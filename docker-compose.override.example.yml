@@ -14,13 +14,14 @@
 services:
   arrmada-app:
     volumes:
-      - /masterdirectory/media/movies:/movies:ro
-      - /masterdirectory/media/tvshows:/tvshows:ro
-      - /masterdirectory/media/ebooks:/ebooks:ro
-      - /masterdirectory/media/audiobooks:/audiobooks:ro
+      # host path (on your server) : container path : read-only
+      - /mnt/user/masterdirectory/media/movies:/movies:ro
+      - /mnt/user/masterdirectory/media/tvshows:/tvshows:ro
+      - /mnt/user/masterdirectory/media/ebooks:/ebooks:ro
+      - /mnt/user/masterdirectory/media/audiobooks:/audiobooks:ro
       # Books in ONE folder instead of two? Use a single mount and point both
       # ARRMADA_EBOOKS_DIR and ARRMADA_AUDIOBOOKS_DIR at it:
-      #   - /masterdirectory/media/books:/books:ro
+      #   - /mnt/user/masterdirectory/media/books:/books:ro
 
 # Then in .env (these tell Arrmada which in-container path each library lives at):
 #   ARRMADA_MOVIES_DIR=/movies
