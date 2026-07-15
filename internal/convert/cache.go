@@ -78,30 +78,53 @@ func (s *Service) WarmCache(ctx context.Context) {
 	if s.cache == nil {
 		return
 	}
-	list, err := s.movies.List(ctx)
-	if err != nil {
-		return
-	}
 	warmed := 0
-	for _, m := range list {
-		if ctx.Err() != nil {
+	warm := func(path string) {
+		fi, err := os.Stat(path)
+		if err != nil {
 			return
 		}
-		if !m.HasFile || m.MovieFilePath == "" {
-			continue
+		if _, ok := s.cache.get(ctx, path, fi.Size(), fi.ModTime().Unix()); ok {
+			return // already cached and unchanged
 		}
-		fi, err := os.Stat(m.MovieFilePath)
-		if err != nil {
-			continue
-		}
-		if _, ok := s.cache.get(ctx, m.MovieFilePath, fi.Size(), fi.ModTime().Unix()); ok {
-			continue // already cached and unchanged
-		}
-		if mi, err := probe(ctx, s.ffprobe, m.MovieFilePath); err == nil {
-			s.cache.put(ctx, m.MovieFilePath, fi.Size(), fi.ModTime().Unix(), mi)
+		if mi, err := probe(ctx, s.ffprobe, path); err == nil {
+			s.cache.put(ctx, path, fi.Size(), fi.ModTime().Unix(), mi)
 			warmed++
 		}
 	}
+
+	if list, err := s.movies.List(ctx); err == nil {
+		for _, m := range list {
+			if ctx.Err() != nil {
+				return
+			}
+			if m.HasFile && m.MovieFilePath != "" {
+				warm(m.MovieFilePath)
+			}
+		}
+	}
+
+	if s.series != nil {
+		if list, err := s.series.List(ctx); err == nil {
+			for _, sm := range list {
+				if ctx.Err() != nil {
+					return
+				}
+				full, err := s.series.Get(ctx, sm.ID)
+				if err != nil {
+					continue
+				}
+				for _, sn := range full.Seasons {
+					for _, e := range sn.Episodes {
+						if e.HasFile && e.FilePath != "" {
+							warm(e.FilePath)
+						}
+					}
+				}
+			}
+		}
+	}
+
 	if warmed > 0 {
 		s.log.Info("convert: probe cache warmed", "files", warmed)
 	}

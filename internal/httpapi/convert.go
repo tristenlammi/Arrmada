@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/convert"
@@ -15,9 +16,12 @@ func (a *api) handleConvertHardware(w http.ResponseWriter, r *http.Request) {
 	if encoders == nil {
 		encoders = []convert.Encoder{}
 	}
+	scratchDir, scratchFree := a.deps.Convert.ScratchInfo(r.Context())
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"encoders": encoders, "selected": selected,
-		"reclaimed_bytes": a.deps.Convert.Reclaimed(r.Context()),
+		"reclaimed_bytes":    a.deps.Convert.Reclaimed(r.Context()),
+		"scratch_dir":        scratchDir,
+		"scratch_free_bytes": scratchFree,
 	})
 }
 
@@ -36,11 +40,20 @@ func (a *api) handleConvertSweep(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "converting"})
 }
 
-// handleConvertLibrary probes downloaded movies and returns their specs + convert candidacy.
+// handleConvertLibrary probes the library and returns each file's spec + convert candidacy.
+// ?media=tv returns TV episodes; anything else (default) returns movies.
 func (a *api) handleConvertLibrary(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
-	list, err := a.deps.Convert.Library(ctx)
+	var (
+		list []convert.Candidate
+		err  error
+	)
+	if r.URL.Query().Get("media") == "tv" {
+		list, err = a.deps.Convert.LibraryTV(ctx)
+	} else {
+		list, err = a.deps.Convert.Library(ctx)
+	}
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not scan library")
 		return
@@ -49,6 +62,30 @@ func (a *api) handleConvertLibrary(w http.ResponseWriter, r *http.Request) {
 		list = []convert.Candidate{}
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"items": list})
+}
+
+// handleConvertEpisode queues a Save-space conversion for one TV episode.
+func (a *api) handleConvertEpisode(w http.ResponseWriter, r *http.Request) {
+	seriesID, ok := a.pathValueID(w, r, "series")
+	if !ok {
+		return
+	}
+	season, err := strconv.Atoi(r.PathValue("season"))
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, "invalid season")
+		return
+	}
+	episode, err := strconv.Atoi(r.PathValue("episode"))
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, "invalid episode")
+		return
+	}
+	job, err := a.deps.Convert.QueueEpisode(r.Context(), seriesID, season, episode)
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusAccepted, job)
 }
 
 // handleConvertJobs returns recent + active conversion jobs (polled by the UI for progress).

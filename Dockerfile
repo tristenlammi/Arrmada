@@ -45,10 +45,14 @@ RUN apk add --no-cache wget tar && set -eux; \
 FROM alpine:3.20
 # apprise (Python) is bundled for notifications — one image, 80+ services, no extra container.
 # su-exec lets the entrypoint drop from root to a configurable PUID/PGID.
-RUN apk add --no-cache ca-certificates wget ffmpeg python3 py3-pip su-exec && \
+# intel-media-driver (iHD) + libva enable Intel Quick Sync / VAAPI hardware transcode
+# when /dev/dri is passed into the container (Gen8+ HEVC/H.264; Gen12.5+/Arc also AV1).
+# libva-utils ships `vainfo` for diagnosing the GPU.
+RUN apk add --no-cache ca-certificates wget ffmpeg python3 py3-pip su-exec \
+        libva libva-utils intel-media-driver mesa-va-gallium && \
     pip3 install --no-cache-dir --break-system-packages apprise && \
     apprise --version && \
-    mkdir -p /data /media/downloads /media/library
+    mkdir -p /data /media/downloads /media/library /transcode
 COPY --from=build /out/arrmada /usr/local/bin/arrmada
 # Dolby Vision (dovi_tool) + HDR10+ (hdr10plus_tool) metadata extractors/injectors.
 COPY --from=hdrtools /usr/local/bin/dovi_tool /usr/local/bin/hdr10plus_tool /usr/local/bin/
@@ -61,6 +65,7 @@ ENV ARRMADA_HOST=0.0.0.0 \
     ARRMADA_DATA_DIR=/data \
     ARRMADA_LIBRARY_DIR=/media/library \
     ARRMADA_DOWNLOADS_DIR=/media/downloads \
+    LIBVA_DRIVER_NAME=iHD \
     PUID=1000 \
     PGID=1000
 EXPOSE 7878

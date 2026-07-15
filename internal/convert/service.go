@@ -17,6 +17,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/movies"
+	"github.com/tristenlammi/arrmada/internal/series"
 	"github.com/tristenlammi/arrmada/internal/settings"
 )
 
@@ -35,6 +36,7 @@ const (
 	keySweepStart     = "convert_sweep_start"      // auto-sweep window start "HH:MM" (empty = always)
 	keySweepEnd       = "convert_sweep_end"        // auto-sweep window end   "HH:MM"
 	keyMaxFailures    = "convert_max_failures"     // blocklist a movie after this many convert failures
+	keyScratchDir     = "convert_scratch_dir"      // transcode working dir override (empty = the startup default)
 )
 
 // qualityRetries is how many times the quality gate re-encodes at a higher quality before
@@ -54,10 +56,14 @@ const (
 	StateSkipped   JobState = "skipped"
 )
 
-// Job is one conversion of one movie.
+// Job is one conversion of one library file — a movie or a TV episode.
 type Job struct {
 	ID       int64    `json:"id"`
-	MovieID  int64    `json:"movie_id"`
+	Kind     string   `json:"kind"` // "movie" | "episode" (empty = movie, for back-compat)
+	MovieID  int64    `json:"movie_id,omitempty"`
+	SeriesID int64    `json:"series_id,omitempty"`
+	Season   int      `json:"season,omitempty"`
+	Episode  int      `json:"episode,omitempty"`
 	Title    string   `json:"title"`
 	State    JobState `json:"state"`
 	Progress float64  `json:"progress"` // 0..1
@@ -76,6 +82,7 @@ type Job struct {
 // pool + scheduling arrive in a later phase.
 type Service struct {
 	movies   *movies.Service
+	series   *series.Service
 	settings *settings.Service
 	log      *slog.Logger
 
@@ -97,11 +104,11 @@ type Service struct {
 }
 
 // NewService wires the module, detecting the best available HEVC encoder up front.
-func NewService(db *sql.DB, mv *movies.Service, set *settings.Service, ffmpeg, ffprobe, scratchDir, recycleDir string, log *slog.Logger) *Service {
+func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *settings.Service, ffmpeg, ffprobe, scratchDir, recycleDir string, log *slog.Logger) *Service {
 	_ = os.MkdirAll(scratchDir, 0o755)
 	encs := detectEncoders(context.Background(), ffmpeg)
 	s := &Service{
-		movies: mv, settings: set, log: log,
+		movies: mv, series: sr, settings: set, log: log,
 		ffmpeg: ffmpeg, ffprobe: ffprobe, scratchDir: scratchDir, recycleDir: recycleDir,
 		encoders: encs, encoder: bestHEVC(encs), failures: &failureStore{db: db},
 		cache: &probeCache{db: db},
@@ -155,6 +162,31 @@ func (s *Service) Hardware() (encoders []Encoder, selected Encoder) {
 	return s.encoders, s.encoder
 }
 
+// activeScratch resolves the transcode working directory: the configured override
+// (Convert → Transcode directory) when set, otherwise the startup default. This
+// is where the heavy encode happens before the finished file is moved into the
+// library, so it should live on fast storage (an SSD/NVMe pool), never the array.
+// The directory is created if missing; a bad override falls back to the default.
+func (s *Service) activeScratch(ctx context.Context) string {
+	dir := strings.TrimSpace(s.settings.Get(ctx, keyScratchDir, ""))
+	if dir == "" {
+		dir = s.scratchDir
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		s.log.Warn("convert: transcode dir unusable, falling back to default", "dir", dir, "err", err)
+		_ = os.MkdirAll(s.scratchDir, 0o755)
+		return s.scratchDir
+	}
+	return dir
+}
+
+// ScratchInfo reports the resolved transcode directory and its free space (for
+// the Convert UI).
+func (s *Service) ScratchInfo(ctx context.Context) (dir string, freeBytesN int64) {
+	dir = s.activeScratch(ctx)
+	return dir, int64(freeBytes(dir))
+}
+
 // encoderFor picks the encoder for a plan's target codec (hardware if available, else CPU).
 func (s *Service) encoderFor(codec string) Encoder { return encoderFor(codec, s.encoders) }
 
@@ -175,9 +207,13 @@ func (s *Service) addReclaimed(ctx context.Context, delta int64) {
 
 // Candidate is a library file plus its probed spec and whether "Save space" would act on it.
 type Candidate struct {
-	MovieID   int64      `json:"movie_id"`
+	Kind      string     `json:"kind"` // "movie" | "episode"
+	MovieID   int64      `json:"movie_id,omitempty"`
+	SeriesID  int64      `json:"series_id,omitempty"`
+	Season    int        `json:"season,omitempty"`
+	Episode   int        `json:"episode,omitempty"`
 	Title     string     `json:"title"`
-	Year      int        `json:"year"`
+	Year      int        `json:"year,omitempty"`
 	PosterURL string     `json:"poster_url,omitempty"`
 	Path      string     `json:"path"`
 	Info      *MediaInfo `json:"info,omitempty"`
@@ -198,7 +234,7 @@ func (s *Service) Library(ctx context.Context) ([]Candidate, error) {
 		if !m.HasFile || m.MovieFilePath == "" {
 			continue
 		}
-		c := Candidate{MovieID: m.ID, Title: m.Title, Year: m.Year, PosterURL: m.PosterURL, Path: m.MovieFilePath}
+		c := Candidate{Kind: "movie", MovieID: m.ID, Title: m.Title, Year: m.Year, PosterURL: m.PosterURL, Path: m.MovieFilePath}
 		if mi, err := s.probeCached(ctx, m.MovieFilePath); err == nil {
 			c.Info = mi
 			c.Candidate = isCandidateFor(mi, target)
@@ -211,10 +247,81 @@ func (s *Service) Library(ctx context.Context) ([]Candidate, error) {
 	return out, nil
 }
 
+// LibraryTV probes every downloaded TV episode and returns its spec + convert
+// candidacy — the TV Shows tab of Convert → Library. Uses the same cached probe
+// path as the movie scan, so it only re-analyzes new or changed files.
+func (s *Service) LibraryTV(ctx context.Context) ([]Candidate, error) {
+	if s.series == nil {
+		return nil, nil
+	}
+	list, err := s.series.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	dp := s.defaultPlan(ctx)
+	target := s.targetCodec(ctx)
+	var out []Candidate
+	for _, sm := range list {
+		full, err := s.series.Get(ctx, sm.ID)
+		if err != nil {
+			continue
+		}
+		for _, sn := range full.Seasons {
+			for _, e := range sn.Episodes {
+				if !e.HasFile || e.FilePath == "" {
+					continue
+				}
+				c := Candidate{
+					Kind: "episode", SeriesID: full.ID, Season: e.SeasonNumber, Episode: e.EpisodeNumber,
+					Title:     fmt.Sprintf("%s - S%02dE%02d", full.Title, e.SeasonNumber, e.EpisodeNumber),
+					Year:      full.Year,
+					PosterURL: full.PosterURL,
+					Path:      e.FilePath,
+				}
+				if mi, err := s.probeCached(ctx, e.FilePath); err == nil {
+					c.Info = mi
+					c.Candidate = isCandidateFor(mi, target)
+					if c.Candidate {
+						c.EstBytes = estimatePlanSize(mi, dp)
+					}
+				}
+				out = append(out, c)
+			}
+		}
+	}
+	return out, nil
+}
+
 // QueueMovie enqueues a Save-space conversion of a movie (using the default plan built from
 // the global settings) and returns the created job.
 func (s *Service) QueueMovie(ctx context.Context, movieID int64) (*Job, error) {
 	return s.queueMovie(ctx, movieID, s.defaultPlan(ctx))
+}
+
+// QueueEpisode enqueues a Save-space conversion of one TV episode.
+func (s *Service) QueueEpisode(ctx context.Context, seriesID int64, season, episode int) (*Job, error) {
+	if s.series == nil {
+		return nil, fmt.Errorf("series module not available")
+	}
+	path, _ := s.series.EpisodeFilePath(ctx, seriesID, season, episode)
+	if path == "" {
+		return nil, fmt.Errorf("episode has no file to convert")
+	}
+	title := fmt.Sprintf("S%02dE%02d", season, episode)
+	if sm, err := s.series.Get(ctx, seriesID); err == nil {
+		title = fmt.Sprintf("%s - S%02dE%02d", sm.Title, season, episode)
+	}
+	s.mu.Lock()
+	s.nextID++
+	job := &Job{ID: s.nextID, Kind: "episode", SeriesID: seriesID, Season: season, Episode: episode,
+		Title: title, State: StateQueued, Encoder: s.encoder.Label, plan: s.defaultPlan(ctx)}
+	s.jobs = append([]*Job{job}, s.jobs...)
+	if len(s.jobs) > 200 {
+		s.jobs = s.jobs[:200]
+	}
+	s.mu.Unlock()
+	s.queue <- job
+	return job, nil
 }
 
 // defaultPlan is the single conversion plan derived from the global settings: transcode to the
@@ -366,10 +473,11 @@ func (s *Service) sample(ctx context.Context, movieID int64, plan Plan) (SampleR
 	}
 
 	enc := s.encoderFor(plan.VideoCodec)
+	scratch := s.activeScratch(ctx)
 	var sampledBytes int64
 	var sampledSec float64
 	for i, sl := range slices {
-		dst := filepath.Join(s.scratchDir, fmt.Sprintf("sample-%d-%d%s", movieID, i, ext))
+		dst := filepath.Join(scratch, fmt.Sprintf("sample-%d-%d%s", movieID, i, ext))
 		if err := encodeSlice(enc, sl, dst); err != nil {
 			if enc.Hardware { // retry this slice on CPU
 				err = encodeSlice(cpuEncoder(plan.VideoCodec), sl, dst)
@@ -409,16 +517,18 @@ func (s *Service) Sweep(ctx context.Context) {
 	}
 }
 
-// ConvertAll queues every library file that isn't already the target codec (skipping ones that
-// have failed too many times). The manual "Convert all now" button and the schedule both use it.
+// ConvertAll queues every library file (movies + TV episodes) that isn't already the target
+// codec, skipping movies that have failed too many times. The manual "Convert all now" button
+// and the schedule both use it.
 func (s *Service) ConvertAll(ctx context.Context) (int, error) {
+	plan := s.defaultPlan(ctx)
+	maxFail := s.maxFailures(ctx)
+	queued := 0
+
 	cands, err := s.Library(ctx)
 	if err != nil {
 		return 0, err
 	}
-	plan := s.defaultPlan(ctx)
-	maxFail := s.maxFailures(ctx)
-	queued := 0
 	for _, c := range cands {
 		if !c.Candidate {
 			continue
@@ -428,6 +538,18 @@ func (s *Service) ConvertAll(ctx context.Context) (int, error) {
 		}
 		if _, err := s.queueMovie(ctx, c.MovieID, plan); err == nil {
 			queued++
+		}
+	}
+
+	tv, err := s.LibraryTV(ctx)
+	if err == nil {
+		for _, c := range tv {
+			if !c.Candidate {
+				continue
+			}
+			if _, err := s.QueueEpisode(ctx, c.SeriesID, c.Season, c.Episode); err == nil {
+				queued++
+			}
 		}
 	}
 	return queued, nil
@@ -480,12 +602,11 @@ func (s *Service) update(job *Job, fn func(*Job)) {
 }
 
 func (s *Service) process(ctx context.Context, job *Job) {
-	m, err := s.movies.Get(ctx, job.MovieID)
-	if err != nil || !m.HasFile || m.MovieFilePath == "" {
-		s.finish(job, StateFailed, "movie file is gone")
+	src, title, ok := s.resolveSource(ctx, job)
+	if !ok {
+		s.finish(job, StateFailed, "source file is gone")
 		return
 	}
-	src := m.MovieFilePath
 	mi, err := probe(ctx, s.ffprobe, src)
 	if err != nil {
 		s.finish(job, StateFailed, "could not analyze file: "+err.Error())
@@ -520,8 +641,10 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		s.finish(job, StateSkipped, "file is hardlinked (likely still seeding) — skipped")
 		return
 	}
+	// The transcode working dir (fast/SSD when configured) — heavy encode I/O lands here.
+	scratch := s.activeScratch(ctx)
 	// Disk-space guard: need room for a worst-case same-size output on the scratch volume.
-	if free := freeBytes(s.scratchDir); free > 0 && int64(free) < mi.SizeBytes+(256<<20) {
+	if free := freeBytes(scratch); free > 0 && int64(free) < mi.SizeBytes+(256<<20) {
 		s.finish(job, StateFailed, "not enough scratch space to convert safely")
 		return
 	}
@@ -531,7 +654,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	// file has HDR10+ and we route to the inject pipeline. Absence is normal and silent.
 	h10pJSON := ""
 	if mi.HDR != "Dolby Vision" && (mi.HDR == "HDR10" || mi.HDR == "HDR10+") && s.hdr10plusTool != "" && plan.VideoCodec == "hevc" {
-		jf := filepath.Join(s.scratchDir, fmt.Sprintf("h10p-%d.json", job.ID))
+		jf := filepath.Join(scratch, fmt.Sprintf("h10p-%d.json", job.ID))
 		if err := s.extractHDR10Plus(ctx, src, jf); err == nil {
 			h10pJSON = jf
 			defer os.Remove(jf)
@@ -546,7 +669,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	if plan.Container == "mp4" && mi.HDR != "Dolby Vision" && h10pJSON == "" {
 		ext = ".mp4"
 	}
-	dst := filepath.Join(s.scratchDir, fmt.Sprintf("convert-%d%s", job.ID, ext))
+	dst := filepath.Join(scratch, fmt.Sprintf("convert-%d%s", job.ID, ext))
 	defer os.Remove(dst)
 
 	// Encode, then (if the quality gate is on for a real transcode) score the result and
@@ -570,7 +693,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		}
 		s.update(job, func(j *Job) { j.SSIM = score })
 		if score >= minSSIM {
-			s.log.Info("convert: quality gate passed", "movie", m.Title, "ssim", score, "min", minSSIM)
+			s.log.Info("convert: quality gate passed", "title", title, "ssim", score, "min", minSSIM)
 			break
 		}
 		if attempt >= qualityRetries {
@@ -578,11 +701,43 @@ func (s *Service) process(ctx context.Context, job *Job) {
 			return
 		}
 		plan.Quality = higherQuality(plan)
-		s.log.Info("convert: quality gate retry at higher quality", "movie", m.Title, "ssim", score, "new_crf", plan.Quality)
+		s.log.Info("convert: quality gate retry at higher quality", "title", title, "ssim", score, "new_crf", plan.Quality)
 		s.update(job, func(j *Job) { j.State = StateEncoding; j.Progress = 0 })
 	}
 
-	s.finalizeOutput(ctx, job, src, dst, ext, mi, plan, m.Title)
+	s.finalizeOutput(ctx, job, src, dst, ext, mi, plan, title)
+}
+
+// resolveSource re-resolves a job's current source file path + display title,
+// covering both movie and TV-episode jobs. ok is false when the file is gone.
+func (s *Service) resolveSource(ctx context.Context, job *Job) (src, title string, ok bool) {
+	if job.Kind == "episode" {
+		if s.series == nil {
+			return "", "", false
+		}
+		path, _ := s.series.EpisodeFilePath(ctx, job.SeriesID, job.Season, job.Episode)
+		if path == "" {
+			return "", "", false
+		}
+		return path, job.Title, true
+	}
+	m, err := s.movies.Get(ctx, job.MovieID)
+	if err != nil || !m.HasFile || m.MovieFilePath == "" {
+		return "", "", false
+	}
+	return m.MovieFilePath, m.Title, true
+}
+
+// markConverted records a finished conversion against the right library record
+// (movie or episode), re-tagging its file path.
+func (s *Service) markConverted(ctx context.Context, job *Job, finalPath, tag string) error {
+	if job.Kind == "episode" {
+		if s.series == nil {
+			return fmt.Errorf("series module not available")
+		}
+		return s.series.MarkEpisodeImported(ctx, job.SeriesID, job.Season, job.Episode, finalPath, fileSize(finalPath))
+	}
+	return s.movies.MarkImported(ctx, job.MovieID, finalPath, tag)
 }
 
 // runEncode dispatches to the right pipeline (standard, Dolby Vision, or HDR10+) and produces
@@ -659,8 +814,8 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst, ext st
 		s.finish(job, StateFailed, "could not move converted file into place: "+err.Error())
 		return
 	}
-	if err := s.movies.MarkImported(ctx, job.MovieID, finalPath, "arrmada-convert:"+codecTag(plan)); err != nil {
-		s.log.Warn("convert: mark imported failed", "movie", title, "err", err)
+	if err := s.markConverted(ctx, job, finalPath, "arrmada-convert:"+codecTag(plan)); err != nil {
+		s.log.Warn("convert: mark imported failed", "title", title, "err", err)
 	}
 	s.update(job, func(j *Job) { j.OutBytes = outSize })
 	s.addReclaimed(ctx, mi.SizeBytes-outSize)
@@ -751,8 +906,13 @@ func (s *Service) finish(job *Job, state JobState, note string) {
 			j.Progress = 1
 		}
 	})
-	// Track hard failures for the quarantine blocklist; a success clears the movie's record.
-	// (Skips are intentional outcomes, not failures, so they don't count.)
+	// Track hard failures for the quarantine blocklist; a success clears the record.
+	// (Skips are intentional outcomes, not failures, so they don't count.) The
+	// blocklist is keyed by movie id, so it only applies to movie jobs today;
+	// episode jobs simply aren't quarantined.
+	if job.Kind == "episode" {
+		return
+	}
 	switch state {
 	case StateFailed:
 		s.log.Warn("convert: job failed", "title", job.Title, "note", note)

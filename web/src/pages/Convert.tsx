@@ -90,7 +90,7 @@ export function Convert() {
 
         {tab === "overview" && <Overview hw={hw} items={items} jobs={jobs} />}
         {tab === "queue" && <Queue jobs={jobs} />}
-        {tab === "library" && <Library items={items} flash={flash} onQueued={() => api.convertJobs().then(setJobs)} />}
+        {tab === "library" && <Library flash={flash} onQueued={() => api.convertJobs().then(setJobs)} />}
         {tab === "settings" && <ConvertSettings flash={flash} />}
       </div>
       {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
@@ -257,64 +257,101 @@ function JobBar({ j, rich }: { j: ConvertJob; rich?: boolean }) {
 }
 
 /* ============================= LIBRARY ============================= */
-function Library({ items, flash, onQueued }: { items: ConvertCandidate[] | null; flash: (m: string) => void; onQueued: () => void }) {
-  const [busy, setBusy] = useState<number | null>(null);
+function rowKey(c: ConvertCandidate): string {
+  return c.kind === "episode" ? `e:${c.series_id}:${c.season}:${c.episode}` : `m:${c.movie_id}`;
+}
+
+function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: () => void }) {
+  const [media, setMedia] = useState<"movies" | "tv">("movies");
+  const [items, setItems] = useState<ConvertCandidate[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const [sampling, setSampling] = useState<number | null>(null);
   const [samples, setSamples] = useState<Record<number, ConvertSample>>({});
+
+  useEffect(() => {
+    setItems(null);
+    api.convertLibrary(media).then(setItems).catch(() => setItems([]));
+  }, [media]);
+
   const convert = async (c: ConvertCandidate) => {
-    setBusy(c.movie_id);
-    try { await api.convertMovie(c.movie_id); flash(`Queued “${c.title}”`); onQueued(); } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
+    const key = rowKey(c);
+    setBusy(key);
+    try {
+      if (c.kind === "episode") await api.convertEpisode(c.series_id!, c.season!, c.episode!);
+      else await api.convertMovie(c.movie_id!);
+      flash(`Queued “${c.title}”`);
+      onQueued();
+    } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
   };
   const runSample = async (c: ConvertCandidate) => {
-    setSampling(c.movie_id);
+    if (c.kind !== "movie" || c.movie_id == null) return; // 30s sample is a movie-only tool for now
+    const id = c.movie_id;
+    setSampling(id);
     flash(`Encoding a 30s test of “${c.title}” at your quality — this takes a minute…`);
-    try { const r = await api.convertSampleMovie(c.movie_id); setSamples((s) => ({ ...s, [c.movie_id]: r })); }
+    try { const r = await api.convertSampleMovie(id); setSamples((s) => ({ ...s, [id]: r })); }
     catch (e) { flash((e as Error).message); } finally { setSampling(null); }
   };
-  if (items === null) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Analyzing your library…</div>;
-  if (items.length === 0) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>No downloaded movies yet.</div>;
+
+  const noun = media === "tv" ? "episodes" : "movies";
   return (
     <div className="flex flex-col gap-2">
-      <p className="text-[11px] text-ink-faint">“Est. after” is a rough heuristic. For a real number, run <b>Test 30s</b> — it encodes a 30-second slice at your exact quality and measures the result.</p>
-      <div className="overflow-x-auto rounded-xl" style={{ border: "1px solid var(--line)" }}>
-        <table className="w-full border-collapse text-[12.5px]" style={{ minWidth: 900 }}>
-          <thead><tr style={{ background: "var(--panel-2)" }}>{["Title", "Video", "Res", "HDR", "Bitrate", "Audio", "Subs", "Size", "Est. after", ""].map((h) => <th key={h} className="px-3 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint">{h}</th>)}</tr></thead>
-          <tbody>
-            {items.map((c, i) => {
-              const eff = !c.candidate;
-              const cd = c.info?.video_codec?.toUpperCase() ?? "?";
-              const sm = samples[c.movie_id];
-              return (
-                <tr key={c.movie_id} style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
-                  <td className="px-3 py-2 font-semibold">{c.title} <span className="font-normal text-ink-faint">{c.year || ""}</span></td>
-                  <td className="px-3 py-2"><span className="rounded px-1.5 py-0.5 font-mono text-[10px] font-bold" style={{ background: eff ? "var(--good-soft, rgba(127,176,105,.16))" : "var(--avoid-soft)", color: eff ? "var(--good)" : "var(--avoid)" }}>{cd}</span></td>
-                  <td className="px-3 py-2 font-mono text-ink-dim">{c.info?.resolution ?? "—"}</td>
-                  <td className="px-3 py-2 font-mono text-ink-dim">{c.info?.hdr && c.info.hdr !== "SDR" ? c.info.hdr : "—"}</td>
-                  <td className="px-3 py-2 font-mono tabular-nums text-ink-dim">{c.info?.bitrate_kbps ? `${(c.info.bitrate_kbps / 1000).toFixed(0)} Mb/s` : "—"}</td>
-                  <td className="px-3 py-2 font-mono text-ink-dim">{c.info?.audio_tracks ?? "—"}</td>
-                  <td className="px-3 py-2 font-mono text-ink-dim">{c.info?.sub_tracks ?? "—"}</td>
-                  <td className="px-3 py-2 font-mono tabular-nums">{fmtSize(c.info?.size_bytes)}</td>
-                  <td className="px-3 py-2 font-mono tabular-nums">
-                    {sm ? (
-                      <span title={`Measured from a real ${sm.sample_sec}s encode`} style={{ color: sm.percent > 3 ? "var(--good)" : "var(--avoid)" }}>{fmtSize(sm.est_bytes)} <span className="text-[9.5px] font-bold uppercase" style={{ color: "var(--good)" }}>·meas</span></span>
-                    ) : c.candidate ? (
-                      <span title="Rough heuristic — run Test 30s for a real number" style={{ color: "var(--ink-faint)" }}>~{fmtSize(c.est_bytes)}</span>
-                    ) : <span className="text-ink-faint">—</span>}
-                  </td>
-                  <td className="px-3 py-2">
-                    {c.candidate ? (
-                      <div className="flex items-center justify-end gap-1.5">
-                        <button onClick={() => runSample(c)} disabled={sampling !== null} title="Encode a 30s slice at your quality and measure the real result" className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>{sampling === c.movie_id ? "Testing…" : "Test 30s"}</button>
-                        <button onClick={() => convert(c)} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy === c.movie_id ? "Queuing…" : "Convert"}</button>
-                      </div>
-                    ) : <div className="text-right"><span className="font-mono text-[10.5px] text-ink-faint">efficient</span></div>}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div className="inline-flex w-fit rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+        {(["movies", "tv"] as const).map((m) => (
+          <button key={m} onClick={() => setMedia(m)} className="rounded-md px-3.5 py-1.5 text-[12px] font-semibold" style={{ background: media === m ? "var(--accent)" : "transparent", color: media === m ? "var(--accent-ink)" : "var(--ink-faint)" }}>
+            {m === "movies" ? "Movies" : "TV Shows"}{items && media === m ? <span className="ml-1.5 font-mono text-[10px] opacity-70">{items.length.toLocaleString()}</span> : null}
+          </button>
+        ))}
       </div>
+
+      {items === null ? (
+        <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Analyzing your {noun}…</div>
+      ) : items.length === 0 ? (
+        <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>No downloaded {noun} yet.</div>
+      ) : (
+        <>
+          <p className="text-[11px] text-ink-faint">“Est. after” is a rough heuristic. For a real number, run <b>Test 30s</b> — it encodes a 30-second slice at your exact quality and measures the result{media === "tv" ? " (movies only for now)" : ""}.</p>
+          <div className="overflow-x-auto rounded-xl" style={{ border: "1px solid var(--line)" }}>
+            <table className="w-full border-collapse text-[12.5px]" style={{ minWidth: 900 }}>
+              <thead><tr style={{ background: "var(--panel-2)" }}>{["Title", "Video", "Res", "HDR", "Bitrate", "Audio", "Subs", "Size", "Est. after", ""].map((h) => <th key={h} className="px-3 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint">{h}</th>)}</tr></thead>
+              <tbody>
+                {items.map((c, i) => {
+                  const eff = !c.candidate;
+                  const cd = c.info?.video_codec?.toUpperCase() ?? "?";
+                  const key = rowKey(c);
+                  const sm = c.movie_id != null ? samples[c.movie_id] : undefined;
+                  return (
+                    <tr key={key} style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
+                      <td className="px-3 py-2 font-semibold">{c.title} <span className="font-normal text-ink-faint">{c.year || ""}</span></td>
+                      <td className="px-3 py-2"><span className="rounded px-1.5 py-0.5 font-mono text-[10px] font-bold" style={{ background: eff ? "var(--good-soft, rgba(127,176,105,.16))" : "var(--avoid-soft)", color: eff ? "var(--good)" : "var(--avoid)" }}>{cd}</span></td>
+                      <td className="px-3 py-2 font-mono text-ink-dim">{c.info?.resolution ?? "—"}</td>
+                      <td className="px-3 py-2 font-mono text-ink-dim">{c.info?.hdr && c.info.hdr !== "SDR" ? c.info.hdr : "—"}</td>
+                      <td className="px-3 py-2 font-mono tabular-nums text-ink-dim">{c.info?.bitrate_kbps ? `${(c.info.bitrate_kbps / 1000).toFixed(0)} Mb/s` : "—"}</td>
+                      <td className="px-3 py-2 font-mono text-ink-dim">{c.info?.audio_tracks ?? "—"}</td>
+                      <td className="px-3 py-2 font-mono text-ink-dim">{c.info?.sub_tracks ?? "—"}</td>
+                      <td className="px-3 py-2 font-mono tabular-nums">{fmtSize(c.info?.size_bytes)}</td>
+                      <td className="px-3 py-2 font-mono tabular-nums">
+                        {sm ? (
+                          <span title={`Measured from a real ${sm.sample_sec}s encode`} style={{ color: sm.percent > 3 ? "var(--good)" : "var(--avoid)" }}>{fmtSize(sm.est_bytes)} <span className="text-[9.5px] font-bold uppercase" style={{ color: "var(--good)" }}>·meas</span></span>
+                        ) : c.candidate ? (
+                          <span title="Rough heuristic — run Test 30s for a real number" style={{ color: "var(--ink-faint)" }}>~{fmtSize(c.est_bytes)}</span>
+                        ) : <span className="text-ink-faint">—</span>}
+                      </td>
+                      <td className="px-3 py-2">
+                        {c.candidate ? (
+                          <div className="flex items-center justify-end gap-1.5">
+                            {c.kind === "movie" && <button onClick={() => runSample(c)} disabled={sampling !== null} title="Encode a 30s slice at your quality and measure the real result" className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>{sampling === c.movie_id ? "Testing…" : "Test 30s"}</button>}
+                            <button onClick={() => convert(c)} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy === key ? "Queuing…" : "Convert"}</button>
+                          </div>
+                        ) : <div className="text-right"><span className="font-mono text-[10.5px] text-ink-faint">efficient</span></div>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -344,18 +381,21 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
   const [saved, setSaved] = useState<AppSettings | null>(null);
   const [d, setD] = useState<AppSettings | null>(null); // working draft
   const [busy, setBusy] = useState(false);
+  const [scratch, setScratch] = useState<{ dir: string; free: number } | null>(null);
   useEffect(() => { api.settings().then((v) => { setSaved(v); setD(v); }).catch(() => flash("Could not load settings")); }, [flash]);
+  const loadScratch = useCallback(() => api.convertHardware().then((h) => setScratch({ dir: h.scratch_dir, free: h.scratch_free_bytes })).catch(() => {}), []);
+  useEffect(() => { loadScratch(); }, [loadScratch]);
   const set = (patch: Partial<AppSettings>) => setD((cur) => (cur ? { ...cur, ...patch } : cur));
   const dirty = useMemo(() => {
     if (!saved || !d) return false;
-    const keys: (keyof AppSettings)[] = ["convert_target_codec", "convert_extract_subs", "convert_auto", "convert_sweep_start", "convert_sweep_end", "convert_workers", "convert_quality_gate", "convert_min_ssim", "convert_max_failures", "convert_skip_hardlinked"];
+    const keys: (keyof AppSettings)[] = ["convert_target_codec", "convert_extract_subs", "convert_auto", "convert_sweep_start", "convert_sweep_end", "convert_workers", "convert_quality_gate", "convert_min_ssim", "convert_max_failures", "convert_skip_hardlinked", "convert_scratch_dir"];
     return keys.some((k) => saved[k] !== d[k]);
   }, [saved, d]);
   const onSave = async () => {
     if (!d) return;
     setBusy(true);
-    const patch = { convert_target_codec: d.convert_target_codec, convert_extract_subs: d.convert_extract_subs, convert_auto: d.convert_auto, convert_sweep_start: d.convert_sweep_start, convert_sweep_end: d.convert_sweep_end, convert_workers: d.convert_workers, convert_quality_gate: d.convert_quality_gate, convert_min_ssim: d.convert_min_ssim, convert_max_failures: d.convert_max_failures, convert_skip_hardlinked: d.convert_skip_hardlinked };
-    try { const v = await api.updateSettings(patch); setSaved(v); setD(v); flash("Settings saved"); } catch (e) { flash((e as Error).message); } finally { setBusy(false); }
+    const patch = { convert_target_codec: d.convert_target_codec, convert_extract_subs: d.convert_extract_subs, convert_auto: d.convert_auto, convert_sweep_start: d.convert_sweep_start, convert_sweep_end: d.convert_sweep_end, convert_workers: d.convert_workers, convert_quality_gate: d.convert_quality_gate, convert_min_ssim: d.convert_min_ssim, convert_max_failures: d.convert_max_failures, convert_skip_hardlinked: d.convert_skip_hardlinked, convert_scratch_dir: d.convert_scratch_dir };
+    try { const v = await api.updateSettings(patch); setSaved(v); setD(v); flash("Settings saved"); loadScratch(); } catch (e) { flash((e as Error).message); } finally { setBusy(false); }
   };
   if (!d) return <div className="text-[12px] text-ink-faint">Loading settings…</div>;
   const av1 = d.convert_target_codec === "av1";
@@ -394,6 +434,18 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
         <SettingField label="Convert at once" hint={`${av1 ? "AV1 is heavy — " : ""}keep at 1 for CPU-only, 2–3 with a GPU · applies on restart`}>
           <input type="number" min="1" max="8" value={d.convert_workers} onChange={(e) => set({ convert_workers: e.target.value })} className={`${inp} w-[70px]`} style={inpStyle} />
         </SettingField>
+      </SettingCard>
+
+      {/* Storage / transcode dir */}
+      <SettingCard title="Transcode directory" desc="The working folder Convert encodes into before moving the finished file into your library. Put it on fast storage (an SSD/NVMe cache pool) — never the array — so the long encode doesn't hammer your parity disks. Leave blank to use the default.">
+        <SettingField label="Directory" hint="e.g. /transcode (mount your SSD pool there in compose)">
+          <input type="text" value={d.convert_scratch_dir} onChange={(e) => set({ convert_scratch_dir: e.target.value })} placeholder="/transcode" className={`${inp} w-[240px]`} style={inpStyle} />
+        </SettingField>
+        {scratch && (
+          <div className="text-[11px] text-ink-faint">
+            Currently using <span className="font-mono text-ink-dim">{scratch.dir}</span> · <b style={{ color: scratch.free > 20 * 1024 ** 3 ? "var(--good)" : "var(--avoid)" }}>{fmtSize(scratch.free)}</b> free
+          </div>
+        )}
       </SettingCard>
 
       {/* Safety */}

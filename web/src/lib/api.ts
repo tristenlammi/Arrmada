@@ -288,6 +288,7 @@ export interface AppSettings {
   convert_sweep_start: string;
   convert_sweep_end: string;
   convert_max_failures: string;
+  convert_scratch_dir: string;
 }
 
 export interface MediaRequest {
@@ -576,9 +577,9 @@ export interface ConvertMediaInfo {
   container: string; video_codec: string; width: number; height: number; resolution: string; hdr: string;
   bitrate_kbps: number; frame_rate: number; duration_sec: number; size_bytes: number; audio_tracks: number; sub_tracks: number; ten_bit: boolean;
 }
-export interface ConvertCandidate { movie_id: number; title: string; year: number; poster_url?: string; path: string; info?: ConvertMediaInfo; candidate: boolean; est_bytes: number }
+export interface ConvertCandidate { kind: "movie" | "episode"; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; year?: number; poster_url?: string; path: string; info?: ConvertMediaInfo; candidate: boolean; est_bytes: number }
 export interface ConvertSample { movie_id: number; title: string; src_bytes: number; est_bytes: number; percent: number; sample_sec: number }
-export interface ConvertJob { id: number; movie_id: number; title: string; state: string; progress: number; fps: number; speed_x: number; encoder: string; src_bytes: number; out_bytes: number; note?: string }
+export interface ConvertJob { id: number; kind?: string; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; state: string; progress: number; fps: number; speed_x: number; encoder: string; src_bytes: number; out_bytes: number; note?: string }
 
 // Insights (Plex watch monitoring).
 export interface PlexLibrary { key: string; title: string; type: string }
@@ -919,11 +920,12 @@ export const api = {
   searchSeriesSubs: (id: number) => req<{ status: string }>(`/api/v1/subtitles/series/${id}/search`, { method: "POST" }),
 
   // Convert
-  convertHardware: () => req<{ encoders: ConvertEncoder[]; selected: ConvertEncoder; reclaimed_bytes: number }>("/api/v1/convert/hardware"),
+  convertHardware: () => req<{ encoders: ConvertEncoder[]; selected: ConvertEncoder; reclaimed_bytes: number; scratch_dir: string; scratch_free_bytes: number }>("/api/v1/convert/hardware"),
   convertSweep: () => req<{ status: string }>("/api/v1/convert/sweep", { method: "POST" }),
-  convertLibrary: () => req<{ items: ConvertCandidate[] }>("/api/v1/convert/library").then((r) => r.items),
+  convertLibrary: (media: "movies" | "tv" = "movies") => req<{ items: ConvertCandidate[] }>(`/api/v1/convert/library${media === "tv" ? "?media=tv" : ""}`).then((r) => r.items),
   convertJobs: () => req<{ jobs: ConvertJob[] }>("/api/v1/convert/jobs").then((r) => r.jobs),
   convertMovie: (id: number) => req<ConvertJob>(`/api/v1/convert/movies/${id}`, { method: "POST" }),
+  convertEpisode: (seriesID: number, season: number, episode: number) => req<ConvertJob>(`/api/v1/convert/episodes/${seriesID}/${season}/${episode}`, { method: "POST" }),
   convertSampleMovie: (id: number) => req<ConvertSample>(`/api/v1/convert/movies/${id}/sample`, { method: "POST" }),
 
   // Insights (Plex)

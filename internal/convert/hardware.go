@@ -20,23 +20,27 @@ type Encoder struct {
 // knownEncoders lists the encoders we know how to drive, per target codec, best hardware
 // first within each codec (R5 — HEVC / H.264 / AV1 targets). The CPU encoder for each codec
 // is always the safe fallback.
+// VAAPI is listed before QSV within each codec: on Intel both drive the same
+// media engine, but VAAPI (via intel-media-driver) is the dependable path on this
+// Alpine image, whereas QSV needs the oneVPL runtime. Preferring VAAPI avoids a
+// "QSV init fails → fall back to CPU" loop on Intel boxes.
 var knownEncoders = []Encoder{
 	// HEVC (the default "save space" target).
 	{Codec: "hevc", Name: "hevc_nvenc", Kind: "nvenc", Label: "NVENC (HEVC)", Hardware: true},
-	{Codec: "hevc", Name: "hevc_qsv", Kind: "qsv", Label: "Quick Sync (HEVC)", Hardware: true},
 	{Codec: "hevc", Name: "hevc_vaapi", Kind: "vaapi", Label: "VAAPI (HEVC)", Hardware: true},
+	{Codec: "hevc", Name: "hevc_qsv", Kind: "qsv", Label: "Quick Sync (HEVC)", Hardware: true},
 	{Codec: "hevc", Name: "hevc_videotoolbox", Kind: "videotoolbox", Label: "VideoToolbox (HEVC)", Hardware: true},
 	{Codec: "hevc", Name: "libx265", Kind: "cpu", Label: "CPU (x265)", Hardware: false},
 	// H.264 (maximum compatibility).
 	{Codec: "h264", Name: "h264_nvenc", Kind: "nvenc", Label: "NVENC (H.264)", Hardware: true},
-	{Codec: "h264", Name: "h264_qsv", Kind: "qsv", Label: "Quick Sync (H.264)", Hardware: true},
 	{Codec: "h264", Name: "h264_vaapi", Kind: "vaapi", Label: "VAAPI (H.264)", Hardware: true},
+	{Codec: "h264", Name: "h264_qsv", Kind: "qsv", Label: "Quick Sync (H.264)", Hardware: true},
 	{Codec: "h264", Name: "h264_videotoolbox", Kind: "videotoolbox", Label: "VideoToolbox (H.264)", Hardware: true},
 	{Codec: "h264", Name: "libx264", Kind: "cpu", Label: "CPU (x264)", Hardware: false},
 	// AV1 (smallest, newest).
 	{Codec: "av1", Name: "av1_nvenc", Kind: "nvenc", Label: "NVENC (AV1)", Hardware: true},
-	{Codec: "av1", Name: "av1_qsv", Kind: "qsv", Label: "Quick Sync (AV1)", Hardware: true},
 	{Codec: "av1", Name: "av1_vaapi", Kind: "vaapi", Label: "VAAPI (AV1)", Hardware: true},
+	{Codec: "av1", Name: "av1_qsv", Kind: "qsv", Label: "Quick Sync (AV1)", Hardware: true},
 	{Codec: "av1", Name: "libsvtav1", Kind: "cpu", Label: "CPU (SVT-AV1)", Hardware: false},
 }
 

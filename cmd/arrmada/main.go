@@ -319,9 +319,16 @@ func main() {
 	// Convert module (Tdarr replacement): GPU/CPU transcoding over the Movies library.
 	convertScratch := cfg.ConvertScratchDir
 	if convertScratch == "" {
-		convertScratch = filepath.Join(cfg.DataDir, "convert")
+		// Default to the image's /transcode mount point (put a fast SSD/NVMe pool
+		// there in compose) so the heavy encode stays off the array; fall back to
+		// appdata only if /transcode isn't present.
+		if _, err := os.Stat("/transcode"); err == nil {
+			convertScratch = "/transcode"
+		} else {
+			convertScratch = filepath.Join(cfg.DataDir, "convert")
+		}
 	}
-	convertSvc := convert.NewService(st.DB(), movieSvc, settingsSvc, "ffmpeg", "ffprobe", convertScratch, recycleDir, log)
+	convertSvc := convert.NewService(st.DB(), movieSvc, seriesSvc, settingsSvc, "ffmpeg", "ffprobe", convertScratch, recycleDir, log)
 	go convertSvc.Run(runCtx)
 	// Warm the probe cache off the request path so the first Convert page load after
 	// a restart is instant instead of re-analyzing the whole library.

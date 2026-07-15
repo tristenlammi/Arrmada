@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/library"
 )
@@ -55,6 +56,7 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"convert_sweep_start":  a.deps.Settings.Get(ctx, "convert_sweep_start", ""),
 		"convert_sweep_end":    a.deps.Settings.Get(ctx, "convert_sweep_end", ""),
 		"convert_max_failures": a.deps.Settings.Get(ctx, "convert_max_failures", "3"),
+		"convert_scratch_dir":  a.deps.Settings.Get(ctx, "convert_scratch_dir", ""),
 	})
 }
 
@@ -81,6 +83,7 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		ConvertSweepStart     *string `json:"convert_sweep_start"`
 		ConvertSweepEnd       *string `json:"convert_sweep_end"`
 		ConvertMaxFailures    *string `json:"convert_max_failures"`
+		ConvertScratchDir     *string `json:"convert_scratch_dir"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -148,6 +151,9 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.ConvertMaxFailures != nil && !save(a.deps.Settings.Set(ctx, "convert_max_failures", *req.ConvertMaxFailures)) {
+		return
+	}
+	if req.ConvertScratchDir != nil && !save(a.deps.Settings.Set(ctx, "convert_scratch_dir", strings.TrimSpace(*req.ConvertScratchDir))) {
 		return
 	}
 	if req.MusicEnabled != nil && !save(a.deps.Settings.SetBool(ctx, keyMusicEnabled, *req.MusicEnabled)) {
