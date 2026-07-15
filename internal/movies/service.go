@@ -162,10 +162,14 @@ type ScanResult struct {
 // ScanLibrary walks the library root, matches each movie folder/file to TMDB,
 // and creates entries for anything not already tracked — marked UNMONITORED with
 // an "n/a" quality profile (they already exist on disk; Arrmada just catalogs them).
-func (s *Service) ScanLibrary(ctx context.Context) (ScanResult, error) {
+func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanResult, error) {
 	var res ScanResult
 	if !s.meta.Available() {
 		return res, fmt.Errorf("movie metadata isn't configured — set ARRMADA_TMDB_API_KEY")
+	}
+	root := rootOverride
+	if root == "" {
+		root = s.root
 	}
 	existing, err := s.repo.List(ctx)
 	if err != nil {
@@ -176,7 +180,7 @@ func (s *Service) ScanLibrary(ctx context.Context) (ScanResult, error) {
 		have[m.TMDBID] = true
 	}
 
-	entries, err := os.ReadDir(s.root)
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		return res, err
 	}
@@ -185,7 +189,7 @@ func (s *Service) ScanLibrary(ctx context.Context) (ScanResult, error) {
 		if strings.HasPrefix(name, ".") {
 			continue // .recycle and friends
 		}
-		full := filepath.Join(s.root, name)
+		full := filepath.Join(root, name)
 		video, _, verr := library.FindVideo(full)
 		if verr != nil || video == "" {
 			continue // no video here

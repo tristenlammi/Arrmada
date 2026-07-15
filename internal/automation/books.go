@@ -424,7 +424,7 @@ type BookScanResult struct {
 // ScanBookLibrary catalogs books already in the library folder. Each book folder is
 // matched to Open Library, added unmonitored, and assigned the profile that matches the
 // editions found on disk (ebook-only → Ebook, audio-only → Audiobook, both → both).
-func (c *Coordinator) ScanBookLibrary(ctx context.Context) BookScanResult {
+func (c *Coordinator) ScanBookLibrary(ctx context.Context, ebookRoot, audiobookRoot string) BookScanResult {
 	var res BookScanResult
 	if c.books == nil || c.imp == nil || !c.books.MetadataAvailable() {
 		return res
@@ -435,7 +435,13 @@ func (c *Coordinator) ScanBookLibrary(ctx context.Context) BookScanResult {
 			have[b.OLKey] = true
 		}
 	}
-	for _, bf := range c.imp.FindBookFolders() {
+	var folders []library.BookFolder
+	if ebookRoot != "" || audiobookRoot != "" {
+		folders = c.imp.FindBookFoldersIn(ebookRoot, audiobookRoot)
+	} else {
+		folders = c.imp.FindBookFolders()
+	}
+	for _, bf := range folders {
 		if bf.Title == "" || (len(bf.Ebooks) == 0 && len(bf.Audiobooks) == 0) {
 			continue
 		}

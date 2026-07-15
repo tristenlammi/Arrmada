@@ -227,12 +227,16 @@ type ScanResult struct {
 // top-level folder is matched to TMDB, added unmonitored with an unset profile (so the
 // existing 1000-episode library isn't auto-upgraded), and its episode files marked
 // present. Mirrors the movie library scan.
-func (s *Service) ScanLibrary(ctx context.Context) (ScanResult, error) {
+func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanResult, error) {
 	var res ScanResult
 	if !s.meta.Available() {
 		return res, fmt.Errorf("series metadata isn't configured — set ARRMADA_TMDB_API_KEY")
 	}
-	if s.root == "" {
+	root := rootOverride
+	if root == "" {
+		root = s.root
+	}
+	if root == "" {
 		return res, fmt.Errorf("no library directory configured")
 	}
 	existing, err := s.repo.List(ctx)
@@ -243,7 +247,7 @@ func (s *Service) ScanLibrary(ctx context.Context) (ScanResult, error) {
 	for _, sr := range existing {
 		have[sr.TMDBID] = true
 	}
-	entries, err := os.ReadDir(s.root)
+	entries, err := os.ReadDir(root)
 	if err != nil {
 		return res, err
 	}
@@ -251,7 +255,7 @@ func (s *Service) ScanLibrary(ctx context.Context) (ScanResult, error) {
 		if !e.IsDir() || e.Name() == "" || e.Name()[0] == '.' {
 			continue // series live in per-show folders; skip .recycle etc.
 		}
-		folder := filepath.Join(s.root, e.Name())
+		folder := filepath.Join(root, e.Name())
 		videos, _ := library.FindVideos(folder)
 		if len(videos) == 0 {
 			continue // no episode files here

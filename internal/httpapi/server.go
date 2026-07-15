@@ -80,6 +80,10 @@ func New(d Deps) *http.Server {
 	// App preferences
 	mux.HandleFunc("GET "+base+"/api/v1/settings", a.protected(a.handleGetSettings))
 	mux.HandleFunc("PUT "+base+"/api/v1/settings", a.requireRole(auth.RoleManager, a.handleUpdateSettings))
+	// Library folders + filesystem browser (in-app folder picker).
+	mux.HandleFunc("GET "+base+"/api/v1/system/library", a.requireRole(auth.RoleManager, a.handleGetLibraryPaths))
+	mux.HandleFunc("PUT "+base+"/api/v1/system/library", a.requireRole(auth.RoleManager, a.handleSetLibraryPaths))
+	mux.HandleFunc("GET "+base+"/api/v1/system/browse", a.requireRole(auth.RoleManager, a.handleBrowse))
 
 	// Auth
 	mux.HandleFunc("POST "+base+"/api/v1/auth/setup", a.handleSetup)

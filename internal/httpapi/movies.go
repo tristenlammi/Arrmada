@@ -200,10 +200,11 @@ func (a *api) handleUnblock(w http.ResponseWriter, r *http.Request) {
 // catalogs them (unmonitored, n/a profile). Runs in the background because TMDB
 // lookups over a large library take a while.
 func (a *api) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
+	root := a.libMovies(r) // resolve the configured folder before we detach
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
-		res, err := a.deps.Movies.ScanLibrary(ctx)
+		res, err := a.deps.Movies.ScanLibrary(ctx, root)
 		if err != nil {
 			a.deps.Log.Warn("library scan failed", "err", err)
 			return

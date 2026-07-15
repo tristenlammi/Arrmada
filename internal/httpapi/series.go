@@ -237,10 +237,11 @@ func (a *api) handleSeriesHistory(w http.ResponseWriter, r *http.Request) {
 
 // handleScanSeriesLibrary catalogs series already present in the library folder.
 func (a *api) handleScanSeriesLibrary(w http.ResponseWriter, r *http.Request) {
+	root := a.libTV(r)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	go func() {
 		defer cancel()
-		if _, err := a.deps.Series.ScanLibrary(ctx); err != nil {
+		if _, err := a.deps.Series.ScanLibrary(ctx, root); err != nil {
 			a.deps.Log.Warn("series library scan failed", "err", err)
 		}
 	}()

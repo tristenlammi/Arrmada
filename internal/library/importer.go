@@ -124,7 +124,23 @@ func (im *Importer) FindBookFolders() []BookFolder {
 	if len(roots) == 0 {
 		roots = []string{im.root}
 	}
+	return im.FindBookFoldersIn(roots...)
+}
+
+// FindBookFoldersIn is FindBookFolders over explicit roots (empty/duplicate roots are skipped).
+func (im *Importer) FindBookFoldersIn(roots ...string) []BookFolder {
 	byDir := map[string]*BookFolder{}
+	seen := map[string]bool{}
+	{
+		var uniq []string
+		for _, r := range roots {
+			if r != "" && !seen[r] {
+				seen[r] = true
+				uniq = append(uniq, r)
+			}
+		}
+		roots = uniq
+	}
 	for _, root := range roots {
 		_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 			if err != nil || d.IsDir() || !isBookFile(p) {

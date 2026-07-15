@@ -247,6 +247,9 @@ export interface UserNotification { id: number; title: string; body: string; med
 
 export interface CalendarItem { date: string; type: "episode" | "movie"; title: string; subtitle: string; poster_url?: string; ref_id: number; has_file: boolean; monitored: boolean }
 
+export interface LibraryPaths { movies: string; tv: string; ebooks: string; audiobooks: string; downloads: string }
+export interface BrowseResult { path: string; parent: string; dirs: { name: string; path: string }[] }
+
 export interface HealthWarning {
   level: string; // "error" | "warning"
   message: string;
@@ -719,6 +722,9 @@ export const api = {
   updateSettings: (body: Partial<AppSettings>) =>
     req<AppSettings>("/api/v1/settings", { method: "PUT", body: JSON.stringify(body) }),
   scanLibrary: () => req<{ status: string }>("/api/v1/movies/scan", { method: "POST" }),
+  libraryPaths: () => req<LibraryPaths>("/api/v1/system/library"),
+  setLibraryPaths: (body: Partial<LibraryPaths>) => req<LibraryPaths>("/api/v1/system/library", { method: "PUT", body: JSON.stringify(body) }),
+  browseFolders: (path?: string) => req<BrowseResult>(`/api/v1/system/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   addMovie: (body: { tmdb_id: number; quality_profile: string; monitored?: boolean; search_on_add?: boolean }) =>
     req<Movie>("/api/v1/movies", { method: "POST", body: JSON.stringify(body) }),
   deleteMovie: (id: number, deleteFiles?: boolean) =>

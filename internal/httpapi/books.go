@@ -240,10 +240,11 @@ func (a *api) handleBookRename(w http.ResponseWriter, r *http.Request) {
 
 // handleScanBookLibrary catalogs books already present in the library folder.
 func (a *api) handleScanBookLibrary(w http.ResponseWriter, r *http.Request) {
+	ebooks, audiobooks := a.libEbooks(r), a.libAudiobooks(r)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	go func() {
 		defer cancel()
-		res := a.deps.Automation.ScanBookLibrary(ctx)
+		res := a.deps.Automation.ScanBookLibrary(ctx, ebooks, audiobooks)
 		a.deps.Log.Info("book library scan done", "imported", res.Imported, "skipped", res.Skipped)
 	}()
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "scanning"})
