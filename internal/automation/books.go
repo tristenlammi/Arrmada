@@ -16,6 +16,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/library"
+	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/quality"
 )
 
@@ -461,10 +462,10 @@ func (c *Coordinator) ScanBookLibrary(ctx context.Context, ebookRoot, audiobookR
 	if c.books == nil || c.imp == nil || !c.books.MetadataAvailable() {
 		return res
 	}
-	have := map[string]bool{}
-	if existing, err := c.books.List(ctx); err == nil {
-		for _, b := range existing {
-			have[b.OLKey] = true
+	existing := map[string]books.Book{}
+	if list, err := c.books.List(ctx); err == nil {
+		for _, b := range list {
+			existing[b.OLKey] = b
 		}
 	}
 	var folders []library.BookFolder
@@ -473,6 +474,17 @@ func (c *Coordinator) ScanBookLibrary(ctx context.Context, ebookRoot, audiobookR
 	} else {
 		folders = c.imp.FindBookFolders()
 	}
+
+	// Group folders by the metadata book they match, so an ebook folder and an
+	// audiobook folder for the same title — often in separate roots, sometimes with
+	// different casing — become ONE book with both editions, not one edition each.
+	type pending struct {
+		match  metadata.BookResult
+		ebooks []library.FoundFile
+		audio  []library.FoundFile
+	}
+	byKey := map[string]*pending{}
+	var order []string
 	for _, bf := range folders {
 		if bf.Title == "" || (len(bf.Ebooks) == 0 && len(bf.Audiobooks) == 0) {
 			continue
@@ -487,21 +499,53 @@ func (c *Coordinator) ScanBookLibrary(ctx context.Context, ebookRoot, audiobookR
 			continue
 		}
 		match := results[0]
-		if have[match.Key] {
-			res.Skipped++
+		p := byKey[match.Key]
+		if p == nil {
+			p = &pending{match: match}
+			byKey[match.Key] = p
+			order = append(order, match.Key)
+		}
+		p.ebooks = append(p.ebooks, bf.Ebooks...)
+		p.audio = append(p.audio, bf.Audiobooks...)
+	}
+
+	for _, key := range order {
+		p := byKey[key]
+		hasE, hasA := len(p.ebooks) > 0, len(p.audio) > 0
+		if b, ok := existing[key]; ok {
+			// Already in the library — backfill any edition present on disk but not
+			// yet recorded (e.g. the ebook when only the audiobook was found before).
+			merged := false
+			if hasE && b.Ebook == nil {
+				c.recordEdition(ctx, b.ID, books.KindEbook, p.ebooks)
+				merged = true
+			}
+			if hasA && b.Audiobook == nil {
+				c.recordEdition(ctx, b.ID, books.KindAudiobook, p.audio)
+				merged = true
+			}
+			if merged {
+				// Widen the profile so both on-disk editions count as wanted/included.
+				wantE := hasE || b.Ebook != nil
+				wantA := hasA || b.Audiobook != nil
+				_ = c.books.SetQualityProfile(ctx, b.ID, c.bookProfileFor(ctx, wantE, wantA))
+				res.Imported++
+				c.log.Info("book scan: added missing edition", "title", b.Title, "ebook", hasE, "audio", hasA)
+			} else {
+				res.Skipped++
+			}
 			continue
 		}
-		profile := c.bookProfileFor(ctx, len(bf.Ebooks) > 0, len(bf.Audiobooks) > 0)
-		added, err := c.books.Add(ctx, match.Key, profile, false, match)
+		profile := c.bookProfileFor(ctx, hasE, hasA)
+		added, err := c.books.Add(ctx, p.match.Key, profile, false, p.match)
 		if err != nil {
-			res.Unmatched = append(res.Unmatched, bf.Title)
+			res.Unmatched = append(res.Unmatched, p.match.Title)
 			continue
 		}
-		c.recordEdition(ctx, added.ID, books.KindEbook, bf.Ebooks)
-		c.recordEdition(ctx, added.ID, books.KindAudiobook, bf.Audiobooks)
-		have[match.Key] = true
+		c.recordEdition(ctx, added.ID, books.KindEbook, p.ebooks)
+		c.recordEdition(ctx, added.ID, books.KindAudiobook, p.audio)
 		res.Imported++
-		c.log.Info("book scan: imported", "title", added.Title, "ebooks", len(bf.Ebooks), "audio", len(bf.Audiobooks))
+		c.log.Info("book scan: imported", "title", added.Title, "ebooks", len(p.ebooks), "audio", len(p.audio))
 	}
 	return res
 }

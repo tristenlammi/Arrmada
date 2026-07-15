@@ -265,7 +265,7 @@ function Card({ s, onDelete, onSearch, selectable, selected, onToggleSelect }: {
     try { await onSearch(); } finally { window.setTimeout(() => setSearching(false), 1500); }
   };
   return (
-    <div className="group relative overflow-hidden rounded-xl" style={{ border: `1px solid ${selected ? "var(--accent)" : "var(--line)"}`, background: "var(--panel)", boxShadow: selected ? "0 0 0 1px var(--accent)" : "none", opacity: s.monitored ? 1 : 0.7 }}>
+    <div className="group relative overflow-hidden rounded-xl" style={{ border: `1px solid ${selected ? "var(--accent)" : "var(--line)"}`, background: "var(--panel)", boxShadow: selected ? "0 0 0 1px var(--accent)" : "none" }}>
       <div className="relative" style={{ aspectRatio: "2/3" }}>
         {selectable ? (
           <button onClick={onToggleSelect} className="block h-full w-full text-left">
