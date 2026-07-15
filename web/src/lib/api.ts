@@ -734,6 +734,11 @@ export const api = {
     }),
 
   history: () => req<{ imports: ImportRecord[] }>("/api/v1/history").then((r) => r.imports),
+  reviews: () => req<{ reviews: ImportReview[] }>("/api/v1/reviews").then((r) => r.reviews),
+  rejectReview: (id: number) => req<{ status: string }>(`/api/v1/reviews/${id}/reject`, { method: "POST" }),
+  dismissReview: (id: number) => req<{ status: string }>(`/api/v1/reviews/${id}/dismiss`, { method: "POST" }),
+  importReview: (id: number, targetId?: number) =>
+    req<{ status: string }>(`/api/v1/reviews/${id}/import`, { method: "POST", body: JSON.stringify({ target_id: targetId ?? 0 }) }),
 
   movies: () => req<{ movies: Movie[]; metadata_available: boolean }>("/api/v1/movies"),
   lookupMovies: (q: string) =>
@@ -1134,4 +1139,19 @@ export interface ImportRecord {
   title: string;
   size_bytes: number;
   imported_at: string;
+}
+
+export interface ImportReview {
+  id: number;
+  hash: string;
+  name: string;
+  content_path: string;
+  media_type: "series" | "movie";
+  expected_id: number;
+  expected_title: string;
+  parsed_title: string;
+  reason: string;
+  size_bytes: number;
+  indexer: string;
+  created_at: string;
 }

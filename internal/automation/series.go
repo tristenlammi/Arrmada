@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/indexer"
-	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
@@ -278,24 +277,30 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 		if it.ContentPath == "" {
 			continue
 		}
-		s, ok := c.series.MatchByTitle(ctx, series.NormTitle(parser.Parse(it.Name).Title))
-		if !ok {
-			continue
+		if c.hasReview(ctx, it.Hash) {
+			continue // already held for review (or resolved) — don't re-flag or import
 		}
-		videos, err := library.FindVideos(it.ContentPath)
-		if err != nil || len(videos) == 0 {
-			continue
-		}
-		imported := 0
-		for _, v := range videos {
-			ei, ok, err := c.imp.ImportEpisode(s.Title, s.Year, v.Path)
-			if err != nil || !ok {
+		parsed := parser.Parse(it.Name)
+		s, matchOK := c.series.MatchByTitle(ctx, series.NormTitle(parsed.Title))
+
+		// If this download was grabbed for a specific series, verify its content is
+		// actually that series — otherwise hold it for admin review rather than skip
+		// it silently (e.g. a "Below Deck Mediterranean" pack grabbed for "Below Deck").
+		if gid, indexer, grabbed := c.grabbedMediaFor(ctx, it.Name, "series"); grabbed {
+			if expected, err := c.series.Get(ctx, gid); err == nil && (!matchOK || s.ID != expected.ID) {
+				reason := fmt.Sprintf("Grabbed for %q but the download looks like %q", expected.Title, parsed.Title)
+				c.addReview(ctx, Review{
+					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "series",
+					ExpectedID: expected.ID, ExpectedTitle: expected.Title, ParsedTitle: parsed.Title,
+					Reason: reason, SizeBytes: it.SizeBytes, Indexer: indexer,
+				})
 				continue
 			}
-			if err := c.series.MarkEpisodeImported(ctx, s.ID, ei.Season, ei.Episode, ei.TargetPath, ei.SizeBytes); err == nil {
-				imported++
-			}
 		}
+		if !matchOK {
+			continue // not something we grabbed and not a library title — leave alone
+		}
+		imported := c.importSeriesInto(ctx, s, it.ContentPath)
 		if imported > 0 {
 			c.log.Info("series: imported episodes", "series", s.Title, "count", imported, "release", it.Name)
 			c.markSeriesGrabsImported(ctx, s.ID) // flip its grab to imported for seed cleanup

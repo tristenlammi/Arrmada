@@ -34,6 +34,12 @@ type TitleResolver interface {
 	ResolveMovie(ctx context.Context, releaseName string) (title string, year int, ok bool)
 }
 
+// ImportGate can hold a finished download back from import for admin review — it
+// returns a non-empty reason and hold=true when the content doesn't match what it
+// was grabbed for. The Manager then skips it (records nothing) so the admin can
+// resolve it. nil → import everything.
+type ImportGate func(ctx context.Context, hash, name, contentPath string) (reason string, hold bool)
+
 // Manager orchestrates importing finished downloads: dedupe, import, record,
 // and announce.
 type Manager struct {
@@ -42,7 +48,11 @@ type Manager struct {
 	bus      *eventbus.Bus
 	log      *slog.Logger
 	resolver TitleResolver // nil → name from the parsed release
+	gate     ImportGate    // nil → no review gate
 }
+
+// SetGate installs the review gate that can hold a candidate back from import.
+func (m *Manager) SetGate(g ImportGate) { m.gate = g }
 
 // NewManager wires the import manager against the library root.
 func NewManager(db *sql.DB, root string, bus *eventbus.Bus, log *slog.Logger) *Manager {
@@ -61,6 +71,12 @@ func (m *Manager) Process(ctx context.Context, cands []Candidate) int {
 	for _, c := range cands {
 		if c.Hash == "" || c.ContentPath == "" {
 			continue
+		}
+		if m.gate != nil {
+			if reason, hold := m.gate(ctx, c.Hash, c.Name, c.ContentPath); hold {
+				m.log.Info("import held for review", "name", c.Name, "reason", reason)
+				continue
+			}
 		}
 		target, done, err := m.repo.targetFor(ctx, c.Hash)
 		if err != nil {

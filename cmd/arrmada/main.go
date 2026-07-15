@@ -198,6 +198,9 @@ func main() {
 	// Name movie imports from the matched library record (metadata title), not the
 	// scene release — deterministic folders that match the movie Arrmada tracks.
 	imports.SetTitleResolver(movieTitleResolver{movieSvc})
+	// Hold a movie download for admin review when it doesn't match what it was
+	// grabbed for (e.g. a wrong film), instead of importing the wrong thing.
+	imports.SetGate(coordinator.HoldMovieImport)
 	// Forget import records when files are deleted, so a re-grab re-imports.
 	go imports.WatchDeletions(runCtx)
 	// Wire the series module into the coordinator: TV downloads land in a separate

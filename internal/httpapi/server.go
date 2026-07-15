@@ -156,6 +156,13 @@ func New(d Deps) *http.Server {
 	// Import history
 	mux.HandleFunc("GET "+base+"/api/v1/history", a.protected(a.handleHistory))
 
+	// Import review — downloads held because their content didn't match what they
+	// were grabbed for (admin-only).
+	mux.HandleFunc("GET "+base+"/api/v1/reviews", a.requireRole(auth.RoleManager, a.handleListReviews))
+	mux.HandleFunc("POST "+base+"/api/v1/reviews/{id}/reject", a.requireRole(auth.RoleManager, a.handleRejectReview))
+	mux.HandleFunc("POST "+base+"/api/v1/reviews/{id}/dismiss", a.requireRole(auth.RoleManager, a.handleDismissReview))
+	mux.HandleFunc("POST "+base+"/api/v1/reviews/{id}/import", a.requireRole(auth.RoleManager, a.handleImportReview))
+
 	// Movies
 	mux.HandleFunc("GET "+base+"/api/v1/movies", a.protected(a.handleListMovies))
 	mux.HandleFunc("GET "+base+"/api/v1/movies/lookup", a.protected(a.handleLookupMovies))

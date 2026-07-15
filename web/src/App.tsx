@@ -9,6 +9,7 @@ import { DownloadClients } from "./pages/DownloadClients";
 import { Settings } from "./pages/Settings";
 import { Downloads } from "./pages/Downloads";
 import { History } from "./pages/History";
+import { Reviews } from "./pages/Reviews";
 import { Movies } from "./pages/Movies";
 import { MovieDetail } from "./pages/MovieDetail";
 import { Series } from "./pages/Series";
@@ -69,6 +70,7 @@ export default function App() {
         <Route path="/downloads" element={<Downloads />} />
         <Route path="/activity" element={<Navigate to="/downloads" replace />} />
         <Route path="/history" element={<History />} />
+        <Route path="/review" element={<Reviews />} />
         <Route path="/movies" element={<Movies />} />
         <Route path="/movies/:id" element={<MovieDetail />} />
         <Route path="/series" element={<Series />} />
