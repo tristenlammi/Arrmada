@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { api, type Movie, type MovieLookup } from "../lib/api";
@@ -297,10 +297,25 @@ function gb(bytes?: number): string {
   if (!bytes) return "—";
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
+function bitrateNum(f?: Movie["file"]): number | undefined {
+  if (!f?.size_bytes || !f.duration_min) return undefined;
+  return (f.size_bytes * 8) / (f.duration_min * 60) / 1e6;
+}
 function bitrateMbps(f?: Movie["file"]): string {
-  if (!f?.size_bytes || !f.duration_min) return "—";
-  const mbps = (f.size_bytes * 8) / (f.duration_min * 60) / 1e6;
-  return `${mbps.toFixed(1)} Mbps`;
+  const n = bitrateNum(f);
+  return n === undefined ? "—" : `${n.toFixed(1)} Mbps`;
+}
+function resValue(f?: Movie["file"]): number | undefined {
+  const r = f?.resolution || (f?.quality ? f.quality.split(" ")[0] : "");
+  if (!r) return undefined;
+  const s = r.toLowerCase();
+  if (s.includes("4k") || s.includes("2160")) return 2160;
+  if (s.includes("1440")) return 1440;
+  if (s.includes("1080")) return 1080;
+  if (s.includes("720")) return 720;
+  if (s.includes("480") || s === "sd") return 480;
+  const n = parseInt(s.replace(/\D/g, ""), 10);
+  return isNaN(n) ? undefined : n;
 }
 function fileExt(f?: Movie["file"]): string {
   if (!f?.filename) return "—";
@@ -320,29 +335,79 @@ function YesNo({ on, label }: { on: boolean; label?: string }) {
   );
 }
 
+type SortKey = "title" | "status" | "resolution" | "codec" | "audio" | "atmos" | "hdr" | "type" | "size" | "bitrate";
+
+// sortValue returns a comparable value per column (undefined = empty → sorted last regardless of dir).
+function sortValue(m: Movie, key: SortKey): number | string | undefined {
+  const f = m.file;
+  switch (key) {
+    case "title": return m.title.toLowerCase();
+    case "status": return m.has_file ? 0 : m.monitored ? 1 : 2;
+    case "resolution": return resValue(f);
+    case "codec": return f?.codec || undefined;
+    case "audio": return f?.audio?.length ? f.audio.join(", ").toLowerCase() : undefined;
+    case "atmos": return hasAtmos(f) ? 1 : 0;
+    case "hdr": return f?.hdr?.length ? 1 : 0;
+    case "type": { const e = fileExt(f); return e === "—" ? undefined : e; }
+    case "size": return f?.size_bytes || undefined;
+    case "bitrate": return bitrateNum(f);
+  }
+}
+
 function MovieTable({ movies, multiSelect, selected, onToggleSelect }: { movies: Movie[]; multiSelect: boolean; selected: Set<number>; onToggleSelect: (id: number) => void }) {
   const th = "px-2.5 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-[0.06em] text-ink-faint";
   const td = "px-2.5 py-2 align-middle";
+  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "title", dir: "asc" });
+  const onSort = (key: SortKey) => setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
+
+  const sorted = useMemo(() => {
+    const arr = [...movies];
+    arr.sort((a, b) => {
+      const av = sortValue(a, sort.key), bv = sortValue(b, sort.key);
+      const aE = av === undefined, bE = bv === undefined;
+      if (aE && bE) return 0;
+      if (aE) return 1; // empties always last
+      if (bE) return -1;
+      let r: number;
+      if (typeof av === "number" && typeof bv === "number") r = av - bv;
+      else r = String(av).localeCompare(String(bv));
+      return sort.dir === "asc" ? r : -r;
+    });
+    return arr;
+  }, [movies, sort]);
+
+  const Th = ({ label, k, align }: { label: string; k: SortKey; align?: "right" }) => {
+    const active = sort.key === k;
+    return (
+      <th className={`${th}${align === "right" ? " text-right" : ""}`}>
+        <button onClick={() => onSort(k)} className={`inline-flex items-center gap-1 hover:text-[var(--ink)] ${align === "right" ? "flex-row-reverse" : ""}`} style={{ color: active ? "var(--accent)" : undefined }}>
+          {label}
+          <span className="text-[8px]" style={{ opacity: active ? 1 : 0.3 }}>{active ? (sort.dir === "asc" ? "▲" : "▼") : "▲"}</span>
+        </button>
+      </th>
+    );
+  };
+
   return (
     <div className="overflow-x-auto thin-scroll rounded-xl" style={{ border: "1px solid var(--line)" }}>
       <table className="w-full border-collapse text-[12px]" style={{ minWidth: "900px" }}>
         <thead>
           <tr style={{ background: "var(--panel)", borderBottom: "1px solid var(--line)" }}>
             {multiSelect && <th className={th}></th>}
-            <th className={th}>Title</th>
-            <th className={th}>Status</th>
-            <th className={th}>Resolution</th>
-            <th className={th}>Codec</th>
-            <th className={th}>Audio</th>
-            <th className={th}>Atmos</th>
-            <th className={th}>HDR</th>
-            <th className={th}>Type</th>
-            <th className={`${th} text-right`}>Size</th>
-            <th className={`${th} text-right`}>Bitrate</th>
+            <Th label="Title" k="title" />
+            <Th label="Status" k="status" />
+            <Th label="Resolution" k="resolution" />
+            <Th label="Codec" k="codec" />
+            <Th label="Audio" k="audio" />
+            <Th label="Atmos" k="atmos" />
+            <Th label="HDR" k="hdr" />
+            <Th label="Type" k="type" />
+            <Th label="Size" k="size" align="right" />
+            <Th label="Bitrate" k="bitrate" align="right" />
           </tr>
         </thead>
         <tbody>
-          {movies.map((m) => {
+          {sorted.map((m) => {
             const f = m.file;
             const st = statusOf(m);
             return (
