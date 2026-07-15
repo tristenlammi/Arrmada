@@ -70,7 +70,7 @@ func (c *Coordinator) SearchBookNow(ctx context.Context, bookID int64) error {
 }
 
 func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind string, scores map[string]int) {
-	res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: bookQuery(b, kind), Limit: 60})
+	res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: bookQuery(b, kind), MediaType: indexer.MediaBook, Limit: 60})
 	if err != nil || len(res.Releases) == 0 {
 		return
 	}
@@ -207,7 +207,7 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 	seen := map[string]bool{}
 	var all []indexer.Release
 	for _, q := range []string{query, query + " audiobook"} {
-		res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: q, Limit: 60})
+		res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: q, MediaType: indexer.MediaBook, Limit: 60})
 		if err != nil {
 			continue
 		}

@@ -36,6 +36,7 @@ export interface Indexer {
   url?: string;
   username?: string;
   categories?: number[];
+  media_types?: string[];
   priority: number;
   min_seeders?: number;
   seed_enabled?: boolean;
@@ -52,6 +53,7 @@ export interface NewIndexer {
   username?: string;
   password?: string;
   categories?: number[];
+  media_types?: string[];
   priority?: number;
   min_seeders?: number;
   seed_enabled?: boolean;

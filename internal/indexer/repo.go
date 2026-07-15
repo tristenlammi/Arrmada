@@ -19,19 +19,20 @@ type Repo struct {
 // NewRepo builds a repository over the given pool.
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
-const indexerCols = `id, name, kind, url, api_key, username, password, categories, priority, min_seeders, seed_enabled, seed_ratio, seed_hours, enabled`
+const indexerCols = `id, name, kind, url, api_key, username, password, categories, priority, min_seeders, seed_enabled, seed_ratio, seed_hours, enabled, media_types`
 
 func (r *Repo) scan(row interface{ Scan(...any) error }) (Indexer, error) {
 	var (
-		idx         Indexer
-		cats        string
-		seedEn, en  int
+		idx        Indexer
+		cats, mt   string
+		seedEn, en int
 	)
-	err := row.Scan(&idx.ID, &idx.Name, &idx.Kind, &idx.URL, &idx.APIKey, &idx.Username, &idx.Password, &cats, &idx.Priority, &idx.MinSeeders, &seedEn, &idx.SeedRatio, &idx.SeedHours, &en)
+	err := row.Scan(&idx.ID, &idx.Name, &idx.Kind, &idx.URL, &idx.APIKey, &idx.Username, &idx.Password, &cats, &idx.Priority, &idx.MinSeeders, &seedEn, &idx.SeedRatio, &idx.SeedHours, &en, &mt)
 	if err != nil {
 		return Indexer{}, err
 	}
 	idx.Categories = decodeCats(cats)
+	idx.MediaTypes = decodeStrs(mt)
 	idx.SeedEnabled = seedEn != 0
 	idx.Enabled = en != 0
 	return idx, nil
@@ -81,10 +82,10 @@ func (r *Repo) Create(ctx context.Context, idx Indexer) (Indexer, error) {
 		idx.Priority = 25
 	}
 	res, err := r.db.ExecContext(ctx,
-		`INSERT INTO indexers (name, kind, url, api_key, username, password, categories, priority, min_seeders, seed_enabled, seed_ratio, seed_hours, enabled)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO indexers (name, kind, url, api_key, username, password, categories, priority, min_seeders, seed_enabled, seed_ratio, seed_hours, enabled, media_types)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		idx.Name, idx.Kind, idx.URL, idx.APIKey, idx.Username, idx.Password,
-		encodeCats(idx.Categories), idx.Priority, idx.MinSeeders, boolToInt(idx.SeedEnabled), idx.SeedRatio, idx.SeedHours, boolToInt(idx.Enabled))
+		encodeCats(idx.Categories), idx.Priority, idx.MinSeeders, boolToInt(idx.SeedEnabled), idx.SeedRatio, idx.SeedHours, boolToInt(idx.Enabled), encodeStrs(idx.MediaTypes))
 	if err != nil {
 		return Indexer{}, err
 	}
@@ -96,9 +97,9 @@ func (r *Repo) Create(ctx context.Context, idx Indexer) (Indexer, error) {
 // overwritten when non-empty, so the UI can send blanks to keep existing values.
 func (r *Repo) Update(ctx context.Context, idx Indexer) error {
 	res, err := r.db.ExecContext(ctx,
-		`UPDATE indexers SET name=?, kind=?, url=?, username=?, categories=?, priority=?, min_seeders=?, seed_enabled=?, seed_ratio=?, seed_hours=?, enabled=? WHERE id=?`,
+		`UPDATE indexers SET name=?, kind=?, url=?, username=?, categories=?, priority=?, min_seeders=?, seed_enabled=?, seed_ratio=?, seed_hours=?, enabled=?, media_types=? WHERE id=?`,
 		idx.Name, idx.Kind, idx.URL, idx.Username, encodeCats(idx.Categories),
-		idx.Priority, idx.MinSeeders, boolToInt(idx.SeedEnabled), idx.SeedRatio, idx.SeedHours, boolToInt(idx.Enabled), idx.ID)
+		idx.Priority, idx.MinSeeders, boolToInt(idx.SeedEnabled), idx.SeedRatio, idx.SeedHours, boolToInt(idx.Enabled), encodeStrs(idx.MediaTypes), idx.ID)
 	if err != nil {
 		return err
 	}
@@ -130,7 +131,31 @@ func (r *Repo) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-// --- category CSV encoding ---
+// --- media-type + category CSV encoding ---
+
+func encodeStrs(vals []string) string {
+	var kept []string
+	for _, v := range vals {
+		if v = strings.TrimSpace(v); v != "" {
+			kept = append(kept, v)
+		}
+	}
+	return strings.Join(kept, ",")
+}
+
+func decodeStrs(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
 
 func encodeCats(cats []int) string {
 	if len(cats) == 0 {

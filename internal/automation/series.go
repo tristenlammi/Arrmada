@@ -79,7 +79,7 @@ func (c *Coordinator) SearchSeriesNow(ctx context.Context, seriesID int64) error
 	if err != nil {
 		return err
 	}
-	res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: s.Title, Limit: 100})
+	res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: s.Title, MediaType: indexer.MediaSeries, Limit: 100})
 	if err != nil || len(res.Releases) == 0 {
 		return err
 	}

@@ -111,6 +111,7 @@ export function Indexers() {
                       Delete
                     </button>
                   </div>
+                  <MediaPills idx={idx} onChange={refresh} />
                   {t && !t.loading && (
                     <div className="mt-2.5 font-mono text-[11px]" style={{ color: t.ok ? "var(--good)" : "var(--reject)" }}>
                       {t.ok ? "✓ Connected" : `✕ ${t.error ?? "failed"}`}
@@ -364,6 +365,7 @@ function EditForm({ idx, onSaved }: { idx: Indexer; onSaved: () => void }) {
         password: isTL ? password : undefined,
         api_key: apiKey, // blank = keep existing
         categories: idx.categories,
+        media_types: idx.media_types, // scoping is edited via the row pills; preserve it here
         priority,
         min_seeders: minSeeders,
         seed_enabled: seedEnabled,
@@ -502,5 +504,75 @@ function Labeled({ label, span2, children }: { label: string; span2?: boolean; c
       <span className="font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-ink-faint">{label}</span>
       {children}
     </label>
+  );
+}
+
+const MEDIA_TYPES = [
+  { key: "movie", label: "Movies" },
+  { key: "series", label: "TV" },
+  { key: "book", label: "Books" },
+  { key: "music", label: "Music" },
+] as const;
+const ALL_MEDIA = MEDIA_TYPES.map((m) => m.key as string);
+
+// MediaPills scopes an indexer to specific areas. Empty media_types = used for
+// everything, shown as no pills lit ("all areas"). Clicking a pill on an
+// unscoped indexer restricts it to just that area; click more to add areas, or
+// click a lit pill to remove it. Clearing every area returns to "all areas".
+function MediaPills({ idx, onChange }: { idx: Indexer; onChange: () => void }) {
+  const [saving, setSaving] = useState(false);
+  const scoped = Boolean(idx.media_types && idx.media_types.length > 0);
+  const selected = scoped ? (idx.media_types as string[]) : [];
+
+  const toggle = async (key: string) => {
+    const next = selected.includes(key) ? selected.filter((k) => k !== key) : [...selected, key];
+    const ordered = ALL_MEDIA.filter((k) => next.includes(k));
+    const media_types = ordered.length === ALL_MEDIA.length ? [] : ordered; // none or all = "all areas"
+    setSaving(true);
+    try {
+      await api.updateIndexer(idx.id, {
+        name: idx.name,
+        kind: idx.kind,
+        url: idx.url,
+        username: idx.username,
+        categories: idx.categories,
+        media_types,
+        priority: idx.priority,
+        min_seeders: idx.min_seeders,
+        seed_enabled: idx.seed_enabled,
+        seed_ratio: idx.seed_ratio,
+        seed_hours: idx.seed_hours,
+        enabled: idx.enabled,
+      });
+      onChange();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+      <span className="font-mono text-[9px] font-bold uppercase tracking-[0.1em] text-ink-faint">Used for</span>
+      {MEDIA_TYPES.map((m) => {
+        const active = selected.includes(m.key);
+        return (
+          <button
+            key={m.key}
+            type="button"
+            disabled={saving}
+            onClick={() => toggle(m.key)}
+            className="rounded-full px-2.5 py-0.5 text-[10.5px] font-semibold transition-colors disabled:opacity-50"
+            style={{
+              border: `1px solid ${active ? "var(--accent)" : "var(--line)"}`,
+              background: active ? "var(--accent-soft)" : "var(--panel-2)",
+              color: active ? "var(--accent)" : "var(--ink-faint)",
+            }}
+          >
+            {m.label}
+          </button>
+        );
+      })}
+      {!scoped && <span className="text-[10px] text-ink-faint">· all areas</span>}
+    </div>
   );
 }

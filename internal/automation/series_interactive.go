@@ -32,7 +32,7 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 	case season > 0:
 		query = fmt.Sprintf("%s S%02d", s.Title, season)
 	}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, Limit: 100})
+	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaSeries, Limit: 100})
 	if err != nil {
 		return ReleaseList{}, err
 	}

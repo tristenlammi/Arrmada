@@ -27,8 +27,9 @@ type createIndexerRequest struct {
 	APIKey     string `json:"api_key"`
 	Username   string `json:"username"`
 	Password   string `json:"password"`
-	Categories []int   `json:"categories"`
-	Priority   int     `json:"priority"`
+	Categories []int    `json:"categories"`
+	MediaTypes []string `json:"media_types"`
+	Priority   int      `json:"priority"`
 	MinSeeders  int     `json:"min_seeders"`
 	SeedEnabled *bool   `json:"seed_enabled"`
 	SeedRatio   float64 `json:"seed_ratio"`
@@ -80,6 +81,7 @@ func (a *api) handleCreateIndexer(w http.ResponseWriter, r *http.Request) {
 		Username:   req.Username,
 		Password:   req.Password,
 		Categories: req.Categories,
+		MediaTypes: req.MediaTypes,
 		Priority:   req.Priority,
 		MinSeeders: req.MinSeeders,
 		SeedEnabled: seedEnabled,
@@ -132,6 +134,7 @@ func (a *api) handleUpdateIndexer(w http.ResponseWriter, r *http.Request) {
 		Username:   req.Username,
 		Password:   req.Password, // blank = keep existing
 		Categories: req.Categories,
+		MediaTypes: req.MediaTypes,
 		Priority:   req.Priority,
 		MinSeeders: req.MinSeeders,
 		SeedEnabled: seedEnabled,

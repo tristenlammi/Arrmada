@@ -197,7 +197,7 @@ func (c *Coordinator) RankReleases(ctx context.Context, id int64) (ReleaseList, 
 	if m.Year > 0 {
 		query += " " + strconv.Itoa(m.Year)
 	}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, Limit: 100})
+	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
 	if err != nil {
 		return ReleaseList{}, err
 	}
@@ -288,7 +288,7 @@ func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) error {
 	if m.Year > 0 {
 		query += " " + strconv.Itoa(m.Year)
 	}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, Limit: 100})
+	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
 	if err != nil {
 		return err
 	}
@@ -487,7 +487,7 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 	if m.Year > 0 {
 		query += " " + strconv.Itoa(m.Year)
 	}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, Limit: 100})
+	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
 	if err != nil {
 		return err
 	}
@@ -555,7 +555,7 @@ func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
 	if m.Year > 0 {
 		query += " " + strconv.Itoa(m.Year)
 	}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, Limit: 100})
+	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
 	if err != nil {
 		return err
 	}

@@ -40,12 +40,37 @@ type Indexer struct {
 	Password string `json:"-"` // secret
 
 	Categories []int   `json:"categories,omitempty"`
-	Priority   int     `json:"priority"`    // 1 (highest) .. 50 (lowest)
-	MinSeeders int     `json:"min_seeders"` // drop torrent results below this (0 = off)
-	SeedEnabled bool    `json:"seed_enabled"` // false = delete once imported (no seeding)
-	SeedRatio   float64 `json:"seed_ratio"`   // remove after this ratio (0 = no target)
-	SeedHours   int     `json:"seed_hours"`   // remove after this many hours (0 = no limit)
-	Enabled     bool    `json:"enabled"`
+	// MediaTypes scopes which searches use this indexer (movie | series | book | music).
+	// Empty = used for everything (backward compatible).
+	MediaTypes  []string `json:"media_types,omitempty"`
+	Priority    int      `json:"priority"`     // 1 (highest) .. 50 (lowest)
+	MinSeeders  int      `json:"min_seeders"`  // drop torrent results below this (0 = off)
+	SeedEnabled bool     `json:"seed_enabled"` // false = delete once imported (no seeding)
+	SeedRatio   float64  `json:"seed_ratio"`   // remove after this ratio (0 = no target)
+	SeedHours   int      `json:"seed_hours"`   // remove after this many hours (0 = no limit)
+	Enabled     bool     `json:"enabled"`
+}
+
+// Media types an indexer can be scoped to.
+const (
+	MediaMovie  = "movie"
+	MediaSeries = "series"
+	MediaBook   = "book"
+	MediaMusic  = "music"
+)
+
+// Serves reports whether this indexer should be queried for the given media type. An indexer with
+// no media types set serves everything; an empty query type also matches (e.g. a manual test search).
+func (i Indexer) Serves(mediaType string) bool {
+	if mediaType == "" || len(i.MediaTypes) == 0 {
+		return true
+	}
+	for _, t := range i.MediaTypes {
+		if t == mediaType {
+			return true
+		}
+	}
+	return false
 }
 
 // Transport reports whether this indexer yields torrents or usenet.
@@ -60,6 +85,7 @@ func (i Indexer) Transport() Transport {
 type SearchQuery struct {
 	Text       string
 	Categories []int
+	MediaType  string // movie | series | book | music — restricts to indexers that serve it
 	Limit      int
 }
 

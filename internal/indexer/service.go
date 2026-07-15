@@ -180,6 +180,9 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 	)
 
 	for _, idx := range indexers {
+		if !idx.Serves(q.MediaType) {
+			continue // this indexer isn't scoped to the media type being searched
+		}
 		priority[idx.Name] = idx.Priority
 		wg.Add(1)
 		go func(idx Indexer) {
