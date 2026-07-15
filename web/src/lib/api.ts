@@ -582,6 +582,10 @@ export interface InsightsGraphs {
   by_day_of_week: number[]; by_hour: number[];
   top_platforms: NameStat[]; top_users: NameStat[]; bandwidth: BWPoint[];
 }
+export interface ReliabilitySummary { total_sessions: number; buffered_sessions: number; total_events: number; buffer_rate_pct: number }
+export interface BufferGroup { name: string; sessions: number; buffered_sessions: number; events: number; rate_pct: number }
+export interface BufferEvent { at: number; offset_ms: number; user: string; title: string; platform: string; decision: string }
+export interface Reliability { summary: ReliabilitySummary; by_user: BufferGroup[]; by_platform: BufferGroup[]; by_title: BufferGroup[]; events: BufferEvent[] }
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -891,6 +895,7 @@ export const api = {
   insightsLibraries: () => req<{ libraries: LibraryStat[] }>("/api/v1/insights/libraries").then((r) => r.libraries),
   insightsRecentlyAdded: (limit = 20) => req<{ items: RecentItem[] }>(`/api/v1/insights/recently-added?limit=${limit}`).then((r) => r.items),
   insightsGraphs: (window = 30) => req<InsightsGraphs>(`/api/v1/insights/graphs?window=${window}`),
+  insightsReliability: (window = 30) => req<Reliability>(`/api/v1/insights/reliability?window=${window}`),
   scanSeries: () => req<{ status: string }>("/api/v1/series/scan", { method: "POST" }),
   seriesHistory: (id: number) =>
     req<{ events: MovieEvent[] }>(`/api/v1/series/${id}/history`).then((r) => r.events),

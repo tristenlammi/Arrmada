@@ -1,17 +1,17 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs } from "../lib/api";
+import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs, type Reliability, type BufferGroup } from "../lib/api";
 
 // Insights — Arrmada's Plex watch-monitoring module (Tautulli replacement). Built in slices
 // (see INSIGHTS-PLAN.md). I0 (this): the Plex connection — configure + test. Activity, History,
 // Users, Graphs and the Reliability/buffering view land in later slices and show as "coming soon".
 type Tab = "activity" | "history" | "users" | "graphs" | "reliability" | "settings";
-const TABS: { key: Tab; label: string; soon?: boolean }[] = [
-  { key: "activity", label: "Activity", soon: true },
-  { key: "history", label: "History", soon: true },
-  { key: "users", label: "Users", soon: true },
-  { key: "graphs", label: "Graphs", soon: true },
-  { key: "reliability", label: "Reliability", soon: true },
+const TABS: { key: Tab; label: string }[] = [
+  { key: "activity", label: "Activity" },
+  { key: "history", label: "History" },
+  { key: "users", label: "Users" },
+  { key: "graphs", label: "Graphs" },
+  { key: "reliability", label: "Reliability" },
   { key: "settings", label: "Settings" },
 ];
 
@@ -59,6 +59,8 @@ export function Insights() {
           <UsersView connected={!!connected} onConfigure={() => setTab("settings")} />
         ) : tab === "graphs" ? (
           <GraphsView connected={!!connected} onConfigure={() => setTab("settings")} />
+        ) : tab === "reliability" ? (
+          <ReliabilityView connected={!!connected} onConfigure={() => setTab("settings")} />
         ) : (
           <ComingSoon tab={tab} connected={!!connected} onConfigure={() => setTab("settings")} />
         )}
@@ -631,6 +633,104 @@ function HBarChart({ rows }: { rows: { label: string; value: number }[] }) {
           <span className="w-8 flex-none text-right font-mono text-ink-faint">{r.value}</span>
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ============================= RELIABILITY (buffering history) ============================= */
+function ReliabilityView({ connected, onConfigure }: { connected: boolean; onConfigure: () => void }) {
+  const [r, setR] = useState<Reliability | null>(null);
+  const [win, setWin] = useState(30);
+  useEffect(() => { if (connected) api.insightsReliability(win).then(setR).catch(() => setR(null)); }, [connected, win]);
+  if (!connected) return <ComingSoon tab="reliability" connected={false} onConfigure={onConfigure} />;
+  if (!r) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading reliability…</div>;
+
+  const s = r.summary;
+  const clean = s.total_events === 0;
+  const rateColor = s.buffer_rate_pct === 0 ? "var(--good)" : s.buffer_rate_pct < 10 ? "var(--avoid)" : "var(--reject)";
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <p className="max-w-[54ch] text-[12px] text-ink-dim">Where and when streams stuttered — buffering logged as it happens, so you can see who's affected, on what, and why.</p>
+        <div className="flex gap-1">{[7, 30, 90].map((w) => <Chip key={w} active={win === w} onClick={() => setWin(w)}>{w}d</Chip>)}</div>
+      </div>
+
+      {/* Summary tiles */}
+      <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+        <StatTile label="Buffer rate" value={`${s.buffer_rate_pct}%`} sub={`${s.buffered_sessions} of ${s.total_sessions} streams`} color={rateColor} />
+        <StatTile label="Buffer events" value={s.total_events.toLocaleString()} sub="spells logged" color={s.total_events ? "var(--avoid)" : "var(--good)"} />
+        <StatTile label="Streams affected" value={s.buffered_sessions.toLocaleString()} sub={`of ${s.total_sessions.toLocaleString()} total`} color={s.buffered_sessions ? "var(--avoid)" : "var(--good)"} />
+      </div>
+
+      {clean ? (
+        <div className="rounded-xl p-12 text-center" style={{ border: "1px dashed var(--line)", background: "var(--panel)" }}>
+          <div className="text-[26px]">✓</div>
+          <div className="mt-1 text-[13.5px] font-bold" style={{ color: "var(--good)" }}>Smooth sailing</div>
+          <p className="mx-auto mt-1 max-w-[46ch] text-[12px] text-ink-dim">No buffering recorded in this window. When a stream stutters, the spell is logged here with who, what, and how it was playing — so you can pinpoint bad clients, heavy transcodes, or shaky connections.</p>
+        </div>
+      ) : (
+        <>
+          <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))" }}>
+            <OffenderCard title="Worst-hit users" rows={r.by_user} />
+            <OffenderCard title="Worst-hit platforms" rows={r.by_platform} />
+            <OffenderCard title="Worst-hit titles" rows={r.by_title} />
+          </div>
+
+          {/* Timeline */}
+          <div className="rounded-xl p-4" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
+            <div className="mb-2 text-[12.5px] font-bold">Recent buffer events</div>
+            <div className="flex flex-col">
+              {r.events.map((e, i) => {
+                const d = DECISION[e.decision] ?? DECISION.direct_play;
+                return (
+                  <div key={i} className="flex items-center gap-3 py-1.5 text-[12px]" style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
+                    <span className="w-2 flex-none"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--avoid)" }} /></span>
+                    <span className="w-[92px] flex-none font-mono text-[10.5px] text-ink-faint">{fmtDate(e.at)}</span>
+                    <span className="min-w-0 flex-1 truncate"><b className="font-semibold">{e.user}</b> · {e.title}</span>
+                    <span className="flex-none font-mono text-[10px] text-ink-faint">@ {fmtClock(e.offset_ms)}</span>
+                    <span className="flex-none rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink, #fff)" }}>{d.label}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function StatTile({ label, value, sub, color }: { label: string; value: string; sub: string; color: string }) {
+  return (
+    <div className="rounded-xl p-4" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
+      <div className="font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint">{label}</div>
+      <div className="mt-1 text-[26px] font-extrabold tracking-tight" style={{ color }}>{value}</div>
+      <div className="text-[11px] text-ink-faint">{sub}</div>
+    </div>
+  );
+}
+
+function OffenderCard({ title, rows }: { title: string; rows: BufferGroup[] }) {
+  const max = Math.max(1, ...rows.map((r) => r.events));
+  return (
+    <div className="rounded-xl p-4" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
+      <div className="mb-2 text-[12.5px] font-bold">{title}</div>
+      {rows.length === 0 ? <div className="text-[11px] text-ink-faint">—</div> : (
+        <div className="flex flex-col gap-2">
+          {rows.map((r, i) => (
+            <div key={i} className="text-[11.5px]">
+              <div className="flex items-center justify-between gap-2">
+                <span className="min-w-0 flex-1 truncate" title={r.name}>{r.name || "—"}</span>
+                <span className="flex-none font-mono text-ink-dim">{r.events} event{r.events === 1 ? "" : "s"} · {r.rate_pct}%</span>
+              </div>
+              <span className="mt-0.5 block h-1.5 w-full overflow-hidden rounded-full" style={{ background: "var(--panel-2)" }}>
+                <span className="block h-full rounded-full" style={{ width: `${(r.events / max) * 100}%`, background: "var(--avoid)" }} />
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

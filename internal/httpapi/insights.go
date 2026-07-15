@@ -116,6 +116,19 @@ func (a *api) handleInsightsGraphs(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, g)
 }
 
+// handleInsightsReliability returns the buffering-history bundle.
+func (a *api) handleInsightsReliability(w http.ResponseWriter, r *http.Request) {
+	window, _ := strconv.Atoi(r.URL.Query().Get("window"))
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	res, err := a.deps.Insights.Reliability(ctx, window)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not compute reliability")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, res)
+}
+
 // handleInsightsUsers returns per-user activity aggregates.
 func (a *api) handleInsightsUsers(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
