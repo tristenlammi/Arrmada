@@ -204,6 +204,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("PUT "+base+"/api/v1/insights/plex", a.requireRole(auth.RoleManager, a.handleUpdateInsightsConfig))
 	mux.HandleFunc("POST "+base+"/api/v1/insights/plex/test", a.requireRole(auth.RoleManager, a.handleInsightsTest))
 	mux.HandleFunc("GET "+base+"/api/v1/insights/activity", a.requireRole(auth.RoleManager, a.handleInsightsActivity))
+	mux.HandleFunc("GET "+base+"/api/v1/insights/history", a.requireRole(auth.RoleManager, a.handleInsightsHistory))
 	mux.HandleFunc("GET "+base+"/api/v1/insights/image", a.protected(a.handleInsightsImage))
 
 	// Subtitles (Bazarr replacement — external SRT sidecars over the Movies/Series catalogs).

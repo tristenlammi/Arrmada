@@ -561,6 +561,15 @@ export interface InsightsStream {
   hw_transcode: boolean; throttled: boolean; reasons: string[];
 }
 export interface InsightsActivity { streams: InsightsStream[]; bandwidth: { total_kbps: number; lan_kbps: number; wan_kbps: number }; geo_active: boolean }
+export interface HistoryEntry {
+  id: number; user_id: string; user_name: string; title: string; grandparent_title: string; parent_title: string;
+  media_index: number; parent_index: number; year: number; media_type: string; thumb: string; thumb_url: string;
+  player: string; platform: string; product: string; ip_address: string; location: string; decision: string;
+  started_at: number; stopped_at: number; paused_ms: number; view_offset_ms: number; duration_ms: number;
+  video_src: string; video_stream: string; audio_src: string; audio_stream: string; container_src: string; container_stream: string;
+  hw_transcode: boolean; buffer_count: number; subtitle: string; geo: GeoLocation; watched_secs: number; progress_pct: number;
+}
+export interface InsightsHistory { rows: HistoryEntry[]; total: number }
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -855,6 +864,15 @@ export const api = {
   testInsights: (body: { url?: string; token?: string }) =>
     req<PlexTestResult>("/api/v1/insights/plex/test", { method: "POST", body: JSON.stringify(body) }),
   insightsActivity: () => req<InsightsActivity>("/api/v1/insights/activity"),
+  insightsHistory: (p: { type?: string; decision?: string; q?: string; page?: number; page_size?: number }) => {
+    const qs = new URLSearchParams();
+    if (p.type) qs.set("type", p.type);
+    if (p.decision) qs.set("decision", p.decision);
+    if (p.q) qs.set("q", p.q);
+    qs.set("page", String(p.page ?? 1));
+    qs.set("page_size", String(p.page_size ?? 50));
+    return req<InsightsHistory>(`/api/v1/insights/history?${qs.toString()}`);
+  },
   scanSeries: () => req<{ status: string }>("/api/v1/series/scan", { method: "POST" }),
   seriesHistory: (id: number) =>
     req<{ events: MovieEvent[] }>(`/api/v1/series/${id}/history`).then((r) => r.events),

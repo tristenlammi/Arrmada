@@ -206,3 +206,55 @@ func proxyImage(path string) string {
 func (s *Service) Image(ctx context.Context, path string) (*http.Response, error) {
 	return s.client(ctx).Image(ctx, path)
 }
+
+// HistoryResult is a page of recorded plays with the total for pagination.
+type HistoryResult struct {
+	Rows  []HistoryEntry `json:"rows"`
+	Total int            `json:"total"`
+}
+
+// HistoryEntry is a recorded play enriched for display (proxied thumb, geolocation, subtitle line).
+type HistoryEntry struct {
+	HistoryRow
+	Subtitle    string         `json:"subtitle"`
+	ThumbURL    string         `json:"thumb_url"`
+	Geo         geoip.Location `json:"geo"`
+	WatchedSecs int64          `json:"watched_secs"` // wall time minus paused
+	ProgressPct int            `json:"progress_pct"`
+}
+
+// History returns a page of recorded plays.
+func (s *Service) History(ctx context.Context, f HistoryFilter) (HistoryResult, error) {
+	if f.Limit <= 0 || f.Limit > 200 {
+		f.Limit = 50
+	}
+	rows, total, err := s.repo.history(ctx, f)
+	if err != nil {
+		return HistoryResult{}, err
+	}
+	out := HistoryResult{Rows: make([]HistoryEntry, 0, len(rows)), Total: total}
+	for _, r := range rows {
+		e := HistoryEntry{HistoryRow: r, ThumbURL: proxyImage(r.Thumb), Geo: s.geo.Lookup(r.IPAddress)}
+		e.Subtitle = historySubtitle(r)
+		watched := (r.StoppedAt - r.StartedAt) - r.PausedMS/1000
+		if watched < 0 {
+			watched = 0
+		}
+		e.WatchedSecs = watched
+		if r.DurationMS > 0 {
+			e.ProgressPct = int(r.ViewOffsetMS * 100 / r.DurationMS)
+		}
+		out.Rows = append(out.Rows, e)
+	}
+	return out, nil
+}
+
+func historySubtitle(r HistoryRow) string {
+	if r.MediaType == "episode" && r.GrandparentTitle != "" {
+		return fmt.Sprintf("%s · S%d · E%d", r.GrandparentTitle, r.ParentIndex, r.MediaIndex)
+	}
+	if r.Year > 0 {
+		return fmt.Sprintf("%d", r.Year)
+	}
+	return r.ParentTitle
+}

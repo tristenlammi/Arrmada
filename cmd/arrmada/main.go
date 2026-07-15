@@ -284,8 +284,9 @@ func main() {
 		}
 	}
 	geoResolver := geoip.New(geoDB)
-	insightsSvc := insights.NewService(settingsSvc, geoResolver, log)
+	insightsSvc := insights.NewService(st.DB(), settingsSvc, geoResolver, log)
 	insightsSvc.SeedFromEnv(runCtx, cfg.PlexURL, cfg.PlexToken)
+	go insightsSvc.Run(runCtx) // Plex watch-monitoring poller (records when enabled + configured)
 
 	srv := httpapi.New(httpapi.Deps{
 		Config:     cfg,

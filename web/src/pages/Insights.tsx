@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream } from "../lib/api";
+import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry } from "../lib/api";
 
 // Insights — Arrmada's Plex watch-monitoring module (Tautulli replacement). Built in slices
 // (see INSIGHTS-PLAN.md). I0 (this): the Plex connection — configure + test. Activity, History,
@@ -53,6 +53,8 @@ export function Insights() {
           <PlexSettings cfg={cfg} onSaved={setCfg} flash={flash} />
         ) : tab === "activity" ? (
           <ActivityView connected={!!connected} onConfigure={() => setTab("settings")} />
+        ) : tab === "history" ? (
+          <HistoryView connected={!!connected} onConfigure={() => setTab("settings")} />
         ) : (
           <ComingSoon tab={tab} connected={!!connected} onConfigure={() => setTab("settings")} />
         )}
@@ -220,6 +222,151 @@ function DDRow({ label, a, b }: { label: string; a: string; b?: string }) {
       <span className="text-right text-ink-dim">
         {a}{b ? <span style={{ color: "var(--avoid)" }}> → {b}</span> : null}
       </span>
+    </div>
+  );
+}
+
+/* ============================= HISTORY ============================= */
+function FilterGroup({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="font-mono text-[9px] font-bold uppercase tracking-[0.09em] text-ink-faint">{label}</span>
+      <div className="flex flex-wrap gap-1">{children}</div>
+    </div>
+  );
+}
+function Chip({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <button onClick={onClick} className="rounded-full px-2.5 py-1 text-[10.5px] font-semibold transition-colors" style={{ border: `1px solid ${active ? "var(--accent)" : "var(--line)"}`, background: active ? "var(--accent-soft)" : "var(--panel-2)", color: active ? "var(--accent)" : "var(--ink-dim)" }}>
+      {children}
+    </button>
+  );
+}
+
+function fmtDate(epoch: number): string {
+  if (!epoch) return "—";
+  const d = new Date(epoch * 1000);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+function fmtDur(secs: number): string {
+  if (!secs) return "—";
+  const h = Math.floor(secs / 3600), m = Math.round((secs % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+}
+const TYPE_FILTERS: { key: string; label: string }[] = [
+  { key: "", label: "All" }, { key: "movie", label: "Movies" }, { key: "episode", label: "TV" }, { key: "track", label: "Music" },
+];
+const DEC_FILTERS: { key: string; label: string }[] = [
+  { key: "", label: "All" }, { key: "direct_play", label: "Direct Play" }, { key: "direct_stream", label: "Direct Stream" }, { key: "transcode", label: "Transcode" },
+];
+
+function HistoryView({ connected, onConfigure }: { connected: boolean; onConfigure: () => void }) {
+  const [rows, setRows] = useState<HistoryEntry[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [type, setType] = useState("");
+  const [decision, setDecision] = useState("");
+  const [q, setQ] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [detail, setDetail] = useState<HistoryEntry | null>(null);
+  const pageSize = 50;
+
+  useEffect(() => { setPage(1); }, [type, decision, q]);
+  useEffect(() => {
+    if (!connected) return;
+    let alive = true;
+    setLoading(true);
+    const run = () => api.insightsHistory({ type, decision, q, page, page_size: pageSize })
+      .then((r) => { if (alive) { setRows(r.rows ?? []); setTotal(r.total); } })
+      .catch(() => { if (alive) setRows([]); })
+      .finally(() => { if (alive) setLoading(false); });
+    const t = setTimeout(run, q ? 300 : 0); // debounce search
+    return () => { alive = false; clearTimeout(t); };
+  }, [connected, type, decision, q, page]);
+
+  if (!connected) return <ComingSoon tab="history" connected={false} onConfigure={onConfigure} />;
+
+  const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const to = Math.min(page * pageSize, total);
+  const maxPage = Math.max(1, Math.ceil(total / pageSize));
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <FilterGroup label="Type">{TYPE_FILTERS.map((f) => <Chip key={f.key} active={type === f.key} onClick={() => setType(f.key)}>{f.label}</Chip>)}</FilterGroup>
+        <FilterGroup label="Stream">{DEC_FILTERS.map((f) => <Chip key={f.key} active={decision === f.key} onClick={() => setDecision(f.key)}>{f.label}</Chip>)}</FilterGroup>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search title or user…" className="ml-auto rounded-lg px-3 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)", minWidth: 200 }} />
+      </div>
+
+      <div className="overflow-x-auto rounded-xl" style={{ border: "1px solid var(--line)" }}>
+        <table className="w-full border-collapse text-[12.5px]" style={{ minWidth: 820 }}>
+          <thead><tr style={{ background: "var(--panel-2)" }}>{["When", "User", "Title", "Player", "Location", "Stream", "Watched", ""].map((h) => <th key={h} className="px-3 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint">{h}</th>)}</tr></thead>
+          <tbody>
+            {loading && rows.length === 0 ? (
+              <tr><td colSpan={8} className="px-3 py-10 text-center text-[12px] text-ink-dim">Loading history…</td></tr>
+            ) : rows.length === 0 ? (
+              <tr><td colSpan={8} className="px-3 py-10 text-center text-[12px] text-ink-faint">No plays recorded yet. History fills in as people watch.</td></tr>
+            ) : rows.map((r, i) => {
+              const d = DECISION[r.decision] ?? DECISION.direct_play;
+              return (
+                <tr key={r.id} onClick={() => setDetail(r)} className="cursor-pointer" style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
+                  <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-ink-dim">{fmtDate(r.started_at)}</td>
+                  <td className="px-3 py-2">{r.user_name}</td>
+                  <td className="px-3 py-2"><div className="font-semibold">{r.title}</div>{r.subtitle && <div className="text-[10.5px] text-ink-faint">{r.subtitle}</div>}</td>
+                  <td className="px-3 py-2 text-ink-dim">{r.player || r.platform}</td>
+                  <td className="px-3 py-2 font-mono text-[10.5px] text-ink-dim">{geoLabel(r.geo)}</td>
+                  <td className="px-3 py-2"><span className="rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink, #fff)" }}>{d.label}</span></td>
+                  <td className="whitespace-nowrap px-3 py-2 font-mono tabular-nums text-ink-dim">{fmtDur(r.watched_secs)}{r.buffer_count > 0 && <span title={`${r.buffer_count} buffer event(s)`} style={{ color: "var(--avoid)" }}> · ⚠{r.buffer_count}</span>}</td>
+                  <td className="px-3 py-2 text-right text-ink-faint">›</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="flex items-center justify-between text-[11.5px] text-ink-faint">
+        <span>{total > 0 ? `${from}–${to} of ${total.toLocaleString()}` : "0 plays"}</span>
+        <span className="flex items-center gap-2">
+          <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)} className="rounded-lg px-2.5 py-1 font-semibold disabled:opacity-40" style={{ border: "1px solid var(--line)", color: "var(--ink)" }}>Prev</button>
+          <span className="font-mono">{page}/{maxPage}</span>
+          <button disabled={page >= maxPage} onClick={() => setPage((p) => p + 1)} className="rounded-lg px-2.5 py-1 font-semibold disabled:opacity-40" style={{ border: "1px solid var(--line)", color: "var(--ink)" }}>Next</button>
+        </span>
+      </div>
+
+      {detail && <HistoryDetail r={detail} onClose={() => setDetail(null)} />}
+    </div>
+  );
+}
+
+function HistoryDetail({ r, onClose }: { r: HistoryEntry; onClose: () => void }) {
+  const d = DECISION[r.decision] ?? DECISION.direct_play;
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-start justify-center overflow-y-auto p-6" style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose}>
+      <div className="mt-10 w-full max-w-[560px] rounded-2xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="m-0 truncate text-[15px] font-bold">{r.title}</h2>
+            <p className="m-0 mt-0.5 text-[11.5px] text-ink-dim">{r.subtitle}</p>
+          </div>
+          <button onClick={onClose} className="text-ink-faint hover:text-[var(--ink)]">✕</button>
+        </div>
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <span className="rounded-full px-2.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink, #fff)" }}>{d.label}</span>
+          {r.hw_transcode && <span className="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>HW transcode</span>}
+          {r.buffer_count > 0 && <span className="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style={{ background: "var(--avoid-soft)", color: "var(--avoid)" }}>{r.buffer_count} buffer event{r.buffer_count === 1 ? "" : "s"}</span>}
+        </div>
+        <div className="grid gap-px overflow-hidden rounded-lg text-[12px]" style={{ background: "var(--line)" }}>
+          <DDRow label="User" a={r.user_name} />
+          <DDRow label="Player" a={`${r.player || "—"} · ${r.platform} · ${r.product}`} />
+          <DDRow label="Location" a={`${geoLabel(r.geo)}${r.ip_address ? ` · ${r.ip_address}` : ""} · ${r.location?.toUpperCase() || "—"}`} />
+          <DDRow label="Started" a={fmtDate(r.started_at)} />
+          <DDRow label="Watched" a={`${fmtDur(r.watched_secs)}${r.paused_ms > 0 ? ` (paused ${fmtDur(Math.round(r.paused_ms / 1000))})` : ""}`} />
+          <DDRow label="Video" a={r.video_src} b={r.video_stream} />
+          <DDRow label="Audio" a={r.audio_src} b={r.audio_stream} />
+          <DDRow label="Container" a={r.container_src} b={r.container_stream} />
+        </div>
+      </div>
     </div>
   );
 }

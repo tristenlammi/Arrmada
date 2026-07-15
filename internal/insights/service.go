@@ -6,6 +6,7 @@ package insights
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"strconv"
 
@@ -21,19 +22,22 @@ const (
 	keyPoll    = "insights_poll_seconds"
 )
 
-// Service owns the Plex connection config and, later, the poller.
+// Service owns the Plex connection config, the poller/recorder, and history queries.
 type Service struct {
 	settings *settings.Service
 	geo      *geoip.Resolver
+	repo     *repo
 	log      *slog.Logger
+
+	live map[string]*liveSession // in-flight sessions (poller goroutine only)
 }
 
 // NewService wires the module. geo may be nil (geolocation then only flags LAN as "Local").
-func NewService(set *settings.Service, geo *geoip.Resolver, log *slog.Logger) *Service {
+func NewService(db *sql.DB, set *settings.Service, geo *geoip.Resolver, log *slog.Logger) *Service {
 	if geo == nil {
 		geo = geoip.New("")
 	}
-	return &Service{settings: set, geo: geo, log: log}
+	return &Service{settings: set, geo: geo, repo: &repo{db: db}, log: log, live: map[string]*liveSession{}}
 }
 
 // Config is the connection config exposed to the UI (token is never returned in full).
