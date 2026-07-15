@@ -38,6 +38,7 @@ export function Movies() {
   const [confirmDelete, setConfirmDelete] = useState<Movie | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterKey>("all");
+  const [query, setQuery] = useState("");
   const [multiSelect, setMultiSelect] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [profiles, setProfiles] = useState<{ key: string; name: string }[]>([]);
@@ -85,8 +86,10 @@ export function Movies() {
     api.qualityProfiles("movie").then((r) => setProfiles(r.profiles.map((p) => ({ key: p.key, name: p.name })))).catch(() => {});
   }, []);
 
+  const q = query.trim().toLowerCase();
   const filtered = movies
     .filter((m) => matchesFilter(m, filter))
+    .filter((m) => !q || m.title.toLowerCase().includes(q))
     .sort((a, b) => a.title.localeCompare(b.title)); // default: alphabetical by title
 
   const toggleSelect = (id: number) =>
@@ -187,8 +190,8 @@ export function Movies() {
           </div>
         </div>
 
-        {/* Filters */}
-        <div className="mb-4 flex flex-wrap gap-2">
+        {/* Filters + search */}
+        <div className="mb-4 flex flex-wrap items-center gap-2">
           {FILTERS.map((f) => {
             const active = filter === f.key;
             const count = f.key === "all" ? movies.length : movies.filter((m) => matchesFilter(m, f.key)).length;
@@ -203,6 +206,13 @@ export function Movies() {
               </button>
             );
           })}
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search titles…"
+            className="ml-auto w-[220px] rounded-lg px-3 py-1.5 text-[12px]"
+            style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+          />
         </div>
 
         {/* Bulk actions */}
@@ -247,7 +257,7 @@ export function Movies() {
           </div>
         ) : filtered.length === 0 ? (
           <div className="rounded-xl p-12 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>
-            No movies match the <b>{FILTERS.find((f) => f.key === filter)?.label}</b> filter.
+            {q ? <>No movies match “<b>{query.trim()}</b>”.</> : <>No movies match the <b>{FILTERS.find((f) => f.key === filter)?.label}</b> filter.</>}
           </div>
         ) : view === "table" ? (
           <MovieTable movies={filtered} multiSelect={multiSelect} selected={selected} onToggleSelect={toggleSelect} />

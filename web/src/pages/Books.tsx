@@ -36,6 +36,7 @@ export function Books() {
   const [metaOK, setMetaOK] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterKey>("all");
+  const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
   const [addingAuthor, setAddingAuthor] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Book | null>(null);
@@ -78,7 +79,14 @@ export function Books() {
     } finally { setBulkBusy(false); }
   };
 
-  const filtered = useMemo(() => list.filter((b) => matches(b, filter)), [list, filter]);
+  const q = query.trim().toLowerCase();
+  const filtered = useMemo(
+    () =>
+      list
+        .filter((b) => matches(b, filter))
+        .filter((b) => !q || b.title.toLowerCase().includes(q) || (b.author ?? "").toLowerCase().includes(q)),
+    [list, filter, q],
+  );
   const authors = useMemo(() => {
     const map = new Map<string, Book[]>();
     for (const b of filtered) {
@@ -133,7 +141,7 @@ export function Books() {
           </div>
         </div>
 
-        <div className="mb-4 flex flex-wrap gap-2">
+        <div className="mb-4 flex flex-wrap items-center gap-2">
           {FILTERS.map((f) => {
             const active = filter === f.key;
             const count = f.key === "all" ? list.length : list.filter((b) => matches(b, f.key)).length;
@@ -143,6 +151,13 @@ export function Books() {
               </button>
             );
           })}
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search title or author…"
+            className="ml-auto w-[240px] rounded-lg px-3 py-1.5 text-[12px]"
+            style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+          />
         </div>
 
         {multiSelect && (
@@ -174,7 +189,7 @@ export function Books() {
             No books yet. Click <b>Add book</b>, search by title or author, and Arrmada will monitor and grab it.
           </div>
         ) : filtered.length === 0 ? (
-          <div className="rounded-xl p-12 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>No books match the <b>{FILTERS.find((f) => f.key === filter)?.label}</b> filter.</div>
+          <div className="rounded-xl p-12 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>{q ? <>No books match “<b>{query.trim()}</b>”.</> : <>No books match the <b>{FILTERS.find((f) => f.key === filter)?.label}</b> filter.</>}</div>
         ) : mode === "author" ? (
           view === "table" ? <AuthorTable authors={authors} /> : (
             <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" }}>

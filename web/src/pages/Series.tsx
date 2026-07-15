@@ -34,6 +34,7 @@ export function Series() {
   const [metaOK, setMetaOK] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FilterKey>("all");
+  const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<SeriesT | null>(null);
   const [scanning, setScanning] = useState(false);
@@ -54,9 +55,14 @@ export function Series() {
     api.qualityProfiles("series").then((r) => setProfiles(r.profiles.map((p) => ({ key: p.key, name: p.name })))).catch(() => {});
   }, []);
 
+  const q = query.trim().toLowerCase();
   const filtered = useMemo(
-    () => list.filter((s) => matches(s, filter)).sort((a, b) => a.title.localeCompare(b.title)),
-    [list, filter],
+    () =>
+      list
+        .filter((s) => matches(s, filter))
+        .filter((s) => !q || s.title.toLowerCase().includes(q))
+        .sort((a, b) => a.title.localeCompare(b.title)),
+    [list, filter, q],
   ); // default: alphabetical by title
 
   const toggleSelect = (id: number) =>
@@ -153,8 +159,8 @@ export function Series() {
           </div>
         </div>
 
-        {/* Filters */}
-        <div className="mb-4 flex flex-wrap gap-2">
+        {/* Filters + search */}
+        <div className="mb-4 flex flex-wrap items-center gap-2">
           {FILTERS.map((f) => {
             const active = filter === f.key;
             const count = f.key === "all" ? list.length : list.filter((s) => matches(s, f.key)).length;
@@ -169,6 +175,13 @@ export function Series() {
               </button>
             );
           })}
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search titles…"
+            className="ml-auto w-[220px] rounded-lg px-3 py-1.5 text-[12px]"
+            style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+          />
         </div>
 
         {multiSelect && (
@@ -206,7 +219,7 @@ export function Series() {
           </div>
         ) : filtered.length === 0 ? (
           <div className="rounded-xl p-12 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>
-            No series match the <b>{FILTERS.find((f) => f.key === filter)?.label}</b> filter.
+            {q ? <>No series match “<b>{query.trim()}</b>”.</> : <>No series match the <b>{FILTERS.find((f) => f.key === filter)?.label}</b> filter.</>}
           </div>
         ) : view === "table" ? (
           <SeriesTable list={filtered} multiSelect={multiSelect} selected={selected} onToggleSelect={toggleSelect} />
