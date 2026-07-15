@@ -1,0 +1,144 @@
+# Arrmada + bundled qBittorrent + FlareSolverr — local testing.
+#   docker compose up --build
+# Then open http://localhost:7878  (qBittorrent WebUI: http://localhost:8080)
+services:
+  arrmada-app:
+    build:
+      context: .
+      args:
+        VERSION: dev-docker
+    image: arrmada:dev
+    container_name: arrmada-app
+    ports:
+      - "7878:7878"
+    environment:
+      # Auth is off by default for local testing. Set to "true" to require login.
+      ARRMADA_AUTH_ENABLED: "false"
+      ARRMADA_LOG_LEVEL: "info"
+      # The bundled qBittorrent companion; auto-registered as a download client.
+      ARRMADA_QBITTORRENT_URL: "http://arrmada-qbittorrent:8080"
+      # Bundled FlareSolverr — used to get past Cloudflare on protected trackers.
+      ARRMADA_FLARESOLVERR_URL: "http://arrmada-flaresolverr:8191"
+      # Optional Prowlarr companion (started only with `--profile prowlarr`). This
+      # is just the default URL the "Sync from Prowlarr" button uses; harmless when
+      # Prowlarr isn't running.
+      ARRMADA_PROWLARR_URL: "http://arrmada-prowlarr:9696"
+      # Downloads and the library live UNDER ONE shared volume (/media) so imports
+      # can hardlink instead of copy: the download keeps seeding while the same
+      # bytes appear in the library, costing no extra disk. Hardlinks only work
+      # within a single filesystem — that's the whole reason both are subfolders
+      # of one mount. (On Unraid: map one share, e.g. /mnt/user/data → /media.)
+      ARRMADA_LIBRARY_DIR: "/media/library"
+      # Where the download client writes files (default scan dir for manual import).
+      ARRMADA_DOWNLOADS_DIR: "/media/downloads"
+      # Movie/TV metadata. Get a free v3 API key from https://www.themoviedb.org/settings/api
+      ARRMADA_TMDB_API_KEY: "${ARRMADA_TMDB_API_KEY:-}"
+      ARRMADA_OMDB_API_KEY: "${ARRMADA_OMDB_API_KEY:-}"
+      # Incoming BitTorrent port — Arrmada applies this inside qBittorrent so it
+      # matches the published port above. Same source (.env) as the ports block.
+      ARRMADA_QBIT_PORT: "${ARRMADA_QBIT_PORT:-6881}"
+    volumes:
+      # App database/config — kept separate from media on purpose.
+      - arrmada-data:/data
+      # One shared media volume: /media/downloads + /media/library on one filesystem.
+      - arrmada-media:/media
+    depends_on:
+      arrmada-media-init:
+        condition: service_completed_successfully
+      arrmada-qbittorrent:
+        condition: service_started
+      arrmada-flaresolverr:
+        condition: service_started
+    restart: unless-stopped
+
+  # One-shot: create the media subfolders and hand them to uid/gid 1000 (the
+  # user both Arrmada and qBittorrent run as) so both can write and hardlink.
+  arrmada-media-init:
+    image: alpine:3.20
+    container_name: arrmada-media-init
+    command: >
+      sh -c "mkdir -p /media/downloads/incomplete /media/library &&
+             chown -R 1000:1000 /media"
+    volumes:
+      - arrmada-media:/media
+    restart: "no"
+
+  # One-shot: seed qBittorrent's config the first time (auth-bypass on the
+  # private Docker network + downloads path) so Arrmada connects with no setup.
+  arrmada-qbittorrent-init:
+    image: alpine:3.20
+    container_name: arrmada-qbittorrent-init
+    command: >
+      sh -c "mkdir -p /config/qBittorrent &&
+             [ -f /config/qBittorrent/qBittorrent.conf ] ||
+             cp /seed/qBittorrent.conf /config/qBittorrent/qBittorrent.conf"
+    volumes:
+      - arrmada-qbt-config:/config
+      - ./docker/qbittorrent:/seed:ro
+    restart: "no"
+
+  arrmada-qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: arrmada-qbittorrent
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: "Etc/UTC"
+      WEBUI_PORT: "8080"
+    volumes:
+      - arrmada-qbt-config:/config
+      # Same shared media volume, same path as Arrmada — so a file's path is
+      # identical in both containers and hardlinks resolve.
+      - arrmada-media:/media
+    ports:
+      - "8080:8080" # WebUI
+      # BitTorrent incoming-connection port, TCP *and* UDP (peers + DHT/uTP). Set
+      # once in .env (ARRMADA_QBIT_PORT — the install script picks a random one);
+      # Arrmada auto-applies the same value inside qBittorrent, so the two always
+      # match. Forward this port on your router to this Docker host.
+      - "${ARRMADA_QBIT_PORT:-6881}:${ARRMADA_QBIT_PORT:-6881}"
+      - "${ARRMADA_QBIT_PORT:-6881}:${ARRMADA_QBIT_PORT:-6881}/udp"
+    depends_on:
+      arrmada-qbittorrent-init:
+        condition: service_completed_successfully
+      arrmada-media-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # OPTIONAL indexer manager (Prowlarr). NOT started by default — Arrmada ships
+  # without it. Opt in with:
+  #     docker compose --profile prowlarr up -d
+  # Then add your trackers at http://localhost:9696 and click "Sync from Prowlarr"
+  # in Arrmada → Indexers. Point Prowlarr's FlareSolverr proxy at
+  # http://arrmada-flaresolverr:8191 for Cloudflare-protected trackers.
+  arrmada-prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: arrmada-prowlarr
+    profiles: ["prowlarr"]
+    environment:
+      PUID: "1000"
+      PGID: "1000"
+      TZ: "Etc/UTC"
+    volumes:
+      - arrmada-prowlarr-config:/config
+    ports:
+      - "9696:9696"
+    restart: unless-stopped
+
+  # Solves Cloudflare challenges for protected trackers (e.g. TorrentLeech), the
+  # same way Prowlarr uses it. Headless-Chromium image (~1 GB).
+  arrmada-flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    container_name: arrmada-flaresolverr
+    environment:
+      LOG_LEVEL: "info"
+      TZ: "Etc/UTC"
+    ports:
+      - "8191:8191"
+    restart: unless-stopped
+
+volumes:
+  arrmada-data:
+  arrmada-media:
+  arrmada-qbt-config:
+  arrmada-prowlarr-config:

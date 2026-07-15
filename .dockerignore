@@ -1,0 +1,23 @@
+# Build artifacts & local runtime — never send to the build context.
+/arrmada
+/arrmada.exe
+/bin/
+/dist/
+/data/
+*.db
+*.db-shm
+*.db-wal
+*.log
+
+# Frontend — deps and build output are regenerated inside the image.
+web/node_modules/
+web/dist/
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep
+
+# Dev tooling & docs not needed for the build.
+.git/
+.gitignore
+.idea/
+.vscode/
+*.md

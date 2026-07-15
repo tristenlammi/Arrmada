@@ -1,0 +1,119 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Arrmada design tokens — warm terracotta. Single source of truth for both
+   themes. prefers-color-scheme is the default; the header toggle stamps
+   data-theme on <html> and must win in both directions. */
+:root {
+  --bg: #181310;
+  --sidebar: #1f1812;
+  --panel: #241c15;
+  --panel-2: #1d1610;
+  --line: #382b21;
+  --line-soft: #2a2018;
+  --ink: #f0e7dc;
+  --ink-dim: #beac98;
+  --ink-faint: #8c7a67;
+  --accent: #db7a54;
+  --accent-deep: #c4633c;
+  --accent-ink: #241007;
+  --accent-soft: rgba(219, 122, 84, 0.15);
+  --accent-line: rgba(219, 122, 84, 0.42);
+  --good: #7fb069;
+  --good-soft: rgba(127, 176, 105, 0.16);
+  --avoid: #e0a93b;
+  --reject: #cf5442;
+  --reject-soft: rgba(207, 84, 66, 0.15);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f4eee4;
+    --sidebar: #fbf8f1;
+    --panel: #ffffff;
+    --panel-2: #f1eadd;
+    --line: #e4daca;
+    --line-soft: #ede5d7;
+    --ink: #2b2016;
+    --ink-dim: #6c5d4e;
+    --ink-faint: #9c8b78;
+    --accent: #c15e39;
+    --accent-deep: #a94e2d;
+    --accent-ink: #ffffff;
+    --accent-soft: rgba(193, 94, 57, 0.1);
+    --accent-line: rgba(193, 94, 57, 0.35);
+    --good: #5b8c46;
+    --good-soft: rgba(91, 140, 70, 0.13);
+    --avoid: #b07d1e;
+    --reject: #b23f30;
+    --reject-soft: rgba(178, 63, 48, 0.11);
+  }
+}
+
+:root[data-theme="dark"] {
+  --bg: #181310; --sidebar: #1f1812; --panel: #241c15; --panel-2: #1d1610;
+  --line: #382b21; --line-soft: #2a2018; --ink: #f0e7dc; --ink-dim: #beac98;
+  --ink-faint: #8c7a67; --accent: #db7a54; --accent-deep: #c4633c; --accent-ink: #241007;
+  --accent-soft: rgba(219,122,84,.15); --accent-line: rgba(219,122,84,.42);
+  --good: #7fb069; --good-soft: rgba(127,176,105,.16); --avoid: #e0a93b;
+  --reject: #cf5442; --reject-soft: rgba(207,84,66,.15);
+}
+
+:root[data-theme="light"] {
+  --bg: #f4eee4; --sidebar: #fbf8f1; --panel: #ffffff; --panel-2: #f1eadd;
+  --line: #e4daca; --line-soft: #ede5d7; --ink: #2b2016; --ink-dim: #6c5d4e;
+  --ink-faint: #9c8b78; --accent: #c15e39; --accent-deep: #a94e2d; --accent-ink: #ffffff;
+  --accent-soft: rgba(193,94,57,.1); --accent-line: rgba(193,94,57,.35);
+  --good: #5b8c46; --good-soft: rgba(91,140,70,.13); --avoid: #b07d1e;
+  --reject: #b23f30; --reject-soft: rgba(178,63,48,.11);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Drop the chunky native number-input spinners everywhere. */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* Slim, theme-aware scrollbar for horizontal rails (cast, etc.). */
+.thin-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+.thin-scroll::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+.thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 999px;
+}
+.thin-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-line);
+}

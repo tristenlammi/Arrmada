@@ -1,0 +1,15 @@
+{
+  "name": "Arrmada",
+  "short_name": "Arrmada",
+  "description": "Discover and request movies & TV",
+  "start_url": "/discover",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#1a1310",
+  "theme_color": "#1a1310",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
