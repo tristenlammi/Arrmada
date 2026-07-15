@@ -50,11 +50,11 @@ export function BookReleaseModal({
   const rows = tab === "ebook" ? ebooks : audiobooks;
 
   const grab = async (rel: RankedRelease) => {
-    setBusy(rel.title);
+    setBusy(rel.download_url);
     setError(null);
     try {
       await onGrab(rel);
-      setGrabbed((s) => new Set(s).add(rel.title));
+      setGrabbed((s) => new Set(s).add(rel.download_url));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -100,7 +100,7 @@ export function BookReleaseModal({
           ) : (
             <div className="flex flex-col gap-2">
               {rows.map((rel) => (
-                <BookReleaseRow key={rel.title} rel={rel} busy={busy === rel.title} grabbed={grabbed.has(rel.title)} onGrab={() => grab(rel)} />
+                <BookReleaseRow key={rel.download_url} rel={rel} busy={busy === rel.download_url} grabbed={grabbed.has(rel.download_url)} onGrab={() => grab(rel)} />
               ))}
             </div>
           )}

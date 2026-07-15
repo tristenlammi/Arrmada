@@ -108,28 +108,67 @@ func bookQuery(b books.Book, kind string) string {
 // wins), seeders break ties. Hard-reject terms and unwanted formats are skipped.
 func pickBestBookForKind(sp quality.StoredProfile, releases []indexer.Release, kind string) *indexer.Release {
 	var best *indexer.Release
-	bestScore := 0
+	var bestScore int
+	var bestPartial bool
 	for i := range releases {
-		if books.EditionOf(detectBookFormat(releases[i].Title)) != kind {
+		if books.EditionOf(releaseBookFormat(releases[i])) != kind {
 			continue
 		}
-		score, ok := bookRelScore(sp, releases[i].Title, releases[i].Seeders)
+		score, ok := bookRelScore(sp, releases[i])
 		if !ok {
 			continue
 		}
-		if best == nil || score > bestScore {
-			bestScore, best = score, &releases[i]
+		partial := isPartialBook(releases[i].Title)
+		if best == nil || betterBook(partial, score, bestPartial, bestScore) {
+			best, bestScore, bestPartial = &releases[i], score, partial
 		}
 	}
 	return best
+}
+
+// betterBook reports whether a candidate (partial, score) should replace the
+// current best (bp, bs): a complete release always beats a partial one, then the
+// higher score wins. This keeps a "(Part 1 of 6)" split from being grabbed over
+// the complete book.
+func betterBook(partial bool, score int, bp bool, bs int) bool {
+	if partial != bp {
+		return !partial
+	}
+	return score > bs
+}
+
+// rePartialBook matches the "N of M" / "Part N of M" markers trackers use for a
+// split release (e.g. MyAnonaMouse's "(Part 3 of 6)", "(2of5)").
+var rePartialBook = regexp.MustCompile(`(?i)\b(?:part\s*)?\d+\s*of\s*\d+\b`)
+
+// isPartialBook reports whether a release title looks like one part of a split
+// set rather than the complete book.
+func isPartialBook(title string) bool { return rePartialBook.MatchString(title) }
+
+// releaseBookFormat prefers the indexer's structured file type (e.g. MyAnonaMouse
+// exposes it directly) and falls back to parsing the release title for trackers
+// that only put the format in the name.
+func releaseBookFormat(rel indexer.Release) string {
+	if f := strings.ToUpper(rel.Format); f != "" && books.EditionOf(f) != "" {
+		return f
+	}
+	return detectBookFormat(rel.Title)
+}
+
+// bookScoreText is the text keyword and reject rules are matched against. It
+// spans the structured fields — not just the title — so a "GraphicAudio"
+// preference matches the narrator field even when the release name doesn't
+// contain it (which is exactly how MyAnonaMouse presents full-cast productions).
+func bookScoreText(rel indexer.Release) string {
+	return strings.Join([]string{rel.Title, rel.Author, rel.Narrator, rel.Series, rel.Description}, " ")
 }
 
 // bookRelScore ranks a book release under a profile — format score plus keyword
 // score (so preferences like "graphic audio +100" combine with format
 // preference), seeders as the low-order tiebreak. ok=false when the format isn't
 // wanted (score ≤ 0 or unknown) or a hard-reject term is present.
-func bookRelScore(sp quality.StoredProfile, title string, seeders int) (int, bool) {
-	f := detectBookFormat(title)
+func bookRelScore(sp quality.StoredProfile, rel indexer.Release) (int, bool) {
+	f := releaseBookFormat(rel)
 	if f == "" {
 		return 0, false
 	}
@@ -137,10 +176,11 @@ func bookRelScore(sp quality.StoredProfile, title string, seeders int) (int, boo
 	if !ok || fs <= 0 {
 		return 0, false
 	}
-	if quality.Rejects(sp.Rejected, title) {
+	text := bookScoreText(rel)
+	if quality.Rejects(sp.Rejected, text) {
 		return 0, false
 	}
-	return (fs+quality.KeywordScore(sp.Keywords, title))*1_000_000 + seeders, true
+	return (fs+quality.KeywordScore(sp.Keywords, text))*1_000_000 + rel.Seeders, true
 }
 
 // bookProfile resolves the book's quality profile, falling back to a sensible
@@ -229,6 +269,10 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 	if b.Author != "" {
 		query = b.Author + " " + b.Title
 	}
+	// Dedup by download URL — the unique per-torrent link. Deduping by title
+	// wrongly collapsed distinct editions that render the same display name (e.g. a
+	// GraphicAudio M4B and a standard-narration M4B both "<Author> - <Title> [M4B]"),
+	// hiding valid options.
 	seen := map[string]bool{}
 	var all []indexer.Release
 	for _, q := range []string{query, query + " audiobook"} {
@@ -237,54 +281,69 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 			continue
 		}
 		for _, rel := range res.Releases {
-			if seen[rel.Title] {
+			key := rel.DownloadURL
+			if key == "" {
+				key = rel.Title
+			}
+			if seen[key] {
 				continue
 			}
-			seen[rel.Title] = true
+			seen[key] = true
 			all = append(all, rel)
 		}
 	}
-	out := make([]RankedRelease, 0, len(all))
+
+	// Score each release once (keyword scoring now spans narrator/series/author,
+	// so a GraphicAudio preference actually fires) and keep the score for ordering.
+	type ranked struct {
+		rr       RankedRelease
+		score    int
+		eligible bool
+		partial  bool
+	}
+	items := make([]ranked, 0, len(all))
 	for _, rel := range all {
-		// Prefer the indexer's structured file type (MAM) over scraping it from
-		// the title, but fall back to the title for Torznab/other trackers.
-		f := strings.ToUpper(rel.Format)
-		if f == "" || books.EditionOf(f) == "" {
-			f = detectBookFormat(rel.Title)
-		}
+		f := releaseBookFormat(rel)
 		if f == "" {
 			continue // not an identifiable book release
 		}
-		_, eligible := bookRelScore(sp, rel.Title, rel.Seeders)
+		score, eligible := bookRelScore(sp, rel)
 		edition := books.EditionOf(f)
 		narrator := rel.Narrator
 		if narrator == "" && edition == books.KindAudiobook {
 			narrator = parseNarrator(rel.Title + " " + rel.Description)
 		}
-		out = append(out, RankedRelease{
-			Title: rel.Title, Indexer: rel.Indexer, DownloadURL: rel.DownloadURL, InfoURL: rel.InfoURL,
-			SizeGB: rel.SizeGB(), Seeders: rel.Seeders, Summary: summarizeBook(f),
-			Eligible: eligible, Edition: edition, Format: f, Narrator: narrator,
-			Author: rel.Author, Series: rel.Series, Language: rel.Language,
+		items = append(items, ranked{
+			rr: RankedRelease{
+				Title: rel.Title, Indexer: rel.Indexer, DownloadURL: rel.DownloadURL, InfoURL: rel.InfoURL,
+				SizeGB: rel.SizeGB(), Seeders: rel.Seeders, Summary: summarizeBook(f),
+				Eligible: eligible, Edition: edition, Format: f, Narrator: narrator,
+				Author: rel.Author, Series: rel.Series, Language: rel.Language,
+			},
+			score: score, eligible: eligible, partial: isPartialBook(rel.Title),
 		})
 	}
-	// Order by the profile's preference so the best-format / best-keyword release
-	// leads (eligible first, then by combined score).
-	sort.SliceStable(out, func(i, j int) bool {
-		si, oi := bookRelScore(sp, out[i].Title, out[i].Seeders)
-		sj, oj := bookRelScore(sp, out[j].Title, out[j].Seeders)
-		if oi != oj {
-			return oi // eligible sorts before ineligible
+	// Order by the profile's preference: eligible first, then complete before
+	// split ("Part N of M") releases, then by combined score.
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].eligible != items[j].eligible {
+			return items[i].eligible
 		}
-		return si > sj
+		if items[i].partial != items[j].partial {
+			return !items[i].partial
+		}
+		return items[i].score > items[j].score
 	})
 	// Mark the best eligible release of each edition as the recommended pick.
 	recommended := map[string]bool{}
-	for i := range out {
-		if out[i].Eligible && !recommended[out[i].Edition] {
-			out[i].Recommended = true
-			recommended[out[i].Edition] = true
+	out := make([]RankedRelease, 0, len(items))
+	for i := range items {
+		rr := items[i].rr
+		if items[i].eligible && !recommended[rr.Edition] {
+			rr.Recommended = true
+			recommended[rr.Edition] = true
 		}
+		out = append(out, rr)
 	}
 	return ReleaseList{Profile: b.QualityProfile, Releases: out}, nil
 }

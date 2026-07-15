@@ -31,6 +31,58 @@ func TestPickBestBookKeyword(t *testing.T) {
 	}
 }
 
+// TestPickBestBookKeywordInNarrator: a GraphicAudio preference must win even when
+// "GraphicAudio" is only in the structured narrator field (as MyAnonaMouse
+// presents it), not in the release title. The plain-narration M4B has far more
+// seeders but must lose to the GraphicAudio one.
+func TestPickBestBookKeywordInNarrator(t *testing.T) {
+	sp := quality.StoredProfile{
+		FormatScores: map[string]int{"M4B": 40},
+		Keywords:     []quality.Keyword{{Term: "graphicaudio", Score: 100}},
+	}
+	releases := []indexer.Release{
+		{Title: "Brandon Sanderson - Rhythm of War [M4B]", Narrator: "Kate Reading, Michael Kramer", Format: "M4B", Seeders: 1072},
+		{Title: "Brandon Sanderson - Rhythm of War [M4B]", Narrator: "GraphicAudio", Format: "M4B", Seeders: 61},
+	}
+	best := pickBestBookForKind(sp, releases, "audiobook")
+	if best == nil || best.Narrator != "GraphicAudio" {
+		t.Fatalf("got %+v, want the GraphicAudio narration to win on the keyword preference", best)
+	}
+}
+
+// TestPickBestBookPrefersComplete: a complete release beats a "(Part N of M)"
+// split of the same format/keyword, even with fewer seeders — so a partial
+// GraphicAudio set is never grabbed over the whole book.
+func TestPickBestBookPrefersComplete(t *testing.T) {
+	sp := quality.StoredProfile{
+		FormatScores: map[string]int{"M4B": 40},
+		Keywords:     []quality.Keyword{{Term: "graphicaudio", Score: 100}},
+	}
+	releases := []indexer.Release{
+		{Title: "Rhythm of War (Part 1 of 6) [M4B]", Narrator: "GraphicAudio", Format: "M4B", Seeders: 500},
+		{Title: "Rhythm of War [M4B]", Narrator: "GraphicAudio", Format: "M4B", Seeders: 40},
+	}
+	best := pickBestBookForKind(sp, releases, "audiobook")
+	if best == nil || best.Title != "Rhythm of War [M4B]" {
+		t.Fatalf("got %+v, want the complete release", best)
+	}
+}
+
+func TestIsPartialBook(t *testing.T) {
+	partial := []string{"Rhythm of War (Part 3 of 6) [M4B]", "Words of Radiance (2of5)", "Book (4 of 6)"}
+	complete := []string{"Rhythm of War [M4B]", "Words of Radiance", "The Way of Kings"}
+	for _, s := range partial {
+		if !isPartialBook(s) {
+			t.Errorf("isPartialBook(%q) = false, want true", s)
+		}
+	}
+	for _, s := range complete {
+		if isPartialBook(s) {
+			t.Errorf("isPartialBook(%q) = true, want false", s)
+		}
+	}
+}
+
 // TestPickBestBookFormatPreference: with no keywords, the higher-scored format
 // wins regardless of seeders.
 func TestPickBestBookFormatPreference(t *testing.T) {
