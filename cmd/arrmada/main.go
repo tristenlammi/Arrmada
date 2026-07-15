@@ -92,7 +92,7 @@ func main() {
 	qualitySvc := quality.NewService(st.DB())
 	settingsSvc := settings.NewService(st.DB())
 	notifySvc := notify.NewService(st.DB(), bus, log)
-	seriesSvc := series.NewService(st.DB(), tmdb, cfg.LibraryDir, log)
+	seriesSvc := series.NewService(st.DB(), tmdb, cfg.TVDir, log)
 	booksSvc := books.NewService(st.DB(), openlib, log)
 	// Recycle bin: default to <library>/.recycle so deletes are undoable; "off" hard-deletes.
 	recycleDir := cfg.RecycleDir
@@ -102,7 +102,7 @@ func main() {
 	case "off":
 		recycleDir = ""
 	}
-	movieSvc := movies.NewService(st.DB(), tmdb, qualitySvc, cfg.LibraryDir, recycleDir, bus, log)
+	movieSvc := movies.NewService(st.DB(), tmdb, qualitySvc, cfg.MoviesDir, recycleDir, bus, log)
 	seriesSvc.SetRecycleDir(recycleDir) // per-episode file deletes go to the recycle bin, like movies
 	prefs := libPrefs{s: settingsSvc}
 	movieSvc.SetNaming(prefs)
@@ -168,7 +168,9 @@ func main() {
 	go imports.WatchDeletions(runCtx)
 	// Wire the series module into the coordinator: TV downloads land in a separate
 	// category and are hardlinked file-by-file (a season pack yields many episodes).
-	coordinator.SetSeries(seriesSvc, library.NewImporter(cfg.LibraryDir, log))
+	bookImporter := library.NewImporter(cfg.LibraryDir, log)
+	bookImporter.SetBookRoots(cfg.EbooksDir, cfg.AudiobooksDir) // scan ebooks + audiobooks (may be one folder)
+	coordinator.SetSeries(seriesSvc, bookImporter)
 	// Books share the importer set above; ebooks land in their own category.
 	coordinator.SetBooks(booksSvc)
 	// Book file deletion honors the same recycle bin as movies.

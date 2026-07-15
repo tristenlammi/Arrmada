@@ -102,41 +102,61 @@ type BookFolder struct {
 	Audiobooks []FoundFile
 }
 
-// FindBookFolders walks the library root for folders containing ebook/audiobook files
-// and returns them grouped by author (parent folder) and title (the folder name). Used
-// by the book library scan.
+// SetBookRoots configures the folders scanned for books (ebook + audiobook). Duplicates and
+// empties are collapsed, so passing the same path twice (books under one folder) scans it once.
+func (im *Importer) SetBookRoots(roots ...string) {
+	seen := map[string]bool{}
+	im.bookRoots = im.bookRoots[:0]
+	for _, r := range roots {
+		if r == "" || seen[r] {
+			continue
+		}
+		seen[r] = true
+		im.bookRoots = append(im.bookRoots, r)
+	}
+}
+
+// FindBookFolders walks the configured book roots (ebook + audiobook, falling back to the
+// library root) for folders containing ebook/audiobook files, grouped by author (parent folder)
+// and title (the folder name). Used by the book library scan.
 func (im *Importer) FindBookFolders() []BookFolder {
+	roots := im.bookRoots
+	if len(roots) == 0 {
+		roots = []string{im.root}
+	}
 	byDir := map[string]*BookFolder{}
-	_ = filepath.WalkDir(im.root, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() || !isBookFile(p) {
-			return nil
-		}
-		if strings.Contains(strings.ToLower(filepath.Base(p)), "sample") {
-			return nil
-		}
-		dir := filepath.Dir(p)
-		bf := byDir[dir]
-		if bf == nil {
-			author := ""
-			parent := filepath.Dir(dir)
-			if parent != im.root && parent != "." {
-				author = filepath.Base(parent)
+	for _, root := range roots {
+		_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !isBookFile(p) {
+				return nil
 			}
-			bf = &BookFolder{Author: author, Title: filepath.Base(dir)}
-			byDir[dir] = bf
-		}
-		fi, _ := d.Info()
-		var size int64
-		if fi != nil {
-			size = fi.Size()
-		}
-		if isAudiobook(p) {
-			bf.Audiobooks = append(bf.Audiobooks, FoundFile{Path: p, Size: size})
-		} else {
-			bf.Ebooks = append(bf.Ebooks, FoundFile{Path: p, Size: size})
-		}
-		return nil
-	})
+			if strings.Contains(strings.ToLower(filepath.Base(p)), "sample") {
+				return nil
+			}
+			dir := filepath.Dir(p)
+			bf := byDir[dir]
+			if bf == nil {
+				author := ""
+				parent := filepath.Dir(dir)
+				if parent != root && parent != "." {
+					author = filepath.Base(parent)
+				}
+				bf = &BookFolder{Author: author, Title: filepath.Base(dir)}
+				byDir[dir] = bf
+			}
+			fi, _ := d.Info()
+			var size int64
+			if fi != nil {
+				size = fi.Size()
+			}
+			if isAudiobook(p) {
+				bf.Audiobooks = append(bf.Audiobooks, FoundFile{Path: p, Size: size})
+			} else {
+				bf.Ebooks = append(bf.Ebooks, FoundFile{Path: p, Size: size})
+			}
+			return nil
+		})
+	}
 	out := make([]BookFolder, 0, len(byDir))
 	for _, bf := range byDir {
 		out = append(out, *bf)
@@ -230,9 +250,10 @@ type NamingProvider interface {
 
 // Importer moves media into a library root.
 type Importer struct {
-	root   string
-	log    *slog.Logger
-	naming NamingProvider // nil → built-in defaults
+	root      string
+	bookRoots []string // ebook + audiobook scan roots (falls back to root)
+	log       *slog.Logger
+	naming    NamingProvider // nil → built-in defaults
 }
 
 // NewImporter creates an importer targeting the given library root directory.

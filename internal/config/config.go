@@ -40,8 +40,17 @@ type Config struct {
 	// client (0 = leave it alone). Set once at install to a random value so it
 	// matches the Docker-published port; the user forwards this on their router.
 	QbittorrentPort int
-	// LibraryDir is the root of the organized media library (imports land here).
+	// LibraryDir is the root of the organized media library (imports land here) and the
+	// default scan root for every module.
 	LibraryDir string
+	// Per-library scan roots. Each defaults to LibraryDir when its env var is unset, so a
+	// single shared library still works. Set them to point Movies / TV / Books at separate
+	// folders. EbooksDir and AudiobooksDir may be the same path (both books under one folder)
+	// or different (ebooks and audiobooks kept apart).
+	MoviesDir     string
+	TVDir         string
+	EbooksDir     string
+	AudiobooksDir string
 	// DownloadCategory is the download-client category Arrmada imports from.
 	DownloadCategory string
 	// DownloadsDir is where the download client writes files (shared volume);
@@ -99,6 +108,12 @@ func Load() (Config, error) {
 		PlexToken:             env("ARRMADA_PLEX_TOKEN", ""),
 		GeoIPDB:               env("ARRMADA_GEOIP_DB", ""),
 	}
+
+	// Per-library scan roots default to the shared library dir when not set individually.
+	c.MoviesDir = env("ARRMADA_MOVIES_DIR", c.LibraryDir)
+	c.TVDir = env("ARRMADA_TV_DIR", c.LibraryDir)
+	c.EbooksDir = env("ARRMADA_EBOOKS_DIR", c.LibraryDir)
+	c.AudiobooksDir = env("ARRMADA_AUDIOBOOKS_DIR", c.LibraryDir)
 
 	port, err := strconv.Atoi(env("ARRMADA_PORT", "7878"))
 	if err != nil {
