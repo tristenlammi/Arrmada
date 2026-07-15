@@ -34,3 +34,6 @@ Thumbs.db
 
 # Local secrets (TMDB key, etc.)
 .env
+
+# User-specific compose override (existing-library mounts)
+docker-compose.override.yml

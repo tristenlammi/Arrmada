@@ -31,6 +31,13 @@ services:
       ARRMADA_LIBRARY_DIR: "/media/library"
       # Where the download client writes files (default scan dir for manual import).
       ARRMADA_DOWNLOADS_DIR: "/media/downloads"
+      # Optional: point Movies / TV / Books at separate library folders (empty = use the
+      # shared library above). See docker-compose.override.example.yml to bind existing
+      # folders read-only.
+      ARRMADA_MOVIES_DIR: "${ARRMADA_MOVIES_DIR:-}"
+      ARRMADA_TV_DIR: "${ARRMADA_TV_DIR:-}"
+      ARRMADA_EBOOKS_DIR: "${ARRMADA_EBOOKS_DIR:-}"
+      ARRMADA_AUDIOBOOKS_DIR: "${ARRMADA_AUDIOBOOKS_DIR:-}"
       # Movie/TV metadata. Get a free v3 API key from https://www.themoviedb.org/settings/api
       ARRMADA_TMDB_API_KEY: "${ARRMADA_TMDB_API_KEY:-}"
       ARRMADA_OMDB_API_KEY: "${ARRMADA_OMDB_API_KEY:-}"

@@ -1,0 +1,30 @@
+# ─── Point Arrmada at an EXISTING library ───────────────────────────────────────
+# Copy this file to  docker-compose.override.yml  (Docker Compose merges it
+# automatically), edit the host paths to match your server, then set the matching
+# ARRMADA_*_DIR values in .env (shown at the bottom) and run ./update.sh.
+#
+# The mounts are READ-ONLY (":ro") so Arrmada can only READ and catalog your
+# library — it physically cannot move, rename, delete, or write into it. They mount
+# at their own paths (/movies, /tvshows, …), separate from the managed /media
+# volume, so the one-time media-init (which chowns /media) never touches your files.
+#
+# When you later want Arrmada to actually import downloads INTO a folder, drop the
+# ":ro" on that mount so it becomes writable.
+
+services:
+  arrmada-app:
+    volumes:
+      - /masterdirectory/media/movies:/movies:ro
+      - /masterdirectory/media/tvshows:/tvshows:ro
+      - /masterdirectory/media/ebooks:/ebooks:ro
+      - /masterdirectory/media/audiobooks:/audiobooks:ro
+      # Books in ONE folder instead of two? Use a single mount and point both
+      # ARRMADA_EBOOKS_DIR and ARRMADA_AUDIOBOOKS_DIR at it:
+      #   - /masterdirectory/media/books:/books:ro
+
+# Then in .env (these tell Arrmada which in-container path each library lives at):
+#   ARRMADA_MOVIES_DIR=/movies
+#   ARRMADA_TV_DIR=/tvshows
+#   ARRMADA_EBOOKS_DIR=/ebooks
+#   ARRMADA_AUDIOBOOKS_DIR=/audiobooks
+#   (one /books folder → set both book dirs to /books)

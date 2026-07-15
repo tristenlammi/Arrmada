@@ -1,0 +1,4 @@
+# Shell scripts must stay LF — a CRLF shebang fails on Linux ("bad interpreter").
+*.sh text eol=lf
+install.sh text eol=lf
+update.sh text eol=lf
