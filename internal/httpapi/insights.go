@@ -103,6 +103,19 @@ func (a *api) handleInsightsStats(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, res)
 }
 
+// handleInsightsGraphs returns the time-series bundle for the Graphs tab.
+func (a *api) handleInsightsGraphs(w http.ResponseWriter, r *http.Request) {
+	window, _ := strconv.Atoi(r.URL.Query().Get("window"))
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	g, err := a.deps.Insights.Graphs(ctx, window)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not compute graphs")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, g)
+}
+
 // handleInsightsUsers returns per-user activity aggregates.
 func (a *api) handleInsightsUsers(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)

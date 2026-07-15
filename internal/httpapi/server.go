@@ -206,6 +206,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/insights/activity", a.requireRole(auth.RoleManager, a.handleInsightsActivity))
 	mux.HandleFunc("GET "+base+"/api/v1/insights/history", a.requireRole(auth.RoleManager, a.handleInsightsHistory))
 	mux.HandleFunc("GET "+base+"/api/v1/insights/stats", a.requireRole(auth.RoleManager, a.handleInsightsStats))
+	mux.HandleFunc("GET "+base+"/api/v1/insights/graphs", a.requireRole(auth.RoleManager, a.handleInsightsGraphs))
 	mux.HandleFunc("GET "+base+"/api/v1/insights/users", a.requireRole(auth.RoleManager, a.handleInsightsUsers))
 	mux.HandleFunc("GET "+base+"/api/v1/insights/libraries", a.requireRole(auth.RoleManager, a.handleInsightsLibraries))
 	mux.HandleFunc("GET "+base+"/api/v1/insights/recently-added", a.requireRole(auth.RoleManager, a.handleInsightsRecentlyAdded))

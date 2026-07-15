@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem } from "../lib/api";
+import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs } from "../lib/api";
 
 // Insights — Arrmada's Plex watch-monitoring module (Tautulli replacement). Built in slices
 // (see INSIGHTS-PLAN.md). I0 (this): the Plex connection — configure + test. Activity, History,
@@ -57,6 +57,8 @@ export function Insights() {
           <HistoryView connected={!!connected} onConfigure={() => setTab("settings")} />
         ) : tab === "users" ? (
           <UsersView connected={!!connected} onConfigure={() => setTab("settings")} />
+        ) : tab === "graphs" ? (
+          <GraphsView connected={!!connected} onConfigure={() => setTab("settings")} />
         ) : (
           <ComingSoon tab={tab} connected={!!connected} onConfigure={() => setTab("settings")} />
         )}
@@ -504,6 +506,131 @@ function HistoryDetail({ r, onClose }: { r: HistoryEntry; onClose: () => void })
           <DDRow label="Container" a={r.container_src} b={r.container_stream} />
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ============================= GRAPHS ============================= */
+const SERIES_COLORS = { tv: "var(--accent)", movies: "var(--good)", music: "var(--avoid)" };
+const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+function GraphsView({ connected, onConfigure }: { connected: boolean; onConfigure: () => void }) {
+  const [g, setG] = useState<InsightsGraphs | null>(null);
+  const [win, setWin] = useState(30);
+  useEffect(() => { if (connected) api.insightsGraphs(win).then(setG).catch(() => setG(null)); }, [connected, win]);
+  if (!connected) return <ComingSoon tab="graphs" connected={false} onConfigure={onConfigure} />;
+  if (!g) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading graphs…</div>;
+
+  const anyPlays = g.daily_tv.some(Boolean) || g.daily_movies.some(Boolean) || g.daily_music.some(Boolean);
+  const dayLabels = g.days.map((d) => { const [, m, day] = d.split("-"); return `${+m}/${+day}`; });
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center justify-between">
+        <div className="flex gap-1">{[7, 30, 90].map((w) => <Chip key={w} active={win === w} onClick={() => setWin(w)}>{w}d</Chip>)}</div>
+        <div className="flex items-center gap-3 text-[10.5px]">
+          <Legend c={SERIES_COLORS.tv} label="TV" /><Legend c={SERIES_COLORS.movies} label="Movies" /><Legend c={SERIES_COLORS.music} label="Music" />
+        </div>
+      </div>
+
+      {!anyPlays ? (
+        <div className="rounded-xl p-10 text-center text-[12px] text-ink-faint" style={{ border: "1px dashed var(--line)" }}>No plays in this window yet — graphs fill in as history accrues.</div>
+      ) : (
+        <>
+          <ChartCard title="Daily plays by media type">
+            <LineChart xLabels={dayLabels} series={[
+              { color: SERIES_COLORS.tv, values: g.daily_tv },
+              { color: SERIES_COLORS.movies, values: g.daily_movies },
+              { color: SERIES_COLORS.music, values: g.daily_music },
+            ]} />
+          </ChartCard>
+
+          <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))" }}>
+            <ChartCard title="Plays by day of week"><BarChart values={g.by_day_of_week} labels={DOW} /></ChartCard>
+            <ChartCard title="Plays by hour of day"><BarChart values={g.by_hour} labels={g.by_hour.map((_, i) => (i % 3 === 0 ? String(i).padStart(2, "0") : ""))} /></ChartCard>
+            <ChartCard title="Top platforms"><HBarChart rows={g.top_platforms.map((p) => ({ label: p.name, value: p.plays }))} /></ChartCard>
+            <ChartCard title="Top users"><HBarChart rows={g.top_users.map((u) => ({ label: u.name, value: u.plays }))} /></ChartCard>
+          </div>
+        </>
+      )}
+
+      <ChartCard title="Bandwidth (peak per hour)">
+        {g.bandwidth.length === 0 ? <div className="py-6 text-center text-[11px] text-ink-faint">No bandwidth recorded yet.</div> : (
+          <>
+            <div className="mb-1 flex items-center gap-3 text-[10.5px]"><Legend c="var(--accent)" label="Total" /><Legend c="var(--good)" label="LAN" /><Legend c="var(--avoid)" label="WAN" /></div>
+            <LineChart xLabels={g.bandwidth.map(() => "")} series={[
+              { color: "var(--accent)", values: g.bandwidth.map((p) => p.total_kbps / 1000) },
+              { color: "var(--good)", values: g.bandwidth.map((p) => p.lan_kbps / 1000) },
+              { color: "var(--avoid)", values: g.bandwidth.map((p) => p.wan_kbps / 1000) },
+            ]} unit=" Mb/s" />
+          </>
+        )}
+      </ChartCard>
+    </div>
+  );
+}
+
+function Legend({ c, label }: { c: string; label: string }) {
+  return <span className="inline-flex items-center gap-1 text-ink-dim"><span className="inline-block h-2 w-2 rounded-full" style={{ background: c }} />{label}</span>;
+}
+function ChartCard({ title, children }: { title: string; children: ReactNode }) {
+  return <div className="rounded-xl p-4" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}><div className="mb-2 text-[12.5px] font-bold">{title}</div>{children}</div>;
+}
+
+function LineChart({ series, xLabels, unit }: { series: { color: string; values: number[] }[]; xLabels: string[]; unit?: string }) {
+  const W = 720, H = 200, padL = 34, padB = 20, padT = 8, padR = 8;
+  const n = Math.max(1, xLabels.length);
+  const max = Math.max(1, ...series.flatMap((s) => s.values));
+  const x = (i: number) => padL + (n <= 1 ? 0 : (i / (n - 1)) * (W - padL - padR));
+  const y = (v: number) => padT + (1 - v / max) * (H - padT - padB);
+  const ticks = [0, Math.round(max / 2), max];
+  const labelEvery = Math.max(1, Math.ceil(n / 8));
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: "auto", maxHeight: 240 }} preserveAspectRatio="none">
+      {ticks.map((t, i) => (
+        <g key={i}>
+          <line x1={padL} x2={W - padR} y1={y(t)} y2={y(t)} stroke="var(--line)" strokeWidth={1} />
+          <text x={padL - 5} y={y(t) + 3} textAnchor="end" fontSize={9} fill="var(--ink-faint)">{t}{unit || ""}</text>
+        </g>
+      ))}
+      {series.map((s, si) => (
+        <polyline key={si} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" points={s.values.map((v, i) => `${x(i)},${y(v)}`).join(" ")} />
+      ))}
+      {xLabels.map((l, i) => (l && i % labelEvery === 0 ? <text key={i} x={x(i)} y={H - 6} textAnchor="middle" fontSize={9} fill="var(--ink-faint)">{l}</text> : null))}
+    </svg>
+  );
+}
+
+function BarChart({ values, labels }: { values: number[]; labels: string[] }) {
+  const W = 360, H = 180, padL = 24, padB = 18, padT = 6, padR = 4;
+  const max = Math.max(1, ...values);
+  const bw = (W - padL - padR) / values.length;
+  const y = (v: number) => padT + (1 - v / max) * (H - padT - padB);
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: "auto", maxHeight: 200 }}>
+      <line x1={padL} x2={W - padR} y1={H - padB} y2={H - padB} stroke="var(--line)" strokeWidth={1} />
+      {values.map((v, i) => (
+        <rect key={i} x={padL + i * bw + bw * 0.15} y={y(v)} width={bw * 0.7} height={Math.max(0, H - padB - y(v))} rx={1.5} fill="var(--accent)" />
+      ))}
+      {labels.map((l, i) => (l ? <text key={i} x={padL + i * bw + bw / 2} y={H - 5} textAnchor="middle" fontSize={8.5} fill="var(--ink-faint)">{l}</text> : null))}
+    </svg>
+  );
+}
+
+function HBarChart({ rows }: { rows: { label: string; value: number }[] }) {
+  if (rows.length === 0) return <div className="py-6 text-center text-[11px] text-ink-faint">No data yet.</div>;
+  const max = Math.max(1, ...rows.map((r) => r.value));
+  return (
+    <div className="flex flex-col gap-1.5">
+      {rows.map((r, i) => (
+        <div key={i} className="flex items-center gap-2 text-[11px]">
+          <span className="w-[92px] flex-none truncate text-ink-dim" title={r.label}>{r.label || "—"}</span>
+          <span className="h-3.5 flex-1 overflow-hidden rounded" style={{ background: "var(--panel-2)" }}>
+            <span className="block h-full rounded" style={{ width: `${(r.value / max) * 100}%`, background: "var(--accent)" }} />
+          </span>
+          <span className="w-8 flex-none text-right font-mono text-ink-faint">{r.value}</span>
+        </div>
+      ))}
     </div>
   );
 }

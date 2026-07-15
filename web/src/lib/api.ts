@@ -576,6 +576,12 @@ export interface InsightsStats { most_watched_movies: TitleStat[]; most_watched_
 export interface UserEntry { id: string; username: string; last_seen: number; last_ip: string; last_platform: string; last_player: string; last_title: string; total_plays: number; total_secs: number; geo: GeoLocation }
 export interface LibraryStat { title: string; type: string; count: number }
 export interface RecentItem { title: string; subtitle: string; type: string; thumb_url: string; added_at: number }
+export interface BWPoint { t: string; total_kbps: number; lan_kbps: number; wan_kbps: number }
+export interface InsightsGraphs {
+  days: string[]; daily_tv: number[]; daily_movies: number[]; daily_music: number[];
+  by_day_of_week: number[]; by_hour: number[];
+  top_platforms: NameStat[]; top_users: NameStat[]; bandwidth: BWPoint[];
+}
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -884,6 +890,7 @@ export const api = {
   insightsUsers: () => req<{ users: UserEntry[] }>("/api/v1/insights/users").then((r) => r.users),
   insightsLibraries: () => req<{ libraries: LibraryStat[] }>("/api/v1/insights/libraries").then((r) => r.libraries),
   insightsRecentlyAdded: (limit = 20) => req<{ items: RecentItem[] }>(`/api/v1/insights/recently-added?limit=${limit}`).then((r) => r.items),
+  insightsGraphs: (window = 30) => req<InsightsGraphs>(`/api/v1/insights/graphs?window=${window}`),
   scanSeries: () => req<{ status: string }>("/api/v1/series/scan", { method: "POST" }),
   seriesHistory: (id: number) =>
     req<{ events: MovieEvent[] }>(`/api/v1/series/${id}/history`).then((r) => r.events),
