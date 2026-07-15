@@ -1,6 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry } from "../lib/api";
+import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem } from "../lib/api";
 
 // Insights — Arrmada's Plex watch-monitoring module (Tautulli replacement). Built in slices
 // (see INSIGHTS-PLAN.md). I0 (this): the Plex connection — configure + test. Activity, History,
@@ -16,7 +16,7 @@ const TABS: { key: Tab; label: string; soon?: boolean }[] = [
 ];
 
 export function Insights() {
-  const [tab, setTab] = useState<Tab>("settings");
+  const [tab, setTab] = useState<Tab>("activity");
   const [cfg, setCfg] = useState<PlexConfig | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); };
@@ -55,6 +55,8 @@ export function Insights() {
           <ActivityView connected={!!connected} onConfigure={() => setTab("settings")} />
         ) : tab === "history" ? (
           <HistoryView connected={!!connected} onConfigure={() => setTab("settings")} />
+        ) : tab === "users" ? (
+          <UsersView connected={!!connected} onConfigure={() => setTab("settings")} />
         ) : (
           <ComingSoon tab={tab} connected={!!connected} onConfigure={() => setTab("settings")} />
         )}
@@ -127,7 +129,142 @@ function ActivityView({ connected, onConfigure }: { connected: boolean; onConfig
       {!act.geo_active && streams.some((s) => !s.geo.local) && (
         <div className="text-[10.5px] text-ink-faint">Tip: drop a MaxMind <code>GeoLite2-City.mmdb</code> into the data dir (or set <code>ARRMADA_GEOIP_DB</code>) to resolve remote IPs to a city.</div>
       )}
+      <HomeExtras />
       {detail && <DeepDive s={detail} onClose={() => setDetail(null)} />}
+    </div>
+  );
+}
+
+/* ============================= HOME DASHBOARD (stats / libraries / recently added) ============================= */
+function fmtHours(secs: number): string {
+  if (!secs) return "0";
+  const h = secs / 3600;
+  return h >= 10 ? `${h.toFixed(0)}h` : h >= 1 ? `${h.toFixed(1)}h` : `${Math.round(secs / 60)}m`;
+}
+
+function HomeExtras() {
+  const [stats, setStats] = useState<InsightsStats | null>(null);
+  const [libs, setLibs] = useState<LibraryStat[] | null>(null);
+  const [recent, setRecent] = useState<RecentItem[] | null>(null);
+  const [metric, setMetric] = useState<"plays" | "duration">("plays");
+
+  useEffect(() => { api.insightsStats(30, metric).then(setStats).catch(() => setStats(null)); }, [metric]);
+  useEffect(() => {
+    api.insightsLibraries().then(setLibs).catch(() => setLibs([]));
+    api.insightsRecentlyAdded(20).then(setRecent).catch(() => setRecent([]));
+  }, []);
+
+  const hasStats = stats && (stats.most_watched_movies.length || stats.most_watched_shows.length || stats.most_active_users.length);
+
+  return (
+    <div className="mt-4 flex flex-col gap-5">
+      {/* Watch statistics */}
+      <section>
+        <div className="mb-2.5 flex items-center justify-between">
+          <h3 className="text-[13px] font-bold">Watch statistics <span className="font-normal text-ink-faint">· last 30 days</span></h3>
+          <div className="flex gap-1">
+            <Chip active={metric === "plays"} onClick={() => setMetric("plays")}>Plays</Chip>
+            <Chip active={metric === "duration"} onClick={() => setMetric("duration")}>Duration</Chip>
+          </div>
+        </div>
+        {!hasStats ? (
+          <div className="rounded-xl p-6 text-center text-[12px] text-ink-faint" style={{ border: "1px dashed var(--line)" }}>No watch data yet — statistics build up as people stream.</div>
+        ) : (
+          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
+            <StatCard title="Most watched movies" rows={stats!.most_watched_movies.map((m) => ({ label: m.title, thumb: m.thumb_url, v: metric === "plays" ? m.plays : m.secs }))} metric={metric} />
+            <StatCard title="Most watched TV" rows={stats!.most_watched_shows.map((m) => ({ label: m.title, thumb: m.thumb_url, v: metric === "plays" ? m.plays : m.secs }))} metric={metric} />
+            <StatCard title="Most active users" rows={stats!.most_active_users.map((u) => ({ label: u.name, v: metric === "plays" ? u.plays : u.secs }))} metric={metric} />
+            <StatCard title="Most active platforms" rows={stats!.most_active_platforms.map((p) => ({ label: p.name, v: metric === "plays" ? p.plays : p.secs }))} metric={metric} />
+          </div>
+        )}
+      </section>
+
+      {/* Library statistics */}
+      {libs && libs.length > 0 && (
+        <section>
+          <h3 className="mb-2.5 text-[13px] font-bold">Library statistics</h3>
+          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
+            {libs.map((l) => (
+              <div key={l.title} className="rounded-xl p-4" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
+                <div className="font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint">{libTypeLabel(l.type)}</div>
+                <div className="mt-0.5 text-[13px] font-semibold">{l.title}</div>
+                <div className="mt-1 text-[24px] font-extrabold tracking-tight">{l.count.toLocaleString()}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* Recently added */}
+      {recent && recent.length > 0 && (
+        <section>
+          <h3 className="mb-2.5 text-[13px] font-bold">Recently added</h3>
+          <div className="flex gap-3 overflow-x-auto pb-2 thin-scroll">
+            {recent.map((it, i) => (
+              <div key={i} className="flex-none" style={{ width: 96 }}>
+                <div className="relative h-[144px] w-[96px] overflow-hidden rounded-lg" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+                  {it.thumb_url ? <img src={it.thumb_url} alt="" loading="lazy" className="h-full w-full object-cover" /> : null}
+                </div>
+                <div className="mt-1 truncate text-[11px] font-semibold" title={it.title}>{it.title}</div>
+                <div className="truncate text-[10px] text-ink-faint">{it.subtitle}</div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function libTypeLabel(t: string): string {
+  return t === "movie" ? "Movies" : t === "show" ? "TV Shows" : t === "artist" ? "Music" : t;
+}
+
+function StatCard({ title, rows, metric }: { title: string; rows: { label: string; thumb?: string; v: number }[]; metric: "plays" | "duration" }) {
+  return (
+    <div className="rounded-xl p-4" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
+      <div className="mb-2 text-[12.5px] font-bold">{title}</div>
+      {rows.length === 0 ? <div className="text-[11px] text-ink-faint">—</div> : (
+        <ol className="flex flex-col gap-1.5">
+          {rows.map((r, i) => (
+            <li key={i} className="flex items-center gap-2 text-[12px]">
+              <span className="w-3 flex-none font-mono text-[10px] text-ink-faint">{i + 1}</span>
+              {r.thumb !== undefined && <span className="h-7 w-5 flex-none overflow-hidden rounded" style={{ background: "var(--panel-2)" }}>{r.thumb ? <img src={r.thumb} alt="" loading="lazy" className="h-full w-full object-cover" /> : null}</span>}
+              <span className="min-w-0 flex-1 truncate">{r.label}</span>
+              <span className="flex-none font-mono text-[11px] font-semibold" style={{ color: "var(--accent)" }}>{metric === "plays" ? r.v : fmtHours(r.v)}</span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+/* ============================= USERS ============================= */
+function UsersView({ connected, onConfigure }: { connected: boolean; onConfigure: () => void }) {
+  const [users, setUsers] = useState<UserEntry[] | null>(null);
+  useEffect(() => { if (connected) api.insightsUsers().then(setUsers).catch(() => setUsers([])); }, [connected]);
+  if (!connected) return <ComingSoon tab="users" connected={false} onConfigure={onConfigure} />;
+  if (!users) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading users…</div>;
+  if (users.length === 0) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-faint" style={{ border: "1px solid var(--line)" }}>No users seen yet.</div>;
+  return (
+    <div className="overflow-x-auto rounded-xl" style={{ border: "1px solid var(--line)" }}>
+      <table className="w-full border-collapse text-[12.5px]" style={{ minWidth: 820 }}>
+        <thead><tr style={{ background: "var(--panel-2)" }}>{["User", "Last seen", "Location", "Platform", "Last played", "Plays", "Watch time"].map((h) => <th key={h} className="px-3 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint">{h}</th>)}</tr></thead>
+        <tbody>
+          {users.map((u, i) => (
+            <tr key={u.id} style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
+              <td className="px-3 py-2 font-semibold">{u.username}</td>
+              <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-ink-dim">{u.last_seen ? fmtDate(u.last_seen) : "never"}</td>
+              <td className="px-3 py-2 font-mono text-[10.5px] text-ink-dim">{u.last_ip ? geoLabel(u.geo) : "—"}</td>
+              <td className="px-3 py-2 text-ink-dim">{u.last_platform || "—"}</td>
+              <td className="px-3 py-2 text-ink-dim"><div className="max-w-[240px] truncate">{u.last_title || "—"}</div></td>
+              <td className="px-3 py-2 font-mono tabular-nums">{u.total_plays.toLocaleString()}</td>
+              <td className="whitespace-nowrap px-3 py-2 font-mono tabular-nums text-ink-dim">{fmtDur(u.total_secs)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   );
 }

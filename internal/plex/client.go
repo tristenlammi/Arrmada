@@ -112,6 +112,53 @@ func (c *Client) SectionTotal(ctx context.Context, key string) (int64, error) {
 	return int64(r.MediaContainer.Size), nil
 }
 
+// RecentItem is a recently-added library item.
+type RecentItem struct {
+	RatingKey        string `json:"rating_key"`
+	Type             string `json:"type"`
+	Title            string `json:"title"`
+	GrandparentTitle string `json:"grandparent_title"`
+	Year             int    `json:"year"`
+	Thumb            string `json:"thumb"` // best poster (show poster for episodes)
+	AddedAt          int64  `json:"added_at"`
+}
+
+// RecentlyAdded returns the most recently added items across libraries.
+func (c *Client) RecentlyAdded(ctx context.Context, limit int) ([]RecentItem, error) {
+	if limit <= 0 {
+		limit = 24
+	}
+	var r struct {
+		MediaContainer struct {
+			Metadata []struct {
+				RatingKey        string  `json:"ratingKey"`
+				Type             string  `json:"type"`
+				Title            string  `json:"title"`
+				GrandparentTitle string  `json:"grandparentTitle"`
+				Year             flexInt `json:"year"`
+				Thumb            string  `json:"thumb"`
+				GrandparentThumb string  `json:"grandparentThumb"`
+				AddedAt          flexInt `json:"addedAt"`
+			} `json:"Metadata"`
+		} `json:"MediaContainer"`
+	}
+	if err := c.get(ctx, fmt.Sprintf("/library/recentlyAdded?X-Plex-Container-Start=0&X-Plex-Container-Size=%d", limit), &r); err != nil {
+		return nil, err
+	}
+	out := make([]RecentItem, 0, len(r.MediaContainer.Metadata))
+	for _, m := range r.MediaContainer.Metadata {
+		thumb := m.Thumb
+		if m.GrandparentThumb != "" { // show poster beats episode still
+			thumb = m.GrandparentThumb
+		}
+		out = append(out, RecentItem{
+			RatingKey: m.RatingKey, Type: m.Type, Title: m.Title, GrandparentTitle: m.GrandparentTitle,
+			Year: int(m.Year), Thumb: thumb, AddedAt: int64(m.AddedAt),
+		})
+	}
+	return out, nil
+}
+
 // Image fetches a Plex image (poster/art) by its metadata path, authenticated with the token, so
 // Arrmada can proxy it to the browser without exposing the token. Caller closes the body.
 func (c *Client) Image(ctx context.Context, path string) (*http.Response, error) {

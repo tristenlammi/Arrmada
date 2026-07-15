@@ -570,6 +570,12 @@ export interface HistoryEntry {
   hw_transcode: boolean; buffer_count: number; subtitle: string; geo: GeoLocation; watched_secs: number; progress_pct: number;
 }
 export interface InsightsHistory { rows: HistoryEntry[]; total: number }
+export interface TitleStat { title: string; thumb_url: string; plays: number; secs: number }
+export interface NameStat { id: string; name: string; plays: number; secs: number }
+export interface InsightsStats { most_watched_movies: TitleStat[]; most_watched_shows: TitleStat[]; most_active_users: NameStat[]; most_active_platforms: NameStat[]; recently_watched: HistoryEntry[] }
+export interface UserEntry { id: string; username: string; last_seen: number; last_ip: string; last_platform: string; last_player: string; last_title: string; total_plays: number; total_secs: number; geo: GeoLocation }
+export interface LibraryStat { title: string; type: string; count: number }
+export interface RecentItem { title: string; subtitle: string; type: string; thumb_url: string; added_at: number }
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -873,6 +879,11 @@ export const api = {
     qs.set("page_size", String(p.page_size ?? 50));
     return req<InsightsHistory>(`/api/v1/insights/history?${qs.toString()}`);
   },
+  insightsStats: (window = 30, metric?: "plays" | "duration") =>
+    req<InsightsStats>(`/api/v1/insights/stats?window=${window}${metric ? `&metric=${metric}` : ""}`),
+  insightsUsers: () => req<{ users: UserEntry[] }>("/api/v1/insights/users").then((r) => r.users),
+  insightsLibraries: () => req<{ libraries: LibraryStat[] }>("/api/v1/insights/libraries").then((r) => r.libraries),
+  insightsRecentlyAdded: (limit = 20) => req<{ items: RecentItem[] }>(`/api/v1/insights/recently-added?limit=${limit}`).then((r) => r.items),
   scanSeries: () => req<{ status: string }>("/api/v1/series/scan", { method: "POST" }),
   seriesHistory: (id: number) =>
     req<{ events: MovieEvent[] }>(`/api/v1/series/${id}/history`).then((r) => r.events),

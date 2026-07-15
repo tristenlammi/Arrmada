@@ -89,6 +89,57 @@ func (a *api) handleInsightsHistory(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, res)
 }
 
+// handleInsightsStats returns the home watch-statistics cards over a window.
+func (a *api) handleInsightsStats(w http.ResponseWriter, r *http.Request) {
+	window, _ := strconv.Atoi(r.URL.Query().Get("window"))
+	byDuration := r.URL.Query().Get("metric") == "duration"
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	res, err := a.deps.Insights.Stats(ctx, window, byDuration)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not compute stats")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, res)
+}
+
+// handleInsightsUsers returns per-user activity aggregates.
+func (a *api) handleInsightsUsers(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	users, err := a.deps.Insights.Users(ctx)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not load users")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"users": users})
+}
+
+// handleInsightsLibraries returns Plex library sections with counts (live).
+func (a *api) handleInsightsLibraries(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	libs, err := a.deps.Insights.Libraries(ctx)
+	if err != nil {
+		a.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"libraries": libs})
+}
+
+// handleInsightsRecentlyAdded returns recently-added items (live from Plex).
+func (a *api) handleInsightsRecentlyAdded(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	items, err := a.deps.Insights.RecentlyAdded(ctx, limit)
+	if err != nil {
+		a.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 // handleInsightsImage proxies a Plex poster/art image so the browser never sees the token. Only
 // image paths under /library/ or /photo/ are allowed (no arbitrary Plex-endpoint proxying).
 func (a *api) handleInsightsImage(w http.ResponseWriter, r *http.Request) {
