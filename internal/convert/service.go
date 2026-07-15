@@ -66,11 +66,12 @@ type Job struct {
 	Episode  int      `json:"episode,omitempty"`
 	Title    string   `json:"title"`
 	State    JobState `json:"state"`
-	Progress float64  `json:"progress"` // 0..1
-	FPS      float64  `json:"fps"`
-	SpeedX   float64  `json:"speed_x"`  // × realtime
-	Encoder  string   `json:"encoder"`
-	SrcBytes int64    `json:"src_bytes"`
+	Progress    float64 `json:"progress"`     // 0..1
+	FPS         float64 `json:"fps"`
+	SpeedX      float64 `json:"speed_x"`      // × realtime
+	DurationSec float64 `json:"duration_sec"` // source runtime (for the UI's ETA)
+	Encoder     string  `json:"encoder"`
+	SrcBytes    int64   `json:"src_bytes"`
 	OutBytes int64    `json:"out_bytes"`
 	SSIM     float64  `json:"ssim,omitempty"` // quality-gate score vs the source (0 = not measured)
 	Note     string   `json:"note,omitempty"` // skip reason / error
@@ -612,7 +613,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		s.finish(job, StateFailed, "could not analyze file: "+err.Error())
 		return
 	}
-	s.update(job, func(j *Job) { j.SrcBytes = mi.SizeBytes })
+	s.update(job, func(j *Job) { j.SrcBytes = mi.SizeBytes; j.DurationSec = mi.DurationSec })
 
 	plan := job.plan // the compiled plan this job runs (a rule's, or the save-space default)
 

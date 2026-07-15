@@ -36,14 +36,16 @@ export function Convert() {
   const loadHw = useCallback(() => api.convertHardware().then(setHw).catch(() => {}), []);
   useEffect(() => { loadHw(); loadLibrary(); }, [loadHw, loadLibrary]);
 
+  const anyActive = jobs.some((j) => ACTIVE.has(j.state));
   useEffect(() => {
     let alive = true;
     const tick = () => api.convertJobs().then((j) => { if (alive) setJobs(j); }).catch(() => {});
     tick();
-    const t = setInterval(tick, 2000);
+    // Poll quickly while something is encoding (so the % bar feels live), and back
+    // off when idle to spare the server.
+    const t = setInterval(tick, anyActive ? 1000 : 3000);
     return () => { alive = false; clearInterval(t); };
-  }, []);
-  const anyActive = jobs.some((j) => ACTIVE.has(j.state));
+  }, [anyActive]);
   useEffect(() => { if (!anyActive) { loadLibrary(); loadHw(); } }, [anyActive, loadLibrary, loadHw]);
 
   const enc = hw?.selected;
@@ -241,17 +243,29 @@ function Queue({ jobs }: { jobs: ConvertJob[] }) {
     </div>
   );
 }
+function fmtEta(sec: number): string {
+  if (!isFinite(sec) || sec <= 0) return "—";
+  if (sec < 60) return `${Math.round(sec)}s`;
+  const m = Math.floor(sec / 60), s = Math.round(sec % 60);
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
 function JobBar({ j, rich }: { j: ConvertJob; rich?: boolean }) {
+  const encoding = j.state === "encoding";
+  const pct = Math.max(0, Math.min(100, j.progress * 100));
+  const eta = encoding && j.duration_sec && j.speed_x > 0 && j.progress < 1 ? (j.duration_sec * (1 - j.progress)) / j.speed_x : 0;
   return (
     <div>
       <div className="flex items-center justify-between text-[12px]">
         <span className="font-semibold">{j.title} <span className="ml-1.5 rounded-full px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>{j.encoder}</span></span>
-        <span className="font-mono text-ink-dim">{j.state === "encoding" ? `${Math.round(j.progress * 100)}%` : j.state}</span>
+        <span className="font-mono tabular-nums text-ink-dim">{encoding ? `${pct.toFixed(1)}%${eta > 0 ? ` · ${fmtEta(eta)} left` : ""}` : j.state}</span>
       </div>
       <div className="mt-1 h-1.5 overflow-hidden rounded" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
-        <div className="h-full" style={{ width: `${Math.round(j.progress * 100)}%`, background: "linear-gradient(90deg, var(--accent-deep), var(--accent))" }} />
+        {/* transition ~matches the poll cadence so the fill glides instead of jumping */}
+        <div className="h-full" style={{ width: `${pct}%`, background: "linear-gradient(90deg, var(--accent-deep), var(--accent))", transition: "width 1s linear" }} />
       </div>
-      {rich && j.state === "encoding" && <div className="mt-1 flex gap-4 font-mono text-[11px] text-ink-faint"><span><b className="text-ink">{Math.round(j.fps)}</b> fps</span><span><b className="text-ink">{j.speed_x.toFixed(1)}×</b> realtime</span><span>{fmtSize(j.src_bytes)} source</span></div>}
+      {rich && encoding && <div className="mt-1 flex gap-4 font-mono text-[11px] text-ink-faint"><span><b className="text-ink">{Math.round(j.fps)}</b> fps</span><span><b className="text-ink">{j.speed_x.toFixed(1)}×</b> realtime</span><span>{fmtSize(j.src_bytes)} source</span></div>}
     </div>
   );
 }
