@@ -77,9 +77,14 @@ func (r *Repo) List(ctx context.Context) ([]Series, error) {
 func (r *Repo) allStats(ctx context.Context) (map[int64]*Stats, error) {
 	out := map[int64]*Stats{}
 	// Specials (season 0) are excluded from the have/total roll-up — a library isn't
-	// "incomplete" just because an optional special hasn't been grabbed.
+	// "incomplete" just because an optional special hasn't been grabbed. The total also
+	// only counts episodes that have already AIRED (or that we already have a file for),
+	// so an in-progress season isn't marked incomplete for episodes that don't exist yet.
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT series_id, COUNT(*), COALESCE(SUM(has_file),0), COALESCE(SUM(size_bytes),0)
+		`SELECT series_id,
+		        COALESCE(SUM(CASE WHEN has_file = 1 OR (air_date <> '' AND date(air_date) <= date('now')) THEN 1 ELSE 0 END), 0),
+		        COALESCE(SUM(has_file),0),
+		        COALESCE(SUM(size_bytes),0)
 		 FROM episodes WHERE season_number > 0 GROUP BY series_id`)
 	if err != nil {
 		return out, err

@@ -45,7 +45,12 @@ export function SeriesDetail() {
   });
   const continuing = /return|continu/i.test(s.status ?? "");
   const openSeason = seasons.find((sn) => sn.season_number > 0 && (sn.episodes ?? []).some(aired))?.season_number;
-  const st = statusOf(s);
+  // Overall progress from the loaded episodes (aired-aware, specials excluded) — the detail
+  // endpoint doesn't carry the roll-up stats the way the list does.
+  const allEps = seasons.filter((sn) => sn.season_number > 0).flatMap((sn) => sn.episodes ?? []);
+  const haveAll = allEps.filter((e) => e.has_file).length;
+  const countedAll = allEps.filter((e) => e.has_file || aired(e)).length;
+  const st = statusOf(haveAll, countedAll, s.monitored);
 
   return (
     <>
@@ -138,11 +143,9 @@ export function SeriesDetail() {
   );
 }
 
-function statusOf(s: SeriesT): { label: string; tone: string; soft: string } {
-  const total = s.stats?.episodes ?? 0;
-  const have = s.stats?.have_files ?? 0;
+function statusOf(have: number, total: number, monitored: boolean): { label: string; tone: string; soft: string } {
   if (total > 0 && have >= total) return { label: "Complete", tone: "var(--good)", soft: "var(--good-soft, rgba(90,140,90,.12))" };
-  if (s.monitored) return { label: have > 0 ? "In progress" : "Wanted", tone: "var(--avoid)", soft: "var(--avoid-soft)" };
+  if (monitored) return { label: have > 0 ? "In progress" : "Wanted", tone: "var(--avoid)", soft: "var(--avoid-soft)" };
   return { label: "Unmonitored", tone: "var(--ink-faint)", soft: "var(--panel-2)" };
 }
 
@@ -216,10 +219,13 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen }: { series:
   const have = eps.filter((e) => e.has_file).length;
   const total = eps.length;
   const airedCount = eps.filter(aired).length;
+  // The progress denominator only counts episodes that have aired (or that we already have),
+  // so an in-progress season isn't shown as behind on episodes that haven't come out yet.
+  const counted = eps.filter((e) => e.has_file || aired(e)).length;
   const nextAir = eps.map((e) => e.air_date).filter(Boolean).sort()[0];
   const state: "unreleased" | "upcoming" | "normal" = total === 0 ? "unreleased" : airedCount === 0 ? "upcoming" : "normal";
   const name = season.season_number === 0 ? "Specials" : `Season ${season.season_number}`;
-  const pct = total ? Math.round((have / total) * 100) : 0;
+  const pct = counted ? Math.round((have / counted) * 100) : 0;
 
   const grabSeason = async () => {
     setBusy(true);
@@ -239,12 +245,12 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen }: { series:
           ) : state === "upcoming" ? (
             <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }} title={nextAir ? `First airs ${nextAir}` : undefined}>{nextAir ? `Airs ${nextAir}` : "Upcoming"}</span>
           ) : (
-            <span className="font-mono text-[10.5px] text-ink-faint">{have}/{total}</span>
+            <span className="font-mono text-[10.5px] text-ink-faint">{have}/{counted}</span>
           )}
         </button>
         {state !== "unreleased" && (
           <div className="h-1.5 w-24 overflow-hidden rounded-full" style={{ background: "var(--line)" }}>
-            <div className="h-full rounded-full" style={{ width: `${pct}%`, background: have >= total && total > 0 ? "var(--good)" : "var(--accent)" }} />
+            <div className="h-full rounded-full" style={{ width: `${pct}%`, background: have >= counted && counted > 0 ? "var(--good)" : "var(--accent)" }} />
           </div>
         )}
         {state !== "unreleased" && (
