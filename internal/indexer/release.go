@@ -7,8 +7,9 @@ import "time"
 type Release struct {
 	Title       string    `json:"title"`
 	Description string    `json:"description,omitempty"` // indexer blurb; some carry author/narrator (e.g. MyAnonaMouse)
-	DownloadURL string    `json:"download_url"`         // .torrent / .nzb / magnet
-	InfoHash    string    `json:"info_hash,omitempty"`  // torrent
+	DownloadURL string    `json:"download_url"`          // .torrent / .nzb / magnet
+	InfoURL     string    `json:"info_url,omitempty"`    // the release's details page on the tracker
+	InfoHash    string    `json:"info_hash,omitempty"`   // torrent
 	SizeBytes   int64     `json:"size_bytes"`
 	Seeders     int       `json:"seeders,omitempty"`    // torrent
 	Peers       int       `json:"peers,omitempty"`      // torrent

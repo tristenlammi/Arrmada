@@ -222,6 +222,7 @@ func (t *TorrentLeechSearcher) releasesFromJSON(idx Indexer, body []byte) ([]Rel
 		r := Release{
 			Title:       reReqPrefix.ReplaceAllString(strings.TrimSpace(it.Name), ""),
 			DownloadURL: t.downloadURL(idx, it.Fid, it.Filename),
+			InfoURL:     tlBaseURL + "/torrent/" + it.Fid,
 			SizeBytes:   it.Size,
 			Seeders:     it.Seeders,
 			Peers:       it.Leechers,

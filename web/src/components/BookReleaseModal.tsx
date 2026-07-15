@@ -134,6 +134,7 @@ function BookReleaseRow({ rel, busy, grabbed, onGrab }: { rel: RankedRelease; bu
             <span>{rel.size_gb.toFixed(2)} GB</span>
             <span>{rel.seeders} seeders</span>
             <span>{rel.indexer}</span>
+            {rel.info_url && <a href={rel.info_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="font-semibold hover:underline" style={{ color: "var(--accent)" }}>view ↗</a>}
           </div>
         </div>
         <button

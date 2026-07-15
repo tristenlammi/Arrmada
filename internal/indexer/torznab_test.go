@@ -11,6 +11,7 @@ const torznabSample = `<?xml version="1.0" encoding="UTF-8"?>
     <item>
       <title>Dune.Part.Two.2024.2160p.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-FLUX</title>
       <guid>abc123</guid>
+      <comments>https://tracker.example/details/abc123</comments>
       <link>https://tracker.example/dl/abc123</link>
       <pubDate>Sat, 13 Jul 2024 10:00:00 +0000</pubDate>
       <size>25769803776</size>
@@ -60,6 +61,13 @@ func TestParseTorznabFeed(t *testing.T) {
 	}
 	if r.DownloadURL != "https://tracker.example/abc123.torrent" {
 		t.Errorf("download url = %q (want enclosure url)", r.DownloadURL)
+	}
+	if r.InfoURL != "https://tracker.example/details/abc123" {
+		t.Errorf("info url = %q (want the comments details page)", r.InfoURL)
+	}
+	// Second item has no comments and a non-URL guid → no info URL (not a bogus link).
+	if releases[1].InfoURL != "" {
+		t.Errorf("info url = %q, want empty when only a non-URL guid is present", releases[1].InfoURL)
 	}
 	if r.Seeders != 212 || r.Peers != 230 {
 		t.Errorf("seeders/peers = %d/%d, want 212/230", r.Seeders, r.Peers)

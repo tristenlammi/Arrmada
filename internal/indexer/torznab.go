@@ -25,6 +25,7 @@ type feedItem struct {
 	Title       string      `xml:"title"`
 	Description string      `xml:"description"`
 	Link        string      `xml:"link"`
+	Comments    string      `xml:"comments"`
 	GUID      string        `xml:"guid"`
 	PubDate   string        `xml:"pubDate"`
 	Size      int64         `xml:"size"`
@@ -56,6 +57,7 @@ func ParseFeed(data []byte) ([]Release, error) {
 			Title:       it.Title,
 			Description: it.Description,
 			DownloadURL: firstNonEmpty(it.Enclosure.URL, it.Link),
+			InfoURL:     firstURL(it.Comments, it.GUID),
 			SizeBytes:   it.Size,
 		}
 		if t, ok := parseFeedDate(it.PubDate); ok {
@@ -186,6 +188,18 @@ func buildURL(idx Indexer, t string, q SearchQuery) (string, error) {
 func firstNonEmpty(vals ...string) string {
 	for _, v := range vals {
 		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// firstURL returns the first value that is an http(s) URL — used to pick a
+// release's details page (comments/guid), ignoring non-URL guids.
+func firstURL(vals ...string) string {
+	for _, v := range vals {
+		v = strings.TrimSpace(v)
+		if strings.HasPrefix(v, "http://") || strings.HasPrefix(v, "https://") {
 			return v
 		}
 	}

@@ -145,6 +145,7 @@ type RankedRelease struct {
 	Title        string  `json:"title"`
 	Indexer      string  `json:"indexer"`
 	DownloadURL  string  `json:"download_url"`
+	InfoURL      string  `json:"info_url,omitempty"` // the release's details page on the tracker
 	SizeGB       float64 `json:"size_gb"`
 	Bitrate      float64 `json:"bitrate_mbps,omitempty"` // size ÷ runtime; 0 when runtime unknown
 	Seeders      int     `json:"seeders"`
@@ -229,6 +230,7 @@ func (c *Coordinator) RankReleases(ctx context.Context, id int64) (ReleaseList, 
 			Title:        ev.Candidate.Name,
 			Indexer:      rel.Indexer,
 			DownloadURL:  rel.DownloadURL,
+			InfoURL:      rel.InfoURL,
 			SizeGB:       ev.Candidate.SizeGB,
 			Bitrate:      bitrateMbps(ev.Candidate.SizeGB, m.Runtime),
 			Seeders:      ev.Candidate.Seeders,

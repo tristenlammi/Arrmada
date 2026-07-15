@@ -177,6 +177,7 @@ func parseX1337Results(base, html string) []Release {
 		out = append(out, Release{
 			Title:       title,
 			DownloadURL: base + href,
+			InfoURL:     base + href, // 1337x's /torrent/ page is both the details page and the magnet source
 			Seeders:     parseInt(row.Find("td.seeds").Text()),
 			Peers:       parseInt(row.Find("td.leeches").Text()),
 			SizeBytes:   parseX1337Size(row.Find("td.size").Text()),

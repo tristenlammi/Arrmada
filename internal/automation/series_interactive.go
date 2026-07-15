@@ -78,6 +78,7 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 			Title:        ev.Candidate.Name,
 			Indexer:      rel.Indexer,
 			DownloadURL:  rel.DownloadURL,
+			InfoURL:      rel.InfoURL,
 			SizeGB:       ev.Candidate.SizeGB,
 			Bitrate:      bitrateMbps(ev.Candidate.SizeGB, epRuntime),
 			Seeders:      ev.Candidate.Seeders,

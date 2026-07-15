@@ -242,6 +242,7 @@ function ReleaseRow({ rel, why, busy, grabbed, disabled, onGrab, onBlock }: { re
             {rel.bitrate_mbps ? <span title="Average bitrate (size ÷ runtime)" style={{ color: "var(--accent)" }}>{rel.bitrate_mbps.toFixed(1)} Mb/s</span> : null}
             <span>{rel.seeders} seeders</span>
             <span>{rel.indexer}</span>
+            {rel.info_url && <a href={rel.info_url} target="_blank" rel="noreferrer" className="font-semibold hover:underline" style={{ color: "var(--accent)" }}>view ↗</a>}
           </div>
           {!rel.eligible && rel.reject_reason && <div className="mt-1.5 text-[11px]" style={{ color: "var(--avoid)" }}>{rel.reject_reason}</div>}
           {why && why.length > 0 && (

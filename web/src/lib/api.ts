@@ -1067,6 +1067,7 @@ export interface RankedRelease {
   title: string;
   indexer: string;
   download_url: string;
+  info_url?: string;
   size_gb: number;
   bitrate_mbps?: number;
   seeders: number;

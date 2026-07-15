@@ -254,7 +254,7 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 			narrator = parseNarrator(rel.Title + " " + rel.Description)
 		}
 		out = append(out, RankedRelease{
-			Title: rel.Title, Indexer: rel.Indexer, DownloadURL: rel.DownloadURL,
+			Title: rel.Title, Indexer: rel.Indexer, DownloadURL: rel.DownloadURL, InfoURL: rel.InfoURL,
 			SizeGB: rel.SizeGB(), Seeders: rel.Seeders, Summary: summarizeBook(f),
 			Eligible: eligible, Edition: edition, Format: f, Narrator: narrator,
 		})
