@@ -1,17 +1,18 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs, type Reliability, type BufferGroup } from "../lib/api";
+import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs, type Reliability, type BufferGroup, type NotificationConn } from "../lib/api";
 
 // Insights — Arrmada's Plex watch-monitoring module (Tautulli replacement). Built in slices
 // (see INSIGHTS-PLAN.md). I0 (this): the Plex connection — configure + test. Activity, History,
 // Users, Graphs and the Reliability/buffering view land in later slices and show as "coming soon".
-type Tab = "activity" | "history" | "users" | "graphs" | "reliability" | "settings";
+type Tab = "activity" | "history" | "users" | "graphs" | "reliability" | "notifications" | "settings";
 const TABS: { key: Tab; label: string }[] = [
   { key: "activity", label: "Activity" },
   { key: "history", label: "History" },
   { key: "users", label: "Users" },
   { key: "graphs", label: "Graphs" },
   { key: "reliability", label: "Reliability" },
+  { key: "notifications", label: "Notifications" },
   { key: "settings", label: "Settings" },
 ];
 
@@ -61,6 +62,8 @@ export function Insights() {
           <GraphsView connected={!!connected} onConfigure={() => setTab("settings")} />
         ) : tab === "reliability" ? (
           <ReliabilityView connected={!!connected} onConfigure={() => setTab("settings")} />
+        ) : tab === "notifications" ? (
+          <NotificationsView flash={flash} />
         ) : (
           <ComingSoon tab={tab} connected={!!connected} onConfigure={() => setTab("settings")} />
         )}
@@ -731,6 +734,85 @@ function OffenderCard({ title, rows }: { title: string; rows: BufferGroup[] }) {
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ============================= NOTIFICATIONS (admin) ============================= */
+const EVENTS: { key: keyof NotificationConn; label: string }[] = [
+  { key: "on_grab", label: "Grabbed" },
+  { key: "on_import", label: "Imported" },
+  { key: "on_stream", label: "Stream started" },
+  { key: "on_buffering", label: "Buffering" },
+];
+const BLANK_CONN: NotificationConn = { name: "", kind: "", url: "", on_grab: false, on_import: true, on_stream: false, on_buffering: false, enabled: true };
+
+function NotificationsView({ flash }: { flash: (m: string) => void }) {
+  const [conns, setConns] = useState<NotificationConn[] | null>(null);
+  const [adding, setAdding] = useState(false);
+  const load = () => api.notifications().then(setConns).catch(() => setConns([]));
+  useEffect(() => { load(); }, []);
+  if (!conns) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading…</div>;
+
+  return (
+    <div className="flex flex-col gap-3" style={{ maxWidth: 640 }}>
+      <p className="text-[12px] text-ink-dim">Send alerts anywhere via <b>Apprise</b> — Discord, Telegram, email, ntfy, Slack and 80+ more. Each connection is one <a href="https://github.com/caronc/apprise/wiki" target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>Apprise URL</a> (e.g. <code>discord://id/token</code>, <code>tgram://token/chatid</code>, <code>ntfy://topic</code>).</p>
+
+      {conns.map((c) => <ConnCard key={c.id} conn={c} onChange={load} flash={flash} />)}
+
+      {adding ? (
+        <ConnCard conn={BLANK_CONN} isNew onChange={() => { setAdding(false); load(); }} onCancel={() => setAdding(false)} flash={flash} />
+      ) : (
+        <button onClick={() => setAdding(true)} className="self-start rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>+ Add notification</button>
+      )}
+    </div>
+  );
+}
+
+function ConnCard({ conn, isNew, onChange, onCancel, flash }: { conn: NotificationConn; isNew?: boolean; onChange: () => void; onCancel?: () => void; flash: (m: string) => void }) {
+  const [c, setC] = useState<NotificationConn>(conn);
+  const [busy, setBusy] = useState<"save" | "test" | null>(null);
+  const set = (patch: Partial<NotificationConn>) => setC((p) => ({ ...p, ...patch }));
+
+  const save = async () => {
+    if (!c.name.trim() || !c.url.trim()) { flash("Name and Apprise URL are required"); return; }
+    setBusy("save");
+    try {
+      if (isNew) await api.createNotification(c);
+      else await api.updateNotification(c.id!, c);
+      flash("Saved"); onChange();
+    } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
+  };
+  const test = async () => {
+    if (!c.url.trim()) { flash("Enter an Apprise URL first"); return; }
+    setBusy("test");
+    try { const r = await api.testNotification(c); flash(r.ok ? "✓ Test sent" : `✕ ${r.error || "failed"}`); }
+    catch (e) { flash((e as Error).message); } finally { setBusy(null); }
+  };
+  const del = async () => { if (c.id && confirm(`Delete "${c.name}"?`)) { await api.deleteNotification(c.id); onChange(); } };
+
+  return (
+    <div className="rounded-xl p-4" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
+      <div className="flex flex-wrap gap-2">
+        <input value={c.name} onChange={(e) => set({ name: e.target.value })} placeholder="Name (e.g. My Discord)" className="flex-1 rounded-lg px-2.5 py-1.5 text-[12.5px]" style={{ minWidth: 160, background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+        <label className="flex cursor-pointer items-center gap-1.5 text-[11.5px]">
+          <input type="checkbox" checked={c.enabled} onChange={(e) => set({ enabled: e.target.checked })} /> Enabled
+        </label>
+      </div>
+      <input value={c.url} onChange={(e) => set({ url: e.target.value })} placeholder="discord://webhook_id/token" className="mt-2 w-full rounded-lg px-2.5 py-1.5 font-mono text-[11.5px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+      <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1.5">
+        {EVENTS.map((ev) => (
+          <label key={ev.key} className="flex cursor-pointer items-center gap-1.5 text-[11.5px] text-ink-dim">
+            <input type="checkbox" checked={!!c[ev.key]} onChange={(e) => set({ [ev.key]: e.target.checked } as Partial<NotificationConn>)} /> {ev.label}
+          </label>
+        ))}
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <button onClick={save} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[12px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy === "save" ? "Saving…" : isNew ? "Add" : "Save"}</button>
+        <button onClick={test} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[12px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{busy === "test" ? "Testing…" : "Test"}</button>
+        <span className="flex-1" />
+        {isNew ? <button onClick={onCancel} className="text-[12px] text-ink-faint">Cancel</button> : <button onClick={del} className="text-[12px]" style={{ color: "var(--reject)" }}>Delete</button>}
+      </div>
     </div>
   );
 }

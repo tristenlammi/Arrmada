@@ -234,10 +234,12 @@ export interface NewDownloadClient {
 export interface NotificationConn {
   id?: number;
   name: string;
-  kind: string; // "discord" | "webhook"
-  url: string;
+  kind: string; // free-form label / service hint
+  url: string; // an Apprise URL
   on_grab: boolean;
   on_import: boolean;
+  on_stream?: boolean;
+  on_buffering?: boolean;
   enabled: boolean;
 }
 

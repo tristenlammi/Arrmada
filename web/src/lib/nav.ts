@@ -42,7 +42,6 @@ export const NAV: NavGroup[] = [
       { to: "/indexers", label: "Indexers" },
       { to: "/downloadclients", label: "Download clients" },
       { to: "/quality", label: "Quality profiles" },
-      { to: "/notifications", label: "Notifications" },
       { to: "/settings", label: "Settings" },
     ],
   },

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"strconv"
 
+	"github.com/tristenlammi/arrmada/internal/eventbus"
 	"github.com/tristenlammi/arrmada/internal/geoip"
 	"github.com/tristenlammi/arrmada/internal/plex"
 	"github.com/tristenlammi/arrmada/internal/settings"
@@ -27,17 +28,18 @@ type Service struct {
 	settings *settings.Service
 	geo      *geoip.Resolver
 	repo     *repo
+	bus      *eventbus.Bus
 	log      *slog.Logger
 
 	live map[string]*liveSession // in-flight sessions (poller goroutine only)
 }
 
 // NewService wires the module. geo may be nil (geolocation then only flags LAN as "Local").
-func NewService(db *sql.DB, set *settings.Service, geo *geoip.Resolver, log *slog.Logger) *Service {
+func NewService(db *sql.DB, set *settings.Service, geo *geoip.Resolver, bus *eventbus.Bus, log *slog.Logger) *Service {
 	if geo == nil {
 		geo = geoip.New("")
 	}
-	return &Service{settings: set, geo: geo, repo: &repo{db: db}, log: log, live: map[string]*liveSession{}}
+	return &Service{settings: set, geo: geo, repo: &repo{db: db}, bus: bus, log: log, live: map[string]*liveSession{}}
 }
 
 // Config is the connection config exposed to the UI (token is never returned in full).

@@ -146,13 +146,29 @@ func (s *Service) Run(ctx context.Context) {
 	grabbed, cancelG := s.bus.Subscribe("release.grabbed")
 	imported, cancelI := s.bus.Subscribe("movie.downloaded")
 	seriesImported, cancelS := s.bus.Subscribe("series.imported")
+	streamStarted, cancelSt := s.bus.Subscribe("plex.stream.started")
+	buffering, cancelB := s.bus.Subscribe("plex.buffering")
 	defer cancelG()
 	defer cancelI()
 	defer cancelS()
+	defer cancelSt()
+	defer cancelB()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case ev := <-streamStarted:
+			user, _ := asString(ev.Data, "user")
+			title, _ := asString(ev.Data, "title")
+			if title != "" {
+				s.fan(ctx, "stream", "Now playing", fmt.Sprintf("▶️ %s started %s", user, title))
+			}
+		case ev := <-buffering:
+			user, _ := asString(ev.Data, "user")
+			title, _ := asString(ev.Data, "title")
+			if title != "" {
+				s.fan(ctx, "buffering", "Buffering", fmt.Sprintf("⏳ %s’s stream is buffering — %s", user, title))
+			}
 		case ev := <-grabbed:
 			title, _ := asString(ev.Data, "title")
 			if title != "" {

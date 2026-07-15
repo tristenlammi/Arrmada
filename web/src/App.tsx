@@ -6,7 +6,6 @@ import { Dashboard } from "./pages/Dashboard";
 import { Quality } from "./pages/Quality";
 import { Indexers } from "./pages/Indexers";
 import { DownloadClients } from "./pages/DownloadClients";
-import { Notifications } from "./pages/Notifications";
 import { Settings } from "./pages/Settings";
 import { Downloads } from "./pages/Downloads";
 import { History } from "./pages/History";
@@ -81,7 +80,7 @@ export default function App() {
         <Route path="/insights" element={<Insights />} />
         <Route path="/indexers" element={<Indexers />} />
         <Route path="/downloadclients" element={<DownloadClients />} />
-        <Route path="/notifications" element={<Notifications />} />
+        <Route path="/notifications" element={<Navigate to="/insights" replace />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/quality" element={<Quality />} />
         {MODULE_ROUTES.map((m) => (

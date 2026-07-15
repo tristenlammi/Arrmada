@@ -65,8 +65,11 @@ func (s *Service) poll(ctx context.Context) {
 			ls = &liveSession{started: now, lastTick: now, state: sess.State, sess: sess}
 			s.live[sess.SessionKey] = ls
 			_ = s.repo.upsertUser(ctx, sess.UserID, sess.UserName, sess.UserThumb, now.Unix())
+			s.publish("plex.stream.started", sess)
 		}
-		ls.observe(sess, now)
+		if ls.observe(sess, now) { // a new buffer spell just started
+			s.publish("plex.buffering", sess)
+		}
 		total += sess.Bandwidth
 		if strings.EqualFold(sess.Location, "lan") || isLocalIP(s, sess) {
 			lan += sess.Bandwidth
@@ -86,16 +89,19 @@ func (s *Service) poll(ctx context.Context) {
 	_ = s.repo.insertBandwidth(ctx, now.Unix(), total, lan, wan)
 }
 
-// observe folds one poll's session snapshot into the tracked state.
-func (ls *liveSession) observe(sess plex.Session, now time.Time) {
+// observe folds one poll's session snapshot into the tracked state. Returns true when a new
+// buffering spell just began (so the caller can emit an event).
+func (ls *liveSession) observe(sess plex.Session, now time.Time) bool {
 	if ls.state == "paused" { // accrue paused time across the interval just elapsed
 		ls.pausedMS += now.Sub(ls.lastTick).Milliseconds()
 	}
+	newSpell := false
 	if sess.State == "buffering" {
 		if !ls.buffering { // new spell
 			ls.buffering = true
 			ls.bufCount++
 			ls.bufEvents = append(ls.bufEvents, bufEvent{at: now, offset: sess.OffsetMS})
+			newSpell = true
 		}
 	} else {
 		ls.buffering = false
@@ -103,6 +109,22 @@ func (ls *liveSession) observe(sess plex.Session, now time.Time) {
 	ls.state = sess.State
 	ls.lastTick = now
 	ls.sess = sess // keep the freshest snapshot (offsets, decision, transcode specs)
+	return newSpell
+}
+
+// publish emits a Plex watch event to the bus (for notifications). Safe if the bus is nil.
+func (s *Service) publish(topic string, sess plex.Session) {
+	if s.bus == nil {
+		return
+	}
+	title := sess.Title
+	if sess.Type == "episode" && sess.ShowTitle != "" {
+		title = sess.ShowTitle + " · " + sess.Title
+	}
+	s.bus.Publish(topic, map[string]any{
+		"user": sess.UserName, "title": title, "player": sess.PlayerName,
+		"platform": sess.Platform, "decision": sess.Decision(),
+	})
 }
 
 // record builds the persisted row from the tracked session state (pure — unit-tested).
