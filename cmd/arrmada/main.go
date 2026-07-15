@@ -153,6 +153,18 @@ func main() {
 				log.Warn("could not set qBittorrent save path", "path", cfg.DownloadsDir)
 			}()
 		}
+		// Size qBittorrent's total-active cap to the per-kind limits so nothing sits
+		// "Queued" behind its default cap of 5. Retry; the client may still be booting.
+		go func() {
+			for i := 0; i < 20; i++ {
+				if err := downloads.EnsureBundledQueue(context.Background(), cfg.QbittorrentURL); err == nil {
+					log.Info("qBittorrent queue limits reconciled")
+					return
+				}
+				time.Sleep(3 * time.Second)
+			}
+			log.Warn("could not reconcile qBittorrent queue limits")
+		}()
 	}
 	if !cfg.AuthEnabled {
 		log.Warn("authentication is DISABLED — every request runs as a local admin; set ARRMADA_AUTH_ENABLED=true before exposing to a network")

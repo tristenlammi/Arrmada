@@ -318,6 +318,16 @@ func (q *QBittorrent) GetSettings(ctx context.Context, dc Client) (ClientSetting
 
 // SetSettings writes the tunable global preferences. Max-active values require
 // queueing, so it's enabled alongside them.
+// maxActiveTorrents sizes qBittorrent's total-active cap so the per-kind limits
+// (downloads + seeding) are the real constraint. A negative (unlimited) on either
+// makes the total unlimited too.
+func maxActiveTorrents(downloads, uploads int) int {
+	if downloads < 0 || uploads < 0 {
+		return -1 // unlimited
+	}
+	return downloads + uploads
+}
+
 func (q *QBittorrent) SetSettings(ctx context.Context, dc Client, s ClientSettings) error {
 	prefs, _ := json.Marshal(map[string]any{
 		"dl_limit": s.DlLimit, "up_limit": s.UpLimit,
@@ -329,6 +339,10 @@ func (q *QBittorrent) SetSettings(ctx context.Context, dc Client, s ClientSettin
 		"queueing_enabled":     true,
 		"max_active_downloads": s.MaxActiveDownloads,
 		"max_active_uploads":   s.MaxActiveUploads,
+		// The TOTAL active cap (defaults to 5 in qBittorrent) otherwise queues
+		// torrents regardless of the per-kind limits — the cause of "Queued"
+		// torrents despite a high seeding limit. Sized to cover both.
+		"max_active_torrents": maxActiveTorrents(s.MaxActiveDownloads, s.MaxActiveUploads),
 	})
 	return q.postForm(ctx, dc, "/api/v2/app/setPreferences", url.Values{"json": {string(prefs)}})
 }

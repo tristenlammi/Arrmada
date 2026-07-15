@@ -215,6 +215,36 @@ func (s *Service) GetSettings(ctx context.Context, id int64) (ClientSettings, er
 	return ClientSettings{}, fmt.Errorf("%q has no tunable settings", c.Kind)
 }
 
+// EnsureBundledQueue re-applies the client at url's current queue settings, which
+// re-derives max_active_torrents from the per-kind limits — fixing torrents stuck
+// "Queued" behind qBittorrent's default total-active cap of 5, without the user
+// having to re-save anything.
+func (s *Service) EnsureBundledQueue(ctx context.Context, url string) error {
+	clients, err := s.repo.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, c := range clients {
+		if c.URL != url {
+			continue
+		}
+		impl, ok := s.registry.For(c.Kind)
+		if !ok {
+			return nil
+		}
+		sm, ok := impl.(settingsManager)
+		if !ok {
+			return nil // client kind has no tunable queue settings
+		}
+		cur, err := sm.GetSettings(ctx, c)
+		if err != nil {
+			return err
+		}
+		return sm.SetSettings(ctx, c, cur)
+	}
+	return fmt.Errorf("client %q not found", url)
+}
+
 // SetSettings writes the tunable settings of a client.
 func (s *Service) SetSettings(ctx context.Context, id int64, cs ClientSettings) error {
 	c, err := s.repo.Get(ctx, id)
