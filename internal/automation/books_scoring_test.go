@@ -45,6 +45,20 @@ func TestPickBestBookFormatPreference(t *testing.T) {
 	}
 }
 
+func TestParseNarrator(t *testing.T) {
+	cases := map[string]string{
+		"The Way of Kings - Brandon Sanderson (Narrated by Michael Kramer and Kate Reading) M4B": "Michael Kramer and Kate Reading",
+		"Project Hail Mary [Read by Ray Porter] MP3":                                             "Ray Porter",
+		"Some Audiobook Narrator: Scott Brick 64kbps":                                            "Scott Brick",
+		"The Way of Kings EPUB":                                                                  "",
+	}
+	for in, want := range cases {
+		if got := parseNarrator(in); got != want {
+			t.Errorf("parseNarrator(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestPickBestBookEditionFilter: an audiobook pick ignores ebook-format releases.
 func TestPickBestBookEditionFilter(t *testing.T) {
 	sp := quality.StoredProfile{FormatScores: map[string]int{"EPUB": 40, "M4B": 40}}

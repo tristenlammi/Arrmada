@@ -1075,6 +1075,10 @@ export interface RankedRelease {
   reject_reason?: string;
   recommended: boolean;
   blocklisted?: boolean;
+  // Books only:
+  edition?: "ebook" | "audiobook";
+  format?: string;
+  narrator?: string;
 }
 
 export interface BlockEntry {

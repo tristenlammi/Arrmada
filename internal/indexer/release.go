@@ -6,6 +6,7 @@ import "time"
 // indexer kinds. The acquisition pipeline parses and scores it downstream.
 type Release struct {
 	Title       string    `json:"title"`
+	Description string    `json:"description,omitempty"` // indexer blurb; some carry author/narrator (e.g. MyAnonaMouse)
 	DownloadURL string    `json:"download_url"`         // .torrent / .nzb / magnet
 	InfoHash    string    `json:"info_hash,omitempty"`  // torrent
 	SizeBytes   int64     `json:"size_bytes"`

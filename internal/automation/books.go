@@ -248,10 +248,15 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 			continue // not an identifiable book release
 		}
 		_, eligible := bookRelScore(sp, rel.Title, rel.Seeders)
+		edition := books.EditionOf(f)
+		narrator := ""
+		if edition == books.KindAudiobook {
+			narrator = parseNarrator(rel.Title + " " + rel.Description)
+		}
 		out = append(out, RankedRelease{
 			Title: rel.Title, Indexer: rel.Indexer, DownloadURL: rel.DownloadURL,
 			SizeGB: rel.SizeGB(), Seeders: rel.Seeders, Summary: summarizeBook(f),
-			Eligible: eligible,
+			Eligible: eligible, Edition: edition, Format: f, Narrator: narrator,
 		})
 	}
 	// Order by the profile's preference so the best-format / best-keyword release
@@ -264,7 +269,28 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 		}
 		return si > sj
 	})
+	// Mark the best eligible release of each edition as the recommended pick.
+	recommended := map[string]bool{}
+	for i := range out {
+		if out[i].Eligible && !recommended[out[i].Edition] {
+			out[i].Recommended = true
+			recommended[out[i].Edition] = true
+		}
+	}
 	return ReleaseList{Profile: b.QualityProfile, Releases: out}, nil
+}
+
+// reNarrator pulls a narrator name from an audiobook release title or description
+// ("Narrated by Michael Kramer", "Read by Kate Reading", "Narrator: …").
+var reNarrator = regexp.MustCompile(`(?i)(?:narrated by|read by|narrator[:\s]+)\s*([A-Z][\p{L}.'-]+(?:\s+(?:&|and|,)?\s*[A-Z][\p{L}.'-]+){0,3})`)
+
+// parseNarrator returns the first narrator credit found in text, or "".
+func parseNarrator(text string) string {
+	m := reNarrator.FindStringSubmatch(text)
+	if len(m) > 1 {
+		return strings.TrimSpace(strings.Trim(m[1], " ,&"))
+	}
+	return ""
 }
 
 func summarizeBook(format string) string {

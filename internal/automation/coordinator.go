@@ -153,6 +153,10 @@ type RankedRelease struct {
 	RejectReason string  `json:"reject_reason,omitempty"`
 	Recommended  bool    `json:"recommended"`
 	Blocklisted  bool    `json:"blocklisted,omitempty"`
+	// Books only:
+	Edition  string `json:"edition,omitempty"`  // ebook | audiobook
+	Format   string `json:"format,omitempty"`   // EPUB, M4B, MP3…
+	Narrator string `json:"narrator,omitempty"` // audiobook narrator, when detected
 }
 
 // ReleaseList is the interactive-search response for one movie.

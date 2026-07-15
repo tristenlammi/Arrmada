@@ -22,8 +22,9 @@ type feed struct {
 }
 
 type feedItem struct {
-	Title     string        `xml:"title"`
-	Link      string        `xml:"link"`
+	Title       string      `xml:"title"`
+	Description string      `xml:"description"`
+	Link        string      `xml:"link"`
 	GUID      string        `xml:"guid"`
 	PubDate   string        `xml:"pubDate"`
 	Size      int64         `xml:"size"`
@@ -53,6 +54,7 @@ func ParseFeed(data []byte) ([]Release, error) {
 	for _, it := range f.Items {
 		r := Release{
 			Title:       it.Title,
+			Description: it.Description,
 			DownloadURL: firstNonEmpty(it.Enclosure.URL, it.Link),
 			SizeBytes:   it.Size,
 		}

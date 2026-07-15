@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
+import { BookReleaseModal } from "../components/BookReleaseModal";
 import { api, type Book, type BookFile, type BookFileEntry, type BookImportCandidate } from "../lib/api";
 
 function fmtSize(bytes?: number): string {
@@ -308,9 +308,8 @@ function Toolbar({ book, onChange, flash }: { book: Book; onChange: () => void; 
       </div>
       {showEdit && <EditMetadataModal book={book} onClose={() => setShowEdit(false)} onSaved={() => { onChange(); flash("Metadata updated."); }} />}
       {showSearch && (
-        <ReleaseSearchModal
+        <BookReleaseModal
           title={`Search indexers — ${book.title}`}
-          subtitle="Ebook and audiobook releases. Pick one to grab."
           fetchReleases={() => api.bookReleases(book.id)}
           onGrab={async (rel) => { await api.grabBook(book.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title }); onChange(); }}
           onClose={() => setShowSearch(false)}
