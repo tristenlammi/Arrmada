@@ -87,6 +87,7 @@ type Service struct {
 	encoders []Encoder
 	encoder  Encoder
 	failures *failureStore // quarantine blocklist (repeated-failure tracking)
+	cache    *probeCache   // persisted ffprobe results (avoids re-analyzing on restart)
 
 	mu       sync.Mutex
 	reclaimMu sync.Mutex // guards the reclaimed-bytes read-modify-write across workers
@@ -103,6 +104,7 @@ func NewService(db *sql.DB, mv *movies.Service, set *settings.Service, ffmpeg, f
 		movies: mv, settings: set, log: log,
 		ffmpeg: ffmpeg, ffprobe: ffprobe, scratchDir: scratchDir, recycleDir: recycleDir,
 		encoders: encs, encoder: bestHEVC(encs), failures: &failureStore{db: db},
+		cache: &probeCache{db: db},
 		queue: make(chan *Job, 256),
 	}
 	s.doviTool, _ = exec.LookPath("dovi_tool")
@@ -197,7 +199,7 @@ func (s *Service) Library(ctx context.Context) ([]Candidate, error) {
 			continue
 		}
 		c := Candidate{MovieID: m.ID, Title: m.Title, Year: m.Year, PosterURL: m.PosterURL, Path: m.MovieFilePath}
-		if mi, err := probe(ctx, s.ffprobe, m.MovieFilePath); err == nil {
+		if mi, err := s.probeCached(ctx, m.MovieFilePath); err == nil {
 			c.Info = mi
 			c.Candidate = isCandidateFor(mi, target)
 			if c.Candidate {

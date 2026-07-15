@@ -323,6 +323,9 @@ func main() {
 	}
 	convertSvc := convert.NewService(st.DB(), movieSvc, settingsSvc, "ffmpeg", "ffprobe", convertScratch, recycleDir, log)
 	go convertSvc.Run(runCtx)
+	// Warm the probe cache off the request path so the first Convert page load after
+	// a restart is instant instead of re-analyzing the whole library.
+	go convertSvc.WarmCache(runCtx)
 	// Nightly sweep: run auto-enabled convert rules.
 	sched.Register("convert-sweep", 12*time.Hour, false, func(ctx context.Context) error {
 		convertSvc.Sweep(ctx)
