@@ -44,7 +44,6 @@ export function SeriesDetail() {
     return a.season_number - b.season_number;
   });
   const continuing = /return|continu/i.test(s.status ?? "");
-  const openSeason = seasons.find((sn) => sn.season_number > 0 && (sn.episodes ?? []).some(aired))?.season_number;
   // Overall progress from the loaded episodes (aired-aware, specials excluded) — the detail
   // endpoint doesn't carry the roll-up stats the way the list does.
   const allEps = seasons.filter((sn) => sn.season_number > 0).flatMap((sn) => sn.episodes ?? []);
@@ -111,7 +110,7 @@ export function SeriesDetail() {
 
       <div className="mx-auto w-full max-w-[1200px] px-4 pb-10 sm:px-6">
         <div className="mt-2 flex flex-col gap-3">
-          {seasons.map((sn) => <SeasonBlock key={sn.id} series={s} season={sn} onChange={load} flash={flash} defaultOpen={sn.season_number === openSeason} />)}
+          {seasons.map((sn) => <SeasonBlock key={sn.id} series={s} season={sn} onChange={load} flash={flash} defaultOpen={false} />)}
         </div>
 
         <SeriesBlocklistPanel seriesId={s.id} refreshKey={s.seasons} />
@@ -223,6 +222,8 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen }: { series:
   // so an in-progress season isn't shown as behind on episodes that haven't come out yet.
   const counted = eps.filter((e) => e.has_file || aired(e)).length;
   const nextAir = eps.map((e) => e.air_date).filter(Boolean).sort()[0];
+  // The on-disk folder for this season = the directory of any episode file we have.
+  const seasonDir = (eps.find((e) => e.file_path)?.file_path ?? "").replace(/[\\/][^\\/]*$/, "");
   const state: "unreleased" | "upcoming" | "normal" = total === 0 ? "unreleased" : airedCount === 0 ? "upcoming" : "normal";
   const name = season.season_number === 0 ? "Specials" : `Season ${season.season_number}`;
   const pct = counted ? Math.round((have / counted) * 100) : 0;
@@ -245,8 +246,9 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen }: { series:
           ) : state === "upcoming" ? (
             <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }} title={nextAir ? `First airs ${nextAir}` : undefined}>{nextAir ? `Airs ${nextAir}` : "Upcoming"}</span>
           ) : (
-            <span className="font-mono text-[10.5px] text-ink-faint">{have}/{counted}</span>
+            <span className="flex-none font-mono text-[10.5px] text-ink-faint">{have}/{counted}</span>
           )}
+          {seasonDir && <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink-faint" title={seasonDir}>{seasonDir}</span>}
         </button>
         {state !== "unreleased" && (
           <div className="h-1.5 w-24 overflow-hidden rounded-full" style={{ background: "var(--line)" }}>

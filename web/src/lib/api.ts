@@ -416,6 +416,7 @@ export interface Episode {
   still_url?: string;
   monitored: boolean;
   has_file: boolean;
+  file_path?: string;
   size_bytes?: number;
 }
 export interface Season {
