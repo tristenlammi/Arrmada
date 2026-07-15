@@ -129,8 +129,15 @@ function BookReleaseRow({ rel, busy, grabbed, onGrab }: { rel: RankedRelease; bu
           </div>
           {/* The raw torrent name — narrator and edition detail live here. */}
           <div className="mt-1 break-words text-[12.5px] font-medium">{rel.title}</div>
+          {/* Structured metadata (rich on trackers like MyAnonaMouse). */}
+          {(rel.narrator || rel.series || rel.language) && (
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px]">
+              {rel.narrator && <span style={{ color: "var(--accent)" }}>🎙 {rel.narrator}</span>}
+              {rel.series && <span className="text-ink-dim">📚 {rel.series}</span>}
+              {rel.language && <span className="text-ink-faint">🌐 {rel.language}</span>}
+            </div>
+          )}
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[10.5px] text-ink-faint">
-            {rel.narrator && <span style={{ color: "var(--accent)" }}>🎙 {rel.narrator}</span>}
             <span>{rel.size_gb.toFixed(2)} GB</span>
             <span>{rel.seeders} seeders</span>
             <span>{rel.indexer}</span>

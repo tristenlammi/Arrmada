@@ -246,20 +246,26 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 	}
 	out := make([]RankedRelease, 0, len(all))
 	for _, rel := range all {
-		f := detectBookFormat(rel.Title)
+		// Prefer the indexer's structured file type (MAM) over scraping it from
+		// the title, but fall back to the title for Torznab/other trackers.
+		f := strings.ToUpper(rel.Format)
+		if f == "" || books.EditionOf(f) == "" {
+			f = detectBookFormat(rel.Title)
+		}
 		if f == "" {
 			continue // not an identifiable book release
 		}
 		_, eligible := bookRelScore(sp, rel.Title, rel.Seeders)
 		edition := books.EditionOf(f)
-		narrator := ""
-		if edition == books.KindAudiobook {
+		narrator := rel.Narrator
+		if narrator == "" && edition == books.KindAudiobook {
 			narrator = parseNarrator(rel.Title + " " + rel.Description)
 		}
 		out = append(out, RankedRelease{
 			Title: rel.Title, Indexer: rel.Indexer, DownloadURL: rel.DownloadURL, InfoURL: rel.InfoURL,
 			SizeGB: rel.SizeGB(), Seeders: rel.Seeders, Summary: summarizeBook(f),
 			Eligible: eligible, Edition: edition, Format: f, Narrator: narrator,
+			Author: rel.Author, Series: rel.Series, Language: rel.Language,
 		})
 	}
 	// Order by the profile's preference so the best-format / best-keyword release

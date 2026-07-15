@@ -26,7 +26,16 @@ func NewService(db *sql.DB, log *slog.Logger, flaresolverrURL string) *Service {
 	if flaresolverrURL != "" {
 		fs = flaresolverr.New(flaresolverrURL)
 	}
-	return &Service{repo: NewRepo(db), registry: NewRegistry(fs), log: log}
+	s := &Service{repo: NewRepo(db), registry: NewRegistry(fs), log: log}
+	// Persist a rotated MyAnonaMouse session so it doesn't silently expire.
+	s.registry.SetSessionPersister(func(id int64, session string) {
+		if err := s.repo.SetSession(context.Background(), id, session); err != nil {
+			s.log.Warn("indexer: could not persist rotated mam_id", "id", id, "err", err)
+		} else {
+			s.log.Info("indexer: refreshed MyAnonaMouse session", "id", id)
+		}
+	})
+	return s
 }
 
 // List returns all configured indexers.

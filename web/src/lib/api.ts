@@ -1090,6 +1090,9 @@ export interface RankedRelease {
   edition?: "ebook" | "audiobook";
   format?: string;
   narrator?: string;
+  author?: string;
+  series?: string;
+  language?: string;
 }
 
 export interface BlockEntry {

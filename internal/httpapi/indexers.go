@@ -58,6 +58,11 @@ func (a *api) handleCreateIndexer(w http.ResponseWriter, r *http.Request) {
 			a.writeError(w, http.StatusBadRequest, "username and password are required for torrentleech")
 			return
 		}
+	case indexer.KindMAM:
+		if req.APIKey == "" {
+			a.writeError(w, http.StatusBadRequest, "mam_id session is required for myanonamouse")
+			return
+		}
 	case indexer.KindX1337:
 		// Public — no credentials; URL optional (mirror).
 	default:
@@ -111,7 +116,7 @@ func (a *api) handleUpdateIndexer(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := indexer.Kind(req.Kind)
 	switch kind {
-	case indexer.KindTorznab, indexer.KindNewznab, indexer.KindTorrentLeech, indexer.KindX1337:
+	case indexer.KindTorznab, indexer.KindNewznab, indexer.KindTorrentLeech, indexer.KindX1337, indexer.KindMAM:
 	default:
 		a.writeError(w, http.StatusBadRequest, "invalid kind")
 		return

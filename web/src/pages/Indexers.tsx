@@ -236,6 +236,7 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
 
   const isTL = kind === "torrentleech";
   const is1337 = kind === "1337x";
+  const isMAM = kind === "myanonamouse";
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -244,9 +245,11 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
     try {
       const body = isTL
         ? { name, kind, username, password, api_key: apiKey, priority, min_seeders: minSeeders }
-        : is1337
-          ? { name, kind, url, priority, min_seeders: minSeeders }
-          : { name, kind, url, api_key: apiKey, priority, min_seeders: minSeeders };
+        : isMAM
+          ? { name, kind, api_key: apiKey, media_types: ["book"], priority, min_seeders: minSeeders }
+          : is1337
+            ? { name, kind, url, priority, min_seeders: minSeeders }
+            : { name, kind, url, api_key: apiKey, priority, min_seeders: minSeeders };
       await api.createIndexer(body);
       onAdded();
     } catch (err) {
@@ -269,12 +272,17 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
           <select className={field} style={fieldStyle} value={kind} onChange={(e) => setKind(e.target.value)}>
             <option value="1337x">1337x (public torrents)</option>
             <option value="torrentleech">TorrentLeech (native)</option>
+            <option value="myanonamouse">MyAnonaMouse (native, books)</option>
             <option value="torznab">Torznab (torrent, via Prowlarr/Jackett)</option>
             <option value="newznab">Newznab (usenet)</option>
           </select>
         </Labeled>
 
-        {isTL ? (
+        {isMAM ? (
+          <Labeled label="mam_id session" span2>
+            <input className={field} style={fieldStyle} value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="paste the mam_id session string from MyAnonaMouse" autoComplete="off" required />
+          </Labeled>
+        ) : isTL ? (
           <>
             <Labeled label="Username">
               <input className={field} style={fieldStyle} value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off" required />
@@ -319,6 +327,11 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
           Native — no Prowlarr/Jackett needed. Credentials stored on your server. Uses FlareSolverr for Cloudflare. 2FA not supported yet.
         </p>
       )}
+      {isMAM && (
+        <p className="mt-3 text-[11px] text-ink-faint">
+          Native books/audiobooks integration. In MyAnonaMouse go to <b>Preferences → Security → Create session</b>, allow your server's IP (ASN-locked is fine), and paste the <span className="font-mono">mam_id</span> here. Pulls full metadata — narrator, author, series, language, format — straight from MAM's API. Scoped to Books automatically. If you already have MAM in Prowlarr, remove that entry to avoid duplicate results.
+        </p>
+      )}
       {error && <div className="mt-3 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
       <button
         type="submit"
@@ -335,6 +348,7 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
 function EditForm({ idx, onSaved }: { idx: Indexer; onSaved: () => void }) {
   const isTL = idx.kind === "torrentleech";
   const is1337 = idx.kind === "1337x";
+  const isMAM = idx.kind === "myanonamouse";
   const [name, setName] = useState(idx.name);
   const [url, setUrl] = useState(idx.url ?? "");
   const [username, setUsername] = useState(idx.username ?? "");
@@ -411,6 +425,10 @@ function EditForm({ idx, onSaved }: { idx: Indexer; onSaved: () => void }) {
         ) : is1337 ? (
           <Labeled label="Site URL (optional mirror)" span2>
             <input className={field} style={fieldStyle} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://1337x.to" />
+          </Labeled>
+        ) : isMAM ? (
+          <Labeled label="mam_id session (blank = keep)" span2>
+            <input className={field} style={fieldStyle} value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="paste a fresh mam_id to replace the stored session" autoComplete="off" />
           </Labeled>
         ) : (
           <>

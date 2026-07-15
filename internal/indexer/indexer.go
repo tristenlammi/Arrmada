@@ -15,6 +15,7 @@ const (
 	KindNewznab      Kind = "newznab"      // standard usenet protocol
 	KindTorrentLeech Kind = "torrentleech" // native TorrentLeech integration
 	KindX1337        Kind = "1337x"        // native 1337x (public) integration
+	KindMAM          Kind = "myanonamouse" // native MyAnonaMouse integration (books)
 )
 
 // Transport is the download transport an indexer's releases use.

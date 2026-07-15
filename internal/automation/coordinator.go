@@ -158,6 +158,9 @@ type RankedRelease struct {
 	Edition  string `json:"edition,omitempty"`  // ebook | audiobook
 	Format   string `json:"format,omitempty"`   // EPUB, M4B, MP3…
 	Narrator string `json:"narrator,omitempty"` // audiobook narrator, when detected
+	Author   string `json:"author,omitempty"`   // structured author (e.g. from MyAnonaMouse)
+	Series   string `json:"series,omitempty"`   // structured series + number
+	Language string `json:"language,omitempty"` // language code/name when known
 }
 
 // ReleaseList is the interactive-search response for one movie.

@@ -32,6 +32,7 @@ type Fetcher interface {
 // Registry maps indexer kinds to their Searcher implementation.
 type Registry struct {
 	searchers map[Kind]Searcher
+	mam       *MAMSearcher
 }
 
 // NewRegistry wires the built-in searchers. Torznab and Newznab share one
@@ -45,7 +46,17 @@ func NewRegistry(fs *flaresolverr.Client) *Registry {
 	}}
 	r.searchers[KindTorrentLeech] = NewTorrentLeechSearcher(fs)
 	r.searchers[KindX1337] = NewX1337Searcher(fs)
+	r.mam = NewMAMSearcher(nil)
+	r.searchers[KindMAM] = r.mam
 	return r
+}
+
+// SetSessionPersister wires the callback used to save a rotated MyAnonaMouse
+// mam_id back onto its indexer record.
+func (r *Registry) SetSessionPersister(persist func(id int64, session string)) {
+	if r.mam != nil {
+		r.mam.persist = persist
+	}
 }
 
 // For returns the searcher for a kind.
