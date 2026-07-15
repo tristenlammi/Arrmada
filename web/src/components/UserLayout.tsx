@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Outlet } from "react-router-dom";
+import { NavLink, Outlet } from "react-router-dom";
 import { FleetMark } from "./FleetMark";
 import { useMe } from "../lib/me";
 import { api } from "../lib/api";
@@ -24,6 +24,11 @@ export function UserLayout() {
           </span>
           <span className="text-[15px] font-extrabold tracking-[0.12em]">ARRMADA</span>
         </div>
+        <nav className="flex items-center gap-1">
+          {[{ to: "/discover", label: "Discover" }, { to: "/calendar", label: "Calendar" }].map((n) => (
+            <NavLink key={n.to} to={n.to} className="rounded-lg px-3 py-1.5 text-[12.5px] font-semibold" style={({ isActive }) => ({ background: isActive ? "var(--accent-soft)" : "transparent", color: isActive ? "var(--accent)" : "var(--ink-dim)" })}>{n.label}</NavLink>
+          ))}
+        </nav>
         <div className="relative">
           <button onClick={() => setMenu((m) => !m)} className="grid h-8 w-8 place-items-center rounded-full text-[12px] font-bold" style={{ background: "var(--accent-soft)", color: "var(--accent)", border: "1px solid var(--accent-line)" }}>
             {(user?.username?.[0] ?? "?").toUpperCase()}

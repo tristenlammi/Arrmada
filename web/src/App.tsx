@@ -21,6 +21,7 @@ import { AuthorDetail } from "./pages/AuthorDetail";
 import { Subtitles } from "./pages/Subtitles";
 import { Convert } from "./pages/Convert";
 import { Insights } from "./pages/Insights";
+import { Calendar } from "./pages/Calendar";
 import { Login } from "./pages/Login";
 import { Placeholder } from "./pages/Placeholder";
 
@@ -53,6 +54,7 @@ export default function App() {
       <Routes>
         <Route element={<UserLayout />}>
           <Route path="/discover" element={<Discover chrome={false} />} />
+          <Route path="/calendar" element={<Calendar chrome={false} />} />
           <Route path="*" element={<Navigate to="/discover" replace />} />
         </Route>
       </Routes>
@@ -71,6 +73,7 @@ export default function App() {
         <Route path="/series" element={<Series />} />
         <Route path="/series/:id" element={<SeriesDetail />} />
         <Route path="/discover" element={<Discover />} />
+        <Route path="/calendar" element={<Calendar />} />
         <Route path="/books" element={<Books />} />
         <Route path="/books/author/:name" element={<AuthorDetail />} />
         <Route path="/books/:id" element={<BookDetail />} />

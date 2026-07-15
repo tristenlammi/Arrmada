@@ -261,6 +261,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("DELETE "+base+"/api/v1/books/{id}", a.requireRole(auth.RoleManager, a.handleDeleteBook))
 
 	// Discover (browse trending/popular/upcoming/by-genre; enriched with library status).
+	mux.HandleFunc("GET "+base+"/api/v1/calendar", a.protected(a.handleCalendar))
 	mux.HandleFunc("GET "+base+"/api/v1/discover/trending", a.protected(a.handleDiscoverTrending))
 	mux.HandleFunc("GET "+base+"/api/v1/discover/popular", a.protected(a.handleDiscoverPopular))
 	mux.HandleFunc("GET "+base+"/api/v1/discover/upcoming", a.protected(a.handleDiscoverUpcoming))

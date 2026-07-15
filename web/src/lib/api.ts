@@ -245,6 +245,8 @@ export interface NotificationConn {
 
 export interface UserNotification { id: number; title: string; body: string; media_type: string; ref: string; read: boolean; created_at: number }
 
+export interface CalendarItem { date: string; type: "episode" | "movie"; title: string; subtitle: string; poster_url?: string; ref_id: number; has_file: boolean; monitored: boolean }
+
 export interface HealthWarning {
   level: string; // "error" | "warning"
   message: string;
@@ -693,6 +695,7 @@ export const api = {
   myNotifications: () => req<{ notifications: UserNotification[]; unread: number }>("/api/v1/me/notifications"),
   markNotificationRead: (id: number) => req<void>(`/api/v1/me/notifications/${id}/read`, { method: "POST" }),
   markAllNotificationsRead: () => req<void>("/api/v1/me/notifications/read-all", { method: "POST" }),
+  calendar: (start: string, end: string) => req<{ items: CalendarItem[]; start: string; end: string }>(`/api/v1/calendar?start=${start}&end=${end}`),
   myApprise: () => req<{ url: string; set: boolean }>("/api/v1/me/apprise"),
   setMyApprise: (url: string) => req<{ url: string; set: boolean }>("/api/v1/me/apprise", { method: "PUT", body: JSON.stringify({ url }) }),
 

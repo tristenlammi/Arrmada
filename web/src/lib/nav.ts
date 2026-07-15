@@ -31,6 +31,7 @@ export const NAV: NavGroup[] = [
     group: "Services",
     items: [
       { to: "/discover", label: "Discover" },
+      { to: "/calendar", label: "Calendar" },
       { to: "/subtitles", label: "Subtitles" },
       { to: "/convert", label: "Convert" },
       { to: "/insights", label: "Insights" },
