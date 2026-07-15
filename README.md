@@ -2,90 +2,56 @@
 
 # ⛵ Arrmada
 
-**One fleet. Every media job. Zero container sprawl.**
-
-A single self-hosted app that replaces the entire `*arr` stack — Sonarr, Radarr, Readarr,
-Lidarr, Bazarr, Unpackerr, Tautulli, Overseerr/Jellyseerr, and Prowlarr — with one coordinated,
-professionally designed system.
+**One app instead of the whole `*arr` stack.**
 
 </div>
 
 ---
 
-> **Status:** early development (Milestone M0 — foundation). Not yet usable for media management.
+> **Status:** early and under active development. Working today: Movies, Series,
+> Books, Subtitles, and Convert (HEVC/AV1 transcoding). Music and analytics are
+> still on the way. Expect rough edges.
 
-## Planning docs
-
-| Doc | What it covers |
-|---|---|
-| [ROADMAP.md](ROADMAP.md) | Strategy: vision, architecture, and phases. |
-| [FEATURES.md](FEATURES.md) | The complete feature chart for all nine replaced apps. |
-| [BUILD-PLAN.md](BUILD-PLAN.md) | The execution roadmap: milestones M0–M8 and the v0.1→v1.1 release train. |
+Arrmada is a single self-hosted app that aims to do the job of Radarr, Sonarr,
+Readarr, Bazarr, and more — one coordinated system instead of a pile of
+containers. It bundles qBittorrent, Prowlarr, and FlareSolverr alongside it.
 
 ## Tech
 
-- **Backend:** Go (single static binary, embedded web UI, one port).
-- **Frontend:** React + TypeScript + Vite + Tailwind, served from the Go binary.
-- **Database:** SQLite (default) → PostgreSQL (later).
-- **Architecture:** modular monolith — shared platform services + enable/disable modules.
+- **Backend:** Go — one static binary with the web UI embedded, served on one port.
+- **Frontend:** React + TypeScript + Vite + Tailwind.
+- **Database:** SQLite.
 - **License:** [MIT](LICENSE).
 
-## Project layout
+## Run it
 
-```
-cmd/arrmada/          # main entrypoint
-internal/
-  buildinfo/          # version/commit stamped at build time
-  config/             # env-driven runtime config
-  httpapi/            # HTTP server: JSON API + middleware
-  webui/              # embeds & serves the built web UI (dist/)
-web/                  # React + Vite frontend source
-```
-
-## Run with Docker (easiest)
+You'll need a free [TMDB API key](https://www.themoviedb.org/settings/api) for
+movie/TV metadata.
 
 ```sh
-docker compose up --build      # builds UI + binary, starts on http://localhost:7878
-docker compose down            # stop
+cp .env.example .env     # then paste your TMDB key into .env
+docker compose up --build
 ```
 
-One container, ~33 MB, data persisted in the `arrmada-data` volume. Auth is off by default for local
-testing — set `ARRMADA_AUTH_ENABLED=true` in `docker-compose.yml` to require login.
+Open <http://localhost:7878>. See [.env.example](.env.example) for the handful
+of settings you can configure.
 
-## Development
-
-**Backend** (Go 1.25+):
+## Develop
 
 ```sh
-go run ./cmd/arrmada           # starts on http://localhost:7878
-curl http://localhost:7878/api/health
+# backend (Go 1.25+) — http://localhost:7878
+go run ./cmd/arrmada
+
+# frontend (Node 20+) — http://localhost:5173, proxies /api to the backend
+cd web && npm install && npm run dev
 ```
 
-**Frontend** (Node 20+) — hot-reload dev server, proxies `/api` to the backend:
+Production build bakes the UI into the binary:
 
 ```sh
-cd web
-npm install
-npm run dev                    # http://localhost:5173
-```
-
-**Production build** (UI baked into the binary):
-
-```sh
-cd web && npm run build        # outputs to internal/webui/dist/
+cd web && npm run build      # → internal/webui/dist/
 cd .. && go build -o arrmada ./cmd/arrmada
-./arrmada                      # one binary serves API + UI on one port
 ```
-
-### Configuration (env)
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `ARRMADA_HOST` | `0.0.0.0` | Bind interface. |
-| `ARRMADA_PORT` | `7878` | HTTP port (API + UI). |
-| `ARRMADA_BASE_URL` | _(root)_ | Reverse-proxy sub-path, e.g. `/arrmada`. |
-| `ARRMADA_DATA_DIR` | `./data` | Config, database, logs, backups. |
-| `ARRMADA_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error`. |
 
 ## License
 
