@@ -8,7 +8,7 @@ services:
       args:
         VERSION: dev-docker
     image: arrmada:dev
-    container_name: arrmada-app
+    container_name: Arrmada-app
     ports:
       - "7878:7878"
     environment:
@@ -55,7 +55,7 @@ services:
   # user both Arrmada and qBittorrent run as) so both can write and hardlink.
   arrmada-media-init:
     image: alpine:3.20
-    container_name: arrmada-media-init
+    container_name: Arrmada-media-init
     command: >
       sh -c "mkdir -p /media/downloads/incomplete /media/library &&
              chown -R 1000:1000 /media"
@@ -67,7 +67,7 @@ services:
   # private Docker network + downloads path) so Arrmada connects with no setup.
   arrmada-qbittorrent-init:
     image: alpine:3.20
-    container_name: arrmada-qbittorrent-init
+    container_name: Arrmada-qbittorrent-init
     command: >
       sh -c "mkdir -p /config/qBittorrent &&
              [ -f /config/qBittorrent/qBittorrent.conf ] ||
@@ -79,7 +79,7 @@ services:
 
   arrmada-qbittorrent:
     image: lscr.io/linuxserver/qbittorrent:latest
-    container_name: arrmada-qbittorrent
+    container_name: Arrmada-qbittorrent
     environment:
       PUID: "1000"
       PGID: "1000"
@@ -113,7 +113,7 @@ services:
   # http://arrmada-flaresolverr:8191 for Cloudflare-protected trackers.
   arrmada-prowlarr:
     image: lscr.io/linuxserver/prowlarr:latest
-    container_name: arrmada-prowlarr
+    container_name: Arrmada-prowlarr
     profiles: ["prowlarr"]
     environment:
       PUID: "1000"
@@ -129,7 +129,7 @@ services:
   # same way Prowlarr uses it. Headless-Chromium image (~1 GB).
   arrmada-flaresolverr:
     image: ghcr.io/flaresolverr/flaresolverr:latest
-    container_name: arrmada-flaresolverr
+    container_name: Arrmada-flaresolverr
     environment:
       LOG_LEVEL: "info"
       TZ: "Etc/UTC"
