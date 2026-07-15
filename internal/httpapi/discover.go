@@ -5,26 +5,39 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/parser"
 )
 
 // discoverCard is a DiscoverItem enriched with the viewer's library/request status so
-// the UI can show the right badge (Available / Requested / requestable).
+// the UI can show the right badge (Available / Requested / requestable) and a
+// download-progress bar for items currently downloading.
 type discoverCard struct {
 	metadata.DiscoverItem
-	InLibrary     bool   `json:"in_library"`
-	HasFile       bool   `json:"has_file"`
-	RequestStatus string `json:"request_status,omitempty"` // pending | approved | declined
+	InLibrary        bool    `json:"in_library"`
+	HasFile          bool    `json:"has_file"`
+	RequestStatus    string  `json:"request_status,omitempty"`    // pending | approved | declined
+	DownloadProgress float64 `json:"download_progress,omitempty"` // 0..1 while downloading
 }
 
-// enrichDiscover attaches library + request status to a batch of discover items.
+// enrichDiscover attaches library + request status (and live download progress) to
+// a batch of discover items.
 func (a *api) enrichDiscover(w http.ResponseWriter, r *http.Request, items []metadata.DiscoverItem) {
 	ctx := r.Context()
+	queue, _ := a.deps.Downloads.Queue(ctx)
+
 	movIn, movHave := map[int]bool{}, map[int]bool{}
+	prog := map[string]float64{} // "movie:123" / "series:123" -> progress 0..1
 	if ms, err := a.deps.Movies.List(ctx); err == nil {
 		for _, m := range ms {
 			movIn[m.TMDBID] = true
 			movHave[m.TMDBID] = m.HasFile
+			if len(queue) > 0 {
+				if d := downloadFor(queue, m); d != nil {
+					prog["movie:"+strconv.Itoa(m.TMDBID)] = d.Progress
+				}
+			}
 		}
 	}
 	serIn, serHave := map[int]bool{}, map[int]bool{}
@@ -32,6 +45,11 @@ func (a *api) enrichDiscover(w http.ResponseWriter, r *http.Request, items []met
 		for _, s := range ss {
 			serIn[s.TMDBID] = true
 			serHave[s.TMDBID] = s.Stats != nil && s.Stats.HaveFiles > 0
+			if len(queue) > 0 {
+				if p, ok := seriesQueueProgress(queue, s.Title); ok {
+					prog["series:"+strconv.Itoa(s.TMDBID)] = p
+				}
+			}
 		}
 	}
 	reqStatus := map[string]string{} // "movie:123" / "series:123" -> status
@@ -50,9 +68,37 @@ func (a *api) enrichDiscover(w http.ResponseWriter, r *http.Request, items []met
 			c.InLibrary, c.HasFile = serIn[it.TMDBID], serHave[it.TMDBID]
 		}
 		c.RequestStatus = reqStatus[it.MediaType+":"+strconv.Itoa(it.TMDBID)]
+		c.DownloadProgress = prog[it.MediaType+":"+strconv.Itoa(it.TMDBID)]
 		cards = append(cards, c)
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"items": cards})
+}
+
+// seriesQueueProgress returns the progress of an in-flight download whose parsed
+// series title matches, for the discover progress bar.
+func seriesQueueProgress(queue []download.Item, title string) (float64, bool) {
+	return queueProgressByTitle(queue, title, 0)
+}
+
+// queueProgressByTitle returns the progress (0..1) of the first not-yet-finished
+// download whose parsed title matches (and year, when both are known).
+func queueProgressByTitle(queue []download.Item, title string, year int) (float64, bool) {
+	want := normKey(title)
+	for i := range queue {
+		it := queue[i]
+		if it.Progress >= 1 {
+			continue
+		}
+		p := parser.Parse(it.Name)
+		if normKey(p.Title) != want {
+			continue
+		}
+		if p.Year != 0 && year != 0 && absInt(p.Year-year) > 1 {
+			continue
+		}
+		return it.Progress, true
+	}
+	return 0, false
 }
 
 func (a *api) discoveryReady(w http.ResponseWriter) bool {

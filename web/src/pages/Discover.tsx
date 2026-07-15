@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { NotificationBell } from "../components/NotificationBell";
-import { RequestsPanel } from "./Requests";
 import { BooksDiscover } from "./BooksDiscover";
-import { useMe } from "../lib/me";
-import { api, type DiscoverCard, type Genre, type MediaDetail } from "../lib/api";
+import { useMe, isStaff } from "../lib/me";
+import { api, type DiscoverCard, type Genre, type MediaDetail, type MediaRequest } from "../lib/api";
+import { posterThumb } from "../lib/img";
 
-type Tab = "discover" | "movies" | "series" | "requests" | "books";
+type Tab = "discover" | "movies" | "series" | "books";
 const BASE_TABS: { key: Tab; label: string }[] = [
   { key: "discover", label: "Discover" },
   { key: "movies", label: "Movies" },
   { key: "series", label: "Series" },
-  { key: "requests", label: "Requests" },
 ];
 
 export function Discover({ chrome = true }: { chrome?: boolean }) {
@@ -105,7 +104,6 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
             {tab === "discover" && <DiscoverTab ctx={ctx} />}
             {tab === "movies" && <BrowseTab media="movie" ctx={ctx} />}
             {tab === "series" && <BrowseTab media="series" ctx={ctx} />}
-            {tab === "requests" && <RequestsPanel />}
           </>
         )}
       </div>
@@ -158,11 +156,80 @@ function SearchResults({ query, ctx }: { query: string; ctx: RowCtx }) {
 function DiscoverTab({ ctx }: { ctx: RowCtx }) {
   return (
     <div className="flex flex-col gap-7">
+      <MyRequestsRow />
       <PosterRow title="Trending this week" load={() => api.discoverTrending("all")} ctx={ctx} />
       <PosterRow title="Popular movies" load={() => api.discoverPopular("movie")} ctx={ctx} />
       <PosterRow title="Popular series" load={() => api.discoverPopular("series")} ctx={ctx} />
       <PosterRow title="Upcoming — request ahead" load={() => api.discoverUpcoming()} ctx={ctx} />
       <GenreExplorer media="movie" ctx={ctx} />
+    </div>
+  );
+}
+
+// MyRequestsRow is the horizontal strip of requests at the top of Discover. A
+// requester sees their own requests (status + download progress); staff see every
+// request and can approve/decline pending ones inline (no dedicated page needed).
+function MyRequestsRow() {
+  const { user } = useMe();
+  const staff = isStaff(user);
+  const [items, setItems] = useState<MediaRequest[] | null>(null);
+  const scroller = useRef<HTMLDivElement>(null);
+
+  const load = useCallback(() => api.requests().then((r) => setItems(r.requests)).catch(() => setItems([])), []);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 8000); // refresh so status/progress advance
+    return () => clearInterval(t);
+  }, [load]);
+
+  if (!items || items.length === 0) return null;
+  const scroll = (dir: -1 | 1) => scroller.current?.scrollBy({ left: dir * Math.max(600, scroller.current.clientWidth * 0.8), behavior: "smooth" });
+  return (
+    <div>
+      <div className="mb-2.5 flex items-center justify-between">
+        <h2 className="m-0 text-[15px] font-bold">{staff ? "Requests" : "Your requests"}</h2>
+        <div className="flex gap-1"><ArrowBtn dir={-1} onClick={() => scroll(-1)} /><ArrowBtn dir={1} onClick={() => scroll(1)} /></div>
+      </div>
+      <div ref={scroller} className="thin-scroll flex gap-3 overflow-x-auto pb-2" style={{ scrollSnapType: "x proximity" }}>
+        {items.map((rq) => <RequestPoster key={rq.id} rq={rq} staff={staff} onChanged={load} />)}
+      </div>
+    </div>
+  );
+}
+
+function RequestPoster({ rq, staff, onChanged }: { rq: MediaRequest; staff: boolean; onChanged: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const status = rq.available ? { label: "Available", tone: "var(--good)", bg: "var(--good-soft, rgba(90,140,90,.18))" }
+    : rq.status === "declined" ? { label: "Declined", tone: "var(--reject)", bg: "var(--reject-soft)" }
+    : rq.status === "approved" ? { label: "Downloading", tone: "var(--accent)", bg: "var(--accent-soft)" }
+    : { label: "Pending", tone: "var(--avoid)", bg: "var(--avoid-soft)" };
+  const pct = rq.download_progress != null ? Math.round(rq.download_progress * 100) : 0;
+  const act = async (fn: () => Promise<unknown>) => { setBusy(true); try { await fn(); onChanged(); } finally { setBusy(false); } };
+  return (
+    <div className="group relative w-[150px] flex-none overflow-hidden rounded-xl" style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)", scrollSnapAlign: "start" }}>
+      {rq.poster_url ? (
+        <img src={posterThumb(rq.poster_url)} alt={rq.title} className="h-full w-full object-cover" loading="lazy" decoding="async" />
+      ) : (
+        <div className="flex h-full w-full items-end p-2" style={{ background: "linear-gradient(150deg, hsl(24 40% 30%), hsl(20 35% 16%))" }}><span className="text-[12px] font-bold text-white">{rq.title}</span></div>
+      )}
+      <span className="absolute right-1.5 top-1.5 rounded-full px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase" style={{ background: status.bg, color: status.tone }}>{status.label}</span>
+      {pct > 0 && pct < 100 && (
+        <div className="absolute inset-x-0 bottom-0 z-10 h-1.5" style={{ background: "rgba(20,12,7,.55)" }}>
+          <div className="h-full" style={{ width: `${pct}%`, background: "var(--accent)" }} />
+        </div>
+      )}
+      <div className="absolute inset-x-0 bottom-0 flex flex-col gap-1.5 p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.92), transparent)" }}>
+        <div className="truncate text-[11.5px] font-semibold text-white">{rq.title}</div>
+        {staff && rq.requested_by_name && <div className="truncate text-[9.5px]" style={{ color: "rgba(255,255,255,.65)" }}>by {rq.requested_by_name}</div>}
+        {staff && rq.status === "pending" ? (
+          <div className="flex gap-1.5">
+            <button disabled={busy} onClick={() => act(() => api.approveRequest(rq.id))} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Approve</button>
+            <button disabled={busy} onClick={() => act(() => api.declineRequest(rq.id))} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>Decline</button>
+          </div>
+        ) : (
+          <div className="text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{rq.year || ""}</div>
+        )}
+      </div>
     </div>
   );
 }
@@ -281,13 +348,19 @@ function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: bool
         style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)", scrollSnapAlign: "start" }}
       >
         {c.poster_url ? (
-          <img src={c.poster_url} alt={c.title} className="h-full w-full object-cover" loading="lazy" />
+          <img src={posterThumb(c.poster_url)} alt={c.title} className="h-full w-full object-cover" loading="lazy" decoding="async" />
         ) : (
           <div className="flex h-full w-full items-end p-2" style={{ background: "linear-gradient(150deg, hsl(24 40% 30%), hsl(20 35% 16%))" }}><span className="text-[12px] font-bold text-white">{c.title}</span></div>
         )}
         <span className="absolute left-1.5 top-1.5 rounded px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase" style={{ background: "rgba(20,12,7,.72)", color: "#fff" }}>{c.media_type === "series" ? "TV" : "Movie"}</span>
         {badge && (
           <span className="absolute right-1.5 top-1.5 rounded-full px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase" style={{ background: badge.bg, color: badge.tone }}>{badge.label}</span>
+        )}
+        {/* Terracotta download bar along the bottom of the poster while it's grabbing. */}
+        {c.download_progress != null && c.download_progress > 0 && c.download_progress < 1 && (
+          <div className="absolute inset-x-0 bottom-0 z-10 h-1.5" style={{ background: "rgba(20,12,7,.55)" }}>
+            <div className="h-full" style={{ width: `${Math.round(c.download_progress * 100)}%`, background: "var(--accent)" }} />
+          </div>
         )}
         <div className="absolute inset-x-0 bottom-0 flex flex-col gap-1 p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.9), transparent)" }}>
           <div className="truncate text-[11.5px] font-semibold text-white">{c.title}</div>

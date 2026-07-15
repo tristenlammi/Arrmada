@@ -35,9 +35,10 @@ type Request struct {
 	RequestedBy     int64  `json:"requested_by"`
 	RequestedByName string `json:"requested_by_name,omitempty"`
 	Note            string `json:"note,omitempty"`
-	Available       bool   `json:"available"` // computed at read time, not stored
-	CreatedAt       string `json:"created_at"`
-	UpdatedAt       string `json:"updated_at"`
+	Available        bool    `json:"available"`                   // computed at read time, not stored
+	DownloadProgress float64 `json:"download_progress,omitempty"` // 0..1 while downloading; computed at read time
+	CreatedAt        string  `json:"created_at"`
+	UpdatedAt        string  `json:"updated_at"`
 }
 
 // Repo persists requests in SQLite.

@@ -304,6 +304,7 @@ export interface MediaRequest {
   requested_by_name?: string;
   note?: string;
   available: boolean;
+  download_progress?: number; // 0..1 while the requested item is downloading
   created_at: string;
   updated_at: string;
 }
@@ -321,6 +322,7 @@ export interface DiscoverCard {
   in_library: boolean;
   has_file: boolean;
   request_status?: "pending" | "approved" | "declined";
+  download_progress?: number; // 0..1 while downloading
 }
 
 export interface Genre {

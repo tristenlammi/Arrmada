@@ -14,7 +14,6 @@ import { Movies } from "./pages/Movies";
 import { MovieDetail } from "./pages/MovieDetail";
 import { Series } from "./pages/Series";
 import { SeriesDetail } from "./pages/SeriesDetail";
-import { Requests } from "./pages/Requests";
 import { Discover } from "./pages/Discover";
 import { Books } from "./pages/Books";
 import { BookDetail } from "./pages/BookDetail";
@@ -93,7 +92,6 @@ export default function App() {
         <Route path="/books" element={<Books />} />
         <Route path="/books/author/:name" element={<AuthorDetail />} />
         <Route path="/books/:id" element={<BookDetail />} />
-        <Route path="/requests" element={<Requests />} />
         <Route path="/subtitles" element={<Subtitles />} />
         <Route path="/convert" element={<Convert />} />
         <Route path="/insights" element={<Insights />} />

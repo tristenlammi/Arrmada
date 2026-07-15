@@ -27,6 +27,21 @@ func (a *api) handleListRequests(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []requests.Request{}
 	}
+	// Attach live download progress so the Discover "Your requests" row shows a bar.
+	if queue, qerr := a.deps.Downloads.Queue(r.Context()); qerr == nil && len(queue) > 0 {
+		for i := range list {
+			if list[i].Available {
+				continue
+			}
+			year := list[i].Year
+			if list[i].MediaType == "series" {
+				year = 0 // a series pack rarely carries the show's year
+			}
+			if p, ok := queueProgressByTitle(queue, list[i].Title, year); ok {
+				list[i].DownloadProgress = p
+			}
+		}
+	}
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"requests":     list,
 		"auto_approve": autoApprove, // this viewer's own auto-approve status
