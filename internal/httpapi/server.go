@@ -86,6 +86,12 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/auth/login", a.handleLogin)
 	mux.HandleFunc("POST "+base+"/api/v1/auth/logout", a.handleLogout)
 	mux.HandleFunc("GET "+base+"/api/v1/auth/me", a.protected(a.handleMe))
+	// Per-user notifications (in-app inbox + personal Apprise URL).
+	mux.HandleFunc("GET "+base+"/api/v1/me/notifications", a.protected(a.handleMyNotifications))
+	mux.HandleFunc("POST "+base+"/api/v1/me/notifications/read-all", a.protected(a.handleMarkAllNotificationsRead))
+	mux.HandleFunc("POST "+base+"/api/v1/me/notifications/{id}/read", a.protected(a.handleMarkNotificationRead))
+	mux.HandleFunc("GET "+base+"/api/v1/me/apprise", a.protected(a.handleGetMyApprise))
+	mux.HandleFunc("PUT "+base+"/api/v1/me/apprise", a.protected(a.handleSetMyApprise))
 
 	// User management (admin only).
 	mux.HandleFunc("GET "+base+"/api/v1/users", a.requireRole(auth.RoleAdmin, a.handleListUsers))

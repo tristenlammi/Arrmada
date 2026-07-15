@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
+import { NotificationBell } from "../components/NotificationBell";
 import { RequestsPanel } from "./Requests";
 import { BooksDiscover } from "./BooksDiscover";
 import { useMe } from "../lib/me";
@@ -72,24 +73,27 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
               );
             })}
           </div>
-          {/* Books have their own search inside BooksDiscover — hide the movie/TV one there. */}
-          {tab !== "books" && (
-            <div className="relative mb-2 sm:mb-0">
-              <svg className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2" width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ color: "var(--ink-faint)" }}>
-                <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" /><path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-              </svg>
-              <input
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-                placeholder="Search movies & TV…"
-                className="w-[200px] rounded-lg py-1.5 pl-8 pr-7 text-[12.5px] transition-[width] focus:w-[260px]"
-                style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
-              />
-              {searchInput && (
-                <button onClick={() => setSearchInput("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-faint hover:text-[var(--ink)]" style={{ fontSize: "13px" }}>✕</button>
-              )}
-            </div>
-          )}
+          <div className="mb-2 flex items-center gap-2 sm:mb-0">
+            {/* Books have their own search inside BooksDiscover — hide the movie/TV one there. */}
+            {tab !== "books" && (
+              <div className="relative">
+                <svg className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2" width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ color: "var(--ink-faint)" }}>
+                  <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" /><path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+                <input
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  placeholder="Search movies & TV…"
+                  className="w-[200px] rounded-lg py-1.5 pl-8 pr-7 text-[12.5px] transition-[width] focus:w-[260px]"
+                  style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+                />
+                {searchInput && (
+                  <button onClick={() => setSearchInput("")} className="absolute right-2 top-1/2 -translate-y-1/2 text-ink-faint hover:text-[var(--ink)]" style={{ fontSize: "13px" }}>✕</button>
+                )}
+              </div>
+            )}
+            <NotificationBell />
+          </div>
         </div>
 
         {tab === "books" ? (

@@ -243,6 +243,8 @@ export interface NotificationConn {
   enabled: boolean;
 }
 
+export interface UserNotification { id: number; title: string; body: string; media_type: string; ref: string; read: boolean; created_at: number }
+
 export interface HealthWarning {
   level: string; // "error" | "warning"
   message: string;
@@ -686,6 +688,13 @@ export const api = {
     req<void>(`/api/v1/notifications/${id}`, { method: "DELETE" }),
   testNotification: (body: NotificationConn) =>
     req<{ ok: boolean; error?: string }>("/api/v1/notifications/test", { method: "POST", body: JSON.stringify(body) }),
+
+  // Per-user notifications (in-app inbox + personal Apprise URL)
+  myNotifications: () => req<{ notifications: UserNotification[]; unread: number }>("/api/v1/me/notifications"),
+  markNotificationRead: (id: number) => req<void>(`/api/v1/me/notifications/${id}/read`, { method: "POST" }),
+  markAllNotificationsRead: () => req<void>("/api/v1/me/notifications/read-all", { method: "POST" }),
+  myApprise: () => req<{ url: string; set: boolean }>("/api/v1/me/apprise"),
+  setMyApprise: (url: string) => req<{ url: string; set: boolean }>("/api/v1/me/apprise", { method: "PUT", body: JSON.stringify({ url }) }),
 
   systemHealth: () =>
     req<SystemHealth>("/api/v1/health/system"),

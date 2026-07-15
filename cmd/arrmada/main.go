@@ -252,7 +252,8 @@ func main() {
 
 	// Requests module sits on top of Movies/Series: an approval adds the media and
 	// triggers a search through the existing acquisition pipeline.
-	requestsSvc := requests.NewService(st.DB(), movieSvc, seriesSvc, booksSvc, coordinator, qualitySvc, log)
+	requestsSvc := requests.NewService(st.DB(), movieSvc, seriesSvc, booksSvc, coordinator, qualitySvc, bus, notifySvc.AppriseBin(), log)
+	go requestsSvc.RunNotifier(runCtx) // alert requesters when their request is imported
 
 	// Subtitles module (Bazarr replacement): grabs external SRT sidecars over the
 	// Movies/Series catalogs via OpenSubtitles.

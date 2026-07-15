@@ -10,6 +10,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/books"
+	"github.com/tristenlammi/arrmada/internal/eventbus"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/quality"
@@ -20,18 +21,20 @@ import (
 // to the Movies/Series module (monitored, with a profile) and kicks off a search —
 // reusing the whole acquisition pipeline rather than duplicating it.
 type Service struct {
-	repo    *Repo
-	movies  *movies.Service
-	series  *series.Service
-	books   *books.Service
-	coord   *automation.Coordinator
-	quality *quality.Service
-	log     *slog.Logger
+	repo       *Repo
+	movies     *movies.Service
+	series     *series.Service
+	books      *books.Service
+	coord      *automation.Coordinator
+	quality    *quality.Service
+	bus        *eventbus.Bus
+	appriseBin string
+	log        *slog.Logger
 }
 
-// NewService wires the module.
-func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, bk *books.Service, coord *automation.Coordinator, q *quality.Service, log *slog.Logger) *Service {
-	return &Service{repo: NewRepo(db), movies: mv, series: sr, books: bk, coord: coord, quality: q, log: log}
+// NewService wires the module. bus + appriseBin drive request-ready notifications (both optional).
+func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, bk *books.Service, coord *automation.Coordinator, q *quality.Service, bus *eventbus.Bus, appriseBin string, log *slog.Logger) *Service {
+	return &Service{repo: NewRepo(db), movies: mv, series: sr, books: bk, coord: coord, quality: q, bus: bus, appriseBin: appriseBin, log: log}
 }
 
 // List returns requests (optionally filtered by status and/or requesting user), each
