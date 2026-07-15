@@ -40,12 +40,42 @@ export function Books() {
   const [confirmDelete, setConfirmDelete] = useState<Book | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [view, setView] = useState<"grid" | "table">("grid");
-  const [mode, setMode] = useState<"book" | "author">("book");
+  const [mode, setMode] = useState<"book" | "author">("author");
   const [scanning, setScanning] = useState(false);
+  const [multiSelect, setMultiSelect] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [profiles, setProfiles] = useState<{ key: string; name: string }[]>([]);
 
   const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); };
   const refresh = () => api.books().then((r) => { setList(r.books); setMetaOK(r.metadata_available); setError(null); }).catch((e: Error) => setError(e.message));
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => {
+    refresh();
+    api.qualityProfiles("book").then((r) => setProfiles(r.profiles.map((p) => ({ key: p.key, name: p.name })))).catch(() => {});
+  }, []);
+
+  const toggleSelect = (id: number) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const clearSelect = () => setSelected(new Set());
+  const exitMultiSelect = () => { setMultiSelect(false); clearSelect(); };
+  const enterSelect = () => { setMode("book"); setMultiSelect(true); }; // selection is per-book
+  const bulkMonitor = async (mon: boolean) => {
+    setBulkBusy(true);
+    try {
+      await Promise.all([...selected].map((id) => api.setBookMonitored(id, mon)));
+      flash(`${selected.size} ${mon ? "monitored" : "unmonitored"}.`);
+      clearSelect();
+      refresh();
+    } finally { setBulkBusy(false); }
+  };
+  const bulkProfile = async (profile: string) => {
+    setBulkBusy(true);
+    try {
+      await Promise.all([...selected].map((id) => api.setBookProfile(id, profile)));
+      flash(`Quality profile set on ${selected.size} books.`);
+      clearSelect();
+      refresh();
+    } finally { setBulkBusy(false); }
+  };
 
   const filtered = useMemo(() => list.filter((b) => matches(b, filter)), [list, filter]);
   const authors = useMemo(() => {
@@ -81,17 +111,22 @@ export function Books() {
         <div className="mb-4 flex items-center justify-between gap-3">
           <span className="font-mono text-[11px] text-ink-faint">{list.length} in library</span>
           <div className="flex items-center gap-2">
-            <div className="inline-flex rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
-              {(["book", "author"] as const).map((m) => (
-                <button key={m} onClick={() => setMode(m)} className="rounded-md px-3 py-1.5 text-[11.5px] font-semibold capitalize" style={{ background: mode === m ? "var(--accent)" : "transparent", color: mode === m ? "var(--accent-ink)" : "var(--ink-faint)" }}>{m}</button>
-              ))}
-            </div>
-            <div className="inline-flex rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
-              {(["grid", "table"] as const).map((v) => (
-                <button key={v} onClick={() => setView(v)} className="rounded-md px-3 py-1.5 text-[11.5px] font-semibold capitalize" style={{ background: view === v ? "var(--accent)" : "transparent", color: view === v ? "var(--accent-ink)" : "var(--ink-faint)" }}>{v}</button>
-              ))}
-            </div>
+            {!multiSelect && (
+              <>
+                <div className="inline-flex rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+                  {(["author", "book"] as const).map((m) => (
+                    <button key={m} onClick={() => setMode(m)} className="rounded-md px-3 py-1.5 text-[11.5px] font-semibold capitalize" style={{ background: mode === m ? "var(--accent)" : "transparent", color: mode === m ? "var(--accent-ink)" : "var(--ink-faint)" }}>{m}</button>
+                  ))}
+                </div>
+                <div className="inline-flex rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+                  {(["grid", "table"] as const).map((v) => (
+                    <button key={v} onClick={() => setView(v)} className="rounded-md px-3 py-1.5 text-[11.5px] font-semibold capitalize" style={{ background: view === v ? "var(--accent)" : "transparent", color: view === v ? "var(--accent-ink)" : "var(--ink-faint)" }}>{v}</button>
+                  ))}
+                </div>
+              </>
+            )}
             <button onClick={scanLibrary} disabled={scanning} title="Find books already in your library folder and catalog them" className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{scanning ? "Scanning…" : "Scan library"}</button>
+            <button onClick={() => (multiSelect ? exitMultiSelect() : enterSelect())} className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: `1px solid ${multiSelect ? "var(--accent)" : "var(--line)"}`, background: multiSelect ? "var(--accent-soft)" : "var(--panel-2)", color: multiSelect ? "var(--accent)" : "var(--ink)" }}>{multiSelect ? "Done" : "Select"}</button>
             <button onClick={() => setAddingAuthor(true)} disabled={!metaOK} title="Add an author's entire catalogue of official books" className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", background: "var(--panel-2)", color: "var(--accent)", opacity: metaOK ? 1 : 0.5 }}>+ Add author</button>
             <button onClick={() => setAdding(true)} disabled={!metaOK} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)", opacity: metaOK ? 1 : 0.5 }}>+ Add book</button>
           </div>
@@ -108,6 +143,28 @@ export function Books() {
             );
           })}
         </div>
+
+        {multiSelect && (
+          <div className="mb-4 flex flex-wrap items-center gap-2.5 rounded-xl p-3" style={{ background: "var(--panel)", border: "1px solid var(--accent-line)" }}>
+            <span className="font-mono text-[11.5px] font-semibold" style={{ color: "var(--accent)" }}>{selected.size} selected</span>
+            <button onClick={() => setSelected(new Set(filtered.map((b) => b.id)))} className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink)" }}>Select all ({filtered.length})</button>
+            <button onClick={clearSelect} disabled={selected.size === 0} className="rounded-lg px-2.5 py-1.5 text-[11.5px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Clear</button>
+            <span className="mx-1 h-5 w-px" style={{ background: "var(--line)" }} />
+            <button onClick={() => bulkMonitor(true)} disabled={selected.size === 0 || bulkBusy} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>Monitor</button>
+            <button onClick={() => bulkMonitor(false)} disabled={selected.size === 0 || bulkBusy} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Unmonitor</button>
+            <span className="mx-1 h-5 w-px" style={{ background: "var(--line)" }} />
+            <select
+              defaultValue=""
+              disabled={selected.size === 0 || bulkBusy}
+              onChange={(e) => e.target.value && (bulkProfile(e.target.value), (e.target.value = ""))}
+              className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-medium"
+              style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+            >
+              <option value="">Set quality profile…</option>
+              {profiles.map((p) => <option key={p.key} value={p.key}>{p.name}</option>)}
+            </select>
+          </div>
+        )}
 
         {error && <div className="mb-3 rounded-lg p-3 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
 
@@ -127,7 +184,17 @@ export function Books() {
           <BooksTable list={filtered} />
         ) : (
           <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))" }}>
-            {filtered.map((b) => <Card key={b.id} b={b} onDelete={() => setConfirmDelete(b)} onSearch={() => search(b)} />)}
+            {filtered.map((b) => (
+              <Card
+                key={b.id}
+                b={b}
+                onDelete={() => setConfirmDelete(b)}
+                onSearch={() => search(b)}
+                selectable={multiSelect}
+                selected={selected.has(b.id)}
+                onToggleSelect={() => toggleSelect(b.id)}
+              />
+            ))}
           </div>
         )}
 
@@ -201,31 +268,52 @@ function Cover({ url, title }: { url?: string; title: string }) {
   );
 }
 
-function Card({ b, onDelete, onSearch }: { b: Book; onDelete: () => void; onSearch: () => void }) {
+function Card({ b, onDelete, onSearch, selectable, selected, onToggleSelect }: { b: Book; onDelete: () => void; onSearch: () => void; selectable?: boolean; selected?: boolean; onToggleSelect?: () => void }) {
   const st = statusOf(b);
   const [searching, setSearching] = useState(false);
   const doSearch = async () => { setSearching(true); try { await onSearch(); } finally { window.setTimeout(() => setSearching(false), 1500); } };
+  const meta = (
+    <>
+      <div className="truncate text-[12.5px] font-semibold" title={b.title}>{b.title}</div>
+      <div className="mt-1 flex items-center justify-between gap-2">
+        <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-ink-faint" title={b.author}>{b.author || "—"}</span>
+        <span className="flex-none font-mono text-[9.5px] uppercase" style={{ color: st.tone }}>{st.label}</span>
+      </div>
+    </>
+  );
   return (
-    <div className="group relative overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)", background: "var(--panel)", opacity: b.monitored ? 1 : 0.7 }}>
+    <div className="group relative overflow-hidden rounded-xl" style={{ border: `1px solid ${selected ? "var(--accent)" : "var(--line)"}`, background: "var(--panel)", boxShadow: selected ? "0 0 0 1px var(--accent)" : "none" }}>
       <div className="relative" style={{ aspectRatio: "2/3" }}>
-        <Link to={`/books/${b.id}`} className="block h-full w-full"><Cover url={b.cover_url} title={b.title} /></Link>
-        <button onClick={onDelete} title="Remove" className="absolute right-1.5 top-1.5 hidden h-6 w-6 place-items-center rounded-full group-hover:grid" style={{ background: "rgba(20,12,7,.75)", color: "#fff" }}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 5l14 14M19 5L5 19" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" /></svg>
-        </button>
-        {b.monitored && !b.has_file && (
+        {selectable ? (
+          <button onClick={onToggleSelect} className="block h-full w-full text-left">
+            <Cover url={b.cover_url} title={b.title} />
+            {selected && <div className="absolute inset-0" style={{ background: "var(--accent-soft)" }} />}
+          </button>
+        ) : (
+          <Link to={`/books/${b.id}`} className="block h-full w-full"><Cover url={b.cover_url} title={b.title} /></Link>
+        )}
+        {selectable && (
+          <span className="absolute left-1.5 top-1.5 grid h-6 w-6 place-items-center rounded-full" style={{ background: selected ? "var(--accent)" : "rgba(20,12,7,.65)", border: `1.5px solid ${selected ? "var(--accent)" : "rgba(255,255,255,.6)"}` }}>
+            {selected && <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M4 12l5 5L20 6" stroke="var(--accent-ink)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+          </span>
+        )}
+        {!selectable && (
+          <button onClick={onDelete} title="Remove" className="absolute right-1.5 top-1.5 hidden h-6 w-6 place-items-center rounded-full group-hover:grid" style={{ background: "rgba(20,12,7,.75)", color: "#fff" }}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 5l14 14M19 5L5 19" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" /></svg>
+          </button>
+        )}
+        {!selectable && b.monitored && !b.has_file && (
           <button onClick={doSearch} disabled={searching} title="Search now" className="absolute inset-x-1.5 bottom-1.5 hidden items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px] font-semibold group-hover:flex" style={{ background: "rgba(20,12,7,.82)", color: "#fff" }}>
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" /><path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
             {searching ? "Searching…" : "Search now"}
           </button>
         )}
       </div>
-      <Link to={`/books/${b.id}`} className="block p-2.5">
-        <div className="truncate text-[12.5px] font-semibold" title={b.title}>{b.title}</div>
-        <div className="mt-1 flex items-center justify-between gap-2">
-          <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-ink-faint" title={b.author}>{b.author || "—"}</span>
-          <span className="flex-none font-mono text-[9.5px] uppercase" style={{ color: st.tone }}>{st.label}</span>
-        </div>
-      </Link>
+      {selectable ? (
+        <button onClick={onToggleSelect} className="block w-full p-2.5 text-left">{meta}</button>
+      ) : (
+        <Link to={`/books/${b.id}`} className="block p-2.5">{meta}</Link>
+      )}
     </div>
   );
 }
