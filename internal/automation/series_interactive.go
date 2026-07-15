@@ -43,6 +43,9 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 		if _, dup := byName[rel.Title]; dup {
 			continue
 		}
+		if !releaseIsForSeries(rel.Title, s.Title) {
+			continue // a different show that merely shares a title prefix (e.g. "Below Deck Mediterranean" for "Below Deck")
+		}
 		if !seriesReleaseMatches(parser.Parse(rel.Title), season, episode) {
 			continue // not relevant to the requested season/episode scope
 		}

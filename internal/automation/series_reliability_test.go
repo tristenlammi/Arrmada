@@ -36,6 +36,10 @@ func TestReleaseIsForSeries(t *testing.T) {
 		{"Severance.S02.1080p.WEBRip", "Severance", true},
 		{"Silo S01E05 1080p WEB", "Severance", false},
 		{"Severance 2022 S02 1080p", "severance", true}, // case-insensitive
+		// A spinoff that shares a title prefix must NOT match the base show.
+		{"Below.Deck.Mediterranean.S08.1080p.AMZN.WEB-DL.DDP2.0.H.264-NTb", "Below Deck", false},
+		{"Below Deck Down Under S02 1080p WEB-DL", "Below Deck", false},
+		{"Below.Deck.S08.1080p.WEB", "Below Deck", true}, // the real show still matches
 	}
 	for _, tc := range tests {
 		if got := releaseIsForSeries(tc.relTitle, tc.seriesTitle); got != tc.want {

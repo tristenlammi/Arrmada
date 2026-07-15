@@ -109,6 +109,9 @@ func (c *Coordinator) grabSeriesFrom(ctx context.Context, s series.Series, relea
 		if _, dup := byName[rel.Title]; dup {
 			continue
 		}
+		if !releaseIsForSeries(rel.Title, s.Title) {
+			continue // a different show that merely shares a title prefix (e.g. "Below Deck Mediterranean" for "Below Deck")
+		}
 		byName[rel.Title] = rel
 		cands = append(cands, quality.NewCandidate(rel.Title, rel.SizeGB(), rel.Seeders))
 	}
