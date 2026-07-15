@@ -86,7 +86,7 @@ type Service struct {
 
 	encoders []Encoder
 	encoder  Encoder
-	rules    *ruleRepo
+	failures *failureStore // quarantine blocklist (repeated-failure tracking)
 
 	mu       sync.Mutex
 	reclaimMu sync.Mutex // guards the reclaimed-bytes read-modify-write across workers
@@ -102,7 +102,7 @@ func NewService(db *sql.DB, mv *movies.Service, set *settings.Service, ffmpeg, f
 	s := &Service{
 		movies: mv, settings: set, log: log,
 		ffmpeg: ffmpeg, ffprobe: ffprobe, scratchDir: scratchDir, recycleDir: recycleDir,
-		encoders: encs, encoder: bestHEVC(encs), rules: &ruleRepo{db: db},
+		encoders: encs, encoder: bestHEVC(encs), failures: &failureStore{db: db},
 		queue: make(chan *Job, 256),
 	}
 	s.doviTool, _ = exec.LookPath("dovi_tool")
@@ -286,89 +286,6 @@ func (s *Service) Jobs() []Job {
 
 // --- Rules (C2) ---
 
-// ListRules returns every rule with a live match summary (count + estimated savings)
-// computed against the current library.
-func (s *Service) ListRules(ctx context.Context) ([]Rule, error) {
-	rules, err := s.rules.list(ctx)
-	if err != nil {
-		return nil, err
-	}
-	cands, _ := s.Library(ctx)
-	for i := range rules {
-		rules[i].Matches, rules[i].SaveBytes = summarize(&rules[i], cands)
-	}
-	return rules, nil
-}
-
-// CreateRule adds a rule.
-func (s *Service) CreateRule(ctx context.Context, r Rule) (Rule, error) { return s.rules.create(ctx, r) }
-
-// SetRuleEnabled toggles a rule.
-func (s *Service) SetRuleEnabled(ctx context.Context, id int64, on bool) error {
-	return s.rules.setEnabled(ctx, id, on)
-}
-
-// DeleteRule removes a rule.
-func (s *Service) DeleteRule(ctx context.Context, id int64) error { return s.rules.delete(ctx, id) }
-
-// PreviewRule returns the movies a rule would convert, with per-file size estimates.
-func (s *Service) PreviewRule(ctx context.Context, id int64) (Rule, []Candidate, error) {
-	rule, err := s.rules.get(ctx, id)
-	if err != nil {
-		return Rule{}, nil, err
-	}
-	cands, err := s.Library(ctx)
-	if err != nil {
-		return Rule{}, nil, err
-	}
-	var hits []Candidate
-	for _, c := range cands {
-		if rule.matches(c) {
-			if c.Info != nil {
-				c.EstBytes = estimatePlanSize(c.Info, rule.planFor(c.Info)) // per-file plan (branches resolved)
-			}
-			hits = append(hits, c)
-		}
-	}
-	rule.Matches, rule.SaveBytes = summarize(&rule, cands)
-	return rule, hits, nil
-}
-
-// RunRule queues every movie the rule currently matches (a manual run — ignores the failure
-// blocklist, since the user asked for it explicitly). Returns how many were queued.
-func (s *Service) RunRule(ctx context.Context, id int64) (int, error) {
-	return s.runRule(ctx, id, false)
-}
-
-// runRule queues the rule's matches. When respectBlocklist is set (the auto sweep), movies that
-// have failed too many times are skipped so a broken file can't jam the queue every night.
-func (s *Service) runRule(ctx context.Context, id int64, respectBlocklist bool) (int, error) {
-	rule, err := s.rules.get(ctx, id)
-	if err != nil {
-		return 0, err
-	}
-	cands, err := s.Library(ctx)
-	if err != nil {
-		return 0, err
-	}
-	maxFail := s.maxFailures(ctx)
-	queued := 0
-	for _, c := range cands {
-		if !rule.matches(c) {
-			continue
-		}
-		if respectBlocklist && s.rules.failureCount(ctx, c.MovieID) >= maxFail {
-			s.log.Info("convert: skipping blocklisted movie", "movie", c.Title, "failures", ">="+strconv.Itoa(maxFail))
-			continue
-		}
-		// Compile the plan per file — branches resolve against each file's specs.
-		if _, err := s.queueMovie(ctx, c.MovieID, rule.planFor(c.Info)); err == nil {
-			queued++
-		}
-	}
-	return queued, nil
-}
-
 func (s *Service) maxFailures(ctx context.Context) int {
 	n, _ := strconv.Atoi(s.settings.Get(ctx, keyMaxFailures, "3"))
 	if n < 1 {
@@ -385,25 +302,6 @@ type SampleResult struct {
 	EstBytes  int64  `json:"est_bytes"` // extrapolated full-file size
 	Percent   int    `json:"percent"`   // reduction %
 	SampleSec int    `json:"sample_sec"`
-}
-
-// SampleRule encodes a ~30s slice of the first movie a rule matches, using the rule's plan,
-// and extrapolates a content-exact estimate — the precise alternative to the heuristic.
-func (s *Service) SampleRule(ctx context.Context, id int64) (SampleResult, error) {
-	rule, err := s.rules.get(ctx, id)
-	if err != nil {
-		return SampleResult{}, err
-	}
-	cands, err := s.Library(ctx)
-	if err != nil {
-		return SampleResult{}, err
-	}
-	for _, c := range cands {
-		if rule.matches(c) {
-			return s.sample(ctx, c.MovieID, rule.planFor(c.Info))
-		}
-	}
-	return SampleResult{}, fmt.Errorf("this rule matches no files to sample")
 }
 
 // SampleMovie samples one movie with the default plan.
@@ -523,7 +421,7 @@ func (s *Service) ConvertAll(ctx context.Context) (int, error) {
 		if !c.Candidate {
 			continue
 		}
-		if s.rules.failureCount(ctx, c.MovieID) >= maxFail {
+		if s.failures.failureCount(ctx, c.MovieID) >= maxFail {
 			continue // blocklisted after repeated failures
 		}
 		if _, err := s.queueMovie(ctx, c.MovieID, plan); err == nil {
@@ -571,18 +469,6 @@ func parseHM(s string) (int, bool) {
 		return 0, false
 	}
 	return h*60 + m, true
-}
-
-func summarize(r *Rule, cands []Candidate) (matches int, save int64) {
-	for _, c := range cands {
-		if r.matches(c) {
-			matches++
-			if c.Info != nil {
-				save += c.Info.SizeBytes - estimatePlanSize(c.Info, r.planFor(c.Info))
-			}
-		}
-	}
-	return
 }
 
 func (s *Service) update(job *Job, fn func(*Job)) {
@@ -868,9 +754,9 @@ func (s *Service) finish(job *Job, state JobState, note string) {
 	switch state {
 	case StateFailed:
 		s.log.Warn("convert: job failed", "title", job.Title, "note", note)
-		s.rules.recordFailure(context.Background(), job.MovieID, note)
+		s.failures.recordFailure(context.Background(), job.MovieID, note)
 	case StateDone:
-		s.rules.clearFailures(context.Background(), job.MovieID)
+		s.failures.clearFailures(context.Background(), job.MovieID)
 	}
 }
 

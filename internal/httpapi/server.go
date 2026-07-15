@@ -196,13 +196,6 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/convert/sweep", a.requireRole(auth.RoleManager, a.handleConvertSweep))
 	mux.HandleFunc("POST "+base+"/api/v1/convert/movies/{id}", a.requireRole(auth.RoleManager, a.handleConvertMovie))
 	mux.HandleFunc("POST "+base+"/api/v1/convert/movies/{id}/sample", a.requireRole(auth.RoleManager, a.handleConvertMovieSample))
-	mux.HandleFunc("GET "+base+"/api/v1/convert/rules", a.protected(a.handleConvertRules))
-	mux.HandleFunc("POST "+base+"/api/v1/convert/rules", a.requireRole(auth.RoleManager, a.handleCreateConvertRule))
-	mux.HandleFunc("GET "+base+"/api/v1/convert/rules/{id}/preview", a.protected(a.handleConvertRulePreview))
-	mux.HandleFunc("POST "+base+"/api/v1/convert/rules/{id}/run", a.requireRole(auth.RoleManager, a.handleRunConvertRule))
-	mux.HandleFunc("POST "+base+"/api/v1/convert/rules/{id}/sample", a.requireRole(auth.RoleManager, a.handleConvertRuleSample))
-	mux.HandleFunc("PUT "+base+"/api/v1/convert/rules/{id}", a.requireRole(auth.RoleManager, a.handleSetConvertRuleEnabled))
-	mux.HandleFunc("DELETE "+base+"/api/v1/convert/rules/{id}", a.requireRole(auth.RoleManager, a.handleDeleteConvertRule))
 
 	// Subtitles (Bazarr replacement — external SRT sidecars over the Movies/Series catalogs).
 	mux.HandleFunc("GET "+base+"/api/v1/subtitles/settings", a.protected(a.handleGetSubtitleSettings))

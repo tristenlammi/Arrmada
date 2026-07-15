@@ -545,19 +545,6 @@ export interface ConvertMediaInfo {
 export interface ConvertCandidate { movie_id: number; title: string; year: number; poster_url?: string; path: string; info?: ConvertMediaInfo; candidate: boolean; est_bytes: number }
 export interface ConvertSample { movie_id: number; title: string; src_bytes: number; est_bytes: number; percent: number; sample_sec: number }
 export interface ConvertJob { id: number; movie_id: number; title: string; state: string; progress: number; fps: number; speed_x: number; encoder: string; src_bytes: number; out_bytes: number; note?: string }
-export interface ConvertFilter { field: string; op: string; value: string }
-export interface ConvertAction { type: string; params?: Record<string, string> }
-// ConvertStep is a node in a rule's flow (Rules v2 R4): an action, or a condition that
-// branches into then/else sub-flows. Arbitrarily nestable.
-export interface ConvertStep {
-  type: "action" | "condition";
-  action?: ConvertAction;
-  filter?: ConvertFilter;
-  then?: ConvertStep[];
-  else?: ConvertStep[];
-}
-export interface ConvertRule { id: number; name: string; enabled: boolean; auto: boolean; filters: ConvertFilter[]; actions: ConvertAction[]; steps: ConvertStep[]; window_start?: string; window_end?: string; matches: number; save_bytes: number }
-export interface ConvertSample { movie_id: number; title: string; src_bytes: number; est_bytes: number; percent: number; sample_sec: number }
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -840,19 +827,10 @@ export const api = {
   // Convert
   convertHardware: () => req<{ encoders: ConvertEncoder[]; selected: ConvertEncoder; reclaimed_bytes: number }>("/api/v1/convert/hardware"),
   convertSweep: () => req<{ status: string }>("/api/v1/convert/sweep", { method: "POST" }),
-  convertRulePreview: (id: number) => req<{ rule: ConvertRule; matches: ConvertCandidate[] }>(`/api/v1/convert/rules/${id}/preview`),
   convertLibrary: () => req<{ items: ConvertCandidate[] }>("/api/v1/convert/library").then((r) => r.items),
   convertJobs: () => req<{ jobs: ConvertJob[] }>("/api/v1/convert/jobs").then((r) => r.jobs),
   convertMovie: (id: number) => req<ConvertJob>(`/api/v1/convert/movies/${id}`, { method: "POST" }),
   convertSampleMovie: (id: number) => req<ConvertSample>(`/api/v1/convert/movies/${id}/sample`, { method: "POST" }),
-  convertRules: () => req<{ rules: ConvertRule[] }>("/api/v1/convert/rules").then((r) => r.rules),
-  createConvertRule: (body: { name?: string; auto?: boolean; filters?: ConvertFilter[]; actions?: ConvertAction[]; steps?: ConvertStep[]; window_start?: string; window_end?: string }) =>
-    req<ConvertRule>("/api/v1/convert/rules", { method: "POST", body: JSON.stringify(body) }),
-  setConvertRuleEnabled: (id: number, enabled: boolean) =>
-    req<{ enabled: boolean }>(`/api/v1/convert/rules/${id}`, { method: "PUT", body: JSON.stringify({ enabled }) }),
-  runConvertRule: (id: number) => req<{ queued: number }>(`/api/v1/convert/rules/${id}/run`, { method: "POST" }),
-  sampleConvertRule: (id: number) => req<ConvertSample>(`/api/v1/convert/rules/${id}/sample`, { method: "POST" }),
-  deleteConvertRule: (id: number) => req<void>(`/api/v1/convert/rules/${id}`, { method: "DELETE" }),
   scanSeries: () => req<{ status: string }>("/api/v1/series/scan", { method: "POST" }),
   seriesHistory: (id: number) =>
     req<{ events: MovieEvent[] }>(`/api/v1/series/${id}/history`).then((r) => r.events),
