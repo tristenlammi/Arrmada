@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { api, type Movie, type MovieLookup } from "../lib/api";
+import { posterThumb } from "../lib/img";
 
 
 type FilterKey = "all" | "monitored" | "unmonitored" | "missing" | "available";
@@ -286,7 +287,7 @@ function statusOf(m: Movie): { label: string; tone: string } {
 
 function Poster({ url, title }: { url?: string; title: string }) {
   if (url) {
-    return <img src={url} alt={title} className="h-full w-full object-cover" loading="lazy" />;
+    return <img src={posterThumb(url)} alt={title} className="h-full w-full object-cover" loading="lazy" decoding="async" />;
   }
   return (
     <div className="flex h-full w-full items-end p-2.5" style={{ background: "linear-gradient(150deg, hsl(24 40% 30%), hsl(20 35% 16%))" }}>

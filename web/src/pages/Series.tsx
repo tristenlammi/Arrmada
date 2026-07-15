@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { api, type Series as SeriesT, type SeriesLookup } from "../lib/api";
+import { posterThumb } from "../lib/img";
 
 const FILTERS = [
   { key: "all", label: "All" },
@@ -245,7 +246,7 @@ function statusOf(s: SeriesT): { label: string; tone: string } {
 }
 
 function Poster({ url, title }: { url?: string; title: string }) {
-  if (url) return <img src={url} alt={title} className="h-full w-full object-cover" loading="lazy" />;
+  if (url) return <img src={posterThumb(url)} alt={title} className="h-full w-full object-cover" loading="lazy" decoding="async" />;
   return (
     <div className="flex h-full w-full items-end p-2.5" style={{ background: "linear-gradient(150deg, hsl(24 40% 30%), hsl(20 35% 16%))" }}>
       <span className="text-[13px] font-bold text-white" style={{ textShadow: "0 1px 4px rgba(0,0,0,.6)" }}>{title}</span>

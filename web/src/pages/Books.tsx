@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { api, type Book, type BookLookup, type BookAuthor, type BookDiscoverCard } from "../lib/api";
+import { posterThumb } from "../lib/img";
 
 const FILTERS = [
   { key: "all", label: "All" },
@@ -260,7 +261,7 @@ function BooksTable({ list }: { list: Book[] }) {
 }
 
 function Cover({ url, title }: { url?: string; title: string }) {
-  if (url) return <img src={url} alt={title} className="h-full w-full object-cover" loading="lazy" />;
+  if (url) return <img src={posterThumb(url)} alt={title} className="h-full w-full object-cover" loading="lazy" decoding="async" />;
   return (
     <div className="flex h-full w-full items-center justify-center p-3 text-center" style={{ background: "linear-gradient(150deg, hsl(28 30% 26%), hsl(24 28% 16%))" }}>
       <span className="text-[12px] font-bold text-white">{title}</span>
@@ -424,7 +425,7 @@ function AuthorCard({ name, books }: { name: string; books: Book[] }) {
   return (
     <Link to={`/books/author/${encodeURIComponent(name)}`} className="group relative block overflow-hidden rounded-xl" style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}>
       {cover ? (
-        <img src={cover} alt={name} className="h-full w-full object-cover transition-transform group-hover:scale-[1.03]" loading="lazy" />
+        <img src={posterThumb(cover)} alt={name} className="h-full w-full object-cover transition-transform group-hover:scale-[1.03]" loading="lazy" decoding="async" />
       ) : (
         <div className="flex h-full w-full items-center justify-center text-[34px] font-bold text-white" style={{ background: "linear-gradient(150deg, hsl(28 30% 26%), hsl(24 28% 16%))" }}>{name.charAt(0).toUpperCase()}</div>
       )}
