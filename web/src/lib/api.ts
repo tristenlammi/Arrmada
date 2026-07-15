@@ -550,6 +550,17 @@ export interface ConvertJob { id: number; movie_id: number; title: string; state
 export interface PlexLibrary { key: string; title: string; type: string }
 export interface PlexConfig { url: string; token_set: boolean; enabled: boolean; poll_seconds: number }
 export interface PlexTestResult { ok: boolean; error?: string; machine_id?: string; version?: string; libraries?: PlexLibrary[] }
+export interface GeoLocation { ip: string; local: boolean; city?: string; country?: string; country_code?: string; lat?: number; lon?: number }
+export interface StreamDetail { src: string; stream?: string }
+export interface InsightsStream {
+  session_key: string; user: string; title: string; subtitle: string; type: string; thumb: string;
+  progress_pct: number; offset_ms: number; duration_ms: number; state: string;
+  player: string; platform: string; product: string; decision: string;
+  bandwidth_kbps: number; location: string; ip: string; geo: GeoLocation;
+  video: StreamDetail; audio: StreamDetail; container: StreamDetail;
+  hw_transcode: boolean; throttled: boolean; reasons: string[];
+}
+export interface InsightsActivity { streams: InsightsStream[]; bandwidth: { total_kbps: number; lan_kbps: number; wan_kbps: number }; geo_active: boolean }
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -843,6 +854,7 @@ export const api = {
     req<PlexConfig>("/api/v1/insights/plex", { method: "PUT", body: JSON.stringify(body) }),
   testInsights: (body: { url?: string; token?: string }) =>
     req<PlexTestResult>("/api/v1/insights/plex/test", { method: "POST", body: JSON.stringify(body) }),
+  insightsActivity: () => req<InsightsActivity>("/api/v1/insights/activity"),
   scanSeries: () => req<{ status: string }>("/api/v1/series/scan", { method: "POST" }),
   seriesHistory: (id: number) =>
     req<{ events: MovieEvent[] }>(`/api/v1/series/${id}/history`).then((r) => r.events),

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"strconv"
 
+	"github.com/tristenlammi/arrmada/internal/geoip"
 	"github.com/tristenlammi/arrmada/internal/plex"
 	"github.com/tristenlammi/arrmada/internal/settings"
 )
@@ -23,12 +24,16 @@ const (
 // Service owns the Plex connection config and, later, the poller.
 type Service struct {
 	settings *settings.Service
+	geo      *geoip.Resolver
 	log      *slog.Logger
 }
 
-// NewService wires the module.
-func NewService(set *settings.Service, log *slog.Logger) *Service {
-	return &Service{settings: set, log: log}
+// NewService wires the module. geo may be nil (geolocation then only flags LAN as "Local").
+func NewService(set *settings.Service, geo *geoip.Resolver, log *slog.Logger) *Service {
+	if geo == nil {
+		geo = geoip.New("")
+	}
+	return &Service{settings: set, geo: geo, log: log}
 }
 
 // Config is the connection config exposed to the UI (token is never returned in full).

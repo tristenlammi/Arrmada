@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type PlexConfig, type PlexTestResult } from "../lib/api";
+import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream } from "../lib/api";
 
 // Insights — Arrmada's Plex watch-monitoring module (Tautulli replacement). Built in slices
 // (see INSIGHTS-PLAN.md). I0 (this): the Plex connection — configure + test. Activity, History,
@@ -51,12 +51,176 @@ export function Insights() {
 
         {tab === "settings" ? (
           <PlexSettings cfg={cfg} onSaved={setCfg} flash={flash} />
+        ) : tab === "activity" ? (
+          <ActivityView connected={!!connected} onConfigure={() => setTab("settings")} />
         ) : (
           <ComingSoon tab={tab} connected={!!connected} onConfigure={() => setTab("settings")} />
         )}
       </div>
       {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
     </>
+  );
+}
+
+/* ============================= ACTIVITY ============================= */
+function fmtMbps(kbps: number): string {
+  if (!kbps) return "0";
+  const mb = kbps / 1000;
+  return mb >= 10 ? mb.toFixed(0) : mb.toFixed(1);
+}
+function fmtClock(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+  const mm = String(m).padStart(2, "0"), sss = String(ss).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${sss}` : `${m}:${sss}`;
+}
+const DECISION: Record<string, { label: string; color: string }> = {
+  direct_play: { label: "Direct Play", color: "var(--good)" },
+  direct_stream: { label: "Direct Stream", color: "var(--accent)" },
+  transcode: { label: "Transcode", color: "var(--avoid)" },
+};
+function geoLabel(g: InsightsStream["geo"]): string {
+  if (g.local) return "Local";
+  if (g.city && g.country_code) return `${g.city}, ${g.country_code}`;
+  if (g.country) return g.country;
+  return g.ip || "—";
+}
+
+function ActivityView({ connected, onConfigure }: { connected: boolean; onConfigure: () => void }) {
+  const [act, setAct] = useState<InsightsActivity | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [detail, setDetail] = useState<InsightsStream | null>(null);
+
+  useEffect(() => {
+    if (!connected) return;
+    let alive = true;
+    const tick = () => api.insightsActivity().then((a) => { if (alive) { setAct(a); setErr(null); } }).catch((e) => { if (alive) setErr((e as Error).message); });
+    tick();
+    const t = setInterval(tick, 4000);
+    return () => { alive = false; clearInterval(t); };
+  }, [connected]);
+
+  if (!connected) return <ComingSoon tab="activity" connected={false} onConfigure={onConfigure} />;
+  if (err) return <div className="rounded-xl p-6 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Couldn’t reach Plex: {err}</div>;
+  if (!act) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading activity…</div>;
+
+  const streams = act.streams;
+  return (
+    <div className="flex flex-col gap-3.5">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-[12.5px] text-ink-dim">{streams.length ? `${streams.length} stream${streams.length === 1 ? "" : "s"} active` : "Nothing is playing right now."}</div>
+        <div className="flex items-center gap-3 font-mono text-[11px]">
+          <BW label="TOTAL" v={act.bandwidth.total_kbps} accent />
+          <BW label="LAN" v={act.bandwidth.lan_kbps} />
+          <BW label="WAN" v={act.bandwidth.wan_kbps} />
+        </div>
+      </div>
+      {streams.length === 0 ? (
+        <div className="rounded-xl p-12 text-center text-[12.5px] text-ink-faint" style={{ border: "1px dashed var(--line)" }}>No active streams.</div>
+      ) : (
+        <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))" }}>
+          {streams.map((s) => <StreamCard key={s.session_key} s={s} onOpen={() => setDetail(s)} />)}
+        </div>
+      )}
+      {!act.geo_active && streams.some((s) => !s.geo.local) && (
+        <div className="text-[10.5px] text-ink-faint">Tip: drop a MaxMind <code>GeoLite2-City.mmdb</code> into the data dir (or set <code>ARRMADA_GEOIP_DB</code>) to resolve remote IPs to a city.</div>
+      )}
+      {detail && <DeepDive s={detail} onClose={() => setDetail(null)} />}
+    </div>
+  );
+}
+
+function BW({ label, v, accent }: { label: string; v: number; accent?: boolean }) {
+  return (
+    <span className="inline-flex items-baseline gap-1">
+      <span className="text-[8.5px] font-bold uppercase tracking-wide text-ink-faint">{label}</span>
+      <span style={{ color: accent ? "var(--accent)" : "var(--ink-dim)" }}>{fmtMbps(v)}<span className="text-[9px] text-ink-faint"> Mb/s</span></span>
+    </span>
+  );
+}
+
+function StreamCard({ s, onOpen }: { s: InsightsStream; onOpen: () => void }) {
+  const d = DECISION[s.decision] ?? DECISION.direct_play;
+  const buffering = s.state === "buffering";
+  return (
+    <button onClick={onOpen} className="flex gap-3 rounded-xl p-3 text-left transition-colors" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
+      <div className="relative h-[104px] w-[70px] flex-none overflow-hidden rounded-md" style={{ background: "var(--panel-2)" }}>
+        {s.thumb ? <img src={s.thumb} alt="" className="h-full w-full object-cover" loading="lazy" /> : null}
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="truncate text-[13px] font-semibold">{s.title}</div>
+            <div className="truncate text-[11px] text-ink-dim">{s.subtitle}</div>
+          </div>
+          <span className="flex-none rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink, #fff)" }}>{d.label}</span>
+        </div>
+        <div className="mt-1 truncate text-[11px] text-ink-dim">{s.user} · {s.player || s.platform}</div>
+        <div className="truncate font-mono text-[10px] text-ink-faint">{geoLabel(s.geo)} · {fmtMbps(s.bandwidth_kbps)} Mb/s{s.hw_transcode ? " · HW" : ""}</div>
+        {/* progress */}
+        <div className="mt-auto pt-2">
+          <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ background: "var(--panel-2)" }}>
+            <div className="h-full rounded-full" style={{ width: `${s.progress_pct}%`, background: buffering ? "var(--avoid)" : "var(--accent)" }} />
+          </div>
+          <div className="mt-1 flex items-center justify-between font-mono text-[9.5px] text-ink-faint">
+            <span style={{ color: buffering ? "var(--avoid)" : undefined }}>{buffering ? "● Buffering" : s.state === "paused" ? "⏸ Paused" : "▶ Playing"}</span>
+            <span>{fmtClock(s.offset_ms)} / {fmtClock(s.duration_ms)}</span>
+          </div>
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function DeepDive({ s, onClose }: { s: InsightsStream; onClose: () => void }) {
+  const d = DECISION[s.decision] ?? DECISION.direct_play;
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-start justify-center overflow-y-auto p-6" style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose}>
+      <div className="mt-10 w-full max-w-[560px] rounded-2xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2 className="m-0 truncate text-[15px] font-bold">{s.title}</h2>
+            <p className="m-0 mt-0.5 text-[11.5px] text-ink-dim">{s.subtitle}</p>
+          </div>
+          <button onClick={onClose} className="text-ink-faint hover:text-[var(--ink)]">✕</button>
+        </div>
+
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <span className="rounded-full px-2.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink, #fff)" }}>{d.label}</span>
+          {s.hw_transcode && <span className="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>HW transcode</span>}
+          {s.throttled && <span className="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Throttled</span>}
+        </div>
+
+        {s.reasons && s.reasons.length > 0 && (
+          <div className="mb-3 rounded-lg p-3 text-[11.5px]" style={{ background: "var(--avoid-soft)", color: "var(--avoid)" }}>
+            <div className="mb-1 font-bold uppercase tracking-wide" style={{ fontSize: 9 }}>Why it's transcoding</div>
+            <ul className="list-none space-y-0.5 p-0">{s.reasons.map((r, i) => <li key={i}>• {r}</li>)}</ul>
+          </div>
+        )}
+
+        <div className="grid gap-px overflow-hidden rounded-lg text-[12px]" style={{ background: "var(--line)" }}>
+          <DDRow label="User" a={s.user} />
+          <DDRow label="Player" a={`${s.player || "—"} · ${s.platform} · ${s.product}`} />
+          <DDRow label="Location" a={`${geoLabel(s.geo)}${s.ip ? ` · ${s.ip}` : ""} · ${s.location?.toUpperCase() || "—"}`} />
+          <DDRow label="Bandwidth" a={`${fmtMbps(s.bandwidth_kbps)} Mb/s`} />
+          <DDRow label="Video" a={s.video.src} b={s.video.stream} />
+          <DDRow label="Audio" a={s.audio.src} b={s.audio.stream} />
+          <DDRow label="Container" a={s.container.src} b={s.container.stream} />
+          <DDRow label="Progress" a={`${fmtClock(s.offset_ms)} / ${fmtClock(s.duration_ms)} (${s.progress_pct}%)`} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DDRow({ label, a, b }: { label: string; a: string; b?: string }) {
+  return (
+    <div className="flex items-center justify-between gap-3 px-3 py-2" style={{ background: "var(--panel)" }}>
+      <span className="font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint">{label}</span>
+      <span className="text-right text-ink-dim">
+        {a}{b ? <span style={{ color: "var(--avoid)" }}> → {b}</span> : null}
+      </span>
+    </div>
   );
 }
 

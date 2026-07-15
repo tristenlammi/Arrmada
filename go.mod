@@ -6,6 +6,7 @@ require (
 	github.com/PuerkitoBio/goquery v1.12.0
 	github.com/coder/websocket v1.8.15
 	github.com/nwaples/rardecode/v2 v2.2.5
+	github.com/oschwald/geoip2-golang v1.13.0
 	golang.org/x/crypto v0.54.0
 	modernc.org/sqlite v1.53.0
 )
@@ -16,6 +17,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
+	github.com/oschwald/maxminddb-golang v1.13.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect

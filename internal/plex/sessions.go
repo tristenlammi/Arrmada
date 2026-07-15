@@ -51,6 +51,12 @@ type Session struct {
 	SrcAudioCodec string
 	SrcContainer  string
 	SrcBitrate    int64
+
+	// Transcode target specs (from TranscodeSession; empty when direct playing).
+	StreamVideoCodec string
+	StreamAudioCodec string
+	StreamWidth      int
+	StreamHeight     int
 }
 
 // Decision classifies the stream as direct_play / direct_stream / transcode.
@@ -115,13 +121,17 @@ type rawSession struct {
 		Location  string  `json:"location"`
 	} `json:"Session"`
 	TranscodeSession *struct {
-		VideoDecision string `json:"videoDecision"`
-		AudioDecision string `json:"audioDecision"`
-		SubDecision   string `json:"subtitleDecision"`
-		Protocol      string `json:"protocol"`
-		Container     string `json:"container"`
-		Throttled     bool   `json:"throttled"`
-		TranscodeHw   bool   `json:"transcodeHwRequested"`
+		VideoDecision string  `json:"videoDecision"`
+		AudioDecision string  `json:"audioDecision"`
+		SubDecision   string  `json:"subtitleDecision"`
+		Protocol      string  `json:"protocol"`
+		Container     string  `json:"container"`
+		Throttled     bool    `json:"throttled"`
+		TranscodeHw   bool    `json:"transcodeHwRequested"`
+		VideoCodec    string  `json:"videoCodec"`
+		AudioCodec    string  `json:"audioCodec"`
+		Width         flexInt `json:"width"`
+		Height        flexInt `json:"height"`
 	} `json:"TranscodeSession"`
 	Media []struct {
 		VideoResolution string  `json:"videoResolution"`
@@ -149,6 +159,8 @@ func (m rawSession) flatten() Session {
 		s.VideoDecision, s.AudioDecision, s.SubDecision = t.VideoDecision, t.AudioDecision, t.SubDecision
 		s.TranscodeHW, s.Throttled = t.TranscodeHw, t.Throttled
 		s.TranscodeProto, s.TranscodeCont = t.Protocol, t.Container
+		s.StreamVideoCodec, s.StreamAudioCodec = t.VideoCodec, t.AudioCodec
+		s.StreamWidth, s.StreamHeight = int(t.Width), int(t.Height)
 	}
 	if len(m.Media) > 0 {
 		md := m.Media[0]

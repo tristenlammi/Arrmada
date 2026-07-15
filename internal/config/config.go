@@ -30,6 +30,9 @@ type Config struct {
 	// startup (the UI can also set them). Token is a secret — keep it in .env.
 	PlexURL   string
 	PlexToken string
+	// GeoIPDB is an optional MaxMind GeoLite2-City.mmdb for IP geolocation in
+	// Insights. Empty → geolocation shows LAN as "Local" and public IPs raw.
+	GeoIPDB string
 	// QbittorrentURL, when set, is the bundled qBittorrent companion; Arrmada
 	// auto-registers it as a download client on startup.
 	QbittorrentURL string
@@ -94,6 +97,7 @@ func Load() (Config, error) {
 		ConvertScratchDir:     env("ARRMADA_CONVERT_SCRATCH_DIR", ""),
 		PlexURL:               env("ARRMADA_PLEX_URL", ""),
 		PlexToken:             env("ARRMADA_PLEX_TOKEN", ""),
+		GeoIPDB:               env("ARRMADA_GEOIP_DB", ""),
 	}
 
 	port, err := strconv.Atoi(env("ARRMADA_PORT", "7878"))

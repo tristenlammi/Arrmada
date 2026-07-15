@@ -112,6 +112,23 @@ func (c *Client) SectionTotal(ctx context.Context, key string) (int64, error) {
 	return int64(r.MediaContainer.Size), nil
 }
 
+// Image fetches a Plex image (poster/art) by its metadata path, authenticated with the token, so
+// Arrmada can proxy it to the browser without exposing the token. Caller closes the body.
+func (c *Client) Image(ctx context.Context, path string) (*http.Response, error) {
+	if c.base == "" || c.token == "" {
+		return nil, fmt.Errorf("plex is not configured")
+	}
+	if !strings.HasPrefix(path, "/") {
+		return nil, fmt.Errorf("invalid image path")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Plex-Token", c.token)
+	return c.http.Do(req)
+}
+
 // flexInt tolerates Plex's habit of encoding the same numeric field as a JSON number in one
 // place and a quoted string in another.
 type flexInt int64

@@ -22,6 +22,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/buildinfo"
 	"github.com/tristenlammi/arrmada/internal/config"
 	"github.com/tristenlammi/arrmada/internal/convert"
+	"github.com/tristenlammi/arrmada/internal/geoip"
 	"github.com/tristenlammi/arrmada/internal/insights"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/eventbus"
@@ -276,7 +277,14 @@ func main() {
 	})
 
 	// Insights (Plex watch monitoring — Tautulli replacement).
-	insightsSvc := insights.NewService(settingsSvc, log)
+	geoDB := cfg.GeoIPDB
+	if geoDB == "" { // auto-detect a GeoLite2 DB dropped in the data dir
+		if p := filepath.Join(cfg.DataDir, "GeoLite2-City.mmdb"); func() bool { _, err := os.Stat(p); return err == nil }() {
+			geoDB = p
+		}
+	}
+	geoResolver := geoip.New(geoDB)
+	insightsSvc := insights.NewService(settingsSvc, geoResolver, log)
 	insightsSvc.SeedFromEnv(runCtx, cfg.PlexURL, cfg.PlexToken)
 
 	srv := httpapi.New(httpapi.Deps{

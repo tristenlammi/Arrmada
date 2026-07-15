@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -41,4 +43,43 @@ func (a *api) handleInsightsTest(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	a.writeJSON(w, http.StatusOK, a.deps.Insights.Test(ctx, req.URL, req.Token))
+}
+
+// handleInsightsActivity returns the current live Plex streams (the Activity view).
+func (a *api) handleInsightsActivity(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	act, err := a.deps.Insights.Activity(ctx)
+	if err != nil {
+		a.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, act)
+}
+
+// handleInsightsImage proxies a Plex poster/art image so the browser never sees the token. Only
+// image paths under /library/ or /photo/ are allowed (no arbitrary Plex-endpoint proxying).
+func (a *api) handleInsightsImage(w http.ResponseWriter, r *http.Request) {
+	path := r.URL.Query().Get("path")
+	if !strings.HasPrefix(path, "/library/") && !strings.HasPrefix(path, "/photo/") {
+		a.writeError(w, http.StatusBadRequest, "unsupported image path")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	resp, err := a.deps.Insights.Image(ctx, path)
+	if err != nil {
+		a.writeError(w, http.StatusBadGateway, "could not load image")
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "" {
+		w.Header().Set("Content-Type", ct)
+	}
+	w.Header().Set("Cache-Control", "private, max-age=86400")
+	_, _ = io.Copy(w, resp.Body)
 }
