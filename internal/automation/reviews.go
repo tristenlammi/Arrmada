@@ -231,6 +231,20 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	return imported
 }
 
+// recordImportedHash notes a finished download as imported in the shared imports
+// table, so the downloads view drops it once it's in the library (it keeps
+// seeding in the client). Series/book imports run outside the movie import flow,
+// which is the only one that records automatically.
+func (c *Coordinator) recordImportedHash(ctx context.Context, hash, title string, size int64) {
+	if hash == "" {
+		return
+	}
+	_, _ = c.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO imports (download_hash, source_path, target_path, title, size_bytes)
+		 VALUES (?, '', '', ?, ?)`,
+		hash, title, size)
+}
+
 func titleYear(title string, year int) string {
 	if year > 0 {
 		return fmt.Sprintf("%s (%d)", title, year)

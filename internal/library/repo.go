@@ -24,6 +24,24 @@ func (r *importRepo) exists(ctx context.Context, hash string) (bool, error) {
 	return n > 0, err
 }
 
+// importedHashes returns the set of download hashes already imported into the
+// library — used to drop finished-and-imported torrents from the downloads view.
+func (r *importRepo) importedHashes(ctx context.Context) (map[string]bool, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT download_hash FROM imports WHERE download_hash != ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var h string
+		if rows.Scan(&h) == nil {
+			out[h] = true
+		}
+	}
+	return out, rows.Err()
+}
+
 // targetFor returns the recorded target path for a download hash, and whether a
 // record exists. Used to verify a prior import's file is still on disk.
 func (r *importRepo) targetFor(ctx context.Context, hash string) (string, bool, error) {

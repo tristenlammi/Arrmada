@@ -145,6 +145,11 @@ func (m *Manager) Recent(ctx context.Context, limit int) ([]ImportRecord, error)
 	return m.repo.recent(ctx, limit)
 }
 
+// ImportedHashes returns the download hashes already imported into the library.
+func (m *Manager) ImportedHashes(ctx context.Context) (map[string]bool, error) {
+	return m.repo.importedHashes(ctx)
+}
+
 // WatchDeletions forgets import records when their files are deleted, so the
 // same release can be re-imported after (e.g.) removing and re-adding it.
 func (m *Manager) WatchDeletions(ctx context.Context) {

@@ -303,7 +303,8 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 		imported := c.importSeriesInto(ctx, s, it.ContentPath)
 		if imported > 0 {
 			c.log.Info("series: imported episodes", "series", s.Title, "count", imported, "release", it.Name)
-			c.markSeriesGrabsImported(ctx, s.ID) // flip its grab to imported for seed cleanup
+			c.recordImportedHash(ctx, it.Hash, it.Name, it.SizeBytes) // drop it from the downloads view
+			c.markSeriesGrabsImported(ctx, s.ID)                       // flip its grab to imported for seed cleanup
 			c.series.AddEvent(ctx, s.ID, "imported", fmt.Sprintf("Imported %d episode%s from %s", imported, plural(imported), it.Name))
 			c.bus.Publish("series.imported", map[string]any{"title": s.Title, "id": s.ID, "count": imported})
 		}

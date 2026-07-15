@@ -181,6 +181,9 @@ func (c *Coordinator) ImportBookDownloads(ctx context.Context) {
 		}
 		c.importBookEdition(ctx, b, books.KindEbook, ebooks)
 		c.importBookEdition(ctx, b, books.KindAudiobook, audio)
+		if len(ebooks) > 0 || len(audio) > 0 {
+			c.recordImportedHash(ctx, it.Hash, it.Name, it.SizeBytes) // drop it from the downloads view
+		}
 	}
 }
 

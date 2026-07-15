@@ -2,6 +2,16 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { api, type ActivityDownload, type ClientSettings, type SearchingItem } from "../lib/api";
+import { useMe } from "../lib/me";
+
+type MediaFilter = "all" | "movie" | "series" | "book" | "music";
+const TYPE_PILLS: { key: MediaFilter; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "movie", label: "Movies" },
+  { key: "series", label: "Series" },
+  { key: "book", label: "Books" },
+  { key: "music", label: "Music" },
+];
 
 function bytes(n: number): string {
   if (n <= 0) return "0 B";
@@ -36,6 +46,8 @@ export function Downloads() {
   const [loaded, setLoaded] = useState(false);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<SortKey>("progress");
+  const [typeFilter, setTypeFilter] = useState<MediaFilter>("all");
+  const { musicEnabled } = useMe();
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [clientId, setClientId] = useState<number | null>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -78,7 +90,8 @@ export function Downloads() {
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = q ? downloads.filter((d) => d.name.toLowerCase().includes(q)) : [...downloads];
+    let list = typeFilter === "all" ? downloads : downloads.filter((d) => (d.media_type ?? "movie") === typeFilter);
+    list = q ? list.filter((d) => d.name.toLowerCase().includes(q)) : [...list];
     list.sort((a, b) => {
       switch (sort) {
         case "name": return a.name.localeCompare(b.name);
@@ -88,7 +101,9 @@ export function Downloads() {
       }
     });
     return list;
-  }, [downloads, query, sort]);
+  }, [downloads, query, sort, typeFilter]);
+
+  const typeCount = (k: MediaFilter) => (k === "all" ? downloads.length : downloads.filter((d) => (d.media_type ?? "movie") === k).length);
 
   const shownSearching = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -121,6 +136,17 @@ export function Downloads() {
         </div>
 
         {showSettings && clientId != null && <SettingsPanel clientId={clientId} onClose={() => setShowSettings(false)} />}
+
+        <div className="mb-3 flex flex-wrap gap-2">
+          {TYPE_PILLS.filter((p) => p.key !== "music" || musicEnabled).map((p) => {
+            const active = typeFilter === p.key;
+            return (
+              <button key={p.key} onClick={() => setTypeFilter(p.key)} className="rounded-full px-3 py-1 text-[12px] font-semibold" style={{ border: `1px solid ${active ? "var(--accent)" : "var(--line)"}`, background: active ? "var(--accent-soft)" : "var(--panel)", color: active ? "var(--accent)" : "var(--ink-faint)" }}>
+                {p.label} <span className="font-mono text-[10.5px] opacity-70">{typeCount(p.key)}</span>
+              </button>
+            );
+          })}
+        </div>
 
         <div className="mb-3 flex items-center gap-2">
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search downloads…" className="w-[220px] rounded-lg px-3 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
@@ -168,7 +194,7 @@ export function Downloads() {
                             <div className="truncate font-mono text-[11.5px]" title={it.name}>{it.name}</div>
                             <div className="mt-1 flex flex-wrap items-center gap-2">
                               <span className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--panel-2)", color: STATE_TONE[it.state] ?? "var(--ink-faint)" }}>{it.state}</span>
-                              <span className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>{it.media_type === "series" ? "TV" : "Movie"}</span>
+                              <span className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>{it.media_type === "series" ? "TV" : it.media_type === "book" ? "Book" : it.media_type === "music" ? "Music" : "Movie"}</span>
                               <ProfileChip profile={it.quality_profile} />
                               <span className="font-mono text-[10px] text-ink-faint">{bytes(it.size_bytes)}</span>
                               <span className="font-mono text-[10.5px]" style={{ color: it.down_speed > 0 ? "var(--accent)" : "var(--ink-faint)" }}>{it.down_speed > 0 ? `↓${bytes(it.down_speed)}/s` : it.up_speed > 0 ? `↑${bytes(it.up_speed)}/s` : "—"}</span>

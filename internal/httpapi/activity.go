@@ -16,6 +16,7 @@ import (
 // seriesDownloadCategory is the qBittorrent category TV downloads use (kept in sync
 // with automation.seriesCategory) so the feed can label series torrents.
 const seriesDownloadCategory = "arrmada-tv"
+const bookDownloadCategory = "arrmada-books"
 
 // handleDownloadsFeed returns the live acquisition feed: movies that are searching
 // (monitored, missing, not yet downloading) plus the download queue — each with
@@ -43,21 +44,38 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Downloads already imported into the library are dropped from the view (they
+	// keep seeding in the client, but they're done as far as Arrmada is concerned).
+	imported := map[string]bool{}
+	if a.deps.Library != nil {
+		if s, err := a.deps.Library.ImportedHashes(ctx); err == nil {
+			imported = s
+		}
+	}
+
 	downloads := make([]map[string]any, 0, len(queue))
 	var totalDown, totalUp int64
 	active := 0
 	for _, it := range queue {
+		if imported[it.Hash] {
+			continue // imported — hide it, even though it's still seeding
+		}
 		profile := "n/a"
 		mediaType := "movie"
-		if it.Category == seriesDownloadCategory {
+		switch it.Category {
+		case seriesDownloadCategory:
 			mediaType = "series"
 			if a.deps.Series != nil {
 				if sr, ok := a.deps.Series.MatchByTitle(ctx, series.NormTitle(parser.Parse(it.Name).Title)); ok {
 					profile = a.profileName(ctx, sr.QualityProfile)
 				}
 			}
-		} else if mv, ok := a.deps.Movies.MatchRelease(ctx, it.Name); ok {
-			profile = a.profileName(ctx, mv.QualityProfile)
+		case bookDownloadCategory:
+			mediaType = "book"
+		default:
+			if mv, ok := a.deps.Movies.MatchRelease(ctx, it.Name); ok {
+				profile = a.profileName(ctx, mv.QualityProfile)
+			}
 		}
 		totalDown += it.DownSpeed
 		totalUp += it.UpSpeed
