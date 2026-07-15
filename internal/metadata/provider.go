@@ -8,10 +8,66 @@ package metadata
 import (
 	"context"
 	"errors"
+	"strings"
+	"unicode"
 )
 
 // ErrNotConfigured means the provider is missing required config (e.g. API key).
 var ErrNotConfigured = errors.New("metadata provider not configured")
+
+// NormalizeTitle reduces a title to lowercase alphanumerics so titles compare
+// free of punctuation, spacing, and case ("Marvel's Agents of S.H.I.E.L.D." →
+// "marvelsagentsofshield"). Used to match a scanned folder to a search result.
+func NormalizeTitle(s string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// TitleYearMatch picks the search result that confidently matches the given
+// folder title (and year, when known): an exact normalized title wins, confirmed
+// by year when the folder supplied one; a year-only match is accepted only as a
+// fallback when the folder gave a year to anchor on. It returns ok=false rather
+// than guess the most popular hit — guessing is what mis-files "UNTAMED" as the
+// more popular "The Untamed". titleOf/yearOf project the caller's result type.
+func TitleYearMatch[T any](results []T, title string, year int, titleOf func(T) string, yearOf func(T) int) (T, bool) {
+	var zero T
+	want := NormalizeTitle(title)
+	if want == "" {
+		return zero, false
+	}
+	if year > 0 {
+		for _, r := range results {
+			if NormalizeTitle(titleOf(r)) == want && absYear(yearOf(r)-year) <= 1 {
+				return r, true
+			}
+		}
+	}
+	for _, r := range results {
+		if NormalizeTitle(titleOf(r)) == want {
+			return r, true
+		}
+	}
+	if year > 0 {
+		for _, r := range results {
+			if absYear(yearOf(r)-year) <= 1 {
+				return r, true
+			}
+		}
+	}
+	return zero, false
+}
+
+func absYear(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
 
 // MovieResult is a lightweight search hit.
 type MovieResult struct {

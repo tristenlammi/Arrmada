@@ -269,7 +269,11 @@ func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanRes
 			res.Unmatched = append(res.Unmatched, e.Name())
 			continue
 		}
-		match := bestSeriesMatch(results, rel.Year)
+		match, ok := bestSeriesMatch(results, rel.Title, rel.Year)
+		if !ok {
+			res.Unmatched = append(res.Unmatched, e.Name())
+			continue // no confident title/year match — never guess the popular hit
+		}
 		if have[match.TMDBID] {
 			res.Skipped++
 			continue
@@ -298,16 +302,14 @@ func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanRes
 	return res, nil
 }
 
-// bestSeriesMatch prefers a result whose first-air year matches (±1), else the top hit.
-func bestSeriesMatch(results []metadata.SeriesResult, year int) metadata.SeriesResult {
-	if year > 0 {
-		for _, r := range results {
-			if r.Year == year {
-				return r
-			}
-		}
-	}
-	return results[0]
+// bestSeriesMatch resolves a scanned folder to a search result, requiring a
+// confident match (exact normalized title, optionally confirmed by year). It
+// returns ok=false instead of falling back to the most popular hit, which is what
+// mis-filed "UNTAMED" (2025) as "The Untamed" (2019).
+func bestSeriesMatch(results []metadata.SeriesResult, title string, year int) (metadata.SeriesResult, bool) {
+	return metadata.TitleYearMatch(results, title, year,
+		func(r metadata.SeriesResult) string { return r.Title },
+		func(r metadata.SeriesResult) int { return r.Year })
 }
 
 // MarkEpisodeImported records an imported episode file and logs it.

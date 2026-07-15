@@ -203,7 +203,11 @@ func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanRes
 			res.Unmatched = append(res.Unmatched, name)
 			continue
 		}
-		match := bestMatch(results, rel.Year)
+		match, ok := bestMatch(results, rel.Title, rel.Year)
+		if !ok {
+			res.Unmatched = append(res.Unmatched, name)
+			continue // no confident title/year match — never guess the popular hit
+		}
 		if have[match.TMDBID] {
 			res.Skipped++
 			continue
@@ -230,21 +234,13 @@ func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanRes
 	return res, nil
 }
 
-// bestMatch prefers a TMDB result whose year matches (±1), else the top hit.
-func bestMatch(results []metadata.MovieResult, year int) metadata.MovieResult {
-	if year > 0 {
-		for _, r := range results {
-			if r.Year == year {
-				return r
-			}
-		}
-		for _, r := range results {
-			if abs(r.Year-year) <= 1 {
-				return r
-			}
-		}
-	}
-	return results[0]
+// bestMatch resolves a scanned folder to a search result, requiring a confident
+// match (exact normalized title, optionally confirmed by year) rather than
+// guessing the most popular hit. Returns ok=false when nothing matches.
+func bestMatch(results []metadata.MovieResult, title string, year int) (metadata.MovieResult, bool) {
+	return metadata.TitleYearMatch(results, title, year,
+		func(r metadata.MovieResult) string { return r.Title },
+		func(r metadata.MovieResult) int { return r.Year })
 }
 
 // extraFrom projects provider details into the stored MovieExtra blob.

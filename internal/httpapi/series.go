@@ -241,9 +241,13 @@ func (a *api) handleScanSeriesLibrary(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	go func() {
 		defer cancel()
-		if _, err := a.deps.Series.ScanLibrary(ctx, root); err != nil {
+		res, err := a.deps.Series.ScanLibrary(ctx, root)
+		if err != nil {
 			a.deps.Log.Warn("series library scan failed", "err", err)
+			return
 		}
+		a.deps.Log.Info("series library scan complete", "imported", res.Imported, "skipped", res.Skipped, "unmatched", len(res.Unmatched))
+		a.deps.Bus.Publish("library.scanned", map[string]any{"imported": res.Imported, "unmatched": res.Unmatched})
 	}()
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "scanning"})
 }
