@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type LibraryPaths, type BrowseResult } from "../lib/api";
+import { api, type LibraryPaths, type BrowseResult, type UnmatchedFolder, type MatchCandidate } from "../lib/api";
 
 // Library — System page for pointing each library at a folder, with an in-app folder picker.
 // Mount your media into the container (see the installer), then browse + select here.
@@ -18,6 +18,7 @@ export function Library() {
   const [draft, setDraft] = useState<LibraryPaths | null>(null);
   const [picking, setPicking] = useState<PathKey | null>(null);
   const [busy, setBusy] = useState(false);
+  const [reviewKey, setReviewKey] = useState(0); // bump to reload the unmatched lists
   const [toast, setToast] = useState<string | null>(null);
   const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); };
 
@@ -33,8 +34,11 @@ export function Library() {
   const scan = async (row: typeof ROWS[number]) => {
     if (!row.scan) return;
     if (dirty) { flash("Save your folders first, then scan."); return; }
-    try { await row.scan(); flash(`Scanning ${row.label}… it'll appear in the library shortly.`); }
-    catch (e) { flash((e as Error).message); }
+    try {
+      await row.scan();
+      flash(`Scanning ${row.label}… matches appear in the library; anything unsure lands in "needs review" below.`);
+      window.setTimeout(() => setReviewKey((k) => k + 1), 5000); // reload review once the scan has had a moment
+    } catch (e) { flash((e as Error).message); }
   };
 
   return (
@@ -71,6 +75,9 @@ export function Library() {
           {dirty && <span className="text-[11.5px] text-ink-faint">Unsaved changes</span>}
           <button onClick={save} disabled={!dirty || busy} className="rounded-lg px-4 py-2 text-[13px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy ? "Saving…" : "Save folders"}</button>
         </div>
+
+        <UnmatchedReview media="movie" reloadKey={reviewKey} flash={flash} />
+        <UnmatchedReview media="series" reloadKey={reviewKey} flash={flash} />
       </div>
 
       {picking && (
@@ -82,6 +89,102 @@ export function Library() {
       )}
       {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
     </>
+  );
+}
+
+// UnmatchedReview lists folders the last scan couldn't confidently identify and
+// lets the admin pick the right title (from candidates or a manual search), so a
+// mis-titled folder never gets silently mis-filed.
+function UnmatchedReview({ media, reloadKey, flash }: { media: "movie" | "series"; reloadKey: number; flash: (m: string) => void }) {
+  const label = media === "movie" ? "Movies" : "TV Shows";
+  const [items, setItems] = useState<UnmatchedFolder[] | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = () =>
+    (media === "movie" ? api.moviesUnmatched() : api.seriesUnmatched()).then(setItems).catch(() => setItems([]));
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [reloadKey]);
+
+  const pick = async (folder: string, tmdb_id: number) => {
+    setBusy(true);
+    try {
+      await (media === "movie" ? api.importMovieFolder(folder, tmdb_id) : api.importSeriesFolder(folder, tmdb_id));
+      setItems((xs) => (xs ?? []).filter((u) => u.folder !== folder));
+      flash(`Imported “${folder}”.`);
+    } catch (e) { flash((e as Error).message); } finally { setBusy(false); }
+  };
+
+  if (items === null || items.length === 0) return null;
+  return (
+    <div className="mt-4 rounded-xl p-3.5" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <div className="text-[13px] font-semibold">
+            {label} — needs review
+            <span className="ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold" style={{ background: "var(--reject-soft)", color: "var(--reject)" }}>{items.length}</span>
+          </div>
+          <div className="text-[10.5px] text-ink-faint">Arrmada couldn't confidently identify these — pick the right title so nothing is mis-filed.</div>
+        </div>
+        <button onClick={load} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>Refresh</button>
+      </div>
+      <div className="mt-3 flex flex-col gap-2.5">
+        {items.map((u) => <UnmatchedRow key={u.folder} media={media} item={u} busy={busy} onPick={pick} />)}
+      </div>
+    </div>
+  );
+}
+
+function UnmatchedRow({ media, item, busy, onPick }: { media: "movie" | "series"; item: UnmatchedFolder; busy: boolean; onPick: (folder: string, tmdb: number) => void }) {
+  const [q, setQ] = useState(item.title);
+  const [results, setResults] = useState<MatchCandidate[] | null>(null);
+  const [searching, setSearching] = useState(false);
+
+  const search = async () => {
+    if (!q.trim()) return;
+    setSearching(true);
+    try {
+      const r = media === "movie" ? await api.lookupMovies(q) : await api.lookupSeries(q);
+      setResults(r.map((x) => ({ tmdb_id: x.tmdb_id, title: x.title, year: x.year, poster_url: x.poster_url })));
+    } catch { setResults([]); } finally { setSearching(false); }
+  };
+  const shown = results ?? item.candidates;
+
+  return (
+    <div className="rounded-lg p-2.5" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
+      <div className="flex items-center gap-2 text-[12px]">
+        <span style={{ color: "var(--accent)" }}>📁</span>
+        <span className="font-mono font-semibold">{item.folder}</span>
+        <span className="text-ink-faint">— looked for “{item.title}”{item.year ? ` (${item.year})` : ""}</span>
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        {shown.length === 0 && <span className="text-[11px] text-ink-faint">No candidates — search a different title below.</span>}
+        {shown.map((c) => (
+          <button
+            key={c.tmdb_id}
+            disabled={busy}
+            onClick={() => onPick(item.folder, c.tmdb_id)}
+            title={c.overview}
+            className="flex items-center gap-2 rounded-lg px-2 py-1 text-left text-[11.5px] disabled:opacity-50"
+            style={{ border: "1px solid var(--line)", background: "var(--panel)" }}
+          >
+            {c.poster_url
+              ? <img src={c.poster_url} alt="" className="h-9 w-6 flex-none rounded object-cover" />
+              : <span className="grid h-9 w-6 flex-none place-items-center rounded text-[9px] text-ink-faint" style={{ background: "var(--panel-2)" }}>?</span>}
+            <span><span className="font-semibold">{c.title}</span>{c.year ? <span className="text-ink-faint"> ({c.year})</span> : ""}</span>
+          </button>
+        ))}
+      </div>
+      <div className="mt-2 flex gap-1.5">
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && search()}
+          placeholder="Search a different title…"
+          className="flex-1 rounded-lg px-2 py-1 text-[11.5px]"
+          style={{ background: "var(--panel)", border: "1px solid var(--line)", color: "var(--ink)" }}
+        />
+        <button onClick={search} disabled={searching} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel)", color: "var(--ink)" }}>{searching ? "…" : "Search"}</button>
+      </div>
+    </div>
   );
 }
 

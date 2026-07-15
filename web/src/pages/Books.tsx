@@ -56,8 +56,8 @@ export function Books() {
       if (arr) arr.push(b); else map.set(name, [b]);
     }
     return [...map.entries()]
-      .map(([name, books]) => ({ name, books }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .map(([name, books]) => ({ name, books: books.slice().sort((a, b) => a.title.localeCompare(b.title)) }))
+      .sort((a, b) => a.name.localeCompare(b.name)); // authors A→Z, books A→Z within each
   }, [filtered]);
 
   const doDelete = async (id: number, deleteFiles: boolean) => { await api.deleteBook(id, deleteFiles); setConfirmDelete(null); refresh(); };

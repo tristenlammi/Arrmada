@@ -247,9 +247,38 @@ func (a *api) handleScanSeriesLibrary(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.deps.Log.Info("series library scan complete", "imported", res.Imported, "skipped", res.Skipped, "unmatched", len(res.Unmatched))
-		a.deps.Bus.Publish("library.scanned", map[string]any{"imported": res.Imported, "unmatched": res.Unmatched})
+		a.deps.Bus.Publish("library.scanned", map[string]any{"media": "series", "imported": res.Imported, "unmatched": len(res.Unmatched)})
 	}()
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "scanning"})
+}
+
+// handleSeriesUnmatched returns the folders the last scan couldn't identify, each
+// with candidate matches to choose from.
+func (a *api) handleSeriesUnmatched(w http.ResponseWriter, r *http.Request) {
+	a.writeJSON(w, http.StatusOK, map[string]any{"unmatched": a.deps.Series.LastUnmatched()})
+}
+
+// handleSeriesImportFolder catalogs one library folder as an explicitly chosen
+// TMDB series — the manual pick for a folder the scan couldn't identify.
+func (a *api) handleSeriesImportFolder(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Folder string `json:"folder"`
+		TMDBID int    `json:"tmdb_id"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	if !safeFolder(req.Folder) || req.TMDBID == 0 {
+		a.writeError(w, http.StatusBadRequest, "folder and tmdb_id are required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	defer cancel()
+	if err := a.deps.Series.ImportFolderAs(ctx, a.libTV(r), req.Folder, req.TMDBID); err != nil {
+		a.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"status": "imported"})
 }
 
 // handleSeriesReleases runs an interactive search, optionally scoped by ?season= and

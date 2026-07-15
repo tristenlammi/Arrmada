@@ -369,6 +369,23 @@ export interface MediaDetail {
 }
 
 // --- Series (TV) ---
+// A metadata search hit offered as a manual-pick candidate for an unmatched folder.
+export interface MatchCandidate {
+  tmdb_id: number;
+  title: string;
+  year: number;
+  poster_url?: string;
+  overview?: string;
+}
+
+// A library folder the scan couldn't confidently identify, with candidates to pick from.
+export interface UnmatchedFolder {
+  folder: string;
+  title: string;
+  year: number;
+  candidates: MatchCandidate[];
+}
+
 export interface SeriesLookup {
   tmdb_id: number;
   title: string;
@@ -724,6 +741,9 @@ export const api = {
   updateSettings: (body: Partial<AppSettings>) =>
     req<AppSettings>("/api/v1/settings", { method: "PUT", body: JSON.stringify(body) }),
   scanLibrary: () => req<{ status: string }>("/api/v1/movies/scan", { method: "POST" }),
+  moviesUnmatched: () => req<{ unmatched: UnmatchedFolder[] }>("/api/v1/movies/unmatched").then((r) => r.unmatched),
+  importMovieFolder: (folder: string, tmdb_id: number) =>
+    req<{ status: string }>("/api/v1/movies/import", { method: "POST", body: JSON.stringify({ folder, tmdb_id }) }),
   libraryPaths: () => req<LibraryPaths>("/api/v1/system/library"),
   setLibraryPaths: (body: Partial<LibraryPaths>) => req<LibraryPaths>("/api/v1/system/library", { method: "PUT", body: JSON.stringify(body) }),
   browseFolders: (path?: string) => req<BrowseResult>(`/api/v1/system/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
@@ -919,6 +939,9 @@ export const api = {
   insightsGraphs: (window = 30) => req<InsightsGraphs>(`/api/v1/insights/graphs?window=${window}`),
   insightsReliability: (window = 30) => req<Reliability>(`/api/v1/insights/reliability?window=${window}`),
   scanSeries: () => req<{ status: string }>("/api/v1/series/scan", { method: "POST" }),
+  seriesUnmatched: () => req<{ unmatched: UnmatchedFolder[] }>("/api/v1/series/unmatched").then((r) => r.unmatched),
+  importSeriesFolder: (folder: string, tmdb_id: number) =>
+    req<{ status: string }>("/api/v1/series/import", { method: "POST", body: JSON.stringify({ folder, tmdb_id }) }),
   seriesHistory: (id: number) =>
     req<{ events: MovieEvent[] }>(`/api/v1/series/${id}/history`).then((r) => r.events),
   movieReleases: (id: number) => req<ReleaseList>(`/api/v1/movies/${id}/releases`),

@@ -53,7 +53,10 @@ export function Series() {
     api.qualityProfiles("series").then((r) => setProfiles(r.profiles.map((p) => ({ key: p.key, name: p.name })))).catch(() => {});
   }, []);
 
-  const filtered = useMemo(() => list.filter((s) => matches(s, filter)), [list, filter]);
+  const filtered = useMemo(
+    () => list.filter((s) => matches(s, filter)).sort((a, b) => a.title.localeCompare(b.title)),
+    [list, filter],
+  ); // default: alphabetical by title
 
   const toggleSelect = (id: number) =>
     setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });

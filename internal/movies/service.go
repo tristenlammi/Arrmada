@@ -53,6 +53,18 @@ type Service struct {
 
 	probing  sync.Map      // movie IDs with an in-flight media probe (dedup, so list polling can't storm ffprobe)
 	probeSem chan struct{} // bounds how many probes run at once
+
+	muUnmatched   sync.Mutex
+	lastUnmatched []UnmatchedFolder // folders the last scan couldn't identify, for manual pick
+}
+
+// UnmatchedFolder is a scanned library folder the scan couldn't confidently
+// identify, with the search candidates offered for a manual pick.
+type UnmatchedFolder struct {
+	Folder     string                 `json:"folder"`
+	Title      string                 `json:"title"`
+	Year       int                    `json:"year"`
+	Candidates []metadata.MovieResult `json:"candidates"`
 }
 
 // NewService wires the module. recycleDir is where deleted files are moved
@@ -154,9 +166,9 @@ func (s *Service) Add(ctx context.Context, tmdbID int, qualityProfile string, mo
 
 // ScanResult summarizes a library scan.
 type ScanResult struct {
-	Imported  int      `json:"imported"`
-	Skipped   int      `json:"skipped"`   // already in the library
-	Unmatched []string `json:"unmatched"` // folders TMDB couldn't identify
+	Imported  int               `json:"imported"`
+	Skipped   int               `json:"skipped"`   // already in the library
+	Unmatched []UnmatchedFolder `json:"unmatched"` // folders TMDB couldn't confidently identify
 }
 
 // ScanLibrary walks the library root, matches each movie folder/file to TMDB,
@@ -200,38 +212,99 @@ func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanRes
 		}
 		results, err := s.meta.SearchMovie(ctx, rel.Title)
 		if err != nil || len(results) == 0 {
-			res.Unmatched = append(res.Unmatched, name)
+			res.Unmatched = append(res.Unmatched, UnmatchedFolder{Folder: name, Title: rel.Title, Year: rel.Year})
 			continue
 		}
 		match, ok := bestMatch(results, rel.Title, rel.Year)
 		if !ok {
-			res.Unmatched = append(res.Unmatched, name)
-			continue // no confident title/year match — never guess the popular hit
+			// No confident match — surface the top candidates for a manual pick.
+			res.Unmatched = append(res.Unmatched, UnmatchedFolder{Folder: name, Title: rel.Title, Year: rel.Year, Candidates: topMovies(results, 6)})
+			continue
 		}
 		if have[match.TMDBID] {
 			res.Skipped++
 			continue
 		}
-		details, err := s.meta.GetMovie(ctx, match.TMDBID)
-		if err != nil {
-			res.Unmatched = append(res.Unmatched, name)
+		if err := s.importMovieFile(ctx, video, match.TMDBID); err != nil {
+			res.Unmatched = append(res.Unmatched, UnmatchedFolder{Folder: name, Title: rel.Title, Year: rel.Year})
 			continue
 		}
-		created, err := s.repo.Create(ctx, Movie{
-			TMDBID: details.TMDBID, IMDBID: details.IMDBID, Title: details.Title, Year: details.Year,
-			Overview: details.Overview, PosterURL: details.PosterURL, Runtime: details.Runtime, Status: details.Status,
-			Monitored: false, QualityProfile: "n/a", Extra: extraFrom(details),
-		})
-		if err != nil {
-			continue // likely a race/duplicate
-		}
-		_ = s.setDefaultFile(ctx, created.ID, video)
-		_ = s.repo.AddEvent(ctx, created.ID, "imported", "Found during library scan: "+filepath.Base(video))
 		have[match.TMDBID] = true
 		res.Imported++
-		s.log.Info("library scan: imported", "title", details.Title, "year", details.Year)
 	}
+	s.setLastUnmatched(res.Unmatched)
 	return res, nil
+}
+
+// importMovieFile catalogs one on-disk video as the given TMDB movie (unmonitored,
+// no quality profile — Arrmada is only adopting an existing file).
+func (s *Service) importMovieFile(ctx context.Context, video string, tmdbID int) error {
+	details, err := s.meta.GetMovie(ctx, tmdbID)
+	if err != nil {
+		return err
+	}
+	created, err := s.repo.Create(ctx, Movie{
+		TMDBID: details.TMDBID, IMDBID: details.IMDBID, Title: details.Title, Year: details.Year,
+		Overview: details.Overview, PosterURL: details.PosterURL, Runtime: details.Runtime, Status: details.Status,
+		Monitored: false, QualityProfile: "n/a", Extra: extraFrom(details),
+	})
+	if err != nil {
+		return err
+	}
+	_ = s.setDefaultFile(ctx, created.ID, video)
+	_ = s.repo.AddEvent(ctx, created.ID, "imported", "Found during library scan: "+filepath.Base(video))
+	s.log.Info("library scan: imported", "title", details.Title, "year", details.Year)
+	return nil
+}
+
+// ImportFolderAs catalogs a specific library folder as the chosen TMDB movie —
+// the manual pick for a folder the scan couldn't confidently identify.
+func (s *Service) ImportFolderAs(ctx context.Context, rootOverride, folder string, tmdbID int) error {
+	root := rootOverride
+	if root == "" {
+		root = s.root
+	}
+	video, _, err := library.FindVideo(filepath.Join(root, folder))
+	if err != nil || video == "" {
+		return fmt.Errorf("no video file found in %q", folder)
+	}
+	if err := s.importMovieFile(ctx, video, tmdbID); err != nil {
+		return err
+	}
+	s.dropUnmatched(folder)
+	return nil
+}
+
+func topMovies(results []metadata.MovieResult, n int) []metadata.MovieResult {
+	if len(results) > n {
+		return results[:n]
+	}
+	return results
+}
+
+func (s *Service) setLastUnmatched(u []UnmatchedFolder) {
+	s.muUnmatched.Lock()
+	s.lastUnmatched = u
+	s.muUnmatched.Unlock()
+}
+
+// LastUnmatched returns the folders the most recent scan couldn't identify.
+func (s *Service) LastUnmatched() []UnmatchedFolder {
+	s.muUnmatched.Lock()
+	defer s.muUnmatched.Unlock()
+	return append([]UnmatchedFolder(nil), s.lastUnmatched...)
+}
+
+func (s *Service) dropUnmatched(folder string) {
+	s.muUnmatched.Lock()
+	defer s.muUnmatched.Unlock()
+	out := s.lastUnmatched[:0]
+	for _, u := range s.lastUnmatched {
+		if u.Folder != folder {
+			out = append(out, u)
+		}
+	}
+	s.lastUnmatched = out
 }
 
 // bestMatch resolves a scanned folder to a search result, requiring a confident

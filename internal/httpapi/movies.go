@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/movies"
@@ -210,9 +211,43 @@ func (a *api) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.deps.Log.Info("library scan complete", "imported", res.Imported, "skipped", res.Skipped, "unmatched", len(res.Unmatched))
-		a.deps.Bus.Publish("library.scanned", map[string]any{"imported": res.Imported, "unmatched": res.Unmatched})
+		a.deps.Bus.Publish("library.scanned", map[string]any{"media": "movie", "imported": res.Imported, "unmatched": len(res.Unmatched)})
 	}()
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "scanning"})
+}
+
+// handleMovieUnmatched returns the folders the last scan couldn't identify, each
+// with candidate matches to choose from.
+func (a *api) handleMovieUnmatched(w http.ResponseWriter, r *http.Request) {
+	a.writeJSON(w, http.StatusOK, map[string]any{"unmatched": a.deps.Movies.LastUnmatched()})
+}
+
+// handleMovieImportFolder catalogs one library folder as an explicitly chosen
+// TMDB movie — the manual pick for a folder the scan couldn't identify.
+func (a *api) handleMovieImportFolder(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Folder string `json:"folder"`
+		TMDBID int    `json:"tmdb_id"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	if !safeFolder(req.Folder) || req.TMDBID == 0 {
+		a.writeError(w, http.StatusBadRequest, "folder and tmdb_id are required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	defer cancel()
+	if err := a.deps.Movies.ImportFolderAs(ctx, a.libMovies(r), req.Folder, req.TMDBID); err != nil {
+		a.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"status": "imported"})
+}
+
+// safeFolder rejects a folder name that could escape the library root.
+func safeFolder(f string) bool {
+	return f != "" && f != "." && !strings.ContainsAny(f, `/\`) && !strings.Contains(f, "..")
 }
 
 // handleGetMovie returns a single movie for the detail page.

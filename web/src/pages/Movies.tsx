@@ -84,7 +84,9 @@ export function Movies() {
     api.qualityProfiles("movie").then((r) => setProfiles(r.profiles.map((p) => ({ key: p.key, name: p.name })))).catch(() => {});
   }, []);
 
-  const filtered = movies.filter((m) => matchesFilter(m, filter));
+  const filtered = movies
+    .filter((m) => matchesFilter(m, filter))
+    .sort((a, b) => a.title.localeCompare(b.title)); // default: alphabetical by title
 
   const toggleSelect = (id: number) =>
     setSelected((s) => {
