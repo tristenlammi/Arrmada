@@ -59,6 +59,11 @@ ARRMADA_QBIT_PORT=$PORT
 # creates the admin account. Leave false for a quick local trial.
 ARRMADA_AUTH_ENABLED=false
 
+# Where the app database + config live. Default = a managed Docker volume. On Unraid,
+# set this to keep it in appdata (recommended):
+#   ARRMADA_DATA_HOST=/mnt/user/appdata/arrmada
+ARRMADA_DATA_HOST=arrmada-data
+
 # ─── Using an EXISTING library ───────────────────────────────────────────────
 # By default Arrmada keeps its own managed library in a Docker volume. To point it
 # at library folders you already have, copy docker-compose.override.example.yml to

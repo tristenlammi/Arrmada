@@ -45,9 +45,11 @@ services:
       # matches the published port above. Same source (.env) as the ports block.
       ARRMADA_QBIT_PORT: "${ARRMADA_QBIT_PORT:-6881}"
     volumes:
-      # App database/config — kept separate from media on purpose.
-      - arrmada-data:/data
-      # One shared media volume: /media/downloads + /media/library on one filesystem.
+      # App database/config. Defaults to a managed Docker volume; set ARRMADA_DATA_HOST in
+      # .env to a host path (e.g. /mnt/user/appdata/arrmada on Unraid) to keep it in appdata.
+      - ${ARRMADA_DATA_HOST:-arrmada-data}:/data
+      # Managed media (downloads + library) for the self-contained setup. To use an existing
+      # library, see docker-compose.override.example.yml (mounts it at its own path, NOT /data).
       - arrmada-media:/media
     depends_on:
       arrmada-media-init:
