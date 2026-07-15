@@ -199,11 +199,14 @@ function MyRequestsRow() {
 
 function RequestPoster({ rq, staff, onChanged }: { rq: MediaRequest; staff: boolean; onChanged: () => void }) {
   const [busy, setBusy] = useState(false);
-  const status = rq.available ? { label: "Available", tone: "var(--good)", bg: "var(--good-soft, rgba(90,140,90,.18))" }
-    : rq.status === "declined" ? { label: "Declined", tone: "var(--reject)", bg: "var(--reject-soft)" }
-    : rq.status === "approved" ? { label: "Downloading", tone: "var(--accent)", bg: "var(--accent-soft)" }
-    : { label: "Pending", tone: "var(--avoid)", bg: "var(--avoid-soft)" };
   const pct = rq.download_progress != null ? Math.round(rq.download_progress * 100) : 0;
+  // "Downloading" only when something is actually downloading — an approved-but-not-
+  // -yet-released title stays "Requested".
+  const status = rq.available ? { label: "Available", tone: "var(--good)" }
+    : rq.status === "declined" ? { label: "Declined", tone: "var(--reject)" }
+    : pct > 0 ? { label: "Downloading", tone: "var(--accent)" }
+    : rq.status === "approved" ? { label: "Requested", tone: "var(--accent)" }
+    : { label: "Pending", tone: "var(--avoid)" };
   const act = async (fn: () => Promise<unknown>) => { setBusy(true); try { await fn(); onChanged(); } finally { setBusy(false); } };
   return (
     <div className="group relative w-[150px] flex-none overflow-hidden rounded-xl" style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)", scrollSnapAlign: "start" }}>
@@ -212,7 +215,7 @@ function RequestPoster({ rq, staff, onChanged }: { rq: MediaRequest; staff: bool
       ) : (
         <div className="flex h-full w-full items-end p-2" style={{ background: "linear-gradient(150deg, hsl(24 40% 30%), hsl(20 35% 16%))" }}><span className="text-[12px] font-bold text-white">{rq.title}</span></div>
       )}
-      <span className="absolute right-1.5 top-1.5 rounded-full px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase" style={{ background: status.bg, color: status.tone }}>{status.label}</span>
+      <span className="absolute right-1.5 top-1.5 rounded-full px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase" style={{ background: BADGE_BG, color: status.tone, border: `1px solid ${status.tone}` }}>{status.label}</span>
       {pct > 0 && pct < 100 && (
         <div className="absolute inset-x-0 bottom-0 z-10 h-1.5" style={{ background: "rgba(20,12,7,.55)" }}>
           <div className="h-full" style={{ width: `${pct}%`, background: "var(--accent)" }} />
@@ -327,10 +330,14 @@ function GenreExplorer({ media, ctx }: { media: "movie" | "series"; ctx: RowCtx 
   );
 }
 
-function badgeFor(c: DiscoverCard, requested: boolean): { label: string; tone: string; bg: string } | null {
-  if (c.has_file) return { label: "Available", tone: "var(--good)", bg: "var(--good-soft, rgba(90,140,90,.18))" };
-  if (requested || c.request_status === "pending") return { label: "Pending", tone: "var(--avoid)", bg: "var(--avoid-soft)" };
-  if (c.in_library || c.request_status === "approved") return { label: "Processing", tone: "var(--accent)", bg: "var(--accent-soft)" };
+// A near-opaque chip so status stays legible over any poster.
+const BADGE_BG = "rgba(14,10,7,.92)";
+
+function badgeFor(c: DiscoverCard, requested: boolean): { label: string; tone: string } | null {
+  if (c.has_file) return { label: "Available", tone: "var(--good)" };
+  if ((c.download_progress ?? 0) > 0) return { label: "Downloading", tone: "var(--accent)" };
+  if (c.in_library || c.request_status === "approved") return { label: "Requested", tone: "var(--accent)" };
+  if (requested || c.request_status === "pending") return { label: "Pending", tone: "var(--avoid)" };
   return null;
 }
 
@@ -354,7 +361,7 @@ function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: bool
         )}
         <span className="absolute left-1.5 top-1.5 rounded px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase" style={{ background: "rgba(20,12,7,.72)", color: "#fff" }}>{c.media_type === "series" ? "TV" : "Movie"}</span>
         {badge && (
-          <span className="absolute right-1.5 top-1.5 rounded-full px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase" style={{ background: badge.bg, color: badge.tone }}>{badge.label}</span>
+          <span className="absolute right-1.5 top-1.5 rounded-full px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase" style={{ background: BADGE_BG, color: badge.tone, border: `1px solid ${badge.tone}` }}>{badge.label}</span>
         )}
         {/* Terracotta download bar along the bottom of the poster while it's grabbing. */}
         {c.download_progress != null && c.download_progress > 0 && c.download_progress < 1 && (
@@ -452,7 +459,7 @@ function RequestDetailModal({ c, requested, requestable, onRequest, onClose }: {
             )}
             <div className="mt-3">
               {badge && !requestable ? (
-                <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: badge.bg, color: badge.tone }}>{badge.label === "Available" ? "✓ In your library" : badge.label === "Pending" ? "Requested — pending approval" : "Processing"}</span>
+                <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: BADGE_BG, color: badge.tone, border: `1px solid ${badge.tone}` }}>{badge.label === "Available" ? "✓ In your library" : badge.label === "Pending" ? "Requested — pending approval" : badge.label === "Downloading" ? "Downloading…" : "Requested"}</span>
               ) : (
                 <button onClick={request} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
                   {busy ? "Requesting…" : "＋ Request"}
