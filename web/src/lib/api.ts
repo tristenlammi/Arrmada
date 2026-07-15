@@ -16,6 +16,7 @@ export interface Status {
   auth_enabled: boolean;
   needs_setup: boolean;
   authenticated: boolean;
+  external: boolean;
   modules: Module[];
   books_enabled: boolean;
   music_enabled: boolean;

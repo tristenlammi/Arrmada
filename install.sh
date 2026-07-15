@@ -55,7 +55,7 @@ if [ ! -f .env ]; then
     say ""
     say "ARRMADA_PORT=7878"
     say "ARRMADA_QBIT_PORT=$PORT"
-    say "ARRMADA_AUTH_ENABLED=false"
+    say "ARRMADA_AUTH_ENABLED=true"
     say ""
     say "# Run as this user/group (Unraid: 99 / 100)."
     say "ARRMADA_PUID=$PUID"

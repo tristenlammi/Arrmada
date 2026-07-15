@@ -39,7 +39,7 @@ const MODULE_ROUTES: {
 ];
 
 export default function App() {
-  const { user, loading } = useMe();
+  const { user, loading, external } = useMe();
 
   if (loading) {
     return <div className="grid h-full place-items-center text-[13px] text-ink-dim">Loading…</div>;
@@ -48,6 +48,19 @@ export default function App() {
   // Auth enabled + not signed in → login / first-run setup.
   if (!user) {
     return <Login />;
+  }
+
+  // From outside the LAN, EVERYONE (even an admin) is limited to Discover — the
+  // rest of the app is only reachable on the local network. Backend enforces too.
+  if (external) {
+    return (
+      <Routes>
+        <Route element={<UserLayout />}>
+          <Route path="/discover" element={<Discover chrome={false} />} />
+          <Route path="*" element={<Navigate to="/discover" replace />} />
+        </Route>
+      </Routes>
+    );
   }
 
   // Non-staff (requesters/readonly) only ever get the Discover experience — no nav.

@@ -4,6 +4,7 @@ import { api, type AuthUser } from "./api";
 interface MeState {
   user: AuthUser | null;
   loading: boolean;
+  external: boolean; // request came from outside the LAN → Discover-only
   // Module toggles (from /status) so nav + Discover can hide disabled modules live.
   booksEnabled: boolean;
   setBooksEnabled: (v: boolean) => void;
@@ -11,7 +12,7 @@ interface MeState {
   setMusicEnabled: (v: boolean) => void;
 }
 
-const MeContext = createContext<MeState>({ user: null, loading: true, booksEnabled: true, setBooksEnabled: () => {}, musicEnabled: true, setMusicEnabled: () => {} });
+const MeContext = createContext<MeState>({ user: null, loading: true, external: false, booksEnabled: true, setBooksEnabled: () => {}, musicEnabled: true, setMusicEnabled: () => {} });
 
 // MeProvider fetches the current user and module toggles once at boot so the whole app can
 // branch on role (staff get the full console; requesters get the Discover-only shell) and
@@ -19,19 +20,21 @@ const MeContext = createContext<MeState>({ user: null, loading: true, booksEnabl
 export function MeProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const [external, setExternal] = useState(false);
   const [booksEnabled, setBooksEnabled] = useState(true);
   const [musicEnabled, setMusicEnabled] = useState(true);
   useEffect(() => {
     Promise.allSettled([api.me(), api.status()]).then(([me, status]) => {
       if (me.status === "fulfilled") setUser(me.value);
       if (status.status === "fulfilled") {
+        setExternal(status.value.external);
         setBooksEnabled(status.value.books_enabled);
         setMusicEnabled(status.value.music_enabled);
       }
       setLoading(false);
     });
   }, []);
-  return <MeContext.Provider value={{ user, loading, booksEnabled, setBooksEnabled, musicEnabled, setMusicEnabled }}>{children}</MeContext.Provider>;
+  return <MeContext.Provider value={{ user, loading, external, booksEnabled, setBooksEnabled, musicEnabled, setMusicEnabled }}>{children}</MeContext.Provider>;
 }
 
 export function useMe(): MeState {

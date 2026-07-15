@@ -103,7 +103,10 @@ type credentials struct {
 // handleSetup creates the first admin account (only allowed when no users exist)
 // and logs them in.
 func (a *api) handleSetup(w http.ResponseWriter, r *http.Request) {
-	n, err := a.deps.Auth.UserCount(r.Context())
+	// First-run setup is available until an admin exists — not just until the first
+	// user exists — so an instance that somehow has only a requester (e.g. auth was
+	// toggled) can still bootstrap its admin instead of being locked out.
+	n, err := a.deps.Auth.CountAdmins(r.Context())
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not check setup state")
 		return

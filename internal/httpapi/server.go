@@ -312,8 +312,9 @@ func New(d Deps) *http.Server {
 		mux.Handle("/", ui)
 	}
 
-	// Chain: recover → authenticate (resolves the user) → log → routes.
-	handler := a.recoverPanics(a.authenticate(a.logRequests(mux)))
+	// Chain: recover → authenticate (resolves the user) → external gate (LAN vs
+	// outside) → log → routes.
+	handler := a.recoverPanics(a.authenticate(a.externalGate(a.logRequests(mux))))
 
 	return &http.Server{
 		Addr:              d.Config.Addr(),
@@ -378,7 +379,8 @@ func (a *api) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// When auth is disabled (local dev) there's nothing to set up.
 	needsSetup := false
 	if a.deps.Config.AuthEnabled {
-		if n, err := a.deps.Auth.UserCount(r.Context()); err == nil {
+		// Needs setup until an admin exists (a lone requester shouldn't block bootstrap).
+		if n, err := a.deps.Auth.CountAdmins(r.Context()); err == nil {
 			needsSetup = n == 0
 		}
 	}
@@ -393,6 +395,8 @@ func (a *api) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"auth_enabled":   a.deps.Config.AuthEnabled,
 		"needs_setup":    needsSetup,
 		"authenticated":  authed,
+		"external":       isExternalRequest(r), // request came from outside the LAN → Discover-only
+
 		"modules":        plannedModules,
 		"books_enabled":  a.booksEnabled(r.Context()),
 		"music_enabled":  a.musicEnabled(r.Context()),

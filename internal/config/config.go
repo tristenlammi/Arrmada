@@ -22,10 +22,14 @@ type Config struct {
 	DataDir string
 	// LogLevel is one of: debug, info, warn, error.
 	LogLevel string
-	// AuthEnabled gates login/session/API-key enforcement. Default false while
-	// in early local development — every request runs as a local admin. Flip on
-	// (ARRMADA_AUTH_ENABLED=true) before exposing Arrmada to a network.
+	// AuthEnabled gates login/session/API-key enforcement. On by default — set
+	// ARRMADA_AUTH_ENABLED=false only for throwaway local development.
 	AuthEnabled bool
+	// ExternalHeader marks a request as coming from OUTSIDE the LAN when present:
+	// a Cloudflare Tunnel / reverse proxy stamps it (default Cf-Connecting-Ip),
+	// while direct LAN hits don't. External requests are limited to Discover.
+	// Empty disables header-based detection (falls back to a public source IP).
+	ExternalHeader string
 	// PlexURL / PlexToken, when set, seed the Insights module's Plex connection on
 	// startup (the UI can also set them). Token is a secret — keep it in .env.
 	PlexURL   string
@@ -90,7 +94,8 @@ func Load() (Config, error) {
 		DataDir:  env("ARRMADA_DATA_DIR", "./data"),
 		LogLevel: strings.ToLower(env("ARRMADA_LOG_LEVEL", "info")),
 		// Default off during local development.
-		AuthEnabled:      envBool("ARRMADA_AUTH_ENABLED", false),
+		AuthEnabled:      envBool("ARRMADA_AUTH_ENABLED", true),
+		ExternalHeader:   env("ARRMADA_EXTERNAL_HEADER", "Cf-Connecting-Ip"),
 		QbittorrentURL:   env("ARRMADA_QBITTORRENT_URL", ""),
 		LibraryDir:       env("ARRMADA_LIBRARY_DIR", "./library"),
 		DownloadCategory: env("ARRMADA_DOWNLOAD_CATEGORY", "arrmada"),

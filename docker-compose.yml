@@ -12,8 +12,12 @@ services:
     ports:
       - "7878:7878"
     environment:
-      # Auth is off by default for local testing. Set to "true" to require login.
-      ARRMADA_AUTH_ENABLED: "false"
+      # Login is on by default. Set ARRMADA_AUTH_ENABLED=false in .env only for a
+      # throwaway local instance. First launch shows a one-time "create admin" form.
+      ARRMADA_AUTH_ENABLED: "${ARRMADA_AUTH_ENABLED:-true}"
+      # A request carrying this header (a Cloudflare Tunnel / reverse proxy stamps
+      # it) is treated as "outside the LAN" and limited to the Discover page.
+      ARRMADA_EXTERNAL_HEADER: "${ARRMADA_EXTERNAL_HEADER:-Cf-Connecting-Ip}"
       ARRMADA_LOG_LEVEL: "info"
       # The bundled qBittorrent companion; auto-registered as a download client.
       ARRMADA_QBITTORRENT_URL: "http://arrmada-qbittorrent:8080"
