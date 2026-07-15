@@ -27,13 +27,21 @@ type Candidate struct {
 	Category    string
 }
 
+// TitleResolver maps a finished download to the library title it belongs to, so
+// imports are named from the metadata record (deterministic, matches the movie
+// Arrmada tracks) instead of the scene release. ok=false → name from the release.
+type TitleResolver interface {
+	ResolveMovie(ctx context.Context, releaseName string) (title string, year int, ok bool)
+}
+
 // Manager orchestrates importing finished downloads: dedupe, import, record,
 // and announce.
 type Manager struct {
-	imp  *Importer
-	repo *importRepo
-	bus  *eventbus.Bus
-	log  *slog.Logger
+	imp      *Importer
+	repo     *importRepo
+	bus      *eventbus.Bus
+	log      *slog.Logger
+	resolver TitleResolver // nil → name from the parsed release
 }
 
 // NewManager wires the import manager against the library root.
@@ -70,7 +78,7 @@ func (m *Manager) Process(ctx context.Context, cands []Candidate) int {
 			m.log.Info("re-importing: previously-imported file is missing", "hash", c.Hash, "was", target)
 		}
 
-		res, err := m.imp.Import(c.Name, c.ContentPath)
+		res, err := m.importOne(ctx, c)
 		if err != nil {
 			m.log.Warn("import failed", "name", c.Name, "err", err)
 			continue
@@ -92,8 +100,23 @@ func (m *Manager) Process(ctx context.Context, cands []Candidate) int {
 	return imported
 }
 
+// importOne names by the matched library title when the resolver knows it (so the
+// folder matches the movie record), otherwise parses the release name.
+func (m *Manager) importOne(ctx context.Context, c Candidate) (*Result, error) {
+	if m.resolver != nil {
+		if title, year, ok := m.resolver.ResolveMovie(ctx, c.Name); ok {
+			return m.imp.ImportAs(title, year, c.ContentPath)
+		}
+	}
+	return m.imp.Import(c.Name, c.ContentPath)
+}
+
 // SetNaming installs the user-configurable naming scheme on the import path.
 func (m *Manager) SetNaming(np NamingProvider) { m.imp.SetNaming(np) }
+
+// SetTitleResolver installs the canonical-title lookup used at import time so
+// movie folders match the library record rather than the scene release name.
+func (m *Manager) SetTitleResolver(r TitleResolver) { m.resolver = r }
 
 // SetRoots routes imports to per-media-type destinations (movies, TV, ebooks,
 // audiobooks); empty values fall back to the base library root.

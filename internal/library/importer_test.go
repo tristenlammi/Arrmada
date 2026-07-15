@@ -125,6 +125,24 @@ func mustWrite(t *testing.T, dir, name string) string {
 	return p
 }
 
+// TestImportAsCleanTitle checks that importing under a metadata title strips
+// punctuation into a clean folder name ("tick, tick... BOOM!" → "tick tick BOOM").
+func TestImportAsCleanTitle(t *testing.T) {
+	src := t.TempDir()
+	lib := t.TempDir()
+	writeFile(t, filepath.Join(src, "ttb.2160p.WEB-DL.mkv"), 5000)
+
+	im := NewImporter(lib, quiet())
+	res, err := im.ImportAs("tick, tick... BOOM!", 2021, filepath.Join(src, "ttb.2160p.WEB-DL.mkv"))
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	want := filepath.Join(lib, "tick tick BOOM (2021)")
+	if got := filepath.Dir(res.TargetPath); got != want {
+		t.Errorf("folder = %q, want %q", got, want)
+	}
+}
+
 func TestImportNoVideo(t *testing.T) {
 	src := t.TempDir()
 	writeFile(t, filepath.Join(src, "readme.txt"), 10)

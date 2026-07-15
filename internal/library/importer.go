@@ -359,7 +359,7 @@ func (im *Importer) movieNaming() Naming {
 // movieParts renders the folder and file base names for a movie from the naming
 // scheme. rel supplies quality/edition/codec/group tokens.
 func (im *Importer) movieParts(title string, year int, rel parser.Release) (folder, file string) {
-	t := clean(title)
+	t := cleanTitleLoose(title)
 	if t == "" {
 		t = "Unknown"
 	}
@@ -671,6 +671,19 @@ func qualityTag(r parser.Release) string {
 func clean(s string) string {
 	s = reIllegal.ReplaceAllString(s, "")
 	return strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+}
+
+// reTitlePunct is the sentence punctuation dropped from a metadata title so it
+// reads like a scene release ("tick, tick... BOOM!" → "tick tick BOOM"). Hyphens
+// and ampersands are kept (Spider-Man, Fast & Furious).
+var reTitlePunct = regexp.MustCompile(`[.,!?:;'"…]+`)
+
+// cleanTitleLoose sanitizes a metadata title into a folder/file name: it drops
+// sentence punctuation (so the name doesn't carry commas/ellipses/bangs), then
+// removes filesystem-illegal characters and collapses whitespace. This keeps the
+// clean, release-style look while still sourcing the name from the metadata title.
+func cleanTitleLoose(s string) string {
+	return clean(reTitlePunct.ReplaceAllString(s, " "))
 }
 
 // findMediaFile returns the primary video file at contentPath (which may be a

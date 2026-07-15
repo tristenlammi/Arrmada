@@ -58,6 +58,19 @@ func (p libPrefs) DownloadArtwork() bool {
 	return p.s.GetBool(context.Background(), "download_artwork", true)
 }
 
+// movieTitleResolver names movie imports from the matched library record (its
+// metadata title/year) instead of the scene release, so folders are deterministic
+// and match the movie Arrmada tracks.
+type movieTitleResolver struct{ svc *movies.Service }
+
+func (r movieTitleResolver) ResolveMovie(ctx context.Context, name string) (string, int, bool) {
+	m, ok := r.svc.MatchRelease(ctx, name)
+	if !ok {
+		return "", 0, false
+	}
+	return m.Title, m.Year, true
+}
+
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
@@ -182,6 +195,9 @@ func main() {
 	// Route each media type to its own library folder (movies/TV/ebooks/audiobooks);
 	// unset dirs fall back to LibraryDir, so a single-library setup is unchanged.
 	imports.SetRoots(cfg.MoviesDir, cfg.TVDir, cfg.EbooksDir, cfg.AudiobooksDir)
+	// Name movie imports from the matched library record (metadata title), not the
+	// scene release — deterministic folders that match the movie Arrmada tracks.
+	imports.SetTitleResolver(movieTitleResolver{movieSvc})
 	// Forget import records when files are deleted, so a re-grab re-imports.
 	go imports.WatchDeletions(runCtx)
 	// Wire the series module into the coordinator: TV downloads land in a separate
