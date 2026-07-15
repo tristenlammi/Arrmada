@@ -95,6 +95,12 @@ func (m *Manager) Process(ctx context.Context, cands []Candidate) int {
 // SetNaming installs the user-configurable naming scheme on the import path.
 func (m *Manager) SetNaming(np NamingProvider) { m.imp.SetNaming(np) }
 
+// SetRoots routes imports to per-media-type destinations (movies, TV, ebooks,
+// audiobooks); empty values fall back to the base library root.
+func (m *Manager) SetRoots(movie, tv, ebook, audiobook string) {
+	m.imp.SetRoots(movie, tv, ebook, audiobook)
+}
+
 // Recent returns the latest imports.
 func (m *Manager) Recent(ctx context.Context, limit int) ([]ImportRecord, error) {
 	return m.repo.recent(ctx, limit)

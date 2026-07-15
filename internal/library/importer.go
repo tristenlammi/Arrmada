@@ -187,7 +187,7 @@ func (im *Importer) ImportBookEdition(author, title string, files []FoundFile) (
 	if len(files) == 0 {
 		return nil, fmt.Errorf("no book files to import")
 	}
-	dir := im.bookDir(author, title)
+	dir := im.bookDirIn(im.bookRootForFiles(files), author, title)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create book dir: %w", err)
 	}
@@ -220,18 +220,28 @@ func (im *Importer) ImportBookEdition(author, title string, files []FoundFile) (
 	return &BookImport{TargetPath: dir, Format: format, SizeBytes: total, FileCount: len(files)}, nil
 }
 
-// BookLibraryFiles returns the book files present in a book's library folder (rescan).
+// BookLibraryFiles returns the book files present in a book's library folder
+// (rescan). Ebooks and audiobooks may live under different roots, so both are
+// checked (deduped when they share one folder).
 func (im *Importer) BookLibraryFiles(author, title string) []FoundFile {
-	return FindBookFiles(im.bookDir(author, title))
+	out := FindBookFiles(im.bookDirIn(im.ebookDir(), author, title))
+	if im.audiobookDir() != im.ebookDir() {
+		out = append(out, FindBookFiles(im.bookDirIn(im.audiobookDir(), author, title))...)
+	}
+	return out
 }
 
 // BookEditionCanonical returns the canonical path a single-file book edition should
-// live at ("<root>/<Author>/<Title>/<Title>.ext").
+// live at ("<root>/<Author>/<Title>/<Title>.ext"), rooted by the file's kind.
 func (im *Importer) BookEditionCanonical(author, title, srcPath string) string {
-	return filepath.Join(im.bookDir(author, title), clean(title)+filepath.Ext(srcPath))
+	root := im.ebookDir()
+	if isAudiobook(srcPath) {
+		root = im.audiobookDir()
+	}
+	return filepath.Join(im.bookDirIn(root, author, title), clean(title)+filepath.Ext(srcPath))
 }
 
-func (im *Importer) bookDir(author, title string) string {
+func (im *Importer) bookDirIn(root, author, title string) string {
 	a := clean(author)
 	if a == "" {
 		a = "Unknown Author"
@@ -240,7 +250,7 @@ func (im *Importer) bookDir(author, title string) string {
 	if t == "" {
 		t = "Unknown"
 	}
-	return filepath.Join(im.root, a, t)
+	return filepath.Join(root, a, t)
 }
 
 var reIllegal = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]`)
@@ -266,10 +276,61 @@ type NamingProvider interface {
 
 // Importer moves media into a library root.
 type Importer struct {
-	root      string
-	bookRoots []string // ebook + audiobook scan roots (falls back to root)
-	log       *slog.Logger
-	naming    NamingProvider // nil → built-in defaults
+	root string
+	// Per-media-type import destinations. Empty → fall back to root, so a
+	// single-library setup (no per-library dirs configured) keeps working.
+	movieRoot     string
+	tvRoot        string
+	ebookRoot     string
+	audiobookRoot string
+	bookRoots     []string // ebook + audiobook scan roots (falls back to root)
+	log           *slog.Logger
+	naming        NamingProvider // nil → built-in defaults
+}
+
+// SetRoots routes each media type to its own library folder (movies, TV, ebooks,
+// audiobooks). Any empty value falls back to the importer's base root, so an
+// unconfigured type still lands in the shared library.
+func (im *Importer) SetRoots(movie, tv, ebook, audiobook string) {
+	im.movieRoot, im.tvRoot, im.ebookRoot, im.audiobookRoot = movie, tv, ebook, audiobook
+}
+
+func (im *Importer) movieDir() string {
+	if im.movieRoot != "" {
+		return im.movieRoot
+	}
+	return im.root
+}
+
+func (im *Importer) tvDir() string {
+	if im.tvRoot != "" {
+		return im.tvRoot
+	}
+	return im.root
+}
+
+func (im *Importer) ebookDir() string {
+	if im.ebookRoot != "" {
+		return im.ebookRoot
+	}
+	return im.root
+}
+
+func (im *Importer) audiobookDir() string {
+	if im.audiobookRoot != "" {
+		return im.audiobookRoot
+	}
+	return im.root
+}
+
+// bookRootForFiles picks the audiobook or ebook root from the files being
+// imported (a single edition is one kind — the coordinator imports each kind
+// separately).
+func (im *Importer) bookRootForFiles(files []FoundFile) string {
+	if len(files) > 0 && isAudiobook(files[0].Path) {
+		return im.audiobookDir()
+	}
+	return im.ebookDir()
 }
 
 // NewImporter creates an importer targeting the given library root directory.
@@ -508,7 +569,7 @@ func (im *Importer) SeriesLibraryFiles(title string, year int) []EpisodeImport {
 	if year > 0 {
 		folder = fmt.Sprintf("%s (%d)", folder, year)
 	}
-	vids, _ := FindVideos(filepath.Join(im.root, folder))
+	vids, _ := FindVideos(filepath.Join(im.tvDir(), folder))
 	var out []EpisodeImport
 	for _, v := range vids {
 		p := parser.Parse(filepath.Base(v.Path))
@@ -533,7 +594,7 @@ func (im *Importer) episodeTarget(title string, year, season, episode int, rel p
 	if q := qualityTag(rel); q != "" {
 		file += " - " + q
 	}
-	return filepath.Join(im.root, folder, fmt.Sprintf("Season %02d", season), clean(file)+ext)
+	return filepath.Join(im.tvDir(), folder, fmt.Sprintf("Season %02d", season), clean(file)+ext)
 }
 
 // MovieTarget builds the library path for a movie file using the configured
@@ -541,7 +602,7 @@ func (im *Importer) episodeTarget(title string, year, season, episode int, rel p
 // source/release filename).
 func (im *Importer) MovieTarget(title string, year int, qualitySource, ext string) string {
 	folder, file := im.movieParts(title, year, parser.Parse(qualitySource))
-	return filepath.Join(im.root, folder, file+ext)
+	return filepath.Join(im.movieDir(), folder, file+ext)
 }
 
 // ImportAs imports a file into the library under a known movie's title/year
@@ -578,12 +639,12 @@ func (im *Importer) targetPath(r parser.Release, ext string) string {
 		if quality != "" {
 			file += " - " + quality
 		}
-		return filepath.Join(im.root, folder, season, clean(file)+ext)
+		return filepath.Join(im.tvDir(), folder, season, clean(file)+ext)
 	}
 
 	// Movie.
 	folder, file := im.movieParts(r.Title, r.Year, r)
-	return filepath.Join(im.root, folder, file+ext)
+	return filepath.Join(im.movieDir(), folder, file+ext)
 }
 
 func episodeTag(r parser.Release) string {

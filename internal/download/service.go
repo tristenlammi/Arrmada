@@ -139,6 +139,35 @@ func (s *Service) SetBundledPort(ctx context.Context, url string, port int) erro
 	return fmt.Errorf("client %q not found", url)
 }
 
+// savePathManager is implemented by clients whose default save path Arrmada manages.
+type savePathManager interface {
+	SetSavePath(ctx context.Context, dc Client, savePath string) error
+}
+
+// SetBundledSavePath points the client at url at the given downloads dir, so the
+// client and Arrmada agree on where files land (and stay on the shared volume for
+// hardlinking). No-op for client kinds without a managed save path.
+func (s *Service) SetBundledSavePath(ctx context.Context, url, savePath string) error {
+	clients, err := s.repo.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, c := range clients {
+		if c.URL != url {
+			continue
+		}
+		impl, ok := s.registry.For(c.Kind)
+		if !ok {
+			return fmt.Errorf("no downloader for kind %q", c.Kind)
+		}
+		if sp, ok := impl.(savePathManager); ok {
+			return sp.SetSavePath(ctx, c, savePath)
+		}
+		return nil // client kind has no managed save path
+	}
+	return fmt.Errorf("client %q not found", url)
+}
+
 // ListenPort reports a client's incoming-connection port (0 if not applicable).
 func (s *Service) ListenPort(ctx context.Context, id int64) (int, error) {
 	c, err := s.repo.Get(ctx, id)

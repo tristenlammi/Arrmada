@@ -28,9 +28,13 @@ services:
       # bytes appear in the library, costing no extra disk. Hardlinks only work
       # within a single filesystem — that's the whole reason both are subfolders
       # of one mount. (On Unraid: map one share, e.g. /mnt/user/data → /media.)
-      ARRMADA_LIBRARY_DIR: "/media/library"
+      # Default managed library; override in .env (e.g. per-library MOVIES/TV dirs
+      # under /storage) to import onto your own array instead of the managed volume.
+      ARRMADA_LIBRARY_DIR: "${ARRMADA_LIBRARY_DIR:-/media/library}"
       # Where the download client writes files (default scan dir for manual import).
-      ARRMADA_DOWNLOADS_DIR: "/media/downloads"
+      # Set ARRMADA_DOWNLOADS_DIR in .env to land downloads on your array (same
+      # filesystem as the library, so imports hardlink).
+      ARRMADA_DOWNLOADS_DIR: "${ARRMADA_DOWNLOADS_DIR:-/media/downloads}"
       # Optional: point Movies / TV / Books at separate library folders (empty = use the
       # shared library above). See docker-compose.override.example.yml to bind existing
       # folders read-only.

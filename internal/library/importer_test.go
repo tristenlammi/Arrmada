@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -57,6 +58,71 @@ func TestImportEpisode(t *testing.T) {
 	if _, err := os.Stat(want); err != nil {
 		t.Errorf("expected imported file: %v", err)
 	}
+}
+
+// TestImportRoutesByType checks that per-media-type roots send movies, TV, and
+// book editions to their own library folders (falling back to the base root when
+// a type has no dedicated dir).
+func TestImportRoutesByType(t *testing.T) {
+	src := t.TempDir()
+	base := t.TempDir()
+	movies := filepath.Join(base, "m")
+	tv := filepath.Join(base, "t")
+	ebooks := filepath.Join(base, "e")
+	audiobooks := filepath.Join(base, "a")
+
+	im := NewImporter(base, quiet())
+	im.SetRoots(movies, tv, ebooks, audiobooks)
+
+	// Movie → movies root.
+	mv := "Dune.Part.Two.2024.2160p.WEB-DL-FLUX"
+	writeFile(t, filepath.Join(src, mv+".mkv"), 5000)
+	res, err := im.Import(mv, filepath.Join(src, mv+".mkv"))
+	if err != nil {
+		t.Fatalf("movie import: %v", err)
+	}
+	if want := filepath.Join(movies, "Dune Part Two (2024)"); filepath.Dir(res.TargetPath) != want {
+		t.Errorf("movie dir = %q, want under %q", filepath.Dir(res.TargetPath), want)
+	}
+
+	// Episode → tv root.
+	ep := "Andor.S02E01.1080p.WEB-DL-NTb"
+	writeFile(t, filepath.Join(src, ep+".mkv"), 3000)
+	epRes, err := im.Import(ep, filepath.Join(src, ep+".mkv"))
+	if err != nil {
+		t.Fatalf("episode import: %v", err)
+	}
+	if !hasPrefix(epRes.TargetPath, tv) {
+		t.Errorf("episode target = %q, want under tv root %q", epRes.TargetPath, tv)
+	}
+
+	// Ebook → ebooks root; audiobook → audiobooks root.
+	eb, err := im.ImportBookEdition("Some Author", "Some Book", []FoundFile{{Path: mustWrite(t, src, "book.epub")}})
+	if err != nil {
+		t.Fatalf("ebook import: %v", err)
+	}
+	if !hasPrefix(eb.TargetPath, ebooks) {
+		t.Errorf("ebook target = %q, want under ebooks root %q", eb.TargetPath, ebooks)
+	}
+	ab, err := im.ImportBookEdition("Some Author", "Some Book", []FoundFile{{Path: mustWrite(t, src, "book.m4b")}})
+	if err != nil {
+		t.Fatalf("audiobook import: %v", err)
+	}
+	if !hasPrefix(ab.TargetPath, audiobooks) {
+		t.Errorf("audiobook target = %q, want under audiobooks root %q", ab.TargetPath, audiobooks)
+	}
+}
+
+func hasPrefix(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func mustWrite(t *testing.T, dir, name string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	writeFile(t, p, 1000)
+	return p
 }
 
 func TestImportNoVideo(t *testing.T) {

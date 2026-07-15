@@ -125,6 +125,21 @@ func main() {
 				log.Warn("could not set qBittorrent incoming port", "port", cfg.QbittorrentPort)
 			}()
 		}
+		// Point qBittorrent's default save + incomplete paths at the downloads dir so
+		// an existing client (seeded before the dir changed) still lands files on the
+		// shared volume. Retry in the background; qBittorrent may still be booting.
+		if cfg.DownloadsDir != "" {
+			go func() {
+				for i := 0; i < 20; i++ {
+					if err := downloads.SetBundledSavePath(context.Background(), cfg.QbittorrentURL, cfg.DownloadsDir); err == nil {
+						log.Info("qBittorrent save path set", "path", cfg.DownloadsDir)
+						return
+					}
+					time.Sleep(3 * time.Second)
+				}
+				log.Warn("could not set qBittorrent save path", "path", cfg.DownloadsDir)
+			}()
+		}
 	}
 	if !cfg.AuthEnabled {
 		log.Warn("authentication is DISABLED — every request runs as a local admin; set ARRMADA_AUTH_ENABLED=true before exposing to a network")
@@ -164,12 +179,16 @@ func main() {
 	// Import finished downloads into the library.
 	imports := library.NewManager(st.DB(), cfg.LibraryDir, bus, log)
 	imports.SetNaming(prefs)
+	// Route each media type to its own library folder (movies/TV/ebooks/audiobooks);
+	// unset dirs fall back to LibraryDir, so a single-library setup is unchanged.
+	imports.SetRoots(cfg.MoviesDir, cfg.TVDir, cfg.EbooksDir, cfg.AudiobooksDir)
 	// Forget import records when files are deleted, so a re-grab re-imports.
 	go imports.WatchDeletions(runCtx)
 	// Wire the series module into the coordinator: TV downloads land in a separate
 	// category and are hardlinked file-by-file (a season pack yields many episodes).
 	bookImporter := library.NewImporter(cfg.LibraryDir, log)
-	bookImporter.SetBookRoots(cfg.EbooksDir, cfg.AudiobooksDir) // scan ebooks + audiobooks (may be one folder)
+	bookImporter.SetBookRoots(cfg.EbooksDir, cfg.AudiobooksDir)                         // scan ebooks + audiobooks (may be one folder)
+	bookImporter.SetRoots(cfg.MoviesDir, cfg.TVDir, cfg.EbooksDir, cfg.AudiobooksDir) // this importer places TV episodes + book editions
 	coordinator.SetSeries(seriesSvc, bookImporter)
 	// Books share the importer set above; ebooks land in their own category.
 	coordinator.SetBooks(booksSvc)
