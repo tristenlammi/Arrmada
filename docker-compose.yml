@@ -44,6 +44,10 @@ services:
       # Incoming BitTorrent port — Arrmada applies this inside qBittorrent so it
       # matches the published port above. Same source (.env) as the ports block.
       ARRMADA_QBIT_PORT: "${ARRMADA_QBIT_PORT:-6881}"
+      # Run as this user/group. On Unraid, set ARRMADA_PUID=99 / ARRMADA_PGID=100 in .env
+      # so the app owns its appdata and can read your media. qBittorrent uses the same.
+      PUID: "${ARRMADA_PUID:-1000}"
+      PGID: "${ARRMADA_PGID:-1000}"
     volumes:
       # App database/config. Defaults to a managed Docker volume; set ARRMADA_DATA_HOST in
       # .env to a host path (e.g. /mnt/user/appdata/arrmada on Unraid) to keep it in appdata.
@@ -67,7 +71,7 @@ services:
     container_name: Arrmada-media-init
     command: >
       sh -c "mkdir -p /media/downloads/incomplete /media/library &&
-             chown -R 1000:1000 /media"
+             chown -R ${ARRMADA_PUID:-1000}:${ARRMADA_PGID:-1000} /media"
     volumes:
       - arrmada-media:/media
     restart: "no"
@@ -90,8 +94,8 @@ services:
     image: lscr.io/linuxserver/qbittorrent:latest
     container_name: Arrmada-qbittorrent
     environment:
-      PUID: "1000"
-      PGID: "1000"
+      PUID: "${ARRMADA_PUID:-1000}"
+      PGID: "${ARRMADA_PGID:-1000}"
       TZ: "Etc/UTC"
       WEBUI_PORT: "8080"
     volumes:

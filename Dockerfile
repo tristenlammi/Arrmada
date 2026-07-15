@@ -44,26 +44,29 @@ RUN apk add --no-cache wget tar && set -eux; \
 # --- Stage 4: minimal runtime ---
 FROM alpine:3.20
 # apprise (Python) is bundled for notifications — one image, 80+ services, no extra container.
-RUN apk add --no-cache ca-certificates wget ffmpeg python3 py3-pip && \
+# su-exec lets the entrypoint drop from root to a configurable PUID/PGID.
+RUN apk add --no-cache ca-certificates wget ffmpeg python3 py3-pip su-exec && \
     pip3 install --no-cache-dir --break-system-packages apprise && \
     apprise --version && \
-    adduser -D -u 1000 arrmada && \
-    mkdir -p /data /media/downloads /media/library && \
-    chown -R arrmada:arrmada /data /media
+    mkdir -p /data /media/downloads /media/library
 COPY --from=build /out/arrmada /usr/local/bin/arrmada
 # Dolby Vision (dovi_tool) + HDR10+ (hdr10plus_tool) metadata extractors/injectors.
 COPY --from=hdrtools /usr/local/bin/dovi_tool /usr/local/bin/hdr10plus_tool /usr/local/bin/
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
-USER arrmada
+# Runs as root only long enough to fix data-dir ownership, then drops to PUID:PGID.
 ENV ARRMADA_HOST=0.0.0.0 \
     ARRMADA_PORT=7878 \
     ARRMADA_DATA_DIR=/data \
     ARRMADA_LIBRARY_DIR=/media/library \
-    ARRMADA_DOWNLOADS_DIR=/media/downloads
+    ARRMADA_DOWNLOADS_DIR=/media/downloads \
+    PUID=1000 \
+    PGID=1000
 EXPOSE 7878
 VOLUME ["/data", "/media"]
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget -qO- http://127.0.0.1:7878/api/health || exit 1
 
-ENTRYPOINT ["/usr/local/bin/arrmada"]
+ENTRYPOINT ["/entrypoint.sh"]
