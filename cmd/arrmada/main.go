@@ -53,9 +53,9 @@ func (p libPrefs) Naming() library.Naming {
 		File:   p.s.Get(ctx, "naming_movie_file", library.DefaultMovieFile),
 	}
 }
-func (p libPrefs) WriteNFO() bool { return p.s.GetBool(context.Background(), "write_nfo", true) }
+func (p libPrefs) WriteNFO() bool { return p.s.GetBool(context.Background(), "write_nfo", false) }
 func (p libPrefs) DownloadArtwork() bool {
-	return p.s.GetBool(context.Background(), "download_artwork", true)
+	return p.s.GetBool(context.Background(), "download_artwork", false)
 }
 
 // movieTitleResolver names movie imports from the matched library record (its

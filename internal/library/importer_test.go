@@ -143,6 +143,62 @@ func TestImportAsCleanTitle(t *testing.T) {
 	}
 }
 
+// TestImportSidecarSubs checks that external subtitles in a download land next to
+// the imported video with the target's base name and preserved language tag.
+func TestImportSidecarSubs(t *testing.T) {
+	src := t.TempDir()
+	lib := t.TempDir()
+	name := "Dune.Part.Two.2024.1080p.WEB-DL-FLUX"
+	writeFile(t, filepath.Join(src, name, name+".mkv"), 5000)
+	writeFile(t, filepath.Join(src, name, name+".en.srt"), 40)  // english, tagged
+	writeFile(t, filepath.Join(src, name, name+".srt"), 40)     // bare (no lang)
+	writeFile(t, filepath.Join(src, name, "Subs", "spanish.srt"), 40) // in a Subs folder
+
+	im := NewImporter(lib, quiet())
+	res, err := im.Import(name, filepath.Join(src, name))
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	base := strings.TrimSuffix(res.TargetPath, filepath.Ext(res.TargetPath))
+	for _, want := range []string{base + ".en.srt", base + ".srt", base + ".es.srt"} {
+		if _, err := os.Stat(want); err != nil {
+			t.Errorf("expected subtitle at %q: %v", want, err)
+		}
+	}
+}
+
+// TestImportSidecarSubsIgnoresNeighbors checks a single-file torrent (living in a
+// shared save dir) never picks up a different download's subtitle.
+func TestImportSidecarSubsIgnoresNeighbors(t *testing.T) {
+	dl := t.TempDir() // shared downloads dir
+	lib := t.TempDir()
+	name := "Dune.Part.Two.2024.1080p.WEB-DL-FLUX"
+	writeFile(t, filepath.Join(dl, name+".mkv"), 5000)
+	writeFile(t, filepath.Join(dl, name+".en.srt"), 40)              // ours
+	writeFile(t, filepath.Join(dl, "Some.Other.Movie.2020.en.srt"), 40) // a neighbor
+
+	im := NewImporter(lib, quiet())
+	res, err := im.Import(name, filepath.Join(dl, name+".mkv"))
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	base := strings.TrimSuffix(res.TargetPath, filepath.Ext(res.TargetPath))
+	if _, err := os.Stat(base + ".en.srt"); err != nil {
+		t.Errorf("expected our subtitle imported: %v", err)
+	}
+	// Only our sub should be present — the neighbor must be skipped.
+	entries, _ := os.ReadDir(filepath.Dir(res.TargetPath))
+	subs := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".srt") {
+			subs++
+		}
+	}
+	if subs != 1 {
+		t.Errorf("expected exactly 1 subtitle imported, got %d", subs)
+	}
+}
+
 func TestImportNoVideo(t *testing.T) {
 	src := t.TempDir()
 	writeFile(t, filepath.Join(src, "readme.txt"), 10)

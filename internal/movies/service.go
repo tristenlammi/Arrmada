@@ -48,7 +48,7 @@ type Service struct {
 	imp      *library.Importer // reused for naming + import
 	resolver ProfileResolver
 	bus      *eventbus.Bus
-	prefs    LibraryPrefs // nil → write .nfo + artwork by default
+	prefs    LibraryPrefs // nil → lean import (no .nfo / artwork)
 	http     *http.Client
 
 	probing  sync.Map      // movie IDs with an in-flight media probe (dedup, so list polling can't storm ffprobe)
@@ -78,8 +78,8 @@ func (s *Service) SetNaming(np library.NamingProvider) { s.imp.SetNaming(np) }
 // SetPrefs installs library-write preferences (.nfo / artwork).
 func (s *Service) SetPrefs(p LibraryPrefs) { s.prefs = p }
 
-func (s *Service) writeNFO() bool         { return s.prefs == nil || s.prefs.WriteNFO() }
-func (s *Service) downloadArtwork() bool  { return s.prefs == nil || s.prefs.DownloadArtwork() }
+func (s *Service) writeNFO() bool        { return s.prefs != nil && s.prefs.WriteNFO() }
+func (s *Service) downloadArtwork() bool { return s.prefs != nil && s.prefs.DownloadArtwork() }
 
 // MetadataAvailable reports whether the metadata provider is configured.
 func (s *Service) MetadataAvailable() bool { return s.meta.Available() }

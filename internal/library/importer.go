@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 
 	"github.com/tristenlammi/arrmada/internal/extract"
 	"github.com/tristenlammi/arrmada/internal/parser"
@@ -447,6 +448,7 @@ func (im *Importer) Import(name, contentPath string) (*Result, error) {
 		return nil, fmt.Errorf("import file: %w", err)
 	}
 	im.logImport(rel.Title, src, target, method)
+	im.importSidecarSubs(contentPath, src, target)
 	return &Result{SourcePath: src, TargetPath: target, Title: rel.Title, Year: rel.Year, SizeBytes: size}, nil
 }
 
@@ -533,6 +535,7 @@ func (im *Importer) ImportEpisode(seriesTitle string, year int, videoPath string
 		return nil, false, fmt.Errorf("import episode: %w", err)
 	}
 	im.logImport(seriesTitle, videoPath, target, method)
+	im.importSidecarSubs(videoPath, videoPath, target)
 	fi, _ := os.Stat(target)
 	var size int64
 	if fi != nil {
@@ -621,6 +624,7 @@ func (im *Importer) ImportAs(title string, year int, contentPath string) (*Resul
 		return nil, fmt.Errorf("import file: %w", err)
 	}
 	im.logImport(title, src, target, method)
+	im.importSidecarSubs(contentPath, src, target)
 	return &Result{SourcePath: src, TargetPath: target, Title: title, Year: year, SizeBytes: size}, nil
 }
 
@@ -723,6 +727,120 @@ func findMediaFile(contentPath string) (string, int64, error) {
 
 func isVideo(p string) bool {
 	return videoExts[strings.ToLower(filepath.Ext(p))]
+}
+
+// subtitleExts are external subtitle sidecar files worth importing with the video.
+var subtitleExts = map[string]bool{".srt": true, ".ass": true, ".ssa": true, ".sub": true, ".vtt": true, ".idx": true}
+
+// langNames maps common subtitle language tokens (codes + English names) to the
+// ISO 639-1 tag used by the Subtitles module's sidecar convention.
+var langNames = map[string]string{
+	"en": "en", "eng": "en", "english": "en",
+	"es": "es", "spa": "es", "spanish": "es",
+	"fr": "fr", "fre": "fr", "fra": "fr", "french": "fr",
+	"de": "de", "ger": "de", "deu": "de", "german": "de",
+	"it": "it", "ita": "it", "italian": "it",
+	"pt": "pt", "por": "pt", "portuguese": "pt",
+	"nl": "nl", "dut": "nl", "nld": "nl", "dutch": "nl",
+	"ru": "ru", "rus": "ru", "russian": "ru",
+	"ja": "ja", "jpn": "ja", "japanese": "ja",
+	"zh": "zh", "chi": "zh", "zho": "zh", "chinese": "zh",
+	"ko": "ko", "kor": "ko", "korean": "ko",
+	"ar": "ar", "ara": "ar", "arabic": "ar",
+}
+
+// importSidecarSubs links external subtitle files from a finished download next to
+// the imported video, following the Plex/Jellyfin "<base>.<lang>.<ext>" convention
+// so the Subtitles module and players pick them up. It only takes subtitles that
+// belong to this release: for a single-file torrent (contentPath is the file, in a
+// shared save dir) it matches only the video's own base name, never a neighbor's.
+func (im *Importer) importSidecarSubs(contentPath, srcVideo, targetVideo string) {
+	info, err := os.Stat(contentPath)
+	if err != nil {
+		return
+	}
+	ownFolder := info.IsDir() // a folder download is entirely this release's
+	dir := contentPath
+	if !ownFolder {
+		dir = filepath.Dir(contentPath)
+	}
+	srcBase := strings.ToLower(strings.TrimSuffix(filepath.Base(srcVideo), filepath.Ext(srcVideo)))
+	targetBase := strings.TrimSuffix(targetVideo, filepath.Ext(targetVideo))
+
+	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !subtitleExts[strings.ToLower(filepath.Ext(p))] {
+			return nil
+		}
+		if strings.Contains(strings.ToLower(filepath.Base(p)), "sample") {
+			return nil
+		}
+		stem := strings.ToLower(strings.TrimSuffix(filepath.Base(p), filepath.Ext(p)))
+		lang, ok := subLangFor(stem, srcBase, ownFolder)
+		if !ok {
+			return nil // a neighbor's subtitle in a shared save dir — skip
+		}
+		target := targetBase + strings.ToLower(filepath.Ext(p))
+		if lang != "" {
+			target = targetBase + "." + lang + strings.ToLower(filepath.Ext(p))
+		}
+		target = uniqueSubPath(target)
+		if method, err := linkOrCopy(p, target); err == nil {
+			im.log.Info("imported subtitle", "lang", lang, "target", target, "method", method)
+		}
+		return nil
+	})
+}
+
+// subLangFor derives a subtitle's language tag and whether it belongs to this
+// release. A bare "<base>.srt" → no tag; "<base>.en.srt" → "en"; inside the
+// release's own folder, an unrelated name is language-sniffed; in a shared save
+// dir an unrelated name is rejected so single-file torrents don't grab neighbors.
+func subLangFor(stem, srcBase string, ownFolder bool) (lang string, ok bool) {
+	switch {
+	case stem == srcBase:
+		return "", true
+	case strings.HasPrefix(stem, srcBase+"."):
+		rest := stem[len(srcBase)+1:]
+		if i := strings.IndexByte(rest, '.'); i >= 0 {
+			rest = rest[:i] // "en" from "en.forced"
+		}
+		if code, known := langNames[rest]; known {
+			return code, true
+		}
+		return rest, true
+	case ownFolder:
+		return detectLang(stem), true
+	default:
+		return "", false
+	}
+}
+
+// detectLang finds a known language token anywhere in a subtitle filename.
+func detectLang(stem string) string {
+	for _, tok := range strings.FieldsFunc(stem, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if code, ok := langNames[tok]; ok {
+			return code
+		}
+	}
+	return ""
+}
+
+// uniqueSubPath returns path, or path with a numeric suffix if it already exists,
+// so a second same-language subtitle doesn't clobber the first.
+func uniqueSubPath(path string) string {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return path
+	}
+	ext := filepath.Ext(path)
+	base := strings.TrimSuffix(path, ext)
+	for i := 2; ; i++ {
+		cand := fmt.Sprintf("%s.%d%s", base, i, ext)
+		if _, err := os.Stat(cand); os.IsNotExist(err) {
+			return cand
+		}
+	}
 }
 
 // linkOrCopy hardlinks src→dst (instant, no extra space, keeps seeding), falling

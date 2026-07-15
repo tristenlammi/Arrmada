@@ -7,6 +7,17 @@ import (
 	"github.com/tristenlammi/arrmada/internal/parser"
 )
 
+// TestBitrateMbps pins the GiB-over-minutes → Mbps conversion the upgrade
+// threshold and bitrate cap both rely on (10 GiB over 100 min ≈ 14.3 Mbps).
+func TestBitrateMbps(t *testing.T) {
+	if got := BitrateMbps(10, 100); got < 14.0 || got > 14.7 {
+		t.Errorf("BitrateMbps(10, 100) = %.2f, want ≈14.3", got)
+	}
+	if got := BitrateMbps(10, 0); got != 0 {
+		t.Errorf("BitrateMbps with unknown runtime = %.2f, want 0", got)
+	}
+}
+
 // testProfiles are scoring fixtures for the engine tests. They are plain
 // Profiles (the app no longer ships built-in presets), kept here so the engine
 // behavior stays pinned to known inputs.

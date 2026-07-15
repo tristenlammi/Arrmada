@@ -18,7 +18,7 @@ func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const profileCols = `id, media_type, name, base, allowed_resolutions, min_source, bitrate_cap_mbps,
 	small_bias, min_format_score, format_scores, custom_formats, keywords, rejected, min_seeders, stall_minutes, max_source,
-	upgrades_enabled, upgrade_gb`
+	upgrades_enabled, upgrade_bitrate_mbps`
 
 func (r *Repo) scan(row interface{ Scan(...any) error }) (StoredProfile, error) {
 	var (
@@ -29,7 +29,7 @@ func (r *Repo) scan(row interface{ Scan(...any) error }) (StoredProfile, error) 
 	err := row.Scan(&sp.ID, &sp.MediaType, &sp.Name, &sp.Base, &allowedJSON, &sp.MinSource,
 		&sp.BitrateCapMbps, &sp.SmallBias, &sp.MinFormatScore, &scoresJSON, &cfJSON,
 		&kwJSON, &rejectedJSON, &sp.MinSeeders, &sp.StallMinutes, &sp.MaxSource,
-		&upgradesEnabled, &sp.UpgradeGB)
+		&upgradesEnabled, &sp.UpgradeBitrateMbps)
 	if err != nil {
 		return StoredProfile{}, err
 	}
@@ -80,11 +80,11 @@ func (r *Repo) Create(ctx context.Context, sp StoredProfile) (StoredProfile, err
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO quality_profiles (media_type, name, base, allowed_resolutions, min_source,
 			bitrate_cap_mbps, small_bias, min_format_score, format_scores, custom_formats,
-			keywords, rejected, min_seeders, stall_minutes, max_source, upgrades_enabled, upgrade_gb)
+			keywords, rejected, min_seeders, stall_minutes, max_source, upgrades_enabled, upgrade_bitrate_mbps)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sp.MediaType, sp.Name, sp.Base, allowed, sp.MinSource, sp.BitrateCapMbps, sp.SmallBias,
 		sp.MinFormatScore, scores, cf, kw, rej, sp.MinSeeders, sp.StallMinutes, sp.MaxSource,
-		boolToInt(sp.UpgradesEnabled), sp.UpgradeGB)
+		boolToInt(sp.UpgradesEnabled), sp.UpgradeBitrateMbps)
 	if err != nil {
 		return StoredProfile{}, err
 	}
@@ -99,11 +99,11 @@ func (r *Repo) Update(ctx context.Context, id int64, sp StoredProfile) error {
 		`UPDATE quality_profiles SET name = ?, base = ?, allowed_resolutions = ?, min_source = ?,
 			bitrate_cap_mbps = ?, small_bias = ?, min_format_score = ?, format_scores = ?, custom_formats = ?,
 			keywords = ?, rejected = ?, min_seeders = ?, stall_minutes = ?, max_source = ?,
-			upgrades_enabled = ?, upgrade_gb = ?
+			upgrades_enabled = ?, upgrade_bitrate_mbps = ?
 		 WHERE id = ?`,
 		sp.Name, sp.Base, allowed, sp.MinSource, sp.BitrateCapMbps, sp.SmallBias, sp.MinFormatScore,
 		scores, cf, kw, rej, sp.MinSeeders, sp.StallMinutes, sp.MaxSource,
-		boolToInt(sp.UpgradesEnabled), sp.UpgradeGB, id)
+		boolToInt(sp.UpgradesEnabled), sp.UpgradeBitrateMbps, id)
 	if err != nil {
 		return err
 	}

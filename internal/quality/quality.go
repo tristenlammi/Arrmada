@@ -171,11 +171,15 @@ func (c Candidate) WithRuntime(min int) Candidate {
 const gibToMegabit = 1024.0 * 1024.0 * 1024.0 * 8.0 / 1e6 // ≈ 8589.93
 
 // bitrateMbps is the release's average bitrate in Mbps, or 0 when the runtime is unknown.
-func (c Candidate) bitrateMbps() float64 {
-	if c.RuntimeMin <= 0 || c.SizeGB <= 0 {
+func (c Candidate) bitrateMbps() float64 { return BitrateMbps(c.SizeGB, c.RuntimeMin) }
+
+// BitrateMbps is the average bitrate in Mbps for a GiB size over a minutes
+// runtime, or 0 when either is unknown/zero.
+func BitrateMbps(sizeGB float64, runtimeMin int) float64 {
+	if runtimeMin <= 0 || sizeGB <= 0 {
 		return 0
 	}
-	return c.SizeGB * gibToMegabit / float64(c.RuntimeMin*60)
+	return sizeGB * gibToMegabit / float64(runtimeMin*60)
 }
 
 // Evaluation is the scored result for a single candidate.

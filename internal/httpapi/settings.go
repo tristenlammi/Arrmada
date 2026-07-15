@@ -36,8 +36,8 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"search_on_add":         a.deps.Settings.GetBool(ctx, keySearchOnAdd, true),
 		"naming_movie_folder":   a.deps.Settings.Get(ctx, keyNamingFolder, library.DefaultMovieFolder),
 		"naming_movie_file":     a.deps.Settings.Get(ctx, keyNamingFile, library.DefaultMovieFile),
-		"write_nfo":        a.deps.Settings.GetBool(ctx, keyWriteNFO, true),
-		"download_artwork": a.deps.Settings.GetBool(ctx, keyDownloadArtwrk, true),
+		"write_nfo":        a.deps.Settings.GetBool(ctx, keyWriteNFO, false),
+		"download_artwork": a.deps.Settings.GetBool(ctx, keyDownloadArtwrk, false),
 		"books_enabled":    a.booksEnabled(ctx),
 		"music_enabled":    a.musicEnabled(ctx),
 		// Convert module.

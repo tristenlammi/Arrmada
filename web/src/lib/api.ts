@@ -211,7 +211,7 @@ export interface StoredProfile {
   min_seeders: number;
   stall_minutes: number;
   upgrades_enabled: boolean;
-  upgrade_gb: number;
+  upgrade_bitrate_mbps: number;
 }
 
 export interface DownloadClient {

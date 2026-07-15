@@ -117,6 +117,7 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 		season, episode int
 		release         string // current filename — carries the quality tag we renamed to
 		sizeGB          float64
+		runtimeMin      int // episode length, for the bitrate-based upgrade threshold
 	}
 	var haveEps []have
 	for _, sn := range s.Seasons {
@@ -125,7 +126,9 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 		}
 		for _, e := range sn.Episodes {
 			if e.Monitored && e.HasFile && e.FilePath != "" {
-				haveEps = append(haveEps, have{e.SeasonNumber, e.EpisodeNumber, filepath.Base(e.FilePath), gbOf(e.SizeBytes)})
+				// e.Runtime (episode minutes) drives the bitrate threshold; 0 (unknown)
+				// falls back to quality-only upgrades inside UpgradeCandidate.
+				haveEps = append(haveEps, have{e.SeasonNumber, e.EpisodeNumber, filepath.Base(e.FilePath), gbOf(e.SizeBytes), e.Runtime})
 			}
 		}
 	}
@@ -157,7 +160,7 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 		if len(cands) == 0 {
 			continue
 		}
-		pick, ok := c.quality.UpgradeCandidate(ctx, s.QualityProfile, ep.release, ep.sizeGB, cands)
+		pick, ok := c.quality.UpgradeCandidate(ctx, s.QualityProfile, ep.release, ep.sizeGB, ep.runtimeMin, cands)
 		if !ok {
 			continue
 		}

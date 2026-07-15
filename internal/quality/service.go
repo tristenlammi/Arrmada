@@ -116,8 +116,12 @@ func (s *Service) Decide(ctx context.Context, ref string, cands []Candidate) Dec
 //     never churn on a guess);
 //   - a candidate never drops resolution (that's a downgrade, handled elsewhere);
 //   - it wins if it scores strictly higher (better resolution/formats), OR — when
-//     upgrade_gb > 0 — it's at least that many GB bigger and no worse on quality.
-func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease string, currentSizeGB float64, cands []Candidate) (Candidate, bool) {
+//     upgrade_bitrate_mbps > 0 — its average bitrate is at least that many Mbps
+//     higher and it's no worse on quality.
+//
+// runtimeMin is the content length (movie/episode minutes), needed to turn sizes
+// into bitrates; 0 disables the bitrate-based upgrade (quality-only still applies).
+func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease string, currentSizeGB float64, runtimeMin int, cands []Candidate) (Candidate, bool) {
 	sp, err := s.GetStored(ctx, ref)
 	if err != nil || !sp.UpgradesEnabled || strings.TrimSpace(currentRelease) == "" {
 		return Candidate{}, false
@@ -137,8 +141,8 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 			continue // the release we already have
 		}
 		qualityBetter := ev.Total > cur.Total
-		bitrateBetter := sp.UpgradeGB > 0 && ev.Total >= cur.Total &&
-			ev.Candidate.SizeGB >= currentSizeGB+sp.UpgradeGB
+		bitrateBetter := sp.UpgradeBitrateMbps > 0 && ev.Total >= cur.Total && runtimeMin > 0 &&
+			BitrateMbps(ev.Candidate.SizeGB, runtimeMin) >= BitrateMbps(currentSizeGB, runtimeMin)+sp.UpgradeBitrateMbps
 		if qualityBetter || bitrateBetter {
 			return ev.Candidate, true
 		}

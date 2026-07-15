@@ -512,7 +512,7 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 		if v.File != nil && v.File.SizeBytes > 0 {
 			curSizeGB = gbOf(v.File.SizeBytes)
 		}
-		pick, ok := c.quality.UpgradeCandidate(ctx, v.QualityProfile, v.SourceRelease, curSizeGB, cands)
+		pick, ok := c.quality.UpgradeCandidate(ctx, v.QualityProfile, v.SourceRelease, curSizeGB, m.Runtime, cands)
 		if !ok {
 			continue
 		}

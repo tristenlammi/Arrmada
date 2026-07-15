@@ -36,7 +36,7 @@ type StoredProfile struct {
 	MinSeeders         int            `json:"min_seeders"`           // reject releases below this seeder count
 	StallMinutes       int            `json:"stall_minutes"`         // 0 = off; else fail-over after this long
 	UpgradesEnabled    bool           `json:"upgrades_enabled"`      // keep seeking a better release after import
-	UpgradeGB          float64        `json:"upgrade_gb"`            // also upgrade if a release is ≥ this many GB bigger (0 = quality-only)
+	UpgradeBitrateMbps float64        `json:"upgrade_bitrate_mbps"`  // also upgrade if a release's avg bitrate is ≥ this many Mbps higher (0 = quality-only)
 }
 
 // Keyword scores releases whose name contains Term (case-insensitive). Positive

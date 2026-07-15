@@ -71,7 +71,7 @@ function emptyProfile(media: string): StoredProfile {
     min_seeders: 0,
     stall_minutes: 0,
     upgrades_enabled: true,
-    upgrade_gb: 0,
+    upgrade_bitrate_mbps: 0,
   };
 }
 
@@ -425,12 +425,12 @@ function Builder({ formats, initial, onCancel, onSaved }: { formats: FormatInfo[
               <div className="mt-3.5 border-t pt-3" style={{ borderColor: "var(--line)" }}>
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
-                    <div className="text-[12px] font-semibold">Also upgrade on bigger files</div>
-                    <div className="text-[10.5px] text-ink-faint">Grab a same-or-better release that's at least this many GB larger (higher bitrate), up to your size ceiling. 0 = only upgrade on a real quality gain.</div>
+                    <div className="text-[12px] font-semibold">Also upgrade on higher bitrate</div>
+                    <div className="text-[10.5px] text-ink-faint">Grab a same-or-better release whose average bitrate is at least this many Mbps higher, up to your bitrate ceiling. 0 = only upgrade on a real quality gain.</div>
                   </div>
                   <div className="flex flex-none items-center gap-1.5">
-                    <input type="number" min={0} step={1} value={sp.upgrade_gb} onChange={(e) => patch({ upgrade_gb: Math.max(0, Number(e.target.value)) })} className="w-[64px] rounded-lg px-2 py-1.5 text-right text-[13px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
-                    <span className="text-[11px] text-ink-faint">GB</span>
+                    <input type="number" min={0} step={1} value={sp.upgrade_bitrate_mbps} onChange={(e) => patch({ upgrade_bitrate_mbps: Math.max(0, Number(e.target.value)) })} className="w-[64px] rounded-lg px-2 py-1.5 text-right text-[13px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+                    <span className="text-[11px] text-ink-faint">Mbps</span>
                   </div>
                 </div>
               </div>
