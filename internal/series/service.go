@@ -224,6 +224,19 @@ func (s *Service) EpisodeFilePath(ctx context.Context, seriesID int64, season, e
 	return s.repo.EpisodeFilePath(ctx, seriesID, season, episode)
 }
 
+// ExistingFolderName returns the name of the series' existing library folder,
+// derived from any episode already on disk ("" if the series has no files yet).
+// New episodes are routed into this folder so they don't spawn a duplicate under
+// a differently-named "<Title> (<Year>)" path.
+func (s *Service) ExistingFolderName(ctx context.Context, seriesID int64) string {
+	path, err := s.repo.AnyEpisodeFilePath(ctx, seriesID)
+	if err != nil || path == "" {
+		return ""
+	}
+	// path = <root>/<Series Folder>/Season NN/<file>; the series folder is two up.
+	return filepath.Base(filepath.Dir(filepath.Dir(path)))
+}
+
 // Events returns a series' activity timeline, newest first.
 func (s *Service) Events(ctx context.Context, id int64, limit int) ([]Event, error) {
 	return s.repo.Events(ctx, id, limit)

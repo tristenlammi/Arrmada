@@ -359,10 +359,13 @@ func (q *QBittorrent) SetListenPort(ctx context.Context, dc Client, port int) er
 // at Arrmada's downloads dir. The seed config only applies on first run, so this
 // fixes an existing client whose path still points at the old managed volume.
 func (q *QBittorrent) SetSavePath(ctx context.Context, dc Client, savePath string) error {
+	// Download straight to the final folder — NO separate "incomplete" path. The
+	// move-on-completion that a temp path triggers breaks hardlinks and can leave
+	// 0-byte files on Unraid's /mnt/user FUSE, which kills seeding. Downloading in
+	// place keeps every file stable so imports hardlink the real data.
 	prefs, _ := json.Marshal(map[string]any{
 		"save_path":         savePath,
-		"temp_path":         savePath + "/incomplete",
-		"temp_path_enabled": true,
+		"temp_path_enabled": false,
 	})
 	return q.postForm(ctx, dc, "/api/v2/app/setPreferences", url.Values{"json": {string(prefs)}})
 }

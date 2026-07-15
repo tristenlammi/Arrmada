@@ -60,6 +60,47 @@ func TestImportEpisode(t *testing.T) {
 	}
 }
 
+// TestImportEpisodeIntoExistingFolder checks that a supplied series folder wins
+// over the derived "<Title> (<Year>)" name, so new episodes join the show's
+// existing on-disk folder instead of spawning a duplicate.
+func TestImportEpisodeIntoExistingFolder(t *testing.T) {
+	src := t.TempDir()
+	lib := t.TempDir()
+
+	name := "Below.Deck.S11E01.1080p.WEB-DL-NTb"
+	writeFile(t, filepath.Join(src, name+".mkv"), 3000)
+
+	im := NewImporter(lib, quiet())
+	// Series is known to TMDB with year 2013, but the library folder is "Below Deck".
+	res, ok, err := im.ImportEpisodeInto("Below Deck", "Below Deck", 2013, filepath.Join(src, name+".mkv"))
+	if err != nil || !ok {
+		t.Fatalf("import: ok=%v err=%v", ok, err)
+	}
+	want := filepath.Join(lib, "Below Deck", "Season 11", "Below Deck - S11E01 - 1080p WEB-DL.mkv")
+	if res.TargetPath != want {
+		t.Errorf("target = %q\n want %q (should not create a \"Below Deck (2013)\" folder)", res.TargetPath, want)
+	}
+}
+
+// TestImportEpisodeSkipsEmpty checks that a 0-byte source is refused rather than
+// overwriting a good library file with nothing (broken hardlink / mid-move).
+func TestImportEpisodeSkipsEmpty(t *testing.T) {
+	src := t.TempDir()
+	lib := t.TempDir()
+
+	name := "Below.Deck.S11E02.1080p.WEB-DL-NTb"
+	writeFile(t, filepath.Join(src, name+".mkv"), 0)
+
+	im := NewImporter(lib, quiet())
+	res, ok, err := im.ImportEpisode("Below Deck", 0, filepath.Join(src, name+".mkv"))
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if ok || res != nil {
+		t.Errorf("expected empty file to be skipped, got ok=%v res=%v", ok, res)
+	}
+}
+
 // TestImportRoutesByType checks that per-media-type roots send movies, TV, and
 // book editions to their own library folders (falling back to the base root when
 // a type has no dedicated dir).

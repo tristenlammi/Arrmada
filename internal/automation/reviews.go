@@ -218,9 +218,13 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	if err != nil {
 		return 0
 	}
+	// Route episodes into the show's existing on-disk folder when it has one, so a
+	// show already stored as "Below Deck" doesn't spawn a duplicate "Below Deck
+	// (2013)" folder on the next grab.
+	folder := c.series.ExistingFolderName(ctx, s.ID)
 	imported := 0
 	for _, v := range videos {
-		ei, ok, err := c.imp.ImportEpisode(s.Title, s.Year, v.Path)
+		ei, ok, err := c.imp.ImportEpisodeInto(folder, s.Title, s.Year, v.Path)
 		if err != nil || !ok {
 			continue
 		}

@@ -520,13 +520,27 @@ type EpisodeImport struct {
 // season/episode from the file name. Returns nil (no error) with a false ok if the
 // file has no SxxExx marker.
 func (im *Importer) ImportEpisode(seriesTitle string, year int, videoPath string) (*EpisodeImport, bool, error) {
+	return im.ImportEpisodeInto("", seriesTitle, year, videoPath)
+}
+
+// ImportEpisodeInto is ImportEpisode with an explicit series folder name to place
+// the episode under (relative to the TV root). When non-empty it overrides the
+// derived "<Title> (<Year>)" folder, so new episodes join the show's existing
+// on-disk folder instead of spawning a duplicate.
+func (im *Importer) ImportEpisodeInto(seriesFolder, seriesTitle string, year int, videoPath string) (*EpisodeImport, bool, error) {
 	rel := parser.Parse(filepath.Base(videoPath))
 	if rel.Season == 0 || len(rel.Episodes) == 0 {
 		return nil, false, nil // can't place a file with no S/E marker
 	}
+	// Refuse empty source files — a 0-byte file means the download is mid-move or
+	// its data was lost (e.g. a broken hardlink), and importing it would overwrite a
+	// good library file with nothing and leave qBittorrent nothing to seed.
+	if fi, err := os.Stat(videoPath); err == nil && fi.Size() == 0 {
+		return nil, false, nil
+	}
 	ep := rel.Episodes[0]
 	ext := filepath.Ext(videoPath)
-	target := im.episodeTarget(seriesTitle, year, rel.Season, ep, rel, ext)
+	target := im.episodeTargetIn(seriesFolder, seriesTitle, year, rel.Season, ep, rel, ext)
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return nil, false, fmt.Errorf("create season dir: %w", err)
 	}
@@ -548,6 +562,12 @@ func (im *Importer) ImportEpisode(seriesTitle string, year int, videoPath string
 // quality tag from sourceName (usually the current filename). Used by rename preview.
 func (im *Importer) EpisodeTarget(title string, year, season, episode int, sourceName, ext string) string {
 	return im.episodeTarget(title, year, season, episode, parser.Parse(sourceName), ext)
+}
+
+// EpisodeTargetIn is EpisodeTarget scoped to an explicit series folder (empty =
+// derive "<Title> (<Year>)").
+func (im *Importer) EpisodeTargetIn(seriesFolder, title string, year, season, episode int, sourceName, ext string) string {
+	return im.episodeTargetIn(seriesFolder, title, year, season, episode, parser.Parse(sourceName), ext)
 }
 
 // Move relocates a file within the library (same volume), creating parent dirs. A
@@ -586,12 +606,23 @@ func (im *Importer) SeriesLibraryFiles(title string, year int) []EpisodeImport {
 
 // episodeTarget builds "<root>/<Series (Year)>/Season NN/<Series - SxxExx - q>.ext".
 func (im *Importer) episodeTarget(title string, year, season, episode int, rel parser.Release, ext string) string {
-	folder := clean(title)
+	return im.episodeTargetIn("", title, year, season, episode, rel, ext)
+}
+
+// episodeTargetIn builds the episode path under an explicit series folder. When
+// seriesFolder is empty it derives the conventional "<Title> (<Year>)" folder;
+// otherwise it uses the given folder verbatim so episodes land in the show's
+// existing on-disk directory.
+func (im *Importer) episodeTargetIn(seriesFolder, title string, year, season, episode int, rel parser.Release, ext string) string {
+	folder := clean(seriesFolder)
 	if folder == "" {
-		folder = "Unknown"
-	}
-	if year > 0 {
-		folder = fmt.Sprintf("%s (%d)", folder, year)
+		folder = clean(title)
+		if folder == "" {
+			folder = "Unknown"
+		}
+		if year > 0 {
+			folder = fmt.Sprintf("%s (%d)", folder, year)
+		}
 	}
 	file := fmt.Sprintf("%s - S%02dE%02d", clean(title), season, episode)
 	if q := qualityTag(rel); q != "" {

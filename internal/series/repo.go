@@ -269,6 +269,20 @@ func (r *Repo) EpisodeFilePath(ctx context.Context, seriesID int64, season, epis
 	return path, err
 }
 
+// AnyEpisodeFilePath returns the on-disk path of any one episode with a file for
+// the series (empty if the series has nothing on disk). Used to discover the
+// show's existing library folder so new episodes join it.
+func (r *Repo) AnyEpisodeFilePath(ctx context.Context, seriesID int64) (string, error) {
+	var path string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT file_path FROM episodes WHERE series_id = ? AND has_file = 1 AND file_path <> '' LIMIT 1`,
+		seriesID).Scan(&path)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return path, err
+}
+
 // SetQualityProfile changes a series' quality profile.
 func (r *Repo) SetQualityProfile(ctx context.Context, id int64, profile string) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE series SET quality_profile = ? WHERE id = ?`, profile, id)

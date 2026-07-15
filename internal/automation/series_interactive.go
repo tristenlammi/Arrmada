@@ -251,7 +251,8 @@ func (c *Coordinator) ManualImportSeries(ctx context.Context, seriesID int64, pa
 	if err != nil {
 		return err
 	}
-	ei, ok, err := c.imp.ImportEpisode(s.Title, s.Year, path)
+	folder := c.series.ExistingFolderName(ctx, seriesID)
+	ei, ok, err := c.imp.ImportEpisodeInto(folder, s.Title, s.Year, path)
 	if err != nil {
 		return err
 	}
@@ -277,13 +278,14 @@ func (c *Coordinator) SeriesRenamePreview(ctx context.Context, seriesID int64) (
 	if err != nil {
 		return nil, err
 	}
+	folder := c.series.ExistingFolderName(ctx, seriesID)
 	var items []SeriesRenameItem
 	for _, sn := range s.Seasons {
 		for _, e := range sn.Episodes {
 			if !e.HasFile || e.FilePath == "" {
 				continue
 			}
-			target := c.imp.EpisodeTarget(s.Title, s.Year, e.SeasonNumber, e.EpisodeNumber, filepath.Base(e.FilePath), filepath.Ext(e.FilePath))
+			target := c.imp.EpisodeTargetIn(folder, s.Title, s.Year, e.SeasonNumber, e.EpisodeNumber, filepath.Base(e.FilePath), filepath.Ext(e.FilePath))
 			if target != "" && target != e.FilePath {
 				items = append(items, SeriesRenameItem{From: e.FilePath, To: target})
 			}
@@ -301,13 +303,14 @@ func (c *Coordinator) SeriesRename(ctx context.Context, seriesID int64) (int, er
 	if err != nil {
 		return 0, err
 	}
+	folder := c.series.ExistingFolderName(ctx, seriesID)
 	moved := 0
 	for _, sn := range s.Seasons {
 		for _, e := range sn.Episodes {
 			if !e.HasFile || e.FilePath == "" {
 				continue
 			}
-			target := c.imp.EpisodeTarget(s.Title, s.Year, e.SeasonNumber, e.EpisodeNumber, filepath.Base(e.FilePath), filepath.Ext(e.FilePath))
+			target := c.imp.EpisodeTargetIn(folder, s.Title, s.Year, e.SeasonNumber, e.EpisodeNumber, filepath.Base(e.FilePath), filepath.Ext(e.FilePath))
 			if target == "" || target == e.FilePath {
 				continue
 			}
