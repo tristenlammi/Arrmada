@@ -16,6 +16,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/library"
+	"github.com/tristenlammi/arrmada/internal/quality"
 )
 
 // bookCategory keeps ebook/audiobook downloads in their own download-client category
@@ -58,24 +59,24 @@ func (c *Coordinator) SearchBookNow(ctx context.Context, bookID int64) error {
 	if err != nil {
 		return err
 	}
-	scores := c.bookFormatScores(ctx, b.QualityProfile)
-	wantEbook, wantAudio := books.WantedEditions(scores)
+	sp := c.bookProfile(ctx, b.QualityProfile)
+	wantEbook, wantAudio := books.WantedEditions(sp.FormatScores)
 	if wantEbook && b.Ebook == nil {
-		c.grabBookEdition(ctx, b, books.KindEbook, scores)
+		c.grabBookEdition(ctx, b, books.KindEbook, sp)
 	}
 	if wantAudio && b.Audiobook == nil {
-		c.grabBookEdition(ctx, b, books.KindAudiobook, scores)
+		c.grabBookEdition(ctx, b, books.KindAudiobook, sp)
 	}
 	return nil
 }
 
-func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind string, scores map[string]int) {
+func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind string, sp quality.StoredProfile) {
 	res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: bookQuery(b, kind), MediaType: indexer.MediaBook, Limit: 60})
 	if err != nil || len(res.Releases) == 0 {
 		return
 	}
 	res.Releases = c.dropBlockedBook(ctx, b.ID, res.Releases) // don't re-grab a blocklisted (e.g. stalled) release
-	best := pickBestBookForKind(scores, res.Releases, kind)
+	best := pickBestBookForKind(sp, res.Releases, kind)
 	if best == nil {
 		c.log.Info("book: no matching-format release", "title", b.Title, "edition", kind)
 		return
@@ -101,33 +102,53 @@ func bookQuery(b books.Book, kind string) string {
 	return q
 }
 
-// pickBestBookForKind ranks releases of the given edition by the profile's format
-// preference (format dominates, seeders tiebreak).
-func pickBestBookForKind(scores map[string]int, releases []indexer.Release, kind string) *indexer.Release {
+// pickBestBookForKind ranks releases of the given edition by the profile: format
+// score + keyword score combine (so "graphic audio +100" or a preferred format
+// wins), seeders break ties. Hard-reject terms and unwanted formats are skipped.
+func pickBestBookForKind(sp quality.StoredProfile, releases []indexer.Release, kind string) *indexer.Release {
 	var best *indexer.Release
-	bestScore := -1
+	bestScore := 0
 	for i := range releases {
-		f := detectBookFormat(releases[i].Title)
-		if f == "" || books.EditionOf(f) != kind {
+		if books.EditionOf(detectBookFormat(releases[i].Title)) != kind {
 			continue
 		}
-		fs, ok := scores[f]
-		if !ok || fs <= 0 {
+		score, ok := bookRelScore(sp, releases[i].Title, releases[i].Seeders)
+		if !ok {
 			continue
 		}
-		score := fs*100000 + releases[i].Seeders
-		if score > bestScore {
+		if best == nil || score > bestScore {
 			bestScore, best = score, &releases[i]
 		}
 	}
 	return best
 }
 
-func (c *Coordinator) bookFormatScores(ctx context.Context, profileRef string) map[string]int {
-	if sp, err := c.quality.GetStored(ctx, profileRef); err == nil && len(sp.FormatScores) > 0 {
-		return sp.FormatScores
+// bookRelScore ranks a book release under a profile — format score plus keyword
+// score (so preferences like "graphic audio +100" combine with format
+// preference), seeders as the low-order tiebreak. ok=false when the format isn't
+// wanted (score ≤ 0 or unknown) or a hard-reject term is present.
+func bookRelScore(sp quality.StoredProfile, title string, seeders int) (int, bool) {
+	f := detectBookFormat(title)
+	if f == "" {
+		return 0, false
 	}
-	return map[string]int{"EPUB": 40, "AZW3": 30, "MOBI": 20, "PDF": 10}
+	fs, ok := sp.FormatScores[f]
+	if !ok || fs <= 0 {
+		return 0, false
+	}
+	if quality.Rejects(sp.Rejected, title) {
+		return 0, false
+	}
+	return (fs+quality.KeywordScore(sp.Keywords, title))*1_000_000 + seeders, true
+}
+
+// bookProfile resolves the book's quality profile, falling back to a sensible
+// ebook-preferring default when unset.
+func (c *Coordinator) bookProfile(ctx context.Context, profileRef string) quality.StoredProfile {
+	if sp, err := c.quality.GetStored(ctx, profileRef); err == nil && len(sp.FormatScores) > 0 {
+		return sp
+	}
+	return quality.StoredProfile{FormatScores: map[string]int{"EPUB": 40, "AZW3": 30, "MOBI": 20, "PDF": 10}}
 }
 
 // ImportBookDownloads imports finished book downloads: for each completed torrent in
@@ -199,7 +220,7 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 	if err != nil {
 		return ReleaseList{}, err
 	}
-	scores := c.bookFormatScores(ctx, b.QualityProfile)
+	sp := c.bookProfile(ctx, b.QualityProfile)
 	query := b.Title
 	if b.Author != "" {
 		query = b.Author + " " + b.Title
@@ -225,12 +246,23 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 		if f == "" {
 			continue // not an identifiable book release
 		}
+		_, eligible := bookRelScore(sp, rel.Title, rel.Seeders)
 		out = append(out, RankedRelease{
 			Title: rel.Title, Indexer: rel.Indexer, DownloadURL: rel.DownloadURL,
 			SizeGB: rel.SizeGB(), Seeders: rel.Seeders, Summary: summarizeBook(f),
-			Eligible: scores[f] > 0,
+			Eligible: eligible,
 		})
 	}
+	// Order by the profile's preference so the best-format / best-keyword release
+	// leads (eligible first, then by combined score).
+	sort.SliceStable(out, func(i, j int) bool {
+		si, oi := bookRelScore(sp, out[i].Title, out[i].Seeders)
+		sj, oj := bookRelScore(sp, out[j].Title, out[j].Seeders)
+		if oi != oj {
+			return oi // eligible sorts before ineligible
+		}
+		return si > sj
+	})
 	return ReleaseList{Profile: b.QualityProfile, Releases: out}, nil
 }
 
@@ -674,7 +706,7 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 		if !b.Monitored {
 			continue
 		}
-		scores := c.bookFormatScores(ctx, b.QualityProfile)
+		sp := c.bookProfile(ctx, b.QualityProfile)
 		matched := c.dropBlockedBook(ctx, b.ID, releasesForBook(res.Releases, b))
 		if len(matched) == 0 {
 			continue
@@ -684,7 +716,7 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 			if (kind == books.KindEbook && b.Ebook != nil) || (kind == books.KindAudiobook && b.Audiobook != nil) {
 				continue // already have this edition
 			}
-			best := pickBestBookForKind(scores, matched, kind)
+			best := pickBestBookForKind(sp, matched, kind)
 			if best == nil {
 				continue
 			}

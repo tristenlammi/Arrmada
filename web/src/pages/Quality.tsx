@@ -80,6 +80,12 @@ const REJECT_TYPES = ["CAM", "TS", "XviD", "AVI", "WMV", "3D", "HDCAM", "R5"];
 // Executable/script extensions — pre-rejected on new profiles for safety.
 const EXECUTABLE_TYPES = ["exe", "bat", "cmd", "scr", "msi", "com", "vbs", "ps1"];
 
+// Book file formats, grouped by edition — the score-able formats in a book profile.
+const BOOK_FORMATS: { group: string; formats: string[] }[] = [
+  { group: "Ebook", formats: ["EPUB", "AZW3", "MOBI", "AZW", "PDF", "CBZ", "CBR", "FB2"] },
+  { group: "Audiobook", formats: ["M4B", "MP3", "M4A", "FLAC", "AAC", "OGG", "OPUS"] },
+];
+
 export function Quality() {
   const [media, setMedia] = useState("movie");
   const [profiles, setProfiles] = useState<QualityProfileInfo[]>([]);
@@ -102,9 +108,7 @@ export function Quality() {
     refresh();
   }, [refresh]);
 
-  // Books use fixed presets (Ebook / Audiobook / Ebook + Audiobook) — no resolution/HDR
-  // editor, no adding/deleting. You just pick which one is the default.
-  const preset = media === "book";
+  const isBook = media === "book";
 
   const openNew = () => setEditing(emptyProfile(media));
   const editRef = async (info: QualityProfileInfo) => {
@@ -113,17 +117,11 @@ export function Quality() {
   };
 
   if (editing) {
-    return (
-      <Builder
-        formats={formats}
-        initial={editing}
-        onCancel={() => setEditing(null)}
-        onSaved={() => {
-          setEditing(null);
-          refresh();
-        }}
-      />
-    );
+    const done = { onCancel: () => setEditing(null), onSaved: () => { setEditing(null); refresh(); } };
+    // Books tune formats + keywords, not resolution/bitrate — their own builder.
+    return editing.media_type === "book"
+      ? <BookBuilder initial={editing} {...done} />
+      : <Builder formats={formats} initial={editing} {...done} />;
   }
 
   return (
@@ -132,16 +130,14 @@ export function Quality() {
       <div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6">
         <div className="mb-5 flex items-center justify-between">
           <Tabs value={media} onChange={setMedia} />
-          {!preset && (
-            <button onClick={openNew} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
-              + New profile
-            </button>
-          )}
+          <button onClick={openNew} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
+            + New profile
+          </button>
         </div>
 
         <p className="mb-4 text-[12.5px] text-ink-dim">
-          {preset
-            ? "Books come as three fixed presets — pick which edition(s) you want when adding a book, or set a default here. There's nothing to tune: Arrmada always prefers EPUB for ebooks and M4B for audiobooks."
+          {isBook
+            ? "A book profile picks which formats to grab (EPUB, M4B…) and can boost releases by keyword — e.g. GraphicAudio +100 to prefer full-cast dramatizations, or M4B where available. Higher score wins."
             : "A profile tells Arrmada what a good release looks like. Two come pre-loaded to get you going — edit them, delete them, or add your own. See exactly what you'd get, no scores to decode."}
         </p>
 
@@ -154,7 +150,7 @@ export function Quality() {
         ) : (
           <div className="flex flex-col gap-2.5">
             {profiles.map((p) => (
-              <ProfileCard key={p.key} info={p} media={media} preset={preset} onEdit={() => editRef(p)} onChange={refresh} />
+              <ProfileCard key={p.key} info={p} media={media} preset={false} onEdit={() => editRef(p)} onChange={refresh} />
             ))}
           </div>
         )}
@@ -477,6 +473,85 @@ function NumberField({ label, hint, value, onChange }: { label: string; hint: st
       <div className="mb-2 text-[10.5px] text-ink-faint">{hint}</div>
       <input type="number" min={0} value={value} onChange={(e) => onChange(Math.max(0, Number(e.target.value)))} className="w-full rounded-lg px-2.5 py-1.5 text-[13px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
     </div>
+  );
+}
+
+// BookBuilder edits a book quality profile: which formats to grab (per edition)
+// and keyword boosts (e.g. GraphicAudio +100), plus hard-reject terms. No
+// resolution/bitrate — those don't apply to books.
+function BookBuilder({ initial, onCancel, onSaved }: { initial: StoredProfile; onCancel: () => void; onSaved: () => void }) {
+  const [sp, setSp] = useState<StoredProfile>({
+    ...initial,
+    format_scores: initial.format_scores ?? {},
+    keywords: initial.keywords ?? [],
+    rejected: initial.rejected ?? [],
+  });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const patch = (p: Partial<StoredProfile>) => setSp((s) => ({ ...s, ...p }));
+  const setFormatScore = (name: string, score: number) => {
+    const next = { ...sp.format_scores };
+    if (score <= 0) delete next[name];
+    else next[name] = score;
+    patch({ format_scores: next });
+  };
+  const save = async () => {
+    if (!sp.name.trim()) { setError("Give the profile a name."); return; }
+    setSaving(true);
+    setError(null);
+    try {
+      if (sp.id > 0) await api.updateQualityProfile(sp.id, sp);
+      else await api.createQualityProfile(sp);
+      onSaved();
+    } catch (e) { setError((e as Error).message); } finally { setSaving(false); }
+  };
+
+  return (
+    <>
+      <PageHeader title={sp.id > 0 ? "Edit book profile" : "New book profile"} crumb="System / Quality" />
+      <div className="mx-auto w-full max-w-[720px] px-4 py-6 sm:px-6">
+        <div className="mb-4 flex items-center gap-2">
+          <button onClick={onCancel} className="text-[12px] text-ink-dim hover:text-[var(--ink)]">← Back</button>
+        </div>
+
+        <label className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-wide text-accent">Name</label>
+        <input value={sp.name} onChange={(e) => patch({ name: e.target.value })} placeholder="e.g. Audiobooks — GraphicAudio first" className="mb-5 w-full rounded-lg px-3 py-2 text-[13px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+
+        {BOOK_FORMATS.map((grp) => (
+          <div key={grp.group} className="mb-5">
+            <SectionLabel>{grp.group} formats</SectionLabel>
+            <p className="mb-2 text-[10.5px] text-ink-faint">Score a format above 0 to grab it (higher = preferred); 0 skips it. The {grp.group.toLowerCase()} edition is fetched only if at least one of its formats is scored.</p>
+            <div className="flex flex-col gap-1.5">
+              {grp.formats.map((f) => {
+                const v = sp.format_scores?.[f] ?? 0;
+                return (
+                  <div key={f} className="flex items-center gap-3 rounded-lg px-2.5 py-1.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+                    <span className="w-[56px] font-mono text-[12px] font-semibold">{f}</span>
+                    <input type="range" min={0} max={100} step={5} value={v} onChange={(e) => setFormatScore(f, Number(e.target.value))} className="flex-1 accent-[var(--accent)]" />
+                    <input type="number" min={0} value={v} onChange={(e) => setFormatScore(f, Math.max(0, Number(e.target.value)))} className="w-[60px] rounded-lg px-2 py-1 text-right font-mono text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+
+        <SectionLabel>Preferred keywords</SectionLabel>
+        <p className="mb-2 text-[10.5px] text-ink-faint">Add points to any release whose name contains a term — e.g. GraphicAudio +100, Dramatized +80, Unabridged +20. Combined with the format score; highest total wins.</p>
+        <KeywordEditor keywords={sp.keywords ?? []} onChange={(kw) => patch({ keywords: kw })} />
+
+        <div className="mt-5">
+          <SectionLabel>Reject</SectionLabel>
+          <RejectEditor rejected={sp.rejected ?? []} onChange={(r) => patch({ rejected: r })} />
+        </div>
+
+        {error && <div className="mt-4 rounded-lg p-3 text-[12px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
+        <div className="mt-6 flex items-center justify-end gap-3">
+          <button onClick={onCancel} className="text-[12.5px] text-ink-dim hover:text-[var(--ink)]">Cancel</button>
+          <button onClick={save} disabled={saving} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{saving ? "Saving…" : "Save profile"}</button>
+        </div>
+      </div>
+    </>
   );
 }
 

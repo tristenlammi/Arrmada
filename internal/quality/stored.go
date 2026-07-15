@@ -2,6 +2,7 @@ package quality
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/parser"
@@ -46,6 +47,32 @@ type Keyword struct {
 	Score int    `json:"score"`
 }
 
+// KeywordScore sums the scores of the keywords whose term appears in the release
+// title (case-insensitive). Shared by the video engine and the book picker so
+// "graphic audio +100" style preferences work everywhere.
+func KeywordScore(keywords []Keyword, title string) int {
+	lc := strings.ToLower(title)
+	total := 0
+	for _, k := range keywords {
+		if k.Term != "" && strings.Contains(lc, strings.ToLower(k.Term)) {
+			total += k.Score
+		}
+	}
+	return total
+}
+
+// Rejects reports whether the release title contains any of the profile's
+// hard-reject terms (case-insensitive).
+func Rejects(rejected []string, title string) bool {
+	lc := strings.ToLower(title)
+	for _, term := range rejected {
+		if term != "" && strings.Contains(lc, strings.ToLower(term)) {
+			return true
+		}
+	}
+	return false
+}
+
 // ToProfile projects the stored form into the runtime scoring Profile.
 func (sp StoredProfile) ToProfile() Profile {
 	res := make([]parser.Resolution, 0, len(sp.AllowedResolutions))
@@ -75,6 +102,9 @@ func (sp StoredProfile) Engine() *Engine {
 
 // Summary renders a one-line, plain-language description of the profile.
 func (sp StoredProfile) Summary() string {
+	if sp.MediaType == MediaBook {
+		return sp.bookSummary()
+	}
 	var parts []string
 	switch {
 	case len(sp.AllowedResolutions) == 0:
@@ -105,6 +135,41 @@ func (sp StoredProfile) Summary() string {
 	}
 	if len(prefs) > 0 {
 		parts = append(parts, "prefers "+strings.Join(prefs, ", "))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// bookSummary describes a book profile by the formats it prefers (highest score
+// first) plus its keyword count — the two things a book profile actually tunes.
+func (sp StoredProfile) bookSummary() string {
+	type fs struct {
+		name  string
+		score int
+	}
+	var list []fs
+	for n, s := range sp.FormatScores {
+		if s > 0 {
+			list = append(list, fs{n, s})
+		}
+	}
+	sort.Slice(list, func(i, j int) bool {
+		if list[i].score != list[j].score {
+			return list[i].score > list[j].score
+		}
+		return list[i].name < list[j].name
+	})
+	names := make([]string, len(list))
+	for i, f := range list {
+		names[i] = f.name
+	}
+	var parts []string
+	if len(names) > 0 {
+		parts = append(parts, "prefers "+strings.Join(names, ", "))
+	} else {
+		parts = append(parts, "no formats selected")
+	}
+	if n := len(sp.Keywords); n > 0 {
+		parts = append(parts, fmt.Sprintf("%d keyword%s", n, map[bool]string{true: "s", false: ""}[n != 1]))
 	}
 	return strings.Join(parts, " · ")
 }
