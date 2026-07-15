@@ -31,9 +31,13 @@ fi
 PROFILES=""
 [ "${1:-}" = "--with-prowlarr" ] && PROFILES="--profile prowlarr"
 
-say "Rebuilding and restarting…"
+say "Rebuilding and restarting Arrmada…"
+# Rebuild + recreate ONLY the app. --no-deps leaves the companions (qBittorrent,
+# FlareSolverr) running and, crucially, does NOT re-run the one-shot media /
+# qBittorrent init containers — those only need to run once, at install. An update
+# only changes the app image, so nothing else needs touching.
 # shellcheck disable=SC2086
-docker compose $PROFILES up -d --build
+docker compose $PROFILES up -d --build --no-deps arrmada-app
 
 # Reclaim space from the previous image build (harmless if nothing to prune).
 docker image prune -f >/dev/null 2>&1 || true
