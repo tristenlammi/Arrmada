@@ -43,7 +43,10 @@ RUN apk add --no-cache wget tar && set -eux; \
 
 # --- Stage 4: minimal runtime ---
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates wget ffmpeg && \
+# apprise (Python) is bundled for notifications — one image, 80+ services, no extra container.
+RUN apk add --no-cache ca-certificates wget ffmpeg python3 py3-pip && \
+    pip3 install --no-cache-dir --break-system-packages apprise && \
+    apprise --version && \
     adduser -D -u 1000 arrmada && \
     mkdir -p /data /media/downloads /media/library && \
     chown -R arrmada:arrmada /data /media
