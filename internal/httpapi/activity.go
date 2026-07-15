@@ -27,7 +27,12 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	list, _ := a.deps.Movies.List(ctx)
 	queue, _ := a.deps.Downloads.Queue(ctx)
 
+	// Monitored, missing movies split into two buckets: those actually being
+	// searched (past their minimum-availability threshold — same gate the
+	// automation uses) and those still awaiting release. An unreleased film must
+	// not claim to be "Searching" — nothing is looking for it yet.
 	searching := []map[string]any{}
+	upcoming := []map[string]any{}
 	for _, m := range list {
 		if !m.Monitored || m.HasFile {
 			continue
@@ -35,13 +40,21 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		if movieInQueue(queue, m) {
 			continue // a download for it is already in flight
 		}
-		searching = append(searching, map[string]any{
+		entry := map[string]any{
 			"movie_id":        m.ID,
 			"title":           m.Title,
 			"year":            m.Year,
 			"poster_url":      m.PosterURL,
 			"quality_profile": a.profileName(ctx, m.QualityProfile),
-		})
+		}
+		if a.deps.Movies.IsAvailable(m) {
+			searching = append(searching, entry)
+			continue
+		}
+		if m.Extra != nil && m.Extra.ReleaseDate != "" {
+			entry["available_at"] = m.Extra.ReleaseDate
+		}
+		upcoming = append(upcoming, entry)
 	}
 
 	// Downloads already imported into the library are dropped from the view (they
@@ -100,6 +113,7 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	freeGB, _ := diskspace.FreeGB(a.deps.Config.DownloadsDir)
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"searching": searching,
+		"upcoming":  upcoming,
 		"downloads": downloads,
 		"totals":    map[string]any{"down_speed": totalDown, "up_speed": totalUp, "active": active},
 		"free_gb":   freeGB,

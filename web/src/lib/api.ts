@@ -139,6 +139,7 @@ export interface SearchingItem {
   year: number;
   poster_url?: string;
   quality_profile: string;
+  available_at?: string; // release date (YYYY-MM-DD) for upcoming, not-yet-searchable movies
 }
 
 export interface ActivityDownload {
@@ -157,6 +158,7 @@ export interface ActivityDownload {
 
 export interface ActivityFeed {
   searching: SearchingItem[];
+  upcoming?: SearchingItem[];
   downloads: ActivityDownload[];
   totals?: { down_speed: number; up_speed: number; active: number };
   free_gb?: number;

@@ -25,6 +25,15 @@ function eta(sec: number): string {
   if (sec < 3600) return `${Math.round(sec / 60)}m`;
   return `${Math.round(sec / 3600)}h`;
 }
+// fmtReleaseDate renders a YYYY-MM-DD release date as e.g. "Jul 4, 2026" (year
+// only when the day is unknown), parsed as a plain date to avoid TZ drift.
+function fmtReleaseDate(iso: string): string {
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y) return iso;
+  if (!m || !d) return String(y);
+  const dt = new Date(y, m - 1, d);
+  return dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
 
 const STATE_TONE: Record<string, string> = {
   downloading: "var(--accent)", seeding: "var(--good)", paused: "var(--ink-faint)", error: "var(--reject)", checking: "var(--avoid)",
@@ -39,6 +48,7 @@ function ProfileChip({ profile }: { profile: string }) {
 
 export function Downloads() {
   const [searching, setSearching] = useState<SearchingItem[]>([]);
+  const [upcoming, setUpcoming] = useState<SearchingItem[]>([]);
   const [downloads, setDownloads] = useState<ActivityDownload[]>([]);
   const [totals, setTotals] = useState<{ down_speed: number; up_speed: number; active: number }>({ down_speed: 0, up_speed: 0, active: 0 });
   const [freeGb, setFreeGb] = useState<number | null>(null);
@@ -67,6 +77,7 @@ export function Downloads() {
         if (!alive) return;
         fails = 0;
         setSearching(a.searching ?? []);
+        setUpcoming(a.upcoming ?? []);
         setDownloads(a.downloads ?? []);
         if (a.totals) setTotals(a.totals);
         if (typeof a.free_gb === "number") setFreeGb(a.free_gb);
@@ -110,7 +121,13 @@ export function Downloads() {
     return q ? searching.filter((s) => s.title.toLowerCase().includes(q)) : searching;
   }, [searching, query]);
 
-  const empty = loaded && searching.length === 0 && downloads.length === 0;
+  const shownUpcoming = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = q ? upcoming.filter((s) => s.title.toLowerCase().includes(q)) : upcoming;
+    return [...list].sort((a, b) => (a.available_at ?? "").localeCompare(b.available_at ?? ""));
+  }, [upcoming, query]);
+
+  const empty = loaded && searching.length === 0 && upcoming.length === 0 && downloads.length === 0;
 
   return (
     <>
@@ -174,6 +191,22 @@ export function Downloads() {
                       <div className="min-w-0 flex-1"><div className="truncate text-[12.5px] font-medium">{s.title} <span className="font-mono text-[10.5px] text-ink-faint">{s.year || ""}</span></div></div>
                       <ProfileChip profile={s.quality_profile} />
                       <span className="font-mono text-[10px] uppercase" style={{ color: "var(--avoid)" }}>Searching…</span>
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {shownUpcoming.length > 0 && (
+              <div className="mb-5">
+                <div className="mb-2 font-mono text-[9.5px] font-bold uppercase tracking-[0.08em] text-ink-faint">Upcoming · {shownUpcoming.length}</div>
+                <div className="overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)" }}>
+                  {shownUpcoming.map((s) => (
+                    <Link key={s.movie_id} to={`/movies/${s.movie_id}`} className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-[var(--panel-2)]" style={{ background: "var(--panel)", borderBottom: "1px solid var(--line-soft)" }}>
+                      <span className="inline-block h-2 w-2 flex-none rounded-full" style={{ background: "var(--ink-faint)" }} />
+                      <div className="min-w-0 flex-1"><div className="truncate text-[12.5px] font-medium">{s.title} <span className="font-mono text-[10.5px] text-ink-faint">{s.year || ""}</span></div></div>
+                      <ProfileChip profile={s.quality_profile} />
+                      <span className="font-mono text-[10px] uppercase text-ink-faint">{s.available_at ? `Available ${fmtReleaseDate(s.available_at)}` : "Awaiting release"}</span>
                     </Link>
                   ))}
                 </div>
