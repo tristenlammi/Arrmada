@@ -22,6 +22,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/buildinfo"
 	"github.com/tristenlammi/arrmada/internal/config"
 	"github.com/tristenlammi/arrmada/internal/convert"
+	"github.com/tristenlammi/arrmada/internal/insights"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/eventbus"
 	"github.com/tristenlammi/arrmada/internal/httpapi"
@@ -274,6 +275,10 @@ func main() {
 		return nil
 	})
 
+	// Insights (Plex watch monitoring — Tautulli replacement).
+	insightsSvc := insights.NewService(settingsSvc, log)
+	insightsSvc.SeedFromEnv(runCtx, cfg.PlexURL, cfg.PlexToken)
+
 	srv := httpapi.New(httpapi.Deps{
 		Config:     cfg,
 		Log:        log,
@@ -296,6 +301,7 @@ func main() {
 		Books:      booksSvc,
 		Subtitles:  subtitlesSvc,
 		Convert:    convertSvc,
+		Insights:   insightsSvc,
 	})
 
 	errCh := make(chan error, 1)

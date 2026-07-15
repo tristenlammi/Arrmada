@@ -21,6 +21,7 @@ import { BookDetail } from "./pages/BookDetail";
 import { AuthorDetail } from "./pages/AuthorDetail";
 import { Subtitles } from "./pages/Subtitles";
 import { Convert } from "./pages/Convert";
+import { Insights } from "./pages/Insights";
 import { Login } from "./pages/Login";
 import { Placeholder } from "./pages/Placeholder";
 
@@ -33,7 +34,6 @@ const MODULE_ROUTES: {
   milestone: string;
 }[] = [
   { path: "/music", title: "Music", crumb: "Library / Music", milestone: "M8" },
-  { path: "/insights", title: "Insights", crumb: "Services / Insights", milestone: "M5" },
 ];
 
 export default function App() {
@@ -78,6 +78,7 @@ export default function App() {
         <Route path="/requests" element={<Requests />} />
         <Route path="/subtitles" element={<Subtitles />} />
         <Route path="/convert" element={<Convert />} />
+        <Route path="/insights" element={<Insights />} />
         <Route path="/indexers" element={<Indexers />} />
         <Route path="/downloadclients" element={<DownloadClients />} />
         <Route path="/notifications" element={<Notifications />} />

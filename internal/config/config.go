@@ -26,6 +26,10 @@ type Config struct {
 	// in early local development — every request runs as a local admin. Flip on
 	// (ARRMADA_AUTH_ENABLED=true) before exposing Arrmada to a network.
 	AuthEnabled bool
+	// PlexURL / PlexToken, when set, seed the Insights module's Plex connection on
+	// startup (the UI can also set them). Token is a secret — keep it in .env.
+	PlexURL   string
+	PlexToken string
 	// QbittorrentURL, when set, is the bundled qBittorrent companion; Arrmada
 	// auto-registers it as a download client on startup.
 	QbittorrentURL string
@@ -88,6 +92,8 @@ func Load() (Config, error) {
 		OpenSubtitlesUsername: env("ARRMADA_OPENSUBTITLES_USERNAME", ""),
 		OpenSubtitlesPassword: env("ARRMADA_OPENSUBTITLES_PASSWORD", ""),
 		ConvertScratchDir:     env("ARRMADA_CONVERT_SCRATCH_DIR", ""),
+		PlexURL:               env("ARRMADA_PLEX_URL", ""),
+		PlexToken:             env("ARRMADA_PLEX_TOKEN", ""),
 	}
 
 	port, err := strconv.Atoi(env("ARRMADA_PORT", "7878"))

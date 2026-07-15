@@ -546,6 +546,11 @@ export interface ConvertCandidate { movie_id: number; title: string; year: numbe
 export interface ConvertSample { movie_id: number; title: string; src_bytes: number; est_bytes: number; percent: number; sample_sec: number }
 export interface ConvertJob { id: number; movie_id: number; title: string; state: string; progress: number; fps: number; speed_x: number; encoder: string; src_bytes: number; out_bytes: number; note?: string }
 
+// Insights (Plex watch monitoring).
+export interface PlexLibrary { key: string; title: string; type: string }
+export interface PlexConfig { url: string; token_set: boolean; enabled: boolean; poll_seconds: number }
+export interface PlexTestResult { ok: boolean; error?: string; machine_id?: string; version?: string; libraries?: PlexLibrary[] }
+
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -831,6 +836,13 @@ export const api = {
   convertJobs: () => req<{ jobs: ConvertJob[] }>("/api/v1/convert/jobs").then((r) => r.jobs),
   convertMovie: (id: number) => req<ConvertJob>(`/api/v1/convert/movies/${id}`, { method: "POST" }),
   convertSampleMovie: (id: number) => req<ConvertSample>(`/api/v1/convert/movies/${id}/sample`, { method: "POST" }),
+
+  // Insights (Plex)
+  insightsConfig: () => req<PlexConfig>("/api/v1/insights/plex"),
+  updateInsightsConfig: (body: { url: string; token?: string; enabled?: boolean; poll_seconds?: number }) =>
+    req<PlexConfig>("/api/v1/insights/plex", { method: "PUT", body: JSON.stringify(body) }),
+  testInsights: (body: { url?: string; token?: string }) =>
+    req<PlexTestResult>("/api/v1/insights/plex/test", { method: "POST", body: JSON.stringify(body) }),
   scanSeries: () => req<{ status: string }>("/api/v1/series/scan", { method: "POST" }),
   seriesHistory: (id: number) =>
     req<{ events: MovieEvent[] }>(`/api/v1/series/${id}/history`).then((r) => r.events),

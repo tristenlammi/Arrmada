@@ -24,6 +24,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/realtime"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/convert"
+	"github.com/tristenlammi/arrmada/internal/insights"
 	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/series"
 	"github.com/tristenlammi/arrmada/internal/settings"
@@ -56,6 +57,7 @@ type Deps struct {
 	Books      *books.Service
 	Subtitles  *subtitles.Service
 	Convert    *convert.Service
+	Insights   *insights.Service
 }
 
 type api struct {
@@ -197,6 +199,11 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/convert/movies/{id}", a.requireRole(auth.RoleManager, a.handleConvertMovie))
 	mux.HandleFunc("POST "+base+"/api/v1/convert/movies/{id}/sample", a.requireRole(auth.RoleManager, a.handleConvertMovieSample))
 
+	// Insights (Tautulli replacement — Plex watch monitoring). I0: connection config + test.
+	mux.HandleFunc("GET "+base+"/api/v1/insights/plex", a.requireRole(auth.RoleManager, a.handleInsightsConfig))
+	mux.HandleFunc("PUT "+base+"/api/v1/insights/plex", a.requireRole(auth.RoleManager, a.handleUpdateInsightsConfig))
+	mux.HandleFunc("POST "+base+"/api/v1/insights/plex/test", a.requireRole(auth.RoleManager, a.handleInsightsTest))
+
 	// Subtitles (Bazarr replacement — external SRT sidecars over the Movies/Series catalogs).
 	mux.HandleFunc("GET "+base+"/api/v1/subtitles/settings", a.protected(a.handleGetSubtitleSettings))
 	mux.HandleFunc("PUT "+base+"/api/v1/subtitles/settings", a.requireRole(auth.RoleManager, a.handleUpdateSubtitleSettings))
@@ -305,7 +312,7 @@ var plannedModules = []module{
 	{"requests", "Requests", true, "available"},
 	{"subtitles", "Subtitles", true, "available"},
 	{"convert", "Convert", true, "available"},
-	{"insights", "Insights", false, "planned"},
+	{"insights", "Insights", true, "available"},
 	{"music", "Music", false, "planned"},
 }
 
