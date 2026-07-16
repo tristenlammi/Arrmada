@@ -60,6 +60,35 @@ func TestImportEpisode(t *testing.T) {
 	}
 }
 
+// TestLinkOrCopyIdempotent is the regression test for the 0-byte-both bug: a second
+// import of the same file must be a no-op, never a destructive truncate that zeroes
+// the hardlinked source (the torrent) along with the destination.
+func TestLinkOrCopyIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.mkv")
+	dst := filepath.Join(dir, "dst.mkv")
+	writeFile(t, src, 4096)
+
+	if _, err := linkOrCopy(src, dst); err != nil {
+		t.Fatalf("first import: %v", err)
+	}
+	// Re-import (what the sweep does every ~30s) must detect it's already there.
+	m2, err := linkOrCopy(src, dst)
+	if err != nil {
+		t.Fatalf("second import: %v", err)
+	}
+	if m2 != "already" {
+		t.Errorf("second linkOrCopy = %q, want %q", m2, "already")
+	}
+	// Both files must still hold their data — the whole point.
+	for _, p := range []string{src, dst} {
+		fi, err := os.Stat(p)
+		if err != nil || fi.Size() != 4096 {
+			t.Errorf("%s = size %v (err %v), want 4096 — data was zeroed", p, fi, err)
+		}
+	}
+}
+
 func TestParseSeasonDir(t *testing.T) {
 	ok := map[string]int{"Season 1": 1, "Season 01": 1, "season 12": 12, "S1": 1, "S01": 1, "Specials": 0, "Season 0": 0}
 	for name, want := range ok {

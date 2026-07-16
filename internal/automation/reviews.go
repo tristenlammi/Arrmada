@@ -228,6 +228,9 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		if err != nil || !ok {
 			continue
 		}
+		if ei.Method == "already" {
+			continue // already imported and unchanged — don't re-count or re-notify
+		}
 		if c.series.MarkEpisodeImported(ctx, s.ID, ei.Season, ei.Episode, ei.TargetPath, ei.SizeBytes) == nil {
 			imported++
 		}

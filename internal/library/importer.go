@@ -514,6 +514,7 @@ type EpisodeImport struct {
 	SourcePath string
 	TargetPath string
 	SizeBytes  int64
+	Method     string // "hardlink" | "copy" | "already" (already present, unchanged)
 }
 
 // ImportEpisode hardlinks a single episode video into
@@ -549,14 +550,16 @@ func (im *Importer) ImportEpisodeInto(seriesFolder, seriesTitle string, year int
 	if err != nil {
 		return nil, false, fmt.Errorf("import episode: %w", err)
 	}
-	im.logImport(seriesTitle, videoPath, target, method)
-	im.importSidecarSubs(videoPath, videoPath, target)
+	if method != "already" { // don't re-log / re-extract subs for an unchanged file
+		im.logImport(seriesTitle, videoPath, target, method)
+		im.importSidecarSubs(videoPath, videoPath, target)
+	}
 	fi, _ := os.Stat(target)
 	var size int64
 	if fi != nil {
 		size = fi.Size()
 	}
-	return &EpisodeImport{Season: rel.Season, Episode: ep, SourcePath: videoPath, TargetPath: target, SizeBytes: size}, true, nil
+	return &EpisodeImport{Season: rel.Season, Episode: ep, SourcePath: videoPath, TargetPath: target, SizeBytes: size, Method: method}, true, nil
 }
 
 // EpisodeTarget builds the library path an episode file should live at, deriving the
@@ -931,6 +934,19 @@ func uniqueSubPath(path string) string {
 // back to a copy across filesystems. It reports which path was taken ("hardlink"
 // or "copy") so callers can surface a misconfigured volume mapping.
 func linkOrCopy(src, dst string) (string, error) {
+	// If the destination already holds this exact file (a prior hardlinked import),
+	// do NOTHING. Re-copying would truncate dst — and since dst shares the source's
+	// inode, that truncation zeroes the source torrent too (the 0-byte-both bug).
+	if si, err := os.Stat(src); err == nil {
+		if di, err := os.Stat(dst); err == nil {
+			if os.SameFile(si, di) {
+				return "already", nil // same inode — already imported, leave it alone
+			}
+			if si.Size() > 0 && di.Size() == si.Size() {
+				return "already", nil // same content already present (prior copy)
+			}
+		}
+	}
 	if err := os.Link(src, dst); err == nil {
 		return "hardlink", nil
 	}
@@ -940,6 +956,9 @@ func linkOrCopy(src, dst string) (string, error) {
 	return "copy", nil
 }
 
+// copyFile copies src → dst atomically: it writes to a temp file and renames into
+// place, so it never truncates an existing dst in-place (which would zero the
+// source when dst is a hardlink of it).
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -947,13 +966,19 @@ func copyFile(src, dst string) error {
 	}
 	defer in.Close()
 
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	tmp := dst + ".arrmada-tmp"
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
 		out.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
-	return out.Close()
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, dst)
 }
