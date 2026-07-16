@@ -279,11 +279,13 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
   const [media, setMedia] = useState<"movies" | "tv">("movies");
   const [items, setItems] = useState<ConvertCandidate[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [queued, setQueued] = useState<Set<string>>(new Set());
   const [sampling, setSampling] = useState<number | null>(null);
   const [samples, setSamples] = useState<Record<number, ConvertSample>>({});
 
   useEffect(() => {
     setItems(null);
+    setQueued(new Set());
     api.convertLibrary(media).then(setItems).catch(() => setItems([]));
   }, [media]);
 
@@ -293,6 +295,7 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
     try {
       if (c.kind === "episode") await api.convertEpisode(c.series_id!, c.season!, c.episode!);
       else await api.convertMovie(c.movie_id!);
+      setQueued((q) => new Set(q).add(key));
       flash(`Queued “${c.title}”`);
       onQueued();
     } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
@@ -353,8 +356,12 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
                       <td className="px-3 py-2">
                         {c.candidate ? (
                           <div className="flex items-center justify-end gap-1.5">
-                            {c.kind === "movie" && <button onClick={() => runSample(c)} disabled={sampling !== null} title="Encode a 30s slice at your quality and measure the real result" className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>{sampling === c.movie_id ? "Testing…" : "Test 30s"}</button>}
-                            <button onClick={() => convert(c)} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy === key ? "Queuing…" : "Convert"}</button>
+                            {c.kind === "movie" && !queued.has(key) && <button onClick={() => runSample(c)} disabled={sampling !== null} title="Encode a 30s slice at your quality and measure the real result" className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>{sampling === c.movie_id ? "Testing…" : "Test 30s"}</button>}
+                            {queued.has(key) ? (
+                              <span className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--good)", color: "var(--good)" }}>Queued ✓</span>
+                            ) : (
+                              <button onClick={() => convert(c)} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy === key ? "Queuing…" : "Convert"}</button>
+                            )}
                           </div>
                         ) : <div className="text-right"><span className="font-mono text-[10.5px] text-ink-faint">efficient</span></div>}
                       </td>
