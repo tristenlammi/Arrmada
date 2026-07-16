@@ -466,9 +466,9 @@ func (s *Service) sample(ctx context.Context, movieID int64, plan Plan) (SampleR
 
 	encodeSlice := func(enc Encoder, sl slice, dst string) error {
 		args := []string{"-y", "-hide_banner", "-ss", fmt.Sprintf("%.2f", sl.start), "-t", fmt.Sprintf("%.2f", sl.length)}
-		args = append(args, globalArgs(enc)...)
+		args = append(args, globalArgs(enc, false)...) // sample = software decode (short, keep it simple/robust)
 		args = append(args, "-i", src)
-		args = append(args, compileOutputArgs(enc, mi, plan)...)
+		args = append(args, compileOutputArgs(enc, mi, plan, false)...)
 		args = append(args, dst)
 		return exec.CommandContext(ctx, s.ffmpeg, args...).Run()
 	}
@@ -753,12 +753,23 @@ func (s *Service) runEncode(ctx context.Context, job *Job, src, dst string, mi *
 		s.update(job, func(j *Job) { j.Encoder = "CPU (x265) + HDR10+" })
 		return s.encodeHDR10Plus(ctx, job, src, dst, mi, plan, h10pJSON)
 	default:
-		err := s.encode(ctx, job, src, dst, mi, enc, plan)
+		// VAAPI: first try a full-GPU pipeline (hardware decode → GPU encode) so the CPU
+		// isn't stuck doing software decode. If the source can't be hardware-decoded (odd
+		// codec / unsupported profile) fall back to software decode + GPU encode, then CPU.
+		if enc.Kind == "vaapi" {
+			if err := s.encode(ctx, job, src, dst, mi, enc, plan, true); err == nil {
+				return nil
+			} else {
+				s.log.Warn("convert: hardware decode failed, retrying with software decode", "err", err)
+				s.update(job, func(j *Job) { j.Progress = 0 })
+			}
+		}
+		err := s.encode(ctx, job, src, dst, mi, enc, plan, false)
 		if err != nil && enc.Hardware { // hardware encoder failed → fall back to CPU once
 			cpu := cpuEncoder(plan.VideoCodec)
 			s.log.Warn("convert: hardware encode failed, retrying on CPU", "err", err)
 			s.update(job, func(j *Job) { j.Encoder = cpu.Label; j.Progress = 0 })
-			err = s.encode(ctx, job, src, dst, mi, cpu, plan)
+			err = s.encode(ctx, job, src, dst, mi, cpu, plan, false)
 		}
 		return err
 	}
@@ -981,12 +992,14 @@ func lavfiSingleQuote(p string) string {
 	return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
 }
 
-// encode runs ffmpeg for one job, parsing live progress from the -progress pipe.
-func (s *Service) encode(ctx context.Context, job *Job, src, dst string, mi *MediaInfo, enc Encoder, plan Plan) error {
+// encode runs ffmpeg for one job, parsing live progress from the -progress pipe. hwDecode
+// asks the GPU to decode too (VAAPI only) — set for the full-GPU attempt, cleared for the
+// software-decode fallback.
+func (s *Service) encode(ctx context.Context, job *Job, src, dst string, mi *MediaInfo, enc Encoder, plan Plan, hwDecode bool) error {
 	args := []string{"-y", "-hide_banner", "-nostats", "-progress", "pipe:1"}
-	args = append(args, globalArgs(enc)...) // device init (VAAPI) must precede the input
+	args = append(args, globalArgs(enc, hwDecode)...) // device / hwaccel init must precede the input
 	args = append(args, "-i", src)
-	args = append(args, compileOutputArgs(enc, mi, plan)...)
+	args = append(args, compileOutputArgs(enc, mi, plan, hwDecode)...)
 	args = append(args, dst)
 	return s.runWithProgress(ctx, job, args, mi.DurationSec)
 }

@@ -43,9 +43,14 @@ var twoToThree = map[string]string{
 const vaapiDevice = "/dev/dri/renderD128"
 
 // globalArgs returns ffmpeg options that must appear before the input (device init). Only
-// VAAPI needs one today.
-func globalArgs(enc Encoder) []string {
+// VAAPI needs one today. With hwDecode, the GPU also decodes the source (frames stay on the
+// GPU as VAAPI surfaces — no CPU decode or upload); otherwise ffmpeg decodes in software and
+// the filter chain uploads each frame for the hardware encoder.
+func globalArgs(enc Encoder, hwDecode bool) []string {
 	if enc.Kind == "vaapi" {
+		if hwDecode {
+			return []string{"-hwaccel", "vaapi", "-hwaccel_device", vaapiDevice, "-hwaccel_output_format", "vaapi"}
+		}
 		return []string{"-vaapi_device", vaapiDevice}
 	}
 	return nil
@@ -79,7 +84,7 @@ func mp4Audio(codec string) bool {
 // to the target codec, optionally downscaling; keep/convert/downmix/normalize the wanted audio
 // (container-safe); extract or repackage subtitles; set the container. This is the generalized
 // compiler (Rules v2 R1, extended in R5) — every Plan runs through here.
-func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan) []string {
+func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool) []string {
 	container := plan.Container
 	if container == "" {
 		container = "mkv"
@@ -171,16 +176,26 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan) []string {
 		}
 		scale := plan.ScaleHeight > 0 && mi.Height > plan.ScaleHeight // downscale only, never up
 		switch enc.Kind {
-		case "vaapi": // AMD/Intel hardware — upload frames to the GPU, scale + encode there.
-			pix := "nv12"
-			if mi.TenBit && codec != "h264" {
-				pix = "p010"
+		case "vaapi": // AMD/Intel hardware — scale + encode on the GPU.
+			if hwDecode {
+				// Frames arrive as VAAPI surfaces straight from the hardware decoder,
+				// so no software decode / hwupload — optionally scale on the GPU, then encode.
+				if scale {
+					a = append(a, "-vf", fmt.Sprintf("scale_vaapi=w=-2:h=%d", plan.ScaleHeight))
+				}
+			} else {
+				// Software decode: convert to the right pixel format and upload each frame.
+				pix := "nv12"
+				if mi.TenBit && codec != "h264" {
+					pix = "p010"
+				}
+				chain := "format=" + pix + ",hwupload"
+				if scale {
+					chain += fmt.Sprintf(",scale_vaapi=w=-2:h=%d", plan.ScaleHeight)
+				}
+				a = append(a, "-vf", chain)
 			}
-			chain := "format=" + pix + ",hwupload"
-			if scale {
-				chain += fmt.Sprintf(",scale_vaapi=w=-2:h=%d", plan.ScaleHeight)
-			}
-			a = append(a, "-vf", chain, "-c:v", enc.Name, "-rc_mode", "CQP", "-qp", strconv.Itoa(crf))
+			a = append(a, "-c:v", enc.Name, "-rc_mode", "CQP", "-qp", strconv.Itoa(crf))
 			if mi.TenBit && codec != "h264" {
 				a = append(a, "-profile:v", "main10")
 			}
