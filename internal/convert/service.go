@@ -163,6 +163,10 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 // goroutine). The worker count comes from settings (default 1); process() is concurrency-safe,
 // with per-job scratch files and mutex-guarded shared state.
 func (s *Service) Run(ctx context.Context) {
+	// A restart abandons any in-flight encode (jobs aren't persisted; the original
+	// file is only replaced at the very end, so nothing is lost). Sweep the scratch
+	// dir of the partial files those jobs left behind so /transcode doesn't fill up.
+	s.cleanScratch(ctx)
 	n := s.workerCount(ctx)
 	s.log.Info("convert: worker pool started", "workers", n)
 	var wg sync.WaitGroup
@@ -181,6 +185,35 @@ func (s *Service) Run(ctx context.Context) {
 		}()
 	}
 	wg.Wait()
+}
+
+// cleanScratch removes leftover per-job scratch files (partial encodes, samples,
+// HDR sidecars) from the working dir at startup — the debris of any convert cut
+// short by a restart. Only runs before workers start, so nothing live is touched.
+func (s *Service) cleanScratch(ctx context.Context) {
+	seen := map[string]bool{}
+	for _, dir := range []string{s.scratchDir, s.activeScratch(ctx)} {
+		if dir == "" || seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		removed := 0
+		for _, e := range entries {
+			n := e.Name()
+			if strings.HasPrefix(n, "convert-") || strings.HasPrefix(n, "sample-") || strings.HasPrefix(n, "h10p-") {
+				if os.Remove(filepath.Join(dir, n)) == nil {
+					removed++
+				}
+			}
+		}
+		if removed > 0 {
+			s.log.Info("convert: cleaned orphaned scratch files", "dir", dir, "count", removed)
+		}
+	}
 }
 
 // workerCount reads the configured concurrency (clamped to a sane range).
