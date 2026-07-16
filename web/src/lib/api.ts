@@ -657,6 +657,8 @@ export const api = {
   updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string }) =>
     req<{ id: number; role: string; auto_approve: boolean }>(`/api/v1/users/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteUser: (id: number) => req<void>(`/api/v1/users/${id}`, { method: "DELETE" }),
+  importOverseerr: (url: string, api_key: string) =>
+    req<{ status: string; found: number }>("/api/v1/requests/import/overseerr", { method: "POST", body: JSON.stringify({ url, api_key }) }),
 
   indexers: () => req<{ indexers: Indexer[] }>("/api/v1/indexers").then((r) => r.indexers),
   createIndexer: (body: NewIndexer) =>

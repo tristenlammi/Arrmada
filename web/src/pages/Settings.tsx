@@ -126,6 +126,7 @@ export function Settings() {
                 <Toggle label="Music" hint="The Music library and its nav entry. (The Music module itself is still on the roadmap.)" checked={s.music_enabled} onChange={(v) => patch({ music_enabled: v })} />
               </Section>
               <SaveBar />
+              <OverseerrImport />
             </div>
           )
         ) : (
@@ -314,5 +315,45 @@ function Toggle({ label, hint, checked, onChange }: { label: string; hint: strin
         <span className="inline-block h-4 w-4 rounded-full bg-white transition-transform" style={{ transform: checked ? "translateX(22px)" : "translateX(3px)" }} />
       </button>
     </div>
+  );
+}
+
+// OverseerrImport is the one-time migration: pull an existing Overseerr/Jellyseerr
+// request history into Arrmada's Requests. Runs in the background on the server.
+function OverseerrImport() {
+  const [url, setUrl] = useState("");
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const run = async () => {
+    if (!url.trim() || !key.trim()) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const r = await api.importOverseerr(url.trim(), key.trim());
+      setMsg({ ok: true, text: `Found ${r.found} request${r.found === 1 ? "" : "s"} — importing in the background. Approved titles are added to your library and searched; they'll appear on the Requests page as they process.` });
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Section title="Import from Overseerr / Jellyseerr" subtitle="Migrating in? Pull your existing request history into Arrmada's Requests, then retire the old container. Approved/available titles are added to the library and searched; pending ones become pending requests here. Requests are matched to your Arrmada users by username (unmatched ones are credited to you). Safe to run more than once — anything already requested is skipped.">
+      <Field label="Overseerr / Jellyseerr URL">
+        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.168.50.247:5055" className={input} style={inputStyle} autoComplete="off" />
+      </Field>
+      <Field label="API key">
+        <input type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder="from Overseerr → Settings → General → API Key" className={input} style={inputStyle} autoComplete="off" />
+      </Field>
+      <div className="flex items-center gap-3">
+        <button onClick={run} disabled={busy || !url.trim() || !key.trim()} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
+          {busy ? "Connecting…" : "Import requests"}
+        </button>
+        {msg && <span className="text-[11.5px]" style={{ color: msg.ok ? "var(--good)" : "var(--reject)" }}>{msg.text}</span>}
+      </div>
+    </Section>
   );
 }
