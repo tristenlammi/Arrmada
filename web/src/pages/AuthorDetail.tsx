@@ -134,15 +134,22 @@ function statusOf(b: Book): { label: string; tone: string } {
   return { label: "Unmonitored", tone: "var(--ink-faint)" };
 }
 
+// BookCover renders a cover, falling back to a clean title placeholder when the
+// image is missing or fails to load (a broken URL otherwise leaves a dim, blank
+// tile that reads as "faded").
+function BookCover({ url, title }: { url?: string; title: string }) {
+  const [failed, setFailed] = useState(false);
+  if (url && !failed) {
+    return <img src={url} alt={title} className="h-full w-full object-cover" loading="lazy" onError={() => setFailed(true)} />;
+  }
+  return <div className="flex h-full w-full items-center justify-center p-2 text-center text-[12px] font-bold text-white" style={{ background: "linear-gradient(150deg, hsl(28 30% 26%), hsl(24 28% 16%))" }}>{title}</div>;
+}
+
 function OwnedCard({ b }: { b: Book }) {
   const st = statusOf(b);
   return (
     <Link to={`/books/${b.id}`} className="group relative block overflow-hidden rounded-xl" style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}>
-      {b.cover_url ? (
-        <img src={b.cover_url} alt={b.title} className="h-full w-full object-cover" loading="lazy" />
-      ) : (
-        <div className="flex h-full w-full items-center justify-center p-2 text-center text-[12px] font-bold text-white" style={{ background: "linear-gradient(150deg, hsl(28 30% 26%), hsl(24 28% 16%))" }}>{b.title}</div>
-      )}
+      <BookCover url={b.cover_url} title={b.title} />
       <span className="absolute left-1.5 top-1.5 rounded-full px-1.5 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: "rgba(20,12,7,.72)", color: st.tone }}>{st.label}</span>
       <div className="absolute inset-x-0 bottom-0 p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.9), transparent)" }}>
         <div className="truncate text-[11.5px] font-semibold text-white">{b.title}</div>
@@ -155,11 +162,7 @@ function OwnedCard({ b }: { b: Book }) {
 function CatalogueCard({ w, onAdd, busy, disabled }: { w: BookDiscoverCard; onAdd: () => void; busy: boolean; disabled: boolean }) {
   return (
     <div className="group relative overflow-hidden rounded-xl" style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}>
-      {w.cover_url ? (
-        <img src={w.cover_url} alt={w.title} className="h-full w-full object-cover" loading="lazy" />
-      ) : (
-        <div className="flex h-full w-full items-center justify-center p-2 text-center text-[12px] font-bold text-white" style={{ background: "linear-gradient(150deg, hsl(28 30% 26%), hsl(24 28% 16%))" }}>{w.title}</div>
-      )}
+      <BookCover url={w.cover_url} title={w.title} />
       <div className="absolute inset-0 flex flex-col justify-end p-2" style={{ background: "linear-gradient(to top, rgba(0,0,0,.92), transparent 55%)" }}>
         <div className="truncate text-[11.5px] font-semibold text-white" title={w.title}>{w.title}</div>
         {w.year > 0 && <div className="mb-1.5 text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{w.year}</div>}
