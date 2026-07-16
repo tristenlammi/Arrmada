@@ -216,6 +216,9 @@ func (c *Coordinator) RankReleases(ctx context.Context, id int64) (ReleaseList, 
 		if _, dup := byName[rel.Title]; dup {
 			continue
 		}
+		if !releaseIsForMovie(rel.Title, m) {
+			continue // a different film that merely shares a word with the title
+		}
 		byName[rel.Title] = rel
 		cands = append(cands, quality.NewCandidate(rel.Title, rel.SizeGB(), rel.Seeders))
 	}
@@ -305,9 +308,25 @@ func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) error {
 		c.log.Info("automation: no releases found", "movie", m.Title)
 		return nil
 	}
-	byName, cands := c.candidatesFrom(ctx, m.ID, result.Releases)
+	// Only consider releases that are actually for THIS movie — a title search for a
+	// short/common name (e.g. "Hope") returns unrelated films ("Romance at Hope
+	// Ranch"), and the scorer would otherwise happily grab the wrong one.
+	byName, cands := c.candidatesFrom(ctx, m.ID, matchingMovieReleases(m, result.Releases))
 	c.grabMissing(ctx, m, want, byName, cands)
 	return nil
+}
+
+// matchingMovieReleases keeps only releases whose parsed title + year match the
+// movie — the guard that keeps auto-grab from picking a different film that merely
+// shares a word with the title.
+func matchingMovieReleases(m movies.Movie, releases []indexer.Release) []indexer.Release {
+	out := make([]indexer.Release, 0, len(releases))
+	for _, rel := range releases {
+		if releaseIsForMovie(rel.Title, m) {
+			out = append(out, rel)
+		}
+	}
+	return out
 }
 
 // missingVersions returns the monitored version tracks that still need a file.
@@ -508,7 +527,7 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 	byName := make(map[string]indexer.Release, len(result.Releases))
 	cands := make([]quality.Candidate, 0, len(result.Releases))
 	for _, rel := range result.Releases {
-		if blocked[normTitle(rel.Title)] {
+		if blocked[normTitle(rel.Title)] || !releaseIsForMovie(rel.Title, m) {
 			continue
 		}
 		byName[rel.Title] = rel
@@ -575,7 +594,7 @@ func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
 	byName := make(map[string]indexer.Release, len(result.Releases))
 	cands := make([]quality.Candidate, 0, len(result.Releases))
 	for _, rel := range result.Releases {
-		if blocked[normTitle(rel.Title)] {
+		if blocked[normTitle(rel.Title)] || !releaseIsForMovie(rel.Title, m) {
 			continue
 		}
 		byName[rel.Title] = rel

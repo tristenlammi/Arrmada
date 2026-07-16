@@ -157,6 +157,8 @@ func (s *Service) Recent(ctx context.Context, limit int) (SearchResult, error) {
 	}
 	wg.Wait()
 
+	result.Releases = filterAdult(result.Releases)
+
 	sort.SliceStable(result.Releases, func(i, j int) bool {
 		a, b := result.Releases[i], result.Releases[j]
 		if a.Seeders != b.Seeders {
@@ -225,6 +227,9 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 		}(idx)
 	}
 	wg.Wait()
+
+	// Safety: never surface or hand on adult content, on any indexer.
+	result.Releases = filterAdult(result.Releases)
 
 	sort.SliceStable(result.Releases, func(i, j int) bool {
 		a, b := result.Releases[i], result.Releases[j]
