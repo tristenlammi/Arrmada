@@ -33,6 +33,14 @@ export function SeriesDetail() {
 
   useEffect(() => { load(); }, [load]);
 
+  // While any episode is downloading, refresh so the progress ticks up.
+  const anyDownloading = !!s?.seasons?.some((sn) => sn.episodes?.some((e) => e.download));
+  useEffect(() => {
+    if (!anyDownloading) return;
+    const t = setInterval(load, 3000);
+    return () => clearInterval(t);
+  }, [anyDownloading, load]);
+
   if (notFound) return <Shell><div className="py-10 text-center text-[13px] text-ink-dim">That series isn't in your library. <Link to="/series" className="underline" style={{ color: "var(--accent)" }}>Back to Series</Link></div></Shell>;
   if (!s) return <Shell><p className="text-[12.5px] text-ink-dim">{error ?? "Loading…"}</p></Shell>;
 
@@ -286,7 +294,13 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen }: { series:
 function EpisodeRow({ series, ep, onChange, flash }: { series: SeriesT; ep: Episode; onChange: () => void; flash: (m: string) => void }) {
   const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
-  const status = ep.has_file ? { label: "Downloaded", tone: "var(--good)" } : aired(ep) ? (ep.monitored ? { label: "Missing", tone: "var(--avoid)" } : { label: "Not monitored", tone: "var(--ink-faint)" }) : { label: "Unaired", tone: "var(--ink-faint)" };
+  const dl = !ep.has_file && ep.download ? ep.download : null;
+  const dlPct = dl ? Math.round(dl.progress * 100) : 0;
+  const status = ep.has_file
+    ? { label: "Downloaded", tone: "var(--good)" }
+    : dl
+      ? { label: `↓ ${dlPct}%`, tone: "var(--accent)" }
+      : aired(ep) ? (ep.monitored ? { label: "Missing", tone: "var(--avoid)" } : { label: "Not monitored", tone: "var(--ink-faint)" }) : { label: "Unaired", tone: "var(--ink-faint)" };
 
   const grabEp = async () => {
     setBusy(true);
@@ -309,7 +323,7 @@ function EpisodeRow({ series, ep, onChange, flash }: { series: SeriesT; ep: Epis
   };
 
   return (
-    <div className="flex items-center gap-3 px-4 py-2.5" style={{ borderBottom: "1px solid var(--line-soft)", opacity: ep.monitored ? 1 : 0.55 }}>
+    <div className="relative flex items-center gap-3 px-4 py-2.5" style={{ borderBottom: "1px solid var(--line-soft)", opacity: ep.monitored ? 1 : 0.55 }}>
       <button onClick={async () => { await api.setEpisodeMonitored(ep.id, !ep.monitored); onChange(); }} title={ep.monitored ? "Monitored — click to stop" : "Not monitored — click to monitor"} className="flex-none text-[13px]" style={{ color: ep.monitored ? "var(--accent)" : "var(--ink-faint)" }}>
         {ep.monitored ? "◉" : "○"}
       </button>
@@ -321,11 +335,16 @@ function EpisodeRow({ series, ep, onChange, flash }: { series: SeriesT; ep: Epis
         {ep.has_file ? (<>
           <button onClick={replaceEp} disabled={busy} title="Blocklist this release and grab a different one" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy ? "…" : "Replace"}</button>
           <button onClick={deleteEpFile} disabled={busy} title="Delete this episode's file (to recycle bin)" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>Delete</button>
-        </>) : (
+        </>) : !dl && (
           <button onClick={grabEp} disabled={busy} title="Auto-grab the best release for this episode" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy ? "…" : "Grab"}</button>
         )}
         <button onClick={() => setSearching(true)} title="Search indexers for this episode" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Search</button>
       </div>
+      {dl && (
+        <div className="absolute inset-x-0 bottom-0 h-[2px]" style={{ background: "var(--panel-2)" }}>
+          <div className="h-full" style={{ width: `${dlPct}%`, background: "var(--accent)", transition: "width 1s linear" }} />
+        </div>
+      )}
       {searching && (
         <ReleaseSearchModal
           title={`${series.title} — ${sxe(ep)}`}

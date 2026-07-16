@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/download"
+	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
 
@@ -125,7 +127,61 @@ func (a *api) handleGetSeries(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, "could not load series")
 		return
 	}
+	a.attachEpisodeDownloads(r.Context(), &s)
 	a.writeJSON(w, http.StatusOK, s)
+}
+
+// attachEpisodeDownloads tags each not-yet-downloaded episode with any in-flight
+// download from the live queue, matched by series title + season + episode (a
+// season pack — no episode markers — covers every episode in its season).
+func (a *api) attachEpisodeDownloads(ctx context.Context, s *series.Series) {
+	if a.deps.Downloads == nil || len(s.Seasons) == 0 {
+		return
+	}
+	queue, err := a.deps.Downloads.Queue(ctx)
+	if err != nil || len(queue) == 0 {
+		return
+	}
+	want := normKey(s.Title)
+	for si := range s.Seasons {
+		for ei := range s.Seasons[si].Episodes {
+			e := &s.Seasons[si].Episodes[ei]
+			if e.HasFile {
+				continue
+			}
+			if d := episodeDownload(queue, want, e.SeasonNumber, e.EpisodeNumber); d != nil {
+				e.Download = d
+			}
+		}
+	}
+}
+
+// episodeDownload finds an unfinished queue item for the given series episode.
+func episodeDownload(queue []download.Item, wantTitle string, season, episode int) *series.EpisodeDownload {
+	for i := range queue {
+		it := queue[i]
+		if it.Progress >= 1 {
+			continue // finished — import handles it; not "downloading"
+		}
+		r := parser.Parse(it.Name)
+		if normKey(r.Title) != wantTitle || r.Season != season {
+			continue
+		}
+		if len(r.Episodes) > 0 && !containsInt(r.Episodes, episode) {
+			continue // a specific-episode release that isn't this one
+		}
+		return &series.EpisodeDownload{State: it.State, Progress: it.Progress}
+	}
+	return nil
+}
+
+func containsInt(xs []int, v int) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *api) handleSetSeriesMonitored(w http.ResponseWriter, r *http.Request) {

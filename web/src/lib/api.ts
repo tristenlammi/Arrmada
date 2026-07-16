@@ -424,6 +424,7 @@ export interface Episode {
   has_file: boolean;
   file_path?: string;
   size_bytes?: number;
+  download?: { state: string; progress: number };
 }
 export interface Season {
   id: number;

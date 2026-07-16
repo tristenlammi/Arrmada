@@ -71,4 +71,13 @@ type Episode struct {
 	HasFile       bool   `json:"has_file"`
 	FilePath      string `json:"file_path,omitempty"`
 	SizeBytes     int64  `json:"size_bytes,omitempty"`
+	// Download reflects an in-flight download for this episode (attached by the HTTP
+	// layer from the live queue; nil when nothing is downloading).
+	Download *EpisodeDownload `json:"download,omitempty"`
+}
+
+// EpisodeDownload is a lightweight view of an episode's in-flight download.
+type EpisodeDownload struct {
+	State    string  `json:"state"`
+	Progress float64 `json:"progress"` // 0..1
 }
