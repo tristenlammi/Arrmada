@@ -17,23 +17,10 @@ import (
 // reference is scaled to the output's resolution first, so a deliberate downscale is judged on
 // how well the encode preserved the (downscaled) picture, not penalised for the resize.
 //
-// SSIM's real cost is decoding both files; when a VAAPI device is present we decode on the GPU
-// (frames auto-transfer to system memory for the CPU ssim filter), so verification doesn't peg
-// the CPU after a GPU encode. Falls back to a pure-CPU pass if hardware decode can't handle the
-// streams.
+// Decode is on the CPU: it's the reliable path (hardware-decoded SSIM could stall the pipeline
+// on some GPUs). The caller wraps this in a timeout so a slow/hung verify can never block a job
+// forever.
 func (s *Service) computeSSIM(ctx context.Context, distorted, reference string) (float64, error) {
-	if s.encoder.Kind == "vaapi" {
-		if score, err := s.ssim(ctx, distorted, reference, true); err == nil {
-			return score, nil
-		} else {
-			s.log.Warn("convert: hardware-decoded SSIM failed, falling back to CPU decode", "err", err)
-		}
-	}
-	return s.ssim(ctx, distorted, reference, false)
-}
-
-// ssim runs the SSIM comparison, optionally decoding both inputs on the GPU (hwDecode).
-func (s *Service) ssim(ctx context.Context, distorted, reference string, hwDecode bool) (float64, error) {
 	di, err := probe(ctx, s.ffprobe, distorted)
 	if err != nil {
 		return 0, err
@@ -42,20 +29,10 @@ func (s *Service) ssim(ctx context.Context, distorted, reference string, hwDecod
 		return 0, fmt.Errorf("could not read output resolution")
 	}
 	lavfi := fmt.Sprintf("[1:v]scale=%d:%d:flags=bicubic[ref];[0:v][ref]ssim", di.Width, di.Height)
-	// Per-input hardware decode (auto-downloads frames to system memory for the CPU ssim filter).
-	var hw []string
-	if hwDecode {
-		hw = []string{"-hwaccel", "vaapi", "-hwaccel_device", vaapiDevice}
-	}
-	args := []string{"-nostdin", "-hide_banner"}
-	args = append(args, hw...)
-	args = append(args, "-i", distorted)
-	args = append(args, hw...)
-	args = append(args, "-i", reference)
 	// ssim prints its summary to stderr; -f null discards frames. Exit status is ignored — we
 	// rely on parsing the "All:" score.
-	args = append(args, "-lavfi", lavfi, "-an", "-sn", "-f", "null", "-")
-	out, _ := exec.CommandContext(ctx, s.ffmpeg, args...).CombinedOutput()
+	out, _ := exec.CommandContext(ctx, s.ffmpeg, "-nostdin", "-hide_banner",
+		"-i", distorted, "-i", reference, "-lavfi", lavfi, "-an", "-sn", "-f", "null", "-").CombinedOutput()
 	return parseSSIM(string(out))
 }
 

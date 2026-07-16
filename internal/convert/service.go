@@ -102,6 +102,42 @@ type Service struct {
 	jobs     []*Job
 	nextID   int64
 	queue    chan *Job
+
+	logMu  sync.Mutex
+	logBuf []LogLine // recent human-readable convert events, for the UI console
+}
+
+// LogLine is one entry in the Convert activity console.
+type LogLine struct {
+	At    int64  `json:"at"`    // unix seconds
+	Level string `json:"level"` // "info" | "warn" | "error"
+	Msg   string `json:"msg"`
+}
+
+// event appends a human-readable line to the convert console (kept to the last 300)
+// and mirrors it to the structured log.
+func (s *Service) event(level, msg string) {
+	s.logMu.Lock()
+	s.logBuf = append(s.logBuf, LogLine{At: time.Now().Unix(), Level: level, Msg: msg})
+	if len(s.logBuf) > 300 {
+		s.logBuf = s.logBuf[len(s.logBuf)-300:]
+	}
+	s.logMu.Unlock()
+	switch level {
+	case "error", "warn":
+		s.log.Warn("convert: " + msg)
+	default:
+		s.log.Info("convert: " + msg)
+	}
+}
+
+// Logs returns the recent convert console lines (oldest first).
+func (s *Service) Logs() []LogLine {
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	out := make([]LogLine, len(s.logBuf))
+	copy(out, s.logBuf)
+	return out
 }
 
 // NewService wires the module, detecting the best available HEVC encoder up front.
@@ -321,6 +357,7 @@ func (s *Service) QueueEpisode(ctx context.Context, seriesID int64, season, epis
 		s.jobs = s.jobs[:200]
 	}
 	s.mu.Unlock()
+	s.event("info", "Queued "+job.Title)
 	s.queue <- job
 	return job, nil
 }
@@ -379,6 +416,7 @@ func (s *Service) queueMovie(ctx context.Context, movieID int64, plan Plan) (*Jo
 		s.jobs = s.jobs[:200]
 	}
 	s.mu.Unlock()
+	s.event("info", "Queued "+job.Title)
 	s.queue <- job
 	return job, nil
 }
@@ -678,6 +716,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	gate := plan.VideoCodec != "" && s.settings.GetBool(ctx, keyQualityGate, false)
 	minSSIM := parseFloatDefault(s.settings.Get(ctx, keyMinSSIM, "0.95"), 0.95)
 	s.update(job, func(j *Job) { j.State = StateEncoding; j.Encoder = enc.Label })
+	s.event("info", fmt.Sprintf("Encoding %s → %s on %s (%s source)", title, strings.ToUpper(plan.VideoCodec), enc.Label, humanBytes(mi.SizeBytes)))
 	for attempt := 0; ; attempt++ {
 		if err := s.runEncode(ctx, job, src, dst, mi, enc, plan, h10pJSON); err != nil {
 			s.finish(job, StateFailed, "encode failed: "+err.Error())
@@ -687,14 +726,20 @@ func (s *Service) process(ctx context.Context, job *Job) {
 			break
 		}
 		s.update(job, func(j *Job) { j.State = StateVerifying })
-		score, err := s.computeSSIM(ctx, dst, src)
+		s.event("info", fmt.Sprintf("Verifying %s (SSIM vs source)…", title))
+		// Cap the verify: SSIM decodes both files, which is slow on a long movie and
+		// must never hang the whole queue. On timeout we accept the encode.
+		sctx, cancel := context.WithTimeout(ctx, 25*time.Minute)
+		score, err := s.computeSSIM(sctx, dst, src)
+		cancel()
 		if err != nil {
 			s.log.Warn("convert: quality gate could not measure SSIM, accepting output", "err", err)
+			s.event("warn", fmt.Sprintf("%s: couldn't measure SSIM — accepting the encode", title))
 			break
 		}
 		s.update(job, func(j *Job) { j.SSIM = score })
 		if score >= minSSIM {
-			s.log.Info("convert: quality gate passed", "title", title, "ssim", score, "min", minSSIM)
+			s.event("info", fmt.Sprintf("%s: quality gate passed (SSIM %.4f ≥ %.2f)", title, score, minSSIM))
 			break
 		}
 		if attempt >= qualityRetries {
@@ -702,7 +747,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 			return
 		}
 		plan.Quality = higherQuality(plan)
-		s.log.Info("convert: quality gate retry at higher quality", "title", title, "ssim", score, "new_crf", plan.Quality)
+		s.event("warn", fmt.Sprintf("%s: SSIM %.4f < %.2f — re-encoding at higher quality (attempt %d)", title, score, minSSIM, attempt+2))
 		s.update(job, func(j *Job) { j.State = StateEncoding; j.Progress = 0 })
 	}
 
@@ -918,6 +963,16 @@ func (s *Service) finish(job *Job, state JobState, note string) {
 			j.Progress = 1
 		}
 	})
+	// Mirror the outcome to the console log.
+	switch state {
+	case StateDone:
+		saved := job.SrcBytes - job.OutBytes
+		s.event("info", fmt.Sprintf("✓ Done %s — %s → %s (saved %s)", job.Title, humanBytes(job.SrcBytes), humanBytes(job.OutBytes), humanBytes(saved)))
+	case StateFailed:
+		s.event("error", fmt.Sprintf("✗ Failed %s — %s", job.Title, note))
+	case StateSkipped:
+		s.event("info", fmt.Sprintf("Skipped %s — %s", job.Title, note))
+	}
 	// Track hard failures for the quarantine blocklist; a success clears the record.
 	// (Skips are intentional outcomes, not failures, so they don't count.) The
 	// blocklist is keyed by movie id, so it only applies to movie jobs today;
@@ -1078,6 +1133,20 @@ func fileSize(path string) int64 {
 		return fi.Size()
 	}
 	return 0
+}
+
+// humanBytes renders a byte count for the console log.
+func humanBytes(b int64) string {
+	switch {
+	case b >= 1<<40:
+		return fmt.Sprintf("%.2f TB", float64(b)/(1<<40))
+	case b >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(b)/(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.0f MB", float64(b)/(1<<20))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
 }
 
 // moveFile renames src→dst, falling back to copy+remove across filesystems (scratch is

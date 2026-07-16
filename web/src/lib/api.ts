@@ -927,6 +927,7 @@ export const api = {
   convertSweep: () => req<{ status: string }>("/api/v1/convert/sweep", { method: "POST" }),
   convertLibrary: (media: "movies" | "tv" = "movies") => req<{ items: ConvertCandidate[] }>(`/api/v1/convert/library${media === "tv" ? "?media=tv" : ""}`).then((r) => r.items),
   convertJobs: () => req<{ jobs: ConvertJob[] }>("/api/v1/convert/jobs").then((r) => r.jobs),
+  convertLogs: () => req<{ lines: { at: number; level: string; msg: string }[] }>("/api/v1/convert/logs").then((r) => r.lines),
   convertMovie: (id: number) => req<ConvertJob>(`/api/v1/convert/movies/${id}`, { method: "POST" }),
   convertEpisode: (seriesID: number, season: number, episode: number) => req<ConvertJob>(`/api/v1/convert/episodes/${seriesID}/${season}/${episode}`, { method: "POST" }),
   convertSampleMovie: (id: number) => req<ConvertSample>(`/api/v1/convert/movies/${id}/sample`, { method: "POST" }),

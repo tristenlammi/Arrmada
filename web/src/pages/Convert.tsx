@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { api, type ConvertCandidate, type ConvertEncoder, type ConvertJob, type ConvertSample, type AppSettings } from "../lib/api";
 
@@ -7,7 +7,7 @@ import { api, type ConvertCandidate, type ConvertEncoder, type ConvertJob, type 
 // (safe encode→verify→replace), and the rules engine. Steps the mockup shows that are still
 // on the roadmap (audio/sub/HDR actions, VMAF gate, 30s sample) are marked as such — see
 // CONVERT-BUILD-PLAN.md.
-type Tab = "overview" | "queue" | "library" | "settings";
+type Tab = "overview" | "queue" | "library" | "logs" | "settings";
 const ACTIVE = new Set(["queued", "encoding", "verifying", "replacing"]);
 
 function fmtSize(b?: number): string {
@@ -57,6 +57,7 @@ export function Convert() {
     { key: "overview", label: "Overview" },
     { key: "queue", label: "Queue", n: activeCount ? `${activeCount} active` : undefined },
     { key: "library", label: "Library", n: items ? items.length.toLocaleString() : undefined },
+    { key: "logs", label: "Logs" },
     { key: "settings", label: "Settings" },
   ];
 
@@ -93,6 +94,7 @@ export function Convert() {
         {tab === "overview" && <Overview hw={hw} items={items} jobs={jobs} />}
         {tab === "queue" && <Queue jobs={jobs} />}
         {tab === "library" && <Library flash={flash} onQueued={() => api.convertJobs().then(setJobs)} />}
+        {tab === "logs" && <LogsConsole />}
         {tab === "settings" && <ConvertSettings flash={flash} />}
       </div>
       {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
@@ -215,6 +217,47 @@ function ActToggle({ on, set, label, hint }: { on: boolean; set: (v: boolean) =>
 // Warn is an inline amber caution.
 function Warn({ children }: { children: ReactNode }) {
   return <div className="flex items-start gap-1.5 rounded-md px-2 py-1.5 text-[10.5px] leading-snug" style={{ background: "var(--avoid-soft)", color: "var(--avoid)" }}><span className="flex-none">⚠</span><span>{children}</span></div>;
+}
+
+/* ============================= LOGS CONSOLE ============================= */
+function LogsConsole() {
+  const [lines, setLines] = useState<{ at: number; level: string; msg: string }[]>([]);
+  const [follow, setFollow] = useState(true);
+  const boxRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    const tick = () => api.convertLogs().then((l) => { if (alive) setLines(l); }).catch(() => {});
+    tick();
+    const t = setInterval(tick, 1500);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
+  useEffect(() => {
+    if (follow && boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
+  }, [lines, follow]);
+
+  const tone = (lvl: string) => (lvl === "error" ? "var(--reject)" : lvl === "warn" ? "var(--avoid)" : "var(--ink-dim)");
+  const clock = (at: number) => new Date(at * 1000).toLocaleTimeString();
+
+  return (
+    <div className={card} style={cardStyle}>
+      <div className="mb-2 flex items-center justify-between">
+        <div className="text-[14px] font-bold">Activity log</div>
+        <label className="flex items-center gap-1.5 text-[11px] text-ink-faint"><input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} /> Auto-scroll</label>
+      </div>
+      <div ref={boxRef} className="thin-scroll max-h-[62vh] overflow-y-auto rounded-lg p-3 font-mono text-[11.5px] leading-relaxed" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+        {lines.length === 0 ? (
+          <div className="text-ink-faint">No activity yet. Queue a conversion and it'll stream here.</div>
+        ) : lines.map((l, i) => (
+          <div key={i} className="flex gap-2">
+            <span className="flex-none text-ink-faint">{clock(l.at)}</span>
+            <span style={{ color: tone(l.level) }}>{l.msg}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function Queue({ jobs }: { jobs: ConvertJob[] }) {

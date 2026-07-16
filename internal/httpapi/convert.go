@@ -88,6 +88,15 @@ func (a *api) handleConvertEpisode(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusAccepted, job)
 }
 
+// handleConvertLogs returns the recent Convert activity console lines.
+func (a *api) handleConvertLogs(w http.ResponseWriter, r *http.Request) {
+	logs := a.deps.Convert.Logs()
+	if logs == nil {
+		logs = []convert.LogLine{}
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"lines": logs})
+}
+
 // handleConvertJobs returns recent + active conversion jobs (polled by the UI for progress).
 func (a *api) handleConvertJobs(w http.ResponseWriter, r *http.Request) {
 	jobs := a.deps.Convert.Jobs()
