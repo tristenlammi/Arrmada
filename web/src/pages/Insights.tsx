@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs, type Reliability, type BufferGroup, type NotificationConn } from "../lib/api";
 
@@ -101,21 +101,39 @@ function ActivityView({ connected, onConfigure }: { connected: boolean; onConfig
   const [act, setAct] = useState<InsightsActivity | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [detail, setDetail] = useState<InsightsStream | null>(null);
+  // syncedAt = when the current snapshot was fetched; the 1s ticker below re-renders
+  // so the progress bar can advance smoothly between the (4s) server polls without
+  // any extra load on Plex.
+  const syncedAt = useRef(0);
+  const [, tickNow] = useState(0);
 
   useEffect(() => {
     if (!connected) return;
     let alive = true;
-    const tick = () => api.insightsActivity().then((a) => { if (alive) { setAct(a); setErr(null); } }).catch((e) => { if (alive) setErr((e as Error).message); });
+    const tick = () => api.insightsActivity().then((a) => { if (alive) { setAct(a); syncedAt.current = Date.now(); setErr(null); } }).catch((e) => { if (alive) setErr((e as Error).message); });
     tick();
     const t = setInterval(tick, 4000);
     return () => { alive = false; clearInterval(t); };
   }, [connected]);
+
+  // Re-render once a second so playing streams' progress interpolates in real time.
+  useEffect(() => {
+    const t = setInterval(() => tickNow((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
 
   if (!connected) return <ComingSoon tab="activity" connected={false} onConfigure={onConfigure} />;
   if (err) return <div className="rounded-xl p-6 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Couldn’t reach Plex: {err}</div>;
   if (!act) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading activity…</div>;
 
   const streams = act.streams;
+  // liveOffset advances a playing stream's position by the time elapsed since the
+  // snapshot; paused/buffering streams hold. Capped at the runtime.
+  const liveOffset = (s: InsightsStream): number => {
+    if (s.state !== "playing") return s.offset_ms;
+    const adv = Math.max(0, Date.now() - syncedAt.current);
+    return s.duration_ms > 0 ? Math.min(s.duration_ms, s.offset_ms + adv) : s.offset_ms + adv;
+  };
   return (
     <div className="flex flex-col gap-3.5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -130,7 +148,7 @@ function ActivityView({ connected, onConfigure }: { connected: boolean; onConfig
         <div className="rounded-xl p-12 text-center text-[12.5px] text-ink-faint" style={{ border: "1px dashed var(--line)" }}>No active streams.</div>
       ) : (
         <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))" }}>
-          {streams.map((s) => <StreamCard key={s.session_key} s={s} onOpen={() => setDetail(s)} />)}
+          {streams.map((s) => <StreamCard key={s.session_key} s={s} offsetMs={liveOffset(s)} onOpen={() => setDetail(s)} />)}
         </div>
       )}
       {!act.geo_active && streams.some((s) => !s.geo.local) && (
@@ -285,9 +303,10 @@ function BW({ label, v, accent }: { label: string; v: number; accent?: boolean }
   );
 }
 
-function StreamCard({ s, onOpen }: { s: InsightsStream; onOpen: () => void }) {
+function StreamCard({ s, offsetMs, onOpen }: { s: InsightsStream; offsetMs: number; onOpen: () => void }) {
   const d = DECISION[s.decision] ?? DECISION.direct_play;
   const buffering = s.state === "buffering";
+  const pct = s.duration_ms > 0 ? Math.min(100, (offsetMs * 100) / s.duration_ms) : s.progress_pct;
   return (
     <button onClick={onOpen} className="flex gap-3 rounded-xl p-3 text-left transition-colors" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
       <div className="relative h-[104px] w-[70px] flex-none overflow-hidden rounded-md" style={{ background: "var(--panel-2)" }}>
@@ -306,11 +325,11 @@ function StreamCard({ s, onOpen }: { s: InsightsStream; onOpen: () => void }) {
         {/* progress */}
         <div className="mt-auto pt-2">
           <div className="h-1.5 w-full overflow-hidden rounded-full" style={{ background: "var(--panel-2)" }}>
-            <div className="h-full rounded-full" style={{ width: `${s.progress_pct}%`, background: buffering ? "var(--avoid)" : "var(--accent)" }} />
+            <div className="h-full rounded-full" style={{ width: `${pct}%`, background: buffering ? "var(--avoid)" : "var(--accent)", transition: "width 1s linear" }} />
           </div>
           <div className="mt-1 flex items-center justify-between font-mono text-[9.5px] text-ink-faint">
             <span style={{ color: buffering ? "var(--avoid)" : undefined }}>{buffering ? "● Buffering" : s.state === "paused" ? "⏸ Paused" : "▶ Playing"}</span>
-            <span>{fmtClock(s.offset_ms)} / {fmtClock(s.duration_ms)}</span>
+            <span>{fmtClock(offsetMs)} / {fmtClock(s.duration_ms)}</span>
           </div>
         </div>
       </div>
