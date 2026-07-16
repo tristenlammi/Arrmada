@@ -37,6 +37,7 @@ const (
 	keySweepEnd       = "convert_sweep_end"        // auto-sweep window end   "HH:MM"
 	keyMaxFailures    = "convert_max_failures"     // blocklist a movie after this many convert failures
 	keyScratchDir     = "convert_scratch_dir"      // transcode working dir override (empty = the startup default)
+	keyVaapiDevice    = "convert_vaapi_device"     // which /dev/dri/renderD* VAAPI encodes on (empty = default)
 )
 
 // qualityRetries is how many times the quality gate re-encodes at a higher quality before
@@ -197,6 +198,21 @@ func (s *Service) workerCount(ctx context.Context) int {
 // Hardware reports detected encoders + the selected one.
 func (s *Service) Hardware() (encoders []Encoder, selected Encoder) {
 	return s.encoders, s.encoder
+}
+
+// Devices reports the available render nodes plus the one currently selected for
+// VAAPI — so the UI can let the user pick the discrete card over the iGPU.
+func (s *Service) Devices(ctx context.Context) (devices []RenderDevice, selected string) {
+	return renderDevices(), s.vaapiDev(ctx)
+}
+
+// vaapiDev resolves which render node VAAPI encodes on (the Convert → VAAPI device
+// setting), falling back to the default node.
+func (s *Service) vaapiDev(ctx context.Context) string {
+	if d := strings.TrimSpace(s.settings.Get(ctx, keyVaapiDevice, "")); d != "" {
+		return d
+	}
+	return vaapiDevice
 }
 
 // activeScratch resolves the transcode working directory: the configured override
@@ -504,7 +520,7 @@ func (s *Service) sample(ctx context.Context, movieID int64, plan Plan) (SampleR
 
 	encodeSlice := func(enc Encoder, sl slice, dst string) error {
 		args := []string{"-y", "-hide_banner", "-ss", fmt.Sprintf("%.2f", sl.start), "-t", fmt.Sprintf("%.2f", sl.length)}
-		args = append(args, globalArgs(enc, false)...) // sample = software decode (short, keep it simple/robust)
+		args = append(args, globalArgs(enc, false, s.vaapiDev(ctx))...) // sample = software decode (short, keep it simple/robust)
 		args = append(args, "-i", src)
 		args = append(args, compileOutputArgs(enc, mi, plan, false)...)
 		args = append(args, dst)
@@ -1052,7 +1068,7 @@ func lavfiSingleQuote(p string) string {
 // software-decode fallback.
 func (s *Service) encode(ctx context.Context, job *Job, src, dst string, mi *MediaInfo, enc Encoder, plan Plan, hwDecode bool) error {
 	args := []string{"-y", "-hide_banner", "-nostats", "-progress", "pipe:1"}
-	args = append(args, globalArgs(enc, hwDecode)...) // device / hwaccel init must precede the input
+	args = append(args, globalArgs(enc, hwDecode, s.vaapiDev(ctx))...) // device / hwaccel init must precede the input
 	args = append(args, "-i", src)
 	args = append(args, compileOutputArgs(enc, mi, plan, hwDecode)...)
 	args = append(args, dst)

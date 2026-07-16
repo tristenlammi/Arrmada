@@ -17,11 +17,17 @@ func (a *api) handleConvertHardware(w http.ResponseWriter, r *http.Request) {
 		encoders = []convert.Encoder{}
 	}
 	scratchDir, scratchFree := a.deps.Convert.ScratchInfo(r.Context())
+	devices, vaapiDevice := a.deps.Convert.Devices(r.Context())
+	if devices == nil {
+		devices = []convert.RenderDevice{}
+	}
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"encoders": encoders, "selected": selected,
 		"reclaimed_bytes":    a.deps.Convert.Reclaimed(r.Context()),
 		"scratch_dir":        scratchDir,
 		"scratch_free_bytes": scratchFree,
+		"render_devices":     devices,
+		"vaapi_device":       vaapiDevice,
 	})
 }
 

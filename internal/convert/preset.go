@@ -39,19 +39,24 @@ var twoToThree = map[string]string{
 	"hi": "hin", "ja": "jpn", "ko": "kor", "zh": "chi",
 }
 
-// vaapiDevice is the DRM render node VAAPI (AMD/Intel) encodes through.
+// vaapiDevice is the default DRM render node VAAPI encodes through. On a box with
+// both an iGPU and a discrete card there are several (renderD128, renderD129, …);
+// the Convert → VAAPI device setting picks which one.
 const vaapiDevice = "/dev/dri/renderD128"
 
 // globalArgs returns ffmpeg options that must appear before the input (device init). Only
 // VAAPI needs one today. With hwDecode, the GPU also decodes the source (frames stay on the
 // GPU as VAAPI surfaces — no CPU decode or upload); otherwise ffmpeg decodes in software and
-// the filter chain uploads each frame for the hardware encoder.
-func globalArgs(enc Encoder, hwDecode bool) []string {
+// the filter chain uploads each frame for the hardware encoder. device is the render node.
+func globalArgs(enc Encoder, hwDecode bool, device string) []string {
 	if enc.Kind == "vaapi" {
-		if hwDecode {
-			return []string{"-hwaccel", "vaapi", "-hwaccel_device", vaapiDevice, "-hwaccel_output_format", "vaapi"}
+		if device == "" {
+			device = vaapiDevice
 		}
-		return []string{"-vaapi_device", vaapiDevice}
+		if hwDecode {
+			return []string{"-hwaccel", "vaapi", "-hwaccel_device", device, "-hwaccel_output_format", "vaapi"}
+		}
+		return []string{"-vaapi_device", device}
 	}
 	return nil
 }

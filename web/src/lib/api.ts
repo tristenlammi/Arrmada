@@ -289,6 +289,7 @@ export interface AppSettings {
   convert_sweep_end: string;
   convert_max_failures: string;
   convert_scratch_dir: string;
+  convert_vaapi_device: string;
 }
 
 export interface MediaRequest {
@@ -923,7 +924,7 @@ export const api = {
   searchSeriesSubs: (id: number) => req<{ status: string }>(`/api/v1/subtitles/series/${id}/search`, { method: "POST" }),
 
   // Convert
-  convertHardware: () => req<{ encoders: ConvertEncoder[]; selected: ConvertEncoder; reclaimed_bytes: number; scratch_dir: string; scratch_free_bytes: number }>("/api/v1/convert/hardware"),
+  convertHardware: () => req<{ encoders: ConvertEncoder[]; selected: ConvertEncoder; reclaimed_bytes: number; scratch_dir: string; scratch_free_bytes: number; render_devices: { path: string; pci: string; vendor: string }[]; vaapi_device: string }>("/api/v1/convert/hardware"),
   convertSweep: () => req<{ status: string }>("/api/v1/convert/sweep", { method: "POST" }),
   convertLibrary: (media: "movies" | "tv" = "movies") => req<{ items: ConvertCandidate[] }>(`/api/v1/convert/library${media === "tv" ? "?media=tv" : ""}`).then((r) => r.items),
   convertJobs: () => req<{ jobs: ConvertJob[] }>("/api/v1/convert/jobs").then((r) => r.jobs),

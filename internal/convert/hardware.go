@@ -158,6 +158,58 @@ func deviceExists(path string) bool {
 	return err == nil
 }
 
+// RenderDevice is one /dev/dri/renderD* node the user can point VAAPI at (a box
+// with an iGPU + a discrete card has several).
+type RenderDevice struct {
+	Path   string `json:"path"`   // /dev/dri/renderD128
+	PCI    string `json:"pci"`    // 0000:03:00.0
+	Vendor string `json:"vendor"` // Intel | AMD | NVIDIA | ...
+}
+
+// renderDevices lists the DRM render nodes present, each with its PCI address and
+// GPU vendor — enough for the user to tell the iGPU from the discrete Arc.
+func renderDevices() []RenderDevice {
+	entries, err := os.ReadDir("/dev/dri")
+	if err != nil {
+		return nil
+	}
+	var out []RenderDevice
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, "renderD") {
+			continue
+		}
+		d := RenderDevice{Path: "/dev/dri/" + name}
+		if link, err := os.Readlink("/sys/class/drm/" + name + "/device"); err == nil {
+			d.PCI = filepathBase(link)
+		}
+		if v, err := os.ReadFile("/sys/class/drm/" + name + "/device/vendor"); err == nil {
+			d.Vendor = vendorName(strings.TrimSpace(string(v)))
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+func vendorName(id string) string {
+	switch id {
+	case "0x8086":
+		return "Intel"
+	case "0x1002":
+		return "AMD"
+	case "0x10de":
+		return "NVIDIA"
+	}
+	return id
+}
+
+func filepathBase(p string) string {
+	if i := strings.LastIndexByte(p, '/'); i >= 0 {
+		return p[i+1:]
+	}
+	return p
+}
+
 func hasCmd(name string) bool {
 	_, err := exec.LookPath(name)
 	return err == nil

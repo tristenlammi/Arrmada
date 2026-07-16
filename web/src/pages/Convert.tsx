@@ -446,20 +446,21 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
   const [d, setD] = useState<AppSettings | null>(null); // working draft
   const [busy, setBusy] = useState(false);
   const [scratch, setScratch] = useState<{ dir: string; free: number } | null>(null);
+  const [devices, setDevices] = useState<{ path: string; pci: string; vendor: string }[]>([]);
   useEffect(() => { api.settings().then((v) => { setSaved(v); setD(v); }).catch(() => flash("Could not load settings")); }, [flash]);
-  const loadScratch = useCallback(() => api.convertHardware().then((h) => setScratch({ dir: h.scratch_dir, free: h.scratch_free_bytes })).catch(() => {}), []);
+  const loadScratch = useCallback(() => api.convertHardware().then((h) => { setScratch({ dir: h.scratch_dir, free: h.scratch_free_bytes }); setDevices(h.render_devices ?? []); }).catch(() => {}), []);
   useEffect(() => { loadScratch(); }, [loadScratch]);
   const set = (patch: Partial<AppSettings>) => setD((cur) => (cur ? { ...cur, ...patch } : cur));
   const dirty = useMemo(() => {
     if (!saved || !d) return false;
-    const keys: (keyof AppSettings)[] = ["convert_target_codec", "convert_extract_subs", "convert_auto", "convert_sweep_start", "convert_sweep_end", "convert_workers", "convert_quality_gate", "convert_min_ssim", "convert_max_failures", "convert_skip_hardlinked", "convert_scratch_dir"];
+    const keys: (keyof AppSettings)[] = ["convert_target_codec", "convert_extract_subs", "convert_auto", "convert_sweep_start", "convert_sweep_end", "convert_workers", "convert_quality_gate", "convert_min_ssim", "convert_max_failures", "convert_skip_hardlinked", "convert_scratch_dir", "convert_vaapi_device"];
     return keys.some((k) => saved[k] !== d[k]);
   }, [saved, d]);
   const onSave = async () => {
     if (!d) return;
     setBusy(true);
-    const patch = { convert_target_codec: d.convert_target_codec, convert_extract_subs: d.convert_extract_subs, convert_auto: d.convert_auto, convert_sweep_start: d.convert_sweep_start, convert_sweep_end: d.convert_sweep_end, convert_workers: d.convert_workers, convert_quality_gate: d.convert_quality_gate, convert_min_ssim: d.convert_min_ssim, convert_max_failures: d.convert_max_failures, convert_skip_hardlinked: d.convert_skip_hardlinked, convert_scratch_dir: d.convert_scratch_dir };
-    try { const v = await api.updateSettings(patch); setSaved(v); setD(v); flash("Settings saved"); loadScratch(); } catch (e) { flash((e as Error).message); } finally { setBusy(false); }
+    const patch = { convert_target_codec: d.convert_target_codec, convert_extract_subs: d.convert_extract_subs, convert_auto: d.convert_auto, convert_sweep_start: d.convert_sweep_start, convert_sweep_end: d.convert_sweep_end, convert_workers: d.convert_workers, convert_quality_gate: d.convert_quality_gate, convert_min_ssim: d.convert_min_ssim, convert_max_failures: d.convert_max_failures, convert_skip_hardlinked: d.convert_skip_hardlinked, convert_scratch_dir: d.convert_scratch_dir, convert_vaapi_device: d.convert_vaapi_device };
+    try { const v = await api.updateSettings(patch); setSaved(v); setD(v); flash("Settings saved — restart or the next job uses the new GPU"); loadScratch(); } catch (e) { flash((e as Error).message); } finally { setBusy(false); }
   };
   if (!d) return <div className="text-[12px] text-ink-faint">Loading settings…</div>;
   const av1 = d.convert_target_codec === "av1";
@@ -499,6 +500,20 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
           <input type="number" min="1" max="8" value={d.convert_workers} onChange={(e) => set({ convert_workers: e.target.value })} className={`${inp} w-[70px]`} style={inpStyle} />
         </SettingField>
       </SettingCard>
+
+      {/* GPU / VAAPI device — matters when the box has an iGPU + a discrete card */}
+      {devices.length > 1 && (
+        <SettingCard title="GPU device" desc="This machine has more than one GPU. Pick which render node hardware transcoding runs on — e.g. a discrete Arc card instead of the CPU's integrated graphics. Applies to the next job.">
+          <SettingField label="VAAPI device" hint="the discrete card is usually the higher renderD number / a PCIe slot like 03:00.0">
+            <select value={d.convert_vaapi_device || ""} onChange={(e) => set({ convert_vaapi_device: e.target.value })} className={`${inp} w-[300px]`} style={inpStyle}>
+              <option value="">Default (renderD128)</option>
+              {devices.map((dev) => (
+                <option key={dev.path} value={dev.path}>{dev.path.replace("/dev/dri/", "")} · {dev.vendor}{dev.pci ? ` · ${dev.pci}` : ""}</option>
+              ))}
+            </select>
+          </SettingField>
+        </SettingCard>
+      )}
 
       {/* Storage / transcode dir */}
       <SettingCard title="Transcode directory" desc="The working folder Convert encodes into before moving the finished file into your library. Put it on fast storage (an SSD/NVMe cache pool) — never the array — so the long encode doesn't hammer your parity disks. Leave blank to use the default.">
