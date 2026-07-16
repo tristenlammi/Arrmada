@@ -51,7 +51,7 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"convert_target_codec": a.deps.Settings.Get(ctx, "convert_target_codec", "hevc"),
 		"convert_auto":         a.deps.Settings.GetBool(ctx, "convert_auto", false),
 		"convert_quality_gate": a.deps.Settings.GetBool(ctx, "convert_quality_gate", true),
-		"convert_min_ssim":     a.deps.Settings.Get(ctx, "convert_min_ssim", "0.98"),
+		"convert_min_ssim":     a.deps.Settings.Get(ctx, "convert_min_ssim", "0.95"),
 		"convert_workers":      a.deps.Settings.Get(ctx, "convert_workers", "1"),
 		"convert_sweep_start":  a.deps.Settings.Get(ctx, "convert_sweep_start", ""),
 		"convert_sweep_end":    a.deps.Settings.Get(ctx, "convert_sweep_end", ""),
