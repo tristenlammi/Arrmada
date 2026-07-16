@@ -70,8 +70,11 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	var totalDown, totalUp int64
 	active := 0
 	for _, it := range queue {
-		if imported[it.Hash] {
-			continue // imported — hide it, even though it's still seeding
+		// Hide a torrent only once it's imported AND finished (still seeding, but done).
+		// A re-download of a previously-imported release (e.g. after deleting a bad
+		// import) is < 100% and must stay visible while it downloads.
+		if imported[it.Hash] && it.Progress >= 1.0 {
+			continue
 		}
 		profile := "n/a"
 		mediaType := "movie"
