@@ -30,7 +30,7 @@ export function Convert() {
   const [items, setItems] = useState<ConvertCandidate[] | null>(null);
   const [jobs, setJobs] = useState<ConvertJob[]>([]);
   const [toast, setToast] = useState<string | null>(null);
-  const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); };
+  const flash = useCallback((m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); }, []);
 
   const loadLibrary = useCallback(() => api.convertLibrary().then(setItems).catch(() => setItems([])), []);
   const loadHw = useCallback(() => api.convertHardware().then(setHw).catch(() => {}), []);
@@ -447,7 +447,10 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
   const [busy, setBusy] = useState(false);
   const [scratch, setScratch] = useState<{ dir: string; free: number } | null>(null);
   const [devices, setDevices] = useState<{ path: string; pci: string; vendor: string }[]>([]);
-  useEffect(() => { api.settings().then((v) => { setSaved(v); setD(v); }).catch(() => flash("Could not load settings")); }, [flash]);
+  // Load once on mount only. Depending on `flash` (a new function each parent
+  // render) re-ran this every poll tick, overwriting the user's unsaved edits.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { api.settings().then((v) => { setSaved(v); setD(v); }).catch(() => flash("Could not load settings")); }, []);
   const loadScratch = useCallback(() => api.convertHardware().then((h) => { setScratch({ dir: h.scratch_dir, free: h.scratch_free_bytes }); setDevices(h.render_devices ?? []); }).catch(() => {}), []);
   useEffect(() => { loadScratch(); }, [loadScratch]);
   const set = (patch: Partial<AppSettings>) => setD((cur) => (cur ? { ...cur, ...patch } : cur));
