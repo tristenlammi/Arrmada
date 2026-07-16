@@ -6,7 +6,9 @@ package insights
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"log/slog"
 	"strconv"
 
@@ -17,10 +19,12 @@ import (
 )
 
 const (
-	keyURL     = "insights_plex_url"
-	keyToken   = "insights_plex_token"
-	keyEnabled = "insights_enabled"
-	keyPoll    = "insights_poll_seconds"
+	keyURL      = "insights_plex_url"
+	keyToken    = "insights_plex_token"
+	keyEnabled  = "insights_enabled"
+	keyPoll     = "insights_poll_seconds"
+	keyClientID = "insights_plex_client_id" // stable X-Plex-Client-Identifier for sign-in
+	plexProduct = "Arrmada"
 )
 
 // Service owns the Plex connection config, the poller/recorder, and history queries.
@@ -95,6 +99,57 @@ func (s *Service) SetConfig(ctx context.Context, url string, token *string, enab
 		}
 	}
 	return nil
+}
+
+// clientID returns the stable X-Plex-Client-Identifier for this install, generating
+// and persisting one on first use (Plex ties the sign-in PIN to it).
+func (s *Service) clientID(ctx context.Context) string {
+	if id := s.settings.Get(ctx, keyClientID, ""); id != "" {
+		return id
+	}
+	b := make([]byte, 16)
+	_, _ = rand.Read(b)
+	id := hex.EncodeToString(b)
+	_ = s.settings.Set(ctx, keyClientID, id)
+	return id
+}
+
+// PlexAuth is a started sign-in the UI opens + polls.
+type PlexAuth struct {
+	ID      int    `json:"id"`
+	AuthURL string `json:"auth_url"`
+}
+
+// StartPlexAuth begins a Plex sign-in and returns the PIN id + the URL to open.
+func (s *Service) StartPlexAuth(ctx context.Context) (PlexAuth, error) {
+	cid := s.clientID(ctx)
+	pin, err := plex.RequestPIN(ctx, cid, plexProduct)
+	if err != nil {
+		return PlexAuth{}, err
+	}
+	return PlexAuth{ID: pin.ID, AuthURL: plex.AuthURL(cid, pin.Code, plexProduct)}, nil
+}
+
+// PollPlexAuth checks whether the user has authorized the sign-in. On success it
+// stores the token and, if no URL is set yet, auto-discovers the server URL.
+func (s *Service) PollPlexAuth(ctx context.Context, pinID int) (bool, error) {
+	cid := s.clientID(ctx)
+	token, err := plex.CheckPIN(ctx, cid, pinID)
+	if err != nil {
+		return false, err
+	}
+	if token == "" {
+		return false, nil // still pending
+	}
+	if err := s.settings.Set(ctx, keyToken, token); err != nil {
+		return false, err
+	}
+	if s.settings.Get(ctx, keyURL, "") == "" {
+		if url, e := plex.DiscoverServer(ctx, cid, token); e == nil && url != "" {
+			_ = s.settings.Set(ctx, keyURL, url)
+		}
+	}
+	return true, nil
 }
 
 // SeedFromEnv stores a URL/token supplied via env on startup, but only for fields not already

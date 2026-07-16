@@ -48,6 +48,36 @@ func (a *api) handleInsightsTest(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, a.deps.Insights.Test(ctx, req.URL, req.Token))
 }
 
+// handleInsightsPlexAuthStart begins a "Sign in with Plex" flow: returns the PIN id
+// and the plex.tv URL the UI opens for the user to authorize.
+func (a *api) handleInsightsPlexAuthStart(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	auth, err := a.deps.Insights.StartPlexAuth(ctx)
+	if err != nil {
+		a.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, auth)
+}
+
+// handleInsightsPlexAuthPoll checks whether the user has authorized the sign-in; on
+// success the token (and, if unset, the server URL) are stored.
+func (a *api) handleInsightsPlexAuthPoll(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	authorized, err := a.deps.Insights.PollPlexAuth(ctx, int(id))
+	if err != nil {
+		a.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"authorized": authorized})
+}
+
 // handleInsightsActivity returns the current live Plex streams (the Activity view).
 func (a *api) handleInsightsActivity(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)

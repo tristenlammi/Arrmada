@@ -932,6 +932,8 @@ export const api = {
 
   // Insights (Plex)
   insightsConfig: () => req<PlexConfig>("/api/v1/insights/plex"),
+  insightsPlexAuthStart: () => req<{ id: number; auth_url: string }>("/api/v1/insights/plex/auth", { method: "POST" }),
+  insightsPlexAuthPoll: (id: number) => req<{ authorized: boolean }>(`/api/v1/insights/plex/auth/${id}`),
   updateInsightsConfig: (body: { url: string; token?: string; enabled?: boolean; poll_seconds?: number }) =>
     req<PlexConfig>("/api/v1/insights/plex", { method: "PUT", body: JSON.stringify(body) }),
   testInsights: (body: { url?: string; token?: string }) =>

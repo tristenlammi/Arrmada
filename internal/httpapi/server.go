@@ -226,6 +226,8 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/insights/plex", a.requireRole(auth.RoleManager, a.handleInsightsConfig))
 	mux.HandleFunc("PUT "+base+"/api/v1/insights/plex", a.requireRole(auth.RoleManager, a.handleUpdateInsightsConfig))
 	mux.HandleFunc("POST "+base+"/api/v1/insights/plex/test", a.requireRole(auth.RoleManager, a.handleInsightsTest))
+	mux.HandleFunc("POST "+base+"/api/v1/insights/plex/auth", a.requireRole(auth.RoleManager, a.handleInsightsPlexAuthStart))
+	mux.HandleFunc("GET "+base+"/api/v1/insights/plex/auth/{id}", a.requireRole(auth.RoleManager, a.handleInsightsPlexAuthPoll))
 	mux.HandleFunc("GET "+base+"/api/v1/insights/activity", a.requireRole(auth.RoleManager, a.handleInsightsActivity))
 	mux.HandleFunc("GET "+base+"/api/v1/insights/history", a.requireRole(auth.RoleManager, a.handleInsightsHistory))
 	mux.HandleFunc("GET "+base+"/api/v1/insights/stats", a.requireRole(auth.RoleManager, a.handleInsightsStats))

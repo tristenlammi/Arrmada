@@ -865,6 +865,7 @@ function PlexSettings({ cfg, onSaved, flash }: { cfg: PlexConfig | null; onSaved
   const [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState<"save" | "test" | null>(null);
   const [test, setTest] = useState<PlexTestResult | null>(null);
+  const [signingIn, setSigningIn] = useState(false);
 
   useEffect(() => {
     if (!cfg) return;
@@ -872,6 +873,38 @@ function PlexSettings({ cfg, onSaved, flash }: { cfg: PlexConfig | null; onSaved
     setPoll(String(cfg.poll_seconds || 5));
     setEnabled(cfg.enabled);
   }, [cfg]);
+
+  // Sign in with Plex: open plex.tv's auth popup, then poll until the user approves,
+  // at which point the token (and server URL, if unset) are stored on the server.
+  const signIn = async () => {
+    setSigningIn(true);
+    setTest(null);
+    try {
+      const { id, auth_url } = await api.insightsPlexAuthStart();
+      const popup = window.open(auth_url, "plex-auth", "width=800,height=720");
+      const deadline = Date.now() + 3 * 60 * 1000;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        await new Promise((r) => setTimeout(r, 2000));
+        if (Date.now() > deadline) { flash("Plex sign-in timed out — try again."); break; }
+        let authorized = false;
+        try { authorized = (await api.insightsPlexAuthPoll(id)).authorized; } catch { /* keep polling */ }
+        if (authorized) {
+          popup?.close();
+          const c = await api.insightsConfig();
+          onSaved(c);
+          setUrl(c.url);
+          flash("Signed in with Plex ✓");
+          break;
+        }
+        if (popup && popup.closed) { flash("Sign-in window closed before finishing."); break; }
+      }
+    } catch (e) {
+      flash((e as Error).message);
+    } finally {
+      setSigningIn(false);
+    }
+  };
 
   const body = () => ({ url: url.trim(), token: token.trim() || undefined, enabled, poll_seconds: Number(poll) || 5 });
 
@@ -891,6 +924,14 @@ function PlexSettings({ cfg, onSaved, flash }: { cfg: PlexConfig | null; onSaved
       <div className="rounded-xl p-5" style={{ border: "1px solid var(--line)", background: "var(--panel)", maxWidth: 560 }}>
         <div className="text-[13.5px] font-bold">Plex connection</div>
         <div className="mb-4 mt-0.5 text-[11.5px] text-ink-faint">Point Arrmada at your Plex Media Server. Your token stays on this server and is never shown back in full.</div>
+
+        {/* One-click sign-in — no token hunting. */}
+        <button onClick={signIn} disabled={signingIn} className="mb-4 flex w-full items-center justify-center gap-2 rounded-lg py-2.5 text-[13px] font-semibold disabled:opacity-60" style={{ background: "#e5a00d", color: "#1f1200" }}>
+          {signingIn ? "Waiting for Plex…" : (cfg?.token_set ? "Re-sign in with Plex" : "Sign in with Plex")}
+        </button>
+        <div className="mb-4 flex items-center gap-2 text-[10.5px] text-ink-faint">
+          <span className="h-px flex-1" style={{ background: "var(--line)" }} /> or enter manually <span className="h-px flex-1" style={{ background: "var(--line)" }} />
+        </div>
 
         <label className="mb-3 block">
           <span className="mb-1 block text-[12px] font-semibold">Server URL</span>
