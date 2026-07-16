@@ -407,6 +407,12 @@ func (s *Service) MarkEpisodeImported(ctx context.Context, seriesID int64, seaso
 	return nil
 }
 
+// MarkEpisodeMissing flips an episode back to wanted (no file on disk) — used by
+// rescan to reconcile episodes whose file was deleted or moved away.
+func (s *Service) MarkEpisodeMissing(ctx context.Context, seriesID int64, season, episode int) error {
+	return s.repo.ClearEpisodeFile(ctx, seriesID, season, episode)
+}
+
 // MatchByTitle finds a series whose normalized title matches (for import routing).
 func (s *Service) MatchByTitle(ctx context.Context, normalized string) (Series, bool) {
 	all, err := s.repo.List(ctx)

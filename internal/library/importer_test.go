@@ -60,6 +60,40 @@ func TestImportEpisode(t *testing.T) {
 	}
 }
 
+func TestParseSeasonDir(t *testing.T) {
+	ok := map[string]int{"Season 1": 1, "Season 01": 1, "season 12": 12, "S1": 1, "S01": 1, "Specials": 0, "Season 0": 0}
+	for name, want := range ok {
+		if n, valid := parseSeasonDir(name); !valid || n != want {
+			t.Errorf("parseSeasonDir(%q) = (%d,%v), want (%d,true)", name, n, valid, want)
+		}
+	}
+	for _, name := range []string{"Extras", "Season", "Behind the Scenes", "S"} {
+		if _, valid := parseSeasonDir(name); valid {
+			t.Errorf("parseSeasonDir(%q) = valid, want invalid", name)
+		}
+	}
+}
+
+// TestSeasonDirNameReusesExisting checks that an import joins the show's existing
+// "Season 1" folder instead of creating a padded "Season 01" duplicate.
+func TestSeasonDirNameReusesExisting(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "Season 1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := seasonDirName(dir, 1); got != "Season 1" {
+		t.Errorf("seasonDirName = %q, want the existing %q", got, "Season 1")
+	}
+	// A season with no existing folder falls back to the zero-padded default.
+	if got := seasonDirName(dir, 2); got != "Season 02" {
+		t.Errorf("seasonDirName(new) = %q, want %q", got, "Season 02")
+	}
+	// Season 0 with nothing on disk → Specials.
+	if got := seasonDirName(dir, 0); got != "Specials" {
+		t.Errorf("seasonDirName(0) = %q, want Specials", got)
+	}
+}
+
 // TestImportEpisodeIntoExistingFolder checks that a supplied series folder wins
 // over the derived "<Title> (<Year>)" name, so new episodes join the show's
 // existing on-disk folder instead of spawning a duplicate.

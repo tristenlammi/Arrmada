@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -585,12 +586,23 @@ func (im *Importer) Move(from, to string) error {
 // SeriesLibraryFiles walks a series' library folder and returns the episode files
 // present on disk (season/episode parsed from each filename). Used by rescan.
 func (im *Importer) SeriesLibraryFiles(title string, year int) []EpisodeImport {
-	folder := clean(title)
+	return im.SeriesLibraryFilesIn("", title, year)
+}
+
+// SeriesLibraryFilesIn is SeriesLibraryFiles scoped to an explicit series folder
+// (the show's real on-disk directory). When empty it derives "<Title> (<Year>)".
+// Using the real folder lets rescan reconcile a show whose folder doesn't match
+// the derived name. FindVideos recurses, so any season-folder naming is found.
+func (im *Importer) SeriesLibraryFilesIn(seriesFolder, title string, year int) []EpisodeImport {
+	folder := clean(seriesFolder)
 	if folder == "" {
-		folder = "Unknown"
-	}
-	if year > 0 {
-		folder = fmt.Sprintf("%s (%d)", folder, year)
+		folder = clean(title)
+		if folder == "" {
+			folder = "Unknown"
+		}
+		if year > 0 {
+			folder = fmt.Sprintf("%s (%d)", folder, year)
+		}
 	}
 	vids, _ := FindVideos(filepath.Join(im.tvDir(), folder))
 	var out []EpisodeImport
@@ -628,7 +640,48 @@ func (im *Importer) episodeTargetIn(seriesFolder, title string, year, season, ep
 	if q := qualityTag(rel); q != "" {
 		file += " - " + q
 	}
-	return filepath.Join(im.tvDir(), folder, fmt.Sprintf("Season %02d", season), clean(file)+ext)
+	seriesDir := filepath.Join(im.tvDir(), folder)
+	return filepath.Join(seriesDir, seasonDirName(seriesDir, season), clean(file)+ext)
+}
+
+// seasonDirName returns the season directory to place an episode in: an existing
+// one for that season if the show already has it (matching any padding — "Season 1",
+// "Season 01", "Specials"), otherwise the zero-padded default. This stops a grab
+// from creating a duplicate "Season 01" next to an existing "Season 1".
+func seasonDirName(seriesDir string, season int) string {
+	def := fmt.Sprintf("Season %02d", season)
+	if season == 0 {
+		def = "Specials"
+	}
+	entries, err := os.ReadDir(seriesDir)
+	if err != nil {
+		return def
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			if n, ok := parseSeasonDir(e.Name()); ok && n == season {
+				return e.Name() // reuse the show's existing layout
+			}
+		}
+	}
+	return def
+}
+
+// reSeasonDir matches "Season 1", "Season 01", "S1", "S01" (any zero-padding).
+var reSeasonDir = regexp.MustCompile(`(?i)^s(?:eason)?\s*0*(\d+)$`)
+
+// parseSeasonDir extracts a season number from a directory name ("Specials" → 0).
+func parseSeasonDir(name string) (int, bool) {
+	name = strings.TrimSpace(name)
+	if strings.EqualFold(name, "specials") {
+		return 0, true
+	}
+	if m := reSeasonDir.FindStringSubmatch(name); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			return n, true
+		}
+	}
+	return 0, false
 }
 
 // MovieTarget builds the library path for a movie file using the configured

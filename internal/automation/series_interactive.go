@@ -3,6 +3,7 @@ package automation
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -198,8 +199,11 @@ func scopeLabel(season, episode int) string {
 	}
 }
 
-// RescanSeries walks the series' library folder and marks each episode file it finds
-// as present — the "rescan" half of Refresh & rescan.
+// RescanSeries reconciles a series' episode records with what's actually on disk —
+// the "rescan" half of Refresh & rescan. It walks the show's real library folder
+// (not the derived name, so a differently-named folder still works), marks every
+// episode file it finds present (updating moved paths), and clears episodes whose
+// file is gone — so deleting a stray/duplicate folder is picked up cleanly.
 func (c *Coordinator) RescanSeries(ctx context.Context, seriesID int64) {
 	if c.series == nil || c.imp == nil {
 		return
@@ -208,9 +212,31 @@ func (c *Coordinator) RescanSeries(ctx context.Context, seriesID int64) {
 	if err != nil {
 		return
 	}
-	for _, f := range c.imp.SeriesLibraryFiles(s.Title, s.Year) {
+	folder := c.series.ExistingFolderName(ctx, seriesID) // "" → importer derives the name
+
+	found := map[[2]int]bool{}
+	for _, f := range c.imp.SeriesLibraryFilesIn(folder, s.Title, s.Year) {
+		found[[2]int{f.Season, f.Episode}] = true
 		_ = c.series.MarkEpisodeImported(ctx, seriesID, f.Season, f.Episode, f.TargetPath, f.SizeBytes)
 	}
+
+	// Clear any episode still flagged as having a file that wasn't found on disk and
+	// whose stored path no longer exists (e.g. a deleted duplicate season folder).
+	for _, sn := range s.Seasons {
+		for _, e := range sn.Episodes {
+			if !e.HasFile || found[[2]int{e.SeasonNumber, e.EpisodeNumber}] {
+				continue
+			}
+			if e.FilePath == "" || !fileExists(e.FilePath) {
+				_ = c.series.MarkEpisodeMissing(ctx, seriesID, e.SeasonNumber, e.EpisodeNumber)
+			}
+		}
+	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // SeriesImportCandidate is a video file on disk that can be manually imported into a
