@@ -101,16 +101,17 @@ function ActivityView({ connected, onConfigure }: { connected: boolean; onConfig
   const [act, setAct] = useState<InsightsActivity | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [detail, setDetail] = useState<InsightsStream | null>(null);
-  // syncedAt = when the current snapshot was fetched; the 1s ticker below re-renders
-  // so the progress bar can advance smoothly between the (4s) server polls without
-  // any extra load on Plex.
-  const syncedAt = useRef(0);
+  // Per-session smoothed playback clock. Plex only updates viewOffset every ~10s, so
+  // re-baselining to it every poll makes the bar sawtooth. Instead we run our own 1×
+  // clock and only re-sync to Plex when it diverges a lot (a real seek/resume) — small
+  // drift from Plex's lazy updates is ignored, so the timer counts smoothly.
+  const clock = useRef<Record<string, { base: number; at: number }>>({});
   const [, tickNow] = useState(0);
 
   useEffect(() => {
     if (!connected) return;
     let alive = true;
-    const tick = () => api.insightsActivity().then((a) => { if (alive) { setAct(a); syncedAt.current = Date.now(); setErr(null); } }).catch((e) => { if (alive) setErr((e as Error).message); });
+    const tick = () => api.insightsActivity().then((a) => { if (alive) { setAct(a); setErr(null); } }).catch((e) => { if (alive) setErr((e as Error).message); });
     tick();
     const t = setInterval(tick, 4000);
     return () => { alive = false; clearInterval(t); };
@@ -122,17 +123,36 @@ function ActivityView({ connected, onConfigure }: { connected: boolean; onConfig
     return () => clearInterval(t);
   }, []);
 
+  // Reconcile the smoothed clocks whenever a fresh snapshot arrives.
+  useEffect(() => {
+    if (!act) return;
+    const now = Date.now();
+    const SEEK_MS = 15000; // treat a >15s gap vs our clock as a seek, not Plex lag
+    const next: Record<string, { base: number; at: number }> = {};
+    for (const s of act.streams) {
+      const prev = clock.current[s.session_key];
+      if (s.state !== "playing" || !prev) {
+        next[s.session_key] = { base: s.offset_ms, at: now };
+        continue;
+      }
+      const predicted = prev.base + (now - prev.at);
+      next[s.session_key] = Math.abs(s.offset_ms - predicted) > SEEK_MS
+        ? { base: s.offset_ms, at: now } // real seek/resume → snap to Plex
+        : { base: predicted, at: now };  // keep our smooth clock, ignore Plex's jitter
+    }
+    clock.current = next; // ended sessions drop out
+  }, [act]);
+
   if (!connected) return <ComingSoon tab="activity" connected={false} onConfigure={onConfigure} />;
   if (err) return <div className="rounded-xl p-6 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Couldn’t reach Plex: {err}</div>;
   if (!act) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading activity…</div>;
 
   const streams = act.streams;
-  // liveOffset advances a playing stream's position by the time elapsed since the
-  // snapshot; paused/buffering streams hold. Capped at the runtime.
+  // liveOffset reads the smoothed clock: advance while playing, hold otherwise; capped.
   const liveOffset = (s: InsightsStream): number => {
-    if (s.state !== "playing") return s.offset_ms;
-    const adv = Math.max(0, Date.now() - syncedAt.current);
-    return s.duration_ms > 0 ? Math.min(s.duration_ms, s.offset_ms + adv) : s.offset_ms + adv;
+    const c = clock.current[s.session_key];
+    const off = c ? (s.state === "playing" ? c.base + (Date.now() - c.at) : c.base) : s.offset_ms;
+    return s.duration_ms > 0 ? Math.min(s.duration_ms, off) : off;
   };
   return (
     <div className="flex flex-col gap-3.5">
