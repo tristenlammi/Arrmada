@@ -69,6 +69,9 @@ type Release struct {
 	// season pack is [Season]. Complete marks a full-series pack ("Complete Series").
 	Seasons  []int `json:"seasons,omitempty"`
 	Complete bool  `json:"complete,omitempty"`
+	// AbsoluteEpisodes holds anime-style absolute episode numbers ("[Group] Show - 137"),
+	// numbered 1..N across the whole run. Only consulted for series flagged as anime.
+	AbsoluteEpisodes []int `json:"absolute_episodes,omitempty"`
 }
 
 // Kind classifies a TV release by the breadth it covers.
@@ -126,7 +129,7 @@ func (r Release) HasAudio(tag string) bool {
 
 // IsTV reports whether a season/episode/series marker was found.
 func (r Release) IsTV() bool {
-	return r.Season > 0 || len(r.Episodes) > 0 || len(r.Seasons) > 0 || r.Complete
+	return r.Season > 0 || len(r.Episodes) > 0 || len(r.Seasons) > 0 || r.Complete || len(r.AbsoluteEpisodes) > 0
 }
 
 var (
@@ -142,6 +145,11 @@ var (
 	// Multi-season ranges: "S01-S03", "S1 - S5", or "Seasons 1-5".
 	reSeasonRange = regexp.MustCompile(`(?i)\bS(\d{1,2})\s*-\s*S(\d{1,2})\b`)
 	reSeasonWord  = regexp.MustCompile(`(?i)\bseasons?\s*(\d{1,2})\s*-\s*(\d{1,2})\b`)
+	// Anime fansub tag: a leading single-token "[Group]" (SubsPlease, Erai-raws…).
+	// Space inside the brackets excludes site tags like "[ Some Site ]".
+	reAnimeGroup = regexp.MustCompile(`^\s*\[([^\]\s]+)\]\s*`)
+	// Anime absolute episode: "Title - 137", "Title - 12v2", or a batch "Title - 01-12".
+	reAbsEp = regexp.MustCompile(`(?i)\s-\s(\d{1,4})(?:v\d+)?(?:\s*[-~]\s*(\d{1,4}))?(?:\s|$|[.\[(])`)
 )
 
 // Parse extracts structured attributes from a release name.
@@ -156,6 +164,15 @@ func Parse(name string) Release {
 	// Release group: trailing "-GROUP" (before normalization eats the dash).
 	if m := reGroup.FindStringSubmatch(name); m != nil {
 		r.Group = m[1]
+	}
+
+	// Anime fansub tag: a leading "[Group]". titleStart trims it off the title.
+	titleStart := 0
+	if m := reAnimeGroup.FindStringSubmatchIndex(name); m != nil {
+		if r.Group == "" {
+			r.Group = name[m[2]:m[3]]
+		}
+		titleStart = m[1]
 	}
 
 	// Lowercased, space-separated copy for keyword matching.
@@ -184,6 +201,18 @@ func Parse(name string) Release {
 	if contains(lc, "complete") && (contains(lc, "series") || strings.Contains(lc, "season") || r.Season > 0) {
 		r.Complete = true
 	}
+	// Anime absolute episode ("[Group] Show - 137" / batch "... - 01-12"). Gated on a
+	// leading fansub tag so scene TV and movies are never misread; only when no SxxExx.
+	absCut := len(name)
+	if titleStart > 0 && r.Season == 0 && len(r.Episodes) == 0 {
+		if m := reAbsEp.FindStringSubmatchIndex(name); m != nil {
+			r.AbsoluteEpisodes = absoluteRange(name[m[2]:m[3]], subIdx(name, m, 4))
+			if len(r.AbsoluteEpisodes) > 0 {
+				absCut = m[0]
+			}
+		}
+	}
+
 	if rng := reSeasonRange.FindStringSubmatch(name); rng != nil {
 		r.Seasons = seasonRange(rng[1], rng[2])
 	} else if rng := reSeasonWord.FindStringSubmatch(name); rng != nil {
@@ -214,9 +243,46 @@ func Parse(name string) Release {
 			cut = loc[0]
 		}
 	}
-	r.Title = cleanTitle(name[:cut])
+	if absCut < cut {
+		cut = absCut
+	}
+	if titleStart > cut {
+		titleStart = 0
+	}
+	r.Title = cleanTitle(name[titleStart:cut])
 
 	return r
+}
+
+// subIdx returns the i-th submatch string from a FindStringSubmatchIndex result
+// (i is the group number; group g occupies indices [2g, 2g+1]). "" when unset.
+func subIdx(s string, m []int, g int) string {
+	if g+1 >= len(m) || m[g] < 0 {
+		return ""
+	}
+	return s[m[g]:m[g+1]]
+}
+
+// absoluteRange expands an anime absolute-episode match into episode numbers: a
+// single "137", or a batch "01"-"12" → 1..12. A number that looks like a year
+// (1900-2099) is rejected, since "Show - 2011" is a year, not episode 2011.
+func absoluteRange(start, end string) []int {
+	a, err := strconv.Atoi(start)
+	if err != nil || a <= 0 || (a >= 1900 && a <= 2099) {
+		return nil
+	}
+	if end == "" {
+		return []int{a}
+	}
+	b, err := strconv.Atoi(end)
+	if err != nil || b <= a || b-a >= 500 {
+		return []int{a}
+	}
+	out := make([]int, 0, b-a+1)
+	for i := a; i <= b; i++ {
+		out = append(out, i)
+	}
+	return out
 }
 
 // seasonRange expands "a" and "b" into an inclusive list of season numbers.

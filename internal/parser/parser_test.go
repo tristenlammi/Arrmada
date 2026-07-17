@@ -107,6 +107,20 @@ func TestParseTV(t *testing.T) {
 			"Show.S01E01-1080p.WEB-DL-GRP",
 			Release{Title: "Show", Resolution: Res1080p, Source: SourceWebDL, Group: "GRP", Season: 1, Episodes: []int{1}},
 		},
+		{
+			// Anime: leading [Group] + absolute episode number.
+			"[SubsPlease] Hunter x Hunter - 137 (1080p) [ABCD1234]",
+			Release{Title: "Hunter x Hunter", Resolution: Res1080p, Group: "SubsPlease", AbsoluteEpisodes: []int{137}},
+		},
+		{
+			"[Erai-raws] Some Show - 12v2 [1080p]",
+			Release{Title: "Some Show", Resolution: Res1080p, Group: "Erai-raws", AbsoluteEpisodes: []int{12}},
+		},
+		{
+			// Anime batch → absolute range.
+			"[Judas] Some Show - 01-03 [1080p]",
+			Release{Title: "Some Show", Resolution: Res1080p, Group: "Judas", AbsoluteEpisodes: []int{1, 2, 3}},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
