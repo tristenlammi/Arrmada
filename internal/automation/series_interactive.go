@@ -39,7 +39,7 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 			query = fmt.Sprintf("%s S%02d", s.Title, season)
 		}
 	}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaSeries, Limit: 100})
+	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaSeries, Limit: 400})
 	if err != nil {
 		return ReleaseList{}, err
 	}
@@ -51,12 +51,16 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 	byName := make(map[string]indexer.Release, len(result.Releases))
 	cands := make([]quality.Candidate, 0, len(result.Releases))
 	var droppedTitle, droppedScope int
+	var sampleDropped []string
 	for _, rel := range result.Releases {
 		if _, dup := byName[rel.Title]; dup {
 			continue
 		}
 		if !seriesTitleMatches(rel.Title, s) {
 			droppedTitle++
+			if len(sampleDropped) < 8 {
+				sampleDropped = append(sampleDropped, rel.Title+" → "+parser.Parse(rel.Title).Title)
+			}
 			continue // a different show that merely shares a title prefix (e.g. "Below Deck Mediterranean" for "Below Deck")
 		}
 		if !c.releaseMatchesScope(ctx, s, parser.Parse(rel.Title), season, episode) {
@@ -67,6 +71,9 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 		cands = append(cands, quality.NewCandidate(rel.Title, rel.SizeGB(), rel.Seeders))
 	}
 	c.log.Info("series: search filtered", "series", s.Title, "kept", len(cands), "dropped_wrong_title", droppedTitle, "dropped_out_of_scope", droppedScope)
+	if len(sampleDropped) > 0 {
+		c.log.Info("series: sample of dropped titles (parsed → title)", "series", s.Title, "samples", strings.Join(sampleDropped, " | "))
+	}
 	decision := c.quality.Decide(ctx, s.QualityProfile, cands)
 
 	// For a single-episode search we can show a bitrate (size ÷ episode runtime). Season/series
