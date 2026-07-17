@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
-import { PasteLinkModal } from "../components/PasteLinkModal";
+import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { api, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry } from "../lib/api";
 
 const today = new Date().toISOString().slice(0, 10);
@@ -216,16 +216,16 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
           {busy === "search" ? "Searching…" : "Auto-grab missing"}
         </button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowSearch(true)}>Search indexers</button>
-        <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowPaste(true)}>Paste link</button>
+        <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowPaste(true)}>Upload torrent</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowImport(true)}>Manual import</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("rename", rename)}>{busy === "rename" ? "Renaming…" : "Rename"}</button>
         <DeleteButton onDelete={async (df) => { await api.deleteSeries(series.id, df); window.location.href = "/series"; }} />
       </div>
       {showPaste && (
-        <PasteLinkModal
+        <UploadTorrentModal
           what={series.title}
-          onPreview={(link) => api.previewLink(link)}
-          onGrab={async (link, title) => { await api.grabSeriesLink(series.id, link, title); onChange(); }}
+          onPreview={(torrent) => api.previewTorrent(torrent)}
+          onGrab={async (torrent, filename, title) => { await api.grabSeriesTorrent(series.id, torrent, filename, title); onChange(); }}
           onClose={() => setShowPaste(false)}
         />
       )}

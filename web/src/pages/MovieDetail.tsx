@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
-import { PasteLinkModal } from "../components/PasteLinkModal";
+import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import {
   api,
   type BlockEntry,
@@ -691,7 +691,7 @@ function Toolbar({ movie, onChange, flash }: { movie: Movie; onChange: () => voi
           </button>
         )}
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowSearch(true)}>Search indexers</button>
-        <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowPaste(true)}>Paste link</button>
+        <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowPaste(true)}>Upload torrent</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowImport(true)}>Manual import</button>
         {movie.has_file && (
           <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("rename", rename)}>
@@ -700,10 +700,10 @@ function Toolbar({ movie, onChange, flash }: { movie: Movie; onChange: () => voi
         )}
       </div>
       {showPaste && (
-        <PasteLinkModal
+        <UploadTorrentModal
           what={movie.title}
-          onPreview={(link) => api.previewLink(link)}
-          onGrab={async (link, title) => { await api.grabMovieLink(movie.id, link, title); onChange(); }}
+          onPreview={(torrent) => api.previewTorrent(torrent)}
+          onGrab={async (torrent, filename, title) => { await api.grabMovieTorrent(movie.id, torrent, filename, title); onChange(); }}
           onClose={() => setShowPaste(false)}
         />
       )}

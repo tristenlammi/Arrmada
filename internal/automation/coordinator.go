@@ -103,14 +103,17 @@ func (c *Coordinator) grabTo(ctx context.Context, indexerName, downloadURL, titl
 	return nil
 }
 
-// addLink hands a pasted magnet/.torrent URL straight to the download client (no
-// indexer fetch) in the given category, recording it as a manual grab source.
-func (c *Coordinator) addLink(ctx context.Context, link, title, category string) error {
-	link = strings.TrimSpace(link)
-	if link == "" {
-		return fmt.Errorf("no link provided")
+// addTorrentFile hands an uploaded .torrent file straight to the download client (no
+// indexer fetch, so it works for private trackers where the user downloaded the file
+// while logged in), in the given category, recorded as a manual grab source.
+func (c *Coordinator) addTorrentFile(ctx context.Context, file []byte, filename, title, category string) error {
+	if len(file) == 0 {
+		return fmt.Errorf("no torrent file provided")
 	}
-	add := download.AddRequest{Name: title, SavePath: c.downloadsDir, Category: category, URL: link}
+	if filename == "" {
+		filename = "arrmada.torrent"
+	}
+	add := download.AddRequest{Name: title, SavePath: c.downloadsDir, Category: category, File: file, Filename: filename}
 	if err := c.downloads.Add(ctx, add); err != nil {
 		return err
 	}
@@ -118,30 +121,30 @@ func (c *Coordinator) addLink(ctx context.Context, link, title, category string)
 	return nil
 }
 
-// GrabMovieLink adds a pasted link for a movie (default category) and tracks it like an
-// auto grab so seed cleanup / stall detection manage it too.
-func (c *Coordinator) GrabMovieLink(ctx context.Context, movieID int64, link, title string) error {
-	if err := c.addLink(ctx, link, title, ""); err != nil {
+// GrabMovieTorrent adds an uploaded .torrent file for a movie (default category) and
+// tracks it like an auto grab so seed cleanup / stall detection manage it too.
+func (c *Coordinator) GrabMovieTorrent(ctx context.Context, movieID int64, file []byte, filename, title string) error {
+	if err := c.addTorrentFile(ctx, file, filename, title, ""); err != nil {
 		return err
 	}
 	c.RecordManualGrab(ctx, movieID, title, "manual")
 	if c.movies != nil {
-		c.movies.AddEvent(ctx, movieID, "grabbed", "Pasted link — "+title)
+		c.movies.AddEvent(ctx, movieID, "grabbed", "Uploaded torrent — "+title)
 	}
 	return nil
 }
 
-// GrabSeriesLink adds a pasted link for a series (TV category, so the multi-file
-// importer handles a pack) and records the grab.
-func (c *Coordinator) GrabSeriesLink(ctx context.Context, seriesID int64, link, title string) error {
-	if err := c.addLink(ctx, link, title, seriesCategory); err != nil {
+// GrabSeriesTorrent adds an uploaded .torrent file for a series (TV category, so the
+// multi-file importer handles a pack) and records the grab.
+func (c *Coordinator) GrabSeriesTorrent(ctx context.Context, seriesID int64, file []byte, filename, title string) error {
+	if err := c.addTorrentFile(ctx, file, filename, title, seriesCategory); err != nil {
 		return err
 	}
 	if c.series != nil {
 		if s, err := c.series.Get(ctx, seriesID); err == nil {
 			c.recordSeriesGrab(ctx, seriesID, title, "manual", s.QualityProfile)
 		}
-		c.series.AddEvent(ctx, seriesID, "grabbed", "Pasted link — "+title)
+		c.series.AddEvent(ctx, seriesID, "grabbed", "Uploaded torrent — "+title)
 	}
 	return nil
 }
