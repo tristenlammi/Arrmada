@@ -258,6 +258,15 @@ func (r *Repo) BackfillAbsolute(ctx context.Context, seriesID int64) error {
 	return err
 }
 
+// EpisodeTitle returns an episode's title (empty when unknown).
+func (r *Repo) EpisodeTitle(ctx context.Context, seriesID int64, season, episode int) string {
+	var title string
+	_ = r.db.QueryRowContext(ctx,
+		`SELECT title FROM episodes WHERE series_id = ? AND season_number = ? AND episode_number = ? LIMIT 1`,
+		seriesID, season, episode).Scan(&title)
+	return title
+}
+
 // EpisodeExists reports whether a series has an episode with that (season, number).
 func (r *Repo) EpisodeExists(ctx context.Context, seriesID int64, season, episode int) bool {
 	var one int

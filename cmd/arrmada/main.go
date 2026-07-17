@@ -221,6 +221,10 @@ func main() {
 	bookImporter := library.NewImporter(cfg.LibraryDir, log)
 	bookImporter.SetBookRoots(cfg.EbooksDir, cfg.AudiobooksDir)                         // scan ebooks + audiobooks (may be one folder)
 	bookImporter.SetRoots(cfg.MoviesDir, cfg.TVDir, cfg.EbooksDir, cfg.AudiobooksDir) // this importer places TV episodes + book editions
+	// Name episode files with their metadata title ("<Series> - SxxEyy - <Episode> - <quality>").
+	bookImporter.SetEpisodeTitleFunc(func(seriesTitle string, year, season, episode int) string {
+		return seriesSvc.EpisodeTitleByName(context.Background(), seriesTitle, year, season, episode)
+	})
 	coordinator.SetSeries(seriesSvc, bookImporter)
 	// Books share the importer set above; ebooks land in their own category.
 	coordinator.SetBooks(booksSvc)

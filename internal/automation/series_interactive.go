@@ -384,6 +384,7 @@ func (c *Coordinator) SeriesRename(ctx context.Context, seriesID int64) (int, er
 				c.log.Warn("series: rename failed", "from", e.FilePath, "err", err)
 				continue
 			}
+			c.imp.MoveEpisodeSubs(e.FilePath, target) // keep paired subtitles alongside
 			_ = c.series.MarkEpisodeImported(ctx, seriesID, e.SeasonNumber, e.EpisodeNumber, target, e.SizeBytes)
 			moved++
 		}

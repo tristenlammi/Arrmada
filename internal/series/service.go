@@ -525,6 +525,21 @@ func (s *Service) MatchByTitle(ctx context.Context, normalized string) (Series, 
 	return Series{}, false
 }
 
+// EpisodeTitle returns the metadata title for one episode ("" when unknown).
+func (s *Service) EpisodeTitle(ctx context.Context, seriesID int64, season, episode int) string {
+	return s.repo.EpisodeTitle(ctx, seriesID, season, episode)
+}
+
+// EpisodeTitleByName resolves a series by (normalized) title and returns one episode's
+// title. Used by the importer's naming callback, which only knows the show by name.
+func (s *Service) EpisodeTitleByName(ctx context.Context, seriesTitle string, year, season, episode int) string {
+	sr, ok := s.MatchByTitle(ctx, normKey(seriesTitle))
+	if !ok {
+		return ""
+	}
+	return s.repo.EpisodeTitle(ctx, sr.ID, season, episode)
+}
+
 // normKey lowercases and keeps only alphanumerics — for tolerant title matching.
 func normKey(str string) string {
 	var b []rune

@@ -288,6 +288,15 @@ type Importer struct {
 	bookRoots     []string // ebook + audiobook scan roots (falls back to root)
 	log           *slog.Logger
 	naming        NamingProvider // nil → built-in defaults
+	// epTitleFn resolves an episode's metadata title for naming ("" when unknown or
+	// unset). Keyed by show name/year since the importer only knows the show by name.
+	epTitleFn func(seriesTitle string, year, season, episode int) string
+}
+
+// SetEpisodeTitleFunc installs a lookup so episode files are named with their
+// metadata title ("Chuck - S03E06 - Chuck Versus the Nacho Sampler - 1080p BluRay").
+func (im *Importer) SetEpisodeTitleFunc(f func(seriesTitle string, year, season, episode int) string) {
+	im.epTitleFn = f
 }
 
 // SetRoots routes each media type to its own library folder (movies, TV, ebooks,
@@ -607,6 +616,32 @@ func (im *Importer) EpisodeTargetIn(seriesFolder, title string, year, season, ep
 	return im.episodeTargetIn(seriesFolder, title, year, season, episode, parser.Parse(sourceName), ext)
 }
 
+// MoveEpisodeSubs moves subtitle sidecars paired with oldVideo so they stay next to
+// the renamed video (newVideo), preserving each ".<lang>"/".forced" suffix. Only files
+// sharing the old video's base name are moved, so unrelated neighbors are left alone.
+func (im *Importer) MoveEpisodeSubs(oldVideo, newVideo string) {
+	oldBase := strings.TrimSuffix(oldVideo, filepath.Ext(oldVideo))
+	newBase := strings.TrimSuffix(newVideo, filepath.Ext(newVideo))
+	entries, err := os.ReadDir(filepath.Dir(oldVideo))
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() || !subtitleExts[strings.ToLower(filepath.Ext(e.Name()))] {
+			continue
+		}
+		p := filepath.Join(filepath.Dir(oldVideo), e.Name())
+		stem := strings.TrimSuffix(p, filepath.Ext(p))
+		if stem != oldBase && !strings.HasPrefix(stem, oldBase+".") {
+			continue // not this video's sidecar
+		}
+		target := newBase + stem[len(oldBase):] + filepath.Ext(p) // carry ".en"/".forced"
+		if err := im.Move(p, target); err == nil {
+			im.log.Info("moved subtitle with rename", "from", p, "to", target)
+		}
+	}
+}
+
 // Move relocates a file within the library (same volume), creating parent dirs. A
 // no-op when from == to.
 func (im *Importer) Move(from, to string) error {
@@ -681,6 +716,11 @@ func (im *Importer) episodeTargetIn(seriesFolder, title string, year, season, ep
 		epPart = episodeTag(rel) // multi-episode file → "S03E21-E22"
 	}
 	file := fmt.Sprintf("%s - %s", clean(title), epPart)
+	if im.epTitleFn != nil {
+		if et := cleanTitleLoose(im.epTitleFn(title, year, season, episode)); et != "" {
+			file += " - " + et
+		}
+	}
 	if q := qualityTag(rel); q != "" {
 		file += " - " + q
 	}
