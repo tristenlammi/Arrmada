@@ -219,7 +219,7 @@ function rowKey(f: SubFileEntry): string {
 }
 function embeddedKinds(f: SubFileEntry): { txt: boolean; pgs: boolean; vob: boolean } {
   let txt = false, pgs = false, vob = false;
-  for (const t of f.embedded) {
+  for (const t of f.embedded ?? []) {
     if (t.text) txt = true;
     else if (t.codec === "hdmv_pgs_subtitle") pgs = true;
     else if (t.codec === "dvd_subtitle") vob = true;
@@ -263,7 +263,7 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
       const k = embeddedKinds(f);
       if (k.pgs || k.vob) c.pgs++;
       if (k.txt) c.text++;
-      if (f.external.length > 0) c.external++;
+      if ((f.external ?? []).length > 0) c.external++;
     }
     return c;
   }, [items]);
@@ -273,13 +273,13 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
     if (filters.has("missing")) list = list.filter((f) => f.missing > 0);
     if (filters.has("pgs")) list = list.filter((f) => { const k = embeddedKinds(f); return k.pgs || k.vob; });
     if (filters.has("text")) list = list.filter((f) => embeddedKinds(f).txt);
-    if (filters.has("external")) list = list.filter((f) => f.external.length > 0);
+    if (filters.has("external")) list = list.filter((f) => (f.external ?? []).length > 0);
     const dir = sort.dir === "asc" ? 1 : -1;
     const val = (f: SubFileEntry): number | string => {
       switch (sort.key) {
         case "title": return f.title.toLowerCase();
         case "missing": return f.missing;
-        case "embedded": return f.embedded.length;
+        case "embedded": return (f.embedded ?? []).length;
       }
     };
     return list.sort((a, b) => {
@@ -339,7 +339,7 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
                       <td className="px-3 py-2 font-semibold">{f.title} <span className="font-normal text-ink-faint">{f.year || ""}</span></td>
                       <td className="px-3 py-2 font-mono text-[10.5px] text-ink-dim">{(f.audio_langs ?? []).map((l) => l.toUpperCase()).join(" ") || "—"}</td>
                       <td className="px-3 py-2">
-                        {f.embedded.length === 0 ? <span className="text-ink-faint">—</span> : (
+                        {(f.embedded ?? []).length === 0 ? <span className="text-ink-faint">—</span> : (
                           <div className="flex items-center gap-1">
                             {k.txt && <EmbBadge kind="txt" />}
                             {k.pgs && <EmbBadge kind="pgs" />}
@@ -348,7 +348,7 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
                         )}
                       </td>
                       <td className="px-3 py-2">
-                        <div className="flex flex-wrap items-center gap-1">{f.languages.map((l) => <CoverChip key={l.lang} l={l} />)}</div>
+                        <div className="flex flex-wrap items-center gap-1">{(f.languages ?? []).map((l) => <CoverChip key={l.lang} l={l} />)}</div>
                       </td>
                       <td className="px-3 py-2 font-mono text-[10.5px] text-ink-faint">{f.health ? `${f.health.score}%` : "—"}</td>
                       <td className="px-3 py-2">

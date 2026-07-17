@@ -102,6 +102,9 @@ func (s *Service) fillCoverage(ctx context.Context, fs *FileSubs, langs []string
 		fs.AudioLangs = mi.AudioLangs
 		fs.Embedded = mi.Subs
 	}
+	if fs.Embedded == nil {
+		fs.Embedded = []SubTrack{} // never nil → JSON emits [] not null (frontend iterates it)
+	}
 	present := presentLanguages(fs.Path, langs) // kept languages with a sidecar already
 	have := make(map[string]bool, len(present))
 	for _, p := range present {
