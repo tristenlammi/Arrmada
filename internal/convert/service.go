@@ -25,6 +25,7 @@ const (
 	keySkipHardlinked = "convert_skip_hardlinked"
 	keyReclaimed      = "convert_reclaimed_bytes"
 	keyExtractSubs    = "convert_extract_subs"
+	keySubLangs       = "convert_sub_langs"        // CSV of subtitle langs to extract; empty = all
 	keyKeepAudioLangs = "convert_keep_audio_langs" // CSV; empty = keep all audio
 	keyAddStereo      = "convert_add_stereo"       // add an AAC 2.0 downmix beside surround
 	keyLoudnorm       = "convert_loudnorm"         // EBU R128 loudness normalize
@@ -452,6 +453,11 @@ func (s *Service) defaultPlan(ctx context.Context) Plan {
 		Container:  "mkv",
 		Subs:       SubPlan{ExtractText: subs, ExtractCC: subs},
 	}
+}
+
+// subLangs is the set of subtitle languages to extract (e.g. ["en"]); empty = every language.
+func (s *Service) subLangs(ctx context.Context) []string {
+	return csv(s.settings.Get(ctx, keySubLangs, ""))
 }
 
 // targetCodec is the codec the library is being converted to (hevc | av1), default HEVC.
@@ -999,17 +1005,25 @@ func (s *Service) runHealthCheck(ctx context.Context, job *Job, src string, mi *
 // can't be turned into text without OCR, so they're left in place and reported.
 func (s *Service) runExtractOnly(ctx context.Context, job *Job, src string, mi *MediaInfo, title string) {
 	s.update(job, func(j *Job) { j.State = StateEncoding; j.Encoder = "Subtitle extract"; j.SrcBytes = mi.SizeBytes; j.Progress = 0 })
-	image := 0
+	text, image := 0, 0
 	for _, sub := range mi.Subs {
-		if !sub.Text {
+		if sub.Text {
+			text++
+		} else {
 			image++
 		}
 	}
-	outs := textSubOutputs(src, mi) // finalPath == src → sidecars land next to the original
+	langs := s.subLangs(ctx)
+	outs := textSubOutputs(src, mi, langs) // finalPath == src → sidecars next to the original
 	if len(outs) == 0 && !mi.HasCC {
-		note := "no embedded text subtitles to extract"
-		if image > 0 {
+		var note string
+		switch {
+		case len(langs) > 0 && text > 0:
+			note = fmt.Sprintf("no %s text subtitles (all %d text track(s) are other languages)", strings.Join(langs, "/"), text)
+		case image > 0:
 			note = fmt.Sprintf("only %d image subtitle(s) (PGS/VOBSUB) — need OCR, coming soon", image)
+		default:
+			note = "no embedded text subtitles to extract"
 		}
 		s.finish(job, StateSkipped, note)
 		return
@@ -1135,8 +1149,9 @@ type subOut struct {
 // textSubOutputs plans an SRT sidecar path for every embedded text subtitle track, next to
 // finalPath. The first track of a language gets "<base>.<lang>.srt"; further tracks in the same
 // language are disambiguated with their stream index ("<base>.<lang>.<idx>.srt"). Image subs
-// (PGS/VOBSUB) are skipped — they need OCR.
-func textSubOutputs(finalPath string, mi *MediaInfo) []subOut {
+// (PGS/VOBSUB) are skipped — they need OCR. When keepLangs is non-empty, only tracks in those
+// languages are extracted (e.g. English-only); an empty list extracts every language.
+func textSubOutputs(finalPath string, mi *MediaInfo, keepLangs []string) []subOut {
 	dir := filepath.Dir(finalPath)
 	base := strings.TrimSuffix(filepath.Base(finalPath), filepath.Ext(finalPath))
 	seen := map[string]int{}
@@ -1144,6 +1159,9 @@ func textSubOutputs(finalPath string, mi *MediaInfo) []subOut {
 	for _, sub := range mi.Subs {
 		if !sub.Text {
 			continue
+		}
+		if len(keepLangs) > 0 && !langIn(sub.Lang, keepLangs) {
+			continue // language not in the wanted set
 		}
 		lang := sub.Lang
 		if lang == "" {
@@ -1180,7 +1198,7 @@ func pruneEmptySubs(outs []subOut) int {
 // track). Image subs (PGS/VOBSUB) are left in the container; they need OCR. Empty outputs are
 // pruned. Returns the number of real sidecars written.
 func (s *Service) extractTextSubs(ctx context.Context, src, finalPath string, mi *MediaInfo) int {
-	outs := textSubOutputs(finalPath, mi)
+	outs := textSubOutputs(finalPath, mi, s.subLangs(ctx))
 	if len(outs) == 0 {
 		return 0
 	}

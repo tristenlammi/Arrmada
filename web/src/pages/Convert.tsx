@@ -603,13 +603,13 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
   const set = (patch: Partial<AppSettings>) => setD((cur) => (cur ? { ...cur, ...patch } : cur));
   const dirty = useMemo(() => {
     if (!saved || !d) return false;
-    const keys: (keyof AppSettings)[] = ["convert_target_codec", "convert_extract_subs", "convert_auto", "convert_sweep_start", "convert_sweep_end", "convert_workers", "convert_quality_gate", "convert_min_ssim", "convert_max_failures", "convert_skip_hardlinked", "convert_scratch_dir", "convert_vaapi_device"];
+    const keys: (keyof AppSettings)[] = ["convert_target_codec", "convert_extract_subs", "convert_sub_langs", "convert_auto", "convert_sweep_start", "convert_sweep_end", "convert_workers", "convert_quality_gate", "convert_min_ssim", "convert_max_failures", "convert_skip_hardlinked", "convert_scratch_dir", "convert_vaapi_device"];
     return keys.some((k) => saved[k] !== d[k]);
   }, [saved, d]);
   const onSave = async () => {
     if (!d) return;
     setBusy(true);
-    const patch = { convert_target_codec: d.convert_target_codec, convert_extract_subs: d.convert_extract_subs, convert_auto: d.convert_auto, convert_sweep_start: d.convert_sweep_start, convert_sweep_end: d.convert_sweep_end, convert_workers: d.convert_workers, convert_quality_gate: d.convert_quality_gate, convert_min_ssim: d.convert_min_ssim, convert_max_failures: d.convert_max_failures, convert_skip_hardlinked: d.convert_skip_hardlinked, convert_scratch_dir: d.convert_scratch_dir, convert_vaapi_device: d.convert_vaapi_device };
+    const patch = { convert_target_codec: d.convert_target_codec, convert_extract_subs: d.convert_extract_subs, convert_sub_langs: d.convert_sub_langs, convert_auto: d.convert_auto, convert_sweep_start: d.convert_sweep_start, convert_sweep_end: d.convert_sweep_end, convert_workers: d.convert_workers, convert_quality_gate: d.convert_quality_gate, convert_min_ssim: d.convert_min_ssim, convert_max_failures: d.convert_max_failures, convert_skip_hardlinked: d.convert_skip_hardlinked, convert_scratch_dir: d.convert_scratch_dir, convert_vaapi_device: d.convert_vaapi_device };
     try { const v = await api.updateSettings(patch); setSaved(v); setD(v); flash("Settings saved — restart or the next job uses the new GPU"); loadScratch(); } catch (e) { flash((e as Error).message); } finally { setBusy(false); }
   };
   if (!d) return <div className="text-[12px] text-ink-faint">Loading settings…</div>;
@@ -634,6 +634,9 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
       {/* Subtitles */}
       <SettingCard title="Subtitles" desc="Text subtitles can be pulled out into .srt sidecar files next to the video (and removed from the container) so any player can use them.">
         <ActToggle on={d.convert_extract_subs} set={(v) => set({ convert_extract_subs: v })} label="Extract subtitles → SRT sidecars" hint="image-based subs (PGS/VOBSUB) are left in the file" />
+        <SettingField label="Languages to extract" hint="blank = every language · comma-separated codes, e.g. “en” for English only, or “en, es”">
+          <input value={d.convert_sub_langs} onChange={(e) => set({ convert_sub_langs: e.target.value })} placeholder="all languages" className={inp} style={inpStyle} />
+        </SettingField>
       </SettingCard>
 
       {/* Schedule */}

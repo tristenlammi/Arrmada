@@ -43,6 +43,7 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"music_enabled":    a.musicEnabled(ctx),
 		// Convert module.
 		"convert_extract_subs":     a.deps.Settings.GetBool(ctx, "convert_extract_subs", true),
+		"convert_sub_langs":        a.deps.Settings.Get(ctx, "convert_sub_langs", ""),
 		"convert_skip_hardlinked":  a.deps.Settings.GetBool(ctx, "convert_skip_hardlinked", true),
 		"convert_keep_audio_langs": a.deps.Settings.Get(ctx, "convert_keep_audio_langs", ""),
 		"convert_add_stereo":       a.deps.Settings.GetBool(ctx, "convert_add_stereo", false),
@@ -72,6 +73,7 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		BooksEnabled    *bool   `json:"books_enabled"`
 		MusicEnabled    *bool   `json:"music_enabled"`
 		ConvertExtractSubs    *bool   `json:"convert_extract_subs"`
+		ConvertSubLangs       *string `json:"convert_sub_langs"`
 		ConvertSkipHardlinked *bool   `json:"convert_skip_hardlinked"`
 		ConvertKeepAudioLangs *string `json:"convert_keep_audio_langs"`
 		ConvertAddStereo      *bool   `json:"convert_add_stereo"`
@@ -117,6 +119,9 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.ConvertExtractSubs != nil && !save(a.deps.Settings.SetBool(ctx, "convert_extract_subs", *req.ConvertExtractSubs)) {
+		return
+	}
+	if req.ConvertSubLangs != nil && !save(a.deps.Settings.Set(ctx, "convert_sub_langs", strings.TrimSpace(*req.ConvertSubLangs))) {
 		return
 	}
 	if req.ConvertSkipHardlinked != nil && !save(a.deps.Settings.SetBool(ctx, "convert_skip_hardlinked", *req.ConvertSkipHardlinked)) {

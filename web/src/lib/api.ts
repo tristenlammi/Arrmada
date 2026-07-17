@@ -278,6 +278,7 @@ export interface AppSettings {
   convert_target_codec: string;
   convert_auto: boolean;
   convert_extract_subs: boolean;
+  convert_sub_langs: string;
   convert_skip_hardlinked: boolean;
   convert_keep_audio_langs: string;
   convert_add_stereo: boolean;
