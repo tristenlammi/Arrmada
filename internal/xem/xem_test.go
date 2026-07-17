@@ -34,3 +34,16 @@ func TestFetchParsesSceneMap(t *testing.T) {
 		t.Fatalf("failure result: m=%v err=%v", m, err)
 	}
 }
+
+func TestExtractJSONFromFlareResponse(t *testing.T) {
+	// Chrome-rendered raw JSON inside <pre>, HTML-escaped.
+	page := `<html><head></head><body><pre style="word-wrap: break-word;">{&quot;result&quot;:&quot;success&quot;,&quot;data&quot;:[{&quot;scene&quot;:{&quot;season&quot;:2,&quot;episode&quot;:1,&quot;absolute&quot;:15}}]}</pre></body></html>`
+	m, err := parse([]byte(extractJSON(page)))
+	if err != nil || m[Key(2, 1)] != 15 {
+		t.Fatalf("extract+parse = %v, err=%v", m, err)
+	}
+	// Bare JSON (no wrapper) also works.
+	if got := extractJSON(`{"result":"success","data":[]}`); got != `{"result":"success","data":[]}` {
+		t.Errorf("bare json passthrough = %q", got)
+	}
+}
