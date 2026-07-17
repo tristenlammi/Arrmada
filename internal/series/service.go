@@ -3,6 +3,7 @@ package series
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -15,7 +16,13 @@ import (
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/parser"
+	"github.com/tristenlammi/arrmada/internal/xem"
 )
+
+// SceneMapper fetches a TheXEM scene→absolute map for a TVDB id (keyed "season-episode").
+type SceneMapper interface {
+	Fetch(ctx context.Context, tvdbID int) (map[string]int, error)
+}
 
 // Service is the Series module's application logic.
 type Service struct {
@@ -24,10 +31,17 @@ type Service struct {
 	root    string // library root, for delete-with-files and library scan
 	recycle string // recycle-bin dir ("" = hard delete), matching movies
 	log     *slog.Logger
+	scene   SceneMapper // TheXEM client (nil → scene mapping falls back to air-date gaps)
 
 	muUnmatched   sync.Mutex
 	lastUnmatched []UnmatchedFolder // folders the last scan couldn't identify, for manual pick
+
+	sceneMu    sync.Mutex
+	sceneCache map[int64]map[string]int // series id → scene "S-E" → absolute (in-memory)
 }
+
+// SetSceneMapper installs the TheXEM client used to reconcile split-season anime.
+func (s *Service) SetSceneMapper(m SceneMapper) { s.scene = m }
 
 // UnmatchedFolder is a scanned series folder the scan couldn't confidently
 // identify, with the search candidates offered for a manual pick.
@@ -101,7 +115,7 @@ func (s *Service) Add(ctx context.Context, tmdbID int, qualityProfile string, mo
 		return Series{}, fmt.Errorf("fetch metadata: %w", err)
 	}
 	sr := Series{
-		TMDBID: d.TMDBID, IMDBID: d.IMDBID, Title: d.Title, Year: d.Year, Overview: d.Overview,
+		TMDBID: d.TMDBID, TVDBID: d.TVDBID, IMDBID: d.IMDBID, Title: d.Title, Year: d.Year, Overview: d.Overview,
 		PosterURL: d.PosterURL, Status: d.Status, Network: d.Network,
 		Monitored: monitored, QualityProfile: qualityProfile, Extra: extraFrom(d),
 		SeriesType: detectSeriesType(d),
@@ -113,6 +127,9 @@ func (s *Service) Add(ctx context.Context, tmdbID int, qualityProfile string, mo
 	seasons := seasonsFromDetails(d, monitored)
 	if err := s.repo.InsertSeasons(ctx, created.ID, seasons); err != nil {
 		s.log.Warn("series: insert seasons failed", "series", created.Title, "err", err)
+	}
+	if created.IsAnime() {
+		s.refreshSceneMap(ctx, created.ID, d.TVDBID) // TheXEM scene mapping for split-season anime
 	}
 	s.AddEvent(ctx, created.ID, "added", fmt.Sprintf("Added — %d seasons", len(seasons)))
 	s.log.Info("series added", "title", created.Title, "year", created.Year, "seasons", len(seasons))
@@ -179,6 +196,13 @@ func (s *Service) Refresh(ctx context.Context, id int64) (Series, error) {
 		// support, and covers any newly-announced episodes).
 		if err := s.repo.BackfillAbsolute(ctx, id); err != nil {
 			s.log.Warn("series: backfill absolute numbers failed", "series", sr.Title, "err", err)
+		}
+		if d.TVDBID > 0 && d.TVDBID != sr.TVDBID {
+			_ = s.repo.SetTVDBID(ctx, id, d.TVDBID)
+		}
+		// Refresh the TheXEM scene map for anime, so split-season releases resolve.
+		if sr.IsAnime() || detectSeriesType(d) == SeriesTypeAnime {
+			s.refreshSceneMap(ctx, id, d.TVDBID)
 		}
 	} else {
 		s.log.Warn("series: refresh metadata failed", "series", sr.Title, "err", derr)
@@ -256,8 +280,13 @@ func (s *Service) resolveSE(ctx context.Context, seriesID int64, season, episode
 		if real, ok := s.repo.NthEpisodeOfSeason(ctx, seriesID, season, episode); ok {
 			return EpisodeRef{Season: season, Episode: real}
 		}
-		// Scene-season mapping: the release's season doesn't exist in TMDB (TMDB has
-		// one continuous season, torrents split it S1/S2). Map via air-date gaps.
+		// TheXEM scene mapping (authoritative): scene (season, episode) → absolute → TMDB.
+		if abs, ok := s.sceneAbsolute(ctx, seriesID, season, episode); ok {
+			if se, ep, ok := s.repo.EpisodeByAbsolute(ctx, seriesID, abs); ok {
+				return EpisodeRef{Season: se, Episode: ep}
+			}
+		}
+		// Air-date-gap fallback: split a TMDB single season at broadcast hiatuses.
 		if rs, re, ok := s.resolveSceneSeason(ctx, seriesID, season, episode); ok {
 			return EpisodeRef{Season: rs, Episode: re}
 		}
@@ -271,10 +300,35 @@ func (s *Service) HasSeason(ctx context.Context, seriesID int64, season int) boo
 }
 
 // SceneSeasonEpisodes returns every TMDB (season, episode) that a scene season maps to
-// — used to match a whole split-season pack ("Frieren S02" → TMDB E29-38).
+// — used to match a whole split-season pack ("Dragon Ball Super S02" or "Frieren S02").
+// Prefers TheXEM (authoritative); falls back to air-date-gap grouping.
 func (s *Service) SceneSeasonEpisodes(ctx context.Context, seriesID int64, sceneSeason int) []EpisodeRef {
+	if sceneSeason < 1 {
+		return nil
+	}
+	if m := s.sceneMapFor(ctx, seriesID); len(m) > 0 {
+		prefix := fmt.Sprintf("%d-", sceneSeason)
+		var out []EpisodeRef
+		for k, abs := range m {
+			if !strings.HasPrefix(k, prefix) {
+				continue
+			}
+			if se, ep, ok := s.repo.EpisodeByAbsolute(ctx, seriesID, abs); ok {
+				out = append(out, EpisodeRef{Season: se, Episode: ep})
+			}
+		}
+		if len(out) > 0 {
+			sort.Slice(out, func(i, j int) bool {
+				if out[i].Season != out[j].Season {
+					return out[i].Season < out[j].Season
+				}
+				return out[i].Episode < out[j].Episode
+			})
+			return out
+		}
+	}
 	groups := s.sceneGroups(ctx, seriesID, sceneSeason)
-	if sceneSeason < 1 || sceneSeason > len(groups) {
+	if sceneSeason > len(groups) {
 		return nil
 	}
 	var out []EpisodeRef
@@ -282,6 +336,60 @@ func (s *Service) SceneSeasonEpisodes(ctx context.Context, seriesID int64, scene
 		out = append(out, EpisodeRef{Season: e.season, Episode: e.episode})
 	}
 	return out
+}
+
+// refreshSceneMap fetches the TheXEM scene→absolute map for an anime and caches it (DB +
+// in-memory). Best-effort: a missing map or a TheXEM outage just leaves the fallback.
+func (s *Service) refreshSceneMap(ctx context.Context, seriesID int64, tvdbID int) {
+	if s.scene == nil || tvdbID <= 0 {
+		return
+	}
+	m, err := s.scene.Fetch(ctx, tvdbID)
+	if err != nil {
+		s.log.Warn("series: TheXEM fetch failed", "tvdb", tvdbID, "err", err)
+		return
+	}
+	b, _ := json.Marshal(m)
+	_ = s.repo.SetSceneMap(ctx, seriesID, string(b), time.Now().Unix())
+	s.sceneMu.Lock()
+	if s.sceneCache == nil {
+		s.sceneCache = map[int64]map[string]int{}
+	}
+	s.sceneCache[seriesID] = m
+	s.sceneMu.Unlock()
+	if len(m) > 0 {
+		s.log.Info("series: cached TheXEM scene map", "series_id", seriesID, "tvdb", tvdbID, "entries", len(m))
+	}
+}
+
+// sceneAbsolute returns the absolute episode number for a scene (season, episode) from
+// the cached TheXEM map. ok=false when there's no mapping.
+func (s *Service) sceneAbsolute(ctx context.Context, seriesID int64, season, episode int) (int, bool) {
+	m := s.sceneMapFor(ctx, seriesID)
+	if len(m) == 0 {
+		return 0, false
+	}
+	abs, ok := m[xem.Key(season, episode)]
+	return abs, ok
+}
+
+// sceneMapFor returns a series' scene→absolute map, loading it from the DB into an
+// in-memory cache on first use (nil is cached too, to avoid re-querying).
+func (s *Service) sceneMapFor(ctx context.Context, seriesID int64) map[string]int {
+	s.sceneMu.Lock()
+	defer s.sceneMu.Unlock()
+	if s.sceneCache == nil {
+		s.sceneCache = map[int64]map[string]int{}
+	}
+	if m, ok := s.sceneCache[seriesID]; ok {
+		return m
+	}
+	var m map[string]int
+	if j := s.repo.SceneMap(ctx, seriesID); j != "" {
+		_ = json.Unmarshal([]byte(j), &m)
+	}
+	s.sceneCache[seriesID] = m
+	return m
 }
 
 // resolveSceneSeason maps a split-season release's (season, episode) to the continuous
@@ -375,6 +483,9 @@ func (s *Service) SetType(ctx context.Context, id int64, seriesType string) erro
 	}
 	if seriesType == SeriesTypeAnime {
 		_ = s.repo.BackfillAbsolute(ctx, id)
+		if sr, err := s.repo.Get(ctx, id); err == nil {
+			s.refreshSceneMap(ctx, id, sr.TVDBID) // pull the TheXEM map now that it's anime
+		}
 	}
 	return nil
 }

@@ -142,6 +142,7 @@ type SeriesDetails struct {
 	Seasons      []SeasonDetails `json:"seasons,omitempty"`
 	OriginalName string          `json:"original_name,omitempty"` // TMDB original_name (romaji for anime)
 	OriginalLang string          `json:"original_language,omitempty"`
+	TVDBID       int             `json:"tvdb_id,omitempty"` // for TheXEM scene mapping
 }
 
 // SeasonDetails is one season plus its episodes.

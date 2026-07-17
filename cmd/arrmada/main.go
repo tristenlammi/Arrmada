@@ -36,6 +36,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/realtime"
 	"github.com/tristenlammi/arrmada/internal/applog"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
+	"github.com/tristenlammi/arrmada/internal/xem"
 	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/scheduler"
 	"github.com/tristenlammi/arrmada/internal/series"
@@ -108,6 +109,7 @@ func main() {
 	settingsSvc := settings.NewService(st.DB())
 	notifySvc := notify.NewService(st.DB(), bus, log)
 	seriesSvc := series.NewService(st.DB(), tmdb, cfg.TVDir, log)
+	seriesSvc.SetSceneMapper(xem.New()) // TheXEM scene mapping for split-season anime
 	booksSvc := books.NewService(st.DB(), openlib, log)
 	// Recycle bin: default to <library>/.recycle so deletes are undoable; "off" hard-deletes.
 	recycleDir := cfg.RecycleDir

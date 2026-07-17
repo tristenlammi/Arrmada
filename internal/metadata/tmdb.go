@@ -124,6 +124,7 @@ func (t *TMDB) GetSeries(ctx context.Context, tmdbID int) (*SeriesDetails, error
 		Status:       s.Status,
 		OriginalName: s.OriginalName,
 		OriginalLang: s.OriginalLanguage,
+		TVDBID:       s.ExternalIDs.TVDBID,
 	}
 	if s.BackdropPath != "" {
 		d.BackdropURL = tmdbBackdropBase + s.BackdropPath
@@ -218,6 +219,7 @@ type tmdbSeries struct {
 	} `json:"seasons"`
 	ExternalIDs struct {
 		IMDBID string `json:"imdb_id"`
+		TVDBID int    `json:"tvdb_id"`
 	} `json:"external_ids"`
 	CreatedBy []tmdbCast `json:"created_by"`
 	Credits   struct {

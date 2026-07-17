@@ -8,6 +8,7 @@ package series
 type Series struct {
 	ID             int64  `json:"id"`
 	TMDBID         int    `json:"tmdb_id"`
+	TVDBID         int    `json:"tvdb_id,omitempty"`
 	IMDBID         string `json:"imdb_id,omitempty"`
 	Title          string `json:"title"`
 	Year           int    `json:"year"`

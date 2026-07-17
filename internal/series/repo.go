@@ -21,7 +21,7 @@ type Repo struct{ db *sql.DB }
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const seriesCols = `id, tmdb_id, imdb_id, title, year, overview, poster_url, status, network,
-	monitored, quality_profile, extra_json, series_type, added_at`
+	monitored, quality_profile, extra_json, series_type, tvdb_id, added_at`
 
 func scanSeries(row interface{ Scan(...any) error }) (Series, error) {
 	var (
@@ -30,7 +30,7 @@ func scanSeries(row interface{ Scan(...any) error }) (Series, error) {
 		extraJSON string
 	)
 	err := row.Scan(&s.ID, &s.TMDBID, &s.IMDBID, &s.Title, &s.Year, &s.Overview, &s.PosterURL,
-		&s.Status, &s.Network, &mon, &s.QualityProfile, &extraJSON, &s.SeriesType, &s.AddedAt)
+		&s.Status, &s.Network, &mon, &s.QualityProfile, &extraJSON, &s.SeriesType, &s.TVDBID, &s.AddedAt)
 	if err != nil {
 		return Series{}, err
 	}
@@ -139,10 +139,10 @@ func (r *Repo) Create(ctx context.Context, s Series) (Series, error) {
 	}
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO series (tmdb_id, imdb_id, title, year, overview, poster_url, status, network,
-			monitored, quality_profile, extra_json, series_type)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			monitored, quality_profile, extra_json, series_type, tvdb_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.TMDBID, s.IMDBID, s.Title, s.Year, s.Overview, s.PosterURL, s.Status, s.Network,
-		b2i(s.Monitored), s.QualityProfile, extraJSON, stype)
+		b2i(s.Monitored), s.QualityProfile, extraJSON, stype, s.TVDBID)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return Series{}, ErrExists
@@ -222,6 +222,28 @@ func (r *Repo) SeasonsFor(ctx context.Context, seriesID int64) ([]Season, error)
 func (r *Repo) SetMonitored(ctx context.Context, id int64, monitored bool) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE series SET monitored = ? WHERE id = ?`, b2i(monitored), id)
 	return err
+}
+
+// SetTVDBID records a series' TVDB id (the TheXEM lookup key).
+func (r *Repo) SetTVDBID(ctx context.Context, id int64, tvdbID int) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE series SET tvdb_id = ? WHERE id = ?`, tvdbID, id)
+	return err
+}
+
+// SetSceneMap caches a series' fetched scene→absolute map (JSON) with a fetch timestamp.
+func (r *Repo) SetSceneMap(ctx context.Context, id int64, sceneJSON string, fetchedAt int64) error {
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO series_scene_map (series_id, scene_json, fetched_at) VALUES (?, ?, ?)
+		 ON CONFLICT(series_id) DO UPDATE SET scene_json = excluded.scene_json, fetched_at = excluded.fetched_at`,
+		id, sceneJSON, fetchedAt)
+	return err
+}
+
+// SceneMap returns a series' cached scene→absolute JSON ("" when none cached).
+func (r *Repo) SceneMap(ctx context.Context, id int64) string {
+	var j string
+	_ = r.db.QueryRowContext(ctx, `SELECT scene_json FROM series_scene_map WHERE series_id = ?`, id).Scan(&j)
+	return j
 }
 
 // SetSeriesType sets a series' numbering type ("standard" | "anime").
