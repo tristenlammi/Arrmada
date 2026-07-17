@@ -765,6 +765,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	gate := plan.VideoCodec != "" && s.settings.GetBool(ctx, keyQualityGate, false)
 	minSSIM := parseFloatDefault(s.settings.Get(ctx, keyMinSSIM, "0.95"), 0.95)
 	s.update(job, func(j *Job) { j.State = StateEncoding; j.Encoder = enc.Label })
+	s.event("info", fmt.Sprintf("%s — source: %s · %s", title, mediaSpec(mi), humanBytes(mi.SizeBytes)))
 	s.event("info", fmt.Sprintf("Encoding %s → %s on %s (%s source)", title, strings.ToUpper(plan.VideoCodec), enc.Label, humanBytes(mi.SizeBytes)))
 	for attempt := 0; ; attempt++ {
 		if err := s.runEncode(ctx, job, src, dst, mi, enc, plan, h10pJSON); err != nil {
@@ -894,6 +895,11 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst, ext st
 		s.finish(job, StateSkipped, "remuxed file was unexpectedly larger — kept the original")
 		return
 	}
+	pct := 0
+	if mi.SizeBytes > 0 {
+		pct = int(100 - outSize*100/mi.SizeBytes)
+	}
+	s.event("info", fmt.Sprintf("%s — output: %s · %s (%d%% smaller)", title, mediaSpec(outInfo), humanBytes(outSize), pct))
 
 	// Safe replace: recycle the original, then move the new file into place. The container may
 	// change (→ MKV or MP4), so the extension may change.

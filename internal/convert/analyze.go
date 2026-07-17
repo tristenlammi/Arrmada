@@ -66,6 +66,120 @@ var textSubCodecs = map[string]bool{
 	"subrip": true, "srt": true, "ass": true, "ssa": true, "mov_text": true, "webvtt": true, "text": true,
 }
 
+// mediaSpec formats a file's key attributes into one readable line for the activity log — the
+// before/after picture the user asked for: codec, geometry, HDR, bit depth, bitrate, frame rate,
+// audio tracks (codec + channel layout) and subtitle tracks (text vs image).
+func mediaSpec(mi *MediaInfo) string {
+	if mi == nil {
+		return "unknown"
+	}
+	parts := []string{strings.ToUpper(mi.VideoCodec)}
+	if mi.Width > 0 && mi.Height > 0 {
+		geo := fmt.Sprintf("%d×%d", mi.Width, mi.Height)
+		if mi.Resolution != "" {
+			geo += " (" + mi.Resolution + ")"
+		}
+		parts = append(parts, geo)
+	}
+	hdr := mi.HDR
+	if hdr == "" {
+		hdr = "SDR"
+	}
+	depth := "8-bit"
+	if mi.TenBit {
+		depth = "10-bit"
+	}
+	parts = append(parts, hdr, depth)
+	if mi.BitrateKbps > 0 {
+		parts = append(parts, fmt.Sprintf("%.1f Mb/s", float64(mi.BitrateKbps)/1000))
+	}
+	if mi.FrameRate > 0 {
+		fps := strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.3f", mi.FrameRate), "0"), ".") + " fps"
+		if mi.VFR {
+			fps += " VFR"
+		}
+		parts = append(parts, fps)
+	}
+	parts = append(parts, "audio: "+audioSummary(mi.Audio, mi.AudioTracks))
+	parts = append(parts, "subs: "+subSummary(mi.Subs, mi.SubTracks))
+	return strings.Join(parts, " · ")
+}
+
+// audioSummary lists each audio track as "CODEC layout [lang]", falling back to a plain count when
+// the detailed stream list isn't available.
+func audioSummary(tracks []AudioStream, count int) string {
+	if len(tracks) == 0 {
+		if count == 0 {
+			return "none"
+		}
+		return fmt.Sprintf("%d track(s)", count)
+	}
+	out := make([]string, 0, len(tracks))
+	for _, a := range tracks {
+		label := strings.ToUpper(a.Codec)
+		if lay := channelLayout(a.Channels); lay != "" {
+			label += " " + lay
+		}
+		if a.Lang != "" && a.Lang != "und" {
+			label += " [" + a.Lang + "]"
+		}
+		out = append(out, label)
+	}
+	return strings.Join(out, ", ")
+}
+
+// channelLayout maps a channel count to its common name (5.1, 7.1, …); "" for unknown.
+func channelLayout(ch int) string {
+	switch ch {
+	case 1:
+		return "mono"
+	case 2:
+		return "2.0"
+	case 3:
+		return "2.1"
+	case 6:
+		return "5.1"
+	case 7:
+		return "6.1"
+	case 8:
+		return "7.1"
+	case 0:
+		return ""
+	default:
+		return fmt.Sprintf("%dch", ch)
+	}
+}
+
+// subSummary reports the subtitle track count split by text vs image (PGS/VOBSUB), which is what
+// matters for Plex compatibility.
+func subSummary(subs []SubStream, count int) string {
+	if len(subs) == 0 {
+		if count == 0 {
+			return "none"
+		}
+		return fmt.Sprintf("%d track(s)", count)
+	}
+	text, img := 0, 0
+	for _, s := range subs {
+		if s.Text {
+			text++
+		} else {
+			img++
+		}
+	}
+	kinds := make([]string, 0, 2)
+	if text > 0 {
+		kinds = append(kinds, fmt.Sprintf("%d text", text))
+	}
+	if img > 0 {
+		kinds = append(kinds, fmt.Sprintf("%d image", img))
+	}
+	if len(kinds) == 0 {
+		return fmt.Sprintf("%d", len(subs))
+	}
+	return fmt.Sprintf("%d (%s)", len(subs), strings.Join(kinds, ", "))
+}
+
 // probe runs ffprobe and parses a file's spec.
 func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 	cmd := exec.CommandContext(ctx, ffprobe,
