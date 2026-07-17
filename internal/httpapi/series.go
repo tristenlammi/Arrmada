@@ -164,7 +164,9 @@ func episodeDownload(queue []download.Item, wantTitle string, season, episode in
 			continue // finished — import handles it; not "downloading"
 		}
 		r := parser.Parse(it.Name)
-		if normKey(r.Title) != wantTitle || r.Season != season {
+		// CoversSeason handles multi-season ("S01-07") and complete-series packs, not
+		// just a single-season one — otherwise a box set only lit up its first season.
+		if normKey(r.Title) != wantTitle || !r.CoversSeason(season) {
 			continue
 		}
 		if len(r.Episodes) > 0 && !containsInt(r.Episodes, episode) {
