@@ -15,6 +15,10 @@ import (
 	"time"
 )
 
+// userAgent is a browser-style UA so Cloudflare's bot filter on thexem.info lets the
+// request through (the default Go UA is 403'd).
+const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
 // Client queries TheXEM. The zero value is unusable; use New.
 type Client struct {
 	http *http.Client
@@ -38,6 +42,10 @@ func (c *Client) Fetch(ctx context.Context, tvdbID int) (map[string]int, error) 
 	if err != nil {
 		return nil, err
 	}
+	// TheXEM sits behind Cloudflare, which 403s the default Go user-agent as a bot.
+	// A normal browser UA gets past the bot filter for this public JSON API.
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Accept", "application/json, text/plain, */*")
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
