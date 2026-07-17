@@ -246,30 +246,19 @@ func (s *Service) GrabSeries(ctx context.Context, id int64) (int, error) {
 	return grabbed, nil
 }
 
-// AutoGrab runs a sweep for whichever media types have auto-grab enabled.
+// AutoGrab queues subtitle-ensure jobs for whichever media types have auto-mode enabled — the
+// scheduled sweep. The worker then makes each missing kept-language SRT by the best-source
+// pipeline (extract → download → …), so auto-mode isn't download-only.
 func (s *Service) AutoGrab(ctx context.Context) {
-	if !s.provider.CanDownload() {
-		return
-	}
 	set := s.GetSettings(ctx)
 	if set.MoviesAuto {
-		if list, err := s.movies.List(ctx); err == nil {
-			for _, m := range list {
-				if m.HasFile && m.MovieFilePath != "" {
-					if n, _ := s.GrabMovie(ctx, m.ID); n > 0 {
-						s.log.Info("subtitles auto-grabbed", "movie", m.Title, "count", n)
-					}
-				}
-			}
+		if n, _ := s.SweepMissing(ctx, "movies"); n > 0 {
+			s.log.Info("subtitles: auto-sweep queued movies", "count", n)
 		}
 	}
 	if set.SeriesAuto {
-		if list, err := s.series.List(ctx); err == nil {
-			for _, sr := range list {
-				if n, _ := s.GrabSeries(ctx, sr.ID); n > 0 {
-					s.log.Info("subtitles auto-grabbed", "series", sr.Title, "count", n)
-				}
-			}
+		if n, _ := s.SweepMissing(ctx, "tv"); n > 0 {
+			s.log.Info("subtitles: auto-sweep queued series", "count", n)
 		}
 	}
 }
