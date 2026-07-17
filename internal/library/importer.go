@@ -509,8 +509,9 @@ func FindVideos(contentPath string) ([]FoundVideo, error) {
 
 // EpisodeImport describes one imported episode file.
 type EpisodeImport struct {
-	Season     int
-	Episode    int
+	Season   int
+	Episode  int   // the first episode this file covers (kept for single-episode callers)
+	Episodes []int // every episode the file covers — >1 for a multi-episode file
 	SourcePath string
 	TargetPath string
 	SizeBytes  int64
@@ -559,7 +560,7 @@ func (im *Importer) ImportEpisodeInto(seriesFolder, seriesTitle string, year int
 	if fi != nil {
 		size = fi.Size()
 	}
-	return &EpisodeImport{Season: rel.Season, Episode: ep, SourcePath: videoPath, TargetPath: target, SizeBytes: size, Method: method}, true, nil
+	return &EpisodeImport{Season: rel.Season, Episode: ep, Episodes: rel.Episodes, SourcePath: videoPath, TargetPath: target, SizeBytes: size, Method: method}, true, nil
 }
 
 // EpisodeTarget builds the library path an episode file should live at, deriving the
@@ -614,7 +615,11 @@ func (im *Importer) SeriesLibraryFilesIn(seriesFolder, title string, year int) [
 		if p.Season == 0 || len(p.Episodes) == 0 {
 			continue
 		}
-		out = append(out, EpisodeImport{Season: p.Season, Episode: p.Episodes[0], SourcePath: v.Path, TargetPath: v.Path, SizeBytes: v.Size})
+		// A multi-episode file (SxxE21-E22) satisfies every episode it covers, so
+		// emit one entry per episode — otherwise E22 looks missing next to E21.
+		for _, ep := range p.Episodes {
+			out = append(out, EpisodeImport{Season: p.Season, Episode: ep, Episodes: p.Episodes, SourcePath: v.Path, TargetPath: v.Path, SizeBytes: v.Size})
+		}
 	}
 	return out
 }
@@ -639,7 +644,11 @@ func (im *Importer) episodeTargetIn(seriesFolder, title string, year, season, ep
 			folder = fmt.Sprintf("%s (%d)", folder, year)
 		}
 	}
-	file := fmt.Sprintf("%s - S%02dE%02d", clean(title), season, episode)
+	epPart := fmt.Sprintf("S%02dE%02d", season, episode)
+	if len(rel.Episodes) > 1 {
+		epPart = episodeTag(rel) // multi-episode file → "S03E21-E22"
+	}
+	file := fmt.Sprintf("%s - %s", clean(title), epPart)
 	if q := qualityTag(rel); q != "" {
 		file += " - " + q
 	}

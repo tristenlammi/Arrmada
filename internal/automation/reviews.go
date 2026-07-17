@@ -231,11 +231,23 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		if ei.Method == "already" {
 			continue // already imported and unchanged — don't re-count or re-notify
 		}
-		if c.series.MarkEpisodeImported(ctx, s.ID, ei.Season, ei.Episode, ei.TargetPath, ei.SizeBytes) == nil {
-			imported++
+		// A double-episode file marks both episodes present (all point at the one file).
+		for _, ep := range episodesOf(ei) {
+			if c.series.MarkEpisodeImported(ctx, s.ID, ei.Season, ep, ei.TargetPath, ei.SizeBytes) == nil {
+				imported++
+			}
 		}
 	}
 	return imported
+}
+
+// episodesOf returns every episode number an imported file covers (a double-
+// episode file covers two), falling back to the single Episode field.
+func episodesOf(ei *library.EpisodeImport) []int {
+	if len(ei.Episodes) > 0 {
+		return ei.Episodes
+	}
+	return []int{ei.Episode}
 }
 
 // recordImportedHash notes a finished download as imported in the shared imports

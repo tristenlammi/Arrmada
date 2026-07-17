@@ -285,7 +285,13 @@ func (c *Coordinator) ManualImportSeries(ctx context.Context, seriesID int64, pa
 	if !ok {
 		return fmt.Errorf("couldn't detect a season/episode from that filename")
 	}
-	return c.series.MarkEpisodeImported(ctx, seriesID, ei.Season, ei.Episode, ei.TargetPath, ei.SizeBytes)
+	var lastErr error
+	for _, ep := range episodesOf(ei) { // double-episode file → mark both
+		if err := c.series.MarkEpisodeImported(ctx, seriesID, ei.Season, ep, ei.TargetPath, ei.SizeBytes); err != nil {
+			lastErr = err
+		}
+	}
+	return lastErr
 }
 
 // SeriesRenameItem is one proposed episode-file rename.

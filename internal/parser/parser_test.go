@@ -89,6 +89,24 @@ func TestParseTV(t *testing.T) {
 				Audio: []string{"DDP"}, Group: "NTb", Season: 1,
 			},
 		},
+		{
+			// Double-episode file with no second "E" — both episodes must parse.
+			"Gotham - S03E21-22 - Heroes Rise Destiny Calling",
+			Release{Title: "Gotham", Season: 3, Episodes: []int{21, 22}},
+		},
+		{
+			"Show.S03E21-E22.1080p.WEB-DL-GRP",
+			Release{Title: "Show", Resolution: Res1080p, Source: SourceWebDL, Group: "GRP", Season: 3, Episodes: []int{21, 22}},
+		},
+		{
+			"Show.S01E01E02.720p.HDTV",
+			Release{Title: "Show", Resolution: Res720p, Source: SourceHDTV, Season: 1, Episodes: []int{1, 2}},
+		},
+		{
+			// A bare "-1080p" after the episode must NOT read as episode 1080/108.
+			"Show.S01E01-1080p.WEB-DL-GRP",
+			Release{Title: "Show", Resolution: Res1080p, Source: SourceWebDL, Group: "GRP", Season: 1, Episodes: []int{1}},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

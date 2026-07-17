@@ -132,9 +132,13 @@ func (r Release) IsTV() bool {
 var (
 	reYear    = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
 	reGroup   = regexp.MustCompile(`-([A-Za-z0-9]{2,})$`)
-	reSxxExx  = regexp.MustCompile(`(?i)\bS(\d{1,2})(?:E(\d{1,3}))(?:[-\s.]?E?(\d{1,3}))*`)
+	// reSxxExx captures the season (1), the first episode (2), and any continuation
+	// (3) — a multi-episode file's extra parts: "S03E21-E22", "S03E21-22", "S01E01E02".
+	// The continuation only accepts an explicit "E<n>" or a bare "-<n>" (never a
+	// space/dot before a number, so ".1080p"/" 720p" stay out of it).
+	reSxxExx  = regexp.MustCompile(`(?i)\bS(\d{1,2})E(\d{1,3})((?:[-\s.]?E\d{1,3}|-\d{1,3})*)`)
 	reSeason  = regexp.MustCompile(`(?i)\bS(\d{1,2})\b`)
-	reEpRange = regexp.MustCompile(`(?i)E(\d{1,3})`)
+	reEpPart  = regexp.MustCompile(`(?i)E(\d{1,3})|-(\d{1,3})`)
 	// Multi-season ranges: "S01-S03", "S1 - S5", or "Seasons 1-5".
 	reSeasonRange = regexp.MustCompile(`(?i)\bS(\d{1,2})\s*-\s*S(\d{1,2})\b`)
 	reSeasonWord  = regexp.MustCompile(`(?i)\bseasons?\s*(\d{1,2})\s*-\s*(\d{1,2})\b`)
@@ -169,11 +173,7 @@ func Parse(name string) Release {
 	// TV season/episodes.
 	if m := reSxxExx.FindStringSubmatch(name); m != nil {
 		r.Season, _ = strconv.Atoi(m[1])
-		for _, em := range reEpRange.FindAllStringSubmatch(m[0], -1) {
-			if n, err := strconv.Atoi(em[1]); err == nil {
-				r.Episodes = append(r.Episodes, n)
-			}
-		}
+		r.Episodes = parseEpisodeList(m[2], m[3])
 	} else if m := reSeason.FindStringSubmatch(name); m != nil {
 		// Season pack (no episode markers).
 		r.Season, _ = strconv.Atoi(m[1])
@@ -220,6 +220,35 @@ func Parse(name string) Release {
 }
 
 // seasonRange expands "a" and "b" into an inclusive list of season numbers.
+// parseEpisodeList turns an SxxExx match into its episode numbers. first is the
+// E<n> right after the season; tail is the continuation ("-22", "E02E03", "-E22").
+// A bare "-<n>" counts as a range end only when it's a small step up from the
+// previous episode — so "S01E01-720p" reads as episode 1, not episodes 1 and 720.
+func parseEpisodeList(first, tail string) []int {
+	n0, err := strconv.Atoi(first)
+	if err != nil {
+		return nil
+	}
+	eps := []int{n0}
+	prev := n0
+	for _, em := range reEpPart.FindAllStringSubmatch(tail, -1) {
+		var n int
+		switch {
+		case em[1] != "": // explicit "E<n>" — always an episode
+			n, _ = strconv.Atoi(em[1])
+		case em[2] != "": // bare "-<n>" — a range end only if consecutive-ish
+			if v, _ := strconv.Atoi(em[2]); v > prev && v-prev <= 50 {
+				n = v
+			}
+		}
+		if n > 0 && n != prev {
+			eps = append(eps, n)
+			prev = n
+		}
+	}
+	return eps
+}
+
 func seasonRange(a, b string) []int {
 	lo, _ := strconv.Atoi(a)
 	hi, _ := strconv.Atoi(b)

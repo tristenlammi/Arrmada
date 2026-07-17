@@ -329,8 +329,11 @@ func (s *Service) importSeriesFolder(ctx context.Context, videos []library.Found
 		if p.Season == 0 || len(p.Episodes) == 0 {
 			continue
 		}
-		if s.repo.SetEpisodeFile(ctx, added.ID, p.Season, p.Episodes[0], v.Path, v.Size) == nil {
-			marked++
+		// A multi-episode file (SxxE21-E22) marks every episode it covers present.
+		for _, ep := range p.Episodes {
+			if s.repo.SetEpisodeFile(ctx, added.ID, p.Season, ep, v.Path, v.Size) == nil {
+				marked++
+			}
 		}
 	}
 	s.AddEvent(ctx, added.ID, "imported", fmt.Sprintf("Found during library scan: %d episode files", marked))
