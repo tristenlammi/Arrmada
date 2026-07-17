@@ -365,6 +365,7 @@ func (c *Coordinator) candidatesFrom(ctx context.Context, movieID int64, release
 // differs.
 func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []movies.Version, byName map[string]indexer.Release, cands []quality.Candidate) {
 	grabbed := map[string]bool{}
+	pending := c.pendingGrabTitles(ctx, m.ID) // releases already grabbed for this movie, not yet imported
 	for _, v := range want {
 		decision := c.quality.Decide(ctx, v.QualityProfile, tagRuntime(cands, m.Runtime))
 		if decision.Winner == nil {
@@ -373,6 +374,9 @@ func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []mo
 		winner := byName[decision.Winner.Candidate.Name]
 		if grabbed[winner.DownloadURL] {
 			continue
+		}
+		if pending[normTitle(winner.Title)] {
+			continue // already grabbed this exact release and it's still in flight — don't loop
 		}
 		if !c.diskOKFor(decision.Winner.Candidate.SizeGB) {
 			c.log.Warn("automation: low disk, skipping grab", "movie", m.Title, "need_gb", decision.Winner.Candidate.SizeGB)

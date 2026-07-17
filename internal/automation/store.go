@@ -200,6 +200,27 @@ func (c *Coordinator) pendingGrabs(ctx context.Context) ([]grab, error) {
 	return out, rows.Err()
 }
 
+// pendingGrabTitles returns the normalized titles of a movie's still-pending grabs (downloaded /
+// in-flight but not yet imported or failed). Used to stop the same release being grabbed again on
+// the next sweep — a belt-and-suspenders guard against re-grab loops when the in-client name-match
+// (inQueue) can't recognize a download.
+func (c *Coordinator) pendingGrabTitles(ctx context.Context, movieID int64) map[string]bool {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT title FROM grabs WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'movie'`, movieID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	set := map[string]bool{}
+	for rows.Next() {
+		var title string
+		if rows.Scan(&title) == nil {
+			set[normTitle(title)] = true
+		}
+	}
+	return set
+}
+
 // setGrabStatus marks a grab imported or failed.
 func (c *Coordinator) setGrabStatus(ctx context.Context, id int64, status string) {
 	_, _ = c.db.ExecContext(ctx, `UPDATE grabs SET status = ? WHERE id = ?`, status, id)

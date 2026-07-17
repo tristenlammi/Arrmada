@@ -16,6 +16,7 @@ func TestAvailable(t *testing.T) {
 	}{
 		{"announced always searchable", Movie{MinAvailability: "announced"}, true},
 		{"released + status Released", Movie{MinAvailability: "released", Status: "Released"}, true},
+		{"released + status Released but future date → not yet", Movie{MinAvailability: "released", Status: "Released", Extra: rel("2026-12-25")}, false},
 		{"released + future date → not yet", Movie{MinAvailability: "released", Extra: rel("2026-12-25")}, false},
 		{"released + past date → available", Movie{MinAvailability: "released", Extra: rel("2025-01-01")}, true},
 		{"released + today → available", Movie{MinAvailability: "released", Extra: rel("2026-07-16")}, true},

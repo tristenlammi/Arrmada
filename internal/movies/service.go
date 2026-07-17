@@ -880,15 +880,19 @@ func available(m Movie, now time.Time) bool {
 	case "announced":
 		return true
 	case "inCinemas", "released":
-		if m.Status == "Released" {
-			return true
-		}
+		// A known release date is the source of truth. If it's still in the future the movie
+		// isn't out yet — don't search — even when TMDB's status says "Released" (it flips early
+		// on some entries, and bad/duplicate entries can be flat-out wrong). This is what stops a
+		// months-away film from being searched (and grabbing a wrong-title release) prematurely.
 		if m.Extra != nil && m.Extra.ReleaseDate != "" {
 			if t, err := time.Parse("2006-01-02", m.Extra.ReleaseDate); err == nil {
 				return !now.Before(t)
 			}
 		}
-		// No date and not marked Released — treat "released" strictly, cinemas leniently.
+		if m.Status == "Released" {
+			return true
+		}
+		// No parseable date and not marked Released — treat "released" strictly, cinemas leniently.
 		return m.MinAvailability == "inCinemas"
 	default:
 		return true
