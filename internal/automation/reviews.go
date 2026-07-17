@@ -231,9 +231,11 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		if ei.Method == "already" {
 			continue // already imported and unchanged — don't re-count or re-notify
 		}
-		// A double-episode file marks both episodes present (all point at the one file).
+		// A double-episode file marks both episodes present (all point at the one file);
+		// anime files resolve to their real episode (absolute/positional) first.
 		for _, ep := range episodesOf(ei) {
-			if c.series.MarkEpisodeImported(ctx, s.ID, ei.Season, ep, ei.TargetPath, ei.SizeBytes) == nil {
+			rs, re := c.series.ResolveEpisode(ctx, s.ID, ei.Season, ep)
+			if c.series.MarkEpisodeImported(ctx, s.ID, rs, re, ei.TargetPath, ei.SizeBytes) == nil {
 				imported++
 			}
 		}

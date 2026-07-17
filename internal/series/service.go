@@ -205,6 +205,59 @@ func (s *Service) SetQualityProfile(ctx context.Context, id int64, profile strin
 	return s.repo.SetQualityProfile(ctx, id, profile)
 }
 
+// EpisodeRef is a concrete (season, episode) that a file or release maps to.
+type EpisodeRef struct {
+	Season  int
+	Episode int
+}
+
+// ResolveEpisodes maps a parsed release to the concrete (season, episode) pairs it
+// covers for THIS series. Standard series use SxxExx as-is. Anime also honors:
+//   - absolute numbering: "[Group] Show - 137" → the episode whose absolute number is 137
+//   - a positional fallback: a per-cour file "S03E01" whose (3,1) doesn't exist in the
+//     metadata resolves to the 1st episode of season 3 (e.g. absolute-numbered E137).
+func (s *Service) ResolveEpisodes(ctx context.Context, seriesID int64, rel parser.Release) []EpisodeRef {
+	sr, err := s.repo.Get(ctx, seriesID)
+	if err != nil {
+		return nil
+	}
+	anime := sr.IsAnime()
+	if anime && len(rel.AbsoluteEpisodes) > 0 {
+		var out []EpisodeRef
+		for _, ab := range rel.AbsoluteEpisodes {
+			if se, ep, ok := s.repo.EpisodeByAbsolute(ctx, seriesID, ab); ok {
+				out = append(out, EpisodeRef{Season: se, Episode: ep})
+			}
+		}
+		return out
+	}
+	var out []EpisodeRef
+	for _, ep := range rel.Episodes {
+		out = append(out, s.resolveSE(ctx, seriesID, rel.Season, ep, anime))
+	}
+	return out
+}
+
+// ResolveEpisode resolves a single (season, episode) from a filename to the concrete
+// episode it belongs to — used by rescan/import where episodes are already split out.
+func (s *Service) ResolveEpisode(ctx context.Context, seriesID int64, season, episode int) (int, int) {
+	sr, err := s.repo.Get(ctx, seriesID)
+	ref := s.resolveSE(ctx, seriesID, season, episode, err == nil && sr.IsAnime())
+	return ref.Season, ref.Episode
+}
+
+func (s *Service) resolveSE(ctx context.Context, seriesID int64, season, episode int, anime bool) EpisodeRef {
+	if s.repo.EpisodeExists(ctx, seriesID, season, episode) {
+		return EpisodeRef{Season: season, Episode: episode}
+	}
+	if anime {
+		if real, ok := s.repo.NthEpisodeOfSeason(ctx, seriesID, season, episode); ok {
+			return EpisodeRef{Season: season, Episode: real}
+		}
+	}
+	return EpisodeRef{Season: season, Episode: episode} // standard: mark as-is (no-op if absent)
+}
+
 // SetType overrides a series' numbering type ("standard" | "anime"). Ensures absolute
 // numbers exist when switching to anime so matching works immediately.
 func (s *Service) SetType(ctx context.Context, id int64, seriesType string) error {
@@ -370,12 +423,10 @@ func (s *Service) importSeriesFolder(ctx context.Context, videos []library.Found
 	marked := 0
 	for _, v := range videos {
 		p := parser.Parse(filepath.Base(v.Path))
-		if p.Season == 0 || len(p.Episodes) == 0 {
-			continue
-		}
-		// A multi-episode file (SxxE21-E22) marks every episode it covers present.
-		for _, ep := range p.Episodes {
-			if s.repo.SetEpisodeFile(ctx, added.ID, p.Season, ep, v.Path, v.Size) == nil {
+		// ResolveEpisodes handles multi-episode files, and — for anime — absolute
+		// numbering and the per-cour positional fallback.
+		for _, ref := range s.ResolveEpisodes(ctx, added.ID, p) {
+			if s.repo.SetEpisodeFile(ctx, added.ID, ref.Season, ref.Episode, v.Path, v.Size) == nil {
 				marked++
 			}
 		}

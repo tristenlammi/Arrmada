@@ -258,6 +258,15 @@ func (r *Repo) BackfillAbsolute(ctx context.Context, seriesID int64) error {
 	return err
 }
 
+// EpisodeExists reports whether a series has an episode with that (season, number).
+func (r *Repo) EpisodeExists(ctx context.Context, seriesID int64, season, episode int) bool {
+	var one int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT 1 FROM episodes WHERE series_id = ? AND season_number = ? AND episode_number = ? LIMIT 1`,
+		seriesID, season, episode).Scan(&one)
+	return err == nil && one == 1
+}
+
 // EpisodeByAbsolute resolves an absolute episode number to its (season, episode).
 // ok=false when the series has no episode with that absolute number.
 func (r *Repo) EpisodeByAbsolute(ctx context.Context, seriesID int64, absolute int) (season, episode int, ok bool) {

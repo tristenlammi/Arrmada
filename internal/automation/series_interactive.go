@@ -216,8 +216,10 @@ func (c *Coordinator) RescanSeries(ctx context.Context, seriesID int64) {
 
 	found := map[[2]int]bool{}
 	for _, f := range c.imp.SeriesLibraryFilesIn(folder, s.Title, s.Year) {
-		found[[2]int{f.Season, f.Episode}] = true
-		_ = c.series.MarkEpisodeImported(ctx, seriesID, f.Season, f.Episode, f.TargetPath, f.SizeBytes)
+		// Resolve per-cour anime files (S03E01 → the real season-3 episode) before marking.
+		rs, re := c.series.ResolveEpisode(ctx, seriesID, f.Season, f.Episode)
+		found[[2]int{rs, re}] = true
+		_ = c.series.MarkEpisodeImported(ctx, seriesID, rs, re, f.TargetPath, f.SizeBytes)
 	}
 
 	// Clear any episode still flagged as having a file that wasn't found on disk and
@@ -287,7 +289,8 @@ func (c *Coordinator) ManualImportSeries(ctx context.Context, seriesID int64, pa
 	}
 	var lastErr error
 	for _, ep := range episodesOf(ei) { // double-episode file → mark both
-		if err := c.series.MarkEpisodeImported(ctx, seriesID, ei.Season, ep, ei.TargetPath, ei.SizeBytes); err != nil {
+		rs, re := c.series.ResolveEpisode(ctx, seriesID, ei.Season, ep)
+		if err := c.series.MarkEpisodeImported(ctx, seriesID, rs, re, ei.TargetPath, ei.SizeBytes); err != nil {
 			lastErr = err
 		}
 	}
