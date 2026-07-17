@@ -216,6 +216,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/requests/{id}/decline", a.requireRole(auth.RoleManager, a.handleDeclineRequest))
 	mux.HandleFunc("DELETE "+base+"/api/v1/requests/{id}", a.requireRole(auth.RoleManager, a.handleDeleteRequest))
 	mux.HandleFunc("POST "+base+"/api/v1/requests/import/overseerr", a.requireRole(auth.RoleAdmin, a.handleImportOverseerr))
+	mux.HandleFunc("POST "+base+"/api/v1/insights/import/tautulli", a.requireRole(auth.RoleAdmin, a.handleImportTautulli))
 
 	// Convert (Tdarr replacement — GPU transcoding/cleanup over the Movies/Series catalogs).
 	mux.HandleFunc("GET "+base+"/api/v1/recycle", a.requireRole(auth.RoleManager, a.handleRecycleStats))

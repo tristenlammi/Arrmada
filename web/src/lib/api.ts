@@ -693,6 +693,8 @@ export const api = {
   deleteUser: (id: number) => req<void>(`/api/v1/users/${id}`, { method: "DELETE" }),
   importOverseerr: (url: string, api_key: string) =>
     req<{ status: string; found: number }>("/api/v1/requests/import/overseerr", { method: "POST", body: JSON.stringify({ url, api_key }) }),
+  importTautulli: (url: string, api_key: string) =>
+    req<{ status: string }>("/api/v1/insights/import/tautulli", { method: "POST", body: JSON.stringify({ url, api_key }) }),
 
   indexers: () => req<{ indexers: Indexer[] }>("/api/v1/indexers").then((r) => r.indexers),
   createIndexer: (body: NewIndexer) =>

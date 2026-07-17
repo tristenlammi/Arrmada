@@ -60,6 +60,16 @@ func (r *repo) insertSession(ctx context.Context, s sessionRecord) (int64, error
 	return res.LastInsertId()
 }
 
+// sessionExists reports whether a session for this user + item + start time is already recorded
+// (used to keep history imports idempotent on re-run).
+func (r *repo) sessionExists(ctx context.Context, userID, ratingKey string, startedAt int64) bool {
+	var n int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM stream_sessions WHERE user_id = ? AND rating_key = ? AND started_at = ?`,
+		userID, ratingKey, startedAt).Scan(&n)
+	return err == nil && n > 0
+}
+
 func (r *repo) insertBufferEvent(ctx context.Context, sessionID, at, offsetMS int64) error {
 	_, err := r.db.ExecContext(ctx, `INSERT INTO buffer_events (session_id,at,view_offset_ms) VALUES (?,?,?)`, sessionID, at, offsetMS)
 	return err
