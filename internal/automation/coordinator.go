@@ -103,6 +103,49 @@ func (c *Coordinator) grabTo(ctx context.Context, indexerName, downloadURL, titl
 	return nil
 }
 
+// addLink hands a pasted magnet/.torrent URL straight to the download client (no
+// indexer fetch) in the given category, recording it as a manual grab source.
+func (c *Coordinator) addLink(ctx context.Context, link, title, category string) error {
+	link = strings.TrimSpace(link)
+	if link == "" {
+		return fmt.Errorf("no link provided")
+	}
+	add := download.AddRequest{Name: title, SavePath: c.downloadsDir, Category: category, URL: link}
+	if err := c.downloads.Add(ctx, add); err != nil {
+		return err
+	}
+	c.bus.Publish("release.grabbed", map[string]any{"title": title, "indexer": "manual"})
+	return nil
+}
+
+// GrabMovieLink adds a pasted link for a movie (default category) and tracks it like an
+// auto grab so seed cleanup / stall detection manage it too.
+func (c *Coordinator) GrabMovieLink(ctx context.Context, movieID int64, link, title string) error {
+	if err := c.addLink(ctx, link, title, ""); err != nil {
+		return err
+	}
+	c.RecordManualGrab(ctx, movieID, title, "manual")
+	if c.movies != nil {
+		c.movies.AddEvent(ctx, movieID, "grabbed", "Pasted link — "+title)
+	}
+	return nil
+}
+
+// GrabSeriesLink adds a pasted link for a series (TV category, so the multi-file
+// importer handles a pack) and records the grab.
+func (c *Coordinator) GrabSeriesLink(ctx context.Context, seriesID int64, link, title string) error {
+	if err := c.addLink(ctx, link, title, seriesCategory); err != nil {
+		return err
+	}
+	if c.series != nil {
+		if s, err := c.series.Get(ctx, seriesID); err == nil {
+			c.recordSeriesGrab(ctx, seriesID, title, "manual", s.QualityProfile)
+		}
+		c.series.AddEvent(ctx, seriesID, "grabbed", "Pasted link — "+title)
+	}
+	return nil
+}
+
 // RecordManualGrab tracks a release grabbed by hand (interactive search) exactly
 // like an automatic grab, so it's seed-managed and stall-detected too. movieID 0
 // (not tied to a tracked movie) is a no-op.

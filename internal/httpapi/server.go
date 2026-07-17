@@ -158,6 +158,9 @@ func New(d Deps) *http.Server {
 
 	// Grab: search result → download client (closes the acquisition loop).
 	mux.HandleFunc("POST "+base+"/api/v1/grab", a.protected(a.handleGrab))
+	mux.HandleFunc("POST "+base+"/api/v1/grab/preview", a.requireRole(auth.RoleManager, a.handleGrabPreview))
+	mux.HandleFunc("POST "+base+"/api/v1/movies/{id}/grablink", a.requireRole(auth.RoleManager, a.handleMovieGrabLink))
+	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/grablink", a.requireRole(auth.RoleManager, a.handleSeriesGrabLink))
 
 	// Import history
 	mux.HandleFunc("GET "+base+"/api/v1/history", a.protected(a.handleHistory))

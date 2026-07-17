@@ -297,6 +297,13 @@ export interface AppSettings {
   recycle_retention_days: string;
 }
 
+export interface LinkPreview {
+  name: string;
+  size_bytes: number;
+  hash?: string;
+  magnet: boolean;
+  files?: { path: string; size_bytes: number }[];
+}
 export interface LogEntry {
   time_ms: number;
   level: string; // DEBUG | INFO | WARN | ERROR
@@ -831,6 +838,12 @@ export const api = {
   browseFolders: (path?: string) => req<BrowseResult>(`/api/v1/system/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   addMovie: (body: { tmdb_id: number; quality_profile: string; monitored?: boolean; search_on_add?: boolean }) =>
     req<Movie>("/api/v1/movies", { method: "POST", body: JSON.stringify(body) }),
+  previewLink: (link: string) =>
+    req<LinkPreview>("/api/v1/grab/preview", { method: "POST", body: JSON.stringify({ link }) }),
+  grabMovieLink: (id: number, link: string, title: string) =>
+    req<{ status: string }>(`/api/v1/movies/${id}/grablink`, { method: "POST", body: JSON.stringify({ link, title }) }),
+  grabSeriesLink: (id: number, link: string, title: string) =>
+    req<{ status: string }>(`/api/v1/series/${id}/grablink`, { method: "POST", body: JSON.stringify({ link, title }) }),
   deleteMovie: (id: number, deleteFiles?: boolean) =>
     req<void>(`/api/v1/movies/${id}${deleteFiles ? "?delete_files=true" : ""}`, { method: "DELETE" }),
   searchMovie: (id: number) =>
