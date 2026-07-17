@@ -3,6 +3,7 @@ package automation
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/parser"
@@ -225,7 +226,13 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	imported := 0
 	for _, v := range videos {
 		ei, ok, err := c.imp.ImportEpisodeInto(folder, s.Title, s.Year, v.Path)
-		if err != nil || !ok {
+		if err != nil {
+			continue
+		}
+		if !ok {
+			// No SxxExx — for anime this is an absolute-numbered file ("Show - 137"):
+			// resolve the absolute number and place it under that season/episode.
+			imported += c.importAbsoluteEpisode(ctx, s, folder, v.Path)
 			continue
 		}
 		if ei.Method == "already" {
@@ -241,6 +248,27 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		}
 	}
 	return imported
+}
+
+// importAbsoluteEpisode places an anime file that carries only an absolute episode
+// number (no SxxExx). It resolves the number to a (season, episode) via the series'
+// metadata, then places + marks it. Returns how many episodes it imported.
+func (c *Coordinator) importAbsoluteEpisode(ctx context.Context, s series.Series, folder, path string) int {
+	if !s.IsAnime() {
+		return 0
+	}
+	refs := c.series.ResolveEpisodes(ctx, s.ID, parser.Parse(filepath.Base(path)))
+	n := 0
+	for _, ref := range refs {
+		ei, ok, err := c.imp.ImportEpisodeAs(folder, s.Title, s.Year, ref.Season, ref.Episode, path)
+		if err != nil || !ok || ei.Method == "already" {
+			continue
+		}
+		if c.series.MarkEpisodeImported(ctx, s.ID, ref.Season, ref.Episode, ei.TargetPath, ei.SizeBytes) == nil {
+			n++
+		}
+	}
+	return n
 }
 
 // episodesOf returns every episode number an imported file covers (a double-

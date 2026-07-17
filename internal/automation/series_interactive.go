@@ -312,6 +312,10 @@ func (c *Coordinator) ManualImportSeries(ctx context.Context, seriesID int64, pa
 		return err
 	}
 	if !ok {
+		// Anime file numbered absolutely (no SxxExx) — resolve + place by absolute number.
+		if s.IsAnime() && c.importAbsoluteEpisode(ctx, s, folder, path) > 0 {
+			return nil
+		}
 		return fmt.Errorf("couldn't detect a season/episode from that filename")
 	}
 	var lastErr error

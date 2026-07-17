@@ -563,6 +563,38 @@ func (im *Importer) ImportEpisodeInto(seriesFolder, seriesTitle string, year int
 	return &EpisodeImport{Season: rel.Season, Episode: ep, Episodes: rel.Episodes, SourcePath: videoPath, TargetPath: target, SizeBytes: size, Method: method}, true, nil
 }
 
+// ImportEpisodeAs places a video under an explicit (season, episode) — for anime
+// files numbered absolutely ("[Group] Show - 137"), where the caller has already
+// resolved the absolute number to a season/episode. Naming follows the standard
+// "<Series> - SxxEyy" scheme (quality tag parsed from the source name).
+func (im *Importer) ImportEpisodeAs(seriesFolder, seriesTitle string, year, season, episode int, videoPath string) (*EpisodeImport, bool, error) {
+	if season <= 0 || episode <= 0 {
+		return nil, false, nil
+	}
+	if fi, err := os.Stat(videoPath); err == nil && fi.Size() == 0 {
+		return nil, false, nil // refuse 0-byte files (see ImportEpisodeInto)
+	}
+	rel := parser.Parse(filepath.Base(videoPath)) // for the quality tag only
+	ext := filepath.Ext(videoPath)
+	target := im.episodeTargetIn(seriesFolder, seriesTitle, year, season, episode, rel, ext)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return nil, false, fmt.Errorf("create season dir: %w", err)
+	}
+	method, err := linkOrCopy(videoPath, target)
+	if err != nil {
+		return nil, false, fmt.Errorf("import episode: %w", err)
+	}
+	if method != "already" {
+		im.logImport(seriesTitle, videoPath, target, method)
+		im.importSidecarSubs(videoPath, videoPath, target)
+	}
+	var size int64
+	if fi, _ := os.Stat(target); fi != nil {
+		size = fi.Size()
+	}
+	return &EpisodeImport{Season: season, Episode: episode, Episodes: []int{episode}, SourcePath: videoPath, TargetPath: target, SizeBytes: size, Method: method}, true, nil
+}
+
 // EpisodeTarget builds the library path an episode file should live at, deriving the
 // quality tag from sourceName (usually the current filename). Used by rename preview.
 func (im *Importer) EpisodeTarget(title string, year, season, episode int, sourceName, ext string) string {
