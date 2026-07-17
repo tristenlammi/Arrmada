@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/settings"
 	"github.com/tristenlammi/arrmada/internal/store"
 )
@@ -59,6 +60,59 @@ func TestStatsAndEmpty(t *testing.T) {
 	}
 	if st := svc.Stats(ctx); st.Files != 0 || st.Bytes != 0 {
 		t.Fatalf("after empty = %+v, want zero", st)
+	}
+}
+
+func TestListRestoreDelete(t *testing.T) {
+	svc, _, binDir := newTestSvc(t)
+	ctx := context.Background()
+
+	// A real file in a "library", recycled through the shared RecycleFile (records origin).
+	lib := t.TempDir()
+	orig := filepath.Join(lib, "Movie (2024)", "movie.mkv")
+	if err := os.MkdirAll(filepath.Dir(orig), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(orig, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := library.RecycleFile(binDir, orig); err != nil {
+		t.Fatal(err)
+	}
+
+	items := svc.List(ctx)
+	if len(items) != 1 || items[0].Name != "movie.mkv" || items[0].OrigPath != orig || !items[0].Restorable {
+		t.Fatalf("List = %+v; want one restorable movie.mkv with origin", items)
+	}
+	// The sidecar must not be counted as a file.
+	if st := svc.Stats(ctx); st.Files != 1 {
+		t.Fatalf("Stats.Files = %d, want 1 (sidecar excluded)", st.Files)
+	}
+
+	// Restore puts it back and clears the bin.
+	if err := svc.Restore(ctx, items[0].ID); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if _, err := os.Stat(orig); err != nil {
+		t.Error("file should be back at its original path")
+	}
+	if len(svc.List(ctx)) != 0 {
+		t.Error("bin should be empty after restore")
+	}
+
+	// Restore refuses when the origin is occupied.
+	library.RecycleFile(binDir, orig) // re-delete (orig still exists from restore)
+	os.WriteFile(orig, []byte("new"), 0o644)
+	if err := svc.Restore(ctx, svc.List(ctx)[0].ID); err == nil {
+		t.Error("restore should refuse when a file already occupies the origin")
+	}
+	// DeleteItem removes it (and its sidecar).
+	id := svc.List(ctx)[0].ID
+	if err := svc.DeleteItem(ctx, id); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if len(svc.List(ctx)) != 0 {
+		t.Error("bin should be empty after delete")
 	}
 }
 

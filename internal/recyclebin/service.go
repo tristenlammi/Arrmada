@@ -6,13 +6,17 @@ package recyclebin
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/settings"
 )
 
@@ -50,14 +54,14 @@ type entry struct {
 	mod  time.Time
 }
 
-// walk lists every regular file currently in the bin.
+// walk lists every recycled file currently in the bin (sidecar metadata files excluded).
 func (s *Service) walk() []entry {
 	if s.dir == "" {
 		return nil
 	}
 	var out []entry
 	_ = filepath.WalkDir(s.dir, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
+		if err != nil || d.IsDir() || strings.HasSuffix(p, library.RecycleMetaExt) {
 			return nil
 		}
 		if fi, e := d.Info(); e == nil {
@@ -66,6 +70,129 @@ func (s *Service) walk() []entry {
 		return nil
 	})
 	return out
+}
+
+// Item is one recycled file surfaced to the management UI.
+type Item struct {
+	ID          string `json:"id"`   // path relative to the bin (stable handle)
+	Name        string `json:"name"` // filename
+	OrigPath    string `json:"orig_path,omitempty"`
+	SizeBytes   int64  `json:"size_bytes"`
+	DeletedUnix int64  `json:"deleted_unix"`
+	Restorable  bool   `json:"restorable"` // false for legacy items with no recorded origin
+}
+
+// List returns the bin's contents, most-recently-deleted first.
+func (s *Service) List(ctx context.Context) []Item {
+	items := s.walk()
+	sort.Slice(items, func(i, j int) bool { return items[i].mod.After(items[j].mod) })
+	out := make([]Item, 0, len(items))
+	for _, e := range items {
+		rel, err := filepath.Rel(s.dir, e.path)
+		if err != nil {
+			continue
+		}
+		it := Item{ID: filepath.ToSlash(rel), Name: filepath.Base(e.path), SizeBytes: e.size, DeletedUnix: e.mod.Unix()}
+		if m := library.ReadRecycleMeta(e.path); m.Orig != "" {
+			it.OrigPath = m.Orig
+			it.Restorable = true
+			if m.Deleted > 0 {
+				it.DeletedUnix = m.Deleted
+			}
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+// resolve maps an item ID to an absolute path inside the bin, rejecting traversal.
+func (s *Service) resolve(id string) (string, error) {
+	if s.dir == "" {
+		return "", fmt.Errorf("recycling is disabled")
+	}
+	full := filepath.Join(s.dir, filepath.FromSlash(id))
+	rel, err := filepath.Rel(s.dir, full)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("invalid item")
+	}
+	return full, nil
+}
+
+// Restore moves a recycled file back to its original location and drops its sidecar.
+// It refuses when the origin is unknown or already occupied.
+func (s *Service) Restore(ctx context.Context, id string) error {
+	full, err := s.resolve(id)
+	if err != nil {
+		return err
+	}
+	m := library.ReadRecycleMeta(full)
+	if m.Orig == "" {
+		return fmt.Errorf("can't restore — the original location isn't recorded for this item")
+	}
+	if _, err := os.Stat(m.Orig); err == nil {
+		return fmt.Errorf("a file already exists at the original location")
+	}
+	if err := os.MkdirAll(filepath.Dir(m.Orig), 0o755); err != nil {
+		return err
+	}
+	if err := moveFile(full, m.Orig); err != nil {
+		return err
+	}
+	_ = os.Remove(full + library.RecycleMetaExt)
+	s.pruneEmptyDirs()
+	s.log.Info("recyclebin: restored", "to", m.Orig)
+	return nil
+}
+
+// DeleteItem permanently removes one recycled file (and its sidecar).
+func (s *Service) DeleteItem(ctx context.Context, id string) error {
+	full, err := s.resolve(id)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(full); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	_ = os.Remove(full + library.RecycleMetaExt)
+	s.pruneEmptyDirs()
+	return nil
+}
+
+// removeItem deletes a recycled file and its sidecar.
+func removeItem(path string) error {
+	err := os.Remove(path)
+	_ = os.Remove(path + library.RecycleMetaExt)
+	return err
+}
+
+// moveFile renames from→to, falling back to copy+remove across filesystems.
+func moveFile(from, to string) error {
+	if err := os.Rename(from, to); err == nil {
+		return nil
+	}
+	in, err := os.Open(from)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp := to + ".arrmada-tmp"
+	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, to); err != nil {
+		return err
+	}
+	return os.Remove(from)
 }
 
 // Stats reports the bin's size + contents and the current caps.
@@ -146,7 +273,7 @@ func (s *Service) Enforce(ctx context.Context) {
 		cutoff := time.Now().AddDate(0, 0, -retentionDays)
 		for _, e := range items {
 			if e.mod.Before(cutoff) {
-				if os.Remove(e.path) == nil {
+				if removeItem(e.path) == nil {
 					removed++
 					freed += e.size
 				}
@@ -171,7 +298,7 @@ func (s *Service) Enforce(ctx context.Context) {
 				if total <= limit {
 					break
 				}
-				if os.Remove(e.path) == nil {
+				if removeItem(e.path) == nil {
 					total -= e.size
 					removed++
 					freed += e.size

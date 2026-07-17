@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type AppSettings, type AuthUser, type RecycleStats } from "../lib/api";
+import { api, type AppSettings, type AuthUser, type RecycleStats, type RecycleItem } from "../lib/api";
 import { useMe, isAdmin } from "../lib/me";
 
 // Sample release used for the live naming preview.
@@ -299,11 +299,16 @@ function ageOf(unix: number): string {
 // files (movie/episode deletes, Convert originals) land here instead of being erased.
 function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettings>) => void }) {
   const [stats, setStats] = useState<RecycleStats | null>(null);
+  const [items, setItems] = useState<RecycleItem[] | null>(null);
+  const [showItems, setShowItems] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [rowBusy, setRowBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
   const load = () => api.recycleStats().then(setStats).catch(() => setStats(null));
+  const loadItems = () => api.recycleItems().then(setItems).catch(() => setItems([]));
   useEffect(() => { load(); }, []);
+  useEffect(() => { if (showItems) loadItems(); }, [showItems]);
 
   const empty = async () => {
     if (!window.confirm("Permanently delete everything in the recycle bin? This can't be undone.")) return;
@@ -311,9 +316,23 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
     try {
       const r = await api.emptyRecycle();
       setMsg(`Freed ${fmtBytes(r.freed_bytes)}.`);
-      load();
+      load(); if (showItems) loadItems();
     } catch (e) { setMsg((e as Error).message); }
     finally { setBusy(false); }
+  };
+
+  const restore = async (it: RecycleItem) => {
+    setRowBusy(it.id); setMsg(null);
+    try { await api.restoreRecycle(it.id); setMsg(`Restored ${it.name}.`); load(); loadItems(); }
+    catch (e) { setMsg((e as Error).message); }
+    finally { setRowBusy(null); }
+  };
+  const deleteItem = async (it: RecycleItem) => {
+    if (!window.confirm(`Permanently delete "${it.name}"? This can't be undone.`)) return;
+    setRowBusy(it.id); setMsg(null);
+    try { await api.deleteRecycleItem(it.id); load(); loadItems(); }
+    catch (e) { setMsg((e as Error).message); }
+    finally { setRowBusy(null); }
   };
 
   const digits = (v: string) => v.replace(/[^0-9]/g, "");
@@ -339,11 +358,38 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
               <span className="text-[10.5px] text-ink-faint">0 = keep forever. Older files are auto-deleted.</span>
             </Field>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <button onClick={() => setShowItems((v) => !v)} disabled={(stats?.files ?? 0) === 0} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", color: "var(--ink)" }}>{showItems ? "Hide contents" : `Manage contents${stats ? ` (${stats.files})` : ""}`}</button>
             <button onClick={empty} disabled={busy || (stats?.files ?? 0) === 0} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{busy ? "Emptying…" : "Empty now"}</button>
             {msg && <span className="text-[11.5px] text-ink-dim">{msg}</span>}
           </div>
-          <p className="text-[10.5px] text-ink-faint">Guard rails run automatically about once an hour. The size/retention values save with the button below.</p>
+
+          {showItems && (
+            <div className="rounded-lg" style={{ border: "1px solid var(--line)" }}>
+              {items === null ? (
+                <div className="p-4 text-center text-[12px] text-ink-dim">Loading…</div>
+              ) : items.length === 0 ? (
+                <div className="p-4 text-center text-[12px] text-ink-dim">The recycle bin is empty.</div>
+              ) : (
+                <div className="thin-scroll max-h-[340px] overflow-y-auto">
+                  {items.map((it) => (
+                    <div key={it.id} className="flex items-center gap-3 px-3 py-2" style={{ borderTop: "1px solid var(--line-soft)" }}>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[12.5px] font-medium" title={it.name}>{it.name}</div>
+                        <div className="truncate font-mono text-[10px] text-ink-faint" title={it.orig_path || "origin not recorded"}>{it.orig_path || "origin not recorded"}</div>
+                      </div>
+                      <span className="flex-none font-mono text-[10.5px] text-ink-faint">{fmtBytes(it.size_bytes)}</span>
+                      <span className="hidden flex-none font-mono text-[10.5px] text-ink-faint sm:block">{ageOf(it.deleted_unix)}</span>
+                      <button onClick={() => restore(it)} disabled={!it.restorable || rowBusy !== null} title={it.restorable ? "Move back to its original location" : "Original location wasn't recorded for this item"} className="flex-none rounded-md px-2.5 py-1 text-[11px] font-semibold disabled:opacity-40" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{rowBusy === it.id ? "…" : "Restore"}</button>
+                      <button onClick={() => deleteItem(it)} disabled={rowBusy !== null} title="Delete permanently" className="flex-none rounded-md px-2.5 py-1 text-[11px] font-semibold disabled:opacity-40" style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>Delete</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <p className="text-[10.5px] text-ink-faint">Guard rails run automatically about once an hour. The size/retention values save with the button below. Restore moves a file back to where it was deleted from (when that location is free).</p>
         </>
       )}
     </Section>

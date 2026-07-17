@@ -306,6 +306,14 @@ export interface RecycleStats {
   max_gb: number;
   retention_days: number;
 }
+export interface RecycleItem {
+  id: string;
+  name: string;
+  orig_path?: string;
+  size_bytes: number;
+  deleted_unix: number;
+  restorable: boolean;
+}
 
 export interface MediaRequest {
   id: number;
@@ -796,7 +804,10 @@ export const api = {
   plexLoginStart: () => req<{ id: number; auth_url: string }>("/api/v1/auth/plex/pin", { method: "POST" }),
   plexLoginPoll: (id: number) => req<{ pending?: boolean; user?: AuthUser }>(`/api/v1/auth/plex/pin/${id}`),
   recycleStats: () => req<RecycleStats>("/api/v1/recycle"),
+  recycleItems: () => req<{ items: RecycleItem[] }>("/api/v1/recycle/items").then((r) => r.items),
   emptyRecycle: () => req<{ freed_bytes: number }>("/api/v1/recycle/empty", { method: "POST" }),
+  restoreRecycle: (id: string) => req<{ status: string }>("/api/v1/recycle/restore", { method: "POST", body: JSON.stringify({ id }) }),
+  deleteRecycleItem: (id: string) => req<{ status: string }>("/api/v1/recycle/delete", { method: "POST", body: JSON.stringify({ id }) }),
   scanLibrary: () => req<{ status: string }>("/api/v1/movies/scan", { method: "POST" }),
   moviesUnmatched: () => req<{ unmatched: UnmatchedFolder[] }>("/api/v1/movies/unmatched").then((r) => r.unmatched),
   importMovieFolder: (folder: string, tmdb_id: number) =>
