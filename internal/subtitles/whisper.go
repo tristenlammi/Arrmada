@@ -15,10 +15,11 @@ import (
 // the binary or a model isn't present — the module then reports AI as unavailable instead of
 // failing, so everything builds/runs before the Dockerfile bundles whisper.
 type whisperGen struct {
-	bin       string // whisper-cli path ("" = not installed)
-	modelsDir string // where the GGML model files live (data dir / whisper)
-	dlMu      sync.Mutex
-	dl        map[string]bool // model filenames currently downloading
+	bin          string // whisper-cli path ("" = not installed)
+	modelsDir    string // where the GGML model files live (data dir / whisper)
+	vadSupported bool   // whether this whisper-cli build understands --vad
+	dlMu         sync.Mutex
+	dl           map[string]bool // model filenames currently downloading
 }
 
 // GGML model + VAD filenames (from ggerganov/whisper.cpp on Hugging Face). turbo is fast and used
@@ -32,7 +33,14 @@ const (
 
 func detectWhisper(modelsDir string) *whisperGen {
 	bin, _ := exec.LookPath("whisper-cli")
-	return &whisperGen{bin: bin, modelsDir: modelsDir, dl: map[string]bool{}}
+	w := &whisperGen{bin: bin, modelsDir: modelsDir, dl: map[string]bool{}}
+	if bin != "" {
+		// Older whisper.cpp builds don't have VAD; passing --vad makes them print usage and do
+		// nothing. Probe the help text once so we only pass it when supported.
+		out, _ := exec.Command(bin, "--help").CombinedOutput()
+		w.vadSupported = strings.Contains(string(out), "--vad")
+	}
+	return w
 }
 
 func (w *whisperGen) hasModel(name string) bool {
@@ -100,7 +108,7 @@ func (w *whisperGen) generate(ctx context.Context, ffmpeg, videoPath, srtPath, l
 	} else if lang != "" {
 		args = append(args, "-l", lang)
 	}
-	if w.hasModel(vadModel) {
+	if w.vadSupported && w.hasModel(vadModel) {
 		args = append(args, "--vad", "--vad-model", filepath.Join(w.modelsDir, vadModel))
 	}
 	out, err := exec.CommandContext(ctx, w.bin, args...).CombinedOutput()
