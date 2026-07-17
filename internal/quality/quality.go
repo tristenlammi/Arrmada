@@ -251,7 +251,7 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 	}
 	lcName := strings.ToLower(c.Name)
 	for _, term := range p.Rejected {
-		if term != "" && strings.Contains(lcName, strings.ToLower(term)) {
+		if containsTerm(lcName, strings.ToLower(strings.TrimSpace(term))) {
 			ev.RejectReason = "Contains rejected term: " + term
 			return ev
 		}
@@ -299,6 +299,31 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 	ev.Eligible = true
 	return ev
 }
+
+// containsTerm reports whether term appears in name as a whole token — bounded by non-alphanumeric
+// characters (the "." / " " / "-" / "_" that separate release-name parts) or the string ends. This
+// keeps a reject term like "com" (the .com executable extension) from matching inside "Complete".
+func containsTerm(name, term string) bool {
+	if term == "" {
+		return false
+	}
+	for start := 0; ; {
+		i := strings.Index(name[start:], term)
+		if i < 0 {
+			return false
+		}
+		i += start
+		leftOK := i == 0 || !isAlnum(name[i-1])
+		end := i + len(term)
+		rightOK := end >= len(name) || !isAlnum(name[end])
+		if leftOK && rightOK {
+			return true
+		}
+		start = i + 1
+	}
+}
+
+func isAlnum(b byte) bool { return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') }
 
 // Decide ranks candidates and explains the winner.
 func (e *Engine) Decide(p Profile, cands []Candidate) Decision {
