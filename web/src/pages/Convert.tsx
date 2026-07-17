@@ -511,7 +511,10 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
                   const kinds = subKinds(c);
                   const total = c.info?.sub_tracks ?? 0;
                   const sm = c.movie_id != null ? samples[c.movie_id] : undefined;
-                  const canExtract = hasTextSubs(c);
+                  // Only offer extraction when there are embedded text subs AND no external .srt
+                  // already sits next to the file — Plex/Jellyfin can be told to ignore internal
+                  // subs, so re-extracting when sidecars exist just makes duplicates.
+                  const canExtract = hasTextSubs(c) && (c.external_subs ?? 0) === 0;
                   return (
                     <tr key={key} style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
                       <td className="px-3 py-2 font-semibold">{c.title} <span className="font-normal text-ink-faint">{c.year || ""}</span></td>

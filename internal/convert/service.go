@@ -998,16 +998,15 @@ func (s *Service) runHealthCheck(ctx context.Context, job *Job, src string, mi *
 // next to the original file, without re-muxing or replacing the video. Image subs (PGS/VOBSUB)
 // can't be turned into text without OCR, so they're left in place and reported.
 func (s *Service) runExtractOnly(ctx context.Context, job *Job, src string, mi *MediaInfo, title string) {
-	s.update(job, func(j *Job) { j.State = StateEncoding; j.Encoder = "Subtitle extract"; j.SrcBytes = mi.SizeBytes; j.Progress = 0.2 })
-	text, image := 0, 0
+	s.update(job, func(j *Job) { j.State = StateEncoding; j.Encoder = "Subtitle extract"; j.SrcBytes = mi.SizeBytes; j.Progress = 0 })
+	image := 0
 	for _, sub := range mi.Subs {
-		if sub.Text {
-			text++
-		} else {
+		if !sub.Text {
 			image++
 		}
 	}
-	if text == 0 && !mi.HasCC {
+	outs := textSubOutputs(src, mi) // finalPath == src → sidecars land next to the original
+	if len(outs) == 0 && !mi.HasCC {
 		note := "no embedded text subtitles to extract"
 		if image > 0 {
 			note = fmt.Sprintf("only %d image subtitle(s) (PGS/VOBSUB) — need OCR, coming soon", image)
@@ -1015,8 +1014,22 @@ func (s *Service) runExtractOnly(ctx context.Context, job *Job, src string, mi *
 		s.finish(job, StateSkipped, note)
 		return
 	}
-	s.event("info", fmt.Sprintf("Extracting %d text subtitle track(s) from %s → SRT sidecar(s)", text, title))
-	s.extractTextSubs(ctx, src, src, mi) // finalPath == src → sidecars land next to the original
+	s.event("info", fmt.Sprintf("Extracting %d text subtitle track(s) from %s → SRT sidecar(s)", len(outs), title))
+
+	kept := 0
+	if len(outs) > 0 {
+		// One ffmpeg pass reads the source once and writes every sidecar, with live progress off
+		// the -progress stream (out_time / duration). One pass, not one-per-track — extracting 4
+		// tracks from a 29 GB remux used to mean 4 full reads with a frozen bar.
+		args := []string{"-y", "-hide_banner", "-nostats", "-progress", "pipe:1", "-i", src}
+		for _, o := range outs {
+			args = append(args, "-map", fmt.Sprintf("0:s:%d", o.Index), "-c:s", "srt", o.Path)
+		}
+		if err := s.runWithProgress(ctx, job, args, mi.DurationSec); err != nil {
+			s.log.Warn("convert: subtitle extract failed", "err", err)
+		}
+		kept = pruneEmptySubs(outs)
+	}
 	if mi.HasCC {
 		s.extractCC(ctx, src, src)
 	}
@@ -1025,8 +1038,8 @@ func (s *Service) runExtractOnly(ctx context.Context, job *Job, src string, mi *
 	if image > 0 {
 		left = fmt.Sprintf(" · left %d image sub(s) in place (need OCR)", image)
 	}
-	s.event("info", fmt.Sprintf("✓ Extracted subtitles from %s → SRT%s", title, left))
-	s.finish(job, StateDone, fmt.Sprintf("extracted %d subtitle track(s) → SRT sidecar(s)%s", text, left))
+	s.event("info", fmt.Sprintf("✓ Extracted %d subtitle track(s) from %s → SRT%s", kept, title, left))
+	s.finish(job, StateDone, fmt.Sprintf("extracted %d subtitle track(s) → SRT sidecar(s)%s", kept, left))
 }
 
 // wouldBeNoOp reports whether running this plan on this file would change nothing (already the
@@ -1113,11 +1126,21 @@ func (s *Service) finish(job *Job, state JobState, note string) {
 	}
 }
 
-// extractTextSubs pulls each embedded text subtitle track out to an SRT sidecar next to
-// the final file (image subs — PGS/VOBSUB — are left in the container; they need OCR).
-func (s *Service) extractTextSubs(ctx context.Context, src, finalPath string, mi *MediaInfo) {
+// subOut is one planned SRT sidecar: the subtitle stream index and its target path.
+type subOut struct {
+	Index int
+	Path  string
+}
+
+// textSubOutputs plans an SRT sidecar path for every embedded text subtitle track, next to
+// finalPath. The first track of a language gets "<base>.<lang>.srt"; further tracks in the same
+// language are disambiguated with their stream index ("<base>.<lang>.<idx>.srt"). Image subs
+// (PGS/VOBSUB) are skipped — they need OCR.
+func textSubOutputs(finalPath string, mi *MediaInfo) []subOut {
 	dir := filepath.Dir(finalPath)
 	base := strings.TrimSuffix(filepath.Base(finalPath), filepath.Ext(finalPath))
+	seen := map[string]int{}
+	var outs []subOut
 	for _, sub := range mi.Subs {
 		if !sub.Text {
 			continue
@@ -1126,18 +1149,51 @@ func (s *Service) extractTextSubs(ctx context.Context, src, finalPath string, mi
 		if lang == "" {
 			lang = "und"
 		}
-		out := filepath.Join(dir, base+"."+lang+".srt")
-		if _, err := os.Stat(out); err == nil { // second track in the same language
-			out = filepath.Join(dir, fmt.Sprintf("%s.%s.%d.srt", base, lang, sub.SubIndex))
+		name := base + "." + lang + ".srt"
+		if seen[lang] > 0 {
+			name = fmt.Sprintf("%s.%s.%d.srt", base, lang, sub.SubIndex)
 		}
-		cmd := exec.CommandContext(ctx, s.ffmpeg, "-y", "-hide_banner", "-i", src,
-			"-map", fmt.Sprintf("0:s:%d", sub.SubIndex), "-c:s", "srt", out)
-		if err := cmd.Run(); err != nil {
-			s.log.Warn("convert: subtitle extract failed", "sub", sub.SubIndex, "err", err)
-			continue
-		}
-		s.log.Info("convert: extracted subtitle → SRT", "to", out, "lang", lang)
+		seen[lang]++
+		outs = append(outs, subOut{Index: sub.SubIndex, Path: filepath.Join(dir, name)})
 	}
+	return outs
+}
+
+// pruneEmptySubs deletes any 0-byte sidecars (tracks that extracted to nothing) and returns how
+// many real, non-empty files remain.
+func pruneEmptySubs(outs []subOut) int {
+	kept := 0
+	for _, o := range outs {
+		if fi, err := os.Stat(o.Path); err == nil {
+			if fi.Size() == 0 {
+				_ = os.Remove(o.Path)
+				continue
+			}
+			kept++
+		}
+	}
+	return kept
+}
+
+// extractTextSubs pulls every embedded text subtitle track out to an SRT sidecar next to the final
+// file in a SINGLE ffmpeg pass (one read of the source, all tracks at once — not one full pass per
+// track). Image subs (PGS/VOBSUB) are left in the container; they need OCR. Empty outputs are
+// pruned. Returns the number of real sidecars written.
+func (s *Service) extractTextSubs(ctx context.Context, src, finalPath string, mi *MediaInfo) int {
+	outs := textSubOutputs(finalPath, mi)
+	if len(outs) == 0 {
+		return 0
+	}
+	args := []string{"-y", "-hide_banner", "-i", src}
+	for _, o := range outs {
+		args = append(args, "-map", fmt.Sprintf("0:s:%d", o.Index), "-c:s", "srt", o.Path)
+	}
+	if err := exec.CommandContext(ctx, s.ffmpeg, args...).Run(); err != nil {
+		s.log.Warn("convert: subtitle extract failed", "err", err) // some outputs may still have landed
+	}
+	kept := pruneEmptySubs(outs)
+	s.log.Info("convert: extracted subtitles → SRT", "tracks", kept, "near", finalPath)
+	return kept
 }
 
 // extractCC pulls embedded EIA/CEA-608/708 closed captions (which live inside the video
