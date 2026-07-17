@@ -224,11 +224,22 @@ func wantedEpisodes(s series.Series) ([]epKey, map[int]bool) {
 // (so "[Group] Show - 137" covers the metadata's season-3 episode). Packs still match
 // by season for both types.
 func (c *Coordinator) coveredByFor(ctx context.Context, s series.Series, r parser.Release, needed map[epKey]bool) []epKey {
-	if !s.IsAnime() || r.Kind() != parser.KindEpisode {
+	if !s.IsAnime() {
 		return coveredBy(r, needed)
 	}
+	var refs []series.EpisodeRef
+	switch {
+	case r.Kind() == parser.KindEpisode:
+		refs = c.series.ResolveEpisodes(ctx, s.ID, r) // absolute + per-cour + scene mapping
+	case r.Season > 0 && !r.Complete && len(r.Seasons) <= 1 && !c.series.HasSeason(ctx, s.ID, r.Season):
+		// A split-season pack ("Frieren S02") for a season TMDB doesn't have — map the
+		// whole scene season onto TMDB's continuous numbering.
+		refs = c.series.SceneSeasonEpisodes(ctx, s.ID, r.Season)
+	default:
+		return coveredBy(r, needed) // real-season pack / multi-season / complete show
+	}
 	var out []epKey
-	for _, ref := range c.series.ResolveEpisodes(ctx, s.ID, r) {
+	for _, ref := range refs {
 		k := epKey{ref.Season, ref.Episode}
 		if needed[k] {
 			out = append(out, k)

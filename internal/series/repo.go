@@ -276,6 +276,41 @@ func (r *Repo) EpisodeExists(ctx context.Context, seriesID int64, season, episod
 	return err == nil && one == 1
 }
 
+// SeasonExists reports whether a series has any episode in the given season.
+func (r *Repo) SeasonExists(ctx context.Context, seriesID int64, season int) bool {
+	var one int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT 1 FROM episodes WHERE series_id = ? AND season_number = ? LIMIT 1`,
+		seriesID, season).Scan(&one)
+	return err == nil && one == 1
+}
+
+// epAir is one episode's (season, episode) with its air date, for scene-season inference.
+type epAir struct {
+	season, episode int
+	airDate         string
+}
+
+// OrderedEpisodes returns a series' non-special episodes in absolute (season, episode)
+// order with their air dates — the input to air-date-gap scene-season inference.
+func (r *Repo) OrderedEpisodes(ctx context.Context, seriesID int64) []epAir {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT season_number, episode_number, air_date FROM episodes
+		 WHERE series_id = ? AND season_number > 0 ORDER BY season_number, episode_number`, seriesID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []epAir
+	for rows.Next() {
+		var e epAir
+		if rows.Scan(&e.season, &e.episode, &e.airDate) == nil {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // EpisodeByAbsolute resolves an absolute episode number to its (season, episode).
 // ok=false when the series has no episode with that absolute number.
 func (r *Repo) EpisodeByAbsolute(ctx context.Context, seriesID int64, absolute int) (season, episode int, ok bool) {

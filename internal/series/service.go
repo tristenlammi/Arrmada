@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/metadata"
@@ -251,11 +252,116 @@ func (s *Service) resolveSE(ctx context.Context, seriesID int64, season, episode
 		return EpisodeRef{Season: season, Episode: episode}
 	}
 	if anime {
+		// Per-cour positional: the season exists but is numbered absolutely.
 		if real, ok := s.repo.NthEpisodeOfSeason(ctx, seriesID, season, episode); ok {
 			return EpisodeRef{Season: season, Episode: real}
 		}
+		// Scene-season mapping: the release's season doesn't exist in TMDB (TMDB has
+		// one continuous season, torrents split it S1/S2). Map via air-date gaps.
+		if rs, re, ok := s.resolveSceneSeason(ctx, seriesID, season, episode); ok {
+			return EpisodeRef{Season: rs, Episode: re}
+		}
 	}
 	return EpisodeRef{Season: season, Episode: episode} // standard: mark as-is (no-op if absent)
+}
+
+// HasSeason reports whether TMDB gives this series the given season number.
+func (s *Service) HasSeason(ctx context.Context, seriesID int64, season int) bool {
+	return s.repo.SeasonExists(ctx, seriesID, season)
+}
+
+// SceneSeasonEpisodes returns every TMDB (season, episode) that a scene season maps to
+// — used to match a whole split-season pack ("Frieren S02" → TMDB E29-38).
+func (s *Service) SceneSeasonEpisodes(ctx context.Context, seriesID int64, sceneSeason int) []EpisodeRef {
+	groups := s.sceneGroups(ctx, seriesID, sceneSeason)
+	if sceneSeason < 1 || sceneSeason > len(groups) {
+		return nil
+	}
+	var out []EpisodeRef
+	for _, e := range groups[sceneSeason-1] {
+		out = append(out, EpisodeRef{Season: e.season, Episode: e.episode})
+	}
+	return out
+}
+
+// resolveSceneSeason maps a split-season release's (season, episode) to the continuous
+// TMDB numbering by inferring scene seasons from air-date gaps.
+func (s *Service) resolveSceneSeason(ctx context.Context, seriesID int64, sceneSeason, sceneEpisode int) (int, int, bool) {
+	if sceneSeason < 1 || sceneEpisode < 1 {
+		return 0, 0, false
+	}
+	groups := s.sceneGroups(ctx, seriesID, sceneSeason)
+	if sceneSeason > len(groups) {
+		return 0, 0, false
+	}
+	g := groups[sceneSeason-1]
+	if sceneEpisode > len(g) {
+		return 0, 0, false
+	}
+	return g[sceneEpisode-1].season, g[sceneEpisode-1].episode, true
+}
+
+// minSceneGapDays is the smallest air-date gap treated as a season boundary — big
+// enough to ignore weekly cadence and cour breaks-within-a-season, small enough to
+// catch a real broadcast-season split.
+const minSceneGapDays = 30
+
+// sceneGroups splits a series' continuous episode list into k contiguous groups at the
+// k-1 largest air-date gaps — the broadcast/scene seasons that torrents number by.
+// Returns nil when there aren't k-1 real season breaks (so a genuinely continuous show
+// mislabeled "S2" doesn't get a bogus mapping).
+func (s *Service) sceneGroups(ctx context.Context, seriesID int64, k int) [][]epAir {
+	eps := s.repo.OrderedEpisodes(ctx, seriesID)
+	if len(eps) == 0 || k < 1 {
+		return nil
+	}
+	if k == 1 {
+		return [][]epAir{eps}
+	}
+	type gap struct{ idx, days int }
+	gaps := make([]gap, 0, len(eps))
+	for i := 0; i+1 < len(eps); i++ {
+		gaps = append(gaps, gap{i, daysBetween(eps[i].airDate, eps[i+1].airDate)})
+	}
+	sort.Slice(gaps, func(a, b int) bool { return gaps[a].days > gaps[b].days })
+	cuts := map[int]bool{}
+	for i := 0; i < k-1; i++ {
+		if i >= len(gaps) || gaps[i].days < minSceneGapDays {
+			return nil // not enough real season breaks to form k groups
+		}
+		cuts[gaps[i].idx] = true
+	}
+	var groups [][]epAir
+	var cur []epAir
+	for i, e := range eps {
+		cur = append(cur, e)
+		if cuts[i] {
+			groups = append(groups, cur)
+			cur = nil
+		}
+	}
+	if len(cur) > 0 {
+		groups = append(groups, cur)
+	}
+	if len(groups) != k {
+		return nil
+	}
+	return groups
+}
+
+// daysBetween returns the absolute day count between two "YYYY-MM-DD" dates (0 when
+// either is missing/unparseable, so unknown dates never form a season boundary).
+func daysBetween(a, b string) int {
+	ta, ea := time.Parse("2006-01-02", a)
+	tb, eb := time.Parse("2006-01-02", b)
+	if ea != nil || eb != nil {
+		return 0
+	}
+	d := int(tb.Sub(ta).Hours() / 24)
+	if d < 0 {
+		return -d
+	}
+	return d
 }
 
 // SetType overrides a series' numbering type ("standard" | "anime"). Ensures absolute

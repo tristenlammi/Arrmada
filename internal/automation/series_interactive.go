@@ -28,16 +28,16 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 		return ReleaseList{}, err
 	}
 	query := s.Title
-	switch {
-	case s.IsAnime() && season > 0 && episode > 0:
-		// Anime episodes are released by absolute number ("Show - 137"), not SxxExx.
-		if abs := s.AbsoluteFor(season, episode); abs > 0 {
-			query = fmt.Sprintf("%s %d", s.Title, abs)
+	// Anime is released under many numbering conventions (absolute "- 137", per-cour
+	// SxxExx, or a split-season S02) — a narrow query would miss most. Search broad by
+	// title and let the resolver-backed scope filter pick releases covering the episode.
+	if !s.IsAnime() {
+		switch {
+		case season > 0 && episode > 0:
+			query = fmt.Sprintf("%s S%02dE%02d", s.Title, season, episode)
+		case season > 0:
+			query = fmt.Sprintf("%s S%02d", s.Title, season)
 		}
-	case season > 0 && episode > 0:
-		query = fmt.Sprintf("%s S%02dE%02d", s.Title, season, episode)
-	case season > 0:
-		query = fmt.Sprintf("%s S%02d", s.Title, season)
 	}
 	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaSeries, Limit: 100})
 	if err != nil {
@@ -121,7 +121,18 @@ func (c *Coordinator) releaseMatchesScope(ctx context.Context, s series.Series, 
 		return p.IsTV()
 	}
 	if p.Kind() != parser.KindEpisode {
-		return p.CoversSeason(season) // packs still match by season
+		if p.CoversSeason(season) {
+			return true // real-season pack matching the requested TMDB season
+		}
+		// A split-season pack ("Frieren S02") for a season TMDB doesn't have.
+		if p.Season > 0 && !p.Complete && len(p.Seasons) <= 1 && !c.series.HasSeason(ctx, s.ID, p.Season) {
+			for _, ref := range c.series.SceneSeasonEpisodes(ctx, s.ID, p.Season) {
+				if ref.Season == season && (episode <= 0 || ref.Episode == episode) {
+					return true
+				}
+			}
+		}
+		return false
 	}
 	for _, ref := range c.series.ResolveEpisodes(ctx, s.ID, p) {
 		if ref.Season == season && (episode <= 0 || ref.Episode == episode) {
