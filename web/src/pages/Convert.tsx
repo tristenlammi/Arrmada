@@ -226,7 +226,16 @@ function LogsConsole() {
 
   useEffect(() => {
     let alive = true;
-    const tick = () => api.convertLogs().then((l) => { if (alive) setLines(l); }).catch(() => {});
+    // Only swap state when the log actually changed (count or newest line) — the history can be
+    // up to 5000 lines, so re-rendering every 1.5s poll when nothing's new would be wasteful.
+    const tick = () => api.convertLogs().then((l) => {
+      if (!alive) return;
+      setLines((prev) => {
+        const a = prev[prev.length - 1], b = l[l.length - 1];
+        if (prev.length === l.length && a?.at === b?.at && a?.msg === b?.msg) return prev;
+        return l;
+      });
+    }).catch(() => {});
     tick();
     const t = setInterval(tick, 1500);
     return () => { alive = false; clearInterval(t); };

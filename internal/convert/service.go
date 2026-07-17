@@ -105,7 +105,8 @@ type Service struct {
 	queue    chan *Job
 
 	logMu  sync.Mutex
-	logBuf []LogLine // recent human-readable convert events, for the UI console
+	logBuf []LogLine  // recent human-readable convert events, for the UI console
+	logs   *logStore // durable mirror of logBuf so history survives a restart
 }
 
 // LogLine is one entry in the Convert activity console.
@@ -115,15 +116,17 @@ type LogLine struct {
 	Msg   string `json:"msg"`
 }
 
-// event appends a human-readable line to the convert console (kept to the last 300)
-// and mirrors it to the structured log.
+// event appends a human-readable line to the convert console (kept to the last maxLogLines,
+// persisted to the DB so history survives a restart) and mirrors it to the structured log.
 func (s *Service) event(level, msg string) {
+	ln := LogLine{At: time.Now().Unix(), Level: level, Msg: msg}
 	s.logMu.Lock()
-	s.logBuf = append(s.logBuf, LogLine{At: time.Now().Unix(), Level: level, Msg: msg})
-	if len(s.logBuf) > 300 {
-		s.logBuf = s.logBuf[len(s.logBuf)-300:]
+	s.logBuf = append(s.logBuf, ln)
+	if len(s.logBuf) > maxLogLines {
+		s.logBuf = s.logBuf[len(s.logBuf)-maxLogLines:]
 	}
 	s.logMu.Unlock()
+	s.logs.append(context.Background(), ln)
 	switch level {
 	case "error", "warn":
 		s.log.Warn("convert: " + msg)
@@ -149,9 +152,10 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 		movies: mv, series: sr, settings: set, log: log,
 		ffmpeg: ffmpeg, ffprobe: ffprobe, scratchDir: scratchDir, recycleDir: recycleDir,
 		encoders: encs, encoder: bestHEVC(encs), failures: &failureStore{db: db},
-		cache: &probeCache{db: db},
+		cache: &probeCache{db: db}, logs: &logStore{db: db},
 		queue: make(chan *Job, 256),
 	}
+	s.logBuf = s.logs.recent(context.Background(), maxLogLines) // restore the console after a restart
 	s.doviTool, _ = exec.LookPath("dovi_tool")
 	s.hdr10plusTool, _ = exec.LookPath("hdr10plus_tool")
 	log.Info("convert: encoder selected", "encoder", s.encoder.Label, "name", s.encoder.Name,
