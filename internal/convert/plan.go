@@ -20,6 +20,11 @@ type Plan struct {
 	// HealthCheck, with no transcode (VideoCodec == ""), turns the job into a read-only
 	// corruption scan that reports issues instead of replacing the file (R5).
 	HealthCheck bool
+	// ExtractOnly writes the embedded text subtitles out to SRT sidecars without re-muxing or
+	// replacing the video at all — fast, and safe on hardlinked/still-seeding files (it never
+	// touches the original). Stripping the embedded tracks needs a full remux and rides along with
+	// the (future) image-sub OCR pass instead.
+	ExtractOnly bool
 	// ExtraArgs are raw ffmpeg output args appended verbatim — the advanced escape hatch
 	// for anything the structured actions don't cover (R5). Empty for the common case.
 	ExtraArgs []string

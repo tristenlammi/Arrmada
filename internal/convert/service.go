@@ -301,10 +301,11 @@ type Candidate struct {
 	Title     string     `json:"title"`
 	Year      int        `json:"year,omitempty"`
 	PosterURL string     `json:"poster_url,omitempty"`
-	Path      string     `json:"path"`
-	Info      *MediaInfo `json:"info,omitempty"`
-	Candidate bool       `json:"candidate"` // would Save space convert it
-	EstBytes  int64      `json:"est_bytes"` // rough estimate of converted size
+	Path         string     `json:"path"`
+	Info         *MediaInfo `json:"info,omitempty"`
+	Candidate    bool       `json:"candidate"`     // would Save space convert it
+	EstBytes     int64      `json:"est_bytes"`     // rough estimate of converted size
+	ExternalSubs int        `json:"external_subs"` // count of .srt sidecars next to the file
 }
 
 // Library probes every downloaded movie and returns its spec + convert candidacy.
@@ -321,6 +322,7 @@ func (s *Service) Library(ctx context.Context) ([]Candidate, error) {
 			continue
 		}
 		c := Candidate{Kind: "movie", MovieID: m.ID, Title: m.Title, Year: m.Year, PosterURL: m.PosterURL, Path: m.MovieFilePath}
+		c.ExternalSubs = countSidecarSubs(m.MovieFilePath)
 		if mi, err := s.probeCached(ctx, m.MovieFilePath); err == nil {
 			c.Info = mi
 			c.Candidate = isCandidateFor(mi, target)
@@ -364,6 +366,7 @@ func (s *Service) LibraryTV(ctx context.Context) ([]Candidate, error) {
 					PosterURL: full.PosterURL,
 					Path:      e.FilePath,
 				}
+				c.ExternalSubs = countSidecarSubs(e.FilePath)
 				if mi, err := s.probeCached(ctx, e.FilePath); err == nil {
 					c.Info = mi
 					c.Candidate = isCandidateFor(mi, target)
@@ -386,6 +389,27 @@ func (s *Service) QueueMovie(ctx context.Context, movieID int64) (*Job, error) {
 
 // QueueEpisode enqueues a Save-space conversion of one TV episode.
 func (s *Service) QueueEpisode(ctx context.Context, seriesID int64, season, episode int) (*Job, error) {
+	return s.queueEpisode(ctx, seriesID, season, episode, s.defaultPlan(ctx))
+}
+
+// QueueExtractMovie enqueues a subtitle-only extraction for a movie (text subs → SRT sidecars,
+// video left untouched).
+func (s *Service) QueueExtractMovie(ctx context.Context, movieID int64) (*Job, error) {
+	return s.queueMovie(ctx, movieID, extractPlan())
+}
+
+// QueueExtractEpisode enqueues a subtitle-only extraction for one TV episode.
+func (s *Service) QueueExtractEpisode(ctx context.Context, seriesID int64, season, episode int) (*Job, error) {
+	return s.queueEpisode(ctx, seriesID, season, episode, extractPlan())
+}
+
+// extractPlan is the plan for a subtitle-only extraction: no transcode, no remux, just pull the
+// text subs out to sidecars (ExtractOnly short-circuits the encode pipeline in process).
+func extractPlan() Plan {
+	return Plan{Container: "mkv", ExtractOnly: true, Subs: SubPlan{ExtractText: true, ExtractCC: true}}
+}
+
+func (s *Service) queueEpisode(ctx context.Context, seriesID int64, season, episode int, plan Plan) (*Job, error) {
 	if s.series == nil {
 		return nil, fmt.Errorf("series module not available")
 	}
@@ -400,7 +424,7 @@ func (s *Service) QueueEpisode(ctx context.Context, seriesID int64, season, epis
 	s.mu.Lock()
 	s.nextID++
 	job := &Job{ID: s.nextID, Kind: "episode", SeriesID: seriesID, Season: season, Episode: episode,
-		Title: title, State: StateQueued, Encoder: s.encoder.Label, plan: s.defaultPlan(ctx)}
+		Title: title, State: StateQueued, Encoder: s.encoder.Label, plan: plan}
 	s.jobs = append([]*Job{job}, s.jobs...)
 	if len(s.jobs) > 200 {
 		s.jobs = s.jobs[:200]
@@ -709,6 +733,12 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		s.runHealthCheck(ctx, job, src, mi)
 		return
 	}
+	// Extract-only: write text subs → SRT sidecars, leave the video untouched (no remux/replace),
+	// so it's safe on hardlinked/seeding files. Report and return.
+	if plan.ExtractOnly {
+		s.runExtractOnly(ctx, job, src, mi, title)
+		return
+	}
 	if wouldBeNoOp(mi, plan) {
 		s.finish(job, StateSkipped, "already "+strings.ToUpper(mi.VideoCodec)+" — nothing to do")
 		return
@@ -960,6 +990,41 @@ func (s *Service) runHealthCheck(ctx context.Context, job *Job, src string, mi *
 	}
 }
 
+// runExtractOnly pulls the embedded text subtitles (and any closed captions) out to SRT sidecars
+// next to the original file, without re-muxing or replacing the video. Image subs (PGS/VOBSUB)
+// can't be turned into text without OCR, so they're left in place and reported.
+func (s *Service) runExtractOnly(ctx context.Context, job *Job, src string, mi *MediaInfo, title string) {
+	s.update(job, func(j *Job) { j.State = StateEncoding; j.Encoder = "Subtitle extract"; j.SrcBytes = mi.SizeBytes; j.Progress = 0.2 })
+	text, image := 0, 0
+	for _, sub := range mi.Subs {
+		if sub.Text {
+			text++
+		} else {
+			image++
+		}
+	}
+	if text == 0 && !mi.HasCC {
+		note := "no embedded text subtitles to extract"
+		if image > 0 {
+			note = fmt.Sprintf("only %d image subtitle(s) (PGS/VOBSUB) — need OCR, coming soon", image)
+		}
+		s.finish(job, StateSkipped, note)
+		return
+	}
+	s.event("info", fmt.Sprintf("Extracting %d text subtitle track(s) from %s → SRT sidecar(s)", text, title))
+	s.extractTextSubs(ctx, src, src, mi) // finalPath == src → sidecars land next to the original
+	if mi.HasCC {
+		s.extractCC(ctx, src, src)
+	}
+	s.update(job, func(j *Job) { j.Progress = 1 })
+	left := ""
+	if image > 0 {
+		left = fmt.Sprintf(" · left %d image sub(s) in place (need OCR)", image)
+	}
+	s.event("info", fmt.Sprintf("✓ Extracted subtitles from %s → SRT%s", title, left))
+	s.finish(job, StateDone, fmt.Sprintf("extracted %d subtitle track(s) → SRT sidecar(s)%s", text, left))
+}
+
 // wouldBeNoOp reports whether running this plan on this file would change nothing (already the
 // target codec, no downscale, same container) — so the worker can skip it cleanly.
 func wouldBeNoOp(mi *MediaInfo, plan Plan) bool {
@@ -1095,6 +1160,30 @@ func (s *Service) extractCC(ctx context.Context, src, finalPath string) {
 		return
 	}
 	s.log.Info("convert: extracted closed captions → SRT", "to", out)
+}
+
+// countSidecarSubs counts external .srt files sitting next to a video (named after it), e.g.
+// "Movie.en.srt". Used to power the "external subs" filter in the Convert library.
+func countSidecarSubs(videoPath string) int {
+	if videoPath == "" {
+		return 0
+	}
+	base := strings.ToLower(strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath)))
+	entries, err := os.ReadDir(filepath.Dir(videoPath))
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := strings.ToLower(e.Name())
+		if strings.HasSuffix(name, ".srt") && strings.HasPrefix(name, base) {
+			n++
+		}
+	}
+	return n
 }
 
 // lavfiSingleQuote wraps a path for safe use inside a lavfi filtergraph.
