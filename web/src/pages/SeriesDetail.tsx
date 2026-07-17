@@ -342,6 +342,9 @@ function EpisodeRow({ series, ep, onChange, flash }: { series: SeriesT; ep: Epis
         {ep.monitored ? "◉" : "○"}
       </button>
       <span className="w-[64px] flex-none font-mono text-[11px] text-ink-faint">{sxe(ep)}</span>
+      {series.series_type === "anime" && ep.absolute_number ? (
+        <span className="flex-none rounded px-1 font-mono text-[10px]" style={{ background: "var(--accent-soft)", color: "var(--accent)" }} title="Absolute episode number">#{ep.absolute_number}</span>
+      ) : null}
       <span className="min-w-0 flex-1 truncate text-[12.5px]">{ep.title || "TBA"}</span>
       <span className="hidden w-[92px] flex-none font-mono text-[10.5px] text-ink-faint sm:block">{ep.air_date || "—"}</span>
       <span className="w-[80px] flex-none text-right font-mono text-[10px] uppercase" style={{ color: status.tone }}>{status.label}</span>
