@@ -617,7 +617,7 @@ function WhyPanel({ movie }: { movie: Movie }) {
   let msg: string;
   let tone = "var(--ink-dim)";
   if (movie.has_file) {
-    msg = "You have this movie. Arrmada won't search unless you upgrade the quality profile or delete the file.";
+    msg = "You have this movie. If your quality profile allows upgrades, Arrmada keeps watching for a clearly-better release and grabs it automatically (checked every 6 hours); otherwise it stays put until you raise the profile or delete the file.";
     tone = "var(--good)";
   } else if (!movie.monitored) {
     msg = "Not monitored — Arrmada won't search for this. Turn on monitoring to start looking.";

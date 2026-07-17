@@ -190,6 +190,13 @@ func (s *Service) GetStored(ctx context.Context, ref string) (StoredProfile, err
 	return StoredProfile{}, ErrNotFound
 }
 
+// AllowsUpgrades reports whether a profile has upgrades turned on — used to skip the upgrade
+// indexer-search entirely for movies whose profile doesn't want them.
+func (s *Service) AllowsUpgrades(ctx context.Context, ref string) bool {
+	sp, err := s.GetStored(ctx, ref)
+	return err == nil && sp.UpgradesEnabled
+}
+
 // Create, Update, Delete manage user profiles.
 func (s *Service) Create(ctx context.Context, sp StoredProfile) (StoredProfile, error) {
 	normalize(&sp)

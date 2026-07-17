@@ -507,7 +507,10 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 	}
 	var want []movies.Version
 	for _, v := range versions {
-		if v.Monitored && v.HasFile && v.SourceRelease != "" {
+		// Include any monitored version with a file whose profile allows upgrades — regardless of
+		// whether Arrmada grabbed it or found it on a library scan. The AllowsUpgrades gate keeps
+		// us from indexer-searching movies on a non-upgrading profile.
+		if v.Monitored && v.HasFile && c.quality.AllowsUpgrades(ctx, v.QualityProfile) {
 			want = append(want, v)
 		}
 	}
@@ -544,7 +547,8 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 		if v.File != nil && v.File.SizeBytes > 0 {
 			curSizeGB = gbOf(v.File.SizeBytes)
 		}
-		pick, ok := c.quality.UpgradeCandidate(ctx, v.QualityProfile, v.SourceRelease, curSizeGB, m.Runtime, cands)
+		baseline := upgradeBaseline(m, v)
+		pick, ok := c.quality.UpgradeCandidate(ctx, v.QualityProfile, baseline, curSizeGB, m.Runtime, cands)
 		if !ok {
 			continue
 		}
@@ -552,7 +556,7 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 		if grabbed[winner.DownloadURL] {
 			continue
 		}
-		c.log.Info("automation: upgrading", "movie", m.Title, "version", v.Label, "from", v.SourceRelease, "to", winner.Title)
+		c.log.Info("automation: upgrading", "movie", m.Title, "version", v.Label, "from", baseline, "to", winner.Title)
 		if err := c.Grab(ctx, winner.Indexer, winner.DownloadURL, winner.Title); err != nil {
 			c.log.Warn("automation: upgrade grab failed", "movie", m.Title, "err", err)
 			continue
@@ -569,6 +573,31 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 }
 
 func gbOf(bytes int64) float64 { return float64(bytes) / (1024 * 1024 * 1024) }
+
+// upgradeBaseline is the "what we already have" release string the upgrade comparison scores
+// against. Files Arrmada grabbed carry their SourceRelease; files found by a library scan don't —
+// so fall back to their probed quality (e.g. "Bambi 1942 1080p BluRay x264"), then the filename.
+// Without this, disk-imported movies could never be considered for an upgrade at all.
+func upgradeBaseline(m movies.Movie, v movies.Version) string {
+	if s := strings.TrimSpace(v.SourceRelease); s != "" {
+		return s
+	}
+	if v.File != nil && v.File.Quality != "" {
+		parts := []string{m.Title}
+		if m.Year > 0 {
+			parts = append(parts, strconv.Itoa(m.Year))
+		}
+		parts = append(parts, v.File.Quality) // e.g. "1080p BluRay"
+		if v.File.Codec != "" {
+			parts = append(parts, v.File.Codec)
+		}
+		return strings.Join(parts, " ")
+	}
+	if v.FilePath != "" {
+		return filepath.Base(v.FilePath)
+	}
+	return ""
+}
 
 // RegrabMovie grabs the best release under each monitored version's current
 // profile even when a file already exists — a deliberate re-grab, used when the
