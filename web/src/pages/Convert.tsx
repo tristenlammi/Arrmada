@@ -327,29 +327,11 @@ function rowKey(c: ConvertCandidate): string {
 }
 
 type SortKey = "title" | "video" | "res" | "bitrate" | "audio" | "subs" | "size" | "est";
-type SubKind = "PGS" | "VobSub" | "Text" | "External";
-const SUB_KINDS: SubKind[] = ["PGS", "VobSub", "Text", "External"];
-const SUB_LABEL: Record<SubKind, string> = { PGS: "PGS", VobSub: "VobSub", Text: "Embedded text", External: "External SRT" };
 const HEADERS: { label: string; key?: SortKey }[] = [
   { label: "Title", key: "title" }, { label: "Video", key: "video" }, { label: "Res", key: "res" }, { label: "HDR" },
   { label: "Bitrate", key: "bitrate" }, { label: "Audio", key: "audio" }, { label: "Subs", key: "subs" },
   { label: "Size", key: "size" }, { label: "Est. after", key: "est" }, { label: "" },
 ];
-
-// subKinds classifies a file's subtitles into the buckets the filter pills expose. Image subs
-// (PGS/VOBSUB) are the ones Plex handles poorly; "Text" is anything extractable to SRT; "External"
-// means a .srt sidecar already sits next to the file.
-function subKinds(c: ConvertCandidate): SubKind[] {
-  const s = new Set<SubKind>();
-  for (const sub of c.info?.subs ?? []) {
-    if (sub.text) s.add("Text");
-    else if (sub.codec === "hdmv_pgs_subtitle") s.add("PGS");
-    else if (sub.codec === "dvd_subtitle") s.add("VobSub");
-  }
-  if ((c.external_subs ?? 0) > 0) s.add("External");
-  return SUB_KINDS.filter((k) => s.has(k));
-}
-const hasTextSubs = (c: ConvertCandidate) => (c.info?.subs ?? []).some((s) => s.text);
 
 function Pill({ active, disabled, onClick, children }: { active: boolean; disabled?: boolean; onClick: () => void; children: ReactNode }) {
   return (
@@ -361,37 +343,20 @@ function Pill({ active, disabled, onClick, children }: { active: boolean; disabl
   );
 }
 
-// SubTag is the small coloured badge shown in the Subs column: image subs are flagged in the
-// "avoid" colour (they're the ones worth extracting), external SRTs in the "good" colour.
-function SubTag({ k }: { k: SubKind }) {
-  const style = k === "PGS" || k === "VobSub"
-    ? { background: "var(--avoid-soft)", color: "var(--avoid)" }
-    : k === "External"
-      ? { background: "var(--good-soft, rgba(127,176,105,.16))", color: "var(--good)" }
-      : { background: "var(--panel-2)", color: "var(--ink-dim)" };
-  const label = k === "Text" ? "TXT" : k === "External" ? "EXT" : k === "VobSub" ? "VOB" : "PGS";
-  return <span className="rounded px-1 py-0.5 text-[8.5px] font-bold uppercase" style={style} title={SUB_LABEL[k]}>{label}</span>;
-}
-
 function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: () => void }) {
   const [media, setMedia] = useState<"movies" | "tv">("movies");
   const [items, setItems] = useState<ConvertCandidate[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [queued, setQueued] = useState<Set<string>>(new Set());
-  const [extracting, setExtracting] = useState<string | null>(null);
-  const [extracted, setExtracted] = useState<Set<string>>(new Set());
   const [sampling, setSampling] = useState<number | null>(null);
   const [samples, setSamples] = useState<Record<number, ConvertSample>>({});
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "size", dir: "desc" });
   const [codecF, setCodecF] = useState<Set<string>>(new Set());
-  const [subF, setSubF] = useState<Set<SubKind>>(new Set());
 
   useEffect(() => {
     setItems(null);
     setQueued(new Set());
-    setExtracted(new Set());
     setCodecF(new Set());
-    setSubF(new Set());
     api.convertLibrary(media).then(setItems).catch(() => setItems([]));
   }, [media]);
 
@@ -406,17 +371,6 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
       onQueued();
     } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
   };
-  const extract = async (c: ConvertCandidate) => {
-    const key = rowKey(c);
-    setExtracting(key);
-    try {
-      if (c.kind === "episode") await api.convertExtractEpisodeSubs(c.series_id!, c.season!, c.episode!);
-      else await api.convertExtractMovieSubs(c.movie_id!);
-      setExtracted((q) => new Set(q).add(key));
-      flash(`Extracting subtitles from “${c.title}” → SRT`);
-      onQueued();
-    } catch (e) { flash((e as Error).message); } finally { setExtracting(null); }
-  };
   const runSample = async (c: ConvertCandidate) => {
     if (c.kind !== "movie" || c.movie_id == null) return; // 30s sample is a movie-only tool for now
     const id = c.movie_id;
@@ -429,23 +383,16 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
   const setSortKey = (key: SortKey) =>
     setSort((s) => s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "title" ? "asc" : "desc" });
   const toggleCodec = (cc: string) => setCodecF((s) => { const n = new Set(s); n.has(cc) ? n.delete(cc) : n.add(cc); return n; });
-  const toggleSub = (k: SubKind) => setSubF((s) => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n; });
 
   const codecs = useMemo(() => {
     const m = new Map<string, number>();
     for (const c of items ?? []) { const cc = c.info?.video_codec?.toUpperCase(); if (cc) m.set(cc, (m.get(cc) ?? 0) + 1); }
     return [...m.entries()].sort((a, b) => b[1] - a[1]);
   }, [items]);
-  const subCounts = useMemo(() => {
-    const m = new Map<SubKind, number>();
-    for (const c of items ?? []) for (const k of subKinds(c)) m.set(k, (m.get(k) ?? 0) + 1);
-    return m;
-  }, [items]);
 
   const view = useMemo(() => {
     let list = (items ?? []).slice();
     if (codecF.size) list = list.filter((c) => codecF.has(c.info?.video_codec?.toUpperCase() ?? ""));
-    if (subF.size) list = list.filter((c) => subKinds(c).some((k) => subF.has(k)));
     const dir = sort.dir === "asc" ? 1 : -1;
     const val = (c: ConvertCandidate): number | string => {
       switch (sort.key) {
@@ -463,10 +410,10 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
       const va = val(a), vb = val(b);
       return typeof va === "string" || typeof vb === "string" ? String(va).localeCompare(String(vb)) * dir : (va - vb) * dir;
     });
-  }, [items, codecF, subF, sort]);
+  }, [items, codecF, sort]);
 
   const noun = media === "tv" ? "episodes" : "movies";
-  const filtering = codecF.size > 0 || subF.size > 0;
+  const filtering = codecF.size > 0;
   return (
     <div className="flex flex-col gap-2">
       <div className="inline-flex w-fit rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
@@ -486,14 +433,11 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="mr-0.5 font-mono text-[9.5px] uppercase text-ink-faint">Codec</span>
             {codecs.map(([cc, n]) => <Pill key={cc} active={codecF.has(cc)} onClick={() => toggleCodec(cc)}>{cc} <span className="opacity-60">{n}</span></Pill>)}
-            <span className="mx-1 h-4 w-px" style={{ background: "var(--line)" }} />
-            <span className="mr-0.5 font-mono text-[9.5px] uppercase text-ink-faint">Subs</span>
-            {SUB_KINDS.map((k) => { const n = subCounts.get(k) ?? 0; return <Pill key={k} active={subF.has(k)} disabled={n === 0} onClick={() => toggleSub(k)}>{SUB_LABEL[k]} <span className="opacity-60">{n}</span></Pill>; })}
-            {filtering && <button onClick={() => { setCodecF(new Set()); setSubF(new Set()); }} className="ml-1 text-[10.5px] text-ink-faint underline hover:text-[var(--ink)]">clear</button>}
+            {filtering && <button onClick={() => setCodecF(new Set())} className="ml-1 text-[10.5px] text-ink-faint underline hover:text-[var(--ink)]">clear</button>}
           </div>
           <p className="text-[11px] text-ink-faint">
             {filtering ? <><b style={{ color: "var(--ink)" }}>{view.length.toLocaleString()}</b> of {items.length.toLocaleString()} · </> : null}
-            “Est. after” is a rough heuristic — run <b>Test 30s</b> for a real number{media === "tv" ? " (movies only for now)" : ""}. <b>Extract subs</b> pulls embedded text tracks to <code>.srt</code> next to the file (image subs need OCR — coming soon).
+            “Est. after” is a rough heuristic — run <b>Test 30s</b> for a real number{media === "tv" ? " (movies only for now)" : ""}.
           </p>
           <div className="overflow-x-auto rounded-xl" style={{ border: "1px solid var(--line)" }}>
             <table className="w-full border-collapse text-[12.5px]" style={{ minWidth: 940 }}>
@@ -508,13 +452,7 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
                   const eff = !c.candidate;
                   const cd = c.info?.video_codec?.toUpperCase() ?? "?";
                   const key = rowKey(c);
-                  const kinds = subKinds(c);
-                  const total = c.info?.sub_tracks ?? 0;
                   const sm = c.movie_id != null ? samples[c.movie_id] : undefined;
-                  // Only offer extraction when there are embedded text subs AND no external .srt
-                  // already sits next to the file — Plex/Jellyfin can be told to ignore internal
-                  // subs, so re-extracting when sidecars exist just makes duplicates.
-                  const canExtract = hasTextSubs(c) && (c.external_subs ?? 0) === 0;
                   return (
                     <tr key={key} style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
                       <td className="px-3 py-2 font-semibold">{c.title} <span className="font-normal text-ink-faint">{c.year || ""}</span></td>
@@ -523,11 +461,7 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
                       <td className="px-3 py-2 font-mono text-ink-dim">{c.info?.hdr && c.info.hdr !== "SDR" ? c.info.hdr : "—"}</td>
                       <td className="px-3 py-2 font-mono tabular-nums text-ink-dim">{c.info?.bitrate_kbps ? `${(c.info.bitrate_kbps / 1000).toFixed(0)} Mb/s` : "—"}</td>
                       <td className="px-3 py-2 font-mono text-ink-dim">{c.info?.audio_tracks ?? "—"}</td>
-                      <td className="px-3 py-2 font-mono text-ink-dim">
-                        {total === 0 && kinds.length === 0 ? <span className="text-ink-faint">—</span> : (
-                          <div className="flex items-center gap-1">{total || (c.external_subs ?? 0)}{kinds.map((k) => <SubTag key={k} k={k} />)}</div>
-                        )}
-                      </td>
+                      <td className="px-3 py-2 font-mono text-ink-dim">{c.info?.sub_tracks ?? "—"}</td>
                       <td className="px-3 py-2 font-mono tabular-nums">{fmtSize(c.info?.size_bytes)}</td>
                       <td className="px-3 py-2 font-mono tabular-nums">
                         {sm ? (
@@ -537,23 +471,16 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
                         ) : <span className="text-ink-faint">—</span>}
                       </td>
                       <td className="px-3 py-2">
-                        <div className="flex items-center justify-end gap-1.5">
-                          {canExtract && (extracted.has(key) ? (
-                            <span className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: "1px solid var(--good)", color: "var(--good)" }}>Extracted ✓</span>
-                          ) : (
-                            <button onClick={() => extract(c)} disabled={extracting !== null} title="Extract embedded text subtitles to external .srt files — leaves the video untouched" className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>{extracting === key ? "Extracting…" : "Extract subs"}</button>
-                          ))}
-                          {c.candidate ? (
-                            <>
-                              {c.kind === "movie" && !queued.has(key) && <button onClick={() => runSample(c)} disabled={sampling !== null} title="Encode a 30s slice at your quality and measure the real result" className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>{sampling === c.movie_id ? "Testing…" : "Test 30s"}</button>}
-                              {queued.has(key) ? (
-                                <span className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--good)", color: "var(--good)" }}>Queued ✓</span>
-                              ) : (
-                                <button onClick={() => convert(c)} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy === key ? "Queuing…" : "Convert"}</button>
-                              )}
-                            </>
-                          ) : !canExtract ? <span className="font-mono text-[10.5px] text-ink-faint">efficient</span> : null}
-                        </div>
+                        {c.candidate ? (
+                          <div className="flex items-center justify-end gap-1.5">
+                            {c.kind === "movie" && !queued.has(key) && <button onClick={() => runSample(c)} disabled={sampling !== null} title="Encode a 30s slice at your quality and measure the real result" className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>{sampling === c.movie_id ? "Testing…" : "Test 30s"}</button>}
+                            {queued.has(key) ? (
+                              <span className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--good)", color: "var(--good)" }}>Queued ✓</span>
+                            ) : (
+                              <button onClick={() => convert(c)} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy === key ? "Queuing…" : "Convert"}</button>
+                            )}
+                          </div>
+                        ) : <div className="text-right"><span className="font-mono text-[10.5px] text-ink-faint">efficient</span></div>}
                       </td>
                     </tr>
                   );
@@ -603,13 +530,13 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
   const set = (patch: Partial<AppSettings>) => setD((cur) => (cur ? { ...cur, ...patch } : cur));
   const dirty = useMemo(() => {
     if (!saved || !d) return false;
-    const keys: (keyof AppSettings)[] = ["convert_target_codec", "convert_extract_subs", "convert_sub_langs", "convert_auto", "convert_sweep_start", "convert_sweep_end", "convert_workers", "convert_quality_gate", "convert_min_ssim", "convert_max_failures", "convert_skip_hardlinked", "convert_scratch_dir", "convert_vaapi_device"];
+    const keys: (keyof AppSettings)[] = ["convert_target_codec", "convert_auto", "convert_sweep_start", "convert_sweep_end", "convert_workers", "convert_quality_gate", "convert_min_ssim", "convert_max_failures", "convert_skip_hardlinked", "convert_scratch_dir", "convert_vaapi_device"];
     return keys.some((k) => saved[k] !== d[k]);
   }, [saved, d]);
   const onSave = async () => {
     if (!d) return;
     setBusy(true);
-    const patch = { convert_target_codec: d.convert_target_codec, convert_extract_subs: d.convert_extract_subs, convert_sub_langs: d.convert_sub_langs, convert_auto: d.convert_auto, convert_sweep_start: d.convert_sweep_start, convert_sweep_end: d.convert_sweep_end, convert_workers: d.convert_workers, convert_quality_gate: d.convert_quality_gate, convert_min_ssim: d.convert_min_ssim, convert_max_failures: d.convert_max_failures, convert_skip_hardlinked: d.convert_skip_hardlinked, convert_scratch_dir: d.convert_scratch_dir, convert_vaapi_device: d.convert_vaapi_device };
+    const patch = { convert_target_codec: d.convert_target_codec, convert_auto: d.convert_auto, convert_sweep_start: d.convert_sweep_start, convert_sweep_end: d.convert_sweep_end, convert_workers: d.convert_workers, convert_quality_gate: d.convert_quality_gate, convert_min_ssim: d.convert_min_ssim, convert_max_failures: d.convert_max_failures, convert_skip_hardlinked: d.convert_skip_hardlinked, convert_scratch_dir: d.convert_scratch_dir, convert_vaapi_device: d.convert_vaapi_device };
     try { const v = await api.updateSettings(patch); setSaved(v); setD(v); flash("Settings saved — restart or the next job uses the new GPU"); loadScratch(); } catch (e) { flash((e as Error).message); } finally { setBusy(false); }
   };
   if (!d) return <div className="text-[12px] text-ink-faint">Loading settings…</div>;
@@ -629,14 +556,6 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
             note="Slower to encode. Older TVs & devices (pre-2020) may not play it. HDR/Dolby Vision files are kept in HEVC — AV1 HDR passthrough isn't supported yet, so they're skipped." />
         </div>
         <Warn>Re-encoding is lossy by nature — both formats reproduce the picture visually, but a re-encode is never a bit-for-bit copy of the source. The quality gate below guards against a bad encode. HDR, Dolby Vision and surround audio (Atmos/TrueHD/DTS) are always copied through untouched.</Warn>
-      </SettingCard>
-
-      {/* Subtitles */}
-      <SettingCard title="Subtitles" desc="Text subtitles can be pulled out into .srt sidecar files next to the video (and removed from the container) so any player can use them.">
-        <ActToggle on={d.convert_extract_subs} set={(v) => set({ convert_extract_subs: v })} label="Extract subtitles → SRT sidecars" hint="image-based subs (PGS/VOBSUB) are left in the file" />
-        <SettingField label="Languages to extract" hint="blank = every language · comma-separated codes, e.g. “en” for English only, or “en, es”">
-          <input value={d.convert_sub_langs} onChange={(e) => set({ convert_sub_langs: e.target.value })} placeholder="all languages" className={inp} style={inpStyle} />
-        </SettingField>
       </SettingCard>
 
       {/* Schedule */}

@@ -138,33 +138,22 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool) []s
 		}
 	}
 
-	// Subtitles, container-aware. Text subs go to SRT sidecars when ExtractText is set; image
-	// subs (PGS/VOBSUB) can only live in MKV. MP4 keeps text subs as mov_text.
-	subCopy, subConv := false, ""
-	if plan.Subs.ExtractText {
-		if !mp4 {
-			for _, s := range mi.Subs {
-				if !s.Text {
-					a = append(a, "-map", fmt.Sprintf("0:s:%d", s.SubIndex))
-					subCopy = true
-				}
-			}
-		}
-	} else if mp4 {
+	// Subtitles are carried through untouched — the Subtitles module owns extraction/stripping now.
+	// MKV copies every subtitle stream as-is; MP4 can't hold image subs (PGS/VOBSUB), so an MP4
+	// target keeps only text subs, re-encoded to mov_text.
+	if mp4 {
+		mapped := false
 		for _, s := range mi.Subs {
 			if s.Text {
 				a = append(a, "-map", fmt.Sprintf("0:s:%d", s.SubIndex))
-				subConv = "mov_text"
+				mapped = true
 			}
 		}
+		if mapped {
+			a = append(a, "-c:s", "mov_text")
+		}
 	} else {
-		a = append(a, "-map", "0:s?")
-		subCopy = true
-	}
-	if subConv != "" {
-		a = append(a, "-c:s", subConv)
-	} else if subCopy {
-		a = append(a, "-c:s", "copy")
+		a = append(a, "-map", "0:s?", "-c:s", "copy")
 	}
 
 	// Video: copy for remux-only, else re-encode to the target codec (optionally downscaled).

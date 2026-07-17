@@ -94,45 +94,6 @@ func (a *api) handleConvertEpisode(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusAccepted, job)
 }
 
-// handleConvertExtractMovieSubs queues a subtitle-only extraction for one movie (text subs → SRT
-// sidecars, video left untouched).
-func (a *api) handleConvertExtractMovieSubs(w http.ResponseWriter, r *http.Request) {
-	id, ok := a.pathID(w, r)
-	if !ok {
-		return
-	}
-	job, err := a.deps.Convert.QueueExtractMovie(r.Context(), id)
-	if err != nil {
-		a.writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	a.writeJSON(w, http.StatusAccepted, job)
-}
-
-// handleConvertExtractEpisodeSubs queues a subtitle-only extraction for one TV episode.
-func (a *api) handleConvertExtractEpisodeSubs(w http.ResponseWriter, r *http.Request) {
-	seriesID, ok := a.pathValueID(w, r, "series")
-	if !ok {
-		return
-	}
-	season, err := strconv.Atoi(r.PathValue("season"))
-	if err != nil {
-		a.writeError(w, http.StatusBadRequest, "invalid season")
-		return
-	}
-	episode, err := strconv.Atoi(r.PathValue("episode"))
-	if err != nil {
-		a.writeError(w, http.StatusBadRequest, "invalid episode")
-		return
-	}
-	job, err := a.deps.Convert.QueueExtractEpisode(r.Context(), seriesID, season, episode)
-	if err != nil {
-		a.writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	a.writeJSON(w, http.StatusAccepted, job)
-}
-
 // handleConvertLogs returns the recent Convert activity console lines.
 func (a *api) handleConvertLogs(w http.ResponseWriter, r *http.Request) {
 	logs := a.deps.Convert.Logs()

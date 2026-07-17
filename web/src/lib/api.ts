@@ -277,8 +277,6 @@ export interface AppSettings {
   // Convert module (focused model: target codec + subs + schedule + safety).
   convert_target_codec: string;
   convert_auto: boolean;
-  convert_extract_subs: boolean;
-  convert_sub_langs: string;
   convert_skip_hardlinked: boolean;
   convert_keep_audio_langs: string;
   convert_add_stereo: boolean;
@@ -589,13 +587,11 @@ export interface SeriesSubStatus {
 
 // --- Convert ---
 export interface ConvertEncoder { codec: string; name: string; kind: string; label: string; hardware: boolean; available: boolean }
-export interface ConvertSubStream { sub_index: number; codec: string; lang: string; text: boolean }
 export interface ConvertMediaInfo {
   container: string; video_codec: string; width: number; height: number; resolution: string; hdr: string;
   bitrate_kbps: number; frame_rate: number; duration_sec: number; size_bytes: number; audio_tracks: number; sub_tracks: number; ten_bit: boolean;
-  subs?: ConvertSubStream[];
 }
-export interface ConvertCandidate { kind: "movie" | "episode"; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; year?: number; poster_url?: string; path: string; info?: ConvertMediaInfo; candidate: boolean; est_bytes: number; external_subs?: number }
+export interface ConvertCandidate { kind: "movie" | "episode"; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; year?: number; poster_url?: string; path: string; info?: ConvertMediaInfo; candidate: boolean; est_bytes: number }
 export interface ConvertSample { movie_id: number; title: string; src_bytes: number; est_bytes: number; percent: number; sample_sec: number }
 export interface ConvertJob { id: number; kind?: string; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; state: string; progress: number; fps: number; speed_x: number; duration_sec?: number; encoder: string; src_bytes: number; out_bytes: number; note?: string }
 
@@ -949,8 +945,6 @@ export const api = {
   convertLogs: () => req<{ lines: { at: number; level: string; msg: string }[] }>("/api/v1/convert/logs").then((r) => r.lines),
   convertMovie: (id: number) => req<ConvertJob>(`/api/v1/convert/movies/${id}`, { method: "POST" }),
   convertEpisode: (seriesID: number, season: number, episode: number) => req<ConvertJob>(`/api/v1/convert/episodes/${seriesID}/${season}/${episode}`, { method: "POST" }),
-  convertExtractMovieSubs: (id: number) => req<ConvertJob>(`/api/v1/convert/movies/${id}/extract-subs`, { method: "POST" }),
-  convertExtractEpisodeSubs: (seriesID: number, season: number, episode: number) => req<ConvertJob>(`/api/v1/convert/episodes/${seriesID}/${season}/${episode}/extract-subs`, { method: "POST" }),
   convertSampleMovie: (id: number) => req<ConvertSample>(`/api/v1/convert/movies/${id}/sample`, { method: "POST" }),
 
   // Insights (Plex)

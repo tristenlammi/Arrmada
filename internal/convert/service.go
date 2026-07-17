@@ -24,8 +24,6 @@ import (
 const (
 	keySkipHardlinked = "convert_skip_hardlinked"
 	keyReclaimed      = "convert_reclaimed_bytes"
-	keyExtractSubs    = "convert_extract_subs"
-	keySubLangs       = "convert_sub_langs"        // CSV of subtitle langs to extract; empty = all
 	keyKeepAudioLangs = "convert_keep_audio_langs" // CSV; empty = keep all audio
 	keyAddStereo      = "convert_add_stereo"       // add an AAC 2.0 downmix beside surround
 	keyLoudnorm       = "convert_loudnorm"         // EBU R128 loudness normalize
@@ -308,9 +306,8 @@ type Candidate struct {
 	PosterURL string     `json:"poster_url,omitempty"`
 	Path         string     `json:"path"`
 	Info         *MediaInfo `json:"info,omitempty"`
-	Candidate    bool       `json:"candidate"`     // would Save space convert it
-	EstBytes     int64      `json:"est_bytes"`     // rough estimate of converted size
-	ExternalSubs int        `json:"external_subs"` // count of .srt sidecars next to the file
+	Candidate bool  `json:"candidate"` // would Save space convert it
+	EstBytes  int64 `json:"est_bytes"` // rough estimate of converted size
 }
 
 // Library probes every downloaded movie and returns its spec + convert candidacy.
@@ -327,7 +324,6 @@ func (s *Service) Library(ctx context.Context) ([]Candidate, error) {
 			continue
 		}
 		c := Candidate{Kind: "movie", MovieID: m.ID, Title: m.Title, Year: m.Year, PosterURL: m.PosterURL, Path: m.MovieFilePath}
-		c.ExternalSubs = countSidecarSubs(m.MovieFilePath)
 		if mi, err := s.probeCached(ctx, m.MovieFilePath); err == nil {
 			c.Info = mi
 			c.Candidate = isCandidateFor(mi, target)
@@ -371,7 +367,6 @@ func (s *Service) LibraryTV(ctx context.Context) ([]Candidate, error) {
 					PosterURL: full.PosterURL,
 					Path:      e.FilePath,
 				}
-				c.ExternalSubs = countSidecarSubs(e.FilePath)
 				if mi, err := s.probeCached(ctx, e.FilePath); err == nil {
 					c.Info = mi
 					c.Candidate = isCandidateFor(mi, target)
@@ -395,23 +390,6 @@ func (s *Service) QueueMovie(ctx context.Context, movieID int64) (*Job, error) {
 // QueueEpisode enqueues a Save-space conversion of one TV episode.
 func (s *Service) QueueEpisode(ctx context.Context, seriesID int64, season, episode int) (*Job, error) {
 	return s.queueEpisode(ctx, seriesID, season, episode, s.defaultPlan(ctx))
-}
-
-// QueueExtractMovie enqueues a subtitle-only extraction for a movie (text subs → SRT sidecars,
-// video left untouched).
-func (s *Service) QueueExtractMovie(ctx context.Context, movieID int64) (*Job, error) {
-	return s.queueMovie(ctx, movieID, extractPlan())
-}
-
-// QueueExtractEpisode enqueues a subtitle-only extraction for one TV episode.
-func (s *Service) QueueExtractEpisode(ctx context.Context, seriesID int64, season, episode int) (*Job, error) {
-	return s.queueEpisode(ctx, seriesID, season, episode, extractPlan())
-}
-
-// extractPlan is the plan for a subtitle-only extraction: no transcode, no remux, just pull the
-// text subs out to sidecars (ExtractOnly short-circuits the encode pipeline in process).
-func extractPlan() Plan {
-	return Plan{Container: "mkv", ExtractOnly: true, Subs: SubPlan{ExtractText: true, ExtractCC: true}}
 }
 
 func (s *Service) queueEpisode(ctx context.Context, seriesID int64, season, episode int, plan Plan) (*Job, error) {
@@ -441,23 +419,16 @@ func (s *Service) queueEpisode(ctx context.Context, seriesID int64, season, epis
 }
 
 // defaultPlan is the single conversion plan derived from the global settings: transcode to the
-// chosen codec at maximum-retention quality, keep audio untouched, extract subtitles per the
-// toggle, MKV container. There is no per-rule plan any more — Convert is one focused job.
+// chosen codec at maximum-retention quality, keep audio untouched, subtitles carried through
+// (the Subtitles module handles them), MKV container.
 func (s *Service) defaultPlan(ctx context.Context) Plan {
 	codec := s.targetCodec(ctx)
-	subs := s.settings.GetBool(ctx, keyExtractSubs, true)
 	return Plan{
 		VideoCodec: codec,
 		Quality:    maxQualityCRF(codec),
 		VFRToCFR:   true,
 		Container:  "mkv",
-		Subs:       SubPlan{ExtractText: subs, ExtractCC: subs},
 	}
-}
-
-// subLangs is the set of subtitle languages to extract (e.g. ["en"]); empty = every language.
-func (s *Service) subLangs(ctx context.Context) []string {
-	return csv(s.settings.Get(ctx, keySubLangs, ""))
 }
 
 // targetCodec is the codec the library is being converted to (hevc | av1), default HEVC.
@@ -743,12 +714,6 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		s.runHealthCheck(ctx, job, src, mi)
 		return
 	}
-	// Extract-only: write text subs → SRT sidecars, leave the video untouched (no remux/replace),
-	// so it's safe on hardlinked/seeding files. Report and return.
-	if plan.ExtractOnly {
-		s.runExtractOnly(ctx, job, src, mi, title)
-		return
-	}
 	if wouldBeNoOp(mi, plan) {
 		s.finish(job, StateSkipped, "already "+strings.ToUpper(mi.VideoCodec)+" — nothing to do")
 		return
@@ -945,12 +910,6 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst, ext st
 	// change (→ MKV or MP4), so the extension may change.
 	s.update(job, func(j *Job) { j.State = StateReplacing })
 	finalPath := strings.TrimSuffix(src, filepath.Ext(src)) + ext
-	if plan.Subs.ExtractText {
-		s.extractTextSubs(ctx, src, finalPath, mi)
-	}
-	if plan.Subs.ExtractCC && mi.HasCC {
-		s.extractCC(ctx, src, finalPath) // embedded 608/708 captions → sidecar (best-effort)
-	}
 	if dst2, rerr := library.RecycleFile(s.recycleDir, src); rerr != nil {
 		s.log.Warn("convert: recycle original failed, hard-deleting", "path", src, "err", rerr)
 		_ = os.Remove(src)
@@ -998,62 +957,6 @@ func (s *Service) runHealthCheck(ctx context.Context, job *Job, src string, mi *
 	default:
 		s.finish(job, StateFailed, fmt.Sprintf("%d decode issue(s) found — file may be corrupt", issues))
 	}
-}
-
-// runExtractOnly pulls the embedded text subtitles (and any closed captions) out to SRT sidecars
-// next to the original file, without re-muxing or replacing the video. Image subs (PGS/VOBSUB)
-// can't be turned into text without OCR, so they're left in place and reported.
-func (s *Service) runExtractOnly(ctx context.Context, job *Job, src string, mi *MediaInfo, title string) {
-	s.update(job, func(j *Job) { j.State = StateEncoding; j.Encoder = "Subtitle extract"; j.SrcBytes = mi.SizeBytes; j.Progress = 0 })
-	text, image := 0, 0
-	for _, sub := range mi.Subs {
-		if sub.Text {
-			text++
-		} else {
-			image++
-		}
-	}
-	langs := s.subLangs(ctx)
-	outs := textSubOutputs(src, mi, langs) // finalPath == src → sidecars next to the original
-	if len(outs) == 0 && !mi.HasCC {
-		var note string
-		switch {
-		case len(langs) > 0 && text > 0:
-			note = fmt.Sprintf("no %s text subtitles (all %d text track(s) are other languages)", strings.Join(langs, "/"), text)
-		case image > 0:
-			note = fmt.Sprintf("only %d image subtitle(s) (PGS/VOBSUB) — need OCR, coming soon", image)
-		default:
-			note = "no embedded text subtitles to extract"
-		}
-		s.finish(job, StateSkipped, note)
-		return
-	}
-	s.event("info", fmt.Sprintf("Extracting %d text subtitle track(s) from %s → SRT sidecar(s)", len(outs), title))
-
-	kept := 0
-	if len(outs) > 0 {
-		// One ffmpeg pass reads the source once and writes every sidecar, with live progress off
-		// the -progress stream (out_time / duration). One pass, not one-per-track — extracting 4
-		// tracks from a 29 GB remux used to mean 4 full reads with a frozen bar.
-		args := []string{"-y", "-hide_banner", "-nostats", "-progress", "pipe:1", "-i", src}
-		for _, o := range outs {
-			args = append(args, "-map", fmt.Sprintf("0:s:%d", o.Index), "-c:s", "srt", o.Path)
-		}
-		if err := s.runWithProgress(ctx, job, args, mi.DurationSec); err != nil {
-			s.log.Warn("convert: subtitle extract failed", "err", err)
-		}
-		kept = pruneEmptySubs(outs)
-	}
-	if mi.HasCC {
-		s.extractCC(ctx, src, src)
-	}
-	s.update(job, func(j *Job) { j.Progress = 1 })
-	left := ""
-	if image > 0 {
-		left = fmt.Sprintf(" · left %d image sub(s) in place (need OCR)", image)
-	}
-	s.event("info", fmt.Sprintf("✓ Extracted %d subtitle track(s) from %s → SRT%s", kept, title, left))
-	s.finish(job, StateDone, fmt.Sprintf("extracted %d subtitle track(s) → SRT sidecar(s)%s", kept, left))
 }
 
 // wouldBeNoOp reports whether running this plan on this file would change nothing (already the
@@ -1140,134 +1043,6 @@ func (s *Service) finish(job *Job, state JobState, note string) {
 	}
 }
 
-// subOut is one planned SRT sidecar: the subtitle stream index and its target path.
-type subOut struct {
-	Index int
-	Path  string
-}
-
-// textSubOutputs plans an SRT sidecar path for every embedded text subtitle track, next to
-// finalPath. The first track of a language gets "<base>.<lang>.srt"; further tracks in the same
-// language are disambiguated with their stream index ("<base>.<lang>.<idx>.srt"). Image subs
-// (PGS/VOBSUB) are skipped — they need OCR. When keepLangs is non-empty, only tracks in those
-// languages are extracted (e.g. English-only); an empty list extracts every language.
-func textSubOutputs(finalPath string, mi *MediaInfo, keepLangs []string) []subOut {
-	dir := filepath.Dir(finalPath)
-	base := strings.TrimSuffix(filepath.Base(finalPath), filepath.Ext(finalPath))
-	seen := map[string]int{}
-	var outs []subOut
-	for _, sub := range mi.Subs {
-		if !sub.Text {
-			continue
-		}
-		if len(keepLangs) > 0 && !langIn(sub.Lang, keepLangs) {
-			continue // language not in the wanted set
-		}
-		lang := sub.Lang
-		if lang == "" {
-			lang = "und"
-		}
-		name := base + "." + lang + ".srt"
-		if seen[lang] > 0 {
-			name = fmt.Sprintf("%s.%s.%d.srt", base, lang, sub.SubIndex)
-		}
-		seen[lang]++
-		outs = append(outs, subOut{Index: sub.SubIndex, Path: filepath.Join(dir, name)})
-	}
-	return outs
-}
-
-// pruneEmptySubs deletes any 0-byte sidecars (tracks that extracted to nothing) and returns how
-// many real, non-empty files remain.
-func pruneEmptySubs(outs []subOut) int {
-	kept := 0
-	for _, o := range outs {
-		if fi, err := os.Stat(o.Path); err == nil {
-			if fi.Size() == 0 {
-				_ = os.Remove(o.Path)
-				continue
-			}
-			kept++
-		}
-	}
-	return kept
-}
-
-// extractTextSubs pulls every embedded text subtitle track out to an SRT sidecar next to the final
-// file in a SINGLE ffmpeg pass (one read of the source, all tracks at once — not one full pass per
-// track). Image subs (PGS/VOBSUB) are left in the container; they need OCR. Empty outputs are
-// pruned. Returns the number of real sidecars written.
-func (s *Service) extractTextSubs(ctx context.Context, src, finalPath string, mi *MediaInfo) int {
-	outs := textSubOutputs(finalPath, mi, s.subLangs(ctx))
-	if len(outs) == 0 {
-		return 0
-	}
-	args := []string{"-y", "-hide_banner", "-i", src}
-	for _, o := range outs {
-		args = append(args, "-map", fmt.Sprintf("0:s:%d", o.Index), "-c:s", "srt", o.Path)
-	}
-	if err := exec.CommandContext(ctx, s.ffmpeg, args...).Run(); err != nil {
-		s.log.Warn("convert: subtitle extract failed", "err", err) // some outputs may still have landed
-	}
-	kept := pruneEmptySubs(outs)
-	s.log.Info("convert: extracted subtitles → SRT", "tracks", kept, "near", finalPath)
-	return kept
-}
-
-// extractCC pulls embedded EIA/CEA-608/708 closed captions (which live inside the video
-// stream, not as a track, and are lost on re-encode) out to an SRT sidecar. Best-effort:
-// any failure is logged and ignored so it never fails the conversion.
-func (s *Service) extractCC(ctx context.Context, src, finalPath string) {
-	dir := filepath.Dir(finalPath)
-	base := strings.TrimSuffix(filepath.Base(finalPath), filepath.Ext(finalPath))
-	out := filepath.Join(dir, base+".cc.srt")
-	if _, err := os.Stat(out); err == nil {
-		return
-	}
-	// The lavfi "movie" filter exposes captions via the subcc pad; single-quote the path so
-	// spaces/colons/parentheses are literal.
-	graph := "movie=filename=" + lavfiSingleQuote(src) + "[out0+subcc]"
-	cmd := exec.CommandContext(ctx, s.ffmpeg, "-y", "-hide_banner", "-f", "lavfi", "-i", graph, "-map", "0:1", "-c:s", "srt", out)
-	if err := cmd.Run(); err != nil {
-		s.log.Warn("convert: closed-caption extract failed (best-effort)", "err", err)
-		_ = os.Remove(out)
-		return
-	}
-	if fi, e := os.Stat(out); e != nil || fi.Size() < 10 { // no captions actually decoded
-		_ = os.Remove(out)
-		return
-	}
-	s.log.Info("convert: extracted closed captions → SRT", "to", out)
-}
-
-// countSidecarSubs counts external .srt files sitting next to a video (named after it), e.g.
-// "Movie.en.srt". Used to power the "external subs" filter in the Convert library.
-func countSidecarSubs(videoPath string) int {
-	if videoPath == "" {
-		return 0
-	}
-	base := strings.ToLower(strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath)))
-	entries, err := os.ReadDir(filepath.Dir(videoPath))
-	if err != nil {
-		return 0
-	}
-	n := 0
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		name := strings.ToLower(e.Name())
-		if strings.HasSuffix(name, ".srt") && strings.HasPrefix(name, base) {
-			n++
-		}
-	}
-	return n
-}
-
-// lavfiSingleQuote wraps a path for safe use inside a lavfi filtergraph.
-func lavfiSingleQuote(p string) string {
-	return "'" + strings.ReplaceAll(p, "'", `'\''`) + "'"
-}
 
 // encode runs ffmpeg for one job, parsing live progress from the -progress pipe. hwDecode
 // asks the GPU to decode too (VAAPI only) — set for the full-GPU attempt, cleared for the
@@ -1337,17 +1112,6 @@ func (s *Service) readProgress(job *Job, r io.Reader, durationSec float64) {
 			}
 		}
 	}
-}
-
-// csv splits a comma-separated setting into trimmed, non-empty values.
-func csv(s string) []string {
-	var out []string
-	for _, p := range strings.Split(s, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }
 
 func fileSize(path string) int64 {
