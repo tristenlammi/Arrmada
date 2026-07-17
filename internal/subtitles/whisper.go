@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -16,6 +17,8 @@ import (
 type whisperGen struct {
 	bin       string // whisper-cli path ("" = not installed)
 	modelsDir string // where the GGML model files live (data dir / whisper)
+	dlMu      sync.Mutex
+	dl        map[string]bool // model filenames currently downloading
 }
 
 // GGML model + VAD filenames (from ggerganov/whisper.cpp on Hugging Face). turbo is fast and used
@@ -29,7 +32,7 @@ const (
 
 func detectWhisper(modelsDir string) *whisperGen {
 	bin, _ := exec.LookPath("whisper-cli")
-	return &whisperGen{bin: bin, modelsDir: modelsDir}
+	return &whisperGen{bin: bin, modelsDir: modelsDir, dl: map[string]bool{}}
 }
 
 func (w *whisperGen) hasModel(name string) bool {

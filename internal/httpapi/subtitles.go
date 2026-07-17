@@ -9,6 +9,20 @@ import (
 	"github.com/tristenlammi/arrmada/internal/subtitles"
 )
 
+// handleSubtitleModels returns local-AI (whisper) binary + model status.
+func (a *api) handleSubtitleModels(w http.ResponseWriter, r *http.Request) {
+	a.writeJSON(w, http.StatusOK, a.deps.Subtitles.WhisperStatus())
+}
+
+// handleSubtitleDownloadModel starts a background download of a whisper model.
+func (a *api) handleSubtitleDownloadModel(w http.ResponseWriter, r *http.Request) {
+	if err := a.deps.Subtitles.DownloadModel(r.PathValue("name")); err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "downloading"})
+}
+
 // handleSubtitleJobs returns recent + active subtitle-ensure jobs (polled for the Queue tab).
 func (a *api) handleSubtitleJobs(w http.ResponseWriter, r *http.Request) {
 	jobs := a.deps.Subtitles.Jobs()

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type SubtitleSettings, type SubFileEntry, type SubtitleJob, type SubLangStatus } from "../lib/api";
+import { api, type SubtitleSettings, type SubFileEntry, type SubtitleJob, type SubLangStatus, type WhisperStatus } from "../lib/api";
 
 type Tab = "overview" | "queue" | "library" | "logs" | "settings";
 const ACTIVE = new Set(["queued", "running"]);
@@ -453,6 +453,8 @@ function SettingsTab({ settings, onPatch, flash }: { settings: SubtitleSettings;
         </div>
       </div>
 
+      <LocalAI flash={flash} />
+
       <div className={card} style={cardStyle}>
         <div className="text-[14px] font-bold">OpenSubtitles (optional download source)</div>
         <div className="mt-0.5 text-[11.5px] text-ink-faint">A download source Arrmada tries before AI. Optional — embedded extraction and (soon) AI work without it.</div>
@@ -465,6 +467,50 @@ function SettingsTab({ settings, onPatch, flash }: { settings: SubtitleSettings;
           </span>
         </div>
       </div>
+    </div>
+  );
+}
+function LocalAI({ flash }: { flash: (m: string) => void }) {
+  const [status, setStatus] = useState<WhisperStatus | null>(null);
+  const load = useCallback(() => api.subtitleModels().then(setStatus).catch(() => setStatus(null)), []);
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 3000); // reflect download progress
+    return () => clearInterval(t);
+  }, [load]);
+  const download = async (name: string) => {
+    try { await api.subtitleDownloadModel(name); flash("Downloading — watch the Logs tab for progress."); load(); }
+    catch (e) { flash((e as Error).message); }
+  };
+  const st = status;
+  return (
+    <div className={card} style={cardStyle}>
+      <div className="flex items-center justify-between">
+        <div className="text-[14px] font-bold">Local AI (whisper)</div>
+        <span className="rounded-full px-2 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: st?.ready ? "var(--good-soft, rgba(127,176,105,.16))" : "var(--panel-2)", color: st?.ready ? "var(--good)" : "var(--ink-faint)" }}>
+          {st?.ready ? "ready" : st?.binary_ready ? "needs a model" : "not installed"}
+        </span>
+      </div>
+      <div className="mt-0.5 text-[11.5px] text-ink-faint">Generates subtitles from a file's audio when no better source exists — 100% local, no key. Download a model to enable it (large files, runs in the background).</div>
+      {st && !st.binary_ready && <div className="mt-2 text-[11.5px]" style={{ color: "var(--avoid)" }}>whisper-cli isn't in this build yet — update to a build that bundles it.</div>}
+      <div className="mt-3 flex flex-col gap-2">
+        {(st?.models ?? []).map((m) => (
+          <div key={m.name} className="flex items-center justify-between gap-3 rounded-lg px-3 py-2" style={{ background: "var(--panel-2)" }}>
+            <div className="min-w-0">
+              <div className="text-[12px] font-semibold">{m.label}</div>
+              <div className="font-mono text-[10px] text-ink-faint">{m.name} · ~{m.size_mb >= 1000 ? `${(m.size_mb / 1000).toFixed(1)} GB` : `${m.size_mb} MB`}</div>
+            </div>
+            {m.present ? (
+              <span className="rounded px-2 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: "var(--good-soft, rgba(127,176,105,.16))", color: "var(--good)" }}>installed ✓</span>
+            ) : m.downloading ? (
+              <span className="rounded px-2 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>downloading…</span>
+            ) : (
+              <button onClick={() => download(m.name)} disabled={!st?.binary_ready} className="rounded-lg px-3 py-1.5 text-[11px] font-semibold disabled:opacity-40" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>Download</button>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="mt-2 text-[10.5px] text-ink-faint">Get <b>turbo</b> for English, plus <b>large-v3</b> to translate foreign audio to English. <b>Silero VAD</b> is small and strongly recommended.</div>
     </div>
   );
 }

@@ -582,6 +582,8 @@ export interface SubtitleJob {
   id: number; kind: "movie" | "episode"; movie_id?: number; series_id?: number; season?: number; episode?: number;
   title: string; state: "queued" | "running" | "done" | "skipped" | "failed"; note?: string; at: number;
 }
+export interface WhisperModel { name: string; label: string; size_mb: number; present: boolean; downloading: boolean }
+export interface WhisperStatus { binary_ready: boolean; ready: boolean; models: WhisperModel[] }
 export interface MovieSubStatus {
   id: number;
   title: string;
@@ -953,6 +955,8 @@ export const api = {
   subtitleQueueMovie: (id: number) => req<SubtitleJob>(`/api/v1/subtitles/library/movies/${id}`, { method: "POST" }),
   subtitleQueueEpisode: (seriesID: number, season: number, episode: number) => req<SubtitleJob>(`/api/v1/subtitles/library/episodes/${seriesID}/${season}/${episode}`, { method: "POST" }),
   subtitleSweep: (media: "movies" | "tv" = "movies") => req<{ queued: number }>(`/api/v1/subtitles/sweep${media === "tv" ? "?media=tv" : ""}`, { method: "POST" }),
+  subtitleModels: () => req<WhisperStatus>("/api/v1/subtitles/models"),
+  subtitleDownloadModel: (name: string) => req<{ status: string }>(`/api/v1/subtitles/models/${encodeURIComponent(name)}`, { method: "POST" }),
   subtitleMovies: () => req<{ movies: MovieSubStatus[] }>("/api/v1/subtitles/movies").then((r) => r.movies),
   subtitleSeries: () => req<{ series: SeriesSubStatus[] }>("/api/v1/subtitles/series").then((r) => r.series),
   searchMovieSubs: (id: number) => req<{ status: string }>(`/api/v1/subtitles/movies/${id}/search`, { method: "POST" }),
