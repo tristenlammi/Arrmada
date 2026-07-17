@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/overseerr"
 	"github.com/tristenlammi/arrmada/internal/requests"
 )
@@ -54,6 +56,7 @@ func (a *api) handleImportOverseerr(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	adminID := admin.ID
+	autoApprove := a.deps.Settings.GetBool(ctx, "plex_login_auto_approve", true)
 
 	// Import in the background so a large history (and the tunnel's request timeout)
 	// can't cut it short; results land on the Requests page as they process.
@@ -61,6 +64,7 @@ func (a *api) handleImportOverseerr(w http.ResponseWriter, r *http.Request) {
 		bg, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 		client := overseerr.New(req.URL, req.APIKey)
+		plexUsers := map[int]int64{} // requester's Plex account id → Arrmada user id (cached)
 		var imported, skipped, declined, failed int
 		for i := range items {
 			if bg.Err() != nil {
@@ -72,9 +76,21 @@ func (a *api) handleImportOverseerr(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			client.Details(bg, &it)
+			// Attribute to the requester. A Plex requester gets a real Plex-linked account
+			// (created if needed) so when they Sign in with Plex they see their own requests.
 			uid := adminID
-			if id, ok := byName[strings.ToLower(it.Requester)]; ok && it.Requester != "" {
-				uid = id
+			switch {
+			case it.RequesterPlex > 0:
+				if id, ok := plexUsers[it.RequesterPlex]; ok {
+					uid = id
+				} else if u, e := a.deps.Auth.FindOrCreatePlexUser(bg, strconv.Itoa(it.RequesterPlex), it.Requester, auth.RoleRequester, autoApprove); e == nil {
+					plexUsers[it.RequesterPlex] = u.ID
+					uid = u.ID
+				}
+			case it.Requester != "":
+				if id, ok := byName[strings.ToLower(it.Requester)]; ok {
+					uid = id
+				}
 			}
 			in := requests.Request{
 				MediaType:       it.MediaType,

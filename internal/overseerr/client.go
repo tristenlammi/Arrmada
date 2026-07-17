@@ -6,6 +6,7 @@ package overseerr
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,13 +17,15 @@ import (
 
 // Item is one migrated request, mapped to Arrmada's model.
 type Item struct {
-	MediaType string // "movie" | "series"
-	TMDBID    int
-	Title     string
-	Year      int
-	PosterURL string
-	Requester string // Overseerr display name / username (for attribution)
-	Status    string // "approved" | "pending" | "declined"
+	MediaType      string // "movie" | "series"
+	TMDBID         int
+	Title          string
+	Year           int
+	PosterURL      string
+	Requester      string // Overseerr display name / username (for attribution)
+	RequesterPlex  int    // requester's Plex account id (0 = none) — links to a Plex sign-in
+	RequesterEmail string
+	Status         string // "approved" | "pending" | "declined"
 }
 
 // Client talks to an Overseerr/Jellyseerr instance with an API key.
@@ -60,7 +63,11 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	case resp.StatusCode == http.StatusNotFound:
 		return fmt.Errorf("overseerr: not found (check the URL — it should be the base address, e.g. http://host:5055)")
 	case resp.StatusCode >= 300:
-		return fmt.Errorf("overseerr: HTTP %d", resp.StatusCode)
+		snippet := strings.TrimSpace(string(body))
+		if len(snippet) > 200 {
+			snippet = snippet[:200]
+		}
+		return &httpError{code: resp.StatusCode, body: snippet}
 	}
 	if out != nil {
 		return json.Unmarshal(body, out)
@@ -81,53 +88,116 @@ type reqObj struct {
 		DisplayName  string `json:"displayName"`
 		PlexUsername string `json:"plexUsername"`
 		Username     string `json:"username"`
+		Email        string `json:"email"`
+		PlexID       int    `json:"plexId"`
 	} `json:"requestedBy"`
 }
 
-// List paginates through every request and maps each to an Item (without title/
-// poster — call Details to fill those). Fast: only the /request pages are fetched.
+// httpError carries the Overseerr HTTP status + body so a 5xx shows the real cause and can be
+// detected for the skip-the-bad-request fallback.
+type httpError struct {
+	code int
+	body string
+}
+
+func (e *httpError) Error() string {
+	if e.body != "" {
+		return fmt.Sprintf("overseerr: HTTP %d — %s", e.code, e.body)
+	}
+	return fmt.Sprintf("overseerr: HTTP %d", e.code)
+}
+
+func isServerErr(err error) bool {
+	var he *httpError
+	return errors.As(err, &he) && he.code >= 500
+}
+
+// page fetches one page of requests (take from skip) and maps them to Items. count is the number
+// of raw results Overseerr returned (so the caller knows when it's reached the end).
+func (c *Client) page(ctx context.Context, take, skip int) (items []Item, count int, err error) {
+	var pg struct {
+		Results []reqObj `json:"results"`
+	}
+	if err := c.get(ctx, fmt.Sprintf("/api/v1/request?take=%d&skip=%d&sort=added", take, skip), &pg); err != nil {
+		return nil, 0, err
+	}
+	for _, r := range pg.Results {
+		if r.Media.TmdbID == 0 {
+			continue
+		}
+		mt := "movie"
+		if r.Type == "tv" || r.Media.MediaType == "tv" {
+			mt = "series"
+		}
+		status := "pending"
+		switch {
+		case r.Status == 3:
+			status = "declined"
+		case r.Status == 2 || r.Media.Status >= 4: // approved, or already partially/fully available
+			status = "approved"
+		}
+		items = append(items, Item{
+			MediaType:      mt,
+			TMDBID:         r.Media.TmdbID,
+			Requester:      firstNonEmpty(r.RequestedBy.DisplayName, r.RequestedBy.PlexUsername, r.RequestedBy.Username),
+			RequesterPlex:  r.RequestedBy.PlexID,
+			RequesterEmail: r.RequestedBy.Email,
+			Status:         status,
+		})
+	}
+	return items, len(pg.Results), nil
+}
+
+// List paginates through every request and maps each to an Item (without title/poster — call
+// Details to fill those). A 5xx on a page (Overseerr chokes on an orphaned request) triggers a
+// one-at-a-time walk of that batch so a single bad request doesn't abort the whole migration.
 func (c *Client) List(ctx context.Context) ([]Item, error) {
 	const take = 50
 	var items []Item
-	for skip := 0; ; skip += take {
-		var page struct {
-			PageInfo struct {
-				Pages   int `json:"pages"`
-				Page    int `json:"page"`
-				Results int `json:"results"`
-			} `json:"pageInfo"`
-			Results []reqObj `json:"results"`
-		}
-		if err := c.get(ctx, fmt.Sprintf("/api/v1/request?take=%d&skip=%d&sort=added", take, skip), &page); err != nil {
-			return nil, err
-		}
-		for _, r := range page.Results {
-			if r.Media.TmdbID == 0 {
-				continue
+	for skip := 0; ; {
+		batch, count, err := c.page(ctx, take, skip)
+		if err != nil {
+			if !isServerErr(err) {
+				return items, err
 			}
-			mt := "movie"
-			if r.Type == "tv" || r.Media.MediaType == "tv" {
-				mt = "series"
+			// Walk this batch request-by-request, skipping the one(s) Overseerr can't serialise.
+			got, atEnd, werr := c.walkBatch(ctx, skip, take, &items)
+			if got == 0 && werr != nil {
+				return items, werr // couldn't get anything — surface the error
 			}
-			status := "pending"
-			switch {
-			case r.Status == 3:
-				status = "declined"
-			case r.Status == 2 || r.Media.Status >= 4: // approved, or already partially/fully available
-				status = "approved"
+			if atEnd {
+				break
 			}
-			items = append(items, Item{
-				MediaType: mt,
-				TMDBID:    r.Media.TmdbID,
-				Requester: firstNonEmpty(r.RequestedBy.DisplayName, r.RequestedBy.PlexUsername, r.RequestedBy.Username),
-				Status:    status,
-			})
+			skip += take
+			continue
 		}
-		if len(page.Results) < take || (page.PageInfo.Pages > 0 && page.PageInfo.Page >= page.PageInfo.Pages) {
+		items = append(items, batch...)
+		if count < take {
 			break
 		}
+		skip += take
 	}
 	return items, nil
+}
+
+// walkBatch fetches [skip, skip+take) one request at a time, appending successes and skipping any
+// single request that 5xx's. atEnd is true when Overseerr returned no more results.
+func (c *Client) walkBatch(ctx context.Context, skip, take int, items *[]Item) (got int, atEnd bool, err error) {
+	for i := 0; i < take; i++ {
+		one, count, e := c.page(ctx, 1, skip+i)
+		if e != nil {
+			if isServerErr(e) {
+				continue // this single request is un-serialisable on Overseerr's side — skip it
+			}
+			return got, false, e
+		}
+		if count == 0 {
+			return got, true, nil
+		}
+		*items = append(*items, one...)
+		got += len(one)
+	}
+	return got, false, nil
 }
 
 // Details fills an item's title/year/poster from Overseerr's media detail endpoint.

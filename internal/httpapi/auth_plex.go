@@ -96,9 +96,11 @@ func (a *api) handlePlexLoginPoll(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	plexID := acct.UUID
-	if plexID == "" {
-		plexID = strconv.FormatInt(acct.ID, 10)
+	// Use the numeric Plex account id — the identifier Overseerr/Tautulli also key on — so imported
+	// requests and watch history line up with the account that signs in.
+	plexID := strconv.FormatInt(acct.ID, 10)
+	if acct.ID == 0 && acct.UUID != "" {
+		plexID = acct.UUID
 	}
 	autoApprove := a.deps.Settings.GetBool(ctx, "plex_login_auto_approve", true)
 	u, err := a.deps.Auth.FindOrCreatePlexUser(ctx, plexID, acct.Username, auth.RoleRequester, autoApprove)
