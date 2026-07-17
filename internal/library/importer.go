@@ -66,7 +66,7 @@ func FindBookFiles(contentPath string) []FoundFile {
 		if err != nil || d.IsDir() || !isBookFile(p) {
 			return nil
 		}
-		if strings.Contains(strings.ToLower(filepath.Base(p)), "sample") {
+		if isSampleName(p) {
 			return nil
 		}
 		if fi, e := d.Info(); e == nil {
@@ -148,7 +148,7 @@ func (im *Importer) FindBookFoldersIn(roots ...string) []BookFolder {
 			if err != nil || d.IsDir() || !isBookFile(p) {
 				return nil
 			}
-			if strings.Contains(strings.ToLower(filepath.Base(p)), "sample") {
+			if isSampleName(p) {
 				return nil
 			}
 			dir := filepath.Dir(p)
@@ -498,7 +498,7 @@ func FindVideos(contentPath string) ([]FoundVideo, error) {
 		if e != nil || fi.Size() < 50<<20 {
 			return nil
 		}
-		if strings.Contains(strings.ToLower(filepath.Base(p)), "sample") {
+		if isSampleName(p) {
 			return nil
 		}
 		out = append(out, FoundVideo{Path: p, Size: fi.Size()})
@@ -857,6 +857,21 @@ func isVideo(p string) bool {
 	return videoExts[strings.ToLower(filepath.Ext(p))]
 }
 
+// isSampleName reports whether a file is a sample clip. "sample" must appear as a
+// whole token (bounded by the separators in a filename), NOT merely as a substring —
+// otherwise a legit episode like "Chuck Versus the Nacho Sampler" is wrongly skipped.
+func isSampleName(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	for _, tok := range strings.FieldsFunc(base, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if tok == "sample" { // singular only — "Sampler"/"Free Samples" are real titles
+			return true
+		}
+	}
+	return false
+}
+
 // subtitleExts are external subtitle sidecar files worth importing with the video.
 var subtitleExts = map[string]bool{".srt": true, ".ass": true, ".ssa": true, ".sub": true, ".vtt": true, ".idx": true}
 
@@ -899,7 +914,7 @@ func (im *Importer) importSidecarSubs(contentPath, srcVideo, targetVideo string)
 		if err != nil || d.IsDir() || !subtitleExts[strings.ToLower(filepath.Ext(p))] {
 			return nil
 		}
-		if strings.Contains(strings.ToLower(filepath.Base(p)), "sample") {
+		if isSampleName(p) {
 			return nil
 		}
 		stem := strings.ToLower(strings.TrimSuffix(filepath.Base(p), filepath.Ext(p)))
