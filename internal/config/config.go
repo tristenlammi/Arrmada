@@ -1,6 +1,6 @@
 // Package config loads Arrmada's runtime configuration. For M0 this is a small
 // env-driven struct with sensible defaults; file-based config and a settings UI
-// arrive in later M0 workstreams (see BUILD-PLAN.md).
+// arrive in later M0 workstreams.
 package config
 
 import (

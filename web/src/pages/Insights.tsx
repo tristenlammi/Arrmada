@@ -2,8 +2,8 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs, type Reliability, type BufferGroup, type NotificationConn } from "../lib/api";
 
-// Insights — Arrmada's Plex watch-monitoring module (Tautulli replacement). Built in slices
-// (see INSIGHTS-PLAN.md). I0 (this): the Plex connection — configure + test. Activity, History,
+// Insights — Arrmada's Plex watch-monitoring module (Tautulli replacement). Built in slices.
+// I0 (this): the Plex connection — configure + test. Activity, History,
 // Users, Graphs and the Reliability/buffering view land in later slices and show as "coming soon".
 type Tab = "activity" | "history" | "users" | "graphs" | "reliability" | "notifications" | "settings";
 const TABS: { key: Tab; label: string }[] = [

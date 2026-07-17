@@ -4,8 +4,7 @@ package convert
 // from how it's executed. A flow (Rules v2) builds a Plan by walking its nodes; for now the
 // "Save space" preset builds it from the global settings. The compiler (compileOutputArgs)
 // turns a Plan into an ffmpeg command, and preview reads the Plan directly — which is what
-// makes the preview exact (you preview the literal thing that will run). See
-// CONVERT-RULES-V2.md (R1).
+// makes the preview exact (you preview the literal thing that will run).
 type Plan struct {
 	// Video.
 	VideoCodec  string // target video codec: "hevc" | "h264" | "av1"; "" = copy (remux only)

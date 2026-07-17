@@ -5,8 +5,7 @@ import { api, type ConvertCandidate, type ConvertEncoder, type ConvertJob, type 
 // Convert (Tdarr replacement) — the four-tab experience from the design mockup, wired to
 // the real backend. Implemented today: analysis, hardware detection, the Save-space engine
 // (safe encode→verify→replace), and the rules engine. Steps the mockup shows that are still
-// on the roadmap (audio/sub/HDR actions, VMAF gate, 30s sample) are marked as such — see
-// CONVERT-BUILD-PLAN.md.
+// on the roadmap (audio/sub/HDR actions, VMAF gate, 30s sample) are marked as such.
 type Tab = "overview" | "queue" | "library" | "logs" | "settings";
 const ACTIVE = new Set(["queued", "encoding", "verifying", "replacing"]);
 

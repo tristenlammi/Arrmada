@@ -26,8 +26,7 @@ import { Library } from "./pages/Library";
 import { Login } from "./pages/Login";
 import { Placeholder } from "./pages/Placeholder";
 
-// Module routes still awaiting their build → placeholders. Milestones mirror
-// BUILD-PLAN.md.
+// Module routes still awaiting their build → placeholders.
 const MODULE_ROUTES: {
   path: string;
   title: string;
