@@ -297,6 +297,12 @@ export interface AppSettings {
   recycle_retention_days: string;
 }
 
+export interface LogEntry {
+  time_ms: number;
+  level: string; // DEBUG | INFO | WARN | ERROR
+  msg: string;
+  attrs?: string;
+}
 export interface RecycleStats {
   enabled: boolean;
   dir: string;
@@ -803,6 +809,14 @@ export const api = {
     req<AppSettings>("/api/v1/settings", { method: "PUT", body: JSON.stringify(body) }),
   plexLoginStart: () => req<{ id: number; auth_url: string }>("/api/v1/auth/plex/pin", { method: "POST" }),
   plexLoginPoll: (id: number) => req<{ pending?: boolean; user?: AuthUser }>(`/api/v1/auth/plex/pin/${id}`),
+  logs: (opts?: { limit?: number; level?: string; q?: string }) => {
+    const p = new URLSearchParams();
+    if (opts?.limit) p.set("limit", String(opts.limit));
+    if (opts?.level) p.set("level", opts.level);
+    if (opts?.q) p.set("q", opts.q);
+    const qs = p.toString();
+    return req<{ entries: LogEntry[] }>(`/api/v1/logs${qs ? `?${qs}` : ""}`).then((r) => r.entries);
+  },
   recycleStats: () => req<RecycleStats>("/api/v1/recycle"),
   recycleItems: () => req<{ items: RecycleItem[] }>("/api/v1/recycle/items").then((r) => r.items),
   emptyRecycle: () => req<{ freed_bytes: number }>("/api/v1/recycle/empty", { method: "POST" }),

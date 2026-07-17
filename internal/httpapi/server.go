@@ -25,6 +25,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/convert"
 	"github.com/tristenlammi/arrmada/internal/insights"
+	"github.com/tristenlammi/arrmada/internal/applog"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
 	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/series"
@@ -60,6 +61,7 @@ type Deps struct {
 	Convert    *convert.Service
 	Insights   *insights.Service
 	Recycle    *recyclebin.Service
+	Logs       *applog.Ring
 }
 
 type api struct {
@@ -220,6 +222,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/insights/import/tautulli", a.requireRole(auth.RoleAdmin, a.handleImportTautulli))
 
 	// Convert (Tdarr replacement — GPU transcoding/cleanup over the Movies/Series catalogs).
+	mux.HandleFunc("GET "+base+"/api/v1/logs", a.requireRole(auth.RoleManager, a.handleLogs))
 	mux.HandleFunc("GET "+base+"/api/v1/recycle", a.requireRole(auth.RoleManager, a.handleRecycleStats))
 	mux.HandleFunc("GET "+base+"/api/v1/recycle/items", a.requireRole(auth.RoleManager, a.handleRecycleItems))
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/empty", a.requireRole(auth.RoleManager, a.handleRecycleEmpty))

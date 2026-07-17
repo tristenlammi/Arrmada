@@ -34,6 +34,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/notify"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/realtime"
+	"github.com/tristenlammi/arrmada/internal/applog"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
 	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/scheduler"
@@ -388,6 +389,7 @@ func main() {
 		Convert:    convertSvc,
 		Insights:   insightsSvc,
 		Recycle:    recycleSvc,
+		Logs:       logRing,
 	})
 
 	errCh := make(chan error, 1)
@@ -423,6 +425,9 @@ func main() {
 	log.Info("stopped cleanly")
 }
 
+// logRing captures recent logs for the in-app Logs viewer (also written to stdout).
+var logRing = applog.NewRing(5000)
+
 func newLogger(level string) *slog.Logger {
 	var l slog.Level
 	switch level {
@@ -435,7 +440,8 @@ func newLogger(level string) *slog.Logger {
 	default:
 		l = slog.LevelInfo
 	}
-	return slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: l}))
+	base := slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: l})
+	return slog.New(applog.NewHandler(base, logRing))
 }
 
 func orRoot(base string) string {
