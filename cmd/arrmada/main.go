@@ -312,6 +312,7 @@ func main() {
 	// Movies/Series catalogs via OpenSubtitles.
 	subsProvider := subtitles.NewOpenSubtitles(cfg.OpenSubtitlesAPIKey, cfg.OpenSubtitlesUsername, cfg.OpenSubtitlesPassword)
 	subtitlesSvc := subtitles.NewService(st.DB(), movieSvc, seriesSvc, settingsSvc, subsProvider, "ffmpeg", "ffprobe", log)
+	go subtitlesSvc.Run(runCtx) // subtitle-ensure job worker
 	sched.Register("subtitles-auto-grab", 6*time.Hour, false, func(ctx context.Context) error {
 		subtitlesSvc.AutoGrab(ctx)
 		return nil

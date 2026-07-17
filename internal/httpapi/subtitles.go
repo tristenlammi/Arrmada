@@ -3,10 +3,81 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/subtitles"
 )
+
+// handleSubtitleJobs returns recent + active subtitle-ensure jobs (polled for the Queue tab).
+func (a *api) handleSubtitleJobs(w http.ResponseWriter, r *http.Request) {
+	jobs := a.deps.Subtitles.Jobs()
+	if jobs == nil {
+		jobs = []subtitles.Job{}
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"jobs": jobs})
+}
+
+// handleSubtitleLogs returns the recent Subtitles activity console lines.
+func (a *api) handleSubtitleLogs(w http.ResponseWriter, r *http.Request) {
+	logs := a.deps.Subtitles.Logs()
+	if logs == nil {
+		logs = []subtitles.LogLine{}
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"lines": logs})
+}
+
+// handleSubtitleQueueMovie queues a subtitle-ensure job for one movie.
+func (a *api) handleSubtitleQueueMovie(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	job, err := a.deps.Subtitles.QueueMovie(r.Context(), id)
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusAccepted, job)
+}
+
+// handleSubtitleQueueEpisode queues a subtitle-ensure job for one TV episode.
+func (a *api) handleSubtitleQueueEpisode(w http.ResponseWriter, r *http.Request) {
+	seriesID, ok := a.pathValueID(w, r, "series")
+	if !ok {
+		return
+	}
+	season, err := strconv.Atoi(r.PathValue("season"))
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, "invalid season")
+		return
+	}
+	episode, err := strconv.Atoi(r.PathValue("episode"))
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, "invalid episode")
+		return
+	}
+	job, err := a.deps.Subtitles.QueueEpisode(r.Context(), seriesID, season, episode)
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusAccepted, job)
+}
+
+// handleSubtitleSweep queues an ensure job for every file missing a kept-language subtitle.
+func (a *api) handleSubtitleSweep(w http.ResponseWriter, r *http.Request) {
+	media := "movies"
+	if r.URL.Query().Get("media") == "tv" {
+		media = "tv"
+	}
+	n, err := a.deps.Subtitles.SweepMissing(r.Context(), media)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not start the sweep")
+		return
+	}
+	a.writeJSON(w, http.StatusAccepted, map[string]any{"queued": n})
+}
 
 func (a *api) handleGetSubtitleSettings(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, a.deps.Subtitles.GetSettings(r.Context()))

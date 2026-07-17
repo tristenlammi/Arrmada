@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/series"
@@ -33,6 +34,13 @@ type Service struct {
 	ffprobe  string
 	cache    *probeCache
 	log      *slog.Logger
+
+	mu     sync.Mutex
+	jobs   []*Job     // recent subtitle-ensure jobs (newest first), for the Queue tab
+	queue  chan *Job  // work handed to the worker
+	nextID int64
+	logMu  sync.Mutex
+	logBuf []LogLine // recent activity console lines, for the Logs tab
 }
 
 // NewService wires the module over the shared Movies/Series catalogs + a subtitle provider. db is
@@ -41,6 +49,7 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 	return &Service{
 		movies: mv, series: sr, settings: set, provider: provider,
 		ffmpeg: ffmpeg, ffprobe: ffprobe, cache: &probeCache{db: db}, log: log,
+		queue: make(chan *Job, 256),
 	}
 }
 

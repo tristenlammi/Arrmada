@@ -577,6 +577,10 @@ export interface SubFileEntry {
   audio_langs?: string[]; embedded: SubTrack[]; external: string[];
   languages: SubLangStatus[]; health?: SubHealth; missing: number;
 }
+export interface SubtitleJob {
+  id: number; kind: "movie" | "episode"; movie_id?: number; series_id?: number; season?: number; episode?: number;
+  title: string; state: "queued" | "running" | "done" | "skipped" | "failed"; note?: string; at: number;
+}
 export interface MovieSubStatus {
   id: number;
   title: string;
@@ -943,6 +947,11 @@ export const api = {
   updateSubtitleSettings: (body: { movies_auto?: boolean; series_auto?: boolean; languages?: string[] }) =>
     req<SubtitleSettings>("/api/v1/subtitles/settings", { method: "PUT", body: JSON.stringify(body) }),
   subtitleLibrary: (media: "movies" | "tv" = "movies") => req<{ items: SubFileEntry[] }>(`/api/v1/subtitles/library${media === "tv" ? "?media=tv" : ""}`).then((r) => r.items),
+  subtitleJobs: () => req<{ jobs: SubtitleJob[] }>("/api/v1/subtitles/jobs").then((r) => r.jobs),
+  subtitleLogs: () => req<{ lines: { at: number; level: string; msg: string }[] }>("/api/v1/subtitles/logs").then((r) => r.lines),
+  subtitleQueueMovie: (id: number) => req<SubtitleJob>(`/api/v1/subtitles/library/movies/${id}`, { method: "POST" }),
+  subtitleQueueEpisode: (seriesID: number, season: number, episode: number) => req<SubtitleJob>(`/api/v1/subtitles/library/episodes/${seriesID}/${season}/${episode}`, { method: "POST" }),
+  subtitleSweep: (media: "movies" | "tv" = "movies") => req<{ queued: number }>(`/api/v1/subtitles/sweep${media === "tv" ? "?media=tv" : ""}`, { method: "POST" }),
   subtitleMovies: () => req<{ movies: MovieSubStatus[] }>("/api/v1/subtitles/movies").then((r) => r.movies),
   subtitleSeries: () => req<{ series: SeriesSubStatus[] }>("/api/v1/subtitles/series").then((r) => r.series),
   searchMovieSubs: (id: number) => req<{ status: string }>(`/api/v1/subtitles/movies/${id}/search`, { method: "POST" }),
