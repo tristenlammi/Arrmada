@@ -90,6 +90,8 @@ func New(d Deps) *http.Server {
 	// Auth
 	mux.HandleFunc("POST "+base+"/api/v1/auth/setup", a.handleSetup)
 	mux.HandleFunc("POST "+base+"/api/v1/auth/login", a.handleLogin)
+	mux.HandleFunc("POST "+base+"/api/v1/auth/plex/pin", a.handlePlexLoginStart)
+	mux.HandleFunc("GET "+base+"/api/v1/auth/plex/pin/{id}", a.handlePlexLoginPoll)
 	mux.HandleFunc("POST "+base+"/api/v1/auth/logout", a.handleLogout)
 	mux.HandleFunc("GET "+base+"/api/v1/auth/me", a.protected(a.handleMe))
 	// Per-user notifications (in-app inbox + personal Apprise URL).
@@ -412,6 +414,7 @@ func (a *api) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"auth_enabled":   a.deps.Config.AuthEnabled,
 		"needs_setup":    needsSetup,
 		"authenticated":  authed,
+		"plex_login":     a.deps.Settings.GetBool(r.Context(), "plex_login_enabled", false),
 		"external":       isExternalRequest(r), // request came from outside the LAN → Discover-only
 
 		"modules":        plannedModules,

@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -102,6 +103,66 @@ func (s *Service) CreateUser(ctx context.Context, username, password string, rol
 	}
 	id, _ := res.LastInsertId()
 	return &User{ID: id, Username: username, Role: role, AutoApprove: autoApprove}, nil
+}
+
+// FindOrCreatePlexUser returns the user linked to a Plex account, creating a passwordless one
+// (its username derived from the Plex name, de-duplicated) if none exists yet. An existing link
+// keeps its current role/auto-approve — only new users get the provided defaults. A disabled
+// linked user is returned as-is so the caller can refuse the sign-in.
+func (s *Service) FindOrCreatePlexUser(ctx context.Context, plexID, plexUsername string, role Role, autoApprove bool) (*User, error) {
+	if strings.TrimSpace(plexID) == "" {
+		return nil, errors.New("missing plex id")
+	}
+	var u User
+	var disabled, aa int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, username, role, disabled, auto_approve FROM users WHERE plex_id = ?`, plexID).
+		Scan(&u.ID, &u.Username, &u.Role, &disabled, &aa)
+	if err == nil {
+		u.Disabled = disabled == 1
+		u.AutoApprove = aa == 1
+		return &u, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
+	if !ValidRole(role) {
+		role = RoleRequester
+	}
+	pw := make([]byte, 24) // unusable password — Plex-linked accounts sign in via Plex only
+	if _, err := rand.Read(pw); err != nil {
+		return nil, err
+	}
+	hash, err := bcrypt.GenerateFromPassword(pw, bcrypt.DefaultCost)
+	if err != nil {
+		return nil, err
+	}
+	username := s.uniqueUsername(ctx, plexUsername)
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO users (username, password_hash, role, auto_approve, plex_id) VALUES (?, ?, ?, ?, ?)`,
+		username, string(hash), string(role), boolToInt(autoApprove), plexID)
+	if err != nil {
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	return &User{ID: id, Username: username, Role: role, AutoApprove: autoApprove}, nil
+}
+
+// uniqueUsername returns base (trimmed), appending "-N" until it's free.
+func (s *Service) uniqueUsername(ctx context.Context, base string) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		base = "plex-user"
+	}
+	name := base
+	for i := 2; i < 1000; i++ {
+		var n int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE username = ?`, name).Scan(&n); err == nil && n == 0 {
+			return name
+		}
+		name = base + "-" + strconv.Itoa(i)
+	}
+	return base + "-" + strconv.FormatInt(time.Now().UnixNano(), 10)
 }
 
 // UpdateUser changes a user's role and auto-approve flag.

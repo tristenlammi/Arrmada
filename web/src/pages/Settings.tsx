@@ -125,6 +125,10 @@ export function Settings() {
                 <Toggle label="Books" hint="Open Library metadata, ebook & audiobook library, and the Books tab in Discover." checked={s.books_enabled} onChange={(v) => patch({ books_enabled: v })} />
                 <Toggle label="Music" hint="The Music library and its nav entry. (The Music module itself is still on the roadmap.)" checked={s.music_enabled} onChange={(v) => patch({ music_enabled: v })} />
               </Section>
+              <Section title="Plex sign-in" subtitle="Let your Plex Home members and shared users sign in with Plex — no accounts to hand out. They get a Requester account (Discover-only), and only people who actually have access to your Plex server are allowed in. Requires your Plex server to be connected in Insights.">
+                <Toggle label="Allow Sign in with Plex" hint="Adds a 'Sign in with Plex' button to the login page." checked={s.plex_login_enabled} onChange={(v) => patch({ plex_login_enabled: v })} />
+                <Toggle label="Auto-approve their requests" hint="Plex sign-ins' requests download immediately instead of waiting for your approval." checked={s.plex_login_auto_approve} onChange={(v) => patch({ plex_login_auto_approve: v })} />
+              </Section>
               <RecycleBin s={s} patch={patch} />
               <SaveBar />
               <OverseerrImport />

@@ -20,6 +20,7 @@ export interface Status {
   modules: Module[];
   books_enabled: boolean;
   music_enabled: boolean;
+  plex_login: boolean;
 }
 
 export interface Health {
@@ -274,6 +275,8 @@ export interface AppSettings {
   download_artwork: boolean;
   books_enabled: boolean;
   music_enabled: boolean;
+  plex_login_enabled: boolean;
+  plex_login_auto_approve: boolean;
   // Convert module (focused model: target codec + subs + schedule + safety).
   convert_target_codec: string;
   convert_auto: boolean;
@@ -785,6 +788,8 @@ export const api = {
   settings: () => req<AppSettings>("/api/v1/settings"),
   updateSettings: (body: Partial<AppSettings>) =>
     req<AppSettings>("/api/v1/settings", { method: "PUT", body: JSON.stringify(body) }),
+  plexLoginStart: () => req<{ id: number; auth_url: string }>("/api/v1/auth/plex/pin", { method: "POST" }),
+  plexLoginPoll: (id: number) => req<{ pending?: boolean; user?: AuthUser }>(`/api/v1/auth/plex/pin/${id}`),
   recycleStats: () => req<RecycleStats>("/api/v1/recycle"),
   emptyRecycle: () => req<{ freed_bytes: number }>("/api/v1/recycle/empty", { method: "POST" }),
   scanLibrary: () => req<{ status: string }>("/api/v1/movies/scan", { method: "POST" }),

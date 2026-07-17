@@ -41,6 +41,8 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"download_artwork": a.deps.Settings.GetBool(ctx, keyDownloadArtwrk, false),
 		"books_enabled":    a.booksEnabled(ctx),
 		"music_enabled":    a.musicEnabled(ctx),
+		"plex_login_enabled":      a.deps.Settings.GetBool(ctx, "plex_login_enabled", false),
+		"plex_login_auto_approve": a.deps.Settings.GetBool(ctx, "plex_login_auto_approve", true),
 		// Convert module.
 		"convert_skip_hardlinked":  a.deps.Settings.GetBool(ctx, "convert_skip_hardlinked", true),
 		"convert_keep_audio_langs": a.deps.Settings.Get(ctx, "convert_keep_audio_langs", ""),
@@ -73,6 +75,8 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		DownloadArtwork *bool   `json:"download_artwork"`
 		BooksEnabled    *bool   `json:"books_enabled"`
 		MusicEnabled    *bool   `json:"music_enabled"`
+		PlexLoginEnabled     *bool `json:"plex_login_enabled"`
+		PlexLoginAutoApprove *bool `json:"plex_login_auto_approve"`
 		ConvertSkipHardlinked *bool   `json:"convert_skip_hardlinked"`
 		ConvertKeepAudioLangs *string `json:"convert_keep_audio_langs"`
 		ConvertAddStereo      *bool   `json:"convert_add_stereo"`
@@ -117,6 +121,12 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.BooksEnabled != nil && !save(a.deps.Settings.SetBool(ctx, keyBooksEnabled, *req.BooksEnabled)) {
+		return
+	}
+	if req.PlexLoginEnabled != nil && !save(a.deps.Settings.SetBool(ctx, "plex_login_enabled", *req.PlexLoginEnabled)) {
+		return
+	}
+	if req.PlexLoginAutoApprove != nil && !save(a.deps.Settings.SetBool(ctx, "plex_login_auto_approve", *req.PlexLoginAutoApprove)) {
 		return
 	}
 	if req.ConvertSkipHardlinked != nil && !save(a.deps.Settings.SetBool(ctx, "convert_skip_hardlinked", *req.ConvertSkipHardlinked)) {
