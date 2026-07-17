@@ -30,8 +30,18 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		present[strings.ToLower(l)] = true
 	}
 	canDownload := s.provider != nil && s.provider.CanDownload()
+	aiOK := s.whisper.available()
+	var audioLangs []string
+	if mi != nil {
+		audioLangs = mi.AudioLangs
+	}
 
+	type aiTask struct {
+		lang      string
+		translate bool
+	}
 	var extractLangs, downloadLangs []string
+	var aiTasks []aiTask
 	pending := 0
 	for _, l := range langs {
 		if present[strings.ToLower(l)] {
@@ -42,11 +52,26 @@ func (s *Service) process(ctx context.Context, job *Job) {
 			extractLangs = append(extractLangs, l)
 		case "download":
 			downloadLangs = append(downloadLangs, l)
-		default: // ocr | ai — not implemented yet
+		case "ai":
+			// Only what Whisper can actually do: transcribe when the audio is that language, or
+			// translate to English. It can't translate into other languages.
+			if aiOK {
+				switch aiPlan(audioLangs, l) {
+				case "transcribe":
+					aiTasks = append(aiTasks, aiTask{l, false})
+				case "translate":
+					aiTasks = append(aiTasks, aiTask{l, true})
+				default:
+					pending++
+				}
+			} else {
+				pending++
+			}
+		default: // ocr — not implemented yet
 			pending++
 		}
 	}
-	if len(extractLangs) == 0 && len(downloadLangs) == 0 {
+	if len(extractLangs) == 0 && len(downloadLangs) == 0 && len(aiTasks) == 0 {
 		if pending > 0 {
 			s.finish(job, StateSkipped, fmt.Sprintf("%d language(s) need OCR/AI — coming soon", pending))
 		} else {
@@ -71,6 +96,19 @@ func (s *Service) process(ctx context.Context, job *Job) {
 			downloaded++
 		}
 	}
+	generated := 0
+	for _, t := range aiTasks {
+		verb := "transcribing"
+		if t.translate {
+			verb = "translating → en"
+		}
+		s.event("info", fmt.Sprintf("AI %s %s (%s)…", verb, title, t.lang))
+		if err := s.whisper.generate(ctx, s.ffmpeg, path, sidecarPath(path, strings.ToLower(t.lang)), t.lang, t.translate); err != nil {
+			s.event("warn", fmt.Sprintf("%s: AI %s failed: %v", title, t.lang, err))
+		} else {
+			generated++
+		}
+	}
 
 	var parts []string
 	if extracted > 0 {
@@ -78,6 +116,9 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	}
 	if downloaded > 0 {
 		parts = append(parts, fmt.Sprintf("%d downloaded", downloaded))
+	}
+	if generated > 0 {
+		parts = append(parts, fmt.Sprintf("%d AI-generated", generated))
 	}
 	if pending > 0 {
 		parts = append(parts, fmt.Sprintf("%d pending (OCR/AI)", pending))
@@ -87,7 +128,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	}
 	note := strings.Join(parts, " · ")
 	s.event("info", fmt.Sprintf("✓ %s — %s", title, note))
-	if extracted+downloaded > 0 {
+	if extracted+downloaded+generated > 0 {
 		s.finish(job, StateDone, note)
 	} else {
 		s.finish(job, StateSkipped, note)

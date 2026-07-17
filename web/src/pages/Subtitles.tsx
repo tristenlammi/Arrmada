@@ -142,7 +142,7 @@ function Overview({ jobs, settings }: { jobs: SubtitleJob[]; settings: SubtitleS
             <Row2 label="Embedded extract" on />
             <Row2 label="OpenSubtitles download" on={!!settings?.can_download} />
             <Row2 label="Image-sub OCR" on={false} soon />
-            <Row2 label="AI transcription" on={false} soon />
+            <Row2 label="AI transcription" on={!!settings?.ai_ready} soon={!settings?.ai_ready} />
           </div>
           <div className="mt-2.5 border-t pt-2.5 text-[11.5px] text-ink-faint" style={{ borderColor: "var(--line-soft)" }}>
             Auto: movies {settings?.movies_auto ? "on" : "off"} · series {settings?.series_auto ? "on" : "off"}

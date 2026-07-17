@@ -33,6 +33,7 @@ type Service struct {
 	ffmpeg   string
 	ffprobe  string
 	cache    *probeCache
+	whisper  *whisperGen
 	log      *slog.Logger
 
 	mu     sync.Mutex
@@ -44,11 +45,13 @@ type Service struct {
 }
 
 // NewService wires the module over the shared Movies/Series catalogs + a subtitle provider. db is
-// used for the probe cache; ffmpeg/ffprobe drive embedded-track probing and extraction.
-func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *settings.Service, provider Provider, ffmpeg, ffprobe string, log *slog.Logger) *Service {
+// used for the probe cache; ffmpeg/ffprobe drive embedded-track probing and extraction;
+// whisperModelsDir is where the local AI (whisper.cpp) model files live.
+func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *settings.Service, provider Provider, ffmpeg, ffprobe, whisperModelsDir string, log *slog.Logger) *Service {
 	return &Service{
 		movies: mv, series: sr, settings: set, provider: provider,
-		ffmpeg: ffmpeg, ffprobe: ffprobe, cache: &probeCache{db: db}, log: log,
+		ffmpeg: ffmpeg, ffprobe: ffprobe, cache: &probeCache{db: db},
+		whisper: detectWhisper(whisperModelsDir), log: log,
 		queue: make(chan *Job, 256),
 	}
 }
@@ -60,6 +63,7 @@ type Settings struct {
 	Languages     []string `json:"languages"`
 	ProviderReady bool     `json:"provider_ready"` // can search
 	CanDownload   bool     `json:"can_download"`   // can actually grab (needs account)
+	AIReady       bool     `json:"ai_ready"`       // local whisper.cpp binary + a model present
 }
 
 // GetSettings returns the current configuration + provider status.
@@ -70,6 +74,7 @@ func (s *Service) GetSettings(ctx context.Context) Settings {
 		Languages:     s.languages(ctx),
 		ProviderReady: s.provider.Available(),
 		CanDownload:   s.provider.CanDownload(),
+		AIReady:       s.whisper.available(),
 	}
 }
 
