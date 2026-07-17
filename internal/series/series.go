@@ -17,7 +17,12 @@ type Series struct {
 	Network        string `json:"network,omitempty"`
 	Monitored      bool   `json:"monitored"`
 	QualityProfile string `json:"quality_profile"`
-	AddedAt        string `json:"added_at,omitempty"`
+	// SeriesType drives episode numbering. "standard" matches releases by SxxExx;
+	// "anime" also matches by absolute episode number (and falls back positionally),
+	// because anime releases number episodes 1..N across the whole run. Auto-set on
+	// Add (TMDB Animation genre + Japanese original language) and user-overridable.
+	SeriesType string `json:"series_type,omitempty"`
+	AddedAt    string `json:"added_at,omitempty"`
 
 	Extra   *SeriesExtra `json:"extra,omitempty"`
 	Seasons []Season     `json:"seasons,omitempty"` // detail endpoint only
@@ -37,7 +42,19 @@ type SeriesExtra struct {
 	Genres      []string     `json:"genres,omitempty"`
 	BackdropURL string       `json:"backdrop_url,omitempty"`
 	Cast        []CastMember `json:"cast,omitempty"`
+	// OriginalTitle is TMDB's original_name (e.g. romaji for anime). Used as an
+	// alternate search title, since anime is often released under its romaji name.
+	OriginalTitle string `json:"original_title,omitempty"`
 }
+
+// IsAnime reports whether the series uses anime (absolute) episode numbering.
+func (s Series) IsAnime() bool { return s.SeriesType == SeriesTypeAnime }
+
+// Series type values stored in series.series_type.
+const (
+	SeriesTypeStandard = "standard"
+	SeriesTypeAnime    = "anime"
+)
 
 // CastMember is one billed actor.
 type CastMember struct {
@@ -67,7 +84,11 @@ type Episode struct {
 	AirDate       string `json:"air_date,omitempty"`
 	Runtime       int    `json:"runtime,omitempty"`
 	StillURL      string `json:"still_url,omitempty"`
-	Monitored     bool   `json:"monitored"`
+	// AbsoluteNumber is the episode's 1..N position across the whole series
+	// (specials excluded), used to match anime releases numbered absolutely. 0 when
+	// unknown/not computed.
+	AbsoluteNumber int  `json:"absolute_number,omitempty"`
+	Monitored      bool `json:"monitored"`
 	HasFile       bool   `json:"has_file"`
 	FilePath      string `json:"file_path,omitempty"`
 	SizeBytes     int64  `json:"size_bytes,omitempty"`

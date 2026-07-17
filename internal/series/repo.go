@@ -21,7 +21,7 @@ type Repo struct{ db *sql.DB }
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const seriesCols = `id, tmdb_id, imdb_id, title, year, overview, poster_url, status, network,
-	monitored, quality_profile, extra_json, added_at`
+	monitored, quality_profile, extra_json, series_type, added_at`
 
 func scanSeries(row interface{ Scan(...any) error }) (Series, error) {
 	var (
@@ -30,7 +30,7 @@ func scanSeries(row interface{ Scan(...any) error }) (Series, error) {
 		extraJSON string
 	)
 	err := row.Scan(&s.ID, &s.TMDBID, &s.IMDBID, &s.Title, &s.Year, &s.Overview, &s.PosterURL,
-		&s.Status, &s.Network, &mon, &s.QualityProfile, &extraJSON, &s.AddedAt)
+		&s.Status, &s.Network, &mon, &s.QualityProfile, &extraJSON, &s.SeriesType, &s.AddedAt)
 	if err != nil {
 		return Series{}, err
 	}
@@ -133,12 +133,16 @@ func (r *Repo) Create(ctx context.Context, s Series) (Series, error) {
 			extraJSON = string(b)
 		}
 	}
+	stype := s.SeriesType
+	if stype == "" {
+		stype = SeriesTypeStandard
+	}
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO series (tmdb_id, imdb_id, title, year, overview, poster_url, status, network,
-			monitored, quality_profile, extra_json)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			monitored, quality_profile, extra_json, series_type)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.TMDBID, s.IMDBID, s.Title, s.Year, s.Overview, s.PosterURL, s.Status, s.Network,
-		b2i(s.Monitored), s.QualityProfile, extraJSON)
+		b2i(s.Monitored), s.QualityProfile, extraJSON, stype)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return Series{}, ErrExists
@@ -160,9 +164,9 @@ func (r *Repo) InsertSeasons(ctx context.Context, seriesID int64, seasons []Seas
 		}
 		for _, ep := range sn.Episodes {
 			if _, err := r.db.ExecContext(ctx,
-				`INSERT OR IGNORE INTO episodes (series_id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				seriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.Overview, ep.AirDate, ep.Runtime, ep.StillURL, b2i(ep.Monitored)); err != nil {
+				`INSERT OR IGNORE INTO episodes (series_id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored, absolute_number)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				seriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.Overview, ep.AirDate, ep.Runtime, ep.StillURL, b2i(ep.Monitored), ep.AbsoluteNumber); err != nil {
 				return err
 			}
 		}
@@ -194,7 +198,7 @@ func (r *Repo) SeasonsFor(ctx context.Context, seriesID int64) ([]Season, error)
 		return nil, err
 	}
 	eps, err := r.db.QueryContext(ctx,
-		`SELECT id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored, has_file, file_path, size_bytes
+		`SELECT id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored, has_file, file_path, size_bytes, absolute_number
 		 FROM episodes WHERE series_id = ? ORDER BY season_number, episode_number`, seriesID)
 	if err != nil {
 		return seasons, nil
@@ -203,7 +207,7 @@ func (r *Repo) SeasonsFor(ctx context.Context, seriesID int64) ([]Season, error)
 	for eps.Next() {
 		var e Episode
 		var mon, hf int
-		if err := eps.Scan(&e.ID, &e.SeasonNumber, &e.EpisodeNumber, &e.Title, &e.Overview, &e.AirDate, &e.Runtime, &e.StillURL, &mon, &hf, &e.FilePath, &e.SizeBytes); err != nil {
+		if err := eps.Scan(&e.ID, &e.SeasonNumber, &e.EpisodeNumber, &e.Title, &e.Overview, &e.AirDate, &e.Runtime, &e.StillURL, &mon, &hf, &e.FilePath, &e.SizeBytes, &e.AbsoluteNumber); err != nil {
 			return seasons, nil
 		}
 		e.Monitored, e.HasFile = mon != 0, hf != 0
@@ -218,6 +222,69 @@ func (r *Repo) SeasonsFor(ctx context.Context, seriesID int64) ([]Season, error)
 func (r *Repo) SetMonitored(ctx context.Context, id int64, monitored bool) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE series SET monitored = ? WHERE id = ?`, b2i(monitored), id)
 	return err
+}
+
+// SetSeriesType sets a series' numbering type ("standard" | "anime").
+func (r *Repo) SetSeriesType(ctx context.Context, id int64, seriesType string) error {
+	res, err := r.db.ExecContext(ctx, `UPDATE series SET series_type = ? WHERE id = ?`, seriesType, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetEpisodeAbsolute records an episode's absolute number (backfill on refresh).
+func (r *Repo) SetEpisodeAbsolute(ctx context.Context, seriesID int64, season, episode, absolute int) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE episodes SET absolute_number = ? WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
+		absolute, seriesID, season, episode)
+	return err
+}
+
+// BackfillAbsolute (re)computes every episode's absolute number as its 1-based
+// ordinal across the non-special seasons (ordered by season then episode). Idempotent
+// — safe to run on refresh, and it retro-fits series added before absolute numbering.
+func (r *Repo) BackfillAbsolute(ctx context.Context, seriesID int64) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE episodes SET absolute_number = (
+			SELECT COUNT(*) FROM episodes e2
+			WHERE e2.series_id = episodes.series_id AND e2.season_number > 0
+			  AND (e2.season_number < episodes.season_number
+			       OR (e2.season_number = episodes.season_number AND e2.episode_number <= episodes.episode_number))
+		) WHERE series_id = ? AND season_number > 0`, seriesID)
+	return err
+}
+
+// EpisodeByAbsolute resolves an absolute episode number to its (season, episode).
+// ok=false when the series has no episode with that absolute number.
+func (r *Repo) EpisodeByAbsolute(ctx context.Context, seriesID int64, absolute int) (season, episode int, ok bool) {
+	err := r.db.QueryRowContext(ctx,
+		`SELECT season_number, episode_number FROM episodes WHERE series_id = ? AND absolute_number = ? LIMIT 1`,
+		seriesID, absolute).Scan(&season, &episode)
+	if err != nil {
+		return 0, 0, false
+	}
+	return season, episode, true
+}
+
+// NthEpisodeOfSeason resolves the n-th (1-based) aired episode of a season to its
+// episode number — the positional fallback for anime files numbered per cour
+// ("S03E01" → the first episode of season 3). ok=false when out of range.
+func (r *Repo) NthEpisodeOfSeason(ctx context.Context, seriesID int64, season, n int) (episode int, ok bool) {
+	if n < 1 {
+		return 0, false
+	}
+	err := r.db.QueryRowContext(ctx,
+		`SELECT episode_number FROM episodes WHERE series_id = ? AND season_number = ?
+		 ORDER BY episode_number LIMIT 1 OFFSET ?`,
+		seriesID, season, n-1).Scan(&episode)
+	if err != nil {
+		return 0, false
+	}
+	return episode, true
 }
 
 // SetSeasonMonitored toggles a whole season (and its episodes).

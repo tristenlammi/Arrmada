@@ -133,13 +133,15 @@ type SeriesResult struct {
 // SeriesDetails is a full TV series record with its seasons and episodes.
 type SeriesDetails struct {
 	SeriesResult
-	IMDBID      string          `json:"imdb_id,omitempty"`
-	Status      string          `json:"status,omitempty"` // Returning Series | Ended | Canceled
-	Network     string          `json:"network,omitempty"`
-	BackdropURL string          `json:"backdrop_url,omitempty"`
-	Genres      []string        `json:"genres,omitempty"`
-	Cast        []CastMember    `json:"cast,omitempty"`
-	Seasons     []SeasonDetails `json:"seasons,omitempty"`
+	IMDBID       string          `json:"imdb_id,omitempty"`
+	Status       string          `json:"status,omitempty"` // Returning Series | Ended | Canceled
+	Network      string          `json:"network,omitempty"`
+	BackdropURL  string          `json:"backdrop_url,omitempty"`
+	Genres       []string        `json:"genres,omitempty"`
+	Cast         []CastMember    `json:"cast,omitempty"`
+	Seasons      []SeasonDetails `json:"seasons,omitempty"`
+	OriginalName string          `json:"original_name,omitempty"` // TMDB original_name (romaji for anime)
+	OriginalLang string          `json:"original_language,omitempty"`
 }
 
 // SeasonDetails is one season plus its episodes.

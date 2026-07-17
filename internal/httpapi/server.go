@@ -200,6 +200,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/series/{id}", a.protected(a.handleGetSeries))
 	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/monitor", a.protected(a.handleSetSeriesMonitored))
 	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/profile", a.protected(a.handleSetSeriesProfile))
+	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/type", a.protected(a.handleSetSeriesType))
 	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/seasons/{season}/monitor", a.protected(a.handleSetSeasonMonitored))
 	mux.HandleFunc("PUT "+base+"/api/v1/series/episodes/{eid}/monitor", a.protected(a.handleSetEpisodeMonitored))
 	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/blocklist", a.protected(a.handleSeriesBlocklist))

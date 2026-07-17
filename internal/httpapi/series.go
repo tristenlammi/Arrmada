@@ -220,6 +220,24 @@ func (a *api) handleSetSeriesProfile(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"quality_profile": req.QualityProfile})
 }
 
+func (a *api) handleSetSeriesType(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		SeriesType string `json:"series_type"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	if err := a.deps.Series.SetType(r.Context(), id, req.SeriesType); err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"series_type": req.SeriesType})
+}
+
 func (a *api) handleSetSeasonMonitored(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)
 	if !ok {

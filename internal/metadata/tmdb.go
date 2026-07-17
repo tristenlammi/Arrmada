@@ -122,6 +122,8 @@ func (t *TMDB) GetSeries(ctx context.Context, tmdbID int) (*SeriesDetails, error
 		SeriesResult: s.toResult(),
 		IMDBID:       s.ExternalIDs.IMDBID,
 		Status:       s.Status,
+		OriginalName: s.OriginalName,
+		OriginalLang: s.OriginalLanguage,
 	}
 	if s.BackdropPath != "" {
 		d.BackdropURL = tmdbBackdropBase + s.BackdropPath
@@ -195,9 +197,11 @@ func (t *TMDB) seasonEpisodes(ctx context.Context, tmdbID, season int) ([]Episod
 }
 
 type tmdbSeries struct {
-	ID           int         `json:"id"`
-	Name         string      `json:"name"`
-	FirstAirDate string      `json:"first_air_date"`
+	ID               int         `json:"id"`
+	Name             string      `json:"name"`
+	OriginalName     string      `json:"original_name"`
+	OriginalLanguage string      `json:"original_language"`
+	FirstAirDate     string      `json:"first_air_date"`
 	Overview     string      `json:"overview"`
 	PosterPath   string      `json:"poster_path"`
 	BackdropPath string      `json:"backdrop_path"`

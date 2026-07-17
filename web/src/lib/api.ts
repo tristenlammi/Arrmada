@@ -436,6 +436,7 @@ export interface Episode {
   air_date?: string;
   runtime?: number;
   still_url?: string;
+  absolute_number?: number;
   monitored: boolean;
   has_file: boolean;
   file_path?: string;
@@ -463,6 +464,7 @@ export interface Series {
   network?: string;
   monitored: boolean;
   quality_profile: string;
+  series_type?: string; // "standard" | "anime"
   added_at?: string;
   extra?: SeriesExtra;
   seasons?: Season[];
@@ -871,6 +873,8 @@ export const api = {
     req<{ monitored: boolean }>(`/api/v1/series/${id}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
   setSeriesProfile: (id: number, quality_profile: string) =>
     req<{ quality_profile: string }>(`/api/v1/series/${id}/profile`, { method: "PUT", body: JSON.stringify({ quality_profile }) }),
+  setSeriesType: (id: number, series_type: string) =>
+    req<{ series_type: string }>(`/api/v1/series/${id}/type`, { method: "PUT", body: JSON.stringify({ series_type }) }),
   setSeasonMonitored: (id: number, season: number, monitored: boolean) =>
     req<{ monitored: boolean }>(`/api/v1/series/${id}/seasons/${season}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
   setEpisodeMonitored: (eid: number, monitored: boolean) =>

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/tristenlammi/arrmada/internal/library"
@@ -102,6 +103,7 @@ func (s *Service) Add(ctx context.Context, tmdbID int, qualityProfile string, mo
 		TMDBID: d.TMDBID, IMDBID: d.IMDBID, Title: d.Title, Year: d.Year, Overview: d.Overview,
 		PosterURL: d.PosterURL, Status: d.Status, Network: d.Network,
 		Monitored: monitored, QualityProfile: qualityProfile, Extra: extraFrom(d),
+		SeriesType: detectSeriesType(d),
 	}
 	created, err := s.repo.Create(ctx, sr)
 	if err != nil {
@@ -118,8 +120,11 @@ func (s *Service) Add(ctx context.Context, tmdbID int, qualityProfile string, mo
 
 // seasonsFromDetails projects TMDB season/episode metadata into storage rows.
 // Specials (season 0) default unmonitored; everything else follows the series flag.
+// Absolute numbers are assigned 1..N across the non-special seasons in order, so an
+// anime release numbered absolutely resolves to the right (season, episode).
 func seasonsFromDetails(d *metadata.SeriesDetails, monitored bool) []Season {
 	seasons := make([]Season, 0, len(d.Seasons))
+	abs := 0
 	for _, sd := range d.Seasons {
 		special := sd.SeasonNumber == 0
 		sn := Season{
@@ -127,15 +132,34 @@ func seasonsFromDetails(d *metadata.SeriesDetails, monitored bool) []Season {
 			Monitored: monitored && !special,
 		}
 		for _, ed := range sd.Episodes {
+			absNum := 0
+			if !special {
+				abs++
+				absNum = abs
+			}
 			sn.Episodes = append(sn.Episodes, Episode{
 				SeasonNumber: sd.SeasonNumber, EpisodeNumber: ed.EpisodeNumber, Title: ed.Title,
 				Overview: ed.Overview, AirDate: ed.AirDate, Runtime: ed.Runtime, StillURL: ed.StillURL,
-				Monitored: monitored && !special,
+				AbsoluteNumber: absNum, Monitored: monitored && !special,
 			})
 		}
 		seasons = append(seasons, sn)
 	}
 	return seasons
+}
+
+// detectSeriesType flags a show as anime when TMDB says it's Animation AND its
+// original language is Japanese — the same heuristic Sonarr-style tools use. It's
+// only a default; the user can override per series.
+func detectSeriesType(d *metadata.SeriesDetails) string {
+	if d.OriginalLang == "ja" {
+		for _, g := range d.Genres {
+			if strings.EqualFold(g, "Animation") {
+				return SeriesTypeAnime
+			}
+		}
+	}
+	return SeriesTypeStandard
 }
 
 // Refresh re-pulls TMDB metadata for a series, adding any newly-announced seasons or
@@ -149,6 +173,11 @@ func (s *Service) Refresh(ctx context.Context, id int64) (Series, error) {
 	if d, derr := s.meta.GetSeries(ctx, sr.TMDBID); derr == nil {
 		if err := s.repo.InsertSeasons(ctx, id, seasonsFromDetails(d, sr.Monitored)); err != nil {
 			s.log.Warn("series: refresh insert seasons failed", "series", sr.Title, "err", err)
+		}
+		// Recompute absolute numbers (fills them in for series added before anime
+		// support, and covers any newly-announced episodes).
+		if err := s.repo.BackfillAbsolute(ctx, id); err != nil {
+			s.log.Warn("series: backfill absolute numbers failed", "series", sr.Title, "err", err)
 		}
 	} else {
 		s.log.Warn("series: refresh metadata failed", "series", sr.Title, "err", derr)
@@ -174,6 +203,21 @@ func (s *Service) SetEpisodeMonitored(ctx context.Context, episodeID int64, moni
 // SetQualityProfile changes a series' quality profile.
 func (s *Service) SetQualityProfile(ctx context.Context, id int64, profile string) error {
 	return s.repo.SetQualityProfile(ctx, id, profile)
+}
+
+// SetType overrides a series' numbering type ("standard" | "anime"). Ensures absolute
+// numbers exist when switching to anime so matching works immediately.
+func (s *Service) SetType(ctx context.Context, id int64, seriesType string) error {
+	if seriesType != SeriesTypeStandard && seriesType != SeriesTypeAnime {
+		return fmt.Errorf("invalid series type %q", seriesType)
+	}
+	if err := s.repo.SetSeriesType(ctx, id, seriesType); err != nil {
+		return err
+	}
+	if seriesType == SeriesTypeAnime {
+		_ = s.repo.BackfillAbsolute(ctx, id)
+	}
+	return nil
 }
 
 // Delete removes a series. When deleteFiles is set, its episode files are removed
@@ -450,6 +494,11 @@ func NormTitle(s string) string { return normKey(s) }
 // extraFrom projects metadata into the stored extra blob.
 func extraFrom(d *metadata.SeriesDetails) *SeriesExtra {
 	ex := &SeriesExtra{Genres: d.Genres, BackdropURL: d.BackdropURL}
+	// Keep the romaji/original title only when it differs from the display title, so
+	// anime searches can also query the name releases are actually tagged with.
+	if d.OriginalName != "" && !strings.EqualFold(d.OriginalName, d.Title) {
+		ex.OriginalTitle = d.OriginalName
+	}
 	for _, c := range d.Cast {
 		ex.Cast = append(ex.Cast, CastMember{Name: c.Name, Character: c.Character, ProfileURL: c.ProfileURL})
 	}

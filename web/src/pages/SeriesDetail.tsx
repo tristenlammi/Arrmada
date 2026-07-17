@@ -196,6 +196,20 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("refresh", async () => { await api.refreshSeries(series.id); onChange(); flash("Refreshed metadata and rescanned disk."); })}>
           {busy === "refresh" ? "Refreshing…" : "Refresh & rescan"}
         </button>
+        <button
+          className={btn}
+          style={series.series_type === "anime" ? { background: "var(--accent-soft)", color: "var(--accent)", border: "1px solid var(--accent-line)" } : ghost}
+          disabled={busy !== null}
+          title="Anime numbers episodes 1..N across the whole run. Turn on to match releases by absolute episode number (and per-cour files). Auto-detected for Japanese animation."
+          onClick={() => run("type", async () => {
+            const next = series.series_type === "anime" ? "standard" : "anime";
+            await api.setSeriesType(series.id, next);
+            onChange();
+            flash(next === "anime" ? "Anime numbering on — rescan to match absolute-numbered files." : "Standard numbering.");
+          })}
+        >
+          {busy === "type" ? "Saving…" : series.series_type === "anime" ? "Anime ✓" : "Anime"}
+        </button>
         <button className={btn} style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }} disabled={busy !== null} onClick={() => run("search", async () => { await api.searchSeries(series.id); flash("Searching — packs and episodes will show in Downloads once grabbed."); })}>
           {busy === "search" ? "Searching…" : "Auto-grab missing"}
         </button>
