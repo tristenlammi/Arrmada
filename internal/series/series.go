@@ -50,6 +50,22 @@ type SeriesExtra struct {
 // IsAnime reports whether the series uses anime (absolute) episode numbering.
 func (s Series) IsAnime() bool { return s.SeriesType == SeriesTypeAnime }
 
+// AbsoluteFor returns the absolute episode number for a (season, episode), or 0 when
+// unknown. Requires the series' Seasons to be loaded (detail view).
+func (s Series) AbsoluteFor(season, episode int) int {
+	for _, sn := range s.Seasons {
+		if sn.SeasonNumber != season {
+			continue
+		}
+		for _, e := range sn.Episodes {
+			if e.EpisodeNumber == episode {
+				return e.AbsoluteNumber
+			}
+		}
+	}
+	return 0
+}
+
 // Series type values stored in series.series_type.
 const (
 	SeriesTypeStandard = "standard"

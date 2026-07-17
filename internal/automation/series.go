@@ -108,7 +108,7 @@ func (c *Coordinator) grabSeriesFrom(ctx context.Context, s series.Series, relea
 		if _, dup := byName[rel.Title]; dup {
 			continue
 		}
-		if !releaseIsForSeries(rel.Title, s.Title) {
+		if !seriesTitleMatches(rel.Title, s) {
 			continue // a different show that merely shares a title prefix (e.g. "Below Deck Mediterranean" for "Below Deck")
 		}
 		byName[rel.Title] = rel
@@ -168,7 +168,7 @@ func (c *Coordinator) grabSeriesFrom(ctx context.Context, s series.Series, relea
 			if !isPackTier(eligible[i].Candidate.Release.Kind(), ended) {
 				continue
 			}
-			n := len(coveredBy(eligible[i].Candidate.Release, needed))
+			n := len(c.coveredByFor(ctx, s, eligible[i].Candidate.Release, needed))
 			if n > bestCover {
 				bestCover, best = n, &eligible[i]
 			}
@@ -177,7 +177,7 @@ func (c *Coordinator) grabSeriesFrom(ctx context.Context, s series.Series, relea
 			break
 		}
 		grab(best.Candidate.Name, "pack")
-		for _, k := range coveredBy(best.Candidate.Release, needed) {
+		for _, k := range c.coveredByFor(ctx, s, best.Candidate.Release, needed) {
 			delete(needed, k)
 		}
 	}
@@ -191,7 +191,7 @@ func (c *Coordinator) grabSeriesFrom(ctx context.Context, s series.Series, relea
 		if r.Kind() != parser.KindEpisode {
 			continue
 		}
-		for _, k := range coveredBy(r, needed) {
+		for _, k := range c.coveredByFor(ctx, s, r, needed) {
 			grab(ev.Candidate.Name, "episode")
 			delete(needed, k)
 		}
@@ -217,6 +217,24 @@ func wantedEpisodes(s series.Series) ([]epKey, map[int]bool) {
 		}
 	}
 	return want, seriesSeasons
+}
+
+// coveredByFor is coveredBy with anime awareness: an episode-scope release for an
+// anime series is resolved through absolute/positional numbering before matching
+// (so "[Group] Show - 137" covers the metadata's season-3 episode). Packs still match
+// by season for both types.
+func (c *Coordinator) coveredByFor(ctx context.Context, s series.Series, r parser.Release, needed map[epKey]bool) []epKey {
+	if !s.IsAnime() || r.Kind() != parser.KindEpisode {
+		return coveredBy(r, needed)
+	}
+	var out []epKey
+	for _, ref := range c.series.ResolveEpisodes(ctx, s.ID, r) {
+		k := epKey{ref.Season, ref.Episode}
+		if needed[k] {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // coveredBy returns which needed episodes a release satisfies.

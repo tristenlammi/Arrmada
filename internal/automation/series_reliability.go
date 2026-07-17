@@ -10,6 +10,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/quality"
+	"github.com/tristenlammi/arrmada/internal/series"
 )
 
 // detectStalledSeries fails a stalled series download over to an alternate: past the
@@ -193,6 +194,18 @@ func seriesDownloading(queue []download.Item, seriesTitle string) bool {
 // (normalized title match).
 func releaseIsForSeries(relTitle, seriesTitle string) bool {
 	return titleKey(parser.Parse(relTitle).Title) == titleKey(seriesTitle)
+}
+
+// seriesTitleMatches is releaseIsForSeries that also accepts an anime series' romaji
+// (original) title, since anime is frequently released under its romaji name.
+func seriesTitleMatches(relTitle string, s series.Series) bool {
+	if releaseIsForSeries(relTitle, s.Title) {
+		return true
+	}
+	if s.IsAnime() && s.Extra != nil && s.Extra.OriginalTitle != "" {
+		return releaseIsForSeries(relTitle, s.Extra.OriginalTitle)
+	}
+	return false
 }
 
 // episodeRelease reports whether a parsed release is a single-episode release for the

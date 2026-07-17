@@ -12,6 +12,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/quality"
+	"github.com/tristenlammi/arrmada/internal/series"
 )
 
 // RankSeriesReleases runs an interactive search for a series, optionally scoped to a
@@ -28,6 +29,11 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 	}
 	query := s.Title
 	switch {
+	case s.IsAnime() && season > 0 && episode > 0:
+		// Anime episodes are released by absolute number ("Show - 137"), not SxxExx.
+		if abs := s.AbsoluteFor(season, episode); abs > 0 {
+			query = fmt.Sprintf("%s %d", s.Title, abs)
+		}
 	case season > 0 && episode > 0:
 		query = fmt.Sprintf("%s S%02dE%02d", s.Title, season, episode)
 	case season > 0:
@@ -44,10 +50,10 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 		if _, dup := byName[rel.Title]; dup {
 			continue
 		}
-		if !releaseIsForSeries(rel.Title, s.Title) {
+		if !seriesTitleMatches(rel.Title, s) {
 			continue // a different show that merely shares a title prefix (e.g. "Below Deck Mediterranean" for "Below Deck")
 		}
-		if !seriesReleaseMatches(parser.Parse(rel.Title), season, episode) {
+		if !c.releaseMatchesScope(ctx, s, parser.Parse(rel.Title), season, episode) {
 			continue // not relevant to the requested season/episode scope
 		}
 		byName[rel.Title] = rel
@@ -104,6 +110,27 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 // seriesReleaseMatches reports whether a release is relevant to a season/episode
 // scope. season<=0 → any TV release; season set / episode<=0 → covers that season;
 // both set → the exact episode, or a pack that covers it.
+// releaseMatchesScope is seriesReleaseMatches with anime awareness: an episode-scope
+// anime release is resolved through absolute/positional numbering before checking it
+// covers the requested (season, episode).
+func (c *Coordinator) releaseMatchesScope(ctx context.Context, s series.Series, p parser.Release, season, episode int) bool {
+	if !s.IsAnime() {
+		return seriesReleaseMatches(p, season, episode)
+	}
+	if season <= 0 {
+		return p.IsTV()
+	}
+	if p.Kind() != parser.KindEpisode {
+		return p.CoversSeason(season) // packs still match by season
+	}
+	for _, ref := range c.series.ResolveEpisodes(ctx, s.ID, p) {
+		if ref.Season == season && (episode <= 0 || ref.Episode == episode) {
+			return true
+		}
+	}
+	return false
+}
+
 func seriesReleaseMatches(p parser.Release, season, episode int) bool {
 	if season <= 0 {
 		return p.IsTV()
