@@ -49,10 +49,11 @@ ARG WHISPER_VERSION=v1.7.5
 RUN apk add --no-cache git cmake g++ make
 RUN git clone --depth 1 --branch ${WHISPER_VERSION} https://github.com/ggerganov/whisper.cpp /src/whisper && \
     cd /src/whisper && \
-    cmake -B build -DCMAKE_BUILD_TYPE=Release && \
+    cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF && \
     cmake --build build -j"$(nproc)" && \
     (cp build/bin/whisper-cli /usr/local/bin/whisper-cli 2>/dev/null || cp build/bin/main /usr/local/bin/whisper-cli) && \
-    strip /usr/local/bin/whisper-cli
+    strip /usr/local/bin/whisper-cli && \
+    ldd /usr/local/bin/whisper-cli || true
 
 # --- Stage 4: minimal runtime ---
 FROM alpine:3.20
