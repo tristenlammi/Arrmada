@@ -131,19 +131,18 @@ services:
         condition: service_completed_successfully
     restart: unless-stopped
 
-  # OPTIONAL indexer manager (Prowlarr). NOT started by default — Arrmada ships
-  # without it. Opt in with:
-  #     docker compose --profile prowlarr up -d
-  # Then add your trackers at http://localhost:9696 and click "Sync from Prowlarr"
-  # in Arrmada → Indexers. Point Prowlarr's FlareSolverr proxy at
+  # OPTIONAL indexer manager (Prowlarr). NOT started by default — opt in with:
+  #     ./install.sh --with-prowlarr        (or: docker compose --profile prowlarr up -d)
+  # Then add your trackers at its WebUI (port ← ARRMADA_PROWLARR_PORT) and click
+  # "Sync from Prowlarr" in Arrmada → Indexers. Point Prowlarr's FlareSolverr proxy at
   # http://arrmada-flaresolverr:8191 for Cloudflare-protected trackers.
   arrmada-prowlarr:
     image: lscr.io/linuxserver/prowlarr:latest
     container_name: Arrmada-prowlarr
     profiles: ["prowlarr"]
     environment:
-      PUID: "1000"
-      PGID: "1000"
+      PUID: "${ARRMADA_PUID:-1000}"
+      PGID: "${ARRMADA_PGID:-1000}"
       TZ: "Etc/UTC"
     volumes:
       - arrmada-prowlarr-config:/config

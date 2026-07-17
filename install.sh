@@ -167,7 +167,10 @@ fi
 
 # ── build + start ──────────────────────────────────────────────────────────────
 PROFILES=""
-[ "${1:-}" = "--with-prowlarr" ] && PROFILES="--profile prowlarr"
+if [ "${1:-}" = "--with-prowlarr" ]; then
+  PROFILES="--profile prowlarr"
+  say "Including the optional Prowlarr indexer manager."
+fi
 
 say ""
 say "Building and starting Arrmada… (the first build compiles everything — a few minutes)"
@@ -178,3 +181,7 @@ WEBPORT=$(grep -E '^ARRMADA_PORT=' .env | cut -d= -f2)
 say ""
 say "✓ Arrmada is up.  Open http://localhost:${WEBPORT:-7878}"
 say "  Update anytime with:  ./update.sh"
+if [ -z "$PROFILES" ]; then
+  say ""
+  say "  Prowlarr is optional and was NOT installed. Want it? Run:  ./install.sh --with-prowlarr"
+fi

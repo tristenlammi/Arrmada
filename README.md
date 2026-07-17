@@ -52,7 +52,8 @@ for Movies/TV metadata (the installer asks for it, or add it later in `.env`).
 - **Database** — stored in `/mnt/user/appdata/arrmada` on Unraid, else `./data`.
 - **Media + transcode** — written into `docker-compose.override.yml` for you.
 
-Optional: `./install.sh --with-prowlarr` also starts a Prowlarr companion.
+Optional: `./install.sh --with-prowlarr` also starts a Prowlarr indexer
+manager (Arrmada has its own indexers, so this is only if you want it).
 </details>
 
 ## Update
