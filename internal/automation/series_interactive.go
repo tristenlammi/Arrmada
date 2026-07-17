@@ -321,7 +321,7 @@ func (c *Coordinator) ManualImportSeries(ctx context.Context, seriesID int64, pa
 	var lastErr error
 	for _, ep := range episodesOf(ei) { // double-episode file → mark both
 		rs, re := c.series.ResolveEpisode(ctx, seriesID, ei.Season, ep)
-		if err := c.series.MarkEpisodeImported(ctx, seriesID, rs, re, ei.TargetPath, ei.SizeBytes); err != nil {
+		if err := c.series.SupersedeEpisodeFile(ctx, seriesID, rs, re, ei.TargetPath, ei.SizeBytes); err != nil {
 			lastErr = err
 		}
 	}

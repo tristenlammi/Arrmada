@@ -505,6 +505,26 @@ func (s *Service) MarkEpisodeImported(ctx context.Context, seriesID int64, seaso
 	return nil
 }
 
+// SupersedeEpisodeFile records a newly-imported file and recycles the episode's
+// previous file when it lived at a DIFFERENT path — an upgrade (better quality) or a
+// naming change. Without this, the new file lands at a new name and the old one is
+// left orphaned on disk, so every upgrade/re-grab leaves a duplicate behind.
+func (s *Service) SupersedeEpisodeFile(ctx context.Context, seriesID int64, season, episode int, path string, size int64) error {
+	if old, _ := s.repo.EpisodeFilePath(ctx, seriesID, season, episode); old != "" && old != path {
+		if _, err := os.Stat(old); err == nil {
+			if s.recycle != "" {
+				if _, rerr := library.RecycleFile(s.recycle, old); rerr != nil {
+					_ = os.Remove(old)
+				}
+			} else {
+				_ = os.Remove(old)
+			}
+			s.log.Info("series: superseded old episode file", "old", old, "new", path)
+		}
+	}
+	return s.MarkEpisodeImported(ctx, seriesID, season, episode, path, size)
+}
+
 // MarkEpisodeMissing flips an episode back to wanted (no file on disk) — used by
 // rescan to reconcile episodes whose file was deleted or moved away.
 func (s *Service) MarkEpisodeMissing(ctx context.Context, seriesID int64, season, episode int) error {
