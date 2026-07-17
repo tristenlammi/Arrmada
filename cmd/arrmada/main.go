@@ -34,6 +34,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/notify"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/realtime"
+	"github.com/tristenlammi/arrmada/internal/recyclebin"
 	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/scheduler"
 	"github.com/tristenlammi/arrmada/internal/series"
@@ -351,6 +352,13 @@ func main() {
 	insightsSvc.SeedFromEnv(runCtx, cfg.PlexURL, cfg.PlexToken)
 	go insightsSvc.Run(runCtx) // Plex watch-monitoring poller (records when enabled + configured)
 
+	// Recycle bin: enforce the user's size/age guard rails on a schedule (and once at startup).
+	recycleSvc := recyclebin.New(recycleDir, settingsSvc, log)
+	sched.Register("recycle-enforce", time.Hour, true, func(ctx context.Context) error {
+		recycleSvc.Enforce(ctx)
+		return nil
+	})
+
 	srv := httpapi.New(httpapi.Deps{
 		Config:     cfg,
 		Log:        log,
@@ -374,6 +382,7 @@ func main() {
 		Subtitles:  subtitlesSvc,
 		Convert:    convertSvc,
 		Insights:   insightsSvc,
+		Recycle:    recycleSvc,
 	})
 
 	errCh := make(chan error, 1)

@@ -291,6 +291,19 @@ export interface AppSettings {
   convert_max_failures: string;
   convert_scratch_dir: string;
   convert_vaapi_device: string;
+  // Recycle bin guard rails.
+  recycle_max_gb: string;
+  recycle_retention_days: string;
+}
+
+export interface RecycleStats {
+  enabled: boolean;
+  dir: string;
+  files: number;
+  bytes: number;
+  oldest_unix?: number;
+  max_gb: number;
+  retention_days: number;
 }
 
 export interface MediaRequest {
@@ -759,6 +772,8 @@ export const api = {
   settings: () => req<AppSettings>("/api/v1/settings"),
   updateSettings: (body: Partial<AppSettings>) =>
     req<AppSettings>("/api/v1/settings", { method: "PUT", body: JSON.stringify(body) }),
+  recycleStats: () => req<RecycleStats>("/api/v1/recycle"),
+  emptyRecycle: () => req<{ freed_bytes: number }>("/api/v1/recycle/empty", { method: "POST" }),
   scanLibrary: () => req<{ status: string }>("/api/v1/movies/scan", { method: "POST" }),
   moviesUnmatched: () => req<{ unmatched: UnmatchedFolder[] }>("/api/v1/movies/unmatched").then((r) => r.unmatched),
   importMovieFolder: (folder: string, tmdb_id: number) =>

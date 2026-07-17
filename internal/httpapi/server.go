@@ -25,6 +25,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/convert"
 	"github.com/tristenlammi/arrmada/internal/insights"
+	"github.com/tristenlammi/arrmada/internal/recyclebin"
 	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/series"
 	"github.com/tristenlammi/arrmada/internal/settings"
@@ -58,6 +59,7 @@ type Deps struct {
 	Subtitles  *subtitles.Service
 	Convert    *convert.Service
 	Insights   *insights.Service
+	Recycle    *recyclebin.Service
 }
 
 type api struct {
@@ -214,6 +216,8 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/requests/import/overseerr", a.requireRole(auth.RoleAdmin, a.handleImportOverseerr))
 
 	// Convert (Tdarr replacement — GPU transcoding/cleanup over the Movies/Series catalogs).
+	mux.HandleFunc("GET "+base+"/api/v1/recycle", a.requireRole(auth.RoleManager, a.handleRecycleStats))
+	mux.HandleFunc("POST "+base+"/api/v1/recycle/empty", a.requireRole(auth.RoleManager, a.handleRecycleEmpty))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/hardware", a.protected(a.handleConvertHardware))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/library", a.protected(a.handleConvertLibrary))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/jobs", a.protected(a.handleConvertJobs))

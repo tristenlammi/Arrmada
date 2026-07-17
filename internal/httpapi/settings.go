@@ -59,6 +59,9 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"convert_max_failures": a.deps.Settings.Get(ctx, "convert_max_failures", "3"),
 		"convert_scratch_dir":  a.deps.Settings.Get(ctx, "convert_scratch_dir", ""),
 		"convert_vaapi_device": a.deps.Settings.Get(ctx, "convert_vaapi_device", ""),
+		// Recycle bin guard rails.
+		"recycle_max_gb":         a.deps.Settings.Get(ctx, "recycle_max_gb", "0"),
+		"recycle_retention_days": a.deps.Settings.Get(ctx, "recycle_retention_days", "0"),
 	})
 }
 
@@ -88,6 +91,8 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		ConvertMaxFailures    *string `json:"convert_max_failures"`
 		ConvertScratchDir     *string `json:"convert_scratch_dir"`
 		ConvertVaapiDevice    *string `json:"convert_vaapi_device"`
+		RecycleMaxGB          *string `json:"recycle_max_gb"`
+		RecycleRetentionDays  *string `json:"recycle_retention_days"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -164,6 +169,12 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.ConvertVaapiDevice != nil && !save(a.deps.Settings.Set(ctx, "convert_vaapi_device", strings.TrimSpace(*req.ConvertVaapiDevice))) {
+		return
+	}
+	if req.RecycleMaxGB != nil && !save(a.deps.Settings.Set(ctx, "recycle_max_gb", strings.TrimSpace(*req.RecycleMaxGB))) {
+		return
+	}
+	if req.RecycleRetentionDays != nil && !save(a.deps.Settings.Set(ctx, "recycle_retention_days", strings.TrimSpace(*req.RecycleRetentionDays))) {
 		return
 	}
 	if req.MusicEnabled != nil && !save(a.deps.Settings.SetBool(ctx, keyMusicEnabled, *req.MusicEnabled)) {

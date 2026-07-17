@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type AppSettings, type AuthUser } from "../lib/api";
+import { api, type AppSettings, type AuthUser, type RecycleStats } from "../lib/api";
 import { useMe, isAdmin } from "../lib/me";
 
 // Sample release used for the live naming preview.
@@ -125,6 +125,7 @@ export function Settings() {
                 <Toggle label="Books" hint="Open Library metadata, ebook & audiobook library, and the Books tab in Discover." checked={s.books_enabled} onChange={(v) => patch({ books_enabled: v })} />
                 <Toggle label="Music" hint="The Music library and its nav entry. (The Music module itself is still on the roadmap.)" checked={s.music_enabled} onChange={(v) => patch({ music_enabled: v })} />
               </Section>
+              <RecycleBin s={s} patch={patch} />
               <SaveBar />
               <OverseerrImport />
             </div>
@@ -274,6 +275,75 @@ function EditUserModal({ user, onClose, onSaved }: { user: AuthUser; onClose: ()
 
 const input = "w-full rounded-lg px-3 py-2 font-mono text-[12.5px]";
 const inputStyle = { background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" } as const;
+
+function fmtBytes(b: number): string {
+  if (!b || b <= 0) return "0 MB";
+  const tb = b / 1024 ** 4;
+  if (tb >= 1) return `${tb.toFixed(2)} TB`;
+  const gb = b / 1024 ** 3;
+  if (gb >= 1) return `${gb.toFixed(1)} GB`;
+  return `${(b / 1024 ** 2).toFixed(0)} MB`;
+}
+function ageOf(unix: number): string {
+  const days = Math.floor((Date.now() / 1000 - unix) / 86400);
+  return days <= 0 ? "today" : `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
+// RecycleBin shows what the bin is holding and lets an admin set the guard rails (max size /
+// retention) — saved with the page's Save button — and empty it on demand. Deleted & replaced
+// files (movie/episode deletes, Convert originals) land here instead of being erased.
+function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettings>) => void }) {
+  const [stats, setStats] = useState<RecycleStats | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const load = () => api.recycleStats().then(setStats).catch(() => setStats(null));
+  useEffect(() => { load(); }, []);
+
+  const empty = async () => {
+    if (!window.confirm("Permanently delete everything in the recycle bin? This can't be undone.")) return;
+    setBusy(true); setMsg(null);
+    try {
+      const r = await api.emptyRecycle();
+      setMsg(`Freed ${fmtBytes(r.freed_bytes)}.`);
+      load();
+    } catch (e) { setMsg((e as Error).message); }
+    finally { setBusy(false); }
+  };
+
+  const digits = (v: string) => v.replace(/[^0-9]/g, "");
+
+  return (
+    <Section title="Recycle bin" subtitle="Deleted & replaced files (movie/episode deletes and Convert originals) are moved here instead of being erased — so a mistake is recoverable. Set guard rails so it can't grow forever.">
+      {stats && !stats.enabled ? (
+        <p className="text-[12px] text-ink-dim">Recycling is turned off (<code>ARRMADA_RECYCLE_DIR=off</code>) — deleted files are erased immediately.</p>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 text-[12.5px]">
+            <span>Holding <b>{stats ? fmtBytes(stats.bytes) : "…"}</b>{stats ? ` · ${stats.files} file${stats.files === 1 ? "" : "s"}` : ""}</span>
+            {stats?.oldest_unix ? <span className="text-ink-faint">oldest {ageOf(stats.oldest_unix)}</span> : null}
+          </div>
+          {stats?.dir && <div className="truncate font-mono text-[10.5px] text-ink-faint" title={stats.dir}>{stats.dir}</div>}
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Max size (GB)">
+              <input inputMode="numeric" value={s.recycle_max_gb} onChange={(e) => patch({ recycle_max_gb: digits(e.target.value) })} placeholder="0" className={input} style={inputStyle} />
+              <span className="text-[10.5px] text-ink-faint">0 = unlimited. Over this, the oldest files are purged first.</span>
+            </Field>
+            <Field label="Keep for (days)">
+              <input inputMode="numeric" value={s.recycle_retention_days} onChange={(e) => patch({ recycle_retention_days: digits(e.target.value) })} placeholder="0" className={input} style={inputStyle} />
+              <span className="text-[10.5px] text-ink-faint">0 = keep forever. Older files are auto-deleted.</span>
+            </Field>
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={empty} disabled={busy || (stats?.files ?? 0) === 0} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{busy ? "Emptying…" : "Empty now"}</button>
+            {msg && <span className="text-[11.5px] text-ink-dim">{msg}</span>}
+          </div>
+          <p className="text-[10.5px] text-ink-faint">Guard rails run automatically about once an hour. The size/retention values save with the button below.</p>
+        </>
+      )}
+    </Section>
+  );
+}
 
 function Section({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
   return (
