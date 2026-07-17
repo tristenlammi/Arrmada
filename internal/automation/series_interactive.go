@@ -43,22 +43,30 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 	if err != nil {
 		return ReleaseList{}, err
 	}
+	c.log.Info("series: interactive search", "series", s.Title, "query", query, "raw", len(result.Releases), "indexer_errors", len(result.Errors))
+	for name, e := range result.Errors {
+		c.log.Warn("series: indexer error", "indexer", name, "err", e)
+	}
 
 	byName := make(map[string]indexer.Release, len(result.Releases))
 	cands := make([]quality.Candidate, 0, len(result.Releases))
+	var droppedTitle, droppedScope int
 	for _, rel := range result.Releases {
 		if _, dup := byName[rel.Title]; dup {
 			continue
 		}
 		if !seriesTitleMatches(rel.Title, s) {
+			droppedTitle++
 			continue // a different show that merely shares a title prefix (e.g. "Below Deck Mediterranean" for "Below Deck")
 		}
 		if !c.releaseMatchesScope(ctx, s, parser.Parse(rel.Title), season, episode) {
+			droppedScope++
 			continue // not relevant to the requested season/episode scope
 		}
 		byName[rel.Title] = rel
 		cands = append(cands, quality.NewCandidate(rel.Title, rel.SizeGB(), rel.Seeders))
 	}
+	c.log.Info("series: search filtered", "series", s.Title, "kept", len(cands), "dropped_wrong_title", droppedTitle, "dropped_out_of_scope", droppedScope)
 	decision := c.quality.Decide(ctx, s.QualityProfile, cands)
 
 	// For a single-episode search we can show a bitrate (size ÷ episode runtime). Season/series

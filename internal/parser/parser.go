@@ -145,6 +145,9 @@ var (
 	// Multi-season ranges: "S01-S03", "S1 - S5", or "Seasons 1-5".
 	reSeasonRange = regexp.MustCompile(`(?i)\bS(\d{1,2})\s*-\s*S(\d{1,2})\b`)
 	reSeasonWord  = regexp.MustCompile(`(?i)\bseasons?\s*(\d{1,2})\s*-\s*(\d{1,2})\b`)
+	// "S01-07" — a season range where the second bound drops the "S" (TorrentLeech
+	// box sets: "Elementary S01-07 Complete").
+	reSeasonRangeShort = regexp.MustCompile(`(?i)\bS(\d{1,2})\s*-\s*(\d{1,2})\b`)
 	// Anime fansub tag: a leading single-token "[Group]" (SubsPlease, Erai-raws…).
 	// Space inside the brackets excludes site tags like "[ Some Site ]".
 	reAnimeGroup = regexp.MustCompile(`^\s*\[([^\]\s]+)\]\s*`)
@@ -217,6 +220,8 @@ func Parse(name string) Release {
 		r.Seasons = seasonRange(rng[1], rng[2])
 	} else if rng := reSeasonWord.FindStringSubmatch(name); rng != nil {
 		r.Seasons = seasonRange(rng[1], rng[2])
+	} else if rng := reSeasonRangeShort.FindStringSubmatch(name); rng != nil && len(r.Episodes) == 0 {
+		r.Seasons = seasonRange(rng[1], rng[2]) // "S01-07" box set
 	} else if r.Season > 0 && len(r.Episodes) == 0 {
 		r.Seasons = []int{r.Season} // single-season pack
 	}
