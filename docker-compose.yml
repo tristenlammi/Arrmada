@@ -10,7 +10,9 @@ services:
     image: arrmada:dev
     container_name: Arrmada-app
     ports:
-      - "7878:7878"
+      # Host web-UI port ← .env (install.sh auto-picks a free one so it never clashes
+      # with Radarr's 7878 etc.). The app always listens on 7878 *inside* the container.
+      - "${ARRMADA_PORT:-7878}:7878"
     environment:
       # Login is on by default. Set ARRMADA_AUTH_ENABLED=false in .env only for a
       # throwaway local instance. First launch shows a one-time "create admin" form.
@@ -112,7 +114,10 @@ services:
       # identical in both containers and hardlinks resolve.
       - arrmada-media:/media
     ports:
-      - "8080:8080" # WebUI
+      # qBittorrent's own WebUI ← .env (install.sh auto-picks a free host port so it
+      # won't clash with an existing qBit on 8080). Arrmada manages qBit over the
+      # internal Docker network, so you rarely need this — it's just for a direct peek.
+      - "${ARRMADA_QBIT_WEBUI_PORT:-8080}:8080"
       # BitTorrent incoming-connection port, TCP *and* UDP (peers + DHT/uTP). Set
       # once in .env (ARRMADA_QBIT_PORT — the install script picks a random one);
       # Arrmada auto-applies the same value inside qBittorrent, so the two always
@@ -143,19 +148,21 @@ services:
     volumes:
       - arrmada-prowlarr-config:/config
     ports:
-      - "9696:9696"
+      - "${ARRMADA_PROWLARR_PORT:-9696}:9696"
     restart: unless-stopped
 
   # Solves Cloudflare challenges for protected trackers (e.g. TorrentLeech), the
-  # same way Prowlarr uses it. Headless-Chromium image (~1 GB).
+  # same way Prowlarr uses it. Headless-Chromium image (~1 GB). NO host port is
+  # published — only Arrmada talks to it, over the internal Docker network — so it
+  # can never clash with an existing FlareSolverr on 8191.
   arrmada-flaresolverr:
     image: ghcr.io/flaresolverr/flaresolverr:latest
     container_name: Arrmada-flaresolverr
     environment:
       LOG_LEVEL: "info"
       TZ: "Etc/UTC"
-    ports:
-      - "8191:8191"
+    expose:
+      - "8191"
     restart: unless-stopped
 
 volumes:

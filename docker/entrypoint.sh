@@ -14,4 +14,12 @@ mkdir -p "$DATA"
 # Best-effort: never fail boot over a chown (e.g. a read-only or odd filesystem).
 chown -R "$PUID:$PGID" "$DATA" 2>/dev/null || true
 
+# Hardware transcode: if a GPU render node was passed in (compose `devices: /dev/dri`),
+# open its permissions so the dropped-privilege PUID:PGID user can use VAAPI. The device
+# is already cgroup-whitelisted by Docker; this just avoids having to match the host's
+# render group. Best-effort — no GPU, or a read-only /dev, is fine (falls back to CPU).
+if [ -e /dev/dri ]; then
+  chmod -R a+rw /dev/dri 2>/dev/null || true
+fi
+
 exec su-exec "$PUID:$PGID" /usr/local/bin/arrmada "$@"

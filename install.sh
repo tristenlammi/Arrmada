@@ -1,12 +1,13 @@
 #!/usr/bin/env sh
-# Arrmada installer — one-shot first-run setup. Idempotent; safe to re-run.
+# Arrmada installer — one command, everything set up. Idempotent; safe to re-run.
 #
 #   git clone https://github.com/tristenlammi/Arrmada && cd Arrmada
 #   ./install.sh                  # core stack (app + qBittorrent + FlareSolverr)
 #   ./install.sh --with-prowlarr  # also start the optional Prowlarr indexer manager
 #
-# It creates .env (asks for your TMDB key, user/group, and where your media lives),
-# puts the database in ./data (inside this app folder), and starts everything.
+# It asks two things — where your media lives and where to transcode — then handles the
+# rest automatically: free host ports (never clashes with Radarr/Sonarr/qBit), the run
+# user, the database location, and GPU pass-through if a GPU is present.
 # Update later with:  ./update.sh
 set -eu
 cd "$(dirname "$0")"
@@ -19,6 +20,31 @@ ask() { # ask "prompt" "default" -> echoes the answer (default if non-interactiv
   printf '%s' "$_a"
 }
 
+# port_in_use PORT -> 0 (true) if something is already listening on PORT on this host.
+port_in_use() {
+  _p="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${_p}\$"
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${_p}\$"
+  else
+    return 1 # can't check — assume free
+  fi
+}
+# free_port PREFERRED... -> first preferred port that's free, else scan upward from 18000.
+free_port() {
+  for _p in "$@"; do port_in_use "$_p" || { printf '%s' "$_p"; return; }; done
+  _p=18000
+  while port_in_use "$_p"; do _p=$((_p + 1)); done
+  printf '%s' "$_p"
+}
+# rand_port -> a random high port (for BitTorrent) that isn't currently in use.
+rand_port() {
+  _p=$(awk 'BEGIN { srand(); print int(20000 + rand() * 40000) }')
+  while port_in_use "$_p"; do _p=$((_p + 1)); done
+  printf '%s' "$_p"
+}
+
 # ── prerequisites ──────────────────────────────────────────────────────────────
 if ! command -v docker >/dev/null 2>&1; then
   say "✗ Docker isn't installed (or not on PATH). Install Docker, then re-run ./install.sh" >&2; exit 1
@@ -29,22 +55,43 @@ fi
 
 # ── .env (created once, never overwritten) ──────────────────────────────────────
 if [ ! -f .env ]; then
-  say "First run — let's set up .env."
-
-  PORT=$(awk 'BEGIN { srand(); print int(20000 + rand() * 40000) }')
+  say "First run — let's set up Arrmada. Two questions, then it's automatic."
+  say ""
 
   KEY="${ARRMADA_TMDB_API_KEY:-}"
   [ -z "$KEY" ] && KEY=$(ask "TMDB API key (free: themoviedb.org — needed for Movies & TV; Enter to skip): " "")
 
   say ""
-  say "Run Arrmada as which user? On Unraid this is usually 99 (nobody) / 100 (users)."
-  PUID=$(ask "  PUID [1000]: " "1000")
-  PGID=$(ask "  PGID [1000]: " "1000")
+  say "1/2  Where does your media live? Give the folder that CONTAINS your libraries +"
+  say "     downloads (e.g. /mnt/user/masterdirectory). Enter to use Arrmada's own managed storage."
+  MEDIA=$(ask "     Media folder [blank = managed]: " "")
 
   say ""
-  say "Where does your media live? Give the folder that CONTAINS your libraries + downloads"
-  say "(e.g. /mnt/user/masterdirectory). Leave blank to use Arrmada's own managed storage."
-  MEDIA=$(ask "  Media folder [blank = managed]: " "")
+  say "2/2  Where should Convert transcode? A fast SSD/NVMe pool, NOT the array (e.g."
+  say "     /mnt/cache/transcode). Enter to skip (transcoding uses container storage)."
+  TRANSCODE=$(ask "     Transcode folder [blank = skip]: " "")
+
+  # Auto: run user. Match the media folder's owner so the app can read/write it; fall back to
+  # Unraid's nobody/users (99/100) or a generic 1000/1000.
+  OWNER=""
+  [ -n "$MEDIA" ] && [ -e "$MEDIA" ] && OWNER=$(stat -c '%u:%g' "$MEDIA" 2>/dev/null || echo "")
+  case "$OWNER" in
+    "" | "0:0") if [ -d /mnt/user ]; then OWNER="99:100"; else OWNER="1000:1000"; fi ;;
+  esac
+  PUID=${OWNER%:*}; PGID=${OWNER#*:}
+
+  # Auto: free host ports — so it never collides with Radarr (7878), an existing qBit (8080), etc.
+  WEBPORT=$(free_port 7878 7979 8790 8385)
+  QBWEB=$(free_port 8080 8081 8082)
+  PROWPORT=$(free_port 9696 9697 9698)
+  BTPORT=$(rand_port)
+
+  # Auto: database/config location. Unraid → appdata; otherwise ./data inside this folder.
+  if [ -d /mnt/user/appdata ]; then DATA="/mnt/user/appdata/arrmada"; else DATA="./data"; fi
+
+  # Auto: GPU pass-through when a render node exists on the host.
+  GPU=""
+  [ -e /dev/dri ] && GPU=1
 
   {
     say "# ─── Arrmada configuration ─── edit, then ./update.sh to apply ───"
@@ -53,16 +100,19 @@ if [ ! -f .env ]; then
     say "ARRMADA_TMDB_API_KEY=$KEY"
     say "ARRMADA_OMDB_API_KEY="
     say ""
-    say "ARRMADA_PORT=7878"
-    say "ARRMADA_QBIT_PORT=$PORT"
+    say "# Host ports (auto-picked free at install so nothing clashes with your other apps)."
+    say "ARRMADA_PORT=$WEBPORT"
+    say "ARRMADA_QBIT_WEBUI_PORT=$QBWEB"
+    say "ARRMADA_PROWLARR_PORT=$PROWPORT"
+    say "ARRMADA_QBIT_PORT=$BTPORT"
     say "ARRMADA_AUTH_ENABLED=true"
     say ""
-    say "# Run as this user/group (Unraid: 99 / 100)."
+    say "# Run as this user/group (auto-detected from your media folder / platform)."
     say "ARRMADA_PUID=$PUID"
     say "ARRMADA_PGID=$PGID"
     say ""
-    say "# Database + config live here, inside this app folder (appdata)."
-    say "ARRMADA_DATA_HOST=./data"
+    say "# Database + config live here."
+    say "ARRMADA_DATA_HOST=$DATA"
     if [ -n "$MEDIA" ]; then
       say ""
       say "# Your media folder is mounted at /storage inside the app. Point each library at"
@@ -76,24 +126,41 @@ if [ ! -f .env ]; then
     fi
   } > .env
 
-  # Generate the /storage mount when a real media folder was given.
-  if [ -n "$MEDIA" ] && [ ! -f docker-compose.override.yml ]; then
-    cat > docker-compose.override.yml <<EOF
-# Auto-generated by install.sh — mounts your media folder at /storage in both containers.
-services:
-  arrmada-app:
-    volumes:
-      - $MEDIA:/storage
-  arrmada-qbittorrent:
-    volumes:
-      - $MEDIA:/storage
-EOF
-    say "✓ Wrote docker-compose.override.yml (your media → /storage)"
+  # Generate the compose override: media mount, transcode mount, and GPU devices — only the
+  # pieces that apply, so the file is always valid YAML.
+  if [ -n "$MEDIA" ] || [ -n "$TRANSCODE" ] || [ -n "$GPU" ]; then
+    {
+      say "# Auto-generated by install.sh — merged into docker-compose.yml. Edit freely + ./update.sh."
+      say "services:"
+      say "  arrmada-app:"
+      if [ -n "$MEDIA" ] || [ -n "$TRANSCODE" ]; then
+        say "    volumes:"
+        [ -n "$MEDIA" ] && say "      - $MEDIA:/storage"
+        [ -n "$TRANSCODE" ] && say "      - $TRANSCODE:/transcode"
+      fi
+      if [ -n "$GPU" ]; then
+        say "    devices:"
+        say "      - /dev/dri:/dev/dri"
+      fi
+      if [ -n "$MEDIA" ]; then
+        say "  arrmada-qbittorrent:"
+        say "    volumes:"
+        say "      - $MEDIA:/storage"
+      fi
+    } > docker-compose.override.yml
+    say "✓ Wrote docker-compose.override.yml"
   fi
 
-  mkdir -p ./data
-  say "✓ Wrote .env  (BitTorrent port: $PORT, user: $PUID:$PGID)"
-  [ -z "$KEY" ] && say "  ! No TMDB key — add ARRMADA_TMDB_API_KEY to .env for Movies/TV, then ./update.sh"
+  [ "$DATA" = "./data" ] && mkdir -p ./data
+  [ -n "$TRANSCODE" ] && mkdir -p "$TRANSCODE" 2>/dev/null || true
+  say ""
+  say "✓ Wrote .env"
+  say "   • Web UI port:   $WEBPORT"
+  say "   • qBit WebUI:    $QBWEB"
+  say "   • BitTorrent:    $BTPORT   (forward this on your router, TCP+UDP)"
+  say "   • Run as:        $PUID:$PGID"
+  [ -n "$GPU" ] && say "   • GPU:           /dev/dri detected → hardware transcode enabled" || say "   • GPU:           none detected → Convert will use the CPU"
+  [ -z "$KEY" ] && say "   ! No TMDB key — add ARRMADA_TMDB_API_KEY to .env for Movies/TV, then ./update.sh"
 else
   say ".env already exists — keeping your settings."
 fi
@@ -102,6 +169,7 @@ fi
 PROFILES=""
 [ "${1:-}" = "--with-prowlarr" ] && PROFILES="--profile prowlarr"
 
+say ""
 say "Building and starting Arrmada… (the first build compiles everything — a few minutes)"
 # shellcheck disable=SC2086
 docker compose $PROFILES up -d --build
