@@ -655,8 +655,9 @@ export interface InsightsGraphs {
 }
 export interface ReliabilitySummary { total_sessions: number; buffered_sessions: number; total_events: number; buffer_rate_pct: number }
 export interface BufferGroup { name: string; sessions: number; buffered_sessions: number; events: number; rate_pct: number }
-export interface BufferEvent { at: number; offset_ms: number; user: string; title: string; platform: string; decision: string }
-export interface Reliability { summary: ReliabilitySummary; by_user: BufferGroup[]; by_platform: BufferGroup[]; by_title: BufferGroup[]; events: BufferEvent[] }
+export interface BufferEvent { at: number; offset_ms: number; user: string; title: string; platform: string; decision: string; cause: string; detail: string }
+export interface CauseCount { cause: string; label: string; count: number }
+export interface Reliability { summary: ReliabilitySummary; causes: CauseCount[]; by_user: BufferGroup[]; by_platform: BufferGroup[]; by_title: BufferGroup[]; events: BufferEvent[] }
 
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(path, {

@@ -5,13 +5,22 @@ import (
 	"time"
 )
 
-// Reliability is the buffering-history bundle — the "did things buffer?" view Tautulli lacks.
+// Reliability is the buffering-history bundle — the "did things buffer, and why?" view
+// Tautulli lacks.
 type Reliability struct {
 	Summary    ReliabilitySummary `json:"summary"`
+	Causes     []CauseCount       `json:"causes"`
 	ByUser     []BufferGroup      `json:"by_user"`
 	ByPlatform []BufferGroup      `json:"by_platform"`
 	ByTitle    []BufferGroup      `json:"by_title"`
 	Events     []BufferEvent      `json:"events"`
+}
+
+// CauseCount is how many buffer spells fell into a diagnosed cause bucket.
+type CauseCount struct {
+	Cause string `json:"cause"`
+	Label string `json:"label"`
+	Count int    `json:"count"`
 }
 
 // ReliabilitySummary is the top-line health of the window.
@@ -31,7 +40,7 @@ type BufferGroup struct {
 	RatePct          float64 `json:"rate_pct"` // buffered / sessions
 }
 
-// BufferEvent is one recorded buffer spell with its stream context.
+// BufferEvent is one recorded buffer spell with its stream context and diagnosed cause.
 type BufferEvent struct {
 	At       int64  `json:"at"`
 	OffsetMS int64  `json:"offset_ms"`
@@ -39,6 +48,22 @@ type BufferEvent struct {
 	Title    string `json:"title"`
 	Platform string `json:"platform"`
 	Decision string `json:"decision"`
+	Cause    string `json:"cause"`  // key: transcode | transcode_cpu | bandwidth | unknown
+	Detail   string `json:"detail"` // human-readable "why"
+}
+
+// causeLabel maps a cause key to a short user-facing label.
+func causeLabel(cause string) string {
+	switch cause {
+	case "transcode":
+		return "Transcode overloaded"
+	case "transcode_cpu":
+		return "CPU transcode (no HW)"
+	case "bandwidth":
+		return "Bandwidth / network"
+	default:
+		return "Inconclusive"
+	}
 }
 
 // Reliability computes the buffering-history bundle over the last windowDays.
@@ -73,9 +98,27 @@ func (s *Service) Reliability(ctx context.Context, windowDays int) (Reliability,
 		return Reliability{}, err
 	}
 
+	// Cause breakdown — how many buffer spells fell into each diagnosed bucket.
+	crows, err := s.repo.db.QueryContext(ctx, `
+		SELECT COALESCE(NULLIF(cause,''),'unknown') c, COUNT(*) FROM buffer_events
+		WHERE at >= ? GROUP BY c ORDER BY COUNT(*) DESC`, since)
+	if err != nil {
+		return Reliability{}, err
+	}
+	for crows.Next() {
+		var cc CauseCount
+		if err := crows.Scan(&cc.Cause, &cc.Count); err != nil {
+			crows.Close()
+			return Reliability{}, err
+		}
+		cc.Label = causeLabel(cc.Cause)
+		out.Causes = append(out.Causes, cc)
+	}
+	crows.Close()
+
 	// Recent buffer-event timeline.
 	rows, err := s.repo.db.QueryContext(ctx, `
-		SELECT b.at, b.view_offset_ms, s.user_name, s.title, s.grandparent_title, s.media_type, s.platform, s.decision
+		SELECT b.at, b.view_offset_ms, b.cause, b.detail, s.user_name, s.title, s.grandparent_title, s.media_type, s.platform, s.decision
 		FROM buffer_events b JOIN stream_sessions s ON s.id = b.session_id
 		WHERE b.at >= ? ORDER BY b.at DESC LIMIT 60`, since)
 	if err != nil {
@@ -85,7 +128,7 @@ func (s *Service) Reliability(ctx context.Context, windowDays int) (Reliability,
 	for rows.Next() {
 		var e BufferEvent
 		var gp, mt string
-		if err := rows.Scan(&e.At, &e.OffsetMS, &e.User, &e.Title, &gp, &mt, &e.Platform, &e.Decision); err != nil {
+		if err := rows.Scan(&e.At, &e.OffsetMS, &e.Cause, &e.Detail, &e.User, &e.Title, &gp, &mt, &e.Platform, &e.Decision); err != nil {
 			return Reliability{}, err
 		}
 		if mt == "episode" && gp != "" {

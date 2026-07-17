@@ -23,6 +23,8 @@ type liveSession struct {
 type bufEvent struct {
 	at     time.Time
 	offset int64
+	cause  string // classified likely cause, captured at the moment the spell began
+	detail string
 }
 
 // Run is the monitoring loop: while enabled + configured, poll Plex and record activity. Re-reads
@@ -100,7 +102,8 @@ func (ls *liveSession) observe(sess plex.Session, now time.Time) bool {
 		if !ls.buffering { // new spell
 			ls.buffering = true
 			ls.bufCount++
-			ls.bufEvents = append(ls.bufEvents, bufEvent{at: now, offset: sess.OffsetMS})
+			cause, detail := sess.BufferCause() // diagnose from this snapshot's transcode/network signals
+			ls.bufEvents = append(ls.bufEvents, bufEvent{at: now, offset: sess.OffsetMS, cause: cause, detail: detail})
 			newSpell = true
 		}
 	} else {
@@ -165,7 +168,7 @@ func (s *Service) finalize(ctx context.Context, ls *liveSession, now time.Time) 
 		return
 	}
 	for _, be := range ls.bufEvents {
-		_ = s.repo.insertBufferEvent(ctx, id, be.at.Unix(), be.offset)
+		_ = s.repo.insertBufferEvent(ctx, id, be.at.Unix(), be.offset, be.cause, be.detail)
 	}
 	s.log.Debug("insights: recorded session", "title", rec.Title, "user", rec.UserName, "buffers", ls.bufCount)
 }

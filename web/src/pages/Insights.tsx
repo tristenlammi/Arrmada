@@ -90,6 +90,13 @@ const DECISION: Record<string, { label: string; color: string }> = {
   direct_stream: { label: "Direct Stream", color: "var(--accent)" },
   transcode: { label: "Transcode", color: "var(--avoid)" },
 };
+// Diagnosed buffer-cause styling (keys match BufferEvent.cause / CauseCount.cause).
+const CAUSE: Record<string, { label: string; color: string }> = {
+  transcode: { label: "Transcode overloaded", color: "var(--reject)" },
+  transcode_cpu: { label: "CPU transcode (no HW)", color: "var(--reject)" },
+  bandwidth: { label: "Bandwidth / network", color: "var(--avoid)" },
+  unknown: { label: "Inconclusive", color: "var(--ink-faint)" },
+};
 function geoLabel(g: InsightsStream["geo"]): string {
   if (g.local) return "Local";
   if (g.city && g.country_code) return `${g.city}, ${g.country_code}`;
@@ -719,19 +726,41 @@ function ReliabilityView({ connected, onConfigure }: { connected: boolean; onCon
             <OffenderCard title="Worst-hit titles" rows={r.by_title} />
           </div>
 
+          {/* Why streams buffered — diagnosed cause breakdown */}
+          {r.causes.length > 0 && (
+            <div className="rounded-xl p-4" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
+              <div className="mb-2 text-[12.5px] font-bold">Why streams buffered</div>
+              <div className="flex flex-wrap gap-2">
+                {r.causes.map((c) => {
+                  const cc = CAUSE[c.cause] ?? CAUSE.unknown;
+                  return (
+                    <span key={c.cause} className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold" style={{ background: "var(--panel-2)", border: `1px solid ${cc.color}` }}>
+                      <span className="inline-block h-2 w-2 rounded-full" style={{ background: cc.color }} />
+                      {cc.label}<span className="font-mono text-ink-faint">{c.count}</span>
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Timeline */}
           <div className="rounded-xl p-4" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
             <div className="mb-2 text-[12.5px] font-bold">Recent buffer events</div>
             <div className="flex flex-col">
               {r.events.map((e, i) => {
                 const d = DECISION[e.decision] ?? DECISION.direct_play;
+                const cc = CAUSE[e.cause] ?? CAUSE.unknown;
                 return (
-                  <div key={i} className="flex items-center gap-3 py-1.5 text-[12px]" style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
-                    <span className="w-2 flex-none"><span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--avoid)" }} /></span>
-                    <span className="w-[92px] flex-none font-mono text-[10.5px] text-ink-faint">{fmtDate(e.at)}</span>
-                    <span className="min-w-0 flex-1 truncate"><b className="font-semibold">{e.user}</b> · {e.title}</span>
-                    <span className="flex-none font-mono text-[10px] text-ink-faint">@ {fmtClock(e.offset_ms)}</span>
-                    <span className="flex-none rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink, #fff)" }}>{d.label}</span>
+                  <div key={i} className="py-1.5 text-[12px]" style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
+                    <div className="flex items-center gap-3">
+                      <span className="w-2 flex-none"><span className="inline-block h-2 w-2 rounded-full" style={{ background: cc.color }} /></span>
+                      <span className="w-[92px] flex-none font-mono text-[10.5px] text-ink-faint">{fmtDate(e.at)}</span>
+                      <span className="min-w-0 flex-1 truncate"><b className="font-semibold">{e.user}</b> · {e.title}</span>
+                      <span className="flex-none font-mono text-[10px] text-ink-faint">@ {fmtClock(e.offset_ms)}</span>
+                      <span className="flex-none rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink, #fff)" }}>{d.label}</span>
+                    </div>
+                    {e.detail && <div className="pl-[112px] text-[11px]" style={{ color: cc.color }}>{e.detail}</div>}
                   </div>
                 );
               })}

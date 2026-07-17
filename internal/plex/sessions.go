@@ -1,6 +1,9 @@
 package plex
 
-import "context"
+import (
+	"context"
+	"fmt"
+)
 
 // Session is one active playback stream from /status/sessions, flattened into the fields
 // Insights cares about. The raw Plex payload is far larger; we keep what drives the Activity
@@ -42,6 +45,7 @@ type Session struct {
 	SubDecision    string // "", copy, transcode, burn
 	TranscodeHW    bool
 	Throttled      bool
+	TranscodeSpeed float64 // transcode throughput vs realtime; < 1.0 = falling behind
 	TranscodeProto string
 	TranscodeCont  string
 
@@ -57,6 +61,31 @@ type Session struct {
 	StreamAudioCodec string
 	StreamWidth      int
 	StreamHeight     int
+}
+
+// BufferCause classifies the likely reason a stream stalled, from the transcode and
+// network signals in the session. Plex reports no explicit reason, so this is a
+// best-effort diagnosis returning (cause key, human-readable detail).
+func (s Session) BufferCause() (cause, detail string) {
+	// A transcoder that can't keep up (throughput < realtime) is the clearest, most
+	// common culprit — and it tells you whether hardware transcoding is helping.
+	if s.Transcoding && s.TranscodeSpeed > 0 && s.TranscodeSpeed < 0.95 {
+		if s.TranscodeHW {
+			return "transcode", fmt.Sprintf("hardware transcode falling behind (%.1f× realtime)", s.TranscodeSpeed)
+		}
+		return "transcode_cpu", fmt.Sprintf("CPU transcode too slow (%.1f× realtime) — hardware transcoding not in use", s.TranscodeSpeed)
+	}
+	// Remote direct play whose reserved bandwidth is under the source bitrate → network.
+	if !s.Local && !s.Transcoding && s.Bandwidth > 0 && s.SrcBitrate > 0 && s.Bandwidth < s.SrcBitrate {
+		return "bandwidth", fmt.Sprintf("remote direct play — ~%d kbps available vs %d kbps source", s.Bandwidth, s.SrcBitrate)
+	}
+	if !s.Local {
+		return "bandwidth", "remote stream — likely limited by the client's connection"
+	}
+	if s.Transcoding {
+		return "transcode", "transcoding — the server was momentarily busy"
+	}
+	return "unknown", "no clear cause — a brief source-read or network hiccup"
 }
 
 // Decision classifies the stream as direct_play / direct_stream / transcode.
@@ -128,6 +157,7 @@ type rawSession struct {
 		Container     string  `json:"container"`
 		Throttled     bool    `json:"throttled"`
 		TranscodeHw   bool    `json:"transcodeHwRequested"`
+		Speed         float64 `json:"speed"`
 		VideoCodec    string  `json:"videoCodec"`
 		AudioCodec    string  `json:"audioCodec"`
 		Width         flexInt `json:"width"`
@@ -158,6 +188,7 @@ func (m rawSession) flatten() Session {
 		s.Transcoding = true
 		s.VideoDecision, s.AudioDecision, s.SubDecision = t.VideoDecision, t.AudioDecision, t.SubDecision
 		s.TranscodeHW, s.Throttled = t.TranscodeHw, t.Throttled
+		s.TranscodeSpeed = t.Speed
 		s.TranscodeProto, s.TranscodeCont = t.Protocol, t.Container
 		s.StreamVideoCodec, s.StreamAudioCodec = t.VideoCodec, t.AudioCodec
 		s.StreamWidth, s.StreamHeight = int(t.Width), int(t.Height)
