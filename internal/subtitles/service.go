@@ -143,7 +143,7 @@ func (s *Service) MovieStatuses(ctx context.Context) ([]MovieStatus, error) {
 		if !m.HasFile || m.MovieFilePath == "" {
 			continue
 		}
-		present := presentLanguages(m.MovieFilePath, langs)
+		present := presentLanguages(m.MovieFilePath, langs, true)
 		out = append(out, MovieStatus{
 			ID: m.ID, Title: m.Title, Year: m.Year, PosterURL: m.PosterURL,
 			Present: nonNil(present), Missing: nonNil(missingOf(langs, present)),
@@ -183,7 +183,7 @@ func (s *Service) SeriesStatuses(ctx context.Context) ([]SeriesStatus, error) {
 					continue
 				}
 				st.Episodes++
-				if len(missingOf(langs, presentLanguages(ep.FilePath, langs))) == 0 {
+				if len(missingOf(langs, presentLanguages(ep.FilePath, langs, false))) == 0 {
 					st.Complete++
 				} else {
 					st.MissingSubs++
@@ -208,7 +208,7 @@ func (s *Service) GrabMovie(ctx context.Context, id int64) (int, error) {
 		return 0, nil
 	}
 	langs := s.languages(ctx)
-	missing := missingOf(langs, presentLanguages(m.MovieFilePath, langs))
+	missing := missingOf(langs, presentLanguages(m.MovieFilePath, langs, true))
 	grabbed := 0
 	for _, lang := range missing {
 		ok, err := s.grabOne(ctx, m.IMDBID, m.Title, m.Year, 0, 0, m.MovieFilePath, lang)
@@ -236,7 +236,7 @@ func (s *Service) GrabSeries(ctx context.Context, id int64) (int, error) {
 			if !ep.HasFile || ep.FilePath == "" {
 				continue
 			}
-			for _, lang := range missingOf(langs, presentLanguages(ep.FilePath, langs)) {
+			for _, lang := range missingOf(langs, presentLanguages(ep.FilePath, langs, false)) {
 				ok, err := s.grabOne(ctx, full.IMDBID, full.Title, full.Year, ep.SeasonNumber, ep.EpisodeNumber, ep.FilePath, lang)
 				if err != nil {
 					s.log.Warn("subtitle grab failed", "series", full.Title, "s", ep.SeasonNumber, "e", ep.EpisodeNumber, "lang", lang, "err", err)

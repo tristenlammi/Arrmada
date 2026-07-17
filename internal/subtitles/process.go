@@ -26,7 +26,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	}
 	langs := s.languages(ctx)
 	present := map[string]bool{}
-	for _, l := range presentLanguages(path, langs) {
+	for _, l := range presentLanguages(path, langs, job.Kind != "episode") {
 		present[strings.ToLower(l)] = true
 	}
 	canDownload := s.provider != nil && s.provider.CanDownload()
