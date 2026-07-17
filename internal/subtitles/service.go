@@ -2,6 +2,7 @@ package subtitles
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 	"os"
 	"strings"
@@ -28,12 +29,19 @@ type Service struct {
 	series   *series.Service
 	settings *settings.Service
 	provider Provider
+	ffmpeg   string
+	ffprobe  string
+	cache    *probeCache
 	log      *slog.Logger
 }
 
-// NewService wires the module over the shared Movies/Series catalogs + a subtitle provider.
-func NewService(mv *movies.Service, sr *series.Service, set *settings.Service, provider Provider, log *slog.Logger) *Service {
-	return &Service{movies: mv, series: sr, settings: set, provider: provider, log: log}
+// NewService wires the module over the shared Movies/Series catalogs + a subtitle provider. db is
+// used for the probe cache; ffmpeg/ffprobe drive embedded-track probing and extraction.
+func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *settings.Service, provider Provider, ffmpeg, ffprobe string, log *slog.Logger) *Service {
+	return &Service{
+		movies: mv, series: sr, settings: set, provider: provider,
+		ffmpeg: ffmpeg, ffprobe: ffprobe, cache: &probeCache{db: db}, log: log,
+	}
 }
 
 // Settings is the module's configuration + provider readiness for the dashboard.

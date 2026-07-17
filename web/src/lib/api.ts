@@ -567,6 +567,16 @@ export interface SubtitleSettings {
   provider_ready: boolean;
   can_download: boolean;
 }
+export interface SubTrack { index: number; codec: string; lang: string; text: boolean; forced?: boolean }
+export interface SubLangStatus { lang: string; have: boolean; source?: "extract" | "ocr" | "download" | "ai" }
+export interface SubHealth { score: number; notes?: string[] }
+export interface SubFileEntry {
+  kind: "movie" | "episode";
+  movie_id?: number; series_id?: number; season?: number; episode?: number;
+  title: string; year?: number; poster_url?: string; path: string; duration_sec?: number;
+  audio_langs?: string[]; embedded: SubTrack[]; external: string[];
+  languages: SubLangStatus[]; health?: SubHealth; missing: number;
+}
 export interface MovieSubStatus {
   id: number;
   title: string;
@@ -932,6 +942,7 @@ export const api = {
   subtitleSettings: () => req<SubtitleSettings>("/api/v1/subtitles/settings"),
   updateSubtitleSettings: (body: { movies_auto?: boolean; series_auto?: boolean; languages?: string[] }) =>
     req<SubtitleSettings>("/api/v1/subtitles/settings", { method: "PUT", body: JSON.stringify(body) }),
+  subtitleLibrary: (media: "movies" | "tv" = "movies") => req<{ items: SubFileEntry[] }>(`/api/v1/subtitles/library${media === "tv" ? "?media=tv" : ""}`).then((r) => r.items),
   subtitleMovies: () => req<{ movies: MovieSubStatus[] }>("/api/v1/subtitles/movies").then((r) => r.movies),
   subtitleSeries: () => req<{ series: SeriesSubStatus[] }>("/api/v1/subtitles/series").then((r) => r.series),
   searchMovieSubs: (id: number) => req<{ status: string }>(`/api/v1/subtitles/movies/${id}/search`, { method: "POST" }),

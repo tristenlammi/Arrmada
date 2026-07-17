@@ -32,6 +32,24 @@ func (a *api) handleUpdateSubtitleSettings(w http.ResponseWriter, r *http.Reques
 	a.writeJSON(w, http.StatusOK, a.deps.Subtitles.GetSettings(r.Context()))
 }
 
+// handleSubtitleLibrary returns per-file subtitle coverage for the Subtitles Library tab
+// (media=movies|tv), computed against the kept languages.
+func (a *api) handleSubtitleLibrary(w http.ResponseWriter, r *http.Request) {
+	media := "movies"
+	if r.URL.Query().Get("media") == "tv" {
+		media = "tv"
+	}
+	list, err := a.deps.Subtitles.Library(r.Context(), media)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not load subtitle library")
+		return
+	}
+	if list == nil {
+		list = []subtitles.FileSubs{}
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"items": list})
+}
+
 func (a *api) handleSubtitleMovies(w http.ResponseWriter, r *http.Request) {
 	list, err := a.deps.Subtitles.MovieStatuses(r.Context())
 	if err != nil {
