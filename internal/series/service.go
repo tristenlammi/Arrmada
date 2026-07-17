@@ -357,9 +357,7 @@ func (s *Service) refreshSceneMap(ctx context.Context, seriesID int64, tvdbID in
 	}
 	s.sceneCache[seriesID] = m
 	s.sceneMu.Unlock()
-	if len(m) > 0 {
-		s.log.Info("series: cached TheXEM scene map", "series_id", seriesID, "tvdb", tvdbID, "entries", len(m))
-	}
+	s.log.Info("series: TheXEM scene map cached", "series_id", seriesID, "tvdb", tvdbID, "entries", len(m))
 }
 
 // sceneAbsolute returns the absolute episode number for a scene (season, episode) from

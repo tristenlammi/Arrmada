@@ -109,7 +109,7 @@ func main() {
 	settingsSvc := settings.NewService(st.DB())
 	notifySvc := notify.NewService(st.DB(), bus, log)
 	seriesSvc := series.NewService(st.DB(), tmdb, cfg.TVDir, log)
-	seriesSvc.SetSceneMapper(xem.New(cfg.FlaresolverrURL)) // TheXEM scene mapping (via FlareSolverr past Cloudflare)
+	seriesSvc.SetSceneMapper(xem.New(cfg.FlaresolverrURL, log)) // TheXEM scene mapping (via FlareSolverr past Cloudflare)
 	booksSvc := books.NewService(st.DB(), openlib, log)
 	// Recycle bin: default to <library>/.recycle so deletes are undoable; "off" hard-deletes.
 	recycleDir := cfg.RecycleDir
