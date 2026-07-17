@@ -294,6 +294,19 @@ func (c *Coordinator) recordImportedHash(ctx context.Context, hash, title string
 		hash, title, size)
 }
 
+// hashAlreadyImported reports whether a finished download has already been imported
+// (its hash is recorded). Guards the series import loop from re-importing the same
+// torrent every cycle — which, with quality-upgrade supersede, otherwise ping-pongs
+// two packs for the same episodes and floods the recycle bin.
+func (c *Coordinator) hashAlreadyImported(ctx context.Context, hash string) bool {
+	if hash == "" {
+		return false
+	}
+	var one int
+	_ = c.db.QueryRowContext(ctx, `SELECT 1 FROM imports WHERE download_hash = ? LIMIT 1`, hash).Scan(&one)
+	return one == 1
+}
+
 func titleYear(title string, year int) string {
 	if year > 0 {
 		return fmt.Sprintf("%s (%d)", title, year)

@@ -306,6 +306,9 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 		if it.ContentPath == "" {
 			continue
 		}
+		if c.hashAlreadyImported(ctx, it.Hash) {
+			continue // already imported this torrent — never re-import (ping-pong guard)
+		}
 		if c.hasReview(ctx, it.Hash) {
 			continue // already held for review (or resolved) — don't re-flag or import
 		}
