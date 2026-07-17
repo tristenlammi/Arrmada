@@ -75,15 +75,25 @@ func (w *whisperGen) generate(ctx context.Context, ffmpeg, videoPath, srtPath, l
 	if model == "" {
 		return fmt.Errorf("no whisper model available for %s", ifElse(translate, "translation", "transcription"))
 	}
-	// 1. Extract mono 16 kHz PCM — what Whisper expects.
-	wav := filepath.Join(os.TempDir(), fmt.Sprintf("whisper-%d.wav", time.Now().UnixNano()))
+	// Work in the temp dir under a clean (space-free) base, then move the result next to the video.
+	// Whisper writes "<outBase>.srt".
+	stamp := time.Now().UnixNano()
+	wav := filepath.Join(os.TempDir(), fmt.Sprintf("whisper-%d.wav", stamp))
+	outBase := filepath.Join(os.TempDir(), fmt.Sprintf("whisper-%d", stamp))
+	outSRT := outBase + ".srt"
 	defer os.Remove(wav)
-	if err := exec.CommandContext(ctx, ffmpeg, "-y", "-hide_banner", "-i", videoPath,
-		"-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav).Run(); err != nil {
-		return fmt.Errorf("extract audio: %w", err)
+	defer os.Remove(outSRT)
+
+	// 1. Extract mono 16 kHz PCM — what Whisper expects — and confirm it's real audio.
+	if out, err := exec.CommandContext(ctx, ffmpeg, "-y", "-hide_banner", "-i", videoPath,
+		"-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav).CombinedOutput(); err != nil {
+		return fmt.Errorf("extract audio: %w: %s", err, tailStr(out, 300))
 	}
-	// 2. Transcribe/translate to SRT. whisper-cli writes "<outBase>.srt".
-	outBase := strings.TrimSuffix(srtPath, filepath.Ext(srtPath))
+	if fi, err := os.Stat(wav); err != nil || fi.Size() < 4096 {
+		return fmt.Errorf("extracted audio was empty (no decodable audio track?)")
+	}
+
+	// 2. Transcribe/translate to SRT.
 	args := []string{"-m", model, "-f", wav, "-osrt", "-of", outBase}
 	if translate {
 		args = append(args, "--translate")
@@ -93,16 +103,29 @@ func (w *whisperGen) generate(ctx context.Context, ffmpeg, videoPath, srtPath, l
 	if w.hasModel(vadModel) {
 		args = append(args, "--vad", "--vad-model", filepath.Join(w.modelsDir, vadModel))
 	}
-	if err := exec.CommandContext(ctx, w.bin, args...).Run(); err != nil {
-		return fmt.Errorf("whisper: %w", err)
+	out, err := exec.CommandContext(ctx, w.bin, args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("whisper: %w: %s", err, tailStr(out, 400))
 	}
-	// 3. Drop stock-phrase hallucinations ("thank you" / "thanks for watching" over non-speech).
-	if b, err := os.ReadFile(srtPath); err == nil {
-		if cleaned := filterStockPhrases(string(b)); cleaned != string(b) {
-			_ = os.WriteFile(srtPath, []byte(cleaned), 0o644)
-		}
+	if fi, statErr := os.Stat(outSRT); statErr != nil || fi.Size() == 0 {
+		return fmt.Errorf("whisper produced no subtitle output: %s", tailStr(out, 400))
 	}
-	return nil
+
+	// 3. Filter stock-phrase hallucinations and write the sidecar next to the video.
+	b, err := os.ReadFile(outSRT)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(srtPath, []byte(filterStockPhrases(string(b))), 0o644)
+}
+
+// tailStr returns the last n bytes of out as a single trimmed line (for error diagnostics).
+func tailStr(out []byte, n int) string {
+	s := strings.TrimSpace(string(out))
+	if len(s) > n {
+		s = s[len(s)-n:]
+	}
+	return strings.ReplaceAll(s, "\n", " ⏎ ")
 }
 
 // aiPlan decides how (if at all) AI can produce a wanted-language subtitle from a file's audio:
