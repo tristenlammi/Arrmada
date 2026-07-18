@@ -320,14 +320,22 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 		if it.ContentPath == "" {
 			continue
 		}
-		if c.hashAlreadyImported(ctx, it.Hash) {
-			continue // already imported this torrent — never re-import (ping-pong guard)
-		}
 		if c.hasReview(ctx, it.Hash) {
 			continue // already held for review (or resolved) — don't re-flag or import
 		}
 		parsed := parser.Parse(it.Name)
 		s, matchOK := c.series.MatchByTitle(ctx, series.NormTitle(parsed.Title))
+
+		// Already-imported guard. Normally skip a torrent we've handled — but if the
+		// season it covers STILL has aired episodes missing (e.g. a pack that only
+		// partly extracted the first time, before the recursive-unpack fix), give it
+		// another pass so it can fill the gaps. The per-episode quality gate in
+		// importSeriesInto keeps this from ping-ponging once the season is complete.
+		if c.hashAlreadyImported(ctx, it.Hash) {
+			if !matchOK || !c.series.SeasonHasMissing(ctx, s.ID, parsed.Season) {
+				continue
+			}
+		}
 
 		// If this download was grabbed for a specific series, verify its content is
 		// actually that series — otherwise hold it for admin review rather than skip
@@ -347,13 +355,18 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			c.log.Info("series import: no matching library series", "release", it.Name, "parsed_title", parsed.Title)
 			continue // not something we grabbed and not a library title — leave alone
 		}
-		imported := c.importSeriesInto(ctx, s, it.ContentPath)
-		if imported > 0 {
-			c.log.Info("series: imported episodes", "series", s.Title, "count", imported, "release", it.Name)
-			c.recordImportedHash(ctx, it.Hash, it.Name, it.SizeBytes) // drop it from the downloads view
-			c.markSeriesGrabsImported(ctx, s.ID)                       // flip its grab to imported for seed cleanup
-			c.series.AddEvent(ctx, s.ID, "imported", fmt.Sprintf("Imported %d episode%s from %s", imported, plural(imported), it.Name))
-			c.bus.Publish("series.imported", map[string]any{"title": s.Title, "id": s.ID, "count": imported})
+		imported, matched := c.importSeriesInto(ctx, s, it.ContentPath)
+		if matched > 0 {
+			// Every file mapped to a known episode (some newly placed, some already
+			// present) — the download is handled, so drop it from the downloads view
+			// and stop re-scanning it.
+			c.recordImportedHash(ctx, it.Hash, it.Name, it.SizeBytes)
+			c.markSeriesGrabsImported(ctx, s.ID) // flip its grab to imported for seed cleanup
+			if imported > 0 {
+				c.log.Info("series: imported episodes", "series", s.Title, "count", imported, "release", it.Name)
+				c.series.AddEvent(ctx, s.ID, "imported", fmt.Sprintf("Imported %d episode%s from %s", imported, plural(imported), it.Name))
+				c.bus.Publish("series.imported", map[string]any{"title": s.Title, "id": s.ID, "count": imported})
+			}
 		} else {
 			c.log.Warn("series import: matched but imported 0 episodes — no video found (archive not extracted, or an unrecognized episode name)",
 				"series", s.Title, "release", it.Name, "content_path", it.ContentPath)

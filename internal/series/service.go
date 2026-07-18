@@ -740,6 +740,30 @@ func (s *Service) SupersedeEpisodeFile(ctx context.Context, seriesID int64, seas
 	return s.MarkEpisodeImported(ctx, seriesID, season, episode, path, size)
 }
 
+// WantsFile reports whether importing a candidate release (at resolution res) into this
+// episode is worth doing: true when the episode has no file, when its recorded file is
+// gone from disk, or when the candidate is a strictly higher resolution than what's on
+// disk. The auto-importer uses this to skip an equal-or-lower-quality duplicate — which
+// otherwise ping-pongs endlessly between two releases of the same episode.
+func (s *Service) WantsFile(ctx context.Context, seriesID int64, season, episode int, res parser.Resolution) bool {
+	old, _ := s.repo.EpisodeFilePath(ctx, seriesID, season, episode)
+	if old == "" {
+		return true
+	}
+	if _, err := os.Stat(old); err != nil {
+		return true // recorded file no longer on disk — re-import it
+	}
+	cur := parser.Parse(filepath.Base(old)).Resolution
+	return parser.ResolutionRank(res) > parser.ResolutionRank(cur)
+}
+
+// SeasonHasMissing reports whether the covered season still has an aired, monitored
+// episode with no file — used to decide whether an already-imported pack is worth a
+// second pass (e.g. a season pack that only partly extracted the first time).
+func (s *Service) SeasonHasMissing(ctx context.Context, seriesID int64, season int) bool {
+	return s.repo.SeasonHasMissing(ctx, seriesID, season)
+}
+
 // MarkEpisodeMissing flips an episode back to wanted (no file on disk) — used by
 // rescan to reconcile episodes whose file was deleted or moved away.
 func (s *Service) MarkEpisodeMissing(ctx context.Context, seriesID int64, season, episode int) error {

@@ -134,6 +134,12 @@ func extractRar(archivePath, destDir string) error {
 }
 
 func writeFile(in io.Reader, dst string) error {
+	// Idempotent: if we've already extracted this file, don't rewrite it. A season pack
+	// gets re-scanned while it still has missing episodes, and re-copying multi-GB videos
+	// every pass would be pointless churn.
+	if fi, err := os.Stat(dst); err == nil && fi.Size() > 0 {
+		return nil
+	}
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return err

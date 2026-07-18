@@ -307,6 +307,25 @@ func (r *Repo) SeasonExists(ctx context.Context, seriesID int64, season int) boo
 	return err == nil && one == 1
 }
 
+// SeasonHasMissing reports whether a season still has a monitored, aired episode with
+// no file on disk — i.e. a re-processed pack could still fill something. Unaired
+// episodes don't count (they can't be filled yet), so an ongoing show doesn't look
+// perpetually incomplete. season <= 0 checks the whole series.
+func (r *Repo) SeasonHasMissing(ctx context.Context, seriesID int64, season int) bool {
+	q := `SELECT 1 FROM episodes
+	      WHERE series_id = ? AND monitored = 1 AND has_file = 0 AND season_number > 0
+	        AND air_date != '' AND air_date <= date('now')`
+	args := []any{seriesID}
+	if season > 0 {
+		q += ` AND season_number = ?`
+		args = append(args, season)
+	}
+	q += ` LIMIT 1`
+	var one int
+	err := r.db.QueryRowContext(ctx, q, args...).Scan(&one)
+	return err == nil && one == 1
+}
+
 // epAir is one episode's (season, episode) with its air date, for scene-season inference.
 type epAir struct {
 	season, episode int

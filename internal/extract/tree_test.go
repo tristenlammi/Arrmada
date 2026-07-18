@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestExtractTreeNested checks that ExtractTree reaches an archive nested inside a
@@ -31,5 +32,24 @@ func TestExtractTreeNested(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(sub, "Show.S03E10.mkv")); err != nil {
 		t.Error("expected the nested archive's video to be extracted next to it")
+	}
+
+	// Re-extracting must not rewrite an already-unpacked file — a season pack is
+	// re-scanned while it still has missing episodes, and re-copying multi-GB videos
+	// every pass would be wasteful churn. Mark the file and confirm it's untouched.
+	out := filepath.Join(sub, "Show.S03E10.mkv")
+	epoch := time.Unix(1000000, 0)
+	if err := os.Chtimes(out, epoch, epoch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExtractTree(root); err != nil {
+		t.Fatalf("second ExtractTree: %v", err)
+	}
+	fi, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !fi.ModTime().Equal(epoch) {
+		t.Error("expected the already-extracted file to be left untouched on the second pass")
 	}
 }

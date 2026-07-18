@@ -23,6 +23,25 @@ const (
 	Res480p    Resolution = "480p"
 )
 
+// ResolutionRank orders resolutions from best (higher) to worst, with unknown lowest,
+// so the importer can decide whether a candidate is an upgrade over what's on disk.
+func ResolutionRank(r Resolution) int {
+	switch r {
+	case Res2160p:
+		return 5
+	case Res1080p:
+		return 4
+	case Res720p:
+		return 3
+	case Res576p:
+		return 2
+	case Res480p:
+		return 1
+	default:
+		return 0
+	}
+}
+
 // Source is the normalized origin of a release.
 type Source string
 
