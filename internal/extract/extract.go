@@ -55,6 +55,26 @@ func ExtractAll(dir string) (int, error) {
 	return count, nil
 }
 
+// ExtractTree extracts archives found anywhere under dir (recursively), so a season
+// pack whose episodes each live in their own subfolder of RARs is fully unpacked.
+// Best-effort: a failure in one folder doesn't stop the rest. Returns the total count.
+func ExtractTree(dir string) (int, error) {
+	total := 0
+	var firstErr error
+	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return nil
+		}
+		n, e := ExtractAll(p)
+		total += n
+		if e != nil && firstErr == nil {
+			firstErr = e
+		}
+		return nil
+	})
+	return total, firstErr
+}
+
 // isFirstRarVolume reports whether name is the first volume of a RAR set. Plain
 // ".rar" (old-style .rar/.r00/.r01…) is first; ".partNN.rar" only when NN == 1.
 func isFirstRarVolume(name string) bool {

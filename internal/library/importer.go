@@ -433,9 +433,10 @@ type Result struct {
 // Import organizes a finished download. name is the release name (used for
 // parsing); contentPath is the file or folder on disk to import from.
 func (im *Importer) Import(name, contentPath string) (*Result, error) {
-	// Unpack any archives first (scene releases often ship RAR'd).
+	// Unpack any archives first (scene releases often ship RAR'd), recursively so a
+	// nested folder of parts is reached too.
 	if info, err := os.Stat(contentPath); err == nil && info.IsDir() {
-		if n, err := extract.ExtractAll(contentPath); err != nil {
+		if n, err := extract.ExtractTree(contentPath); err != nil {
 			im.log.Warn("extraction failed", "path", contentPath, "err", err)
 		} else if n > 0 {
 			im.log.Info("extracted archives", "count", n, "path", contentPath)

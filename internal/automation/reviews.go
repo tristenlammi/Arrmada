@@ -3,8 +3,10 @@ package automation
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 
+	"github.com/tristenlammi/arrmada/internal/extract"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/series"
@@ -215,6 +217,15 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 // importSeriesInto hardlinks every episode file in contentPath into the given
 // series' library, marking each episode present. Returns the count imported.
 func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, contentPath string) int {
+	// Unpack any archives first (scene releases ship the episode inside a RAR set — this
+	// is the Unpackerr job). Recursive, so a season pack's per-episode subfolders unpack.
+	if fi, err := os.Stat(contentPath); err == nil && fi.IsDir() {
+		if n, xerr := extract.ExtractTree(contentPath); xerr != nil {
+			c.log.Warn("series: archive extraction failed", "path", contentPath, "err", xerr)
+		} else if n > 0 {
+			c.log.Info("series: extracted archives before import", "count", n, "path", contentPath)
+		}
+	}
 	videos, err := library.FindVideos(contentPath)
 	if err != nil {
 		return 0
