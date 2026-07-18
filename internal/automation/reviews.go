@@ -230,6 +230,10 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	if err != nil {
 		return 0
 	}
+	if len(videos) == 0 {
+		c.log.Warn("series import: no video files found in the download (all archives? nested oddly?)", "series", s.Title, "content_path", contentPath)
+		return 0
+	}
 	// Route episodes into the show's existing on-disk folder when it has one, so a
 	// show already stored as "Below Deck" doesn't spawn a duplicate "Below Deck
 	// (2013)" folder on the next grab.
@@ -243,7 +247,14 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		if !ok {
 			// No SxxExx — for anime this is an absolute-numbered file ("Show - 137"):
 			// resolve the absolute number and place it under that season/episode.
-			imported += c.importAbsoluteEpisode(ctx, s, folder, v.Path)
+			if n := c.importAbsoluteEpisode(ctx, s, folder, v.Path); n > 0 {
+				imported += n
+			} else {
+				rel := parser.Parse(filepath.Base(v.Path))
+				c.log.Warn("series import: couldn't place file",
+					"file", filepath.Base(v.Path), "season", rel.Season, "episodes", rel.Episodes,
+					"absolute", rel.AbsoluteEpisodes, "anime", s.IsAnime())
+			}
 			continue
 		}
 		if ei.Method == "already" {
