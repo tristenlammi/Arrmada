@@ -72,7 +72,7 @@ func TestRenameNormalizesSeasonFolder(t *testing.T) {
 	im := NewImporter(lib, quiet())
 
 	// Import path reuses the existing "Season 04" (no duplicate folder).
-	if got := seasonDirName(filepath.Join(lib, "Andor"), 4); got != "Season 04" {
+	if got := seasonDirName(filepath.Join(lib, "Andor"), 4, "Season 4"); got != "Season 04" {
 		t.Errorf("import seasonDirName = %q, want it to reuse the existing %q", got, "Season 04")
 	}
 	// Rename path forces the canonical unpadded "Season 4".
@@ -80,6 +80,29 @@ func TestRenameNormalizesSeasonFolder(t *testing.T) {
 	want := filepath.Join(lib, "Andor", "Season 4", "Andor - S04E01 - 1080p WEB-DL.mkv")
 	if got != want {
 		t.Errorf("rename target = %q\n want %q (canonical, not the legacy Season 04)", got, want)
+	}
+}
+
+type fixedSeriesNaming struct{ n SeriesNaming }
+
+func (f fixedSeriesNaming) SeriesNaming() SeriesNaming { return f.n }
+
+// TestSeriesNamingScheme checks a fully custom series scheme renders through: a bare
+// series folder, a zero-padded season folder via {season00}, and an episode file with
+// the episode title and quality.
+func TestSeriesNamingScheme(t *testing.T) {
+	lib := t.TempDir()
+	im := NewImporter(lib, quiet())
+	im.SetEpisodeTitleFunc(func(string, int, int, int) string { return "The Pilot" })
+	im.SetSeriesNaming(fixedSeriesNaming{SeriesNaming{
+		Folder:       "{title}",
+		SeasonFolder: "Season {season00}",
+		EpisodeFile:  "{title} {episode} {episodetitle} [{quality}]",
+	}})
+	got := im.EpisodeTargetIn("", "Foo", 2020, 4, 1, "Foo.S04E01.1080p.WEB-DL.mkv", ".mkv")
+	want := filepath.Join(lib, "Foo", "Season 04", "Foo S04E01 The Pilot [1080p WEB-DL].mkv")
+	if got != want {
+		t.Errorf("custom scheme target =\n %q\n want %q", got, want)
 	}
 }
 
@@ -133,16 +156,16 @@ func TestSeasonDirNameReusesExisting(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(dir, "Season 1"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if got := seasonDirName(dir, 1); got != "Season 1" {
+	if got := seasonDirName(dir, 1, "Season 1"); got != "Season 1" {
 		t.Errorf("seasonDirName = %q, want the existing %q", got, "Season 1")
 	}
-	// A season with no existing folder falls back to the canonical unpadded default.
-	if got := seasonDirName(dir, 2); got != "Season 2" {
+	// A season with no existing folder falls back to the given canonical default.
+	if got := seasonDirName(dir, 2, "Season 2"); got != "Season 2" {
 		t.Errorf("seasonDirName(new) = %q, want %q", got, "Season 2")
 	}
-	// Season 0 with nothing on disk → Specials.
-	if got := seasonDirName(dir, 0); got != "Specials" {
-		t.Errorf("seasonDirName(0) = %q, want Specials", got)
+	// Even when the canonical is padded, an existing unpadded folder is reused.
+	if got := seasonDirName(dir, 1, "Season 01"); got != "Season 1" {
+		t.Errorf("seasonDirName(reuse over padded) = %q, want %q", got, "Season 1")
 	}
 }
 
@@ -277,8 +300,8 @@ func TestImportSidecarSubs(t *testing.T) {
 	lib := t.TempDir()
 	name := "Dune.Part.Two.2024.1080p.WEB-DL-FLUX"
 	writeFile(t, filepath.Join(src, name, name+".mkv"), 5000)
-	writeFile(t, filepath.Join(src, name, name+".en.srt"), 40)  // english, tagged
-	writeFile(t, filepath.Join(src, name, name+".srt"), 40)     // bare (no lang)
+	writeFile(t, filepath.Join(src, name, name+".en.srt"), 40)        // english, tagged
+	writeFile(t, filepath.Join(src, name, name+".srt"), 40)           // bare (no lang)
 	writeFile(t, filepath.Join(src, name, "Subs", "spanish.srt"), 40) // in a Subs folder
 
 	im := NewImporter(lib, quiet())
@@ -301,7 +324,7 @@ func TestImportSidecarSubsIgnoresNeighbors(t *testing.T) {
 	lib := t.TempDir()
 	name := "Dune.Part.Two.2024.1080p.WEB-DL-FLUX"
 	writeFile(t, filepath.Join(dl, name+".mkv"), 5000)
-	writeFile(t, filepath.Join(dl, name+".en.srt"), 40)              // ours
+	writeFile(t, filepath.Join(dl, name+".en.srt"), 40)                 // ours
 	writeFile(t, filepath.Join(dl, "Some.Other.Movie.2020.en.srt"), 40) // a neighbor
 
 	im := NewImporter(lib, quiet())

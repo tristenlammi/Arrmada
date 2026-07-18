@@ -18,12 +18,34 @@ const SAMPLE = {
 
 const TOKENS = ["title", "year", "quality", "resolution", "source", "edition", "codec", "group"];
 
-function render(format: string): string {
+// Sample series episode for the series naming preview.
+const SERIES_SAMPLE = {
+  title: "The Bear",
+  year: "2022",
+  season: "4",
+  season00: "04",
+  episode: "S04E01",
+  episodetitle: "Tomorrow",
+  quality: "1080p WEB-DL",
+  resolution: "1080p",
+  source: "WEB-DL",
+  codec: "x264",
+  group: "NTb",
+};
+const SERIES_TOKENS = ["title", "year", "season", "season00", "episode", "episodetitle", "quality", "resolution", "source", "codec", "group"];
+
+// renderWith mirrors the backend renderName tidy-up: substitute tokens, drop empty
+// bracket pairs and stranded "- -" separators, strip illegal filename chars.
+function renderWith(format: string, sample: Record<string, string>): string {
   let out = format;
-  for (const [k, v] of Object.entries(SAMPLE)) out = out.split(`{${k}}`).join(v);
-  out = out.replace(/\s+/g, " ").replace(/[\s-]+$/g, "").trim();
+  for (const [k, v] of Object.entries(sample)) out = out.split(`{${k}}`).join(v);
+  out = out.replace(/\(\)/g, "").replace(/\[\]/g, "").replace(/\s+/g, " ");
+  while (out.includes("- -")) out = out.replace("- -", "-");
+  out = out.replace(/^[\s-]+|[\s-]+$/g, "");
   return out.replace(/[<>:"/\\|?*]/g, "");
 }
+const render = (format: string) => renderWith(format, SAMPLE);
+const renderSeries = (format: string) => renderWith(format, SERIES_SAMPLE);
 
 type Tab = "media" | "library" | "system" | "users";
 
@@ -91,7 +113,7 @@ export function Settings() {
           <p className="text-[12.5px] text-ink-dim">Loading…</p>
         ) : tab === "media" ? (
           <div className="flex flex-col gap-6">
-            <Section title="Media management" subtitle="How imported movie files are named. Tokens are replaced per release.">
+            <Section title="Movie naming" subtitle="How imported movie files are named. Tokens are replaced per release.">
               <Field label="Folder name">
                 <input value={s.naming_movie_folder} onChange={(e) => patch({ naming_movie_folder: e.target.value })} className={input} style={inputStyle} />
                 <Preview>{render(s.naming_movie_folder)}</Preview>
@@ -100,11 +122,25 @@ export function Settings() {
                 <input value={s.naming_movie_file} onChange={(e) => patch({ naming_movie_file: e.target.value })} className={input} style={inputStyle} />
                 <Preview>{render(s.naming_movie_file)}.mkv</Preview>
               </Field>
-              <div className="flex flex-wrap gap-1.5">
-                {TOKENS.map((t) => (
-                  <code key={t} className="rounded px-1.5 py-0.5 font-mono text-[10.5px]" style={{ background: "var(--panel-2)", color: "var(--ink-dim)" }}>{`{${t}}`}</code>
-                ))}
-              </div>
+              <TokenList tokens={TOKENS} />
+            </Section>
+            <Section title="Series naming" subtitle="How imported episodes are named: the show folder holds season folders, which hold episode files.">
+              <Field label="Series folder">
+                <input value={s.naming_series_folder} onChange={(e) => patch({ naming_series_folder: e.target.value })} className={input} style={inputStyle} />
+                <Preview>{renderSeries(s.naming_series_folder)}</Preview>
+              </Field>
+              <Field label="Season folder">
+                <input value={s.naming_series_season} onChange={(e) => patch({ naming_series_season: e.target.value })} className={input} style={inputStyle} />
+                <Preview>{renderSeries(s.naming_series_season)}</Preview>
+              </Field>
+              <Field label="Episode file">
+                <input value={s.naming_series_episode} onChange={(e) => patch({ naming_series_episode: e.target.value })} className={input} style={inputStyle} />
+                <Preview>{renderSeries(s.naming_series_episode)}.mkv</Preview>
+              </Field>
+              <p className="text-[11px] text-ink-faint">
+                <code className="font-mono">{"{episode}"}</code> is the SxxExx tag (a range for double episodes). Use <code className="font-mono">{"{season00}"}</code> for a zero-padded season number. Season 0 is always “Specials”.
+              </p>
+              <TokenList tokens={SERIES_TOKENS} />
             </Section>
             <Section title="Metadata" subtitle="Written into each movie folder for Plex, Jellyfin, Emby and Kodi.">
               <Toggle label="Write movie.nfo" hint="A metadata sidecar with title, plot, ids, ratings." checked={s.write_nfo} onChange={(v) => patch({ write_nfo: v })} />
@@ -421,6 +457,16 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function Preview({ children }: { children: React.ReactNode }) {
   return <span className="text-[11px] text-ink-dim">→ <span className="font-mono" style={{ color: "var(--accent)" }}>{children}</span></span>;
+}
+
+function TokenList({ tokens }: { tokens: string[] }) {
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {tokens.map((t) => (
+        <code key={t} className="rounded px-1.5 py-0.5 font-mono text-[10.5px]" style={{ background: "var(--panel-2)", color: "var(--ink-dim)" }}>{`{${t}}`}</code>
+      ))}
+    </div>
+  );
 }
 
 function Toggle({ label, hint, checked, onChange }: { label: string; hint: string; checked: boolean; onChange: (v: boolean) => void }) {

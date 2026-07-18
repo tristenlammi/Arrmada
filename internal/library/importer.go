@@ -264,16 +264,40 @@ const (
 	DefaultMovieFile   = "{title} ({year}) - {quality}"
 )
 
+// Default series naming. The series folder holds season folders, which hold episode
+// files. Tokens: {title} {year} {season} {season00} {episode} {episodetitle} {quality}
+// {resolution} {source} {codec} {group}. {episode} is the SxxExx tag (a range for a
+// double-episode file); {season00} is the zero-padded season for those who want it.
+const (
+	DefaultSeriesFolder = "{title} ({year})"
+	DefaultSeasonFolder = "Season {season}"
+	DefaultEpisodeFile  = "{title} - {episode} - {episodetitle} - {quality}"
+)
+
 // Naming is the configurable movie naming scheme.
 type Naming struct {
 	Folder string
 	File   string
 }
 
+// SeriesNaming is the configurable series naming scheme (folder / season folder /
+// episode file formats).
+type SeriesNaming struct {
+	Folder       string
+	SeasonFolder string
+	EpisodeFile  string
+}
+
 // NamingProvider supplies the (possibly user-customized) naming scheme at import
 // time, so a settings change takes effect without restarting.
 type NamingProvider interface {
 	Naming() Naming
+}
+
+// SeriesNamingProvider supplies the series naming scheme, read fresh each import so a
+// settings change applies live.
+type SeriesNamingProvider interface {
+	SeriesNaming() SeriesNaming
 }
 
 // Importer moves media into a library root.
@@ -287,7 +311,8 @@ type Importer struct {
 	audiobookRoot string
 	bookRoots     []string // ebook + audiobook scan roots (falls back to root)
 	log           *slog.Logger
-	naming        NamingProvider // nil → built-in defaults
+	naming        NamingProvider       // nil → built-in defaults
+	seriesNaming  SeriesNamingProvider // nil → built-in defaults
 	// epTitleFn resolves an episode's metadata title for naming ("" when unknown or
 	// unset). Keyed by show name/year since the importer only knows the show by name.
 	epTitleFn func(seriesTitle string, year, season, episode int) string
@@ -352,6 +377,29 @@ func NewImporter(root string, log *slog.Logger) *Importer {
 // SetNaming installs a naming provider (user-configurable folder/file formats).
 func (im *Importer) SetNaming(np NamingProvider) { im.naming = np }
 
+// SetSeriesNaming installs the series naming provider (folder / season folder /
+// episode file formats).
+func (im *Importer) SetSeriesNaming(np SeriesNamingProvider) { im.seriesNaming = np }
+
+// seriesNamingScheme returns the series formats in effect, filling any blank with its
+// built-in default.
+func (im *Importer) seriesNamingScheme() SeriesNaming {
+	n := SeriesNaming{}
+	if im.seriesNaming != nil {
+		n = im.seriesNaming.SeriesNaming()
+	}
+	if n.Folder == "" {
+		n.Folder = DefaultSeriesFolder
+	}
+	if n.SeasonFolder == "" {
+		n.SeasonFolder = DefaultSeasonFolder
+	}
+	if n.EpisodeFile == "" {
+		n.EpisodeFile = DefaultEpisodeFile
+	}
+	return n
+}
+
 // movieNaming returns the folder and file formats in effect (defaults if unset).
 func (im *Importer) movieNaming() Naming {
 	if im.naming != nil {
@@ -396,14 +444,21 @@ func (im *Importer) movieParts(title string, year int, rel parser.Release) (fold
 	return folder, file
 }
 
-// renderName substitutes {tokens} and tidies up separators left by empty ones.
+// renderName substitutes {tokens} and tidies up separators left by empty ones — an
+// empty {episodetitle} in "{title} - {episode} - {episodetitle} - {quality}" must not
+// leave a stranded "- -".
 func renderName(format string, tok map[string]string) string {
 	out := format
 	for k, v := range tok {
 		out = strings.ReplaceAll(out, "{"+k+"}", v)
 	}
+	out = strings.ReplaceAll(out, "()", "") // empty {year} etc. left bare brackets
+	out = strings.ReplaceAll(out, "[]", "")
 	out = strings.Join(strings.Fields(out), " ") // collapse whitespace
-	out = strings.TrimRight(out, " -")           // drop a dangling "- " from an empty trailing token
+	for strings.Contains(out, "- -") {           // collapse "- - " runs from empty middle tokens
+		out = strings.ReplaceAll(out, "- -", "-")
+	}
+	out = strings.Trim(out, " -") // drop dangling separators at either end
 	return clean(out)
 }
 
@@ -519,9 +574,9 @@ func FindVideos(contentPath string) ([]FoundVideo, error) {
 
 // EpisodeImport describes one imported episode file.
 type EpisodeImport struct {
-	Season   int
-	Episode  int   // the first episode this file covers (kept for single-episode callers)
-	Episodes []int // every episode the file covers — >1 for a multi-episode file
+	Season     int
+	Episode    int   // the first episode this file covers (kept for single-episode callers)
+	Episodes   []int // every episode the file covers — >1 for a multi-episode file
 	SourcePath string
 	TargetPath string
 	SizeBytes  int64
@@ -730,63 +785,86 @@ func (im *Importer) episodeTarget(title string, year, season, episode int, rel p
 	return im.episodeTargetIn("", title, year, season, episode, rel, ext, true)
 }
 
-// episodeTargetIn builds the episode path under an explicit series folder. When
-// seriesFolder is empty it derives the conventional "<Title> (<Year>)" folder;
-// otherwise it uses the given folder verbatim so episodes land in the show's
-// existing on-disk directory.
+// episodeTargetIn builds the episode path under an explicit series folder, rendering
+// the user's series naming scheme (series folder / season folder / episode file). When
+// seriesFolder is empty it derives the folder from the scheme; otherwise it uses the
+// given folder verbatim so episodes join the show's existing on-disk directory.
 func (im *Importer) episodeTargetIn(seriesFolder, title string, year, season, episode int, rel parser.Release, ext string, canonicalSeason bool) string {
+	sn := im.seriesNamingScheme()
+	t := cleanTitleLoose(title)
+	if t == "" {
+		t = "Unknown"
+	}
 	folder := clean(seriesFolder)
 	if folder == "" {
-		folder = clean(title)
+		folder = renderName(sn.Folder, map[string]string{"title": t, "year": yearToken(year)})
 		if folder == "" {
-			folder = "Unknown"
-		}
-		if year > 0 {
-			folder = fmt.Sprintf("%s (%d)", folder, year)
+			folder = t
 		}
 	}
+
 	epPart := fmt.Sprintf("S%02dE%02d", season, episode)
 	if len(rel.Episodes) > 1 {
 		epPart = episodeTag(rel) // multi-episode file → "S03E21-E22"
 	}
-	file := fmt.Sprintf("%s - %s", clean(title), epPart)
+	epTitle := ""
 	if im.epTitleFn != nil {
-		if et := cleanTitleLoose(im.epTitleFn(title, year, season, episode)); et != "" {
-			file += " - " + et
-		}
+		epTitle = cleanTitleLoose(im.epTitleFn(title, year, season, episode))
 	}
-	if q := qualityTag(rel); q != "" {
-		file += " - " + q
+	file := renderName(sn.EpisodeFile, map[string]string{
+		"title":        t,
+		"year":         yearToken(year),
+		"season":       strconv.Itoa(season),
+		"season00":     fmt.Sprintf("%02d", season),
+		"episode":      epPart,
+		"episodetitle": epTitle,
+		"quality":      qualityTag(rel),
+		"resolution":   tokenOrEmpty(string(rel.Resolution), string(parser.ResUnknown)),
+		"source":       tokenOrEmpty(string(rel.Source), string(parser.SourceUnknown)),
+		"codec":        string(rel.Codec),
+		"group":        rel.Group,
+	})
+	if file == "" {
+		file = fmt.Sprintf("%s - %s", t, epPart)
 	}
+
 	seriesDir := filepath.Join(im.tvDir(), folder)
 	// Import reuses an existing season folder (any padding) so it never duplicates one;
-	// rename forces the canonical unpadded name so "Season 04" becomes "Season 4".
-	seasonSub := canonicalSeasonDir(season)
+	// rename forces the scheme's canonical name so "Season 04" becomes "Season 4".
+	canonical := im.seasonFolderName(sn.SeasonFolder, season, t, year)
+	seasonSub := canonical
 	if !canonicalSeason {
-		seasonSub = seasonDirName(seriesDir, season)
+		seasonSub = seasonDirName(seriesDir, season, canonical)
 	}
 	return filepath.Join(seriesDir, seasonSub, clean(file)+ext)
 }
 
-// canonicalSeasonDir is the season folder Arrmada creates: unpadded "Season 4" (and
-// "Specials" for season 0). Legacy padded folders ("Season 04") are still recognized on
-// import to avoid duplicates; rename normalizes everything to this form.
-func canonicalSeasonDir(season int) string {
+// seasonFolderName renders the season folder from the scheme. Season 0 is always
+// "Specials" (the convention parseSeasonDir round-trips), regardless of the format.
+func (im *Importer) seasonFolderName(format string, season int, title string, year int) string {
 	if season == 0 {
 		return "Specials"
 	}
-	return fmt.Sprintf("Season %d", season)
+	name := renderName(format, map[string]string{
+		"season":   strconv.Itoa(season),
+		"season00": fmt.Sprintf("%02d", season),
+		"title":    title,
+		"year":     yearToken(year),
+	})
+	if name == "" {
+		name = fmt.Sprintf("Season %d", season)
+	}
+	return name
 }
 
 // seasonDirName returns the season directory to place an episode in: an existing
 // one for that season if the show already has it (matching any padding — "Season 1",
-// "Season 01", "Specials"), otherwise the canonical unpadded default. This stops a grab
+// "Season 01", "Specials"), otherwise the given canonical default. This stops a grab
 // from creating a duplicate "Season 4" next to an existing "Season 04".
-func seasonDirName(seriesDir string, season int) string {
-	def := canonicalSeasonDir(season)
+func seasonDirName(seriesDir string, season int, canonical string) string {
 	entries, err := os.ReadDir(seriesDir)
 	if err != nil {
-		return def
+		return canonical
 	}
 	for _, e := range entries {
 		if e.IsDir() {
@@ -795,7 +873,7 @@ func seasonDirName(seriesDir string, season int) string {
 			}
 		}
 	}
-	return def
+	return canonical
 }
 
 // reSeasonDir matches "Season 1", "Season 01", "S1", "S01" (any zero-padding).
@@ -849,16 +927,15 @@ func (im *Importer) targetPath(r parser.Release, ext string) string {
 	if title == "" {
 		title = "Unknown"
 	}
-	quality := qualityTag(r)
 
 	if r.IsTV() {
-		folder := title
-		season := canonicalSeasonDir(r.Season)
-		file := fmt.Sprintf("%s - %s", title, episodeTag(r))
-		if quality != "" {
-			file += " - " + quality
+		// Route TV through the same series-naming path as episode imports so the
+		// configured scheme is honored everywhere.
+		ep := 0
+		if len(r.Episodes) > 0 {
+			ep = r.Episodes[0]
 		}
-		return filepath.Join(im.tvDir(), folder, season, clean(file)+ext)
+		return im.episodeTargetIn("", r.Title, r.Year, r.Season, ep, r, ext, false)
 	}
 
 	// Movie.

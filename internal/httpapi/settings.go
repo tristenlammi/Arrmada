@@ -9,13 +9,16 @@ import (
 )
 
 const (
-	keySearchOnAdd    = "search_on_add"
-	keyNamingFolder   = "naming_movie_folder"
-	keyNamingFile     = "naming_movie_file"
-	keyWriteNFO       = "write_nfo"
-	keyDownloadArtwrk = "download_artwork"
-	keyBooksEnabled   = "module_books_enabled"
-	keyMusicEnabled   = "module_music_enabled"
+	keySearchOnAdd         = "search_on_add"
+	keyNamingFolder        = "naming_movie_folder"
+	keyNamingFile          = "naming_movie_file"
+	keyNamingSeriesFolder  = "naming_series_folder"
+	keyNamingSeriesSeason  = "naming_series_season"
+	keyNamingSeriesEpisode = "naming_series_episode"
+	keyWriteNFO            = "write_nfo"
+	keyDownloadArtwrk      = "download_artwork"
+	keyBooksEnabled        = "module_books_enabled"
+	keyMusicEnabled        = "module_music_enabled"
 )
 
 // booksEnabled reports whether the Books module is turned on (default true). Used to gate
@@ -34,13 +37,16 @@ func (a *api) musicEnabled(ctx context.Context) bool {
 func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	a.writeJSON(w, http.StatusOK, map[string]any{
-		"search_on_add":         a.deps.Settings.GetBool(ctx, keySearchOnAdd, true),
-		"naming_movie_folder":   a.deps.Settings.Get(ctx, keyNamingFolder, library.DefaultMovieFolder),
-		"naming_movie_file":     a.deps.Settings.Get(ctx, keyNamingFile, library.DefaultMovieFile),
-		"write_nfo":        a.deps.Settings.GetBool(ctx, keyWriteNFO, false),
-		"download_artwork": a.deps.Settings.GetBool(ctx, keyDownloadArtwrk, false),
-		"books_enabled":    a.booksEnabled(ctx),
-		"music_enabled":    a.musicEnabled(ctx),
+		"search_on_add":           a.deps.Settings.GetBool(ctx, keySearchOnAdd, true),
+		"naming_movie_folder":     a.deps.Settings.Get(ctx, keyNamingFolder, library.DefaultMovieFolder),
+		"naming_movie_file":       a.deps.Settings.Get(ctx, keyNamingFile, library.DefaultMovieFile),
+		"naming_series_folder":    a.deps.Settings.Get(ctx, keyNamingSeriesFolder, library.DefaultSeriesFolder),
+		"naming_series_season":    a.deps.Settings.Get(ctx, keyNamingSeriesSeason, library.DefaultSeasonFolder),
+		"naming_series_episode":   a.deps.Settings.Get(ctx, keyNamingSeriesEpisode, library.DefaultEpisodeFile),
+		"write_nfo":               a.deps.Settings.GetBool(ctx, keyWriteNFO, false),
+		"download_artwork":        a.deps.Settings.GetBool(ctx, keyDownloadArtwrk, false),
+		"books_enabled":           a.booksEnabled(ctx),
+		"music_enabled":           a.musicEnabled(ctx),
 		"plex_login_enabled":      a.deps.Settings.GetBool(ctx, "plex_login_enabled", false),
 		"plex_login_auto_approve": a.deps.Settings.GetBool(ctx, "plex_login_auto_approve", true),
 		// Convert module.
@@ -68,15 +74,18 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 // handleUpdateSettings persists changed preferences (only provided keys change).
 func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SearchOnAdd         *bool   `json:"search_on_add"`
-		NamingMovieFolder   *string `json:"naming_movie_folder"`
-		NamingMovieFile     *string `json:"naming_movie_file"`
-		WriteNFO        *bool   `json:"write_nfo"`
-		DownloadArtwork *bool   `json:"download_artwork"`
-		BooksEnabled    *bool   `json:"books_enabled"`
-		MusicEnabled    *bool   `json:"music_enabled"`
-		PlexLoginEnabled     *bool `json:"plex_login_enabled"`
-		PlexLoginAutoApprove *bool `json:"plex_login_auto_approve"`
+		SearchOnAdd           *bool   `json:"search_on_add"`
+		NamingMovieFolder     *string `json:"naming_movie_folder"`
+		NamingMovieFile       *string `json:"naming_movie_file"`
+		NamingSeriesFolder    *string `json:"naming_series_folder"`
+		NamingSeriesSeason    *string `json:"naming_series_season"`
+		NamingSeriesEpisode   *string `json:"naming_series_episode"`
+		WriteNFO              *bool   `json:"write_nfo"`
+		DownloadArtwork       *bool   `json:"download_artwork"`
+		BooksEnabled          *bool   `json:"books_enabled"`
+		MusicEnabled          *bool   `json:"music_enabled"`
+		PlexLoginEnabled      *bool   `json:"plex_login_enabled"`
+		PlexLoginAutoApprove  *bool   `json:"plex_login_auto_approve"`
 		ConvertSkipHardlinked *bool   `json:"convert_skip_hardlinked"`
 		ConvertKeepAudioLangs *string `json:"convert_keep_audio_langs"`
 		ConvertAddStereo      *bool   `json:"convert_add_stereo"`
@@ -112,6 +121,15 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.NamingMovieFile != nil && !save(a.deps.Settings.Set(ctx, keyNamingFile, *req.NamingMovieFile)) {
+		return
+	}
+	if req.NamingSeriesFolder != nil && !save(a.deps.Settings.Set(ctx, keyNamingSeriesFolder, *req.NamingSeriesFolder)) {
+		return
+	}
+	if req.NamingSeriesSeason != nil && !save(a.deps.Settings.Set(ctx, keyNamingSeriesSeason, *req.NamingSeriesSeason)) {
+		return
+	}
+	if req.NamingSeriesEpisode != nil && !save(a.deps.Settings.Set(ctx, keyNamingSeriesEpisode, *req.NamingSeriesEpisode)) {
 		return
 	}
 	if req.WriteNFO != nil && !save(a.deps.Settings.SetBool(ctx, keyWriteNFO, *req.WriteNFO)) {

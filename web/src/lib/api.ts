@@ -280,6 +280,9 @@ export interface AppSettings {
   search_on_add: boolean;
   naming_movie_folder: string;
   naming_movie_file: string;
+  naming_series_folder: string;
+  naming_series_season: string;
+  naming_series_episode: string;
   write_nfo: boolean;
   download_artwork: boolean;
   books_enabled: boolean;

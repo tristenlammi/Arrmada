@@ -16,33 +16,33 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/applog"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/buildinfo"
 	"github.com/tristenlammi/arrmada/internal/config"
 	"github.com/tristenlammi/arrmada/internal/convert"
-	"github.com/tristenlammi/arrmada/internal/geoip"
-	"github.com/tristenlammi/arrmada/internal/insights"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/eventbus"
+	"github.com/tristenlammi/arrmada/internal/geoip"
 	"github.com/tristenlammi/arrmada/internal/httpapi"
 	"github.com/tristenlammi/arrmada/internal/indexer"
+	"github.com/tristenlammi/arrmada/internal/insights"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/notify"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/realtime"
-	"github.com/tristenlammi/arrmada/internal/applog"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
-	"github.com/tristenlammi/arrmada/internal/xem"
 	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/scheduler"
 	"github.com/tristenlammi/arrmada/internal/series"
 	"github.com/tristenlammi/arrmada/internal/settings"
 	"github.com/tristenlammi/arrmada/internal/store"
 	"github.com/tristenlammi/arrmada/internal/subtitles"
+	"github.com/tristenlammi/arrmada/internal/xem"
 )
 
 // libPrefs adapts the settings store to the library/movies preference interfaces
@@ -54,6 +54,14 @@ func (p libPrefs) Naming() library.Naming {
 	return library.Naming{
 		Folder: p.s.Get(ctx, "naming_movie_folder", library.DefaultMovieFolder),
 		File:   p.s.Get(ctx, "naming_movie_file", library.DefaultMovieFile),
+	}
+}
+func (p libPrefs) SeriesNaming() library.SeriesNaming {
+	ctx := context.Background()
+	return library.SeriesNaming{
+		Folder:       p.s.Get(ctx, "naming_series_folder", library.DefaultSeriesFolder),
+		SeasonFolder: p.s.Get(ctx, "naming_series_season", library.DefaultSeasonFolder),
+		EpisodeFile:  p.s.Get(ctx, "naming_series_episode", library.DefaultEpisodeFile),
 	}
 }
 func (p libPrefs) WriteNFO() bool { return p.s.GetBool(context.Background(), "write_nfo", false) }
@@ -222,12 +230,13 @@ func main() {
 	// Wire the series module into the coordinator: TV downloads land in a separate
 	// category and are hardlinked file-by-file (a season pack yields many episodes).
 	bookImporter := library.NewImporter(cfg.LibraryDir, log)
-	bookImporter.SetBookRoots(cfg.EbooksDir, cfg.AudiobooksDir)                         // scan ebooks + audiobooks (may be one folder)
+	bookImporter.SetBookRoots(cfg.EbooksDir, cfg.AudiobooksDir)                       // scan ebooks + audiobooks (may be one folder)
 	bookImporter.SetRoots(cfg.MoviesDir, cfg.TVDir, cfg.EbooksDir, cfg.AudiobooksDir) // this importer places TV episodes + book editions
 	// Name episode files with their metadata title ("<Series> - SxxEyy - <Episode> - <quality>").
 	bookImporter.SetEpisodeTitleFunc(func(seriesTitle string, year, season, episode int) string {
 		return seriesSvc.EpisodeTitleByName(context.Background(), seriesTitle, year, season, episode)
 	})
+	bookImporter.SetSeriesNaming(prefs) // user-configurable series folder / season / episode formats
 	coordinator.SetSeries(seriesSvc, bookImporter)
 	// Books share the importer set above; ebooks land in their own category.
 	coordinator.SetBooks(booksSvc)
