@@ -757,6 +757,17 @@ func (s *Service) WantsFile(ctx context.Context, seriesID int64, season, episode
 	return parser.ResolutionRank(res) > parser.ResolutionRank(cur)
 }
 
+// AcquisitionSummary returns per-monitored-series wanted/upcoming episode counts for
+// the downloads feed (Searching + Upcoming tabs).
+func (s *Service) AcquisitionSummary(ctx context.Context) []SeriesAcquisition {
+	out, err := s.repo.AcquisitionSummary(ctx)
+	if err != nil {
+		s.log.Warn("series: acquisition summary failed", "err", err)
+		return nil
+	}
+	return out
+}
+
 // SeasonHasMissing reports whether the covered season still has an aired, monitored
 // episode with no file — used to decide whether an already-imported pack is worth a
 // second pass (e.g. a season pack that only partly extracted the first time).

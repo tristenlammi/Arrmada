@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/movies"
@@ -57,6 +58,28 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		upcoming = append(upcoming, entry)
 	}
 
+	// Series contribute to the same two buckets, grouped per show: a series with aired,
+	// monitored, missing episodes is "searching" (labeled with the count); its soonest
+	// unaired monitored episode is "upcoming".
+	if a.deps.Series != nil {
+		for _, sa := range a.deps.Series.AcquisitionSummary(ctx) {
+			if sa.SearchingCount > 0 {
+				searching = append(searching, map[string]any{
+					"series_id": sa.ID, "title": sa.Title, "year": sa.Year,
+					"poster_url": sa.PosterURL, "quality_profile": a.profileName(ctx, sa.QualityProfile),
+					"media_type": "series", "episode_count": sa.SearchingCount,
+				})
+			}
+			if sa.NextAir != "" {
+				upcoming = append(upcoming, map[string]any{
+					"series_id": sa.ID, "title": sa.Title, "year": sa.Year,
+					"poster_url": sa.PosterURL, "quality_profile": a.profileName(ctx, sa.QualityProfile),
+					"media_type": "series", "available_at": sa.NextAir, "next_label": sa.NextLabel,
+				})
+			}
+		}
+	}
+
 	// Downloads already imported into the library are dropped from the view (they
 	// keep seeding in the client, but they're done as far as Arrmada is concerned).
 	imported := map[string]bool{}
@@ -64,6 +87,13 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		if s, err := a.deps.Library.ImportedHashes(ctx); err == nil {
 			imported = s
 		}
+	}
+
+	// Seed goals recorded at grab time, so the Seeding tab can show each torrent's
+	// target ratio / time and whether it's set to seed at all.
+	var seedPolicies map[string]automation.SeedPolicy
+	if a.deps.Automation != nil {
+		seedPolicies = a.deps.Automation.SeedPolicies(ctx)
 	}
 
 	downloads := make([]map[string]any, 0, len(queue))
@@ -98,7 +128,7 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		if it.State == "downloading" {
 			active++
 		}
-		downloads = append(downloads, map[string]any{
+		entry := map[string]any{
 			"hash":            it.Hash,
 			"name":            it.Name,
 			"state":           it.State,
@@ -108,9 +138,17 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 			"up_speed":        it.UpSpeed,
 			"eta_seconds":     it.ETASeconds,
 			"ratio":           it.Ratio,
+			"seeding_time":    it.SeedingTime,
 			"quality_profile": profile,
 			"media_type":      mediaType,
-		})
+		}
+		if p, ok := seedPolicies[automation.NormReleaseKey(it.Name)]; ok {
+			entry["seed_enabled"] = p.Enabled
+			entry["seed_ratio"] = p.Ratio
+			entry["seed_hours"] = p.Hours
+			entry["seed_known"] = true
+		}
+		downloads = append(downloads, entry)
 	}
 
 	freeGB, _ := diskspace.FreeGB(a.deps.Config.DownloadsDir)

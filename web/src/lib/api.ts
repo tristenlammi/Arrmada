@@ -135,12 +135,16 @@ export interface QualityProfileInfo {
 }
 
 export interface SearchingItem {
-  movie_id: number;
+  movie_id?: number;
+  series_id?: number;
+  media_type?: "movie" | "series";
   title: string;
   year: number;
   poster_url?: string;
   quality_profile: string;
   available_at?: string; // release date (YYYY-MM-DD) for upcoming, not-yet-searchable movies
+  episode_count?: number; // series: how many aired episodes are being searched
+  next_label?: string; // series: "S02E13" for the upcoming episode
 }
 
 export interface ActivityDownload {
@@ -153,6 +157,11 @@ export interface ActivityDownload {
   up_speed: number;
   eta_seconds: number;
   ratio: number;
+  seeding_time?: number; // seconds seeded after completion
+  seed_known?: boolean; // true when a seed goal was recorded for this release
+  seed_enabled?: boolean; // false = remove as soon as imported (no seeding)
+  seed_ratio?: number; // target ratio (0 = no ratio target)
+  seed_hours?: number; // target seed time in hours (0 = no time target)
   quality_profile: string;
   media_type?: string;
 }

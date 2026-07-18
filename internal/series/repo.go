@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -327,6 +328,68 @@ func (r *Repo) SeasonHasMissing(ctx context.Context, seriesID int64, season int)
 	err := r.db.QueryRowContext(ctx, q, args...).Scan(&one)
 	return err == nil && one == 1
 }
+
+// SeriesAcquisition summarizes a monitored series' outstanding episodes for the
+// downloads feed: how many aired episodes are still wanted (being searched) and the
+// soonest monitored episode that hasn't aired yet (upcoming).
+type SeriesAcquisition struct {
+	ID             int64
+	Title          string
+	Year           int
+	PosterURL      string
+	QualityProfile string
+	SearchingCount int    // aired, monitored, missing episodes
+	NextAir        string // soonest future monitored+missing episode air date (YYYY-MM-DD), "" if none
+	NextLabel      string // "S02E13" for the upcoming episode, "" if none
+}
+
+// AcquisitionSummary returns per-monitored-series counts of wanted (aired, missing)
+// episodes and the next upcoming episode, in one pass. Only series with something
+// outstanding in either bucket are worth returning; the caller filters.
+func (r *Repo) AcquisitionSummary(ctx context.Context) ([]SeriesAcquisition, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT s.id, s.title, s.year, s.poster_url, s.quality_profile,
+		  SUM(CASE WHEN e.monitored = 1 AND e.has_file = 0 AND e.season_number > 0
+		           AND e.air_date != '' AND e.air_date <= date('now') THEN 1 ELSE 0 END) AS searching,
+		  MIN(CASE WHEN e.monitored = 1 AND e.has_file = 0 AND e.air_date > date('now')
+		           THEN e.air_date END) AS next_air
+		FROM series s
+		JOIN episodes e ON e.series_id = s.id
+		WHERE s.monitored = 1
+		GROUP BY s.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SeriesAcquisition
+	for rows.Next() {
+		var a SeriesAcquisition
+		var nextAir sql.NullString
+		if err := rows.Scan(&a.ID, &a.Title, &a.Year, &a.PosterURL, &a.QualityProfile, &a.SearchingCount, &nextAir); err != nil {
+			return nil, err
+		}
+		if nextAir.Valid {
+			a.NextAir = nextAir.String
+			if s, e, ok := r.episodeAtAir(ctx, a.ID, nextAir.String); ok {
+				a.NextLabel = fmtSxxExx(s, e)
+			}
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// episodeAtAir returns the (season, episode) of the monitored, missing episode airing
+// on the given date — the label for an upcoming row.
+func (r *Repo) episodeAtAir(ctx context.Context, seriesID int64, air string) (season, episode int, ok bool) {
+	err := r.db.QueryRowContext(ctx,
+		`SELECT season_number, episode_number FROM episodes
+		 WHERE series_id = ? AND air_date = ? AND monitored = 1 AND has_file = 0
+		 ORDER BY season_number, episode_number LIMIT 1`, seriesID, air).Scan(&season, &episode)
+	return season, episode, err == nil
+}
+
+func fmtSxxExx(s, e int) string { return fmt.Sprintf("S%02dE%02d", s, e) }
 
 // epAir is one episode's (season, episode) with its air date, for scene-season inference.
 type epAir struct {

@@ -866,6 +866,32 @@ func (c *Coordinator) ManageSeeding(ctx context.Context) {
 	}
 }
 
+// SeedPolicy is the recorded seed goal for a grabbed release, so the downloads feed
+// can show each seeding torrent's target (ratio and/or time) and whether it seeds.
+type SeedPolicy struct {
+	Enabled bool    `json:"enabled"`
+	Ratio   float64 `json:"ratio"`
+	Hours   int     `json:"hours"`
+}
+
+// SeedPolicies returns the seed policy for every imported grab, keyed by a normalized
+// release title (use NormReleaseKey on a download name to look it up). Built in one
+// query so the feed can annotate seeding torrents without a per-item lookup.
+func (c *Coordinator) SeedPolicies(ctx context.Context) map[string]SeedPolicy {
+	grabs, err := c.importedGrabs(ctx)
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]SeedPolicy, len(grabs))
+	for _, g := range grabs {
+		out[normRelease(g.Title)] = SeedPolicy{Enabled: g.SeedEnabled, Ratio: g.SeedRatio, Hours: g.SeedHours}
+	}
+	return out
+}
+
+// NormReleaseKey normalizes a download name to the key used by SeedPolicies.
+func NormReleaseKey(name string) string { return normRelease(name) }
+
 // matchGrab finds the imported grab a download name belongs to.
 func matchGrab(grabs []grab, name string) *grab {
 	want := normRelease(name)
