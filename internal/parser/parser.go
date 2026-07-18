@@ -152,15 +152,18 @@ func (r Release) IsTV() bool {
 }
 
 var (
-	reYear    = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
-	reGroup   = regexp.MustCompile(`-([A-Za-z0-9]{2,})$`)
+	reYear  = regexp.MustCompile(`\b(19\d{2}|20\d{2})\b`)
+	reGroup = regexp.MustCompile(`-([A-Za-z0-9]{2,})$`)
 	// reSxxExx captures the season (1), the first episode (2), and any continuation
 	// (3) — a multi-episode file's extra parts: "S03E21-E22", "S03E21-22", "S01E01E02".
 	// The continuation only accepts an explicit "E<n>" or a bare "-<n>" (never a
 	// space/dot before a number, so ".1080p"/" 720p" stay out of it).
-	reSxxExx  = regexp.MustCompile(`(?i)\bS(\d{1,2})E(\d{1,3})((?:[-\s.]?E\d{1,3}|-\d{1,3})*)`)
-	reSeason  = regexp.MustCompile(`(?i)\bS(\d{1,2})\b`)
-	reEpPart  = regexp.MustCompile(`(?i)E(\d{1,3})|-(\d{1,3})`)
+	reSxxExx = regexp.MustCompile(`(?i)\bS(\d{1,2})E(\d{1,3})((?:[-\s.]?E\d{1,3}|-\d{1,3})*)`)
+	reSeason = regexp.MustCompile(`(?i)\bS(\d{1,2})\b`)
+	// Spelled-out single season: "Season 3" / "Season 3 Complete" (scene/WEBRip packs
+	// that don't use the "S03" form). A range like "Season 1-3" is handled separately.
+	reSeasonSingleWord = regexp.MustCompile(`(?i)\bseason\s+(\d{1,2})\b`)
+	reEpPart           = regexp.MustCompile(`(?i)E(\d{1,3})|-(\d{1,3})`)
 	// Multi-season ranges: "S01-S03", "S1 - S5", or "Seasons 1-5".
 	reSeasonRange = regexp.MustCompile(`(?i)\bS(\d{1,2})\s*-\s*S(\d{1,2})\b`)
 	reSeasonWord  = regexp.MustCompile(`(?i)\bseasons?\s*(\d{1,2})\s*-\s*(\d{1,2})\b`)
@@ -219,6 +222,9 @@ func Parse(name string) Release {
 		r.Episodes = parseEpisodeList(m[2], m[3])
 	} else if m := reSeason.FindStringSubmatch(name); m != nil {
 		// Season pack (no episode markers).
+		r.Season, _ = strconv.Atoi(m[1])
+	} else if m := reSeasonSingleWord.FindStringSubmatch(name); m != nil {
+		// Spelled-out "Season 3" pack (e.g. "Ben 10 2016 Season 3 Complete").
 		r.Season, _ = strconv.Atoi(m[1])
 	}
 

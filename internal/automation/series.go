@@ -3,6 +3,8 @@ package automation
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -11,6 +13,38 @@ import (
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
+
+// executableExts are file types that never belong in a media download; their presence
+// (a ".scr" screensaver named like an episode) marks a fake or malicious release.
+var executableExts = map[string]bool{
+	".scr": true, ".exe": true, ".bat": true, ".cmd": true, ".com": true, ".msi": true,
+	".vbs": true, ".js": true, ".ps1": true, ".jar": true, ".apk": true, ".lnk": true,
+}
+
+// hasExecutable reports whether the download at path contains an executable file.
+func hasExecutable(path string) bool {
+	found := false
+	_ = filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if executableExts[strings.ToLower(filepath.Ext(p))] {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+// grabIndexer returns the indexer a release was grabbed from ("" if untracked), for
+// recording on a blocklist entry.
+func (c *Coordinator) grabIndexer(ctx context.Context, name, mediaType string) string {
+	if _, ix, ok := c.grabbedMediaFor(ctx, name, mediaType); ok {
+		return ix
+	}
+	return ""
+}
 
 // plural returns "s" for counts other than 1.
 func plural(n int) string {
@@ -326,6 +360,14 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 		parsed := parser.Parse(it.Name)
 		s, matchOK := c.series.MatchByTitle(ctx, series.NormTitle(parsed.Title))
 
+		// Given-up guard: if we've already blocklisted this exact release for the series
+		// (it downloaded but couldn't import — junk, a fake, or unresolvable numbering),
+		// don't re-scan it. The auto-searcher skips blocklisted releases too, so together
+		// this breaks the grab→fail→re-grab loop.
+		if matchOK && c.blockedSetSeries(ctx, s.ID)[normTitle(it.Name)] {
+			continue
+		}
+
 		// Already-imported guard. Normally skip a torrent we've handled — but if the
 		// season it covers STILL has aired episodes missing (e.g. a pack that only
 		// partly extracted the first time, before the recursive-unpack fix), give it
@@ -368,10 +410,27 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 				c.log.Info("series: imported episodes", "series", s.Title, "count", imported, "release", it.Name)
 				c.series.AddEvent(ctx, s.ID, "imported", fmt.Sprintf("Imported %d episode%s from %s", imported, plural(imported), it.Name))
 				c.bus.Publish("series.imported", map[string]any{"title": s.Title, "id": s.ID, "count": imported})
+			} else if c.series.SeasonHasMissing(ctx, s.ID, parsed.Season) {
+				// Re-processed but placed nothing new while the season is still incomplete:
+				// this release can't finish the job (e.g. Ben 10's scene numbering doesn't
+				// map to the metadata). Blocklist it so the auto-searcher stops re-grabbing
+				// the identical release every cycle.
+				c.addBlockSeries(ctx, s.ID, it.Name, c.grabIndexer(ctx, it.Name, "series"), "downloaded but can't complete the season (unresolved episode numbering)")
+				c.log.Warn("series import: release can't complete the season — blocklisted to stop re-grabbing", "series", s.Title, "release", it.Name)
 			}
 		} else {
-			c.log.Warn("series import: matched but imported 0 episodes — no video found (archive not extracted, or an unrecognized episode name)",
-				"series", s.Title, "release", it.Name, "content_path", it.ContentPath)
+			// A completed download that maps to no importable episode is junk, a fake, or
+			// an unresolvable release. Blocklist it so it isn't re-grabbed or re-scanned.
+			reason := "downloaded but nothing importable was found"
+			if hasExecutable(it.ContentPath) {
+				reason = "download contained executables and no video (possible fake/malware)"
+				c.log.Warn("series import: refusing a download with executables and no video — blocklisted",
+					"series", s.Title, "release", it.Name, "content_path", it.ContentPath)
+			} else {
+				c.log.Warn("series import: nothing importable — blocklisting so it isn't re-grabbed",
+					"series", s.Title, "release", it.Name, "content_path", it.ContentPath)
+			}
+			c.addBlockSeries(ctx, s.ID, it.Name, c.grabIndexer(ctx, it.Name, "series"), reason)
 		}
 	}
 }
