@@ -51,12 +51,35 @@ func TestImportEpisode(t *testing.T) {
 		t.Fatalf("import: %v", err)
 	}
 
-	want := filepath.Join(lib, "Andor", "Season 02", "Andor - S02E01 - 1080p WEB-DL.mkv")
+	want := filepath.Join(lib, "Andor", "Season 2", "Andor - S02E01 - 1080p WEB-DL.mkv")
 	if res.TargetPath != want {
 		t.Errorf("target = %q\n want %q", res.TargetPath, want)
 	}
 	if _, err := os.Stat(want); err != nil {
 		t.Errorf("expected imported file: %v", err)
+	}
+}
+
+// TestRenameNormalizesSeasonFolder is the "Season 04 → Season 4" fix: import reuses an
+// existing padded folder (to avoid duplicates), but rename targets the canonical
+// unpadded name so the layout normalizes.
+func TestRenameNormalizesSeasonFolder(t *testing.T) {
+	lib := t.TempDir()
+	// A legacy padded season folder already on disk.
+	if err := os.MkdirAll(filepath.Join(lib, "Andor", "Season 04"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	im := NewImporter(lib, quiet())
+
+	// Import path reuses the existing "Season 04" (no duplicate folder).
+	if got := seasonDirName(filepath.Join(lib, "Andor"), 4); got != "Season 04" {
+		t.Errorf("import seasonDirName = %q, want it to reuse the existing %q", got, "Season 04")
+	}
+	// Rename path forces the canonical unpadded "Season 4".
+	got := im.EpisodeTargetIn("Andor", "Andor", 2022, 4, 1, "Andor.S04E01.1080p.WEB-DL.mkv", ".mkv")
+	want := filepath.Join(lib, "Andor", "Season 4", "Andor - S04E01 - 1080p WEB-DL.mkv")
+	if got != want {
+		t.Errorf("rename target = %q\n want %q (canonical, not the legacy Season 04)", got, want)
 	}
 }
 
@@ -113,9 +136,9 @@ func TestSeasonDirNameReusesExisting(t *testing.T) {
 	if got := seasonDirName(dir, 1); got != "Season 1" {
 		t.Errorf("seasonDirName = %q, want the existing %q", got, "Season 1")
 	}
-	// A season with no existing folder falls back to the zero-padded default.
-	if got := seasonDirName(dir, 2); got != "Season 02" {
-		t.Errorf("seasonDirName(new) = %q, want %q", got, "Season 02")
+	// A season with no existing folder falls back to the canonical unpadded default.
+	if got := seasonDirName(dir, 2); got != "Season 2" {
+		t.Errorf("seasonDirName(new) = %q, want %q", got, "Season 2")
 	}
 	// Season 0 with nothing on disk → Specials.
 	if got := seasonDirName(dir, 0); got != "Specials" {

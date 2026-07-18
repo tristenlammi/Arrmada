@@ -1038,11 +1038,16 @@ func (s *Service) Rename(ctx context.Context, id int64) error {
 	if target == m.MovieFilePath {
 		return nil
 	}
+	oldDir := filepath.Dir(m.MovieFilePath)
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return fmt.Errorf("create dir: %w", err)
 	}
 	if err := os.Rename(m.MovieFilePath, target); err != nil {
 		return fmt.Errorf("rename: %w", err)
+	}
+	s.imp.MoveEpisodeSubs(m.MovieFilePath, target) // carry sidecar subtitles along
+	if newDir := filepath.Dir(target); newDir != oldDir {
+		s.imp.RemoveDirIfEmpty(oldDir) // the movie moved to a renamed folder; drop the empty old one
 	}
 	if err := s.setDefaultFile(ctx, id, target); err != nil {
 		return err

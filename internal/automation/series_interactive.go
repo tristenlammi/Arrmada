@@ -399,6 +399,7 @@ func (c *Coordinator) SeriesRename(ctx context.Context, seriesID int64) (int, er
 	}
 	folder := c.series.ExistingFolderName(ctx, seriesID)
 	moved := 0
+	oldDirs := map[string]bool{} // season folders emptied by the moves, to prune after
 	for _, sn := range s.Seasons {
 		for _, e := range sn.Episodes {
 			if !e.HasFile || e.FilePath == "" {
@@ -413,9 +414,15 @@ func (c *Coordinator) SeriesRename(ctx context.Context, seriesID int64) (int, er
 				continue
 			}
 			c.imp.MoveEpisodeSubs(e.FilePath, target) // keep paired subtitles alongside
+			if od := filepath.Dir(e.FilePath); od != filepath.Dir(target) {
+				oldDirs[od] = true // a season folder that changed name (e.g. "Season 04" → "Season 4")
+			}
 			_ = c.series.MarkEpisodeImported(ctx, seriesID, e.SeasonNumber, e.EpisodeNumber, target, e.SizeBytes)
 			moved++
 		}
+	}
+	for od := range oldDirs {
+		c.imp.RemoveDirIfEmpty(od) // drop the now-empty legacy season folder
 	}
 	if moved > 0 {
 		c.series.AddEvent(ctx, seriesID, "renamed", fmt.Sprintf("Renamed %d episode file%s", moved, plural(moved)))

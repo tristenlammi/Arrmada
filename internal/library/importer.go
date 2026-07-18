@@ -553,7 +553,7 @@ func (im *Importer) ImportEpisodeInto(seriesFolder, seriesTitle string, year int
 	}
 	ep := rel.Episodes[0]
 	ext := filepath.Ext(videoPath)
-	target := im.episodeTargetIn(seriesFolder, seriesTitle, year, rel.Season, ep, rel, ext)
+	target := im.episodeTargetIn(seriesFolder, seriesTitle, year, rel.Season, ep, rel, ext, false)
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return nil, false, fmt.Errorf("create season dir: %w", err)
 	}
@@ -586,7 +586,7 @@ func (im *Importer) ImportEpisodeAs(seriesFolder, seriesTitle string, year, seas
 	}
 	rel := parser.Parse(filepath.Base(videoPath)) // for the quality tag only
 	ext := filepath.Ext(videoPath)
-	target := im.episodeTargetIn(seriesFolder, seriesTitle, year, season, episode, rel, ext)
+	target := im.episodeTargetIn(seriesFolder, seriesTitle, year, season, episode, rel, ext, false)
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return nil, false, fmt.Errorf("create season dir: %w", err)
 	}
@@ -614,7 +614,7 @@ func (im *Importer) EpisodeTarget(title string, year, season, episode int, sourc
 // EpisodeTargetIn is EpisodeTarget scoped to an explicit series folder (empty =
 // derive "<Title> (<Year>)").
 func (im *Importer) EpisodeTargetIn(seriesFolder, title string, year, season, episode int, sourceName, ext string) string {
-	return im.episodeTargetIn(seriesFolder, title, year, season, episode, parser.Parse(sourceName), ext)
+	return im.episodeTargetIn(seriesFolder, title, year, season, episode, parser.Parse(sourceName), ext, true)
 }
 
 // MoveEpisodeSubs moves subtitle sidecars paired with oldVideo so they stay next to
@@ -640,6 +640,19 @@ func (im *Importer) MoveEpisodeSubs(oldVideo, newVideo string) {
 		if err := im.Move(p, target); err == nil {
 			im.log.Info("moved subtitle with rename", "from", p, "to", target)
 		}
+	}
+}
+
+// RemoveDirIfEmpty deletes dir only when it contains no entries — used after a rename
+// empties a legacy season folder ("Season 04") so it doesn't linger next to the new
+// "Season 4". Safe: a folder still holding artwork/nfo/leftovers is left untouched.
+func (im *Importer) RemoveDirIfEmpty(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) > 0 {
+		return
+	}
+	if err := os.Remove(dir); err == nil {
+		im.log.Info("removed empty folder after rename", "dir", dir)
 	}
 }
 
@@ -711,16 +724,17 @@ func (im *Importer) SeriesLibraryFilesIn(seriesFolder, title string, year int) [
 	return out
 }
 
-// episodeTarget builds "<root>/<Series (Year)>/Season NN/<Series - SxxExx - q>.ext".
+// episodeTarget builds "<root>/<Series (Year)>/Season N/<Series - SxxExx - q>.ext". Used
+// by rename, so it targets the canonical (unpadded) season folder.
 func (im *Importer) episodeTarget(title string, year, season, episode int, rel parser.Release, ext string) string {
-	return im.episodeTargetIn("", title, year, season, episode, rel, ext)
+	return im.episodeTargetIn("", title, year, season, episode, rel, ext, true)
 }
 
 // episodeTargetIn builds the episode path under an explicit series folder. When
 // seriesFolder is empty it derives the conventional "<Title> (<Year>)" folder;
 // otherwise it uses the given folder verbatim so episodes land in the show's
 // existing on-disk directory.
-func (im *Importer) episodeTargetIn(seriesFolder, title string, year, season, episode int, rel parser.Release, ext string) string {
+func (im *Importer) episodeTargetIn(seriesFolder, title string, year, season, episode int, rel parser.Release, ext string, canonicalSeason bool) string {
 	folder := clean(seriesFolder)
 	if folder == "" {
 		folder = clean(title)
@@ -745,18 +759,31 @@ func (im *Importer) episodeTargetIn(seriesFolder, title string, year, season, ep
 		file += " - " + q
 	}
 	seriesDir := filepath.Join(im.tvDir(), folder)
-	return filepath.Join(seriesDir, seasonDirName(seriesDir, season), clean(file)+ext)
+	// Import reuses an existing season folder (any padding) so it never duplicates one;
+	// rename forces the canonical unpadded name so "Season 04" becomes "Season 4".
+	seasonSub := canonicalSeasonDir(season)
+	if !canonicalSeason {
+		seasonSub = seasonDirName(seriesDir, season)
+	}
+	return filepath.Join(seriesDir, seasonSub, clean(file)+ext)
+}
+
+// canonicalSeasonDir is the season folder Arrmada creates: unpadded "Season 4" (and
+// "Specials" for season 0). Legacy padded folders ("Season 04") are still recognized on
+// import to avoid duplicates; rename normalizes everything to this form.
+func canonicalSeasonDir(season int) string {
+	if season == 0 {
+		return "Specials"
+	}
+	return fmt.Sprintf("Season %d", season)
 }
 
 // seasonDirName returns the season directory to place an episode in: an existing
 // one for that season if the show already has it (matching any padding — "Season 1",
-// "Season 01", "Specials"), otherwise the zero-padded default. This stops a grab
-// from creating a duplicate "Season 01" next to an existing "Season 1".
+// "Season 01", "Specials"), otherwise the canonical unpadded default. This stops a grab
+// from creating a duplicate "Season 4" next to an existing "Season 04".
 func seasonDirName(seriesDir string, season int) string {
-	def := fmt.Sprintf("Season %02d", season)
-	if season == 0 {
-		def = "Specials"
-	}
+	def := canonicalSeasonDir(season)
 	entries, err := os.ReadDir(seriesDir)
 	if err != nil {
 		return def
@@ -826,7 +853,7 @@ func (im *Importer) targetPath(r parser.Release, ext string) string {
 
 	if r.IsTV() {
 		folder := title
-		season := fmt.Sprintf("Season %02d", r.Season)
+		season := canonicalSeasonDir(r.Season)
 		file := fmt.Sprintf("%s - %s", title, episodeTag(r))
 		if quality != "" {
 			file += " - " + quality
