@@ -300,12 +300,13 @@ function DownloadCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; 
 
 // seedGoal computes the removal target for a seeding torrent and how far along it is.
 function seedGoal(it: ActivityDownload): { label: string; frac: number | null } {
-  if (it.seed_known && it.seed_enabled === false) return { label: "No seeding — removes after import", frac: null };
+  if (!it.seed_known) return { label: "Not managed by Arrmada — no seed rule", frac: null };
+  if (it.seed_enabled === false) return { label: "No seeding — removes after import", frac: null };
   const ratioTarget = it.seed_ratio ?? 0;
   const hoursTarget = it.seed_hours ?? 0;
   const seededSec = it.seeding_time ?? 0;
   if (ratioTarget <= 0 && hoursTarget <= 0) {
-    return { label: it.seed_known ? "Seeds indefinitely" : "Seeding", frac: null };
+    return { label: "Seeds indefinitely", frac: null };
   }
   const parts: string[] = [];
   let frac = 0;

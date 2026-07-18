@@ -162,6 +162,7 @@ export interface ActivityDownload {
   seed_enabled?: boolean; // false = remove as soon as imported (no seeding)
   seed_ratio?: number; // target ratio (0 = no ratio target)
   seed_hours?: number; // target seed time in hours (0 = no time target)
+  imported?: boolean; // Arrmada has imported this download into the library
   quality_profile: string;
   media_type?: string;
 }

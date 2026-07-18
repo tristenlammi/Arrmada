@@ -80,8 +80,9 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Downloads already imported into the library are dropped from the view (they
-	// keep seeding in the client, but they're done as far as Arrmada is concerned).
+	// Imported hashes are flagged (not hidden) so the Seeding tab can show every seeding
+	// torrent — the user wants to see each one's seed rule and progress, not just the
+	// untracked ones.
 	imported := map[string]bool{}
 	if a.deps.Library != nil {
 		if s, err := a.deps.Library.ImportedHashes(ctx); err == nil {
@@ -100,12 +101,6 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	var totalDown, totalUp int64
 	active := 0
 	for _, it := range queue {
-		// Hide a torrent only once it's imported AND finished (still seeding, but done).
-		// A re-download of a previously-imported release (e.g. after deleting a bad
-		// import) is < 100% and must stay visible while it downloads.
-		if imported[it.Hash] && it.Progress >= 1.0 {
-			continue
-		}
 		profile := "n/a"
 		mediaType := "movie"
 		switch it.Category {
@@ -141,6 +136,7 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 			"seeding_time":    it.SeedingTime,
 			"quality_profile": profile,
 			"media_type":      mediaType,
+			"imported":        imported[it.Hash],
 		}
 		if p, ok := seedPolicies[automation.NormReleaseKey(it.Name)]; ok {
 			entry["seed_enabled"] = p.Enabled
