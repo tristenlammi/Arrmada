@@ -47,7 +47,7 @@ const STATE_TONE: Record<string, string> = {
   downloading: "var(--accent)", seeding: "var(--good)", paused: "var(--ink-faint)", error: "var(--reject)", checking: "var(--avoid)",
 };
 
-type SortKey = "name" | "progress" | "speed" | "size";
+type SortKey = "name" | "progress" | "speed" | "size" | "ratio" | "seedtime";
 type Tab = "downloads" | "seeding" | "searching" | "upcoming";
 
 function ProfileChip({ profile }: { profile: string }) {
@@ -71,6 +71,7 @@ export function Downloads() {
   const [clientId, setClientId] = useState<number | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [tab, setTab] = useState<Tab>("downloads");
+  const [seedSort, setSeedSort] = useState<SortKey>("ratio");
 
   useEffect(() => {
     api.downloadClients().then((cs) => {
@@ -112,22 +113,24 @@ export function Downloads() {
   const activeDownloads = useMemo(() => downloads.filter((d) => d.progress < 1), [downloads]);
   const seedingDownloads = useMemo(() => downloads.filter((d) => d.progress >= 1), [downloads]);
 
-  const filterSort = (list: ActivityDownload[]) => {
+  const filterSort = (list: ActivityDownload[], sortKey: SortKey) => {
     const q = query.trim().toLowerCase();
     let l = typeFilter === "all" ? list : list.filter((d) => (d.media_type ?? "movie") === typeFilter);
     l = q ? l.filter((d) => d.name.toLowerCase().includes(q)) : [...l];
     l.sort((a, b) => {
-      switch (sort) {
+      switch (sortKey) {
         case "name": return a.name.localeCompare(b.name);
         case "speed": return b.down_speed - a.down_speed;
         case "size": return b.size_bytes - a.size_bytes;
+        case "ratio": return b.ratio - a.ratio;
+        case "seedtime": return (b.seeding_time ?? 0) - (a.seeding_time ?? 0);
         default: return b.progress - a.progress;
       }
     });
     return l;
   };
-  const shownDownloads = useMemo(() => filterSort(activeDownloads), [activeDownloads, query, sort, typeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
-  const shownSeeding = useMemo(() => filterSort(seedingDownloads), [seedingDownloads, query, sort, typeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shownDownloads = useMemo(() => filterSort(activeDownloads, sort), [activeDownloads, query, sort, typeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shownSeeding = useMemo(() => filterSort(seedingDownloads, seedSort), [seedingDownloads, query, seedSort, typeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const shownSearching = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -199,11 +202,19 @@ export function Downloads() {
           })}
           <div className="ml-auto flex items-center gap-2">
             <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search…" className="w-[200px] rounded-lg px-3 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
-            {isDownloadTab && (
+            {tab === "downloads" && (
               <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} className="rounded-lg px-2.5 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
                 <option value="progress">Sort: Progress</option>
                 <option value="name">Sort: Name</option>
                 <option value="speed">Sort: Speed</option>
+                <option value="size">Sort: Size</option>
+              </select>
+            )}
+            {tab === "seeding" && (
+              <select value={seedSort} onChange={(e) => setSeedSort(e.target.value as SortKey)} className="rounded-lg px-2.5 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
+                <option value="ratio">Sort: Ratio</option>
+                <option value="seedtime">Sort: Seed time</option>
+                <option value="name">Sort: Name</option>
                 <option value="size">Sort: Size</option>
               </select>
             )}
@@ -219,6 +230,7 @@ export function Downloads() {
         ) : tab === "seeding" ? (
           shownSeeding.length === 0 ? <Empty>Nothing seeding right now.</Empty> : (
             <div className="flex flex-col gap-2">
+              <SeedingSummary items={shownSeeding} />
               {shownSeeding.map((it) => <SeedingCard key={it.hash} it={it} busy={!!busy[it.hash]} act={act} />)}
             </div>
           )
@@ -300,6 +312,25 @@ function seedGoal(it: ActivityDownload): { label: string; frac: number | null } 
   if (ratioTarget > 0) { parts.push(`ratio ${it.ratio.toFixed(2)} / ${ratioTarget.toFixed(2)}`); frac = Math.max(frac, it.ratio / ratioTarget); }
   if (hoursTarget > 0) { parts.push(`${dur(seededSec)} / ${hoursTarget}h`); frac = Math.max(frac, seededSec / (hoursTarget * 3600)); }
   return { label: `until ${parts.join(" or ")}`, frac: Math.min(1, frac) };
+}
+
+// SeedingSummary is the at-a-glance strip above the seeding list: how many, live
+// upload, average share ratio, and the total data being shared.
+function SeedingSummary({ items }: { items: ActivityDownload[] }) {
+  const count = items.length;
+  const totalUp = items.reduce((n, it) => n + it.up_speed, 0);
+  const avgRatio = count ? items.reduce((n, it) => n + it.ratio, 0) / count : 0;
+  const sharing = items.reduce((n, it) => n + it.size_bytes, 0);
+  const activeUp = items.filter((it) => it.up_speed > 0).length;
+  return (
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 rounded-xl px-4 py-2.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+      <Stat label="seeding" value={String(count)} />
+      <Stat label="↑ now" value={`${bytes(totalUp)}/s`} tone={totalUp > 0 ? "var(--good)" : undefined} />
+      <Stat label="uploading" value={`${activeUp}/${count}`} />
+      <Stat label="avg ratio" value={avgRatio.toFixed(2)} tone="var(--good)" />
+      <Stat label="sharing" value={bytes(sharing)} />
+    </div>
+  );
 }
 
 // SeedingCard is a completed torrent that's sharing back: ratio, seed time, goal progress.
