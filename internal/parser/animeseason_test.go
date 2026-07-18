@@ -16,7 +16,9 @@ func TestAnimeSeasonAbsolute(t *testing.T) {
 		season int
 	}{
 		{"[No0bSubs] Frieren - Beyond Journey's End S2 29 (1080p AV1 MULTI Audio)[DA4AB167]", "Frieren - Beyond Journey's End", []int{29}, 0},
-		{"[No0bSubs] Frieren - Beyond Journey's End S2 38 (1080p AV1 MULTI Audio)[AC270A95]", "Frieren - Beyond Journey's End", []int{38}, 0},
+		// The same file as it sits in the library — no leading fansub tag (only the hash
+		// at the end). Must still parse, since the rescan reads library names.
+		{"Frieren - Beyond Journey's End S2 38 (1080p AV1 MULTI Audio)[AC270A95]", "Frieren - Beyond Journey's End", []int{38}, 0},
 		{"[SubsPlease] Show - 137 (1080p) [ABCD]", "Show", []int{137}, 0}, // existing dash form still works
 		{"[Group] Show S02 (1080p BluRay)", "Show", nil, 2},               // a real season pack, no episode number
 	}

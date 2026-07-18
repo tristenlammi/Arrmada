@@ -660,6 +660,25 @@ func (im *Importer) SeriesLibraryFiles(title string, year int) []EpisodeImport {
 	return im.SeriesLibraryFilesIn("", title, year)
 }
 
+// SeriesLibraryVideos returns the raw video files in a series' on-disk folder (path +
+// size), leaving parsing/resolution to the caller — so a rescan can run each name
+// through the anime-aware resolver (which handles absolute-numbered files that carry no
+// SxxExx). seriesFolder empty → derive "<Title> (<Year>)".
+func (im *Importer) SeriesLibraryVideos(seriesFolder, title string, year int) []FoundVideo {
+	folder := clean(seriesFolder)
+	if folder == "" {
+		folder = clean(title)
+		if folder == "" {
+			folder = "Unknown"
+		}
+		if year > 0 {
+			folder = fmt.Sprintf("%s (%d)", folder, year)
+		}
+	}
+	vids, _ := FindVideos(filepath.Join(im.tvDir(), folder))
+	return vids
+}
+
 // SeriesLibraryFilesIn is SeriesLibraryFiles scoped to an explicit series folder
 // (the show's real on-disk directory). When empty it derives "<Title> (<Year>)".
 // Using the real folder lets rescan reconcile a show whose folder doesn't match

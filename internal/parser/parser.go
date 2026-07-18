@@ -211,8 +211,10 @@ func Parse(name string) Release {
 	// Anime absolute episode ("[Group] Show - 137" / batch "... - 01-12"). Gated on a
 	// leading fansub tag so scene TV and movies are never misread; only when no SxxExx.
 	absCut := len(name)
-	if titleStart > 0 && len(r.Episodes) == 0 {
-		if r.Season == 0 {
+	if len(r.Episodes) == 0 {
+		// "[Group] Title - 137" — dash-absolute. Gated on a leading fansub tag because a
+		// bare "- <n>" is ambiguous (could be part of a movie title).
+		if titleStart > 0 && r.Season == 0 {
 			if m := reAbsEp.FindStringSubmatchIndex(name); m != nil {
 				r.AbsoluteEpisodes = absoluteRange(name[m[2]:m[3]], subIdx(name, m, 4))
 				if len(r.AbsoluteEpisodes) > 0 {
@@ -220,8 +222,10 @@ func Parse(name string) Release {
 				}
 			}
 		}
-		// "[Group] Title S2 29" — a fansub season + absolute episode. Clear the season,
-		// since the number IS the absolute episode (not a season pack).
+		// "Title S2 29" — a (fansub) season followed by the absolute episode number. This
+		// form is distinctive enough (a season with a space then a plain number, and no
+		// SxxExx) that it needs no fansub tag — so it also works on renamed library files.
+		// Clears the season, since the number IS the absolute episode, not a season pack.
 		if len(r.AbsoluteEpisodes) == 0 {
 			if m := reAnimeSeasonAbs.FindStringSubmatchIndex(name); m != nil {
 				if eps := absoluteRange(name[m[4]:m[5]], ""); len(eps) > 0 {
