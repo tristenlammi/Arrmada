@@ -298,11 +298,25 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 	if c.series == nil || c.imp == nil {
 		return
 	}
-	completed, err := c.downloads.CompletedInCategory(ctx, seriesCategory)
+	// Look at every completed download (not just the series category), so a TV pack that
+	// landed in the wrong category — e.g. added straight to qBittorrent uncategorized —
+	// is visible instead of silently ignored.
+	completed, err := c.downloads.CompletedInCategory(ctx, "")
 	if err != nil {
 		return
 	}
 	for _, it := range completed {
+		if it.Category != seriesCategory {
+			// Diagnostic: a completed TV download that matches a library series but isn't
+			// in the TV category won't import — flag it so it's not a silent no-op.
+			if p := parser.Parse(it.Name); p.IsTV() {
+				if _, ok := c.series.MatchByTitle(ctx, series.NormTitle(p.Title)); ok {
+					c.log.Warn("series import: a completed TV download is in the wrong category — it won't import; re-grab via Arrmada or set its qBittorrent category to "+seriesCategory,
+						"release", it.Name, "category", it.Category)
+				}
+			}
+			continue
+		}
 		if it.ContentPath == "" {
 			continue
 		}
@@ -330,6 +344,7 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			}
 		}
 		if !matchOK {
+			c.log.Info("series import: no matching library series", "release", it.Name, "parsed_title", parsed.Title)
 			continue // not something we grabbed and not a library title — leave alone
 		}
 		imported := c.importSeriesInto(ctx, s, it.ContentPath)
@@ -339,6 +354,9 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			c.markSeriesGrabsImported(ctx, s.ID)                       // flip its grab to imported for seed cleanup
 			c.series.AddEvent(ctx, s.ID, "imported", fmt.Sprintf("Imported %d episode%s from %s", imported, plural(imported), it.Name))
 			c.bus.Publish("series.imported", map[string]any{"title": s.Title, "id": s.ID, "count": imported})
+		} else {
+			c.log.Warn("series import: matched but imported 0 episodes — no video found (archive not extracted, or an unrecognized episode name)",
+				"series", s.Title, "release", it.Name, "content_path", it.ContentPath)
 		}
 	}
 }
