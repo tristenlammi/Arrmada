@@ -335,6 +335,8 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			if !matchOK || !c.series.SeasonHasMissing(ctx, s.ID, parsed.Season) {
 				continue
 			}
+			c.log.Info("series import: re-processing an already-imported pack to fill missing episodes",
+				"series", s.Title, "release", it.Name, "season", parsed.Season)
 		}
 
 		// If this download was grabbed for a specific series, verify its content is

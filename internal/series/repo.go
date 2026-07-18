@@ -307,13 +307,15 @@ func (r *Repo) SeasonExists(ctx context.Context, seriesID int64, season int) boo
 	return err == nil && one == 1
 }
 
-// SeasonHasMissing reports whether a season still has a monitored, aired episode with
-// no file on disk — i.e. a re-processed pack could still fill something. Unaired
-// episodes don't count (they can't be filled yet), so an ongoing show doesn't look
-// perpetually incomplete. season <= 0 checks the whole series.
+// SeasonHasMissing reports whether a season still has an aired episode with no file on
+// disk — i.e. a re-processed pack could still fill something. Monitoring is deliberately
+// NOT considered: if the file is already downloaded, it should import regardless of
+// whether Arrmada would auto-grab the episode. Unaired episodes don't count (they can't
+// be filled yet), so an ongoing show doesn't look perpetually incomplete. season <= 0
+// checks the whole series.
 func (r *Repo) SeasonHasMissing(ctx context.Context, seriesID int64, season int) bool {
 	q := `SELECT 1 FROM episodes
-	      WHERE series_id = ? AND monitored = 1 AND has_file = 0 AND season_number > 0
+	      WHERE series_id = ? AND has_file = 0 AND season_number > 0
 	        AND air_date != '' AND air_date <= date('now')`
 	args := []any{seriesID}
 	if season > 0 {
