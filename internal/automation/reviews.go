@@ -233,12 +233,15 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	}
 	videos, err := library.FindVideos(contentPath)
 	if err != nil {
+		c.log.Warn("series import: couldn't scan the download folder for videos",
+			"series", s.Title, "content_path", contentPath, "err", err)
 		return 0, 0
 	}
 	if len(videos) == 0 {
 		c.log.Warn("series import: no video files found in the download (all archives? nested oddly?)", "series", s.Title, "content_path", contentPath)
 		return 0, 0
 	}
+	c.log.Info("series import: scanning download", "series", s.Title, "videos", len(videos), "content_path", contentPath)
 	// Route episodes into the show's existing on-disk folder when it has one, so a
 	// show already stored as "Below Deck" doesn't spawn a duplicate "Below Deck
 	// (2013)" folder on the next grab.
