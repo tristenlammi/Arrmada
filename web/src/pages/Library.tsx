@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import { PageHeader } from "../components/PageHeader";
 import { api, type LibraryPaths, type BrowseResult, type UnmatchedFolder, type MatchCandidate } from "../lib/api";
 
-// Library — System page for pointing each library at a folder, with an in-app folder picker.
-// Mount your media into the container (see the installer), then browse + select here.
+// LibraryFolders — points each library at a folder (with an in-app picker) and scans it.
+// Lives inside Settings → Library. Mount your media into the container (see the
+// installer), then browse + select here.
 type PathKey = keyof LibraryPaths;
 const ROWS: { key: PathKey; label: string; hint: string; scan?: () => Promise<unknown> }[] = [
   { key: "movies", label: "Movies", hint: "folder of movie subfolders", scan: () => api.scanLibrary() },
@@ -13,7 +13,7 @@ const ROWS: { key: PathKey; label: string; hint: string; scan?: () => Promise<un
   { key: "downloads", label: "Downloads", hint: "where the download client saves completed files" },
 ];
 
-export function Library() {
+export function LibraryFolders() {
   const [paths, setPaths] = useState<LibraryPaths | null>(null);
   const [draft, setDraft] = useState<LibraryPaths | null>(null);
   const [picking, setPicking] = useState<PathKey | null>(null);
@@ -23,7 +23,7 @@ export function Library() {
   const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); };
 
   useEffect(() => { api.libraryPaths().then((p) => { setPaths(p); setDraft(p); }).catch(() => flash("Could not load library paths")); }, []);
-  if (!draft) return <><PageHeader title="Library" crumb="System / Library" /><div className="mx-auto max-w-[820px] px-4 py-6 text-[12.5px] text-ink-dim">Loading…</div></>;
+  if (!draft) return <div className="text-[12.5px] text-ink-dim">Loading…</div>;
 
   const dirty = paths && (Object.keys(draft) as PathKey[]).some((k) => draft[k] !== paths[k]);
   const save = async () => {
@@ -42,43 +42,40 @@ export function Library() {
   };
 
   return (
-    <>
-      <PageHeader title="Library" crumb="System / Library" />
-      <div className="mx-auto w-full max-w-[820px] px-4 py-6 sm:px-6">
-        <p className="mb-5 max-w-[64ch] text-[12.5px] text-ink-dim">Point each library at a folder inside your mounted media. Use <b>Browse</b> to pick from the folders Arrmada can see, then <b>Scan</b> to catalog what's there. Ebooks and audiobooks can share one folder.</p>
+    <div>
+      <p className="mb-4 max-w-[64ch] text-[12.5px] text-ink-dim">Point each library at a folder inside your mounted media. Use <b>Browse</b> to pick from the folders Arrmada can see, then <b>Scan</b> to catalog what's there. Ebooks and audiobooks can share one folder.</p>
 
-        <div className="flex flex-col gap-2.5">
-          {ROWS.map((row) => (
-            <div key={row.key} className="rounded-xl p-3.5" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="text-[13px] font-semibold">{row.label}</div>
-                  <div className="text-[10.5px] text-ink-faint">{row.hint}</div>
-                </div>
-                {row.scan && <button onClick={() => scan(row)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>Scan</button>}
+      <div className="flex flex-col gap-2.5">
+        {ROWS.map((row) => (
+          <div key={row.key} className="rounded-xl p-3.5" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[13px] font-semibold">{row.label}</div>
+                <div className="text-[10.5px] text-ink-faint">{row.hint}</div>
               </div>
-              <div className="mt-2 flex gap-2">
-                <input
-                  value={draft[row.key]}
-                  onChange={(e) => setDraft({ ...draft, [row.key]: e.target.value })}
-                  placeholder="/storage/media/…"
-                  className="flex-1 rounded-lg px-2.5 py-1.5 font-mono text-[11.5px]"
-                  style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
-                />
-                <button onClick={() => setPicking(row.key)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>Browse…</button>
-              </div>
+              {row.scan && <button onClick={() => scan(row)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>Scan</button>}
             </div>
-          ))}
-        </div>
-
-        <div className="mt-4 flex items-center justify-end gap-3">
-          {dirty && <span className="text-[11.5px] text-ink-faint">Unsaved changes</span>}
-          <button onClick={save} disabled={!dirty || busy} className="rounded-lg px-4 py-2 text-[13px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy ? "Saving…" : "Save folders"}</button>
-        </div>
-
-        <UnmatchedReview media="movie" reloadKey={reviewKey} flash={flash} />
-        <UnmatchedReview media="series" reloadKey={reviewKey} flash={flash} />
+            <div className="mt-2 flex gap-2">
+              <input
+                value={draft[row.key]}
+                onChange={(e) => setDraft({ ...draft, [row.key]: e.target.value })}
+                placeholder="/storage/media/…"
+                className="flex-1 rounded-lg px-2.5 py-1.5 font-mono text-[11.5px]"
+                style={{ background: "var(--panel)", border: "1px solid var(--line)", color: "var(--ink)" }}
+              />
+              <button onClick={() => setPicking(row.key)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel)", color: "var(--ink)" }}>Browse…</button>
+            </div>
+          </div>
+        ))}
       </div>
+
+      <div className="mt-4 flex items-center justify-end gap-3">
+        {dirty && <span className="text-[11.5px] text-ink-faint">Unsaved changes</span>}
+        <button onClick={save} disabled={!dirty || busy} className="rounded-lg px-4 py-2 text-[13px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy ? "Saving…" : "Save folders"}</button>
+      </div>
+
+      <UnmatchedReview media="movie" reloadKey={reviewKey} flash={flash} />
+      <UnmatchedReview media="series" reloadKey={reviewKey} flash={flash} />
 
       {picking && (
         <FolderPicker
@@ -88,7 +85,7 @@ export function Library() {
         />
       )}
       {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
-    </>
+    </div>
   );
 }
 

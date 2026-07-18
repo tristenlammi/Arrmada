@@ -41,7 +41,6 @@ export const NAV: NavGroup[] = [
   {
     group: "System",
     items: [
-      { to: "/library", label: "Library" },
       { to: "/indexers", label: "Indexers" },
       { to: "/downloadclients", label: "Download clients" },
       { to: "/quality", label: "Quality profiles" },

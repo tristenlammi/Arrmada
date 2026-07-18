@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { api, type AppSettings, type AuthUser, type RecycleStats, type RecycleItem } from "../lib/api";
 import { useMe, isAdmin } from "../lib/me";
+import { LibraryFolders } from "./Library";
 
 // Sample release used for the live naming preview.
 const SAMPLE = {
@@ -113,7 +114,10 @@ export function Settings() {
           </div>
         ) : tab === "library" ? (
           <div className="flex flex-col gap-6">
-            <Section title="Library" subtitle="Defaults when adding movies and series.">
+            <Section title="Media folders" subtitle="Point each library at a folder in your mounted media, then scan it for existing titles. (Has its own Save folders button below the list.)">
+              <LibraryFolders />
+            </Section>
+            <Section title="Adding titles" subtitle="Defaults when adding movies and series.">
               <Toggle label="Search on add" hint="Start searching for a release as soon as a title is added." checked={s.search_on_add} onChange={(v) => patch({ search_on_add: v })} />
             </Section>
             <SaveBar />

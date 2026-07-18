@@ -22,7 +22,6 @@ import { Subtitles } from "./pages/Subtitles";
 import { Convert } from "./pages/Convert";
 import { Insights } from "./pages/Insights";
 import { Calendar } from "./pages/Calendar";
-import { Library } from "./pages/Library";
 import { Logs } from "./pages/Logs";
 import { Login } from "./pages/Login";
 import { Placeholder } from "./pages/Placeholder";
@@ -101,7 +100,7 @@ export default function App() {
         <Route path="/settings" element={<Settings />} />
         <Route path="/quality" element={<Quality />} />
         <Route path="/logs" element={<Logs />} />
-        <Route path="/library" element={<Library />} />
+        <Route path="/library" element={<Navigate to="/settings" replace />} />
         {MODULE_ROUTES.map((m) => (
           <Route
             key={m.path}
