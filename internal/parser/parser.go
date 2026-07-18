@@ -153,6 +153,10 @@ var (
 	reAnimeGroup = regexp.MustCompile(`^\s*\[([^\]\s]+)\]\s*`)
 	// Anime absolute episode: "Title - 137", "Title - 12v2", or a batch "Title - 01-12".
 	reAbsEp = regexp.MustCompile(`(?i)\s-\s(\d{1,4})(?:v\d+)?(?:\s*[-~]\s*(\d{1,4}))?(?:\s|$|[.\[(])`)
+	// Anime "S2 29" — a fansub season followed by the absolute episode number. Some
+	// groups (No0bSubs, …) number episodes absolutely across seasons, so "S2 29" is the
+	// 29th episode overall. The trailing \b keeps a resolution like "S2 1080p" out.
+	reAnimeSeasonAbs = regexp.MustCompile(`(?i)\bS(\d{1,2})\s+(\d{1,4})\b`)
 )
 
 // Parse extracts structured attributes from a release name.
@@ -207,11 +211,24 @@ func Parse(name string) Release {
 	// Anime absolute episode ("[Group] Show - 137" / batch "... - 01-12"). Gated on a
 	// leading fansub tag so scene TV and movies are never misread; only when no SxxExx.
 	absCut := len(name)
-	if titleStart > 0 && r.Season == 0 && len(r.Episodes) == 0 {
-		if m := reAbsEp.FindStringSubmatchIndex(name); m != nil {
-			r.AbsoluteEpisodes = absoluteRange(name[m[2]:m[3]], subIdx(name, m, 4))
-			if len(r.AbsoluteEpisodes) > 0 {
-				absCut = m[0]
+	if titleStart > 0 && len(r.Episodes) == 0 {
+		if r.Season == 0 {
+			if m := reAbsEp.FindStringSubmatchIndex(name); m != nil {
+				r.AbsoluteEpisodes = absoluteRange(name[m[2]:m[3]], subIdx(name, m, 4))
+				if len(r.AbsoluteEpisodes) > 0 {
+					absCut = m[0]
+				}
+			}
+		}
+		// "[Group] Title S2 29" — a fansub season + absolute episode. Clear the season,
+		// since the number IS the absolute episode (not a season pack).
+		if len(r.AbsoluteEpisodes) == 0 {
+			if m := reAnimeSeasonAbs.FindStringSubmatchIndex(name); m != nil {
+				if eps := absoluteRange(name[m[4]:m[5]], ""); len(eps) > 0 {
+					r.AbsoluteEpisodes = eps
+					r.Season = 0
+					absCut = m[0]
+				}
 			}
 		}
 	}
