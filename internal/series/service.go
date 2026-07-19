@@ -325,6 +325,12 @@ func (s *Service) sceneOverrideRef(ctx context.Context, seriesID int64, sceneSea
 	return EpisodeRef{}, false
 }
 
+// AbsoluteNumber returns an episode's absolute (1..N across the run) number, or 0 when
+// it hasn't been computed. Used to build anime searches the way fansubs name releases.
+func (s *Service) AbsoluteNumber(ctx context.Context, seriesID int64, season, episode int) int {
+	return s.repo.AbsoluteOf(ctx, seriesID, season, episode)
+}
+
 // SceneOverrides returns a series' manual scene-season mappings.
 func (s *Service) SceneOverrides(ctx context.Context, seriesID int64) []SceneOverride {
 	return s.repo.SceneOverrides(ctx, seriesID)

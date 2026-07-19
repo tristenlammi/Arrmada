@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -171,10 +172,81 @@ func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (int
 		return 0, err
 	}
 	res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: s.Title, MediaType: indexer.MediaSeries, Limit: 100})
-	if err != nil || len(res.Releases) == 0 {
+	if err != nil {
 		return 0, err
 	}
-	return c.grabSeriesFrom(ctx, s, res.Releases), nil
+	grabbed, remaining := 0, []epKey(nil)
+	if len(res.Releases) > 0 {
+		grabbed, remaining = c.grabSeriesFrom(ctx, s, res.Releases)
+	} else if wanted, _ := wantedEpisodes(s); len(wanted) > 0 {
+		remaining = sortedKeys(setOf(wanted))
+	}
+	grabbed += c.searchByAbsolute(ctx, s, remaining)
+	return grabbed, nil
+}
+
+// maxAbsoluteQueries caps the follow-up searches per series per sweep. A title search
+// returns a fixed page (100), which for a long-running anime is dominated by recent
+// uploads — episode 137 simply isn't in it. Querying the absolute number finds it, but
+// one query per missing episode would undo the throttle and backoff work, so it's
+// bounded; successful grabs reset the backoff and the next sweep continues.
+const maxAbsoluteQueries = 3
+
+// searchByAbsolute is the anime follow-up: for episodes the broad title search didn't
+// cover, query the absolute episode number the way fansubs actually name releases
+// ("Dan Da Dan 13" → "[Group] Dan Da Dan - 13 [1080p]").
+//
+// Anime-only on purpose: standard series are named SxxExx and are already found by the
+// title search, and a bare number would just add noise.
+func (c *Coordinator) searchByAbsolute(ctx context.Context, s series.Series, remaining []epKey) int {
+	if !s.IsAnime() || len(remaining) == 0 {
+		return 0
+	}
+	grabbed, queries := 0, 0
+	still := remaining // narrows as earlier queries cover episodes
+	for _, k := range remaining {
+		if queries >= maxAbsoluteQueries {
+			break
+		}
+		if !containsKey(still, k) {
+			continue // an earlier absolute query already covered this one
+		}
+		abs := c.series.AbsoluteNumber(ctx, s.ID, k.season, k.episode)
+		if abs <= 0 {
+			continue // no absolute number computed for this episode — nothing to query by
+		}
+		queries++
+		q := fmt.Sprintf("%s %d", s.Title, abs)
+		res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: q, MediaType: indexer.MediaSeries, Limit: 100})
+		if err != nil || len(res.Releases) == 0 {
+			continue
+		}
+		n, left := c.grabSeriesLimited(ctx, s, res.Releases, still)
+		still = left
+		if n > 0 {
+			c.log.Info("series: grabbed via absolute-number search", "series", s.Title, "query", q, "count", n)
+		}
+		grabbed += n
+	}
+	return grabbed
+}
+
+func containsKey(keys []epKey, k epKey) bool {
+	for _, x := range keys {
+		if x == k {
+			return true
+		}
+	}
+	return false
+}
+
+// setOf turns a wanted-episode slice into the map form grabSeriesFrom uses.
+func setOf(keys []epKey) map[epKey]bool {
+	m := make(map[epKey]bool, len(keys))
+	for _, k := range keys {
+		m[k] = true
+	}
+	return m
 }
 
 // searchBackoff is how long to wait before sweeping a series again after n consecutive
@@ -201,8 +273,20 @@ func searchBackoff(misses int) time.Duration {
 // re-grab what just failed.
 // Returns how many releases it grabbed (named, so the existing bare returns keep
 // working) — the sweep uses it to decide whether to back this series off.
-func (c *Coordinator) grabSeriesFrom(ctx context.Context, s series.Series, releases []indexer.Release) (grabbedN int) {
+func (c *Coordinator) grabSeriesFrom(ctx context.Context, s series.Series, releases []indexer.Release) (int, []epKey) {
+	return c.grabSeriesLimited(ctx, s, releases, nil)
+}
+
+// grabSeriesLimited is grabSeriesFrom restricted to a specific set of wanted episodes
+// (nil = everything the series is missing). The absolute-number follow-up passes the
+// episodes the title search left uncovered, so it can't grab a second release for an
+// episode the first pass already handled — wantedEpisodes still lists those, because a
+// grab isn't reflected until it imports.
+func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, releases []indexer.Release, only []epKey) (grabbedN int, remaining []epKey) {
 	wanted, seriesSeasons := wantedEpisodes(s)
+	if only != nil {
+		wanted = only
+	}
 	if len(wanted) == 0 {
 		return
 	}
@@ -229,6 +313,10 @@ func (c *Coordinator) grabSeriesFrom(ctx context.Context, s series.Series, relea
 	eligible := decision.Eligible // sorted best (highest quality) first
 
 	needed := map[epKey]bool{}
+	// Report back what no release here covered, so the caller can follow up with a
+	// targeted search (anime: query by absolute episode number). Deferred so the
+	// existing early returns report accurately too.
+	defer func() { remaining = sortedKeys(needed) }()
 	for _, k := range wanted {
 		needed[k] = true
 	}
@@ -319,7 +407,23 @@ func (c *Coordinator) grabSeriesFrom(ctx context.Context, s series.Series, relea
 			delete(needed, k)
 		}
 	}
-	return grabbedN
+	return grabbedN, nil // remaining is filled by the deferred sortedKeys(needed)
+}
+
+// sortedKeys returns the still-uncovered episodes in a stable order, so follow-up
+// searches pick the same episodes each sweep rather than a random map sample.
+func sortedKeys(needed map[epKey]bool) []epKey {
+	out := make([]epKey, 0, len(needed))
+	for k := range needed {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].season != out[j].season {
+			return out[i].season < out[j].season
+		}
+		return out[i].episode < out[j].episode
+	})
+	return out
 }
 
 // wantedEpisodes returns the monitored, aired, file-less episodes plus the set of
