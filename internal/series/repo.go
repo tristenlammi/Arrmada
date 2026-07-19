@@ -219,10 +219,40 @@ func (r *Repo) SeasonsFor(ctx context.Context, seriesID int64) ([]Season, error)
 	return seasons, nil
 }
 
-// SetMonitored toggles a series' monitored flag.
+// SetMonitored toggles a series' monitored flag AND cascades it to the show's seasons
+// and episodes.
+//
+// Without the cascade, flipping a show to monitored only updated the series row while
+// every episode stayed unmonitored — and the search only ever grabs episodes where
+// monitored = 1. A show would read "Monitored" in the UI and silently never grab
+// anything, which is especially misleading when monitoring shows in bulk.
+//
+// Enabling deliberately skips specials (season 0), matching how a series is added
+// (seasonsFromDetails monitors `monitored && !special`). Disabling covers everything —
+// nothing should be grabbed for a show you've switched off.
 func (r *Repo) SetMonitored(ctx context.Context, id int64, monitored bool) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE series SET monitored = ? WHERE id = ?`, b2i(monitored), id)
-	return err
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	if _, err := tx.ExecContext(ctx, `UPDATE series SET monitored = ? WHERE id = ?`, b2i(monitored), id); err != nil {
+		return err
+	}
+	// season_number > 0 leaves specials alone when enabling; when disabling we want
+	// everything off, so the filter is dropped.
+	scope := ` AND season_number > 0`
+	if !monitored {
+		scope = ``
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE seasons SET monitored = ? WHERE series_id = ?`+scope, b2i(monitored), id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE episodes SET monitored = ? WHERE series_id = ?`+scope, b2i(monitored), id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // SetTVDBID records a series' TVDB id (the TheXEM lookup key).
