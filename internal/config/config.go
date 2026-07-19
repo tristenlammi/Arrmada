@@ -86,20 +86,20 @@ type Config struct {
 // Every key is prefixed ARRMADA_ so it never collides with other services.
 func Load() (Config, error) {
 	c := Config{
-		Host:     env("ARRMADA_HOST", "0.0.0.0"),
-		BaseURL:  normalizeBaseURL(env("ARRMADA_BASE_URL", "")),
-		DataDir:  env("ARRMADA_DATA_DIR", "./data"),
-		LogLevel: strings.ToLower(env("ARRMADA_LOG_LEVEL", "info")),
-		ExternalHeader:   env("ARRMADA_EXTERNAL_HEADER", "Cf-Connecting-Ip"),
-		QbittorrentURL:   env("ARRMADA_QBITTORRENT_URL", ""),
-		LibraryDir:       env("ARRMADA_LIBRARY_DIR", "./library"),
-		DownloadCategory: env("ARRMADA_DOWNLOAD_CATEGORY", "arrmada"),
-		DownloadsDir:     env("ARRMADA_DOWNLOADS_DIR", "./downloads"),
-		RecycleDir:       env("ARRMADA_RECYCLE_DIR", ""),
-		FlaresolverrURL:  env("ARRMADA_FLARESOLVERR_URL", ""),
-		TMDBAPIKey:       env("ARRMADA_TMDB_API_KEY", ""),
-		OMDBAPIKey:       env("ARRMADA_OMDB_API_KEY", ""),
-		ProwlarrURL:      env("ARRMADA_PROWLARR_URL", ""),
+		Host:                  env("ARRMADA_HOST", "0.0.0.0"),
+		BaseURL:               normalizeBaseURL(env("ARRMADA_BASE_URL", "")),
+		DataDir:               env("ARRMADA_DATA_DIR", "./data"),
+		LogLevel:              strings.ToLower(env("ARRMADA_LOG_LEVEL", "info")),
+		ExternalHeader:        env("ARRMADA_EXTERNAL_HEADER", "Cf-Connecting-Ip"),
+		QbittorrentURL:        env("ARRMADA_QBITTORRENT_URL", ""),
+		LibraryDir:            env("ARRMADA_LIBRARY_DIR", "./library"),
+		DownloadCategory:      env("ARRMADA_DOWNLOAD_CATEGORY", "arrmada"),
+		DownloadsDir:          env("ARRMADA_DOWNLOADS_DIR", "./downloads"),
+		RecycleDir:            env("ARRMADA_RECYCLE_DIR", ""),
+		FlaresolverrURL:       env("ARRMADA_FLARESOLVERR_URL", ""),
+		TMDBAPIKey:            env("ARRMADA_TMDB_API_KEY", ""),
+		OMDBAPIKey:            env("ARRMADA_OMDB_API_KEY", ""),
+		ProwlarrURL:           env("ARRMADA_PROWLARR_URL", ""),
 		OpenSubtitlesAPIKey:   env("ARRMADA_OPENSUBTITLES_API_KEY", ""),
 		OpenSubtitlesUsername: env("ARRMADA_OPENSUBTITLES_USERNAME", ""),
 		OpenSubtitlesPassword: env("ARRMADA_OPENSUBTITLES_PASSWORD", ""),
@@ -154,17 +154,4 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-func envBool(key string, fallback bool) bool {
-	v, ok := os.LookupEnv(key)
-	if !ok || v == "" {
-		return fallback
-	}
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
-	}
 }
