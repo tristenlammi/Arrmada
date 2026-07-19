@@ -240,6 +240,56 @@ func (a *api) handleSetSeriesType(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"series_type": req.SeriesType})
 }
 
+// handleListSceneOverrides returns a series' manual scene-season mappings.
+func (a *api) handleListSceneOverrides(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	list := a.deps.Series.SceneOverrides(r.Context(), id)
+	if list == nil {
+		list = []series.SceneOverride{}
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"overrides": list})
+}
+
+// handleSetSceneOverride pins "scene season N starts at TMDB SxxEyy" for an anime whose
+// broadcast cours don't line up with TMDB's numbering.
+func (a *api) handleSetSceneOverride(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	var req series.SceneOverride
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	if err := a.deps.Series.SetSceneOverride(r.Context(), id, req); err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, req)
+}
+
+// handleDeleteSceneOverride drops one mapping, returning the series to automatic
+// resolution (per-cour positional → TheXEM → air-date gap).
+func (a *api) handleDeleteSceneOverride(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	season, err := strconv.Atoi(r.PathValue("season"))
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, "invalid scene season")
+		return
+	}
+	if err := a.deps.Series.DeleteSceneOverride(r.Context(), id, season); err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not remove the mapping")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (a *api) handleSetSeasonMonitored(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)
 	if !ok {

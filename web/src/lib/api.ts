@@ -484,6 +484,14 @@ export interface Season {
   monitored: boolean;
   episodes?: Episode[];
 }
+// SceneOverride pins where a scene/broadcast season starts in TMDB numbering, for anime
+// whose cours don't line up (e.g. release "S02E01" is really S01E13).
+export interface SceneOverride {
+  scene_season: number;
+  tmdb_season: number;
+  tmdb_episode: number;
+}
+
 export interface Series {
   id: number;
   tmdb_id: number;
@@ -497,6 +505,7 @@ export interface Series {
   monitored: boolean;
   quality_profile: string;
   series_type?: string; // "standard" | "anime"
+  scene_overrides?: SceneOverride[];
   added_at?: string;
   extra?: SeriesExtra;
   seasons?: Season[];
@@ -925,6 +934,13 @@ export const api = {
     req<{ quality_profile: string }>(`/api/v1/series/${id}/profile`, { method: "PUT", body: JSON.stringify({ quality_profile }) }),
   setSeriesType: (id: number, series_type: string) =>
     req<{ series_type: string }>(`/api/v1/series/${id}/type`, { method: "PUT", body: JSON.stringify({ series_type }) }),
+  // Manual scene-season mapping (anime whose broadcast cours don't match TMDB numbering).
+  sceneOverrides: (id: number) =>
+    req<{ overrides: SceneOverride[] }>(`/api/v1/series/${id}/scene-map`),
+  setSceneOverride: (id: number, o: SceneOverride) =>
+    req<SceneOverride>(`/api/v1/series/${id}/scene-map`, { method: "PUT", body: JSON.stringify(o) }),
+  deleteSceneOverride: (id: number, sceneSeason: number) =>
+    req<void>(`/api/v1/series/${id}/scene-map/${sceneSeason}`, { method: "DELETE" }),
   setSeasonMonitored: (id: number, season: number, monitored: boolean) =>
     req<{ monitored: boolean }>(`/api/v1/series/${id}/seasons/${season}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
   setEpisodeMonitored: (eid: number, monitored: boolean) =>

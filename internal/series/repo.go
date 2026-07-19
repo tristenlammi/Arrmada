@@ -277,6 +277,69 @@ func (r *Repo) SceneMap(ctx context.Context, id int64) string {
 	return j
 }
 
+// SceneOverride is a manual "scene season N starts at TMDB SxxEyy" mapping.
+type SceneOverride struct {
+	SceneSeason int `json:"scene_season"`
+	TMDBSeason  int `json:"tmdb_season"`
+	TMDBEpisode int `json:"tmdb_episode"`
+}
+
+// SceneOverrides returns a series' manual scene-season mappings, lowest scene season first.
+func (r *Repo) SceneOverrides(ctx context.Context, seriesID int64) []SceneOverride {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT scene_season, tmdb_season, tmdb_episode FROM series_scene_overrides
+		 WHERE series_id = ? ORDER BY scene_season`, seriesID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []SceneOverride
+	for rows.Next() {
+		var o SceneOverride
+		if rows.Scan(&o.SceneSeason, &o.TMDBSeason, &o.TMDBEpisode) == nil {
+			out = append(out, o)
+		}
+	}
+	return out
+}
+
+// SceneOverrideFor returns the mapping for one scene season, if the user set one.
+func (r *Repo) SceneOverrideFor(ctx context.Context, seriesID int64, sceneSeason int) (SceneOverride, bool) {
+	o := SceneOverride{SceneSeason: sceneSeason}
+	err := r.db.QueryRowContext(ctx,
+		`SELECT tmdb_season, tmdb_episode FROM series_scene_overrides
+		 WHERE series_id = ? AND scene_season = ?`, seriesID, sceneSeason).Scan(&o.TMDBSeason, &o.TMDBEpisode)
+	return o, err == nil
+}
+
+// SetSceneOverride records (or replaces) one scene-season mapping.
+func (r *Repo) SetSceneOverride(ctx context.Context, seriesID int64, o SceneOverride) error {
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO series_scene_overrides (series_id, scene_season, tmdb_season, tmdb_episode)
+		 VALUES (?, ?, ?, ?)
+		 ON CONFLICT(series_id, scene_season) DO UPDATE SET
+		   tmdb_season = excluded.tmdb_season, tmdb_episode = excluded.tmdb_episode`,
+		seriesID, o.SceneSeason, o.TMDBSeason, o.TMDBEpisode)
+	return err
+}
+
+// DeleteSceneOverride drops one scene-season mapping.
+func (r *Repo) DeleteSceneOverride(ctx context.Context, seriesID int64, sceneSeason int) error {
+	_, err := r.db.ExecContext(ctx,
+		`DELETE FROM series_scene_overrides WHERE series_id = ? AND scene_season = ?`, seriesID, sceneSeason)
+	return err
+}
+
+// AbsoluteOf returns an episode's absolute number (0 when unknown) — used to walk a
+// scene cour forward from its mapped starting episode, even across a season boundary.
+func (r *Repo) AbsoluteOf(ctx context.Context, seriesID int64, season, episode int) int {
+	var abs int
+	_ = r.db.QueryRowContext(ctx,
+		`SELECT absolute_number FROM episodes WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
+		seriesID, season, episode).Scan(&abs)
+	return abs
+}
+
 // SetSeriesType sets a series' numbering type ("standard" | "anime").
 func (r *Repo) SetSeriesType(ctx context.Context, id int64, seriesType string) error {
 	res, err := r.db.ExecContext(ctx, `UPDATE series SET series_type = ? WHERE id = ?`, seriesType, id)

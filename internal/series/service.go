@@ -276,6 +276,12 @@ func (s *Service) resolveSE(ctx context.Context, seriesID int64, season, episode
 		return EpisodeRef{Season: season, Episode: episode}
 	}
 	if anime {
+		// A manual scene-season mapping wins over every guess below — it's the user
+		// telling us outright where this cour lands. Only consulted when they've set one
+		// for this exact scene season, so it can't disturb shows that resolve fine.
+		if ref, ok := s.sceneOverrideRef(ctx, seriesID, season, episode); ok {
+			return ref
+		}
 		// Per-cour positional: the season exists but is numbered absolutely.
 		if real, ok := s.repo.NthEpisodeOfSeason(ctx, seriesID, season, episode); ok {
 			return EpisodeRef{Season: season, Episode: real}
@@ -294,6 +300,64 @@ func (s *Service) resolveSE(ctx context.Context, seriesID int64, season, episode
 	return EpisodeRef{Season: season, Episode: episode} // standard: mark as-is (no-op if absent)
 }
 
+// sceneOverrideRef resolves a scene (season, episode) through the user's manual mapping.
+// The mapping pins where scene E01 lands; the rest of the cour follows by walking the
+// series' absolute order forward, so a cour that crosses a TMDB season boundary still
+// resolves correctly. Falls back to a plain within-season offset when absolute numbers
+// haven't been backfilled.
+func (s *Service) sceneOverrideRef(ctx context.Context, seriesID int64, sceneSeason, sceneEpisode int) (EpisodeRef, bool) {
+	if sceneSeason < 1 || sceneEpisode < 1 {
+		return EpisodeRef{}, false
+	}
+	o, ok := s.repo.SceneOverrideFor(ctx, seriesID, sceneSeason)
+	if !ok {
+		return EpisodeRef{}, false
+	}
+	if base := s.repo.AbsoluteOf(ctx, seriesID, o.TMDBSeason, o.TMDBEpisode); base > 0 {
+		if se, ep, found := s.repo.EpisodeByAbsolute(ctx, seriesID, base+sceneEpisode-1); found {
+			return EpisodeRef{Season: se, Episode: ep}, true
+		}
+	}
+	target := o.TMDBEpisode + sceneEpisode - 1
+	if s.repo.EpisodeExists(ctx, seriesID, o.TMDBSeason, target) {
+		return EpisodeRef{Season: o.TMDBSeason, Episode: target}, true
+	}
+	return EpisodeRef{}, false
+}
+
+// SceneOverrides returns a series' manual scene-season mappings.
+func (s *Service) SceneOverrides(ctx context.Context, seriesID int64) []SceneOverride {
+	return s.repo.SceneOverrides(ctx, seriesID)
+}
+
+// SetSceneOverride records a manual scene-season mapping. Anime-only: standard series
+// are matched by SxxExx directly, so an override there would only ever misroute.
+func (s *Service) SetSceneOverride(ctx context.Context, seriesID int64, o SceneOverride) error {
+	sr, err := s.repo.Get(ctx, seriesID)
+	if err != nil {
+		return err
+	}
+	if !sr.IsAnime() {
+		return fmt.Errorf("scene-season mapping applies to anime only — set the series type to Anime first")
+	}
+	if o.SceneSeason < 1 || o.TMDBSeason < 0 || o.TMDBEpisode < 1 {
+		return fmt.Errorf("scene season and target episode must be 1 or greater")
+	}
+	if !s.repo.EpisodeExists(ctx, seriesID, o.TMDBSeason, o.TMDBEpisode) {
+		return fmt.Errorf("this series has no S%02dE%02d to map onto", o.TMDBSeason, o.TMDBEpisode)
+	}
+	if err := s.repo.SetSceneOverride(ctx, seriesID, o); err != nil {
+		return err
+	}
+	s.AddEvent(ctx, seriesID, "scene-map", fmt.Sprintf("Scene season %d mapped to S%02dE%02d", o.SceneSeason, o.TMDBSeason, o.TMDBEpisode))
+	return nil
+}
+
+// DeleteSceneOverride removes a manual scene-season mapping.
+func (s *Service) DeleteSceneOverride(ctx context.Context, seriesID int64, sceneSeason int) error {
+	return s.repo.DeleteSceneOverride(ctx, seriesID, sceneSeason)
+}
+
 // HasSeason reports whether TMDB gives this series the given season number.
 func (s *Service) HasSeason(ctx context.Context, seriesID int64, season int) bool {
 	return s.repo.SeasonExists(ctx, seriesID, season)
@@ -305,6 +369,28 @@ func (s *Service) HasSeason(ctx context.Context, seriesID int64, season int) boo
 func (s *Service) SceneSeasonEpisodes(ctx context.Context, seriesID int64, sceneSeason int) []EpisodeRef {
 	if sceneSeason < 1 {
 		return nil
+	}
+	// A manual mapping wins, so a whole "S02" pack matches the cour the user pinned.
+	// The cour runs from its mapped start up to the next mapped scene season (or the
+	// end of the series), walked in absolute order.
+	if o, ok := s.repo.SceneOverrideFor(ctx, seriesID, sceneSeason); ok {
+		if start := s.repo.AbsoluteOf(ctx, seriesID, o.TMDBSeason, o.TMDBEpisode); start > 0 {
+			end := 0 // exclusive; 0 = run to the end of the series
+			if next, ok2 := s.repo.SceneOverrideFor(ctx, seriesID, sceneSeason+1); ok2 {
+				end = s.repo.AbsoluteOf(ctx, seriesID, next.TMDBSeason, next.TMDBEpisode)
+			}
+			var out []EpisodeRef
+			for abs := start; end == 0 || abs < end; abs++ {
+				se, ep, found := s.repo.EpisodeByAbsolute(ctx, seriesID, abs)
+				if !found {
+					break
+				}
+				out = append(out, EpisodeRef{Season: se, Episode: ep})
+			}
+			if len(out) > 0 {
+				return out
+			}
+		}
 	}
 	if m := s.sceneMapFor(ctx, seriesID); len(m) > 0 {
 		prefix := fmt.Sprintf("%d-", sceneSeason)

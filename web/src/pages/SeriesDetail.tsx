@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
-import { api, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry } from "../lib/api";
+import { api, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride } from "../lib/api";
 
 const today = new Date().toISOString().slice(0, 10);
 const aired = (e: Episode) => !!e.air_date && e.air_date <= today;
@@ -221,6 +221,7 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("rename", rename)}>{busy === "rename" ? "Renaming…" : "Rename"}</button>
         <DeleteButton onDelete={async (df) => { await api.deleteSeries(series.id, df); window.location.href = "/series"; }} />
       </div>
+      {series.series_type === "anime" && <SceneMapPanel series={series} />}
       {showPaste && (
         <UploadTorrentModal
           what={series.title}
@@ -558,6 +559,104 @@ function SeriesBlocklistPanel({ seriesId, refreshKey }: { seriesId: number; refr
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// SceneMapPanel lets you pin where a scene/broadcast season starts in TMDB numbering —
+// the manual escape hatch for anime whose cours don't line up. Anime-only: standard
+// series match SxxExx directly, so a mapping there could only misroute.
+//
+// Automatic resolution (per-cour positional → TheXEM → air-date gap) handles most shows;
+// this exists for the ones it can't, where the only alternative was importing every
+// episode by hand.
+function SceneMapPanel({ series }: { series: SeriesT }) {
+  const [rows, setRows] = useState<SceneOverride[] | null>(null);
+  const [sceneSeason, setSceneSeason] = useState("");
+  const [tmdbSeason, setTmdbSeason] = useState("");
+  const [tmdbEpisode, setTmdbEpisode] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    api.sceneOverrides(series.id).then((r) => setRows(r.overrides ?? [])).catch(() => setRows([]));
+  }, [series.id]);
+  useEffect(load, [load]);
+
+  const add = async () => {
+    setErr(null);
+    setBusy(true);
+    try {
+      await api.setSceneOverride(series.id, {
+        scene_season: Number(sceneSeason),
+        tmdb_season: Number(tmdbSeason),
+        tmdb_episode: Number(tmdbEpisode),
+      });
+      setSceneSeason(""); setTmdbSeason(""); setTmdbEpisode("");
+      load();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const num = "w-[64px] rounded-lg px-2 py-1.5 text-center text-[12.5px]";
+  const numStyle = { background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" } as const;
+  const ready = sceneSeason !== "" && tmdbSeason !== "" && tmdbEpisode !== "";
+
+  return (
+    <div className="mt-3 rounded-xl p-3.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+      <div className="text-[12.5px] font-semibold">Scene season mapping</div>
+      <p className="mb-2.5 mt-0.5 text-[11px] text-ink-faint">
+        Only needed when releases number seasons differently to TMDB — e.g. this show ships as
+        <code className="mx-1 font-mono">S02E01</code> but TMDB counts it as one long season. Pin where each
+        scene season starts and the rest of the cour follows automatically.
+      </p>
+
+      {rows && rows.length > 0 && (
+        <div className="mb-2.5 flex flex-col gap-1.5">
+          {rows.map((o) => (
+            <div key={o.scene_season} className="flex items-center gap-2 rounded-lg px-2.5 py-1.5" style={{ background: "var(--panel-2)" }}>
+              <span className="font-mono text-[11.5px]">
+                Scene S{String(o.scene_season).padStart(2, "0")} → S{String(o.tmdb_season).padStart(2, "0")}E{String(o.tmdb_episode).padStart(2, "0")}
+              </span>
+              <button
+                className="ml-auto text-[11px] font-semibold"
+                style={{ color: "var(--reject)" }}
+                onClick={async () => { await api.deleteSceneOverride(series.id, o.scene_season); load(); }}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="text-[10.5px] text-ink-faint">
+          <div>Scene season</div>
+          <input className={num} style={numStyle} inputMode="numeric" value={sceneSeason} onChange={(e) => setSceneSeason(e.target.value)} placeholder="2" />
+        </label>
+        <span className="pb-1.5 text-[12px] text-ink-faint">starts at</span>
+        <label className="text-[10.5px] text-ink-faint">
+          <div>TMDB season</div>
+          <input className={num} style={numStyle} inputMode="numeric" value={tmdbSeason} onChange={(e) => setTmdbSeason(e.target.value)} placeholder="1" />
+        </label>
+        <label className="text-[10.5px] text-ink-faint">
+          <div>Episode</div>
+          <input className={num} style={numStyle} inputMode="numeric" value={tmdbEpisode} onChange={(e) => setTmdbEpisode(e.target.value)} placeholder="13" />
+        </label>
+        <button
+          disabled={!ready || busy}
+          onClick={add}
+          className="rounded-lg px-3 py-1.5 text-[12px] font-semibold"
+          style={{ background: ready ? "var(--accent)" : "var(--panel-2)", color: ready ? "var(--accent-ink)" : "var(--ink-faint)" }}
+        >
+          {busy ? "Saving…" : "Add mapping"}
+        </button>
+      </div>
+      {err && <div className="mt-2 text-[11.5px]" style={{ color: "var(--reject)" }}>{err}</div>}
     </div>
   );
 }

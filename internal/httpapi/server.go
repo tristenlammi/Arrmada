@@ -9,23 +9,23 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/applog"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/buildinfo"
 	"github.com/tristenlammi/arrmada/internal/config"
+	"github.com/tristenlammi/arrmada/internal/convert"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/eventbus"
 	"github.com/tristenlammi/arrmada/internal/indexer"
+	"github.com/tristenlammi/arrmada/internal/insights"
 	"github.com/tristenlammi/arrmada/internal/library"
-	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/notify"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/realtime"
-	"github.com/tristenlammi/arrmada/internal/books"
-	"github.com/tristenlammi/arrmada/internal/convert"
-	"github.com/tristenlammi/arrmada/internal/insights"
-	"github.com/tristenlammi/arrmada/internal/applog"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
 	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/series"
@@ -38,14 +38,14 @@ import (
 // Deps bundles everything the HTTP layer needs. Grouping them keeps New's
 // signature stable as more subsystems come online.
 type Deps struct {
-	Config   config.Config
-	Log      *slog.Logger
-	Store    *store.Store
-	Bus      *eventbus.Bus
-	Auth     *auth.Service
-	Realtime  *realtime.Hub
-	Indexers  *indexer.Service
-	Downloads *download.Service
+	Config     config.Config
+	Log        *slog.Logger
+	Store      *store.Store
+	Bus        *eventbus.Bus
+	Auth       *auth.Service
+	Realtime   *realtime.Hub
+	Indexers   *indexer.Service
+	Downloads  *download.Service
 	Library    *library.Manager
 	Movies     *movies.Service
 	Quality    *quality.Service
@@ -206,6 +206,10 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/monitor", a.protected(a.handleSetSeriesMonitored))
 	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/profile", a.protected(a.handleSetSeriesProfile))
 	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/type", a.protected(a.handleSetSeriesType))
+	// Manual scene-season mapping (anime whose cours don't match TMDB numbering).
+	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/scene-map", a.protected(a.handleListSceneOverrides))
+	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/scene-map", a.requireRole(auth.RoleManager, a.handleSetSceneOverride))
+	mux.HandleFunc("DELETE "+base+"/api/v1/series/{id}/scene-map/{season}", a.requireRole(auth.RoleManager, a.handleDeleteSceneOverride))
 	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/seasons/{season}/monitor", a.protected(a.handleSetSeasonMonitored))
 	mux.HandleFunc("PUT "+base+"/api/v1/series/episodes/{eid}/monitor", a.protected(a.handleSetEpisodeMonitored))
 	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/blocklist", a.protected(a.handleSeriesBlocklist))
@@ -425,9 +429,9 @@ func (a *api) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"plex_login":     a.deps.Settings.GetBool(r.Context(), "plex_login_enabled", false),
 		"external":       isExternalRequest(r), // request came from outside the LAN → Discover-only
 
-		"modules":        plannedModules,
-		"books_enabled":  a.booksEnabled(r.Context()),
-		"music_enabled":  a.musicEnabled(r.Context()),
+		"modules":       plannedModules,
+		"books_enabled": a.booksEnabled(r.Context()),
+		"music_enabled": a.musicEnabled(r.Context()),
 	})
 }
 
