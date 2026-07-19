@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type ConvertCandidate, type ConvertEncoder, type ConvertJob, type ConvertSample, type AppSettings } from "../lib/api";
+import { api, type ConvertCandidate, type ConvertSeriesRollup, type ConvertEncoder, type ConvertJob, type ConvertSample, type AppSettings } from "../lib/api";
 
 // Convert (Tdarr replacement) — the four-tab experience from the design mockup, wired to
 // the real backend. Implemented today: analysis, hardware detection, the Save-space engine
@@ -345,6 +345,10 @@ function Pill({ active, disabled, onClick, children }: { active: boolean; disabl
 
 function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: () => void }) {
   const [media, setMedia] = useState<"movies" | "tv">("movies");
+  // The TV tab browses shows first and only fetches episodes for the one you open —
+  // fetching every episode in the library is what used to make this tab unusable.
+  const [shows, setShows] = useState<ConvertSeriesRollup[] | null>(null);
+  const [show, setShow] = useState<ConvertSeriesRollup | null>(null);
   const [items, setItems] = useState<ConvertCandidate[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [queued, setQueued] = useState<Set<string>>(new Set());
@@ -355,10 +359,24 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
 
   useEffect(() => {
     setItems(null);
+    setShow(null);
     setQueued(new Set());
     setCodecF(new Set());
-    api.convertLibrary(media).then(setItems).catch(() => setItems([]));
+    if (media === "tv") {
+      setShows(null);
+      api.convertLibrarySeries().then(setShows).catch(() => setShows([]));
+    } else {
+      api.convertLibrary("movies").then(setItems).catch(() => setItems([]));
+    }
   }, [media]);
+
+  // Opening a show loads just that show's episodes.
+  useEffect(() => {
+    if (media !== "tv" || !show) return;
+    setItems(null);
+    setCodecF(new Set());
+    api.convertLibrary("tv", show.series_id).then(setItems).catch(() => setItems([]));
+  }, [media, show]);
 
   const convert = async (c: ConvertCandidate) => {
     const key = rowKey(c);
@@ -371,6 +389,17 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
       onQueued();
     } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
   };
+  // Queue a whole show, or one season of it, in a single call.
+  const convertBulk = async (seriesID: number, season: number | undefined, label: string) => {
+    const key = `bulk:${seriesID}:${season ?? "all"}`;
+    setBusy(key);
+    try {
+      const { queued: n } = await api.convertSeries(seriesID, season);
+      flash(n > 0 ? `Queued ${n} episode${n === 1 ? "" : "s"} from ${label}` : `Nothing to convert in ${label} — already efficient`);
+      onQueued();
+    } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
+  };
+
   const runSample = async (c: ConvertCandidate) => {
     if (c.kind !== "movie" || c.movie_id == null) return; // 30s sample is a movie-only tool for now
     const id = c.movie_id;
@@ -412,6 +441,14 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
     });
   }, [items, codecF, sort]);
 
+  // Seasons of the open show that still have convertible episodes — nothing else is
+  // worth offering a bulk button for.
+  const seasons = useMemo(() => {
+    const set = new Set<number>();
+    for (const c of items ?? []) if (c.candidate && c.season != null) set.add(c.season);
+    return [...set].sort((a, b) => a - b);
+  }, [items]);
+
   const noun = media === "tv" ? "episodes" : "movies";
   const filtering = codecF.size > 0;
   return (
@@ -419,17 +456,84 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
       <div className="inline-flex w-fit rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
         {(["movies", "tv"] as const).map((m) => (
           <button key={m} onClick={() => setMedia(m)} className="rounded-md px-3.5 py-1.5 text-[12px] font-semibold" style={{ background: media === m ? "var(--accent)" : "transparent", color: media === m ? "var(--accent-ink)" : "var(--ink-faint)" }}>
-            {m === "movies" ? "Movies" : "TV Shows"}{items && media === m ? <span className="ml-1.5 font-mono text-[10px] opacity-70">{items.length.toLocaleString()}</span> : null}
+            {m === "movies" ? "Movies" : "TV Shows"}
+            {media === m ? <span className="ml-1.5 font-mono text-[10px] opacity-70">{(m === "tv" ? shows?.length : items?.length)?.toLocaleString() ?? ""}</span> : null}
           </button>
         ))}
       </div>
 
-      {items === null ? (
+      {media === "tv" && !show ? (
+        shows === null ? (
+          <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading your shows…</div>
+        ) : shows.length === 0 ? (
+          <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>No downloaded episodes yet.</div>
+        ) : (
+          <>
+            <p className="text-[11px] text-ink-faint">
+              <b style={{ color: "var(--ink)" }}>{shows.reduce((n, x) => n + x.convertible, 0).toLocaleString()}</b> convertible
+              {" "}episode{shows.reduce((n, x) => n + x.convertible, 0) === 1 ? "" : "s"} across {shows.length.toLocaleString()} show{shows.length === 1 ? "" : "s"}.
+              Open a show to see its episodes, or convert the whole thing.
+            </p>
+            <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
+              {shows.map((sh) => {
+                const done = sh.convertible === 0;
+                const saving = sh.total_bytes > 0 ? sh.est_bytes : 0;
+                return (
+                  <div key={sh.series_id} className="flex flex-col gap-2 rounded-xl p-3" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
+                    <button onClick={() => setShow(sh)} className="text-left">
+                      <div className="text-[13px] font-bold">{sh.title} <span className="font-normal text-ink-faint">{sh.year || ""}</span></div>
+                      <div className="mt-0.5 font-mono text-[10.5px] text-ink-faint">
+                        {sh.files.toLocaleString()} file{sh.files === 1 ? "" : "s"} · {fmtSize(sh.total_bytes)}
+                      </div>
+                    </button>
+                    <div className="flex items-center justify-between gap-2">
+                      {done ? (
+                        <span className="font-mono text-[10.5px]" style={{ color: "var(--good)" }}>all efficient ✓</span>
+                      ) : (
+                        <span className="font-mono text-[10.5px]" style={{ color: "var(--avoid)" }}>
+                          {sh.convertible.toLocaleString()} convertible{saving ? ` · ~${fmtSize(saving)} after` : ""}
+                        </span>
+                      )}
+                      <div className="flex items-center gap-1.5">
+                        <button onClick={() => setShow(sh)} className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Episodes</button>
+                        {!done && (
+                          <button onClick={() => convertBulk(sh.series_id, undefined, sh.title)} disabled={busy !== null}
+                            className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50"
+                            style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>
+                            {busy === `bulk:${sh.series_id}:all` ? "Queuing…" : "Convert all"}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )
+      ) : items === null ? (
         <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Analyzing your {noun}…</div>
       ) : items.length === 0 ? (
         <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>No downloaded {noun} yet.</div>
       ) : (
         <>
+          {show && (
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl px-3 py-2" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setShow(null)} className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>← All shows</button>
+                <span className="text-[13px] font-bold">{show.title}</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {seasons.map((n) => (
+                  <button key={n} onClick={() => convertBulk(show.series_id, n, `${show.title} season ${n}`)} disabled={busy !== null}
+                    className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50"
+                    style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>
+                    {busy === `bulk:${show.series_id}:${n}` ? "Queuing…" : `Convert S${n}`}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="mr-0.5 font-mono text-[9.5px] uppercase text-ink-faint">Codec</span>
             {codecs.map(([cc, n]) => <Pill key={cc} active={codecF.has(cc)} onClick={() => toggleCodec(cc)}>{cc} <span className="opacity-60">{n}</span></Pill>)}
@@ -530,13 +634,13 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
   const set = (patch: Partial<AppSettings>) => setD((cur) => (cur ? { ...cur, ...patch } : cur));
   const dirty = useMemo(() => {
     if (!saved || !d) return false;
-    const keys: (keyof AppSettings)[] = ["convert_target_codec", "convert_auto", "convert_sweep_start", "convert_sweep_end", "convert_workers", "convert_quality_gate", "convert_min_ssim", "convert_max_failures", "convert_skip_hardlinked", "convert_scratch_dir", "convert_vaapi_device"];
+    const keys: (keyof AppSettings)[] = ["convert_target_codec", "convert_auto", "convert_sweep_start", "convert_sweep_end", "convert_workers", "convert_quality_gate", "convert_min_ssim", "convert_max_failures", "convert_skip_hardlinked", "convert_scratch_dir", "convert_vaapi_device", "convert_scan_at"];
     return keys.some((k) => saved[k] !== d[k]);
   }, [saved, d]);
   const onSave = async () => {
     if (!d) return;
     setBusy(true);
-    const patch = { convert_target_codec: d.convert_target_codec, convert_auto: d.convert_auto, convert_sweep_start: d.convert_sweep_start, convert_sweep_end: d.convert_sweep_end, convert_workers: d.convert_workers, convert_quality_gate: d.convert_quality_gate, convert_min_ssim: d.convert_min_ssim, convert_max_failures: d.convert_max_failures, convert_skip_hardlinked: d.convert_skip_hardlinked, convert_scratch_dir: d.convert_scratch_dir, convert_vaapi_device: d.convert_vaapi_device };
+    const patch = { convert_target_codec: d.convert_target_codec, convert_auto: d.convert_auto, convert_sweep_start: d.convert_sweep_start, convert_sweep_end: d.convert_sweep_end, convert_workers: d.convert_workers, convert_quality_gate: d.convert_quality_gate, convert_min_ssim: d.convert_min_ssim, convert_max_failures: d.convert_max_failures, convert_skip_hardlinked: d.convert_skip_hardlinked, convert_scratch_dir: d.convert_scratch_dir, convert_vaapi_device: d.convert_vaapi_device, convert_scan_at: d.convert_scan_at };
     try { const v = await api.updateSettings(patch); setSaved(v); setD(v); flash("Settings saved — restart or the next job uses the new GPU"); loadScratch(); } catch (e) { flash((e as Error).message); } finally { setBusy(false); }
   };
   if (!d) return <div className="text-[12px] text-ink-faint">Loading settings…</div>;
@@ -570,6 +674,9 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
         </SettingField>
         <SettingField label="Convert at once" hint={`${av1 ? "AV1 is heavy — " : ""}keep at 1 for CPU-only, 2–3 with a GPU · applies on restart`}>
           <input type="number" min="1" max="8" value={d.convert_workers} onChange={(e) => set({ convert_workers: e.target.value })} className={`${inp} w-[70px]`} style={inpStyle} />
+        </SettingField>
+        <SettingField label="Scan the library at" hint="a daily pass to spot files changed outside Arrmada · imports are picked up instantly, so this can sit overnight">
+          <input type="time" value={d.convert_scan_at} onChange={(e) => set({ convert_scan_at: e.target.value })} className={inp} style={inpStyle} />
         </SettingField>
       </SettingCard>
 

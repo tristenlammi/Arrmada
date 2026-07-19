@@ -45,6 +45,22 @@ type Coordinator struct {
 	books        *books.Service  // set post-construction via SetBooks
 	imp          *library.Importer
 	recycle      string // recycle-bin dir for book deletes ("" = hard delete); set via SetRecycleDir
+
+	// onSeriesImported fires after episodes land, so the Convert library index can
+	// refresh just that show rather than waiting for the nightly sweep. Optional.
+	onSeriesImported func(ctx context.Context, seriesID int64)
+}
+
+// SetSeriesImportedHook registers a callback run after a series import writes episodes.
+func (c *Coordinator) SetSeriesImportedHook(fn func(ctx context.Context, seriesID int64)) {
+	c.onSeriesImported = fn
+}
+
+// seriesImported notifies the hook, if one is registered.
+func (c *Coordinator) seriesImported(ctx context.Context, seriesID int64) {
+	if c.onSeriesImported != nil {
+		c.onSeriesImported(ctx, seriesID)
+	}
 }
 
 // SetRecycleDir points book file deletion at the recycle bin (matching movies). Empty

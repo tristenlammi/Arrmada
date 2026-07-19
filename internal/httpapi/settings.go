@@ -62,6 +62,7 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"convert_min_ssim":     a.deps.Settings.Get(ctx, "convert_min_ssim", "0.95"),
 		"convert_workers":      a.deps.Settings.Get(ctx, "convert_workers", "1"),
 		"convert_sweep_start":  a.deps.Settings.Get(ctx, "convert_sweep_start", ""),
+		"convert_scan_at":      a.deps.Settings.Get(ctx, "convert_scan_at", "03:00"),
 		"convert_sweep_end":    a.deps.Settings.Get(ctx, "convert_sweep_end", ""),
 		"convert_max_failures": a.deps.Settings.Get(ctx, "convert_max_failures", "3"),
 		"convert_scratch_dir":  a.deps.Settings.Get(ctx, "convert_scratch_dir", ""),
@@ -100,6 +101,7 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		ConvertMinSSIM        *string `json:"convert_min_ssim"`
 		ConvertWorkers        *string `json:"convert_workers"`
 		ConvertSweepStart     *string `json:"convert_sweep_start"`
+		ConvertScanAt         *string `json:"convert_scan_at"`
 		ConvertSweepEnd       *string `json:"convert_sweep_end"`
 		ConvertMaxFailures    *string `json:"convert_max_failures"`
 		ConvertScratchDir     *string `json:"convert_scratch_dir"`
@@ -176,6 +178,9 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.ConvertWorkers != nil && !save(a.deps.Settings.Set(ctx, "convert_workers", *req.ConvertWorkers)) {
+		return
+	}
+	if req.ConvertScanAt != nil && !save(a.deps.Settings.Set(ctx, "convert_scan_at", *req.ConvertScanAt)) {
 		return
 	}
 	if req.ConvertSweepStart != nil && !save(a.deps.Settings.Set(ctx, "convert_sweep_start", *req.ConvertSweepStart)) {

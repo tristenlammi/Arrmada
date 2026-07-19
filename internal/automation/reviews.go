@@ -237,6 +237,7 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 			return fmt.Errorf("no episode files could be imported into %q", s.Title)
 		}
 		c.series.AddEvent(ctx, s.ID, "imported", fmt.Sprintf("Imported %d episode%s from review: %s", n, plural(n), r.Name))
+		c.seriesImported(ctx, s.ID)
 	case "movie":
 		if c.movies == nil {
 			return fmt.Errorf("movies module unavailable")

@@ -301,6 +301,7 @@ export interface AppSettings {
   convert_min_ssim: string;
   convert_workers: string;
   convert_sweep_start: string;
+  convert_scan_at: string;
   convert_sweep_end: string;
   convert_max_failures: string;
   convert_scratch_dir: string;
@@ -654,6 +655,17 @@ export interface ConvertMediaInfo {
   container: string; video_codec: string; width: number; height: number; resolution: string; hdr: string;
   bitrate_kbps: number; frame_rate: number; duration_sec: number; size_bytes: number; audio_tracks: number; sub_tracks: number; ten_bit: boolean;
 }
+export interface ConvertSeriesRollup {
+  series_id: number;
+  title: string;
+  year?: number;
+  poster_url?: string;
+  files: number;
+  convertible: number;
+  total_bytes: number;
+  est_bytes: number;
+}
+
 export interface ConvertCandidate { kind: "movie" | "episode"; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; year?: number; poster_url?: string; path: string; info?: ConvertMediaInfo; candidate: boolean; est_bytes: number }
 export interface ConvertSample { movie_id: number; title: string; src_bytes: number; est_bytes: number; percent: number; sample_sec: number }
 export interface ConvertJob { id: number; kind?: string; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; state: string; progress: number; fps: number; speed_x: number; duration_sec?: number; encoder: string; src_bytes: number; out_bytes: number; note?: string }
@@ -1042,7 +1054,13 @@ export const api = {
   // Convert
   convertHardware: () => req<{ encoders: ConvertEncoder[]; selected: ConvertEncoder; reclaimed_bytes: number; scratch_dir: string; scratch_free_bytes: number; render_devices: { path: string; pci: string; vendor: string }[]; vaapi_device: string }>("/api/v1/convert/hardware"),
   convertSweep: () => req<{ status: string }>("/api/v1/convert/sweep", { method: "POST" }),
-  convertLibrary: (media: "movies" | "tv" = "movies") => req<{ items: ConvertCandidate[] }>(`/api/v1/convert/library${media === "tv" ? "?media=tv" : ""}`).then((r) => r.items),
+  convertLibrary: (media: "movies" | "tv" = "movies", seriesID?: number) =>
+    req<{ items: ConvertCandidate[] }>(`/api/v1/convert/library${media === "tv" ? `?media=tv&series=${seriesID}` : ""}`).then((r) => r.items),
+  // The TV tab lists shows, not episodes — one roll-up row per series keeps the payload
+  // small no matter how many episodes the library holds.
+  convertLibrarySeries: () => req<{ series: ConvertSeriesRollup[] }>("/api/v1/convert/library?media=tv").then((r) => r.series),
+  convertSeries: (seriesID: number, season?: number) =>
+    req<{ queued: number }>(`/api/v1/convert/series/${seriesID}${season === undefined ? "" : `?season=${season}`}`, { method: "POST" }),
   convertJobs: () => req<{ jobs: ConvertJob[] }>("/api/v1/convert/jobs").then((r) => r.jobs),
   convertLogs: () => req<{ lines: { at: number; level: string; msg: string }[] }>("/api/v1/convert/logs").then((r) => r.lines),
   convertMovie: (id: number) => req<ConvertJob>(`/api/v1/convert/movies/${id}`, { method: "POST" }),

@@ -46,28 +46,77 @@ func (a *api) handleConvertSweep(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "converting"})
 }
 
-// handleConvertLibrary probes the library and returns each file's spec + convert candidacy.
-// ?media=tv returns TV episodes; anything else (default) returns movies.
+// handleConvertLibrary returns each library file's spec + convert candidacy, read from the
+// persisted index (migration 0058) rather than scanned per request.
+//
+//	?media=tv               → per-series roll-up (a few dozen rows, not thousands)
+//	?media=tv&series=<id>   → that show's episodes
+//	(default)               → movies
 func (a *api) handleConvertLibrary(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
-	defer cancel()
+	ctx := r.Context()
+	if r.URL.Query().Get("media") == "tv" {
+		// A bare TV request gets the roll-up. Returning every episode is what made this
+		// tab unusable, so the flat list is only ever served for one series at a time.
+		if raw := r.URL.Query().Get("series"); raw == "" {
+			rollup, err := a.deps.Convert.LibraryTVSeries(ctx)
+			if err != nil {
+				a.writeError(w, http.StatusInternalServerError, "could not read library index")
+				return
+			}
+			if rollup == nil {
+				rollup = []convert.SeriesRollup{}
+			}
+			a.writeJSON(w, http.StatusOK, map[string]any{"series": rollup})
+			return
+		}
+	}
+
 	var (
 		list []convert.Candidate
 		err  error
 	)
 	if r.URL.Query().Get("media") == "tv" {
-		list, err = a.deps.Convert.LibraryTV(ctx)
+		seriesID, parseErr := strconv.ParseInt(r.URL.Query().Get("series"), 10, 64)
+		if parseErr != nil || seriesID <= 0 {
+			a.writeError(w, http.StatusBadRequest, "invalid series id")
+			return
+		}
+		list, err = a.deps.Convert.LibraryTV(ctx, seriesID)
 	} else {
 		list, err = a.deps.Convert.Library(ctx)
 	}
 	if err != nil {
-		a.writeError(w, http.StatusInternalServerError, "could not scan library")
+		a.writeError(w, http.StatusInternalServerError, "could not read library index")
 		return
 	}
 	if list == nil {
 		list = []convert.Candidate{}
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"items": list})
+}
+
+// handleConvertSeries queues every convertible episode of a series, or of one season when
+// ?season= is given. The response reports how many were queued so the UI can confirm.
+func (a *api) handleConvertSeries(w http.ResponseWriter, r *http.Request) {
+	seriesID, ok := a.pathValueID(w, r, "series")
+	if !ok {
+		return
+	}
+	season := -1 // -1 = the whole series
+	if raw := r.URL.Query().Get("season"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			a.writeError(w, http.StatusBadRequest, "invalid season")
+			return
+		}
+		season = n
+	}
+	n, err := a.deps.Convert.QueueSeries(r.Context(), seriesID, season)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not queue conversions")
+		return
+	}
+	a.writeJSON(w, http.StatusAccepted, map[string]any{"queued": n})
 }
 
 // handleConvertEpisode queues a Save-space conversion for one TV episode.

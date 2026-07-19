@@ -1,0 +1,410 @@
+package convert
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+)
+
+// libraryIndex is the persisted answer to "what's in the library and what codec is it".
+// Listing reads this table instead of walking the library and probing per request — see
+// migration 0058 for why.
+type libraryIndex struct{ db *sql.DB }
+
+// indexRow is one indexed file.
+type indexRow struct {
+	Path      string
+	MediaType string // "movie" | "episode"
+	MovieID   int64
+	SeriesID  int64
+	Season    int
+	Episode   int
+	Title     string
+	Year      int
+	PosterURL string
+	SizeBytes int64
+	Codec     string
+	Info      *MediaInfo
+}
+
+// sizesFor returns path → indexed size for a scope, so the indexer can spot unchanged
+// files without touching the filesystem. seriesID 0 with movies=false means everything.
+func (ix *libraryIndex) sizesFor(ctx context.Context, mediaType string, seriesID int64) map[string]int64 {
+	q := `SELECT path, size_bytes FROM convert_library WHERE media_type = ?`
+	args := []any{mediaType}
+	if seriesID > 0 {
+		q += ` AND series_id = ?`
+		args = append(args, seriesID)
+	}
+	rows, err := ix.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return map[string]int64{}
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var p string
+		var n int64
+		if rows.Scan(&p, &n) == nil {
+			out[p] = n
+		}
+	}
+	return out
+}
+
+func (ix *libraryIndex) upsert(ctx context.Context, r indexRow) error {
+	var infoJSON string
+	if r.Info != nil {
+		if b, err := json.Marshal(r.Info); err == nil {
+			infoJSON = string(b)
+		}
+	}
+	_, err := ix.db.ExecContext(ctx,
+		`INSERT INTO convert_library
+		   (path, media_type, movie_id, series_id, season, episode, title, year, poster_url,
+		    size_bytes, video_codec, info_json, indexed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		 ON CONFLICT(path) DO UPDATE SET
+		   media_type = excluded.media_type, movie_id = excluded.movie_id,
+		   series_id = excluded.series_id, season = excluded.season, episode = excluded.episode,
+		   title = excluded.title, year = excluded.year, poster_url = excluded.poster_url,
+		   size_bytes = excluded.size_bytes, video_codec = excluded.video_codec,
+		   info_json = excluded.info_json, indexed_at = datetime('now')`,
+		r.Path, r.MediaType, r.MovieID, r.SeriesID, r.Season, r.Episode, r.Title, r.Year,
+		r.PosterURL, r.SizeBytes, r.Codec, infoJSON)
+	return err
+}
+
+// prune drops indexed rows for files no longer in the library (deleted, or replaced by a
+// different path), scoped the same way as sizesFor.
+func (ix *libraryIndex) prune(ctx context.Context, mediaType string, seriesID int64, keep map[string]bool) {
+	for path := range ix.sizesFor(ctx, mediaType, seriesID) {
+		if keep[path] {
+			continue
+		}
+		_, _ = ix.db.ExecContext(ctx, `DELETE FROM convert_library WHERE path = ?`, path)
+	}
+}
+
+// IndexSeries reindexes one series' episodes. Called after an import so the Convert
+// library reflects new files immediately, without re-walking the whole library.
+func (s *Service) IndexSeries(ctx context.Context, seriesID int64) error {
+	if s.series == nil || s.index == nil {
+		return nil
+	}
+	full, err := s.series.Get(ctx, seriesID)
+	if err != nil {
+		return err
+	}
+	known := s.index.sizesFor(ctx, "episode", seriesID)
+	keep := map[string]bool{}
+	for _, sn := range full.Seasons {
+		for _, e := range sn.Episodes {
+			if !e.HasFile || e.FilePath == "" {
+				continue
+			}
+			keep[e.FilePath] = true
+			// The episode row already carries the file size, so an unchanged file needs
+			// no stat and no probe — the whole point of the index on a spun-down array.
+			if size, ok := known[e.FilePath]; ok && size == e.SizeBytes && e.SizeBytes > 0 {
+				continue
+			}
+			row := indexRow{
+				Path: e.FilePath, MediaType: "episode", SeriesID: full.ID,
+				Season: e.SeasonNumber, Episode: e.EpisodeNumber,
+				Title:     fmt.Sprintf("%s - S%02dE%02d", full.Title, e.SeasonNumber, e.EpisodeNumber),
+				Year:      full.Year,
+				PosterURL: full.PosterURL,
+				SizeBytes: e.SizeBytes,
+			}
+			if mi, err := s.probeCached(ctx, e.FilePath); err == nil {
+				row.Info, row.Codec = mi, mi.VideoCodec
+				if row.SizeBytes == 0 {
+					row.SizeBytes = mi.SizeBytes
+				}
+			}
+			if err := s.index.upsert(ctx, row); err != nil {
+				s.log.Warn("convert: index episode failed", "path", e.FilePath, "err", err)
+			}
+		}
+	}
+	s.index.prune(ctx, "episode", seriesID, keep)
+	return nil
+}
+
+// IndexMovie reindexes one movie.
+func (s *Service) IndexMovie(ctx context.Context, movieID int64) error {
+	if s.movies == nil || s.index == nil {
+		return nil
+	}
+	m, err := s.movies.Get(ctx, movieID)
+	if err != nil {
+		return err
+	}
+	if !m.HasFile || m.MovieFilePath == "" {
+		return nil
+	}
+	row := indexRow{
+		Path: m.MovieFilePath, MediaType: "movie", MovieID: m.ID,
+		Title: m.Title, Year: m.Year, PosterURL: m.PosterURL,
+	}
+	if mi, err := s.probeCached(ctx, m.MovieFilePath); err == nil {
+		row.Info, row.Codec, row.SizeBytes = mi, mi.VideoCodec, mi.SizeBytes
+	}
+	return s.index.upsert(ctx, row)
+}
+
+// IndexAll refreshes the whole index — the daily sweep. Incremental: files whose
+// recorded size still matches the index are skipped without a stat or a probe, so a
+// steady library costs almost nothing and the array stays asleep.
+func (s *Service) IndexAll(ctx context.Context) {
+	if s.index == nil {
+		return
+	}
+	started := time.Now()
+
+	if s.movies != nil {
+		if list, err := s.movies.List(ctx); err == nil {
+			known := s.index.sizesFor(ctx, "movie", 0)
+			keep := map[string]bool{}
+			for _, m := range list {
+				if ctx.Err() != nil {
+					return
+				}
+				if !m.HasFile || m.MovieFilePath == "" {
+					continue
+				}
+				keep[m.MovieFilePath] = true
+				if _, ok := known[m.MovieFilePath]; ok {
+					continue // already indexed; a changed movie file is re-indexed on import
+				}
+				if err := s.IndexMovie(ctx, m.ID); err != nil {
+					s.log.Warn("convert: index movie failed", "movie", m.Title, "err", err)
+				}
+			}
+			s.index.prune(ctx, "movie", 0, keep)
+		}
+	}
+
+	if s.series != nil {
+		if list, err := s.series.List(ctx); err == nil {
+			for _, sm := range list {
+				if ctx.Err() != nil {
+					return
+				}
+				if err := s.IndexSeries(ctx, sm.ID); err != nil {
+					s.log.Warn("convert: index series failed", "series", sm.Title, "err", err)
+				}
+			}
+		}
+	}
+	s.log.Info("convert: library index refreshed", "took", time.Since(started).Round(time.Second).String())
+}
+
+// MaybeIndexSweep is the scheduler entry point. It ticks often but only sweeps once a day,
+// at the admin-configured time (Settings → Convert, default 03:00), so the array isn't
+// woken at an arbitrary hour. Imports keep the index fresh in between — this only catches
+// changes made outside Arrmada.
+func (s *Service) MaybeIndexSweep(ctx context.Context) {
+	if s.index == nil {
+		return
+	}
+	s.indexMu.Lock()
+	defer s.indexMu.Unlock()
+
+	now := time.Now()
+	if !s.lastSweep.IsZero() && now.Sub(s.lastSweep) < 20*time.Hour {
+		return
+	}
+	at := strings.TrimSpace(s.settings.Get(ctx, keyScanAt, defaultScanAt))
+	hh, mm, ok := parseHHMM(at)
+	if !ok {
+		hh, mm, _ = parseHHMM(defaultScanAt)
+	}
+	// Run once we're inside the configured hour. Startup does its own IndexAll, so this
+	// is purely the recurring daily pass — there's no need to catch up on boot.
+	if now.Hour() != hh || now.Minute() < mm {
+		return
+	}
+	s.lastSweep = now
+	s.IndexAll(ctx)
+}
+
+// parseHHMM parses "HH:MM".
+func parseHHMM(v string) (hour, minute int, ok bool) {
+	parts := strings.SplitN(v, ":", 2)
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	h, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+	m, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err1 != nil || err2 != nil || h < 0 || h > 23 || m < 0 || m > 59 {
+		return 0, 0, false
+	}
+	return h, m, true
+}
+
+// SeriesRollup is one row of the Convert → TV Shows list: a whole show summarized, so the
+// tab renders a few dozen rows instead of thousands of episodes.
+type SeriesRollup struct {
+	SeriesID    int64  `json:"series_id"`
+	Title       string `json:"title"`
+	Year        int    `json:"year,omitempty"`
+	PosterURL   string `json:"poster_url,omitempty"`
+	Files       int    `json:"files"`
+	Convertible int    `json:"convertible"`
+	TotalBytes  int64  `json:"total_bytes"`
+	EstBytes    int64  `json:"est_bytes"` // estimated size of the convertible files after conversion
+}
+
+// LibraryTVSeries returns the per-series roll-up for the TV tab — one grouped query over
+// the index, no per-episode work.
+func (s *Service) LibraryTVSeries(ctx context.Context) ([]SeriesRollup, error) {
+	if s.index == nil {
+		return nil, nil
+	}
+	dp := s.defaultPlan(ctx)
+	target := s.targetCodec(ctx)
+
+	// One sequential scan of the index, aggregated in Go. Aggregating here rather than
+	// in SQL is what lets the estimated saving use the same estimatePlanSize the detail
+	// view does — and it's still one query with no filesystem access, which was the
+	// actual cost. Only the aggregate crosses the wire.
+	rows, err := s.index.db.QueryContext(ctx,
+		`SELECT series_id, size_bytes, video_codec, info_json
+		   FROM convert_library WHERE media_type = 'episode'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	agg := map[int64]*SeriesRollup{}
+	for rows.Next() {
+		var id, size int64
+		var codec, infoJSON string
+		if err := rows.Scan(&id, &size, &codec, &infoJSON); err != nil {
+			return nil, err
+		}
+		r := agg[id]
+		if r == nil {
+			r = &SeriesRollup{SeriesID: id}
+			agg[id] = r
+		}
+		r.Files++
+		r.TotalBytes += size
+		if codec != "" && !strings.EqualFold(codec, target) {
+			r.Convertible++
+			if infoJSON != "" {
+				var mi MediaInfo
+				if json.Unmarshal([]byte(infoJSON), &mi) == nil {
+					r.EstBytes += estimatePlanSize(&mi, dp)
+				}
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// The index stores per-episode display titles ("Show - S01E02"), so take show names
+	// from one series.List rather than parsing them back out or fetching per series.
+	out := []SeriesRollup{}
+	if s.series != nil {
+		list, err := s.series.List(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, sm := range list {
+			r := agg[sm.ID]
+			if r == nil || r.Files == 0 {
+				continue
+			}
+			r.Title, r.Year, r.PosterURL = sm.Title, sm.Year, sm.PosterURL
+			out = append(out, *r)
+		}
+	}
+	return out, nil
+}
+
+// QueueSeries enqueues every convertible episode of a series — or of one season when
+// season >= 0 — and returns how many were queued. Episodes already in the target codec
+// are skipped, so re-running it is harmless.
+func (s *Service) QueueSeries(ctx context.Context, seriesID int64, season int) (int, error) {
+	eps, err := s.indexedCandidates(ctx, "episode", seriesID)
+	if err != nil {
+		return 0, err
+	}
+	queued := 0
+	for _, c := range eps {
+		if !c.Candidate {
+			continue
+		}
+		if season >= 0 && c.Season != season {
+			continue
+		}
+		if _, err := s.QueueEpisode(ctx, c.SeriesID, c.Season, c.Episode); err != nil {
+			s.log.Warn("convert: queue episode failed",
+				"series", seriesID, "season", c.Season, "episode", c.Episode, "err", err)
+			continue
+		}
+		queued++
+	}
+	return queued, nil
+}
+
+// indexedCandidates reads the index and shapes it into the list the UI consumes.
+// One query — no filesystem access, no probing. seriesID > 0 narrows to a single show.
+func (s *Service) indexedCandidates(ctx context.Context, mediaType string, seriesID int64) ([]Candidate, error) {
+	if s.index == nil {
+		return nil, nil
+	}
+	q := `SELECT path, media_type, movie_id, series_id, season, episode, title, year,
+	             poster_url, size_bytes, video_codec, info_json
+	      FROM convert_library WHERE media_type = ?`
+	args := []any{mediaType}
+	if seriesID > 0 {
+		q += ` AND series_id = ?`
+		args = append(args, seriesID)
+	}
+	q += ` ORDER BY title, season, episode`
+	rows, err := s.index.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	dp := s.defaultPlan(ctx)
+	target := s.targetCodec(ctx)
+	var out []Candidate
+	for rows.Next() {
+		var r indexRow
+		var infoJSON string
+		if err := rows.Scan(&r.Path, &r.MediaType, &r.MovieID, &r.SeriesID, &r.Season, &r.Episode,
+			&r.Title, &r.Year, &r.PosterURL, &r.SizeBytes, &r.Codec, &infoJSON); err != nil {
+			return nil, err
+		}
+		c := Candidate{
+			Kind: r.MediaType, MovieID: r.MovieID, SeriesID: r.SeriesID,
+			Season: r.Season, Episode: r.Episode, Title: r.Title, Year: r.Year,
+			PosterURL: r.PosterURL, Path: r.Path,
+		}
+		if infoJSON != "" {
+			var mi MediaInfo
+			if json.Unmarshal([]byte(infoJSON), &mi) == nil {
+				c.Info = &mi
+				// Candidacy is derived here, not stored — changing the target codec
+				// takes effect immediately with no reindex.
+				c.Candidate = isCandidateFor(&mi, target)
+				if c.Candidate {
+					c.EstBytes = estimatePlanSize(&mi, dp)
+				}
+			}
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}

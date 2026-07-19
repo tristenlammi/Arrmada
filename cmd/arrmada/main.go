@@ -348,8 +348,26 @@ func main() {
 	convertSvc := convert.NewService(st.DB(), movieSvc, seriesSvc, settingsSvc, "ffmpeg", "ffprobe", convertScratch, recycleDir, log)
 	go convertSvc.Run(runCtx)
 	// Warm the probe cache off the request path so the first Convert page load after
-	// a restart is instant instead of re-analyzing the whole library.
-	go convertSvc.WarmCache(runCtx)
+	// a restart is instant instead of re-analyzing the whole library, then build the
+	// library index the Convert list reads (both are incremental — see migration 0058).
+	go func() {
+		convertSvc.WarmCache(runCtx)
+		convertSvc.IndexAll(runCtx)
+	}()
+	// Keep the Convert library index current. Imports reindex just their own series, so
+	// this only catches changes made outside Arrmada; it ticks hourly but sweeps once a
+	// day at the admin-configured time (Settings → Convert).
+	sched.Register("convert-index", time.Hour, false, func(ctx context.Context) error {
+		convertSvc.MaybeIndexSweep(ctx)
+		return nil
+	})
+	// A finished import reindexes only that show, so a new episode is convertible
+	// immediately without re-walking the whole library.
+	coordinator.SetSeriesImportedHook(func(ctx context.Context, seriesID int64) {
+		if err := convertSvc.IndexSeries(ctx, seriesID); err != nil {
+			log.Warn("convert: reindex after import failed", "series_id", seriesID, "err", err)
+		}
+	})
 	// Nightly sweep: run auto-enabled convert rules.
 	sched.Register("convert-sweep", 12*time.Hour, false, func(ctx context.Context) error {
 		convertSvc.Sweep(ctx)

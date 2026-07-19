@@ -37,7 +37,13 @@ const (
 	keyMaxFailures    = "convert_max_failures"     // blocklist a movie after this many convert failures
 	keyScratchDir     = "convert_scratch_dir"      // transcode working dir override (empty = the startup default)
 	keyVaapiDevice    = "convert_vaapi_device"     // which /dev/dri/renderD* VAAPI encodes on (empty = default)
+	keyScanAt         = "convert_scan_at"          // "HH:MM" — when the daily library index sweep runs
 )
+
+// defaultScanAt is when the daily index sweep runs if the admin hasn't picked a time.
+// Pre-dawn by default: the sweep only touches new or changed files, but on a big first
+// run it can wake the array, so keep it away from prime viewing hours.
+const defaultScanAt = "03:00"
 
 // qualityRetries is how many times the quality gate re-encodes at a higher quality before
 // giving up and keeping the original.
@@ -96,6 +102,10 @@ type Service struct {
 	encoder  Encoder
 	failures *failureStore // quarantine blocklist (repeated-failure tracking)
 	cache    *probeCache   // persisted ffprobe results (avoids re-analyzing on restart)
+	index    *libraryIndex // persisted per-file library facts; what the library list reads
+
+	indexMu   sync.Mutex // serializes index sweeps so a scheduled one can't overlap an import-triggered one
+	lastSweep time.Time
 
 	mu       sync.Mutex
 	reclaimMu sync.Mutex // guards the reclaimed-bytes read-modify-write across workers
@@ -151,7 +161,7 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 		movies: mv, series: sr, settings: set, log: log,
 		ffmpeg: ffmpeg, ffprobe: ffprobe, scratchDir: scratchDir, recycleDir: recycleDir,
 		encoders: encs, encoder: bestHEVC(encs), failures: &failureStore{db: db},
-		cache: &probeCache{db: db}, logs: &logStore{db: db},
+		cache: &probeCache{db: db}, logs: &logStore{db: db}, index: &libraryIndex{db: db},
 		queue: make(chan *Job, 256),
 	}
 	s.logBuf = s.logs.recent(context.Background(), maxLogLines) // restore the console after a restart
@@ -310,75 +320,19 @@ type Candidate struct {
 	EstBytes  int64 `json:"est_bytes"` // rough estimate of converted size
 }
 
-// Library probes every downloaded movie and returns its spec + convert candidacy.
+// Library returns every downloaded movie with its spec + convert candidacy.
+//
+// Reads the persisted index (migration 0058) rather than walking the library and probing
+// per request, so this is one query with no filesystem access.
 func (s *Service) Library(ctx context.Context) ([]Candidate, error) {
-	list, err := s.movies.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	dp := s.defaultPlan(ctx)
-	target := s.targetCodec(ctx)
-	var out []Candidate
-	for _, m := range list {
-		if !m.HasFile || m.MovieFilePath == "" {
-			continue
-		}
-		c := Candidate{Kind: "movie", MovieID: m.ID, Title: m.Title, Year: m.Year, PosterURL: m.PosterURL, Path: m.MovieFilePath}
-		if mi, err := s.probeCached(ctx, m.MovieFilePath); err == nil {
-			c.Info = mi
-			c.Candidate = isCandidateFor(mi, target)
-			if c.Candidate {
-				c.EstBytes = estimatePlanSize(mi, dp) // plan-aware estimate
-			}
-		}
-		out = append(out, c)
-	}
-	return out, nil
+	return s.indexedCandidates(ctx, "movie", 0)
 }
 
-// LibraryTV probes every downloaded TV episode and returns its spec + convert
-// candidacy — the TV Shows tab of Convert → Library. Uses the same cached probe
-// path as the movie scan, so it only re-analyzes new or changed files.
-func (s *Service) LibraryTV(ctx context.Context) ([]Candidate, error) {
-	if s.series == nil {
-		return nil, nil
-	}
-	list, err := s.series.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	dp := s.defaultPlan(ctx)
-	target := s.targetCodec(ctx)
-	var out []Candidate
-	for _, sm := range list {
-		full, err := s.series.Get(ctx, sm.ID)
-		if err != nil {
-			continue
-		}
-		for _, sn := range full.Seasons {
-			for _, e := range sn.Episodes {
-				if !e.HasFile || e.FilePath == "" {
-					continue
-				}
-				c := Candidate{
-					Kind: "episode", SeriesID: full.ID, Season: e.SeasonNumber, Episode: e.EpisodeNumber,
-					Title:     fmt.Sprintf("%s - S%02dE%02d", full.Title, e.SeasonNumber, e.EpisodeNumber),
-					Year:      full.Year,
-					PosterURL: full.PosterURL,
-					Path:      e.FilePath,
-				}
-				if mi, err := s.probeCached(ctx, e.FilePath); err == nil {
-					c.Info = mi
-					c.Candidate = isCandidateFor(mi, target)
-					if c.Candidate {
-						c.EstBytes = estimatePlanSize(mi, dp)
-					}
-				}
-				out = append(out, c)
-			}
-		}
-	}
-	return out, nil
+// LibraryTV returns every downloaded TV episode with its spec + convert candidacy,
+// reading the same persisted index as Library. Pass seriesID > 0 to scope to one show —
+// that's what keeps the TV tab responsive at library scale.
+func (s *Service) LibraryTV(ctx context.Context, seriesID int64) ([]Candidate, error) {
+	return s.indexedCandidates(ctx, "episode", seriesID)
 }
 
 // QueueMovie enqueues a Save-space conversion of a movie (using the default plan built from
@@ -634,7 +588,7 @@ func (s *Service) ConvertAll(ctx context.Context) (int, error) {
 		}
 	}
 
-	tv, err := s.LibraryTV(ctx)
+	tv, err := s.LibraryTV(ctx, 0)
 	if err == nil {
 		for _, c := range tv {
 			if !c.Candidate {
