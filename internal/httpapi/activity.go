@@ -200,9 +200,10 @@ func movieInQueue(queue []download.Item, m movies.Movie) bool {
 	return false
 }
 
+// normKey folds accents and keeps alphanumerics, so "Pokémon" matches "Pokemon".
 func normKey(s string) string {
 	var b strings.Builder
-	for _, r := range strings.ToLower(s) {
+	for _, r := range strings.ToLower(parser.FoldAccents(s)) {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			b.WriteRune(r)
 		}

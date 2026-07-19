@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/flaresolverr"
+	"github.com/tristenlammi/arrmada/internal/parser"
 )
 
 // Service manages configured indexers and runs aggregated searches across them.
@@ -175,6 +176,11 @@ func (s *Service) Recent(ctx context.Context, limit int) (SearchResult, error) {
 // Search queries every enabled indexer concurrently and merges the results,
 // ranked by seeders (desc) then indexer priority.
 func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, error) {
+	// Releases are named in ASCII, so a title carrying diacritics ("Pokémon Heroes")
+	// finds nothing until it's folded ("Pokemon Heroes"). Done here so every caller —
+	// movies, series, books — benefits.
+	q.Text = parser.FoldAccents(q.Text)
+
 	indexers, err := s.repo.ListEnabled(ctx)
 	if err != nil {
 		return SearchResult{}, err

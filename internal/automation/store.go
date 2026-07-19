@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"strings"
 	"unicode"
+
+	"github.com/tristenlammi/arrmada/internal/parser"
 )
 
 // BlockEntry is a blocklisted release for a movie.
@@ -267,10 +269,11 @@ func (c *Coordinator) markSeriesGrabsImported(ctx context.Context, seriesID int6
 	_, _ = c.db.ExecContext(ctx, `UPDATE grabs SET status = 'imported' WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'series'`, seriesID)
 }
 
-// normTitle normalizes a release title for blocklist/matching comparisons.
+// normTitle normalizes a release title for blocklist/matching comparisons. Accents
+// are folded first so "Pokémon" and "Pokemon" compare equal.
 func normTitle(s string) string {
 	var b strings.Builder
-	for _, r := range strings.ToLower(s) {
+	for _, r := range strings.ToLower(parser.FoldAccents(s)) {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			b.WriteRune(r)
 		}

@@ -810,10 +810,11 @@ func (s *Service) EpisodeTitleByName(ctx context.Context, seriesTitle string, ye
 	return s.repo.EpisodeTitle(ctx, sr.ID, season, episode)
 }
 
-// normKey lowercases and keeps only alphanumerics — for tolerant title matching.
+// normKey folds accents, lowercases, and keeps only alphanumerics — for tolerant title
+// matching, so "Pokémon" and "Pokemon" resolve to the same key.
 func normKey(str string) string {
 	var b []rune
-	for _, r := range str {
+	for _, r := range parser.FoldAccents(str) {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
 			if r >= 'A' && r <= 'Z' {
 				r += 32
