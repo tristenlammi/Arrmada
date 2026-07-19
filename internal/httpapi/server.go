@@ -405,14 +405,11 @@ func boolStatus(ok bool) string {
 }
 
 func (a *api) handleStatus(w http.ResponseWriter, r *http.Request) {
-	// needs_setup lets the UI show first-run onboarding vs a login screen.
-	// When auth is disabled (local dev) there's nothing to set up.
+	// needs_setup lets the UI show first-run onboarding vs a login screen. Needs setup
+	// until an admin exists (a lone requester shouldn't block bootstrap).
 	needsSetup := false
-	if a.deps.Config.AuthEnabled {
-		// Needs setup until an admin exists (a lone requester shouldn't block bootstrap).
-		if n, err := a.deps.Auth.CountAdmins(r.Context()); err == nil {
-			needsSetup = n == 0
-		}
+	if n, err := a.deps.Auth.CountAdmins(r.Context()); err == nil {
+		needsSetup = n == 0
 	}
 	_, authed := userFrom(r)
 
@@ -422,7 +419,7 @@ func (a *api) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"commit":         buildinfo.Commit,
 		"started_at":     a.start.UTC().Format(time.RFC3339),
 		"uptime_seconds": int(time.Since(a.start).Seconds()),
-		"auth_enabled":   a.deps.Config.AuthEnabled,
+		"auth_enabled":   true, // always enforced; kept in the payload for the UI/API
 		"needs_setup":    needsSetup,
 		"authenticated":  authed,
 		"plex_login":     a.deps.Settings.GetBool(r.Context(), "plex_login_enabled", false),

@@ -105,7 +105,6 @@ if [ ! -f .env ]; then
     say "ARRMADA_QBIT_WEBUI_PORT=$QBWEB"
     say "ARRMADA_PROWLARR_PORT=$PROWPORT"
     say "ARRMADA_QBIT_PORT=$BTPORT"
-    say "ARRMADA_AUTH_ENABLED=true"
     say ""
     say "# Run as this user/group (auto-detected from your media folder / platform)."
     say "ARRMADA_PUID=$PUID"

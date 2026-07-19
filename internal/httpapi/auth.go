@@ -27,21 +27,10 @@ func userFrom(r *http.Request) (*auth.User, bool) {
 
 // authenticate resolves the current user from a session cookie or API key and
 // stashes it in the request context. It never rejects — enforcement is the job
-// of protected/requireRole.
-// localAdmin is the synthetic identity every request runs as when auth is
-// disabled (local development).
-func localAdmin() *auth.User {
-	return &auth.User{ID: 0, Username: "local-dev", Role: auth.RoleAdmin, AutoApprove: true}
-}
-
+// of protected/requireRole. Authentication is always enforced: there is no
+// "local development" bypass, so a LAN-reachable instance is never wide open.
 func (a *api) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Auth disabled: treat everyone as a local admin so protected routes work.
-		if !a.deps.Config.AuthEnabled {
-			next.ServeHTTP(w, withUser(r, localAdmin()))
-			return
-		}
-
 		var user *auth.User
 		if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
 			if u, err := a.deps.Auth.ValidateSession(r.Context(), c.Value); err == nil {

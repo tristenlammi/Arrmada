@@ -178,10 +178,6 @@ func main() {
 			log.Warn("could not reconcile qBittorrent queue limits")
 		}()
 	}
-	if !cfg.AuthEnabled {
-		log.Warn("authentication is DISABLED — every request runs as a local admin; set ARRMADA_AUTH_ENABLED=true before exposing to a network")
-	}
-
 	// The coordinator is the "add a movie and walk away" brain: it searches
 	// indexers for monitored-but-missing movies, ranks releases, grabs the best,
 	// and attaches finished imports back to the movie.

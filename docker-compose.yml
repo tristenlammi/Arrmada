@@ -14,9 +14,8 @@ services:
       # with Radarr's 7878 etc.). The app always listens on 7878 *inside* the container.
       - "${ARRMADA_PORT:-7878}:7878"
     environment:
-      # Login is on by default. Set ARRMADA_AUTH_ENABLED=false in .env only for a
-      # throwaway local instance. First launch shows a one-time "create admin" form.
-      ARRMADA_AUTH_ENABLED: "${ARRMADA_AUTH_ENABLED:-true}"
+      # Login is always required — there is no way to disable it. First launch shows a
+      # one-time "create admin" form.
       # A request carrying this header (a Cloudflare Tunnel / reverse proxy stamps
       # it) is treated as "outside the LAN" and limited to the Discover page.
       ARRMADA_EXTERNAL_HEADER: "${ARRMADA_EXTERNAL_HEADER:-Cf-Connecting-Ip}"

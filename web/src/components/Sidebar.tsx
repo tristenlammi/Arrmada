@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom";
 import { NAV } from "../lib/nav";
 import { useMe } from "../lib/me";
+import { api } from "../lib/api";
 import { FleetMark } from "./FleetMark";
 
 function toggleTheme() {
@@ -12,7 +13,11 @@ function toggleTheme() {
 }
 
 export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { booksEnabled, musicEnabled } = useMe();
+  const { user, booksEnabled, musicEnabled } = useMe();
+  const signOut = async () => {
+    try { await api.logout(); } catch { /* ignore — clearing the session locally is enough */ }
+    window.location.href = "/";
+  };
   // Hide nav entries for modules an admin has turned off.
   const nav = NAV.map((group) => ({
     ...group,
@@ -69,20 +74,33 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
         </nav>
 
         <div className="mt-auto flex items-center gap-2.5 p-3.5" style={{ borderTop: "1px solid var(--line)" }}>
-          <span className="grid h-[30px] w-[30px] place-items-center rounded-full bg-[#5f5142] text-xs font-bold text-white">T</span>
-          <div>
-            <div className="text-[12.5px] font-semibold">local-dev</div>
-            <div className="font-mono text-[10.5px] text-ink-faint">Admin</div>
+          <span className="grid h-[30px] w-[30px] flex-none place-items-center rounded-full bg-[#5f5142] text-xs font-bold text-white">
+            {(user?.username?.[0] ?? "?").toUpperCase()}
+          </span>
+          <div className="min-w-0">
+            <div className="truncate text-[12.5px] font-semibold" title={user?.username}>{user?.username ?? "…"}</div>
+            <div className="font-mono text-[10.5px] capitalize text-ink-faint">{user?.role ?? ""}</div>
           </div>
           <button
             onClick={toggleTheme}
             title="Toggle theme"
             aria-label="Toggle theme"
-            className="ml-auto grid h-[30px] w-[30px] place-items-center rounded-lg"
+            className="ml-auto grid h-[30px] w-[30px] flex-none place-items-center rounded-lg"
             style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}
           >
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
               <path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z" fill="currentColor" />
+            </svg>
+          </button>
+          <button
+            onClick={signOut}
+            title="Sign out"
+            aria-label="Sign out"
+            className="grid h-[30px] w-[30px] flex-none place-items-center rounded-lg"
+            style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--reject)" }}
+          >
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9" />
             </svg>
           </button>
         </div>
