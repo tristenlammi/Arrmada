@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/parser"
 )
 
@@ -160,19 +161,25 @@ func (c *Coordinator) recordGrab(ctx context.Context, movieID, versionID int64, 
 	}
 }
 
-// seedRules returns the seed policy of the named indexer (defaults to "don't
-// seed" if the indexer can't be found, so an unknown source isn't kept forever).
+// seedRules returns the seed policy of the named indexer.
+//
+// An unknown indexer must NOT mean "don't seed". A manual torrent upload is recorded
+// with indexer "manual", and an indexer can be renamed or removed after a grab — in
+// both cases the lookup misses. Returning seed-disabled made cleanup delete the torrent
+// AND its data the moment it imported, which is a hit-and-run on whatever private
+// tracker the file actually came from. Default to seeding for the standard window; the
+// user can still stop or delete it from the Downloads page.
 func (c *Coordinator) seedRules(ctx context.Context, name string) (enabled bool, ratio float64, hours int) {
 	idxs, err := c.indexers.List(ctx)
 	if err != nil {
-		return false, 0, 0
+		return true, 0, indexer.DefaultSeedHours
 	}
 	for _, ix := range idxs {
 		if ix.Name == name {
 			return ix.SeedEnabled, ix.SeedRatio, ix.SeedHours
 		}
 	}
-	return false, 0, 0
+	return true, 0, indexer.DefaultSeedHours
 }
 
 func boolToInt(b bool) int {

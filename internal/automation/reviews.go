@@ -296,6 +296,14 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		// higher resolution. Without this, two releases of the same episode (e.g. a 1080p
 		// and a 720p pack) supersede each other on every sweep, flooding the recycle bin.
 		if !c.series.WantsFile(ctx, s.ID, refs[0].Season, refs[0].Episode, rel.Resolution) {
+			// Say so. Without this a whole pack can resolve onto episodes that already
+			// have a file and be skipped in total silence — the download looks handled
+			// and nothing explains why nothing appeared. Includes what it resolved TO,
+			// which is what tells you a scene-season split was mapped wrongly.
+			c.log.Info("series import: skipping file — that episode already has an equal-or-better file",
+				"series", s.Title, "file", filepath.Base(v.Path),
+				"resolved_to", fmt.Sprintf("S%02dE%02d", refs[0].Season, refs[0].Episode),
+				"candidate_resolution", string(rel.Resolution))
 			continue
 		}
 		ei, ok, err := c.imp.ImportEpisodeInto(folder, s.Title, s.Year, v.Path)
