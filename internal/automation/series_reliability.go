@@ -3,7 +3,6 @@ package automation
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/download"
@@ -116,7 +115,7 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 	}
 	type have struct {
 		season, episode int
-		release         string // current filename — carries the quality tag we renamed to
+		release         string // the release it was imported from (NOT the renamed library file)
 		sizeGB          float64
 		runtimeMin      int // episode length, for the bitrate-based upgrade threshold
 	}
@@ -127,9 +126,18 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 		}
 		for _, e := range sn.Episodes {
 			if e.Monitored && e.HasFile && e.FilePath != "" {
+				// The baseline MUST be the release name, not the library filename. Library
+				// files are renamed to a scheme with no group/HDR/audio/codec tags, so they
+				// always score near zero — every candidate then looks like an upgrade, and
+				// after importing (and renaming back) the same release wins again on the
+				// next sweep. That was an unbounded re-download loop. No recorded release
+				// (imported before it was tracked) → skip rather than guess.
+				if e.SourceRelease == "" {
+					continue
+				}
 				// e.Runtime (episode minutes) drives the bitrate threshold; 0 (unknown)
 				// falls back to quality-only upgrades inside UpgradeCandidate.
-				haveEps = append(haveEps, have{e.SeasonNumber, e.EpisodeNumber, filepath.Base(e.FilePath), gbOf(e.SizeBytes), e.Runtime})
+				haveEps = append(haveEps, have{e.SeasonNumber, e.EpisodeNumber, e.SourceRelease, gbOf(e.SizeBytes), e.Runtime})
 			}
 		}
 	}

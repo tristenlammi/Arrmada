@@ -34,7 +34,7 @@ func TestSupersedeRecyclesOld(t *testing.T) {
 	if err := svc.MarkEpisodeImported(ctx, 1, 1, 1, oldF, 3); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.SupersedeEpisodeFile(ctx, 1, 1, 1, newF, 3); err != nil {
+	if err := svc.SupersedeEpisodeFile(ctx, 1, 1, 1, newF, 3, "Show.S01E01.1080p.BluRay.x264-GRP"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(oldF); !os.IsNotExist(err) {
@@ -45,7 +45,7 @@ func TestSupersedeRecyclesOld(t *testing.T) {
 	}
 	// Same path (in-place convert) must not delete the file.
 	os.WriteFile(newF, []byte("new"), 0o644)
-	if err := svc.SupersedeEpisodeFile(ctx, 1, 1, 1, newF, 3); err != nil {
+	if err := svc.SupersedeEpisodeFile(ctx, 1, 1, 1, newF, 3, "Show.S01E01.1080p.BluRay.x264-GRP"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(newF); err != nil {

@@ -724,7 +724,15 @@ func (s *Service) MarkEpisodeImported(ctx context.Context, seriesID int64, seaso
 // previous file when it lived at a DIFFERENT path — an upgrade (better quality) or a
 // naming change. Without this, the new file lands at a new name and the old one is
 // left orphaned on disk, so every upgrade/re-grab leaves a duplicate behind.
-func (s *Service) SupersedeEpisodeFile(ctx context.Context, seriesID int64, season, episode int, path string, size int64) error {
+// sourceRelease is the release name the file came from (e.g. the downloaded filename);
+// it's recorded so upgrade scoring has a faithful baseline. Pass "" when unknown (a
+// rescan of an existing library file) — the upgrade path skips episodes without one.
+func (s *Service) SupersedeEpisodeFile(ctx context.Context, seriesID int64, season, episode int, path string, size int64, sourceRelease string) error {
+	if sourceRelease != "" {
+		if err := s.repo.SetEpisodeSourceRelease(ctx, seriesID, season, episode, sourceRelease); err != nil {
+			s.log.Warn("series: record source release failed", "err", err)
+		}
+	}
 	if old, _ := s.repo.EpisodeFilePath(ctx, seriesID, season, episode); old != "" && old != path {
 		if _, err := os.Stat(old); err == nil {
 			if s.recycle != "" {
@@ -766,6 +774,12 @@ func (s *Service) AcquisitionSummary(ctx context.Context) []SeriesAcquisition {
 		return nil
 	}
 	return out
+}
+
+// HasWantedEpisodes reports whether the automation would actually grab anything for
+// this series (monitored + aired + no file) — used to skip a pointless indexer search.
+func (s *Service) HasWantedEpisodes(ctx context.Context, seriesID int64) bool {
+	return s.repo.HasWantedEpisodes(ctx, seriesID)
 }
 
 // SeasonHasMissing reports whether the covered season still has an aired, monitored

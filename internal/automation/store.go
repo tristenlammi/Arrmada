@@ -264,9 +264,34 @@ func (c *Coordinator) markGrabsImportedForMovie(ctx context.Context, movieID int
 	_, _ = c.db.ExecContext(ctx, `UPDATE grabs SET status = 'imported' WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'movie'`, movieID)
 }
 
-// markSeriesGrabsImported flips a series' pending grabs to imported (episodes landed).
-func (c *Coordinator) markSeriesGrabsImported(ctx context.Context, seriesID int64) {
-	_, _ = c.db.ExecContext(ctx, `UPDATE grabs SET status = 'imported' WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'series'`, seriesID)
+// markSeriesGrabImported flips the ONE grab this download came from to imported.
+//
+// It used to flip EVERY pending grab for the series, which marked sibling torrents as
+// imported before their data had landed. Seed cleanup only considers imported grabs, so
+// it would then remove those torrents WITH their data (the default seed policy deletes
+// data), the episodes stayed missing, and the next sweep re-grabbed them — a real
+// grab → delete → re-grab loop.
+func (c *Coordinator) markSeriesGrabImported(ctx context.Context, seriesID int64, releaseName string) {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT id, title FROM grabs WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'series'`, seriesID)
+	if err != nil {
+		return
+	}
+	want := normRelease(releaseName)
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		var title string
+		if rows.Scan(&id, &title) == nil && normRelease(title) == want {
+			ids = append(ids, id)
+		}
+	}
+	rows.Close() // close before writing — SQLite won't take a write while a read is open
+	for _, id := range ids {
+		if _, err := c.db.ExecContext(ctx, `UPDATE grabs SET status = 'imported' WHERE id = ?`, id); err != nil {
+			c.log.Warn("series: mark grab imported failed", "err", err)
+		}
+	}
 }
 
 // normTitle normalizes a release title for blocklist/matching comparisons. Accents

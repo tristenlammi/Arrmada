@@ -199,7 +199,7 @@ func (r *Repo) SeasonsFor(ctx context.Context, seriesID int64) ([]Season, error)
 		return nil, err
 	}
 	eps, err := r.db.QueryContext(ctx,
-		`SELECT id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored, has_file, file_path, size_bytes, absolute_number
+		`SELECT id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored, has_file, file_path, size_bytes, absolute_number, source_release
 		 FROM episodes WHERE series_id = ? ORDER BY season_number, episode_number`, seriesID)
 	if err != nil {
 		return seasons, nil
@@ -208,7 +208,7 @@ func (r *Repo) SeasonsFor(ctx context.Context, seriesID int64) ([]Season, error)
 	for eps.Next() {
 		var e Episode
 		var mon, hf int
-		if err := eps.Scan(&e.ID, &e.SeasonNumber, &e.EpisodeNumber, &e.Title, &e.Overview, &e.AirDate, &e.Runtime, &e.StillURL, &mon, &hf, &e.FilePath, &e.SizeBytes, &e.AbsoluteNumber); err != nil {
+		if err := eps.Scan(&e.ID, &e.SeasonNumber, &e.EpisodeNumber, &e.Title, &e.Overview, &e.AirDate, &e.Runtime, &e.StillURL, &mon, &hf, &e.FilePath, &e.SizeBytes, &e.AbsoluteNumber, &e.SourceRelease); err != nil {
 			return seasons, nil
 		}
 		e.Monitored, e.HasFile = mon != 0, hf != 0
@@ -326,6 +326,19 @@ func (r *Repo) SeasonHasMissing(ctx context.Context, seriesID int64, season int)
 	q += ` LIMIT 1`
 	var one int
 	err := r.db.QueryRowContext(ctx, q, args...).Scan(&one)
+	return err == nil && one == 1
+}
+
+// HasWantedEpisodes reports whether a series has an episode the automation would
+// actually grab: monitored, aired, and with no file. Mirrors wantedEpisodes' filter so
+// the missing-sweep can skip a series without spending an indexer search on it.
+func (r *Repo) HasWantedEpisodes(ctx context.Context, seriesID int64) bool {
+	var one int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT 1 FROM episodes
+		 WHERE series_id = ? AND monitored = 1 AND has_file = 0 AND season_number > 0
+		   AND (air_date = '' OR air_date <= date('now'))
+		 LIMIT 1`, seriesID).Scan(&one)
 	return err == nil && one == 1
 }
 
@@ -472,6 +485,15 @@ func (r *Repo) SetEpisodeFile(ctx context.Context, seriesID int64, season, episo
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE episodes SET has_file = 1, file_path = ?, size_bytes = ? WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
 		path, size, seriesID, season, episode)
+	return err
+}
+
+// SetEpisodeSourceRelease records the release name an episode's file was imported from.
+// Kept separate from SetEpisodeFile so path-only updates (rename, transcode) preserve it.
+func (r *Repo) SetEpisodeSourceRelease(ctx context.Context, seriesID int64, season, episode int, release string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE episodes SET source_release = ? WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
+		release, seriesID, season, episode)
 	return err
 }
 

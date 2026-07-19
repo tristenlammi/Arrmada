@@ -104,11 +104,16 @@ type Episode struct {
 	// AbsoluteNumber is the episode's 1..N position across the whole series
 	// (specials excluded), used to match anime releases numbered absolutely. 0 when
 	// unknown/not computed.
-	AbsoluteNumber int  `json:"absolute_number,omitempty"`
-	Monitored      bool `json:"monitored"`
-	HasFile       bool   `json:"has_file"`
-	FilePath      string `json:"file_path,omitempty"`
-	SizeBytes     int64  `json:"size_bytes,omitempty"`
+	AbsoluteNumber int    `json:"absolute_number,omitempty"`
+	Monitored      bool   `json:"monitored"`
+	HasFile        bool   `json:"has_file"`
+	FilePath       string `json:"file_path,omitempty"`
+	SizeBytes      int64  `json:"size_bytes,omitempty"`
+	// SourceRelease is the release name the file was imported from (e.g.
+	// "Show.S01E01.1080p.BluRay.x264-GRP"). The library filename is renamed and strips
+	// group/HDR/audio tags, so only this is a trustworthy baseline for upgrade scoring.
+	// Empty for files imported before it was recorded — those are skipped by upgrades.
+	SourceRelease string `json:"source_release,omitempty"`
 	// Download reflects an in-flight download for this episode (attached by the HTTP
 	// layer from the live queue; nil when nothing is downloading).
 	Download *EpisodeDownload `json:"download,omitempty"`

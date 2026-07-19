@@ -279,7 +279,7 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		// anime files resolve to their real episode (absolute/positional) first.
 		for _, ep := range episodesOf(ei) {
 			rs, re := c.series.ResolveEpisode(ctx, s.ID, ei.Season, ep)
-			if c.series.SupersedeEpisodeFile(ctx, s.ID, rs, re, ei.TargetPath, ei.SizeBytes) == nil {
+			if c.series.SupersedeEpisodeFile(ctx, s.ID, rs, re, ei.TargetPath, ei.SizeBytes, filepath.Base(ei.SourcePath)) == nil {
 				placed++
 			}
 		}
@@ -301,7 +301,7 @@ func (c *Coordinator) importAbsoluteEpisode(ctx context.Context, s series.Series
 		if err != nil || !ok || ei.Method == "already" {
 			continue
 		}
-		if c.series.SupersedeEpisodeFile(ctx, s.ID, ref.Season, ref.Episode, ei.TargetPath, ei.SizeBytes) == nil {
+		if c.series.SupersedeEpisodeFile(ctx, s.ID, ref.Season, ref.Episode, ei.TargetPath, ei.SizeBytes, filepath.Base(ei.SourcePath)) == nil {
 			n++
 		}
 	}

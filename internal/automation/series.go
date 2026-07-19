@@ -87,8 +87,23 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	// One queue read for the whole sweep: a series with a download already in flight is
+	// skipped, so we don't re-grab the same winner every tick while a pack downloads.
+	// (RSSSyncSeries and UpgradeSeries already do this; the missing sweep didn't.)
+	queue, qerr := c.downloads.Queue(ctx)
+	if qerr != nil {
+		queue = nil
+	}
 	for _, s := range all {
 		if !s.Monitored {
+			continue
+		}
+		if seriesDownloading(queue, s.Title) {
+			continue // already downloading something for this show — let it finish
+		}
+		// Cheap local check before spending an indexer search: a series with nothing
+		// grabbable shouldn't cost N queries every sweep, forever.
+		if !c.series.HasWantedEpisodes(ctx, s.ID) {
 			continue
 		}
 		if err := c.SearchSeriesNow(ctx, s.ID); err != nil {
@@ -156,9 +171,19 @@ func (c *Coordinator) grabSeriesFrom(ctx context.Context, s series.Series, relea
 		needed[k] = true
 	}
 	grabbed := map[string]bool{}
+	// grabbedGB tracks what this pass has already committed, so a series with many
+	// missing seasons can't queue past the free space by checking each pack against the
+	// same (pre-download) free-space reading.
+	grabbedGB := 0.0
 	grab := func(name string, label string) {
 		rel := byName[name]
 		if rel.DownloadURL == "" || grabbed[rel.DownloadURL] {
+			return
+		}
+		// Space guard — the movie path has had this; TV (where packs are far bigger) did not.
+		if !c.diskOKFor(grabbedGB + rel.SizeGB()) {
+			c.log.Warn("series: skipping grab — not enough free space in the downloads dir",
+				"series", s.Title, "release", rel.Title, "release_gb", rel.SizeGB(), "already_queued_gb", grabbedGB)
 			return
 		}
 		if err := c.grabTo(ctx, rel.Indexer, rel.DownloadURL, rel.Title, seriesCategory); err != nil {
@@ -166,6 +191,7 @@ func (c *Coordinator) grabSeriesFrom(ctx context.Context, s series.Series, relea
 			return
 		}
 		grabbed[rel.DownloadURL] = true
+		grabbedGB += rel.SizeGB()
 		c.recordSeriesGrab(ctx, s.ID, rel.Title, rel.Indexer, s.QualityProfile)
 		c.series.AddEvent(ctx, s.ID, "grabbed", label+": "+rel.Title+" · "+rel.Indexer)
 		c.log.Info("series: grabbing", "series", s.Title, "release", rel.Title, "tier", label)
@@ -405,7 +431,7 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			// present) — the download is handled, so drop it from the downloads view
 			// and stop re-scanning it.
 			c.recordImportedHash(ctx, it.Hash, it.Name, it.SizeBytes)
-			c.markSeriesGrabsImported(ctx, s.ID) // flip its grab to imported for seed cleanup
+			c.markSeriesGrabImported(ctx, s.ID, it.Name) // flip THIS grab (not siblings) for seed cleanup
 			if imported > 0 {
 				c.log.Info("series: imported episodes", "series", s.Title, "count", imported, "release", it.Name)
 				c.series.AddEvent(ctx, s.ID, "imported", fmt.Sprintf("Imported %d episode%s from %s", imported, plural(imported), it.Name))

@@ -1,0 +1,14 @@
+-- 0054_episode_source_release: record the release name an episode file was imported
+-- from, so the upgrade path can score "what I already have" faithfully.
+--
+-- Before this, UpgradeSeries passed the RENAMED library filename as the current-release
+-- baseline. The library scheme is "{title} - {episode} - {episodetitle} - {quality}",
+-- which carries no group / HDR / audio / codec tags, so the baseline always scored near
+-- zero and every candidate looked like an upgrade. After importing, the file was renamed
+-- back to the tag-less name, the baseline reset, and the SAME release was grabbed again
+-- on the next 6-hourly sweep — an unbounded re-download loop.
+--
+-- Movies already do this correctly (movies.source_release, migration 0019); this brings
+-- episodes in line. Existing rows stay empty: an empty baseline is untrustworthy, so the
+-- upgrade path skips those episodes rather than guessing (see UpgradeSeries).
+ALTER TABLE episodes ADD COLUMN source_release TEXT NOT NULL DEFAULT '';
