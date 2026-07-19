@@ -255,6 +255,32 @@ func (c *Coordinator) importedGrabs(ctx context.Context) ([]grab, error) {
 	return out, rows.Err()
 }
 
+// liveGrabs returns every grab still in play — downloading OR imported-and-seeding.
+//
+// Distinct from importedGrabs on purpose: seed CLEANUP must only consider imported
+// grabs (never remove a torrent before its data has landed), but the Seeding tab wants
+// the rule for anything currently in the client. Using the imported-only set there made
+// a torrent that had finished downloading but not yet imported read "Not managed by
+// Arrmada — no seed rule", even though its rule was recorded at grab time.
+func (c *Coordinator) liveGrabs(ctx context.Context) ([]grab, error) {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT id, movie_id, version_id, title, indexer, quality_profile, stall_minutes, grabbed_at, seed_enabled, seed_ratio, seed_hours, media_type
+		 FROM grabs WHERE status IN ('grabbed', 'imported') ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []grab
+	for rows.Next() {
+		g, err := scanGrab(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
 // scanGrab reads a grab row (columns in the order the queries select them).
 func scanGrab(row interface{ Scan(...any) error }) (grab, error) {
 	var g grab

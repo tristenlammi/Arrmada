@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/eventbus"
@@ -23,7 +24,6 @@ import (
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/quality"
-	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
 
@@ -874,11 +874,13 @@ type SeedPolicy struct {
 	Hours   int     `json:"hours"`
 }
 
-// SeedPolicies returns the seed policy for every imported grab, keyed by a normalized
-// release title (use NormReleaseKey on a download name to look it up). Built in one
-// query so the feed can annotate seeding torrents without a per-item lookup.
+// SeedPolicies returns the seed policy for every live grab (downloading or seeding),
+// keyed by a normalized release title (use NormReleaseKey on a download name to look it
+// up). Built in one query so the feed can annotate seeding torrents without a per-item
+// lookup. Uses liveGrabs, not importedGrabs: a torrent that has finished downloading but
+// not yet imported still has a rule, and the UI should show it.
 func (c *Coordinator) SeedPolicies(ctx context.Context) map[string]SeedPolicy {
-	grabs, err := c.importedGrabs(ctx)
+	grabs, err := c.liveGrabs(ctx)
 	if err != nil {
 		return nil
 	}
