@@ -31,19 +31,24 @@ func (a *api) handleConvertHardware(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleConvertSweep converts every non-target-codec file now — the manual "Convert all" button
-// (bypasses the schedule gates; the scheduler uses Sweep instead).
+// handleConvertSweep queues every non-target-codec file now — the manual "Convert all" button.
+// It ignores the schedule for QUEUEING (you asked for it, so it gets queued immediately) but
+// the workers still hold each job until the encode window opens, so nothing encodes off-hours.
+//
+// Runs synchronously so the response can report what was actually queued; the UI shows that
+// back to the user rather than the movies-only guess it used to display.
 func (a *api) handleConvertSweep(w http.ResponseWriter, r *http.Request) {
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		if n, err := a.deps.Convert.ConvertAll(ctx); err != nil {
-			a.deps.Log.Warn("convert all failed", "err", err)
-		} else {
-			a.deps.Log.Info("convert all queued", "count", n)
-		}
-	}()
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "converting"})
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
+	defer cancel()
+	res, err := a.deps.Convert.ConvertAll(ctx)
+	if err != nil {
+		a.deps.Log.Warn("convert all failed", "err", err)
+		a.writeError(w, http.StatusInternalServerError, "could not queue conversions")
+		return
+	}
+	a.deps.Log.Info("convert all queued",
+		"queued", res.Queued, "movies", res.Movies, "episodes", res.Episodes, "blocklisted", res.Blocklisted)
+	a.writeJSON(w, http.StatusAccepted, res)
 }
 
 // handleConvertLibrary returns each library file's spec + convert candidacy, read from the
@@ -93,6 +98,17 @@ func (a *api) handleConvertLibrary(w http.ResponseWriter, r *http.Request) {
 		list = []convert.Candidate{}
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"items": list})
+}
+
+// handleConvertStats returns the Overview tab's library-wide numbers (movies + TV) from the
+// index, so the page doesn't have to fetch the whole movie list to render them.
+func (a *api) handleConvertStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := a.deps.Convert.LibraryStats(r.Context())
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not read library index")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, stats)
 }
 
 // handleConvertSeries queues every convertible episode of a series, or of one season when

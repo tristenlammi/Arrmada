@@ -330,6 +330,103 @@ func (s *Service) LibraryTVSeries(ctx context.Context) ([]SeriesRollup, error) {
 	return out, nil
 }
 
+// MediaStats summarizes one media type's slice of the library.
+type MediaStats struct {
+	Files       int   `json:"files"`
+	Convertible int   `json:"convertible"`
+	TotalBytes  int64 `json:"total_bytes"`
+	EstBytes    int64 `json:"est_bytes"`   // convertible files' estimated size after conversion
+	Reclaimable int64 `json:"reclaimable"` // total_bytes of convertible files minus est_bytes
+	H264        int   `json:"h264"`
+	HEVC        int   `json:"hevc"`
+	AV1         int   `json:"av1"`
+	Other       int   `json:"other"`
+}
+
+// LibraryStats is the Overview tab's numbers, across the WHOLE library. The Overview used to
+// derive these from the movie list it fetched on page load, so it silently ignored TV — with
+// thousands of episodes indexed that made the codec breakdown and "reclaimable" figure wrong.
+// One pass over the index instead, and the page no longer fetches every movie just to render.
+type LibraryStats struct {
+	Movies MediaStats `json:"movies"`
+	TV     MediaStats `json:"tv"`
+	Total  MediaStats `json:"total"`
+}
+
+func (m *MediaStats) add(codec string, size, est int64, convertible bool) {
+	m.Files++
+	m.TotalBytes += size
+	switch codecClass(codec) {
+	case "h264":
+		m.H264++
+	case "hevc":
+		m.HEVC++
+	case "av1":
+		m.AV1++
+	default:
+		m.Other++
+	}
+	if convertible {
+		m.Convertible++
+		m.EstBytes += est
+		if d := size - est; d > 0 {
+			m.Reclaimable += d
+		}
+	}
+}
+
+// codecClass buckets a codec name for the Overview's breakdown bar.
+func codecClass(c string) string {
+	switch strings.ToLower(c) {
+	case "h264", "avc", "avc1":
+		return "h264"
+	case "hevc", "h265", "hev1", "hvc1":
+		return "hevc"
+	case "av1", "av01":
+		return "av1"
+	default:
+		return "other"
+	}
+}
+
+// LibraryStats aggregates the whole index in one pass.
+func (s *Service) LibraryStats(ctx context.Context) (*LibraryStats, error) {
+	out := &LibraryStats{}
+	if s.index == nil {
+		return out, nil
+	}
+	dp := s.defaultPlan(ctx)
+	target := s.targetCodec(ctx)
+	rows, err := s.index.db.QueryContext(ctx,
+		`SELECT media_type, size_bytes, video_codec, info_json FROM convert_library`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var mediaType, codec, infoJSON string
+		var size int64
+		if err := rows.Scan(&mediaType, &size, &codec, &infoJSON); err != nil {
+			return nil, err
+		}
+		convertible := codec != "" && !strings.EqualFold(codec, target)
+		var est int64
+		if convertible && infoJSON != "" {
+			var mi MediaInfo
+			if json.Unmarshal([]byte(infoJSON), &mi) == nil {
+				est = estimatePlanSize(&mi, dp)
+			}
+		}
+		if mediaType == "episode" {
+			out.TV.add(codec, size, est, convertible)
+		} else {
+			out.Movies.add(codec, size, est, convertible)
+		}
+		out.Total.add(codec, size, est, convertible)
+	}
+	return out, rows.Err()
+}
+
 // QueueSeries enqueues every convertible episode of a series — or of one season when
 // season >= 0 — and returns how many were queued. Episodes already in the target codec
 // are skipped, so re-running it is harmless.
@@ -338,6 +435,8 @@ func (s *Service) QueueSeries(ctx context.Context, seriesID int64, season int) (
 	if err != nil {
 		return 0, err
 	}
+	plan := s.defaultPlan(ctx)
+	maxFail := s.maxFailures(ctx)
 	queued := 0
 	for _, c := range eps {
 		if !c.Candidate {
@@ -346,7 +445,10 @@ func (s *Service) QueueSeries(ctx context.Context, seriesID int64, season int) (
 		if season >= 0 && c.Season != season {
 			continue
 		}
-		if _, err := s.QueueEpisode(ctx, c.SeriesID, c.Season, c.Episode); err != nil {
+		if s.failures.blocklisted(ctx, episodeKey(c.SeriesID, c.Season, c.Episode), maxFail) {
+			continue // keeps failing — don't re-queue it every time
+		}
+		if _, err := s.enqueueEpisodeIndexed(ctx, c, plan); err != nil {
 			s.log.Warn("convert: queue episode failed",
 				"series", seriesID, "season", c.Season, "episode", c.Episode, "err", err)
 			continue

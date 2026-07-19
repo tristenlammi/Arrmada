@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type ConvertCandidate, type ConvertSeriesRollup, type ConvertEncoder, type ConvertJob, type ConvertSample, type AppSettings } from "../lib/api";
+import { api, type ConvertCandidate, type ConvertSeriesRollup, type ConvertLibraryStats, type ConvertEncoder, type ConvertJob, type ConvertSample, type AppSettings } from "../lib/api";
 
 // Convert (Tdarr replacement) — the four-tab experience from the design mockup, wired to
 // the real backend. Implemented today: analysis, hardware detection, the Save-space engine
@@ -16,24 +16,22 @@ function fmtSize(b?: number): string {
   const gb = b / 1024 ** 3;
   return gb >= 1 ? `${gb.toFixed(1)} GB` : `${(b / 1024 ** 2).toFixed(0)} MB`;
 }
-function codecClass(c?: string): "h264" | "hevc" | "av1" | "other" {
-  if (c === "h264") return "h264";
-  if (c === "hevc") return "hevc";
-  if (c === "av1") return "av1";
-  return "other";
-}
-
 export function Convert() {
   const [tab, setTab] = useState<Tab>("overview");
   const [hw, setHw] = useState<{ selected: ConvertEncoder; encoders: ConvertEncoder[]; reclaimed_bytes: number } | null>(null);
   const [items, setItems] = useState<ConvertCandidate[] | null>(null);
   const [jobs, setJobs] = useState<ConvertJob[]>([]);
+  // Library-wide counts (movies + TV) come from the index in one query, so the Overview no
+  // longer has to fetch every movie — and no longer silently ignores thousands of episodes.
+  const [stats, setStats] = useState<ConvertLibraryStats | null>(null);
+  const [confirmAll, setConfirmAll] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const flash = useCallback((m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); }, []);
 
   const loadLibrary = useCallback(() => api.convertLibrary().then(setItems).catch(() => setItems([])), []);
+  const loadStats = useCallback(() => api.convertStats().then(setStats).catch(() => {}), []);
   const loadHw = useCallback(() => api.convertHardware().then(setHw).catch(() => {}), []);
-  useEffect(() => { loadHw(); loadLibrary(); }, [loadHw, loadLibrary]);
+  useEffect(() => { loadHw(); loadLibrary(); loadStats(); }, [loadHw, loadLibrary, loadStats]);
 
   const anyActive = jobs.some((j) => ACTIVE.has(j.state));
   useEffect(() => {
@@ -45,12 +43,21 @@ export function Convert() {
     const t = setInterval(tick, anyActive ? 1000 : 3000);
     return () => { alive = false; clearInterval(t); };
   }, [anyActive]);
-  useEffect(() => { if (!anyActive) { loadLibrary(); loadHw(); } }, [anyActive, loadLibrary, loadHw]);
+  useEffect(() => { if (!anyActive) { loadLibrary(); loadHw(); loadStats(); } }, [anyActive, loadLibrary, loadHw, loadStats]);
 
   const enc = hw?.selected;
   const activeCount = jobs.filter((j) => ACTIVE.has(j.state)).length;
-  const candidates = (items ?? []).filter((c) => c.candidate).length;
-  const convertAll = async () => { try { await api.convertSweep(); flash(candidates ? `Converting ${candidates} file${candidates === 1 ? "" : "s"}…` : "Nothing to convert — everything's already your target codec."); setTab("queue"); } catch (e) { flash((e as Error).message); } };
+  // The WHOLE library, not just movies — this button queues TV too.
+  const candidates = stats?.total.convertible ?? 0;
+  const convertAll = async () => {
+    setConfirmAll(false);
+    try {
+      const r = await api.convertSweep();
+      const parts = [r.movies ? `${r.movies.toLocaleString()} movie${r.movies === 1 ? "" : "s"}` : "", r.episodes ? `${r.episodes.toLocaleString()} episode${r.episodes === 1 ? "" : "s"}` : ""].filter(Boolean);
+      flash(r.queued ? `Queued ${parts.join(" + ")}${r.blocklisted ? ` · ${r.blocklisted} skipped (repeated failures)` : ""}` : "Nothing to convert — everything's already your target codec.");
+      setTab("queue");
+    } catch (e) { flash((e as Error).message); }
+  };
 
   const TABS: { key: Tab; label: string; n?: string }[] = [
     { key: "overview", label: "Overview" },
@@ -73,7 +80,7 @@ export function Convert() {
               {enc ? `${enc.label}${enc.hardware ? " · GPU ready" : " · CPU"}` : "Detecting…"}
             </span>
             <button onClick={() => setTab("settings")} className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>Settings</button>
-            <button onClick={convertAll} disabled={candidates === 0} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>Convert all{candidates ? ` (${candidates})` : ""}</button>
+            <button onClick={() => setConfirmAll(true)} disabled={candidates === 0} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>Convert all{candidates ? ` (${candidates})` : ""}</button>
           </div>
         </div>
 
@@ -90,12 +97,39 @@ export function Convert() {
           })}
         </div>
 
-        {tab === "overview" && <Overview hw={hw} items={items} jobs={jobs} />}
+        {tab === "overview" && <Overview hw={hw} stats={stats} jobs={jobs} />}
         {tab === "queue" && <Queue jobs={jobs} />}
         {tab === "library" && <Library flash={flash} onQueued={() => api.convertJobs().then(setJobs)} />}
         {tab === "logs" && <LogsConsole />}
         {tab === "settings" && <ConvertSettings flash={flash} />}
       </div>
+      {confirmAll && stats && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.55)" }} onClick={() => setConfirmAll(false)}>
+          <div className="w-full max-w-[460px] rounded-xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }} onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-[15px] font-bold">Convert your whole library?</h3>
+            <p className="mt-1.5 text-[12.5px] leading-relaxed text-ink-dim">
+              This queues every file in your library that isn't already in your target codec.
+            </p>
+            <div className="mt-3 flex flex-col gap-1.5 rounded-lg p-3 font-mono text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+              <Row k="Movies" v={stats.movies.convertible.toLocaleString()} />
+              <Row k="Episodes" v={stats.tv.convertible.toLocaleString()} />
+              <Row k="Total jobs" v={stats.total.convertible.toLocaleString()} strong />
+              <Row k="Space reclaimed" v={`~${fmtSize(stats.total.reclaimable)}`} />
+            </div>
+            <p className="mt-3 text-[11.5px] leading-snug text-ink-faint">
+              Encoding respects your schedule window — anything queued outside it waits rather
+              than starting. Originals go to the recycle bin, and a file that keeps failing is
+              skipped instead of retried forever.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button onClick={() => setConfirmAll(false)} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Cancel</button>
+              <button onClick={convertAll} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
+                Queue {stats.total.convertible.toLocaleString()} job{stats.total.convertible === 1 ? "" : "s"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
     </>
   );
@@ -106,17 +140,14 @@ const cardStyle = { border: "1px solid var(--line)", background: "var(--panel)" 
 const lbl = "font-mono text-[9.5px] font-bold uppercase tracking-[0.11em] text-ink-faint";
 
 /* ============================= OVERVIEW ============================= */
-function Overview({ hw, items, jobs }: { hw: { selected: ConvertEncoder; encoders: ConvertEncoder[]; reclaimed_bytes: number } | null; items: ConvertCandidate[] | null; jobs: ConvertJob[] }) {
-  const list = items ?? [];
-  const breakdown = useMemo(() => {
-    const b = { h264: 0, hevc: 0, av1: 0, other: 0 };
-    let n = 0;
-    for (const c of list) { if (c.info) { b[codecClass(c.info.video_codec)]++; n++; } }
-    return { b, n };
-  }, [list]);
-  const candidates = list.filter((c) => c.candidate);
-  const opportunity = candidates.reduce((n, c) => n + Math.max(0, (c.info?.size_bytes ?? 0) - c.est_bytes), 0);
-  const pct = (x: number) => (breakdown.n ? Math.round((x / breakdown.n) * 100) : 0);
+function Overview({ hw, stats, jobs }: { hw: { selected: ConvertEncoder; encoders: ConvertEncoder[]; reclaimed_bytes: number } | null; stats: ConvertLibraryStats | null; jobs: ConvertJob[] }) {
+  // Which slice of the library the codec bar describes. It covered movies only before, which
+  // hid the fact that TV is the overwhelming majority of files.
+  const [scope, setScope] = useState<"total" | "movies" | "tv">("total");
+  const t = stats?.total;
+  const b = stats ? stats[scope] : null;
+  const n = b?.files ?? 0;
+  const pct = (x: number) => (n ? Math.round((x / n) * 100) : 0);
   const activeJobs = jobs.filter((j) => ACTIVE.has(j.state));
 
   return (
@@ -127,24 +158,39 @@ function Overview({ hw, items, jobs }: { hw: { selected: ConvertEncoder; encoder
           <div className={lbl}>Space reclaimed</div>
           <div className="mt-2 text-[30px] font-extrabold tracking-tight">{fmtSize(hw?.reclaimed_bytes)}</div>
           <div className="mt-3 border-t pt-3 text-[12px] text-ink-dim" style={{ borderColor: "var(--line-soft)" }}>
-            <span style={{ color: "var(--good)" }}>~{fmtSize(opportunity)}</span> more reclaimable · <b style={{ color: "var(--ink)" }}>{candidates.length}</b> of {list.length} movies still not HEVC/AV1
+            <span style={{ color: "var(--good)" }}>~{fmtSize(t?.reclaimable)}</span> more reclaimable ·{" "}
+            <b style={{ color: "var(--ink)" }}>{(t?.convertible ?? 0).toLocaleString()}</b> of {(t?.files ?? 0).toLocaleString()} files still to convert
+            <div className="mt-1 text-[11px] text-ink-faint">
+              {(stats?.movies.convertible ?? 0).toLocaleString()} movies · {(stats?.tv.convertible ?? 0).toLocaleString()} episodes
+            </div>
           </div>
         </div>
         {/* codec breakdown */}
         <div className={card} style={cardStyle}>
-          <div className={lbl}>Library video codecs</div>
+          <div className="flex items-center justify-between">
+            <div className={lbl}>Library video codecs</div>
+            <div className="inline-flex rounded-md p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+              {(["total", "movies", "tv"] as const).map((k) => (
+                <button key={k} onClick={() => setScope(k)} className="rounded px-2 py-0.5 font-mono text-[9.5px] font-bold uppercase"
+                  style={{ background: scope === k ? "var(--accent)" : "transparent", color: scope === k ? "var(--accent-ink)" : "var(--ink-faint)" }}>
+                  {k === "total" ? "All" : k === "movies" ? "Movies" : "TV"}
+                </button>
+              ))}
+            </div>
+          </div>
           <div className="mt-2.5 flex h-4 overflow-hidden rounded-md" style={{ border: "1px solid var(--line)" }}>
-            {breakdown.b.h264 > 0 && <span style={{ width: `${pct(breakdown.b.h264)}%`, background: "var(--avoid)" }} />}
-            {breakdown.b.hevc > 0 && <span style={{ width: `${pct(breakdown.b.hevc)}%`, background: "var(--good)" }} />}
-            {breakdown.b.av1 > 0 && <span style={{ width: `${pct(breakdown.b.av1)}%`, background: "var(--accent)" }} />}
-            {breakdown.b.other > 0 && <span style={{ width: `${pct(breakdown.b.other)}%`, background: "var(--ink-faint)" }} />}
+            {(b?.h264 ?? 0) > 0 && <span style={{ width: `${pct(b!.h264)}%`, background: "var(--avoid)" }} />}
+            {(b?.hevc ?? 0) > 0 && <span style={{ width: `${pct(b!.hevc)}%`, background: "var(--good)" }} />}
+            {(b?.av1 ?? 0) > 0 && <span style={{ width: `${pct(b!.av1)}%`, background: "var(--accent)" }} />}
+            {(b?.other ?? 0) > 0 && <span style={{ width: `${pct(b!.other)}%`, background: "var(--ink-faint)" }} />}
           </div>
           <div className="mt-3 flex flex-wrap gap-x-3.5 gap-y-1.5 text-[11.5px] text-ink-dim">
-            <Legend c="var(--avoid)" label={`H.264 · ${pct(breakdown.b.h264)}%`} />
-            <Legend c="var(--good)" label={`HEVC · ${pct(breakdown.b.hevc)}%`} />
-            <Legend c="var(--accent)" label={`AV1 · ${pct(breakdown.b.av1)}%`} />
-            <Legend c="var(--ink-faint)" label={`Other · ${pct(breakdown.b.other)}%`} />
+            <Legend c="var(--avoid)" label={`H.264 · ${pct(b?.h264 ?? 0)}%`} />
+            <Legend c="var(--good)" label={`HEVC · ${pct(b?.hevc ?? 0)}%`} />
+            <Legend c="var(--accent)" label={`AV1 · ${pct(b?.av1 ?? 0)}%`} />
+            <Legend c="var(--ink-faint)" label={`Other · ${pct(b?.other ?? 0)}%`} />
           </div>
+          <div className="mt-2 font-mono text-[10.5px] text-ink-faint">{n.toLocaleString()} files · {fmtSize(b?.total_bytes)}</div>
         </div>
         {/* hardware */}
         <div className={card} style={cardStyle}>
@@ -341,6 +387,16 @@ const SHOW_HEADERS: { label: string; key?: ShowSortKey; align?: string }[] = [
   { label: "Convertible", key: "convertible" }, { label: "Size", key: "size" },
   { label: "Est. after", key: "est" }, { label: "" },
 ];
+
+// Row is a key/value line in the Convert-all confirmation.
+function Row({ k, v, strong }: { k: string; v: string; strong?: boolean }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-ink-faint">{k}</span>
+      <span className={strong ? "font-bold" : "text-ink-dim"} style={strong ? { color: "var(--accent)" } : undefined}>{v}</span>
+    </div>
+  );
+}
 
 function Pill({ active, disabled, onClick, children }: { active: boolean; disabled?: boolean; onClick: () => void; children: ReactNode }) {
   return (

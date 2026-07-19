@@ -49,6 +49,17 @@ const defaultScanAt = "03:00"
 // giving up and keeping the original.
 const qualityRetries = 2
 
+// maxQueued bounds the in-memory queue. "Convert all" over a TV library is thousands of
+// files, and the old 256 slot buffer turned that into a blocking send that never returned —
+// especially with the encode window parking the workers. The queue isn't persisted, so a
+// restart drops whatever hasn't run; re-running "Convert all" re-queues the remainder.
+const maxQueued = 16384
+
+// maxJobHistory caps how many FINISHED jobs are retained for the Queue tab. Pending and
+// running jobs are never trimmed — dropping them would hide work that's still going to
+// happen.
+const maxJobHistory = 200
+
 // JobState is a conversion job's lifecycle stage.
 type JobState string
 
@@ -64,24 +75,24 @@ const (
 
 // Job is one conversion of one library file — a movie or a TV episode.
 type Job struct {
-	ID       int64    `json:"id"`
-	Kind     string   `json:"kind"` // "movie" | "episode" (empty = movie, for back-compat)
-	MovieID  int64    `json:"movie_id,omitempty"`
-	SeriesID int64    `json:"series_id,omitempty"`
-	Season   int      `json:"season,omitempty"`
-	Episode  int      `json:"episode,omitempty"`
-	Title    string   `json:"title"`
-	State    JobState `json:"state"`
-	Progress    float64 `json:"progress"`     // 0..1
-	FPS         float64 `json:"fps"`
-	SpeedX      float64 `json:"speed_x"`      // × realtime
-	DurationSec float64 `json:"duration_sec"` // source runtime (for the UI's ETA)
-	Encoder     string  `json:"encoder"`
-	SrcBytes    int64   `json:"src_bytes"`
-	OutBytes int64    `json:"out_bytes"`
-	SSIM     float64  `json:"ssim,omitempty"` // quality-gate score vs the source (0 = not measured)
-	Note     string   `json:"note,omitempty"` // skip reason / error
-	plan     Plan     // the compiled plan this job runs (not serialized)
+	ID          int64    `json:"id"`
+	Kind        string   `json:"kind"` // "movie" | "episode" (empty = movie, for back-compat)
+	MovieID     int64    `json:"movie_id,omitempty"`
+	SeriesID    int64    `json:"series_id,omitempty"`
+	Season      int      `json:"season,omitempty"`
+	Episode     int      `json:"episode,omitempty"`
+	Title       string   `json:"title"`
+	State       JobState `json:"state"`
+	Progress    float64  `json:"progress"` // 0..1
+	FPS         float64  `json:"fps"`
+	SpeedX      float64  `json:"speed_x"`      // × realtime
+	DurationSec float64  `json:"duration_sec"` // source runtime (for the UI's ETA)
+	Encoder     string   `json:"encoder"`
+	SrcBytes    int64    `json:"src_bytes"`
+	OutBytes    int64    `json:"out_bytes"`
+	SSIM        float64  `json:"ssim,omitempty"` // quality-gate score vs the source (0 = not measured)
+	Note        string   `json:"note,omitempty"` // skip reason / error
+	plan        Plan     // the compiled plan this job runs (not serialized)
 }
 
 // Service runs the conversion engine: a single worker draining a queue, doing the safe
@@ -107,14 +118,14 @@ type Service struct {
 	indexMu   sync.Mutex // serializes index sweeps so a scheduled one can't overlap an import-triggered one
 	lastSweep time.Time
 
-	mu       sync.Mutex
+	mu        sync.Mutex
 	reclaimMu sync.Mutex // guards the reclaimed-bytes read-modify-write across workers
-	jobs     []*Job
-	nextID   int64
-	queue    chan *Job
+	jobs      []*Job
+	nextID    int64
+	queue     chan *Job
 
 	logMu  sync.Mutex
-	logBuf []LogLine  // recent human-readable convert events, for the UI console
+	logBuf []LogLine // recent human-readable convert events, for the UI console
 	logs   *logStore // durable mirror of logBuf so history survives a restart
 }
 
@@ -162,7 +173,7 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 		ffmpeg: ffmpeg, ffprobe: ffprobe, scratchDir: scratchDir, recycleDir: recycleDir,
 		encoders: encs, encoder: bestHEVC(encs), failures: &failureStore{db: db},
 		cache: &probeCache{db: db}, logs: &logStore{db: db}, index: &libraryIndex{db: db},
-		queue: make(chan *Job, 256),
+		queue: make(chan *Job, maxQueued),
 	}
 	s.logBuf = s.logs.recent(context.Background(), maxLogLines) // restore the console after a restart
 	s.doviTool, _ = exec.LookPath("dovi_tool")
@@ -192,6 +203,13 @@ func (s *Service) Run(ctx context.Context) {
 				case <-ctx.Done():
 					return
 				case job := <-s.queue:
+					// Queueing isn't converting: the window is "quiet hours for
+					// encoding", so a job queued outside it waits here rather than
+					// starting immediately. Without this, "Convert all" would kick
+					// off thousands of encodes the moment it's clicked.
+					if !s.waitForWindow(ctx, job) {
+						return
+					}
 					s.process(ctx, job)
 				}
 			}
@@ -314,10 +332,10 @@ type Candidate struct {
 	Title     string     `json:"title"`
 	Year      int        `json:"year,omitempty"`
 	PosterURL string     `json:"poster_url,omitempty"`
-	Path         string     `json:"path"`
-	Info         *MediaInfo `json:"info,omitempty"`
-	Candidate bool  `json:"candidate"` // would Save space convert it
-	EstBytes  int64 `json:"est_bytes"` // rough estimate of converted size
+	Path      string     `json:"path"`
+	Info      *MediaInfo `json:"info,omitempty"`
+	Candidate bool       `json:"candidate"` // would Save space convert it
+	EstBytes  int64      `json:"est_bytes"` // rough estimate of converted size
 }
 
 // Library returns every downloaded movie with its spec + convert candidacy.
@@ -358,17 +376,32 @@ func (s *Service) queueEpisode(ctx context.Context, seriesID int64, season, epis
 	if sm, err := s.series.Get(ctx, seriesID); err == nil {
 		title = fmt.Sprintf("%s - S%02dE%02d", sm.Title, season, episode)
 	}
+	return s.enqueueEpisode(ctx, seriesID, season, episode, title, plan)
+}
+
+// enqueueEpisodeIndexed queues an episode using facts already read from the library index.
+// Bulk callers ("Convert all", per-series/season) go through here: the lookup version costs a
+// series.Get AND an EpisodeFilePath per episode, which at thousands of episodes is thousands
+// of redundant queries — each series.Get loads every season and episode of that show.
+func (s *Service) enqueueEpisodeIndexed(ctx context.Context, c Candidate, plan Plan) (*Job, error) {
+	if c.Path == "" {
+		return nil, fmt.Errorf("episode has no file to convert")
+	}
+	return s.enqueueEpisode(ctx, c.SeriesID, c.Season, c.Episode, c.Title, plan)
+}
+
+func (s *Service) enqueueEpisode(ctx context.Context, seriesID int64, season, episode int, title string, plan Plan) (*Job, error) {
 	s.mu.Lock()
 	s.nextID++
 	job := &Job{ID: s.nextID, Kind: "episode", SeriesID: seriesID, Season: season, Episode: episode,
 		Title: title, State: StateQueued, Encoder: s.encoder.Label, plan: plan}
 	s.jobs = append([]*Job{job}, s.jobs...)
-	if len(s.jobs) > 200 {
-		s.jobs = s.jobs[:200]
-	}
+	s.trimJobsLocked()
 	s.mu.Unlock()
 	s.event("info", "Queued "+job.Title)
-	s.queue <- job
+	if err := s.enqueue(ctx, job); err != nil {
+		return nil, err
+	}
 	return job, nil
 }
 
@@ -420,13 +453,63 @@ func (s *Service) queueMovie(ctx context.Context, movieID int64, plan Plan) (*Jo
 	s.nextID++
 	job := &Job{ID: s.nextID, MovieID: movieID, Title: m.Title, State: StateQueued, Encoder: s.encoder.Label, plan: plan}
 	s.jobs = append([]*Job{job}, s.jobs...) // newest first
-	if len(s.jobs) > 200 {
-		s.jobs = s.jobs[:200]
-	}
+	s.trimJobsLocked()
 	s.mu.Unlock()
 	s.event("info", "Queued "+job.Title)
-	s.queue <- job
+	if err := s.enqueue(ctx, job); err != nil {
+		return nil, err
+	}
 	return job, nil
+}
+
+// pendingState reports whether a job still has work left to do (so it must not be trimmed).
+func pendingState(st JobState) bool {
+	switch st {
+	case StateQueued, StateEncoding, StateVerifying, StateReplacing:
+		return true
+	}
+	return false
+}
+
+// trimJobsLocked drops the oldest FINISHED jobs once history grows past the cap, leaving
+// every queued/running job in place. Callers must hold s.mu.
+func (s *Service) trimJobsLocked() {
+	finished := 0
+	for _, j := range s.jobs {
+		if !pendingState(j.State) {
+			finished++
+		}
+	}
+	if finished <= maxJobHistory {
+		return
+	}
+	drop := finished - maxJobHistory
+	kept := make([]*Job, 0, len(s.jobs)-drop)
+	for i := len(s.jobs) - 1; i >= 0; i-- { // oldest first
+		if drop > 0 && !pendingState(s.jobs[i].State) {
+			drop--
+			continue
+		}
+		kept = append(kept, s.jobs[i])
+	}
+	// kept is oldest-first; restore newest-first ordering.
+	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
+		kept[i], kept[j] = kept[j], kept[i]
+	}
+	s.jobs = kept
+}
+
+// enqueue hands a job to the workers without blocking forever if the queue is saturated.
+func (s *Service) enqueue(ctx context.Context, job *Job) error {
+	select {
+	case s.queue <- job:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		s.finish(job, StateSkipped, "convert queue is full — try again once it drains")
+		return fmt.Errorf("convert queue is full")
+	}
 }
 
 // Jobs returns a snapshot of recent jobs (newest first).
@@ -559,32 +642,45 @@ func (s *Service) Sweep(ctx context.Context) {
 		s.log.Info("convert: outside the schedule window, skipping")
 		return
 	}
-	if n, _ := s.ConvertAll(ctx); n > 0 {
-		s.log.Info("convert: scheduled conversion queued", "queued", n)
+	if r, _ := s.ConvertAll(ctx); r.Queued > 0 {
+		s.log.Info("convert: scheduled conversion queued",
+			"queued", r.Queued, "movies", r.Movies, "episodes", r.Episodes, "blocklisted", r.Blocklisted)
 	}
 }
 
 // ConvertAll queues every library file (movies + TV episodes) that isn't already the target
-// codec, skipping movies that have failed too many times. The manual "Convert all now" button
-// and the schedule both use it.
-func (s *Service) ConvertAll(ctx context.Context) (int, error) {
+// codec, skipping anything that has failed too many times. The manual "Convert all" button and
+// the schedule both use it. Queueing is not converting: the workers still hold each job until
+// the encode window opens.
+// ConvertAllResult breaks down what a "Convert all" actually did. The button used to show a
+// movies-only count while this queued TV as well, so the number on screen was far lower than
+// the work it started.
+type ConvertAllResult struct {
+	Movies      int `json:"movies"`
+	Episodes    int `json:"episodes"`
+	Queued      int `json:"queued"`
+	Blocklisted int `json:"blocklisted"` // skipped: failed too many times already
+}
+
+func (s *Service) ConvertAll(ctx context.Context) (ConvertAllResult, error) {
 	plan := s.defaultPlan(ctx)
 	maxFail := s.maxFailures(ctx)
-	queued := 0
+	var res ConvertAllResult
 
 	cands, err := s.Library(ctx)
 	if err != nil {
-		return 0, err
+		return res, err
 	}
 	for _, c := range cands {
 		if !c.Candidate {
 			continue
 		}
-		if s.failures.failureCount(ctx, c.MovieID) >= maxFail {
-			continue // blocklisted after repeated failures
+		if s.failures.blocklisted(ctx, movieKey(c.MovieID), maxFail) {
+			res.Blocklisted++
+			continue
 		}
 		if _, err := s.queueMovie(ctx, c.MovieID, plan); err == nil {
-			queued++
+			res.Movies++
 		}
 	}
 
@@ -594,12 +690,41 @@ func (s *Service) ConvertAll(ctx context.Context) (int, error) {
 			if !c.Candidate {
 				continue
 			}
-			if _, err := s.QueueEpisode(ctx, c.SeriesID, c.Season, c.Episode); err == nil {
-				queued++
+			if s.failures.blocklisted(ctx, episodeKey(c.SeriesID, c.Season, c.Episode), maxFail) {
+				res.Blocklisted++
+				continue
+			}
+			if _, err := s.enqueueEpisodeIndexed(ctx, c, plan); err == nil {
+				res.Episodes++
 			}
 		}
 	}
-	return queued, nil
+	res.Queued = res.Movies + res.Episodes
+	return res, nil
+}
+
+// waitForWindow blocks until the encode window opens, parking the job in the queue with a
+// note so the UI can explain why nothing is running. Returns false if ctx was cancelled.
+func (s *Service) waitForWindow(ctx context.Context, job *Job) bool {
+	if s.inSweepWindow(ctx) {
+		return true
+	}
+	start := s.settings.Get(ctx, keySweepStart, "")
+	end := s.settings.Get(ctx, keySweepEnd, "")
+	s.update(job, func(j *Job) { j.Note = fmt.Sprintf("waiting for the %s–%s window", start, end) })
+	s.log.Info("convert: job waiting for the encode window",
+		"title", job.Title, "window", start+"-"+end)
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(time.Minute):
+			if s.inSweepWindow(ctx) {
+				s.update(job, func(j *Job) { j.Note = "" })
+				return true
+			}
+		}
+	}
 }
 
 // inSweepWindow reports whether now falls inside the global auto-sweep window (a master
@@ -982,21 +1107,18 @@ func (s *Service) finish(job *Job, state JobState, note string) {
 		s.event("info", fmt.Sprintf("Skipped %s — %s", job.Title, note))
 	}
 	// Track hard failures for the quarantine blocklist; a success clears the record.
-	// (Skips are intentional outcomes, not failures, so they don't count.) The
-	// blocklist is keyed by movie id, so it only applies to movie jobs today;
-	// episode jobs simply aren't quarantined.
-	if job.Kind == "episode" {
-		return
-	}
+	// (Skips are intentional outcomes, not failures, so they don't count.) Keyed per
+	// item, so episodes quarantine exactly like movies — without this a file that
+	// always fails to encode is re-queued by every sweep, forever.
+	key := jobKey(job)
 	switch state {
 	case StateFailed:
 		s.log.Warn("convert: job failed", "title", job.Title, "note", note)
-		s.failures.recordFailure(context.Background(), job.MovieID, note)
+		s.failures.recordFailure(context.Background(), key, note)
 	case StateDone:
-		s.failures.clearFailures(context.Background(), job.MovieID)
+		s.failures.clearFailures(context.Background(), key)
 	}
 }
-
 
 // encode runs ffmpeg for one job, parsing live progress from the -progress pipe. hwDecode
 // asks the GPU to decode too (VAAPI only) — set for the full-GPU attempt, cleared for the

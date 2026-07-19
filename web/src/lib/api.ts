@@ -655,6 +655,13 @@ export interface ConvertMediaInfo {
   container: string; video_codec: string; width: number; height: number; resolution: string; hdr: string;
   bitrate_kbps: number; frame_rate: number; duration_sec: number; size_bytes: number; audio_tracks: number; sub_tracks: number; ten_bit: boolean;
 }
+export interface ConvertMediaStats {
+  files: number; convertible: number; total_bytes: number; est_bytes: number; reclaimable: number;
+  h264: number; hevc: number; av1: number; other: number;
+}
+export interface ConvertLibraryStats { movies: ConvertMediaStats; tv: ConvertMediaStats; total: ConvertMediaStats }
+export interface ConvertAllResult { movies: number; episodes: number; queued: number; blocklisted: number }
+
 export interface ConvertSeriesRollup {
   series_id: number;
   title: string;
@@ -1053,11 +1060,12 @@ export const api = {
 
   // Convert
   convertHardware: () => req<{ encoders: ConvertEncoder[]; selected: ConvertEncoder; reclaimed_bytes: number; scratch_dir: string; scratch_free_bytes: number; render_devices: { path: string; pci: string; vendor: string }[]; vaapi_device: string }>("/api/v1/convert/hardware"),
-  convertSweep: () => req<{ status: string }>("/api/v1/convert/sweep", { method: "POST" }),
+  convertSweep: () => req<ConvertAllResult>("/api/v1/convert/sweep", { method: "POST" }),
   convertLibrary: (media: "movies" | "tv" = "movies", seriesID?: number) =>
     req<{ items: ConvertCandidate[] }>(`/api/v1/convert/library${media === "tv" ? `?media=tv&series=${seriesID}` : ""}`).then((r) => r.items),
   // The TV tab lists shows, not episodes — one roll-up row per series keeps the payload
   // small no matter how many episodes the library holds.
+  convertStats: () => req<ConvertLibraryStats>("/api/v1/convert/stats"),
   convertLibrarySeries: () => req<{ series: ConvertSeriesRollup[] }>("/api/v1/convert/library?media=tv").then((r) => r.series),
   convertSeries: (seriesID: number, season?: number) =>
     req<{ queued: number }>(`/api/v1/convert/series/${seriesID}${season === undefined ? "" : `?season=${season}`}`, { method: "POST" }),
