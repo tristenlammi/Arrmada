@@ -221,6 +221,9 @@ func main() {
 	// Hold a movie download for admin review when it doesn't match what it was
 	// grabbed for (e.g. a wrong film), instead of importing the wrong thing.
 	imports.SetGate(coordinator.HoldMovieImport)
+	// Blocklist (and clean up) a movie download that finished but has nothing importable,
+	// so the 30s import sweep stops retrying it forever.
+	imports.SetFailureHook(coordinator.HandleMovieImportFailure)
 	// Forget import records when files are deleted, so a re-grab re-imports.
 	go imports.WatchDeletions(runCtx)
 	// Wire the series module into the coordinator: TV downloads land in a separate

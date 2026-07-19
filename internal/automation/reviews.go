@@ -146,6 +146,42 @@ func (c *Coordinator) HoldMovieImport(ctx context.Context, hash, name, contentPa
 	return reason, true
 }
 
+// HandleMovieImportFailure reacts to a movie download that finished but could not be
+// imported. The import sweep runs every 30 seconds, so without this it retried the same
+// broken download forever and the release stayed a valid candidate for re-grabbing.
+//
+// Only a download with NO video is blocklisted and removed. That's junk — a fake, an
+// empty folder, an archive set that won't unpack — and can never import. A failure on a
+// download that DOES contain video is deliberately left alone: those are far more likely
+// transient (disk full, permissions, a file still being moved), and blocklisting a good
+// release because of a temporary error would be worse than retrying.
+func (c *Coordinator) HandleMovieImportFailure(ctx context.Context, hash, name, contentPath string, cause error) {
+	if c.movies == nil {
+		return
+	}
+	if vids, err := library.FindVideos(contentPath); err != nil || len(vids) > 0 {
+		return // has video, or we can't tell — treat as transient and retry
+	}
+	mid, indexerName, grabbed := c.grabbedMediaFor(ctx, name, "movie")
+	if !grabbed {
+		m, ok := c.movies.MatchRelease(ctx, name)
+		if !ok {
+			return // not a release we can attribute to a movie — nothing to blocklist against
+		}
+		mid = m.ID
+	}
+	reason := "downloaded but contained no video"
+	if hasExecutable(contentPath) {
+		reason = "download contained executables and no video (possible fake/malware)"
+	}
+	if err := c.addBlock(ctx, mid, name, indexerName, "", reason); err != nil {
+		c.log.Warn("movie: blocklist after failed import failed", "release", name, "err", err)
+	}
+	c.log.Warn("movie import: nothing importable — blocklisted so it isn't re-grabbed",
+		"release", name, "reason", reason, "err", cause)
+	c.removeIfNoVideo(ctx, hash, name, contentPath)
+}
+
 // --- review actions -------------------------------------------------------
 
 // RejectReview removes the download (and its files), blocklists the release so

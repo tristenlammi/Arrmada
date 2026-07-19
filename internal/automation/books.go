@@ -40,14 +40,40 @@ func (c *Coordinator) SearchBooksMissing(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	// A book stays "missing" for the whole download (b.Ebook is only set after import),
+	// so without an in-flight guard every sweep re-grabbed the same release.
+	queue, qerr := c.downloads.Queue(ctx)
+	if qerr != nil {
+		queue = nil
+	}
 	for _, b := range all {
 		if !b.Monitored {
 			continue
+		}
+		if c.bookDownloading(ctx, queue, b.ID) {
+			continue // already downloading for this book — let it finish
 		}
 		if err := c.SearchBookNow(ctx, b.ID); err != nil {
 			c.log.Warn("book: search failed", "title", b.Title, "err", err)
 		}
 	}
+}
+
+// bookDownloading reports whether the queue already holds a book torrent for this book,
+// so search/RSS sweeps don't stack a second grab on an in-flight one.
+func (c *Coordinator) bookDownloading(ctx context.Context, queue []download.Item, bookID int64) bool {
+	if c.books == nil {
+		return false
+	}
+	for _, it := range queue {
+		if it.Category != bookCategory {
+			continue
+		}
+		if b, ok := c.books.MatchByRelease(ctx, it.Name); ok && b.ID == bookID {
+			return true
+		}
+	}
+	return false
 }
 
 // SearchBookNow searches for each wanted edition (ebook/audiobook, per the profile)
@@ -205,6 +231,11 @@ func (c *Coordinator) ImportBookDownloads(ctx context.Context) {
 	}
 	for _, it := range completed {
 		if it.ContentPath == "" {
+			continue
+		}
+		// Without this the sweep re-hardlinked and re-marked every completed book
+		// torrent every 30 seconds for as long as it seeded — pure disk/IO churn.
+		if c.hashAlreadyImported(ctx, it.Hash) {
 			continue
 		}
 		b, ok := c.books.MatchByRelease(ctx, it.Name)
@@ -840,9 +871,16 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 	if err != nil || len(res.Releases) == 0 {
 		return
 	}
+	queue, qerr := c.downloads.Queue(ctx)
+	if qerr != nil {
+		queue = nil
+	}
 	for _, b := range all {
 		if !b.Monitored {
 			continue
+		}
+		if c.bookDownloading(ctx, queue, b.ID) {
+			continue // already downloading for this book — don't stack another grab
 		}
 		sp := c.bookProfile(ctx, b.QualityProfile)
 		matched := c.dropBlockedBook(ctx, b.ID, releasesForBook(res.Releases, b))

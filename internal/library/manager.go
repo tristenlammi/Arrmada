@@ -40,6 +40,10 @@ type TitleResolver interface {
 // resolve it. nil → import everything.
 type ImportGate func(ctx context.Context, hash, name, contentPath string) (reason string, hold bool)
 
+// ImportFailure is called when a candidate could not be imported, so the caller can
+// react (blocklist the release, remove junk) rather than let the sweep retry forever.
+type ImportFailure func(ctx context.Context, hash, name, contentPath string, cause error)
+
 // Manager orchestrates importing finished downloads: dedupe, import, record,
 // and announce.
 type Manager struct {
@@ -49,10 +53,16 @@ type Manager struct {
 	log      *slog.Logger
 	resolver TitleResolver // nil → name from the parsed release
 	gate     ImportGate    // nil → no review gate
+	onFail   ImportFailure // nil → failures are only logged
 }
 
 // SetGate installs the review gate that can hold a candidate back from import.
 func (m *Manager) SetGate(g ImportGate) { m.gate = g }
+
+// SetFailureHook installs a callback for candidates that fail to import, so the caller
+// can blocklist the release / clean up junk. Without it the import sweep just logs and
+// retries the same broken download on every pass, forever.
+func (m *Manager) SetFailureHook(f ImportFailure) { m.onFail = f }
 
 // NewManager wires the import manager against the library root.
 func NewManager(db *sql.DB, root string, bus *eventbus.Bus, log *slog.Logger) *Manager {
@@ -97,6 +107,9 @@ func (m *Manager) Process(ctx context.Context, cands []Candidate) int {
 		res, err := m.importOne(ctx, c)
 		if err != nil {
 			m.log.Warn("import failed", "name", c.Name, "err", err)
+			if m.onFail != nil {
+				m.onFail(ctx, c.Hash, c.Name, c.ContentPath, err)
+			}
 			continue
 		}
 		_ = m.repo.record(ctx, ImportRecord{

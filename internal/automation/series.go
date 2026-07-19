@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/indexer"
+	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
@@ -35,6 +36,27 @@ func hasExecutable(path string) bool {
 		return nil
 	})
 	return found
+}
+
+// removeIfNoVideo deletes a completed download that holds no video at all — a fake
+// (the ".scr" screensaver dressed up as an episode), an empty folder, or an archive set
+// that won't unpack. There is nothing to salvage, and left alone it occupies the
+// downloads dir forever since it's blocklisted and will never import.
+//
+// A download that DOES contain video is deliberately kept: we may simply have failed to
+// work out which episode it is, and the user can still import it by hand.
+func (c *Coordinator) removeIfNoVideo(ctx context.Context, hash, name, contentPath string) {
+	if hash == "" || contentPath == "" || c.downloads == nil {
+		return
+	}
+	if vids, err := library.FindVideos(contentPath); err != nil || len(vids) > 0 {
+		return // has video (or we can't tell) — leave it for manual import
+	}
+	if err := c.downloads.Remove(ctx, hash, true); err != nil {
+		c.log.Warn("import: could not remove junk download", "release", name, "err", err)
+		return
+	}
+	c.log.Info("import: removed a download with no video in it (blocklisted, nothing to import)", "release", name)
 }
 
 // grabIndexer returns the indexer a release was grabbed from ("" if untracked), for
@@ -499,6 +521,7 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 					"series", s.Title, "release", it.Name, "content_path", it.ContentPath)
 			}
 			c.addBlockSeries(ctx, s.ID, it.Name, c.grabIndexer(ctx, it.Name, "series"), reason)
+			c.removeIfNoVideo(ctx, it.Hash, it.Name, it.ContentPath)
 		}
 	}
 }
