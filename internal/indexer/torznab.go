@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -22,15 +23,15 @@ type feed struct {
 }
 
 type feedItem struct {
-	Title       string      `xml:"title"`
-	Description string      `xml:"description"`
-	Link        string      `xml:"link"`
-	Comments    string      `xml:"comments"`
-	GUID      string        `xml:"guid"`
-	PubDate   string        `xml:"pubDate"`
-	Size      int64         `xml:"size"`
-	Enclosure feedEnclosure `xml:"enclosure"`
-	Attrs     []feedAttr    `xml:"attr"`
+	Title       string        `xml:"title"`
+	Description string        `xml:"description"`
+	Link        string        `xml:"link"`
+	Comments    string        `xml:"comments"`
+	GUID        string        `xml:"guid"`
+	PubDate     string        `xml:"pubDate"`
+	Size        int64         `xml:"size"`
+	Enclosure   feedEnclosure `xml:"enclosure"`
+	Attrs       []feedAttr    `xml:"attr"`
 }
 
 type feedEnclosure struct {
@@ -86,15 +87,59 @@ func ParseFeed(data []byte) ([]Release, error) {
 	return releases, nil
 }
 
+// torznabRequestDelay is the minimum gap between requests to the SAME host. The
+// scraped trackers (TorrentLeech, 1337x) have always throttled; torznab did not, which
+// is what earns HTTP 429s once many series are monitored — every indexer behind one
+// Prowlarr shares that host, so a burst of per-series searches hits it all at once.
+const torznabRequestDelay = 1000 * time.Millisecond
+
 // TorznabSearcher queries Torznab/Newznab endpoints over HTTP. It implements
 // Searcher for both the KindTorznab and KindNewznab kinds.
 type TorznabSearcher struct {
 	http *http.Client
+	mu   sync.Mutex
+	// next[host] is the earliest time the next request to that host may start.
+	// Keyed by host so separate trackers don't queue behind each other.
+	next map[string]time.Time
 }
 
 // NewTorznabSearcher returns a searcher with a sane request timeout.
 func NewTorznabSearcher() *TorznabSearcher {
-	return &TorznabSearcher{http: &http.Client{Timeout: 30 * time.Second}}
+	return &TorznabSearcher{
+		http: &http.Client{Timeout: 30 * time.Second},
+		next: map[string]time.Time{},
+	}
+}
+
+// throttle reserves this request's slot for the endpoint's host and waits for it.
+// The slot is claimed under the lock but slept for outside it, so concurrent callers
+// to one host queue in order while other hosts proceed in parallel.
+func (c *TorznabSearcher) throttle(ctx context.Context, endpoint string) error {
+	host := endpoint
+	if u, err := url.Parse(endpoint); err == nil && u.Host != "" {
+		host = u.Host
+	}
+
+	c.mu.Lock()
+	slot := time.Now()
+	if next, ok := c.next[host]; ok && next.After(slot) {
+		slot = next
+	}
+	c.next[host] = slot.Add(torznabRequestDelay)
+	c.mu.Unlock()
+
+	wait := time.Until(slot)
+	if wait <= 0 {
+		return nil
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Search runs a text search against a single indexer and returns its releases,
@@ -136,6 +181,9 @@ func (c *TorznabSearcher) Test(ctx context.Context, idx Indexer) error {
 }
 
 func (c *TorznabSearcher) get(ctx context.Context, endpoint string) ([]byte, error) {
+	if err := c.throttle(ctx, endpoint); err != nil {
+		return nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err

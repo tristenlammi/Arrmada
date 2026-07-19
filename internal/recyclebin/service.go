@@ -215,8 +215,22 @@ func (s *Service) Stats(ctx context.Context) Stats {
 	return st
 }
 
-func (s *Service) maxGB(ctx context.Context) int         { return atoiClampNonNeg(s.settings.Get(ctx, keyMaxGB, "0")) }
-func (s *Service) retentionDays(ctx context.Context) int { return atoiClampNonNeg(s.settings.Get(ctx, keyRetention, "0")) }
+// Default guard rails. The bin is on by default and absorbs every delete, quality
+// upgrade and Convert original, so shipping "unlimited" quietly grows it until the
+// volume fills. These are the single source of truth — the settings API renders the
+// same constants, so what the UI shows is what Enforce actually applies. Set either to
+// 0 in Settings to opt back into unlimited.
+const (
+	DefaultMaxGB         = "50"
+	DefaultRetentionDays = "30"
+)
+
+func (s *Service) maxGB(ctx context.Context) int {
+	return atoiClampNonNeg(s.settings.Get(ctx, keyMaxGB, DefaultMaxGB))
+}
+func (s *Service) retentionDays(ctx context.Context) int {
+	return atoiClampNonNeg(s.settings.Get(ctx, keyRetention, DefaultRetentionDays))
+}
 
 func atoiClampNonNeg(v string) int {
 	n, _ := strconv.Atoi(v)

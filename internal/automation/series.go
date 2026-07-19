@@ -106,8 +106,22 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 		if !c.series.HasWantedEpisodes(ctx, s.ID) {
 			continue
 		}
-		if err := c.SearchSeriesNow(ctx, s.ID); err != nil {
+		// Exponential backoff for a series that keeps finding nothing — an episode no
+		// indexer carries used to cost a full multi-indexer search 4×/hour forever.
+		lastAt, misses := c.series.SearchState(ctx, s.ID)
+		if wait := searchBackoff(misses); wait > 0 {
+			if last := parseTime(lastAt); !last.IsZero() && time.Since(last) < wait {
+				continue
+			}
+		}
+		n, err := c.searchSeriesOnce(ctx, s.ID)
+		switch {
+		case err != nil:
 			c.log.Warn("series: search failed", "series", s.Title, "err", err)
+		case n > 0:
+			c.series.ResetSearchMisses(ctx, s.ID)
+		default:
+			c.series.RecordSearchMiss(ctx, s.ID)
 		}
 	}
 }
@@ -120,26 +134,52 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 //     or multi-season packs, since the show isn't finished and each new season is best
 //     picked up as its own pack.
 func (c *Coordinator) SearchSeriesNow(ctx context.Context, seriesID int64) error {
+	_, err := c.searchSeriesOnce(ctx, seriesID)
+	return err
+}
+
+// searchSeriesOnce is SearchSeriesNow that also reports how many releases it grabbed,
+// so the missing-sweep can back off a series that keeps coming up empty.
+func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (int, error) {
 	if c.series == nil {
-		return nil
+		return 0, nil
 	}
 	s, err := c.series.Get(ctx, seriesID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: s.Title, MediaType: indexer.MediaSeries, Limit: 100})
 	if err != nil || len(res.Releases) == 0 {
-		return err
+		return 0, err
 	}
-	c.grabSeriesFrom(ctx, s, res.Releases)
-	return nil
+	return c.grabSeriesFrom(ctx, s, res.Releases), nil
+}
+
+// searchBackoff is how long to wait before sweeping a series again after n consecutive
+// sweeps that grabbed nothing: 30m, 1h, 2h, 4h, 8h, capped at 12h. Applies to the
+// automatic sweep only — a user-triggered search and RSS sync both ignore it, so a
+// newly-aired episode is still picked up promptly.
+func searchBackoff(misses int) time.Duration {
+	if misses <= 0 {
+		return 0
+	}
+	d := 30 * time.Minute
+	for i := 1; i < misses; i++ {
+		d *= 2
+		if d >= 12*time.Hour {
+			return 12 * time.Hour
+		}
+	}
+	return d
 }
 
 // grabSeriesFrom applies the season-pack-preference grab logic over a set of releases
 // (from an on-demand search, the RSS feed, or a stall re-search) for a series' monitored,
 // aired, missing episodes. Blocklisted releases are skipped so a stall re-search doesn't
 // re-grab what just failed.
-func (c *Coordinator) grabSeriesFrom(ctx context.Context, s series.Series, releases []indexer.Release) {
+// Returns how many releases it grabbed (named, so the existing bare returns keep
+// working) — the sweep uses it to decide whether to back this series off.
+func (c *Coordinator) grabSeriesFrom(ctx context.Context, s series.Series, releases []indexer.Release) (grabbedN int) {
 	wanted, seriesSeasons := wantedEpisodes(s)
 	if len(wanted) == 0 {
 		return
@@ -191,6 +231,7 @@ func (c *Coordinator) grabSeriesFrom(ctx context.Context, s series.Series, relea
 			return
 		}
 		grabbed[rel.DownloadURL] = true
+		grabbedN++
 		grabbedGB += rel.SizeGB()
 		c.recordSeriesGrab(ctx, s.ID, rel.Title, rel.Indexer, s.QualityProfile)
 		c.series.AddEvent(ctx, s.ID, "grabbed", label+": "+rel.Title+" · "+rel.Indexer)
@@ -256,6 +297,7 @@ func (c *Coordinator) grabSeriesFrom(ctx context.Context, s series.Series, relea
 			delete(needed, k)
 		}
 	}
+	return grabbedN
 }
 
 // wantedEpisodes returns the monitored, aired, file-less episodes plus the set of

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/library"
+	"github.com/tristenlammi/arrmada/internal/recyclebin"
 )
 
 const (
@@ -65,9 +66,12 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"convert_max_failures": a.deps.Settings.Get(ctx, "convert_max_failures", "3"),
 		"convert_scratch_dir":  a.deps.Settings.Get(ctx, "convert_scratch_dir", ""),
 		"convert_vaapi_device": a.deps.Settings.Get(ctx, "convert_vaapi_device", ""),
-		// Recycle bin guard rails.
-		"recycle_max_gb":         a.deps.Settings.Get(ctx, "recycle_max_gb", "0"),
-		"recycle_retention_days": a.deps.Settings.Get(ctx, "recycle_retention_days", "0"),
+		// Recycle bin guard rails. These default to REAL limits, not 0/unlimited: the
+		// bin is on by default and every delete, quality upgrade and Convert original
+		// lands in it, so an unlimited default silently grows until the volume fills.
+		// Set either to 0 to opt back into unlimited.
+		"recycle_max_gb":         a.deps.Settings.Get(ctx, "recycle_max_gb", recyclebin.DefaultMaxGB),
+		"recycle_retention_days": a.deps.Settings.Get(ctx, "recycle_retention_days", recyclebin.DefaultRetentionDays),
 	})
 }
 

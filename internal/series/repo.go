@@ -329,6 +329,26 @@ func (r *Repo) SeasonHasMissing(ctx context.Context, seriesID int64, season int)
 	return err == nil && one == 1
 }
 
+// SearchState returns when the series was last swept and how many consecutive sweeps
+// found nothing to grab (drives the search backoff).
+func (r *Repo) SearchState(ctx context.Context, seriesID int64) (lastSearchAt string, misses int) {
+	_ = r.db.QueryRowContext(ctx,
+		`SELECT last_search_at, search_misses FROM series WHERE id = ?`, seriesID).Scan(&lastSearchAt, &misses)
+	return lastSearchAt, misses
+}
+
+// RecordSearchMiss stamps the sweep time and increments the miss counter.
+func (r *Repo) RecordSearchMiss(ctx context.Context, seriesID int64) {
+	_, _ = r.db.ExecContext(ctx,
+		`UPDATE series SET last_search_at = datetime('now'), search_misses = search_misses + 1 WHERE id = ?`, seriesID)
+}
+
+// ResetSearchMisses clears the backoff after a successful grab.
+func (r *Repo) ResetSearchMisses(ctx context.Context, seriesID int64) {
+	_, _ = r.db.ExecContext(ctx,
+		`UPDATE series SET last_search_at = datetime('now'), search_misses = 0 WHERE id = ?`, seriesID)
+}
+
 // HasWantedEpisodes reports whether a series has an episode the automation would
 // actually grab: monitored, aired, and with no file. Mirrors wantedEpisodes' filter so
 // the missing-sweep can skip a series without spending an indexer search on it.

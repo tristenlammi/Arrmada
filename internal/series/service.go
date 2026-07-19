@@ -776,6 +776,21 @@ func (s *Service) AcquisitionSummary(ctx context.Context) []SeriesAcquisition {
 	return out
 }
 
+// SearchState returns the series' last sweep time and consecutive-miss count.
+func (s *Service) SearchState(ctx context.Context, seriesID int64) (string, int) {
+	return s.repo.SearchState(ctx, seriesID)
+}
+
+// RecordSearchMiss notes that a sweep found nothing to grab for this series.
+func (s *Service) RecordSearchMiss(ctx context.Context, seriesID int64) {
+	s.repo.RecordSearchMiss(ctx, seriesID)
+}
+
+// ResetSearchMisses clears the search backoff (a grab succeeded).
+func (s *Service) ResetSearchMisses(ctx context.Context, seriesID int64) {
+	s.repo.ResetSearchMisses(ctx, seriesID)
+}
+
 // HasWantedEpisodes reports whether the automation would actually grab anything for
 // this series (monitored + aired + no file) — used to skip a pointless indexer search.
 func (s *Service) HasWantedEpisodes(ctx context.Context, seriesID int64) bool {
