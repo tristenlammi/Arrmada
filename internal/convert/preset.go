@@ -20,14 +20,28 @@ func isCandidate(mi *MediaInfo) bool {
 // tolerating 2- vs 3-letter codes for the common languages.
 func langIn(lang string, wanted []string) bool {
 	l := strings.ToLower(strings.TrimSpace(lang))
-	if l == "" {
-		return false
+	// An untagged or explicitly-unknown track is KEPT. Dropping it lost untagged original-
+	// language and commentary tracks whenever any other track matched the filter, which is
+	// the opposite of what "keep these languages" should do to a track of unknown language.
+	if l == "" || l == "und" {
+		return true
 	}
 	for _, w := range wanted {
 		w = strings.ToLower(strings.TrimSpace(w))
 		if w == l || twoToThree[w] == l || twoToThree[l] == w {
 			return true
 		}
+	}
+	return false
+}
+
+// losslessAudio reports whether a codec carries lossless or object-based audio — TrueHD
+// (Atmos), DTS-HD MA / DTS:X, FLAC, PCM. Re-encoding these to AAC is an irreversible loss of
+// exactly the thing this module exists to preserve.
+func losslessAudio(codec string) bool {
+	switch strings.ToLower(strings.TrimSpace(codec)) {
+	case "truehd", "mlp", "flac", "alac", "dts", "dtshd", "dts-hd", "pcm_s16le", "pcm_s24le", "pcm_bluray", "pcm_dvd":
+		return true
 	}
 	return false
 }
@@ -122,7 +136,13 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool) []s
 			a = append(a, "-map", fmt.Sprintf("0:a:%d", au.AudIndex))
 			switch {
 			case plan.Audio.Loudnorm:
-				a = append(a, fmt.Sprintf("-c:a:%d", outAud), "aac", fmt.Sprintf("-b:a:%d", outAud), "256k", fmt.Sprintf("-filter:a:%d", outAud), "loudnorm=I=-16:TP=-1.5:LRA=11")
+				// Never loudnorm lossless/object-based audio: it would re-encode Atmos/TrueHD/
+				// DTS-HD down to 256k AAC. Those tracks are copied untouched instead.
+				if losslessAudio(au.Codec) {
+					a = append(a, fmt.Sprintf("-c:a:%d", outAud), "copy")
+				} else {
+					a = append(a, fmt.Sprintf("-c:a:%d", outAud), "aac", fmt.Sprintf("-b:a:%d", outAud), "256k", fmt.Sprintf("-filter:a:%d", outAud), "loudnorm=I=-16:TP=-1.5:LRA=11")
+				}
 			case mp4 && !mp4Audio(au.Codec):
 				a = append(a, fmt.Sprintf("-c:a:%d", outAud), "aac", fmt.Sprintf("-b:a:%d", outAud), "256k") // MP4 can't hold TrueHD/DTS/… → AAC
 			default:
@@ -154,6 +174,14 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool) []s
 		}
 	} else {
 		a = append(a, "-map", "0:s?", "-c:s", "copy")
+	}
+
+	// Attachments — embedded fonts, cover art. Once ANY -map is given, ffmpeg's default
+	// stream selection is off, so without this every attachment is silently dropped: ASS/SSA
+	// subtitles (anime especially) then render in a fallback font with the typesetting and
+	// karaoke styling destroyed. MP4 can't hold attachments, so this is MKV-only.
+	if !mp4 {
+		a = append(a, "-map", "0:t?", "-c:t", "copy")
 	}
 
 	// Video: copy for remux-only, else re-encode to the target codec (optionally downscaled).

@@ -56,6 +56,30 @@ func (ix *libraryIndex) sizesFor(ctx context.Context, mediaType string, seriesID
 	return out
 }
 
+// codecsFor returns path → recorded codec for a scope. An empty codec marks a row whose
+// probe failed, which must be retried rather than treated as up to date.
+func (ix *libraryIndex) codecsFor(ctx context.Context, mediaType string, seriesID int64) map[string]string {
+	q := `SELECT path, video_codec FROM convert_library WHERE media_type = ?`
+	args := []any{mediaType}
+	if seriesID > 0 {
+		q += ` AND series_id = ?`
+		args = append(args, seriesID)
+	}
+	rows, err := ix.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return map[string]string{}
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var p, c string
+		if rows.Scan(&p, &c) == nil {
+			out[p] = c
+		}
+	}
+	return out
+}
+
 func (ix *libraryIndex) upsert(ctx context.Context, r indexRow) error {
 	var infoJSON string
 	if r.Info != nil {
@@ -101,6 +125,7 @@ func (s *Service) IndexSeries(ctx context.Context, seriesID int64) error {
 		return err
 	}
 	known := s.index.sizesFor(ctx, "episode", seriesID)
+	codecs := s.index.codecsFor(ctx, "episode", seriesID)
 	keep := map[string]bool{}
 	for _, sn := range full.Seasons {
 		for _, e := range sn.Episodes {
@@ -110,7 +135,10 @@ func (s *Service) IndexSeries(ctx context.Context, seriesID int64) error {
 			keep[e.FilePath] = true
 			// The episode row already carries the file size, so an unchanged file needs
 			// no stat and no probe — the whole point of the index on a spun-down array.
-			if size, ok := known[e.FilePath]; ok && size == e.SizeBytes && e.SizeBytes > 0 {
+			// An empty recorded codec means a PREVIOUS probe failed (spun-down array,
+			// transient I/O); skipping on size alone latched that forever, so the file
+			// never became a candidate, never appeared in any list, and was never retried.
+			if size, ok := known[e.FilePath]; ok && size == e.SizeBytes && e.SizeBytes > 0 && codecs[e.FilePath] != "" {
 				continue
 			}
 			row := indexRow{
@@ -178,6 +206,7 @@ func (s *Service) IndexAll(ctx context.Context) {
 	if s.movies != nil {
 		if list, err := s.movies.List(ctx); err == nil {
 			known := s.index.sizesFor(ctx, "movie", 0)
+			codecs := s.index.codecsFor(ctx, "movie", 0)
 			keep := map[string]bool{}
 			for _, m := range list {
 				if ctx.Err() != nil {
@@ -187,8 +216,10 @@ func (s *Service) IndexAll(ctx context.Context) {
 					continue
 				}
 				keep[m.MovieFilePath] = true
-				if _, ok := known[m.MovieFilePath]; ok {
-					continue // already indexed; a changed movie file is re-indexed on import
+				// Re-probe when the recorded codec is empty (a previous probe failed), so a
+				// transient error doesn't hide the file from Convert permanently.
+				if _, ok := known[m.MovieFilePath]; ok && codecs[m.MovieFilePath] != "" {
+					continue
 				}
 				if err := s.IndexMovie(ctx, m.ID); err != nil {
 					s.log.Warn("convert: index movie failed", "movie", m.Title, "err", err)

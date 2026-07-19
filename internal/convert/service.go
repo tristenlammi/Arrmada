@@ -1039,12 +1039,27 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	// Pick the encoder for this plan's target codec (hardware if available, else CPU).
 	enc := s.encoderFor(plan.VideoCodec)
 
-	// HDR fail-safe: re-encoding HDR without preserving its metadata degrades the picture. HDR10
-	// static metadata is re-passed on the CPU/HEVC path, and a plain remux/copy keeps the stream
-	// (and its metadata) intact — both are safe. HDR10+ / Dolby Vision are still skipped until
-	// their dynamic-metadata tools (hdr10plus_tool / dovi_tool) land.
-	if mi.HDR != "" && mi.HDR != "SDR" && !s.canPreserveHDR(mi, plan, enc) {
-		s.finish(job, StateSkipped, mi.HDR+" — skipped (metadata passthrough not yet available for this target)")
+	// HDR metadata passthrough is implemented only on the x265 path — hdr10Args re-passes the
+	// mastering display / max-cll, and the Dolby Vision and HDR10+ pipelines both encode a raw
+	// x265 elementary stream before injecting their metadata back.
+	//
+	// This used to mean HDR was SKIPPED outright whenever a hardware encoder was selected, i.e.
+	// on every GPU machine — so all the HDR content in the library, and the whole bundled
+	// dovi_tool / hdr10plus_tool pipeline, was permanently unreachable. Fall back to CPU for
+	// these files instead: slower, but it converts and keeps the metadata rather than never
+	// converting at all.
+	if isHDR(mi.HDR) && plan.VideoCodec == "hevc" && enc.Name != "libx265" {
+		hw := enc
+		enc = cpuEncoder("hevc")
+		s.update(job, func(j *Job) { j.Encoder = enc.Label }) // don't claim GPU in the UI
+		s.log.Info("convert: HDR file — using CPU x265 so the HDR metadata survives",
+			"title", job.Title, "hdr", mi.HDR, "instead_of", hw.Name)
+	}
+
+	// Fail-safe for what still can't be preserved (AV1 targets, or a missing dovi_tool /
+	// hdr10plus_tool): skip rather than silently flatten the picture.
+	if isHDR(mi.HDR) && !s.canPreserveHDR(mi, plan, enc) {
+		s.finish(job, StateSkipped, mi.HDR+" — skipped (metadata passthrough not available for this target)")
 		return
 	}
 	// Seeding-safety: skip hardlinked files by default so we don't duplicate a seeding copy.
@@ -1362,6 +1377,9 @@ func (s *Service) canPreserveHDR(mi *MediaInfo, plan Plan, enc Encoder) bool {
 	}
 	return false
 }
+
+// isHDR reports whether a probed HDR label means the file carries HDR metadata.
+func isHDR(hdr string) bool { return hdr != "" && hdr != "SDR" }
 
 // codecTag is the source-release marker written to the library record after a conversion.
 func codecTag(plan Plan) string {

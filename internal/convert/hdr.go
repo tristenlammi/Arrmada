@@ -141,6 +141,13 @@ func (s *Service) encodeHEVCStream(ctx context.Context, job *Job, src, dst strin
 		crf = crfDefault("hevc")
 	}
 	args := []string{"-y", "-hide_banner", "-nostats", "-progress", "pipe:1", "-i", src, "-map", "0:v:0", "-an", "-sn"}
+	// A raw Annex-B stream carries no timestamps, so the remux stamps it at one constant rate.
+	// A VFR source therefore has to be flattened HERE, or its variable timing is reinterpreted
+	// as constant while the audio keeps real timing — progressive A/V drift. The normal path
+	// does this in compileOutputArgs; this path was missing it entirely.
+	if plan.VFRToCFR && mi.VFR {
+		args = append(args, "-fps_mode", "cfr")
+	}
 	if plan.ScaleHeight > 0 && mi.Height > plan.ScaleHeight {
 		args = append(args, "-vf", scaleCPU(plan.ScaleHeight))
 	}
@@ -168,9 +175,14 @@ func (s *Service) remuxVideoStream(ctx context.Context, video, src, dst string, 
 		return fmt.Errorf("package video: %v (%s)", err, tailStr(out))
 	}
 	// 2) MP4 video + original audio/subtitles → final MKV.
+	// Input 1 is the ORIGINAL: audio, subtitles, attachments, chapters and global metadata all
+	// come from there. Without the explicit -map_metadata/-map_chapters, ffmpeg defaults to
+	// input 0 — the throwaway video-only temp file — so the title, tags and chapters were taken
+	// from an empty container and the original's were discarded. Attachments were dropped too.
 	args := []string{"-y", "-hide_banner", "-loglevel", "error",
 		"-i", tmp, "-i", src,
-		"-map", "0:v:0", "-map", "1:a?", "-map", "1:s?",
+		"-map", "0:v:0", "-map", "1:a?", "-map", "1:s?", "-map", "1:t?",
+		"-map_metadata", "1", "-map_chapters", "1",
 		"-c", "copy", "-tag:v", "hvc1", dst}
 	if out, err := exec.CommandContext(ctx, s.ffmpeg, args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("%v (%s)", err, tailStr(out))
