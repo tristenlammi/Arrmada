@@ -216,6 +216,20 @@ function RequestPoster({ rq, staff, onChanged }: { rq: MediaRequest; staff: bool
         <div className="flex h-full w-full items-end p-2" style={{ background: "linear-gradient(150deg, hsl(24 40% 30%), hsl(20 35% 16%))" }}><span className="text-[12px] font-bold text-white">{rq.title}</span></div>
       )}
       <span className="absolute right-1.5 top-1.5 rounded-full px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase" style={{ background: BADGE_BG, color: status.tone, border: `1px solid ${status.tone}` }}>{status.label}</span>
+      {/* Who asked for it — staff only, and always visible (not hover-gated), since staff
+          see everyone's requests and "whose is this?" is the first question. */}
+      {staff && rq.requested_by_name && (
+        <span
+          className="absolute left-1.5 top-1.5 flex max-w-[70%] items-center gap-1 rounded-full py-[2px] pl-[2px] pr-1.5"
+          style={{ background: BADGE_BG, border: "1px solid rgba(255,255,255,.18)" }}
+          title={`Requested by ${rq.requested_by_name}`}
+        >
+          <span className="grid h-[14px] w-[14px] flex-none place-items-center rounded-full text-[8px] font-bold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>
+            {rq.requested_by_name[0]?.toUpperCase()}
+          </span>
+          <span className="truncate text-[9px] font-semibold text-white">{rq.requested_by_name}</span>
+        </span>
+      )}
       {pct > 0 && pct < 100 && (
         <div className="absolute inset-x-0 bottom-0 z-10 h-1.5" style={{ background: "rgba(20,12,7,.55)" }}>
           <div className="h-full" style={{ width: `${pct}%`, background: "var(--accent)" }} />
@@ -223,7 +237,6 @@ function RequestPoster({ rq, staff, onChanged }: { rq: MediaRequest; staff: bool
       )}
       <div className="absolute inset-x-0 bottom-0 flex flex-col gap-1.5 p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.92), transparent)" }}>
         <div className="truncate text-[11.5px] font-semibold text-white">{rq.title}</div>
-        {staff && rq.requested_by_name && <div className="truncate text-[9.5px]" style={{ color: "rgba(255,255,255,.65)" }}>by {rq.requested_by_name}</div>}
         {staff && rq.status === "pending" ? (
           <div className="flex gap-1.5">
             <button disabled={busy} onClick={() => act(() => api.approveRequest(rq.id))} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Approve</button>
