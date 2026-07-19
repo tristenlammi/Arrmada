@@ -155,7 +155,15 @@ func (s *Service) IndexMovie(ctx context.Context, movieID int64) error {
 	if mi, err := s.probeCached(ctx, m.MovieFilePath); err == nil {
 		row.Info, row.Codec, row.SizeBytes = mi, mi.VideoCodec, mi.SizeBytes
 	}
-	return s.index.upsert(ctx, row)
+	if err := s.index.upsert(ctx, row); err != nil {
+		return err
+	}
+	// A convert can change the container (MKV → MP4), so drop any row still pointing at this
+	// movie's previous path — otherwise the old codec lingers and it stays "convertible".
+	_, _ = s.index.db.ExecContext(ctx,
+		`DELETE FROM convert_library WHERE media_type = 'movie' AND movie_id = ? AND path <> ?`,
+		m.ID, m.MovieFilePath)
+	return nil
 }
 
 // IndexAll refreshes the whole index — the daily sweep. Incremental: files whose

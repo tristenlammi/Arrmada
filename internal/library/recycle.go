@@ -2,6 +2,7 @@ package library
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,11 @@ import (
 // RecycleMetaExt is the sidecar extension holding a recycled file's original path +
 // deletion time, so the recycle bin can restore it and age it correctly.
 const RecycleMetaExt = ".arrmeta"
+
+// ErrRecycleDisabled is returned when the recycle bin is switched off. Callers decide
+// whether that means "hard-delete" or "refuse" — it must never mean "move it somewhere
+// arbitrary and report success".
+var ErrRecycleDisabled = errors.New("recycle bin is disabled")
 
 // RecycleMeta is what a recycled file's sidecar records.
 type RecycleMeta struct {
@@ -28,6 +34,13 @@ type RecycleMeta struct {
 // it was recycled, not when the content was last modified) and writes a sidecar with the
 // original path so the bin can restore it.
 func RecycleFile(recycleDir, path string) (string, error) {
+	// An empty recycleDir means the bin is switched off. Without this guard filepath.Join
+	// produced a RELATIVE destination, so the file was moved into the process working
+	// directory and reported as successfully recycled — losing it on the next container
+	// update. Callers that support "off" must hard-delete deliberately instead.
+	if recycleDir == "" {
+		return "", ErrRecycleDisabled
+	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return "", nil
 	}

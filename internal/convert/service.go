@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -235,7 +236,8 @@ func (s *Service) cleanScratch(ctx context.Context) {
 		removed := 0
 		for _, e := range entries {
 			n := e.Name()
-			if strings.HasPrefix(n, "convert-") || strings.HasPrefix(n, "sample-") || strings.HasPrefix(n, "h10p-") {
+			if strings.HasPrefix(n, "convert-") || strings.HasPrefix(n, "sample-") ||
+				strings.HasPrefix(n, "h10p-") || strings.HasPrefix(n, "dv-") {
 				if os.Remove(filepath.Join(dir, n)) == nil {
 					removed++
 				}
@@ -460,6 +462,28 @@ func (s *Service) queueMovie(ctx context.Context, movieID int64, plan Plan) (*Jo
 		return nil, err
 	}
 	return job, nil
+}
+
+// finishAfterEncode skips a job that already burned a full encode (or three, via the quality
+// gate) and would do so again on every sweep: the outcome is deterministic for that file, and
+// it stays a candidate because its codec never changed. Counting it toward the blocklist is
+// what stops the library re-transcoding the same unshrinkable file forever.
+func (s *Service) finishAfterEncode(job *Job, note string) {
+	s.failures.recordFailure(context.Background(), jobKey(job), note)
+	s.finish(job, StateSkipped, note)
+}
+
+// reindexConverted updates the library index for the file a job just converted.
+func (s *Service) reindexConverted(ctx context.Context, job *Job) {
+	var err error
+	if job.Kind == "episode" {
+		err = s.IndexSeries(ctx, job.SeriesID)
+	} else {
+		err = s.IndexMovie(ctx, job.MovieID)
+	}
+	if err != nil {
+		s.log.Warn("convert: reindex after convert failed", "title", job.Title, "err", err)
+	}
 }
 
 // pendingState reports whether a job still has work left to do (so it must not be trimmed).
@@ -846,7 +870,9 @@ func (s *Service) process(ctx context.Context, job *Job) {
 
 	// Encode, then (if the quality gate is on for a real transcode) score the result and
 	// re-encode at a higher quality until it passes or we run out of attempts.
-	gate := plan.VideoCodec != "" && s.settings.GetBool(ctx, keyQualityGate, false)
+	// Default true, matching the settings API (httpapi/settings.go) — they disagreed, so a
+	// fresh install showed the gate as ON in the UI while encoding with it OFF.
+	gate := plan.VideoCodec != "" && s.settings.GetBool(ctx, keyQualityGate, true)
 	minSSIM := parseFloatDefault(s.settings.Get(ctx, keyMinSSIM, "0.95"), 0.95)
 	s.update(job, func(j *Job) { j.State = StateEncoding; j.Encoder = enc.Label })
 	s.event("info", fmt.Sprintf("%s — source: %s · %s", title, mediaSpec(mi), humanBytes(mi.SizeBytes)))
@@ -877,7 +903,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 			break
 		}
 		if attempt >= qualityRetries {
-			s.finish(job, StateSkipped, fmt.Sprintf("quality gate failed — SSIM %.4f < %.4f after %d attempts; kept the original", score, minSSIM, attempt+1))
+			s.finishAfterEncode(job, fmt.Sprintf("quality gate failed — SSIM %.4f < %.4f after %d attempts; kept the original", score, minSSIM, attempt+1))
 			return
 		}
 		plan.Quality = higherQuality(plan)
@@ -972,7 +998,7 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst, ext st
 	// Save-space safety only applies to transcodes; a remux/container change is about the
 	// container, not size, so reject it only if it grew unreasonably.
 	if plan.VideoCodec != "" && outSize >= mi.SizeBytes {
-		s.finish(job, StateSkipped, "converted file wasn't smaller — kept the original")
+		s.finishAfterEncode(job, "converted file wasn't smaller — kept the original")
 		return
 	}
 	if plan.VideoCodec == "" && outSize > mi.SizeBytes*12/10 {
@@ -985,28 +1011,56 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst, ext st
 	}
 	s.event("info", fmt.Sprintf("%s — output: %s · %s (%d%% smaller)", title, mediaSpec(outInfo), humanBytes(outSize), pct))
 
-	// Safe replace: recycle the original, then move the new file into place. The container may
-	// change (→ MKV or MP4), so the extension may change.
+	// Safe replace. Ordering matters enormously here: the original must remain on disk and
+	// intact until the converted file is completely written to the destination volume.
+	//
+	// This used to recycle the original FIRST and then move the new file in. Those two steps
+	// fail together — a full array breaks both — and the deferred scratch cleanup then removed
+	// the encode, destroying the only copy. Worse, the move is a cross-volume COPY on every
+	// job (scratch deliberately lives on separate fast storage), so an interrupted copy left a
+	// truncated file at the real library path.
+	//
+	// Now: copy to a sibling .arrpart file, and only once that succeeds do we retire the
+	// original and swap the part file in with a same-directory rename, which is atomic.
 	s.update(job, func(j *Job) { j.State = StateReplacing })
 	finalPath := strings.TrimSuffix(src, filepath.Ext(src)) + ext
-	if dst2, rerr := library.RecycleFile(s.recycleDir, src); rerr != nil {
-		s.log.Warn("convert: recycle original failed, hard-deleting", "path", src, "err", rerr)
-		_ = os.Remove(src)
-	} else {
-		s.log.Info("convert: original recycled", "to", dst2)
+	part := finalPath + ".arrpart"
+	_ = os.Remove(part) // a leftover from an interrupted job
+	if err := moveFile(dst, part); err != nil {
+		_ = os.Remove(part)
+		s.finish(job, StateFailed, "could not stage the converted file: "+err.Error()+" — kept the original")
+		return
+	}
+
+	// The original is only retired once the replacement is safely on the same volume.
+	if err := s.retire(src); err != nil {
+		_ = os.Remove(part)
+		s.finish(job, StateFailed, "could not move the original to the recycle bin: "+err.Error()+" — kept the original")
+		return
 	}
 	if finalPath != src {
 		if _, e := os.Stat(finalPath); e == nil {
-			_, _ = library.RecycleFile(s.recycleDir, finalPath)
+			if err := s.retire(finalPath); err != nil {
+				s.log.Warn("convert: could not retire the file being replaced", "path", finalPath, "err", err)
+			}
 		}
 	}
-	if err := moveFile(dst, finalPath); err != nil {
-		s.finish(job, StateFailed, "could not move converted file into place: "+err.Error())
+	// Same-directory rename: atomic, so the library never sees a partial file.
+	if err := os.Rename(part, finalPath); err != nil {
+		s.log.Error("convert: converted file is staged but could not be swapped in",
+			"part", part, "final", finalPath, "err", err)
+		s.finish(job, StateFailed, "converted file is staged at "+filepath.Base(part)+
+			" but could not replace the original — the original is in the recycle bin")
 		return
 	}
 	if err := s.markConverted(ctx, job, finalPath, "arrmada-convert:"+codecTag(plan)); err != nil {
 		s.log.Warn("convert: mark imported failed", "title", title, "err", err)
 	}
+	// Refresh this item in the library index. Without it a converted file keeps its OLD codec
+	// in the index: it shows as convertible forever, inflates "reclaimable", and gets re-queued
+	// by every sweep. Episodes self-heal on the next size comparison, but movies never did —
+	// nothing else calls IndexMovie.
+	s.reindexConverted(ctx, job)
 	s.update(job, func(j *Job) { j.OutBytes = outSize })
 	s.addReclaimed(ctx, mi.SizeBytes-outSize)
 	s.finish(job, StateDone, "")
@@ -1213,6 +1267,30 @@ func humanBytes(b int64) string {
 
 // moveFile renames src→dst, falling back to copy+remove across filesystems (scratch is
 // often a different volume from the library).
+// retire moves a library file out of the way before it's replaced: into the recycle bin, or
+// deleted outright if the admin switched the bin off. It never silently relocates a file —
+// see library.ErrRecycleDisabled.
+func (s *Service) retire(path string) error {
+	dst, err := library.RecycleFile(s.recycleDir, path)
+	switch {
+	case errors.Is(err, library.ErrRecycleDisabled):
+		// Deliberate: the user turned the bin off, so deletion is the configured behaviour.
+		if rerr := os.Remove(path); rerr != nil && !os.IsNotExist(rerr) {
+			return rerr
+		}
+		s.log.Info("convert: original deleted (recycle bin is off)", "path", path)
+		return nil
+	case err != nil:
+		return err
+	}
+	s.log.Info("convert: original recycled", "to", dst)
+	return nil
+}
+
+// moveFile moves src to dst, falling back to copy+remove across filesystems. The copy is
+// fsynced before the source is removed: without that, a crash between the copy and the
+// filesystem flushing it leaves a zero-length or partial destination while the source is
+// already gone. Callers must pass a temporary dst and rename it into place.
 func moveFile(src, dst string) error {
 	if err := os.Rename(src, dst); err == nil {
 		return nil
@@ -1221,17 +1299,19 @@ func moveFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
+	defer in.Close()
 	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
-		in.Close()
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
-		in.Close()
 		out.Close()
 		return err
 	}
-	in.Close()
+	if err := out.Sync(); err != nil { // durable before we drop the only other copy
+		out.Close()
+		return err
+	}
 	if err := out.Close(); err != nil {
 		return err
 	}
