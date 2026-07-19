@@ -333,6 +333,15 @@ const HEADERS: { label: string; key?: SortKey }[] = [
   { label: "Size", key: "size" }, { label: "Est. after", key: "est" }, { label: "" },
 ];
 
+// The TV tab's show roll-up is its own table with its own columns, sorted independently
+// of the episode table below it.
+type ShowSortKey = "title" | "files" | "convertible" | "size" | "est";
+const SHOW_HEADERS: { label: string; key?: ShowSortKey; align?: string }[] = [
+  { label: "Show", key: "title" }, { label: "Files", key: "files" },
+  { label: "Convertible", key: "convertible" }, { label: "Size", key: "size" },
+  { label: "Est. after", key: "est" }, { label: "" },
+];
+
 function Pill({ active, disabled, onClick, children }: { active: boolean; disabled?: boolean; onClick: () => void; children: ReactNode }) {
   return (
     <button type="button" disabled={disabled} onClick={onClick}
@@ -355,6 +364,7 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
   const [sampling, setSampling] = useState<number | null>(null);
   const [samples, setSamples] = useState<Record<number, ConvertSample>>({});
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "size", dir: "desc" });
+  const [showSort, setShowSort] = useState<{ key: ShowSortKey; dir: "asc" | "desc" }>({ key: "convertible", dir: "desc" });
   const [codecF, setCodecF] = useState<Set<string>>(new Set());
 
   useEffect(() => {
@@ -441,6 +451,26 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
     });
   }, [items, codecF, sort]);
 
+  const setShowSortKey = (key: ShowSortKey) =>
+    setShowSort((s) => s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "title" ? "asc" : "desc" });
+
+  const showView = useMemo(() => {
+    const dir = showSort.dir === "asc" ? 1 : -1;
+    const val = (sh: ConvertSeriesRollup): number | string => {
+      switch (showSort.key) {
+        case "title": return sh.title.toLowerCase();
+        case "files": return sh.files;
+        case "convertible": return sh.convertible;
+        case "size": return sh.total_bytes;
+        case "est": return sh.convertible ? sh.est_bytes : -1;
+      }
+    };
+    return (shows ?? []).slice().sort((a, b) => {
+      const va = val(a), vb = val(b);
+      return typeof va === "string" || typeof vb === "string" ? String(va).localeCompare(String(vb)) * dir : (va - vb) * dir;
+    });
+  }, [shows, showSort]);
+
   // Seasons of the open show that still have convertible episodes — nothing else is
   // worth offering a bulk button for.
   const seasons = useMemo(() => {
@@ -474,40 +504,52 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
               {" "}episode{shows.reduce((n, x) => n + x.convertible, 0) === 1 ? "" : "s"} across {shows.length.toLocaleString()} show{shows.length === 1 ? "" : "s"}.
               Open a show to see its episodes, or convert the whole thing.
             </p>
-            <div className="grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))" }}>
-              {shows.map((sh) => {
-                const done = sh.convertible === 0;
-                const saving = sh.total_bytes > 0 ? sh.est_bytes : 0;
-                return (
-                  <div key={sh.series_id} className="flex flex-col gap-2 rounded-xl p-3" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
-                    <button onClick={() => setShow(sh)} className="text-left">
-                      <div className="text-[13px] font-bold">{sh.title} <span className="font-normal text-ink-faint">{sh.year || ""}</span></div>
-                      <div className="mt-0.5 font-mono text-[10.5px] text-ink-faint">
-                        {sh.files.toLocaleString()} file{sh.files === 1 ? "" : "s"} · {fmtSize(sh.total_bytes)}
-                      </div>
-                    </button>
-                    <div className="flex items-center justify-between gap-2">
-                      {done ? (
-                        <span className="font-mono text-[10.5px]" style={{ color: "var(--good)" }}>all efficient ✓</span>
-                      ) : (
-                        <span className="font-mono text-[10.5px]" style={{ color: "var(--avoid)" }}>
-                          {sh.convertible.toLocaleString()} convertible{saving ? ` · ~${fmtSize(saving)} after` : ""}
-                        </span>
-                      )}
-                      <div className="flex items-center gap-1.5">
-                        <button onClick={() => setShow(sh)} className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Episodes</button>
-                        {!done && (
-                          <button onClick={() => convertBulk(sh.series_id, undefined, sh.title)} disabled={busy !== null}
-                            className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50"
-                            style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>
-                            {busy === `bulk:${sh.series_id}:all` ? "Queuing…" : "Convert all"}
+            <div className="overflow-x-auto rounded-xl" style={{ border: "1px solid var(--line)" }}>
+              <table className="w-full border-collapse text-[12.5px]" style={{ minWidth: 720 }}>
+                <thead><tr style={{ background: "var(--panel-2)" }}>{SHOW_HEADERS.map((h) => (
+                  <th key={h.label} onClick={h.key ? () => setShowSortKey(h.key!) : undefined}
+                    className={`px-3 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint ${h.key ? "cursor-pointer select-none hover:text-[var(--ink)]" : ""}`}>
+                    {h.label}{h.key && showSort.key === h.key ? (showSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                  </th>
+                ))}</tr></thead>
+                <tbody>
+                  {showView.map((sh, i) => {
+                    const done = sh.convertible === 0;
+                    return (
+                      <tr key={sh.series_id} style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
+                        <td className="px-3 py-2 font-semibold">
+                          <button onClick={() => setShow(sh)} className="text-left hover:underline">
+                            {sh.title} <span className="font-normal text-ink-faint">{sh.year || ""}</span>
                           </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+                        </td>
+                        <td className="px-3 py-2 font-mono tabular-nums text-ink-dim">{sh.files.toLocaleString()}</td>
+                        <td className="px-3 py-2 font-mono tabular-nums">
+                          {done
+                            ? <span style={{ color: "var(--good)" }}>all efficient ✓</span>
+                            : <span style={{ color: "var(--avoid)" }}>{sh.convertible.toLocaleString()}</span>}
+                        </td>
+                        <td className="px-3 py-2 font-mono tabular-nums">{fmtSize(sh.total_bytes)}</td>
+                        <td className="px-3 py-2 font-mono tabular-nums">
+                          {done ? <span className="text-ink-faint">—</span>
+                                : <span style={{ color: "var(--ink-faint)" }}>~{fmtSize(sh.est_bytes)}</span>}
+                        </td>
+                        <td className="px-3 py-2">
+                          <div className="flex items-center justify-end gap-1.5">
+                            <button onClick={() => setShow(sh)} className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Episodes</button>
+                            {!done && (
+                              <button onClick={() => convertBulk(sh.series_id, undefined, sh.title)} disabled={busy !== null}
+                                className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50"
+                                style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>
+                                {busy === `bulk:${sh.series_id}:all` ? "Queuing…" : "Convert all"}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </>
         )
