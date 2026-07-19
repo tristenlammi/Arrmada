@@ -368,8 +368,11 @@ func main() {
 			log.Warn("convert: reindex after import failed", "series_id", seriesID, "err", err)
 		}
 	})
-	// Nightly sweep: run auto-enabled convert rules.
-	sched.Register("convert-sweep", 12*time.Hour, false, func(ctx context.Context) error {
+	// Auto-convert sweep. Hourly, not 12-hourly: Sweep only queues while inside the encode
+	// window, so two daily ticks against a typical few-hour window usually landed outside it
+	// and auto-convert silently never fired. Re-queueing is cheap now that jobs are deduped,
+	// and waitForWindow gates the actual encoding regardless.
+	sched.Register("convert-sweep", time.Hour, false, func(ctx context.Context) error {
 		convertSvc.Sweep(ctx)
 		return nil
 	})

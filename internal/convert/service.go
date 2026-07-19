@@ -72,6 +72,7 @@ const (
 	StateDone      JobState = "done"
 	StateFailed    JobState = "failed"
 	StateSkipped   JobState = "skipped"
+	StateCancelled JobState = "cancelled"
 )
 
 // Job is one conversion of one library file — a movie or a TV episode.
@@ -80,7 +81,7 @@ type Job struct {
 	Kind        string   `json:"kind"` // "movie" | "episode" (empty = movie, for back-compat)
 	MovieID     int64    `json:"movie_id,omitempty"`
 	SeriesID    int64    `json:"series_id,omitempty"`
-	Season      int      `json:"season,omitempty"`
+	Season      int      `json:"season"` // NOT omitempty: season 0 is specials, and must survive
 	Episode     int      `json:"episode,omitempty"`
 	Title       string   `json:"title"`
 	State       JobState `json:"state"`
@@ -93,7 +94,10 @@ type Job struct {
 	OutBytes    int64    `json:"out_bytes"`
 	SSIM        float64  `json:"ssim,omitempty"` // quality-gate score vs the source (0 = not measured)
 	Note        string   `json:"note,omitempty"` // skip reason / error
-	plan        Plan     // the compiled plan this job runs (not serialized)
+
+	plan      Plan               // the compiled plan this job runs (not serialized)
+	cancel    context.CancelFunc // set while running, so the encode can be stopped mid-flight
+	cancelled bool               // cancellation requested; the worker checks before starting
 }
 
 // Service runs the conversion engine: a single worker draining a queue, doing the safe
@@ -124,6 +128,12 @@ type Service struct {
 	jobs      []*Job
 	nextID    int64
 	queue     chan *Job
+
+	// pending maps an item key (see failures.go) to its live job so the same file is never
+	// queued twice. The sweep re-runs ConvertAll over a queue that can take days to drain,
+	// which without this re-queues everything — including files currently encoding, letting
+	// two workers write the same output. Guarded by mu.
+	pending map[string]*Job
 
 	logMu  sync.Mutex
 	logBuf []LogLine // recent human-readable convert events, for the UI console
@@ -174,7 +184,8 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 		ffmpeg: ffmpeg, ffprobe: ffprobe, scratchDir: scratchDir, recycleDir: recycleDir,
 		encoders: encs, encoder: bestHEVC(encs), failures: &failureStore{db: db},
 		cache: &probeCache{db: db}, logs: &logStore{db: db}, index: &libraryIndex{db: db},
-		queue: make(chan *Job, maxQueued),
+		queue:   make(chan *Job, maxQueued),
+		pending: map[string]*Job{},
 	}
 	s.logBuf = s.logs.recent(context.Background(), maxLogLines) // restore the console after a restart
 	s.doviTool, _ = exec.LookPath("dovi_tool")
@@ -211,7 +222,7 @@ func (s *Service) Run(ctx context.Context) {
 					if !s.waitForWindow(ctx, job) {
 						return
 					}
-					s.process(ctx, job)
+					s.runJob(ctx, job)
 				}
 			}
 		}()
@@ -329,7 +340,7 @@ type Candidate struct {
 	Kind      string     `json:"kind"` // "movie" | "episode"
 	MovieID   int64      `json:"movie_id,omitempty"`
 	SeriesID  int64      `json:"series_id,omitempty"`
-	Season    int        `json:"season,omitempty"`
+	Season    int        `json:"season"` // NOT omitempty — season 0 is specials
 	Episode   int        `json:"episode,omitempty"`
 	Title     string     `json:"title"`
 	Year      int        `json:"year,omitempty"`
@@ -346,6 +357,23 @@ type Candidate struct {
 // per request, so this is one query with no filesystem access.
 func (s *Service) Library(ctx context.Context) ([]Candidate, error) {
 	return s.indexedCandidates(ctx, "movie", 0)
+}
+
+// LibraryConvertible returns only the files that still need conversion. The movies tab
+// otherwise returns every movie with its full MediaInfo — the same unbounded-payload problem
+// the TV roll-up solved — so this lets the UI ask for just the actionable rows.
+func (s *Service) LibraryConvertible(ctx context.Context, mediaType string, seriesID int64) ([]Candidate, error) {
+	all, err := s.indexedCandidates(ctx, mediaType, seriesID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Candidate, 0, len(all))
+	for _, c := range all {
+		if c.Candidate {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 // LibraryTV returns every downloaded TV episode with its spec + convert candidacy,
@@ -393,10 +421,15 @@ func (s *Service) enqueueEpisodeIndexed(ctx context.Context, c Candidate, plan P
 }
 
 func (s *Service) enqueueEpisode(ctx context.Context, seriesID int64, season, episode int, title string, plan Plan) (*Job, error) {
+	key := episodeKey(seriesID, season, episode)
+	if existing, ok := s.reservePending(key); !ok {
+		return existing, ErrAlreadyQueued
+	}
 	s.mu.Lock()
 	s.nextID++
 	job := &Job{ID: s.nextID, Kind: "episode", SeriesID: seriesID, Season: season, Episode: episode,
 		Title: title, State: StateQueued, Encoder: s.encoder.Label, plan: plan}
+	s.pending[key] = job
 	s.jobs = append([]*Job{job}, s.jobs...)
 	s.trimJobsLocked()
 	s.mu.Unlock()
@@ -417,7 +450,26 @@ func (s *Service) defaultPlan(ctx context.Context) Plan {
 		Quality:    maxQualityCRF(codec),
 		VFRToCFR:   true,
 		Container:  "mkv",
+		// These three were readable and writable through the settings API but never read
+		// here, so setting them did nothing at all. The AudioPlan machinery they feed
+		// (compileOutputArgs, estimatePlanSize) has always been implemented.
+		Audio: AudioPlan{
+			KeepLangs: splitCSV(s.settings.Get(ctx, keyKeepAudioLangs, "")),
+			AddStereo: s.settings.GetBool(ctx, keyAddStereo, false),
+			Loudnorm:  s.settings.GetBool(ctx, keyLoudnorm, false),
+		},
 	}
+}
+
+// splitCSV parses a comma-separated setting into trimmed, non-empty values.
+func splitCSV(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // targetCodec is the codec the library is being converted to (hevc | av1), default HEVC.
@@ -451,9 +503,14 @@ func (s *Service) queueMovie(ctx context.Context, movieID int64, plan Plan) (*Jo
 	if !m.HasFile || m.MovieFilePath == "" {
 		return nil, fmt.Errorf("movie has no file to convert")
 	}
+	key := movieKey(movieID)
+	if existing, ok := s.reservePending(key); !ok {
+		return existing, ErrAlreadyQueued
+	}
 	s.mu.Lock()
 	s.nextID++
 	job := &Job{ID: s.nextID, MovieID: movieID, Title: m.Title, State: StateQueued, Encoder: s.encoder.Label, plan: plan}
+	s.pending[key] = job
 	s.jobs = append([]*Job{job}, s.jobs...) // newest first
 	s.trimJobsLocked()
 	s.mu.Unlock()
@@ -521,6 +578,133 @@ func (s *Service) trimJobsLocked() {
 		kept[i], kept[j] = kept[j], kept[i]
 	}
 	s.jobs = kept
+}
+
+// reservePending claims an item key for a new job, or reports the job already working on it.
+// Callers must NOT hold mu.
+func (s *Service) reservePending(key string) (*Job, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if j, ok := s.pending[key]; ok {
+		return j, false
+	}
+	return nil, true
+}
+
+// releasePending drops a finished job's claim so the file can be queued again later.
+func (s *Service) releasePending(key string, job *Job) {
+	s.mu.Lock()
+	if s.pending[key] == job {
+		delete(s.pending, key)
+	}
+	s.mu.Unlock()
+}
+
+// ErrAlreadyQueued means this exact file already has a job waiting or running.
+var ErrAlreadyQueued = errors.New("this file is already queued")
+
+// Cancel stops a job: a queued one never starts, a running one has its encode killed. The
+// original file is only ever replaced at the very end of a job, so cancelling mid-encode
+// leaves the library untouched.
+func (s *Service) Cancel(id int64) error {
+	s.mu.Lock()
+	var job *Job
+	for _, j := range s.jobs {
+		if j.ID == id {
+			job = j
+			break
+		}
+	}
+	if job == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("no such job")
+	}
+	if !pendingState(job.State) {
+		s.mu.Unlock()
+		return fmt.Errorf("job already finished")
+	}
+	job.cancelled = true
+	cancel := job.cancel
+	s.mu.Unlock()
+
+	if cancel != nil {
+		cancel() // kills ffmpeg; process() unwinds and marks the job cancelled
+		return nil
+	}
+	// Still sitting in the queue — mark it now so the UI updates immediately; the worker
+	// will drop it when it reaches the front.
+	s.finish(job, StateCancelled, "cancelled")
+	return nil
+}
+
+// CancelQueued cancels everything not yet started, leaving in-flight encodes alone. This is
+// the escape hatch for "I queued my whole library with the wrong settings".
+func (s *Service) CancelQueued() int {
+	s.mu.Lock()
+	var targets []*Job
+	for _, j := range s.jobs {
+		if j.State == StateQueued {
+			j.cancelled = true
+			targets = append(targets, j)
+		}
+	}
+	s.mu.Unlock()
+	for _, j := range targets {
+		s.finish(j, StateCancelled, "cancelled")
+	}
+	if len(targets) > 0 {
+		s.event("info", fmt.Sprintf("Cancelled %d queued job%s", len(targets), plural(len(targets))))
+	}
+	return len(targets)
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// Blocklist returns the files automation is currently skipping because they kept failing,
+// with titles resolved. Without this the user has no way to discover that a handful of files
+// silently never convert.
+func (s *Service) Blocklist(ctx context.Context) ([]Blocked, error) {
+	list, err := s.failures.list(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range list {
+		b := &list[i]
+		switch b.Kind {
+		case "movie":
+			if s.movies != nil {
+				if m, err := s.movies.Get(ctx, b.MovieID); err == nil {
+					b.Title = m.Title
+				}
+			}
+		case "episode":
+			if s.series != nil {
+				if sm, err := s.series.Get(ctx, b.SeriesID); err == nil {
+					b.Title = fmt.Sprintf("%s - S%02dE%02d", sm.Title, b.Season, b.Episode)
+				}
+			}
+		}
+		if b.Title == "" {
+			b.Title = b.Key
+		}
+	}
+	return list, nil
+}
+
+// ClearBlocklist forgets an item's failures (or all of them when key is empty) so it will be
+// retried by the next convert.
+func (s *Service) ClearBlocklist(ctx context.Context, key string) error {
+	if key == "" {
+		_, err := s.failures.db.ExecContext(ctx, `DELETE FROM convert_failures`)
+		return err
+	}
+	s.failures.clearFailures(ctx, key)
+	return nil
 }
 
 // enqueue hands a job to the workers without blocking forever if the queue is saturated.
@@ -797,6 +981,37 @@ func (s *Service) update(job *Job, fn func(*Job)) {
 	s.mu.Unlock()
 }
 
+// runJob wraps process() with per-job cancellation, and drops a job that was cancelled while
+// it sat in the queue.
+func (s *Service) runJob(ctx context.Context, job *Job) {
+	jobCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	s.mu.Lock()
+	if job.cancelled {
+		s.mu.Unlock()
+		if pendingState(job.State) {
+			s.finish(job, StateCancelled, "cancelled")
+		}
+		return
+	}
+	job.cancel = cancel
+	s.mu.Unlock()
+
+	s.process(jobCtx, job)
+
+	s.mu.Lock()
+	job.cancel = nil
+	wasCancelled := job.cancelled
+	state := job.State
+	s.mu.Unlock()
+	// process() reports a killed ffmpeg as a failure; relabel it so the user sees their own
+	// action rather than an error they didn't cause.
+	if wasCancelled && state == StateFailed {
+		s.update(job, func(j *Job) { j.State = StateCancelled; j.Note = "cancelled" })
+	}
+}
+
 func (s *Service) process(ctx context.Context, job *Job) {
 	src, title, ok := s.resolveSource(ctx, job)
 	if !ok {
@@ -851,10 +1066,20 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	h10pJSON := ""
 	if mi.HDR != "Dolby Vision" && (mi.HDR == "HDR10" || mi.HDR == "HDR10+") && s.hdr10plusTool != "" && plan.VideoCodec == "hevc" {
 		jf := filepath.Join(scratch, fmt.Sprintf("h10p-%d.json", job.ID))
-		if err := s.extractHDR10Plus(ctx, src, jf); err == nil {
+		err := s.extractHDR10Plus(ctx, src, jf)
+		switch {
+		case err == nil:
 			h10pJSON = jf
 			defer os.Remove(jf)
-		} else {
+		case mi.HDR == "HDR10+":
+			// This file is KNOWN to carry HDR10+. Continuing would encode it with static
+			// HDR10 only and quietly lose the dynamic metadata, so stop instead.
+			_ = os.Remove(jf)
+			s.finish(job, StateSkipped,
+				"HDR10+ metadata could not be extracted — kept the original rather than re-encoding without it")
+			return
+		default:
+			// Labelled plain HDR10: a failed extract just means it has no HDR10+. Normal.
 			_ = os.Remove(jf)
 		}
 	}
@@ -1123,11 +1348,15 @@ func (s *Service) canPreserveHDR(mi *MediaInfo, plan Plan, enc Encoder) bool {
 		return false // dynamic/static HDR passthrough is implemented only on the x265/HEVC path
 	}
 	switch mi.HDR {
-	case "HDR10", "HDR10+":
-		// Colour tags (BT.2020/PQ) always survive a libx265 re-encode; mastering-display /
-		// max-cll are re-passed when present, and HDR10+ dynamic metadata is extracted and fed
-		// back via dhdr10-info when the file has it and the tool is bundled.
+	case "HDR10":
+		// Colour tags (BT.2020/PQ) always survive a libx265 re-encode, and mastering-display /
+		// max-cll are re-passed when present.
 		return true
+	case "HDR10+":
+		// The bundled x265 can't re-embed dynamic metadata, so it has to be extracted and
+		// injected afterwards. Without the tool the re-encode would keep only static HDR10 and
+		// silently drop the per-scene metadata — skip the file instead of degrading it.
+		return s.hdr10plusTool != ""
 	case "Dolby Vision":
 		return s.doviTool != ""
 	}
@@ -1165,6 +1394,7 @@ func (s *Service) finish(job *Job, state JobState, note string) {
 	// item, so episodes quarantine exactly like movies — without this a file that
 	// always fails to encode is re-queued by every sweep, forever.
 	key := jobKey(job)
+	s.releasePending(key, job) // the file can be queued again once this job is over
 	switch state {
 	case StateFailed:
 		s.log.Warn("convert: job failed", "title", job.Title, "note", note)

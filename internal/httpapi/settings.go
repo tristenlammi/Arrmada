@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/library"
@@ -180,6 +181,35 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if req.ConvertWorkers != nil && !save(a.deps.Settings.Set(ctx, "convert_workers", *req.ConvertWorkers)) {
 		return
 	}
+	// Convert settings are validated here rather than trusted from the client: the UI's
+	// min/max attributes aren't enforced for programmatic writes, and a value like
+	// min_ssim=2.0 is unreachable, so every encode would be discarded with no explanation.
+	if req.ConvertMinSSIM != nil {
+		if v, err := strconv.ParseFloat(strings.TrimSpace(*req.ConvertMinSSIM), 64); err != nil || v <= 0 || v > 1 {
+			a.writeError(w, http.StatusBadRequest, "quality gate minimum must be between 0 and 1")
+			return
+		}
+	}
+	for _, f := range []struct {
+		v    *string
+		name string
+	}{
+		{req.ConvertSweepStart, "schedule start"}, {req.ConvertSweepEnd, "schedule end"}, {req.ConvertScanAt, "scan time"},
+	} {
+		if f.v == nil {
+			continue
+		}
+		if t := strings.TrimSpace(*f.v); t != "" && !validHHMM(t) {
+			a.writeError(w, http.StatusBadRequest, f.name+" must be a time like 03:00")
+			return
+		}
+	}
+	if req.ConvertTargetCodec != nil {
+		if c := strings.TrimSpace(*req.ConvertTargetCodec); c != "hevc" && c != "av1" {
+			a.writeError(w, http.StatusBadRequest, "target codec must be hevc or av1")
+			return
+		}
+	}
 	if req.ConvertScanAt != nil && !save(a.deps.Settings.Set(ctx, "convert_scan_at", *req.ConvertScanAt)) {
 		return
 	}
@@ -208,4 +238,15 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.handleGetSettings(w, r)
+}
+
+// validHHMM reports whether v is a 24-hour "HH:MM" time.
+func validHHMM(v string) bool {
+	p := strings.SplitN(v, ":", 2)
+	if len(p) != 2 {
+		return false
+	}
+	h, err1 := strconv.Atoi(p[0])
+	m, err2 := strconv.Atoi(p[1])
+	return err1 == nil && err2 == nil && h >= 0 && h < 24 && m >= 0 && m < 60
 }

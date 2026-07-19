@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // failureStore tracks repeated conversion failures per library file so the auto-sweep can
@@ -48,6 +50,55 @@ func (f *failureStore) failureCount(ctx context.Context, key string) int {
 	var n int
 	_ = f.db.QueryRowContext(ctx, `SELECT count FROM convert_failures WHERE item_key = ?`, key).Scan(&n)
 	return n
+}
+
+// Blocked is one quarantined file, for the UI's Problems list.
+type Blocked struct {
+	Key       string `json:"key"` // "movie:12" | "episode:76:2:5"
+	Kind      string `json:"kind"`
+	MovieID   int64  `json:"movie_id,omitempty"`
+	SeriesID  int64  `json:"series_id,omitempty"`
+	Season    int    `json:"season"`
+	Episode   int    `json:"episode"`
+	Title     string `json:"title"`
+	Count     int    `json:"count"`
+	LastError string `json:"last_error"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// list returns every item with recorded failures, worst first.
+func (f *failureStore) list(ctx context.Context) ([]Blocked, error) {
+	rows, err := f.db.QueryContext(ctx,
+		`SELECT item_key, count, last_error, updated_at FROM convert_failures ORDER BY count DESC, updated_at DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Blocked{}
+	for rows.Next() {
+		var b Blocked
+		if err := rows.Scan(&b.Key, &b.Count, &b.LastError, &b.UpdatedAt); err != nil {
+			return nil, err
+		}
+		parseItemKey(&b)
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
+// parseItemKey unpacks "movie:12" / "episode:76:2:5" back into identifiers.
+func parseItemKey(b *Blocked) {
+	parts := strings.Split(b.Key, ":")
+	switch {
+	case len(parts) == 2 && parts[0] == "movie":
+		b.Kind = "movie"
+		b.MovieID, _ = strconv.ParseInt(parts[1], 10, 64)
+	case len(parts) == 4 && parts[0] == "episode":
+		b.Kind = "episode"
+		b.SeriesID, _ = strconv.ParseInt(parts[1], 10, 64)
+		b.Season, _ = strconv.Atoi(parts[2])
+		b.Episode, _ = strconv.Atoi(parts[3])
+	}
 }
 
 // blocklisted reports whether an item has failed enough times for automation to skip it.

@@ -2,8 +2,10 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/convert"
@@ -80,14 +82,26 @@ func (a *api) handleConvertLibrary(w http.ResponseWriter, r *http.Request) {
 		list []convert.Candidate
 		err  error
 	)
+	// ?convertible=1 trims the response to rows that actually need work — the difference
+	// between a few hundred actionable movies and every movie with its full media info.
+	onlyConvertible := r.URL.Query().Get("convertible") == "1"
+	mediaType := "movie"
+	var seriesID int64
 	if r.URL.Query().Get("media") == "tv" {
-		seriesID, parseErr := strconv.ParseInt(r.URL.Query().Get("series"), 10, 64)
-		if parseErr != nil || seriesID <= 0 {
+		mediaType = "episode"
+		parsed, parseErr := strconv.ParseInt(r.URL.Query().Get("series"), 10, 64)
+		if parseErr != nil || parsed <= 0 {
 			a.writeError(w, http.StatusBadRequest, "invalid series id")
 			return
 		}
+		seriesID = parsed
+	}
+	switch {
+	case onlyConvertible:
+		list, err = a.deps.Convert.LibraryConvertible(ctx, mediaType, seriesID)
+	case mediaType == "episode":
 		list, err = a.deps.Convert.LibraryTV(ctx, seriesID)
-	} else {
+	default:
 		list, err = a.deps.Convert.Library(ctx)
 	}
 	if err != nil {
@@ -98,6 +112,53 @@ func (a *api) handleConvertLibrary(w http.ResponseWriter, r *http.Request) {
 		list = []convert.Candidate{}
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"items": list})
+}
+
+// handleConvertCancel stops one job. Queued jobs never start; a running encode is killed.
+// The original is only replaced at the very end of a job, so cancelling is always safe.
+func (a *api) handleConvertCancel(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathValueID(w, r, "id")
+	if !ok {
+		return
+	}
+	if err := a.deps.Convert.Cancel(id); err != nil {
+		a.writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"cancelled": id})
+}
+
+// handleConvertCancelQueued drops everything not yet started, leaving in-flight encodes
+// alone — the escape hatch after queueing a library with the wrong settings.
+func (a *api) handleConvertCancelQueued(w http.ResponseWriter, r *http.Request) {
+	a.writeJSON(w, http.StatusOK, map[string]any{"cancelled": a.deps.Convert.CancelQueued()})
+}
+
+// handleConvertBlocklist lists files automation is skipping after repeated failures.
+func (a *api) handleConvertBlocklist(w http.ResponseWriter, r *http.Request) {
+	list, err := a.deps.Convert.Blocklist(r.Context())
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not read the blocklist")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"items": list})
+}
+
+// handleConvertBlocklistClear forgets one item's failures, or all of them with ?all=1.
+func (a *api) handleConvertBlocklistClear(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	if r.URL.Query().Get("all") != "1" && key == "" {
+		a.writeError(w, http.StatusBadRequest, "pass key= or all=1")
+		return
+	}
+	if r.URL.Query().Get("all") == "1" {
+		key = ""
+	}
+	if err := a.deps.Convert.ClearBlocklist(r.Context(), key); err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not clear the blocklist")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"cleared": true})
 }
 
 // handleConvertStats returns the Overview tab's library-wide numbers (movies + TV) from the
@@ -153,7 +214,7 @@ func (a *api) handleConvertEpisode(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := a.deps.Convert.QueueEpisode(r.Context(), seriesID, season, episode)
 	if err != nil {
-		a.writeError(w, http.StatusBadRequest, err.Error())
+		a.writeError(w, convertQueueStatus(err), err.Error())
 		return
 	}
 	a.writeJSON(w, http.StatusAccepted, job)
@@ -202,8 +263,24 @@ func (a *api) handleConvertMovie(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := a.deps.Convert.QueueMovie(r.Context(), id)
 	if err != nil {
-		a.writeError(w, http.StatusBadRequest, err.Error())
+		a.writeError(w, convertQueueStatus(err), err.Error())
 		return
 	}
 	a.writeJSON(w, http.StatusAccepted, job)
+}
+
+// convertQueueStatus maps a queue error to a status the client can act on. Everything used to
+// be a 400, so "already queued" and "the queue is full, retry later" were indistinguishable
+// from a malformed request.
+func convertQueueStatus(err error) int {
+	switch {
+	case errors.Is(err, convert.ErrAlreadyQueued):
+		return http.StatusConflict
+	case strings.Contains(err.Error(), "queue is full"):
+		return http.StatusServiceUnavailable
+	case strings.Contains(err.Error(), "no file to convert"),
+		strings.Contains(err.Error(), "not available"):
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }

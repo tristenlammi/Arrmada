@@ -245,6 +245,10 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/convert/movies/{id}/sample", a.requireRole(auth.RoleManager, a.handleConvertMovieSample))
 	mux.HandleFunc("POST "+base+"/api/v1/convert/episodes/{series}/{season}/{episode}", a.requireRole(auth.RoleManager, a.handleConvertEpisode))
 	mux.HandleFunc("POST "+base+"/api/v1/convert/series/{series}", a.requireRole(auth.RoleManager, a.handleConvertSeries))
+	mux.HandleFunc("POST "+base+"/api/v1/convert/jobs/{id}/cancel", a.requireRole(auth.RoleManager, a.handleConvertCancel))
+	mux.HandleFunc("POST "+base+"/api/v1/convert/jobs/cancel-queued", a.requireRole(auth.RoleManager, a.handleConvertCancelQueued))
+	mux.HandleFunc("GET "+base+"/api/v1/convert/blocklist", a.protected(a.handleConvertBlocklist))
+	mux.HandleFunc("POST "+base+"/api/v1/convert/blocklist/clear", a.requireRole(auth.RoleManager, a.handleConvertBlocklistClear))
 
 	// Insights (Tautulli replacement — Plex watch monitoring). I0: connection config + test.
 	mux.HandleFunc("GET "+base+"/api/v1/insights/plex", a.requireRole(auth.RoleManager, a.handleInsightsConfig))

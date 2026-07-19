@@ -655,8 +655,13 @@ export interface ConvertMediaInfo {
   container: string; video_codec: string; width: number; height: number; resolution: string; hdr: string;
   bitrate_kbps: number; frame_rate: number; duration_sec: number; size_bytes: number; audio_tracks: number; sub_tracks: number; ten_bit: boolean;
 }
+export interface ConvertBlocked {
+  key: string; kind: string; movie_id?: number; series_id?: number; season: number; episode: number;
+  title: string; count: number; last_error: string; updated_at: string;
+}
+
 export interface ConvertMediaStats {
-  files: number; convertible: number; total_bytes: number; est_bytes: number; reclaimable: number;
+  files: number; convertible: number; total_bytes: number; est_bytes: number; convertible_bytes: number; reclaimable: number;
   h264: number; hevc: number; av1: number; other: number;
 }
 export interface ConvertLibraryStats { movies: ConvertMediaStats; tv: ConvertMediaStats; total: ConvertMediaStats }
@@ -675,7 +680,7 @@ export interface ConvertSeriesRollup {
 
 export interface ConvertCandidate { kind: "movie" | "episode"; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; year?: number; poster_url?: string; path: string; info?: ConvertMediaInfo; candidate: boolean; est_bytes: number }
 export interface ConvertSample { movie_id: number; title: string; src_bytes: number; est_bytes: number; percent: number; sample_sec: number }
-export interface ConvertJob { id: number; kind?: string; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; state: string; progress: number; fps: number; speed_x: number; duration_sec?: number; encoder: string; src_bytes: number; out_bytes: number; note?: string }
+export interface ConvertJob { id: number; kind?: string; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; state: string; progress: number; fps: number; speed_x: number; duration_sec?: number; encoder: string; src_bytes: number; out_bytes: number; ssim?: number; note?: string }
 
 // Insights (Plex watch monitoring).
 export interface PlexLibrary { key: string; title: string; type: string }
@@ -1061,11 +1066,21 @@ export const api = {
   // Convert
   convertHardware: () => req<{ encoders: ConvertEncoder[]; selected: ConvertEncoder; reclaimed_bytes: number; scratch_dir: string; scratch_free_bytes: number; render_devices: { path: string; pci: string; vendor: string }[]; vaapi_device: string }>("/api/v1/convert/hardware"),
   convertSweep: () => req<ConvertAllResult>("/api/v1/convert/sweep", { method: "POST" }),
-  convertLibrary: (media: "movies" | "tv" = "movies", seriesID?: number) =>
-    req<{ items: ConvertCandidate[] }>(`/api/v1/convert/library${media === "tv" ? `?media=tv&series=${seriesID}` : ""}`).then((r) => r.items),
+  convertLibrary: (media: "movies" | "tv" = "movies", seriesID?: number, convertibleOnly = false) => {
+    const q = new URLSearchParams();
+    if (media === "tv") { q.set("media", "tv"); q.set("series", String(seriesID)); }
+    if (convertibleOnly) q.set("convertible", "1");
+    const qs = q.toString();
+    return req<{ items: ConvertCandidate[] }>(`/api/v1/convert/library${qs ? `?${qs}` : ""}`).then((r) => r.items);
+  },
   // The TV tab lists shows, not episodes — one roll-up row per series keeps the payload
   // small no matter how many episodes the library holds.
   convertStats: () => req<ConvertLibraryStats>("/api/v1/convert/stats"),
+  convertCancel: (id: number) => req<{ cancelled: number }>(`/api/v1/convert/jobs/${id}/cancel`, { method: "POST" }),
+  convertCancelQueued: () => req<{ cancelled: number }>("/api/v1/convert/jobs/cancel-queued", { method: "POST" }),
+  convertBlocklist: () => req<{ items: ConvertBlocked[] }>("/api/v1/convert/blocklist").then((r) => r.items),
+  convertBlocklistClear: (key?: string) =>
+    req<{ cleared: boolean }>(`/api/v1/convert/blocklist/clear?${key ? `key=${encodeURIComponent(key)}` : "all=1"}`, { method: "POST" }),
   convertLibrarySeries: () => req<{ series: ConvertSeriesRollup[] }>("/api/v1/convert/library?media=tv").then((r) => r.series),
   convertSeries: (seriesID: number, season?: number) =>
     req<{ queued: number }>(`/api/v1/convert/series/${seriesID}${season === undefined ? "" : `?season=${season}`}`, { method: "POST" }),

@@ -340,15 +340,16 @@ func (s *Service) LibraryTVSeries(ctx context.Context) ([]SeriesRollup, error) {
 
 // MediaStats summarizes one media type's slice of the library.
 type MediaStats struct {
-	Files       int   `json:"files"`
-	Convertible int   `json:"convertible"`
-	TotalBytes  int64 `json:"total_bytes"`
-	EstBytes    int64 `json:"est_bytes"`   // convertible files' estimated size after conversion
-	Reclaimable int64 `json:"reclaimable"` // total_bytes of convertible files minus est_bytes
-	H264        int   `json:"h264"`
-	HEVC        int   `json:"hevc"`
-	AV1         int   `json:"av1"`
-	Other       int   `json:"other"`
+	Files            int   `json:"files"`
+	Convertible      int   `json:"convertible"`
+	TotalBytes       int64 `json:"total_bytes"`
+	EstBytes         int64 `json:"est_bytes"`         // convertible files' estimated size after conversion
+	ConvertibleBytes int64 `json:"convertible_bytes"` // convertible files' CURRENT size on disk
+	Reclaimable      int64 `json:"reclaimable"`       // total_bytes of convertible files minus est_bytes
+	H264             int   `json:"h264"`
+	HEVC             int   `json:"hevc"`
+	AV1              int   `json:"av1"`
+	Other            int   `json:"other"`
 }
 
 // LibraryStats is the Overview tab's numbers, across the WHOLE library. The Overview used to
@@ -377,6 +378,7 @@ func (m *MediaStats) add(codec string, size, est int64, convertible bool) {
 	if convertible {
 		m.Convertible++
 		m.EstBytes += est
+		m.ConvertibleBytes += size
 		if d := size - est; d > 0 {
 			m.Reclaimable += d
 		}

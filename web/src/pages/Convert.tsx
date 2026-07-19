@@ -1,37 +1,60 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type ConvertCandidate, type ConvertSeriesRollup, type ConvertLibraryStats, type ConvertEncoder, type ConvertJob, type ConvertSample, type AppSettings } from "../lib/api";
+import { api, type ConvertCandidate, type ConvertSeriesRollup, type ConvertLibraryStats, type ConvertBlocked, type ConvertEncoder, type ConvertJob, type ConvertSample, type AppSettings } from "../lib/api";
 
 // Convert (Tdarr replacement) — the four-tab experience from the design mockup, wired to
 // the real backend. Implemented today: analysis, hardware detection, the Save-space engine
 // (safe encode→verify→replace), and the rules engine. Steps the mockup shows that are still
 // on the roadmap (audio/sub/HDR actions, VMAF gate, 30s sample) are marked as such.
-type Tab = "overview" | "queue" | "library" | "logs" | "settings";
+type Tab = "overview" | "queue" | "library" | "problems" | "logs" | "settings";
 const ACTIVE = new Set(["queued", "encoding", "verifying", "replacing"]);
+// RUNNING excludes "queued". A whole-library sweep leaves thousands of jobs queued, and
+// counting or rendering those as "active" made the Queue tab claim thousands of concurrent
+// encodes and paint a progress bar for every one of them.
+const RUNNING = new Set(["encoding", "verifying", "replacing"]);
 
 function fmtSize(b?: number): string {
-  if (!b || b <= 0) return "—";
+  if (b === undefined || b === null) return "—";
+  if (b <= 0) return "0 B"; // a real zero is a fact, not missing data
   const tb = b / 1024 ** 4;
   if (tb >= 1) return `${tb.toFixed(2)} TB`;
   const gb = b / 1024 ** 3;
-  return gb >= 1 ? `${gb.toFixed(1)} GB` : `${(b / 1024 ** 2).toFixed(0)} MB`;
+  if (gb >= 1) return `${gb.toFixed(1)} GB`;
+  const mb = b / 1024 ** 2;
+  return mb >= 1 ? `${mb.toFixed(0)} MB` : `${(b / 1024).toFixed(0)} KB`;
+}
+
+// savedPct is the size reduction of a finished job, or null when it can't be computed —
+// health-check jobs never set out_bytes, which used to render as a scary "−100%".
+function savedPct(j: ConvertJob): number | null {
+  if (!j.src_bytes || j.src_bytes <= 0 || !j.out_bytes || j.out_bytes <= 0) return null;
+  return Math.round((1 - j.out_bytes / j.src_bytes) * 100);
 }
 export function Convert() {
   const [tab, setTab] = useState<Tab>("overview");
   const [hw, setHw] = useState<{ selected: ConvertEncoder; encoders: ConvertEncoder[]; reclaimed_bytes: number } | null>(null);
-  const [items, setItems] = useState<ConvertCandidate[] | null>(null);
   const [jobs, setJobs] = useState<ConvertJob[]>([]);
   // Library-wide counts (movies + TV) come from the index in one query, so the Overview no
   // longer has to fetch every movie — and no longer silently ignores thousands of episodes.
   const [stats, setStats] = useState<ConvertLibraryStats | null>(null);
   const [confirmAll, setConfirmAll] = useState(false);
+  const [statsErr, setStatsErr] = useState(false);
+  const [settings, setSettings] = useState<AppSettings | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const flash = useCallback((m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); }, []);
+  const toastTimer = useRef<number | undefined>(undefined);
+  const flash = useCallback((m: string) => {
+    setToast(m);
+    window.clearTimeout(toastTimer.current); // otherwise a second message inherits the first's expiry
+    toastTimer.current = window.setTimeout(() => setToast(null), 3500);
+  }, []);
+  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
 
-  const loadLibrary = useCallback(() => api.convertLibrary().then(setItems).catch(() => setItems([])), []);
-  const loadStats = useCallback(() => api.convertStats().then(setStats).catch(() => {}), []);
+  const loadStats = useCallback(
+    () => api.convertStats().then((v) => { setStats(v); setStatsErr(false); }).catch(() => setStatsErr(true)),
+    []);
   const loadHw = useCallback(() => api.convertHardware().then(setHw).catch(() => {}), []);
-  useEffect(() => { loadHw(); loadLibrary(); loadStats(); }, [loadHw, loadLibrary, loadStats]);
+  const loadSettings = useCallback(() => api.settings().then(setSettings).catch(() => {}), []);
+  useEffect(() => { loadHw(); loadStats(); loadSettings(); }, [loadHw, loadStats, loadSettings]);
 
   const anyActive = jobs.some((j) => ACTIVE.has(j.state));
   useEffect(() => {
@@ -43,10 +66,41 @@ export function Convert() {
     const t = setInterval(tick, anyActive ? 1000 : 3000);
     return () => { alive = false; clearInterval(t); };
   }, [anyActive]);
-  useEffect(() => { if (!anyActive) { loadLibrary(); loadHw(); loadStats(); } }, [anyActive, loadLibrary, loadHw, loadStats]);
+  useEffect(() => { if (!anyActive) { loadHw(); loadStats(); } }, [anyActive, loadHw, loadStats]);
 
   const enc = hw?.selected;
-  const activeCount = jobs.filter((j) => ACTIVE.has(j.state)).length;
+  const runningCount = jobs.filter((j) => RUNNING.has(j.state)).length;
+  const queuedCount = jobs.filter((j) => j.state === "queued").length;
+  // Escape closes the modal and focus lands on its primary action — it was a bare div that
+  // trapped nothing and dismissed on nothing but a backdrop click.
+  const confirmBtn = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!confirmAll) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setConfirmAll(false); };
+    window.addEventListener("keydown", onKey);
+    confirmBtn.current?.focus();
+    return () => window.removeEventListener("keydown", onKey);
+  }, [confirmAll]);
+
+  // Wall-clock estimate from what this machine has actually achieved recently — the single
+  // most decision-changing number, and the UI never showed it.
+  const etaSeconds = useMemo(() => {
+    const measured = jobs.filter((j) => j.state === "done" && j.duration_sec && j.speed_x > 0);
+    if (!measured.length || !stats?.total.convertible) return 0;
+    const avgSpeed = measured.reduce((n, j) => n + j.speed_x, 0) / measured.length;
+    const avgRuntime = measured.reduce((n, j) => n + (j.duration_sec ?? 0), 0) / measured.length;
+    const workers = Math.max(1, Number(settings?.convert_workers) || 1);
+    return (stats.total.convertible * (avgRuntime / avgSpeed)) / workers;
+  }, [jobs, stats, settings]);
+
+  // A whole-library sweep pushes every original into the recycle bin; if that exceeds the
+  // configured cap they're pruned by size before the user could restore anything.
+  const recycleWarning = useMemo(() => {
+    const capGB = Number(settings?.recycle_max_gb);
+    if (!capGB || !stats) return false;
+    return stats.total.convertible_bytes > capGB * 1024 ** 3;
+  }, [settings, stats]);
+
   // The WHOLE library, not just movies — this button queues TV too.
   const candidates = stats?.total.convertible ?? 0;
   const convertAll = async () => {
@@ -61,8 +115,11 @@ export function Convert() {
 
   const TABS: { key: Tab; label: string; n?: string }[] = [
     { key: "overview", label: "Overview" },
-    { key: "queue", label: "Queue", n: activeCount ? `${activeCount} active` : undefined },
-    { key: "library", label: "Library", n: items ? items.length.toLocaleString() : undefined },
+    { key: "queue", label: "Queue", n: runningCount || queuedCount
+      ? [runningCount ? `${runningCount} running` : "", queuedCount ? `${queuedCount.toLocaleString()} waiting` : ""].filter(Boolean).join(" · ")
+      : undefined },
+    { key: "library", label: "Library", n: stats ? stats.total.files.toLocaleString() : undefined },
+    { key: "problems", label: "Problems" },
     { key: "logs", label: "Logs" },
     { key: "settings", label: "Settings" },
   ];
@@ -97,16 +154,25 @@ export function Convert() {
           })}
         </div>
 
-        {tab === "overview" && <Overview hw={hw} stats={stats} jobs={jobs} />}
-        {tab === "queue" && <Queue jobs={jobs} />}
+        {statsErr && (
+          <div role="status" className="mb-3 flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-[12px]"
+            style={{ border: "1px solid var(--avoid)", background: "var(--avoid-soft)", color: "var(--avoid)" }}>
+            <span>Couldn't read the library index — these numbers may be stale or missing.</span>
+            <button onClick={() => { loadStats(); loadHw(); }} className="rounded px-2 py-1 text-[11.5px] font-semibold" style={{ border: "1px solid var(--avoid)" }}>Retry</button>
+          </div>
+        )}
+        {tab === "overview" && <Overview hw={hw} stats={stats} jobs={jobs} settings={settings} />}
+        {tab === "queue" && <Queue jobs={jobs} flash={flash} onChanged={() => { api.convertJobs().then(setJobs).catch(() => {}); loadStats(); }} />}
         {tab === "library" && <Library flash={flash} onQueued={() => api.convertJobs().then(setJobs)} />}
+        {tab === "problems" && <Blocklist flash={flash} />}
         {tab === "logs" && <LogsConsole />}
         {tab === "settings" && <ConvertSettings flash={flash} />}
       </div>
       {confirmAll && stats && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.55)" }} onClick={() => setConfirmAll(false)}>
+        <div role="dialog" aria-modal="true" aria-labelledby="convert-all-title"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,.55)" }} onClick={() => setConfirmAll(false)}>
           <div className="w-full max-w-[460px] rounded-xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }} onClick={(e) => e.stopPropagation()}>
-            <h3 className="text-[15px] font-bold">Convert your whole library?</h3>
+            <h3 id="convert-all-title" className="text-[15px] font-bold">Convert your whole library?</h3>
             <p className="mt-1.5 text-[12.5px] leading-relaxed text-ink-dim">
               This queues every file in your library that isn't already in your target codec.
             </p>
@@ -116,21 +182,37 @@ export function Convert() {
               <Row k="Total jobs" v={stats.total.convertible.toLocaleString()} strong />
               <Row k="Space reclaimed" v={`~${fmtSize(stats.total.reclaimable)}`} />
             </div>
+            {etaSeconds > 0 && (
+              <p className="mt-3 text-[12px] font-semibold" style={{ color: "var(--avoid)" }}>
+                Roughly {fmtDuration(etaSeconds)} of encoding at your recent speed
+                {settings?.convert_sweep_start && settings.convert_sweep_end
+                  ? `, spread across your ${settings.convert_sweep_start}–${settings.convert_sweep_end} window`
+                  : ""}.
+              </p>
+            )}
+            {recycleWarning && (
+              <p className="mt-2 text-[11.5px] leading-snug" style={{ color: "var(--avoid)" }}>
+                ⚠ Originals total ~{fmtSize(stats.total.convertible_bytes)}, more than your{" "}
+                {settings?.recycle_max_gb} GB recycle-bin cap — older originals will be pruned before
+                you can restore them.
+              </p>
+            )}
             <p className="mt-3 text-[11.5px] leading-snug text-ink-faint">
               Encoding respects your schedule window — anything queued outside it waits rather
-              than starting. Originals go to the recycle bin, and a file that keeps failing is
-              skipped instead of retried forever.
+              than starting. Originals go to the recycle bin, a file that keeps failing is
+              skipped instead of retried forever, and you can cancel from the Queue tab at any
+              time.
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <button onClick={() => setConfirmAll(false)} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Cancel</button>
-              <button onClick={convertAll} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
+              <button ref={confirmBtn} onClick={convertAll} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
                 Queue {stats.total.convertible.toLocaleString()} job{stats.total.convertible === 1 ? "" : "s"}
               </button>
             </div>
           </div>
         </div>
       )}
-      {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
+      {toast && <div role="status" aria-live="polite" className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
     </>
   );
 }
@@ -140,7 +222,7 @@ const cardStyle = { border: "1px solid var(--line)", background: "var(--panel)" 
 const lbl = "font-mono text-[9.5px] font-bold uppercase tracking-[0.11em] text-ink-faint";
 
 /* ============================= OVERVIEW ============================= */
-function Overview({ hw, stats, jobs }: { hw: { selected: ConvertEncoder; encoders: ConvertEncoder[]; reclaimed_bytes: number } | null; stats: ConvertLibraryStats | null; jobs: ConvertJob[] }) {
+function Overview({ hw, stats, jobs, settings }: { hw: { selected: ConvertEncoder; encoders: ConvertEncoder[]; reclaimed_bytes: number } | null; stats: ConvertLibraryStats | null; jobs: ConvertJob[]; settings: AppSettings | null }) {
   // Which slice of the library the codec bar describes. It covered movies only before, which
   // hid the fact that TV is the overwhelming majority of files.
   const [scope, setScope] = useState<"total" | "movies" | "tv">("total");
@@ -148,7 +230,7 @@ function Overview({ hw, stats, jobs }: { hw: { selected: ConvertEncoder; encoder
   const b = stats ? stats[scope] : null;
   const n = b?.files ?? 0;
   const pct = (x: number) => (n ? Math.round((x / n) * 100) : 0);
-  const activeJobs = jobs.filter((j) => ACTIVE.has(j.state));
+  const activeJobs = jobs.filter((j) => RUNNING.has(j.state));
 
   return (
     <div className="flex flex-col gap-3.5">
@@ -213,12 +295,20 @@ function Overview({ hw, stats, jobs }: { hw: { selected: ConvertEncoder; encoder
         <div className="h2 text-[14px] font-bold">Safeguards &amp; storage</div>
         <div className="mt-0.5 text-[11.5px] text-ink-faint">The protections that keep Convert from ever damaging a file.</div>
         <div className="mt-3 grid gap-x-4 gap-y-3" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
-          <Safeguard ic="🔗" t="Seeding-safe" d="Never touches a file that's still seeding, and never breaks a hardlink to your torrents." on />
+          {/* These reflect the ACTUAL settings. They were hardcoded on, which meant the page
+              could promise a protection the user had switched off. */}
+          <Safeguard ic="🔗" t="Seeding-safe" on={settings?.convert_skip_hardlinked !== false}
+            d={settings?.convert_skip_hardlinked === false
+              ? "OFF — Convert may re-encode a file that's still seeding or hardlinked. Enable it in Settings."
+              : "Never touches a file that's still seeding, and never breaks a hardlink to your torrents."} />
           <Safeguard ic="🩹" t="Verify & recycle" d="Stream/duration check before replacing · original moved to the recycle bin." on />
           <Safeguard ic="💽" t="Scratch + space guard" d="Encodes to a scratch dir and checks free space before every job." on />
           <Safeguard ic="🏷" t="Renames & re-tags" d="Updates the filename & library record so quality/upgrade logic stays correct." on />
           <Safeguard ic="📺" t="Streaming-aware" d="Pause a file that's being played (arrives with the media-server integration)." on={false} />
-          <Safeguard ic="🛡" t="Quality gate (SSIM)" d="Re-encode at higher quality, then keep the original, if a transcode scores too low. Enable it in Settings." on={true} />
+          <Safeguard ic="🛡" t="Quality gate (SSIM)" on={settings?.convert_quality_gate !== false}
+            d={settings?.convert_quality_gate === false
+              ? "OFF — encodes are not scored against the source. Enable it in Settings."
+              : `Scores each encode against the source and keeps the original if it falls below ${settings?.convert_min_ssim || "0.98"}.`} />
         </div>
       </div>
 
@@ -304,7 +394,7 @@ function LogsConsole() {
         {lines.length === 0 ? (
           <div className="text-ink-faint">No activity yet. Queue a conversion and it'll stream here.</div>
         ) : lines.map((l, i) => (
-          <div key={i} className="flex gap-2">
+          <div key={`${l.at}-${i}`} className="flex gap-2">
             <span className="flex-none text-ink-faint">{clock(l.at)}</span>
             <span style={{ color: tone(l.level) }}>{l.msg}</span>
           </div>
@@ -314,32 +404,170 @@ function LogsConsole() {
   );
 }
 
-function Queue({ jobs }: { jobs: ConvertJob[] }) {
-  const active = jobs.filter((j) => ACTIVE.has(j.state));
-  const done = jobs.filter((j) => !ACTIVE.has(j.state));
+function Queue({ jobs, flash, onChanged }: { jobs: ConvertJob[]; flash: (m: string) => void; onChanged: () => void }) {
+  const [filter, setFilter] = useState<"all" | "failed">("all");
+  const [busy, setBusy] = useState(false);
+
+  const running = jobs.filter((j) => RUNNING.has(j.state));
+  const queued = jobs.filter((j) => j.state === "queued");
+  const finished = jobs.filter((j) => !ACTIVE.has(j.state));
+  // Successes push failures out of a 20-row list within minutes of a sweep starting, and the
+  // notes on skipped jobs ("file is hardlinked", "wasn't smaller") are the useful ones.
+  const problems = finished.filter((j) => j.state === "failed" || j.state === "skipped");
+  const shown = (filter === "failed" ? problems : finished).slice(0, 40);
+
+  const cancel = async (id: number) => {
+    try { await api.convertCancel(id); onChanged(); } catch (e) { flash((e as Error).message); }
+  };
+  const cancelAllQueued = async () => {
+    setBusy(true);
+    try {
+      const { cancelled } = await api.convertCancelQueued();
+      flash(`Cancelled ${cancelled.toLocaleString()} queued job${cancelled === 1 ? "" : "s"}`);
+      onChanged();
+    } catch (e) { flash((e as Error).message); } finally { setBusy(false); }
+  };
+
   return (
     <div className="flex flex-col gap-3.5">
       <div className={card} style={cardStyle}>
-        <div className="text-[14px] font-bold">Active <span className="font-mono text-[11px] text-ink-faint">{active.length} running</span></div>
-        {active.length === 0 ? <div className="mt-2 text-[12px] text-ink-dim">Nothing converting right now.</div> : <div className="mt-2 flex flex-col gap-3">{active.map((j) => <JobBar key={j.id} j={j} rich />)}</div>}
+        <div className="text-[14px] font-bold">Converting now <span className="font-mono text-[11px] text-ink-faint">{running.length}</span></div>
+        {running.length === 0
+          ? <div className="mt-2 text-[12px] text-ink-dim">Nothing converting right now.</div>
+          : <div className="mt-2 flex flex-col gap-3">{running.map((j) => <JobBar key={j.id} j={j} rich onCancel={() => cancel(j.id)} />)}</div>}
       </div>
-      {done.length > 0 && (
+
+      {queued.length > 0 && (
         <div className={card} style={cardStyle}>
-          <div className="text-[14px] font-bold">Recent</div>
-          <div className="mt-2 flex flex-col gap-1.5">
-            {done.slice(0, 20).map((j) => (
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[14px] font-bold">
+              Waiting <span className="font-mono text-[11px] text-ink-faint">{queued.length.toLocaleString()}</span>
+            </div>
+            <button onClick={cancelAllQueued} disabled={busy} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50"
+              style={{ border: "1px solid var(--avoid)", color: "var(--avoid)" }}>
+              {busy ? "Cancelling…" : `Cancel all ${queued.length.toLocaleString()} waiting`}
+            </button>
+          </div>
+          {queued[0]?.note && <div className="mt-1.5 text-[11.5px] text-ink-faint">{queued[0].note}</div>}
+          {/* Only the head of the queue is listed: rendering thousands of rows is what made
+              this tab lock up after a whole-library sweep. */}
+          <div className="mt-2 flex flex-col gap-1">
+            {queued.slice(0, 12).map((j) => (
               <div key={j.id} className="flex items-center gap-2.5 text-[12px]">
-                <span className="rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: j.state === "done" ? "var(--good-soft, rgba(127,176,105,.16))" : j.state === "failed" ? "var(--reject-soft)" : "var(--panel-2)", color: j.state === "done" ? "var(--good)" : j.state === "failed" ? "var(--reject)" : "var(--ink-faint)" }}>{j.state}</span>
-                <span className="flex-1 truncate font-semibold">{j.title}</span>
-                {j.state === "done" ? <span className="font-mono text-ink-dim">{fmtSize(j.src_bytes)} → {fmtSize(j.out_bytes)} <span style={{ color: "var(--good)" }}>−{Math.round((1 - j.out_bytes / j.src_bytes) * 100)}%</span></span> : <span className="text-[11.5px] text-ink-faint">{j.note}</span>}
+                <span className="flex-1 truncate text-ink-dim">{j.title}</span>
+                <button onClick={() => cancel(j.id)} aria-label={`Cancel ${j.title}`}
+                  className="rounded px-1.5 py-0.5 font-mono text-[10px] text-ink-faint hover:text-[var(--avoid)]">✕</button>
               </div>
             ))}
+            {queued.length > 12 && <div className="text-[11.5px] text-ink-faint">+ {(queued.length - 12).toLocaleString()} more waiting</div>}
+          </div>
+        </div>
+      )}
+
+      {finished.length > 0 && (
+        <div className={card} style={cardStyle}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-[14px] font-bold">Recent</div>
+            <div className="flex items-center gap-1.5">
+              <Pill active={filter === "all"} onClick={() => setFilter("all")}>All {finished.length}</Pill>
+              <Pill active={filter === "failed"} onClick={() => setFilter("failed")}>Problems {problems.length}</Pill>
+            </div>
+          </div>
+          <div className="mt-2 flex flex-col gap-1.5">
+            {shown.map((j) => {
+              const pct = savedPct(j);
+              const tone = j.state === "done" ? "var(--good)" : j.state === "failed" ? "var(--reject)" : "var(--ink-faint)";
+              const bg = j.state === "done" ? "var(--good-soft, rgba(127,176,105,.16))" : j.state === "failed" ? "var(--reject-soft)" : "var(--panel-2)";
+              return (
+                <div key={j.id} className="flex items-center gap-2.5 text-[12px]">
+                  <span className="rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: bg, color: tone }}>{j.state}</span>
+                  <span className="flex-1 truncate font-semibold">{j.title}</span>
+                  {j.state === "done" && pct !== null ? (
+                    <span className="font-mono text-ink-dim">
+                      {fmtSize(j.src_bytes)} → {fmtSize(j.out_bytes)} <span style={{ color: "var(--good)" }}>−{pct}%</span>
+                      {j.ssim ? <span className="ml-1.5 text-[10.5px] text-ink-faint">SSIM {j.ssim.toFixed(3)}</span> : null}
+                    </span>
+                  ) : (
+                    <span className="text-[11.5px] text-ink-faint">{j.note || j.state}</span>
+                  )}
+                </div>
+              );
+            })}
+            {shown.length === 0 && <div className="text-[12px] text-ink-dim">No problems — everything finished cleanly.</div>}
           </div>
         </div>
       )}
     </div>
   );
 }
+// fmtDuration renders a long span in human terms — used for the whole-library ETA, where the
+// answer is often days or weeks and that is exactly the number worth seeing before committing.
+// Blocklist surfaces files automation has given up on. They were previously invisible: the
+// engine skipped them silently forever and the only hint was a transient toast.
+function Blocklist({ flash }: { flash: (m: string) => void }) {
+  const [items, setItems] = useState<ConvertBlocked[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const load = useCallback(() => api.convertBlocklist().then(setItems).catch(() => setItems([])), []);
+  useEffect(() => { load(); }, [load]);
+
+  const clear = async (key?: string) => {
+    setBusy(key ?? "all");
+    try {
+      await api.convertBlocklistClear(key);
+      flash(key ? "Cleared — it'll be retried on the next convert" : "Blocklist cleared");
+      load();
+    } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
+  };
+
+  if (items === null) return <div className="text-[12px] text-ink-faint">Loading…</div>;
+  if (!items.length) {
+    return (
+      <div className={card} style={cardStyle}>
+        <div className="text-[14px] font-bold">No problem files</div>
+        <p className="mt-1 text-[12px] text-ink-dim">Nothing has failed enough times to be skipped by automation.</p>
+      </div>
+    );
+  }
+  return (
+    <div className={card} style={cardStyle}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="text-[14px] font-bold">Problem files <span className="font-mono text-[11px] text-ink-faint">{items.length}</span></div>
+          <p className="mt-0.5 text-[11.5px] text-ink-dim">
+            These kept failing, so bulk converts skip them. Clear one to have it retried.
+          </p>
+        </div>
+        <button onClick={() => clear()} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50"
+          style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Clear all</button>
+      </div>
+      <div className="mt-3 flex flex-col gap-1.5">
+        {items.map((b) => (
+          <div key={b.key} className="flex items-start gap-2.5 text-[12px]">
+            <span className="rounded px-1.5 py-0.5 font-mono text-[9px] font-bold" style={{ background: "var(--reject-soft)", color: "var(--reject)" }}>{b.count}×</span>
+            <div className="flex-1">
+              <div className="font-semibold">{b.title}</div>
+              {b.last_error && <div className="text-[11px] leading-snug text-ink-faint">{b.last_error}</div>}
+            </div>
+            <button onClick={() => clear(b.key)} disabled={busy !== null} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold disabled:opacity-50"
+              style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>
+              {busy === b.key ? "…" : "Retry"}
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function fmtDuration(sec: number): string {
+  if (!isFinite(sec) || sec <= 0) return "—";
+  const h = sec / 3600;
+  if (h < 1) return `${Math.round(sec / 60)} min`;
+  if (h < 48) return `${h.toFixed(h < 10 ? 1 : 0)} hours`;
+  const d = h / 24;
+  return d < 14 ? `${d.toFixed(1)} days` : `${Math.round(d / 7)} weeks`;
+}
+
 function fmtEta(sec: number): string {
   if (!isFinite(sec) || sec <= 0) return "—";
   if (sec < 60) return `${Math.round(sec)}s`;
@@ -348,7 +576,7 @@ function fmtEta(sec: number): string {
   const h = Math.floor(m / 60);
   return `${h}h ${m % 60}m`;
 }
-function JobBar({ j, rich }: { j: ConvertJob; rich?: boolean }) {
+function JobBar({ j, rich, onCancel }: { j: ConvertJob; rich?: boolean; onCancel?: () => void }) {
   const encoding = j.state === "encoding";
   const pct = Math.max(0, Math.min(100, j.progress * 100));
   const eta = encoding && j.duration_sec && j.speed_x > 0 && j.progress < 1 ? (j.duration_sec * (1 - j.progress)) / j.speed_x : 0;
@@ -356,7 +584,11 @@ function JobBar({ j, rich }: { j: ConvertJob; rich?: boolean }) {
     <div>
       <div className="flex items-center justify-between text-[12px]">
         <span className="font-semibold">{j.title} <span className="ml-1.5 rounded-full px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>{j.encoder}</span></span>
-        <span className="font-mono tabular-nums text-ink-dim">{encoding ? `${pct.toFixed(1)}%${eta > 0 ? ` · ${fmtEta(eta)} left` : ""}` : j.state}</span>
+        <span className="flex items-center gap-2 font-mono tabular-nums text-ink-dim">
+          {encoding ? `${pct.toFixed(1)}%${eta > 0 ? ` · ${fmtEta(eta)} left` : ""}` : j.state}
+          {onCancel && <button onClick={onCancel} aria-label={`Cancel ${j.title}`} title="Cancel — the original is untouched until a job completes"
+            className="rounded px-1.5 py-0.5 text-[10px] hover:text-[var(--avoid)]">✕</button>}
+        </span>
       </div>
       <div className="mt-1 h-1.5 overflow-hidden rounded" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
         {/* transition ~matches the poll cadence so the fill glides instead of jumping */}
@@ -422,27 +654,36 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "size", dir: "desc" });
   const [showSort, setShowSort] = useState<{ key: ShowSortKey; dir: "asc" | "desc" }>({ key: "convertible", dir: "desc" });
   const [codecF, setCodecF] = useState<Set<string>>(new Set());
+  // Default to hiding already-efficient rows: on a large library most rows are noise, and
+  // the "what should I convert" question is the only one this table answers.
+  const [onlyConvertible, setOnlyConvertible] = useState(true);
+  const [q, setQ] = useState("");
+  const [loadErr, setLoadErr] = useState(false);
 
   useEffect(() => {
     setItems(null);
     setShow(null);
     setQueued(new Set());
     setCodecF(new Set());
+    setLoadErr(false);
     if (media === "tv") {
       setShows(null);
-      api.convertLibrarySeries().then(setShows).catch(() => setShows([]));
+      api.convertLibrarySeries().then(setShows).catch(() => { setShows([]); setLoadErr(true); });
     } else {
-      api.convertLibrary("movies").then(setItems).catch(() => setItems([]));
+      api.convertLibrary("movies", undefined, onlyConvertible)
+        .then(setItems).catch(() => { setItems([]); setLoadErr(true); });
     }
-  }, [media]);
+  }, [media, onlyConvertible]);
 
   // Opening a show loads just that show's episodes.
   useEffect(() => {
     if (media !== "tv" || !show) return;
     setItems(null);
     setCodecF(new Set());
-    api.convertLibrary("tv", show.series_id).then(setItems).catch(() => setItems([]));
-  }, [media, show]);
+    setLoadErr(false);
+    api.convertLibrary("tv", show.series_id, onlyConvertible)
+      .then(setItems).catch(() => { setItems([]); setLoadErr(true); });
+  }, [media, show, onlyConvertible]);
 
   const convert = async (c: ConvertCandidate) => {
     const key = rowKey(c);
@@ -456,7 +697,10 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
     } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
   };
   // Queue a whole show, or one season of it, in a single call.
-  const convertBulk = async (seriesID: number, season: number | undefined, label: string) => {
+  const convertBulk = async (seriesID: number, season: number | undefined, label: string, count: number) => {
+    if (count > 1 && !window.confirm(`Queue ${count} episode${count === 1 ? "" : "s"} from ${label}?
+
+Originals move to the recycle bin. You can cancel from the Queue tab.`)) return;
     const key = `bulk:${seriesID}:${season ?? "all"}`;
     setBusy(key);
     try {
@@ -488,6 +732,8 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
   const view = useMemo(() => {
     let list = (items ?? []).slice();
     if (codecF.size) list = list.filter((c) => codecF.has(c.info?.video_codec?.toUpperCase() ?? ""));
+    const needle = q.trim().toLowerCase();
+    if (needle) list = list.filter((c) => c.title.toLowerCase().includes(needle));
     const dir = sort.dir === "asc" ? 1 : -1;
     const val = (c: ConvertCandidate): number | string => {
       switch (sort.key) {
@@ -505,7 +751,7 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
       const va = val(a), vb = val(b);
       return typeof va === "string" || typeof vb === "string" ? String(va).localeCompare(String(vb)) * dir : (va - vb) * dir;
     });
-  }, [items, codecF, sort]);
+  }, [items, codecF, sort, q]);
 
   const setShowSortKey = (key: ShowSortKey) =>
     setShowSort((s) => s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "title" ? "asc" : "desc" });
@@ -521,11 +767,15 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
         case "est": return sh.convertible ? sh.est_bytes : -1;
       }
     };
-    return (shows ?? []).slice().sort((a, b) => {
+    const needle = q.trim().toLowerCase();
+    let base = shows ?? [];
+    if (onlyConvertible) base = base.filter((sh) => sh.convertible > 0);
+    if (needle) base = base.filter((sh) => sh.title.toLowerCase().includes(needle));
+    return base.slice().sort((a, b) => {
       const va = val(a), vb = val(b);
       return typeof va === "string" || typeof vb === "string" ? String(va).localeCompare(String(vb)) * dir : (va - vb) * dir;
     });
-  }, [shows, showSort]);
+  }, [shows, showSort, q, onlyConvertible]);
 
   // Seasons of the open show that still have convertible episodes — nothing else is
   // worth offering a bulk button for.
@@ -539,14 +789,34 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
   const filtering = codecF.size > 0;
   return (
     <div className="flex flex-col gap-2">
-      <div className="inline-flex w-fit rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
-        {(["movies", "tv"] as const).map((m) => (
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="inline-flex w-fit rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+          {(["movies", "tv"] as const).map((m) => (
           <button key={m} onClick={() => setMedia(m)} className="rounded-md px-3.5 py-1.5 text-[12px] font-semibold" style={{ background: media === m ? "var(--accent)" : "transparent", color: media === m ? "var(--accent-ink)" : "var(--ink-faint)" }}>
             {m === "movies" ? "Movies" : "TV Shows"}
             {media === m ? <span className="ml-1.5 font-mono text-[10px] opacity-70">{(m === "tv" ? shows?.length : items?.length)?.toLocaleString() ?? ""}</span> : null}
-          </button>
-        ))}
+            </button>
+          ))}
+        </div>
+
+        <label className="sr-only" htmlFor="convert-search">Search titles</label>
+        <input id="convert-search" type="search" value={q} onChange={(e) => setQ(e.target.value)}
+          placeholder={media === "tv" ? "Search shows…" : "Search movies…"}
+          className="rounded-lg px-2.5 py-1.5 text-[12px]"
+          style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)", minWidth: 200 }} />
+
+        <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-ink-dim">
+          <input type="checkbox" checked={onlyConvertible} onChange={(e) => setOnlyConvertible(e.target.checked)} />
+          Only show files needing conversion
+        </label>
       </div>
+
+      {loadErr && (
+        <div role="status" className="rounded-lg px-3 py-2 text-[12px]"
+          style={{ border: "1px solid var(--avoid)", background: "var(--avoid-soft)", color: "var(--avoid)" }}>
+          Couldn't load the library — this is an error, not an empty library.
+        </div>
+      )}
 
       {media === "tv" && !show ? (
         shows === null ? (
@@ -563,9 +833,13 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
             <div className="overflow-x-auto rounded-xl" style={{ border: "1px solid var(--line)" }}>
               <table className="w-full border-collapse text-[12.5px]" style={{ minWidth: 720 }}>
                 <thead><tr style={{ background: "var(--panel-2)" }}>{SHOW_HEADERS.map((h) => (
-                  <th key={h.label} onClick={h.key ? () => setShowSortKey(h.key!) : undefined}
-                    className={`px-3 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint ${h.key ? "cursor-pointer select-none hover:text-[var(--ink)]" : ""}`}>
-                    {h.label}{h.key && showSort.key === h.key ? (showSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                  <th key={h.label} scope="col" aria-sort={h.key && showSort.key === h.key ? (showSort.dir === "asc" ? "ascending" : "descending") : undefined}
+                    className="px-3 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint">
+                    {h.key
+                      ? <button type="button" onClick={() => setShowSortKey(h.key!)} className="font-inherit uppercase hover:text-[var(--ink)]">
+                          {h.label}{showSort.key === h.key ? (showSort.dir === "asc" ? " ▲" : " ▼") : ""}
+                        </button>
+                      : h.label}
                   </th>
                 ))}</tr></thead>
                 <tbody>
@@ -593,7 +867,7 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
                           <div className="flex items-center justify-end gap-1.5">
                             <button onClick={() => setShow(sh)} className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Episodes</button>
                             {!done && (
-                              <button onClick={() => convertBulk(sh.series_id, undefined, sh.title)} disabled={busy !== null}
+                              <button onClick={() => convertBulk(sh.series_id, undefined, sh.title, sh.convertible)} disabled={busy !== null}
                                 className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50"
                                 style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>
                                 {busy === `bulk:${sh.series_id}:all` ? "Queuing…" : "Convert all"}
@@ -623,7 +897,7 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
                 {seasons.map((n) => (
-                  <button key={n} onClick={() => convertBulk(show.series_id, n, `${show.title} season ${n}`)} disabled={busy !== null}
+                  <button key={n} onClick={() => convertBulk(show.series_id, n, `${show.title} season ${n}`, (items ?? []).filter((c) => c.candidate && c.season === n).length)} disabled={busy !== null}
                     className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50"
                     style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>
                     {busy === `bulk:${show.series_id}:${n}` ? "Queuing…" : `Convert S${n}`}
@@ -644,9 +918,13 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
           <div className="overflow-x-auto rounded-xl" style={{ border: "1px solid var(--line)" }}>
             <table className="w-full border-collapse text-[12.5px]" style={{ minWidth: 940 }}>
               <thead><tr style={{ background: "var(--panel-2)" }}>{HEADERS.map((h) => (
-                <th key={h.label} onClick={h.key ? () => setSortKey(h.key!) : undefined}
-                  className={`px-3 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint ${h.key ? "cursor-pointer select-none hover:text-[var(--ink)]" : ""}`}>
-                  {h.label}{h.key && sort.key === h.key ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}
+                <th key={h.label} scope="col" aria-sort={h.key && sort.key === h.key ? (sort.dir === "asc" ? "ascending" : "descending") : undefined}
+                  className="px-3 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint">
+                  {h.key
+                    ? <button type="button" onClick={() => setSortKey(h.key!)} className="font-inherit uppercase hover:text-[var(--ink)]">
+                        {h.label}{sort.key === h.key ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}
+                      </button>
+                    : h.label}
                 </th>
               ))}</tr></thead>
               <tbody>
@@ -834,11 +1112,15 @@ function SettingCard({ title, desc, children }: { title: string; desc: string; c
   );
 }
 
+// SettingField associates its label with the control it wraps — screen readers announced
+// every Convert setting as an unlabeled "edit, blank" before this.
+// SettingField wraps its control in a <label> so the visible text is the accessible name —
+// screen readers announced every Convert setting as an unlabeled "edit, blank" before this.
 function SettingField({ label, hint, children }: { label: string; hint: string; children: ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3">
-      <div><div className="text-[12px] font-semibold">{label}</div><div className="text-[10.5px] text-ink-faint">{hint}</div></div>
+    <label className="flex items-center justify-between gap-3">
+      <span><span className="block text-[12px] font-semibold">{label}</span><span className="block text-[10.5px] text-ink-faint">{hint}</span></span>
       {children}
-    </div>
+    </label>
   );
 }
