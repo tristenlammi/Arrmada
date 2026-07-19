@@ -124,8 +124,14 @@ func (s *Service) SyncProwlarr(ctx context.Context, baseURL, apiKey, flareURL st
 			if err := s.repo.Update(ctx, idx); err != nil {
 				return res, err
 			}
-		} else if _, err := s.repo.Create(ctx, idx); err != nil {
-			return res, err
+		} else {
+			// A new synced indexer must not inherit Go's zero values: SeedEnabled=false
+			// means "remove as soon as it's imported", i.e. never seed at all — a
+			// hit-and-run on any private tracker. Seed for the default window instead.
+			idx.SeedEnabled, idx.SeedHours = true, DefaultSeedHours
+			if _, err := s.repo.Create(ctx, idx); err != nil {
+				return res, err
+			}
 		}
 		res.Synced++
 	}

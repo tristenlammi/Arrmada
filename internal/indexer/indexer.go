@@ -18,6 +18,16 @@ const (
 	KindMAM          Kind = "myanonamouse" // native MyAnonaMouse integration (books)
 )
 
+// DefaultSeedHours is the seed goal given to a new indexer that specifies neither a
+// ratio nor a time target. Without one, "seed enabled" means seed FOREVER — the torrent
+// is never removed and its data holds the downloads dir permanently, which is the
+// biggest single way to fill a cache drive.
+//
+// Deliberately time-based rather than ratio-based: a ratio goal can be met within
+// minutes on a well-seeded release and remove the torrent early, breaching a private
+// tracker's minimum-seed-time rule. A time goal never removes early.
+const DefaultSeedHours = 336 // 14 days
+
 // Transport is the download transport an indexer's releases use.
 type Transport string
 
@@ -40,7 +50,7 @@ type Indexer struct {
 	Username string `json:"username,omitempty"`
 	Password string `json:"-"` // secret
 
-	Categories []int   `json:"categories,omitempty"`
+	Categories []int `json:"categories,omitempty"`
 	// MediaTypes scopes which searches use this indexer (movie | series | book | music).
 	// Empty = used for everything (backward compatible).
 	MediaTypes  []string `json:"media_types,omitempty"`

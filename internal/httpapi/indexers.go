@@ -21,20 +21,20 @@ func (a *api) handleListIndexers(w http.ResponseWriter, r *http.Request) {
 }
 
 type createIndexerRequest struct {
-	Name       string `json:"name"`
-	Kind       string `json:"kind"`
-	URL        string `json:"url"`
-	APIKey     string `json:"api_key"`
-	Username   string `json:"username"`
-	Password   string `json:"password"`
-	Categories []int    `json:"categories"`
-	MediaTypes []string `json:"media_types"`
-	Priority   int      `json:"priority"`
-	MinSeeders  int     `json:"min_seeders"`
-	SeedEnabled *bool   `json:"seed_enabled"`
-	SeedRatio   float64 `json:"seed_ratio"`
-	SeedHours   int     `json:"seed_hours"`
-	Enabled     *bool   `json:"enabled"`
+	Name        string   `json:"name"`
+	Kind        string   `json:"kind"`
+	URL         string   `json:"url"`
+	APIKey      string   `json:"api_key"`
+	Username    string   `json:"username"`
+	Password    string   `json:"password"`
+	Categories  []int    `json:"categories"`
+	MediaTypes  []string `json:"media_types"`
+	Priority    int      `json:"priority"`
+	MinSeeders  int      `json:"min_seeders"`
+	SeedEnabled *bool    `json:"seed_enabled"`
+	SeedRatio   float64  `json:"seed_ratio"`
+	SeedHours   int      `json:"seed_hours"`
+	Enabled     *bool    `json:"enabled"`
 }
 
 func (a *api) handleCreateIndexer(w http.ResponseWriter, r *http.Request) {
@@ -77,22 +77,32 @@ func (a *api) handleCreateIndexer(w http.ResponseWriter, r *http.Request) {
 	if req.SeedEnabled != nil {
 		seedEnabled = *req.SeedEnabled
 	}
+	// Seeding with no ratio AND no time goal means "seed forever" — the torrent is never
+	// removed and its data occupies the downloads dir permanently, the single biggest way
+	// to fill a cache drive. Default a NEW indexer to a time-only goal; time-only (rather
+	// than a ratio) can never remove a torrent early and breach a private tracker's
+	// minimum-seed-time rule. Editing an indexer respects whatever is sent, so 0/0 stays
+	// deliberately selectable.
+	seedRatio, seedHours := req.SeedRatio, req.SeedHours
+	if seedEnabled && seedRatio == 0 && seedHours == 0 {
+		seedHours = indexer.DefaultSeedHours
+	}
 
 	created, err := a.deps.Indexers.Create(r.Context(), indexer.Indexer{
-		Name:       req.Name,
-		Kind:       kind,
-		URL:        req.URL,
-		APIKey:     req.APIKey,
-		Username:   req.Username,
-		Password:   req.Password,
-		Categories: req.Categories,
-		MediaTypes: req.MediaTypes,
-		Priority:   req.Priority,
-		MinSeeders: req.MinSeeders,
+		Name:        req.Name,
+		Kind:        kind,
+		URL:         req.URL,
+		APIKey:      req.APIKey,
+		Username:    req.Username,
+		Password:    req.Password,
+		Categories:  req.Categories,
+		MediaTypes:  req.MediaTypes,
+		Priority:    req.Priority,
+		MinSeeders:  req.MinSeeders,
 		SeedEnabled: seedEnabled,
-		SeedRatio:  req.SeedRatio,
-		SeedHours:  req.SeedHours,
-		Enabled:    enabled,
+		SeedRatio:   seedRatio,
+		SeedHours:   seedHours,
+		Enabled:     enabled,
 	})
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not create indexer")
@@ -131,21 +141,21 @@ func (a *api) handleUpdateIndexer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	err := a.deps.Indexers.Update(r.Context(), indexer.Indexer{
-		ID:         id,
-		Name:       req.Name,
-		Kind:       kind,
-		URL:        req.URL,
-		APIKey:     req.APIKey, // blank = keep existing
-		Username:   req.Username,
-		Password:   req.Password, // blank = keep existing
-		Categories: req.Categories,
-		MediaTypes: req.MediaTypes,
-		Priority:   req.Priority,
-		MinSeeders: req.MinSeeders,
+		ID:          id,
+		Name:        req.Name,
+		Kind:        kind,
+		URL:         req.URL,
+		APIKey:      req.APIKey, // blank = keep existing
+		Username:    req.Username,
+		Password:    req.Password, // blank = keep existing
+		Categories:  req.Categories,
+		MediaTypes:  req.MediaTypes,
+		Priority:    req.Priority,
+		MinSeeders:  req.MinSeeders,
 		SeedEnabled: seedEnabled,
-		SeedRatio:  req.SeedRatio,
-		SeedHours:  req.SeedHours,
-		Enabled:    enabled,
+		SeedRatio:   req.SeedRatio,
+		SeedHours:   req.SeedHours,
+		Enabled:     enabled,
 	})
 	if errors.Is(err, indexer.ErrNotFound) {
 		a.writeError(w, http.StatusNotFound, "indexer not found")
