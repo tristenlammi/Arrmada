@@ -8,9 +8,13 @@ import "testing"
 func TestIndexerQuery(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"Teen Titans Go!", "Teen Titans Go"},
+		// "&" becomes "and" — that's how releases spell it, and searching "Love Death"
+		// instead matched "Love, Death & Robots" so well it crowded out the real show.
+		{"Love & Death", "Love and Death"},
+		{"Will & Grace", "Will and Grace"},
 		{"Marvel's Agents of S.H.I.E.L.D.", "Marvels Agents of S H I E L D"},
 		{"Bob's Burgers", "Bobs Burgers"},
-		{"Law & Order: SVU", "Law Order SVU"},
+		{"Law & Order: SVU", "Law and Order SVU"},
 		{"Pokémon Heroes", "Pokemon Heroes"},
 		{"Dexter's Laboratory (1996)", "Dexters Laboratory 1996"},
 		{"Teen.Titans.Go", "Teen Titans Go"},

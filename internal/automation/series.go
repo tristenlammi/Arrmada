@@ -483,7 +483,14 @@ func indexerQuery(title string) string {
 			b.WriteRune(r)
 		case r == ' ' || r == '.' || r == '_' || r == '-':
 			b.WriteByte(' ')
-			// Everything else — ! ? : ; , ' " ( ) [ ] & — is dropped: releases don't
+		case r == '&':
+			// "&" becomes "and", matching how releases actually spell it and how
+			// titleKey normalizes for comparison. Dropping it instead turned
+			// "Love & Death" into the query "Love Death", which matches
+			// "Love, Death & Robots" so strongly that it filled every result slot and
+			// the show's own releases never appeared.
+			b.WriteString(" and ")
+			// Everything else — ! ? : ; , ' " ( ) [ ] — is dropped: releases don't
 			// carry it, and including it only ever narrows the match.
 		}
 	}
@@ -537,9 +544,12 @@ func (c *Coordinator) searchSeriesReleases(ctx context.Context, s series.Series)
 // download URL. Shared by the automatic and interactive paths so both surface season packs
 // the same way.
 func (c *Coordinator) searchSeasons(ctx context.Context, s series.Series, title string, seasons []int, have []indexer.Release) []indexer.Release {
+	// Deduped by TITLE, not download URL: Prowlarr mints a new URL per request, so the
+	// same release fetched by the broad query and by a season query looked like two
+	// different results.
 	seen := map[string]bool{}
 	for _, r := range have {
-		seen[r.DownloadURL] = true
+		seen[r.Title] = true
 	}
 	queried := 0
 	for _, season := range seasons {
@@ -554,8 +564,8 @@ func (c *Coordinator) searchSeasons(ctx context.Context, s series.Series, title 
 			continue // one season failing shouldn't sink the rest
 		}
 		for _, r := range sr.Releases {
-			if !seen[r.DownloadURL] {
-				seen[r.DownloadURL] = true
+			if !seen[r.Title] {
+				seen[r.Title] = true
 				have = append(have, r)
 			}
 		}
