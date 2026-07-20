@@ -2,7 +2,7 @@
 # Run Arrmada as a configurable user (PUID/PGID) — the standard container pattern so the
 # app owns its appdata and can read your media, whatever uid your files use. Defaults to
 # 1000:1000. The container starts as root, fixes ownership of the data dir, then drops
-# privileges to PUID:PGID via su-exec.
+# privileges to PUID:PGID via gosu (Debian's su-exec equivalent).
 set -e
 
 PUID="${PUID:-1000}"
@@ -22,4 +22,4 @@ if [ -e /dev/dri ]; then
   chmod -R a+rw /dev/dri 2>/dev/null || true
 fi
 
-exec su-exec "$PUID:$PGID" /usr/local/bin/arrmada "$@"
+exec gosu "$PUID:$PGID" /usr/local/bin/arrmada "$@"

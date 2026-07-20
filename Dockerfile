@@ -44,9 +44,10 @@ RUN apk add --no-cache wget tar && set -eux; \
 # --- Stage 3b: whisper.cpp CLI (local AI subtitle generation) ---
 # CPU build for now — reliable everywhere; GPU (Vulkan on the Arc) is a follow-up. Models are NOT
 # baked in (multi-GB); the app downloads them on demand into the data dir.
-FROM alpine:3.20 AS whisper
+# Built on Debian, matching the runtime: a musl-linked binary can't run on a glibc image.
+FROM debian:bookworm-slim AS whisper
 ARG WHISPER_VERSION=v1.7.5
-RUN apk add --no-cache git cmake g++ make
+RUN apt-get update && apt-get install -y --no-install-recommends         git cmake g++ make ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN git clone --depth 1 --branch ${WHISPER_VERSION} https://github.com/ggerganov/whisper.cpp /src/whisper && \
     cd /src/whisper && \
     cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF && \
@@ -55,19 +56,39 @@ RUN git clone --depth 1 --branch ${WHISPER_VERSION} https://github.com/ggerganov
     strip /usr/local/bin/whisper-cli && \
     ldd /usr/local/bin/whisper-cli || true
 
-# --- Stage 4: minimal runtime ---
-FROM alpine:3.20
+# --- Stage 4: runtime ---
+#
+# Debian + jellyfin-ffmpeg, NOT Alpine's ffmpeg package.
+#
+# Alpine's libx265 segfaults at frame zero on some newer CPUs (reproduced on a Core Ultra
+# 285K: the file decodes fine, libx264 encodes fine, VAAPI encodes fine, and libx265 dies
+# instantly on every file even with asm=0). That removes CPU encoding entirely, and with it
+# HDR conversion — every HDR metadata path encodes through x265.
+#
+# jellyfin-ffmpeg is built for exactly this job: verified working x265, VAAPI AND Quick Sync
+# on the same hardware where Alpine's build failed all three (QSV had been exiting 171). It
+# also bundles the Intel media drivers rather than depending on whatever the base image
+# ships, which is one less thing to drift.
+FROM debian:bookworm-slim
+# gosu is Debian's su-exec: the entrypoint drops from root to a configurable PUID/PGID.
 # apprise (Python) is bundled for notifications — one image, 80+ services, no extra container.
-# su-exec lets the entrypoint drop from root to a configurable PUID/PGID.
-# intel-media-driver (iHD) + libva enable Intel Quick Sync / VAAPI hardware transcode
-# when /dev/dri is passed into the container (Gen8+ HEVC/H.264; Gen12.5+/Arc also AV1).
-# libva-utils ships `vainfo` for diagnosing the GPU.
-# libstdc++ + libgomp are whisper-cli's runtime deps (C++/OpenMP).
-RUN apk add --no-cache ca-certificates wget ffmpeg python3 py3-pip su-exec \
-        libva libva-utils intel-media-driver mesa-va-gallium libstdc++ libgomp && \
+# jellyfin-ffmpeg7 brings libva and the Intel drivers it needs for /dev/dri passthrough.
+# libgomp1 is whisper-cli's OpenMP runtime; vainfo helps diagnose the GPU.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl gnupg gosu python3 python3-pip libgomp1 vainfo && \
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
+        | gpg --dearmor -o /etc/apt/keyrings/jellyfin.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/jellyfin.gpg arch=amd64] https://repo.jellyfin.org/debian bookworm main" \
+        > /etc/apt/sources.list.d/jellyfin.list && \
+    apt-get update && apt-get install -y --no-install-recommends jellyfin-ffmpeg7 && \
+    rm -rf /var/lib/apt/lists/* && \
+    ln -sf /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/local/bin/ffmpeg && \
+    ln -sf /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe && \
     pip3 install --no-cache-dir --break-system-packages apprise && \
-    apprise --version && \
+    apprise --version && ffmpeg -version | head -1 && \
     mkdir -p /data /media/downloads /media/library /transcode
+
 COPY --from=build /out/arrmada /usr/local/bin/arrmada
 # Dolby Vision (dovi_tool) + HDR10+ (hdr10plus_tool) metadata extractors/injectors.
 COPY --from=hdrtools /usr/local/bin/dovi_tool /usr/local/bin/hdr10plus_tool /usr/local/bin/
