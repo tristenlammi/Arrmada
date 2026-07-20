@@ -152,7 +152,7 @@ func (s *Service) encodeHEVCStream(ctx context.Context, job *Job, src, dst strin
 		args = append(args, "-vf", scaleCPU(plan.ScaleHeight))
 	}
 	args = append(args, "-c:v", "libx265", "-preset", "medium", "-crf", strconv.Itoa(crf), "-pix_fmt", "yuv420p10le")
-	args = append(args, hdr10Args(mi.HDR10)...) // BT.2020/PQ + mastering (dynamic metadata re-added later)
+	args = append(args, hdr10Args(mi)...) // BT.2020/PQ + mastering (dynamic metadata re-added later)
 	args = append(args, "-f", "hevc", dst)
 	return s.runWithProgress(ctx, job, args, mi.DurationSec)
 }

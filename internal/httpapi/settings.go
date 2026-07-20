@@ -57,17 +57,20 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"convert_add_stereo":       a.deps.Settings.GetBool(ctx, "convert_add_stereo", false),
 		"convert_loudnorm":         a.deps.Settings.GetBool(ctx, "convert_loudnorm", false),
 		// Convert — focused model: target codec, subtitle toggle, schedule, quality safety.
-		"convert_target_codec": a.deps.Settings.Get(ctx, "convert_target_codec", "hevc"),
-		"convert_auto":         a.deps.Settings.GetBool(ctx, "convert_auto", false),
-		"convert_quality_gate": a.deps.Settings.GetBool(ctx, "convert_quality_gate", true),
-		"convert_min_ssim":     a.deps.Settings.Get(ctx, "convert_min_ssim", "0.95"),
-		"convert_workers":      a.deps.Settings.Get(ctx, "convert_workers", "1"),
-		"convert_sweep_start":  a.deps.Settings.Get(ctx, "convert_sweep_start", ""),
-		"convert_scan_at":      a.deps.Settings.Get(ctx, "convert_scan_at", "03:00"),
-		"convert_sweep_end":    a.deps.Settings.Get(ctx, "convert_sweep_end", ""),
-		"convert_max_failures": a.deps.Settings.Get(ctx, "convert_max_failures", "3"),
-		"convert_scratch_dir":  a.deps.Settings.Get(ctx, "convert_scratch_dir", ""),
-		"convert_vaapi_device": a.deps.Settings.Get(ctx, "convert_vaapi_device", ""),
+		"convert_target_codec":     a.deps.Settings.Get(ctx, "convert_target_codec", "hevc"),
+		"convert_auto":             a.deps.Settings.GetBool(ctx, "convert_auto", false),
+		"convert_quality_gate":     a.deps.Settings.GetBool(ctx, "convert_quality_gate", true),
+		"convert_min_ssim":         a.deps.Settings.Get(ctx, "convert_min_ssim", "0.95"),
+		"convert_workers":          a.deps.Settings.Get(ctx, "convert_workers", "1"),
+		"convert_sweep_start":      a.deps.Settings.Get(ctx, "convert_sweep_start", ""),
+		"convert_scan_at":          a.deps.Settings.Get(ctx, "convert_scan_at", "03:00"),
+		"convert_cpu_cores":        a.deps.Settings.Get(ctx, "convert_cpu_cores", "0"),
+		"convert_cpu_above_height": a.deps.Settings.Get(ctx, "convert_cpu_above_height", "2160"),
+		"convert_av1_recode_hevc":  a.deps.Settings.GetBool(ctx, "convert_av1_recode_hevc", false),
+		"convert_sweep_end":        a.deps.Settings.Get(ctx, "convert_sweep_end", ""),
+		"convert_max_failures":     a.deps.Settings.Get(ctx, "convert_max_failures", "3"),
+		"convert_scratch_dir":      a.deps.Settings.Get(ctx, "convert_scratch_dir", ""),
+		"convert_vaapi_device":     a.deps.Settings.Get(ctx, "convert_vaapi_device", ""),
 		// Recycle bin guard rails. These default to REAL limits, not 0/unlimited: the
 		// bin is on by default and every delete, quality upgrade and Convert original
 		// lands in it, so an unlimited default silently grows until the volume fills.
@@ -103,6 +106,9 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		ConvertWorkers        *string `json:"convert_workers"`
 		ConvertSweepStart     *string `json:"convert_sweep_start"`
 		ConvertScanAt         *string `json:"convert_scan_at"`
+		ConvertCPUCores       *string `json:"convert_cpu_cores"`
+		ConvertCPUAboveHeight *string `json:"convert_cpu_above_height"`
+		ConvertAV1RecodeHEVC  *bool   `json:"convert_av1_recode_hevc"`
 		ConvertSweepEnd       *string `json:"convert_sweep_end"`
 		ConvertMaxFailures    *string `json:"convert_max_failures"`
 		ConvertScratchDir     *string `json:"convert_scratch_dir"`
@@ -211,6 +217,15 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.ConvertScanAt != nil && !save(a.deps.Settings.Set(ctx, "convert_scan_at", *req.ConvertScanAt)) {
+		return
+	}
+	if req.ConvertCPUCores != nil && !save(a.deps.Settings.Set(ctx, "convert_cpu_cores", *req.ConvertCPUCores)) {
+		return
+	}
+	if req.ConvertCPUAboveHeight != nil && !save(a.deps.Settings.Set(ctx, "convert_cpu_above_height", *req.ConvertCPUAboveHeight)) {
+		return
+	}
+	if req.ConvertAV1RecodeHEVC != nil && !save(a.deps.Settings.SetBool(ctx, "convert_av1_recode_hevc", *req.ConvertAV1RecodeHEVC)) {
 		return
 	}
 	if req.ConvertSweepStart != nil && !save(a.deps.Settings.Set(ctx, "convert_sweep_start", *req.ConvertSweepStart)) {

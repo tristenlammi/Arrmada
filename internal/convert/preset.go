@@ -103,7 +103,7 @@ func mp4Audio(codec string) bool {
 // to the target codec, optionally downscaling; keep/convert/downmix/normalize the wanted audio
 // (container-safe); extract or repackage subtitles; set the container. This is the generalized
 // compiler (Rules v2 R1, extended in R5) — every Plan runs through here.
-func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool) []string {
+func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int) []string {
 	container := plan.Container
 	if container == "" {
 		container = "mkv"
@@ -246,13 +246,15 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool) []s
 			if scale {
 				a = append(a, "-vf", scaleCPU(plan.ScaleHeight))
 			}
-			a = append(a, cpuVideoArgs(enc.Name, codec, crf, mi.TenBit)...)
-			// HDR10 static passthrough: ffmpeg keeps the colour tags on a re-encode but drops the
-			// mastering-display / max-cll, so re-pass them to x265. (HDR10+ dynamic metadata is
-			// handled by a separate inject pipeline — see encodeHDR10Plus.)
-			if codec == "hevc" && enc.Name == "libx265" && (mi.HDR == "HDR10" || mi.HDR == "HDR10+") {
-				a = append(a, hdr10Args(mi.HDR10)...)
+			// HDR10/HLG static passthrough: ffmpeg keeps the colour tags on a re-encode but
+			// drops the mastering-display / max-cll, so they're re-passed to x265. (HDR10+
+			// dynamic metadata and the DV RPU are re-injected by their own pipelines.)
+			hdrParams, colourTags := "", []string(nil)
+			if codec == "hevc" && enc.Name == "libx265" && isHDR(mi.HDR) {
+				hdrParams, colourTags = hdr10Params(mi)
 			}
+			a = append(a, cpuVideoArgs(enc.Name, codec, crf, mi.TenBit, cores, hdrParams)...)
+			a = append(a, colourTags...)
 		}
 	}
 
@@ -272,36 +274,71 @@ func scaleCPU(height int) string { return fmt.Sprintf("scale=-2:%d", height) }
 // the mastering-display + max-cll (hdr10=1 emits the SEI, repeat-headers keeps it on every IDR so
 // seeking stays HDR-correct). HDR10+ dynamic metadata and Dolby Vision RPU are re-embedded
 // post-encode by their tools (the bundled x265 isn't built with dhdr10-info support). m may be nil.
-func hdr10Args(m *HDR10Meta) []string {
-	params := "hdr10=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc"
-	if m != nil {
-		if m.MasterDisplay != "" {
-			params += ":master-display=" + m.MasterDisplay
+func hdr10Params(mi *MediaInfo) (params string, colourTags []string) {
+	// The transfer curve must follow the SOURCE. This was hardcoded to smpte2084 (PQ), so
+	// every HLG file was re-tagged as PQ — it then plays back with wrong brightness, washed
+	// out or crushed, with the original already in the recycle bin.
+	trc := "smpte2084"
+	if mi.HDR == "HLG" {
+		trc = "arib-std-b67"
+	}
+	params = "hdr10=1:repeat-headers=1:colorprim=bt2020:transfer=" + trc + ":colormatrix=bt2020nc"
+	// Mastering display / max-cll describe an absolute-luminance (PQ) grade. HLG is relative
+	// and self-describing, so it carries neither.
+	if mi.HDR != "HLG" && mi.HDR10 != nil {
+		if mi.HDR10.MasterDisplay != "" {
+			params += ":master-display=" + mi.HDR10.MasterDisplay
 		}
-		if m.MaxCLL != "" {
-			params += ":max-cll=" + m.MaxCLL
+		if mi.HDR10.MaxCLL != "" {
+			params += ":max-cll=" + mi.HDR10.MaxCLL
 		}
 	}
-	return []string{
-		"-color_primaries", "bt2020", "-color_trc", "smpte2084", "-colorspace", "bt2020nc",
-		"-x265-params", params,
-	}
+	return params, []string{"-color_primaries", "bt2020", "-color_trc", trc, "-colorspace", "bt2020nc"}
+}
+
+// hdr10Args is the standalone form used by the elementary-stream HDR pipelines, which build
+// their own x265 command rather than going through compileOutputArgs.
+func hdr10Args(mi *MediaInfo) []string {
+	params, tags := hdr10Params(mi)
+	return append(tags, "-x265-params", params)
 }
 
 // cpuVideoArgs builds the CPU encoder args for a target codec. H.264 is pinned to 8-bit
 // (yuv420p) for compatibility; HEVC/AV1 preserve 10-bit when the source is 10-bit.
-func cpuVideoArgs(name, codec string, crf int, tenBit bool) []string {
+// cpuVideoArgs builds the CPU encoder args. cores bounds the encoder's own thread pool so a
+// library conversion can't take the whole machine — the server is also running Plex and
+// whatever else, and an encode that saturates every core makes the box unusable for days.
+func cpuVideoArgs(name, codec string, crf int, tenBit bool, cores int, hdrParams string) []string {
 	switch codec {
 	case "h264":
 		return []string{"-c:v", name, "-preset", "medium", "-crf", strconv.Itoa(crf), "-pix_fmt", "yuv420p"}
+
 	case "av1":
-		out := []string{"-c:v", name, "-preset", "8", "-crf", strconv.Itoa(crf)}
+		// preset 5, not 8. SVT-AV1's presets run 0 (slowest) to 13; 8 is a *fast* preset and
+		// was plainly at odds with a module whose purpose is quality retention. tune=0
+		// targets subjective quality — the default tunes for PSNR, which visibly
+		// over-smooths. lp bounds the thread pool.
+		params := fmt.Sprintf("tune=0:lp=%d", cores)
+		out := []string{"-c:v", name, "-preset", "5", "-crf", strconv.Itoa(crf), "-svtav1-params", params}
 		if tenBit {
 			out = append(out, "-pix_fmt", "yuv420p10le")
 		}
 		return out
+
 	default: // hevc
-		out := []string{"-c:v", name, "-preset", "medium", "-crf", strconv.Itoa(crf)}
+		// preset slow (~1.6x medium's time for a real fidelity gain), plus the params that
+		// matter for retaining detail rather than for speed:
+		//   aq-mode=3   better bit distribution in dark scenes and gradients
+		//   psy-rd      preserves texture/grain the default happily smooths away
+		//   no-sao      SAO is x265's classic detail-smearer at high quality
+		//   rc-lookahead / bframes  more context for rate decisions
+		params := fmt.Sprintf("aq-mode=3:psy-rd=2.0:psy-rdoq=1.0:no-sao=1:bframes=8:rc-lookahead=40:pools=%d", cores)
+		// HDR params must be MERGED here, not appended as a second -x265-params: ffmpeg keeps
+		// only the last occurrence, so two flags means one set is silently discarded.
+		if hdrParams != "" {
+			params += ":" + hdrParams
+		}
+		out := []string{"-c:v", name, "-preset", "slow", "-crf", strconv.Itoa(crf), "-x265-params", params}
 		if tenBit {
 			out = append(out, "-pix_fmt", "yuv420p10le")
 		}

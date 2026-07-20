@@ -308,6 +308,7 @@ func (s *Service) LibraryTVSeries(ctx context.Context) ([]SeriesRollup, error) {
 	}
 	dp := s.defaultPlan(ctx)
 	target := s.targetCodec(ctx)
+	recode := s.av1RecodesHEVC(ctx)
 
 	// One sequential scan of the index, aggregated in Go. Aggregating here rather than
 	// in SQL is what lets the estimated saving use the same estimatePlanSize the detail
@@ -335,7 +336,7 @@ func (s *Service) LibraryTVSeries(ctx context.Context) ([]SeriesRollup, error) {
 		}
 		r.Files++
 		r.TotalBytes += size
-		if codec != "" && !strings.EqualFold(codec, target) {
+		if isCandidateCodec(codec, target, recode) {
 			r.Convertible++
 			if infoJSON != "" {
 				var mi MediaInfo
@@ -377,10 +378,17 @@ type MediaStats struct {
 	EstBytes         int64 `json:"est_bytes"`         // convertible files' estimated size after conversion
 	ConvertibleBytes int64 `json:"convertible_bytes"` // convertible files' CURRENT size on disk
 	Reclaimable      int64 `json:"reclaimable"`       // total_bytes of convertible files minus est_bytes
-	H264             int   `json:"h264"`
-	HEVC             int   `json:"hevc"`
-	AV1              int   `json:"av1"`
-	Other            int   `json:"other"`
+	// HDR counts, over CONVERTIBLE files only — the question the format cards answer is
+	// "what would this format leave behind", not "what do I own".
+	HDR10       int `json:"hdr10"`
+	HDR10Plus   int `json:"hdr10_plus"`
+	DolbyVision int `json:"dolby_vision"`
+	HLG         int `json:"hlg"`
+
+	H264  int `json:"h264"`
+	HEVC  int `json:"hevc"`
+	AV1   int `json:"av1"`
+	Other int `json:"other"`
 }
 
 // LibraryStats is the Overview tab's numbers, across the WHOLE library. The Overview used to
@@ -391,6 +399,22 @@ type LibraryStats struct {
 	Movies MediaStats `json:"movies"`
 	TV     MediaStats `json:"tv"`
 	Total  MediaStats `json:"total"`
+}
+
+// addHDR counts a file's HDR format. These drive the format cards in setup: they turn
+// "AV1 can't carry Dolby Vision" into "AV1 would leave 47 of your files alone", which is
+// the same fact in terms the user can act on.
+func (m *MediaStats) addHDR(hdr string) {
+	switch hdr {
+	case "HDR10":
+		m.HDR10++
+	case "HDR10+":
+		m.HDR10Plus++
+	case "Dolby Vision":
+		m.DolbyVision++
+	case "HLG":
+		m.HLG++
+	}
 }
 
 func (m *MediaStats) add(codec string, size, est int64, convertible bool) {
@@ -438,6 +462,7 @@ func (s *Service) LibraryStats(ctx context.Context) (*LibraryStats, error) {
 	}
 	dp := s.defaultPlan(ctx)
 	target := s.targetCodec(ctx)
+	recode := s.av1RecodesHEVC(ctx)
 	rows, err := s.index.db.QueryContext(ctx,
 		`SELECT media_type, size_bytes, video_codec, info_json FROM convert_library`)
 	if err != nil {
@@ -450,20 +475,28 @@ func (s *Service) LibraryStats(ctx context.Context) (*LibraryStats, error) {
 		if err := rows.Scan(&mediaType, &size, &codec, &infoJSON); err != nil {
 			return nil, err
 		}
-		convertible := codec != "" && !strings.EqualFold(codec, target)
+		convertible := isCandidateCodec(codec, target, recode)
 		var est int64
-		if convertible && infoJSON != "" {
+		hdr := ""
+		if infoJSON != "" {
 			var mi MediaInfo
 			if json.Unmarshal([]byte(infoJSON), &mi) == nil {
-				est = estimatePlanSize(&mi, dp)
+				hdr = mi.HDR
+				if convertible {
+					est = estimatePlanSize(&mi, dp)
+				}
 			}
 		}
+		per := &out.Movies
 		if mediaType == "episode" {
-			out.TV.add(codec, size, est, convertible)
-		} else {
-			out.Movies.add(codec, size, est, convertible)
+			per = &out.TV
 		}
+		per.add(codec, size, est, convertible)
 		out.Total.add(codec, size, est, convertible)
+		if convertible {
+			per.addHDR(hdr)
+			out.Total.addHDR(hdr)
+		}
 	}
 	return out, rows.Err()
 }
@@ -522,6 +555,7 @@ func (s *Service) indexedCandidates(ctx context.Context, mediaType string, serie
 
 	dp := s.defaultPlan(ctx)
 	target := s.targetCodec(ctx)
+	recode := s.av1RecodesHEVC(ctx)
 	var out []Candidate
 	for rows.Next() {
 		var r indexRow
@@ -541,7 +575,7 @@ func (s *Service) indexedCandidates(ctx context.Context, mediaType string, serie
 				c.Info = &mi
 				// Candidacy is derived here, not stored — changing the target codec
 				// takes effect immediately with no reindex.
-				c.Candidate = isCandidateFor(&mi, target)
+				c.Candidate = isCandidateCodec(mi.VideoCodec, target, recode)
 				if c.Candidate {
 					c.EstBytes = estimatePlanSize(&mi, dp)
 				}

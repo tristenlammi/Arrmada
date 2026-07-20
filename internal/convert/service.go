@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -39,7 +40,33 @@ const (
 	keyScratchDir     = "convert_scratch_dir"      // transcode working dir override (empty = the startup default)
 	keyVaapiDevice    = "convert_vaapi_device"     // which /dev/dri/renderD* VAAPI encodes on (empty = default)
 	keyScanAt         = "convert_scan_at"          // "HH:MM" — when the daily library index sweep runs
+	keyCPUCores       = "convert_cpu_cores"        // max cores a CPU encode may use (0 = half the box)
+	keyCPUAboveHeight = "convert_cpu_above_height" // use CPU at/above this height (0 = never)
+	keyAV1RecodeHEVC  = "convert_av1_recode_hevc"  // let an AV1 target re-encode existing HEVC
 )
+
+// encodeNice is the scheduling priority CPU encodes run at. 19 is the lowest — encoding is
+// bulk background work that should yield instantly to Plex, game servers, or anything else
+// the user actually notices.
+const encodeNice = 19
+
+// cpuCores is how many cores a CPU encode may use. Default is half the machine: encoding a
+// library takes days, and it runs on a server that is also doing other things, so taking the
+// whole box is never the right default. Combined with the low priority above, a CPU encode
+// becomes something that fills idle capacity rather than something you schedule around.
+func (s *Service) cpuCores(ctx context.Context) int {
+	n, _ := strconv.Atoi(s.settings.Get(ctx, keyCPUCores, "0"))
+	if n <= 0 {
+		n = runtime.NumCPU() / 2
+	}
+	if n < 1 {
+		n = 1
+	}
+	if max := runtime.NumCPU(); n > max {
+		n = max
+	}
+	return n
+}
 
 // defaultScanAt is when the daily index sweep runs if the admin hasn't picked a time.
 // Pre-dawn by default: the sweep only touches new or changed files, but on a big first
@@ -472,6 +499,12 @@ func splitCSV(v string) []string {
 	return out
 }
 
+// av1RecodesHEVC reports whether an AV1 target should also re-encode existing HEVC files.
+// Off by default — see isCandidateCodec for why.
+func (s *Service) av1RecodesHEVC(ctx context.Context) bool {
+	return s.settings.GetBool(ctx, keyAV1RecodeHEVC, false)
+}
+
 // targetCodec is the codec the library is being converted to (hevc | av1), default HEVC.
 func (s *Service) targetCodec(ctx context.Context) string {
 	if s.settings.Get(ctx, keyTargetCodec, "hevc") == "av1" {
@@ -492,7 +525,27 @@ func maxQualityCRF(codec string) int {
 // isCandidateFor reports whether a file should be converted for the chosen target codec — i.e.
 // it's a real video stream that isn't already that codec.
 func isCandidateFor(mi *MediaInfo, target string) bool {
-	return mi.VideoCodec != "" && !strings.EqualFold(mi.VideoCodec, target)
+	return isCandidateCodec(mi.VideoCodec, target, false)
+}
+
+// isCandidateCodec decides whether a file's codec makes it worth converting to target.
+//
+// recodeHEVC covers the one genuinely debatable case: an AV1 target technically makes every
+// existing HEVC file a candidate, but HEVC → AV1 is a SECOND lossy generation — recompressing
+// an already-compressed encode for maybe 20-30% more space. On a library that's mostly HEVC
+// that means re-encoding thousands of already-efficient files and compounding their artifacts,
+// which is a poor trade for a module whose promise is quality retention. H.264 → AV1 is the
+// opposite: a big efficiency jump from a wasteful source, worth one generation.
+//
+// So it's opt-in, and off by default.
+func isCandidateCodec(codec, target string, recodeHEVC bool) bool {
+	if codec == "" || strings.EqualFold(codec, target) {
+		return false
+	}
+	if target == "av1" && codecClass(codec) == "hevc" && !recodeHEVC {
+		return false
+	}
+	return true
 }
 
 func (s *Service) queueMovie(ctx context.Context, movieID int64, plan Plan) (*Job, error) {
@@ -805,9 +858,15 @@ func (s *Service) sample(ctx context.Context, movieID int64, plan Plan) (SampleR
 		args := []string{"-y", "-hide_banner", "-ss", fmt.Sprintf("%.2f", sl.start), "-t", fmt.Sprintf("%.2f", sl.length)}
 		args = append(args, globalArgs(enc, false, s.vaapiDev(ctx))...) // sample = software decode (short, keep it simple/robust)
 		args = append(args, "-i", src)
-		args = append(args, compileOutputArgs(enc, mi, plan, false)...)
+		args = append(args, compileOutputArgs(enc, mi, plan, false, s.cpuCores(ctx))...)
 		args = append(args, dst)
-		return exec.CommandContext(ctx, s.ffmpeg, args...).Run()
+		cmd := exec.CommandContext(ctx, s.ffmpeg, args...)
+		lowPriority(cmd)
+		if err := cmd.Start(); err != nil {
+			return err
+		}
+		applyNice(cmd.Process.Pid, encodeNice)
+		return cmd.Wait()
 	}
 
 	enc := s.encoderFor(plan.VideoCodec)
@@ -1036,32 +1095,17 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		s.finish(job, StateSkipped, "already "+strings.ToUpper(mi.VideoCodec)+" — nothing to do")
 		return
 	}
-	// Pick the encoder for this plan's target codec (hardware if available, else CPU).
-	enc := s.encoderFor(plan.VideoCodec)
+	// Encoder routing — ordered, first match wins. See CONVERT-QUALITY-PLAN.md.
+	enc := s.pickEncoder(ctx, job, mi, plan)
 
-	// HDR metadata passthrough is implemented only on the x265 path — hdr10Args re-passes the
-	// mastering display / max-cll, and the Dolby Vision and HDR10+ pipelines both encode a raw
-	// x265 elementary stream before injecting their metadata back.
-	//
-	// This used to mean HDR was SKIPPED outright whenever a hardware encoder was selected, i.e.
-	// on every GPU machine — so all the HDR content in the library, and the whole bundled
-	// dovi_tool / hdr10plus_tool pipeline, was permanently unreachable. Fall back to CPU for
-	// these files instead: slower, but it converts and keeps the metadata rather than never
-	// converting at all.
-	if isHDR(mi.HDR) && plan.VideoCodec == "hevc" && enc.Name != "libx265" {
-		hw := enc
-		enc = cpuEncoder("hevc")
-		s.update(job, func(j *Job) { j.Encoder = enc.Label }) // don't claim GPU in the UI
-		s.log.Info("convert: HDR file — using CPU x265 so the HDR metadata survives",
-			"title", job.Title, "hdr", mi.HDR, "instead_of", hw.Name)
-	}
-
-	// Fail-safe for what still can't be preserved (AV1 targets, or a missing dovi_tool /
-	// hdr10plus_tool): skip rather than silently flatten the picture.
+	// Whatever still can't be preserved after routing (Dolby Vision or HDR10+ with an AV1
+	// target, or a missing dovi_tool / hdr10plus_tool) is skipped rather than silently
+	// flattened. The format cards in Settings warn about this before the user commits.
 	if isHDR(mi.HDR) && !s.canPreserveHDR(mi, plan, enc) {
-		s.finish(job, StateSkipped, mi.HDR+" — skipped (metadata passthrough not available for this target)")
+		s.finish(job, StateSkipped, skipReasonHDR(mi.HDR, plan.VideoCodec))
 		return
 	}
+
 	// Seeding-safety: skip hardlinked files by default so we don't duplicate a seeding copy.
 	if s.settings.GetBool(ctx, keySkipHardlinked, true) && fileLinks(src) > 1 {
 		s.finish(job, StateSkipped, "file is hardlinked (likely still seeding) — skipped")
@@ -1356,26 +1400,97 @@ func wouldBeNoOp(mi *MediaInfo, plan Plan) bool {
 // Vision RPU each require their bundled tool. When none applies the caller skips the file rather
 // than silently degrading it.
 func (s *Service) canPreserveHDR(mi *MediaInfo, plan Plan, enc Encoder) bool {
-	if plan.VideoCodec == "" { // remux / container / track work copies the video stream as-is
+	if plan.VideoCodec == "" { // remux / container work copies the video stream as-is
 		return true
 	}
+
+	// AV1. The format itself handles all of these — Netflix ships AV1-HDR10+ at scale — but
+	// our bundled tools can't write the metadata into an AV1 bitstream: dovi_tool 2.3.3 and
+	// hdr10plus_tool 1.7.2 both read and write HEVC only. So what AV1 can carry here is
+	// whatever lives in the bitstream headers, not what needs injecting afterwards.
+	if plan.VideoCodec == "av1" {
+		switch mi.HDR {
+		case "HLG":
+			return true // transfer curve only — nothing to inject
+		case "HDR10":
+			// Needs SVT-AV1 to accept mastering-display via -svtav1-params. Without it the
+			// grade metadata is lost and the picture displays wrong, so treat it as
+			// unsupported until proven otherwise.
+			return false
+		}
+		return false // HDR10+ and Dolby Vision: no injection path for AV1
+	}
+
+	// HEVC. Everything is preservable, but only on the x265 path — hdr10Params emits
+	// -x265-params, and the HDR10+ / DV pipelines encode an x265 elementary stream before
+	// re-injecting. Hardware encoders have no equivalent, so HDR routes to CPU (see process).
 	if plan.VideoCodec != "hevc" || enc.Name != "libx265" {
-		return false // dynamic/static HDR passthrough is implemented only on the x265/HEVC path
+		return false
 	}
 	switch mi.HDR {
-	case "HDR10":
-		// Colour tags (BT.2020/PQ) always survive a libx265 re-encode, and mastering-display /
-		// max-cll are re-passed when present.
+	case "HDR10", "HLG":
+		// Colour tags survive a re-encode; mastering-display / max-cll are re-passed for PQ.
 		return true
 	case "HDR10+":
-		// The bundled x265 can't re-embed dynamic metadata, so it has to be extracted and
-		// injected afterwards. Without the tool the re-encode would keep only static HDR10 and
-		// silently drop the per-scene metadata — skip the file instead of degrading it.
+		// x265 here isn't built with dhdr10-info, so the dynamic metadata is injected after
+		// the encode. Without the tool it would silently degrade to static HDR10.
 		return s.hdr10plusTool != ""
 	case "Dolby Vision":
 		return s.doviTool != ""
 	}
 	return false
+}
+
+// pickEncoder applies the ordered routing rules:
+//
+//  1. HDR of any kind → CPU. Forced: every HDR metadata path is software-only. hdr10Params
+//     emits -x265-params, and the HDR10+ / Dolby Vision pipelines encode an x265 elementary
+//     stream before re-injecting. This is checked BEFORE resolution, which is why a 1080p
+//     HDR file goes to CPU — resolution never enters into it.
+//  2. Height >= threshold (default 2160) → CPU. A preference, not a requirement: 4K files
+//     are few and large, so the efficiency gain is tens of GB each.
+//  3. Otherwise → hardware, falling back to CPU if none is available.
+func (s *Service) pickEncoder(ctx context.Context, job *Job, mi *MediaInfo, plan Plan) Encoder {
+	hw := s.encoderFor(plan.VideoCodec)
+	cpu := cpuEncoder(plan.VideoCodec)
+
+	reason := ""
+	switch {
+	case isHDR(mi.HDR):
+		reason = mi.HDR + " metadata can only be preserved on the CPU encoder"
+	case plan.VideoCodec != "" && mi.Height > 0 && mi.Height >= s.cpuAboveHeight(ctx):
+		reason = "high resolution — CPU gives a better result per byte"
+	default:
+		return hw
+	}
+	if hw.Name == cpu.Name {
+		return cpu // already on CPU; nothing to say
+	}
+	s.update(job, func(j *Job) { j.Encoder = cpu.Label }) // don't claim GPU in the UI
+	s.log.Info("convert: routing to the CPU encoder", "title", job.Title, "reason", reason,
+		"instead_of", hw.Name)
+	return cpu
+}
+
+// cpuAboveHeight is the resolution at or above which conversions use the CPU encoder.
+// 0 disables the rule (hardware for everything that isn't forced to CPU).
+func (s *Service) cpuAboveHeight(ctx context.Context) int {
+	n, err := strconv.Atoi(s.settings.Get(ctx, keyCPUAboveHeight, "2160"))
+	if err != nil || n < 0 {
+		return 2160
+	}
+	if n == 0 {
+		return 1 << 30 // effectively never
+	}
+	return n
+}
+
+// skipReasonHDR explains, in the user's terms, why a file can't be converted to this format.
+func skipReasonHDR(hdr, target string) string {
+	if target == "av1" {
+		return hdr + " can't be converted to AV1 — the metadata can't be carried, so this file was left as it is"
+	}
+	return hdr + " — skipped (metadata passthrough not available for this target)"
 }
 
 // isHDR reports whether a probed HDR label means the file carries HDR metadata.
@@ -1426,10 +1541,11 @@ func (s *Service) finish(job *Job, state JobState, note string) {
 // asks the GPU to decode too (VAAPI only) — set for the full-GPU attempt, cleared for the
 // software-decode fallback.
 func (s *Service) encode(ctx context.Context, job *Job, src, dst string, mi *MediaInfo, enc Encoder, plan Plan, hwDecode bool) error {
-	args := []string{"-y", "-hide_banner", "-nostats", "-progress", "pipe:1"}
+	cores := s.cpuCores(ctx)
+	args := []string{"-y", "-hide_banner", "-nostats", "-progress", "pipe:1", "-threads", strconv.Itoa(cores)}
 	args = append(args, globalArgs(enc, hwDecode, s.vaapiDev(ctx))...) // device / hwaccel init must precede the input
 	args = append(args, "-i", src)
-	args = append(args, compileOutputArgs(enc, mi, plan, hwDecode)...)
+	args = append(args, compileOutputArgs(enc, mi, plan, hwDecode, cores)...)
 	args = append(args, dst)
 	return s.runWithProgress(ctx, job, args, mi.DurationSec)
 }
@@ -1438,6 +1554,7 @@ func (s *Service) encode(ctx context.Context, job *Job, src, dst string, mi *Med
 // live and returning any error with a tail of stderr for diagnosis.
 func (s *Service) runWithProgress(ctx context.Context, job *Job, args []string, durationSec float64) error {
 	cmd := exec.CommandContext(ctx, s.ffmpeg, args...)
+	lowPriority(cmd) // own process group, so the whole encode can be niced and signalled together
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -1455,6 +1572,7 @@ func (s *Service) runWithProgress(ctx context.Context, job *Job, args []string, 
 	if err := cmd.Start(); err != nil {
 		return err
 	}
+	applyNice(cmd.Process.Pid, encodeNice) // bulk work — yield to anything interactive
 	s.readProgress(job, stdout, durationSec)
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("%v (%s)", err, tail.String())

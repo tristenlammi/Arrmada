@@ -15,20 +15,20 @@ import (
 
 // MediaInfo is the probed spec of a single media file.
 type MediaInfo struct {
-	Container   string  `json:"container"`
-	VideoCodec  string  `json:"video_codec"`
-	Width       int     `json:"width"`
-	Height      int     `json:"height"`
-	Resolution  string  `json:"resolution"` // "2160p" | "1080p" | "720p" | "SD"
-	HDR         string  `json:"hdr"`        // "SDR" | "HDR10" | "HDR10+" | "Dolby Vision"
-	BitrateKbps int     `json:"bitrate_kbps"`
-	FrameRate   float64 `json:"frame_rate"`
-	DurationSec float64 `json:"duration_sec"`
-	SizeBytes   int64   `json:"size_bytes"`
-	AudioTracks int     `json:"audio_tracks"`
-	SubTracks   int     `json:"sub_tracks"`
-	TenBit      bool    `json:"ten_bit"`
-	VFR         bool          `json:"vfr"` // variable frame rate → needs CFR conversion
+	Container   string        `json:"container"`
+	VideoCodec  string        `json:"video_codec"`
+	Width       int           `json:"width"`
+	Height      int           `json:"height"`
+	Resolution  string        `json:"resolution"` // "2160p" | "1080p" | "720p" | "SD"
+	HDR         string        `json:"hdr"`        // "SDR" | "HDR10" | "HDR10+" | "Dolby Vision"
+	BitrateKbps int           `json:"bitrate_kbps"`
+	FrameRate   float64       `json:"frame_rate"`
+	DurationSec float64       `json:"duration_sec"`
+	SizeBytes   int64         `json:"size_bytes"`
+	AudioTracks int           `json:"audio_tracks"`
+	SubTracks   int           `json:"sub_tracks"`
+	TenBit      bool          `json:"ten_bit"`
+	VFR         bool          `json:"vfr"`    // variable frame rate → needs CFR conversion
 	HasCC       bool          `json:"has_cc"` // embedded EIA/CEA-608/708 closed captions in the video
 	Audio       []AudioStream `json:"audio,omitempty"`
 	Subs        []SubStream   `json:"subs,omitempty"`
@@ -190,17 +190,17 @@ func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 	}
 	var raw struct {
 		Streams []struct {
-			CodecType     string `json:"codec_type"`
-			CodecName     string `json:"codec_name"`
-			Width         int    `json:"width"`
-			Height        int    `json:"height"`
-			PixFmt        string `json:"pix_fmt"`
-			ColorTransfer string `json:"color_transfer"`
+			CodecType      string `json:"codec_type"`
+			CodecName      string `json:"codec_name"`
+			Width          int    `json:"width"`
+			Height         int    `json:"height"`
+			PixFmt         string `json:"pix_fmt"`
+			ColorTransfer  string `json:"color_transfer"`
 			RFrameRate     string `json:"r_frame_rate"`
 			AvgFrameRate   string `json:"avg_frame_rate"`
 			ClosedCaptions int    `json:"closed_captions"`
 			Channels       int    `json:"channels"`
-			Tags          struct {
+			Tags           struct {
 				Language string `json:"language"`
 			} `json:"tags"`
 			SideDataList []struct {
@@ -243,7 +243,13 @@ func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 				strings.Contains(s.PixFmt, "12") || strings.Contains(s.PixFmt, "14") ||
 				strings.Contains(s.PixFmt, "16")
 			if s.ColorTransfer == "smpte2084" || s.ColorTransfer == "arib-std-b67" {
-				mi.HDR = "HDR10"
+				// HLG is its own format, not HDR10. Folding it in meant the encode re-tagged
+				// it with PQ's transfer curve, which visibly breaks the picture.
+				if s.ColorTransfer == "arib-std-b67" {
+					mi.HDR = "HLG"
+				} else {
+					mi.HDR = "HDR10"
+				}
 			}
 			for _, sd := range s.SideDataList {
 				t := strings.ToLower(sd.SideDataType)
