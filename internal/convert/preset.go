@@ -250,8 +250,13 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cor
 			// drops the mastering-display / max-cll, so they're re-passed to x265. (HDR10+
 			// dynamic metadata and the DV RPU are re-injected by their own pipelines.)
 			hdrParams, colourTags := "", []string(nil)
-			if codec == "hevc" && enc.Name == "libx265" && isHDR(mi.HDR) {
-				hdrParams, colourTags = hdr10Params(mi)
+			if isHDR(mi.HDR) {
+				switch {
+				case codec == "hevc" && enc.Name == "libx265":
+					hdrParams, colourTags = hdr10Params(mi)
+				case codec == "av1" && enc.Name == "libsvtav1":
+					hdrParams, colourTags = av1HDRParams(mi)
+				}
 			}
 			a = append(a, cpuVideoArgs(enc.Name, codec, crf, mi.TenBit, cores, hdrParams)...)
 			a = append(a, colourTags...)
@@ -296,6 +301,31 @@ func hdr10Params(mi *MediaInfo) (params string, colourTags []string) {
 	return params, []string{"-color_primaries", "bt2020", "-color_trc", trc, "-colorspace", "bt2020nc"}
 }
 
+// av1HDRParams builds the SVT-AV1 static-HDR parameters plus the colour tags. AV1 carries
+// the colour description in its sequence header via ffmpeg's -color_* flags, and the
+// mastering display / content light as metadata OBUs via -svtav1-params.
+//
+// Unlike the x265 form there's no hdr10=1 or colorprim= — those are x265-specific knobs.
+func av1HDRParams(mi *MediaInfo) (params string, colourTags []string) {
+	trc := "smpte2084"
+	if mi.HDR == "HLG" {
+		trc = "arib-std-b67"
+	}
+	// HLG is relative and self-describing: no mastering metadata applies.
+	if mi.HDR != "HLG" && mi.HDR10 != nil {
+		if mi.HDR10.MasterDisplay != "" {
+			params = "mastering-display=" + mi.HDR10.MasterDisplay
+		}
+		if mi.HDR10.MaxCLL != "" {
+			if params != "" {
+				params += ":"
+			}
+			params += "content-light=" + mi.HDR10.MaxCLL
+		}
+	}
+	return params, []string{"-color_primaries", "bt2020", "-color_trc", trc, "-colorspace", "bt2020nc"}
+}
+
 // hdr10Args is the standalone form used by the elementary-stream HDR pipelines, which build
 // their own x265 command rather than going through compileOutputArgs.
 func hdr10Args(mi *MediaInfo) []string {
@@ -319,6 +349,12 @@ func cpuVideoArgs(name, codec string, crf int, tenBit bool, cores int, hdrParams
 		// targets subjective quality — the default tunes for PSNR, which visibly
 		// over-smooths. lp bounds the thread pool.
 		params := fmt.Sprintf("tune=0:lp=%d", cores)
+		// SVT-AV1 takes the mastering display and content light in exactly the same string
+		// form x265 does, so the probed metadata is reused verbatim. Verified against this
+		// ffmpeg build by encoding and probing the output: every value round-trips.
+		if hdrParams != "" {
+			params += ":" + hdrParams
+		}
 		out := []string{"-c:v", name, "-preset", "5", "-crf", strconv.Itoa(crf), "-svtav1-params", params}
 		if tenBit {
 			out = append(out, "-pix_fmt", "yuv420p10le")

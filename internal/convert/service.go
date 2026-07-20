@@ -1413,10 +1413,10 @@ func (s *Service) canPreserveHDR(mi *MediaInfo, plan Plan, enc Encoder) bool {
 		case "HLG":
 			return true // transfer curve only — nothing to inject
 		case "HDR10":
-			// Needs SVT-AV1 to accept mastering-display via -svtav1-params. Without it the
-			// grade metadata is lost and the picture displays wrong, so treat it as
-			// unsupported until proven otherwise.
-			return false
+			// Verified against the bundled ffmpeg: SVT-AV1 accepts mastering-display and
+			// content-light via -svtav1-params, and the values round-trip into the output
+			// as Mastering display / Content light level side data.
+			return true
 		}
 		return false // HDR10+ and Dolby Vision: no injection path for AV1
 	}

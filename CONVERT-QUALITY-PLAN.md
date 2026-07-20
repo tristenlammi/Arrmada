@@ -25,14 +25,27 @@ supports HDR10, HDR10+ and Dolby Vision profile 10 — Netflix ships AV1-HDR10+ 
 but nothing in our image can write that metadata into an AV1 bitstream. That would need an
 SVT-AV1 built with `enable-dovi` / `enable-hdr10plus`, i.e. a different ffmpeg. Out of scope.
 
-**One open question:** whether this SVT-AV1 accepts `mastering-display` / `content-light`
-via `-svtav1-params`. It decides whether plain HDR10 can go to AV1. Test:
+**RESOLVED — this SVT-AV1 does carry static HDR10.** Tested against the identical package
+(`alpine:3.20` + `apk add ffmpeg`, ffmpeg 6.1.1) by encoding with `mastering-display` /
+`content-light` and probing the *output*:
 
-```bash
-docker exec Arrmada-app ffmpeg -hide_banner -f lavfi -i testsrc=d=1:s=64x64 \
-  -c:v libsvtav1 -svtav1-params mastering-display="G(0.265,0.690)B(0.150,0.060)R(0.680,0.320)WP(0.3127,0.3290)L(1000,0.0001)" \
-  -f null - 2>&1 | tail -5
 ```
+side_data_type=Mastering display metadata
+red_x=44564/65536        → 0.6800    (passed 0.680)
+green_y=45220/65536      → 0.6900    (passed 0.690)
+max_luminance=256000/256 → 1000
+side_data_type=Content light level metadata
+max_content=1000  max_average=400
+```
+
+Every value round-trips exactly, and `yuv420p10le` confirms 10-bit.
+
+**Important control:** an unknown `-svtav1-params` key does **not** error — a deliberately
+bogus parameter encoded fine with exit 0. So "it encoded" proves nothing; only probing the
+output does. Worth remembering if the ffmpeg version ever changes, because losing the
+parameter would fail silently and strip the grade from every HDR10 file.
+
+So AV1 only skips what needs **post-encode injection**: Dolby Vision and HDR10+.
 
 ---
 
@@ -55,15 +68,15 @@ This is the safe default and what most users should pick.
 
 ## Option 2 — AV1
 
-**~30% smaller than HEVC, but it can't carry Dolby Vision or HDR10+ metadata with our
-toolchain, so those files are left alone.**
+**~30% smaller than HEVC. Keeps HDR10 and HLG, but can't carry Dolby Vision or HDR10+
+metadata with our toolchain, so those files are left alone.**
 
 | Source | Treatment |
 |---|---|
 | Already AV1 | Skip |
 | H.264 / MPEG-2 / MPEG-4 / VC-1, SDR | → AV1 |
 | HLG | → AV1 — only colour tags needed, nothing to inject |
-| HDR10 | → AV1 **if** `mastering-display` is supported; otherwise skip |
+| HDR10 | → AV1, full static metadata preserved — **verified**, see below |
 | HDR10+ | **Skip** — `hdr10plus_tool` cannot inject into AV1 |
 | Dolby Vision | **Skip** — `dovi_tool` cannot inject into AV1 |
 | Existing HEVC | **Skip by default** — see below |
@@ -98,7 +111,8 @@ Applies to both targets. First match wins.
 1. **Source is HDR of any kind (HDR10 / HDR10+ / DV / HLG) → CPU.**
    Forced, not a preference. All metadata handling is software-only: `hdr10Args` is
    `-x265-params`, and the DV / HDR10+ pipelines encode an x265 elementary stream before
-   re-injecting. For AV1, `mastering-display` is an SVT-AV1 parameter — also CPU.
+   re-injecting. For AV1, `mastering-display` / `content-light` are SVT-AV1 parameters, so
+   HDR10 there is CPU too — hardware AV1 has no equivalent.
    **This is why 1080p HDR goes to CPU** — HDR is checked before resolution, so resolution
    never enters into it.
 
@@ -154,9 +168,9 @@ pulled from the index (which already stores every file's codec and HDR type):
 > Plays on virtually every device
 >
 > **AV1**
-> Converts 6,390 files · 4.1 TB → ~1.7 TB
+> Converts 6,390 files · 4.1 TB → ~1.5 TB
+> Keeps HDR10 and HLG, audio, subtitles and fonts
 > Leaves 47 Dolby Vision and 12 HDR10+ files as they are — AV1 can't carry their metadata
-> Audio, subtitles and fonts unaffected
 > Fewer pre-2020 devices can play it
 
 The counts make the trade self-evident without anyone learning what a codec is. A user with

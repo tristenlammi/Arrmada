@@ -53,12 +53,13 @@ func TestHDRPreservationByFormat(t *testing.T) {
 		{"HDR10+", "hevc", x265, true, "hdr10plus_tool injects after the encode"},
 		{"Dolby Vision", "hevc", x265, true, "dovi_tool injects the RPU"},
 
-		// AV1: only what lives in the bitstream headers. dovi_tool and hdr10plus_tool
-		// cannot write into an AV1 bitstream, so anything needing injection is skipped.
+		// AV1 handles what the encoder itself can write: colour tags and the static HDR10
+		// metadata OBUs. dovi_tool and hdr10plus_tool cannot write into an AV1 bitstream,
+		// so only the formats needing post-encode injection are skipped.
 		{"HLG", "av1", av1, true, "transfer curve only, nothing to inject"},
 		{"HDR10+", "av1", av1, false, "no AV1 injection path"},
 		{"Dolby Vision", "av1", av1, false, "no AV1 injection path"},
-		{"HDR10", "av1", av1, false, "mastering-display support unverified"},
+		{"HDR10", "av1", av1, true, "SVT-AV1 takes mastering-display; verified round-tripping into the output"},
 	}
 	for _, c := range cases {
 		mi := &MediaInfo{HDR: c.hdr, VideoCodec: "h264"}
@@ -130,4 +131,31 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+// AV1 carries static HDR differently from x265: metadata OBUs via -svtav1-params, with no
+// hdr10=1 / colorprim= (those are x265-only knobs). Verified against the bundled ffmpeg by
+// encoding and probing the output.
+func TestAV1HDRParams(t *testing.T) {
+	meta := &HDR10Meta{MasterDisplay: "G(0.265,0.690)B(0.150,0.060)R(0.680,0.320)WP(0.3127,0.3290)L(1000,0.0001)", MaxCLL: "1000,400"}
+
+	params, tags := av1HDRParams(&MediaInfo{HDR: "HDR10", HDR10: meta})
+	if !contains(params, "mastering-display=G(0.265,0.690)") || !contains(params, "content-light=1000,400") {
+		t.Errorf("AV1 HDR10 params = %q", params)
+	}
+	if contains(params, "hdr10=1") || contains(params, "colorprim") {
+		t.Errorf("x265-only knobs leaked into the AV1 params: %q", params)
+	}
+	if !containsSlice(tags, "smpte2084") {
+		t.Errorf("HDR10 colour tags = %v, want PQ", tags)
+	}
+
+	// HLG: transfer curve only, and never mastering metadata.
+	hlgParams, hlgTags := av1HDRParams(&MediaInfo{HDR: "HLG", HDR10: meta})
+	if hlgParams != "" {
+		t.Errorf("HLG must carry no mastering metadata, got %q", hlgParams)
+	}
+	if !containsSlice(hlgTags, "arib-std-b67") {
+		t.Errorf("HLG colour tags = %v, want the HLG transfer", hlgTags)
+	}
 }

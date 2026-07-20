@@ -283,7 +283,7 @@ function Setup({ stats, onDone, flash }: { stats: ConvertLibraryStats | null; on
           files={av1Files} from={t?.convertible_bytes ?? 0} to={Math.round((t?.est_bytes ?? 0) * 0.7)}
           points={[
             "About 30% smaller again than HEVC",
-            "Audio, subtitles and fonts unaffected",
+            "Keeps HDR10 and HLG, audio, subtitles and fonts",
             "Fewer pre-2020 devices can play it",
           ]}
           warn={blocked > 0
