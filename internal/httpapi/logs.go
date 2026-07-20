@@ -11,7 +11,7 @@ import (
 
 // handleLogs returns recent application logs for the in-app Logs viewer.
 //
-//	GET /api/v1/logs?limit=500&level=info&q=ben10
+//	GET /api/v1/logs?limit=500&level=info&q=ben10&hide=torznab,indexer+search
 func (a *api) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if a.deps.Logs == nil {
 		a.writeJSON(w, http.StatusOK, map[string]any{"entries": []applog.Entry{}})
@@ -24,7 +24,12 @@ func (a *api) handleLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = v
 	}
-	entries := a.deps.Logs.Snapshot(limit, parseLevel(r.URL.Query().Get("level")), r.URL.Query().Get("q"))
+	entries := a.deps.Logs.Snapshot(applog.Filter{
+		Limit: limit,
+		Min:   parseLevel(r.URL.Query().Get("level")),
+		Query: r.URL.Query().Get("q"),
+		Hide:  r.URL.Query().Get("hide"),
+	})
 	if entries == nil {
 		entries = []applog.Entry{}
 	}

@@ -45,9 +45,21 @@ func (r *Ring) add(e Entry) {
 	r.mu.Unlock()
 }
 
-// Snapshot returns the most-recent entries (oldest first) at or above minLevel, whose
-// message/attrs contain query (case-insensitive). limit caps the newest N returned.
-func (r *Ring) Snapshot(limit int, minLevel slog.Level, query string) []Entry {
+// Filter selects which captured entries a Snapshot returns.
+type Filter struct {
+	Limit int        // newest N after filtering; 0 = no cap
+	Min   slog.Level // entries below this level are dropped
+	Query string     // keep only entries whose message/attrs contain this
+	// Hide drops entries whose message/attrs contain any of these comma-separated
+	// terms. The routine chatter — per-page indexer tracing especially — can outnumber
+	// everything else by an order of magnitude, and a keep-only filter can't help when
+	// you don't yet know what you're looking for. Applied after Query, so a term can
+	// narrow first and then subtract the noise from what's left.
+	Hide string
+}
+
+// Snapshot returns the most-recent matching entries, oldest first.
+func (r *Ring) Snapshot(f Filter) []Entry {
 	r.mu.RLock()
 	// Reconstruct chronological order.
 	var ordered []Entry
@@ -57,21 +69,51 @@ func (r *Ring) Snapshot(limit int, minLevel slog.Level, query string) []Entry {
 	ordered = append(ordered, r.buf[:r.next]...)
 	r.mu.RUnlock()
 
-	q := strings.ToLower(strings.TrimSpace(query))
+	q := strings.ToLower(strings.TrimSpace(f.Query))
+	hide := hideTerms(f.Hide)
 	out := make([]Entry, 0, len(ordered))
 	for _, e := range ordered {
-		if levelValue(e.Level) < minLevel {
+		if levelValue(e.Level) < f.Min {
 			continue
 		}
-		if q != "" && !strings.Contains(strings.ToLower(e.Message), q) && !strings.Contains(strings.ToLower(e.Attrs), q) {
+		if q != "" && !matches(e, q) {
+			continue
+		}
+		if hidden(e, hide) {
 			continue
 		}
 		out = append(out, e)
 	}
-	if limit > 0 && len(out) > limit {
-		out = out[len(out)-limit:]
+	if f.Limit > 0 && len(out) > f.Limit {
+		out = out[len(out)-f.Limit:]
 	}
 	return out
+}
+
+func matches(e Entry, lowerTerm string) bool {
+	return strings.Contains(strings.ToLower(e.Message), lowerTerm) ||
+		strings.Contains(strings.ToLower(e.Attrs), lowerTerm)
+}
+
+// hideTerms splits a comma-separated exclude list into lowercase terms, dropping blanks
+// so a trailing comma doesn't turn into a term that matches everything.
+func hideTerms(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if t := strings.ToLower(strings.TrimSpace(part)); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+func hidden(e Entry, terms []string) bool {
+	for _, t := range terms {
+		if matches(e, t) {
+			return true
+		}
+	}
+	return false
 }
 
 func levelValue(s string) slog.Level {
