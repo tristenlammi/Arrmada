@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
@@ -396,6 +396,23 @@ function ManualImportModal({ series, onClose, onImported }: { series: SeriesT; o
     api.seriesManualImportList(series.id).then((r) => setCands(r.candidates)).catch((e: Error) => setError(e.message));
   }, [series.id]);
 
+  // Whole-folder imports. A season pack is dozens of files and clicking each one is not a
+  // realistic way to import it — and importing the folder runs the full pipeline (quality
+  // inherited from the release name, the upgrade gate) rather than the single-file path.
+  const folders = useMemo(() => {
+    const byDir = new Map<string, number>();
+    for (const c of cands ?? []) {
+      const cut = c.path.lastIndexOf("/");
+      if (cut <= 0) continue;
+      const dir = c.path.slice(0, cut);
+      byDir.set(dir, (byDir.get(dir) ?? 0) + 1);
+    }
+    return [...byDir.entries()]
+      .filter(([, n]) => n > 1) // a lone file is already one click away below
+      .map(([path, count]) => ({ path, count, name: path.slice(path.lastIndexOf("/") + 1) }))
+      .sort((a, b) => b.count - a.count);
+  }, [cands]);
+
   const doImport = async (path: string) => {
     setImporting(path);
     setError(null);
@@ -421,6 +438,30 @@ function ManualImportModal({ series, onClose, onImported }: { series: SeriesT; o
         </div>
         <p className="mb-3 text-[12px] text-ink-dim">Pick episode files already on disk to import as <b>{series.title}</b>. Season/episode is detected from each filename; files are renamed to the library scheme.</p>
         {error && <div className="mb-2 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
+        {folders.length > 0 && (
+          <div className="mb-3">
+            <div className="mb-1.5 text-[11px] font-semibold text-ink-dim">Whole downloads</div>
+            {folders.map((f) => (
+              <button
+                key={f.path}
+                onClick={() => doImport(f.path)}
+                disabled={importing !== null}
+                className="mb-1.5 flex w-full items-center gap-3 rounded-lg p-2.5 text-left disabled:opacity-50"
+                style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[12.5px] font-medium" title={f.path}>{f.name}</div>
+                  <div className="mt-0.5 font-mono text-[10.5px] text-ink-faint">
+                    {f.count} video files — imported together, keeping whichever copy of each episode is better
+                  </div>
+                </div>
+                <span className="flex-none text-[11.5px] font-semibold" style={{ color: "var(--accent)" }}>
+                  {importing === f.path ? "Importing…" : "Import all"}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="thin-scroll max-h-[52vh] overflow-y-auto">
           {cands === null ? (
             <div className="p-6 text-center text-[12.5px] text-ink-dim">Scanning…</div>

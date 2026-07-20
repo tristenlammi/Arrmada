@@ -344,6 +344,28 @@ func (c *Coordinator) ManualImportSeries(ctx context.Context, seriesID int64, pa
 	if err != nil {
 		return err
 	}
+	// A directory means "import this whole download", which runs the full pipeline —
+	// quality inherited from the release name, the upgrade gate, multi-episode files —
+	// rather than the single-file shortcut below.
+	//
+	// This is also the way to re-run an import Arrmada has already processed. The
+	// automatic sweep won't revisit a download it recorded as imported unless the season
+	// still has gaps, so when a fix changes what WOULD have imported, pointing manual
+	// import at the folder is what applies it.
+	if fi, statErr := os.Stat(path); statErr == nil && fi.IsDir() {
+		placed, matched, unresolved := c.importSeriesInto(ctx, s, path)
+		if matched == 0 {
+			return fmt.Errorf("none of the video files in that folder could be matched to an episode of %q", s.Title)
+		}
+		c.log.Info("series: manual folder import", "series", s.Title, "path", path,
+			"placed", placed, "matched", matched, "unresolved", unresolved)
+		if placed > 0 {
+			c.series.AddEvent(ctx, seriesID, "imported", fmt.Sprintf("Imported %d episode%s from %s", placed, plural(placed), filepath.Base(path)))
+			c.seriesImported(ctx, seriesID)
+		}
+		return nil
+	}
+
 	folder := c.series.ExistingFolderName(ctx, seriesID)
 	ei, ok, err := c.imp.ImportEpisodeInto(folder, s.Title, s.Year, path)
 	if err != nil {
