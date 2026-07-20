@@ -98,6 +98,10 @@ type SearchQuery struct {
 	Categories []int
 	MediaType  string // movie | series | book | music — restricts to indexers that serve it
 	Limit      int
+	// Offset is the Torznab pagination cursor. Indexers commonly cap a response at their
+	// own page size regardless of Limit, so results beyond the first page are only
+	// reachable by asking for them.
+	Offset int
 }
 
 // Recenter is an optional capability: fetch the newest releases (an RSS-style
