@@ -380,7 +380,17 @@ func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) error {
 	// Only consider releases that are actually for THIS movie — a title search for a
 	// short/common name (e.g. "Hope") returns unrelated films ("Romance at Hope
 	// Ranch"), and the scorer would otherwise happily grab the wrong one.
-	byName, cands := c.candidatesFrom(ctx, m.ID, matchingMovieReleases(m, result.Releases))
+	matching := matchingMovieReleases(m, result.Releases)
+	byName, cands := c.candidatesFrom(ctx, m.ID, matching)
+	// Say where the results went. A search that returns releases and grabs none looked
+	// identical in the log to one that found nothing useful — the same movie re-searched
+	// every cycle forever with no hint whether the releases were for a different film,
+	// blocklisted, or simply below the quality profile's bar.
+	if len(cands) == 0 {
+		c.log.Info("automation: no usable releases",
+			"movie", m.Title, "returned", len(result.Releases),
+			"wrong_title", len(result.Releases)-len(matching), "blocklisted", len(matching))
+	}
 	c.grabMissing(ctx, m, want, byName, cands)
 	return nil
 }
@@ -438,6 +448,14 @@ func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []mo
 	for _, v := range want {
 		decision := c.quality.Decide(ctx, v.QualityProfile, tagRuntime(cands, m.Runtime))
 		if decision.Winner == nil {
+			// The profile rejected everything on offer. Silent before, which made a
+			// too-strict profile look identical to an indexer returning nothing — and
+			// the search repeated every cycle either way, with no way to tell which.
+			if len(cands) > 0 {
+				c.log.Info("automation: no release met the quality profile",
+					"movie", m.Title, "version", v.Label,
+					"profile", v.QualityProfile, "candidates", len(cands))
+			}
 			continue
 		}
 		winner := byName[decision.Winner.Candidate.Name]
