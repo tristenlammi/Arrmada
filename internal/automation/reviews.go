@@ -583,6 +583,23 @@ func (c *Coordinator) correctRefsByTitle(ctx context.Context, s series.Series, f
 	if len(refs) == 0 {
 		return refs
 	}
+	// Anime is resolved through absolute numbering and TheXEM scene maps, which are
+	// purpose-built and far more authoritative than a fuzzy title match — and fansub
+	// titles are romanized inconsistently, so they'd match badly. Leave that path alone.
+	if s.IsAnime() {
+		return refs
+	}
+	// Single-episode files only. A multi-episode file spans several metadata episodes and
+	// its one title can legitimately match just the first of them — "Space House" against
+	// TMDB's "Space House (1)" — so acting on that would collapse a file covering four
+	// episodes down to one and lose the other three.
+	//
+	// The shifted season still comes out right without it: the two-part file keeps its
+	// number-derived episodes, and the correctly-titled single that belongs on the second
+	// of those supersedes it a moment later.
+	if len(refs) != 1 {
+		return refs
+	}
 	fileTitle := parser.EpisodeTitleFrom(fileName)
 	if fileTitle == "" {
 		return refs // no title to reason from
@@ -603,7 +620,7 @@ func (c *Coordinator) correctRefsByTitle(ctx context.Context, s series.Series, f
 	if hits != 1 {
 		return refs // ambiguous or unknown — the number is all we have
 	}
-	if len(refs) == 1 && refs[0].Episode == match {
+	if refs[0].Episode == match {
 		return refs // already right
 	}
 
@@ -617,13 +634,31 @@ func (c *Coordinator) correctRefsByTitle(ctx context.Context, s series.Series, f
 	return []series.EpisodeRef{{Season: season, Episode: match}}
 }
 
-// titlesAlike compares episode titles loosely — punctuation, case and accents differ
-// freely between a release name and metadata, and none of that is a real disagreement.
-// One being a prefix of the other counts as alike, since releases truncate long titles.
+// minPrefixTitleLen is how much of a title must be present before a PREFIX counts as a
+// match. Releases truncate long titles, so a prefix has to be allowed — but "Go" is a
+// prefix of "Go Big or Go Home", and acting on that would move a file onto an episode it
+// has nothing to do with. Long enough to be evidence, short enough to accept a real
+// truncation.
+const minPrefixTitleLen = 12
+
+// titlesAlike reports whether a filename's episode title and a metadata title name the
+// same episode. Punctuation, case and accents differ freely between the two and none of
+// that is a real disagreement.
+//
+// This decides where a file is PLACED, so it errs toward saying no. An empty side means
+// no evidence, not a match — an episode whose title is punctuation only ("!!!") normalizes
+// to nothing, and treating that as alike made it match every file in the season.
 func titlesAlike(a, b string) bool {
 	ka, kb := titleKey(a), titleKey(b)
 	if ka == "" || kb == "" {
-		return true // nothing to compare — don't cry wolf
+		return false // nothing to compare — not evidence of anything
 	}
-	return strings.HasPrefix(ka, kb) || strings.HasPrefix(kb, ka)
+	if ka == kb {
+		return true
+	}
+	short, long := ka, kb
+	if len(short) > len(long) {
+		short, long = long, short
+	}
+	return len(short) >= minPrefixTitleLen && strings.HasPrefix(long, short)
 }

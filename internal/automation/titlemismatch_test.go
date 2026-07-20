@@ -38,11 +38,36 @@ func TestTitlesAlikeCatchesRealMismatches(t *testing.T) {
 	}
 }
 
-// An empty side means there's nothing to compare, which must not produce a warning.
-func TestTitlesAlikeIgnoresEmpty(t *testing.T) {
-	for _, p := range [][2]string{{"", "Doppelgängers"}, {"Doppelgängers", ""}, {"", ""}} {
-		if !titlesAlike(p[0], p[1]) {
-			t.Errorf("titlesAlike(%q, %q) should be quiet when there's nothing to compare", p[0], p[1])
+// An empty side is NO EVIDENCE, not a match. This used to return true ("don't cry wolf")
+// when it only drove a warning; now it decides where a file is placed, and an episode
+// whose title is punctuation only ("!!!") normalizes to nothing — treating that as alike
+// made it match every file in the season and collect them all.
+func TestEmptyTitlesAreNotAMatch(t *testing.T) {
+	for _, p := range [][2]string{{"", "Doppelgängers"}, {"Doppelgängers", ""}, {"", ""}, {"Doppelgängers", "!!!"}, {"...", "Doppelgängers"}} {
+		if titlesAlike(p[0], p[1]) {
+			t.Errorf("titlesAlike(%q, %q) = true — an empty key must never act as a wildcard", p[0], p[1])
 		}
+	}
+}
+
+// A short prefix is not evidence. "Go" is a prefix of "Go Big or Go Home", and acting on
+// that would move a file onto an episode it has nothing to do with — the exact failure a
+// tolerant rule invites once it starts deciding placement rather than logging.
+func TestShortPrefixesAreNotAMatch(t *testing.T) {
+	tooShort := [][2]string{
+		{"Go", "Go Big or Go Home"},
+		{"The", "The Wall"},
+		{"Part 1", "Part 1 of a Longer Name"},
+		{"Jam", "Jam Session Extravaganza"},
+	}
+	for _, p := range tooShort {
+		if titlesAlike(p[0], p[1]) {
+			t.Errorf("titlesAlike(%q, %q) = true — too little of the title to identify an episode", p[0], p[1])
+		}
+	}
+
+	// A genuine truncation carries enough of the title to be unambiguous.
+	if !titlesAlike("The Johnny Karate Super Awesome", "The Johnny Karate Super Awesome Musical Explosion Show") {
+		t.Error("a long truncation should still match — releases shorten titles routinely")
 	}
 }

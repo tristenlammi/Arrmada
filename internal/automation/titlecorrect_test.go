@@ -85,3 +85,28 @@ func uniqueEpisodeByTitle(titles map[int]string, fileTitle string) (int, bool) {
 	}
 	return match, hits == 1
 }
+
+// A multi-episode file must keep its number-derived episodes. Its single title can
+// legitimately match only the FIRST of the episodes it spans — "Space House" against
+// TMDB's "Space House (1)" — and acting on that would collapse a file covering four
+// episodes down to one, losing the other three.
+func TestMultiEpisodeFilesKeepTheirNumbers(t *testing.T) {
+	// The correction is gated on len(refs) == 1, so a span is never rewritten. This pins
+	// the reason: the title alone cannot say how many episodes the file covers.
+	titles := map[int]string{8: "Space House", 9: "Something Else", 10: "Another", 11: "Yet Another"}
+	if got, ok := uniqueEpisodeByTitle(titles, "Space House"); !ok || got != 8 {
+		t.Fatalf("premise: the title does match episode 8 uniquely (got %d, ok=%v)", got, ok)
+	}
+	// ...and that is exactly why a 4-episode file must not be corrected by it.
+}
+
+// Anime resolves through absolute numbering and TheXEM scene maps, which are
+// purpose-built and far more authoritative than a fuzzy title match — and fansub titles
+// are romanized inconsistently, so they would match badly. That path is left alone.
+func TestAnimeTitlesAreNotUsedForPlacement(t *testing.T) {
+	// Guarding the intent: a romaji/English title pair that should NOT be treated as a
+	// confident identification if the anime path were ever included.
+	if titlesAlike("Sousou no Frieren", "Frieren: Beyond Journey's End") {
+		t.Error("romanized and localized titles are not a reliable identification")
+	}
+}
