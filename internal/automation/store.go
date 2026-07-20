@@ -230,6 +230,38 @@ func (c *Coordinator) pendingGrabTitles(ctx context.Context, movieID int64) map[
 	return set
 }
 
+// pendingSeriesGrabTitles returns the normalized titles of a series' still-pending grabs
+// (grabbed but not yet imported or failed).
+//
+// The series path relied solely on seriesDownloading(), which reads the download client's
+// queue and matches on the torrent's category plus its parsed title. That misses whenever
+// the client hasn't applied the category, the queue read fails, or the torrent's name
+// doesn't parse back to the show — and the next sweep then grabs the identical release
+// again. Observed with Taskmaster: S16, S17 and S21 each grabbed twice, twelve minutes
+// apart. Movies have had this DB-backed guard for exactly this reason.
+func (c *Coordinator) pendingSeriesGrabTitles(ctx context.Context, seriesID int64) map[string]bool {
+	// Bounded to a day. Stall fail-over normally clears a dead grab, but it only runs
+	// when the profile sets a stall timeout — with none set, an unbounded guard would
+	// blocklist the release by accident and permanently, which is worse than the
+	// duplicate it prevents. After 24h, re-grabbing is the right call.
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT title FROM grabs
+		 WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'series'
+		   AND grabbed_at > datetime('now', '-1 day')`, seriesID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	set := map[string]bool{}
+	for rows.Next() {
+		var title string
+		if rows.Scan(&title) == nil {
+			set[normTitle(title)] = true
+		}
+	}
+	return set
+}
+
 // setGrabStatus marks a grab imported or failed.
 func (c *Coordinator) setGrabStatus(ctx context.Context, id int64, status string) {
 	_, _ = c.db.ExecContext(ctx, `UPDATE grabs SET status = ? WHERE id = ?`, status, id)

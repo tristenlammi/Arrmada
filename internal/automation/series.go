@@ -291,6 +291,9 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 		return
 	}
 	blocked := c.blockedSetSeries(ctx, s.ID)
+	// Releases already grabbed for this show and not yet imported. seriesDownloading()
+	// alone couldn't be trusted to catch these — see pendingSeriesGrabTitles.
+	pending := c.pendingSeriesGrabTitles(ctx, s.ID)
 
 	// Score all candidates with the series' quality profile; keep the eligible set
 	// ranked best-first, each paired with its parsed release + indexer info.
@@ -328,6 +331,13 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 	grab := func(name string, label string) {
 		rel := byName[name]
 		if rel.DownloadURL == "" || grabbed[rel.DownloadURL] {
+			return
+		}
+		if pending[normTitle(rel.Title)] {
+			// Already grabbed and still in flight. Grabbing it again just downloads the
+			// same bytes twice and stacks a duplicate torrent in the client.
+			c.log.Info("series: skipping grab — already grabbed and still importing",
+				"series", s.Title, "release", rel.Title)
 			return
 		}
 		// Space guard — the movie path has had this; TV (where packs are far bigger) did not.
@@ -901,10 +911,15 @@ func aired(date string) bool {
 // recordSeriesGrab tracks a series grab for seed cleanup (media_type=series).
 func (c *Coordinator) recordSeriesGrab(ctx context.Context, seriesID int64, title, indexer, profile string) {
 	seedEnabled, seedRatio, seedHours := c.seedRules(ctx, indexer)
+	// stall_minutes was hardcoded to 0, and detectStalledSeries returns immediately when
+	// it isn't positive — so the entire series stall fail-over was dead code. A TV
+	// download that stalled was never blocklisted, never removed, and its grab row sat at
+	// 'grabbed' forever. Movies have always passed the profile's value here.
 	_, err := c.db.ExecContext(ctx,
 		`INSERT INTO grabs (movie_id, version_id, title, indexer, quality_profile, stall_minutes, seed_enabled, seed_ratio, seed_hours, media_type)
-		 VALUES (?, 0, ?, ?, ?, 0, ?, ?, ?, 'series')`,
-		seriesID, title, indexer, profile, boolToInt(seedEnabled), seedRatio, seedHours)
+		 VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, 'series')`,
+		seriesID, title, indexer, profile, c.quality.StallMinutes(ctx, profile),
+		boolToInt(seedEnabled), seedRatio, seedHours)
 	if err != nil {
 		c.log.Warn("series: record grab failed", "err", err)
 	}
