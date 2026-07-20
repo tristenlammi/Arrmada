@@ -857,21 +857,43 @@ func (im *Importer) seasonFolderName(format string, season int, title string, ye
 	return name
 }
 
-// seasonDirName returns the season directory to place an episode in: an existing
-// one for that season if the show already has it (matching any padding — "Season 1",
-// "Season 01", "Specials"), otherwise the given canonical default. This stops a grab
-// from creating a duplicate "Season 4" next to an existing "Season 04".
+// seasonDirName returns the season directory to place an episode in.
+//
+// If the show already has a directory for that season under a different spelling
+// ("Season 04" when the scheme says "Season 4"), it is RENAMED to the canonical form
+// rather than merely reused. Reusing kept the library permanently inconsistent — a show
+// could end up with "Season 1, Season 2, Season 04, Season 05" depending on when each
+// folder happened to be created. Renaming can't fragment the library the way ignoring the
+// existing folder would, because the episodes move with it.
+//
+// The rename is skipped when the canonical name is already taken (both spellings exist),
+// since merging directories is not this function's job — the existing folder is reused, as
+// before, and the layout is left alone.
 func seasonDirName(seriesDir string, season int, canonical string) string {
 	entries, err := os.ReadDir(seriesDir)
 	if err != nil {
 		return canonical
 	}
 	for _, e := range entries {
-		if e.IsDir() {
-			if n, ok := parseSeasonDir(e.Name()); ok && n == season {
-				return e.Name() // reuse the show's existing layout
-			}
+		if !e.IsDir() {
+			continue
 		}
+		n, ok := parseSeasonDir(e.Name())
+		if !ok || n != season {
+			continue
+		}
+		if e.Name() == canonical {
+			return canonical
+		}
+		// Different spelling of the same season — normalize it.
+		from, to := filepath.Join(seriesDir, e.Name()), filepath.Join(seriesDir, canonical)
+		if _, err := os.Stat(to); err == nil {
+			return e.Name() // canonical already exists too; don't merge, just reuse
+		}
+		if err := os.Rename(from, to); err != nil {
+			return e.Name() // couldn't normalize (permissions, in use) — reuse rather than fail
+		}
+		return canonical
 	}
 	return canonical
 }

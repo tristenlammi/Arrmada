@@ -601,6 +601,24 @@ func (r *Repo) SetEpisodeFile(ctx context.Context, seriesID int64, season, episo
 	return err
 }
 
+// RepointEpisodeFile moves EVERY episode currently pointing at oldPath to newPath.
+//
+// A single file can serve several episodes — a double-length "S03E01E02" is one file with
+// two episode rows. Updating just one of them leaves the others pointing at a path that
+// may no longer exist (a convert can change the container), so the reverse lookup has to
+// be by path, not by episode number.
+func (r *Repo) RepointEpisodeFile(ctx context.Context, seriesID int64, oldPath, newPath string, size int64) (int64, error) {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE episodes SET has_file = 1, file_path = ?, size_bytes = ?
+		  WHERE series_id = ? AND file_path = ?`,
+		newPath, size, seriesID, oldPath)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // SetEpisodeSourceRelease records the release name an episode's file was imported from.
 // Kept separate from SetEpisodeFile so path-only updates (rename, transcode) preserve it.
 func (r *Repo) SetEpisodeSourceRelease(ctx context.Context, seriesID int64, season, episode int, release string) error {

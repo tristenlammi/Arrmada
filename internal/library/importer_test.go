@@ -71,9 +71,16 @@ func TestRenameNormalizesSeasonFolder(t *testing.T) {
 	}
 	im := NewImporter(lib, quiet())
 
-	// Import path reuses the existing "Season 04" (no duplicate folder).
-	if got := seasonDirName(filepath.Join(lib, "Andor"), 4, "Season 4"); got != "Season 04" {
-		t.Errorf("import seasonDirName = %q, want it to reuse the existing %q", got, "Season 04")
+	// The legacy "Season 04" is renamed to the canonical spelling rather than reused —
+	// merely reusing it left libraries permanently mixed ("Season 1, Season 2, Season 04").
+	if got := seasonDirName(filepath.Join(lib, "Andor"), 4, "Season 4"); got != "Season 4" {
+		t.Errorf("import seasonDirName = %q, want the canonical %q", got, "Season 4")
+	}
+	if _, err := os.Stat(filepath.Join(lib, "Andor", "Season 4")); err != nil {
+		t.Errorf("legacy folder should have been renamed on disk: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(lib, "Andor", "Season 04")); err == nil {
+		t.Error("legacy padded folder should no longer exist")
 	}
 	// Rename path forces the canonical unpadded "Season 4".
 	got := im.EpisodeTargetIn("Andor", "Andor", 2022, 4, 1, "Andor.S04E01.1080p.WEB-DL.mkv", ".mkv")
@@ -163,9 +170,30 @@ func TestSeasonDirNameReusesExisting(t *testing.T) {
 	if got := seasonDirName(dir, 2, "Season 2"); got != "Season 2" {
 		t.Errorf("seasonDirName(new) = %q, want %q", got, "Season 2")
 	}
-	// Even when the canonical is padded, an existing unpadded folder is reused.
-	if got := seasonDirName(dir, 1, "Season 01"); got != "Season 1" {
-		t.Errorf("seasonDirName(reuse over padded) = %q, want %q", got, "Season 1")
+	// The naming scheme decides the spelling: an existing folder is normalized to the
+	// canonical form, whichever direction that goes.
+	if got := seasonDirName(dir, 1, "Season 01"); got != "Season 01" {
+		t.Errorf("seasonDirName(normalize) = %q, want the canonical %q", got, "Season 01")
+	}
+}
+
+// When BOTH spellings exist, the existing folder is reused rather than renamed — merging
+// two directories isn't this function's job, and clobbering one would lose episodes.
+func TestSeasonDirNameDoesNotMergeFolders(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"Season 3", "Season 03"} {
+		if err := os.MkdirAll(filepath.Join(dir, n), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := seasonDirName(dir, 3, "Season 3")
+	if got != "Season 3" && got != "Season 03" {
+		t.Errorf("seasonDirName = %q, want one of the existing folders", got)
+	}
+	for _, n := range []string{"Season 3", "Season 03"} {
+		if _, err := os.Stat(filepath.Join(dir, n)); err != nil {
+			t.Errorf("%s should still exist — folders must never be merged: %v", n, err)
+		}
 	}
 }
 

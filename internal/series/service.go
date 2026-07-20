@@ -623,6 +623,12 @@ func (s *Service) AddEvent(ctx context.Context, id int64, event, detail string) 
 	s.repo.AddEvent(ctx, id, event, detail)
 }
 
+// RepointEpisodeFile updates every episode served by oldPath to point at newPath. Returns
+// how many episode records were moved — more than one for a double-length episode file.
+func (s *Service) RepointEpisodeFile(ctx context.Context, seriesID int64, oldPath, newPath string, size int64) (int64, error) {
+	return s.repo.RepointEpisodeFile(ctx, seriesID, oldPath, newPath, size)
+}
+
 // EpisodeFilePath returns one episode's on-disk file path ("" if none).
 func (s *Service) EpisodeFilePath(ctx context.Context, seriesID int64, season, episode int) (string, error) {
 	return s.repo.EpisodeFilePath(ctx, seriesID, season, episode)

@@ -1290,12 +1290,26 @@ func (s *Service) resolveSource(ctx context.Context, job *Job) (src, title strin
 
 // markConverted records a finished conversion against the right library record
 // (movie or episode), re-tagging its file path.
-func (s *Service) markConverted(ctx context.Context, job *Job, finalPath, tag string) error {
+func (s *Service) markConverted(ctx context.Context, job *Job, src, finalPath, tag string) error {
 	if job.Kind == "episode" {
 		if s.series == nil {
 			return fmt.Errorf("series module not available")
 		}
-		return s.series.MarkEpisodeImported(ctx, job.SeriesID, job.Season, job.Episode, finalPath, fileSize(finalPath))
+		size := fileSize(finalPath)
+		// One file can serve several episodes — a double-length "S03E01E02" is a single
+		// file with two episode rows. Repoint by PATH so they all follow the conversion;
+		// updating only this job's episode left the others pointing at the old path, which
+		// no longer exists whenever the container changed.
+		if src != "" {
+			if n, err := s.series.RepointEpisodeFile(ctx, job.SeriesID, src, finalPath, size); err == nil && n > 0 {
+				if n > 1 {
+					s.log.Info("convert: file serves multiple episodes — all repointed",
+						"title", job.Title, "episodes", n)
+				}
+				return nil
+			}
+		}
+		return s.series.MarkEpisodeImported(ctx, job.SeriesID, job.Season, job.Episode, finalPath, size)
 	}
 	return s.movies.MarkImported(ctx, job.MovieID, finalPath, tag)
 }
@@ -1407,7 +1421,7 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst, ext st
 			" but could not replace the original — the original is in the recycle bin")
 		return
 	}
-	if err := s.markConverted(ctx, job, finalPath, "arrmada-convert:"+codecTag(plan)); err != nil {
+	if err := s.markConverted(ctx, job, src, finalPath, "arrmada-convert:"+codecTag(plan)); err != nil {
 		s.log.Warn("convert: mark imported failed", "title", title, "err", err)
 	}
 	// Refresh this item in the library index. Without it a converted file keeps its OLD codec
