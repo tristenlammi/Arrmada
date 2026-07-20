@@ -955,6 +955,31 @@ func (c *Coordinator) SeedPolicies(ctx context.Context) map[string]SeedPolicy {
 // NormReleaseKey normalizes a download name to the key used by SeedPolicies.
 func NormReleaseKey(name string) string { return normRelease(name) }
 
+// GrabStatusFor reports the status of any grab recorded for this download name, across
+// ALL statuses — including the ones SeedPolicies deliberately excludes ('seeded',
+// 'failed'). "" means no grab row matches the name at all.
+//
+// Purely diagnostic. "No seed rule" has two causes that look identical in the UI: the
+// release was never grabbed by Arrmada, or it was and its row has since moved to a status
+// the seeding view doesn't consider. ManageSeeding writes 'seeded' after removing a
+// torrent, and stall fail-over writes 'failed' — either would silently drop a torrent
+// that's still in the client out of the seeding view.
+func (c *Coordinator) GrabStatusFor(ctx context.Context, name string) string {
+	rows, err := c.db.QueryContext(ctx, `SELECT title, status FROM grabs ORDER BY id DESC`)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+	want := normRelease(name)
+	for rows.Next() {
+		var title, status string
+		if rows.Scan(&title, &status) == nil && normRelease(title) == want {
+			return status
+		}
+	}
+	return ""
+}
+
 // matchGrab finds the imported grab a download name belongs to.
 func matchGrab(grabs []grab, name string) *grab {
 	want := normRelease(name)

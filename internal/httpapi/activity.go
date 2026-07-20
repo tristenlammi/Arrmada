@@ -150,7 +150,7 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		}
 		downloads = append(downloads, entry)
 	}
-	a.logUnmatchedSeeds(unmatched, seedPolicies)
+	a.logUnmatchedSeeds(ctx, unmatched, seedPolicies)
 
 	freeGB, _ := diskspace.FreeGB(a.deps.Config.DownloadsDir)
 	a.writeJSON(w, http.StatusOK, map[string]any{
@@ -233,10 +233,12 @@ func absInt(n int) int {
 // title we recorded. The second is a bug wearing the first one's label, and reading the
 // UI can't distinguish them.
 //
-// So log the normalized key we looked up alongside the number of rules we hold. If the
-// key is absent from a healthy-sized policy set, it's a matching failure; if the set is
-// empty, the grab rows are the problem.
-func (a *api) logUnmatchedSeeds(names []string, policies map[string]automation.SeedPolicy) {
+// So log the normalized key we looked up, how many rules we hold, and — decisively — the
+// status of any grab row that DOES match the name across all statuses. rules_held proved
+// the policy set is healthy, which rules out missing rows wholesale; grab_status then
+// separates "never grabbed" ("") from a row parked in a status the seeding view skips
+// ('seeded' after ManageSeeding removes a torrent, 'failed' after stall fail-over).
+func (a *api) logUnmatchedSeeds(ctx context.Context, names []string, policies map[string]automation.SeedPolicy) {
 	if len(names) == 0 || a.deps.Log == nil {
 		return
 	}
@@ -255,8 +257,15 @@ func (a *api) logUnmatchedSeeds(names []string, policies map[string]automation.S
 		sample = sample[:5]
 	}
 	for _, n := range sample {
+		status := "<no grab row>"
+		if a.deps.Automation != nil {
+			if s := a.deps.Automation.GrabStatusFor(ctx, n); s != "" {
+				status = s
+			}
+		}
 		a.deps.Log.Info("seeding: no seed rule matched this torrent",
-			"torrent", n, "lookup_key", automation.NormReleaseKey(n), "rules_held", len(policies))
+			"torrent", n, "lookup_key", automation.NormReleaseKey(n),
+			"rules_held", len(policies), "grab_status", status)
 	}
 	if len(names) > len(sample) {
 		a.deps.Log.Info("seeding: more torrents without a seed rule",
