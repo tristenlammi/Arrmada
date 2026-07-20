@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Encoder is an available (compiled-in) ffmpeg video encoder for a target codec.
@@ -219,4 +220,27 @@ func filepathBase(p string) string {
 func hasCmd(name string) bool {
 	_, err := exec.LookPath(name)
 	return err == nil
+}
+
+// numaPoolsBlocked reports whether x265's NUMA thread-pool setup is denied in this
+// environment.
+//
+// x265 binds its worker pools to NUMA nodes with set_mempolicy(2). Docker's default seccomp
+// profile blocks that syscall unless the container has CAP_SYS_NICE, and x265 responds by
+// logging "set_mempolicy: Operation not permitted" once per pool — then, on some CPUs
+// (hybrid P-core/E-core parts in particular), dying with a segfault partway into the encode.
+//
+// Rather than guess, probe it: encode a single frame and look for the warning. When it's
+// present every subsequent encode gets pools=none, which trades some threading efficiency
+// for actually completing. Adding SYS_NICE to the container makes the probe pass and
+// restores full threading with no further change.
+func numaPoolsBlocked(ctx context.Context, ffmpeg string) bool {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, ffmpeg,
+		"-hide_banner", "-loglevel", "warning",
+		"-f", "lavfi", "-i", "testsrc=d=0.1:s=64x64",
+		"-c:v", "libx265", "-preset", "ultrafast", "-f", "null", "-",
+	).CombinedOutput()
+	return strings.Contains(string(out), "set_mempolicy")
 }

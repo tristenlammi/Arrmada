@@ -29,7 +29,7 @@ func TestCompileKeepsAttachmentsAndStreams(t *testing.T) {
 		Audio: []AudioStream{{AudIndex: 0, Codec: "truehd", Lang: "eng", Channels: 8}},
 		Subs:  []SubStream{{Codec: "ass", Lang: "eng"}},
 	}
-	args := compileOutputArgs(cpuEncoder("hevc"), mi, mkvPlan(), false, 4)
+	args := compileOutputArgs(cpuEncoder("hevc"), mi, mkvPlan(), false, 4, false)
 
 	for _, want := range [][2]string{
 		{"-map", "0:t?"}, // attachments: embedded fonts
@@ -56,7 +56,7 @@ func TestLoudnormNeverTouchesLosslessAudio(t *testing.T) {
 			{AudIndex: 1, Codec: "ac3", Lang: "eng", Channels: 6},    // lossy — may be normalized
 		},
 	}
-	args := strings.Join(compileOutputArgs(cpuEncoder("hevc"), mi, plan, false, 4), " ")
+	args := strings.Join(compileOutputArgs(cpuEncoder("hevc"), mi, plan, false, 4, false), " ")
 
 	if !strings.Contains(args, "-c:a:0 copy") {
 		t.Errorf("TrueHD track must be copied, got: %s", args)

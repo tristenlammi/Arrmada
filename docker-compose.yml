@@ -9,6 +9,15 @@ services:
         VERSION: dev-docker
     image: arrmada:dev
     container_name: Arrmada-app
+    # x265 binds its worker thread pools to NUMA nodes with set_mempolicy(2), which
+    # Docker's default seccomp profile blocks — the encode then logs "set_mempolicy:
+    # Operation not permitted" repeatedly and, on some CPUs (notably hybrid P-core/E-core
+    # parts), crashes outright. SYS_NICE permits the call so x265 threads normally.
+    #
+    # The app also detects this at startup and falls back to unpooled threading, so an
+    # existing container without this capability still converts — just less efficiently.
+    cap_add:
+      - SYS_NICE
     ports:
       # Host web-UI port ← .env (install.sh auto-picks a free one so it never clashes
       # with Radarr's 7878 etc.). The app always listens on 7878 *inside* the container.

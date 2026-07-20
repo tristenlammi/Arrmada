@@ -152,6 +152,11 @@ type Service struct {
 
 	doviTool, hdr10plusTool string // Dolby Vision / HDR10+ metadata tools (empty if not bundled)
 
+	// noNumaPools is set when x265's NUMA pool binding is blocked by the container's
+	// seccomp profile — see numaPoolsBlocked. Encodes then run unpooled, which is slower
+	// but doesn't crash.
+	noNumaPools bool
+
 	encoders []Encoder
 	encoder  Encoder
 	failures *failureStore // quarantine blocklist (repeated-failure tracking)
@@ -237,6 +242,10 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 	s.logBuf = s.logs.recent(context.Background(), maxLogLines) // restore the console after a restart
 	s.doviTool, _ = exec.LookPath("dovi_tool")
 	s.hdr10plusTool, _ = exec.LookPath("hdr10plus_tool")
+	if s.noNumaPools = numaPoolsBlocked(context.Background(), ffmpeg); s.noNumaPools {
+		log.Warn("convert: x265 NUMA thread pools are blocked by the container's seccomp policy — " +
+			"encoding unpooled. Add cap_add: [SYS_NICE] to the container for full threading.")
+	}
 	log.Info("convert: encoder selected", "encoder", s.encoder.Label, "name", s.encoder.Name,
 		"dolby_vision", s.doviTool != "", "hdr10plus", s.hdr10plusTool != "")
 	return s
@@ -951,7 +960,7 @@ func (s *Service) sample(ctx context.Context, movieID int64, plan Plan) (SampleR
 		args := []string{"-y", "-hide_banner", "-ss", fmt.Sprintf("%.2f", sl.start), "-t", fmt.Sprintf("%.2f", sl.length)}
 		args = append(args, globalArgs(enc, false, s.vaapiDev(ctx))...) // sample = software decode (short, keep it simple/robust)
 		args = append(args, "-i", src)
-		args = append(args, compileOutputArgs(enc, mi, plan, false, s.cpuCores(ctx))...)
+		args = append(args, compileOutputArgs(enc, mi, plan, false, s.cpuCores(ctx), s.noNumaPools)...)
 		args = append(args, dst)
 		cmd := exec.CommandContext(ctx, s.ffmpeg, args...)
 		lowPriority(cmd)
@@ -1700,7 +1709,7 @@ func (s *Service) encode(ctx context.Context, job *Job, src, dst string, mi *Med
 		"-progress", "pipe:1", "-threads", strconv.Itoa(cores)}
 	args = append(args, globalArgs(enc, hwDecode, s.vaapiDev(ctx))...) // device / hwaccel init must precede the input
 	args = append(args, "-i", src)
-	args = append(args, compileOutputArgs(enc, mi, plan, hwDecode, cores)...)
+	args = append(args, compileOutputArgs(enc, mi, plan, hwDecode, cores, s.noNumaPools)...)
 	args = append(args, dst)
 
 	err := s.runWithProgress(ctx, job, args, mi.DurationSec)

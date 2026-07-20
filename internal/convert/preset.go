@@ -103,7 +103,7 @@ func mp4Audio(codec string) bool {
 // to the target codec, optionally downscaling; keep/convert/downmix/normalize the wanted audio
 // (container-safe); extract or repackage subtitles; set the container. This is the generalized
 // compiler (Rules v2 R1, extended in R5) — every Plan runs through here.
-func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int) []string {
+func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int, noNumaPools bool) []string {
 	container := plan.Container
 	if container == "" {
 		container = "mkv"
@@ -258,7 +258,7 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cor
 					hdrParams, colourTags = av1HDRParams(mi)
 				}
 			}
-			a = append(a, cpuVideoArgs(enc.Name, codec, crf, mi.TenBit, cores, hdrParams)...)
+			a = append(a, cpuVideoArgs(enc.Name, codec, crf, mi.TenBit, cores, hdrParams, noNumaPools)...)
 			a = append(a, colourTags...)
 		}
 	}
@@ -354,7 +354,7 @@ func stripTuningParams(args []string) []string {
 // cpuVideoArgs builds the CPU encoder args. cores bounds the encoder's own thread pool so a
 // library conversion can't take the whole machine — the server is also running Plex and
 // whatever else, and an encode that saturates every core makes the box unusable for days.
-func cpuVideoArgs(name, codec string, crf int, tenBit bool, cores int, hdrParams string) []string {
+func cpuVideoArgs(name, codec string, crf int, tenBit bool, cores int, hdrParams string, noNumaPools bool) []string {
 	switch codec {
 	case "h264":
 		return []string{"-c:v", name, "-preset", "medium", "-crf", strconv.Itoa(crf), "-pix_fmt", "yuv420p"}
@@ -389,6 +389,12 @@ func cpuVideoArgs(name, codec string, crf int, tenBit bool, cores int, hdrParams
 		// actually allowed to use. ffmpeg's -threads already bounds the encode, and dropping
 		// pools measured no slower.
 		params := "aq-mode=3:psy-rd=2.0:psy-rdoq=1.0:no-sao=1:bframes=8:rc-lookahead=40"
+		if noNumaPools {
+			// Worker pools bind to NUMA nodes via set_mempolicy, which this environment
+			// denies. Unpooled keeps frame-level parallelism and, unlike the default,
+			// finishes. See numaPoolsBlocked.
+			params += ":pools=none"
+		}
 		// HDR params must be MERGED here, not appended as a second -x265-params: ffmpeg keeps
 		// only the last occurrence, so two flags means one set is silently discarded.
 		if hdrParams != "" {

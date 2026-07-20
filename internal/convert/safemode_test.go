@@ -52,3 +52,21 @@ func TestStripTuningParamsHandlesAV1(t *testing.T) {
 		t.Errorf("preset must survive: %s", joined)
 	}
 }
+
+// When NUMA pool binding is denied, x265 must be told not to use pools at all — the
+// default behaviour logs a warning per pool and can crash partway into the encode.
+func TestNoNumaPoolsAddsPoolsNone(t *testing.T) {
+	mi := &MediaInfo{VideoCodec: "h264", Height: 1080}
+
+	blocked := strings.Join(compileOutputArgs(cpuEncoder("hevc"), mi, mkvPlan(), false, 4, true), " ")
+	if !strings.Contains(blocked, "pools=none") {
+		t.Errorf("expected pools=none when NUMA pools are blocked: %s", blocked)
+	}
+
+	// And it must NOT appear otherwise — unpooled costs threading efficiency, so it's
+	// only worth paying when the environment actually requires it.
+	ok := strings.Join(compileOutputArgs(cpuEncoder("hevc"), mi, mkvPlan(), false, 4, false), " ")
+	if strings.Contains(ok, "pools=none") {
+		t.Errorf("pools=none should only appear when needed: %s", ok)
+	}
+}
