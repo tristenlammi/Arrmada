@@ -524,18 +524,25 @@ func (c *Coordinator) searchSeriesReleases(ctx context.Context, s series.Series)
 		return nil, err
 	}
 	all := res.Releases
-	seen := map[string]bool{}
-	for _, r := range all {
-		seen[r.DownloadURL] = true
-	}
 
 	wanted, _ := wantedEpisodes(s)
-	seasons := seasonsOf(setOf(wanted))
+	seasons := sortedSeasons(seasonsOf(setOf(wanted)))
 	if len(seasons) == 0 {
 		return all, nil
 	}
+	return c.searchSeasons(ctx, s, title, seasons, all), nil
+}
+
+// searchSeasons runs one tvsearch per season and merges the results into have, deduped by
+// download URL. Shared by the automatic and interactive paths so both surface season packs
+// the same way.
+func (c *Coordinator) searchSeasons(ctx context.Context, s series.Series, title string, seasons []int, have []indexer.Release) []indexer.Release {
+	seen := map[string]bool{}
+	for _, r := range have {
+		seen[r.DownloadURL] = true
+	}
 	queried := 0
-	for _, season := range sortedSeasons(seasons) {
+	for _, season := range seasons {
 		if ctx.Err() != nil || queried >= maxSeasonQueries {
 			break
 		}
@@ -549,13 +556,20 @@ func (c *Coordinator) searchSeriesReleases(ctx context.Context, s series.Series)
 		for _, r := range sr.Releases {
 			if !seen[r.DownloadURL] {
 				seen[r.DownloadURL] = true
-				all = append(all, r)
+				have = append(have, r)
 			}
 		}
 	}
 	c.log.Info("series: searched by season", "series", s.Title,
-		"seasons_missing", len(seasons), "seasons_queried", queried, "releases", len(all))
-	return all, nil
+		"seasons", len(seasons), "seasons_queried", queried, "releases", len(have))
+	return have
+}
+
+// addSeasonSearches fans out over every season the series HAS — the interactive browse
+// case, where the user wants to see what exists rather than only fill gaps.
+func (c *Coordinator) addSeasonSearches(ctx context.Context, s series.Series, title string, have []indexer.Release) []indexer.Release {
+	_, seriesSeasons := wantedEpisodes(s)
+	return c.searchSeasons(ctx, s, title, sortedSeasons(seriesSeasons), have)
 }
 
 // wantedEpisodes returns the monitored, aired, file-less episodes plus the set of

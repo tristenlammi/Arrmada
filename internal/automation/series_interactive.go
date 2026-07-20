@@ -30,23 +30,29 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 	// Clean the title before it reaches an indexer: releases carry no punctuation, so
 	// "Teen Titans Go!" must be searched as "Teen Titans Go" or its packs never appear.
 	title := indexerQuery(s.Title)
-	query := title
+	// Season/episode go in the tvsearch PARAMETERS, not baked into the text. Indexers
+	// match those far better than "Title S07" as a string, and a bare title query returns
+	// one capped page — which is how a nine-season show showed only 35 results.
+	q := indexer.SearchQuery{Text: title, MediaType: indexer.MediaSeries, Limit: 400}
 	// Anime is released under many numbering conventions (absolute "- 137", per-cour
 	// SxxExx, or a split-season S02) — a narrow query would miss most. Search broad by
 	// title and let the resolver-backed scope filter pick releases covering the episode.
 	if !s.IsAnime() {
-		switch {
-		case season > 0 && episode > 0:
-			query = fmt.Sprintf("%s S%02dE%02d", title, season, episode)
-		case season > 0:
-			query = fmt.Sprintf("%s S%02d", title, season)
-		}
+		q.Season, q.Episode = season, episode
 	}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaSeries, Limit: 400})
+
+	result, err := c.indexers.Search(ctx, q)
 	if err != nil {
 		return ReleaseList{}, err
 	}
-	c.log.Info("series: interactive search", "series", s.Title, "query", query, "raw", len(result.Releases), "indexer_errors", len(result.Errors))
+	// Browsing the whole show: fan out per season as well, for the same reason the
+	// automatic search does. One title query can't surface nine seasons' worth of packs.
+	if q.Season == 0 && !s.IsAnime() {
+		result.Releases = c.addSeasonSearches(ctx, s, title, result.Releases)
+	}
+	c.log.Info("series: interactive search", "series", s.Title, "query", title,
+		"season", q.Season, "episode", q.Episode,
+		"raw", len(result.Releases), "indexer_errors", len(result.Errors))
 	for name, e := range result.Errors {
 		c.log.Warn("series: indexer error", "indexer", name, "err", e)
 	}
