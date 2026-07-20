@@ -175,6 +175,18 @@ export interface ActivityFeed {
   free_gb?: number;
 }
 
+export interface APIKeyStatus {
+  id: string;
+  label: string;
+  purpose: string;
+  help_url: string;
+  steps: string;
+  secret: boolean;
+  configured: boolean;
+  source: "settings" | "env" | "";
+  hint?: string;
+}
+
 export interface ClientSettings {
   dl_limit: number;
   up_limit: number;
@@ -798,6 +810,11 @@ export const api = {
     req<{ status: string }>(`/api/v1/queue/${hash}/block`, { method: "POST", body: JSON.stringify({ name }) }),
   torrentAction: (hash: string, action: "recheck" | "reannounce" | "prio_up" | "prio_down") =>
     req<{ status: string }>(`/api/v1/queue/${hash}/action`, { method: "POST", body: JSON.stringify({ action }) }),
+  // External service credentials, settable in-app (settings-first, env-fallback). The
+  // server never returns the secret itself — only whether it's set, from where, and a hint.
+  apiKeys: () => req<{ keys: APIKeyStatus[] }>(`/api/v1/apikeys`).then((r) => r.keys),
+  setAPIKey: (id: string, value: string) =>
+    req<{ keys: APIKeyStatus[] }>(`/api/v1/apikeys/${id}`, { method: "PUT", body: JSON.stringify({ value }) }).then((r) => r.keys),
   clientSettings: (id: number) => req<ClientSettings>(`/api/v1/downloadclients/${id}/settings`),
   setClientSettings: (id: number, body: ClientSettings) =>
     req<{ status: string }>(`/api/v1/downloadclients/${id}/settings`, { method: "PUT", body: JSON.stringify(body) }),

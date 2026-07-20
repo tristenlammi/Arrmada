@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type AppSettings, type AuthUser, type RecycleStats, type RecycleItem } from "../lib/api";
+import { api, type APIKeyStatus, type AppSettings, type AuthUser, type RecycleStats, type RecycleItem } from "../lib/api";
 import { useMe, isAdmin } from "../lib/me";
 import { LibraryFolders } from "./Library";
 
@@ -169,6 +169,7 @@ export function Settings() {
                 <Toggle label="Allow Sign in with Plex" hint="Adds a 'Sign in with Plex' button to the login page." checked={s.plex_login_enabled} onChange={(v) => patch({ plex_login_enabled: v })} />
                 <Toggle label="Auto-approve their requests" hint="Plex sign-ins' requests download immediately instead of waiting for your approval." checked={s.plex_login_auto_approve} onChange={(v) => patch({ plex_login_auto_approve: v })} />
               </Section>
+              <APIKeysSection />
               <RecycleBin s={s} patch={patch} />
               <SaveBar />
               <OverseerrImport />
@@ -431,6 +432,86 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
 
           <p className="text-[10.5px] text-ink-faint">Guard rails run automatically about once an hour. The size/retention values save with the button below. Restore moves a file back to where it was deleted from (when that location is free).</p>
         </>
+      )}
+    </Section>
+  );
+}
+
+
+function APIKeysSection() {
+  const [keys, setKeys] = useState<APIKeyStatus[] | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => { api.apiKeys().then(setKeys).catch((e: Error) => setErr(e.message)); }, []);
+
+  const saveKey = async (id: string) => {
+    setBusy(id); setErr(null);
+    try {
+      const next = await api.setAPIKey(id, drafts[id] ?? "");
+      setKeys(next);
+      setDrafts((d) => { const n = { ...d }; delete n[id]; return n; }); // clear the field on success
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <Section title="API keys" subtitle="External services Arrmada can use. A key entered here takes effect immediately — no restart — and overrides any set at install. The saved value is never shown back to you; only whether it's set.">
+      {err && <div className="rounded-lg p-2.5 text-[11.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{err}</div>}
+      {keys === null ? (
+        <p className="text-[11.5px] text-ink-dim">Loading…</p>
+      ) : (
+        keys.map((k) => (
+          <div key={k.id} className="flex flex-col gap-1.5 rounded-lg p-3" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[12.5px] font-semibold">{k.label}</span>
+              {k.configured ? (
+                <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: "var(--good-soft, rgba(80,200,120,.15))", color: "var(--good)" }}>
+                  Set {k.hint ? `(${k.hint})` : ""}{k.source === "env" ? " · from install" : ""}
+                </span>
+              ) : (
+                <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: "var(--panel)", color: "var(--ink-faint)" }}>Not set</span>
+              )}
+            </div>
+            <p className="text-[10.5px] text-ink-faint">{k.purpose}</p>
+            <div className="flex items-center gap-2">
+              <input
+                type={k.secret ? "password" : "text"}
+                value={drafts[k.id] ?? ""}
+                onChange={(e) => setDrafts((d) => ({ ...d, [k.id]: e.target.value }))}
+                placeholder={k.configured ? "Enter a new value to replace it" : "Paste your key here"}
+                className="min-w-0 flex-1 rounded-lg px-3 py-1.5 text-[12px]"
+                style={{ background: "var(--panel)", border: "1px solid var(--line)", color: "var(--ink)" }}
+              />
+              <button
+                onClick={() => saveKey(k.id)}
+                disabled={busy !== null}
+                className="flex-none rounded-lg px-3 py-1.5 text-[11.5px] font-semibold"
+                style={{ border: "1px solid var(--accent-line, var(--line))", color: "var(--accent)" }}
+              >
+                {busy === k.id ? "Saving…" : "Save"}
+              </button>
+              {k.configured && k.source === "settings" && (
+                <button
+                  onClick={() => { setDrafts((d) => ({ ...d, [k.id]: "" })); saveKey(k.id); }}
+                  disabled={busy !== null}
+                  className="flex-none rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold"
+                  style={{ border: "1px solid var(--line)", color: "var(--ink-faint)" }}
+                  title="Clear this key"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+            <p className="text-[10px] text-ink-faint">
+              {k.steps} <a href={k.help_url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>Get one →</a>
+            </p>
+          </div>
+        ))
       )}
     </Section>
   );

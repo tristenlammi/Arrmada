@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/apikeys"
 	"github.com/tristenlammi/arrmada/internal/applog"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
@@ -63,6 +64,7 @@ type Deps struct {
 	Insights   *insights.Service
 	Recycle    *recyclebin.Service
 	Logs       *applog.Ring
+	APIKeys    *apikeys.Store
 }
 
 type api struct {
@@ -89,6 +91,8 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/status", a.handleStatus)
 
 	// App preferences
+	mux.HandleFunc("GET "+base+"/api/v1/apikeys", a.requireRole(auth.RoleManager, a.handleGetAPIKeys))
+	mux.HandleFunc("PUT "+base+"/api/v1/apikeys/{id}", a.requireRole(auth.RoleManager, a.handleSetAPIKey))
 	mux.HandleFunc("GET "+base+"/api/v1/settings", a.protected(a.handleGetSettings))
 	mux.HandleFunc("PUT "+base+"/api/v1/settings", a.requireRole(auth.RoleManager, a.handleUpdateSettings))
 	// Library folders + filesystem browser (in-app folder picker).

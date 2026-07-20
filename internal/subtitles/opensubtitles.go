@@ -21,11 +21,11 @@ const osBaseURL = "https://api.opensubtitles.com/api/v1"
 // needs only an API key; downloading additionally needs a (free) account, so username +
 // password are optional and only required to actually grab. Credentials come from config.
 type OpenSubtitles struct {
-	http     *http.Client
-	apiKey   string
-	username string
-	password string
-	ua       string
+	http       *http.Client
+	apiKeyFn   func() string
+	usernameFn func() string
+	passwordFn func() string
+	ua         string
 
 	mu    sync.Mutex
 	token string // cached bearer token from /login
@@ -33,21 +33,35 @@ type OpenSubtitles struct {
 
 // NewOpenSubtitles builds the provider from config credentials (any may be empty).
 func NewOpenSubtitles(apiKey, username, password string) *OpenSubtitles {
+	return NewOpenSubtitlesFunc(
+		func() string { return apiKey },
+		func() string { return username },
+		func() string { return password },
+	)
+}
+
+// NewOpenSubtitlesFunc builds the provider reading each credential lazily, so values set
+// in the settings menu take effect without a restart.
+func NewOpenSubtitlesFunc(apiKey, username, password func() string) *OpenSubtitles {
 	return &OpenSubtitles{
-		http:     &http.Client{Timeout: 25 * time.Second},
-		apiKey:   strings.TrimSpace(apiKey),
-		username: strings.TrimSpace(username),
-		password: strings.TrimSpace(password),
-		ua:       "Arrmada/1.0",
+		http:       &http.Client{Timeout: 25 * time.Second},
+		apiKeyFn:   apiKey,
+		usernameFn: username,
+		passwordFn: password,
+		ua:         "Arrmada/1.0",
 	}
 }
 
+func (o *OpenSubtitles) apiKey() string   { return strings.TrimSpace(o.apiKeyFn()) }
+func (o *OpenSubtitles) username() string { return strings.TrimSpace(o.usernameFn()) }
+func (o *OpenSubtitles) password() string { return strings.TrimSpace(o.passwordFn()) }
+
 // Available reports whether search is possible (needs the API key).
-func (o *OpenSubtitles) Available() bool { return o.apiKey != "" }
+func (o *OpenSubtitles) Available() bool { return o.apiKey() != "" }
 
 // CanDownload reports whether we can actually fetch files (needs a full account).
 func (o *OpenSubtitles) CanDownload() bool {
-	return o.apiKey != "" && o.username != "" && o.password != ""
+	return o.apiKey() != "" && o.username() != "" && o.password() != ""
 }
 
 func (o *OpenSubtitles) req(ctx context.Context, method, path string, q url.Values, body any, bearer string) (*http.Response, error) {
@@ -67,7 +81,7 @@ func (o *OpenSubtitles) req(ctx context.Context, method, path string, q url.Valu
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Api-Key", o.apiKey)
+	req.Header.Set("Api-Key", o.apiKey())
 	req.Header.Set("User-Agent", o.ua)
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
@@ -90,7 +104,7 @@ func (o *OpenSubtitles) login(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("%w: OpenSubtitles username/password required to download", ErrNotConfigured)
 	}
 	resp, err := o.req(ctx, http.MethodPost, "/login", nil, map[string]string{
-		"username": o.username, "password": o.password,
+		"username": o.username(), "password": o.password(),
 	}, "")
 	if err != nil {
 		return "", err

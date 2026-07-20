@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/apikeys"
 	"github.com/tristenlammi/arrmada/internal/applog"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
@@ -126,12 +127,16 @@ func main() {
 	authSvc := auth.NewService(st.DB())
 	indexers := indexer.NewService(st.DB(), log, cfg.FlaresolverrURL)
 	downloads := download.NewService(st.DB(), log)
-	tmdb := metadata.NewTMDB(cfg.TMDBAPIKey)
-	omdb := metadata.NewOMDb(cfg.OMDBAPIKey)
+	settingsSvc := settings.NewService(st.DB())
+	// API keys resolve settings-first, env-fallback, so a key added in the settings menu
+	// takes effect without a restart while existing env-based setups keep working. Seed
+	// the store with any env values so a fresh install with only compose vars still works.
+	keyStore := apikeys.NewStore(settingsSvc)
+	tmdb := metadata.NewTMDBFunc(keyStore.Func("tmdb"))
+	omdb := metadata.NewOMDbFunc(keyStore.Func("omdb"))
 	// Open Library primary, Google Books fallback — a book/author OL can't resolve still gets found.
 	openlib := metadata.NewBooksWithFallback(metadata.NewOpenLibrary(), metadata.NewGoogleBooks())
 	qualitySvc := quality.NewService(st.DB())
-	settingsSvc := settings.NewService(st.DB())
 	notifySvc := notify.NewService(st.DB(), bus, log)
 	// Episode NUMBERING comes from TVmaze; everything else about a show still comes from
 	// TMDB. TMDB merges two-part episodes into single entries where releases keep them
@@ -348,7 +353,7 @@ func main() {
 
 	// Subtitles module (Bazarr replacement): grabs external SRT sidecars over the
 	// Movies/Series catalogs via OpenSubtitles.
-	subsProvider := subtitles.NewOpenSubtitles(cfg.OpenSubtitlesAPIKey, cfg.OpenSubtitlesUsername, cfg.OpenSubtitlesPassword)
+	subsProvider := subtitles.NewOpenSubtitlesFunc(keyStore.Func("opensubtitles_api"), keyStore.Func("opensubtitles_username"), keyStore.Func("opensubtitles_password"))
 	subtitlesSvc := subtitles.NewService(st.DB(), movieSvc, seriesSvc, settingsSvc, subsProvider, "ffmpeg", "ffprobe", filepath.Join(cfg.DataDir, "whisper"), log)
 	go subtitlesSvc.Run(runCtx) // subtitle-ensure job worker
 	sched.Register("subtitles-auto-grab", 6*time.Hour, false, func(ctx context.Context) error {
@@ -444,6 +449,7 @@ func main() {
 		Insights:   insightsSvc,
 		Recycle:    recycleSvc,
 		Logs:       logRing,
+		APIKeys:    keyStore,
 	})
 
 	errCh := make(chan error, 1)

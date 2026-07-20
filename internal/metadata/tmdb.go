@@ -23,23 +23,27 @@ const (
 
 // TMDB is a The Movie Database provider (v3 API key).
 type TMDB struct {
-	apiKey string
-	http   *http.Client
+	key  func() string
+	http *http.Client
 }
 
-// NewTMDB builds a TMDB provider. apiKey may be empty (Available reports false).
-func NewTMDB(apiKey string) *TMDB {
-	return &TMDB{apiKey: apiKey, http: &http.Client{Timeout: 20 * time.Second}}
+// NewTMDB builds a TMDB provider from a static key (env/config). Empty means unconfigured.
+func NewTMDB(apiKey string) *TMDB { return NewTMDBFunc(func() string { return apiKey }) }
+
+// NewTMDBFunc builds a TMDB provider that reads its key lazily, so a key added in the
+// settings menu takes effect without a restart.
+func NewTMDBFunc(key func() string) *TMDB {
+	return &TMDB{key: key, http: &http.Client{Timeout: 20 * time.Second}}
 }
 
 // Available reports whether an API key is configured.
-func (t *TMDB) Available() bool { return t.apiKey != "" }
+func (t *TMDB) Available() bool { return t.key() != "" }
 
 func (t *TMDB) get(ctx context.Context, path string, q url.Values) ([]byte, error) {
 	if !t.Available() {
 		return nil, ErrNotConfigured
 	}
-	q.Set("api_key", t.apiKey)
+	q.Set("api_key", t.key())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tmdbBaseURL+path+"?"+q.Encode(), nil)
 	if err != nil {
 		return nil, err

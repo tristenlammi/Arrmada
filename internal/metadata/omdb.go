@@ -14,17 +14,20 @@ import (
 // id — the one thing TMDB doesn't carry. A free key from omdbapi.com. Optional: with
 // no key, Available() is false and the detail modal falls back to the TMDB score.
 type OMDb struct {
-	apiKey string
-	http   *http.Client
+	key  func() string
+	http *http.Client
 }
 
 // NewOMDb builds an OMDb client. apiKey may be empty (Available reports false).
-func NewOMDb(apiKey string) *OMDb {
-	return &OMDb{apiKey: apiKey, http: &http.Client{Timeout: 12 * time.Second}}
+func NewOMDb(apiKey string) *OMDb { return NewOMDbFunc(func() string { return apiKey }) }
+
+// NewOMDbFunc builds an OMDb client that reads its key lazily (settings-backed).
+func NewOMDbFunc(key func() string) *OMDb {
+	return &OMDb{key: key, http: &http.Client{Timeout: 12 * time.Second}}
 }
 
 // Available reports whether an OMDb API key is configured.
-func (o *OMDb) Available() bool { return o.apiKey != "" }
+func (o *OMDb) Available() bool { return o.key() != "" }
 
 // Ratings returns IMDB / Rotten Tomatoes / Metacritic scores for an IMDB id.
 func (o *OMDb) Ratings(ctx context.Context, imdbID string) (Ratings, error) {
@@ -35,7 +38,7 @@ func (o *OMDb) Ratings(ctx context.Context, imdbID string) (Ratings, error) {
 		return Ratings{}, fmt.Errorf("omdb: no imdb id")
 	}
 	q := url.Values{}
-	q.Set("apikey", o.apiKey)
+	q.Set("apikey", o.key())
 	q.Set("i", imdbID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.omdbapi.com/?"+q.Encode(), nil)
 	if err != nil {
