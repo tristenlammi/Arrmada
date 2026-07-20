@@ -372,9 +372,19 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		}
 		// A double-episode file marks both episodes present (all point at the one file);
 		// anime files resolve to their real episode (absolute/positional) first.
+		// Record the name that actually describes the quality. A pack's per-file names
+		// often don't ("Parks and Recreation - 1x01 - Make My Pit a Park.mkv"), and the
+		// library file is renamed on import, so recording the bare filename left the
+		// episode with NO resolution recorded anywhere — which any future 1080p release
+		// would then outrank, re-importing the same quality forever. The release name
+		// carries it, so use that when the file's own name doesn't.
+		sourceName := filepath.Base(ei.SourcePath)
+		if parser.Parse(sourceName).Resolution == "" && release.Resolution != "" {
+			sourceName = filepath.Base(contentPath)
+		}
 		for _, ep := range episodesOf(ei) {
 			rs, re := c.series.ResolveEpisode(ctx, s.ID, ei.Season, ep)
-			if c.series.SupersedeEpisodeFile(ctx, s.ID, rs, re, ei.TargetPath, ei.SizeBytes, filepath.Base(ei.SourcePath)) == nil {
+			if c.series.SupersedeEpisodeFile(ctx, s.ID, rs, re, ei.TargetPath, ei.SizeBytes, sourceName) == nil {
 				placed++
 			}
 		}
