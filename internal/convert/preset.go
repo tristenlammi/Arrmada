@@ -335,6 +335,22 @@ func hdr10Args(mi *MediaInfo) []string {
 
 // cpuVideoArgs builds the CPU encoder args for a target codec. H.264 is pinned to 8-bit
 // (yuv420p) for compatibility; HEVC/AV1 preserve 10-bit when the source is 10-bit.
+// stripTuningParams removes the quality-tuning parameter strings from a compiled command,
+// leaving the plain preset/CRF encode. Used for the safe-mode retry: the tuned parameters
+// are a much larger surface than "-preset slow -crf 18", and a failure there shouldn't cost
+// the user the conversion when the simple form would have worked.
+func stripTuningParams(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-x265-params" || args[i] == "-svtav1-params" {
+			i++ // skip the value too
+			continue
+		}
+		out = append(out, args[i])
+	}
+	return out
+}
+
 // cpuVideoArgs builds the CPU encoder args. cores bounds the encoder's own thread pool so a
 // library conversion can't take the whole machine — the server is also running Plex and
 // whatever else, and an encode that saturates every core makes the box unusable for days.
@@ -368,7 +384,11 @@ func cpuVideoArgs(name, codec string, crf int, tenBit bool, cores int, hdrParams
 		//   psy-rd      preserves texture/grain the default happily smooths away
 		//   no-sao      SAO is x265's classic detail-smearer at high quality
 		//   rc-lookahead / bframes  more context for rate decisions
-		params := fmt.Sprintf("aq-mode=3:psy-rd=2.0:psy-rdoq=1.0:no-sao=1:bframes=8:rc-lookahead=40:pools=%d", cores)
+		// NOTE: no "pools=" here. It's x265's thread-topology knob and the one most likely
+		// to misbehave when the detected core count doesn't match what the container is
+		// actually allowed to use. ffmpeg's -threads already bounds the encode, and dropping
+		// pools measured no slower.
+		params := "aq-mode=3:psy-rd=2.0:psy-rdoq=1.0:no-sao=1:bframes=8:rc-lookahead=40"
 		// HDR params must be MERGED here, not appended as a second -x265-params: ffmpeg keeps
 		// only the last occurrence, so two flags means one set is silently discarded.
 		if hdrParams != "" {

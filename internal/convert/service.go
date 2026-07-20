@@ -168,6 +168,13 @@ type Service struct {
 	nextID    int64
 	queue     chan *Job
 
+	// hwBroken records hardware encoders that failed at runtime. detectEncoders can only
+	// tell us an encoder is COMPILED IN and its device node exists — not that it actually
+	// works. Quick Sync in particular can be present and still fail to initialise, and
+	// without this every single job pays for another doomed attempt before falling back.
+	hwBrokenMu sync.Mutex
+	hwBroken   map[string]bool
+
 	// pending maps an item key (see failures.go) to its live job so the same file is never
 	// queued twice. The sweep re-runs ConvertAll over a queue that can take days to drain,
 	// which without this re-queues everything — including files currently encoding, letting
@@ -824,6 +831,28 @@ func (s *Service) ClearBlocklist(ctx context.Context, key string) error {
 	return nil
 }
 
+// markHardwareBroken records that a hardware encoder failed, so it stops being preferred.
+func (s *Service) markHardwareBroken(name, reason string) {
+	s.hwBrokenMu.Lock()
+	if s.hwBroken == nil {
+		s.hwBroken = map[string]bool{}
+	}
+	first := !s.hwBroken[name]
+	s.hwBroken[name] = true
+	s.hwBrokenMu.Unlock()
+	if first {
+		s.log.Warn("convert: hardware encoder failed — using the CPU for the rest of this run",
+			"encoder", name, "err", reason)
+		s.event("warn", name+" failed on this machine — converting on the CPU instead")
+	}
+}
+
+func (s *Service) hardwareIsBroken(name string) bool {
+	s.hwBrokenMu.Lock()
+	defer s.hwBrokenMu.Unlock()
+	return s.hwBroken[name]
+}
+
 // enqueue hands a job to the workers without blocking forever if the queue is saturated.
 func (s *Service) enqueue(ctx context.Context, job *Job) error {
 	select {
@@ -1340,7 +1369,7 @@ func (s *Service) runEncode(ctx context.Context, job *Job, src, dst string, mi *
 		err := s.encode(ctx, job, src, dst, mi, enc, plan, false)
 		if err != nil && enc.Hardware { // hardware encoder failed → fall back to CPU once
 			cpu := cpuEncoder(plan.VideoCodec)
-			s.log.Warn("convert: hardware encode failed, retrying on CPU", "err", err)
+			s.markHardwareBroken(enc.Name, err.Error())
 			s.update(job, func(j *Job) { j.Encoder = cpu.Label; j.Progress = 0 })
 			err = s.encode(ctx, job, src, dst, mi, cpu, plan, false)
 		}
@@ -1537,6 +1566,9 @@ func (s *Service) canPreserveHDR(mi *MediaInfo, plan Plan, enc Encoder) bool {
 func (s *Service) pickEncoder(ctx context.Context, job *Job, mi *MediaInfo, plan Plan) Encoder {
 	hw := s.encoderFor(plan.VideoCodec)
 	cpu := cpuEncoder(plan.VideoCodec)
+	if hw.Hardware && s.hardwareIsBroken(hw.Name) {
+		return cpu // proven not to work on this machine; don't waste an attempt on it
+	}
 
 	reason := ""
 	switch {
@@ -1622,6 +1654,45 @@ func (s *Service) finish(job *Job, state JobState, note string) {
 	}
 }
 
+// lineTail keeps the most recent N lines of a stream, for error reporting.
+type lineTail struct {
+	mu    sync.Mutex
+	max   int
+	lines []string
+}
+
+func (t *lineTail) add(line string) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return
+	}
+	t.mu.Lock()
+	t.lines = append(t.lines, line)
+	if len(t.lines) > t.max {
+		t.lines = t.lines[len(t.lines)-t.max:]
+	}
+	t.mu.Unlock()
+}
+
+// String returns the retained lines, most useful last. Lines that are plainly metadata
+// rather than diagnostics are dropped, since they crowd out the actual error.
+func (t *lineTail) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	keep := make([]string, 0, len(t.lines))
+	for _, l := range t.lines {
+		if strings.HasPrefix(l, "title") || strings.HasPrefix(l, "Stream #") ||
+			strings.HasPrefix(l, "Metadata:") || strings.HasPrefix(l, "encoder") {
+			continue
+		}
+		keep = append(keep, l)
+	}
+	if len(keep) == 0 {
+		keep = t.lines
+	}
+	return strings.Join(keep, " | ")
+}
+
 // encode runs ffmpeg for one job, parsing live progress from the -progress pipe. hwDecode
 // asks the GPU to decode too (VAAPI only) — set for the full-GPU attempt, cleared for the
 // software-decode fallback.
@@ -1632,7 +1703,28 @@ func (s *Service) encode(ctx context.Context, job *Job, src, dst string, mi *Med
 	args = append(args, "-i", src)
 	args = append(args, compileOutputArgs(enc, mi, plan, hwDecode, cores)...)
 	args = append(args, dst)
-	return s.runWithProgress(ctx, job, args, mi.DurationSec)
+
+	err := s.runWithProgress(ctx, job, args, mi.DurationSec)
+	if err == nil || ctx.Err() != nil {
+		return err
+	}
+	// Safe-mode retry. The quality-tuning parameters are a far larger surface than a plain
+	// preset/CRF encode, and they vary with the machine (core counts, driver, ffmpeg build)
+	// in ways that can't all be verified up front. A failure there shouldn't cost the user
+	// the conversion when the simple form would have worked — so try once without them
+	// before giving up, and say so.
+	simple := stripTuningParams(args)
+	if len(simple) == len(args) {
+		return err // nothing to strip; the failure is something else
+	}
+	s.log.Warn("convert: encode failed with tuned settings — retrying with plain preset/CRF",
+		"title", job.Title, "err", err)
+	s.update(job, func(j *Job) { j.Progress = 0 })
+	if err2 := s.runWithProgress(ctx, job, simple, mi.DurationSec); err2 != nil {
+		return err // report the ORIGINAL failure; the retry is a bonus, not the diagnosis
+	}
+	s.event("warn", job.Title+": converted with default encoder settings — the tuned ones failed on this machine")
+	return nil
 }
 
 // runWithProgress runs an ffmpeg command whose stdout is a -progress stream, updating the job
@@ -1644,13 +1736,16 @@ func (s *Service) runWithProgress(ctx context.Context, job *Job, args []string, 
 	if err != nil {
 		return err
 	}
-	var tail strings.Builder
+	// Keep the LAST few stderr lines, not just one. ffmpeg's final line is usually stream
+	// metadata, so a one-line tail reported things like "title: English (SDH)" as the cause
+	// of a segfault. The mutex matters too: this goroutine outlives Wait() in principle, and
+	// the old unsynchronized Builder was a genuine data race.
+	tail := &lineTail{max: 12}
 	if errPipe, e := cmd.StderrPipe(); e == nil {
 		go func() {
 			sc := bufio.NewScanner(errPipe)
 			for sc.Scan() {
-				tail.Reset()
-				tail.WriteString(sc.Text())
+				tail.add(sc.Text())
 			}
 		}()
 	}
@@ -1660,7 +1755,7 @@ func (s *Service) runWithProgress(ctx context.Context, job *Job, args []string, 
 	applyNice(cmd.Process.Pid, encodeNice) // bulk work — yield to anything interactive
 	s.readProgress(job, stdout, durationSec)
 	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("%v (%s)", err, tail.String())
+		return fmt.Errorf("%v: %s", err, tail.String())
 	}
 	return nil
 }
