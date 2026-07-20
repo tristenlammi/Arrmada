@@ -160,6 +160,15 @@ var (
 	// space/dot before a number, so ".1080p"/" 720p" stay out of it).
 	reSxxExx = regexp.MustCompile(`(?i)\bS(\d{1,2})E(\d{1,3})((?:[-\s.]?E\d{1,3}|-\d{1,3})*)`)
 	reSeason = regexp.MustCompile(`(?i)\bS(\d{1,2})\b`)
+	// "1x01" — the other common episode form, used by a lot of pack releasers and by
+	// anyone who renamed their library that way. Nothing understood it, so a 122-file
+	// "Parks and Recreation S01-S07" pack imported nothing at all and was blocklisted as
+	// junk. Captures multi-episode continuations too: "6x01 & 6x02", "7x12 & 7x13".
+	//
+	// The episode needs 2+ digits so an aspect ratio ("16x9") or a dimension ("4x4")
+	// can't be read as an episode. That does mean a genuine "1x1" is missed; releases
+	// using the form pad to two digits in practice.
+	reNxNN = regexp.MustCompile(`(?i)\b(\d{1,2})x(\d{2,3})((?:\s*[&+]\s*\d{1,2}x\d{2,3}|\s*-\s*\d{1,2}x\d{2,3})*)`)
 	// Spelled-out single season: "Season 3" / "Season 3 Complete" (scene/WEBRip packs
 	// that don't use the "S03" form). A range like "Season 1-3" is handled separately.
 	reSeasonSingleWord = regexp.MustCompile(`(?i)\bseason\s+(\d{1,2})\b`)
@@ -223,6 +232,11 @@ func Parse(name string) Release {
 	if m := reSxxExx.FindStringSubmatch(name); m != nil {
 		r.Season, _ = strconv.Atoi(m[1])
 		r.Episodes = parseEpisodeList(m[2], m[3])
+	} else if m := reNxNN.FindStringSubmatch(name); m != nil {
+		// Checked before the season-only forms on purpose: "Flu Season 2" in an episode
+		// title would otherwise win and report season 2 for a file that is plainly 6x19.
+		r.Season, _ = strconv.Atoi(m[1])
+		r.Episodes = parseNxNNList(m[2], m[3])
 	} else if m := reSeason.FindStringSubmatch(name); m != nil {
 		// Season pack (no episode markers).
 		r.Season, _ = strconv.Atoi(m[1])
@@ -295,6 +309,8 @@ func Parse(name string) Release {
 			cut = loc[0]
 		} else if loc := reSxxExx.FindStringIndex(name); loc != nil && loc[0] < cut {
 			cut = loc[0]
+		} else if loc := reNxNN.FindStringIndex(name); loc != nil && loc[0] < cut {
+			cut = loc[0] // "Parks and Recreation - 1x01 - Make My Pit a Park"
 		}
 	}
 	if absCut < cut {
@@ -387,6 +403,36 @@ func parseEpisodeList(first, tail string) []int {
 // inventing 40 episode numbers from one would mark a whole season present in error. Past
 // the cap we keep just the endpoints, which is what the parser always did.
 const maxEpisodeSpan = 12
+
+// reNxNNPart pulls each continuation episode out of "& 6x02" / "- 7x13".
+var reNxNNPart = regexp.MustCompile(`(?i)\d{1,2}x(\d{2,3})`)
+
+// parseNxNNList expands "6x01 & 6x02" into [1, 2]. Only the episode numbers matter — the
+// season is taken from the first pair, and a file spanning two seasons isn't a thing.
+func parseNxNNList(first, tail string) []int {
+	n0, err := strconv.Atoi(first)
+	if err != nil {
+		return nil
+	}
+	eps := []int{n0}
+	prev := n0
+	for _, m := range reNxNNPart.FindAllStringSubmatch(tail, -1) {
+		n, err := strconv.Atoi(m[1])
+		if err != nil || n == prev {
+			continue
+		}
+		// A hyphen between them is a range ("6x01-6x04"), so fill the gap — same rule as
+		// the SxxExx form, and capped identically against a misparse inventing a season.
+		if n > prev+1 && n-prev <= maxEpisodeSpan && strings.Contains(tail, "-") {
+			for e := prev + 1; e < n; e++ {
+				eps = append(eps, e)
+			}
+		}
+		eps = append(eps, n)
+		prev = n
+	}
+	return eps
+}
 
 func seasonRange(a, b string) []int {
 	lo, _ := strconv.Atoi(a)
