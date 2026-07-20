@@ -44,6 +44,7 @@ export function Series() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [profiles, setProfiles] = useState<{ key: string; name: string }[]>([]);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [refreshingAll, setRefreshingAll] = useState(false);
 
   const flash = (msg: string) => { setToast(msg); window.setTimeout(() => setToast(null), 3500); };
 
@@ -87,6 +88,28 @@ export function Series() {
       clearSelect();
       refresh();
     } finally { setBulkBusy(false); }
+  };
+
+  // Refresh + rescan every series. This is the bulk form of the per-show "Refresh"
+  // button: it reconciles episodes whose file is already on disk but whose row still
+  // reads as missing, which is what makes the searcher re-grab things you already have.
+  const refreshAll = async () => {
+    if (!window.confirm(`Refresh metadata and rescan files for all ${list.length} series? This runs in the background and can take a while.`)) return;
+    setRefreshingAll(true);
+    try {
+      const r = await api.refreshAllSeries();
+      flash(`Refreshing ${r.queued} series in the background — counts will update as it goes.`);
+      // Poll while it works so the user sees episode counts settle rather than having
+      // to guess whether anything happened.
+      let ticks = 0;
+      const t = setInterval(() => {
+        refresh();
+        if (++ticks >= 40) { clearInterval(t); setRefreshingAll(false); }
+      }, 3000);
+    } catch (e) {
+      flash((e as Error).message);
+      setRefreshingAll(false);
+    }
   };
 
   const scanLibrary = async () => {
@@ -140,6 +163,15 @@ export function Series() {
               style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}
             >
               {scanning ? "Scanning…" : "Scan library"}
+            </button>
+            <button
+              onClick={refreshAll}
+              disabled={refreshingAll || list.length === 0}
+              title="Re-pull metadata and rescan files for every series — fixes episodes that are on disk but still show as missing"
+              className="rounded-lg px-3 py-2 text-[12.5px] font-semibold"
+              style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)", opacity: refreshingAll || list.length === 0 ? 0.5 : 1 }}
+            >
+              {refreshingAll ? "Refreshing…" : "Refresh all"}
             </button>
             <button
               onClick={() => (multiSelect ? exitMultiSelect() : setMultiSelect(true))}

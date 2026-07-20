@@ -500,6 +500,68 @@ func (a *api) handleRefreshSeries(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, s)
 }
 
+// handleRefreshAllSeries refreshes metadata and rescans the disk for every series.
+//
+// The per-series refresh is what reconciles episodes whose file is already on disk but
+// whose row still reads as missing — the state that makes the searcher keep grabbing
+// releases you already have. Doing that one show at a time is impractical once the
+// library is large, which is the whole reason this exists.
+//
+// Runs in the background: a few hundred series means a few hundred metadata pulls and
+// disk walks, far longer than any sensible request timeout. The response says how many
+// were queued and the work continues after it returns.
+func (a *api) handleRefreshAllSeries(w http.ResponseWriter, r *http.Request) {
+	all, err := a.deps.Series.List(r.Context())
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not list series")
+		return
+	}
+	// One sweep at a time. Two overlapping runs would double every metadata pull and
+	// race each other's episode writes for no benefit.
+	if !a.refreshAll.CompareAndSwap(false, true) {
+		a.writeError(w, http.StatusConflict, "a refresh of all series is already running")
+		return
+	}
+	ids := make([]int64, 0, len(all))
+	for _, s := range all {
+		ids = append(ids, s.ID)
+	}
+	go a.refreshSeriesSweep(ids)
+	a.writeJSON(w, http.StatusAccepted, map[string]any{"queued": len(ids)})
+}
+
+// refreshSeriesSweep walks every series, refreshing metadata and rescanning the disk.
+// Detached from the request, so it uses its own context and budget.
+func (a *api) refreshSeriesSweep(ids []int64) {
+	defer a.refreshAll.Store(false)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+	defer cancel()
+
+	a.deps.Log.Info("series: refreshing all", "count", len(ids))
+	var refreshed, failed int
+	for _, id := range ids {
+		// Per-series budget, so one hung metadata call can't stall the whole sweep.
+		each, cancelEach := context.WithTimeout(ctx, 60*time.Second)
+		if _, err := a.deps.Series.Refresh(each, id); err != nil {
+			failed++
+			a.deps.Log.Warn("series: refresh failed", "series_id", id, "err", err)
+			cancelEach()
+			if ctx.Err() != nil {
+				break // the whole sweep timed out or was cancelled
+			}
+			continue
+		}
+		a.deps.Automation.RescanSeries(each, id)
+		cancelEach()
+		refreshed++
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	a.deps.Log.Info("series: refreshed all", "refreshed", refreshed, "failed", failed)
+}
+
 // handleSeriesManualImportList lists importable video files under the downloads dir
 // (or ?path=). handleSeriesManualImport imports a chosen one into the series.
 func (a *api) handleSeriesManualImportList(w http.ResponseWriter, r *http.Request) {

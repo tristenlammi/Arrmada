@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/applog"
@@ -67,6 +68,9 @@ type Deps struct {
 type api struct {
 	deps  Deps
 	start time.Time
+	// refreshAll guards the bulk series refresh so two overlapping sweeps can't
+	// double every metadata pull and race each other's episode writes.
+	refreshAll atomic.Bool
 }
 
 // New builds the HTTP server: JSON API routes, the embedded UI (with SPA
@@ -197,6 +201,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/releases", a.protected(a.handleSeriesReleases))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/grab", a.requireRole(auth.RoleManager, a.handleGrabSeries))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/autograb", a.requireRole(auth.RoleManager, a.handleAutoGrabSeries))
+	mux.HandleFunc("POST "+base+"/api/v1/series/refresh", a.requireRole(auth.RoleManager, a.handleRefreshAllSeries))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/refresh", a.protected(a.handleRefreshSeries))
 	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/manualimport", a.protected(a.handleSeriesManualImportList))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/manualimport", a.requireRole(auth.RoleManager, a.handleSeriesManualImport))

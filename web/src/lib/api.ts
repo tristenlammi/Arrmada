@@ -927,6 +927,9 @@ export const api = {
   autoGrabSeries: (id: number, season: number, episode: number) =>
     req<{ status: string }>(`/api/v1/series/${id}/autograb`, { method: "POST", body: JSON.stringify({ season, episode }) }),
   refreshSeries: (id: number) => req<Series>(`/api/v1/series/${id}/refresh`, { method: "POST" }),
+  // Bulk refresh: re-pulls metadata and rescans the disk for every series. Runs in the
+  // background — the response only reports how many were queued.
+  refreshAllSeries: () => req<{ queued: number }>(`/api/v1/series/refresh`, { method: "POST" }),
   // Requests
   requests: (status?: string) =>
     req<{ requests: MediaRequest[]; auto_approve: boolean }>(`/api/v1/requests${status ? `?status=${status}` : ""}`),
