@@ -42,7 +42,7 @@ const (
 	keyScanAt         = "convert_scan_at"          // "HH:MM" — when the daily library index sweep runs
 	keyCPUCores       = "convert_cpu_cores"        // max cores a CPU encode may use (0 = half the box)
 	keyCPUAboveHeight = "convert_cpu_above_height" // use CPU at/above this height (0 = never)
-	keyAV1RecodeHEVC  = "convert_av1_recode_hevc"  // let an AV1 target re-encode existing HEVC
+	keyRecodeModern   = "convert_recode_modern"    // also re-encode files already in a modern codec
 )
 
 // defaultMinSSIM is the quality bar an encode must clear against its source.
@@ -528,10 +528,10 @@ func splitCSV(v string) []string {
 	return out
 }
 
-// av1RecodesHEVC reports whether an AV1 target should also re-encode existing HEVC files.
-// Off by default — see isCandidateCodec for why.
-func (s *Service) av1RecodesHEVC(ctx context.Context) bool {
-	return s.settings.GetBool(ctx, keyAV1RecodeHEVC, false)
+// recodesModern reports whether files already in a modern codec (HEVC, AV1) should be
+// re-encoded into the target anyway. Off by default — see isCandidateCodec for why.
+func (s *Service) recodesModern(ctx context.Context) bool {
+	return s.settings.GetBool(ctx, keyRecodeModern, false)
 }
 
 // targetCodec is the codec the library is being converted to (hevc | av1), default HEVC.
@@ -557,21 +557,35 @@ func isCandidateFor(mi *MediaInfo, target string) bool {
 	return isCandidateCodec(mi.VideoCodec, target, false)
 }
 
+// modernCodec reports whether a codec is already an efficient modern one. These are the
+// files there's little to gain from re-encoding — they're the DESTINATION of a conversion,
+// not a wasteful source in need of one.
+func modernCodec(c string) bool {
+	switch codecClass(c) {
+	case "hevc", "av1":
+		return true
+	}
+	return false
+}
+
 // isCandidateCodec decides whether a file's codec makes it worth converting to target.
 //
-// recodeHEVC covers the one genuinely debatable case: an AV1 target technically makes every
-// existing HEVC file a candidate, but HEVC → AV1 is a SECOND lossy generation — recompressing
-// an already-compressed encode for maybe 20-30% more space. On a library that's mostly HEVC
-// that means re-encoding thousands of already-efficient files and compounding their artifacts,
-// which is a poor trade for a module whose promise is quality retention. H.264 → AV1 is the
-// opposite: a big efficiency jump from a wasteful source, worth one generation.
+// The point of the module is taking wasteful old encodes — H.264, MPEG-2, VC-1 — and
+// bringing them to a modern codec. Re-encoding something already modern is a different
+// proposition entirely:
 //
-// So it's opt-in, and off by default.
-func isCandidateCodec(codec, target string, recodeHEVC bool) bool {
+//   - HEVC → AV1 is a SECOND lossy generation for maybe 20-30% more space, compounding the
+//     artifacts of an encode that's already efficient.
+//   - AV1 → HEVC is worse still: a second generation that also produces a BIGGER file,
+//     since AV1 is the more efficient codec. There's no space to save, only quality to
+//     lose. The only reason to want it is device compatibility.
+//
+// So neither happens by default. recodeModern is the opt-in for both.
+func isCandidateCodec(codec, target string, recodeModern bool) bool {
 	if codec == "" || strings.EqualFold(codec, target) {
 		return false
 	}
-	if target == "av1" && codecClass(codec) == "hevc" && !recodeHEVC {
+	if modernCodec(codec) && !recodeModern {
 		return false
 	}
 	return true

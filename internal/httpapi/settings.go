@@ -66,7 +66,7 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"convert_scan_at":          a.deps.Settings.Get(ctx, "convert_scan_at", "03:00"),
 		"convert_cpu_cores":        a.deps.Settings.Get(ctx, "convert_cpu_cores", "0"),
 		"convert_cpu_above_height": a.deps.Settings.Get(ctx, "convert_cpu_above_height", "2160"),
-		"convert_av1_recode_hevc":  a.deps.Settings.GetBool(ctx, "convert_av1_recode_hevc", false),
+		"convert_recode_modern":    a.deps.Settings.GetBool(ctx, "convert_recode_modern", false),
 		// Distinguishes "chose HEVC" from "never chose" — convert_target_codec defaults to
 		// hevc, so it can't answer that on its own. Must be READ as well as written, or the
 		// first-run setup screen can never dismiss.
@@ -112,7 +112,7 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		ConvertScanAt         *string `json:"convert_scan_at"`
 		ConvertCPUCores       *string `json:"convert_cpu_cores"`
 		ConvertCPUAboveHeight *string `json:"convert_cpu_above_height"`
-		ConvertAV1RecodeHEVC  *bool   `json:"convert_av1_recode_hevc"`
+		ConvertRecodeModern   *bool   `json:"convert_recode_modern"`
 		ConvertSetupDone      *bool   `json:"convert_setup_done"`
 		ConvertSweepEnd       *string `json:"convert_sweep_end"`
 		ConvertMaxFailures    *string `json:"convert_max_failures"`
@@ -231,7 +231,7 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if req.ConvertCPUAboveHeight != nil && !save(a.deps.Settings.Set(ctx, "convert_cpu_above_height", *req.ConvertCPUAboveHeight)) {
 		return
 	}
-	if req.ConvertAV1RecodeHEVC != nil && !save(a.deps.Settings.SetBool(ctx, "convert_av1_recode_hevc", *req.ConvertAV1RecodeHEVC)) {
+	if req.ConvertRecodeModern != nil && !save(a.deps.Settings.SetBool(ctx, "convert_recode_modern", *req.ConvertRecodeModern)) {
 		return
 	}
 	if req.ConvertSetupDone != nil && !save(a.deps.Settings.SetBool(ctx, "convert_setup_done", *req.ConvertSetupDone)) {

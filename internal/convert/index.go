@@ -308,7 +308,7 @@ func (s *Service) LibraryTVSeries(ctx context.Context) ([]SeriesRollup, error) {
 	}
 	dp := s.defaultPlan(ctx)
 	target := s.targetCodec(ctx)
-	recode := s.av1RecodesHEVC(ctx)
+	recode := s.recodesModern(ctx)
 
 	// One sequential scan of the index, aggregated in Go. Aggregating here rather than
 	// in SQL is what lets the estimated saving use the same estimatePlanSize the detail
@@ -467,7 +467,7 @@ func (s *Service) LibraryStats(ctx context.Context) (*LibraryStats, error) {
 	}
 	dp := s.defaultPlan(ctx)
 	target := s.targetCodec(ctx)
-	recode := s.av1RecodesHEVC(ctx)
+	recode := s.recodesModern(ctx)
 	// Files whose skip won't resolve on its own aren't reclaimable space, however
 	// convertible their codec looks.
 	skipped := s.skips.permanentKeys(ctx)
@@ -573,7 +573,7 @@ func (s *Service) indexedCandidates(ctx context.Context, mediaType string, serie
 
 	dp := s.defaultPlan(ctx)
 	target := s.targetCodec(ctx)
-	recode := s.av1RecodesHEVC(ctx)
+	recode := s.recodesModern(ctx)
 	var out []Candidate
 	for rows.Next() {
 		var r indexRow

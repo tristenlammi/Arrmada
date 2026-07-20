@@ -304,7 +304,7 @@ export interface AppSettings {
   convert_scan_at: string;
   convert_cpu_cores: string;
   convert_cpu_above_height: string;
-  convert_av1_recode_hevc: boolean;
+  convert_recode_modern: boolean;
   convert_setup_done: boolean;
   convert_sweep_end: string;
   convert_max_failures: string;

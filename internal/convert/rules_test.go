@@ -22,8 +22,20 @@ func TestCandidacyRules(t *testing.T) {
 		// HEVC -> AV1 is a second lossy generation for ~20-30% space, so it's opt-in.
 		{"hevc to av1 is skipped by default", "hevc", "av1", false, false},
 		{"hevc to av1 converts when opted in", "hevc", "av1", true, true},
+
+		// AV1 -> HEVC is worse than that: a second generation that also makes the file
+		// BIGGER, since AV1 is the more efficient codec. Nothing to gain but device
+		// compatibility, so it must never happen by default.
+		{"av1 to hevc is skipped by default", "av1", "hevc", false, false},
+		{"av1 to hevc converts when opted in", "av1", "hevc", true, true},
+
 		// The opt-in must not resurrect no-op work.
 		{"opt-in does not make av1 to av1 a candidate", "av1", "av1", true, false},
+		{"opt-in does not make hevc to hevc a candidate", "hevc", "hevc", true, false},
+
+		// Old codecs are the point of the module and always convert.
+		{"vc1 to hevc converts", "vc1", "hevc", false, true},
+		{"vp9 to av1 converts", "vp9", "av1", false, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
