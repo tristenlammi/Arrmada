@@ -381,28 +381,44 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 	// episodes. Ended shows may take multi-season (or leftover complete-show) packs so
 	// a multi-season pack beats separate season packs; running shows are restricted to
 	// single-season packs.
-	for {
-		var best *quality.Evaluation
-		var bestCover int
-		for i := range eligible {
-			if !isPackTier(eligible[i].Candidate.Release.Kind(), ended) {
-				continue
+	counts := seasonEpisodeCounts(s)
+	// worthItOnly first: prefer packs that are mostly useful. A second lap without that
+	// restriction runs later, so a gap is never left unfilled just because the only release
+	// covering it happens to be a big pack.
+	takePacks := func(worthItOnly bool) {
+		for {
+			var best *quality.Evaluation
+			var bestCover int
+			for i := range eligible {
+				r := eligible[i].Candidate.Release
+				if !isPackTier(r.Kind(), ended) {
+					continue
+				}
+				n := len(c.coveredByFor(ctx, s, r, needed))
+				if n == 0 {
+					continue
+				}
+				if worthItOnly && !packIsWorthIt(r, n, seriesSeasons, counts) {
+					continue
+				}
+				if n > bestCover {
+					bestCover, best = n, &eligible[i]
+				}
 			}
-			n := len(c.coveredByFor(ctx, s, eligible[i].Candidate.Release, needed))
-			if n > bestCover {
-				bestCover, best = n, &eligible[i]
+			if best == nil || bestCover == 0 {
+				return
 			}
-		}
-		if best == nil || bestCover == 0 {
-			break
-		}
-		grab(best.Candidate.Name, "pack")
-		for _, k := range c.coveredByFor(ctx, s, best.Candidate.Release, needed) {
-			delete(needed, k)
+			grab(best.Candidate.Name, "pack")
+			for _, k := range c.coveredByFor(ctx, s, best.Candidate.Release, needed) {
+				delete(needed, k)
+			}
 		}
 	}
+	takePacks(true)
 
-	// Pass 3 — individual episodes for whatever's left.
+	// Pass 3 — individual episodes for whatever's left. Cheaper and more targeted than a
+	// pack when only a few are missing, which is why the disproportionate packs were held
+	// back above.
 	for _, ev := range eligible {
 		if len(needed) == 0 {
 			break
@@ -415,6 +431,11 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 			grab(ev.Candidate.Name, "episode")
 			delete(needed, k)
 		}
+	}
+	// Pass 4 — last resort. Anything still missing had no single-episode release either, so
+	// take an oversized pack rather than leave the gap: an inefficient grab beats none.
+	if len(needed) > 0 {
+		takePacks(false)
 	}
 	return grabbedN, nil // remaining is filled by the deferred sortedKeys(needed)
 }
@@ -432,6 +453,18 @@ func sortedKeys(needed map[epKey]bool) []epKey {
 		}
 		return out[i].episode < out[j].episode
 	})
+	return out
+}
+
+// seasonEpisodeCounts maps each real season to how many episodes it has, so a pack's bulk
+// can be weighed against what's actually wanted from it.
+func seasonEpisodeCounts(s series.Series) map[int]int {
+	out := map[int]int{}
+	for _, sn := range s.Seasons {
+		if sn.SeasonNumber > 0 {
+			out[sn.SeasonNumber] = len(sn.Episodes)
+		}
+	}
 	return out
 }
 
@@ -547,6 +580,27 @@ func packIsProportionate(neededSeasons, packSeasons map[int]bool) bool {
 		}
 	}
 	return useful*2 >= len(packSeasons)
+}
+
+// packIsWorthIt reports whether a pack brings enough that's actually wanted to justify
+// downloading all of it.
+//
+// Pass 2 used to pick purely by "covers the most needed episodes", which meant a four-season
+// pack won for a single missing episode — it covered it, and nothing else did. Even a single
+// season pack is a poor trade for one gap: 38 episodes downloaded to obtain one.
+//
+// So weigh what it brings against what's wanted. A pack must be at least half useful.
+func packIsWorthIt(r parser.Release, needed int, seriesSeasons map[int]bool, counts map[int]int) bool {
+	brings := 0
+	for season := range seriesSeasons {
+		if r.CoversSeason(season) {
+			brings += counts[season]
+		}
+	}
+	if brings == 0 {
+		return true // unknown episode counts — don't block on missing metadata
+	}
+	return needed*2 >= brings
 }
 
 // packSeasonsOf lists the seasons a release covers, bounded by the seasons the series
