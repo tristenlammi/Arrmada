@@ -99,59 +99,79 @@ func (c *Coordinator) KnownProfile(ctx context.Context, ref string) bool {
 
 // Grab resolves a release's download link and hands it to a download client.
 // Shared by the manual grab endpoint and automatic search.
-func (c *Coordinator) Grab(ctx context.Context, indexerName, downloadURL, title string) error {
+func (c *Coordinator) Grab(ctx context.Context, indexerName, downloadURL, title string) (string, error) {
 	return c.grabTo(ctx, indexerName, downloadURL, title, "")
 }
 
 // grabTo is Grab with an explicit download-client category (series use a separate
 // one so the multi-file importer handles them). Empty category = client default.
-func (c *Coordinator) grabTo(ctx context.Context, indexerName, downloadURL, title, category string) error {
+// grabTo hands a release to the download client and returns the torrent's info hash so
+// the caller can record it on the grab.
+//
+// The hash matters because names don't survive the round trip: an indexer's listing title
+// is often a prettified rendering of the actual torrent ("EAC3" as "DD+", "10bit" and
+// episode titles dropped), so a grab recorded under the listing can never be matched back
+// to what the client holds. An empty hash is not an error — a tracker may serve something
+// we can't parse — and the caller falls back to name matching as before.
+func (c *Coordinator) grabTo(ctx context.Context, indexerName, downloadURL, title, category string) (string, error) {
 	res, err := c.indexers.Fetch(ctx, indexerName, downloadURL)
 	if err != nil {
-		return err
+		return "", err
 	}
 	add := download.AddRequest{Name: title, SavePath: c.downloadsDir, Category: category}
+	var hash string
 	switch {
 	case len(res.File) > 0:
 		add.File = res.File
 		add.Filename = res.Filename
+		if h, herr := download.InfoHashFromFile(res.File); herr == nil {
+			hash = h
+		} else {
+			c.log.Warn("grab: could not read the torrent's info hash — seed rules will fall back to name matching",
+				"release", title, "err", herr)
+		}
 	case res.URL != "":
 		add.URL = res.URL
+		if h, herr := download.InfoHashFromMagnet(res.URL); herr == nil {
+			hash = h
+		}
 	default:
-		return fmt.Errorf("nothing to download for this release")
+		return "", fmt.Errorf("nothing to download for this release")
 	}
 	if err := c.downloads.Add(ctx, add); err != nil {
-		return err
+		return "", err
 	}
 	c.bus.Publish("release.grabbed", map[string]any{"title": title, "indexer": indexerName})
-	return nil
+	return hash, nil
 }
 
 // addTorrentFile hands an uploaded .torrent file straight to the download client (no
 // indexer fetch, so it works for private trackers where the user downloaded the file
 // while logged in), in the given category, recorded as a manual grab source.
-func (c *Coordinator) addTorrentFile(ctx context.Context, file []byte, filename, title, category string) error {
+func (c *Coordinator) addTorrentFile(ctx context.Context, file []byte, filename, title, category string) (string, error) {
 	if len(file) == 0 {
-		return fmt.Errorf("no torrent file provided")
+		return "", fmt.Errorf("no torrent file provided")
 	}
 	if filename == "" {
 		filename = "arrmada.torrent"
 	}
 	add := download.AddRequest{Name: title, SavePath: c.downloadsDir, Category: category, File: file, Filename: filename}
 	if err := c.downloads.Add(ctx, add); err != nil {
-		return err
+		return "", err
 	}
+	hash, _ := download.InfoHashFromFile(file) // "" falls back to name matching
 	c.bus.Publish("release.grabbed", map[string]any{"title": title, "indexer": "manual"})
-	return nil
+	return hash, nil
 }
 
 // GrabMovieTorrent adds an uploaded .torrent file for a movie (default category) and
 // tracks it like an auto grab so seed cleanup / stall detection manage it too.
 func (c *Coordinator) GrabMovieTorrent(ctx context.Context, movieID int64, file []byte, filename, title string) error {
-	if err := c.addTorrentFile(ctx, file, filename, title, ""); err != nil {
+	hash, err := c.addTorrentFile(ctx, file, filename, title, "")
+	if err != nil {
 		return err
 	}
-	c.RecordManualGrab(ctx, movieID, title, "manual")
+	c.RecordManualGrab(ctx, movieID, title, "manual", hash)
 	if c.movies != nil {
 		c.movies.AddEvent(ctx, movieID, "grabbed", "Uploaded torrent — "+title)
 	}
@@ -161,12 +181,13 @@ func (c *Coordinator) GrabMovieTorrent(ctx context.Context, movieID int64, file 
 // GrabSeriesTorrent adds an uploaded .torrent file for a series (TV category, so the
 // multi-file importer handles a pack) and records the grab.
 func (c *Coordinator) GrabSeriesTorrent(ctx context.Context, seriesID int64, file []byte, filename, title string) error {
-	if err := c.addTorrentFile(ctx, file, filename, title, seriesCategory); err != nil {
+	hash, err := c.addTorrentFile(ctx, file, filename, title, seriesCategory)
+	if err != nil {
 		return err
 	}
 	if c.series != nil {
 		if s, err := c.series.Get(ctx, seriesID); err == nil {
-			c.recordSeriesGrab(ctx, seriesID, title, "manual", s.QualityProfile)
+			c.recordSeriesGrab(ctx, seriesID, title, "manual", s.QualityProfile, hash)
 		}
 		c.series.AddEvent(ctx, seriesID, "grabbed", "Uploaded torrent — "+title)
 	}
@@ -176,7 +197,7 @@ func (c *Coordinator) GrabSeriesTorrent(ctx context.Context, seriesID int64, fil
 // RecordManualGrab tracks a release grabbed by hand (interactive search) exactly
 // like an automatic grab, so it's seed-managed and stall-detected too. movieID 0
 // (not tied to a tracked movie) is a no-op.
-func (c *Coordinator) RecordManualGrab(ctx context.Context, movieID int64, title, indexerName string) {
+func (c *Coordinator) RecordManualGrab(ctx context.Context, movieID int64, title, indexerName, infoHash string) {
 	if movieID == 0 {
 		return
 	}
@@ -184,7 +205,7 @@ func (c *Coordinator) RecordManualGrab(ctx context.Context, movieID int64, title
 	if err != nil {
 		return
 	}
-	c.recordGrab(ctx, movieID, 0, title, indexerName, m.QualityProfile, c.quality.StallMinutes(ctx, m.QualityProfile))
+	c.recordGrab(ctx, movieID, 0, title, indexerName, m.QualityProfile, c.quality.StallMinutes(ctx, m.QualityProfile), infoHash)
 }
 
 // SearchMissing searches for and grabs any monitored version that has no file
@@ -491,12 +512,13 @@ func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []mo
 			continue
 		}
 		c.log.Info("automation: grabbing", "movie", m.Title, "version", v.Label, "release", winner.Title, "indexer", winner.Indexer)
-		if err := c.Grab(ctx, winner.Indexer, winner.DownloadURL, winner.Title); err != nil {
+		hash, err := c.Grab(ctx, winner.Indexer, winner.DownloadURL, winner.Title)
+		if err != nil {
 			c.log.Warn("automation: grab failed", "movie", m.Title, "version", v.Label, "err", err)
 			continue
 		}
 		grabbed[winner.DownloadURL] = true
-		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, v.QualityProfile, c.quality.StallMinutes(ctx, v.QualityProfile))
+		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, v.QualityProfile, c.quality.StallMinutes(ctx, v.QualityProfile), hash)
 		detail := winner.Title + " · " + winner.Indexer
 		if !v.IsDefault {
 			detail += " → " + v.Label
@@ -665,12 +687,13 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 			continue
 		}
 		c.log.Info("automation: upgrading", "movie", m.Title, "version", v.Label, "from", baseline, "to", winner.Title)
-		if err := c.Grab(ctx, winner.Indexer, winner.DownloadURL, winner.Title); err != nil {
+		hash, err := c.Grab(ctx, winner.Indexer, winner.DownloadURL, winner.Title)
+		if err != nil {
 			c.log.Warn("automation: upgrade grab failed", "movie", m.Title, "err", err)
 			continue
 		}
 		grabbed[winner.DownloadURL] = true
-		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, v.QualityProfile, c.quality.StallMinutes(ctx, v.QualityProfile))
+		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, v.QualityProfile, c.quality.StallMinutes(ctx, v.QualityProfile), hash)
 		detail := "Upgrade: " + winner.Title + " · " + winner.Indexer
 		if !v.IsDefault {
 			detail += " → " + v.Label
@@ -754,12 +777,13 @@ func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
 		if grabbed[winner.DownloadURL] {
 			continue
 		}
-		if err := c.Grab(ctx, winner.Indexer, winner.DownloadURL, winner.Title); err != nil {
+		hash, err := c.Grab(ctx, winner.Indexer, winner.DownloadURL, winner.Title)
+		if err != nil {
 			c.log.Warn("automation: regrab failed", "movie", m.Title, "err", err)
 			continue
 		}
 		grabbed[winner.DownloadURL] = true
-		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, v.QualityProfile, c.quality.StallMinutes(ctx, v.QualityProfile))
+		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, v.QualityProfile, c.quality.StallMinutes(ctx, v.QualityProfile), hash)
 		c.movies.AddEvent(ctx, m.ID, "grabbed", "Re-grab: "+winner.Title+" · "+winner.Indexer)
 	}
 	return nil
@@ -857,7 +881,7 @@ func (c *Coordinator) DetectStalled(ctx context.Context) {
 		if age < time.Duration(g.StallMinutes)*time.Minute {
 			continue
 		}
-		item, found := findQueued(queue, g.Title)
+		item, found := findQueued(queue, g)
 		stalled := !found ||
 			item.State == "error" || item.State == "stalledDL" || item.State == "missingFiles" ||
 			(item.Progress < 1.0 && item.DownSpeed == 0)
@@ -892,7 +916,7 @@ func (c *Coordinator) ManageSeeding(ctx context.Context) {
 		if it.Progress < 1 {
 			continue // still downloading — never remove before it's done + imported
 		}
-		g := matchGrab(grabs, it.Name)
+		g := matchGrab(grabs, it.Hash, it.Name)
 		if g == nil {
 			continue // untracked torrent — leave it alone
 		}
@@ -941,14 +965,22 @@ type SeedPolicy struct {
 // up). Built in one query so the feed can annotate seeding torrents without a per-item
 // lookup. Uses liveGrabs, not importedGrabs: a torrent that has finished downloading but
 // not yet imported still has a rule, and the UI should show it.
+// Keyed by BOTH the torrent's info hash and its normalized title. The hash is the
+// reliable key — an indexer's listing title is often a prettified rendering of the actual
+// torrent, so name matching silently failed for whole trackers — but rows predating
+// migration 0062 have no hash, and the name key keeps working for those.
 func (c *Coordinator) SeedPolicies(ctx context.Context) map[string]SeedPolicy {
 	grabs, err := c.liveGrabs(ctx)
 	if err != nil {
 		return nil
 	}
-	out := make(map[string]SeedPolicy, len(grabs))
+	out := make(map[string]SeedPolicy, len(grabs)*2)
 	for _, g := range grabs {
-		out[normRelease(g.Title)] = SeedPolicy{Enabled: g.SeedEnabled, Ratio: g.SeedRatio, Hours: g.SeedHours}
+		p := SeedPolicy{Enabled: g.SeedEnabled, Ratio: g.SeedRatio, Hours: g.SeedHours}
+		out[normRelease(g.Title)] = p
+		if g.InfoHash != "" {
+			out[strings.ToLower(g.InfoHash)] = p
+		}
 	}
 	return out
 }
@@ -1017,8 +1049,22 @@ func commonPrefix(a, b string) int {
 	return n
 }
 
-// matchGrab finds the imported grab a download name belongs to.
-func matchGrab(grabs []grab, name string) *grab {
+// matchGrab finds the grab a download belongs to, by info hash first and falling back to
+// the normalized name for rows predating migration 0062.
+//
+// Hash first because names are unreliable: the indexer's listing title is frequently a
+// prettified rendering of the torrent ("EAC3" as "DD+", episode titles dropped), so
+// matching on it failed for entire trackers — and every consumer of this function
+// silently did nothing as a result.
+func matchGrab(grabs []grab, hash, name string) *grab {
+	if hash != "" {
+		want := strings.ToLower(hash)
+		for i := range grabs {
+			if grabs[i].InfoHash != "" && strings.ToLower(grabs[i].InfoHash) == want {
+				return &grabs[i]
+			}
+		}
+	}
 	want := normRelease(name)
 	for i := range grabs {
 		if normRelease(grabs[i].Title) == want {
@@ -1060,8 +1106,21 @@ func (c *Coordinator) movieHasFileFor(ctx context.Context, g grab) bool {
 	return false
 }
 
-func findQueued(queue []download.Item, title string) (download.Item, bool) {
-	want := normRelease(title)
+// findQueued locates a grab's torrent in the client, by info hash first.
+//
+// Getting this wrong is dangerous, not merely ineffective: stall detection treats "not
+// in the queue" as a stalled download and blocklists the release. A name mismatch would
+// therefore condemn a torrent that is downloading perfectly well.
+func findQueued(queue []download.Item, g grab) (download.Item, bool) {
+	if g.InfoHash != "" {
+		want := strings.ToLower(g.InfoHash)
+		for _, it := range queue {
+			if strings.ToLower(it.Hash) == want {
+				return it, true
+			}
+		}
+	}
+	want := normRelease(g.Title)
 	for _, it := range queue {
 		if normRelease(it.Name) == want {
 			return it, true

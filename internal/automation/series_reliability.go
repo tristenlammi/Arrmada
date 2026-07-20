@@ -24,7 +24,7 @@ func (c *Coordinator) detectStalledSeries(ctx context.Context, g grab, queue []d
 	if age < time.Duration(g.StallMinutes)*time.Minute {
 		return
 	}
-	item, found := findQueued(queue, g.Title)
+	item, found := findQueued(queue, g)
 	stalled := !found ||
 		item.State == "error" || item.State == "stalledDL" || item.State == "missingFiles" ||
 		(item.Progress < 1.0 && item.DownSpeed == 0)

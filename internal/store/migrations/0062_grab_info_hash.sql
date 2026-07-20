@@ -1,0 +1,23 @@
+-- 0062_grab_info_hash: identify a grab by its torrent's info hash, not its title.
+--
+-- Grabs recorded the indexer's LISTING title, while the download client names the torrent
+-- from the .torrent itself. For several trackers those genuinely differ — the listing is a
+-- prettified rendering:
+--
+--   client:   Peppa Pig (2004) S08 1080p WEBRip 10bit EAC3 2 0 x265-iVy
+--   recorded: Peppa Pig 2004 S08 1080p WEBRip DD+ 2 0 x265-iVy
+--
+--   client:   Teen.Titans.Go!.S09E33.Rulers.Rule.1080p.iT.WEB-DL.AAC2.0.H.264-NTb.mkv
+--   recorded: Teen Titans Go S09E33 1080p iT WEB-DL AAC 2.0 H.264-NTb
+--
+-- "EAC3" written as "DD+", "10bit" dropped, the episode title omitted. No amount of
+-- normalization reconciles those, and every consumer that matched a torrent back to its
+-- grab by name silently failed: seed rules never applied (torrents seeded forever), stall
+-- detection saw the download as missing, and the Seeding tab labelled them "Not managed
+-- by Arrmada".
+--
+-- The info hash is the torrent's actual identity and both sides agree on it by
+-- definition. Existing rows keep '' and continue to match by name, which is no worse
+-- than before.
+ALTER TABLE grabs ADD COLUMN info_hash TEXT NOT NULL DEFAULT '';
+CREATE INDEX idx_grabs_info_hash ON grabs(info_hash);

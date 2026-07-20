@@ -1,0 +1,109 @@
+package automation
+
+import (
+	"testing"
+
+	"github.com/tristenlammi/arrmada/internal/download"
+)
+
+// The real strings from the wild. An indexer's LISTING title is frequently a prettified
+// rendering of the actual torrent — "EAC3" written as "DD+", "10bit" dropped, episode
+// titles omitted — so no amount of normalization reconciles the two. Matching on names
+// silently failed for entire trackers: seed rules never applied, stall detection saw the
+// download as missing, and the Seeding tab called them unmanaged.
+var namingDivergence = []struct {
+	recorded string // as the indexer listed it, stored on the grab
+	client   string // as the download client names it, from the .torrent itself
+}{
+	{
+		"Peppa Pig 2004 S08 1080p WEBRip DD+ 2 0 x265-iVy",
+		"Peppa Pig (2004) S08 1080p WEBRip 10bit EAC3 2 0 x265-iVy",
+	},
+	{
+		"Teen Titans Go S09E33 1080p iT WEB-DL AAC 2.0 H.264-NTb",
+		"Teen.Titans.Go!.S09E33.Rulers.Rule.1080p.iT.WEB-DL.AAC2.0.H.264-NTb.mkv",
+	},
+	{
+		"You and I Are Polar Opposites  S01 1080p CR WEB-DL Dual-Audio DD+ 2 0 H 264-Kitsune",
+		"You.and.I.Are.Polar.Opposites.S01.1080p.CR.WEB-DL.DUAL.DDP2.0.H.264-Kitsune",
+	},
+	{
+		"Ink Master 2012 S05 1080p WEBRip DD+ 2 0 x265-iVy",
+		"Ink Master (2012) S05 1080p WEBRip 10bit EAC3 2 0 x265-iVy",
+	},
+}
+
+// First, pin the premise: these names genuinely do NOT normalize to the same key. If a
+// future normalization change made them match, the hash would still be correct — but this
+// test documents why the hash was needed.
+func TestListingTitlesDoNotNormalizeToTorrentNames(t *testing.T) {
+	for _, c := range namingDivergence {
+		if normRelease(c.recorded) == normRelease(c.client) {
+			t.Errorf("these now normalize alike, so this case no longer demonstrates the problem:\n  %q\n  %q", c.recorded, c.client)
+		}
+	}
+}
+
+// With the info hash recorded, the torrent matches its grab regardless of naming.
+func TestMatchGrabByInfoHash(t *testing.T) {
+	const hash = "c12fe1c06bba254a9dc9f519b335aa7c1367a88a"
+	for _, c := range namingDivergence {
+		grabs := []grab{{ID: 1, Title: c.recorded, InfoHash: hash}}
+
+		if g := matchGrab(grabs, hash, c.client); g == nil {
+			t.Errorf("hash match failed for %q", c.client)
+		}
+		// The client reports lowercase; a tracker may have given us uppercase.
+		if g := matchGrab(grabs, "C12FE1C06BBA254A9DC9F519B335AA7C1367A88A", c.client); g == nil {
+			t.Errorf("hash match should be case-insensitive for %q", c.client)
+		}
+		// Without the hash there's nothing to match on — the old broken behaviour.
+		if g := matchGrab(grabs, "", c.client); g != nil {
+			t.Errorf("name-only match unexpectedly succeeded for %q — premise changed", c.client)
+		}
+	}
+}
+
+// Rows predating migration 0062 have no hash and must keep matching by name, or the fix
+// would break every existing grab on upgrade.
+func TestMatchGrabFallsBackToNameForOldRows(t *testing.T) {
+	grabs := []grab{{ID: 7, Title: "Some Release 1080p WEB-DL-GRP", InfoHash: ""}}
+
+	if g := matchGrab(grabs, "deadbeef", "Some.Release.1080p.WEB-DL-GRP.mkv"); g == nil || g.ID != 7 {
+		t.Error("a pre-0062 row should still match by name when the hash finds nothing")
+	}
+	if g := matchGrab(grabs, "", "Something Else Entirely"); g != nil {
+		t.Error("an unrelated name must not match")
+	}
+}
+
+// A hash must never match the WRONG grab just because another row shares a name shape.
+func TestMatchGrabPrefersHashOverName(t *testing.T) {
+	grabs := []grab{
+		{ID: 1, Title: "Show S01 1080p WEB-DL-GRP", InfoHash: "aaaa"},
+		{ID: 2, Title: "Show S01 1080p WEB-DL-GRP", InfoHash: "bbbb"}, // a re-grab of the same release
+	}
+	g := matchGrab(grabs, "bbbb", "Show.S01.1080p.WEB-DL-GRP")
+	if g == nil || g.ID != 2 {
+		t.Errorf("hash should select the exact row, got %+v", g)
+	}
+}
+
+// findQueued backs stall detection, which blocklists a release it can't find in the
+// queue. A name mismatch there condemns a torrent that is downloading perfectly well, so
+// it has to match by hash too.
+func TestFindQueuedMatchesByHash(t *testing.T) {
+	for _, c := range namingDivergence {
+		const hash = "c12fe1c06bba254a9dc9f519b335aa7c1367a88a"
+		queue := []download.Item{{Hash: hash, Name: c.client}}
+
+		if _, found := findQueued(queue, grab{Title: c.recorded, InfoHash: hash}); !found {
+			t.Errorf("stall detection would wrongly blocklist %q", c.recorded)
+		}
+		// Pre-0062 row: name fallback still applies, and here it genuinely can't match —
+		// which is the old behaviour, not a regression.
+		if _, found := findQueued(queue, grab{Title: c.client, InfoHash: ""}); !found {
+			t.Errorf("name fallback should still work when the names DO agree: %q", c.client)
+		}
+	}
+}

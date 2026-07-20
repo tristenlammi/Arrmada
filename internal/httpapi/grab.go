@@ -26,12 +26,15 @@ func (a *api) handleGrab(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := a.deps.Automation.Grab(r.Context(), req.Indexer, req.DownloadURL, req.Title); err != nil {
+	hash, err := a.deps.Automation.Grab(r.Context(), req.Indexer, req.DownloadURL, req.Title)
+	if err != nil {
 		a.deps.Log.Warn("grab failed", "indexer", req.Indexer, "title", req.Title, "err", err)
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	// Track it so seed cleanup / stall detection manage it like an auto grab.
-	a.deps.Automation.RecordManualGrab(r.Context(), req.MovieID, req.Title, req.Indexer)
+	// Track it so seed cleanup / stall detection manage it like an auto grab. The info
+	// hash goes on the row so the torrent can be matched back regardless of how the
+	// client ends up naming it.
+	a.deps.Automation.RecordManualGrab(r.Context(), req.MovieID, req.Title, req.Indexer, hash)
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "grabbed", "title": req.Title})
 }

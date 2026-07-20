@@ -108,11 +108,12 @@ func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind st
 		c.log.Info("book: no matching-format release", "title", b.Title, "edition", kind)
 		return
 	}
-	if err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, bookCategory); err != nil {
+	hash, err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, bookCategory)
+	if err != nil {
 		c.log.Warn("book: grab failed", "title", b.Title, "err", err)
 		return
 	}
-	c.recordBookGrab(ctx, b.ID, best.Title, best.Indexer, b.QualityProfile)
+	c.recordBookGrab(ctx, b.ID, best.Title, best.Indexer, b.QualityProfile, hash)
 	c.log.Info("book: grabbing", "title", b.Title, "edition", kind, "release", best.Title, "format", detectBookFormat(best.Title))
 }
 
@@ -276,11 +277,12 @@ func (c *Coordinator) importBookEdition(ctx context.Context, b books.Book, kind 
 
 // GrabForBook grabs a chosen release for a book (interactive search) into the book category.
 func (c *Coordinator) GrabForBook(ctx context.Context, bookID int64, indexerName, downloadURL, title string) error {
-	if err := c.grabTo(ctx, indexerName, downloadURL, title, bookCategory); err != nil {
+	hash, err := c.grabTo(ctx, indexerName, downloadURL, title, bookCategory)
+	if err != nil {
 		return err
 	}
 	if b, err := c.books.Get(ctx, bookID); err == nil {
-		c.recordBookGrab(ctx, bookID, title, indexerName, b.QualityProfile)
+		c.recordBookGrab(ctx, bookID, title, indexerName, b.QualityProfile, hash)
 	}
 	return nil
 }
@@ -783,12 +785,12 @@ func sanitizeName(s string) string {
 }
 
 // recordBookGrab tracks a book grab for seed cleanup (media_type=book, movie_id=bookID).
-func (c *Coordinator) recordBookGrab(ctx context.Context, bookID int64, title, indexer, profile string) {
+func (c *Coordinator) recordBookGrab(ctx context.Context, bookID int64, title, indexer, profile, infoHash string) {
 	seedEnabled, seedRatio, seedHours := c.seedRules(ctx, indexer)
 	_, err := c.db.ExecContext(ctx,
-		`INSERT INTO grabs (movie_id, version_id, title, indexer, quality_profile, stall_minutes, seed_enabled, seed_ratio, seed_hours, media_type)
-		 VALUES (?, 0, ?, ?, ?, 0, ?, ?, ?, 'book')`,
-		bookID, title, indexer, profile, boolToInt(seedEnabled), seedRatio, seedHours)
+		`INSERT INTO grabs (movie_id, version_id, title, indexer, quality_profile, stall_minutes, seed_enabled, seed_ratio, seed_hours, media_type, info_hash)
+		 VALUES (?, 0, ?, ?, ?, 0, ?, ?, ?, 'book', ?)`,
+		bookID, title, indexer, profile, boolToInt(seedEnabled), seedRatio, seedHours, infoHash)
 	if err != nil {
 		c.log.Warn("book: record grab failed", "err", err)
 	}
@@ -841,7 +843,7 @@ func (c *Coordinator) detectStalledBook(ctx context.Context, g grab, queue []dow
 	if time.Since(parseTime(g.GrabbedAt)) < time.Duration(g.StallMinutes)*time.Minute {
 		return
 	}
-	item, found := findQueued(queue, g.Title)
+	item, found := findQueued(queue, g)
 	stalled := !found ||
 		item.State == "error" || item.State == "stalledDL" || item.State == "missingFiles" ||
 		(item.Progress < 1.0 && item.DownSpeed == 0)
@@ -896,10 +898,11 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 			if best == nil {
 				continue
 			}
-			if err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, bookCategory); err != nil {
+			hash, err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, bookCategory)
+			if err != nil {
 				continue
 			}
-			c.recordBookGrab(ctx, b.ID, best.Title, best.Indexer, b.QualityProfile)
+			c.recordBookGrab(ctx, b.ID, best.Title, best.Indexer, b.QualityProfile, hash)
 			c.log.Info("rss: grabbing book", "title", b.Title, "edition", kind, "release", best.Title)
 		}
 	}

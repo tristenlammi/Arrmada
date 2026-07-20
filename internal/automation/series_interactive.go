@@ -225,11 +225,12 @@ func joinSeasons(seasons []int) string {
 // GrabForSeries resolves a release and hands it to the download client in the series
 // category, recorded as a series grab (so seed cleanup manages it like an auto grab).
 func (c *Coordinator) GrabForSeries(ctx context.Context, seriesID int64, indexerName, downloadURL, title string) error {
-	if err := c.grabTo(ctx, indexerName, downloadURL, title, seriesCategory); err != nil {
+	hash, err := c.grabTo(ctx, indexerName, downloadURL, title, seriesCategory)
+	if err != nil {
 		return err
 	}
 	if s, err := c.series.Get(ctx, seriesID); err == nil {
-		c.recordSeriesGrab(ctx, seriesID, title, indexerName, s.QualityProfile)
+		c.recordSeriesGrab(ctx, seriesID, title, indexerName, s.QualityProfile, hash)
 	}
 	c.series.AddEvent(ctx, seriesID, "grabbed", title+" · "+indexerName)
 	return nil

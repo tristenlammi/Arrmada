@@ -140,7 +140,14 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 			"media_type":      mediaType,
 			"imported":        imported[it.Hash],
 		}
-		if p, ok := seedPolicies[automation.NormReleaseKey(it.Name)]; ok {
+		// Info hash first: the indexer's listing title is often a prettified rendering of
+		// the actual torrent, so matching on the name alone missed entire trackers and
+		// labelled genuinely-managed torrents "Not managed by Arrmada".
+		p, ok := seedPolicies[strings.ToLower(it.Hash)]
+		if !ok {
+			p, ok = seedPolicies[automation.NormReleaseKey(it.Name)]
+		}
+		if ok {
 			entry["seed_enabled"] = p.Enabled
 			entry["seed_ratio"] = p.Ratio
 			entry["seed_hours"] = p.Hours

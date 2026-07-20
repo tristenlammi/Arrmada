@@ -36,6 +36,7 @@ type grab struct {
 	SeedRatio    float64
 	SeedHours    int
 	MediaType    string // "movie" | "series"
+	InfoHash     string // the torrent's real identity; "" for rows predating migration 0062
 }
 
 // addBlock blocklists a release for a movie.
@@ -150,12 +151,12 @@ func (c *Coordinator) blockedSetBook(ctx context.Context, bookID int64) map[stri
 // recordGrab logs an automatic grab for stall tracking + seed cleanup, capturing
 // the originating indexer's seed policy so cleanup survives the indexer being
 // removed or renamed later.
-func (c *Coordinator) recordGrab(ctx context.Context, movieID, versionID int64, title, indexer, profile string, stallMinutes int) {
+func (c *Coordinator) recordGrab(ctx context.Context, movieID, versionID int64, title, indexer, profile string, stallMinutes int, infoHash string) {
 	seedEnabled, seedRatio, seedHours := c.seedRules(ctx, indexer)
 	_, err := c.db.ExecContext(ctx,
-		`INSERT INTO grabs (movie_id, version_id, title, indexer, quality_profile, stall_minutes, seed_enabled, seed_ratio, seed_hours)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		movieID, versionID, title, indexer, profile, stallMinutes, boolToInt(seedEnabled), seedRatio, seedHours)
+		`INSERT INTO grabs (movie_id, version_id, title, indexer, quality_profile, stall_minutes, seed_enabled, seed_ratio, seed_hours, info_hash)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		movieID, versionID, title, indexer, profile, stallMinutes, boolToInt(seedEnabled), seedRatio, seedHours, infoHash)
 	if err != nil {
 		c.log.Warn("automation: record grab failed", "err", err)
 	}
@@ -192,7 +193,7 @@ func boolToInt(b bool) int {
 // pendingGrabs returns grabs still awaiting import.
 func (c *Coordinator) pendingGrabs(ctx context.Context) ([]grab, error) {
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT id, movie_id, version_id, title, indexer, quality_profile, stall_minutes, grabbed_at, seed_enabled, seed_ratio, seed_hours, media_type
+		`SELECT id, movie_id, version_id, title, indexer, quality_profile, stall_minutes, grabbed_at, seed_enabled, seed_ratio, seed_hours, media_type, info_hash
 		 FROM grabs WHERE status = 'grabbed' ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -270,7 +271,7 @@ func (c *Coordinator) setGrabStatus(ctx context.Context, id int64, status string
 // importedGrabs returns grabs whose file has imported (candidates for seed cleanup).
 func (c *Coordinator) importedGrabs(ctx context.Context) ([]grab, error) {
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT id, movie_id, version_id, title, indexer, quality_profile, stall_minutes, grabbed_at, seed_enabled, seed_ratio, seed_hours, media_type
+		`SELECT id, movie_id, version_id, title, indexer, quality_profile, stall_minutes, grabbed_at, seed_enabled, seed_ratio, seed_hours, media_type, info_hash
 		 FROM grabs WHERE status = 'imported' ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -296,7 +297,7 @@ func (c *Coordinator) importedGrabs(ctx context.Context) ([]grab, error) {
 // Arrmada — no seed rule", even though its rule was recorded at grab time.
 func (c *Coordinator) liveGrabs(ctx context.Context) ([]grab, error) {
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT id, movie_id, version_id, title, indexer, quality_profile, stall_minutes, grabbed_at, seed_enabled, seed_ratio, seed_hours, media_type
+		`SELECT id, movie_id, version_id, title, indexer, quality_profile, stall_minutes, grabbed_at, seed_enabled, seed_ratio, seed_hours, media_type, info_hash
 		 FROM grabs WHERE status IN ('grabbed', 'imported') ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -318,7 +319,7 @@ func scanGrab(row interface{ Scan(...any) error }) (grab, error) {
 	var g grab
 	var seedEnabled int
 	err := row.Scan(&g.ID, &g.MovieID, &g.VersionID, &g.Title, &g.Indexer, &g.Profile,
-		&g.StallMinutes, &g.GrabbedAt, &seedEnabled, &g.SeedRatio, &g.SeedHours, &g.MediaType)
+		&g.StallMinutes, &g.GrabbedAt, &seedEnabled, &g.SeedRatio, &g.SeedHours, &g.MediaType, &g.InfoHash)
 	g.SeedEnabled = seedEnabled != 0
 	return g, err
 }
