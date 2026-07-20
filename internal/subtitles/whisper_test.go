@@ -11,13 +11,13 @@ func TestAIPlan(t *testing.T) {
 		wanted string
 		want   string
 	}{
-		{[]string{"eng"}, "en", "transcribe"},          // audio already English
-		{[]string{"kor"}, "en", "translate"},           // foreign audio → English translate
-		{[]string{"kor"}, "es", ""},                    // can't translate into non-English
-		{[]string{"spa"}, "es", "transcribe"},          // Spanish audio → Spanish transcribe
-		{nil, "en", "translate"},                       // unknown audio, English target → translate
-		{nil, "fr", ""},                                // unknown audio, non-English target → impossible
-		{[]string{"eng", "spa"}, "es", "transcribe"},   // matches a secondary audio track
+		{[]string{"eng"}, "en", "transcribe"},        // audio already English
+		{[]string{"kor"}, "en", "translate"},         // foreign audio → English translate
+		{[]string{"kor"}, "es", ""},                  // can't translate into non-English
+		{[]string{"spa"}, "es", "transcribe"},        // Spanish audio → Spanish transcribe
+		{nil, "en", "translate"},                     // unknown audio, English target → translate
+		{nil, "fr", ""},                              // unknown audio, non-English target → impossible
+		{[]string{"eng", "spa"}, "es", "transcribe"}, // matches a secondary audio track
 	}
 	for _, c := range cases {
 		if got := aiPlan(c.audio, c.wanted); got != c.want {

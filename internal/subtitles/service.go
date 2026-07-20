@@ -37,8 +37,8 @@ type Service struct {
 	log      *slog.Logger
 
 	mu     sync.Mutex
-	jobs   []*Job     // recent subtitle-ensure jobs (newest first), for the Queue tab
-	queue  chan *Job  // work handed to the worker
+	jobs   []*Job    // recent subtitle-ensure jobs (newest first), for the Queue tab
+	queue  chan *Job // work handed to the worker
 	nextID int64
 	logMu  sync.Mutex
 	logBuf []LogLine // recent activity console lines, for the Logs tab

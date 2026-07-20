@@ -8,11 +8,11 @@ import "net"
 
 // Location is a resolved (or partially resolved) IP location.
 type Location struct {
-	IP          string `json:"ip"`
-	Local       bool   `json:"local"`             // private/LAN/loopback address
-	City        string `json:"city,omitempty"`
-	Country     string `json:"country,omitempty"`
-	CountryCode string `json:"country_code,omitempty"`
+	IP          string  `json:"ip"`
+	Local       bool    `json:"local"` // private/LAN/loopback address
+	City        string  `json:"city,omitempty"`
+	Country     string  `json:"country,omitempty"`
+	CountryCode string  `json:"country_code,omitempty"`
 	Lat         float64 `json:"lat,omitempty"`
 	Lon         float64 `json:"lon,omitempty"`
 }

@@ -22,9 +22,9 @@ const profileCols = `id, media_type, name, base, allowed_resolutions, min_source
 
 func (r *Repo) scan(row interface{ Scan(...any) error }) (StoredProfile, error) {
 	var (
-		sp                                                     StoredProfile
+		sp                                                    StoredProfile
 		allowedJSON, scoresJSON, cfJSON, kwJSON, rejectedJSON string
-		upgradesEnabled                                        int
+		upgradesEnabled                                       int
 	)
 	err := row.Scan(&sp.ID, &sp.MediaType, &sp.Name, &sp.Base, &allowedJSON, &sp.MinSource,
 		&sp.BitrateCapMbps, &sp.SmallBias, &sp.MinFormatScore, &scoresJSON, &cfJSON,

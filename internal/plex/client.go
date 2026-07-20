@@ -79,7 +79,7 @@ type Library struct {
 	Key   string `json:"key"`
 	Title string `json:"title"`
 	Type  string `json:"type"` // movie | show | artist | photo
-	Count int64  `json:"-"`     // filled by SectionTotal on demand
+	Count int64  `json:"-"`    // filled by SectionTotal on demand
 }
 
 // Libraries lists the server's library sections.

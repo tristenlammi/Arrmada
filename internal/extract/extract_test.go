@@ -52,12 +52,12 @@ func TestExtractNoArchives(t *testing.T) {
 
 func TestIsFirstRarVolume(t *testing.T) {
 	cases := map[string]bool{
-		"file.rar":         true,
-		"file.part01.rar":  true,
-		"file.part1.rar":   true,
-		"file.part02.rar":  false,
-		"file.part2.rar":   false,
-		"file.part10.rar":  false,
+		"file.rar":        true,
+		"file.part01.rar": true,
+		"file.part1.rar":  true,
+		"file.part02.rar": false,
+		"file.part2.rar":  false,
+		"file.part10.rar": false,
 	}
 	for name, want := range cases {
 		if got := isFirstRarVolume(name); got != want {

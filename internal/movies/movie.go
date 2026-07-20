@@ -5,15 +5,15 @@ package movies
 
 // Movie is a film in the library.
 type Movie struct {
-	ID             int64  `json:"id"`
-	TMDBID         int    `json:"tmdb_id"`
-	IMDBID         string `json:"imdb_id,omitempty"`
-	Title          string `json:"title"`
-	Year           int    `json:"year"`
-	Overview       string `json:"overview,omitempty"`
-	PosterURL      string `json:"poster_url,omitempty"`
-	Runtime        int    `json:"runtime,omitempty"`
-	Status         string `json:"status,omitempty"` // TMDB status (Released, Post Production, …)
+	ID              int64  `json:"id"`
+	TMDBID          int    `json:"tmdb_id"`
+	IMDBID          string `json:"imdb_id,omitempty"`
+	Title           string `json:"title"`
+	Year            int    `json:"year"`
+	Overview        string `json:"overview,omitempty"`
+	PosterURL       string `json:"poster_url,omitempty"`
+	Runtime         int    `json:"runtime,omitempty"`
+	Status          string `json:"status,omitempty"` // TMDB status (Released, Post Production, …)
 	Monitored       bool   `json:"monitored"`
 	QualityProfile  string `json:"quality_profile"`  // quality preset key
 	MinAvailability string `json:"min_availability"` // announced | inCinemas | released
@@ -86,17 +86,17 @@ type Version struct {
 // MovieFile describes the on-disk file for a movie: size plus media info parsed
 // from its filename. Computed at read-time by stat-ing the path.
 type MovieFile struct {
-	Path      string   `json:"path"`
-	Filename  string   `json:"filename"`
-	SizeBytes int64    `json:"size_bytes"`
-	Quality   string   `json:"quality,omitempty"` // "2160p BluRay"
-	Codec      string   `json:"codec,omitempty"`
-	Audio      []string `json:"audio,omitempty"`
-	HDR        []string `json:"hdr,omitempty"`
-	Group      string   `json:"group,omitempty"`
-	Resolution string   `json:"resolution,omitempty"`   // real resolution (ffprobe)
-	DurationMin int     `json:"duration_min,omitempty"` // runtime from the file
-	Probed     bool     `json:"probed,omitempty"`       // media info read from the file, not the name
-	Subtitles  []string `json:"subtitles,omitempty"`    // sidecar subtitle filenames
-	Missing    bool     `json:"missing"`                // tracked in DB but gone from disk
+	Path        string   `json:"path"`
+	Filename    string   `json:"filename"`
+	SizeBytes   int64    `json:"size_bytes"`
+	Quality     string   `json:"quality,omitempty"` // "2160p BluRay"
+	Codec       string   `json:"codec,omitempty"`
+	Audio       []string `json:"audio,omitempty"`
+	HDR         []string `json:"hdr,omitempty"`
+	Group       string   `json:"group,omitempty"`
+	Resolution  string   `json:"resolution,omitempty"`   // real resolution (ffprobe)
+	DurationMin int      `json:"duration_min,omitempty"` // runtime from the file
+	Probed      bool     `json:"probed,omitempty"`       // media info read from the file, not the name
+	Subtitles   []string `json:"subtitles,omitempty"`    // sidecar subtitle filenames
+	Missing     bool     `json:"missing"`                // tracked in DB but gone from disk
 }

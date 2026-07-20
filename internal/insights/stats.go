@@ -74,11 +74,11 @@ func (r *repo) topNames(ctx context.Context, idCol, nameCol string, since int64,
 }
 
 type userStatRow struct {
-	ID, Username, Thumb                       string
-	LastSeen                                  int64
+	ID, Username, Thumb                         string
+	LastSeen                                    int64
 	LastIP, LastPlatform, LastPlayer, LastTitle string
-	TotalPlays                                int
-	TotalSecs                                 int64
+	TotalPlays                                  int
+	TotalSecs                                   int64
 }
 
 func (r *repo) users(ctx context.Context) ([]userStatRow, error) {

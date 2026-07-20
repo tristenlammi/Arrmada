@@ -203,14 +203,14 @@ type tmdbSeries struct {
 	OriginalName     string      `json:"original_name"`
 	OriginalLanguage string      `json:"original_language"`
 	FirstAirDate     string      `json:"first_air_date"`
-	Overview     string      `json:"overview"`
-	PosterPath   string      `json:"poster_path"`
-	BackdropPath string      `json:"backdrop_path"`
-	VoteAverage  float64     `json:"vote_average"`
-	Status       string      `json:"status"`
-	Genres       []tmdbNamed `json:"genres"`
-	Networks     []tmdbNamed `json:"networks"`
-	Seasons      []struct {
+	Overview         string      `json:"overview"`
+	PosterPath       string      `json:"poster_path"`
+	BackdropPath     string      `json:"backdrop_path"`
+	VoteAverage      float64     `json:"vote_average"`
+	Status           string      `json:"status"`
+	Genres           []tmdbNamed `json:"genres"`
+	Networks         []tmdbNamed `json:"networks"`
+	Seasons          []struct {
 		SeasonNumber int    `json:"season_number"`
 		Name         string `json:"name"`
 		Overview     string `json:"overview"`
@@ -314,10 +314,10 @@ type tmdbNamed struct {
 }
 
 type tmdbCast struct {
-	Name       string `json:"name"`
-	Character  string `json:"character"`
+	Name        string `json:"name"`
+	Character   string `json:"character"`
 	ProfilePath string `json:"profile_path"`
-	Order      int    `json:"order"`
+	Order       int    `json:"order"`
 }
 
 type tmdbReleaseDates struct {

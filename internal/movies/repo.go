@@ -239,9 +239,9 @@ const versionCols = `id, movie_id, label, quality_profile, edition, monitored, h
 
 func scanVersion(row interface{ Scan(...any) error }) (Version, int64, error) {
 	var (
-		v            Version
-		movieID      int64
-		mon, hf      int
+		v       Version
+		movieID int64
+		mon, hf int
 	)
 	err := row.Scan(&v.ID, &movieID, &v.Label, &v.QualityProfile, &v.Edition, &mon, &hf, &v.FilePath, &v.SizeBytes, &v.SourceRelease)
 	if err != nil {

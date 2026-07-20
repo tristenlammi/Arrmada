@@ -21,11 +21,11 @@ func TestIsAdultRelease(t *testing.T) {
 	clean := []string{
 		"Hope 2026 1080p WEB-DL x265",
 		"Romance at Hope Ranch 2026 1080p WEB-DL H264-NoRBiT",
-		"Analyze This 1999 1080p BluRay",   // "anal" is a prefix, not a word
-		"xXx Return of Xander Cage 2017",   // the Vin Diesel film — bare token ok, but "xxx" word...
-		"Wicked 2024 2160p",                // studio "wicked pictures" not bare "wicked"
-		"The Deeper You Dig 2019 1080p",    // "deeper" isn't in the list
-		"Popcorn 1991 1080p",               // contains "corn", not "porn"
+		"Analyze This 1999 1080p BluRay", // "anal" is a prefix, not a word
+		"xXx Return of Xander Cage 2017", // the Vin Diesel film — bare token ok, but "xxx" word...
+		"Wicked 2024 2160p",              // studio "wicked pictures" not bare "wicked"
+		"The Deeper You Dig 2019 1080p",  // "deeper" isn't in the list
+		"Popcorn 1991 1080p",             // contains "corn", not "porn"
 	}
 	for _, s := range clean {
 		if isAdultRelease(s, nil) {

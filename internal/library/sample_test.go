@@ -10,7 +10,7 @@ func TestIsSampleName(t *testing.T) {
 		want bool
 	}{
 		{"Chuck - S03E06 - Chuck Versus the Nacho Sampler Bluray-1080p.mkv", false}, // "Sampler"
-		{"Some.Show.Free.Samples.S01E01.mkv", false},                               // "Samples" episode title
+		{"Some.Show.Free.Samples.S01E01.mkv", false},                                // "Samples" episode title
 		{"Movie.2024.sample.mkv", true},
 		{"sample.mkv", true},
 		{"RARBG-sample.mp4", true},

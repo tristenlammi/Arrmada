@@ -34,11 +34,11 @@ type FileSubs struct {
 	Path        string       `json:"path"`
 	DurationSec float64      `json:"duration_sec,omitempty"`
 	AudioLangs  []string     `json:"audio_langs,omitempty"`
-	Embedded    []SubTrack   `json:"embedded"`            // embedded subtitle tracks (for badges/filters)
-	External    []string     `json:"external"`            // kept languages that already have a sidecar
-	Languages   []LangStatus `json:"languages"`           // per-kept-language coverage + best source
-	Health      *SubHealth   `json:"health,omitempty"`    // Tier-1 sync/health score (nil until scored)
-	Missing     int          `json:"missing"`             // count of kept languages still without an SRT
+	Embedded    []SubTrack   `json:"embedded"`         // embedded subtitle tracks (for badges/filters)
+	External    []string     `json:"external"`         // kept languages that already have a sidecar
+	Languages   []LangStatus `json:"languages"`        // per-kept-language coverage + best source
+	Health      *SubHealth   `json:"health,omitempty"` // Tier-1 sync/health score (nil until scored)
+	Missing     int          `json:"missing"`          // count of kept languages still without an SRT
 }
 
 // Library probes every downloaded movie (media="movies") or episode (media="tv") and returns its
@@ -65,8 +65,8 @@ func (s *Service) Library(ctx context.Context, media string) ([]FileSubs, error)
 					}
 					fs := FileSubs{
 						Kind: "episode", SeriesID: full.ID, Season: e.SeasonNumber, Episode: e.EpisodeNumber,
-						Title:     fmt.Sprintf("%s - S%02dE%02d", full.Title, e.SeasonNumber, e.EpisodeNumber),
-						Year:      full.Year, PosterURL: full.PosterURL, Path: e.FilePath,
+						Title: fmt.Sprintf("%s - S%02dE%02d", full.Title, e.SeasonNumber, e.EpisodeNumber),
+						Year:  full.Year, PosterURL: full.PosterURL, Path: e.FilePath,
 					}
 					s.fillCoverage(ctx, &fs, langs, canDownload)
 					out = append(out, fs)

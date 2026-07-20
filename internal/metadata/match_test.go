@@ -7,7 +7,7 @@ import (
 )
 
 func mTitle(r MovieResult) string { return r.Title }
-func mYear(r MovieResult) int      { return r.Year }
+func mYear(r MovieResult) int     { return r.Year }
 
 // TestTitleYearMatchReported reproduces the mis-matches the user hit: a folder
 // with no year must not grab the more-popular same-word show.

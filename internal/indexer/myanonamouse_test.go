@@ -7,11 +7,11 @@ import (
 
 func TestJoinMAMNames(t *testing.T) {
 	cases := map[string]string{
-		`{"123":"Brandon Sanderson"}`:              "Brandon Sanderson",
+		`{"123":"Brandon Sanderson"}`:               "Brandon Sanderson",
 		`{"1":"Michael Kramer","2":"Kate Reading"}`: "", // order-dependent; checked below
-		``:                                          "",
-		`[]`:                                        "",
-		`{}`:                                        "",
+		``:   "",
+		`[]`: "",
+		`{}`: "",
 		`{"9":"Neil Gaiman &amp; Terry Pratchett"}`: "Neil Gaiman & Terry Pratchett",
 	}
 	for in, want := range cases {
@@ -58,4 +58,3 @@ func TestParseHumanSize(t *testing.T) {
 		}
 	}
 }
-

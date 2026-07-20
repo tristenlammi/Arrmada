@@ -59,7 +59,7 @@ const cols = `id, name, kind, url, on_grab, on_import, on_stream, on_buffering, 
 
 func scanConn(row interface{ Scan(...any) error }) (Connection, error) {
 	var (
-		c                                                     Connection
+		c                                              Connection
 		onGrab, onImport, onStream, onBuffering, enabl int
 	)
 	if err := row.Scan(&c.ID, &c.Name, &c.Kind, &c.URL, &onGrab, &onImport, &onStream, &onBuffering, &enabl); err != nil {

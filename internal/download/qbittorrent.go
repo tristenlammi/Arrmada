@@ -433,14 +433,14 @@ func (q *QBittorrent) List(ctx context.Context, dc Client) ([]Item, error) {
 }
 
 type qbitTorrent struct {
-	Hash       string  `json:"hash"`
-	Name       string  `json:"name"`
-	Size       int64   `json:"size"`
-	Progress   float64 `json:"progress"`
-	DLSpeed    int64   `json:"dlspeed"`
-	UPSpeed    int64   `json:"upspeed"`
-	ETA        int64   `json:"eta"`
-	State      string  `json:"state"`
+	Hash        string  `json:"hash"`
+	Name        string  `json:"name"`
+	Size        int64   `json:"size"`
+	Progress    float64 `json:"progress"`
+	DLSpeed     int64   `json:"dlspeed"`
+	UPSpeed     int64   `json:"upspeed"`
+	ETA         int64   `json:"eta"`
+	State       string  `json:"state"`
 	Ratio       float64 `json:"ratio"`
 	Category    string  `json:"category"`
 	Completed   int64   `json:"completed"`

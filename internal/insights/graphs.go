@@ -7,8 +7,8 @@ import (
 
 // Graphs is the time-series bundle for the Graphs tab.
 type Graphs struct {
-	Days         []string   `json:"days"`         // date labels (chronological) for the daily chart
-	DailyTV      []int      `json:"daily_tv"`     // per-day play counts, aligned to Days
+	Days         []string   `json:"days"`     // date labels (chronological) for the daily chart
+	DailyTV      []int      `json:"daily_tv"` // per-day play counts, aligned to Days
 	DailyMovies  []int      `json:"daily_movies"`
 	DailyMusic   []int      `json:"daily_music"`
 	ByDayOfWeek  []int      `json:"by_day_of_week"` // length 7, Sun..Sat

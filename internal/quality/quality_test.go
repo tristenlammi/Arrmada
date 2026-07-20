@@ -92,11 +92,11 @@ func TestPresetDecisions(t *testing.T) {
 		wantWinner  string // release group of the expected winner
 		wantRejects int    // at least this many rejected
 	}{
-		{"4k-hdr", "FraMeSToR", 4},   // 2160p Remux wins; 1080p/720p rejected
-		{"4k-sane", "FLUX", 5},       // Remux over the 40 Mbps cap → 2160p WEB-DL wins
-		{"best-1080p", "SPARKS", 3},  // 1080p BluRay wins; 2160p not in profile
-		{"smallest", "EVO", 4},       // smallest *decent* — low-quality YTS is penalized
-		{"remux", "FraMeSToR", 6},    // only the Remux qualifies
+		{"4k-hdr", "FraMeSToR", 4},  // 2160p Remux wins; 1080p/720p rejected
+		{"4k-sane", "FLUX", 5},      // Remux over the 40 Mbps cap → 2160p WEB-DL wins
+		{"best-1080p", "SPARKS", 3}, // 1080p BluRay wins; 2160p not in profile
+		{"smallest", "EVO", 4},      // smallest *decent* — low-quality YTS is penalized
+		{"remux", "FraMeSToR", 6},   // only the Remux qualifies
 	}
 
 	for _, tc := range cases {
@@ -162,8 +162,8 @@ func TestPrefersFormatsOverBitrate(t *testing.T) {
 		FormatScores:       map[string]int{"Dolby Vision": 55, "HDR10": 45, "Atmos": 40},
 	}
 	cands := []Candidate{
-		NewCandidate("Movie.2024.2160p.WEB-DL.x265-PLAIN", 70, 100),                        // bigger, no preferred formats
-		NewCandidate("Movie.2024.2160p.BluRay.REMUX.DV.HDR10.TrueHD.Atmos-GRP", 50, 100),    // smaller, all preferred formats
+		NewCandidate("Movie.2024.2160p.WEB-DL.x265-PLAIN", 70, 100),                      // bigger, no preferred formats
+		NewCandidate("Movie.2024.2160p.BluRay.REMUX.DV.HDR10.TrueHD.Atmos-GRP", 50, 100), // smaller, all preferred formats
 	}
 	d := NewDefaultEngine().Decide(profile, cands)
 	if d.Winner == nil || d.Winner.Candidate.Release.Group != "GRP" {

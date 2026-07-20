@@ -12,10 +12,10 @@ import (
 
 // SubTrack is one embedded subtitle stream in a media file.
 type SubTrack struct {
-	Index  int    `json:"index"`  // position among subtitle streams (ffmpeg's 0:s:N)
-	Codec  string `json:"codec"`  // e.g. subrip, ass, hdmv_pgs_subtitle, dvd_subtitle
-	Lang   string `json:"lang"`   // ISO code, lower-case ("" / "und" = unknown)
-	Text   bool   `json:"text"`   // true = extractable to SRT; false = image sub (PGS/VOBSUB) → needs OCR
+	Index  int    `json:"index"` // position among subtitle streams (ffmpeg's 0:s:N)
+	Codec  string `json:"codec"` // e.g. subrip, ass, hdmv_pgs_subtitle, dvd_subtitle
+	Lang   string `json:"lang"`  // ISO code, lower-case ("" / "und" = unknown)
+	Text   bool   `json:"text"`  // true = extractable to SRT; false = image sub (PGS/VOBSUB) → needs OCR
 	Forced bool   `json:"forced,omitempty"`
 }
 

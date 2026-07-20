@@ -21,20 +21,20 @@ const (
 
 // Request is one user request for a movie, series, or book.
 type Request struct {
-	ID              int64  `json:"id"`
-	MediaType       string `json:"media_type"`      // "movie" | "series" | "book"
-	TMDBID          int    `json:"tmdb_id"`         // movies/series
-	OLKey           string `json:"ol_key,omitempty"` // books (Open Library work key)
-	Title           string `json:"title"`
-	Author          string `json:"author,omitempty"` // books
-	Year            int    `json:"year"`
-	PosterURL       string `json:"poster_url,omitempty"`
-	Overview        string `json:"overview,omitempty"`
-	Status          string `json:"status"`
-	QualityProfile  string `json:"quality_profile,omitempty"`
-	RequestedBy     int64  `json:"requested_by"`
-	RequestedByName string `json:"requested_by_name,omitempty"`
-	Note            string `json:"note,omitempty"`
+	ID               int64   `json:"id"`
+	MediaType        string  `json:"media_type"`       // "movie" | "series" | "book"
+	TMDBID           int     `json:"tmdb_id"`          // movies/series
+	OLKey            string  `json:"ol_key,omitempty"` // books (Open Library work key)
+	Title            string  `json:"title"`
+	Author           string  `json:"author,omitempty"` // books
+	Year             int     `json:"year"`
+	PosterURL        string  `json:"poster_url,omitempty"`
+	Overview         string  `json:"overview,omitempty"`
+	Status           string  `json:"status"`
+	QualityProfile   string  `json:"quality_profile,omitempty"`
+	RequestedBy      int64   `json:"requested_by"`
+	RequestedByName  string  `json:"requested_by_name,omitempty"`
+	Note             string  `json:"note,omitempty"`
 	Available        bool    `json:"available"`                   // computed at read time, not stored
 	DownloadProgress float64 `json:"download_progress,omitempty"` // 0..1 while downloading; computed at read time
 	CreatedAt        string  `json:"created_at"`

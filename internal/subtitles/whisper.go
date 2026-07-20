@@ -137,10 +137,11 @@ func tailStr(out []byte, n int) string {
 }
 
 // aiPlan decides how (if at all) AI can produce a wanted-language subtitle from a file's audio:
-//   "transcribe" — the audio is already in that language;
-//   "translate"  — the target is English and the audio isn't (Whisper's only translation direction),
-//                  or the audio language is unknown (auto-detect + translate is a safe default);
-//   ""           — impossible: Whisper can't translate into a non-English language.
+//
+//	"transcribe" — the audio is already in that language;
+//	"translate"  — the target is English and the audio isn't (Whisper's only translation direction),
+//	               or the audio language is unknown (auto-detect + translate is a safe default);
+//	""           — impossible: Whisper can't translate into a non-English language.
 func aiPlan(audioLangs []string, wanted string) string {
 	for _, a := range audioLangs {
 		if langMatches(a, wanted) {

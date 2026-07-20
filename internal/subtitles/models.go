@@ -144,12 +144,12 @@ func (w *whisperGen) fetch(ctx context.Context, url, name string, log func(level
 
 // progressWriter logs download progress at ~10% steps (and no more than every 2s).
 type progressWriter struct {
-	total    int64
-	got      int64
-	lastPct  int
-	name     string
-	log      func(level, msg string)
-	last     time.Time
+	total   int64
+	got     int64
+	lastPct int
+	name    string
+	log     func(level, msg string)
+	last    time.Time
 }
 
 func (p *progressWriter) Write(b []byte) (int, error) {

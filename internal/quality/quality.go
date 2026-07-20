@@ -131,17 +131,17 @@ func (f CustomFormat) Matches(r parser.Release) bool {
 
 // Profile expresses "what a good release looks like".
 type Profile struct {
-	Name               string                 `json:"name"`
-	AllowedResolutions []parser.Resolution    `json:"allowed_resolutions"` // empty = any
-	MinSource          parser.Source          `json:"min_source,omitempty"`
-	MaxSource          parser.Source          `json:"max_source,omitempty"` // empty = no upper bound
-	BitrateCapMbps     float64                `json:"bitrate_cap_mbps,omitempty"` // 0 = no cap; rejects releases whose bitrate exceeds it (length-independent)
-	SmallBias          float64                `json:"small_bias,omitempty"`  // score penalty per GB
-	FormatScores       map[string]int         `json:"format_scores,omitempty"`
-	MinFormatScore     int                    `json:"min_format_score,omitempty"`
-	Keywords           []Keyword              `json:"keywords,omitempty"`
-	Rejected           []string               `json:"rejected,omitempty"`
-	MinSeeders         int                    `json:"min_seeders,omitempty"`
+	Name               string              `json:"name"`
+	AllowedResolutions []parser.Resolution `json:"allowed_resolutions"` // empty = any
+	MinSource          parser.Source       `json:"min_source,omitempty"`
+	MaxSource          parser.Source       `json:"max_source,omitempty"`       // empty = no upper bound
+	BitrateCapMbps     float64             `json:"bitrate_cap_mbps,omitempty"` // 0 = no cap; rejects releases whose bitrate exceeds it (length-independent)
+	SmallBias          float64             `json:"small_bias,omitempty"`       // score penalty per GB
+	FormatScores       map[string]int      `json:"format_scores,omitempty"`
+	MinFormatScore     int                 `json:"min_format_score,omitempty"`
+	Keywords           []Keyword           `json:"keywords,omitempty"`
+	Rejected           []string            `json:"rejected,omitempty"`
+	MinSeeders         int                 `json:"min_seeders,omitempty"`
 }
 
 // Candidate is a release under consideration (release + indexer metadata).

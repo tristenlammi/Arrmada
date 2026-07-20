@@ -222,7 +222,7 @@ type BookDetails struct {
 
 // AuthorResult is a lightweight author search hit (Open Library author).
 type AuthorResult struct {
-	Key       string `json:"key"`  // Open Library author key, e.g. "OL23919A"
+	Key       string `json:"key"` // Open Library author key, e.g. "OL23919A"
 	Name      string `json:"name"`
 	WorkCount int    `json:"work_count"`
 	TopWork   string `json:"top_work,omitempty"`

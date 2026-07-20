@@ -11,18 +11,18 @@ import (
 // almost always hallucinations, so we drop such cues from generated SRTs (belt-and-suspenders on
 // top of VAD). Matched case-insensitively, ignoring surrounding punctuation.
 var stockHallucinations = map[string]bool{
-	"thank you":                    true,
-	"thanks for watching":          true,
-	"thank you for watching":       true,
-	"thank you very much":          true,
-	"please subscribe":             true,
-	"like and subscribe":           true,
+	"thank you":                            true,
+	"thanks for watching":                  true,
+	"thank you for watching":               true,
+	"thank you very much":                  true,
+	"please subscribe":                     true,
+	"like and subscribe":                   true,
 	"subtitles by the amara.org community": true,
-	"you":                          true,
-	"bye":                          true,
-	"bye bye":                      true,
-	"okay":                         true,
-	"the end":                      true,
+	"you":                                  true,
+	"bye":                                  true,
+	"bye bye":                              true,
+	"okay":                                 true,
+	"the end":                              true,
 }
 
 var srtIndexLine = regexp.MustCompile(`^\d+$`)

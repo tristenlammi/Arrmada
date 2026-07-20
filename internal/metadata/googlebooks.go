@@ -138,8 +138,10 @@ func (g *GoogleBooks) Covers(context.Context, string, string, string) ([]string,
 	return nil, nil
 }
 func (g *GoogleBooks) SearchAuthors(context.Context, string) ([]AuthorResult, error) { return nil, nil }
-func (g *GoogleBooks) AuthorWorks(context.Context, string, int) ([]BookResult, error) { return nil, nil }
-func (g *GoogleBooks) TrendingBooks(context.Context) ([]BookResult, error)            { return nil, nil }
+func (g *GoogleBooks) AuthorWorks(context.Context, string, int) ([]BookResult, error) {
+	return nil, nil
+}
+func (g *GoogleBooks) TrendingBooks(context.Context) ([]BookResult, error) { return nil, nil }
 func (g *GoogleBooks) BooksBySubject(context.Context, string, int) ([]BookResult, error) {
 	return nil, nil
 }
