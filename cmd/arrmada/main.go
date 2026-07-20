@@ -335,22 +335,6 @@ func main() {
 	})
 	sched.Start(runCtx)
 
-	// One-off repair for grabs recorded before migration 0062, which carry no info hash
-	// and so still match their torrent by name — the comparison that fails whenever an
-	// indexer's listing title differs from the .torrent's own name. Until they're linked,
-	// those torrents get no seed rule and are invisible to stall detection.
-	//
-	// Runs in the background: it needs the download client, which may not be reachable the
-	// instant we boot, and nothing else waits on it. Self-limiting — once a row has a hash
-	// it's no longer selected, so later restarts do almost no work.
-	go func() {
-		filled, ambiguous := coordinator.BackfillGrabHashes(runCtx)
-		if filled > 0 || ambiguous > 0 {
-			log.Info("grab backfill: linked existing torrents to their grabs",
-				"linked", filled, "ambiguous", ambiguous)
-		}
-	}()
-
 	// Requests module sits on top of Movies/Series: an approval adds the media and
 	// triggers a search through the existing acquisition pipeline.
 	requestsSvc := requests.NewService(st.DB(), movieSvc, seriesSvc, booksSvc, coordinator, qualitySvc, bus, notifySvc.AppriseBin(), log)
