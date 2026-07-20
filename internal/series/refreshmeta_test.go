@@ -95,3 +95,89 @@ func testRepo(t *testing.T) (*Repo, context.Context) {
 	}
 	return NewRepo(db), context.Background()
 }
+
+// A refresh that can only ADD leaves a show stuck with whatever a previous metadata
+// source invented. TVmaze numbers some long-running shows by broadcast year, so Naruto
+// gained seasons 2002-2007 beside its real ones — and no refresh could remove them.
+func TestRefreshPrunesStaleSeasons(t *testing.T) {
+	repo, ctx := testRepo(t)
+	sr, err := repo.Create(ctx, Series{TMDBID: 1, Title: "Naruto", Monitored: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The real seasons, plus the year-numbered ones a bad listing left behind.
+	if err := repo.InsertSeasons(ctx, sr.ID, []Season{
+		{SeasonNumber: 1, Episodes: []Episode{{SeasonNumber: 1, EpisodeNumber: 1, Title: "Enter: Naruto Uzumaki!"}}},
+		{SeasonNumber: 2002, Episodes: []Episode{{SeasonNumber: 2002, EpisodeNumber: 1, Title: "Enter: Naruto Uzumaki!"}}},
+		{SeasonNumber: 2003, Episodes: []Episode{{SeasonNumber: 2003, EpisodeNumber: 1}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A later refresh sees only the real season.
+	real := []Season{{SeasonNumber: 1, Episodes: []Episode{{SeasonNumber: 1, EpisodeNumber: 1, Title: "Enter: Naruto Uzumaki!"}}}}
+	if err := repo.InsertSeasons(ctx, sr.ID, real); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := repo.PruneSeasonsNotIn(ctx, sr.ID, []int{1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed != 2 {
+		t.Errorf("removed %d seasons, want the 2 year-numbered ones", removed)
+	}
+
+	seasons, err := repo.SeasonsFor(ctx, sr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(seasons) != 1 || seasons[0].SeasonNumber != 1 {
+		t.Errorf("seasons = %+v, want just season 1", seasons)
+	}
+}
+
+// A season holding a FILE must survive whatever the metadata says. Losing track of
+// something the user actually has is far worse than an extra row in the season list.
+func TestPruneKeepsSeasonsWithFiles(t *testing.T) {
+	repo, ctx := testRepo(t)
+	sr, _ := repo.Create(ctx, Series{TMDBID: 2, Title: "Show", Monitored: true})
+	if err := repo.InsertSeasons(ctx, sr.ID, []Season{
+		{SeasonNumber: 5, Episodes: []Episode{
+			{SeasonNumber: 5, EpisodeNumber: 1},
+			{SeasonNumber: 5, EpisodeNumber: 2},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// One episode has a file; the metadata no longer lists season 5 at all.
+	if _, err := repo.db.ExecContext(ctx,
+		`UPDATE episodes SET has_file = 1, file_path = '/keep.mkv' WHERE series_id = ? AND episode_number = 1`, sr.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.PruneSeasonsNotIn(ctx, sr.ID, []int{1}); err != nil {
+		t.Fatal(err)
+	}
+
+	seasons, _ := repo.SeasonsFor(ctx, sr.ID)
+	if len(seasons) != 1 || seasons[0].SeasonNumber != 5 {
+		t.Fatalf("the season holding a file must survive, got %+v", seasons)
+	}
+	if len(seasons[0].Episodes) != 1 || seasons[0].Episodes[0].FilePath != "/keep.mkv" {
+		t.Errorf("the episode with a file must survive; the empty one may go: %+v", seasons[0].Episodes)
+	}
+}
+
+// An empty keep list means we have no listing to trust, so nothing is pruned.
+func TestPruneDoesNothingWithoutAListing(t *testing.T) {
+	repo, ctx := testRepo(t)
+	sr, _ := repo.Create(ctx, Series{TMDBID: 3, Title: "Show", Monitored: true})
+	_ = repo.InsertSeasons(ctx, sr.ID, []Season{{SeasonNumber: 1, Episodes: []Episode{{SeasonNumber: 1, EpisodeNumber: 1}}}})
+
+	if n, err := repo.PruneSeasonsNotIn(ctx, sr.ID, nil); err != nil || n != 0 {
+		t.Errorf("prune with no listing = %d (err %v), want 0 — a failed fetch must not empty a library", n, err)
+	}
+	if seasons, _ := repo.SeasonsFor(ctx, sr.ID); len(seasons) != 1 {
+		t.Error("seasons were removed with nothing to justify it")
+	}
+}

@@ -189,8 +189,22 @@ func (s *Service) Refresh(ctx context.Context, id int64) (Series, error) {
 		return Series{}, err
 	}
 	if d, derr := s.meta.GetSeries(ctx, sr.TMDBID); derr == nil {
-		if err := s.repo.InsertSeasons(ctx, id, seasonsFromDetails(d, sr.Monitored)); err != nil {
+		seasons := seasonsFromDetails(d, sr.Monitored)
+		if err := s.repo.InsertSeasons(ctx, id, seasons); err != nil {
 			s.log.Warn("series: refresh insert seasons failed", "series", sr.Title, "err", err)
+		}
+		// Drop seasons the metadata no longer lists. A refresh that can only ADD leaves
+		// a show stuck with whatever a previous source invented — Naruto kept seasons
+		// 2002-2007 from a year-numbered listing, with no way back short of deleting the
+		// show. Anything holding a file is kept regardless.
+		keep := make([]int, 0, len(seasons))
+		for _, sn := range seasons {
+			keep = append(keep, sn.SeasonNumber)
+		}
+		if n, perr := s.repo.PruneSeasonsNotIn(ctx, id, keep); perr != nil {
+			s.log.Warn("series: prune stale seasons failed", "series", sr.Title, "err", perr)
+		} else if n > 0 {
+			s.log.Info("series: removed seasons the metadata no longer lists", "series", sr.Title, "removed", n)
 		}
 		// Recompute absolute numbers (fills them in for series added before anime
 		// support, and covers any newly-announced episodes).

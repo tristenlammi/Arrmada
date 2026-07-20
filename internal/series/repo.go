@@ -189,6 +189,45 @@ func (r *Repo) InsertSeasons(ctx context.Context, seriesID int64, seasons []Seas
 	return nil
 }
 
+// PruneSeasonsNotIn removes seasons the metadata no longer lists, and reports how many
+// went. Nothing holding a file is ever touched.
+//
+// Needed because a metadata source can change a show's whole season MODEL, not just its
+// contents — TVmaze numbers some long-running shows by broadcast year, so Naruto briefly
+// gained seasons 2002 through 2007 alongside its real ones. Without pruning, a refresh
+// could only ever ADD, so the wrong seasons sat there permanently and the only cure was
+// deleting and re-adding the show.
+//
+// Deliberately conservative: an episode with a file survives whatever the metadata says,
+// and a season keeping any such episode survives with it. Losing track of a file the user
+// actually has is far worse than an extra row in the season list.
+func (r *Repo) PruneSeasonsNotIn(ctx context.Context, seriesID int64, keep []int) (int, error) {
+	if len(keep) == 0 {
+		return 0, nil // no listing to trust — prune nothing
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(keep)), ",")
+	args := []any{seriesID}
+	for _, n := range keep {
+		args = append(args, n)
+	}
+
+	if _, err := r.db.ExecContext(ctx,
+		`DELETE FROM episodes
+		 WHERE series_id = ? AND has_file = 0 AND season_number NOT IN (`+placeholders+`)`, args...); err != nil {
+		return 0, err
+	}
+	res, err := r.db.ExecContext(ctx,
+		`DELETE FROM seasons
+		 WHERE series_id = ? AND season_number NOT IN (`+placeholders+`)
+		   AND NOT EXISTS (SELECT 1 FROM episodes e
+		                   WHERE e.series_id = seasons.series_id AND e.season_number = seasons.season_number)`, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
 // SeasonsFor returns the seasons of a series (episodes attached), ordered.
 func (r *Repo) SeasonsFor(ctx context.Context, seriesID int64) ([]Season, error) {
 	rows, err := r.db.QueryContext(ctx,
