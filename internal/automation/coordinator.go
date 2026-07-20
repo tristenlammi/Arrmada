@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -955,29 +956,65 @@ func (c *Coordinator) SeedPolicies(ctx context.Context) map[string]SeedPolicy {
 // NormReleaseKey normalizes a download name to the key used by SeedPolicies.
 func NormReleaseKey(name string) string { return normRelease(name) }
 
-// GrabStatusFor reports the status of any grab recorded for this download name, across
-// ALL statuses — including the ones SeedPolicies deliberately excludes ('seeded',
-// 'failed'). "" means no grab row matches the name at all.
+// GrabNearMiss is a grab row that ALMOST matches a download name.
+type GrabNearMiss struct {
+	Title  string // as recorded at grab time
+	Status string
+	Key    string // its normalized key, for comparison against the torrent's
+}
+
+// NearestGrabs returns the grab rows whose normalized key most closely resembles this
+// download name's, best first.
 //
-// Purely diagnostic. "No seed rule" has two causes that look identical in the UI: the
-// release was never grabbed by Arrmada, or it was and its row has since moved to a status
-// the seeding view doesn't consider. ManageSeeding writes 'seeded' after removing a
-// torrent, and stall fail-over writes 'failed' — either would silently drop a torrent
-// that's still in the client out of the seeding view.
-func (c *Coordinator) GrabStatusFor(ctx context.Context, name string) string {
+// An exact-match lookup can't diagnose a matching failure — it uses the very comparison
+// under suspicion, so "not found" is indistinguishable from "not recorded". Reporting the
+// near misses instead shows the two strings side by side, which is the only way to see
+// HOW they diverge: a year present on one side, a punctuation difference that survives
+// normalization, a tracker listing that differs from the .torrent's own name.
+func (c *Coordinator) NearestGrabs(ctx context.Context, name string, limit int) []GrabNearMiss {
 	rows, err := c.db.QueryContext(ctx, `SELECT title, status FROM grabs ORDER BY id DESC`)
 	if err != nil {
-		return ""
+		return nil
 	}
 	defer rows.Close()
+
 	want := normRelease(name)
+	type scored struct {
+		m GrabNearMiss
+		n int
+	}
+	var best []scored
 	for rows.Next() {
 		var title, status string
-		if rows.Scan(&title, &status) == nil && normRelease(title) == want {
-			return status
+		if rows.Scan(&title, &status) != nil {
+			continue
 		}
+		key := normRelease(title)
+		n := commonPrefix(key, want)
+		if n < 8 {
+			continue // unrelated release; not worth reporting
+		}
+		best = append(best, scored{GrabNearMiss{Title: title, Status: status, Key: key}, n})
 	}
-	return ""
+	sort.Slice(best, func(i, j int) bool { return best[i].n > best[j].n })
+	out := make([]GrabNearMiss, 0, limit)
+	for i := 0; i < len(best) && i < limit; i++ {
+		out = append(out, best[i].m)
+	}
+	return out
+}
+
+// SharedPrefixLen exposes commonPrefix for diagnostics: it says where two normalized
+// keys start to differ, which points straight at the token responsible.
+func SharedPrefixLen(a, b string) int { return commonPrefix(a, b) }
+
+// commonPrefix returns how many leading characters two keys share.
+func commonPrefix(a, b string) int {
+	n := 0
+	for n < len(a) && n < len(b) && a[n] == b[n] {
+		n++
+	}
+	return n
 }
 
 // matchGrab finds the imported grab a download name belongs to.

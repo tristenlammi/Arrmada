@@ -256,27 +256,30 @@ func (a *api) logUnmatchedSeeds(ctx context.Context, names []string, policies ma
 	if len(sample) > 5 {
 		sample = sample[:5]
 	}
-	// A torrent with no grab row at all was added outside Arrmada — by hand, or left
-	// seeding by whatever managed the library before. That's an ordinary state, not a
-	// fault, and logging it every 10 minutes forever would be exactly the noise the Logs
-	// page now has a filter for. Only report rows that DO exist but sit in a status the
-	// seeding view skips, which is the case that would indicate a real bug.
-	var odd int
+	// Report the near misses, not an exact-match verdict. An exact lookup uses the very
+	// comparison under suspicion, so "not found" can't distinguish "never grabbed" from
+	// "grabbed, recorded under a title that no longer matches" — printing both strings is
+	// the only way to see how they diverge.
 	for _, n := range sample {
+		key := automation.NormReleaseKey(n)
+		a.deps.Log.Warn("seeding: no seed rule matched this torrent",
+			"torrent", n, "lookup_key", key, "rules_held", len(policies))
 		if a.deps.Automation == nil {
 			continue
 		}
-		status := a.deps.Automation.GrabStatusFor(ctx, n)
-		if status == "" {
-			continue // never grabbed by Arrmada — nothing to explain
+		near := a.deps.Automation.NearestGrabs(ctx, n, 3)
+		if len(near) == 0 {
+			a.deps.Log.Warn("seeding:   no grab row even resembles it", "torrent", n)
+			continue
 		}
-		odd++
-		a.deps.Log.Warn("seeding: a grabbed release has no seed rule — its grab row is in an unexpected status",
-			"torrent", n, "lookup_key", automation.NormReleaseKey(n),
-			"rules_held", len(policies), "grab_status", status)
+		for _, g := range near {
+			a.deps.Log.Warn("seeding:   closest recorded grab",
+				"recorded_title", g.Title, "recorded_key", g.Key, "status", g.Status,
+				"shared_prefix", automation.SharedPrefixLen(g.Key, key))
+		}
 	}
-	if odd == 0 {
-		a.deps.Log.Debug("seeding: torrents without a seed rule were not grabbed by Arrmada",
-			"count", len(names))
+	if len(names) > len(sample) {
+		a.deps.Log.Warn("seeding: more torrents without a seed rule",
+			"shown", len(sample), "total", len(names))
 	}
 }
