@@ -18,6 +18,36 @@ type Service struct {
 	repo     *Repo
 	registry *Registry
 	log      *slog.Logger
+	recent   recentCache
+}
+
+// recentTTL is how long an RSS feed pull is reused. The movie, series and book RSS
+// sweeps each call Recent independently and fire within seconds of each other, so every
+// cycle pulled the identical unfiltered feed from every indexer three times over. A
+// window this short cannot delay a new release noticeably — the sweeps themselves run
+// minutes apart — but it collapses the burst into one fetch per indexer.
+const recentTTL = 60 * time.Second
+
+// recentCache memoizes the last feed pull. The mutex is deliberately held across the
+// fetch: a second sweep arriving mid-pull should wait and share the result rather than
+// start a duplicate request, which is the whole point.
+type recentCache struct {
+	mu    sync.Mutex
+	at    time.Time
+	limit int
+	res   SearchResult
+}
+
+// fresh reports whether the cached feed still stands in for a pull of this size.
+// A different limit is a different feed, so it never matches.
+//
+// The hit is a copy of the slice header: three sweeps now share one backing array, and
+// a caller appending to its own result must not reach into what the next one reads.
+func (c *recentCache) fresh(limit int) (SearchResult, bool) {
+	if c.at.IsZero() || c.limit != limit || time.Since(c.at) >= recentTTL {
+		return SearchResult{}, false
+	}
+	return SearchResult{Releases: append([]Release(nil), c.res.Releases...), Errors: c.res.Errors}, true
 }
 
 // NewService wires a Service over the database. flaresolverrURL may be empty
@@ -108,7 +138,27 @@ type SearchResult struct {
 // Recent fetches the newest releases from every enabled indexer that supports an
 // RSS-style feed (Recenter), merged and ranked like a search. Indexers without
 // the capability are simply skipped.
+//
+// Results are shared between callers for recentTTL — see recentCache. Failures are not
+// cached, so a transient indexer error doesn't suppress the next sweep's attempt.
 func (s *Service) Recent(ctx context.Context, limit int) (SearchResult, error) {
+	s.recent.mu.Lock()
+	defer s.recent.mu.Unlock()
+	if cached, ok := s.recent.fresh(limit); ok {
+		return cached, nil
+	}
+	res, err := s.fetchRecent(ctx, limit)
+	if err != nil {
+		return res, err
+	}
+	// Hand out a copy of the slice header so a caller appending to Releases can't
+	// clobber the cached run for whoever reads it next.
+	s.recent.at, s.recent.limit = time.Now(), limit
+	s.recent.res = SearchResult{Releases: append([]Release(nil), res.Releases...), Errors: res.Errors}
+	return s.recent.res, nil
+}
+
+func (s *Service) fetchRecent(ctx context.Context, limit int) (SearchResult, error) {
 	indexers, err := s.repo.ListEnabled(ctx)
 	if err != nil {
 		return SearchResult{}, err
