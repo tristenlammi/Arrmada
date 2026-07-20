@@ -60,17 +60,21 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"convert_target_codec":     a.deps.Settings.Get(ctx, "convert_target_codec", "hevc"),
 		"convert_auto":             a.deps.Settings.GetBool(ctx, "convert_auto", false),
 		"convert_quality_gate":     a.deps.Settings.GetBool(ctx, "convert_quality_gate", true),
-		"convert_min_ssim":         a.deps.Settings.Get(ctx, "convert_min_ssim", "0.95"),
+		"convert_min_ssim":         a.deps.Settings.Get(ctx, "convert_min_ssim", "0.97"),
 		"convert_workers":          a.deps.Settings.Get(ctx, "convert_workers", "1"),
 		"convert_sweep_start":      a.deps.Settings.Get(ctx, "convert_sweep_start", ""),
 		"convert_scan_at":          a.deps.Settings.Get(ctx, "convert_scan_at", "03:00"),
 		"convert_cpu_cores":        a.deps.Settings.Get(ctx, "convert_cpu_cores", "0"),
 		"convert_cpu_above_height": a.deps.Settings.Get(ctx, "convert_cpu_above_height", "2160"),
 		"convert_av1_recode_hevc":  a.deps.Settings.GetBool(ctx, "convert_av1_recode_hevc", false),
-		"convert_sweep_end":        a.deps.Settings.Get(ctx, "convert_sweep_end", ""),
-		"convert_max_failures":     a.deps.Settings.Get(ctx, "convert_max_failures", "3"),
-		"convert_scratch_dir":      a.deps.Settings.Get(ctx, "convert_scratch_dir", ""),
-		"convert_vaapi_device":     a.deps.Settings.Get(ctx, "convert_vaapi_device", ""),
+		// Distinguishes "chose HEVC" from "never chose" — convert_target_codec defaults to
+		// hevc, so it can't answer that on its own. Must be READ as well as written, or the
+		// first-run setup screen can never dismiss.
+		"convert_setup_done":   a.deps.Settings.GetBool(ctx, "convert_setup_done", false),
+		"convert_sweep_end":    a.deps.Settings.Get(ctx, "convert_sweep_end", ""),
+		"convert_max_failures": a.deps.Settings.Get(ctx, "convert_max_failures", "3"),
+		"convert_scratch_dir":  a.deps.Settings.Get(ctx, "convert_scratch_dir", ""),
+		"convert_vaapi_device": a.deps.Settings.Get(ctx, "convert_vaapi_device", ""),
 		// Recycle bin guard rails. These default to REAL limits, not 0/unlimited: the
 		// bin is on by default and every delete, quality upgrade and Convert original
 		// lands in it, so an unlimited default silently grows until the volume fills.
@@ -127,6 +131,36 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return false
 		}
 		return true
+	}
+
+	// Convert settings are validated here rather than trusted from the client: the UI's
+	// min/max attributes aren't enforced for programmatic writes, and a value like
+	// min_ssim=2.0 is unreachable, so every encode would be discarded with no explanation.
+	if req.ConvertMinSSIM != nil {
+		if v, err := strconv.ParseFloat(strings.TrimSpace(*req.ConvertMinSSIM), 64); err != nil || v <= 0 || v > 1 {
+			a.writeError(w, http.StatusBadRequest, "quality gate minimum must be between 0 and 1")
+			return
+		}
+	}
+	for _, f := range []struct {
+		v    *string
+		name string
+	}{
+		{req.ConvertSweepStart, "schedule start"}, {req.ConvertSweepEnd, "schedule end"}, {req.ConvertScanAt, "scan time"},
+	} {
+		if f.v == nil {
+			continue
+		}
+		if t := strings.TrimSpace(*f.v); t != "" && !validHHMM(t) {
+			a.writeError(w, http.StatusBadRequest, f.name+" must be a time like 03:00")
+			return
+		}
+	}
+	if req.ConvertTargetCodec != nil {
+		if c := strings.TrimSpace(*req.ConvertTargetCodec); c != "hevc" && c != "av1" {
+			a.writeError(w, http.StatusBadRequest, "target codec must be hevc or av1")
+			return
+		}
 	}
 	if req.SearchOnAdd != nil && !save(a.deps.Settings.SetBool(ctx, keySearchOnAdd, *req.SearchOnAdd)) {
 		return
@@ -187,35 +221,6 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ConvertWorkers != nil && !save(a.deps.Settings.Set(ctx, "convert_workers", *req.ConvertWorkers)) {
 		return
-	}
-	// Convert settings are validated here rather than trusted from the client: the UI's
-	// min/max attributes aren't enforced for programmatic writes, and a value like
-	// min_ssim=2.0 is unreachable, so every encode would be discarded with no explanation.
-	if req.ConvertMinSSIM != nil {
-		if v, err := strconv.ParseFloat(strings.TrimSpace(*req.ConvertMinSSIM), 64); err != nil || v <= 0 || v > 1 {
-			a.writeError(w, http.StatusBadRequest, "quality gate minimum must be between 0 and 1")
-			return
-		}
-	}
-	for _, f := range []struct {
-		v    *string
-		name string
-	}{
-		{req.ConvertSweepStart, "schedule start"}, {req.ConvertSweepEnd, "schedule end"}, {req.ConvertScanAt, "scan time"},
-	} {
-		if f.v == nil {
-			continue
-		}
-		if t := strings.TrimSpace(*f.v); t != "" && !validHHMM(t) {
-			a.writeError(w, http.StatusBadRequest, f.name+" must be a time like 03:00")
-			return
-		}
-	}
-	if req.ConvertTargetCodec != nil {
-		if c := strings.TrimSpace(*req.ConvertTargetCodec); c != "hevc" && c != "av1" {
-			a.writeError(w, http.StatusBadRequest, "target codec must be hevc or av1")
-			return
-		}
 	}
 	if req.ConvertScanAt != nil && !save(a.deps.Settings.Set(ctx, "convert_scan_at", *req.ConvertScanAt)) {
 		return

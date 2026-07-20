@@ -32,7 +32,7 @@ const (
 	keyTargetCodec    = "convert_target_codec"     // "hevc" | "av1" — what the library is converted to
 	keyAuto           = "convert_auto"             // auto-convert the library on the schedule
 	keyQualityGate    = "convert_quality_gate"     // reject/retry an encode that scores too low (SSIM)
-	keyMinSSIM        = "convert_min_ssim"         // minimum acceptable SSIM (default 0.95)
+	keyMinSSIM        = "convert_min_ssim"         // minimum acceptable SSIM vs the source
 	keyWorkers        = "convert_workers"          // number of concurrent encode workers (default 1)
 	keySweepStart     = "convert_sweep_start"      // auto-sweep window start "HH:MM" (empty = always)
 	keySweepEnd       = "convert_sweep_end"        // auto-sweep window end   "HH:MM"
@@ -43,6 +43,17 @@ const (
 	keyCPUCores       = "convert_cpu_cores"        // max cores a CPU encode may use (0 = half the box)
 	keyCPUAboveHeight = "convert_cpu_above_height" // use CPU at/above this height (0 = never)
 	keyAV1RecodeHEVC  = "convert_av1_recode_hevc"  // let an AV1 target re-encode existing HEVC
+)
+
+// defaultMinSSIM is the quality bar an encode must clear against its source.
+//
+// 0.97, not the old 0.95: at 0.95 an encode with visible degradation passes, which makes
+// the gate decorative when the whole promise of the module is that you won't see a
+// difference. The gate is the only mechanism enforcing that promise, so it has to be set
+// where "passed" actually means "indistinguishable".
+const (
+	defaultMinSSIM      = "0.97"
+	defaultMinSSIMValue = 0.97
 )
 
 // encodeNice is the scheduling priority CPU encodes run at. 19 is the lowest — encoding is
@@ -1210,7 +1221,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	// Default true, matching the settings API (httpapi/settings.go) — they disagreed, so a
 	// fresh install showed the gate as ON in the UI while encoding with it OFF.
 	gate := plan.VideoCodec != "" && s.settings.GetBool(ctx, keyQualityGate, true)
-	minSSIM := parseFloatDefault(s.settings.Get(ctx, keyMinSSIM, "0.95"), 0.95)
+	minSSIM := parseFloatDefault(s.settings.Get(ctx, keyMinSSIM, defaultMinSSIM), defaultMinSSIMValue)
 	s.update(job, func(j *Job) { j.State = StateEncoding; j.Encoder = enc.Label })
 	s.event("info", fmt.Sprintf("%s — source: %s · %s", title, mediaSpec(mi), humanBytes(mi.SizeBytes)))
 	s.event("info", fmt.Sprintf("Encoding %s → %s on %s (%s source)", title, strings.ToUpper(plan.VideoCodec), enc.Label, humanBytes(mi.SizeBytes)))
@@ -1224,15 +1235,21 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		}
 		s.update(job, func(j *Job) { j.State = StateVerifying })
 		s.event("info", fmt.Sprintf("Verifying %s (SSIM vs source)…", title))
-		// Cap the verify: SSIM decodes both files, which is slow on a long movie and
-		// must never hang the whole queue. On timeout we accept the encode.
+		// Cap the verify: SSIM decodes both files, which is slow on a long movie and must
+		// never hang the whole queue.
 		sctx, cancel := context.WithTimeout(ctx, 25*time.Minute)
 		score, err := s.computeSSIM(sctx, dst, src)
 		cancel()
 		if err != nil {
-			s.log.Warn("convert: quality gate could not measure SSIM, accepting output", "err", err)
-			s.event("warn", fmt.Sprintf("%s: couldn't measure SSIM — accepting the encode", title))
-			break
+			// FAIL CLOSED. This used to accept the encode and recycle the original when the
+			// comparison couldn't be made — which is backwards for the one mechanism
+			// enforcing "you won't see a difference". An unmeasurable result is not a pass,
+			// and it happens most often on exactly the long, complex files most likely to
+			// have encoded badly. Keep the original instead.
+			s.log.Warn("convert: quality gate could not measure SSIM — keeping the original", "err", err)
+			s.finishSkip(job, SkipQualityGate,
+				"couldn't verify the encode matched the source — kept the original")
+			return
 		}
 		s.update(job, func(j *Job) { j.SSIM = score })
 		if score >= minSSIM {

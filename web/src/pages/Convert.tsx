@@ -40,6 +40,9 @@ export function Convert() {
   const [confirmAll, setConfirmAll] = useState(false);
   const [statsErr, setStatsErr] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  // Belt and braces: once setup is completed in THIS session, never show it again even if
+  // a later settings read fails or returns something stale.
+  const [setupDone, setSetupDone] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
   const flash = useCallback((m: string) => {
@@ -53,7 +56,9 @@ export function Convert() {
     () => api.convertStats().then((v) => { setStats(v); setStatsErr(false); }).catch(() => setStatsErr(true)),
     []);
   const loadHw = useCallback(() => api.convertHardware().then(setHw).catch(() => {}), []);
-  const loadSettings = useCallback(() => api.settings().then(setSettings).catch(() => {}), []);
+  const loadSettings = useCallback(
+    () => api.settings().then(setSettings).catch((e) => { console.error("convert: settings load failed", e); }),
+    []);
   useEffect(() => { loadHw(); loadStats(); loadSettings(); }, [loadHw, loadStats, loadSettings]);
 
   const anyActive = jobs.some((j) => ACTIVE.has(j.state));
@@ -137,7 +142,7 @@ export function Convert() {
               {enc ? `${enc.label}${enc.hardware ? " · GPU ready" : " · CPU"}` : "Detecting…"}
             </span>
             {/* Hidden during setup: nothing here is meaningful before a format is chosen. */}
-            {settings?.convert_setup_done && <>
+            {(settings?.convert_setup_done || setupDone) && <>
             <button onClick={() => setTab("settings")} className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>Settings</button>
             <button onClick={() => setConfirmAll(true)} disabled={candidates === 0} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>Convert all{candidates ? ` (${candidates.toLocaleString()})` : ""}</button>
             </>}
@@ -145,7 +150,7 @@ export function Convert() {
         </div>
 
         {/* Tabs */}
-        <div className="mb-5 flex gap-1 border-b" style={{ borderColor: "var(--line)", display: settings && !settings.convert_setup_done ? "none" : undefined }}>
+        <div className="mb-5 flex gap-1 border-b" style={{ borderColor: "var(--line)", display: settings && !settings.convert_setup_done && !setupDone ? "none" : undefined }}>
           {TABS.map((t) => {
             const active = tab === t.key;
             return (
@@ -159,8 +164,8 @@ export function Convert() {
 
         {/* Until a format is chosen there is nothing meaningful to show on the other tabs —
             candidacy, counts and estimates all depend on the target codec. */}
-        {settings && !settings.convert_setup_done ? (
-          <Setup stats={stats} flash={flash} onDone={() => { loadSettings(); loadStats(); flash("Convert is ready"); }} />
+        {settings && !settings.convert_setup_done && !setupDone ? (
+          <Setup stats={stats} flash={flash} onDone={(s) => { setSettings(s); setSetupDone(true); loadStats(); flash("Convert is ready"); }} />
         ) : (
         <>
         {statsErr && (
@@ -232,7 +237,7 @@ export function Convert() {
 // Every card carries THIS library's real numbers, so the trade is visible without anyone
 // needing to know what a codec is. The counts come from the index, which already stores
 // every file's codec and HDR type.
-function Setup({ stats, onDone, flash }: { stats: ConvertLibraryStats | null; onDone: () => void; flash: (m: string) => void }) {
+function Setup({ stats, onDone, flash }: { stats: ConvertLibraryStats | null; onDone: (s: AppSettings) => void; flash: (m: string) => void }) {
   const [codec, setCodec] = useState<"hevc" | "av1">("hevc");
   const [preset, setPreset] = useState<"quality" | "balanced" | "fastest">("balanced");
   const [busy, setBusy] = useState(false);
@@ -246,12 +251,15 @@ function Setup({ stats, onDone, flash }: { stats: ConvertLibraryStats | null; on
   const save = async () => {
     setBusy(true);
     try {
-      await api.updateSettings({
+      // Use the response directly rather than re-fetching. Gating the whole page on a
+      // second round-trip meant a failed or swallowed refetch left the user stuck on this
+      // screen with no way forward and nothing to explain it.
+      const updated = await api.updateSettings({
         convert_target_codec: codec,
         convert_cpu_above_height: preset === "quality" ? "1" : preset === "fastest" ? "0" : "2160",
         convert_setup_done: true,
       });
-      onDone();
+      onDone(updated);
     } catch (e) { flash((e as Error).message); } finally { setBusy(false); }
   };
 
