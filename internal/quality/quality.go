@@ -173,6 +173,31 @@ const gibToMegabit = 1024.0 * 1024.0 * 1024.0 * 8.0 / 1e6 // ≈ 8589.93
 // bitrateMbps is the release's average bitrate in Mbps, or 0 when the runtime is unknown.
 func (c Candidate) bitrateMbps() float64 { return BitrateMbps(c.SizeGB, c.RuntimeMin) }
 
+// codecEfficiency scales a bitrate into H.264-equivalent terms.
+//
+// Raw bitrate is a poor quality measure across codecs: a 60 Mbps H.264 encode looks WORSE
+// than a 55 Mbps HEVC one, because HEVC delivers roughly the same picture in far fewer
+// bits. Comparing the raw numbers therefore penalizes the better release and lets a bloated
+// older-codec encode through a ceiling that a superior modern one fails.
+//
+// These are deliberately conservative round numbers, not precise measurements — the point
+// is to stop comparing across codecs as though a bit is a bit.
+func codecEfficiency(c parser.Codec) float64 {
+	switch c {
+	case parser.CodecX265:
+		return 1.6 // HEVC needs ~40% fewer bits than H.264 for the same picture
+	case parser.CodecXvid, parser.CodecVC1:
+		return 0.6 // older codecs need MORE bits for the same picture
+	}
+	return 1.0 // H.264 is the reference, and the safe assumption when unknown
+}
+
+// effectiveBitrateMbps is the bitrate expressed in H.264-equivalent terms, so ceilings and
+// comparisons mean the same thing regardless of the codec a release used.
+func (c Candidate) effectiveBitrateMbps() float64 {
+	return c.bitrateMbps() * codecEfficiency(c.Release.Codec)
+}
+
 // BitrateMbps is the average bitrate in Mbps for a GiB size over a minutes
 // runtime, or 0 when either is unknown/zero.
 func BitrateMbps(sizeGB float64, runtimeMin int) float64 {
@@ -240,8 +265,10 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 	// Bitrate ceiling (length-independent). Only applies when we know the runtime; without it
 	// we can't turn a file size into a bitrate, so the cap is skipped rather than guessed.
 	if p.BitrateCapMbps > 0 {
-		if br := c.bitrateMbps(); br > p.BitrateCapMbps {
-			ev.RejectReason = fmt.Sprintf("Over your %.0f Mbps ceiling (%.1f Mbps)", p.BitrateCapMbps, br)
+		// Compared in H.264-equivalent terms: the ceiling is about picture quality, and an
+		// HEVC release at the same raw bitrate carries considerably more of it.
+		if br := c.effectiveBitrateMbps(); br > p.BitrateCapMbps {
+			ev.RejectReason = fmt.Sprintf("Over your %.0f Mbps ceiling (%.1f Mbps H.264-equivalent)", p.BitrateCapMbps, br)
 			return ev
 		}
 	}

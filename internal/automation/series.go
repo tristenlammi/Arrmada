@@ -361,10 +361,19 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 			if r.Kind() != parser.KindCompleteShow {
 				continue
 			}
-			if coversAllSeasons(r, neededSeasons, seriesSeasons) {
-				grab(ev.Candidate.Name, "complete series")
-				return
+			if !coversAllSeasons(r, neededSeasons, seriesSeasons) {
+				continue
 			}
+			// Covering what's needed isn't enough — the pack has to be mostly useful.
+			// Otherwise one missing episode pulls down an entire six-season show.
+			if !packIsProportionate(neededSeasons, packSeasonsOf(r, seriesSeasons)) {
+				c.log.Info("series: skipping complete-series pack — too little of it is needed",
+					"series", s.Title, "release", r.Title,
+					"needed_seasons", len(neededSeasons), "pack_seasons", len(packSeasonsOf(r, seriesSeasons)))
+				continue
+			}
+			grab(ev.Candidate.Name, "complete series")
+			return
 		}
 	}
 
@@ -517,6 +526,41 @@ func coversAllSeasons(r parser.Release, needed, seriesSeasons map[int]bool) bool
 	return true
 }
 
+// packIsProportionate reports whether taking a pack covering packSeasons is a sensible
+// trade for the seasons actually needed.
+//
+// Coverage alone is not enough. "Do I need something from season 3?" is satisfied by a
+// six-season complete pack, so the old check happily downloaded an entire show — hundreds
+// of gigabytes — to fill a single missing episode, then discarded almost all of it. A pack
+// has to be mostly useful, not merely sufficient.
+//
+// The rule: at least half the seasons it brings must be seasons we actually want. A show
+// missing 5 of 6 seasons still takes the complete pack; a show missing 1 of 6 does not.
+func packIsProportionate(neededSeasons, packSeasons map[int]bool) bool {
+	if len(packSeasons) <= 1 {
+		return true // a single-season pack can't be disproportionate
+	}
+	useful := 0
+	for s := range packSeasons {
+		if neededSeasons[s] {
+			useful++
+		}
+	}
+	return useful*2 >= len(packSeasons)
+}
+
+// packSeasonsOf lists the seasons a release covers, bounded by the seasons the series
+// actually has (a "S01-S06" tag on a 4-season show shouldn't invent seasons).
+func packSeasonsOf(r parser.Release, seriesSeasons map[int]bool) map[int]bool {
+	out := map[int]bool{}
+	for s := range seriesSeasons {
+		if r.CoversSeason(s) {
+			out[s] = true
+		}
+	}
+	return out
+}
+
 // ---- import (multi-file) -------------------------------------------------
 
 // ImportSeriesDownloads imports finished TV downloads: for each completed torrent
@@ -590,7 +634,26 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			}
 		}
 		if !matchOK {
-			c.log.Info("series import: no matching library series", "release", it.Name, "parsed_title", parsed.Title)
+			// The import sweep runs every 30 seconds, so an unmatchable download used to
+			// log this line forever — thousands of identical entries burying real events,
+			// while the searcher separately re-grabbed the same release because its
+			// episodes still read as missing. Log it once per download instead, and after
+			// enough attempts hand it to review so a human can see it and it stops being
+			// invisible.
+			n := c.noteUnmatched(it.Hash)
+			switch {
+			case n == 1:
+				c.log.Info("series import: no matching library series",
+					"release", it.Name, "parsed_title", parsed.Title)
+			case n == unmatchedReviewAfter:
+				c.log.Warn("series import: download still matches no series — sending to review",
+					"release", it.Name, "parsed_title", parsed.Title, "attempts", n)
+				c.addReview(ctx, Review{
+					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "series",
+					ParsedTitle: parsed.Title, SizeBytes: it.SizeBytes,
+					Reason: fmt.Sprintf("Parsed as %q, which matches no series in your library", parsed.Title),
+				})
+			}
 			continue // not something we grabbed and not a library title — leave alone
 		}
 		imported, matched := c.importSeriesInto(ctx, s, it.ContentPath)

@@ -385,12 +385,30 @@ func normalize(s string) string {
 	return " " + repl.Replace(s) + " "
 }
 
+// packWords are scene words that describe the RELEASE, not the show. They're normally
+// harmless because they sit after the season marker ("Scorpion S01-S04 complete web ..."),
+// which is where the title is cut. But when a group puts them BEFORE it — "The Expanse
+// complete S01-S06 web ..." — they land inside the title, the release stops matching any
+// library series, and the download is retried forever while the searcher re-grabs it.
+var packWords = map[string]bool{
+	"complete": true, "collection": true, "boxset": true, "box": true, "set": true,
+	"pack": true, "series": true, "duology": true, "trilogy": true, "quadrilogy": true,
+	"anthology": true,
+}
+
 func cleanTitle(s string) string {
 	s = strings.NewReplacer(".", " ", "_", " ").Replace(s)
 	// Trim trailing separators and a dangling "(" from a parenthesized year,
 	// e.g. "The Matrix (1999)" → title "The Matrix (" → "The Matrix".
 	s = strings.Trim(s, " -([")
-	return strings.Join(strings.Fields(s), " ")
+	fields := strings.Fields(s)
+	// Strip pack words from the END only. Leading/middle occurrences are part of real
+	// titles ("The Complete Sherlock Holmes", "Band of Brothers"), and never stripping
+	// the last remaining word keeps a show genuinely called "Complete" intact.
+	for len(fields) > 1 && packWords[strings.ToLower(fields[len(fields)-1])] {
+		fields = fields[:len(fields)-1]
+	}
+	return strings.Join(fields, " ")
 }
 
 func contains(hay, needle string) bool {

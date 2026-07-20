@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -45,6 +46,12 @@ type Coordinator struct {
 	books        *books.Service  // set post-construction via SetBooks
 	imp          *library.Importer
 	recycle      string // recycle-bin dir for book deletes ("" = hard delete); set via SetRecycleDir
+
+	// unmatched counts how many import sweeps have failed to match a download to a
+	// series, keyed by torrent hash. Without it the 30-second sweep logs the same failure
+	// forever and nothing ever escalates. Guarded by unmatchedMu.
+	unmatchedMu sync.Mutex
+	unmatched   map[string]int
 
 	// onSeriesImported fires after episodes land, so the Convert library index can
 	// refresh just that show rather than waiting for the nightly sweep. Optional.
@@ -1044,4 +1051,19 @@ func toInt(v any) int {
 		return int(n)
 	}
 	return 0
+}
+
+// unmatchedReviewAfter is how many failed match attempts before a download is escalated
+// to review. At one sweep every 30s that's about five minutes of trying.
+const unmatchedReviewAfter = 10
+
+// noteUnmatched records another failed match for a download and returns the running count.
+func (c *Coordinator) noteUnmatched(hash string) int {
+	c.unmatchedMu.Lock()
+	defer c.unmatchedMu.Unlock()
+	if c.unmatched == nil {
+		c.unmatched = map[string]int{}
+	}
+	c.unmatched[hash]++
+	return c.unmatched[hash]
 }
