@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -112,6 +113,7 @@ const torznabRequestDelay = 1000 * time.Millisecond
 // TorznabSearcher queries Torznab/Newznab endpoints over HTTP. It implements
 // Searcher for both the KindTorznab and KindNewznab kinds.
 type TorznabSearcher struct {
+	log  *slog.Logger
 	http *http.Client
 	mu   sync.Mutex
 	// next[host] is the earliest time the next request to that host may start.
@@ -126,6 +128,10 @@ func NewTorznabSearcher() *TorznabSearcher {
 		next: map[string]time.Time{},
 	}
 }
+
+// SetLogger attaches a logger so each request page can be traced. Optional — the searcher
+// works without one.
+func (c *TorznabSearcher) SetLogger(l *slog.Logger) { c.log = l }
 
 // throttle reserves this request's slot for the endpoint's host and waits for it.
 // The slot is claimed under the lock but slept for outside it, so concurrent callers
@@ -186,6 +192,14 @@ func (c *TorznabSearcher) Search(ctx context.Context, idx Indexer, q SearchQuery
 		releases, total, err := parseFeedPage(body)
 		if err != nil {
 			return nil, fmt.Errorf("indexer %q: %w", idx.Name, err)
+		}
+		// Per-page trace. The aggregate count can't show whether paging happened, what
+		// categories were asked for, or what total the indexer declared — all of which
+		// decide whether a missing release was never offered or never requested.
+		if c.log != nil {
+			c.log.Info("torznab page", "indexer", idx.Name, "page", page,
+				"offset", q.Offset, "items", len(releases), "declared_total", total,
+				"url", redactKey(endpoint))
 		}
 
 		added := 0
@@ -342,4 +356,18 @@ func parseFeedDate(s string) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+// redactKey strips the apikey from a URL so it can be logged safely.
+func redactKey(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "<unparseable>"
+	}
+	qs := u.Query()
+	if qs.Get("apikey") != "" {
+		qs.Set("apikey", "REDACTED")
+	}
+	u.RawQuery = qs.Encode()
+	return u.String()
 }

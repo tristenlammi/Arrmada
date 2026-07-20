@@ -28,6 +28,7 @@ func NewService(db *sql.DB, log *slog.Logger, flaresolverrURL string) *Service {
 		fs = flaresolverr.New(flaresolverrURL)
 	}
 	s := &Service{repo: NewRepo(db), registry: NewRegistry(fs), log: log}
+	s.registry.SetLogger(log) // per-page request tracing
 	// Persist a rotated MyAnonaMouse session so it doesn't silently expire.
 	s.registry.SetSessionPersister(func(id int64, session string) {
 		if err := s.repo.SetSession(context.Background(), id, session); err != nil {

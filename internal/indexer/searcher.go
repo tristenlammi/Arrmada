@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/tristenlammi/arrmada/internal/flaresolverr"
 )
@@ -49,6 +50,13 @@ func NewRegistry(fs *flaresolverr.Client) *Registry {
 	r.mam = NewMAMSearcher(nil)
 	r.searchers[KindMAM] = r.mam
 	return r
+}
+
+// SetLogger attaches a logger to the searchers that support request tracing.
+func (r *Registry) SetLogger(l *slog.Logger) {
+	if tn, ok := r.searchers[KindTorznab].(*TorznabSearcher); ok {
+		tn.SetLogger(l)
+	}
 }
 
 // SetSessionPersister wires the callback used to save a rotated MyAnonaMouse
