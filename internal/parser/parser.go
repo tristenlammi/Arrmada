@@ -428,6 +428,16 @@ func cleanTitle(s string) string {
 	// titles ("The Complete Sherlock Holmes", "Band of Brothers"), and never stripping
 	// the last remaining word keeps a show genuinely called "Complete" intact.
 	for len(fields) > 1 && packWords[strings.ToLower(fields[len(fields)-1])] {
+		// "Series" is the one pack word that is routinely part of the real title —
+		// "ARK: The Animated Series", "Batman: The Animated Series", "Star Trek: The
+		// Animated Series". Stripping it unconditionally left "ARK The Animated", which
+		// matched no library show, so a perfectly good pack was held for review on every
+		// sweep. Scene releases spell the pack sense as "Complete Series", so only treat
+		// it as one when another pack word sits immediately before it.
+		if strings.EqualFold(fields[len(fields)-1], "series") &&
+			!(len(fields) > 1 && packWords[strings.ToLower(fields[len(fields)-2])]) {
+			break
+		}
 		fields = fields[:len(fields)-1]
 	}
 	return strings.Join(fields, " ")
