@@ -659,6 +659,11 @@ export interface ConvertMediaInfo {
   container: string; video_codec: string; width: number; height: number; resolution: string; hdr: string;
   bitrate_kbps: number; frame_rate: number; duration_sec: number; size_bytes: number; audio_tracks: number; sub_tracks: number; ten_bit: boolean;
 }
+export interface ConvertSkipped {
+  key: string; kind: string; reason: string; permanent: boolean; updated_at: string;
+  media_kind: string; movie_id?: number; series_id?: number; season: number; episode: number; title: string;
+}
+
 export interface ConvertBlocked {
   key: string; kind: string; movie_id?: number; series_id?: number; season: number; episode: number;
   title: string; count: number; last_error: string; updated_at: string;
@@ -666,6 +671,7 @@ export interface ConvertBlocked {
 
 export interface ConvertMediaStats {
   files: number; convertible: number; total_bytes: number; est_bytes: number; convertible_bytes: number; reclaimable: number;
+  skipped: number;
   hdr10: number; hdr10_plus: number; dolby_vision: number; hlg: number;
   h264: number; hevc: number; av1: number; other: number;
 }
@@ -1084,6 +1090,9 @@ export const api = {
   convertCancel: (id: number) => req<{ cancelled: number }>(`/api/v1/convert/jobs/${id}/cancel`, { method: "POST" }),
   convertCancelQueued: () => req<{ cancelled: number }>("/api/v1/convert/jobs/cancel-queued", { method: "POST" }),
   convertBlocklist: () => req<{ items: ConvertBlocked[] }>("/api/v1/convert/blocklist").then((r) => r.items),
+  convertSkips: () => req<{ items: ConvertSkipped[] }>("/api/v1/convert/skips").then((r) => r.items),
+  convertSkipsClear: (key?: string) =>
+    req<{ cleared: boolean }>(`/api/v1/convert/skips/clear?${key ? `key=${encodeURIComponent(key)}` : "all=1"}`, { method: "POST" }),
   convertBlocklistClear: (key?: string) =>
     req<{ cleared: boolean }>(`/api/v1/convert/blocklist/clear?${key ? `key=${encodeURIComponent(key)}` : "all=1"}`, { method: "POST" }),
   convertLibrarySeries: () => req<{ series: ConvertSeriesRollup[] }>("/api/v1/convert/library?media=tv").then((r) => r.series),

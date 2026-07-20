@@ -380,6 +380,11 @@ type MediaStats struct {
 	Reclaimable      int64 `json:"reclaimable"`       // total_bytes of convertible files minus est_bytes
 	// HDR counts, over CONVERTIBLE files only — the question the format cards answer is
 	// "what would this format leave behind", not "what do I own".
+	// Skipped counts files that CAN'T convert (Dolby Vision into AV1, still seeding, …).
+	// They're excluded from Reclaimable so the headline stops promising space that will
+	// never arrive, but still counted here so the UI can explain the shortfall.
+	Skipped int `json:"skipped"`
+
 	HDR10       int `json:"hdr10"`
 	HDR10Plus   int `json:"hdr10_plus"`
 	DolbyVision int `json:"dolby_vision"`
@@ -463,19 +468,29 @@ func (s *Service) LibraryStats(ctx context.Context) (*LibraryStats, error) {
 	dp := s.defaultPlan(ctx)
 	target := s.targetCodec(ctx)
 	recode := s.av1RecodesHEVC(ctx)
+	// Files whose skip won't resolve on its own aren't reclaimable space, however
+	// convertible their codec looks.
+	skipped := s.skips.permanentKeys(ctx)
 	rows, err := s.index.db.QueryContext(ctx,
-		`SELECT media_type, size_bytes, video_codec, info_json FROM convert_library`)
+		`SELECT media_type, movie_id, series_id, season, episode, size_bytes, video_codec, info_json
+		   FROM convert_library`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var mediaType, codec, infoJSON string
-		var size int64
-		if err := rows.Scan(&mediaType, &size, &codec, &infoJSON); err != nil {
+		var movieID, seriesID, size int64
+		var season, episode int
+		if err := rows.Scan(&mediaType, &movieID, &seriesID, &season, &episode, &size, &codec, &infoJSON); err != nil {
 			return nil, err
 		}
+		key := movieKey(movieID)
+		if mediaType == "episode" {
+			key = episodeKey(seriesID, season, episode)
+		}
 		convertible := isCandidateCodec(codec, target, recode)
+		permaSkipped := convertible && skipped[key]
 		var est int64
 		hdr := ""
 		if infoJSON != "" {
@@ -491,9 +506,12 @@ func (s *Service) LibraryStats(ctx context.Context) (*LibraryStats, error) {
 		if mediaType == "episode" {
 			per = &out.TV
 		}
-		per.add(codec, size, est, convertible)
-		out.Total.add(codec, size, est, convertible)
-		if convertible {
+		per.add(codec, size, est, convertible && !permaSkipped)
+		out.Total.add(codec, size, est, convertible && !permaSkipped)
+		if permaSkipped {
+			per.Skipped++
+			out.Total.Skipped++
+		} else if convertible {
 			per.addHDR(hdr)
 			out.Total.addHDR(hdr)
 		}

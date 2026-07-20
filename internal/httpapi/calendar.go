@@ -38,7 +38,7 @@ func (a *api) handleCalendar(w http.ResponseWriter, r *http.Request) {
 		for _, e := range eps {
 			items = append(items, CalendarItem{
 				Date: dateOnly(e.AirDate), Type: "episode", Title: e.SeriesTitle,
-				Subtitle: episodeSubtitle(e.Season, e.Episode, e.EpisodeName),
+				Subtitle:  episodeSubtitle(e.Season, e.Episode, e.EpisodeName),
 				PosterURL: e.PosterURL, RefID: e.SeriesID, HasFile: e.HasFile, Monitored: e.Monitored,
 			})
 		}

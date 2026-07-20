@@ -161,6 +161,33 @@ func (a *api) handleConvertBlocklistClear(w http.ResponseWriter, r *http.Request
 	a.writeJSON(w, http.StatusOK, map[string]any{"cleared": true})
 }
 
+// handleConvertSkips lists files that couldn't be converted, with the reason.
+func (a *api) handleConvertSkips(w http.ResponseWriter, r *http.Request) {
+	list, err := a.deps.Convert.Skips(r.Context())
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not read the skip list")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"items": list})
+}
+
+// handleConvertSkipsClear forgets one skip, or all of them with ?all=1, so they're retried.
+func (a *api) handleConvertSkipsClear(w http.ResponseWriter, r *http.Request) {
+	key := r.URL.Query().Get("key")
+	if r.URL.Query().Get("all") != "1" && key == "" {
+		a.writeError(w, http.StatusBadRequest, "pass key= or all=1")
+		return
+	}
+	if r.URL.Query().Get("all") == "1" {
+		key = ""
+	}
+	if err := a.deps.Convert.ClearSkip(r.Context(), key); err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not clear the skip")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"cleared": true})
+}
+
 // handleConvertStats returns the Overview tab's library-wide numbers (movies + TV) from the
 // index, so the page doesn't have to fetch the whole movie list to render them.
 func (a *api) handleConvertStats(w http.ResponseWriter, r *http.Request) {

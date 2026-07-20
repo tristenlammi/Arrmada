@@ -145,6 +145,7 @@ type Service struct {
 	encoder  Encoder
 	failures *failureStore // quarantine blocklist (repeated-failure tracking)
 	cache    *probeCache   // persisted ffprobe results (avoids re-analyzing on restart)
+	skips    *skipStore    // persisted skip reasons, so they survive a restart and are visible
 	index    *libraryIndex // persisted per-file library facts; what the library list reads
 
 	indexMu   sync.Mutex // serializes index sweeps so a scheduled one can't overlap an import-triggered one
@@ -211,6 +212,7 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 		ffmpeg: ffmpeg, ffprobe: ffprobe, scratchDir: scratchDir, recycleDir: recycleDir,
 		encoders: encs, encoder: bestHEVC(encs), failures: &failureStore{db: db},
 		cache: &probeCache{db: db}, logs: &logStore{db: db}, index: &libraryIndex{db: db},
+		skips:   &skipStore{db: db},
 		queue:   make(chan *Job, maxQueued),
 		pending: map[string]*Job{},
 	}
@@ -574,13 +576,22 @@ func (s *Service) queueMovie(ctx context.Context, movieID int64, plan Plan) (*Jo
 	return job, nil
 }
 
+// finishSkip ends a job as skipped and records the reason durably. The in-memory job list
+// holds only the last 200 entries and is lost on restart, so without this a skip was
+// effectively invisible: the file stayed a candidate, kept inflating the reclaimable
+// figure, and was re-probed by every sweep with nothing to show for it.
+func (s *Service) finishSkip(job *Job, kind, note string) {
+	s.skips.record(context.Background(), jobKey(job), kind, note)
+	s.finish(job, StateSkipped, note)
+}
+
 // finishAfterEncode skips a job that already burned a full encode (or three, via the quality
 // gate) and would do so again on every sweep: the outcome is deterministic for that file, and
 // it stays a candidate because its codec never changed. Counting it toward the blocklist is
 // what stops the library re-transcoding the same unshrinkable file forever.
-func (s *Service) finishAfterEncode(job *Job, note string) {
+func (s *Service) finishAfterEncode(job *Job, kind, note string) {
 	s.failures.recordFailure(context.Background(), jobKey(job), note)
-	s.finish(job, StateSkipped, note)
+	s.finishSkip(job, kind, note)
 }
 
 // reindexConverted updates the library index for the file a job just converted.
@@ -749,6 +760,48 @@ func (s *Service) Blocklist(ctx context.Context) ([]Blocked, error) {
 	return list, nil
 }
 
+// Skips returns the files that couldn't be converted and why, with titles resolved.
+// Without this the reasons lived only in a 200-entry in-memory list that vanished on
+// restart, so "some of my library never converts" was undiscoverable.
+func (s *Service) Skips(ctx context.Context) ([]Skipped, error) {
+	list, err := s.skips.list(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for i := range list {
+		list[i].Title = s.titleForKey(ctx, list[i].MediaKind, list[i].MovieID, list[i].SeriesID, list[i].Season, list[i].Episode, list[i].Key)
+	}
+	return list, nil
+}
+
+// ClearSkip forgets an item's skip (or all of them) so it's retried next time.
+func (s *Service) ClearSkip(ctx context.Context, key string) error {
+	if key == "" {
+		return s.skips.clearAll(ctx)
+	}
+	s.skips.clear(ctx, key)
+	return nil
+}
+
+// titleForKey resolves a display title for a movie or episode, falling back to the raw key.
+func (s *Service) titleForKey(ctx context.Context, kind string, movieID, seriesID int64, season, episode int, key string) string {
+	switch kind {
+	case "movie":
+		if s.movies != nil {
+			if m, err := s.movies.Get(ctx, movieID); err == nil {
+				return m.Title
+			}
+		}
+	case "episode":
+		if s.series != nil {
+			if sm, err := s.series.Get(ctx, seriesID); err == nil {
+				return fmt.Sprintf("%s - S%02dE%02d", sm.Title, season, episode)
+			}
+		}
+	}
+	return key
+}
+
 // ClearBlocklist forgets an item's failures (or all of them when key is empty) so it will be
 // retried by the next convert.
 func (s *Service) ClearBlocklist(ctx context.Context, key string) error {
@@ -768,7 +821,7 @@ func (s *Service) enqueue(ctx context.Context, job *Job) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-		s.finish(job, StateSkipped, "convert queue is full — try again once it drains")
+		s.finishSkip(job, SkipQueueFull, "convert queue is full — try again once it drains")
 		return fmt.Errorf("convert queue is full")
 	}
 }
@@ -1092,7 +1145,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		return
 	}
 	if wouldBeNoOp(mi, plan) {
-		s.finish(job, StateSkipped, "already "+strings.ToUpper(mi.VideoCodec)+" — nothing to do")
+		s.finishSkip(job, SkipAlreadyTarget, "already "+strings.ToUpper(mi.VideoCodec)+" — nothing to do")
 		return
 	}
 	// Encoder routing — ordered, first match wins. See CONVERT-QUALITY-PLAN.md.
@@ -1102,13 +1155,13 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	// target, or a missing dovi_tool / hdr10plus_tool) is skipped rather than silently
 	// flattened. The format cards in Settings warn about this before the user commits.
 	if isHDR(mi.HDR) && !s.canPreserveHDR(mi, plan, enc) {
-		s.finish(job, StateSkipped, skipReasonHDR(mi.HDR, plan.VideoCodec))
+		s.finishSkip(job, SkipHDRUnsupported, skipReasonHDR(mi.HDR, plan.VideoCodec))
 		return
 	}
 
 	// Seeding-safety: skip hardlinked files by default so we don't duplicate a seeding copy.
 	if s.settings.GetBool(ctx, keySkipHardlinked, true) && fileLinks(src) > 1 {
-		s.finish(job, StateSkipped, "file is hardlinked (likely still seeding) — skipped")
+		s.finishSkip(job, SkipHardlinked, "file is hardlinked (likely still seeding) — skipped")
 		return
 	}
 	// The transcode working dir (fast/SSD when configured) — heavy encode I/O lands here.
@@ -1187,7 +1240,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 			break
 		}
 		if attempt >= qualityRetries {
-			s.finishAfterEncode(job, fmt.Sprintf("quality gate failed — SSIM %.4f < %.4f after %d attempts; kept the original", score, minSSIM, attempt+1))
+			s.finishAfterEncode(job, SkipQualityGate, fmt.Sprintf("quality gate failed — SSIM %.4f < %.4f after %d attempts; kept the original", score, minSSIM, attempt+1))
 			return
 		}
 		plan.Quality = higherQuality(plan)
@@ -1282,11 +1335,11 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst, ext st
 	// Save-space safety only applies to transcodes; a remux/container change is about the
 	// container, not size, so reject it only if it grew unreasonably.
 	if plan.VideoCodec != "" && outSize >= mi.SizeBytes {
-		s.finishAfterEncode(job, "converted file wasn't smaller — kept the original")
+		s.finishAfterEncode(job, SkipNotSmaller, "converted file wasn't smaller — kept the original")
 		return
 	}
 	if plan.VideoCodec == "" && outSize > mi.SizeBytes*12/10 {
-		s.finish(job, StateSkipped, "remuxed file was unexpectedly larger — kept the original")
+		s.finishSkip(job, SkipNotSmaller, "remuxed file was unexpectedly larger — kept the original")
 		return
 	}
 	pct := 0
@@ -1534,6 +1587,7 @@ func (s *Service) finish(job *Job, state JobState, note string) {
 		s.failures.recordFailure(context.Background(), key, note)
 	case StateDone:
 		s.failures.clearFailures(context.Background(), key)
+		s.skips.clear(context.Background(), key) // it converted after all
 	}
 }
 

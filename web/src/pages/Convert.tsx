@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type ConvertCandidate, type ConvertSeriesRollup, type ConvertLibraryStats, type ConvertBlocked, type ConvertEncoder, type ConvertJob, type ConvertSample, type AppSettings } from "../lib/api";
+import { api, type ConvertCandidate, type ConvertSeriesRollup, type ConvertLibraryStats, type ConvertBlocked, type ConvertSkipped, type ConvertEncoder, type ConvertJob, type ConvertSample, type AppSettings } from "../lib/api";
 
 // Convert (Tdarr replacement) — the four-tab experience from the design mockup, wired to
 // the real backend. Implemented today: analysis, hardware detection, the Save-space engine
@@ -170,10 +170,10 @@ export function Convert() {
             <button onClick={() => { loadStats(); loadHw(); }} className="rounded px-2 py-1 text-[11.5px] font-semibold" style={{ border: "1px solid var(--avoid)" }}>Retry</button>
           </div>
         )}
-        {tab === "overview" && <Overview hw={hw} stats={stats} jobs={jobs} settings={settings} />}
+        {tab === "overview" && <Overview hw={hw} stats={stats} jobs={jobs} settings={settings} onShowProblems={() => setTab("problems")} />}
         {tab === "queue" && <Queue jobs={jobs} flash={flash} onChanged={() => { api.convertJobs().then(setJobs).catch(() => {}); loadStats(); }} />}
         {tab === "library" && <Library flash={flash} onQueued={() => api.convertJobs().then(setJobs)} />}
-        {tab === "problems" && <Blocklist flash={flash} />}
+        {tab === "problems" && <Problems flash={flash} />}
         {tab === "logs" && <LogsConsole />}
         {tab === "settings" && <ConvertSettings flash={flash} />}
         </>
@@ -355,7 +355,7 @@ const cardStyle = { border: "1px solid var(--line)", background: "var(--panel)" 
 const lbl = "font-mono text-[9.5px] font-bold uppercase tracking-[0.11em] text-ink-faint";
 
 /* ============================= OVERVIEW ============================= */
-function Overview({ hw, stats, jobs, settings }: { hw: { selected: ConvertEncoder; encoders: ConvertEncoder[]; reclaimed_bytes: number } | null; stats: ConvertLibraryStats | null; jobs: ConvertJob[]; settings: AppSettings | null }) {
+function Overview({ hw, stats, jobs, settings, onShowProblems }: { onShowProblems: () => void; hw: { selected: ConvertEncoder; encoders: ConvertEncoder[]; reclaimed_bytes: number } | null; stats: ConvertLibraryStats | null; jobs: ConvertJob[]; settings: AppSettings | null }) {
   // Which slice of the library the codec bar describes. It covered movies only before, which
   // hid the fact that TV is the overwhelming majority of files.
   const [scope, setScope] = useState<"total" | "movies" | "tv">("total");
@@ -378,6 +378,13 @@ function Overview({ hw, stats, jobs, settings }: { hw: { selected: ConvertEncode
             <div className="mt-1 text-[11px] text-ink-faint">
               {(stats?.movies.convertible ?? 0).toLocaleString()} movies · {(stats?.tv.convertible ?? 0).toLocaleString()} episodes
             </div>
+            {/* Permanently-skipped files are excluded from the figure above, so say why
+                rather than leaving an unexplained shortfall. */}
+            {(t?.skipped ?? 0) > 0 && (
+              <button onClick={onShowProblems} className="mt-1 text-left text-[11px] underline" style={{ color: "var(--avoid)" }}>
+                {t!.skipped.toLocaleString()} file{t!.skipped === 1 ? "" : "s"} can&rsquo;t be converted — see Problems
+              </button>
+            )}
           </div>
         </div>
         {/* codec breakdown */}
@@ -637,57 +644,117 @@ function Queue({ jobs, flash, onChanged }: { jobs: ConvertJob[]; flash: (m: stri
 // answer is often days or weeks and that is exactly the number worth seeing before committing.
 // Blocklist surfaces files automation has given up on. They were previously invisible: the
 // engine skipped them silently forever and the only hint was a transient toast.
-function Blocklist({ flash }: { flash: (m: string) => void }) {
-  const [items, setItems] = useState<ConvertBlocked[] | null>(null);
+// SKIP_LABEL turns a machine kind into something worth reading. Grouping by reason is the
+// point: "47 files: Dolby Vision can't be converted to AV1" is actionable, forty-seven
+// separate rows are not.
+const SKIP_LABEL: Record<string, string> = {
+  hdr_unsupported: "Their HDR metadata can't be carried into your chosen format",
+  hardlinked: "Still seeding — Convert won't touch a file your torrent client is sharing",
+  not_smaller: "Converting them made them bigger, so the originals were kept",
+  quality_gate: "The encode couldn't meet your quality threshold, so the originals were kept",
+  queue_full: "The queue was full at the time — these will be picked up next run",
+};
+
+// Problems shows everything Convert couldn't do and why. Both lists were previously
+// invisible: blocklisted files had no UI at all, and skip reasons lived only in a 200-entry
+// in-memory job list that vanished on restart.
+function Problems({ flash }: { flash: (m: string) => void }) {
+  const [skips, setSkips] = useState<ConvertSkipped[] | null>(null);
+  const [blocked, setBlocked] = useState<ConvertBlocked[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const load = useCallback(() => api.convertBlocklist().then(setItems).catch(() => setItems([])), []);
+
+  const load = useCallback(() => {
+    api.convertSkips().then(setSkips).catch(() => setSkips([]));
+    api.convertBlocklist().then(setBlocked).catch(() => setBlocked([]));
+  }, []);
   useEffect(() => { load(); }, [load]);
 
-  const clear = async (key?: string) => {
-    setBusy(key ?? "all");
+  const retrySkips = async (kind?: string, key?: string) => {
+    setBusy(key ?? kind ?? "all");
     try {
-      await api.convertBlocklistClear(key);
-      flash(key ? "Cleared — it'll be retried on the next convert" : "Blocklist cleared");
+      if (key) await api.convertSkipsClear(key);
+      else for (const s of (skips ?? []).filter((x) => !kind || x.kind === kind)) await api.convertSkipsClear(s.key);
+      flash("Cleared — they'll be retried on the next convert");
       load();
     } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
   };
+  const retryBlocked = async (key?: string) => {
+    setBusy(key ?? "blocked");
+    try { await api.convertBlocklistClear(key); flash("Cleared — will be retried"); load(); }
+    catch (e) { flash((e as Error).message); } finally { setBusy(null); }
+  };
 
-  if (items === null) return <div className="text-[12px] text-ink-faint">Loading…</div>;
-  if (!items.length) {
+  if (skips === null || blocked === null) return <div className="text-[12px] text-ink-faint">Loading…</div>;
+
+  // Group skips by reason — the user wants to know what class of thing is stuck.
+  const groups = new Map<string, ConvertSkipped[]>();
+  for (const s of skips) groups.set(s.kind, [...(groups.get(s.kind) ?? []), s]);
+
+  if (!skips.length && !blocked.length) {
     return (
       <div className={card} style={cardStyle}>
-        <div className="text-[14px] font-bold">No problem files</div>
-        <p className="mt-1 text-[12px] text-ink-dim">Nothing has failed enough times to be skipped by automation.</p>
+        <div className="text-[14px] font-bold">Nothing stuck</div>
+        <p className="mt-1 text-[12px] text-ink-dim">Every file has either converted or is waiting its turn.</p>
       </div>
     );
   }
+
   return (
-    <div className={card} style={cardStyle}>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <div className="text-[14px] font-bold">Problem files <span className="font-mono text-[11px] text-ink-faint">{items.length}</span></div>
-          <p className="mt-0.5 text-[11.5px] text-ink-dim">
-            These kept failing, so bulk converts skip them. Clear one to have it retried.
-          </p>
-        </div>
-        <button onClick={() => clear()} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50"
-          style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Clear all</button>
-      </div>
-      <div className="mt-3 flex flex-col gap-1.5">
-        {items.map((b) => (
-          <div key={b.key} className="flex items-start gap-2.5 text-[12px]">
-            <span className="rounded px-1.5 py-0.5 font-mono text-[9px] font-bold" style={{ background: "var(--reject-soft)", color: "var(--reject)" }}>{b.count}×</span>
-            <div className="flex-1">
-              <div className="font-semibold">{b.title}</div>
-              {b.last_error && <div className="text-[11px] leading-snug text-ink-faint">{b.last_error}</div>}
+    <div className="flex flex-col gap-3.5">
+      {[...groups.entries()].map(([kind, items]) => (
+        <div key={kind} className={card} style={cardStyle}>
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <div className="text-[14px] font-bold">
+                {items.length.toLocaleString()} file{items.length === 1 ? "" : "s"} skipped
+                {items[0].permanent ? null : <span className="ml-2 font-mono text-[10px] font-normal text-ink-faint">TEMPORARY</span>}
+              </div>
+              <p className="mt-0.5 text-[12px] text-ink-dim">{SKIP_LABEL[kind] ?? items[0].reason}</p>
             </div>
-            <button onClick={() => clear(b.key)} disabled={busy !== null} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold disabled:opacity-50"
-              style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>
-              {busy === b.key ? "…" : "Retry"}
+            <button onClick={() => retrySkips(kind)} disabled={busy !== null}
+              className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50"
+              style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
+              {busy === kind ? "…" : "Try these again"}
             </button>
           </div>
-        ))}
-      </div>
+          <div className="mt-2.5 flex flex-col gap-1">
+            {items.slice(0, 12).map((s) => (
+              <div key={s.key} className="flex items-center gap-2.5 text-[12px]">
+                <span className="flex-1 truncate text-ink-dim">{s.title}</span>
+                <button onClick={() => retrySkips(undefined, s.key)} disabled={busy !== null}
+                  className="rounded px-1.5 py-0.5 font-mono text-[10px] text-ink-faint hover:text-[var(--accent)]">retry</button>
+              </div>
+            ))}
+            {items.length > 12 && <div className="text-[11.5px] text-ink-faint">+ {(items.length - 12).toLocaleString()} more</div>}
+          </div>
+        </div>
+      ))}
+
+      {blocked.length > 0 && (
+        <div className={card} style={cardStyle}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="text-[14px] font-bold">Repeated failures <span className="font-mono text-[11px] text-ink-faint">{blocked.length}</span></div>
+              <p className="mt-0.5 text-[11.5px] text-ink-dim">These failed enough times that bulk converts now skip them.</p>
+            </div>
+            <button onClick={() => retryBlocked()} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50"
+              style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Clear all</button>
+          </div>
+          <div className="mt-2.5 flex flex-col gap-1.5">
+            {blocked.map((b) => (
+              <div key={b.key} className="flex items-start gap-2.5 text-[12px]">
+                <span className="rounded px-1.5 py-0.5 font-mono text-[9px] font-bold" style={{ background: "var(--reject-soft)", color: "var(--reject)" }}>{b.count}×</span>
+                <div className="flex-1">
+                  <div className="font-semibold">{b.title}</div>
+                  {b.last_error && <div className="text-[11px] leading-snug text-ink-faint">{b.last_error}</div>}
+                </div>
+                <button onClick={() => retryBlocked(b.key)} disabled={busy !== null} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold disabled:opacity-50"
+                  style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>Retry</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
