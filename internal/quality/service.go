@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"strconv"
 	"strings"
+
+	"github.com/tristenlammi/arrmada/internal/parser"
 )
 
 // Service is the quality subsystem's application logic: it resolves a profile
@@ -141,8 +143,14 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 			continue // the release we already have
 		}
 		qualityBetter := ev.Total > cur.Total
-		bitrateBetter := sp.UpgradeBitrateMbps > 0 && ev.Total >= cur.Total && runtimeMin > 0 &&
-			BitrateMbps(ev.Candidate.SizeGB, runtimeMin) >= BitrateMbps(currentSizeGB, runtimeMin)+sp.UpgradeBitrateMbps
+		// Same helper the import gate uses, so the two can't drift apart again — the
+		// searcher deciding a release is worth grabbing and the importer then refusing to
+		// place it is exactly the bug this shares its logic to prevent. It also brings the
+		// margin floors and codec normalization to the grab side, which compared raw
+		// bitrates and so over-valued a bloated older-codec encode.
+		bitrateBetter := ev.Total >= cur.Total && s.IsBitrateUpgrade(ctx, ref,
+			Encode{SizeGB: ev.Candidate.SizeGB, Codec: ev.Candidate.Release.Codec},
+			Encode{SizeGB: currentSizeGB, Codec: curCand.Release.Codec}, runtimeMin)
 		if qualityBetter || bitrateBetter {
 			return ev.Candidate, true
 		}
@@ -150,26 +158,54 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 	return Candidate{}, false
 }
 
-// IsBitrateUpgrade reports whether a candidate beats the current file by the profile's
-// bitrate margin, at equal resolution.
+// Encode is one side of a bitrate comparison: how big it is and what codec it used.
+type Encode struct {
+	SizeGB float64
+	Codec  parser.Codec
+}
+
+// Guard rails on the upgrade margin, so a small or careless setting can't churn a library
+// through an endless ladder of barely-better files. Both must be cleared.
+const (
+	// MinUpgradeMarginMbps is the floor on the absolute margin, whatever the profile
+	// asks for. Matters most at low bitrates, where a percentage alone is a tiny number.
+	MinUpgradeMarginMbps = 0.5
+	// MinUpgradeRatio requires the candidate to be meaningfully better in proportion, not
+	// just by a fixed amount. A fixed margin can't serve 480p (~1.5 Mbps) and 2160p
+	// (~40 Mbps) at once: 1 Mbps is a huge jump for one and noise for the other.
+	MinUpgradeRatio = 1.20
+)
+
+// IsBitrateUpgrade reports whether a candidate beats the current file by enough to be
+// worth replacing it, at equal resolution.
 //
 // This is the same test Upgrade() applies when deciding to GRAB a better release, exposed
 // so the IMPORT gate can apply it too. They used to disagree: the searcher would find a
 // same-resolution higher-bitrate release, grab it, download it — and the importer would
-// then refuse to place it because resolution hadn't increased. The bandwidth was spent and
-// the file discarded.
+// then refuse to place it because resolution hadn't increased.
 //
-// Returns false when the profile doesn't enable upgrades, sets no bitrate margin, or when
-// the runtime/sizes needed to compute a bitrate are missing.
-func (s *Service) IsBitrateUpgrade(ctx context.Context, ref string, candGB, currentGB float64, runtimeMin int) bool {
+// Comparison is in H.264-equivalent terms. Raw bitrate is a poor measure across codecs —
+// see codecEfficiency — and comparing it directly would rate a bloated x264 encode above a
+// better x265 one, then swap a good file for a worse one.
+//
+// Returns false when the profile doesn't enable upgrades, sets no margin, or when the
+// runtime/sizes needed to compute a bitrate are missing.
+func (s *Service) IsBitrateUpgrade(ctx context.Context, ref string, cand, current Encode, runtimeMin int) bool {
 	sp, err := s.GetStored(ctx, ref)
 	if err != nil || !sp.UpgradesEnabled || sp.UpgradeBitrateMbps <= 0 {
 		return false
 	}
-	if runtimeMin <= 0 || candGB <= 0 || currentGB <= 0 {
+	if runtimeMin <= 0 || cand.SizeGB <= 0 || current.SizeGB <= 0 {
 		return false // can't express either as a bitrate — don't guess
 	}
-	return BitrateMbps(candGB, runtimeMin) >= BitrateMbps(currentGB, runtimeMin)+sp.UpgradeBitrateMbps
+	candBr := BitrateMbps(cand.SizeGB, runtimeMin) * codecEfficiency(cand.Codec)
+	curBr := BitrateMbps(current.SizeGB, runtimeMin) * codecEfficiency(current.Codec)
+
+	margin := sp.UpgradeBitrateMbps
+	if margin < MinUpgradeMarginMbps {
+		margin = MinUpgradeMarginMbps
+	}
+	return candBr >= curBr+margin && candBr >= curBr*MinUpgradeRatio
 }
 
 // WouldReject reports whether the profile would reject the given release — used

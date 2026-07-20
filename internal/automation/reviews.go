@@ -11,6 +11,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/extract"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/parser"
+	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
 
@@ -345,7 +346,7 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		// Quality gate: leave the existing file alone unless this candidate is a strictly
 		// higher resolution. Without this, two releases of the same episode (e.g. a 1080p
 		// and a 720p pack) supersede each other on every sweep, flooding the recycle bin.
-		if !c.wantsEpisodeFile(ctx, s, refs[0].Season, refs[0].Episode, rel.Resolution, v.Size) {
+		if !c.wantsEpisodeFile(ctx, s, refs[0].Season, refs[0].Episode, rel, v.Size) {
 			// Say so. Without this a whole pack can resolve onto episodes that already
 			// have a file and be skipped in total silence — the download looks handled
 			// and nothing explains why nothing appeared. Includes what it resolved TO,
@@ -472,7 +473,8 @@ func inheritQuality(file, release parser.Release) parser.Release {
 // Resolution still governs first — it must never DROP, and a genuine resolution increase
 // is always taken. The bitrate margin only decides the equal-resolution case, which is
 // exactly where the old rule said "no" to everything.
-func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, season, episode int, res parser.Resolution, candBytes int64) bool {
+func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, season, episode int, cand parser.Release, candBytes int64) bool {
+	res := cand.Resolution
 	cur := c.series.CurrentEpisodeFile(ctx, s.ID, season, episode)
 	if cur.Path == "" {
 		return true // nothing there yet
@@ -481,12 +483,20 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 		return true // recorded file is gone from disk — re-import it
 	}
 
-	curRes := parser.Parse(filepath.Base(cur.Path)).Resolution
-	// The library file is renamed on import, so its name may not carry the resolution.
-	// Fall back to the release it came from, which does.
-	if curRes == "" && cur.SourceRelease != "" {
-		curRes = parser.Parse(cur.SourceRelease).Resolution
+	// The library file is renamed on import, so its name often carries neither the
+	// resolution nor the codec. The release it came from does, so prefer that and fall
+	// back to the filename.
+	curParsed := parser.Parse(filepath.Base(cur.Path))
+	if cur.SourceRelease != "" {
+		src := parser.Parse(cur.SourceRelease)
+		if curParsed.Resolution == "" {
+			curParsed.Resolution = src.Resolution
+		}
+		if curParsed.Codec == "" {
+			curParsed.Codec = src.Codec
+		}
 	}
+	curRes := curParsed.Resolution
 	switch {
 	case parser.ResolutionRank(res) > parser.ResolutionRank(curRes):
 		return true // a real resolution upgrade
@@ -497,7 +507,9 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	// Equal resolution: defer to the profile's bitrate margin, if it set one.
 	const bytesPerGB = 1 << 30
 	if c.quality.IsBitrateUpgrade(ctx, s.QualityProfile,
-		float64(candBytes)/bytesPerGB, float64(cur.SizeBytes)/bytesPerGB, cur.RuntimeMin) {
+		quality.Encode{SizeGB: float64(candBytes) / bytesPerGB, Codec: cand.Codec},
+		quality.Encode{SizeGB: float64(cur.SizeBytes) / bytesPerGB, Codec: curParsed.Codec},
+		cur.RuntimeMin) {
 		c.log.Info("series import: replacing an equal-resolution file — the profile's bitrate margin is met",
 			"series", s.Title, "episode", fmt.Sprintf("S%02dE%02d", season, episode),
 			"current_gb", float64(cur.SizeBytes)/bytesPerGB, "candidate_gb", float64(candBytes)/bytesPerGB)
