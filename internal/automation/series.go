@@ -901,10 +901,22 @@ func incompleteSeasonReason(unresolved int) string {
 }
 
 func aired(date string) bool {
-	// Episodes with no air date are treated as aired (best effort) so specials/odd
-	// data don't block grabs. YYYY-MM-DD compares lexicographically.
+	// No air date means UNAIRED, and is not searched for.
+	//
+	// It used to mean "aired (best effort)", on the theory that odd metadata shouldn't
+	// block a grab. In practice the opposite is far more common: TMDB pads a season with
+	// placeholder episodes that have no date, and the searcher then hunts forever for
+	// episodes that don't exist. ARK: The Animated Series listed 14 for a season that
+	// aired 6, so a fully-imported show kept re-grabbing its own complete pack — and the
+	// "can't complete the season" blocklist never fired to stop it, because
+	// SeasonHasMissing already excluded dateless episodes. The three rules disagreed;
+	// they now agree.
+	//
+	// The cost is a genuinely-aired episode whose date TMDB doesn't carry: it won't be
+	// searched automatically. The UI already labels those UNAIRED, and a manual search
+	// still grabs them.
 	if date == "" {
-		return true
+		return false
 	}
 	return date <= nowDate()
 }

@@ -445,12 +445,18 @@ func (r *Repo) ResetSearchMisses(ctx context.Context, seriesID int64) {
 // HasWantedEpisodes reports whether a series has an episode the automation would
 // actually grab: monitored, aired, and with no file. Mirrors wantedEpisodes' filter so
 // the missing-sweep can skip a series without spending an indexer search on it.
+//
+// An episode with no air date is UNAIRED and is not wanted — it's almost always a TMDB
+// placeholder padding out a season, and treating it as wanted made the searcher hunt
+// forever for episodes that don't exist. SeasonHasMissing and automation's aired() apply
+// the same rule; when these disagreed, a fully-imported show re-grabbed its own pack on
+// every sweep with nothing able to stop it.
 func (r *Repo) HasWantedEpisodes(ctx context.Context, seriesID int64) bool {
 	var one int
 	err := r.db.QueryRowContext(ctx,
 		`SELECT 1 FROM episodes
 		 WHERE series_id = ? AND monitored = 1 AND has_file = 0 AND season_number > 0
-		   AND (air_date = '' OR air_date <= date('now'))
+		   AND air_date != '' AND air_date <= date('now')
 		 LIMIT 1`, seriesID).Scan(&one)
 	return err == nil && one == 1
 }
