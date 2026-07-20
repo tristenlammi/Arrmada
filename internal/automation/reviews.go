@@ -232,7 +232,7 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 		if err != nil {
 			return err
 		}
-		n, matched := c.importSeriesInto(ctx, s, r.ContentPath)
+		n, matched, _ := c.importSeriesInto(ctx, s, r.ContentPath)
 		if matched == 0 {
 			return fmt.Errorf("no episode files could be imported into %q", s.Title)
 		}
@@ -252,13 +252,19 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 }
 
 // importSeriesInto hardlinks every episode file in contentPath into the given series'
-// library, marking each episode present. It returns two counts: placed is the number of
-// episodes newly written to disk (for the "imported N" notification), and matched is the
+// library, marking each episode present. It returns three counts: placed is the number of
+// episodes newly written to disk (for the "imported N" notification), matched is the
 // number recognized as belonging to a known episode (placed OR already present at
-// equal-or-better quality). matched drives whether the download is considered handled —
-// a pack whose episodes are all already on disk still counts as done so it drops out of
-// the downloads view instead of being re-scanned forever.
-func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, contentPath string) (placed, matched int) {
+// equal-or-better quality), and unresolved is the number of video files whose numbering
+// couldn't be mapped onto a known episode at all. matched drives whether the download is
+// considered handled — a pack whose episodes are all already on disk still counts as done
+// so it drops out of the downloads view instead of being re-scanned forever.
+//
+// unresolved is what separates "this release's numbering doesn't line up with the
+// metadata" from "this release simply doesn't contain the rest of the season". Both look
+// identical from placed/matched alone, and conflating them told users a perfectly good
+// partial pack had a numbering fault.
+func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, contentPath string) (placed, matched, unresolved int) {
 	// Unpack any archives first (scene releases ship the episode inside a RAR set — this
 	// is the Unpackerr job). Recursive, so a season pack's per-episode subfolders unpack.
 	if fi, err := os.Stat(contentPath); err == nil && fi.IsDir() {
@@ -272,11 +278,11 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	if err != nil {
 		c.log.Warn("series import: couldn't scan the download folder for videos",
 			"series", s.Title, "content_path", contentPath, "err", err)
-		return 0, 0
+		return 0, 0, 0
 	}
 	if len(videos) == 0 {
 		c.log.Warn("series import: no video files found in the download (all archives? nested oddly?)", "series", s.Title, "content_path", contentPath)
-		return 0, 0
+		return 0, 0, 0
 	}
 	c.log.Info("series import: scanning download", "series", s.Title, "videos", len(videos), "content_path", contentPath)
 	// Route episodes into the show's existing on-disk folder when it has one, so a
@@ -287,6 +293,7 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		rel := parser.Parse(filepath.Base(v.Path))
 		refs := c.series.ResolveEpisodes(ctx, s.ID, rel)
 		if len(refs) == 0 {
+			unresolved++
 			c.log.Warn("series import: couldn't place file",
 				"file", filepath.Base(v.Path), "season", rel.Season, "episodes", rel.Episodes,
 				"absolute", rel.AbsoluteEpisodes, "anime", s.IsAnime())
@@ -329,7 +336,7 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			}
 		}
 	}
-	return placed, matched
+	return placed, matched, unresolved
 }
 
 // importAbsoluteEpisode places an anime file that carries only an absolute episode

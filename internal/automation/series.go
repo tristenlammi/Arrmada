@@ -830,7 +830,7 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			}
 			continue // not something we grabbed and not a library title — leave alone
 		}
-		imported, matched := c.importSeriesInto(ctx, s, it.ContentPath)
+		imported, matched, unresolved := c.importSeriesInto(ctx, s, it.ContentPath)
 		if matched > 0 {
 			// Every file mapped to a known episode (some newly placed, some already
 			// present) — the download is handled, so drop it from the downloads view
@@ -843,12 +843,22 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 				c.seriesImported(ctx, s.ID)
 				c.bus.Publish("series.imported", map[string]any{"title": s.Title, "id": s.ID, "count": imported})
 			} else if c.series.SeasonHasMissing(ctx, s.ID, parsed.Season) {
-				// Re-processed but placed nothing new while the season is still incomplete:
-				// this release can't finish the job (e.g. Ben 10's scene numbering doesn't
-				// map to the metadata). Blocklist it so the auto-searcher stops re-grabbing
-				// the identical release every cycle.
-				c.addBlockSeries(ctx, s.ID, it.Name, c.grabIndexer(ctx, it.Name, "series"), "downloaded but can't complete the season (unresolved episode numbering)")
-				c.log.Warn("series import: release can't complete the season — blocklisted to stop re-grabbing", "series", s.Title, "release", it.Name)
+				// Re-processed but placed nothing new while the season is still incomplete.
+				// Either way we stop re-grabbing it, but WHY matters, and the two cases are
+				// not the same thing:
+				//
+				//   unresolved > 0 — files we couldn't map onto any known episode. This is
+				//   the real numbering fault (Ben 10's scene numbering vs the metadata).
+				//
+				//   unresolved == 0 — every file in the release landed on a known episode.
+				//   Nothing is wrong with it; it just doesn't CONTAIN the rest of the season.
+				//   Streaming-sourced packs of long-running kids' shows do this constantly:
+				//   TMDB lists 52 episodes for the season, the service carried 28. Calling
+				//   that "unresolved episode numbering" told users their perfectly good
+				//   import was broken and sent them looking for a bug that wasn't there.
+				c.addBlockSeries(ctx, s.ID, it.Name, c.grabIndexer(ctx, it.Name, "series"), incompleteSeasonReason(unresolved))
+				c.log.Info("series import: release can't complete the season — won't be re-grabbed",
+					"series", s.Title, "release", it.Name, "season", parsed.Season, "unresolved_files", unresolved)
 			}
 		} else {
 			// A completed download that maps to no importable episode is junk, a fake, or
@@ -866,6 +876,17 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			c.removeIfNoVideo(ctx, it.Hash, it.Name, it.ContentPath)
 		}
 	}
+}
+
+// incompleteSeasonReason explains why a re-processed release added nothing, given how many
+// of its files failed to map onto a known episode. Users read this string in the Blocklist,
+// so it has to say which of the two situations actually occurred.
+func incompleteSeasonReason(unresolved int) string {
+	if unresolved > 0 {
+		return fmt.Sprintf("downloaded but %d file%s couldn't be matched to an episode (unresolved episode numbering)",
+			unresolved, plural(unresolved))
+	}
+	return "fully imported — this release has no more episodes for this season"
 }
 
 func aired(date string) bool {
