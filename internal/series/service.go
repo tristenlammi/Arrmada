@@ -1020,6 +1020,23 @@ func (s *Service) MatchByTitle(ctx context.Context, normalized string) (Series, 
 	return Series{}, false
 }
 
+// TitleMatcher indexes a library snapshot once, keyed by normalized title, so a caller
+// resolving many torrents in one pass indexes once instead of reloading the series table
+// per torrent. Keyed the same way (and queried with the same NormTitle) as MatchByTitle.
+func (s *Service) TitleMatcher(all []Series) func(normalized string) (Series, bool) {
+	byKey := make(map[string]Series, len(all))
+	for _, sr := range all {
+		k := normKey(sr.Title)
+		if _, exists := byKey[k]; !exists { // first wins, matching MatchByTitle's scan order
+			byKey[k] = sr
+		}
+	}
+	return func(normalized string) (Series, bool) {
+		sr, ok := byKey[normalized]
+		return sr, ok
+	}
+}
+
 // EpisodeTitle returns the metadata title for one episode ("" when unknown).
 func (s *Service) EpisodeTitle(ctx context.Context, seriesID int64, season, episode int) string {
 	return s.repo.EpisodeTitle(ctx, seriesID, season, episode)

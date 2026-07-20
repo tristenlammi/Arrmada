@@ -29,6 +29,36 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	list, _ := a.deps.Movies.List(ctx)
 	queue, _ := a.deps.Downloads.Queue(ctx)
 
+	// Parse every torrent name ONCE. parser.Parse is regex-heavy; the old code re-parsed
+	// the whole queue for every monitored-missing movie (O(movies × torrents) parses),
+	// which was the bulk of this endpoint's multi-second load. Reuse the parse below too.
+	qParsed := make([]parser.Release, len(queue))
+	queuedMovieYears := map[string][]int{} // normalized title → years present in the queue
+	for i, it := range queue {
+		qParsed[i] = parser.Parse(it.Name)
+		k := normKey(qParsed[i].Title)
+		queuedMovieYears[k] = append(queuedMovieYears[k], qParsed[i].Year)
+	}
+	// inQueue is the O(1) form of the old movieInQueue: a title match with the year within ±1.
+	inQueue := func(m movies.Movie) bool {
+		for _, y := range queuedMovieYears[normKey(m.Title)] {
+			if y == 0 || m.Year == 0 || absInt(y-m.Year) <= 1 {
+				return true
+			}
+		}
+		return false
+	}
+	// Resolve each quality-profile reference to a name at most once per request.
+	profileCache := map[string]string{}
+	pname := func(ref string) string {
+		if v, ok := profileCache[ref]; ok {
+			return v
+		}
+		v := a.profileName(ctx, ref)
+		profileCache[ref] = v
+		return v
+	}
+
 	// Monitored, missing movies split into two buckets: those actually being
 	// searched (past their minimum-availability threshold — same gate the
 	// automation uses) and those still awaiting release. An unreleased film must
@@ -39,7 +69,7 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		if !m.Monitored || m.HasFile {
 			continue
 		}
-		if movieInQueue(queue, m) {
+		if inQueue(m) {
 			continue // a download for it is already in flight
 		}
 		entry := map[string]any{
@@ -47,7 +77,7 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 			"title":           m.Title,
 			"year":            m.Year,
 			"poster_url":      m.PosterURL,
-			"quality_profile": a.profileName(ctx, m.QualityProfile),
+			"quality_profile": pname(m.QualityProfile),
 		}
 		if a.deps.Movies.IsAvailable(m) {
 			searching = append(searching, entry)
@@ -67,14 +97,14 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 			if sa.SearchingCount > 0 {
 				searching = append(searching, map[string]any{
 					"series_id": sa.ID, "title": sa.Title, "year": sa.Year,
-					"poster_url": sa.PosterURL, "quality_profile": a.profileName(ctx, sa.QualityProfile),
+					"poster_url": sa.PosterURL, "quality_profile": pname(sa.QualityProfile),
 					"media_type": "series", "episode_count": sa.SearchingCount,
 				})
 			}
 			if sa.NextAir != "" {
 				upcoming = append(upcoming, map[string]any{
 					"series_id": sa.ID, "title": sa.Title, "year": sa.Year,
-					"poster_url": sa.PosterURL, "quality_profile": a.profileName(ctx, sa.QualityProfile),
+					"poster_url": sa.PosterURL, "quality_profile": pname(sa.QualityProfile),
 					"media_type": "series", "available_at": sa.NextAir, "next_label": sa.NextLabel,
 				})
 			}
@@ -98,26 +128,36 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		seedPolicies = a.deps.Automation.SeedPolicies(ctx)
 	}
 
+	// One-pass matchers over already-loaded snapshots, so labelling each torrent is a map
+	// lookup — not a full-table reload of the movies/series table per torrent as before.
+	matchMovie := a.deps.Movies.Matcher(list)
+	var matchSeries func(string) (series.Series, bool)
+	if a.deps.Series != nil {
+		if seriesList, err := a.deps.Series.List(ctx); err == nil {
+			matchSeries = a.deps.Series.TitleMatcher(seriesList)
+		}
+	}
+
 	downloads := make([]map[string]any, 0, len(queue))
 	var totalDown, totalUp int64
 	var unmatched []string
 	active := 0
-	for _, it := range queue {
+	for i, it := range queue {
 		profile := "n/a"
 		mediaType := "movie"
 		switch it.Category {
 		case seriesDownloadCategory:
 			mediaType = "series"
-			if a.deps.Series != nil {
-				if sr, ok := a.deps.Series.MatchByTitle(ctx, series.NormTitle(parser.Parse(it.Name).Title)); ok {
-					profile = a.profileName(ctx, sr.QualityProfile)
+			if matchSeries != nil {
+				if sr, ok := matchSeries(series.NormTitle(qParsed[i].Title)); ok {
+					profile = pname(sr.QualityProfile)
 				}
 			}
 		case bookDownloadCategory:
 			mediaType = "book"
 		default:
-			if mv, ok := a.deps.Movies.MatchRelease(ctx, it.Name); ok {
-				profile = a.profileName(ctx, mv.QualityProfile)
+			if mv, ok := matchMovie(qParsed[i].Title, qParsed[i].Year); ok {
+				profile = pname(mv.QualityProfile)
 			}
 		}
 		totalDown += it.DownSpeed
@@ -198,18 +238,6 @@ func downloadFor(queue []download.Item, m movies.Movie) *movies.DownloadStatus {
 		return &movies.DownloadStatus{State: it.State, Progress: it.Progress}
 	}
 	return nil
-}
-
-// movieInQueue reports whether a download in the queue matches the movie.
-func movieInQueue(queue []download.Item, m movies.Movie) bool {
-	want := normKey(m.Title)
-	for _, it := range queue {
-		r := parser.Parse(it.Name)
-		if normKey(r.Title) == want && (r.Year == 0 || m.Year == 0 || absInt(r.Year-m.Year) <= 1) {
-			return true
-		}
-	}
-	return false
 }
 
 // normKey folds accents and keeps alphanumerics, so "Pokémon" matches "Pokemon".

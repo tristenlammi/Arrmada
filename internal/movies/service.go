@@ -1080,6 +1080,25 @@ func (s *Service) MatchRelease(ctx context.Context, name string) (Movie, bool) {
 	return s.Match(ctx, r.Title, r.Year)
 }
 
+// Matcher indexes a library snapshot once and returns a title/year matcher, so a caller
+// resolving many releases in one pass (the downloads feed) does a single scan instead of
+// reloading and re-normalizing the whole movies table per release.
+func (s *Service) Matcher(all []Movie) func(title string, year int) (Movie, bool) {
+	byTitle := make(map[string][]Movie, len(all))
+	for _, m := range all {
+		k := normalizeTitle(m.Title)
+		byTitle[k] = append(byTitle[k], m)
+	}
+	return func(title string, year int) (Movie, bool) {
+		for _, m := range byTitle[normalizeTitle(title)] {
+			if year == 0 || m.Year == 0 || abs(m.Year-year) <= 1 {
+				return m, true
+			}
+		}
+		return Movie{}, false
+	}
+}
+
 // Match finds the library movie a parsed release belongs to, comparing
 // normalized titles and (when the release has a year) the year within ±1.
 func (s *Service) Match(ctx context.Context, title string, year int) (Movie, bool) {
