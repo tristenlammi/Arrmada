@@ -210,6 +210,7 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 				var releases []Release
 				releases, err = searcher.Search(ctx, idx, q)
 				if err == nil {
+					returned := len(releases)
 					// Drop torrents below this indexer's seeder floor.
 					if idx.MinSeeders > 0 {
 						kept := releases[:0]
@@ -220,6 +221,14 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 						}
 						releases = kept
 					}
+					// Per-indexer accounting. The aggregate count alone can't distinguish
+					// "the indexer only had this much" from "the seeder floor discarded the
+					// rest" — and an old season pack with few seeders is exactly the sort of
+					// release that quietly vanishes here.
+					s.log.Info("indexer search", "indexer", idx.Name, "query", q.Text,
+						"returned", returned, "kept", len(releases),
+						"dropped_low_seeders", returned-len(releases), "min_seeders", idx.MinSeeders,
+						"limit", q.Limit)
 					mu.Lock()
 					result.Releases = append(result.Releases, releases...)
 					mu.Unlock()
