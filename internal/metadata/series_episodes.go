@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 )
 
@@ -62,6 +63,11 @@ func (s *seriesWithEpisodeSource) GetSeries(ctx context.Context, tmdbID int) (*S
 	if !usableListing(seasons) {
 		return d, nil // not carried there, or too thin to trust — keep what we have
 	}
+	if why, ok := incompatibleNumbering(seasons, d.Seasons); !ok {
+		s.log.Info("keeping the primary's episode numbering — the other source numbers this show differently",
+			"title", d.Title, "reason", why)
+		return d, nil
+	}
 	d.Seasons = mergeSeasonArt(seasons, d.Seasons)
 	return d, nil
 }
@@ -76,6 +82,39 @@ func usableListing(seasons []SeasonDetails) bool {
 		}
 	}
 	return false
+}
+
+// incompatibleNumbering rejects a listing that uses a different season MODEL, rather than
+// merely different episode boundaries.
+//
+// TVmaze numbers some long-running shows by broadcast year — Naruto comes back as seasons
+// 2002 through 2007 — which is a coherent scheme but not the one releases use, and not one
+// that can be reconciled with the primary's. Importing it would leave a library with
+// "Season 2002" alongside the real seasons and nothing able to match a file to either.
+//
+// The test is deliberately structural, not a guess at which is "right": season numbers
+// that look like years, or a set that shares no season at all with what the primary
+// already has. Different episode COUNTS within shared seasons are exactly what this
+// feature is for and are left alone.
+func incompatibleNumbering(from, primary []SeasonDetails) (string, bool) {
+	for _, sn := range from {
+		if sn.SeasonNumber >= 1900 {
+			return fmt.Sprintf("seasons are numbered by year (found season %d)", sn.SeasonNumber), false
+		}
+	}
+	if len(primary) == 0 {
+		return "", true // nothing to compare against
+	}
+	have := make(map[int]bool, len(primary))
+	for _, sn := range primary {
+		have[sn.SeasonNumber] = true
+	}
+	for _, sn := range from {
+		if have[sn.SeasonNumber] {
+			return "", true // they agree on at least one season — same model
+		}
+	}
+	return "no season in common with the primary listing", false
 }
 
 // mergeSeasonArt keeps the primary's season-level name, overview and poster — the second

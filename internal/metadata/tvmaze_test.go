@@ -215,3 +215,62 @@ func (s *stubEpisodes) Available() bool { return true }
 func (s *stubEpisodes) Episodes(context.Context, int, string) ([]SeasonDetails, error) {
 	return s.seasons, s.err
 }
+
+// TVmaze numbers some long-running shows by BROADCAST YEAR. Naruto comes back as seasons
+// 2002 through 2007 — a coherent scheme, but not the one releases use and not one that
+// can be reconciled with TMDB's. Taking it produced a library with "Season 2002" sitting
+// beside the real seasons and nothing able to match a file to either.
+func TestYearNumberedSeasonsAreRejected(t *testing.T) {
+	naruto := []SeasonDetails{
+		{SeasonNumber: 2002, Episodes: []EpisodeDetails{{EpisodeNumber: 1, Title: "Enter: Naruto Uzumaki!"}}},
+		{SeasonNumber: 2003, Episodes: []EpisodeDetails{{EpisodeNumber: 1}}},
+		{SeasonNumber: 2007, Episodes: []EpisodeDetails{{EpisodeNumber: 1}}},
+	}
+	tmdb := []SeasonDetails{{SeasonNumber: 1, Episodes: []EpisodeDetails{{EpisodeNumber: 1, Title: "Enter: Naruto Uzumaki!"}}}}
+
+	why, ok := incompatibleNumbering(naruto, tmdb)
+	if ok {
+		t.Fatal("year-numbered seasons must be rejected — releases are numbered S01E01, not S2002E01")
+	}
+	if !strings.Contains(why, "2002") {
+		t.Errorf("reason should name the offending season, got %q", why)
+	}
+
+	// End to end: the primary's listing survives untouched.
+	p := &stubSeries{d: &SeriesDetails{SeriesResult: SeriesResult{Title: "Naruto"}, TVDBID: 78857, Seasons: tmdb}}
+	got, _ := NewSeriesWithEpisodes(p, &stubEpisodes{seasons: naruto}, slog.Default()).GetSeries(context.Background(), 1)
+	if len(got.Seasons) != 1 || got.Seasons[0].SeasonNumber != 1 {
+		t.Errorf("expected TMDB's seasons to be kept, got %+v", got.Seasons)
+	}
+}
+
+// A listing sharing no season at all with the primary is a different model too, whatever
+// the numbers look like.
+func TestDisjointSeasonsAreRejected(t *testing.T) {
+	if _, ok := incompatibleNumbering(
+		[]SeasonDetails{{SeasonNumber: 7, Episodes: []EpisodeDetails{{EpisodeNumber: 1}}}},
+		[]SeasonDetails{{SeasonNumber: 1}, {SeasonNumber: 2}},
+	); ok {
+		t.Error("no season in common means the two are not describing the same structure")
+	}
+}
+
+// Different episode COUNTS inside shared seasons are exactly what this feature exists for
+// and must be accepted — that's the Parks and Recreation case.
+func TestDifferentEpisodeCountsAreAccepted(t *testing.T) {
+	tvmaze := []SeasonDetails{{SeasonNumber: 6, Episodes: []EpisodeDetails{
+		{EpisodeNumber: 1, Title: "London (1)"}, {EpisodeNumber: 2, Title: "London (2)"},
+	}}}
+	tmdb := []SeasonDetails{{SeasonNumber: 6, Episodes: []EpisodeDetails{{EpisodeNumber: 1, Title: "London"}}}}
+
+	if why, ok := incompatibleNumbering(tvmaze, tmdb); !ok {
+		t.Errorf("a season split differently is the point of the feature, rejected as %q", why)
+	}
+}
+
+// With no primary listing to compare against there's nothing to contradict.
+func TestNoPrimarySeasonsAccepts(t *testing.T) {
+	if _, ok := incompatibleNumbering([]SeasonDetails{{SeasonNumber: 1}}, nil); !ok {
+		t.Error("nothing to compare against should not be treated as a conflict")
+	}
+}
