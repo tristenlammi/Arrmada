@@ -11,8 +11,8 @@ type Release struct {
 	InfoURL     string    `json:"info_url,omitempty"`    // the release's details page on the tracker
 	InfoHash    string    `json:"info_hash,omitempty"`   // torrent
 	SizeBytes   int64     `json:"size_bytes"`
-	Seeders     int       `json:"seeders,omitempty"` // torrent
-	Peers       int       `json:"peers,omitempty"`   // torrent
+	Seeders     int       `json:"seeders,omitempty"`    // torrent
+	Peers       int       `json:"peers,omitempty"`      // torrent
 	PublishedAt time.Time `json:"published_at,omitempty"`
 	Categories  []int     `json:"categories,omitempty"`
 	Indexer     string    `json:"indexer"`   // which indexer returned it
