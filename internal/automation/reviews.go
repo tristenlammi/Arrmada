@@ -343,6 +343,7 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			continue
 		}
 		matched += len(refs) // recognized — counts as handled even if we don't re-place it
+		c.warnTitleMismatch(ctx, s, filepath.Base(v.Path), refs[0].Season, refs[0].Episode)
 		// Quality gate: leave the existing file alone unless this candidate is a strictly
 		// higher resolution. Without this, two releases of the same episode (e.g. a 1080p
 		// and a 720p pack) supersede each other on every sweep, flooding the recycle bin.
@@ -561,4 +562,40 @@ func (c *Coordinator) repairSourceRelease(ctx context.Context, s series.Series, 
 		c.log.Info("series import: recorded the release name for an already-imported episode",
 			"series", s.Title, "episode", fmt.Sprintf("S%02dE%02d", rs, re), "source_release", better)
 	}
+}
+
+// warnTitleMismatch reports a file whose own episode title disagrees with the metadata
+// title for the slot it resolved to.
+//
+// The episode NUMBER is all the importer matches on, so when a release numbers episodes
+// differently from the metadata the file is filed — and renamed — as the wrong episode,
+// silently. A Parks and Recreation pack numbered season 6 with "The Pawnee-Eagleton
+// Tip-Off Classic" at 6x03 while TMDB has "Doppelgängers" there, and every episode from
+// that point on landed one slot out. Nothing noticed.
+//
+// A warning, not a refusal: releases legitimately abbreviate and re-word titles, so this
+// can't be a hard gate. But a whole season warning in sequence is unmistakable.
+func (c *Coordinator) warnTitleMismatch(ctx context.Context, s series.Series, fileName string, season, episode int) {
+	fileTitle := parser.EpisodeTitleFrom(fileName)
+	if fileTitle == "" {
+		return // most releases carry no title — nothing to check against
+	}
+	metaTitle := c.series.EpisodeTitle(ctx, s.ID, season, episode)
+	if metaTitle == "" || titlesAlike(fileTitle, metaTitle) {
+		return
+	}
+	c.log.Warn("series import: the file's episode title doesn't match the metadata for that episode — the release may number episodes differently",
+		"series", s.Title, "resolved_to", fmt.Sprintf("S%02dE%02d", season, episode),
+		"file_says", fileTitle, "metadata_says", metaTitle)
+}
+
+// titlesAlike compares episode titles loosely — punctuation, case and accents differ
+// freely between a release name and metadata, and none of that is a real disagreement.
+// One being a prefix of the other counts as alike, since releases truncate long titles.
+func titlesAlike(a, b string) bool {
+	ka, kb := titleKey(a), titleKey(b)
+	if ka == "" || kb == "" {
+		return true // nothing to compare — don't cry wolf
+	}
+	return strings.HasPrefix(ka, kb) || strings.HasPrefix(kb, ka)
 }

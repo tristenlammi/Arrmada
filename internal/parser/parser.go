@@ -6,6 +6,7 @@
 package parser
 
 import (
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -618,4 +619,38 @@ func detectEdition(lc string) string {
 		}
 	}
 	return ""
+}
+
+// reQualityStart marks where a release's technical tokens begin, so anything before them
+// (after the episode marker) is the episode title.
+var reQualityStart = regexp.MustCompile(`(?i)\b(\d{3,4}[pi]|web[-. ]?dl|webrip|bluray|blu-ray|hdtv|remux|dvdrip|x26[45]|h[-. ]?26[45]|hevc|avc|xvid|aac|ac3|eac3|dts|ddp|dd\+|truehd|atmos|10bit|8bit|amzn|nf|hmax|dsnp|atvp|repack|proper|internal|complete)\b`)
+
+// EpisodeTitleFrom extracts the episode title a filename carries, if any:
+// "Show - 6x03 - The Pawnee-Eagleton Tip-Off Classic.mkv" → "The Pawnee-Eagleton Tip-Off Classic".
+//
+// Returns "" when the name has no episode marker or nothing readable after it — most
+// scene releases carry no title at all, and a guess would be worse than silence.
+//
+// Worth having because a title is an independent check on the NUMBER. When a pack says
+// 6x03 is one episode and the metadata says that slot is another, the numbering schemes
+// disagree, and the file gets filed (and renamed) as the wrong episode.
+func EpisodeTitleFrom(name string) string {
+	name = strings.TrimSuffix(name, filepath.Ext(name))
+	loc := reSxxExx.FindStringIndex(name)
+	if loc == nil {
+		loc = reNxNN.FindStringIndex(name)
+	}
+	if loc == nil {
+		return ""
+	}
+	rest := name[loc[1]:]
+	if q := reQualityStart.FindStringIndex(rest); q != nil {
+		rest = rest[:q[0]]
+	}
+	rest = strings.NewReplacer(".", " ", "_", " ").Replace(rest)
+	rest = strings.Trim(rest, " -[]()")
+	if len(rest) < 2 {
+		return "" // nothing meaningful — don't invent a title
+	}
+	return strings.Join(strings.Fields(rest), " ")
 }
