@@ -413,11 +413,21 @@ function ManualImportModal({ series, onClose, onImported }: { series: SeriesT; o
       .sort((a, b) => b.count - a.count);
   }, [cands]);
 
+  const [background, setBackground] = useState(false);
+
   const doImport = async (path: string) => {
     setImporting(path);
     setError(null);
     try {
-      await api.seriesManualImport(series.id, path);
+      const res = await api.seriesManualImport(series.id, path);
+      // A whole folder runs detached — a season pack can take many minutes, so the
+      // request returns immediately and the work continues. Say so, or the user sits on
+      // a spinner wondering whether navigating away cancels it.
+      if (res.background) {
+        setBackground(true);
+        onImported();
+        return;
+      }
       onImported();
       // refresh the list so the imported file drops off
       const r = await api.seriesManualImportList(series.id);
@@ -438,6 +448,12 @@ function ManualImportModal({ series, onClose, onImported }: { series: SeriesT; o
         </div>
         <p className="mb-3 text-[12px] text-ink-dim">Pick episode files already on disk to import as <b>{series.title}</b>. Season/episode is detected from each filename; files are renamed to the library scheme.</p>
         {error && <div className="mb-2 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
+        {background && (
+          <div className="mb-3 rounded-lg p-3 text-[12px]" style={{ border: "1px solid var(--accent-line)", background: "var(--accent-soft)", color: "var(--accent)" }}>
+            Importing in the background — this can take several minutes for a large pack.
+            You can close this and keep using Arrmada; progress appears in the log and the episode list updates as it goes.
+          </div>
+        )}
         {folders.length > 0 && (
           <div className="mb-3">
             <div className="mb-1.5 text-[11px] font-semibold text-ink-dim">Whole downloads</div>

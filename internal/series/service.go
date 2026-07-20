@@ -851,6 +851,13 @@ func (s *Service) SupersedeEpisodeFile(ctx context.Context, seriesID int64, seas
 	return s.MarkEpisodeImported(ctx, seriesID, season, episode, path, size)
 }
 
+// SetEpisodeSourceRelease records the release name an episode's file came from. Used to
+// repair episodes imported before quality was inherited from the release, whose recorded
+// name carries no resolution and so makes every future comparison meaningless.
+func (s *Service) SetEpisodeSourceRelease(ctx context.Context, seriesID int64, season, episode int, release string) error {
+	return s.repo.SetEpisodeSourceRelease(ctx, seriesID, season, episode, release)
+}
+
 // CurrentEpisodeFile returns what an episode currently holds, for upgrade decisions that
 // need more than the filename (size, source release, runtime).
 func (s *Service) CurrentEpisodeFile(ctx context.Context, seriesID int64, season, episode int) EpisodeFile {

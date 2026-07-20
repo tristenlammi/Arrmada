@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -591,6 +592,22 @@ func (a *api) handleSeriesManualImport(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "path is required")
 		return
 	}
+	// A whole-folder import is long work — a 122-file season pack took 14 minutes — so it
+	// runs detached. Holding the request open outlasts any sensible HTTP timeout and
+	// leaves the user staring at a spinner, unsure whether navigating away cancels it.
+	// Single files stay synchronous: they're quick, and immediate feedback is better.
+	if fi, statErr := os.Stat(req.Path); statErr == nil && fi.IsDir() {
+		go func(seriesID int64, path string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+			defer cancel()
+			if err := a.deps.Automation.ManualImportSeries(ctx, seriesID, path); err != nil {
+				a.deps.Log.Warn("series: folder import failed", "series_id", seriesID, "path", path, "err", err)
+			}
+		}(id, req.Path)
+		a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "importing", "background": true})
+		return
+	}
+
 	if err := a.deps.Automation.ManualImportSeries(r.Context(), id, req.Path); err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return

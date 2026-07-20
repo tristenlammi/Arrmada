@@ -962,7 +962,7 @@ export const api = {
   seriesManualImportList: (id: number) =>
     req<{ candidates: SeriesImportCandidate[] }>(`/api/v1/series/${id}/manualimport`),
   seriesManualImport: (id: number, path: string) =>
-    req<{ status: string }>(`/api/v1/series/${id}/manualimport`, { method: "POST", body: JSON.stringify({ path }) }),
+    req<{ status: string; background?: boolean }>(`/api/v1/series/${id}/manualimport`, { method: "POST", body: JSON.stringify({ path }) }),
   seriesRenamePreview: (id: number) =>
     req<{ items: { from: string; to: string }[]; matches: boolean }>(`/api/v1/series/${id}/rename`),
   renameSeries: (id: number) =>

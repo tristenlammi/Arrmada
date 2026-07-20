@@ -368,6 +368,14 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			continue
 		}
 		if ei.Method == "already" {
+			// The file is in place and unchanged, so there's nothing to import — but the
+			// recorded source release may still be wrong. Anything imported before the
+			// pack-quality fix recorded a bare filename carrying no resolution, which
+			// leaves the episode looking like unknown quality forever: every future
+			// release outranks it, and upgrade scoring has no baseline. Re-running the
+			// import is the natural way to repair that, and it did nothing because this
+			// short-circuit sits in front of the write.
+			c.repairSourceRelease(ctx, s, ei, contentPath, release)
 			continue // already imported and unchanged — don't re-count or re-notify
 		}
 		// A double-episode file marks both episodes present (all point at the one file);
@@ -526,4 +534,31 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 		return true
 	}
 	return false
+}
+
+// repairSourceRelease upgrades an episode's recorded source release when the stored one
+// carries no resolution and a better name is available.
+//
+// Only ever adds information: if the stored name already states a resolution it's left
+// alone, since it's the faithful record of what the file actually came from.
+func (c *Coordinator) repairSourceRelease(ctx context.Context, s series.Series, ei *library.EpisodeImport, contentPath string, release parser.Release) {
+	better := filepath.Base(ei.SourcePath)
+	if parser.Parse(better).Resolution == "" {
+		if release.Resolution == "" {
+			return // nothing better to record
+		}
+		better = filepath.Base(contentPath)
+	}
+	for _, ep := range episodesOf(ei) {
+		rs, re := c.series.ResolveEpisode(ctx, s.ID, ei.Season, ep)
+		cur := c.series.CurrentEpisodeFile(ctx, s.ID, rs, re)
+		if parser.Parse(cur.SourceRelease).Resolution != "" {
+			continue // already records a resolution — leave the faithful record alone
+		}
+		if err := c.series.SetEpisodeSourceRelease(ctx, s.ID, rs, re, better); err != nil {
+			continue
+		}
+		c.log.Info("series import: recorded the release name for an already-imported episode",
+			"series", s.Title, "episode", fmt.Sprintf("S%02dE%02d", rs, re), "source_release", better)
+	}
 }
