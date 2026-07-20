@@ -1679,18 +1679,12 @@ func (t *lineTail) add(line string) {
 func (t *lineTail) String() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	keep := make([]string, 0, len(t.lines))
-	for _, l := range t.lines {
-		if strings.HasPrefix(l, "title") || strings.HasPrefix(l, "Stream #") ||
-			strings.HasPrefix(l, "Metadata:") || strings.HasPrefix(l, "encoder") {
-			continue
-		}
-		keep = append(keep, l)
+	if len(t.lines) == 0 {
+		// A crash can kill ffmpeg before it says anything. Saying so plainly is more use
+		// than dredging up whatever text happened to be last.
+		return "no output from ffmpeg"
 	}
-	if len(keep) == 0 {
-		keep = t.lines
-	}
-	return strings.Join(keep, " | ")
+	return strings.Join(t.lines, " | ")
 }
 
 // encode runs ffmpeg for one job, parsing live progress from the -progress pipe. hwDecode
@@ -1698,7 +1692,12 @@ func (t *lineTail) String() string {
 // software-decode fallback.
 func (s *Service) encode(ctx context.Context, job *Job, src, dst string, mi *MediaInfo, enc Encoder, plan Plan, hwDecode bool) error {
 	cores := s.cpuCores(ctx)
-	args := []string{"-y", "-hide_banner", "-nostats", "-progress", "pipe:1", "-threads", strconv.Itoa(cores)}
+	// -loglevel warning suppresses ffmpeg's input stream dump. That dump is emitted at
+	// info level and floods stderr, so the retained tail filled up with "Side data:" and
+	// "title:" lines and the actual diagnostic — if there was one — scrolled away. Warnings
+	// and errors still come through, which is all the tail is for.
+	args := []string{"-y", "-hide_banner", "-nostats", "-loglevel", "warning",
+		"-progress", "pipe:1", "-threads", strconv.Itoa(cores)}
 	args = append(args, globalArgs(enc, hwDecode, s.vaapiDev(ctx))...) // device / hwaccel init must precede the input
 	args = append(args, "-i", src)
 	args = append(args, compileOutputArgs(enc, mi, plan, hwDecode, cores)...)
