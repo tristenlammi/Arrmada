@@ -96,18 +96,27 @@ const BOOK_FORMATS: { group: string; formats: string[] }[] = [
 // library for nothing. The options start above it so the UI can never promise something
 // the server will quietly override.
 const UPGRADE_STEPS = [
-  { percent: 0, label: "Off", hint: "Only upgrade on a real quality gain — better resolution or a format you prefer." },
-  { percent: 25, label: "Noticeably better", hint: "At least 25% higher bitrate." },
-  { percent: 50, label: "Clearly better", hint: "At least 50% higher bitrate." },
-  { percent: 100, label: "Much better", hint: "At least double the bitrate." },
+  {
+    percent: 0,
+    label: "Off",
+    detail: "Size is ignored. A file is only replaced by a better resolution or a format you prefer.",
+  },
+  {
+    percent: 25,
+    label: "Noticeably better",
+    detail: "A 2.0 GB episode is replaced at about 2.5 GB. Swaps a thin, heavily-compressed encode for a normal one.",
+  },
+  {
+    percent: 50,
+    label: "Clearly better",
+    detail: "A 2.0 GB episode is replaced at about 3.0 GB. Ignores middling differences — the new file has to be visibly heavier.",
+  },
+  {
+    percent: 100,
+    label: "Much better",
+    detail: "A 2.0 GB episode is replaced at about 4.0 GB. Only a dramatic jump, like a compact web rip giving way to a near-source encode.",
+  },
 ];
-
-// A worked example beats a number: 25% is abstract, "2.0 GB → 2.5 GB" is not.
-function upgradeExplainer(percent: number): string {
-  if (!percent) return "Files are only replaced by a better resolution or a preferred format — never for size alone.";
-  const example = (2.0 * (1 + percent / 100)).toFixed(1);
-  return `A 2.0 GB episode would only be replaced by one of about ${example} GB or more (same resolution, ${percent}% higher bitrate). Comparisons account for codec, so a smaller HEVC file isn't treated as worse than a bloated H.264 one.`;
-}
 
 export function Quality() {
   const [media, setMedia] = useState("movie");
@@ -447,24 +456,40 @@ function Builder({ formats, initial, onCancel, onSaved }: { formats: FormatInfo[
                   Two releases can both be 1080p and still look different — one encoded at twice the bitrate of the other.
                   Pick how much better a release has to be before it's worth re-downloading.
                 </div>
-                <div className="mt-2.5 flex flex-wrap gap-1.5">
-                  {UPGRADE_STEPS.map((s) => (
-                    <button
-                      key={s.percent}
-                      onClick={() => patch({ upgrade_min_percent: s.percent })}
-                      title={s.hint}
-                      className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold"
-                      style={{
-                        border: `1px solid ${sp.upgrade_min_percent === s.percent ? "var(--accent)" : "var(--line)"}`,
-                        background: sp.upgrade_min_percent === s.percent ? "var(--accent-soft)" : "var(--panel-2)",
-                        color: sp.upgrade_min_percent === s.percent ? "var(--accent)" : "var(--ink-dim)",
-                      }}
-                    >
-                      {s.label}
-                    </button>
-                  ))}
+                <div className="mt-2.5 flex flex-col gap-1.5">
+                  {UPGRADE_STEPS.map((step) => {
+                    const on = sp.upgrade_min_percent === step.percent;
+                    return (
+                      <button
+                        key={step.percent}
+                        onClick={() => patch({ upgrade_min_percent: step.percent })}
+                        className="flex items-start gap-2.5 rounded-lg px-3 py-2 text-left"
+                        style={{
+                          border: `1px solid ${on ? "var(--accent)" : "var(--line)"}`,
+                          background: on ? "var(--accent-soft)" : "var(--panel-2)",
+                        }}
+                      >
+                        <span
+                          className="mt-[3px] inline-block h-3 w-3 flex-none rounded-full"
+                          style={{ border: `1px solid ${on ? "var(--accent)" : "var(--line)"}`, background: on ? "var(--accent)" : "transparent" }}
+                        />
+                        <span className="min-w-0">
+                          <span className="flex items-baseline gap-1.5">
+                            <span className="text-[11.5px] font-semibold" style={{ color: on ? "var(--accent)" : "var(--ink)" }}>{step.label}</span>
+                            {step.percent > 0 && (
+                              <span className="font-mono text-[10px] text-ink-faint">+{step.percent}% bitrate</span>
+                            )}
+                          </span>
+                          <span className="mt-0.5 block text-[10.5px] leading-[1.45] text-ink-faint">{step.detail}</span>
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
-                <div className="mt-2 text-[10.5px] text-ink-faint">{upgradeExplainer(sp.upgrade_min_percent)}</div>
+                <div className="mt-2 text-[10.5px] text-ink-faint">
+                  Sizes are examples for a one-hour episode — the same proportion applies whatever the length or resolution.
+                  Comparisons account for codec, so a smaller HEVC file isn't treated as worse than a bloated H.264 one.
+                </div>
               </div>
             )}
           </div>
