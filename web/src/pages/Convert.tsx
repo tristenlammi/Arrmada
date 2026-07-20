@@ -136,13 +136,16 @@ export function Convert() {
               <span className="h-2 w-2 rounded-full" style={{ background: enc?.hardware ? "var(--good)" : "var(--avoid)" }} />
               {enc ? `${enc.label}${enc.hardware ? " · GPU ready" : " · CPU"}` : "Detecting…"}
             </span>
+            {/* Hidden during setup: nothing here is meaningful before a format is chosen. */}
+            {settings?.convert_setup_done && <>
             <button onClick={() => setTab("settings")} className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>Settings</button>
-            <button onClick={() => setConfirmAll(true)} disabled={candidates === 0} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>Convert all{candidates ? ` (${candidates})` : ""}</button>
+            <button onClick={() => setConfirmAll(true)} disabled={candidates === 0} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>Convert all{candidates ? ` (${candidates.toLocaleString()})` : ""}</button>
+            </>}
           </div>
         </div>
 
         {/* Tabs */}
-        <div className="mb-5 flex gap-1 border-b" style={{ borderColor: "var(--line)" }}>
+        <div className="mb-5 flex gap-1 border-b" style={{ borderColor: "var(--line)", display: settings && !settings.convert_setup_done ? "none" : undefined }}>
           {TABS.map((t) => {
             const active = tab === t.key;
             return (
@@ -154,6 +157,12 @@ export function Convert() {
           })}
         </div>
 
+        {/* Until a format is chosen there is nothing meaningful to show on the other tabs —
+            candidacy, counts and estimates all depend on the target codec. */}
+        {settings && !settings.convert_setup_done ? (
+          <Setup stats={stats} flash={flash} onDone={() => { loadSettings(); loadStats(); flash("Convert is ready"); }} />
+        ) : (
+        <>
         {statsErr && (
           <div role="status" className="mb-3 flex items-center justify-between gap-3 rounded-lg px-3 py-2 text-[12px]"
             style={{ border: "1px solid var(--avoid)", background: "var(--avoid-soft)", color: "var(--avoid)" }}>
@@ -167,6 +176,8 @@ export function Convert() {
         {tab === "problems" && <Blocklist flash={flash} />}
         {tab === "logs" && <LogsConsole />}
         {tab === "settings" && <ConvertSettings flash={flash} />}
+        </>
+        )}
       </div>
       {confirmAll && stats && (
         <div role="dialog" aria-modal="true" aria-labelledby="convert-all-title"
@@ -214,6 +225,128 @@ export function Convert() {
       )}
       {toast && <div role="status" aria-live="polite" className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
     </>
+  );
+}
+
+// Setup is the first-run experience: choose a format, choose a quality/speed balance, done.
+// Every card carries THIS library's real numbers, so the trade is visible without anyone
+// needing to know what a codec is. The counts come from the index, which already stores
+// every file's codec and HDR type.
+function Setup({ stats, onDone, flash }: { stats: ConvertLibraryStats | null; onDone: () => void; flash: (m: string) => void }) {
+  const [codec, setCodec] = useState<"hevc" | "av1">("hevc");
+  const [preset, setPreset] = useState<"quality" | "balanced" | "fastest">("balanced");
+  const [busy, setBusy] = useState(false);
+
+  const t = stats?.total;
+  // AV1 can't carry Dolby Vision or HDR10+ with the bundled tools, and by default it also
+  // leaves existing HEVC alone (re-encoding it would be a second lossy generation).
+  const blocked = (t?.dolby_vision ?? 0) + (t?.hdr10_plus ?? 0);
+  const av1Files = Math.max(0, (t?.convertible ?? 0) - blocked);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.updateSettings({
+        convert_target_codec: codec,
+        convert_cpu_above_height: preset === "quality" ? "1" : preset === "fastest" ? "0" : "2160",
+        convert_setup_done: true,
+      });
+      onDone();
+    } catch (e) { flash((e as Error).message); } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="mx-auto flex max-w-[860px] flex-col gap-5">
+      <div>
+        <h2 className="text-[19px] font-bold">Let&rsquo;s set up Convert</h2>
+        <p className="mt-1 text-[13px] leading-relaxed text-ink-dim">
+          Convert shrinks your library by re-encoding video to a modern codec. Your audio —
+          including Atmos and TrueHD — subtitles, fonts and chapters are copied across
+          untouched. Pick a format and Convert handles the rest.
+        </p>
+      </div>
+
+      <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))" }}>
+        <SetupFormat
+          id="hevc" sel={codec} on={() => setCodec("hevc")}
+          title="HEVC · H.265" tag="Recommended"
+          files={t?.convertible ?? 0} from={t?.convertible_bytes ?? 0} to={t?.est_bytes ?? 0}
+          points={[
+            "Keeps Dolby Vision, HDR10+, HDR10 and HLG",
+            "Plays on virtually every device",
+            "Nothing in your library gets skipped",
+          ]}
+        />
+        <SetupFormat
+          id="av1" sel={codec} on={() => setCodec("av1")}
+          title="AV1" tag="Smaller, newer"
+          files={av1Files} from={t?.convertible_bytes ?? 0} to={Math.round((t?.est_bytes ?? 0) * 0.7)}
+          points={[
+            "About 30% smaller again than HEVC",
+            "Audio, subtitles and fonts unaffected",
+            "Fewer pre-2020 devices can play it",
+          ]}
+          warn={blocked > 0
+            ? `${blocked.toLocaleString()} Dolby Vision / HDR10+ file${blocked === 1 ? "" : "s"} would be left as ${blocked === 1 ? "it is" : "they are"} — AV1 can't carry their metadata`
+            : undefined}
+        />
+      </div>
+
+      <div>
+        <div className={lbl}>Quality vs speed</div>
+        <div className="mt-2 grid gap-2" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
+          {([
+            ["quality", "Best quality", "Everything on the CPU. Slowest, and the best result per byte."],
+            ["balanced", "Balanced", "HDR and 4K on the CPU, everything else on the GPU. Recommended."],
+            ["fastest", "Fastest", "GPU wherever possible. HDR still uses the CPU — it's the only way to keep the metadata."],
+          ] as const).map(([id, title, desc]) => (
+            <button key={id} type="button" onClick={() => setPreset(id)} className="rounded-xl p-3 text-left"
+              style={{ border: `1.5px solid ${preset === id ? "var(--accent)" : "var(--line)"}`, background: preset === id ? "var(--accent-soft, rgba(198,93,59,.08))" : "var(--panel-2)" }}>
+              <div className="text-[13px] font-bold">{title}</div>
+              <div className="mt-0.5 text-[11.5px] leading-snug text-ink-dim">{desc}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between gap-3 rounded-xl p-3.5" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
+        <p className="text-[11.5px] leading-snug text-ink-faint">
+          Originals go to the recycle bin, never straight to deletion. Every encode is scored
+          against the source and thrown away if it doesn&rsquo;t measure up. You can change any
+          of this later in Settings.
+        </p>
+        <button onClick={save} disabled={busy} className="flex-none rounded-lg px-4 py-2.5 text-[13px] font-semibold disabled:opacity-50"
+          style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
+          {busy ? "Saving…" : "Start using Convert"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// SetupFormat is one of the two format cards, carrying the library's real numbers.
+function SetupFormat({ id, sel, on, title, tag, files, from, to, points, warn }: {
+  id: string; sel: string; on: () => void; title: string; tag: string;
+  files: number; from: number; to: number; points: string[]; warn?: string;
+}) {
+  const active = sel === id;
+  return (
+    <button type="button" onClick={on} className="flex flex-col gap-2.5 rounded-xl p-4 text-left"
+      style={{ border: `1.5px solid ${active ? "var(--accent)" : "var(--line)"}`, background: active ? "var(--accent-soft, rgba(198,93,59,.08))" : "var(--panel-2)" }}>
+      <div className="flex items-center justify-between">
+        <span className="text-[15px] font-bold">{title}</span>
+        <span className="h-4 w-4 flex-none rounded-full" style={{ border: `2px solid ${active ? "var(--accent)" : "var(--line)"}`, background: active ? "var(--accent)" : "transparent" }} />
+      </div>
+      <span className="text-[11px] font-medium text-ink-dim">{tag}</span>
+      <div className="rounded-lg px-2.5 py-2 font-mono text-[11.5px]" style={{ background: "var(--panel)", border: "1px solid var(--line-soft)" }}>
+        <div><b>{files.toLocaleString()}</b> files</div>
+        <div className="text-ink-faint">{fmtSize(from)} → ~{fmtSize(to)}</div>
+      </div>
+      <ul className="flex flex-col gap-1">
+        {points.map((p) => <li key={p} className="flex items-start gap-1.5 text-[11.5px] text-ink-dim"><span className="flex-none" style={{ color: "var(--good)" }}>✓</span>{p}</li>)}
+      </ul>
+      {warn && <div className="flex items-start gap-1.5 rounded-md px-2 py-1.5 text-[10.5px] leading-snug" style={{ background: "var(--avoid-soft)", color: "var(--avoid)" }}><span className="flex-none">⚠</span><span>{warn}</span></div>}
+    </button>
   );
 }
 

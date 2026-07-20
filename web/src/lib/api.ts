@@ -302,6 +302,10 @@ export interface AppSettings {
   convert_workers: string;
   convert_sweep_start: string;
   convert_scan_at: string;
+  convert_cpu_cores: string;
+  convert_cpu_above_height: string;
+  convert_av1_recode_hevc: boolean;
+  convert_setup_done: boolean;
   convert_sweep_end: string;
   convert_max_failures: string;
   convert_scratch_dir: string;
@@ -662,6 +666,7 @@ export interface ConvertBlocked {
 
 export interface ConvertMediaStats {
   files: number; convertible: number; total_bytes: number; est_bytes: number; convertible_bytes: number; reclaimable: number;
+  hdr10: number; hdr10_plus: number; dolby_vision: number; hlg: number;
   h264: number; hevc: number; av1: number; other: number;
 }
 export interface ConvertLibraryStats { movies: ConvertMediaStats; tv: ConvertMediaStats; total: ConvertMediaStats }

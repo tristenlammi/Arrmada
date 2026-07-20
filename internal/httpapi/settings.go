@@ -109,6 +109,7 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		ConvertCPUCores       *string `json:"convert_cpu_cores"`
 		ConvertCPUAboveHeight *string `json:"convert_cpu_above_height"`
 		ConvertAV1RecodeHEVC  *bool   `json:"convert_av1_recode_hevc"`
+		ConvertSetupDone      *bool   `json:"convert_setup_done"`
 		ConvertSweepEnd       *string `json:"convert_sweep_end"`
 		ConvertMaxFailures    *string `json:"convert_max_failures"`
 		ConvertScratchDir     *string `json:"convert_scratch_dir"`
@@ -226,6 +227,9 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.ConvertAV1RecodeHEVC != nil && !save(a.deps.Settings.SetBool(ctx, "convert_av1_recode_hevc", *req.ConvertAV1RecodeHEVC)) {
+		return
+	}
+	if req.ConvertSetupDone != nil && !save(a.deps.Settings.SetBool(ctx, "convert_setup_done", *req.ConvertSetupDone)) {
 		return
 	}
 	if req.ConvertSweepStart != nil && !save(a.deps.Settings.Set(ctx, "convert_sweep_start", *req.ConvertSweepStart)) {
