@@ -163,7 +163,10 @@ var (
 	// Spelled-out single season: "Season 3" / "Season 3 Complete" (scene/WEBRip packs
 	// that don't use the "S03" form). A range like "Season 1-3" is handled separately.
 	reSeasonSingleWord = regexp.MustCompile(`(?i)\bseason\s+(\d{1,2})\b`)
-	reEpPart           = regexp.MustCompile(`(?i)E(\d{1,3})|-(\d{1,3})`)
+	// Continuation parts of a multi-episode file. Group 1 captures the separator before
+	// an "E<n>" so a hyphen ("E62-E65", a RANGE) can be told apart from juxtaposition
+	// ("E01E02", a LIST) — without it, a range's middle episodes were dropped.
+	reEpPart = regexp.MustCompile(`(?i)([-\s.]?)E(\d{1,3})|-(\d{1,3})`)
 	// Multi-season ranges: "S01-S03", "S1 - S5", or "Seasons 1-5".
 	reSeasonRange = regexp.MustCompile(`(?i)\bS(\d{1,2})\s*-\s*S(\d{1,2})\b`)
 	reSeasonWord  = regexp.MustCompile(`(?i)\bseasons?\s*(\d{1,2})\s*-\s*(\d{1,2})\b`)
@@ -350,21 +353,40 @@ func parseEpisodeList(first, tail string) []int {
 	prev := n0
 	for _, em := range reEpPart.FindAllStringSubmatch(tail, -1) {
 		var n int
+		var isRange bool
 		switch {
-		case em[1] != "": // explicit "E<n>" — always an episode
-			n, _ = strconv.Atoi(em[1])
-		case em[2] != "": // bare "-<n>" — a range end only if consecutive-ish
-			if v, _ := strconv.Atoi(em[2]); v > prev && v-prev <= 50 {
+		case em[2] != "": // explicit "E<n>" — always an episode
+			n, _ = strconv.Atoi(em[2])
+			isRange = em[1] == "-" // "E62-E65" spans; "E01E02" just lists two
+		case em[3] != "": // bare "-<n>" — a range end only if consecutive-ish
+			if v, _ := strconv.Atoi(em[3]); v > prev && v-prev <= 50 {
 				n = v
+				isRange = true
 			}
 		}
-		if n > 0 && n != prev {
-			eps = append(eps, n)
-			prev = n
+		if n <= 0 || n == prev {
+			continue
 		}
+		// A hyphen means every episode in between is in this file too. Peppa Pig's
+		// "S07E62-E65.Cruise.Ship.Holiday...mkv" is one file holding four episodes;
+		// recording only the endpoints left 63 and 64 permanently "missing", so the
+		// searcher hunted forever for episodes already sitting on disk.
+		if isRange && n-prev <= maxEpisodeSpan {
+			for e := prev + 1; e < n; e++ {
+				eps = append(eps, e)
+			}
+		}
+		eps = append(eps, n)
+		prev = n
 	}
 	return eps
 }
+
+// maxEpisodeSpan bounds how many episodes one hyphenated range may expand to. Genuine
+// multi-episode files hold a handful; anything wider is far more likely a misparse, and
+// inventing 40 episode numbers from one would mark a whole season present in error. Past
+// the cap we keep just the endpoints, which is what the parser always did.
+const maxEpisodeSpan = 12
 
 func seasonRange(a, b string) []int {
 	lo, _ := strconv.Atoi(a)
