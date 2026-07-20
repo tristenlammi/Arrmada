@@ -329,7 +329,9 @@ func (s *Service) ResolveEpisodes(ctx context.Context, seriesID int64, rel parse
 	}
 	var out []EpisodeRef
 	for _, ep := range rel.Episodes {
-		out = append(out, s.resolveSE(ctx, seriesID, rel.Season, ep, anime))
+		if ref, ok := s.resolveSE(ctx, seriesID, rel.Season, ep, anime); ok {
+			out = append(out, ref)
+		}
 	}
 	return out
 }
@@ -338,37 +340,52 @@ func (s *Service) ResolveEpisodes(ctx context.Context, seriesID int64, rel parse
 // episode it belongs to — used by rescan/import where episodes are already split out.
 func (s *Service) ResolveEpisode(ctx context.Context, seriesID int64, season, episode int) (int, int) {
 	sr, err := s.repo.Get(ctx, seriesID)
-	ref := s.resolveSE(ctx, seriesID, season, episode, err == nil && sr.IsAnime())
+	ref, ok := s.resolveSE(ctx, seriesID, season, episode, err == nil && sr.IsAnime())
+	if !ok {
+		return season, episode // couldn't remap — leave it as-is for the post-import path
+	}
 	return ref.Season, ref.Episode
 }
 
-func (s *Service) resolveSE(ctx context.Context, seriesID int64, season, episode int, anime bool) EpisodeRef {
+func (s *Service) resolveSE(ctx context.Context, seriesID int64, season, episode int, anime bool) (EpisodeRef, bool) {
 	if s.repo.EpisodeExists(ctx, seriesID, season, episode) {
-		return EpisodeRef{Season: season, Episode: episode}
+		return EpisodeRef{Season: season, Episode: episode}, true
 	}
 	if anime {
 		// A manual scene-season mapping wins over every guess below — it's the user
 		// telling us outright where this cour lands. Only consulted when they've set one
 		// for this exact scene season, so it can't disturb shows that resolve fine.
 		if ref, ok := s.sceneOverrideRef(ctx, seriesID, season, episode); ok {
-			return ref
+			return ref, true
 		}
 		// Per-cour positional: the season exists but is numbered absolutely.
 		if real, ok := s.repo.NthEpisodeOfSeason(ctx, seriesID, season, episode); ok {
-			return EpisodeRef{Season: season, Episode: real}
+			return EpisodeRef{Season: season, Episode: real}, true
 		}
 		// TheXEM scene mapping (authoritative): scene (season, episode) → absolute → TMDB.
 		if abs, ok := s.sceneAbsolute(ctx, seriesID, season, episode); ok {
 			if se, ep, ok := s.repo.EpisodeByAbsolute(ctx, seriesID, abs); ok {
-				return EpisodeRef{Season: se, Episode: ep}
+				return EpisodeRef{Season: se, Episode: ep}, true
 			}
+		}
+		// Absolute number in the SxxExx slot: some groups ship a whole season with the
+		// SERIES absolute number in the episode field — EiNSTEiNSiR names S07E01 as
+		// "S07E139". Read the number as an absolute, but trust it ONLY when it maps back
+		// into the SAME season the file named, so a genuine per-cour "S03E01" (which would
+		// otherwise hit absolute 1 → S01E01) is never disturbed.
+		if se, ep, ok := s.repo.EpisodeByAbsolute(ctx, seriesID, episode); ok && se == season {
+			return EpisodeRef{Season: se, Episode: ep}, true
 		}
 		// Air-date-gap fallback: split a TMDB single season at broadcast hiatuses.
 		if rs, re, ok := s.resolveSceneSeason(ctx, seriesID, season, episode); ok {
-			return EpisodeRef{Season: rs, Episode: re}
+			return EpisodeRef{Season: rs, Episode: re}, true
 		}
+		// Nothing mapped this to a real episode. Do NOT invent a phantom (a file named
+		// S07E139 must not become a nonexistent S07E139) — report it unresolved so the
+		// caller holds it for review instead of misnaming it.
+		return EpisodeRef{}, false
 	}
-	return EpisodeRef{Season: season, Episode: episode} // standard: mark as-is (no-op if absent)
+	return EpisodeRef{Season: season, Episode: episode}, true // standard: mark as-is (no-op if absent)
 }
 
 // sceneOverrideRef resolves a scene (season, episode) through the user's manual mapping.
