@@ -851,11 +851,21 @@ func (s *Service) SupersedeEpisodeFile(ctx context.Context, seriesID int64, seas
 	return s.MarkEpisodeImported(ctx, seriesID, season, episode, path, size)
 }
 
+// CurrentEpisodeFile returns what an episode currently holds, for upgrade decisions that
+// need more than the filename (size, source release, runtime).
+func (s *Service) CurrentEpisodeFile(ctx context.Context, seriesID int64, season, episode int) EpisodeFile {
+	return s.repo.CurrentEpisodeFile(ctx, seriesID, season, episode)
+}
+
 // WantsFile reports whether importing a candidate release (at resolution res) into this
 // episode is worth doing: true when the episode has no file, when its recorded file is
 // gone from disk, or when the candidate is a strictly higher resolution than what's on
 // disk. The auto-importer uses this to skip an equal-or-lower-quality duplicate — which
 // otherwise ping-pongs endlessly between two releases of the same episode.
+//
+// Resolution is the only comparison available from a filename alone. A caller holding the
+// quality profile should use automation's wantsEpisodeFile instead, which also applies the
+// profile's bitrate-upgrade margin.
 func (s *Service) WantsFile(ctx context.Context, seriesID int64, season, episode int, res parser.Resolution) bool {
 	old, _ := s.repo.EpisodeFilePath(ctx, seriesID, season, episode)
 	if old == "" {

@@ -643,6 +643,29 @@ func (r *Repo) ClearEpisodeFile(ctx context.Context, seriesID int64, season, epi
 }
 
 // EpisodeFilePath returns the on-disk path of one episode's file (empty if none).
+// EpisodeFile describes the file an episode currently has, for upgrade decisions.
+// Path is "" when the episode has no file.
+type EpisodeFile struct {
+	Path          string
+	SizeBytes     int64
+	SourceRelease string // the release it came from, not the renamed library file
+	RuntimeMin    int    // needed to turn size into a bitrate
+}
+
+// CurrentEpisodeFile returns what an episode currently holds, so an import can be judged
+// against it on more than resolution alone.
+func (r *Repo) CurrentEpisodeFile(ctx context.Context, seriesID int64, season, episode int) EpisodeFile {
+	var f EpisodeFile
+	err := r.db.QueryRowContext(ctx,
+		`SELECT file_path, size_bytes, source_release, runtime FROM episodes
+		 WHERE series_id = ? AND season_number = ? AND episode_number = ? AND has_file = 1`,
+		seriesID, season, episode).Scan(&f.Path, &f.SizeBytes, &f.SourceRelease, &f.RuntimeMin)
+	if err != nil {
+		return EpisodeFile{}
+	}
+	return f
+}
+
 func (r *Repo) EpisodeFilePath(ctx context.Context, seriesID int64, season, episode int) (string, error) {
 	var path string
 	err := r.db.QueryRowContext(ctx,

@@ -150,6 +150,28 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 	return Candidate{}, false
 }
 
+// IsBitrateUpgrade reports whether a candidate beats the current file by the profile's
+// bitrate margin, at equal resolution.
+//
+// This is the same test Upgrade() applies when deciding to GRAB a better release, exposed
+// so the IMPORT gate can apply it too. They used to disagree: the searcher would find a
+// same-resolution higher-bitrate release, grab it, download it — and the importer would
+// then refuse to place it because resolution hadn't increased. The bandwidth was spent and
+// the file discarded.
+//
+// Returns false when the profile doesn't enable upgrades, sets no bitrate margin, or when
+// the runtime/sizes needed to compute a bitrate are missing.
+func (s *Service) IsBitrateUpgrade(ctx context.Context, ref string, candGB, currentGB float64, runtimeMin int) bool {
+	sp, err := s.GetStored(ctx, ref)
+	if err != nil || !sp.UpgradesEnabled || sp.UpgradeBitrateMbps <= 0 {
+		return false
+	}
+	if runtimeMin <= 0 || candGB <= 0 || currentGB <= 0 {
+		return false // can't express either as a bitrate — don't guess
+	}
+	return BitrateMbps(candGB, runtimeMin) >= BitrateMbps(currentGB, runtimeMin)+sp.UpgradeBitrateMbps
+}
+
 // WouldReject reports whether the profile would reject the given release — used
 // to tell if switching a movie to this profile is a downgrade (its current file
 // no longer fits). currentRelease is the file's source release name.
