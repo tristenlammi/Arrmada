@@ -1470,7 +1470,9 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst, ext st
 	s.update(job, func(j *Job) { j.OutBytes = outSize })
 	s.addReclaimed(ctx, mi.SizeBytes-outSize)
 	s.finish(job, StateDone, "")
-	s.log.Info("convert: done", "movie", title, "src_mb", mi.SizeBytes>>20, "out_mb", outSize>>20, "saved_mb", (mi.SizeBytes-outSize)>>20)
+	// "title", not "movie" — this path handles episodes too, and labelling one as a movie
+	// makes the logs quietly misleading.
+	s.log.Info("convert: done", "title", title, "src_mb", mi.SizeBytes>>20, "out_mb", outSize>>20, "saved_mb", (mi.SizeBytes-outSize)>>20)
 }
 
 // runHealthCheck decodes the whole file looking for decode errors (a corruption scan, like

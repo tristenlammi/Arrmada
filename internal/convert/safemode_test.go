@@ -96,9 +96,10 @@ func TestVAAPIQualityOptionPerCodec(t *testing.T) {
 	mi := &MediaInfo{VideoCodec: "h264", Height: 1080}
 	vaapi := Encoder{Codec: "av1", Name: "av1_vaapi", Kind: "vaapi", Hardware: true}
 
+	// CRF 24 -> tightened to 20 for hardware -> qindex 80.
 	av1 := strings.Join(compileOutputArgs(vaapi, mi, Plan{VideoCodec: "av1", Quality: 24, Container: "mkv"}, false, 4, false), " ")
-	if !strings.Contains(av1, "-global_quality 96") {
-		t.Errorf("AV1 VAAPI should use the rescaled global_quality: %s", av1)
+	if !strings.Contains(av1, "-global_quality 80") {
+		t.Errorf("AV1 VAAPI should use the tightened, rescaled global_quality: %s", av1)
 	}
 	if strings.Contains(av1, "-qp ") {
 		t.Errorf("av1_vaapi has no -qp option; it must not be passed: %s", av1)
@@ -106,7 +107,31 @@ func TestVAAPIQualityOptionPerCodec(t *testing.T) {
 
 	hevcEnc := Encoder{Codec: "hevc", Name: "hevc_vaapi", Kind: "vaapi", Hardware: true}
 	hevc := strings.Join(compileOutputArgs(hevcEnc, mi, Plan{VideoCodec: "hevc", Quality: 24, Container: "mkv"}, false, 4, false), " ")
-	if !strings.Contains(hevc, "-qp 24") {
-		t.Errorf("HEVC VAAPI should pass CRF through as -qp: %s", hevc)
+	if !strings.Contains(hevc, "-qp 20") {
+		t.Errorf("HEVC VAAPI should tighten the CRF target for hardware: %s", hevc)
+	}
+}
+
+// Hardware encoders need a tighter quantizer than software for the same picture, so the
+// software CRF target is lowered before it reaches them. Without this, hardware output
+// lands far softer than "maximum quality retention" implies — the first real conversion
+// cut a 1080p episode from 12.1 to 2.1 Mb/s.
+func TestHardwareQualityIsTightenedAndClamped(t *testing.T) {
+	cases := []struct{ crf, want int }{
+		{24, 20}, // the AV1 default
+		{18, 14}, // an already-high target goes higher still
+		{4, 1},   // never below 1: 0 means lossless
+		{1, 1},
+	}
+	for _, c := range cases {
+		if got := hardwareQuality(c.crf); got != c.want {
+			t.Errorf("hardwareQuality(%d) = %d, want %d", c.crf, got, c.want)
+		}
+	}
+	// The CPU path must be untouched — it doesn't need the correction.
+	mi := &MediaInfo{VideoCodec: "h264", Height: 1080}
+	cpu := strings.Join(compileOutputArgs(cpuEncoder("hevc"), mi, Plan{VideoCodec: "hevc", Quality: 24, Container: "mkv"}, false, 4, false), " ")
+	if !strings.Contains(cpu, "-crf 24") {
+		t.Errorf("CPU encodes must use the target as given: %s", cpu)
 	}
 }

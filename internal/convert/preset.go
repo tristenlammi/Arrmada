@@ -75,6 +75,30 @@ func globalArgs(enc Encoder, hwDecode bool, device string) []string {
 	return nil
 }
 
+// hardwareQualityOffset tightens the quality target for hardware encoders.
+//
+// Fixed-function silicon needs a tighter quantizer than a software encoder to reach the
+// same picture, because it has far simpler rate-distortion optimisation. Feeding hardware
+// the same CRF number we'd give x265 or SVT-AV1 therefore lands softer than intended: the
+// first real conversion here dropped a 1080p episode from 12.1 to 2.1 Mb/s, an 83% cut,
+// with SSIM falling to 0.9754 — comfortably more aggressive than "maximum quality
+// retention" should be.
+//
+// Four points is a deliberate, conservative correction rather than a measured constant.
+// The CPU-vs-GPU comparison (plan phase 6) is what would replace this heuristic with a
+// number derived from real content.
+const hardwareQualityOffset = 4
+
+// hardwareQuality converts a software-scale CRF target into the tighter one a hardware
+// encoder needs for comparable output.
+func hardwareQuality(crf int) int {
+	q := crf - hardwareQualityOffset
+	if q < 1 {
+		q = 1
+	}
+	return q
+}
+
 // av1QIndex converts a CRF-scale quality target (0-63, what SVT-AV1 uses) into AV1's
 // quantizer index (0-255), which is what the hardware AV1 encoders take. They're the same
 // scale stretched by 4, so a CRF of 24 becomes a qindex of 96.
@@ -241,9 +265,9 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cor
 			// AV1 conversion was discarded by the never-grow guard.
 			a = append(a, "-c:v", enc.Name, "-rc_mode", "CQP")
 			if codec == "av1" {
-				a = append(a, "-global_quality", strconv.Itoa(av1QIndex(crf)))
+				a = append(a, "-global_quality", strconv.Itoa(av1QIndex(hardwareQuality(crf))))
 			} else {
-				a = append(a, "-qp", strconv.Itoa(crf))
+				a = append(a, "-qp", strconv.Itoa(hardwareQuality(crf)))
 			}
 			if mi.TenBit && codec != "h264" {
 				a = append(a, "-profile:v", "main10")
@@ -252,7 +276,7 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cor
 			if scale {
 				a = append(a, "-vf", scaleCPU(plan.ScaleHeight))
 			}
-			a = append(a, "-c:v", enc.Name, "-preset", "p5", "-rc", "vbr", "-cq", strconv.Itoa(crf))
+			a = append(a, "-c:v", enc.Name, "-preset", "p5", "-rc", "vbr", "-cq", strconv.Itoa(hardwareQuality(crf)))
 			if mi.TenBit && codec != "h264" {
 				a = append(a, "-pix_fmt", "p010le")
 			}
@@ -260,9 +284,9 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cor
 			if scale {
 				a = append(a, "-vf", scaleCPU(plan.ScaleHeight))
 			}
-			qsvQ := crf
+			qsvQ := hardwareQuality(crf)
 			if codec == "av1" {
-				qsvQ = av1QIndex(crf) // AV1 quantizes 0-255, not on the CRF scale
+				qsvQ = av1QIndex(qsvQ) // AV1 quantizes 0-255, not on the CRF scale
 			}
 			a = append(a, "-c:v", enc.Name, "-global_quality", strconv.Itoa(qsvQ), "-preset", "medium")
 			if mi.TenBit && codec != "h264" {
