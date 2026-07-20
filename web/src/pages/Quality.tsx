@@ -71,7 +71,7 @@ function emptyProfile(media: string): StoredProfile {
     min_seeders: 0,
     stall_minutes: 0,
     upgrades_enabled: true,
-    upgrade_bitrate_mbps: 0,
+    upgrade_min_percent: 0,
   };
 }
 
@@ -85,6 +85,29 @@ const BOOK_FORMATS: { group: string; formats: string[] }[] = [
   { group: "Ebook", formats: ["EPUB", "AZW3", "MOBI", "AZW", "PDF", "CBZ", "CBR", "FB2"] },
   { group: "Audiobook", formats: ["M4B", "MP3", "M4A", "FLAC", "AAC", "OGG", "OPUS"] },
 ];
+
+// How much better a release must be before it's worth replacing a same-resolution file.
+// Expressed as a percentage, not Mbps: "2 Mbps better" more than doubles a 480p file and
+// is noise on a 2160p one, so the same number would mean something different for every
+// show. A percentage is the same promise everywhere.
+//
+// 20% is the server's floor (quality.MinUpgradePercent) — below that, "better" is within
+// the noise of how two groups encoded the same source, and acting on it re-downloads a
+// library for nothing. The options start above it so the UI can never promise something
+// the server will quietly override.
+const UPGRADE_STEPS = [
+  { percent: 0, label: "Off", hint: "Only upgrade on a real quality gain — better resolution or a format you prefer." },
+  { percent: 25, label: "Noticeably better", hint: "At least 25% higher bitrate." },
+  { percent: 50, label: "Clearly better", hint: "At least 50% higher bitrate." },
+  { percent: 100, label: "Much better", hint: "At least double the bitrate." },
+];
+
+// A worked example beats a number: 25% is abstract, "2.0 GB → 2.5 GB" is not.
+function upgradeExplainer(percent: number): string {
+  if (!percent) return "Files are only replaced by a better resolution or a preferred format — never for size alone.";
+  const example = (2.0 * (1 + percent / 100)).toFixed(1);
+  return `A 2.0 GB episode would only be replaced by one of about ${example} GB or more (same resolution, ${percent}% higher bitrate). Comparisons account for codec, so a smaller HEVC file isn't treated as worse than a bloated H.264 one.`;
+}
 
 export function Quality() {
   const [media, setMedia] = useState("movie");
@@ -405,7 +428,7 @@ function Builder({ formats, initial, onCancel, onSaved }: { formats: FormatInfo[
             <div className="flex items-center justify-between gap-3">
               <div className="min-w-0">
                 <div className="text-[12.5px] font-semibold">Automatically upgrade</div>
-                <div className="text-[10.5px] text-ink-faint">After a file is imported, keep watching for a better release and replace it. Stops once you're at the best resolution with all your preferred formats — never churns on a few extra Mb/s.</div>
+                <div className="text-[10.5px] text-ink-faint">After a file is imported, keep watching for a better release and replace it. Stops once you're at the best resolution with all your preferred formats.</div>
               </div>
               <button
                 role="switch"
@@ -419,16 +442,29 @@ function Builder({ formats, initial, onCancel, onSaved }: { formats: FormatInfo[
             </div>
             {sp.upgrades_enabled && (
               <div className="mt-3.5 border-t pt-3" style={{ borderColor: "var(--line)" }}>
-                <div className="flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-[12px] font-semibold">Also upgrade on higher bitrate</div>
-                    <div className="text-[10.5px] text-ink-faint">Grab a same-or-better release whose average bitrate is at least this many Mbps higher, up to your bitrate ceiling. 0 = only upgrade on a real quality gain.</div>
-                  </div>
-                  <div className="flex flex-none items-center gap-1.5">
-                    <input type="number" min={0} step={1} value={sp.upgrade_bitrate_mbps} onChange={(e) => patch({ upgrade_bitrate_mbps: Math.max(0, Number(e.target.value)) })} className="w-[64px] rounded-lg px-2 py-1.5 text-right text-[13px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
-                    <span className="text-[11px] text-ink-faint">Mbps</span>
-                  </div>
+                <div className="text-[12px] font-semibold">Also replace a same-quality file when it's bigger</div>
+                <div className="mt-0.5 text-[10.5px] text-ink-faint">
+                  Two releases can both be 1080p and still look different — one encoded at twice the bitrate of the other.
+                  Pick how much better a release has to be before it's worth re-downloading.
                 </div>
+                <div className="mt-2.5 flex flex-wrap gap-1.5">
+                  {UPGRADE_STEPS.map((s) => (
+                    <button
+                      key={s.percent}
+                      onClick={() => patch({ upgrade_min_percent: s.percent })}
+                      title={s.hint}
+                      className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold"
+                      style={{
+                        border: `1px solid ${sp.upgrade_min_percent === s.percent ? "var(--accent)" : "var(--line)"}`,
+                        background: sp.upgrade_min_percent === s.percent ? "var(--accent-soft)" : "var(--panel-2)",
+                        color: sp.upgrade_min_percent === s.percent ? "var(--accent)" : "var(--ink-dim)",
+                      }}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="mt-2 text-[10.5px] text-ink-faint">{upgradeExplainer(sp.upgrade_min_percent)}</div>
               </div>
             )}
           </div>

@@ -40,6 +40,7 @@ func TestUpgradeGuardRails(t *testing.T) {
 		why    string
 	}{
 		{"barely bigger", 3.1, false, "~3% better is noise, exactly the churn to prevent"},
+		{"just under the floor", 3.5, false, "~17%, still short of the 20% minimum"},
 		{"10 percent bigger", 3.3, false, "under the 20% proportional floor"},
 		{"25 percent bigger", 3.75, true, "clears both floors — a real step up"},
 		{"much bigger", 6.0, true, "obviously better"},
@@ -49,8 +50,8 @@ func TestUpgradeGuardRails(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			// A tiny configured margin must not defeat the floors.
-			if got := passesUpgradeFloors(c.candGB, current.SizeGB, runtime, 0.01); got != c.want {
-				t.Errorf("with a 0.01 Mbps margin: got %v, want %v — %s", got, c.want, c.why)
+			if got := passesUpgradeFloors(c.candGB, current.SizeGB, runtime, 1); got != c.want {
+				t.Errorf("with a 1%% setting: got %v, want %v — %s", got, c.want, c.why)
 			}
 		})
 	}
@@ -61,24 +62,25 @@ func TestUpgradeGuardRails(t *testing.T) {
 func TestAbsoluteFloorMattersAtLowBitrates(t *testing.T) {
 	// A 30-minute episode at ~0.6 Mbps (0.13 GiB). 20% of that is ~0.12 Mbps.
 	const runtime = 30
-	if passesUpgradeFloors(0.16, 0.13, runtime, 0.01) {
+	if passesUpgradeFloors(0.16, 0.13, runtime, 1) {
 		t.Error("a ~0.1 Mbps gain cleared the proportional floor but must fail the absolute one")
 	}
 	// A genuinely large jump still passes.
-	if !passesUpgradeFloors(0.5, 0.13, runtime, 0.01) {
+	if !passesUpgradeFloors(0.5, 0.13, runtime, 1) {
 		t.Error("a several-fold increase should be an upgrade")
 	}
 }
 
 // passesUpgradeFloors mirrors IsBitrateUpgrade's arithmetic without needing a database,
-// so the thresholds themselves can be exercised directly.
-func passesUpgradeFloors(candGB, curGB float64, runtimeMin int, margin float64) bool {
+// so the thresholds themselves can be exercised directly. pct is what the profile asks
+// for; the floors apply on top of it.
+func passesUpgradeFloors(candGB, curGB float64, runtimeMin int, pct float64) bool {
 	candBr := BitrateMbps(candGB, runtimeMin)
 	curBr := BitrateMbps(curGB, runtimeMin)
-	if margin < MinUpgradeMarginMbps {
-		margin = MinUpgradeMarginMbps
+	if pct < MinUpgradePercent {
+		pct = MinUpgradePercent
 	}
-	return candBr >= curBr+margin && candBr >= curBr*MinUpgradeRatio
+	return candBr >= curBr*(1+pct/100) && candBr >= curBr+MinUpgradeMarginMbps
 }
 
 // Codec normalization: a bigger x264 file is not automatically better than a smaller x265

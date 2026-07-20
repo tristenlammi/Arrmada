@@ -118,8 +118,8 @@ func (s *Service) Decide(ctx context.Context, ref string, cands []Candidate) Dec
 //     never churn on a guess);
 //   - a candidate never drops resolution (that's a downgrade, handled elsewhere);
 //   - it wins if it scores strictly higher (better resolution/formats), OR — when
-//     upgrade_bitrate_mbps > 0 — its average bitrate is at least that many Mbps
-//     higher and it's no worse on quality.
+//     upgrade_min_percent > 0 — it's at least that much better on bitrate and no worse
+//     on quality.
 //
 // runtimeMin is the content length (movie/episode minutes), needed to turn sizes
 // into bitrates; 0 disables the bitrate-based upgrade (quality-only still applies).
@@ -164,16 +164,17 @@ type Encode struct {
 	Codec  parser.Codec
 }
 
-// Guard rails on the upgrade margin, so a small or careless setting can't churn a library
-// through an endless ladder of barely-better files. Both must be cleared.
+// Guard rails on the upgrade threshold, so a small or careless setting can't churn a
+// library through an endless ladder of barely-better files.
 const (
-	// MinUpgradeMarginMbps is the floor on the absolute margin, whatever the profile
-	// asks for. Matters most at low bitrates, where a percentage alone is a tiny number.
+	// MinUpgradePercent is the smallest improvement that can count, whatever a profile
+	// asks for. Below this, "better" is within the noise of how two groups encoded the
+	// same source, and acting on it means re-downloading a library for nothing.
+	MinUpgradePercent = 20.0
+	// MinUpgradeMarginMbps also applies in absolute terms. A percentage alone is a tiny
+	// number at low bitrates — 20% of a 0.6 Mbps file is 0.12 Mbps — so this stops churn
+	// at the bottom of the range where the percentage can't.
 	MinUpgradeMarginMbps = 0.5
-	// MinUpgradeRatio requires the candidate to be meaningfully better in proportion, not
-	// just by a fixed amount. A fixed margin can't serve 480p (~1.5 Mbps) and 2160p
-	// (~40 Mbps) at once: 1 Mbps is a huge jump for one and noise for the other.
-	MinUpgradeRatio = 1.20
 )
 
 // IsBitrateUpgrade reports whether a candidate beats the current file by enough to be
@@ -192,7 +193,7 @@ const (
 // runtime/sizes needed to compute a bitrate are missing.
 func (s *Service) IsBitrateUpgrade(ctx context.Context, ref string, cand, current Encode, runtimeMin int) bool {
 	sp, err := s.GetStored(ctx, ref)
-	if err != nil || !sp.UpgradesEnabled || sp.UpgradeBitrateMbps <= 0 {
+	if err != nil || !sp.UpgradesEnabled || sp.UpgradeMinPercent <= 0 {
 		return false
 	}
 	if runtimeMin <= 0 || cand.SizeGB <= 0 || current.SizeGB <= 0 {
@@ -201,11 +202,11 @@ func (s *Service) IsBitrateUpgrade(ctx context.Context, ref string, cand, curren
 	candBr := BitrateMbps(cand.SizeGB, runtimeMin) * codecEfficiency(cand.Codec)
 	curBr := BitrateMbps(current.SizeGB, runtimeMin) * codecEfficiency(current.Codec)
 
-	margin := sp.UpgradeBitrateMbps
-	if margin < MinUpgradeMarginMbps {
-		margin = MinUpgradeMarginMbps
+	pct := sp.UpgradeMinPercent
+	if pct < MinUpgradePercent {
+		pct = MinUpgradePercent
 	}
-	return candBr >= curBr+margin && candBr >= curBr*MinUpgradeRatio
+	return candBr >= curBr*(1+pct/100) && candBr >= curBr+MinUpgradeMarginMbps
 }
 
 // WouldReject reports whether the profile would reject the given release — used

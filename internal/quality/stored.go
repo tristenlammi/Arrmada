@@ -32,12 +32,17 @@ type StoredProfile struct {
 	MinFormatScore     int            `json:"min_format_score"`
 	FormatScores       map[string]int `json:"format_scores"`
 	CustomFormats      []CustomFormat `json:"custom_formats,omitempty"`
-	Keywords           []Keyword      `json:"keywords,omitempty"`   // scored terms matched in the release name
-	Rejected           []string       `json:"rejected,omitempty"`   // hard-reject terms (incl. file types)
-	MinSeeders         int            `json:"min_seeders"`          // reject releases below this seeder count
-	StallMinutes       int            `json:"stall_minutes"`        // 0 = off; else fail-over after this long
-	UpgradesEnabled    bool           `json:"upgrades_enabled"`     // keep seeking a better release after import
-	UpgradeBitrateMbps float64        `json:"upgrade_bitrate_mbps"` // also upgrade if a release's avg bitrate is ≥ this many Mbps higher (0 = quality-only)
+	Keywords           []Keyword      `json:"keywords,omitempty"` // scored terms matched in the release name
+	Rejected           []string       `json:"rejected,omitempty"` // hard-reject terms (incl. file types)
+	MinSeeders         int            `json:"min_seeders"`        // reject releases below this seeder count
+	StallMinutes       int            `json:"stall_minutes"`      // 0 = off; else fail-over after this long
+	UpgradesEnabled    bool           `json:"upgrades_enabled"`   // keep seeking a better release after import
+	// UpgradeMinPercent also upgrades when a release is at least this much better in
+	// bitrate, as a percentage (0 = only upgrade on a real quality gain).
+	//
+	// A percentage rather than Mbps because it means the same thing at every resolution:
+	// "2 Mbps better" more than doubles a 480p file and is noise on a 2160p one.
+	UpgradeMinPercent float64 `json:"upgrade_min_percent"`
 }
 
 // Keyword scores releases whose name contains Term (case-insensitive). Positive
