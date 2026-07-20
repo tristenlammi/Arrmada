@@ -940,6 +940,10 @@ func (s *Service) EpisodeTitleByName(ctx context.Context, seriesTitle string, ye
 // normKey folds accents, lowercases, and keeps only alphanumerics — for tolerant title
 // matching, so "Pokémon" and "Pokemon" resolve to the same key.
 func normKey(str string) string {
+	// Same "&" / "and" equivalence as automation's titleKey: a release named
+	// "Love.and.Death" must resolve to the library's "Love & Death" and not look like a
+	// different show.
+	str = strings.ReplaceAll(str, "&", " and ")
 	var b []rune
 	for _, r := range parser.FoldAccents(str) {
 		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {

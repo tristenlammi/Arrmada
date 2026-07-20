@@ -1025,8 +1025,14 @@ func inQueue(queue []download.Item, m movies.Movie) bool {
 }
 
 func titleKey(s string) string {
+	// "&" and "and" are the same word, and releases pick either freely: a library title of
+	// "Love & Death" has to match "Love.and.Death.S01..." as well as "Love.&.Death.S01...".
+	// Stripping the ampersand as punctuation made those two spellings different keys
+	// (lovedeath vs loveanddeath), so an entire show's releases were rejected as belonging
+	// to a different programme. Normalize to one form before dropping the rest.
+	lower := strings.ReplaceAll(strings.ToLower(s), "&", " and ")
 	var b strings.Builder
-	for _, r := range strings.ToLower(s) {
+	for _, r := range lower {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			b.WriteRune(r)
 		}
