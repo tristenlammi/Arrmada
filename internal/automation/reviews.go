@@ -325,8 +325,14 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 				"folder", folder, "importing", s.Title, "also_stored_here", strings.Join(names, ", "))
 		}
 	}
+	// Quality lives on the RELEASE, not always on each file. Packs routinely name files
+	// "Show - 1x01 - Title.mkv" and put "1080p BDRip x265" only on the folder, so every
+	// file parsed to unknown resolution, lost the upgrade comparison against whatever was
+	// already on disk, and the whole pack was skipped as "already has an equal-or-better
+	// file" — 120 of 122 episodes in one case.
+	release := parser.Parse(filepath.Base(contentPath))
 	for _, v := range videos {
-		rel := parser.Parse(filepath.Base(v.Path))
+		rel := inheritQuality(parser.Parse(filepath.Base(v.Path)), release)
 		refs := c.series.ResolveEpisodes(ctx, s.ID, rel)
 		if len(refs) == 0 {
 			unresolved++
@@ -437,4 +443,19 @@ func titleYear(title string, year int) string {
 		return fmt.Sprintf("%s (%d)", title, year)
 	}
 	return title
+}
+
+// inheritQuality fills in quality attributes a pack states only once, on the release,
+// rather than on every file inside it.
+//
+// A file that names its own resolution always wins — a pack can hold mixed quality, and
+// the file is the more specific claim. Only genuinely-absent fields are borrowed.
+func inheritQuality(file, release parser.Release) parser.Release {
+	if file.Resolution == "" {
+		file.Resolution = release.Resolution
+	}
+	if file.Source == "" {
+		file.Source = release.Source
+	}
+	return file
 }
