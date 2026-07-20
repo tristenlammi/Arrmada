@@ -52,14 +52,44 @@ func TitleYearMatch[T any](results []T, title string, year int, titleOf func(T) 
 			return r, true
 		}
 	}
+	// Fall back to a year match ONLY when the title is also a near miss. This used to
+	// accept any result within a year of the folder's, with no title check whatsoever —
+	// so a folder could be silently re-identified as a completely different show, taking
+	// its existing files with it and then downloading the wrong series' episodes.
 	if year > 0 {
 		for _, r := range results {
-			if absYear(yearOf(r)-year) <= 1 {
+			if absYear(yearOf(r)-year) <= 1 && titlesClose(NormalizeTitle(titleOf(r)), want) {
 				return r, true
 			}
 		}
 	}
 	return zero, false
+}
+
+// maxTitleSuffix is how much extra text a "same show" title may carry — enough for a
+// disambiguating year or country tag ("2022", "uk"), not enough for extra words. Any more
+// and it's a different show: "lovedeath" and "lovedeathrobots" differ by six characters
+// and are unrelated programmes.
+const maxTitleSuffix = 4
+
+// titlesClose reports whether two normalized titles are near-identical: one contained in
+// the other, differing only by a short suffix. Containment alone is far too permissive —
+// "lost" is contained in "lostinspace".
+func titlesClose(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if a == b {
+		return true
+	}
+	long, short := a, b
+	if len(short) > len(long) {
+		long, short = short, long
+	}
+	if !strings.Contains(long, short) {
+		return false
+	}
+	return len(long)-len(short) <= maxTitleSuffix
 }
 
 func absYear(n int) int {
