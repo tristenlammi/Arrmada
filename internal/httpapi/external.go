@@ -42,12 +42,12 @@ func isExternalRequest(r *http.Request) bool {
 var externalAllowedPrefixes = []string{
 	"/api/health",
 	"/api/v1/status",
-	"/api/v1/auth/",    // login, logout, setup, me
-	"/api/v1/me/",      // the requester's own notifications + push settings
-	"/api/v1/discover", // discover feeds
+	"/api/v1/auth/",     // login, logout, setup, me
+	"/api/v1/me/",       // the requester's own notifications + push settings
+	"/api/v1/discover",  // discover feeds
 	"/api/v1/books/discover",
-	"/api/v1/media/",   // discover detail + image proxy
-	"/api/v1/requests", // list own + create (+ approve/decline still role-gated)
+	"/api/v1/media/",    // discover detail + image proxy
+	"/api/v1/requests",  // list own + create (+ approve/decline still role-gated)
 }
 
 // externalAllowed reports whether a path is reachable from outside the LAN. The
