@@ -634,6 +634,30 @@ var reQualityStart = regexp.MustCompile(`(?i)\b(\d{3,4}[pi]|web[-. ]?dl|webrip|b
 // Worth having because a title is an independent check on the NUMBER. When a pack says
 // 6x03 is one episode and the metadata says that slot is another, the numbering schemes
 // disagree, and the file gets filed (and renamed) as the wrong episode.
+// StripBracketed removes parenthesised, bracketed and braced segments — the alternate
+// titles and tags that shouldn't defeat a title match. "My Hero Academia (Boku no Hero
+// Academia)" becomes "My Hero Academia", so a release carrying the romaji alt-title still
+// resolves to the show. Nested and unbalanced groups are handled defensively.
+func StripBracketed(s string) string {
+	var b strings.Builder
+	depth := 0
+	for _, r := range s {
+		switch r {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if depth == 0 {
+				b.WriteRune(r)
+			}
+		}
+	}
+	return strings.TrimSpace(b.String())
+}
+
 func EpisodeTitleFrom(name string) string {
 	name = strings.TrimSuffix(name, filepath.Ext(name))
 	loc := reSxxExx.FindStringIndex(name)

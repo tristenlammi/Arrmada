@@ -240,10 +240,13 @@ func downloadFor(queue []download.Item, m movies.Movie) *movies.DownloadStatus {
 	return nil
 }
 
-// normKey folds accents and keeps alphanumerics, so "Pokémon" matches "Pokemon".
+// normKey folds accents and keeps alphanumerics, so "Pokémon" matches "Pokemon". It also
+// drops parenthesised alternate titles first — "My Hero Academia (Boku no Hero Academia)"
+// keys the same as the library's "My Hero Academia", so the download shows its progress on
+// the show's page instead of looking like an unrelated release.
 func normKey(s string) string {
 	var b strings.Builder
-	for _, r := range strings.ToLower(parser.FoldAccents(s)) {
+	for _, r := range strings.ToLower(parser.FoldAccents(parser.StripBracketed(s))) {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			b.WriteRune(r)
 		}

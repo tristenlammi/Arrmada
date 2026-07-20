@@ -343,6 +343,7 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			continue
 		}
 		refs = c.correctRefsByTitle(ctx, s, filepath.Base(v.Path), refs)
+		c.warnAnimeTitleMismatch(ctx, s, filepath.Base(v.Path), refs)
 		matched += len(refs) // recognized — counts as handled even if we don't re-place it
 		// Quality gate: leave the existing file alone unless this candidate is a strictly
 		// higher resolution. Without this, two releases of the same episode (e.g. a 1080p
@@ -562,6 +563,33 @@ func (c *Coordinator) repairSourceRelease(ctx context.Context, s series.Series, 
 		c.log.Info("series import: recorded the release name for an already-imported episode",
 			"series", s.Title, "episode", fmt.Sprintf("S%02dE%02d", rs, re), "source_release", better)
 	}
+}
+
+// warnAnimeTitleMismatch surfaces — without ever moving anything — an anime file whose own
+// episode title disagrees with the episode its number resolved to.
+//
+// Anime is placed by absolute number and TheXEM, and has no title safety net:
+// correctRefsByTitle deliberately skips it, because fansub titles are romanized too
+// inconsistently to place by. But that also means a release whose absolute scheme diverges
+// from TVDB's (a group counting recaps TVDB doesn't, say) would be renamed to the wrong
+// episode in silence. So when a fansub file DOES carry a title and it clearly doesn't match
+// the resolved episode, log a warning to make a suspected misnumber visible. It never
+// re-places the file — the title isn't trustworthy enough to act on, only to flag.
+func (c *Coordinator) warnAnimeTitleMismatch(ctx context.Context, s series.Series, fileName string, refs []series.EpisodeRef) {
+	if !s.IsAnime() || len(refs) != 1 {
+		return // scoped to a single clear placement; packs/multi-refs are out of scope
+	}
+	fileTitle := parser.EpisodeTitleFrom(fileName)
+	if fileTitle == "" {
+		return // most fansub files carry no title — nothing to check against
+	}
+	got := c.series.EpisodeTitle(ctx, s.ID, refs[0].Season, refs[0].Episode)
+	if got == "" || titlesAlike(fileTitle, got) {
+		return
+	}
+	c.log.Warn("series import: anime file's title doesn't match the episode its number resolved to — the release may number episodes differently than TVDB; verify this placement",
+		"series", s.Title, "file", fileName, "file_title", fileTitle,
+		"resolved_to", fmt.Sprintf("S%02dE%02d", refs[0].Season, refs[0].Episode), "resolved_title", got)
 }
 
 // correctRefsByTitle re-points a file at the episode its own TITLE identifies, when the
