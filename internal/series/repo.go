@@ -170,6 +170,20 @@ func (r *Repo) InsertSeasons(ctx context.Context, seriesID int64, seasons []Seas
 				seriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.Overview, ep.AirDate, ep.Runtime, ep.StillURL, b2i(ep.Monitored), ep.AbsoluteNumber); err != nil {
 				return err
 			}
+			// INSERT OR IGNORE alone froze an episode's metadata at whatever it was when
+			// the show was added: a refresh could never correct a title, and — since
+			// dateless episodes are treated as unaired — could never learn an air date
+			// TMDB published later, leaving those episodes unsearchable forever.
+			//
+			// Only the metadata is refreshed. Monitoring, file state, size and the
+			// recorded source release are the user's and the library's, not TMDB's.
+			if _, err := r.db.ExecContext(ctx,
+				`UPDATE episodes SET title = ?, overview = ?, air_date = ?, runtime = ?, still_url = ?
+				 WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
+				ep.Title, ep.Overview, ep.AirDate, ep.Runtime, ep.StillURL,
+				seriesID, ep.SeasonNumber, ep.EpisodeNumber); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

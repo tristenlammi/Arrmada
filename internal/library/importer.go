@@ -596,7 +596,31 @@ func (im *Importer) ImportEpisode(seriesTitle string, year int, videoPath string
 // derived "<Title> (<Year>)" folder, so new episodes join the show's existing
 // on-disk folder instead of spawning a duplicate.
 func (im *Importer) ImportEpisodeInto(seriesFolder, seriesTitle string, year int, videoPath string) (*EpisodeImport, bool, error) {
+	return im.ImportEpisodeIntoWith(seriesFolder, seriesTitle, year, videoPath, parser.Release{})
+}
+
+// ImportEpisodeIntoWith is ImportEpisodeInto with quality inherited from the release the
+// file came from, for the fields its own name doesn't state.
+//
+// A pack states its quality once, on the folder — "Parks and Recreation S01-S07 (1080p
+// BDRip x265)" — and names the files plainly. The importer parses only the filename, so
+// {quality} rendered empty and every imported episode lost the " - 1080p BluRay" suffix
+// the rest of the library carries. A file that names its own quality still wins; a pack
+// can hold mixed encodes and the file is the more specific claim.
+func (im *Importer) ImportEpisodeIntoWith(seriesFolder, seriesTitle string, year int, videoPath string, hint parser.Release) (*EpisodeImport, bool, error) {
 	rel := parser.Parse(filepath.Base(videoPath))
+	if rel.Resolution == parser.ResUnknown {
+		rel.Resolution = hint.Resolution
+	}
+	if rel.Source == parser.SourceUnknown {
+		rel.Source = hint.Source
+	}
+	if rel.Codec == parser.CodecUnknown {
+		rel.Codec = hint.Codec
+	}
+	if rel.Group == "" {
+		rel.Group = hint.Group
+	}
 	if rel.Season == 0 || len(rel.Episodes) == 0 {
 		return nil, false, nil // can't place a file with no S/E marker
 	}

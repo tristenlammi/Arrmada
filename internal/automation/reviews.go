@@ -358,7 +358,7 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 				"candidate_resolution", string(rel.Resolution))
 			continue
 		}
-		ei, ok, err := c.imp.ImportEpisodeInto(folder, s.Title, s.Year, v.Path)
+		ei, ok, err := c.imp.ImportEpisodeIntoWith(folder, s.Title, s.Year, v.Path, release)
 		if err != nil {
 			continue
 		}
