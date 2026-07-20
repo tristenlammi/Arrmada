@@ -383,6 +383,31 @@ func (r *Repo) EpisodeTitle(ctx context.Context, seriesID int64, season, episode
 	return title
 }
 
+// SeasonEpisodeTitles returns every episode title in a season, keyed by episode number.
+//
+// Used to identify an episode by its TITLE rather than its number, for releases numbered
+// against a different metadata source. TMDB and TVDB disagree constantly about two-part
+// episodes — TMDB merges "London" into one 44-minute entry where TVDB splits it — which
+// shifts every subsequent episode by one.
+func (r *Repo) SeasonEpisodeTitles(ctx context.Context, seriesID int64, season int) map[int]string {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT episode_number, title FROM episodes
+		 WHERE series_id = ? AND season_number = ? AND title != ''`, seriesID, season)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := map[int]string{}
+	for rows.Next() {
+		var n int
+		var t string
+		if rows.Scan(&n, &t) == nil {
+			out[n] = t
+		}
+	}
+	return out
+}
+
 // EpisodeExists reports whether a series has an episode with that (season, number).
 func (r *Repo) EpisodeExists(ctx context.Context, seriesID int64, season, episode int) bool {
 	var one int

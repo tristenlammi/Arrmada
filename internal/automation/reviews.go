@@ -342,8 +342,8 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 				"absolute", rel.AbsoluteEpisodes, "anime", s.IsAnime())
 			continue
 		}
+		refs = c.correctRefsByTitle(ctx, s, filepath.Base(v.Path), refs)
 		matched += len(refs) // recognized — counts as handled even if we don't re-place it
-		c.warnTitleMismatch(ctx, s, filepath.Base(v.Path), refs[0].Season, refs[0].Episode)
 		// Quality gate: leave the existing file alone unless this candidate is a strictly
 		// higher resolution. Without this, two releases of the same episode (e.g. a 1080p
 		// and a 720p pack) supersede each other on every sweep, flooding the recycle bin.
@@ -564,29 +564,57 @@ func (c *Coordinator) repairSourceRelease(ctx context.Context, s series.Series, 
 	}
 }
 
-// warnTitleMismatch reports a file whose own episode title disagrees with the metadata
-// title for the slot it resolved to.
+// correctRefsByTitle re-points a file at the episode its own TITLE identifies, when the
+// number it carries resolves somewhere else.
 //
-// The episode NUMBER is all the importer matches on, so when a release numbers episodes
-// differently from the metadata the file is filed — and renamed — as the wrong episode,
-// silently. A Parks and Recreation pack numbered season 6 with "The Pawnee-Eagleton
-// Tip-Off Classic" at 6x03 while TMDB has "Doppelgängers" there, and every episode from
-// that point on landed one slot out. Nothing noticed.
+// Metadata sources genuinely disagree about episode numbering. TMDB merges Parks and
+// Recreation's two-part "London" into one 44-minute episode 1; TVDB — which nearly every
+// release is numbered against — splits it into episodes 1 and 2. Everything after it is
+// therefore one slot apart, so a release numbered 6x03 lands on TMDB's episode 3 when it
+// is really TMDB's episode 2, and the whole rest of the season shifts with it.
 //
-// A warning, not a refusal: releases legitimately abbreviate and re-word titles, so this
-// can't be a hard gate. But a whole season warning in sequence is unmistakable.
-func (c *Coordinator) warnTitleMismatch(ctx context.Context, s series.Series, fileName string, season, episode int) {
+// The number is ambiguous between sources; the title is not. When a file names an episode
+// and exactly one episode in that season carries that title, the title wins.
+//
+// Deliberately conservative: it needs a title in the filename, a unique match, and does
+// nothing when the resolved episode already agrees. Most releases carry no title at all
+// and are untouched.
+func (c *Coordinator) correctRefsByTitle(ctx context.Context, s series.Series, fileName string, refs []series.EpisodeRef) []series.EpisodeRef {
+	if len(refs) == 0 {
+		return refs
+	}
 	fileTitle := parser.EpisodeTitleFrom(fileName)
 	if fileTitle == "" {
-		return // most releases carry no title — nothing to check against
+		return refs // no title to reason from
 	}
-	metaTitle := c.series.EpisodeTitle(ctx, s.ID, season, episode)
-	if metaTitle == "" || titlesAlike(fileTitle, metaTitle) {
-		return
+	season := refs[0].Season
+	titles := c.series.SeasonEpisodeTitles(ctx, s.ID, season)
+	if len(titles) == 0 {
+		return refs
 	}
-	c.log.Warn("series import: the file's episode title doesn't match the metadata for that episode — the release may number episodes differently",
-		"series", s.Title, "resolved_to", fmt.Sprintf("S%02dE%02d", season, episode),
-		"file_says", fileTitle, "metadata_says", metaTitle)
+
+	var match int
+	hits := 0
+	for num, t := range titles {
+		if titlesAlike(fileTitle, t) {
+			match, hits = num, hits+1
+		}
+	}
+	if hits != 1 {
+		return refs // ambiguous or unknown — the number is all we have
+	}
+	if len(refs) == 1 && refs[0].Episode == match {
+		return refs // already right
+	}
+
+	was := make([]int, 0, len(refs))
+	for _, r := range refs {
+		was = append(was, r.Episode)
+	}
+	c.log.Info("series import: placed by episode title, not the number in the filename — the release numbers episodes differently from the metadata",
+		"series", s.Title, "file", fileName, "title", fileTitle,
+		"season", season, "filename_said", was, "metadata_says", match)
+	return []series.EpisodeRef{{Season: season, Episode: match}}
 }
 
 // titlesAlike compares episode titles loosely — punctuation, case and accents differ

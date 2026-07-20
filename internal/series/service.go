@@ -851,6 +851,11 @@ func (s *Service) SupersedeEpisodeFile(ctx context.Context, seriesID int64, seas
 	return s.MarkEpisodeImported(ctx, seriesID, season, episode, path, size)
 }
 
+// SeasonEpisodeTitles returns a season's episode titles, keyed by episode number.
+func (s *Service) SeasonEpisodeTitles(ctx context.Context, seriesID int64, season int) map[int]string {
+	return s.repo.SeasonEpisodeTitles(ctx, seriesID, season)
+}
+
 // SetEpisodeSourceRelease records the release name an episode's file came from. Used to
 // repair episodes imported before quality was inherited from the release, whose recorded
 // name carries no resolution and so makes every future comparison meaningless.
