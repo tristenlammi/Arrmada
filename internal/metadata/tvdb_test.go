@@ -178,20 +178,31 @@ func TestFallsThroughToLaterSource(t *testing.T) {
 	}
 }
 
-// An unavailable source (no key) is dropped, so only TVmaze wraps.
-func TestUnavailableSourcesAreDropped(t *testing.T) {
-	primary := &stubSeries{d: &SeriesDetails{SeriesResult: SeriesResult{Title: "Show"}}}
-	unavailable := &stubUnavailable{}
-	if p := NewSeriesWithEpisodes(primary, slog.Default(), unavailable); p != SeriesProvider(primary) {
-		t.Error("with every source unavailable, the primary should be returned unwrapped")
+// The regression that put an anime library on TMDB's numbering: a source must be judged
+// unavailable PER REQUEST, not once at startup. A key added in settings after boot has to
+// take effect on the next GetSeries — deciding at construction dropped TVDB for the whole
+// process and no key added later could bring it back without a restart.
+func TestAvailabilityIsRecheckedEachRequest(t *testing.T) {
+	primary := &stubSeries{d: &SeriesDetails{
+		SeriesResult: SeriesResult{Title: "Show"}, TVDBID: 1,
+		Seasons: []SeasonDetails{{SeasonNumber: 1, Episodes: []EpisodeDetails{{EpisodeNumber: 1, Title: "tmdb"}}}},
+	}}
+	// Starts unavailable (no key at boot), exactly as TVDB does before the key is entered.
+	src := &stubEpisodes{unavailable: true, seasons: []SeasonDetails{{SeasonNumber: 1, Episodes: []EpisodeDetails{{EpisodeNumber: 1, Title: "tvdb"}}}}}
+	provider := NewSeriesWithEpisodes(primary, slog.Default(), src)
+
+	// While unavailable, the primary's numbering is kept — but the source is NOT discarded.
+	got, _ := provider.GetSeries(context.Background(), 1)
+	if got.Seasons[0].Episodes[0].Title != "tmdb" {
+		t.Fatalf("an unavailable source should be skipped, got %q", got.Seasons[0].Episodes[0].Title)
 	}
-}
 
-type stubUnavailable struct{}
-
-func (stubUnavailable) Available() bool { return false }
-func (stubUnavailable) Episodes(context.Context, int, string) ([]SeasonDetails, error) {
-	return nil, nil
+	// Key added at runtime — the very next request must pick the source up, no restart.
+	src.unavailable = false
+	got, _ = provider.GetSeries(context.Background(), 1)
+	if got.Seasons[0].Episodes[0].Title != "tvdb" {
+		t.Errorf("a source that became available should be used on the next request, got %q", got.Seasons[0].Episodes[0].Title)
+	}
 }
 
 func itoaN(n int) string {

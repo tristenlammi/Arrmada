@@ -484,13 +484,23 @@ func (a *api) handleRefreshSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	if _, err := a.deps.Series.Refresh(ctx, id); err != nil {
+	_, renumbered, err := a.deps.Series.Refresh(ctx, id)
+	if err != nil {
 		if errors.Is(err, series.ErrNotFound) {
 			a.writeError(w, http.StatusNotFound, "series not found")
 			return
 		}
 		a.writeError(w, http.StatusInternalServerError, "could not refresh series")
 		return
+	}
+	// A rebuild moved files to new (season, episode) rows but left them at their old on-disk
+	// names; rename brings the library into line before the rescan reads it.
+	if renumbered {
+		if moved, rerr := a.deps.Automation.SeriesRename(ctx, id); rerr != nil {
+			a.deps.Log.Warn("series: rename after renumber failed", "series_id", id, "err", rerr)
+		} else {
+			a.deps.Log.Info("series: renamed files after renumber", "series_id", id, "moved", moved)
+		}
 	}
 	a.deps.Automation.RescanSeries(ctx, id)
 	s, err := a.deps.Series.Get(ctx, id)
@@ -544,7 +554,8 @@ func (a *api) refreshSeriesSweep(ids []int64) {
 	for _, id := range ids {
 		// Per-series budget, so one hung metadata call can't stall the whole sweep.
 		each, cancelEach := context.WithTimeout(ctx, 60*time.Second)
-		if _, err := a.deps.Series.Refresh(each, id); err != nil {
+		_, renumbered, err := a.deps.Series.Refresh(each, id)
+		if err != nil {
 			failed++
 			a.deps.Log.Warn("series: refresh failed", "series_id", id, "err", err)
 			cancelEach()
@@ -552,6 +563,11 @@ func (a *api) refreshSeriesSweep(ids []int64) {
 				break // the whole sweep timed out or was cancelled
 			}
 			continue
+		}
+		if renumbered {
+			if _, rerr := a.deps.Automation.SeriesRename(each, id); rerr != nil {
+				a.deps.Log.Warn("series: rename after renumber failed", "series_id", id, "err", rerr)
+			}
 		}
 		a.deps.Automation.RescanSeries(each, id)
 		cancelEach()

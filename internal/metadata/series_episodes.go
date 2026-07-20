@@ -29,20 +29,24 @@ type seriesWithEpisodeSource struct {
 
 // NewSeriesWithEpisodes wraps a provider so episode numbering comes from the first of
 // sources that can supply a usable, compatible listing. Sources are tried in priority
-// order — e.g. TVDB (authoritative, needs a key) before TVmaze (free) — and any that is
-// nil or unavailable is skipped. With none usable the primary's own listing is kept, so a
-// show always works.
+// order — e.g. TVDB (authoritative, needs a key) before TVmaze (free).
+//
+// Availability is NOT decided here. A source's Available() is checked per request, in
+// GetSeries — because keys can be added in the settings menu while the app is running.
+// Deciding at construction (startup) would drop TVDB for the whole process whenever it
+// booted without a key, so a key added later did nothing until a restart: exactly the
+// trap that left an anime library on TMDB's numbering after the key was entered.
 func NewSeriesWithEpisodes(primary SeriesProvider, log *slog.Logger, sources ...EpisodeSource) SeriesProvider {
-	usable := make([]EpisodeSource, 0, len(sources))
+	present := make([]EpisodeSource, 0, len(sources))
 	for _, src := range sources {
-		if src != nil && src.Available() {
-			usable = append(usable, src)
+		if src != nil {
+			present = append(present, src)
 		}
 	}
-	if len(usable) == 0 {
+	if len(present) == 0 {
 		return primary
 	}
-	return &seriesWithEpisodeSource{primary: primary, sources: usable, log: log}
+	return &seriesWithEpisodeSource{primary: primary, sources: present, log: log}
 }
 
 func (s *seriesWithEpisodeSource) Available() bool { return s.primary.Available() }
@@ -62,6 +66,10 @@ func (s *seriesWithEpisodeSource) GetSeries(ctx context.Context, tmdbID int) (*S
 		return d, nil
 	}
 	for _, src := range s.sources {
+		if !src.Available() {
+			continue // e.g. no key configured right now — re-checked every request so a key
+			// added in settings takes effect on the next add or refresh, without a restart.
+		}
 		seasons, err := src.Episodes(ctx, d.TVDBID, d.IMDBID)
 		if err != nil {
 			// A numbering source being down must never stop a show being added or

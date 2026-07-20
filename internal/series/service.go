@@ -185,17 +185,44 @@ func detectSeriesType(d *metadata.SeriesDetails) string {
 	return SeriesTypeStandard
 }
 
-// Refresh re-pulls TMDB metadata for a series, adding any newly-announced seasons or
-// episodes. Existing rows are left untouched (INSERT OR IGNORE), so monitor/file state
-// is preserved; only genuinely new episodes appear.
-func (s *Service) Refresh(ctx context.Context, id int64) (Series, error) {
+// Refresh re-pulls metadata for a series, adding any newly-announced seasons or episodes.
+// In the ordinary case existing rows are left untouched (INSERT OR IGNORE), so monitor/file
+// state is preserved and only genuinely new episodes appear.
+//
+// When the source has changed the season MODEL — e.g. a TVDB key was added and anime that
+// was on TMDB's 20-season, continuously-numbered listing is now TVDB's 22-season, per-season
+// listing — INSERT OR IGNORE can't help: it never renumbers an episode that already exists.
+// So Refresh detects that case and rebuilds the listing, carrying files across by absolute
+// number. It returns renumbered=true when files ended up at a new (season, episode), so the
+// caller can rename them on disk to match.
+func (s *Service) Refresh(ctx context.Context, id int64) (Series, bool, error) {
 	sr, err := s.repo.Get(ctx, id)
 	if err != nil {
-		return Series{}, err
+		return Series{}, false, err
 	}
+	renumbered := false
 	if d, derr := s.meta.GetSeries(ctx, sr.TMDBID); derr == nil {
 		seasons := seasonsFromDetails(d, sr.Monitored)
-		if err := s.repo.InsertSeasons(ctx, id, seasons); err != nil {
+		stored, _ := s.repo.StoredNumbering(ctx, id)
+		if numberingModelChanged(seasons, stored) {
+			remaps, rerr := s.repo.RebuildEpisodes(ctx, id, seasons)
+			if rerr != nil {
+				// A rebuild that can't complete falls back to the additive path — better a
+				// show with stale numbering than one left half-rebuilt.
+				s.log.Warn("series: numbering rebuild failed — falling back to insert", "series", sr.Title, "err", rerr)
+				if err := s.repo.InsertSeasons(ctx, id, seasons); err != nil {
+					s.log.Warn("series: refresh insert seasons failed", "series", sr.Title, "err", err)
+				}
+			} else {
+				renumbered = len(remaps) > 0
+				s.log.Info("series: rebuilt episode numbering to match the metadata source",
+					"series", sr.Title, "files_remapped", len(remaps))
+				if renumbered {
+					s.AddEvent(ctx, id, "renumbered", fmt.Sprintf(
+						"Episode numbering rebuilt from updated metadata; %d file(s) remapped and renamed", len(remaps)))
+				}
+			}
+		} else if err := s.repo.InsertSeasons(ctx, id, seasons); err != nil {
 			s.log.Warn("series: refresh insert seasons failed", "series", sr.Title, "err", err)
 		}
 		// Drop seasons the metadata no longer lists. A refresh that can only ADD leaves
@@ -211,8 +238,8 @@ func (s *Service) Refresh(ctx context.Context, id int64) (Series, error) {
 		} else if n > 0 {
 			s.log.Info("series: removed seasons the metadata no longer lists", "series", sr.Title, "removed", n)
 		}
-		// Recompute absolute numbers (fills them in for series added before anime
-		// support, and covers any newly-announced episodes).
+		// Fill absolute numbers only where they're still unset — never overwriting the
+		// authoritative ones a source like TVDB supplied (see BackfillAbsolute).
 		if err := s.repo.BackfillAbsolute(ctx, id); err != nil {
 			s.log.Warn("series: backfill absolute numbers failed", "series", sr.Title, "err", err)
 		}
@@ -226,7 +253,32 @@ func (s *Service) Refresh(ctx context.Context, id int64) (Series, error) {
 	} else {
 		s.log.Warn("series: refresh metadata failed", "series", sr.Title, "err", derr)
 	}
-	return s.Get(ctx, id)
+	got, err := s.Get(ctx, id)
+	return got, renumbered, err
+}
+
+// numberingModelChanged reports whether fresh metadata places a shared absolute episode at
+// a different (season, episode) than what's stored — i.e. the season model itself changed,
+// not merely its episode boundaries. That's the signal that a plain INSERT-OR-IGNORE would
+// silently do nothing and a rebuild is needed. Compared on absolute number because it's the
+// one identity both models share.
+func numberingModelChanged(desired []Season, stored map[int][2]int) bool {
+	if len(stored) == 0 {
+		return false // nothing to reconcile against — the additive path is correct
+	}
+	for _, sn := range desired {
+		for _, ep := range sn.Episodes {
+			if ep.AbsoluteNumber <= 0 {
+				continue
+			}
+			if se, ok := stored[ep.AbsoluteNumber]; ok {
+				if se[0] != sn.SeasonNumber || se[1] != ep.EpisodeNumber {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // SetMonitored toggles a series.

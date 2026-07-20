@@ -207,11 +207,12 @@ func (s *stubSeries) GetSeries(context.Context, int) (*SeriesDetails, error) {
 }
 
 type stubEpisodes struct {
-	seasons []SeasonDetails
-	err     error
+	seasons     []SeasonDetails
+	err         error
+	unavailable bool // toggled at runtime to model a key added/removed while the app runs
 }
 
-func (s *stubEpisodes) Available() bool { return true }
+func (s *stubEpisodes) Available() bool { return !s.unavailable }
 func (s *stubEpisodes) Episodes(context.Context, int, string) ([]SeasonDetails, error) {
 	return s.seasons, s.err
 }

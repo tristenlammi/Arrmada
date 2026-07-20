@@ -189,6 +189,195 @@ func (r *Repo) InsertSeasons(ctx context.Context, seriesID int64, seasons []Seas
 	return nil
 }
 
+// StoredNumbering returns the series' current absolute → (season, episode) mapping, for
+// episodes that carry an absolute number. Refresh compares it against fresh metadata to
+// notice when a source has changed the season MODEL — the same absolute episode now at a
+// different (season, episode) — which INSERT-OR-IGNORE can never correct on its own.
+func (r *Repo) StoredNumbering(ctx context.Context, seriesID int64) (map[int][2]int, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT absolute_number, season_number, episode_number FROM episodes
+		 WHERE series_id = ? AND absolute_number > 0`, seriesID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int][2]int{}
+	for rows.Next() {
+		var abs, s, e int
+		if err := rows.Scan(&abs, &s, &e); err != nil {
+			return nil, err
+		}
+		out[abs] = [2]int{s, e}
+	}
+	return out, rows.Err()
+}
+
+// EpisodeRemap records a file that moved to a new (season, episode) during a rebuild, so
+// the caller can rename it on disk.
+type EpisodeRemap struct {
+	Absolute              int
+	OldSeason, OldEpisode int
+	NewSeason, NewEpisode int
+	FilePath              string
+}
+
+// RebuildEpisodes replaces a series' entire season/episode listing with `seasons`, while
+// preserving what belongs to the user and the library — file placement, size, source
+// release, and monitoring. Files are carried across by ABSOLUTE number, which is
+// source-independent: episode 480 is the same content whether TMDB filed it as S20E480 or
+// TVDB as S22E5, so its file follows the absolute number to wherever the new model puts it.
+//
+// This is what INSERT-OR-IGNORE cannot do — it can add and re-title, but never renumber an
+// existing episode. Runs in one transaction; on any error nothing changes. Returns the
+// files whose (season, episode) moved, so the caller can rename them on disk.
+func (r *Repo) RebuildEpisodes(ctx context.Context, seriesID int64, seasons []Season) ([]EpisodeRemap, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Snapshot everything that must survive the rebuild, keyed by its stable identity.
+	type placement struct {
+		season, episode int
+		path            string
+		size            int64
+		release         string
+	}
+	filesByAbs := map[int]placement{}   // absolute → file placement (absolute > 0)
+	filesBySE := map[[2]int]placement{} // (season, episode) → file (absolute == 0, e.g. specials)
+	monByAbs := map[int]bool{}
+	monBySE := map[[2]int]bool{}
+	rows, err := tx.QueryContext(ctx,
+		`SELECT absolute_number, season_number, episode_number, has_file, file_path, size_bytes, source_release, monitored
+		   FROM episodes WHERE series_id = ?`, seriesID)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var abs, s, e, hf, mon int
+		var path, rel string
+		var size int64
+		if err := rows.Scan(&abs, &s, &e, &hf, &path, &size, &rel, &mon); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		p := placement{season: s, episode: e, path: path, size: size, release: rel}
+		if abs > 0 {
+			monByAbs[abs] = mon != 0
+			if hf != 0 && path != "" {
+				filesByAbs[abs] = p
+			}
+		} else {
+			key := [2]int{s, e}
+			monBySE[key] = mon != 0
+			if hf != 0 && path != "" {
+				filesBySE[key] = p
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	// Rebuild from scratch. No foreign key points at episodes.id, so a clean replace is safe.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM episodes WHERE series_id = ?`, seriesID); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM seasons WHERE series_id = ?`, seriesID); err != nil {
+		return nil, err
+	}
+	for _, sn := range seasons {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO seasons (series_id, season_number, name, overview, poster_url, monitored)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			seriesID, sn.SeasonNumber, sn.Name, sn.Overview, sn.PosterURL, b2i(sn.Monitored)); err != nil {
+			return nil, err
+		}
+		for _, ep := range sn.Episodes {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO episodes (series_id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored, absolute_number)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				seriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.Overview, ep.AirDate, ep.Runtime, ep.StillURL, b2i(ep.Monitored), ep.AbsoluteNumber); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	applyFile := func(ns, ne int, p placement) error {
+		_, err := tx.ExecContext(ctx,
+			`UPDATE episodes SET has_file = 1, file_path = ?, size_bytes = ?, source_release = ?
+			   WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
+			p.path, p.size, p.release, seriesID, ns, ne)
+		return err
+	}
+	existsSE := func(season, episode int) bool {
+		var one int
+		return tx.QueryRowContext(ctx,
+			`SELECT 1 FROM episodes WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
+			seriesID, season, episode).Scan(&one) == nil
+	}
+
+	// Carry files by absolute — the whole point: the new model decides where each absolute
+	// episode lives now, and its file follows.
+	var remaps []EpisodeRemap
+	for abs, p := range filesByAbs {
+		var ns, ne int
+		err := tx.QueryRowContext(ctx,
+			`SELECT season_number, episode_number FROM episodes WHERE series_id = ? AND absolute_number = ?`,
+			seriesID, abs).Scan(&ns, &ne)
+		if err == sql.ErrNoRows {
+			// The new model doesn't carry this absolute. Fall back to the file's old slot if
+			// it still exists, so the file is never orphaned; a later rescan reconciles
+			// anything we genuinely couldn't place.
+			if !existsSE(p.season, p.episode) {
+				continue
+			}
+			ns, ne = p.season, p.episode
+		} else if err != nil {
+			return nil, err
+		}
+		if err := applyFile(ns, ne, p); err != nil {
+			return nil, err
+		}
+		if ns != p.season || ne != p.episode {
+			remaps = append(remaps, EpisodeRemap{
+				Absolute: abs, OldSeason: p.season, OldEpisode: p.episode,
+				NewSeason: ns, NewEpisode: ne, FilePath: p.path,
+			})
+		}
+	}
+	// Files with no absolute (specials) stay where they were, when that slot still exists.
+	for se, p := range filesBySE {
+		if existsSE(se[0], se[1]) {
+			if err := applyFile(se[0], se[1], p); err != nil {
+				return nil, err
+			}
+		}
+	}
+	// Preserve the user's monitoring choices, matched the same way files were.
+	for abs, mon := range monByAbs {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE episodes SET monitored = ? WHERE series_id = ? AND absolute_number = ?`,
+			b2i(mon), seriesID, abs); err != nil {
+			return nil, err
+		}
+	}
+	for se, mon := range monBySE {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE episodes SET monitored = ? WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
+			b2i(mon), seriesID, se[0], se[1]); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return remaps, nil
+}
+
 // PruneSeasonsNotIn removes seasons the metadata no longer lists, and reports how many
 // went. Nothing holding a file is ever touched.
 //
@@ -413,9 +602,15 @@ func (r *Repo) SetEpisodeAbsolute(ctx context.Context, seriesID int64, season, e
 	return err
 }
 
-// BackfillAbsolute (re)computes every episode's absolute number as its 1-based
-// ordinal across the non-special seasons (ordered by season then episode). Idempotent
-// — safe to run on refresh, and it retro-fits series added before absolute numbering.
+// BackfillAbsolute fills in a 1-based ordinal (across the non-special seasons, ordered by
+// season then episode) for episodes that DON'T already have an absolute number. It
+// retro-fits series added before absolute numbering existed.
+//
+// It deliberately leaves non-zero absolutes alone. TVDB supplies authoritative absolute
+// numbers — which for anime can differ from a naive positional count — and those are
+// exactly what fansub releases ("Show - 137") are matched against. An earlier version
+// recomputed every row unconditionally, silently overwriting TVDB's numbers with counted
+// ones on every refresh; only unset rows are touched now.
 func (r *Repo) BackfillAbsolute(ctx context.Context, seriesID int64) error {
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE episodes SET absolute_number = (
@@ -423,7 +618,7 @@ func (r *Repo) BackfillAbsolute(ctx context.Context, seriesID int64) error {
 			WHERE e2.series_id = episodes.series_id AND e2.season_number > 0
 			  AND (e2.season_number < episodes.season_number
 			       OR (e2.season_number = episodes.season_number AND e2.episode_number <= episodes.episode_number))
-		) WHERE series_id = ? AND season_number > 0`, seriesID)
+		) WHERE series_id = ? AND season_number > 0 AND absolute_number = 0`, seriesID)
 	return err
 }
 
