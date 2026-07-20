@@ -27,16 +27,19 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 	if err != nil {
 		return ReleaseList{}, err
 	}
-	query := s.Title
+	// Clean the title before it reaches an indexer: releases carry no punctuation, so
+	// "Teen Titans Go!" must be searched as "Teen Titans Go" or its packs never appear.
+	title := indexerQuery(s.Title)
+	query := title
 	// Anime is released under many numbering conventions (absolute "- 137", per-cour
 	// SxxExx, or a split-season S02) — a narrow query would miss most. Search broad by
 	// title and let the resolver-backed scope filter pick releases covering the episode.
 	if !s.IsAnime() {
 		switch {
 		case season > 0 && episode > 0:
-			query = fmt.Sprintf("%s S%02dE%02d", s.Title, season, episode)
+			query = fmt.Sprintf("%s S%02dE%02d", title, season, episode)
 		case season > 0:
-			query = fmt.Sprintf("%s S%02d", s.Title, season)
+			query = fmt.Sprintf("%s S%02d", title, season)
 		}
 	}
 	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaSeries, Limit: 400})

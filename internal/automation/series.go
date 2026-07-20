@@ -171,7 +171,7 @@ func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (int
 	if err != nil {
 		return 0, err
 	}
-	res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: s.Title, MediaType: indexer.MediaSeries, Limit: 100})
+	res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: indexerQuery(s.Title), MediaType: indexer.MediaSeries, Limit: 100})
 	if err != nil {
 		return 0, err
 	}
@@ -468,6 +468,28 @@ func seasonEpisodeCounts(s series.Series) map[int]int {
 	return out
 }
 
+// indexerQuery turns a library title into something an indexer will actually match.
+//
+// Scene releases carry no punctuation: "Teen Titans Go!" ships as "Teen.Titans.Go.S07...".
+// Searching with the title verbatim therefore narrows or misses results — a whole show's
+// season packs can be invisible because of one exclamation mark. Accents are folded for the
+// same reason (see the Pokémon case), and separators become spaces so a title that already
+// uses dots still matches.
+func indexerQuery(title string) string {
+	var b strings.Builder
+	for _, r := range parser.FoldAccents(title) {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9'):
+			b.WriteRune(r)
+		case r == ' ' || r == '.' || r == '_' || r == '-':
+			b.WriteByte(' ')
+			// Everything else — ! ? : ; , ' " ( ) [ ] & — is dropped: releases don't
+			// carry it, and including it only ever narrows the match.
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
+}
+
 // wantedEpisodes returns the monitored, aired, file-less episodes plus the set of
 // season numbers the series actually has.
 func wantedEpisodes(s series.Series) ([]epKey, map[int]bool) {
@@ -666,7 +688,13 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 		// another pass so it can fill the gaps. The per-episode quality gate in
 		// importSeriesInto keeps this from ping-ponging once the season is complete.
 		if c.hashAlreadyImported(ctx, it.Hash) {
-			if !matchOK || !c.series.SeasonHasMissing(ctx, s.ID, parsed.Season) {
+			// PACKS only. A single-episode release can never fill a season's remaining
+			// gaps, so re-processing one just re-imports the episode it already provided,
+			// finds nothing new, and blocklists it as a pack that "can't complete the
+			// season" — turning every successful single-episode import into a permanent
+			// blocklist entry.
+			if !matchOK || parsed.Kind() == parser.KindEpisode ||
+				!c.series.SeasonHasMissing(ctx, s.ID, parsed.Season) {
 				continue
 			}
 			c.log.Info("series import: re-processing an already-imported pack to fill missing episodes",
