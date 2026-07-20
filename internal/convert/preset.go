@@ -75,6 +75,20 @@ func globalArgs(enc Encoder, hwDecode bool, device string) []string {
 	return nil
 }
 
+// av1QIndex converts a CRF-scale quality target (0-63, what SVT-AV1 uses) into AV1's
+// quantizer index (0-255), which is what the hardware AV1 encoders take. They're the same
+// scale stretched by 4, so a CRF of 24 becomes a qindex of 96.
+func av1QIndex(crf int) int {
+	q := crf * 4
+	if q < 1 {
+		q = 1
+	}
+	if q > 255 {
+		q = 255
+	}
+	return q
+}
+
 // crfDefault is the quality target for a codec when the plan doesn't set one. The scales
 // differ per codec (AV1's CRF runs higher for the same perceived quality), so each has its own
 // baseline. HEVC's 24 preserves the pre-R5 "Save space" behavior.
@@ -217,7 +231,20 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cor
 				}
 				a = append(a, "-vf", chain)
 			}
-			a = append(a, "-c:v", enc.Name, "-rc_mode", "CQP", "-qp", strconv.Itoa(crf))
+			// Quality has to be expressed in the ENCODER's own scale, not ours.
+			//
+			// hevc_vaapi/h264_vaapi take -qp on a 0-52 scale, close enough to CRF to pass
+			// straight through. av1_vaapi doesn't expose -qp at all: AV1 quantizes on a
+			// 0-255 index, so the value goes via -global_quality after being rescaled.
+			// Passing our CRF-scale number as -qp meant av1_vaapi ignored it entirely and
+			// used its own default — which produced files LARGER than the source, so every
+			// AV1 conversion was discarded by the never-grow guard.
+			a = append(a, "-c:v", enc.Name, "-rc_mode", "CQP")
+			if codec == "av1" {
+				a = append(a, "-global_quality", strconv.Itoa(av1QIndex(crf)))
+			} else {
+				a = append(a, "-qp", strconv.Itoa(crf))
+			}
 			if mi.TenBit && codec != "h264" {
 				a = append(a, "-profile:v", "main10")
 			}
@@ -233,7 +260,11 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cor
 			if scale {
 				a = append(a, "-vf", scaleCPU(plan.ScaleHeight))
 			}
-			a = append(a, "-c:v", enc.Name, "-global_quality", strconv.Itoa(crf), "-preset", "medium")
+			qsvQ := crf
+			if codec == "av1" {
+				qsvQ = av1QIndex(crf) // AV1 quantizes 0-255, not on the CRF scale
+			}
+			a = append(a, "-c:v", enc.Name, "-global_quality", strconv.Itoa(qsvQ), "-preset", "medium")
 			if mi.TenBit && codec != "h264" {
 				a = append(a, "-pix_fmt", "p010le")
 			}

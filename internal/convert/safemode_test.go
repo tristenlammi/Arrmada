@@ -70,3 +70,43 @@ func TestNoNumaPoolsAddsPoolsNone(t *testing.T) {
 		t.Errorf("pools=none should only appear when needed: %s", ok)
 	}
 }
+
+// AV1 quantizes on a 0-255 index while our quality targets are CRF-scale (0-63). Feeding a
+// CRF number straight to a hardware AV1 encoder made it ignore the value and use its own
+// default, producing files larger than the source — every AV1 conversion was then thrown
+// away by the never-grow guard.
+func TestAV1QIndexMapping(t *testing.T) {
+	cases := []struct{ crf, want int }{
+		{24, 96},  // the AV1 default
+		{18, 72},  // the HEVC-style high-quality target
+		{0, 1},    // never zero: 0 means lossless and would be enormous
+		{63, 252}, // top of the CRF scale stays inside the qindex range
+		{99, 255}, // clamped
+	}
+	for _, c := range cases {
+		if got := av1QIndex(c.crf); got != c.want {
+			t.Errorf("av1QIndex(%d) = %d, want %d", c.crf, got, c.want)
+		}
+	}
+}
+
+// The AV1 hardware path must use -global_quality (av1_vaapi has no -qp), while HEVC keeps
+// -qp on its own 0-52 scale.
+func TestVAAPIQualityOptionPerCodec(t *testing.T) {
+	mi := &MediaInfo{VideoCodec: "h264", Height: 1080}
+	vaapi := Encoder{Codec: "av1", Name: "av1_vaapi", Kind: "vaapi", Hardware: true}
+
+	av1 := strings.Join(compileOutputArgs(vaapi, mi, Plan{VideoCodec: "av1", Quality: 24, Container: "mkv"}, false, 4, false), " ")
+	if !strings.Contains(av1, "-global_quality 96") {
+		t.Errorf("AV1 VAAPI should use the rescaled global_quality: %s", av1)
+	}
+	if strings.Contains(av1, "-qp ") {
+		t.Errorf("av1_vaapi has no -qp option; it must not be passed: %s", av1)
+	}
+
+	hevcEnc := Encoder{Codec: "hevc", Name: "hevc_vaapi", Kind: "vaapi", Hardware: true}
+	hevc := strings.Join(compileOutputArgs(hevcEnc, mi, Plan{VideoCodec: "hevc", Quality: 24, Container: "mkv"}, false, 4, false), " ")
+	if !strings.Contains(hevc, "-qp 24") {
+		t.Errorf("HEVC VAAPI should pass CRF through as -qp: %s", hevc)
+	}
+}
