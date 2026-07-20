@@ -1,6 +1,55 @@
 package automation
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/tristenlammi/arrmada/internal/movies"
+)
+
+// Releases are named in ASCII, so a library title carrying diacritics has to fold to the
+// same key as its accent-free release name. unicode.IsLetter accepts 'é', so "Pokémon"
+// kept its accent and matched nothing — the searcher folds the outbound query, found the
+// releases, and then the title check discarded every one of them.
+func TestTitleKeyFoldsAccents(t *testing.T) {
+	same := [][2]string{
+		{"Pokémon Heroes", "Pokemon Heroes"},
+		{"Pokémon", "Pokemon"},
+		{"Amélie", "Amelie"},
+		{"Les Misérables", "Les Miserables"},
+		{"Æon Flux", "Aeon Flux"},
+		{"WALL·E", "WALL-E"},
+	}
+	for _, p := range same {
+		if titleKey(p[0]) != titleKey(p[1]) {
+			t.Errorf("titleKey(%q)=%q != titleKey(%q)=%q — should match",
+				p[0], titleKey(p[0]), p[1], titleKey(p[1]))
+		}
+	}
+}
+
+// End-to-end: the real release names from the log, against the real library title.
+// All six were being rejected as "wrong_title".
+func TestReleaseIsForMovieAcceptsFoldedTitle(t *testing.T) {
+	m := movies.Movie{Title: "Pokémon Heroes", Year: 2002}
+	for _, rel := range []string{
+		"Pokemon Heroes 2002 1080p BluRay x264-GROUP",
+		"Pokemon.Heroes.2002.720p.WEB-DL.AAC2.0.H.264",
+		"Pokémon Heroes 2002 2160p UHD BluRay x265",
+	} {
+		if !releaseIsForMovie(rel, m) {
+			t.Errorf("release %q should match movie %q", rel, m.Title)
+		}
+	}
+	// Folding must not make unrelated films collide.
+	for _, rel := range []string{
+		"Pokemon The First Movie 1998 1080p BluRay x264",
+		"Pokemon Detective Pikachu 2019 1080p BluRay x264",
+	} {
+		if releaseIsForMovie(rel, m) {
+			t.Errorf("release %q must NOT match movie %q", rel, m.Title)
+		}
+	}
+}
 
 // Releases spell "&" and "and" interchangeably, so both must reduce to the same key.
 // Treating the ampersand as plain punctuation made "Love & Death" (lovedeath) and

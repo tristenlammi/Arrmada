@@ -1068,7 +1068,13 @@ func titleKey(s string) string {
 	// Stripping the ampersand as punctuation made those two spellings different keys
 	// (lovedeath vs loveanddeath), so an entire show's releases were rejected as belonging
 	// to a different programme. Normalize to one form before dropping the rest.
-	lower := strings.ReplaceAll(strings.ToLower(s), "&", " and ")
+	//
+	// Accents fold too. unicode.IsLetter accepts 'é', so "Pokémon" kept its diacritic and
+	// never matched a release named "Pokemon" — releases are named in ASCII. The searcher
+	// already folds the outbound query (indexer.Service.Search), so the search found the
+	// releases and then this check threw every one of them away. series.normKey has always
+	// folded; this is the same normalization, now agreed on by both.
+	lower := strings.ReplaceAll(strings.ToLower(parser.FoldAccents(s)), "&", " and ")
 	var b strings.Builder
 	for _, r := range lower {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
