@@ -256,19 +256,27 @@ func (a *api) logUnmatchedSeeds(ctx context.Context, names []string, policies ma
 	if len(sample) > 5 {
 		sample = sample[:5]
 	}
+	// A torrent with no grab row at all was added outside Arrmada — by hand, or left
+	// seeding by whatever managed the library before. That's an ordinary state, not a
+	// fault, and logging it every 10 minutes forever would be exactly the noise the Logs
+	// page now has a filter for. Only report rows that DO exist but sit in a status the
+	// seeding view skips, which is the case that would indicate a real bug.
+	var odd int
 	for _, n := range sample {
-		status := "<no grab row>"
-		if a.deps.Automation != nil {
-			if s := a.deps.Automation.GrabStatusFor(ctx, n); s != "" {
-				status = s
-			}
+		if a.deps.Automation == nil {
+			continue
 		}
-		a.deps.Log.Info("seeding: no seed rule matched this torrent",
+		status := a.deps.Automation.GrabStatusFor(ctx, n)
+		if status == "" {
+			continue // never grabbed by Arrmada — nothing to explain
+		}
+		odd++
+		a.deps.Log.Warn("seeding: a grabbed release has no seed rule — its grab row is in an unexpected status",
 			"torrent", n, "lookup_key", automation.NormReleaseKey(n),
 			"rules_held", len(policies), "grab_status", status)
 	}
-	if len(names) > len(sample) {
-		a.deps.Log.Info("seeding: more torrents without a seed rule",
-			"shown", len(sample), "total", len(names))
+	if odd == 0 {
+		a.deps.Log.Debug("seeding: torrents without a seed rule were not grabbed by Arrmada",
+			"count", len(names))
 	}
 }
