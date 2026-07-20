@@ -90,12 +90,29 @@ func main() {
 	}
 
 	log := newLogger(cfg.LogLevel)
+
+	// Persist the log to disk and re-seed the in-memory view from the previous run, so
+	// the Logs page still has history after a restart — which is exactly when you go
+	// looking, since an update or a crash is usually what sent you there.
+	logPath := filepath.Join(cfg.DataDir, "logs", "arrmada.log.jsonl")
+	restored := logRing.Restore(logPath)
+	stopLogFile, logFileErr := logRing.Persist(logPath)
+	if logFileErr != nil {
+		// Not fatal: the in-memory view and stdout both still work.
+		log.Warn("logs will not be persisted to disk", "path", logPath, "err", logFileErr)
+	} else {
+		defer stopLogFile()
+	}
+
 	log.Info("starting Arrmada",
 		"version", buildinfo.Version,
 		"commit", buildinfo.Commit,
 		"addr", cfg.Addr(),
 		"base_url", orRoot(cfg.BaseURL),
 	)
+	if restored > 0 {
+		log.Info("restored logs from the previous run", "lines", restored, "path", logPath)
+	}
 
 	st, err := store.Open(cfg.DataDir)
 	if err != nil {
@@ -456,8 +473,15 @@ func main() {
 	log.Info("stopped cleanly")
 }
 
-// logRing captures recent logs for the in-app Logs viewer (also written to stdout).
-var logRing = applog.NewRing(5000)
+// logRing captures recent logs for the in-app Logs viewer (also written to stdout and,
+// once Persist is attached, to <DataDir>/logs).
+//
+// 50,000 lines rather than 5,000. A busy sweep emits a line per page per indexer per
+// query, so real-world traffic runs tens of thousands of lines a day and the old buffer
+// held roughly two hours — routinely too short to still contain the thing you came to
+// look at. At ~200 bytes an entry this is ~10 MB of memory, which is cheap next to
+// losing the evidence. The on-disk files hold considerably more than the ring does.
+var logRing = applog.NewRing(50000)
 
 func newLogger(level string) *slog.Logger {
 	var l slog.Level

@@ -19,12 +19,14 @@ type Entry struct {
 }
 
 // Ring is a fixed-capacity, concurrency-safe buffer of the most recent log entries.
+// With Persist attached it also tees each entry to disk — see persist.go.
 type Ring struct {
 	mu   sync.RWMutex
 	buf  []Entry
 	next int
 	full bool
 	max  int
+	sink *writer // nil until Persist is called
 }
 
 // NewRing builds a ring holding up to max entries (min 100).
@@ -42,7 +44,11 @@ func (r *Ring) add(e Entry) {
 	if r.next == 0 {
 		r.full = true
 	}
+	sink := r.sink
 	r.mu.Unlock()
+	if sink != nil {
+		sink.offer(e) // never blocks; see writer.offer
+	}
 }
 
 // Filter selects which captured entries a Snapshot returns.
