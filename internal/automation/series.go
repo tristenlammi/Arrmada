@@ -871,16 +871,34 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 				c.log.Info("series import: release can't complete the season — won't be re-grabbed",
 					"series", s.Title, "release", it.Name, "season", parsed.Season, "unresolved_files", unresolved)
 			}
+		} else if unresolved > 0 {
+			// The release IS full of video — we just couldn't work out which episodes.
+			// Blocklisting that as junk is a false accusation, and an expensive one: a
+			// 122-file "Parks and Recreation S01-S07" pack was discarded because every
+			// file used the "1x01" form the parser didn't understand, and the blocklist
+			// then blocked recovery even after the parser learned it.
+			//
+			// Hold it for review instead. The user can see what arrived, import it into
+			// the right show, and nothing is thrown away over a naming convention.
+			c.addReview(ctx, Review{
+				Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "series",
+				ExpectedID: s.ID, ExpectedTitle: s.Title, ParsedTitle: parsed.Title,
+				SizeBytes: it.SizeBytes, Indexer: c.grabIndexer(ctx, it.Name, "series"),
+				Reason: fmt.Sprintf("Downloaded, but none of its %d video file%s could be matched to an episode — the episode numbering isn't in a form Arrmada recognises",
+					unresolved, plural(unresolved)),
+			})
+			c.log.Warn("series import: has video but nothing could be placed — held for review",
+				"series", s.Title, "release", it.Name, "video_files", unresolved)
 		} else {
-			// A completed download that maps to no importable episode is junk, a fake, or
-			// an unresolvable release. Blocklist it so it isn't re-grabbed or re-scanned.
-			reason := "downloaded but nothing importable was found"
+			// No video at all: junk, a fake, or an archive set that won't unpack. This one
+			// can never import, so blocklist it and stop re-scanning.
+			reason := "downloaded but contained no video"
 			if hasExecutable(it.ContentPath) {
 				reason = "download contained executables and no video (possible fake/malware)"
 				c.log.Warn("series import: refusing a download with executables and no video — blocklisted",
 					"series", s.Title, "release", it.Name, "content_path", it.ContentPath)
 			} else {
-				c.log.Warn("series import: nothing importable — blocklisting so it isn't re-grabbed",
+				c.log.Warn("series import: no video in the download — blocklisting so it isn't re-grabbed",
 					"series", s.Title, "release", it.Name, "content_path", it.ContentPath)
 			}
 			c.addBlockSeries(ctx, s.ID, it.Name, c.grabIndexer(ctx, it.Name, "series"), reason)

@@ -647,6 +647,11 @@ func (s *Service) ExistingFolderName(ctx context.Context, seriesID int64) string
 	return filepath.Base(filepath.Dir(filepath.Dir(path)))
 }
 
+// FolderSharedWith returns other series storing episodes in the same library folder.
+func (s *Service) FolderSharedWith(ctx context.Context, seriesID int64, folder string) []int64 {
+	return s.repo.FolderSharedWith(ctx, seriesID, folder)
+}
+
 // Events returns a series' activity timeline, newest first.
 func (s *Service) Events(ctx context.Context, id int64, limit int) ([]Event, error) {
 	return s.repo.Events(ctx, id, limit)

@@ -2,15 +2,21 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/extract"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
+
+// ErrDownloadGone means the review's files are no longer on disk. Distinguished from a
+// real failure so the API can answer with "this download is gone" rather than a 500.
+var ErrDownloadGone = errors.New("the download is no longer on disk — it was removed or cleaned up since this was held for review")
 
 // Review is a finished download held back from import because its content doesn't
 // match what it was grabbed for (e.g. a "Below Deck Mediterranean" pack grabbed
@@ -219,6 +225,16 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 	if err != nil {
 		return err
 	}
+	// A review can outlive its download: the torrent gets removed, or the folder is
+	// cleaned up, long after the item was held. That's an ordinary situation and the user
+	// should be told plainly — it surfaced as a bare HTTP 500 with the raw stat error
+	// buried in the server log, which tells them nothing about what to do.
+	if r.ContentPath == "" {
+		return ErrDownloadGone
+	}
+	if _, serr := os.Stat(r.ContentPath); serr != nil {
+		return fmt.Errorf("%w: %s", ErrDownloadGone, r.ContentPath)
+	}
 	dest := r.ExpectedID
 	if targetID > 0 {
 		dest = targetID
@@ -289,6 +305,26 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	// show already stored as "Below Deck" doesn't spawn a duplicate "Below Deck
 	// (2013)" folder on the next grab.
 	folder := c.series.ExistingFolderName(ctx, s.ID)
+	// Following the existing folder is right when it's this show's own. It is NOT right
+	// when another series already stores episodes there: two shows in one directory merge
+	// their season folders, and any episode number they share overwrites. Observed with
+	// "Teen Titans Go!" writing into a folder named "Teen Titans".
+	//
+	// Reported rather than repaired — moving a library's files unprompted is far more
+	// dangerous than the collision itself, and which show should own the folder is the
+	// user's call.
+	if folder != "" {
+		if others := c.series.FolderSharedWith(ctx, s.ID, folder); len(others) > 0 {
+			names := make([]string, 0, len(others))
+			for _, id := range others {
+				if o, err := c.series.Get(ctx, id); err == nil {
+					names = append(names, o.Title)
+				}
+			}
+			c.log.Warn("series import: two shows share one library folder — episodes may overwrite each other",
+				"folder", folder, "importing", s.Title, "also_stored_here", strings.Join(names, ", "))
+		}
+	}
 	for _, v := range videos {
 		rel := parser.Parse(filepath.Base(v.Path))
 		refs := c.series.ResolveEpisodes(ctx, s.ID, rel)

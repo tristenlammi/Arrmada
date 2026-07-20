@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
@@ -61,6 +62,13 @@ func (a *api) handleImportReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.deps.Automation.ImportReview(r.Context(), id, req.TargetID); err != nil {
+		// A review outliving its download is ordinary, not a server fault: the torrent
+		// was removed or the folder cleaned up after the item was held. It used to answer
+		// 500 with the raw stat error, which told the user nothing actionable.
+		if errors.Is(err, automation.ErrDownloadGone) {
+			a.writeError(w, http.StatusGone, err.Error())
+			return
+		}
 		a.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

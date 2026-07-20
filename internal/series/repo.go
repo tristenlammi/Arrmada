@@ -657,6 +657,36 @@ func (r *Repo) EpisodeFilePath(ctx context.Context, seriesID int64, season, epis
 // AnyEpisodeFilePath returns the on-disk path of any one episode with a file for
 // the series (empty if the series has nothing on disk). Used to discover the
 // show's existing library folder so new episodes join it.
+// FolderSharedWith returns the ids of OTHER series that also store episodes in the given
+// library folder name.
+//
+// Two shows in one folder is corruption waiting to happen: their season directories merge,
+// and any episode number they share collides. "Teen Titans" and "Teen Titans Go!" are the
+// obvious pair, but any show whose folder was renamed to another's name does it.
+func (r *Repo) FolderSharedWith(ctx context.Context, seriesID int64, folder string) []int64 {
+	if folder == "" {
+		return nil
+	}
+	// Match the folder as a whole path segment, so "Teen Titans" doesn't match
+	// "Teen Titans Go".
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT DISTINCT series_id FROM episodes
+		 WHERE series_id != ? AND has_file = 1 AND file_path LIKE '%/' || ? || '/%'`,
+		seriesID, folder)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
 func (r *Repo) AnyEpisodeFilePath(ctx context.Context, seriesID int64) (string, error) {
 	var path string
 	err := r.db.QueryRowContext(ctx,
