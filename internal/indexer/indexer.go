@@ -102,6 +102,13 @@ type SearchQuery struct {
 	// own page size regardless of Limit, so results beyond the first page are only
 	// reachable by asking for them.
 	Offset int
+
+	// Season and Episode narrow a TV search. Torznab's tvsearch takes these directly,
+	// which is how season packs are found: a generic query returns one capped page of
+	// whatever the indexer felt like, while season=7 asks for that season specifically.
+	// Zero means unset.
+	Season  int
+	Episode int
 }
 
 // Recenter is an optional capability: fetch the newest releases (an RSS-style

@@ -171,13 +171,13 @@ func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (int
 	if err != nil {
 		return 0, err
 	}
-	res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: indexerQuery(s.Title), MediaType: indexer.MediaSeries, Limit: 100})
+	releases, err := c.searchSeriesReleases(ctx, s)
 	if err != nil {
 		return 0, err
 	}
 	grabbed, remaining := 0, []epKey(nil)
-	if len(res.Releases) > 0 {
-		grabbed, remaining = c.grabSeriesFrom(ctx, s, res.Releases)
+	if len(releases) > 0 {
+		grabbed, remaining = c.grabSeriesFrom(ctx, s, releases)
 	} else if wanted, _ := wantedEpisodes(s); len(wanted) > 0 {
 		remaining = sortedKeys(setOf(wanted))
 	}
@@ -488,6 +488,74 @@ func indexerQuery(title string) string {
 		}
 	}
 	return strings.Join(strings.Fields(b.String()), " ")
+}
+
+// sortedSeasons orders seasons so the fan-out is deterministic and the earliest missing
+// seasons are queried first when the cap bites.
+func sortedSeasons(m map[int]bool) []int {
+	out := make([]int, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// maxSeasonQueries bounds the per-season fan-out so a show with dozens of missing seasons
+// can't flood an indexer. Each query is throttled per host anyway.
+const maxSeasonQueries = 12
+
+// searchSeriesReleases finds releases for a series, querying each season that's actually
+// missing something rather than relying on one broad title search.
+//
+// A bare title query returns whatever single page the indexer feels like — 35 results, in
+// the case that exposed this — so a long-running show's season packs simply never appear
+// and those seasons stay empty forever. Torznab's tvsearch takes a season number directly,
+// which asks the indexer for that season instead of hoping it turns up in a general match.
+func (c *Coordinator) searchSeriesReleases(ctx context.Context, s series.Series) ([]indexer.Release, error) {
+	title := indexerQuery(s.Title)
+
+	// The broad query first: it catches multi-season and complete-show packs, which no
+	// single season number would find.
+	res, err := c.indexers.Search(ctx, indexer.SearchQuery{
+		Text: title, MediaType: indexer.MediaSeries, Limit: 100,
+	})
+	if err != nil {
+		return nil, err
+	}
+	all := res.Releases
+	seen := map[string]bool{}
+	for _, r := range all {
+		seen[r.DownloadURL] = true
+	}
+
+	wanted, _ := wantedEpisodes(s)
+	seasons := seasonsOf(setOf(wanted))
+	if len(seasons) == 0 {
+		return all, nil
+	}
+	queried := 0
+	for _, season := range sortedSeasons(seasons) {
+		if ctx.Err() != nil || queried >= maxSeasonQueries {
+			break
+		}
+		queried++
+		sr, err := c.indexers.Search(ctx, indexer.SearchQuery{
+			Text: title, MediaType: indexer.MediaSeries, Season: season, Limit: 100,
+		})
+		if err != nil {
+			continue // one season failing shouldn't sink the rest
+		}
+		for _, r := range sr.Releases {
+			if !seen[r.DownloadURL] {
+				seen[r.DownloadURL] = true
+				all = append(all, r)
+			}
+		}
+	}
+	c.log.Info("series: searched by season", "series", s.Title,
+		"seasons_missing", len(seasons), "seasons_queried", queried, "releases", len(all))
+	return all, nil
 }
 
 // wantedEpisodes returns the monitored, aired, file-less episodes plus the set of

@@ -280,7 +280,7 @@ func buildURL(idx Indexer, t string, q SearchQuery) (string, error) {
 		return "", fmt.Errorf("invalid indexer url %q: %w", idx.URL, err)
 	}
 	qs := u.Query()
-	qs.Set("t", t)
+	qs.Set("t", searchType(t, q))
 	if idx.APIKey != "" {
 		qs.Set("apikey", idx.APIKey)
 	}
@@ -293,6 +293,15 @@ func buildURL(idx Indexer, t string, q SearchQuery) (string, error) {
 	}
 	if len(cats) > 0 {
 		qs.Set("cat", joinInts(cats))
+	}
+	// tvsearch takes the season/episode directly. This is what surfaces season packs: a
+	// bare q= returns one capped page of general matches — 35, in the case that prompted
+	// this — whereas season=7 asks the indexer for that season and gets its packs.
+	if q.Season > 0 {
+		qs.Set("season", strconv.Itoa(q.Season))
+		if q.Episode > 0 {
+			qs.Set("ep", strconv.Itoa(q.Episode))
+		}
 	}
 	if q.Limit > 0 {
 		qs.Set("limit", strconv.Itoa(q.Limit))
@@ -370,4 +379,20 @@ func redactKey(raw string) string {
 	}
 	u.RawQuery = qs.Encode()
 	return u.String()
+}
+
+// searchType maps a query to the right Torznab endpoint. The generic "search" works
+// everywhere but ignores season/episode, so TV queries use tvsearch and movie queries use
+// movie — both of which indexers implement with better matching than a plain text search.
+func searchType(base string, q SearchQuery) string {
+	if base != "search" {
+		return base // caps, or an explicit override
+	}
+	switch q.MediaType {
+	case MediaSeries:
+		return "tvsearch"
+	case MediaMovie:
+		return "movie"
+	}
+	return "search"
 }
