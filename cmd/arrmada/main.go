@@ -133,7 +133,13 @@ func main() {
 	qualitySvc := quality.NewService(st.DB())
 	settingsSvc := settings.NewService(st.DB())
 	notifySvc := notify.NewService(st.DB(), bus, log)
-	seriesSvc := series.NewService(st.DB(), tmdb, cfg.TVDir, log)
+	// Episode NUMBERING comes from TVmaze; everything else about a show still comes from
+	// TMDB. TMDB merges two-part episodes into single entries where releases keep them
+	// separate, so its numbering drifts from the way files are actually named and every
+	// episode after a merged pair lands one slot out. TVmaze follows the release
+	// convention, needs no API key, and falls back to TMDB whenever it can't help.
+	tvSeries := metadata.NewSeriesWithEpisodes(tmdb, metadata.NewTVmaze(), log)
+	seriesSvc := series.NewService(st.DB(), tvSeries, cfg.TVDir, log)
 	seriesSvc.SetSceneMapper(xem.New(cfg.FlaresolverrURL, log)) // TheXEM scene mapping (via FlareSolverr past Cloudflare)
 	booksSvc := books.NewService(st.DB(), openlib, log)
 	// Recycle bin: default to <library>/.recycle so deletes are undoable; "off" hard-deletes.
