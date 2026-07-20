@@ -143,7 +143,13 @@ func main() {
 	// separate, so its numbering drifts from the way files are actually named and every
 	// episode after a merged pair lands one slot out. TVmaze follows the release
 	// convention, needs no API key, and falls back to TMDB whenever it can't help.
-	tvSeries := metadata.NewSeriesWithEpisodes(tmdb, metadata.NewTVmaze(), log)
+	// Episode numbering: TVDB first (authoritative, matches releases and gives real
+	// absolute numbers — but needs a key), then TVmaze (free, handles the common
+	// two-parter), then TMDB itself. Each falls back cleanly when it can't help.
+	tvSeries := metadata.NewSeriesWithEpisodes(tmdb, log,
+		metadata.NewTVDB(keyStore.Func("tvdb")),
+		metadata.NewTVmaze(),
+	)
 	seriesSvc := series.NewService(st.DB(), tvSeries, cfg.TVDir, log)
 	seriesSvc.SetSceneMapper(xem.New(cfg.FlaresolverrURL, log)) // TheXEM scene mapping (via FlareSolverr past Cloudflare)
 	booksSvc := books.NewService(st.DB(), openlib, log)

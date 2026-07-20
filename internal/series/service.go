@@ -154,6 +154,11 @@ func seasonsFromDetails(d *metadata.SeriesDetails, monitored bool) []Season {
 			if !special {
 				abs++
 				absNum = abs
+				// Prefer an absolute number the source supplied authoritatively (TVDB)
+				// over the counted one, which drifts whenever the season list is wrong.
+				if ed.AbsoluteNumber > 0 {
+					absNum = ed.AbsoluteNumber
+				}
 			}
 			sn.Episodes = append(sn.Episodes, Episode{
 				SeasonNumber: sd.SeasonNumber, EpisodeNumber: ed.EpisodeNumber, Title: ed.Title,

@@ -193,6 +193,10 @@ type EpisodeDetails struct {
 	AirDate       string `json:"air_date,omitempty"`
 	Runtime       int    `json:"runtime,omitempty"`
 	StillURL      string `json:"still_url,omitempty"`
+	// AbsoluteNumber is the episode's position across the whole series, when the source
+	// provides it authoritatively (TVDB does). 0 means "not supplied" — the series module
+	// then derives it by counting, which is less reliable for anime.
+	AbsoluteNumber int `json:"absolute_number,omitempty"`
 }
 
 // SeriesProvider looks up TV metadata.

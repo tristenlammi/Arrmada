@@ -23,18 +23,26 @@ type EpisodeSource interface {
 // without giving up anything TMDB is good at.
 type seriesWithEpisodeSource struct {
 	primary SeriesProvider
-	eps     EpisodeSource
+	sources []EpisodeSource // tried in order; the first usable, compatible listing wins
 	log     *slog.Logger
 }
 
-// NewSeriesWithEpisodes wraps a provider so episode numbering comes from eps. A nil or
-// unavailable eps, a lookup failure, or a show the second source doesn't carry all fall
-// back to the primary's own listing — the show still works, just with its old numbering.
-func NewSeriesWithEpisodes(primary SeriesProvider, eps EpisodeSource, log *slog.Logger) SeriesProvider {
-	if eps == nil || !eps.Available() {
+// NewSeriesWithEpisodes wraps a provider so episode numbering comes from the first of
+// sources that can supply a usable, compatible listing. Sources are tried in priority
+// order — e.g. TVDB (authoritative, needs a key) before TVmaze (free) — and any that is
+// nil or unavailable is skipped. With none usable the primary's own listing is kept, so a
+// show always works.
+func NewSeriesWithEpisodes(primary SeriesProvider, log *slog.Logger, sources ...EpisodeSource) SeriesProvider {
+	usable := make([]EpisodeSource, 0, len(sources))
+	for _, src := range sources {
+		if src != nil && src.Available() {
+			usable = append(usable, src)
+		}
+	}
+	if len(usable) == 0 {
 		return primary
 	}
-	return &seriesWithEpisodeSource{primary: primary, eps: eps, log: log}
+	return &seriesWithEpisodeSource{primary: primary, sources: usable, log: log}
 }
 
 func (s *seriesWithEpisodeSource) Available() bool { return s.primary.Available() }
@@ -48,28 +56,31 @@ func (s *seriesWithEpisodeSource) GetSeries(ctx context.Context, tmdbID int) (*S
 	if err != nil || d == nil {
 		return d, err
 	}
-	// Nothing to match on — the second source is keyed by external ids the primary
-	// supplies, so without one there's no lookup to make.
+	// Nothing to match on — sources are keyed by external ids the primary supplies, so
+	// without one there's no lookup to make.
 	if d.TVDBID == 0 && d.IMDBID == "" {
 		return d, nil
 	}
-	seasons, err := s.eps.Episodes(ctx, d.TVDBID, d.IMDBID)
-	if err != nil {
-		// A numbering source being down must never stop a show being added or refreshed.
-		s.log.Warn("episode numbering source unavailable — keeping the primary's numbering",
-			"title", d.Title, "tvdb_id", d.TVDBID, "err", err)
+	for _, src := range s.sources {
+		seasons, err := src.Episodes(ctx, d.TVDBID, d.IMDBID)
+		if err != nil {
+			// A numbering source being down must never stop a show being added or
+			// refreshed — just move to the next source, then to the primary.
+			s.log.Warn("episode numbering source failed — trying the next", "title", d.Title, "err", err)
+			continue
+		}
+		if !usableListing(seasons) {
+			continue // not carried here, or too thin to trust
+		}
+		if why, ok := incompatibleNumbering(seasons, d.Seasons); !ok {
+			s.log.Info("skipping a numbering source that models this show differently",
+				"title", d.Title, "reason", why)
+			continue
+		}
+		d.Seasons = mergeSeasonArt(seasons, d.Seasons)
 		return d, nil
 	}
-	if !usableListing(seasons) {
-		return d, nil // not carried there, or too thin to trust — keep what we have
-	}
-	if why, ok := incompatibleNumbering(seasons, d.Seasons); !ok {
-		s.log.Info("keeping the primary's episode numbering — the other source numbers this show differently",
-			"title", d.Title, "reason", why)
-		return d, nil
-	}
-	d.Seasons = mergeSeasonArt(seasons, d.Seasons)
-	return d, nil
+	return d, nil // no source usable — keep the primary's listing
 }
 
 // usableListing rejects an empty or obviously incomplete reply. Replacing a full listing

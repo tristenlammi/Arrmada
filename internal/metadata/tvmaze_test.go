@@ -138,7 +138,7 @@ func TestEpisodeSourceReplacesOnlyNumbering(t *testing.T) {
 		},
 	}}}
 
-	got, err := NewSeriesWithEpisodes(primary, src, slog.Default()).GetSeries(context.Background(), 1)
+	got, err := NewSeriesWithEpisodes(primary, slog.Default(), src).GetSeries(context.Background(), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestEpisodeSourceFallsBack(t *testing.T) {
 		"not carried":   {seasons: nil},
 		"empty listing": {seasons: []SeasonDetails{{SeasonNumber: 1}}},
 	} {
-		got, err := NewSeriesWithEpisodes(base(), src, slog.Default()).GetSeries(context.Background(), 1)
+		got, err := NewSeriesWithEpisodes(base(), slog.Default(), src).GetSeries(context.Background(), 1)
 		if err != nil {
 			t.Errorf("%s: returned an error instead of falling back: %v", name, err)
 			continue
@@ -182,7 +182,7 @@ func TestEpisodeSourceFallsBack(t *testing.T) {
 	// No external ids means no lookup is even possible.
 	noIDs := &stubSeries{d: &SeriesDetails{SeriesResult: SeriesResult{Title: "Show"}, Seasons: tmdbSeasons}}
 	src := &stubEpisodes{seasons: []SeasonDetails{{SeasonNumber: 9, Episodes: []EpisodeDetails{{EpisodeNumber: 1}}}}}
-	got, _ := NewSeriesWithEpisodes(noIDs, src, slog.Default()).GetSeries(context.Background(), 1)
+	got, _ := NewSeriesWithEpisodes(noIDs, slog.Default(), src).GetSeries(context.Background(), 1)
 	if got.Seasons[0].SeasonNumber != 1 {
 		t.Error("with no TVDB or IMDb id there is nothing to match on — the primary must be kept")
 	}
@@ -192,7 +192,7 @@ func TestEpisodeSourceFallsBack(t *testing.T) {
 // fails on every call.
 func TestNilEpisodeSourceReturnsPrimary(t *testing.T) {
 	p := &stubSeries{d: &SeriesDetails{SeriesResult: SeriesResult{Title: "Show"}}}
-	if got := NewSeriesWithEpisodes(p, nil, slog.Default()); got != SeriesProvider(p) {
+	if got := NewSeriesWithEpisodes(p, slog.Default(), nil); got != SeriesProvider(p) {
 		t.Error("a nil episode source should hand back the primary unchanged")
 	}
 }
@@ -238,7 +238,7 @@ func TestYearNumberedSeasonsAreRejected(t *testing.T) {
 
 	// End to end: the primary's listing survives untouched.
 	p := &stubSeries{d: &SeriesDetails{SeriesResult: SeriesResult{Title: "Naruto"}, TVDBID: 78857, Seasons: tmdb}}
-	got, _ := NewSeriesWithEpisodes(p, &stubEpisodes{seasons: naruto}, slog.Default()).GetSeries(context.Background(), 1)
+	got, _ := NewSeriesWithEpisodes(p, slog.Default(), &stubEpisodes{seasons: naruto}).GetSeries(context.Background(), 1)
 	if len(got.Seasons) != 1 || got.Seasons[0].SeasonNumber != 1 {
 		t.Errorf("expected TMDB's seasons to be kept, got %+v", got.Seasons)
 	}
