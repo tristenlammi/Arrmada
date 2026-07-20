@@ -36,7 +36,10 @@ func TestCandidacyRules(t *testing.T) {
 
 // What each format can actually preserve, given the bundled tools are HEVC-only.
 func TestHDRPreservationByFormat(t *testing.T) {
-	withTools := &Service{doviTool: "/usr/local/bin/dovi_tool", hdr10plusTool: "/usr/local/bin/hdr10plus_tool"}
+	withTools := &Service{
+		doviTool: "/usr/local/bin/dovi_tool", hdr10plusTool: "/usr/local/bin/hdr10plus_tool",
+		encoders: workingCPUEncoders(),
+	}
 	x265 := cpuEncoder("hevc")
 	av1 := cpuEncoder("av1")
 
@@ -72,7 +75,7 @@ func TestHDRPreservationByFormat(t *testing.T) {
 
 // Without the tools present, HEVC must skip rather than silently flatten the picture.
 func TestHDRSkippedWhenToolsMissing(t *testing.T) {
-	bare := &Service{} // no dovi_tool, no hdr10plus_tool
+	bare := &Service{encoders: workingCPUEncoders()} // no dovi_tool, no hdr10plus_tool
 	x265 := cpuEncoder("hevc")
 	plan := Plan{VideoCodec: "hevc"}
 
@@ -157,5 +160,29 @@ func TestAV1HDRParams(t *testing.T) {
 	}
 	if !containsSlice(hlgTags, "arib-std-b67") {
 		t.Errorf("HLG colour tags = %v, want the HLG transfer", hlgTags)
+	}
+}
+
+// workingCPUEncoders is the normal case: the software encoders verified fine at startup.
+func workingCPUEncoders() []Encoder {
+	return []Encoder{
+		{Codec: "hevc", Name: "libx265", Kind: "cpu", Available: true},
+		{Codec: "av1", Name: "libsvtav1", Kind: "cpu", Available: true},
+	}
+}
+
+// A broken libx265 — Alpine's build segfaults instantly on some newer CPUs — means HDR
+// cannot be preserved at all, because every preservation path encodes through x265. The
+// module must say so rather than routing files to a guaranteed failure.
+func TestHDRNotPreservableWhenX265IsBroken(t *testing.T) {
+	broken := &Service{
+		doviTool: "/usr/local/bin/dovi_tool", hdr10plusTool: "/usr/local/bin/hdr10plus_tool",
+		encoders: []Encoder{{Codec: "hevc", Name: "libx265", Kind: "cpu", Available: false}},
+	}
+	plan := Plan{VideoCodec: "hevc"}
+	for _, hdr := range []string{"HDR10", "HLG", "HDR10+", "Dolby Vision"} {
+		if broken.canPreserveHDR(&MediaInfo{HDR: hdr}, plan, cpuEncoder("hevc")) {
+			t.Errorf("%s must not be claimed preservable when x265 doesn't run", hdr)
+		}
 	}
 }

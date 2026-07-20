@@ -1549,6 +1549,9 @@ func (s *Service) canPreserveHDR(mi *MediaInfo, plan Plan, enc Encoder) bool {
 	if plan.VideoCodec != "hevc" || enc.Name != "libx265" {
 		return false
 	}
+	if !cpuWorks("hevc", s.encoders) {
+		return false // x265 doesn't run here, so nothing can be preserved through it
+	}
 	switch mi.HDR {
 	case "HDR10", "HLG":
 		// Colour tags survive a re-encode; mastering-display / max-cll are re-passed for PQ.
@@ -1575,8 +1578,15 @@ func (s *Service) canPreserveHDR(mi *MediaInfo, plan Plan, enc Encoder) bool {
 func (s *Service) pickEncoder(ctx context.Context, job *Job, mi *MediaInfo, plan Plan) Encoder {
 	hw := s.encoderFor(plan.VideoCodec)
 	cpu := cpuEncoder(plan.VideoCodec)
-	if hw.Hardware && s.hardwareIsBroken(hw.Name) {
+	// The CPU encoder is normally the safe harbour, but it isn't guaranteed — a broken
+	// libx265 build fails every file. When it doesn't work there's nothing to fall back
+	// to, so stay on hardware and let the HDR check below decide what's preservable.
+	cpuOK := cpuWorks(plan.VideoCodec, s.encoders)
+	if hw.Hardware && s.hardwareIsBroken(hw.Name) && cpuOK {
 		return cpu // proven not to work on this machine; don't waste an attempt on it
+	}
+	if !cpuOK {
+		return hw
 	}
 
 	reason := ""
