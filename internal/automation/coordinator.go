@@ -202,8 +202,24 @@ func (c *Coordinator) SearchMissing(ctx context.Context) {
 		if inQueue(queue, m) {
 			continue // a download for this title is already in flight
 		}
-		if err := c.searchAndGrab(ctx, m); err != nil {
+		// Exponential backoff for a movie that keeps finding nothing grabbable — an
+		// unreleased title, or one whose every result is for a different film of the
+		// same name, used to cost a full multi-indexer search every cycle forever.
+		// Same policy as the series sweep (migration 0055); this is migration 0061.
+		lastAt, misses := c.movies.SearchState(ctx, m.ID)
+		if wait := searchBackoff(misses); wait > 0 {
+			if last := parseTime(lastAt); !last.IsZero() && time.Since(last) < wait {
+				continue
+			}
+		}
+		n, err := c.searchAndGrab(ctx, m)
+		switch {
+		case err != nil:
 			c.log.Warn("automation: search failed", "movie", m.Title, "err", err)
+		case n > 0:
+			c.movies.ResetSearchMisses(ctx, m.ID)
+		default:
+			c.movies.RecordSearchMiss(ctx, m.ID)
 		}
 	}
 }
@@ -357,13 +373,17 @@ func (c *Coordinator) SearchMovie(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	return c.searchAndGrab(ctx, m)
+	_, err = c.searchAndGrab(ctx, m)
+	return err
 }
 
-func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) error {
+// searchAndGrab searches for a movie and grabs what the quality profile picks. It
+// returns how many releases were grabbed so the sweep can back off a movie that keeps
+// coming up empty.
+func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (int, error) {
 	want := c.missingVersions(ctx, m.ID)
 	if len(want) == 0 {
-		return nil
+		return 0, nil
 	}
 	query := m.Title
 	if m.Year > 0 {
@@ -371,11 +391,11 @@ func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) error {
 	}
 	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if len(result.Releases) == 0 {
 		c.log.Info("automation: no releases found", "movie", m.Title)
-		return nil
+		return 0, nil
 	}
 	// Only consider releases that are actually for THIS movie — a title search for a
 	// short/common name (e.g. "Hope") returns unrelated films ("Romance at Hope
@@ -391,8 +411,7 @@ func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) error {
 			"movie", m.Title, "returned", len(result.Releases),
 			"wrong_title", len(result.Releases)-len(matching), "blocklisted", len(matching))
 	}
-	c.grabMissing(ctx, m, want, byName, cands)
-	return nil
+	return c.grabMissing(ctx, m, want, byName, cands), nil
 }
 
 // matchingMovieReleases keeps only releases whose parsed title + year match the
@@ -442,7 +461,7 @@ func (c *Coordinator) candidatesFrom(ctx context.Context, movieID int64, release
 // grabMissing grabs the best candidate for each still-missing version track.
 // Shared by live search (searchAndGrab) and RSS sync — only the candidate source
 // differs.
-func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []movies.Version, byName map[string]indexer.Release, cands []quality.Candidate) {
+func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []movies.Version, byName map[string]indexer.Release, cands []quality.Candidate) int {
 	grabbed := map[string]bool{}
 	pending := c.pendingGrabTitles(ctx, m.ID) // releases already grabbed for this movie, not yet imported
 	for _, v := range want {
@@ -483,6 +502,7 @@ func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []mo
 		}
 		c.movies.AddEvent(ctx, m.ID, "grabbed", detail)
 	}
+	return len(grabbed)
 }
 
 // diskOKFor reports whether there's room to grab a release of the given size,
@@ -851,7 +871,7 @@ func (c *Coordinator) DetectStalled(ctx context.Context) {
 		c.setGrabStatus(ctx, g.ID, "failed")
 		c.movies.AddEvent(ctx, g.MovieID, "failed", g.Title+" stalled — blocklisted, searching for an alternate")
 		if m, err := c.movies.Get(ctx, g.MovieID); err == nil {
-			_ = c.searchAndGrab(ctx, m)
+			_, _ = c.searchAndGrab(ctx, m) // stall fail-over ignores the sweep backoff
 		}
 	}
 }

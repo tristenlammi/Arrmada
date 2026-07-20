@@ -168,6 +168,26 @@ func (r *Repo) SetMonitored(ctx context.Context, id int64, monitored bool) error
 	return err
 }
 
+// SearchState returns when the movie was last swept and how many consecutive sweeps
+// grabbed nothing (drives the search backoff).
+func (r *Repo) SearchState(ctx context.Context, movieID int64) (lastSearchAt string, misses int) {
+	_ = r.db.QueryRowContext(ctx,
+		`SELECT last_search_at, search_misses FROM movies WHERE id = ?`, movieID).Scan(&lastSearchAt, &misses)
+	return lastSearchAt, misses
+}
+
+// RecordSearchMiss stamps the sweep time and increments the miss counter.
+func (r *Repo) RecordSearchMiss(ctx context.Context, movieID int64) {
+	_, _ = r.db.ExecContext(ctx,
+		`UPDATE movies SET last_search_at = datetime('now'), search_misses = search_misses + 1 WHERE id = ?`, movieID)
+}
+
+// ResetSearchMisses clears the backoff after a successful grab.
+func (r *Repo) ResetSearchMisses(ctx context.Context, movieID int64) {
+	_, _ = r.db.ExecContext(ctx,
+		`UPDATE movies SET last_search_at = datetime('now'), search_misses = 0 WHERE id = ?`, movieID)
+}
+
 // SetFile marks a movie as having a file at path.
 func (r *Repo) SetFile(ctx context.Context, id int64, path string) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE movies SET has_file = 1, movie_file_path = ? WHERE id = ?`, path, id)

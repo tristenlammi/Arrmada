@@ -136,6 +136,17 @@ func (s *Service) MonitoredMissing(ctx context.Context) ([]Movie, error) {
 	return s.repo.MonitoredMissing(ctx)
 }
 
+// SearchState returns the movie's last sweep time and consecutive-miss count.
+func (s *Service) SearchState(ctx context.Context, id int64) (string, int) {
+	return s.repo.SearchState(ctx, id)
+}
+
+// RecordSearchMiss notes that a sweep found nothing grabbable for this movie.
+func (s *Service) RecordSearchMiss(ctx context.Context, id int64) { s.repo.RecordSearchMiss(ctx, id) }
+
+// ResetSearchMisses clears the search backoff (a grab succeeded).
+func (s *Service) ResetSearchMisses(ctx context.Context, id int64) { s.repo.ResetSearchMisses(ctx, id) }
+
 // Add pulls full metadata for a TMDB id and adds the movie to the library.
 func (s *Service) Add(ctx context.Context, tmdbID int, qualityProfile string, monitored bool) (Movie, error) {
 	details, err := s.meta.GetMovie(ctx, tmdbID)
