@@ -71,6 +71,9 @@ type api struct {
 	// refreshAll guards the bulk series refresh so two overlapping sweeps can't
 	// double every metadata pull and race each other's episode writes.
 	refreshAll atomic.Bool
+	// seedDiagAt throttles the unmatched-seed-rule diagnostic. The Downloads page polls
+	// continuously, so an unthrottled line would bury the log it's meant to help read.
+	seedDiagAt atomic.Int32
 }
 
 // New builds the HTTP server: JSON API routes, the embedded UI (with SPA

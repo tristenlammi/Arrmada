@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
@@ -99,6 +100,7 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 
 	downloads := make([]map[string]any, 0, len(queue))
 	var totalDown, totalUp int64
+	var unmatched []string
 	active := 0
 	for _, it := range queue {
 		profile := "n/a"
@@ -143,9 +145,12 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 			entry["seed_ratio"] = p.Ratio
 			entry["seed_hours"] = p.Hours
 			entry["seed_known"] = true
+		} else {
+			unmatched = append(unmatched, it.Name)
 		}
 		downloads = append(downloads, entry)
 	}
+	a.logUnmatchedSeeds(unmatched, seedPolicies)
 
 	freeGB, _ := diskspace.FreeGB(a.deps.Config.DownloadsDir)
 	a.writeJSON(w, http.StatusOK, map[string]any{
@@ -216,4 +221,45 @@ func absInt(n int) int {
 		return -n
 	}
 	return n
+}
+
+// logUnmatchedSeeds explains torrents the Seeding tab is labelling "Not managed by
+// Arrmada — no seed rule".
+//
+// That message covers two very different situations and gives no way to tell them apart:
+// the torrent genuinely wasn't grabbed by Arrmada (added by hand, or left over from
+// another tool), or it WAS grabbed and its seed rule simply isn't being found — a stale
+// grab row, or a torrent whose name in the client no longer normalizes to the release
+// title we recorded. The second is a bug wearing the first one's label, and reading the
+// UI can't distinguish them.
+//
+// So log the normalized key we looked up alongside the number of rules we hold. If the
+// key is absent from a healthy-sized policy set, it's a matching failure; if the set is
+// empty, the grab rows are the problem.
+func (a *api) logUnmatchedSeeds(names []string, policies map[string]automation.SeedPolicy) {
+	if len(names) == 0 || a.deps.Log == nil {
+		return
+	}
+	// The Downloads page polls continuously; without a throttle this would bury the log
+	// it's meant to help you read.
+	if !a.seedDiagAt.CompareAndSwap(0, 1) {
+		return
+	}
+	go func() {
+		time.Sleep(10 * time.Minute)
+		a.seedDiagAt.Store(0)
+	}()
+
+	sample := names
+	if len(sample) > 5 {
+		sample = sample[:5]
+	}
+	for _, n := range sample {
+		a.deps.Log.Info("seeding: no seed rule matched this torrent",
+			"torrent", n, "lookup_key", automation.NormReleaseKey(n), "rules_held", len(policies))
+	}
+	if len(names) > len(sample) {
+		a.deps.Log.Info("seeding: more torrents without a seed rule",
+			"shown", len(sample), "total", len(names))
+	}
 }
