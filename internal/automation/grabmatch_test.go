@@ -136,7 +136,6 @@ func TestFingerprintSeparatesDifferentReleases(t *testing.T) {
 		"Teen.Titans.Go!.S09E26.Activate.1080p.iT.WEB-DL.AAC2.0.H.264-NTb.mkv", // different episode
 		"Ink Master (2012) S05 1080p WEBRip 10bit EAC3 2 0 x265-iVy",           // different show
 		"Ink Master (2012) S05 720p WEBRip 10bit EAC3 2 0 x265-iVy",            // different resolution
-		"Ink Master (2012) S05 1080p WEBRip 10bit EAC3 2 0 x265-OTHER",         // different group
 	}
 	seen := map[string]string{}
 	for _, name := range distinct {
@@ -155,5 +154,63 @@ func TestFingerprintRejectsUnidentifiableNames(t *testing.T) {
 		if fp := releaseFingerprint(name); fp != "" {
 			t.Errorf("releaseFingerprint(%q) = %q, want empty — it identifies no episode", name, fp)
 		}
+	}
+}
+
+// The release group is checked separately from the fingerprint, because a name ending in
+// a parenthetical hides it entirely — and that's true of exactly the releases this repair
+// exists for. Requiring an exact group match would strand them.
+func TestReleaseGroupIsAbsentWhenNameEndsInParenthesis(t *testing.T) {
+	hidden := "Peppa Pig (2004) S09 (1080p MY5 WEB-DL H264 SDR AAC 2.0 English - HONE)"
+	if g := releaseGroup(hidden); g != "" {
+		t.Errorf("releaseGroup(%q) = %q — the premise for the wildcard has changed", hidden, g)
+	}
+	if g := releaseGroup("Peppa Pig (2004) S08 1080p WEBRip 10bit EAC3 2 0 x265-iVy"); g != "ivy" {
+		t.Errorf("releaseGroup = %q, want ivy", g)
+	}
+	// The hidden-group name must still fingerprint alike to its listing form, so the
+	// group wildcard gets the chance to apply.
+	listing := "Peppa Pig 2004 S09 1080p MY5 WEB-DL H264 SDR AAC 2 0 English-HONE"
+	if releaseFingerprint(hidden) != releaseFingerprint(listing) {
+		t.Errorf("fingerprints differ:\n  %q -> %q\n  %q -> %q",
+			hidden, releaseFingerprint(hidden), listing, releaseFingerprint(listing))
+	}
+}
+
+// A multi-season pack identifies real seasons and must fingerprint, not be discarded as
+// too vague — "Season 1-3 COMPLETE" was being skipped entirely.
+func TestFingerprintHandlesMultiSeasonPacks(t *testing.T) {
+	name := "Smiling Friends (2020) Season 1-3 COMPLETE.1080p.H265.EAC3.6CH-MNKYDDL"
+	fp := releaseFingerprint(name)
+	if fp == "" {
+		t.Fatalf("releaseFingerprint(%q) = empty — a season range identifies real seasons", name)
+	}
+	// It must not collide with a single-season pack of the same show.
+	if single := releaseFingerprint("Smiling Friends (2020) S01 1080p H265 EAC3-MNKYDDL"); fp == single {
+		t.Error("a 1-3 pack and a season 1 pack must not fingerprint alike")
+	}
+}
+
+// Duplicate grab rows for one release are the NORMAL case here — the duplicate-grab bug
+// recorded each pack twice, and treating that as ambiguous is what blocked the repair for
+// nearly every torrent. They describe one release with one seed policy.
+func TestSameReleaseAcceptsDuplicateRowsButNotDifferentReleases(t *testing.T) {
+	dupes := []pendingGrab{
+		{id: 1, title: "Teen Titans Go S09E33 1080p iT WEB-DL AAC 2.0 H.264-NTb"},
+		{id: 2, title: "Teen Titans Go S09E33 1080p iT WEB-DL AAC 2.0 H.264-NTb"},
+	}
+	if !sameRelease(dupes) {
+		t.Error("identical rows describe one release and must be linkable")
+	}
+
+	different := []pendingGrab{
+		{id: 1, title: "Ink Master 2012 S05 1080p WEBRip DD+ 2 0 x265-iVy"},
+		{id: 2, title: "Ink Master 2012 S05 1080p WEBRip DD+ 2 0 x265-OTHER"},
+	}
+	if sameRelease(different) {
+		t.Error("two different releases must never be collapsed onto one torrent")
+	}
+	if !sameRelease(nil) || !sameRelease(different[:1]) {
+		t.Error("zero or one row is trivially unambiguous")
 	}
 }
