@@ -581,6 +581,7 @@ export interface BookDiscoverCard {
   in_library: boolean;
   has_file: boolean;
   requested: boolean;
+  request_status?: "pending" | "approved" | "declined" | "";
 }
 export interface BookAuthor {
   key: string;
@@ -951,8 +952,12 @@ export const api = {
   // Requests
   requests: (status?: string) =>
     req<{ requests: MediaRequest[]; auto_approve: boolean }>(`/api/v1/requests${status ? `?status=${status}` : ""}`),
+  // Returns 200 even for already-requested titles: subscribed=true means "you were
+  // attached to an existing request and will be notified too". Requesting a declined
+  // title resurrects it as pending.
   createRequest: (body: { media_type: "movie" | "series" | "book"; tmdb_id?: number; ol_key?: string; author?: string; title: string; year: number; poster_url?: string; overview?: string; quality_profile?: string; note?: string }) =>
-    req<MediaRequest>("/api/v1/requests", { method: "POST", body: JSON.stringify(body) }),
+    req<{ request: MediaRequest; subscribed: boolean } | MediaRequest>("/api/v1/requests", { method: "POST", body: JSON.stringify(body) })
+      .then((r): { request: MediaRequest; subscribed: boolean } => ("request" in r ? r : { request: r, subscribed: false })),
   approveRequest: (id: number, quality_profile?: string) =>
     req<MediaRequest>(`/api/v1/requests/${id}/approve`, { method: "POST", body: JSON.stringify({ quality_profile: quality_profile ?? "" }) }),
   declineRequest: (id: number) =>

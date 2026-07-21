@@ -34,10 +34,10 @@ func TestClaimPendingIsAtomic(t *testing.T) {
 // their own must not count toward the quarantine blocklist.
 func TestTransientFailure(t *testing.T) {
 	for note, want := range map[string]bool{
-		"not enough scratch space to convert safely":  true,
-		"source file is gone":                         true,
-		"encode failed: no space left on device":      true,
-		"encode failed: x265 param rejected":          false,
+		"not enough scratch space to convert safely":     true,
+		"source file is gone":                            true,
+		"encode failed: no space left on device":         true,
+		"encode failed: x265 param rejected":             false,
 		"output failed verification — kept the original": false,
 	} {
 		if got := transientFailure(note); got != want {
@@ -87,8 +87,8 @@ func TestCodecToken(t *testing.T) {
 // scheduled time (any hour later) must trigger exactly one sweep per day.
 func TestMaybeIndexSweepSchedule(t *testing.T) {
 	// Pure logic re-implemented check: the condition is now >= scheduled && lastSweep < scheduled.
-	now := time.Date(2026, 7, 21, 5, 30, 0, 0, time.UTC)         // 05:30 tick
-	sched := time.Date(2026, 7, 21, 3, 55, 0, 0, time.UTC)       // 03:55 schedule
+	now := time.Date(2026, 7, 21, 5, 30, 0, 0, time.UTC)          // 05:30 tick
+	sched := time.Date(2026, 7, 21, 3, 55, 0, 0, time.UTC)        // 03:55 schedule
 	lastYesterday := time.Date(2026, 7, 20, 4, 0, 0, 0, time.UTC) // swept yesterday
 	if now.Before(sched) || !lastYesterday.Before(sched) {
 		t.Fatal("a 05:30 tick with a 03:55 schedule and yesterday's sweep must fire")

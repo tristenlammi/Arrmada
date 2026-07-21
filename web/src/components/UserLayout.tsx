@@ -7,8 +7,13 @@ import { api } from "../lib/api";
 // UserLayout is the requester-facing shell: no nav menu, just a slim branded top bar
 // and the Discover experience. This is what installs as the PWA on phones.
 export function UserLayout() {
-  const { user } = useMe();
+  const { user, external } = useMe();
   const [menu, setMenu] = useState(false);
+  // External sessions are Discover-only (the /calendar route isn't mounted or
+  // allowlisted for them) — don't show a link that silently bounces.
+  const nav = external
+    ? [{ to: "/discover", label: "Discover" }]
+    : [{ to: "/discover", label: "Discover" }, { to: "/calendar", label: "Calendar" }];
 
   const logout = async () => {
     try { await api.logout(); } catch { /* ignore */ }
@@ -25,7 +30,7 @@ export function UserLayout() {
           <span className="text-[15px] font-extrabold tracking-[0.12em]">ARRMADA</span>
         </div>
         <nav className="flex items-center gap-1">
-          {[{ to: "/discover", label: "Discover" }, { to: "/calendar", label: "Calendar" }].map((n) => (
+          {nav.map((n) => (
             <NavLink key={n.to} to={n.to} className="rounded-lg px-3 py-1.5 text-[12.5px] font-semibold" style={({ isActive }) => ({ background: isActive ? "var(--accent-soft)" : "transparent", color: isActive ? "var(--accent)" : "var(--ink-dim)" })}>{n.label}</NavLink>
           ))}
         </nav>

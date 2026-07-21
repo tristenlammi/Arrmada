@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { api, type UserNotification } from "../lib/api";
+
+// Pull the media title out of a notification: bodies read like “Dune” is ready to
+// watch — the quoted part is the title. Falls back to the whole body if nothing is
+// quoted (the title field is generic, e.g. "Your request is ready").
+function searchTitleOf(n: UserNotification): string {
+  const m = n.body?.match(/[“"]([^”"]+)[”"]/) || n.title?.match(/[“"]([^”"]+)[”"]/);
+  return m ? m[1] : "";
+}
 
 // NotificationBell is the requester-facing inbox: a bell with an unread badge that opens a
 // dropdown of "your request is ready" notifications, plus a place to set a personal Apprise URL
@@ -9,7 +18,9 @@ export function NotificationBell() {
   const [unread, setUnread] = useState(0);
   const [open, setOpen] = useState(false);
   const [settings, setSettings] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
 
   const load = () => api.myNotifications().then((r) => { setItems(r.notifications ?? []); setUnread(r.unread); }).catch(() => {});
   useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t); }, []);
@@ -22,9 +33,37 @@ export function NotificationBell() {
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
 
-  const toggle = () => { const next = !open; setOpen(next); if (next) load(); };
-  const markAll = async () => { await api.markAllNotificationsRead().catch(() => {}); setItems((xs) => xs.map((x) => ({ ...x, read: true }))); setUnread(0); };
-  const clickItem = async (n: UserNotification) => { if (!n.read) { await api.markNotificationRead(n.id).catch(() => {}); setItems((xs) => xs.map((x) => (x.id === n.id ? { ...x, read: true } : x))); setUnread((u) => Math.max(0, u - 1)); } };
+  const toggle = () => { const next = !open; setOpen(next); if (next) { setError(null); load(); } };
+  // Only zero the badge when the server actually marked everything read.
+  const markAll = async () => {
+    setError(null);
+    try {
+      await api.markAllNotificationsRead();
+      setItems((xs) => xs.map((x) => ({ ...x, read: true })));
+      setUnread(0);
+    } catch (e) {
+      console.warn("mark all notifications read failed", e);
+      setError((e as Error).message);
+    }
+  };
+  // Mark read (badge only drops when the server call succeeds), then jump to Discover
+  // with the title prefilled in search.
+  const clickItem = async (n: UserNotification) => {
+    if (!n.read) {
+      try {
+        await api.markNotificationRead(n.id);
+        setItems((xs) => xs.map((x) => (x.id === n.id ? { ...x, read: true } : x)));
+        setUnread((u) => Math.max(0, u - 1));
+      } catch (e) {
+        console.warn("mark notification read failed", e);
+      }
+    }
+    const title = searchTitleOf(n);
+    if (title) {
+      setOpen(false);
+      navigate(n.media_type === "book" ? `/discover?tab=books&q=${encodeURIComponent(title)}` : `/discover?q=${encodeURIComponent(title)}`);
+    }
+  };
 
   return (
     <div className="relative" ref={ref}>
@@ -42,6 +81,8 @@ export function NotificationBell() {
               <button onClick={() => setSettings((s) => !s)} className="text-ink-faint hover:text-[var(--ink)]" aria-label="Notification settings">⚙</button>
             </div>
           </div>
+
+          {error && <div className="px-3.5 py-1.5 text-[11px] font-medium" style={{ color: "var(--reject)", borderBottom: "1px solid var(--line-soft)" }}>{error}</div>}
 
           {settings && <AppriseSetting />}
 
@@ -68,8 +109,19 @@ function AppriseSetting() {
   const [url, setUrl] = useState("");
   const [set, setSet] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => { api.myApprise().then((r) => { setSet(r.set); setUrl(r.url); }).catch(() => {}); }, []);
-  const save = async () => { const r = await api.setMyApprise(url.trim()).catch(() => null); if (r) { setSet(r.set); setSaved(true); window.setTimeout(() => setSaved(false), 2000); } };
+  const save = async () => {
+    setError(null);
+    try {
+      const r = await api.setMyApprise(url.trim());
+      setSet(r.set);
+      setSaved(true);
+      window.setTimeout(() => setSaved(false), 2000);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
   return (
     <div className="px-3.5 py-3" style={{ background: "var(--panel-2)", borderBottom: "1px solid var(--line)" }}>
       <div className="text-[11.5px] font-semibold">Push notifications (optional)</div>
@@ -78,6 +130,7 @@ function AppriseSetting() {
         <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="ntfy://topic or discord://id/token" className="flex-1 rounded-lg px-2 py-1 font-mono text-[11px]" style={{ background: "var(--panel)", border: "1px solid var(--line)", color: "var(--ink)" }} />
         <button onClick={save} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>{saved ? "✓" : "Save"}</button>
       </div>
+      {error && <div className="mt-1.5 text-[10.5px] font-medium" style={{ color: "var(--reject)" }}>Couldn’t save — {error}</div>}
     </div>
   );
 }
