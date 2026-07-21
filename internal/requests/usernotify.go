@@ -23,12 +23,18 @@ type UserNotification struct {
 
 // --- inbox + per-user Apprise (repo) ---
 
-func (r *Repo) addUserNotification(ctx context.Context, userID int64, title, body, mediaType, ref string, at int64) error {
-	// Unique (user_id, ref) index makes this idempotent — a multi-part import notifies once.
-	_, err := r.db.ExecContext(ctx,
+// addUserNotification inserts one inbox entry. The unique (user_id, ref) index
+// makes it idempotent — inserted reports whether this call actually added a row
+// (false = already notified), so callers can skip the Apprise push on repeats.
+func (r *Repo) addUserNotification(ctx context.Context, userID int64, title, body, mediaType, ref string, at int64) (inserted bool, err error) {
+	res, err := r.db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO user_notifications (user_id, title, body, media_type, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
 		userID, title, body, mediaType, ref, at)
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 func (r *Repo) listUserNotifications(ctx context.Context, userID int64) ([]UserNotification, error) {
@@ -125,7 +131,13 @@ func (s *Service) RunNotifier(ctx context.Context) {
 		case ev := <-seriesCh:
 			if id, ok := evID(ev.Data); ok {
 				if sr, err := s.series.Get(ctx, id); err == nil {
-					s.notifyRequester(ctx, "series", sr.TMDBID, "")
+					// A series isn't "ready to watch" on its first imported episode:
+					// only notify once no monitored, aired episode is still wanted.
+					// Later imports re-fire this event (and the ready-sweep backstops),
+					// so skipping here just defers the notification.
+					if !s.series.HasWantedEpisodes(ctx, sr.ID) {
+						s.notifyRequester(ctx, "series", sr.TMDBID, "")
+					}
 				}
 			}
 		case ev := <-bookCh:
@@ -138,41 +150,150 @@ func (s *Service) RunNotifier(ctx context.Context) {
 	}
 }
 
-// notifyRequester finds the request behind a just-imported item and alerts its requester.
+// requestRef is the stable de-dupe key for a request's media ("movie:123",
+// "series:456", "book:OL123W"). Suffixes distinguish notification kinds so an
+// "approved" note doesn't block the later "ready" one.
+func requestRef(req Request) string {
+	if req.MediaType == "book" {
+		return "book:" + req.OLKey
+	}
+	return fmt.Sprintf("%s:%d", req.MediaType, req.TMDBID)
+}
+
+// notifyRequester finds the request behind a just-imported item and alerts its
+// requester plus everyone subscribed to it.
 func (s *Service) notifyRequester(ctx context.Context, mediaType string, tmdbID int, olKey string) {
 	var (
 		req Request
 		ok  bool
-		ref string
 	)
 	if mediaType == "book" {
 		req, ok = s.repo.GetByBook(ctx, olKey)
-		ref = "book:" + olKey
 	} else {
 		req, ok = s.repo.GetByMedia(ctx, mediaType, tmdbID)
-		ref = fmt.Sprintf("%s:%d", mediaType, tmdbID)
 	}
-	if !ok || req.RequestedBy <= 0 {
+	if !ok {
 		return
 	}
+	s.notifyReady(ctx, req)
+}
+
+// notifyReady sends the "your request is ready" notification for one request.
+// Idempotent per user (unique inbox ref), so callers may fire it repeatedly.
+func (s *Service) notifyReady(ctx context.Context, req Request) {
 	body := fmt.Sprintf("“%s” is ready to watch.", req.Title)
-	if mediaType == "book" {
+	if req.MediaType == "book" {
 		body = fmt.Sprintf("“%s” is ready to read.", req.Title)
 	}
-	now := time.Now().Unix()
-	if err := s.repo.addUserNotification(ctx, req.RequestedBy, "Your request is ready", body, mediaType, ref, now); err != nil {
-		s.log.Warn("request-ready: could not add inbox notification", "err", err)
+	s.notifyParties(ctx, req, "Your request is ready", body, requestRef(req), "request-ready")
+}
+
+// notifyDecision tells the requester and subscribers a request was approved or declined.
+func (s *Service) notifyDecision(ctx context.Context, req Request, approved bool) {
+	if approved {
+		body := fmt.Sprintf("Your request for “%s” was approved — we're on it.", req.Title)
+		s.notifyParties(ctx, req, "Request approved", body, requestRef(req)+":approved", "request-approved")
 		return
 	}
-	// Optional personal Apprise push.
-	if s.appriseBin != "" {
-		if url, err := s.repo.getUserApprise(ctx, req.RequestedBy); err == nil && url != "" {
-			if err := notify.Send(ctx, s.appriseBin, "Arrmada", body, url); err != nil {
-				s.log.Warn("request-ready: apprise push failed", "user", req.RequestedBy, "err", err)
+	body := fmt.Sprintf("Your request for “%s” was declined.", req.Title)
+	s.notifyParties(ctx, req, "Request declined", body, requestRef(req)+":declined", "request-declined")
+}
+
+// notifyParties fans one notification out to the requester and every subscriber:
+// in-app inbox always, personal Apprise push when set. The unique (user_id, ref)
+// inbox index de-dupes; the Apprise push only fires when the inbox row was new.
+func (s *Service) notifyParties(ctx context.Context, req Request, title, body, ref, kind string) {
+	seen := map[int64]bool{}
+	var userIDs []int64
+	if req.RequestedBy > 0 {
+		seen[req.RequestedBy] = true
+		userIDs = append(userIDs, req.RequestedBy)
+	}
+	if subs, err := s.repo.Subscribers(ctx, req.ID); err == nil {
+		for _, sub := range subs {
+			if sub.UserID > 0 && !seen[sub.UserID] {
+				seen[sub.UserID] = true
+				userIDs = append(userIDs, sub.UserID)
 			}
 		}
+	} else {
+		s.log.Warn(kind+": could not list subscribers", "request", req.ID, "err", err)
 	}
-	s.log.Info("request-ready notified", "title", req.Title, "user", req.RequestedBy)
+	now := time.Now().Unix()
+	for _, uid := range userIDs {
+		inserted, err := s.repo.addUserNotification(ctx, uid, title, body, req.MediaType, ref, now)
+		if err != nil {
+			s.log.Warn(kind+": could not add inbox notification", "user", uid, "err", err)
+			continue
+		}
+		if !inserted {
+			continue // already notified — don't re-push
+		}
+		if s.appriseBin != "" {
+			if url, err := s.repo.getUserApprise(ctx, uid); err == nil && url != "" {
+				if err := notify.Send(ctx, s.appriseBin, "Arrmada", body, url); err != nil {
+					s.log.Warn(kind+": apprise push failed", "user", uid, "err", err)
+				}
+			}
+		}
+		s.log.Info(kind+" notified", "title", req.Title, "user", uid)
+	}
+}
+
+// SweepReadyRequests is the notification backstop: every approved request whose
+// media is now available gets the ready notification. It catches availability
+// that arrived without an import event (library scans) and events dropped under
+// load. Idempotent by construction — the unique inbox ref means an
+// already-notified user is skipped — so it's safe on a short timer.
+func (s *Service) SweepReadyRequests(ctx context.Context) error {
+	reqs, err := s.repo.List(ctx, StatusApproved, 0)
+	if err != nil {
+		return err
+	}
+	if len(reqs) == 0 {
+		return nil
+	}
+	movHave := map[int]bool{}
+	if ms, err := s.movies.List(ctx); err == nil {
+		for _, m := range ms {
+			movHave[m.TMDBID] = m.HasFile
+		}
+	}
+	type serInfo struct {
+		id       int64
+		hasFiles bool
+	}
+	serByTMDB := map[int]serInfo{}
+	if ss, err := s.series.List(ctx); err == nil {
+		for _, sr := range ss {
+			serByTMDB[sr.TMDBID] = serInfo{id: sr.ID, hasFiles: sr.Stats != nil && sr.Stats.HaveFiles > 0}
+		}
+	}
+	bookHave := map[string]bool{}
+	if bs, err := s.books.List(ctx); err == nil {
+		for _, b := range bs {
+			bookHave[b.OLKey] = b.HasFile
+		}
+	}
+	for i := range reqs {
+		ready := false
+		switch reqs[i].MediaType {
+		case "movie":
+			ready = movHave[reqs[i].TMDBID]
+		case "series":
+			// Ready = some files on disk AND nothing still wanted (monitored, aired,
+			// missing) — the same completeness rule the import-event path applies.
+			if info, ok := serByTMDB[reqs[i].TMDBID]; ok && info.hasFiles {
+				ready = !s.series.HasWantedEpisodes(ctx, info.id)
+			}
+		case "book":
+			ready = bookHave[reqs[i].OLKey]
+		}
+		if ready {
+			s.notifyReady(ctx, reqs[i])
+		}
+	}
+	return nil
 }
 
 // evID pulls the "id" field (int64) out of an event payload.

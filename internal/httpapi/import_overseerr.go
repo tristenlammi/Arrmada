@@ -101,10 +101,10 @@ func (a *api) handleImportOverseerr(w http.ResponseWriter, r *http.Request) {
 				RequestedBy:     uid,
 				RequestedByName: it.Requester,
 			}
-			_, err := a.deps.Requests.Create(bg, in, it.Status == "approved")
+			_, subscribed, err := a.deps.Requests.Create(bg, in, it.Status == "approved")
 			switch {
-			case errors.Is(err, requests.ErrExists):
-				skipped++
+			case errors.Is(err, requests.ErrExists), subscribed:
+				skipped++ // already requested here — nothing new to import
 			case err != nil:
 				failed++
 				a.deps.Log.Warn("overseerr import: request failed", "title", it.Title, "tmdb", it.TMDBID, "err", err)

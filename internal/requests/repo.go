@@ -142,11 +142,17 @@ func (r *Repo) List(ctx context.Context, status string, requestedBy int64) ([]Re
 	return out, rows.Err()
 }
 
-// SetStatus updates a request's status (and profile when approving).
+// SetStatus updates a request's status. A non-empty profile also updates the
+// stored quality profile; an empty profile leaves it alone (so a decline doesn't
+// erase the profile the requester picked).
 func (r *Repo) SetStatus(ctx context.Context, id int64, status, profile string) error {
 	res, err := r.db.ExecContext(ctx,
-		`UPDATE requests SET status = ?, quality_profile = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-		status, profile, id)
+		`UPDATE requests
+		    SET status = ?,
+		        quality_profile = CASE WHEN ? = '' THEN quality_profile ELSE ? END,
+		        updated_at = CURRENT_TIMESTAMP
+		  WHERE id = ?`,
+		status, profile, profile, id)
 	if err != nil {
 		return err
 	}
@@ -156,7 +162,29 @@ func (r *Repo) SetStatus(ctx context.Context, id int64, status, profile string) 
 	return nil
 }
 
-// Delete removes a request.
+// Resurrect re-opens a declined request under a new requester: status back to
+// pending, requested_by swapped to the caller. A non-empty profile replaces the
+// stored one; empty keeps the original choice.
+func (r *Repo) Resurrect(ctx context.Context, id, userID int64, userName, profile string) error {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE requests
+		    SET status = ?,
+		        requested_by = ?,
+		        requested_by_name = ?,
+		        quality_profile = CASE WHEN ? = '' THEN quality_profile ELSE ? END,
+		        updated_at = CURRENT_TIMESTAMP
+		  WHERE id = ?`,
+		StatusPending, userID, userName, profile, profile, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// Delete removes a request (and its subscriber rows).
 func (r *Repo) Delete(ctx context.Context, id int64) error {
 	res, err := r.db.ExecContext(ctx, `DELETE FROM requests WHERE id = ?`, id)
 	if err != nil {
@@ -165,5 +193,47 @@ func (r *Repo) Delete(ctx context.Context, id int64) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
+	_, _ = r.db.ExecContext(ctx, `DELETE FROM request_subscribers WHERE request_id = ?`, id)
 	return nil
+}
+
+// Subscriber is one extra user attached to a request (beyond the requester).
+type Subscriber struct {
+	UserID   int64
+	UserName string
+}
+
+// AddSubscriber attaches a user to a request. Idempotent (unique request_id+user_id).
+func (r *Repo) AddSubscriber(ctx context.Context, requestID, userID int64, userName string) error {
+	_, err := r.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO request_subscribers (request_id, user_id, user_name) VALUES (?, ?, ?)`,
+		requestID, userID, userName)
+	return err
+}
+
+// RemoveSubscriber detaches a user from a request (used when a subscriber becomes
+// the requester on a re-request, so they aren't listed twice).
+func (r *Repo) RemoveSubscriber(ctx context.Context, requestID, userID int64) error {
+	_, err := r.db.ExecContext(ctx,
+		`DELETE FROM request_subscribers WHERE request_id = ? AND user_id = ?`, requestID, userID)
+	return err
+}
+
+// Subscribers lists the extra users attached to a request.
+func (r *Repo) Subscribers(ctx context.Context, requestID int64) ([]Subscriber, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT user_id, user_name FROM request_subscribers WHERE request_id = ? ORDER BY created_at`, requestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Subscriber
+	for rows.Next() {
+		var s Subscriber
+		if err := rows.Scan(&s.UserID, &s.UserName); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
 }

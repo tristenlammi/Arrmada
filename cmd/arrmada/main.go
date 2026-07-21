@@ -354,12 +354,18 @@ func main() {
 		coordinator.ManageSeeding(ctx)
 		return nil
 	})
-	sched.Start(runCtx)
-
 	// Requests module sits on top of Movies/Series: an approval adds the media and
-	// triggers a search through the existing acquisition pipeline.
+	// triggers a search through the existing acquisition pipeline. Created before
+	// sched.Start so its sweep is in the snapshot the scheduler launches.
 	requestsSvc := requests.NewService(st.DB(), movieSvc, seriesSvc, booksSvc, coordinator, qualitySvc, bus, notifySvc.AppriseBin(), log)
 	go requestsSvc.RunNotifier(runCtx) // alert requesters when their request is imported
+	// Backstop for request-ready notifications: catches availability that arrived
+	// without an import event (library scan) or whose event was dropped under load.
+	// Idempotent (unique inbox ref), so re-running never double-notifies.
+	sched.Register("request-ready-sweep", 10*time.Minute, false, func(ctx context.Context) error {
+		return requestsSvc.SweepReadyRequests(ctx)
+	})
+	sched.Start(runCtx)
 
 	// Subtitles module (Bazarr replacement): grabs external SRT sidecars over the
 	// Movies/Series catalogs via OpenSubtitles.

@@ -49,38 +49,99 @@ func (s *Service) List(ctx context.Context, status string, requestedBy int64) ([
 	return reqs, nil
 }
 
+// ErrUnknownProfile is returned when a supplied quality profile doesn't resolve.
+var ErrUnknownProfile = errors.New("unknown quality profile")
+
+// Get returns one request by id.
+func (s *Service) Get(ctx context.Context, id int64) (Request, error) {
+	return s.repo.Get(ctx, id)
+}
+
 // Create records a new request. When autoApprove is set it's approved (and added)
-// immediately. A duplicate request for the same media returns the existing one with
-// ErrExists.
-func (s *Service) Create(ctx context.Context, in Request, autoApprove bool) (Request, error) {
+// immediately. When the same media has already been requested, the caller is
+// attached to the existing request instead: a pending/approved request gains them
+// as a subscriber (subscribed = true), and a declined request is re-opened under
+// their name with the previous requester kept as a subscriber.
+func (s *Service) Create(ctx context.Context, in Request, autoApprove bool) (created Request, subscribed bool, err error) {
 	switch in.MediaType {
 	case "movie", "series":
 		if in.TMDBID == 0 {
-			return Request{}, fmt.Errorf("tmdb_id is required")
-		}
-		if existing, ok := s.repo.GetByMedia(ctx, in.MediaType, in.TMDBID); ok {
-			return existing, ErrExists
+			return Request{}, false, fmt.Errorf("tmdb_id is required")
 		}
 	case "book":
 		if in.OLKey == "" {
-			return Request{}, fmt.Errorf("ol_key is required")
-		}
-		if existing, ok := s.repo.GetByBook(ctx, in.OLKey); ok {
-			return existing, ErrExists
+			return Request{}, false, fmt.Errorf("ol_key is required")
 		}
 	default:
-		return Request{}, fmt.Errorf("media_type must be movie, series or book")
+		return Request{}, false, fmt.Errorf("media_type must be movie, series or book")
+	}
+	if in.QualityProfile != "" && s.quality != nil && !s.quality.Known(ctx, in.QualityProfile) {
+		return Request{}, false, ErrUnknownProfile
+	}
+	if existing, ok := s.lookupExisting(ctx, in); ok {
+		return s.attachToExisting(ctx, existing, in)
 	}
 	in.Status = StatusPending
-	created, err := s.repo.Create(ctx, in)
+	created, err = s.repo.Create(ctx, in)
+	if errors.Is(err, ErrExists) {
+		// Lost a create race: someone inserted the same media between our existence
+		// check and the INSERT. Re-fetch and attach instead of failing.
+		if existing, ok := s.lookupExisting(ctx, in); ok {
+			return s.attachToExisting(ctx, existing, in)
+		}
+		return Request{}, false, err
+	}
 	if err != nil {
-		return Request{}, err
+		return Request{}, false, err
 	}
 	s.log.Info("request created", "media", in.MediaType, "title", in.Title, "by", in.RequestedByName, "auto_approve", autoApprove)
 	if autoApprove {
-		return s.Approve(ctx, created.ID, in.QualityProfile)
+		created, err = s.Approve(ctx, created.ID, in.QualityProfile)
+		return created, false, err
 	}
-	return created, nil
+	return created, false, nil
+}
+
+// lookupExisting finds a prior request for the same media, if any.
+func (s *Service) lookupExisting(ctx context.Context, in Request) (Request, bool) {
+	if in.MediaType == "book" {
+		return s.repo.GetByBook(ctx, in.OLKey)
+	}
+	return s.repo.GetByMedia(ctx, in.MediaType, in.TMDBID)
+}
+
+// attachToExisting handles a request for media that's already requested:
+//   - pending/approved: the caller becomes a subscriber (idempotent) and shares
+//     future notifications; the existing request is returned with subscribed=true.
+//   - declined: re-request — the row goes back to pending under the caller, and
+//     the previous requester is kept as a subscriber so they still hear the outcome.
+func (s *Service) attachToExisting(ctx context.Context, existing, in Request) (Request, bool, error) {
+	if existing.Status == StatusDeclined {
+		if err := s.repo.Resurrect(ctx, existing.ID, in.RequestedBy, in.RequestedByName, in.QualityProfile); err != nil {
+			return Request{}, false, err
+		}
+		// Keep the previous requester in the loop as a subscriber.
+		if existing.RequestedBy > 0 && existing.RequestedBy != in.RequestedBy {
+			if err := s.repo.AddSubscriber(ctx, existing.ID, existing.RequestedBy, existing.RequestedByName); err != nil {
+				s.log.Warn("request: could not keep previous requester subscribed", "id", existing.ID, "err", err)
+			}
+		}
+		// The new requester may have been a subscriber before; don't list them twice.
+		if err := s.repo.RemoveSubscriber(ctx, existing.ID, in.RequestedBy); err != nil {
+			s.log.Warn("request: could not clean subscriber row", "id", existing.ID, "err", err)
+		}
+		s.log.Info("request re-opened", "media", existing.MediaType, "title", existing.Title, "by", in.RequestedByName)
+		req, err := s.repo.Get(ctx, existing.ID)
+		return req, false, err
+	}
+	// Pending or approved: subscribe the caller (skip when they already own it).
+	if in.RequestedBy > 0 && in.RequestedBy != existing.RequestedBy {
+		if err := s.repo.AddSubscriber(ctx, existing.ID, in.RequestedBy, in.RequestedByName); err != nil {
+			return Request{}, false, err
+		}
+		s.log.Info("request subscribed", "media", existing.MediaType, "title", existing.Title, "by", in.RequestedByName)
+	}
+	return existing, true, nil
 }
 
 // Approve adds the requested media to the Movies/Series module (monitored) and starts
@@ -90,6 +151,9 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 	req, err := s.repo.Get(ctx, id)
 	if err != nil {
 		return Request{}, err
+	}
+	if profile != "" && s.quality != nil && !s.quality.Known(ctx, profile) {
+		return Request{}, ErrUnknownProfile
 	}
 	if profile == "" {
 		profile = req.QualityProfile
@@ -146,18 +210,37 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 	}
 
 	if err := s.repo.SetStatus(ctx, id, StatusApproved, profile); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			// The request was withdrawn while we were approving it. The library add
+			// above stands (the media is monitored either way); just report success.
+			s.log.Warn("request deleted mid-approve; library add stands", "media", req.MediaType, "title", req.Title)
+			req.Status = StatusApproved
+			req.QualityProfile = profile
+			return req, nil
+		}
 		return Request{}, err
 	}
 	s.log.Info("request approved", "media", req.MediaType, "title", req.Title, "profile", profile)
+	s.notifyDecision(ctx, req, true)
 	return s.repo.Get(ctx, id)
 }
 
-// Decline rejects a request without adding anything.
+// Decline rejects a request without adding anything. The stored quality profile
+// is preserved so a later re-request keeps the original choice.
 func (s *Service) Decline(ctx context.Context, id int64) error {
-	return s.repo.SetStatus(ctx, id, StatusDeclined, "")
+	req, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := s.repo.SetStatus(ctx, id, StatusDeclined, ""); err != nil {
+		return err
+	}
+	s.log.Info("request declined", "media", req.MediaType, "title", req.Title)
+	s.notifyDecision(ctx, req, false)
+	return nil
 }
 
-// Delete removes a request record.
+// Delete removes a request record (and its subscribers).
 func (s *Service) Delete(ctx context.Context, id int64) error {
 	return s.repo.Delete(ctx, id)
 }

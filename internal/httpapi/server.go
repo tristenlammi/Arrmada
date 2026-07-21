@@ -236,7 +236,9 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/requests", a.requireRole(auth.RoleRequester, a.handleCreateRequest))
 	mux.HandleFunc("POST "+base+"/api/v1/requests/{id}/approve", a.requireRole(auth.RoleManager, a.handleApproveRequest))
 	mux.HandleFunc("POST "+base+"/api/v1/requests/{id}/decline", a.requireRole(auth.RoleManager, a.handleDeclineRequest))
-	mux.HandleFunc("DELETE "+base+"/api/v1/requests/{id}", a.requireRole(auth.RoleManager, a.handleDeleteRequest))
+	// Owner-withdraw is allowed (own request, still pending), so the route admits
+	// requesters; the handler enforces ownership vs manager.
+	mux.HandleFunc("DELETE "+base+"/api/v1/requests/{id}", a.requireRole(auth.RoleRequester, a.handleDeleteRequest))
 	mux.HandleFunc("POST "+base+"/api/v1/requests/import/overseerr", a.requireRole(auth.RoleAdmin, a.handleImportOverseerr))
 	mux.HandleFunc("POST "+base+"/api/v1/insights/import/tautulli", a.requireRole(auth.RoleAdmin, a.handleImportTautulli))
 
