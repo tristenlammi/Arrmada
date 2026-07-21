@@ -305,6 +305,8 @@ func (s *Service) Queue(ctx context.Context) ([]Item, error) {
 		return nil, err
 	}
 	var items []Item
+	var listed bool
+	var lastErr error
 	for _, c := range clients {
 		impl, ok := s.registry.For(c.Kind)
 		if !ok {
@@ -313,9 +315,17 @@ func (s *Service) Queue(ctx context.Context) ([]Item, error) {
 		part, err := impl.List(ctx, c)
 		if err != nil {
 			s.log.Warn("download client list failed", "client", c.Name, "err", err)
+			lastErr = err
 			continue
 		}
+		listed = true
 		items = append(items, part...)
+	}
+	// If every client failed to list, that is an outage, not an empty queue —
+	// returning ([], nil) here makes downstream consumers (import sweep, in-queue
+	// dedup, stall detection) wrongly conclude nothing is downloading.
+	if !listed && lastErr != nil {
+		return nil, fmt.Errorf("all download clients failed to list: %w", lastErr)
 	}
 	return items, nil
 }

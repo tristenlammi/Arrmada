@@ -21,11 +21,15 @@ import (
 type QBittorrent struct {
 	mu       sync.Mutex
 	sessions map[int64]*http.Client
+	loginMu  map[int64]*sync.Mutex // per-client single-flight for login
 }
 
 // NewQBittorrent creates the downloader.
 func NewQBittorrent() *QBittorrent {
-	return &QBittorrent{sessions: map[int64]*http.Client{}}
+	return &QBittorrent{
+		sessions: map[int64]*http.Client{},
+		loginMu:  map[int64]*sync.Mutex{},
+	}
 }
 
 func base(dc Client) string { return strings.TrimRight(dc.URL, "/") }
@@ -67,11 +71,29 @@ func (q *QBittorrent) login(ctx context.Context, dc Client) (*http.Client, error
 
 func (q *QBittorrent) session(ctx context.Context, dc Client) (*http.Client, error) {
 	q.mu.Lock()
-	c := q.sessions[dc.ID]
-	q.mu.Unlock()
-	if c != nil {
+	if c := q.sessions[dc.ID]; c != nil {
+		q.mu.Unlock()
 		return c, nil
 	}
+	// Single-flight logins per client: concurrent callers wait for one login
+	// instead of stampeding qBittorrent (which bans after repeated auth attempts).
+	lm := q.loginMu[dc.ID]
+	if lm == nil {
+		lm = &sync.Mutex{}
+		q.loginMu[dc.ID] = lm
+	}
+	q.mu.Unlock()
+
+	lm.Lock()
+	defer lm.Unlock()
+	// A concurrent caller may have logged in while we waited on lm.
+	q.mu.Lock()
+	if c := q.sessions[dc.ID]; c != nil {
+		q.mu.Unlock()
+		return c, nil
+	}
+	q.mu.Unlock()
+
 	c, err := q.login(ctx, dc)
 	if err != nil {
 		return nil, err
@@ -86,6 +108,50 @@ func (q *QBittorrent) drop(id int64) {
 	q.mu.Lock()
 	delete(q.sessions, id)
 	q.mu.Unlock()
+}
+
+// doAuthed executes an authenticated request against qBittorrent. If the cached
+// session has expired (HTTP 403), it drops the session, re-logs-in, and retries
+// exactly once — a second 403 after a fresh login is a real error and the 403
+// response is returned to the caller. newReq must build a fresh *http.Request
+// on every call (request bodies are consumed by the transport, so a retry needs
+// a rebuilt body, not a reused reader).
+func (q *QBittorrent) doAuthed(ctx context.Context, dc Client, newReq func() (*http.Request, error)) (*http.Response, error) {
+	for attempt := 0; ; attempt++ {
+		client, err := q.session(ctx, dc)
+		if err != nil {
+			return nil, err
+		}
+		req, err := newReq()
+		if err != nil {
+			return nil, err
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("qbittorrent: %w", err)
+		}
+		if resp.StatusCode == http.StatusForbidden {
+			q.drop(dc.ID) // session expired (or auth revoked)
+			if attempt == 0 {
+				resp.Body.Close()
+				continue // session() re-logs-in; retry the request once
+			}
+		}
+		return resp, nil
+	}
+}
+
+// getAuthed issues an authenticated GET (with the expired-session retry of
+// doAuthed). The caller owns the response body.
+func (q *QBittorrent) getAuthed(ctx context.Context, dc Client, path string) (*http.Response, error) {
+	return q.doAuthed(ctx, dc, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base(dc)+path, nil)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Referer", base(dc))
+		return req, nil
+	})
 }
 
 // Test logs in and reads the app version.
@@ -109,64 +175,65 @@ func (q *QBittorrent) Test(ctx context.Context, dc Client) error {
 
 // Add starts a download from a URL or an already-fetched .torrent file.
 func (q *QBittorrent) Add(ctx context.Context, dc Client, req AddRequest) error {
-	client, err := q.session(ctx, dc)
-	if err != nil {
-		return err
-	}
-
-	var buf bytes.Buffer
-	w := multipart.NewWriter(&buf)
-	if len(req.File) > 0 {
-		name := req.Filename
-		if name == "" {
-			name = "arrmada.torrent"
-		}
-		part, err := w.CreateFormFile("torrents", name)
-		if err != nil {
-			return err
-		}
-		if _, err := part.Write(req.File); err != nil {
-			return err
-		}
-	} else if req.URL != "" {
-		_ = w.WriteField("urls", req.URL)
-	} else {
+	if len(req.File) == 0 && req.URL == "" {
 		return fmt.Errorf("qbittorrent: add requires a URL or file")
 	}
 
-	cat := req.Category
-	if cat == "" {
-		cat = dc.Category
-	}
-	if cat != "" {
-		_ = w.WriteField("category", cat)
-	}
-	// Pin the save path to Arrmada's downloads dir so the client and Arrmada agree
-	// on where the file lands — otherwise a stale client default breaks import
-	// (and hardlinking, if it points off the shared volume).
-	if req.SavePath != "" {
-		_ = w.WriteField("savepath", req.SavePath)
-	}
-	_ = w.WriteField("paused", strconv.FormatBool(req.Paused))
-	_ = w.Close()
+	// Built per attempt: a multipart body is consumed on send, so the re-login
+	// retry needs a freshly rebuilt request.
+	newReq := func() (*http.Request, error) {
+		var buf bytes.Buffer
+		w := multipart.NewWriter(&buf)
+		if len(req.File) > 0 {
+			name := req.Filename
+			if name == "" {
+				name = "arrmada.torrent"
+			}
+			part, err := w.CreateFormFile("torrents", name)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := part.Write(req.File); err != nil {
+				return nil, err
+			}
+		} else {
+			_ = w.WriteField("urls", req.URL)
+		}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base(dc)+"/api/v2/torrents/add", &buf)
+		cat := req.Category
+		if cat == "" {
+			cat = dc.Category
+		}
+		if cat != "" {
+			_ = w.WriteField("category", cat)
+		}
+		// Pin the save path to Arrmada's downloads dir so the client and Arrmada agree
+		// on where the file lands — otherwise a stale client default breaks import
+		// (and hardlinking, if it points off the shared volume).
+		if req.SavePath != "" {
+			_ = w.WriteField("savepath", req.SavePath)
+		}
+		_ = w.WriteField("paused", strconv.FormatBool(req.Paused))
+		_ = w.Close()
+
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base(dc)+"/api/v2/torrents/add", &buf)
+		if err != nil {
+			return nil, err
+		}
+		httpReq.Header.Set("Content-Type", w.FormDataContentType())
+		httpReq.Header.Set("Referer", base(dc))
+		return httpReq, nil
+	}
+
+	resp, err := q.doAuthed(ctx, dc, newReq)
 	if err != nil {
 		return err
-	}
-	httpReq.Header.Set("Content-Type", w.FormDataContentType())
-	httpReq.Header.Set("Referer", base(dc))
-
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("qbittorrent: add failed: %w", err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 
 	if resp.StatusCode == http.StatusForbidden {
-		q.drop(dc.ID) // session likely expired
-		return fmt.Errorf("qbittorrent: session expired, retry")
+		return fmt.Errorf("qbittorrent: add unauthorized after re-login (HTTP 403)")
 	}
 	// qBittorrent returns 200 "Ok." on a normal add, but also 202 Accepted when it
 	// queues a URL/magnet to fetch asynchronously — both are success. Only a
@@ -179,32 +246,10 @@ func (q *QBittorrent) Add(ctx context.Context, dc Client, req AddRequest) error 
 
 // Remove deletes a torrent (optionally with its data) from qBittorrent.
 func (q *QBittorrent) Remove(ctx context.Context, dc Client, hash string, deleteData bool) error {
-	client, err := q.session(ctx, dc)
-	if err != nil {
-		return err
-	}
 	form := url.Values{}
 	form.Set("hashes", hash)
 	form.Set("deleteFiles", strconv.FormatBool(deleteData))
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, base(dc)+"/api/v2/torrents/delete", strings.NewReader(form.Encode()))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	httpReq.Header.Set("Referer", base(dc))
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("qbittorrent: delete failed: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusForbidden {
-		q.drop(dc.ID)
-		return fmt.Errorf("qbittorrent: session expired, retry")
-	}
-	if resp.StatusCode/100 != 2 {
-		return fmt.Errorf("qbittorrent: delete rejected (HTTP %d)", resp.StatusCode)
-	}
-	return nil
+	return q.postForm(ctx, dc, "/api/v2/torrents/delete", form)
 }
 
 // Pause stops a torrent. qBittorrent 5.x renamed pause→stop; try the new name
@@ -230,26 +275,26 @@ func (q *QBittorrent) action(ctx context.Context, dc Client, hash, primary, lega
 	return nil
 }
 
-// postForm posts a urlencoded form to qBittorrent, handling session expiry.
+// postForm posts a urlencoded form to qBittorrent, transparently re-logging-in
+// once if the session has expired.
 func (q *QBittorrent) postForm(ctx context.Context, dc Client, path string, form url.Values) error {
-	client, err := q.session(ctx, dc)
+	body := form.Encode()
+	newReq := func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base(dc)+path, strings.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("Referer", base(dc))
+		return req, nil
+	}
+	resp, err := q.doAuthed(ctx, dc, newReq)
 	if err != nil {
 		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base(dc)+path, strings.NewReader(form.Encode()))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Referer", base(dc))
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("qbittorrent: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusForbidden {
-		q.drop(dc.ID)
-		return fmt.Errorf("qbittorrent: session expired, retry")
+		return fmt.Errorf("qbittorrent: %s unauthorized after re-login (HTTP 403)", path)
 	}
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("qbittorrent: %s HTTP %d", path, resp.StatusCode)
@@ -273,21 +318,11 @@ func (q *QBittorrent) TorrentAction(ctx context.Context, dc Client, hash, action
 
 // GetSettings reads the tunable global preferences.
 func (q *QBittorrent) GetSettings(ctx context.Context, dc Client) (ClientSettings, error) {
-	client, err := q.session(ctx, dc)
+	resp, err := q.getAuthed(ctx, dc, "/api/v2/app/preferences")
 	if err != nil {
 		return ClientSettings{}, err
 	}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base(dc)+"/api/v2/app/preferences", nil)
-	req.Header.Set("Referer", base(dc))
-	resp, err := client.Do(req)
-	if err != nil {
-		return ClientSettings{}, fmt.Errorf("qbittorrent: %w", err)
-	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusForbidden {
-		q.drop(dc.ID)
-		return ClientSettings{}, fmt.Errorf("qbittorrent: session expired, retry")
-	}
 	if resp.StatusCode != http.StatusOK {
 		return ClientSettings{}, fmt.Errorf("qbittorrent: preferences HTTP %d", resp.StatusCode)
 	}
@@ -372,21 +407,11 @@ func (q *QBittorrent) SetSavePath(ctx context.Context, dc Client, savePath strin
 
 // ListenPort reports qBittorrent's current incoming-connection port.
 func (q *QBittorrent) ListenPort(ctx context.Context, dc Client) (int, error) {
-	client, err := q.session(ctx, dc)
+	resp, err := q.getAuthed(ctx, dc, "/api/v2/app/preferences")
 	if err != nil {
 		return 0, err
 	}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base(dc)+"/api/v2/app/preferences", nil)
-	req.Header.Set("Referer", base(dc))
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, fmt.Errorf("qbittorrent: %w", err)
-	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusForbidden {
-		q.drop(dc.ID)
-		return 0, fmt.Errorf("qbittorrent: session expired, retry")
-	}
 	if resp.StatusCode != http.StatusOK {
 		return 0, fmt.Errorf("qbittorrent: preferences HTTP %d", resp.StatusCode)
 	}
@@ -405,23 +430,11 @@ func (q *QBittorrent) ListenPort(ctx context.Context, dc Client) (int, error) {
 // specific category filter in Go (see CompletedInCategory). Filtering server-side
 // to a single category here would hide series torrents from imports and the feed.
 func (q *QBittorrent) List(ctx context.Context, dc Client) ([]Item, error) {
-	client, err := q.session(ctx, dc)
+	resp, err := q.getAuthed(ctx, dc, "/api/v2/torrents/info")
 	if err != nil {
 		return nil, err
 	}
-	u := base(dc) + "/api/v2/torrents/info"
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	req.Header.Set("Referer", base(dc))
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("qbittorrent: %w", err)
-	}
 	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusForbidden {
-		q.drop(dc.ID)
-		return nil, fmt.Errorf("qbittorrent: session expired, retry")
-	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("qbittorrent: list HTTP %d", resp.StatusCode)
 	}
