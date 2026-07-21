@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -44,18 +45,34 @@ func (s *X1337Searcher) base(idx Indexer) string {
 	return x1337DefaultBase
 }
 
-func (s *X1337Searcher) throttle() {
+// throttle reserves the next request slot under the lock, then waits for it
+// outside the lock, honouring ctx cancellation (see TorrentLeechSearcher.throttle).
+func (s *X1337Searcher) throttle(ctx context.Context) error {
 	s.rateMu.Lock()
-	defer s.rateMu.Unlock()
-	if d := x1337Delay - time.Since(s.lastReq); d > 0 {
-		time.Sleep(d)
+	prev := s.lastReq
+	slot := time.Now()
+	if next := prev.Add(x1337Delay); next.After(slot) {
+		slot = next
 	}
-	s.lastReq = time.Now()
+	s.lastReq = slot
+	s.rateMu.Unlock()
+
+	if err := waitUntil(ctx, slot); err != nil {
+		s.rateMu.Lock()
+		if s.lastReq.Equal(slot) {
+			s.lastReq = prev
+		}
+		s.rateMu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // getHTML fetches a page's HTML, via FlareSolverr when configured.
 func (s *X1337Searcher) getHTML(ctx context.Context, pageURL string) (string, error) {
-	s.throttle()
+	if err := s.throttle(ctx); err != nil {
+		return "", err
+	}
 	if s.fs != nil {
 		sol, err := s.fs.Get(ctx, pageURL)
 		if err != nil {
@@ -76,14 +93,11 @@ func (s *X1337Searcher) getHTML(ctx context.Context, pageURL string) (string, er
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	b := make([]byte, 0)
-	buf := make([]byte, 32*1024)
-	for {
-		n, e := resp.Body.Read(buf)
-		b = append(b, buf[:n]...)
-		if e != nil || len(b) > 8<<20 {
-			break
-		}
+	// A read error must fail the request: a body truncated by a mid-transfer
+	// timeout otherwise looks like a valid page that just has fewer results.
+	b, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
 	}
 	return string(b), nil
 }

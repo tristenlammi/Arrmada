@@ -51,13 +51,27 @@ const (
 // 16 = Radio. We search books + audiobooks by default.
 var mamBookMainCats = []int{13, 14}
 
-func (m *MAMSearcher) throttle() {
+// throttle reserves the next request slot under the lock, then waits for it
+// outside the lock, honouring ctx cancellation (see TorrentLeechSearcher.throttle).
+func (m *MAMSearcher) throttle(ctx context.Context) error {
 	m.rateMu.Lock()
-	defer m.rateMu.Unlock()
-	if d := mamRequestDelay - time.Since(m.lastReq); d > 0 {
-		time.Sleep(d)
+	prev := m.lastReq
+	slot := time.Now()
+	if next := prev.Add(mamRequestDelay); next.After(slot) {
+		slot = next
 	}
-	m.lastReq = time.Now()
+	m.lastReq = slot
+	m.rateMu.Unlock()
+
+	if err := waitUntil(ctx, slot); err != nil {
+		m.rateMu.Lock()
+		if m.lastReq.Equal(slot) {
+			m.lastReq = prev
+		}
+		m.rateMu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // mamSearchBody is the JSON request MAM's search endpoint expects.
@@ -268,7 +282,9 @@ func (m *MAMSearcher) do(ctx context.Context, idx Indexer, method, rawurl, sessi
 	if method == http.MethodPost {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	m.throttle()
+	if err := m.throttle(ctx); err != nil {
+		return nil, err
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("myanonamouse: request failed: %w", err)

@@ -3,9 +3,15 @@ package indexer
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
+	"path"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +25,9 @@ type Service struct {
 	registry *Registry
 	log      *slog.Logger
 	recent   recentCache
+	// unknownKindLogged remembers which unknown searcher kinds have been warned
+	// about, so the RSS sweep doesn't repeat the warning every cycle.
+	unknownKindLogged sync.Map
 }
 
 // recentTTL is how long an RSS feed pull is reused. The movie, series and book RSS
@@ -47,7 +56,19 @@ func (c *recentCache) fresh(limit int) (SearchResult, bool) {
 	if c.at.IsZero() || c.limit != limit || time.Since(c.at) >= recentTTL {
 		return SearchResult{}, false
 	}
-	return SearchResult{Releases: append([]Release(nil), c.res.Releases...), Errors: c.res.Errors}, true
+	return SearchResult{Releases: append([]Release(nil), c.res.Releases...), Errors: copyErrors(c.res.Errors)}, true
+}
+
+// copyErrors clones a per-indexer error map so callers can't mutate the cached one.
+func copyErrors(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
 
 // NewService wires a Service over the database. flaresolverrURL may be empty
@@ -111,8 +132,101 @@ func (s *Service) Fetch(ctx context.Context, indexerName, downloadURL string) (F
 	if f, ok := searcher.(Fetcher); ok {
 		return f.Fetch(ctx, *found, downloadURL)
 	}
-	// No special handling (torznab/newznab): the client fetches the URL itself.
-	return FetchResult{URL: downloadURL}, nil
+	// Usenet (newznab): the download client fetches the NZB URL itself.
+	if found.Transport() == TransportUsenet {
+		return FetchResult{URL: downloadURL}, nil
+	}
+	// Torrent-transport URLs (torznab) are resolved server-side so downstream
+	// gets an infohash-bearing payload (.torrent bytes or a magnet) instead of a
+	// bare URL — stall detection, seed cleanup and import matching all depend on
+	// the infohash. On any failure the URL is passed through as before, so a
+	// flaky tracker can never break the grab itself.
+	res, err := fetchTorrentPayload(ctx, downloadURL)
+	if err != nil {
+		s.log.Warn("indexer fetch: could not resolve torrent URL server-side; passing URL through",
+			"indexer", indexerName, "url", redactKey(downloadURL), "err", err)
+		return FetchResult{URL: downloadURL}, nil
+	}
+	return res, nil
+}
+
+// fetchTorrentTimeout bounds the server-side resolution of a torrent URL. Grabs
+// are user-facing, so a hung tracker should fall back to URL passthrough quickly.
+const fetchTorrentTimeout = 30 * time.Second
+
+// fetchTorrentPayload HTTP-GETs a torrent-transport download URL, following
+// redirects. A redirect to a magnet: URI is captured and returned as a magnet;
+// a bencoded body (every .torrent starts with a 'd'-prefixed dictionary) is
+// returned as file bytes. Anything else is an error, and the caller falls back
+// to handing the client the raw URL.
+func fetchTorrentPayload(ctx context.Context, downloadURL string) (FetchResult, error) {
+	if strings.HasPrefix(downloadURL, "magnet:") {
+		return FetchResult{URL: downloadURL}, nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, fetchTorrentTimeout)
+	defer cancel()
+
+	var magnet string
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Torznab grab endpoints commonly 302 to a magnet URI; the transport
+			// can't follow that scheme, so capture it and stop.
+			if req.URL.Scheme == "magnet" {
+				magnet = req.URL.String()
+				return http.ErrUseLastResponse
+			}
+			if len(via) >= 10 {
+				return errors.New("stopped after 10 redirects")
+			}
+			return nil
+		},
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return FetchResult{}, sanitizeErr(downloadURL, err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		if magnet != "" {
+			return FetchResult{URL: magnet}, nil
+		}
+		return FetchResult{}, sanitizeErr(downloadURL, err)
+	}
+	defer resp.Body.Close()
+	if magnet != "" {
+		return FetchResult{URL: magnet}, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return FetchResult{}, fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 32<<20))
+	if err != nil {
+		return FetchResult{}, sanitizeErr(downloadURL, err)
+	}
+	if !looksLikeTorrent(body) {
+		return FetchResult{}, errors.New("response body is not a bencoded torrent")
+	}
+	return FetchResult{File: body, Filename: torrentFilename(downloadURL)}, nil
+}
+
+// looksLikeTorrent reports whether data starts like a bencoded dictionary —
+// every .torrent begins with 'd' followed by a length-prefixed key ("d8:announce…").
+func looksLikeTorrent(data []byte) bool {
+	return len(data) >= 2 && data[0] == 'd' && data[1] >= '0' && data[1] <= '9'
+}
+
+// torrentFilename derives a .torrent filename from the download URL's path.
+func torrentFilename(downloadURL string) string {
+	filename := "arrmada.torrent"
+	if u, err := url.Parse(downloadURL); err == nil {
+		if b := path.Base(u.Path); b != "" && b != "." && b != "/" {
+			filename = b
+		}
+	}
+	if !strings.HasSuffix(strings.ToLower(filename), ".torrent") {
+		filename += ".torrent"
+	}
+	return filename
 }
 
 // Test checks connectivity + auth for a stored indexer.
@@ -151,11 +265,11 @@ func (s *Service) Recent(ctx context.Context, limit int) (SearchResult, error) {
 	if err != nil {
 		return res, err
 	}
-	// Hand out a copy of the slice header so a caller appending to Releases can't
-	// clobber the cached run for whoever reads it next.
+	// Cache a private copy (slice header AND errors map) so a caller mutating its
+	// result can't clobber the cached run for whoever reads it next.
 	s.recent.at, s.recent.limit = time.Now(), limit
-	s.recent.res = SearchResult{Releases: append([]Release(nil), res.Releases...), Errors: res.Errors}
-	return s.recent.res, nil
+	s.recent.res = SearchResult{Releases: append([]Release(nil), res.Releases...), Errors: copyErrors(res.Errors)}
+	return res, nil
 }
 
 func (s *Service) fetchRecent(ctx context.Context, limit int) (SearchResult, error) {
@@ -175,6 +289,12 @@ func (s *Service) fetchRecent(ctx context.Context, limit int) (SearchResult, err
 	for _, idx := range indexers {
 		searcher, err := s.registry.For(idx.Kind)
 		if err != nil {
+			// Warn once per kind: silently skipping made a misconfigured indexer
+			// invisible to RSS sync forever.
+			if _, logged := s.unknownKindLogged.LoadOrStore(idx.Kind, true); !logged {
+				s.log.Warn("indexer recent: no searcher for kind; skipping",
+					"indexer", idx.Name, "kind", idx.Kind, "err", err)
+			}
 			continue
 		}
 		rec, ok := searcher.(Recenter)
@@ -185,7 +305,11 @@ func (s *Service) fetchRecent(ctx context.Context, limit int) (SearchResult, err
 		wg.Add(1)
 		go func(idx Indexer, rec Recenter) {
 			defer wg.Done()
-			releases, err := rec.Recent(ctx, idx, limit)
+			// A child deadline per indexer: one hung feed must not consume the
+			// whole sweep's budget while every other result waits on wg.Wait.
+			ictx, cancel := context.WithTimeout(ctx, perIndexerTimeout)
+			defer cancel()
+			releases, err := rec.Recent(ictx, idx, limit)
 			if err != nil {
 				mu.Lock()
 				result.Errors[idx.Name] = err.Error()
@@ -224,6 +348,12 @@ func (s *Service) fetchRecent(ctx context.Context, limit int) (SearchResult, err
 	return result, nil
 }
 
+// perIndexerTimeout caps each indexer goroutine's share of a fan-out. The fan-out
+// as a whole keeps its 45s budget, but wg.Wait blocks on the slowest indexer — so
+// without a per-indexer cap one hung endpoint consumed the entire budget for
+// everyone. Its timeout error lands in the per-indexer Errors map as usual.
+const perIndexerTimeout = 25 * time.Second
+
 // Search queries every enabled indexer concurrently and merges the results,
 // ranked by seeders (desc) then indexer priority.
 func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, error) {
@@ -255,11 +385,15 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 		wg.Add(1)
 		go func(idx Indexer) {
 			defer wg.Done()
+			// A child deadline per indexer: one hung indexer must not consume the
+			// whole search's budget while every other result waits on wg.Wait.
+			ictx, cancel := context.WithTimeout(ctx, perIndexerTimeout)
+			defer cancel()
 
 			searcher, err := s.registry.For(idx.Kind)
 			if err == nil {
 				var releases []Release
-				releases, err = searcher.Search(ctx, idx, q)
+				releases, err = searcher.Search(ictx, idx, q)
 				if err == nil {
 					returned := len(releases)
 					// Drop torrents below this indexer's seeder floor.
@@ -297,6 +431,10 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 	// Safety: never surface or hand on adult content, on any indexer.
 	result.Releases = filterAdult(result.Releases)
 
+	// The same torrent often comes back from several indexers; collapse those
+	// duplicates by infohash so the ranked list shows each release once.
+	result.Releases = dedupeByInfoHash(result.Releases, priority)
+
 	sort.SliceStable(result.Releases, func(i, j int) bool {
 		a, b := result.Releases[i], result.Releases[j]
 		if a.Seeders != b.Seeders {
@@ -309,4 +447,32 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 		result.Errors = nil
 	}
 	return result, nil
+}
+
+// dedupeByInfoHash collapses releases sharing a non-empty infohash, keeping the
+// better copy: more seeders, ties broken by higher indexer priority (lower
+// number). Releases without an infohash are never deduped — an empty hash says
+// nothing about identity.
+func dedupeByInfoHash(releases []Release, priority map[string]int) []Release {
+	byHash := make(map[string]int, len(releases)) // infohash -> index in out
+	out := make([]Release, 0, len(releases))
+	for _, r := range releases {
+		h := strings.ToLower(strings.TrimSpace(r.InfoHash))
+		if h == "" {
+			out = append(out, r)
+			continue
+		}
+		i, ok := byHash[h]
+		if !ok {
+			byHash[h] = len(out)
+			out = append(out, r)
+			continue
+		}
+		kept := out[i]
+		if r.Seeders > kept.Seeders ||
+			(r.Seeders == kept.Seeders && priority[r.Indexer] < priority[kept.Indexer]) {
+			out[i] = r
+		}
+	}
+	return out
 }

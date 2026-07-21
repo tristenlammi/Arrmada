@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -160,6 +161,31 @@ func (c *TorznabSearcher) throttle(ctx context.Context, endpoint string) error {
 	case <-t.C:
 		return nil
 	case <-ctx.Done():
+		// Release the abandoned slot if nobody queued behind it, so a cancelled
+		// search doesn't leave a dead gap that delays the host's next request.
+		c.mu.Lock()
+		if next, ok := c.next[host]; ok && next.Equal(slot.Add(torznabRequestDelay)) {
+			c.next[host] = slot
+		}
+		c.mu.Unlock()
+		return ctx.Err()
+	}
+}
+
+// waitUntil sleeps until the reserved slot time, or until ctx is cancelled.
+// Shared by the native trackers' rate limiters so none of them block a
+// cancelled search (or hold a mutex) while waiting out a request delay.
+func waitUntil(ctx context.Context, slot time.Time) error {
+	wait := time.Until(slot)
+	if wait <= 0 {
+		return nil
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
@@ -187,10 +213,27 @@ func (c *TorznabSearcher) Search(ctx context.Context, idx Indexer, q SearchQuery
 		}
 		body, err := c.get(ctx, endpoint)
 		if err != nil {
+			// A failure on a later page must not discard the pages already fetched —
+			// returning nil here silently threw away every release from pages 0..N-1.
+			// Only a first-page failure means the search itself failed.
+			if page > 0 {
+				if c.log != nil {
+					c.log.Warn("torznab page failed; keeping earlier pages",
+						"indexer", idx.Name, "page", page, "have", len(all), "err", err)
+				}
+				return all, nil
+			}
 			return nil, fmt.Errorf("indexer %q: %w", idx.Name, err)
 		}
 		releases, total, err := parseFeedPage(body)
 		if err != nil {
+			if page > 0 {
+				if c.log != nil {
+					c.log.Warn("torznab page unparseable; keeping earlier pages",
+						"indexer", idx.Name, "page", page, "have", len(all), "err", err)
+				}
+				return all, nil
+			}
 			return nil, fmt.Errorf("indexer %q: %w", idx.Name, err)
 		}
 		// Per-page trace. The aggregate count can't show whether paging happened, what
@@ -256,17 +299,17 @@ func (c *TorznabSearcher) get(ctx context.Context, endpoint string) ([]byte, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return nil, err
+		return nil, sanitizeErr(endpoint, err)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, sanitizeErr(endpoint, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
-		return nil, err
+		return nil, sanitizeErr(endpoint, err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
@@ -365,6 +408,27 @@ func parseFeedDate(s string) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+// sanitizeErr rewrites err so its text cannot leak the apikey embedded in the
+// request URL. Transport failures (url.Error and friends) reproduce the full
+// URL — apikey included — and error strings from this package end up in the
+// UI's per-indexer Errors map and in warn logs, so redaction has to happen at
+// the point the error is created, not just on the trace-log path.
+func sanitizeErr(endpoint string, err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if u, e := url.Parse(endpoint); e == nil {
+		if key := u.Query().Get("apikey"); key != "" {
+			msg = strings.ReplaceAll(msg, key, "REDACTED")
+			if esc := url.QueryEscape(key); esc != key {
+				msg = strings.ReplaceAll(msg, esc, "REDACTED")
+			}
+		}
+	}
+	return errors.New(msg)
 }
 
 // redactKey strips the apikey from a URL so it can be logged safely.

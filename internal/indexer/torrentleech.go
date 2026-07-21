@@ -55,13 +55,30 @@ const (
 
 var reReqPrefix = regexp.MustCompile(`^\[REQ(?:UEST(?:ED)?)?\]\s*`)
 
-func (t *TorrentLeechSearcher) throttle() {
+// throttle reserves the next request slot under the lock, then waits for it
+// outside the lock, honouring ctx cancellation. Sleeping while holding rateMu
+// used to block every concurrent request — including ones whose context was
+// already dead — behind a plain time.Sleep.
+func (t *TorrentLeechSearcher) throttle(ctx context.Context) error {
 	t.rateMu.Lock()
-	defer t.rateMu.Unlock()
-	if d := tlRequestDelay - time.Since(t.lastReq); d > 0 {
-		time.Sleep(d)
+	prev := t.lastReq
+	slot := time.Now()
+	if next := prev.Add(tlRequestDelay); next.After(slot) {
+		slot = next
 	}
-	t.lastReq = time.Now()
+	t.lastReq = slot
+	t.rateMu.Unlock()
+
+	if err := waitUntil(ctx, slot); err != nil {
+		// Give the abandoned slot back if nobody queued behind it.
+		t.rateMu.Lock()
+		if t.lastReq.Equal(slot) {
+			t.lastReq = prev
+		}
+		t.rateMu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // do issues a throttled request through the session, using its User-Agent, and
@@ -76,7 +93,9 @@ func (t *TorrentLeechSearcher) do(ctx context.Context, sess *tlSession, method, 
 	if method == http.MethodPost {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
-	t.throttle()
+	if err := t.throttle(ctx); err != nil {
+		return nil, nil, err
+	}
 	resp, err := sess.client.Do(req)
 	if err != nil {
 		return nil, nil, err
