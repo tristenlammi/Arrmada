@@ -2,6 +2,7 @@ package recyclebin
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"os"
@@ -129,6 +130,46 @@ func TestEnforceRetention(t *testing.T) {
 	}
 	if _, err := os.Stat(recent); err != nil {
 		t.Error("expected the 2-day-old file to survive retention")
+	}
+}
+
+// TestEnforcePrefersSidecarDeleted pins the retention fix: the .arrmeta sidecar's
+// Deleted timestamp is the authoritative age — file mtime is only a fallback for
+// legacy items with no sidecar. A file whose content mtime is ancient but that was
+// recycled recently must survive; one recycled long ago must be purged even if its
+// mtime was refreshed (e.g. a failed Chtimes at recycle time, or a later touch).
+func TestEnforcePrefersSidecarDeleted(t *testing.T) {
+	svc, set, dir := newTestSvc(t)
+	ctx := context.Background()
+	_ = set.Set(ctx, keyRetention, "7")
+
+	writeSidecar := func(p string, deletedAgoDays int) {
+		t.Helper()
+		m := library.RecycleMeta{Orig: "/orig/" + filepath.Base(p), Deleted: time.Now().AddDate(0, 0, -deletedAgoDays).Unix()}
+		b, err := json.Marshal(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p+library.RecycleMetaExt, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	oldMtimeRecentDelete := writeFile(t, dir, "a", "keep.mkv", 100, 30) // mtime 30d ago…
+	writeSidecar(oldMtimeRecentDelete, 1)                               // …but deleted yesterday
+	newMtimeOldDelete := writeFile(t, dir, "b", "purge.mkv", 100, 0)    // fresh mtime…
+	writeSidecar(newMtimeOldDelete, 30)                                 // …but deleted 30d ago
+	legacyOld := writeFile(t, dir, "c", "legacy.mkv", 100, 30)          // no sidecar → mtime rules
+
+	svc.Enforce(ctx)
+	if _, err := os.Stat(oldMtimeRecentDelete); err != nil {
+		t.Error("recently-deleted file must survive despite its old content mtime")
+	}
+	if _, err := os.Stat(newMtimeOldDelete); !os.IsNotExist(err) {
+		t.Error("long-ago-deleted file must be purged despite its fresh mtime")
+	}
+	if _, err := os.Stat(legacyOld); !os.IsNotExist(err) {
+		t.Error("legacy sidecar-less file must still age by mtime")
 	}
 }
 

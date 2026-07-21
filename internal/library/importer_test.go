@@ -15,10 +15,11 @@ func TestImportMovie(t *testing.T) {
 	src := t.TempDir()
 	lib := t.TempDir()
 
-	// A download folder containing the movie + a small sample.
+	// A download folder containing the movie + a small sample. The movie must be
+	// over the ~50MB directory-scan floor now that findMediaFile filters samples.
 	name := "Dune.Part.Two.2024.2160p.WEB-DL.DDP5.1.Atmos.DV.HDR.H.265-FLUX"
-	writeFile(t, filepath.Join(src, name, name+".mkv"), 5000)
-	writeFile(t, filepath.Join(src, name, "sample.mkv"), 50) // smaller → ignored
+	writeFile(t, filepath.Join(src, name, name+".mkv"), 60<<20)
+	writeFile(t, filepath.Join(src, name, "sample.mkv"), 50) // sample-named + tiny → ignored
 
 	im := NewImporter(lib, quiet())
 	res, err := im.Import(name, filepath.Join(src, name))
@@ -60,10 +61,12 @@ func TestImportEpisode(t *testing.T) {
 	}
 }
 
-// TestRenameNormalizesSeasonFolder is the "Season 04 → Season 4" fix: import reuses an
-// existing padded folder (to avoid duplicates), but rename targets the canonical
-// unpadded name so the layout normalizes.
-func TestRenameNormalizesSeasonFolder(t *testing.T) {
+// TestSeasonDirNameIsReadOnly pins the fix for seasonDirName renaming folders as a
+// side effect of merely DERIVING a path: computing a target (including previews)
+// must never mutate the disk. An existing variant spelling is reused as-is; folder
+// normalization is the explicit SeriesRename flow's job. (This test previously
+// pinned the opposite — rename-on-derive — behavior.)
+func TestSeasonDirNameIsReadOnly(t *testing.T) {
 	lib := t.TempDir()
 	// A legacy padded season folder already on disk.
 	if err := os.MkdirAll(filepath.Join(lib, "Andor", "Season 04"), 0o755); err != nil {
@@ -71,22 +74,22 @@ func TestRenameNormalizesSeasonFolder(t *testing.T) {
 	}
 	im := NewImporter(lib, quiet())
 
-	// The legacy "Season 04" is renamed to the canonical spelling rather than reused —
-	// merely reusing it left libraries permanently mixed ("Season 1, Season 2, Season 04").
-	if got := seasonDirName(filepath.Join(lib, "Andor"), 4, "Season 4"); got != "Season 4" {
-		t.Errorf("import seasonDirName = %q, want the canonical %q", got, "Season 4")
+	// The legacy "Season 04" is reused, NOT renamed.
+	if got := seasonDirName(filepath.Join(lib, "Andor"), 4, "Season 4"); got != "Season 04" {
+		t.Errorf("import seasonDirName = %q, want the existing %q reused", got, "Season 04")
 	}
-	if _, err := os.Stat(filepath.Join(lib, "Andor", "Season 4")); err != nil {
-		t.Errorf("legacy folder should have been renamed on disk: %v", err)
+	if _, err := os.Stat(filepath.Join(lib, "Andor", "Season 04")); err != nil {
+		t.Errorf("existing folder must be untouched by path derivation: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(lib, "Andor", "Season 04")); err == nil {
-		t.Error("legacy padded folder should no longer exist")
+	if _, err := os.Stat(filepath.Join(lib, "Andor", "Season 4")); err == nil {
+		t.Error("deriving a path must not create/rename folders on disk")
 	}
-	// Rename path forces the canonical unpadded "Season 4".
+	// The rename path (EpisodeTargetIn) still targets the canonical unpadded name —
+	// actually moving files there is the SeriesRename flow's job.
 	got := im.EpisodeTargetIn("Andor", "Andor", 2022, 4, 1, "Andor.S04E01.1080p.WEB-DL.mkv", ".mkv")
 	want := filepath.Join(lib, "Andor", "Season 4", "Andor - S04E01 - 1080p WEB-DL.mkv")
 	if got != want {
-		t.Errorf("rename target = %q\n want %q (canonical, not the legacy Season 04)", got, want)
+		t.Errorf("rename target = %q\n want %q (canonical)", got, want)
 	}
 }
 
@@ -170,10 +173,11 @@ func TestSeasonDirNameReusesExisting(t *testing.T) {
 	if got := seasonDirName(dir, 2, "Season 2"); got != "Season 2" {
 		t.Errorf("seasonDirName(new) = %q, want %q", got, "Season 2")
 	}
-	// The naming scheme decides the spelling: an existing folder is normalized to the
-	// canonical form, whichever direction that goes.
-	if got := seasonDirName(dir, 1, "Season 01"); got != "Season 01" {
-		t.Errorf("seasonDirName(normalize) = %q, want the canonical %q", got, "Season 01")
+	// An existing variant spelling is reused as-is — seasonDirName is read-only, so
+	// it never renames toward the canonical form. (Previously pinned normalization;
+	// updated for the no-side-effect fix.)
+	if got := seasonDirName(dir, 1, "Season 01"); got != "Season 1" {
+		t.Errorf("seasonDirName(variant) = %q, want the existing %q reused", got, "Season 1")
 	}
 }
 
@@ -249,6 +253,13 @@ func TestImportRoutesByType(t *testing.T) {
 	ebooks := filepath.Join(base, "e")
 	audiobooks := filepath.Join(base, "a")
 
+	// Configured roots must exist up front — the importer now refuses to create a
+	// library root itself (mount guard), only subdirectories beneath it.
+	for _, d := range []string{movies, tv, ebooks, audiobooks} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	im := NewImporter(base, quiet())
 	im.SetRoots(movies, tv, ebooks, audiobooks)
 
@@ -327,7 +338,7 @@ func TestImportSidecarSubs(t *testing.T) {
 	src := t.TempDir()
 	lib := t.TempDir()
 	name := "Dune.Part.Two.2024.1080p.WEB-DL-FLUX"
-	writeFile(t, filepath.Join(src, name, name+".mkv"), 5000)
+	writeFile(t, filepath.Join(src, name, name+".mkv"), 60<<20)       // over the dir-scan size floor
 	writeFile(t, filepath.Join(src, name, name+".en.srt"), 40)        // english, tagged
 	writeFile(t, filepath.Join(src, name, name+".srt"), 40)           // bare (no lang)
 	writeFile(t, filepath.Join(src, name, "Subs", "spanish.srt"), 40) // in a Subs folder

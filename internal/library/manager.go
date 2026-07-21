@@ -9,15 +9,6 @@ import (
 	"github.com/tristenlammi/arrmada/internal/eventbus"
 )
 
-// fileExists reports whether a path is present on disk.
-func fileExists(path string) bool {
-	if path == "" {
-		return false
-	}
-	_, err := os.Stat(path)
-	return err == nil
-}
-
 // Candidate is a finished download to (maybe) import. Kept package-local so the
 // library doesn't depend on the download package.
 type Candidate struct {
@@ -95,11 +86,18 @@ func (m *Manager) Process(ctx context.Context, cands []Candidate) int {
 		}
 		if done {
 			// Already imported AND the file is still on disk → nothing to do.
-			if fileExists(target) {
+			if _, statErr := os.Stat(target); statErr == nil {
+				continue
+			} else if target != "" && !os.IsNotExist(statErr) {
+				// EIO / permission / dead mount: we can't tell whether the import is
+				// still there. Re-importing here would duplicate the library (or write
+				// onto the mount point), so skip the candidate until the disk answers.
+				m.log.Warn("skipping candidate: can't verify prior import (library unreachable?)",
+					"hash", c.Hash, "target", target, "err", statErr)
 				continue
 			}
-			// Stale record: the imported file is gone (deleted or cleaned up).
-			// Forget it and re-import so the library is made whole again.
+			// Stale record: the imported file is definitively gone (deleted or cleaned
+			// up). Forget it and re-import so the library is made whole again.
 			_ = m.repo.forgetByHash(ctx, c.Hash)
 			m.log.Info("re-importing: previously-imported file is missing", "hash", c.Hash, "was", target)
 		}
@@ -112,16 +110,21 @@ func (m *Manager) Process(ctx context.Context, cands []Candidate) int {
 			}
 			continue
 		}
-		_ = m.repo.record(ctx, ImportRecord{
+		if err := m.repo.record(ctx, ImportRecord{
 			Hash: c.Hash, SourcePath: res.SourcePath, TargetPath: res.TargetPath,
 			Title: res.Title, SizeBytes: res.SizeBytes,
-		})
+		}); err != nil {
+			// The import itself succeeded; a lost record just means the next sweep
+			// re-checks (and skips via the on-disk file). Worth knowing about, though.
+			m.log.Warn("recording import failed", "hash", c.Hash, "target", res.TargetPath, "err", err)
+		}
 		if m.bus != nil {
 			m.bus.Publish("download.imported", map[string]any{
 				"title":  res.Title,
 				"year":   res.Year,
 				"target": res.TargetPath,
 				"name":   c.Name, // the release/torrent name — scored for upgrade decisions
+				"hash":   c.Hash, // the download hash — lets consumers tie the event to the torrent
 			})
 		}
 		imported++
@@ -142,6 +145,10 @@ func (m *Manager) importOne(ctx context.Context, c Candidate) (*Result, error) {
 
 // SetNaming installs the user-configurable naming scheme on the import path.
 func (m *Manager) SetNaming(np NamingProvider) { m.imp.SetNaming(np) }
+
+// SetRecycleDir routes replaced library files to the recycle bin during imports
+// (see Importer.SetRecycleDir). Empty keeps the overwrite behavior.
+func (m *Manager) SetRecycleDir(dir string) { m.imp.SetRecycleDir(dir) }
 
 // SetTitleResolver installs the canonical-title lookup used at import time so
 // movie folders match the library record rather than the scene release name.

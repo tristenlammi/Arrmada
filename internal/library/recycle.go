@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,20 +57,35 @@ func RecycleFile(recycleDir, path string) (string, error) {
 		ext := filepath.Ext(path)
 		dst = filepath.Join(dstDir, strings.TrimSuffix(filepath.Base(path), ext)+fmt.Sprintf(".%d", i)+ext)
 	}
+	now := time.Now()
+	stamp := func() {
+		// mtime = deletion time, for accurate retention; the sidecar records the
+		// origin (restore) and the authoritative deletion time. Failures are logged —
+		// silently losing either quietly breaks retention/restore.
+		if err := os.Chtimes(dst, now, now); err != nil {
+			slog.Warn("recycle: stamping deletion time failed — retention will age from content mtime", "dst", dst, "err", err)
+		}
+		b, err := json.Marshal(RecycleMeta{Orig: path, Deleted: now.Unix()})
+		if err == nil {
+			err = os.WriteFile(dst+RecycleMetaExt, b, 0o644)
+		}
+		if err != nil {
+			slog.Warn("recycle: writing sidecar failed — item won't be restorable", "dst", dst, "err", err)
+		}
+	}
 	if err := os.Rename(path, dst); err != nil {
 		// Cross-device rename fails with EXDEV — fall back to copy then remove.
 		if cerr := copyFile(path, dst); cerr != nil {
 			return "", cerr
 		}
 		if rerr := os.Remove(path); rerr != nil {
-			return "", rerr
+			// The bin now holds a good copy but the source lingers. Still write the
+			// sidecar so the bin copy stays restorable rather than an orphan.
+			stamp()
+			return "", fmt.Errorf("recycled a copy of %s but couldn't remove the source: %w", path, rerr)
 		}
 	}
-	now := time.Now()
-	_ = os.Chtimes(dst, now, now) // mtime = deletion time, for accurate retention
-	if b, err := json.Marshal(RecycleMeta{Orig: path, Deleted: now.Unix()}); err == nil {
-		_ = os.WriteFile(dst+RecycleMetaExt, b, 0o644)
-	}
+	stamp()
 	return dst, nil
 }
 

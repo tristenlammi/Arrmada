@@ -5,6 +5,7 @@
 package library
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/tristenlammi/arrmada/internal/extract"
@@ -189,13 +191,18 @@ func (im *Importer) ImportBookEdition(author, title string, files []FoundFile) (
 	if len(files) == 0 {
 		return nil, fmt.Errorf("no book files to import")
 	}
-	dir := im.bookDirIn(im.bookRootForFiles(files), author, title)
+	root := im.bookRootForFiles(files)
+	if err := im.checkRoot(root); err != nil {
+		return nil, err
+	}
+	dir := im.bookDirIn(root, author, title)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, fmt.Errorf("create book dir: %w", err)
 	}
+	cleanStaleTemps(dir)
 	if len(files) == 1 {
 		target := filepath.Join(dir, clean(title)+filepath.Ext(files[0].Path))
-		method, err := linkOrCopy(files[0].Path, target)
+		method, err := im.linkOrCopy(files[0].Path, target)
 		if err != nil {
 			return nil, fmt.Errorf("import book: %w", err)
 		}
@@ -206,20 +213,31 @@ func (im *Importer) ImportBookEdition(author, title string, files []FoundFile) (
 		}
 		return &BookImport{TargetPath: target, Format: BookFileFormat(target), SizeBytes: size, FileCount: 1}, nil
 	}
-	// Multi-file (e.g. an mp3 audiobook): keep names inside the book folder.
+	// Multi-file (e.g. an mp3 audiobook): keep names inside the book folder. Per-file
+	// failures are logged and counted out of FileCount; only a total wipeout errors.
 	var total int64
 	format := ""
+	placed := 0
+	var lastErr error
 	for _, f := range files {
 		target := filepath.Join(dir, clean(strings.TrimSuffix(filepath.Base(f.Path), filepath.Ext(f.Path)))+filepath.Ext(f.Path))
-		if method, err := linkOrCopy(f.Path, target); err == nil {
-			im.logImport(title, f.Path, target, method)
-			if fi, _ := os.Stat(target); fi != nil {
-				total += fi.Size()
-			}
-			format = BookFileFormat(f.Path)
+		method, err := im.linkOrCopy(f.Path, target)
+		if err != nil {
+			lastErr = err
+			im.log.Warn("book file import failed", "title", title, "source", f.Path, "err", err)
+			continue
 		}
+		placed++
+		im.logImport(title, f.Path, target, method)
+		if fi, _ := os.Stat(target); fi != nil {
+			total += fi.Size()
+		}
+		format = BookFileFormat(f.Path)
 	}
-	return &BookImport{TargetPath: dir, Format: format, SizeBytes: total, FileCount: len(files)}, nil
+	if placed == 0 {
+		return nil, fmt.Errorf("import book: no files could be placed: %w", lastErr)
+	}
+	return &BookImport{TargetPath: dir, Format: format, SizeBytes: total, FileCount: placed}, nil
 }
 
 // BookLibraryFiles returns the book files present in a book's library folder
@@ -310,6 +328,7 @@ type Importer struct {
 	ebookRoot     string
 	audiobookRoot string
 	bookRoots     []string // ebook + audiobook scan roots (falls back to root)
+	recycleDir    string   // when set, a replaced library file is recycled instead of overwritten
 	log           *slog.Logger
 	naming        NamingProvider       // nil → built-in defaults
 	seriesNaming  SeriesNamingProvider // nil → built-in defaults
@@ -373,6 +392,12 @@ func (im *Importer) bookRootForFiles(files []FoundFile) string {
 func NewImporter(root string, log *slog.Logger) *Importer {
 	return &Importer{root: root, log: log}
 }
+
+// SetRecycleDir points the importer at the recycle bin: when an import replaces an
+// existing library file with different content, the old file is recycled first (so
+// the replacement can hardlink) instead of being overwritten in place. Empty keeps
+// the previous overwrite behavior.
+func (im *Importer) SetRecycleDir(dir string) { im.recycleDir = dir }
 
 // SetNaming installs a naming provider (user-configurable folder/file formats).
 func (im *Importer) SetNaming(np NamingProvider) { im.naming = np }
@@ -485,37 +510,94 @@ type Result struct {
 	SizeBytes  int64  `json:"size_bytes"`
 }
 
-// Import organizes a finished download. name is the release name (used for
-// parsing); contentPath is the file or folder on disk to import from.
-func (im *Importer) Import(name, contentPath string) (*Result, error) {
-	// Unpack any archives first (scene releases often ship RAR'd), recursively so a
-	// nested folder of parts is reached too.
-	if info, err := os.Stat(contentPath); err == nil && info.IsDir() {
+// prepareContent unpacks any archives at contentPath and returns the path the
+// importer should search for media. A directory has its archive tree extracted in
+// place; a single-file contentPath that is itself an archive (.rar/.zip — a lone
+// archive torrent) is extracted into a scratch subdirectory next to it, which is
+// returned as the search path. Shared by Import and ImportAs so both behave
+// identically.
+func (im *Importer) prepareContent(contentPath string) string {
+	info, err := os.Stat(contentPath)
+	if err != nil {
+		return contentPath
+	}
+	if info.IsDir() {
+		// Unpack any archives (scene releases often ship RAR'd), recursively so a
+		// nested folder of parts is reached too.
 		if n, err := extract.ExtractTree(contentPath); err != nil {
 			im.log.Warn("extraction failed", "path", contentPath, "err", err)
 		} else if n > 0 {
 			im.log.Info("extracted archives", "count", n, "path", contentPath)
 		}
+		return contentPath
 	}
+	if extract.IsArchive(contentPath) {
+		scratch := contentPath + ".extracted"
+		if err := os.MkdirAll(scratch, 0o755); err != nil {
+			im.log.Warn("extraction scratch dir failed", "path", scratch, "err", err)
+			return contentPath
+		}
+		if err := extract.ExtractArchive(contentPath, scratch); err != nil {
+			im.log.Warn("extraction failed", "path", contentPath, "err", err)
+		} else {
+			im.log.Info("extracted archive", "path", contentPath)
+		}
+		return scratch
+	}
+	return contentPath
+}
 
-	src, size, err := findMediaFile(contentPath)
+// Import organizes a finished download. name is the release name (used for
+// parsing); contentPath is the file or folder on disk to import from.
+func (im *Importer) Import(name, contentPath string) (*Result, error) {
+	searchPath := im.prepareContent(contentPath)
+
+	src, size, err := findMediaFile(searchPath)
 	if err != nil {
 		return nil, err
 	}
+	if size == 0 {
+		// Same guard episodes have: a 0-byte file means the download is mid-move or
+		// its data was lost, and importing it would replace a good library file with
+		// nothing.
+		return nil, fmt.Errorf("refusing to import empty (0-byte) source: %s", src)
+	}
 
 	rel := parser.Parse(name)
+	root := im.movieDir()
+	if rel.IsTV() {
+		root = im.tvDir()
+	}
+	if err := im.checkRoot(root); err != nil {
+		return nil, err
+	}
 	target := im.targetPath(rel, filepath.Ext(src))
 
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return nil, fmt.Errorf("create library dir: %w", err)
 	}
-	method, err := linkOrCopy(src, target)
+	cleanStaleTemps(filepath.Dir(target))
+	method, err := im.linkOrCopy(src, target)
 	if err != nil {
 		return nil, fmt.Errorf("import file: %w", err)
 	}
 	im.logImport(rel.Title, src, target, method)
-	im.importSidecarSubs(contentPath, src, target)
+	im.importSidecarSubs(searchPath, src, target)
 	return &Result{SourcePath: src, TargetPath: target, Title: rel.Title, Year: rel.Year, SizeBytes: size}, nil
+}
+
+// checkRoot verifies a configured library root exists before anything is created
+// under it. When a mount is down, MkdirAll would silently recreate the root on the
+// host filesystem and imports would land there — better to fail loudly.
+func (im *Importer) checkRoot(root string) error {
+	fi, err := os.Stat(root)
+	if err != nil {
+		return fmt.Errorf("library root missing/unmounted: %s: %w", root, err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("library root is not a directory: %s", root)
+	}
+	return nil
 }
 
 // logImport records how the file reached the library. A hardlink is instant and
@@ -621,7 +703,10 @@ func (im *Importer) ImportEpisodeIntoWith(seriesFolder, seriesTitle string, year
 	if rel.Group == "" {
 		rel.Group = hint.Group
 	}
-	if rel.Season == 0 || len(rel.Episodes) == 0 {
+	// No episode list means no S/E marker at all. Season 0 WITH episodes is a real
+	// special (S00E01) and imports into the "Specials" folder — refusing it made
+	// specials in complete packs silently unimportable while still counted handled.
+	if len(rel.Episodes) == 0 {
 		return nil, false, nil // can't place a file with no S/E marker
 	}
 	// Refuse empty source files — a 0-byte file means the download is mid-move or
@@ -632,17 +717,21 @@ func (im *Importer) ImportEpisodeIntoWith(seriesFolder, seriesTitle string, year
 	}
 	ep := rel.Episodes[0]
 	ext := filepath.Ext(videoPath)
+	if err := im.checkRoot(im.tvDir()); err != nil {
+		return nil, false, err
+	}
 	target := im.episodeTargetIn(seriesFolder, seriesTitle, year, rel.Season, ep, rel, ext, false)
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return nil, false, fmt.Errorf("create season dir: %w", err)
 	}
-	method, err := linkOrCopy(videoPath, target)
+	cleanStaleTemps(filepath.Dir(target))
+	method, err := im.linkOrCopy(videoPath, target)
 	if err != nil {
 		return nil, false, fmt.Errorf("import episode: %w", err)
 	}
 	if method != "already" { // don't re-log / re-extract subs for an unchanged file
 		im.logImport(seriesTitle, videoPath, target, method)
-		im.importSidecarSubs(videoPath, videoPath, target)
+		im.importEpisodeSubs(videoPath, target)
 	}
 	fi, _ := os.Stat(target)
 	var size int64
@@ -657,7 +746,8 @@ func (im *Importer) ImportEpisodeIntoWith(seriesFolder, seriesTitle string, year
 // resolved the absolute number to a season/episode. Naming follows the standard
 // "<Series> - SxxEyy" scheme (quality tag parsed from the source name).
 func (im *Importer) ImportEpisodeAs(seriesFolder, seriesTitle string, year, season, episode int, videoPath string) (*EpisodeImport, bool, error) {
-	if season <= 0 || episode <= 0 {
+	// Season 0 is valid: specials place into the "Specials" folder.
+	if season < 0 || episode <= 0 {
 		return nil, false, nil
 	}
 	if fi, err := os.Stat(videoPath); err == nil && fi.Size() == 0 {
@@ -665,17 +755,21 @@ func (im *Importer) ImportEpisodeAs(seriesFolder, seriesTitle string, year, seas
 	}
 	rel := parser.Parse(filepath.Base(videoPath)) // for the quality tag only
 	ext := filepath.Ext(videoPath)
+	if err := im.checkRoot(im.tvDir()); err != nil {
+		return nil, false, err
+	}
 	target := im.episodeTargetIn(seriesFolder, seriesTitle, year, season, episode, rel, ext, false)
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return nil, false, fmt.Errorf("create season dir: %w", err)
 	}
-	method, err := linkOrCopy(videoPath, target)
+	cleanStaleTemps(filepath.Dir(target))
+	method, err := im.linkOrCopy(videoPath, target)
 	if err != nil {
 		return nil, false, fmt.Errorf("import episode: %w", err)
 	}
 	if method != "already" {
 		im.logImport(seriesTitle, videoPath, target, method)
-		im.importSidecarSubs(videoPath, videoPath, target)
+		im.importEpisodeSubs(videoPath, target)
 	}
 	var size int64
 	if fi, _ := os.Stat(target); fi != nil {
@@ -791,8 +885,8 @@ func (im *Importer) SeriesLibraryFilesIn(seriesFolder, title string, year int) [
 	var out []EpisodeImport
 	for _, v := range vids {
 		p := parser.Parse(filepath.Base(v.Path))
-		if p.Season == 0 || len(p.Episodes) == 0 {
-			continue
+		if len(p.Episodes) == 0 {
+			continue // no S/E marker — S00Exx specials DO count
 		}
 		// A multi-episode file (SxxE21-E22) satisfies every episode it covers, so
 		// emit one entry per episode — otherwise E22 looks missing next to E21.
@@ -881,23 +975,19 @@ func (im *Importer) seasonFolderName(format string, season int, title string, ye
 	return name
 }
 
-// seasonDirName returns the season directory to place an episode in.
-//
-// If the show already has a directory for that season under a different spelling
-// ("Season 04" when the scheme says "Season 4"), it is RENAMED to the canonical form
-// rather than merely reused. Reusing kept the library permanently inconsistent — a show
-// could end up with "Season 1, Season 2, Season 04, Season 05" depending on when each
-// folder happened to be created. Renaming can't fragment the library the way ignoring the
-// existing folder would, because the episodes move with it.
-//
-// The rename is skipped when the canonical name is already taken (both spellings exist),
-// since merging directories is not this function's job — the existing folder is reused, as
-// before, and the layout is left alone.
+// seasonDirName returns the season directory to place an episode in. READ-ONLY:
+// deriving a path must never mutate the disk as a side effect (a rename here fired
+// on every target computation, including previews). If the show already has a
+// directory for that season — under any spelling ("Season 04" vs "Season 4") — its
+// actual name is reused so imports never spawn a duplicate; otherwise the canonical
+// name from the scheme is returned. Normalizing legacy spellings is the explicit
+// SeriesRename flow's job.
 func seasonDirName(seriesDir string, season int, canonical string) string {
 	entries, err := os.ReadDir(seriesDir)
 	if err != nil {
 		return canonical
 	}
+	existing := ""
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -907,17 +997,14 @@ func seasonDirName(seriesDir string, season int, canonical string) string {
 			continue
 		}
 		if e.Name() == canonical {
-			return canonical
+			return canonical // exact match wins over any variant spelling
 		}
-		// Different spelling of the same season — normalize it.
-		from, to := filepath.Join(seriesDir, e.Name()), filepath.Join(seriesDir, canonical)
-		if _, err := os.Stat(to); err == nil {
-			return e.Name() // canonical already exists too; don't merge, just reuse
+		if existing == "" {
+			existing = e.Name()
 		}
-		if err := os.Rename(from, to); err != nil {
-			return e.Name() // couldn't normalize (permissions, in use) — reuse rather than fail
-		}
-		return canonical
+	}
+	if existing != "" {
+		return existing
 	}
 	return canonical
 }
@@ -949,21 +1036,30 @@ func (im *Importer) MovieTarget(title string, year int, qualitySource, ext strin
 
 // ImportAs imports a file into the library under a known movie's title/year
 // (rather than parsing the title from the release name). Used by manual import.
+// Archives are unpacked first, exactly like Import.
 func (im *Importer) ImportAs(title string, year int, contentPath string) (*Result, error) {
-	src, size, err := findMediaFile(contentPath)
+	searchPath := im.prepareContent(contentPath)
+	src, size, err := findMediaFile(searchPath)
 	if err != nil {
+		return nil, err
+	}
+	if size == 0 {
+		return nil, fmt.Errorf("refusing to import empty (0-byte) source: %s", src)
+	}
+	if err := im.checkRoot(im.movieDir()); err != nil {
 		return nil, err
 	}
 	target := im.MovieTarget(title, year, filepath.Base(src), filepath.Ext(src))
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return nil, fmt.Errorf("create library dir: %w", err)
 	}
-	method, err := linkOrCopy(src, target)
+	cleanStaleTemps(filepath.Dir(target))
+	method, err := im.linkOrCopy(src, target)
 	if err != nil {
 		return nil, fmt.Errorf("import file: %w", err)
 	}
 	im.logImport(title, src, target, method)
-	im.importSidecarSubs(contentPath, src, target)
+	im.importSidecarSubs(searchPath, src, target)
 	return &Result{SourcePath: src, TargetPath: target, Title: title, Year: year, SizeBytes: size}, nil
 }
 
@@ -1034,8 +1130,20 @@ func cleanTitleLoose(s string) string {
 	return clean(reTitlePunct.ReplaceAllString(s, " "))
 }
 
+// minVideoSize is the floor below which a video in a directory is treated as a
+// sample/extra, matching FindVideos.
+const minVideoSize = 50 << 20
+
+// ErrOnlySamples is returned when a directory holds video files but every one is
+// sample-named or under the size floor. Callers treat it like no-video-found (a
+// failed import), which must never select — or delete — real data.
+var ErrOnlySamples = errors.New("only sample-sized videos found")
+
 // findMediaFile returns the primary video file at contentPath (which may be a
-// single file or a directory) plus its size.
+// single file or a directory) plus its size. When picking from a directory it
+// applies the same sample-name filter and ~50 MB floor as FindVideos, so a loose
+// sample.mkv is never selected as the movie. A single-file contentPath is taken
+// as-is (the caller explicitly chose it).
 func findMediaFile(contentPath string) (string, int64, error) {
 	info, err := os.Stat(contentPath)
 	if err != nil {
@@ -1050,6 +1158,7 @@ func findMediaFile(contentPath string) (string, int64, error) {
 
 	var best string
 	var bestSize int64
+	sawExcluded := false // a video existed but was sample-named or under the floor
 	_ = filepath.WalkDir(contentPath, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() || !isVideo(p) {
 			return nil
@@ -1058,12 +1167,19 @@ func findMediaFile(contentPath string) (string, int64, error) {
 		if e != nil {
 			return nil
 		}
+		if isSampleName(p) || fi.Size() < minVideoSize {
+			sawExcluded = true
+			return nil
+		}
 		if fi.Size() > bestSize {
 			bestSize, best = fi.Size(), p
 		}
 		return nil
 	})
 	if best == "" {
+		if sawExcluded {
+			return "", 0, fmt.Errorf("%w in %s", ErrOnlySamples, contentPath)
+		}
 		return "", 0, fmt.Errorf("no video file found in %s", contentPath)
 	}
 	return best, bestSize, nil
@@ -1138,16 +1254,95 @@ func (im *Importer) importSidecarSubs(contentPath, srcVideo, targetVideo string)
 		if !ok {
 			return nil // a neighbor's subtitle in a shared save dir — skip
 		}
-		target := targetBase + strings.ToLower(filepath.Ext(p))
-		if lang != "" {
-			target = targetBase + "." + lang + strings.ToLower(filepath.Ext(p))
-		}
-		target = uniqueSubPath(target)
-		if method, err := linkOrCopy(p, target); err == nil {
-			im.log.Info("imported subtitle", "lang", lang, "target", target, "method", method)
-		}
+		im.placeSub(p, targetBase, lang)
 		return nil
 	})
+}
+
+// importEpisodeSubs imports the subtitles belonging to one episode file: its own
+// sidecars (same base name, next to it) plus any matching subtitles in the release
+// folder's Subs/Subtitles subdirectory — the season-pack convention the plain
+// sidecar scan never reached.
+func (im *Importer) importEpisodeSubs(videoPath, targetVideo string) {
+	im.importSidecarSubs(videoPath, videoPath, targetVideo)
+	im.importPackSubs(videoPath, targetVideo)
+}
+
+// importPackSubs scans a "Subs"/"Subtitles" folder next to an episode file for
+// subtitles that belong to it: matching the video's base name, sitting in a
+// per-episode subfolder named after it, or anything at all when the release folder
+// holds exactly one video (then every subtitle is unambiguously that video's).
+func (im *Importer) importPackSubs(videoPath, targetVideo string) {
+	dir := filepath.Dir(videoPath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	videoStem := strings.ToLower(strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath)))
+	targetBase := strings.TrimSuffix(targetVideo, filepath.Ext(targetVideo))
+	videos := 0
+	var subDirs []string
+	for _, e := range entries {
+		if e.IsDir() {
+			switch strings.ToLower(e.Name()) {
+			case "subs", "subtitles":
+				subDirs = append(subDirs, filepath.Join(dir, e.Name()))
+			}
+			continue
+		}
+		if isVideo(e.Name()) && !isSampleName(e.Name()) {
+			videos++
+		}
+	}
+	onlyVideo := videos == 1
+	for _, sd := range subDirs {
+		_ = filepath.WalkDir(sd, func(p string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !subtitleExts[strings.ToLower(filepath.Ext(p))] || isSampleName(p) {
+				return nil
+			}
+			stem := strings.ToLower(strings.TrimSuffix(filepath.Base(p), filepath.Ext(p)))
+			parentStem := strings.ToLower(filepath.Base(filepath.Dir(p)))
+			belongs := onlyVideo || stem == videoStem || strings.HasPrefix(stem, videoStem+".") || parentStem == videoStem
+			if !belongs {
+				return nil
+			}
+			lang, _ := subLangFor(stem, videoStem, true) // ownFolder semantics: sniff the name for a language
+			im.placeSub(p, targetBase, lang)
+			return nil
+		})
+	}
+}
+
+// placeSub links a subtitle to "<targetBase>[.<lang>]<ext>". The already-imported
+// check runs BEFORE any uniqueness suffixing: if the natural target (or one of its
+// numbered variants) already holds this subtitle — same inode or same size — the
+// import is skipped, so re-imports don't stack "movie.en.2.srt" duplicates. A
+// genuinely different subtitle at the natural path still gets a numeric suffix.
+func (im *Importer) placeSub(src, targetBase, lang string) {
+	si, err := os.Stat(src)
+	if err != nil {
+		return
+	}
+	ext := strings.ToLower(filepath.Ext(src))
+	natural := targetBase + ext
+	if lang != "" {
+		natural = targetBase + "." + lang + ext
+	}
+	base := strings.TrimSuffix(natural, ext)
+	target := natural
+	for i := 2; ; i++ {
+		di, err := os.Stat(target)
+		if os.IsNotExist(err) {
+			break // free slot — import here
+		}
+		if err == nil && (os.SameFile(si, di) || di.Size() == si.Size()) {
+			return // already imported — skip, don't stack a duplicate
+		}
+		target = fmt.Sprintf("%s.%d%s", base, i, ext)
+	}
+	if method, err := linkOrCopy(src, target); err == nil {
+		im.log.Info("imported subtitle", "lang", lang, "target", target, "method", method)
+	}
 }
 
 // subLangFor derives a subtitle's language tag and whether it belongs to this
@@ -1186,20 +1381,29 @@ func detectLang(stem string) string {
 	return ""
 }
 
-// uniqueSubPath returns path, or path with a numeric suffix if it already exists,
-// so a second same-language subtitle doesn't clobber the first.
-func uniqueSubPath(path string) string {
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return path
-	}
-	ext := filepath.Ext(path)
-	base := strings.TrimSuffix(path, ext)
-	for i := 2; ; i++ {
-		cand := fmt.Sprintf("%s.%d%s", base, i, ext)
-		if _, err := os.Stat(cand); os.IsNotExist(err) {
-			return cand
+// linkOrCopy is the Importer-aware wrapper around the package-level linkOrCopy:
+// when dst already exists with different content it recycles the old file first
+// (if a recycle dir is configured) so the new file can hardlink into place —
+// otherwise the replacement silently degraded to a full copy over dst. Without
+// recycling the old overwrite behavior stands, but is at least logged.
+func (im *Importer) linkOrCopy(src, dst string) (string, error) {
+	if si, err := os.Stat(src); err == nil {
+		if di, err := os.Stat(dst); err == nil {
+			switch {
+			case os.SameFile(si, di), si.Size() > 0 && di.Size() == si.Size():
+				// linkOrCopy will report "already" — nothing to recycle.
+			case im.recycleDir != "":
+				if binDst, rerr := RecycleFile(im.recycleDir, dst); rerr != nil {
+					im.log.Warn("recycling replaced file failed — falling back to overwrite", "target", dst, "err", rerr)
+				} else {
+					im.log.Info("recycled replaced file", "target", dst, "recycled_to", binDst)
+				}
+			default:
+				im.log.Warn("replacing existing library file (recycle bin not configured)", "target", dst)
+			}
 		}
 	}
+	return linkOrCopy(src, dst)
 }
 
 // linkOrCopy hardlinks src→dst (instant, no extra space, keeps seeding), falling
@@ -1228,9 +1432,10 @@ func linkOrCopy(src, dst string) (string, error) {
 	return "copy", nil
 }
 
-// copyFile copies src → dst atomically: it writes to a temp file and renames into
-// place, so it never truncates an existing dst in-place (which would zero the
-// source when dst is a hardlink of it).
+// copyFile copies src → dst atomically: it writes to a uniquely-named temp file
+// (so two concurrent copies of the same target can't collide), fsyncs, and renames
+// into place — it never truncates an existing dst in-place (which would zero the
+// source when dst is a hardlink of it). The temp is removed on any error.
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
@@ -1238,19 +1443,52 @@ func copyFile(src, dst string) error {
 	}
 	defer in.Close()
 
-	tmp := dst + ".arrmada-tmp"
-	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	out, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".*.arrmada-tmp")
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	tmp := out.Name()
+	fail := func(e error) error {
 		out.Close()
 		_ = os.Remove(tmp)
-		return err
+		return e
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		return fail(err)
+	}
+	if err := out.Sync(); err != nil { // data on disk before the rename publishes it
+		return fail(err)
 	}
 	if err := out.Close(); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, dst)
+	if err := os.Chmod(tmp, 0o644); err != nil { // CreateTemp makes 0600
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// cleanStaleTemps removes leftover *.arrmada-tmp files older than a day directly in
+// dir — litter from a crash mid-copy. Called lazily on each import's target dir so
+// no global sweep is needed. Fresh temps are left alone (a copy may be in flight).
+func cleanStaleTemps(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-24 * time.Hour)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".arrmada-tmp") {
+			continue
+		}
+		if fi, err := e.Info(); err == nil && fi.ModTime().Before(cutoff) {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
 }

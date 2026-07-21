@@ -54,7 +54,10 @@ type entry struct {
 	mod  time.Time
 }
 
-// walk lists every recycled file currently in the bin (sidecar metadata files excluded).
+// walk lists every recycled file currently in the bin (sidecar metadata files
+// excluded). Each entry's age comes from its .arrmeta sidecar's Deleted timestamp
+// when one exists — the authoritative deletion time — falling back to file mtime
+// only for legacy items with no sidecar (or where stamping the mtime failed).
 func (s *Service) walk() []entry {
 	if s.dir == "" {
 		return nil
@@ -65,7 +68,11 @@ func (s *Service) walk() []entry {
 			return nil
 		}
 		if fi, e := d.Info(); e == nil {
-			out = append(out, entry{path: p, size: fi.Size(), mod: fi.ModTime()})
+			mod := fi.ModTime()
+			if m := library.ReadRecycleMeta(p); m.Deleted > 0 {
+				mod = time.Unix(m.Deleted, 0)
+			}
+			out = append(out, entry{path: p, size: fi.Size(), mod: mod})
 		}
 		return nil
 	})
@@ -165,7 +172,9 @@ func removeItem(path string) error {
 	return err
 }
 
-// moveFile renames from→to, falling back to copy+remove across filesystems.
+// moveFile renames from→to, falling back to copy+remove across filesystems. The
+// copy goes through a uniquely-named temp in the destination dir, fsyncs, and
+// renames into place; the temp is removed on any error.
 func moveFile(from, to string) error {
 	if err := os.Rename(from, to); err == nil {
 		return nil
@@ -175,21 +184,32 @@ func moveFile(from, to string) error {
 		return err
 	}
 	defer in.Close()
-	tmp := to + ".arrmada-tmp"
-	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	out, err := os.CreateTemp(filepath.Dir(to), filepath.Base(to)+".*.arrmada-tmp")
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
+	tmp := out.Name()
+	fail := func(e error) error {
 		out.Close()
 		_ = os.Remove(tmp)
-		return err
+		return e
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		return fail(err)
+	}
+	if err := out.Sync(); err != nil { // data durable before the rename publishes it
+		return fail(err)
 	}
 	if err := out.Close(); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
+	if err := os.Chmod(tmp, 0o644); err != nil { // CreateTemp makes 0600
+		_ = os.Remove(tmp)
+		return err
+	}
 	if err := os.Rename(tmp, to); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Remove(from)
