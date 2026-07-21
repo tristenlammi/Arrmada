@@ -16,6 +16,7 @@ import (
 type OMDb struct {
 	key  func() string
 	http *http.Client
+	base string // API base URL (overridable in tests)
 }
 
 // NewOMDb builds an OMDb client. apiKey may be empty (Available reports false).
@@ -23,7 +24,7 @@ func NewOMDb(apiKey string) *OMDb { return NewOMDbFunc(func() string { return ap
 
 // NewOMDbFunc builds an OMDb client that reads its key lazily (settings-backed).
 func NewOMDbFunc(key func() string) *OMDb {
-	return &OMDb{key: key, http: &http.Client{Timeout: 12 * time.Second}}
+	return &OMDb{key: key, http: &http.Client{Timeout: 12 * time.Second}, base: "https://www.omdbapi.com/"}
 }
 
 // Available reports whether an OMDb API key is configured.
@@ -40,13 +41,14 @@ func (o *OMDb) Ratings(ctx context.Context, imdbID string) (Ratings, error) {
 	q := url.Values{}
 	q.Set("apikey", o.key())
 	q.Set("i", imdbID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://www.omdbapi.com/?"+q.Encode(), nil)
+	full := o.base + "?" + q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, full, nil)
 	if err != nil {
-		return Ratings{}, err
+		return Ratings{}, sanitizeErr(full, err)
 	}
 	resp, err := o.http.Do(req)
 	if err != nil {
-		return Ratings{}, fmt.Errorf("omdb request: %w", err)
+		return Ratings{}, sanitizeErr(full, fmt.Errorf("omdb request: %w", err))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

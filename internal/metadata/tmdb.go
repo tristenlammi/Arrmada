@@ -3,12 +3,14 @@ package metadata
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -25,6 +27,10 @@ const (
 type TMDB struct {
 	key  func() string
 	http *http.Client
+	base string // API base URL (tmdbBaseURL; overridable in tests)
+
+	discMu    sync.Mutex
+	discCache map[string]discoverCacheEntry // browse/search list cache (TTL-only)
 }
 
 // NewTMDB builds a TMDB provider from a static key (env/config). Empty means unconfigured.
@@ -33,7 +39,35 @@ func NewTMDB(apiKey string) *TMDB { return NewTMDBFunc(func() string { return ap
 // NewTMDBFunc builds a TMDB provider that reads its key lazily, so a key added in the
 // settings menu takes effect without a restart.
 func NewTMDBFunc(key func() string) *TMDB {
-	return &TMDB{key: key, http: &http.Client{Timeout: 20 * time.Second}}
+	return &TMDB{
+		key:       key,
+		http:      &http.Client{Timeout: 20 * time.Second},
+		base:      tmdbBaseURL,
+		discCache: map[string]discoverCacheEntry{},
+	}
+}
+
+// sanitizeErr rewrites err so its text cannot leak an API key embedded in the request
+// URL. Transport failures (*url.Error and friends) reproduce the full URL — key
+// included — and error strings from this package are written back to API clients and
+// logs, so redaction has to happen at the point the error is created.
+func sanitizeErr(rawURL string, err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	if u, e := url.Parse(rawURL); e == nil {
+		q := u.Query()
+		for _, param := range []string{"api_key", "apikey", "key"} {
+			if key := q.Get(param); key != "" {
+				msg = strings.ReplaceAll(msg, key, "REDACTED")
+				if esc := url.QueryEscape(key); esc != key {
+					msg = strings.ReplaceAll(msg, esc, "REDACTED")
+				}
+			}
+		}
+	}
+	return errors.New(msg)
 }
 
 // Available reports whether an API key is configured.
@@ -44,13 +78,14 @@ func (t *TMDB) get(ctx context.Context, path string, q url.Values) ([]byte, erro
 		return nil, ErrNotConfigured
 	}
 	q.Set("api_key", t.key())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tmdbBaseURL+path+"?"+q.Encode(), nil)
+	full := t.base + path + "?" + q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, full, nil)
 	if err != nil {
-		return nil, err
+		return nil, sanitizeErr(full, err)
 	}
 	resp, err := t.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("tmdb request: %w", err)
+		return nil, sanitizeErr(full, fmt.Errorf("tmdb request: %w", err))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))

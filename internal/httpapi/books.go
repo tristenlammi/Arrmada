@@ -440,12 +440,13 @@ func coverFiles(dir string, id int64) []string {
 // so the UI can badge what's already owned or pending.
 type bookCard struct {
 	metadata.BookResult
-	InLibrary bool `json:"in_library"`
-	HasFile   bool `json:"has_file"`
-	Requested bool `json:"requested"`
+	InLibrary     bool   `json:"in_library"`
+	HasFile       bool   `json:"has_file"`
+	Requested     bool   `json:"requested"`                // kept for compatibility: a pending request exists
+	RequestStatus string `json:"request_status,omitempty"` // pending | approved | declined (mirrors discoverCard)
 }
 
-// enrichBookCards annotates search/browse results with library + pending-request status.
+// enrichBookCards annotates search/browse results with library + request status.
 func (a *api) enrichBookCards(ctx context.Context, results []metadata.BookResult) []bookCard {
 	inLib := map[string]bool{}
 	hasFile := map[string]bool{}
@@ -455,17 +456,30 @@ func (a *api) enrichBookCards(ctx context.Context, results []metadata.BookResult
 			hasFile[b.OLKey] = b.HasFile
 		}
 	}
-	pending := map[string]bool{}
-	if reqs, err := a.deps.Requests.List(ctx, "pending", 0); err == nil {
+	// Requests.List returns newest first; iterating in order and overwriting means the
+	// OLDEST request would win, so only set a key on first sight — the newest request
+	// for a book determines its badge (matching the movie/series discover behavior of
+	// one-status-per-title, but declined stays distinguishable from never-requested).
+	reqStatus := map[string]string{}
+	if reqs, err := a.deps.Requests.List(ctx, "", 0); err == nil {
 		for _, rq := range reqs {
-			if rq.MediaType == "book" {
-				pending[rq.OLKey] = true
+			if rq.MediaType == "book" && rq.OLKey != "" {
+				if _, seen := reqStatus[rq.OLKey]; !seen {
+					reqStatus[rq.OLKey] = rq.Status
+				}
 			}
 		}
 	}
 	cards := make([]bookCard, 0, len(results))
 	for _, br := range results {
-		cards = append(cards, bookCard{BookResult: br, InLibrary: inLib[br.Key], HasFile: hasFile[br.Key], Requested: pending[br.Key]})
+		st := reqStatus[br.Key]
+		cards = append(cards, bookCard{
+			BookResult:    br,
+			InLibrary:     inLib[br.Key],
+			HasFile:       hasFile[br.Key],
+			Requested:     st == "pending",
+			RequestStatus: st,
+		})
 	}
 	return cards
 }

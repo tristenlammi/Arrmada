@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/metadata"
@@ -21,54 +24,112 @@ type discoverCard struct {
 	DownloadProgress float64 `json:"download_progress,omitempty"` // 0..1 while downloading
 }
 
+// discoverEnrichSnap holds the precomputed lookup maps enrichDiscover needs: library
+// membership, file presence, in-flight download progress, and request status.
+type discoverEnrichSnap struct {
+	movIn, movHave map[int]bool
+	serIn, serHave map[int]bool
+	prog           map[string]float64 // "movie:123" / "series:123" -> progress 0..1
+	reqStatus      map[string]string  // "movie:123" / "series:123" -> status
+}
+
+// enrichSnapTTL: a Discover page render fires ~6 row requests at once and the frontend
+// polls every 8s; snapshotting the enrichment inputs for 15s means each burst re-lists
+// the library/requests/queue once instead of per-row.
+const enrichSnapTTL = 15 * time.Second
+
+// enrichSnaps keys the snapshot per api instance (the api struct lives in server.go and
+// can't grow a field here without crossing file ownership; a process runs one server, so
+// this map holds a single entry in practice).
+var enrichSnaps sync.Map // *api -> *enrichSnapEntry
+
+type enrichSnapEntry struct {
+	mu   sync.Mutex
+	at   time.Time
+	snap *discoverEnrichSnap
+}
+
+// discoverSnapshot returns the (possibly cached) enrichment maps. Snapshots built while
+// any backing store errored are served but not cached, so a transient failure clears on
+// the next request rather than sticking for the TTL.
+func (a *api) discoverSnapshot(ctx context.Context) *discoverEnrichSnap {
+	v, _ := enrichSnaps.LoadOrStore(a, &enrichSnapEntry{})
+	e := v.(*enrichSnapEntry)
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.snap != nil && time.Since(e.at) < enrichSnapTTL {
+		return e.snap
+	}
+	snap, complete := a.buildDiscoverSnapshot(ctx)
+	if complete {
+		e.snap, e.at = snap, time.Now()
+	}
+	return snap
+}
+
+// buildDiscoverSnapshot lists the library, requests, and download queue once and folds
+// them into lookup maps. complete is false when any source errored (partial data).
+func (a *api) buildDiscoverSnapshot(ctx context.Context) (snap *discoverEnrichSnap, complete bool) {
+	snap = &discoverEnrichSnap{
+		movIn: map[int]bool{}, movHave: map[int]bool{},
+		serIn: map[int]bool{}, serHave: map[int]bool{},
+		prog: map[string]float64{}, reqStatus: map[string]string{},
+	}
+	complete = true
+	queue, err := a.deps.Downloads.Queue(ctx)
+	if err != nil {
+		complete = false
+	}
+	if ms, err := a.deps.Movies.List(ctx); err == nil {
+		for _, m := range ms {
+			snap.movIn[m.TMDBID] = true
+			snap.movHave[m.TMDBID] = m.HasFile
+			if len(queue) > 0 {
+				if d := downloadFor(queue, m); d != nil {
+					snap.prog["movie:"+strconv.Itoa(m.TMDBID)] = d.Progress
+				}
+			}
+		}
+	} else {
+		complete = false
+	}
+	if ss, err := a.deps.Series.List(ctx); err == nil {
+		for _, s := range ss {
+			snap.serIn[s.TMDBID] = true
+			snap.serHave[s.TMDBID] = s.Stats != nil && s.Stats.HaveFiles > 0
+			if len(queue) > 0 {
+				if p, ok := seriesQueueProgress(queue, s.Title); ok {
+					snap.prog["series:"+strconv.Itoa(s.TMDBID)] = p
+				}
+			}
+		}
+	} else {
+		complete = false
+	}
+	if rs, err := a.deps.Requests.List(ctx, "", 0); err == nil {
+		for _, req := range rs {
+			snap.reqStatus[req.MediaType+":"+strconv.Itoa(req.TMDBID)] = req.Status
+		}
+	} else {
+		complete = false
+	}
+	return snap, complete
+}
+
 // enrichDiscover attaches library + request status (and live download progress) to
 // a batch of discover items.
 func (a *api) enrichDiscover(w http.ResponseWriter, r *http.Request, items []metadata.DiscoverItem) {
-	ctx := r.Context()
-	queue, _ := a.deps.Downloads.Queue(ctx)
-
-	movIn, movHave := map[int]bool{}, map[int]bool{}
-	prog := map[string]float64{} // "movie:123" / "series:123" -> progress 0..1
-	if ms, err := a.deps.Movies.List(ctx); err == nil {
-		for _, m := range ms {
-			movIn[m.TMDBID] = true
-			movHave[m.TMDBID] = m.HasFile
-			if len(queue) > 0 {
-				if d := downloadFor(queue, m); d != nil {
-					prog["movie:"+strconv.Itoa(m.TMDBID)] = d.Progress
-				}
-			}
-		}
-	}
-	serIn, serHave := map[int]bool{}, map[int]bool{}
-	if ss, err := a.deps.Series.List(ctx); err == nil {
-		for _, s := range ss {
-			serIn[s.TMDBID] = true
-			serHave[s.TMDBID] = s.Stats != nil && s.Stats.HaveFiles > 0
-			if len(queue) > 0 {
-				if p, ok := seriesQueueProgress(queue, s.Title); ok {
-					prog["series:"+strconv.Itoa(s.TMDBID)] = p
-				}
-			}
-		}
-	}
-	reqStatus := map[string]string{} // "movie:123" / "series:123" -> status
-	if rs, err := a.deps.Requests.List(ctx, "", 0); err == nil {
-		for _, req := range rs {
-			reqStatus[req.MediaType+":"+strconv.Itoa(req.TMDBID)] = req.Status
-		}
-	}
-
+	snap := a.discoverSnapshot(r.Context())
 	cards := make([]discoverCard, 0, len(items))
 	for _, it := range items {
 		c := discoverCard{DiscoverItem: it}
 		if it.MediaType == "movie" {
-			c.InLibrary, c.HasFile = movIn[it.TMDBID], movHave[it.TMDBID]
+			c.InLibrary, c.HasFile = snap.movIn[it.TMDBID], snap.movHave[it.TMDBID]
 		} else {
-			c.InLibrary, c.HasFile = serIn[it.TMDBID], serHave[it.TMDBID]
+			c.InLibrary, c.HasFile = snap.serIn[it.TMDBID], snap.serHave[it.TMDBID]
 		}
-		c.RequestStatus = reqStatus[it.MediaType+":"+strconv.Itoa(it.TMDBID)]
-		c.DownloadProgress = prog[it.MediaType+":"+strconv.Itoa(it.TMDBID)]
+		c.RequestStatus = snap.reqStatus[it.MediaType+":"+strconv.Itoa(it.TMDBID)]
+		c.DownloadProgress = snap.prog[it.MediaType+":"+strconv.Itoa(it.TMDBID)]
 		cards = append(cards, c)
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"items": cards})

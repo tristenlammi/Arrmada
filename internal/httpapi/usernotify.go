@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"net/http"
+	"strings"
 
+	"github.com/tristenlammi/arrmada/internal/notify"
 	"github.com/tristenlammi/arrmada/internal/requests"
 )
 
@@ -89,6 +91,15 @@ func (a *api) handleSetMyApprise(w http.ResponseWriter, r *http.Request) {
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
+	}
+	// Validate before storing: the URL becomes an apprise CLI argument on the
+	// server, so an unvalidated one is an SSRF / argument-injection vector for any
+	// requester-level account. ("" clears the setting and is always allowed.)
+	if strings.TrimSpace(req.URL) != "" {
+		if verr := notify.ValidateAppriseURL(req.URL); verr != nil {
+			a.writeError(w, http.StatusBadRequest, verr.Error())
+			return
+		}
 	}
 	if err := a.deps.Requests.SetApprise(r.Context(), u.ID, req.URL); err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not save setting")

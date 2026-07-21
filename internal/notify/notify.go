@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/eventbus"
@@ -248,12 +250,67 @@ func Send(ctx context.Context, appriseBin, title, body string, urls ...string) e
 	}
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	args := []string{"-v", "-t", title, "-b", body} // -v surfaces the failure reason on non-zero exit
-	args = append(args, urls...)
-	cmd := exec.CommandContext(cctx, appriseBin, args...)
+	cmd := exec.CommandContext(cctx, appriseBin, appriseArgs(title, body, urls)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("apprise: %v (%s)", err, trim(string(out)))
+	}
+	return nil
+}
+
+// appriseArgs builds the apprise CLI argument list. The "--" separator terminates option
+// parsing so a stored URL can never be interpreted as an apprise CLI flag (e.g. a URL
+// crafted to start with "-" smuggling in --config/--attach behavior).
+func appriseArgs(title, body string, urls []string) []string {
+	args := []string{"-v", "-t", title, "-b", body, "--"} // -v surfaces the failure reason on non-zero exit
+	return append(args, urls...)
+}
+
+// appriseSchemes is the allowlist of Apprise notification URL schemes accepted by
+// ValidateAppriseURL. Note: the generic delivery schemes (json/form/xml/webhook and
+// their TLS variants) let a user point Arrmada's server at ANY host — including
+// internal ones — so storing them is an accepted SSRF surface; the allowlist guards
+// against option injection and nonsense input, not against where those schemes post.
+var appriseSchemes = map[string]bool{
+	"discord": true, "telegram": true, "tgram": true, "slack": true,
+	"mailto": true, "mailtos": true,
+	"pover": true, "pushover": true,
+	"gotify": true, "gotifys": true,
+	"ntfy": true, "ntfys": true,
+	"matrix": true, "matrixs": true,
+	"signal": true, "signals": true,
+	"json": true, "jsons": true,
+	"form": true, "forms": true,
+	"xml": true, "xmls": true,
+	"webhook": true, "webhooks": true,
+	"twilio":  true,
+	"apprise": true, "apprises": true,
+	"pbul": true, "pushbullet": true,
+	"home-assistant": true, "hassio": true,
+}
+
+// ValidateAppriseURL rejects strings that are not a plausible Apprise notification URL:
+// anything starting with "-" (could read as a CLI option), anything unparseable, and any
+// scheme outside the allowlist above. Intended for storage-time validation of
+// user-supplied URLs (e.g. per-user notification endpoints).
+func ValidateAppriseURL(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return errors.New("notification URL is empty")
+	}
+	if strings.HasPrefix(raw, "-") {
+		return errors.New("notification URL must not start with '-'")
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("not a valid URL: %v", err)
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme == "" {
+		return errors.New("notification URL must include a scheme (e.g. discord://…)")
+	}
+	if !appriseSchemes[scheme] {
+		return fmt.Errorf("unsupported notification scheme %q", scheme)
 	}
 	return nil
 }

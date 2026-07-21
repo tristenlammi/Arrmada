@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"strconv"
+	"time"
 )
 
 // DiscoverItem is a unified movie/series card for the Discover experience. MediaType
@@ -271,6 +272,66 @@ func (i tmdbDiscoverItem) toItem(defaultMedia string) (DiscoverItem, bool) {
 	return di, true
 }
 
+// Discover list caching: the browse rows (trending/popular/upcoming/genre) are the same
+// for every user and change rarely, so they get a 10-minute TTL. Search is per-query user
+// input — still worth caching (the UI re-fires on focus/poll) but shorter-lived. The cache
+// is TTL-only (no manual invalidation) and never stores errors. A size cap bounds memory
+// against unbounded distinct search queries.
+const (
+	discoverListTTL   = 10 * time.Minute
+	discoverSearchTTL = 2 * time.Minute
+	discoverCacheCap  = 200
+)
+
+type discoverCacheEntry struct {
+	items []DiscoverItem
+	added time.Time
+	exp   time.Time
+}
+
+// cachedDiscoverList serves a discover list from the TTL cache, fetching (and caching)
+// on miss. Errors are returned uncached so a transient TMDB failure doesn't stick.
+func (t *TMDB) cachedDiscoverList(ctx context.Context, path string, q url.Values, defaultMedia string, ttl time.Duration) ([]DiscoverItem, error) {
+	key := path + "?" + q.Encode()
+	now := time.Now()
+
+	t.discMu.Lock()
+	if e, ok := t.discCache[key]; ok && now.Before(e.exp) {
+		items := e.items
+		t.discMu.Unlock()
+		return items, nil
+	}
+	t.discMu.Unlock()
+
+	items, err := t.discoverList(ctx, path, q, defaultMedia)
+	if err != nil {
+		return nil, err
+	}
+
+	t.discMu.Lock()
+	defer t.discMu.Unlock()
+	if t.discCache == nil {
+		t.discCache = map[string]discoverCacheEntry{}
+	}
+	for k, e := range t.discCache { // drop expired entries first
+		if !now.Before(e.exp) {
+			delete(t.discCache, k)
+		}
+	}
+	if len(t.discCache) >= discoverCacheCap { // still full: evict the oldest entry
+		var oldestKey string
+		var oldestAt time.Time
+		for k, e := range t.discCache {
+			if oldestKey == "" || e.added.Before(oldestAt) {
+				oldestKey, oldestAt = k, e.added
+			}
+		}
+		delete(t.discCache, oldestKey)
+	}
+	t.discCache[key] = discoverCacheEntry{items: items, added: now, exp: now.Add(ttl)}
+	return items, nil
+}
+
 func (t *TMDB) discoverList(ctx context.Context, path string, q url.Values, defaultMedia string) ([]DiscoverItem, error) {
 	body, err := t.get(ctx, path, q)
 	if err != nil {
@@ -303,20 +364,20 @@ func (t *TMDB) Trending(ctx context.Context, media string) ([]DiscoverItem, erro
 	case tvish(media):
 		seg = "tv"
 	}
-	return t.discoverList(ctx, "/trending/"+seg+"/week", url.Values{}, "")
+	return t.cachedDiscoverList(ctx, "/trending/"+seg+"/week", url.Values{}, "", discoverListTTL)
 }
 
 // Popular returns popular movies or series.
 func (t *TMDB) Popular(ctx context.Context, media string) ([]DiscoverItem, error) {
 	if tvish(media) {
-		return t.discoverList(ctx, "/tv/popular", url.Values{}, "tv")
+		return t.cachedDiscoverList(ctx, "/tv/popular", url.Values{}, "tv", discoverListTTL)
 	}
-	return t.discoverList(ctx, "/movie/popular", url.Values{}, "movie")
+	return t.cachedDiscoverList(ctx, "/movie/popular", url.Values{}, "movie", discoverListTTL)
 }
 
 // Upcoming returns movies not yet released (for requesting future titles).
 func (t *TMDB) Upcoming(ctx context.Context) ([]DiscoverItem, error) {
-	return t.discoverList(ctx, "/movie/upcoming", url.Values{}, "movie")
+	return t.cachedDiscoverList(ctx, "/movie/upcoming", url.Values{}, "movie", discoverListTTL)
 }
 
 // DiscoverByGenre returns popular titles in a genre.
@@ -325,9 +386,9 @@ func (t *TMDB) DiscoverByGenre(ctx context.Context, media string, genreID int) (
 	q.Set("with_genres", strconv.Itoa(genreID))
 	q.Set("sort_by", "popularity.desc")
 	if tvish(media) {
-		return t.discoverList(ctx, "/discover/tv", q, "tv")
+		return t.cachedDiscoverList(ctx, "/discover/tv", q, "tv", discoverListTTL)
 	}
-	return t.discoverList(ctx, "/discover/movie", q, "movie")
+	return t.cachedDiscoverList(ctx, "/discover/movie", q, "movie", discoverListTTL)
 }
 
 // Search runs a combined movie+TV search (TMDB /search/multi), dropping people and
@@ -339,7 +400,7 @@ func (t *TMDB) Search(ctx context.Context, query string) ([]DiscoverItem, error)
 	q := url.Values{}
 	q.Set("query", query)
 	q.Set("include_adult", "false")
-	return t.discoverList(ctx, "/search/multi", q, "")
+	return t.cachedDiscoverList(ctx, "/search/multi", q, "", discoverSearchTTL)
 }
 
 // Genres returns the genre list for movies or series.
