@@ -840,14 +840,12 @@ func (c *Coordinator) detectStalledBook(ctx context.Context, g grab, queue []dow
 	if g.StallMinutes <= 0 {
 		return
 	}
-	if time.Since(parseTime(g.GrabbedAt)) < time.Duration(g.StallMinutes)*time.Minute {
+	window := time.Duration(g.StallMinutes) * time.Minute
+	if time.Since(parseTime(g.GrabbedAt)) < window {
 		return
 	}
 	item, found := findQueued(queue, g)
-	stalled := !found ||
-		item.State == "error" || item.State == "stalledDL" || item.State == "missingFiles" ||
-		(item.Progress < 1.0 && item.DownSpeed == 0)
-	if !stalled {
+	if !c.stalledInQueue(g, item, found, window) {
 		return
 	}
 	c.log.Info("automation: book download stalled, failing over", "book", g.MovieID, "release", g.Title)

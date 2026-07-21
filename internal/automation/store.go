@@ -106,7 +106,12 @@ func (c *Coordinator) blockedSetSeries(ctx context.Context, seriesID int64) map[
 
 func (c *Coordinator) blockedSetOf(ctx context.Context, id int64, mediaType string) map[string]bool {
 	set := map[string]bool{}
-	rows, err := c.db.QueryContext(ctx, `SELECT norm_title FROM blocklist WHERE movie_id = ? AND media_type = ?`, id, mediaType)
+	// Global rows (media_type='global') apply to every library item: a fake/malware
+	// release detected on one show must not stay grabbable for everything else it
+	// happens to match.
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT norm_title FROM blocklist WHERE (movie_id = ? AND media_type = ?) OR media_type = 'global'`,
+		id, mediaType)
 	if err != nil {
 		return set
 	}
@@ -146,6 +151,19 @@ func (c *Coordinator) addBlockBook(ctx context.Context, bookID int64, title, ind
 // blockedSetBook returns the normalized titles blocklisted for a book.
 func (c *Coordinator) blockedSetBook(ctx context.Context, bookID int64) map[string]bool {
 	return c.blockedSetOf(ctx, bookID, "book")
+}
+
+// addBlockGlobal blocklists a release for EVERY library item — used when the release
+// itself is the problem (executables and no video: a fake or malware), not its fit for
+// one particular movie or show. blockedSetOf folds these rows into every lookup.
+func (c *Coordinator) addBlockGlobal(ctx context.Context, title, indexer, reason string) {
+	_, err := c.db.ExecContext(ctx,
+		`INSERT INTO blocklist (movie_id, norm_title, title, indexer, download_url, reason, media_type)
+		 VALUES (0, ?, ?, ?, '', ?, 'global')`,
+		normTitle(title), title, indexer, reason)
+	if err != nil {
+		c.log.Warn("automation: global blocklist failed", "err", err)
+	}
 }
 
 // recordGrab logs an automatic grab for stall tracking + seed cleanup, capturing
@@ -215,8 +233,13 @@ func (c *Coordinator) pendingGrabs(ctx context.Context) ([]grab, error) {
 // the next sweep — a belt-and-suspenders guard against re-grab loops when the in-client name-match
 // (inQueue) can't recognize a download.
 func (c *Coordinator) pendingGrabTitles(ctx context.Context, movieID int64) map[string]bool {
+	// Bounded to a day, matching pendingSeriesGrabTitles: a grab stuck 'grabbed' forever
+	// (torrent removed by hand, stall timeout unset) must not block re-grabbing that
+	// release permanently.
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT title FROM grabs WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'movie'`, movieID)
+		`SELECT title FROM grabs
+		 WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'movie'
+		   AND grabbed_at > datetime('now', '-1 day')`, movieID)
 	if err != nil {
 		return nil
 	}
@@ -324,22 +347,19 @@ func scanGrab(row interface{ Scan(...any) error }) (grab, error) {
 	return g, err
 }
 
-// markGrabsImportedForMovie flips a movie's pending grabs to imported (called
-// when a version gains a file).
-func (c *Coordinator) markGrabsImportedForMovie(ctx context.Context, movieID int64) {
-	_, _ = c.db.ExecContext(ctx, `UPDATE grabs SET status = 'imported' WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'movie'`, movieID)
-}
-
-// markSeriesGrabImported flips the ONE grab this download came from to imported.
+// markGrabImportedForMovie flips the ONE grab this import came from to imported, the
+// same way markSeriesGrabImported does.
 //
-// It used to flip EVERY pending grab for the series, which marked sibling torrents as
-// imported before their data had landed. Seed cleanup only considers imported grabs, so
-// it would then remove those torrents WITH their data (the default seed policy deletes
-// data), the episodes stayed missing, and the next sweep re-grabbed them — a real
-// grab → delete → re-grab loop.
-func (c *Coordinator) markSeriesGrabImported(ctx context.Context, seriesID int64, releaseName string) {
+// It used to flip EVERY pending grab for the movie, which marked sibling version
+// downloads (e.g. a 4K track still in flight while the 1080p landed) as imported
+// before their data existed. Seed cleanup only considers imported grabs and removes
+// finished ones WITH their data, so the sibling was deleted the moment it completed
+// and the version re-grabbed — the same grab → delete → re-grab loop the series path
+// fixed. A grab that matches no release name here is left pending; DetectStalled
+// flips it via movieHasFileFor once its own version gains a file.
+func (c *Coordinator) markGrabImportedForMovie(ctx context.Context, movieID int64, releaseName string) {
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT id, title FROM grabs WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'series'`, seriesID)
+		`SELECT id, title FROM grabs WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'movie'`, movieID)
 	if err != nil {
 		return
 	}
@@ -351,6 +371,52 @@ func (c *Coordinator) markSeriesGrabImported(ctx context.Context, seriesID int64
 		if rows.Scan(&id, &title) == nil && normRelease(title) == want {
 			ids = append(ids, id)
 		}
+	}
+	rows.Close() // close before writing — SQLite won't take a write while a read is open
+	for _, id := range ids {
+		if _, err := c.db.ExecContext(ctx, `UPDATE grabs SET status = 'imported' WHERE id = ?`, id); err != nil {
+			c.log.Warn("automation: mark grab imported failed", "err", err)
+		}
+	}
+}
+
+// markSeriesGrabImported flips the ONE grab this download came from to imported.
+//
+// It used to flip EVERY pending grab for the series, which marked sibling torrents as
+// imported before their data had landed. Seed cleanup only considers imported grabs, so
+// it would then remove those torrents WITH their data (the default seed policy deletes
+// data), the episodes stayed missing, and the next sweep re-grabbed them — a real
+// grab → delete → re-grab loop.
+// It matches by info hash first — the torrent's real identity — and only falls back to
+// the normalized name for rows without one (pre-migration-0062, unparseable torrents).
+// Name matching alone silently failed for whole trackers whose listing titles are
+// prettified renderings of the torrent name ("DD+" vs "EAC3"), leaving the grab
+// 'grabbed' forever: seed cleanup never removed the torrent, and the pending-grab
+// guard blocked legitimate re-grabs for a day.
+func (c *Coordinator) markSeriesGrabImported(ctx context.Context, seriesID int64, infoHash, releaseName string) {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT id, title, info_hash FROM grabs WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'series'`, seriesID)
+	if err != nil {
+		return
+	}
+	wantHash := strings.ToLower(infoHash)
+	want := normRelease(releaseName)
+	var byHash, byName []int64
+	for rows.Next() {
+		var id int64
+		var title, hash string
+		if rows.Scan(&id, &title, &hash) != nil {
+			continue
+		}
+		if wantHash != "" && hash != "" && strings.ToLower(hash) == wantHash {
+			byHash = append(byHash, id)
+		} else if normRelease(title) == want {
+			byName = append(byName, id)
+		}
+	}
+	ids := byHash
+	if len(ids) == 0 {
+		ids = byName
 	}
 	rows.Close() // close before writing — SQLite won't take a write while a read is open
 	for _, id := range ids {

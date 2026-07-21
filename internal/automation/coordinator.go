@@ -50,9 +50,21 @@ type Coordinator struct {
 
 	// unmatched counts how many import sweeps have failed to match a download to a
 	// series, keyed by torrent hash. Without it the 30-second sweep logs the same failure
-	// forever and nothing ever escalates. Guarded by unmatchedMu.
+	// forever and nothing ever escalates. Guarded by unmatchedMu. Entries are pruned when
+	// their download leaves the completed list, so the map can't grow for the process
+	// lifetime.
 	unmatchedMu sync.Mutex
 	unmatched   map[string]int
+
+	// stallProgress remembers each pending grab's last observed download progress and
+	// when it last increased, keyed by grab ID. Stall detection compares against this:
+	// "stalled" must mean NO PROGRESS for the profile's stall window, not "old and its
+	// instantaneous speed read zero once" — a big pack legitimately downloading for
+	// hours was being condemned on a single sample. Guarded by stallMu; entries are
+	// pruned when their grab leaves the pending set. In-memory on purpose: a restart
+	// just restarts the observation window.
+	stallMu       sync.Mutex
+	stallProgress map[int64]stallSample
 
 	// onSeriesImported fires after episodes land, so the Convert library index can
 	// refresh just that show rather than waiting for the nightly sweep. Optional.
@@ -114,6 +126,16 @@ func (c *Coordinator) Grab(ctx context.Context, indexerName, downloadURL, title 
 // to what the client holds. An empty hash is not an error — a tracker may serve something
 // we can't parse — and the caller falls back to name matching as before.
 func (c *Coordinator) grabTo(ctx context.Context, indexerName, downloadURL, title, category string) (string, error) {
+	// The only download-client kind is a torrent client. Handing it an .nzb URL
+	// "succeeds" (qBittorrent fetches URLs async and answers 2xx), records an
+	// in-flight grab, and nothing ever arrives — refuse up front instead.
+	if idxs, err := c.indexers.List(ctx); err == nil {
+		for _, ix := range idxs {
+			if ix.Name == indexerName && ix.Transport() == indexer.TransportUsenet {
+				return "", fmt.Errorf("%q is a usenet indexer and no usenet download client is configured — this release can't be downloaded", indexerName)
+			}
+		}
+	}
 	res, err := c.indexers.Fetch(ctx, indexerName, downloadURL)
 	if err != nil {
 		return "", err
@@ -234,10 +256,12 @@ func (c *Coordinator) SearchMissing(ctx context.Context) {
 				continue
 			}
 		}
-		n, err := c.searchAndGrab(ctx, m)
+		n, searched, err := c.searchAndGrab(ctx, m)
 		switch {
 		case err != nil:
 			c.log.Warn("automation: search failed", "movie", m.Title, "err", err)
+		case !searched:
+			// Nothing wanted, no query spent — not a miss.
 		case n > 0:
 			c.movies.ResetSearchMisses(ctx, m.ID)
 		default:
@@ -319,10 +343,7 @@ func (c *Coordinator) RankReleases(ctx context.Context, id int64) (ReleaseList, 
 
 	byName := make(map[string]indexer.Release, len(result.Releases))
 	cands := make([]quality.Candidate, 0, len(result.Releases))
-	for _, rel := range result.Releases {
-		if _, dup := byName[rel.Title]; dup {
-			continue
-		}
+	for _, rel := range bestByTitle(result.Releases) {
 		if !releaseIsForMovie(rel.Title, m) {
 			continue // a different film that merely shares a word with the title
 		}
@@ -395,17 +416,20 @@ func (c *Coordinator) SearchMovie(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	_, err = c.searchAndGrab(ctx, m)
+	_, _, err = c.searchAndGrab(ctx, m)
 	return err
 }
 
 // searchAndGrab searches for a movie and grabs what the quality profile picks. It
 // returns how many releases were grabbed so the sweep can back off a movie that keeps
-// coming up empty.
-func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (int, error) {
+// coming up empty, and whether a search actually ran — a movie with nothing wanted
+// costs no indexer query and must not count as a "miss" (that ratcheted every
+// fully-downloaded movie to the 12h backoff cap, delaying the first real search when
+// a file was later deleted or a new version track added).
+func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (int, bool, error) {
 	want := c.missingVersions(ctx, m.ID)
 	if len(want) == 0 {
-		return 0, nil
+		return 0, false, nil
 	}
 	query := m.Title
 	if m.Year > 0 {
@@ -413,11 +437,11 @@ func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (int, e
 	}
 	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
 	if err != nil {
-		return 0, err
+		return 0, true, err
 	}
 	if len(result.Releases) == 0 {
 		c.log.Info("automation: no releases found", "movie", m.Title)
-		return 0, nil
+		return 0, true, nil
 	}
 	// Only consider releases that are actually for THIS movie — a title search for a
 	// short/common name (e.g. "Hope") returns unrelated films ("Romance at Hope
@@ -433,7 +457,7 @@ func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (int, e
 			"movie", m.Title, "returned", len(result.Releases),
 			"wrong_title", len(result.Releases)-len(matching), "blocklisted", len(matching))
 	}
-	return c.grabMissing(ctx, m, want, byName, cands), nil
+	return c.grabMissing(ctx, m, want, byName, cands), true, nil
 }
 
 // matchingMovieReleases keeps only releases whose parsed title + year match the
@@ -464,10 +488,48 @@ func (c *Coordinator) missingVersions(ctx context.Context, movieID int64) []movi
 	return want
 }
 
+// bestByTitle collapses duplicate release titles to one copy each — the healthiest
+// (most seeders). The same scene release routinely appears on several indexers; keeping
+// duplicates meant the quality engine could score one copy while a later byName lookup
+// returned another (last write wins), so the grab used a different indexer, seed policy
+// and download link than the release that actually won.
+func bestByTitle(releases []indexer.Release) []indexer.Release {
+	idx := make(map[string]int, len(releases))
+	out := make([]indexer.Release, 0, len(releases))
+	for _, rel := range releases {
+		if i, dup := idx[rel.Title]; dup {
+			if rel.Seeders > out[i].Seeders {
+				out[i] = rel
+			}
+			continue
+		}
+		idx[rel.Title] = len(out)
+		out = append(out, rel)
+	}
+	return out
+}
+
+// grabbable filters out releases no configured download client can take. The only
+// client kind is a torrent client, so usenet releases must not reach a grab: qBittorrent
+// accepts the .nzb URL with a 2xx (it fetches async), the grab is recorded as in-flight,
+// and nothing ever arrives.
+func grabbable(releases []indexer.Release) []indexer.Release {
+	out := make([]indexer.Release, 0, len(releases))
+	for _, rel := range releases {
+		if rel.Transport == indexer.TransportUsenet {
+			continue
+		}
+		out = append(out, rel)
+	}
+	return out
+}
+
 // candidatesFrom builds the scoring candidates from a set of releases, dropping
-// any that are blocklisted for this movie.
+// any that are blocklisted for this movie, ungrabbable (usenet), or duplicate
+// copies of a title already kept.
 func (c *Coordinator) candidatesFrom(ctx context.Context, movieID int64, releases []indexer.Release) (map[string]indexer.Release, []quality.Candidate) {
 	blocked := c.blockedSet(ctx, movieID)
+	releases = bestByTitle(grabbable(releases))
 	byName := make(map[string]indexer.Release, len(releases))
 	cands := make([]quality.Candidate, 0, len(releases))
 	for _, rel := range releases {
@@ -486,6 +548,9 @@ func (c *Coordinator) candidatesFrom(ctx context.Context, movieID int64, release
 func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []movies.Version, byName map[string]indexer.Release, cands []quality.Candidate) int {
 	grabbed := map[string]bool{}
 	pending := c.pendingGrabTitles(ctx, m.ID) // releases already grabbed for this movie, not yet imported
+	// grabbedGB accumulates what this pass has already committed, so two version tracks
+	// can't jointly overcommit the same free-space reading (the series path has done this).
+	grabbedGB := 0.0
 	for _, v := range want {
 		decision := c.quality.Decide(ctx, v.QualityProfile, tagRuntime(cands, m.Runtime))
 		if decision.Winner == nil {
@@ -506,8 +571,8 @@ func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []mo
 		if pending[normTitle(winner.Title)] {
 			continue // already grabbed this exact release and it's still in flight — don't loop
 		}
-		if !c.diskOKFor(decision.Winner.Candidate.SizeGB) {
-			c.log.Warn("automation: low disk, skipping grab", "movie", m.Title, "need_gb", decision.Winner.Candidate.SizeGB)
+		if !c.diskOKFor(grabbedGB + decision.Winner.Candidate.SizeGB) {
+			c.log.Warn("automation: low disk, skipping grab", "movie", m.Title, "need_gb", decision.Winner.Candidate.SizeGB, "already_queued_gb", grabbedGB)
 			c.movies.AddEvent(ctx, m.ID, "failed", "Not enough free disk space to grab "+winner.Title)
 			continue
 		}
@@ -518,6 +583,7 @@ func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []mo
 			continue
 		}
 		grabbed[winner.DownloadURL] = true
+		grabbedGB += decision.Winner.Candidate.SizeGB
 		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, v.QualityProfile, c.quality.StallMinutes(ctx, v.QualityProfile), hash)
 		detail := winner.Title + " · " + winner.Indexer
 		if !v.IsDefault {
@@ -601,7 +667,14 @@ func (c *Coordinator) UpgradeMovies(ctx context.Context) {
 		c.log.Warn("automation: list movies failed", "err", err)
 		return
 	}
-	queue, _ := c.downloads.Queue(ctx)
+	queue, err := c.downloads.Queue(ctx)
+	if err != nil {
+		// Without the queue, "already grabbing" can't be checked — skip this cycle
+		// rather than risk stacking a second copy of a large upgrade. Upgrades are
+		// not urgent; the next 6h sweep will run.
+		c.log.Warn("automation: upgrade sweep skipped — can't read the download queue", "err", err)
+		return
+	}
 	for _, m := range all {
 		if !m.Monitored || !m.HasFile {
 			continue
@@ -663,15 +736,20 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 	blocked := c.blockedSet(ctx, m.ID)
 	byName := make(map[string]indexer.Release, len(result.Releases))
 	cands := make([]quality.Candidate, 0, len(result.Releases))
-	for _, rel := range result.Releases {
+	for _, rel := range bestByTitle(grabbable(result.Releases)) {
 		if blocked[normTitle(rel.Title)] || !releaseIsForMovie(rel.Title, m) {
 			continue
 		}
 		byName[rel.Title] = rel
 		cands = append(cands, quality.NewCandidate(rel.Title, rel.SizeGB(), rel.Seeders))
 	}
+	// Runtime on the candidates so the profile's bitrate ceiling applies to upgrades
+	// too — without it a capped profile could "upgrade" to a remux it explicitly forbids.
+	cands = tagRuntime(cands, m.Runtime)
 
 	grabbed := map[string]bool{}
+	grabbedGB := 0.0
+	pending := c.pendingGrabTitles(ctx, m.ID)
 	for _, v := range want {
 		curSizeGB := gbOf(v.SizeBytes)
 		if v.File != nil && v.File.SizeBytes > 0 {
@@ -686,6 +764,13 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 		if grabbed[winner.DownloadURL] {
 			continue
 		}
+		if pending[normTitle(winner.Title)] {
+			continue // this exact upgrade is already in flight — don't stack a second copy
+		}
+		if !c.diskOKFor(grabbedGB + pick.SizeGB) {
+			c.log.Warn("automation: low disk, skipping upgrade", "movie", m.Title, "need_gb", pick.SizeGB)
+			continue
+		}
 		c.log.Info("automation: upgrading", "movie", m.Title, "version", v.Label, "from", baseline, "to", winner.Title)
 		hash, err := c.Grab(ctx, winner.Indexer, winner.DownloadURL, winner.Title)
 		if err != nil {
@@ -693,6 +778,7 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 			continue
 		}
 		grabbed[winner.DownloadURL] = true
+		grabbedGB += pick.SizeGB
 		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, v.QualityProfile, c.quality.StallMinutes(ctx, v.QualityProfile), hash)
 		detail := "Upgrade: " + winner.Title + " · " + winner.Indexer
 		if !v.IsDefault {
@@ -757,7 +843,7 @@ func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
 	blocked := c.blockedSet(ctx, m.ID)
 	byName := make(map[string]indexer.Release, len(result.Releases))
 	cands := make([]quality.Candidate, 0, len(result.Releases))
-	for _, rel := range result.Releases {
+	for _, rel := range bestByTitle(grabbable(result.Releases)) {
 		if blocked[normTitle(rel.Title)] || !releaseIsForMovie(rel.Title, m) {
 			continue
 		}
@@ -765,6 +851,7 @@ func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
 		cands = append(cands, quality.NewCandidate(rel.Title, rel.SizeGB(), rel.Seeders))
 	}
 	grabbed := map[string]bool{}
+	grabbedGB := 0.0
 	for _, v := range versions {
 		if !v.Monitored {
 			continue
@@ -777,12 +864,17 @@ func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
 		if grabbed[winner.DownloadURL] {
 			continue
 		}
+		if !c.diskOKFor(grabbedGB + decision.Winner.Candidate.SizeGB) {
+			c.log.Warn("automation: low disk, skipping regrab", "movie", m.Title, "need_gb", decision.Winner.Candidate.SizeGB)
+			continue
+		}
 		hash, err := c.Grab(ctx, winner.Indexer, winner.DownloadURL, winner.Title)
 		if err != nil {
 			c.log.Warn("automation: regrab failed", "movie", m.Title, "err", err)
 			continue
 		}
 		grabbed[winner.DownloadURL] = true
+		grabbedGB += decision.Winner.Candidate.SizeGB
 		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, v.QualityProfile, c.quality.StallMinutes(ctx, v.QualityProfile), hash)
 		c.movies.AddEvent(ctx, m.ID, "grabbed", "Re-grab: "+winner.Title+" · "+winner.Indexer)
 	}
@@ -803,15 +895,37 @@ func (c *Coordinator) Blocklisted(ctx context.Context, movieID int64) ([]BlockEn
 func (c *Coordinator) Unblock(ctx context.Context, id int64) error { return c.removeBlock(ctx, id) }
 
 // BlockRelease is the "block from the downloads list" action: remove the torrent
-// (and its data), blocklist it for its movie so it isn't grabbed again, and search
+// (and its data), blocklist it for its media so it isn't grabbed again, and search
 // for an alternate release. name is the torrent/release name.
+//
+// It used to only know about movies: blocking a TV torrent removed it but blocklisted
+// nothing, so the very next sweep re-grabbed the identical release.
 func (c *Coordinator) BlockRelease(ctx context.Context, hash, name string) error {
 	_ = c.downloads.Remove(ctx, hash, true)
-	m, ok := c.movies.MatchRelease(ctx, name)
-	if !ok {
-		return nil // not tied to a tracked movie — the removal is enough
+	// Whatever it was, its grab row must not stay 'grabbed' — that would hold the
+	// pending-grab guard for a day and hide the block from stall detection.
+	if pending, err := c.pendingGrabs(ctx); err == nil {
+		if g := matchGrab(pending, hash, name); g != nil {
+			c.setGrabStatus(ctx, g.ID, "failed")
+		}
 	}
-	return c.BlocklistAndSearch(ctx, m.ID, name, "", "")
+	if m, ok := c.movies.MatchRelease(ctx, name); ok {
+		return c.BlocklistAndSearch(ctx, m.ID, name, "", "")
+	}
+	if c.series != nil {
+		sid, ix, grabbed := c.grabbedMediaFor(ctx, name, "series")
+		if !grabbed {
+			if s, ok := c.series.MatchByTitle(ctx, series.NormTitle(parser.Parse(name).Title)); ok {
+				sid = s.ID
+			}
+		}
+		if sid != 0 {
+			c.addBlockSeries(ctx, sid, name, ix, "manually blocklisted")
+			c.series.AddEvent(ctx, sid, "blocklisted", name)
+			return c.SearchSeriesNow(ctx, sid)
+		}
+	}
+	return nil // not tied to tracked media — the removal is enough
 }
 
 // BlocklistAndSearch blocklists a release then re-searches for an alternate.
@@ -841,15 +955,96 @@ func (c *Coordinator) BlocklistSeries(ctx context.Context, seriesID int64, title
 
 // RegrabEpisode replaces one episode: blocklist its current release (so the same one isn't
 // re-selected), then search + grab the best available for that episode.
+//
+// The blocklist entry must be the episode's SOURCE RELEASE, not its library filename:
+// library files are renamed to a clean scheme with no release tags, so a filename-keyed
+// entry matches no indexer release — the regrab would happily re-select the identical
+// release, download the same bytes, and the import quality gate would then refuse the
+// equal file. A silent no-op from the user's point of view.
 func (c *Coordinator) RegrabEpisode(ctx context.Context, seriesID int64, season, episode int) error {
 	if c.series == nil {
 		return fmt.Errorf("series module not available")
 	}
-	if path, _ := c.series.EpisodeFilePath(ctx, seriesID, season, episode); path != "" {
-		title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-		c.addBlockSeries(ctx, seriesID, title, "", "replaced by regrab")
+	blockedCurrent := false
+	if s, err := c.series.Get(ctx, seriesID); err == nil {
+		for _, sn := range s.Seasons {
+			if sn.SeasonNumber != season {
+				continue
+			}
+			for _, e := range sn.Episodes {
+				if e.EpisodeNumber == episode && e.SourceRelease != "" {
+					c.addBlockSeries(ctx, seriesID, e.SourceRelease, "", "replaced by regrab")
+					blockedCurrent = true
+				}
+			}
+		}
+	}
+	if !blockedCurrent {
+		// No recorded source release (imported before tracking existed) — fall back to
+		// the filename entry. It rarely matches a release title, but it's all there is.
+		if path, _ := c.series.EpisodeFilePath(ctx, seriesID, season, episode); path != "" {
+			title := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+			c.addBlockSeries(ctx, seriesID, title, "", "replaced by regrab")
+		}
 	}
 	return c.GrabBestForScope(ctx, seriesID, season, episode)
+}
+
+// stallSample is one observation of a grab's download progress: how far along it was
+// and when that value last increased.
+type stallSample struct {
+	progress float64
+	at       time.Time
+}
+
+// noProgressFor reports whether grab id's download has made no progress for at least
+// window. Each call updates the sample: any forward progress restarts the clock.
+// The first observation of a grab always returns false — a genuinely dead download
+// simply waits one extra window, which is far cheaper than condemning a live one.
+func (c *Coordinator) noProgressFor(id int64, progress float64, window time.Duration) bool {
+	c.stallMu.Lock()
+	defer c.stallMu.Unlock()
+	if c.stallProgress == nil {
+		c.stallProgress = map[int64]stallSample{}
+	}
+	s, seen := c.stallProgress[id]
+	if !seen || progress > s.progress {
+		c.stallProgress[id] = stallSample{progress: progress, at: time.Now()}
+		return false
+	}
+	return time.Since(s.at) >= window
+}
+
+// pruneStallSamples drops progress samples for grabs no longer pending, so the map
+// tracks only live downloads.
+func (c *Coordinator) pruneStallSamples(pending []grab) {
+	c.stallMu.Lock()
+	defer c.stallMu.Unlock()
+	live := make(map[int64]bool, len(pending))
+	for _, g := range pending {
+		live[g.ID] = true
+	}
+	for id := range c.stallProgress {
+		if !live[id] {
+			delete(c.stallProgress, id)
+		}
+	}
+}
+
+// stalledInQueue is the shared verdict for a pending grab found (or not found) in the
+// client queue: gone from a *successfully read* queue, in a hard-error state, or
+// incomplete with no progress for the grab's stall window. "stalledDL" (no peers right
+// now) and a momentary zero speed are NOT stalls on their own — only sustained lack of
+// progress is; a single instantaneous sample condemned big packs that were downloading
+// fine.
+func (c *Coordinator) stalledInQueue(g grab, item download.Item, found bool, window time.Duration) bool {
+	if !found {
+		return true
+	}
+	if item.State == "error" || item.State == "missingFiles" {
+		return true
+	}
+	return item.Progress < 1.0 && c.noProgressFor(g.ID, item.Progress, window)
 }
 
 // DetectStalled fails over grabs that haven't progressed within their profile's
@@ -859,7 +1054,16 @@ func (c *Coordinator) DetectStalled(ctx context.Context) {
 	if err != nil || len(pending) == 0 {
 		return
 	}
-	queue, _ := c.downloads.Queue(ctx)
+	c.pruneStallSamples(pending)
+	queue, err := c.downloads.Queue(ctx)
+	if err != nil {
+		// Without the queue every pending grab reads as "not found", and not-found means
+		// stalled — one unreachable download client during a tick would mass-blocklist
+		// perfectly healthy downloads and re-grab alternates for all of them. Skip the
+		// cycle instead; the next tick is two minutes away.
+		c.log.Warn("automation: stall check skipped — can't read the download queue", "err", err)
+		return
+	}
 	for _, g := range pending {
 		if g.MediaType == "series" {
 			c.detectStalledSeries(ctx, g, queue)
@@ -877,26 +1081,29 @@ func (c *Coordinator) DetectStalled(ctx context.Context) {
 		if g.StallMinutes <= 0 {
 			continue // fail-over disabled for this profile
 		}
+		window := time.Duration(g.StallMinutes) * time.Minute
 		age := time.Since(parseTime(g.GrabbedAt))
-		if age < time.Duration(g.StallMinutes)*time.Minute {
+		if age < window {
 			continue
 		}
 		item, found := findQueued(queue, g)
-		stalled := !found ||
-			item.State == "error" || item.State == "stalledDL" || item.State == "missingFiles" ||
-			(item.Progress < 1.0 && item.DownSpeed == 0)
-		if !stalled {
+		if !c.stalledInQueue(g, item, found, window) {
 			continue
 		}
 		c.log.Info("automation: download stalled, failing over", "movie", g.MovieID, "release", g.Title, "age_min", int(age.Minutes()))
-		_ = c.addBlock(ctx, g.MovieID, g.Title, g.Indexer, "", fmt.Sprintf("stalled after %d min", g.StallMinutes))
+		if err := c.addBlock(ctx, g.MovieID, g.Title, g.Indexer, "", fmt.Sprintf("stalled after %d min", g.StallMinutes)); err != nil {
+			// If the blocklist insert fails, the re-search below would just re-grab the
+			// release that stalled — skip the fail-over and retry next tick.
+			c.log.Warn("automation: stall blocklist failed — leaving the grab for the next tick", "release", g.Title, "err", err)
+			continue
+		}
 		if found {
 			_ = c.downloads.Remove(ctx, item.Hash, true)
 		}
 		c.setGrabStatus(ctx, g.ID, "failed")
 		c.movies.AddEvent(ctx, g.MovieID, "failed", g.Title+" stalled — blocklisted, searching for an alternate")
 		if m, err := c.movies.Get(ctx, g.MovieID); err == nil {
-			_, _ = c.searchAndGrab(ctx, m) // stall fail-over ignores the sweep backoff
+			_, _, _ = c.searchAndGrab(ctx, m) // stall fail-over ignores the sweep backoff
 		}
 	}
 }
@@ -1164,7 +1371,7 @@ func (c *Coordinator) WatchImports(ctx context.Context) {
 					c.log.Warn("automation: mark imported failed", "movie", m.Title, "err", err)
 					continue
 				}
-				c.markGrabsImportedForMovie(ctx, m.ID)
+				c.markGrabImportedForMovie(ctx, m.ID, release)
 				c.log.Info("automation: import attached to movie", "movie", m.Title)
 				c.bus.Publish("movie.downloaded", map[string]any{"title": m.Title, "id": m.ID})
 			}
@@ -1237,4 +1444,16 @@ func (c *Coordinator) noteUnmatched(hash string) int {
 	}
 	c.unmatched[hash]++
 	return c.unmatched[hash]
+}
+
+// pruneUnmatched drops counters for downloads no longer in the completed list (removed,
+// imported, or sent to review), so the map doesn't grow for the process lifetime.
+func (c *Coordinator) pruneUnmatched(active map[string]bool) {
+	c.unmatchedMu.Lock()
+	defer c.unmatchedMu.Unlock()
+	for h := range c.unmatched {
+		if !active[h] {
+			delete(c.unmatched, h)
+		}
+	}
 }

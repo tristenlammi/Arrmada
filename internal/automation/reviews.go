@@ -180,6 +180,8 @@ func (c *Coordinator) HandleMovieImportFailure(ctx context.Context, hash, name, 
 	reason := "downloaded but contained no video"
 	if hasExecutable(contentPath) {
 		reason = "download contained executables and no video (possible fake/malware)"
+		// Hostile release — block it library-wide, not just for this movie.
+		c.addBlockGlobal(ctx, name, indexerName, reason)
 	}
 	if err := c.addBlock(ctx, mid, name, indexerName, "", reason); err != nil {
 		c.log.Warn("movie: blocklist after failed import failed", "release", name, "err", err)

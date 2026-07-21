@@ -61,10 +61,7 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 	cands := make([]quality.Candidate, 0, len(result.Releases))
 	var droppedTitle, droppedScope int
 	var sampleDropped []string
-	for _, rel := range result.Releases {
-		if _, dup := byName[rel.Title]; dup {
-			continue
-		}
+	for _, rel := range bestByTitle(result.Releases) {
 		if !seriesTitleMatches(rel.Title, s) {
 			droppedTitle++
 			if len(sampleDropped) < 8 {
@@ -105,6 +102,10 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 	if decision.Winner != nil {
 		winnerName = decision.Winner.Candidate.Name
 	}
+	// Flag blocklisted releases like the movie path does, so the UI can warn — and so
+	// GrabBestForScope (the per-episode quick "grab" action) doesn't silently re-grab
+	// a release that just stalled or imported as junk.
+	blocked := c.blockedSetSeries(ctx, s.ID)
 	out := make([]RankedRelease, 0, len(cands))
 	appendEval := func(ev quality.Evaluation) {
 		rel := byName[ev.Candidate.Name]
@@ -120,6 +121,7 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 			Eligible:     ev.Eligible,
 			RejectReason: ev.RejectReason,
 			Recommended:  ev.Candidate.Name == winnerName,
+			Blocklisted:  blocked[normTitle(ev.Candidate.Name)],
 		})
 	}
 	for _, ev := range decision.Eligible {
@@ -244,7 +246,7 @@ func (c *Coordinator) GrabBestForScope(ctx context.Context, seriesID int64, seas
 		return err
 	}
 	for _, rel := range list.Releases {
-		if rel.Eligible {
+		if rel.Eligible && !rel.Blocklisted {
 			return c.GrabForSeries(ctx, seriesID, rel.Indexer, rel.DownloadURL, rel.Title)
 		}
 	}

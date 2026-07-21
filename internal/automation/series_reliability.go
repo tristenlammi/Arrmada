@@ -20,15 +20,13 @@ func (c *Coordinator) detectStalledSeries(ctx context.Context, g grab, queue []d
 	if c.series == nil || g.StallMinutes <= 0 {
 		return
 	}
+	window := time.Duration(g.StallMinutes) * time.Minute
 	age := time.Since(parseTime(g.GrabbedAt))
-	if age < time.Duration(g.StallMinutes)*time.Minute {
+	if age < window {
 		return
 	}
 	item, found := findQueued(queue, g)
-	stalled := !found ||
-		item.State == "error" || item.State == "stalledDL" || item.State == "missingFiles" ||
-		(item.Progress < 1.0 && item.DownSpeed == 0)
-	if !stalled {
+	if !c.stalledInQueue(g, item, found, window) {
 		return
 	}
 	c.log.Info("series: download stalled, failing over", "series", g.MovieID, "release", g.Title, "age_min", int(age.Minutes()))
@@ -71,7 +69,10 @@ func (c *Coordinator) RSSSyncSeries(ctx context.Context) {
 		}
 		var matched []indexer.Release
 		for _, rel := range res.Releases {
-			if releaseIsForSeries(rel.Title, s.Title) {
+			// seriesTitleMatches, not releaseIsForSeries: anime is mostly uploaded under
+			// its romaji title, and matching English-only made the RSS fast path — the
+			// mechanism that catches new episodes promptly — dead for those shows.
+			if seriesTitleMatches(rel.Title, s) {
 				matched = append(matched, rel)
 			}
 		}
@@ -94,7 +95,13 @@ func (c *Coordinator) UpgradeSeries(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	queue, _ := c.downloads.Queue(ctx)
+	queue, err := c.downloads.Queue(ctx)
+	if err != nil {
+		// Without the queue, "already downloading" can't be checked — don't risk
+		// stacking a second copy of a big release; upgrades can wait for the next sweep.
+		c.log.Warn("series: upgrade sweep skipped — can't read the download queue", "err", err)
+		return
+	}
 	for _, meta := range all {
 		if !meta.Monitored || seriesDownloading(queue, meta.Title) {
 			continue
@@ -151,7 +158,7 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 	}
 	blocked := c.blockedSetSeries(ctx, s.ID)
 	byName := make(map[string]indexer.Release, len(res.Releases))
-	for _, rel := range res.Releases {
+	for _, rel := range bestByTitle(grabbable(res.Releases)) {
 		if blocked[normTitle(rel.Title)] {
 			continue
 		}
@@ -159,6 +166,8 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 	}
 
 	grabbed := map[string]bool{}
+	grabbedGB := 0.0
+	pending := c.pendingSeriesGrabTitles(ctx, s.ID)
 	for _, ep := range haveEps {
 		var cands []quality.Candidate
 		for name, rel := range byName {
@@ -177,12 +186,20 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 		if grabbed[winner.DownloadURL] {
 			continue
 		}
+		if pending[normTitle(winner.Title)] {
+			continue // this exact upgrade is already in flight
+		}
+		if !c.diskOKFor(grabbedGB + pick.SizeGB) {
+			c.log.Warn("series: low disk, skipping upgrade", "series", s.Title, "need_gb", pick.SizeGB)
+			continue
+		}
 		c.log.Info("series: upgrading episode", "series", s.Title, "s", ep.season, "e", ep.episode, "to", winner.Title)
 		if err := c.GrabForSeries(ctx, s.ID, winner.Indexer, winner.DownloadURL, winner.Title); err != nil {
 			c.log.Warn("series: upgrade grab failed", "series", s.Title, "err", err)
 			continue
 		}
 		grabbed[winner.DownloadURL] = true
+		grabbedGB += pick.SizeGB
 	}
 	return nil
 }

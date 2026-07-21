@@ -299,11 +299,8 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 	// ranked best-first, each paired with its parsed release + indexer info.
 	byName := make(map[string]indexer.Release, len(releases))
 	cands := make([]quality.Candidate, 0, len(releases))
-	for _, rel := range releases {
+	for _, rel := range bestByTitle(grabbable(releases)) {
 		if blocked[normTitle(rel.Title)] {
-			continue
-		}
-		if _, dup := byName[rel.Title]; dup {
 			continue
 		}
 		if !seriesTitleMatches(rel.Title, s) {
@@ -324,32 +321,46 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 		needed[k] = true
 	}
 	grabbed := map[string]bool{}
+	// grabFailed marks releases this pass tried and couldn't grab (indexer error, disk
+	// guard). The pack passes must both skip them when re-selecting AND not treat their
+	// episodes as covered — a transient error on the best pack used to delete its
+	// episodes from `needed`, hiding them from every fallback pass and the anime
+	// follow-up, then recording a "miss" that grew the backoff up to 12h.
+	grabFailed := map[string]bool{}
 	// grabbedGB tracks what this pass has already committed, so a series with many
 	// missing seasons can't queue past the free space by checking each pack against the
 	// same (pre-download) free-space reading.
 	grabbedGB := 0.0
-	grab := func(name string, label string) {
+	// grab returns whether the release is now in flight — freshly grabbed, a duplicate
+	// of one this pass already took, or pending from an earlier sweep. Only then may the
+	// caller count its episodes as covered.
+	grab := func(name string, label string) bool {
 		rel := byName[name]
-		if rel.DownloadURL == "" || grabbed[rel.DownloadURL] {
-			return
+		if rel.DownloadURL == "" {
+			return false
+		}
+		if grabbed[rel.DownloadURL] {
+			return true // already taken this pass — its episodes are covered
 		}
 		if pending[normTitle(rel.Title)] {
 			// Already grabbed and still in flight. Grabbing it again just downloads the
 			// same bytes twice and stacks a duplicate torrent in the client.
 			c.log.Info("series: skipping grab — already grabbed and still importing",
 				"series", s.Title, "release", rel.Title)
-			return
+			return true
 		}
 		// Space guard — the movie path has had this; TV (where packs are far bigger) did not.
 		if !c.diskOKFor(grabbedGB + rel.SizeGB()) {
 			c.log.Warn("series: skipping grab — not enough free space in the downloads dir",
 				"series", s.Title, "release", rel.Title, "release_gb", rel.SizeGB(), "already_queued_gb", grabbedGB)
-			return
+			grabFailed[name] = true
+			return false
 		}
 		hash, err := c.grabTo(ctx, rel.Indexer, rel.DownloadURL, rel.Title, seriesCategory)
 		if err != nil {
 			c.log.Warn("series: grab failed", "series", s.Title, "release", rel.Title, "err", err)
-			return
+			grabFailed[name] = true
+			return false
 		}
 		grabbed[rel.DownloadURL] = true
 		grabbedN++
@@ -357,6 +368,7 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 		c.recordSeriesGrab(ctx, s.ID, rel.Title, rel.Indexer, s.QualityProfile, hash)
 		c.series.AddEvent(ctx, s.ID, "grabbed", label+": "+rel.Title+" · "+rel.Indexer)
 		c.log.Info("series: grabbing", "series", s.Title, "release", rel.Title, "tier", label)
+		return true
 	}
 
 	// A whole-show / multi-season pack only makes sense once the show has actually
@@ -383,7 +395,13 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 					"needed_seasons", len(neededSeasons), "pack_seasons", len(packSeasonsOf(r, seriesSeasons)))
 				continue
 			}
-			grab(ev.Candidate.Name, "complete series")
+			if !grab(ev.Candidate.Name, "complete series") {
+				continue // this one couldn't be grabbed — try the next complete pack
+			}
+			// The pack covers everything wanted: clear `needed` so `remaining` reports
+			// nothing uncovered. Returning with it full made the anime absolute-number
+			// follow-up grab single episodes the pack already contains.
+			needed = map[epKey]bool{}
 			return
 		}
 	}
@@ -401,6 +419,9 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 			var best *quality.Evaluation
 			var bestCover int
 			for i := range eligible {
+				if grabFailed[eligible[i].Candidate.Name] {
+					continue // couldn't be grabbed this pass — re-selecting it would loop
+				}
 				r := eligible[i].Candidate.Release
 				if !isPackTier(r.Kind(), ended) {
 					continue
@@ -419,7 +440,9 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 			if best == nil || bestCover == 0 {
 				return
 			}
-			grab(best.Candidate.Name, "pack")
+			if !grab(best.Candidate.Name, "pack") {
+				continue // grab failed — its episodes stay needed; the failed-set skips it next lap
+			}
 			for _, k := range c.coveredByFor(ctx, s, best.Candidate.Release, needed) {
 				delete(needed, k)
 			}
@@ -438,8 +461,14 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 		if r.Kind() != parser.KindEpisode {
 			continue
 		}
-		for _, k := range c.coveredByFor(ctx, s, r, needed) {
-			grab(ev.Candidate.Name, "episode")
+		covered := c.coveredByFor(ctx, s, r, needed)
+		if len(covered) == 0 {
+			continue
+		}
+		if !grab(ev.Candidate.Name, "episode") {
+			continue // grab failed — leave its episodes needed for the next candidate
+		}
+		for _, k := range covered {
 			delete(needed, k)
 		}
 	}
@@ -847,7 +876,7 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			// present) — the download is handled, so drop it from the downloads view
 			// and stop re-scanning it.
 			c.recordImportedHash(ctx, it.Hash, it.Name, it.SizeBytes)
-			c.markSeriesGrabImported(ctx, s.ID, it.Name) // flip THIS grab (not siblings) for seed cleanup
+			c.markSeriesGrabImported(ctx, s.ID, it.Hash, it.Name) // flip THIS grab (not siblings) for seed cleanup
 			if imported > 0 {
 				c.log.Info("series: imported episodes", "series", s.Title, "count", imported, "release", it.Name)
 				c.series.AddEvent(ctx, s.ID, "imported", fmt.Sprintf("Imported %d episode%s from %s", imported, plural(imported), it.Name))
@@ -897,6 +926,10 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 				reason = "download contained executables and no video (possible fake/malware)"
 				c.log.Warn("series import: refusing a download with executables and no video — blocklisted",
 					"series", s.Title, "release", it.Name, "content_path", it.ContentPath)
+				// The release itself is hostile, not merely wrong for this show — block it
+				// for the whole library, or the same upload stays grabbable for anything
+				// else it happens to match.
+				c.addBlockGlobal(ctx, it.Name, c.grabIndexer(ctx, it.Name, "series"), reason)
 			} else {
 				c.log.Warn("series import: no video in the download — blocklisting so it isn't re-grabbed",
 					"series", s.Title, "release", it.Name, "content_path", it.ContentPath)
@@ -905,6 +938,13 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			c.removeIfNoVideo(ctx, it.Hash, it.Name, it.ContentPath)
 		}
 	}
+	// Forget unmatched counters for downloads that are gone from the completed list,
+	// so the map only ever tracks what's actually in the client.
+	active := make(map[string]bool, len(completed))
+	for _, it := range completed {
+		active[it.Hash] = true
+	}
+	c.pruneUnmatched(active)
 }
 
 // incompleteSeasonReason explains why a re-processed release added nothing, given how many
