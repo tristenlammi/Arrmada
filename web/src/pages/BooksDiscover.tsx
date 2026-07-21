@@ -7,10 +7,34 @@ import { api, type BookAuthor, type BookDiscoverCard, type BookMeta } from "../l
 // same request → approve pipeline as movies/series (auto-approved for auto-approve users).
 const SUBJECTS = ["Fantasy", "Science Fiction", "Mystery", "Thriller", "Romance", "History"];
 
+// Shared with the movie/TV tab's design system. Duplicated (not imported) because
+// Discover.tsx imports this file — importing back would be a circular import.
+const BADGE_BG = "rgba(14,10,7,.92)";
+
+function LoadError({ message }: { message: string }) {
+  return (
+    <div className="rounded-lg px-3 py-2 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-faint)" }}>
+      Couldn’t load — {message}
+    </div>
+  );
+}
+
+// Cover + caption skeleton, matched to a real card so loading → loaded has no shift.
+function BookCardSkeleton({ full }: { full?: boolean }) {
+  return (
+    <div className={full ? "w-full" : "w-[150px] flex-none"}>
+      <div className="rounded-xl" style={{ aspectRatio: "2/3", background: "var(--panel-2)" }} />
+      <div className="mt-2 h-3 w-4/5 rounded" style={{ background: "var(--panel-2)" }} />
+      <div className="mt-1.5 h-2.5 w-2/5 rounded" style={{ background: "var(--panel-2)" }} />
+    </div>
+  );
+}
+
 export function BooksDiscover({ flash, canRequest, initialQuery }: { flash: (m: string) => void; canRequest: boolean; initialQuery?: string }) {
   const [input, setInput] = useState(initialQuery ?? "");
   const [query, setQuery] = useState("");
   const [author, setAuthor] = useState<BookAuthor | null>(null);
+  const [focused, setFocused] = useState(false);
   // ol_keys the viewer has just requested this session (optimistic badge).
   const [requested, setRequested] = useState<Set<string>>(new Set());
 
@@ -51,18 +75,23 @@ export function BooksDiscover({ flash, canRequest, initialQuery }: { flash: (m: 
     <div>
       {/* Books' own search bar — separate from the movie/TV one. */}
       <div className="mb-5 flex items-center gap-3">
-        <div className="relative flex-1 sm:max-w-[420px]">
-          <svg className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2" width="15" height="15" viewBox="0 0 24 24" fill="none" style={{ color: "var(--ink-faint)" }}>
+        <div className="relative w-full sm:w-[320px]">
+          <svg className="pointer-events-none absolute left-2.5 top-1/2 z-10 -translate-y-1/2" width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ color: "var(--ink-faint)" }}>
             <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" /><path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
           </svg>
           <input
             value={input}
             onChange={(e) => { setInput(e.target.value); setAuthor(null); }}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
             placeholder="Search books & authors…"
-            className="w-full rounded-lg py-2 pl-9 pr-8 text-[13px]"
-            style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+            aria-label="Search books and authors"
+            className="w-full rounded-lg py-1.5 pl-8 pr-7 text-[12.5px]"
+            style={{ background: "var(--panel-2)", border: `1px solid ${focused ? "var(--accent-line)" : "var(--line)"}`, color: "var(--ink)" }}
           />
-          {input && <button onClick={() => setInput("")} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-faint hover:text-[var(--ink)]" style={{ fontSize: "13px" }}>✕</button>}
+          {input && (
+            <button onClick={() => setInput("")} aria-label="Clear search" className="absolute right-2 top-1/2 z-10 -translate-y-1/2 text-ink-faint hover:text-[var(--ink)]" style={{ fontSize: "13px" }}>✕</button>
+          )}
         </div>
       </div>
 
@@ -120,13 +149,7 @@ function SearchView({ query, ctx, onPickAuthor }: { query: string; ctx: BookCtx;
       <div>
         <h2 className="m-0 mb-3 text-[15px] font-bold">Books {books && !error && <span className="font-normal text-ink-faint">· {books.length}</span>}</h2>
         {/* A failed search is an error, not "no books match". */}
-        {error ? (
-          <div className="rounded-lg px-3 py-2 text-[12px] font-medium" style={{ border: "1px solid var(--line)", color: "var(--reject)", background: "var(--panel)" }}>
-            Couldn’t load — {error}
-          </div>
-        ) : (
-          <BookGrid books={books} ctx={ctx} emptyLabel={`No books match “${query}”.`} />
-        )}
+        <BookGrid books={books} ctx={ctx} error={error} emptyLabel={`No books match “${query}”.`} />
       </div>
     </div>
   );
@@ -134,10 +157,13 @@ function SearchView({ query, ctx, onPickAuthor }: { query: string; ctx: BookCtx;
 
 function AuthorView({ author, ctx, onBack }: { author: BookAuthor; ctx: BookCtx; onBack: () => void }) {
   const [books, setBooks] = useState<BookDiscoverCard[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
-    setBooks(null);
-    api.bookAuthorWorks(author.key).then((r) => alive && setBooks(r)).catch(() => alive && setBooks([]));
+    setBooks(null); setError(null);
+    api.bookAuthorWorks(author.key)
+      .then((r) => { if (alive) { setBooks(r); setError(null); } })
+      .catch((e) => { if (alive) { setBooks([]); setError((e as Error).message); } });
     return () => { alive = false; };
   }, [author.key]);
 
@@ -153,23 +179,29 @@ function AuthorView({ author, ctx, onBack }: { author: BookAuthor; ctx: BookCtx;
           {author.work_count > 0 ? `${author.work_count.toLocaleString()} works` : "Author"}{author.birth_date ? ` · b. ${author.birth_date}` : ""}
         </div>
       </div>
-      <BookGrid books={books} ctx={ctx} emptyLabel="No works found for this author." authorName={author.name} />
+      <BookGrid books={books} ctx={ctx} error={error} emptyLabel="No works found for this author." authorName={author.name} />
     </div>
   );
 }
 
 function BookRow({ title, load, ctx }: { title: string; load: () => Promise<BookDiscoverCard[]>; ctx: BookCtx }) {
   const [items, setItems] = useState<BookDiscoverCard[] | null>(null);
+  // A failed row stays visible with an inline error — silently vanishing (or
+  // skeleton-ing forever) hides real Open Library outages from the viewer.
+  const [error, setError] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   useEffect(() => {
     let alive = true;
-    load().then((r) => alive && setItems(r)).catch(() => alive && setItems([]));
+    load()
+      .then((r) => { if (alive) { setItems(r); setError(null); } })
+      .catch((e) => { if (alive) { setItems([]); setError((e as Error).message); } });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   const scroll = (dir: -1 | 1) => scroller.current?.scrollBy({ left: dir * Math.max(600, scroller.current.clientWidth * 0.8), behavior: "smooth" });
 
-  if (items && items.length === 0) return null;
+  // Genuinely empty (but successful) rows still collapse; errored ones do not.
+  if (items && items.length === 0 && !error) return null;
   return (
     <div>
       <div className="mb-2.5 flex items-center justify-between">
@@ -181,20 +213,28 @@ function BookRow({ title, load, ctx }: { title: string; load: () => Promise<Book
           </div>
         )}
       </div>
-      <div ref={scroller} className="thin-scroll flex gap-3 overflow-x-auto pb-2" style={{ scrollSnapType: "x proximity" }}>
-        {items === null
-          ? Array.from({ length: 8 }).map((_, i) => <div key={i} className="w-[140px] flex-none rounded-xl" style={{ aspectRatio: "2/3", background: "var(--panel-2)" }} />)
-          : items.map((b) => <BookCard key={b.key} b={b} ctx={ctx} />)}
-      </div>
+      {error ? (
+        <LoadError message={error} />
+      ) : (
+        <div ref={scroller} className="thin-scroll flex gap-3 overflow-x-auto pb-2" style={{ scrollSnapType: "x proximity" }}>
+          {items === null
+            ? Array.from({ length: 8 }).map((_, i) => <BookCardSkeleton key={i} />)
+            : items.map((b) => <BookCard key={b.key} b={b} ctx={ctx} />)}
+        </div>
+      )}
     </div>
   );
 }
 
-function BookGrid({ books, ctx, emptyLabel, authorName }: { books: BookDiscoverCard[] | null; ctx: BookCtx; emptyLabel: string; authorName?: string }) {
+const GRID_COLS = "repeat(auto-fill, minmax(140px, 1fr))";
+
+function BookGrid({ books, ctx, emptyLabel, authorName, error }: { books: BookDiscoverCard[] | null; ctx: BookCtx; emptyLabel: string; authorName?: string; error?: string | null }) {
+  // An error is not "no results" — say so instead of showing an empty state.
+  if (error) return <LoadError message={error} />;
   if (books === null) {
     return (
-      <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))" }}>
-        {Array.from({ length: 12 }).map((_, i) => <div key={i} className="rounded-xl" style={{ aspectRatio: "2/3", background: "var(--panel-2)" }} />)}
+      <div className="grid gap-x-3 gap-y-5" style={{ gridTemplateColumns: GRID_COLS }}>
+        {Array.from({ length: 12 }).map((_, i) => <BookCardSkeleton key={i} full />)}
       </div>
     );
   }
@@ -202,7 +242,7 @@ function BookGrid({ books, ctx, emptyLabel, authorName }: { books: BookDiscoverC
     return <div className="rounded-xl p-12 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>{emptyLabel}</div>;
   }
   return (
-    <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(130px, 1fr))" }}>
+    <div className="grid gap-x-3 gap-y-5" style={{ gridTemplateColumns: GRID_COLS }}>
       {books.map((b) => <BookCard key={b.key} b={b} ctx={ctx} authorName={authorName} full />)}
     </div>
   );
@@ -234,39 +274,54 @@ function BookCard({ b, ctx, authorName, full }: { b: BookDiscoverCard; ctx: Book
     finally { setQuickBusy(false); }
   };
 
+  const byline = b.author || authorName || "";
+
   return (
-    <>
+    <div className={`group ${full ? "w-full" : "w-[150px] flex-none"}`} style={{ scrollSnapAlign: "start" }}>
       <button
         onClick={() => setOpen(true)}
-        className={`group relative overflow-hidden rounded-xl text-left ${full ? "w-full" : "w-[140px] flex-none"}`}
-        style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)", scrollSnapAlign: "start" }}
+        aria-label={`View details for ${b.title}`}
+        className="relative block w-full overflow-hidden rounded-xl text-left transition-[transform,box-shadow] duration-200 will-change-transform group-hover:-translate-y-1 group-hover:scale-[1.03] group-hover:shadow-[0_12px_30px_rgba(0,0,0,0.45)]"
+        style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}
       >
         {b.cover_url ? (
-          <img src={b.cover_url} alt={b.title} className="h-full w-full object-cover" loading="lazy" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} />
+          <img src={b.cover_url} alt={b.title} className="h-full w-full object-cover" loading="lazy" decoding="async" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} />
         ) : (
           <div className="flex h-full w-full items-center justify-center p-2 text-center" style={{ background: "linear-gradient(150deg, hsl(28 30% 26%), hsl(24 28% 16%))" }}><span className="text-[11.5px] font-bold text-white">{b.title}</span></div>
         )}
-        {badge && <span className="absolute right-1.5 top-1.5 rounded-full px-1.5 py-0.5 font-mono text-[8px] font-bold uppercase" style={{ background: badge.bg, color: badge.tone }}>{badge.label}</span>}
-        <div className="absolute inset-x-0 bottom-0 flex flex-col gap-0.5 p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.9), transparent)" }}>
-          <div className="truncate text-[11.5px] font-semibold text-white">{b.title}</div>
-          <div className="truncate text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{b.author || authorName || ""}{b.year ? ` · ${b.year}` : ""}</div>
-          {/* span, not button — the whole card is already a <button> and nesting is invalid HTML */}
-          {ctx.canRequest && requestable && (
+        {badge && (
+          <span className="absolute right-1.5 top-1.5 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: BADGE_BG, color: badge.tone, border: `1px solid ${badge.tone}` }}>{badge.label}</span>
+        )}
+        {/* Hover overlay: quick-request + a details affordance (touch users tap the card). */}
+        {/* span, not button — the whole card is already a <button> and nesting is invalid HTML */}
+        <div className="absolute inset-0 flex flex-col justify-end gap-1.5 p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.82) 0%, rgba(0,0,0,.15) 42%, transparent 70%)" }}>
+          {ctx.canRequest && requestable ? (
             <span
               role="button"
               tabIndex={0}
               onClick={quick}
               onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); quick(e as unknown as React.MouseEvent); } }}
-              className="mt-0.5 self-start rounded-md px-2 py-1 text-[10px] font-semibold"
+              className="self-start rounded-md px-2.5 py-1 text-[10.5px] font-semibold"
               style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)", opacity: quickBusy ? 0.6 : 1 }}
             >
               {quickBusy ? "Requesting…" : "＋ Request"}
             </span>
+          ) : (
+            <span className="self-start rounded-md px-2.5 py-1 text-[10.5px] font-semibold" style={{ background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.26)", color: "#fff" }}>Details</span>
           )}
         </div>
       </button>
+      {/* Always-visible caption strip — many Open Library covers are blank leather
+          with no printed title, so the cover alone can't identify the book. */}
+      <div className="px-0.5 pt-2">
+        <div className="truncate text-[12px] font-semibold" style={{ color: "var(--ink)" }} title={b.title}>{b.title}</div>
+        <div className="mt-0.5 flex items-center gap-1.5 text-[11px]" style={{ color: "var(--ink-faint)" }}>
+          <span className="flex-none">{b.year || "—"}</span>
+          {byline && <><span className="flex-none">·</span><span className="truncate" title={byline}>{byline}</span></>}
+        </div>
+      </div>
       {open && <BookRequestModal b={b} ctx={ctx} authorName={authorName} onClose={() => setOpen(false)} />}
-    </>
+    </div>
   );
 }
 
