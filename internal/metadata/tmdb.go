@@ -265,6 +265,25 @@ type tmdbSeries struct {
 		Cast []tmdbCast `json:"cast"`
 		Crew []tmdbCrew `json:"crew"`
 	} `json:"credits"`
+	Videos          tmdbVideos          `json:"videos"`
+	Recommendations tmdbRecommendations `json:"recommendations"`
+}
+
+// tmdbVideo is one entry from TMDB's /videos append (trailers, teasers, clips).
+type tmdbVideo struct {
+	Key      string `json:"key"`
+	Site     string `json:"site"`
+	Type     string `json:"type"`
+	Official bool   `json:"official"`
+}
+
+type tmdbVideos struct {
+	Results []tmdbVideo `json:"results"`
+}
+
+// tmdbRecommendations is TMDB's /recommendations append (rows share the discover shape).
+type tmdbRecommendations struct {
+	Results []tmdbDiscoverItem `json:"results"`
 }
 
 func (s tmdbSeries) toResult() SeriesResult {
@@ -339,6 +358,8 @@ type tmdbMovie struct {
 	ExternalIDs struct {
 		IMDBID string `json:"imdb_id"`
 	} `json:"external_ids"`
+	Videos          tmdbVideos          `json:"videos"`
+	Recommendations tmdbRecommendations `json:"recommendations"`
 }
 
 type tmdbCrew struct {

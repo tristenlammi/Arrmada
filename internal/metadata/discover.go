@@ -75,7 +75,16 @@ type MediaDetail struct {
 	Cast          []CastMember `json:"cast,omitempty"`
 	Crew          []CrewMember `json:"crew,omitempty"`
 	Ratings       Ratings      `json:"ratings"`
+	// TrailerURL is a YouTube watch URL for the best available trailer, empty when TMDB
+	// has no usable video.
+	TrailerURL string `json:"trailer_url,omitempty"`
+	// Similar is "more like this" — TMDB recommendations mapped to browse cards (same
+	// shape as the Trending/Popular rows), capped and posterless entries dropped.
+	Similar []DiscoverItem `json:"similar,omitempty"`
 }
+
+// maxSimilar caps the "more like this" row on the detail record.
+const maxSimilar = 12
 
 // RatingProvider supplies external ratings by IMDB id (OMDb).
 type RatingProvider interface {
@@ -95,7 +104,7 @@ func (t *TMDB) MediaDetails(ctx context.Context, media string, tmdbID int) (*Med
 
 func (t *TMDB) movieDetail(ctx context.Context, tmdbID int) (*MediaDetail, error) {
 	q := url.Values{}
-	q.Set("append_to_response", "credits,release_dates,external_ids")
+	q.Set("append_to_response", "credits,release_dates,external_ids,videos,recommendations")
 	body, err := t.get(ctx, "/movie/"+strconv.Itoa(tmdbID), q)
 	if err != nil {
 		return nil, err
@@ -124,12 +133,14 @@ func (t *TMDB) movieDetail(ctx context.Context, tmdbID int) (*MediaDetail, error
 	}
 	d.Cast = castOf(m.Credits.Cast)
 	d.Crew = movieCrew(m.Credits.Crew)
+	d.TrailerURL = bestTrailerURL(m.Videos.Results)
+	d.Similar = recommendedItems(m.Recommendations.Results, "movie")
 	return d, nil
 }
 
 func (t *TMDB) seriesDetail(ctx context.Context, tmdbID int) (*MediaDetail, error) {
 	q := url.Values{}
-	q.Set("append_to_response", "credits,external_ids")
+	q.Set("append_to_response", "credits,external_ids,videos,recommendations")
 	body, err := t.get(ctx, "/tv/"+strconv.Itoa(tmdbID), q)
 	if err != nil {
 		return nil, err
@@ -163,7 +174,54 @@ func (t *TMDB) seriesDetail(ctx context.Context, tmdbID int) (*MediaDetail, erro
 		}
 		d.Crew = append(d.Crew, cm)
 	}
+	d.TrailerURL = bestTrailerURL(s.Videos.Results)
+	d.Similar = recommendedItems(s.Recommendations.Results, "tv")
 	return d, nil
+}
+
+// bestTrailerURL picks the best YouTube video from TMDB's videos list and returns its
+// watch URL, or "" if none is usable. Preference: an official YouTube Trailer, then any
+// YouTube Trailer, then any YouTube Teaser. Order within each tier follows TMDB's.
+func bestTrailerURL(vids []tmdbVideo) string {
+	var officialTrailer, trailer, teaser string
+	for _, v := range vids {
+		if v.Site != "YouTube" || v.Key == "" {
+			continue
+		}
+		switch v.Type {
+		case "Trailer":
+			if v.Official && officialTrailer == "" {
+				officialTrailer = v.Key
+			}
+			if trailer == "" {
+				trailer = v.Key
+			}
+		case "Teaser":
+			if teaser == "" {
+				teaser = v.Key
+			}
+		}
+	}
+	key := firstNonEmpty(officialTrailer, firstNonEmpty(trailer, teaser))
+	if key == "" {
+		return ""
+	}
+	return "https://www.youtube.com/watch?v=" + key
+}
+
+// recommendedItems maps TMDB recommendation rows to Discover cards, reusing the same
+// mapping as the browse lists (posterless/untyped rows dropped) and capping the result.
+func recommendedItems(results []tmdbDiscoverItem, defaultMedia string) []DiscoverItem {
+	out := make([]DiscoverItem, 0, maxSimilar)
+	for _, r := range results {
+		if len(out) >= maxSimilar {
+			break
+		}
+		if di, ok := r.toItem(defaultMedia); ok {
+			out = append(out, di)
+		}
+	}
+	return out
 }
 
 // castOf maps TMDB cast into billed cast members (capped, with photos).
