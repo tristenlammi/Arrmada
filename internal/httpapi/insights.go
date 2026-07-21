@@ -4,12 +4,96 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/insights"
 )
+
+// Query-parameter clamps: user-supplied window/limit/page_size values flow into
+// downstream code that allocates per-day/per-row slices, so an unbounded value
+// (e.g. window=10000000) is a memory-exhaustion vector. These bound the input
+// while leaving the "<= 0 means use the downstream default" contract intact.
+const (
+	maxWindowDays = 365 // ~1 year of daily buckets is already generous
+	maxPageSize   = 200 // history/recently-added page cap
+)
+
+// clampWindow bounds an explicit positive window to [1, maxWindowDays]. Values
+// <= 0 are passed through unchanged so the service layer applies its own default
+// (30 days); negatives also fall through to that default and never allocate.
+func clampWindow(w int) int {
+	if w <= 0 {
+		return w
+	}
+	if w > maxWindowDays {
+		return maxWindowDays
+	}
+	return w
+}
+
+// clampPageSize bounds an explicit positive limit/page_size to at most
+// maxPageSize. Values <= 0 pass through so the service default applies.
+func clampPageSize(n int) int {
+	if n > maxPageSize {
+		return maxPageSize
+	}
+	return n
+}
+
+// atoiQuery reads a query parameter as an int, defaulting to 0 on absence or
+// parse error (which the service layer treats as "use the default").
+func atoiQuery(r *http.Request, key string) int {
+	n, _ := strconv.Atoi(r.URL.Query().Get(key))
+	return n
+}
+
+// validatePlexImagePath enforces that a proxied Plex image path is a bare,
+// normalized path under /library/ or /photo/ — nothing else. It returns the
+// cleaned path to forward to Plex and false if the input must be rejected.
+//
+// The check defeats path-traversal SSRF: a raw prefix check alone lets
+// "/library/../status/sessions" through (Plex normalizes the dot-segments and
+// returns arbitrary read-only API data under the server's admin token). We
+// parse the path, reject any query/fragment (real thumb paths carry neither —
+// they look like "/library/metadata/123/thumb/1700000000"), path.Clean it, and
+// require the CLEANED path to still start with an allowed prefix so "../"
+// escapes are caught after normalization.
+func validatePlexImagePath(raw string) (string, bool) {
+	if raw == "" {
+		return "", false
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", false
+	}
+	// A query or fragment could inject arbitrary Plex API params (e.g.
+	// ?X-Plex-Token=...) or smuggle an endpoint; real image paths have none.
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return "", false
+	}
+	// Reject scheme-relative ("//evil") or absolute-URL forms — image paths are
+	// server-relative and must not carry a scheme or host.
+	if u.Scheme != "" || u.Host != "" || u.Opaque != "" {
+		return "", false
+	}
+	p := u.Path
+	if !strings.HasPrefix(p, "/") {
+		return "", false
+	}
+	clean := path.Clean(p)
+	// Defense in depth: path.Clean already resolves "..", but reject any residue.
+	if clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") || strings.HasSuffix(clean, "/..") {
+		return "", false
+	}
+	if !strings.HasPrefix(clean, "/library/") && !strings.HasPrefix(clean, "/photo/") {
+		return "", false
+	}
+	return clean, true
+}
 
 // handleInsightsConfig returns the Plex connection settings (token presence only, never the value).
 func (a *api) handleInsightsConfig(w http.ResponseWriter, r *http.Request) {
@@ -101,6 +185,7 @@ func (a *api) handleInsightsHistory(w http.ResponseWriter, r *http.Request) {
 	if size <= 0 {
 		size = 50
 	}
+	size = clampPageSize(size)
 	f := insights.HistoryFilter{
 		UserID:   q.Get("user"),
 		Type:     q.Get("type"),
@@ -121,7 +206,7 @@ func (a *api) handleInsightsHistory(w http.ResponseWriter, r *http.Request) {
 
 // handleInsightsStats returns the home watch-statistics cards over a window.
 func (a *api) handleInsightsStats(w http.ResponseWriter, r *http.Request) {
-	window, _ := strconv.Atoi(r.URL.Query().Get("window"))
+	window := clampWindow(atoiQuery(r, "window"))
 	byDuration := r.URL.Query().Get("metric") == "duration"
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
@@ -135,7 +220,7 @@ func (a *api) handleInsightsStats(w http.ResponseWriter, r *http.Request) {
 
 // handleInsightsGraphs returns the time-series bundle for the Graphs tab.
 func (a *api) handleInsightsGraphs(w http.ResponseWriter, r *http.Request) {
-	window, _ := strconv.Atoi(r.URL.Query().Get("window"))
+	window := clampWindow(atoiQuery(r, "window"))
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	g, err := a.deps.Insights.Graphs(ctx, window)
@@ -148,7 +233,7 @@ func (a *api) handleInsightsGraphs(w http.ResponseWriter, r *http.Request) {
 
 // handleInsightsReliability returns the buffering-history bundle.
 func (a *api) handleInsightsReliability(w http.ResponseWriter, r *http.Request) {
-	window, _ := strconv.Atoi(r.URL.Query().Get("window"))
+	window := clampWindow(atoiQuery(r, "window"))
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	res, err := a.deps.Insights.Reliability(ctx, window)
@@ -185,7 +270,7 @@ func (a *api) handleInsightsLibraries(w http.ResponseWriter, r *http.Request) {
 
 // handleInsightsRecentlyAdded returns recently-added items (live from Plex).
 func (a *api) handleInsightsRecentlyAdded(w http.ResponseWriter, r *http.Request) {
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	limit := clampPageSize(atoiQuery(r, "limit"))
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	items, err := a.deps.Insights.RecentlyAdded(ctx, limit)
@@ -199,14 +284,14 @@ func (a *api) handleInsightsRecentlyAdded(w http.ResponseWriter, r *http.Request
 // handleInsightsImage proxies a Plex poster/art image so the browser never sees the token. Only
 // image paths under /library/ or /photo/ are allowed (no arbitrary Plex-endpoint proxying).
 func (a *api) handleInsightsImage(w http.ResponseWriter, r *http.Request) {
-	path := r.URL.Query().Get("path")
-	if !strings.HasPrefix(path, "/library/") && !strings.HasPrefix(path, "/photo/") {
+	clean, ok := validatePlexImagePath(r.URL.Query().Get("path"))
+	if !ok {
 		a.writeError(w, http.StatusBadRequest, "unsupported image path")
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	resp, err := a.deps.Insights.Image(ctx, path)
+	resp, err := a.deps.Insights.Image(ctx, clean)
 	if err != nil {
 		a.writeError(w, http.StatusBadGateway, "could not load image")
 		return

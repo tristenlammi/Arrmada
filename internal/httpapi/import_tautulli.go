@@ -33,7 +33,14 @@ func (a *api) handleImportTautulli(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Serialize imports process-wide so a double-clicked import doesn't interleave duplicate inserts.
+	if !a.deps.Insights.TryStartImport() {
+		a.writeError(w, http.StatusConflict, "an import is already running")
+		return
+	}
+
 	go func() {
+		defer a.deps.Insights.StopImport()
 		bg, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
 		client := tautulli.New(req.URL, req.APIKey)
@@ -42,7 +49,7 @@ func (a *api) handleImportTautulli(w http.ResponseWriter, r *http.Request) {
 			sessions := make([]insights.ImportedSession, 0, len(rows))
 			for _, r := range rows {
 				sessions = append(sessions, insights.ImportedSession{
-					UserID: r.UserID, UserName: r.User, RatingKey: r.RatingKey, MediaType: r.MediaType,
+					UserID: r.UserID, UserName: r.User, UserThumb: r.UserThumb, RatingKey: r.RatingKey, MediaType: r.MediaType,
 					Title: r.Title, GrandparentTitle: r.GrandparentTitle, ParentTitle: r.ParentTitle,
 					MediaIndex: r.MediaIndex, ParentIndex: r.ParentIndex, Year: r.Year, Thumb: r.Thumb,
 					Player: r.Player, Platform: r.Platform, Product: r.Product, IPAddress: r.IPAddress, Decision: r.Decision,

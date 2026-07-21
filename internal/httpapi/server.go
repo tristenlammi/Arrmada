@@ -154,7 +154,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("PUT "+base+"/api/v1/downloadclients/{id}/settings", a.requireRole(auth.RoleManager, a.handleSetClientSettings))
 	mux.HandleFunc("GET "+base+"/api/v1/indexers/prowlarr", a.protected(a.handleProwlarrInfo))
 	mux.HandleFunc("POST "+base+"/api/v1/indexers/prowlarr/sync", a.requireRole(auth.RoleManager, a.handleProwlarrSync))
-	mux.HandleFunc("GET "+base+"/api/v1/notifications", a.protected(a.handleListNotifications))
+	mux.HandleFunc("GET "+base+"/api/v1/notifications", a.requireRole(auth.RoleManager, a.handleListNotifications))
 	mux.HandleFunc("POST "+base+"/api/v1/notifications", a.requireRole(auth.RoleManager, a.handleCreateNotification))
 	mux.HandleFunc("PUT "+base+"/api/v1/notifications/{id}", a.requireRole(auth.RoleManager, a.handleUpdateNotification))
 	mux.HandleFunc("DELETE "+base+"/api/v1/notifications/{id}", a.requireRole(auth.RoleManager, a.handleDeleteNotification))
@@ -280,7 +280,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/insights/users", a.requireRole(auth.RoleManager, a.handleInsightsUsers))
 	mux.HandleFunc("GET "+base+"/api/v1/insights/libraries", a.requireRole(auth.RoleManager, a.handleInsightsLibraries))
 	mux.HandleFunc("GET "+base+"/api/v1/insights/recently-added", a.requireRole(auth.RoleManager, a.handleInsightsRecentlyAdded))
-	mux.HandleFunc("GET "+base+"/api/v1/insights/image", a.protected(a.handleInsightsImage))
+	mux.HandleFunc("GET "+base+"/api/v1/insights/image", a.requireRole(auth.RoleManager, a.handleInsightsImage))
 
 	// Subtitles (Bazarr replacement — external SRT sidecars over the Movies/Series catalogs).
 	mux.HandleFunc("GET "+base+"/api/v1/subtitles/library", a.protected(a.handleSubtitleLibrary))

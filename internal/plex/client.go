@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -161,19 +162,48 @@ func (c *Client) RecentlyAdded(ctx context.Context, limit int) ([]RecentItem, er
 
 // Image fetches a Plex image (poster/art) by its metadata path, authenticated with the token, so
 // Arrmada can proxy it to the browser without exposing the token. Caller closes the body.
-func (c *Client) Image(ctx context.Context, path string) (*http.Response, error) {
+func (c *Client) Image(ctx context.Context, imgPath string) (*http.Response, error) {
 	if c.base == "" || c.token == "" {
 		return nil, fmt.Errorf("plex is not configured")
 	}
-	if !strings.HasPrefix(path, "/") {
+	// Defense in depth: the httpapi handler already validates this path, but the
+	// token attached below makes any un-normalized path a traversal/SSRF vector,
+	// so re-check here rather than trust the caller. A query or fragment could
+	// inject arbitrary Plex API params, and un-cleaned "../" segments escape the
+	// image namespace once Plex normalizes them.
+	imgPath, ok := safeImagePath(imgPath)
+	if !ok {
 		return nil, fmt.Errorf("invalid image path")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+imgPath, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("X-Plex-Token", c.token)
 	return c.http.Do(req)
+}
+
+// safeImagePath validates and normalizes a Plex image path before it is joined
+// to the base URL and sent with the admin token. It rejects anything carrying a
+// query/fragment or escaping the /library/ or /photo/ image namespaces (even via
+// "../" that Plex would normalize), returning the cleaned path when acceptable.
+func safeImagePath(raw string) (string, bool) {
+	if raw == "" || !strings.HasPrefix(raw, "/") {
+		return "", false
+	}
+	// A '?' or '#' would smuggle query params (e.g. an alternate token) or an
+	// endpoint fragment; real image paths contain neither.
+	if strings.ContainsAny(raw, "?#") {
+		return "", false
+	}
+	clean := path.Clean(raw)
+	if clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") || strings.HasSuffix(clean, "/..") {
+		return "", false
+	}
+	if !strings.HasPrefix(clean, "/library/") && !strings.HasPrefix(clean, "/photo/") {
+		return "", false
+	}
+	return clean, true
 }
 
 // flexInt tolerates Plex's habit of encoding the same numeric field as a JSON number in one
