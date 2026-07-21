@@ -74,6 +74,9 @@ func (s *Service) pollSeconds(ctx context.Context) int {
 	if n < 2 {
 		n = 2 // don't hammer the server
 	}
+	if n > 60 {
+		n = 60 // cap the sampling period: wider than this makes every duration/skew bound too coarse
+	}
 	return n
 }
 
