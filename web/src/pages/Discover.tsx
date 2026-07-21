@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { NotificationBell } from "../components/NotificationBell";
@@ -384,16 +384,21 @@ function SearchResults({ query, ctx }: { query: string; ctx: RowCtx }) {
 }
 
 function DiscoverTab({ ctx }: { ctx: RowCtx }) {
+  // One registry per mount of the tab — switching tabs or entering/clearing a search
+  // unmounts this subtree, so the "already shown" set resets with it.
+  const registry = useMemo(createRowRegistry, []);
   return (
-    <div className="flex flex-col gap-7">
-      <Hero ctx={ctx} />
-      <MyRequestsRow flash={ctx.flash} />
-      <PosterRow title="Trending this week" load={() => api.discoverTrending("all")} ctx={ctx} />
-      <PosterRow title="Popular movies" load={() => api.discoverPopular("movie")} ctx={ctx} />
-      <PosterRow title="Popular series" load={() => api.discoverPopular("series")} ctx={ctx} />
-      <PosterRow title="Upcoming — request ahead" load={() => api.discoverUpcoming()} ctx={ctx} />
-      <GenreExplorer media="movie" switchable ctx={ctx} />
-    </div>
+    <RowRegistryCtx.Provider value={registry}>
+      <div className="flex flex-col gap-7">
+        <Hero ctx={ctx} />
+        <MyRequestsRow flash={ctx.flash} />
+        <PosterRow order={0} title="Trending this week" load={() => api.discoverTrending("all")} ctx={ctx} />
+        <PosterRow order={1} title="Popular movies" load={() => api.discoverPopular("movie")} ctx={ctx} />
+        <PosterRow order={2} title="Popular series" load={() => api.discoverPopular("series")} ctx={ctx} />
+        <PosterRow order={3} excludeOwned title="Upcoming — request ahead" load={() => api.discoverUpcoming()} ctx={ctx} />
+        <GenreExplorer media="movie" switchable ctx={ctx} />
+      </div>
+    </RowRegistryCtx.Provider>
   );
 }
 
@@ -621,13 +626,23 @@ function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest;
 }
 
 function BrowseTab({ media, ctx }: { media: "movie" | "series"; ctx: RowCtx }) {
+  // Keyed on media so Movies and Series each dedupe against their own rows only.
+  const registry = useMemo(createRowRegistry, [media]);
   return (
-    <div className="flex flex-col gap-7">
-      <PosterRow title={`Trending ${media === "movie" ? "movies" : "series"}`} load={() => api.discoverTrending(media)} ctx={ctx} />
-      <PosterRow title={`Popular ${media === "movie" ? "movies" : "series"}`} load={() => api.discoverPopular(media)} ctx={ctx} />
-      {media === "movie" && <PosterRow title="Upcoming — request ahead" load={() => api.discoverUpcoming()} ctx={ctx} />}
-      <GenreExplorer media={media} ctx={ctx} />
-    </div>
+    <RowRegistryCtx.Provider value={registry}>
+      <div key={media} className="flex flex-col gap-7">
+        <PosterRow order={0} title={`Trending ${media === "movie" ? "movies" : "series"}`} load={() => api.discoverTrending(media)} ctx={ctx} />
+        <PosterRow order={1} title={`Popular ${media === "movie" ? "movies" : "series"}`} load={() => api.discoverPopular(media)} ctx={ctx} />
+        {media === "movie" ? (
+          <PosterRow order={2} excludeOwned title="Upcoming — request ahead" load={() => api.discoverUpcoming()} ctx={ctx} />
+        ) : (
+          // Series upcoming ships behind a backend change; if it isn't live the row
+          // hides itself rather than showing an error on an otherwise healthy tab.
+          <PosterRow order={2} excludeOwned hideOnError title="Airing soon" load={() => api.discoverUpcoming("series")} ctx={ctx} />
+        )}
+        <GenreExplorer media={media} ctx={ctx} />
+      </div>
+    </RowRegistryCtx.Provider>
   );
 }
 
@@ -642,21 +657,103 @@ function CardSkeleton({ full }: { full?: boolean }) {
   );
 }
 
-function PosterRow({ title, load, ctx }: { title: string; load: () => Promise<DiscoverCard[]>; ctx: RowCtx }) {
+// ---- Cross-row de-duplication ----------------------------------------------
+//
+// TMDB's trending/popular/upcoming lists overlap heavily, so the same four titles
+// used to fill every row on a tab. Each row is given an `order` (its render
+// position); a row drops anything already claimed by a row ABOVE it and claims
+// what it keeps.
+//
+// Why this can't loop: claims only ever propagate DOWNWARD. `claim(order, …)`
+// notifies subscribers with a strictly greater order, so the notification chain
+// is a DAG over a finite, strictly increasing ordinal — it terminates after at
+// most one pass per row. A row's own state update never re-runs its own load or
+// subscribe effects (their deps are `[order, registry]`, both stable for the life
+// of the tab), so a re-filter can't retrigger a fetch or a sibling's effect. The
+// notify is additionally skipped when a row's claim set is unchanged, so the 30s
+// enrichment refresh normally causes no downstream work at all.
+const MIN_ROW_ITEMS = 4; // below this, a repeated title beats a dead row
+const cardKey = (c: DiscoverCard) => `${c.media_type}:${c.tmdb_id}`;
+
+interface RowRegistry {
+  claim: (order: number, items: DiscoverCard[]) => DiscoverCard[];
+  subscribe: (order: number, fn: () => void) => () => void;
+  release: (order: number) => void;
+}
+
+function createRowRegistry(): RowRegistry {
+  const claims = new Map<number, Set<string>>();
+  const subs = new Map<number, () => void>();
+  return {
+    claim(order, items) {
+      const taken = new Set<string>();
+      claims.forEach((keys, o) => { if (o < order) keys.forEach((k) => taken.add(k)); });
+      const filtered = items.filter((c) => !taken.has(cardKey(c)));
+      const kept = filtered.length >= MIN_ROW_ITEMS ? filtered : items;
+      const next = new Set(kept.map(cardKey));
+      const prev = claims.get(order);
+      const changed = !prev || prev.size !== next.size || [...next].some((k) => !prev.has(k));
+      claims.set(order, next);
+      if (changed) subs.forEach((fn, o) => { if (o > order) fn(); });
+      return kept;
+    },
+    subscribe(order, fn) { subs.set(order, fn); return () => { subs.delete(order); }; },
+    release(order) { claims.delete(order); subs.delete(order); },
+  };
+}
+
+// Default is a no-op registry so a PosterRow rendered outside a provider (or with
+// no `order`) behaves exactly as before.
+const RowRegistryCtx = createContext<RowRegistry>({ claim: (_o, items) => items, subscribe: () => () => {}, release: () => {} });
+
+function PosterRow({ title, load, ctx, order, excludeOwned, hideOnError }: {
+  title: string;
+  load: () => Promise<DiscoverCard[]>;
+  ctx: RowCtx;
+  /** Render position on the tab — rows dedupe against every lower order. Omit to opt out. */
+  order?: number;
+  /** Upcoming rows: don't invite a request for something already in the library. */
+  excludeOwned?: boolean;
+  /** Row quietly disappears if the endpoint isn't available (e.g. not deployed yet). */
+  hideOnError?: boolean;
+}) {
+  const registry = useContext(RowRegistryCtx);
   const [items, setItems] = useState<DiscoverCard[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
+  // Last raw server payload, kept so the row can re-filter without re-fetching.
+  const raw = useRef<DiscoverCard[] | null>(null);
+  const loadRef = useRef(load); loadRef.current = load;
+
+  const recompute = useCallback(() => {
+    const r = raw.current;
+    if (!r) return;
+    let pool = r;
+    if (excludeOwned) {
+      const fresh = r.filter((c) => !c.has_file && !c.in_library);
+      pool = fresh.length >= MIN_ROW_ITEMS ? fresh : r;
+    }
+    setItems(order == null ? pool : registry.claim(order, pool));
+  }, [excludeOwned, order, registry]);
+  const recomputeRef = useRef(recompute); recomputeRef.current = recompute;
+
+  useEffect(() => {
+    if (order == null) return;
+    const off = registry.subscribe(order, () => recomputeRef.current());
+    return () => { off(); registry.release(order); };
+  }, [order, registry]);
 
   useEffect(() => {
     let alive = true;
-    load()
-      .then((r) => { if (alive) { setItems(r); setError(null); } })
-      .catch((e) => { if (alive) { setItems([]); setError((e as Error).message); } });
+    const pull = (first: boolean) => loadRef.current()
+      .then((r) => { if (!alive) return; raw.current = r; setError(null); recomputeRef.current(); })
+      .catch((e) => { if (!alive || !first) return; raw.current = []; setItems([]); setError((e as Error).message); });
+    pull(true);
     // Re-pull enrichment (badges, download progress) every 30s while the tab is
     // visible; refresh failures keep the last good data.
     const t = setInterval(() => {
       if (document.visibilityState !== "visible") return;
-      load().then((r) => { if (alive) { setItems(r); setError(null); } }).catch(() => {});
+      pull(false);
     }, 30000);
     return () => { alive = false; clearInterval(t); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -664,6 +761,7 @@ function PosterRow({ title, load, ctx }: { title: string; load: () => Promise<Di
 
   const scroll = (dir: -1 | 1) => scroller.current?.scrollBy({ left: dir * Math.max(600, scroller.current.clientWidth * 0.8), behavior: "smooth" });
 
+  if (error && hideOnError) return null;
   if (items && items.length === 0 && !error) return null;
   return (
     <div>

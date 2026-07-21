@@ -973,8 +973,10 @@ export const api = {
     req<{ items: DiscoverCard[] }>(`/api/v1/discover/trending${media ? `?media=${media}` : ""}`).then((r) => r.items),
   discoverPopular: (media: string) =>
     req<{ items: DiscoverCard[] }>(`/api/v1/discover/popular?media=${media}`).then((r) => r.items),
-  discoverUpcoming: () =>
-    req<{ items: DiscoverCard[] }>(`/api/v1/discover/upcoming`).then((r) => r.items),
+  // media is optional: no arg keeps the movie default the backend already assumes,
+  // "series" asks for shows airing soon.
+  discoverUpcoming: (media?: string) =>
+    req<{ items: DiscoverCard[] }>(`/api/v1/discover/upcoming${media ? `?media=${media}` : ""}`).then((r) => r.items),
   discoverByGenre: (media: string, genre: number) =>
     req<{ items: DiscoverCard[] }>(`/api/v1/discover?media=${media}&genre=${genre}`).then((r) => r.items),
   discoverGenres: (media: string) =>
