@@ -2,6 +2,7 @@ package insights
 
 import (
 	"context"
+	"strconv"
 )
 
 // Reliability is the buffering-history bundle — the "did things buffer, and why?" view
@@ -17,9 +18,10 @@ type Reliability struct {
 
 // CauseCount is how many buffer spells fell into a diagnosed cause bucket.
 type CauseCount struct {
-	Cause string `json:"cause"`
-	Label string `json:"label"`
-	Count int    `json:"count"`
+	Cause   string `json:"cause"`
+	Label   string `json:"label"`
+	Count   int    `json:"count"`
+	StallMS int64  `json:"stall_ms"` // observed stall time in this bucket
 }
 
 // ReliabilitySummary is the top-line health of the window.
@@ -27,6 +29,7 @@ type ReliabilitySummary struct {
 	TotalSessions    int     `json:"total_sessions"`
 	BufferedSessions int     `json:"buffered_sessions"`
 	TotalEvents      int     `json:"total_events"`
+	TotalStallMS     int64   `json:"total_stall_ms"` // observed stall time across the window
 	BufferRatePct    float64 `json:"buffer_rate_pct"`
 }
 
@@ -36,19 +39,21 @@ type BufferGroup struct {
 	Sessions         int     `json:"sessions"`
 	BufferedSessions int     `json:"buffered_sessions"`
 	Events           int     `json:"events"`
+	StallMS          int64   `json:"stall_ms"` // observed stall time for the group
 	RatePct          float64 `json:"rate_pct"` // buffered / sessions
 }
 
 // BufferEvent is one recorded buffer spell with its stream context and diagnosed cause.
 type BufferEvent struct {
-	At       int64  `json:"at"`
-	OffsetMS int64  `json:"offset_ms"`
-	User     string `json:"user"`
-	Title    string `json:"title"`
-	Platform string `json:"platform"`
-	Decision string `json:"decision"`
-	Cause    string `json:"cause"`  // key: transcode | transcode_cpu | bandwidth | unknown
-	Detail   string `json:"detail"` // human-readable "why"
+	At         int64  `json:"at"`
+	OffsetMS   int64  `json:"offset_ms"`
+	DurationMS int64  `json:"duration_ms"` // observed stall time (0 = single-poll blip or legacy row)
+	User       string `json:"user"`
+	Title      string `json:"title"`
+	Platform   string `json:"platform"`
+	Decision   string `json:"decision"`
+	Cause      string `json:"cause"`  // key: transcode | transcode_cpu | bandwidth | unknown
+	Detail     string `json:"detail"` // human-readable "why"
 }
 
 // causeLabel maps a cause key to a short user-facing label.
@@ -85,6 +90,9 @@ func (s *Service) Reliability(ctx context.Context, windowDays int) (Reliability,
 	if out.Summary.TotalSessions > 0 {
 		out.Summary.BufferRatePct = round1(float64(out.Summary.BufferedSessions) * 100 / float64(out.Summary.TotalSessions))
 	}
+	_ = s.repo.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(duration_ms),0) FROM buffer_events WHERE at >= ?`, since).
+		Scan(&out.Summary.TotalStallMS)
 
 	// Offenders — only groups that actually buffered, worst first.
 	titleExpr := `CASE WHEN media_type='episode' AND grandparent_title<>'' THEN grandparent_title ELSE title END`
@@ -100,14 +108,14 @@ func (s *Service) Reliability(ctx context.Context, windowDays int) (Reliability,
 
 	// Cause breakdown — how many buffer spells fell into each diagnosed bucket.
 	crows, err := s.repo.db.QueryContext(ctx, `
-		SELECT COALESCE(NULLIF(cause,''),'unknown') c, COUNT(*) FROM buffer_events
-		WHERE at >= ? GROUP BY c ORDER BY COUNT(*) DESC`, since)
+		SELECT COALESCE(NULLIF(cause,''),'unknown') c, COUNT(*), COALESCE(SUM(duration_ms),0) FROM buffer_events
+		WHERE at >= ? GROUP BY c ORDER BY SUM(duration_ms) DESC, COUNT(*) DESC`, since)
 	if err != nil {
 		return Reliability{}, err
 	}
 	for crows.Next() {
 		var cc CauseCount
-		if err := crows.Scan(&cc.Cause, &cc.Count); err != nil {
+		if err := crows.Scan(&cc.Cause, &cc.Count, &cc.StallMS); err != nil {
 			crows.Close()
 			return Reliability{}, err
 		}
@@ -118,7 +126,7 @@ func (s *Service) Reliability(ctx context.Context, windowDays int) (Reliability,
 
 	// Recent buffer-event timeline.
 	rows, err := s.repo.db.QueryContext(ctx, `
-		SELECT b.at, b.view_offset_ms, b.cause, b.detail, s.user_name, s.title, s.grandparent_title, s.media_type, s.platform, s.decision
+		SELECT b.at, b.view_offset_ms, b.duration_ms, b.cause, b.detail, s.user_name, s.title, s.grandparent_title, s.media_type, s.platform, s.decision
 		FROM buffer_events b JOIN stream_sessions s ON s.id = b.session_id
 		WHERE b.at >= ? ORDER BY b.at DESC LIMIT 60`, since)
 	if err != nil {
@@ -128,7 +136,7 @@ func (s *Service) Reliability(ctx context.Context, windowDays int) (Reliability,
 	for rows.Next() {
 		var e BufferEvent
 		var gp, mt string
-		if err := rows.Scan(&e.At, &e.OffsetMS, &e.Cause, &e.Detail, &e.User, &e.Title, &gp, &mt, &e.Platform, &e.Decision); err != nil {
+		if err := rows.Scan(&e.At, &e.OffsetMS, &e.DurationMS, &e.Cause, &e.Detail, &e.User, &e.Title, &gp, &mt, &e.Platform, &e.Decision); err != nil {
 			return Reliability{}, err
 		}
 		if mt == "episode" && gp != "" {
@@ -139,12 +147,27 @@ func (s *Service) Reliability(ctx context.Context, windowDays int) (Reliability,
 	return out, rows.Err()
 }
 
-// bufferGroups rolls sessions up by a column/expression, keeping only groups that buffered.
+// Offender floor: one sampled blip must never put someone on a leaderboard. A group
+// appears only with a repeated pattern (>= minOffenderEvents observed stalls) or real
+// felt time (>= minOffenderStallMS). Sampled telemetry earns a spot; a fluke doesn't.
+const (
+	minOffenderEvents  = 3
+	minOffenderStallMS = 10_000
+)
+
+// bufferGroups rolls sessions up by a column/expression, keeping only groups whose
+// buffering clears the offender floor, worst observed stall time first.
 func (s *Service) bufferGroups(ctx context.Context, groupExpr string, since int64) ([]BufferGroup, error) {
-	q := `SELECT ` + groupExpr + ` g, COUNT(*),
-			SUM(CASE WHEN buffer_count>0 THEN 1 ELSE 0 END), SUM(buffer_count)
-		FROM stream_sessions WHERE started_at >= ? AND ` + groupExpr + ` <> ''
-		GROUP BY g HAVING SUM(buffer_count) > 0 ORDER BY SUM(buffer_count) DESC LIMIT 10`
+	q := `SELECT g, COUNT(*), SUM(buffered), SUM(events), SUM(stall_ms) FROM (
+			SELECT ` + groupExpr + ` g,
+				CASE WHEN s.buffer_count>0 THEN 1 ELSE 0 END buffered,
+				s.buffer_count events,
+				COALESCE((SELECT SUM(b.duration_ms) FROM buffer_events b WHERE b.session_id = s.id),0) stall_ms
+			FROM stream_sessions s WHERE s.started_at >= ? AND ` + groupExpr + ` <> ''
+		)
+		GROUP BY g
+		HAVING SUM(events) >= ` + strconv.Itoa(minOffenderEvents) + ` OR SUM(stall_ms) >= ` + strconv.Itoa(minOffenderStallMS) + `
+		ORDER BY SUM(stall_ms) DESC, SUM(events) DESC LIMIT 10`
 	rows, err := s.repo.db.QueryContext(ctx, q, since)
 	if err != nil {
 		return nil, err
@@ -153,7 +176,7 @@ func (s *Service) bufferGroups(ctx context.Context, groupExpr string, since int6
 	out := []BufferGroup{} // non-nil so an empty roll-up serializes as [] not null
 	for rows.Next() {
 		var g BufferGroup
-		if err := rows.Scan(&g.Name, &g.Sessions, &g.BufferedSessions, &g.Events); err != nil {
+		if err := rows.Scan(&g.Name, &g.Sessions, &g.BufferedSessions, &g.Events, &g.StallMS); err != nil {
 			return nil, err
 		}
 		if g.Sessions > 0 {

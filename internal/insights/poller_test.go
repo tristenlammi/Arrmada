@@ -245,3 +245,146 @@ func TestDirectPlayRecord(t *testing.T) {
 		t.Errorf("direct play should have empty stream targets, got video=%q audio=%q", rec.VideoStream, rec.AudioStream)
 	}
 }
+
+// sessAt builds a session snapshot in a given player state at a playback offset.
+func sessAt(state string, offsetMS int64) plex.Session {
+	return plex.Session{SessionKey: "b1", RatingKey: "500", UserID: "9", Type: "movie",
+		Title: "Heat", State: state, OffsetMS: offsetMS}
+}
+
+// bufferState pulls the tracked live session for the buffer tests.
+func bufferLS(svc *Service) *liveSession { return svc.live["b1"] }
+
+// Startup fill must not count: a slow client's play-start "buffering" made its owner
+// the biggest buffer offender without a single real stall.
+func TestBufferStartupFillNotCounted(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+	t0 := time.Now()
+
+	svc.reconcile(ctx, []plex.Session{sessAt("buffering", 0)}, t0) // first sighting mid startup-fill
+	svc.reconcile(ctx, []plex.Session{sessAt("buffering", 0)}, t0.Add(5*time.Second))
+	svc.reconcile(ctx, []plex.Session{sessAt("playing", 3_000)}, t0.Add(10*time.Second))
+	if ls := bufferLS(svc); ls.bufCount != 0 {
+		t.Fatalf("startup fill counted as %d buffer events", ls.bufCount)
+	}
+
+	// A genuine stall AFTER steady playback still counts.
+	svc.reconcile(ctx, []plex.Session{sessAt("playing", 8_000)}, t0.Add(15*time.Second))
+	svc.reconcile(ctx, []plex.Session{sessAt("buffering", 12_900)}, t0.Add(20*time.Second))
+	if ls := bufferLS(svc); ls.bufCount != 1 {
+		t.Fatalf("real stall not counted, bufCount=%d", ls.bufCount)
+	}
+}
+
+// A seek refill (offset jumps far beyond wall-clock progress) must not count.
+func TestBufferSeekRefillNotCounted(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+	t0 := time.Now()
+
+	svc.reconcile(ctx, []plex.Session{sessAt("playing", 10_000)}, t0)
+	svc.reconcile(ctx, []plex.Session{sessAt("playing", 15_000)}, t0.Add(5*time.Second))
+	// Skip intro: offset leaps ~90s while 5s passed → refill, not a stall.
+	svc.reconcile(ctx, []plex.Session{sessAt("buffering", 105_000)}, t0.Add(10*time.Second))
+	if ls := bufferLS(svc); ls.bufCount != 0 {
+		t.Fatalf("seek refill counted as %d buffer events", ls.bufCount)
+	}
+	// Backwards scrub too.
+	svc.reconcile(ctx, []plex.Session{sessAt("playing", 110_000)}, t0.Add(15*time.Second))
+	svc.reconcile(ctx, []plex.Session{sessAt("buffering", 20_000)}, t0.Add(20*time.Second))
+	if ls := bufferLS(svc); ls.bufCount != 0 {
+		t.Fatalf("backward seek counted as %d buffer events", ls.bufCount)
+	}
+}
+
+// The refill after resuming from pause must not count.
+func TestBufferResumeRefillNotCounted(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+	t0 := time.Now()
+
+	svc.reconcile(ctx, []plex.Session{sessAt("playing", 10_000)}, t0)
+	svc.reconcile(ctx, []plex.Session{sessAt("paused", 15_000)}, t0.Add(5*time.Second))
+	svc.reconcile(ctx, []plex.Session{sessAt("buffering", 15_000)}, t0.Add(10*time.Second))
+	if ls := bufferLS(svc); ls.bufCount != 0 {
+		t.Fatalf("pause-resume refill counted as %d buffer events", ls.bufCount)
+	}
+}
+
+// A counted spell accrues observed stall time across consecutive buffering polls,
+// and the duration lands on the recorded event.
+func TestBufferSpellAccruesDuration(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+	t0 := time.Now()
+
+	svc.reconcile(ctx, []plex.Session{sessAt("playing", 10_000)}, t0)
+	svc.reconcile(ctx, []plex.Session{sessAt("playing", 15_000)}, t0.Add(5*time.Second))
+	svc.reconcile(ctx, []plex.Session{sessAt("buffering", 19_000)}, t0.Add(10*time.Second)) // stall starts
+	svc.reconcile(ctx, []plex.Session{sessAt("buffering", 19_000)}, t0.Add(15*time.Second)) // +5s observed
+	svc.reconcile(ctx, []plex.Session{sessAt("buffering", 19_000)}, t0.Add(20*time.Second)) // +5s observed
+	svc.reconcile(ctx, []plex.Session{sessAt("playing", 21_000)}, t0.Add(25*time.Second))   // recovers
+
+	ls := bufferLS(svc)
+	if ls.bufCount != 1 || len(ls.bufEvents) != 1 {
+		t.Fatalf("want one spell, got count=%d events=%d", ls.bufCount, len(ls.bufEvents))
+	}
+	if got := ls.bufEvents[0].durationMS; got != 10_000 {
+		t.Fatalf("spell duration = %dms, want 10000", got)
+	}
+
+	// Finalize and confirm the duration reaches the DB.
+	svc.reconcile(ctx, nil, t0.Add(30*time.Second))
+	var dur int64
+	if err := svc.repo.db.QueryRowContext(ctx, `SELECT duration_ms FROM buffer_events LIMIT 1`).Scan(&dur); err != nil {
+		t.Fatalf("read buffer event: %v", err)
+	}
+	if dur != 10_000 {
+		t.Fatalf("stored duration = %dms, want 10000", dur)
+	}
+}
+
+// Offender floor: one sampled blip never makes the leaderboard; a repeated pattern
+// or real stall time does — ranked by observed stall time.
+func TestReliabilityOffenderFloor(t *testing.T) {
+	svc := newTestService(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+
+	mk := func(user string, bufCount int, durEachMS int64) {
+		id, err := svc.repo.insertSession(ctx, sessionRecord{
+			UserID: user, UserName: user, RatingKey: "1", MediaType: "movie", Title: "T-" + user,
+			Platform: "P-" + user, StartedAt: now - 600, StoppedAt: now - 60, BufferCount: bufCount,
+		})
+		if err != nil {
+			t.Fatalf("insert session: %v", err)
+		}
+		for i := 0; i < bufCount; i++ {
+			if err := svc.repo.insertBufferEvent(ctx, id, now-300, 0, durEachMS, "unknown", ""); err != nil {
+				t.Fatalf("insert event: %v", err)
+			}
+		}
+	}
+	mk("blip", 1, 0)          // one sampled blip → must NOT appear
+	mk("repeat", 3, 0)        // repeated pattern → appears (count floor)
+	mk("longstall", 1, 15000) // one long stall → appears (time floor), ranked first
+
+	rel, err := svc.Reliability(ctx, 7)
+	if err != nil {
+		t.Fatalf("reliability: %v", err)
+	}
+	names := make([]string, 0, len(rel.ByUser))
+	for _, g := range rel.ByUser {
+		names = append(names, g.Name)
+	}
+	if len(names) != 2 || names[0] != "longstall" || names[1] != "repeat" {
+		t.Fatalf("offenders = %v, want [longstall repeat] (blip filtered, stall time first)", names)
+	}
+	if rel.ByUser[0].StallMS != 15000 {
+		t.Fatalf("longstall stall_ms = %d, want 15000", rel.ByUser[0].StallMS)
+	}
+	if rel.Summary.TotalStallMS != 15000 {
+		t.Fatalf("summary stall_ms = %d, want 15000", rel.Summary.TotalStallMS)
+	}
+}

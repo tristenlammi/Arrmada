@@ -71,8 +71,8 @@ func (r *repo) sessionExists(ctx context.Context, userID, ratingKey string, star
 	return err == nil && n > 0
 }
 
-func (r *repo) insertBufferEvent(ctx context.Context, sessionID, at, offsetMS int64, cause, detail string) error {
-	_, err := r.db.ExecContext(ctx, `INSERT INTO buffer_events (session_id,at,view_offset_ms,cause,detail) VALUES (?,?,?,?,?)`, sessionID, at, offsetMS, cause, detail)
+func (r *repo) insertBufferEvent(ctx context.Context, sessionID, at, offsetMS, durationMS int64, cause, detail string) error {
+	_, err := r.db.ExecContext(ctx, `INSERT INTO buffer_events (session_id,at,view_offset_ms,duration_ms,cause,detail) VALUES (?,?,?,?,?,?)`, sessionID, at, offsetMS, durationMS, cause, detail)
 	return err
 }
 

@@ -20,15 +20,25 @@ type liveSession struct {
 	state     string
 	pausedMS  int64
 	buffering bool // currently inside a buffer spell (debounces events)
-	bufCount  int
-	bufEvents []bufEvent
+	// steady reports whether the previous observation was normal playback. Plex
+	// clients report "buffering" for the startup fill, for the refill after a seek,
+	// and for the refill after resuming from pause — none of which are stalls. Only
+	// a buffering state entered FROM steady playback counts; anything else made the
+	// user with the slowest-starting TV the "biggest buffer offender" while their
+	// playback never stalled once.
+	steady       bool
+	spellCounted bool  // whether the open spell passed the filters (accrue its duration)
+	lastOffsetMS int64 // previous poll's playback offset, for seek detection
+	bufCount     int
+	bufEvents    []bufEvent
 }
 
 type bufEvent struct {
-	at     time.Time
-	offset int64
-	cause  string // classified likely cause, captured at the moment the spell began
-	detail string
+	at         time.Time
+	offset     int64
+	durationMS int64  // observed stall time: wall-clock covered by consecutive buffering polls
+	cause      string // classified likely cause, captured at the moment the spell began
+	detail     string
 }
 
 // Run is the monitoring loop: while enabled + configured, poll Plex and record activity. Re-reads
@@ -125,24 +135,63 @@ func (s *Service) reconcile(ctx context.Context, sessions []plex.Session, now ti
 	_ = s.repo.insertBandwidth(ctx, now.Unix(), total, lan, wan)
 }
 
+// seekSlackMS is how far the playback offset may diverge from wall-clock progress
+// before the jump reads as a deliberate seek. Big enough to absorb poll jitter and
+// clients that report offsets coarsely; far smaller than any skip-intro jump.
+const seekSlackMS = 10_000
+
+// offsetJumped reports whether the playback position moved in a way steady playback
+// can't explain — a seek (skip intro, scrub, chapter jump). The refill after a seek
+// reports "buffering" but is not a stall.
+func offsetJumped(prevMS, curMS, elapsedMS int64) bool {
+	delta := curMS - prevMS
+	diff := delta - elapsedMS
+	if diff < 0 {
+		diff = -diff
+	}
+	return delta < 0 || diff > seekSlackMS
+}
+
 // observe folds one poll's session snapshot into the tracked state. Returns true when a new
-// buffering spell just began (so the caller can emit an event).
+// COUNTED buffering spell just began (so the caller can emit an event).
+//
+// Counting rule: only a stall entered from steady playback counts. Startup fill,
+// seek refill and pause-resume refill all present as "buffering" without being
+// stalls — sampled counts of those measured which client someone owns, not their
+// connection. While a counted spell persists across polls, its observed duration
+// accrues so the Reliability view can lead with stall TIME (a far more honest
+// number under 5s sampling than raw event counts).
 func (ls *liveSession) observe(sess plex.Session, now time.Time) bool {
+	elapsedMS := now.Sub(ls.lastSeen).Milliseconds()
 	if ls.state == "paused" { // accrue paused time across the interval just elapsed
-		ls.pausedMS += now.Sub(ls.lastSeen).Milliseconds()
+		ls.pausedMS += elapsedMS
 	}
 	newSpell := false
 	if sess.State == "buffering" {
-		if !ls.buffering { // new spell
+		if ls.buffering {
+			// Spell continues: the elapsed interval was observed stalling.
+			if ls.spellCounted && len(ls.bufEvents) > 0 {
+				ls.bufEvents[len(ls.bufEvents)-1].durationMS += elapsedMS
+			}
+		} else { // transition into buffering
 			ls.buffering = true
-			ls.bufCount++
-			cause, detail := sess.BufferCause() // diagnose from this snapshot's transcode/network signals
-			ls.bufEvents = append(ls.bufEvents, bufEvent{at: now, offset: sess.OffsetMS, cause: cause, detail: detail})
-			newSpell = true
+			seek := offsetJumped(ls.lastOffsetMS, sess.OffsetMS, elapsedMS)
+			ls.spellCounted = ls.steady && !seek
+			if ls.spellCounted {
+				ls.bufCount++
+				cause, detail := sess.BufferCause() // diagnose from this snapshot's transcode/network signals
+				ls.bufEvents = append(ls.bufEvents, bufEvent{at: now, offset: sess.OffsetMS, cause: cause, detail: detail})
+				newSpell = true
+			}
 		}
 	} else {
 		ls.buffering = false
+		ls.spellCounted = false
 	}
+	// steady is what the NEXT observation's transition check reads: it must reflect
+	// this poll's state. Only normal playback arms the counter.
+	ls.steady = sess.State == "playing"
+	ls.lastOffsetMS = sess.OffsetMS
 	ls.state = sess.State
 	ls.lastSeen = now
 	ls.sess = sess // keep the freshest snapshot (offsets, decision, transcode specs)
@@ -205,7 +254,7 @@ func (s *Service) finalize(ctx context.Context, ls *liveSession) {
 		return
 	}
 	for _, be := range ls.bufEvents {
-		_ = s.repo.insertBufferEvent(ctx, id, be.at.Unix(), be.offset, be.cause, be.detail)
+		_ = s.repo.insertBufferEvent(ctx, id, be.at.Unix(), be.offset, be.durationMS, be.cause, be.detail)
 	}
 	s.log.Debug("insights: recorded session", "title", rec.Title, "user", rec.UserName, "buffers", ls.bufCount)
 }

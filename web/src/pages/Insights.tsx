@@ -701,22 +701,22 @@ function ReliabilityView({ connected, onConfigure }: { connected: boolean; onCon
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <p className="max-w-[54ch] text-[12px] text-ink-dim">Where and when streams stuttered — buffering logged as it happens, so you can see who's affected, on what, and why.</p>
+        <p className="max-w-[54ch] text-[12px] text-ink-dim">Where and when streams stalled mid-playback — sampled every few seconds, so treat counts as observed lower bounds. Startup, seeking and resume refills aren't counted.</p>
         <div className="flex gap-1">{[7, 30, 90].map((w) => <Chip key={w} active={win === w} onClick={() => setWin(w)}>{w}d</Chip>)}</div>
       </div>
 
       {/* Summary tiles */}
       <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
-        <StatTile label="Buffer rate" value={`${s.buffer_rate_pct}%`} sub={`${s.buffered_sessions} of ${s.total_sessions} streams`} color={rateColor} />
-        <StatTile label="Buffer events" value={s.total_events.toLocaleString()} sub="spells logged" color={s.total_events ? "var(--avoid)" : "var(--good)"} />
-        <StatTile label="Streams affected" value={s.buffered_sessions.toLocaleString()} sub={`of ${s.total_sessions.toLocaleString()} total`} color={s.buffered_sessions ? "var(--avoid)" : "var(--good)"} />
+        <StatTile label="Observed stall time" value={fmtStall(s.total_stall_ms)} sub="across the window" color={s.total_stall_ms ? "var(--avoid)" : "var(--good)"} />
+        <StatTile label="Stall rate" value={`${s.buffer_rate_pct}%`} sub={`${s.buffered_sessions} of ${s.total_sessions} streams`} color={rateColor} />
+        <StatTile label="Observed stalls" value={s.total_events.toLocaleString()} sub="sampled events" color={s.total_events ? "var(--avoid)" : "var(--good)"} />
       </div>
 
       {clean ? (
         <div className="rounded-xl p-12 text-center" style={{ border: "1px dashed var(--line)", background: "var(--panel)" }}>
           <div className="text-[26px]">✓</div>
           <div className="mt-1 text-[13.5px] font-bold" style={{ color: "var(--good)" }}>Smooth sailing</div>
-          <p className="mx-auto mt-1 max-w-[46ch] text-[12px] text-ink-dim">No buffering recorded in this window. When a stream stutters, the spell is logged here with who, what, and how it was playing — so you can pinpoint bad clients, heavy transcodes, or shaky connections.</p>
+          <p className="mx-auto mt-1 max-w-[46ch] text-[12px] text-ink-dim">No mid-playback stalls observed in this window. When a stream stalls while playing (startup, seeks and resume refills don't count), it's logged here with who, what, and how it was playing — so you can pinpoint heavy transcodes or shaky connections.</p>
         </div>
       ) : (
         <>
@@ -729,14 +729,14 @@ function ReliabilityView({ connected, onConfigure }: { connected: boolean; onCon
           {/* Why streams buffered — diagnosed cause breakdown */}
           {r.causes.length > 0 && (
             <div className="rounded-xl p-4" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
-              <div className="mb-2 text-[12.5px] font-bold">Why streams buffered</div>
+              <div className="mb-2 text-[12.5px] font-bold">Why streams stalled</div>
               <div className="flex flex-wrap gap-2">
                 {r.causes.map((c) => {
                   const cc = CAUSE[c.cause] ?? CAUSE.unknown;
                   return (
                     <span key={c.cause} className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold" style={{ background: "var(--panel-2)", border: `1px solid ${cc.color}` }}>
                       <span className="inline-block h-2 w-2 rounded-full" style={{ background: cc.color }} />
-                      {cc.label}<span className="font-mono text-ink-faint">{c.count}</span>
+                      {cc.label}<span className="font-mono text-ink-faint">{c.stall_ms > 0 ? fmtStall(c.stall_ms) : c.count}</span>
                     </span>
                   );
                 })}
@@ -746,7 +746,7 @@ function ReliabilityView({ connected, onConfigure }: { connected: boolean; onCon
 
           {/* Timeline */}
           <div className="rounded-xl p-4" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
-            <div className="mb-2 text-[12.5px] font-bold">Recent buffer events</div>
+            <div className="mb-2 text-[12.5px] font-bold">Recent observed stalls</div>
             <div className="flex flex-col">
               {r.events.map((e, i) => {
                 const d = DECISION[e.decision] ?? DECISION.direct_play;
@@ -758,6 +758,7 @@ function ReliabilityView({ connected, onConfigure }: { connected: boolean; onCon
                       <span className="w-[92px] flex-none font-mono text-[10.5px] text-ink-faint">{fmtDate(e.at)}</span>
                       <span className="min-w-0 flex-1 truncate"><b className="font-semibold">{e.user}</b> · {e.title}</span>
                       <span className="flex-none font-mono text-[10px] text-ink-faint">@ {fmtClock(e.offset_ms)}</span>
+                      {e.duration_ms > 0 && <span className="flex-none font-mono text-[10px] font-semibold" style={{ color: "var(--avoid)" }}>{fmtStall(e.duration_ms)}</span>}
                       <span className="flex-none rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink, #fff)" }}>{d.label}</span>
                     </div>
                     {e.detail && <div className="pl-[112px] text-[11px]" style={{ color: cc.color }}>{e.detail}</div>}
@@ -782,8 +783,18 @@ function StatTile({ label, value, sub, color }: { label: string; value: string; 
   );
 }
 
+// fmtStall renders observed stall milliseconds compactly ("47s", "3m 12s").
+function fmtStall(ms: number): string {
+  const secs = Math.round(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+}
+
 function OffenderCard({ title, rows }: { title: string; rows: BufferGroup[] }) {
-  const max = Math.max(1, ...rows.map((r) => r.events));
+  // Rank/scale by observed stall time; legacy rows (pre-duration data) fall back to counts.
+  const anyStall = rows.some((r) => r.stall_ms > 0);
+  const metric = (r: BufferGroup) => (anyStall ? r.stall_ms : r.events);
+  const max = Math.max(1, ...rows.map(metric));
   return (
     <div className="rounded-xl p-4" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
       <div className="mb-2 text-[12.5px] font-bold">{title}</div>
@@ -793,10 +804,12 @@ function OffenderCard({ title, rows }: { title: string; rows: BufferGroup[] }) {
             <div key={i} className="text-[11.5px]">
               <div className="flex items-center justify-between gap-2">
                 <span className="min-w-0 flex-1 truncate" title={r.name}>{r.name || "—"}</span>
-                <span className="flex-none font-mono text-ink-dim">{r.events} event{r.events === 1 ? "" : "s"} · {r.rate_pct}%</span>
+                <span className="flex-none font-mono text-ink-dim">
+                  {r.stall_ms > 0 ? `${fmtStall(r.stall_ms)} · ` : ""}{r.events} stall{r.events === 1 ? "" : "s"} · {r.rate_pct}%
+                </span>
               </div>
               <span className="mt-0.5 block h-1.5 w-full overflow-hidden rounded-full" style={{ background: "var(--panel-2)" }}>
-                <span className="block h-full rounded-full" style={{ width: `${(r.events / max) * 100}%`, background: "var(--avoid)" }} />
+                <span className="block h-full rounded-full" style={{ width: `${(metric(r) / max) * 100}%`, background: "var(--avoid)" }} />
               </span>
             </div>
           ))}
