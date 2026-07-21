@@ -52,7 +52,10 @@ type ffprobeOut struct {
 		Height        int    `json:"height"`
 		Channels      int    `json:"channels"`
 		ColorTransfer string `json:"color_transfer"`
-		SideDataList  []struct {
+		Disposition   struct {
+			AttachedPic int `json:"attached_pic"`
+		} `json:"disposition"`
+		SideDataList []struct {
 			SideDataType string `json:"side_data_type"`
 		} `json:"side_data_list"`
 	} `json:"streams"`
@@ -70,7 +73,10 @@ func parse(b []byte) (Info, error) {
 	for _, s := range o.Streams {
 		switch s.CodecType {
 		case "video":
-			if info.Width == 0 { // first/primary video stream
+			if s.Disposition.AttachedPic == 1 {
+				continue // cover art is a video stream too — don't report the movie as MJPEG
+			}
+			if info.VideoCodec == "" { // first REAL video stream
 				info.Width, info.Height = s.Width, s.Height
 				info.VideoCodec = normalizeVideoCodec(s.CodecName)
 				info.HDR = detectHDR(s.ColorTransfer, s.SideDataList)

@@ -35,7 +35,11 @@ func TestCandidacyRules(t *testing.T) {
 
 		// Old codecs are the point of the module and always convert.
 		{"vc1 to hevc converts", "vc1", "hevc", false, true},
-		{"vp9 to av1 converts", "vp9", "av1", false, true},
+
+		// VP9 counts as modern (it's an efficient codec in the HEVC class), so re-encoding
+		// it is a second lossy generation and opt-in like the others.
+		{"vp9 to av1 is skipped by default", "vp9", "av1", false, false},
+		{"vp9 to av1 converts when opted in", "vp9", "av1", true, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -152,10 +156,12 @@ func indexOf(s, sub string) int {
 // hdr10=1 / colorprim= (those are x265-only knobs). Verified against the bundled ffmpeg by
 // encoding and probing the output.
 func TestAV1HDRParams(t *testing.T) {
-	meta := &HDR10Meta{MasterDisplay: "G(0.265,0.690)B(0.150,0.060)R(0.680,0.320)WP(0.3127,0.3290)L(1000,0.0001)", MaxCLL: "1000,400"}
+	// The probed MasterDisplay is in x265's integer units (chromaticity 0.00002, luminance
+	// 0.0001); SVT-AV1's documented format is floats, so av1HDRParams must convert.
+	meta := &HDR10Meta{MasterDisplay: "G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1)", MaxCLL: "1000,400"}
 
 	params, tags := av1HDRParams(&MediaInfo{HDR: "HDR10", HDR10: meta})
-	if !contains(params, "mastering-display=G(0.265,0.690)") || !contains(params, "content-light=1000,400") {
+	if !contains(params, "mastering-display=G(0.2650,0.6900)") || !contains(params, "content-light=1000,400") {
 		t.Errorf("AV1 HDR10 params = %q", params)
 	}
 	if contains(params, "hdr10=1") || contains(params, "colorprim") {

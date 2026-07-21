@@ -9,9 +9,22 @@ import (
 
 // probeCache persists ffprobe results so the library scan doesn't re-analyze
 // every file on each restart. An entry is valid only while the file's size and
-// mtime are unchanged; any change (or a missing file) forces a fresh probe.
+// mtime are unchanged AND it was written by the current probe schema; any change
+// (or a missing file) forces a fresh probe.
 // Backed by the convert_probe_cache table.
 type probeCache struct{ db *sql.DB }
+
+// probeSchemaVersion invalidates cached probes when MediaInfo gains fields the
+// pipelines rely on. Bumped for DVProfile / Interlaced / VideoIndex / FrameRateRat —
+// without this, a DV profile 5 file with a stale cache entry could still reach the
+// encoder router looking like plain HDR.
+const probeSchemaVersion = 2
+
+// cachedProbe wraps MediaInfo with the schema version it was probed under.
+type cachedProbe struct {
+	Ver int `json:"ver"`
+	MediaInfo
+}
 
 // get returns the cached MediaInfo for path when the stored size + mtime match
 // the current file (i.e. the file hasn't changed since it was probed).
@@ -23,16 +36,17 @@ func (c *probeCache) get(ctx context.Context, path string, size, mtime int64) (*
 	if err != nil {
 		return nil, false
 	}
-	var mi MediaInfo
-	if json.Unmarshal([]byte(infoJSON), &mi) != nil {
-		return nil, false
+	var cp cachedProbe
+	if json.Unmarshal([]byte(infoJSON), &cp) != nil || cp.Ver != probeSchemaVersion {
+		return nil, false // unreadable or pre-schema-bump — re-probe
 	}
+	mi := cp.MediaInfo
 	return &mi, true
 }
 
 // put upserts a probe result for path, stamped with the file's size + mtime.
 func (c *probeCache) put(ctx context.Context, path string, size, mtime int64, mi *MediaInfo) {
-	b, err := json.Marshal(mi)
+	b, err := json.Marshal(cachedProbe{Ver: probeSchemaVersion, MediaInfo: *mi})
 	if err != nil {
 		return
 	}

@@ -15,24 +15,36 @@ import (
 
 // MediaInfo is the probed spec of a single media file.
 type MediaInfo struct {
-	Container   string        `json:"container"`
-	VideoCodec  string        `json:"video_codec"`
-	Width       int           `json:"width"`
-	Height      int           `json:"height"`
-	Resolution  string        `json:"resolution"` // "2160p" | "1080p" | "720p" | "SD"
-	HDR         string        `json:"hdr"`        // "SDR" | "HDR10" | "HDR10+" | "Dolby Vision"
-	BitrateKbps int           `json:"bitrate_kbps"`
-	FrameRate   float64       `json:"frame_rate"`
-	DurationSec float64       `json:"duration_sec"`
-	SizeBytes   int64         `json:"size_bytes"`
-	AudioTracks int           `json:"audio_tracks"`
-	SubTracks   int           `json:"sub_tracks"`
-	TenBit      bool          `json:"ten_bit"`
-	VFR         bool          `json:"vfr"`    // variable frame rate → needs CFR conversion
-	HasCC       bool          `json:"has_cc"` // embedded EIA/CEA-608/708 closed captions in the video
-	Audio       []AudioStream `json:"audio,omitempty"`
-	Subs        []SubStream   `json:"subs,omitempty"`
-	HDR10       *HDR10Meta    `json:"hdr10,omitempty"` // static HDR10 metadata for passthrough (when present)
+	Container   string  `json:"container"`
+	VideoCodec  string  `json:"video_codec"`
+	VideoIndex  int     `json:"video_index,omitempty"` // position among VIDEO streams (the N in 0:v:N) — nonzero when cover art precedes the movie
+	Width       int     `json:"width"`
+	Height      int     `json:"height"`
+	Resolution  string  `json:"resolution"`           // "2160p" | "1080p" | "720p" | "SD"
+	HDR         string  `json:"hdr"`                  // "SDR" | "HDR10" | "HDR10+" | "Dolby Vision"
+	DVProfile   int     `json:"dv_profile,omitempty"` // Dolby Vision profile (5, 7, 8…); 0 = unknown / not DV
+	BitrateKbps int     `json:"bitrate_kbps"`
+	FrameRate   float64 `json:"frame_rate"`
+	// FrameRateRat is the frame rate as ffprobe's exact rational (e.g. "24000/1001"), from
+	// avg_frame_rate. Anywhere a rate is stamped onto a stream this is the value to use —
+	// a %.6g float of 23.976… re-times every frame slightly and drifts over a feature.
+	FrameRateRat string  `json:"frame_rate_rat,omitempty"`
+	DurationSec  float64 `json:"duration_sec"`
+	SizeBytes    int64   `json:"size_bytes"`
+	AudioTracks  int     `json:"audio_tracks"`
+	SubTracks    int     `json:"sub_tracks"`
+	TenBit       bool    `json:"ten_bit"`
+	Interlaced   bool    `json:"interlaced,omitempty"` // field_order says the content is interlaced → needs deinterlacing
+	VFR          bool    `json:"vfr"`                  // variable frame rate → needs CFR conversion
+	HasCC        bool    `json:"has_cc"`               // embedded EIA/CEA-608/708 closed captions in the video
+	// Colour tags as probed (empty / "unknown" when untagged). Re-asserted on hardware
+	// encodes, which don't always forward them.
+	ColorPrimaries string        `json:"color_primaries,omitempty"`
+	ColorTransfer  string        `json:"color_transfer,omitempty"`
+	ColorSpace     string        `json:"color_space,omitempty"`
+	Audio          []AudioStream `json:"audio,omitempty"`
+	Subs           []SubStream   `json:"subs,omitempty"`
+	HDR10          *HDR10Meta    `json:"hdr10,omitempty"` // static HDR10 metadata for passthrough (when present)
 }
 
 // HDR10Meta is the static HDR10 mastering metadata, pre-formatted for x265 so it can be
@@ -97,6 +109,9 @@ func mediaSpec(mi *MediaInfo) string {
 		fps := strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.3f", mi.FrameRate), "0"), ".") + " fps"
 		if mi.VFR {
 			fps += " VFR"
+		}
+		if mi.Interlaced {
+			fps += " interlaced"
 		}
 		parts = append(parts, fps)
 	}
@@ -196,15 +211,22 @@ func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 			Height         int    `json:"height"`
 			PixFmt         string `json:"pix_fmt"`
 			ColorTransfer  string `json:"color_transfer"`
+			ColorPrimaries string `json:"color_primaries"`
+			ColorSpace     string `json:"color_space"`
+			FieldOrder     string `json:"field_order"`
 			RFrameRate     string `json:"r_frame_rate"`
 			AvgFrameRate   string `json:"avg_frame_rate"`
 			ClosedCaptions int    `json:"closed_captions"`
 			Channels       int    `json:"channels"`
-			Tags           struct {
+			Disposition    struct {
+				AttachedPic int `json:"attached_pic"`
+			} `json:"disposition"`
+			Tags struct {
 				Language string `json:"language"`
 			} `json:"tags"`
 			SideDataList []struct {
 				SideDataType string `json:"side_data_type"`
+				DVProfile    int    `json:"dv_profile"` // set on the DOVI configuration record
 			} `json:"side_data_list"`
 		} `json:"streams"`
 		Format struct {
@@ -223,20 +245,42 @@ func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 	if br, _ := strconv.Atoi(raw.Format.BitRate); br > 0 {
 		mi.BitrateKbps = br / 1000
 	}
+	videoSeen := 0
 	for _, s := range raw.Streams {
 		switch s.CodecType {
 		case "video":
-			if mi.VideoCodec != "" {
-				continue // first video stream wins
+			vidx := videoSeen
+			videoSeen++
+			// Cover art is a video stream too (disposition attached_pic). Picking it as THE
+			// video meant "converting" a JPEG and mapping the wrong stream.
+			if s.Disposition.AttachedPic == 1 {
+				continue
 			}
+			if mi.VideoCodec != "" {
+				continue // first real video stream wins
+			}
+			mi.VideoIndex = vidx
 			mi.VideoCodec = s.CodecName
 			mi.Width, mi.Height = s.Width, s.Height
 			mi.Resolution = resolutionLabel(s.Width, s.Height)
-			mi.FrameRate = parseRate(s.RFrameRate)
+			// Interlaced content needs a deinterlace filter or the encode bakes combing in.
+			switch s.FieldOrder {
+			case "tt", "bb", "tb", "bt":
+				mi.Interlaced = true
+			}
+			r := parseRate(s.RFrameRate)
 			avg := parseRate(s.AvgFrameRate)
-			// VFR when the nominal (r) and average frame rates differ meaningfully.
-			mi.VFR = avg > 0 && mi.FrameRate > 0 && (mi.FrameRate-avg)/avg > 0.02
+			// Prefer the average rate for display/stamping: for interlaced streams r_frame_rate
+			// is often the FIELD rate (2× the frame rate), and for VFR it's the max rate.
+			mi.FrameRate = avg
+			mi.FrameRateRat = s.AvgFrameRate
+			if avg <= 0 {
+				mi.FrameRate = r
+				mi.FrameRateRat = s.RFrameRate
+			}
+			mi.VFR = detectVFR(r, avg, mi.Interlaced)
 			mi.HasCC = s.ClosedCaptions == 1
+			mi.ColorPrimaries, mi.ColorTransfer, mi.ColorSpace = s.ColorPrimaries, s.ColorTransfer, s.ColorSpace
 			// >8-bit, not just 10-bit: a 12-bit source matched neither substring, so it was
 			// treated as 8-bit and truncated on encode.
 			mi.TenBit = strings.Contains(s.PixFmt, "10") || strings.Contains(s.PixFmt, "p10") ||
@@ -253,10 +297,18 @@ func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 			}
 			for _, sd := range s.SideDataList {
 				t := strings.ToLower(sd.SideDataType)
-				if strings.Contains(t, "dolby vision") {
+				switch {
+				// ffprobe's stream-level name is "DOVI configuration record", so matching only
+				// "dolby vision" (the FRAME-level name) made this branch dead code.
+				case strings.Contains(t, "dolby vision") || strings.Contains(t, "dovi"):
 					mi.HDR = "Dolby Vision"
-				} else if strings.Contains(t, "hdr dynamic") || strings.Contains(t, "hdr10+") {
-					mi.HDR = "HDR10+"
+					if sd.DVProfile > 0 {
+						mi.DVProfile = sd.DVProfile
+					}
+				case strings.Contains(t, "hdr dynamic") || strings.Contains(t, "hdr10+"):
+					if mi.HDR != "Dolby Vision" { // DV+HDR10+ discs exist; DV routing wins
+						mi.HDR = "HDR10+"
+					}
 				}
 			}
 		case "audio":
@@ -271,11 +323,15 @@ func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 			mi.SubTracks++
 		}
 	}
-	// For HDR files, pull the mastering-display + content-light values (so a transcode can
-	// re-pass them; ffmpeg drops them on a naive re-encode) and detect a Dolby Vision RPU, which
-	// ffmpeg exposes as frame — not stream — side data. One extra targeted probe, only for HDR.
-	if mi.HDR == "HDR10" || mi.HDR == "HDR10+" || mi.HDR == "Dolby Vision" {
-		meta, hasDV := probeHDR10(ctx, ffprobe, path)
+	// Pull the mastering-display + content-light values (so a transcode can re-pass them;
+	// ffmpeg drops them on a naive re-encode) and detect a Dolby Vision RPU, which ffmpeg
+	// exposes as frame — not stream — side data. The probe runs for ANY 10-bit HEVC stream,
+	// not just transfer-flagged ones: Dolby Vision profile 5 typically has
+	// color_transfer=unspecified, so gating on PQ let it slip through as SDR into hardware
+	// encodes that strip the RPU (green/purple output, original recycled).
+	if mi.HDR == "HDR10" || mi.HDR == "HDR10+" || mi.HDR == "Dolby Vision" ||
+		(mi.TenBit && mi.VideoCodec == "hevc") {
+		meta, hasDV := probeHDR10(ctx, ffprobe, path, mi.VideoIndex)
 		mi.HDR10 = meta
 		if hasDV {
 			mi.HDR = "Dolby Vision"
@@ -284,11 +340,30 @@ func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 	return mi, nil
 }
 
-// probeHDR10 decodes one frame and reads its mastering-display + content-light side data
-// (formatted the way x265's master-display / max-cll params expect), and reports whether the
-// frame carries a Dolby Vision RPU. Meta is nil when no static metadata is present.
-func probeHDR10(ctx context.Context, ffprobe, path string) (meta *HDR10Meta, hasDV bool) {
-	out, err := exec.CommandContext(ctx, ffprobe, "-v", "error", "-select_streams", "v",
+// detectVFR decides whether a stream is really variable-frame-rate from its nominal (r) and
+// average frame rates. Requires a coherent avg (VFR sources sometimes report avg 0/0 — that's
+// "unknown", not evidence), and ignores the classic 2× artifact on interlaced streams, where
+// r_frame_rate is the FIELD rate: 59.94 fields vs 29.97 frames is CFR, not VFR.
+func detectVFR(r, avg float64, interlaced bool) bool {
+	if r <= 0 || avg <= 0 {
+		return false
+	}
+	if (r-avg)/avg <= 0.02 {
+		return false
+	}
+	if ratio := r / avg; interlaced && ratio > 1.9 && ratio < 2.1 {
+		return false
+	}
+	return true
+}
+
+// probeHDR10 decodes one frame of video stream videoIndex and reads its mastering-display +
+// content-light side data (formatted the way x265's master-display / max-cll params expect),
+// and reports whether the frame carries a Dolby Vision RPU. Meta is nil when no static
+// metadata is present.
+func probeHDR10(ctx context.Context, ffprobe, path string, videoIndex int) (meta *HDR10Meta, hasDV bool) {
+	out, err := exec.CommandContext(ctx, ffprobe, "-v", "error",
+		"-select_streams", fmt.Sprintf("v:%d", videoIndex),
 		"-read_intervals", "%+#1", "-show_frames", "-print_format", "json", path).Output()
 	if err != nil {
 		return nil, false
@@ -317,7 +392,8 @@ func probeHDR10(ctx context.Context, ffprobe, path string) (meta *HDR10Meta, has
 	}
 	m := &HDR10Meta{}
 	for _, sd := range raw.Frames[0].SideDataList {
-		if strings.Contains(strings.ToLower(sd.SideDataType), "dolby vision") {
+		t := strings.ToLower(sd.SideDataType)
+		if strings.Contains(t, "dolby vision") || strings.Contains(t, "dovi") {
 			hasDV = true
 		}
 		switch sd.SideDataType {

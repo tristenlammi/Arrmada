@@ -16,9 +16,16 @@ import (
 // Both are HEVC-only and run on the CPU (libx265) path; when a tool or the metadata is missing,
 // callers fall back to the static-HDR10 base or skip, never silently degrading a file.
 
+// errDVProfile5 is the refusal returned when the Dolby Vision pipeline is asked to convert a
+// profile 5 source. Kept as a sentinel so the router's skip reason and the pipeline's error
+// can never drift apart.
+var errDVProfile5 = fmt.Errorf("Dolby Vision profile 5 (IPT-PQ-c2) can't be converted faithfully — " +
+	"its base layer isn't HDR10-compatible even after an RPU conversion to 8.1; keeping the original")
+
 // extractHDR10Plus pulls the HDR10+ dynamic metadata from a file's HEVC stream into a JSON file
 // that x265 consumes via dhdr10-info. Returns an error (and writes nothing usable) if the file
-// carries no HDR10+ metadata.
+// carries no HDR10+ metadata. NOTE: the pipeline (this bitstream filter, and hdr10plus_tool
+// itself) is HEVC-only — the caller's gate must ensure the SOURCE is HEVC before extracting.
 func (s *Service) extractHDR10Plus(ctx context.Context, src, jsonOut string) error {
 	// Feed the raw HEVC elementary stream (Annex-B) into hdr10plus_tool.
 	ff := exec.CommandContext(ctx, s.ffmpeg, "-loglevel", "error", "-i", src,
@@ -40,32 +47,39 @@ func (s *Service) encodeDolbyVision(ctx context.Context, job *Job, src, dst stri
 	if s.doviTool == "" {
 		return fmt.Errorf("dovi_tool not available")
 	}
+	// Profile 5 (IPT-PQ-c2) is refused outright. Converting its RPU to 8.1 does NOT convert
+	// the base-layer PIXELS, which stay in IPT-PQ-c2 — the "HDR10-compatible" output renders
+	// wrong colors on every non-DV display. The router (canPreserveHDR) skips P5 before a job
+	// gets here; this is defence in depth for anything that slips past it.
+	if mi.DVProfile == 5 {
+		return errDVProfile5
+	}
 	stem := filepath.Join(s.scratchDir, fmt.Sprintf("dv-%d", job.ID))
 	rpu, encoded, injected := stem+".rpu.bin", stem+".hevc", stem+".inj.hevc"
 	defer os.Remove(rpu)
 	defer os.Remove(encoded)
 	defer os.Remove(injected)
 
-	// 1) Extract the RPU untouched (mode 0) so we can read its profile and pick the right
-	//    conversion — profile 5 needs mode 3, everything else (7 dual-layer, 8.x) mode 2.
+	// 1) Extract the RPU untouched (mode 0) so we can read its profile — the stream-level
+	//    probe can miss it (some sources carry no DOVI configuration record).
 	if err := s.extractDoviRPU(ctx, src, rpu); err != nil {
 		return fmt.Errorf("extract RPU: %w", err)
 	}
-	mode := "2"
 	if s.doviProfile(ctx, rpu) == 5 {
-		mode = "3" // profile 5 (IPT-PQ-c2) → 8.1, else the picture tints green/pink
+		return errDVProfile5
 	}
 	// 2) Encode the video to a raw HEVC 10-bit elementary stream (the slow, progress-tracked step).
 	if err := s.encodeHEVCStream(ctx, job, src, encoded, mi, plan); err != nil {
 		return fmt.Errorf("encode: %w", err)
 	}
 	// 3) Interleave the RPU back into the encoded stream, converting it to profile 8.1 (broadly
-	//    compatible: plays as HDR10 on non-DV displays, DV where supported).
-	if out, err := exec.CommandContext(ctx, s.doviTool, "-m", mode, "inject-rpu", "-i", encoded, "--rpu-in", rpu, "-o", injected).CombinedOutput(); err != nil {
+	//    compatible: plays as HDR10 on non-DV displays, DV where supported). Mode 2 handles the
+	//    dual-layer (7) and 8.x profiles; profile 5 never reaches this point.
+	if out, err := exec.CommandContext(ctx, s.doviTool, "-m", "2", "inject-rpu", "-i", encoded, "--rpu-in", rpu, "-o", injected).CombinedOutput(); err != nil {
 		return fmt.Errorf("inject RPU: %v (%s)", err, tailStr(out))
 	}
 	// 4) Remux the DV video with the original audio/subtitles into the final container.
-	if err := s.remuxVideoStream(ctx, injected, src, dst, mi.FrameRate); err != nil {
+	if err := s.remuxVideoStream(ctx, injected, src, dst, mi.FrameRateRat); err != nil {
 		return fmt.Errorf("remux: %w", err)
 	}
 	return nil
@@ -90,7 +104,7 @@ func (s *Service) encodeHDR10Plus(ctx context.Context, job *Job, src, dst string
 	if out, err := exec.CommandContext(ctx, s.hdr10plusTool, "inject", "-i", encoded, "-j", jsonPath, "-o", injected).CombinedOutput(); err != nil {
 		return fmt.Errorf("inject HDR10+: %v (%s)", err, tailStr(out))
 	}
-	if err := s.remuxVideoStream(ctx, injected, src, dst, mi.FrameRate); err != nil {
+	if err := s.remuxVideoStream(ctx, injected, src, dst, mi.FrameRateRat); err != nil {
 		return fmt.Errorf("remux: %w", err)
 	}
 	return nil
@@ -135,24 +149,31 @@ func (s *Service) doviProfile(ctx context.Context, rpu string) int {
 // encodeHEVCStream re-encodes only the video to a raw HEVC 10-bit Annex-B stream (no audio/subs),
 // carrying the HDR10 base metadata so the profile-8.1 result is HDR10-correct. Live progress is
 // parsed from the -progress pipe.
+//
+// NO frame-rate flattening here, deliberately: the DV RPU / HDR10+ JSON is extracted from the
+// SOURCE frame-for-frame, and -fps_mode cfr changes the frame count, so every subsequent frame's
+// dynamic metadata lands on the wrong picture after inject. Frame counts must match exactly.
+// (The remux stamps the stream at the source's exact average rate, so timing still lines up.)
 func (s *Service) encodeHEVCStream(ctx context.Context, job *Job, src, dst string, mi *MediaInfo, plan Plan) error {
 	crf := plan.Quality
 	if crf <= 0 {
 		crf = crfDefault("hevc")
 	}
-	args := []string{"-y", "-hide_banner", "-nostats", "-progress", "pipe:1", "-i", src, "-map", "0:v:0", "-an", "-sn"}
-	// A raw Annex-B stream carries no timestamps, so the remux stamps it at one constant rate.
-	// A VFR source therefore has to be flattened HERE, or its variable timing is reinterpreted
-	// as constant while the audio keeps real timing — progressive A/V drift. The normal path
-	// does this in compileOutputArgs; this path was missing it entirely.
-	if plan.VFRToCFR && mi.VFR {
-		args = append(args, "-fps_mode", "cfr")
+	cores := s.cpuCores(ctx)
+	args := []string{"-y", "-hide_banner", "-nostats", "-progress", "pipe:1",
+		"-threads", strconv.Itoa(cores),
+		"-i", src, "-map", fmt.Sprintf("0:v:%d", mi.VideoIndex), "-an", "-sn"}
+	scale := plan.ScaleHeight > 0 && mi.Height > plan.ScaleHeight
+	if vf := swFilterChain(mi, scale, plan.ScaleHeight); vf != "" {
+		args = append(args, "-vf", vf)
 	}
-	if plan.ScaleHeight > 0 && mi.Height > plan.ScaleHeight {
-		args = append(args, "-vf", scaleCPU(plan.ScaleHeight))
-	}
-	args = append(args, "-c:v", "libx265", "-preset", "medium", "-crf", strconv.Itoa(crf), "-pix_fmt", "yuv420p10le")
-	args = append(args, hdr10Args(mi)...) // BT.2020/PQ + mastering (dynamic metadata re-added later)
+	// Same quality tuning as the standard CPU path — preset slow, the tuned x265 params, the
+	// HDR10 args merged in, and pools bounded (or disabled under the NUMA workaround). This
+	// path used a bare "-preset medium", so DV/HDR10+ files — the premium content — were the
+	// only ones encoded BELOW the module's quality bar, and blocked-NUMA machines crashed here.
+	hdrParams, colourTags := hdr10Params(mi)
+	args = append(args, cpuVideoArgs("libx265", "hevc", crf, true, cores, hdrParams, s.noNumaPools)...)
+	args = append(args, colourTags...)
 	args = append(args, "-f", "hevc", dst)
 	return s.runWithProgress(ctx, job, args, mi.DurationSec)
 }
@@ -162,16 +183,20 @@ func (s *Service) encodeHEVCStream(ctx context.Context, job *Job, src, dst strin
 // temporary MP4 because this ffmpeg build won't ingest a raw HEVC ES straight into Matroska (no
 // timestamps) — MP4 accepts it with an input frame rate, and the resulting MP4 then remuxes
 // cleanly into MKV. Shared by the Dolby Vision and HDR10+ pipelines.
-func (s *Service) remuxVideoStream(ctx context.Context, video, src, dst string, frameRate float64) error {
+//
+// frameRate is ffprobe's EXACT RATIONAL (e.g. "24000/1001", from avg_frame_rate). Stamping a
+// %.6g float of 23.976… instead re-times every frame slightly, and over a feature the video
+// drifts audibly out of sync with the copied audio.
+func (s *Service) remuxVideoStream(ctx context.Context, video, src, dst, frameRate string) error {
 	r := frameRate
-	if r <= 0 {
-		r = 24
+	if r == "" || r == "0/0" || strings.HasPrefix(r, "0/") {
+		r = "24"
 	}
 	tmp := video + ".mp4"
 	defer os.Remove(tmp)
 	// 1) Raw HEVC ES → video-only MP4 (the -r generates timestamps for the timestamp-less ES).
 	if out, err := exec.CommandContext(ctx, s.ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-		"-r", fmt.Sprintf("%.6g", r), "-i", video, "-c", "copy", "-tag:v", "hvc1", tmp).CombinedOutput(); err != nil {
+		"-r", r, "-i", video, "-c", "copy", "-tag:v", "hvc1", tmp).CombinedOutput(); err != nil {
 		return fmt.Errorf("package video: %v (%s)", err, tailStr(out))
 	}
 	// 2) MP4 video + original audio/subtitles → final MKV.

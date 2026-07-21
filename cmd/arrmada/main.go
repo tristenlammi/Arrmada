@@ -406,6 +406,27 @@ func main() {
 			log.Warn("convert: reindex after import failed", "series_id", seriesID, "err", err)
 		}
 	})
+	// Movie imports need the same treatment: without it a new or upgraded movie was
+	// invisible to Convert until the daily 03:00 index sweep — and permanently, if the
+	// replacement landed at the same path (the sweep skips known paths).
+	go func() {
+		events, cancelSub := bus.Subscribe("movie.downloaded")
+		defer cancelSub()
+		for {
+			select {
+			case <-runCtx.Done():
+				return
+			case ev := <-events:
+				if data, ok := ev.Data.(map[string]any); ok {
+					if id, ok := data["id"].(int64); ok && id > 0 {
+						if err := convertSvc.IndexMovie(runCtx, id); err != nil {
+							log.Warn("convert: reindex after movie import failed", "movie_id", id, "err", err)
+						}
+					}
+				}
+			}
+		}
+	}()
 	// Auto-convert sweep. Hourly, not 12-hourly: Sweep only queues while inside the encode
 	// window, so two daily ticks against a typical few-hour window usually landed outside it
 	// and auto-convert silently never fired. Re-queueing is cheap now that jobs are deduped,

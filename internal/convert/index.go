@@ -264,9 +264,17 @@ func (s *Service) MaybeIndexSweep(ctx context.Context) {
 	if !ok {
 		hh, mm, _ = parseHHMM(defaultScanAt)
 	}
-	// Run once we're inside the configured hour. Startup does its own IndexAll, so this
-	// is purely the recurring daily pass — there's no need to catch up on boot.
-	if now.Hour() != hh || now.Minute() < mm {
+	// Run once we're past today's scheduled time and haven't yet swept since it.
+	// The old check required the hourly tick to land INSIDE the scheduled hour at or
+	// after the minute — a 03:55 schedule had a ~1-in-12 chance of ever firing.
+	sched := time.Date(now.Year(), now.Month(), now.Day(), hh, mm, 0, 0, now.Location())
+	if s.lastSweep.IsZero() {
+		// Startup does its own IndexAll; treat boot as the baseline rather than
+		// re-sweeping on the first tick.
+		s.lastSweep = now
+		return
+	}
+	if now.Before(sched) || !s.lastSweep.Before(sched) {
 		return
 	}
 	s.lastSweep = now
@@ -454,6 +462,11 @@ func codecClass(c string) string {
 		return "hevc"
 	case "av1", "av01":
 		return "av1"
+	case "vp9", "vp09":
+		// Modern and efficient: re-encoding a VP9 web-dl to HEVC is a second lossy
+		// generation for roughly nothing — the class the module's own philosophy
+		// (see isCandidateCodec) says not to touch by default.
+		return "vp9"
 	default:
 		return "other"
 	}
