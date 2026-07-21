@@ -38,14 +38,20 @@ type Review struct {
 	CreatedAt     string `json:"created_at"`
 }
 
-// hasReview reports whether a download hash already has a review row (pending or
-// resolved) — so the import loop neither re-flags nor re-imports it.
+// hasReview reports whether a download hash has a PENDING review — the import loop
+// must leave it alone while a human decision is outstanding.
+//
+// Resolved rows deliberately don't count anymore. They used to, which meant a
+// DISMISSED review held its download in limbo forever: the sweep re-held it every
+// 30 seconds, it never imported, and seed cleanup never removed it. Each resolution
+// path now leaves the download unambiguous instead — ImportReview and DismissReview
+// record the hash as handled, RejectReview removes the download outright.
 func (c *Coordinator) hasReview(ctx context.Context, hash string) bool {
 	if hash == "" {
 		return false
 	}
 	var n int
-	_ = c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM import_reviews WHERE hash = ?`, hash).Scan(&n)
+	_ = c.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM import_reviews WHERE hash = ? AND status = 'pending'`, hash).Scan(&n)
 	return n > 0
 }
 
@@ -99,27 +105,44 @@ func (c *Coordinator) resolveReview(ctx context.Context, id int64) error {
 	return err
 }
 
-// grabbedMediaFor finds the media a finished download was grabbed for, matching
-// the download name to a grab record (normalized). Returns the media id + indexer.
+// grabbedMediaFor finds the media a finished download was grabbed for, by name only.
+// Prefer grabbedMediaForHash wherever the torrent hash is available — names are the
+// unreliable key (see matchGrab).
 func (c *Coordinator) grabbedMediaFor(ctx context.Context, name, mediaType string) (id int64, indexer string, ok bool) {
+	return c.grabbedMediaForHash(ctx, "", name, mediaType)
+}
+
+// grabbedMediaForHash finds the media a finished download was grabbed for: info hash
+// first (the torrent's real identity), then the normalized name, with the extension
+// stripped like matchGrab does — a single-file torrent is "<release>.mkv" while the
+// grab records "<release>", and the raw normTitle comparison used here silently never
+// matched those, letting wrong-movie content sail past the review gate.
+func (c *Coordinator) grabbedMediaForHash(ctx context.Context, hash, name, mediaType string) (id int64, indexer string, ok bool) {
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT movie_id, title, indexer FROM grabs WHERE media_type = ? ORDER BY id DESC LIMIT 1000`, mediaType)
+		`SELECT movie_id, title, indexer, info_hash FROM grabs WHERE media_type = ? ORDER BY id DESC LIMIT 1000`, mediaType)
 	if err != nil {
 		return 0, "", false
 	}
 	defer rows.Close()
-	target := normTitle(name)
+	wantHash := strings.ToLower(hash)
+	target := normRelease(name)
+	var nameID int64
+	var nameIdx string
+	var nameHit bool
 	for rows.Next() {
 		var mid int64
-		var title, idx string
-		if rows.Scan(&mid, &title, &idx) != nil {
+		var title, idx, ihash string
+		if rows.Scan(&mid, &title, &idx, &ihash) != nil {
 			continue
 		}
-		if normTitle(title) == target {
-			return mid, idx, true
+		if wantHash != "" && ihash != "" && strings.ToLower(ihash) == wantHash {
+			return mid, idx, true // exact identity — no better answer exists
+		}
+		if !nameHit && normRelease(title) == target {
+			nameID, nameIdx, nameHit = mid, idx, true
 		}
 	}
-	return 0, "", false
+	return nameID, nameIdx, nameHit
 }
 
 // HoldMovieImport is the import gate for the generic movie importer: it holds a
@@ -130,9 +153,12 @@ func (c *Coordinator) HoldMovieImport(ctx context.Context, hash, name, contentPa
 		return "", false
 	}
 	if c.hasReview(ctx, hash) {
-		return "held for review", true // already flagged or resolved — never auto-import
+		return "held for review", true // a pending review — never auto-import
 	}
-	mid, indexer, grabbed := c.grabbedMediaFor(ctx, name, "movie")
+	if c.hashAlreadyImported(ctx, hash) {
+		return "", false // already handled (e.g. imported via review) — nothing to gate
+	}
+	mid, indexer, grabbed := c.grabbedMediaForHash(ctx, hash, name, "movie")
 	if !grabbed {
 		return "", false // not something we grabbed for a specific movie — import as usual
 	}
@@ -169,7 +195,7 @@ func (c *Coordinator) HandleMovieImportFailure(ctx context.Context, hash, name, 
 	if vids, err := library.FindVideos(contentPath); err != nil || len(vids) > 0 {
 		return // has video, or we can't tell — treat as transient and retry
 	}
-	mid, indexerName, grabbed := c.grabbedMediaFor(ctx, name, "movie")
+	mid, indexerName, grabbed := c.grabbedMediaForHash(ctx, hash, name, "movie")
 	if !grabbed {
 		m, ok := c.movies.MatchRelease(ctx, name)
 		if !ok {
@@ -205,18 +231,31 @@ func (c *Coordinator) RejectReview(ctx context.Context, id int64) error {
 			c.log.Warn("review: remove download failed", "hash", r.Hash, "err", err)
 		}
 	}
-	switch r.MediaType {
-	case "series":
+	switch {
+	case r.ExpectedID == 0:
+		// The review wasn't tied to a specific library item ("matches no series/movie").
+		// A blocklist row against id 0 is inert — nothing ever reads it — so a rejected
+		// junk release stayed grabbable everywhere. The user just called it junk: block
+		// it library-wide.
+		c.addBlockGlobal(ctx, r.Name, r.Indexer, "rejected in review")
+	case r.MediaType == "series":
 		c.addBlockSeries(ctx, r.ExpectedID, r.Name, r.Indexer, "rejected in review")
-	case "movie":
+	case r.MediaType == "movie":
 		_ = c.addBlock(ctx, r.ExpectedID, r.Name, r.Indexer, "", "rejected in review")
 	}
 	return c.resolveReview(ctx, id)
 }
 
 // DismissReview resolves the review without touching the download (admin will
-// handle it manually).
+// handle it manually). The hash is recorded as handled so the sweep stops
+// re-scanning the download every 30 seconds — resolving alone left it in limbo:
+// held forever, never imported, never seed-cleaned.
 func (c *Coordinator) DismissReview(ctx context.Context, id int64) error {
+	r, err := c.getReview(ctx, id)
+	if err != nil {
+		return err
+	}
+	c.recordImportedHash(ctx, r.Hash, r.Name, r.SizeBytes)
 	return c.resolveReview(ctx, id)
 }
 
@@ -251,7 +290,7 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 		if err != nil {
 			return err
 		}
-		n, matched, _ := c.importSeriesInto(ctx, s, r.ContentPath)
+		n, matched, _, _ := c.importSeriesInto(ctx, s, r.ContentPath)
 		if matched == 0 {
 			return fmt.Errorf("no episode files could be imported into %q", s.Title)
 		}
@@ -267,6 +306,9 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 	default:
 		return fmt.Errorf("unknown media type %q", r.MediaType)
 	}
+	// Mark the download handled so the sweep doesn't re-scan it (and, with the review
+	// now resolved, re-hold or mis-blocklist it as "fully imported").
+	c.recordImportedHash(ctx, r.Hash, r.Name, r.SizeBytes)
 	return c.resolveReview(ctx, id)
 }
 
@@ -283,7 +325,11 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 // metadata" from "this release simply doesn't contain the rest of the season". Both look
 // identical from placed/matched alone, and conflating them told users a perfectly good
 // partial pack had a numbering fault.
-func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, contentPath string) (placed, matched, unresolved int) {
+// failed counts files that resolved to wanted episodes but couldn't be placed
+// (link/copy error, disk full). The sweep must NOT mark the download handled while
+// failed > 0 — a swallowed transient error used to leave the episode permanently
+// unimported with the torrent recorded as done.
+func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, contentPath string) (placed, matched, unresolved, failed int) {
 	// Unpack any archives first (scene releases ship the episode inside a RAR set — this
 	// is the Unpackerr job). Recursive, so a season pack's per-episode subfolders unpack.
 	if fi, err := os.Stat(contentPath); err == nil && fi.IsDir() {
@@ -297,11 +343,11 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	if err != nil {
 		c.log.Warn("series import: couldn't scan the download folder for videos",
 			"series", s.Title, "content_path", contentPath, "err", err)
-		return 0, 0, 0
+		return 0, 0, 0, 0
 	}
 	if len(videos) == 0 {
 		c.log.Warn("series import: no video files found in the download (all archives? nested oddly?)", "series", s.Title, "content_path", contentPath)
-		return 0, 0, 0
+		return 0, 0, 0, 0
 	}
 	c.log.Info("series import: scanning download", "series", s.Title, "videos", len(videos), "content_path", contentPath)
 	// Route episodes into the show's existing on-disk folder when it has one, so a
@@ -346,62 +392,162 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		}
 		refs = c.correctRefsByTitle(ctx, s, filepath.Base(v.Path), refs)
 		c.warnAnimeTitleMismatch(ctx, s, filepath.Base(v.Path), refs)
+		// Phantom guard: only keep refs the metadata actually has. The anime resolver
+		// already refuses phantoms; the standard path passed any (season, episode)
+		// through, hardlinked the file, and then "marked" an episode row that doesn't
+		// exist — an orphan library file counted as a successful import.
+		known := refs[:0:0]
+		for _, ref := range refs {
+			if c.series.EpisodeExists(ctx, s.ID, ref.Season, ref.Episode) {
+				known = append(known, ref)
+			}
+		}
+		if len(known) == 0 {
+			unresolved++
+			c.log.Warn("series import: file resolves to episodes the metadata doesn't have — not placing",
+				"series", s.Title, "file", filepath.Base(v.Path),
+				"resolved_to", refsLabel(refs))
+			continue
+		}
+		refs = known
 		matched += len(refs) // recognized — counts as handled even if we don't re-place it
-		// Quality gate: leave the existing file alone unless this candidate is a strictly
-		// higher resolution. Without this, two releases of the same episode (e.g. a 1080p
-		// and a 720p pack) supersede each other on every sweep, flooding the recycle bin.
-		if !c.wantsEpisodeFile(ctx, s, refs[0].Season, refs[0].Episode, rel, v.Size) {
+		// Quality gate, PER EPISODE. Gating the whole file on refs[0] alone let a
+		// multi-episode file downgrade its second episode (E01 missing → whole file
+		// accepted → E02's better file superseded too), and conversely blocked E02
+		// entirely when E01 already had the better file.
+		wanted := refs[:0:0]
+		for _, ref := range refs {
+			if c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rel, v.Size) {
+				wanted = append(wanted, ref)
+			}
+		}
+		if len(wanted) == 0 {
 			// Say so. Without this a whole pack can resolve onto episodes that already
 			// have a file and be skipped in total silence — the download looks handled
 			// and nothing explains why nothing appeared. Includes what it resolved TO,
 			// which is what tells you a scene-season split was mapped wrongly.
-			c.log.Info("series import: skipping file — that episode already has an equal-or-better file",
+			c.log.Info("series import: skipping file — its episodes already have equal-or-better files",
 				"series", s.Title, "file", filepath.Base(v.Path),
-				"resolved_to", fmt.Sprintf("S%02dE%02d", refs[0].Season, refs[0].Episode),
+				"resolved_to", refsLabel(refs),
 				"candidate_resolution", string(rel.Resolution))
 			continue
 		}
-		ei, ok, err := c.imp.ImportEpisodeIntoWith(folder, s.Title, s.Year, v.Path, release)
-		if err != nil {
-			continue
-		}
-		if !ok {
-			// No SxxExx — for anime this is an absolute-numbered file ("Show - 137"):
-			// resolve the absolute number and place it under that season/episode.
-			placed += c.importAbsoluteEpisode(ctx, s, folder, v.Path)
-			continue
-		}
-		if ei.Method == "already" {
-			// The file is in place and unchanged, so there's nothing to import — but the
-			// recorded source release may still be wrong. Anything imported before the
-			// pack-quality fix recorded a bare filename carrying no resolution, which
-			// leaves the episode looking like unknown quality forever: every future
-			// release outranks it, and upgrade scoring has no baseline. Re-running the
-			// import is the natural way to repair that, and it did nothing because this
-			// short-circuit sits in front of the write.
-			c.repairSourceRelease(ctx, s, ei, contentPath, release)
-			continue // already imported and unchanged — don't re-count or re-notify
-		}
-		// A double-episode file marks both episodes present (all point at the one file);
-		// anime files resolve to their real episode (absolute/positional) first.
 		// Record the name that actually describes the quality. A pack's per-file names
 		// often don't ("Parks and Recreation - 1x01 - Make My Pit a Park.mkv"), and the
 		// library file is renamed on import, so recording the bare filename left the
 		// episode with NO resolution recorded anywhere — which any future 1080p release
 		// would then outrank, re-importing the same quality forever. The release name
 		// carries it, so use that when the file's own name doesn't.
-		sourceName := filepath.Base(ei.SourcePath)
+		sourceName := filepath.Base(v.Path)
 		if parser.Parse(sourceName).Resolution == "" && release.Resolution != "" {
 			sourceName = filepath.Base(contentPath)
 		}
-		for _, ep := range episodesOf(ei) {
-			rs, re := c.series.ResolveEpisode(ctx, s.ID, ei.Season, ep)
-			if c.series.SupersedeEpisodeFile(ctx, s.ID, rs, re, ei.TargetPath, ei.SizeBytes, sourceName) == nil {
+		if c.refsAgreeWithFile(ctx, s.ID, rel, refs) {
+			// The filename's own numbering is correct — the standard path, which also
+			// handles multi-episode naming.
+			ei, ok, ierr := c.imp.ImportEpisodeIntoWith(folder, s.Title, s.Year, v.Path, release)
+			if ierr != nil {
+				failed++
+				c.log.Warn("series import: couldn't place file",
+					"series", s.Title, "file", filepath.Base(v.Path), "err", ierr)
+				continue
+			}
+			if !ok {
+				// No SxxExx — for anime this is an absolute-numbered file ("Show - 137"):
+				// resolve the absolute number and place it under that season/episode.
+				placed += c.importAbsoluteEpisode(ctx, s, folder, v.Path)
+				continue
+			}
+			if ei.Method == "already" {
+				// The file is in place and unchanged, so there's nothing to import — but the
+				// recorded source release may still be wrong. Anything imported before the
+				// pack-quality fix recorded a bare filename carrying no resolution, which
+				// leaves the episode looking like unknown quality forever: every future
+				// release outranks it, and upgrade scoring has no baseline. Re-running the
+				// import is the natural way to repair that, and it did nothing because this
+				// short-circuit sits in front of the write.
+				c.repairSourceRelease(ctx, s, ei, contentPath, release)
+				continue // already imported and unchanged — don't re-count or re-notify
+			}
+			// A double-episode file marks its episodes present (all point at the one
+			// file) — but ONLY the ones the gate approved: a sibling episode whose
+			// existing file is better keeps it.
+			for _, ep := range episodesOf(ei) {
+				rs, re := c.series.ResolveEpisode(ctx, s.ID, ei.Season, ep)
+				if !refsContain(wanted, rs, re) {
+					continue
+				}
+				if c.series.SupersedeEpisodeFile(ctx, s.ID, rs, re, ei.TargetPath, ei.SizeBytes, sourceName) == nil {
+					placed++
+				}
+			}
+			continue
+		}
+		// The resolved refs DIFFER from the filename's numbering (episode-title
+		// correction, split-season/absolute resolution). Place by the resolved episode,
+		// not the filename — the gate, the on-disk name, and the DB row must all agree.
+		// Placing by the filename here was the silent mis-file: the gate approved E02,
+		// the file landed and was recorded as E03, and E03's legitimate file could be
+		// recycled by a supersede the gate never sanctioned.
+		ref := wanted[0]
+		ei, ok, ierr := c.imp.ImportEpisodeAs(folder, s.Title, s.Year, ref.Season, ref.Episode, v.Path)
+		if ierr != nil || !ok {
+			failed++
+			c.log.Warn("series import: couldn't place file under its resolved episode",
+				"series", s.Title, "file", filepath.Base(v.Path),
+				"resolved_to", fmt.Sprintf("S%02dE%02d", ref.Season, ref.Episode), "err", ierr)
+			continue
+		}
+		if ei.Method == "already" {
+			c.repairSourceRelease(ctx, s, ei, contentPath, release)
+			continue
+		}
+		if len(wanted) > 1 {
+			c.log.Info("series import: multi-episode file placed under its first resolved episode",
+				"series", s.Title, "file", filepath.Base(v.Path), "episodes", refsLabel(wanted))
+		}
+		for _, w := range wanted {
+			if c.series.SupersedeEpisodeFile(ctx, s.ID, w.Season, w.Episode, ei.TargetPath, ei.SizeBytes, sourceName) == nil {
 				placed++
 			}
 		}
 	}
-	return placed, matched, unresolved
+	return placed, matched, unresolved, failed
+}
+
+// refsLabel renders episode refs as "S06E02 S06E03" for logs.
+func refsLabel(refs []series.EpisodeRef) string {
+	parts := make([]string, 0, len(refs))
+	for _, r := range refs {
+		parts = append(parts, fmt.Sprintf("S%02dE%02d", r.Season, r.Episode))
+	}
+	return strings.Join(parts, " ")
+}
+
+// refsContain reports whether (season, episode) is in refs.
+func refsContain(refs []series.EpisodeRef, season, episode int) bool {
+	for _, r := range refs {
+		if r.Season == season && r.Episode == episode {
+			return true
+		}
+	}
+	return false
+}
+
+// refsAgreeWithFile reports whether the resolved refs are exactly what the file's own
+// SxxExx numbering resolves to — i.e. no episode-title correction or scene/absolute
+// renumbering changed anything. Only then may placement trust the filename.
+func (c *Coordinator) refsAgreeWithFile(ctx context.Context, seriesID int64, rel parser.Release, refs []series.EpisodeRef) bool {
+	if rel.Season <= 0 || len(rel.Episodes) == 0 || len(refs) != len(rel.Episodes) {
+		return false
+	}
+	for i, ep := range rel.Episodes {
+		rs, re := c.series.ResolveEpisode(ctx, seriesID, rel.Season, ep)
+		if refs[i].Season != rs || refs[i].Episode != re {
+			return false
+		}
+	}
+	return true
 }
 
 // importAbsoluteEpisode places an anime file that carries only an absolute episode
@@ -418,7 +564,16 @@ func (c *Coordinator) importAbsoluteEpisode(ctx context.Context, s series.Series
 		if err != nil || !ok || ei.Method == "already" {
 			continue
 		}
-		if c.series.SupersedeEpisodeFile(ctx, s.ID, ref.Season, ref.Episode, ei.TargetPath, ei.SizeBytes, filepath.Base(ei.SourcePath)) == nil {
+		// Same source-name fallback as the SxxExx path: a fansub file often carries no
+		// resolution of its own — recording it verbatim left the episode with unknown
+		// quality forever, so every future release outranked it.
+		sourceName := filepath.Base(ei.SourcePath)
+		if parser.Parse(sourceName).Resolution == "" {
+			if parent := filepath.Base(filepath.Dir(path)); parser.Parse(parent).Resolution != "" {
+				sourceName = parent
+			}
+		}
+		if c.series.SupersedeEpisodeFile(ctx, s.ID, ref.Season, ref.Episode, ei.TargetPath, ei.SizeBytes, sourceName) == nil {
 			n++
 		}
 	}
@@ -479,6 +634,13 @@ func inheritQuality(file, release parser.Release) parser.Release {
 	}
 	if file.Source == "" {
 		file.Source = release.Source
+	}
+	// Codec too: the bitrate-margin gate converts sizes to H.264-equivalent bitrates
+	// via codec efficiency, and an x265 pack that states the codec only on the folder
+	// had its files' bitrates understated by ~37% — the gate then refused the very
+	// upgrade the searcher (which parses the full release name) deliberately grabbed.
+	if file.Codec == "" {
+		file.Codec = release.Codec
 	}
 	return file
 }

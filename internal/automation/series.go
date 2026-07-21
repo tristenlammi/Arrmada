@@ -53,11 +53,38 @@ func (c *Coordinator) removeIfNoVideo(ctx context.Context, hash, name, contentPa
 	if vids, err := library.FindVideos(contentPath); err != nil || len(vids) > 0 {
 		return // has video (or we can't tell) — leave it for manual import
 	}
+	// FindVideos floors at ~50MB to skip samples — but before DELETING data, check
+	// again without the floor: legitimate small episodes (shorts, mini-episodes)
+	// were being destroyed as "no video" when they merely failed the size floor.
+	if hasAnyVideoFile(contentPath) {
+		c.log.Info("import: download has only small video files — keeping it for manual import", "release", name)
+		return
+	}
 	if err := c.downloads.Remove(ctx, hash, true); err != nil {
 		c.log.Warn("import: could not remove junk download", "release", name, "err", err)
 		return
 	}
 	c.log.Info("import: removed a download with no video in it (blocklisted, nothing to import)", "release", name)
+}
+
+// hasAnyVideoFile reports whether ANY video-extension file exists under path,
+// with no size floor — the last check before deleting a download's data.
+func hasAnyVideoFile(path string) bool {
+	found := false
+	_ = filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error {
+		if err != nil || found || d.IsDir() {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(p))
+		for _, e := range videoExts {
+			if ext == e {
+				found = true
+				break
+			}
+		}
+		return nil
+	})
+	return found
 }
 
 // grabIndexer returns the indexer a release was grabbed from ("" if untracked), for
@@ -836,7 +863,7 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 		// If this download was grabbed for a specific series, verify its content is
 		// actually that series — otherwise hold it for admin review rather than skip
 		// it silently (e.g. a "Below Deck Mediterranean" pack grabbed for "Below Deck").
-		if gid, indexer, grabbed := c.grabbedMediaFor(ctx, it.Name, "series"); grabbed {
+		if gid, indexer, grabbed := c.grabbedMediaForHash(ctx, it.Hash, it.Name, "series"); grabbed {
 			if expected, err := c.series.Get(ctx, gid); err == nil && (!matchOK || s.ID != expected.ID) {
 				reason := fmt.Sprintf("Grabbed for %q but the download looks like %q", expected.Title, parsed.Title)
 				c.addReview(ctx, Review{
@@ -870,8 +897,15 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			}
 			continue // not something we grabbed and not a library title — leave alone
 		}
-		imported, matched, unresolved := c.importSeriesInto(ctx, s, it.ContentPath)
-		if matched > 0 {
+		imported, matched, unresolved, importFailed := c.importSeriesInto(ctx, s, it.ContentPath)
+		if importFailed > 0 {
+			// Some files resolved to wanted episodes but couldn't be placed (disk full,
+			// permissions, a file mid-move). Leave the download unrecorded so the next
+			// sweep retries — marking it handled here left episodes permanently
+			// unimported after a transient error.
+			c.log.Warn("series import: some files failed to place — will retry next sweep",
+				"series", s.Title, "release", it.Name, "failed", importFailed, "placed", imported)
+		} else if matched > 0 {
 			// Every file mapped to a known episode (some newly placed, some already
 			// present) — the download is handled, so drop it from the downloads view
 			// and stop re-scanning it.

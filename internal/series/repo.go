@@ -823,15 +823,32 @@ func (r *Repo) OrderedEpisodes(ctx context.Context, seriesID int64) []epAir {
 }
 
 // EpisodeByAbsolute resolves an absolute episode number to its (season, episode).
-// ok=false when the series has no episode with that absolute number.
+// ok=false when the series has no episode with that absolute number. Ordered so a
+// duplicate absolute number (metadata divergence between the computed counter and
+// TVDB-supplied values) resolves deterministically to the earliest episode instead
+// of whichever row SQLite happens to return first.
 func (r *Repo) EpisodeByAbsolute(ctx context.Context, seriesID int64, absolute int) (season, episode int, ok bool) {
 	err := r.db.QueryRowContext(ctx,
-		`SELECT season_number, episode_number FROM episodes WHERE series_id = ? AND absolute_number = ? LIMIT 1`,
+		`SELECT season_number, episode_number FROM episodes
+		 WHERE series_id = ? AND absolute_number = ?
+		 ORDER BY season_number, episode_number LIMIT 1`,
 		seriesID, absolute).Scan(&season, &episode)
 	if err != nil {
 		return 0, 0, false
 	}
 	return season, episode, true
+}
+
+// EpisodesSharingPath counts OTHER episodes (excluding the given one) whose file is
+// the same on-disk path — siblings served by a multi-episode file.
+func (r *Repo) EpisodesSharingPath(ctx context.Context, seriesID int64, path string, season, episode int) (int, error) {
+	var n int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM episodes
+		 WHERE series_id = ? AND file_path = ? AND has_file = 1
+		   AND NOT (season_number = ? AND episode_number = ?)`,
+		seriesID, path, season, episode).Scan(&n)
+	return n, err
 }
 
 // NthEpisodeOfSeason resolves the n-th (1-based) aired episode of a season to its

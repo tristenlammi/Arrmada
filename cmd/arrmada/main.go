@@ -249,6 +249,9 @@ func main() {
 	// Route each media type to its own library folder (movies/TV/ebooks/audiobooks);
 	// unset dirs fall back to LibraryDir, so a single-library setup is unchanged.
 	imports.SetRoots(cfg.MoviesDir, cfg.TVDir, cfg.EbooksDir, cfg.AudiobooksDir)
+	// When an import replaces a same-named library file, recycle the old one first
+	// (instead of silently overwriting it) — same bin the delete paths use.
+	imports.SetRecycleDir(recycleDir)
 	// Name movie imports from the matched library record (metadata title), not the
 	// scene release — deterministic folders that match the movie Arrmada tracks.
 	imports.SetTitleResolver(movieTitleResolver{movieSvc})
@@ -265,6 +268,7 @@ func main() {
 	bookImporter := library.NewImporter(cfg.LibraryDir, log)
 	bookImporter.SetBookRoots(cfg.EbooksDir, cfg.AudiobooksDir)                       // scan ebooks + audiobooks (may be one folder)
 	bookImporter.SetRoots(cfg.MoviesDir, cfg.TVDir, cfg.EbooksDir, cfg.AudiobooksDir) // this importer places TV episodes + book editions
+	bookImporter.SetRecycleDir(recycleDir)                                            // replaced files go to the bin here too
 	// Name episode files with their metadata title ("<Series> - SxxEyy - <Episode> - <quality>").
 	bookImporter.SetEpisodeTitleFunc(func(seriesTitle string, year, season, episode int) string {
 		return seriesSvc.EpisodeTitleByName(context.Background(), seriesTitle, year, season, episode)

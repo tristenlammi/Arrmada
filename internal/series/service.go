@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -731,9 +732,23 @@ func (s *Service) ExistingFolderName(ctx context.Context, seriesID int64) string
 	if err != nil || path == "" {
 		return ""
 	}
-	// path = <root>/<Series Folder>/Season NN/<file>; the series folder is two up.
-	return filepath.Base(filepath.Dir(filepath.Dir(path)))
+	// Usually path = <root>/<Series Folder>/Season NN/<file> and the series folder is
+	// two up — but only when the parent actually IS a season folder. A library storing
+	// files directly under <root>/<Show>/ used to walk two levels up to the TV ROOT
+	// itself, so every later grab imported into <root>/<rootname>/Season N/… — a bogus
+	// nested library folder.
+	parent := filepath.Dir(path)
+	if isSeasonFolder(filepath.Base(parent)) {
+		return filepath.Base(filepath.Dir(parent))
+	}
+	return filepath.Base(parent)
 }
+
+// reSeasonFolder matches the folder names episode files are stored under inside a
+// show's folder ("Season 4", "Season 04", "Specials").
+var reSeasonFolder = regexp.MustCompile(`(?i)^(season[ ._-]?\d+|specials)$`)
+
+func isSeasonFolder(name string) bool { return reSeasonFolder.MatchString(name) }
 
 // FolderSharedWith returns other series storing episodes in the same library folder.
 func (s *Service) FolderSharedWith(ctx context.Context, seriesID int64, folder string) []int64 {
@@ -925,7 +940,14 @@ func (s *Service) SupersedeEpisodeFile(ctx context.Context, seriesID int64, seas
 		}
 	}
 	if old, _ := s.repo.EpisodeFilePath(ctx, seriesID, season, episode); old != "" && old != path {
-		if _, err := os.Stat(old); err == nil {
+		// A double-episode file serves several episode rows. If any sibling still
+		// points at the old path, recycling it would yank the file out from under
+		// them — the library would claim a file that's sitting in the recycle bin.
+		// Leave it on disk for the siblings and only repoint this episode.
+		if n, _ := s.repo.EpisodesSharingPath(ctx, seriesID, old, season, episode); n > 0 {
+			s.log.Info("series: old file still serves other episodes — keeping it",
+				"old", old, "shared_by", n, "new", path)
+		} else if _, err := os.Stat(old); err == nil {
 			if s.recycle != "" {
 				if _, rerr := library.RecycleFile(s.recycle, old); rerr != nil {
 					_ = os.Remove(old)
@@ -937,6 +959,14 @@ func (s *Service) SupersedeEpisodeFile(ctx context.Context, seriesID int64, seas
 		}
 	}
 	return s.MarkEpisodeImported(ctx, seriesID, season, episode, path, size)
+}
+
+// EpisodeExists reports whether the series' metadata actually has this episode.
+// The import path uses it to refuse "phantom" placements — a release numbered
+// beyond the metadata (TVDB-vs-TMDB count mismatches) used to be hardlinked into
+// the library and counted as imported while no episode row tracked it.
+func (s *Service) EpisodeExists(ctx context.Context, seriesID int64, season, episode int) bool {
+	return s.repo.EpisodeExists(ctx, seriesID, season, episode)
 }
 
 // SeasonEpisodeTitles returns a season's episode titles, keyed by episode number.

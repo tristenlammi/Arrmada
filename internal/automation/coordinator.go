@@ -1362,11 +1362,25 @@ func (c *Coordinator) WatchImports(ctx context.Context) {
 			title, _ := data["title"].(string)
 			target, _ := data["target"].(string)
 			release, _ := data["name"].(string)
+			hash, _ := data["hash"].(string)
 			year := toInt(data["year"])
 			if title == "" {
 				continue
 			}
-			if m, matched := c.movies.Match(ctx, title, year); matched {
+			// Identity first: the download's grab row knows exactly which movie it was
+			// for. Re-deriving it from a (differently normalized) title match orphaned
+			// imports for accented/&-titled movies and could attach a year-less release
+			// to the wrong same-titled film.
+			m, matched := movies.Movie{}, false
+			if mid, ok := c.movieIDForGrabHash(ctx, hash); ok {
+				if got, err := c.movies.Get(ctx, mid); err == nil {
+					m, matched = got, true
+				}
+			}
+			if !matched {
+				m, matched = c.movies.Match(ctx, title, year)
+			}
+			if matched {
 				if err := c.movies.MarkImported(ctx, m.ID, target, release); err != nil {
 					c.log.Warn("automation: mark imported failed", "movie", m.Title, "err", err)
 					continue

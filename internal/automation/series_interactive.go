@@ -355,15 +355,22 @@ func (c *Coordinator) ManualImportSeries(ctx context.Context, seriesID int64, pa
 	// still has gaps, so when a fix changes what WOULD have imported, pointing manual
 	// import at the folder is what applies it.
 	if fi, statErr := os.Stat(path); statErr == nil && fi.IsDir() {
-		placed, matched, unresolved := c.importSeriesInto(ctx, s, path)
+		placed, matched, unresolved, importFailed := c.importSeriesInto(ctx, s, path)
 		if matched == 0 {
 			return fmt.Errorf("none of the video files in that folder could be matched to an episode of %q", s.Title)
 		}
 		c.log.Info("series: manual folder import", "series", s.Title, "path", path,
-			"placed", placed, "matched", matched, "unresolved", unresolved)
+			"placed", placed, "matched", matched, "unresolved", unresolved, "failed", importFailed)
 		if placed > 0 {
 			c.series.AddEvent(ctx, seriesID, "imported", fmt.Sprintf("Imported %d episode%s from %s", placed, plural(placed), filepath.Base(path)))
 			c.seriesImported(ctx, seriesID)
+		}
+		// If the folder is a download the client still holds, record its hash as
+		// handled (when nothing failed) — otherwise the 30s sweep re-scans it, places
+		// nothing (everything now equal-or-better), and mis-blocklists the release
+		// with "fully imported — no more episodes for this season".
+		if importFailed == 0 {
+			c.recordHashForContentPath(ctx, path)
 		}
 		return nil
 	}
@@ -388,6 +395,26 @@ func (c *Coordinator) ManualImportSeries(ctx context.Context, seriesID int64, pa
 		}
 	}
 	return lastErr
+}
+
+// recordHashForContentPath finds the completed download whose content path matches
+// and records its hash as imported. Used after manual imports, which are given a
+// filesystem path rather than a torrent hash.
+func (c *Coordinator) recordHashForContentPath(ctx context.Context, path string) {
+	if c.downloads == nil {
+		return
+	}
+	completed, err := c.downloads.CompletedInCategory(ctx, "")
+	if err != nil {
+		return
+	}
+	clean := filepath.Clean(path)
+	for _, it := range completed {
+		if it.ContentPath != "" && filepath.Clean(it.ContentPath) == clean {
+			c.recordImportedHash(ctx, it.Hash, it.Name, it.SizeBytes)
+			return
+		}
+	}
 }
 
 // SeriesRenameItem is one proposed episode-file rename.

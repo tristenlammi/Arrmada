@@ -426,6 +426,22 @@ func (c *Coordinator) markSeriesGrabImported(ctx context.Context, seriesID int64
 	}
 }
 
+// movieIDForGrabHash resolves which movie a download was grabbed for, by torrent
+// info hash — the one identity that survives the round trip through the download
+// client unchanged. Any grab status counts: by attach time the row may already be
+// imported/seeded.
+func (c *Coordinator) movieIDForGrabHash(ctx context.Context, hash string) (int64, bool) {
+	if hash == "" {
+		return 0, false
+	}
+	var id int64
+	err := c.db.QueryRowContext(ctx,
+		`SELECT movie_id FROM grabs
+		 WHERE media_type = 'movie' AND info_hash != '' AND lower(info_hash) = lower(?)
+		 ORDER BY id DESC LIMIT 1`, hash).Scan(&id)
+	return id, err == nil
+}
+
 // normTitle normalizes a release title for blocklist/matching comparisons. Accents
 // are folded first so "Pokémon" and "Pokemon" compare equal.
 func normTitle(s string) string {
