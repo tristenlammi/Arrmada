@@ -71,3 +71,26 @@ func TestStopsOnContextCancel(t *testing.T) {
 		t.Fatalf("task kept running after cancel: %d -> %d", before, after)
 	}
 }
+
+// TestRegisterAfterStartRuns pins the late-registration fix: Start used to
+// snapshot the task list, so anything registered afterwards silently never ran —
+// which is exactly what happened to four real jobs in main.go (convert-sweep,
+// convert-index, subtitles-auto-grab, recycle-enforce).
+func TestRegisterAfterStartRuns(t *testing.T) {
+	s := New(quietLogger())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	s.Start(ctx)
+
+	var runs int32
+	s.Register("late", 5*time.Millisecond, true, func(context.Context) error {
+		atomic.AddInt32(&runs, 1)
+		return nil
+	})
+	time.Sleep(30 * time.Millisecond)
+	if atomic.LoadInt32(&runs) == 0 {
+		t.Fatal("a task registered after Start never ran")
+	}
+	cancel()
+	s.Wait()
+}

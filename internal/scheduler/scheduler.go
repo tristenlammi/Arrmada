@@ -22,27 +22,39 @@ type task struct {
 
 // Scheduler owns a set of recurring tasks and their goroutines.
 type Scheduler struct {
-	log   *slog.Logger
-	mu    sync.Mutex
-	tasks []task
-	wg    sync.WaitGroup
+	log     *slog.Logger
+	mu      sync.Mutex
+	tasks   []task
+	started bool
+	ctx     context.Context // the Start context, for tasks registered late
+	wg      sync.WaitGroup
 }
 
 // New creates an empty Scheduler.
 func New(log *slog.Logger) *Scheduler { return &Scheduler{log: log} }
 
 // Register adds a task. runAtStart runs it once immediately on Start, then every
-// interval after. Register before Start.
+// interval after. Registering AFTER Start launches the task immediately — Start
+// used to snapshot the list, which silently never ran anything registered later:
+// four real jobs (convert-sweep, convert-index, subtitles-auto-grab,
+// recycle-enforce) sat dead behind that ordering hazard.
 func (s *Scheduler) Register(name string, every time.Duration, runAtStart bool, fn TaskFunc) {
+	t := task{name: name, every: every, runAtStart: runAtStart, fn: fn}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.tasks = append(s.tasks, task{name: name, every: every, runAtStart: runAtStart, fn: fn})
+	s.tasks = append(s.tasks, t)
+	started, ctx := s.started, s.ctx
+	s.mu.Unlock()
+	if started {
+		s.wg.Add(1)
+		go s.run(ctx, t)
+	}
 }
 
 // Start launches each task in its own goroutine. Tasks stop when ctx is
 // cancelled; call Wait afterwards to block until they've drained.
 func (s *Scheduler) Start(ctx context.Context) {
 	s.mu.Lock()
+	s.started, s.ctx = true, ctx
 	tasks := append([]task(nil), s.tasks...)
 	s.mu.Unlock()
 
