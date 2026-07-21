@@ -571,21 +571,29 @@ function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest;
       ) : (
         <PosterPlaceholder title={rq.title} year={rq.year} />
       )}
-      <span className="absolute right-1.5 top-1.5 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: BADGE_BG, color: status.tone, border: `1px solid ${status.tone}` }}>{status.label}</span>
-      {/* Who asked for it — staff only, and always visible (not hover-gated), since staff
-          see everyone's requests and "whose is this?" is the first question. */}
-      {staff && rq.requested_by_name && (
-        <span
-          className="absolute left-1.5 top-1.5 flex max-w-[70%] items-center gap-1 rounded-full py-[2px] pl-[2px] pr-1.5"
-          style={{ background: BADGE_BG, border: "1px solid rgba(255,255,255,.18)" }}
-          title={`Requested by ${rq.requested_by_name}`}
-        >
-          <span className="grid h-[14px] w-[14px] flex-none place-items-center rounded-full text-[8px] font-bold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>
-            {rq.requested_by_name[0]?.toUpperCase()}
+      {/* One flex row, not two independent absolutes: the requester chip and the status
+          badge used to be positioned left and right on a 150px card, so a long username
+          painted straight over the badge ("AVAILABLE" read as "ABLE"). Now the name
+          shrinks and truncates while the badge always keeps its full width. */}
+      <div className="absolute inset-x-1.5 top-1.5 z-10 flex items-start justify-between gap-1">
+        {/* Who asked for it — staff only, and always visible (not hover-gated), since staff
+            see everyone's requests and "whose is this?" is the first question. */}
+        {staff && rq.requested_by_name ? (
+          <span
+            className="flex min-w-0 items-center gap-1 rounded-full py-[2px] pl-[2px] pr-1.5"
+            style={{ background: BADGE_BG, border: "1px solid rgba(255,255,255,.18)" }}
+            title={`Requested by ${rq.requested_by_name}`}
+          >
+            <span className="grid h-[14px] w-[14px] flex-none place-items-center rounded-full text-[8px] font-bold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>
+              {rq.requested_by_name[0]?.toUpperCase()}
+            </span>
+            <span className="truncate text-[9px] font-semibold text-white">{rq.requested_by_name}</span>
           </span>
-          <span className="truncate text-[9px] font-semibold text-white">{rq.requested_by_name}</span>
-        </span>
-      )}
+        ) : (
+          <span />
+        )}
+        <span className="flex-none rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: BADGE_BG, color: status.tone, border: `1px solid ${status.tone}` }}>{status.label}</span>
+      </div>
       {pct > 0 && pct < 100 && (
         <div className="absolute inset-x-0 bottom-0 z-10 h-1.5" style={{ background: "rgba(20,12,7,.55)" }}>
           <div className="h-full" style={{ width: `${pct}%`, background: "var(--accent)" }} />
@@ -959,7 +967,7 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
 
   return (
     <div
-      className="fixed inset-0 z-50 flex justify-center overflow-y-auto sm:items-start sm:p-6"
+      className="fixed inset-0 z-50 flex justify-center overflow-hidden sm:items-center sm:p-6"
       style={{ background: "rgba(0,0,0,.68)" }}
       onClick={onClose}
     >
@@ -969,19 +977,24 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
         aria-modal="true"
         aria-label={c.title}
         tabIndex={-1}
-        className="flex min-h-full w-full flex-col outline-none sm:my-0 sm:min-h-0 sm:max-w-[820px] sm:rounded-2xl sm:shadow-2xl"
+        className="relative flex h-full w-full flex-col overflow-hidden outline-none sm:h-auto sm:max-h-[92vh] sm:max-w-[820px] sm:rounded-2xl sm:shadow-2xl"
         style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Backdrop hero */}
-        <div className="relative h-[190px] flex-none sm:h-[260px] sm:rounded-t-2xl sm:overflow-hidden" style={{ background: "var(--panel-2)" }}>
-          {(d?.backdrop_url || c.backdrop_url) && <img src={d?.backdrop_url || c.backdrop_url} alt="" className="h-full w-full object-cover opacity-60" />}
-          <div className="absolute inset-0" style={{ background: "linear-gradient(to top, var(--panel) 4%, transparent 78%)" }} />
-          <button onClick={onClose} aria-label="Close" className="absolute right-3 top-3 grid h-8 w-8 place-items-center rounded-full" style={{ background: "rgba(20,12,7,.7)", color: "#fff" }}>✕</button>
-        </div>
+        {/* Close sits on the dialog, not the backdrop, so it stays put while the body scrolls. */}
+        <button onClick={onClose} aria-label="Close" className="absolute right-3 top-3 z-20 grid h-8 w-8 place-items-center rounded-full" style={{ background: "rgba(20,12,7,.7)", color: "#fff" }}>✕</button>
 
+        {/* The backdrop lives INSIDE the scroller: the poster below insets over it with a
+            negative margin, and an overflow container clips negative margins — with the
+            backdrop outside, the poster's overlap was sliced off and it butted against the
+            image edge instead of floating over it. */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto">
-          <div className="flex gap-4 px-5 pt-0 sm:px-6">
+          <div className="relative h-[190px] sm:h-[260px]" style={{ background: "var(--panel-2)" }}>
+            {(d?.backdrop_url || c.backdrop_url) && <img src={d?.backdrop_url || c.backdrop_url} alt="" className="h-full w-full object-cover opacity-60" />}
+            <div className="absolute inset-0" style={{ background: "linear-gradient(to top, var(--panel) 4%, transparent 78%)" }} />
+          </div>
+
+          <div className="relative flex gap-4 px-5 pt-0 sm:px-6">
             <div className="-mt-20 h-[186px] w-[124px] flex-none overflow-hidden rounded-xl sm:-mt-24 sm:h-[210px] sm:w-[140px]" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", boxShadow: "0 10px 26px rgba(0,0,0,.4)" }}>
               {c.poster_url ? <img src={c.poster_url} alt="" className="h-full w-full object-cover" /> : <PosterPlaceholder title={c.title} year={c.year} />}
             </div>
@@ -1075,7 +1088,7 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
                 <h3 className="m-0 mb-2 text-[12px] font-bold uppercase tracking-wide text-ink-faint">Cast</h3>
                 <div className="thin-scroll flex gap-3 overflow-x-auto pb-1">
                   {d.cast.slice(0, 10).map((p, i) => (
-                    <div key={i} className="w-[80px] flex-none text-center">
+                    <div key={i} className="w-[96px] flex-none text-center">
                       <div className="mb-1 overflow-hidden rounded-lg" style={{ aspectRatio: "2/3", background: "var(--panel-2)" }}>
                         {p.profile_url ? <img src={p.profile_url} alt={p.name} className="h-full w-full object-cover" loading="lazy" /> : (
                           <div className="grid h-full w-full place-items-center" style={{ color: "var(--ink-faint)" }}>
@@ -1083,8 +1096,10 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
                           </div>
                         )}
                       </div>
-                      <div className="truncate text-[10.5px] font-semibold" title={p.name}>{p.name}</div>
-                      {p.character && <div className="truncate text-[9.5px] text-ink-faint" title={p.character}>{p.character}</div>}
+                      {/* Two lines instead of a hard truncate: "Arnold Schwa…" and
+                          "James Earl Jo…" cut mid-word at the old width. */}
+                      <div className="line-clamp-2 text-[10.5px] font-semibold leading-tight" title={p.name}>{p.name}</div>
+                      {p.character && <div className="mt-0.5 line-clamp-1 text-[9.5px] text-ink-faint" title={p.character}>{p.character}</div>}
                     </div>
                   ))}
                 </div>
