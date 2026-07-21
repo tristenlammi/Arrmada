@@ -185,27 +185,61 @@ func (s *Service) Refresh(ctx context.Context, id int64) (Book, error) {
 	return s.repo.Get(ctx, id)
 }
 
-// MatchByRelease finds a book whose (normalized) title appears in a release name — used
-// to route a finished download to the right book.
+// MatchByRelease finds the book a release name refers to — used to route a finished
+// download to the right book.
+//
+// Matching is word-boundary based: the book's title must appear in the release name
+// as whole words. The old substring compare on boundary-less keys mis-routed
+// releases — "Dune" matched inside "Dune Messiah", so the Messiah files imported as
+// Dune — and its 3-character floor made short titles ("It") unmatchable. Every
+// candidate is evaluated (not first-hit): when several titles match, ones whose
+// author also appears in the release win, and the LONGEST title among those is
+// chosen — the most specific claim ("Dune Messiah" beats "Dune" for a Messiah
+// release; a plain "Dune" release contains no "dune messiah" word run, so only
+// "Dune" matches it).
 func (s *Service) MatchByRelease(ctx context.Context, releaseName string) (Book, bool) {
-	norm := NormKey(releaseName)
 	all, err := s.repo.List(ctx)
 	if err != nil {
 		return Book{}, false
 	}
-	var match Book
-	found := false
+	return matchRelease(all, releaseName)
+}
+
+// matchRelease is MatchByRelease's pure core (separated so it's table-testable).
+func matchRelease(all []Book, releaseName string) (Book, bool) {
+	rel := wordKey(releaseName)
+	if rel == "" {
+		return Book{}, false
+	}
+	var best Book
+	found, bestAuthor, bestLen := false, false, 0
 	for _, b := range all {
-		bt := NormKey(b.Title)
-		if len(bt) >= 3 && strings.Contains(norm, bt) {
-			// Prefer a match that also carries the author, to disambiguate common titles.
-			if a := NormKey(b.Author); a != "" && strings.Contains(norm, a) {
-				return b, true
-			}
-			match, found = b, true
+		bt := wordKey(b.Title)
+		if bt == "" || !containsWords(rel, bt) {
+			continue
+		}
+		a := wordKey(b.Author)
+		authorOK := a != "" && containsWords(rel, a)
+		if !found || betterMatch(authorOK, len(bt), bestAuthor, bestLen) {
+			best, found, bestAuthor, bestLen = b, true, authorOK, len(bt)
 		}
 	}
-	return match, found
+	return best, found
+}
+
+// betterMatch ranks candidates: author-confirmed beats not, then the longer
+// (more specific) title wins.
+func betterMatch(authorOK bool, titleLen int, bestAuthor bool, bestLen int) bool {
+	if authorOK != bestAuthor {
+		return authorOK
+	}
+	return titleLen > bestLen
+}
+
+// containsWords reports whether needle's words appear, contiguously and on word
+// boundaries, in hay. Both must already be wordKey-normalized.
+func containsWords(hay, needle string) bool {
+	return strings.Contains(" "+hay+" ", " "+needle+" ")
 }
 
 // Delete removes a book.
@@ -230,4 +264,31 @@ func NormKey(str string) string {
 		}
 	}
 	return string(b)
+}
+
+// wordKey lowercases and reduces every run of non-alphanumerics to a single
+// space — like NormKey, but PRESERVING word boundaries so release matching can
+// require whole-word hits ("dune" must not match inside "dunemessiah").
+func wordKey(str string) string {
+	var b strings.Builder
+	space := false
+	for _, r := range str {
+		switch {
+		case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
+			if space && b.Len() > 0 {
+				b.WriteByte(' ')
+			}
+			space = false
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			if space && b.Len() > 0 {
+				b.WriteByte(' ')
+			}
+			space = false
+			b.WriteRune(r + 32)
+		default:
+			space = true
+		}
+	}
+	return b.String()
 }

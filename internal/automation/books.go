@@ -44,7 +44,11 @@ func (c *Coordinator) SearchBooksMissing(ctx context.Context) {
 	// so without an in-flight guard every sweep re-grabbed the same release.
 	queue, qerr := c.downloads.Queue(ctx)
 	if qerr != nil {
-		queue = nil
+		// An unreadable queue looks exactly like an empty one — every in-flight book
+		// would read as "not downloading" and the sweep would stack a duplicate grab
+		// on each. Skip the cycle; the next sweep is 15 minutes away.
+		c.log.Warn("book: couldn't read the download queue — skipping the missing-books sweep this cycle", "err", qerr)
+		return
 	}
 	for _, b := range all {
 		if !b.Monitored {
@@ -103,6 +107,10 @@ func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind st
 		return
 	}
 	res.Releases = c.dropBlockedBook(ctx, b.ID, res.Releases) // don't re-grab a blocklisted (e.g. stalled) release
+	// DB pending-grab guard, mirroring the movie path's pendingGrabTitles: a release
+	// already grabbed for this book (and not yet imported/failed) must not be grabbed
+	// again, even when the queue-based bookDownloading check couldn't see it.
+	res.Releases = dropPendingBook(res.Releases, c.pendingBookGrabTitles(ctx, b.ID))
 	best := pickBestBookForKind(sp, res.Releases, kind)
 	if best == nil {
 		c.log.Info("book: no matching-format release", "title", b.Title, "edition", kind)
@@ -228,6 +236,7 @@ func (c *Coordinator) ImportBookDownloads(ctx context.Context) {
 	}
 	completed, err := c.downloads.CompletedInCategory(ctx, bookCategory)
 	if err != nil {
+		c.log.Warn("book import: couldn't list completed downloads — skipping this cycle", "err", err)
 		return
 	}
 	for _, it := range completed {
@@ -239,8 +248,28 @@ func (c *Coordinator) ImportBookDownloads(ctx context.Context) {
 		if c.hashAlreadyImported(ctx, it.Hash) {
 			continue
 		}
+		if c.hasReview(ctx, it.Hash) {
+			continue // already held for review (or resolved) — don't re-flag or import
+		}
 		b, ok := c.books.MatchByRelease(ctx, it.Name)
 		if !ok {
+			// The sweep runs every 30 seconds, so an unmatchable download used to be
+			// rescanned in silence forever. Log once, and after enough attempts hand it
+			// to review so a human sees it (same escalation as the series sweep).
+			n := c.noteUnmatched(it.Hash)
+			switch {
+			case n == 1:
+				c.log.Info("book import: no matching library book", "release", it.Name)
+			case n == unmatchedReviewAfter:
+				parsed := bookParsedTitle(it.Name)
+				c.log.Warn("book import: download still matches no book — sending to review",
+					"release", it.Name, "parsed_title", parsed, "attempts", n)
+				c.addReview(ctx, Review{
+					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "book",
+					ParsedTitle: parsed, SizeBytes: it.SizeBytes,
+					Reason: fmt.Sprintf("Parsed as %q, which matches no book in your library", parsed),
+				})
+			}
 			continue
 		}
 		var ebooks, audio []library.FoundFile
@@ -251,28 +280,65 @@ func (c *Coordinator) ImportBookDownloads(ctx context.Context) {
 				ebooks = append(ebooks, f)
 			}
 		}
-		c.importBookEdition(ctx, b, books.KindEbook, ebooks)
-		c.importBookEdition(ctx, b, books.KindAudiobook, audio)
-		if len(ebooks) > 0 || len(audio) > 0 {
-			c.recordImportedHash(ctx, it.Hash, it.Name, it.SizeBytes) // drop it from the downloads view
+		// Containment heuristic: audiobook releases routinely ship a companion PDF
+		// (artwork/booklet) next to the M4B. Importing that PDF as the book's EBOOK
+		// edition satisfied the edition forever, so a real EPUB was never searched
+		// again. A download holding BOTH kinds is an audiobook release: import only
+		// the audio and leave the ebook edition unclaimed. Ebook-only and audio-only
+		// downloads import as before.
+		if len(audio) > 0 && len(ebooks) > 0 {
+			skipped := make([]string, 0, len(ebooks))
+			for _, f := range ebooks {
+				skipped = append(skipped, filepath.Base(f.Path))
+			}
+			c.log.Info("book import: audiobook release carries ebook-extension companion files — importing audio only, not claiming the ebook edition",
+				"book", b.Title, "release", it.Name, "skipped", strings.Join(skipped, ", "))
+			ebooks = nil
+		}
+		okEbook := c.importBookEdition(ctx, b, books.KindEbook, ebooks, it.Hash, it.Name)
+		okAudio := c.importBookEdition(ctx, b, books.KindAudiobook, audio, it.Hash, it.Name)
+		switch {
+		case okEbook || okAudio:
+			// At least one edition actually landed — drop it from the downloads view.
+			c.recordImportedHash(ctx, it.Hash, it.Name, it.SizeBytes)
+		case len(ebooks) > 0 || len(audio) > 0:
+			// Files were found but every import failed. Recording the hash here would
+			// make the sweep skip this torrent forever while the book stays missing;
+			// leave it unrecorded so the next sweep retries.
+			c.log.Warn("book import: found files but no edition imported — will retry next sweep",
+				"book", b.Title, "release", it.Name)
 		}
 	}
 }
 
-func (c *Coordinator) importBookEdition(ctx context.Context, b books.Book, kind string, files []library.FoundFile) {
+// bookParsedTitle reduces a release name to a readable title guess for a review row:
+// separators become spaces and format tags are stripped.
+func bookParsedTitle(name string) string {
+	t := strings.NewReplacer(".", " ", "_", " ").Replace(name)
+	t = reBookFormat.ReplaceAllString(t, "")
+	return strings.Join(strings.Fields(t), " ")
+}
+
+// importBookEdition hardlinks one edition's files into the library and records it,
+// reporting whether the edition actually imported — callers must only mark the
+// download handled when something did.
+func (c *Coordinator) importBookEdition(ctx context.Context, b books.Book, kind string, files []library.FoundFile, infoHash, downloadName string) bool {
 	if len(files) == 0 {
-		return
+		return false
 	}
 	bi, err := c.imp.ImportBookEdition(b.Author, b.Title, files)
 	if err != nil {
 		c.log.Warn("book: import failed", "title", b.Title, "edition", kind, "err", err)
-		return
+		return false
 	}
-	if err := c.books.MarkImported(ctx, b.ID, kind, bi.TargetPath, bi.Format, bi.SizeBytes, bi.FileCount); err == nil {
-		c.log.Info("book: imported", "title", b.Title, "edition", kind, "format", bi.Format, "files", bi.FileCount)
-		c.markBookGrabsImported(ctx, b.ID)
-		c.bus.Publish("book.imported", map[string]any{"title": b.Title, "id": b.ID, "edition": kind})
+	if err := c.books.MarkImported(ctx, b.ID, kind, bi.TargetPath, bi.Format, bi.SizeBytes, bi.FileCount); err != nil {
+		c.log.Warn("book: recording the imported edition failed", "title", b.Title, "edition", kind, "err", err)
+		return false
 	}
+	c.log.Info("book: imported", "title", b.Title, "edition", kind, "format", bi.Format, "files", bi.FileCount)
+	c.markBookGrabImported(ctx, b.ID, infoHash, downloadName) // flip THIS grab (not siblings) for seed cleanup
+	c.bus.Publish("book.imported", map[string]any{"title": b.Title, "id": b.ID, "edition": kind})
+	return true
 }
 
 // GrabForBook grabs a chosen release for a book (interactive search) into the book category.
@@ -784,6 +850,46 @@ func sanitizeName(s string) string {
 	return strings.TrimSpace(repl.Replace(s))
 }
 
+// pendingBookGrabTitles returns the normalized titles of a book's still-pending grabs
+// (grabbed but not yet imported or failed) — the DB-backed twin of the queue-based
+// bookDownloading guard, mirroring pendingGrabTitles for movies. When the download
+// client's queue can't be read, or a torrent's name doesn't match back to the book,
+// this still stops the same release being grabbed again. Bounded to a day so a grab
+// stuck 'grabbed' forever (torrent removed by hand, stall timeout unset) can't block
+// re-grabbing that release permanently.
+func (c *Coordinator) pendingBookGrabTitles(ctx context.Context, bookID int64) map[string]bool {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT title FROM grabs
+		 WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'book'
+		   AND grabbed_at > datetime('now', '-1 day')`, bookID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	set := map[string]bool{}
+	for rows.Next() {
+		var title string
+		if rows.Scan(&title) == nil {
+			set[normTitle(title)] = true
+		}
+	}
+	return set
+}
+
+// dropPendingBook removes releases whose normalized title is already pending as a grab.
+func dropPendingBook(releases []indexer.Release, pending map[string]bool) []indexer.Release {
+	if len(pending) == 0 {
+		return releases
+	}
+	out := releases[:0]
+	for _, rel := range releases {
+		if !pending[normTitle(rel.Title)] {
+			out = append(out, rel)
+		}
+	}
+	return out
+}
+
 // recordBookGrab tracks a book grab for seed cleanup (media_type=book, movie_id=bookID).
 func (c *Coordinator) recordBookGrab(ctx context.Context, bookID int64, title, indexer, profile, infoHash string) {
 	seedEnabled, seedRatio, seedHours := c.seedRules(ctx, indexer)
@@ -796,8 +902,48 @@ func (c *Coordinator) recordBookGrab(ctx context.Context, bookID int64, title, i
 	}
 }
 
-func (c *Coordinator) markBookGrabsImported(ctx context.Context, bookID int64) {
-	_, _ = c.db.ExecContext(ctx, `UPDATE grabs SET status = 'imported' WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'book'`, bookID)
+// markBookGrabImported flips the ONE grab this download came from to imported —
+// matching by info hash first (the torrent's real identity), then by normalized
+// release name for rows without one. Mirrors markSeriesGrabImported.
+//
+// It used to flip EVERY pending book grab for the book, which marked a sibling
+// edition's torrent — the audiobook still downloading while the ebook landed — as
+// imported before its data existed. Seed cleanup only considers imported grabs and
+// removes finished ones WITH their data, so the sibling was deleted the moment it
+// completed and the edition re-grabbed: the same grab → delete → re-grab loop the
+// series path fixed. A grab matching neither hash nor name stays pending;
+// detectStalledBook resolves it once its own edition lands.
+func (c *Coordinator) markBookGrabImported(ctx context.Context, bookID int64, infoHash, downloadName string) {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT id, title, info_hash FROM grabs WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'book'`, bookID)
+	if err != nil {
+		return
+	}
+	wantHash := strings.ToLower(infoHash)
+	want := normRelease(downloadName)
+	var byHash, byName []int64
+	for rows.Next() {
+		var id int64
+		var title, hash string
+		if rows.Scan(&id, &title, &hash) != nil {
+			continue
+		}
+		if wantHash != "" && hash != "" && strings.ToLower(hash) == wantHash {
+			byHash = append(byHash, id)
+		} else if normRelease(title) == want {
+			byName = append(byName, id)
+		}
+	}
+	ids := byHash
+	if len(ids) == 0 {
+		ids = byName
+	}
+	rows.Close() // close before writing — SQLite won't take a write while a read is open
+	for _, id := range ids {
+		if _, err := c.db.ExecContext(ctx, `UPDATE grabs SET status = 'imported' WHERE id = ?`, id); err != nil {
+			c.log.Warn("book: mark grab imported failed", "err", err)
+		}
+	}
 }
 
 var errBooksNotReady = errString("books module not ready")
@@ -873,7 +1019,10 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 	}
 	queue, qerr := c.downloads.Queue(ctx)
 	if qerr != nil {
-		queue = nil
+		// Same reasoning as SearchBooksMissing: an unreadable queue reads as empty,
+		// which would let this path stack duplicate grabs. Skip the cycle.
+		c.log.Warn("rss: couldn't read the download queue — skipping the book RSS sync this cycle", "err", qerr)
+		return
 	}
 	for _, b := range all {
 		if !b.Monitored {
@@ -884,6 +1033,12 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 		}
 		sp := c.bookProfile(ctx, b.QualityProfile)
 		matched := c.dropBlockedBook(ctx, b.ID, releasesForBook(res.Releases, b))
+		if len(matched) == 0 {
+			continue
+		}
+		// DB pending-grab guard (belt to bookDownloading's braces): never re-grab a
+		// release that's already been grabbed for this book and is still pending.
+		matched = dropPendingBook(matched, c.pendingBookGrabTitles(ctx, b.ID))
 		if len(matched) == 0 {
 			continue
 		}
