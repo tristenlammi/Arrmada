@@ -42,6 +42,26 @@ func (a *api) logRequests(next http.Handler) http.Handler {
 	})
 }
 
+// securityHeaders sets conservative, always-safe response headers on every
+// request. Deliberately NOT a strict Content-Security-Policy: the UI relies on
+// inline styles throughout, which a strict style-src would break — that needs a
+// nonce/hash pass before it can ship. These headers cost nothing and don't.
+func (a *api) securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff") // no MIME sniffing
+		h.Set("X-Frame-Options", "SAMEORIGIN")     // clickjacking: no foreign framing
+		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		h.Set("Cross-Origin-Opener-Policy", "same-origin")
+		// HSTS only when the client actually reached us over HTTPS, so a plain-HTTP
+		// LAN setup isn't pinned to a scheme it doesn't serve.
+		if requestIsHTTPS(r) {
+			h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // recoverPanics turns a panic in any handler into a 500 instead of crashing the
 // whole server.
 func (a *api) recoverPanics(next http.Handler) http.Handler {

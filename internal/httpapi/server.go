@@ -70,8 +70,9 @@ type Deps struct {
 }
 
 type api struct {
-	deps  Deps
-	start time.Time
+	deps         Deps
+	start        time.Time
+	loginLimiter *loginLimiter // throttles auth attempts (login/setup/plex-pin)
 	// refreshAll guards the bulk series refresh so two overlapping sweeps can't
 	// double every metadata pull and race each other's episode writes.
 	refreshAll atomic.Bool
@@ -83,7 +84,7 @@ type api struct {
 // New builds the HTTP server: JSON API routes, the embedded UI (with SPA
 // fallback), and the middleware chain (recover → log → mux).
 func New(d Deps) *http.Server {
-	a := &api{deps: d, start: time.Now()}
+	a := &api{deps: d, start: time.Now(), loginLimiter: newLoginLimiter(10, 15*time.Minute)}
 
 	mux := http.NewServeMux()
 	base := d.Config.BaseURL // "" for root, or "/sub-path"
@@ -147,14 +148,14 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/indexers", a.requireRole(auth.RoleManager, a.handleCreateIndexer))
 	mux.HandleFunc("PUT "+base+"/api/v1/indexers/{id}", a.requireRole(auth.RoleManager, a.handleUpdateIndexer))
 	mux.HandleFunc("DELETE "+base+"/api/v1/indexers/{id}", a.requireRole(auth.RoleManager, a.handleDeleteIndexer))
-	mux.HandleFunc("POST "+base+"/api/v1/indexers/{id}/test", a.protected(a.handleTestIndexer))
+	mux.HandleFunc("POST "+base+"/api/v1/indexers/{id}/test", a.requireRole(auth.RoleManager, a.handleTestIndexer))
 	mux.HandleFunc("GET "+base+"/api/v1/search", a.protected(a.handleSearch))
 
 	// Download clients + queue
 	mux.HandleFunc("GET "+base+"/api/v1/downloadclients", a.protected(a.handleListDownloadClients))
 	mux.HandleFunc("POST "+base+"/api/v1/downloadclients", a.requireRole(auth.RoleManager, a.handleCreateDownloadClient))
 	mux.HandleFunc("DELETE "+base+"/api/v1/downloadclients/{id}", a.requireRole(auth.RoleManager, a.handleDeleteDownloadClient))
-	mux.HandleFunc("POST "+base+"/api/v1/downloadclients/{id}/test", a.protected(a.handleTestDownloadClient))
+	mux.HandleFunc("POST "+base+"/api/v1/downloadclients/{id}/test", a.requireRole(auth.RoleManager, a.handleTestDownloadClient))
 	mux.HandleFunc("GET "+base+"/api/v1/downloadclients/{id}/status", a.protected(a.handleDownloadClientStatus))
 	mux.HandleFunc("GET "+base+"/api/v1/downloadclients/{id}/settings", a.protected(a.handleGetClientSettings))
 	mux.HandleFunc("PUT "+base+"/api/v1/downloadclients/{id}/settings", a.requireRole(auth.RoleManager, a.handleSetClientSettings))
@@ -174,7 +175,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("DELETE "+base+"/api/v1/queue/{hash}", a.requireRole(auth.RoleManager, a.handleDeleteDownload))
 
 	// Grab: search result → download client (closes the acquisition loop).
-	mux.HandleFunc("POST "+base+"/api/v1/grab", a.protected(a.handleGrab))
+	mux.HandleFunc("POST "+base+"/api/v1/grab", a.requireRole(auth.RoleManager, a.handleGrab))
 	mux.HandleFunc("POST "+base+"/api/v1/grab/preview", a.requireRole(auth.RoleManager, a.handleGrabPreview))
 	mux.HandleFunc("POST "+base+"/api/v1/movies/{id}/grabtorrent", a.requireRole(auth.RoleManager, a.handleMovieGrabTorrent))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/grabtorrent", a.requireRole(auth.RoleManager, a.handleSeriesGrabTorrent))
@@ -196,8 +197,8 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/movies/unmatched", a.requireRole(auth.RoleManager, a.handleMovieUnmatched))
 	mux.HandleFunc("POST "+base+"/api/v1/movies/import", a.requireRole(auth.RoleManager, a.handleMovieImportFolder))
 	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}", a.protected(a.handleGetMovie))
-	mux.HandleFunc("POST "+base+"/api/v1/movies", a.protected(a.handleAddMovie))
-	mux.HandleFunc("POST "+base+"/api/v1/movies/{id}/search", a.protected(a.handleSearchMovie))
+	mux.HandleFunc("POST "+base+"/api/v1/movies", a.requireRole(auth.RoleManager, a.handleAddMovie))
+	mux.HandleFunc("POST "+base+"/api/v1/movies/{id}/search", a.requireRole(auth.RoleManager, a.handleSearchMovie))
 	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/releases", a.protected(a.handleMovieReleases))
 	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/history", a.protected(a.handleMovieHistory))
 	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/collection", a.protected(a.handleMovieCollection))
@@ -208,28 +209,28 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/series/scan", a.requireRole(auth.RoleManager, a.handleScanSeriesLibrary))
 	mux.HandleFunc("GET "+base+"/api/v1/series/unmatched", a.requireRole(auth.RoleManager, a.handleSeriesUnmatched))
 	mux.HandleFunc("POST "+base+"/api/v1/series/import", a.requireRole(auth.RoleManager, a.handleSeriesImportFolder))
-	mux.HandleFunc("POST "+base+"/api/v1/series", a.protected(a.handleAddSeries))
+	mux.HandleFunc("POST "+base+"/api/v1/series", a.requireRole(auth.RoleManager, a.handleAddSeries))
 	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/history", a.protected(a.handleSeriesHistory))
-	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/search", a.protected(a.handleSearchSeries))
+	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/search", a.requireRole(auth.RoleManager, a.handleSearchSeries))
 	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/releases", a.protected(a.handleSeriesReleases))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/grab", a.requireRole(auth.RoleManager, a.handleGrabSeries))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/autograb", a.requireRole(auth.RoleManager, a.handleAutoGrabSeries))
 	mux.HandleFunc("POST "+base+"/api/v1/series/refresh", a.requireRole(auth.RoleManager, a.handleRefreshAllSeries))
-	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/refresh", a.protected(a.handleRefreshSeries))
+	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/refresh", a.requireRole(auth.RoleManager, a.handleRefreshSeries))
 	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/manualimport", a.protected(a.handleSeriesManualImportList))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/manualimport", a.requireRole(auth.RoleManager, a.handleSeriesManualImport))
 	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/rename", a.protected(a.handleSeriesRenamePreview))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/rename", a.requireRole(auth.RoleManager, a.handleSeriesRename))
 	mux.HandleFunc("GET "+base+"/api/v1/series/{id}", a.protected(a.handleGetSeries))
-	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/monitor", a.protected(a.handleSetSeriesMonitored))
-	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/profile", a.protected(a.handleSetSeriesProfile))
-	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/type", a.protected(a.handleSetSeriesType))
+	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetSeriesMonitored))
+	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/profile", a.requireRole(auth.RoleManager, a.handleSetSeriesProfile))
+	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/type", a.requireRole(auth.RoleManager, a.handleSetSeriesType))
 	// Manual scene-season mapping (anime whose cours don't match TMDB numbering).
 	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/scene-map", a.protected(a.handleListSceneOverrides))
 	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/scene-map", a.requireRole(auth.RoleManager, a.handleSetSceneOverride))
 	mux.HandleFunc("DELETE "+base+"/api/v1/series/{id}/scene-map/{season}", a.requireRole(auth.RoleManager, a.handleDeleteSceneOverride))
-	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/seasons/{season}/monitor", a.protected(a.handleSetSeasonMonitored))
-	mux.HandleFunc("PUT "+base+"/api/v1/series/episodes/{eid}/monitor", a.protected(a.handleSetEpisodeMonitored))
+	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/seasons/{season}/monitor", a.requireRole(auth.RoleManager, a.handleSetSeasonMonitored))
+	mux.HandleFunc("PUT "+base+"/api/v1/series/episodes/{eid}/monitor", a.requireRole(auth.RoleManager, a.handleSetEpisodeMonitored))
 	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/blocklist", a.protected(a.handleSeriesBlocklist))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/blocklist", a.requireRole(auth.RoleManager, a.handleSeriesBlock))
 	mux.HandleFunc("DELETE "+base+"/api/v1/series/{id}/blocklist/{bid}", a.requireRole(auth.RoleManager, a.handleSeriesUnblock))
@@ -309,9 +310,9 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/books/lookup", a.protected(a.handleLookupBooks))
 	mux.HandleFunc("POST "+base+"/api/v1/books/scan", a.requireRole(auth.RoleManager, a.handleScanBookLibrary))
 	mux.HandleFunc("POST "+base+"/api/v1/books/author", a.requireRole(auth.RoleManager, a.handleAddAuthor))
-	mux.HandleFunc("POST "+base+"/api/v1/books", a.protected(a.handleAddBook))
-	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/search", a.protected(a.handleSearchBook))
-	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/refresh", a.protected(a.handleRefreshBook))
+	mux.HandleFunc("POST "+base+"/api/v1/books", a.requireRole(auth.RoleManager, a.handleAddBook))
+	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/search", a.requireRole(auth.RoleManager, a.handleSearchBook))
+	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/refresh", a.requireRole(auth.RoleManager, a.handleRefreshBook))
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/releases", a.protected(a.handleBookReleases))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/grab", a.requireRole(auth.RoleManager, a.handleGrabBook))
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/manualimport", a.protected(a.handleBookManualImportList))
@@ -328,11 +329,11 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/books/discover/detail", a.protected(a.handleBookDiscoverDetail))
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/covers", a.protected(a.handleBookCovers))
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/cover-image", a.protected(a.handleBookCoverImage))
-	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/cover", a.protected(a.handleSetBookCover))
-	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/cover", a.protected(a.handleUploadBookCover))
+	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/cover", a.requireRole(auth.RoleManager, a.handleSetBookCover))
+	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/cover", a.requireRole(auth.RoleManager, a.handleUploadBookCover))
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}", a.protected(a.handleGetBook))
-	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/monitor", a.protected(a.handleSetBookMonitored))
-	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/profile", a.protected(a.handleSetBookProfile))
+	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetBookMonitored))
+	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/profile", a.requireRole(auth.RoleManager, a.handleSetBookProfile))
 	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/metadata", a.requireRole(auth.RoleManager, a.handleOverrideBookMetadata))
 	mux.HandleFunc("DELETE "+base+"/api/v1/books/{id}/file", a.requireRole(auth.RoleManager, a.handleDeleteBookFile))
 	mux.HandleFunc("DELETE "+base+"/api/v1/books/{id}", a.requireRole(auth.RoleManager, a.handleDeleteBook))
@@ -350,11 +351,11 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/blocklist", a.protected(a.handleListBlocklist))
 	mux.HandleFunc("POST "+base+"/api/v1/movies/{id}/blocklist", a.requireRole(auth.RoleManager, a.handleBlocklist))
 	mux.HandleFunc("DELETE "+base+"/api/v1/movies/{id}/blocklist/{bid}", a.requireRole(auth.RoleManager, a.handleUnblock))
-	mux.HandleFunc("POST "+base+"/api/v1/movies/{id}/refresh", a.protected(a.handleRefreshMovie))
-	mux.HandleFunc("PUT "+base+"/api/v1/movies/{id}/monitor", a.protected(a.handleSetMonitored))
-	mux.HandleFunc("PUT "+base+"/api/v1/movies/{id}/profile", a.protected(a.handleSetProfile))
+	mux.HandleFunc("POST "+base+"/api/v1/movies/{id}/refresh", a.requireRole(auth.RoleManager, a.handleRefreshMovie))
+	mux.HandleFunc("PUT "+base+"/api/v1/movies/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetMonitored))
+	mux.HandleFunc("PUT "+base+"/api/v1/movies/{id}/profile", a.requireRole(auth.RoleManager, a.handleSetProfile))
 	mux.HandleFunc("POST "+base+"/api/v1/movies/{id}/regrab", a.requireRole(auth.RoleManager, a.handleRegrab))
-	mux.HandleFunc("PUT "+base+"/api/v1/movies/{id}/availability", a.protected(a.handleSetAvailability))
+	mux.HandleFunc("PUT "+base+"/api/v1/movies/{id}/availability", a.requireRole(auth.RoleManager, a.handleSetAvailability))
 	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/manualimport", a.protected(a.handleManualImportList))
 	mux.HandleFunc("POST "+base+"/api/v1/movies/{id}/manualimport", a.requireRole(auth.RoleManager, a.handleManualImport))
 	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/rename", a.protected(a.handleRenamePreview))
@@ -377,7 +378,7 @@ func New(d Deps) *http.Server {
 
 	// Chain: recover → authenticate (resolves the user) → external gate (LAN vs
 	// outside) → log → routes.
-	handler := a.recoverPanics(a.authenticate(a.externalGate(a.logRequests(mux))))
+	handler := a.recoverPanics(a.securityHeaders(a.authenticate(a.externalGate(a.logRequests(mux)))))
 
 	return &http.Server{
 		Addr:              d.Config.Addr(),

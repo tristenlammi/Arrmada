@@ -121,3 +121,30 @@ func TestRoleAtLeast(t *testing.T) {
 		t.Error("role should meet itself")
 	}
 }
+
+// A password change must invalidate every existing session for that user.
+func TestPasswordChangeRevokesSessions(t *testing.T) {
+	ctx := context.Background()
+	s := newService(t)
+	u, err := s.CreateUser(ctx, "tristen", "supersecret", RoleAdmin, false)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	token, _, err := s.CreateSession(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("session: %v", err)
+	}
+	if _, err := s.ValidateSession(ctx, token); err != nil {
+		t.Fatalf("session should be valid: %v", err)
+	}
+	if err := s.SetPassword(ctx, u.ID, "brandnewpass"); err != nil {
+		t.Fatalf("set password: %v", err)
+	}
+	if _, err := s.ValidateSession(ctx, token); err == nil {
+		t.Fatal("session must be invalid after a password change")
+	}
+	// The disabled account must also fail to authenticate even with the right password.
+	if _, err := s.Authenticate(ctx, "tristen", "brandnewpass"); err != nil {
+		t.Fatalf("new password should authenticate: %v", err)
+	}
+}

@@ -256,7 +256,17 @@ func (s *Service) SetPassword(ctx context.Context, id int64, password string) er
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
+	// Invalidate every existing session for this user: a password change (often a
+	// response to a suspected compromise) must log out any hijacked session, not
+	// leave 30-day tokens valid.
+	_, _ = s.db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id)
 	return nil
+}
+
+// RevokeUserSessions logs a user out of every device (also used on disable).
+func (s *Service) RevokeUserSessions(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id)
+	return err
 }
 
 // Authenticate verifies a username/password and returns the user on success.
@@ -273,21 +283,32 @@ func (s *Service) Authenticate(ctx context.Context, username, password string) (
 		Scan(&u.ID, &u.Username, &hash, &u.Role, &disabled, &autoApprove)
 	u.AutoApprove = autoApprove != 0
 	if errors.Is(err, sql.ErrNoRows) {
-		// Spend a bcrypt cycle anyway so timing doesn't leak account existence.
-		_ = bcrypt.CompareHashAndPassword([]byte("$2a$10$invalidinvalidinvalidinvalidinvalidinvalidinv"), []byte(password))
+		// Spend a REAL bcrypt cycle so response time doesn't leak whether the
+		// username exists. The previous placeholder was too short to parse, so
+		// CompareHashAndPassword returned instantly — no cycle spent — and the
+		// timing gap cleanly enumerated valid accounts.
+		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
 		return nil, ErrInvalidCredentials
 	}
 	if err != nil {
 		return nil, err
 	}
-	if disabled != 0 {
-		return nil, ErrInvalidCredentials
-	}
-	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
+	// Always run the compare (even for a disabled user) so a disabled account
+	// isn't distinguishable by timing either, THEN reject.
+	pwOK := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+	if disabled != 0 || !pwOK {
 		return nil, ErrInvalidCredentials
 	}
 	return &u, nil
 }
+
+// dummyHash is a valid 60-char bcrypt hash of a random string, computed once, so
+// the no-such-user path spends a genuine bcrypt cycle (see Authenticate). No
+// password ever verifies against it.
+var dummyHash = func() []byte {
+	h, _ := bcrypt.GenerateFromPassword([]byte("arrmada-timing-guard"), bcrypt.DefaultCost)
+	return h
+}()
 
 // CreateSession issues a new session token (returned raw once) and stores only
 // its hash. Returns the raw token and its expiry.

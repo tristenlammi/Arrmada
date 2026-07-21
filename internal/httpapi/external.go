@@ -27,7 +27,43 @@ func (a *api) classifyExternal(r *http.Request) bool {
 	if ip == nil {
 		return false // can't tell — treat as internal rather than lock the LAN out
 	}
-	return !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast()
+	if !ip.IsPrivate() && !ip.IsLoopback() && !ip.IsLinkLocalUnicast() {
+		return true // public source IP → external (direct port-forward)
+	}
+	// A private/loopback PEER is a reverse proxy in front of us. Rather than the old
+	// "no matching header → internal" (which silently exposed the whole LAN-only API
+	// to the internet on any proxy that didn't set the configured header), look at the
+	// forwarded ORIGINAL client IP: a public one is an internet visitor (external), a
+	// private one is a genuine LAN client behind a local proxy (internal, so a LAN +
+	// local-TLS-proxy setup isn't locked out). A remote client that forges the header
+	// to look private only reaches role-gated endpoints anyway — the gate is defense in
+	// depth, not the sole control.
+	if fwd := forwardedClientIP(r); fwd != nil {
+		return !fwd.IsPrivate() && !fwd.IsLoopback() && !fwd.IsLinkLocalUnicast()
+	}
+	return false // no forward info, private peer → treat as LAN
+}
+
+// forwardedClientIP returns the original client IP a reverse proxy stamped, from
+// X-Forwarded-For (leftmost hop) or the Forwarded header, or nil if neither is set.
+func forwardedClientIP(r *http.Request) net.IP {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		first := strings.TrimSpace(strings.Split(xff, ",")[0])
+		return net.ParseIP(first)
+	}
+	if f := r.Header.Get("Forwarded"); f != "" {
+		for _, part := range strings.Split(f, ";") {
+			part = strings.TrimSpace(part)
+			if strings.HasPrefix(strings.ToLower(part), "for=") {
+				v := strings.Trim(part[4:], `"[]`)
+				if h, _, err := net.SplitHostPort(v); err == nil {
+					v = h
+				}
+				return net.ParseIP(v)
+			}
+		}
+	}
+	return nil
 }
 
 // isExternalRequest reads the classification stamped by externalGate.

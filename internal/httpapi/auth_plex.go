@@ -33,6 +33,11 @@ func (a *api) handlePlexLoginStart(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusForbidden, "Plex sign-in is disabled")
 		return
 	}
+	// Each pin start hits plex.tv; throttle so the unauthenticated endpoint can't
+	// be used to amplify traffic at plex.tv or spin up pins without bound.
+	if !a.loginAllowed(w, r, "plexpin:"+clientIP(r)) {
+		return
+	}
 	clientID := a.plexClientID(ctx)
 	pin, err := plex.RequestPIN(ctx, clientID, plexLoginProduct)
 	if err != nil {

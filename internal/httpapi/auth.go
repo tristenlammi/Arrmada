@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
@@ -104,6 +105,11 @@ func (a *api) handleSetup(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusConflict, "setup already complete")
 		return
 	}
+	// Throttle the unauthenticated setup endpoint too — it's externally reachable
+	// on a fresh instance until the first admin exists.
+	if !a.loginAllowed(w, r, "setup:"+clientIP(r)) {
+		return
+	}
 
 	var body credentials
 	if !a.decodeJSON(w, r, &body) {
@@ -124,12 +130,33 @@ func (a *api) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !a.decodeJSON(w, r, &body) {
 		return
 	}
+	// Throttle by IP and by username so neither dimension can be brute-forced.
+	if !a.loginAllowed(w, r, "login:"+clientIP(r), "login-user:"+strings.ToLower(strings.TrimSpace(body.Username))) {
+		return
+	}
 	u, err := a.deps.Auth.Authenticate(r.Context(), body.Username, body.Password)
 	if err != nil {
 		a.writeAuthError(w, err)
 		return
 	}
 	a.startSession(w, r, u, http.StatusOK)
+}
+
+// loginAllowed checks every provided rate-limit key; the first that trips writes
+// a 429 with a Retry-After and returns false. Wide-open when no limiter is set.
+func (a *api) loginAllowed(w http.ResponseWriter, r *http.Request, keys ...string) bool {
+	if a.loginLimiter == nil {
+		return true
+	}
+	for _, k := range keys {
+		if ok, retry := a.loginLimiter.allow(k); !ok {
+			secs := int(retry.Seconds()) + 1
+			w.Header().Set("Retry-After", strconv.Itoa(secs))
+			a.writeError(w, http.StatusTooManyRequests, "too many attempts — try again in a bit")
+			return false
+		}
+	}
+	return true
 }
 
 // handleLogout revokes the current session and clears the cookie.
@@ -159,7 +186,7 @@ func (a *api) startSession(w http.ResponseWriter, r *http.Request, u *auth.User,
 		Path:     a.cookiePath(),
 		Expires:  expires,
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 	a.writeJSON(w, code, map[string]any{"user": u})
@@ -172,9 +199,27 @@ func (a *api) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 		Path:     a.cookiePath(),
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   r.TLS != nil,
+		Secure:   requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 	})
+}
+
+// requestIsHTTPS reports whether the ORIGINAL client request used HTTPS. Direct
+// TLS sets r.TLS; behind a TLS-terminating reverse proxy (the exposed
+// deployment) the proxy speaks plaintext to Go, so r.TLS is nil and we must
+// trust the X-Forwarded-Proto / Forwarded header the proxy stamps. Without this
+// the session cookie dropped its Secure flag exactly where it matters most.
+func requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if p := r.Header.Get("X-Forwarded-Proto"); p != "" {
+		return strings.EqualFold(strings.TrimSpace(strings.Split(p, ",")[0]), "https")
+	}
+	if f := r.Header.Get("Forwarded"); strings.Contains(strings.ToLower(f), "proto=https") {
+		return true
+	}
+	return false
 }
 
 func (a *api) cookiePath() string {
