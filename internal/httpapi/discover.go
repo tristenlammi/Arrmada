@@ -216,7 +216,7 @@ func (a *api) handleDiscoverUpcoming(w http.ResponseWriter, r *http.Request) {
 	if !a.discoveryReady(w) {
 		return
 	}
-	items, err := a.deps.Discovery.Upcoming(r.Context())
+	items, err := a.deps.Discovery.Upcoming(r.Context(), r.URL.Query().Get("media"))
 	if err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return

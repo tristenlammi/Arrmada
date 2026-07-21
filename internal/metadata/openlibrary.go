@@ -23,18 +23,24 @@ const (
 // Goodreads dependency — Open Library is open data and can be mirrored/swapped later.
 type OpenLibrary struct {
 	http *http.Client
+	// base is the openlibrary.org root; overridden in tests.
+	base string
 }
 
 // NewOpenLibrary builds the provider.
 func NewOpenLibrary() *OpenLibrary {
-	return &OpenLibrary{http: &http.Client{Timeout: 15 * time.Second}}
+	return &OpenLibrary{http: &http.Client{Timeout: 15 * time.Second}, base: olBaseURL}
 }
 
 // Available is always true — no key required.
 func (o *OpenLibrary) Available() bool { return true }
 
 func (o *OpenLibrary) get(ctx context.Context, path string, q url.Values) ([]byte, error) {
-	u := olBaseURL + path
+	root := o.base
+	if root == "" {
+		root = olBaseURL
+	}
+	u := root + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}
@@ -177,11 +183,20 @@ func (o *OpenLibrary) AuthorWorks(ctx context.Context, key string, limit int) ([
 	return filterBundles(out), nil
 }
 
+// olTrendingTimeout bounds the trending call specifically. /trending/weekly.json is by
+// far the slowest and flakiest Open Library endpoint; on the general 15s client timeout
+// the Books tab sits on skeletons for the full 15s before giving up. A tighter deadline
+// fails the row fast (surfacing a real error the UI can render as "couldn't load")
+// while every other Open Library call keeps the full 15s.
+var olTrendingTimeout = 6 * time.Second
+
 // TrendingBooks returns books trending this week.
 func (o *OpenLibrary) TrendingBooks(ctx context.Context) ([]BookResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, olTrendingTimeout)
+	defer cancel()
 	body, err := o.get(ctx, "/trending/weekly.json", nil)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("openlibrary: trending: %w", err)
 	}
 	return decodeWorkList(body)
 }

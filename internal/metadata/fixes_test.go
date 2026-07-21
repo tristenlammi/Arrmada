@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -136,11 +137,11 @@ func TestDiscoverListDoesNotCacheErrors(t *testing.T) {
 	tm.base = srv.URL
 	ctx := context.Background()
 
-	if _, err := tm.Upcoming(ctx); err == nil {
+	if _, err := tm.Upcoming(ctx, "movie"); err == nil {
 		t.Fatal("expected an error from the 500 response")
 	}
 	fail.Store(false)
-	items, err := tm.Upcoming(ctx)
+	items, err := tm.Upcoming(ctx, "movie")
 	if err != nil {
 		t.Fatalf("expected recovery after upstream heals, got %v", err)
 	}
@@ -181,5 +182,104 @@ func TestDiscoverListCacheExpiry(t *testing.T) {
 	}
 	if got := hits.Load(); got != 2 {
 		t.Errorf("expected refetch after expiry, got %d hits", got)
+	}
+}
+
+// --- Upcoming: movie vs series ---
+
+// Upcoming("series") must hit /tv/on_the_air (shows airing in the next 7 days) and
+// normalize rows to media_type "series"; movie stays on /movie/upcoming. Crucially the
+// two must not share a cache entry — a shared key would serve movie cards on the Series
+// tab (or vice versa) for the whole 10-minute TTL.
+func TestUpcomingRoutesAndCachesPerMediaType(t *testing.T) {
+	var paths []string
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		paths = append(paths, r.URL.Path)
+		mu.Unlock()
+		switch r.URL.Path {
+		case "/movie/upcoming":
+			w.Write([]byte(`{"results":[{"id":1,"title":"Movie A","release_date":"2030-01-01","poster_path":"/m.jpg"}]}`))
+		case "/tv/on_the_air":
+			w.Write([]byte(`{"results":[{"id":2,"name":"Show B","first_air_date":"2030-02-02","poster_path":"/s.jpg"}]}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	tm := NewTMDB("k")
+	tm.base = srv.URL
+	ctx := context.Background()
+
+	for _, media := range []string{"series", "tv"} {
+		items, err := tm.Upcoming(ctx, media)
+		if err != nil {
+			t.Fatalf("upcoming(%q): %v", media, err)
+		}
+		if len(items) != 1 || items[0].MediaType != "series" || items[0].Title != "Show B" || items[0].TMDBID != 2 {
+			t.Fatalf("upcoming(%q) unexpected items: %+v", media, items)
+		}
+		if items[0].PosterURL == "" {
+			t.Errorf("upcoming(%q): poster URL not built", media)
+		}
+	}
+
+	for _, media := range []string{"movie", "", "bogus"} {
+		items, err := tm.Upcoming(ctx, media)
+		if err != nil {
+			t.Fatalf("upcoming(%q): %v", media, err)
+		}
+		if len(items) != 1 || items[0].MediaType != "movie" || items[0].Title != "Movie A" {
+			t.Fatalf("upcoming(%q) unexpected items: %+v", media, items)
+		}
+	}
+
+	// Distinct cache keys: exactly one upstream fetch per media type, and both entries
+	// coexist in the cache.
+	mu.Lock()
+	got := append([]string(nil), paths...)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("expected exactly 2 upstream hits (one per media type), got %v", got)
+	}
+	tm.discMu.Lock()
+	n := len(tm.discCache)
+	_, haveMovie := tm.discCache["/movie/upcoming?"]
+	_, haveSeries := tm.discCache["/tv/on_the_air?"]
+	tm.discMu.Unlock()
+	if n != 2 || !haveMovie || !haveSeries {
+		t.Errorf("expected separate cache entries per media type, got %d entries (movie=%v series=%v)", n, haveMovie, haveSeries)
+	}
+}
+
+// A slow /trending/weekly.json must fail fast on its own deadline rather than hanging
+// the Books row until the 15s client timeout.
+func TestTrendingBooksHasOwnDeadline(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // hang until the client gives up
+	}))
+	defer func() { close(release); srv.Close() }()
+
+	// The client timeout stays generous (as in production); only the trending-specific
+	// deadline is shrunk so the test doesn't have to wait it out.
+	ol := &OpenLibrary{http: &http.Client{Timeout: 15 * time.Second}, base: srv.URL}
+	prev := olTrendingTimeout
+	olTrendingTimeout = 100 * time.Millisecond
+	defer func() { olTrendingTimeout = prev }()
+
+	start := time.Now()
+	items, err := ol.TrendingBooks(context.Background())
+	if err == nil {
+		t.Fatal("expected a timeout error, got nil (an empty row would render as 'no results')")
+	}
+	if items != nil {
+		t.Errorf("expected no items on timeout, got %+v", items)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("trending waited %v — it must not ride the 15s client timeout", elapsed)
 	}
 }

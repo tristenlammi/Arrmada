@@ -33,7 +33,7 @@ type DiscoveryProvider interface {
 	Available() bool
 	Trending(ctx context.Context, media string) ([]DiscoverItem, error)
 	Popular(ctx context.Context, media string) ([]DiscoverItem, error)
-	Upcoming(ctx context.Context) ([]DiscoverItem, error)
+	Upcoming(ctx context.Context, media string) ([]DiscoverItem, error)
 	DiscoverByGenre(ctx context.Context, media string, genreID int) ([]DiscoverItem, error)
 	Genres(ctx context.Context, media string) ([]Genre, error)
 	MediaDetails(ctx context.Context, media string, tmdbID int) (*MediaDetail, error)
@@ -433,8 +433,16 @@ func (t *TMDB) Popular(ctx context.Context, media string) ([]DiscoverItem, error
 	return t.cachedDiscoverList(ctx, "/movie/popular", url.Values{}, "movie", discoverListTTL)
 }
 
-// Upcoming returns movies not yet released (for requesting future titles).
-func (t *TMDB) Upcoming(ctx context.Context) ([]DiscoverItem, error) {
+// Upcoming returns titles airing/releasing soon (for requesting future titles). For
+// movies that's TMDB's not-yet-released list; for series it's shows airing in the next
+// 7 days (/tv/on_the_air). media: "movie" (default) | "series"/"tv".
+//
+// The two variants hit different TMDB paths, and the discover cache keys on
+// path+query, so movie and series results can never collide.
+func (t *TMDB) Upcoming(ctx context.Context, media string) ([]DiscoverItem, error) {
+	if tvish(media) {
+		return t.cachedDiscoverList(ctx, "/tv/on_the_air", url.Values{}, "tv", discoverListTTL)
+	}
 	return t.cachedDiscoverList(ctx, "/movie/upcoming", url.Values{}, "movie", discoverListTTL)
 }
 
