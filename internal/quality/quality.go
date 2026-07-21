@@ -23,15 +23,31 @@ var resBase = map[parser.Resolution]int{
 	parser.Res480p:  40,
 }
 
+// sourceBonus layers a release's provenance on top of the resolution base.
+// The values are deliberately compressed: the whole identified-source spread
+// (Remux 21 → DVD 2 = 19 points) stays below the tightest resolution gap
+// (576p→480p = 20), so a better source can never leapfrog a full resolution
+// tier — it decides between releases of the SAME resolution, exactly where
+// "1080p HDCAM vs 1080p WEB-DL" needs deciding. Every adjacent gap is at
+// least 2, which keeps the +1 properBonus from jumping a source tier either.
+// Unknown sources score 0 (map default): below every identified source.
+// CAM is the one deliberate outlier — a cam rip is worse than a real encode
+// at any resolution, so its penalty drops it out of contention entirely.
 var sourceBonus = map[parser.Source]int{
-	parser.SourceRemux:  130,
-	parser.SourceBluray: 95,
-	parser.SourceWebDL:  70,
-	parser.SourceWebRip: 35,
-	parser.SourceDVD:    20,
-	parser.SourceHDTV:   10,
-	parser.SourceCAM:    -50,
+	parser.SourceRemux:  21,
+	parser.SourceBluray: 18,
+	parser.SourceWebDL:  8,
+	parser.SourceWebRip: 6,
+	parser.SourceHDTV:   4,
+	parser.SourceDVD:    2,
+	parser.SourceCAM:    -170,
 }
+
+// properBonus rewards a PROPER/REPACK re-release: +1 strictly wins the tie
+// against the broken original it replaces, while staying below every source
+// gap (min 2) and every resolution gap, so a proper never out-ranks anything
+// its base release wouldn't.
+const properBonus = 1
 
 var sourceRank = map[parser.Source]int{
 	parser.SourceRemux: 6, parser.SourceBluray: 5, parser.SourceWebDL: 4,
@@ -42,12 +58,19 @@ var resRank = map[parser.Resolution]int{
 	parser.Res2160p: 5, parser.Res1080p: 4, parser.Res720p: 3, parser.Res576p: 2, parser.Res480p: 1,
 }
 
-// qualityScore ranks by resolution only. Source is a filter (min/max) and a
-// tiebreaker — NOT a score factor — so a high-bitrate WEBRip can beat a heavily
-// compressed BluRay of the same resolution, which is what "highest bitrate in
-// range" means.
+// qualityScore ranks by resolution first, with a small source bonus layered on
+// top so provenance breaks same-resolution contests (a 1080p WEB-DL out-ranks a
+// 1080p HDCAM even when the cam file is bigger). The source spread is kept
+// smaller than any resolution gap — see sourceBonus — so within a profile's
+// allowed range, size (bitrate) still decides between releases whose score
+// ties. A PROPER/REPACK gets a +1 nudge so it strictly beats the broken
+// original it re-releases.
 func qualityScore(r parser.Release) int {
-	return resBase[r.Resolution]
+	s := resBase[r.Resolution] + sourceBonus[r.Source]
+	if r.Proper || r.Repack {
+		s += properBonus
+	}
+	return s
 }
 
 // lowQualityGroups are release groups widely regarded as over-compressed /
@@ -136,7 +159,7 @@ type Profile struct {
 	MinSource          parser.Source       `json:"min_source,omitempty"`
 	MaxSource          parser.Source       `json:"max_source,omitempty"`       // empty = no upper bound
 	BitrateCapMbps     float64             `json:"bitrate_cap_mbps,omitempty"` // 0 = no cap; rejects releases whose bitrate exceeds it (length-independent)
-	SmallBias          float64             `json:"small_bias,omitempty"`       // score penalty per GB
+	SmallBias          float64             `json:"small_bias,omitempty"`       // score penalty per GB; any value > 0 also breaks score ties toward the smaller file (0 = ties go to the larger, i.e. higher-bitrate, file)
 	FormatScores       map[string]int      `json:"format_scores,omitempty"`
 	MinFormatScore     int                 `json:"min_format_score,omitempty"`
 	Keywords           []Keyword           `json:"keywords,omitempty"`
@@ -302,7 +325,9 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 		}
 	}
 	for _, k := range p.Keywords {
-		if k.Term == "" || !strings.Contains(lcName, strings.ToLower(k.Term)) {
+		// Token-bounded like Rejected terms: keyword "cam" must not match
+		// "American", "web" must not match inside "cobweb".
+		if !containsTerm(lcName, strings.ToLower(strings.TrimSpace(k.Term))) {
 			continue
 		}
 		ev.FormatScore += k.Score
@@ -317,9 +342,11 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 		return ev
 	}
 
-	// Size doesn't enter the score — it only breaks ties (as bitrate) in Decide.
-	// A strong small-size profile ("smallest") still nudges the score smaller.
-	if p.SmallBias >= 4 {
+	// Any positive SmallBias nudges the score per GB — a mild bias (0.15) is a
+	// gentle lean toward smaller files, a strong one (8) is "smallest decent".
+	// SmallBias == 0 leaves size out of the score entirely (ties then go to the
+	// bigger, higher-bitrate file in Decide).
+	if p.SmallBias > 0 {
 		ev.SizeScore = -int(c.SizeGB * p.SmallBias)
 	}
 	ev.Total = ev.QualityScore + ev.FormatScore + ev.SizeScore
@@ -365,8 +392,8 @@ func (e *Engine) Decide(p Profile, cands []Candidate) Decision {
 	}
 	// Rank by score, then by bitrate. For one movie every candidate is the same
 	// runtime, so a larger file = higher bitrate = better — unless the profile
-	// explicitly optimizes for small size, in which case smaller wins the tie.
-	preferSmaller := p.SmallBias >= 4
+	// expresses any small-size preference, in which case smaller wins the tie.
+	preferSmaller := p.SmallBias > 0
 	sort.SliceStable(d.Eligible, func(i, j int) bool {
 		a, b := d.Eligible[i], d.Eligible[j]
 		if a.Total != b.Total {
@@ -410,11 +437,14 @@ func whyReasons(p Profile, e Evaluation) []string {
 	for _, m := range e.Matched {
 		out = append(out, m+" — matched")
 	}
-	if p.SmallBias >= 4 {
+	switch {
+	case p.SmallBias >= 4:
 		out = append(out, "Smallest watchable size")
-	} else if p.BitrateCapMbps > 0 {
+	case p.BitrateCapMbps > 0:
 		out = append(out, fmt.Sprintf("Highest bitrate under your %.0f Mbps ceiling", p.BitrateCapMbps))
-	} else {
+	case p.SmallBias > 0:
+		out = append(out, "Best quality for the size")
+	default:
 		out = append(out, "Highest bitrate available")
 	}
 	return out

@@ -53,13 +53,14 @@ type Keyword struct {
 }
 
 // KeywordScore sums the scores of the keywords whose term appears in the release
-// title (case-insensitive). Shared by the video engine and the book picker so
-// "graphic audio +100" style preferences work everywhere.
+// title (case-insensitive, token-bounded like reject terms — "web" must not match
+// inside "cobweb"). Shared by the video engine and the book picker so "graphic
+// audio +100" style preferences work everywhere.
 func KeywordScore(keywords []Keyword, title string) int {
 	lc := strings.ToLower(title)
 	total := 0
 	for _, k := range keywords {
-		if k.Term != "" && strings.Contains(lc, strings.ToLower(k.Term)) {
+		if containsTerm(lc, strings.ToLower(strings.TrimSpace(k.Term))) {
 			total += k.Score
 		}
 	}
@@ -67,11 +68,12 @@ func KeywordScore(keywords []Keyword, title string) int {
 }
 
 // Rejects reports whether the release title contains any of the profile's
-// hard-reject terms (case-insensitive).
+// hard-reject terms (case-insensitive, token-bounded — "cam" must not reject
+// "Camera", "com" must not reject "Complete").
 func Rejects(rejected []string, title string) bool {
 	lc := strings.ToLower(title)
 	for _, term := range rejected {
-		if term != "" && strings.Contains(lc, strings.ToLower(term)) {
+		if containsTerm(lc, strings.ToLower(strings.TrimSpace(term))) {
 			return true
 		}
 	}

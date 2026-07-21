@@ -451,7 +451,7 @@ func (a *api) handleSetProfile(w http.ResponseWriter, r *http.Request) {
 		case !m.HasFile:
 			// Missing → search under the new criteria.
 			go a.bg(func(ctx context.Context) error { return a.deps.Automation.SearchMovie(ctx, id) }, "re-search after profile change", id)
-		case a.deps.Quality.WouldReject(r.Context(), req.QualityProfile, m.SourceRelease, sizeGB(m)):
+		case a.deps.Quality.WouldReject(r.Context(), req.QualityProfile, m.SourceRelease, sizeGB(m), m.Runtime):
 			// The existing file no longer fits the new (lower) profile → this is a
 			// downgrade. Don't act automatically; let the UI ask the user.
 			downgrade = true

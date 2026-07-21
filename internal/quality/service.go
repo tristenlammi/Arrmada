@@ -211,13 +211,15 @@ func (s *Service) IsBitrateUpgrade(ctx context.Context, ref string, cand, curren
 
 // WouldReject reports whether the profile would reject the given release — used
 // to tell if switching a movie to this profile is a downgrade (its current file
-// no longer fits). currentRelease is the file's source release name.
-func (s *Service) WouldReject(ctx context.Context, ref, currentRelease string, sizeGB float64) bool {
+// no longer fits). currentRelease is the file's source release name. runtimeMin
+// is the content length in minutes, needed to turn the size into a bitrate so
+// the profile's bitrate ceiling can apply; 0 skips the ceiling check.
+func (s *Service) WouldReject(ctx context.Context, ref, currentRelease string, sizeGB float64, runtimeMin int) bool {
 	if strings.TrimSpace(currentRelease) == "" {
 		return false
 	}
 	p, e := s.Resolve(ctx, ref)
-	return !e.Evaluate(p, NewCandidate(currentRelease, sizeGB, 1_000_000)).Eligible
+	return !e.Evaluate(p, NewCandidate(currentRelease, sizeGB, 1_000_000).WithRuntime(runtimeMin)).Eligible
 }
 
 // List returns the user's quality profiles for a media type. Every profile is a
