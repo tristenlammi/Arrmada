@@ -282,3 +282,50 @@ func (s *Service) RecentlyAdded(ctx context.Context, limit int) ([]RecentItem, e
 	}
 	return out, nil
 }
+
+// WatchedTitle is one thing a user has played, in library-matchable form: the
+// show title for episodes, the movie title otherwise.
+type WatchedTitle struct {
+	Title     string
+	MediaType string // "movie" | "episode"
+	Year      int
+}
+
+// RecentlyWatchedByUser returns the distinct titles a Plex user has recently
+// watched, most-recent first — the watch-history seed for the personalized
+// "Recommended for you" row. plexUserID is the numeric Plex account id (what the
+// Plex-login flow stores on the Arrmada user as plex_id, and what sessions key on).
+// Episodes collapse to their show title so one binge is one seed.
+func (s *Service) RecentlyWatchedByUser(ctx context.Context, plexUserID string, limit int) ([]WatchedTitle, error) {
+	if plexUserID == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	// GROUP BY the library-facing title so a re-watch or a multi-episode binge is a
+	// single seed; order by the most recent play of each.
+	rows, err := s.repo.db.QueryContext(ctx,
+		`SELECT
+		   CASE WHEN media_type = 'episode' AND grandparent_title != '' THEN grandparent_title ELSE title END AS lib_title,
+		   media_type, MAX(year) AS year, MAX(started_at) AS last_at
+		 FROM stream_sessions
+		 WHERE user_id = ? AND lib_title != ''
+		 GROUP BY lib_title, media_type
+		 ORDER BY last_at DESC
+		 LIMIT ?`, plexUserID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []WatchedTitle
+	for rows.Next() {
+		var w WatchedTitle
+		var lastAt int64
+		if err := rows.Scan(&w.Title, &w.MediaType, &w.Year, &lastAt); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}

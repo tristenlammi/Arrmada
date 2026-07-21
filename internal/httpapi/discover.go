@@ -119,7 +119,14 @@ func (a *api) buildDiscoverSnapshot(ctx context.Context) (snap *discoverEnrichSn
 // enrichDiscover attaches library + request status (and live download progress) to
 // a batch of discover items.
 func (a *api) enrichDiscover(w http.ResponseWriter, r *http.Request, items []metadata.DiscoverItem) {
-	snap := a.discoverSnapshot(r.Context())
+	a.writeJSON(w, http.StatusOK, map[string]any{"items": a.enrichCards(r.Context(), items)})
+}
+
+// enrichCards annotates raw discover items with the viewer's library/request/download
+// status, sharing the 15s enrichment snapshot. Split out of enrichDiscover so the
+// personalized row can enrich and then filter before writing.
+func (a *api) enrichCards(ctx context.Context, items []metadata.DiscoverItem) []discoverCard {
+	snap := a.discoverSnapshot(ctx)
 	cards := make([]discoverCard, 0, len(items))
 	for _, it := range items {
 		c := discoverCard{DiscoverItem: it}
@@ -132,7 +139,7 @@ func (a *api) enrichDiscover(w http.ResponseWriter, r *http.Request, items []met
 		c.DownloadProgress = snap.prog[it.MediaType+":"+strconv.Itoa(it.TMDBID)]
 		cards = append(cards, c)
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"items": cards})
+	return cards
 }
 
 // seriesQueueProgress returns the progress of an in-flight download whose parsed

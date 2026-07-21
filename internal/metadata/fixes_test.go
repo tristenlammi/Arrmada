@@ -373,3 +373,31 @@ func TestDiscoverRegionParam(t *testing.T) {
 		t.Errorf("invalid region should be omitted, got %q", gotPopular)
 	}
 }
+
+// Recommendations hits the per-title endpoint and maps rows like the browse lists
+// (no vote floor, since it's contextual to a seed the user chose).
+func TestRecommendations(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Write([]byte(`{"results":[
+			{"id":11,"title":"Rec One","media_type":"movie","release_date":"2021-01-01","poster_path":"/a.jpg","vote_count":3},
+			{"id":12,"title":"Rec Two","media_type":"movie","release_date":"2022-01-01","poster_path":"/b.jpg","vote_count":900}
+		]}`))
+	}))
+	defer srv.Close()
+
+	tm := NewTMDB("k")
+	tm.base = srv.URL
+	items, err := tm.Recommendations(context.Background(), "movie", 550)
+	if err != nil {
+		t.Fatalf("recommendations: %v", err)
+	}
+	if gotPath != "/movie/550/recommendations" {
+		t.Errorf("path = %q", gotPath)
+	}
+	// Both kept — the low-vote one is NOT floored on the recommendations path.
+	if len(items) != 2 {
+		t.Fatalf("expected 2 recs (no vote floor), got %+v", items)
+	}
+}

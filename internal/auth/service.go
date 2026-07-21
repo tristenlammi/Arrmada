@@ -166,6 +166,17 @@ func (s *Service) uniqueUsername(ctx context.Context, base string) string {
 }
 
 // UpdateUser changes a user's role and auto-approve flag.
+// PlexIDForUser returns the Plex account id linked to an Arrmada user (set when they
+// sign in with Plex), or "" if none. Used to tie a signed-in user to their Plex watch
+// history, which is keyed by the same numeric account id.
+func (s *Service) PlexIDForUser(ctx context.Context, userID int64) string {
+	var plexID sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT plex_id FROM users WHERE id = ?`, userID).Scan(&plexID); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(plexID.String)
+}
+
 func (s *Service) UpdateUser(ctx context.Context, id int64, role Role, autoApprove bool) error {
 	if !ValidRole(role) {
 		return errors.New("invalid role")

@@ -391,11 +391,15 @@ function DiscoverTab({ ctx }: { ctx: RowCtx }) {
     <RowRegistryCtx.Provider value={registry}>
       <div className="flex flex-col gap-7">
         <Hero ctx={ctx} />
+        {/* Personalized to the viewer's watch history/requests. Hidden entirely (no header,
+            no skeleton) when the backend returns nothing to recommend, or on error. At
+            order 0 it claims the top slot so the rows below dedupe against it. */}
+        <PosterRow order={0} hideUntilLoaded hideOnError title="Recommended for you" load={() => api.discoverRecommended()} ctx={ctx} />
         <MyRequestsRow flash={ctx.flash} />
-        <PosterRow order={0} title="Trending this week" load={() => api.discoverTrending("all")} ctx={ctx} />
-        <PosterRow order={1} title="Popular movies" load={() => api.discoverPopular("movie")} ctx={ctx} />
-        <PosterRow order={2} title="Popular series" load={() => api.discoverPopular("series")} ctx={ctx} />
-        <PosterRow order={3} excludeOwned title="Upcoming — request ahead" load={() => api.discoverUpcoming()} ctx={ctx} />
+        <PosterRow order={1} title="Trending this week" load={() => api.discoverTrending("all")} ctx={ctx} />
+        <PosterRow order={2} title="Popular movies" load={() => api.discoverPopular("movie")} ctx={ctx} />
+        <PosterRow order={3} title="Popular series" load={() => api.discoverPopular("series")} ctx={ctx} />
+        <PosterRow order={4} excludeOwned title="Upcoming — request ahead" load={() => api.discoverUpcoming()} ctx={ctx} />
         <GenreExplorer media="movie" switchable ctx={ctx} />
       </div>
     </RowRegistryCtx.Provider>
@@ -706,7 +710,7 @@ function createRowRegistry(): RowRegistry {
 // no `order`) behaves exactly as before.
 const RowRegistryCtx = createContext<RowRegistry>({ claim: (_o, items) => items, subscribe: () => () => {}, release: () => {} });
 
-function PosterRow({ title, load, ctx, order, excludeOwned, hideOnError }: {
+function PosterRow({ title, load, ctx, order, excludeOwned, hideOnError, hideUntilLoaded }: {
   title: string;
   load: () => Promise<DiscoverCard[]>;
   ctx: RowCtx;
@@ -716,6 +720,10 @@ function PosterRow({ title, load, ctx, order, excludeOwned, hideOnError }: {
   excludeOwned?: boolean;
   /** Row quietly disappears if the endpoint isn't available (e.g. not deployed yet). */
   hideOnError?: boolean;
+  /** Render nothing (no header, no skeleton) until the first load resolves — then show
+      the row only if it has items. Prevents a header flashing in for a row that ends up
+      empty (e.g. "Recommended for you" for a user with no history). */
+  hideUntilLoaded?: boolean;
 }) {
   const registry = useContext(RowRegistryCtx);
   const [items, setItems] = useState<DiscoverCard[] | null>(null);
@@ -762,6 +770,7 @@ function PosterRow({ title, load, ctx, order, excludeOwned, hideOnError }: {
   const scroll = (dir: -1 | 1) => scroller.current?.scrollBy({ left: dir * Math.max(600, scroller.current.clientWidth * 0.8), behavior: "smooth" });
 
   if (error && hideOnError) return null;
+  if (hideUntilLoaded && items === null) return null;
   if (items && items.length === 0 && !error) return null;
   return (
     <div>

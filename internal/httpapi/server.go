@@ -336,6 +336,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/discover/trending", a.protected(a.handleDiscoverTrending))
 	mux.HandleFunc("GET "+base+"/api/v1/discover/popular", a.protected(a.handleDiscoverPopular))
 	mux.HandleFunc("GET "+base+"/api/v1/discover/upcoming", a.protected(a.handleDiscoverUpcoming))
+	mux.HandleFunc("GET "+base+"/api/v1/discover/recommended", a.protected(a.handleDiscoverRecommended))
 	mux.HandleFunc("GET "+base+"/api/v1/discover/search", a.protected(a.handleDiscoverSearch))
 	mux.HandleFunc("GET "+base+"/api/v1/discover/genres", a.protected(a.handleDiscoverGenres))
 	mux.HandleFunc("GET "+base+"/api/v1/discover", a.protected(a.handleDiscoverByGenre))

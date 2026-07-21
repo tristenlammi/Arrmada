@@ -40,6 +40,9 @@ type DiscoveryProvider interface {
 	Genres(ctx context.Context, media string) ([]Genre, error)
 	MediaDetails(ctx context.Context, media string, tmdbID int) (*MediaDetail, error)
 	Search(ctx context.Context, query string) ([]DiscoverItem, error)
+	// Recommendations returns TMDB's "recommended" titles for one movie/series — the
+	// seed for the personalized "Recommended for you" row.
+	Recommendations(ctx context.Context, media string, tmdbID int) ([]DiscoverItem, error)
 }
 
 // CrewMember is a billed crew member (director/writer/producer/creator).
@@ -516,6 +519,19 @@ func (t *TMDB) Search(ctx context.Context, query string) ([]DiscoverItem, error)
 	q.Set("query", query)
 	q.Set("include_adult", "false")
 	return t.cachedDiscoverList(ctx, "/search/multi", q, "", discoverSearchTTL, 0)
+}
+
+// Recommendations returns TMDB's recommended titles for one movie/series. No vote
+// floor — these are contextual to a seed the user already engaged with, so an
+// obscure-but-relevant match is legitimate; the adult flag and title filter still
+// apply inside the mapper. Cached like the browse lists (10 min), keyed on the id.
+func (t *TMDB) Recommendations(ctx context.Context, media string, tmdbID int) ([]DiscoverItem, error) {
+	seg, def := "movie", "movie"
+	if tvish(media) {
+		seg, def = "tv", "tv"
+	}
+	path := "/" + seg + "/" + strconv.Itoa(tmdbID) + "/recommendations"
+	return t.cachedDiscoverList(ctx, path, url.Values{}, def, discoverListTTL, 0)
 }
 
 // Genres returns the genre list for movies or series.
