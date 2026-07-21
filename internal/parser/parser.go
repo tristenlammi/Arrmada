@@ -159,7 +159,9 @@ var (
 	// (3) — a multi-episode file's extra parts: "S03E21-E22", "S03E21-22", "S01E01E02".
 	// The continuation only accepts an explicit "E<n>" or a bare "-<n>" (never a
 	// space/dot before a number, so ".1080p"/" 720p" stay out of it).
-	reSxxExx = regexp.MustCompile(`(?i)\bS(\d{1,2})E(\d{1,3})((?:[-\s.]?E\d{1,3}|-\d{1,3})*)`)
+	// An optional dot/space between Sxx and Exx accepts the "S01.E05" spaced form,
+	// which otherwise misparsed as a full season pack.
+	reSxxExx = regexp.MustCompile(`(?i)\bS(\d{1,2})[. ]?E(\d{1,3})((?:[-\s.]?E\d{1,3}|-\d{1,3})*)`)
 	reSeason = regexp.MustCompile(`(?i)\bS(\d{1,2})\b`)
 	// "1x01" — the other common episode form, used by a lot of pack releasers and by
 	// anyone who renamed their library that way. Nothing understood it, so a 122-file
@@ -223,7 +225,13 @@ func Parse(name string) Release {
 	r.Resolution = detectResolution(lc)
 	r.Source = detectSource(lc)
 	r.Codec = detectCodec(lc)
-	r.HDR = detectHDR(lc)
+	// Exclude the trailing release-group token from HDR detection: a group
+	// literally named "DV" ("...x265-DV") is a tag, not Dolby Vision.
+	hdrHay := lc
+	if r.Group != "" && strings.HasSuffix(name, "-"+r.Group) {
+		hdrHay = normalize(strings.TrimSuffix(name, "-"+r.Group))
+	}
+	r.HDR = detectHDR(hdrHay)
 	r.Audio = detectAudio(lc)
 	r.Edition = detectEdition(lc)
 	r.Proper = contains(lc, "proper")
@@ -247,9 +255,20 @@ func Parse(name string) Release {
 	}
 
 	// Multi-season / complete-series packs. Require a series context so a movie
-	// "Complete Collection" box set isn't misread as a TV pack.
-	if contains(lc, "complete") && (contains(lc, "series") || strings.Contains(lc, "season") || r.Season > 0) {
-		r.Complete = true
+	// "Complete Collection" box set isn't misread as a TV pack. And a single
+	// specific season ("The.Wire.S02.COMPLETE") is a complete SEASON — a season
+	// pack covering only that season — never a complete-show marker.
+	hasSeasonRange := reSeasonRange.MatchString(name) || reSeasonWord.MatchString(name) ||
+		(len(r.Episodes) == 0 && reSeasonRangeShort.MatchString(name))
+	if contains(lc, "complete") {
+		switch {
+		case contains(lc, "series"), hasSeasonRange:
+			r.Complete = true
+		case r.Season > 0:
+			// "Sxx COMPLETE" / "Season N Complete": one full season, not the show.
+		case strings.Contains(lc, "season"):
+			r.Complete = true
+		}
 	}
 	// Anime absolute episode ("[Group] Show - 137" / batch "... - 01-12"). Gated on a
 	// leading fansub tag so scene TV and movies are never misread; only when no SxxExx.
@@ -320,7 +339,39 @@ func Parse(name string) Release {
 	if titleStart > cut {
 		titleStart = 0
 	}
-	r.Title = cleanTitle(name[titleStart:cut])
+	// Pack words are only stripped from the title when the release shows actual
+	// pack evidence; otherwise "The.Box.2009" would lose "Box" to the list.
+	packCtx := r.Complete || len(r.Seasons) > 0 || contains(lc, "complete") || contains(lc, "collection")
+	r.Title = cleanTitle(name[titleStart:cut], packCtx)
+
+	// Year-titled shows ("1923", "1984"): when the only year token opens the name,
+	// the year-cut lands at position 0 and leaves no title — the token IS the
+	// title. Fall back to cutting at the season/episode/quality marker instead,
+	// and drop the year (a second distinct year, "2012.2009.1080p", never gets
+	// here because the last-year cut already leaves "2012" as the title).
+	if r.Title == "" && r.Year > 0 {
+		r.Year = 0
+		cut = len(name)
+		if r.IsTV() {
+			if loc := reSeason.FindStringIndex(name); loc != nil && loc[0] > 0 && loc[0] < cut {
+				cut = loc[0]
+			} else if loc := reSxxExx.FindStringIndex(name); loc != nil && loc[0] > 0 && loc[0] < cut {
+				cut = loc[0]
+			} else if loc := reNxNN.FindStringIndex(name); loc != nil && loc[0] > 0 && loc[0] < cut {
+				cut = loc[0]
+			}
+		}
+		if absCut > 0 && absCut < cut {
+			cut = absCut
+		}
+		if q := reQualityStart.FindStringIndex(name); q != nil && q[0] > 0 && q[0] < cut {
+			cut = q[0]
+		}
+		if titleStart > cut {
+			titleStart = 0
+		}
+		r.Title = cleanTitle(name[titleStart:cut], packCtx)
+	}
 
 	return r
 }
@@ -465,7 +516,11 @@ var packWords = map[string]bool{
 	"anthology": true,
 }
 
-func cleanTitle(s string) string {
+// cleanTitle turns a raw title segment into the display title. packCtx reports
+// whether the release shows pack evidence (Complete flag, a Seasons range, or a
+// "complete"/"collection" word); only then are trailing pack words stripped —
+// otherwise a movie genuinely titled "The Box" or "The Pack" loses its last word.
+func cleanTitle(s string, packCtx bool) string {
 	s = strings.NewReplacer(".", " ", "_", " ").Replace(s)
 	// Trim trailing separators and a dangling "(" from a parenthesized year,
 	// e.g. "The Matrix (1999)" → title "The Matrix (" → "The Matrix".
@@ -474,7 +529,7 @@ func cleanTitle(s string) string {
 	// Strip pack words from the END only. Leading/middle occurrences are part of real
 	// titles ("The Complete Sherlock Holmes", "Band of Brothers"), and never stripping
 	// the last remaining word keeps a show genuinely called "Complete" intact.
-	for len(fields) > 1 && packWords[strings.ToLower(fields[len(fields)-1])] {
+	for packCtx && len(fields) > 1 && packWords[strings.ToLower(fields[len(fields)-1])] {
 		// "Series" is the one pack word that is routinely part of the real title —
 		// "ARK: The Animated Series", "Batman: The Animated Series", "Star Trek: The
 		// Animated Series". Stripping it unconditionally left "ARK The Animated", which
@@ -490,13 +545,33 @@ func cleanTitle(s string) string {
 	return strings.Join(fields, " ")
 }
 
+// contains reports whether needle appears in hay as a whole token: preceded by a
+// space, and followed by a space, the end of the string, or a digit. The digit
+// keeps scene tags like "REPACK2"/"PROPER2" matching, while "Property" no longer
+// matches "proper".
 func contains(hay, needle string) bool {
-	return strings.Contains(hay, " "+needle+" ") || strings.Contains(hay, " "+needle)
+	for from := 0; ; {
+		i := strings.Index(hay[from:], " "+needle)
+		if i < 0 {
+			return false
+		}
+		end := from + i + 1 + len(needle)
+		if end >= len(hay) {
+			return true
+		}
+		if c := hay[end]; c == ' ' || ('0' <= c && c <= '9') {
+			return true
+		}
+		from = from + i + 1
+	}
 }
 
 func detectResolution(lc string) Resolution {
+	// An explicit "<n>p"/"<n>i" token always wins: "Hybrid.1080p.UHD.BluRay" is a
+	// 1080p encode OF a UHD source, not 2160p. "uhd"/"4k" only infer 2160p when no
+	// explicit token exists.
 	switch {
-	case strings.Contains(lc, "2160p") || strings.Contains(lc, " 4k ") || strings.Contains(lc, " uhd "):
+	case strings.Contains(lc, "2160p"):
 		return Res2160p
 	case strings.Contains(lc, "1080p") || strings.Contains(lc, "1080i"):
 		return Res1080p
@@ -506,6 +581,8 @@ func detectResolution(lc string) Resolution {
 		return Res576p
 	case strings.Contains(lc, "480p"):
 		return Res480p
+	case strings.Contains(lc, " 4k ") || strings.Contains(lc, " uhd "):
+		return Res2160p
 	}
 	return ResUnknown
 }
@@ -519,7 +596,7 @@ func detectSource(lc string) Source {
 		return SourceBluray
 	case strings.Contains(lc, "web dl"), strings.Contains(lc, "webdl"):
 		return SourceWebDL
-	case strings.Contains(lc, "webrip"), strings.Contains(lc, "web rip"), strings.Contains(lc, " web "):
+	case strings.Contains(lc, "webrip"), strings.Contains(lc, "web rip"):
 		return SourceWebRip
 	case strings.Contains(lc, "hdtv"), strings.Contains(lc, "pdtv"):
 		return SourceHDTV
@@ -528,6 +605,10 @@ func detectSource(lc string) Source {
 	case strings.Contains(lc, "hdcam"), strings.Contains(lc, " cam "),
 		strings.Contains(lc, "telesync"), strings.Contains(lc, " ts "):
 		return SourceCAM
+	case strings.Contains(lc, " web "):
+		// The bare " web " token LAST: it's a word in real titles ("Charlottes
+		// Web", "Web of Lies"), so it only counts when nothing explicit matched.
+		return SourceWebRip
 	}
 	return SourceUnknown
 }
@@ -564,18 +645,21 @@ func detectHDR(lc string) []string {
 }
 
 // audioTags is checked in priority order; the first-listed matching tags win.
+// bounded needles must match as whole tokens (see contains) — "aac"/"flac" are
+// short enough to hide inside real words ("Isaac", "Flack").
 var audioTags = []struct {
 	label   string
 	needles []string
+	bounded bool
 }{
-	{"Atmos", []string{"atmos"}},
-	{"TrueHD", []string{"truehd", "true hd"}},
-	{"DTS-HD", []string{"dts hd", "dtshd", "dts x", "dts:x"}},
-	{"DTS", []string{" dts "}},
-	{"DDP", []string{"ddp", "dd+", "eac3", "e ac 3", "e ac3"}},
-	{"DD", []string{" dd ", "ac3", "dd5 1", "dd2 0"}},
-	{"AAC", []string{"aac"}},
-	{"FLAC", []string{"flac"}},
+	{"Atmos", []string{"atmos"}, false},
+	{"TrueHD", []string{"truehd", "true hd"}, false},
+	{"DTS-HD", []string{"dts hd", "dtshd", "dts x", "dts:x"}, false},
+	{"DTS", []string{" dts "}, false},
+	{"DDP", []string{"ddp", "dd+", "eac3", "e ac 3", "e ac3"}, false},
+	{"DD", []string{" dd ", "ac3", "dd5 1", "dd2 0"}, false},
+	{"AAC", []string{"aac"}, true},
+	{"FLAC", []string{"flac"}, true},
 }
 
 func detectAudio(lc string) []string {
@@ -587,7 +671,11 @@ func detectAudio(lc string) []string {
 			continue
 		}
 		for _, n := range t.needles {
-			if strings.Contains(lc, n) && !seen[t.label] {
+			ok := strings.Contains(lc, n)
+			if t.bounded {
+				ok = contains(lc, n)
+			}
+			if ok && !seen[t.label] {
 				out = append(out, t.label)
 				seen[t.label] = true
 				break
