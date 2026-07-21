@@ -1,7 +1,7 @@
 export function PageHeader({ title, crumb }: { title: string; crumb?: string }) {
   return (
     <div
-      className="sticky top-0 z-10 flex items-center gap-4 px-6 py-3.5"
+      className="sticky top-0 z-30 flex items-center gap-4 px-6 py-3.5"
       style={{ borderBottom: "1px solid var(--line)", background: "var(--bg)" }}
     >
       <div>
