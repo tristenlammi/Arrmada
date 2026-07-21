@@ -26,6 +26,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/notify"
+	"github.com/tristenlammi/arrmada/internal/push"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/realtime"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
@@ -62,6 +63,7 @@ type Deps struct {
 	Subtitles  *subtitles.Service
 	Convert    *convert.Service
 	Insights   *insights.Service
+	Push       *push.Service
 	Recycle    *recyclebin.Service
 	Logs       *applog.Ring
 	APIKeys    *apikeys.Store
@@ -111,6 +113,10 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/me/notifications", a.protected(a.handleMyNotifications))
 	mux.HandleFunc("POST "+base+"/api/v1/me/notifications/read-all", a.protected(a.handleMarkAllNotificationsRead))
 	mux.HandleFunc("POST "+base+"/api/v1/me/notifications/{id}/read", a.protected(a.handleMarkNotificationRead))
+	// Web Push (PWA notifications): key + per-device subscribe/unsubscribe.
+	mux.HandleFunc("GET "+base+"/api/v1/me/push/key", a.protected(a.handlePushKey))
+	mux.HandleFunc("POST "+base+"/api/v1/me/push/subscribe", a.protected(a.handlePushSubscribe))
+	mux.HandleFunc("POST "+base+"/api/v1/me/push/unsubscribe", a.protected(a.handlePushUnsubscribe))
 	mux.HandleFunc("GET "+base+"/api/v1/me/apprise", a.protected(a.handleGetMyApprise))
 	mux.HandleFunc("PUT "+base+"/api/v1/me/apprise", a.protected(a.handleSetMyApprise))
 

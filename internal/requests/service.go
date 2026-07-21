@@ -29,8 +29,19 @@ type Service struct {
 	quality    *quality.Service
 	bus        *eventbus.Bus
 	appriseBin string
+	push       PushSender // optional: Web Push fan-out alongside inbox + Apprise
 	log        *slog.Logger
 }
+
+// PushSender delivers a Web Push notification to every device a user registered.
+// Satisfied by *push.Service; an interface here keeps requests free of the
+// dependency and lets tests stub it.
+type PushSender interface {
+	SendToUserAsync(userID int64, title, body, url string)
+}
+
+// SetPushSender wires the Web Push service (optional; nil-safe when unset).
+func (s *Service) SetPushSender(p PushSender) { s.push = p }
 
 // NewService wires the module. bus + appriseBin drive request-ready notifications (both optional).
 func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, bk *books.Service, coord *automation.Coordinator, q *quality.Service, bus *eventbus.Bus, appriseBin string, log *slog.Logger) *Service {

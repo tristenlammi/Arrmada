@@ -34,6 +34,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/notify"
+	"github.com/tristenlammi/arrmada/internal/push"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/realtime"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
@@ -141,6 +142,7 @@ func main() {
 	openlib := metadata.NewBooksWithFallback(metadata.NewOpenLibrary(), metadata.NewGoogleBooks())
 	qualitySvc := quality.NewService(st.DB())
 	notifySvc := notify.NewService(st.DB(), bus, log)
+	pushSvc := push.New(st.DB(), settingsSvc, log)
 	// Episode NUMBERING comes from TVmaze; everything else about a show still comes from
 	// TMDB. TMDB merges two-part episodes into single entries where releases keep them
 	// separate, so its numbering drifts from the way files are actually named and every
@@ -361,6 +363,7 @@ func main() {
 	// triggers a search through the existing acquisition pipeline. Created before
 	// sched.Start so its sweep is in the snapshot the scheduler launches.
 	requestsSvc := requests.NewService(st.DB(), movieSvc, seriesSvc, booksSvc, coordinator, qualitySvc, bus, notifySvc.AppriseBin(), log)
+	requestsSvc.SetPushSender(pushSvc) // Web Push alongside inbox + Apprise
 	go requestsSvc.RunNotifier(runCtx) // alert requesters when their request is imported
 	// Backstop for request-ready notifications: catches availability that arrived
 	// without an import event (library scan) or whose event was dropped under load.
@@ -497,6 +500,7 @@ func main() {
 		Subtitles:  subtitlesSvc,
 		Convert:    convertSvc,
 		Insights:   insightsSvc,
+		Push:       pushSvc,
 		Recycle:    recycleSvc,
 		Logs:       logRing,
 		APIKeys:    keyStore,

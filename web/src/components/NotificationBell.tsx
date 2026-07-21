@@ -73,7 +73,11 @@ export function NotificationBell() {
       </button>
 
       {open && (
-        <div className="absolute right-0 z-50 mt-2 w-[340px] overflow-hidden rounded-xl" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }}>
+        /* Mobile: the header wraps and the bell can sit mid-screen, so a 340px panel
+           right-anchored to it ran off the left viewport edge. `fixed` with auto top
+           keeps the panel at its natural vertical spot but pins it horizontally to
+           the viewport (inset-x-3); sm+ restores the bell-anchored dropdown. */
+        <div className="fixed inset-x-3 z-50 mt-2 overflow-hidden rounded-xl sm:absolute sm:inset-x-auto sm:right-0 sm:w-[340px]" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }}>
           <div className="flex items-center justify-between px-3.5 py-2.5" style={{ borderBottom: "1px solid var(--line)" }}>
             <span className="text-[13px] font-bold">Notifications</span>
             <div className="flex items-center gap-3 text-[11px]">
@@ -84,7 +88,12 @@ export function NotificationBell() {
 
           {error && <div className="px-3.5 py-1.5 text-[11px] font-medium" style={{ color: "var(--reject)", borderBottom: "1px solid var(--line-soft)" }}>{error}</div>}
 
-          {settings && <AppriseSetting />}
+          {settings && (
+            <>
+              <PushSetting />
+              <AppriseSetting />
+            </>
+          )}
 
           <div className="thin-scroll max-h-[360px] overflow-y-auto">
             {items.length === 0 ? (
@@ -101,6 +110,102 @@ export function NotificationBell() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// urlBase64ToUint8Array converts the VAPID public key into the form
+// PushManager.subscribe expects.
+function urlBase64ToUint8Array(base64: string): Uint8Array {
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = window.atob(b64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+// PushSetting is the per-device Web Push toggle: real notifications on this
+// phone/desktop when a request is ready — no extra app. iOS needs the PWA added
+// to the Home Screen (16.4+); Android/desktop work in the browser directly.
+function PushSetting() {
+  const supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  const [enabled, setEnabled] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [available, setAvailable] = useState(false);
+
+  useEffect(() => {
+    if (!supported) return;
+    let alive = true;
+    (async () => {
+      try {
+        const key = await api.pushKey();
+        if (!alive || !key) return;
+        setAvailable(true);
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        if (alive) setEnabled(!!sub && Notification.permission === "granted");
+      } catch { /* push stays hidden */ }
+    })();
+    return () => { alive = false; };
+  }, [supported]);
+
+  const toggle = async () => {
+    if (busy) return;
+    setBusy(true); setError(null);
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      if (enabled) {
+        const sub = await reg.pushManager.getSubscription();
+        if (sub) {
+          await api.pushUnsubscribe(sub.endpoint).catch(() => {});
+          await sub.unsubscribe();
+        }
+        setEnabled(false);
+      } else {
+        // Permission must be requested from this user gesture (iOS requires it).
+        const perm = await Notification.requestPermission();
+        if (perm !== "granted") {
+          setError(perm === "denied" ? "Notifications are blocked for this site in your browser settings." : "Permission not granted.");
+          return;
+        }
+        const key = await api.pushKey();
+        const sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(key) as BufferSource,
+        });
+        const json = sub.toJSON();
+        await api.pushSubscribe({ endpoint: sub.endpoint, keys: { p256dh: json.keys?.p256dh ?? "", auth: json.keys?.auth ?? "" } });
+        setEnabled(true);
+      }
+    } catch (e) {
+      setError((e as Error).message || "Couldn't set up push on this device.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!supported || !available) return null;
+  return (
+    <div className="px-3.5 py-2.5" style={{ borderBottom: "1px solid var(--line)" }}>
+      <div className="flex items-center justify-between gap-2">
+        <div className="min-w-0">
+          <div className="text-[12px] font-semibold">Push notifications</div>
+          <div className="text-[10.5px] text-ink-faint">Real notifications on this device when a request is ready. On iPhone, add Arrmada to your Home Screen first.</div>
+        </div>
+        <button
+          onClick={toggle}
+          disabled={busy}
+          role="switch"
+          aria-checked={enabled}
+          className="relative h-5 w-9 flex-none rounded-full transition-colors"
+          style={{ background: enabled ? "var(--accent)" : "var(--panel-2)", border: "1px solid var(--line)", opacity: busy ? 0.6 : 1 }}
+        >
+          <span className="absolute top-1/2 h-3.5 w-3.5 -translate-y-1/2 rounded-full transition-[left]" style={{ left: enabled ? "calc(100% - 16px)" : "2px", background: enabled ? "var(--accent-ink)" : "var(--ink-faint)" }} />
+        </button>
+      </div>
+      {error && <div className="mt-1 text-[10.5px]" style={{ color: "var(--reject)" }}>{error}</div>}
     </div>
   );
 }

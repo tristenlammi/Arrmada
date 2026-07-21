@@ -43,3 +43,33 @@ self.addEventListener("fetch", (e) => {
     )
   );
 });
+
+// --- Web Push -------------------------------------------------------------
+// The server sends an encrypted JSON payload: { title, body, url }.
+self.addEventListener("push", (e) => {
+  let data = { title: "Arrmada", body: "", url: "/discover" };
+  try { data = { ...data, ...e.data.json() }; } catch { /* body may be empty */ }
+  e.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      icon: "/icon.svg",
+      badge: "/icon.svg",
+      data: { url: data.url },
+      tag: data.body || data.title, // collapse duplicate pings for the same item
+    })
+  );
+});
+
+// Tapping the notification focuses an open Arrmada tab (navigating it), or opens one.
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || "/discover";
+  e.waitUntil(
+    clients.matchAll({ type: "window", includeUncontrolled: true }).then((tabs) => {
+      for (const tab of tabs) {
+        if ("focus" in tab) { tab.navigate(url); return tab.focus(); }
+      }
+      return clients.openWindow(url);
+    })
+  );
+});

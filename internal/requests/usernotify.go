@@ -236,6 +236,12 @@ func (s *Service) notifyParties(ctx context.Context, req Request, title, body, r
 				}
 			}
 		}
+		if s.push != nil {
+			// Web Push to every device this user enabled it on. Async with its own
+			// deadline — the import fan-out must never block on a push service. The
+			// inbox insert above already deduped repeats, so this can't double-ping.
+			s.push.SendToUserAsync(uid, title, body, "/discover")
+		}
 		s.log.Info(kind+" notified", "title", req.Title, "user", uid)
 	}
 }
