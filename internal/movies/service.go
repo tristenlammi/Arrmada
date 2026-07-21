@@ -608,6 +608,64 @@ func (s *Service) fetchArt(ctx context.Context, dst, url string) {
 	_, _ = io.Copy(f, io.LimitReader(resp.Body, 25<<20))
 }
 
+// RepointMovieFile updates the movie's file records for a PATH-ONLY change (convert,
+// rename): every version whose file sits at oldPath follows to newPath, and the
+// recorded source_release is preserved — optionally gaining a codec token.
+//
+// This exists so Convert does NOT go through MarkImported: stamping source_release
+// with a synthetic tag there destroyed the upgrade baseline (the tag parsed to
+// nothing, every release outscored it, and automation re-downloaded the exact
+// release the file came from — an endless download → re-encode loop), and the
+// import quality gate could even refuse the update, leaving the record pointing at
+// a recycled file. codecToken (e.g. "x265" after an HEVC conversion) keeps
+// bitrate-upgrade scoring honest: without it the halved file was costed at the old
+// codec's efficiency and looked like a starving encode begging to be replaced.
+func (s *Service) RepointMovieFile(ctx context.Context, movieID int64, oldPath, newPath string, size int64, codecToken string) (int, error) {
+	versions, err := s.Versions(ctx, movieID)
+	if err != nil {
+		return 0, err
+	}
+	appendToken := func(rel string) string {
+		if rel == "" || codecToken == "" {
+			return rel
+		}
+		if parser.Parse(rel).Codec == parser.Parse("x "+codecToken).Codec {
+			return rel // already reads as the new codec
+		}
+		return rel + " " + codecToken
+	}
+	n := 0
+	for _, v := range versions {
+		if !v.HasFile || v.FilePath != newPath && v.FilePath != oldPath {
+			continue
+		}
+		if v.FilePath == newPath {
+			n++ // already repointed (retry after a partial failure)
+			continue
+		}
+		if v.IsDefault {
+			if err := s.repo.SetFile(ctx, movieID, newPath); err != nil {
+				return n, err
+			}
+			if upd := appendToken(v.SourceRelease); upd != v.SourceRelease {
+				_ = s.repo.SetSourceRelease(ctx, movieID, upd)
+			}
+		} else {
+			if err := s.repo.SetVersionFile(ctx, v.ID, newPath, size); err != nil {
+				return n, err
+			}
+			if upd := appendToken(v.SourceRelease); upd != v.SourceRelease {
+				_ = s.repo.SetVersionSourceRelease(ctx, v.ID, upd)
+			}
+		}
+		n++
+	}
+	if n > 0 {
+		s.log.Info("movie: file repointed", "movie_id", movieID, "new", newPath, "records", n)
+	}
+	return n, nil
+}
+
 // Versions returns all tracks for a movie: the default (the movie row) followed
 // by any extra version tracks, each enriched with on-disk file info.
 func (s *Service) Versions(ctx context.Context, id int64) ([]Version, error) {

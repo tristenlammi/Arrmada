@@ -66,6 +66,7 @@ const (
 	CodecX264    Codec = "x264"
 	CodecXvid    Codec = "XviD"
 	CodecVC1     Codec = "VC-1"
+	CodecAV1     Codec = "AV1"
 )
 
 // Release is the structured result of parsing a release name.
@@ -625,6 +626,8 @@ func detectCodec(lc string) Codec {
 		return CodecXvid
 	case strings.Contains(lc, "vc 1"), strings.Contains(lc, "vc1"):
 		return CodecVC1
+	case strings.Contains(lc, " av1"), strings.HasPrefix(lc, "av1"):
+		return CodecAV1
 	}
 	return CodecUnknown
 }

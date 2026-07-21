@@ -209,6 +209,8 @@ func codecEfficiency(c parser.Codec) float64 {
 	switch c {
 	case parser.CodecX265:
 		return 1.6 // HEVC needs ~40% fewer bits than H.264 for the same picture
+	case parser.CodecAV1:
+		return 2.0 // AV1 is the most bit-efficient of the lot
 	case parser.CodecXvid, parser.CodecVC1:
 		return 0.6 // older codecs need MORE bits for the same picture
 	}
