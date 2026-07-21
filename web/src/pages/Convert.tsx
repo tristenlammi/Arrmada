@@ -214,10 +214,10 @@ export function Convert() {
               </p>
             )}
             <p className="mt-3 text-[11.5px] leading-snug text-ink-faint">
-              Encoding respects your schedule window — anything queued outside it waits rather
-              than starting. Originals go to the recycle bin, a file that keeps failing is
-              skipped instead of retried forever, and you can cancel from the Queue tab at any
-              time.
+              Whatever you queue here obeys your encode window — queue it now and it waits for
+              the window to open, no auto-convert needed. Originals go to the recycle bin, a file
+              that keeps failing is skipped instead of retried forever, and you can cancel from
+              the Queue tab at any time.
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <button onClick={() => setConfirmAll(false)} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Cancel</button>
@@ -1246,10 +1246,9 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
         <Warn>Re-encoding is lossy by nature — both formats reproduce the picture visually, but a re-encode is never a bit-for-bit copy of the source. The quality gate below guards against a bad encode. HDR, Dolby Vision and surround audio (Atmos/TrueHD/DTS) are always copied through untouched.</Warn>
       </SettingCard>
 
-      {/* Schedule */}
-      <SettingCard title="Schedule" desc="Let Arrmada convert your library automatically in the background, on your terms.">
-        <ActToggle on={d.convert_auto} set={(v) => set({ convert_auto: v })} label="Auto-convert new & existing media" hint="scans and converts unattended — otherwise use “Convert all” manually" />
-        <SettingField label="Only run between" hint="quiet hours for encoding · leave empty to run any time">
+      {/* Encode window — governs ALL jobs, manual or automatic */}
+      <SettingCard title="Encode window" desc="When encoding is allowed to run. This applies to everything you queue — including “Convert all” and per-title jobs — so you can queue work now and let it run overnight without turning on auto-convert.">
+        <SettingField label="Only run between" hint="anything queued outside these hours waits until the window opens · leave empty to run immediately">
           <span className="flex items-center gap-1.5">
             <input type="time" value={d.convert_sweep_start} onChange={(e) => set({ convert_sweep_start: e.target.value })} className={inp} style={inpStyle} />
             <span className="text-ink-faint">to</span>
@@ -1259,6 +1258,11 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
         <SettingField label="Convert at once" hint={`${av1 ? "AV1 is heavy — " : ""}keep at 1 for CPU-only, 2–3 with a GPU · applies on restart`}>
           <input type="number" min="1" max="8" value={d.convert_workers} onChange={(e) => set({ convert_workers: e.target.value })} className={`${inp} w-[70px]`} style={inpStyle} />
         </SettingField>
+      </SettingCard>
+
+      {/* Automatic conversion — optional; the encode window above applies whether this is on or off */}
+      <SettingCard title="Automatic conversion" desc="Optional. Let Arrmada find and queue convertible media for you. Leave this off and queue things yourself with “Convert all” or per-title — either way, jobs still obey the encode window above.">
+        <ActToggle on={d.convert_auto} set={(v) => set({ convert_auto: v })} label="Auto-convert new & existing media" hint="scans and queues unattended — otherwise queue manually" />
         <SettingField label="Scan the library at" hint="a daily pass to spot files changed outside Arrmada · imports are picked up instantly, so this can sit overnight">
           <input type="time" value={d.convert_scan_at} onChange={(e) => set({ convert_scan_at: e.target.value })} className={inp} style={inpStyle} />
         </SettingField>
