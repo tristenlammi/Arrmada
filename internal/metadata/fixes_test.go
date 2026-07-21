@@ -89,7 +89,7 @@ func TestDiscoverListCaching(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
-		w.Write([]byte(`{"results":[{"id":1,"title":"A","media_type":"movie","release_date":"2020-01-01","poster_path":"/p.jpg"}]}`))
+		w.Write([]byte(`{"results":[{"id":1,"title":"A","media_type":"movie","release_date":"2020-01-01","poster_path":"/p.jpg","vote_count":900}]}`))
 	}))
 	defer srv.Close()
 
@@ -129,7 +129,7 @@ func TestDiscoverListDoesNotCacheErrors(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
-		w.Write([]byte(`{"results":[{"id":1,"title":"A","media_type":"movie","release_date":"2020-01-01","poster_path":"/p.jpg"}]}`))
+		w.Write([]byte(`{"results":[{"id":1,"title":"A","media_type":"movie","release_date":"2020-01-01","poster_path":"/p.jpg","vote_count":900}]}`))
 	}))
 	defer srv.Close()
 
@@ -281,5 +281,48 @@ func TestTrendingBooksHasOwnDeadline(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Errorf("trending waited %v — it must not ride the 15s client timeout", elapsed)
+	}
+}
+
+// Adult rows must never reach a discovery surface, and the browse floor must drop
+// the obscure junk TMDB doesn't flag — while leaving explicit search untouched so
+// a real-but-obscure title stays findable.
+func TestDiscoverAdultAndVoteFloor(t *testing.T) {
+	const body = `{"results":[
+		{"id":1,"title":"Mainstream","media_type":"movie","release_date":"2020-01-01","poster_path":"/a.jpg","vote_count":900},
+		{"id":2,"title":"Flagged Adult","media_type":"movie","release_date":"2020-01-01","poster_path":"/b.jpg","vote_count":900,"adult":true},
+		{"id":3,"title":"Obscure Pink Film","media_type":"movie","release_date":"1998-01-01","poster_path":"/c.jpg","vote_count":3},
+		{"id":4,"title":"Brazzers Presents","media_type":"movie","release_date":"2020-01-01","poster_path":"/d.jpg","vote_count":900}
+	]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	tm := NewTMDB("k")
+	tm.base = srv.URL
+	ctx := context.Background()
+
+	// Browse: adult flag, adult title and the vote floor all apply.
+	items, err := tm.Trending(ctx, "movie")
+	if err != nil {
+		t.Fatalf("trending: %v", err)
+	}
+	if len(items) != 1 || items[0].Title != "Mainstream" {
+		t.Fatalf("browse should keep only the mainstream row, got %+v", items)
+	}
+
+	// Search: no vote floor (obscure titles stay findable), but adult still blocked.
+	found, err := tm.Search(ctx, "anything")
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(found) != 2 {
+		t.Fatalf("search should keep mainstream + obscure, got %+v", found)
+	}
+	for _, it := range found {
+		if it.Title == "Flagged Adult" || it.Title == "Brazzers Presents" {
+			t.Errorf("adult row leaked into search: %q", it.Title)
+		}
 	}
 }

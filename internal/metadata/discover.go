@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/adultfilter"
 )
 
 // DiscoverItem is a unified movie/series card for the Discover experience. MediaType
@@ -217,7 +219,10 @@ func recommendedItems(results []tmdbDiscoverItem, defaultMedia string) []Discove
 		if len(out) >= maxSimilar {
 			break
 		}
-		if di, ok := r.toItem(defaultMedia); ok {
+		// No vote floor here: these are recommendations for a title the user already
+		// opened, so an obscure-but-real match is legitimate. The adult flag and the
+		// title filter inside toItem still apply.
+		if di, ok := r.toItem(defaultMedia, 0); ok {
 			out = append(out, di)
 		}
 	}
@@ -297,11 +302,37 @@ type tmdbDiscoverItem struct {
 	PosterPath   string  `json:"poster_path"`
 	BackdropPath string  `json:"backdrop_path"`
 	VoteAverage  float64 `json:"vote_average"`
+	VoteCount    int     `json:"vote_count"`
+	Adult        bool    `json:"adult"`
 }
+
+// browseMinVotes is the vote-count floor for BROWSE lists (trending, popular,
+// upcoming, genre). Deliberately not applied to explicit search or to a title's
+// own recommendations: there, the user asked for something specific and an
+// obscure-but-real title must still be findable.
+//
+// It exists for adult content as much as for quality. TMDB's include_adult only
+// filters rows it has actually flagged, and it routinely does NOT flag softcore
+// / "pink film" catalogue entries — they're stored as ordinary movies. Those
+// entries are near-universally sub-50-vote, so the floor catches what the adult
+// flag misses, while every mainstream title clears it easily.
+const browseMinVotes = 50
 
 // toItem maps a raw TMDB row to a DiscoverItem. defaultMedia ("movie"/"tv") applies
 // when the row carries no media_type (single-type endpoints). Persons are dropped.
-func (i tmdbDiscoverItem) toItem(defaultMedia string) (DiscoverItem, bool) {
+// minVotes applies the browse floor (0 = no floor).
+//
+// Adult rows are ALWAYS dropped regardless of the caller: TMDB's own flag plus
+// the shared title filter (internal/adultfilter, same rule the indexer uses).
+// Every discovery surface — trending, popular, upcoming, genre, search, "more
+// like this" — funnels through here, so this is the one place that has to hold.
+func (i tmdbDiscoverItem) toItem(defaultMedia string, minVotes int) (DiscoverItem, bool) {
+	if i.Adult {
+		return DiscoverItem{}, false
+	}
+	if i.VoteCount < minVotes {
+		return DiscoverItem{}, false
+	}
 	mt := i.MediaType
 	if mt == "" {
 		mt = defaultMedia
@@ -318,6 +349,9 @@ func (i tmdbDiscoverItem) toItem(defaultMedia string) (DiscoverItem, bool) {
 	}
 	if title == "" || i.PosterPath == "" {
 		return DiscoverItem{}, false // skip posterless/untitled — they read as broken cards
+	}
+	if adultfilter.Matches(title) {
+		return DiscoverItem{}, false
 	}
 	di := DiscoverItem{
 		MediaType: normalized, TMDBID: i.ID, Title: title, Year: yearOf(date),
@@ -349,7 +383,7 @@ type discoverCacheEntry struct {
 
 // cachedDiscoverList serves a discover list from the TTL cache, fetching (and caching)
 // on miss. Errors are returned uncached so a transient TMDB failure doesn't stick.
-func (t *TMDB) cachedDiscoverList(ctx context.Context, path string, q url.Values, defaultMedia string, ttl time.Duration) ([]DiscoverItem, error) {
+func (t *TMDB) cachedDiscoverList(ctx context.Context, path string, q url.Values, defaultMedia string, ttl time.Duration, minVotes int) ([]DiscoverItem, error) {
 	key := path + "?" + q.Encode()
 	now := time.Now()
 
@@ -361,7 +395,7 @@ func (t *TMDB) cachedDiscoverList(ctx context.Context, path string, q url.Values
 	}
 	t.discMu.Unlock()
 
-	items, err := t.discoverList(ctx, path, q, defaultMedia)
+	items, err := t.discoverList(ctx, path, q, defaultMedia, minVotes)
 	if err != nil {
 		return nil, err
 	}
@@ -390,7 +424,7 @@ func (t *TMDB) cachedDiscoverList(ctx context.Context, path string, q url.Values
 	return items, nil
 }
 
-func (t *TMDB) discoverList(ctx context.Context, path string, q url.Values, defaultMedia string) ([]DiscoverItem, error) {
+func (t *TMDB) discoverList(ctx context.Context, path string, q url.Values, defaultMedia string, minVotes int) ([]DiscoverItem, error) {
 	body, err := t.get(ctx, path, q)
 	if err != nil {
 		return nil, err
@@ -403,7 +437,7 @@ func (t *TMDB) discoverList(ctx context.Context, path string, q url.Values, defa
 	}
 	out := make([]DiscoverItem, 0, len(payload.Results))
 	for _, r := range payload.Results {
-		if di, ok := r.toItem(defaultMedia); ok {
+		if di, ok := r.toItem(defaultMedia, minVotes); ok {
 			out = append(out, di)
 		}
 	}
@@ -422,15 +456,15 @@ func (t *TMDB) Trending(ctx context.Context, media string) ([]DiscoverItem, erro
 	case tvish(media):
 		seg = "tv"
 	}
-	return t.cachedDiscoverList(ctx, "/trending/"+seg+"/week", url.Values{}, "", discoverListTTL)
+	return t.cachedDiscoverList(ctx, "/trending/"+seg+"/week", url.Values{}, "", discoverListTTL, browseMinVotes)
 }
 
 // Popular returns popular movies or series.
 func (t *TMDB) Popular(ctx context.Context, media string) ([]DiscoverItem, error) {
 	if tvish(media) {
-		return t.cachedDiscoverList(ctx, "/tv/popular", url.Values{}, "tv", discoverListTTL)
+		return t.cachedDiscoverList(ctx, "/tv/popular", url.Values{}, "tv", discoverListTTL, browseMinVotes)
 	}
-	return t.cachedDiscoverList(ctx, "/movie/popular", url.Values{}, "movie", discoverListTTL)
+	return t.cachedDiscoverList(ctx, "/movie/popular", url.Values{}, "movie", discoverListTTL, browseMinVotes)
 }
 
 // Upcoming returns titles airing/releasing soon (for requesting future titles). For
@@ -441,9 +475,9 @@ func (t *TMDB) Popular(ctx context.Context, media string) ([]DiscoverItem, error
 // path+query, so movie and series results can never collide.
 func (t *TMDB) Upcoming(ctx context.Context, media string) ([]DiscoverItem, error) {
 	if tvish(media) {
-		return t.cachedDiscoverList(ctx, "/tv/on_the_air", url.Values{}, "tv", discoverListTTL)
+		return t.cachedDiscoverList(ctx, "/tv/on_the_air", url.Values{}, "tv", discoverListTTL, 0)
 	}
-	return t.cachedDiscoverList(ctx, "/movie/upcoming", url.Values{}, "movie", discoverListTTL)
+	return t.cachedDiscoverList(ctx, "/movie/upcoming", url.Values{}, "movie", discoverListTTL, 0)
 }
 
 // DiscoverByGenre returns popular titles in a genre.
@@ -451,10 +485,11 @@ func (t *TMDB) DiscoverByGenre(ctx context.Context, media string, genreID int) (
 	q := url.Values{}
 	q.Set("with_genres", strconv.Itoa(genreID))
 	q.Set("sort_by", "popularity.desc")
+	q.Set("include_adult", "false") // /discover/* honours this; trending/popular don't
 	if tvish(media) {
-		return t.cachedDiscoverList(ctx, "/discover/tv", q, "tv", discoverListTTL)
+		return t.cachedDiscoverList(ctx, "/discover/tv", q, "tv", discoverListTTL, browseMinVotes)
 	}
-	return t.cachedDiscoverList(ctx, "/discover/movie", q, "movie", discoverListTTL)
+	return t.cachedDiscoverList(ctx, "/discover/movie", q, "movie", discoverListTTL, browseMinVotes)
 }
 
 // Search runs a combined movie+TV search (TMDB /search/multi), dropping people and
@@ -466,7 +501,7 @@ func (t *TMDB) Search(ctx context.Context, query string) ([]DiscoverItem, error)
 	q := url.Values{}
 	q.Set("query", query)
 	q.Set("include_adult", "false")
-	return t.cachedDiscoverList(ctx, "/search/multi", q, "", discoverSearchTTL)
+	return t.cachedDiscoverList(ctx, "/search/multi", q, "", discoverSearchTTL, 0)
 }
 
 // Genres returns the genre list for movies or series.
