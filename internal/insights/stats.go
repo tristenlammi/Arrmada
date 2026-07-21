@@ -11,6 +11,24 @@ import (
 // watchedExpr is the per-row watched seconds (wall time minus paused).
 const watchedExpr = `((stopped_at - started_at) - paused_ms/1000)`
 
+// watchedSum sums per-row watched seconds, clamping each row at 0 so a corrupt/in-progress row
+// (stopped_at <= started_at, or a paused span longer than the wall time) can't drag a total
+// negative. Play COUNT(*) still includes such rows — only the watch-time is clamped.
+const watchedSum = `SUM(MAX(0, ` + watchedExpr + `))`
+
+// windowStart returns the unix-second start of a windowDays window aligned to LOCAL midnight, so
+// day-grouped SQL (which uses 'localtime') and the day-axis labels agree at the window boundary.
+// It spans windowDays calendar days ending today. Shared by Stats, Graphs and Reliability so the
+// three tabs report over the same span.
+func windowStart(windowDays int) int64 {
+	if windowDays <= 0 {
+		windowDays = 30
+	}
+	t := time.Now()
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.Local).
+		AddDate(0, 0, -(windowDays - 1)).Unix()
+}
+
 // --- repo: aggregate queries over stream_sessions ---
 
 type titleStatRow struct {
@@ -34,7 +52,7 @@ func orderBy(byDuration bool) string {
 }
 
 func (r *repo) topTitles(ctx context.Context, mediaType, groupCol string, since int64, byDuration bool, limit int) ([]titleStatRow, error) {
-	q := `SELECT ` + groupCol + ` AS t, MAX(thumb) AS th, COUNT(*) AS plays, SUM(` + watchedExpr + `) AS secs
+	q := `SELECT ` + groupCol + ` AS t, MAX(thumb) AS th, COUNT(*) AS plays, ` + watchedSum + ` AS secs
 		FROM stream_sessions WHERE media_type = ? AND started_at >= ? AND ` + groupCol + ` <> ''
 		GROUP BY ` + groupCol + ` ORDER BY ` + orderBy(byDuration) + ` LIMIT ?`
 	rows, err := r.db.QueryContext(ctx, q, mediaType, since, limit)
@@ -54,9 +72,11 @@ func (r *repo) topTitles(ctx context.Context, mediaType, groupCol string, since 
 }
 
 func (r *repo) topNames(ctx context.Context, idCol, nameCol string, since int64, byDuration bool, limit int) ([]nameStatRow, error) {
-	q := `SELECT ` + idCol + ` AS id, ` + nameCol + ` AS name, COUNT(*) AS plays, SUM(` + watchedExpr + `) AS secs
-		FROM stream_sessions WHERE started_at >= ? AND ` + nameCol + ` <> ''
-		GROUP BY ` + nameCol + ` ORDER BY ` + orderBy(byDuration) + ` LIMIT ?`
+	// Group by the ID column (not the display name) so the id the UI uses for drill-down links is a
+	// real one, and carry a representative name via MAX(nameCol) rather than an arbitrary pick.
+	q := `SELECT ` + idCol + ` AS id, MAX(` + nameCol + `) AS name, COUNT(*) AS plays, ` + watchedSum + ` AS secs
+		FROM stream_sessions WHERE started_at >= ? AND ` + idCol + ` <> ''
+		GROUP BY ` + idCol + ` ORDER BY ` + orderBy(byDuration) + ` LIMIT ?`
 	rows, err := r.db.QueryContext(ctx, q, since, limit)
 	if err != nil {
 		return nil, err
@@ -82,13 +102,18 @@ type userStatRow struct {
 }
 
 func (r *repo) users(ctx context.Context) ([]userStatRow, error) {
+	// The last-session join is pinned to a single row via MAX(id) at that started_at, so two
+	// sessions sharing a started_at don't fan the user out into duplicate rows.
 	q := `SELECT u.id, u.username, u.thumb,
 			COALESCE(a.last,0), COALESCE(a.plays,0), COALESCE(a.secs,0),
 			COALESCE(l.ip_address,''), COALESCE(l.platform,''), COALESCE(l.player,''), COALESCE(l.title,'')
 		FROM plex_users u
-		LEFT JOIN (SELECT user_id, COUNT(*) plays, SUM(` + watchedExpr + `) secs, MAX(started_at) last
+		LEFT JOIN (SELECT user_id, COUNT(*) plays, ` + watchedSum + ` secs, MAX(started_at) last
 				   FROM stream_sessions GROUP BY user_id) a ON a.user_id = u.id
-		LEFT JOIN stream_sessions l ON l.user_id = u.id AND l.started_at = a.last
+		LEFT JOIN stream_sessions l ON l.id = (
+			SELECT x.id FROM stream_sessions x
+			WHERE x.user_id = u.id AND x.started_at = a.last
+			ORDER BY x.id DESC LIMIT 1)
 		ORDER BY COALESCE(a.plays,0) DESC, u.username ASC`
 	rows, err := r.db.QueryContext(ctx, q)
 	if err != nil {
@@ -137,7 +162,7 @@ func (s *Service) Stats(ctx context.Context, windowDays int, byDuration bool) (S
 	if windowDays <= 0 {
 		windowDays = 30
 	}
-	since := time.Now().AddDate(0, 0, -windowDays).Unix()
+	since := windowStart(windowDays)
 	const n = 5
 	movies, err := s.repo.topTitles(ctx, "movie", "title", since, byDuration, n)
 	if err != nil {

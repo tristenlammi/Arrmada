@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"strings"
+	"time"
 )
 
 type repo struct{ db *sql.DB }
@@ -80,15 +81,38 @@ func (r *repo) insertBandwidth(ctx context.Context, at, total, lan, wan int64) e
 	return err
 }
 
+// pruneBandwidth deletes bandwidth_samples older than `before` (epoch seconds), returning the
+// number of rows removed. The poller inserts a sample every cycle even when idle, so without
+// pruning this table grows unbounded (~17k rows/day).
+func (r *repo) pruneBandwidth(ctx context.Context, before int64) (int64, error) {
+	res, err := r.db.ExecContext(ctx, `DELETE FROM bandwidth_samples WHERE at < ?`, before)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func (r *repo) upsertUser(ctx context.Context, id, username, thumb string, at int64) error {
 	if id == "" {
 		return nil
 	}
+	// Keep the existing avatar when the incoming thumb is blank (imports may not carry one — don't
+	// clobber a good avatar with ''), and never move last_seen_at backwards when importing old rows.
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO plex_users (id,username,thumb,last_seen_at) VALUES (?,?,?,?)
-		ON CONFLICT(id) DO UPDATE SET username=excluded.username, thumb=excluded.thumb, last_seen_at=excluded.last_seen_at`,
+		ON CONFLICT(id) DO UPDATE SET
+			username=excluded.username,
+			thumb=CASE WHEN excluded.thumb <> '' THEN excluded.thumb ELSE plex_users.thumb END,
+			last_seen_at=MAX(plex_users.last_seen_at, excluded.last_seen_at)`,
 		id, username, thumb, at)
 	return err
+}
+
+// PruneBandwidth deletes bandwidth samples older than `before`, returning the number removed.
+// A scheduler should call this periodically (e.g. PruneBandwidth(ctx, now.Add(-90*24*time.Hour)))
+// because the poller records a bandwidth sample every cycle even with zero active streams.
+func (s *Service) PruneBandwidth(ctx context.Context, before time.Time) (int64, error) {
+	return s.repo.pruneBandwidth(ctx, before.Unix())
 }
 
 // HistoryFilter narrows the history query.

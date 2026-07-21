@@ -35,7 +35,8 @@ type Row struct {
 	Product          string
 	IPAddress        string
 	Decision         string // transcode_decision
-	Thumb            string
+	Thumb            string // media poster
+	UserThumb        string // user avatar (distinct from the media poster)
 }
 
 // Client talks to a Tautulli instance with an API key.
@@ -120,9 +121,12 @@ func (c *Client) History(ctx context.Context, fn func([]Row) error) error {
 		batch := make([]Row, 0, len(data.Data))
 		for _, m := range data.Data {
 			r := Row{
-				UserID:           asInt(m["user_id"]),
-				User:             firstNonEmpty(asStr(m["friendly_name"]), asStr(m["user"])),
-				Title:            firstNonEmpty(asStr(m["full_title"]), asStr(m["title"])),
+				UserID: asInt(m["user_id"]),
+				User:   firstNonEmpty(asStr(m["friendly_name"]), asStr(m["user"])),
+				// Prefer the plain title over full_title ("Show - Episode" / "Movie (Year)"): live
+				// rows store the bare title (+ grandparent/parent for episodes), so using full_title
+				// doubled show names and fragmented movie top-lists when grouping across sources.
+				Title:            firstNonEmpty(asStr(m["title"]), asStr(m["full_title"])),
 				GrandparentTitle: asStr(m["grandparent_title"]),
 				ParentTitle:      asStr(m["parent_title"]),
 				MediaType:        asStr(m["media_type"]),
@@ -140,6 +144,7 @@ func (c *Client) History(ctx context.Context, fn func([]Row) error) error {
 				IPAddress:        asStr(m["ip_address"]),
 				Decision:         asStr(m["transcode_decision"]),
 				Thumb:            asStr(m["thumb"]),
+				UserThumb:        asStr(m["user_thumb"]),
 			}
 			if r.Started == 0 {
 				continue // group headers / bad rows

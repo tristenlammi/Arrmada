@@ -453,6 +453,16 @@ func main() {
 	insightsSvc := insights.NewService(st.DB(), settingsSvc, geoResolver, bus, log)
 	insightsSvc.SeedFromEnv(runCtx, cfg.PlexURL, cfg.PlexToken)
 	go insightsSvc.Run(runCtx) // Plex watch-monitoring poller (records when enabled + configured)
+	// Prune raw bandwidth samples older than 90 days: the poller writes one row per
+	// cycle, so at the 5s default that's ~17k/day and every graph query scans them all.
+	// Watch history itself is kept — only the high-frequency bandwidth series is rolled off.
+	sched.Register("insights-prune-bandwidth", 24*time.Hour, true, func(ctx context.Context) error {
+		n, err := insightsSvc.PruneBandwidth(ctx, time.Now().Add(-90*24*time.Hour))
+		if err == nil && n > 0 {
+			log.Info("insights: pruned old bandwidth samples", "rows", n)
+		}
+		return err
+	})
 
 	// Recycle bin: enforce the user's size/age guard rails on a schedule (and once at startup).
 	recycleSvc := recyclebin.New(recycleDir, settingsSvc, log)

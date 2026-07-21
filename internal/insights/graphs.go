@@ -31,7 +31,9 @@ func (s *Service) Graphs(ctx context.Context, windowDays int) (Graphs, error) {
 	if windowDays <= 0 {
 		windowDays = 30
 	}
-	since := time.Now().AddDate(0, 0, -(windowDays - 1)).Truncate(24 * time.Hour).Unix()
+	// Local-midnight-aligned start (windowStart) so this matches the 'localtime'-grouped SQL and the
+	// local dayAxis labels — a UTC-truncated start made the first day of every window mis-count.
+	since := windowStart(windowDays)
 
 	g := Graphs{ByDayOfWeek: make([]int, 7), ByHour: make([]int, 24)}
 
@@ -129,7 +131,7 @@ func (s *Service) bandwidthSeries(ctx context.Context, since int64) ([]BWPoint, 
 		return nil, err
 	}
 	defer rows.Close()
-	var out []BWPoint
+	out := []BWPoint{} // non-nil so the JSON is [] not null (a null white-screens the Graphs tab)
 	for rows.Next() {
 		var p BWPoint
 		if err := rows.Scan(&p.T, &p.Total, &p.LAN, &p.WAN); err != nil {

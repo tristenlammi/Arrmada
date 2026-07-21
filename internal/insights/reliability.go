@@ -2,7 +2,6 @@ package insights
 
 import (
 	"context"
-	"time"
 )
 
 // Reliability is the buffering-history bundle — the "did things buffer, and why?" view
@@ -71,8 +70,9 @@ func (s *Service) Reliability(ctx context.Context, windowDays int) (Reliability,
 	if windowDays <= 0 {
 		windowDays = 30
 	}
-	since := time.Now().AddDate(0, 0, -windowDays).Unix()
-	var out Reliability
+	since := windowStart(windowDays)
+	// Non-nil so empty windows serialize as [] not null (a null crashes the Reliability tab).
+	out := Reliability{Causes: []CauseCount{}, Events: []BufferEvent{}}
 
 	// Summary.
 	err := s.repo.db.QueryRowContext(ctx, `
@@ -150,7 +150,7 @@ func (s *Service) bufferGroups(ctx context.Context, groupExpr string, since int6
 		return nil, err
 	}
 	defer rows.Close()
-	var out []BufferGroup
+	out := []BufferGroup{} // non-nil so an empty roll-up serializes as [] not null
 	for rows.Next() {
 		var g BufferGroup
 		if err := rows.Scan(&g.Name, &g.Sessions, &g.BufferedSessions, &g.Events); err != nil {
