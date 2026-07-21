@@ -401,3 +401,73 @@ func TestRecommendations(t *testing.T) {
 		t.Fatalf("expected 2 recs (no vote floor), got %+v", items)
 	}
 }
+
+// Talk shows / news / soaps never belong on browse rows (nobody torrents last
+// night's talk show), but explicit search must still find them.
+func TestDiscoverNoiseGenres(t *testing.T) {
+	const body = `{"results":[
+		{"id":1,"name":"Great Drama","media_type":"tv","first_air_date":"2020-01-01","poster_path":"/a.jpg","vote_count":900,"genre_ids":[18]},
+		{"id":2,"name":"Late Nite Talk","media_type":"tv","first_air_date":"2020-01-01","poster_path":"/b.jpg","vote_count":900,"genre_ids":[10767]},
+		{"id":3,"name":"Nightly News","media_type":"tv","first_air_date":"2020-01-01","poster_path":"/c.jpg","vote_count":900,"genre_ids":[10763]},
+		{"id":4,"name":"Daily Soap","media_type":"tv","first_air_date":"2020-01-01","poster_path":"/d.jpg","vote_count":900,"genre_ids":[10766]}
+	]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	tm := NewTMDB("k")
+	tm.base = srv.URL
+	ctx := context.Background()
+
+	items, err := tm.Trending(ctx, "series")
+	if err != nil {
+		t.Fatalf("trending: %v", err)
+	}
+	if len(items) != 1 || items[0].Title != "Great Drama" {
+		t.Fatalf("browse should keep only the drama, got %+v", items)
+	}
+
+	found, err := tm.Search(ctx, "talk")
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(found) != 4 {
+		t.Fatalf("search must keep all four (explicit intent), got %d", len(found))
+	}
+}
+
+// Browsing a noise genre on purpose (the Talk/News/Soap chips) shows it; browsing
+// any other genre excludes noise server-side via without_genres.
+func TestDiscoverByGenreNoiseIntent(t *testing.T) {
+	var gotWithout []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotWithout = append(gotWithout, r.URL.Query().Get("without_genres"))
+		w.Write([]byte(`{"results":[{"id":2,"name":"Late Nite Talk","media_type":"tv","first_air_date":"2020-01-01","poster_path":"/b.jpg","vote_count":900,"genre_ids":[10767]}]}`))
+	}))
+	defer srv.Close()
+
+	tm := NewTMDB("k")
+	tm.base = srv.URL
+	ctx := context.Background()
+
+	// Drama browse: noise excluded (param sent, and the row filtered even if TMDB returns it).
+	items, err := tm.DiscoverByGenre(ctx, "series", 18)
+	if err != nil {
+		t.Fatalf("genre 18: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("noise row leaked into a drama browse: %+v", items)
+	}
+	// Talk browse: explicit intent — no exclusion, rows kept.
+	items, err = tm.DiscoverByGenre(ctx, "series", 10767)
+	if err != nil {
+		t.Fatalf("genre 10767: %v", err)
+	}
+	if len(items) != 1 || items[0].Title != "Late Nite Talk" {
+		t.Fatalf("explicit talk browse should show talk shows, got %+v", items)
+	}
+	if gotWithout[0] != "10767,10763,10766" || gotWithout[1] != "" {
+		t.Fatalf("without_genres params = %v", gotWithout)
+	}
+}
