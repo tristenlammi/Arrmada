@@ -437,6 +437,9 @@ export interface MediaDetail {
   cast?: { name: string; character?: string; profile_url?: string }[];
   crew?: CrewMember[];
   ratings: DetailRatings;
+  // Enrichment added by the metadata worker — render defensively (only when present).
+  trailer_url?: string; // YouTube (or similar) trailer link
+  similar?: DiscoverCard[]; // "more like this" — same shape as a Discover card
 }
 
 // --- Series (TV) ---
