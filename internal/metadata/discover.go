@@ -464,7 +464,11 @@ func (t *TMDB) Popular(ctx context.Context, media string) ([]DiscoverItem, error
 	if tvish(media) {
 		return t.cachedDiscoverList(ctx, "/tv/popular", url.Values{}, "tv", discoverListTTL, browseMinVotes)
 	}
-	return t.cachedDiscoverList(ctx, "/movie/popular", url.Values{}, "movie", discoverListTTL, browseMinVotes)
+	q := url.Values{}
+	if r := t.regionCode(); r != "" {
+		q.Set("region", r)
+	}
+	return t.cachedDiscoverList(ctx, "/movie/popular", q, "movie", discoverListTTL, browseMinVotes)
 }
 
 // Upcoming returns titles airing/releasing soon (for requesting future titles). For
@@ -477,7 +481,11 @@ func (t *TMDB) Upcoming(ctx context.Context, media string) ([]DiscoverItem, erro
 	if tvish(media) {
 		return t.cachedDiscoverList(ctx, "/tv/on_the_air", url.Values{}, "tv", discoverListTTL, 0)
 	}
-	return t.cachedDiscoverList(ctx, "/movie/upcoming", url.Values{}, "movie", discoverListTTL, 0)
+	q := url.Values{}
+	if r := t.regionCode(); r != "" {
+		q.Set("region", r)
+	}
+	return t.cachedDiscoverList(ctx, "/movie/upcoming", q, "movie", discoverListTTL, 0)
 }
 
 // DiscoverByGenre returns popular titles in a genre.
@@ -486,8 +494,14 @@ func (t *TMDB) DiscoverByGenre(ctx context.Context, media string, genreID int) (
 	q.Set("with_genres", strconv.Itoa(genreID))
 	q.Set("sort_by", "popularity.desc")
 	q.Set("include_adult", "false") // /discover/* honours this; trending/popular don't
+	// Server-side floor: /discover supports it, so the page arrives already filtered
+	// instead of being thinned client-side. The client floor stays as the backstop.
+	q.Set("vote_count.gte", strconv.Itoa(browseMinVotes))
 	if tvish(media) {
 		return t.cachedDiscoverList(ctx, "/discover/tv", q, "tv", discoverListTTL, browseMinVotes)
+	}
+	if r := t.regionCode(); r != "" {
+		q.Set("region", r)
 	}
 	return t.cachedDiscoverList(ctx, "/discover/movie", q, "movie", discoverListTTL, browseMinVotes)
 }

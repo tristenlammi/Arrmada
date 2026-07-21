@@ -443,8 +443,30 @@ function APIKeysSection() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // Discovery region rides along in this section: it tunes what the TMDB key returns.
+  const [region, setRegion] = useState("");
+  const [regionSaved, setRegionSaved] = useState<string | null>(null);
+  const [regionBusy, setRegionBusy] = useState(false);
+  const [regionMsg, setRegionMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => { api.apiKeys().then(setKeys).catch((e: Error) => setErr(e.message)); }, []);
+  useEffect(() => {
+    api.settings().then((s) => { setRegion(s.tmdb_region ?? ""); setRegionSaved(s.tmdb_region ?? ""); }).catch(() => {});
+  }, []);
+
+  const saveRegion = async () => {
+    setRegionBusy(true); setRegionMsg(null);
+    try {
+      await api.updateSettings({ tmdb_region: region.trim().toUpperCase() });
+      setRegion(region.trim().toUpperCase());
+      setRegionSaved(region.trim().toUpperCase());
+      setRegionMsg({ ok: true, text: region.trim() ? `Discover now favours ${region.trim().toUpperCase()} listings` : "Back to global listings" });
+    } catch (e) {
+      setRegionMsg({ ok: false, text: (e as Error).message });
+    } finally {
+      setRegionBusy(false);
+    }
+  };
 
   const saveKey = async (id: string) => {
     setBusy(id); setErr(null);
@@ -513,6 +535,43 @@ function APIKeysSection() {
           </div>
         ))
       )}
+      {/* Discovery region — tunes what the TMDB key returns, so it lives with the keys. */}
+      <div className="flex flex-col gap-1.5 rounded-lg p-3" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[12.5px] font-semibold">Discovery region</span>
+          {regionSaved ? (
+            <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: "var(--good-soft, rgba(80,200,120,.15))", color: "var(--good)" }}>{regionSaved}</span>
+          ) : (
+            <span className="rounded-full px-2 py-0.5 text-[10px] font-semibold" style={{ background: "var(--panel)", color: "var(--ink-faint)" }}>Global</span>
+          )}
+        </div>
+        <p className="text-[10.5px] text-ink-faint">
+          Localizes Discover's popular, upcoming and genre lists (release dates, theatrical calendar). Two-letter
+          country code — e.g. AU, US, GB. Leave empty for TMDB's global lists.
+        </p>
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={region}
+            maxLength={2}
+            onChange={(e) => setRegion(e.target.value.toUpperCase().replace(/[^A-Z]/g, ""))}
+            placeholder="AU"
+            className="w-[80px] rounded-lg px-3 py-1.5 text-center font-mono text-[12px] uppercase"
+            style={{ background: "var(--panel)", border: "1px solid var(--line)", color: "var(--ink)" }}
+          />
+          <button
+            onClick={saveRegion}
+            disabled={regionBusy || region === (regionSaved ?? "")}
+            className="flex-none rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50"
+            style={{ border: "1px solid var(--accent-line, var(--line))", color: "var(--accent)" }}
+          >
+            {regionBusy ? "Saving…" : "Save"}
+          </button>
+          {regionMsg && (
+            <span className="text-[10.5px]" style={{ color: regionMsg.ok ? "var(--good)" : "var(--reject)" }}>{regionMsg.text}</span>
+          )}
+        </div>
+      </div>
     </Section>
   );
 }

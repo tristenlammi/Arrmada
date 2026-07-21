@@ -133,6 +133,9 @@ func main() {
 	// the store with any env values so a fresh install with only compose vars still works.
 	keyStore := apikeys.NewStore(settingsSvc)
 	tmdb := metadata.NewTMDBFunc(keyStore.Func("tmdb"))
+	// Discovery region (Settings → API keys): localizes popular/upcoming/genre
+	// lists. Read lazily like the key, so changing it needs no restart.
+	tmdb.SetRegionFunc(func() string { return settingsSvc.Get(context.Background(), "tmdb_region", "") })
 	omdb := metadata.NewOMDbFunc(keyStore.Func("omdb"))
 	// Open Library primary, Google Books fallback — a book/author OL can't resolve still gets found.
 	openlib := metadata.NewBooksWithFallback(metadata.NewOpenLibrary(), metadata.NewGoogleBooks())

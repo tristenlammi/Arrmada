@@ -302,6 +302,8 @@ export interface AppSettings {
   music_enabled: boolean;
   plex_login_enabled: boolean;
   plex_login_auto_approve: boolean;
+  /** Discovery region for TMDB lists (ISO 3166-1 alpha-2, e.g. "AU"); "" = global. */
+  tmdb_region: string;
   // Convert module (focused model: target codec + subs + schedule + safety).
   convert_target_codec: string;
   convert_auto: boolean;

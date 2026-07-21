@@ -50,6 +50,7 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"books_enabled":           a.booksEnabled(ctx),
 		"music_enabled":           a.musicEnabled(ctx),
 		"plex_login_enabled":      a.deps.Settings.GetBool(ctx, "plex_login_enabled", false),
+		"tmdb_region":             a.deps.Settings.Get(ctx, "tmdb_region", ""),
 		"plex_login_auto_approve": a.deps.Settings.GetBool(ctx, "plex_login_auto_approve", true),
 		// Convert module.
 		"convert_skip_hardlinked":  a.deps.Settings.GetBool(ctx, "convert_skip_hardlinked", true),
@@ -98,6 +99,7 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		BooksEnabled          *bool   `json:"books_enabled"`
 		MusicEnabled          *bool   `json:"music_enabled"`
 		PlexLoginEnabled      *bool   `json:"plex_login_enabled"`
+		TMDBRegion            *string `json:"tmdb_region"`
 		PlexLoginAutoApprove  *bool   `json:"plex_login_auto_approve"`
 		ConvertSkipHardlinked *bool   `json:"convert_skip_hardlinked"`
 		ConvertKeepAudioLangs *string `json:"convert_keep_audio_langs"`
@@ -191,6 +193,17 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.PlexLoginEnabled != nil && !save(a.deps.Settings.SetBool(ctx, "plex_login_enabled", *req.PlexLoginEnabled)) {
 		return
+	}
+	if req.TMDBRegion != nil {
+		// ISO 3166-1 alpha-2 ("AU"), or empty to go back to TMDB's global lists.
+		region := strings.ToUpper(strings.TrimSpace(*req.TMDBRegion))
+		if region != "" && (len(region) != 2 || region[0] < 'A' || region[0] > 'Z' || region[1] < 'A' || region[1] > 'Z') {
+			a.writeError(w, http.StatusBadRequest, "region must be a two-letter country code, e.g. AU")
+			return
+		}
+		if !save(a.deps.Settings.Set(ctx, "tmdb_region", region)) {
+			return
+		}
 	}
 	if req.PlexLoginAutoApprove != nil && !save(a.deps.Settings.SetBool(ctx, "plex_login_auto_approve", *req.PlexLoginAutoApprove)) {
 		return

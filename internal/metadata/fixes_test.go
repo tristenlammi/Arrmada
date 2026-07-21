@@ -326,3 +326,50 @@ func TestDiscoverAdultAndVoteFloor(t *testing.T) {
 		}
 	}
 }
+
+// The admin's region must reach the region-aware endpoints (and only produce a
+// valid code): popular/upcoming movies and movie genre discovery localize; a junk
+// region value falls back to global rather than breaking the request.
+func TestDiscoverRegionParam(t *testing.T) {
+	var gotPopular, gotDiscover string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/movie/popular"):
+			gotPopular = r.URL.Query().Get("region")
+		case strings.HasPrefix(r.URL.Path, "/discover/movie"):
+			gotDiscover = r.URL.Query().Get("region")
+		}
+		w.Write([]byte(`{"results":[]}`))
+	}))
+	defer srv.Close()
+
+	tm := NewTMDB("k")
+	tm.base = srv.URL
+	tm.SetRegionFunc(func() string { return "au" }) // lower-case in settings → normalized
+	ctx := context.Background()
+
+	if _, err := tm.Popular(ctx, "movie"); err != nil {
+		t.Fatalf("popular: %v", err)
+	}
+	if gotPopular != "AU" {
+		t.Errorf("popular region = %q, want AU", gotPopular)
+	}
+	if _, err := tm.DiscoverByGenre(ctx, "movie", 28); err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if gotDiscover != "AU" {
+		t.Errorf("genre discover region = %q, want AU", gotDiscover)
+	}
+
+	// Invalid region → dropped, not sent.
+	tm2 := NewTMDB("k")
+	tm2.base = srv.URL
+	tm2.SetRegionFunc(func() string { return "australia" })
+	gotPopular = "unset"
+	if _, err := tm2.Popular(ctx, "movie"); err != nil {
+		t.Fatalf("popular: %v", err)
+	}
+	if gotPopular != "" {
+		t.Errorf("invalid region should be omitted, got %q", gotPopular)
+	}
+}

@@ -25,9 +25,10 @@ const (
 
 // TMDB is a The Movie Database provider (v3 API key).
 type TMDB struct {
-	key  func() string
-	http *http.Client
-	base string // API base URL (tmdbBaseURL; overridable in tests)
+	key    func() string
+	http   *http.Client
+	base   string        // API base URL (tmdbBaseURL; overridable in tests)
+	region func() string // admin's discovery region (ISO alpha-2); nil/"" = global
 
 	discMu    sync.Mutex
 	discCache map[string]discoverCacheEntry // browse/search list cache (TTL-only)
@@ -45,6 +46,26 @@ func NewTMDBFunc(key func() string) *TMDB {
 		base:      tmdbBaseURL,
 		discCache: map[string]discoverCacheEntry{},
 	}
+}
+
+// SetRegionFunc installs a lazy resolver for the admin's discovery region
+// (ISO 3166-1 alpha-2, e.g. "AU"). Read per call — like the API key — so a
+// settings change applies without a restart. Region localizes the release-date
+// driven lists (popular, upcoming, genre discovery): without it TMDB's global
+// mix surfaces regional oddities from everywhere except where the user lives.
+func (t *TMDB) SetRegionFunc(f func() string) { t.region = f }
+
+// regionCode returns the configured region normalized to two upper-case ASCII
+// letters, or "" when unset/invalid (TMDB then falls back to its global lists).
+func (t *TMDB) regionCode() string {
+	if t.region == nil {
+		return ""
+	}
+	r := strings.ToUpper(strings.TrimSpace(t.region()))
+	if len(r) != 2 || r[0] < 'A' || r[0] > 'Z' || r[1] < 'A' || r[1] > 'Z' {
+		return ""
+	}
+	return r
 }
 
 // sanitizeErr rewrites err so its text cannot leak an API key embedded in the request
