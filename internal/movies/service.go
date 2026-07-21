@@ -15,7 +15,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/tristenlammi/arrmada/internal/eventbus"
 	"github.com/tristenlammi/arrmada/internal/library"
@@ -371,11 +370,26 @@ func (s *Service) SetQualityProfile(ctx context.Context, id int64, profile strin
 	return s.repo.SetQualityProfile(ctx, id, profile)
 }
 
+// ErrWorseQuality is returned when an automatic import would replace an existing
+// file with a lower-resolution one; the existing file is kept untouched.
+var ErrWorseQuality = fmt.Errorf("import is lower quality than the existing file")
+
 // MarkImported records that a movie now has a file (called by the import
 // pipeline once a download for it lands). If the movie already had a different
 // file, the old one is deleted from disk first — an upgrade replaces, it doesn't
-// accumulate (multi-version is a separate, opt-in feature).
+// accumulate (multi-version is a separate, opt-in feature). A replacement whose
+// resolution is LOWER than the existing file's is refused with ErrWorseQuality.
 func (s *Service) MarkImported(ctx context.Context, id int64, path, sourceRelease string) error {
+	return s.markImported(ctx, id, path, sourceRelease, false)
+}
+
+// MarkImportedManual is MarkImported for user-driven imports: the user picked
+// this file deliberately, so the worse-quality replacement gate does not apply.
+func (s *Service) MarkImportedManual(ctx context.Context, id int64, path, sourceRelease string) error {
+	return s.markImported(ctx, id, path, sourceRelease, true)
+}
+
+func (s *Service) markImported(ctx context.Context, id int64, path, sourceRelease string, manual bool) error {
 	versions, err := s.Versions(ctx, id)
 	if err != nil {
 		return err
@@ -386,6 +400,22 @@ func (s *Service) MarkImported(ctx context.Context, id int64, path, sourceReleas
 	// never touches the 4K track's file.
 	upgrade := false
 	if target.HasFile && target.FilePath != "" && target.FilePath != path {
+		// Quality gate (auto imports only): never replace a file with a KNOWN
+		// lower resolution — a mislabeled or wrongly-routed 720p grab must not
+		// clobber the 2160p already on disk. Unknown resolutions can't be judged,
+		// so they pass through (equal/higher always replaces, as before).
+		if !manual {
+			newRes := importResolution(path, sourceRelease)
+			oldRes := existingResolution(target)
+			if newRes != parser.ResUnknown && oldRes != parser.ResUnknown &&
+				parser.ResolutionRank(newRes) < parser.ResolutionRank(oldRes) {
+				s.log.Warn("refusing to replace file with lower-resolution import — keeping existing",
+					"movie_id", id, "version", target.Label,
+					"existing", string(oldRes), "existing_path", target.FilePath,
+					"incoming", string(newRes), "incoming_path", path)
+				return fmt.Errorf("%w (%s < %s)", ErrWorseQuality, newRes, oldRes)
+			}
+		}
 		s.removeFile(target.FilePath)
 		s.log.Info("replaced older file on upgrade", "movie_id", id, "version", target.Label, "old", target.FilePath, "new", path)
 		upgrade = true
@@ -420,11 +450,61 @@ func (s *Service) MarkImported(ctx context.Context, id int64, path, sourceReleas
 	}
 	_ = s.repo.AddEvent(ctx, id, event, detail)
 
-	// Write Plex/Jellyfin-readable metadata into the movie folder.
+	// Write Plex/Jellyfin-readable metadata into the movie folder — off the
+	// caller's goroutine, because artwork downloads can take seconds and the
+	// import pipeline shouldn't stall on them. Safe to detach: the helpers only
+	// write sidecar files and do independent HTTP fetches (no shared mutable
+	// state), and the movie snapshot is captured before the goroutine starts.
+	// The DB updates above already happened synchronously.
 	if m, err := s.repo.Get(ctx, id); err == nil {
-		s.writeLibraryMetadata(ctx, filepath.Dir(path), m)
+		dir := filepath.Dir(path)
+		go func() {
+			// The caller's ctx may be cancelled as soon as it returns; the sidecar
+			// work should still finish, just not run forever.
+			bctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			s.writeLibraryMetadata(bctx, dir, m)
+		}()
 	}
 	return nil
+}
+
+// importResolution is the resolution the NEW file claims: the release name it
+// was grabbed from, falling back to the filename.
+func importResolution(path, sourceRelease string) parser.Resolution {
+	if sourceRelease != "" {
+		if r := parser.Parse(sourceRelease).Resolution; r != parser.ResUnknown {
+			return r
+		}
+	}
+	return parser.Parse(filepath.Base(path)).Resolution
+}
+
+// existingResolution is the resolution of a version's current file, tried in
+// order of trustworthiness: the stored source release, probed/parsed file info,
+// then the filename (mirrors the automation coordinator's upgrade baseline).
+func existingResolution(v Version) parser.Resolution {
+	if sr := strings.TrimSpace(v.SourceRelease); sr != "" {
+		if r := parser.Parse(sr).Resolution; r != parser.ResUnknown {
+			return r
+		}
+	}
+	if v.File != nil {
+		if v.File.Resolution != "" { // real (ffprobe) resolution when available
+			if r := parser.Resolution(v.File.Resolution); parser.ResolutionRank(r) > 0 {
+				return r
+			}
+		}
+		if v.File.Quality != "" { // e.g. "1080p BluRay"
+			if r := parser.Parse(v.File.Quality).Resolution; r != parser.ResUnknown {
+				return r
+			}
+		}
+	}
+	if v.FilePath != "" {
+		return parser.Parse(filepath.Base(v.FilePath)).Resolution
+	}
+	return parser.ResUnknown
 }
 
 // writeLibraryMetadata writes a Kodi/Jellyfin/Plex-readable movie.nfo and, if
@@ -560,16 +640,27 @@ func (s *Service) HasExtraVersions(ctx context.Context, id int64) bool {
 }
 
 // routeVersion picks which version an imported file belongs to, by matching the
-// file's resolution against each version's quality profile. Falls back to the
-// default version when nothing matches.
+// file's resolution against each version's quality profile.
+//
+// A file whose resolution can't be determined routes to the DEFAULT track
+// explicitly — never to whichever extra track happens to score least badly. A
+// file with a KNOWN resolution never lands on a track whose profile forbids it
+// (-1) while another track accepts it; if every track forbids it, it falls back
+// to the default track (whose file the MarkImported quality gate still protects).
 func (s *Service) routeVersion(ctx context.Context, versions []Version, path string) Version {
 	res := s.resolutionOf(path)
+	if res == "" {
+		return versions[0] // unknown resolution → default track
+	}
 	best := versions[0] // default
 	bestScore := s.matchScore(ctx, versions[0].QualityProfile, res)
 	for _, v := range versions[1:] {
 		if sc := s.matchScore(ctx, v.QualityProfile, res); sc > bestScore {
 			best, bestScore = v, sc
 		}
+	}
+	if bestScore < 0 {
+		return versions[0] // every track forbids it → default track
 	}
 	return best
 }
@@ -1018,8 +1109,9 @@ func (s *Service) ManualImport(ctx context.Context, id int64, srcPath string) er
 		return err
 	}
 	// The source filename usually carries the quality tags (scene/p2p naming), so
-	// use it as the release name for upgrade scoring.
-	return s.MarkImported(ctx, id, res.TargetPath, filepath.Base(res.SourcePath))
+	// use it as the release name for upgrade scoring. Manual: the user picked this
+	// file on purpose, so the worse-quality gate must not refuse it.
+	return s.MarkImportedManual(ctx, id, res.TargetPath, filepath.Base(res.SourcePath))
 }
 
 // RenamePreview returns the canonical name a movie's file should have, and
@@ -1101,32 +1193,52 @@ func (s *Service) Matcher(all []Movie) func(title string, year int) (Movie, bool
 
 // Match finds the library movie a parsed release belongs to, comparing
 // normalized titles and (when the release has a year) the year within ±1.
+//
+// A release with no parseable year only matches when exactly ONE library movie
+// shares the title key: with two Cinderellas in the library, a "Cinderella.1080p"
+// release must stay unmatched rather than attach to whichever was added last.
 func (s *Service) Match(ctx context.Context, title string, year int) (Movie, bool) {
 	all, err := s.repo.List(ctx)
 	if err != nil {
 		return Movie{}, false
 	}
 	want := normalizeTitle(title)
+	var candidates []Movie
 	for _, m := range all {
 		if normalizeTitle(m.Title) != want {
 			continue
 		}
-		if year == 0 || m.Year == 0 || abs(m.Year-year) <= 1 {
-			return m, true
+		if year != 0 {
+			if m.Year == 0 || abs(m.Year-year) <= 1 {
+				return m, true
+			}
+			continue
 		}
+		candidates = append(candidates, m)
 	}
-	return Movie{}, false
+	switch len(candidates) {
+	case 0:
+		return Movie{}, false
+	case 1:
+		return candidates[0], true
+	default:
+		if s.log != nil {
+			names := make([]string, 0, len(candidates))
+			for _, c := range candidates {
+				names = append(names, fmt.Sprintf("%s (%d)", c.Title, c.Year))
+			}
+			s.log.Debug("year-less release title is ambiguous — not matching",
+				"title", title, "candidates", strings.Join(names, ", "))
+		}
+		return Movie{}, false
+	}
 }
 
-func normalizeTitle(s string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(s) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
+// normalizeTitle keys a title for matching. It MUST agree with the search side
+// (automation's titleKey), which also uses parser.TitleKey: if search-side matching
+// accepts a release the import-side can't re-match (accents, "&" vs "and"), the
+// grab stays pending forever and the sweep re-grabs a duplicate.
+func normalizeTitle(s string) string { return parser.TitleKey(s) }
 
 func abs(n int) int {
 	if n < 0 {
