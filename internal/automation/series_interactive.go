@@ -80,7 +80,7 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 	if len(sampleDropped) > 0 {
 		c.log.Info("series: sample of dropped titles (parsed → title)", "series", s.Title, "samples", strings.Join(sampleDropped, " | "))
 	}
-	decision := c.quality.Decide(ctx, s.QualityProfile, cands)
+	decision := c.quality.Decide(ctx, c.effectiveProfile(ctx, s.QualityProfile, "series"), cands)
 
 	// For a single-episode search we can show a bitrate (size ÷ episode runtime). Season/series
 	// packs cover many episodes, so leave bitrate off there rather than mislead.

@@ -327,6 +327,22 @@ func bitrateMbps(sizeGB float64, runtimeMin int) float64 {
 	return sizeGB * (1024 * 1024 * 1024 * 8 / 1e6) / float64(runtimeMin*60)
 }
 
+// effectiveProfile substitutes the user's configured default profile when a title carries
+// no real profile of its own — "n/a", as library-scanned movies and series do. Without it,
+// scoring a scanned title falls back to a generic preset that PREFERS Dolby Vision, HDR10
+// and Atmos, so a manual search recommended a Dolby Vision release even to someone who set
+// DV to Avoid. Their default profile is the right preference to apply; only when they have
+// no profiles at all does the generic fallback remain.
+func (c *Coordinator) effectiveProfile(ctx context.Context, profile, mediaType string) string {
+	if profile != "n/a" && c.quality.Known(ctx, profile) {
+		return profile // a real profile of its own — honour it
+	}
+	if def := c.quality.DefaultProfile(ctx, mediaType); def != "" && def != "n/a" {
+		return def
+	}
+	return profile
+}
+
 func (c *Coordinator) RankReleases(ctx context.Context, id int64) (ReleaseList, error) {
 	m, err := c.movies.Get(ctx, id)
 	if err != nil {
@@ -350,7 +366,8 @@ func (c *Coordinator) RankReleases(ctx context.Context, id int64) (ReleaseList, 
 		byName[rel.Title] = rel
 		cands = append(cands, quality.NewCandidate(rel.Title, rel.SizeGB(), rel.Seeders))
 	}
-	decision := c.quality.Decide(ctx, m.QualityProfile, tagRuntime(cands, m.Runtime))
+	profile := c.effectiveProfile(ctx, m.QualityProfile, "movie")
+	decision := c.quality.Decide(ctx, profile, tagRuntime(cands, m.Runtime))
 	blocked := c.blockedSet(ctx, m.ID)
 
 	winnerName := ""
@@ -381,7 +398,7 @@ func (c *Coordinator) RankReleases(ctx context.Context, id int64) (ReleaseList, 
 	for _, ev := range decision.Rejected {
 		appendEval(ev)
 	}
-	return ReleaseList{Profile: m.QualityProfile, Why: decision.Why, Releases: out}, nil
+	return ReleaseList{Profile: profile, Why: decision.Why, Releases: out}, nil
 }
 
 // summarize renders a release's key attributes in plain language.
