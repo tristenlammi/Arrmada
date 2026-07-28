@@ -242,6 +242,12 @@ type Evaluation struct {
 	SizeScore    int       `json:"size_score"`
 	Total        int       `json:"total"`
 	Matched      []string  `json:"matched,omitempty"` // preferred formats that matched
+	// Avoided is set when the release carries a format the profile scores negatively (the
+	// "Avoid" toggle). Such a release drops to a lower tier: it's only ever the winner when
+	// no non-avoided release is eligible, so "Avoid Dolby Vision" means "never pick DV while
+	// there's an alternative" — not merely a score penalty a better source could overcome.
+	Avoided        bool     `json:"avoided,omitempty"`
+	AvoidedFormats []string `json:"avoided_formats,omitempty"`
 }
 
 // Decision is the ranked outcome over a set of candidates.
@@ -324,6 +330,9 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 		ev.FormatScore += score
 		if score > 0 {
 			ev.Matched = append(ev.Matched, name)
+		} else if score < 0 {
+			ev.Avoided = true
+			ev.AvoidedFormats = append(ev.AvoidedFormats, name)
 		}
 	}
 	for _, k := range p.Keywords {
@@ -338,6 +347,7 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 		}
 	}
 	sort.Strings(ev.Matched) // stable output
+	sort.Strings(ev.AvoidedFormats)
 
 	if ev.FormatScore < p.MinFormatScore {
 		ev.RejectReason = "Below the profile's minimum format score"
@@ -398,6 +408,13 @@ func (e *Engine) Decide(p Profile, cands []Candidate) Decision {
 	preferSmaller := p.SmallBias > 0
 	sort.SliceStable(d.Eligible, func(i, j int) bool {
 		a, b := d.Eligible[i], d.Eligible[j]
+		// Avoided releases are a strictly lower tier: a release carrying an avoided format
+		// never out-ranks one that doesn't, no matter how much better its resolution,
+		// source or bitrate is. This is what makes "Avoid" mean "don't pick it while there's
+		// an alternative" rather than a penalty a nicer release can outweigh.
+		if a.Avoided != b.Avoided {
+			return !a.Avoided // non-avoided first
+		}
 		if a.Total != b.Total {
 			return a.Total > b.Total
 		}
@@ -416,11 +433,20 @@ func (e *Engine) Decide(p Profile, cands []Candidate) Decision {
 	if len(d.Eligible) > 0 {
 		d.Winner = &d.Eligible[0]
 		d.Why = whyReasons(p, *d.Winner)
+		// Every eligible release carries a format you avoid — say so, so a Dolby Vision
+		// recommendation doesn't look like the avoid was ignored when it's simply all
+		// there was.
+		if d.Winner.Avoided {
+			d.Why = append([]string{"Only releases with a format you avoid were available"}, d.Why...)
+		}
 		if len(d.Eligible) > 1 {
-			ru := d.Eligible[1].Candidate.Release
+			ru := d.Eligible[1]
+			reason := loseReason(d.Winner.Candidate.Release, ru.Candidate.Release)
+			if ru.Avoided && !d.Winner.Avoided {
+				reason = "it has " + strings.Join(ru.AvoidedFormats, ", ") + ", which you avoid"
+			}
 			d.ChosenOver = fmt.Sprintf("Chosen over the %s %s — %s",
-				resLabel(ru.Resolution), sourceLabel(ru.Source),
-				loseReason(d.Winner.Candidate.Release, ru))
+				resLabel(ru.Candidate.Release.Resolution), sourceLabel(ru.Candidate.Release.Source), reason)
 		}
 	}
 	return d

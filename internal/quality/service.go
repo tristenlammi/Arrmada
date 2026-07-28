@@ -136,6 +136,12 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 
 	d := e.Decide(p, cands)
 	for _, ev := range d.Eligible { // sorted best-first
+		// Never auto-upgrade INTO a format you avoid. Keeping the current file is always the
+		// preferable alternative, so "Avoid Dolby Vision" also means the upgrader won't swap
+		// a clean file for a DV one — matching how the picker now treats avoided releases.
+		if ev.Avoided && !cur.Avoided {
+			continue
+		}
 		if resRank[ev.Candidate.Release.Resolution] < curResRank {
 			continue // never drop resolution — that's a downgrade, not an upgrade
 		}
