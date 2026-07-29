@@ -220,6 +220,16 @@ func Parse(name string) Release {
 		titleStart = m[1]
 	}
 
+	// Underscore is a WORD character to Go's regex \b, so "Rafters_S01E01_Pilot" has no word
+	// boundary before the S and every \b-anchored pattern below — SxxExx, 1x01, "Season 3",
+	// the anime absolute forms — silently failed to match. A whole 122-file "Packed To The
+	// Rafters S01-S06" pack parsed as season 0 with no episodes and could not be placed.
+	//
+	// Done after the group patterns above (which are anchored to the raw name and may hold an
+	// underscore inside a fansub tag) and before everything that follows. "_" → " " is
+	// byte-for-byte, so titleStart stays valid.
+	name = strings.ReplaceAll(name, "_", " ")
+
 	// Lowercased, space-separated copy for keyword matching.
 	lc := normalize(name)
 
@@ -751,6 +761,9 @@ func StripBracketed(s string) string {
 
 func EpisodeTitleFrom(name string) string {
 	name = strings.TrimSuffix(name, filepath.Ext(name))
+	// Same underscore/\b problem as Parse: without this, an underscore-separated name finds
+	// no SxxExx and yields no title at all.
+	name = strings.ReplaceAll(name, "_", " ")
 	loc := reSxxExx.FindStringIndex(name)
 	if loc == nil {
 		loc = reNxNN.FindStringIndex(name)
