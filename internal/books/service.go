@@ -205,6 +205,20 @@ func (s *Service) MatchByRelease(ctx context.Context, releaseName string) (Book,
 	return matchRelease(all, releaseName)
 }
 
+// Matcher returns a release→book matcher over ONE library snapshot, for a caller resolving
+// many release names in a batch (a page of indexer results). MatchByRelease re-reads the
+// whole books table per call, so filtering 60 search results with it meant 60 full table
+// scans; this reads once.
+func (s *Service) Matcher(ctx context.Context) func(releaseName string) (Book, bool) {
+	all, err := s.repo.List(ctx)
+	if err != nil {
+		// No snapshot means no basis to judge a release against — report no match rather
+		// than silently matching everything.
+		return func(string) (Book, bool) { return Book{}, false }
+	}
+	return func(name string) (Book, bool) { return matchRelease(all, name) }
+}
+
 // matchRelease is MatchByRelease's pure core (separated so it's table-testable).
 func matchRelease(all []Book, releaseName string) (Book, bool) {
 	rel := wordKey(releaseName)

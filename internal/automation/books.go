@@ -14,6 +14,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/audiobook"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/download"
+	"github.com/tristenlammi/arrmada/internal/extract"
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/metadata"
@@ -106,6 +107,17 @@ func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind st
 	if err != nil || len(res.Releases) == 0 {
 		return
 	}
+	// Only releases that actually name THIS book. Book indexers fuzzy-match, so a query of
+	// "Frank Herbert Dune" routinely returns Dune Messiah and Children of Dune; nothing
+	// downstream checked the title, so a sequel could out-score the book we asked for, be
+	// grabbed, import into this book's folder, and satisfy the edition forever (there is no
+	// upgrade pass to correct it later). Movies and series both gate their search results
+	// this way, and the books RSS path already did — only this path was missing it.
+	res.Releases = c.releasesForThisBook(ctx, b, res.Releases)
+	if len(res.Releases) == 0 {
+		c.log.Info("book: no release matched this title", "title", b.Title, "edition", kind)
+		return
+	}
 	res.Releases = c.dropBlockedBook(ctx, b.ID, res.Releases) // don't re-grab a blocklisted (e.g. stalled) release
 	// DB pending-grab guard, mirroring the movie path's pendingGrabTitles: a release
 	// already grabbed for this book (and not yet imported/failed) must not be grabbed
@@ -123,6 +135,29 @@ func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind st
 	}
 	c.recordBookGrab(ctx, b.ID, best.Title, best.Indexer, b.QualityProfile, hash)
 	c.log.Info("book: grabbing", "title", b.Title, "edition", kind, "release", best.Title, "format", detectBookFormat(best.Title))
+}
+
+// releasesForThisBook keeps only the releases whose name resolves to b when matched against
+// the whole library.
+//
+// It reuses the import-side matcher deliberately, so the searcher and the importer agree on
+// what a release is: whole-word title containment, author-confirmed candidates preferred,
+// and the LONGEST matching title winning. That last rule is what keeps a "Dune Messiah"
+// release off "Dune" — Messiah is the more specific claim, so it only passes this gate for
+// the book it really is.
+//
+// Limit worth knowing: if the sequel is NOT in the library there is no longer title to beat
+// "Dune", so such a release still passes. Catching that needs a book database we don't have;
+// the import-side identity gate is what stops it landing on the wrong book unnoticed.
+func (c *Coordinator) releasesForThisBook(ctx context.Context, b books.Book, releases []indexer.Release) []indexer.Release {
+	match := c.books.Matcher(ctx)
+	out := make([]indexer.Release, 0, len(releases))
+	for _, rel := range releases {
+		if mb, ok := match(rel.Title); ok && mb.ID == b.ID {
+			out = append(out, rel)
+		}
+	}
+	return out
 }
 
 // bookQuery builds the indexer query. Audiobook searches append "audiobook" so the
@@ -252,6 +287,26 @@ func (c *Coordinator) ImportBookDownloads(ctx context.Context) {
 			continue // already held for review (or resolved) — don't re-flag or import
 		}
 		b, ok := c.books.MatchByRelease(ctx, it.Name)
+
+		// If this download was grabbed for a specific book, verify its content really is
+		// that book before importing. The target was otherwise re-derived from the torrent
+		// name alone, so a release that resolves to a different book than the one we asked
+		// for landed there silently — even though the grab row records the book id and info
+		// hash needed to catch it. Mirrors the series import gate.
+		if gid, idx, grabbed := c.grabbedMediaForHash(ctx, it.Hash, it.Name, "book"); grabbed {
+			if expected, gerr := c.books.Get(ctx, gid); gerr == nil && (!ok || b.ID != expected.ID) {
+				parsed := bookParsedTitle(it.Name)
+				c.log.Warn("book import: download doesn't look like the book it was grabbed for — sending to review",
+					"expected", expected.Title, "release", it.Name, "parsed_title", parsed)
+				c.addReview(ctx, Review{
+					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "book",
+					ExpectedID: expected.ID, ExpectedTitle: expected.Title, ParsedTitle: parsed,
+					Reason:    fmt.Sprintf("Grabbed for %q but the download looks like %q", expected.Title, parsed),
+					SizeBytes: it.SizeBytes, Indexer: idx,
+				})
+				continue
+			}
+		}
 		if !ok {
 			// The sweep runs every 30 seconds, so an unmatchable download used to be
 			// rescanned in silence forever. Log once, and after enough attempts hand it
@@ -272,43 +327,89 @@ func (c *Coordinator) ImportBookDownloads(ctx context.Context) {
 			}
 			continue
 		}
-		var ebooks, audio []library.FoundFile
-		for _, f := range library.FindBookFiles(it.ContentPath) {
-			if library.IsAudiobookFile(f.Path) {
-				audio = append(audio, f)
-			} else {
-				ebooks = append(ebooks, f)
-			}
-		}
-		// Containment heuristic: audiobook releases routinely ship a companion PDF
-		// (artwork/booklet) next to the M4B. Importing that PDF as the book's EBOOK
-		// edition satisfied the edition forever, so a real EPUB was never searched
-		// again. A download holding BOTH kinds is an audiobook release: import only
-		// the audio and leave the ebook edition unclaimed. Ebook-only and audio-only
-		// downloads import as before.
-		if len(audio) > 0 && len(ebooks) > 0 {
-			skipped := make([]string, 0, len(ebooks))
-			for _, f := range ebooks {
-				skipped = append(skipped, filepath.Base(f.Path))
-			}
-			c.log.Info("book import: audiobook release carries ebook-extension companion files — importing audio only, not claiming the ebook edition",
-				"book", b.Title, "release", it.Name, "skipped", strings.Join(skipped, ", "))
-			ebooks = nil
-		}
-		okEbook := c.importBookEdition(ctx, b, books.KindEbook, ebooks, it.Hash, it.Name)
-		okAudio := c.importBookEdition(ctx, b, books.KindAudiobook, audio, it.Hash, it.Name)
+		imported, hadFiles := c.importBookContent(ctx, b, it.ContentPath, it.Hash, it.Name)
 		switch {
-		case okEbook || okAudio:
+		case imported:
 			// At least one edition actually landed — drop it from the downloads view.
 			c.recordImportedHash(ctx, it.Hash, it.Name, it.SizeBytes)
-		case len(ebooks) > 0 || len(audio) > 0:
+		case hadFiles:
 			// Files were found but every import failed. Recording the hash here would
 			// make the sweep skip this torrent forever while the book stays missing;
 			// leave it unrecorded so the next sweep retries.
 			c.log.Warn("book import: found files but no edition imported — will retry next sweep",
 				"book", b.Title, "release", it.Name)
+		default:
+			// No ebook or audiobook files at all — a still-archived release we couldn't
+			// extract, or content the container can't read. This case had no branch, so the
+			// sweep did nothing whatsoever: no log, no blocklist, no review, retried every
+			// 30 seconds forever while the book showed as still missing.
+			// >= rather than ==: this counter is shared with the "no matching book" branch
+			// above, so a download that sat unmatched until the user added its book would
+			// already be past the threshold and would otherwise never escalate. Escalating
+			// repeatedly is impossible — the hasReview check at the top of the loop skips
+			// this download once a review exists.
+			n := c.noteUnmatched(it.Hash)
+			switch {
+			case n == 1:
+				c.log.Warn("book import: download holds no ebook or audiobook files",
+					"book", b.Title, "release", it.Name, "path", it.ContentPath)
+			case n >= unmatchedReviewAfter:
+				c.log.Warn("book import: still nothing importable — sending to review",
+					"book", b.Title, "release", it.Name, "attempts", n)
+				c.addReview(ctx, Review{
+					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "book",
+					ExpectedID: b.ID, ExpectedTitle: b.Title, ParsedTitle: bookParsedTitle(it.Name),
+					SizeBytes: it.SizeBytes,
+					Reason:    "Downloaded but holds no ebook or audiobook files — still archived, or unreadable",
+				})
+			}
 		}
 	}
+}
+
+// importBookContent groups a download's files by edition and imports each into b. Shared by
+// the automatic sweep and the review "import anyway" path so the two can't drift.
+//
+// imported reports whether any edition actually landed; hadFiles reports whether the
+// download held any recognisable book files at all — the caller needs to tell "import
+// failed, retry" apart from "nothing here to import".
+func (c *Coordinator) importBookContent(ctx context.Context, b books.Book, contentPath, hash, name string) (imported, hadFiles bool) {
+	// Scene ebook and audiobook packs routinely ship inside a RAR set. Without this the
+	// archive yielded no recognised book files and the download was never imported.
+	if fi, err := os.Stat(contentPath); err == nil && fi.IsDir() {
+		if n, xerr := extract.ExtractTree(contentPath); xerr != nil {
+			c.log.Warn("book import: archive extraction failed", "path", contentPath, "err", xerr)
+		} else if n > 0 {
+			c.log.Info("book import: extracted archives before import", "count", n, "path", contentPath)
+		}
+	}
+	var ebooks, audio []library.FoundFile
+	for _, f := range library.FindBookFiles(contentPath) {
+		if library.IsAudiobookFile(f.Path) {
+			audio = append(audio, f)
+		} else {
+			ebooks = append(ebooks, f)
+		}
+	}
+	hadFiles = len(ebooks) > 0 || len(audio) > 0
+	// Containment heuristic: audiobook releases routinely ship a companion PDF
+	// (artwork/booklet) next to the M4B. Importing that PDF as the book's EBOOK
+	// edition satisfied the edition forever, so a real EPUB was never searched
+	// again. A download holding BOTH kinds is an audiobook release: import only
+	// the audio and leave the ebook edition unclaimed. Ebook-only and audio-only
+	// downloads import as before.
+	if len(audio) > 0 && len(ebooks) > 0 {
+		skipped := make([]string, 0, len(ebooks))
+		for _, f := range ebooks {
+			skipped = append(skipped, filepath.Base(f.Path))
+		}
+		c.log.Info("book import: audiobook release carries ebook-extension companion files — importing audio only, not claiming the ebook edition",
+			"book", b.Title, "release", name, "skipped", strings.Join(skipped, ", "))
+		ebooks = nil
+	}
+	okEbook := c.importBookEdition(ctx, b, books.KindEbook, ebooks, hash, name)
+	okAudio := c.importBookEdition(ctx, b, books.KindAudiobook, audio, hash, name)
+	return okEbook || okAudio, hadFiles
 }
 
 // bookParsedTitle reduces a release name to a readable title guess for a review row:
@@ -893,10 +994,16 @@ func dropPendingBook(releases []indexer.Release, pending map[string]bool) []inde
 // recordBookGrab tracks a book grab for seed cleanup (media_type=book, movie_id=bookID).
 func (c *Coordinator) recordBookGrab(ctx context.Context, bookID int64, title, indexer, profile, infoHash string) {
 	seedEnabled, seedRatio, seedHours := c.seedRules(ctx, indexer)
+	// stall_minutes must come from the profile. It was written as a literal 0, and
+	// detectStalledBook returns immediately when it isn't positive — so the entire book
+	// stall fail-over was dead code: a 0-seeder grab was never blocklisted or removed, and
+	// once the 24h pending guard expired the identical release was grabbed again, forever.
+	// (The series path carried this exact bug and fixes it the same way.)
 	_, err := c.db.ExecContext(ctx,
 		`INSERT INTO grabs (movie_id, version_id, title, indexer, quality_profile, stall_minutes, seed_enabled, seed_ratio, seed_hours, media_type, info_hash)
-		 VALUES (?, 0, ?, ?, ?, 0, ?, ?, ?, 'book', ?)`,
-		bookID, title, indexer, profile, boolToInt(seedEnabled), seedRatio, seedHours, infoHash)
+		 VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, 'book', ?)`,
+		bookID, title, indexer, profile, c.quality.StallMinutes(ctx, profile),
+		boolToInt(seedEnabled), seedRatio, seedHours, infoHash)
 	if err != nil {
 		c.log.Warn("book: record grab failed", "err", err)
 	}
@@ -968,6 +1075,23 @@ func (c *Coordinator) dropBlockedBook(ctx context.Context, bookID int64, release
 	return out
 }
 
+// bookEditionLanded reports whether the edition a grab was for is now on disk. The edition
+// is read back from the release's own format tag — the same classification pickBestBookForKind
+// used to choose it — because the shared grabs table has no edition column.
+//
+// When the format can't be told, it falls back to "either edition present": a grab we can't
+// classify is better treated as done than left to be blocklisted as stalled.
+func bookEditionLanded(b books.Book, releaseTitle string) bool {
+	switch books.EditionOf(detectBookFormat(releaseTitle)) {
+	case books.KindEbook:
+		return b.Ebook != nil
+	case books.KindAudiobook:
+		return b.Audiobook != nil
+	default:
+		return b.HasFile
+	}
+}
+
 // detectStalledBook fails over a stalled book grab: blocklist the release, remove it, re-search.
 func (c *Coordinator) detectStalledBook(ctx context.Context, g grab, queue []download.Item) {
 	if c.books == nil {
@@ -979,7 +1103,12 @@ func (c *Coordinator) detectStalledBook(ctx context.Context, g grab, queue []dow
 		c.setGrabStatus(ctx, g.ID, "failed")
 		return
 	}
-	if b.HasFile { // an edition landed
+	// Only the edition THIS grab was for counts as landed. Checking b.HasFile (ebook OR
+	// audiobook) meant a landed ebook flipped a still-downloading AUDIOBOOK grab to
+	// "imported" — after which ManageSeeding removed that torrent WITH its data the moment
+	// it completed, before the import sweep could run, and the book was re-grabbed on the
+	// next pass: a grab/delete/re-grab loop that also destroyed the download.
+	if bookEditionLanded(b, g.Title) {
 		c.setGrabStatus(ctx, g.ID, "imported")
 		return
 	}

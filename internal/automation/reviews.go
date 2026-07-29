@@ -242,6 +242,12 @@ func (c *Coordinator) RejectReview(ctx context.Context, id int64) error {
 		c.addBlockSeries(ctx, r.ExpectedID, r.Name, r.Indexer, "rejected in review")
 	case r.MediaType == "movie":
 		_ = c.addBlock(ctx, r.ExpectedID, r.Name, r.Indexer, "", "rejected in review")
+	case r.MediaType == "book":
+		// Book reviews now carry the book they were grabbed for, so they reach this switch
+		// with a real ExpectedID. Without a case of their own they would match nothing and
+		// rejecting would blocklist nothing at all, leaving the release free to be re-grabbed
+		// for the same book on the next sweep.
+		c.addBlockBook(ctx, r.ExpectedID, r.Name, r.Indexer, "rejected in review")
 	}
 	return c.resolveReview(ctx, id)
 }
@@ -302,6 +308,25 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 		}
 		if err := c.movies.ManualImport(ctx, dest, r.ContentPath); err != nil {
 			return err
+		}
+	case "book":
+		// The books sweep creates reviews with MediaType "book", but this switch only knew
+		// series and movie — so every book review's "Import anyway" hit the default branch
+		// and failed with "unknown media type". The escalation path books built led to a
+		// queue whose primary action could not work.
+		if c.books == nil {
+			return fmt.Errorf("books module unavailable")
+		}
+		b, err := c.books.Get(ctx, dest)
+		if err != nil {
+			return err
+		}
+		imported, hadFiles := c.importBookContent(ctx, b, r.ContentPath, r.Hash, r.Name)
+		if !imported {
+			if !hadFiles {
+				return fmt.Errorf("no ebook or audiobook files found in the download for %q", b.Title)
+			}
+			return fmt.Errorf("no edition could be imported into %q", b.Title)
 		}
 	default:
 		return fmt.Errorf("unknown media type %q", r.MediaType)
