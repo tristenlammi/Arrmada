@@ -226,10 +226,72 @@ func (r *Repo) ClearEdition(ctx context.Context, id int64, kind string) error {
 	return err
 }
 
+// Rematch re-points a book at a different Open Library work and replaces the metadata that
+// came from the old one. File/edition state, monitoring and the quality profile are the
+// library's and the user's, not the provider's, so they are deliberately left alone — the
+// point is to fix a wrong identification without losing the files already on disk.
+//
+// ol_key is UNIQUE, so re-matching onto a work already in the library returns ErrExists
+// rather than silently failing: the two rows would have to be merged, which is the user's
+// call, not ours.
+func (r *Repo) Rematch(ctx context.Context, id int64, b Book) error {
+	subjectsJSON := ""
+	if len(b.Subjects) > 0 {
+		if raw, err := json.Marshal(b.Subjects); err == nil {
+			subjectsJSON = string(raw)
+		}
+	}
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE books SET ol_key = ?, title = ?, author = ?, year = ?, cover_url = ?,
+		        description = ?, subjects_json = ? WHERE id = ?`,
+		b.OLKey, b.Title, b.Author, b.Year, b.CoverURL, b.Description, subjectsJSON, id)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return ErrExists
+		}
+		return err
+	}
+	return affected(res, nil)
+}
+
 // Delete removes a book.
 func (r *Repo) Delete(ctx context.Context, id int64) error {
 	res, err := r.db.ExecContext(ctx, `DELETE FROM books WHERE id = ?`, id)
 	return affected(res, err)
+}
+
+// Event is one entry in a book's activity timeline.
+type Event struct {
+	Event     string `json:"event"`
+	Detail    string `json:"detail,omitempty"`
+	CreatedAt string `json:"created_at"`
+}
+
+// AddEvent appends a timeline event for a book (best effort — a history write must never
+// fail the operation it is recording).
+func (r *Repo) AddEvent(ctx context.Context, bookID int64, event, detail string) {
+	_, _ = r.db.ExecContext(ctx,
+		`INSERT INTO book_events (book_id, event, detail) VALUES (?, ?, ?)`, bookID, event, detail)
+}
+
+// Events returns a book's timeline, newest first.
+func (r *Repo) Events(ctx context.Context, bookID int64, limit int) ([]Event, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT event, detail, created_at FROM book_events WHERE book_id = ? ORDER BY id DESC LIMIT ?`,
+		bookID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Event
+	for rows.Next() {
+		var e Event
+		if err := rows.Scan(&e.Event, &e.Detail, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
 }
 
 func affected(res sql.Result, err error) error {

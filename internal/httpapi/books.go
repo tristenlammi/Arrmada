@@ -749,3 +749,63 @@ func (a *api) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// handleBookHistory returns a book's activity timeline (added / grabbed / imported /
+// renamed / matched / failed) for the History panel on the detail page.
+func (a *api) handleBookHistory(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	events, err := a.deps.Books.Events(r.Context(), id, 100)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not read history")
+		return
+	}
+	if events == nil {
+		events = []books.Event{}
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"events": events})
+}
+
+// handleRematchBook re-points a book at a different Open Library work — the fix for a book
+// the providers, or the library scan (which takes the first search hit), identified wrongly.
+// The files already on disk, monitoring and the quality profile are kept; only the metadata
+// identity changes.
+func (a *api) handleRematchBook(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		OLKey    string `json:"ol_key"`
+		Title    string `json:"title"`
+		Author   string `json:"author"`
+		Year     int    `json:"year"`
+		CoverURL string `json:"cover_url"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.OLKey) == "" {
+		a.writeError(w, http.StatusBadRequest, "ol_key is required")
+		return
+	}
+	b, err := a.deps.Books.Rematch(r.Context(), id, strings.TrimSpace(req.OLKey), metadata.BookResult{
+		Key: req.OLKey, Title: req.Title, Author: req.Author, Year: req.Year, CoverURL: req.CoverURL,
+	})
+	switch {
+	case errors.Is(err, books.ErrNotFound):
+		a.writeError(w, http.StatusNotFound, "book not found")
+		return
+	case errors.Is(err, books.ErrExists):
+		// The chosen work is already a separate row. Merging the two is the user's call —
+		// say so plainly instead of failing with a bare constraint error.
+		a.writeError(w, http.StatusConflict, "that work is already in your library as another book — delete one of them first")
+		return
+	case err != nil:
+		a.writeError(w, http.StatusBadGateway, "could not re-match: "+err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, b)
+}

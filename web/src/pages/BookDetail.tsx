@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { BookReleaseModal } from "../components/BookReleaseModal";
-import { api, type Book, type BookFile, type BookFileEntry, type BookImportCandidate } from "../lib/api";
+import { api, type Book, type BookFile, type BookFileEntry, type BookImportCandidate, type BookLookup, type MovieEvent } from "../lib/api";
 
 function fmtSize(bytes?: number): string {
   if (!bytes || bytes <= 0) return "";
@@ -77,6 +77,7 @@ export function BookDetail() {
           <EditionPanel label="Ebook" file={b.ebook} wanted={b.want_ebook} bookId={b.id} kind="ebook" onChange={load} flash={flash} />
           <EditionPanel label="Audiobook" file={b.audiobook} wanted={b.want_audiobook} bookId={b.id} kind="audiobook" onChange={load} flash={flash} />
         </div>
+        <HistoryPanel bookId={b.id} refreshKey={b} />
       </div>
 
       {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
@@ -279,6 +280,7 @@ function Toolbar({ book, onChange, flash }: { book: Book; onChange: () => void; 
   const [showSearch, setShowSearch] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
+  const [showMatch, setShowMatch] = useState(false);
 
   const run = async (key: string, fn: () => Promise<void>) => { setBusy(key); try { await fn(); } catch (e) { flash((e as Error).message); } finally { setBusy(null); } };
   const btn = "rounded-lg px-3 py-2 text-[12.5px] font-semibold disabled:opacity-50";
@@ -304,9 +306,11 @@ function Toolbar({ book, onChange, flash }: { book: Book; onChange: () => void; 
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowImport(true)}>Manual import</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("rename", rename)}>{busy === "rename" ? "Renaming…" : "Rename"}</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowEdit(true)} title="Manually fix title/author/year when the metadata providers got it wrong">Edit metadata</button>
+        <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowMatch(true)} title="This is the wrong book — search Open Library and re-link it to the right one, keeping your files">Change match</button>
         <DeleteButton book={book} />
       </div>
       {showEdit && <EditMetadataModal book={book} onClose={() => setShowEdit(false)} onSaved={() => { onChange(); flash("Metadata updated."); }} />}
+      {showMatch && <RematchModal book={book} onClose={() => setShowMatch(false)} onMatched={() => { onChange(); flash("Re-matched to the chosen work."); }} />}
       {showSearch && (
         <BookReleaseModal
           title={`Search indexers — ${book.title}`}
@@ -465,6 +469,132 @@ function EditMetadataModal({ book, onClose, onSaved }: { book: Book; onClose: ()
           <button onClick={onClose} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Cancel</button>
           <button onClick={save} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy ? "Saving…" : "Save"}</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+const EVENT_TONES: Record<string, string> = {
+  added: "var(--ink-faint)",
+  grabbed: "var(--accent)",
+  imported: "var(--good)",
+  merged: "var(--good)",
+  matched: "var(--accent)",
+  edited: "var(--ink-dim)",
+  renamed: "var(--ink-dim)",
+  deleted: "var(--reject)",
+  failed: "var(--reject)",
+};
+
+function fmtEventTime(s: string): string {
+  const d = new Date(s.includes("T") ? s : s.replace(" ", "T") + "Z");
+  if (isNaN(d.getTime())) return s;
+  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+// HistoryPanel is the book's activity trail — why it was grabbed, what release it came
+// from, when it failed. Books were the only media module without one.
+function HistoryPanel({ bookId, refreshKey }: { bookId: number; refreshKey: unknown }) {
+  const [events, setEvents] = useState<MovieEvent[] | null>(null);
+
+  useEffect(() => {
+    api.bookHistory(bookId).then(setEvents).catch(() => setEvents([]));
+  }, [bookId, refreshKey]);
+
+  return (
+    <div className="mt-8">
+      <h2 className="m-0 mb-3 text-[14px] font-bold">History</h2>
+      {events === null ? (
+        <div className="text-[12.5px] text-ink-dim">Loading…</div>
+      ) : events.length === 0 ? (
+        <div className="rounded-xl p-6 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>No activity yet.</div>
+      ) : (
+        <div className="flex flex-col">
+          {events.map((e, i) => (
+            <div key={i} className="flex items-center gap-3 border-b py-2 text-[12px]" style={{ borderColor: "var(--line)" }}>
+              <span className="w-[74px] flex-none font-mono text-[10px] font-bold uppercase" style={{ color: EVENT_TONES[e.event] ?? "var(--ink-dim)" }}>{e.event}</span>
+              <span className="min-w-0 flex-1 truncate text-ink-dim" title={e.detail}>{e.detail || "—"}</span>
+              <span className="flex-none font-mono text-[10.5px] text-ink-faint">{fmtEventTime(e.created_at)}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// RematchModal re-points the book at a different Open Library work. This is the fix for a
+// book identified as the wrong title — most often one catalogued by the library scan, which
+// takes the first search hit. Files on disk, monitoring and the quality profile are kept.
+function RematchModal({ book, onClose, onMatched }: { book: Book; onClose: () => void; onMatched: () => void }) {
+  const [query, setQuery] = useState(`${book.title} ${book.author}`.trim());
+  const [results, setResults] = useState<BookLookup[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [searching, setSearching] = useState(false);
+  const [saving, setSaving] = useState<string | null>(null);
+
+  const search = useCallback(async (q: string) => {
+    if (!q.trim()) return;
+    setSearching(true); setError(null);
+    try { setResults(await api.lookupBooks(q.trim())); }
+    catch (e) { setError((e as Error).message); setResults([]); }
+    finally { setSearching(false); }
+  }, []);
+
+  // Seed with the book's current title so the right work is usually one click away.
+  useEffect(() => { void search(`${book.title} ${book.author}`.trim()); }, [book.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const choose = async (r: BookLookup) => {
+    setSaving(r.key); setError(null);
+    try {
+      await api.rematchBook(book.id, { ol_key: r.key, title: r.title, author: r.author, year: r.year, cover_url: r.cover_url ?? "" });
+      onMatched();
+      onClose();
+    } catch (e) { setError((e as Error).message); setSaving(null); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-start justify-center overflow-y-auto p-6" style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose}>
+      <div className="mt-10 w-full max-w-[720px] rounded-2xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }} onClick={(e) => e.stopPropagation()}>
+        <div className="mb-1 flex items-center justify-between">
+          <h2 className="m-0 text-[15px] font-bold">Change match — {book.title}</h2>
+          <button onClick={onClose} className="text-ink-faint hover:text-[var(--ink)]">✕</button>
+        </div>
+        <p className="mb-3 text-[12px] text-ink-dim">Pick the correct Open Library work. Your files, monitoring and quality profile are kept — only the metadata changes.</p>
+
+        <form className="mb-3 flex gap-2" onSubmit={(e) => { e.preventDefault(); void search(query); }}>
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search Open Library…" className="flex-1 rounded-lg px-3 py-2 text-[13px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+          <button type="submit" disabled={searching} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{searching ? "Searching…" : "Search"}</button>
+        </form>
+
+        {error && <div className="mb-3 rounded-lg p-2.5 text-[12px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
+
+        {results === null ? (
+          <div className="p-4 text-center text-[12.5px] text-ink-dim">Searching…</div>
+        ) : results.length === 0 ? (
+          <div className="rounded-xl p-6 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>No works found. Try a different search.</div>
+        ) : (
+          <div className="flex max-h-[440px] flex-col overflow-y-auto">
+            {results.map((r) => {
+              const current = r.key === book.ol_key;
+              return (
+                <div key={r.key} className="flex items-center gap-3 border-b py-2.5" style={{ borderColor: "var(--line)" }}>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[13px] font-medium">{r.title} {r.year > 0 && <span className="font-mono text-[11px] text-ink-faint">{r.year}</span>}</div>
+                    <div className="truncate text-[11.5px] text-ink-dim">{r.author || "Unknown author"} <span className="font-mono text-ink-faint">· {r.key}</span></div>
+                  </div>
+                  {current ? (
+                    <span className="flex-none rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>Current</span>
+                  ) : (
+                    <button disabled={saving !== null} onClick={() => choose(r)} className="flex-none rounded-lg px-3 py-1.5 text-[12px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--accent)", color: "var(--accent)" }}>
+                      {saving === r.key ? "Matching…" : "Use this"}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

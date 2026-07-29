@@ -1096,6 +1096,11 @@ export const api = {
     req<{ status: string }>(`/api/v1/books/${id}/metadata`, { method: "PUT", body: JSON.stringify(body) }),
   deleteBook: (id: number, deleteFiles?: boolean) =>
     req<void>(`/api/v1/books/${id}${deleteFiles ? "?delete_files=true" : ""}`, { method: "DELETE" }),
+  bookHistory: (id: number) =>
+    req<{ events: MovieEvent[] }>(`/api/v1/books/${id}/history`).then((r) => r.events),
+  // Re-point a book at a different Open Library work, keeping its files and settings.
+  rematchBook: (id: number, body: { ol_key: string; title: string; author: string; year: number; cover_url: string }) =>
+    req<Book>(`/api/v1/books/${id}/rematch`, { method: "POST", body: JSON.stringify(body) }),
 
   // Subtitles
   subtitleSettings: () => req<SubtitleSettings>("/api/v1/subtitles/settings"),

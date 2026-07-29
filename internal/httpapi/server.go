@@ -318,6 +318,8 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/manualimport", a.protected(a.handleBookManualImportList))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/manualimport", a.requireRole(auth.RoleManager, a.handleBookManualImport))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/rename", a.requireRole(auth.RoleManager, a.handleBookRename))
+	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/history", a.protected(a.handleBookHistory))
+	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/rematch", a.requireRole(auth.RoleManager, a.handleRematchBook))
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/edition-files", a.protected(a.handleBookEditionFiles))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/merge-audiobook", a.requireRole(auth.RoleManager, a.handleMergeAudiobook))
 	// Books Discover (Open Library browse/search + author catalogues).

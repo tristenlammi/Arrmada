@@ -84,6 +84,7 @@ func (s *Service) Add(ctx context.Context, olKey, qualityProfile string, monitor
 		return Book{}, err
 	}
 	s.log.Info("book added", "title", created.Title, "author", created.Author)
+	s.repo.AddEvent(ctx, created.ID, "added", "Added to library")
 	return created, nil
 }
 
@@ -105,7 +106,11 @@ func (s *Service) SetCover(ctx context.Context, id int64, coverURL string) error
 
 // OverrideMetadata applies a manual metadata correction (title/author/year/description/cover).
 func (s *Service) OverrideMetadata(ctx context.Context, id int64, title, author string, year int, description, coverURL string) error {
-	return s.repo.UpdateDetails(ctx, id, strings.TrimSpace(title), strings.TrimSpace(author), year, description, coverURL)
+	if err := s.repo.UpdateDetails(ctx, id, strings.TrimSpace(title), strings.TrimSpace(author), year, description, coverURL); err != nil {
+		return err
+	}
+	s.repo.AddEvent(ctx, id, "edited", "Metadata corrected by hand")
+	return nil
 }
 
 // AddWorks bulk-adds a list of works (an author's catalogue) to the library, skipping any
@@ -131,6 +136,7 @@ func (s *Service) AddWorks(ctx context.Context, works []metadata.BookResult, pro
 			s.log.Warn("add author: create failed", "title", wk.Title, "err", err)
 			continue
 		}
+		s.repo.AddEvent(ctx, created.ID, "added", "Added from the author's catalogue")
 		added = append(added, created)
 	}
 	if len(added) > 0 {
@@ -161,7 +167,11 @@ func (s *Service) MarkImported(ctx context.Context, id int64, kind, path, format
 
 // ClearEdition forgets a book edition (after the user deletes its file).
 func (s *Service) ClearEdition(ctx context.Context, id int64, kind string) error {
-	return s.repo.ClearEdition(ctx, id, kind)
+	if err := s.repo.ClearEdition(ctx, id, kind); err != nil {
+		return err
+	}
+	s.repo.AddEvent(ctx, id, "deleted", "Removed the "+kind+" edition")
+	return nil
 }
 
 // Refresh re-pulls Open Library metadata (description, cover, subjects) for a book.
@@ -256,8 +266,57 @@ func containsWords(hay, needle string) bool {
 	return strings.Contains(" "+hay+" ", " "+needle+" ")
 }
 
+// Rematch re-points a book at a different Open Library work — the fix for a book the
+// providers (or the library scan, which takes the first search hit) identified wrongly.
+// Metadata is re-pulled from the chosen work; the files already on disk, monitoring and the
+// quality profile are kept.
+//
+// fallback carries what the picker already knew (title/author/year/cover), because the work
+// endpoint doesn't return a publish year and often has no cover.
+func (s *Service) Rematch(ctx context.Context, id int64, olKey string, fallback metadata.BookResult) (Book, error) {
+	before, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return Book{}, err
+	}
+	d, err := s.meta.GetBook(ctx, olKey)
+	if err != nil {
+		return Book{}, fmt.Errorf("fetch metadata: %w", err)
+	}
+	next := Book{
+		OLKey:       orStr(d.Key, olKey),
+		Title:       orStr(d.Title, fallback.Title),
+		Author:      orStr(d.Author, fallback.Author),
+		Year:        d.Year,
+		CoverURL:    orStr(d.CoverURL, fallback.CoverURL),
+		Description: d.Description,
+		Subjects:    d.Subjects,
+	}
+	if next.Year == 0 {
+		next.Year = fallback.Year
+	}
+	if next.Title == "" {
+		return Book{}, fmt.Errorf("the chosen work has no title")
+	}
+	if err := s.repo.Rematch(ctx, id, next); err != nil {
+		return Book{}, err
+	}
+	s.repo.AddEvent(ctx, id, "matched", fmt.Sprintf("Re-matched from %q to %q (%s)", before.Title, next.Title, next.OLKey))
+	s.log.Info("book re-matched", "id", id, "from", before.Title, "to", next.Title, "ol_key", next.OLKey)
+	return s.repo.Get(ctx, id)
+}
+
 // Delete removes a book.
 func (s *Service) Delete(ctx context.Context, id int64) error { return s.repo.Delete(ctx, id) }
+
+// AddEvent appends a timeline event for a book.
+func (s *Service) AddEvent(ctx context.Context, id int64, event, detail string) {
+	s.repo.AddEvent(ctx, id, event, detail)
+}
+
+// Events returns a book's activity timeline, newest first.
+func (s *Service) Events(ctx context.Context, id int64, limit int) ([]Event, error) {
+	return s.repo.Events(ctx, id, limit)
+}
 
 func orStr(a, b string) string {
 	if a != "" {

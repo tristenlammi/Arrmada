@@ -134,6 +134,7 @@ func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind st
 		return
 	}
 	c.recordBookGrab(ctx, b.ID, best.Title, best.Indexer, b.QualityProfile, hash)
+	c.books.AddEvent(ctx, b.ID, "grabbed", fmt.Sprintf("Grabbed the %s edition from %s: %s", kind, best.Indexer, best.Title))
 	c.log.Info("book: grabbing", "title", b.Title, "edition", kind, "release", best.Title, "format", detectBookFormat(best.Title))
 }
 
@@ -437,6 +438,7 @@ func (c *Coordinator) importBookEdition(ctx context.Context, b books.Book, kind 
 		return false
 	}
 	c.log.Info("book: imported", "title", b.Title, "edition", kind, "format", bi.Format, "files", bi.FileCount)
+	c.books.AddEvent(ctx, b.ID, "imported", bookImportDetail(kind, bi.Format, bi.FileCount, downloadName))
 	c.markBookGrabImported(ctx, b.ID, infoHash, downloadName) // flip THIS grab (not siblings) for seed cleanup
 	c.bus.Publish("book.imported", map[string]any{"title": b.Title, "id": b.ID, "edition": kind})
 	return true
@@ -451,6 +453,7 @@ func (c *Coordinator) GrabForBook(ctx context.Context, bookID int64, indexerName
 	if b, err := c.books.Get(ctx, bookID); err == nil {
 		c.recordBookGrab(ctx, bookID, title, indexerName, b.QualityProfile, hash)
 	}
+	c.books.AddEvent(ctx, bookID, "grabbed", "Grabbed by hand from "+indexerName+": "+title)
 	return nil
 }
 
@@ -600,6 +603,7 @@ func (c *Coordinator) recordEdition(ctx context.Context, bookID int64, kind stri
 	if len(files) == 1 {
 		f := files[0]
 		_ = c.books.MarkImported(ctx, bookID, kind, f.Path, library.BookFileFormat(f.Path), f.Size, 1)
+		c.books.AddEvent(ctx, bookID, "imported", "Found the "+kind+" edition during a library scan ("+library.BookFileFormat(f.Path)+")")
 		return
 	}
 	var total int64
@@ -608,6 +612,7 @@ func (c *Coordinator) recordEdition(ctx context.Context, bookID int64, kind stri
 	}
 	dir := filepath.Dir(files[0].Path)
 	_ = c.books.MarkImported(ctx, bookID, kind, dir, library.BookFileFormat(files[0].Path), total, len(files))
+	c.books.AddEvent(ctx, bookID, "imported", fmt.Sprintf("Found the %s edition during a library scan (%s, %d files)", kind, library.BookFileFormat(files[0].Path), len(files)))
 }
 
 // BookImportCandidate is an on-disk book file that can be manually imported.
@@ -653,7 +658,11 @@ func (c *Coordinator) ManualImportBook(ctx context.Context, bookID int64, path s
 	if err != nil {
 		return err
 	}
-	return c.books.MarkImported(ctx, bookID, kind, bi.TargetPath, bi.Format, bi.SizeBytes, bi.FileCount)
+	if err := c.books.MarkImported(ctx, bookID, kind, bi.TargetPath, bi.Format, bi.SizeBytes, bi.FileCount); err != nil {
+		return err
+	}
+	c.books.AddEvent(ctx, bookID, "imported", "Imported the "+kind+" edition by hand ("+bi.Format+") from "+filepath.Base(path))
+	return nil
 }
 
 // DeleteBookEdition removes an edition's file(s) from disk and forgets the edition.
@@ -737,6 +746,9 @@ func (c *Coordinator) BookRename(ctx context.Context, bookID int64) (int, error)
 		}
 		_ = c.books.MarkImported(ctx, bookID, e.kind, target, e.f.Format, e.f.SizeBytes, 1)
 		moved++
+	}
+	if moved > 0 {
+		c.books.AddEvent(ctx, bookID, "renamed", fmt.Sprintf("Renamed %d file%s to the canonical scheme", moved, plural(moved)))
 	}
 	return moved, nil
 }
@@ -942,6 +954,7 @@ func (c *Coordinator) MergeAudiobook(ctx context.Context, bookID int64) error {
 		size = fi.Size()
 	}
 	c.log.Info("book: merged audiobook", "title", b.Title, "out", out)
+	c.books.AddEvent(ctx, b.ID, "merged", fmt.Sprintf("Merged %d chapter files into a single m4b", len(paths)))
 	c.bus.Publish("book.imported", map[string]any{"title": b.Title, "id": b.ID, "edition": "audiobook"})
 	return c.books.MarkImported(ctx, bookID, books.KindAudiobook, out, "M4B", size, 1)
 }
@@ -1124,6 +1137,7 @@ func (c *Coordinator) detectStalledBook(ctx context.Context, g grab, queue []dow
 		return
 	}
 	c.log.Info("automation: book download stalled, failing over", "book", g.MovieID, "release", g.Title)
+	c.books.AddEvent(ctx, g.MovieID, "failed", fmt.Sprintf("Stalled after %d min — blocklisted and re-searching: %s", g.StallMinutes, g.Title))
 	c.addBlockBook(ctx, g.MovieID, g.Title, g.Indexer, fmt.Sprintf("stalled after %d min", g.StallMinutes))
 	if found {
 		_ = c.downloads.Remove(ctx, item.Hash, true)
@@ -1203,4 +1217,18 @@ func releasesForBook(releases []indexer.Release, b books.Book) []indexer.Release
 		}
 	}
 	return out
+}
+
+// bookImportDetail renders the history line for an imported edition: what landed, in what
+// format, and which release it came from.
+func bookImportDetail(kind, format string, files int, release string) string {
+	d := fmt.Sprintf("Imported the %s edition (%s", kind, format)
+	if files > 1 {
+		d += fmt.Sprintf(", %d files", files)
+	}
+	d += ")"
+	if release != "" {
+		d += " from " + release
+	}
+	return d
 }
