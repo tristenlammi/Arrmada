@@ -6,6 +6,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -44,10 +45,10 @@ type Config struct {
 	// LibraryDir is the root of the organized media library (imports land here) and the
 	// default scan root for every module.
 	LibraryDir string
-	// Per-library scan roots. Each defaults to LibraryDir when its env var is unset, so a
-	// single shared library still works. Set them to point Movies / TV / Books at separate
-	// folders. EbooksDir and AudiobooksDir may be the same path (both books under one folder)
-	// or different (ebooks and audiobooks kept apart).
+	// Per-library roots. Each defaults to its own subfolder of LibraryDir (movies, tvshows,
+	// ebooks, audiobooks, music) so the types don't share one directory. Point them anywhere
+	// with the matching env var, or in Settings → Library. EbooksDir and AudiobooksDir may be
+	// the same path (both books under one folder) or different.
 	MoviesDir     string
 	TVDir         string
 	EbooksDir     string
@@ -110,12 +111,18 @@ func Load() (Config, error) {
 		GeoIPDB:               env("ARRMADA_GEOIP_DB", ""),
 	}
 
-	// Per-library scan roots default to the shared library dir when not set individually.
-	c.MoviesDir = env("ARRMADA_MOVIES_DIR", c.LibraryDir)
-	c.TVDir = env("ARRMADA_TV_DIR", c.LibraryDir)
-	c.EbooksDir = env("ARRMADA_EBOOKS_DIR", c.LibraryDir)
-	c.AudiobooksDir = env("ARRMADA_AUDIOBOOKS_DIR", c.LibraryDir)
-	c.MusicDir = env("ARRMADA_MUSIC_DIR", c.LibraryDir)
+	// Per-library roots default to their own subfolder of the shared library dir.
+	//
+	// They used to default to the library root ITSELF, which meant every unset type shared
+	// one folder: movies, TV, books and music all writing into the same directory, and each
+	// module's scan walking the others' files. A conventional per-type subfolder is what
+	// people set these to by hand anyway, so it's the better default — and each is still
+	// overridable by env var or in Settings → Library.
+	c.MoviesDir = env("ARRMADA_MOVIES_DIR", filepath.Join(c.LibraryDir, "movies"))
+	c.TVDir = env("ARRMADA_TV_DIR", filepath.Join(c.LibraryDir, "tvshows"))
+	c.EbooksDir = env("ARRMADA_EBOOKS_DIR", filepath.Join(c.LibraryDir, "ebooks"))
+	c.AudiobooksDir = env("ARRMADA_AUDIOBOOKS_DIR", filepath.Join(c.LibraryDir, "audiobooks"))
+	c.MusicDir = env("ARRMADA_MUSIC_DIR", filepath.Join(c.LibraryDir, "music"))
 
 	port, err := strconv.Atoi(env("ARRMADA_PORT", "7878"))
 	if err != nil {
