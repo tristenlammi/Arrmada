@@ -327,6 +327,7 @@ type Importer struct {
 	tvRoot        string
 	ebookRoot     string
 	musicRoot     string
+	musicRootFn   func() string
 	audiobookRoot string
 	bookRoots     []string // ebook + audiobook scan roots (falls back to root)
 	recycleDir    string   // when set, a replaced library file is recycled instead of overwritten
@@ -368,8 +369,19 @@ func (im *Importer) tvDir() string {
 // SetMusicRoot points album imports at the music library folder.
 func (im *Importer) SetMusicRoot(root string) { im.musicRoot = root }
 
+// SetMusicRootFunc resolves the music root on every use instead of baking it in at startup,
+// so a folder picked in Settings takes effect for IMPORTS as well as scans. Without it the
+// scan would look in the folder the user chose while imports still wrote to the env default
+// — two different places, which is worse than either alone.
+func (im *Importer) SetMusicRootFunc(fn func() string) { im.musicRootFn = fn }
+
 // MusicDir is where album folders are written.
 func (im *Importer) MusicDir() string {
+	if im.musicRootFn != nil {
+		if v := strings.TrimSpace(im.musicRootFn()); v != "" {
+			return v
+		}
+	}
 	if im.musicRoot != "" {
 		return im.musicRoot
 	}

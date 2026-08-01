@@ -56,6 +56,7 @@ services:
       ARRMADA_TV_DIR: "${ARRMADA_TV_DIR:-}"
       ARRMADA_EBOOKS_DIR: "${ARRMADA_EBOOKS_DIR:-}"
       ARRMADA_AUDIOBOOKS_DIR: "${ARRMADA_AUDIOBOOKS_DIR:-}"
+      ARRMADA_MUSIC_DIR: "${ARRMADA_MUSIC_DIR:-}"
       # Movie/TV metadata. Get a free v3 API key from https://www.themoviedb.org/settings/api
       ARRMADA_TMDB_API_KEY: "${ARRMADA_TMDB_API_KEY:-}"
       ARRMADA_OMDB_API_KEY: "${ARRMADA_OMDB_API_KEY:-}"

@@ -10,6 +10,7 @@ const ROWS: { key: PathKey; label: string; hint: string; scan?: () => Promise<un
   { key: "tv", label: "TV Shows", hint: "folder of show subfolders", scan: () => api.scanSeries() },
   { key: "ebooks", label: "Ebooks", hint: "folder of book subfolders", scan: () => api.scanBooks() },
   { key: "audiobooks", label: "Audiobooks", hint: "may share the ebooks folder", scan: () => api.scanBooks() },
+  { key: "music", label: "Music", hint: "folder of artist subfolders", scan: () => api.scanMusic() },
   { key: "downloads", label: "Downloads", hint: "where the download client saves completed files" },
 ];
 

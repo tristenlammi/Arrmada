@@ -15,6 +15,7 @@ const (
 	keyLibTV         = "lib_tv_dir"
 	keyLibEbooks     = "lib_ebooks_dir"
 	keyLibAudiobooks = "lib_audiobooks_dir"
+	keyLibMusic      = "lib_music_dir"
 	keyLibDownloads  = "lib_downloads_dir"
 )
 
@@ -31,6 +32,9 @@ func (a *api) libEbooks(r *http.Request) string {
 func (a *api) libAudiobooks(r *http.Request) string {
 	return a.deps.Settings.Get(r.Context(), keyLibAudiobooks, a.deps.Config.AudiobooksDir)
 }
+func (a *api) libMusic(r *http.Request) string {
+	return a.deps.Settings.Get(r.Context(), keyLibMusic, a.deps.Config.MusicDir)
+}
 func (a *api) libDownloads(r *http.Request) string {
 	return a.deps.Settings.Get(r.Context(), keyLibDownloads, a.deps.Config.DownloadsDir)
 }
@@ -42,6 +46,7 @@ func (a *api) handleGetLibraryPaths(w http.ResponseWriter, r *http.Request) {
 		"tv":         a.libTV(r),
 		"ebooks":     a.libEbooks(r),
 		"audiobooks": a.libAudiobooks(r),
+		"music":      a.libMusic(r),
 		"downloads":  a.libDownloads(r),
 	})
 }
@@ -53,6 +58,7 @@ func (a *api) handleSetLibraryPaths(w http.ResponseWriter, r *http.Request) {
 		TV         *string `json:"tv"`
 		Ebooks     *string `json:"ebooks"`
 		Audiobooks *string `json:"audiobooks"`
+		Music      *string `json:"music"`
 		Downloads  *string `json:"downloads"`
 	}
 	if !a.decodeJSON(w, r, &req) {
@@ -70,7 +76,8 @@ func (a *api) handleSetLibraryPaths(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 	if !set(keyLibMovies, req.Movies) || !set(keyLibTV, req.TV) || !set(keyLibEbooks, req.Ebooks) ||
-		!set(keyLibAudiobooks, req.Audiobooks) || !set(keyLibDownloads, req.Downloads) {
+		!set(keyLibAudiobooks, req.Audiobooks) || !set(keyLibMusic, req.Music) ||
+		!set(keyLibDownloads, req.Downloads) {
 		return
 	}
 	a.handleGetLibraryPaths(w, r)

@@ -275,7 +275,7 @@ export interface UserNotification { id: number; title: string; body: string; med
 
 export interface CalendarItem { date: string; type: "episode" | "movie"; title: string; subtitle: string; poster_url?: string; ref_id: number; has_file: boolean; monitored: boolean }
 
-export interface LibraryPaths { movies: string; tv: string; ebooks: string; audiobooks: string; downloads: string }
+export interface LibraryPaths { movies: string; tv: string; ebooks: string; audiobooks: string; music: string; downloads: string }
 export interface BrowseResult { path: string; parent: string; dirs: { name: string; path: string }[] }
 
 export interface HealthWarning {

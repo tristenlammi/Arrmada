@@ -274,7 +274,11 @@ func main() {
 	// Wire the series module into the coordinator: TV downloads land in a separate
 	// category and are hardlinked file-by-file (a season pack yields many episodes).
 	bookImporter := library.NewImporter(cfg.LibraryDir, log)
-	bookImporter.SetMusicRoot(cfg.MusicDir)
+	// Resolve the music root from settings on every use, so the folder picked in
+	// Settings → Library applies to imports and not just scans.
+	bookImporter.SetMusicRootFunc(func() string {
+		return settingsSvc.Get(context.Background(), "lib_music_dir", cfg.MusicDir)
+	})
 	bookImporter.SetBookRoots(cfg.EbooksDir, cfg.AudiobooksDir)                       // scan ebooks + audiobooks (may be one folder)
 	bookImporter.SetRoots(cfg.MoviesDir, cfg.TVDir, cfg.EbooksDir, cfg.AudiobooksDir) // this importer places TV episodes + book editions
 	bookImporter.SetRecycleDir(recycleDir)                                            // replaced files go to the bin here too
