@@ -41,6 +41,10 @@ export function Music() {
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [multiSelect, setMultiSelect] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [profiles, setProfiles] = useState<{ key: string; name: string }[]>([]);
 
   const flash = (m: string) => {
     setToast(m);
@@ -56,7 +60,41 @@ export function Music() {
       });
   useEffect(() => {
     load();
+    api.qualityProfiles("music")
+      .then((r) => setProfiles(r.profiles.map((p) => ({ key: p.key, name: p.name }))))
+      .catch(() => {});
   }, []);
+
+  const toggleSelect = (id: number) =>
+    setSelected((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  const clearSelect = () => setSelected(new Set());
+  const exitSelect = () => {
+    setMultiSelect(false);
+    clearSelect();
+  };
+
+  // Partial failures are reported rather than swallowed. Promise.all rejects on the first
+  // error, which skips the refresh and leaves the UI showing stale state for the ones that
+  // DID change — allSettled lets us apply what worked and say what didn't.
+  const runBulk = async (label: string, fn: (id: number) => Promise<unknown>) => {
+    const ids = [...selected];
+    setBulkBusy(true);
+    try {
+      const results = await Promise.allSettled(ids.map(fn));
+      const failed = results.filter((r) => r.status === "rejected").length;
+      if (failed === 0) flash(`${label} ${ids.length} artist${ids.length === 1 ? "" : "s"}.`);
+      else flash(`${label} ${ids.length - failed} of ${ids.length}; ${failed} failed.`);
+      clearSelect();
+      load();
+    } finally {
+      setBulkBusy(false);
+    }
+  };
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -112,6 +150,16 @@ export function Music() {
               Scan library
             </button>
             <button
+              onClick={() => (multiSelect ? exitSelect() : setMultiSelect(true))}
+              className="rounded-lg px-3 py-2 text-[12.5px] font-semibold"
+              style={{
+                border: `1px solid ${multiSelect ? "var(--accent)" : "var(--line)"}`,
+                color: multiSelect ? "var(--accent)" : "var(--ink-dim)",
+              }}
+            >
+              {multiSelect ? "Done" : "Select"}
+            </button>
+            <button
               onClick={() => setAdding(true)}
               className="rounded-lg px-4 py-2 text-[12.5px] font-semibold"
               style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}
@@ -127,6 +175,79 @@ export function Music() {
           </div>
         )}
 
+        {multiSelect && (
+          <div
+            className="mb-3 flex flex-wrap items-center gap-2 rounded-xl px-3.5 py-2.5"
+            style={{ background: "var(--panel)", border: "1px solid var(--accent-line, var(--line))" }}
+          >
+            <span className="text-[12.5px] font-semibold">
+              {selected.size} selected
+            </span>
+            <button
+              onClick={() => setSelected(new Set(shown.map((a) => a.id)))}
+              className="rounded-lg px-2.5 py-1 text-[11.5px] font-semibold"
+              style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}
+            >
+              Select all ({shown.length})
+            </button>
+            <button
+              onClick={clearSelect}
+              disabled={selected.size === 0}
+              className="rounded-lg px-2.5 py-1 text-[11.5px] font-semibold disabled:opacity-40"
+              style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}
+            >
+              Clear
+            </button>
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              <button
+                disabled={selected.size === 0 || bulkBusy}
+                onClick={() => runBulk("Monitored", (id) => api.setArtistMonitored(id, true))}
+                className="rounded-lg px-2.5 py-1 text-[11.5px] font-semibold disabled:opacity-40"
+                style={{ border: "1px solid var(--accent)", color: "var(--accent)" }}
+              >
+                Monitor
+              </button>
+              <button
+                disabled={selected.size === 0 || bulkBusy}
+                onClick={() => runBulk("Unmonitored", (id) => api.setArtistMonitored(id, false))}
+                className="rounded-lg px-2.5 py-1 text-[11.5px] font-semibold disabled:opacity-40"
+                style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}
+              >
+                Unmonitor
+              </button>
+              <select
+                disabled={selected.size === 0 || bulkBusy || profiles.length === 0}
+                value=""
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v) void runBulk("Set the profile on", (id) => api.setArtistProfile(id, v));
+                  e.target.value = "";
+                }}
+                className="rounded-lg px-2 py-1 text-[11.5px] disabled:opacity-40"
+                style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+              >
+                <option value="">Quality profile…</option>
+                {profiles.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                disabled={selected.size === 0 || bulkBusy}
+                onClick={() => {
+                  if (!window.confirm(`Remove ${selected.size} artist${selected.size === 1 ? "" : "s"} from Arrmada? Files on disk are kept.`)) return;
+                  void runBulk("Removed", (id) => api.deleteArtist(id));
+                }}
+                className="rounded-lg px-2.5 py-1 text-[11.5px] font-semibold disabled:opacity-40"
+                style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}
+              >
+                Remove
+              </button>
+            </div>
+          </div>
+        )}
+
         {artists === null ? (
           <p className="text-[12.5px] text-ink-dim">Loading…</p>
         ) : shown.length === 0 ? (
@@ -136,7 +257,13 @@ export function Music() {
         ) : (
           <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))" }}>
             {shown.map((a) => (
-              <ArtistCard key={a.id} a={a} />
+              <ArtistCard
+                key={a.id}
+                a={a}
+                selectable={multiSelect}
+                selected={selected.has(a.id)}
+                onToggleSelect={() => toggleSelect(a.id)}
+              />
             ))}
           </div>
         )}
@@ -163,23 +290,44 @@ export function Music() {
   );
 }
 
-function ArtistCard({ a }: { a: Artist }) {
+function ArtistCard({
+  a,
+  selectable,
+  selected,
+  onToggleSelect,
+}: {
+  a: Artist;
+  selectable: boolean;
+  selected: boolean;
+  onToggleSelect: () => void;
+}) {
   const done = have(a);
   const all = total(a);
   const pct = all > 0 ? Math.round((done / all) * 100) : 0;
   const tone = all === 0 ? "var(--ink-faint)" : done >= all ? "var(--good)" : a.monitored ? "var(--avoid)" : "var(--ink-faint)";
-  return (
-    <Link
-      to={`/music/${a.id}`}
-      className="flex flex-col gap-2 rounded-xl p-3.5 transition-colors hover:bg-[var(--panel-2)]"
-      style={{ background: "var(--panel)", border: "1px solid var(--line)" }}
-    >
+
+  const body = (
+    <>
       <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="truncate text-[13.5px] font-semibold">{a.name}</div>
-          <div className="mt-0.5 truncate text-[11px] text-ink-faint">
-            {a.stats?.albums ?? 0} album{(a.stats?.albums ?? 0) === 1 ? "" : "s"}
-            {a.genres && a.genres.length > 0 && <> · {a.genres[0]}</>}
+        <div className="flex min-w-0 items-start gap-2">
+          {selectable && (
+            <span
+              className="mt-0.5 grid h-4 w-4 flex-none place-items-center rounded text-[10px] font-bold"
+              style={{
+                border: `1px solid ${selected ? "var(--accent)" : "var(--line)"}`,
+                background: selected ? "var(--accent)" : "transparent",
+                color: "var(--accent-ink)",
+              }}
+            >
+              {selected ? "✓" : ""}
+            </span>
+          )}
+          <div className="min-w-0">
+            <div className="truncate text-[13.5px] font-semibold">{a.name}</div>
+            <div className="mt-0.5 truncate text-[11px] text-ink-faint">
+              {a.stats?.albums ?? 0} album{(a.stats?.albums ?? 0) === 1 ? "" : "s"}
+              {a.genres && a.genres.length > 0 && <> · {a.genres[0]}</>}
+            </div>
           </div>
         </div>
         <span className="flex-none rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold uppercase" style={{ background: "var(--panel-2)", color: tone }}>
@@ -194,6 +342,27 @@ function ArtistCard({ a }: { a: Artist }) {
           {all > 0 ? `${done}/${all}` : "—"}
         </span>
       </div>
+    </>
+  );
+
+  const cls = "flex flex-col gap-2 rounded-xl p-3.5 text-left transition-colors hover:bg-[var(--panel-2)]";
+  const style = {
+    background: selected ? "var(--accent-soft)" : "var(--panel)",
+    border: `1px solid ${selected ? "var(--accent)" : "var(--line)"}`,
+  };
+
+  // In select mode the card stops being a link entirely — a card that both navigates and
+  // selects depending on where you click is how you lose a selection by mis-clicking.
+  if (selectable) {
+    return (
+      <button type="button" onClick={onToggleSelect} className={cls} style={style}>
+        {body}
+      </button>
+    );
+  }
+  return (
+    <Link to={`/music/${a.id}`} className={cls} style={style}>
+      {body}
     </Link>
   );
 }
