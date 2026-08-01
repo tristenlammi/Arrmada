@@ -274,6 +274,7 @@ func main() {
 	// Wire the series module into the coordinator: TV downloads land in a separate
 	// category and are hardlinked file-by-file (a season pack yields many episodes).
 	bookImporter := library.NewImporter(cfg.LibraryDir, log)
+	bookImporter.SetMusicRoot(cfg.MusicDir)
 	bookImporter.SetBookRoots(cfg.EbooksDir, cfg.AudiobooksDir)                       // scan ebooks + audiobooks (may be one folder)
 	bookImporter.SetRoots(cfg.MoviesDir, cfg.TVDir, cfg.EbooksDir, cfg.AudiobooksDir) // this importer places TV episodes + book editions
 	bookImporter.SetRecycleDir(recycleDir)                                            // replaced files go to the bin here too
@@ -285,6 +286,8 @@ func main() {
 	coordinator.SetSeries(seriesSvc, bookImporter)
 	// Books share the importer set above; ebooks land in their own category.
 	coordinator.SetBooks(booksSvc)
+	// Music shares the same importer; albums land in their own category.
+	coordinator.SetMusic(musicSvc)
 	// Book file deletion honors the same recycle bin as movies.
 	coordinator.SetRecycleDir(recycleDir)
 	sched.Register("import-completed", 30*time.Second, false, func(ctx context.Context) error {
@@ -335,6 +338,16 @@ func main() {
 	// Sweep monitored, file-less books and grab the best-format release.
 	sched.Register("search-missing-books", 30*time.Minute, false, func(ctx context.Context) error {
 		coordinator.SearchBooksMissing(ctx)
+		return nil
+	})
+	// Sweep monitored albums missing tracks and grab the best release for each.
+	sched.Register("search-missing-music", 30*time.Minute, false, func(ctx context.Context) error {
+		coordinator.SearchMusicMissing(ctx)
+		return nil
+	})
+	// Import finished album downloads (arrmada-music category).
+	sched.Register("import-music", 30*time.Second, false, func(ctx context.Context) error {
+		coordinator.ImportMusicDownloads(ctx)
 		return nil
 	})
 	// Import finished ebook downloads (arrmada-books category).

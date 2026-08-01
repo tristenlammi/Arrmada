@@ -28,7 +28,7 @@ type Review struct {
 	Hash          string `json:"hash"`
 	Name          string `json:"name"`
 	ContentPath   string `json:"content_path"`
-	MediaType     string `json:"media_type"` // series | movie
+	MediaType     string `json:"media_type"` // series | movie | book | music
 	ExpectedID    int64  `json:"expected_id"`
 	ExpectedTitle string `json:"expected_title"`
 	ParsedTitle   string `json:"parsed_title"`
@@ -242,6 +242,8 @@ func (c *Coordinator) RejectReview(ctx context.Context, id int64) error {
 		c.addBlockSeries(ctx, r.ExpectedID, r.Name, r.Indexer, "rejected in review")
 	case r.MediaType == "movie":
 		_ = c.addBlock(ctx, r.ExpectedID, r.Name, r.Indexer, "", "rejected in review")
+	case r.MediaType == "music":
+		c.addBlockMusic(ctx, r.ExpectedID, r.Name, r.Indexer, "rejected in review")
 	case r.MediaType == "book":
 		// Book reviews now carry the book they were grabbed for, so they reach this switch
 		// with a real ExpectedID. Without a case of their own they would match nothing and
@@ -308,6 +310,27 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 		}
 		if err := c.movies.ManualImport(ctx, dest, r.ContentPath); err != nil {
 			return err
+		}
+	case "music":
+		// Books shipped with reviews their own ImportReview couldn't handle, so every
+		// "Import anyway" failed with "unknown media type". Music gets its case up front.
+		if c.music == nil {
+			return fmt.Errorf("music module unavailable")
+		}
+		al, err := c.music.GetAlbum(ctx, dest)
+		if err != nil {
+			return err
+		}
+		art, err := c.music.GetArtist(ctx, al.ArtistID)
+		if err != nil {
+			return err
+		}
+		placed, found := c.importAlbumContent(ctx, art, al, r.ContentPath, r.Name)
+		if placed == 0 {
+			if !found {
+				return fmt.Errorf("no audio files found in the download for %q", al.Title)
+			}
+			return fmt.Errorf("no track could be placed into %q", al.Title)
 		}
 	case "book":
 		// The books sweep creates reviews with MediaType "book", but this switch only knew

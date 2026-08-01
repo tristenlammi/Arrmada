@@ -455,3 +455,19 @@ func normTitle(s string) string {
 }
 
 var _ = sql.ErrNoRows
+
+// addBlockMusic blocklists a release for one album.
+func (c *Coordinator) addBlockMusic(ctx context.Context, albumID int64, title, indexer, reason string) {
+	_, err := c.db.ExecContext(ctx,
+		`INSERT INTO blocklist (movie_id, norm_title, title, indexer, download_url, reason, media_type)
+		 VALUES (?, ?, ?, ?, '', ?, 'music')`,
+		albumID, normTitle(title), title, indexer, reason)
+	if err != nil {
+		c.log.Warn("music: blocklist failed", "err", err)
+	}
+}
+
+// blockedSetMusic returns the normalized titles blocklisted for an album.
+func (c *Coordinator) blockedSetMusic(ctx context.Context, albumID int64) map[string]bool {
+	return c.blockedSetOf(ctx, albumID, "music")
+}

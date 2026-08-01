@@ -52,6 +52,7 @@ type Config struct {
 	TVDir         string
 	EbooksDir     string
 	AudiobooksDir string
+	MusicDir      string
 	// DownloadCategory is the download-client category Arrmada imports from.
 	DownloadCategory string
 	// DownloadsDir is where the download client writes files (shared volume);
@@ -114,6 +115,7 @@ func Load() (Config, error) {
 	c.TVDir = env("ARRMADA_TV_DIR", c.LibraryDir)
 	c.EbooksDir = env("ARRMADA_EBOOKS_DIR", c.LibraryDir)
 	c.AudiobooksDir = env("ARRMADA_AUDIOBOOKS_DIR", c.LibraryDir)
+	c.MusicDir = env("ARRMADA_MUSIC_DIR", c.LibraryDir)
 
 	port, err := strconv.Atoi(env("ARRMADA_PORT", "7878"))
 	if err != nil {

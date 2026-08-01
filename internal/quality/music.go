@@ -82,10 +82,10 @@ func MusicPresets() []MusicPreset {
 	}
 }
 
-// fallbackMusicProfile scores the full ladder in rank order. Used when an artist references
+// FallbackMusicProfile scores the full ladder in rank order. Used when an artist references
 // a profile that no longer exists, so acquisition degrades to "best available" instead of
 // stalling — the same role fallbackProfile plays for video.
-func fallbackMusicProfile() StoredProfile {
+func FallbackMusicProfile() StoredProfile {
 	for _, p := range MusicPresets() {
 		if p.Name == "Any quality" {
 			return StoredProfile{

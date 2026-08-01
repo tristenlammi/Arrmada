@@ -24,6 +24,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/movies"
+	"github.com/tristenlammi/arrmada/internal/music"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
@@ -45,6 +46,7 @@ type Coordinator struct {
 	downloadsDir string          // filesystem checked for free space before auto-grabs
 	series       *series.Service // set post-construction via SetSeries
 	books        *books.Service  // set post-construction via SetBooks
+	music        *music.Service  // set post-construction via SetMusic
 	imp          *library.Importer
 	recycle      string // recycle-bin dir for book deletes ("" = hard delete); set via SetRecycleDir
 
@@ -95,6 +97,9 @@ func (c *Coordinator) SetSeries(s *series.Service, imp *library.Importer) {
 
 // SetBooks wires the books module (shares the importer set by SetSeries).
 func (c *Coordinator) SetBooks(b *books.Service) { c.books = b }
+
+// SetMusic wires the music module (shares the importer set by SetSeries).
+func (c *Coordinator) SetMusic(m *music.Service) { c.music = m }
 
 // New wires the coordinator.
 func New(m *movies.Service, ix *indexer.Service, dl *download.Service, q *quality.Service, db *sql.DB, bus *eventbus.Bus, log *slog.Logger, downloadsDir string) *Coordinator {
@@ -1084,6 +1089,10 @@ func (c *Coordinator) DetectStalled(ctx context.Context) {
 	for _, g := range pending {
 		if g.MediaType == "series" {
 			c.detectStalledSeries(ctx, g, queue)
+			continue
+		}
+		if g.MediaType == "music" {
+			c.detectStalledMusic(ctx, g, queue)
 			continue
 		}
 		if g.MediaType == "book" {

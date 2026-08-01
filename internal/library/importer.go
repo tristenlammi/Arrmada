@@ -326,6 +326,7 @@ type Importer struct {
 	movieRoot     string
 	tvRoot        string
 	ebookRoot     string
+	musicRoot     string
 	audiobookRoot string
 	bookRoots     []string // ebook + audiobook scan roots (falls back to root)
 	recycleDir    string   // when set, a replaced library file is recycled instead of overwritten
@@ -360,6 +361,17 @@ func (im *Importer) movieDir() string {
 func (im *Importer) tvDir() string {
 	if im.tvRoot != "" {
 		return im.tvRoot
+	}
+	return im.root
+}
+
+// SetMusicRoot points album imports at the music library folder.
+func (im *Importer) SetMusicRoot(root string) { im.musicRoot = root }
+
+// MusicDir is where album folders are written.
+func (im *Importer) MusicDir() string {
+	if im.musicRoot != "" {
+		return im.musicRoot
 	}
 	return im.root
 }
@@ -1491,4 +1503,46 @@ func cleanStaleTemps(dir string) {
 			_ = os.Remove(filepath.Join(dir, e.Name()))
 		}
 	}
+}
+
+// AlbumTrackTarget builds the library path for one track:
+//
+//	<MusicDir>/<Artist>/<Album> (Year)/<NN> - <Title>.<ext>
+//
+// Multi-disc albums get the disc into the filename ("1-04") rather than a subfolder, so a
+// player that ignores folders still orders the album correctly.
+func (im *Importer) AlbumTrackTarget(artist, album string, year, disc, track int, title, ext string) string {
+	folder := clean(album)
+	if folder == "" {
+		folder = "Unknown Album"
+	}
+	if year > 0 {
+		folder = fmt.Sprintf("%s (%d)", folder, year)
+	}
+	num := fmt.Sprintf("%02d", track)
+	if disc > 1 {
+		num = fmt.Sprintf("%d-%02d", disc, track)
+	}
+	name := num
+	if t := clean(title); t != "" {
+		name = num + " - " + t
+	}
+	artistDir := clean(artist)
+	if artistDir == "" {
+		artistDir = "Unknown Artist"
+	}
+	return filepath.Join(im.MusicDir(), artistDir, folder, name+ext)
+}
+
+// PlaceFile hardlinks src to dst (copying when a link isn't possible), creating parents.
+// Used by the album importer, where each track is placed individually.
+func (im *Importer) PlaceFile(src, dst string) error {
+	if err := im.checkRoot(im.MusicDir()); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("create album dir: %w", err)
+	}
+	_, err := im.linkOrCopy(src, dst)
+	return err
 }
