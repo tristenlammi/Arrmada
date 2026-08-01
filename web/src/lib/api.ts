@@ -1102,6 +1102,25 @@ export const api = {
   rematchBook: (id: number, body: { ol_key: string; title: string; author: string; year: number; cover_url: string }) =>
     req<Book>(`/api/v1/books/${id}/rematch`, { method: "POST", body: JSON.stringify(body) }),
 
+  // ---- Music ----
+  artists: () => req<{ artists: Artist[] }>("/api/v1/music/artists").then((r) => r.artists ?? []),
+  lookupArtists: (q: string) =>
+    req<{ results: ArtistLookup[] }>(`/api/v1/music/lookup?q=${encodeURIComponent(q)}`).then((r) => r.results ?? []),
+  addArtist: (body: { mbid: string; quality_profile?: string; monitored?: boolean }) =>
+    req<Artist>("/api/v1/music/artists", { method: "POST", body: JSON.stringify(body) }),
+  artistDetail: (id: number) => req<Artist>(`/api/v1/music/artists/${id}`),
+  refreshArtist: (id: number) => req<Artist>(`/api/v1/music/artists/${id}/refresh`, { method: "POST" }),
+  setArtistMonitored: (id: number, monitored: boolean) =>
+    req<{ monitored: boolean }>(`/api/v1/music/artists/${id}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
+  setArtistProfile: (id: number, quality_profile: string) =>
+    req<{ quality_profile: string }>(`/api/v1/music/artists/${id}/profile`, { method: "PUT", body: JSON.stringify({ quality_profile }) }),
+  deleteArtist: (id: number) => req<void>(`/api/v1/music/artists/${id}`, { method: "DELETE" }),
+  artistHistory: (id: number) =>
+    req<{ events: MovieEvent[] }>(`/api/v1/music/artists/${id}/history`).then((r) => r.events ?? []),
+  albumDetail: (id: number) => req<MusicAlbum>(`/api/v1/music/albums/${id}`),
+  setAlbumMonitored: (id: number, monitored: boolean) =>
+    req<{ monitored: boolean }>(`/api/v1/music/albums/${id}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
+
   // Subtitles
   subtitleSettings: () => req<SubtitleSettings>("/api/v1/subtitles/settings"),
   updateSubtitleSettings: (body: { movies_auto?: boolean; series_auto?: boolean; languages?: string[] }) =>
@@ -1284,6 +1303,65 @@ export interface DuplicateEpisodeFile {
   keeping: DuplicateCopy;
   extras: DuplicateCopy[];
 }
+
+// ---- Music ----
+export interface ArtistLookup {
+  mbid: string;
+  name: string;
+  sort_name?: string;
+  disambiguation?: string;
+  country?: string;
+  type?: string;
+}
+export interface ArtistStats {
+  albums: number;
+  tracks: number;
+  have_tracks: number;
+  size_bytes: number;
+}
+export interface MusicTrack {
+  id: number;
+  album_id: number;
+  disc_number: number;
+  track_number: number;
+  title: string;
+  duration_sec?: number;
+  monitored: boolean;
+  has_file: boolean;
+  file_path?: string;
+  format?: string;
+  size_bytes?: number;
+}
+export interface MusicAlbum {
+  id: number;
+  artist_id: number;
+  mbid: string;
+  title: string;
+  year?: number;
+  album_type?: string;
+  cover_url?: string;
+  release_date?: string;
+  monitored: boolean;
+  tracks?: MusicTrack[];
+  track_count: number;
+  have_tracks: number;
+  size_bytes: number;
+}
+export interface Artist {
+  id: number;
+  mbid: string;
+  name: string;
+  sort_name?: string;
+  overview?: string;
+  image_url?: string;
+  genres?: string[];
+  monitored: boolean;
+  quality_profile: string;
+  added_at?: string;
+  albums?: MusicAlbum[];
+  stats?: ArtistStats;
+}
+
 export interface MovieEvent {
   event: string;
   detail?: string;

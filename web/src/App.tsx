@@ -16,6 +16,9 @@ import { Series } from "./pages/Series";
 import { SeriesDetail } from "./pages/SeriesDetail";
 import { Discover } from "./pages/Discover";
 import { Books } from "./pages/Books";
+import { Music } from "./pages/Music";
+import { ArtistDetail } from "./pages/ArtistDetail";
+import { AlbumDetail } from "./pages/AlbumDetail";
 import { BookDetail } from "./pages/BookDetail";
 import { AuthorDetail } from "./pages/AuthorDetail";
 import { Subtitles } from "./pages/Subtitles";
@@ -27,15 +30,6 @@ import { Login } from "./pages/Login";
 import { Placeholder } from "./pages/Placeholder";
 
 // Module routes still awaiting their build → placeholders.
-const MODULE_ROUTES: {
-  path: string;
-  title: string;
-  crumb: string;
-  milestone: string;
-}[] = [
-  { path: "/music", title: "Music", crumb: "Library / Music", milestone: "M8" },
-];
-
 export default function App() {
   const { user, loading, external } = useMe();
 
@@ -88,6 +82,9 @@ export default function App() {
         <Route path="/series/:id" element={<SeriesDetail />} />
         <Route path="/discover" element={<Discover />} />
         <Route path="/calendar" element={<Calendar />} />
+        <Route path="/music" element={<Music />} />
+        <Route path="/music/album/:id" element={<AlbumDetail />} />
+        <Route path="/music/:id" element={<ArtistDetail />} />
         <Route path="/books" element={<Books />} />
         <Route path="/books/author/:name" element={<AuthorDetail />} />
         <Route path="/books/:id" element={<BookDetail />} />
@@ -101,15 +98,6 @@ export default function App() {
         <Route path="/quality" element={<Quality />} />
         <Route path="/logs" element={<Logs />} />
         <Route path="/library" element={<Navigate to="/settings" replace />} />
-        {MODULE_ROUTES.map((m) => (
-          <Route
-            key={m.path}
-            path={m.path}
-            element={
-              <Placeholder title={m.title} crumb={m.crumb} milestone={m.milestone} />
-            }
-          />
-        ))}
         <Route
           path="*"
           element={<Placeholder title="Not found" note="No such page." />}
