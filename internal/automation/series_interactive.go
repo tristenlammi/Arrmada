@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -545,4 +546,108 @@ func bestLibraryVideo(files []library.FoundVideo) library.FoundVideo {
 		}
 	}
 	return best
+}
+
+// DuplicateEpisodeFile is one episode that has more than one file on disk: the copy the
+// library tracks, and the extra copies that are just taking up space.
+type DuplicateEpisodeFile struct {
+	Season  int             `json:"season"`
+	Episode int             `json:"episode"`
+	Keeping DuplicateCopy   `json:"keeping"`
+	Extras  []DuplicateCopy `json:"extras"`
+}
+
+// DuplicateCopy is one file on disk claiming an episode.
+type DuplicateCopy struct {
+	Path      string `json:"path"`
+	Filename  string `json:"filename"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+// SeriesDuplicates reports episodes with more than one file on disk.
+//
+// These accumulate because the library filename embeds derived metadata — the quality tag,
+// and for a while the episode title. When that derivation changes (a source re-classified
+// WEBRip vs WEB-DL, an episode title added or dropped) a re-import writes to a NEW path,
+// and SupersedeEpisodeFile only recycles the ONE file the database was tracking. Every
+// earlier copy is orphaned: invisible to Arrmada, still filling the disk, and showing up as
+// a duplicate episode in Plex.
+//
+// Read-only — it reports what it finds and never deletes anything on its own.
+func (c *Coordinator) SeriesDuplicates(ctx context.Context, seriesID int64) ([]DuplicateEpisodeFile, error) {
+	if c.series == nil || c.imp == nil {
+		return nil, nil
+	}
+	s, err := c.series.Get(ctx, seriesID)
+	if err != nil {
+		return nil, err
+	}
+	folder := c.series.ExistingFolderName(ctx, seriesID)
+
+	byEpisode := map[[2]int][]library.FoundVideo{}
+	for _, v := range c.imp.SeriesLibraryVideos(folder, s.Title, s.Year) {
+		for _, ref := range c.series.ResolveEpisodes(ctx, seriesID, parser.Parse(filepath.Base(v.Path))) {
+			key := [2]int{ref.Season, ref.Episode}
+			byEpisode[key] = append(byEpisode[key], v)
+		}
+	}
+
+	out := make([]DuplicateEpisodeFile, 0)
+	for key, files := range byEpisode {
+		if len(files) < 2 {
+			continue
+		}
+		best := bestLibraryVideo(files)
+		d := DuplicateEpisodeFile{Season: key[0], Episode: key[1], Keeping: copyOf(best)}
+		for _, f := range files {
+			if f.Path != best.Path {
+				d.Extras = append(d.Extras, copyOf(f))
+			}
+		}
+		out = append(out, d)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Season != out[j].Season {
+			return out[i].Season < out[j].Season
+		}
+		return out[i].Episode < out[j].Episode
+	})
+	return out, nil
+}
+
+func copyOf(v library.FoundVideo) DuplicateCopy {
+	return DuplicateCopy{Path: v.Path, Filename: filepath.Base(v.Path), SizeBytes: v.Size}
+}
+
+// DeleteSeriesDuplicate recycles one duplicate file. It refuses any path that isn't
+// currently reported as an EXTRA copy for this series, so an arbitrary path — or the file
+// the library actually tracks — can never be deleted through this route.
+func (c *Coordinator) DeleteSeriesDuplicate(ctx context.Context, seriesID int64, path string) error {
+	dupes, err := c.SeriesDuplicates(ctx, seriesID)
+	if err != nil {
+		return err
+	}
+	for _, d := range dupes {
+		for _, e := range d.Extras {
+			if e.Path != path {
+				continue
+			}
+			if c.recycle != "" {
+				if _, rerr := library.RecycleFile(c.recycle, path); rerr != nil {
+					c.log.Warn("series: recycling a duplicate failed, hard-deleting", "path", path, "err", rerr)
+					if derr := os.Remove(path); derr != nil {
+						return derr
+					}
+				}
+			} else if derr := os.Remove(path); derr != nil {
+				return derr
+			}
+			c.log.Info("series: deleted a duplicate episode file", "series", seriesID,
+				"episode", fmt.Sprintf("S%02dE%02d", d.Season, d.Episode), "path", path)
+			c.series.AddEvent(ctx, seriesID, "file.deleted",
+				fmt.Sprintf("Deleted duplicate file for S%02dE%02d: %s", d.Season, d.Episode, filepath.Base(path)))
+			return nil
+		}
+	}
+	return fmt.Errorf("that file isn't a duplicate of this series — refusing to delete it")
 }

@@ -1178,6 +1178,10 @@ export const api = {
   seriesUnmatched: () => req<{ unmatched: UnmatchedFolder[] }>("/api/v1/series/unmatched").then((r) => r.unmatched),
   importSeriesFolder: (folder: string, tmdb_id: number) =>
     req<{ status: string }>("/api/v1/series/import", { method: "POST", body: JSON.stringify({ folder, tmdb_id }) }),
+  seriesDuplicates: (id: number) =>
+    req<{ duplicates: DuplicateEpisodeFile[]; extra_files: number; reclaimable_bytes: number }>(`/api/v1/series/${id}/duplicates`),
+  deleteSeriesDuplicate: (id: number, path: string) =>
+    req<{ status: string }>(`/api/v1/series/${id}/duplicates`, { method: "DELETE", body: JSON.stringify({ path }) }),
   seriesHistory: (id: number) =>
     req<{ events: MovieEvent[] }>(`/api/v1/series/${id}/history`).then((r) => r.events),
   movieReleases: (id: number) => req<ReleaseList>(`/api/v1/movies/${id}/releases`),
@@ -1269,6 +1273,17 @@ export interface MovieExtra {
   cast?: CastMember[];
 }
 
+export interface DuplicateCopy {
+  path: string;
+  filename: string;
+  size_bytes: number;
+}
+export interface DuplicateEpisodeFile {
+  season: number;
+  episode: number;
+  keeping: DuplicateCopy;
+  extras: DuplicateCopy[];
+}
 export interface MovieEvent {
   event: string;
   detail?: string;

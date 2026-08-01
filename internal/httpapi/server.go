@@ -219,6 +219,8 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/refresh", a.requireRole(auth.RoleManager, a.handleRefreshSeries))
 	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/manualimport", a.protected(a.handleSeriesManualImportList))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/manualimport", a.requireRole(auth.RoleManager, a.handleSeriesManualImport))
+	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/duplicates", a.protected(a.handleSeriesDuplicates))
+	mux.HandleFunc("DELETE "+base+"/api/v1/series/{id}/duplicates", a.requireRole(auth.RoleManager, a.handleDeleteSeriesDuplicate))
 	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/rename", a.protected(a.handleSeriesRenamePreview))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/rename", a.requireRole(auth.RoleManager, a.handleSeriesRename))
 	mux.HandleFunc("GET "+base+"/api/v1/series/{id}", a.protected(a.handleGetSeries))

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
@@ -749,4 +750,58 @@ func (a *api) handleDeleteEpisodeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSeriesDuplicates lists episodes with more than one file on disk. These are copies
+// left behind when a re-import derived a different filename (a re-classified source tag, or
+// the episode title being added/dropped) — the old file is orphaned and otherwise invisible.
+func (a *api) handleSeriesDuplicates(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	dupes, err := a.deps.Automation.SeriesDuplicates(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, series.ErrNotFound) {
+			a.writeError(w, http.StatusNotFound, "series not found")
+			return
+		}
+		a.writeError(w, http.StatusInternalServerError, "could not scan for duplicates")
+		return
+	}
+	var extras int
+	var reclaim int64
+	for _, d := range dupes {
+		for _, e := range d.Extras {
+			extras++
+			reclaim += e.SizeBytes
+		}
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"duplicates": dupes, "extra_files": extras, "reclaimable_bytes": reclaim,
+	})
+}
+
+// handleDeleteSeriesDuplicate recycles one duplicate copy. The path must be one the scan
+// currently reports as an extra for this series, so the tracked file can't be deleted.
+func (a *api) handleDeleteSeriesDuplicate(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Path string `json:"path"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	if strings.TrimSpace(req.Path) == "" {
+		a.writeError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	if err := a.deps.Automation.DeleteSeriesDuplicate(r.Context(), id, req.Path); err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"status": "deleted"})
 }

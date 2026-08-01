@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
-import { api, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride } from "../lib/api";
+import { api, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type DuplicateEpisodeFile } from "../lib/api";
 
 const today = new Date().toISOString().slice(0, 10);
 const aired = (e: Episode) => !!e.air_date && e.air_date <= today;
@@ -140,6 +140,8 @@ export function SeriesDetail() {
             </div>
           </div>
         )}
+
+        <DuplicatesPanel seriesId={s.id} refreshKey={s.stats?.have_files} flash={flash} />
 
         <HistoryPanel seriesId={s.id} refreshKey={s.stats?.have_files} />
       </div>
@@ -714,6 +716,75 @@ function SceneMapPanel({ series }: { series: SeriesT }) {
         </button>
       </div>
       {err && <div className="mt-2 text-[11.5px]" style={{ color: "var(--reject)" }}>{err}</div>}
+    </div>
+  );
+}
+
+function fmtBytes(n: number): string {
+  if (!n || n <= 0) return "";
+  const gb = n / 1024 ** 3;
+  return gb >= 1 ? `${gb.toFixed(2)} GB` : `${(n / 1024 ** 2).toFixed(0)} MB`;
+}
+
+// DuplicatesPanel surfaces episodes with more than one file on disk. These pile up when a
+// re-import derives a different filename (a re-classified source tag, or the episode title
+// being added or dropped): the library tracks the newest copy and every earlier one is
+// orphaned — invisible, still eating disk, and a duplicate episode in Plex.
+function DuplicatesPanel({ seriesId, refreshKey, flash }: { seriesId: number; refreshKey: unknown; flash: (m: string) => void }) {
+  const [dupes, setDupes] = useState<DuplicateEpisodeFile[] | null>(null);
+  const [reclaim, setReclaim] = useState(0);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    api.seriesDuplicates(seriesId)
+      .then((r) => { setDupes(r.duplicates ?? []); setReclaim(r.reclaimable_bytes ?? 0); })
+      .catch(() => setDupes([]));
+  }, [seriesId]);
+  useEffect(() => { load(); }, [load, refreshKey]);
+
+  const remove = async (path: string) => {
+    setBusy(path); setError(null);
+    try { await api.deleteSeriesDuplicate(seriesId, path); flash("Duplicate deleted."); load(); }
+    catch (e) { setError((e as Error).message); }
+    finally { setBusy(null); }
+  };
+
+  // Nothing to say when the library is clean — don't add a permanently empty panel.
+  if (dupes === null || dupes.length === 0) return null;
+
+  const extras = dupes.reduce((n, d) => n + d.extras.length, 0);
+  return (
+    <div className="mt-8">
+      <h2 className="m-0 mb-1 text-[14px] font-bold" style={{ color: "var(--avoid)" }}>Duplicate files</h2>
+      <p className="mb-3 text-[11.5px] text-ink-dim">
+        {extras} extra file{extras === 1 ? "" : "s"} on disk across {dupes.length} episode{dupes.length === 1 ? "" : "s"}
+        {reclaim > 0 && <> · {fmtBytes(reclaim)} reclaimable</>}. These are older copies left behind when a re-import
+        wrote a different filename. Arrmada tracks the one marked <em>keeping</em>; the rest are unused.
+      </p>
+      {error && <div className="mb-3 rounded-lg p-2.5 text-[12px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
+      <div className="overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)" }}>
+        {dupes.map((d) => (
+          <div key={`${d.season}-${d.episode}`} className="border-b p-3 last:border-b-0" style={{ borderColor: "var(--line-soft)" }}>
+            <div className="mb-1.5 font-mono text-[11px] font-bold">{`S${String(d.season).padStart(2, "0")}E${String(d.episode).padStart(2, "0")}`}</div>
+            <div className="flex items-center gap-2 py-1 text-[12px]">
+              <span className="flex-none rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: "var(--panel-2)", color: "var(--good)" }}>keeping</span>
+              <span className="min-w-0 flex-1 truncate text-ink-dim" title={d.keeping.path}>{d.keeping.filename}</span>
+              <span className="flex-none font-mono text-[10.5px] text-ink-faint">{fmtBytes(d.keeping.size_bytes)}</span>
+            </div>
+            {d.extras.map((x) => (
+              <div key={x.path} className="flex items-center gap-2 py-1 text-[12px]">
+                <span className="flex-none rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: "var(--panel-2)", color: "var(--avoid)" }}>extra</span>
+                <span className="min-w-0 flex-1 truncate text-ink-dim" title={x.path}>{x.filename}</span>
+                <span className="flex-none font-mono text-[10.5px] text-ink-faint">{fmtBytes(x.size_bytes)}</span>
+                <button disabled={busy !== null} onClick={() => remove(x.path)} className="flex-none rounded-lg px-2.5 py-1 text-[11px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>
+                  {busy === x.path ? "Deleting…" : "Delete"}
+                </button>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
