@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/music"
 	"github.com/tristenlammi/arrmada/internal/quality"
@@ -210,4 +212,31 @@ func (a *api) musicErr(w http.ResponseWriter, err error, msg string) {
 		return
 	}
 	a.writeError(w, http.StatusInternalServerError, msg)
+}
+
+// handleScanMusicLibrary catalogues music already on disk. Runs in the background: a big
+// collection means one MusicBrainz lookup per unknown artist at one request per second,
+// far longer than any sensible request timeout.
+func (a *api) handleScanMusicLibrary(w http.ResponseWriter, r *http.Request) {
+	if !a.musicScan.CompareAndSwap(false, true) {
+		a.writeError(w, http.StatusConflict, "a music scan is already running")
+		return
+	}
+	go func() {
+		defer a.musicScan.Store(false)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+		defer cancel()
+		res, err := a.deps.Automation.ScanMusicLibrary(ctx)
+		if err != nil {
+			a.deps.Log.Warn("music scan failed", "err", err)
+			return
+		}
+		a.deps.Log.Info("music scan complete", "artists", res.Artists, "albums", res.Albums,
+			"tracks", res.Tracks, "unmatched", len(res.Unmatched))
+		a.deps.Bus.Publish("library.scanned", map[string]any{
+			"media": "music", "artists": res.Artists, "albums": res.Albums,
+			"tracks": res.Tracks, "unmatched": len(res.Unmatched),
+		})
+	}()
+	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "scanning"})
 }

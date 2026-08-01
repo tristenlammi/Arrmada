@@ -1108,6 +1108,7 @@ export const api = {
     req<{ results: ArtistLookup[] }>(`/api/v1/music/lookup?q=${encodeURIComponent(q)}`).then((r) => r.results ?? []),
   addArtist: (body: { mbid: string; quality_profile?: string; monitored?: boolean }) =>
     req<Artist>("/api/v1/music/artists", { method: "POST", body: JSON.stringify(body) }),
+  scanMusic: () => req<{ status: string }>("/api/v1/music/scan", { method: "POST" }),
   artistDetail: (id: number) => req<Artist>(`/api/v1/music/artists/${id}`),
   refreshArtist: (id: number) => req<Artist>(`/api/v1/music/artists/${id}/refresh`, { method: "POST" }),
   setArtistMonitored: (id: number, monitored: boolean) =>

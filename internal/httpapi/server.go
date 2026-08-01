@@ -78,6 +78,9 @@ type api struct {
 	// refreshAll guards the bulk series refresh so two overlapping sweeps can't
 	// double every metadata pull and race each other's episode writes.
 	refreshAll atomic.Bool
+	// musicScan guards the background music library scan: two overlapping runs would
+	// double every MusicBrainz lookup and race each other's writes.
+	musicScan atomic.Bool
 	// seedDiagAt throttles the unmatched-seed-rule diagnostic. The Downloads page polls
 	// continuously, so an unthrottled line would bury the log it's meant to help read.
 	seedDiagAt atomic.Int32
@@ -329,6 +332,7 @@ func New(d Deps) *http.Server {
 	// Music (Lidarr replacement - MusicBrainz metadata + album acquisition).
 	mux.HandleFunc("GET "+base+"/api/v1/music/artists", a.protected(a.handleListArtists))
 	mux.HandleFunc("GET "+base+"/api/v1/music/lookup", a.protected(a.handleLookupArtists))
+	mux.HandleFunc("POST "+base+"/api/v1/music/scan", a.requireRole(auth.RoleManager, a.handleScanMusicLibrary))
 	mux.HandleFunc("POST "+base+"/api/v1/music/artists", a.requireRole(auth.RoleManager, a.handleAddArtist))
 	mux.HandleFunc("GET "+base+"/api/v1/music/artists/{id}", a.protected(a.handleGetArtist))
 	mux.HandleFunc("POST "+base+"/api/v1/music/artists/{id}/refresh", a.requireRole(auth.RoleManager, a.handleRefreshArtist))

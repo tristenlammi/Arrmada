@@ -96,6 +96,22 @@ export function Music() {
               style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
             />
             <button
+              onClick={async () => {
+                try {
+                  await api.scanMusic();
+                  // The scan runs in the background — one MusicBrainz lookup per unknown
+                  // artist at a request per second — so say so rather than implying it's done.
+                  flash("Scanning your music folder… this runs in the background.");
+                } catch (e) {
+                  setError((e as Error).message);
+                }
+              }}
+              className="rounded-lg px-3 py-2 text-[12.5px] font-semibold"
+              style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}
+            >
+              Scan library
+            </button>
+            <button
               onClick={() => setAdding(true)}
               className="rounded-lg px-4 py-2 text-[12.5px] font-semibold"
               style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}
