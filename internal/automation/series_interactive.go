@@ -279,14 +279,44 @@ func (c *Coordinator) RescanSeries(ctx context.Context, seriesID int64) {
 	}
 	folder := c.series.ExistingFolderName(ctx, seriesID) // "" → importer derives the name
 
-	found := map[[2]int]bool{}
+	// Group by resolved episode first, rather than marking as we walk. Several files on
+	// disk can claim the same episode — three copies of every Solo Leveling season 2
+	// episode, say, left by re-imports under different names. Marking inside the walk made
+	// the LAST file the directory happened to yield the winner, silently overwrote the
+	// others' paths, and reported nothing: the extra copies became invisible to Arrmada
+	// while still filling the disk and showing up as duplicates in Plex.
+	byEpisode := map[[2]int][]library.FoundVideo{}
 	for _, v := range c.imp.SeriesLibraryVideos(folder, s.Title, s.Year) {
 		// Run each file through the full resolver: SxxExx, multi-episode, and — for anime
 		// — absolute ("S2 29") and per-cour numbering all map onto the metadata's episodes.
 		for _, ref := range c.series.ResolveEpisodes(ctx, seriesID, parser.Parse(filepath.Base(v.Path))) {
-			found[[2]int{ref.Season, ref.Episode}] = true
-			_ = c.series.MarkEpisodeImported(ctx, seriesID, ref.Season, ref.Episode, v.Path, v.Size)
+			key := [2]int{ref.Season, ref.Episode}
+			byEpisode[key] = append(byEpisode[key], v)
 		}
+	}
+
+	found := make(map[[2]int]bool, len(byEpisode))
+	dupes := 0
+	for key, files := range byEpisode {
+		found[key] = true
+		best := files[0]
+		if len(files) > 1 {
+			best = bestLibraryVideo(files)
+			dupes += len(files) - 1
+			others := make([]string, 0, len(files)-1)
+			for _, f := range files {
+				if f.Path != best.Path {
+					others = append(others, filepath.Base(f.Path))
+				}
+			}
+			c.log.Warn("series rescan: several files claim the same episode — keeping the best one; the rest are duplicates taking up space",
+				"series", s.Title, "episode", fmt.Sprintf("S%02dE%02d", key[0], key[1]),
+				"keeping", filepath.Base(best.Path), "duplicates", strings.Join(others, ", "))
+		}
+		_ = c.series.MarkEpisodeImported(ctx, seriesID, key[0], key[1], best.Path, best.Size)
+	}
+	if dupes > 0 {
+		c.log.Warn("series rescan: duplicate episode files on disk", "series", s.Title, "extra_files", dupes)
 	}
 
 	// Clear any episode still flagged as having a file that wasn't found on disk and
@@ -490,4 +520,29 @@ func (c *Coordinator) SeriesRename(ctx context.Context, seriesID int64) (int, er
 		c.bus.Publish("series.renamed", map[string]any{"id": seriesID, "count": moved})
 	}
 	return moved, nil
+}
+
+// bestLibraryVideo picks which of several files claiming one episode to keep as that
+// episode's file: highest resolution first, then the bigger file (higher bitrate at the
+// same resolution), then the path — so the choice is deterministic rather than "whichever
+// the directory walk yielded last".
+func bestLibraryVideo(files []library.FoundVideo) library.FoundVideo {
+	best := files[0]
+	bestRank := parser.ResolutionRank(parser.Parse(filepath.Base(best.Path)).Resolution)
+	for _, f := range files[1:] {
+		rank := parser.ResolutionRank(parser.Parse(filepath.Base(f.Path)).Resolution)
+		switch {
+		case rank != bestRank:
+			if rank > bestRank {
+				best, bestRank = f, rank
+			}
+		case f.Size != best.Size:
+			if f.Size > best.Size {
+				best = f
+			}
+		case f.Path < best.Path:
+			best = f
+		}
+	}
+	return best
 }
