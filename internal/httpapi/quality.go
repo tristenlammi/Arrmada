@@ -47,7 +47,14 @@ func (a *api) handleListQualityProfiles(w http.ResponseWriter, r *http.Request) 
 	if list == nil {
 		list = []quality.ProfileInfo{}
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"profiles": list, "formats": quality.Catalog()})
+	body := map[string]any{"profiles": list, "formats": quality.Catalog()}
+	if media == quality.MediaMusic {
+		// Music quality is a ranked ladder rather than a set of preferences, so the builder
+		// renders from the ladder and offers starter presets instead of the video formats.
+		body["music_ladder"] = quality.MusicQualityLadder()
+		body["music_presets"] = quality.MusicPresets()
+	}
+	a.writeJSON(w, http.StatusOK, body)
 }
 
 // handleGetQualityProfile returns an editable profile (preset or custom).

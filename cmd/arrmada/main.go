@@ -33,6 +33,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/movies"
+	"github.com/tristenlammi/arrmada/internal/music"
 	"github.com/tristenlammi/arrmada/internal/notify"
 	"github.com/tristenlammi/arrmada/internal/push"
 	"github.com/tristenlammi/arrmada/internal/quality"
@@ -158,6 +159,8 @@ func main() {
 	seriesSvc := series.NewService(st.DB(), tvSeries, cfg.TVDir, log)
 	seriesSvc.SetSceneMapper(xem.New(cfg.FlaresolverrURL, log)) // TheXEM scene mapping (via FlareSolverr past Cloudflare)
 	booksSvc := books.NewService(st.DB(), openlib, log)
+	// MusicBrainz needs no key, the way Open Library needs none for books.
+	musicSvc := music.NewService(st.DB(), metadata.NewMusicBrainz(), log)
 	// Recycle bin: default to <library>/.recycle so deletes are undoable; "off" hard-deletes.
 	recycleDir := cfg.RecycleDir
 	switch recycleDir {
@@ -497,6 +500,7 @@ func main() {
 		Discovery:  tmdb,
 		Ratings:    omdb,
 		Books:      booksSvc,
+		Music:      musicSvc,
 		Subtitles:  subtitlesSvc,
 		Convert:    convertSvc,
 		Insights:   insightsSvc,

@@ -25,6 +25,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/movies"
+	"github.com/tristenlammi/arrmada/internal/music"
 	"github.com/tristenlammi/arrmada/internal/notify"
 	"github.com/tristenlammi/arrmada/internal/push"
 	"github.com/tristenlammi/arrmada/internal/quality"
@@ -60,6 +61,7 @@ type Deps struct {
 	Discovery  metadata.DiscoveryProvider
 	Ratings    metadata.RatingProvider
 	Books      *books.Service
+	Music      *music.Service
 	Subtitles  *subtitles.Service
 	Convert    *convert.Service
 	Insights   *insights.Service
@@ -324,6 +326,19 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/rematch", a.requireRole(auth.RoleManager, a.handleRematchBook))
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/edition-files", a.protected(a.handleBookEditionFiles))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/merge-audiobook", a.requireRole(auth.RoleManager, a.handleMergeAudiobook))
+	// Music (Lidarr replacement - MusicBrainz metadata + album acquisition).
+	mux.HandleFunc("GET "+base+"/api/v1/music/artists", a.protected(a.handleListArtists))
+	mux.HandleFunc("GET "+base+"/api/v1/music/lookup", a.protected(a.handleLookupArtists))
+	mux.HandleFunc("POST "+base+"/api/v1/music/artists", a.requireRole(auth.RoleManager, a.handleAddArtist))
+	mux.HandleFunc("GET "+base+"/api/v1/music/artists/{id}", a.protected(a.handleGetArtist))
+	mux.HandleFunc("POST "+base+"/api/v1/music/artists/{id}/refresh", a.requireRole(auth.RoleManager, a.handleRefreshArtist))
+	mux.HandleFunc("PUT "+base+"/api/v1/music/artists/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetArtistMonitored))
+	mux.HandleFunc("PUT "+base+"/api/v1/music/artists/{id}/profile", a.requireRole(auth.RoleManager, a.handleSetArtistProfile))
+	mux.HandleFunc("DELETE "+base+"/api/v1/music/artists/{id}", a.requireRole(auth.RoleManager, a.handleDeleteArtist))
+	mux.HandleFunc("GET "+base+"/api/v1/music/artists/{id}/history", a.protected(a.handleArtistHistory))
+	mux.HandleFunc("GET "+base+"/api/v1/music/albums/{id}", a.protected(a.handleGetAlbum))
+	mux.HandleFunc("PUT "+base+"/api/v1/music/albums/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetAlbumMonitored))
+
 	// Books Discover (Open Library browse/search + author catalogues).
 	mux.HandleFunc("GET "+base+"/api/v1/books/discover/trending", a.protected(a.handleBookDiscoverTrending))
 	mux.HandleFunc("GET "+base+"/api/v1/books/discover/search", a.protected(a.handleBookDiscoverSearch))
