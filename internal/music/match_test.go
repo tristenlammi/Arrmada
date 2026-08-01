@@ -74,3 +74,33 @@ func TestReleaseIsForAlbum(t *testing.T) {
 		t.Error("the artist must match too")
 	}
 }
+
+// A discography must be recognisable for the artist it belongs to, and only through the
+// explicit path — ReleaseIsForAlbum still refuses it, so an automatic album sweep can never
+// pick one up by accident.
+func TestReleaseIsDiscographyFor(t *testing.T) {
+	const disco = "Radiohead - Discography (1993-2016) [FLAC]"
+	if !ReleaseIsDiscographyFor(disco, "Radiohead") {
+		t.Error("a discography naming the artist should match")
+	}
+	if ReleaseIsDiscographyFor(disco, "Portishead") {
+		t.Error("a discography by a different artist must not match")
+	}
+	// A single album is not a discography, whichever function asks.
+	if ReleaseIsDiscographyFor("Radiohead - OK Computer (1997) [FLAC]", "Radiohead") {
+		t.Error("a single album must not be treated as a discography")
+	}
+	// The album path must still refuse it, so the automatic sweep can't grab one.
+	if ReleaseIsForAlbum(disco, "Radiohead", "OK Computer") {
+		t.Error("the album gate must keep refusing discographies")
+	}
+	// Other whole-catalogue wordings.
+	for _, n := range []string{
+		"Radiohead - Complete Collection [FLAC]",
+		"Radiohead Anthology 1993-2016 [MP3-320]",
+	} {
+		if !ReleaseIsDiscographyFor(n, "Radiohead") {
+			t.Errorf("%q should read as a whole-catalogue pack", n)
+		}
+	}
+}

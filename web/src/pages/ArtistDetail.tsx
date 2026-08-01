@@ -66,6 +66,10 @@ export function ArtistDetail() {
 
   const done = a.stats?.have_tracks ?? 0;
   const all = a.stats?.tracks ?? 0;
+  // A discography is one torrent spanning every album, which fights per-album upgrades and
+  // seeding. Only offer it where it's genuinely the better tool: you own little or nothing
+  // by this artist. Topping up is what the per-album sweep is for.
+  const mostlyMissing = (a.albums?.length ?? 0) > 1 && (all === 0 || done / Math.max(all, 1) < 0.25);
 
   return (
     <>
@@ -130,6 +134,17 @@ export function ArtistDetail() {
           >
             {busy === "refresh" ? "Refreshing…" : "Refresh"}
           </button>
+          {mostlyMissing && (
+            <button
+              className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold"
+              style={{ border: "1px solid var(--accent)", color: "var(--accent)" }}
+              disabled={busy !== null}
+              title="Grab one torrent covering this artist's whole catalogue. Best when you own little or nothing by them — for topping up, per-album grabs keep upgrades and seeding clean."
+              onClick={() => run("disco", async () => { await api.grabDiscography(a.id); flash("Looking for a discography — check Downloads."); })}
+            >
+              {busy === "disco" ? "Searching…" : "Grab discography"}
+            </button>
+          )}
           <DeleteArtistButton artist={a} />
         </div>
 

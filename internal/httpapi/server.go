@@ -336,6 +336,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/music/artists", a.requireRole(auth.RoleManager, a.handleAddArtist))
 	mux.HandleFunc("GET "+base+"/api/v1/music/artists/{id}", a.protected(a.handleGetArtist))
 	mux.HandleFunc("POST "+base+"/api/v1/music/artists/{id}/refresh", a.requireRole(auth.RoleManager, a.handleRefreshArtist))
+	mux.HandleFunc("POST "+base+"/api/v1/music/artists/{id}/discography", a.requireRole(auth.RoleManager, a.handleGrabDiscography))
 	mux.HandleFunc("PUT "+base+"/api/v1/music/artists/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetArtistMonitored))
 	mux.HandleFunc("PUT "+base+"/api/v1/music/artists/{id}/profile", a.requireRole(auth.RoleManager, a.handleSetArtistProfile))
 	mux.HandleFunc("DELETE "+base+"/api/v1/music/artists/{id}", a.requireRole(auth.RoleManager, a.handleDeleteArtist))

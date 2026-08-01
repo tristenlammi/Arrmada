@@ -240,3 +240,20 @@ func (a *api) handleScanMusicLibrary(w http.ResponseWriter, r *http.Request) {
 	}()
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "scanning"})
 }
+
+// handleGrabDiscography grabs a whole-catalogue pack for an artist.
+//
+// An explicit action rather than part of the automatic sweep: a discography is one torrent
+// spanning many albums, which fights per-album upgrades and seeding. It's the right tool
+// when you own nothing by an artist, and the wrong one for topping up.
+func (a *api) handleGrabDiscography(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	if err := a.deps.Automation.GrabDiscography(r.Context(), id); err != nil {
+		a.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"status": "grabbed"})
+}

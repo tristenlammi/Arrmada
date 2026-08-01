@@ -164,3 +164,18 @@ func normWords(s string) string {
 	}
 	return b.String()
 }
+
+// ReleaseIsDiscographyFor reports whether a release is a whole-catalogue pack for this
+// artist. Kept separate from ReleaseIsForAlbum, which refuses discographies outright:
+// they're only ever wanted through the explicit "grab discography" action, where a
+// multi-album importer maps each folder to its own album.
+func ReleaseIsDiscographyFor(releaseName, artist string) bool {
+	if !ParseRelease(releaseName).Discography {
+		return false
+	}
+	a := normWords(artist)
+	if a == "" {
+		return false
+	}
+	return strings.Contains(" "+normWords(releaseName)+" ", " "+a+" ")
+}

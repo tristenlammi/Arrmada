@@ -204,6 +204,31 @@ func (c *Coordinator) ImportMusicDownloads(ctx context.Context) {
 		if c.hasReview(ctx, it.Hash) {
 			continue // already held for review — don't re-flag or import
 		}
+		// A discography covers many albums, so it takes a different import path: each folder
+		// inside is resolved to its own album. Routed on the release name because that's what
+		// distinguishes the two, and the grab for one is recorded against the ARTIST id.
+		if music.ParseRelease(it.Name).Discography {
+			art, aok := c.artistForRelease(ctx, it.Name)
+			if !aok {
+				n := c.noteUnmatched(it.Hash)
+				if n == 1 {
+					c.log.Info("music import: a discography matches no artist in the library", "release", it.Name)
+				}
+				continue
+			}
+			placed, found := c.importDiscographyContent(ctx, art, it.ContentPath, it.Name)
+			switch {
+			case placed > 0:
+				c.recordImportedHash(ctx, it.Hash, it.Name, it.SizeBytes)
+			case found:
+				c.log.Warn("music import: discography held albums but none matched the library — will retry",
+					"artist", art.Name, "release", it.Name)
+			default:
+				c.log.Warn("music import: discography holds no audio files",
+					"artist", art.Name, "release", it.Name, "path", it.ContentPath)
+			}
+			continue
+		}
 		album, artist, ok := c.albumForRelease(ctx, it.Name)
 
 		// Verify the download really is the album it was grabbed for. Without this the
@@ -479,3 +504,170 @@ func (c *Coordinator) detectStalledMusic(ctx context.Context, g grab, queue []do
 
 // ensure the library importer is referenced even if the album helpers move.
 var _ = library.FoundVideo{}
+
+// GrabDiscography grabs a whole-catalogue pack for an artist.
+//
+// Deliberately an explicit action rather than the automatic first choice. A discography is
+// one torrent covering many albums, which fights the upgrade path in a way album-sized
+// releases don't: replace one album with a FLAC later and you either keep seeding files
+// you've superseded or break the torrent. It's the right tool for a new artist you own
+// nothing of, and the wrong one for topping up a collection — so the caller decides.
+func (c *Coordinator) GrabDiscography(ctx context.Context, artistID int64) error {
+	if c.music == nil {
+		return fmt.Errorf("music module unavailable")
+	}
+	a, err := c.music.GetArtist(ctx, artistID)
+	if err != nil {
+		return err
+	}
+	sp := c.musicProfile(ctx, a.QualityProfile)
+	res, err := c.indexers.Search(ctx, indexer.SearchQuery{
+		Text: a.Name + " discography", MediaType: indexer.MediaMusic, Limit: 100,
+	})
+	if err != nil {
+		return fmt.Errorf("search failed: %w", err)
+	}
+	var cands []indexer.Release
+	for _, rel := range res.Releases {
+		if music.ReleaseIsDiscographyFor(rel.Title, a.Name) {
+			cands = append(cands, rel)
+		}
+	}
+	if len(cands) == 0 {
+		return fmt.Errorf("no discography release found for %q", a.Name)
+	}
+	cands = c.dropBlockedMusic(ctx, artistID, cands)
+	best := pickBestAlbum(sp, cands)
+	if best == nil {
+		return fmt.Errorf("found discography releases for %q, but none met the quality profile", a.Name)
+	}
+	if !c.diskOKFor(float64(best.SizeBytes) / (1 << 30)) {
+		return fmt.Errorf("not enough free space for %q (%.1f GB)", best.Title, float64(best.SizeBytes)/(1<<30))
+	}
+	hash, err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, musicCategory)
+	if err != nil {
+		return err
+	}
+	// Recorded against the ARTIST id, not an album: the pack covers many, and the import
+	// resolves each folder to its own album.
+	c.recordMusicGrab(ctx, artistID, best.Title, best.Indexer, a.QualityProfile, hash)
+	c.music.AddEvent(ctx, artistID, "grabbed",
+		fmt.Sprintf("Grabbed a discography from %s: %s", best.Indexer, best.Title))
+	c.log.Info("music: grabbing discography", "artist", a.Name, "release", best.Title,
+		"quality", music.DetectQuality(best.Title))
+	return nil
+}
+
+// artistForRelease resolves a release name to a library artist (used for discographies,
+// which name the artist but no single album).
+func (c *Coordinator) artistForRelease(ctx context.Context, name string) (music.Artist, bool) {
+	artists, err := c.music.ListArtists(ctx)
+	if err != nil {
+		return music.Artist{}, false
+	}
+	// Longest name wins, so "Bob Marley and the Wailers" beats "Bob Marley" on a release
+	// that names the full act.
+	var best music.Artist
+	found := false
+	for _, a := range artists {
+		if music.ReleaseIsDiscographyFor(name, a.Name) && (!found || len(a.Name) > len(best.Name)) {
+			best, found = a, true
+		}
+	}
+	return best, found
+}
+
+// importDiscographyContent imports a whole-catalogue pack: each album folder inside it is
+// matched to one of the artist's albums and imported separately.
+//
+// Folders that match no album are reported, never force-placed. A discography routinely
+// carries bootlegs, singles and live records the artist's release-group list doesn't have,
+// and filing those against a near-miss album would put the wrong audio on a real record.
+func (c *Coordinator) importDiscographyContent(ctx context.Context, a music.Artist, contentPath, release string) (placed int, found bool) {
+	if fi, err := os.Stat(contentPath); err == nil && fi.IsDir() {
+		if n, xerr := extract.ExtractTree(contentPath); xerr != nil {
+			c.log.Warn("music import: archive extraction failed", "path", contentPath, "err", xerr)
+		} else if n > 0 {
+			c.log.Info("music import: extracted archives before import", "count", n, "path", contentPath)
+		}
+	}
+	folders := findAlbumFolders(contentPath)
+	if len(folders) == 0 {
+		return 0, false
+	}
+	found = true
+
+	albums, err := c.music.Albums(ctx, a.ID)
+	if err != nil {
+		return 0, found
+	}
+	var skipped []string
+	for _, f := range folders {
+		title := f.album
+		if title == "" {
+			// A folder named just "OK Computer (1997)" has no " - " to split on, so the
+			// parser leaves the whole thing in Artist.
+			title = f.artist
+		}
+		al, ok := matchAlbumByTitle(albums, title)
+		if !ok {
+			skipped = append(skipped, filepath.Base(f.path))
+			continue
+		}
+		n := c.importAlbumFolder(ctx, a, al, f, release)
+		placed += n
+	}
+	if len(skipped) > 0 {
+		c.log.Warn("music import: discography folders that match no album in the library — left alone",
+			"artist", a.Name, "folders", strings.Join(skipped, ", "))
+	}
+	if placed > 0 {
+		c.music.AddEvent(ctx, a.ID, "imported",
+			fmt.Sprintf("Imported %d track(s) from a discography (%d folder(s) unmatched)", placed, len(skipped)))
+	}
+	return placed, found
+}
+
+// importAlbumFolder places one album folder's audio against a known album.
+func (c *Coordinator) importAlbumFolder(ctx context.Context, a music.Artist, al music.Album, f albumFolder, release string) int {
+	if err := c.music.EnsureTracks(ctx, al); err != nil {
+		c.log.Warn("music import: couldn't fetch a track listing", "album", al.Title, "err", err)
+		return 0
+	}
+	tracks, err := c.music.Tracks(ctx, al.ID)
+	if err != nil || len(tracks) == 0 {
+		return 0
+	}
+	matched, _ := music.MatchTracks(tracks, f.files)
+	q := music.DetectQuality(release)
+	if fq := music.DetectQuality(filepath.Base(f.path)); fq != music.QualityUnknown {
+		// A mixed-quality pack often tags each album folder; that's more specific than the
+		// pack name and is exactly the case where the overall tag would be wrong.
+		q = fq
+	}
+	n := 0
+	for _, t := range tracks {
+		file, ok := matched[t.ID]
+		if !ok {
+			continue
+		}
+		target := c.imp.AlbumTrackTarget(a.Name, al.Title, al.Year, t.DiscNumber, t.TrackNumber, t.Title, filepath.Ext(file.Path))
+		if err := c.imp.PlaceFile(file.Path, target); err != nil {
+			c.log.Warn("music import: placing a track failed", "track", t.Title, "err", err)
+			continue
+		}
+		size := file.SizeBytes
+		if fi, serr := os.Stat(target); serr == nil {
+			size = fi.Size()
+		}
+		if err := c.music.MarkTrackImported(ctx, t.ID, target, string(q), 0, size, release); err != nil {
+			continue
+		}
+		n++
+	}
+	if n > 0 {
+		c.log.Info("music: imported album from discography", "artist", a.Name, "album", al.Title,
+			"placed", n, "of", len(tracks), "quality", q)
+	}
+	return n
+}

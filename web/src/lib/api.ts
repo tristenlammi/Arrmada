@@ -1111,6 +1111,8 @@ export const api = {
   scanMusic: () => req<{ status: string }>("/api/v1/music/scan", { method: "POST" }),
   artistDetail: (id: number) => req<Artist>(`/api/v1/music/artists/${id}`),
   refreshArtist: (id: number) => req<Artist>(`/api/v1/music/artists/${id}/refresh`, { method: "POST" }),
+  grabDiscography: (id: number) =>
+    req<{ status: string }>(`/api/v1/music/artists/${id}/discography`, { method: "POST" }),
   setArtistMonitored: (id: number, monitored: boolean) =>
     req<{ monitored: boolean }>(`/api/v1/music/artists/${id}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
   setArtistProfile: (id: number, quality_profile: string) =>
