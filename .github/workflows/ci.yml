@@ -20,6 +20,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The binary embeds the built web UI (//go:embed all:dist in internal/webui), and
+      # dist is generated rather than committed. Without this step the embed pattern
+      # matches nothing on a fresh checkout and `go build ./...` fails before any of the
+      # real checks run — which is exactly what happened: every run since this workflow
+      # landed failed here, never reaching vet, gofmt or the tests.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build the embedded web UI
+        run: npm ci && npm run build
+        working-directory: web
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25.x"
