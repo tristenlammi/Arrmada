@@ -246,10 +246,31 @@ func (c *Coordinator) GrabBestForScope(ctx context.Context, seriesID int64, seas
 	if err != nil {
 		return err
 	}
-	for _, rel := range list.Releases {
-		if rel.Eligible && !rel.Blocklisted {
+	pick := func(packsOnly bool) *RankedRelease {
+		for i := range list.Releases {
+			rel := &list.Releases[i]
+			if !rel.Eligible || rel.Blocklisted {
+				continue
+			}
+			if packsOnly && parser.Parse(rel.Title).Kind() == parser.KindEpisode {
+				continue
+			}
+			return rel
+		}
+		return nil
+	}
+	// A season (or whole-series) grab wants the pack, not one episode out of it. The scope
+	// filter admits single episodes on purpose — they do cover part of the season — and the
+	// quality ranking has no notion of tier at all, so a well-scored single episode can
+	// out-rank the pack and the button quietly fetches one file. Packs first; fall back to
+	// singles only when no pack is eligible, which is the normal state of an airing season.
+	if episode <= 0 {
+		if rel := pick(true); rel != nil {
 			return c.GrabForSeries(ctx, seriesID, rel.Indexer, rel.DownloadURL, rel.Title)
 		}
+	}
+	if rel := pick(false); rel != nil {
+		return c.GrabForSeries(ctx, seriesID, rel.Indexer, rel.DownloadURL, rel.Title)
 	}
 	return fmt.Errorf("no eligible release found for that %s", scopeLabel(season, episode))
 }
