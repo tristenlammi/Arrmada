@@ -715,6 +715,27 @@ func (r *Repo) ResetSearchMisses(ctx context.Context, seriesID int64) {
 		`UPDATE series SET last_search_at = datetime('now'), search_misses = 0 WHERE id = ?`, seriesID)
 }
 
+// SearchCursors returns where the last sweep stopped in the season fan-out and in the
+// anime absolute-number follow-up, so the next one resumes instead of restarting at the
+// lowest season and starving everything past the query budget.
+func (r *Repo) SearchCursors(ctx context.Context, seriesID int64) (season, absolute int) {
+	_ = r.db.QueryRowContext(ctx,
+		`SELECT search_season_cursor, search_abs_cursor FROM series WHERE id = ?`, seriesID).Scan(&season, &absolute)
+	return season, absolute
+}
+
+// SetSeasonCursor records where the next season fan-out should resume.
+func (r *Repo) SetSeasonCursor(ctx context.Context, seriesID int64, cursor int) {
+	_, _ = r.db.ExecContext(ctx,
+		`UPDATE series SET search_season_cursor = ? WHERE id = ?`, cursor, seriesID)
+}
+
+// SetAbsoluteCursor records where the next absolute-number follow-up should resume.
+func (r *Repo) SetAbsoluteCursor(ctx context.Context, seriesID int64, cursor int) {
+	_, _ = r.db.ExecContext(ctx,
+		`UPDATE series SET search_abs_cursor = ? WHERE id = ?`, cursor, seriesID)
+}
+
 // HasWantedEpisodes reports whether a series has an episode the automation would
 // actually grab: monitored, aired, and with no file. Mirrors wantedEpisodes' filter so
 // the missing-sweep can skip a series without spending an indexer search on it.

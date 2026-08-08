@@ -264,6 +264,41 @@ func (s *Service) AllowsUpgrades(ctx context.Context, ref string) bool {
 	return err == nil && sp.UpgradesEnabled
 }
 
+// AtCeiling reports whether a file is already as good as this profile permits, so no
+// release the profile would accept could beat it on resolution or source.
+//
+// Arrmada has no explicit "cutoff quality" field; the ceiling is implied by the profile's
+// own limits — the best resolution it allows and its maximum source. A 1080p WEB-DL under a
+// profile that allows 1080p and caps the source at WEB-DL is finished: every eligible
+// candidate is, at best, its equal. Searching for it again every sweep is pure indexer
+// traffic for a result that can only be rejected.
+//
+// The tradeoff is deliberate: a same-resolution, same-source swap for format-score reasons
+// (a different audio track, say) is given up for these files. That's the point — "it meets
+// the profile" should mean the searching stops.
+func (s *Service) AtCeiling(ctx context.Context, ref, currentRelease string) bool {
+	if strings.TrimSpace(currentRelease) == "" {
+		return false // nothing recorded to judge — let the normal path decide
+	}
+	p, _ := s.Resolve(ctx, ref)
+	// An unbounded profile has no ceiling to reach: with any resolution allowed and no
+	// maximum source, something better can always turn up.
+	if len(p.AllowedResolutions) == 0 || p.MaxSource == "" {
+		return false
+	}
+	cur := parser.Parse(currentRelease)
+	best := 0
+	for _, res := range p.AllowedResolutions {
+		if resRank[res] > best {
+			best = resRank[res]
+		}
+	}
+	if resRank[cur.Resolution] < best {
+		return false
+	}
+	return sourceRank[cur.Source] >= sourceRank[p.MaxSource]
+}
+
 // Create, Update, Delete manage user profiles.
 func (s *Service) Create(ctx context.Context, sp StoredProfile) (StoredProfile, error) {
 	normalize(&sp)

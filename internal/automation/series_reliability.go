@@ -120,6 +120,17 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 	if err != nil {
 		return err
 	}
+	// Resolved once and used for the gate, the ceiling check and the upgrade decision
+	// alike. A gate reading one profile while the decider reads another is how you get a
+	// sweep that searches and then rejects everything it finds.
+	profile := c.effectiveProfile(ctx, s.QualityProfile, "series")
+	// Upgrades off means there is nothing to find, so don't ask an indexer. The movie
+	// sweep has always checked this before searching; the series sweep hit the indexer
+	// every 6 hours for every monitored show regardless, then threw the results away
+	// inside UpgradeCandidate.
+	if !c.quality.AllowsUpgrades(ctx, profile) {
+		return nil
+	}
 	type have struct {
 		season, episode int
 		release         string // the release it was imported from (NOT the renamed library file)
@@ -127,6 +138,7 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 		runtimeMin      int // episode length, for the bitrate-based upgrade threshold
 	}
 	var haveEps []have
+	atCeiling := 0
 	for _, sn := range s.Seasons {
 		if sn.SeasonNumber == 0 {
 			continue // never upgrade specials
@@ -142,6 +154,13 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 				if e.SourceRelease == "" {
 					continue
 				}
+				// Already as good as this profile permits — no candidate it would accept
+				// can beat it, so including it only pads the search with work whose only
+				// possible outcome is "rejected".
+				if c.quality.AtCeiling(ctx, profile, e.SourceRelease) {
+					atCeiling++
+					continue
+				}
 				// e.Runtime (episode minutes) drives the bitrate threshold; 0 (unknown)
 				// falls back to quality-only upgrades inside UpgradeCandidate.
 				haveEps = append(haveEps, have{e.SeasonNumber, e.EpisodeNumber, e.SourceRelease, gbOf(e.SizeBytes), e.Runtime})
@@ -149,7 +168,18 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 		}
 	}
 	if len(haveEps) == 0 {
+		// Every episode is either at the ceiling or has no recorded release. Saying so
+		// beats a silent no-op, since "why did my upgrade sweep stop" is otherwise
+		// indistinguishable from a broken indexer.
+		if atCeiling > 0 {
+			c.log.Info("series: nothing to upgrade — every episode already meets the profile",
+				"series", s.Title, "profile", profile, "episodes", atCeiling)
+		}
 		return nil
+	}
+	if atCeiling > 0 {
+		c.log.Info("series: skipping episodes already at the profile ceiling",
+			"series", s.Title, "at_ceiling", atCeiling, "searching", len(haveEps))
 	}
 
 	res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: indexerQuery(s.Title), MediaType: indexer.MediaSeries, Limit: 100})
@@ -178,7 +208,7 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 		if len(cands) == 0 {
 			continue
 		}
-		pick, ok := c.quality.UpgradeCandidate(ctx, s.QualityProfile, ep.release, ep.sizeGB, ep.runtimeMin, cands)
+		pick, ok := c.quality.UpgradeCandidate(ctx, profile, ep.release, ep.sizeGB, ep.runtimeMin, cands)
 		if !ok {
 			continue
 		}

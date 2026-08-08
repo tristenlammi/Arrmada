@@ -1034,6 +1034,20 @@ func (s *Service) ResetSearchMisses(ctx context.Context, seriesID int64) {
 	s.repo.ResetSearchMisses(ctx, seriesID)
 }
 
+// SearchCursors returns where the last sweep stopped in the season fan-out and the
+// absolute-number follow-up, so the next one resumes rather than restarting.
+func (s *Service) SearchCursors(ctx context.Context, seriesID int64) (int, int) {
+	return s.repo.SearchCursors(ctx, seriesID)
+}
+
+// SetSeasonCursor / SetAbsoluteCursor advance those cursors.
+func (s *Service) SetSeasonCursor(ctx context.Context, seriesID int64, cursor int) {
+	s.repo.SetSeasonCursor(ctx, seriesID, cursor)
+}
+func (s *Service) SetAbsoluteCursor(ctx context.Context, seriesID int64, cursor int) {
+	s.repo.SetAbsoluteCursor(ctx, seriesID, cursor)
+}
+
 // HasWantedEpisodes reports whether the automation would actually grab anything for
 // this series (monitored + aired + no file) — used to skip a pointless indexer search.
 func (s *Service) HasWantedEpisodes(ctx context.Context, seriesID int64) bool {

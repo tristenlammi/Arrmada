@@ -229,12 +229,20 @@ func (c *Coordinator) searchByAbsolute(ctx context.Context, s series.Series, rem
 	if !s.IsAnime() || len(remaining) == 0 {
 		return 0
 	}
+	// Same starvation as the season fan-out: `remaining` arrives sorted ascending, so three
+	// queries a sweep meant the same three oldest gaps were re-asked forever and a later
+	// season's episodes were never reached. Resume where the last sweep stopped instead.
+	// The cursor packs (season, episode) into one integer; the ordering wraps, so a gap
+	// that can't be found doesn't block the ones behind it.
+	ordered := rotateKeys(remaining, c.absoluteCursor(ctx, s.ID))
 	grabbed, queries := 0, 0
 	still := remaining // narrows as earlier queries cover episodes
-	for _, k := range remaining {
+	last := -1
+	for i, k := range ordered {
 		if queries >= maxAbsoluteQueries {
 			break
 		}
+		last = i
 		if !containsKey(still, k) {
 			continue // an earlier absolute query already covered this one
 		}
@@ -255,7 +263,36 @@ func (c *Coordinator) searchByAbsolute(ctx context.Context, s series.Series, rem
 		}
 		grabbed += n
 	}
+	if last >= 0 && len(ordered) > 0 {
+		c.series.SetAbsoluteCursor(ctx, s.ID, epCursor(ordered[(last+1)%len(ordered)]))
+	}
 	return grabbed
+}
+
+// epCursor packs an episode key into one sortable integer, so a resume point fits in a
+// single column. 10 000 episodes a season is far past anything real.
+func epCursor(k epKey) int { return k.season*10000 + k.episode }
+
+func (c *Coordinator) absoluteCursor(ctx context.Context, seriesID int64) int {
+	_, abs := c.series.SearchCursors(ctx, seriesID)
+	return abs
+}
+
+// rotateKeys returns keys reordered to start at the first one at or past cursor, wrapping
+// around. Keys are matched by VALUE, not position — which episodes remain changes between
+// sweeps, so a stored index would drift.
+func rotateKeys(keys []epKey, cursor int) []epKey {
+	if len(keys) == 0 || cursor <= 0 {
+		return keys
+	}
+	start := 0
+	for i, k := range keys {
+		if epCursor(k) >= cursor {
+			start = i
+			break
+		}
+	}
+	return append(append([]epKey{}, keys[start:]...), keys[:start]...)
 }
 
 func containsKey(keys []epKey, k epKey) bool {
@@ -604,7 +641,38 @@ func (c *Coordinator) searchSeriesReleases(ctx context.Context, s series.Series)
 	if len(seasons) == 0 {
 		return all, nil
 	}
-	return c.searchSeasons(ctx, s, title, seasons, all), nil
+	return c.searchSeasons(ctx, s, title, c.rotateSeasons(ctx, s, seasons), all), nil
+}
+
+// rotateSeasons reorders the incomplete seasons so this sweep resumes where the last one
+// stopped, and records where the next should pick up.
+//
+// Without it the fan-out restarted at the lowest season every time and maxSeasonQueries cut
+// it off, so a show with more than that many gaps could never search its later seasons at
+// all — Bleach logged "seasons=17 seasons_queried=12" every sweep and season 17 was simply
+// never asked about.
+//
+// The cursor holds a SEASON NUMBER, not an index: which seasons are incomplete changes
+// between sweeps as gaps fill, and an index into a shifting slice would skip or repeat
+// seasons at random.
+func (c *Coordinator) rotateSeasons(ctx context.Context, s series.Series, seasons []int) []int {
+	if len(seasons) <= maxSeasonQueries {
+		return seasons // they all fit in one sweep — nothing to rotate
+	}
+	cursor, _ := c.series.SearchCursors(ctx, s.ID)
+	start := 0
+	for i, sn := range seasons {
+		if sn >= cursor {
+			start = i
+			break
+		}
+	}
+	out := append(append([]int{}, seasons[start:]...), seasons[:start]...)
+	// Where the budget runs out. If a sweep is cut short (context cancelled mid-fan-out)
+	// this advances past a season it didn't actually query — harmless, because the order
+	// wraps, so that season comes around again rather than being lost.
+	c.series.SetSeasonCursor(ctx, s.ID, out[maxSeasonQueries])
+	return out
 }
 
 // searchSeasons runs one tvsearch per season and merges the results into have, deduped by
