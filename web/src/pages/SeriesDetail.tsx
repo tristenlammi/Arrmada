@@ -9,7 +9,8 @@ import { api, type Series as SeriesT, type Season, type Episode, type SeriesImpo
 // search that turns up nothing leaves no trace at all — which is exactly when you most need
 // to remember you already tried. Nothing server-side records the REQUEST, so the mark lives
 // here, in localStorage so it survives a reload while you work down a long list of missing
-// episodes. Episode ids are unique across series, so one flat map covers every show.
+// episodes. Keyed by "ep:<id>" / "s:<series>:<season>" — episode ids are unique across
+// series, but a season number only means something alongside its show.
 const GRAB_KEY = "arrmada.grabRequested";
 const GRAB_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -26,18 +27,21 @@ function loadGrabMarks(): Record<string, number> {
 function saveGrabMarks(m: Record<string, number>) {
   try { localStorage.setItem(GRAB_KEY, JSON.stringify(m)); } catch { /* ignore quota */ }
 }
-function grabRequested(epID: number): boolean {
-  return loadGrabMarks()[String(epID)] !== undefined;
+const epKey = (epID: number) => `ep:${epID}`;
+const seasonKey = (seriesID: number, seasonNo: number) => `s:${seriesID}:${seasonNo}`;
+
+function grabRequested(key: string): boolean {
+  return loadGrabMarks()[key] !== undefined;
 }
-function markGrabRequested(epID: number) {
+function markGrabRequested(key: string) {
   const m = loadGrabMarks();
-  m[String(epID)] = Date.now();
+  m[key] = Date.now();
   saveGrabMarks(m);
 }
-function clearGrabRequested(epID: number) {
+function clearGrabRequested(key: string) {
   const m = loadGrabMarks();
-  if (m[String(epID)] === undefined) return;
-  delete m[String(epID)];
+  if (m[key] === undefined) return;
+  delete m[key];
   saveGrabMarks(m);
 }
 
@@ -286,6 +290,7 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen }: { series:
   const [open, setOpen] = useState(defaultOpen);
   const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [requested, setRequested] = useState(() => grabRequested(seasonKey(series.id, season.season_number)));
   const eps = season.episodes ?? [];
   const have = eps.filter((e) => e.has_file).length;
   const total = eps.length;
@@ -300,9 +305,24 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen }: { series:
   const name = season.season_number === 0 ? "Specials" : `Season ${season.season_number}`;
   const pct = counted ? Math.round((have / counted) * 100) : 0;
 
+  // A season pack request is settled once the pack is actually coming down or the season is
+  // full — same rule as an episode, just read off the season as a whole.
+  const settled = (counted > 0 && have >= counted) || eps.some((e) => !e.has_file && e.download);
+  useEffect(() => {
+    if (settled) {
+      clearGrabRequested(seasonKey(series.id, season.season_number));
+      setRequested(false);
+    }
+  }, [settled, series.id, season.season_number]);
+
   const grabSeason = async () => {
     setBusy(true);
-    try { await api.autoGrabSeries(series.id, season.season_number, 0); flash(`Searching for a ${name} pack…`); }
+    try {
+      await api.autoGrabSeries(series.id, season.season_number, 0);
+      markGrabRequested(seasonKey(series.id, season.season_number));
+      setRequested(true);
+      flash(`Searching for a ${name} pack…`);
+    }
     catch (e) { flash((e as Error).message); }
     finally { setBusy(false); }
   };
@@ -329,7 +349,17 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen }: { series:
         )}
         {state !== "unreleased" && (
           <>
-            <button onClick={grabSeason} disabled={busy} title={`Auto-grab the best ${name} pack`} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy ? "…" : "Grab"}</button>
+            <button
+              onClick={grabSeason}
+              disabled={busy}
+              title={requested ? `Already requested — the search runs in the background. Click to try again.` : `Auto-grab the best ${name} pack`}
+              className="rounded-lg px-2.5 py-1 text-[11px] font-semibold"
+              style={requested
+                ? { border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink-faint)" }
+                : { border: "1px solid var(--accent-line)", color: "var(--accent)" }}
+            >
+              {busy ? "…" : requested ? "✓ Requested" : "Grab"}
+            </button>
             <button onClick={() => setSearching(true)} title={`Search indexers for ${name}`} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Search</button>
           </>
         )}
@@ -358,7 +388,7 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen }: { series:
 function EpisodeRow({ series, ep, onChange, flash }: { series: SeriesT; ep: Episode; onChange: () => void; flash: (m: string) => void }) {
   const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [requested, setRequested] = useState(() => grabRequested(ep.id));
+  const [requested, setRequested] = useState(() => grabRequested(epKey(ep.id)));
   const dl = !ep.has_file && ep.download ? ep.download : null;
   const dlPct = dl ? Math.round(dl.progress * 100) : 0;
 
@@ -367,7 +397,7 @@ function EpisodeRow({ series, ep, onChange, flash }: { series: SeriesT; ep: Epis
   const settled = ep.has_file || !!dl;
   useEffect(() => {
     if (settled) {
-      clearGrabRequested(ep.id);
+      clearGrabRequested(epKey(ep.id));
       setRequested(false);
     }
   }, [settled, ep.id]);
@@ -381,7 +411,7 @@ function EpisodeRow({ series, ep, onChange, flash }: { series: SeriesT; ep: Epis
     setBusy(true);
     try {
       await api.autoGrabSeries(series.id, ep.season_number, ep.episode_number);
-      markGrabRequested(ep.id);
+      markGrabRequested(epKey(ep.id));
       setRequested(true);
       flash(`Searching for ${sxe(ep)}…`);
     }
