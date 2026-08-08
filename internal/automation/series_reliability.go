@@ -154,10 +154,11 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 				if e.SourceRelease == "" {
 					continue
 				}
-				// Already as good as this profile permits — no candidate it would accept
-				// can beat it, so including it only pads the search with work whose only
-				// possible outcome is "rejected".
-				if c.quality.AtCeiling(ctx, profile, e.SourceRelease) {
+				// Out of headroom: at the best resolution the profile allows, and far
+				// enough up the bitrate ceiling that the next percentage step lands above
+				// it. Nothing the profile would accept can win, so searching only produces
+				// work whose one possible outcome is "rejected".
+				if c.quality.AtCeiling(ctx, profile, e.SourceRelease, gbOf(e.SizeBytes), e.Runtime) {
 					atCeiling++
 					continue
 				}

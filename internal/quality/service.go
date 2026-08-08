@@ -264,29 +264,52 @@ func (s *Service) AllowsUpgrades(ctx context.Context, ref string) bool {
 	return err == nil && sp.UpgradesEnabled
 }
 
-// AtCeiling reports whether a file is already as good as this profile permits, so no
-// release the profile would accept could beat it on resolution or source.
+// AtCeiling reports whether a file has run out of room under its profile, so no release
+// the profile would accept can clear the upgrade threshold and searching for one again is
+// spent traffic.
 //
-// Arrmada has no explicit "cutoff quality" field; the ceiling is implied by the profile's
-// own limits — the best resolution it allows and its maximum source. A 1080p WEB-DL under a
-// profile that allows 1080p and caps the source at WEB-DL is finished: every eligible
-// candidate is, at best, its equal. Searching for it again every sweep is pure indexer
-// traffic for a result that can only be rejected.
+// It falls straight out of the two numbers the profile already declares. Upgrades move in
+// percentage steps (UpgradeMinPercent, floored by MinUpgradePercent), and BitrateCapMbps
+// rejects anything above the ceiling — so an upgrade has to land in the band
 //
-// The tradeoff is deliberate: a same-resolution, same-source swap for format-score reasons
-// (a different audio track, say) is given up for these files. That's the point — "it meets
-// the profile" should mean the searching stops.
-func (s *Service) AtCeiling(ctx context.Context, ref, currentRelease string) bool {
+//	current × (1 + pct/100)  …  cap
+//
+// and once the bottom of that band is above the cap, the band is empty. A 25 Mbps file
+// under a 30 Mbps ceiling with a 25% step would need 31.25 Mbps, which the profile would
+// reject: nothing can win, this sweep or any other.
+//
+// Both sides are H.264-equivalent, the same units the cap and IsBitrateUpgrade use, so an
+// x265 file isn't judged against a raw number that means something different for it.
+//
+// Resolution is still checked, because UpgradeCandidate also upgrades on a pure quality
+// gain: a 720p file can be maxing out the bitrate ceiling and still have a 1080p release
+// waiting for it. Only a file that is BOTH at the best resolution the profile allows AND
+// out of bitrate headroom is genuinely finished.
+//
+// Deliberately not part of the test: source and format scores. Those can technically still
+// improve (a BluRay over a WEB-DL at the same resolution), and giving up that churn is the
+// point of a ceiling — "it meets the profile" should mean the searching stops.
+func (s *Service) AtCeiling(ctx context.Context, ref, currentRelease string, sizeGB float64, runtimeMin int) bool {
 	if strings.TrimSpace(currentRelease) == "" {
 		return false // nothing recorded to judge — let the normal path decide
 	}
-	p, _ := s.Resolve(ctx, ref)
-	// An unbounded profile has no ceiling to reach: with any resolution allowed and no
-	// maximum source, something better can always turn up.
-	if len(p.AllowedResolutions) == 0 || p.MaxSource == "" {
+	sp, err := s.GetStored(ctx, ref)
+	if err != nil {
 		return false
 	}
+	// No cap is no ceiling, and with no percentage step there's no bitrate upgrade path to
+	// exhaust in the first place — in both cases only a quality gain can win, and that
+	// can't be ruled out here.
+	if sp.BitrateCapMbps <= 0 || sp.UpgradeMinPercent <= 0 {
+		return false
+	}
+	if runtimeMin <= 0 || sizeGB <= 0 {
+		return false // can't express the file as a bitrate — don't guess
+	}
+	p, _ := s.Resolve(ctx, ref)
 	cur := parser.Parse(currentRelease)
+	// A resolution the profile allows and we don't have is still an upgrade, whatever the
+	// bitrate says.
 	best := 0
 	for _, res := range p.AllowedResolutions {
 		if resRank[res] > best {
@@ -296,7 +319,19 @@ func (s *Service) AtCeiling(ctx context.Context, ref, currentRelease string) boo
 	if resRank[cur.Resolution] < best {
 		return false
 	}
-	return sourceRank[cur.Source] >= sourceRank[p.MaxSource]
+
+	curBr := BitrateMbps(sizeGB, runtimeMin) * codecEfficiency(cur.Codec)
+	pct := sp.UpgradeMinPercent
+	if pct < MinUpgradePercent {
+		pct = MinUpgradePercent
+	}
+	// The smallest bitrate that would actually count as an upgrade — both gates from
+	// IsBitrateUpgrade, so the ceiling can't disagree with the thing it's predicting.
+	needed := curBr * (1 + pct/100)
+	if floor := curBr + MinUpgradeMarginMbps; floor > needed {
+		needed = floor
+	}
+	return needed > sp.BitrateCapMbps
 }
 
 // Create, Update, Delete manage user profiles.
