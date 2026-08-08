@@ -5,6 +5,42 @@ import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { api, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type DuplicateEpisodeFile } from "../lib/api";
 
+// Auto-grab is fire-and-forget: the API answers 202 and searches in the background, and a
+// search that turns up nothing leaves no trace at all — which is exactly when you most need
+// to remember you already tried. Nothing server-side records the REQUEST, so the mark lives
+// here, in localStorage so it survives a reload while you work down a long list of missing
+// episodes. Episode ids are unique across series, so one flat map covers every show.
+const GRAB_KEY = "arrmada.grabRequested";
+const GRAB_TTL_MS = 24 * 60 * 60 * 1000;
+
+function loadGrabMarks(): Record<string, number> {
+  try {
+    const v = JSON.parse(localStorage.getItem(GRAB_KEY) || "{}");
+    if (!v || typeof v !== "object") return {};
+    // Expire on read, so the map can't grow without bound and a click from last week
+    // doesn't masquerade as one from this session.
+    const cutoff = Date.now() - GRAB_TTL_MS;
+    return Object.fromEntries(Object.entries(v as Record<string, number>).filter(([, t]) => typeof t === "number" && t > cutoff));
+  } catch { return {}; }
+}
+function saveGrabMarks(m: Record<string, number>) {
+  try { localStorage.setItem(GRAB_KEY, JSON.stringify(m)); } catch { /* ignore quota */ }
+}
+function grabRequested(epID: number): boolean {
+  return loadGrabMarks()[String(epID)] !== undefined;
+}
+function markGrabRequested(epID: number) {
+  const m = loadGrabMarks();
+  m[String(epID)] = Date.now();
+  saveGrabMarks(m);
+}
+function clearGrabRequested(epID: number) {
+  const m = loadGrabMarks();
+  if (m[String(epID)] === undefined) return;
+  delete m[String(epID)];
+  saveGrabMarks(m);
+}
+
 const today = new Date().toISOString().slice(0, 10);
 const aired = (e: Episode) => !!e.air_date && e.air_date <= today;
 const sxe = (e: Episode) => `S${String(e.season_number).padStart(2, "0")}E${String(e.episode_number).padStart(2, "0")}`;
@@ -322,8 +358,19 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen }: { series:
 function EpisodeRow({ series, ep, onChange, flash }: { series: SeriesT; ep: Episode; onChange: () => void; flash: (m: string) => void }) {
   const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [requested, setRequested] = useState(() => grabRequested(ep.id));
   const dl = !ep.has_file && ep.download ? ep.download : null;
   const dlPct = dl ? Math.round(dl.progress * 100) : 0;
+
+  // Real state supersedes the reminder: once a download or a file exists, the mark has done
+  // its job and would only go stale.
+  const settled = ep.has_file || !!dl;
+  useEffect(() => {
+    if (settled) {
+      clearGrabRequested(ep.id);
+      setRequested(false);
+    }
+  }, [settled, ep.id]);
   const status = ep.has_file
     ? { label: "Downloaded", tone: "var(--good)" }
     : dl
@@ -332,7 +379,12 @@ function EpisodeRow({ series, ep, onChange, flash }: { series: SeriesT; ep: Epis
 
   const grabEp = async () => {
     setBusy(true);
-    try { await api.autoGrabSeries(series.id, ep.season_number, ep.episode_number); flash(`Searching for ${sxe(ep)}…`); }
+    try {
+      await api.autoGrabSeries(series.id, ep.season_number, ep.episode_number);
+      markGrabRequested(ep.id);
+      setRequested(true);
+      flash(`Searching for ${sxe(ep)}…`);
+    }
     catch (e) { flash((e as Error).message); }
     finally { setBusy(false); }
   };
@@ -367,7 +419,20 @@ function EpisodeRow({ series, ep, onChange, flash }: { series: SeriesT; ep: Epis
           <button onClick={replaceEp} disabled={busy} title="Blocklist this release and grab a different one" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy ? "…" : "Replace"}</button>
           <button onClick={deleteEpFile} disabled={busy} title="Delete this episode's file (to recycle bin)" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>Delete</button>
         </>) : !dl && (
-          <button onClick={grabEp} disabled={busy} title="Auto-grab the best release for this episode" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy ? "…" : "Grab"}</button>
+          // "Requested", not "Grabbed" — the search runs in the background and may find
+          // nothing, so the mark says what actually happened: you asked. Still clickable,
+          // since asking again after a release shows up is the normal next move.
+          <button
+            onClick={grabEp}
+            disabled={busy}
+            title={requested ? "Already requested — the search runs in the background. Click to try again." : "Auto-grab the best release for this episode"}
+            className="rounded-md px-2 py-1 text-[10.5px] font-semibold"
+            style={requested
+              ? { border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink-faint)" }
+              : { border: "1px solid var(--accent-line)", color: "var(--accent)" }}
+          >
+            {busy ? "…" : requested ? "✓ Requested" : "Grab"}
+          </button>
         )}
         <button onClick={() => setSearching(true)} title="Search indexers for this episode" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Search</button>
       </div>
