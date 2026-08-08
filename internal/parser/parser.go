@@ -195,14 +195,61 @@ var (
 	// groups (No0bSubs, …) number episodes absolutely across seasons, so "S2 29" is the
 	// 29th episode overall. The trailing \b keeps a resolution like "S2 1080p" out.
 	reAnimeSeasonAbs = regexp.MustCompile(`(?i)\bS(\d{1,2})\s+(\d{1,4})\b`)
+	// Anime CRC32: the 8-hex checksum fansub groups stamp on a file. Along with a leading
+	// "[Group]" it's the marker that a name follows anime conventions rather than scene TV.
+	reAnimeCRC = regexp.MustCompile(`\[[0-9A-Fa-f]{8}\]`)
+	// Anime absolute episode WITHOUT the dash: "[DB] Bleach 168 [CRC]",
+	// "Arigatou.Bleach.01.[x264.AAC][CRC]", "[ELEMENT] Bleach 230 HD [CRC]". Older fansub
+	// groups omit the " - " entirely, and a 366-episode Bleach pack had 200+ files that no
+	// other form could read.
+	//
+	// Anchored to the end of the un-bracketed text, and only a short technical token may
+	// follow the number. That's what separates an episode from a title: "230 HD" is episode
+	// 230, while "Jump Festa 2004 Anime Tour + 13 Squad Omake" ends in words and must not
+	// match. A title that genuinely ends in a number ("Mob Psycho 100") can still be misread
+	// here, which is why the import path validates the number against the series' real
+	// episode list before placing anything.
+	reAbsBare = regexp.MustCompile(`(?i)[\s.](\d{1,4})(?:v\d+)?(?:\s*[-~]\s*(\d{1,4}))?(?:[\s.]+(?:hd|sd|raw|dvd|bd|uncensored|\d{3,4}[pi]))*[\s.]*$`)
 )
+
+// videoExts are trimmed off a release name before parsing. Only .mkv/.mp4 used to be, which
+// left "avi" sitting in the title of every file from an older pack.
+var videoExts = []string{".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".wmv", ".mpg", ".mpeg", ".webm", ".flv"}
+
+// maskBracketed blanks out bracketed regions, preserving the string's length so match
+// indices stay valid against the original.
+func maskBracketed(s string) string {
+	b := []byte(s)
+	depth := 0
+	for i, c := range b {
+		switch c {
+		case '(', '[', '{':
+			depth++
+			b[i] = ' '
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+			b[i] = ' '
+		default:
+			if depth > 0 {
+				b[i] = ' '
+			}
+		}
+	}
+	return string(b)
+}
 
 // Parse extracts structured attributes from a release name.
 func Parse(name string) Release {
 	name = strings.TrimSpace(name)
 	// Strip a trailing container extension if present.
-	name = strings.TrimSuffix(name, ".mkv")
-	name = strings.TrimSuffix(name, ".mp4")
+	for _, ext := range videoExts {
+		if strings.EqualFold(filepath.Ext(name), ext) {
+			name = name[:len(name)-len(ext)]
+			break
+		}
+	}
 
 	var r Release
 
@@ -304,6 +351,17 @@ func Parse(name string) Release {
 				if eps := absoluteRange(name[m[4]:m[5]], ""); len(eps) > 0 {
 					r.AbsoluteEpisodes = eps
 					r.Season = 0
+					absCut = m[0]
+				}
+			}
+		}
+		// Dash-less fansub form, last because it's the loosest. Matched against a masked
+		// copy so a "[1280x720]" or "[x264 AAC]" tag can't be read as the episode, while
+		// the indices still line up with name for the title cut.
+		if len(r.AbsoluteEpisodes) == 0 && r.Season == 0 && (titleStart > 0 || reAnimeCRC.MatchString(name)) {
+			if m := reAbsBare.FindStringSubmatchIndex(maskBracketed(name)); m != nil {
+				r.AbsoluteEpisodes = absoluteRange(name[m[2]:m[3]], subIdx(name, m, 4))
+				if len(r.AbsoluteEpisodes) > 0 {
 					absCut = m[0]
 				}
 			}
@@ -726,6 +784,9 @@ func detectEdition(lc string) string {
 // (after the episode marker) is the episode title.
 var reQualityStart = regexp.MustCompile(`(?i)\b(\d{3,4}[pi]|web[-. ]?dl|webrip|bluray|blu-ray|hdtv|remux|dvdrip|x26[45]|h[-. ]?26[45]|hevc|avc|xvid|aac|ac3|eac3|dts|ddp|dd\+|truehd|atmos|10bit|8bit|amzn|nf|hmax|dsnp|atvp|repack|proper|internal|complete)\b`)
 
+// reEpisodeQualityStart is reQualityStart without "complete" — see EpisodeTitleFrom.
+var reEpisodeQualityStart = regexp.MustCompile(`(?i)\b(\d{3,4}[pi]|web[-. ]?dl|webrip|bluray|blu-ray|hdtv|remux|dvdrip|x26[45]|h[-. ]?26[45]|hevc|avc|xvid|aac|ac3|eac3|dts|ddp|dd\+|truehd|atmos|10bit|8bit|amzn|nf|hmax|dsnp|atvp|repack|proper|internal)\b`)
+
 // EpisodeTitleFrom extracts the episode title a filename carries, if any:
 // "Show - 6x03 - The Pawnee-Eagleton Tip-Off Classic.mkv" → "The Pawnee-Eagleton Tip-Off Classic".
 //
@@ -772,7 +833,11 @@ func EpisodeTitleFrom(name string) string {
 		return ""
 	}
 	rest := name[loc[1]:]
-	if q := reQualityStart.FindStringIndex(rest); q != nil {
+	// reEpisodeQualityStart, not reQualityStart: "complete" marks a pack in a release name,
+	// but a name that already carries SxxExx isn't a pack, so the word belongs to the title.
+	// Cutting there turned "S06E14 Ichigo Complete Hollowification" into "Ichigo" and made
+	// the anime title-mismatch warning fire on a placement that was perfectly correct.
+	if q := reEpisodeQualityStart.FindStringIndex(rest); q != nil {
 		rest = rest[:q[0]]
 	}
 	rest = strings.NewReplacer(".", " ", "_", " ").Replace(rest)

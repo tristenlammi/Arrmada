@@ -121,6 +121,38 @@ func TestParseTV(t *testing.T) {
 			"[Judas] Some Show - 01-03 [1080p]",
 			Release{Title: "Some Show", Resolution: Res1080p, Group: "Judas", AbsoluteEpisodes: []int{1, 2, 3}},
 		},
+		{
+			// Dash-less fansub form. Older groups drop the " - " entirely; a 366-file
+			// Bleach pack had 200+ of these and none of them could be placed.
+			"[DB]_Bleach_168_[441E1525].avi",
+			Release{Title: "Bleach", Group: "DB", AbsoluteEpisodes: []int{168}},
+		},
+		{
+			// A technical token after the number is still an episode, not a title.
+			"[ELEMENT]_Bleach_230_HD_[84778B6F].avi",
+			Release{Title: "Bleach", Group: "ELEMENT", AbsoluteEpisodes: []int{230}},
+		},
+		{
+			// The resolution tag lives in its own bracket and must not be read as the
+			// episode — the masked copy hides it.
+			"[ELEMENT]_Bleach_240_[1280x720]_[233529E1].avi",
+			Release{Title: "Bleach", Group: "ELEMENT", AbsoluteEpisodes: []int{240}},
+		},
+		{
+			"[DB]_Bleach_176-177_[ADB6869D].avi",
+			Release{Title: "Bleach", Group: "DB", AbsoluteEpisodes: []int{176, 177}},
+		},
+		{
+			// No leading [Group]; the CRC32 is what marks it as anime.
+			"Arigatou.Bleach.100.[x264.AAC][A3BE77C2].mkv",
+			Release{Title: "Arigatou Bleach", Codec: CodecX264, AbsoluteEpisodes: []int{100}},
+		},
+		{
+			// A number in the MIDDLE of a title is not an episode. Placing this as episode
+			// 13 is exactly the silent mislabel the dash-less form has to avoid.
+			"[Lunar]_Bleach_Jump_Festa_2004_Anime_Tour_+_13_Squad_Omake_[DVD][AF803142].avi",
+			Release{Title: "Bleach Jump Festa", Year: 2004, Group: "Lunar"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -182,5 +214,11 @@ func assertRelease(t *testing.T, got, want Release) {
 	}
 	if want.Episodes != nil && !reflect.DeepEqual(got.Episodes, want.Episodes) {
 		t.Errorf("Episodes = %v, want %v", got.Episodes, want.Episodes)
+	}
+	// Compared even when want has none: "this name yields NO absolute episode" is the
+	// assertion that keeps a loose anime pattern from claiming numbers out of a title.
+	if len(got.AbsoluteEpisodes) != len(want.AbsoluteEpisodes) ||
+		(want.AbsoluteEpisodes != nil && !reflect.DeepEqual(got.AbsoluteEpisodes, want.AbsoluteEpisodes)) {
+		t.Errorf("AbsoluteEpisodes = %v, want %v", got.AbsoluteEpisodes, want.AbsoluteEpisodes)
 	}
 }
