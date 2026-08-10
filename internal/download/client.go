@@ -45,13 +45,18 @@ type Item struct {
 	Progress        float64 `json:"progress"` // 0..1
 	SizeBytes       int64   `json:"size_bytes"`
 	DownloadedBytes int64   `json:"downloaded_bytes"`
-	DownSpeed       int64   `json:"down_speed"` // bytes/s
-	UpSpeed         int64   `json:"up_speed"`   // bytes/s
-	ETASeconds      int64   `json:"eta_seconds"`
-	Ratio           float64 `json:"ratio"`
-	SeedingTime     int64   `json:"seeding_time,omitempty"` // seconds seeded after completion
-	Category        string  `json:"category,omitempty"`
-	ContentPath     string  `json:"content_path,omitempty"` // path on disk (for import)
+	// UploadedBytes / TransferredBytes are the client's own transfer counters, kept so a
+	// seed goal can be judged from real numbers instead of the client's Ratio field —
+	// qBittorrent reports an unbounded ratio as a sentinel, which clears any target.
+	UploadedBytes    int64   `json:"uploaded_bytes"`
+	TransferredBytes int64   `json:"transferred_bytes"` // actually pulled from peers (may be 0 for pre-existing data)
+	DownSpeed        int64   `json:"down_speed"`        // bytes/s
+	UpSpeed          int64   `json:"up_speed"`          // bytes/s
+	ETASeconds       int64   `json:"eta_seconds"`
+	Ratio            float64 `json:"ratio"`
+	SeedingTime      int64   `json:"seeding_time,omitempty"` // seconds seeded after completion
+	Category         string  `json:"category,omitempty"`
+	ContentPath      string  `json:"content_path,omitempty"` // path on disk (for import)
 }
 
 // ClientSettings is the tunable subset of a torrent client's global config.

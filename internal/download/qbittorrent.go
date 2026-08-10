@@ -457,6 +457,8 @@ type qbitTorrent struct {
 	Ratio       float64 `json:"ratio"`
 	Category    string  `json:"category"`
 	Completed   int64   `json:"completed"`
+	Uploaded    int64   `json:"uploaded"`
+	Downloaded  int64   `json:"downloaded"`
 	AmountLeft  int64   `json:"amount_left"`
 	ContentPath string  `json:"content_path"`
 	SeedingTime int64   `json:"seeding_time"` // seconds spent seeding after completion
@@ -470,19 +472,21 @@ func parseTorrentsInfo(body []byte) ([]Item, error) {
 	items := make([]Item, 0, len(raw))
 	for _, t := range raw {
 		items = append(items, Item{
-			Hash:            t.Hash,
-			Name:            t.Name,
-			State:           normalizeState(t.State),
-			Progress:        t.Progress,
-			SizeBytes:       t.Size,
-			DownloadedBytes: t.Completed,
-			DownSpeed:       t.DLSpeed,
-			UpSpeed:         t.UPSpeed,
-			ETASeconds:      t.ETA,
-			Ratio:           t.Ratio,
-			Category:        t.Category,
-			ContentPath:     t.ContentPath,
-			SeedingTime:     t.SeedingTime,
+			Hash:             t.Hash,
+			Name:             t.Name,
+			State:            normalizeState(t.State),
+			Progress:         t.Progress,
+			SizeBytes:        t.Size,
+			DownloadedBytes:  t.Completed,
+			UploadedBytes:    t.Uploaded,
+			TransferredBytes: t.Downloaded,
+			DownSpeed:        t.DLSpeed,
+			UpSpeed:          t.UPSpeed,
+			ETASeconds:       t.ETA,
+			Ratio:            t.Ratio,
+			Category:         t.Category,
+			ContentPath:      t.ContentPath,
+			SeedingTime:      t.SeedingTime,
 		})
 	}
 	return items, nil

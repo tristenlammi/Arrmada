@@ -1134,6 +1134,32 @@ func (c *Coordinator) DetectStalled(ctx context.Context) {
 	}
 }
 
+// seedRatioOf is the torrent's real upload ratio, or -1 when it can't be worked out.
+//
+// The client's own Ratio field is NOT trustworthy for this. qBittorrent reports an
+// unbounded ratio as a sentinel (MAX_RATIO, 9999) whenever its download counter is zero —
+// pre-existing data, a cross-seed, or counters lost across a restart. Compared straight
+// against a target of 2 that sentinel clears instantly, and a season pack that had
+// uploaded 4 MB of 3.65 GB was deleted a day into a 28-day seed goal, earning a hit-and-run
+// on the tracker it came from.
+//
+// So the ratio is computed from the byte counters instead, and when there is no honest
+// denominator this returns -1 and the caller falls back to the time goal. Erring toward
+// seeding too long is a cost; erring toward too short is a ban.
+func seedRatioOf(it download.Item) float64 {
+	// What was actually pulled from peers is the right denominator. Data that was already
+	// on disk falls back to the completed size — still a real number, and it can only make
+	// the ratio look smaller, which keeps the torrent seeding.
+	denom := it.TransferredBytes
+	if denom <= 0 {
+		denom = it.DownloadedBytes
+	}
+	if denom <= 0 || it.UploadedBytes < 0 {
+		return -1
+	}
+	return float64(it.UploadedBytes) / float64(denom)
+}
+
 // ManageSeeding removes imported torrents once they hit their indexer's seed
 // goal (ratio or time). Safe because the library keeps its own copy of the file.
 func (c *Coordinator) ManageSeeding(ctx context.Context) {
@@ -1158,10 +1184,13 @@ func (c *Coordinator) ManageSeeding(ctx context.Context) {
 		//   off → remove as soon as it's imported (no seeding).
 		//   on  → remove once it hits a ratio or seeding-time goal (both 0 = forever).
 		var over bool
+		ratio := seedRatioOf(it)
 		if !g.SeedEnabled {
 			over = true
 		} else {
-			over = g.SeedRatio > 0 && it.Ratio >= g.SeedRatio
+			// ratio < 0 means the client couldn't give us an honest number — see
+			// seedRatioOf. Then only the time goal may end the seed.
+			over = g.SeedRatio > 0 && ratio >= 0 && ratio >= g.SeedRatio
 			if !over && g.SeedHours > 0 {
 				over = it.SeedingTime >= int64(g.SeedHours)*3600
 			}
@@ -1178,7 +1207,8 @@ func (c *Coordinator) ManageSeeding(ctx context.Context) {
 		if !g.SeedEnabled {
 			reason = "seeding off — removed after import"
 		}
-		c.log.Info("automation: removed torrent", "release", g.Title, "indexer", g.Indexer, "reason", reason, "ratio", it.Ratio, "seed_time_s", it.SeedingTime)
+		c.log.Info("automation: removed torrent", "release", g.Title, "indexer", g.Indexer, "reason", reason,
+			"ratio", ratio, "uploaded_bytes", it.UploadedBytes, "seed_time_s", it.SeedingTime)
 		if g.MediaType == "movie" {
 			c.movies.AddEvent(ctx, g.MovieID, "seeded", g.Title+" — "+reason+", download removed")
 		}
