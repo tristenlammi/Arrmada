@@ -166,15 +166,19 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 			active++
 		}
 		entry := map[string]any{
-			"hash":            it.Hash,
-			"name":            it.Name,
-			"state":           it.State,
-			"progress":        it.Progress,
-			"size_bytes":      it.SizeBytes,
-			"down_speed":      it.DownSpeed,
-			"up_speed":        it.UpSpeed,
-			"eta_seconds":     it.ETASeconds,
-			"ratio":           it.Ratio,
+			"hash":        it.Hash,
+			"name":        it.Name,
+			"state":       it.State,
+			"progress":    it.Progress,
+			"size_bytes":  it.SizeBytes,
+			"down_speed":  it.DownSpeed,
+			"up_speed":    it.UpSpeed,
+			"eta_seconds": it.ETASeconds,
+			// The computed ratio, not the client's field: qBittorrent reports an unbounded
+			// ratio as a 9999 sentinel, so the page would show that while the seed-goal
+			// logic (which now works from the byte counters) sees the real figure.
+			"ratio":           ratioOrZero(it.SeedRatio()),
+			"uploaded_bytes":  it.UploadedBytes,
 			"seeding_time":    it.SeedingTime,
 			"quality_profile": profile,
 			"media_type":      mediaType,
@@ -320,4 +324,13 @@ func (a *api) logUnmatchedSeeds(ctx context.Context, names []string, policies ma
 		a.deps.Log.Warn("seeding: more torrents without a seed rule",
 			"shown", len(sample), "total", len(names))
 	}
+}
+
+// ratioOrZero renders an unknowable ratio as 0 rather than the -1 sentinel, which would
+// show up in the UI as a negative ratio.
+func ratioOrZero(r float64) float64 {
+	if r < 0 {
+		return 0
+	}
+	return r
 }

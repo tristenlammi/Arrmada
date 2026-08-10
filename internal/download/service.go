@@ -291,21 +291,35 @@ func (s *Service) CompletedInCategory(ctx context.Context, category string) ([]I
 	}
 	var out []Item
 	for _, it := range all {
-		if it.Progress >= 1.0 && (category == "" || it.Category == category) {
+		if it.Complete() && (category == "" || it.Category == category) {
 			out = append(out, it)
 		}
 	}
 	return out, nil
 }
 
-// Queue aggregates live download items across all enabled clients.
+// Queue aggregates live download items across all enabled clients. A partial result — some
+// clients answered, some didn't — is returned without error; callers that draw conclusions
+// from a torrent's ABSENCE must use QueueComplete instead.
 func (s *Service) Queue(ctx context.Context) ([]Item, error) {
+	items, _, err := s.QueueComplete(ctx)
+	return items, err
+}
+
+// QueueComplete is Queue that also reports whether EVERY enabled client answered.
+//
+// It matters because "this torrent isn't in the queue" is treated as a stall, and that
+// blocklists the release and grabs an alternate. With more than one client, a single
+// unreachable one makes all of its torrents vanish from the list while Queue still returns
+// nil error — so healthy downloads would be condemned for their client being down.
+func (s *Service) QueueComplete(ctx context.Context) ([]Item, bool, error) {
 	clients, err := s.repo.ListEnabled(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	var items []Item
 	var listed bool
+	var failed int
 	var lastErr error
 	for _, c := range clients {
 		impl, ok := s.registry.For(c.Kind)
@@ -316,6 +330,7 @@ func (s *Service) Queue(ctx context.Context) ([]Item, error) {
 		if err != nil {
 			s.log.Warn("download client list failed", "client", c.Name, "err", err)
 			lastErr = err
+			failed++
 			continue
 		}
 		listed = true
@@ -325,7 +340,7 @@ func (s *Service) Queue(ctx context.Context) ([]Item, error) {
 	// returning ([], nil) here makes downstream consumers (import sweep, in-queue
 	// dedup, stall detection) wrongly conclude nothing is downloading.
 	if !listed && lastErr != nil {
-		return nil, fmt.Errorf("all download clients failed to list: %w", lastErr)
+		return nil, false, fmt.Errorf("all download clients failed to list: %w", lastErr)
 	}
-	return items, nil
+	return items, failed == 0, nil
 }

@@ -262,7 +262,7 @@ func seriesDownloading(queue []download.Item, seriesTitle string) bool {
 // stack: seeding is bookkeeping, not a download.
 func seriesInFlight(queue []download.Item, seriesTitle string) string {
 	for _, it := range queue {
-		if it.Progress >= 1 {
+		if it.Complete() {
 			continue // finished — importing or seeding, either way not in flight
 		}
 		if it.Category == seriesCategory && titleKey(parser.Parse(it.Name).Title) == titleKey(seriesTitle) {

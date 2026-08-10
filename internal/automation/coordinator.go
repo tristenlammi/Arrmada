@@ -1063,10 +1063,12 @@ func (c *Coordinator) stalledInQueue(g grab, item download.Item, found bool, win
 	if !found {
 		return true
 	}
-	if item.State == "error" || item.State == "missingFiles" {
+	// "missingFiles" isn't tested here: normalizeState already folds it into "error", so a
+	// second check for it could never fire.
+	if item.State == "error" {
 		return true
 	}
-	return item.Progress < 1.0 && c.noProgressFor(g.ID, item.Progress, window)
+	return !item.Complete() && c.noProgressFor(g.ID, item.Progress, window)
 }
 
 // DetectStalled fails over grabs that haven't progressed within their profile's
@@ -1077,13 +1079,21 @@ func (c *Coordinator) DetectStalled(ctx context.Context) {
 		return
 	}
 	c.pruneStallSamples(pending)
-	queue, err := c.downloads.Queue(ctx)
+	queue, whole, err := c.downloads.QueueComplete(ctx)
 	if err != nil {
 		// Without the queue every pending grab reads as "not found", and not-found means
 		// stalled — one unreachable download client during a tick would mass-blocklist
 		// perfectly healthy downloads and re-grab alternates for all of them. Skip the
 		// cycle instead; the next tick is two minutes away.
 		c.log.Warn("automation: stall check skipped — can't read the download queue", "err", err)
+		return
+	}
+	if !whole {
+		// Same reasoning, for the case the error branch misses: Queue reports success as
+		// long as ANY client answered, so with several clients one being down silently
+		// hides all of its torrents. Absence is the evidence stall detection acts on, so a
+		// partial list is not something it may act on at all.
+		c.log.Warn("automation: stall check skipped — a download client didn't answer, so a missing torrent can't be told from a down client")
 		return
 	}
 	for _, g := range pending {
@@ -1134,32 +1144,6 @@ func (c *Coordinator) DetectStalled(ctx context.Context) {
 	}
 }
 
-// seedRatioOf is the torrent's real upload ratio, or -1 when it can't be worked out.
-//
-// The client's own Ratio field is NOT trustworthy for this. qBittorrent reports an
-// unbounded ratio as a sentinel (MAX_RATIO, 9999) whenever its download counter is zero —
-// pre-existing data, a cross-seed, or counters lost across a restart. Compared straight
-// against a target of 2 that sentinel clears instantly, and a season pack that had
-// uploaded 4 MB of 3.65 GB was deleted a day into a 28-day seed goal, earning a hit-and-run
-// on the tracker it came from.
-//
-// So the ratio is computed from the byte counters instead, and when there is no honest
-// denominator this returns -1 and the caller falls back to the time goal. Erring toward
-// seeding too long is a cost; erring toward too short is a ban.
-func seedRatioOf(it download.Item) float64 {
-	// What was actually pulled from peers is the right denominator. Data that was already
-	// on disk falls back to the completed size — still a real number, and it can only make
-	// the ratio look smaller, which keeps the torrent seeding.
-	denom := it.TransferredBytes
-	if denom <= 0 {
-		denom = it.DownloadedBytes
-	}
-	if denom <= 0 || it.UploadedBytes < 0 {
-		return -1
-	}
-	return float64(it.UploadedBytes) / float64(denom)
-}
-
 // ManageSeeding removes imported torrents once they hit their indexer's seed
 // goal (ratio or time). Safe because the library keeps its own copy of the file.
 func (c *Coordinator) ManageSeeding(ctx context.Context) {
@@ -1172,7 +1156,7 @@ func (c *Coordinator) ManageSeeding(ctx context.Context) {
 		return
 	}
 	for _, it := range queue {
-		if it.Progress < 1 {
+		if !it.Complete() {
 			continue // still downloading — never remove before it's done + imported
 		}
 		g := matchGrab(grabs, it.Hash, it.Name)
@@ -1184,7 +1168,7 @@ func (c *Coordinator) ManageSeeding(ctx context.Context) {
 		//   off → remove as soon as it's imported (no seeding).
 		//   on  → remove once it hits a ratio or seeding-time goal (both 0 = forever).
 		var over bool
-		ratio := seedRatioOf(it)
+		ratio := it.SeedRatio()
 		if !g.SeedEnabled {
 			over = true
 		} else {

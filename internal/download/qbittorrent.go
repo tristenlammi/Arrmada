@@ -459,6 +459,7 @@ type qbitTorrent struct {
 	Completed   int64   `json:"completed"`
 	Uploaded    int64   `json:"uploaded"`
 	Downloaded  int64   `json:"downloaded"`
+	TotalSize   int64   `json:"total_size"` // every file, including deselected ones
 	AmountLeft  int64   `json:"amount_left"`
 	ContentPath string  `json:"content_path"`
 	SeedingTime int64   `json:"seeding_time"` // seconds spent seeding after completion
@@ -480,6 +481,8 @@ func parseTorrentsInfo(body []byte) ([]Item, error) {
 			DownloadedBytes:  t.Completed,
 			UploadedBytes:    t.Uploaded,
 			TransferredBytes: t.Downloaded,
+			RemainingBytes:   t.AmountLeft,
+			TotalSizeBytes:   t.TotalSize,
 			DownSpeed:        t.DLSpeed,
 			UpSpeed:          t.UPSpeed,
 			ETASeconds:       t.ETA,

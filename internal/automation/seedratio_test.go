@@ -20,7 +20,7 @@ func TestSeedRatioOfIgnoresTheClientsSentinel(t *testing.T) {
 		Ratio:         9999, // qBittorrent's MAX_RATIO
 		UploadedBytes: 4 << 20, TransferredBytes: hawkBytes, DownloadedBytes: hawkBytes,
 	}
-	got := seedRatioOf(hawk)
+	got := hawk.SeedRatio()
 	if want := float64(4<<20) / float64(hawkBytes); math.Abs(got-want) > 1e-9 {
 		t.Errorf("ratio = %v, want %v (uploaded ÷ downloaded, not the client's field)", got, want)
 	}
@@ -31,20 +31,20 @@ func TestSeedRatioOfIgnoresTheClientsSentinel(t *testing.T) {
 	// Data already on disk: nothing was pulled from peers, so fall back to the completed
 	// size. A real denominator keeps the ratio small, which keeps the torrent seeding.
 	preexisting := download.Item{Ratio: 9999, UploadedBytes: 1 << 20, TransferredBytes: 0, DownloadedBytes: 2 * gb}
-	if r := seedRatioOf(preexisting); r < 0 || r >= 1 {
+	if r := preexisting.SeedRatio(); r < 0 || r >= 1 {
 		t.Errorf("pre-existing data: ratio = %v, want a small positive number", r)
 	}
 
 	// No honest denominator at all → refuse to judge, so only the time goal can end it.
 	// Erring toward seeding too long costs disk; erring short costs a tracker ban.
 	blank := download.Item{Ratio: 9999, UploadedBytes: 5 << 20}
-	if r := seedRatioOf(blank); r >= 0 {
+	if r := blank.SeedRatio(); r >= 0 {
 		t.Errorf("unknown transfer: ratio = %v, want -1", r)
 	}
 
 	// A genuinely well-seeded torrent still reports a ratio that meets the goal.
 	seeded := download.Item{UploadedBytes: 8 * gb, TransferredBytes: 4 * gb, DownloadedBytes: 4 * gb}
-	if r := seedRatioOf(seeded); r < 2 {
+	if r := seeded.SeedRatio(); r < 2 {
 		t.Errorf("well-seeded: ratio = %v, want >= 2", r)
 	}
 }
