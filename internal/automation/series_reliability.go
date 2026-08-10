@@ -60,7 +60,11 @@ func (c *Coordinator) RSSSyncSeries(ctx context.Context) {
 	}
 	queue, _ := c.downloads.Queue(ctx)
 	for _, meta := range all {
-		if !meta.Monitored || seriesDownloading(queue, meta.Title) {
+		if !meta.Monitored {
+			continue
+		}
+		if busy := seriesInFlight(queue, meta.Title); busy != "" {
+			c.log.Info("rss: skipping series — a grab is still downloading", "series", meta.Title, "release", busy)
 			continue
 		}
 		s, err := c.series.Get(ctx, meta.ID)
@@ -103,7 +107,11 @@ func (c *Coordinator) UpgradeSeries(ctx context.Context) {
 		return
 	}
 	for _, meta := range all {
-		if !meta.Monitored || seriesDownloading(queue, meta.Title) {
+		if !meta.Monitored {
+			continue
+		}
+		if busy := seriesInFlight(queue, meta.Title); busy != "" {
+			c.log.Info("series: skipping upgrade sweep — a grab is still downloading", "series", meta.Title, "release", busy)
 			continue
 		}
 		if err := c.upgradeSeries(ctx, meta.ID); err != nil {
@@ -238,12 +246,30 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 // seriesDownloading reports whether the queue already has a TV torrent for this series
 // (so upgrade/RSS sweeps don't stack a second grab on top of an in-flight one).
 func seriesDownloading(queue []download.Item, seriesTitle string) bool {
+	return seriesInFlight(queue, seriesTitle) != ""
+}
+
+// seriesInFlight returns the name of a torrent still being FETCHED for this series, or ""
+// when nothing is. It's what stops a sweep stacking a second copy on top of an in-progress
+// grab — and the reason it names the release is that every caller skips the series in
+// silence, which made this impossible to diagnose from a log.
+//
+// Progress < 1 is the whole test, and it matters: the queue is the download client's full
+// torrent list, seeding torrents included. Treating those as "downloading" froze a show out
+// of the missing sweep, RSS sync AND the upgrade sweep for the entire seeding period — 22
+// hours in the case that surfaced this — so a mid-season episode that aired inside that
+// window was never picked up at all. Once the bytes are on disk there's nothing left to
+// stack: seeding is bookkeeping, not a download.
+func seriesInFlight(queue []download.Item, seriesTitle string) string {
 	for _, it := range queue {
+		if it.Progress >= 1 {
+			continue // finished — importing or seeding, either way not in flight
+		}
 		if it.Category == seriesCategory && titleKey(parser.Parse(it.Name).Title) == titleKey(seriesTitle) {
-			return true
+			return it.Name
 		}
 	}
-	return false
+	return ""
 }
 
 // releaseIsForSeries reports whether a release title belongs to the given series

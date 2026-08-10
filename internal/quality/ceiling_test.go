@@ -101,3 +101,52 @@ func TestAtCeilingNeedsACapAndAStep(t *testing.T) {
 		t.Error("with no percentage step there's no bitrate band to exhaust — only quality gains, which this can't rule out")
 	}
 }
+
+// The searcher takes a release on a quality gain that isn't a resolution gain (a WEB-DL
+// with Atmos over a plain WEB rip). The import gate only knew resolution and bitrate, so
+// it refused the finished download — a wasted grab that then sat seeding in the client and
+// froze the show's sweeps. Both sides must now reach the same verdict.
+func TestIsQualityUpgradeMatchesTheSearcher(t *testing.T) {
+	s, ctx := testService(t)
+	p, err := s.Create(ctx, StoredProfile{
+		MediaType: MediaSeries, Name: "web-dl preferred",
+		AllowedResolutions: []string{"1080p"},
+		FormatScores:       map[string]int{"Atmos": 50, "DDP": 20},
+		UpgradesEnabled:    true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := "custom:" + strconv.FormatInt(p.ID, 10)
+
+	const (
+		ethel = "Lioness 2023 S03E01 1080p WEB h264-ETHEL"
+		flux  = "Lioness 2023 S03E01 1080p AMZN WEB-DL DDP5 1 Atmos H 264-FLUX"
+	)
+	if !s.IsQualityUpgrade(ctx, ref, flux, 2.0, ethel, 2.0) {
+		t.Error("the release the searcher chose must not be refused on arrival")
+	}
+	if s.IsQualityUpgrade(ctx, ref, ethel, 2.0, flux, 2.0) {
+		t.Error("the reverse is a downgrade")
+	}
+	if s.IsQualityUpgrade(ctx, ref, flux, 2.0, flux, 2.0) {
+		t.Error("the same release must not score as an upgrade over itself — that's a re-import loop")
+	}
+	if s.IsQualityUpgrade(ctx, ref, flux, 2.0, "", 2.0) {
+		t.Error("no recorded baseline must not count as an upgrade")
+	}
+
+	// Upgrades off means the searcher would never have picked it, so the importer must not
+	// replace a file on its own initiative either.
+	off, err := s.Create(ctx, StoredProfile{
+		MediaType: MediaSeries, Name: "no upgrades",
+		AllowedResolutions: []string{"1080p"},
+		FormatScores:       map[string]int{"Atmos": 50, "DDP": 20},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.IsQualityUpgrade(ctx, "custom:"+strconv.FormatInt(off.ID, 10), flux, 2.0, ethel, 2.0) {
+		t.Error("upgrades disabled must stop the import gate replacing files too")
+	}
+}

@@ -164,6 +164,39 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 	return Candidate{}, false
 }
 
+// IsQualityUpgrade reports whether a candidate scores strictly higher than the current
+// file under this profile — the OTHER half of what UpgradeCandidate accepts, exposed so
+// the import gate can honour the same verdict.
+//
+// The two used to disagree on exactly this. The searcher took a release on a quality gain
+// that wasn't a resolution gain (a WEB-DL with Atmos over a plain WEB rip, say), the
+// importer looked only at resolution and bitrate, and the finished download was refused on
+// arrival — a wasted grab that then sat in the client seeding, blocking the show's sweeps
+// for as long as it stayed there.
+//
+// Avoided formats are refused the same way UpgradeCandidate refuses them: keeping the
+// current file is always preferable to swapping into something the profile avoids.
+func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string, candSizeGB float64, currentRelease string, currentSizeGB float64) bool {
+	if strings.TrimSpace(candRelease) == "" || strings.TrimSpace(currentRelease) == "" {
+		return false // no baseline to beat — the caller's other gates decide
+	}
+	// Same gate as IsBitrateUpgrade and UpgradeCandidate. With upgrades off the searcher
+	// would never have chosen this release, so the importer replacing a file on its own
+	// initiative would break the one promise that setting makes: the library stops churning.
+	if sp, err := s.GetStored(ctx, ref); err != nil || !sp.UpgradesEnabled {
+		return false
+	}
+	p, e := s.Resolve(ctx, ref)
+	// Seeders are irrelevant here and unknown for a file on disk, so both sides get the
+	// same large value rather than letting a seeder term skew the comparison.
+	cand := e.Evaluate(p, NewCandidate(candRelease, candSizeGB, 1_000_000))
+	cur := e.Evaluate(p, NewCandidate(currentRelease, currentSizeGB, 1_000_000))
+	if cand.Avoided && !cur.Avoided {
+		return false
+	}
+	return cand.Total > cur.Total
+}
+
 // Encode is one side of a bitrate comparison: how big it is and what codec it used.
 type Encode struct {
 	SizeGB float64

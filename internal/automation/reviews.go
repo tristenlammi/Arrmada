@@ -463,9 +463,16 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		// multi-episode file downgrade its second episode (E01 missing → whole file
 		// accepted → E02's better file superseded too), and conversely blocked E02
 		// entirely when E01 already had the better file.
+		// The name that actually carries the quality tags — a pack's per-file names often
+		// carry none, so fall back to the release folder. Computed here rather than after
+		// the gate because SCORING the candidate needs the same name that gets recorded.
+		sourceName := filepath.Base(v.Path)
+		if parser.Parse(sourceName).Resolution == "" && release.Resolution != "" {
+			sourceName = filepath.Base(contentPath)
+		}
 		wanted := refs[:0:0]
 		for _, ref := range refs {
-			if c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rel, v.Size) {
+			if c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rel, sourceName, v.Size) {
 				wanted = append(wanted, ref)
 			}
 		}
@@ -479,16 +486,6 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 				"resolved_to", refsLabel(refs),
 				"candidate_resolution", string(rel.Resolution))
 			continue
-		}
-		// Record the name that actually describes the quality. A pack's per-file names
-		// often don't ("Parks and Recreation - 1x01 - Make My Pit a Park.mkv"), and the
-		// library file is renamed on import, so recording the bare filename left the
-		// episode with NO resolution recorded anywhere — which any future 1080p release
-		// would then outrank, re-importing the same quality forever. The release name
-		// carries it, so use that when the file's own name doesn't.
-		sourceName := filepath.Base(v.Path)
-		if parser.Parse(sourceName).Resolution == "" && release.Resolution != "" {
-			sourceName = filepath.Base(contentPath)
 		}
 		if c.refsAgreeWithFile(ctx, s.ID, rel, refs) {
 			// The filename's own numbering is correct — the standard path, which also
@@ -705,7 +702,7 @@ func inheritQuality(file, release parser.Release) parser.Release {
 // Resolution still governs first — it must never DROP, and a genuine resolution increase
 // is always taken. The bitrate margin only decides the equal-resolution case, which is
 // exactly where the old rule said "no" to everything.
-func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, season, episode int, cand parser.Release, candBytes int64) bool {
+func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, season, episode int, cand parser.Release, candName string, candBytes int64) bool {
 	res := cand.Resolution
 	cur := c.series.CurrentEpisodeFile(ctx, s.ID, season, episode)
 	if cur.Path == "" {
@@ -736,15 +733,32 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 		return false // never downgrade
 	}
 
-	// Equal resolution: defer to the profile's bitrate margin, if it set one.
+	// Equal resolution. Two ways to win, and they're the same two the SEARCHER uses in
+	// UpgradeCandidate — the profile resolved identically, so a release it chose can't be
+	// turned away on arrival. That mismatch cost a full download and then left the torrent
+	// seeding in the client, which froze the show's sweeps for as long as it sat there.
 	const bytesPerGB = 1 << 30
-	if c.quality.IsBitrateUpgrade(ctx, s.QualityProfile,
+	profile := c.effectiveProfile(ctx, s.QualityProfile, "series")
+	epLabel := fmt.Sprintf("S%02dE%02d", season, episode)
+	if c.quality.IsBitrateUpgrade(ctx, profile,
 		quality.Encode{SizeGB: float64(candBytes) / bytesPerGB, Codec: cand.Codec},
 		quality.Encode{SizeGB: float64(cur.SizeBytes) / bytesPerGB, Codec: curParsed.Codec},
 		cur.RuntimeMin) {
 		c.log.Info("series import: replacing an equal-resolution file — the profile's bitrate margin is met",
-			"series", s.Title, "episode", fmt.Sprintf("S%02dE%02d", season, episode),
+			"series", s.Title, "episode", epLabel,
 			"current_gb", float64(cur.SizeBytes)/bytesPerGB, "candidate_gb", float64(candBytes)/bytesPerGB)
+		return true
+	}
+	// Scoring needs the release the current file came FROM. The library file is renamed to
+	// a tagless scheme, so scoring its name would rate every candidate an upgrade and
+	// re-import the same episode forever — the loop upgradeSeries guards against the same
+	// way. Without it, fall through to the resolution/bitrate answer above.
+	if cur.SourceRelease != "" && c.quality.IsQualityUpgrade(ctx, profile,
+		candName, float64(candBytes)/bytesPerGB,
+		cur.SourceRelease, float64(cur.SizeBytes)/bytesPerGB) {
+		c.log.Info("series import: replacing an equal-resolution file — it scores higher on this profile",
+			"series", s.Title, "episode", epLabel,
+			"current", cur.SourceRelease, "candidate", candName)
 		return true
 	}
 	return false

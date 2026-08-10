@@ -148,8 +148,11 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 		if !s.Monitored {
 			continue
 		}
-		if seriesDownloading(queue, s.Title) {
-			continue // already downloading something for this show — let it finish
+		if busy := seriesInFlight(queue, s.Title); busy != "" {
+			// Said out loud: this used to skip in total silence, so a show frozen out of
+			// the sweep looked identical to one with nothing to find.
+			c.log.Info("series: skipping sweep — a grab is still downloading", "series", s.Title, "release", busy)
+			continue
 		}
 		// Cheap local check before spending an indexer search: a series with nothing
 		// grabbable shouldn't cost N queries every sweep, forever.
