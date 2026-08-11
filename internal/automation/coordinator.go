@@ -1037,6 +1037,18 @@ func (c *Coordinator) noProgressFor(id int64, progress float64, window time.Dura
 	return time.Since(s.at) >= window
 }
 
+// holdStallClock refreshes a grab's stall sample WITHOUT counting it as progress, so time
+// spent in a state that cannot progress doesn't accumulate toward the stall window. The
+// grab resumes being judged the moment the torrent is running again.
+func (c *Coordinator) holdStallClock(id int64, progress float64) {
+	c.stallMu.Lock()
+	defer c.stallMu.Unlock()
+	if c.stallProgress == nil {
+		c.stallProgress = map[int64]stallSample{}
+	}
+	c.stallProgress[id] = stallSample{progress: progress, at: time.Now()}
+}
+
 // pruneStallSamples drops progress samples for grabs no longer pending, so the map
 // tracks only live downloads.
 func (c *Coordinator) pruneStallSamples(pending []grab) {
@@ -1063,10 +1075,27 @@ func (c *Coordinator) stalledInQueue(g grab, item download.Item, found bool, win
 	if !found {
 		return true
 	}
-	// "missingFiles" isn't tested here: normalizeState already folds it into "error", so a
-	// second check for it could never fire.
+	// A DELIBERATE pause is not a stall. A user script reacting to a full cache drive,
+	// qBittorrent's own queueing, or the user hitting pause all produce a torrent that
+	// cannot progress by definition — and the plain no-progress test then condemns it:
+	// blocklist the release, delete the torrent AND its data, grab an alternate that can't
+	// download either because the disk is still full. Hold the clock instead, so the stall
+	// window measures time spent actually trying.
+	//
+	// "checking" gets the same treatment: after a disk-full crash qBittorrent rechecks its
+	// torrents, which on a large pack takes a long while and moves no progress meanwhile.
+	if item.State == "paused" || item.State == "checking" {
+		c.holdStallClock(g.ID, item.Progress)
+		return false
+	}
+	// "missingFiles" isn't tested here: normalizeState already folds it into "error".
+	//
+	// An errored torrent now gets the stall window rather than being condemned on sight.
+	// A full disk is exactly how a torrent lands in missingFiles, and it recovers when
+	// space is freed — deleting its data on the first sample turns a transient storage
+	// problem into a permanent loss and a hit-and-run on the tracker.
 	if item.State == "error" {
-		return true
+		return c.noProgressFor(g.ID, item.Progress, window)
 	}
 	return !item.Complete() && c.noProgressFor(g.ID, item.Progress, window)
 }
@@ -1329,10 +1358,24 @@ var videoExts = []string{".mkv", ".mp4", ".avi", ".m4v", ".mov", ".ts", ".wmv", 
 // normRelease normalizes a torrent name / release title for comparison, first
 // stripping a trailing video-file extension so "<name>.mkv" matches "<name>".
 func normRelease(s string) string {
+	s = strings.TrimSpace(s)
 	lower := strings.ToLower(s)
 	for _, e := range videoExts {
+		// Both spellings, because the two sides carry the container differently: the
+		// torrent is a filename ending ".mp4", while the indexer's listing often leaves it
+		// as a trailing WORD ("…x264-Cherzo mp4"). Stripping only the dotted form left two
+		// keys differing by "mp4" that could never match, so the download showed as not
+		// managed by Arrmada and its seed rule was never found.
+		//
+		// Matched against the raw string rather than the normalized key on purpose: the
+		// key has no separators left, and a blind suffix trim there would eat the "ts" off
+		// a group like GHOSTS.
 		if strings.HasSuffix(lower, e) {
 			s = s[:len(s)-len(e)]
+			break
+		}
+		if ext := " " + e[1:]; strings.HasSuffix(lower, ext) {
+			s = s[:len(s)-len(ext)]
 			break
 		}
 	}
