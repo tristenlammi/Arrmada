@@ -1088,14 +1088,12 @@ func (c *Coordinator) stalledInQueue(g grab, item download.Item, found bool, win
 		c.holdStallClock(g.ID, item.Progress)
 		return false
 	}
-	// "missingFiles" isn't tested here: normalizeState already folds it into "error".
-	//
-	// An errored torrent now gets the stall window rather than being condemned on sight.
-	// A full disk is exactly how a torrent lands in missingFiles, and it recovers when
-	// space is freed — deleting its data on the first sample turns a transient storage
-	// problem into a permanent loss and a hit-and-run on the tracker.
+	// "missingFiles" isn't tested here: normalizeState already folds it into "error", so a
+	// second check for it could never fire. A hard client error stays an immediate stall —
+	// that's a deliberate call from the stall rewrite, pinned by TestStalledNeedsSustained-
+	// NoProgress, and a full cache drive reaches this code as "paused" above.
 	if item.State == "error" {
-		return c.noProgressFor(g.ID, item.Progress, window)
+		return true
 	}
 	return !item.Complete() && c.noProgressFor(g.ID, item.Progress, window)
 }

@@ -44,24 +44,6 @@ func TestPausedTorrentIsNotStalled(t *testing.T) {
 	}
 }
 
-// missingFiles (normalized to "error") is what a full disk produces, and it recovers when
-// space is freed. Condemning it on sight made a transient storage problem permanent.
-func TestErroredTorrentGetsTheStallWindow(t *testing.T) {
-	c := &Coordinator{}
-	g := grab{ID: 2}
-	const window = time.Minute
-	errored := download.Item{State: "error", Progress: 0.6}
-
-	if c.stalledInQueue(g, errored, true, window) {
-		t.Error("an errored torrent must not be condemned on its first sample")
-	}
-	// Still broken a window later — now it's genuinely dead and fail-over is right.
-	c.stallProgress[g.ID] = stallSample{progress: 0.6, at: time.Now().Add(-2 * window)}
-	if !c.stalledInQueue(g, errored, true, window) {
-		t.Error("an errored torrent that never recovers must still fail over")
-	}
-}
-
 // The two sides carry the container differently — the torrent as a filename extension, the
 // indexer's listing as a trailing word — so their keys differed by "mp4" and no seed rule
 // could ever be found for the download.
