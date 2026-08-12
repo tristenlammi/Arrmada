@@ -1041,6 +1041,10 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			}
 			c.addBlockSeries(ctx, s.ID, it.Name, c.grabIndexer(ctx, it.Name, "series"), reason)
 			c.removeIfNoVideo(ctx, it.Hash, it.Name, it.ContentPath)
+			// The download is gone and can never import, so the grab must not stay
+			// 'grabbed' — the pending guard would keep answering "already grabbed and
+			// still importing" for a day, and the show couldn't take an alternate.
+			c.markSeriesGrabFailed(ctx, s.ID, it.Hash, it.Name)
 		}
 	}
 	// Forget unmatched counters for downloads that are gone from the completed list,

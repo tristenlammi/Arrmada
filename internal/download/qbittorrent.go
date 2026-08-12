@@ -235,6 +235,18 @@ func (q *QBittorrent) Add(ctx context.Context, dc Client, req AddRequest) error 
 	if resp.StatusCode == http.StatusForbidden {
 		return fmt.Errorf("qbittorrent: add unauthorized after re-login (HTTP 403)")
 	}
+	// 409 Conflict means the torrent is ALREADY in the client — the same info hash is
+	// there under some other name. That's the state the caller wanted, so it isn't a
+	// failure: reporting one left the release ungrabbed in Arrmada's eyes, re-attempted
+	// every sweep forever, while the torrent itself sat in the client with no grab row —
+	// so no seed rule ever applied to it and the Downloads page called it unmanaged.
+	//
+	// Add is idempotent by nature. If a build ever returns 409 for something else, the
+	// grab is recorded for a torrent that isn't there, and stall detection catches it as
+	// missing-from-queue and fails over — the same path as any vanished download.
+	if resp.StatusCode == http.StatusConflict {
+		return nil
+	}
 	// qBittorrent returns 200 "Ok." on a normal add, but also 202 Accepted when it
 	// queues a URL/magnet to fetch asynchronously — both are success. Only a
 	// non-2xx status or an explicit "Fails." body is a real rejection.

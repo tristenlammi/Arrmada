@@ -393,7 +393,22 @@ func (c *Coordinator) markGrabImportedForMovie(ctx context.Context, movieID int6
 // prettified renderings of the torrent name ("DD+" vs "EAC3"), leaving the grab
 // 'grabbed' forever: seed cleanup never removed the torrent, and the pending-grab
 // guard blocked legitimate re-grabs for a day.
+// markSeriesGrabFailed flips a series grab to 'failed'. Used when its download is thrown
+// away — blocklisted as junk, say — so the pending-grab guard stops treating the release
+// as still in flight. Left at 'grabbed', the sweep answers "already grabbed and still
+// importing" for a full day about a torrent that no longer exists and can never import,
+// and the show can't grab an alternate for the whole of it.
+func (c *Coordinator) markSeriesGrabFailed(ctx context.Context, seriesID int64, infoHash, releaseName string) {
+	c.setSeriesGrabStatus(ctx, seriesID, infoHash, releaseName, "failed")
+}
+
 func (c *Coordinator) markSeriesGrabImported(ctx context.Context, seriesID int64, infoHash, releaseName string) {
+	c.setSeriesGrabStatus(ctx, seriesID, infoHash, releaseName, "imported")
+}
+
+// setSeriesGrabStatus finds the grab a download came from — by info hash first, since a
+// name survives the round trip through the client only by luck — and sets its status.
+func (c *Coordinator) setSeriesGrabStatus(ctx context.Context, seriesID int64, infoHash, releaseName, status string) {
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT id, title, info_hash FROM grabs WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'series'`, seriesID)
 	if err != nil {
@@ -420,8 +435,8 @@ func (c *Coordinator) markSeriesGrabImported(ctx context.Context, seriesID int64
 	}
 	rows.Close() // close before writing — SQLite won't take a write while a read is open
 	for _, id := range ids {
-		if _, err := c.db.ExecContext(ctx, `UPDATE grabs SET status = 'imported' WHERE id = ?`, id); err != nil {
-			c.log.Warn("series: mark grab imported failed", "err", err)
+		if _, err := c.db.ExecContext(ctx, `UPDATE grabs SET status = ? WHERE id = ?`, status, id); err != nil {
+			c.log.Warn("series: mark grab status failed", "status", status, "err", err)
 		}
 	}
 }
