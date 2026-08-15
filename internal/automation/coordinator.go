@@ -161,6 +161,17 @@ func (c *Coordinator) grabTo(ctx context.Context, indexerName, downloadURL, titl
 		add.URL = res.URL
 		if h, herr := download.InfoHashFromMagnet(res.URL); herr == nil {
 			hash = h
+		} else {
+			// Only a magnet carries its hash in the link; an indexer that hands back a
+			// plain http download URL leaves us nothing to record. This branch used to
+			// swallow that, so the grab was written with an empty info_hash and every
+			// later lookup — seed rules, stall detection, import — fell back to matching
+			// the indexer's listing title against the torrent's own name. Those differ
+			// often enough (an "Atmos" in the listing that isn't in the release name) to
+			// strand the download as unmanaged, which is what the Downloads page reports
+			// as "no seed rule matched". Say so, so it's diagnosable rather than silent.
+			c.log.Warn("grab: no info hash in the download link — seed rules will fall back to name matching",
+				"release", title, "indexer", indexerName, "err", herr)
 		}
 	default:
 		return "", fmt.Errorf("nothing to download for this release")
