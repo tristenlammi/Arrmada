@@ -315,6 +315,9 @@ export interface AppSettings {
   convert_min_ssim: string;
   convert_workers: string;
   convert_sweep_start: string;
+  /** Read-only: the clock the server evaluates the encode window against. */
+  server_time?: string;
+  server_tz?: string;
   convert_scan_at: string;
   convert_cpu_cores: string;
   convert_cpu_above_height: string;

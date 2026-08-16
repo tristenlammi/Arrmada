@@ -16,6 +16,14 @@ import (
 	"syscall"
 	"time"
 
+	// The scratch image carries no tzdata package, so every named zone failed to load
+	// and time.Now() silently stayed UTC — which made the convert encode window run on
+	// UTC hours while the user was entering local ones. A "01:00-03:30" overnight window
+	// became 11:00-13:30 local: nothing ran overnight, and a parked worker logs nothing,
+	// so it looked like scheduling was simply broken. Embedding the database (~450 KB)
+	// makes TZ=Australia/Sydney and friends resolve without an OS package.
+	_ "time/tzdata"
+
 	"github.com/tristenlammi/arrmada/internal/apikeys"
 	"github.com/tristenlammi/arrmada/internal/applog"
 	"github.com/tristenlammi/arrmada/internal/auth"

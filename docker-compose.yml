@@ -115,7 +115,7 @@ services:
     environment:
       PUID: "${ARRMADA_PUID:-1000}"
       PGID: "${ARRMADA_PGID:-1000}"
-      TZ: "Etc/UTC"
+      TZ: "${TZ:-Etc/UTC}"
       WEBUI_PORT: "8080"
     volumes:
       - arrmada-qbt-config:/config
@@ -152,7 +152,7 @@ services:
     environment:
       PUID: "${ARRMADA_PUID:-1000}"
       PGID: "${ARRMADA_PGID:-1000}"
-      TZ: "Etc/UTC"
+      TZ: "${TZ:-Etc/UTC}"
     volumes:
       - arrmada-prowlarr-config:/config
     ports:
@@ -168,7 +168,7 @@ services:
     container_name: Arrmada-flaresolverr
     environment:
       LOG_LEVEL: "info"
-      TZ: "Etc/UTC"
+      TZ: "${TZ:-Etc/UTC}"
     expose:
       - "8191"
     restart: unless-stopped

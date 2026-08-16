@@ -5,10 +5,25 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
 )
+
+// serverZone names the timezone the server evaluates schedules in, so the UI can say
+// which clock the encode window is measured against. Falls back to the UTC offset when
+// the zone is unnamed (a bare TZ=UTC, or a container with no tzdata).
+func serverZone() string {
+	name, offset := time.Now().Zone()
+	if name != "" && name != "UTC" {
+		return name
+	}
+	if offset == 0 {
+		return "UTC"
+	}
+	return time.Now().Format("-07:00")
+}
 
 const (
 	keySearchOnAdd         = "search_on_add"
@@ -58,12 +73,17 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"convert_add_stereo":       a.deps.Settings.GetBool(ctx, "convert_add_stereo", false),
 		"convert_loudnorm":         a.deps.Settings.GetBool(ctx, "convert_loudnorm", false),
 		// Convert — focused model: target codec, subtitle toggle, schedule, quality safety.
-		"convert_target_codec":     a.deps.Settings.Get(ctx, "convert_target_codec", "hevc"),
-		"convert_auto":             a.deps.Settings.GetBool(ctx, "convert_auto", false),
-		"convert_quality_gate":     a.deps.Settings.GetBool(ctx, "convert_quality_gate", true),
-		"convert_min_ssim":         a.deps.Settings.Get(ctx, "convert_min_ssim", "0.97"),
-		"convert_workers":          a.deps.Settings.Get(ctx, "convert_workers", "1"),
-		"convert_sweep_start":      a.deps.Settings.Get(ctx, "convert_sweep_start", ""),
+		"convert_target_codec": a.deps.Settings.Get(ctx, "convert_target_codec", "hevc"),
+		"convert_auto":         a.deps.Settings.GetBool(ctx, "convert_auto", false),
+		"convert_quality_gate": a.deps.Settings.GetBool(ctx, "convert_quality_gate", true),
+		"convert_min_ssim":     a.deps.Settings.Get(ctx, "convert_min_ssim", "0.97"),
+		"convert_workers":      a.deps.Settings.Get(ctx, "convert_workers", "1"),
+		"convert_sweep_start":  a.deps.Settings.Get(ctx, "convert_sweep_start", ""),
+		// The encode window is compared against the SERVER's clock, not the browser's.
+		// When the two disagree the window silently never opens, so hand the UI the
+		// server's own time and zone to show beside the inputs.
+		"server_time":              time.Now().Format("15:04"),
+		"server_tz":                serverZone(),
 		"convert_scan_at":          a.deps.Settings.Get(ctx, "convert_scan_at", "03:00"),
 		"convert_cpu_cores":        a.deps.Settings.Get(ctx, "convert_cpu_cores", "0"),
 		"convert_cpu_above_height": a.deps.Settings.Get(ctx, "convert_cpu_above_height", "2160"),

@@ -1203,6 +1203,21 @@ function FormatCard({ id, sel, on, title, tag, pros, note }: { id: string; sel: 
   );
 }
 
+
+// minutesApart compares two "HH:MM" clocks as a circular distance, so 23:58 and 00:02 read
+// as 4 minutes rather than most of a day. Used to spot a server/browser timezone gap — the
+// reason an overnight encode window can silently never open.
+function minutesApart(a: string | undefined, b: string): number {
+  const mins = (t?: string) => {
+    const m = /^(\d{1,2}):(\d{2})$/.exec(t ?? "");
+    return m ? +m[1] * 60 + +m[2] : null;
+  };
+  const x = mins(a), y = mins(b);
+  if (x === null || y === null) return 0; // nothing to compare — don't cry wolf
+  const d = Math.abs(x - y);
+  return Math.min(d, 1440 - d);
+}
+
 function ConvertSettings({ flash }: { flash: (m: string) => void }) {
   const [saved, setSaved] = useState<AppSettings | null>(null);
   const [d, setD] = useState<AppSettings | null>(null); // working draft
@@ -1229,6 +1244,12 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
   };
   if (!d) return <div className="text-[12px] text-ink-faint">Loading settings…</div>;
   const av1 = d.convert_target_codec === "av1";
+  // An empty window means "always" to the server, so that IS the 24/7 setting — the
+  // toggle just makes it a deliberate choice rather than something you discover by
+  // clearing two fields.
+  const scheduled = !!(d.convert_sweep_start && d.convert_sweep_end);
+  const browserTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+  const clockSkewed = minutesApart(d.server_time, browserTime) > 5;
 
   return (
     <div className="flex flex-col gap-4">
@@ -1248,13 +1269,43 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
 
       {/* Encode window — governs ALL jobs, manual or automatic */}
       <SettingCard title="Encode window" desc="When encoding is allowed to run. This applies to everything you queue — including “Convert all” and per-title jobs — so you can queue work now and let it run overnight without turning on auto-convert.">
-        <SettingField label="Only run between" hint="anything queued outside these hours waits until the window opens · leave empty to run immediately">
-          <span className="flex items-center gap-1.5">
-            <input type="time" value={d.convert_sweep_start} onChange={(e) => set({ convert_sweep_start: e.target.value })} className={inp} style={inpStyle} />
-            <span className="text-ink-faint">to</span>
-            <input type="time" value={d.convert_sweep_end} onChange={(e) => set({ convert_sweep_end: e.target.value })} className={inp} style={inpStyle} />
-          </span>
-        </SettingField>
+        <ActToggle
+          on={scheduled}
+          set={(v) => set(v ? { convert_sweep_start: "01:00", convert_sweep_end: "03:30" } : { convert_sweep_start: "", convert_sweep_end: "" })}
+          label="Only encode during set hours"
+          hint="off — encode whenever there's work, including anything you queue by hand"
+        />
+        {scheduled && (
+          <SettingField label="Only run between" hint="anything queued outside these hours waits until the window opens">
+            <span className="flex items-center gap-1.5">
+              <input type="time" value={d.convert_sweep_start} onChange={(e) => set({ convert_sweep_start: e.target.value })} className={inp} style={inpStyle} />
+              <span className="text-ink-faint">to</span>
+              <input type="time" value={d.convert_sweep_end} onChange={(e) => set({ convert_sweep_end: e.target.value })} className={inp} style={inpStyle} />
+              <button
+                type="button"
+                onClick={() => set({ convert_sweep_start: "01:00", convert_sweep_end: "03:30" })}
+                className="text-xs text-ink-faint hover:text-ink underline underline-offset-2 ml-1"
+                title="Back to 01:00–03:30"
+              >
+                reset
+              </button>
+            </span>
+          </SettingField>
+        )}
+        {/* The window is measured against the SERVER's clock. When the container's zone
+            differs from yours the window silently never opens — nothing encodes and a
+            parked worker logs nothing, so the only symptom is "the schedule does nothing".
+            Show both clocks whenever they disagree. */}
+        {scheduled && d.server_time && (
+          <p className={`text-xs mt-1 ${clockSkewed ? "text-amber-400" : "text-ink-faint"}`}>
+            {clockSkewed ? "⚠ " : ""}These hours are read on the server's clock, which says{" "}
+            <strong>{d.server_time}</strong>
+            {d.server_tz ? ` ${d.server_tz}` : ""}
+            {clockSkewed
+              ? ` — but yours says ${browserTime}. Set the container's TZ to your timezone, or enter these hours in ${d.server_tz || "server"} time.`
+              : "."}
+          </p>
+        )}
         <SettingField label="Convert at once" hint={`${av1 ? "AV1 is heavy — " : ""}keep at 1 for CPU-only, 2–3 with a GPU · applies on restart`}>
           <input type="number" min="1" max="8" value={d.convert_workers} onChange={(e) => set({ convert_workers: e.target.value })} className={`${inp} w-[70px]`} style={inpStyle} />
         </SettingField>

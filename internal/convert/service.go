@@ -1169,8 +1169,14 @@ func (s *Service) waitForWindow(ctx context.Context, job *Job) bool {
 	start := s.settings.Get(ctx, keySweepStart, "")
 	end := s.settings.Get(ctx, keySweepEnd, "")
 	s.update(job, func(j *Job) { j.Note = fmt.Sprintf("waiting for the %s–%s window", start, end) })
+	// The server's own clock, named, because the window is measured against it and NOT
+	// against the browser's. A container stuck on UTC turns an overnight window into a
+	// midday one: nothing runs at night, and a parked worker is otherwise silent, so the
+	// only symptom is "the schedule does nothing". Print the clock being compared.
+	zone, _ := time.Now().Zone()
 	s.log.Info("convert: job waiting for the encode window",
-		"title", job.Title, "window", start+"-"+end)
+		"title", job.Title, "window", start+"-"+end,
+		"server_time", time.Now().Format("15:04"), "server_tz", zone)
 	for {
 		select {
 		case <-ctx.Done():
