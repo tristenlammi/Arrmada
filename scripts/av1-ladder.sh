@@ -75,18 +75,28 @@ for i in "${!OFFSETS[@]}"; do
   REFS+=("$ref")
 done
 
-# score <encoded-dir-prefix> → prints "VMAF SSIM" averaged over the samples
+# metric <json> <key> → the pooled mean for one libvmaf metric.
+# The log is pretty-printed, so the value sits several lines below its key; flattening it
+# first lets one grep span the object without needing jq or python on the host.
+metric() {
+  tr -d '\n ' < "$1" | grep -o "\"$2\":{[^}]*}" | grep -o '"mean":[0-9.]*' | head -1 | cut -d: -f2
+}
+
+# score <encoded-prefix> → prints "VMAF SSIM" averaged over the samples
 score() {
   local prefix="$1" vsum=0 ssum=0 n=0
   for i in "${!REFS[@]}"; do
-    local log="$WORK/vmaf-$i.json"
-    "$FFMPEG" -v error -i "${prefix}-$i.mkv" -i "${REFS[$i]}" \
-      -lavfi "[0:v]setpts=PTS-STARTPTS[d];[1:v]setpts=PTS-STARTPTS[r];[d][r]libvmaf=log_fmt=json:log_path=$log:feature=name=float_ssim" \
-      -f null - 2>/dev/null
+    # Run from inside the work dir and name the log RELATIVELY. An absolute path here is a
+    # trap on Windows/MSYS: a path inside a filter-graph string isn't translated the way an
+    # ordinary argument is, so ffmpeg.exe silently writes no log and every score reads
+    # "n/a". A bare filename resolves against ffmpeg's cwd on every platform.
+    ( cd "$WORK" && "$FFMPEG" -v error -i "$(basename "$prefix")-$i.mkv" -i "ref-$i.mkv" \
+        -lavfi "[0:v]setpts=PTS-STARTPTS[d];[1:v]setpts=PTS-STARTPTS[r];[d][r]libvmaf=log_fmt=json:log_path=vmaf-$i.json:feature=name=float_ssim" \
+        -f null - ) || { echo "VMAF failed on sample $i" >&2; return 1; }
     local v s
-    v="$(grep -o '"vmaf"[^}]*"mean":[0-9.]*' "$log" | grep -o '[0-9.]*$' | head -1)"
-    s="$(grep -o '"float_ssim"[^}]*"mean":[0-9.]*' "$log" | grep -o '[0-9.]*$' | head -1)"
-    [ -n "$v" ] || continue
+    v="$(metric "$WORK/vmaf-$i.json" vmaf)"
+    s="$(metric "$WORK/vmaf-$i.json" float_ssim)"
+    [ -n "$v" ] || { echo "no VMAF score written for sample $i" >&2; return 1; }
     vsum="$(awk -v a="$vsum" -v b="$v" 'BEGIN{print a+b}')"
     ssum="$(awk -v a="$ssum" -v b="${s:-0}" 'BEGIN{print a+b}')"
     n=$((n+1))
@@ -122,7 +132,7 @@ for crf in $CRFS; do
   for i in "${!REFS[@]}"; do
     "$FFMPEG" -v error -y -i "${REFS[$i]}" \
       -c:v libsvtav1 -preset "$PRESET" -crf "$crf" \
-      -svtav1-params "tune=0" -pix_fmt "$DEPTH" -an -sn "${prefix}-$i.mkv"
+      -svtav1-params "tune=0" -pix_fmt "$DEPTH" -an -sn "${prefix}-$i.mkv" 2>"$WORK/enc.log"       || { echo "AV1 encode failed at CRF $crf:" >&2; cat "$WORK/enc.log" >&2; exit 1; }
   done
   read -r vmaf ssim <<<"$(score "$prefix")"
   bytes="$(rung_bytes "$prefix")"
@@ -137,7 +147,7 @@ if [ "$COMPARE_HEVC" = "1" ]; then
       "$FFMPEG" -v error -y -i "${REFS[$i]}" \
         -c:v libx265 -preset slow -crf "$crf" \
         -x265-params "aq-mode=3:psy-rd=2.0:psy-rdoq=1.0:no-sao=1:bframes=8:rc-lookahead=40" \
-        -pix_fmt "$DEPTH" -an -sn "${prefix}-$i.mkv"
+        -pix_fmt "$DEPTH" -an -sn "${prefix}-$i.mkv" 2>"$WORK/enc.log"         || { echo "x265 encode failed at CRF $crf:" >&2; cat "$WORK/enc.log" >&2; exit 1; }
     done
     read -r vmaf ssim <<<"$(score "$prefix")"
     bytes="$(rung_bytes "$prefix")"
