@@ -19,9 +19,11 @@ func TestCandidacyRules(t *testing.T) {
 		{"already av1 is left alone", "av1", "av1", false, false},
 		{"unprobed file is never a candidate", "", "hevc", false, false},
 
-		// HEVC -> AV1 is a second lossy generation for ~20-30% space, so it's opt-in.
-		{"hevc to av1 is skipped by default", "hevc", "av1", false, false},
-		{"hevc to av1 converts when opted in", "hevc", "av1", true, true},
+		// HEVC -> AV1 is a second lossy generation for ~20-30% space. It used to be
+		// opt-in; it is now refused outright, opt-in included. The library's rule is that
+		// already-efficient video is never fed to AV1 — see TestNeverRecodesHEVCIntoAV1.
+		{"hevc to av1 is refused", "hevc", "av1", false, false},
+		{"hevc to av1 stays refused even when opted in", "hevc", "av1", true, false},
 
 		// AV1 -> HEVC is worse than that: a second generation that also makes the file
 		// BIGGER, since AV1 is the more efficient codec. Nothing to gain but device
@@ -36,10 +38,10 @@ func TestCandidacyRules(t *testing.T) {
 		// Old codecs are the point of the module and always convert.
 		{"vc1 to hevc converts", "vc1", "hevc", false, true},
 
-		// VP9 counts as modern (it's an efficient codec in the HEVC class), so re-encoding
-		// it is a second lossy generation and opt-in like the others.
-		{"vp9 to av1 is skipped by default", "vp9", "av1", false, false},
-		{"vp9 to av1 converts when opted in", "vp9", "av1", true, true},
+		// VP9 counts as modern (it's an efficient codec in the HEVC class), so it falls
+		// under the same refusal: efficient in, AV1 out is not a trade worth a generation.
+		{"vp9 to av1 is refused", "vp9", "av1", false, false},
+		{"vp9 to av1 stays refused even when opted in", "vp9", "av1", true, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

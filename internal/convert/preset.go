@@ -397,7 +397,18 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cor
 					hdrParams, colourTags = av1HDRParams(mi)
 				}
 			}
-			a = append(a, cpuVideoArgs(enc.Name, codec, crf, mi.TenBit, cores, hdrParams, noNumaPools)...)
+			// ALWAYS 10-bit, not just when the source is. Encoding 8-bit content into a
+			// 10-bit stream is standard practice for both x265 and SVT-AV1: the extra
+			// precision in the internal transforms near-eliminates the banding on skies,
+			// smoke and dark gradients that is the first thing anyone notices in a
+			// re-encode, and it IMPROVES efficiency by roughly 5-10% at equal quality
+			// rather than costing anything. HEVC Main10 and AV1 Main both require 10-bit
+			// decode support, so nothing loses playback compatibility.
+			//
+			// h264 is left alone: 8-bit High is the universally-played profile, and High10
+			// is not. It isn't a conversion target here anyway.
+			tenBit := mi.TenBit || codec != "h264"
+			a = append(a, cpuVideoArgs(enc.Name, codec, crf, tenBit, cores, hdrParams, noNumaPools)...)
 			a = append(a, colourTags...)
 		}
 	}

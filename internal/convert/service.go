@@ -587,6 +587,13 @@ func isCandidateCodec(codec, target string, recodeModern bool) bool {
 	if codec == "" || strings.EqualFold(codec, target) {
 		return false
 	}
+	// HEVC → AV1 is never worth doing, and "recode modern" must not buy it. The gain over
+	// an already-efficient encode is modest, and it costs a SECOND generation of loss on
+	// video that is already lossy — the one trade this library is not willing to make.
+	// H.264 and older are the wasteful sources worth re-encoding; those still qualify.
+	if modernCodec(codec) && target == "av1" {
+		return false
+	}
 	if modernCodec(codec) && !recodeModern {
 		return false
 	}
@@ -1304,8 +1311,23 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	// target, or a missing dovi_tool / hdr10plus_tool) is skipped rather than silently
 	// flattened. The format cards in Settings warn about this before the user commits.
 	if isHDR(mi.HDR) && !s.canPreserveHDR(mi, plan, enc) {
-		s.finishSkip(job, SkipHDRUnsupported, skipReasonHDR(mi.HDR, plan.VideoCodec))
-		return
+		// The goal is a library with no H.264 left in it — not AV1 at any cost. When AV1
+		// can't carry this file's HDR metadata but HEVC can, convert to HEVC instead of
+		// skipping: the metadata survives intact AND the file still gets off H.264.
+		// Skipping is reserved for what NEITHER codec can preserve (Dolby Vision profile 5,
+		// or a missing dovi_tool/hdr10plus_tool).
+		if alt := s.hdrFallbackCodec(mi, plan); alt != "" {
+			s.log.Info("convert: routing to HEVC — AV1 can't carry this file's HDR metadata",
+				"title", job.Title, "hdr", mi.HDR)
+			s.event("info", job.Title+" — "+mi.HDR+" can't be carried into AV1; converting to HEVC instead")
+			plan.VideoCodec = alt
+			plan.Quality = maxQualityCRF(alt) // CRF scales differ per codec — re-target, don't reuse AV1's
+			enc = s.pickEncoder(ctx, job, mi, plan)
+		}
+		if !s.canPreserveHDR(mi, plan, enc) {
+			s.finishSkip(job, SkipHDRUnsupported, skipReasonHDR(mi.HDR, plan.VideoCodec))
+			return
+		}
 	}
 
 	// Seeding-safety: skip hardlinked files by default so we don't duplicate a seeding copy.
@@ -1331,14 +1353,26 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		err := s.extractHDR10Plus(ctx, src, jf)
 		switch {
 		case err == nil && plan.VideoCodec == "av1":
-			// The file carries HDR10+ dynamic metadata and the AV1 pipeline can't
-			// re-embed it. This probe used to run only for HEVC targets, so a
-			// mislabeled "HDR10" file (most HDR10+ files — ffprobe won't reliably
-			// say) was silently flattened to static HDR10 on AV1.
-			_ = os.Remove(jf)
-			s.finishSkip(job, SkipHDRUnsupported,
-				"carries HDR10+ dynamic metadata, which can't be preserved into AV1 — kept the original")
-			return
+			// The file carries HDR10+ dynamic metadata, which the AV1 pipeline can't
+			// re-embed but the HEVC one can (extract → encode → inject). Route to HEVC
+			// rather than skip: the dynamic metadata survives and the file leaves H.264.
+			//
+			// This is the common case, not an edge one — ffprobe won't reliably report
+			// HDR10+, so most files carrying it are labelled plain "HDR10" and only the
+			// extract above can tell.
+			s.log.Info("convert: HDR10+ found — routing to HEVC so the dynamic metadata survives",
+				"title", job.Title)
+			s.event("info", job.Title+" — carries HDR10+; converting to HEVC so the dynamic metadata survives")
+			plan.VideoCodec = "hevc"
+			plan.Quality = maxQualityCRF("hevc")
+			enc = s.pickEncoder(ctx, job, mi, plan)
+			if !s.canPreserveHDR(mi, plan, enc) {
+				_ = os.Remove(jf)
+				s.finishSkip(job, SkipHDRUnsupported, skipReasonHDR("HDR10+", "hevc"))
+				return
+			}
+			h10pJSON = jf
+			defer os.Remove(jf)
 		case err == nil:
 			h10pJSON = jf
 			defer os.Remove(jf)
@@ -1826,6 +1860,26 @@ func (s *Service) canPreserveHDR(mi *MediaInfo, plan Plan, enc Encoder) bool {
 		return s.doviTool != ""
 	}
 	return false
+}
+
+// hdrFallbackCodec names the codec that CAN preserve this file's HDR when the planned one
+// can't — today only AV1→HEVC, since dovi_tool and hdr10plus_tool read and write HEVC only.
+// Returns "" when there's no better option, which is the caller's signal to skip.
+//
+// The HEVC check is made against x265 deliberately: every HDR metadata path is software-only
+// (hdr10Params emits -x265-params; HDR10+ and Dolby Vision inject into an x265 elementary
+// stream), and pickEncoder already forces HDR to the CPU encoder — so x265 is what the
+// rerouted job will actually run on.
+func (s *Service) hdrFallbackCodec(mi *MediaInfo, plan Plan) string {
+	if plan.VideoCodec != "av1" {
+		return ""
+	}
+	alt := plan
+	alt.VideoCodec = "hevc"
+	if s.canPreserveHDR(mi, alt, cpuEncoder("hevc")) {
+		return "hevc"
+	}
+	return ""
 }
 
 // pickEncoder applies the ordered routing rules:

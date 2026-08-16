@@ -55,10 +55,11 @@ var knownEncoders = []Encoder{
 	{Codec: "h264", Name: "h264_videotoolbox", Kind: "videotoolbox", Label: "VideoToolbox (H.264)", Hardware: true},
 	{Codec: "h264", Name: "libx264", Kind: "cpu", Label: "CPU (x264)", Hardware: false},
 	// AV1 (smallest, newest).
+	// SVT-AV1 leads the AV1 entries, and encoderFor honours that — see the note there.
+	{Codec: "av1", Name: "libsvtav1", Kind: "cpu", Label: "CPU (SVT-AV1)", Hardware: false},
 	{Codec: "av1", Name: "av1_nvenc", Kind: "nvenc", Label: "NVENC (AV1)", Hardware: true},
 	{Codec: "av1", Name: "av1_vaapi", Kind: "vaapi", Label: "VAAPI (AV1)", Hardware: true},
 	{Codec: "av1", Name: "av1_qsv", Kind: "qsv", Label: "Quick Sync (AV1)", Hardware: true},
-	{Codec: "av1", Name: "libsvtav1", Kind: "cpu", Label: "CPU (SVT-AV1)", Hardware: false},
 }
 
 // detectEncoders reports which known encoders are compiled into ffmpeg and whether the
@@ -159,13 +160,30 @@ func encoderFor(codec string, encs []Encoder) Encoder {
 	if codec == "" {
 		codec = "hevc"
 	}
-	for _, e := range encs { // hardware first
-		if e.Codec == codec && e.Hardware && e.Available {
-			return e
+	// Hardware first for every codec EXCEPT AV1.
+	//
+	// AV1 is chosen for efficiency, and a fixed-function AV1 block gives most of that
+	// efficiency straight back: the silicon has far simpler rate-distortion optimisation
+	// and runs constant-QP with no adaptive quantisation, so a flat gradient and a complex
+	// action shot get quantised identically. The output is both bigger and softer than
+	// SVT-AV1's — which defeats the reason for picking AV1 over HEVC in the first place.
+	// When speed matters more, HEVC on the GPU is the better trade than AV1 on it.
+	if codec != "av1" {
+		for _, e := range encs {
+			if e.Codec == codec && e.Hardware && e.Available {
+				return e
+			}
 		}
 	}
 	for _, e := range encs { // detected CPU encoder
 		if e.Codec == codec && e.Kind == "cpu" && e.Available {
+			return e
+		}
+	}
+	// AV1 lands here only when SVT-AV1 failed startup verification. A hardware block is
+	// then better than not converting at all.
+	for _, e := range encs {
+		if e.Codec == codec && e.Hardware && e.Available {
 			return e
 		}
 	}

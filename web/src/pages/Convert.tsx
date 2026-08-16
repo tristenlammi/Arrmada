@@ -1262,9 +1262,9 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
           <FormatCard id="av1" sel={d.convert_target_codec} on={() => set({ convert_target_codec: "av1" })}
             title="AV1" tag="The most efficient"
             pros={["~30% smaller again than HEVC", "Royalty-free, the modern streaming codec", "Best quality-per-byte available today"]}
-            note="Slower to encode. Older TVs & devices (pre-2020) may not play it. HDR/Dolby Vision files are kept in HEVC — AV1 HDR passthrough isn't supported yet, so they're skipped." />
+            note="Slower to encode — AV1 uses the CPU encoder, which produces a markedly better result than a GPU's AV1 block. Older TVs & devices (pre-2020) may not play it. Files carrying HDR10+ or Dolby Vision are converted to HEVC instead, so their metadata survives intact." />
         </div>
-        <Warn>Re-encoding is lossy by nature — both formats reproduce the picture visually, but a re-encode is never a bit-for-bit copy of the source. The quality gate below guards against a bad encode. HDR, Dolby Vision and surround audio (Atmos/TrueHD/DTS) are always copied through untouched.</Warn>
+        <Warn>Only H.264 and older are converted. Files already in HEVC, AV1 or VP9 are left alone — re-encoding them would spend a second generation of loss for little gain. Re-encoding is lossy by nature: both formats reproduce the picture visually, but a re-encode is never a bit-for-bit copy. Output is always 10-bit, which is what keeps gradients free of banding. The quality gate below guards against a bad encode. HDR, Dolby Vision and surround audio (Atmos/TrueHD/DTS) are always copied through untouched.</Warn>
       </SettingCard>
 
       {/* Encode window — governs ALL jobs, manual or automatic */}
