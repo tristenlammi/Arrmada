@@ -502,19 +502,27 @@ func (s *Service) LibraryStats(ctx context.Context) (*LibraryStats, error) {
 		if mediaType == "episode" {
 			key = episodeKey(seriesID, season, episode)
 		}
-		convertible := isCandidateCodec(codec, target, recode)
-		permaSkipped := convertible && skipped[key]
-		var est int64
+		// Convertibility has to be decided the SAME way indexedCandidates decides it, or
+		// the Overview promises space that "Convert all" will never queue. That function
+		// reads the codec out of the probe JSON and treats a row without one as not a
+		// candidate; this one read the codec column and counted the file regardless. A
+		// file whose probe failed (spun-down array, transient I/O) therefore showed up as
+		// reclaimable here — with est=0, so its ENTIRE size was booked as savings — while
+		// being invisible everywhere else.
+		var mi MediaInfo
+		probed := infoJSON != "" && json.Unmarshal([]byte(infoJSON), &mi) == nil
 		hdr := ""
-		if infoJSON != "" {
-			var mi MediaInfo
-			if json.Unmarshal([]byte(infoJSON), &mi) == nil {
-				hdr = mi.HDR
-				if convertible {
-					est = estimatePlanSize(&mi, dp)
-				}
+		var est int64
+		convertible := false
+		if probed {
+			hdr = mi.HDR
+			convertible = isCandidateCodec(mi.VideoCodec, target, recode)
+			if convertible {
+				est = estimatePlanSize(&mi, dp)
 			}
 		}
+		_ = codec // the column is kept for the breakdown bar below; candidacy uses the probe
+		permaSkipped := convertible && skipped[key]
 		per := &out.Movies
 		if mediaType == "episode" {
 			per = &out.TV
