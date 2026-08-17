@@ -213,13 +213,34 @@ type HistoryResult struct {
 	Total int            `json:"total"`
 }
 
+// watchedSecs is the Go twin of watchedExpr — the two must agree, or a row's watch time in
+// the History list contradicts the totals on Users and Graphs, which are summed in SQL.
+// Prefer what the source reported; fall back to wall time minus paused, which is only
+// trustworthy for a live-tracked session where the poller saw the start AND the stop.
+func watchedSecs(r HistoryRow) int64 {
+	span := r.StoppedAt - r.StartedAt
+	if span < 0 {
+		span = 0
+	}
+	if r.WatchedMS > 0 {
+		if w := r.WatchedMS / 1000; w < span {
+			return w
+		}
+		return span // reported longer than the session existed — impossible, so cap it
+	}
+	if w := span - r.PausedMS/1000; w > 0 {
+		return w
+	}
+	return 0
+}
+
 // HistoryEntry is a recorded play enriched for display (proxied thumb, geolocation, subtitle line).
 type HistoryEntry struct {
 	HistoryRow
 	Subtitle    string         `json:"subtitle"`
 	ThumbURL    string         `json:"thumb_url"`
 	Geo         geoip.Location `json:"geo"`
-	WatchedSecs int64          `json:"watched_secs"` // wall time minus paused
+	WatchedSecs int64          `json:"watched_secs"` // see watchedSecs
 	ProgressPct int            `json:"progress_pct"`
 }
 

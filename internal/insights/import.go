@@ -29,7 +29,8 @@ type ImportedSession struct {
 	Decision         string
 	StartedAt        int64 // epoch seconds
 	StoppedAt        int64
-	DurationMS       int64
+	DurationMS       int64 // the MEDIA's runtime, if the source reports one
+	WatchedMS        int64 // actual time watched — Tautulli's `duration`, which is NOT the runtime
 	PausedMS         int64
 }
 
@@ -80,8 +81,11 @@ func (s *Service) ImportHistory(ctx context.Context, rows []ImportedSession) (im
 			continue
 		}
 		stopped := r.StoppedAt
-		if stopped == 0 && r.DurationMS > 0 {
-			stopped = r.StartedAt + r.DurationMS/1000
+		if stopped == 0 && r.WatchedMS > 0 {
+			// No stop timestamp: the best we can say is that the session ran for as long
+			// as it was watched. Good enough to keep the row, and watched_ms carries the
+			// figure that actually matters either way.
+			stopped = r.StartedAt + r.WatchedMS/1000
 		}
 		// Guard against un-computable durations (in-progress rows with stopped=0/duration=0, or
 		// clock-skewed rows): a row with stopped <= started poisons every SUM(watched) aggregate
@@ -96,7 +100,8 @@ func (s *Service) ImportHistory(ctx context.Context, rows []ImportedSession) (im
 			MediaIndex: r.MediaIndex, ParentIndex: r.ParentIndex, Year: r.Year, Thumb: r.Thumb,
 			Player: r.Player, Platform: r.Platform, Product: r.Product, IPAddress: r.IPAddress,
 			Decision:  normalizeDecision(r.Decision),
-			StartedAt: r.StartedAt, StoppedAt: stopped, DurationMS: r.DurationMS, PausedMS: r.PausedMS,
+			StartedAt: r.StartedAt, StoppedAt: stopped, DurationMS: r.DurationMS,
+			WatchedMS: r.WatchedMS, PausedMS: r.PausedMS,
 		}); err != nil {
 			continue
 		}

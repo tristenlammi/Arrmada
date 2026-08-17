@@ -32,7 +32,8 @@ type sessionRecord struct {
 	StoppedAt        int64
 	PausedMS         int64
 	ViewOffsetMS     int64
-	DurationMS       int64
+	DurationMS       int64 // the MEDIA's runtime (progress % denominator), not watch time
+	WatchedMS        int64 // actual time watched, when the source reports it; 0 = derive it
 	VideoSrc         string
 	VideoStream      string
 	AudioSrc         string
@@ -48,12 +49,12 @@ func (r *repo) insertSession(ctx context.Context, s sessionRecord) (int64, error
 		INSERT INTO stream_sessions
 		 (session_key,user_id,user_name,rating_key,media_type,title,grandparent_title,parent_title,
 		  media_index,parent_index,year,thumb,player,platform,product,ip_address,location,decision,
-		  started_at,stopped_at,paused_ms,view_offset_ms,duration_ms,
+		  started_at,stopped_at,paused_ms,view_offset_ms,duration_ms,watched_ms,
 		  video_src,video_stream,audio_src,audio_stream,container_src,container_stream,hw_transcode,buffer_count)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		s.SessionKey, s.UserID, s.UserName, s.RatingKey, s.MediaType, s.Title, s.GrandparentTitle, s.ParentTitle,
 		s.MediaIndex, s.ParentIndex, s.Year, s.Thumb, s.Player, s.Platform, s.Product, s.IPAddress, s.Location, s.Decision,
-		s.StartedAt, s.StoppedAt, s.PausedMS, s.ViewOffsetMS, s.DurationMS,
+		s.StartedAt, s.StoppedAt, s.PausedMS, s.ViewOffsetMS, s.DurationMS, s.WatchedMS,
 		s.VideoSrc, s.VideoStream, s.AudioSrc, s.AudioStream, s.ContainerSrc, s.ContainerStream, b2i(s.HWTranscode), s.BufferCount)
 	if err != nil {
 		return 0, err
@@ -149,6 +150,7 @@ type HistoryRow struct {
 	PausedMS         int64  `json:"paused_ms"`
 	ViewOffsetMS     int64  `json:"view_offset_ms"`
 	DurationMS       int64  `json:"duration_ms"`
+	WatchedMS        int64  `json:"watched_ms"`
 	VideoSrc         string `json:"video_src"`
 	VideoStream      string `json:"video_stream"`
 	AudioSrc         string `json:"audio_src"`
@@ -161,7 +163,7 @@ type HistoryRow struct {
 
 const historyCols = `id,user_id,user_name,title,grandparent_title,parent_title,media_index,parent_index,year,
 	media_type,thumb,player,platform,product,ip_address,location,decision,started_at,stopped_at,paused_ms,
-	view_offset_ms,duration_ms,video_src,video_stream,audio_src,audio_stream,container_src,container_stream,
+	view_offset_ms,duration_ms,watched_ms,video_src,video_stream,audio_src,audio_stream,container_src,container_stream,
 	hw_transcode,buffer_count`
 
 func (r *repo) history(ctx context.Context, f HistoryFilter) ([]HistoryRow, int, error) {
@@ -184,7 +186,7 @@ func (r *repo) history(ctx context.Context, f HistoryFilter) ([]HistoryRow, int,
 		if err := rows.Scan(&h.ID, &h.UserID, &h.UserName, &h.Title, &h.GrandparentTitle, &h.ParentTitle,
 			&h.MediaIndex, &h.ParentIndex, &h.Year, &h.MediaType, &h.Thumb, &h.Player, &h.Platform, &h.Product,
 			&h.IPAddress, &h.Location, &h.Decision, &h.StartedAt, &h.StoppedAt, &h.PausedMS, &h.ViewOffsetMS,
-			&h.DurationMS, &h.VideoSrc, &h.VideoStream, &h.AudioSrc, &h.AudioStream, &h.ContainerSrc,
+			&h.DurationMS, &h.WatchedMS, &h.VideoSrc, &h.VideoStream, &h.AudioSrc, &h.AudioStream, &h.ContainerSrc,
 			&h.ContainerStream, &hw, &h.BufferCount); err != nil {
 			return nil, 0, err
 		}

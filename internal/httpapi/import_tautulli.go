@@ -53,7 +53,11 @@ func (a *api) handleImportTautulli(w http.ResponseWriter, r *http.Request) {
 					Title: r.Title, GrandparentTitle: r.GrandparentTitle, ParentTitle: r.ParentTitle,
 					MediaIndex: r.MediaIndex, ParentIndex: r.ParentIndex, Year: r.Year, Thumb: r.Thumb,
 					Player: r.Player, Platform: r.Platform, Product: r.Product, IPAddress: r.IPAddress, Decision: r.Decision,
-					StartedAt: r.Started, StoppedAt: r.Stopped, DurationMS: r.DurationSec * 1000, PausedMS: r.PausedSec * 1000,
+					StartedAt: r.Started, StoppedAt: r.Stopped, PausedMS: r.PausedSec * 1000,
+					// Tautulli's `duration` is how long they WATCHED, not how long the
+					// media runs — it belongs in WatchedMS. Putting it in DurationMS made
+					// History divide the view offset by watch time for its progress bar.
+					WatchedMS: r.DurationSec * 1000,
 				})
 			}
 			imp, skp := a.deps.Insights.ImportHistory(bg, sessions)

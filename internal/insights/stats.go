@@ -8,13 +8,26 @@ import (
 	"github.com/tristenlammi/arrmada/internal/geoip"
 )
 
-// watchedExpr is the per-row watched seconds (wall time minus paused).
-const watchedExpr = `((stopped_at - started_at) - paused_ms/1000)`
+// watchedExpr is the per-row watched seconds.
+//
+// Prefer what the source actually reported (watched_ms). Falling back to wall time is only
+// sound for a live-tracked session, where the poller observes both the start and the stop.
+// An imported Tautulli row's wall time also spans every minute a client sat idle without
+// sending a stop — which is how the Users tab came to show 24-34 hours per play against a
+// real average nearer half an hour.
+//
+// The reported figure is still capped at the wall span: a source can under-report watch
+// time honestly, but it can never have watched longer than the session existed.
+//
+// Each branch clamps at 0 so a corrupt or in-progress row (stopped_at <= started_at, or a
+// paused span longer than the wall time) can't drag a total negative. Play COUNT(*) still
+// includes such rows — only the watch time is clamped.
+const watchedExpr = `(CASE WHEN watched_ms > 0
+		THEN MIN(watched_ms/1000, MAX(0, stopped_at - started_at))
+		ELSE MAX(0, (stopped_at - started_at) - paused_ms/1000) END)`
 
-// watchedSum sums per-row watched seconds, clamping each row at 0 so a corrupt/in-progress row
-// (stopped_at <= started_at, or a paused span longer than the wall time) can't drag a total
-// negative. Play COUNT(*) still includes such rows — only the watch-time is clamped.
-const watchedSum = `SUM(MAX(0, ` + watchedExpr + `))`
+// watchedSum sums per-row watched seconds.
+const watchedSum = `SUM(` + watchedExpr + `)`
 
 // windowStart returns the unix-second start of a windowDays window aligned to LOCAL midnight, so
 // day-grouped SQL (which uses 'localtime') and the day-axis labels agree at the window boundary.
