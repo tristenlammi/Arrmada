@@ -78,8 +78,19 @@ func (s *Service) Graphs(ctx context.Context, windowDays int) (Graphs, error) {
 		return Graphs{}, err
 	}
 
-	g.TopPlatforms = toNameStats(mustNames(s.repo.topNames(ctx, "platform", "platform", since, false, 10)))
-	g.TopUsers = toNameStats(mustNames(s.repo.topNames(ctx, "user_id", "user_name", since, false, 10)))
+	// These used to run through mustNames, which took the error and dropped it on the
+	// floor: a failed query rendered as an empty Top Platforms / Top Users card, so a
+	// broken query and a quiet week looked identical.
+	plats, err := s.repo.topNames(ctx, "platform", "platform", since, false, 10)
+	if err != nil {
+		return Graphs{}, err
+	}
+	g.TopPlatforms = toNameStats(plats)
+	users, err := s.repo.topNames(ctx, "user_id", "user_name", since, false, 10)
+	if err != nil {
+		return Graphs{}, err
+	}
+	g.TopUsers = toNameStats(users)
 
 	bw, err := s.bandwidthSeries(ctx, since)
 	if err != nil {
@@ -141,8 +152,6 @@ func (s *Service) bandwidthSeries(ctx context.Context, since int64) ([]BWPoint, 
 	}
 	return out, rows.Err()
 }
-
-func mustNames(rows []nameStatRow, _ error) []nameStatRow { return rows }
 
 func atoiSafe(s string) int {
 	n := 0
