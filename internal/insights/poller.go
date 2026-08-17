@@ -96,6 +96,11 @@ func (s *Service) reconcile(ctx context.Context, sessions []plex.Session, now ti
 	var total, lan, wan int64
 
 	for _, sess := range sessions {
+		// Do this FIRST: the id feeds the live-session identity check, the user upsert and
+		// the recorded row, and all three have to agree. A PMS calls its owner "1" — a
+		// placeholder, not an account id — so left alone the owner is filed separately
+		// from the same person's imported history.
+		sess.UserID = s.canonicalUserID(ctx, sess.UserID)
 		seen[sess.SessionKey] = true
 		ls := s.live[sess.SessionKey]
 		// A client can keep the same sessionKey across autoplayed episodes, and a Plex restart

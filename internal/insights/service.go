@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"strconv"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/eventbus"
 	"github.com/tristenlammi/arrmada/internal/geoip"
@@ -36,6 +37,9 @@ type Service struct {
 	log      *slog.Logger
 
 	live map[string]*liveSession // in-flight sessions (poller goroutine only)
+	// ownerLookupAt rate-limits the plex.tv account lookup. Poller-goroutine only, same
+	// as live — nothing else touches it.
+	ownerLookupAt time.Time
 }
 
 // NewService wires the module. geo may be nil (geolocation then only flags LAN as "Local").

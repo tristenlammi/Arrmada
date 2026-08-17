@@ -109,6 +109,26 @@ func (r *repo) upsertUser(ctx context.Context, id, username, thumb string, at in
 	return err
 }
 
+// repointUser moves every session filed under `from` onto `to`, returning how many moved.
+// Used to fold the Plex owner placeholder ("1") into the real account id.
+func (r *repo) repointUser(ctx context.Context, from, to string) (int64, error) {
+	res, err := r.db.ExecContext(ctx,
+		`UPDATE stream_sessions SET user_id = ? WHERE user_id = ?`, to, from)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// deleteUserIfUnused retires a plex_users row once no session references it. Guarded so a
+// partial merge can never orphan sessions against a user the Users tab can't join to.
+func (r *repo) deleteUserIfUnused(ctx context.Context, id string) error {
+	_, err := r.db.ExecContext(ctx,
+		`DELETE FROM plex_users WHERE id = ?
+		   AND NOT EXISTS (SELECT 1 FROM stream_sessions WHERE user_id = ?)`, id, id)
+	return err
+}
+
 // PruneBandwidth deletes bandwidth samples older than `before`, returning the number removed.
 // A scheduler should call this periodically (e.g. PruneBandwidth(ctx, now.Add(-90*24*time.Hour)))
 // because the poller records a bandwidth sample every cycle even with zero active streams.
