@@ -25,8 +25,14 @@ func TestTitleKey(t *testing.T) {
 	if got := TitleKey("Pokémon"); got != "pokemon" {
 		t.Errorf("TitleKey(Pokémon) = %q, want %q", got, "pokemon")
 	}
-	if got := TitleKey("Love & Death"); got != "loveanddeath" {
-		t.Errorf("TitleKey(Love & Death) = %q, want %q", got, "loveanddeath")
+	// The conjunction is now dropped rather than spelled out, so that a release which
+	// DELETED the ampersand keys the same as one that expanded it. See
+	// TestTitleKeyAgreesAcrossAmpersandSpellings for why that third spelling matters.
+	if got := TitleKey("Love & Death"); got != "lovedeath" {
+		t.Errorf("TitleKey(Love & Death) = %q, want %q", got, "lovedeath")
+	}
+	if TitleKey("Love & Death") != TitleKey("Love Death") {
+		t.Error("a release that dropped the ampersand must key the same as the library title")
 	}
 	if TitleKey("Dune") == TitleKey("Duel") {
 		t.Error("different titles must not collide")
