@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 )
 
 // MAMSearcher is a native MyAnonaMouse integration. MAM exposes a rich JSON
@@ -50,6 +51,25 @@ const (
 // MAM top-level categories. 13 = Audiobooks, 14 = E-Books, 15 = Musicology,
 // 16 = Radio. We search books + audiobooks by default.
 var mamBookMainCats = []int{13, 14}
+
+const (
+	mamCatAudiobooks = 13
+	mamCatEbooks     = 14
+)
+
+// mamCatsFor narrows the search to one edition's category. MAM matches ALL query words
+// (searchType "all"), so the usual trick of appending "audiobook" to the text asks for a
+// title/author/narrator/series containing that literal word — which no listing does, so it
+// returned nothing every time. The edition is a category here, and that's how to ask.
+func mamCatsFor(edition string, fallback []int) []int {
+	switch edition {
+	case "audiobook":
+		return []int{mamCatAudiobooks}
+	case "ebook":
+		return []int{mamCatEbooks}
+	}
+	return fallback
+}
 
 // throttle reserves the next request slot under the lock, then waits for it
 // outside the lock, honouring ctx cancellation (see TorrentLeechSearcher.throttle).
@@ -89,6 +109,27 @@ type mamTor struct {
 	SortType    string          `json:"sortType"`
 	StartNumber string          `json:"startNumber"`
 	PerPage     int             `json:"perpage"`
+}
+
+// mamSearchText prepares a query for MAM's all-words matching.
+//
+// Punctuation attached to a word is the quiet killer here: an author recorded as
+// "Harper L. Woods" searched for the token "L." while the listing carries "Harper L Woods",
+// and with every word required, one unmatched initial returns nothing at all. Dropping
+// punctuation costs no precision — MAM has no operators to preserve — and makes an
+// initial match whichever way either side spells it.
+func mamSearchText(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range text {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsSpace(r):
+			b.WriteRune(r)
+		default:
+			b.WriteRune(' ') // split rather than join: "sci-fi" is two words, not "scifi"
+		}
+	}
+	return strings.Join(strings.Fields(b.String()), " ")
 }
 
 // mamResponse is MAM's search reply. On no results MAM returns {"error": "..."}.
@@ -134,6 +175,9 @@ func (m *MAMSearcher) Search(ctx context.Context, idx Indexer, q SearchQuery) ([
 	} else if len(idx.Categories) > 0 {
 		mainCats = idx.Categories
 	}
+	// An explicit edition beats the configured default — asking for the audiobook and
+	// being handed the ebook category is the same miss in a different disguise.
+	mainCats = mamCatsFor(q.BookEdition, mainCats)
 	limit := q.Limit
 	if limit <= 0 || limit > 100 {
 		limit = 50
@@ -141,7 +185,7 @@ func (m *MAMSearcher) Search(ctx context.Context, idx Indexer, q SearchQuery) ([
 
 	body := mamSearchBody{
 		Tor: mamTor{
-			Text:        strings.TrimSpace(q.Text),
+			Text:        mamSearchText(q.Text),
 			SrchIn:      map[string]bool{"title": true, "author": true, "narrator": true, "series": true},
 			SearchType:  "all",
 			SearchIn:    "torrents",

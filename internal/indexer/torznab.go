@@ -317,6 +317,20 @@ func (c *TorznabSearcher) get(ctx context.Context, endpoint string) ([]byte, err
 	return body, nil
 }
 
+// torznabText applies a book edition the only way a general tracker can express it: as a
+// word in the query, because its release NAMES carry "audiobook" while its categories are
+// whatever the indexer decided to define. (A dedicated book tracker has a real category
+// for the edition and does the opposite — see mamCatsFor.)
+//
+// Ebook is deliberately not appended: "ebook" rarely appears in a release name, so adding
+// it would filter out the very releases it's meant to find.
+func torznabText(q SearchQuery) string {
+	if q.Text != "" && q.BookEdition == "audiobook" {
+		return q.Text + " audiobook"
+	}
+	return q.Text
+}
+
 func buildURL(idx Indexer, t string, q SearchQuery) (string, error) {
 	u, err := url.Parse(idx.URL)
 	if err != nil {
@@ -327,8 +341,8 @@ func buildURL(idx Indexer, t string, q SearchQuery) (string, error) {
 	if idx.APIKey != "" {
 		qs.Set("apikey", idx.APIKey)
 	}
-	if q.Text != "" {
-		qs.Set("q", q.Text)
+	if text := torznabText(q); text != "" {
+		qs.Set("q", text)
 	}
 	cats := q.Categories
 	if len(cats) == 0 {

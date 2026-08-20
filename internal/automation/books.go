@@ -103,7 +103,8 @@ func (c *Coordinator) SearchBookNow(ctx context.Context, bookID int64) error {
 }
 
 func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind string, sp quality.StoredProfile) {
-	res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: bookQuery(b, kind), MediaType: indexer.MediaBook, Limit: 60})
+	res, err := c.indexers.Search(ctx, indexer.SearchQuery{
+		Text: bookQuery(b), MediaType: indexer.MediaBook, BookEdition: kind, Limit: 60})
 	if err != nil || len(res.Releases) == 0 {
 		return
 	}
@@ -161,17 +162,20 @@ func (c *Coordinator) releasesForThisBook(ctx context.Context, b books.Book, rel
 	return out
 }
 
-// bookQuery builds the indexer query. Audiobook searches append "audiobook" so the
-// audio editions surface (ebook releases dominate a bare title search).
-func bookQuery(b books.Book, kind string) string {
-	q := b.Title
+// bookQuery builds the indexer query: author + title, with no edition word.
+//
+// It used to append "audiobook" for audio searches, on the reasoning that ebook releases
+// dominate a bare title search. That works on a general tracker, whose release NAMES carry
+// the word. On a dedicated book tracker it is fatal: MyAnonaMouse matches all query words
+// against title/author/narrator/series, none of which contain "audiobook", so every audio
+// search returned zero. The edition now travels as SearchQuery.BookEdition and each
+// searcher applies it the way its own API expects — a category on MAM, a query word on
+// the general trackers.
+func bookQuery(b books.Book) string {
 	if b.Author != "" {
-		q = b.Author + " " + b.Title
+		return b.Author + " " + b.Title
 	}
-	if kind == books.KindAudiobook {
-		q += " audiobook"
-	}
-	return q
+	return b.Title
 }
 
 // pickBestBookForKind ranks releases of the given edition by the profile: format
@@ -468,18 +472,20 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 		return ReleaseList{}, err
 	}
 	sp := c.bookProfile(ctx, b.QualityProfile)
-	query := b.Title
-	if b.Author != "" {
-		query = b.Author + " " + b.Title
-	}
+	query := bookQuery(b)
 	// Dedup by download URL — the unique per-torrent link. Deduping by title
 	// wrongly collapsed distinct editions that render the same display name (e.g. a
 	// GraphicAudio M4B and a standard-narration M4B both "<Author> - <Title> [M4B]"),
 	// hiding valid options.
 	seen := map[string]bool{}
 	var all []indexer.Release
-	for _, q := range []string{query, query + " audiobook"} {
-		res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: q, MediaType: indexer.MediaBook, Limit: 60})
+	// Two passes: everything, then audiobooks specifically. The edition travels as a field
+	// rather than a suffix on the text, so each indexer narrows it the way its own API can
+	// — a category on a book tracker, an extra query word on a general one. Appending the
+	// word unconditionally made the second pass return nothing at all on MyAnonaMouse.
+	for _, edition := range []string{"", books.KindAudiobook} {
+		res, err := c.indexers.Search(ctx, indexer.SearchQuery{
+			Text: query, MediaType: indexer.MediaBook, BookEdition: edition, Limit: 60})
 		if err != nil {
 			continue
 		}

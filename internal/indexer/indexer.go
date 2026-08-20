@@ -109,6 +109,16 @@ type SearchQuery struct {
 	// Zero means unset.
 	Season  int
 	Episode int
+
+	// BookEdition narrows a book search to "ebook" or "audiobook". Empty means either.
+	//
+	// It exists because the two kinds of book tracker want opposite things. A general
+	// tracker has no notion of an edition, so the only way to bias toward audio is to put
+	// the word "audiobook" in the query and hope it appears in the release name. A book
+	// tracker like MyAnonaMouse categorises the edition properly — and matches ALL query
+	// words, so that same appended word matches nothing and returns an empty result set.
+	// Each searcher now applies the edition the way its own API expects.
+	BookEdition string
 }
 
 // Recenter is an optional capability: fetch the newest releases (an RSS-style
