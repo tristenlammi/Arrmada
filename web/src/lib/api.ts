@@ -931,6 +931,8 @@ export const api = {
     req<{ status: string }>(`/api/v1/movies/${id}/grabtorrent`, { method: "POST", body: JSON.stringify({ torrent, filename, title }) }),
   grabSeriesTorrent: (id: number, torrent: string, filename: string, title: string) =>
     req<{ status: string }>(`/api/v1/series/${id}/grabtorrent`, { method: "POST", body: JSON.stringify({ torrent, filename, title }) }),
+  grabBookTorrent: (id: number, torrent: string, filename: string, title: string) =>
+    req<{ status: string }>(`/api/v1/books/${id}/grabtorrent`, { method: "POST", body: JSON.stringify({ torrent, filename, title }) }),
   deleteMovie: (id: number, deleteFiles?: boolean) =>
     req<void>(`/api/v1/movies/${id}${deleteFiles ? "?delete_files=true" : ""}`, { method: "DELETE" }),
   searchMovie: (id: number) =>

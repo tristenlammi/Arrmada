@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { BookReleaseModal } from "../components/BookReleaseModal";
+import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { api, type Book, type BookFile, type BookFileEntry, type BookImportCandidate, type BookLookup, type MovieEvent } from "../lib/api";
 
 function fmtSize(bytes?: number): string {
@@ -279,6 +280,7 @@ function Toolbar({ book, onChange, flash }: { book: Book; onChange: () => void; 
   const [busy, setBusy] = useState<string | null>(null);
   const [showSearch, setShowSearch] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showPaste, setShowPaste] = useState(false);
   const [showEdit, setShowEdit] = useState(false);
   const [showMatch, setShowMatch] = useState(false);
 
@@ -303,6 +305,7 @@ function Toolbar({ book, onChange, flash }: { book: Book; onChange: () => void; 
         </button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("refresh", async () => { await api.refreshBook(book.id); onChange(); flash("Refreshed metadata and rescanned disk."); })}>{busy === "refresh" ? "Refreshing…" : "Refresh & rescan"}</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowSearch(true)}>Search indexers</button>
+        <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowPaste(true)} title="Found the release yourself? Drop the .torrent here and Arrmada will grab and import it">Upload torrent</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowImport(true)}>Manual import</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("rename", rename)}>{busy === "rename" ? "Renaming…" : "Rename"}</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowEdit(true)} title="Manually fix title/author/year when the metadata providers got it wrong">Edit metadata</button>
@@ -317,6 +320,14 @@ function Toolbar({ book, onChange, flash }: { book: Book; onChange: () => void; 
           fetchReleases={() => api.bookReleases(book.id)}
           onGrab={async (rel) => { await api.grabBook(book.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title }); onChange(); }}
           onClose={() => setShowSearch(false)}
+        />
+      )}
+      {showPaste && (
+        <UploadTorrentModal
+          what={book.title}
+          onPreview={(torrent) => api.previewTorrent(torrent)}
+          onGrab={async (torrent, filename, title) => { await api.grabBookTorrent(book.id, torrent, filename, title); onChange(); }}
+          onClose={() => setShowPaste(false)}
         />
       )}
       {showImport && <ManualImportModal book={book} onClose={() => setShowImport(false)} onImported={() => { onChange(); flash("Imported."); }} />}

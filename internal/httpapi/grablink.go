@@ -67,6 +67,29 @@ func (a *api) handleMovieGrabTorrent(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "grabbed"})
 }
 
+// handleBookGrabTorrent adds an uploaded .torrent to the download client, attributed to a
+// book — for an edition search can't reach, which on book trackers is common enough to
+// need a way in by hand.
+func (a *api) handleBookGrabTorrent(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	var req torrentUpload
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	data, ok := a.decodeTorrent(w, req)
+	if !ok {
+		return
+	}
+	if err := a.deps.Automation.GrabBookTorrent(r.Context(), id, data, req.Filename, req.Title); err != nil {
+		a.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"status": "grabbed"})
+}
+
 // handleSeriesGrabTorrent adds an uploaded .torrent to the download client, attributed
 // to a series.
 func (a *api) handleSeriesGrabTorrent(w http.ResponseWriter, r *http.Request) {

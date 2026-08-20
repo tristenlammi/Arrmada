@@ -232,6 +232,33 @@ func (c *Coordinator) GrabSeriesTorrent(ctx context.Context, seriesID int64, fil
 	return nil
 }
 
+// GrabBookTorrent adds an uploaded .torrent file for a book and records the grab.
+//
+// Book trackers are the ones you most often have to reach into by hand: a private tracker
+// may hold the only copy of an edition, and a title that search can't phrase a query for
+// (an author's initials punctuated differently, a series name the listing spells its own
+// way) is otherwise unreachable from inside Arrmada.
+//
+// The book category matters — it's what routes the finished download through the book
+// importer, which knows an ebook from an audiobook and hardlinks each edition into place.
+func (c *Coordinator) GrabBookTorrent(ctx context.Context, bookID int64, file []byte, filename, title string) error {
+	hash, err := c.addTorrentFile(ctx, file, filename, title, bookCategory)
+	if err != nil {
+		return err
+	}
+	if c.books != nil {
+		if b, err := c.books.Get(ctx, bookID); err == nil {
+			// "manual" as the indexer, same as the movie and series paths: seedRules
+			// treats an unknown indexer as seed-for-the-standard-window rather than
+			// don't-seed, so an uploaded torrent from a private tracker isn't deleted
+			// the moment it imports.
+			c.recordBookGrab(ctx, bookID, title, "manual", b.QualityProfile, hash)
+		}
+		c.books.AddEvent(ctx, bookID, "grabbed", "Uploaded torrent — "+title)
+	}
+	return nil
+}
+
 // RecordManualGrab tracks a release grabbed by hand (interactive search) exactly
 // like an automatic grab, so it's seed-managed and stall-detected too. movieID 0
 // (not tied to a tracked movie) is a no-op.
