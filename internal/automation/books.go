@@ -18,6 +18,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/quality"
 )
 
@@ -388,8 +389,15 @@ func (c *Coordinator) importBookContent(ctx context.Context, b books.Book, conte
 			c.log.Info("book import: extracted archives before import", "count", n, "path", contentPath)
 		}
 	}
+	found := library.FindBookFiles(contentPath)
+	// A "Red Rising" grab routinely turns out to be the whole trilogy, and every file in
+	// it used to be hardlinked into Red Rising's folder — three books filed as one, with
+	// the other two still showing as missing. Split off anything that names a DIFFERENT
+	// book in the library and import it where it belongs.
+	found = c.divertForeignBookFiles(ctx, b, found, hash, name)
+
 	var ebooks, audio []library.FoundFile
-	for _, f := range library.FindBookFiles(contentPath) {
+	for _, f := range found {
 		if library.IsAudiobookFile(f.Path) {
 			audio = append(audio, f)
 		} else {
@@ -415,6 +423,102 @@ func (c *Coordinator) importBookContent(ctx context.Context, b books.Book, conte
 	okEbook := c.importBookEdition(ctx, b, books.KindEbook, ebooks, hash, name)
 	okAudio := c.importBookEdition(ctx, b, books.KindAudiobook, audio, hash, name)
 	return okEbook || okAudio, hadFiles
+}
+
+// divertForeignBookFiles pulls the files that belong to a DIFFERENT library book out of a
+// download and imports them into that book, returning what's left for b.
+//
+// Multi-book packs are the norm on book trackers — a series grab hands back the whole
+// trilogy — and importing the lot under the book that was asked for both mis-files two of
+// them AND leaves them counted as missing, so the searcher keeps hunting for what's
+// already on disk.
+//
+// The bar for diverting is deliberately high: a file moves only when it names a specific
+// OTHER book that is already in the library. Anything ambiguous — generic chapter files,
+// "Part 1 of 2", a book not in the library — stays with b, which is the existing
+// behaviour and the safe one for a single title split across many files.
+func (c *Coordinator) divertForeignBookFiles(ctx context.Context, b books.Book, found []library.FoundFile, hash, name string) []library.FoundFile {
+	if len(found) < 2 || c.books == nil {
+		return found // a single file is whatever the download was matched as
+	}
+	match := c.books.Matcher(ctx)
+	keep := make([]library.FoundFile, 0, len(found))
+	foreign := map[int64][]library.FoundFile{}
+	titles := map[int64]books.Book{}
+	for _, f := range found {
+		// Match on the file's own name AND its parent folder: a pack usually separates the
+		// books into folders and names the files generically inside them.
+		other, ok := matchBookFile(match, f.Path)
+		if !ok || other.ID == b.ID {
+			keep = append(keep, f)
+			continue
+		}
+		foreign[other.ID] = append(foreign[other.ID], f)
+		titles[other.ID] = other
+	}
+	for id, files := range foreign {
+		other := titles[id]
+		c.log.Info("book import: pack holds another library book — importing it into its own folder",
+			"grabbed_for", b.Title, "also_holds", other.Title, "files", len(files), "release", name)
+		var ebooks, audio []library.FoundFile
+		for _, f := range files {
+			if library.IsAudiobookFile(f.Path) {
+				audio = append(audio, f)
+			} else {
+				ebooks = append(ebooks, f)
+			}
+		}
+		if len(audio) > 0 && len(ebooks) > 0 {
+			ebooks = nil // same companion-PDF rule the main path applies
+		}
+		c.importBookEdition(ctx, other, books.KindEbook, ebooks, hash, name)
+		c.importBookEdition(ctx, other, books.KindAudiobook, audio, hash, name)
+	}
+	return keep
+}
+
+// matchBookFile resolves one file inside a pack to a library book, trying its own name
+// first and then its containing folder — a pack commonly puts each book in a folder and
+// names the files inside it generically ("01 - Chapter 1.mp3").
+func matchBookFile(match func(string) (books.Book, bool), path string) (books.Book, bool) {
+	if b, ok := match(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))); ok {
+		return b, true
+	}
+	if dir := filepath.Base(filepath.Dir(path)); dir != "." && dir != string(filepath.Separator) {
+		if b, ok := match(dir); ok {
+			return b, true
+		}
+	}
+	return books.Book{}, false
+}
+
+// pickScanMatch chooses the lookup result that really is the book in this folder.
+//
+// A metadata search is a fuzzy, ranked guess: "Pierce Brown Golden Son" can rank Red Rising
+// first, because the author and series match and the provider weights popularity. Accepting
+// the top hit unconditionally files a folder under whichever book the provider felt like
+// naming, and when that book is already in the library the scan looks like it succeeded.
+//
+// So require the titles to actually correspond. Exact key equality first; failing that, a
+// result whose title contains the folder's (an edition subtitled "Golden Son: Red Rising
+// Book 2" is still Golden Son) — never the reverse, or "Dune" would swallow a folder
+// holding "Dune Messiah".
+func pickScanMatch(folderTitle string, results []metadata.BookResult) (metadata.BookResult, bool) {
+	want := parser.TitleKey(folderTitle)
+	if want == "" {
+		return metadata.BookResult{}, false
+	}
+	for _, r := range results {
+		if parser.TitleKey(r.Title) == want {
+			return r, true
+		}
+	}
+	for _, r := range results {
+		if k := parser.TitleKey(r.Title); k != "" && strings.Contains(k, want) {
+			return r, true
+		}
+	}
+	return metadata.BookResult{}, false
 }
 
 // bookParsedTitle reduces a release name to a readable title guess for a review row:
@@ -810,7 +914,18 @@ func (c *Coordinator) ScanBookLibrary(ctx context.Context, ebookRoot, audiobookR
 			res.Unmatched = append(res.Unmatched, bf.Title)
 			continue
 		}
-		match := results[0]
+		match, ok := pickScanMatch(bf.Title, results)
+		if !ok {
+			// Better to leave a folder uncatalogued and say so than to file it under the
+			// wrong book. Taking results[0] on faith meant a lookup for "Golden Son" that
+			// answered with its more famous series-mate silently folded that folder's
+			// files into the WRONG book — and because that book was already in the
+			// library, the scan reported nothing amiss and Golden Son never appeared.
+			c.log.Info("book scan: no lookup result matched the folder's title — leaving it uncatalogued",
+				"folder_title", bf.Title, "author", bf.Author, "best_guess", results[0].Title)
+			res.Unmatched = append(res.Unmatched, bf.Title)
+			continue
+		}
 		p := byKey[match.Key]
 		if p == nil {
 			p = &pending{match: match}
