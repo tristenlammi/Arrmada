@@ -52,6 +52,11 @@ type Book struct {
 	WantEbook     bool   `json:"want_ebook"`
 	WantAudiobook bool   `json:"want_audiobook"`
 	AddedAt       string `json:"added_at,omitempty"`
+	// SeriesName / SeriesPosition are learned from the release that matched this book —
+	// book trackers state them ("Coven of Bones #1") and nothing used to keep them.
+	// Position 0 means the series is known but the number isn't.
+	SeriesName     string  `json:"series_name,omitempty"`
+	SeriesPosition float64 `json:"series_position,omitempty"`
 }
 
 // SearchState returns when the missing-books sweep last searched for this book and how
@@ -75,6 +80,43 @@ func (r *Repo) ResetSearchMisses(ctx context.Context, bookID int64) {
 		`UPDATE books SET last_search_at = datetime('now'), search_misses = 0 WHERE id = ?`, bookID)
 }
 
+// SetSeries records the series a book belongs to and its position in it. Learned from the
+// release that matched the book, so it only ever fills in — a later release naming no
+// series can't erase what an earlier one told us.
+func (r *Repo) SetSeries(ctx context.Context, bookID int64, name string, position float64) error {
+	if strings.TrimSpace(name) == "" {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE books SET series_name = ?, series_position = ? WHERE id = ?`, name, position, bookID)
+	return err
+}
+
+// SeriesSiblings returns every book sharing this series name, in reading order, including
+// the book itself. Position 0 means "no number known" and sorts last, after the numbered
+// entries, rather than pretending to be book zero.
+func (r *Repo) SeriesSiblings(ctx context.Context, seriesName string) ([]Book, error) {
+	if strings.TrimSpace(seriesName) == "" {
+		return nil, nil
+	}
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT `+cols+` FROM books WHERE series_name = ?
+		  ORDER BY CASE WHEN series_position > 0 THEN 0 ELSE 1 END, series_position, title`, seriesName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Book
+	for rows.Next() {
+		b, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // Repo persists books in SQLite.
 type Repo struct{ db *sql.DB }
 
@@ -82,7 +124,7 @@ type Repo struct{ db *sql.DB }
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const cols = `id, ol_key, title, author, year, cover_url, description, subjects_json,
-	monitored, quality_profile, added_at,
+	monitored, quality_profile, added_at, series_name, series_position,
 	ebook_path, ebook_format, ebook_size, ebook_files,
 	audiobook_path, audiobook_format, audiobook_size, audiobook_files`
 
@@ -99,7 +141,7 @@ func scan(row interface{ Scan(...any) error }) (Book, error) {
 		abFiles       int
 	)
 	err := row.Scan(&b.ID, &b.OLKey, &b.Title, &b.Author, &b.Year, &b.CoverURL, &b.Description,
-		&subjectsJSON, &mon, &b.QualityProfile, &b.AddedAt,
+		&subjectsJSON, &mon, &b.QualityProfile, &b.AddedAt, &b.SeriesName, &b.SeriesPosition,
 		&ebPath, &ebFmt, &ebSize, &ebFiles, &abPath, &abFmt, &abSize, &abFiles)
 	if err != nil {
 		return Book{}, err

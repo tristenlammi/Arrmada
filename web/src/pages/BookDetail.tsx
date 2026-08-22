@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { BookReleaseModal } from "../components/BookReleaseModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
-import { api, type Book, type BookFile, type BookFileEntry, type BookImportCandidate, type BookLookup, type MovieEvent } from "../lib/api";
+import { api, type Book, type BookFile, type BookFileEntry, type BookImportCandidate, type BookLookup, type BookSeries, type MovieEvent } from "../lib/api";
 
 function fmtSize(bytes?: number): string {
   if (!bytes || bytes <= 0) return "";
@@ -322,6 +322,7 @@ function Toolbar({ book, onChange, flash }: { book: Book; onChange: () => void; 
           onClose={() => setShowSearch(false)}
         />
       )}
+      <SeriesPanel bookID={book.id} />
       {showPaste && (
         <UploadTorrentModal
           what={book.title}
@@ -608,5 +609,58 @@ function RematchModal({ book, onClose, onMatched }: { book: Book; onClose: () =>
         )}
       </div>
     </div>
+  );
+}
+
+// SeriesPanel shows the series a book belongs to and what's missing from it.
+//
+// The series is learned from the release that matched the book — book trackers state it
+// ("Coven of Bones #1") and Arrmada used to discard it — so it appears once something has
+// been grabbed, and the panel simply doesn't render before then.
+//
+// Gaps are only shown BETWEEN entries you own. Nothing here knows how long a series really
+// runs, so a hole at #2 when you have #1 and #3 is a fact, while "#6 is missing" past your
+// highest entry would be a guess.
+function SeriesPanel({ bookID }: { bookID: number }) {
+  const [series, setSeries] = useState<BookSeries | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    api.bookSeries(bookID).then((s) => { if (live) setSeries(s); }).catch(() => {});
+    return () => { live = false; };
+  }, [bookID]);
+
+  if (!series?.name || series.entries.length === 0) return null;
+
+  return (
+    <section className="mt-4 rounded-xl p-4" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+      <div className="flex items-baseline justify-between gap-3">
+        <h2 className="m-0 text-[15px] font-bold">{series.name}</h2>
+        <span className="font-mono text-[10.5px] text-ink-faint">
+          {series.gaps > 0 ? `${series.gaps} missing from your library` : "no gaps"}
+        </span>
+      </div>
+      <ol className="mt-3 flex list-none flex-col gap-1 p-0">
+        {series.entries.map((e, i) => (
+          <li key={e.book_id ?? `gap-${e.position}-${i}`} className="flex items-center gap-2.5 text-[12.5px]">
+            <span className="w-8 flex-none text-right font-mono text-[11px] text-ink-faint">
+              {e.position ? `#${e.position}` : "—"}
+            </span>
+            {e.missing ? (
+              <span style={{ color: "var(--avoid)" }}>Not in your library</span>
+            ) : (
+              <>
+                <Link to={`/books/${e.book_id}`} style={{ color: e.book_id === bookID ? "var(--accent)" : "var(--ink)" }}>
+                  {e.title}
+                </Link>
+                <span className="font-mono text-[10px]" style={{ color: e.has_file ? "var(--good)" : "var(--ink-faint)" }}>
+                  {e.has_file ? "on disk" : "wanted"}
+                </span>
+              </>
+            )}
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }

@@ -250,6 +250,24 @@ func (a *api) handleScanBookLibrary(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "scanning"})
 }
 
+// handleBookSeries returns the series a book belongs to, its siblings in reading order,
+// and the numbered entries missing between them.
+func (a *api) handleBookSeries(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	res, err := a.deps.Automation.BookSeriesFor(r.Context(), id)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not read the series")
+		return
+	}
+	if res.Entries == nil {
+		res.Entries = []automation.BookSeriesEntry{} // [] not null, or the panel can't render
+	}
+	a.writeJSON(w, http.StatusOK, res)
+}
+
 // handleBookEditionFiles lists an edition's individual files (?edition=ebook|audiobook).
 func (a *api) handleBookEditionFiles(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)

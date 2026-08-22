@@ -166,6 +166,7 @@ func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind st
 		return false
 	}
 	c.recordBookGrab(ctx, b.ID, best.Title, best.Indexer, b.QualityProfile, hash)
+	c.learnBookSeries(ctx, b, *best)
 	c.books.AddEvent(ctx, b.ID, "grabbed", fmt.Sprintf("Grabbed the %s edition from %s: %s", kind, best.Indexer, best.Title))
 	c.log.Info("book: grabbing", "title", b.Title, "edition", kind, "release", best.Title, "format", detectBookFormat(best.Title))
 	return true
@@ -192,6 +193,133 @@ func (c *Coordinator) releasesForThisBook(ctx context.Context, b books.Book, rel
 		}
 	}
 	return out
+}
+
+// reSeriesPosition splits a book tracker's series credit into its name and number.
+// MyAnonaMouse renders one as "Coven of Bones #1"; a book in several series comes back
+// comma-joined, and the first is the one that names it.
+var reSeriesPosition = regexp.MustCompile(`^(.*?)\s*#\s*([0-9]+(?:\.[0-9]+)?)\s*$`)
+
+// parseBookSeries pulls the series name and position out of an indexer's series credit.
+// A position of 0 means the series is known but its number isn't — worth recording even
+// so, because grouping a library by series doesn't need the numbers.
+func parseBookSeries(credit string) (name string, position float64) {
+	// Only the first credit. An omnibus can list several series, and the one it leads
+	// with is the one it belongs to; guessing between them would file it arbitrarily.
+	if i := strings.Index(credit, ","); i >= 0 {
+		credit = credit[:i]
+	}
+	credit = strings.TrimSpace(credit)
+	if credit == "" {
+		return "", 0
+	}
+	m := reSeriesPosition.FindStringSubmatch(credit)
+	if m == nil {
+		return credit, 0
+	}
+	name = strings.TrimSpace(m[1])
+	if name == "" {
+		return "", 0 // "#3" on its own names no series
+	}
+	position, _ = strconv.ParseFloat(m[2], 64)
+	return name, position
+}
+
+// learnBookSeries records the series a grabbed release says this book belongs to.
+//
+// Book trackers state it and Arrmada used to discard it: the searcher folded the credit
+// into the text it scored against and kept nothing, so a library had no idea which of its
+// books were one series or which entry was missing between two it owned.
+//
+// Only ever fills in. A release that names no series can't erase what an earlier one said,
+// and a book that already has a series isn't relabelled by whatever it's grabbed next.
+func (c *Coordinator) learnBookSeries(ctx context.Context, b books.Book, rel indexer.Release) {
+	if c.books == nil || b.SeriesName != "" || rel.Series == "" {
+		return
+	}
+	name, pos := parseBookSeries(rel.Series)
+	if name == "" {
+		return
+	}
+	if err := c.books.SetSeries(ctx, b.ID, name, pos); err != nil {
+		c.log.Warn("book: could not record series", "title", b.Title, "series", name, "err", err)
+		return
+	}
+	c.log.Info("book: learned its series from the release", "title", b.Title, "series", name, "position", pos)
+}
+
+// BookSeriesEntry is one position in a series as seen from the library: a book you own,
+// or a hole where one should be.
+type BookSeriesEntry struct {
+	BookID   int64   `json:"book_id,omitempty"` // 0 for a gap — nothing in the library
+	Title    string  `json:"title"`
+	Position float64 `json:"position,omitempty"`
+	HasFile  bool    `json:"has_file"`
+	Missing  bool    `json:"missing"` // a numbered entry with no book in the library
+}
+
+// BookSeries is a book's series as the library can see it.
+type BookSeries struct {
+	Name    string            `json:"name"`
+	Entries []BookSeriesEntry `json:"entries"`
+	Gaps    int               `json:"gaps"`
+}
+
+// BookSeriesFor returns the series a book belongs to, its siblings in reading order, and
+// the numbered positions missing between them.
+//
+// The gaps are inferred, not looked up: nothing here knows how long a series really is,
+// only what the library holds. A hole BETWEEN two owned entries is a fact — you have #1
+// and #3, so #2 exists and you don't have it. Anything past the highest owned position is
+// a guess, so it isn't reported. That keeps every gap shown a real one.
+func (c *Coordinator) BookSeriesFor(ctx context.Context, bookID int64) (BookSeries, error) {
+	if c.books == nil {
+		return BookSeries{}, nil
+	}
+	b, err := c.books.Get(ctx, bookID)
+	if err != nil {
+		return BookSeries{}, err
+	}
+	if b.SeriesName == "" {
+		return BookSeries{}, nil
+	}
+	siblings, err := c.books.SeriesSiblings(ctx, b.SeriesName)
+	if err != nil {
+		return BookSeries{}, err
+	}
+	out := BookSeries{Name: b.SeriesName}
+	owned := map[int]books.Book{}
+	maxPos := 0
+	for _, sb := range siblings {
+		// Only whole numbers can imply a gap. A novella at 1.5 is optional by nature —
+		// its absence says nothing about the series being incomplete.
+		if p := sb.SeriesPosition; p > 0 && p == float64(int(p)) {
+			owned[int(p)] = sb
+			if int(p) > maxPos {
+				maxPos = int(p)
+			}
+		}
+	}
+	for i := 1; i <= maxPos; i++ {
+		if sb, ok := owned[i]; ok {
+			out.Entries = append(out.Entries, BookSeriesEntry{
+				BookID: sb.ID, Title: sb.Title, Position: sb.SeriesPosition, HasFile: sb.HasFile})
+			continue
+		}
+		out.Entries = append(out.Entries, BookSeriesEntry{Position: float64(i), Missing: true})
+		out.Gaps++
+	}
+	// Everything the whole-number walk didn't cover: novellas, and entries whose number
+	// no release ever stated. They belong to the series and shouldn't vanish from it.
+	for _, sb := range siblings {
+		p := sb.SeriesPosition
+		if p > 0 && p == float64(int(p)) {
+			continue // already placed above
+		}
+		out.Entries = append(out.Entries, BookSeriesEntry{
+			BookID: sb.ID, Title: sb.Title, Position: p, HasFile: sb.HasFile})
+	}
+	return out, nil
 }
 
 // bookQuery builds the indexer query: author + title, with no edition word.

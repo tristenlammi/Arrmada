@@ -560,6 +560,9 @@ export interface Book {
   title: string;
   author: string;
   year: number;
+  /** Learned from the release that matched this book; position 0 = number unknown. */
+  series_name?: string;
+  series_position?: number;
   cover_url?: string;
   description?: string;
   subjects?: string[];
@@ -696,6 +699,11 @@ export interface ConvertMediaStats {
   hdr10: number; hdr10_plus: number; dolby_vision: number; hlg: number;
   h264: number; hevc: number; av1: number; other: number;
 }
+// A book's series as the library can see it: the entries you own, in reading order, and
+// the numbered holes between them.
+export interface BookSeriesEntry { book_id?: number; title: string; position?: number; has_file: boolean; missing: boolean }
+export interface BookSeries { name: string; entries: BookSeriesEntry[]; gaps: number }
+
 export interface ConvertLibraryStats { movies: ConvertMediaStats; tv: ConvertMediaStats; total: ConvertMediaStats }
 export interface ConvertAllResult { movies: number; episodes: number; queued: number; blocklisted: number }
 
@@ -931,6 +939,7 @@ export const api = {
     req<{ status: string }>(`/api/v1/movies/${id}/grabtorrent`, { method: "POST", body: JSON.stringify({ torrent, filename, title }) }),
   grabSeriesTorrent: (id: number, torrent: string, filename: string, title: string) =>
     req<{ status: string }>(`/api/v1/series/${id}/grabtorrent`, { method: "POST", body: JSON.stringify({ torrent, filename, title }) }),
+  bookSeries: (id: number) => req<BookSeries>(`/api/v1/books/${id}/series`),
   grabBookTorrent: (id: number, torrent: string, filename: string, title: string) =>
     req<{ status: string }>(`/api/v1/books/${id}/grabtorrent`, { method: "POST", body: JSON.stringify({ torrent, filename, title }) }),
   deleteMovie: (id: number, deleteFiles?: boolean) =>

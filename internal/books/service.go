@@ -229,6 +229,17 @@ func (s *Service) ResetSearchMisses(ctx context.Context, bookID int64) {
 	s.repo.ResetSearchMisses(ctx, bookID)
 }
 
+// SetSeries records the series a book belongs to, learned from a matched release.
+func (s *Service) SetSeries(ctx context.Context, bookID int64, name string, position float64) error {
+	return s.repo.SetSeries(ctx, bookID, name, position)
+}
+
+// SeriesSiblings returns every book in the library sharing this series name, in reading
+// order — the basis for showing a series on a book's page and spotting the gaps in it.
+func (s *Service) SeriesSiblings(ctx context.Context, seriesName string) ([]Book, error) {
+	return s.repo.SeriesSiblings(ctx, seriesName)
+}
+
 // Matcher returns a release→book matcher over ONE library snapshot, for a caller resolving
 // many release names in a batch (a page of indexer results). MatchByRelease re-reads the
 // whole books table per call, so filtering 60 search results with it meant 60 full table
