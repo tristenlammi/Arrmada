@@ -54,6 +54,27 @@ type Book struct {
 	AddedAt       string `json:"added_at,omitempty"`
 }
 
+// SearchState returns when the missing-books sweep last searched for this book and how
+// many consecutive times it found nothing. Drives the same backoff movies and series use.
+func (r *Repo) SearchState(ctx context.Context, bookID int64) (lastSearchAt string, misses int) {
+	var last sql.NullString
+	_ = r.db.QueryRowContext(ctx,
+		`SELECT last_search_at, search_misses FROM books WHERE id = ?`, bookID).Scan(&last, &misses)
+	return last.String, misses
+}
+
+// RecordSearchMiss stamps the sweep time and increments the miss counter.
+func (r *Repo) RecordSearchMiss(ctx context.Context, bookID int64) {
+	_, _ = r.db.ExecContext(ctx,
+		`UPDATE books SET last_search_at = datetime('now'), search_misses = search_misses + 1 WHERE id = ?`, bookID)
+}
+
+// ResetSearchMisses clears the backoff after a successful grab.
+func (r *Repo) ResetSearchMisses(ctx context.Context, bookID int64) {
+	_, _ = r.db.ExecContext(ctx,
+		`UPDATE books SET last_search_at = datetime('now'), search_misses = 0 WHERE id = ?`, bookID)
+}
+
 // Repo persists books in SQLite.
 type Repo struct{ db *sql.DB }
 

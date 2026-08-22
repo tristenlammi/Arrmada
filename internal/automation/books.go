@@ -59,8 +59,24 @@ func (c *Coordinator) SearchBooksMissing(ctx context.Context) {
 		if c.bookDownloading(ctx, queue, b.ID) {
 			continue // already downloading for this book — let it finish
 		}
-		if err := c.SearchBookNow(ctx, b.ID); err != nil {
+		// Exponential backoff for a book that keeps finding nothing. Without it, a title
+		// no indexer carries cost a full multi-indexer search every 30 minutes forever —
+		// and book searches are the expensive kind, one per wanted edition. Movies and
+		// series have both had this; the books sweep was the one that didn't.
+		lastAt, misses := c.books.SearchState(ctx, b.ID)
+		if wait := searchBackoff(misses); wait > 0 {
+			if last := parseTime(lastAt); !last.IsZero() && time.Since(last) < wait {
+				continue
+			}
+		}
+		n, err := c.searchBookOnce(ctx, b.ID)
+		switch {
+		case err != nil:
 			c.log.Warn("book: search failed", "title", b.Title, "err", err)
+		case n > 0:
+			c.books.ResetSearchMisses(ctx, b.ID)
+		default:
+			c.books.RecordSearchMiss(ctx, b.ID)
 		}
 	}
 }
@@ -85,29 +101,43 @@ func (c *Coordinator) bookDownloading(ctx context.Context, queue []download.Item
 // SearchBookNow searches for each wanted edition (ebook/audiobook, per the profile)
 // that the book doesn't yet have, and grabs the best-format release for it.
 func (c *Coordinator) SearchBookNow(ctx context.Context, bookID int64) error {
+	_, err := c.searchBookOnce(ctx, bookID)
+	return err
+}
+
+// searchBookOnce is SearchBookNow that also reports how many editions it grabbed, so the
+// missing-books sweep can back off a book that keeps coming up empty.
+func (c *Coordinator) searchBookOnce(ctx context.Context, bookID int64) (int, error) {
 	if c.books == nil {
-		return nil
+		return 0, nil
 	}
 	b, err := c.books.Get(ctx, bookID)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	sp := c.bookProfile(ctx, b.QualityProfile)
 	wantEbook, wantAudio := books.WantedEditions(sp.FormatScores)
+	grabbed := 0
 	if wantEbook && b.Ebook == nil {
-		c.grabBookEdition(ctx, b, books.KindEbook, sp)
+		if c.grabBookEdition(ctx, b, books.KindEbook, sp) {
+			grabbed++
+		}
 	}
 	if wantAudio && b.Audiobook == nil {
-		c.grabBookEdition(ctx, b, books.KindAudiobook, sp)
+		if c.grabBookEdition(ctx, b, books.KindAudiobook, sp) {
+			grabbed++
+		}
 	}
-	return nil
+	return grabbed, nil
 }
 
-func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind string, sp quality.StoredProfile) {
+// grabBookEdition searches for one edition and grabs the best release. Reports whether a
+// grab actually happened, which is what tells the sweep to clear this book's backoff.
+func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind string, sp quality.StoredProfile) bool {
 	res, err := c.indexers.Search(ctx, indexer.SearchQuery{
 		Text: bookQuery(b), MediaType: indexer.MediaBook, BookEdition: kind, Limit: 60})
 	if err != nil || len(res.Releases) == 0 {
-		return
+		return false
 	}
 	// Only releases that actually name THIS book. Book indexers fuzzy-match, so a query of
 	// "Frank Herbert Dune" routinely returns Dune Messiah and Children of Dune; nothing
@@ -118,7 +148,7 @@ func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind st
 	res.Releases = c.releasesForThisBook(ctx, b, res.Releases)
 	if len(res.Releases) == 0 {
 		c.log.Info("book: no release matched this title", "title", b.Title, "edition", kind)
-		return
+		return false
 	}
 	res.Releases = c.dropBlockedBook(ctx, b.ID, res.Releases) // don't re-grab a blocklisted (e.g. stalled) release
 	// DB pending-grab guard, mirroring the movie path's pendingGrabTitles: a release
@@ -128,16 +158,17 @@ func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind st
 	best := pickBestBookForKind(sp, res.Releases, kind)
 	if best == nil {
 		c.log.Info("book: no matching-format release", "title", b.Title, "edition", kind)
-		return
+		return false
 	}
 	hash, err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, bookCategory)
 	if err != nil {
 		c.log.Warn("book: grab failed", "title", b.Title, "err", err)
-		return
+		return false
 	}
 	c.recordBookGrab(ctx, b.ID, best.Title, best.Indexer, b.QualityProfile, hash)
 	c.books.AddEvent(ctx, b.ID, "grabbed", fmt.Sprintf("Grabbed the %s edition from %s: %s", kind, best.Indexer, best.Title))
 	c.log.Info("book: grabbing", "title", b.Title, "edition", kind, "release", best.Title, "format", detectBookFormat(best.Title))
+	return true
 }
 
 // releasesForThisBook keeps only the releases whose name resolves to b when matched against

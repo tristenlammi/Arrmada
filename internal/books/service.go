@@ -215,6 +215,20 @@ func (s *Service) MatchByRelease(ctx context.Context, releaseName string) (Book,
 	return matchRelease(all, releaseName)
 }
 
+// SearchState / RecordSearchMiss / ResetSearchMisses drive the missing-books sweep's
+// backoff, mirroring the movie and series services.
+func (s *Service) SearchState(ctx context.Context, bookID int64) (string, int) {
+	return s.repo.SearchState(ctx, bookID)
+}
+
+func (s *Service) RecordSearchMiss(ctx context.Context, bookID int64) {
+	s.repo.RecordSearchMiss(ctx, bookID)
+}
+
+func (s *Service) ResetSearchMisses(ctx context.Context, bookID int64) {
+	s.repo.ResetSearchMisses(ctx, bookID)
+}
+
 // Matcher returns a release→book matcher over ONE library snapshot, for a caller resolving
 // many release names in a batch (a page of indexer results). MatchByRelease re-reads the
 // whole books table per call, so filtering 60 search results with it meant 60 full table
