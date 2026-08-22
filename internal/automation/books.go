@@ -59,12 +59,12 @@ func (c *Coordinator) SearchBooksMissing(ctx context.Context) {
 		if c.bookDownloading(ctx, queue, b.ID) {
 			continue // already downloading for this book — let it finish
 		}
-		// Exponential backoff for a book that keeps finding nothing. Without it, a title
-		// no indexer carries cost a full multi-indexer search every 30 minutes forever —
-		// and book searches are the expensive kind, one per wanted edition. Movies and
-		// series have both had this; the books sweep was the one that didn't.
 		lastAt, misses := c.books.SearchState(ctx, b.ID)
-		if wait := searchBackoff(misses); wait > 0 {
+		wait, giveUp := bookSearchWait(misses)
+		if giveUp {
+			continue // twice was enough — it's a manual search from here
+		}
+		if wait > 0 {
 			if last := parseTime(lastAt); !last.IsZero() && time.Since(last) < wait {
 				continue
 			}
@@ -73,10 +73,14 @@ func (c *Coordinator) SearchBooksMissing(ctx context.Context) {
 		switch {
 		case err != nil:
 			c.log.Warn("book: search failed", "title", b.Title, "err", err)
-		case n > 0:
-			c.books.ResetSearchMisses(ctx, b.ID)
-		default:
+		case n == 0:
 			c.books.RecordSearchMiss(ctx, b.ID)
+			// Say so once, at the transition. A book that has quietly stopped being
+			// searched looks identical to one nobody has got to yet.
+			if misses+1 >= bookSearchAttempts {
+				c.log.Info("book: nothing found twice — no more automatic searches, use Search on the book page",
+					"title", b.Title)
+			}
 		}
 	}
 }
@@ -105,8 +109,31 @@ func (c *Coordinator) SearchBookNow(ctx context.Context, bookID int64) error {
 	return err
 }
 
+// bookSearchAttempts is how many times the sweep tries a book before leaving it alone.
+//
+// Books aren't films: a title that no tracker carries today usually isn't carried next
+// week either, and a book search is the expensive kind — one per wanted edition, across
+// every indexer. So rather than the ever-lengthening ladder movies and series use, books
+// get two goes: once when they're added, and once a day later in case an upload was on
+// its way. After that the sweep leaves it, and the Search button on the book page is how
+// you ask again.
+const bookSearchAttempts = 2
+
+// bookSearchWait reports how long the sweep must leave this book alone, and whether it has
+// stopped searching it automatically altogether.
+func bookSearchWait(misses int) (wait time.Duration, giveUp bool) {
+	switch {
+	case misses <= 0:
+		return 0, false // never searched — go
+	case misses < bookSearchAttempts:
+		return 24 * time.Hour, false // one more try, a day later
+	default:
+		return 0, true
+	}
+}
+
 // searchBookOnce is SearchBookNow that also reports how many editions it grabbed, so the
-// missing-books sweep can back off a book that keeps coming up empty.
+// missing-books sweep can leave alone a book that keeps coming up empty.
 func (c *Coordinator) searchBookOnce(ctx context.Context, bookID int64) (int, error) {
 	if c.books == nil {
 		return 0, nil
@@ -127,6 +154,12 @@ func (c *Coordinator) searchBookOnce(ctx context.Context, bookID int64) (int, er
 		if c.grabBookEdition(ctx, b, books.KindAudiobook, sp) {
 			grabbed++
 		}
+	}
+	if grabbed > 0 {
+		// Something was findable after all. Clearing here rather than in the sweep covers
+		// the manual Search button too: a book you un-stuck by hand goes back to being
+		// swept normally, which matters when only one of its two editions landed.
+		c.books.ResetSearchMisses(ctx, bookID)
 	}
 	return grabbed, nil
 }
@@ -246,6 +279,67 @@ func (c *Coordinator) learnBookSeries(ctx context.Context, b books.Book, rel ind
 		return
 	}
 	c.log.Info("book: learned its series from the release", "title", b.Title, "series", name, "position", pos)
+}
+
+// BookSeriesBackfill reports what a backfill run did.
+type BookSeriesBackfill struct {
+	Scanned int `json:"scanned"` // books that had no series recorded
+	Learned int `json:"learned"` // books a release could name a series for
+}
+
+// BackfillBookSeries fills in the series for books already in the library.
+//
+// The series is normally learned from the release that matched a book, which means a
+// library assembled before this existed knows nothing — and would only fill in as each
+// book happened to be grabbed again, which for a book you already own is never. This runs
+// one search per unlabelled book purely to READ the series off the results.
+//
+// It grabs nothing and changes nothing else. Releases are put through the same identity
+// gate the searcher uses, so a series is only taken from a release that really is this
+// book — a "Red Rising" result would otherwise label Golden Son with its own series and
+// position.
+func (c *Coordinator) BackfillBookSeries(ctx context.Context) (BookSeriesBackfill, error) {
+	var res BookSeriesBackfill
+	if c.books == nil {
+		return res, nil
+	}
+	all, err := c.books.List(ctx)
+	if err != nil {
+		return res, err
+	}
+	for _, b := range all {
+		if ctx.Err() != nil {
+			c.log.Info("book: series backfill cancelled", "scanned", res.Scanned, "learned", res.Learned)
+			return res, ctx.Err()
+		}
+		if b.SeriesName != "" {
+			continue
+		}
+		res.Scanned++
+		out, err := c.indexers.Search(ctx, indexer.SearchQuery{
+			Text: bookQuery(b), MediaType: indexer.MediaBook, Limit: 60})
+		if err != nil || len(out.Releases) == 0 {
+			continue
+		}
+		for _, rel := range c.releasesForThisBook(ctx, b, out.Releases) {
+			if rel.Series == "" {
+				continue
+			}
+			name, pos := parseBookSeries(rel.Series)
+			if name == "" {
+				continue
+			}
+			if err := c.books.SetSeries(ctx, b.ID, name, pos); err != nil {
+				c.log.Warn("book: series backfill could not save", "title", b.Title, "err", err)
+				break
+			}
+			c.log.Info("book: series backfilled", "title", b.Title, "series", name, "position", pos)
+			res.Learned++
+			break // the first release that names this book is enough
+		}
+	}
+	c.log.Info("book: series backfill done", "scanned", res.Scanned, "learned", res.Learned)
+	return res, nil
 }
 
 // BookSeriesEntry is one position in a series as seen from the library: a book you own,

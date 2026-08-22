@@ -44,6 +44,7 @@ export function Books() {
   const [view, setView] = useState<"grid" | "table">("grid");
   const [mode, setMode] = useState<"book" | "author">("author");
   const [scanning, setScanning] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
   const [multiSelect, setMultiSelect] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -103,6 +104,18 @@ export function Books() {
   const search = async (b: Book) => {
     try { await api.searchBook(b.id); flash(`Searching for “${b.title}”…`); } catch (e) { flash((e as Error).message); }
   };
+  // One-off: a series is normally learned from the release that matched a book, so a
+  // library assembled before that existed knows nothing — and a book you already own is
+  // never grabbed again to teach it. This reads the series off a search per unlabelled
+  // book. It grabs nothing.
+  const backfillSeries = async () => {
+    setBackfilling(true);
+    try {
+      await api.backfillBookSeries();
+      flash("Looking up series for your books — this takes a few minutes.");
+    } catch (e) { flash((e as Error).message); }
+    finally { setBackfilling(false); }
+  };
   const scanLibrary = async () => {
     setScanning(true);
     try {
@@ -134,6 +147,7 @@ export function Books() {
                 </div>
               </>
             )}
+            <button onClick={backfillSeries} disabled={backfilling} title="One-off: look up which series your books belong to. Searches indexers to read the series off, and downloads nothing." className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{backfilling ? "Looking up…" : "Find series"}</button>
             <button onClick={scanLibrary} disabled={scanning} title="Find books already in your library folder and catalog them" className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{scanning ? "Scanning…" : "Scan library"}</button>
             <button onClick={() => (multiSelect ? exitMultiSelect() : enterSelect())} className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: `1px solid ${multiSelect ? "var(--accent)" : "var(--line)"}`, background: multiSelect ? "var(--accent-soft)" : "var(--panel-2)", color: multiSelect ? "var(--accent)" : "var(--ink)" }}>{multiSelect ? "Done" : "Select"}</button>
             <button onClick={() => setAddingAuthor(true)} disabled={!metaOK} title="Add an author's entire catalogue of official books" className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", background: "var(--panel-2)", color: "var(--accent)", opacity: metaOK ? 1 : 0.5 }}>+ Add author</button>

@@ -186,6 +186,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/grabtorrent", a.requireRole(auth.RoleManager, a.handleSeriesGrabTorrent))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/grabtorrent", a.requireRole(auth.RoleManager, a.handleBookGrabTorrent))
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/series", a.protected(a.handleBookSeries))
+	mux.HandleFunc("POST "+base+"/api/v1/books/series-backfill", a.requireRole(auth.RoleManager, a.handleBackfillBookSeries))
 
 	// Import history
 	mux.HandleFunc("GET "+base+"/api/v1/history", a.protected(a.handleHistory))

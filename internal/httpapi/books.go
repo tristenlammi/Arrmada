@@ -250,6 +250,24 @@ func (a *api) handleScanBookLibrary(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "scanning"})
 }
 
+// handleBackfillBookSeries fills in the series for books already in the library — a
+// one-off for a library assembled before Arrmada started recording it. Runs in the
+// background: one indexer search per unlabelled book takes minutes, not a request.
+func (a *api) handleBackfillBookSeries(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	go func() {
+		defer cancel()
+		res, err := a.deps.Automation.BackfillBookSeries(ctx)
+		if err != nil {
+			a.deps.Log.Warn("book series backfill failed", "err", err,
+				"scanned", res.Scanned, "learned", res.Learned)
+			return
+		}
+		a.deps.Log.Info("book series backfill finished", "scanned", res.Scanned, "learned", res.Learned)
+	}()
+	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "backfilling"})
+}
+
 // handleBookSeries returns the series a book belongs to, its siblings in reading order,
 // and the numbered entries missing between them.
 func (a *api) handleBookSeries(w http.ResponseWriter, r *http.Request) {

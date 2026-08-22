@@ -940,6 +940,8 @@ export const api = {
   grabSeriesTorrent: (id: number, torrent: string, filename: string, title: string) =>
     req<{ status: string }>(`/api/v1/series/${id}/grabtorrent`, { method: "POST", body: JSON.stringify({ torrent, filename, title }) }),
   bookSeries: (id: number) => req<BookSeries>(`/api/v1/books/${id}/series`),
+  backfillBookSeries: () =>
+    req<{ status: string }>("/api/v1/books/series-backfill", { method: "POST" }),
   grabBookTorrent: (id: number, torrent: string, filename: string, title: string) =>
     req<{ status: string }>(`/api/v1/books/${id}/grabtorrent`, { method: "POST", body: JSON.stringify({ torrent, filename, title }) }),
   deleteMovie: (id: number, deleteFiles?: boolean) =>
