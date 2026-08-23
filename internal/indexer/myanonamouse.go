@@ -323,8 +323,16 @@ func (m *MAMSearcher) do(ctx context.Context, idx Indexer, method, rawurl, sessi
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "Arrmada/1.0")
+	// Go sends no Accept header at all unless told to, and MyAnonaMouse answers a request
+	// without one from /tor/download.php with 406 Not Acceptable — the status that means
+	// exactly "nothing I can return matches what you said you'd accept". The search POST
+	// was unaffected because it carries a Content-Type; the .torrent GET failed every
+	// single time, so a book that searched fine could never actually be grabbed.
 	if method == http.MethodPost {
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/plain, */*")
+	} else {
+		req.Header.Set("Accept", "application/x-bittorrent, application/octet-stream, */*")
 	}
 	if err := m.throttle(ctx); err != nil {
 		return nil, err
@@ -340,6 +348,12 @@ func (m *MAMSearcher) do(ctx context.Context, idx Indexer, method, rawurl, sessi
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		return nil, fmt.Errorf("myanonamouse: not authorized (HTTP %d) — the mam_id session is invalid or IP-locked to a different address", resp.StatusCode)
+	}
+	if resp.StatusCode == http.StatusNotAcceptable {
+		// Named rather than left as a bare number: 406 here means the request's headers
+		// were refused, not that the torrent is missing or the session is bad, and the
+		// difference is the whole diagnosis.
+		return nil, fmt.Errorf("myanonamouse: rejected the request headers (HTTP 406) — %s", rawurl)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("myanonamouse: HTTP %d", resp.StatusCode)

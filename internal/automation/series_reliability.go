@@ -197,11 +197,26 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 	}
 	blocked := c.blockedSetSeries(ctx, s.ID)
 	byName := make(map[string]indexer.Release, len(res.Releases))
+	droppedTitle := 0
 	for _, rel := range bestByTitle(grabbable(res.Releases)) {
+		// The candidate must actually BE this show. Nothing here checked, and matching on
+		// season/episode numbers alone is not a check: a search for "Goliath" returns
+		// "House of David S01E07 David and Goliath - Part 1" — the indexer matched the
+		// word in an EPISODE title — and S01E07 lines up with Goliath's own S01E07, so it
+		// was grabbed as an upgrade and imported over the real episode. The missing-episode
+		// and interactive searches have always gated on this; the upgrade sweep didn't.
+		if !seriesTitleMatches(rel.Title, s) {
+			droppedTitle++
+			continue
+		}
 		if blocked[normTitle(rel.Title)] {
 			continue
 		}
 		byName[rel.Title] = rel
+	}
+	if droppedTitle > 0 {
+		c.log.Info("series: upgrade search filtered", "series", s.Title,
+			"kept", len(byName), "dropped_wrong_title", droppedTitle)
 	}
 
 	grabbed := map[string]bool{}
