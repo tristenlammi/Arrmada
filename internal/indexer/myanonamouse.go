@@ -259,7 +259,7 @@ func (m *MAMSearcher) releaseFrom(idx Indexer, it mamItem) Release {
 	r := Release{
 		Title:       display,
 		Description: strings.Join(desc, " · "),
-		DownloadURL: mamBaseURL + "/tor/download.php?tid=" + id,
+		DownloadURL: mamDownloadURL(id, it.Dl),
 		InfoURL:     mamBaseURL + "/t/" + id,
 		SizeBytes:   parseHumanSize(it.Size),
 		Seeders:     numToInt(it.Seeders),
@@ -278,10 +278,26 @@ func (m *MAMSearcher) releaseFrom(idx Indexer, it mamItem) Release {
 	if t, err := time.Parse("2006-01-02 15:04:05", strings.TrimSpace(it.Added)); err == nil {
 		r.PublishedAt = t
 	}
-	// The MAM token lets us build a session-less .torrent link too, but we fetch
-	// through the authenticated session (Fetch) so this stays robust either way.
-	_ = it.Dl
 	return r
+}
+
+// mamDownloadURL builds the link Fetch pulls the .torrent from.
+//
+// Every search result carries a `dl` download token, and the path form that uses it is
+// what MAM's own API hands you for this purpose. The token was being discarded in favour
+// of the "?tid=" query form, which the site answers with 406 Not Acceptable — so a book
+// that searched perfectly could never actually be grabbed:
+//
+//	indexer search  MyAnonaMouse Native  returned=1 kept=1
+//	book: grab failed  err=myanonamouse: HTTP 406
+//
+// The query form is kept as a fallback for a result with no token, since it's better to
+// try and fail than to hand back a link that can't exist.
+func mamDownloadURL(id, dl string) string {
+	if dl = strings.TrimSpace(dl); dl != "" {
+		return mamBaseURL + "/tor/download.php/" + dl
+	}
+	return mamBaseURL + "/tor/download.php?tid=" + id
 }
 
 // Fetch downloads a release's .torrent bytes through the mam_id session.

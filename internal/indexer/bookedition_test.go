@@ -69,3 +69,24 @@ func TestTorznabTextAppendsAudiobookOnly(t *testing.T) {
 		t.Errorf("empty query = %q, want empty", got)
 	}
 }
+
+// Every MyAnonaMouse search result carries a `dl` download token, and the path form that
+// uses it is what the API hands you for grabbing. It was discarded in favour of the
+// "?tid=" query form, which the site answers with 406 — so a book that searched perfectly
+// could never be grabbed.
+func TestMAMDownloadURLPrefersTheToken(t *testing.T) {
+	const base = "https://www.myanonamouse.net"
+
+	if got, want := mamDownloadURL("12345", "abc123def"), base+"/tor/download.php/abc123def"; got != want {
+		t.Errorf("with a token: %q, want %q", got, want)
+	}
+	// Whitespace around the token would make the path 404 rather than fail loudly.
+	if got, want := mamDownloadURL("12345", "  abc123def  "), base+"/tor/download.php/abc123def"; got != want {
+		t.Errorf("token trimming: %q, want %q", got, want)
+	}
+	// No token: still hand back something that might work. Better to try and fail than
+	// to return a link that cannot exist.
+	if got, want := mamDownloadURL("12345", ""), base+"/tor/download.php?tid=12345"; got != want {
+		t.Errorf("without a token: %q, want %q", got, want)
+	}
+}
