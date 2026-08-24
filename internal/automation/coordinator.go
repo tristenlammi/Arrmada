@@ -210,6 +210,7 @@ func (c *Coordinator) GrabMovieTorrent(ctx context.Context, movieID int64, file 
 		return err
 	}
 	c.RecordManualGrab(ctx, movieID, title, "manual", hash)
+	c.markGrabManual(ctx, hash) // the user chose this file; don't gate it on score
 	if c.movies != nil {
 		c.movies.AddEvent(ctx, movieID, "grabbed", "Uploaded torrent — "+title)
 	}
@@ -227,6 +228,9 @@ func (c *Coordinator) GrabSeriesTorrent(ctx context.Context, seriesID int64, fil
 		if s, err := c.series.Get(ctx, seriesID); err == nil {
 			c.recordSeriesGrab(ctx, seriesID, title, "manual", s.QualityProfile, hash)
 		}
+		// An uploaded torrent is as deliberate as a choice gets — import it whatever it
+		// scores against what's already there.
+		c.markGrabManual(ctx, hash)
 		c.series.AddEvent(ctx, seriesID, "grabbed", "Uploaded torrent — "+title)
 	}
 	return nil

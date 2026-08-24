@@ -228,12 +228,27 @@ func joinSeasons(seasons []int) string {
 // GrabForSeries resolves a release and hands it to the download client in the series
 // category, recorded as a series grab (so seed cleanup manages it like an auto grab).
 func (c *Coordinator) GrabForSeries(ctx context.Context, seriesID int64, indexerName, downloadURL, title string) error {
+	return c.grabForSeries(ctx, seriesID, indexerName, downloadURL, title, true)
+}
+
+// GrabForSeriesAuto is the same grab made by the automation rather than the user, so the
+// import gate still applies: a sweep must not replace a good file with a worse one.
+func (c *Coordinator) GrabForSeriesAuto(ctx context.Context, seriesID int64, indexerName, downloadURL, title string) error {
+	return c.grabForSeries(ctx, seriesID, indexerName, downloadURL, title, false)
+}
+
+func (c *Coordinator) grabForSeries(ctx context.Context, seriesID int64, indexerName, downloadURL, title string, manual bool) error {
 	hash, err := c.grabTo(ctx, indexerName, downloadURL, title, seriesCategory)
 	if err != nil {
 		return err
 	}
 	if s, err := c.series.Get(ctx, seriesID); err == nil {
 		c.recordSeriesGrab(ctx, seriesID, title, indexerName, s.QualityProfile, hash)
+	}
+	if manual {
+		// Picked out of the interactive search: the user saw the options and chose this
+		// one, so the import gate must not second-guess it on score.
+		c.markGrabManual(ctx, hash)
 	}
 	c.series.AddEvent(ctx, seriesID, "grabbed", title+" · "+indexerName)
 	return nil
@@ -407,7 +422,7 @@ func (c *Coordinator) ManualImportSeries(ctx context.Context, seriesID int64, pa
 	// still has gaps, so when a fix changes what WOULD have imported, pointing manual
 	// import at the folder is what applies it.
 	if fi, statErr := os.Stat(path); statErr == nil && fi.IsDir() {
-		placed, matched, unresolved, importFailed := c.importSeriesInto(ctx, s, path)
+		placed, matched, unresolved, importFailed := c.importSeriesInto(ctx, s, path, true)
 		if matched == 0 {
 			return fmt.Errorf("none of the video files in that folder could be matched to an episode of %q", s.Title)
 		}

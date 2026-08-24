@@ -968,7 +968,9 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			}
 			continue // not something we grabbed and not a library title — leave alone
 		}
-		imported, matched, unresolved, importFailed := c.importSeriesInto(ctx, s, it.ContentPath)
+		// A release the user picked by hand imports regardless of what it scores against
+		// the current file — see importSeriesInto.
+		imported, matched, unresolved, importFailed := c.importSeriesInto(ctx, s, it.ContentPath, c.grabWasManual(ctx, it.Hash))
 		if importFailed > 0 {
 			// Some files resolved to wanted episodes but couldn't be placed (disk full,
 			// permissions, a file mid-move). Leave the download unrecorded so the next

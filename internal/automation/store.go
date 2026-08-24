@@ -208,6 +208,38 @@ func boolToInt(b bool) int {
 	return 0
 }
 
+// markGrabManual flags the most recent grab for this info hash as the user's own choice,
+// so the import gate imports it whatever it scores against the current file.
+//
+// Set after recording rather than as a column on every record path: only two callers ever
+// want it, and threading a bool through every grab recorder for their sake would put the
+// question in a dozen places that have no opinion on it.
+func (c *Coordinator) markGrabManual(ctx context.Context, infoHash string) {
+	if infoHash == "" {
+		return
+	}
+	if _, err := c.db.ExecContext(ctx,
+		`UPDATE grabs SET manual = 1
+		  WHERE id = (SELECT id FROM grabs WHERE lower(info_hash) = lower(?) ORDER BY id DESC LIMIT 1)`,
+		infoHash); err != nil {
+		c.log.Warn("automation: could not mark the grab as manual", "err", err)
+	}
+}
+
+// grabWasManual reports whether this download came from a release the user chose by hand.
+// Matched on info hash only: a name can be rewritten by the client, and getting this
+// wrong in the permissive direction would let an automatic grab overwrite a better file.
+func (c *Coordinator) grabWasManual(ctx context.Context, infoHash string) bool {
+	if infoHash == "" {
+		return false
+	}
+	var manual int
+	_ = c.db.QueryRowContext(ctx,
+		`SELECT manual FROM grabs WHERE lower(info_hash) = lower(?) ORDER BY id DESC LIMIT 1`,
+		infoHash).Scan(&manual)
+	return manual != 0
+}
+
 // pendingGrabs returns grabs still awaiting import.
 func (c *Coordinator) pendingGrabs(ctx context.Context) ([]grab, error) {
 	rows, err := c.db.QueryContext(ctx,

@@ -248,7 +248,7 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 			continue
 		}
 		c.log.Info("series: upgrading episode", "series", s.Title, "s", ep.season, "e", ep.episode, "to", winner.Title)
-		if err := c.GrabForSeries(ctx, s.ID, winner.Indexer, winner.DownloadURL, winner.Title); err != nil {
+		if err := c.GrabForSeriesAuto(ctx, s.ID, winner.Indexer, winner.DownloadURL, winner.Title); err != nil {
 			c.log.Warn("series: upgrade grab failed", "series", s.Title, "err", err)
 			continue
 		}

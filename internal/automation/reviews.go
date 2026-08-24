@@ -298,7 +298,7 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 		if err != nil {
 			return err
 		}
-		n, matched, _, _ := c.importSeriesInto(ctx, s, r.ContentPath)
+		n, matched, _, _ := c.importSeriesInto(ctx, s, r.ContentPath, true)
 		if matched == 0 {
 			return fmt.Errorf("no episode files could be imported into %q", s.Title)
 		}
@@ -377,7 +377,12 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 // (link/copy error, disk full). The sweep must NOT mark the download handled while
 // failed > 0 — a swallowed transient error used to leave the episode permanently
 // unimported with the torrent recorded as done.
-func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, contentPath string) (placed, matched, unresolved, failed int) {
+// force skips the per-episode quality gate: the file goes in whatever it scores against
+// what's already there. Set for a release the user chose themselves — an interactive-search
+// grab, an uploaded torrent, a manual import, an approved review. The gate exists to stop
+// the AUTOMATION downgrading a file; when the user picked the release, "is it better" was
+// already answered by them choosing it.
+func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, contentPath string, force bool) (placed, matched, unresolved, failed int) {
 	// Unpack any archives first (scene releases ship the episode inside a RAR set — this
 	// is the Unpackerr job). Recursive, so a season pack's per-episode subfolders unpack.
 	if fi, err := os.Stat(contentPath); err == nil && fi.IsDir() {
@@ -472,9 +477,13 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		}
 		wanted := refs[:0:0]
 		for _, ref := range refs {
-			if c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rel, sourceName, v.Size) {
+			if force || c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rel, sourceName, v.Size) {
 				wanted = append(wanted, ref)
 			}
+		}
+		if force && len(wanted) > 0 {
+			c.log.Info("series import: replacing on the user's say-so — quality gate skipped",
+				"series", s.Title, "file", filepath.Base(v.Path), "resolved_to", refsLabel(refs))
 		}
 		if len(wanted) == 0 {
 			// Say so. Without this a whole pack can resolve onto episodes that already
