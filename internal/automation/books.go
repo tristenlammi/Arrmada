@@ -1309,7 +1309,10 @@ func (c *Coordinator) MergeAudiobook(ctx context.Context, bookID int64) error {
 			paths = append(paths, f.Path)
 		}
 	}
-	sort.Strings(paths)
+	// NATURAL order, not lexical. sort.Strings puts "Chapter 10" before "Chapter 2", so a
+	// book with ten or more unpadded chapter files was concatenated in the wrong order —
+	// and the sources are deleted on success, so the result is unrecoverable.
+	sortNatural(paths)
 	if len(paths) < 2 {
 		return errString("nothing to merge")
 	}
@@ -1332,6 +1335,59 @@ func (c *Coordinator) MergeAudiobook(ctx context.Context, bookID int64) error {
 	c.bus.Publish("book.imported", map[string]any{"title": b.Title, "id": b.ID, "edition": "audiobook"})
 	return c.books.MarkImported(ctx, bookID, books.KindAudiobook, out, "M4B", size, 1)
 }
+
+// sortNatural orders paths the way a person reads chapter numbers: digit runs compare as
+// numbers, everything else byte-wise and case-insensitively. "Chapter 2" before
+// "Chapter 10", "Part 1 - 09" before "Part 1 - 10".
+//
+// Audiobook rips number their files however they like — padded, unpadded, prefixed,
+// suffixed — and the ONE thing the merge cannot get wrong is the order, because the
+// sources are deleted once it succeeds.
+func sortNatural(paths []string) {
+	sort.Slice(paths, func(i, j int) bool { return naturalLess(paths[i], paths[j]) })
+}
+
+// naturalLess compares two strings treating consecutive digits as one number.
+func naturalLess(a, b string) bool {
+	la, lb := strings.ToLower(a), strings.ToLower(b)
+	i, j := 0, 0
+	for i < len(la) && j < len(lb) {
+		ca, cb := la[i], lb[j]
+		if isDigit(ca) && isDigit(cb) {
+			// Compare the whole digit runs as numbers. Leading zeros don't change the
+			// value, so "09" and "9" tie here and fall through to the next difference.
+			si, sj := i, j
+			for i < len(la) && isDigit(la[i]) {
+				i++
+			}
+			for j < len(lb) && isDigit(lb[j]) {
+				j++
+			}
+			na := strings.TrimLeft(la[si:i], "0")
+			nb := strings.TrimLeft(lb[sj:j], "0")
+			if len(na) != len(nb) {
+				return len(na) < len(nb) // more digits = bigger number
+			}
+			if na != nb {
+				return na < nb
+			}
+			continue
+		}
+		if ca != cb {
+			return ca < cb
+		}
+		i++
+		j++
+	}
+	// One is a prefix of the other, or they're equal ignoring case — shorter first, then
+	// fall back to the raw bytes so the order is total and stable.
+	if len(la)-i != len(lb)-j {
+		return len(la)-i < len(lb)-j
+	}
+	return a < b
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
 
 func sanitizeName(s string) string {
 	repl := strings.NewReplacer("/", "-", "\\", "-", ":", "-", "*", "", "?", "", "\"", "", "<", "", ">", "", "|", "")

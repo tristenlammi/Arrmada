@@ -25,6 +25,23 @@ func (a *api) handleListBooks(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []books.Book{}
 	}
+	// Fill the wanted-edition flags here too, not just on the detail page. Without them
+	// the library can't tell "no audiobook because none was ever wanted" from "no
+	// audiobook and one is missing" — and only the second is worth showing in a filter.
+	// Profiles are resolved once each rather than once per book: a library shares a
+	// handful of them across hundreds of titles.
+	wants := map[string][2]bool{}
+	for i := range list {
+		ref := list[i].QualityProfile
+		w2, ok := wants[ref]
+		if !ok {
+			enriched := list[i]
+			a.enrichBookWants(r, &enriched)
+			w2 = [2]bool{enriched.WantEbook, enriched.WantAudiobook}
+			wants[ref] = w2
+		}
+		list[i].WantEbook, list[i].WantAudiobook = w2[0], w2[1]
+	}
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"books":              list,
 		"metadata_available": a.deps.Books.MetadataAvailable(),

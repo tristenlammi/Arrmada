@@ -9,6 +9,8 @@ const FILTERS = [
   { key: "monitored", label: "Monitored" },
   { key: "missing", label: "Missing" },
   { key: "downloaded", label: "Downloaded" },
+  { key: "no_audiobook", label: "No audiobook" },
+  { key: "no_ebook", label: "No ebook" },
 ] as const;
 type FilterKey = (typeof FILTERS)[number]["key"];
 
@@ -17,6 +19,11 @@ function matches(b: Book, f: FilterKey): boolean {
     case "monitored": return b.monitored;
     case "missing": return !b.has_file;
     case "downloaded": return b.has_file;
+    // "Missing an edition" means the profile WANTS it and it isn't there. Listing every
+    // book without an audiobook would include the ones whose profile only ever asked for
+    // an ebook — nothing outstanding about those, and they'd bury the ones that are.
+    case "no_audiobook": return b.want_audiobook === true && !b.audiobook;
+    case "no_ebook": return b.want_ebook === true && !b.ebook;
     default: return true;
   }
 }
