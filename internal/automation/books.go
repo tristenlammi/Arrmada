@@ -1317,7 +1317,17 @@ func (c *Coordinator) MergeAudiobook(ctx context.Context, bookID int64) error {
 		return errString("nothing to merge")
 	}
 	out := filepath.Join(b.Audiobook.Path, sanitizeName(b.Title)+".m4b")
-	c.log.Info("book: merging audiobook", "title", b.Title, "files", len(paths))
+	// Say which way it's going before spending an hour on it: a remux is the audio
+	// untouched, an encode is a second lossy generation and worth knowing about.
+	plan := audiobook.PlanFor(ctx, paths)
+	if plan.Copy {
+		c.log.Info("book: merging audiobook — copying the audio untouched",
+			"title", b.Title, "files", len(paths))
+	} else {
+		c.log.Info("book: merging audiobook — re-encoding (the sources can't be copied into an m4b as-is)",
+			"title", b.Title, "files", len(paths), "target_kbps", plan.BitrateBPS/1000,
+			"sample_rate", plan.SampleRate, "channels", plan.Channels)
+	}
 	if err := audiobook.Merge(ctx, paths, out); err != nil {
 		return err
 	}
