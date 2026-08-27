@@ -170,6 +170,7 @@ export function Settings() {
                 <Toggle label="Auto-approve their requests" hint="Plex sign-ins' requests download immediately instead of waiting for your approval." checked={s.plex_login_auto_approve} onChange={(v) => patch({ plex_login_auto_approve: v })} />
               </Section>
               <APIKeysSection />
+              <DiskGuardSection s={s} patch={patch} />
               <RecycleBin s={s} patch={patch} />
               <SaveBar />
               <OverseerrImport />
@@ -606,6 +607,65 @@ function TokenList({ tokens }: { tokens: string[] }) {
         <code key={t} className="rounded px-1.5 py-0.5 font-mono text-[10.5px]" style={{ background: "var(--panel-2)", color: "var(--ink-dim)" }}>{`{${t}}`}</code>
       ))}
     </div>
+  );
+}
+
+// A full downloads volume errors every torrent at once and, on a shared cache pool,
+// takes everything else on that pool down with it. This is on by default for that
+// reason — it isn't a preference anyone opts into deliberately after the fact.
+function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettings>) => void }) {
+  const digits = (v: string) => v.replace(/[^0-9]/g, "").slice(0, 3);
+  const pause = Number(s.downloads_disk_guard_pause_pct);
+  const resume = Number(s.downloads_disk_guard_resume_pct);
+  // Mirrors the server's rule. Equal or inverted thresholds would pause and resume on
+  // alternate passes forever, so the server rejects them — say so before saving.
+  const bad = !Number.isNaN(pause) && !Number.isNaN(resume) && resume >= pause;
+
+  return (
+    <Section
+      title="Download disk guard"
+      subtitle="Pause downloads before the downloads volume fills up. A full disk errors every torrent at once, and on a shared cache pool it takes everything else on that pool with it. Seeding torrents are never paused — they aren't writing anything, and pausing them would put your seed goals at risk."
+    >
+      <Toggle
+        label="Pause downloads when the disk gets full"
+        hint="Checked every minute. Only torrents Arrmada paused are resumed — anything you paused by hand stays paused."
+        checked={s.downloads_disk_guard}
+        onChange={(v) => patch({ downloads_disk_guard: v })}
+      />
+      {s.downloads_disk_guard && (
+        <>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Pause at (% full)">
+              <input
+                inputMode="numeric"
+                value={s.downloads_disk_guard_pause_pct}
+                onChange={(e) => patch({ downloads_disk_guard_pause_pct: digits(e.target.value) })}
+                placeholder="85"
+                className={input}
+                style={inputStyle}
+              />
+              <span className="text-[10.5px] text-ink-faint">Active downloads are paused once the volume is this full.</span>
+            </Field>
+            <Field label="Resume at (% full)">
+              <input
+                inputMode="numeric"
+                value={s.downloads_disk_guard_resume_pct}
+                onChange={(e) => patch({ downloads_disk_guard_resume_pct: digits(e.target.value) })}
+                placeholder="80"
+                className={input}
+                style={inputStyle}
+              />
+              <span className="text-[10.5px] text-ink-faint">They restart once it drops back to this. Must be below the pause point.</span>
+            </Field>
+          </div>
+          {bad && (
+            <p className="m-0 text-[11.5px]" style={{ color: "var(--reject)" }}>
+              Resume ({resume}%) must be below pause ({pause}%) — otherwise downloads would pause and resume on alternate checks.
+            </p>
+          )}
+        </>
+      )}
+    </Section>
   );
 }
 
