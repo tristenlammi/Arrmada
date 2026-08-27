@@ -93,6 +93,13 @@ if [ ! -f .env ]; then
   GPU=""
   [ -e /dev/dri ] && GPU=1
 
+  # Auto: timezone, taken from the host. Without this the container runs on UTC, and a
+  # schedule set to "encode overnight" silently means overnight-in-London.
+  TZONE="${TZ:-}"
+  [ -z "$TZONE" ] && [ -r /etc/timezone ] && TZONE=$(cat /etc/timezone 2>/dev/null)
+  [ -z "$TZONE" ] && [ -L /etc/localtime ] && TZONE=$(readlink /etc/localtime 2>/dev/null | sed 's#.*/zoneinfo/##')
+  [ -z "$TZONE" ] && TZONE="Etc/UTC"
+
   {
     say "# ─── Arrmada configuration ─── edit, then ./update.sh to apply ───"
     say ""
@@ -105,6 +112,10 @@ if [ ! -f .env ]; then
     say "ARRMADA_QBIT_WEBUI_PORT=$QBWEB"
     say "ARRMADA_PROWLARR_PORT=$PROWPORT"
     say "ARRMADA_QBIT_PORT=$BTPORT"
+    say ""
+    say "# Timezone (auto-detected from this host). Schedules — the encode window especially —"
+    say "# run in this zone. Full list: en.wikipedia.org/wiki/List_of_tz_database_time_zones"
+    say "TZ=$TZONE"
     say ""
     say "# Run as this user/group (auto-detected from your media folder / platform)."
     say "ARRMADA_PUID=$PUID"
