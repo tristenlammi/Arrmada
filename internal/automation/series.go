@@ -366,18 +366,58 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 	// ranked best-first, each paired with its parsed release + indexer info.
 	byName := make(map[string]indexer.Release, len(releases))
 	cands := make([]quality.Candidate, 0, len(releases))
+	// Every rejection below used to be a silent continue, so a search that found forty
+	// releases and took none was indistinguishable from one that found nothing. Count
+	// the reasons and keep one example of each — "why wasn't this grabbed?" is the
+	// single most common question this code has to answer.
+	var nBlocked, nWrongTitle int
+	var exampleWrongTitle string
 	for _, rel := range bestByTitle(grabbable(releases)) {
 		if blocked[normTitle(rel.Title)] {
+			nBlocked++
 			continue
 		}
 		if !seriesTitleMatches(rel.Title, s) {
-			continue // a different show that merely shares a title prefix (e.g. "Below Deck Mediterranean" for "Below Deck")
+			// A different show that merely shares a title prefix ("Below Deck
+			// Mediterranean" for "Below Deck") — or, for anime, the same show under its
+			// romaji name, which only matches once the series is flagged as anime.
+			nWrongTitle++
+			if exampleWrongTitle == "" {
+				exampleWrongTitle = rel.Title
+			}
+			continue
 		}
 		byName[rel.Title] = rel
 		cands = append(cands, quality.NewCandidate(rel.Title, rel.SizeGB(), rel.Seeders))
 	}
 	decision := c.quality.Decide(ctx, s.QualityProfile, cands)
 	eligible := decision.Eligible // sorted best (highest quality) first
+
+	// Registered before the `remaining` defer below, so it runs after it: by then the
+	// pass is finished and grabbedN is final.
+	defer func() {
+		if grabbedN > 0 || len(releases) == 0 {
+			return
+		}
+		attrs := []any{
+			"series", s.Title, "found", len(releases),
+			"rejected_wrong_title", nWrongTitle,
+			"rejected_blocklisted", nBlocked,
+			"rejected_by_profile", len(cands) - len(eligible),
+			"eligible", len(eligible), "still_missing", len(remaining),
+		}
+		if exampleWrongTitle != "" {
+			attrs = append(attrs, "example_title_mismatch", exampleWrongTitle)
+		}
+		// Anime released under a romaji name, or numbered absolutely, only matches once
+		// the series is flagged as anime — and that flag has to be set by hand on a
+		// series added before the anime support landed. It is by far the most common
+		// reason a show with plenty of releases grabs none of them.
+		if !s.IsAnime() && nWrongTitle > 0 && len(eligible) == 0 {
+			attrs = append(attrs, "hint", "every release was rejected on title — if this is anime, turn on the Anime toggle so its romaji title and absolute episode numbers are recognised")
+		}
+		c.log.Info("series: found releases but grabbed none", attrs...)
+	}()
 
 	needed := map[epKey]bool{}
 	// Report back what no release here covered, so the caller can follow up with a
