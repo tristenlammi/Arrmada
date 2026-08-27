@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type APIKeyStatus, type AppSettings, type AuthUser, type RecycleStats, type RecycleItem } from "../lib/api";
+import { api, type APIKeyStatus, type AppSettings, type AuthUser, type DiskGuardStatus, type RecycleStats, type RecycleItem } from "../lib/api";
 import { useMe, isAdmin } from "../lib/me";
 import { LibraryFolders } from "./Library";
 
@@ -170,6 +170,7 @@ export function Settings() {
                 <Toggle label="Auto-approve their requests" hint="Plex sign-ins' requests download immediately instead of waiting for your approval." checked={s.plex_login_auto_approve} onChange={(v) => patch({ plex_login_auto_approve: v })} />
               </Section>
               <APIKeysSection />
+              <DiskGuardSection s={s} patch={patch} />
               <RecycleBin s={s} patch={patch} />
               <SaveBar />
               <OverseerrImport />
@@ -605,6 +606,123 @@ function TokenList({ tokens }: { tokens: string[] }) {
       {tokens.map((t) => (
         <code key={t} className="rounded px-1.5 py-0.5 font-mono text-[10.5px]" style={{ background: "var(--panel-2)", color: "var(--ink-dim)" }}>{`{${t}}`}</code>
       ))}
+    </div>
+  );
+}
+
+// A full downloads volume errors every torrent at once and, on a shared cache pool,
+// takes everything else on that pool down with it. This is on by default for that
+// reason — it isn't a preference anyone opts into deliberately after the fact.
+function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettings>) => void }) {
+  const digits = (v: string) => v.replace(/[^0-9]/g, "").slice(0, 3);
+  const pause = Number(s.downloads_disk_guard_pause_pct);
+  const resume = Number(s.downloads_disk_guard_resume_pct);
+  // Mirrors the server's rule. Equal or inverted thresholds would pause and resume on
+  // alternate passes forever, so the server rejects them — say so before saving.
+  const bad = !Number.isNaN(pause) && !Number.isNaN(resume) && resume >= pause;
+
+  // The guard measures ARRMADA_DOWNLOADS_DIR and nothing else. Whether that path is
+  // the torrent drive is not knowable from in here, so show the resolved path and the
+  // reading taken from it and let the user confirm it against their own setup.
+  const [status, setStatus] = useState<DiskGuardStatus | null>(null);
+  useEffect(() => {
+    api.diskGuard().then(setStatus).catch(() => setStatus(null));
+  }, []);
+
+  return (
+    <Section
+      title="Download disk guard"
+      subtitle="Pause downloads before the downloads volume fills up. A full disk errors every torrent at once, and on a shared cache pool it takes everything else on that pool with it. Seeding torrents are never paused — they aren't writing anything, and pausing them would put your seed goals at risk."
+    >
+      <Note tone="warn">
+        <b>This only works if your torrents live on their own drive.</b> The guard measures
+        one folder — <code>ARRMADA_DOWNLOADS_DIR</code> in your <code>.env</code> — and nothing
+        else. If that points at a folder on your main array rather than at the cache/torrent
+        drive, the percentage here is measuring the array, and it will either never trigger or
+        pause your queue for a reason that has nothing to do with downloads. Set it in
+        <code>.env</code> and re-run <code>./update.sh</code> before relying on this.
+      </Note>
+
+      {status && (
+        <div className="rounded-lg p-3" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+          <div className="text-[10px] uppercase tracking-[0.1em] text-ink-faint">Currently watching</div>
+          <div className="mt-0.5 break-all font-mono text-[11.5px]">{status.path || "(not set)"}</div>
+          {status.measurable ? (
+            <div className="mt-1 text-[11.5px] text-ink-dim">
+              {status.used_pct.toFixed(1)}% full
+              {status.holding > 0 && (
+                <span style={{ color: "var(--avoid, var(--ink-dim))" }}>
+                  {" "}· holding {status.holding} torrent{status.holding === 1 ? "" : "s"} paused
+                </span>
+              )}
+            </div>
+          ) : (
+            <div className="mt-1 text-[11.5px]" style={{ color: "var(--reject)" }}>
+              Arrmada can't read this folder's disk usage, so the guard will do nothing. Check the
+              path exists and is mounted into the container.
+            </div>
+          )}
+          {status.shared_with_library && (
+            <div className="mt-1.5 text-[11.5px]" style={{ color: "var(--reject)" }}>
+              This is the same drive as your library (<span className="font-mono">{status.library_path}</span>).
+              The guard will be measuring your whole array, not a torrent drive — a threshold like
+              85% almost certainly isn't what you want here.
+            </div>
+          )}
+        </div>
+      )}
+
+      <Toggle
+        label="Pause downloads when the disk gets full"
+        hint="Checked every minute. Only torrents Arrmada paused are resumed — anything you paused by hand stays paused."
+        checked={s.downloads_disk_guard}
+        onChange={(v) => patch({ downloads_disk_guard: v })}
+      />
+      {s.downloads_disk_guard && (
+        <>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field label="Pause at (% full)">
+              <input
+                inputMode="numeric"
+                value={s.downloads_disk_guard_pause_pct}
+                onChange={(e) => patch({ downloads_disk_guard_pause_pct: digits(e.target.value) })}
+                placeholder="85"
+                className={input}
+                style={inputStyle}
+              />
+              <span className="text-[10.5px] text-ink-faint">Active downloads are paused once the volume is this full.</span>
+            </Field>
+            <Field label="Resume at (% full)">
+              <input
+                inputMode="numeric"
+                value={s.downloads_disk_guard_resume_pct}
+                onChange={(e) => patch({ downloads_disk_guard_resume_pct: digits(e.target.value) })}
+                placeholder="80"
+                className={input}
+                style={inputStyle}
+              />
+              <span className="text-[10.5px] text-ink-faint">They restart once it drops back to this. Must be below the pause point.</span>
+            </Field>
+          </div>
+          {bad && (
+            <p className="m-0 text-[11.5px]" style={{ color: "var(--reject)" }}>
+              Resume ({resume}%) must be below pause ({pause}%) — otherwise downloads would pause and resume on alternate checks.
+            </p>
+          )}
+        </>
+      )}
+    </Section>
+  );
+}
+
+function Note({ tone, children }: { tone: "warn" | "info"; children: React.ReactNode }) {
+  const color = tone === "warn" ? "var(--avoid, #d08b3c)" : "var(--line)";
+  return (
+    <div
+      className="rounded-lg p-3 text-[11.5px] leading-relaxed"
+      style={{ background: "var(--panel-2)", border: `1px solid ${color}`, color: "var(--ink-dim)" }}
+    >
+      {children}
     </div>
   );
 }

@@ -81,6 +81,18 @@ func logEnvironment(log *slog.Logger, cfg config.Config) {
 		}
 		log.Info("environment: folder", attrs...)
 	}
+
+	// The download disk guard measures the downloads folder alone. If that folder is
+	// on the same filesystem as the library, the guard is watching the whole array
+	// rather than a torrent drive, and a threshold tuned for a cache pool means
+	// something quite different. Two paths on one filesystem measure identically.
+	if dl, ok := diskspace.Of(cfg.DownloadsDir); ok {
+		if lib, ok := diskspace.Of(cfg.LibraryDir); ok && dl == lib {
+			log.Warn("environment: downloads and library are on the same filesystem",
+				"downloads", cfg.DownloadsDir, "library", cfg.LibraryDir,
+				"impact", "the download disk guard will measure the whole volume, not a separate torrent drive")
+		}
+	}
 }
 
 func byteGB(b uint64) float64 {

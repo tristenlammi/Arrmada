@@ -321,6 +321,18 @@ export interface DashboardData {
   activity: ActivityEvent[];
 }
 
+export interface DiskGuardStatus {
+  enabled: boolean;
+  measurable: boolean;
+  path: string;
+  used_pct: number;
+  pause_pct: number;
+  resume_pct: number;
+  holding: number;
+  shared_with_library: boolean;
+  library_path: string;
+}
+
 export interface AppSettings {
   search_on_add: boolean;
   naming_movie_folder: string;
@@ -362,6 +374,9 @@ export interface AppSettings {
   // Recycle bin guard rails.
   recycle_max_gb: string;
   recycle_retention_days: string;
+  downloads_disk_guard: boolean;
+  downloads_disk_guard_pause_pct: string;
+  downloads_disk_guard_resume_pct: string;
 }
 
 export interface TorrentPreview {
@@ -919,6 +934,7 @@ export const api = {
   systemHealth: () =>
     req<SystemHealth>("/api/v1/health/system"),
   dashboard: () => req<DashboardData>("/api/v1/dashboard"),
+  diskGuard: () => req<DiskGuardStatus>("/api/v1/downloads/disk-guard"),
 
   queue: () => req<{ items: QueueItem[] }>("/api/v1/queue").then((r) => r.items),
 

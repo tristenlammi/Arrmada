@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/download"
 )
 
@@ -100,4 +101,41 @@ func (a *api) handleBlockDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	go a.bg(func(ctx context.Context) error { return a.deps.Automation.BlockRelease(ctx, hash, req.Name) }, "block download", 0)
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "blocking"})
+}
+
+// diskGuardStatus is the guard's live view, plus the two facts that decide whether
+// the setting can do anything at all: which volume it is actually watching, and
+// whether that volume is genuinely separate from the library.
+type diskGuardStatus struct {
+	download.GuardStatus
+	// SharedWithLibrary means the downloads folder and the library measure as the
+	// same filesystem. The guard still functions, but it is then watching the whole
+	// array rather than a torrent drive, so a threshold tuned for a cache pool is
+	// measuring the wrong thing entirely.
+	SharedWithLibrary bool   `json:"shared_with_library"`
+	LibraryPath       string `json:"library_path"`
+}
+
+// handleDiskGuardStatus reports what the disk guard is watching and what it sees.
+// The setting depends entirely on ARRMADA_DOWNLOADS_DIR pointing at the torrent
+// drive, and there is no way to know that from inside the app — so show the resolved
+// path and the reading taken from it, and let the user confirm it themselves.
+func (a *api) handleDiskGuardStatus(w http.ResponseWriter, r *http.Request) {
+	if a.deps.DiskGuard == nil {
+		a.writeError(w, http.StatusServiceUnavailable, "the disk guard isn't running")
+		return
+	}
+	ctx := r.Context()
+	out := diskGuardStatus{
+		GuardStatus: a.deps.DiskGuard.Status(ctx),
+		LibraryPath: a.deps.Config.LibraryDir,
+	}
+	// The same identity test the dashboard uses: two paths on one filesystem report
+	// byte-identical totals, which is cheaper and more portable than a device id.
+	if dl, ok := diskspace.Of(a.deps.Config.DownloadsDir); ok {
+		if lib, ok := diskspace.Of(a.deps.Config.LibraryDir); ok {
+			out.SharedWithLibrary = dl.TotalBytes == lib.TotalBytes && dl.FreeBytes == lib.FreeBytes
+		}
+	}
+	a.writeJSON(w, http.StatusOK, out)
 }

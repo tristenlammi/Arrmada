@@ -42,14 +42,17 @@ import (
 // Deps bundles everything the HTTP layer needs. Grouping them keeps New's
 // signature stable as more subsystems come online.
 type Deps struct {
-	Config     config.Config
-	Log        *slog.Logger
-	Store      *store.Store
-	Bus        *eventbus.Bus
-	Auth       *auth.Service
-	Realtime   *realtime.Hub
-	Indexers   *indexer.Service
-	Downloads  *download.Service
+	Config    config.Config
+	Log       *slog.Logger
+	Store     *store.Store
+	Bus       *eventbus.Bus
+	Auth      *auth.Service
+	Realtime  *realtime.Hub
+	Indexers  *indexer.Service
+	Downloads *download.Service
+	// DiskGuard holds downloads while the downloads volume is too full. Optional:
+	// nil simply means the health panel can't report on it.
+	DiskGuard  *download.DiskGuard
 	Library    *library.Manager
 	Movies     *movies.Service
 	Quality    *quality.Service
@@ -173,6 +176,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("DELETE "+base+"/api/v1/notifications/{id}", a.requireRole(auth.RoleManager, a.handleDeleteNotification))
 	mux.HandleFunc("POST "+base+"/api/v1/notifications/test", a.requireRole(auth.RoleManager, a.handleTestNotification))
 	mux.HandleFunc("GET "+base+"/api/v1/queue", a.protected(a.handleQueue))
+	mux.HandleFunc("GET "+base+"/api/v1/downloads/disk-guard", a.requireRole(auth.RoleManager, a.handleDiskGuardStatus))
 	mux.HandleFunc("GET "+base+"/api/v1/downloads", a.protected(a.handleDownloadsFeed))
 	mux.HandleFunc("POST "+base+"/api/v1/queue/{hash}/pause", a.requireRole(auth.RoleManager, a.handlePauseDownload))
 	mux.HandleFunc("POST "+base+"/api/v1/queue/{hash}/resume", a.requireRole(auth.RoleManager, a.handleResumeDownload))
