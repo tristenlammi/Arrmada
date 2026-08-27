@@ -160,7 +160,7 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 		appendAttr(&sb, h.group, a)
 		return true
 	})
-	h.ring.add(Entry{TimeMS: r.Time.UnixMilli(), Level: r.Level.String(), Message: r.Message, Attrs: strings.TrimSpace(sb.String())})
+	h.ring.add(Entry{TimeMS: r.Time.UnixMilli(), Level: r.Level.String(), Message: scrubQuery(r.Message), Attrs: strings.TrimSpace(sb.String())})
 	return h.base.Handle(ctx, r)
 }
 
@@ -192,5 +192,9 @@ func appendAttr(sb *strings.Builder, group string, a slog.Attr) {
 	if group != "" {
 		key = group + "." + key
 	}
-	fmt.Fprintf(sb, "%s=%v ", key, a.Value.Any())
+	if redactKey(key) {
+		fmt.Fprintf(sb, "%s=%s ", key, redacted)
+		return
+	}
+	fmt.Fprintf(sb, "%s=%v ", key, scrubQuery(fmt.Sprintf("%v", a.Value.Any())))
 }

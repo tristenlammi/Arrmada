@@ -289,6 +289,38 @@ export interface SystemHealth {
   disk?: { free_gb: string; path: string };
 }
 
+export interface StorageVolume {
+  roots: string[];
+  path: string;
+  total_bytes: number;
+  free_bytes: number;
+  used_bytes: number;
+  used_pct: number;
+}
+export interface QueueSummary {
+  downloading: number; seeding: number; paused: number; errored: number;
+  down_speed: number; up_speed: number;
+}
+export interface LibraryCounts {
+  movies: number; movies_missing: number;
+  series: number; episodes: number; episodes_missing: number;
+  books: number; books_missing: number;
+  artists: number; albums: number;
+}
+export interface ActivityEvent {
+  kind: "movie" | "series" | "book";
+  id: number; title: string; event: string; detail: string; at_ms: number;
+}
+export interface DashboardData {
+  storage: StorageVolume[];
+  streams?: InsightsActivity;
+  streams_note?: string;
+  queue: QueueSummary;
+  queue_note?: string;
+  library: LibraryCounts;
+  activity: ActivityEvent[];
+}
+
 export interface AppSettings {
   search_on_add: boolean;
   naming_movie_folder: string;
@@ -886,6 +918,7 @@ export const api = {
 
   systemHealth: () =>
     req<SystemHealth>("/api/v1/health/system"),
+  dashboard: () => req<DashboardData>("/api/v1/dashboard"),
 
   queue: () => req<{ items: QueueItem[] }>("/api/v1/queue").then((r) => r.items),
 

@@ -124,6 +124,7 @@ func main() {
 	if restored > 0 {
 		log.Info("restored logs from the previous run", "lines", restored, "path", logPath)
 	}
+	logEnvironment(log, cfg)
 
 	st, err := store.Open(cfg.DataDir)
 	if err != nil {

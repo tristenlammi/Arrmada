@@ -97,6 +97,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/health", a.handleHealth)
 	mux.HandleFunc("GET "+base+"/api/v1/health/system", a.protected(a.handleSystemHealth))
 	mux.HandleFunc("GET "+base+"/api/v1/status", a.handleStatus)
+	mux.HandleFunc("GET "+base+"/api/v1/dashboard", a.requireRole(auth.RoleManager, a.handleDashboard))
 
 	// App preferences
 	mux.HandleFunc("GET "+base+"/api/v1/apikeys", a.requireRole(auth.RoleManager, a.handleGetAPIKeys))
