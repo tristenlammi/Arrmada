@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
-import { api, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type DuplicateEpisodeFile } from "../lib/api";
+import { api, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile } from "../lib/api";
 
 // Auto-grab is fire-and-forget: the API answers 202 and searches in the background, and a
 // search that turns up nothing leaves no trace at all — which is exactly when you most need
@@ -263,6 +263,7 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("rename", rename)}>{busy === "rename" ? "Renaming…" : "Rename"}</button>
         <DeleteButton onDelete={async (df) => { await api.deleteSeries(series.id, df); window.location.href = "/series"; }} />
       </div>
+      <AliasPanel series={series} />
       {series.series_type === "anime" && <SceneMapPanel series={series} />}
       {showPaste && (
         <UploadTorrentModal
@@ -713,6 +714,112 @@ function SeriesBlocklistPanel({ seriesId, refreshKey }: { seriesId: number; refr
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// AliasPanel manages the other titles a show is released under.
+//
+// An arc released as its own show ("BLEACH Thousand-Year Blood War" for Bleach) is a
+// title no amount of normalising will ever match, so those releases are discarded
+// before they're scored. Pinning the alias to a TMDB season also fixes the numbering:
+// the arc's own S01/S02 are cours inside that season, not the series' own seasons.
+function AliasPanel({ series }: { series: SeriesT }) {
+  const [rows, setRows] = useState<SeriesAlias[] | null>(null);
+  const [title, setTitle] = useState("");
+  const [season, setSeason] = useState("");
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    api.seriesAliases(series.id).then((r) => setRows(r ?? [])).catch(() => setRows([]));
+  }, [series.id]);
+  useEffect(load, [load]);
+
+  const add = async () => {
+    setErr(null);
+    setBusy(true);
+    try {
+      await api.addSeriesAlias(series.id, { title: title.trim(), tmdb_season: Number(season || 0) });
+      setTitle(""); setSeason("");
+      load();
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Nothing configured and nothing being typed: stay out of the way. This is a fix for
+  // a specific problem, not something most shows ever need.
+  const empty = rows !== null && rows.length === 0;
+
+  return (
+    <div className="mt-3 rounded-xl p-3.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+      <div className="text-[12.5px] font-semibold">Alternate titles</div>
+      <p className="mb-2.5 mt-0.5 text-[11px] text-ink-faint">
+        Other names this show is released under. Needed when an arc ships as its own show — Bleach&apos;s
+        <code className="mx-1 font-mono">Thousand-Year Blood War</code> for example — because those releases
+        don&apos;t match the series title at all and get dropped. Set the season to fold the alias&apos;
+        numbering into it: its <code className="mx-1 font-mono">S02E02</code> then means &ldquo;second cour,
+        episode 2&rdquo; of that season. Leave the season blank to only match the title.
+      </p>
+
+      {rows && rows.length > 0 && (
+        <div className="mb-2.5 flex flex-col gap-1.5">
+          {rows.map((a) => (
+            <div key={a.id} className="flex items-center gap-2 rounded-lg px-2.5 py-1.5" style={{ background: "var(--panel-2)" }}>
+              <span className="min-w-0 truncate text-[12px]">{a.title}</span>
+              <span className="shrink-0 font-mono text-[11px] text-ink-faint">
+                {a.tmdb_season > 0 ? `→ season ${a.tmdb_season}` : "title only"}
+              </span>
+              <button
+                className="ml-auto shrink-0 text-[11px] font-semibold"
+                style={{ color: "var(--reject)" }}
+                onClick={async () => { await api.deleteSeriesAlias(series.id, a.id); load(); }}
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="min-w-[220px] flex-1 text-[10.5px] text-ink-faint">
+          <div>Release title</div>
+          <input
+            className="w-full rounded-lg px-2.5 py-1.5 text-[12.5px]"
+            style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="BLEACH Thousand-Year Blood War"
+          />
+        </label>
+        <label className="text-[10.5px] text-ink-faint">
+          <div>Maps to season</div>
+          <input
+            className="w-[104px] rounded-lg px-2 py-1.5 text-center text-[12.5px]"
+            style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+            inputMode="numeric"
+            value={season}
+            onChange={(e) => setSeason(e.target.value.replace(/[^0-9]/g, ""))}
+            placeholder="optional"
+          />
+        </label>
+        <button
+          onClick={add}
+          disabled={busy || title.trim() === ""}
+          className="rounded-lg px-3.5 py-2 text-[12px] font-semibold disabled:opacity-50"
+          style={{ border: "1px solid var(--line)", color: "var(--ink)" }}
+        >
+          {busy ? "Adding…" : "Add title"}
+        </button>
+      </div>
+      {err && <p className="mb-0 mt-2 text-[11.5px]" style={{ color: "var(--reject)" }}>{err}</p>}
+      {empty && !err && (
+        <p className="mb-0 mt-2 text-[11px] text-ink-faint">No alternate titles — most shows never need one.</p>
+      )}
     </div>
   );
 }

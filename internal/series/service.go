@@ -94,7 +94,20 @@ func (s *Service) Lookup(ctx context.Context, query string) ([]metadata.SeriesRe
 }
 
 // List returns the library with roll-up stats.
-func (s *Service) List(ctx context.Context) ([]Series, error) { return s.repo.List(ctx) }
+func (s *Service) List(ctx context.Context) ([]Series, error) {
+	all, err := s.repo.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// One query for every alias rather than one per series — the sweep lists the whole
+	// library each pass, and almost no series has any.
+	if byID := s.repo.AliasTitlesFor(ctx); len(byID) > 0 {
+		for i := range all {
+			all[i].Aliases = byID[all[i].ID]
+		}
+	}
+	return all, nil
+}
 
 // Get returns one series with its seasons and episodes.
 func (s *Service) Get(ctx context.Context, id int64) (Series, error) {
@@ -105,6 +118,7 @@ func (s *Service) Get(ctx context.Context, id int64) (Series, error) {
 	if seasons, err := s.repo.SeasonsFor(ctx, id); err == nil {
 		sr.Seasons = seasons
 	}
+	sr.Aliases = s.repo.Aliases(ctx, id)
 	return sr, nil
 }
 

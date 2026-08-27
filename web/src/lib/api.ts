@@ -333,6 +333,8 @@ export interface DiskGuardStatus {
   library_path: string;
 }
 
+export interface SeriesAlias { id: number; title: string; tmdb_season: number }
+
 export interface AppSettings {
   search_on_add: boolean;
   naming_movie_folder: string;
@@ -935,6 +937,11 @@ export const api = {
     req<SystemHealth>("/api/v1/health/system"),
   dashboard: () => req<DashboardData>("/api/v1/dashboard"),
   diskGuard: () => req<DiskGuardStatus>("/api/v1/downloads/disk-guard"),
+  seriesAliases: (id: number) => req<SeriesAlias[]>(`/api/v1/series/${id}/aliases`),
+  addSeriesAlias: (id: number, body: { title: string; tmdb_season: number }) =>
+    req<SeriesAlias>(`/api/v1/series/${id}/aliases`, { method: "POST", body: JSON.stringify(body) }),
+  deleteSeriesAlias: (id: number, aliasID: number) =>
+    req<{ status: string }>(`/api/v1/series/${id}/aliases/${aliasID}`, { method: "DELETE" }),
 
   queue: () => req<{ items: QueueItem[] }>("/api/v1/queue").then((r) => r.items),
 

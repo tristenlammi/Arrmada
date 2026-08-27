@@ -299,8 +299,17 @@ func seriesTitleMatches(relTitle string, s series.Series) bool {
 	if releaseIsForSeries(relTitle, s.Title) {
 		return true
 	}
-	if s.IsAnime() && s.Extra != nil && s.Extra.OriginalTitle != "" {
-		return releaseIsForSeries(relTitle, s.Extra.OriginalTitle)
+	if s.IsAnime() && s.Extra != nil && s.Extra.OriginalTitle != "" && releaseIsForSeries(relTitle, s.Extra.OriginalTitle) {
+		return true
+	}
+	// User-declared alternate titles. Anime arcs are routinely released as if they were
+	// a separate show ("BLEACH Thousand-Year Blood War" for Bleach), which no amount of
+	// normalizing the real title will ever match. Purely additive: a series with no
+	// aliases behaves exactly as it did before.
+	for _, a := range s.Aliases {
+		if releaseIsForSeries(relTitle, a.Title) {
+			return true
+		}
 	}
 	return false
 }

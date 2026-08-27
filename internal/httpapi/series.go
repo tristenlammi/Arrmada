@@ -805,3 +805,53 @@ func (a *api) handleDeleteSeriesDuplicate(w http.ResponseWriter, r *http.Request
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "deleted"})
 }
+
+// handleListAliases returns a series' alternate release titles.
+func (a *api) handleListAliases(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	a.writeJSON(w, http.StatusOK, a.deps.Series.Aliases(r.Context(), id))
+}
+
+// handleAddAlias records an alternate title the series is released under, optionally
+// pinned to a TMDB season so the alias' own numbering is read inside it.
+func (a *api) handleAddAlias(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Title      string `json:"title"`
+		TMDBSeason int    `json:"tmdb_season"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	al, err := a.deps.Series.AddAlias(r.Context(), id, req.Title, req.TMDBSeason)
+	if err != nil {
+		// These are all "you typed something that can't work" rather than failures.
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, al)
+}
+
+// handleDeleteAlias removes an alternate title.
+func (a *api) handleDeleteAlias(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	aliasID, err := strconv.ParseInt(r.PathValue("alias"), 10, 64)
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, "invalid alias id")
+		return
+	}
+	if err := a.deps.Series.DeleteAlias(r.Context(), id, aliasID); err != nil {
+		a.writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}

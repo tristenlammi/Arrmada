@@ -1089,3 +1089,92 @@ func b2i(b bool) int {
 	}
 	return 0
 }
+
+// Aliases returns a series' alternate release titles, oldest first.
+func (r *Repo) Aliases(ctx context.Context, seriesID int64) []Alias {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT id, title, tmdb_season FROM series_aliases WHERE series_id = ? ORDER BY id`, seriesID)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []Alias
+	for rows.Next() {
+		var a Alias
+		if err := rows.Scan(&a.ID, &a.Title, &a.TMDBSeason); err != nil {
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// AddAlias records an alternate title. Re-adding one that already exists updates its
+// season rather than failing — the user is correcting it, not making a mistake.
+func (r *Repo) AddAlias(ctx context.Context, seriesID int64, title, key string, season int) (Alias, error) {
+	res, err := r.db.ExecContext(ctx,
+		`INSERT INTO series_aliases (series_id, title, title_key, tmdb_season) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(series_id, title_key) DO UPDATE SET title = excluded.title, tmdb_season = excluded.tmdb_season`,
+		seriesID, title, key, season)
+	if err != nil {
+		return Alias{}, err
+	}
+	id, _ := res.LastInsertId()
+	return Alias{ID: id, Title: title, TMDBSeason: season}, nil
+}
+
+// DeleteAlias removes one alternate title. Scoped by series so an id from another
+// series can't be deleted through it.
+func (r *Repo) DeleteAlias(ctx context.Context, seriesID, aliasID int64) error {
+	res, err := r.db.ExecContext(ctx,
+		`DELETE FROM series_aliases WHERE series_id = ? AND id = ?`, seriesID, aliasID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SeasonEpisodeNumbers returns one season's episode numbers in order. Used to read an
+// alias' continuous numbering ("episode 45 of the arc") as an index into the season,
+// rather than assuming the season starts at 1 with no gaps.
+func (r *Repo) SeasonEpisodeNumbers(ctx context.Context, seriesID int64, season int) []int {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT episode_number FROM episodes WHERE series_id = ? AND season_number = ?
+		 ORDER BY episode_number`, seriesID, season)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []int
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// AliasTitlesFor returns every series' alias keys in one query, so listing series
+// doesn't cost a lookup per row.
+func (r *Repo) AliasTitlesFor(ctx context.Context) map[int64][]Alias {
+	rows, err := r.db.QueryContext(ctx, `SELECT series_id, id, title, tmdb_season FROM series_aliases ORDER BY series_id, id`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := map[int64][]Alias{}
+	for rows.Next() {
+		var sid int64
+		var a Alias
+		if err := rows.Scan(&sid, &a.ID, &a.Title, &a.TMDBSeason); err != nil {
+			continue
+		}
+		out[sid] = append(out[sid], a)
+	}
+	return out
+}

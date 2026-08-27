@@ -51,6 +51,23 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 	if q.Season == 0 && !s.IsAnime() {
 		result.Releases = c.addSeasonSearches(ctx, s, title, result.Releases)
 	}
+	// The arc's own name is a different search entirely — the indexer doesn't know the
+	// two titles are one show, so the series' title never returns the arc's releases.
+	for _, a := range s.Aliases {
+		aq := indexerQuery(a.Title)
+		if aq == "" || aq == title {
+			continue
+		}
+		ares, aerr := c.indexers.Search(ctx, indexer.SearchQuery{
+			Text: aq, MediaType: indexer.MediaSeries, Limit: 400,
+		})
+		if aerr != nil {
+			c.log.Warn("series: alias search failed", "series", s.Title, "alias", a.Title, "err", aerr)
+			continue
+		}
+		c.log.Info("series: alias search", "series", s.Title, "alias", a.Title, "returned", len(ares.Releases))
+		result.Releases = append(result.Releases, ares.Releases...)
+	}
 	c.log.Info("series: interactive search", "series", s.Title, "query", title,
 		"season", q.Season, "episode", q.Episode,
 		"raw", len(result.Releases), "indexer_errors", len(result.Errors))
@@ -141,6 +158,19 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 // anime release is resolved through absolute/positional numbering before checking it
 // covers the requested (season, episode).
 func (c *Coordinator) releaseMatchesScope(ctx context.Context, s series.Series, p parser.Release, season, episode int) bool {
+	// An alias-titled release carries the alias' numbering, so resolve it that way
+	// before any of the series' own numbering rules get a look.
+	if refs, ok := c.series.AliasEpisodes(ctx, s.ID, p); ok {
+		if season <= 0 {
+			return true
+		}
+		for _, ref := range refs {
+			if ref.Season == season && (episode <= 0 || ref.Episode == episode) {
+				return true
+			}
+		}
+		return false
+	}
 	if !s.IsAnime() {
 		return seriesReleaseMatches(p, season, episode)
 	}

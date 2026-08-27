@@ -679,6 +679,26 @@ func (c *Coordinator) searchSeriesReleases(ctx context.Context, s series.Series)
 	}
 	all := res.Releases
 
+	// Alias queries. An arc released under its own name ("BLEACH Thousand-Year Blood
+	// War") simply isn't in the results for the series' real title — the indexer has no
+	// idea the two are the same show — so each alias gets its own broad query. Only
+	// runs for a series that has aliases, which is almost none of them.
+	for _, a := range s.Aliases {
+		aq := indexerQuery(a.Title)
+		if aq == "" || aq == title {
+			continue
+		}
+		ares, aerr := c.indexers.Search(ctx, indexer.SearchQuery{
+			Text: aq, MediaType: indexer.MediaSeries, Limit: 100,
+		})
+		if aerr != nil {
+			c.log.Warn("series: alias search failed", "series", s.Title, "alias", a.Title, "err", aerr)
+			continue
+		}
+		c.log.Info("series: alias search", "series", s.Title, "alias", a.Title, "returned", len(ares.Releases))
+		all = append(all, ares.Releases...)
+	}
+
 	wanted, _ := wantedEpisodes(s)
 	seasons := sortedSeasons(seasonsOf(setOf(wanted)))
 	if len(seasons) == 0 {
@@ -786,6 +806,14 @@ func wantedEpisodes(s series.Series) ([]epKey, map[int]bool) {
 // (so "[Group] Show - 137" covers the metadata's season-3 episode). Packs still match
 // by season for both types.
 func (c *Coordinator) coveredByFor(ctx context.Context, s series.Series, r parser.Release, needed map[epKey]bool) []epKey {
+	// A release that matched one of the series' ALIASES is numbered in that alias' own
+	// universe, not the series'. "Thousand-Year Blood War S02E02" is the arc's second
+	// cour, which is Bleach S17E15 — reading it as the series' own S2E2 would file a
+	// 2023 episode against a 2005 one. Checked first, and only ever true for a release
+	// whose title matched an alias, so nothing else changes behaviour.
+	if refs, ok := c.series.AliasEpisodes(ctx, s.ID, r); ok {
+		return keysWanted(refs, needed)
+	}
 	if !s.IsAnime() {
 		return coveredBy(r, needed)
 	}
@@ -800,6 +828,11 @@ func (c *Coordinator) coveredByFor(ctx context.Context, s series.Series, r parse
 	default:
 		return coveredBy(r, needed) // real-season pack / multi-season / complete show
 	}
+	return keysWanted(refs, needed)
+}
+
+// keysWanted narrows resolved episode refs to the ones actually still wanted.
+func keysWanted(refs []series.EpisodeRef, needed map[epKey]bool) []epKey {
 	var out []epKey
 	for _, ref := range refs {
 		k := epKey{ref.Season, ref.Episode}

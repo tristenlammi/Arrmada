@@ -25,9 +25,13 @@ type Series struct {
 	SeriesType string `json:"series_type,omitempty"`
 	AddedAt    string `json:"added_at,omitempty"`
 
-	Extra   *SeriesExtra `json:"extra,omitempty"`
-	Seasons []Season     `json:"seasons,omitempty"` // detail endpoint only
-	Stats   *Stats       `json:"stats,omitempty"`   // aggregate counts for the grid
+	Extra *SeriesExtra `json:"extra,omitempty"`
+	// Aliases are the other titles this show is released under. Populated on read so
+	// release matching can consult them without a lookup per candidate; empty for the
+	// overwhelming majority of series, which is what keeps the feature inert.
+	Aliases []Alias  `json:"aliases,omitempty"`
+	Seasons []Season `json:"seasons,omitempty"` // detail endpoint only
+	Stats   *Stats   `json:"stats,omitempty"`   // aggregate counts for the grid
 }
 
 // Stats are the roll-up numbers shown per series in the library grid.
