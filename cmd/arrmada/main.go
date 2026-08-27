@@ -337,12 +337,6 @@ func main() {
 		coordinator.DetectStalled(ctx)
 		return nil
 	})
-
-	// Hold downloads while the downloads volume is too full. A minute is frequent
-	// enough to catch a big torrent filling a cache pool, and the check is a statfs
-	// plus one queue read, so it costs nothing to run often.
-	diskGuard := download.NewDiskGuard(downloads, settingsSvc, log, cfg.DownloadsDir)
-	sched.Register("downloads-disk-guard", time.Minute, true, diskGuard.Check)
 	// Import finished TV downloads (arrmada-tv category): hardlink every episode file
 	// out of a completed torrent (season packs yield many) into the library.
 	sched.Register("import-series", 30*time.Second, false, func(ctx context.Context) error {
@@ -521,7 +515,6 @@ func main() {
 		Realtime:   hub,
 		Indexers:   indexers,
 		Downloads:  downloads,
-		DiskGuard:  diskGuard,
 		Library:    imports,
 		Movies:     movieSvc,
 		Quality:    qualitySvc,

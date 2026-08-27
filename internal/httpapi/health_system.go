@@ -49,18 +49,6 @@ func (a *api) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 		add("error", "The library folder isn't writable: "+lib)
 	}
 
-	// The disk guard actively holding the queue is the single most confusing reason
-	// for "nothing is downloading" — everything else looks healthy — so say it plainly
-	// and before the raw free-space line.
-	if a.deps.DiskGuard != nil {
-		if g := a.deps.DiskGuard.Status(ctx); g.Enabled && g.Holding > 0 {
-			add("warning", fmt.Sprintf(
-				"Downloads are paused: the downloads volume is %.1f%% full (pause at %d%%). "+
-					"%d torrent%s will resume automatically once it drops below %d%%.",
-				g.UsedPct, g.PausePct, g.Holding, plural(g.Holding), g.ResumePct))
-		}
-	}
-
 	// Free disk space on the downloads volume.
 	var disk map[string]any
 	if free, ok := diskspace.FreeGB(a.deps.Config.DownloadsDir); ok {
@@ -103,11 +91,4 @@ func writable(dir string) bool {
 	_ = f.Close()
 	_ = os.Remove(probe)
 	return true
-}
-
-func plural(n int) string {
-	if n == 1 {
-		return ""
-	}
-	return "s"
 }

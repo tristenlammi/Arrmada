@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
 )
@@ -37,9 +36,6 @@ const (
 	keyDownloadArtwrk      = "download_artwork"
 	keyBooksEnabled        = "module_books_enabled"
 	keyMusicEnabled        = "module_music_enabled"
-	keyDiskGuard           = download.KeyDiskGuard
-	keyDiskGuardPause      = download.KeyDiskGuardPause
-	keyDiskGuardResume     = download.KeyDiskGuardResum
 )
 
 // booksEnabled reports whether the Books module is turned on (default true). Used to gate
@@ -106,11 +102,6 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		// Set either to 0 to opt back into unlimited.
 		"recycle_max_gb":         a.deps.Settings.Get(ctx, "recycle_max_gb", recyclebin.DefaultMaxGB),
 		"recycle_retention_days": a.deps.Settings.Get(ctx, "recycle_retention_days", recyclebin.DefaultRetentionDays),
-		// Downloads disk guard. On by default — a full downloads volume errors every
-		// torrent at once and, on a shared cache pool, takes everything else with it.
-		"downloads_disk_guard":            a.deps.Settings.GetBool(ctx, keyDiskGuard, download.DefaultDiskGuard),
-		"downloads_disk_guard_pause_pct":  a.deps.Settings.Get(ctx, keyDiskGuardPause, strconv.Itoa(download.DefaultDiskGuardPause)),
-		"downloads_disk_guard_resume_pct": a.deps.Settings.Get(ctx, keyDiskGuardResume, strconv.Itoa(download.DefaultDiskGuardResum)),
 	})
 }
 
@@ -151,9 +142,6 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		ConvertVaapiDevice    *string `json:"convert_vaapi_device"`
 		RecycleMaxGB          *string `json:"recycle_max_gb"`
 		RecycleRetentionDays  *string `json:"recycle_retention_days"`
-		DiskGuard             *bool   `json:"downloads_disk_guard"`
-		DiskGuardPausePct     *string `json:"downloads_disk_guard_pause_pct"`
-		DiskGuardResumePct    *string `json:"downloads_disk_guard_resume_pct"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -196,23 +184,6 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// The disk guard's two thresholds are validated together: a resume point at or
-	// above the pause point pauses and resumes on alternate passes forever. The guard
-	// corrects that defensively at read time, but rejecting it here means the UI says
-	// so rather than silently storing a number it won't honour.
-	if req.DiskGuardPausePct != nil || req.DiskGuardResumePct != nil {
-		pausePct := a.pctSetting(ctx, keyDiskGuardPause, download.DefaultDiskGuardPause, req.DiskGuardPausePct)
-		resumePct := a.pctSetting(ctx, keyDiskGuardResume, download.DefaultDiskGuardResum, req.DiskGuardResumePct)
-		if pausePct < 1 || pausePct > 99 {
-			a.writeError(w, http.StatusBadRequest, "pause percentage must be between 1 and 99")
-			return
-		}
-		if resumePct < 0 || resumePct >= pausePct {
-			a.writeError(w, http.StatusBadRequest, "resume percentage must be below the pause percentage")
-			return
-		}
-	}
-
 	if req.SearchOnAdd != nil && !save(a.deps.Settings.SetBool(ctx, keySearchOnAdd, *req.SearchOnAdd)) {
 		return
 	}
@@ -323,15 +294,6 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if req.MusicEnabled != nil && !save(a.deps.Settings.SetBool(ctx, keyMusicEnabled, *req.MusicEnabled)) {
 		return
 	}
-	if req.DiskGuard != nil && !save(a.deps.Settings.SetBool(ctx, keyDiskGuard, *req.DiskGuard)) {
-		return
-	}
-	if req.DiskGuardPausePct != nil && !save(a.deps.Settings.Set(ctx, keyDiskGuardPause, strings.TrimSpace(*req.DiskGuardPausePct))) {
-		return
-	}
-	if req.DiskGuardResumePct != nil && !save(a.deps.Settings.Set(ctx, keyDiskGuardResume, strings.TrimSpace(*req.DiskGuardResumePct))) {
-		return
-	}
 	a.handleGetSettings(w, r)
 }
 
@@ -344,19 +306,4 @@ func validHHMM(v string) bool {
 	h, err1 := strconv.Atoi(p[0])
 	m, err2 := strconv.Atoi(p[1])
 	return err1 == nil && err2 == nil && h >= 0 && h < 24 && m >= 0 && m < 60
-}
-
-// pctSetting resolves a percentage that may be arriving in this request or may already
-// be stored, so the two disk-guard thresholds can be validated against each other even
-// when only one of them is being changed.
-func (a *api) pctSetting(ctx context.Context, key string, def int, incoming *string) int {
-	raw := a.deps.Settings.Get(ctx, key, strconv.Itoa(def))
-	if incoming != nil {
-		raw = *incoming
-	}
-	n, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil {
-		return def
-	}
-	return n
 }

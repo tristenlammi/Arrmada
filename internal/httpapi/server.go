@@ -42,17 +42,14 @@ import (
 // Deps bundles everything the HTTP layer needs. Grouping them keeps New's
 // signature stable as more subsystems come online.
 type Deps struct {
-	Config    config.Config
-	Log       *slog.Logger
-	Store     *store.Store
-	Bus       *eventbus.Bus
-	Auth      *auth.Service
-	Realtime  *realtime.Hub
-	Indexers  *indexer.Service
-	Downloads *download.Service
-	// DiskGuard holds downloads while the downloads volume is too full. Optional:
-	// nil simply means the health panel can't report on it.
-	DiskGuard  *download.DiskGuard
+	Config     config.Config
+	Log        *slog.Logger
+	Store      *store.Store
+	Bus        *eventbus.Bus
+	Auth       *auth.Service
+	Realtime   *realtime.Hub
+	Indexers   *indexer.Service
+	Downloads  *download.Service
 	Library    *library.Manager
 	Movies     *movies.Service
 	Quality    *quality.Service

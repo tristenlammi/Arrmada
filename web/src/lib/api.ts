@@ -362,9 +362,6 @@ export interface AppSettings {
   // Recycle bin guard rails.
   recycle_max_gb: string;
   recycle_retention_days: string;
-  downloads_disk_guard: boolean;
-  downloads_disk_guard_pause_pct: string;
-  downloads_disk_guard_resume_pct: string;
 }
 
 export interface TorrentPreview {
