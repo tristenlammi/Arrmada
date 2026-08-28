@@ -95,8 +95,12 @@ func logEnvironment(log *slog.Logger, cfg config.Config) {
 	}
 }
 
+// byteGB reports whole-GB-with-one-decimal. The raw division printed
+// "free_gb=22374.6357421875", which is fifteen characters of noise in a line meant to
+// be skimmed.
 func byteGB(b uint64) float64 {
-	return float64(b/(1024*1024)) / 1024
+	mb := b / (1024 * 1024)
+	return float64(mb*10/1024) / 10
 }
 
 // writable proves the folder can be written rather than inferring it from the mode
