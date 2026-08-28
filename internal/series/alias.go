@@ -123,6 +123,16 @@ func (s *Service) AliasEpisodes(ctx context.Context, seriesID int64, r parser.Re
 			if cour := s.courOf(ctx, seriesID, a.TMDBSeason, r.Season); len(cour) > 0 {
 				return cour, true
 			}
+			return nil, false
+		}
+		// Neither an episode number nor a season — an arc pack, named only for the arc
+		// ("Bleach - Thousand-Year Blood War [BD Remux 1080p AVC DTS-HD MA]"). Since the
+		// alias IS the arc and the arc is the pinned season, it covers that season.
+		//
+		// Safe because we get here only when the release carries no numbering at all: a
+		// single episode always has one, so this can't mistake one for a pack.
+		if all := s.seasonRefs(ctx, seriesID, a.TMDBSeason); len(all) > 0 {
+			return all, true
 		}
 		return nil, false
 	}
@@ -195,4 +205,14 @@ func (s *Service) seasonCours(ctx context.Context, seriesID int64, tmdbSeason in
 		cur = append(cur, EpisodeRef{Season: eps[i].season, Episode: eps[i].episode})
 	}
 	return append(groups, cur)
+}
+
+// seasonRefs is every episode of one season, in order.
+func (s *Service) seasonRefs(ctx context.Context, seriesID int64, tmdbSeason int) []EpisodeRef {
+	nums := s.repo.SeasonEpisodeNumbers(ctx, seriesID, tmdbSeason)
+	out := make([]EpisodeRef, 0, len(nums))
+	for _, n := range nums {
+		out = append(out, EpisodeRef{Season: tmdbSeason, Episode: n})
+	}
+	return out
 }

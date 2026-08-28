@@ -154,6 +154,55 @@ func TestLongestAliasWins(t *testing.T) {
 	}
 }
 
+// A pack named only for the arc, with no numbering at all, covers the whole pinned
+// season. This exact release was in a real search and was being thrown away — which
+// mattered, because it was the only thing carrying the missing mid-run episodes.
+func TestArcPackCoversThePinnedSeason(t *testing.T) {
+	svc, ctx := bleachFixture(t)
+	if _, err := svc.AddAlias(ctx, 1, "BLEACH Thousand-Year Blood War", 17); err != nil {
+		t.Fatal(err)
+	}
+	refs, ok := svc.AliasEpisodes(ctx, 1,
+		parser.Parse("Bleach - Thousand-Year Blood War [BD Remux 1080p AVC DTS-HD MA 2 0 Dual Audio]"))
+	if !ok {
+		t.Fatal("the arc pack resolved to nothing")
+	}
+	if len(refs) != 52 {
+		t.Fatalf("covers %d episodes, want all 52 of season 17", len(refs))
+	}
+	// It has to actually contain the gap, or covering the season is meaningless.
+	found := map[int]bool{}
+	for _, r := range refs {
+		if r.Season != 17 {
+			t.Fatalf("pack claimed %+v, outside the pinned season", r)
+		}
+		found[r.Episode] = true
+	}
+	for ep := 15; ep <= 19; ep++ {
+		if !found[ep] {
+			t.Errorf("S17E%02d is missing from the pack's coverage", ep)
+		}
+	}
+}
+
+// The pack rule must not swallow a single episode. Anything carrying a number is
+// numbered, and takes the numbered path.
+func TestArcPackRuleIgnoresNumberedReleases(t *testing.T) {
+	svc, ctx := bleachFixture(t)
+	if _, err := svc.AddAlias(ctx, 1, "BLEACH Thousand-Year Blood War", 17); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{
+		"BLEACH Thousand-Year Blood War S02E02 1080p WEB h264-GRP",
+		"[SubsPlease] Bleach - Thousand-Year Blood War - 45 (1080p)",
+	} {
+		refs, ok := svc.AliasEpisodes(ctx, 1, parser.Parse(rel))
+		if !ok || len(refs) != 1 {
+			t.Errorf("%q resolved to %d episodes (ok=%v), want exactly 1", rel, len(refs), ok)
+		}
+	}
+}
+
 // The safety property the whole design rests on: a release under the series' REAL
 // title is untouched. "Bleach S04E04" is a 2005 episode and must not be dragged into
 // the arc just because an alias pins season 17.
