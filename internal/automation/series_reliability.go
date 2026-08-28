@@ -307,7 +307,12 @@ func seriesTitleMatches(relTitle string, s series.Series) bool {
 	// normalizing the real title will ever match. Purely additive: a series with no
 	// aliases behaves exactly as it did before.
 	for _, a := range s.Aliases {
-		if releaseIsForSeries(relTitle, a.Title) {
+		// Whole-word prefix, not equality: groups suffix an arc's name with a per-cour
+		// subtitle ("... The Calamity") or leave junk the parser didn't strip. The word
+		// boundary keeps "Bleach" from matching "Bleachers"; the series' own title is
+		// still compared for equality, so "Below Deck" can't swallow "Below Deck
+		// Mediterranean" — only titles the user declared get this treatment.
+		if parser.TitleHasPrefix(parser.Parse(relTitle).Title, a.Title) {
 			return true
 		}
 	}

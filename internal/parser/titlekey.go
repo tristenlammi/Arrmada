@@ -46,3 +46,53 @@ func TitleKey(s string) string {
 	}
 	return b.String()
 }
+
+// TitleWords is TitleKey's word list rather than its concatenation, for callers that
+// need to compare titles a word at a time.
+//
+// TitleKey glues the words together, which loses the boundaries — "bleach" is a prefix
+// of "bleachers" once the gaps are gone, but ["bleach"] is not a prefix of
+// ["bleachers"]. Anything doing prefix work has to use this.
+func TitleWords(s string) []string {
+	lower := strings.ReplaceAll(strings.ToLower(FoldAccents(s)), "&", " and ")
+	words := strings.FieldsFunc(lower, func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	out := make([]string, 0, len(words))
+	for _, w := range words {
+		if w == "and" {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// TitleHasPrefix reports whether title begins with prefix, compared whole word by whole
+// word. An exact match counts.
+//
+// This is how an alias survives the things release groups append to an arc's name: a
+// per-cour subtitle ("Thousand-Year Blood War The Calamity"), or junk the parser failed
+// to strip ("Thousand-Year Blood War [BD Remux 1080p ...]"). Comparing on the glued key
+// requires the whole title to be identical, and neither of those is.
+//
+// The word boundary is what makes this safe. "Bleach" does not match "Bleachers", and
+// "Below Deck" would not match "Below Deck Mediterranean" — which is exactly why the
+// series' OWN title is still compared for equality. Only user-declared aliases get
+// prefix treatment, where "match this arc whatever they suffix it with" is the point.
+func TitleHasPrefix(title, prefix string) bool {
+	p := TitleWords(prefix)
+	if len(p) == 0 {
+		return false
+	}
+	t := TitleWords(title)
+	if len(t) < len(p) {
+		return false
+	}
+	for i, w := range p {
+		if t[i] != w {
+			return false
+		}
+	}
+	return true
+}

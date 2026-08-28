@@ -71,17 +71,30 @@ func (s *Service) DeleteAlias(ctx context.Context, seriesID, aliasID int64) erro
 }
 
 // AliasFor returns the alias a release title matches, if any.
+//
+// Matching is a whole-word PREFIX, not equality, because release groups append to an
+// arc's name freely: a per-cour subtitle ("Thousand-Year Blood War The Calamity"), or
+// junk the parser didn't strip ("Thousand-Year Blood War [BD Remux 1080p ...]"). One
+// alias should cover the arc rather than needing a row per cour.
+//
+// When several aliases match, the longest wins, so a more specific alias can override a
+// broader one on the same series.
 func (s *Service) AliasFor(ctx context.Context, seriesID int64, releaseTitle string) (Alias, bool) {
-	key := parser.TitleKey(parser.Parse(releaseTitle).Title)
-	if key == "" {
+	title := parser.Parse(releaseTitle).Title
+	if strings.TrimSpace(title) == "" {
 		return Alias{}, false
 	}
+	var best Alias
+	bestLen := 0
 	for _, a := range s.repo.Aliases(ctx, seriesID) {
-		if a.Key() == key {
-			return a, true
+		if !parser.TitleHasPrefix(title, a.Title) {
+			continue
+		}
+		if n := len(parser.TitleWords(a.Title)); n > bestLen {
+			best, bestLen = a, n
 		}
 	}
-	return Alias{}, false
+	return best, bestLen > 0
 }
 
 // AliasEpisodes resolves a release against a season-pinned alias, returning the TMDB

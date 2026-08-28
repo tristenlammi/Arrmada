@@ -94,6 +94,66 @@ func TestAliasResolvesEveryBleachConvention(t *testing.T) {
 	}
 }
 
+// The titles that survived the first attempt, taken verbatim from a real search. Groups
+// suffix the arc's name with the cour's subtitle, and the parser doesn't always strip
+// the trailing junk — so one alias has to cover the family, not just the exact string.
+func TestAliasMatchesSuffixedTitles(t *testing.T) {
+	svc, ctx := bleachFixture(t)
+	if _, err := svc.AddAlias(ctx, 1, "BLEACH Thousand-Year Blood War", 17); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		release string
+		wantEp  int
+	}{
+		// Cour 4 is subtitled "The Calamity"; cour 4 starts at E40.
+		{"BLEACH Thousand-Year Blood War The Calamity S04E01 1080p AMZN WEB-DL H 264-Xiangliu", 40},
+		{"BLEACH Thousand-Year Blood War The Separation S02E02 1080p WEB h264-GRP", 15},
+		// Hyphen after the show name, and bracket junk the parser left in the title.
+		{"Bleach - Thousand-Year Blood War S02E06 [BD Remux 1080p AVC DTS-HD MA 2 0 Dual Audio]", 19},
+	} {
+		refs, ok := svc.AliasEpisodes(ctx, 1, parser.Parse(tc.release))
+		if !ok || len(refs) != 1 || refs[0].Season != 17 || refs[0].Episode != tc.wantEp {
+			t.Errorf("%s resolved to %+v (ok=%v), want S17E%02d", tc.release, refs, ok, tc.wantEp)
+		}
+	}
+}
+
+// The word boundary is what makes prefix matching safe. These all START with the
+// letters of the series name and must not match.
+func TestAliasPrefixStopsAtWordBoundaries(t *testing.T) {
+	svc, ctx := bleachFixture(t)
+	if _, err := svc.AddAlias(ctx, 1, "BLEACH Thousand-Year Blood War", 17); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{
+		"Bleachers-Strange Desire-2014-WEB-FLAC-16bit-PLZRWD",
+		"Soaked In Bleach 2015 1080p BluRay DTS x264-HDMaNiAcS",
+		"BLEACH Rebirth of Souls Yhwach-TENOKE",
+		"Yot Club-Bleach Beach-2022-WEB-FLAC-24bit-PLZRWD",
+	} {
+		if _, ok := svc.AliasEpisodes(ctx, 1, parser.Parse(rel)); ok {
+			t.Errorf("%q matched the alias — it isn't this show", rel)
+		}
+	}
+}
+
+// A more specific alias must win over a broader one on the same series.
+func TestLongestAliasWins(t *testing.T) {
+	svc, ctx := bleachFixture(t)
+	if _, err := svc.AddAlias(ctx, 1, "BLEACH Thousand-Year Blood War", 17); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AddAlias(ctx, 1, "BLEACH Thousand-Year Blood War The Calamity", 4); err != nil {
+		t.Fatal(err)
+	}
+	a, ok := svc.AliasFor(ctx, 1, "BLEACH Thousand-Year Blood War The Calamity S01E01 1080p WEB-GRP")
+	if !ok || a.TMDBSeason != 4 {
+		t.Errorf("matched %+v, want the longer alias pinned to season 4", a)
+	}
+}
+
 // The safety property the whole design rests on: a release under the series' REAL
 // title is untouched. "Bleach S04E04" is a 2005 episode and must not be dragged into
 // the arc just because an alias pins season 17.
