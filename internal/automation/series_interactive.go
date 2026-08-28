@@ -68,8 +68,13 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 		c.log.Info("series: alias search", "series", s.Title, "alias", a.Title, "returned", len(ares.Releases))
 		result.Releases = append(result.Releases, ares.Releases...)
 	}
+	// Log the REQUESTED scope, not the query parameters. For anime the query is
+	// deliberately left broad (q.Season/q.Episode stay 0 so every numbering convention
+	// is returned), so printing those said "season=0 episode=0" for a search of one
+	// specific episode — which reads as "it searched everything and found nothing".
 	c.log.Info("series: interactive search", "series", s.Title, "query", title,
-		"season", q.Season, "episode", q.Episode,
+		"want_season", season, "want_episode", episode,
+		"query_season", q.Season, "query_episode", q.Episode,
 		"raw", len(result.Releases), "indexer_errors", len(result.Errors))
 	for name, e := range result.Errors {
 		c.log.Warn("series: indexer error", "indexer", name, "err", e)
@@ -78,7 +83,7 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 	byName := make(map[string]indexer.Release, len(result.Releases))
 	cands := make([]quality.Candidate, 0, len(result.Releases))
 	var droppedTitle, droppedScope int
-	var sampleDropped []string
+	var sampleDropped, sampleScope []string
 	for _, rel := range bestByTitle(result.Releases) {
 		if !seriesTitleMatches(rel.Title, s) {
 			droppedTitle++
@@ -87,8 +92,14 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 			}
 			continue // a different show that merely shares a title prefix (e.g. "Below Deck Mediterranean" for "Below Deck")
 		}
-		if !c.releaseMatchesScope(ctx, s, parser.Parse(rel.Title), season, episode) {
+		if p := parser.Parse(rel.Title); !c.releaseMatchesScope(ctx, s, p, season, episode) {
 			droppedScope++
+			// What a right-show release DID resolve to is the answer to "there are
+			// torrents for this episode, why won't it take them?" — usually that they
+			// are other episodes entirely, which no amount of title matching fixes.
+			if len(sampleScope) < 8 {
+				sampleScope = append(sampleScope, rel.Title+" → "+c.resolvedLabel(ctx, s, p))
+			}
 			continue // not relevant to the requested season/episode scope
 		}
 		byName[rel.Title] = rel
@@ -97,6 +108,11 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 	c.log.Info("series: search filtered", "series", s.Title, "kept", len(cands), "dropped_wrong_title", droppedTitle, "dropped_out_of_scope", droppedScope)
 	if len(sampleDropped) > 0 {
 		c.log.Info("series: sample of dropped titles (parsed → title)", "series", s.Title, "samples", strings.Join(sampleDropped, " | "))
+	}
+	if len(sampleScope) > 0 {
+		c.log.Info("series: sample of right-show releases that were other episodes (release → resolved)",
+			"series", s.Title, "want_season", season, "want_episode", episode,
+			"samples", strings.Join(sampleScope, " | "))
 	}
 	decision := c.quality.Decide(ctx, c.effectiveProfile(ctx, s.QualityProfile, "series"), cands)
 
@@ -716,4 +732,26 @@ func (c *Coordinator) DeleteSeriesDuplicate(ctx context.Context, seriesID int64,
 		}
 	}
 	return fmt.Errorf("that file isn't a duplicate of this series — refusing to delete it")
+}
+
+// resolvedLabel says which episodes a release actually maps to, for the diagnostic that
+// explains an out-of-scope drop. Best-effort and read-only.
+func (c *Coordinator) resolvedLabel(ctx context.Context, s series.Series, p parser.Release) string {
+	refs, ok := c.series.AliasEpisodes(ctx, s.ID, p)
+	via := "alias"
+	if !ok {
+		refs, via = c.series.ResolveEpisodes(ctx, s.ID, p), "series numbering"
+	}
+	if len(refs) == 0 {
+		return "no episode could be resolved"
+	}
+	parts := make([]string, 0, 4)
+	for i, ref := range refs {
+		if i == 4 {
+			parts = append(parts, fmt.Sprintf("+%d more", len(refs)-4))
+			break
+		}
+		parts = append(parts, fmt.Sprintf("S%02dE%02d", ref.Season, ref.Episode))
+	}
+	return strings.Join(parts, ",") + " (via " + via + ")"
 }
