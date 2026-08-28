@@ -119,7 +119,7 @@ export function SeriesDetail() {
           </Link>
 
           <div className="flex flex-col gap-6 sm:flex-row">
-            <div className="w-[180px] flex-none overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)", aspectRatio: "2/3" }}>
+            <div className="w-[180px] flex-none self-start overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)", aspectRatio: "2/3" }}>
               {s.poster_url ? (
                 <img src={s.poster_url} alt={s.title} className="h-full w-full object-cover" />
               ) : (
@@ -758,11 +758,10 @@ function AliasPanel({ series }: { series: SeriesT }) {
     <div className="mt-3 rounded-xl p-3.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
       <div className="text-[12.5px] font-semibold">Alternate titles</div>
       <p className="mb-2.5 mt-0.5 text-[11px] text-ink-faint">
-        Other names this show is released under. Needed when an arc ships as its own show — Bleach&apos;s
-        <code className="mx-1 font-mono">Thousand-Year Blood War</code> for example — because those releases
-        don&apos;t match the series title at all and get dropped. Set the season to fold the alias&apos;
-        numbering into it: its <code className="mx-1 font-mono">S02E02</code> then means &ldquo;second cour,
-        episode 2&rdquo; of that season. Leave the season blank to only match the title.
+        Other names this show is released under, for when an arc ships as its own show. Set
+        &ldquo;maps to season&rdquo; so the alias&apos; <code className="mx-1 font-mono">S02E02</code> reads as
+        &ldquo;second cour, episode 2&rdquo; of that season — without it the title matches but the numbering
+        is still wrong.
       </p>
 
       {rows && rows.length > 0 && (
