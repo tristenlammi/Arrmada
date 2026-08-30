@@ -215,7 +215,14 @@ func (a *api) handleConvertSeries(w http.ResponseWriter, r *http.Request) {
 		}
 		season = n
 	}
-	n, err := a.deps.Convert.QueueSeries(r.Context(), seriesID, season)
+	// ?mode=remux cleans tracks across the show without re-encoding. It deliberately
+	// covers episodes a conversion sweep skips — a file already in the target codec is
+	// never a conversion candidate, and those are exactly the ones with stale tracks.
+	queue := a.deps.Convert.QueueSeries
+	if r.URL.Query().Get("mode") == "remux" {
+		queue = a.deps.Convert.QueueSeriesRemux
+	}
+	n, err := queue(r.Context(), seriesID, season)
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not queue conversions")
 		return

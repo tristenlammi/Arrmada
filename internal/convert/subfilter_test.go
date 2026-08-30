@@ -81,3 +81,46 @@ func TestRemuxPlanCopiesTheVideo(t *testing.T) {
 		t.Errorf("a plan with no video codec must copy the video:\n%s", args)
 	}
 }
+
+// A remux rewrites the file and replaces the original, so a sweep has to skip files that
+// are already exactly what was asked for — otherwise "clean up this show" churns every
+// episode to produce identical output.
+func TestNeedsTrackCleanup(t *testing.T) {
+	keepEN := Plan{Subs: SubPlan{KeepLangs: []string{"en"}}}
+
+	cluttered := subs(
+		SubStream{SubIndex: 0, Codec: "subrip", Lang: "eng", Text: true},
+		SubStream{SubIndex: 1, Codec: "subrip", Lang: "fre", Text: true},
+	)
+	if !NeedsTrackCleanup(cluttered, keepEN) {
+		t.Error("a file with a French track to drop was reported as clean")
+	}
+
+	clean := subs(SubStream{SubIndex: 0, Codec: "subrip", Lang: "eng", Text: true})
+	if NeedsTrackCleanup(clean, keepEN) {
+		t.Error("a file that already has only English was queued for a pointless rewrite")
+	}
+
+	// No filter set: nothing would be dropped, so nothing needs doing.
+	if NeedsTrackCleanup(cluttered, Plan{}) {
+		t.Error("with no languages configured, a rewrite was proposed anyway")
+	}
+
+	// The never-strip-everything rule means a file with no English isn't "cleanable" —
+	// keptSubs would hand every track back, so a rewrite would change nothing.
+	noEnglish := subs(
+		SubStream{SubIndex: 0, Codec: "subrip", Lang: "chi", Text: true},
+		SubStream{SubIndex: 1, Codec: "subrip", Lang: "jpn", Text: true},
+	)
+	if NeedsTrackCleanup(noEnglish, keepEN) {
+		t.Error("a file with no English was queued, but the filter would keep every track anyway")
+	}
+
+	// Audio counts too.
+	audio := &MediaInfo{VideoCodec: "hevc", Audio: []AudioStream{
+		{AudIndex: 0, Codec: "eac3", Lang: "eng"}, {AudIndex: 1, Codec: "ac3", Lang: "spa"},
+	}}
+	if !NeedsTrackCleanup(audio, Plan{Audio: AudioPlan{KeepLangs: []string{"en"}}}) {
+		t.Error("a Spanish dub to drop was reported as clean")
+	}
+}

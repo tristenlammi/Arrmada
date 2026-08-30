@@ -1285,6 +1285,8 @@ export const api = {
   // Remux: strip unwanted audio/subtitle languages without re-encoding. The only thing
   // that helps a file already in the target codec, which is never a convert candidate.
   remuxMovie: (id: number) => req<ConvertJob>(`/api/v1/convert/movies/${id}?mode=remux`, { method: "POST" }),
+  remuxSeries: (seriesID: number) =>
+    req<{ queued: number }>(`/api/v1/convert/series/${seriesID}?mode=remux`, { method: "POST" }),
   remuxEpisode: (seriesID: number, season: number, episode: number) =>
     req<ConvertJob>(`/api/v1/convert/episodes/${seriesID}/${season}/${episode}?mode=remux`, { method: "POST" }),
   convertSampleMovie: (id: number) => req<ConvertSample>(`/api/v1/convert/movies/${id}/sample`, { method: "POST" }),

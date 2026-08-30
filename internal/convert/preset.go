@@ -757,3 +757,21 @@ func keptSubs(mi *MediaInfo, plan Plan) []SubStream {
 	}
 	return out
 }
+
+// NeedsTrackCleanup reports whether a remux would actually drop anything from this file.
+//
+// A remux rewrites the whole file and replaces the original. Doing that to a file whose
+// tracks are already exactly what you asked for is pure I/O for no change, so a sweep
+// has to be able to tell the difference rather than churning the entire library.
+func NeedsTrackCleanup(mi *MediaInfo, plan Plan) bool {
+	if mi == nil {
+		return false
+	}
+	if len(plan.Subs.KeepLangs) > 0 && len(keptSubs(mi, plan)) < len(mi.Subs) {
+		return true
+	}
+	if len(plan.Audio.KeepLangs) > 0 && len(keptAudio(mi, plan)) < len(mi.Audio) {
+		return true
+	}
+	return false
+}

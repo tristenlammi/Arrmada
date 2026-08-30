@@ -624,3 +624,50 @@ func (s *Service) indexedCandidates(ctx context.Context, mediaType string, serie
 	}
 	return out, rows.Err()
 }
+
+// QueueSeriesRemux queues a track cleanup across a show — every episode whose audio or
+// subtitle tracks include languages the settings say to drop.
+//
+// Deliberately NOT filtered by Candidate, unlike QueueSeries. Candidate means "would
+// re-encoding save space", and the files needing track cleanup are usually the ones that
+// answer no: already in the target codec, and therefore never opened by a conversion
+// sweep at all.
+//
+// Episodes already carrying only the kept languages are skipped. A remux rewrites the
+// file and replaces the original, so running it over a whole library indiscriminately
+// would be a great deal of I/O to produce identical files.
+func (s *Service) QueueSeriesRemux(ctx context.Context, seriesID int64, season int) (int, error) {
+	eps, err := s.indexedCandidates(ctx, "episode", seriesID)
+	if err != nil {
+		return 0, err
+	}
+	plan := s.RemuxPlan(ctx)
+	if len(plan.Subs.KeepLangs) == 0 && len(plan.Audio.KeepLangs) == 0 {
+		return 0, fmt.Errorf("no languages are set to keep — set them in Convert → Audio & subtitle tracks first")
+	}
+	maxFail := s.maxFailures(ctx)
+	queued, skipped := 0, 0
+	for _, c := range eps {
+		if season >= 0 && c.Season != season {
+			continue
+		}
+		if !NeedsTrackCleanup(c.Info, plan) {
+			skipped++
+			continue
+		}
+		if s.failures.blocklisted(ctx, episodeKey(c.SeriesID, c.Season, c.Episode), maxFail) {
+			continue
+		}
+		if _, err := s.enqueueEpisodeIndexed(ctx, c, plan); err != nil {
+			s.log.Warn("convert: queue remux failed",
+				"series", seriesID, "season", c.Season, "episode", c.Episode, "err", err)
+			continue
+		}
+		queued++
+	}
+	s.log.Info("convert: queued subtitle/audio cleanup",
+		"series", seriesID, "season", season, "queued", queued,
+		"already_clean", skipped,
+		"keep_subs", plan.Subs.KeepLangs, "keep_audio", plan.Audio.KeepLangs)
+	return queued, nil
+}
