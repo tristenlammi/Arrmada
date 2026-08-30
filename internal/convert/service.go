@@ -29,6 +29,7 @@ const (
 	keySkipHardlinked = "convert_skip_hardlinked"
 	keyReclaimed      = "convert_reclaimed_bytes"
 	keyKeepAudioLangs = "convert_keep_audio_langs" // CSV; empty = keep all audio
+	keyKeepSubLangs   = "convert_keep_sub_langs"   // CSV; empty = keep all subtitles
 	keyAddStereo      = "convert_add_stereo"       // add an AAC 2.0 downmix beside surround
 	keyLoudnorm       = "convert_loudnorm"         // EBU R128 loudness normalize
 	keyTargetCodec    = "convert_target_codec"     // "hevc" | "av1" — what the library is converted to
@@ -516,7 +517,34 @@ func (s *Service) defaultPlan(ctx context.Context) Plan {
 			AddStereo: s.settings.GetBool(ctx, keyAddStereo, false),
 			Loudnorm:  s.settings.GetBool(ctx, keyLoudnorm, false),
 		},
+		Subs: SubPlan{KeepLangs: splitCSV(s.settings.Get(ctx, keyKeepSubLangs, ""))},
 	}
+}
+
+// RemuxPlan is the default plan with the video left alone: no re-encode, just the
+// stream cleanup — dropping unwanted audio and subtitle languages and rewriting the
+// container. Minutes rather than hours, and bit-for-bit identical video.
+//
+// This is what a file that is ALREADY in the target codec needs. Such a file is not a
+// conversion candidate at all (isCandidateCodec refuses a source that already matches
+// the target), so before this there was no way to clean up its tracks.
+func (s *Service) RemuxPlan(ctx context.Context) Plan {
+	p := s.defaultPlan(ctx)
+	p.VideoCodec = "" // copy
+	p.Quality = 0
+	p.VFRToCFR = false // re-timing frames would mean re-encoding them
+	p.ScaleHeight = 0
+	return p
+}
+
+// QueueMovieRemux enqueues a stream-cleanup remux of one movie.
+func (s *Service) QueueMovieRemux(ctx context.Context, movieID int64) (*Job, error) {
+	return s.queueMovie(ctx, movieID, s.RemuxPlan(ctx))
+}
+
+// QueueEpisodeRemux enqueues a stream-cleanup remux of one episode.
+func (s *Service) QueueEpisodeRemux(ctx context.Context, seriesID int64, season, episode int) (*Job, error) {
+	return s.queueEpisode(ctx, seriesID, season, episode, s.RemuxPlan(ctx))
 }
 
 // splitCSV parses a comma-separated setting into trimmed, non-empty values.

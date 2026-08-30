@@ -7,15 +7,21 @@ export function FileDetailsModal({
   path,
   title,
   subtitle,
+  onCleanTracks,
   onClose,
 }: {
   path: string;
   title: string;
   subtitle?: string;
+  // onCleanTracks queues a remux that drops the audio/subtitle languages Convert is
+  // configured to discard. Omitted where there's nothing sensible to queue.
+  onCleanTracks?: () => Promise<void>;
   onClose: () => void;
 }) {
   const [info, setInfo] = useState<FileDetails | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [cleaning, setCleaning] = useState(false);
+  const [cleanMsg, setCleanMsg] = useState<string | null>(null);
 
   useEffect(() => {
     setInfo(null);
@@ -125,6 +131,33 @@ export function FileDetailsModal({
                   />
                 )}
                 {m.has_cc && <Row k="Captions" v="embedded CEA-608/708" />}
+                {onCleanTracks && (m.subs?.length ?? 0) + (m.audio?.length ?? 0) > 2 && (
+                  <div className="mt-2 border-t pt-2" style={{ borderColor: "var(--line)" }}>
+                    <button
+                      onClick={async () => {
+                        setCleaning(true);
+                        setCleanMsg(null);
+                        try {
+                          await onCleanTracks();
+                          setCleanMsg("Queued — the video is copied, not re-encoded, so this is quick.");
+                        } catch (e) {
+                          setCleanMsg((e as Error).message);
+                        } finally {
+                          setCleaning(false);
+                        }
+                      }}
+                      disabled={cleaning}
+                      className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50"
+                      style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}
+                    >
+                      {cleaning ? "Queueing…" : "Clean up tracks"}
+                    </button>
+                    <span className="ml-2 text-[11px] text-ink-faint">
+                      Drops the languages set in Convert → Audio &amp; subtitle tracks. No re-encode.
+                    </span>
+                    {cleanMsg && <p className="m-0 mt-1.5 text-[11.5px] text-ink-dim">{cleanMsg}</p>}
+                  </div>
+                )}
               </Section>
             )}
             {info.media_note && <Note>{info.media_note}</Note>}

@@ -13,6 +13,7 @@ type Plan struct {
 	ScaleHeight int    // downscale to this height (0 = keep); never upscales
 
 	Audio     AudioPlan
+	Subs      SubPlan
 	Container string // "mkv" | "mp4"
 
 	// HealthCheck, with no transcode (VideoCodec == ""), turns the job into a read-only
@@ -21,6 +22,18 @@ type Plan struct {
 	// ExtraArgs are raw ffmpeg output args appended verbatim — the advanced escape hatch
 	// for anything the structured actions don't cover (R5). Empty for the common case.
 	ExtraArgs []string
+}
+
+// SubPlan is the subtitle portion of a Plan.
+//
+// A WEB-DL commonly ships thirty-odd subtitle tracks for languages nobody in the house
+// reads. They cost little space, but they clutter every player's track menu and some
+// clients pick one at random.
+type SubPlan struct {
+	// KeepLangs keeps only these languages (empty = keep all). Matched the same way as
+	// audio, so "en" and "eng" both work, and an untagged track is kept rather than
+	// guessed at.
+	KeepLangs []string
 }
 
 // AudioPlan is the audio portion of a Plan.

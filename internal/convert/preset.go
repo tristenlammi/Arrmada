@@ -245,12 +245,13 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cor
 		}
 	}
 
-	// Subtitles are carried through untouched — the Subtitles module owns extraction/stripping now.
-	// MKV copies every subtitle stream as-is; MP4 can't hold image subs (PGS/VOBSUB), so an MP4
-	// target keeps only text subs, re-encoded to mov_text.
+	// Subtitles. MKV carries every stream as-is; MP4 can't hold image subs (PGS/VOBSUB),
+	// so an MP4 target keeps only text subs, re-encoded to mov_text. A language filter
+	// narrows either — a WEB-DL with thirty-odd tracks is unusable in a player's menu.
+	subs := keptSubs(mi, plan)
 	if mp4 {
 		mapped := false
-		for _, s := range mi.Subs {
+		for _, s := range subs {
 			if s.Text {
 				a = append(a, "-map", fmt.Sprintf("0:s:%d", s.SubIndex))
 				mapped = true
@@ -259,7 +260,7 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cor
 		if mapped {
 			a = append(a, "-c:s", "mov_text")
 		}
-	} else {
+	} else if len(subs) == len(mi.Subs) {
 		a = append(a, "-map", "0:s?", "-c:s", "copy")
 		// Matroska can't mux MP4-family text subs (mov_text/tx3g): with -c:s copy every MKV
 		// conversion of an MP4-with-subs source fails at header write. Transcode just those
@@ -268,6 +269,19 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cor
 		for _, s := range mi.Subs {
 			if !mkvSub(s.Codec) {
 				a = append(a, fmt.Sprintf("-c:s:%d", s.SubIndex), "srt")
+			}
+		}
+	} else {
+		// Filtered: map the kept streams individually. Output indexes RENUMBER from 0 as
+		// they're mapped, so a per-stream codec override has to use the output position,
+		// not the input's SubIndex — using the input index here would point the override
+		// at the wrong stream, or at one that no longer exists.
+		for out, s := range subs {
+			a = append(a, "-map", fmt.Sprintf("0:s:%d", s.SubIndex))
+			if !mkvSub(s.Codec) {
+				a = append(a, fmt.Sprintf("-c:s:%d", out), "srt")
+			} else {
+				a = append(a, fmt.Sprintf("-c:s:%d", out), "copy")
 			}
 		}
 	}
@@ -721,4 +735,25 @@ func cpuVideoArgs(name, codec string, crf int, tenBit bool, cores int, hdrParams
 		return []string{"-c:v", name, "-preset", "slow", "-crf", strconv.Itoa(crf),
 			"-x265-params", params, "-pix_fmt", "yuv420p10le"}
 	}
+}
+
+// keptSubs applies the subtitle language filter. With no filter every track is kept, so
+// the untouched path stays byte-identical to what it was.
+func keptSubs(mi *MediaInfo, plan Plan) []SubStream {
+	if len(plan.Subs.KeepLangs) == 0 {
+		return mi.Subs
+	}
+	out := make([]SubStream, 0, len(mi.Subs))
+	for _, s := range mi.Subs {
+		if langIn(s.Lang, plan.Subs.KeepLangs) {
+			out = append(out, s)
+		}
+	}
+	// Never strip every subtitle. If the filter matches nothing, the tags are wrong or
+	// unexpected, and silently shipping a file with no subtitles at all is worse than
+	// keeping the clutter.
+	if len(out) == 0 {
+		return mi.Subs
+	}
+	return out
 }

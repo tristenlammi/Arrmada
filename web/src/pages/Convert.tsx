@@ -1233,13 +1233,13 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
   const set = (patch: Partial<AppSettings>) => setD((cur) => (cur ? { ...cur, ...patch } : cur));
   const dirty = useMemo(() => {
     if (!saved || !d) return false;
-    const keys: (keyof AppSettings)[] = ["convert_target_codec", "convert_auto", "convert_sweep_start", "convert_sweep_end", "convert_workers", "convert_quality_gate", "convert_min_ssim", "convert_max_failures", "convert_skip_hardlinked", "convert_scratch_dir", "convert_vaapi_device", "convert_scan_at"];
+    const keys: (keyof AppSettings)[] = ["convert_target_codec", "convert_auto", "convert_sweep_start", "convert_sweep_end", "convert_workers", "convert_quality_gate", "convert_min_ssim", "convert_max_failures", "convert_skip_hardlinked", "convert_scratch_dir", "convert_vaapi_device", "convert_scan_at", "convert_keep_audio_langs", "convert_keep_sub_langs"];
     return keys.some((k) => saved[k] !== d[k]);
   }, [saved, d]);
   const onSave = async () => {
     if (!d) return;
     setBusy(true);
-    const patch = { convert_target_codec: d.convert_target_codec, convert_auto: d.convert_auto, convert_sweep_start: d.convert_sweep_start, convert_sweep_end: d.convert_sweep_end, convert_workers: d.convert_workers, convert_quality_gate: d.convert_quality_gate, convert_min_ssim: d.convert_min_ssim, convert_max_failures: d.convert_max_failures, convert_skip_hardlinked: d.convert_skip_hardlinked, convert_scratch_dir: d.convert_scratch_dir, convert_vaapi_device: d.convert_vaapi_device, convert_scan_at: d.convert_scan_at };
+    const patch = { convert_keep_audio_langs: d.convert_keep_audio_langs, convert_keep_sub_langs: d.convert_keep_sub_langs, convert_target_codec: d.convert_target_codec, convert_auto: d.convert_auto, convert_sweep_start: d.convert_sweep_start, convert_sweep_end: d.convert_sweep_end, convert_workers: d.convert_workers, convert_quality_gate: d.convert_quality_gate, convert_min_ssim: d.convert_min_ssim, convert_max_failures: d.convert_max_failures, convert_skip_hardlinked: d.convert_skip_hardlinked, convert_scratch_dir: d.convert_scratch_dir, convert_vaapi_device: d.convert_vaapi_device, convert_scan_at: d.convert_scan_at };
     try { const v = await api.updateSettings(patch); setSaved(v); setD(v); flash("Settings saved — restart or the next job uses the new GPU"); loadScratch(); } catch (e) { flash((e as Error).message); } finally { setBusy(false); }
   };
   if (!d) return <div className="text-[12px] text-ink-faint">Loading settings…</div>;
@@ -1343,6 +1343,24 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
             Currently using <span className="font-mono text-ink-dim">{scratch.dir}</span> · <b style={{ color: scratch.free > 20 * 1024 ** 3 ? "var(--good)" : "var(--avoid)" }}>{fmtSize(scratch.free)}</b> free
           </div>
         )}
+      </SettingCard>
+
+      {/* Tracks */}
+      <SettingCard
+        title="Audio & subtitle tracks"
+        desc="A WEB-DL often ships thirty-odd subtitle tracks and a dozen dubs. Keep only the languages you actually use — leave blank to keep everything."
+      >
+        <SettingField label="Keep audio languages" hint="comma-separated, e.g. en, ja · blank = keep all">
+          <input value={d.convert_keep_audio_langs} onChange={(e) => set({ convert_keep_audio_langs: e.target.value })} placeholder="all" className={`${inp} w-[190px]`} style={inpStyle} />
+        </SettingField>
+        <SettingField label="Keep subtitle languages" hint="comma-separated, e.g. en · blank = keep all">
+          <input value={d.convert_keep_sub_langs} onChange={(e) => set({ convert_keep_sub_langs: e.target.value })} placeholder="all" className={`${inp} w-[190px]`} style={inpStyle} />
+        </SettingField>
+        <p className="m-0 text-[11px] text-ink-faint">
+          Untagged tracks are always kept — an unlabelled track is more often the original language
+          than something you want gone. If a filter would remove <i>every</i> track, none are removed:
+          the tags are wrong, and a file with no subtitles at all is worse than a cluttered one.
+        </p>
       </SettingCard>
 
       {/* Safety */}

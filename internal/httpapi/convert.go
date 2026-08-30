@@ -239,7 +239,13 @@ func (a *api) handleConvertEpisode(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "invalid episode")
 		return
 	}
-	job, err := a.deps.Convert.QueueEpisode(r.Context(), seriesID, season, episode)
+	// ?mode=remux cleans the streams without re-encoding — the only thing that can help
+	// a file already in the target codec, which is never a conversion candidate.
+	queue := a.deps.Convert.QueueEpisode
+	if r.URL.Query().Get("mode") == "remux" {
+		queue = a.deps.Convert.QueueEpisodeRemux
+	}
+	job, err := queue(r.Context(), seriesID, season, episode)
 	if err != nil {
 		a.writeError(w, convertQueueStatus(err), err.Error())
 		return
@@ -288,7 +294,11 @@ func (a *api) handleConvertMovie(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	job, err := a.deps.Convert.QueueMovie(r.Context(), id)
+	queue := a.deps.Convert.QueueMovie
+	if r.URL.Query().Get("mode") == "remux" {
+		queue = a.deps.Convert.QueueMovieRemux
+	}
+	job, err := queue(r.Context(), id)
 	if err != nil {
 		a.writeError(w, convertQueueStatus(err), err.Error())
 		return
