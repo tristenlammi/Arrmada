@@ -335,6 +335,28 @@ export interface DiskGuardStatus {
 
 export interface SeriesAlias { id: number; title: string; tmdb_season: number }
 
+export interface AudioStreamInfo { aud_index: number; codec: string; lang: string; channels: number }
+export interface SubStreamInfo { sub_index: number; codec: string; lang: string; text: boolean }
+export interface FileMediaInfo {
+  container: string; video_codec: string; width: number; height: number; resolution: string;
+  hdr: string; dv_profile?: number; bitrate_kbps: number; frame_rate: number; duration_sec: number;
+  size_bytes: number; audio_tracks: number; sub_tracks: number; ten_bit: boolean;
+  interlaced?: boolean; vfr: boolean; has_cc: boolean;
+  audio?: AudioStreamInfo[]; subs?: SubStreamInfo[];
+}
+export interface FileSource {
+  release: string; indexer?: string; info_hash?: string; quality_profile?: string;
+  grabbed_ms?: number; imported_ms?: number; source_path?: string;
+  manual: boolean; seed_enabled: boolean; seed_ratio?: number; seed_hours?: number;
+  from_pack: boolean; in_client: boolean; state?: string; ratio?: number;
+}
+export interface FileDetails {
+  path: string; name: string; dir: string; exists: boolean;
+  size_bytes: number; modified_ms: number; missing_reason?: string;
+  media?: FileMediaInfo; media_note?: string;
+  source?: FileSource; source_note?: string;
+}
+
 export interface AppSettings {
   search_on_add: boolean;
   naming_movie_folder: string;
@@ -937,6 +959,7 @@ export const api = {
     req<SystemHealth>("/api/v1/health/system"),
   dashboard: () => req<DashboardData>("/api/v1/dashboard"),
   diskGuard: () => req<DiskGuardStatus>("/api/v1/downloads/disk-guard"),
+  fileInfo: (path: string) => req<FileDetails>(`/api/v1/files/info?path=${encodeURIComponent(path)}`),
   seriesAliases: (id: number) => req<SeriesAlias[]>(`/api/v1/series/${id}/aliases`),
   addSeriesAlias: (id: number, body: { title: string; tmdb_season: number }) =>
     req<SeriesAlias>(`/api/v1/series/${id}/aliases`, { method: "POST", body: JSON.stringify(body) }),

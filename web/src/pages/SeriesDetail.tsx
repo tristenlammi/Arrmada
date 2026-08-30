@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
+import { FileDetailsModal } from "../components/FileDetailsModal";
 import { api, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile } from "../lib/api";
 
 // Auto-grab is fire-and-forget: the API answers 202 and searches in the background, and a
@@ -263,7 +264,7 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("rename", rename)}>{busy === "rename" ? "Renaming…" : "Rename"}</button>
         <DeleteButton onDelete={async (df) => { await api.deleteSeries(series.id, df); window.location.href = "/series"; }} />
       </div>
-      <AliasPanel series={series} />
+      {series.series_type === "anime" && <AliasPanel series={series} />}
       {series.series_type === "anime" && <SceneMapPanel series={series} />}
       {showPaste && (
         <UploadTorrentModal
@@ -388,6 +389,7 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen }: { series:
 
 function EpisodeRow({ series, ep, onChange, flash }: { series: SeriesT; ep: Episode; onChange: () => void; flash: (m: string) => void }) {
   const [searching, setSearching] = useState(false);
+  const [showFile, setShowFile] = useState(false);
   const [busy, setBusy] = useState(false);
   const [requested, setRequested] = useState(() => grabRequested(epKey(ep.id)));
   const dl = !ep.has_file && ep.download ? ep.download : null;
@@ -442,7 +444,18 @@ function EpisodeRow({ series, ep, onChange, flash }: { series: SeriesT; ep: Epis
       {series.series_type === "anime" && ep.absolute_number ? (
         <span className="flex-none rounded px-1 font-mono text-[10px]" style={{ background: "var(--accent-soft)", color: "var(--accent)" }} title="Absolute episode number">#{ep.absolute_number}</span>
       ) : null}
-      <span className="min-w-0 flex-1 truncate text-[12.5px]">{ep.title || "TBA"}</span>
+      {ep.has_file && ep.file_path ? (
+        <button
+          onClick={() => setShowFile(true)}
+          title="Show this file's details — media info and the release it came from"
+          className="min-w-0 flex-1 truncate text-left text-[12.5px] hover:underline"
+          style={{ color: "var(--ink)" }}
+        >
+          {ep.title || "TBA"}
+        </button>
+      ) : (
+        <span className="min-w-0 flex-1 truncate text-[12.5px]">{ep.title || "TBA"}</span>
+      )}
       <span className="hidden w-[92px] flex-none font-mono text-[10.5px] text-ink-faint sm:block">{ep.air_date || "—"}</span>
       <span className="w-[80px] flex-none text-right font-mono text-[10px] uppercase" style={{ color: status.tone }}>{status.label}</span>
       <div className="flex flex-none items-center gap-1">
@@ -479,6 +492,14 @@ function EpisodeRow({ series, ep, onChange, flash }: { series: SeriesT; ep: Epis
           fetchReleases={() => api.seriesReleases(series.id, ep.season_number, ep.episode_number)}
           onGrab={async (rel) => { await api.grabSeries(series.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title }); onChange(); }}
           onClose={() => setSearching(false)}
+        />
+      )}
+      {showFile && ep.file_path && (
+        <FileDetailsModal
+          path={ep.file_path}
+          title={`${series.title} — ${sxe(ep)}`}
+          subtitle={ep.title || undefined}
+          onClose={() => setShowFile(false)}
         />
       )}
     </div>

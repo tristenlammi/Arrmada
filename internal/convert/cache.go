@@ -143,3 +143,11 @@ func (s *Service) WarmCache(ctx context.Context) {
 		s.log.Info("convert: probe cache warmed", "files", warmed)
 	}
 }
+
+// MediaInfoFor returns a file's media details, from the probe cache when the file is
+// unchanged and by probing it once otherwise. Exported for the file-details view, which
+// wants exactly what the Convert scan already computes — codec, resolution, HDR, bitrate
+// and the audio/subtitle tracks.
+func (s *Service) MediaInfoFor(ctx context.Context, path string) (*MediaInfo, error) {
+	return s.probeCached(ctx, path)
+}

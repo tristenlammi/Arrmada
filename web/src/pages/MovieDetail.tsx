@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
+import { FileDetailsModal } from "../components/FileDetailsModal";
 import {
   api,
   type BlockEntry,
@@ -724,6 +725,7 @@ function Toolbar({ movie, onChange, flash }: { movie: Movie; onChange: () => voi
 
 function FilePanel({ file, movieId, onChange, flash }: { file: MovieFile; movieId: number; onChange: () => void; flash: (m: string) => void }) {
   const [confirming, setConfirming] = useState(false);
+  const [showFile, setShowFile] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   const del = async () => {
@@ -758,7 +760,13 @@ function FilePanel({ file, movieId, onChange, flash }: { file: MovieFile; movieI
             {file.group && <span className="font-mono text-[11px] text-ink-faint">{file.group}</span>}
             {file.probed && <span title="Read from the actual file (ffprobe)" className="font-mono text-[10px]" style={{ color: "var(--good)" }}>✓ probed</span>}
           </div>
-          <div className="mt-1.5 break-all font-mono text-[11.5px] text-ink-faint">{file.path}</div>
+          <button
+            onClick={() => setShowFile(true)}
+            title="Show this file's details — media info and the release it came from"
+            className="mt-1.5 block break-all text-left font-mono text-[11.5px] text-ink-faint hover:underline"
+          >
+            {file.path}
+          </button>
           {file.subtitles && file.subtitles.length > 0 && (
             <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-dim">
               <span className="font-mono uppercase text-ink-faint">Subs</span>
@@ -780,6 +788,14 @@ function FilePanel({ file, movieId, onChange, flash }: { file: MovieFile; movieI
           )}
         </div>
       </div>
+      {showFile && (
+        <FileDetailsModal
+          path={file.path}
+          title={file.filename || "File details"}
+          subtitle={file.quality || undefined}
+          onClose={() => setShowFile(false)}
+        />
+      )}
     </div>
   );
 }

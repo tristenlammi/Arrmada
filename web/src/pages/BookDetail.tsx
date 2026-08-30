@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { BookReleaseModal } from "../components/BookReleaseModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
+import { FileDetailsModal } from "../components/FileDetailsModal";
 import { api, type Book, type BookFile, type BookFileEntry, type BookImportCandidate, type BookLookup, type BookSeries, type MovieEvent } from "../lib/api";
 
 function fmtSize(bytes?: number): string {
@@ -173,6 +174,7 @@ function CoverPickerModal({ book, onClose, onChange, flash }: { book: Book; onCl
 }
 
 function EditionPanel({ label, file, wanted, bookId, kind, onChange, flash }: { label: string; file?: BookFile; wanted: boolean; bookId: number; kind: "ebook" | "audiobook"; onChange: () => void; flash: (m: string) => void }) {
+  const [showFile, setShowFile] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   if (!file && !wanted) {
@@ -206,7 +208,13 @@ function EditionPanel({ label, file, wanted, bookId, kind, onChange, flash }: { 
             {multi && <span className="rounded px-2 py-0.5 text-[11px] font-semibold" style={{ background: "var(--panel-2)", color: "var(--ink-dim)" }}>{file.file_count} files</span>}
             <span className="font-mono text-[12px] text-ink-dim">{fmtSize(file.size_bytes)}</span>
           </div>
-          <div className="mt-1.5 break-all font-mono text-[11.5px] text-ink-faint">{file.path}</div>
+          <button
+            onClick={() => setShowFile(true)}
+            title="Show this file's details — format, size and the release it came from"
+            className="mt-1.5 block break-all text-left font-mono text-[11.5px] text-ink-faint hover:underline"
+          >
+            {file.path}
+          </button>
           {multi && <FileList bookId={bookId} kind={kind} count={file.file_count} />}
         </div>
         <div className="flex flex-none flex-col items-end gap-1.5">
@@ -221,6 +229,14 @@ function EditionPanel({ label, file, wanted, bookId, kind, onChange, flash }: { 
           )}
         </div>
       </div>
+      {showFile && (
+        <FileDetailsModal
+          path={file.path}
+          title={`${label} file`}
+          subtitle={file.format}
+          onClose={() => setShowFile(false)}
+        />
+      )}
     </div>
   );
 }

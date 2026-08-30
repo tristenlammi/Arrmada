@@ -177,6 +177,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/notifications/test", a.requireRole(auth.RoleManager, a.handleTestNotification))
 	mux.HandleFunc("GET "+base+"/api/v1/queue", a.protected(a.handleQueue))
 	mux.HandleFunc("GET "+base+"/api/v1/downloads/disk-guard", a.requireRole(auth.RoleManager, a.handleDiskGuardStatus))
+	mux.HandleFunc("GET "+base+"/api/v1/files/info", a.requireRole(auth.RoleManager, a.handleFileInfo))
 	mux.HandleFunc("GET "+base+"/api/v1/downloads", a.protected(a.handleDownloadsFeed))
 	mux.HandleFunc("POST "+base+"/api/v1/queue/{hash}/pause", a.requireRole(auth.RoleManager, a.handlePauseDownload))
 	mux.HandleFunc("POST "+base+"/api/v1/queue/{hash}/resume", a.requireRole(auth.RoleManager, a.handleResumeDownload))
