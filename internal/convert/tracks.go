@@ -58,9 +58,12 @@ type TrackCleanup struct {
 // one query and no filesystem access.
 func (s *Service) TrackCleanupSummary(ctx context.Context) (TrackCleanup, error) {
 	plan := s.RemuxPlan(ctx)
+	// Every slice here is non-nil on purpose. splitCSV returns a nil slice for an empty
+	// setting, and a nil slice marshals to JSON null, not [] — which crashed the page on
+	// the very case this screen exists to explain: nothing configured yet.
 	out := TrackCleanup{
-		KeepSubs:  plan.Subs.KeepLangs,
-		KeepAudio: plan.Audio.KeepLangs,
+		KeepSubs:  nonEmpty(plan.Subs.KeepLangs),
+		KeepAudio: nonEmpty(plan.Audio.KeepLangs),
 		Movies:    []TrackCleanupItem{},
 		Series:    []TrackCleanupSeries{},
 	}
@@ -182,4 +185,12 @@ func (s *Service) QueueTrackCleanupAll(ctx context.Context) (int, error) {
 		"queued", queued, "already_clean", clean,
 		"keep_subs", plan.Subs.KeepLangs, "keep_audio", plan.Audio.KeepLangs)
 	return queued, nil
+}
+
+// nonEmpty guarantees a slice marshals as [] rather than null.
+func nonEmpty(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
 }

@@ -1412,11 +1412,17 @@ function TracksTab({ flash, onQueued }: { flash: (m: string) => void; onQueued: 
 
   if (!data) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Reading the library index…</div>;
 
-  const configured = data.keep_subs.length > 0 || data.keep_audio.length > 0;
+  // Tolerate nulls: a JSON null for an empty list is exactly what this screen has to
+  // survive, since "nothing configured" is one of the states it reports.
+  const keepSubs = data.keep_subs ?? [];
+  const keepAudio = data.keep_audio ?? [];
+  const allSeries = data.series ?? [];
+  const allMovies = data.movies ?? [];
+  const configured = keepSubs.length > 0 || keepAudio.length > 0;
   const q = query.trim().toLowerCase();
-  const series = data.series.filter((s) => !q || s.title.toLowerCase().includes(q));
-  const movies = data.movies.filter((m) => !q || m.title.toLowerCase().includes(q));
-  const totalFiles = data.series.reduce((n, s) => n + s.episodes, 0) + data.movies.length;
+  const series = allSeries.filter((s) => !q || s.title.toLowerCase().includes(q));
+  const movies = allMovies.filter((m) => !q || m.title.toLowerCase().includes(q));
+  const totalFiles = allSeries.reduce((n, s) => n + s.episodes, 0) + allMovies.length;
 
   if (!configured) {
     return (
@@ -1440,9 +1446,9 @@ function TracksTab({ flash, onQueued }: { flash: (m: string) => void; onQueued: 
             </div>
             <div className="mt-0.5 text-[11.5px] text-ink-dim">
               Keeping{" "}
-              <b style={{ color: "var(--ink)" }}>{data.keep_subs.length ? data.keep_subs.join(", ").toUpperCase() : "all"}</b> subtitles
+              <b style={{ color: "var(--ink)" }}>{keepSubs.length ? keepSubs.join(", ").toUpperCase() : "all"}</b> subtitles
               {" · "}
-              <b style={{ color: "var(--ink)" }}>{data.keep_audio.length ? data.keep_audio.join(", ").toUpperCase() : "all"}</b> audio
+              <b style={{ color: "var(--ink)" }}>{keepAudio.length ? keepAudio.join(", ").toUpperCase() : "all"}</b> audio
               {data.clean > 0 ? ` · ${data.clean.toLocaleString()} already correct` : ""}
             </div>
           </div>
