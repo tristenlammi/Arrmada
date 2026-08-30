@@ -13,8 +13,9 @@ export function FileDetailsModal({
   path: string;
   title: string;
   subtitle?: string;
-  // onCleanTracks queues a remux that drops the audio/subtitle languages Convert is
-  // configured to discard. Omitted where there's nothing sensible to queue.
+  // onCleanTracks queues this file for Convert, which brings it to the target spec —
+  // a re-encode if the codec is wrong, a track rewrite if only the languages are.
+  // Omitted where there's nothing sensible to queue.
   onCleanTracks?: () => Promise<void>;
   onClose: () => void;
 }) {
@@ -139,7 +140,7 @@ export function FileDetailsModal({
                         setCleanMsg(null);
                         try {
                           await onCleanTracks();
-                          setCleanMsg("Queued — the video is copied, not re-encoded, so this is quick.");
+                          setCleanMsg("Queued — Convert will bring it to your target spec.");
                         } catch (e) {
                           setCleanMsg((e as Error).message);
                         } finally {
@@ -150,10 +151,10 @@ export function FileDetailsModal({
                       className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50"
                       style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}
                     >
-                      {cleaning ? "Queueing…" : "Clean up tracks"}
+                      {cleaning ? "Queueing…" : "Bring to target"}
                     </button>
                     <span className="ml-2 text-[11px] text-ink-faint">
-                      Drops the languages set in Convert → Audio &amp; subtitle tracks. No re-encode.
+                      Applies your Convert target: codec, plus the audio and subtitle languages you keep.
                     </span>
                     {cleanMsg && <p className="m-0 mt-1.5 text-[11.5px] text-ink-dim">{cleanMsg}</p>}
                   </div>

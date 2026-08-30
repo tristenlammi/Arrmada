@@ -793,7 +793,7 @@ function FilePanel({ file, movieId, onChange, flash }: { file: MovieFile; movieI
           path={file.path}
           title={file.filename || "File details"}
           subtitle={file.quality || undefined}
-          onCleanTracks={async () => { await api.remuxMovie(movieId); }}
+          onCleanTracks={async () => { await api.convertMovie(movieId); }}
           onClose={() => setShowFile(false)}
         />
       )}

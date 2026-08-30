@@ -499,7 +499,7 @@ function EpisodeRow({ series, ep, onChange, flash }: { series: SeriesT; ep: Epis
           path={ep.file_path}
           title={`${series.title} — ${sxe(ep)}`}
           subtitle={ep.title || undefined}
-          onCleanTracks={async () => { await api.remuxEpisode(series.id, ep.season_number, ep.episode_number); }}
+          onCleanTracks={async () => { await api.convertEpisode(series.id, ep.season_number, ep.episode_number); }}
           onClose={() => setShowFile(false)}
         />
       )}

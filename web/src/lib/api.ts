@@ -368,22 +368,6 @@ export interface SubSeriesGroup {
   seasons: number;
 }
 
-export interface ConvertTrackMovie {
-  movie_id: number; title: string; year?: number; path: string;
-  subs_now: number; subs_after: number; audio_now: number; audio_after: number;
-}
-export interface ConvertTrackSeries {
-  series_id: number; title: string; year?: number;
-  episodes: number; drop_subs: number; drop_audio: number;
-}
-export interface ConvertTracks {
-  keep_subs: string[];
-  keep_audio: string[];
-  movies: ConvertTrackMovie[];
-  series: ConvertTrackSeries[];
-  clean: number;
-}
-
 export interface AppSettings {
   search_on_add: boolean;
   naming_movie_folder: string;
@@ -817,7 +801,8 @@ export interface ConvertSeriesRollup {
   est_bytes: number;
 }
 
-export interface ConvertCandidate { kind: "movie" | "episode"; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; year?: number; poster_url?: string; path: string; info?: ConvertMediaInfo; candidate: boolean; est_bytes: number }
+export interface ConvertNeeds { video: boolean; subs: boolean; audio: boolean }
+export interface ConvertCandidate { kind: "movie" | "episode"; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; year?: number; poster_url?: string; path: string; info?: ConvertMediaInfo; candidate: boolean; needs: ConvertNeeds; est_bytes: number }
 export interface ConvertSample { movie_id: number; title: string; src_bytes: number; est_bytes: number; percent: number; sample_sec: number }
 export interface ConvertJob { id: number; kind?: string; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; state: string; progress: number; fps: number; speed_x: number; duration_sec?: number; encoder: string; src_bytes: number; out_bytes: number; ssim?: number; note?: string }
 
@@ -1298,15 +1283,6 @@ export const api = {
   convertLogs: () => req<{ lines: { at: number; level: string; msg: string }[] }>("/api/v1/convert/logs").then((r) => r.lines),
   convertMovie: (id: number) => req<ConvertJob>(`/api/v1/convert/movies/${id}`, { method: "POST" }),
   convertEpisode: (seriesID: number, season: number, episode: number) => req<ConvertJob>(`/api/v1/convert/episodes/${seriesID}/${season}/${episode}`, { method: "POST" }),
-  // Remux: strip unwanted audio/subtitle languages without re-encoding. The only thing
-  // that helps a file already in the target codec, which is never a convert candidate.
-  remuxMovie: (id: number) => req<ConvertJob>(`/api/v1/convert/movies/${id}?mode=remux`, { method: "POST" }),
-  remuxSeries: (seriesID: number) =>
-    req<{ queued: number }>(`/api/v1/convert/series/${seriesID}?mode=remux`, { method: "POST" }),
-  convertTracks: () => req<ConvertTracks>("/api/v1/convert/tracks"),
-  convertTracksSweep: () => req<{ queued: number }>("/api/v1/convert/tracks/sweep", { method: "POST" }),
-  remuxEpisode: (seriesID: number, season: number, episode: number) =>
-    req<ConvertJob>(`/api/v1/convert/episodes/${seriesID}/${season}/${episode}?mode=remux`, { method: "POST" }),
   convertSampleMovie: (id: number) => req<ConvertSample>(`/api/v1/convert/movies/${id}/sample`, { method: "POST" }),
 
   // Insights (Plex)

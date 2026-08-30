@@ -410,8 +410,43 @@ type Candidate struct {
 	PosterURL string     `json:"poster_url,omitempty"`
 	Path      string     `json:"path"`
 	Info      *MediaInfo `json:"info,omitempty"`
-	Candidate bool       `json:"candidate"` // would Save space convert it
-	EstBytes  int64      `json:"est_bytes"` // rough estimate of converted size
+	Candidate bool       `json:"candidate"` // doesn't match the target spec yet
+	// Needs says WHICH parts of the target this file doesn't meet, so the list can be
+	// tagged rather than just flagged. A file can fail on tracks alone while its video
+	// is already exactly right — that's most of a library once the codec is settled.
+	Needs    Needs `json:"needs"`
+	EstBytes int64 `json:"est_bytes"` // rough estimate of converted size
+}
+
+// Needs is the gap between a file and the target spec.
+type Needs struct {
+	Video bool `json:"video"` // wrong video codec
+	Subs  bool `json:"subs"`  // carries subtitle languages that aren't kept
+	Audio bool `json:"audio"` // carries audio languages that aren't kept
+}
+
+// Any reports whether the file falls short of the target at all.
+func (n Needs) Any() bool { return n.Video || n.Subs || n.Audio }
+
+// RemuxOnly reports whether the gap can be closed by copying the video — only the tracks
+// are wrong. That's minutes and no quality loss, versus hours and a re-encode.
+func (n Needs) RemuxOnly() bool { return !n.Video && (n.Subs || n.Audio) }
+
+// Reason is a short label for the list.
+func (n Needs) Reason() string {
+	switch {
+	case n.Video && (n.Subs || n.Audio):
+		return "video + tracks"
+	case n.Video:
+		return "video"
+	case n.Subs && n.Audio:
+		return "subtitles + audio"
+	case n.Subs:
+		return "subtitles"
+	case n.Audio:
+		return "audio"
+	}
+	return ""
 }
 
 // Library returns every downloaded movie with its spec + convert candidacy.
@@ -449,12 +484,20 @@ func (s *Service) LibraryTV(ctx context.Context, seriesID int64) ([]Candidate, e
 // QueueMovie enqueues a Save-space conversion of a movie (using the default plan built from
 // the global settings) and returns the created job.
 func (s *Service) QueueMovie(ctx context.Context, movieID int64) (*Job, error) {
-	return s.queueMovie(ctx, movieID, s.defaultPlan(ctx))
+	m, err := s.movies.Get(ctx, movieID)
+	if err != nil {
+		return nil, err
+	}
+	return s.queueMovie(ctx, movieID, s.planForFile(ctx, m.MovieFilePath))
 }
 
 // QueueEpisode enqueues a Save-space conversion of one TV episode.
 func (s *Service) QueueEpisode(ctx context.Context, seriesID int64, season, episode int) (*Job, error) {
-	return s.queueEpisode(ctx, seriesID, season, episode, s.defaultPlan(ctx))
+	path := ""
+	if s.series != nil {
+		path, _ = s.series.EpisodeFilePath(ctx, seriesID, season, episode)
+	}
+	return s.queueEpisode(ctx, seriesID, season, episode, s.planForFile(ctx, path))
 }
 
 func (s *Service) queueEpisode(ctx context.Context, seriesID int64, season, episode int, plan Plan) (*Job, error) {
@@ -537,14 +580,45 @@ func (s *Service) RemuxPlan(ctx context.Context) Plan {
 	return p
 }
 
-// QueueMovieRemux enqueues a stream-cleanup remux of one movie.
-func (s *Service) QueueMovieRemux(ctx context.Context, movieID int64) (*Job, error) {
-	return s.queueMovie(ctx, movieID, s.RemuxPlan(ctx))
+// planFor turns a file's gap into the cheapest plan that closes it: a full re-encode
+// only when the video codec is wrong, otherwise a copy that just rewrites the tracks.
+//
+// This is what makes "set a target, make everything match it" a single action. The user
+// says what they want the library to look like; deciding whether that costs an hour or
+// a minute is not their problem.
+// NeedsFor is the gap between one probed file and the target spec.
+func (s *Service) NeedsFor(ctx context.Context, mi *MediaInfo) Needs {
+	if mi == nil {
+		return Needs{}
+	}
+	dp := s.defaultPlan(ctx)
+	return Needs{
+		Video: isCandidateCodec(mi.VideoCodec, s.targetCodec(ctx), s.recodesModern(ctx)),
+		Subs:  len(dp.Subs.KeepLangs) > 0 && len(keptSubs(mi, dp)) < len(mi.Subs),
+		Audio: len(dp.Audio.KeepLangs) > 0 && len(keptAudio(mi, dp)) < len(mi.Audio),
+	}
 }
 
-// QueueEpisodeRemux enqueues a stream-cleanup remux of one episode.
-func (s *Service) QueueEpisodeRemux(ctx context.Context, seriesID int64, season, episode int) (*Job, error) {
-	return s.queueEpisode(ctx, seriesID, season, episode, s.RemuxPlan(ctx))
+// planForFile picks the cheapest plan that brings one file to the target. A file that
+// can't be probed gets the full plan: doing the whole job is the safe answer when we
+// can't tell what's wrong, since the alternative silently copies video that may be in
+// the wrong codec.
+func (s *Service) planForFile(ctx context.Context, path string) Plan {
+	if strings.TrimSpace(path) == "" {
+		return s.defaultPlan(ctx)
+	}
+	mi, err := s.probeCached(ctx, path)
+	if err != nil {
+		return s.defaultPlan(ctx)
+	}
+	return s.planFor(ctx, s.NeedsFor(ctx, mi))
+}
+
+func (s *Service) planFor(ctx context.Context, n Needs) Plan {
+	if n.Video {
+		return s.defaultPlan(ctx)
+	}
+	return s.RemuxPlan(ctx)
 }
 
 // splitCSV parses a comma-separated setting into trimmed, non-empty values.

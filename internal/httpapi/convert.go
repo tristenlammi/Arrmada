@@ -215,14 +215,9 @@ func (a *api) handleConvertSeries(w http.ResponseWriter, r *http.Request) {
 		}
 		season = n
 	}
-	// ?mode=remux cleans tracks across the show without re-encoding. It deliberately
-	// covers episodes a conversion sweep skips — a file already in the target codec is
-	// never a conversion candidate, and those are exactly the ones with stale tracks.
-	queue := a.deps.Convert.QueueSeries
-	if r.URL.Query().Get("mode") == "remux" {
-		queue = a.deps.Convert.QueueSeriesRemux
-	}
-	n, err := queue(r.Context(), seriesID, season)
+	// One action: queue everything that doesn't match the target. Whether a given file
+	// needs a re-encode or just a track rewrite is decided per file, not asked for here.
+	n, err := a.deps.Convert.QueueSeries(r.Context(), seriesID, season)
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not queue conversions")
 		return
@@ -246,13 +241,7 @@ func (a *api) handleConvertEpisode(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "invalid episode")
 		return
 	}
-	// ?mode=remux cleans the streams without re-encoding — the only thing that can help
-	// a file already in the target codec, which is never a conversion candidate.
-	queue := a.deps.Convert.QueueEpisode
-	if r.URL.Query().Get("mode") == "remux" {
-		queue = a.deps.Convert.QueueEpisodeRemux
-	}
-	job, err := queue(r.Context(), seriesID, season, episode)
+	job, err := a.deps.Convert.QueueEpisode(r.Context(), seriesID, season, episode)
 	if err != nil {
 		a.writeError(w, convertQueueStatus(err), err.Error())
 		return
@@ -301,11 +290,7 @@ func (a *api) handleConvertMovie(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	queue := a.deps.Convert.QueueMovie
-	if r.URL.Query().Get("mode") == "remux" {
-		queue = a.deps.Convert.QueueMovieRemux
-	}
-	job, err := queue(r.Context(), id)
+	job, err := a.deps.Convert.QueueMovie(r.Context(), id)
 	if err != nil {
 		a.writeError(w, convertQueueStatus(err), err.Error())
 		return
@@ -327,26 +312,4 @@ func convertQueueStatus(err error) int {
 		return http.StatusBadRequest
 	}
 	return http.StatusInternalServerError
-}
-
-// handleConvertTracks lists everything whose audio/subtitle tracks would change under
-// the configured keep-languages.
-func (a *api) handleConvertTracks(w http.ResponseWriter, r *http.Request) {
-	out, err := a.deps.Convert.TrackCleanupSummary(r.Context())
-	if err != nil {
-		a.writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	a.writeJSON(w, http.StatusOK, out)
-}
-
-// handleConvertTracksSweep queues a track cleanup across the whole library.
-func (a *api) handleConvertTracksSweep(w http.ResponseWriter, r *http.Request) {
-	n, err := a.deps.Convert.QueueTrackCleanupAll(r.Context())
-	if err != nil {
-		// "You haven't configured anything" is a request problem, not a server fault.
-		a.writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"queued": n})
 }
