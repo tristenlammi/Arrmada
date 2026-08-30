@@ -262,20 +262,6 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowPaste(true)}>Upload torrent</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowImport(true)}>Manual import</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("rename", rename)}>{busy === "rename" ? "Renaming…" : "Rename"}</button>
-        <button
-          className={btn}
-          style={ghost}
-          disabled={busy !== null}
-          title="Remove the audio and subtitle languages you don't keep, across every episode. Copies the video — no re-encode, no quality loss. Set the languages in Convert → Audio & subtitle tracks."
-          onClick={() => run("cleanTracks", async () => {
-            const r = await api.remuxSeries(series.id);
-            flash(r.queued === 0
-              ? "Nothing to clean — every episode already has only the languages you keep."
-              : `Queued ${r.queued} episode${r.queued === 1 ? "" : "s"} for track cleanup.`);
-          })}
-        >
-          {busy === "cleanTracks" ? "Queueing…" : "Clean up tracks"}
-        </button>
         <DeleteButton onDelete={async (df) => { await api.deleteSeries(series.id, df); window.location.href = "/series"; }} />
       </div>
       {series.series_type === "anime" && <AliasPanel series={series} />}

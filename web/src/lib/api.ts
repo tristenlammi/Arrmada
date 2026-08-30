@@ -368,6 +368,22 @@ export interface SubSeriesGroup {
   seasons: number;
 }
 
+export interface ConvertTrackMovie {
+  movie_id: number; title: string; year?: number; path: string;
+  subs_now: number; subs_after: number; audio_now: number; audio_after: number;
+}
+export interface ConvertTrackSeries {
+  series_id: number; title: string; year?: number;
+  episodes: number; drop_subs: number; drop_audio: number;
+}
+export interface ConvertTracks {
+  keep_subs: string[];
+  keep_audio: string[];
+  movies: ConvertTrackMovie[];
+  series: ConvertTrackSeries[];
+  clean: number;
+}
+
 export interface AppSettings {
   search_on_add: boolean;
   naming_movie_folder: string;
@@ -1287,6 +1303,8 @@ export const api = {
   remuxMovie: (id: number) => req<ConvertJob>(`/api/v1/convert/movies/${id}?mode=remux`, { method: "POST" }),
   remuxSeries: (seriesID: number) =>
     req<{ queued: number }>(`/api/v1/convert/series/${seriesID}?mode=remux`, { method: "POST" }),
+  convertTracks: () => req<ConvertTracks>("/api/v1/convert/tracks"),
+  convertTracksSweep: () => req<{ queued: number }>("/api/v1/convert/tracks/sweep", { method: "POST" }),
   remuxEpisode: (seriesID: number, season: number, episode: number) =>
     req<ConvertJob>(`/api/v1/convert/episodes/${seriesID}/${season}/${episode}?mode=remux`, { method: "POST" }),
   convertSampleMovie: (id: number) => req<ConvertSample>(`/api/v1/convert/movies/${id}/sample`, { method: "POST" }),

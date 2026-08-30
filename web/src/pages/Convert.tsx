@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type ConvertCandidate, type ConvertSeriesRollup, type ConvertLibraryStats, type ConvertBlocked, type ConvertSkipped, type ConvertEncoder, type ConvertJob, type ConvertSample, type AppSettings } from "../lib/api";
+import { api, type ConvertTracks, type ConvertCandidate, type ConvertSeriesRollup, type ConvertLibraryStats, type ConvertBlocked, type ConvertSkipped, type ConvertEncoder, type ConvertJob, type ConvertSample, type AppSettings } from "../lib/api";
 
 // Convert (Tdarr replacement) — the four-tab experience from the design mockup, wired to
 // the real backend. Implemented today: analysis, hardware detection, the Save-space engine
 // (safe encode→verify→replace), and the rules engine. Steps the mockup shows that are still
 // on the roadmap (audio/sub/HDR actions, VMAF gate, 30s sample) are marked as such.
-type Tab = "overview" | "queue" | "library" | "problems" | "logs" | "settings";
+type Tab = "overview" | "queue" | "library" | "tracks" | "problems" | "logs" | "settings";
 const ACTIVE = new Set(["queued", "encoding", "verifying", "replacing"]);
 // RUNNING excludes "queued". A whole-library sweep leaves thousands of jobs queued, and
 // counting or rendering those as "active" made the Queue tab claim thousands of concurrent
@@ -124,6 +124,7 @@ export function Convert() {
       ? [runningCount ? `${runningCount} running` : "", queuedCount ? `${queuedCount.toLocaleString()} waiting` : ""].filter(Boolean).join(" · ")
       : undefined },
     { key: "library", label: "Library", n: stats ? stats.total.files.toLocaleString() : undefined },
+    { key: "tracks", label: "Tracks" },
     { key: "problems", label: "Problems" },
     { key: "logs", label: "Logs" },
     { key: "settings", label: "Settings" },
@@ -178,6 +179,7 @@ export function Convert() {
         {tab === "overview" && <Overview hw={hw} stats={stats} jobs={jobs} settings={settings} onShowProblems={() => setTab("problems")} />}
         {tab === "queue" && <Queue jobs={jobs} flash={flash} onChanged={() => { api.convertJobs().then(setJobs).catch(() => {}); loadStats(); }} />}
         {tab === "library" && <Library flash={flash} onQueued={() => api.convertJobs().then(setJobs)} />}
+        {tab === "tracks" && <TracksTab flash={flash} onQueued={() => api.convertJobs().then(setJobs).catch(() => {})} />}
         {tab === "problems" && <Problems flash={flash} />}
         {tab === "logs" && <LogsConsole />}
         {tab === "settings" && <ConvertSettings flash={flash} />}
@@ -1379,6 +1381,170 @@ function ConvertSettings({ flash }: { flash: (m: string) => void }) {
         {dirty && <span className="text-[11.5px] text-ink-faint">Unsaved changes</span>}
         <button onClick={onSave} disabled={!dirty || busy} className="rounded-lg px-4 py-2 text-[13px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy ? "Saving…" : "Save settings"}</button>
       </div>
+    </div>
+  );
+}
+
+/* ============================= TRACKS ============================= */
+// Track cleanup lives here rather than on each series page: it's a Convert operation
+// (it rewrites files through the same pipeline), and doing it one title at a time was
+// never realistic for a library.
+function TracksTab({ flash, onQueued }: { flash: (m: string) => void; onQueued: () => void }) {
+  const [data, setData] = useState<ConvertTracks | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [done, setDone] = useState<Set<string>>(new Set());
+
+  const load = useCallback(() => {
+    api.convertTracks().then(setData).catch(() => setData(null));
+  }, []);
+  useEffect(load, [load]);
+
+  const run = async (key: string, fn: () => Promise<number>, label: string) => {
+    setBusy(key);
+    try {
+      const n = await fn();
+      setDone((d) => new Set(d).add(key));
+      flash(n === 0 ? `${label}: nothing to do — already clean.` : `${label}: queued ${n} file${n === 1 ? "" : "s"}.`);
+      onQueued();
+    } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
+  };
+
+  if (!data) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Reading the library index…</div>;
+
+  const configured = data.keep_subs.length > 0 || data.keep_audio.length > 0;
+  const q = query.trim().toLowerCase();
+  const series = data.series.filter((s) => !q || s.title.toLowerCase().includes(q));
+  const movies = data.movies.filter((m) => !q || m.title.toLowerCase().includes(q));
+  const totalFiles = data.series.reduce((n, s) => n + s.episodes, 0) + data.movies.length;
+
+  if (!configured) {
+    return (
+      <div className="rounded-xl p-8 text-center" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
+        <p className="m-0 text-[13px] font-semibold">No languages set to keep</p>
+        <p className="mx-auto mt-1.5 max-w-[520px] text-[12px] text-ink-dim">
+          Track cleanup removes the audio and subtitle languages you don&apos;t want — a WEB-DL often
+          ships thirty-odd subtitle tracks. Choose which to keep in Settings, then come back here.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="rounded-xl p-4" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-[13px] font-semibold">
+              {totalFiles === 0 ? "Everything is already clean" : `${totalFiles.toLocaleString()} file${totalFiles === 1 ? "" : "s"} would change`}
+            </div>
+            <div className="mt-0.5 text-[11.5px] text-ink-dim">
+              Keeping{" "}
+              <b style={{ color: "var(--ink)" }}>{data.keep_subs.length ? data.keep_subs.join(", ").toUpperCase() : "all"}</b> subtitles
+              {" · "}
+              <b style={{ color: "var(--ink)" }}>{data.keep_audio.length ? data.keep_audio.join(", ").toUpperCase() : "all"}</b> audio
+              {data.clean > 0 ? ` · ${data.clean.toLocaleString()} already correct` : ""}
+            </div>
+          </div>
+          {totalFiles > 0 && (
+            <button
+              onClick={() => run("all", async () => (await api.convertTracksSweep()).queued, "Whole library")}
+              disabled={busy !== null}
+              className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-50"
+              style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}
+            >
+              {busy === "all" ? "Queueing…" : "Clean up everything"}
+            </button>
+          )}
+        </div>
+        <p className="m-0 mt-2 text-[11px] text-ink-faint">
+          The video is copied, never re-encoded — no quality loss, and far quicker than a conversion.
+          Files that already carry only your kept languages are skipped.
+        </p>
+      </div>
+
+      {totalFiles > 0 && (
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search titles…"
+          className="w-[240px] rounded-lg px-3 py-1.5 text-[12.5px]"
+          style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+        />
+      )}
+
+      {series.length > 0 && (
+        <div>
+          <div className="mb-1.5 font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-ink-faint">TV shows</div>
+          <div className="overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)" }}>
+            {series.map((s, i) => {
+              const key = `s${s.series_id}`;
+              return (
+                <div key={key} className="flex items-center gap-3 px-3 py-2.5" style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
+                  <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold">
+                    {s.title} <span className="font-normal text-ink-faint">{s.year || ""}</span>
+                  </span>
+                  <span className="font-mono text-[10.5px] text-ink-faint">
+                    {s.episodes} ep · −{s.drop_subs} subs{s.drop_audio ? ` · −${s.drop_audio} audio` : ""}
+                  </span>
+                  {done.has(key) ? (
+                    <span className="w-[104px] text-right font-mono text-[10.5px]" style={{ color: "var(--good)" }}>queued ✓</span>
+                  ) : (
+                    <button
+                      onClick={() => run(key, async () => (await api.remuxSeries(s.series_id)).queued, s.title)}
+                      disabled={busy !== null}
+                      className="w-[104px] rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50"
+                      style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}
+                    >
+                      {busy === key ? "Queueing…" : "Clean up"}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {movies.length > 0 && (
+        <div>
+          <div className="mb-1.5 mt-2 font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-ink-faint">Movies</div>
+          <div className="overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)" }}>
+            {movies.map((m, i) => {
+              const key = `m${m.movie_id}`;
+              return (
+                <div key={key} className="flex items-center gap-3 px-3 py-2.5" style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
+                  <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold">
+                    {m.title} <span className="font-normal text-ink-faint">{m.year || ""}</span>
+                  </span>
+                  <span className="font-mono text-[10.5px] text-ink-faint">
+                    subs {m.subs_now}→{m.subs_after}
+                    {m.audio_now !== m.audio_after ? ` · audio ${m.audio_now}→${m.audio_after}` : ""}
+                  </span>
+                  {done.has(key) ? (
+                    <span className="w-[104px] text-right font-mono text-[10.5px]" style={{ color: "var(--good)" }}>queued ✓</span>
+                  ) : (
+                    <button
+                      onClick={() => run(key, async () => { await api.remuxMovie(m.movie_id); return 1; }, m.title)}
+                      disabled={busy !== null}
+                      className="w-[104px] rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50"
+                      style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}
+                    >
+                      {busy === key ? "Queueing…" : "Clean up"}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {totalFiles > 0 && series.length === 0 && movies.length === 0 && (
+        <div className="rounded-xl p-8 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>
+          Nothing matches that search.
+        </div>
+      )}
     </div>
   );
 }

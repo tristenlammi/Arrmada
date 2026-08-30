@@ -328,3 +328,25 @@ func convertQueueStatus(err error) int {
 	}
 	return http.StatusInternalServerError
 }
+
+// handleConvertTracks lists everything whose audio/subtitle tracks would change under
+// the configured keep-languages.
+func (a *api) handleConvertTracks(w http.ResponseWriter, r *http.Request) {
+	out, err := a.deps.Convert.TrackCleanupSummary(r.Context())
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, out)
+}
+
+// handleConvertTracksSweep queues a track cleanup across the whole library.
+func (a *api) handleConvertTracksSweep(w http.ResponseWriter, r *http.Request) {
+	n, err := a.deps.Convert.QueueTrackCleanupAll(r.Context())
+	if err != nil {
+		// "You haven't configured anything" is a request problem, not a server fault.
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusAccepted, map[string]any{"queued": n})
+}

@@ -643,7 +643,7 @@ func (s *Service) QueueSeriesRemux(ctx context.Context, seriesID int64, season i
 	}
 	plan := s.RemuxPlan(ctx)
 	if len(plan.Subs.KeepLangs) == 0 && len(plan.Audio.KeepLangs) == 0 {
-		return 0, fmt.Errorf("no languages are set to keep — set them in Convert → Audio & subtitle tracks first")
+		return 0, errNoKeepLangs
 	}
 	maxFail := s.maxFailures(ctx)
 	queued, skipped := 0, 0
