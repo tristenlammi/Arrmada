@@ -124,6 +124,37 @@ func (a *api) handleSubtitleLibrary(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Query().Get("media") == "tv" {
 		media = "tv"
 	}
+	q := r.URL.Query()
+	// TV grouped by show. The flat list is one row per EPISODE, each probed before the
+	// page can render — at library scale that's tens of thousands of rows and a probe
+	// sweep per page load. Shows first, episodes only for the one you open.
+	if media == "tv" && q.Get("group") == "series" {
+		groups, err := a.deps.Subtitles.SeriesGroups(r.Context())
+		if err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not load subtitle library")
+			return
+		}
+		if groups == nil {
+			groups = []subtitles.SeriesGroup{}
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"groups": groups})
+		return
+	}
+	if media == "tv" && q.Get("series") != "" {
+		id, err := strconv.ParseInt(q.Get("series"), 10, 64)
+		if err != nil {
+			a.writeError(w, http.StatusBadRequest, "invalid series id")
+			return
+		}
+		list, err := a.deps.Subtitles.SeriesEpisodes(r.Context(), id)
+		if err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not load that show's episodes")
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"items": list})
+		return
+	}
+
 	list, err := a.deps.Subtitles.Library(r.Context(), media)
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not load subtitle library")

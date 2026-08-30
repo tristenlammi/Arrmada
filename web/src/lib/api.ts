@@ -357,6 +357,17 @@ export interface FileDetails {
   source?: FileSource; source_note?: string;
 }
 
+export interface SubSeriesGroup {
+  series_id: number;
+  title: string;
+  year?: number;
+  poster_url?: string;
+  episodes: number;
+  missing: number;
+  covered: number;
+  seasons: number;
+}
+
 export interface AppSettings {
   search_on_add: boolean;
   naming_movie_folder: string;
@@ -1225,6 +1236,12 @@ export const api = {
   updateSubtitleSettings: (body: { movies_auto?: boolean; series_auto?: boolean; languages?: string[] }) =>
     req<SubtitleSettings>("/api/v1/subtitles/settings", { method: "PUT", body: JSON.stringify(body) }),
   subtitleLibrary: (media: "movies" | "tv" = "movies") => req<{ items: SubFileEntry[] }>(`/api/v1/subtitles/library${media === "tv" ? "?media=tv" : ""}`).then((r) => r.items),
+  // TV rolled up per show. The flat list is one probed row per episode, which at
+  // library scale is tens of thousands of rows before the page can render.
+  subtitleSeriesGroups: () =>
+    req<{ groups: SubSeriesGroup[] }>("/api/v1/subtitles/library?media=tv&group=series").then((r) => r.groups),
+  subtitleSeriesEpisodes: (seriesID: number) =>
+    req<{ items: SubFileEntry[] }>(`/api/v1/subtitles/library?media=tv&series=${seriesID}`).then((r) => r.items),
   subtitleJobs: () => req<{ jobs: SubtitleJob[] }>("/api/v1/subtitles/jobs").then((r) => r.jobs),
   subtitleLogs: () => req<{ lines: { at: number; level: string; msg: string }[] }>("/api/v1/subtitles/logs").then((r) => r.lines),
   subtitleQueueMovie: (id: number) => req<SubtitleJob>(`/api/v1/subtitles/library/movies/${id}`, { method: "POST" }),

@@ -3,6 +3,7 @@ package subtitles
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -158,4 +159,116 @@ func langMatches(track, wanted string) bool {
 		return false
 	}
 	return t == w || twoToThree[w] == t || twoToThree[t] == w
+}
+
+// SeriesGroup is one show's subtitle coverage, rolled up.
+//
+// A flat list of every episode is unusable at library scale — 23,000 rows, each of
+// which has to be probed before the page can render. Showing shows first means one row
+// per series and probing only the show you open.
+type SeriesGroup struct {
+	SeriesID  int64  `json:"series_id"`
+	Title     string `json:"title"`
+	Year      int    `json:"year,omitempty"`
+	PosterURL string `json:"poster_url,omitempty"`
+	Episodes  int    `json:"episodes"` // episodes with a file on disk
+	Missing   int    `json:"missing"`  // episodes still missing at least one kept language
+	Covered   int    `json:"covered"`  // episodes with every kept language present
+	Seasons   int    `json:"seasons"`
+}
+
+// SeriesGroups returns one row per show with a file on disk, for the Library list.
+//
+// Coverage here is counted from the SIDECARS on disk, deliberately without probing the
+// video files. Probing is what makes the flat list slow, and the roll-up only needs to
+// answer "does this show need attention?" — the per-episode view probes properly once
+// you open one show.
+func (s *Service) SeriesGroups(ctx context.Context) ([]SeriesGroup, error) {
+	if s.series == nil {
+		return []SeriesGroup{}, nil
+	}
+	langs := s.languages(ctx)
+	list, err := s.series.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SeriesGroup, 0, len(list))
+	for _, sm := range list {
+		full, err := s.series.Get(ctx, sm.ID)
+		if err != nil {
+			continue
+		}
+		g := SeriesGroup{SeriesID: full.ID, Title: full.Title, Year: full.Year, PosterURL: full.PosterURL}
+		for _, sn := range full.Seasons {
+			seasonHasFile := false
+			for _, e := range sn.Episodes {
+				if !e.HasFile || e.FilePath == "" {
+					continue
+				}
+				seasonHasFile = true
+				g.Episodes++
+				have := map[string]bool{}
+				for _, p := range presentLanguages(e.FilePath, langs, false) {
+					have[strings.ToLower(p)] = true
+				}
+				complete := true
+				for _, l := range langs {
+					if !have[strings.ToLower(l)] {
+						complete = false
+						break
+					}
+				}
+				if complete {
+					g.Covered++
+				} else {
+					g.Missing++
+				}
+			}
+			if seasonHasFile {
+				g.Seasons++
+			}
+		}
+		if g.Episodes == 0 {
+			continue // nothing on disk — nothing to subtitle
+		}
+		out = append(out, g)
+	}
+	// Shows needing the most work first: that's what the page is for.
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Missing != out[j].Missing {
+			return out[i].Missing > out[j].Missing
+		}
+		return strings.ToLower(out[i].Title) < strings.ToLower(out[j].Title)
+	})
+	return out, nil
+}
+
+// SeriesEpisodes returns the full per-episode coverage for ONE show — the expanded view.
+// Probing is bounded to that show, which is what makes it affordable.
+func (s *Service) SeriesEpisodes(ctx context.Context, seriesID int64) ([]FileSubs, error) {
+	if s.series == nil {
+		return []FileSubs{}, nil
+	}
+	langs := s.languages(ctx)
+	canDownload := s.provider != nil && s.provider.CanDownload()
+	full, err := s.series.Get(ctx, seriesID)
+	if err != nil {
+		return nil, err
+	}
+	out := []FileSubs{}
+	for _, sn := range full.Seasons {
+		for _, e := range sn.Episodes {
+			if !e.HasFile || e.FilePath == "" {
+				continue
+			}
+			fs := FileSubs{
+				Kind: "episode", SeriesID: full.ID, Season: e.SeasonNumber, Episode: e.EpisodeNumber,
+				Title: fmt.Sprintf("%s - S%02dE%02d", full.Title, e.SeasonNumber, e.EpisodeNumber),
+				Year:  full.Year, PosterURL: full.PosterURL, Path: e.FilePath,
+			}
+			s.fillCoverage(ctx, &fs, langs, canDownload)
+			out = append(out, fs)
+		}
+	}
+	return out, nil
 }

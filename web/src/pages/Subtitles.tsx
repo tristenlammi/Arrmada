@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type SubtitleSettings, type SubFileEntry, type SubtitleJob, type SubLangStatus, type WhisperStatus } from "../lib/api";
+import { api, type SubtitleSettings, type SubFileEntry, type SubSeriesGroup, type SubtitleJob, type SubLangStatus, type WhisperStatus } from "../lib/api";
 
 type Tab = "overview" | "queue" | "library" | "logs" | "settings";
 const ACTIVE = new Set(["queued", "running"]);
@@ -238,6 +238,8 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
 
   useEffect(() => {
     setItems(null); setQueued(new Set()); setFilters(new Set());
+    // TV is rendered per show by TVLibrary, which fetches its own rolled-up list.
+    if (media === "tv") return;
     api.subtitleLibrary(media).then(setItems).catch(() => setItems([]));
   }, [media]);
 
@@ -300,12 +302,14 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
       <div className="inline-flex w-fit rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
         {(["movies", "tv"] as const).map((m) => (
           <button key={m} onClick={() => setMedia(m)} className="rounded-md px-3.5 py-1.5 text-[12px] font-semibold" style={{ background: media === m ? "var(--accent)" : "transparent", color: media === m ? "var(--accent-ink)" : "var(--ink-faint)" }}>
-            {m === "movies" ? "Movies" : "TV Shows"}{items && media === m ? <span className="ml-1.5 font-mono text-[10px] opacity-70">{items.length.toLocaleString()}</span> : null}
+            {m === "movies" ? "Movies" : "TV Shows"}{items && media === m && m === "movies" ? <span className="ml-1.5 font-mono text-[10px] opacity-70">{items.length.toLocaleString()}</span> : null}
           </button>
         ))}
       </div>
 
-      {items === null ? (
+      {media === "tv" ? (
+        <TVLibrary flash={flash} onQueued={onQueued} />
+      ) : items === null ? (
         <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Scanning your {noun}…</div>
       ) : items.length === 0 ? (
         <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>No downloaded {noun} yet.</div>
@@ -331,40 +335,16 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
                 </th>
               ))}</tr></thead>
               <tbody>
-                {view.map((f, i) => {
-                  const key = rowKey(f);
-                  const k = embeddedKinds(f);
-                  return (
-                    <tr key={key} style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
-                      <td className="px-3 py-2 font-semibold">{f.title} <span className="font-normal text-ink-faint">{f.year || ""}</span></td>
-                      <td className="px-3 py-2 font-mono text-[10.5px] text-ink-dim">{(f.audio_langs ?? []).map((l) => l.toUpperCase()).join(" ") || "—"}</td>
-                      <td className="px-3 py-2">
-                        {(f.embedded ?? []).length === 0 ? <span className="text-ink-faint">—</span> : (
-                          <div className="flex items-center gap-1">
-                            {k.txt && <EmbBadge kind="txt" />}
-                            {k.pgs && <EmbBadge kind="pgs" />}
-                            {k.vob && <EmbBadge kind="vob" />}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-3 py-2">
-                        <div className="flex flex-wrap items-center gap-1">{(f.languages ?? []).map((l) => <CoverChip key={l.lang} l={l} />)}</div>
-                      </td>
-                      <td className="px-3 py-2 font-mono text-[10.5px] text-ink-faint">{f.health ? `${f.health.score}%` : "—"}</td>
-                      <td className="px-3 py-2">
-                        <div className="flex items-center justify-end">
-                          {f.missing === 0 ? (
-                            <span className="font-mono text-[10.5px]" style={{ color: "var(--good)" }}>complete</span>
-                          ) : queued.has(key) ? (
-                            <span className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--good)", color: "var(--good)" }}>Queued ✓</span>
-                          ) : (
-                            <button onClick={() => ensure(f)} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy === key ? "Queuing…" : "Ensure subs"}</button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {view.map((f, i) => (
+                  <SubRow
+                    key={rowKey(f)}
+                    f={f}
+                    first={i === 0}
+                    busy={busy}
+                    queued={queued.has(rowKey(f))}
+                    onEnsure={() => ensure(f)}
+                  />
+                ))}
               </tbody>
             </table>
           </div>
@@ -373,6 +353,199 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
     </div>
   );
 }
+// TVLibrary lists SHOWS, not episodes.
+//
+// The flat list was one row per episode — 23,000 of them, each probed before the page
+// could render. You cannot find a show in that, and it is slow for the same reason it
+// is unusable. One row per show, a search box, and episodes probed only for the show
+// you actually open.
+function TVLibrary({ flash, onQueued }: { flash: (m: string) => void; onQueued: () => void }) {
+  const [groups, setGroups] = useState<SubSeriesGroup[] | null>(null);
+  const [query, setQuery] = useState("");
+  const [onlyGaps, setOnlyGaps] = useState(false);
+  const [open, setOpen] = useState<number | null>(null);
+
+  useEffect(() => {
+    api.subtitleSeriesGroups().then(setGroups).catch(() => setGroups([]));
+  }, []);
+
+  const view = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return (groups ?? []).filter(
+      (g) => (!q || g.title.toLowerCase().includes(q)) && (!onlyGaps || g.missing > 0),
+    );
+  }, [groups, query, onlyGaps]);
+
+  const totals = useMemo(() => {
+    let eps = 0, missing = 0, shows = 0;
+    for (const g of groups ?? []) {
+      eps += g.episodes;
+      missing += g.missing;
+      if (g.missing > 0) shows++;
+    }
+    return { eps, missing, shows };
+  }, [groups]);
+
+  if (groups === null) {
+    return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Scanning your shows…</div>;
+  }
+  if (groups.length === 0) {
+    return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>No downloaded episodes yet.</div>;
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search shows…"
+          className="w-[240px] rounded-lg px-3 py-1.5 text-[12.5px]"
+          style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+        />
+        <Pill active={onlyGaps} onClick={() => setOnlyGaps((v) => !v)}>
+          Needs subtitles <span className="opacity-60">{totals.shows}</span>
+        </Pill>
+        <span className="text-[11px] text-ink-faint">
+          {groups.length.toLocaleString()} shows · {totals.eps.toLocaleString()} episodes ·{" "}
+          <b style={{ color: totals.missing ? "var(--avoid)" : "var(--good)" }}>{totals.missing.toLocaleString()}</b> missing a kept language
+        </span>
+      </div>
+
+      <div className="overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)" }}>
+        {view.length === 0 ? (
+          <div className="p-8 text-center text-[12.5px] text-ink-dim">No shows match that search.</div>
+        ) : (
+          view.map((g, i) => (
+            <SeriesGroupRow
+              key={g.series_id}
+              g={g}
+              first={i === 0}
+              open={open === g.series_id}
+              onToggle={() => setOpen((cur) => (cur === g.series_id ? null : g.series_id))}
+              flash={flash}
+              onQueued={onQueued}
+            />
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// SeriesGroupRow is one show, expanding to its episodes. The episodes are fetched on
+// first open and kept, so collapsing and reopening doesn't re-probe the files.
+function SeriesGroupRow({ g, first, open, onToggle, flash, onQueued }: {
+  g: SubSeriesGroup; first: boolean; open: boolean; onToggle: () => void;
+  flash: (m: string) => void; onQueued: () => void;
+}) {
+  const [eps, setEps] = useState<SubFileEntry[] | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [queued, setQueued] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!open || eps !== null) return;
+    api.subtitleSeriesEpisodes(g.series_id).then(setEps).catch(() => setEps([]));
+  }, [open, eps, g.series_id]);
+
+  const ensure = async (f: SubFileEntry) => {
+    const key = rowKey(f);
+    setBusy(key);
+    try {
+      await api.subtitleQueueEpisode(f.series_id!, f.season!, f.episode!);
+      setQueued((q) => new Set(q).add(key));
+      flash(`Queued ${f.title}`);
+      onQueued();
+    } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
+  };
+
+  const pct = g.episodes ? Math.round((g.covered / g.episodes) * 100) : 0;
+
+  return (
+    <div style={{ borderTop: first ? "none" : "1px solid var(--line-soft)" }}>
+      <button onClick={onToggle} className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-[var(--panel-2)]">
+        <span className="w-3 flex-none text-[10px] text-ink-faint">{open ? "▾" : "▸"}</span>
+        <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold">
+          {g.title} <span className="font-normal text-ink-faint">{g.year || ""}</span>
+        </span>
+        <span className="hidden font-mono text-[10.5px] text-ink-faint sm:inline">
+          {g.seasons} season{g.seasons === 1 ? "" : "s"} · {g.episodes} ep
+        </span>
+        <span className="w-[120px] flex-none">
+          <span className="block h-1.5 w-full overflow-hidden rounded-full" style={{ background: "var(--panel-2)" }}>
+            <span className="block h-full rounded-full" style={{ width: `${pct}%`, background: g.missing ? "var(--avoid)" : "var(--good)" }} />
+          </span>
+        </span>
+        <span className="w-[92px] flex-none text-right font-mono text-[10.5px]" style={{ color: g.missing ? "var(--avoid)" : "var(--good)" }}>
+          {g.missing ? `${g.missing} missing` : "complete"}
+        </span>
+      </button>
+
+      {open && (
+        <div className="px-3 pb-3">
+          {eps === null ? (
+            <div className="py-6 text-center text-[12px] text-ink-dim">Scanning {g.title}…</div>
+          ) : eps.length === 0 ? (
+            <div className="py-6 text-center text-[12px] text-ink-dim">No episodes with files.</div>
+          ) : (
+            <div className="overflow-x-auto rounded-lg" style={{ border: "1px solid var(--line)" }}>
+              <table className="w-full border-collapse text-[12.5px]" style={{ minWidth: 900 }}>
+                <thead><tr style={{ background: "var(--panel-2)" }}>
+                  {["Episode", "Audio", "Embedded", "Coverage", "Health", ""].map((h, i) => (
+                    <th key={i} className="px-3 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint">{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {eps.map((f, i) => (
+                    <SubRow key={rowKey(f)} f={f} first={i === 0} busy={busy} queued={queued.has(rowKey(f))} onEnsure={() => ensure(f)} />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// SubRow is one file's coverage line. Shared by the flat movie table and the per-show
+// episode table, so the two can't drift apart.
+function SubRow({ f, first, busy, queued, onEnsure }: { f: SubFileEntry; first: boolean; busy: string | null; queued: boolean; onEnsure: () => void }) {
+  const key = rowKey(f);
+  const k = embeddedKinds(f);
+  return (
+    <tr style={{ borderTop: first ? "none" : "1px solid var(--line-soft)" }}>
+      <td className="px-3 py-2 font-semibold">{f.title} <span className="font-normal text-ink-faint">{f.year || ""}</span></td>
+      <td className="px-3 py-2 font-mono text-[10.5px] text-ink-dim">{(f.audio_langs ?? []).map((l) => l.toUpperCase()).join(" ") || "—"}</td>
+      <td className="px-3 py-2">
+        {(f.embedded ?? []).length === 0 ? <span className="text-ink-faint">—</span> : (
+          <div className="flex items-center gap-1">
+            {k.txt && <EmbBadge kind="txt" />}
+            {k.pgs && <EmbBadge kind="pgs" />}
+            {k.vob && <EmbBadge kind="vob" />}
+          </div>
+        )}
+      </td>
+      <td className="px-3 py-2">
+        <div className="flex flex-wrap items-center gap-1">{(f.languages ?? []).map((l) => <CoverChip key={l.lang} l={l} />)}</div>
+      </td>
+      <td className="px-3 py-2 font-mono text-[10.5px] text-ink-faint">{f.health ? `${f.health.score}%` : "—"}</td>
+      <td className="px-3 py-2">
+        <div className="flex items-center justify-end">
+          {f.missing === 0 ? (
+            <span className="font-mono text-[10.5px]" style={{ color: "var(--good)" }}>complete</span>
+          ) : queued ? (
+            <span className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--good)", color: "var(--good)" }}>Queued ✓</span>
+          ) : (
+            <button onClick={onEnsure} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy === key ? "Queuing…" : "Ensure subs"}</button>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 function EmbBadge({ kind }: { kind: "txt" | "pgs" | "vob" }) {
   const style = kind === "txt" ? { background: "var(--panel-2)", color: "var(--ink-dim)" } : { background: "var(--avoid-soft)", color: "var(--avoid)" };
   const label = kind === "txt" ? "TXT" : kind === "pgs" ? "PGS" : "VOB";
