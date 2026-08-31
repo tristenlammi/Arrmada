@@ -1229,6 +1229,15 @@ func (c *Coordinator) ManageSeeding(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	// Repair name-only grabs before matching. A grab recorded under the indexer's
+	// listing title never matches the torrent that actually arrived, so its seed rule
+	// silently doesn't apply — pairing once and writing the hash makes every subsequent
+	// pass exact. Re-reads the grabs when anything changed so this pass uses them.
+	if n := c.AdoptTorrentHashes(ctx, queue); n > 0 {
+		if refreshed, err := c.importedGrabs(ctx); err == nil {
+			grabs = refreshed
+		}
+	}
 	for _, it := range queue {
 		if !it.Complete() {
 			continue // still downloading — never remove before it's done + imported

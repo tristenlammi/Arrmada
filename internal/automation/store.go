@@ -518,3 +518,14 @@ func (c *Coordinator) addBlockMusic(ctx context.Context, albumID int64, title, i
 func (c *Coordinator) blockedSetMusic(ctx context.Context, albumID int64) map[string]bool {
 	return c.blockedSetOf(ctx, albumID, "music")
 }
+
+// setGrabInfoHash records the torrent's real identity on a grab that was recorded
+// without one. Guarded to empty rows in SQL as well as in the caller: this is what seed
+// removal decisions key on, and overwriting a good hash would point a rule at the wrong
+// torrent.
+func (c *Coordinator) setGrabInfoHash(ctx context.Context, id int64, hash string) error {
+	_, err := c.db.ExecContext(ctx,
+		`UPDATE grabs SET info_hash = ? WHERE id = ? AND (info_hash IS NULL OR info_hash = '')`,
+		hash, id)
+	return err
+}
