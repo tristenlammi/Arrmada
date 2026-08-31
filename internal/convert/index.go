@@ -344,15 +344,28 @@ func (s *Service) LibraryTVSeries(ctx context.Context) ([]SeriesRollup, error) {
 		}
 		r.Files++
 		r.TotalBytes += size
-		if isCandidateCodec(codec, target, recode) {
-			r.Convertible++
-			if infoJSON != "" {
-				var mi MediaInfo
-				if json.Unmarshal([]byte(infoJSON), &mi) == nil {
-					r.EstBytes += estimatePlanSize(&mi, dp)
-				}
-			}
+		// The roll-up has to ask the SAME question the episode list asks, or a show
+		// reads "all efficient" while every one of its episodes is listed as needing
+		// work. That is exactly what happened when this counted codecs alone.
+		var mi MediaInfo
+		probed := infoJSON != "" && json.Unmarshal([]byte(infoJSON), &mi) == nil
+		needs := Needs{Video: isCandidateCodec(codec, target, recode)}
+		if probed {
+			needs = needsOf(&mi, dp, target, recode)
 		}
+		if !needs.Any() {
+			continue
+		}
+		r.Convertible++
+		if needs.Video {
+			if probed {
+				r.EstBytes += estimatePlanSize(&mi, dp)
+			}
+			continue
+		}
+		// A track rewrite copies the video, so the file keeps its size. Counting a
+		// saving here would promise space that never arrives.
+		r.EstBytes += size
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -516,9 +529,16 @@ func (s *Service) LibraryStats(ctx context.Context) (*LibraryStats, error) {
 		convertible := false
 		if probed {
 			hdr = mi.HDR
-			convertible = isCandidateCodec(mi.VideoCodec, target, recode)
-			if convertible {
+			needs := needsOf(&mi, dp, target, recode)
+			convertible = needs.Any()
+			switch {
+			case needs.Video:
 				est = estimatePlanSize(&mi, dp)
+			case convertible:
+				// Reclaimable is computed as size-est, so a track rewrite — which copies
+				// the video and keeps the file's size — must estimate its own size. It
+				// counts as work to do without booking any space as recovered.
+				est = size
 			}
 		}
 		_ = codec // the column is kept for the breakdown bar below; candidacy uses the probe
@@ -615,14 +635,7 @@ func (s *Service) indexedCandidates(ctx context.Context, mediaType string, serie
 				c.Info = &mi
 				// The gap is derived here, not stored — changing the target codec or the
 				// kept languages takes effect immediately with no reindex.
-				c.Needs = Needs{
-					Video: isCandidateCodec(mi.VideoCodec, target, recode),
-					Subs:  len(dp.Subs.KeepLangs) > 0 && len(keptSubs(&mi, dp)) < len(mi.Subs),
-					Audio: len(dp.Audio.KeepLangs) > 0 && len(keptAudio(&mi, dp)) < len(mi.Audio),
-				}
-				// Same three questions NeedsFor asks; kept inline here because the loop
-				// already holds the target and the plan, and re-reading settings per row
-				// would turn one query into thousands.
+				c.Needs = needsOf(&mi, dp, target, recode)
 				c.Candidate = c.Needs.Any()
 				// Only a re-encode reclaims space. A track-only rewrite copies the video,
 				// so estimating a saving there would promise space that never arrives.

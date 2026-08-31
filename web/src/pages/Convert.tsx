@@ -1092,7 +1092,7 @@ Originals move to the recycle bin. You can cancel from the Queue tab.`)) return;
                         <td className="px-3 py-2 font-mono tabular-nums text-ink-dim">{sh.files.toLocaleString()}</td>
                         <td className="px-3 py-2 font-mono tabular-nums">
                           {done
-                            ? <span style={{ color: "var(--good)" }}>all efficient ✓</span>
+                            ? <span style={{ color: "var(--good)" }}>all on target ✓</span>
                             : <span style={{ color: "var(--avoid)" }}>{sh.convertible.toLocaleString()}</span>}
                         </td>
                         <td className="px-3 py-2 font-mono tabular-nums">{fmtSize(sh.total_bytes)}</td>

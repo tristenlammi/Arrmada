@@ -590,17 +590,27 @@ func (s *Service) RemuxPlan(ctx context.Context) Plan {
 // This is what makes "set a target, make everything match it" a single action. The user
 // says what they want the library to look like; deciding whether that costs an hour or
 // a minute is not their problem.
-// NeedsFor is the gap between one probed file and the target spec.
-func (s *Service) NeedsFor(ctx context.Context, mi *MediaInfo) Needs {
+// needsOf is THE definition of "this file doesn't match the target". Every list, roll-up
+// and stat must call it.
+//
+// It was inlined in three places, and they drifted: the show roll-up kept asking about
+// the codec alone, so a series read "all efficient" while every one of its episodes was
+// listed as needing subtitle work. Pure, and takes the settings it needs, so a hot loop
+// can hoist them out instead of re-reading per row.
+func needsOf(mi *MediaInfo, dp Plan, target string, recode bool) Needs {
 	if mi == nil {
 		return Needs{}
 	}
-	dp := s.defaultPlan(ctx)
 	return Needs{
-		Video: isCandidateCodec(mi.VideoCodec, s.targetCodec(ctx), s.recodesModern(ctx)),
+		Video: isCandidateCodec(mi.VideoCodec, target, recode),
 		Subs:  len(dp.Subs.KeepLangs) > 0 && len(keptSubs(mi, dp)) < len(mi.Subs),
 		Audio: len(dp.Audio.KeepLangs) > 0 && len(keptAudio(mi, dp)) < len(mi.Audio),
 	}
+}
+
+// NeedsFor is needsOf with the service's current settings.
+func (s *Service) NeedsFor(ctx context.Context, mi *MediaInfo) Needs {
+	return needsOf(mi, s.defaultPlan(ctx), s.targetCodec(ctx), s.recodesModern(ctx))
 }
 
 // planForFile picks the cheapest plan that brings one file to the target. A file that
@@ -657,12 +667,6 @@ func maxQualityCRF(codec string) int {
 		return 24
 	}
 	return 20
-}
-
-// isCandidateFor reports whether a file should be converted for the chosen target codec — i.e.
-// it's a real video stream that isn't already that codec.
-func isCandidateFor(mi *MediaInfo, target string) bool {
-	return isCandidateCodec(mi.VideoCodec, target, false)
 }
 
 // modernCodec reports whether a codec is already an efficient modern one. These are the
