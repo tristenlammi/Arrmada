@@ -1257,6 +1257,8 @@ export const api = {
 
   // Convert
   convertHardware: () => req<{ encoders: ConvertEncoder[]; selected: ConvertEncoder; reclaimed_bytes: number; scratch_dir: string; scratch_free_bytes: number; render_devices: { path: string; pci: string; vendor: string }[]; vaapi_device: string }>("/api/v1/convert/hardware"),
+  convertReindex: () => req<{ started: boolean; reason?: string }>("/api/v1/convert/reindex", { method: "POST" }),
+  convertReindexStatus: () => req<{ running: boolean }>("/api/v1/convert/reindex"),
   convertSweep: () => req<ConvertAllResult>("/api/v1/convert/sweep", { method: "POST" }),
   convertLibrary: (media: "movies" | "tv" = "movies", seriesID?: number, convertibleOnly = false) => {
     const q = new URLSearchParams();

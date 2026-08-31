@@ -313,3 +313,19 @@ func convertQueueStatus(err error) int {
 	}
 	return http.StatusInternalServerError
 }
+
+// handleConvertReindex rescans the library so files added or changed since the last
+// sweep show up without waiting for the nightly one.
+func (a *api) handleConvertReindex(w http.ResponseWriter, r *http.Request) {
+	if !a.deps.Convert.RefreshIndex(r.Context()) {
+		// Not an error: a sweep is already doing exactly what was asked for.
+		a.writeJSON(w, http.StatusOK, map[string]any{"started": false, "reason": "a library scan is already running"})
+		return
+	}
+	a.writeJSON(w, http.StatusAccepted, map[string]any{"started": true})
+}
+
+// handleConvertReindexStatus reports whether a rescan is still running.
+func (a *api) handleConvertReindexStatus(w http.ResponseWriter, r *http.Request) {
+	a.writeJSON(w, http.StatusOK, map[string]any{"running": a.deps.Convert.IndexScanning()})
+}

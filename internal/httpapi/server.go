@@ -281,6 +281,8 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/convert/jobs", a.protected(a.handleConvertJobs))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/logs", a.protected(a.handleConvertLogs))
 	mux.HandleFunc("POST "+base+"/api/v1/convert/sweep", a.requireRole(auth.RoleManager, a.handleConvertSweep))
+	mux.HandleFunc("POST "+base+"/api/v1/convert/reindex", a.requireRole(auth.RoleManager, a.handleConvertReindex))
+	mux.HandleFunc("GET "+base+"/api/v1/convert/reindex", a.protected(a.handleConvertReindexStatus))
 	mux.HandleFunc("POST "+base+"/api/v1/convert/movies/{id}", a.requireRole(auth.RoleManager, a.handleConvertMovie))
 	mux.HandleFunc("POST "+base+"/api/v1/convert/movies/{id}/sample", a.requireRole(auth.RoleManager, a.handleConvertMovieSample))
 	mux.HandleFunc("POST "+base+"/api/v1/convert/episodes/{series}/{season}/{episode}", a.requireRole(auth.RoleManager, a.handleConvertEpisode))

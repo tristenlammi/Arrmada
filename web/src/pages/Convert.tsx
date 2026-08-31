@@ -867,6 +867,8 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
   const [onlyConvertible, setOnlyConvertible] = useState(true);
   const [q, setQ] = useState("");
   const [loadErr, setLoadErr] = useState(false);
+  // Bumped after a rescan so both load effects re-run against the fresh index.
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     setItems(null);
@@ -881,7 +883,7 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
       api.convertLibrary("movies", undefined, onlyConvertible)
         .then(setItems).catch(() => { setItems([]); setLoadErr(true); });
     }
-  }, [media, onlyConvertible]);
+  }, [media, onlyConvertible, refreshKey]);
 
   // Opening a show loads just that show's episodes.
   useEffect(() => {
@@ -891,7 +893,7 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
     setLoadErr(false);
     api.convertLibrary("tv", show.series_id, onlyConvertible)
       .then(setItems).catch(() => { setItems([]); setLoadErr(true); });
-  }, [media, show, onlyConvertible]);
+  }, [media, show, onlyConvertible, refreshKey]);
 
   const convert = async (c: ConvertCandidate) => {
     const key = rowKey(c);
@@ -1006,6 +1008,33 @@ Originals move to the recycle bin. You can cancel from the Queue tab.`)) return;
             </button>
           ))}
         </div>
+
+        <button
+          onClick={async () => {
+            setBusy("reindex");
+            try {
+              const r = await api.convertReindex();
+              if (!r.started) { flash(r.reason ?? "A scan is already running."); setBusy(null); return; }
+              flash("Rescanning the library…");
+              // Hold "Scanning…" until it finishes, then reload — a background scan the
+              // user has to guess the end of is barely better than no button at all.
+              // Bounded so a stalled scan can't disable the toolbar forever.
+              for (let i = 0; i < 240; i++) {
+                await new Promise((res) => setTimeout(res, 2000));
+                const st = await api.convertReindexStatus().catch(() => ({ running: false }));
+                if (!st.running) break;
+              }
+              setRefreshKey((k) => k + 1);
+              flash("Library rescanned.");
+            } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
+          }}
+          disabled={busy !== null}
+          title="Pick up files added or changed since the last scan, without waiting for the nightly one"
+          className="rounded-lg px-3 py-1.5 text-[12px] font-semibold disabled:opacity-50"
+          style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}
+        >
+          {busy === "reindex" ? "Scanning…" : "Rescan library"}
+        </button>
 
         <label className="sr-only" htmlFor="convert-search">Search titles</label>
         <input id="convert-search" type="search" value={q} onChange={(e) => setQ(e.target.value)}

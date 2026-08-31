@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/library"
@@ -168,8 +169,11 @@ type Service struct {
 	skips    *skipStore    // persisted skip reasons, so they survive a restart and are visible
 	index    *libraryIndex // persisted per-file library facts; what the library list reads
 
-	indexMu   sync.Mutex // serializes index sweeps so a scheduled one can't overlap an import-triggered one
-	lastSweep time.Time
+	indexMu sync.Mutex // serializes index sweeps so a scheduled one can't overlap an import-triggered one
+	// indexScanning is readable without taking indexMu, so the UI can poll "is the
+	// rescan still going?" without blocking behind the scan it's asking about.
+	indexScanning atomic.Bool
+	lastSweep     time.Time
 
 	mu        sync.Mutex
 	reclaimMu sync.Mutex // guards the reclaimed-bytes read-modify-write across workers

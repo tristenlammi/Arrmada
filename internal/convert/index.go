@@ -637,3 +637,35 @@ func (s *Service) indexedCandidates(ctx context.Context, mediaType string, serie
 	}
 	return out, rows.Err()
 }
+
+// RefreshIndex runs a full index pass now, on demand.
+//
+// Imports keep the index current on their own, and the scheduled sweep catches whatever
+// changed outside Arrmada — but only once a day. Anything that slipped both (a hook that
+// errored, a file moved in by hand, a run of imports from before the hooks existed) was
+// invisible to Convert until 03:00 with no way to hurry it.
+//
+// Returns false when a sweep is already running: IndexAll walks the whole library, and
+// two at once would just contend on the same probes.
+func (s *Service) RefreshIndex(ctx context.Context) bool {
+	if s.index == nil {
+		return false
+	}
+	if !s.indexMu.TryLock() {
+		return false
+	}
+	s.indexScanning.Store(true)
+	go func() {
+		defer s.indexMu.Unlock()
+		defer s.indexScanning.Store(false)
+		// Deliberately NOT the request's context: a full pass outlives the HTTP call
+		// that asked for it, and cancelling on response would leave it half done.
+		s.IndexAll(context.WithoutCancel(ctx))
+		s.lastSweep = time.Now()
+	}()
+	return true
+}
+
+// IndexScanning reports whether a rescan is in progress, so the UI can reload the list
+// when it finishes rather than asking the user to guess.
+func (s *Service) IndexScanning() bool { return s.indexScanning.Load() }
