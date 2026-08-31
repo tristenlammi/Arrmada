@@ -235,6 +235,18 @@ function ReleaseRow({ rel, why, busy, grabbed, disabled, onGrab, onBlock }: { re
             {highlight && <span className="rounded-full px-2 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Recommended</span>}
             {blocked && <span className="rounded-full px-2 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: "var(--reject-soft)", color: "var(--reject)" }}>Blocklisted</span>}
             <span className="text-[13px] font-semibold">{rel.summary}</span>
+            {/* An anime arc is numbered in its own universe: "S04E06" is the arc's
+                fourth cour, not the show's fourth season. Without saying what it
+                resolved to, a correct match reads as completely the wrong season. */}
+            {rel.resolves && (
+              <span
+                className="rounded px-1.5 py-0.5 font-mono text-[10px] font-bold"
+                style={{ background: "var(--good-soft, rgba(127,176,105,.16))", color: "var(--good)" }}
+                title="Which episode of your library this release actually maps to"
+              >
+                → {rel.resolves}
+              </span>
+            )}
           </div>
           <div className="mt-1 truncate font-mono text-[11px] text-ink-faint" title={rel.title}>{rel.title}</div>
           <div className="mt-1.5 flex flex-wrap items-center gap-3 font-mono text-[10.5px] text-ink-dim">

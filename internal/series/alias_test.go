@@ -300,3 +300,70 @@ func TestReAddingAnAliasUpdatesIt(t *testing.T) {
 		t.Errorf("season = %d, want the corrected 17", aliases[0].TMDBSeason)
 	}
 }
+
+// Release titles taken verbatim from a real S17E46 search. Two of them mark the cour in
+// a way the release parser doesn't model, so they parsed as carrying NO numbering — and
+// the arc-pack rule then claimed they covered the whole 52-episode season. A cour-3 pack
+// was being offered as a match for an episode in cour 4.
+func TestCourMarkersAreNotWholeArcPacks(t *testing.T) {
+	svc, ctx := bleachFixture(t)
+	if _, err := svc.AddAlias(ctx, 1, "BLEACH Thousand-Year Blood War", 17); err != nil {
+		t.Fatal(err)
+	}
+
+	// "(Cour 03)" is cour 3 — E27–E39 in this fixture — and nothing else.
+	refs, ok := svc.AliasEpisodes(ctx, 1,
+		parser.Parse("Bleach Thousand Year Blood War - (Cour 03) (2024) 1080p Web-Dl HEVC 10bit x265 AAC Multi Sub - Anime"))
+	if !ok {
+		t.Fatal("the cour pack resolved to nothing")
+	}
+	if len(refs) != 13 || refs[0].Episode != 27 || refs[len(refs)-1].Episode != 39 {
+		t.Fatalf("cour 3 pack covers %d eps E%d–E%d, want 13 eps E27–E39",
+			len(refs), refs[0].Episode, refs[len(refs)-1].Episode)
+	}
+	for _, r := range refs {
+		if r.Episode == 46 {
+			t.Error("a cour-3 pack claimed E46 — that's in cour 4, and is the bug")
+		}
+	}
+
+	// "Part 3 E03" is one episode: cour 3's third, E29 here.
+	one, ok := svc.AliasEpisodes(ctx, 1,
+		parser.Parse("Bleach Thousand-Year Blood War Part 3 E03 CUSTOM MULTi 1080p WEB X264-AMB3R"))
+	if !ok || len(one) != 1 || one[0].Episode != 29 {
+		t.Errorf("Part 3 E03 resolved to %+v (ok=%v), want the single episode S17E29", one, ok)
+	}
+}
+
+// The genuine whole-arc pack — no cour, no part, no episode — must still cover the
+// season, or the only release carrying the missing middle episodes goes back to being
+// discarded.
+func TestUnmarkedArcPackStillCoversTheSeason(t *testing.T) {
+	svc, ctx := bleachFixture(t)
+	if _, err := svc.AddAlias(ctx, 1, "BLEACH Thousand-Year Blood War", 17); err != nil {
+		t.Fatal(err)
+	}
+	refs, ok := svc.AliasEpisodes(ctx, 1,
+		parser.Parse("Bleach - Thousand-Year Blood War [BD Remux 1080p AVC DTS-HD MA 2 0 Dual Audio]"))
+	if !ok || len(refs) != 52 {
+		t.Fatalf("covers %d episodes (ok=%v), want all 52", len(refs), ok)
+	}
+}
+
+// The episode the whole search was for. Cour 4 starts at E40 in this fixture, so its
+// sixth episode is E45 — the point being that S04E06 resolves through the cour, not to
+// the series' own season 4.
+func TestCourEpisodeResolvesWithinTheArc(t *testing.T) {
+	svc, ctx := bleachFixture(t)
+	if _, err := svc.AddAlias(ctx, 1, "BLEACH Thousand-Year Blood War", 17); err != nil {
+		t.Fatal(err)
+	}
+	refs, ok := svc.AliasEpisodes(ctx, 1,
+		parser.Parse("Bleach Thousand-Year Blood War S04E06 1080p DSNP WEB-DL AAC 2 0 H 264-Bolt"))
+	if !ok || len(refs) != 1 {
+		t.Fatalf("resolved to %+v (ok=%v), want one episode", refs, ok)
+	}
+	if refs[0].Season != 17 || refs[0].Episode != 45 {
+		t.Errorf("S04E06 → S%02dE%02d, want S17E45 (cour 4 starts at E40 here)", refs[0].Season, refs[0].Episode)
+	}
+}

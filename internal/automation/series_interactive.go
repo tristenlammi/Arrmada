@@ -156,6 +156,7 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 			RejectReason: ev.RejectReason,
 			Recommended:  ev.Candidate.Name == winnerName,
 			Blocklisted:  blocked[normTitle(ev.Candidate.Name)],
+			Resolves:     c.resolvesLabel(ctx, s, ev.Candidate.Release),
 		})
 	}
 	for _, ev := range decision.Eligible {
@@ -754,4 +755,23 @@ func (c *Coordinator) resolvedLabel(ctx context.Context, s series.Series, p pars
 		parts = append(parts, fmt.Sprintf("S%02dE%02d", ref.Season, ref.Episode))
 	}
 	return strings.Join(parts, ",") + " (via " + via + ")"
+}
+
+// resolvesLabel names the library episode(s) a release maps to, for the search list.
+// Terser than resolvedLabel: no "via" attribution, and a range rather than a list, since
+// this sits in a row rather than a log line.
+func (c *Coordinator) resolvesLabel(ctx context.Context, s series.Series, p parser.Release) string {
+	refs, ok := c.series.AliasEpisodes(ctx, s.ID, p)
+	if !ok {
+		refs = c.series.ResolveEpisodes(ctx, s.ID, p)
+	}
+	if len(refs) == 0 {
+		return ""
+	}
+	first := refs[0]
+	if len(refs) == 1 {
+		return fmt.Sprintf("S%02dE%02d", first.Season, first.Episode)
+	}
+	last := refs[len(refs)-1]
+	return fmt.Sprintf("S%02dE%02d–E%02d (%d episodes)", first.Season, first.Episode, last.Episode, len(refs))
 }

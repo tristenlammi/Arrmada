@@ -3,10 +3,37 @@ package series
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/parser"
 )
+
+// Release groups mark an arc's cours in ways the release parser doesn't model, because
+// they aren't season numbers: "(Cour 03)", "Part 3 E03". Left unread, such a release
+// carries no numbering at all and would be taken for a pack of the whole arc — so a
+// cour-3 pack gets offered for an episode in cour 4.
+var (
+	courRe    = regexp.MustCompile(`(?i)\b(?:cour|part)[\s._-]*0*(\d{1,2})\b`)
+	looseEpRe = regexp.MustCompile(`(?i)\bE0*(\d{1,3})\b`)
+)
+
+// courAndEpisode reads a cour marker, and an episode within it when present.
+func courAndEpisode(title string) (cour, episode int) {
+	m := courRe.FindStringSubmatch(title)
+	if m == nil {
+		return 0, 0
+	}
+	cour, _ = strconv.Atoi(m[1])
+	// Only look for an episode AFTER the cour marker, so a "Part 3" in the show's name
+	// can't pair with an unrelated number earlier in the string.
+	rest := title[strings.Index(title, m[0])+len(m[0]):]
+	if em := looseEpRe.FindStringSubmatch(rest); em != nil {
+		episode, _ = strconv.Atoi(em[1])
+	}
+	return cour, episode
+}
 
 // Alias is an alternate title a series is released under.
 //
@@ -125,12 +152,25 @@ func (s *Service) AliasEpisodes(ctx context.Context, seriesID int64, r parser.Re
 			}
 			return nil, false
 		}
-		// Neither an episode number nor a season — an arc pack, named only for the arc
+		// A cour marker the release parser doesn't model — "(Cour 03)", "Part 3 E03".
+		// Read it before assuming the release covers the whole arc, or a single cour's
+		// pack is offered for episodes it doesn't contain.
+		if cour, ep := courAndEpisode(r.Title); cour > 0 {
+			group := s.courOf(ctx, seriesID, a.TMDBSeason, cour)
+			if len(group) == 0 {
+				return nil, false
+			}
+			if ep > 0 {
+				if ep > len(group) {
+					return nil, false
+				}
+				return []EpisodeRef{group[ep-1]}, true
+			}
+			return group, true
+		}
+		// No numbering of any kind — an arc pack named only for the arc
 		// ("Bleach - Thousand-Year Blood War [BD Remux 1080p AVC DTS-HD MA]"). Since the
 		// alias IS the arc and the arc is the pinned season, it covers that season.
-		//
-		// Safe because we get here only when the release carries no numbering at all: a
-		// single episode always has one, so this can't mistake one for a pack.
 		if all := s.seasonRefs(ctx, seriesID, a.TMDBSeason); len(all) > 0 {
 			return all, true
 		}

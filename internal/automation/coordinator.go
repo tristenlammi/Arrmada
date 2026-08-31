@@ -332,6 +332,11 @@ type RankedRelease struct {
 	RejectReason string  `json:"reject_reason,omitempty"`
 	Recommended  bool    `json:"recommended"`
 	Blocklisted  bool    `json:"blocklisted,omitempty"`
+	// Resolves says which library episode(s) this release actually maps to, e.g.
+	// "S17E45". An anime arc is numbered in its own universe — "S04E06" is the arc's
+	// fourth cour, not the show's fourth season — so the release's own label looks like
+	// the wrong season entirely until you say what it resolved to.
+	Resolves string `json:"resolves,omitempty"`
 	// Books only:
 	Edition  string `json:"edition,omitempty"`  // ebook | audiobook
 	Format   string `json:"format,omitempty"`   // EPUB, M4B, MP3…

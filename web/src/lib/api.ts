@@ -1523,6 +1523,7 @@ export interface RankedRelease {
   reject_reason?: string;
   recommended: boolean;
   blocklisted?: boolean;
+  resolves?: string;
   // Books only:
   edition?: "ebook" | "audiobook";
   format?: string;
