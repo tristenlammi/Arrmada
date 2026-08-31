@@ -19,6 +19,11 @@ import (
 // real failure so the API can answer with "this download is gone" rather than a 500.
 var ErrDownloadGone = errors.New("the download is no longer on disk — it was removed or cleaned up since this was held for review")
 
+// ErrNothingToImport means the download held nothing this show could place. The request
+// was fine and so is the server, so it must not answer 500 — the user needs to know it's
+// the file's naming, not a fault to report.
+var ErrNothingToImport = errors.New("nothing in this download could be imported")
+
 // Review is a finished download held back from import because its content doesn't
 // match what it was grabbed for (e.g. a "Below Deck Mediterranean" pack grabbed
 // for "Below Deck"). The admin resolves it: reject, import anyway, import into a
@@ -298,9 +303,22 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 		if err != nil {
 			return err
 		}
-		n, matched, _, _ := c.importSeriesInto(ctx, s, r.ContentPath, true)
+		n, matched, unresolved, failed := c.importSeriesInto(ctx, s, r.ContentPath, true)
 		if matched == 0 {
-			return fmt.Errorf("no episode files could be imported into %q", s.Title)
+			// Wrapped in ErrNothingToImport so the API answers 422 rather than 500: the
+			// request was understood and the server is fine, the download just doesn't
+			// contain anything placeable.
+			// Say WHICH failure it was. "No episode files could be imported" reads as a
+			// bug in the app, when the usual cause is that the filename carries no
+			// episode number this show's numbering can place.
+			switch {
+			case unresolved > 0:
+				return fmt.Errorf("%w: couldn't work out which episode of %q %d file%s belong%s to — no season/episode or absolute number could be read from the filename",
+					ErrNothingToImport, s.Title, unresolved, plural(unresolved), map[bool]string{true: "s", false: ""}[unresolved == 1])
+			case failed > 0:
+				return fmt.Errorf("%w: %d file(s) matched an episode of %q but could not be moved into the library — check the folder is writable", ErrNothingToImport, failed, s.Title)
+			}
+			return fmt.Errorf("%w: no video files were found in that download to import into %q", ErrNothingToImport, s.Title)
 		}
 		c.series.AddEvent(ctx, s.ID, "imported", fmt.Sprintf("Imported %d episode%s from review: %s", n, plural(n), r.Name))
 		c.seriesImported(ctx, s.ID)
@@ -435,7 +453,14 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	release := parser.Parse(filepath.Base(contentPath))
 	for _, v := range videos {
 		rel := inheritQuality(parser.Parse(filepath.Base(v.Path)), release)
-		refs := c.series.ResolveEpisodes(ctx, s.ID, rel)
+		// Alias numbering first, exactly as the search side resolves it. Without this a
+		// file the search found and grabbed on purpose — "Bleach Thousand Year Blood War
+		// - 19 ..." — arrives with no season, no episode and no absolute number, and the
+		// import can't place the very thing it was told to fetch.
+		refs, ok := c.series.AliasEpisodes(ctx, s.ID, rel)
+		if !ok {
+			refs = c.series.ResolveEpisodes(ctx, s.ID, rel)
+		}
 		if len(refs) == 0 {
 			unresolved++
 			c.log.Warn("series import: couldn't place file",

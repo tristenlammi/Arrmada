@@ -69,6 +69,12 @@ func (a *api) handleImportReview(w http.ResponseWriter, r *http.Request) {
 			a.writeError(w, http.StatusGone, err.Error())
 			return
 		}
+		// Nothing placeable in the download is the user's problem to act on, not a
+		// server fault — 422 rather than 500, with the reason intact.
+		if errors.Is(err, automation.ErrNothingToImport) {
+			a.writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
 		a.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

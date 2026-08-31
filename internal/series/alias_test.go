@@ -417,3 +417,27 @@ func TestAliasSearchTermsEmptyWithoutAliases(t *testing.T) {
 		t.Errorf("got %v with no aliases configured", terms)
 	}
 }
+
+// The filename as it lands on disk, which is not the release name: dots for spaces, and
+// the number sitting behind a hyphen. The import path resolves against this, so it has
+// to work here too — otherwise the search finds an episode, grabs it, and then can't
+// place the very file it asked for.
+func TestImportedFilenamesResolve(t *testing.T) {
+	svc, ctx := bleachFixture(t)
+	if _, err := svc.AddAlias(ctx, 1, "BLEACH Thousand-Year Blood War", 17); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		file   string
+		wantEp int
+	}{
+		{"Bleach.Thousand.Year.Blood.War.-.19.1080p.DSNP.Web-DL.HEVC 10bit x265.AAC.Multi.Sub-Anime.Time.mkv", 19},
+		{"Bleach.Thousand.Year.Blood.War.-.15.1080p.DSNP.Web-DL.HEVC 10bit x265.Multi.Sub-Anime.Time.mkv", 15},
+		{"Bleach Thousand Year Blood War - 15 1080p DSNP Web-DL HEVC 10bit x265 Multi Sub-Anime Time", 15},
+	} {
+		refs, ok := svc.AliasEpisodes(ctx, 1, parser.Parse(tc.file))
+		if !ok || len(refs) != 1 || refs[0].Season != 17 || refs[0].Episode != tc.wantEp {
+			t.Errorf("%.60s resolved to %+v (ok=%v), want S17E%02d", tc.file, refs, ok, tc.wantEp)
+		}
+	}
+}
