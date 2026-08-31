@@ -154,37 +154,6 @@ func TestLongestAliasWins(t *testing.T) {
 	}
 }
 
-// A pack named only for the arc, with no numbering at all, covers the whole pinned
-// season. This exact release was in a real search and was being thrown away — which
-// mattered, because it was the only thing carrying the missing mid-run episodes.
-func TestArcPackCoversThePinnedSeason(t *testing.T) {
-	svc, ctx := bleachFixture(t)
-	if _, err := svc.AddAlias(ctx, 1, "BLEACH Thousand-Year Blood War", 17); err != nil {
-		t.Fatal(err)
-	}
-	refs, ok := svc.AliasEpisodes(ctx, 1,
-		parser.Parse("Bleach - Thousand-Year Blood War [BD Remux 1080p AVC DTS-HD MA 2 0 Dual Audio]"))
-	if !ok {
-		t.Fatal("the arc pack resolved to nothing")
-	}
-	if len(refs) != 52 {
-		t.Fatalf("covers %d episodes, want all 52 of season 17", len(refs))
-	}
-	// It has to actually contain the gap, or covering the season is meaningless.
-	found := map[int]bool{}
-	for _, r := range refs {
-		if r.Season != 17 {
-			t.Fatalf("pack claimed %+v, outside the pinned season", r)
-		}
-		found[r.Episode] = true
-	}
-	for ep := 15; ep <= 19; ep++ {
-		if !found[ep] {
-			t.Errorf("S17E%02d is missing from the pack's coverage", ep)
-		}
-	}
-}
-
 // The pack rule must not swallow a single episode. Anything carrying a number is
 // numbered, and takes the numbered path.
 func TestArcPackRuleIgnoresNumberedReleases(t *testing.T) {
@@ -335,18 +304,55 @@ func TestCourMarkersAreNotWholeArcPacks(t *testing.T) {
 	}
 }
 
-// The genuine whole-arc pack — no cour, no part, no episode — must still cover the
-// season, or the only release carrying the missing middle episodes goes back to being
-// discarded.
-func TestUnmarkedArcPackStillCoversTheSeason(t *testing.T) {
+// The BD remux that disproved the whole-arc assumption. Its filename list is episodes
+// 27-40, not the 52 the old rule claimed — and on that claim it was offered as the only
+// match for episode 15. A pack whose contents can't be read from its name must resolve
+// to nothing rather than to a guess.
+func TestUnreadablePackIsNotAssumedToCoverTheArc(t *testing.T) {
 	svc, ctx := bleachFixture(t)
 	if _, err := svc.AddAlias(ctx, 1, "BLEACH Thousand-Year Blood War", 17); err != nil {
 		t.Fatal(err)
 	}
 	refs, ok := svc.AliasEpisodes(ctx, 1,
 		parser.Parse("Bleach - Thousand-Year Blood War [BD Remux 1080p AVC DTS-HD MA 2 0 Dual Audio]"))
-	if !ok || len(refs) != 52 {
-		t.Fatalf("covers %d episodes (ok=%v), want all 52", len(refs), ok)
+	if ok {
+		t.Errorf("claimed %d episodes from a title that says nothing about its contents", len(refs))
+	}
+}
+
+// The naming this tracker actually uses: the arc's name then a bare number, with no
+// SxxExx and no " - N " separator. The release parser extracts nothing from it and
+// swallows the number into the title, so every one of these looked like a pack.
+func TestBareNumberAfterTheArcName(t *testing.T) {
+	svc, ctx := bleachFixture(t)
+	if _, err := svc.AddAlias(ctx, 1, "BLEACH Thousand-Year Blood War", 17); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		release string
+		wantEp  int
+	}{
+		{"Bleach Thousand Year Blood War 15 1080p DSNP Web-Dl HEVC 10bit x265 Multi Sub-Anime Time", 15},
+		{"Bleach Thousand Year Blood War 27 1080p DSNP Web-Dl HEVC 10bit x265 AAC Multi Sub-Anime Time", 27},
+		{"Bleach Thousand-Year Blood War 52 1080p WEB-DL", 52},
+	} {
+		refs, ok := svc.AliasEpisodes(ctx, 1, parser.Parse(tc.release))
+		if !ok || len(refs) != 1 || refs[0].Season != 17 || refs[0].Episode != tc.wantEp {
+			t.Errorf("%.60s resolved to %+v (ok=%v), want S17E%02d", tc.release, refs, ok, tc.wantEp)
+		}
+	}
+}
+
+// A year sitting where the episode number would be must not be read as episode 2022.
+// The season's episode count is what rejects it.
+func TestYearAfterTheArcNameIsNotAnEpisode(t *testing.T) {
+	svc, ctx := bleachFixture(t)
+	if _, err := svc.AddAlias(ctx, 1, "BLEACH Thousand-Year Blood War", 17); err != nil {
+		t.Fatal(err)
+	}
+	if refs, ok := svc.AliasEpisodes(ctx, 1,
+		parser.Parse("Bleach Thousand-Year Blood War 2022 1080p BluRay x265")); ok {
+		t.Errorf("read a year as an episode number: %+v", refs)
 	}
 }
 

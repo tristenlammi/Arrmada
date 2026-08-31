@@ -168,12 +168,25 @@ func (s *Service) AliasEpisodes(ctx context.Context, seriesID int64, r parser.Re
 			}
 			return group, true
 		}
-		// No numbering of any kind — an arc pack named only for the arc
-		// ("Bleach - Thousand-Year Blood War [BD Remux 1080p AVC DTS-HD MA]"). Since the
-		// alias IS the arc and the arc is the pinned season, it covers that season.
-		if all := s.seasonRefs(ctx, seriesID, a.TMDBSeason); len(all) > 0 {
-			return all, true
+		// The number straight after the arc's name, which is how this naming works:
+		// "Bleach Thousand Year Blood War 15 1080p DSNP Web-Dl ...". The release parser
+		// finds nothing here — there's no SxxExx and no " - 15 " separator — so it
+		// swallows the number into the title and the release looks like a pack.
+		if n, ok := numberAfterAlias(r.Title, a.Title); ok {
+			season := s.repo.SeasonEpisodeNumbers(ctx, seriesID, a.TMDBSeason)
+			if n >= 1 && n <= len(season) {
+				return []EpisodeRef{{Season: a.TMDBSeason, Episode: season[n-1]}}, true
+			}
+			return nil, false
 		}
+		// Nothing left to go on. This used to claim the WHOLE pinned season, on the
+		// theory that a release named only for the arc must be a pack of it. A real one
+		// disproved that: "Bleach - Thousand-Year Blood War [BD Remux 1080p AVC DTS-HD
+		// MA]" holds episodes 27-40, and claiming all 52 offered it as a match for
+		// episode 15 — 78GB of entirely the wrong episodes.
+		//
+		// Declining is the safe answer. A pack whose contents can't be read from its
+		// name isn't something to grab on an assumption.
 		return nil, false
 	}
 
@@ -255,4 +268,31 @@ func (s *Service) seasonRefs(ctx context.Context, seriesID int64, tmdbSeason int
 		out = append(out, EpisodeRef{Season: tmdbSeason, Episode: n})
 	}
 	return out
+}
+
+// numberAfterAlias reads the bare episode number that follows the arc's name.
+//
+// "Bleach Thousand Year Blood War 15 1080p ..." → 15. Compared word by word against the
+// alias so the number has to sit immediately after it: a digit anywhere else in the
+// string is a year, a resolution, a codec or a group tag.
+//
+// A year directly after the name ("... Blood War 2022 S01 ...") would read as episode
+// 2022; the caller bounds the result by the season's episode count, which rejects it.
+func numberAfterAlias(releaseTitle, aliasTitle string) (int, bool) {
+	alias := parser.TitleWords(aliasTitle)
+	words := parser.TitleWords(releaseTitle)
+	if len(alias) == 0 || len(words) <= len(alias) {
+		return 0, false
+	}
+	for i, w := range alias {
+		if words[i] != w {
+			return 0, false
+		}
+	}
+	next := words[len(alias)]
+	n, err := strconv.Atoi(next)
+	if err != nil || n < 1 {
+		return 0, false
+	}
+	return n, true
 }
