@@ -51,6 +51,23 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 	if q.Season == 0 && !s.IsAnime() {
 		result.Releases = c.addSeasonSearches(ctx, s, title, result.Releases)
 	}
+	// Ask for the specific episode by the arc's own numbering. The broad queries above
+	// are capped by the indexer — TorrentLeech answers a bare q= with 35 rows, newest
+	// first — so an episode from two years ago is never in them however well it matches.
+	// Anime can't use tvsearch's season/ep parameters either, since the arc isn't
+	// numbered like the season. Naming the episode is the only way to reach it.
+	for _, term := range c.series.AliasSearchTerms(ctx, s.ID, season, episode) {
+		tres, terr := c.indexers.Search(ctx, indexer.SearchQuery{
+			Text: indexerQuery(term), MediaType: indexer.MediaSeries, Limit: 400,
+		})
+		if terr != nil {
+			c.log.Warn("series: targeted alias search failed", "series", s.Title, "query", term, "err", terr)
+			continue
+		}
+		c.log.Info("series: targeted alias search", "series", s.Title, "query", term, "returned", len(tres.Releases))
+		result.Releases = append(result.Releases, tres.Releases...)
+	}
+
 	// The arc's own name is a different search entirely — the indexer doesn't know the
 	// two titles are one show, so the series' title never returns the arc's releases.
 	for _, a := range s.Aliases {

@@ -373,3 +373,47 @@ func TestCourEpisodeResolvesWithinTheArc(t *testing.T) {
 		t.Errorf("S04E06 → S%02dE%02d, want S17E45 (cour 4 starts at E40 here)", refs[0].Season, refs[0].Episode)
 	}
 }
+
+// The reason the missing episodes were unreachable: TorrentLeech answers a bare text
+// query with 35 rows, newest first, and anime can't use tvsearch's season/ep parameters
+// because the arc isn't numbered like the season. A 2023 episode is therefore never in
+// the results however well it would have matched — it has to be asked for by name.
+func TestAliasSearchTermsNameTheEpisode(t *testing.T) {
+	svc, ctx := bleachFixture(t)
+	if _, err := svc.AddAlias(ctx, 1, "BLEACH Thousand-Year Blood War", 17); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.AddAlias(ctx, 1, "Bleach - Sennen Kessen Hen", 17); err != nil {
+		t.Fatal(err)
+	}
+
+	// S17E15 is the arc's fifteenth episode, and "<arc name> 15" is exactly how the
+	// tracker names it.
+	got := svc.AliasSearchTerms(ctx, 1, 17, 15)
+	want := map[string]bool{
+		"BLEACH Thousand-Year Blood War 15": true,
+		"Bleach - Sennen Kessen Hen 15":     true,
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %v, want a query per alias", got)
+	}
+	for _, g := range got {
+		if !want[g] {
+			t.Errorf("unexpected query %q", g)
+		}
+	}
+
+	// An episode in a season no alias covers produces nothing — the series' own title
+	// already reaches those.
+	if terms := svc.AliasSearchTerms(ctx, 1, 4, 4); len(terms) != 0 {
+		t.Errorf("got %v for a season with no alias, want none", terms)
+	}
+}
+
+// Inert without aliases, like everything else here.
+func TestAliasSearchTermsEmptyWithoutAliases(t *testing.T) {
+	svc, ctx := bleachFixture(t)
+	if terms := svc.AliasSearchTerms(ctx, 1, 17, 15); len(terms) != 0 {
+		t.Errorf("got %v with no aliases configured", terms)
+	}
+}

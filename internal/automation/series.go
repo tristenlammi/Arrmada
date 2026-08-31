@@ -249,22 +249,32 @@ func (c *Coordinator) searchByAbsolute(ctx context.Context, s series.Series, rem
 		if !containsKey(still, k) {
 			continue // an earlier absolute query already covered this one
 		}
-		abs := c.series.AbsoluteNumber(ctx, s.ID, k.season, k.episode)
-		if abs <= 0 {
-			continue // no absolute number computed for this episode — nothing to query by
+		// The series' own absolute number, and the arc's number for any alias covering
+		// this episode. An arc released as its own show is numbered from 1 within that
+		// arc, not from 1 across the series, so the series-absolute query can't reach it.
+		terms := c.series.AliasSearchTerms(ctx, s.ID, k.season, k.episode)
+		if abs := c.series.AbsoluteNumber(ctx, s.ID, k.season, k.episode); abs > 0 {
+			terms = append(terms, fmt.Sprintf("%s %d", s.Title, abs))
+		}
+		if len(terms) == 0 {
+			continue // nothing to query by
 		}
 		queries++
-		q := fmt.Sprintf("%s %d", s.Title, abs)
-		res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: q, MediaType: indexer.MediaSeries, Limit: 100})
-		if err != nil || len(res.Releases) == 0 {
-			continue
+		for _, q := range terms {
+			res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: q, MediaType: indexer.MediaSeries, Limit: 100})
+			if err != nil || len(res.Releases) == 0 {
+				continue
+			}
+			n, left := c.grabSeriesLimited(ctx, s, res.Releases, still)
+			still = left
+			if n > 0 {
+				c.log.Info("series: grabbed via targeted episode search", "series", s.Title, "query", q, "count", n)
+			}
+			grabbed += n
+			if !containsKey(still, k) {
+				break // this episode is covered — don't spend the other terms on it
+			}
 		}
-		n, left := c.grabSeriesLimited(ctx, s, res.Releases, still)
-		still = left
-		if n > 0 {
-			c.log.Info("series: grabbed via absolute-number search", "series", s.Title, "query", q, "count", n)
-		}
-		grabbed += n
 	}
 	if last >= 0 && len(ordered) > 0 {
 		c.series.SetAbsoluteCursor(ctx, s.ID, epCursor(ordered[(last+1)%len(ordered)]))

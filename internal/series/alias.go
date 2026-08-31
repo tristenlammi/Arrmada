@@ -296,3 +296,43 @@ func numberAfterAlias(releaseTitle, aliasTitle string) (int, bool) {
 	}
 	return n, true
 }
+
+// AliasSearchTerms builds targeted queries for one episode, in the arc's own numbering.
+//
+// A bare title query is capped by the indexer — TorrentLeech returns 35 rows and no
+// more — and those 35 are the newest uploads, so an episode from two years ago simply
+// cannot appear no matter how well it would have matched. Anime can't use the tvsearch
+// season/ep parameters either, because the arc's numbering isn't the season's.
+//
+// So ask for the episode by name, the way the tracker names it: "BLEACH Thousand-Year
+// Blood War 15". Returns nothing when no alias covers the episode's season, which keeps
+// this inert for every series without one.
+func (s *Service) AliasSearchTerms(ctx context.Context, seriesID int64, season, episode int) []string {
+	if season <= 0 || episode <= 0 {
+		return nil
+	}
+	var out []string
+	for _, a := range s.repo.Aliases(ctx, seriesID) {
+		if a.TMDBSeason != season {
+			continue
+		}
+		n := s.arcIndexOf(ctx, seriesID, season, episode)
+		if n <= 0 {
+			continue
+		}
+		out = append(out, fmt.Sprintf("%s %d", a.Title, n))
+	}
+	return out
+}
+
+// arcIndexOf gives an episode's 1-based position within its season — the number the arc
+// is released under. Positional rather than the episode number itself, so a season that
+// doesn't start at 1 or has gaps still lines up.
+func (s *Service) arcIndexOf(ctx context.Context, seriesID int64, season, episode int) int {
+	for i, n := range s.repo.SeasonEpisodeNumbers(ctx, seriesID, season) {
+		if n == episode {
+			return i + 1
+		}
+	}
+	return 0
+}
