@@ -226,7 +226,7 @@ function Queue({ jobs, onChange, flash }: { jobs: SubtitleJob[]; onChange: () =>
             {done.slice(0, 30).map((j) => (
               <div key={j.id} className="flex items-center gap-2.5 text-[12px]">
                 <StateBadge state={j.state} />
-                <span className="flex-1 truncate font-semibold">{j.title}</span>
+                <span className="flex-1 truncate font-semibold">{j.title}{j.redo && <span className="ml-1.5 rounded px-1 py-0.5 font-mono text-[9px] font-bold uppercase text-ink-faint" style={{ border: "1px solid var(--line)" }} title="Replacing the subtitles already there">redo</span>}</span>
                 <span className="text-[11.5px] text-ink-faint">{j.note}</span>
               </div>
             ))}
@@ -256,7 +256,7 @@ function ActiveRow({ j, onCancel, busy }: { j: SubtitleJob; onCancel?: () => voi
     <div className="flex flex-col gap-1 text-[12px]">
       <div className="flex items-center gap-2.5">
         <StateBadge state={j.state} />
-        <span className="flex-1 truncate font-semibold">{j.title}</span>
+        <span className="flex-1 truncate font-semibold">{j.title}{j.redo && <span className="ml-1.5 rounded px-1 py-0.5 font-mono text-[9px] font-bold uppercase text-ink-faint" style={{ border: "1px solid var(--line)" }} title="Replacing the subtitles already there">redo</span>}</span>
         {stopping ? <span className="font-mono text-[10.5px] text-ink-faint">stopping…</span>
           : running && j.stage && <span className="truncate font-mono text-[10.5px] text-ink-faint">{j.stage}</span>}
         {running && elapsed > 0 && <span className="flex-none font-mono text-[10.5px] text-ink-faint">{fmtElapsed(elapsed)}{eta > 0 ? ` · ~${fmtElapsed(eta)} left` : ""}</span>}
@@ -345,14 +345,15 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
     } catch (e) { flash((e as Error).message); } finally { setRescanBusy(false); }
   };
 
-  const ensure = async (f: SubFileEntry) => {
+  const ensure = async (f: SubFileEntry, redo = false) => {
+    if (redo && !confirmRedo(f.title)) return;
     const key = rowKey(f);
     setBusy(key);
     try {
-      if (f.kind === "episode") await api.subtitleQueueEpisode(f.series_id!, f.season!, f.episode!);
-      else await api.subtitleQueueMovie(f.movie_id!);
+      if (f.kind === "episode") await api.subtitleQueueEpisode(f.series_id!, f.season!, f.episode!, redo);
+      else await api.subtitleQueueMovie(f.movie_id!, redo);
       setQueued((q) => new Set(q).add(key));
-      flash(`Queued “${f.title}”`);
+      flash(redo ? `Redoing “${f.title}”` : `Queued “${f.title}”`);
       onQueued();
     } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
   };
@@ -449,6 +450,7 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
                     busy={busy}
                     queued={queued.has(rowKey(f))}
                     onEnsure={() => ensure(f)}
+                    onRedo={() => ensure(f, true)}
                   />
                 ))}
               </tbody>
@@ -555,13 +557,14 @@ function SeriesGroupRow({ g, first, open, onToggle, flash, onQueued }: {
     api.subtitleSeriesEpisodes(g.series_id).then(setEps).catch(() => setEps([]));
   }, [open, eps, g.series_id]);
 
-  const ensure = async (f: SubFileEntry) => {
+  const ensure = async (f: SubFileEntry, redo = false) => {
+    if (redo && !confirmRedo(`${g.title} ${f.title}`)) return;
     const key = rowKey(f);
     setBusy(key);
     try {
-      await api.subtitleQueueEpisode(f.series_id!, f.season!, f.episode!);
+      await api.subtitleQueueEpisode(f.series_id!, f.season!, f.episode!, redo);
       setQueued((q) => new Set(q).add(key));
-      flash(`Queued ${f.title}`);
+      flash(redo ? `Redoing ${f.title}` : `Queued ${f.title}`);
       onQueued();
     } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
   };
@@ -630,7 +633,7 @@ function SeriesGroupRow({ g, first, open, onToggle, flash, onQueued }: {
                 </tr></thead>
                 <tbody>
                   {eps.map((f, i) => (
-                    <SubRow key={rowKey(f)} f={f} first={i === 0} busy={busy} queued={queued.has(rowKey(f))} onEnsure={() => ensure(f)} />
+                    <SubRow key={rowKey(f)} f={f} first={i === 0} busy={busy} queued={queued.has(rowKey(f))} onEnsure={() => ensure(f)} onRedo={() => ensure(f, true)} />
                   ))}
                 </tbody>
               </table>
@@ -644,7 +647,12 @@ function SeriesGroupRow({ g, first, open, onToggle, flash, onQueued }: {
 
 // SubRow is one file's coverage line. Shared by the flat movie table and the per-show
 // episode table, so the two can't drift apart.
-function SubRow({ f, first, busy, queued, onEnsure }: { f: SubFileEntry; first: boolean; busy: string | null; queued: boolean; onEnsure: () => void }) {
+// A redo overwrites the sidecars that are there, so it asks first.
+function confirmRedo(title: string) {
+  return window.confirm(`Redo subtitles for ${title}?\n\nThe existing .srt files for your kept languages will be replaced — use this when what's there is wrong (the AI transcribed the wrong audio track, a bad download).`);
+}
+
+function SubRow({ f, first, busy, queued, onEnsure, onRedo }: { f: SubFileEntry; first: boolean; busy: string | null; queued: boolean; onEnsure: () => void; onRedo: () => void }) {
   const key = rowKey(f);
   const k = embeddedKinds(f);
   return (
@@ -665,11 +673,14 @@ function SubRow({ f, first, busy, queued, onEnsure }: { f: SubFileEntry; first: 
       </td>
       <td className="px-3 py-2 font-mono text-[10.5px] text-ink-faint">{f.health ? `${f.health.score}%` : "—"}</td>
       <td className="px-3 py-2">
-        <div className="flex items-center justify-end">
-          {f.missing === 0 ? (
-            <span className="font-mono text-[10.5px]" style={{ color: "var(--good)" }}>complete</span>
-          ) : queued ? (
+        <div className="flex items-center justify-end gap-2">
+          {queued ? (
             <span className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--good)", color: "var(--good)" }}>Queued ✓</span>
+          ) : f.missing === 0 ? (
+            <>
+              <span className="font-mono text-[10.5px]" style={{ color: "var(--good)" }}>complete</span>
+              <button onClick={onRedo} disabled={busy !== null} title="Make this file's subtitles again, replacing the ones there" className="rounded-md px-2 py-1 text-[10.5px] font-semibold text-ink-dim disabled:opacity-50" style={{ border: "1px solid var(--line)" }}>{busy === key ? "…" : "Redo"}</button>
+            </>
           ) : (
             <button onClick={onEnsure} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy === key ? "Queuing…" : "Ensure subs"}</button>
           )}

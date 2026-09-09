@@ -44,6 +44,10 @@ type Job struct {
 	Progress  int    `json:"progress,omitempty"`
 	Stage     string `json:"stage,omitempty"`      // what the running job is doing right now
 	StartedAt int64  `json:"started_at,omitempty"` // unix seconds the worker picked it up
+	// Redo ignores the sidecars already there and makes every kept language again,
+	// replacing them — for when what's there is wrong (the AI read the dub, a bad
+	// download) and deleting files by hand shouldn't be the only way back.
+	Redo bool `json:"redo,omitempty"`
 }
 
 // key identifies the file a job is for, so the same file can't be queued twice.
@@ -192,6 +196,9 @@ func (s *Service) enqueue(job *Job) *Job {
 	key := job.key()
 	for _, j := range s.jobs {
 		if (j.State == StateQueued || j.State == StateRunning) && j.key() == key {
+			if job.Redo && j.State == StateQueued {
+				j.Redo = true // the waiting job takes on the stronger intent
+			}
 			s.mu.Unlock()
 			return j
 		}
@@ -221,8 +228,9 @@ func (s *Service) enqueue(job *Job) *Job {
 	return job
 }
 
-// QueueMovie enqueues a subtitle-ensure job for one movie.
-func (s *Service) QueueMovie(ctx context.Context, movieID int64) (*Job, error) {
+// QueueMovie enqueues a subtitle-ensure job for one movie. redo replaces the sidecars
+// already there rather than filling in what's missing.
+func (s *Service) QueueMovie(ctx context.Context, movieID int64, redo bool) (*Job, error) {
 	m, err := s.movies.Get(ctx, movieID)
 	if err != nil {
 		return nil, err
@@ -230,11 +238,11 @@ func (s *Service) QueueMovie(ctx context.Context, movieID int64) (*Job, error) {
 	if !m.HasFile || m.MovieFilePath == "" {
 		return nil, fmt.Errorf("movie has no file")
 	}
-	return s.enqueue(&Job{Kind: "movie", MovieID: movieID, Title: m.Title}), nil
+	return s.enqueue(&Job{Kind: "movie", MovieID: movieID, Title: m.Title, Redo: redo}), nil
 }
 
-// QueueEpisode enqueues a subtitle-ensure job for one TV episode.
-func (s *Service) QueueEpisode(ctx context.Context, seriesID int64, season, episode int) (*Job, error) {
+// QueueEpisode enqueues a subtitle-ensure job for one TV episode (redo as for movies).
+func (s *Service) QueueEpisode(ctx context.Context, seriesID int64, season, episode int, redo bool) (*Job, error) {
 	path, _ := s.series.EpisodeFilePath(ctx, seriesID, season, episode)
 	if path == "" {
 		return nil, fmt.Errorf("episode has no file")
@@ -243,7 +251,7 @@ func (s *Service) QueueEpisode(ctx context.Context, seriesID int64, season, epis
 	if sm, err := s.series.Get(ctx, seriesID); err == nil {
 		title = fmt.Sprintf("%s - S%02dE%02d", sm.Title, season, episode)
 	}
-	return s.enqueue(&Job{Kind: "episode", SeriesID: seriesID, Season: season, Episode: episode, Title: title}), nil
+	return s.enqueue(&Job{Kind: "episode", SeriesID: seriesID, Season: season, Episode: episode, Title: title, Redo: redo}), nil
 }
 
 // QueueSeries enqueues an ensure job for every episode of one show that has a file but
@@ -255,7 +263,7 @@ func (s *Service) QueueSeries(ctx context.Context, seriesID int64) (int, error) 
 	}
 	n := 0
 	for _, e := range s.missingEpisodes(ctx, seriesID) {
-		if _, err := s.QueueEpisode(ctx, seriesID, e.season, e.episode); err == nil {
+		if _, err := s.QueueEpisode(ctx, seriesID, e.season, e.episode, false); err == nil {
 			n++
 		}
 	}
@@ -268,7 +276,7 @@ func (s *Service) OnMovieImported(ctx context.Context, movieID int64) {
 	if !s.settings.GetBool(ctx, keyMoviesAuto, defaultMoviesAuto) {
 		return
 	}
-	if _, err := s.QueueMovie(ctx, movieID); err != nil {
+	if _, err := s.QueueMovie(ctx, movieID, false); err != nil {
 		s.log.Debug("subtitles: import hook skipped movie", "movie_id", movieID, "err", err)
 	}
 }
@@ -284,7 +292,7 @@ func (s *Service) OnSeriesImported(ctx context.Context, seriesID int64, episodes
 	}
 	n := 0
 	for _, e := range episodes {
-		if _, err := s.QueueEpisode(ctx, seriesID, e.Season, e.Episode); err == nil {
+		if _, err := s.QueueEpisode(ctx, seriesID, e.Season, e.Episode, false); err == nil {
 			n++
 		} else {
 			s.log.Debug("subtitles: import hook skipped episode", "series_id", seriesID, "season", e.Season, "episode", e.Episode, "err", err)
@@ -313,7 +321,7 @@ func (s *Service) SweepMissing(ctx context.Context, media string) (int, error) {
 				return n, ctx.Err()
 			}
 			for _, e := range s.missingEpisodes(ctx, sm.ID) {
-				if _, err := s.QueueEpisode(ctx, sm.ID, e.season, e.episode); err == nil {
+				if _, err := s.QueueEpisode(ctx, sm.ID, e.season, e.episode, false); err == nil {
 					n++
 				}
 			}
@@ -335,7 +343,7 @@ func (s *Service) SweepMissing(ctx context.Context, media string) (int, error) {
 		if len(missingOf(langs, presentLanguages(m.MovieFilePath, langs, true))) == 0 {
 			continue
 		}
-		if _, err := s.QueueMovie(ctx, m.ID); err == nil {
+		if _, err := s.QueueMovie(ctx, m.ID, false); err == nil {
 			n++
 		}
 	}

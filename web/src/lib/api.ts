@@ -775,6 +775,7 @@ export interface SubtitleJob {
   progress?: number; // 0-100 during an AI run
   stage?: string;    // what a running job is doing
   started_at?: number; // unix seconds the worker picked it up
+  redo?: boolean; // replacing the sidecars already there
 }
 // SubtitleCoverage is the Overview's totals, from the last library pass (not a live walk).
 export interface SubtitleCoverage {
@@ -1320,8 +1321,9 @@ export const api = {
   subtitleCancelJob: (id: number) => req<{ status: string }>(`/api/v1/subtitles/jobs/${id}/cancel`, { method: "POST" }),
   subtitleClearQueue: () => req<{ cleared: number }>("/api/v1/subtitles/jobs/clear", { method: "POST" }),
   subtitleLogs: () => req<{ lines: { at: number; level: string; msg: string }[] }>("/api/v1/subtitles/logs").then((r) => r.lines),
-  subtitleQueueMovie: (id: number) => req<SubtitleJob>(`/api/v1/subtitles/library/movies/${id}`, { method: "POST" }),
-  subtitleQueueEpisode: (seriesID: number, season: number, episode: number) => req<SubtitleJob>(`/api/v1/subtitles/library/episodes/${seriesID}/${season}/${episode}`, { method: "POST" }),
+  // redo: replace the sidecars already there rather than fill in what's missing.
+  subtitleQueueMovie: (id: number, redo = false) => req<SubtitleJob>(`/api/v1/subtitles/library/movies/${id}${redo ? "?redo=1" : ""}`, { method: "POST" }),
+  subtitleQueueEpisode: (seriesID: number, season: number, episode: number, redo = false) => req<SubtitleJob>(`/api/v1/subtitles/library/episodes/${seriesID}/${season}/${episode}${redo ? "?redo=1" : ""}`, { method: "POST" }),
   subtitleQueueSeries: (seriesID: number) => req<{ queued: number }>(`/api/v1/subtitles/library/series/${seriesID}`, { method: "POST" }),
   subtitleSweep: (media: "movies" | "tv" = "movies") => req<{ queued: number }>(`/api/v1/subtitles/sweep${media === "tv" ? "?media=tv" : ""}`, { method: "POST" }),
   subtitleModels: () => req<WhisperStatus>("/api/v1/subtitles/models"),

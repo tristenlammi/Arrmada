@@ -59,13 +59,14 @@ func (a *api) handleSubtitleLogs(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"lines": logs})
 }
 
-// handleSubtitleQueueMovie queues a subtitle-ensure job for one movie.
+// handleSubtitleQueueMovie queues a subtitle-ensure job for one movie; ?redo=1 replaces
+// the sidecars already there.
 func (a *api) handleSubtitleQueueMovie(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)
 	if !ok {
 		return
 	}
-	job, err := a.deps.Subtitles.QueueMovie(r.Context(), id)
+	job, err := a.deps.Subtitles.QueueMovie(r.Context(), id, r.URL.Query().Get("redo") == "1")
 	if err != nil {
 		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -73,7 +74,8 @@ func (a *api) handleSubtitleQueueMovie(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusAccepted, job)
 }
 
-// handleSubtitleQueueEpisode queues a subtitle-ensure job for one TV episode.
+// handleSubtitleQueueEpisode queues a subtitle-ensure job for one TV episode (?redo=1 as
+// for movies).
 func (a *api) handleSubtitleQueueEpisode(w http.ResponseWriter, r *http.Request) {
 	seriesID, ok := a.pathValueID(w, r, "series")
 	if !ok {
@@ -89,7 +91,7 @@ func (a *api) handleSubtitleQueueEpisode(w http.ResponseWriter, r *http.Request)
 		a.writeError(w, http.StatusBadRequest, "invalid episode")
 		return
 	}
-	job, err := a.deps.Subtitles.QueueEpisode(r.Context(), seriesID, season, episode)
+	job, err := a.deps.Subtitles.QueueEpisode(r.Context(), seriesID, season, episode, r.URL.Query().Get("redo") == "1")
 	if err != nil {
 		a.writeError(w, http.StatusBadRequest, err.Error())
 		return

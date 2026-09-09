@@ -28,8 +28,13 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	}
 	langs := s.languages(ctx)
 	present := map[string]bool{}
-	for _, l := range presentLanguages(path, langs, job.Kind != "episode") {
-		present[strings.ToLower(l)] = true
+	if job.Redo {
+		// Make every kept language again; the sidecars there now get written over.
+		s.event("info", fmt.Sprintf("Redoing %s: replacing its existing subtitles", title))
+	} else {
+		for _, l := range presentLanguages(path, langs, job.Kind != "episode") {
+			present[strings.ToLower(l)] = true
+		}
 	}
 	canDownload := s.provider != nil && s.provider.CanDownload()
 	aiOK := s.whisper.available()
