@@ -83,3 +83,33 @@ func TestSyclFallbackIsStickyAndNotedOnce(t *testing.T) {
 		t.Error("with no oneAPI build, the portable one runs")
 	}
 }
+
+// A MULTI release carries the dub as well as the original. Transcribing "English" must
+// read the English track whatever ffmpeg would pick by default; a translation reads
+// the default (original) track.
+func TestAudioStreamForPicksTheWantedLanguage(t *testing.T) {
+	mi := &mediaInfo{Audio: []AudioTrack{
+		{Index: 0, Lang: "fre", Default: true},
+		{Index: 1, Lang: "eng", Title: "Commentary"},
+		{Index: 2, Lang: "eng"},
+	}}
+	if idx, tr := audioStreamFor(mi, "en", false); idx != 2 || tr.Lang != "eng" {
+		t.Errorf("transcribe en = stream %d (%+v), want 2 (the non-commentary English track)", idx, tr)
+	}
+	if idx, _ := audioStreamFor(mi, "fr", false); idx != 0 {
+		t.Errorf("transcribe fr = stream %d, want 0", idx)
+	}
+	if idx, _ := audioStreamFor(mi, "en", true); idx != 0 {
+		t.Errorf("translate = stream %d, want the default track 0", idx)
+	}
+	only := &mediaInfo{Audio: []AudioTrack{{Index: 0, Lang: "eng", Title: "Director's commentary"}}}
+	if idx, _ := audioStreamFor(only, "en", false); idx != 0 {
+		t.Errorf("a lone commentary track is still the English track: got %d", idx)
+	}
+	if idx, _ := audioStreamFor(mi, "de", false); idx != -1 {
+		t.Errorf("no German track: got %d, want -1 (ffmpeg's default)", idx)
+	}
+	if idx, _ := audioStreamFor(&mediaInfo{AudioLangs: []string{"eng"}}, "en", false); idx != -1 {
+		t.Errorf("streams unknown: got %d, want -1", idx)
+	}
+}

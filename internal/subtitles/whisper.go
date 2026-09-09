@@ -262,11 +262,47 @@ func (w *whisperGen) modelPath(translate bool) string {
 	return ""
 }
 
+// audioStreamFor picks the audio stream the AI should listen to: for a transcription,
+// the first track in the wanted language (a commentary track only if nothing else is);
+// for a translation, the track flagged default, else the first. -1 means ffmpeg's own
+// default, used when the file's streams aren't known.
+func audioStreamFor(mi *mediaInfo, lang string, translate bool) (int, AudioTrack) {
+	if mi == nil || len(mi.Audio) == 0 {
+		return -1, AudioTrack{}
+	}
+	if !translate {
+		pick := -1
+		for _, t := range mi.Audio {
+			if !langMatches(t.Lang, lang) {
+				continue
+			}
+			if strings.Contains(strings.ToLower(t.Title), "commentary") {
+				if pick < 0 {
+					pick = t.Index
+				}
+				continue
+			}
+			return t.Index, t
+		}
+		if pick >= 0 {
+			return pick, mi.Audio[pick]
+		}
+		return -1, AudioTrack{}
+	}
+	for _, t := range mi.Audio {
+		if t.Default {
+			return t.Index, t
+		}
+	}
+	return mi.Audio[0].Index, mi.Audio[0]
+}
+
 // generate produces an SRT for one language from a video's audio: extract 16 kHz mono,
 // cut it into chunks at silences (chunks.go), run whisper.cpp on each with DTW word
 // timestamps, and build the cues from the timed words (words.go). translate=true asks
-// whisper to translate the (foreign) audio to English.
-func (w *whisperGen) generate(ctx context.Context, ffmpeg, videoPath, srtPath, lang string, translate bool, progress func(pct int)) error {
+// whisper to translate the (foreign) audio to English. audioStream is the 0:a:N stream
+// to transcribe, or -1 for ffmpeg's default.
+func (w *whisperGen) generate(ctx context.Context, ffmpeg, videoPath, srtPath, lang string, translate bool, audioStream int, progress func(pct int)) error {
 	model := w.modelPath(translate)
 	if model == "" {
 		return fmt.Errorf("no whisper model available for %s", ifElse(translate, "translation", "transcription"))
@@ -280,9 +316,14 @@ func (w *whisperGen) generate(ctx context.Context, ffmpeg, videoPath, srtPath, l
 	wav := base + ".wav"
 	defer os.Remove(wav)
 
-	// 1. Extract mono 16 kHz PCM — what whisper expects — and confirm it's real audio.
-	if out, err := exec.CommandContext(ctx, ffmpeg, "-y", "-hide_banner", "-i", videoPath,
-		"-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav).CombinedOutput(); err != nil {
+	// 1. Extract mono 16 kHz PCM — what whisper expects — from the chosen audio stream,
+	// and confirm it's real audio.
+	extract := []string{"-y", "-hide_banner", "-i", videoPath}
+	if audioStream >= 0 {
+		extract = append(extract, "-map", fmt.Sprintf("0:a:%d", audioStream))
+	}
+	extract = append(extract, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wav)
+	if out, err := exec.CommandContext(ctx, ffmpeg, extract...).CombinedOutput(); err != nil {
 		return fmt.Errorf("extract audio: %w: %s", err, tailStr(out, 300))
 	}
 	if fi, err := os.Stat(wav); err != nil || fi.Size() < 4096 {

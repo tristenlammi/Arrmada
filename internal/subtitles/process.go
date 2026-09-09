@@ -132,11 +132,21 @@ afterDownloads:
 		if t.translate {
 			verb = "translating → en"
 		}
-		s.event("info", fmt.Sprintf("AI %s %s (%s)…", verb, title, t.lang))
+		// Which audio track: a MULTI release has the dub too, and the wrong one gives a
+		// subtitle in the wrong language under the right name.
+		stream, track := audioStreamFor(mi, t.lang, t.translate)
+		from := ""
+		if stream >= 0 {
+			from = fmt.Sprintf(" from audio track %d/%d", stream+1, len(mi.Audio))
+			if track.Lang != "" {
+				from += " (" + track.Lang + ")"
+			}
+		}
+		s.event("info", fmt.Sprintf("AI %s %s (%s)%s…", verb, title, t.lang, from))
 		started := time.Now()
 		s.update(job, func(j *Job) { j.Stage = "AI " + verb + " (" + t.lang + ")"; j.Progress = 0 })
 		onProgress := func(pct int) { s.update(job, func(j *Job) { j.Progress = pct }) }
-		if err := s.whisper.generate(ctx, s.ffmpeg, path, sidecarPath(path, strings.ToLower(t.lang)), t.lang, t.translate, onProgress); err != nil {
+		if err := s.whisper.generate(ctx, s.ffmpeg, path, sidecarPath(path, strings.ToLower(t.lang)), t.lang, t.translate, stream, onProgress); err != nil {
 			if stopped() {
 				break
 			}

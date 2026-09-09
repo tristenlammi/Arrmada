@@ -23,9 +23,21 @@ type SubTrack struct {
 // embedded subtitle tracks. That's everything the coverage engine needs to decide, per language,
 // whether to extract / OCR / download / AI-generate.
 type mediaInfo struct {
-	DurationSec float64    `json:"duration_sec"`
-	AudioLangs  []string   `json:"audio_langs,omitempty"`
-	Subs        []SubTrack `json:"subs,omitempty"`
+	DurationSec float64      `json:"duration_sec"`
+	AudioLangs  []string     `json:"audio_langs,omitempty"`
+	Audio       []AudioTrack `json:"audio,omitempty"` // every audio stream, in ffmpeg's 0:a:N order
+	Subs        []SubTrack   `json:"subs,omitempty"`
+}
+
+// AudioTrack is one audio stream: what the AI transcribes. A MULTI release carries
+// several, and ffmpeg's default pick (the first, or the one flagged default) is as
+// likely to be the dub as the original — which is how an "English" AI subtitle came
+// out in French.
+type AudioTrack struct {
+	Index   int    `json:"index"` // position among audio streams (ffmpeg's 0:a:N)
+	Lang    string `json:"lang,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Default bool   `json:"default,omitempty"`
 }
 
 // textSubCodecs are subtitle codecs we can extract straight to SRT (everything else — PGS, VOBSUB —
@@ -46,10 +58,12 @@ func probeSubs(ctx context.Context, ffprobe, path string) (*mediaInfo, error) {
 			CodecType   string `json:"codec_type"`
 			CodecName   string `json:"codec_name"`
 			Disposition struct {
-				Forced int `json:"forced"`
+				Forced  int `json:"forced"`
+				Default int `json:"default"`
 			} `json:"disposition"`
 			Tags struct {
 				Language string `json:"language"`
+				Title    string `json:"title"`
 			} `json:"tags"`
 		} `json:"streams"`
 		Format struct {
@@ -61,13 +75,21 @@ func probeSubs(ctx context.Context, ffprobe, path string) (*mediaInfo, error) {
 	}
 	mi := &mediaInfo{}
 	mi.DurationSec, _ = strconv.ParseFloat(raw.Format.Duration, 64)
-	subIdx := 0
+	subIdx, audioIdx := 0, 0
 	for _, st := range raw.Streams {
 		switch st.CodecType {
 		case "audio":
-			if l := strings.ToLower(strings.TrimSpace(st.Tags.Language)); l != "" && l != "und" {
+			l := strings.ToLower(strings.TrimSpace(st.Tags.Language))
+			if l != "" && l != "und" {
 				mi.AudioLangs = append(mi.AudioLangs, l)
 			}
+			mi.Audio = append(mi.Audio, AudioTrack{
+				Index:   audioIdx,
+				Lang:    l,
+				Title:   strings.TrimSpace(st.Tags.Title),
+				Default: st.Disposition.Default == 1,
+			})
+			audioIdx++
 		case "subtitle":
 			mi.Subs = append(mi.Subs, SubTrack{
 				Index:  subIdx,
@@ -132,7 +154,11 @@ func (s *Service) probeCached(ctx context.Context, path string) (*mediaInfo, err
 	}
 	size, mtime := fi.Size(), fi.ModTime().Unix()
 	if mi, ok := s.cache.get(ctx, path, size, mtime); ok {
-		return mi, nil
+		// Entries probed before the audio streams were recorded: probe again, once,
+		// so the AI can pick the right track rather than ffmpeg's default.
+		if len(mi.Audio) > 0 || len(mi.AudioLangs) == 0 {
+			return mi, nil
+		}
 	}
 	mi, err := probeSubs(ctx, s.ffprobe, path)
 	if err != nil {
