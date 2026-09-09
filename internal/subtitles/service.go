@@ -62,12 +62,16 @@ type Service struct {
 // used for the probe cache; ffmpeg/ffprobe drive embedded-track probing and extraction;
 // whisperModelsDir is where the local AI (whisper.cpp) model files live.
 func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *settings.Service, provider Provider, ffmpeg, ffprobe, whisperModelsDir string, log *slog.Logger) *Service {
-	return &Service{
+	s := &Service{
 		movies: mv, series: sr, settings: set, provider: provider,
 		ffmpeg: ffmpeg, ffprobe: ffprobe, cache: &probeCache{db: db},
 		whisper: detectWhisper(whisperModelsDir), log: log,
 		wake: make(chan struct{}, 1),
 	}
+	// A silent fall-back from the oneAPI build would hide a broken GPU setup behind a
+	// slow run; surface it as a warning event the first time it happens.
+	s.whisper.note = func(msg string) { s.event("warn", msg) }
+	return s
 }
 
 // Settings is the module's configuration + provider readiness for the dashboard.
@@ -78,7 +82,8 @@ type Settings struct {
 	ProviderReady bool     `json:"provider_ready"` // can search
 	CanDownload   bool     `json:"can_download"`   // can actually grab (needs account)
 	AIReady       bool     `json:"ai_ready"`       // local whisper.cpp binary + a model present
-	AIBackend     string   `json:"ai_backend"`     // "vulkan" | "cpu" | "" until the first run
+	AIBackend     string   `json:"ai_backend"`     // "sycl" | "vulkan" | "cpu" | "" until the first run
+	AINote        string   `json:"ai_note"`        // why the oneAPI build isn't in use, when it was bundled but set aside
 	// Download quota, when the provider reports one. OpenSubtitles free accounts get a
 	// small number of downloads a day; once it's spent every download fails until the
 	// reset, and the UI should say that rather than showing a run of failures.
@@ -97,6 +102,7 @@ func (s *Service) GetSettings(ctx context.Context) Settings {
 		CanDownload:    s.provider.CanDownload(),
 		AIReady:        s.whisper.available(),
 		AIBackend:      s.whisper.Backend(),
+		AINote:         s.whisper.SyclNote(),
 		QuotaRemaining: -1,
 		Pending:        s.Pending(),
 	}

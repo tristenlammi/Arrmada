@@ -21,7 +21,11 @@ import (
 // the binary or a model isn't present — the module then reports AI as unavailable instead of
 // failing, so everything builds/runs before the Dockerfile bundles whisper.
 type whisperGen struct {
-	bin         string // whisper-cli path ("" = not installed)
+	bin string // whisper-cli path: the portable build, Vulkan or CPU ("" = not installed)
+	// sycl is the Intel oneAPI build (whisper-cli-sycl), tried first when it's bundled. On
+	// an Arc card it's the only build that uses the matrix units: ggml's Vulkan backend
+	// keeps them off for Alchemist. "" when the image doesn't carry it.
+	sycl        string
 	modelsDir   string // where the GGML model files live (data dir / whisper)
 	noGPUFlag   bool   // whether this build understands --no-gpu (i.e. was built with a GPU backend)
 	noFallback  bool   // --no-fallback available
@@ -38,6 +42,46 @@ type whisperGen struct {
 	backendMu sync.Mutex
 	backend   string
 	device    string // the GPU line whisper printed ("Intel(R) Arc(tm) A380 ... matrix cores: none")
+
+	// syclOff is set the first time the oneAPI build fails or runs without a GPU; from then
+	// on the portable build is used, and syclWhy says what happened. Sticky for the life of
+	// the process: a broken driver doesn't fix itself between episodes, and retrying it on
+	// every chunk would cost a model load each time.
+	syclOff bool
+	syclWhy string
+	note    func(msg string) // where to report the switch, when the service wants to hear it
+}
+
+// pickBin is the build to run: the oneAPI one while it works, else the portable one.
+func (w *whisperGen) pickBin() string {
+	w.backendMu.Lock()
+	defer w.backendMu.Unlock()
+	if w.sycl != "" && !w.syclOff {
+		return w.sycl
+	}
+	return w.bin
+}
+
+// disableSycl retires the oneAPI build for this process and says why, once.
+func (w *whisperGen) disableSycl(why string) {
+	w.backendMu.Lock()
+	already := w.syclOff
+	w.syclOff, w.syclWhy = true, why
+	note := w.note
+	w.backendMu.Unlock()
+	if !already && note != nil {
+		note("AI: Intel oneAPI (SYCL) whisper build set aside, using the Vulkan/CPU build instead — " + why)
+	}
+}
+
+// SyclNote is why the oneAPI build isn't in use ("" while it is, or was never bundled).
+func (w *whisperGen) SyclNote() string {
+	if w == nil {
+		return ""
+	}
+	w.backendMu.Lock()
+	defer w.backendMu.Unlock()
+	return w.syclWhy
 }
 
 // Device is the GPU whisper reported, with its capability flags — "matrix cores:
@@ -51,14 +95,40 @@ func (w *whisperGen) Device() string {
 	return w.device
 }
 
-// deviceOf pulls the device line out of whisper's output: ggml prints
-// "ggml_vulkan: 0 = <device> (<driver>) | uma: .. | fp16: .. | matrix cores: <mode>".
+// deviceOf pulls the device line out of whisper's output. The Vulkan backend prints
+// "ggml_vulkan: 0 = <device> (<driver>) | uma: .. | fp16: .. | matrix cores: <mode>";
+// the SYCL backend prints a table whose first row is
+// "| 0| [level_zero:gpu:0]| Intel Arc A380 Graphics| 12.55| 128| 1024| 32| 6001M| 1.6.33276|"
+// (type, name, version, compute units, work-group, sub-group, memory, driver), and a
+// separate "SYCL_USE_XMX: yes" line for whether the build targets the matrix units.
 func deviceOf(out []byte) string {
+	xmx := ""
+	if i := bytes.Index(out, []byte("SYCL_USE_XMX: ")); i >= 0 {
+		rest := out[i+len("SYCL_USE_XMX: "):]
+		if j := bytes.IndexByte(rest, '\n'); j >= 0 {
+			rest = rest[:j]
+		}
+		xmx = strings.TrimSpace(string(rest))
+	}
 	for _, line := range bytes.Split(out, []byte("\n")) {
 		for _, p := range []string{"ggml_vulkan: 0 = ", "Vulkan0: "} {
 			if i := bytes.Index(line, []byte(p)); i >= 0 {
 				return strings.TrimSpace(string(line[i+len(p):]))
 			}
+		}
+		if t := bytes.TrimSpace(line); bytes.HasPrefix(t, []byte("| 0|")) {
+			f := strings.Split(string(t), "|")
+			if len(f) < 10 {
+				continue
+			}
+			for k := range f {
+				f[k] = strings.TrimSpace(f[k])
+			}
+			d := fmt.Sprintf("%s %s | %s CUs | %s | driver %s", f[3], f[2], f[5], f[8], f[9])
+			if xmx != "" {
+				d += " | XMX: " + xmx
+			}
+			return d
 		}
 	}
 	return ""
@@ -100,11 +170,17 @@ func threads() int {
 	return n
 }
 
-// backendOf reads which backend whisper-cli reported using. The Vulkan build prints a
-// "ggml_vulkan: Found N Vulkan devices" line at startup when it has a device; without one
-// it says nothing about Vulkan and runs on the CPU.
+// backendOf reads which backend whisper-cli reported using. whisper says
+// "whisper_backend_init_gpu: using SYCL0 backend" / "using Vulkan0 backend" when it has
+// a GPU and "no GPU found" when it hasn't; the Vulkan build also prints a
+// "ggml_vulkan: Found N Vulkan devices" line at startup when it has a device.
 func backendOf(out []byte) string {
-	if bytes.Contains(out, []byte("ggml_vulkan: Found")) || bytes.Contains(out, []byte("Vulkan0")) {
+	switch {
+	case bytes.Contains(out, []byte("no GPU found")):
+		return "cpu"
+	case bytes.Contains(out, []byte("using SYCL")):
+		return "sycl"
+	case bytes.Contains(out, []byte("using Vulkan")), bytes.Contains(out, []byte("ggml_vulkan: Found")), bytes.Contains(out, []byte("Vulkan0")):
 		return "vulkan"
 	}
 	return "cpu"
@@ -132,10 +208,16 @@ func dtwPreset(model string) string {
 
 func detectWhisper(modelsDir string) *whisperGen {
 	bin, _ := exec.LookPath("whisper-cli")
-	w := &whisperGen{bin: bin, modelsDir: modelsDir, dl: map[string]bool{}}
+	sycl, _ := exec.LookPath("whisper-cli-sycl")
+	if bin == "" {
+		// Only the oneAPI build: it's the one and only build, with nothing to fall back to.
+		bin, sycl = sycl, ""
+	}
+	w := &whisperGen{bin: bin, sycl: sycl, modelsDir: modelsDir, dl: map[string]bool{}}
 	if bin != "" {
 		// Flags differ between whisper.cpp versions; an unknown one makes whisper-cli print
-		// usage and do nothing. Probe the help text once and pass only what it knows.
+		// usage and do nothing. Probe the help text once and pass only what it knows. Both
+		// builds come from the same whisper.cpp tag, so one probe covers them.
 		out, _ := exec.Command(bin, "--help").CombinedOutput()
 		w.noGPUFlag = strings.Contains(string(out), "--no-gpu")
 		w.noFallback = strings.Contains(string(out), "--no-fallback")
@@ -155,7 +237,8 @@ func (w *whisperGen) hasModel(name string) bool {
 	return err == nil && fi.Size() > 0
 }
 
-// available reports whether generation can actually run (binary + at least one usable model).
+// available reports whether generation can actually run (a binary + at least one usable
+// model). detectWhisper guarantees bin is set whenever any build is present.
 func (w *whisperGen) available() bool {
 	return w != nil && w.bin != "" && (w.hasModel(modelTurbo) || w.hasModel(modelLarge))
 }
@@ -219,6 +302,7 @@ func (w *whisperGen) generate(ctx context.Context, ffmpeg, videoPath, srtPath, l
 	var words []word
 	noGPU := false
 	dtw := w.dtwFlag
+	bin := w.pickBin()
 	for i, c := range chunks {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -228,44 +312,59 @@ func (w *whisperGen) generate(ctx context.Context, ffmpeg, videoPath, srtPath, l
 		if err := cutChunk(ctx, ffmpeg, wav, c, cwav); err != nil {
 			return err
 		}
-		args := w.args(model, cwav, outB, lang, translate, dtw)
-		if noGPU {
-			args = append(args, "--no-gpu")
-		}
 		prog := func(pct int) {
 			if progress != nil {
 				progress(overallProgress(c, pct, total))
 			}
 		}
-		out, err := runWhisper(ctx, w.bin, args, prog)
+		run := func(b string) ([]byte, error) {
+			args := w.args(model, cwav, outB, lang, translate, dtw)
+			if noGPU {
+				args = append(args, "--no-gpu")
+			}
+			return runWhisper(ctx, b, args, prog)
+		}
+		out, err := run(bin)
+		if err != nil && bin == w.sycl && ctx.Err() == nil {
+			// The oneAPI build failed outright (no Level Zero device, a driver the runtime
+			// doesn't like, out of memory). Retire it and carry on with the portable build,
+			// for this chunk and everything after.
+			w.disableSycl("it failed: " + tailStr(out, 300))
+			bin = w.bin
+			out, err = run(bin)
+		}
 		if err != nil && dtw && ctx.Err() == nil {
 			// DTW needs the model's alignment-head preset and the backend's cooperation;
 			// if this build refuses, the words fall back to segment timing rather than
 			// the whole file failing.
 			dtw = false
-			args = w.args(model, cwav, outB, lang, translate, dtw)
-			out, err = runWhisper(ctx, w.bin, args, prog)
+			out, err = run(bin)
 		}
 		if err != nil && !noGPU && w.noGPUFlag && ctx.Err() == nil {
 			// A GPU build that can't initialise its device (driver missing in the container,
 			// /dev/dri not passed through, an out-of-memory on a small card) fails outright
 			// rather than degrading. Retry on the CPU: slower, but it produces the subtitle.
 			noGPU = true
-			out, err = runWhisper(ctx, w.bin, append(args, "--no-gpu"), prog)
+			out, err = run(bin)
 		}
 		os.Remove(cwav)
 		if err != nil {
 			os.Remove(outB + ".json")
 			return fmt.Errorf("whisper: %w: %s", err, tailStr(out, 400))
 		}
-		if i == 0 {
-			if noGPU {
-				w.setBackend("cpu")
-				w.setDevice("")
-			} else {
-				w.setBackend(backendOf(out))
-				w.setDevice(deviceOf(out))
-			}
+		// Recorded per chunk, so the status reflects whatever ran last.
+		if noGPU {
+			w.setBackend("cpu")
+			w.setDevice("")
+		} else {
+			w.setBackend(backendOf(out))
+			w.setDevice(deviceOf(out))
+		}
+		if bin == w.sycl && !noGPU && backendOf(out) != "sycl" && ctx.Err() == nil {
+			// It ran, but on the CPU: the oneAPI build saw no GPU. This chunk's output is
+			// fine; the portable build (which may have Vulkan) takes over from the next one.
+			w.disableSycl("it found no Level Zero GPU. Check /dev/dri is passed to the container and that `clinfo` inside it lists the card; the Vulkan build is used meanwhile")
+			bin = w.bin
 		}
 		data, rerr := os.ReadFile(outB + ".json")
 		os.Remove(outB + ".json")

@@ -1,0 +1,19 @@
+#!/bin/sh
+# whisper.cpp built with Intel's oneAPI (SYCL) backend, with the runtime libraries it
+# needs (SYCL, oneMKL, oneDNN, the Intel compiler runtime) bundled beside it under
+# /opt/whisper-sycl. The app tries this build first and falls back to the Vulkan/CPU
+# whisper-cli when it fails or finds no GPU.
+export LD_LIBRARY_PATH="/opt/whisper-sycl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+# Only Intel GPUs through Level Zero: never the OpenCL CPU device, never a host's
+# other card. Override from the container environment if a setup needs to.
+export ONEAPI_DEVICE_SELECTOR="${ONEAPI_DEVICE_SELECTOR:-level_zero:gpu}"
+
+# The GPU driver compiles the kernels on first use, tens of seconds for a large model,
+# and caches the result on disk. whisper-cli runs once per audio chunk, so without a
+# persistent cache every chunk would pay that again. Keep it with the models.
+export NEO_CACHE_PERSISTENT=1
+export NEO_CACHE_DIR="${NEO_CACHE_DIR:-${ARRMADA_DATA_DIR:-/data}/whisper/gpu-cache}"
+mkdir -p "$NEO_CACHE_DIR" 2>/dev/null || true
+
+exec /opt/whisper-sycl/whisper-cli "$@"

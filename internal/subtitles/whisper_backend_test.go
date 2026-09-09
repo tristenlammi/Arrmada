@@ -2,6 +2,7 @@ package subtitles
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -13,9 +14,12 @@ func TestBackendOfReadsWhisperOutput(t *testing.T) {
 		out  string
 		want string
 	}{
-		"vulkan device found": {"ggml_vulkan: Found 1 Vulkan devices:\nVulkan0: Intel(R) Arc(tm) A380 Graphics (DG2) | uma: 0 | fp16: 1\nwhisper_init_from_file_with_params_no_state: loading model", "vulkan"},
-		"cpu only build":      {"whisper_init_from_file_with_params_no_state: loading model from 'ggml-large-v3-turbo.bin'\nsystem_info: n_threads = 16", "cpu"},
-		"empty":               {"", "cpu"},
+		"vulkan device found":          {"ggml_vulkan: Found 1 Vulkan devices:\nVulkan0: Intel(R) Arc(tm) A380 Graphics (DG2) | uma: 0 | fp16: 1\nwhisper_init_from_file_with_params_no_state: loading model", "vulkan"},
+		"vulkan by whisper's own line": {"whisper_backend_init_gpu: using Vulkan0 backend\n", "vulkan"},
+		"sycl device found":            {"ggml_sycl_init: SYCL_USE_XMX: yes\nFound 1 SYCL devices:\n| 0| [level_zero:gpu:0]| Intel Arc A380 Graphics| 12.55| 128| 1024| 32| 6001M| 1.6.33276|\nwhisper_backend_init_gpu: using SYCL0 backend\n", "sycl"},
+		"gpu build, no device":         {"ggml_sycl_init: SYCL_USE_XMX: yes\nwhisper_backend_init_gpu: no GPU found\nwhisper_init_with_params_no_state: devices = 1", "cpu"},
+		"cpu only build":               {"whisper_init_from_file_with_params_no_state: loading model from 'ggml-large-v3-turbo.bin'\nsystem_info: n_threads = 16", "cpu"},
+		"empty":                        {"", "cpu"},
 	} {
 		if got := backendOf([]byte(tc.out)); got != tc.want {
 			t.Errorf("%s: backendOf = %q, want %q", name, got, tc.want)
@@ -48,5 +52,34 @@ func TestDeviceOfReadsGGMLDeviceLine(t *testing.T) {
 	}
 	if got := deviceOf([]byte("system_info: n_threads = 16")); got != "" {
 		t.Errorf("deviceOf on a CPU run = %q, want empty", got)
+	}
+	sycl := "ggml_sycl_init: SYCL_USE_XMX: yes\nFound 1 SYCL devices:\n|ID|        Device Type|                                   Name|Version|units  |group   |group|size   |       Driver version|\n|--|-------------------|---------------------------------------|-------|-------|--------|-----|-------|---------------------|\n| 0| [level_zero:gpu:0]|                Intel Arc A380 Graphics|  12.55|    128|    1024|   32|  6001M|            1.6.33276|\nwhisper_backend_init_gpu: using SYCL0 backend"
+	if got, want := deviceOf([]byte(sycl)), "Intel Arc A380 Graphics [level_zero:gpu:0] | 128 CUs | 6001M | driver 1.6.33276 | XMX: yes"; got != want {
+		t.Errorf("deviceOf(sycl) = %q, want %q", got, want)
+	}
+}
+
+// The oneAPI build is preferred while it works and retired for the process once it
+// doesn't; a note goes out exactly once.
+func TestSyclFallbackIsStickyAndNotedOnce(t *testing.T) {
+	var notes []string
+	w := &whisperGen{bin: "/usr/local/bin/whisper-cli", sycl: "/usr/local/bin/whisper-cli-sycl"}
+	w.note = func(m string) { notes = append(notes, m) }
+	if got := w.pickBin(); got != w.sycl {
+		t.Fatalf("pickBin = %q, want the oneAPI build first", got)
+	}
+	w.disableSycl("it failed: boom")
+	w.disableSycl("again")
+	if got := w.pickBin(); got != w.bin {
+		t.Errorf("pickBin after a failure = %q, want the portable build", got)
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], "boom") {
+		t.Errorf("notes = %q, want exactly one carrying the reason", notes)
+	}
+	if w.SyclNote() != "again" {
+		t.Errorf("SyclNote = %q", w.SyclNote())
+	}
+	if (&whisperGen{bin: "/usr/local/bin/whisper-cli"}).pickBin() != "/usr/local/bin/whisper-cli" {
+		t.Error("with no oneAPI build, the portable one runs")
 	}
 }

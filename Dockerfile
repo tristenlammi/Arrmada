@@ -73,9 +73,40 @@ RUN git clone --depth 1 --branch ${WHISPER_VERSION} https://github.com/ggerganov
     strip /usr/local/bin/whisper-cli && \
     (ldd /usr/local/bin/whisper-cli || true)
 
+# --- Stage 3c: whisper.cpp with Intel's oneAPI (SYCL) backend ---
+# The Vulkan build never touches an Arc A-series card's XMX matrix units: ggml's Vulkan
+# backend switches cooperative-matrix off for Alchemist outright ("performance
+# regressions"), which left a 55-minute episode taking 38 minutes on an A380. SYCL is the
+# backend Intel maintains: the whole model runs on the GPU through Level Zero with the
+# matrix units in play. Same whisper.cpp tag, built with Intel's compiler; the app runs
+# this build first and falls back to the Vulkan one when it fails or finds no GPU.
+#
+# The runtime libraries it needs (SYCL, oneMKL, oneDNN, the compiler runtime) are
+# collected from ldd into one directory, so the runtime image carries a few hundred MB
+# of libraries rather than the multi-GB toolkit. The Unified Runtime adapters are
+# dlopen'd, not linked, so they're copied by name.
+FROM intel/deep-learning-essentials:2025.3.3-0-devel-ubuntu24.04 AS whisper-sycl
+ARG WHISPER_VERSION=v1.9.3
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git cmake make ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN git clone --depth 1 --branch ${WHISPER_VERSION} https://github.com/ggerganov/whisper.cpp /src/whisper && \
+    cd /src/whisper && \
+    (. /opt/intel/oneapi/setvars.sh --force >/dev/null 2>&1 || true) && \
+    cmake -B build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+          -DGGML_SYCL=ON -DGGML_SYCL_F16=ON \
+          -DCMAKE_C_COMPILER=icx -DCMAKE_CXX_COMPILER=icpx && \
+    cmake --build build -j"$(nproc)" --target whisper-cli && \
+    mkdir -p /out/lib && cp build/bin/whisper-cli /out/whisper-cli && \
+    ldd /out/whisper-cli | awk '/=> \/opt\/intel/{print $3}' | xargs -r -I{} cp -L {} /out/lib/ && \
+    cp -L /opt/intel/oneapi/compiler/latest/lib/libur_adapter_level_zero*.so* \
+          /opt/intel/oneapi/compiler/latest/lib/libur_adapter_opencl*.so* /out/lib/ && \
+    du -sh /out/lib && ls -la /out/lib
+
 # --- Stage 4: runtime ---
 #
-# Debian + jellyfin-ffmpeg, NOT Alpine's ffmpeg package.
+# Ubuntu 24.04 + jellyfin-ffmpeg, NOT Alpine's ffmpeg package. (Ubuntu rather than
+# Debian since the SYCL build moved in: Intel publishes its Level Zero GPU driver for
+# Ubuntu releases, and jellyfin-ffmpeg is built for both.)
 #
 # Alpine's libx265 segfaults at frame zero on some newer CPUs (reproduced on a Core Ultra
 # 285K: the file decodes fine, libx264 encodes fine, VAAPI encodes fine, and libx265 dies
@@ -86,23 +117,31 @@ RUN git clone --depth 1 --branch ${WHISPER_VERSION} https://github.com/ggerganov
 # on the same hardware where Alpine's build failed all three (QSV had been exiting 171). It
 # also bundles the Intel media drivers rather than depending on whatever the base image
 # ships, which is one less thing to drift.
-FROM debian:bookworm-slim
-# gosu is Debian's su-exec: the entrypoint drops from root to a configurable PUID/PGID.
+FROM ubuntu:24.04
+# gosu is the su-exec equivalent: the entrypoint drops from root to a configurable PUID/PGID.
 # apprise (Python) is bundled for notifications — one image, 80+ services, no extra container.
-# jellyfin-ffmpeg7 brings libva and the Intel drivers it needs for /dev/dri passthrough.
-# libgomp1 is whisper-cli's OpenMP runtime; vainfo helps diagnose the GPU.
+# jellyfin-ffmpeg7 brings libva and the Intel media drivers it needs for /dev/dri passthrough.
+# libgomp1 is the Vulkan whisper-cli's OpenMP runtime; vainfo helps diagnose the GPU.
 # libvulkan1 + mesa-vulkan-drivers give whisper-cli's Vulkan backend an Intel/AMD device
 # through the same /dev/dri passthrough VAAPI uses; vulkaninfo (vulkan-tools) shows whether
 # the container can actually see it.
+# libze1 + libze-intel-gpu1 (Intel's Level Zero loader and GPU driver, from Intel's own
+# repository) are what the SYCL whisper build talks to; intel-opencl-icd rides along so
+# clinfo can show whether the compute side of the card is visible.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg gosu python3 python3-pip libgomp1 vainfo \
-        libvulkan1 mesa-vulkan-drivers vulkan-tools && \
+        libvulkan1 mesa-vulkan-drivers vulkan-tools ocl-icd-libopencl1 clinfo && \
     mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://repo.jellyfin.org/jellyfin_team.gpg.key \
         | gpg --dearmor -o /etc/apt/keyrings/jellyfin.gpg && \
-    echo "deb [signed-by=/etc/apt/keyrings/jellyfin.gpg arch=amd64] https://repo.jellyfin.org/debian bookworm main" \
+    echo "deb [signed-by=/etc/apt/keyrings/jellyfin.gpg arch=amd64] https://repo.jellyfin.org/ubuntu noble main" \
         > /etc/apt/sources.list.d/jellyfin.list && \
-    apt-get update && apt-get install -y --no-install-recommends jellyfin-ffmpeg7 && \
+    curl -fsSL https://repositories.intel.com/gpu/intel-graphics.key \
+        | gpg --dearmor -o /etc/apt/keyrings/intel-graphics.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/intel-graphics.gpg arch=amd64] https://repositories.intel.com/gpu/ubuntu noble unified" \
+        > /etc/apt/sources.list.d/intel-gpu.list && \
+    apt-get update && apt-get install -y --no-install-recommends \
+        jellyfin-ffmpeg7 libze1 libze-intel-gpu1 intel-opencl-icd && \
     rm -rf /var/lib/apt/lists/* && \
     ln -sf /usr/lib/jellyfin-ffmpeg/ffmpeg /usr/local/bin/ffmpeg && \
     ln -sf /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe && \
@@ -115,8 +154,18 @@ COPY --from=build /out/arrmada /usr/local/bin/arrmada
 COPY --from=hdrtools /usr/local/bin/dovi_tool /usr/local/bin/hdr10plus_tool /usr/local/bin/
 # whisper.cpp CLI for local AI subtitle generation (models downloaded on demand into /data/whisper).
 COPY --from=whisper /usr/local/bin/whisper-cli /usr/local/bin/whisper-cli
+# The oneAPI build and its libraries, behind a wrapper that sets the library path and
+# device selection. The app prefers it and falls back to the Vulkan build above.
+COPY --from=whisper-sycl /out/whisper-cli /opt/whisper-sycl/whisper-cli
+COPY --from=whisper-sycl /out/lib /opt/whisper-sycl/lib
+COPY docker/whisper-cli-sycl /usr/local/bin/whisper-cli-sycl
 COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh /usr/local/bin/whisper-cli-sycl && \
+    # Fail the build, not the first subtitle job, if a library the SYCL build needs
+    # didn't make it across.
+    if LD_LIBRARY_PATH=/opt/whisper-sycl/lib ldd /opt/whisper-sycl/whisper-cli | grep "not found"; then \
+        echo "whisper-cli-sycl is missing shared libraries" >&2; exit 1; fi && \
+    whisper-cli-sycl --help >/dev/null 2>&1 && whisper-cli --help >/dev/null 2>&1
 
 # Runs as root only long enough to fix data-dir ownership, then drops to PUID:PGID.
 ENV ARRMADA_HOST=0.0.0.0 \
