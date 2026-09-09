@@ -51,11 +51,14 @@ func (w *whisperGen) Device() string {
 	return w.device
 }
 
-// deviceOf pulls the "Vulkan0: <device> | ..." line out of whisper's output.
+// deviceOf pulls the device line out of whisper's output: ggml prints
+// "ggml_vulkan: 0 = <device> (<driver>) | uma: .. | fp16: .. | matrix cores: <mode>".
 func deviceOf(out []byte) string {
 	for _, line := range bytes.Split(out, []byte("\n")) {
-		if i := bytes.Index(line, []byte("Vulkan0:")); i >= 0 {
-			return strings.TrimSpace(string(line[i+len("Vulkan0:"):]))
+		for _, p := range []string{"ggml_vulkan: 0 = ", "Vulkan0: "} {
+			if i := bytes.Index(line, []byte(p)); i >= 0 {
+				return strings.TrimSpace(string(line[i+len(p):]))
+			}
 		}
 	}
 	return ""

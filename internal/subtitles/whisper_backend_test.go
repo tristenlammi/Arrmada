@@ -37,3 +37,16 @@ func TestThreadsUsesTheMachine(t *testing.T) {
 		t.Errorf("threads() = %d on a %d-core machine, want all of them", n, cpus)
 	}
 }
+
+// ggml announces the device it picked on one line; the "matrix cores" field on it is
+// what tells a slow Vulkan run apart from a fast one.
+func TestDeviceOfReadsGGMLDeviceLine(t *testing.T) {
+	out := "ggml_vulkan: Found 1 Vulkan devices:\nggml_vulkan: 0 = Intel(R) Arc(tm) A380 Graphics (DG2) (Intel open-source Mesa driver) | uma: 0 | fp16: 1 | bf16: 0 | fp4: 0 | warp size: 32 | shared memory: 65536 | int dot: 1 | matrix cores: none\nwhisper_init_from_file_with_params_no_state: loading model"
+	want := "Intel(R) Arc(tm) A380 Graphics (DG2) (Intel open-source Mesa driver) | uma: 0 | fp16: 1 | bf16: 0 | fp4: 0 | warp size: 32 | shared memory: 65536 | int dot: 1 | matrix cores: none"
+	if got := deviceOf([]byte(out)); got != want {
+		t.Errorf("deviceOf = %q, want %q", got, want)
+	}
+	if got := deviceOf([]byte("system_info: n_threads = 16")); got != "" {
+		t.Errorf("deviceOf on a CPU run = %q, want empty", got)
+	}
+}
