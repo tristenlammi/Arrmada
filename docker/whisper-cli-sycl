@@ -10,6 +10,12 @@ export LD_LIBRARY_PATH="/opt/whisper-sycl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PAT
 # Override from the container environment if a setup needs to.
 export ONEAPI_DEVICE_SELECTOR="${ONEAPI_DEVICE_SELECTOR:-level_zero:gpu;opencl:gpu}"
 
+# ggml's SYCL allocator reserves device memory through Level Zero's virtual-memory API
+# by default; the Arc driver in a container refuses that ("could not create a memory
+# object" on the first matrix multiply, verified on an A380 under Unraid). The plain
+# allocator works and costs nothing measurable here.
+export GGML_SYCL_ENABLE_VMM="${GGML_SYCL_ENABLE_VMM:-0}"
+
 # The GPU driver compiles the kernels on first use, tens of seconds for a large model,
 # and caches the result on disk. whisper-cli runs once per audio chunk, so without a
 # persistent cache every chunk would pay that again. Keep it with the models.
