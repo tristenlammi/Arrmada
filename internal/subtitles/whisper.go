@@ -33,6 +33,8 @@ type whisperGen struct {
 	dtwFlag     bool   // --dtw (token timestamps by DTW over the attention heads) available
 	jsonFull    bool   // --output-json-full available
 	flashAttn   bool   // --flash-attn available (a real speedup on GPU backends)
+	noContext   bool   // --no-context available
+	carryPrompt bool   // --carry-initial-prompt available (prompt reaches every window, not just the first)
 	dlMu        sync.Mutex
 	dl          map[string]bool // model filenames currently downloading
 
@@ -223,6 +225,8 @@ func detectWhisper(modelsDir string) *whisperGen {
 		w.noFallback = strings.Contains(string(out), "--no-fallback")
 		w.suppressNST = strings.Contains(string(out), "--suppress-nst")
 		w.flashAttn = strings.Contains(string(out), "--flash-attn")
+		w.noContext = strings.Contains(string(out), "--no-context")
+		w.carryPrompt = strings.Contains(string(out), "--carry-initial-prompt")
 		w.dtwFlag = strings.Contains(string(out), "--dtw")
 		w.jsonFull = strings.Contains(string(out), "--output-json-full")
 	}
@@ -422,8 +426,8 @@ func (w *whisperGen) generate(ctx context.Context, ffmpeg, videoPath, srtPath, l
 		return fmt.Errorf("whisper found no speech in the audio")
 	}
 
-	// 4. Words → cues → SRT, minus stock-phrase hallucinations.
-	srt := filterStockPhrases(formatSRT(shapeWordCues(words)))
+	// 4. Words → cues → SRT, minus stock-phrase hallucinations, sentences cased.
+	srt := filterStockPhrases(formatSRT(fixCasing(shapeWordCues(words), translate || isEnglish(lang))))
 	return os.WriteFile(srtPath, []byte(srt), 0o644)
 }
 
@@ -461,8 +465,24 @@ func (w *whisperGen) args(model, wav, outBase, lang string, translate, dtw bool)
 	if w.flashAttn {
 		args = append(args, "-fa")
 	}
+	// Whisper conditions each 30 s window on the text it produced for the last one, so
+	// a window that came out lowercase and unpunctuated drags the rest of the chunk
+	// with it. Decode the windows independently instead, and hand every one of them a
+	// punctuated, cased prompt to copy the style of — English only, since the prompt
+	// must be in the language being written.
+	if w.noContext {
+		args = append(args, "-nc")
+	}
+	if w.carryPrompt && (translate || isEnglish(lang)) {
+		args = append(args, "--prompt", stylePromptEnglish, "--carry-initial-prompt")
+	}
 	return args
 }
+
+// stylePromptEnglish is the initial prompt: ordinary written English with capitals and
+// punctuation, which is the style whisper then continues in. Its content is never
+// part of the output.
+const stylePromptEnglish = "Hello, how are you? I'm fine, thank you. Let's get started."
 
 // progressRe matches whisper-cli's -pp output: "whisper_print_progress_callback: progress =  25%".
 var progressRe = regexp.MustCompile(`progress\s*=\s*(\d{1,3})%`)
