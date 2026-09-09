@@ -110,26 +110,48 @@ func (w *whisperGen) probeSycl(ctx context.Context, model string) {
 	defer os.Remove(wav)
 	outBase := strings.TrimSuffix(wav, ".wav")
 	defer os.Remove(outBase + ".json")
-	args := []string{"-m", model, "-f", wav, "-t", "1", "-nf", "-ojf", "-of", outBase}
-	out, err := runWhisper(ctx, w.sycl, args, nil)
+	logPath := filepath.Join(w.modelsDir, "sycl-probe.log")
+	run := func(dev int) ([]byte, error) {
+		args := []string{"-m", model, "-f", wav, "-t", "1", "-nf", "-ojf", "-of", outBase}
+		if dev > 0 {
+			args = append(args, "-dev", strconv.Itoa(dev))
+		}
+		out, err := runWhisper(ctx, w.sycl, args, nil)
+		// The whole output, kept beside the models: the note below carries one line of
+		// it, and a crash's first line is rarely the one that says why.
+		_ = os.WriteFile(logPath, out, 0o644)
+		return out, err
+	}
+	out, err := run(0)
 	if ctx.Err() != nil {
 		w.backendMu.Lock()
 		w.syclProbed = false // try again next time
 		w.backendMu.Unlock()
 		return
 	}
+	rows := syclDevices(out)
+	dev := chooseSyclDevice(rows)
+	if dev < 0 {
+		dev = 0
+	}
+	if err != nil && dev != syclMainDevice(out) {
+		// The default device (the CPU's own graphics, when the host has one) may be what
+		// fell over, not the build. One more go, pinned to the card we'd pick anyway.
+		out, err = run(dev)
+		if ctx.Err() != nil {
+			w.backendMu.Lock()
+			w.syclProbed = false
+			w.backendMu.Unlock()
+			return
+		}
+	}
 	if err != nil {
-		w.disableSycl("its probe failed: " + tailStr(out, 300))
+		w.disableSycl(fmt.Sprintf("its probe failed: %s (full output in %s)", firstError(out), logPath))
 		return
 	}
 	if backendOf(out) != "sycl" {
 		w.disableSycl("it found no GPU (is /dev/dri passed to the container? `clinfo -l` inside it should list the card); the Vulkan build is used meanwhile")
 		return
-	}
-	rows := syclDevices(out)
-	dev := chooseSyclDevice(rows)
-	if dev < 0 {
-		dev = 0
 	}
 	w.backendMu.Lock()
 	w.syclDev = dev
@@ -148,6 +170,28 @@ func (w *whisperGen) probeSycl(ctx context.Context, model string) {
 		}
 		note("info", fmt.Sprintf("AI: oneAPI sees %d GPU devices (%s) — using %d: %s", len(rows), strings.Join(names, "; "), dev, chosen))
 	}
+}
+
+// firstError is the line of a failed run that says what went wrong — an assertion, an
+// exception, an "error" — rather than the backtrace that follows it. Falls back to
+// the tail.
+func firstError(out []byte) string {
+	for _, line := range bytes.Split(out, []byte("\n")) {
+		l := strings.TrimSpace(string(line))
+		low := strings.ToLower(l)
+		if l == "" || strings.HasPrefix(low, "whisper_") || strings.HasPrefix(low, "ggml_sycl_init") {
+			continue
+		}
+		for _, m := range []string{"ggml_assert", "what():", "exception", "error", "fail", "abort", "unsupported", "not supported"} {
+			if strings.Contains(low, m) {
+				if len(l) > 240 {
+					l = l[:240] + "…"
+				}
+				return l
+			}
+		}
+	}
+	return tailStr(out, 300)
 }
 
 // writeSilentWAV writes d of 16 kHz mono 16-bit silence.

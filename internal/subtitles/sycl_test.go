@@ -3,6 +3,7 @@ package subtitles
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -61,5 +62,16 @@ func TestWriteSilentWAV(t *testing.T) {
 	}
 	if d := wavDuration(p); d < 990*time.Millisecond || d > 1010*time.Millisecond {
 		t.Errorf("wavDuration = %v, want 1s", d)
+	}
+}
+
+// A crash's useful line is the assertion or exception, not the backtrace under it.
+func TestFirstErrorSkipsTheBacktrace(t *testing.T) {
+	out := "whisper_init_with_params_no_state: use gpu = 1\nggml_sycl_init: SYCL_USE_XMX: yes\nFound 1 SYCL devices:\n/src/ggml/src/ggml-sycl/ggml-sycl.cpp:1234: GGML_ASSERT(ptr != nullptr) failed\n[0x4dd072]\n/opt/whisper-sycl/whisper-cli[0x4e728a]\n"
+	if got := firstError([]byte(out)); !strings.Contains(got, "GGML_ASSERT") {
+		t.Errorf("firstError = %q", got)
+	}
+	if got := firstError([]byte("just\nnoise")); got != "just ⏎ noise" {
+		t.Errorf("fallback = %q", got)
 	}
 }
