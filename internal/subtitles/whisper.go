@@ -49,9 +49,11 @@ type whisperGen struct {
 	// on the portable build is used, and syclWhy says what happened. Sticky for the life of
 	// the process: a broken driver doesn't fix itself between episodes, and retrying it on
 	// every chunk would cost a model load each time.
-	syclOff bool
-	syclWhy string
-	note    func(msg string) // where to report the switch, when the service wants to hear it
+	syclOff    bool
+	syclWhy    string
+	syclProbed bool                    // the one-off device probe has run (sycl.go)
+	syclDev    int                     // the SYCL device index the probe settled on; 0 = whisper's default
+	note       func(level, msg string) // where to report on the switch, when the service wants to hear it
 }
 
 // pickBin is the build to run: the oneAPI one while it works, else the portable one.
@@ -72,7 +74,7 @@ func (w *whisperGen) disableSycl(why string) {
 	note := w.note
 	w.backendMu.Unlock()
 	if !already && note != nil {
-		note("AI: Intel oneAPI (SYCL) whisper build set aside, using the Vulkan/CPU build instead — " + why)
+		note("warn", "AI: Intel oneAPI (SYCL) whisper build set aside, using the Vulkan/CPU build instead — "+why)
 	}
 }
 
@@ -118,20 +120,18 @@ func deviceOf(out []byte) string {
 				return strings.TrimSpace(string(line[i+len(p):]))
 			}
 		}
-		if t := bytes.TrimSpace(line); bytes.HasPrefix(t, []byte("| 0|")) {
-			f := strings.Split(string(t), "|")
-			if len(f) < 10 {
-				continue
-			}
-			for k := range f {
-				f[k] = strings.TrimSpace(f[k])
-			}
-			d := fmt.Sprintf("%s %s | %s CUs | %s | driver %s", f[3], f[2], f[5], f[8], f[9])
-			if xmx != "" {
-				d += " | XMX: " + xmx
-			}
-			return d
+	}
+	// SYCL: the row of the device ggml said it used.
+	main := syclMainDevice(out)
+	for _, r := range syclDevices(out) {
+		if r.Index != main {
+			continue
 		}
+		d := fmt.Sprintf("%s %s | %d CUs | %s | driver %s", r.Name, r.Type, r.CUs, r.Mem, r.Driver)
+		if xmx != "" {
+			d += " | XMX: " + xmx
+		}
+		return d
 	}
 	return ""
 }
@@ -347,6 +347,9 @@ func (w *whisperGen) generate(ctx context.Context, ffmpeg, videoPath, srtPath, l
 	var words []word
 	noGPU := false
 	dtw := w.dtwFlag
+	// Settle which device the oneAPI build should use (and whether it works here)
+	// before spending a chunk on it.
+	w.probeSycl(ctx, model)
 	bin := w.pickBin()
 	for i, c := range chunks {
 		if ctx.Err() != nil {
@@ -366,6 +369,9 @@ func (w *whisperGen) generate(ctx context.Context, ffmpeg, videoPath, srtPath, l
 			args := w.args(model, cwav, outB, lang, translate, dtw)
 			if noGPU {
 				args = append(args, "--no-gpu")
+			}
+			if b == w.sycl && w.syclDev > 0 {
+				args = append(args, "-dev", strconv.Itoa(w.syclDev))
 			}
 			return runWhisper(ctx, b, args, prog)
 		}

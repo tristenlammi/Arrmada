@@ -70,7 +70,7 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 	}
 	// A silent fall-back from the oneAPI build would hide a broken GPU setup behind a
 	// slow run; surface it as a warning event the first time it happens.
-	s.whisper.note = func(msg string) { s.event("warn", msg) }
+	s.whisper.note = func(level, msg string) { s.event(level, msg) }
 	return s
 }
 

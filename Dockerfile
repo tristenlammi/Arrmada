@@ -100,6 +100,15 @@ RUN git clone --depth 1 --branch ${WHISPER_VERSION} https://github.com/ggerganov
     ldd /out/whisper-cli | awk '/=> \/opt\/intel/{print $3}' | xargs -r -I{} cp -L {} /out/lib/ && \
     cp -L /opt/intel/oneapi/compiler/latest/lib/libur_adapter_level_zero*.so* \
           /opt/intel/oneapi/compiler/latest/lib/libur_adapter_opencl*.so* /out/lib/ && \
+    # The adapters have dependencies of their own that the binary doesn't (libumf, for
+    # one): sweep those too, repeating until nothing new turns up.
+    for pass in 1 2 3; do \
+        for f in /out/lib/*.so*; do ldd "$f" | awk '/=> \/opt\/intel/{print $3}'; done | sort -u \
+            | xargs -r -I{} cp -Ln {} /out/lib/; \
+    done && \
+    for f in /out/whisper-cli /out/lib/libur_adapter_*.so.0; do \
+        if LD_LIBRARY_PATH=/out/lib ldd "$f" | grep "not found"; then echo "$f: unresolved" >&2; exit 1; fi; \
+    done && \
     du -sh /out/lib && ls -la /out/lib
 
 # --- Stage 4: runtime ---
@@ -162,9 +171,12 @@ COPY docker/whisper-cli-sycl /usr/local/bin/whisper-cli-sycl
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh /usr/local/bin/whisper-cli-sycl && \
     # Fail the build, not the first subtitle job, if a library the SYCL build needs
-    # didn't make it across.
-    if LD_LIBRARY_PATH=/opt/whisper-sycl/lib ldd /opt/whisper-sycl/whisper-cli | grep "not found"; then \
-        echo "whisper-cli-sycl is missing shared libraries" >&2; exit 1; fi && \
+    # didn't make it across — the run-time-loaded adapters included, since a missing
+    # dependency of theirs shows up only as "No device of requested type available".
+    for f in /opt/whisper-sycl/whisper-cli /opt/whisper-sycl/lib/libur_adapter_*.so.0; do \
+        if LD_LIBRARY_PATH=/opt/whisper-sycl/lib ldd "$f" | grep "not found"; then \
+            echo "$f is missing shared libraries" >&2; exit 1; fi; \
+    done && \
     whisper-cli-sycl --help >/dev/null 2>&1 && whisper-cli --help >/dev/null 2>&1
 
 # Runs as root only long enough to fix data-dir ownership, then drops to PUID:PGID.

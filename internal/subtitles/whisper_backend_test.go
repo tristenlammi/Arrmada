@@ -64,7 +64,7 @@ func TestDeviceOfReadsGGMLDeviceLine(t *testing.T) {
 func TestSyclFallbackIsStickyAndNotedOnce(t *testing.T) {
 	var notes []string
 	w := &whisperGen{bin: "/usr/local/bin/whisper-cli", sycl: "/usr/local/bin/whisper-cli-sycl"}
-	w.note = func(m string) { notes = append(notes, m) }
+	w.note = func(_, m string) { notes = append(notes, m) }
 	if got := w.pickBin(); got != w.sycl {
 		t.Fatalf("pickBin = %q, want the oneAPI build first", got)
 	}
