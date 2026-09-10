@@ -353,7 +353,9 @@ func (s *Service) AtCeiling(ctx context.Context, ref, currentRelease string, siz
 		return false
 	}
 
-	curBr := BitrateMbps(sizeGB, runtimeMin) * codecEfficiency(cur.Codec)
+	// Raw, like the ceiling itself (Evaluate): the question is whether a permitted
+	// release can be the required step above this one.
+	curBr := BitrateMbps(sizeGB, runtimeMin)
 	pct := sp.UpgradeMinPercent
 	if pct < MinUpgradePercent {
 		pct = MinUpgradePercent

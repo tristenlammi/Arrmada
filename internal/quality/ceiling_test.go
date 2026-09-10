@@ -44,9 +44,9 @@ func TestAtCeilingUsesBitrateCapAndStep(t *testing.T) {
 		{"plenty of headroom", "Show.S01E01.1080p.WEB-DL.H.264-GRP", 10, false},
 		// Already over the ceiling itself: certainly nothing better is permitted.
 		{"already above the cap", "Show.S01E01.1080p.WEB-DL.H.264-GRP", 35, true},
-		// x265 counts for 1.6× its raw bitrate, so 20 raw is 32 H.264-equivalent — the same
-		// units the cap is expressed in. Judging it raw would wrongly call it upgradable.
-		{"x265 is judged in H.264-equivalent terms", "Show.S01E01.1080p.WEB-DL.x265-GRP", 20, true},
+		// The ceiling is raw bitrate whatever the codec: 20 × 1.25 = 25 is still under 30,
+		// so a better permitted x265 encode can exist.
+		{"x265 is judged on its raw bitrate like the cap", "Show.S01E01.1080p.WEB-DL.x265-GRP", 20, false},
 	}
 	for _, tc := range cases {
 		got := s.AtCeiling(ctx, ref, tc.release, sizeForBitrate(tc.mbps, runtime), runtime)

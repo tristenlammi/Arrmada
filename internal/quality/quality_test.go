@@ -199,3 +199,63 @@ func TestRequiredFormatRejects(t *testing.T) {
 		t.Error("with nothing carrying the required format there is no winner")
 	}
 }
+
+// The ceiling is the number the user typed, against the raw bitrate: a 25 Mbps HEVC
+// release is under a 40 Mbps ceiling however efficient the codec.
+func TestBitrateCapIsRaw(t *testing.T) {
+	profile := Profile{Name: "4K, 40 cap", AllowedResolutions: []parser.Resolution{parser.Res2160p, parser.Res1080p}, BitrateCapMbps: 40}
+	e := NewDefaultEngine()
+	hevc := NewCandidate("Iron.Lung.2026.2160p.WEB-DL.DDP5.1.HDR.H.265-SCOPE", 22, 100).WithRuntime(120) // ≈26 Mbps raw
+	avc := NewCandidate("Iron.Lung.2026.2160p.WEBRip.x264-CREATiVE24", 44, 100).WithRuntime(120)         // ≈52 Mbps raw
+	if ev := e.Evaluate(profile, hevc); !ev.Eligible {
+		t.Errorf("26 Mbps HEVC rejected under a 40 Mbps ceiling: %s", ev.RejectReason)
+	}
+	if ev := e.Evaluate(profile, avc); ev.Eligible || !strings.Contains(ev.RejectReason, "ceiling") {
+		t.Errorf("52 Mbps should be over a 40 Mbps ceiling: %+v", ev)
+	}
+	d := e.Decide(profile, []Candidate{hevc, avc, NewCandidate("Iron.Lung.2026.1080p.WEBRip.10Bit.DDP5.1.x265-NeoNoir", 1.2, 100).WithRuntime(120)})
+	if d.Winner == nil || d.Winner.Candidate.Release.Group != "SCOPE" {
+		t.Errorf("the 4K HEVC under the ceiling should win, got %s", winnerGroup(d))
+	}
+}
+
+// Preferring a format is a tie-breaker between comparable encodes: it must not pick a
+// 1.4 Mbps HEVC file over a 9 Mbps H.264 one, but a 20 GB HEVC over a 22 GB H.264 is fine.
+func TestFormatBonusWaivedOnBitrateCollapse(t *testing.T) {
+	profile := Profile{Name: "1080p, prefers HEVC", AllowedResolutions: []parser.Resolution{parser.Res1080p}, FormatScores: map[string]int{"HEVC": 50}}
+	e := NewDefaultEngine()
+	tiny := NewCandidate("Iron.Lung.2026.1080p.WEBRip.10Bit.DDP5.1.x265-NeoNoir", 1.2, 100).WithRuntime(120)
+	big := NewCandidate("Iron.Lung.2026.1080p.WEB-DL.DDP5.1.H.264-SCOPE", 8.1, 100).WithRuntime(120)
+	d := e.Decide(profile, []Candidate{tiny, big})
+	if d.Winner == nil || d.Winner.Candidate.Release.Group != "SCOPE" {
+		t.Errorf("a collapsed-bitrate HEVC must not win on the format bonus alone: %s", winnerGroup(d))
+	}
+	for _, ev := range d.Eligible {
+		if ev.Candidate.Release.Group == "NeoNoir" && !ev.BonusWaived {
+			t.Error("the tiny release's bonus should be marked waived")
+		}
+	}
+	comparable := NewCandidate("Iron.Lung.2026.1080p.WEB-DL.DDP5.1.x265-GRP", 20, 100).WithRuntime(120)
+	bigger := NewCandidate("Iron.Lung.2026.1080p.WEB-DL.DDP5.1.H.264-SCOPE", 22, 100).WithRuntime(120)
+	if d := e.Decide(profile, []Candidate{comparable, bigger}); d.Winner == nil || d.Winner.Candidate.Release.Group != "GRP" {
+		t.Errorf("a comparable HEVC keeps its preference: %s", winnerGroup(d))
+	}
+	// No runtimes: nothing to compare, the preference stands.
+	if d := e.Decide(profile, []Candidate{NewCandidate("Movie.2024.1080p.WEB-DL.x265-HEVCGRP", 1, 100), NewCandidate("Movie.2024.1080p.WEB-DL.x264-AVCGRP", 8, 100)}); d.Winner == nil || d.Winner.Candidate.Release.Group != "HEVCGRP" {
+		t.Errorf("without runtimes the bonus is untouched: %s", winnerGroup(d))
+	}
+}
+
+// The reasons say what decided it: a small-size lean is not "highest bitrate".
+func TestWhyReasonsNameTheSizeLean(t *testing.T) {
+	lean := Profile{Name: "lean", BitrateCapMbps: 40, SmallBias: 0.4}
+	ev := Evaluation{Candidate: NewCandidate("Movie.2024.1080p.WEB-DL.x264-GRP", 5, 100)}
+	joined := strings.Join(whyReasons(lean, ev), " | ")
+	if !strings.Contains(joined, "Best quality for the size") || strings.Contains(joined, "Highest bitrate") {
+		t.Errorf("reasons = %q", joined)
+	}
+	capped := Profile{Name: "cap", BitrateCapMbps: 40}
+	if joined := strings.Join(whyReasons(capped, ev), " | "); !strings.Contains(joined, "Highest bitrate under your 40 Mbps ceiling") {
+		t.Errorf("reasons = %q", joined)
+	}
+}

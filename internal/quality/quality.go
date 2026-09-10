@@ -245,6 +245,12 @@ type Evaluation struct {
 	SizeScore    int       `json:"size_score"`
 	Total        int       `json:"total"`
 	Matched      []string  `json:"matched,omitempty"` // preferred formats that matched
+	// PreferBonus is the part of FormatScore that came from preferences (positive
+	// format and keyword scores). Decide takes it back when the release's bitrate has
+	// collapsed against the best alternative: preferring HEVC must not pick a 1 Mbps
+	// file over a 9 Mbps one. BonusWaived says that happened.
+	PreferBonus int  `json:"prefer_bonus,omitempty"`
+	BonusWaived bool `json:"bonus_waived,omitempty"`
 	// Avoided is set when the release carries a format the profile scores negatively (the
 	// "Avoid" toggle). Such a release drops to a lower tier: it's only ever the winner when
 	// no non-avoided release is eligible, so "Avoid Dolby Vision" means "never pick DV while
@@ -299,10 +305,12 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 	// Bitrate ceiling (length-independent). Only applies when we know the runtime; without it
 	// we can't turn a file size into a bitrate, so the cap is skipped rather than guessed.
 	if p.BitrateCapMbps > 0 {
-		// Compared in H.264-equivalent terms: the ceiling is about picture quality, and an
-		// HEVC release at the same raw bitrate carries considerably more of it.
-		if br := c.effectiveBitrateMbps(); br > p.BitrateCapMbps {
-			ev.RejectReason = fmt.Sprintf("Over your %.0f Mbps ceiling (%.1f Mbps H.264-equivalent)", p.BitrateCapMbps, br)
+		// The raw number, in the units the user typed. A ceiling is set to bound file
+		// size or streaming bandwidth, and for that a bit is a bit; judging it in
+		// H.264-equivalent terms threw out 25 Mbps HEVC releases as "over 40". The codec
+		// equivalence stays where it belongs, in deciding what counts as an upgrade.
+		if br := c.bitrateMbps(); br > p.BitrateCapMbps {
+			ev.RejectReason = fmt.Sprintf("Over your %.0f Mbps ceiling (%.1f Mbps)", p.BitrateCapMbps, br)
 			return ev
 		}
 	}
@@ -340,6 +348,7 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 		ev.FormatScore += score
 		if score > 0 {
 			ev.Matched = append(ev.Matched, name)
+			ev.PreferBonus += score
 		} else if score < 0 {
 			ev.Avoided = true
 			ev.AvoidedFormats = append(ev.AvoidedFormats, name)
@@ -354,6 +363,7 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 		ev.FormatScore += k.Score
 		if k.Score > 0 {
 			ev.Matched = append(ev.Matched, k.Term)
+			ev.PreferBonus += k.Score
 		}
 	}
 	// A required format that carries no score still counts as matched, so the
@@ -419,6 +429,7 @@ func (e *Engine) Decide(p Profile, cands []Candidate) Decision {
 			d.Rejected = append(d.Rejected, ev)
 		}
 	}
+	waiveCollapsedBonuses(d.Eligible)
 	// Rank by score, then by bitrate. For one movie every candidate is the same
 	// runtime, so a larger file = higher bitrate = better — unless the profile
 	// expresses any small-size preference, in which case smaller wins the tie.
@@ -469,6 +480,38 @@ func (e *Engine) Decide(p Profile, cands []Candidate) Decision {
 	return d
 }
 
+// bonusCollapseRatio: a release keeps its preference bonuses only while its bitrate
+// (in H.264-equivalent terms, so HEVC gets its due) is at least this fraction of the
+// best eligible release's. Below it the preference is waived — a preferred format is
+// a tie-breaker between comparable encodes, not a licence to pick a file with a
+// fraction of the picture.
+const bonusCollapseRatio = 1.0 / 3.0
+
+// waiveCollapsedBonuses strips the preference bonuses from releases whose bitrate has
+// collapsed against the best one on offer. Needs runtimes; without them nothing changes.
+func waiveCollapsedBonuses(evs []Evaluation) {
+	best := 0.0
+	for _, ev := range evs {
+		if br := ev.Candidate.effectiveBitrateMbps(); br > best {
+			best = br
+		}
+	}
+	if best <= 0 {
+		return
+	}
+	for i := range evs {
+		ev := &evs[i]
+		if ev.PreferBonus <= 0 {
+			continue
+		}
+		if br := ev.Candidate.effectiveBitrateMbps(); br > 0 && br < best*bonusCollapseRatio {
+			ev.Total -= ev.PreferBonus
+			ev.FormatScore -= ev.PreferBonus
+			ev.BonusWaived = true
+		}
+	}
+}
+
 func whyReasons(p Profile, e Evaluation) []string {
 	r := e.Candidate.Release
 	var out []string
@@ -482,13 +525,15 @@ func whyReasons(p Profile, e Evaluation) []string {
 	for _, m := range e.Matched {
 		out = append(out, m+" — matched")
 	}
+	// Say what actually decided it: any small-size lean picks the smaller of equals,
+	// so "highest bitrate" would be untrue however the ceiling is set.
 	switch {
 	case p.SmallBias >= 4:
 		out = append(out, "Smallest watchable size")
-	case p.BitrateCapMbps > 0:
-		out = append(out, fmt.Sprintf("Highest bitrate under your %.0f Mbps ceiling", p.BitrateCapMbps))
 	case p.SmallBias > 0:
 		out = append(out, "Best quality for the size")
+	case p.BitrateCapMbps > 0:
+		out = append(out, fmt.Sprintf("Highest bitrate under your %.0f Mbps ceiling", p.BitrateCapMbps))
 	default:
 		out = append(out, "Highest bitrate available")
 	}
