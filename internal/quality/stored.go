@@ -31,6 +31,7 @@ type StoredProfile struct {
 	SmallBias          float64        `json:"small_bias"`
 	MinFormatScore     int            `json:"min_format_score"`
 	FormatScores       map[string]int `json:"format_scores"`
+	RequiredFormats    []string       `json:"required_formats,omitempty"` // formats a release must have (see Profile.Required)
 	CustomFormats      []CustomFormat `json:"custom_formats,omitempty"`
 	Keywords           []Keyword      `json:"keywords,omitempty"` // scored terms matched in the release name
 	Rejected           []string       `json:"rejected,omitempty"` // hard-reject terms (incl. file types)
@@ -94,6 +95,7 @@ func (sp StoredProfile) ToProfile() Profile {
 		BitrateCapMbps:     sp.BitrateCapMbps,
 		SmallBias:          sp.SmallBias,
 		FormatScores:       sp.FormatScores,
+		Required:           sp.RequiredFormats,
 		MinFormatScore:     sp.MinFormatScore,
 		Keywords:           sp.Keywords,
 		Rejected:           sp.Rejected,
@@ -134,9 +136,12 @@ func (sp StoredProfile) Summary() string {
 	if sp.BitrateCapMbps > 0 {
 		parts = append(parts, fmt.Sprintf("≤%.0f Mbps", sp.BitrateCapMbps))
 	}
+	if len(sp.RequiredFormats) > 0 {
+		parts = append(parts, "requires "+strings.Join(sp.RequiredFormats, ", "))
+	}
 	var prefs []string
 	for name, score := range sp.FormatScores {
-		if score > 0 {
+		if score > 0 && !containsStr(sp.RequiredFormats, name) {
 			prefs = append(prefs, name)
 		}
 	}

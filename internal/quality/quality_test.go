@@ -170,3 +170,32 @@ func TestPrefersFormatsOverBitrate(t *testing.T) {
 		t.Fatalf("expected the format-rich release to win over the bigger plain one, got %+v", winnerGroup(d))
 	}
 }
+
+// A required format is a gate, not a preference: without it a release is rejected
+// however big or well-scored it is, and the reason names the format.
+func TestRequiredFormatRejects(t *testing.T) {
+	profile := Profile{
+		Name:               "4K, Atmos required",
+		AllowedResolutions: []parser.Resolution{parser.Res2160p},
+		Required:           []string{"Atmos"},
+		FormatScores:       map[string]int{"Dolby Vision": 55},
+	}
+	cands := []Candidate{
+		NewCandidate("Movie.2024.2160p.BluRay.REMUX.DV.HDR10.DTS-HD.MA-BIG", 80, 100), // bigger, DV, no Atmos
+		NewCandidate("Movie.2024.2160p.WEB-DL.DDP5.1.Atmos.x265-SMALL", 20, 100),      // Atmos
+	}
+	d := NewDefaultEngine().Decide(profile, cands)
+	if d.Winner == nil || d.Winner.Candidate.Release.Group != "SMALL" {
+		t.Fatalf("the Atmos release must win, got %+v", winnerGroup(d))
+	}
+	if len(d.Rejected) != 1 || !strings.Contains(d.Rejected[0].RejectReason, "Atmos") {
+		t.Errorf("the non-Atmos release should be rejected naming Atmos: %+v", d.Rejected)
+	}
+	if !containsStr(d.Winner.Matched, "Atmos") {
+		t.Errorf("required format should show as matched: %v", d.Winner.Matched)
+	}
+	none := NewDefaultEngine().Decide(profile, cands[:1])
+	if none.Winner != nil {
+		t.Error("with nothing carrying the required format there is no winner")
+	}
+}

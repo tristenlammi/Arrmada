@@ -65,6 +65,7 @@ function emptyProfile(media: string): StoredProfile {
     small_bias: 0,
     min_format_score: 0,
     format_scores: {},
+    required_formats: [],
     custom_formats: [],
     keywords: [],
     rejected: [...EXECUTABLE_TYPES], // reject executables by default (malware safety)
@@ -321,6 +322,19 @@ function Builder({ formats, initial, onCancel, onSaved }: { formats: FormatInfo[
     patch({ format_scores: next });
   };
 
+  // Require is a gate: releases without the format are rejected outright, where Prefer
+  // only ranks them lower. A required format keeps a preference score too, so among
+  // releases that have it the ranking is unchanged.
+  const setRequired = (name: string, on: boolean) => {
+    const cur = sp.required_formats ?? [];
+    patch({ required_formats: on ? [...cur.filter((n) => n !== name), name] : cur.filter((n) => n !== name) });
+  };
+  const setFormatState = (name: string, score: number, required: boolean) => {
+    setFormatScore(name, score);
+    setRequired(name, required);
+  };
+  const isRequired = (name: string) => (sp.required_formats ?? []).includes(name);
+
   const videoFormats = formats.filter((f) => f.group === "hdr" || f.group === "codec");
   const audioFormats = formats.filter((f) => f.group === "audio");
 
@@ -405,18 +419,18 @@ function Builder({ formats, initial, onCancel, onSaved }: { formats: FormatInfo[
           </div>
 
           <SectionLabel>Video</SectionLabel>
-          <p className="-mt-1 mb-2 text-[10.5px] text-ink-faint">Prefer one HDR format. You can Avoid the one your TV can't play (e.g. Dolby Vision) while Preferring HDR10.</p>
+          <p className="-mt-1 mb-2 text-[10.5px] text-ink-faint">Prefer one HDR format. You can Avoid the one your TV can't play (e.g. Dolby Vision) while Preferring HDR10. Require means a release without it is never grabbed.</p>
           <div className="flex flex-col gap-2">
             {videoFormats.map((f) => (
-              <FormatToggle key={f.name} format={f} score={sp.format_scores[f.name] ?? 0} advanced={advanced} onChange={(s) => setFormatScore(f.name, s)} />
+              <FormatToggle key={f.name} format={f} score={sp.format_scores[f.name] ?? 0} required={isRequired(f.name)} advanced={advanced} onChange={(s, req) => setFormatState(f.name, s, req)} />
             ))}
           </div>
 
           <SectionLabel>Audio</SectionLabel>
-          <p className="-mt-1 mb-2 text-[10.5px] text-ink-faint">Pick one preferred audio format.</p>
+          <p className="-mt-1 mb-2 text-[10.5px] text-ink-faint">Pick one preferred audio format, or Require it (nothing without it is grabbed — for TV that can rule out most episodes).</p>
           <div className="flex flex-col gap-2">
             {audioFormats.map((f) => (
-              <FormatToggle key={f.name} format={f} score={sp.format_scores[f.name] ?? 0} advanced={advanced} onChange={(s) => setFormatScore(f.name, s)} />
+              <FormatToggle key={f.name} format={f} score={sp.format_scores[f.name] ?? 0} required={isRequired(f.name)} advanced={advanced} onChange={(s, req) => setFormatState(f.name, s, req)} />
             ))}
           </div>
 
@@ -695,12 +709,13 @@ function RejectEditor({ rejected, onChange }: { rejected: string[]; onChange: (r
   );
 }
 
-function FormatToggle({ format, score, advanced, onChange }: { format: FormatInfo; score: number; advanced: boolean; onChange: (s: number) => void }) {
-  const state = score > 0 ? "prefer" : score < 0 ? "avoid" : "ignore";
-  const opts: { key: string; label: string; val: number; tone: string }[] = [
-    { key: "avoid", label: "Avoid", val: -50, tone: "var(--reject)" },
-    { key: "ignore", label: "Neutral", val: 0, tone: "var(--ink-faint)" },
-    { key: "prefer", label: "Prefer", val: 50, tone: "var(--good)" },
+function FormatToggle({ format, score, required, advanced, onChange }: { format: FormatInfo; score: number; required: boolean; advanced: boolean; onChange: (s: number, required: boolean) => void }) {
+  const state = required ? "require" : score > 0 ? "prefer" : score < 0 ? "avoid" : "ignore";
+  const opts: { key: string; label: string; val: number; req: boolean; tone: string }[] = [
+    { key: "avoid", label: "Avoid", val: -50, req: false, tone: "var(--reject)" },
+    { key: "ignore", label: "Neutral", val: 0, req: false, tone: "var(--ink-faint)" },
+    { key: "prefer", label: "Prefer", val: 50, req: false, tone: "var(--good)" },
+    { key: "require", label: "Require", val: 50, req: true, tone: "var(--accent)" },
   ];
   return (
     <div className="flex items-center gap-3 rounded-lg p-2.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
@@ -709,11 +724,16 @@ function FormatToggle({ format, score, advanced, onChange }: { format: FormatInf
         <div className="truncate text-[11px] text-ink-faint" title={format.description}>{format.description}</div>
       </div>
       {advanced ? (
-        <input type="number" value={score} onChange={(e) => onChange(Number(e.target.value))} className="w-[72px] rounded-lg px-2 py-1 text-right font-mono text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+        <div className="flex items-center gap-2">
+          <label className="flex items-center gap-1 text-[10.5px] text-ink-faint" title="Reject any release without this format">
+            <input type="checkbox" checked={required} onChange={(e) => onChange(score, e.target.checked)} /> required
+          </label>
+          <input type="number" value={score} onChange={(e) => onChange(Number(e.target.value), required)} className="w-[72px] rounded-lg px-2 py-1 text-right font-mono text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+        </div>
       ) : (
         <div className="inline-flex rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
           {opts.map((o) => (
-            <button key={o.key} onClick={() => onChange(o.val)} className="rounded-md px-2.5 py-1 text-[11px] font-semibold" style={{ background: state === o.key ? o.tone : "transparent", color: state === o.key ? "#fff" : "var(--ink-faint)" }}>{o.label}</button>
+            <button key={o.key} onClick={() => onChange(o.val, o.req)} className="rounded-md px-2.5 py-1 text-[11px] font-semibold" style={{ background: state === o.key ? o.tone : "transparent", color: state === o.key ? "#fff" : "var(--ink-faint)" }}>{o.label}</button>
           ))}
         </div>
       )}

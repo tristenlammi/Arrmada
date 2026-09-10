@@ -161,10 +161,13 @@ type Profile struct {
 	BitrateCapMbps     float64             `json:"bitrate_cap_mbps,omitempty"` // 0 = no cap; rejects releases whose bitrate exceeds it (length-independent)
 	SmallBias          float64             `json:"small_bias,omitempty"`       // score penalty per GB; any value > 0 also breaks score ties toward the smaller file (0 = ties go to the larger, i.e. higher-bitrate, file)
 	FormatScores       map[string]int      `json:"format_scores,omitempty"`
-	MinFormatScore     int                 `json:"min_format_score,omitempty"`
-	Keywords           []Keyword           `json:"keywords,omitempty"`
-	Rejected           []string            `json:"rejected,omitempty"`
-	MinSeeders         int                 `json:"min_seeders,omitempty"`
+	// Required names formats a release must carry to be eligible at all — "Atmos"
+	// here rejects everything without an Atmos track, where a score only prefers it.
+	Required       []string  `json:"required_formats,omitempty"`
+	MinFormatScore int       `json:"min_format_score,omitempty"`
+	Keywords       []Keyword `json:"keywords,omitempty"`
+	Rejected       []string  `json:"rejected,omitempty"`
+	MinSeeders     int       `json:"min_seeders,omitempty"`
 }
 
 // Candidate is a release under consideration (release + indexer metadata).
@@ -315,6 +318,13 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 		}
 	}
 
+	for _, name := range p.Required {
+		if f, ok := e.formats[name]; ok && !f.Matches(r) {
+			ev.RejectReason = "No " + name + " — your profile requires it"
+			return ev
+		}
+	}
+
 	ev.QualityScore = qualityScore(r)
 	// Baseline quality signal: notorious low-quality groups (over-compressed
 	// rips) rank below proper encodes of the same resolution/source. They stay
@@ -344,6 +354,13 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 		ev.FormatScore += k.Score
 		if k.Score > 0 {
 			ev.Matched = append(ev.Matched, k.Term)
+		}
+	}
+	// A required format that carries no score still counts as matched, so the
+	// recommendation can say the release has it.
+	for _, name := range p.Required {
+		if _, ok := e.formats[name]; ok && !containsStr(ev.Matched, name) {
+			ev.Matched = append(ev.Matched, name)
 		}
 	}
 	sort.Strings(ev.Matched) // stable output
