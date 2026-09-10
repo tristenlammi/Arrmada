@@ -12,8 +12,8 @@ import (
 // Search button on its page, which is the right default for a book nobody carries. A
 // library catalogued from disk is different: hundreds of books that each have one
 // edition, never searched at all, or searched twice years before the other edition
-// was ever uploaded. This is the manual sweep for that case — every monitored book
-// that lacks an edition its profile wants, back-off ignored, one after another with a
+// was ever uploaded. This is the manual sweep for that case — every book, monitored
+// or not, that lacks an edition its profile wants, back-off ignored, one after another with a
 // pause between so the indexers aren't hammered. It only ever fills a gap: a book
 // with both editions is not touched, and nothing on disk is replaced.
 
@@ -56,8 +56,10 @@ func (c *Coordinator) StartBookSweep(ctx context.Context) bool {
 	return true
 }
 
-// MissingBookEditions counts the books the sweep would search: monitored, and lacking
-// an edition their profile wants.
+// MissingBookEditions counts the books the sweep would search: every book lacking an
+// edition its profile wants. Monitoring is left out on purpose — it governs the
+// automatic sweep, and a library catalogued from disk is mostly unmonitored; this
+// sweep is the user asking.
 func (c *Coordinator) MissingBookEditions(ctx context.Context) int {
 	return len(c.bookSweepTargets(ctx))
 }
@@ -72,9 +74,6 @@ func (c *Coordinator) bookSweepTargets(ctx context.Context) []books.Book {
 	}
 	var out []books.Book
 	for _, b := range all {
-		if !b.Monitored {
-			continue
-		}
 		sp := c.bookProfile(ctx, b.QualityProfile)
 		wantEbook, wantAudio := books.WantedEditions(sp.FormatScores)
 		if (wantEbook && b.Ebook == nil) || (wantAudio && b.Audiobook == nil) {

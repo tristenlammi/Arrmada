@@ -115,8 +115,9 @@ export function Books() {
       flash(r.started ? "Searching for every missing edition — this takes a while, one book at a time." : "A sweep is already running.");
     } catch (e) { flash((e as Error).message); }
   };
-  // Books the sweep would search: monitored, lacking an edition their profile wants.
-  const missingEditions = list.filter((b) => b.monitored && ((b.want_ebook && !b.ebook) || (b.want_audiobook && !b.audiobook))).length;
+  // Books the sweep would search: any lacking an edition its profile wants. Monitoring
+  // only governs the automatic sweep; a library catalogued from disk is mostly unmonitored.
+  const missingEditions = list.filter((b) => (b.want_ebook && !b.ebook) || (b.want_audiobook && !b.audiobook)).length;
   // Dismissing the re-match report: keep a book on its current entry (it drops out of
   // the count and the next run), or just hide the panel until the next run.
   // Hiding the panel sticks for this run (keyed by when it started), so it doesn't
@@ -253,7 +254,7 @@ export function Books() {
               </button>
             )}
             {(missingEditions > 0 || sweep?.running) && (
-              <button onClick={startSweep} disabled={!!sweep?.running} title={`Search your indexers for every monitored book that lacks an edition its profile wants (ebook or audiobook): ${missingEditions} book${missingEditions === 1 ? "" : "s"}. Fills gaps only — editions you already have are never replaced.${sweep?.notes?.length ? `\n\nLast run, nothing found for: ${sweep.notes.slice(0, 4).join("; ")}` : ""}`} className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", background: "var(--panel-2)", color: "var(--accent)" }}>
+              <button onClick={startSweep} disabled={!!sweep?.running} title={`Search your indexers for every book that lacks an edition its profile wants (ebook or audiobook), monitored or not: ${missingEditions} book${missingEditions === 1 ? "" : "s"}. Fills gaps only — editions you already have are never replaced.${sweep?.notes?.length ? `\n\nLast run, nothing found for: ${sweep.notes.slice(0, 4).join("; ")}` : ""}`} className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", background: "var(--panel-2)", color: "var(--accent)" }}>
                 {sweep?.running ? `Searching… ${sweep.done}/${sweep.total}${sweep.grabbed ? ` · ${sweep.grabbed} grabbed` : ""}` : `Search missing (${missingEditions})`}
               </button>
             )}
