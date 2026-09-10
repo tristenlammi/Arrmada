@@ -223,6 +223,7 @@ func (s *Service) SetKeepCatalogue(ctx context.Context, id int64, keep bool) err
 	}
 	if keep {
 		s.repo.AddEvent(ctx, id, "kept", "Left on its current catalogue entry — the Hardcover re-match skips it")
+		s.forgetUnmatched(id)
 	}
 	return nil
 }

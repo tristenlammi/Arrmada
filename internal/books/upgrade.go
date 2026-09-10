@@ -104,6 +104,35 @@ func (s *Service) MaybeStartUpgrade(ctx context.Context) bool {
 	return s.StartUpgrade(ctx)
 }
 
+// forgetUnmatched drops an ignored book from the last run's report.
+func (s *Service) forgetUnmatched(id int64) {
+	s.setUpgrade(func(st *UpgradeStatus) {
+		var left []UnmatchedBook
+		title := ""
+		for _, u := range st.Left {
+			if u.ID == id {
+				title = u.Title
+				continue
+			}
+			left = append(left, u)
+		}
+		if title == "" {
+			return
+		}
+		st.Left = left
+		if st.Unmatched > 0 {
+			st.Unmatched--
+		}
+		var notes []string
+		for _, n := range st.Notes {
+			if !strings.HasPrefix(n, title+" — ") {
+				notes = append(notes, n)
+			}
+		}
+		st.Notes = notes
+	})
+}
+
 func (s *Service) setUpgrade(fn func(*UpgradeStatus)) {
 	s.upgrade.mu.Lock()
 	fn(&s.upgrade.status)

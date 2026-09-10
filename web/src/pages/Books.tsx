@@ -119,7 +119,17 @@ export function Books() {
   const missingEditions = list.filter((b) => b.monitored && ((b.want_ebook && !b.ebook) || (b.want_audiobook && !b.audiobook))).length;
   // Dismissing the re-match report: keep a book on its current entry (it drops out of
   // the count and the next run), or just hide the panel until the next run.
-  const [hideUpgrade, setHideUpgrade] = useState(false);
+  // Hiding the panel sticks for this run (keyed by when it started), so it doesn't
+  // reappear on every visit; a new run brings it back once.
+  const [hideUpgrade, setHideUpgradeState] = useState(false);
+  useEffect(() => {
+    try { setHideUpgradeState(!!upgrade?.started_at && localStorage.getItem("books.upgradeHidden") === String(upgrade.started_at)); } catch { /* storage blocked */ }
+  }, [upgrade?.started_at]);
+  const setHideUpgrade = (on: boolean) => {
+    setHideUpgradeState(on);
+    try { if (on && upgrade?.started_at) localStorage.setItem("books.upgradeHidden", String(upgrade.started_at)); } catch { /* ignore */ }
+  };
+  const leftVisible = (upgrade?.left ?? []).filter((l) => !kept.has(l.id));
   const [kept, setKept] = useState<Set<number>>(new Set());
   const keepOne = async (id: number) => {
     try {
@@ -131,7 +141,7 @@ export function Books() {
   const keepAll = async () => {
     const ids = (upgrade?.left ?? []).map((l) => l.id).filter((id) => !kept.has(id));
     for (const id of ids) await keepOne(id);
-    flash(`${ids.length} book${ids.length === 1 ? "" : "s"} kept as ${ids.length === 1 ? "it is" : "they are"}.`);
+    flash(`Ignoring ${ids.length} book${ids.length === 1 ? "" : "s"} — the re-match leaves them alone from now on.`);
   };
   const startUpgrade = async () => {
     try {
@@ -297,26 +307,26 @@ export function Books() {
         )}
 
         {error && <div className="mb-3 rounded-lg p-3 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
-        {upgrade && !upgrade.running && !hideUpgrade && (upgrade.error || (upgrade.left?.length ?? 0) > 0 || (upgrade.notes?.length ?? 0) > 0) && (
+        {upgrade && !upgrade.running && !hideUpgrade && (upgrade.error || leftVisible.length > 0 || ((upgrade.left?.length ?? 0) === 0 && (upgrade.notes?.length ?? 0) > 0)) && (
           <div className="mb-4 rounded-lg px-3.5 py-2.5 text-[12px]" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink-dim)" }}>
             <div className="flex items-start justify-between gap-3">
               <div>
                 <b>Hardcover re-match:</b> {upgrade.upgraded} upgraded, {upgrade.merged} merged, {upgrade.unmatched} left as they were{upgrade.error ? ` — stopped: ${upgrade.error}` : "."}
-                {(upgrade.left?.length ?? 0) > 0 && <span className="ml-1 text-ink-faint">Keep a book as it is and the re-match stops reporting it.</span>}
+                {leftVisible.length > 0 && <span className="ml-1 text-ink-faint">Ignore a book and the re-match leaves it alone for good.</span>}
               </div>
               <div className="flex flex-none items-center gap-2">
-                {(upgrade.left?.length ?? 0) > 1 && (
-                  <button onClick={() => keepAll()} className="rounded-md px-2 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Keep all as they are</button>
+                {leftVisible.length > 1 && (
+                  <button onClick={() => keepAll()} className="rounded-md px-2 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Ignore all</button>
                 )}
                 <button onClick={() => setHideUpgrade(true)} title="Hide this until the next run" className="text-ink-faint hover:text-[var(--ink)]">✕</button>
               </div>
             </div>
-            {(upgrade.left?.length ?? 0) > 0 ? (
+            {leftVisible.length > 0 ? (
               <ul className="m-0 mt-1.5 list-none space-y-1 p-0 text-[11.5px] text-ink-faint">
-                {upgrade.left!.filter((l) => !kept.has(l.id)).map((l) => (
+                {leftVisible.map((l) => (
                   <li key={l.id} className="flex items-center gap-2">
                     <span className="min-w-0 flex-1"><Link to={`/books/${l.id}`} className="font-semibold hover:text-[var(--accent)]" style={{ color: "var(--ink-dim)" }}>{l.title}</Link>{l.author ? ` — ${l.author}` : ""}: {l.reason}</span>
-                    <button onClick={() => keepOne(l.id)} title="Leave this book on its current catalogue entry; the re-match skips it from now on" className="flex-none rounded-md px-2 py-0.5 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Keep as is</button>
+                    <button onClick={() => keepOne(l.id)} title="Stop reporting this book: it stays on its current catalogue entry and the re-match skips it from now on" className="flex-none rounded-md px-2 py-0.5 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Ignore</button>
                   </li>
                 ))}
               </ul>

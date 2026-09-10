@@ -594,7 +594,9 @@ func (h *Hardcover) AuthorWorks(ctx context.Context, authorKey string, limit int
 	if limit <= 0 || limit > 200 {
 		limit = 200
 	}
-	return cached(ctx, h.cache, fmt.Sprintf("works:%d:%d", id, limit), hcTTLList, func(ctx context.Context) ([]BookResult, error) {
+	// "v2": the filtered listing. Entries cached under the old key (on disk, across
+	// restarts) would otherwise serve the raw join for hours after an update.
+	return cached(ctx, h.cache, fmt.Sprintf("works:v2:%d:%d", id, limit), hcTTLList, func(ctx context.Context) ([]BookResult, error) {
 		return h.authorWorksLive(ctx, id, limit)
 	})
 }
