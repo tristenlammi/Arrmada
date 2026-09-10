@@ -132,6 +132,7 @@ func (s *Service) Cancel(id int64) error {
 		s.dropPendingLocked(job)
 		job.State = StateCancelled
 		job.Note = "removed from the queue"
+		s.retireLocked(job)
 		s.mu.Unlock()
 		s.event("info", "Removed "+job.Title+" from the queue")
 		return nil
@@ -157,6 +158,7 @@ func (s *Service) ClearQueue() int {
 	for _, j := range s.pending {
 		j.State = StateCancelled
 		j.Note = "queue cleared"
+		s.retireLocked(j)
 	}
 	s.pending = nil
 	s.mu.Unlock()
@@ -194,22 +196,29 @@ func (s *Service) pop() *Job {
 func (s *Service) enqueue(job *Job) *Job {
 	s.mu.Lock()
 	key := job.key()
-	for _, j := range s.jobs {
-		if (j.State == StateQueued || j.State == StateRunning) && j.key() == key {
-			if job.Redo && j.State == StateQueued {
-				j.Redo = true // the waiting job takes on the stronger intent
-			}
-			s.mu.Unlock()
-			return j
+	// Looked up, not scanned: a sweep queues thousands, and walking the list for each
+	// one (with a key rendered per entry) was quadratic — slow enough under the race
+	// detector to fail the "never blocks" test.
+	if s.active == nil {
+		s.active = map[string]*Job{}
+	}
+	if j, ok := s.active[key]; ok {
+		if job.Redo && j.State == StateQueued {
+			j.Redo = true // the waiting job takes on the stronger intent
 		}
+		s.mu.Unlock()
+		return j
 	}
 	s.nextID++
 	job.ID = s.nextID
 	job.State = StateQueued
 	job.At = time.Now().Unix()
+	s.active[key] = job
 	s.jobs = append([]*Job{job}, s.jobs...)
-	// Keep the visible history bounded, but never drop a job that hasn't run yet.
-	if len(s.jobs) > 200 {
+	// Keep the visible history bounded, but never drop a job that hasn't run yet. The
+	// trim walks the whole list, so it runs once the finished tail has grown by a few
+	// hundred rather than on every enqueue.
+	if len(s.jobs) > 200+len(s.pending)+256 {
 		kept := s.jobs[:0:0]
 		for i, j := range s.jobs {
 			if i < 200 || j.State == StateQueued || j.State == StateRunning {
@@ -401,7 +410,18 @@ func (s *Service) update(job *Job, fn func(*Job)) {
 
 // finish sets a job's terminal state + note, and clears the in-flight stage/progress.
 func (s *Service) finish(job *Job, state JobState, note string) {
-	s.update(job, func(j *Job) { j.State = state; j.Note = note; j.Stage = ""; j.Progress = 0 })
+	s.mu.Lock()
+	job.State, job.Note, job.Stage, job.Progress = state, note, "", 0
+	s.retireLocked(job)
+	s.mu.Unlock()
+}
+
+// retireLocked forgets a job that is no longer queued or running, so its file can be
+// queued again. The mutex must be held.
+func (s *Service) retireLocked(job *Job) {
+	if k := job.key(); s.active[k] == job {
+		delete(s.active, k)
+	}
 }
 
 // event appends a line to the activity console (kept to the last 500) and mirrors it to the log.

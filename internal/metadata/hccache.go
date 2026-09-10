@@ -90,7 +90,7 @@ func (b *hcBudget) take() bool {
 func (b *hcBudget) usage() (used, budget int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.day != time.Now().UTC().Format("2006-01-02") {
+	if b.day != b.now().UTC().Format("2006-01-02") {
 		return 0, hcDailyBudget
 	}
 	return b.used, hcDailyBudget
