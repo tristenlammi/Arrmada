@@ -68,6 +68,10 @@ type Coordinator struct {
 	stallMu       sync.Mutex
 	stallProgress map[int64]stallSample
 
+	// The manual missing-editions sweep for books (books_sweep.go).
+	bookSweepMu sync.Mutex
+	bookSweep   BookSweepStatus
+
 	// onSeriesImported fires after episodes land, so the Convert library index can
 	// refresh just that show rather than waiting for the nightly sweep, and Subtitles
 	// can fetch for exactly the episodes that arrived. Optional.

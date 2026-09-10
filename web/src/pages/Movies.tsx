@@ -4,6 +4,7 @@ import { PageHeader } from "../components/PageHeader";
 import { api, type Movie, type MovieLookup } from "../lib/api";
 import { posterThumb } from "../lib/img";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
+import { usePersisted } from "../lib/persist";
 
 
 type FilterKey = "all" | "monitored" | "unmonitored" | "missing" | "available";
@@ -45,7 +46,7 @@ export function Movies() {
   const [profiles, setProfiles] = useState<{ key: string; name: string }[]>([]);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [scanning, setScanning] = useState(false);
-  const [view, setView] = useState<"grid" | "table">("grid");
+  const [view, setView] = usePersisted("movies.view", "grid", ["grid", "table"] as const);
   const [searchFor, setSearchFor] = useState<Movie | null>(null); // the table's per-row "Search indexers"
 
   const scanLibrary = async () => {

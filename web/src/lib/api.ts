@@ -632,6 +632,11 @@ export interface BookUpgradeStatus {
   started_at?: number; ended_at?: number; error?: string;
   notes?: string[]; // why the first few books didn't match
 }
+export interface BookSweepStatus {
+  running: boolean; total: number; done: number; grabbed: number; skipped: number;
+  started_at?: number; ended_at?: number;
+  notes?: string[]; // the first few books nothing was found for
+}
 export interface BookLookup {
   key: string;
   title: string;
@@ -1226,6 +1231,9 @@ export const api = {
   deleteBookFile: (id: number, edition: "ebook" | "audiobook") =>
     req<{ status: string }>(`/api/v1/books/${id}/file?edition=${edition}`, { method: "DELETE" }),
   scanBooks: () => req<{ status: string }>("/api/v1/books/scan", { method: "POST" }),
+  // The manual sweep: every monitored book missing an edition its profile wants.
+  startBookSweep: () => req<{ started: boolean; status: BookSweepStatus }>("/api/v1/books/search-missing", { method: "POST" }),
+  bookSweepStatus: () => req<BookSweepStatus>("/api/v1/books/search-missing"),
   bookEditionFiles: (id: number, edition: "ebook" | "audiobook") =>
     req<{ files: BookFileEntry[] }>(`/api/v1/books/${id}/edition-files?edition=${edition}`).then((r) => r.files),
   mergeAudiobook: (id: number) =>

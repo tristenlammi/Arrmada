@@ -65,6 +65,21 @@ func (a *api) handleBookUpgradeStatus(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, a.deps.Books.UpgradeStatus())
 }
 
+// handleStartBookSweep searches for every monitored book's missing editions — the
+// manual, back-off-free sweep. It fills gaps only; nothing on disk is replaced.
+func (a *api) handleStartBookSweep(w http.ResponseWriter, r *http.Request) {
+	started := a.deps.Automation.StartBookSweep(context.WithoutCancel(r.Context()))
+	code := http.StatusOK
+	if started {
+		code = http.StatusAccepted
+	}
+	a.writeJSON(w, code, map[string]any{"started": started, "status": a.deps.Automation.BookSweepStatus()})
+}
+
+func (a *api) handleBookSweepStatus(w http.ResponseWriter, r *http.Request) {
+	a.writeJSON(w, http.StatusOK, a.deps.Automation.BookSweepStatus())
+}
+
 func (a *api) handleLookupBooks(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("q")
 	if q == "" {

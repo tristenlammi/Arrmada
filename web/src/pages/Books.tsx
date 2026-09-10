@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { api, type BookSource, type BookUpgradeStatus, type Book, type BookLookup, type BookAuthor, type BookDiscoverCard } from "../lib/api";
+import { api, type BookSource, type BookUpgradeStatus, type BookSweepStatus, type Book, type BookLookup, type BookAuthor, type BookDiscoverCard } from "../lib/api";
+import { usePersisted } from "../lib/persist";
 import { posterThumb } from "../lib/img";
 
 const FILTERS = [
@@ -48,8 +49,9 @@ export function Books() {
   const [addingAuthor, setAddingAuthor] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Book | null>(null);
   const [toast, setToast] = useState<string | null>(null);
-  const [view, setView] = useState<"grid" | "table">("grid");
-  const [mode, setMode] = useState<"book" | "author">("author");
+  const [view, setView] = usePersisted("books.view", "grid", ["grid", "table"] as const);
+  const [mode, setMode] = usePersisted("books.mode", "author", ["author", "book"] as const);
+  const [sweep, setSweep] = useState<BookSweepStatus | null>(null);
   const [scanning, setScanning] = useState(false);
   const [backfilling, setBackfilling] = useState(false);
   const [multiSelect, setMultiSelect] = useState(false);
@@ -92,6 +94,29 @@ export function Books() {
     }, 2000);
     return () => clearInterval(t);
   }, [upgrade?.running]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Poll the missing-editions sweep while it runs, then reload once it lands.
+  useEffect(() => {
+    if (!sweep?.running) return;
+    const t = setInterval(() => {
+      api.bookSweepStatus().then((st) => {
+        setSweep(st);
+        if (!st.running) {
+          refresh();
+          flash(`Searched ${st.done} book${st.done === 1 ? "" : "s"}: ${st.grabbed} edition${st.grabbed === 1 ? "" : "s"} grabbed${st.skipped ? `, ${st.skipped} already downloading` : ""}.`);
+        }
+      }).catch(() => {});
+    }, 2000);
+    return () => clearInterval(t);
+  }, [sweep?.running]); // eslint-disable-line react-hooks/exhaustive-deps
+  const startSweep = async () => {
+    try {
+      const r = await api.startBookSweep();
+      setSweep(r.status);
+      flash(r.started ? "Searching for every missing edition — this takes a while, one book at a time." : "A sweep is already running.");
+    } catch (e) { flash((e as Error).message); }
+  };
+  // Books the sweep would search: monitored, lacking an edition their profile wants.
+  const missingEditions = list.filter((b) => b.monitored && ((b.want_ebook && !b.ebook) || (b.want_audiobook && !b.audiobook))).length;
   const startUpgrade = async () => {
     try {
       const r = await api.startBookUpgrade();
@@ -103,6 +128,7 @@ export function Books() {
     refresh();
     api.qualityProfiles("book").then((r) => setProfiles(r.profiles.map((p) => ({ key: p.key, name: p.name })))).catch(() => {});
     api.bookUpgradeStatus().then((st) => { if (st.started_at) setUpgrade(st); }).catch(() => {});
+    api.bookSweepStatus().then((st) => { if (st.running) setSweep(st); }).catch(() => {});
   }, []);
 
   const toggleSelect = (id: number) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -200,6 +226,11 @@ export function Books() {
                 {upgrade?.running ? `Re-matching… ${upgrade.done}/${upgrade.total}` : `Re-match ${upgradable} to Hardcover`}
               </button>
             )}
+            {(missingEditions > 0 || sweep?.running) && (
+              <button onClick={startSweep} disabled={!!sweep?.running} title={`Search your indexers for every monitored book that lacks an edition its profile wants (ebook or audiobook): ${missingEditions} book${missingEditions === 1 ? "" : "s"}. Fills gaps only — editions you already have are never replaced.${sweep?.notes?.length ? `\n\nLast run, nothing found for: ${sweep.notes.slice(0, 4).join("; ")}` : ""}`} className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", background: "var(--panel-2)", color: "var(--accent)" }}>
+                {sweep?.running ? `Searching… ${sweep.done}/${sweep.total}${sweep.grabbed ? ` · ${sweep.grabbed} grabbed` : ""}` : `Search missing (${missingEditions})`}
+              </button>
+            )}
             <button onClick={backfillSeries} disabled={backfilling} title="One-off: look up which series your books belong to. Searches indexers to read the series off, and downloads nothing." className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{backfilling ? "Looking up…" : "Find series"}</button>
             <button onClick={scanLibrary} disabled={scanning} title="Find books already in your library folder and catalog them" className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{scanning ? "Scanning…" : "Scan library"}</button>
             <button onClick={() => (multiSelect ? exitMultiSelect() : enterSelect())} className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: `1px solid ${multiSelect ? "var(--accent)" : "var(--line)"}`, background: multiSelect ? "var(--accent-soft)" : "var(--panel-2)", color: multiSelect ? "var(--accent)" : "var(--ink)" }}>{multiSelect ? "Done" : "Select"}</button>
@@ -282,7 +313,7 @@ export function Books() {
             </div>
           )
         ) : view === "table" ? (
-          <BooksTable list={filtered} />
+          <BooksTable list={filtered} onSearch={search} />
         ) : (
           <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))" }}>
             {filtered.map((b) => (
@@ -321,7 +352,7 @@ function editionTags(b: Book): string {
   return t.join(" + ") || "—";
 }
 
-function BooksTable({ list }: { list: Book[] }) {
+function BooksTable({ list, onSearch }: { list: Book[]; onSearch: (b: Book) => void }) {
   const th = "px-2.5 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-[0.06em] text-ink-faint";
   const td = "px-2.5 py-2 align-middle";
   return (
@@ -336,12 +367,14 @@ function BooksTable({ list }: { list: Book[] }) {
             <th className={th}>Editions</th>
             <th className={`${th} text-right`}>Size</th>
             <th className={th}>Monitored</th>
+            <th className={th}></th>
           </tr>
         </thead>
         <tbody>
           {list.map((b) => {
             const st = statusOf(b);
             const size = (b.ebook?.size_bytes ?? 0) + (b.audiobook?.size_bytes ?? 0);
+            const missing = (b.want_ebook && !b.ebook) || (b.want_audiobook && !b.audiobook);
             return (
               <tr key={b.id} className="transition-colors hover:bg-[var(--panel-2)]" style={{ background: "var(--panel)", borderBottom: "1px solid var(--line-soft)" }}>
                 <td className={`${td} min-w-[200px]`}><Link to={`/books/${b.id}`} className="font-semibold hover:text-[var(--accent)]">{b.title}</Link></td>
@@ -351,6 +384,11 @@ function BooksTable({ list }: { list: Book[] }) {
                 <td className={td}><span className="font-mono text-[11px] text-ink-dim">{editionTags(b)}</span></td>
                 <td className={`${td} text-right font-mono text-[11px] text-ink-dim`}>{size > 0 ? gb(size) : "—"}</td>
                 <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: b.monitored ? "var(--accent)" : "var(--ink-faint)" }}>{b.monitored ? "Yes" : "No"}</span></td>
+                <td className={`${td} text-right`}>
+                  {missing && (
+                    <button onClick={() => onSearch(b)} title="Search your indexers for the edition this book is missing" className="whitespace-nowrap rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Search</button>
+                  )}
+                </td>
               </tr>
             );
           })}

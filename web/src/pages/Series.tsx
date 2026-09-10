@@ -4,6 +4,7 @@ import { PageHeader } from "../components/PageHeader";
 import { api, type Series as SeriesT, type SeriesLookup } from "../lib/api";
 import { posterThumb } from "../lib/img";
 import { SeriesSearchModal } from "../components/SeriesSearchModal";
+import { usePersisted } from "../lib/persist";
 
 const FILTERS = [
   { key: "all", label: "All" },
@@ -40,7 +41,7 @@ export function Series() {
   const [confirmDelete, setConfirmDelete] = useState<SeriesT | null>(null);
   const [scanning, setScanning] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const [view, setView] = useState<"grid" | "table">("grid");
+  const [view, setView] = usePersisted("series.view", "grid", ["grid", "table"] as const);
   const [searchFor, setSearchFor] = useState<SeriesT | null>(null); // the table's per-row "Search indexers"
   const [multiSelect, setMultiSelect] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
