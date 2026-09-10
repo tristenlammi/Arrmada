@@ -388,6 +388,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/cover", a.requireRole(auth.RoleManager, a.handleUploadBookCover))
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}", a.protected(a.handleGetBook))
 	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetBookMonitored))
+	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/keep-catalogue", a.requireRole(auth.RoleManager, a.handleSetBookKeepCatalogue))
 	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/profile", a.requireRole(auth.RoleManager, a.handleSetBookProfile))
 	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/metadata", a.requireRole(auth.RoleManager, a.handleOverrideBookMetadata))
 	mux.HandleFunc("DELETE "+base+"/api/v1/books/{id}/file", a.requireRole(auth.RoleManager, a.handleDeleteBookFile))

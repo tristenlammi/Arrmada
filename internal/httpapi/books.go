@@ -880,6 +880,26 @@ func (a *api) handleBookDiscoverDetail(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, d)
 }
 
+// handleSetBookKeepCatalogue marks a book as one the Hardcover re-match leaves alone
+// — the way to silence "no result matched" for a book the catalogue doesn't have.
+func (a *api) handleSetBookKeepCatalogue(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Keep bool `json:"keep"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	if err := a.deps.Books.SetKeepCatalogue(r.Context(), id, req.Keep); err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not update the book")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"keep": req.Keep})
+}
+
 func (a *api) handleSetBookMonitored(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)
 	if !ok {

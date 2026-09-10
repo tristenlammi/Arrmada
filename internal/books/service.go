@@ -215,6 +215,18 @@ func (s *Service) SetMonitored(ctx context.Context, id int64, monitored bool) er
 	return s.repo.SetMonitored(ctx, id, monitored)
 }
 
+// SetKeepCatalogue tells the Hardcover re-match to leave a book as it is (or to try
+// it again).
+func (s *Service) SetKeepCatalogue(ctx context.Context, id int64, keep bool) error {
+	if err := s.repo.SetKeepCatalogue(ctx, id, keep); err != nil {
+		return err
+	}
+	if keep {
+		s.repo.AddEvent(ctx, id, "kept", "Left on its current catalogue entry — the Hardcover re-match skips it")
+	}
+	return nil
+}
+
 // SetQualityProfile changes a book's quality profile.
 func (s *Service) SetQualityProfile(ctx context.Context, id int64, profile string) error {
 	return s.repo.SetQualityProfile(ctx, id, profile)

@@ -36,6 +36,17 @@ type UpgradeStatus struct {
 	EndedAt   int64    `json:"ended_at,omitempty"`
 	Error     string   `json:"error,omitempty"`
 	Notes     []string `json:"notes,omitempty"` // why the first few books didn't match
+	// Left is every book the run left as it was, with why, so the page can offer to
+	// keep each one that way and stop reporting it.
+	Left []UnmatchedBook `json:"left,omitempty"`
+}
+
+// UnmatchedBook is one book a re-match run couldn't place.
+type UnmatchedBook struct {
+	ID     int64  `json:"id"`
+	Title  string `json:"title"`
+	Author string `json:"author,omitempty"`
+	Reason string `json:"reason"`
 }
 
 type upgradeState struct {
@@ -53,7 +64,7 @@ func (s *Service) Upgradable(ctx context.Context) int {
 	}
 	n := 0
 	for _, b := range list {
-		if !metadata.IsHardcoverKey(b.OLKey) {
+		if !metadata.IsHardcoverKey(b.OLKey) && !b.KeepCatalogue {
 			n++
 		}
 	}
@@ -108,7 +119,7 @@ func (s *Service) runUpgrade(ctx context.Context) {
 	}
 	var todo []Book
 	for _, b := range list {
-		if !metadata.IsHardcoverKey(b.OLKey) {
+		if !metadata.IsHardcoverKey(b.OLKey) && !b.KeepCatalogue {
 			todo = append(todo, b)
 		}
 	}
@@ -148,6 +159,7 @@ func (s *Service) runUpgrade(ctx context.Context) {
 				if len(st.Notes) < upgradeNoteLimit {
 					st.Notes = append(st.Notes, fmt.Sprintf("%s — %s: %s", b.Title, orStr(b.Author, "no author"), reason))
 				}
+				st.Left = append(st.Left, UnmatchedBook{ID: b.ID, Title: b.Title, Author: b.Author, Reason: reason})
 			}
 		})
 		if outcome == "unmatched" {

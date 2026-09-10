@@ -178,17 +178,20 @@ type hcBook struct {
 	Image         *hcImage  `json:"image"`
 	Images        []hcImage `json:"images"`
 	Contributions []struct {
-		Author struct {
+		Contribution string `json:"contribution"` // role: empty for the author, "Illustrator", "Foreword"…
+		Author       struct {
 			ID   int    `json:"id"`
 			Name string `json:"name"`
 		} `json:"author"`
 	} `json:"contributions"`
-	CachedTags   json.RawMessage `json:"cached_tags"`
-	Rating       *float64        `json:"rating"`
-	RatingsCount int             `json:"ratings_count"`
-	UsersCount   int             `json:"users_count"`
-	Pages        *int            `json:"pages"`
-	BookSeries   []struct {
+	DefaultPhysicalEdition *hcEditionLang  `json:"default_physical_edition"`
+	DefaultEbookEdition    *hcEditionLang  `json:"default_ebook_edition"`
+	CachedTags             json.RawMessage `json:"cached_tags"`
+	Rating                 *float64        `json:"rating"`
+	RatingsCount           int             `json:"ratings_count"`
+	UsersCount             int             `json:"users_count"`
+	Pages                  *int            `json:"pages"`
+	BookSeries             []struct {
 		Position *float64 `json:"position"`
 		Series   struct {
 			ID   int    `json:"id"`
@@ -202,6 +205,13 @@ type hcBook struct {
 
 type hcImage struct {
 	URL string `json:"url"`
+}
+
+// hcEditionLang is the slice of an edition the author-works filter reads.
+type hcEditionLang struct {
+	Language *struct {
+		Code2 string `json:"code2"`
+	} `json:"language"`
 }
 
 func (b hcBook) result() BookResult {
@@ -592,7 +602,7 @@ func (h *Hardcover) authorWorksLive(ctx context.Context, id, limit int) ([]BookR
   books(
     where: {contributions: {author: {id: {_eq: $id}}}, canonical_id: {_is_null: true}, compilation: {_eq: false}},
     order_by: {users_count: desc}, limit: $n
-  ) { ` + hcBookFields + ` }
+  ) { ` + hcAuthorBookFields + ` }
 }`
 	var data struct {
 		Books []hcBook `json:"books"`
@@ -600,13 +610,7 @@ func (h *Hardcover) authorWorksLive(ctx context.Context, id, limit int) ([]BookR
 	if err := h.query(ctx, q, map[string]any{"id": id, "n": limit}, &data); err != nil {
 		return nil, err
 	}
-	out := make([]BookResult, 0, len(data.Books))
-	for _, b := range data.Books {
-		if r := b.result(); r.Title != "" {
-			out = append(out, r)
-		}
-	}
-	return filterBundles(out), nil
+	return filterAuthorWorks(data.Books, id, time.Now()), nil
 }
 
 // TrendingBooks approximates "trending" as the most-shelved books released in the last

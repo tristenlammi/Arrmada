@@ -58,6 +58,9 @@ type Book struct {
 	SeriesName     string  `json:"series_name,omitempty"`
 	SeriesPosition float64 `json:"series_position,omitempty"`
 	SeriesKey      string  `json:"series_key,omitempty"` // catalogue's series id, when it gave one
+	// KeepCatalogue: the user told the Hardcover re-match to leave this book on the
+	// catalogue it's on. Not counted as "still to re-match", not retried.
+	KeepCatalogue bool `json:"keep_catalogue,omitempty"`
 }
 
 // SearchState returns when the missing-books sweep last searched for this book and how
@@ -125,7 +128,7 @@ type Repo struct{ db *sql.DB }
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const cols = `id, ol_key, title, author, year, cover_url, description, subjects_json,
-	monitored, quality_profile, added_at, series_name, series_position, series_key,
+	monitored, quality_profile, added_at, series_name, series_position, series_key, keep_catalogue,
 	ebook_path, ebook_format, ebook_size, ebook_files,
 	audiobook_path, audiobook_format, audiobook_size, audiobook_files`
 
@@ -133,7 +136,7 @@ func scan(row interface{ Scan(...any) error }) (Book, error) {
 	var (
 		b             Book
 		subjectsJSON  string
-		mon           int
+		mon, keep     int
 		ebPath, ebFmt string
 		ebSize        int64
 		ebFiles       int
@@ -142,12 +145,13 @@ func scan(row interface{ Scan(...any) error }) (Book, error) {
 		abFiles       int
 	)
 	err := row.Scan(&b.ID, &b.OLKey, &b.Title, &b.Author, &b.Year, &b.CoverURL, &b.Description,
-		&subjectsJSON, &mon, &b.QualityProfile, &b.AddedAt, &b.SeriesName, &b.SeriesPosition, &b.SeriesKey,
+		&subjectsJSON, &mon, &b.QualityProfile, &b.AddedAt, &b.SeriesName, &b.SeriesPosition, &b.SeriesKey, &keep,
 		&ebPath, &ebFmt, &ebSize, &ebFiles, &abPath, &abFmt, &abSize, &abFiles)
 	if err != nil {
 		return Book{}, err
 	}
 	b.Monitored = mon != 0
+	b.KeepCatalogue = keep != 0
 	if subjectsJSON != "" {
 		_ = json.Unmarshal([]byte(subjectsJSON), &b.Subjects)
 	}
@@ -221,6 +225,12 @@ func (r *Repo) Create(ctx context.Context, b Book) (Book, error) {
 // SetMonitored toggles a book.
 func (r *Repo) SetMonitored(ctx context.Context, id int64, monitored bool) error {
 	res, err := r.db.ExecContext(ctx, `UPDATE books SET monitored = ? WHERE id = ?`, b2i(monitored), id)
+	return affected(res, err)
+}
+
+// SetKeepCatalogue marks a book as left alone by the Hardcover re-match (or not).
+func (r *Repo) SetKeepCatalogue(ctx context.Context, id int64, keep bool) error {
+	res, err := r.db.ExecContext(ctx, `UPDATE books SET keep_catalogue = ? WHERE id = ?`, b2i(keep), id)
 	return affected(res, err)
 }
 

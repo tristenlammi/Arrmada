@@ -631,6 +631,7 @@ export interface BookUpgradeStatus {
   running: boolean; total: number; done: number; upgraded: number; merged: number; unmatched: number;
   started_at?: number; ended_at?: number; error?: string;
   notes?: string[]; // why the first few books didn't match
+  left?: { id: number; title: string; author?: string; reason: string }[]; // every book left as it was
 }
 export interface BookSweepStatus {
   running: boolean; total: number; done: number; grabbed: number; skipped: number;
@@ -1277,6 +1278,9 @@ export const api = {
     }
     return ((await res.json()) as { cover_url: string }).cover_url;
   },
+  // Tell the Hardcover re-match to leave a book on its current entry (or to try again).
+  keepBookCatalogue: (id: number, keep: boolean) =>
+    req<{ keep: boolean }>(`/api/v1/books/${id}/keep-catalogue`, { method: "PUT", body: JSON.stringify({ keep }) }),
   setBookMonitored: (id: number, monitored: boolean) =>
     req<{ monitored: boolean }>(`/api/v1/books/${id}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
   setBookProfile: (id: number, quality_profile: string) =>

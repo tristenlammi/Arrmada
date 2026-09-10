@@ -117,6 +117,22 @@ export function Books() {
   };
   // Books the sweep would search: monitored, lacking an edition their profile wants.
   const missingEditions = list.filter((b) => b.monitored && ((b.want_ebook && !b.ebook) || (b.want_audiobook && !b.audiobook))).length;
+  // Dismissing the re-match report: keep a book on its current entry (it drops out of
+  // the count and the next run), or just hide the panel until the next run.
+  const [hideUpgrade, setHideUpgrade] = useState(false);
+  const [kept, setKept] = useState<Set<number>>(new Set());
+  const keepOne = async (id: number) => {
+    try {
+      await api.keepBookCatalogue(id, true);
+      setKept((s) => new Set(s).add(id));
+      setUpgradable((n) => Math.max(0, n - 1));
+    } catch (e) { flash((e as Error).message); }
+  };
+  const keepAll = async () => {
+    const ids = (upgrade?.left ?? []).map((l) => l.id).filter((id) => !kept.has(id));
+    for (const id of ids) await keepOne(id);
+    flash(`${ids.length} book${ids.length === 1 ? "" : "s"} kept as ${ids.length === 1 ? "it is" : "they are"}.`);
+  };
   const startUpgrade = async () => {
     try {
       const r = await api.startBookUpgrade();
@@ -281,10 +297,30 @@ export function Books() {
         )}
 
         {error && <div className="mb-3 rounded-lg p-3 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
-        {upgrade && !upgrade.running && (upgrade.error || (upgrade.notes?.length ?? 0) > 0) && (
+        {upgrade && !upgrade.running && !hideUpgrade && (upgrade.error || (upgrade.left?.length ?? 0) > 0 || (upgrade.notes?.length ?? 0) > 0) && (
           <div className="mb-4 rounded-lg px-3.5 py-2.5 text-[12px]" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink-dim)" }}>
-            <b>Hardcover re-match:</b> {upgrade.upgraded} upgraded, {upgrade.merged} merged, {upgrade.unmatched} left as they were{upgrade.error ? ` — stopped: ${upgrade.error}` : "."}
-            {(upgrade.notes?.length ?? 0) > 0 && (
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <b>Hardcover re-match:</b> {upgrade.upgraded} upgraded, {upgrade.merged} merged, {upgrade.unmatched} left as they were{upgrade.error ? ` — stopped: ${upgrade.error}` : "."}
+                {(upgrade.left?.length ?? 0) > 0 && <span className="ml-1 text-ink-faint">Keep a book as it is and the re-match stops reporting it.</span>}
+              </div>
+              <div className="flex flex-none items-center gap-2">
+                {(upgrade.left?.length ?? 0) > 1 && (
+                  <button onClick={() => keepAll()} className="rounded-md px-2 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Keep all as they are</button>
+                )}
+                <button onClick={() => setHideUpgrade(true)} title="Hide this until the next run" className="text-ink-faint hover:text-[var(--ink)]">✕</button>
+              </div>
+            </div>
+            {(upgrade.left?.length ?? 0) > 0 ? (
+              <ul className="m-0 mt-1.5 list-none space-y-1 p-0 text-[11.5px] text-ink-faint">
+                {upgrade.left!.filter((l) => !kept.has(l.id)).map((l) => (
+                  <li key={l.id} className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1"><Link to={`/books/${l.id}`} className="font-semibold hover:text-[var(--accent)]" style={{ color: "var(--ink-dim)" }}>{l.title}</Link>{l.author ? ` — ${l.author}` : ""}: {l.reason}</span>
+                    <button onClick={() => keepOne(l.id)} title="Leave this book on its current catalogue entry; the re-match skips it from now on" className="flex-none rounded-md px-2 py-0.5 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Keep as is</button>
+                  </li>
+                ))}
+              </ul>
+            ) : (upgrade.notes?.length ?? 0) > 0 && (
               <ul className="m-0 mt-1.5 list-disc pl-5 text-[11.5px] text-ink-faint">
                 {upgrade.notes!.map((n, i) => <li key={i}>{n}</li>)}
               </ul>
