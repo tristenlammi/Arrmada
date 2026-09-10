@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -174,11 +175,29 @@ func (s *Service) upgradeOne(ctx context.Context, b Book) (outcome, reason strin
 		}
 		return r, nil
 	}
-	results, err := search(strings.TrimSpace(b.Title + " " + b.Author))
-	if err != nil {
-		return "", "", err
+	note := ""
+	var match *metadata.BookResult
+	var results []metadata.BookResult
+	// A row whose title reads "<work> by <someone else>" is a study guide or summary
+	// that a scan once filed as the book itself. The user's files are the book, so
+	// look the book up rather than the guide.
+	if work, by, ok := derivedWork(b.Title, b.Author); ok {
+		r, err := search(work + " " + by)
+		if err != nil {
+			return "", "", err
+		}
+		if match = matchUpgrade(Book{Title: work, Author: by}, r); match != nil {
+			note = fmt.Sprintf("re-identified as %q by %s (the record was a guide to it)", work, by)
+		}
 	}
-	match := matchUpgrade(b, results)
+	if match == nil {
+		var err error
+		results, err = search(strings.TrimSpace(b.Title + " " + b.Author))
+		if err != nil {
+			return "", "", err
+		}
+		match = matchUpgrade(b, results)
+	}
 	if match == nil && b.Author != "" {
 		// The combined query can miss when the catalogue spells the author
 		// differently; the title alone plus a check on the author usually lands it.
@@ -218,13 +237,54 @@ func (s *Service) upgradeOne(ctx context.Context, b Book) (outcome, reason strin
 		if err := s.foldInto(ctx, keeper, dup); err != nil {
 			return "unmatched", "could not merge with its duplicate: " + err.Error(), nil
 		}
-		return "merged", "", nil
+		return "merged", note, nil
 	}
 	if err := s.applyUpgrade(ctx, b, d); err != nil {
 		return "unmatched", "could not rewrite the row: " + err.Error(), nil
 	}
-	return "upgraded", "", nil
+	if note != "" {
+		s.repo.AddEvent(ctx, b.ID, "upgraded", "Re-matched: "+note)
+	}
+	return "upgraded", note, nil
 }
+
+// byAuthorRe reads "<work> by <Author Name>" off the end of a title: the author is up
+// to four capitalised words or initials.
+var byAuthorRe = regexp.MustCompile(`^(.*\S)\s+(?i:by)\s+((?:[A-Z][\w.'’\-]*)(?:\s+[A-Z][\w.'’\-]*){1,3})$`)
+
+// guideRe marks a title as being about a book rather than the book.
+var guideRe = regexp.MustCompile(`(?i)\b(?:guide|summary|summaries|study|analysis|notes|workbook|companion|lesson|lessons|sparknotes|cliffsnotes|litcharts)\b`)
+
+// derivedWork returns the book a guide-like record is about, and that book's author,
+// when the record's title names an author the record's own author isn't:
+// "LinguiSystems novel guide for Harry Potter and the Goblet of Fire by J.K. Rowling"
+// by Laura Sauser is a guide; the work is the Rowling novel.
+func derivedWork(title, author string) (work, by string, ok bool) {
+	m := byAuthorRe.FindStringSubmatch(strings.TrimSpace(title))
+	if m == nil {
+		return "", "", false
+	}
+	work, by = strings.TrimSpace(m[1]), strings.TrimSpace(m[2])
+	guide := guideRe.MatchString(work)
+	if authorsOverlap(author, by) && !guide {
+		return "", "", false // "Dune by Frank Herbert" by Frank Herbert is just the book
+	}
+	if loc := guideRe.FindStringIndex(work); loc != nil {
+		rest := strings.TrimSpace(work[loc[1]:])
+		for _, prep := range []string{"for ", "to ", "of ", "on "} {
+			if strings.HasPrefix(strings.ToLower(rest), prep) {
+				rest = strings.TrimSpace(rest[len(prep):])
+				break
+			}
+		}
+		work = rest
+	}
+	work = strings.Trim(work, " -—:,")
+	return work, by, work != ""
+}
+
+// AuthorsOverlap is authorsOverlap for other packages (the library scan).
+func AuthorsOverlap(a, b string) bool { return authorsOverlap(a, b) }
 
 // matchUpgrade picks the result that is the same book: the same title-and-author key
 // first; failing that the same title with an author that shares a real word (so
@@ -237,13 +297,15 @@ func matchUpgrade(b Book, results []metadata.BookResult) *metadata.BookResult {
 			return &results[i]
 		}
 	}
-	tk := titleKey(b.Title)
-	if tk == "" {
+	keys := titleKeys(b.Title)
+	if keys[0] == "" {
 		return nil
 	}
+	// The same title read either way round: a library "The Final Empire" is the
+	// catalogue's "Mistborn: The Final Empire", and vice versa.
 	var sameTitle []*metadata.BookResult
 	for i := range results {
-		if titleKey(results[i].Title) == tk {
+		if keysOverlap(keys, titleKeys(results[i].Title)) {
 			sameTitle = append(sameTitle, &results[i])
 		}
 	}
@@ -252,7 +314,18 @@ func matchUpgrade(b Book, results []metadata.BookResult) *metadata.BookResult {
 			return r
 		}
 	}
-	if (strings.TrimSpace(b.Author) == "" || len(sameTitle) == 1 && strings.TrimSpace(sameTitle[0].Author) == "") && len(sameTitle) >= 1 {
+	if len(sameTitle) == 0 {
+		return nil
+	}
+	// No author to check against — none on the library side, or none on any of the
+	// candidates — the first same-title result is the best the catalogue offers.
+	authorless := true
+	for _, r := range sameTitle {
+		if strings.TrimSpace(r.Author) != "" {
+			authorless = false
+		}
+	}
+	if strings.TrimSpace(b.Author) == "" || authorless {
 		return sameTitle[0]
 	}
 	return nil

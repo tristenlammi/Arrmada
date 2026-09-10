@@ -3,6 +3,7 @@ package books
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -34,13 +35,56 @@ func titleKey(title string) string {
 			t = t[:i]
 		}
 	}
+	return titlePartKey(t)
+}
+
+// volumeRe is the marker before a volume number that catalogues render every way:
+// "White Sand, Vol. 1", "White Sand Volume 1", "White Sand #1", "White Sand 1".
+var volumeRe = regexp.MustCompile(`\b(?:vol\.?|volume|no\.?|number|bk\.?|book)\s*(\d+)\b|#\s*(\d+)\b`)
+
+// titlePartKey normalises one part of a title (the main title or a subtitle): the
+// leading article goes, "&" reads as "and", a volume marker keeps only its number.
+func titlePartKey(t string) string {
+	t = strings.ToLower(strings.TrimSpace(t))
 	for _, art := range []string{"the ", "a ", "an "} {
 		if strings.HasPrefix(t, art) && len(t) > len(art) {
 			t = t[len(art):]
 			break
 		}
 	}
+	t = strings.ReplaceAll(t, "&", " and ")
+	t = volumeRe.ReplaceAllString(t, "$1$2")
 	return NormKey(t)
+}
+
+// titleKeys is every way a title can be read: its main title first, then the subtitle
+// when it has one. "Mistborn: The Final Empire" is the same book as "The Final Empire".
+func titleKeys(title string) []string {
+	keys := []string{titleKey(title)}
+	t := strings.TrimSpace(title)
+	for _, sep := range []string{":", " - ", " — "} {
+		if i := strings.Index(t, sep); i > 0 {
+			if sub := titlePartKey(t[i+len(sep):]); sub != "" && sub != keys[0] {
+				keys = append(keys, sub)
+			}
+			break
+		}
+	}
+	return keys
+}
+
+func keysOverlap(a, b []string) bool {
+	for _, x := range a {
+		if x == "" {
+			continue
+		}
+		for _, y := range b {
+			if x == y {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // authorKey keeps the author's words of two or more letters, sorted — so "J. K.

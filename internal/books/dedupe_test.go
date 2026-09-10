@@ -57,3 +57,24 @@ func TestTitleKeyStripsSubtitleAndArticle(t *testing.T) {
 		}
 	}
 }
+
+// Catalogues render the same title with "&" or "and" and volume markers every way;
+// a subtitle can be the whole of another catalogue's title.
+func TestTitleKeysReadCataloguesAlike(t *testing.T) {
+	same := [][2]string{
+		{"The Songbird & the Heart of Stone", "The Songbird and the Heart of Stone"},
+		{"White Sand, Vol. 1", "White Sand 1"},
+		{"White Sand Volume 1", "White Sand #1"},
+	}
+	for _, p := range same {
+		if titleKey(p[0]) != titleKey(p[1]) {
+			t.Errorf("titleKey(%q)=%q != titleKey(%q)=%q", p[0], titleKey(p[0]), p[1], titleKey(p[1]))
+		}
+	}
+	if !keysOverlap(titleKeys("The Final Empire"), titleKeys("Mistborn: The Final Empire")) {
+		t.Errorf("a subtitle should read as the title: %v vs %v", titleKeys("The Final Empire"), titleKeys("Mistborn: The Final Empire"))
+	}
+	if keysOverlap(titleKeys("Dune Messiah"), titleKeys("Dune")) {
+		t.Error("a more specific title must not match its series-mate")
+	}
+}

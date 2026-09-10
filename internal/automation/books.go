@@ -779,23 +779,50 @@ func matchBookFile(match func(string) (books.Book, bool), path string) (books.Bo
 // result whose title contains the folder's (an edition subtitled "Golden Son: Red Rising
 // Book 2" is still Golden Son) — never the reverse, or "Dune" would swallow a folder
 // holding "Dune Messiah".
-func pickScanMatch(folderTitle string, results []metadata.BookResult) (metadata.BookResult, bool) {
+func pickScanMatch(folderTitle, author string, results []metadata.BookResult) (metadata.BookResult, bool) {
 	want := parser.TitleKey(folderTitle)
 	if want == "" {
 		return metadata.BookResult{}, false
 	}
-	for _, r := range results {
-		if parser.TitleKey(r.Title) == want {
-			return r, true
+	// A guide, summary or workbook ABOUT the book is not the book — unless that is what
+	// the folder itself says it holds.
+	guide := scanGuideRe.MatchString(folderTitle)
+	pick := func(accept func(key string) bool) (metadata.BookResult, bool) {
+		var first *metadata.BookResult
+		for i := range results {
+			r := &results[i]
+			k := parser.TitleKey(r.Title)
+			if k == "" || !accept(k) {
+				continue
+			}
+			if !guide && scanGuideRe.MatchString(r.Title) {
+				continue
+			}
+			// The folder's author, when it has one, settles a title several people used.
+			if author != "" && r.Author != "" && books.AuthorsOverlap(author, r.Author) {
+				return *r, true
+			}
+			if first == nil {
+				first = r
+			}
 		}
-	}
-	for _, r := range results {
-		if k := parser.TitleKey(r.Title); k != "" && strings.Contains(k, want) {
-			return r, true
+		if first != nil {
+			return *first, true
 		}
+		return metadata.BookResult{}, false
 	}
-	return metadata.BookResult{}, false
+	if r, ok := pick(func(k string) bool { return k == want }); ok {
+		return r, true
+	}
+	// A subtitled or series-tagged edition starts with the folder's title ("Golden Son:
+	// Red Rising Book 2"). Merely containing it is not enough: that is how a folder
+	// named "Harry Potter and the Goblet of Fire by J.K. Rowling" became a study guide
+	// whose title happened to contain the whole phrase.
+	return pick(func(k string) bool { return strings.HasPrefix(k, want) })
 }
+
+// scanGuideRe marks a title as being about a book rather than the book.
+var scanGuideRe = regexp.MustCompile(`(?i)\b(?:guide|summary|summaries|study|analysis|notes|workbook|companion|lesson|lessons|sparknotes|cliffsnotes|litcharts)\b`)
 
 // bookParsedTitle reduces a release name to a readable title guess for a review row:
 // separators become spaces and format tags are stripped.
@@ -1203,7 +1230,7 @@ func (c *Coordinator) ScanBookLibrary(ctx context.Context, ebookRoot, audiobookR
 				res.Unmatched = append(res.Unmatched, bf.Title)
 				continue
 			}
-			match, matched = pickScanMatch(bf.Title, results)
+			match, matched = pickScanMatch(bf.Title, bf.Author, results)
 		}
 		if !matched {
 			// Better to leave a folder uncatalogued and say so than to file it under the

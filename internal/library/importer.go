@@ -161,7 +161,14 @@ func (im *Importer) FindBookFoldersIn(roots ...string) []BookFolder {
 				if parent != root && parent != "." {
 					author = filepath.Base(parent)
 				}
-				bf = &BookFolder{Author: author, Title: filepath.Base(dir)}
+				title := filepath.Base(dir)
+				if author == "" {
+					// A flat folder named "Title by Author": the author is not part of
+					// the title, and searching the two words together found guides to
+					// the book rather than the book.
+					title, author = splitTitleBy(title)
+				}
+				bf = &BookFolder{Author: author, Title: title}
 				byDir[dir] = bf
 			}
 			fi, _ := d.Info()
@@ -187,6 +194,19 @@ func (im *Importer) FindBookFoldersIn(roots ...string) []BookFolder {
 // ImportBookEdition hardlinks a book edition into "<root>/<Author>/<Title>/". A single
 // file becomes "<Title>.ext"; a multi-file audiobook keeps each file's name in the
 // book folder (TargetPath then points at the folder). Format is the dominant extension.
+// titleByRe reads "<title> by <Author Name>" where the name is two to four capitalised
+// words or initials — "Death by Chocolate" keeps its title.
+var titleByRe = regexp.MustCompile(`^(.*\S)\s+(?i:by)\s+((?:[A-Z][\w.'’\-]*)(?:\s+[A-Z][\w.'’\-]*){1,3}|[A-Z]\.[\w.]*\s+[A-Z][\w'’\-]*)$`)
+
+// splitTitleBy separates a folder name of the form "Title by Author"; anything else
+// comes back as the title with no author.
+func splitTitleBy(name string) (title, author string) {
+	if m := titleByRe.FindStringSubmatch(strings.TrimSpace(name)); m != nil {
+		return strings.TrimSpace(m[1]), strings.TrimSpace(m[2])
+	}
+	return name, ""
+}
+
 func (im *Importer) ImportBookEdition(author, title string, files []FoundFile) (*BookImport, error) {
 	if len(files) == 0 {
 		return nil, fmt.Errorf("no book files to import")

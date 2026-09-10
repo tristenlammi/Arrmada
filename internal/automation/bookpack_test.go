@@ -78,7 +78,7 @@ func TestPickScanMatchRequiresTheTitleToCorrespond(t *testing.T) {
 		{Key: "/works/OL1W", Title: "Red Rising", Author: "Pierce Brown"},
 		{Key: "/works/OL2W", Title: "Golden Son", Author: "Pierce Brown"},
 	}
-	got, ok := pickScanMatch("Golden Son", results)
+	got, ok := pickScanMatch("Golden Son", "", results)
 	if !ok || got.Key != "/works/OL2W" {
 		t.Errorf("got %+v ok=%v, want the Golden Son result even though it ranked second", got, ok)
 	}
@@ -86,21 +86,40 @@ func TestPickScanMatchRequiresTheTitleToCorrespond(t *testing.T) {
 	// A subtitled edition is still the same book — the result may carry more than the
 	// folder does.
 	subtitled := []metadata.BookResult{{Key: "/works/OL2W", Title: "Golden Son: Red Rising Book 2"}}
-	if _, ok := pickScanMatch("Golden Son", subtitled); !ok {
+	if _, ok := pickScanMatch("Golden Son", "", subtitled); !ok {
 		t.Error("a result whose title contains the folder's must match")
 	}
 
 	// Never the reverse: a folder holding a MORE specific title must not be swallowed by
 	// the shorter result, or Dune Messiah lands in Dune.
-	if _, ok := pickScanMatch("Dune Messiah", []metadata.BookResult{{Key: "/works/OLD", Title: "Dune"}}); ok {
+	if _, ok := pickScanMatch("Dune Messiah", "", []metadata.BookResult{{Key: "/works/OLD", Title: "Dune"}}); ok {
 		t.Error("a shorter result must not claim a more specific folder title")
 	}
 
 	// Nothing corresponds: leave it uncatalogued and say so, rather than file it wrongly.
-	if _, ok := pickScanMatch("Golden Son", []metadata.BookResult{{Key: "/works/OL1W", Title: "Red Rising"}}); ok {
+	if _, ok := pickScanMatch("Golden Son", "", []metadata.BookResult{{Key: "/works/OL1W", Title: "Red Rising"}}); ok {
 		t.Error("an unrelated top hit must not be accepted")
 	}
-	if _, ok := pickScanMatch("", results); ok {
+	if _, ok := pickScanMatch("", "", results); ok {
 		t.Error("an empty folder title has nothing to verify against")
+	}
+}
+
+// A guide to the book is not the book, a result merely containing the folder's title
+// is not it either, and the folder's author settles a shared title.
+func TestPickScanMatchRejectsGuidesAndPrefersTheAuthor(t *testing.T) {
+	guide := []metadata.BookResult{{Key: "g", Title: "LinguiSystems novel guide for Harry Potter and the Goblet of Fire by J.K. Rowling", Author: "Laura Sauser"}}
+	if _, ok := pickScanMatch("Harry Potter and the Goblet of Fire", "J.K. Rowling", guide); ok {
+		t.Error("a study guide whose title contains the book's must not be taken for the book")
+	}
+	both := []metadata.BookResult{
+		{Key: "k", Title: "The Final Empire", Author: "Wm. H. Kötke"},
+		{Key: "s", Title: "The Final Empire", Author: "Brandon Sanderson"},
+	}
+	if got, ok := pickScanMatch("The Final Empire", "Brandon Sanderson", both); !ok || got.Key != "s" {
+		t.Errorf("got %+v ok=%v, want the folder author's book", got, ok)
+	}
+	if got, ok := pickScanMatch("The Final Empire", "", both); !ok || got.Key != "k" {
+		t.Errorf("with no author to go on the first same-title result stands: %+v %v", got, ok)
 	}
 }

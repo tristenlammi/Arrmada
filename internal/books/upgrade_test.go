@@ -52,3 +52,46 @@ func TestAuthorsOverlap(t *testing.T) {
 		}
 	}
 }
+
+// The re-match must read titles the way catalogues write them, and take an
+// authorless catalogue entry when that is all the catalogue has under the title.
+func TestMatchUpgradeReadsSubtitlesAndAuthorlessEntries(t *testing.T) {
+	book := Book{Title: "The Final Empire", Author: "Brandon Sanderson"}
+	results := []metadata.BookResult{
+		{Key: "hc:k", Title: "The Final Empire", Author: "Wm. H. Kötke"},
+		{Key: "hc:m", Title: "Mistborn: The Final Empire", Author: "Brandon Sanderson"},
+	}
+	if m := matchUpgrade(book, results); m == nil || m.Key != "hc:m" {
+		t.Errorf("matched %+v, want the Mistborn entry (subtitle is the title)", m)
+	}
+	sky := Book{Title: "Skyward Flight", Author: "Brandon Sanderson"}
+	if m := matchUpgrade(sky, []metadata.BookResult{{Key: "hc:s", Title: "Skyward Flight"}}); m == nil || m.Key != "hc:s" {
+		t.Errorf("an authorless same-title entry should be taken: %+v", m)
+	}
+	if m := matchUpgrade(sky, []metadata.BookResult{{Key: "hc:x", Title: "Skyward Flight", Author: "Someone Else"}}); m != nil {
+		t.Errorf("a different author's book of the same title must not match: %+v", m)
+	}
+	amp := Book{Title: "The Songbird and the Heart of Stone", Author: "Carissa Broadbent"}
+	if m := matchUpgrade(amp, []metadata.BookResult{{Key: "hc:a", Title: "The Songbird & the Heart of Stone", Author: "Carissa Broadbent"}}); m == nil {
+		t.Error("& and 'and' are the same title")
+	}
+}
+
+// A record that is a guide to a book names the book and its author in its title.
+func TestDerivedWork(t *testing.T) {
+	for _, c := range []struct {
+		title, author, work, by string
+		ok                      bool
+	}{
+		{"LinguiSystems novel guide for Harry Potter and the goblet of fire by J.K. Rowling", "Laura Sauser", "Harry Potter and the goblet of fire", "J.K. Rowling", true},
+		{"Harry Potter and the prisoner of Azkaban by J.K. Rowling", "Linda Ward Beech", "Harry Potter and the prisoner of Azkaban", "J.K. Rowling", true},
+		{"Dune by Frank Herbert", "Frank Herbert", "", "", false},
+		{"Death by Chocolate", "Sally Berneathy", "", "", false},
+		{"The Final Empire", "Brandon Sanderson", "", "", false},
+	} {
+		work, by, ok := derivedWork(c.title, c.author)
+		if ok != c.ok || work != c.work || by != c.by {
+			t.Errorf("derivedWork(%q, %q) = (%q, %q, %v), want (%q, %q, %v)", c.title, c.author, work, by, ok, c.work, c.by, c.ok)
+		}
+	}
+}

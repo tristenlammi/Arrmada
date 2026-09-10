@@ -406,3 +406,20 @@ func writeFile(t *testing.T, path string, size int) {
 		t.Fatal(err)
 	}
 }
+
+// A flat "Title by Author" folder is a title and an author, not a title with "by
+// Author" in it; a title that merely contains "by" stays whole.
+func TestSplitTitleBy(t *testing.T) {
+	for _, c := range []struct{ in, title, author string }{
+		{"Harry Potter and the Goblet of Fire by J.K. Rowling", "Harry Potter and the Goblet of Fire", "J.K. Rowling"},
+		{"Dune by Frank Herbert", "Dune", "Frank Herbert"},
+		{"Death by Chocolate", "Death by Chocolate", ""},
+		{"Stand By Me", "Stand By Me", ""},
+		{"Project Hail Mary", "Project Hail Mary", ""},
+	} {
+		title, author := splitTitleBy(c.in)
+		if title != c.title || author != c.author {
+			t.Errorf("splitTitleBy(%q) = (%q, %q), want (%q, %q)", c.in, title, author, c.title, c.author)
+		}
+	}
+}
