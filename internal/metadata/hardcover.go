@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -607,7 +609,16 @@ func (h *Hardcover) authorWorksLive(ctx context.Context, id, limit int) ([]BookR
 	var data struct {
 		Books []hcBook `json:"books"`
 	}
-	if err := h.query(ctx, q, map[string]any{"id": id, "n": limit}, &data); err != nil {
+	err := h.query(ctx, q, map[string]any{"id": id, "n": limit}, &data)
+	if err != nil && !errors.Is(err, ErrHardcoverBudget) {
+		// The edition-language lookup is the one part of this query the schema could
+		// refuse (query depth, a renamed relation). Fall back to the plain fields: the
+		// role and split-part filters still apply, only the language one is lost.
+		slog.Warn("hardcover: author works with edition languages failed — retrying without", "err", err)
+		q2 := strings.Replace(q, hcAuthorBookFields, hcBookFields+` contributions { contribution author { id name } }`, 1)
+		err = h.query(ctx, q2, map[string]any{"id": id, "n": limit}, &data)
+	}
+	if err != nil {
 		return nil, err
 	}
 	return filterAuthorWorks(data.Books, id, time.Now()), nil
