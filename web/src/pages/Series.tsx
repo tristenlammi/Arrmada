@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { api, type Series as SeriesT, type SeriesLookup } from "../lib/api";
 import { posterThumb } from "../lib/img";
+import { SeriesSearchModal } from "../components/SeriesSearchModal";
 
 const FILTERS = [
   { key: "all", label: "All" },
@@ -40,6 +41,7 @@ export function Series() {
   const [scanning, setScanning] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [view, setView] = useState<"grid" | "table">("grid");
+  const [searchFor, setSearchFor] = useState<SeriesT | null>(null); // the table's per-row "Search indexers"
   const [multiSelect, setMultiSelect] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [profiles, setProfiles] = useState<{ key: string; name: string }[]>([]);
@@ -254,7 +256,7 @@ export function Series() {
             {q ? <>No series match “<b>{query.trim()}</b>”.</> : <>No series match the <b>{FILTERS.find((f) => f.key === filter)?.label}</b> filter.</>}
           </div>
         ) : view === "table" ? (
-          <SeriesTable list={filtered} multiSelect={multiSelect} selected={selected} onToggleSelect={toggleSelect} />
+          <SeriesTable list={filtered} multiSelect={multiSelect} selected={selected} onToggleSelect={toggleSelect} onSearch={setSearchFor} />
         ) : (
           <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" }}>
             {filtered.map((s) => (
@@ -271,6 +273,9 @@ export function Series() {
           </div>
         )}
 
+        {searchFor && (
+          <SeriesSearchModal id={searchFor.id} title={searchFor.title} onClose={() => setSearchFor(null)} onGrabbed={() => { flash(`Grabbed for ${searchFor.title} — it will show in Downloads.`); refresh(); }} />
+        )}
         {toast && (
           <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>
             {toast}
@@ -384,7 +389,7 @@ function gb(bytes?: number): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
 
-function SeriesTable({ list, multiSelect, selected, onToggleSelect }: { list: SeriesT[]; multiSelect: boolean; selected: Set<number>; onToggleSelect: (id: number) => void }) {
+function SeriesTable({ list, multiSelect, selected, onToggleSelect, onSearch }: { list: SeriesT[]; multiSelect: boolean; selected: Set<number>; onToggleSelect: (id: number) => void; onSearch: (s: SeriesT) => void }) {
   const th = "px-2.5 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-[0.06em] text-ink-faint";
   const td = "px-2.5 py-2 align-middle";
   return (
@@ -400,6 +405,7 @@ function SeriesTable({ list, multiSelect, selected, onToggleSelect }: { list: Se
             <th className={`${th} text-right`}>Episodes</th>
             <th className={`${th} text-right`}>Size</th>
             <th className={th}>Monitored</th>
+            <th className={th}></th>
           </tr>
         </thead>
         <tbody>
@@ -424,6 +430,9 @@ function SeriesTable({ list, multiSelect, selected, onToggleSelect }: { list: Se
                 <td className={`${td} text-right font-mono text-[11px]`}><span style={{ color: st.have_files >= st.episodes && st.episodes > 0 ? "var(--good)" : "var(--ink-dim)" }}>{st.have_files}/{st.episodes}</span></td>
                 <td className={`${td} text-right font-mono text-[11px] text-ink-dim`}>{gb(st.size_bytes)}</td>
                 <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: s.monitored ? "var(--accent)" : "var(--ink-faint)" }}>{s.monitored ? "Yes" : "No"}</span></td>
+                <td className={`${td} text-right`}>
+                  <button onClick={() => onSearch(s)} title="Search your indexers — whole show or one season" className="whitespace-nowrap rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Search</button>
+                </td>
               </tr>
             );
           })}

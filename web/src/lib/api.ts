@@ -232,6 +232,7 @@ export interface StoredProfile {
   small_bias: number;
   min_format_score: number;
   format_scores: Record<string, number>;
+  required_formats?: string[]; // formats a release must have; anything without them is rejected
   custom_formats?: QualityCustomFormat[];
   keywords?: { term: string; score: number }[];
   rejected?: string[];
@@ -1584,6 +1585,7 @@ export interface MovieFile {
   resolution?: string;
   duration_min?: number;
   probed?: boolean;
+  atmos?: boolean; // Dolby Atmos in any audio track (from the file's own stream profile)
   subtitles?: string[];
   missing: boolean;
 }

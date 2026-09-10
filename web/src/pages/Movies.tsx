@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { api, type Movie, type MovieLookup } from "../lib/api";
 import { posterThumb } from "../lib/img";
+import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 
 
 type FilterKey = "all" | "monitored" | "unmonitored" | "missing" | "available";
@@ -45,6 +46,7 @@ export function Movies() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [view, setView] = useState<"grid" | "table">("grid");
+  const [searchFor, setSearchFor] = useState<Movie | null>(null); // the table's per-row "Search indexers"
 
   const scanLibrary = async () => {
     setScanning(true);
@@ -260,7 +262,7 @@ export function Movies() {
             {q ? <>No movies match “<b>{query.trim()}</b>”.</> : <>No movies match the <b>{FILTERS.find((f) => f.key === filter)?.label}</b> filter.</>}
           </div>
         ) : view === "table" ? (
-          <MovieTable movies={filtered} multiSelect={multiSelect} selected={selected} onToggleSelect={toggleSelect} />
+          <MovieTable movies={filtered} multiSelect={multiSelect} selected={selected} onToggleSelect={toggleSelect} onSearch={setSearchFor} />
         ) : (
           <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" }}>
             {filtered.map((m) => (
@@ -275,6 +277,16 @@ export function Movies() {
               />
             ))}
           </div>
+        )}
+        {searchFor && (
+          <ReleaseSearchModal
+            title={`Search indexers — ${searchFor.title}`}
+            subtitle="Pick a release to grab, or blocklist one to search for an alternate."
+            fetchReleases={() => api.movieReleases(searchFor.id)}
+            onGrab={async (rel) => { await api.grab({ indexer: rel.indexer, download_url: rel.download_url, title: rel.title, movie_id: searchFor.id }); flash(`Grabbed "${rel.summary}" for ${searchFor.title}.`); refresh(); }}
+            onBlock={async (rel) => { await api.blockRelease(searchFor.id, { title: rel.title, indexer: rel.indexer, download_url: rel.download_url, search_again: true }); flash(`Blocklisted "${rel.summary}" — searching for an alternate.`); refresh(); }}
+            onClose={() => setSearchFor(null)}
+          />
         )}
         {toast && (
           <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>
@@ -336,7 +348,7 @@ function fileExt(f?: Movie["file"]): string {
   return i >= 0 ? f.filename.slice(i + 1).toLowerCase() : "—";
 }
 function hasAtmos(f?: Movie["file"]): boolean {
-  return !!f?.audio?.some((a) => /atmos/i.test(a));
+  return !!f?.atmos || !!f?.audio?.some((a) => /atmos/i.test(a));
 }
 
 // YesNo renders a clear yes/no so gaps (missing HDR/Atmos) are easy to scan for.
@@ -367,7 +379,7 @@ function sortValue(m: Movie, key: SortKey): number | string | undefined {
   }
 }
 
-function MovieTable({ movies, multiSelect, selected, onToggleSelect }: { movies: Movie[]; multiSelect: boolean; selected: Set<number>; onToggleSelect: (id: number) => void }) {
+function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }: { movies: Movie[]; multiSelect: boolean; selected: Set<number>; onToggleSelect: (id: number) => void; onSearch: (m: Movie) => void }) {
   const th = "px-2.5 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-[0.06em] text-ink-faint";
   const td = "px-2.5 py-2 align-middle";
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "title", dir: "asc" });
@@ -417,6 +429,7 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect }: { movies:
             <Th label="Type" k="type" />
             <Th label="Size" k="size" align="right" />
             <Th label="Bitrate" k="bitrate" align="right" />
+            <th className={th}></th>
           </tr>
         </thead>
         <tbody>
@@ -446,6 +459,9 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect }: { movies:
                 <td className={td}><span className="font-mono text-[11px] text-ink-dim">{fileExt(f)}</span></td>
                 <td className={`${td} text-right font-mono text-[11px] text-ink-dim`}>{gb(f?.size_bytes)}</td>
                 <td className={`${td} text-right font-mono text-[11px] text-ink-dim`}>{bitrateMbps(f)}</td>
+                <td className={`${td} text-right`}>
+                  <button onClick={() => onSearch(m)} title="Search your indexers and pick a release" className="whitespace-nowrap rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Search</button>
+                </td>
               </tr>
             );
           })}

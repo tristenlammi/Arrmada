@@ -40,6 +40,9 @@ function sortBitrate(r: RankedRelease): number {
 export function ReleaseSearchModal({
   title,
   subtitle,
+  tabs,
+  tab,
+  onTab,
   fetchReleases,
   onGrab,
   onBlock,
@@ -47,6 +50,11 @@ export function ReleaseSearchModal({
 }: {
   title: string;
   subtitle?: string;
+  // Optional scopes rendered as tabs (a show's seasons); switching one re-runs the
+  // search, and the caller's fetchReleases reads the active tab.
+  tabs?: { key: string; label: string }[];
+  tab?: string;
+  onTab?: (key: string) => void;
   fetchReleases: () => Promise<ReleaseList>;
   onGrab: (rel: RankedRelease) => Promise<void>;
   onBlock?: (rel: RankedRelease) => Promise<void>;
@@ -100,7 +108,7 @@ export function ReleaseSearchModal({
   useEffect(() => {
     run();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [tab]);
 
   const grab = async (rel: RankedRelease) => {
     setBusy(rel.title);
@@ -142,6 +150,18 @@ export function ReleaseSearchModal({
             <button onClick={onClose} className="text-ink-faint hover:text-[var(--ink)]">✕</button>
           </div>
         </div>
+        {tabs && tabs.length > 1 && (
+          <div className="mb-3 flex flex-wrap gap-1 border-b pb-2" style={{ borderColor: "var(--line)" }}>
+            {tabs.map((t) => {
+              const active = t.key === tab;
+              return (
+                <button key={t.key} onClick={() => onTab?.(t.key)} disabled={loading && !active} className="rounded-md px-2.5 py-1 text-[11.5px] font-semibold transition-colors" style={{ background: active ? "var(--accent-soft)" : "transparent", color: active ? "var(--accent)" : "var(--ink-dim)", border: `1px solid ${active ? "var(--accent-line)" : "transparent"}` }}>
+                  {t.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
         {error && <div className="mb-3 rounded-lg p-2.5 text-[12px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
         {!loading && list && list.releases.length > 0 && (
           <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 border-b pb-3" style={{ borderColor: "var(--line)" }}>
