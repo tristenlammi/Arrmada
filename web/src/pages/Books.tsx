@@ -130,8 +130,8 @@ export function Books() {
     setHideUpgradeState(on);
     try { if (on && upgrade?.started_at) localStorage.setItem("books.upgradeHidden", String(upgrade.started_at)); } catch { /* ignore */ }
   };
-  const leftVisible = (upgrade?.left ?? []).filter((l) => !kept.has(l.id));
   const [kept, setKept] = useState<Set<number>>(new Set());
+  const leftVisible = (upgrade?.left ?? []).filter((l) => !kept.has(l.id));
   const keepOne = async (id: number) => {
     try {
       await api.keepBookCatalogue(id, true);
