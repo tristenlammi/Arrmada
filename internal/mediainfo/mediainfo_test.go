@@ -41,3 +41,31 @@ func TestParseSkipsAttachedPicture(t *testing.T) {
 		t.Errorf("HDR detection = %v, want both HDR10 and DV", info.HDR)
 	}
 }
+
+// Atmos is reported in the audio stream's profile, not its codec name; a file whose
+// name never mentioned it must still come back as Atmos.
+func TestParseReadsAtmosFromTheAudioProfile(t *testing.T) {
+	probe := []byte(`{
+		"streams": [
+			{"codec_type": "video", "codec_name": "hevc", "width": 3840, "height": 2160},
+			{"codec_type": "audio", "codec_name": "eac3", "channels": 6, "profile": "Dolby Digital Plus + Dolby Atmos"},
+			{"codec_type": "audio", "codec_name": "aac", "channels": 2}
+		],
+		"format": {"duration": "100"}
+	}`)
+	info, err := parse(probe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Atmos || info.AudioCodec != "EAC3" || info.Channels != 6 {
+		t.Errorf("info = %+v, want Atmos from the EAC3 profile", info)
+	}
+	plain, _ := parse([]byte(`{"streams":[{"codec_type":"audio","codec_name":"truehd","channels":8,"profile":"Dolby TrueHD"}],"format":{}}`))
+	if plain.Atmos {
+		t.Error("plain TrueHD reported as Atmos")
+	}
+	titled, _ := parse([]byte(`{"streams":[{"codec_type":"audio","codec_name":"truehd","channels":8,"tags":{"title":"TrueHD Atmos 7.1"}}],"format":{}}`))
+	if !titled.Atmos {
+		t.Error("Atmos in the track title not seen")
+	}
+}

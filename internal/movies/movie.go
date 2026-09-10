@@ -92,6 +92,7 @@ type MovieFile struct {
 	Quality     string   `json:"quality,omitempty"` // "2160p BluRay"
 	Codec       string   `json:"codec,omitempty"`
 	Audio       []string `json:"audio,omitempty"`
+	Atmos       bool     `json:"atmos,omitempty"` // Dolby Atmos in any audio track (probed, or named in the file)
 	HDR         []string `json:"hdr,omitempty"`
 	Group       string   `json:"group,omitempty"`
 	Resolution  string   `json:"resolution,omitempty"`   // real resolution (ffprobe)
@@ -99,4 +100,16 @@ type MovieFile struct {
 	Probed      bool     `json:"probed,omitempty"`       // media info read from the file, not the name
 	Subtitles   []string `json:"subtitles,omitempty"`    // sidecar subtitle filenames
 	Missing     bool     `json:"missing"`                // tracked in DB but gone from disk
+	// MediaVersion is the probe's format version the entry was built with; older
+	// entries are probed again in the background (see MediaVersion).
+	MediaVersion int `json:"v,omitempty"`
+}
+
+// MediaVersion is bumped when the probe learns something new, so cached entries
+// built before it get refreshed. 2: Atmos read from the audio stream's profile.
+const MediaVersion = 2
+
+// MediaStale reports whether a movie's cached media info predates the current probe.
+func (m *Movie) MediaStale() bool {
+	return m.HasFile && (m.File == nil || (!m.File.Missing && m.File.MediaVersion < MediaVersion))
 }

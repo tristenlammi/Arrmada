@@ -14,12 +14,16 @@ import (
 
 // Info is the subset of media properties Arrmada cares about.
 type Info struct {
-	Width       int      `json:"width"`
-	Height      int      `json:"height"`
-	Resolution  string   `json:"resolution"` // "2160p" | "1080p" | …
-	VideoCodec  string   `json:"video_codec"`
-	AudioCodec  string   `json:"audio_codec"`
-	Channels    int      `json:"channels"`
+	Width      int    `json:"width"`
+	Height     int    `json:"height"`
+	Resolution string `json:"resolution"` // "2160p" | "1080p" | …
+	VideoCodec string `json:"video_codec"`
+	AudioCodec string `json:"audio_codec"`
+	Channels   int    `json:"channels"`
+	// Atmos: any audio stream carries Dolby Atmos. ffprobe reports it in the stream's
+	// profile ("Dolby TrueHD + Dolby Atmos", "Dolby Digital Plus + Dolby Atmos"), not
+	// its codec name, which is why a file's filename used to be the only source.
+	Atmos       bool     `json:"atmos,omitempty"`
 	DurationSec int      `json:"duration_sec"`
 	HDR         []string `json:"hdr,omitempty"`
 }
@@ -51,8 +55,12 @@ type ffprobeOut struct {
 		Width         int    `json:"width"`
 		Height        int    `json:"height"`
 		Channels      int    `json:"channels"`
+		Profile       string `json:"profile"`
 		ColorTransfer string `json:"color_transfer"`
-		Disposition   struct {
+		Tags          struct {
+			Title string `json:"title"`
+		} `json:"tags"`
+		Disposition struct {
 			AttachedPic int `json:"attached_pic"`
 		} `json:"disposition"`
 		SideDataList []struct {
@@ -86,6 +94,9 @@ func parse(b []byte) (Info, error) {
 				info.AudioCodec = strings.ToUpper(s.CodecName)
 				info.Channels = s.Channels
 			}
+			if isAtmos(s.Profile) || isAtmos(s.Tags.Title) {
+				info.Atmos = true
+			}
 		}
 	}
 	info.Resolution = resolutionFor(info.Width, info.Height)
@@ -93,6 +104,11 @@ func parse(b []byte) (Info, error) {
 		info.DurationSec = int(d)
 	}
 	return info, nil
+}
+
+// isAtmos reads Dolby Atmos out of an audio stream's profile or title.
+func isAtmos(s string) bool {
+	return strings.Contains(strings.ToLower(s), "atmos")
 }
 
 func normalizeVideoCodec(c string) string {

@@ -25,8 +25,9 @@ func (a *api) handleListMovies(w http.ResponseWriter, r *http.Request) {
 		if len(queue) > 0 {
 			list[i].Download = downloadFor(queue, list[i])
 		}
-		// Backfill media info for movies imported before caching (fire-and-forget).
-		if list[i].HasFile && list[i].File == nil {
+		// Backfill media info cached before it existed or by an older probe (fire-and-forget,
+		// bounded and deduplicated inside EnsureMedia).
+		if list[i].MediaStale() {
 			go a.deps.Movies.EnsureMedia(context.Background(), list[i].ID)
 		}
 	}

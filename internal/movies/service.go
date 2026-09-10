@@ -829,8 +829,8 @@ func (s *Service) setDefaultFile(ctx context.Context, id int64, path string) err
 	return nil
 }
 
-// EnsureMedia caches a movie's media info if it isn't cached yet (lazy backfill
-// for movies imported before media caching existed).
+// EnsureMedia caches a movie's media info if it isn't cached yet, or was cached by an
+// older probe (lazy backfill, from the list handler).
 func (s *Service) EnsureMedia(ctx context.Context, id int64) {
 	// Dedup: list polling fires one of these per uncached file on every request. Skip if this
 	// movie is already being probed, and bound total concurrent probes so a big library can't
@@ -843,7 +843,7 @@ func (s *Service) EnsureMedia(ctx context.Context, id int64) {
 	defer func() { <-s.probeSem }()
 
 	m, err := s.repo.Get(ctx, id)
-	if err != nil || m.File != nil || !m.HasFile || m.MovieFilePath == "" {
+	if err != nil || !m.MediaStale() || m.MovieFilePath == "" {
 		return
 	}
 	if info := s.fileInfo(m.MovieFilePath, true); info != nil {
@@ -861,13 +861,19 @@ func (s *Service) fileInfo(path string, hasFile bool) *MovieFile {
 	}
 	rel := parser.Parse(filepath.Base(path))
 	f := &MovieFile{
-		Path:     path,
-		Filename: filepath.Base(path),
-		Quality:  qualityLabel(path),
-		Codec:    string(rel.Codec),
-		Audio:    rel.Audio,
-		HDR:      rel.HDR,
-		Group:    rel.Group,
+		Path:         path,
+		Filename:     filepath.Base(path),
+		Quality:      qualityLabel(path),
+		Codec:        string(rel.Codec),
+		Audio:        rel.Audio,
+		HDR:          rel.HDR,
+		Group:        rel.Group,
+		MediaVersion: MediaVersion,
+	}
+	for _, a := range rel.Audio {
+		if strings.EqualFold(a, "Atmos") {
+			f.Atmos = true
+		}
 	}
 	if fi, statErr := os.Stat(path); statErr == nil {
 		f.SizeBytes = fi.Size()
@@ -900,6 +906,11 @@ func (s *Service) fileInfo(path string, hasFile bool) *MovieFile {
 						label += " " + audioChannels(mi.Channels)
 					}
 					f.Audio = []string{label}
+				}
+				// Atmos lives in the stream's profile, which most filenames don't
+				// mention; the file is the authority.
+				if mi.Atmos {
+					f.Atmos = true
 				}
 			}
 		}
