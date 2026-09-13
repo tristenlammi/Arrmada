@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -232,10 +233,24 @@ func (a *api) cookiePath() string {
 // decodeJSON reads a small JSON body into dst, writing a 400 and returning false
 // on failure.
 func (a *api) decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	return a.decodeJSONLimit(w, r, dst, 1<<20)
+}
+
+// decodeJSONLimit is decodeJSON with a caller-chosen body cap, for the few bodies
+// that legitimately carry a file. A body over the cap is reported as such — a
+// season-pack .torrent that quietly failed as "invalid request body" was the
+// original sin here.
+func (a *api) decodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, limit int64) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
+		var tooBig *http.MaxBytesError
+		if errors.As(err, &tooBig) {
+			a.writeError(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("request body is too large (over %d MB)", limit>>20))
+			return false
+		}
 		a.writeError(w, http.StatusBadRequest, "invalid request body")
 		return false
 	}

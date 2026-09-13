@@ -7,6 +7,12 @@ import (
 	"github.com/tristenlammi/arrmada/internal/torrentmeta"
 )
 
+// torrentBodyLimit caps an uploaded .torrent's request body. A .torrent is mostly
+// piece hashes, so a whole-series pack of a few hundred gigabytes runs to several
+// megabytes, and base64 adds a third on top; the 1 MB cap every other JSON body gets
+// rejected exactly the uploads this feature exists for.
+const torrentBodyLimit = 32 << 20
+
 // torrentUpload is the shared request body: a base64-encoded .torrent file (+ optional
 // filename and the title to attribute the grab to).
 type torrentUpload struct {
@@ -30,7 +36,7 @@ func (a *api) decodeTorrent(w http.ResponseWriter, req torrentUpload) ([]byte, b
 //	POST /api/v1/grab/preview  {torrent}
 func (a *api) handleGrabPreview(w http.ResponseWriter, r *http.Request) {
 	var req torrentUpload
-	if !a.decodeJSON(w, r, &req) {
+	if !a.decodeJSONLimit(w, r, &req, torrentBodyLimit) {
 		return
 	}
 	data, ok := a.decodeTorrent(w, req)
@@ -53,7 +59,7 @@ func (a *api) handleMovieGrabTorrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req torrentUpload
-	if !a.decodeJSON(w, r, &req) {
+	if !a.decodeJSONLimit(w, r, &req, torrentBodyLimit) {
 		return
 	}
 	data, ok := a.decodeTorrent(w, req)
@@ -76,7 +82,7 @@ func (a *api) handleBookGrabTorrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req torrentUpload
-	if !a.decodeJSON(w, r, &req) {
+	if !a.decodeJSONLimit(w, r, &req, torrentBodyLimit) {
 		return
 	}
 	data, ok := a.decodeTorrent(w, req)
@@ -98,7 +104,7 @@ func (a *api) handleSeriesGrabTorrent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req torrentUpload
-	if !a.decodeJSON(w, r, &req) {
+	if !a.decodeJSONLimit(w, r, &req, torrentBodyLimit) {
 		return
 	}
 	data, ok := a.decodeTorrent(w, req)
