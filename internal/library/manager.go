@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"log/slog"
 	"os"
+	"sync"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/eventbus"
 )
@@ -35,6 +37,26 @@ type ImportGate func(ctx context.Context, hash, name, contentPath string) (reaso
 // react (blocklist the release, remove junk) rather than let the sweep retry forever.
 type ImportFailure func(ctx context.Context, hash, name, contentPath string, cause error)
 
+// ImportStuck is called once a candidate has failed importStuckAfter times with the
+// import itself — a folder that can't be created, a full disk — so the caller can hold
+// it for review with the reason, where a person can fix the cause and import it.
+type ImportStuck func(ctx context.Context, hash, name, contentPath string, attempts int, cause error)
+
+// An import that fails is retried with a growing pause rather than on every 30-second
+// sweep: a "permission denied" on the library folder logged the same warning 1,400
+// times a day and would have kept doing so until someone noticed the log.
+const (
+	importRetryMin   = time.Minute
+	importRetryMax   = 30 * time.Minute
+	importStuckAfter = 5
+)
+
+type importFailure struct {
+	attempts int
+	next     time.Time
+	lastErr  string
+}
+
 // Manager orchestrates importing finished downloads: dedupe, import, record,
 // and announce.
 type Manager struct {
@@ -45,6 +67,53 @@ type Manager struct {
 	resolver TitleResolver // nil → name from the parsed release
 	gate     ImportGate    // nil → no review gate
 	onFail   ImportFailure // nil → failures are only logged
+	onStuck  ImportStuck   // nil → a repeatedly failing import just keeps backing off
+
+	failMu   sync.Mutex
+	failures map[string]*importFailure // by download hash; cleared on success
+}
+
+// SetStuckHook installs the callback for imports that keep failing.
+func (m *Manager) SetStuckHook(f ImportStuck) { m.onStuck = f }
+
+// retryDue reports whether a previously failed candidate may be tried again yet.
+func (m *Manager) retryDue(hash string) bool {
+	m.failMu.Lock()
+	defer m.failMu.Unlock()
+	f, ok := m.failures[hash]
+	return !ok || !time.Now().Before(f.next)
+}
+
+// noteFailure records a failed attempt and schedules the next one. It reports the
+// attempt count and whether this failure is worth a warning: the first one, or one
+// with a different error than last time — the rest are the same news repeated.
+func (m *Manager) noteFailure(hash string, err error) (attempts int, worthWarning bool) {
+	m.failMu.Lock()
+	defer m.failMu.Unlock()
+	if m.failures == nil {
+		m.failures = map[string]*importFailure{}
+	}
+	f := m.failures[hash]
+	if f == nil {
+		f = &importFailure{}
+		m.failures[hash] = f
+	}
+	f.attempts++
+	wait := importRetryMin << uint(f.attempts-1)
+	if wait > importRetryMax || wait <= 0 {
+		wait = importRetryMax
+	}
+	f.next = time.Now().Add(wait)
+	msg := err.Error()
+	worthWarning = f.attempts == 1 || msg != f.lastErr
+	f.lastErr = msg
+	return f.attempts, worthWarning
+}
+
+func (m *Manager) clearFailure(hash string) {
+	m.failMu.Lock()
+	delete(m.failures, hash)
+	m.failMu.Unlock()
 }
 
 // SetGate installs the review gate that can hold a candidate back from import.
@@ -72,6 +141,9 @@ func (m *Manager) Process(ctx context.Context, cands []Candidate) int {
 	for _, c := range cands {
 		if c.Hash == "" || c.ContentPath == "" {
 			continue
+		}
+		if !m.retryDue(c.Hash) {
+			continue // failed recently — its retry is scheduled
 		}
 		if m.gate != nil {
 			if reason, hold := m.gate(ctx, c.Hash, c.Name, c.ContentPath); hold {
@@ -104,12 +176,21 @@ func (m *Manager) Process(ctx context.Context, cands []Candidate) int {
 
 		res, err := m.importOne(ctx, c)
 		if err != nil {
-			m.log.Warn("import failed", "name", c.Name, "err", err)
+			attempts, warn := m.noteFailure(c.Hash, err)
+			if warn {
+				m.log.Warn("import failed", "name", c.Name, "err", err, "attempt", attempts)
+			} else {
+				m.log.Debug("import failed again", "name", c.Name, "err", err, "attempt", attempts)
+			}
 			if m.onFail != nil {
 				m.onFail(ctx, c.Hash, c.Name, c.ContentPath, err)
 			}
+			if attempts == importStuckAfter && m.onStuck != nil {
+				m.onStuck(ctx, c.Hash, c.Name, c.ContentPath, attempts, err)
+			}
 			continue
 		}
+		m.clearFailure(c.Hash)
 		if err := m.repo.record(ctx, ImportRecord{
 			Hash: c.Hash, SourcePath: res.SourcePath, TargetPath: res.TargetPath,
 			Title: res.Title, SizeBytes: res.SizeBytes,

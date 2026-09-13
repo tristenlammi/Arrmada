@@ -222,6 +222,33 @@ func (c *Coordinator) HandleMovieImportFailure(ctx context.Context, hash, name, 
 	c.removeIfNoVideo(ctx, hash, name, contentPath)
 }
 
+// HandleMovieImportStuck holds a movie download for review after its import has
+// failed repeatedly on the import itself — a library folder that can't be created, a
+// full disk. The reason carries the error, so the fix is obvious, and Import from the
+// review retries once it's fixed. The sweep keeps backing off meanwhile.
+func (c *Coordinator) HandleMovieImportStuck(ctx context.Context, hash, name, contentPath string, attempts int, cause error) {
+	if c.movies == nil || c.hasReview(ctx, hash) {
+		return
+	}
+	mid, indexerName, grabbed := c.grabbedMediaForHash(ctx, hash, name, "movie")
+	title := ""
+	if grabbed {
+		if m, err := c.movies.Get(ctx, mid); err == nil {
+			title = m.Title
+		}
+	} else if m, ok := c.movies.MatchRelease(ctx, name); ok {
+		mid, title = m.ID, m.Title
+	}
+	parsed := parser.Parse(name)
+	c.addReview(ctx, Review{
+		Hash: hash, Name: name, ContentPath: contentPath, MediaType: "movie",
+		ExpectedID: mid, ExpectedTitle: title, ParsedTitle: parsed.Title, Indexer: indexerName,
+		Reason: fmt.Sprintf("Import failed %d times: %v — fix the cause (a folder Arrmada can't write to, a full disk), then Import", attempts, cause),
+	})
+	c.log.Warn("movie import: giving up retrying for now — held for review",
+		"release", name, "attempts", attempts, "err", cause)
+}
+
 // --- review actions -------------------------------------------------------
 
 // RejectReview removes the download (and its files), blocklists the release so
@@ -455,6 +482,26 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	// already on disk, and the whole pack was skipped as "already has an equal-or-better
 	// file" — 120 of 122 episodes in one case.
 	release := parser.Parse(filepath.Base(contentPath))
+	// A file that resolves to an episode the show's metadata doesn't have yet is, far
+	// more often than a numbering fault, an episode TMDB listed after the show was last
+	// refreshed. Refresh once per import and look again before calling it unresolved.
+	refreshed := false
+	knownEpisode := func(ref series.EpisodeRef) bool {
+		if c.series.EpisodeExists(ctx, s.ID, ref.Season, ref.Episode) {
+			return true
+		}
+		if refreshed {
+			return false
+		}
+		refreshed = true
+		c.log.Info("series import: file resolves to an episode the metadata doesn't have yet — refreshing the show",
+			"series", s.Title, "season", ref.Season, "episode", ref.Episode)
+		if _, _, err := c.series.Refresh(ctx, s.ID); err != nil {
+			c.log.Warn("series import: refresh failed", "series", s.Title, "err", err)
+			return false
+		}
+		return c.series.EpisodeExists(ctx, s.ID, ref.Season, ref.Episode)
+	}
 	for _, v := range videos {
 		rel := inheritQuality(parser.Parse(filepath.Base(v.Path)), release)
 		// Alias numbering first, exactly as the search side resolves it. Without this a
@@ -480,7 +527,7 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		// exist — an orphan library file counted as a successful import.
 		known := refs[:0:0]
 		for _, ref := range refs {
-			if c.series.EpisodeExists(ctx, s.ID, ref.Season, ref.Episode) {
+			if knownEpisode(ref) {
 				known = append(known, ref)
 			}
 		}

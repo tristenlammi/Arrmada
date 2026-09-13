@@ -299,6 +299,7 @@ func main() {
 	// Blocklist (and clean up) a movie download that finished but has nothing importable,
 	// so the 30s import sweep stops retrying it forever.
 	imports.SetFailureHook(coordinator.HandleMovieImportFailure)
+	imports.SetStuckHook(coordinator.HandleMovieImportStuck)
 	// Forget import records when files are deleted, so a re-grab re-imports.
 	go imports.WatchDeletions(runCtx)
 	// Wire the series module into the coordinator: TV downloads land in a separate
@@ -373,6 +374,12 @@ func main() {
 	// Sweep monitored series for missing, aired episodes and grab packs/episodes.
 	sched.Register("search-missing-series", 15*time.Minute, false, func(ctx context.Context) error {
 		coordinator.SearchSeriesMissing(ctx)
+		return nil
+	})
+	// Keep continuing shows' episode lists current, so an episode TMDB added after the
+	// show was last refreshed exists before its download arrives.
+	sched.Register("refresh-continuing-series", 6*time.Hour, false, func(ctx context.Context) error {
+		coordinator.RefreshContinuingSeries(ctx)
 		return nil
 	})
 	// Sweep monitored, file-less books and grab the best-format release.
