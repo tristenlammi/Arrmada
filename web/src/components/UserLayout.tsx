@@ -15,7 +15,7 @@ export function UserLayout() {
   // an ebook from anywhere.
   const nav = [{ to: "/discover", label: "Discover" }];
   if (!external) nav.push({ to: "/calendar", label: "Calendar" });
-  if (booksEnabled) nav.push({ to: "/books", label: "Your books" });
+  if (booksEnabled) nav.push({ to: "/books", label: "Books" });
 
   const logout = async () => {
     try { await api.logout(); } catch { /* ignore */ }

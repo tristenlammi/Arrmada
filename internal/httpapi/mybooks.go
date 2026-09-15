@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"fmt"
 	"mime"
 	"net/http"
 	"os"
@@ -12,27 +13,37 @@ import (
 	"github.com/tristenlammi/arrmada/internal/books"
 )
 
-// A requester's book arrives in the library and then… nothing: the ebook sits on the
-// server where only staff can see it. Audiobooks reach people through Audiobookshelf;
-// ebooks had no way out. Now a requester has a "Your books" page listing the books
-// they asked for, and a download for each ebook that has arrived. The download is
-// keyed to the request — someone can fetch the ebooks they requested, nothing else —
-// and it is one of the few endpoints reachable from outside the network, so a phone
-// on the bus gets the book too.
+// A book arrives in the library and then… nothing: the ebook sits on the server
+// where only staff can see it. Audiobooks reach people through Audiobookshelf; ebooks
+// had no way out. Now a requester has a read-only "Books" page: every book in the
+// library that has a file, a download for each ebook, and their own requests still on
+// the way. The list and the download are two of the few endpoints reachable from
+// outside the network, so a phone on the bus gets the book too.
 
-// MyBook is one of the caller's requested books, with what has arrived for it.
+// MyBook is one library book as a requester sees it: what it is and what's here.
 type MyBook struct {
-	BookID      int64  `json:"book_id"`
+	BookID   int64  `json:"book_id"`
+	Title    string `json:"title"`
+	Author   string `json:"author,omitempty"`
+	Year     int    `json:"year,omitempty"`
+	CoverURL string `json:"cover_url,omitempty"`
+	AddedAt  string `json:"added_at,omitempty"`
+	Series   string `json:"series,omitempty"` // "Name #3" when known
+	// Ebook is set when an ebook edition exists; Audiobook says one exists (served by
+	// Audiobookshelf, so no download here).
+	Ebook     *MyEbook `json:"ebook,omitempty"`
+	Audiobook bool     `json:"audiobook"`
+	Mine      bool     `json:"mine"` // the caller requested this one
+}
+
+// MyRequest is one of the caller's book requests that hasn't produced a file yet.
+type MyRequest struct {
 	Title       string `json:"title"`
 	Author      string `json:"author,omitempty"`
 	Year        int    `json:"year,omitempty"`
 	CoverURL    string `json:"cover_url,omitempty"`
-	Status      string `json:"status"` // the request's: pending | approved | declined
+	Status      string `json:"status"` // pending | approved | declined
 	RequestedAt string `json:"requested_at"`
-	// Ebook is set once an ebook edition exists; Audiobook says one exists (served by
-	// Audiobookshelf, so no download here).
-	Ebook     *MyEbook `json:"ebook,omitempty"`
-	Audiobook bool     `json:"audiobook"`
 }
 
 // MyEbook is what the download button needs to know.
@@ -41,7 +52,8 @@ type MyEbook struct {
 	SizeBytes int64  `json:"size_bytes"`
 }
 
-// handleMyBooks lists the caller's own book requests joined with the library.
+// handleMyBooks lists the library's books that have a file, plus the caller's own
+// book requests that haven't arrived yet.
 //
 //	GET /api/v1/me/books
 func (a *api) handleMyBooks(w http.ResponseWriter, r *http.Request) {
@@ -55,40 +67,51 @@ func (a *api) handleMyBooks(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, "could not list requests")
 		return
 	}
-	byKey := map[string]books.Book{}
-	if a.deps.Books != nil {
-		if all, err := a.deps.Books.List(r.Context()); err == nil {
-			for _, b := range all {
-				byKey[b.OLKey] = b
-			}
+	mine := map[string]bool{}
+	for _, rq := range reqs {
+		if rq.MediaType == "book" && rq.OLKey != "" {
+			mine[rq.OLKey] = true
 		}
 	}
-	out := []MyBook{}
-	for _, rq := range reqs {
-		if rq.MediaType != "book" {
+	var all []books.Book
+	if a.deps.Books != nil {
+		all, _ = a.deps.Books.List(r.Context())
+	}
+	shelf := []MyBook{}
+	have := map[string]bool{}
+	for _, b := range all {
+		ebook := b.Ebook != nil && b.Ebook.Path != ""
+		audio := b.Audiobook != nil && b.Audiobook.Path != ""
+		if !ebook && !audio {
 			continue
 		}
-		mb := MyBook{Title: rq.Title, Author: rq.Author, Year: rq.Year, CoverURL: rq.PosterURL, Status: rq.Status, RequestedAt: rq.CreatedAt}
-		if b, ok := byKey[rq.OLKey]; ok {
-			mb.BookID = b.ID
-			if b.Title != "" {
-				mb.Title, mb.Author = b.Title, b.Author
-			}
-			if b.CoverURL != "" {
-				mb.CoverURL = b.CoverURL
-			}
-			if b.Ebook != nil && b.Ebook.Path != "" {
-				mb.Ebook = &MyEbook{Format: b.Ebook.Format, SizeBytes: b.Ebook.SizeBytes}
-			}
-			mb.Audiobook = b.Audiobook != nil && b.Audiobook.Path != ""
+		have[b.OLKey] = true
+		mb := MyBook{BookID: b.ID, Title: b.Title, Author: b.Author, Year: b.Year, CoverURL: b.CoverURL,
+			AddedAt: b.AddedAt, Audiobook: audio, Mine: mine[b.OLKey]}
+		if ebook {
+			mb.Ebook = &MyEbook{Format: b.Ebook.Format, SizeBytes: b.Ebook.SizeBytes}
 		}
-		out = append(out, mb)
+		if b.SeriesName != "" {
+			mb.Series = b.SeriesName
+			if b.SeriesPosition > 0 {
+				mb.Series = fmt.Sprintf("%s #%g", b.SeriesName, b.SeriesPosition)
+			}
+		}
+		shelf = append(shelf, mb)
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"books": out})
+	pending := []MyRequest{}
+	for _, rq := range reqs {
+		if rq.MediaType != "book" || have[rq.OLKey] {
+			continue
+		}
+		pending = append(pending, MyRequest{Title: rq.Title, Author: rq.Author, Year: rq.Year,
+			CoverURL: rq.PosterURL, Status: rq.Status, RequestedAt: rq.CreatedAt})
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"books": shelf, "requests": pending})
 }
 
-// handleBookEbook sends a book's ebook file as a download. Staff may fetch any; anyone
-// else only a book they requested themselves.
+// handleBookEbook sends a book's ebook file as a download to any signed-in account
+// that can request (read-only accounts are for watching the calendar, not the shelf).
 //
 //	GET /api/v1/books/{id}/ebook
 func (a *api) handleBookEbook(w http.ResponseWriter, r *http.Request) {
@@ -102,7 +125,7 @@ func (a *api) handleBookEbook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.mayDownloadBook(r, b) {
-		a.writeError(w, http.StatusForbidden, "you can download the books you requested")
+		a.writeError(w, http.StatusForbidden, "your account can't download books")
 		return
 	}
 	if b.Ebook == nil || b.Ebook.Path == "" {
@@ -124,25 +147,11 @@ func (a *api) handleBookEbook(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, path)
 }
 
-// mayDownloadBook: staff always; others when one of their requests is for this book.
-func (a *api) mayDownloadBook(r *http.Request, b books.Book) bool {
+// mayDownloadBook: any enabled account of requester rank or above. The whole shelf is
+// theirs to read — the library exists to be read — so there is no per-book gate.
+func (a *api) mayDownloadBook(r *http.Request, _ books.Book) bool {
 	u, ok := userFrom(r)
-	if !ok || u == nil || u.Disabled {
-		return false
-	}
-	if u.Role.AtLeast(auth.RoleManager) {
-		return true
-	}
-	reqs, err := a.deps.Requests.List(r.Context(), "", u.ID)
-	if err != nil {
-		return false
-	}
-	for _, rq := range reqs {
-		if rq.MediaType == "book" && rq.OLKey != "" && rq.OLKey == b.OLKey {
-			return true
-		}
-	}
-	return false
+	return ok && u != nil && !u.Disabled && u.Role.AtLeast(auth.RoleRequester)
 }
 
 // ebookFile resolves the stored ebook path to the file to send. An ebook edition is

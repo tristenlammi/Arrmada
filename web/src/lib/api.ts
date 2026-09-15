@@ -468,18 +468,29 @@ export interface MediaRequest {
   updated_at: string;
 }
 
-// MyBook is one of the signed-in user's own book requests joined with the library:
-// what they asked for and whether an ebook has arrived to download.
+// MyBook is one library book as a requester sees it: an ebook to download, an
+// audiobook that lives in Audiobookshelf, or both.
 export interface MyBook {
-  book_id: number; // 0 until the request is approved and the book exists in the library
+  book_id: number;
+  title: string;
+  author?: string;
+  year?: number;
+  cover_url?: string;
+  added_at?: string;
+  series?: string;
+  ebook?: { format: string; size_bytes: number };
+  audiobook: boolean;
+  mine: boolean; // the signed-in user requested it
+}
+
+// MyRequest is one of the signed-in user's book requests that hasn't produced a file.
+export interface MyRequest {
   title: string;
   author?: string;
   year?: number;
   cover_url?: string;
   status: "pending" | "approved" | "declined";
   requested_at: string;
-  ebook?: { format: string; size_bytes: number };
-  audiobook: boolean;
 }
 
 export interface DiscoverCard {
@@ -1144,7 +1155,7 @@ export const api = {
   // background — the response only reports how many were queued.
   refreshAllSeries: () => req<{ queued: number }>(`/api/v1/series/refresh`, { method: "POST" }),
   // Requests
-  myBooks: () => req<{ books: MyBook[] }>("/api/v1/me/books"),
+  myBooks: () => req<{ books: MyBook[]; requests: MyRequest[] }>("/api/v1/me/books"),
   // A plain link, not a fetch: the browser saves the file with the server's filename.
   ebookDownloadURL: (bookId: number) => `/api/v1/books/${bookId}/ebook`,
   requests: (status?: string) =>
