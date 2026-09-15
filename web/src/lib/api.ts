@@ -468,6 +468,20 @@ export interface MediaRequest {
   updated_at: string;
 }
 
+// MyBook is one of the signed-in user's own book requests joined with the library:
+// what they asked for and whether an ebook has arrived to download.
+export interface MyBook {
+  book_id: number; // 0 until the request is approved and the book exists in the library
+  title: string;
+  author?: string;
+  year?: number;
+  cover_url?: string;
+  status: "pending" | "approved" | "declined";
+  requested_at: string;
+  ebook?: { format: string; size_bytes: number };
+  audiobook: boolean;
+}
+
 export interface DiscoverCard {
   media_type: "movie" | "series";
   tmdb_id: number;
@@ -1130,6 +1144,9 @@ export const api = {
   // background — the response only reports how many were queued.
   refreshAllSeries: () => req<{ queued: number }>(`/api/v1/series/refresh`, { method: "POST" }),
   // Requests
+  myBooks: () => req<{ books: MyBook[] }>("/api/v1/me/books"),
+  // A plain link, not a fetch: the browser saves the file with the server's filename.
+  ebookDownloadURL: (bookId: number) => `/api/v1/books/${bookId}/ebook`,
   requests: (status?: string) =>
     req<{ requests: MediaRequest[]; auto_approve: boolean }>(`/api/v1/requests${status ? `?status=${status}` : ""}`),
   // Returns 200 even for already-requested titles: subscribed=true means "you were

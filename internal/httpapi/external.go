@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
@@ -96,6 +97,11 @@ var externalAllowedPrefixes = []string{
 	"/api/v1/requests", // list own + create (+ approve/decline still role-gated)
 }
 
+// externalAllowedExact are single endpoints (not prefixes) reachable from outside:
+// the ebook download for a requested book. The handler itself checks the request
+// belongs to the caller; the allowlist only decides the door is there.
+var externalAllowedExact = regexp.MustCompile(`^/api/v1/books/[0-9]+/ebook$`)
+
 // externalAllowed reports whether a path is reachable from outside the LAN. The
 // SPA index + hashed assets (non-/api) always load; the app then renders the
 // Discover-only shell for external visitors, and every other /api call is 403'd.
@@ -108,7 +114,7 @@ func externalAllowed(path string) bool {
 			return true
 		}
 	}
-	return false
+	return externalAllowedExact.MatchString(path)
 }
 
 // externalGate classifies each request (LAN vs external) and, for external

@@ -1,6 +1,7 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { AppLayout } from "./components/AppLayout";
 import { UserLayout } from "./components/UserLayout";
+import { MyBooks } from "./pages/MyBooks";
 import { useMe, isStaff } from "./lib/me";
 import { Dashboard } from "./pages/Dashboard";
 import { Quality } from "./pages/Quality";
@@ -31,7 +32,7 @@ import { Placeholder } from "./pages/Placeholder";
 
 // Module routes still awaiting their build → placeholders.
 export default function App() {
-  const { user, loading, external } = useMe();
+  const { user, loading, external, booksEnabled } = useMe();
 
   if (loading) {
     return <div className="grid h-full place-items-center text-[13px] text-ink-dim">Loading…</div>;
@@ -50,6 +51,7 @@ export default function App() {
       <Routes>
         <Route element={<UserLayout />}>
           <Route path="/discover" element={<Discover chrome={false} />} />
+          {booksEnabled && <Route path="/books" element={<MyBooks />} />}
           <Route path="*" element={<Navigate to="/discover" replace />} />
         </Route>
       </Routes>
@@ -63,6 +65,7 @@ export default function App() {
         <Route element={<UserLayout />}>
           <Route path="/discover" element={<Discover chrome={false} />} />
           <Route path="/calendar" element={<Calendar chrome={false} />} />
+          {booksEnabled && <Route path="/books" element={<MyBooks />} />}
           <Route path="*" element={<Navigate to="/discover" replace />} />
         </Route>
       </Routes>

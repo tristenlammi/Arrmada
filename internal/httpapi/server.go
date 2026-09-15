@@ -129,6 +129,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/me/push/subscribe", a.protected(a.handlePushSubscribe))
 	mux.HandleFunc("POST "+base+"/api/v1/me/push/unsubscribe", a.protected(a.handlePushUnsubscribe))
 	mux.HandleFunc("GET "+base+"/api/v1/me/apprise", a.protected(a.handleGetMyApprise))
+	mux.HandleFunc("GET "+base+"/api/v1/me/books", a.protected(a.handleMyBooks))
 	mux.HandleFunc("PUT "+base+"/api/v1/me/apprise", a.protected(a.handleSetMyApprise))
 
 	// User management (admin only).
@@ -353,6 +354,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/history", a.protected(a.handleBookHistory))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/rematch", a.requireRole(auth.RoleManager, a.handleRematchBook))
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/edition-files", a.protected(a.handleBookEditionFiles))
+	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/ebook", a.protected(a.handleBookEbook))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/merge-audiobook", a.requireRole(auth.RoleManager, a.handleMergeAudiobook))
 	// Music (Lidarr replacement - MusicBrainz metadata + album acquisition).
 	mux.HandleFunc("GET "+base+"/api/v1/music/artists", a.protected(a.handleListArtists))

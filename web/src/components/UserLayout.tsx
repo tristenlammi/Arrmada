@@ -7,13 +7,15 @@ import { api } from "../lib/api";
 // UserLayout is the requester-facing shell: no nav menu, just a slim branded top bar
 // and the Discover experience. This is what installs as the PWA on phones.
 export function UserLayout() {
-  const { user, external } = useMe();
+  const { user, external, booksEnabled } = useMe();
   const [menu, setMenu] = useState(false);
   // External sessions are Discover-only (the /calendar route isn't mounted or
-  // allowlisted for them) — don't show a link that silently bounces.
-  const nav = external
-    ? [{ to: "/discover", label: "Discover" }]
-    : [{ to: "/discover", label: "Discover" }, { to: "/calendar", label: "Calendar" }];
+  // allowlisted for them) — don't show a link that silently bounces. "Your books"
+  // is the exception: its two endpoints are allowlisted, so a requester can pick up
+  // an ebook from anywhere.
+  const nav = [{ to: "/discover", label: "Discover" }];
+  if (!external) nav.push({ to: "/calendar", label: "Calendar" });
+  if (booksEnabled) nav.push({ to: "/books", label: "Your books" });
 
   const logout = async () => {
     try { await api.logout(); } catch { /* ignore */ }
