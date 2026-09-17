@@ -168,7 +168,9 @@ func (h *Hardcover) queryOnce(ctx context.Context, q string, vars map[string]any
 
 // --- the book shape shared by list queries ---
 
-const hcBookFields = `id title release_year canonical_id image { url } contributions { author { id name } } rating ratings_count users_count cached_tags`
+// contributions carry the role: Hardcover lists an illustrator or a foreword writer
+// among them, sometimes first, so the author is the one whose role says "wrote it".
+const hcBookFields = `id title release_year canonical_id image { url } contributions { contribution author { id name } } rating ratings_count users_count cached_tags`
 
 type hcBook struct {
 	ID            int       `json:"id"`
@@ -205,6 +207,23 @@ type hcBook struct {
 	} `json:"editions"`
 }
 
+// mainAuthor is the contributor credited as the writer — not the first one listed.
+// Empire of the Vampire lists its illustrator first; taking contributor number one
+// filed it under Bon Orthwick and every indexer search carried that name.
+func (b hcBook) mainAuthor() string {
+	for _, c := range b.Contributions {
+		if mainAuthorRoles[strings.ToLower(strings.TrimSpace(c.Contribution))] {
+			if n := strings.TrimSpace(c.Author.Name); n != "" {
+				return n
+			}
+		}
+	}
+	if len(b.Contributions) > 0 {
+		return strings.TrimSpace(b.Contributions[0].Author.Name)
+	}
+	return ""
+}
+
 type hcImage struct {
 	URL string `json:"url"`
 }
@@ -224,9 +243,7 @@ func (b hcBook) result() BookResult {
 	if b.Image != nil {
 		r.CoverURL = b.Image.URL
 	}
-	if len(b.Contributions) > 0 {
-		r.Author = strings.TrimSpace(b.Contributions[0].Author.Name)
-	}
+	r.Author = b.mainAuthor()
 	if b.Rating != nil && *b.Rating > 0 {
 		r.Rating = *b.Rating
 	}
@@ -256,6 +273,33 @@ type hcSearchDoc struct {
 	RatingsCnt  json.RawMessage `json:"ratings_count"`
 	UsersCount  json.RawMessage `json:"users_count"`
 	Genres      []string        `json:"genres"`
+	// Contributions, when the search index carries them, name each contributor's
+	// role; author_names is the flat list in index order, illustrator included.
+	Contributions json.RawMessage `json:"contributions"`
+}
+
+// mainAuthor prefers a contributor whose role says "wrote it"; without roles (or a
+// shape this code doesn't know) it is the first name, as before.
+func (d hcSearchDoc) mainAuthor() string {
+	var cs []struct {
+		Contribution string `json:"contribution"`
+		Author       struct {
+			Name string `json:"name"`
+		} `json:"author"`
+	}
+	if len(d.Contributions) > 0 && json.Unmarshal(d.Contributions, &cs) == nil {
+		for _, c := range cs {
+			if mainAuthorRoles[strings.ToLower(strings.TrimSpace(c.Contribution))] {
+				if n := strings.TrimSpace(c.Author.Name); n != "" {
+					return n
+				}
+			}
+		}
+	}
+	if len(d.AuthorNames) > 0 {
+		return strings.TrimSpace(d.AuthorNames[0])
+	}
+	return ""
 }
 
 func rawFloat(r json.RawMessage) float64 {
@@ -355,9 +399,7 @@ func (d hcSearchDoc) bookResult() (BookResult, bool) {
 	}
 	r := BookResult{Key: hcKeyPrefix + strconv.Itoa(id), Title: strings.TrimSpace(d.Title), Year: rawInt(d.ReleaseYear), CoverURL: rawImageURL(d.Image),
 		Rating: rawFloat(d.Rating), Ratings: rawInt(d.RatingsCnt), Readers: rawInt(d.UsersCount)}
-	if len(d.AuthorNames) > 0 {
-		r.Author = strings.TrimSpace(d.AuthorNames[0])
-	}
+	r.Author = d.mainAuthor()
 	if len(d.Genres) > 3 {
 		r.Genres = d.Genres[:3]
 	} else if len(d.Genres) > 0 {
@@ -407,7 +449,7 @@ func (h *Hardcover) Verify(ctx context.Context) (string, error) {
 // SearchBooks finds books by title/author/ISBN. Hardcover's index already folds
 // editions into their book, so one novel is one result.
 func (h *Hardcover) SearchBooks(ctx context.Context, query string) ([]BookResult, error) {
-	return cached(ctx, h.cache, "search:"+strings.ToLower(strings.TrimSpace(query)), hcTTLSearch, func(ctx context.Context) ([]BookResult, error) {
+	return cached(ctx, h.cache, "search:v2:"+strings.ToLower(strings.TrimSpace(query)), hcTTLSearch, func(ctx context.Context) ([]BookResult, error) {
 		return h.searchBooksLive(ctx, query)
 	})
 }
@@ -434,7 +476,9 @@ func (h *Hardcover) GetBook(ctx context.Context, key string) (*BookDetails, erro
 	if !ok {
 		return nil, fmt.Errorf("hardcover: not a hardcover key: %q", key)
 	}
-	return cached(ctx, h.cache, "book:"+key, hcTTLBook, func(ctx context.Context) (*BookDetails, error) {
+	// "v2": the author is picked by role now; entries cached before would keep the
+	// illustrator for a day.
+	return cached(ctx, h.cache, "book:v2:"+key, hcTTLBook, func(ctx context.Context) (*BookDetails, error) {
 		return h.getBookLive(ctx, id)
 	})
 }
@@ -617,7 +661,7 @@ func (h *Hardcover) authorWorksLive(ctx context.Context, id, limit int) ([]BookR
 		// refuse (query depth, a renamed relation). Fall back to the plain fields: the
 		// role and split-part filters still apply, only the language one is lost.
 		slog.Warn("hardcover: author works with edition languages failed — retrying without", "err", err)
-		q2 := strings.Replace(q, hcAuthorBookFields, hcBookFields+` contributions { contribution author { id name } }`, 1)
+		q2 := strings.Replace(q, hcAuthorBookFields, hcBookFields, 1)
 		err = h.query(ctx, q2, map[string]any{"id": id, "n": limit}, &data)
 	}
 	if err != nil {

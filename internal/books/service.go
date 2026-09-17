@@ -269,6 +269,16 @@ func (s *Service) Refresh(ctx context.Context, id int64) (Book, error) {
 			b.Subjects = d.Subjects
 		}
 		_ = s.repo.UpdateMeta(ctx, b.ID, b.Description, b.CoverURL, b.Subjects)
+		// The catalogue's author wins over the one on file: a book filed under its
+		// illustrator (the catalogue once listed that contributor first) is put right
+		// here, and every indexer search from then on carries the right name.
+		if d.Author != "" && !strings.EqualFold(d.Author, b.Author) {
+			old := b.Author
+			if err := s.repo.UpdateDetails(ctx, b.ID, b.Title, d.Author, b.Year, b.Description, b.CoverURL); err == nil {
+				b.Author = d.Author
+				s.repo.AddEvent(ctx, b.ID, "refreshed", "Author corrected: "+old+" → "+d.Author)
+			}
+		}
 		// A series the catalogue knows outranks one guessed from a release name, and
 		// books added before series keys existed pick theirs up here.
 		if d.SeriesName != "" && (b.SeriesKey == "" || d.SeriesKey != "") {

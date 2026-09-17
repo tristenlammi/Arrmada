@@ -168,8 +168,7 @@ func (c *Coordinator) searchBookOnce(ctx context.Context, bookID int64) (int, er
 // grabBookEdition searches for one edition and grabs the best release. Reports whether a
 // grab actually happened, which is what tells the sweep to clear this book's backoff.
 func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind string, sp quality.StoredProfile) bool {
-	res, err := c.indexers.Search(ctx, indexer.SearchQuery{
-		Text: bookQuery(b), MediaType: indexer.MediaBook, BookEdition: kind, Limit: 60})
+	res, err := c.searchBook(ctx, b, kind)
 	if err != nil || len(res.Releases) == 0 {
 		return false
 	}
@@ -317,8 +316,7 @@ func (c *Coordinator) BackfillBookSeries(ctx context.Context) (BookSeriesBackfil
 			continue
 		}
 		res.Scanned++
-		out, err := c.indexers.Search(ctx, indexer.SearchQuery{
-			Text: bookQuery(b), MediaType: indexer.MediaBook, Limit: 60})
+		out, err := c.searchBook(ctx, b, "")
 		if err != nil || len(out.Releases) == 0 {
 			continue
 		}
@@ -453,6 +451,22 @@ func bookQuery(b books.Book) string {
 		return b.Author + " " + b.Title
 	}
 	return b.Title
+}
+
+// searchBook runs the indexer query for a book: author + title, and when that finds
+// nothing, the title alone. The author on file can be wrong — a catalogue that
+// credited the illustrator first — or spelled unlike the tracker's, and a book
+// tracker matches every query word, so one bad word hides a release that is there.
+// The title check downstream still keeps only this book's releases.
+func (c *Coordinator) searchBook(ctx context.Context, b books.Book, edition string) (indexer.SearchResult, error) {
+	res, err := c.indexers.Search(ctx, indexer.SearchQuery{
+		Text: bookQuery(b), MediaType: indexer.MediaBook, BookEdition: edition, Limit: 60})
+	if b.Author == "" || (err == nil && len(res.Releases) > 0) {
+		return res, err
+	}
+	c.log.Info("book: nothing for author + title — trying the title alone", "title", b.Title, "author", b.Author)
+	return c.indexers.Search(ctx, indexer.SearchQuery{
+		Text: b.Title, MediaType: indexer.MediaBook, BookEdition: edition, Limit: 60})
 }
 
 // pickBestBookForKind ranks releases of the given edition by the profile: format
@@ -879,7 +893,6 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 		return ReleaseList{}, err
 	}
 	sp := c.bookProfile(ctx, b.QualityProfile)
-	query := bookQuery(b)
 	// Dedup by download URL — the unique per-torrent link. Deduping by title
 	// wrongly collapsed distinct editions that render the same display name (e.g. a
 	// GraphicAudio M4B and a standard-narration M4B both "<Author> - <Title> [M4B]"),
@@ -891,8 +904,7 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 	// — a category on a book tracker, an extra query word on a general one. Appending the
 	// word unconditionally made the second pass return nothing at all on MyAnonaMouse.
 	for _, edition := range []string{"", books.KindAudiobook} {
-		res, err := c.indexers.Search(ctx, indexer.SearchQuery{
-			Text: query, MediaType: indexer.MediaBook, BookEdition: edition, Limit: 60})
+		res, err := c.searchBook(ctx, b, edition)
 		if err != nil {
 			continue
 		}

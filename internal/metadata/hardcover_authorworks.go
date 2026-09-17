@@ -15,7 +15,7 @@ import (
 
 // hcAuthorBookFields adds to the shared book fields what the filters need: each
 // contribution's role, and the language of the default editions.
-const hcAuthorBookFields = hcBookFields + ` contributions { contribution author { id name } } default_physical_edition { language { code2 } } default_ebook_edition { language { code2 } }`
+const hcAuthorBookFields = hcBookFields + ` default_physical_edition { language { code2 } } default_ebook_edition { language { code2 } }`
 
 // mainAuthorRoles are the contribution labels that mean "wrote it". Hardcover leaves
 // the role empty for the principal author and names the rest ("Illustrator",
