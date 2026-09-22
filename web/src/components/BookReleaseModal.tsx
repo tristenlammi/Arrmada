@@ -11,6 +11,8 @@ export function BookReleaseModal({
   onGrab,
   onClose,
   targets,
+  defaultTarget,
+  audioOnly,
 }: {
   title: string;
   fetchReleases: () => Promise<ReleaseList>;
@@ -19,6 +21,10 @@ export function BookReleaseModal({
   onClose: () => void;
   /** The book's extra audiobook versions; when present, audiobook rows get a "grab as" picker. */
   targets?: { id: number; label: string }[];
+  /** Pre-select this version in every audiobook row's picker (a version's own search). */
+  defaultTarget?: number;
+  /** Show only the Audiobooks tab. */
+  audioOnly?: boolean;
 }) {
   const [list, setList] = useState<ReleaseList | null>(null);
   const [loading, setLoading] = useState(true);
@@ -48,8 +54,8 @@ export function BookReleaseModal({
   const audiobooks = useMemo(() => releases.filter((r) => r.edition === "audiobook"), [releases]);
   // Land on whichever tab actually has results (audiobooks preferred).
   useEffect(() => {
-    if (!loading && audiobooks.length === 0 && ebooks.length > 0) setTab("ebook");
-  }, [loading, audiobooks.length, ebooks.length]);
+    if (!audioOnly && !loading && audiobooks.length === 0 && ebooks.length > 0) setTab("ebook");
+  }, [audioOnly, loading, audiobooks.length, ebooks.length]);
 
   const rows = tab === "ebook" ? ebooks : audiobooks;
 
@@ -93,7 +99,7 @@ export function BookReleaseModal({
         {!loading && (
           <div className="mb-3 flex items-center gap-2 border-b pb-3" style={{ borderColor: "var(--line)" }}>
             <TabBtn k="audiobook" label="Audiobooks" count={audiobooks.length} />
-            <TabBtn k="ebook" label="Ebooks" count={ebooks.length} />
+            {!audioOnly && <TabBtn k="ebook" label="Ebooks" count={ebooks.length} />}
           </div>
         )}
         <div className="thin-scroll max-h-[58vh] overflow-y-auto">
@@ -104,7 +110,7 @@ export function BookReleaseModal({
           ) : (
             <div className="flex flex-col gap-2">
               {rows.map((rel) => (
-                <BookReleaseRow key={rel.download_url} rel={rel} busy={busy === rel.download_url} grabbed={grabbed.has(rel.download_url)} targets={rel.edition === "audiobook" ? targets : undefined} onGrab={(vid) => grab(rel, vid)} />
+                <BookReleaseRow key={rel.download_url} rel={rel} busy={busy === rel.download_url} grabbed={grabbed.has(rel.download_url)} targets={rel.edition === "audiobook" ? targets : undefined} defaultTarget={defaultTarget} onGrab={(vid) => grab(rel, vid)} />
               ))}
             </div>
           )}
@@ -114,9 +120,10 @@ export function BookReleaseModal({
   );
 }
 
-function BookReleaseRow({ rel, busy, grabbed, targets, onGrab }: { rel: RankedRelease; busy: boolean; grabbed: boolean; targets?: { id: number; label: string }[]; onGrab: (versionId: number) => void }) {
-  // Default the target to the version the release's own words point at.
-  const [target, setTarget] = useState<number>(rel.version_id ?? 0);
+function BookReleaseRow({ rel, busy, grabbed, targets, defaultTarget, onGrab }: { rel: RankedRelease; busy: boolean; grabbed: boolean; targets?: { id: number; label: string }[]; defaultTarget?: number; onGrab: (versionId: number) => void }) {
+  // Default the target to the version being searched for, else the version the
+  // release's own words point at.
+  const [target, setTarget] = useState<number>(defaultTarget ?? rel.version_id ?? 0);
   return (
     <div
       className="rounded-xl p-3"

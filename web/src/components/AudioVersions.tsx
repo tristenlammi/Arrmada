@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api, type AudioVersion, type Book } from "../lib/api";
+import { BookReleaseModal } from "./BookReleaseModal";
 
 // Extra audiobook versions of a book: a full-cast GraphicAudio production beside the
 // standard narration, a second narrator, anything the user names. Each version has
@@ -123,6 +124,7 @@ function VersionForm({ book, existing, onClose, onSaved }: { book: Book; existin
 
 export function AudioVersionPanel({ book, v, onChange, flash }: { book: Book; v: AudioVersion; onChange: () => void; flash: (m: string) => void }) {
   const [editing, setEditing] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
   const [confirm, setConfirm] = useState<null | "file" | "remove">(null);
   const [busy, setBusy] = useState<string | null>(null);
 
@@ -161,7 +163,7 @@ export function AudioVersionPanel({ book, v, onChange, flash }: { book: Book; v:
             <div className="mt-1.5 break-all font-mono text-[11.5px] text-ink-faint">{v.file.path}</div>
           ) : (
             <div className="mt-1.5 text-[12px]" style={{ color: tone }}>
-              {v.terms.length === 0 ? "No search words — grab, upload or import a release as this version." : v.monitored ? "Wanted — Arrmada is searching for it." : "Not searched automatically."}
+              {v.terms.length === 0 ? "Not searched automatically without search words — use Search indexers to pick a release for it." : v.monitored ? "Wanted — Arrmada is searching for it." : "Not searched automatically."}
             </div>
           )}
           {v.terms.length > 0 && (
@@ -191,7 +193,8 @@ export function AudioVersionPanel({ book, v, onChange, flash }: { book: Book; v:
             </>
           ) : (
             <>
-              {!has && v.terms.length > 0 && <button disabled={busy !== null} onClick={search} className={small} style={ghost}>{busy === "search" ? "Searching…" : "Search now"}</button>}
+              <button disabled={busy !== null} onClick={() => setBrowsing(true)} className={small} style={ghost} title="Browse audiobook releases on your indexers and pick one for this version">Search indexers</button>
+              {!has && v.terms.length > 0 && <button disabled={busy !== null} onClick={search} className={small} style={ghost} title="Let Arrmada pick and grab the best release matching this version's words">{busy === "search" ? "Searching…" : "Auto search"}</button>}
               <button disabled={busy !== null} onClick={toggleMonitor} className={small} style={ghost} title="Whether the automatic searches look for this version">{v.monitored ? "Monitored" : "Unmonitored"}</button>
               <button disabled={busy !== null} onClick={() => setEditing(true)} className={small} style={ghost}>Edit</button>
               {has && <button disabled={busy !== null} onClick={() => setConfirm("file")} className={small} style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Delete files</button>}
@@ -200,6 +203,17 @@ export function AudioVersionPanel({ book, v, onChange, flash }: { book: Book; v:
           )}
         </div>
       </div>
+      {browsing && (
+        <BookReleaseModal
+          title={`Search indexers — ${book.title} (${v.label})`}
+          fetchReleases={() => api.bookReleases(book.id)}
+          targets={(book.audio_versions ?? []).map((x) => ({ id: x.id, label: x.label }))}
+          defaultTarget={v.id}
+          audioOnly
+          onGrab={async (rel, versionId) => { await api.grabBook(book.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title, version_id: versionId }); onChange(); }}
+          onClose={() => setBrowsing(false)}
+        />
+      )}
       {editing && <VersionForm book={book} existing={v} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); onChange(); flash("Version updated."); }} />}
     </div>
   );
