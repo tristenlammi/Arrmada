@@ -251,7 +251,12 @@ func (c *Coordinator) GrabSeriesTorrent(ctx context.Context, seriesID int64, fil
 //
 // The book category matters — it's what routes the finished download through the book
 // importer, which knows an ebook from an audiobook and hardlinks each edition into place.
-func (c *Coordinator) GrabBookTorrent(ctx context.Context, bookID int64, file []byte, filename, title string) error {
+func (c *Coordinator) GrabBookTorrent(ctx context.Context, bookID, versionID int64, file []byte, filename, title string) error {
+	if versionID > 0 && c.books != nil {
+		if _, err := c.books.GetAudioVersion(ctx, bookID, versionID); err != nil {
+			return err
+		}
+	}
 	hash, err := c.addTorrentFile(ctx, file, filename, title, bookCategory)
 	if err != nil {
 		return err
@@ -262,7 +267,7 @@ func (c *Coordinator) GrabBookTorrent(ctx context.Context, bookID int64, file []
 			// treats an unknown indexer as seed-for-the-standard-window rather than
 			// don't-seed, so an uploaded torrent from a private tracker isn't deleted
 			// the moment it imports.
-			c.recordBookGrab(ctx, bookID, title, "manual", b.QualityProfile, hash)
+			c.recordBookGrab(ctx, bookID, versionID, title, "manual", b.QualityProfile, hash)
 		}
 		c.books.AddEvent(ctx, bookID, "grabbed", "Uploaded torrent — "+title)
 	}
@@ -350,6 +355,10 @@ type RankedRelease struct {
 	Author   string `json:"author,omitempty"`   // structured author (e.g. from MyAnonaMouse)
 	Series   string `json:"series,omitempty"`   // structured series + number
 	Language string `json:"language,omitempty"` // language code/name when known
+	// VersionID/Version name the extra audiobook version this release belongs to (its
+	// words match the version's search terms); 0/"" is the standard audiobook.
+	VersionID int64  `json:"version_id,omitempty"`
+	Version   string `json:"version,omitempty"`
 }
 
 // ReleaseList is the interactive-search response for one movie.

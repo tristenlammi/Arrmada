@@ -29,12 +29,17 @@ export function UploadTorrentModal({
   onPreview,
   onGrab,
   onClose,
+  targets,
 }: {
   what: string; // the movie/series title, for the heading
   onPreview: (torrentB64: string) => Promise<TorrentPreview>;
-  onGrab: (torrentB64: string, filename: string, title: string) => Promise<void>;
+  // targetId is the chosen audiobook version (books with versions only); 0 = standard.
+  onGrab: (torrentB64: string, filename: string, title: string, targetId: number) => Promise<void>;
   onClose: () => void;
+  /** Extra audiobook versions to offer as "file as" choices (books only). */
+  targets?: { id: number; label: string }[];
 }) {
+  const [target, setTarget] = useState(0);
   const [torrent, setTorrent] = useState<string>("");
   const [filename, setFilename] = useState("");
   const [preview, setPreview] = useState<TorrentPreview | null>(null);
@@ -59,7 +64,7 @@ export function UploadTorrentModal({
   const grab = async () => {
     if (!preview || !torrent) return;
     setBusy(true); setError(null);
-    try { await onGrab(torrent, filename, preview.name); setGrabbed(true); }
+    try { await onGrab(torrent, filename, preview.name, target); setGrabbed(true); }
     catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   };
@@ -107,7 +112,15 @@ export function UploadTorrentModal({
               {grabbed ? (
                 <span className="text-[12.5px] font-semibold" style={{ color: "var(--good)" }}>✓ Grabbed — it'll appear in Downloads.</span>
               ) : (
-                <button onClick={grab} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>{busy ? "Grabbing…" : "Grab this"}</button>
+                <>
+                  {targets && targets.length > 0 && (
+                    <select value={target} onChange={(e) => setTarget(Number(e.target.value))} title="Which audiobook the download is filed as" className="rounded-lg px-2 py-2 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
+                      <option value={0}>File audio as Standard</option>
+                      {targets.map((t) => <option key={t.id} value={t.id}>File audio as {t.label}</option>)}
+                    </select>
+                  )}
+                  <button onClick={grab} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>{busy ? "Grabbing…" : "Grab this"}</button>
+                </>
               )}
             </div>
           </div>

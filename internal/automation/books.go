@@ -156,6 +156,11 @@ func (c *Coordinator) searchBookOnce(ctx context.Context, bookID int64) (int, er
 			grabbed++
 		}
 	}
+	for _, v := range b.AudioVersions {
+		if versionWanted(v) && c.grabAudioVersion(ctx, b, v, sp) {
+			grabbed++
+		}
+	}
 	if grabbed > 0 {
 		// Something was findable after all. Clearing here rather than in the sweep covers
 		// the manual Search button too: a book you un-stuck by hand goes back to being
@@ -179,6 +184,9 @@ func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind st
 	// upgrade pass to correct it later). Movies and series both gate their search results
 	// this way, and the books RSS path already did — only this path was missing it.
 	res.Releases = c.releasesForThisBook(ctx, b, res.Releases)
+	if kind == books.KindAudiobook {
+		res.Releases = dropVersionReleases(b, res.Releases) // those belong to a version
+	}
 	if len(res.Releases) == 0 {
 		c.log.Info("book: no release matched this title", "title", b.Title, "edition", kind)
 		return false
@@ -198,7 +206,7 @@ func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind st
 		c.log.Warn("book: grab failed", "title", b.Title, "err", err)
 		return false
 	}
-	c.recordBookGrab(ctx, b.ID, best.Title, best.Indexer, b.QualityProfile, hash)
+	c.recordBookGrab(ctx, b.ID, 0, best.Title, best.Indexer, b.QualityProfile, hash)
 	c.learnBookSeries(ctx, b, *best)
 	c.books.AddEvent(ctx, b.ID, "grabbed", fmt.Sprintf("Grabbed the %s edition from %s: %s", kind, best.Indexer, best.Title))
 	c.log.Info("book: grabbing", "title", b.Title, "edition", kind, "release", best.Title, "format", detectBookFormat(best.Title))
@@ -711,7 +719,12 @@ func (c *Coordinator) importBookContent(ctx context.Context, b books.Book, conte
 		ebooks = nil
 	}
 	okEbook := c.importBookEdition(ctx, b, books.KindEbook, ebooks, hash, name)
-	okAudio := c.importBookEdition(ctx, b, books.KindAudiobook, audio, hash, name)
+	var okAudio bool
+	if v := c.audioVersionForDownload(ctx, b, hash, name); v != nil && len(audio) > 0 {
+		okAudio = c.importAudioVersion(ctx, b, *v, audio, hash, name)
+	} else {
+		okAudio = c.importBookEdition(ctx, b, books.KindAudiobook, audio, hash, name)
+	}
 	return okEbook || okAudio, hadFiles
 }
 
@@ -869,16 +882,29 @@ func (c *Coordinator) importBookEdition(ctx context.Context, b books.Book, kind 
 	return true
 }
 
-// GrabForBook grabs a chosen release for a book (interactive search) into the book category.
-func (c *Coordinator) GrabForBook(ctx context.Context, bookID int64, indexerName, downloadURL, title string) error {
+// GrabForBook grabs a chosen release for a book (interactive search) into the book
+// category. versionID > 0 files the download as that audiobook version.
+func (c *Coordinator) GrabForBook(ctx context.Context, bookID, versionID int64, indexerName, downloadURL, title string) error {
+	label := ""
+	if versionID > 0 {
+		v, err := c.books.GetAudioVersion(ctx, bookID, versionID)
+		if err != nil {
+			return err
+		}
+		label = v.Label
+	}
 	hash, err := c.grabTo(ctx, indexerName, downloadURL, title, bookCategory)
 	if err != nil {
 		return err
 	}
 	if b, err := c.books.Get(ctx, bookID); err == nil {
-		c.recordBookGrab(ctx, bookID, title, indexerName, b.QualityProfile, hash)
+		c.recordBookGrab(ctx, bookID, versionID, title, indexerName, b.QualityProfile, hash)
 	}
-	c.books.AddEvent(ctx, bookID, "grabbed", "Grabbed by hand from "+indexerName+": "+title)
+	what := "Grabbed by hand from " + indexerName + ": " + title
+	if label != "" {
+		what = fmt.Sprintf("Grabbed by hand as the %q audiobook from %s: %s", label, indexerName, title)
+	}
+	c.books.AddEvent(ctx, bookID, "grabbed", what)
 	return nil
 }
 
@@ -928,6 +954,7 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 		score    int
 		eligible bool
 		partial  bool
+		version  *books.AudioVersion // the audiobook version this release belongs to
 	}
 	items := make([]ranked, 0, len(all))
 	for _, rel := range all {
@@ -935,8 +962,15 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 		if f == "" {
 			continue // not an identifiable book release
 		}
-		score, eligible := bookRelScore(sp, rel)
 		edition := books.EditionOf(f)
+		score, eligible := bookRelScore(sp, rel)
+		if edition == books.KindAudiobook {
+			// A version's release is scored the way its own search scores it: audio
+			// always acceptable, and its own words not vetoed by a profile reject.
+			if v := books.VersionFor(b.AudioVersions, bookScoreText(rel)); v != nil {
+				score, eligible = bookRelScore(versionProfile(sp, *v), rel)
+			}
+		}
 		narrator := rel.Narrator
 		if narrator == "" && edition == books.KindAudiobook {
 			narrator = parseNarrator(rel.Title + " " + rel.Description)
@@ -948,6 +982,12 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 				Eligible: eligible, Edition: edition, Format: f, Narrator: narrator,
 				Author: rel.Author, Series: rel.Series, Language: rel.Language,
 			},
+			version: func() *books.AudioVersion {
+				if edition != books.KindAudiobook {
+					return nil
+				}
+				return books.VersionFor(b.AudioVersions, bookScoreText(rel))
+			}(),
 			score: score, eligible: eligible, partial: isPartialBook(rel.Title),
 		})
 	}
@@ -962,14 +1002,20 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 		}
 		return items[i].score > items[j].score
 	})
-	// Mark the best eligible release of each edition as the recommended pick.
+	// Mark the best eligible release of each edition — and of each audiobook version —
+	// as the recommended pick.
 	recommended := map[string]bool{}
 	out := make([]RankedRelease, 0, len(items))
 	for i := range items {
 		rr := items[i].rr
-		if items[i].eligible && !recommended[rr.Edition] {
+		group := rr.Edition
+		if v := items[i].version; v != nil {
+			rr.VersionID, rr.Version = v.ID, v.Label
+			group = fmt.Sprintf("%s:%d", rr.Edition, v.ID)
+		}
+		if items[i].eligible && !recommended[group] {
 			rr.Recommended = true
-			recommended[rr.Edition] = true
+			recommended[group] = true
 		}
 		out = append(out, rr)
 	}
@@ -1017,6 +1063,7 @@ func (c *Coordinator) RescanBook(ctx context.Context, bookID int64) {
 	}
 	c.recordEdition(ctx, bookID, books.KindEbook, ebooks)
 	c.recordEdition(ctx, bookID, books.KindAudiobook, audio)
+	c.rescanAudioVersions(ctx, b)
 }
 
 // recordEdition marks an edition present from on-disk files: a single file uses its
@@ -1066,8 +1113,12 @@ func (c *Coordinator) BookImportCandidates(dir string) []BookImportCandidate {
 	return out
 }
 
-// ManualImportBook imports one on-disk file into a book as the correct edition.
-func (c *Coordinator) ManualImportBook(ctx context.Context, bookID int64, path string) error {
+// ManualImportBook imports one on-disk file into a book as the correct edition, or as
+// an audiobook version when versionID > 0.
+func (c *Coordinator) ManualImportBook(ctx context.Context, bookID, versionID int64, path string) error {
+	if versionID > 0 {
+		return c.ManualImportAudioVersion(ctx, bookID, versionID, path)
+	}
 	if c.books == nil || c.imp == nil {
 		return errBooksNotReady
 	}
@@ -1172,6 +1223,24 @@ func (c *Coordinator) BookRename(ctx context.Context, bookID int64) (int, error)
 		_ = c.books.MarkImported(ctx, bookID, e.kind, target, e.f.Format, e.f.SizeBytes, 1)
 		moved++
 	}
+	for _, v := range b.AudioVersions {
+		if v.File == nil || v.File.Path == "" {
+			continue
+		}
+		if fi, err := os.Stat(v.File.Path); err == nil && fi.IsDir() {
+			continue
+		}
+		target := c.imp.BookEditionCanonical(b.Author, v.FolderTitle(b.Title), v.File.Path)
+		if target == "" || target == v.File.Path {
+			continue
+		}
+		if err := c.imp.Move(v.File.Path, target); err != nil {
+			c.log.Warn("book: rename failed", "from", v.File.Path, "err", err)
+			continue
+		}
+		_ = c.books.SetAudioVersionFile(ctx, v.ID, target, v.File.Format, v.File.SizeBytes, 1)
+		moved++
+	}
 	if moved > 0 {
 		c.books.AddEvent(ctx, bookID, "renamed", fmt.Sprintf("Renamed %d file%s to the canonical scheme", moved, plural(moved)))
 	}
@@ -1194,7 +1263,9 @@ func (c *Coordinator) ScanBookLibrary(ctx context.Context, ebookRoot, audiobookR
 		return res
 	}
 	existing := map[string]books.Book{}
+	var allBooks []books.Book
 	if list, err := c.books.List(ctx); err == nil {
+		allBooks = list
 		for _, b := range list {
 			existing[b.OLKey] = b
 		}
@@ -1218,6 +1289,18 @@ func (c *Coordinator) ScanBookLibrary(ctx context.Context, ebookRoot, audiobookR
 	var order []string
 	for _, bf := range folders {
 		if bf.Title == "" || (len(bf.Ebooks) == 0 && len(bf.Audiobooks) == 0) {
+			continue
+		}
+		// "<Title> (<Label>)" is one of a book's audiobook versions, not a book of its
+		// own: the title lookup would prefix-match it to the book and, with no standard
+		// audiobook on file yet, record the full-cast production as the standard one.
+		if vb, v, ok := versionForScanFolder(bf.Title, allBooks); ok {
+			if v.File == nil && len(bf.Audiobooks) > 0 {
+				c.recordVersionFiles(ctx, vb, v, bf.Audiobooks, "during a library scan")
+				res.Imported++
+			} else {
+				res.Skipped++
+			}
 			continue
 		}
 		// An ISBN in the folder or file names is an exact answer; try it before
@@ -1533,7 +1616,7 @@ func dropPendingBook(releases []indexer.Release, pending map[string]bool) []inde
 }
 
 // recordBookGrab tracks a book grab for seed cleanup (media_type=book, movie_id=bookID).
-func (c *Coordinator) recordBookGrab(ctx context.Context, bookID int64, title, indexer, profile, infoHash string) {
+func (c *Coordinator) recordBookGrab(ctx context.Context, bookID, versionID int64, title, indexer, profile, infoHash string) {
 	seedEnabled, seedRatio, seedHours := c.seedRules(ctx, indexer)
 	// stall_minutes must come from the profile. It was written as a literal 0, and
 	// detectStalledBook returns immediately when it isn't positive — so the entire book
@@ -1542,8 +1625,8 @@ func (c *Coordinator) recordBookGrab(ctx context.Context, bookID int64, title, i
 	// (The series path carried this exact bug and fixes it the same way.)
 	_, err := c.db.ExecContext(ctx,
 		`INSERT INTO grabs (movie_id, version_id, title, indexer, quality_profile, stall_minutes, seed_enabled, seed_ratio, seed_hours, media_type, info_hash)
-		 VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, 'book', ?)`,
-		bookID, title, indexer, profile, c.quality.StallMinutes(ctx, profile),
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'book', ?)`,
+		bookID, versionID, title, indexer, profile, c.quality.StallMinutes(ctx, profile),
 		boolToInt(seedEnabled), seedRatio, seedHours, infoHash)
 	if err != nil {
 		c.log.Warn("book: record grab failed", "err", err)
@@ -1649,7 +1732,19 @@ func (c *Coordinator) detectStalledBook(ctx context.Context, g grab, queue []dow
 	// "imported" — after which ManageSeeding removed that torrent WITH its data the moment
 	// it completed, before the import sweep could run, and the book was re-grabbed on the
 	// next pass: a grab/delete/re-grab loop that also destroyed the download.
-	if bookEditionLanded(b, g.Title) {
+	landed := bookEditionLanded(b, g.Title)
+	if g.VersionID > 0 {
+		// A version grab has landed when THAT version has its file — the standard
+		// audiobook being present says nothing about it. A version since removed has
+		// nothing left to wait for.
+		landed = true
+		for _, v := range b.AudioVersions {
+			if v.ID == g.VersionID {
+				landed = v.File != nil
+			}
+		}
+	}
+	if landed {
 		c.setGrabStatus(ctx, g.ID, "imported")
 		return
 	}
@@ -1718,7 +1813,11 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 			if (kind == books.KindEbook && b.Ebook != nil) || (kind == books.KindAudiobook && b.Audiobook != nil) {
 				continue // already have this edition
 			}
-			best := pickBestBookForKind(sp, matched, kind)
+			pool := matched
+			if kind == books.KindAudiobook {
+				pool = dropVersionReleases(b, matched)
+			}
+			best := pickBestBookForKind(sp, pool, kind)
 			if best == nil {
 				continue
 			}
@@ -1726,8 +1825,23 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 			if err != nil {
 				continue
 			}
-			c.recordBookGrab(ctx, b.ID, best.Title, best.Indexer, b.QualityProfile, hash)
+			c.recordBookGrab(ctx, b.ID, 0, best.Title, best.Indexer, b.QualityProfile, hash)
 			c.log.Info("rss: grabbing book", "title", b.Title, "edition", kind, "release", best.Title)
+		}
+		for _, v := range b.AudioVersions {
+			if !versionWanted(v) {
+				continue
+			}
+			best := pickBestBookForKind(versionProfile(sp, v), releasesForVersion(v, matched), books.KindAudiobook)
+			if best == nil {
+				continue
+			}
+			hash, err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, bookCategory)
+			if err != nil {
+				continue
+			}
+			c.recordBookGrab(ctx, b.ID, v.ID, best.Title, best.Indexer, b.QualityProfile, hash)
+			c.log.Info("rss: grabbing audiobook version", "title", b.Title, "version", v.Label, "release", best.Title)
 		}
 	}
 }

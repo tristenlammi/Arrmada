@@ -355,6 +355,11 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/rematch", a.requireRole(auth.RoleManager, a.handleRematchBook))
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/edition-files", a.protected(a.handleBookEditionFiles))
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/ebook", a.protected(a.handleBookEbook))
+	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/audio-versions", a.requireRole(auth.RoleManager, a.handleAddAudioVersion))
+	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/audio-versions/{vid}", a.requireRole(auth.RoleManager, a.handleUpdateAudioVersion))
+	mux.HandleFunc("DELETE "+base+"/api/v1/books/{id}/audio-versions/{vid}", a.requireRole(auth.RoleManager, a.handleDeleteAudioVersion))
+	mux.HandleFunc("DELETE "+base+"/api/v1/books/{id}/audio-versions/{vid}/file", a.requireRole(auth.RoleManager, a.handleDeleteAudioVersionFile))
+	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/audio-versions/{vid}/search", a.requireRole(auth.RoleManager, a.handleSearchAudioVersion))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/merge-audiobook", a.requireRole(auth.RoleManager, a.handleMergeAudiobook))
 	// Music (Lidarr replacement - MusicBrainz metadata + album acquisition).
 	mux.HandleFunc("GET "+base+"/api/v1/music/artists", a.protected(a.handleListArtists))

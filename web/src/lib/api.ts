@@ -700,6 +700,19 @@ export interface Book {
   want_ebook: boolean;
   want_audiobook: boolean;
   added_at?: string;
+  /** Extra audiobooks beyond the standard one — a full-cast production, another narrator. */
+  audio_versions?: AudioVersion[];
+}
+// AudioVersion is one extra audiobook of a book. A release belongs to it when it
+// mentions one of its terms; with no terms it is filled by hand only.
+export interface AudioVersion {
+  id: number;
+  book_id: number;
+  label: string;
+  terms: string[];
+  monitored: boolean;
+  file?: BookFile;
+  added_at?: string;
 }
 export interface BookImportCandidate {
   path: string;
@@ -1121,8 +1134,8 @@ export const api = {
   bookAuthorImages: () => req<{ images: Record<string, string>; pending: number }>("/api/v1/books/authors/images"),
   backfillBookSeries: () =>
     req<{ status: string }>("/api/v1/books/series-backfill", { method: "POST" }),
-  grabBookTorrent: (id: number, torrent: string, filename: string, title: string) =>
-    req<{ status: string }>(`/api/v1/books/${id}/grabtorrent`, { method: "POST", body: JSON.stringify({ torrent, filename, title }) }),
+  grabBookTorrent: (id: number, torrent: string, filename: string, title: string, versionId?: number) =>
+    req<{ status: string }>(`/api/v1/books/${id}/grabtorrent`, { method: "POST", body: JSON.stringify({ torrent, filename, title, version_id: versionId || 0 }) }),
   deleteMovie: (id: number, deleteFiles?: boolean) =>
     req<void>(`/api/v1/movies/${id}${deleteFiles ? "?delete_files=true" : ""}`, { method: "DELETE" }),
   searchMovie: (id: number) =>
@@ -1250,12 +1263,22 @@ export const api = {
   searchBook: (id: number) => req<{ status: string }>(`/api/v1/books/${id}/search`, { method: "POST" }),
   refreshBook: (id: number) => req<Book>(`/api/v1/books/${id}/refresh`, { method: "POST" }),
   bookReleases: (id: number) => req<ReleaseList>(`/api/v1/books/${id}/releases`),
-  grabBook: (id: number, body: { indexer?: string; download_url: string; title: string }) =>
+  grabBook: (id: number, body: { indexer?: string; download_url: string; title: string; version_id?: number }) =>
     req<{ status: string }>(`/api/v1/books/${id}/grab`, { method: "POST", body: JSON.stringify(body) }),
   bookManualImportList: (id: number) =>
     req<{ candidates: BookImportCandidate[] }>(`/api/v1/books/${id}/manualimport`),
-  bookManualImport: (id: number, path: string) =>
-    req<{ status: string }>(`/api/v1/books/${id}/manualimport`, { method: "POST", body: JSON.stringify({ path }) }),
+  bookManualImport: (id: number, path: string, versionId?: number) =>
+    req<{ status: string }>(`/api/v1/books/${id}/manualimport`, { method: "POST", body: JSON.stringify({ path, version_id: versionId || 0 }) }),
+  addAudioVersion: (id: number, body: { label: string; terms: string[]; monitored: boolean }) =>
+    req<AudioVersion>(`/api/v1/books/${id}/audio-versions`, { method: "POST", body: JSON.stringify(body) }),
+  updateAudioVersion: (id: number, vid: number, body: { label?: string; terms?: string[]; monitored?: boolean }) =>
+    req<AudioVersion>(`/api/v1/books/${id}/audio-versions/${vid}`, { method: "PUT", body: JSON.stringify(body) }),
+  deleteAudioVersion: (id: number, vid: number, deleteFiles: boolean) =>
+    req<void>(`/api/v1/books/${id}/audio-versions/${vid}${deleteFiles ? "?delete_files=true" : ""}`, { method: "DELETE" }),
+  deleteAudioVersionFile: (id: number, vid: number) =>
+    req<{ status: string }>(`/api/v1/books/${id}/audio-versions/${vid}/file`, { method: "DELETE" }),
+  searchAudioVersion: (id: number, vid: number) =>
+    req<{ grabbed: boolean }>(`/api/v1/books/${id}/audio-versions/${vid}/search`, { method: "POST" }),
   renameBook: (id: number) => req<{ renamed: number }>(`/api/v1/books/${id}/rename`, { method: "POST" }),
   deleteBookFile: (id: number, edition: "ebook" | "audiobook") =>
     req<{ status: string }>(`/api/v1/books/${id}/file?edition=${edition}`, { method: "DELETE" }),
@@ -1651,6 +1674,9 @@ export interface RankedRelease {
   author?: string;
   series?: string;
   language?: string;
+  /** The extra audiobook version this release belongs to (0/absent = standard). */
+  version_id?: number;
+  version?: string;
 }
 
 export interface BlockEntry {

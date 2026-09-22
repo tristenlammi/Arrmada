@@ -61,6 +61,9 @@ type Book struct {
 	// KeepCatalogue: the user told the Hardcover re-match to leave this book on the
 	// catalogue it's on. Not counted as "still to re-match", not retried.
 	KeepCatalogue bool `json:"keep_catalogue,omitempty"`
+	// AudioVersions are extra audiobooks of this book beyond the standard one (the
+	// Audiobook field): a full-cast production, another narrator. Filled by the service.
+	AudioVersions []AudioVersion `json:"audio_versions,omitempty"`
 }
 
 // SearchState returns when the missing-books sweep last searched for this book and how

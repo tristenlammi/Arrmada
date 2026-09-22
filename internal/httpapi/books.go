@@ -239,6 +239,7 @@ func (a *api) handleGrabBook(w http.ResponseWriter, r *http.Request) {
 		Indexer     string `json:"indexer"`
 		DownloadURL string `json:"download_url"`
 		Title       string `json:"title"`
+		VersionID   int64  `json:"version_id"` // 0 = standard; >0 = file as this audiobook version
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -247,7 +248,7 @@ func (a *api) handleGrabBook(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "download_url is required")
 		return
 	}
-	if err := a.deps.Automation.GrabForBook(r.Context(), id, req.Indexer, req.DownloadURL, req.Title); err != nil {
+	if err := a.deps.Automation.GrabForBook(r.Context(), id, req.VersionID, req.Indexer, req.DownloadURL, req.Title); err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -276,13 +277,14 @@ func (a *api) handleBookManualImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Path string `json:"path"`
+		Path      string `json:"path"`
+		VersionID int64  `json:"version_id"`
 	}
 	if !a.decodeJSON(w, r, &req) || req.Path == "" {
 		a.writeError(w, http.StatusBadRequest, "path is required")
 		return
 	}
-	if err := a.deps.Automation.ManualImportBook(r.Context(), id, req.Path); err != nil {
+	if err := a.deps.Automation.ManualImportBook(r.Context(), id, req.VersionID, req.Path); err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -989,6 +991,11 @@ func (a *api) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 		// only removes its own kind's files.
 		_ = a.deps.Automation.DeleteBookEdition(r.Context(), id, books.KindEbook)
 		_ = a.deps.Automation.DeleteBookEdition(r.Context(), id, books.KindAudiobook)
+		if b, err := a.deps.Books.Get(r.Context(), id); err == nil {
+			for _, v := range b.AudioVersions {
+				_ = a.deps.Automation.DeleteAudioVersionFile(r.Context(), id, v.ID)
+			}
+		}
 	}
 	if err := a.deps.Books.Delete(r.Context(), id); err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not delete book")

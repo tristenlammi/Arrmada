@@ -4,6 +4,7 @@ import { PageHeader } from "../components/PageHeader";
 import { BookReleaseModal } from "../components/BookReleaseModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
+import { AddAudioVersion, AudioVersionPanel } from "../components/AudioVersions";
 import { api, type BookSeriesEntry, type BookSource, type Book, type BookFile, type BookFileEntry, type BookImportCandidate, type BookLookup, type BookSeries, type MovieEvent } from "../lib/api";
 
 function fmtSize(bytes?: number): string {
@@ -77,7 +78,9 @@ export function BookDetail() {
         <h2 className="m-0 mb-3 text-[14px] font-bold">Editions</h2>
         <div className="flex flex-col gap-2.5">
           <EditionPanel label="Ebook" file={b.ebook} wanted={b.want_ebook} bookId={b.id} kind="ebook" onChange={load} flash={flash} />
-          <EditionPanel label="Audiobook" file={b.audiobook} wanted={b.want_audiobook} bookId={b.id} kind="audiobook" onChange={load} flash={flash} />
+          <EditionPanel label={b.audio_versions && b.audio_versions.length > 0 ? "Audiobook · Standard" : "Audiobook"} file={b.audiobook} wanted={b.want_audiobook} bookId={b.id} kind="audiobook" onChange={load} flash={flash} />
+          {(b.audio_versions ?? []).map((v) => <AudioVersionPanel key={v.id} book={b} v={v} onChange={load} flash={flash} />)}
+          <AddAudioVersion book={b} onAdded={load} flash={flash} />
         </div>
         <HistoryPanel bookId={b.id} refreshKey={b} />
       </div>
@@ -334,7 +337,8 @@ function Toolbar({ book, onChange, flash }: { book: Book; onChange: () => void; 
         <BookReleaseModal
           title={`Search indexers — ${book.title}`}
           fetchReleases={() => api.bookReleases(book.id)}
-          onGrab={async (rel) => { await api.grabBook(book.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title }); onChange(); }}
+          targets={(book.audio_versions ?? []).map((v) => ({ id: v.id, label: v.label }))}
+          onGrab={async (rel, versionId) => { await api.grabBook(book.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title, version_id: versionId }); onChange(); }}
           onClose={() => setShowSearch(false)}
         />
       )}
@@ -343,7 +347,8 @@ function Toolbar({ book, onChange, flash }: { book: Book; onChange: () => void; 
         <UploadTorrentModal
           what={book.title}
           onPreview={(torrent) => api.previewTorrent(torrent)}
-          onGrab={async (torrent, filename, title) => { await api.grabBookTorrent(book.id, torrent, filename, title); onChange(); }}
+          targets={(book.audio_versions ?? []).map((v) => ({ id: v.id, label: v.label }))}
+          onGrab={async (torrent, filename, title, versionId) => { await api.grabBookTorrent(book.id, torrent, filename, title, versionId); onChange(); }}
           onClose={() => setShowPaste(false)}
         />
       )}
@@ -356,13 +361,15 @@ function ManualImportModal({ book, onClose, onImported }: { book: Book; onClose:
   const [cands, setCands] = useState<BookImportCandidate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState<string | null>(null);
+  const versions = book.audio_versions ?? [];
+  const [target, setTarget] = useState(0);
 
   const load = () => api.bookManualImportList(book.id).then((r) => setCands(r.candidates)).catch((e: Error) => setError(e.message));
   useEffect(() => { load(); }, [book.id]);
 
-  const doImport = async (path: string) => {
+  const doImport = async (path: string, edition: string) => {
     setImporting(path); setError(null);
-    try { await api.bookManualImport(book.id, path); onImported(); load(); } catch (e) { setError((e as Error).message); } finally { setImporting(null); }
+    try { await api.bookManualImport(book.id, path, edition === "audiobook" ? target : 0); onImported(); load(); } catch (e) { setError((e as Error).message); } finally { setImporting(null); }
   };
 
   return (
@@ -373,6 +380,15 @@ function ManualImportModal({ book, onClose, onImported }: { book: Book; onClose:
           <button onClick={onClose} className="text-ink-faint hover:text-[var(--ink)]">✕</button>
         </div>
         <p className="mb-3 text-[12px] text-ink-dim">Pick a book file on disk to import as <b>{book.title}</b>. Ebook and audiobook files are assigned to the right edition automatically.</p>
+        {versions.length > 0 && (
+          <label className="mb-3 flex items-center gap-2 text-[12px] text-ink-dim">
+            Import audiobook files as
+            <select value={target} onChange={(e) => setTarget(Number(e.target.value))} className="rounded-md px-2 py-1 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
+              <option value={0}>Standard</option>
+              {versions.map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+            </select>
+          </label>
+        )}
         {error && <div className="mb-2 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
         <div className="thin-scroll max-h-[52vh] overflow-y-auto">
           {cands === null ? (
@@ -381,7 +397,7 @@ function ManualImportModal({ book, onClose, onImported }: { book: Book; onClose:
             <div className="p-6 text-center text-[12.5px] text-ink-dim">No ebook or audiobook files found in the downloads folder.</div>
           ) : (
             cands.map((c) => (
-              <button key={c.path} onClick={() => doImport(c.path)} disabled={importing !== null} className="flex w-full items-center gap-3 rounded-lg p-2.5 text-left transition-colors hover:bg-[var(--panel-2)]">
+              <button key={c.path} onClick={() => doImport(c.path, c.edition)} disabled={importing !== null} className="flex w-full items-center gap-3 rounded-lg p-2.5 text-left transition-colors hover:bg-[var(--panel-2)]">
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-[12.5px] font-medium" title={c.filename}>{c.filename}</div>
                   <div className="mt-0.5 flex items-center gap-3 font-mono text-[10.5px] text-ink-faint">

@@ -10,11 +10,15 @@ export function BookReleaseModal({
   fetchReleases,
   onGrab,
   onClose,
+  targets,
 }: {
   title: string;
   fetchReleases: () => Promise<ReleaseList>;
-  onGrab: (rel: RankedRelease) => Promise<void>;
+  // versionId: 0 = the standard audiobook, >0 = file the grab as that audiobook version.
+  onGrab: (rel: RankedRelease, versionId: number) => Promise<void>;
   onClose: () => void;
+  /** The book's extra audiobook versions; when present, audiobook rows get a "grab as" picker. */
+  targets?: { id: number; label: string }[];
 }) {
   const [list, setList] = useState<ReleaseList | null>(null);
   const [loading, setLoading] = useState(true);
@@ -49,11 +53,11 @@ export function BookReleaseModal({
 
   const rows = tab === "ebook" ? ebooks : audiobooks;
 
-  const grab = async (rel: RankedRelease) => {
+  const grab = async (rel: RankedRelease, versionId: number) => {
     setBusy(rel.download_url);
     setError(null);
     try {
-      await onGrab(rel);
+      await onGrab(rel, versionId);
       setGrabbed((s) => new Set(s).add(rel.download_url));
     } catch (e) {
       setError((e as Error).message);
@@ -100,7 +104,7 @@ export function BookReleaseModal({
           ) : (
             <div className="flex flex-col gap-2">
               {rows.map((rel) => (
-                <BookReleaseRow key={rel.download_url} rel={rel} busy={busy === rel.download_url} grabbed={grabbed.has(rel.download_url)} onGrab={() => grab(rel)} />
+                <BookReleaseRow key={rel.download_url} rel={rel} busy={busy === rel.download_url} grabbed={grabbed.has(rel.download_url)} targets={rel.edition === "audiobook" ? targets : undefined} onGrab={(vid) => grab(rel, vid)} />
               ))}
             </div>
           )}
@@ -110,7 +114,9 @@ export function BookReleaseModal({
   );
 }
 
-function BookReleaseRow({ rel, busy, grabbed, onGrab }: { rel: RankedRelease; busy: boolean; grabbed: boolean; onGrab: () => void }) {
+function BookReleaseRow({ rel, busy, grabbed, targets, onGrab }: { rel: RankedRelease; busy: boolean; grabbed: boolean; targets?: { id: number; label: string }[]; onGrab: (versionId: number) => void }) {
+  // Default the target to the version the release's own words point at.
+  const [target, setTarget] = useState<number>(rel.version_id ?? 0);
   return (
     <div
       className="rounded-xl p-3"
@@ -123,7 +129,8 @@ function BookReleaseRow({ rel, busy, grabbed, onGrab }: { rel: RankedRelease; bu
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
-            {rel.recommended && <span className="rounded px-1.5 py-0.5 text-[9.5px] font-bold uppercase" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>★ Recommended</span>}
+            {rel.recommended && <span className="rounded px-1.5 py-0.5 text-[9.5px] font-bold uppercase" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>★ Recommended{rel.version ? ` · ${rel.version}` : targets && targets.length > 0 && rel.edition === "audiobook" ? " · Standard" : ""}</span>}
+            {rel.version && !rel.recommended && <span className="rounded px-1.5 py-0.5 text-[9.5px] font-bold uppercase" style={{ background: "var(--panel)", color: "var(--accent)", border: "1px solid var(--accent-line)" }}>{rel.version}</span>}
             {rel.format && <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: "var(--panel)", color: "var(--ink-dim)" }}>{rel.format}</span>}
             {!rel.eligible && <span className="rounded px-1.5 py-0.5 text-[9.5px] uppercase" style={{ background: "var(--panel)", color: "var(--ink-faint)" }}>not in profile</span>}
           </div>
@@ -144,14 +151,28 @@ function BookReleaseRow({ rel, busy, grabbed, onGrab }: { rel: RankedRelease; bu
             {rel.info_url && <a href={rel.info_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="font-semibold hover:underline" style={{ color: "var(--accent)" }}>view ↗</a>}
           </div>
         </div>
+        <div className="flex flex-none flex-col items-end gap-1.5">
+        {targets && targets.length > 0 && !grabbed && (
+          <select
+            value={target}
+            onChange={(e) => setTarget(Number(e.target.value))}
+            title="Which audiobook this download is filed as"
+            className="rounded-md px-1.5 py-1 text-[11px]"
+            style={{ background: "var(--panel)", border: "1px solid var(--line)", color: "var(--ink)" }}
+          >
+            <option value={0}>as Standard</option>
+            {targets.map((t) => <option key={t.id} value={t.id}>as {t.label}</option>)}
+          </select>
+        )}
         <button
-          onClick={onGrab}
+          onClick={() => onGrab(target)}
           disabled={busy || grabbed}
           className="flex-none rounded-lg px-3.5 py-2 text-[12px] font-semibold disabled:opacity-60"
           style={{ background: grabbed ? "var(--good)" : "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}
         >
           {grabbed ? "Grabbed ✓" : busy ? "Grabbing…" : "Grab"}
         </button>
+        </div>
       </div>
     </div>
   );

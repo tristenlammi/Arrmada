@@ -92,11 +92,29 @@ func (s *Service) Detail(ctx context.Context, key string) (*metadata.BookDetails
 	return s.meta.GetBook(ctx, key)
 }
 
-// List returns the library.
-func (s *Service) List(ctx context.Context) ([]Book, error) { return s.repo.List(ctx) }
+// List returns the library, each book with its extra audio versions.
+func (s *Service) List(ctx context.Context) ([]Book, error) {
+	list, err := s.repo.List(ctx)
+	if err != nil || len(list) == 0 {
+		return list, err
+	}
+	if all, verr := s.repo.AllAudioVersions(ctx); verr == nil && len(all) > 0 {
+		for i := range list {
+			list[i].AudioVersions = all[list[i].ID]
+		}
+	}
+	return list, nil
+}
 
-// Get returns one book.
-func (s *Service) Get(ctx context.Context, id int64) (Book, error) { return s.repo.Get(ctx, id) }
+// Get returns one book with its extra audio versions.
+func (s *Service) Get(ctx context.Context, id int64) (Book, error) {
+	b, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return b, err
+	}
+	b.AudioVersions, _ = s.repo.ListAudioVersions(ctx, id)
+	return b, nil
+}
 
 // Add pulls details for an Open Library work id and adds it. fallback supplies the
 // year/author/cover/title from the search result — the work endpoint doesn't carry the
