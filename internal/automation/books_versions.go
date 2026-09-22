@@ -142,7 +142,15 @@ func (c *Coordinator) SearchAudioVersionNow(ctx context.Context, bookID, version
 
 // audioVersionForDownload decides which version, if any, a finished download's audio
 // belongs to: the version it was grabbed for, else the version its name mentions.
+//
+// The versions are read here rather than trusted from b: the import finds its book
+// by matching the download's name against the whole library, and that list is loaded
+// without versions — so a download grabbed "as Narrator" was filed as the standard
+// audiobook, over the one already there.
 func (c *Coordinator) audioVersionForDownload(ctx context.Context, b books.Book, hash, name string) *books.AudioVersion {
+	if full, err := c.books.Get(ctx, b.ID); err == nil {
+		b.AudioVersions = full.AudioVersions
+	}
 	if len(b.AudioVersions) == 0 {
 		return nil
 	}

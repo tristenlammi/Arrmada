@@ -1,11 +1,15 @@
 package automation
 
 import (
+	"context"
+	"log/slog"
 	"testing"
 
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/indexer"
+	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/quality"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // While a book has a full-cast version, the standard audiobook never takes a release
@@ -62,5 +66,47 @@ func TestVersionForScanFolder(t *testing.T) {
 	}
 	if _, _, ok := versionForScanFolder("Empire of the Vampire", lib); ok {
 		t.Error("the standard folder is not a version")
+	}
+}
+
+// The import finds its book by the download's name, and that lookup carries no
+// versions. The grab's version must still decide where the audio goes — it once
+// didn't, and a download grabbed "as Narrator" replaced the standard audiobook.
+func TestDownloadGrabbedForAVersionIsFiledAsIt(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc := books.NewService(st.DB(), nil, slog.Default())
+	c := &Coordinator{books: svc, db: st.DB(), log: slog.Default()}
+	ctx := context.Background()
+	added, _ := svc.AddWorks(ctx, []metadata.BookResult{{Key: "hc:1", Title: "Dungeon Crawler Carl", Author: "Matt Dinniman"}}, "", true)
+	if len(added) != 1 {
+		t.Fatal("book not added")
+	}
+	v, err := svc.AddAudioVersion(ctx, added[0].ID, "Narrator", nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().ExecContext(ctx, `INSERT INTO grabs (movie_id, version_id, title, indexer, quality_profile, media_type, info_hash) VALUES (?, ?, ?, 'MAM', '', 'book', ?)`, added[0].ID, v.ID, "Matt Dinniman - Dungeon Crawler Carl [M4B]", "ABCDEF"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Exactly what the import has in hand: the name-matched book, no versions on it.
+	matched, ok := svc.MatchByRelease(ctx, "Matt Dinniman - Dungeon Crawler Carl 01 - Dungeon Crawler Carl (Jeff Hays)")
+	if !ok || len(matched.AudioVersions) != 0 {
+		t.Fatalf("precondition: name match should find the book without versions (ok=%v, versions=%d)", ok, len(matched.AudioVersions))
+	}
+	got := c.audioVersionForDownload(ctx, matched, "abcdef", "Matt Dinniman - Dungeon Crawler Carl 01 - Dungeon Crawler Carl (Jeff Hays)")
+	if got == nil || got.ID != v.ID {
+		t.Fatalf("download grabbed as Narrator was routed to %+v, want the Narrator version", got)
+	}
+	// A download grabbed for the standard audiobook stays standard.
+	if _, err := st.DB().ExecContext(ctx, `INSERT INTO grabs (movie_id, version_id, title, indexer, quality_profile, media_type, info_hash) VALUES (?, ?, ?, 'MAM', '', 'book', ?)`, added[0].ID, 0, "Matt Dinniman - Dungeon Crawler Carl [MP3]", "123456"); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.audioVersionForDownload(ctx, matched, "123456", "Dungeon Crawler Carl MP3"); got != nil {
+		t.Errorf("standard grab routed to version %q", got.Label)
 	}
 }
