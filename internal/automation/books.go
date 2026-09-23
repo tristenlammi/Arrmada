@@ -584,7 +584,7 @@ func (c *Coordinator) ImportBookDownloads(ctx context.Context) {
 		}
 		// Without this the sweep re-hardlinked and re-marked every completed book
 		// torrent every 30 seconds for as long as it seeded — pure disk/IO churn.
-		if c.hashAlreadyImported(ctx, it.Hash) {
+		if c.hashAlreadyImported(ctx, it.Hash) && !c.regrabbedForVersion(ctx, it.Hash) {
 			continue
 		}
 		if c.hasReview(ctx, it.Hash) {
@@ -692,7 +692,7 @@ func (c *Coordinator) importBookContent(ctx context.Context, b books.Book, conte
 	// it used to be hardlinked into Red Rising's folder — three books filed as one, with
 	// the other two still showing as missing. Split off anything that names a DIFFERENT
 	// book in the library and import it where it belongs.
-	found = c.divertForeignBookFiles(ctx, b, found, hash, name)
+	found, diverted := c.divertForeignBookFiles(ctx, b, found, hash, name)
 
 	var ebooks, audio []library.FoundFile
 	for _, f := range found {
@@ -718,6 +718,15 @@ func (c *Coordinator) importBookContent(ctx context.Context, b books.Book, conte
 			"book", b.Title, "release", name, "skipped", strings.Join(skipped, ", "))
 		ebooks = nil
 	}
+	if !hadFiles && len(diverted) > 0 {
+		// Everything in the download belonged to other books and has been filed there.
+		// This used to report "nothing imported, nothing here", so the sweep never marked
+		// the download done and re-filed the other book every 30 seconds until it went to
+		// review — whose Import then failed the same way. The download is finished with:
+		// say so, stop searching this release for b, and let seeding rules take it.
+		c.finishForeignOnlyDownload(ctx, b, hash, name, diverted)
+		return true, true
+	}
 	okEbook := c.importBookEdition(ctx, b, books.KindEbook, ebooks, hash, name)
 	var okAudio bool
 	if v := c.audioVersionForDownload(ctx, b, hash, name); v != nil && len(audio) > 0 {
@@ -740,12 +749,16 @@ func (c *Coordinator) importBookContent(ctx context.Context, b books.Book, conte
 // OTHER book that is already in the library. Anything ambiguous — generic chapter files,
 // "Part 1 of 2", a book not in the library — stays with b, which is the existing
 // behaviour and the safe one for a single title split across many files.
-func (c *Coordinator) divertForeignBookFiles(ctx context.Context, b books.Book, found []library.FoundFile, hash, name string) []library.FoundFile {
+//
+// It also returns the titles of the other books that actually received files, so the
+// caller can tell a download that held nothing at all from one that held only other books.
+func (c *Coordinator) divertForeignBookFiles(ctx context.Context, b books.Book, found []library.FoundFile, hash, name string) ([]library.FoundFile, []string) {
 	if len(found) < 2 || c.books == nil {
-		return found // a single file is whatever the download was matched as
+		return found, nil // a single file is whatever the download was matched as
 	}
 	match := c.books.Matcher(ctx)
 	keep := make([]library.FoundFile, 0, len(found))
+	var diverted []string
 	foreign := map[int64][]library.FoundFile{}
 	titles := map[int64]books.Book{}
 	for _, f := range found {
@@ -774,10 +787,14 @@ func (c *Coordinator) divertForeignBookFiles(ctx context.Context, b books.Book, 
 		if len(audio) > 0 && len(ebooks) > 0 {
 			ebooks = nil // same companion-PDF rule the main path applies
 		}
-		c.importBookEdition(ctx, other, books.KindEbook, ebooks, hash, name)
-		c.importBookEdition(ctx, other, books.KindAudiobook, audio, hash, name)
+		okE := c.importBookEdition(ctx, other, books.KindEbook, ebooks, hash, name)
+		okA := c.importBookEdition(ctx, other, books.KindAudiobook, audio, hash, name)
+		if okE || okA {
+			diverted = append(diverted, other.Title)
+		}
 	}
-	return keep
+	sort.Strings(diverted)
+	return keep, diverted
 }
 
 // matchBookFile resolves one file inside a pack to a library book, trying its own name
