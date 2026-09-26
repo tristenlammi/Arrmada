@@ -185,8 +185,21 @@ func (c *Coordinator) grabTo(ctx context.Context, indexerName, downloadURL, titl
 	if err := c.downloads.Add(ctx, add); err != nil {
 		return "", err
 	}
+	c.clearRemovedImport(ctx, hash)
 	c.bus.Publish("release.grabbed", map[string]any{"title": title, "indexer": indexerName})
 	return hash, nil
+}
+
+// clearRemovedImport lets a release whose imported file the user deleted import again,
+// now that it has been grabbed again on purpose. Without a new grab, the deletion
+// stands and the still-seeding torrent is left alone.
+func (c *Coordinator) clearRemovedImport(ctx context.Context, hash string) {
+	if hash == "" || c.db == nil {
+		return
+	}
+	if _, err := c.db.ExecContext(ctx, `DELETE FROM imports WHERE lower(download_hash) = ? AND removed = 1`, strings.ToLower(hash)); err != nil {
+		c.log.Warn("grab: couldn't clear a deleted import's flag", "err", err)
+	}
 }
 
 // addTorrentFile hands an uploaded .torrent file straight to the download client (no
@@ -205,6 +218,7 @@ func (c *Coordinator) addTorrentFile(ctx context.Context, file []byte, filename,
 	}
 	hash, _ := download.InfoHashFromFile(file) // "" falls back to name matching
 	c.bus.Publish("release.grabbed", map[string]any{"title": title, "indexer": "manual"})
+	c.clearRemovedImport(ctx, hash)
 	return hash, nil
 }
 

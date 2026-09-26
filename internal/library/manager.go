@@ -151,9 +151,16 @@ func (m *Manager) Process(ctx context.Context, cands []Candidate) int {
 				continue
 			}
 		}
-		target, done, err := m.repo.targetFor(ctx, c.Hash)
+		target, done, removed, err := m.repo.importState(ctx, c.Hash)
 		if err != nil {
 			m.log.Warn("import dedupe check failed", "hash", c.Hash, "err", err)
+			continue
+		}
+		if done && removed {
+			// The user deleted this file on purpose. The torrent is still seeding, so
+			// without this it was imported straight back on the next sweep — a
+			// CAMRIP deleted from the movie page kept returning. Grabbing the release
+			// again clears the flag.
 			continue
 		}
 		if done {
@@ -251,8 +258,9 @@ func (m *Manager) ImportedHashes(ctx context.Context) (map[string]bool, error) {
 	return m.repo.importedHashes(ctx)
 }
 
-// WatchDeletions forgets import records when their files are deleted, so the
-// same release can be re-imported after (e.g.) removing and re-adding it.
+// WatchDeletions flags import records when their files are deleted in the app, so
+// the torrent behind them (usually still seeding) isn't imported straight back. The
+// same release imports again once it's grabbed again.
 func (m *Manager) WatchDeletions(ctx context.Context) {
 	if m.bus == nil {
 		return
@@ -269,7 +277,7 @@ func (m *Manager) WatchDeletions(ctx context.Context) {
 				continue
 			}
 			if path, _ := data["path"].(string); path != "" {
-				if err := m.repo.forgetByTarget(ctx, path); err != nil {
+				if err := m.repo.markRemovedByTarget(ctx, path); err != nil {
 					m.log.Warn("forget import failed", "path", path, "err", err)
 				}
 			}

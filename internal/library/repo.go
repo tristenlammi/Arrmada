@@ -45,12 +45,18 @@ func (r *importRepo) importedHashes(ctx context.Context) (map[string]bool, error
 // targetFor returns the recorded target path for a download hash, and whether a
 // record exists. Used to verify a prior import's file is still on disk.
 func (r *importRepo) targetFor(ctx context.Context, hash string) (string, bool, error) {
-	var target string
-	err := r.db.QueryRowContext(ctx, `SELECT target_path FROM imports WHERE download_hash = ?`, hash).Scan(&target)
+	target, done, _, err := r.importState(ctx, hash)
+	return target, done, err
+}
+
+// importState is targetFor plus whether the user deleted the imported file on purpose.
+func (r *importRepo) importState(ctx context.Context, hash string) (target string, done, removed bool, err error) {
+	var rem int
+	err = r.db.QueryRowContext(ctx, `SELECT target_path, removed FROM imports WHERE download_hash = ?`, hash).Scan(&target, &rem)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return "", false, false, nil
 	}
-	return target, true, err
+	return target, err == nil, rem != 0, err
 }
 
 // forgetByHash removes the import record for a download hash so it re-imports.
@@ -67,10 +73,11 @@ func (r *importRepo) record(ctx context.Context, rec ImportRecord) error {
 	return err
 }
 
-// forgetByTarget removes the import record for a target path so the same
-// download can be imported again after its file was deleted.
-func (r *importRepo) forgetByTarget(ctx context.Context, target string) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM imports WHERE target_path = ?`, target)
+// markRemovedByTarget flags the import behind a deliberately deleted library file.
+// The record stays, so the still-seeding torrent isn't imported straight back; a new
+// grab of the same release clears the flag (see ClearRemovedImport).
+func (r *importRepo) markRemovedByTarget(ctx context.Context, target string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE imports SET removed = 1 WHERE target_path = ?`, target)
 	return err
 }
 
