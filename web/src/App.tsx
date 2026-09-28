@@ -2,6 +2,7 @@ import { Routes, Route, Navigate } from "react-router-dom";
 import { AppLayout } from "./components/AppLayout";
 import { UserLayout } from "./components/UserLayout";
 import { MyBooks } from "./pages/MyBooks";
+import { SetupGate } from "./components/SetupGate";
 import { useMe, isStaff } from "./lib/me";
 import { Dashboard } from "./pages/Dashboard";
 import { Quality } from "./pages/Quality";
@@ -73,6 +74,7 @@ export default function App() {
   }
 
   return (
+    <SetupGate user={user}>
     <Routes>
       <Route element={<AppLayout />}>
         <Route index element={<Dashboard />} />
@@ -108,5 +110,6 @@ export default function App() {
         />
       </Route>
     </Routes>
+    </SetupGate>
   );
 }

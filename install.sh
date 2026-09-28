@@ -7,7 +7,8 @@
 #
 # It asks two things — where your media lives and where to transcode — then handles the
 # rest automatically: free host ports (never clashes with Radarr/Sonarr/qBit), the run
-# user, the database location, and GPU pass-through if a GPU is present.
+# user, the database location, and GPU pass-through if a GPU is present. The TMDB key and
+# each library folder are set in the app's first-run setup, with a folder picker.
 # Update later with:  ./update.sh
 set -eu
 cd "$(dirname "$0")"
@@ -45,6 +46,38 @@ rand_port() {
   printf '%s' "$_p"
 }
 
+# wait_healthy -> 0 once the app answers its health check, 1 if it crashed or never came up.
+# It asks from inside the container, so it works whatever host port was picked and needs no
+# curl/wget on the host.
+wait_healthy() {
+  _base=$(grep -E '^ARRMADA_BASE_URL=' .env 2>/dev/null | cut -d= -f2)
+  _i=0
+  printf 'Waiting for Arrmada to start' >&2
+  while [ "$_i" -lt 90 ]; do
+    _state=$(docker inspect -f '{{.State.Status}}' Arrmada-app 2>/dev/null || echo missing)
+    case "$_state" in
+      exited|dead) printf '\n' >&2; return 1 ;;
+    esac
+    if docker exec Arrmada-app curl -fsS -o /dev/null "http://127.0.0.1:7878${_base%/}/api/health" 2>/dev/null; then
+      printf ' ready\n' >&2; return 0
+    fi
+    printf '.' >&2
+    _i=$((_i + 1)); sleep 2
+  done
+  printf '\n' >&2
+  return 1
+}
+
+# fail_start prints why the app didn't come up and exits non-zero.
+fail_start() {
+  say ""
+  say "✗ Arrmada didn't start. The last lines of its log:" >&2
+  docker compose logs --tail 40 arrmada-app >&2 || true
+  say "" >&2
+  say "  Fix what the log says, then run the script again. Full log: docker compose logs arrmada-app" >&2
+  exit 1
+}
+
 # ── prerequisites ──────────────────────────────────────────────────────────────
 if ! command -v docker >/dev/null 2>&1; then
   say "✗ Docker isn't installed (or not on PATH). Install Docker, then re-run ./install.sh" >&2; exit 1
@@ -58,10 +91,10 @@ if [ ! -f .env ]; then
   say "First run — let's set up Arrmada. Two questions, then it's automatic."
   say ""
 
+  # The TMDB key is entered in the app's first-run setup. An exported value is still
+  # honoured, for scripted installs.
   KEY="${ARRMADA_TMDB_API_KEY:-}"
-  [ -z "$KEY" ] && KEY=$(ask "TMDB API key (free: themoviedb.org — needed for Movies & TV; Enter to skip): " "")
 
-  say ""
   say "1/2  Where does your media live? Give the folder that CONTAINS your libraries +"
   say "     downloads (e.g. /mnt/user/masterdirectory). Enter to use Arrmada's own managed storage."
   MEDIA=$(ask "     Media folder [blank = managed]: " "")
@@ -127,14 +160,9 @@ if [ ! -f .env ]; then
     say "ARRMADA_DATA_HOST=$DATA"
     if [ -n "$MEDIA" ]; then
       say ""
-      say "# Your media folder is mounted at /storage inside the app. Point each library at"
-      say "# its subfolder (adjust to your actual folder names, or set them in the app later)."
+      say "# Your media folder, mounted at /storage inside the app. Each library's folder under"
+      say "# it is picked in the app's first-run setup (Settings → Library later)."
       say "ARRMADA_STORAGE_HOST=$MEDIA"
-      say "ARRMADA_MOVIES_DIR=/storage/media/movies"
-      say "ARRMADA_TV_DIR=/storage/media/tvshows"
-      say "ARRMADA_EBOOKS_DIR=/storage/media/ebooks"
-      say "ARRMADA_AUDIOBOOKS_DIR=/storage/media/audiobooks"
-      say "ARRMADA_DOWNLOADS_DIR=/storage/torrents"
     fi
   } > .env
 
@@ -172,7 +200,7 @@ if [ ! -f .env ]; then
   say "   • BitTorrent:    $BTPORT   (forward this on your router, TCP+UDP)"
   say "   • Run as:        $PUID:$PGID"
   [ -n "$GPU" ] && say "   • GPU:           /dev/dri detected → hardware transcode enabled" || say "   • GPU:           none detected → Convert will use the CPU"
-  [ -z "$KEY" ] && say "   ! No TMDB key — add ARRMADA_TMDB_API_KEY to .env for Movies/TV, then ./update.sh"
+  [ -n "$MEDIA" ] && say "   • Media folder:  $MEDIA → /storage inside the app"
 else
   say ".env already exists — keeping your settings."
 fi
@@ -189,9 +217,13 @@ say "Building and starting Arrmada… (the first build compiles everything — a
 # shellcheck disable=SC2086
 docker compose $PROFILES up -d --build
 
+wait_healthy || fail_start
+
 WEBPORT=$(grep -E '^ARRMADA_PORT=' .env | cut -d= -f2)
+HOSTIP=$(hostname -I 2>/dev/null | awk '{print $1}')
 say ""
-say "✓ Arrmada is up.  Open http://localhost:${WEBPORT:-7878}"
+say "✓ Arrmada is running.  Open http://${HOSTIP:-localhost}:${WEBPORT:-7878}"
+say "  Create your admin account, then the setup walks you through the TMDB key and your folders."
 say "  Update anytime with:  ./update.sh"
 if [ -z "$PROFILES" ]; then
   say ""

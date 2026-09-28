@@ -171,7 +171,7 @@ func queueProgressByTitle(queue []download.Item, title string, year int) (float6
 
 func (a *api) discoveryReady(w http.ResponseWriter) bool {
 	if a.deps.Discovery == nil || !a.deps.Discovery.Available() {
-		a.writeError(w, http.StatusBadRequest, "metadata isn't configured — set ARRMADA_TMDB_API_KEY")
+		a.writeError(w, http.StatusBadRequest, "metadata isn't configured — add a TMDB key in Settings → API keys")
 		return false
 	}
 	return true

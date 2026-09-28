@@ -788,7 +788,7 @@ type ScanResult struct {
 func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanResult, error) {
 	var res ScanResult
 	if !s.meta.Available() {
-		return res, fmt.Errorf("series metadata isn't configured — set ARRMADA_TMDB_API_KEY")
+		return res, fmt.Errorf("series metadata isn't configured — add a TMDB key in Settings → API keys")
 	}
 	root := rootOverride
 	if root == "" {

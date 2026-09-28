@@ -1,5 +1,5 @@
-# Arrmada + bundled qBittorrent + FlareSolverr — local testing.
-#   docker compose up --build
+# Arrmada + bundled qBittorrent + FlareSolverr. Normally started by ./install.sh, which
+# writes .env and docker-compose.override.yml; `docker compose up -d --build` also works.
 # Then open http://localhost:7878  (qBittorrent WebUI: http://localhost:8080)
 services:
   arrmada-app:
@@ -111,7 +111,8 @@ services:
     restart: "no"
 
   arrmada-qbittorrent:
-    image: lscr.io/linuxserver/qbittorrent:latest
+    # Pinned so a fresh install gets a known-good version; bump deliberately.
+    image: lscr.io/linuxserver/qbittorrent:5.2.3
     container_name: Arrmada-qbittorrent
     environment:
       PUID: "${ARRMADA_PUID:-1000}"
@@ -147,7 +148,7 @@ services:
   # "Sync from Prowlarr" in Arrmada → Indexers. Point Prowlarr's FlareSolverr proxy at
   # http://arrmada-flaresolverr:8191 for Cloudflare-protected trackers.
   arrmada-prowlarr:
-    image: lscr.io/linuxserver/prowlarr:latest
+    image: lscr.io/linuxserver/prowlarr:2.6.5
     container_name: Arrmada-prowlarr
     profiles: ["prowlarr"]
     environment:
@@ -165,7 +166,7 @@ services:
   # published — only Arrmada talks to it, over the internal Docker network — so it
   # can never clash with an existing FlareSolverr on 8191.
   arrmada-flaresolverr:
-    image: ghcr.io/flaresolverr/flaresolverr:latest
+    image: ghcr.io/flaresolverr/flaresolverr:v3.5.2
     container_name: Arrmada-flaresolverr
     environment:
       LOG_LEVEL: "info"

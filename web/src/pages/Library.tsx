@@ -186,7 +186,7 @@ function UnmatchedRow({ media, item, busy, onPick }: { media: "movie" | "series"
   );
 }
 
-function FolderPicker({ initial, onClose, onSelect }: { initial?: string; onClose: () => void; onSelect: (path: string) => void }) {
+export function FolderPicker({ initial, onClose, onSelect }: { initial?: string; onClose: () => void; onSelect: (path: string) => void }) {
   const [data, setData] = useState<BrowseResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const go = (path?: string) => { setErr(null); api.browseFolders(path).then(setData).catch((e) => setErr((e as Error).message)); };

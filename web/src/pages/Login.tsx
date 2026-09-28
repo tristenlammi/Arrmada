@@ -79,7 +79,7 @@ export function Login() {
             </button>
             {setup && (
               <p className="m-0 mt-1 text-[11px] leading-snug text-ink-faint">
-                Next, add your API keys under Settings: <b>TMDB</b> (required for movies and TV) and <b>Hardcover</b> (recommended for books — free; without it Books use Open Library, which needs no key).
+                Next, a short setup asks for your free <b>TMDB</b> key and where your media lives. You can skip it and do it later in Settings.
               </p>
             )}
 

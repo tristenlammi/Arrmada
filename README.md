@@ -8,26 +8,42 @@
 
 ---
 
-> **Status:** early and under active development. Working today: Movies, Series,
-> Books, Subtitles, and Convert (HEVC/AV1 transcoding). Music and analytics are
-> still on the way. Expect rough edges.
+Arrmada is a self-hosted app that does the jobs of Radarr, Sonarr, Readarr, Bazarr,
+Overseerr, Tautulli and Tdarr in one place, with one database and one web UI. It ships
+with qBittorrent and FlareSolverr already wired up.
 
-Arrmada is a single self-hosted app that aims to do the job of Radarr, Sonarr,
-Readarr, Bazarr, and more — one coordinated system instead of a pile of
-containers. It bundles qBittorrent, Prowlarr, and FlareSolverr alongside it.
+> **Status:** early and under active development. Expect rough edges.
 
-## Tech
+## Features
 
-- **Backend:** Go — one static binary with the web UI embedded, served on one port.
-- **Frontend:** React + TypeScript + Vite + Tailwind.
-- **Database:** SQLite.
-- **License:** [MIT](LICENSE).
+**Library and downloads**
+
+- **Movies** — search, grab, import, rename and upgrade. Keep several versions of a movie (say 4K and 1080p).
+- **TV** — episodes and season packs, anime numbering (TheXEM and TheTVDB), and airing shows kept up to date.
+- **Books** — ebooks and audiobooks with Hardcover or Open Library metadata, series tracking, several audiobook versions per book (standard and full cast), and multi-file audiobooks merged into one M4B.
+- **Music** (early) — artists, albums and whole-discography grabs.
+- **Quality profiles** — a bitrate ceiling, required formats (Atmos, HDR, Dolby Vision), and preferred or rejected words.
+- **Indexers** — any Torznab indexer, one-click sync from Prowlarr, and built-in MyAnonaMouse, TorrentLeech and 1337x. FlareSolverr handles Cloudflare-protected trackers.
+- **Downloads** — the bundled qBittorrent sets itself up. Imports hardlink instead of copying, seeding rules clean up, stalled downloads fail over, and mismatched downloads wait in a review queue.
+- **Safety nets** — a blocklist, a recycle bin, and a full history for every item.
+
+**Requests and people**
+
+- **Discover and requests** — browse and request movies, TV and books, Overseerr-style. Auto-approve per user, and import your existing Overseerr requests.
+- **Users** — admin, manager, requester and read-only roles, with optional Plex sign-in. Visitors from outside your network only see Discover.
+- **Books shelf** — requesters can download any ebook in the library.
+- **Calendar** — what's coming up.
+- **Notifications** — Apprise alerts for admins; an in-app inbox and web push for requesters.
+
+**Media tools**
+
+- **Subtitles** — pulls embedded subtitles out, fetches them from OpenSubtitles, or writes them with local Whisper AI (GPU-accelerated on Intel).
+- **Convert** — HEVC or AV1 transcoding on Intel or AMD (VAAPI), Intel Quick Sync, NVIDIA NVENC, or the CPU. Dolby Vision and HDR10+ are kept.
+- **Insights** — Plex watch history, stats and buffering diagnostics, Tautulli-style.
 
 ## Install
 
-One command. It asks **two** things — where your media lives and where to
-transcode — and handles everything else (run user, free host ports, database
-location, and GPU pass-through) automatically.
+You need Docker with Compose v2. On Unraid, the Compose Manager plugin provides it.
 
 ```sh
 git clone https://github.com/tristenlammi/Arrmada
@@ -35,77 +51,59 @@ cd Arrmada
 ./install.sh
 ```
 
-That's it. When it finishes it prints the URL — open it and create your admin
-account. Grab a free [TMDB API key](https://www.themoviedb.org/settings/api)
-for Movies/TV metadata (the installer asks for it, or add it later in `.env`).
+The installer asks two things: the folder that holds your media and downloads, and where to
+transcode. It works out the rest itself — free ports, the user to run as, where the database
+lives, your timezone and your GPU. The first build compiles everything, so it takes a while.
+It waits until Arrmada is ready and prints the address.
 
-<details>
-<summary>What the installer does for you</summary>
+Open that address and create your admin account. A short setup then asks for your free
+[TMDB key](https://www.themoviedb.org/settings/api) and lets you pick each library folder.
+You can skip it and do both later in Settings.
 
-- **Free ports** — it checks what's already running and picks host ports that
-  don't clash with Radarr (7878), an existing qBittorrent (8080), etc. The
-  chosen ports are printed at the end and saved in `.env`.
-- **Run user** — auto-detected from your media folder's owner (falls back to
-  `99:100` on Unraid, else `1000:1000`), so the app can read/write your files.
-- **GPU** — if `/dev/dri` exists on the host it wires up hardware transcoding
-  automatically; no manual device mapping. No GPU? Convert falls back to CPU.
-- **Database** — stored in `/mnt/user/appdata/arrmada` on Unraid, else `./data`.
-- **Media + transcode** — written into `docker-compose.override.yml` for you.
-
-Optional: `./install.sh --with-prowlarr` also starts a Prowlarr indexer
-manager (Arrmada has its own indexers, so this is only if you want it).
-</details>
+`./install.sh --with-prowlarr` also starts Prowlarr, if you'd rather manage indexers there.
 
 ## Update
-
-Pull the latest and rebuild — your `.env`, database, downloads, and media are
-all preserved:
 
 ```sh
 ./update.sh
 ```
 
-Only the app image is rebuilt and restarted. The bundled companions
-(qBittorrent, FlareSolverr) and the one-shot init containers are **left
-untouched** — they only run once, at install, so an update never re-runs them.
+This pulls the latest code, rebuilds only the app, and waits until it's running again. Your
+settings, database, downloads and media are untouched.
 
 ## Ports
 
-The installer picks **free** host ports automatically, but by default:
+The installer picks free ports so nothing clashes with apps you already run. It prints them
+at the end and saves them in `.env`.
 
-| Service              | Host port                 | Notes                                             |
-| -------------------- | ------------------------- | ------------------------------------------------- |
-| Arrmada web UI       | `ARRMADA_PORT` (7878)     | The app. Auto-moved if 7878 is taken.             |
-| qBittorrent WebUI    | `ARRMADA_QBIT_WEBUI_PORT` (8080) | Optional peek — Arrmada manages qBit for you.    |
-| BitTorrent (qBit)    | `ARRMADA_QBIT_PORT` (random) | Forward this on your router (TCP + UDP).       |
-| FlareSolverr         | *(not published)*         | Internal-only — reached over the Docker network.  |
-| Prowlarr (opt-in)    | `ARRMADA_PROWLARR_PORT` (9696) | Only with `--with-prowlarr`.                   |
+| Service           | Default | Setting                   |
+| ----------------- | ------- | ------------------------- |
+| Arrmada           | 7878    | `ARRMADA_PORT`            |
+| qBittorrent WebUI | 8080    | `ARRMADA_QBIT_WEBUI_PORT` |
+| BitTorrent        | random  | `ARRMADA_QBIT_PORT` — forward this on your router (TCP and UDP) |
 
-All are overridable in [.env](.env.example) — change a value, then `./update.sh`.
+Change a value in `.env`, then run `./update.sh`.
 
-## Point it at an existing library
+## Existing library
 
-The installer's media prompt covers the common case. For read-only trials or
-custom per-library paths, see
+Give the installer the folder that contains your media, and pick each library inside it
+during setup. Keep downloads on the same drive or share as your libraries so imports
+hardlink. For read-only trials or unusual layouts, see
 [docker-compose.override.example.yml](docker-compose.override.example.yml).
 
-> ⚠ Never mount media at `/data` — that path holds Arrmada's own database + config.
+> ⚠ Never mount media at `/data`. That path holds Arrmada's own database.
 
 ## Develop
 
 ```sh
-# backend (Go 1.25+) — http://localhost:7878
-go run ./cmd/arrmada
-
-# frontend (Node 20+) — http://localhost:5173, proxies /api to the backend
-cd web && npm install && npm run dev
+go run ./cmd/arrmada                  # backend (Go 1.25+) on :7878
+cd web && npm install && npm run dev  # UI (Node 20+) on :5173, proxies /api
 ```
 
-Production build bakes the UI into the binary:
+For a single binary with the UI inside it:
 
 ```sh
-cd web && npm run build      # → internal/webui/dist/
-cd .. && go build -o arrmada ./cmd/arrmada
+cd web && npm run build && cd .. && go build -o arrmada ./cmd/arrmada
 ```
 
 ## License

@@ -11,6 +11,38 @@ cd "$(dirname "$0")"
 
 say() { printf '%s\n' "$*"; }
 
+# wait_healthy -> 0 once the app answers its health check, 1 if it crashed or never came up.
+# It asks from inside the container, so it works whatever host port was picked and needs no
+# curl/wget on the host.
+wait_healthy() {
+  _base=$(grep -E '^ARRMADA_BASE_URL=' .env 2>/dev/null | cut -d= -f2)
+  _i=0
+  printf 'Waiting for Arrmada to start' >&2
+  while [ "$_i" -lt 90 ]; do
+    _state=$(docker inspect -f '{{.State.Status}}' Arrmada-app 2>/dev/null || echo missing)
+    case "$_state" in
+      exited|dead) printf '\n' >&2; return 1 ;;
+    esac
+    if docker exec Arrmada-app curl -fsS -o /dev/null "http://127.0.0.1:7878${_base%/}/api/health" 2>/dev/null; then
+      printf ' ready\n' >&2; return 0
+    fi
+    printf '.' >&2
+    _i=$((_i + 1)); sleep 2
+  done
+  printf '\n' >&2
+  return 1
+}
+
+# fail_start prints why the app didn't come up and exits non-zero.
+fail_start() {
+  say ""
+  say "✗ Arrmada didn't start. The last lines of its log:" >&2
+  docker compose logs --tail 40 arrmada-app >&2 || true
+  say "" >&2
+  say "  Fix what the log says, then run the script again. Full log: docker compose logs arrmada-app" >&2
+  exit 1
+}
+
 if ! docker compose version >/dev/null 2>&1; then
   say "✗ 'docker compose' (v2) isn't available." >&2
   exit 1
@@ -35,9 +67,12 @@ say "Rebuilding and restarting Arrmada…"
 # only changes the app image, so nothing else needs touching.
 docker compose up -d --build --no-deps arrmada-app
 
+wait_healthy || fail_start
+
 # Reclaim space from the previous image build (harmless if nothing to prune).
 docker image prune -f >/dev/null 2>&1 || true
 
 WEBPORT=$(grep -E '^ARRMADA_PORT=' .env | cut -d= -f2)
+HOSTIP=$(hostname -I 2>/dev/null | awk '{print $1}')
 say ""
-say "✓ Arrmada updated.  Open http://localhost:${WEBPORT:-7878}"
+say "✓ Arrmada updated.  Open http://${HOSTIP:-localhost}:${WEBPORT:-7878}"

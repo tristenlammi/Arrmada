@@ -278,6 +278,21 @@ export interface UserNotification { id: number; title: string; body: string; med
 export interface CalendarItem { date: string; type: "episode" | "movie"; title: string; subtitle: string; poster_url?: string; ref_id: number; has_file: boolean; monitored: boolean }
 
 export interface LibraryPaths { movies: string; tv: string; ebooks: string; audiobooks: string; music: string; downloads: string }
+// SetupState drives the first-run wizard: whether it's needed, the keys, the folders
+// saved vs the ones the running app uses, and folders that look right on the mount.
+export interface SetupState {
+  needed: boolean;
+  complete: boolean;
+  tmdb_configured: boolean;
+  libraries_chosen: boolean;
+  keys: APIKeyStatus[];
+  library: LibraryPaths;
+  running: LibraryPaths;
+  restart_needed: boolean;
+  can_restart: boolean;
+  mounts: string[];
+  suggestions: Partial<LibraryPaths>;
+}
 export interface BrowseResult { path: string; parent: string; dirs: { name: string; path: string }[] }
 
 export interface HealthWarning {
@@ -1116,6 +1131,9 @@ export const api = {
   importMovieFolder: (folder: string, tmdb_id: number) =>
     req<{ status: string }>("/api/v1/movies/import", { method: "POST", body: JSON.stringify({ folder, tmdb_id }) }),
   libraryPaths: () => req<LibraryPaths>("/api/v1/system/library"),
+  setupState: () => req<SetupState>("/api/v1/setup"),
+  completeSetup: () => req<{ status: string }>("/api/v1/setup/complete", { method: "POST" }),
+  restartApp: () => req<{ status: string }>("/api/v1/system/restart", { method: "POST" }),
   setLibraryPaths: (body: Partial<LibraryPaths>) => req<LibraryPaths>("/api/v1/system/library", { method: "PUT", body: JSON.stringify(body) }),
   browseFolders: (path?: string) => req<BrowseResult>(`/api/v1/system/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   addMovie: (body: { tmdb_id: number; quality_profile: string; monitored?: boolean; search_on_add?: boolean }) =>

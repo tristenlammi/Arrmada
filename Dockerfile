@@ -191,7 +191,10 @@ ENV ARRMADA_HOST=0.0.0.0 \
 EXPOSE 7878
 VOLUME ["/data", "/media"]
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget -qO- http://127.0.0.1:7878/api/health || exit 1
+# curl, not wget: the Ubuntu runtime has no wget, so the old check failed forever and
+# Docker/Unraid showed the container as unhealthy. The first boot runs migrations, hence
+# the minute's grace. ARRMADA_BASE_URL keeps it working behind a reverse-proxy path.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -fsS -o /dev/null "http://127.0.0.1:7878${ARRMADA_BASE_URL%/}/api/health" || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]

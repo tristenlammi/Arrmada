@@ -72,6 +72,9 @@ type Deps struct {
 	Recycle    *recyclebin.Service
 	Logs       *applog.Ring
 	APIKeys    *apikeys.Store
+	// Restart shuts the app down cleanly so Docker's restart policy starts it again
+	// (first-run setup uses it to apply new library folders). nil = not offered.
+	Restart func()
 }
 
 type api struct {
@@ -112,6 +115,10 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/system/library", a.requireRole(auth.RoleManager, a.handleGetLibraryPaths))
 	mux.HandleFunc("PUT "+base+"/api/v1/system/library", a.requireRole(auth.RoleManager, a.handleSetLibraryPaths))
 	mux.HandleFunc("GET "+base+"/api/v1/system/browse", a.requireRole(auth.RoleManager, a.handleBrowse))
+	// First-run setup wizard + restart to apply new folders.
+	mux.HandleFunc("GET "+base+"/api/v1/setup", a.requireRole(auth.RoleAdmin, a.handleSetupState))
+	mux.HandleFunc("POST "+base+"/api/v1/setup/complete", a.requireRole(auth.RoleAdmin, a.handleSetupComplete))
+	mux.HandleFunc("POST "+base+"/api/v1/system/restart", a.requireRole(auth.RoleAdmin, a.handleRestart))
 
 	// Auth
 	mux.HandleFunc("POST "+base+"/api/v1/auth/setup", a.handleSetup)

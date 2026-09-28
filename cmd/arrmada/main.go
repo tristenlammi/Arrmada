@@ -139,6 +139,9 @@ func main() {
 	indexers := indexer.NewService(st.DB(), log, cfg.FlaresolverrURL)
 	downloads := download.NewService(st.DB(), log)
 	settingsSvc := settings.NewService(st.DB())
+	// Library folders chosen in the app (first-run setup, Settings → Library) win over the
+	// environment's, for everything — importer, qBittorrent save path, disk guard.
+	httpapi.ApplySavedLibraryDirs(context.Background(), settingsSvc.Get, &cfg, log)
 	// API keys resolve settings-first, env-fallback, so a key added in the settings menu
 	// takes effect without a restart while existing env-based setups keep working. Seed
 	// the store with any env values so a fresh install with only compose vars still works.
@@ -572,6 +575,7 @@ func main() {
 		return nil
 	})
 
+	restartCh := make(chan struct{}, 1)
 	srv := httpapi.New(httpapi.Deps{
 		Config:     cfg,
 		Log:        log,
@@ -601,6 +605,12 @@ func main() {
 		Recycle:    recycleSvc,
 		Logs:       logRing,
 		APIKeys:    keyStore,
+		Restart: func() {
+			select {
+			case restartCh <- struct{}{}:
+			default:
+			}
+		},
 	})
 
 	errCh := make(chan error, 1)
@@ -621,6 +631,11 @@ func main() {
 		os.Exit(1)
 	case sig := <-stop:
 		log.Info("shutdown requested", "signal", sig.String())
+	case <-restartCh:
+		// Give the HTTP response a moment to reach the browser, then shut down; Docker's
+		// restart policy starts the container again with the new settings applied.
+		time.Sleep(500 * time.Millisecond)
+		log.Info("restarting to apply new settings")
 	}
 
 	cancelRun() // signal background jobs to stop

@@ -121,7 +121,7 @@ export function Dashboard() {
         <Card>
           {!data ? (
             <p className="m-0 text-[12.5px] text-ink-faint">Reading disks…</p>
-          ) : data.storage.length === 0 ? (
+          ) : !data.storage || data.storage.length === 0 ? (
             <p className="m-0 text-[12.5px] text-ink-faint">
               Disk usage isn&apos;t available on this platform.
             </p>
