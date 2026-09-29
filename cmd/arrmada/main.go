@@ -26,6 +26,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/apikeys"
 	"github.com/tristenlammi/arrmada/internal/applog"
+	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/books"
@@ -39,6 +40,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/insights"
 	"github.com/tristenlammi/arrmada/internal/library"
+	"github.com/tristenlammi/arrmada/internal/listening"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/music"
@@ -575,36 +577,63 @@ func main() {
 		return nil
 	})
 
+	// Audiobook server: listening apps (Lissen and other Audiobookshelf clients) connect to
+	// its own port. Off until an admin switches it on in Books → Audiobook server.
+	listenStore := listening.NewStore(st.DB())
+	audioSrv := audioserver.New(audioserver.Options{
+		DB: st.DB(), Books: booksSvc, Listen: listenStore, Users: authSvc, Settings: settingsSvc,
+		Log: log, FFprobe: "ffprobe", DataDir: cfg.DataDir,
+	})
+	audioPort := os.Getenv("ARRMADA_AUDIOBOOK_LISTEN_PORT")
+	if audioPort == "" {
+		audioPort = "13378"
+	}
+	audioMgr := audioserver.NewManager(audioSrv, ":"+audioPort, log)
+	audioMgr.Apply(settingsSvc.GetBool(context.Background(), audioserver.KeyEnabled, false))
+	sched.Register("audioserver-prune", 24*time.Hour, false, func(ctx context.Context) error {
+		return listenStore.Prune(ctx)
+	})
+	sched.Register("audioserver-warm", 30*time.Minute, true, func(ctx context.Context) error {
+		if settingsSvc.GetBool(ctx, audioserver.KeyEnabled, false) {
+			if n := audioSrv.Warm(ctx); n > 0 {
+				log.Info("audiobook server: read chapters and durations", "audiobooks", n)
+			}
+		}
+		return nil
+	})
+
 	restartCh := make(chan struct{}, 1)
 	srv := httpapi.New(httpapi.Deps{
-		Config:     cfg,
-		Log:        log,
-		Store:      st,
-		Bus:        bus,
-		Auth:       authSvc,
-		Realtime:   hub,
-		Indexers:   indexers,
-		Downloads:  downloads,
-		DiskGuard:  diskGuard,
-		Library:    imports,
-		Movies:     movieSvc,
-		Quality:    qualitySvc,
-		Settings:   settingsSvc,
-		Automation: coordinator,
-		Notify:     notifySvc,
-		Series:     seriesSvc,
-		Requests:   requestsSvc,
-		Discovery:  tmdb,
-		Ratings:    omdb,
-		Books:      booksSvc,
-		Music:      musicSvc,
-		Subtitles:  subtitlesSvc,
-		Convert:    convertSvc,
-		Insights:   insightsSvc,
-		Push:       pushSvc,
-		Recycle:    recycleSvc,
-		Logs:       logRing,
-		APIKeys:    keyStore,
+		Config:       cfg,
+		Log:          log,
+		Store:        st,
+		Bus:          bus,
+		Auth:         authSvc,
+		Realtime:     hub,
+		Indexers:     indexers,
+		Downloads:    downloads,
+		DiskGuard:    diskGuard,
+		Library:      imports,
+		Movies:       movieSvc,
+		Quality:      qualitySvc,
+		Settings:     settingsSvc,
+		Automation:   coordinator,
+		Notify:       notifySvc,
+		Series:       seriesSvc,
+		Requests:     requestsSvc,
+		Discovery:    tmdb,
+		Ratings:      omdb,
+		Books:        booksSvc,
+		Music:        musicSvc,
+		Subtitles:    subtitlesSvc,
+		Convert:      convertSvc,
+		Insights:     insightsSvc,
+		Push:         pushSvc,
+		Recycle:      recycleSvc,
+		Logs:         logRing,
+		APIKeys:      keyStore,
+		AudioServer:  audioSrv,
+		AudioManager: audioMgr,
 		Restart: func() {
 			select {
 			case restartCh <- struct{}{}:
@@ -639,6 +668,7 @@ func main() {
 	}
 
 	cancelRun() // signal background jobs to stop
+	audioMgr.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

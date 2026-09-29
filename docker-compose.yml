@@ -22,6 +22,10 @@ services:
       # Host web-UI port ← .env (install.sh auto-picks a free one so it never clashes
       # with Radarr's 7878 etc.). The app always listens on 7878 *inside* the container.
       - "${ARRMADA_PORT:-7878}:7878"
+      # Audiobook server for listening apps (Lissen and other Audiobookshelf clients),
+      # switched on in Books → Audiobook server. It listens on 13378 inside; the host port
+      # defaults to 13379 so it never collides with an Audiobookshelf still on 13378.
+      - "${ARRMADA_AUDIOBOOK_PORT:-13379}:13378"
     environment:
       # Login is always required — there is no way to disable it. First launch shows a
       # one-time "create admin" form.
@@ -29,6 +33,8 @@ services:
       # it) is treated as "outside the LAN" and limited to the Discover page.
       ARRMADA_EXTERNAL_HEADER: "${ARRMADA_EXTERNAL_HEADER:-Cf-Connecting-Ip}"
       ARRMADA_LOG_LEVEL: "info"
+      # The host port above, so the app can show people the address to type.
+      ARRMADA_AUDIOBOOK_HOST_PORT: "${ARRMADA_AUDIOBOOK_PORT:-13379}"
       # The bundled qBittorrent companion; auto-registered as a download client.
       ARRMADA_QBITTORRENT_URL: "http://arrmada-qbittorrent:8080"
       # Bundled FlareSolverr — used to get past Cloudflare on protected trackers.

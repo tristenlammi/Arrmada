@@ -33,7 +33,19 @@ type MyBook struct {
 	// Audiobookshelf, so no download here).
 	Ebook     *MyEbook `json:"ebook,omitempty"`
 	Audiobook bool     `json:"audiobook"`
-	Mine      bool     `json:"mine"` // the caller requested this one
+	// Audiobooks lists what can be downloaded: the standard audiobook (version_id 0)
+	// and any extra versions ("Full cast").
+	Audiobooks []MyAudiobook `json:"audiobooks,omitempty"`
+	Mine       bool          `json:"mine"` // the caller requested this one
+}
+
+// MyAudiobook is one downloadable audiobook of a book.
+type MyAudiobook struct {
+	VersionID int64  `json:"version_id"`
+	Label     string `json:"label,omitempty"`
+	Format    string `json:"format"`
+	SizeBytes int64  `json:"size_bytes"`
+	Files     int    `json:"files"`
 }
 
 // MyRequest is one of the caller's book requests that hasn't produced a file yet.
@@ -82,12 +94,23 @@ func (a *api) handleMyBooks(w http.ResponseWriter, r *http.Request) {
 	for _, b := range all {
 		ebook := b.Ebook != nil && b.Ebook.Path != ""
 		audio := b.Audiobook != nil && b.Audiobook.Path != ""
+		var audiobooks []MyAudiobook
+		if audio {
+			audiobooks = append(audiobooks, MyAudiobook{Format: b.Audiobook.Format, SizeBytes: b.Audiobook.SizeBytes, Files: b.Audiobook.FileCount})
+		}
+		for _, v := range b.AudioVersions {
+			if v.File != nil && v.File.Path != "" {
+				audiobooks = append(audiobooks, MyAudiobook{VersionID: v.ID, Label: v.Label, Format: v.File.Format,
+					SizeBytes: v.File.SizeBytes, Files: v.File.FileCount})
+			}
+		}
+		audio = len(audiobooks) > 0
 		if !ebook && !audio {
 			continue
 		}
 		have[b.OLKey] = true
 		mb := MyBook{BookID: b.ID, Title: b.Title, Author: b.Author, Year: b.Year, CoverURL: b.CoverURL,
-			AddedAt: b.AddedAt, Audiobook: audio, Mine: mine[b.OLKey]}
+			AddedAt: b.AddedAt, Audiobook: audio, Audiobooks: audiobooks, Mine: mine[b.OLKey]}
 		if ebook {
 			mb.Ebook = &MyEbook{Format: b.Ebook.Format, SizeBytes: b.Ebook.SizeBytes}
 		}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/apikeys"
 	"github.com/tristenlammi/arrmada/internal/applog"
+	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/books"
@@ -72,6 +73,9 @@ type Deps struct {
 	Recycle    *recyclebin.Service
 	Logs       *applog.Ring
 	APIKeys    *apikeys.Store
+	// The audiobook server for listening apps, and its listener.
+	AudioServer  *audioserver.Server
+	AudioManager *audioserver.Manager
 	// Restart shuts the app down cleanly so Docker's restart policy starts it again
 	// (first-run setup uses it to apply new library folders). nil = not offered.
 	Restart func()
@@ -119,6 +123,22 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/setup", a.requireRole(auth.RoleAdmin, a.handleSetupState))
 	mux.HandleFunc("POST "+base+"/api/v1/setup/complete", a.requireRole(auth.RoleAdmin, a.handleSetupComplete))
 	mux.HandleFunc("POST "+base+"/api/v1/system/restart", a.requireRole(auth.RoleAdmin, a.handleRestart))
+
+	// Audiobook server (listening apps): admin panel + each user's own connection card.
+	mux.HandleFunc("GET "+base+"/api/v1/audioserver", a.requireRole(auth.RoleAdmin, a.handleAudioServer))
+	mux.HandleFunc("PUT "+base+"/api/v1/audioserver", a.requireRole(auth.RoleAdmin, a.handleSetAudioServer))
+	mux.HandleFunc("PUT "+base+"/api/v1/audioserver/users/{id}", a.requireRole(auth.RoleAdmin, a.handleSetAudioUser))
+	mux.HandleFunc("DELETE "+base+"/api/v1/audioserver/devices/{family}", a.requireRole(auth.RoleAdmin, a.handleRevokeAudioDevice))
+	mux.HandleFunc("GET "+base+"/api/v1/audioserver/listening", a.requireRole(auth.RoleAdmin, a.handleAudioListening))
+	mux.HandleFunc("POST "+base+"/api/v1/audioserver/import", a.requireRole(auth.RoleAdmin, a.handleAudioImportUpload))
+	mux.HandleFunc("POST "+base+"/api/v1/audioserver/import/apply", a.requireRole(auth.RoleAdmin, a.handleAudioImportApply))
+	mux.HandleFunc("GET "+base+"/api/v1/me/audio", a.protected(a.handleMyAudio))
+	mux.HandleFunc("POST "+base+"/api/v1/me/audio/app-passwords", a.protected(a.handleCreateMyAppPassword))
+	mux.HandleFunc("DELETE "+base+"/api/v1/me/audio/app-passwords/{id}", a.protected(a.handleDeleteMyAppPassword))
+	mux.HandleFunc("DELETE "+base+"/api/v1/me/audio/devices/{family}", a.protected(a.handleRevokeMyDevice))
+	mux.HandleFunc("GET "+base+"/api/v1/me/audio/history", a.protected(a.handleMyAudioHistory))
+	mux.HandleFunc("POST "+base+"/api/v1/me/audio/restore", a.protected(a.handleMyAudioRestore))
+	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/audiobook", a.protected(a.handleBookAudiobook))
 
 	// Auth
 	mux.HandleFunc("POST "+base+"/api/v1/auth/setup", a.handleSetup)

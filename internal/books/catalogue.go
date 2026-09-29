@@ -164,6 +164,22 @@ const (
 	authorImageBatch = 6
 )
 
+// KnownAuthorImages returns the author photos already looked up, without triggering any
+// catalogue lookups — for the audiobook server, which serves them to listening apps.
+func (s *Service) KnownAuthorImages(ctx context.Context) map[string]string {
+	out := map[string]string{}
+	known, err := s.repo.authorImages(ctx)
+	if err != nil {
+		return out
+	}
+	for name, rec := range known {
+		if rec.ImageURL != "" {
+			out[name] = rec.ImageURL
+		}
+	}
+	return out
+}
+
 // AuthorImages returns a photo URL per library author, from the book_authors table.
 // Authors not yet looked up are resolved through the current catalogue a few per call
 // (the Books page polls until nothing is pending), so a first visit costs a handful of

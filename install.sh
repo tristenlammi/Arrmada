@@ -117,6 +117,7 @@ if [ ! -f .env ]; then
   WEBPORT=$(free_port 7878 7979 8790 8385)
   QBWEB=$(free_port 8080 8081 8082)
   PROWPORT=$(free_port 9696 9697 9698)
+  AUDIOPORT=$(free_port 13379 13380 13381 13382)
   BTPORT=$(rand_port)
 
   # Auto: database/config location. Unraid → appdata; otherwise ./data inside this folder.
@@ -146,6 +147,8 @@ if [ ! -f .env ]; then
     say "ARRMADA_PORT=$WEBPORT"
     say "ARRMADA_QBIT_WEBUI_PORT=$QBWEB"
     say "ARRMADA_PROWLARR_PORT=$PROWPORT"
+    say "# Audiobook server for listening apps (off until switched on in Books → Audiobook server)."
+    say "ARRMADA_AUDIOBOOK_PORT=$AUDIOPORT"
     say "ARRMADA_QBIT_PORT=$BTPORT"
     say ""
     say "# Timezone (auto-detected from this host). Schedules — the encode window especially —"
@@ -198,6 +201,7 @@ if [ ! -f .env ]; then
   say "   • Web UI port:   $WEBPORT"
   say "   • qBit WebUI:    $QBWEB"
   say "   • BitTorrent:    $BTPORT   (forward this on your router, TCP+UDP)"
+  say "   • Audiobooks:    $AUDIOPORT   (listening apps; switch on in Books → Audiobook server)"
   say "   • Run as:        $PUID:$PGID"
   [ -n "$GPU" ] && say "   • GPU:           /dev/dri detected → hardware transcode enabled" || say "   • GPU:           none detected → Convert will use the CPU"
   [ -n "$MEDIA" ] && say "   • Media folder:  $MEDIA → /storage inside the app"

@@ -100,7 +100,7 @@ var externalAllowedPrefixes = []string{
 // externalAllowedExact are single endpoints (not prefixes) reachable from outside:
 // the ebook download for a requested book. The handler itself checks the request
 // belongs to the caller; the allowlist only decides the door is there.
-var externalAllowedExact = regexp.MustCompile(`^/api/v1/books/[0-9]+/ebook$`)
+var externalAllowedExact = regexp.MustCompile(`^/api/v1/books/[0-9]+/(ebook|audiobook)$`)
 
 // externalAllowed reports whether a path is reachable from outside the LAN. The
 // SPA index + hashed assets (non-/api) always load; the app then renders the

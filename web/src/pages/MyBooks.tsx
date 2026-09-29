@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type MyBook, type MyRequest } from "../lib/api";
 import { posterThumb } from "../lib/img";
+import { ListenOnPhone } from "../components/ListenOnPhone";
 
 // MyBooks is the requester's view of the book library: every book that has a file,
 // a download for each ebook, and their own requests still on the way. Deliberately
 // small — no editing, no indexer search, no library management — because its readers
 // aren't running the library, they're looking for something to read. Audiobooks are
-// pointed at Audiobookshelf rather than downloaded from here.
+// downloadable here too, and playable in listening apps through the audiobook server.
 
 function fmtSize(b: number): string {
   if (!b) return "";
@@ -60,7 +61,7 @@ export function MyBooks() {
         <div>
           <h1 className="m-0 text-[20px] font-bold">Books</h1>
           <p className="m-0 mt-1 text-[12.5px] text-ink-dim">
-            Download any ebook in the library. Audiobooks are in Audiobookshelf.
+            Download any ebook or audiobook in the library, or listen with an app on your phone.
             {books && <span className="text-ink-faint"> · {books.length} book{books.length === 1 ? "" : "s"}, {ebooks} ebook{ebooks === 1 ? "" : "s"}</span>}
           </p>
         </div>
@@ -85,6 +86,11 @@ export function MyBooks() {
       </div>
 
       {error && <div className="mb-3 text-[12.5px]" style={{ color: "var(--reject)" }}>{error}</div>}
+
+      <details className="mb-5">
+        <summary className="cursor-pointer text-[13px] font-bold">Listen on your phone</summary>
+        <div className="mt-3 max-w-[640px]"><ListenOnPhone /></div>
+      </details>
 
       {requests.length > 0 && (
         <div className="mb-5">
@@ -158,11 +164,20 @@ function BookCard({ b }: { b: MyBook }) {
               {b.ebook.size_bytes ? <span className="font-normal opacity-80"> · {fmtSize(b.ebook.size_bytes)}</span> : null}
             </a>
           ) : (
-            <div className="rounded-lg px-2 py-1.5 text-center text-[11px] text-ink-faint" style={{ border: "1px solid var(--line)" }} title="This one is audiobook only for now">
-              Audiobookshelf only
-            </div>
+            <div className="rounded-lg px-2 py-1 text-center text-[11px] text-ink-faint" style={{ border: "1px solid var(--line)" }}>No ebook yet</div>
           )}
-          {b.ebook && b.audiobook && <div className="mt-1 text-center text-[10px] text-ink-faint">Also in Audiobookshelf</div>}
+          {(b.audiobooks ?? []).map((a) => (
+            <a
+              key={a.version_id}
+              href={api.audiobookDownloadURL(b.book_id, a.version_id)}
+              download
+              className="mt-1 block rounded-lg px-2 py-1 text-center text-[11px] font-semibold"
+              style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}
+              title={`Download the audiobook${a.label ? ` (${a.label})` : ""}${a.files > 1 ? ` — ${a.files} files as one zip` : ""}`}
+            >
+              Audiobook{a.label ? ` · ${a.label}` : ""}{a.size_bytes ? <span className="font-normal opacity-80"> · {fmtSize(a.size_bytes)}</span> : null}
+            </a>
+          ))}
         </div>
       </div>
     </div>

@@ -278,6 +278,30 @@ export interface UserNotification { id: number; title: string; body: string; med
 export interface CalendarItem { date: string; type: "episode" | "movie"; title: string; subtitle: string; poster_url?: string; ref_id: number; has_file: boolean; monitored: boolean }
 
 export interface LibraryPaths { movies: string; tv: string; ebooks: string; audiobooks: string; music: string; downloads: string }
+// Audiobook server (listening apps like Lissen).
+export interface AudioDevice { id: string; user_id: number; username: string; client: string; device: string; app_password?: string; created_at: number; last_used_at: number }
+export interface AudioAppPassword { id: number; name: string; created_at: number; last_used_at: number; password?: string }
+export interface AudioConnection { enabled: boolean; running: boolean; error?: string; host_port: string; public_url: string }
+export interface AudioServerAdmin extends AudioConnection {
+  users: { id: number; username: string; role: UserRole; disabled: boolean; eligible: boolean; allowed: boolean }[];
+  devices: AudioDevice[];
+  items: number;
+  items_ready: number;
+}
+export interface AudioPlace { item_key: string; book_id: number; title: string; author?: string; cover_url?: string; position: number; duration: number; finished: boolean; updated_at: number; device?: string }
+export interface MyAudio extends AudioConnection { username: string; allowed: boolean; app_passwords: AudioAppPassword[]; devices: AudioDevice[]; places: AudioPlace[] }
+export interface AudioHistoryEntry { id: number; position: number; at: number; device?: string; reason: string }
+export interface AudioListening {
+  days: number;
+  totals: { user_id: number; username: string; today: number; week: number; month: number; all_time: number; last_listen: number }[];
+  sessions: { user_id: number; username: string; device: string; client: string; started_at: number; ended_at: number; seconds: number }[];
+}
+export interface AudioImportPreview {
+  users: { abs_id: string; abs_username: string; user_id: number; username?: string; progress_rows: number }[];
+  progress: number; matched: number; bookmarks: number; unmatched_books: string[] | null;
+}
+export interface AudioImportResult { imported: number; kept: number; bookmarks: number; skipped: number }
+
 // SetupState drives the first-run wizard: whether it's needed, the keys, the folders
 // saved vs the ones the running app uses, and folders that look right on the mount.
 export interface SetupState {
@@ -496,6 +520,8 @@ export interface MyBook {
   ebook?: { format: string; size_bytes: number };
   audiobook: boolean;
   mine: boolean; // the signed-in user requested it
+  /** Downloadable audiobooks: the standard one (version_id 0) and any extra versions. */
+  audiobooks?: { version_id: number; label?: string; format: string; size_bytes: number; files: number }[];
 }
 
 // MyRequest is one of the signed-in user's book requests that hasn't produced a file.
@@ -1131,6 +1157,30 @@ export const api = {
   importMovieFolder: (folder: string, tmdb_id: number) =>
     req<{ status: string }>("/api/v1/movies/import", { method: "POST", body: JSON.stringify({ folder, tmdb_id }) }),
   libraryPaths: () => req<LibraryPaths>("/api/v1/system/library"),
+  audioServer: () => req<AudioServerAdmin>("/api/v1/audioserver"),
+  setAudioServer: (body: { enabled?: boolean; public_url?: string }) => req<AudioServerAdmin>("/api/v1/audioserver", { method: "PUT", body: JSON.stringify(body) }),
+  setAudioUser: (id: number, allowed: boolean) => req<AudioServerAdmin>(`/api/v1/audioserver/users/${id}`, { method: "PUT", body: JSON.stringify({ allowed }) }),
+  revokeAudioDevice: (id: string) => req<void>(`/api/v1/audioserver/devices/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  audioListening: (days = 14, userId?: number) => req<AudioListening>(`/api/v1/audioserver/listening?days=${days}${userId ? `&user_id=${userId}` : ""}`),
+  audioImportUpload: async (file: File): Promise<AudioImportPreview> => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const res = await fetch("/api/v1/audioserver/import", { method: "POST", body: fd });
+    if (!res.ok) {
+      let msg = `HTTP ${res.status}`;
+      try { const b = await res.json(); if (b.message) msg = b.message; } catch { /* not JSON */ }
+      throw new Error(msg);
+    }
+    return res.json();
+  },
+  audioImportApply: (userMap: Record<string, number>) => req<AudioImportResult>("/api/v1/audioserver/import/apply", { method: "POST", body: JSON.stringify({ user_map: userMap }) }),
+  myAudio: () => req<MyAudio>("/api/v1/me/audio"),
+  createAppPassword: (name: string) => req<AudioAppPassword>("/api/v1/me/audio/app-passwords", { method: "POST", body: JSON.stringify({ name }) }),
+  deleteAppPassword: (id: number) => req<void>(`/api/v1/me/audio/app-passwords/${id}`, { method: "DELETE" }),
+  revokeMyDevice: (id: string) => req<void>(`/api/v1/me/audio/devices/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  audioHistory: (item: string) => req<{ history: AudioHistoryEntry[] }>(`/api/v1/me/audio/history?item=${encodeURIComponent(item)}`),
+  restoreAudioPlace: (item: string, historyId: number) => req<{ position: number }>("/api/v1/me/audio/restore", { method: "POST", body: JSON.stringify({ item, history_id: historyId }) }),
+  audiobookDownloadURL: (bookId: number, versionId = 0) => `/api/v1/books/${bookId}/audiobook${versionId ? `?version=${versionId}` : ""}`,
   setupState: () => req<SetupState>("/api/v1/setup"),
   completeSetup: () => req<{ status: string }>("/api/v1/setup/complete", { method: "POST" }),
   restartApp: () => req<{ status: string }>("/api/v1/system/restart", { method: "POST" }),

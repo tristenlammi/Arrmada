@@ -52,6 +52,32 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
+# port_in_use PORT -> 0 if something already listens on PORT on this host.
+port_in_use() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnH 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${1}\$"
+  elif command -v netstat >/dev/null 2>&1; then
+    netstat -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${1}\$"
+  else
+    return 1
+  fi
+}
+
+# Settings added since this install: give each a free value once, never overwrite.
+if ! grep -qE '^ARRMADA_AUDIOBOOK_PORT=' .env; then
+  AUDIOPORT=""
+  for p in 13379 13380 13381 13382 18379; do
+    if ! port_in_use "$p"; then AUDIOPORT=$p; break; fi
+  done
+  [ -z "$AUDIOPORT" ] && AUDIOPORT=18379
+  {
+    say ""
+    say "# Audiobook server for listening apps (off until switched on in Books → Audiobook server)."
+    say "ARRMADA_AUDIOBOOK_PORT=$AUDIOPORT"
+  } >> .env
+  say "Added ARRMADA_AUDIOBOOK_PORT=$AUDIOPORT to .env (the audiobook server's port)."
+fi
+
 # ── pull latest (skip cleanly if this isn't a git checkout) ─────────────────────
 if [ -d .git ] && command -v git >/dev/null 2>&1; then
   say "Pulling latest changes…"

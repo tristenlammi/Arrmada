@@ -221,6 +221,36 @@ func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	return out, rows.Err()
 }
 
+// UserByID loads one user.
+func (s *Service) UserByID(ctx context.Context, id int64) (*User, error) {
+	return s.userWhere(ctx, `id = ?`, id)
+}
+
+// UserByUsername loads one user by username, exact match first, then ignoring case.
+func (s *Service) UserByUsername(ctx context.Context, username string) (*User, error) {
+	username = strings.TrimSpace(username)
+	if u, err := s.userWhere(ctx, `username = ?`, username); err == nil {
+		return u, nil
+	}
+	return s.userWhere(ctx, `lower(username) = lower(?)`, username)
+}
+
+func (s *Service) userWhere(ctx context.Context, where string, arg any) (*User, error) {
+	var u User
+	var disabled, autoApprove int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, username, role, disabled, auto_approve, created_at FROM users WHERE `+where+` LIMIT 1`, arg).
+		Scan(&u.ID, &u.Username, &u.Role, &disabled, &autoApprove, &u.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrInvalidCredentials
+	}
+	if err != nil {
+		return nil, err
+	}
+	u.Disabled, u.AutoApprove = disabled != 0, autoApprove != 0
+	return &u, nil
+}
+
 // CountAdmins returns how many admin accounts exist (used to protect the last admin).
 func (s *Service) CountAdmins(ctx context.Context) (int, error) {
 	var n int

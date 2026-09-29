@@ -14,6 +14,7 @@ import (
 func TestExternalAllowsOnlyTheEbookDownload(t *testing.T) {
 	for path, want := range map[string]bool{
 		"/api/v1/books/12/ebook":         true,
+		"/api/v1/books/12/audiobook":     true,
 		"/api/v1/me/books":               true,
 		"/api/v1/books/12":               false,
 		"/api/v1/books/12/edition-files": false,
