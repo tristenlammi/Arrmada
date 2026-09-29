@@ -111,3 +111,35 @@ func TestRegrabbedForVersion(t *testing.T) {
 		t.Error("a grab already imported must not reopen the torrent")
 	}
 }
+
+// The Fire & Blood download: one M4B plus its PDF, cue sheet and cover. The file name
+// mentions A Game of Thrones in its subtitle; it was filed there, leaving Fire & Blood
+// with nothing. It is Fire & Blood's audiobook.
+func TestSubtitleNamingAnotherBookStaysWithTheGrabbedBook(t *testing.T) {
+	c, svc, st, ctx := packTestCoord(t)
+	added, _ := svc.AddWorks(ctx, []metadata.BookResult{
+		{Key: "hc:1", Title: "Fire & Blood", Author: "George R.R. Martin"},
+		{Key: "hc:2", Title: "A Game of Thrones", Author: "George R.R. Martin"},
+	}, "", true)
+	fire, got := added[0], added[1]
+	dl := filepath.Join(t.TempDir(), "George R R Martin - The Targaryen Dynasty The House of the Dragon 2 - Fire & Blood (HBO Tie-in Edition)")
+	base := "Fire & Blood (HBO Tie-in Edition)- 300 Years Before A Game of Thrones [B07CL3F5H2]"
+	_ = os.MkdirAll(dl, 0o755)
+	for _, ext := range []string{".m4b", ".pdf", ".cue", ".jpg"} {
+		if err := os.WriteFile(filepath.Join(dl, base+ext), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	insertBookGrab(t, st, fire.ID, 0, "Fire & Blood (HBO Tie-in Edition) [M4B]", "fb1")
+
+	imported, _ := c.importBookContent(ctx, fire, dl, "fb1", filepath.Base(dl))
+	if !imported {
+		t.Fatal("Fire & Blood's audiobook should import")
+	}
+	if b, _ := svc.Get(ctx, fire.ID); b.Audiobook == nil {
+		t.Error("Fire & Blood has no audiobook — it went elsewhere")
+	}
+	if b, _ := svc.Get(ctx, got.ID); b.Audiobook != nil {
+		t.Errorf("A Game of Thrones received Fire & Blood's audiobook: %s", b.Audiobook.Path)
+	}
+}

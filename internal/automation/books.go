@@ -756,7 +756,23 @@ func (c *Coordinator) divertForeignBookFiles(ctx context.Context, b books.Book, 
 	if len(found) < 2 || c.books == nil {
 		return found, nil // a single file is whatever the download was matched as
 	}
-	match := c.books.Matcher(ctx)
+	// One audiobook file and at most one ebook-type file (the usual companion PDF) is one
+	// book, whatever else its name mentions. "Fire & Blood … 300 Years Before A Game of
+	// Thrones.m4b" plus its PDF was split off to A Game of Thrones, leaving Fire & Blood
+	// with nothing.
+	var nAudio, nEbook int
+	for _, f := range found {
+		if library.IsAudiobookFile(f.Path) {
+			nAudio++
+		} else {
+			nEbook++
+		}
+	}
+	if nAudio <= 1 && nEbook <= 1 {
+		return found, nil
+	}
+	// The file matcher goes by the title a file leads with, not the longest title in it.
+	match := c.books.FileMatcher(ctx)
 	keep := make([]library.FoundFile, 0, len(found))
 	var diverted []string
 	foreign := map[int64][]library.FoundFile{}
