@@ -590,6 +590,7 @@ func main() {
 	}
 	audioMgr := audioserver.NewManager(audioSrv, ":"+audioPort, log)
 	audioMgr.Apply(settingsSvc.GetBool(context.Background(), audioserver.KeyEnabled, false))
+	go audioSrv.WatchImports(runCtx, bus)
 	sched.Register("audioserver-prune", 24*time.Hour, false, func(ctx context.Context) error {
 		return listenStore.Prune(ctx)
 	})

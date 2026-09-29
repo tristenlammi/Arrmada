@@ -417,6 +417,25 @@ func (s *Store) History(ctx context.Context, userID int64, itemKey string) ([]Hi
 	return out, rows.Err()
 }
 
+// ErrNoPending is returned when there's no held jump to confirm.
+var ErrNoPending = errors.New("there's no jump waiting to be confirmed")
+
+// AcceptPending makes a held jump back the saved place now — the person confirming, in
+// Arrmada, that going back really was them.
+func (s *Store) AcceptPending(ctx context.Context, userID int64, itemKey string) (Decision, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cur, found, err := s.progress(ctx, userID, itemKey)
+	if err != nil {
+		return Decision{}, err
+	}
+	if !found || cur.PendingPosition == nil {
+		return Decision{}, ErrNoPending
+	}
+	f := false
+	return s.apply(ctx, userID, itemKey, Report{Kind: Manual, Position: *cur.PendingPosition, Finished: &f, At: s.nowMs(), Device: "Arrmada"})
+}
+
 // Restore puts a user's place back to an earlier saved one.
 func (s *Store) Restore(ctx context.Context, userID int64, itemKey string, historyID int64) (Decision, error) {
 	var pos float64
@@ -431,7 +450,7 @@ func (s *Store) Restore(ctx context.Context, userID int64, itemKey string, histo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	f := false
-	d, err := s.apply(ctx, userID, itemKey, Report{Kind: Manual, Position: pos, Finished: &f, At: s.nowMs(), Device: "restored"})
+	d, err := s.apply(ctx, userID, itemKey, Report{Kind: Manual, Position: pos, Finished: &f, At: s.nowMs(), Device: "Arrmada"})
 	if err == nil && d.Changed {
 		_, _ = s.db.ExecContext(ctx, `UPDATE listen_history SET reason = 'restore' WHERE id = (SELECT MAX(id) FROM listen_history WHERE user_id = ? AND item_key = ?)`, userID, itemKey)
 	}

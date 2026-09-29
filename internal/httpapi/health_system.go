@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/diskspace"
 )
 
@@ -70,6 +71,17 @@ func (a *api) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 			add("error", fmt.Sprintf("Very low free disk space (%.1f GB) on the downloads volume.", free))
 		case free < 10:
 			add("warning", fmt.Sprintf("Low free disk space (%.1f GB) on the downloads volume.", free))
+		}
+	}
+
+	// The audiobook server is switched on but couldn't start (usually its port is taken).
+	if a.deps.AudioManager != nil && a.deps.Settings.GetBool(ctx, audioserver.KeyEnabled, false) {
+		if running, lastErr := a.deps.AudioManager.Running(); !running {
+			msg := "The audiobook server is switched on but isn't running, so listening apps can't connect."
+			if lastErr != "" {
+				msg += " " + lastErr
+			}
+			add("error", msg)
 		}
 	}
 

@@ -63,8 +63,21 @@ func parseItemKey(key string) (bookID, versionID int64, ok bool) {
 	return b, 0, true
 }
 
-// items lists every audiobook with a file on disk.
+// items lists every audiobook with a file on disk (cached briefly; see cache.go).
 func (s *Server) items(ctx context.Context) ([]Item, error) {
+	now := time.Now()
+	if items, ok := s.catalog.get(now); ok {
+		return items, nil
+	}
+	gen := s.catalog.generation()
+	items, err := s.loadItems(ctx)
+	if err == nil {
+		s.catalog.put(items, now, gen)
+	}
+	return items, err
+}
+
+func (s *Server) loadItems(ctx context.Context) ([]Item, error) {
 	all, err := s.books.List(ctx)
 	if err != nil {
 		return nil, err
@@ -213,6 +226,10 @@ func sortItems(items []Item, key string, desc bool, dur func(Item) float64) {
 // chapters and durations at once rather than waiting on ffprobe. Cached files cost a
 // database read each; it pauses briefly between books to stay out of the way.
 func (s *Server) Warm(ctx context.Context) (probed int) {
+	if !s.warming.CompareAndSwap(false, true) {
+		return 0
+	}
+	defer s.warming.Store(false)
 	items, err := s.items(ctx)
 	if err != nil {
 		return 0

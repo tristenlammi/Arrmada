@@ -21,7 +21,7 @@ with qBittorrent and FlareSolverr already wired up.
 - **Movies** — search, grab, import, rename and upgrade. Keep several versions of a movie (say 4K and 1080p).
 - **TV** — episodes and season packs, anime numbering (TheXEM and TheTVDB), and airing shows kept up to date.
 - **Books** — ebooks and audiobooks with Hardcover or Open Library metadata, series tracking, several audiobook versions per book (standard and full cast), and multi-file audiobooks merged into one M4B.
-- **Audiobook server** — listening apps built for Audiobookshelf (Lissen) connect to Arrmada directly. Places sync reliably across devices and restarts, a glitch can't reset anyone to the start, and earlier places can be put back. App passwords, per-device sign-out, and a listening overview that shows how much and when, never what. Imports everyone's places from Audiobookshelf.
+- **Audiobook server** — listening apps built for Audiobookshelf (Lissen) connect to Arrmada directly. Places sync reliably across devices and restarts, a glitch can't reset anyone to the start, and earlier places can be put back. Everyone gets their own audiobook password, per-device sign-out and a page showing where they're up to and how much they've listened. The admin sees how much and when people listen, never what. Imports everyone's places from Audiobookshelf.
 - **Music** (early) — artists, albums and whole-discography grabs.
 - **Quality profiles** — a bitrate ceiling, required formats (Atmos, HDR, Dolby Vision), and preferred or rejected words.
 - **Indexers** — any Torznab indexer, one-click sync from Prowlarr, and built-in MyAnonaMouse, TorrentLeech and 1337x. FlareSolverr handles Cloudflare-protected trackers.
@@ -82,7 +82,7 @@ at the end and saves them in `.env`.
 | Arrmada           | 7878    | `ARRMADA_PORT`            |
 | qBittorrent WebUI | 8080    | `ARRMADA_QBIT_WEBUI_PORT` |
 | BitTorrent        | random  | `ARRMADA_QBIT_PORT` — forward this on your router (TCP and UDP) |
-| Audiobook server  | 13379   | `ARRMADA_AUDIOBOOK_PORT` — for listening apps; off until switched on in Books |
+| Audiobook server  | 13379   | `ARRMADA_AUDIOBOOK_PORT` — for listening apps; off until switched on in Audiobooks |
 
 Change a value in `.env`, then run `./update.sh`.
 

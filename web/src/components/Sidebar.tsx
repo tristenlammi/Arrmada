@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { NAV } from "../lib/nav";
 import { useMe } from "../lib/me";
@@ -14,6 +15,14 @@ function toggleTheme() {
 
 export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { user, booksEnabled, musicEnabled } = useMe();
+  // A dot beside Audiobooks: green when the server is running, red when it's switched on
+  // but couldn't start, nothing when it's off.
+  const [audioDot, setAudioDot] = useState<string | null>(null);
+  useEffect(() => {
+    api.myAudio()
+      .then((a) => setAudioDot(a.enabled ? (a.running ? "var(--good)" : "var(--reject)") : null))
+      .catch(() => {});
+  }, []);
   const signOut = async () => {
     try { await api.logout(); } catch { /* ignore — clearing the session locally is enough */ }
     window.location.href = "/";
@@ -67,6 +76,9 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   }
                 >
                   {item.label}
+                  {item.to === "/audiobooks" && audioDot && (
+                    <span className="ml-auto h-1.5 w-1.5 rounded-full" style={{ background: audioDot }} title={audioDot === "var(--good)" ? "Running" : "Switched on but not running"} />
+                  )}
                 </NavLink>
               ))}
             </div>

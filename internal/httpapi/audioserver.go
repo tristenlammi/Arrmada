@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"os"
@@ -16,7 +17,7 @@ import (
 
 // The audiobook server's pages in Arrmada: the admin panel (switch it on, who may
 // connect, devices, listening overview, Audiobookshelf import) and each user's own
-// connection card (address, app passwords, their devices, their places with restore).
+// page (address, their audiobook password, devices, places with restore, listening).
 
 func (a *api) audioHostPort() string {
 	if p := strings.TrimSpace(os.Getenv("ARRMADA_AUDIOBOOK_HOST_PORT")); p != "" {
@@ -50,6 +51,7 @@ func (a *api) handleAudioServer(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	out := a.audioConnection(r)
 	users, _ := a.deps.Auth.ListUsers(ctx)
+	withPassword := a.deps.AudioServer.Accounts.PasswordsSet(ctx)
 	denied := map[int64]bool{}
 	for _, id := range a.deps.AudioServer.DeniedUsers(ctx) {
 		denied[id] = true
@@ -59,6 +61,7 @@ func (a *api) handleAudioServer(w http.ResponseWriter, r *http.Request) {
 		list = append(list, map[string]any{
 			"id": u.ID, "username": u.Username, "role": u.Role, "disabled": u.Disabled,
 			"eligible": !u.Disabled && u.Role.AtLeast(auth.RoleRequester), "allowed": !denied[u.ID],
+			"has_password": withPassword[u.ID],
 		})
 	}
 	out["users"] = list
@@ -86,6 +89,11 @@ func (a *api) handleSetAudioServer(w http.ResponseWriter, r *http.Request) {
 		_ = a.deps.Settings.Set(ctx, audioserver.KeyEnabled, strconv.FormatBool(*req.Enabled))
 		if a.deps.AudioManager != nil {
 			a.deps.AudioManager.Apply(*req.Enabled)
+		}
+		if *req.Enabled && a.deps.AudioServer != nil {
+			// Read the audiobooks' lengths and chapters now rather than on the first
+			// app's first request.
+			go a.deps.AudioServer.Warm(context.Background())
 		}
 	}
 	a.handleAudioServer(w, r)
@@ -119,24 +127,46 @@ func (a *api) handleRevokeAudioDevice(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleAudioListening — GET /api/v1/audioserver/listening?days=14&user_id= (admin).
+// handleAudioListening — GET /api/v1/audioserver/listening?days=30&user_id= (admin).
 // How much and when — never what: it reads a log with no book in it.
 func (a *api) handleAudioListening(w http.ResponseWriter, r *http.Request) {
+	userID, _ := strconv.ParseInt(r.URL.Query().Get("user_id"), 10, 64)
+	a.writeListening(w, r, userID)
+}
+
+// handleMyAudioListening — GET /api/v1/me/audio/listening?days=30: the same overview,
+// only ever of the signed-in person.
+func (a *api) handleMyAudioListening(w http.ResponseWriter, r *http.Request) {
+	u, ok := a.audioUser(w, r)
+	if !ok {
+		return
+	}
+	a.writeListening(w, r, u.ID)
+}
+
+// writeListening answers with totals, listening per day and sessions — for everyone when
+// userID is 0, else one person.
+func (a *api) writeListening(w http.ResponseWriter, r *http.Request, userID int64) {
+	if a.deps.AudioServer == nil {
+		a.writeError(w, http.StatusServiceUnavailable, "audiobook server unavailable")
+		return
+	}
 	ctx := r.Context()
 	days, _ := strconv.Atoi(r.URL.Query().Get("days"))
 	if days <= 0 || days > 90 {
-		days = 14
+		days = 30
 	}
-	userID, _ := strconv.ParseInt(r.URL.Query().Get("user_id"), 10, 64)
 	now := time.Now()
 	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	since := dayStart.AddDate(0, 0, -(days - 1))
 	store := a.deps.AudioServer.Listen()
 	totals, err := store.Totals(ctx, dayStart)
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not read listening")
 		return
 	}
-	log, _ := store.Log(ctx, dayStart.AddDate(0, 0, -(days-1)), userID, 500)
+	daily, _ := store.Daily(ctx, since, userID)
+	log, _ := store.Log(ctx, since, userID, 500)
 	users, _ := a.deps.Auth.ListUsers(ctx)
 	names := map[int64]string{}
 	for _, u := range users {
@@ -144,16 +174,24 @@ func (a *api) handleAudioListening(w http.ResponseWriter, r *http.Request) {
 	}
 	tl := []map[string]any{}
 	for id, t := range totals {
+		if userID > 0 && id != userID {
+			continue
+		}
 		tl = append(tl, map[string]any{"user_id": id, "username": names[id], "today": t.Today, "week": t.Week,
 			"month": t.Month, "all_time": t.AllTime, "last_listen": t.LastListen})
 	}
 	sort.Slice(tl, func(i, j int) bool { return tl[i]["week"].(float64) > tl[j]["week"].(float64) })
+	dl := []map[string]any{}
+	for _, d := range daily {
+		dl = append(dl, map[string]any{"user_id": d.UserID, "username": names[d.UserID], "day": d.Day, "seconds": d.Seconds})
+	}
 	sessions := []map[string]any{}
 	for _, e := range log {
 		sessions = append(sessions, map[string]any{"user_id": e.UserID, "username": names[e.UserID], "device": e.Device,
 			"client": e.Client, "started_at": e.StartedAt, "ended_at": e.EndedAt, "seconds": e.Seconds})
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"totals": tl, "sessions": sessions, "days": days})
+	a.writeJSON(w, http.StatusOK, map[string]any{"totals": tl, "daily": dl, "sessions": sessions, "days": days,
+		"since": since.Format("2006-01-02")})
 }
 
 func (a *api) absImportPath() string {
@@ -234,8 +272,8 @@ func (a *api) handleMyAudio(w http.ResponseWriter, r *http.Request) {
 	out := a.audioConnection(r)
 	out["username"] = u.Username
 	out["allowed"] = a.deps.AudioServer.Allowed(ctx, u)
-	pws, _ := a.deps.AudioServer.Accounts.AppPasswords(ctx, u.ID)
-	out["app_passwords"] = pws
+	out["has_password"] = a.deps.AudioServer.Accounts.HasPassword(ctx, u.ID)
+	out["min_password_length"] = audioserver.MinPasswordLength
 	devs, _ := a.deps.AudioServer.Accounts.Devices(ctx, u.ID)
 	out["devices"] = devs
 	progress, _ := a.deps.AudioServer.Listen().AllProgress(ctx, u.ID)
@@ -247,47 +285,46 @@ func (a *api) handleMyAudio(w http.ResponseWriter, r *http.Request) {
 		}
 		places = append(places, map[string]any{"item_key": p.ItemKey, "book_id": info.BookID, "title": info.Title,
 			"author": info.Author, "cover_url": info.CoverURL, "position": p.Position, "duration": p.Duration,
-			"finished": p.Finished, "updated_at": p.UpdatedAt, "device": p.Device})
+			"finished": p.Finished, "updated_at": p.UpdatedAt, "device": p.Device,
+			"pending_position": p.PendingPosition, "pending_at": p.PendingAt})
 	}
 	out["places"] = places
 	a.writeJSON(w, http.StatusOK, out)
 }
 
-// handleCreateMyAppPassword — POST /api/v1/me/audio/app-passwords {name}
-func (a *api) handleCreateMyAppPassword(w http.ResponseWriter, r *http.Request) {
+// handleSetMyAudioPassword — PUT /api/v1/me/audio/password {password, sign_out_devices}.
+// Setting one is what lets someone connect a listening app at all.
+func (a *api) handleSetMyAudioPassword(w http.ResponseWriter, r *http.Request) {
 	u, ok := a.audioUser(w, r)
 	if !ok {
 		return
 	}
 	var req struct {
-		Name string `json:"name"`
+		Password       string `json:"password"`
+		SignOutDevices bool   `json:"sign_out_devices"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
-	ap, err := a.deps.AudioServer.Accounts.CreateAppPassword(r.Context(), u.ID, req.Name)
-	if err != nil {
-		a.writeError(w, http.StatusInternalServerError, "could not create the app password")
+	if err := a.deps.AudioServer.Accounts.SetPassword(r.Context(), u.ID, req.Password, req.SignOutDevices); err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	a.writeJSON(w, http.StatusCreated, ap)
+	a.handleMyAudio(w, r)
 }
 
-// handleDeleteMyAppPassword — DELETE /api/v1/me/audio/app-passwords/{id}
-func (a *api) handleDeleteMyAppPassword(w http.ResponseWriter, r *http.Request) {
+// handleRemoveMyAudioPassword — DELETE /api/v1/me/audio/password: stops this person
+// using the audiobook server and signs out their devices.
+func (a *api) handleRemoveMyAudioPassword(w http.ResponseWriter, r *http.Request) {
 	u, ok := a.audioUser(w, r)
 	if !ok {
 		return
 	}
-	id, ok := a.pathID(w, r)
-	if !ok {
+	if err := a.deps.AudioServer.Accounts.RemovePassword(r.Context(), u.ID); err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not remove the password")
 		return
 	}
-	if err := a.deps.AudioServer.Accounts.DeleteAppPassword(r.Context(), u.ID, id); err != nil {
-		a.writeError(w, http.StatusNotFound, err.Error())
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	a.handleMyAudio(w, r)
 }
 
 // handleRevokeMyDevice — DELETE /api/v1/me/audio/devices/{family}
@@ -315,6 +352,26 @@ func (a *api) handleMyAudioHistory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"history": hist})
+}
+
+// handleMyAudioAccept — POST /api/v1/me/audio/accept {item}: confirm a held jump back.
+func (a *api) handleMyAudioAccept(w http.ResponseWriter, r *http.Request) {
+	u, ok := a.audioUser(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Item string `json:"item"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	d, err := a.deps.AudioServer.Listen().AcceptPending(r.Context(), u.ID, req.Item)
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"position": d.Progress.Position})
 }
 
 // handleMyAudioRestore — POST /api/v1/me/audio/restore {item, history_id}

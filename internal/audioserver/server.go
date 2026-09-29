@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
@@ -44,6 +45,8 @@ type Server struct {
 	coverDir string
 	Accounts *Accounts
 	limiter  *loginLimiter
+	catalog  catalogCache
+	warming  atomic.Bool // stops overlapping Warm runs (the schedule, switching on, an import)
 }
 
 // Options configure a Server.
@@ -243,7 +246,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
-	if !s.limiter.allow(ip) {
+	if !s.limiter.allow("ip:" + ip) {
 		writeError(w, http.StatusTooManyRequests, "Too many login attempts, try again in a minute")
 		return
 	}
@@ -252,6 +255,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if !readJSON(w, r, &body) {
+		return
+	}
+	// A second limit per account, so many addresses can't take turns guessing one
+	// person's password.
+	userKey := "user:" + strings.ToLower(strings.TrimSpace(body.Username))
+	if !s.limiter.allow(userKey) {
+		writeError(w, http.StatusTooManyRequests, "Too many login attempts, try again in a minute")
 		return
 	}
 	u, t, err := s.Accounts.Login(r.Context(), body.Username, body.Password, clientName(r))
@@ -264,7 +274,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "Invalid username or password")
 		return
 	}
-	s.limiter.reset(ip)
+	s.limiter.reset("ip:" + ip)
+	s.limiter.reset(userKey)
 	s.log.Info("audiobook server: signed in", "user", u.Username, "client", clientName(r))
 	writeJSON(w, http.StatusOK, s.loginJSON(r.Context(), u, &t))
 }
@@ -335,16 +346,25 @@ func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
+// clientIP is the address a request really came from. The forwarded-address headers a
+// proxy adds (Cloudflare's Cf-Connecting-Ip, X-Forwarded-For) are only believed when the
+// request reached us from a local address — a Cloudflare tunnel or reverse proxy on the
+// same machine or network. From anywhere else they're just text an attacker can set, and
+// trusting them would let each login attempt claim a fresh address and dodge the limit.
 func clientIP(r *http.Request) string {
-	if v := r.Header.Get("Cf-Connecting-Ip"); v != "" {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	peer := net.ParseIP(host)
+	if peer == nil || !(peer.IsLoopback() || peer.IsPrivate()) {
+		return host
+	}
+	if v := strings.TrimSpace(r.Header.Get("Cf-Connecting-Ip")); v != "" {
 		return v
 	}
 	if v := r.Header.Get("X-Forwarded-For"); v != "" {
 		return strings.TrimSpace(strings.Split(v, ",")[0])
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
 	}
 	return host
 }
@@ -368,7 +388,7 @@ func clientName(r *http.Request) string {
 	return name
 }
 
-// loginLimiter allows 10 attempts a minute per address.
+// loginLimiter allows 10 attempts a minute per key (an address, or an account).
 type loginLimiter struct {
 	mu   sync.Mutex
 	hits map[string][]time.Time
@@ -376,28 +396,35 @@ type loginLimiter struct {
 
 func newLoginLimiter() *loginLimiter { return &loginLimiter{hits: map[string][]time.Time{}} }
 
-func (l *loginLimiter) allow(ip string) bool {
+func (l *loginLimiter) allow(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := time.Now()
 	cut := now.Add(-time.Minute)
-	keep := l.hits[ip][:0]
-	for _, t := range l.hits[ip] {
+	keep := l.hits[key][:0]
+	for _, t := range l.hits[key] {
 		if t.After(cut) {
 			keep = append(keep, t)
 		}
 	}
 	if len(keep) >= 10 {
-		l.hits[ip] = keep
+		l.hits[key] = keep
 		return false
 	}
-	l.hits[ip] = append(keep, now)
+	l.hits[key] = append(keep, now)
+	if len(l.hits) > 10000 { // bound memory under a flood of distinct keys
+		for k, v := range l.hits {
+			if len(v) == 0 || v[len(v)-1].Before(cut) {
+				delete(l.hits, k)
+			}
+		}
+	}
 	return true
 }
 
-func (l *loginLimiter) reset(ip string) {
+func (l *loginLimiter) reset(key string) {
 	l.mu.Lock()
-	delete(l.hits, ip)
+	delete(l.hits, key)
 	l.mu.Unlock()
 }
 

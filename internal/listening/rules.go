@@ -35,8 +35,10 @@ const (
 	// anything bigger is either a deliberate restart or a glitch.
 	rewindThreshold = 120.0
 	// rewindProof is how long (seconds of listening) the same session must carry on
-	// from the new spot before a big jump back becomes the saved place.
-	rewindProof = 60.0
+	// from the new spot before a big jump back becomes the saved place. Long enough to
+	// outlast a glitchy report, short enough that a real restart sticks quickly; the
+	// person can also confirm a held jump themselves in Arrmada.
+	rewindProof = 30.0
 	// finishedTail: within this many seconds of the end counts as finished.
 	finishedTail = 5.0
 	// speedAllowance bounds how far one second of listening can move the position —

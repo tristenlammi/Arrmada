@@ -2,6 +2,7 @@ package listening
 
 import (
 	"context"
+	"sort"
 	"time"
 )
 
@@ -85,4 +86,56 @@ func (s *Store) Log(ctx context.Context, since time.Time, userID int64, limit in
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// DayTotal is how long one user listened on one local day.
+type DayTotal struct {
+	UserID  int64   `json:"user_id"`
+	Day     string  `json:"day"` // YYYY-MM-DD, local time
+	Seconds float64 `json:"seconds"`
+}
+
+// Daily returns listening per user per local day from since (local midnight) onwards,
+// oldest first. A session is counted on the day it started. userID > 0 limits it to one
+// user.
+func (s *Store) Daily(ctx context.Context, since time.Time, userID int64) ([]DayTotal, error) {
+	q := `SELECT user_id, started_at, seconds FROM listen_log WHERE started_at >= ? AND seconds >= ?`
+	args := []any{since.UnixMilli(), minLogSeconds}
+	if userID > 0 {
+		q += ` AND user_id = ?`
+		args = append(args, userID)
+	}
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	type key struct {
+		user int64
+		day  string
+	}
+	sums := map[key]float64{}
+	loc := since.Location()
+	for rows.Next() {
+		var uid, started int64
+		var secs float64
+		if err := rows.Scan(&uid, &started, &secs); err != nil {
+			return nil, err
+		}
+		sums[key{uid, time.UnixMilli(started).In(loc).Format("2006-01-02")}] += secs
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]DayTotal, 0, len(sums))
+	for k, v := range sums {
+		out = append(out, DayTotal{UserID: k.user, Day: k.day, Seconds: v})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Day != out[j].Day {
+			return out[i].Day < out[j].Day
+		}
+		return out[i].UserID < out[j].UserID
+	})
+	return out, nil
 }

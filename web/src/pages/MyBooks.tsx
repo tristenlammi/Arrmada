@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, type MyBook, type MyRequest } from "../lib/api";
 import { posterThumb } from "../lib/img";
-import { ListenOnPhone } from "../components/ListenOnPhone";
+import { Link } from "react-router-dom";
 
 // MyBooks is the requester's view of the book library: every book that has a file,
 // a download for each ebook, and their own requests still on the way. Deliberately
@@ -87,10 +87,10 @@ export function MyBooks() {
 
       {error && <div className="mb-3 text-[12.5px]" style={{ color: "var(--reject)" }}>{error}</div>}
 
-      <details className="mb-5">
-        <summary className="cursor-pointer text-[13px] font-bold">Listen on your phone</summary>
-        <div className="mt-3 max-w-[640px]"><ListenOnPhone /></div>
-      </details>
+      <Link to="/audiobooks" className="mb-5 flex items-center justify-between gap-3 rounded-xl px-4 py-3 text-[12.5px]" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+        <span><b>Listen in an app</b> <span className="text-ink-dim">— audiobooks in Lissen, with your place kept in sync.</span></span>
+        <span className="flex-none font-semibold" style={{ color: "var(--accent)" }}>Audiobooks →</span>
+      </Link>
 
       {requests.length > 0 && (
         <div className="mb-5">

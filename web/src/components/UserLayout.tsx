@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
+import { Link, NavLink, Outlet } from "react-router-dom";
 import { FleetMark } from "./FleetMark";
 import { useMe } from "../lib/me";
 import { api } from "../lib/api";
@@ -16,6 +16,7 @@ export function UserLayout() {
   const nav = [{ to: "/discover", label: "Discover" }];
   if (!external) nav.push({ to: "/calendar", label: "Calendar" });
   if (booksEnabled) nav.push({ to: "/books", label: "Books" });
+  nav.push({ to: "/audiobooks", label: "Audiobooks" });
 
   const logout = async () => {
     try { await api.logout(); } catch { /* ignore */ }
@@ -46,6 +47,7 @@ export function UserLayout() {
               <div className="absolute right-0 z-50 mt-2 w-[200px] rounded-xl p-2" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }}>
                 <div className="truncate px-2.5 py-1.5 text-[12px] text-ink-dim" title={user?.username}>{user?.username || "Guest"}</div>
                 <div className="my-1 h-px" style={{ background: "var(--line)" }} />
+                <Link to="/audiobooks" onClick={() => setMenu(false)} className="block w-full rounded-lg px-2.5 py-1.5 text-left text-[12.5px] font-medium hover:bg-[var(--panel-2)]" style={{ color: "var(--ink)" }}>Audiobook password</Link>
                 <button onClick={logout} className="w-full rounded-lg px-2.5 py-1.5 text-left text-[12.5px] font-medium hover:bg-[var(--panel-2)]" style={{ color: "var(--reject)" }}>Sign out</button>
               </div>
             </>

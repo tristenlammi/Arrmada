@@ -148,3 +148,54 @@ func TestLogHasNoBookAndSkipsTaps(t *testing.T) {
 		t.Fatalf("log = %+v, want just the 2½-minute session", log)
 	}
 }
+
+// A held jump back can be confirmed by the person, which makes it the place at once.
+func TestAcceptPendingJump(t *testing.T) {
+	s, _, uid, clock := testStore(t)
+	ctx := context.Background()
+	sess, _, err := s.OpenSession(ctx, uid, "b1", "dev1", "Pixel", "Lissen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	*clock = clock.Add(time.Minute)
+	if _, err := s.Sync(ctx, uid, sess.ID, 3000, 60, 36000, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AcceptPending(ctx, uid, "b1"); err != ErrNoPending {
+		t.Fatalf("accept with nothing held = %v, want ErrNoPending", err)
+	}
+	*clock = clock.Add(15 * time.Second)
+	d, err := s.Sync(ctx, uid, sess.ID, 0, 15, 36000, false)
+	if err != nil || d.Reason != "held" {
+		t.Fatalf("jump to 0 = %+v %v, want held", d, err)
+	}
+	d, err = s.AcceptPending(ctx, uid, "b1")
+	if err != nil || d.Progress.Position != 0 || d.Progress.PendingPosition != nil {
+		t.Fatalf("accept = %+v %v, want position 0 and nothing pending", d.Progress, err)
+	}
+}
+
+// Daily groups listening by the local day each session started.
+func TestDailyTotals(t *testing.T) {
+	s, db, uid, _ := testStore(t)
+	ctx := context.Background()
+	loc := time.FixedZone("AEST", 10*3600)
+	day1 := time.Date(2026, 9, 1, 23, 30, 0, 0, loc)
+	day2 := time.Date(2026, 9, 2, 0, 30, 0, 0, loc)
+	for i, r := range []struct {
+		at   time.Time
+		secs float64
+	}{{day1, 600}, {day2, 300}, {day2.Add(time.Hour), 120}, {day2.Add(2 * time.Hour), 10}} {
+		if _, err := db.Exec(`INSERT INTO listen_log (session_id, user_id, device, client, started_at, ended_at, seconds) VALUES (?, ?, '', '', ?, ?, ?)`,
+			"s"+string(rune('a'+i)), uid, r.at.UnixMilli(), r.at.UnixMilli(), r.secs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.Daily(ctx, time.Date(2026, 9, 1, 0, 0, 0, 0, loc), uid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Day != "2026-09-01" || got[0].Seconds != 600 || got[1].Day != "2026-09-02" || got[1].Seconds != 420 {
+		t.Fatalf("daily = %+v", got)
+	}
+}

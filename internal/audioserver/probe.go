@@ -44,10 +44,26 @@ type Chapter struct {
 type prober struct {
 	db      *sql.DB
 	ffprobe string
+	cache   filesCache
 }
 
 // files lists an item's audio files in play order, probed (cached per file).
 func (p *prober) files(ctx context.Context, path string, probe bool) ([]AudioFile, error) {
+	now := time.Now()
+	if !probe {
+		if files, ok := p.cache.get(path, now); ok {
+			return files, nil
+		}
+	}
+	gen := p.cache.generation()
+	out, err := p.list(ctx, path, probe)
+	if err == nil {
+		p.cache.put(path, out, now, gen)
+	}
+	return out, err
+}
+
+func (p *prober) list(ctx context.Context, path string, probe bool) ([]AudioFile, error) {
 	st, err := os.Stat(path)
 	if err != nil {
 		return nil, err

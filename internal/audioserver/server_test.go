@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
@@ -65,6 +65,12 @@ func newHarness(t *testing.T) *harness {
 	b, _ := bs.Get(ctx, added[0].ID)
 	s := New(Options{DB: db, Books: bs, Listen: listening.NewStore(db), Users: users, Settings: settings.NewService(db),
 		Log: slog.Default(), FFprobe: "ffprobe-not-installed", DataDir: dir})
+	for name, pw := range map[string]string{"reader": "listen-pass-1", "viewer": "listen-pass-2"} {
+		u, _ := users.UserByUsername(ctx, name)
+		if err := s.Accounts.SetPassword(ctx, u.ID, pw, false); err != nil {
+			t.Fatal(err)
+		}
+	}
 	h := &harness{t: t, srv: s, http: httptest.NewServer(s.Handler()), users: users, book: b}
 	t.Cleanup(h.http.Close)
 	return h
@@ -150,10 +156,10 @@ func TestLissenConversation(t *testing.T) {
 	if code, _ := h.do("POST", "/login", map[string]string{"username": "reader", "password": "nope"}, nil); code != 401 {
 		t.Fatalf("wrong password: HTTP %d", code)
 	}
-	if code, _ := h.do("POST", "/login", map[string]string{"username": "viewer", "password": "correct-horse-2"}, nil); code != 403 {
+	if code, _ := h.do("POST", "/login", map[string]string{"username": "viewer", "password": "listen-pass-2"}, nil); code != 403 {
 		t.Fatalf("read-only account: HTTP %d, want 403", code)
 	}
-	code, out := h.do("POST", "/login", map[string]string{"username": "reader", "password": "correct-horse-1"}, map[string]string{"x-return-tokens": "true"})
+	code, out := h.do("POST", "/login", map[string]string{"username": "reader", "password": "listen-pass-1"}, map[string]string{"x-return-tokens": "true"})
 	if code != 200 {
 		t.Fatalf("login: HTTP %d %s", code, out)
 	}
@@ -308,38 +314,109 @@ func TestLissenConversation(t *testing.T) {
 	}
 }
 
-// An app password signs in; deleting it signs that device out. An admin switching a user
-// off locks them out.
-func TestAppPasswordsAndAccess(t *testing.T) {
+// Only the audiobook password signs in — never the Arrmada one, and nobody without an
+// audiobook password. Changing it (with sign-out) or removing it signs devices out, and
+// an admin switching a user off locks them out.
+func TestAudioPasswordAndAccess(t *testing.T) {
 	h := newHarness(t)
 	ctx := context.Background()
 	u, _ := h.users.UserByUsername(ctx, "reader")
-	ap, err := h.srv.Accounts.CreateAppPassword(ctx, u.ID, "Phone")
-	if err != nil {
+	login := func(user, pw string) (int, string) {
+		code, out := h.do("POST", "/login", map[string]string{"username": user, "password": pw}, nil)
+		if code != 200 {
+			return code, ""
+		}
+		var l map[string]any
+		_ = json.Unmarshal(out, &l)
+		return code, obj1(t, l["user"])["accessToken"].(string)
+	}
+
+	if code, _ := login("reader", "correct-horse-1"); code != 401 {
+		t.Fatalf("Arrmada password accepted: HTTP %d", code)
+	}
+	if err := h.srv.Accounts.RemovePassword(ctx, u.ID); err != nil {
 		t.Fatal(err)
 	}
-	typed := strings.ToUpper(strings.ReplaceAll(ap.Password, "-", " ")) // typed sloppily on a phone
-	code, out := h.do("POST", "/login", map[string]string{"username": "READER", "password": typed}, nil)
-	if code != 200 {
-		t.Fatalf("app password login: HTTP %d %s", code, out)
+	if code, _ := login("reader", "listen-pass-1"); code != 401 {
+		t.Fatalf("login with no audiobook password set: HTTP %d", code)
 	}
-	var login map[string]any
-	_ = json.Unmarshal(out, &login)
-	h.token = obj1(t, login["user"])["accessToken"].(string)
+	if err := h.srv.Accounts.SetPassword(ctx, u.ID, "short", false); err == nil {
+		t.Fatal("a too-short password was accepted")
+	}
+	if err := h.srv.Accounts.SetPassword(ctx, u.ID, "listen-pass-1", false); err != nil {
+		t.Fatal(err)
+	}
+	code, tok := login("READER", "listen-pass-1") // usernames aren't case-sensitive
+	if code != 200 {
+		t.Fatalf("audiobook password login: HTTP %d", code)
+	}
+	h.token = tok
 	h.json("GET", "/api/me", nil)
 
-	if err := h.srv.Accounts.DeleteAppPassword(ctx, u.ID, ap.ID); err != nil {
+	// Changing it without sign-out keeps the phone; with sign-out drops it.
+	if err := h.srv.Accounts.SetPassword(ctx, u.ID, "listen-pass-2", false); err != nil {
+		t.Fatal(err)
+	}
+	h.json("GET", "/api/me", nil)
+	if code, _ := login("reader", "listen-pass-1"); code != 401 {
+		t.Fatalf("old password still works: HTTP %d", code)
+	}
+	if err := h.srv.Accounts.SetPassword(ctx, u.ID, "listen-pass-3", true); err != nil {
 		t.Fatal(err)
 	}
 	if code, _ := h.do("GET", "/api/me", nil, nil); code != 401 {
-		t.Fatalf("device signed in with a deleted app password still works: HTTP %d", code)
+		t.Fatalf("device survived a password change with sign-out: HTTP %d", code)
 	}
 
-	code, out = h.do("POST", "/login", map[string]string{"username": "reader", "password": "correct-horse-1"}, nil)
-	_ = json.Unmarshal(out, &login)
-	h.token = obj1(t, login["user"])["accessToken"].(string)
+	// Removing the password signs out too.
+	_, h.token = login("reader", "listen-pass-3")
+	h.json("GET", "/api/me", nil)
+	if err := h.srv.Accounts.RemovePassword(ctx, u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := h.do("GET", "/api/me", nil, nil); code != 401 {
+		t.Fatalf("device survived removing the password: HTTP %d", code)
+	}
+
+	_ = h.srv.Accounts.SetPassword(ctx, u.ID, "listen-pass-4", false)
+	_, h.token = login("reader", "listen-pass-4")
 	_ = h.srv.SetAllowed(ctx, u.ID, false)
 	if code, _ := h.do("GET", "/api/me", nil, nil); code != 401 {
 		t.Fatalf("switched-off user still has access: HTTP %d", code)
+	}
+}
+
+// Proxy headers only count from a local proxy (the Cloudflare tunnel); from anywhere
+// else they could be forged to dodge the login limit.
+func TestClientIP(t *testing.T) {
+	for _, c := range []struct{ remote, cf, want string }{
+		{"127.0.0.1:5000", "203.0.113.9", "203.0.113.9"},
+		{"172.18.0.4:5000", "203.0.113.9", "203.0.113.9"},
+		{"198.51.100.7:5000", "203.0.113.9", "198.51.100.7"},
+		{"198.51.100.7:5000", "", "198.51.100.7"},
+	} {
+		r := httptest.NewRequest("POST", "/login", nil)
+		r.RemoteAddr = c.remote
+		if c.cf != "" {
+			r.Header.Set("Cf-Connecting-Ip", c.cf)
+		}
+		if got := clientIP(r); got != c.want {
+			t.Errorf("clientIP(%s, cf=%q) = %s, want %s", c.remote, c.cf, got, c.want)
+		}
+	}
+}
+
+// Guessing one account's password is limited however many addresses take turns.
+func TestLoginLimitPerAccount(t *testing.T) {
+	h := newHarness(t)
+	for i := 0; i < 10; i++ {
+		if code, _ := h.do("POST", "/login", map[string]string{"username": "reader", "password": "wrong"},
+			map[string]string{"Cf-Connecting-Ip": fmt.Sprintf("203.0.113.%d", i)}); code != 401 {
+			t.Fatalf("attempt %d: HTTP %d", i, code)
+		}
+	}
+	if code, _ := h.do("POST", "/login", map[string]string{"username": "reader", "password": "listen-pass-1"},
+		map[string]string{"Cf-Connecting-Ip": "203.0.113.200"}); code != 429 {
+		t.Fatalf("11th attempt on one account from a new address: HTTP %d, want 429", code)
 	}
 }

@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { AudioServerPanel } from "../components/AudioServerPanel";
 import { api, type BookSource, type BookUpgradeStatus, type BookSweepStatus, type Book, type BookLookup, type BookAuthor, type BookDiscoverCard } from "../lib/api";
 import { usePersisted } from "../lib/persist";
 import { posterThumb } from "../lib/img";
@@ -41,7 +40,6 @@ function statusOf(b: Book): { label: string; tone: string } {
 }
 
 export function Books() {
-  const [audioPanel, setAudioPanel] = useState(false);
   const [list, setList] = useState<Book[]>([]);
   const [metaOK, setMetaOK] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -232,7 +230,6 @@ export function Books() {
   return (
     <>
       <PageHeader title="Books" crumb="Library / Books" />
-      {audioPanel && <AudioServerPanel onClose={() => setAudioPanel(false)} />}
       <div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex items-center justify-between gap-3">
           <span className="font-mono text-[11px] text-ink-faint">{list.length} in library</span>
@@ -261,7 +258,6 @@ export function Books() {
                 {sweep?.running ? `Searching… ${sweep.done}/${sweep.total}${sweep.grabbed ? ` · ${sweep.grabbed} grabbed` : ""}` : `Search missing (${missingEditions})`}
               </button>
             )}
-            <button onClick={() => setAudioPanel(true)} title="Serve your audiobooks to listening apps like Lissen" className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>Audiobook server</button>
             <button onClick={backfillSeries} disabled={backfilling} title="One-off: look up which series your books belong to. Searches indexers to read the series off, and downloads nothing." className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{backfilling ? "Looking up…" : "Find series"}</button>
             <button onClick={scanLibrary} disabled={scanning} title="Find books already in your library folder and catalog them" className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{scanning ? "Scanning…" : "Scan library"}</button>
             <button onClick={() => (multiSelect ? exitMultiSelect() : enterSelect())} className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: `1px solid ${multiSelect ? "var(--accent)" : "var(--line)"}`, background: multiSelect ? "var(--accent-soft)" : "var(--panel-2)", color: multiSelect ? "var(--accent)" : "var(--ink)" }}>{multiSelect ? "Done" : "Select"}</button>

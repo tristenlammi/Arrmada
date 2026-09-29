@@ -26,6 +26,7 @@ import { AuthorDetail } from "./pages/AuthorDetail";
 import { Subtitles } from "./pages/Subtitles";
 import { Convert } from "./pages/Convert";
 import { Insights } from "./pages/Insights";
+import { Audiobooks } from "./pages/Audiobooks";
 import { Calendar } from "./pages/Calendar";
 import { Logs } from "./pages/Logs";
 import { Login } from "./pages/Login";
@@ -53,6 +54,7 @@ export default function App() {
         <Route element={<UserLayout />}>
           <Route path="/discover" element={<Discover chrome={false} />} />
           {booksEnabled && <Route path="/books" element={<MyBooks />} />}
+          <Route path="/audiobooks" element={<Audiobooks chrome={false} />} />
           <Route path="*" element={<Navigate to="/discover" replace />} />
         </Route>
       </Routes>
@@ -67,6 +69,7 @@ export default function App() {
           <Route path="/discover" element={<Discover chrome={false} />} />
           <Route path="/calendar" element={<Calendar chrome={false} />} />
           {booksEnabled && <Route path="/books" element={<MyBooks />} />}
+          <Route path="/audiobooks" element={<Audiobooks chrome={false} />} />
           <Route path="*" element={<Navigate to="/discover" replace />} />
         </Route>
       </Routes>
@@ -97,6 +100,7 @@ export default function App() {
         <Route path="/subtitles" element={<Subtitles />} />
         <Route path="/convert" element={<Convert />} />
         <Route path="/insights" element={<Insights />} />
+        <Route path="/audiobooks" element={<Audiobooks />} />
         <Route path="/indexers" element={<Indexers />} />
         <Route path="/downloadclients" element={<DownloadClients />} />
         <Route path="/notifications" element={<Navigate to="/insights" replace />} />

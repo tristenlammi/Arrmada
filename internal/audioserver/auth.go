@@ -8,7 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"strings"
+	"fmt"
 	"sync"
 	"time"
 
@@ -17,7 +17,9 @@ import (
 	"github.com/tristenlammi/arrmada/internal/auth"
 )
 
-// Sign-in for listening apps. A sign-in on a device is a token "family": a long-lived
+// Sign-in for listening apps. Each person sets an audiobook-server password in Arrmada;
+// without one they can't connect, and their Arrmada password is never accepted here.
+// A sign-in on a device is a token "family": a long-lived
 // token (older clients keep one forever), an access token and a refresh token (newer
 // Audiobookshelf clients refresh when the access token expires). Revoking a device
 // revokes its whole family. Tokens are stored hashed.
@@ -46,7 +48,7 @@ type Tokens struct {
 	Family  string
 }
 
-// Accounts handles tokens and app passwords.
+// Accounts handles audiobook-server passwords and tokens.
 type Accounts struct {
 	db      *sql.DB
 	users   *auth.Service
@@ -61,55 +63,105 @@ func newAccounts(db *sql.DB, users *auth.Service, allowed func(context.Context, 
 	return &Accounts{db: db, users: users, allowed: allowed, now: time.Now, touched: map[string]time.Time{}}
 }
 
-// Login checks a username with the account password or an app password and issues a
-// token family.
+// Login checks a username and audiobook-server password and issues a token family.
 func (a *Accounts) Login(ctx context.Context, username, password, client string) (*auth.User, Tokens, error) {
-	u, appPwID, err := a.verify(ctx, username, password)
+	u, err := a.verify(ctx, username, password)
 	if err != nil {
 		return nil, Tokens{}, err
 	}
 	if !a.allowed(ctx, u) {
 		return nil, Tokens{}, errNoAccess
 	}
-	t, err := a.issue(ctx, u.ID, appPwID, client)
+	t, err := a.issue(ctx, u.ID, client)
 	return u, t, err
 }
 
-func (a *Accounts) verify(ctx context.Context, username, password string) (*auth.User, int64, error) {
-	if u, err := a.users.Authenticate(ctx, username, password); err == nil {
-		return u, 0, nil
-	}
+func (a *Accounts) verify(ctx context.Context, username, password string) (*auth.User, error) {
 	u, err := a.users.UserByUsername(ctx, username)
-	if err != nil || u.Disabled {
-		return nil, 0, errBadLogin
+	var hash string
+	if err == nil {
+		hash = a.passwordHash(ctx, u.ID)
 	}
-	rows, err := a.db.QueryContext(ctx, `SELECT id, hash FROM audio_app_passwords WHERE user_id = ?`, u.ID)
-	if err != nil {
-		return nil, 0, err
+	if err != nil || hash == "" || u.Disabled {
+		// Spend a real bcrypt cycle anyway, so timing doesn't reveal which usernames
+		// exist or have a password set.
+		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+		return nil, errBadLogin
 	}
-	type cand struct {
-		id   int64
-		hash string
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) != nil {
+		return nil, errBadLogin
 	}
-	var cands []cand
-	for rows.Next() {
-		var c cand
-		if rows.Scan(&c.id, &c.hash) == nil {
-			cands = append(cands, c)
-		}
-	}
-	rows.Close()
-	pw := normalizeAppPassword(password)
-	for _, c := range cands {
-		if bcrypt.CompareHashAndPassword([]byte(c.hash), []byte(pw)) == nil {
-			_, _ = a.db.ExecContext(ctx, `UPDATE audio_app_passwords SET last_used_at = ? WHERE id = ?`, a.now().UnixMilli(), c.id)
-			return u, c.id, nil
-		}
-	}
-	return nil, 0, errBadLogin
+	return u, nil
 }
 
-func (a *Accounts) issue(ctx context.Context, userID, appPwID int64, client string) (Tokens, error) {
+var dummyHash, _ = bcrypt.GenerateFromPassword([]byte("arrmada-audiobook-timing-guard"), bcrypt.DefaultCost)
+
+func (a *Accounts) passwordHash(ctx context.Context, userID int64) string {
+	var h string
+	_ = a.db.QueryRowContext(ctx, `SELECT hash FROM audio_passwords WHERE user_id = ?`, userID).Scan(&h)
+	return h
+}
+
+// HasPassword reports whether a user has set an audiobook-server password.
+func (a *Accounts) HasPassword(ctx context.Context, userID int64) bool {
+	return a.passwordHash(ctx, userID) != ""
+}
+
+// PasswordsSet returns the ids of users who have set a password.
+func (a *Accounts) PasswordsSet(ctx context.Context) map[int64]bool {
+	out := map[int64]bool{}
+	rows, err := a.db.QueryContext(ctx, `SELECT user_id FROM audio_passwords`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id int64
+		if rows.Scan(&id) == nil {
+			out[id] = true
+		}
+	}
+	return out
+}
+
+// MinPasswordLength is the shortest audiobook-server password accepted.
+const MinPasswordLength = 8
+
+// SetPassword sets (or changes) a user's audiobook-server password. signOut also signs
+// out every device already connected — what you want after a change, not the first time.
+func (a *Accounts) SetPassword(ctx context.Context, userID int64, password string, signOut bool) error {
+	if len([]rune(password)) < MinPasswordLength {
+		return fmt.Errorf("use at least %d characters", MinPasswordLength)
+	}
+	if len(password) > 72 {
+		return errors.New("use at most 72 characters")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	if _, err := a.db.ExecContext(ctx,
+		`INSERT INTO audio_passwords (user_id, hash, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(user_id) DO UPDATE SET hash = excluded.hash, updated_at = excluded.updated_at`,
+		userID, string(hash), a.now().UnixMilli()); err != nil {
+		return err
+	}
+	if signOut {
+		_, err = a.db.ExecContext(ctx, `UPDATE audio_tokens SET revoked = 1 WHERE user_id = ?`, userID)
+	}
+	return err
+}
+
+// RemovePassword removes a user's password and signs out all their devices.
+func (a *Accounts) RemovePassword(ctx context.Context, userID int64) error {
+	if _, err := a.db.ExecContext(ctx, `DELETE FROM audio_passwords WHERE user_id = ?`, userID); err != nil {
+		return err
+	}
+	_, err := a.db.ExecContext(ctx, `UPDATE audio_tokens SET revoked = 1 WHERE user_id = ?`, userID)
+	return err
+}
+
+func (a *Accounts) issue(ctx context.Context, userID int64, client string) (Tokens, error) {
 	now := a.now()
 	t := Tokens{Legacy: randToken(), Access: randToken(), Refresh: randToken(), Family: randToken()[:16]}
 	for _, row := range []struct {
@@ -121,9 +173,9 @@ func (a *Accounts) issue(ctx context.Context, userID, appPwID int64, client stri
 		{t.Refresh, "refresh", now.Add(refreshTTL).UnixMilli()},
 	} {
 		if _, err := a.db.ExecContext(ctx,
-			`INSERT INTO audio_tokens (user_id, hash, kind, family, app_password_id, client, created_at, expires_at, last_used_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			userID, hashToken(row.tok), row.kind, t.Family, appPwID, client, now.UnixMilli(), row.exp, now.UnixMilli()); err != nil {
+			`INSERT INTO audio_tokens (user_id, hash, kind, family, client, created_at, expires_at, last_used_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			userID, hashToken(row.tok), row.kind, t.Family, client, now.UnixMilli(), row.exp, now.UnixMilli()); err != nil {
 			return Tokens{}, err
 		}
 	}
@@ -145,7 +197,7 @@ func (a *Accounts) Refresh(ctx context.Context, refreshToken string) (*auth.User
 		return nil, Tokens{}, errBadToken
 	}
 	u, err := a.users.UserByID(ctx, userID)
-	if err != nil || u.Disabled || !a.allowed(ctx, u) {
+	if err != nil || u.Disabled || !a.allowed(ctx, u) || !a.HasPassword(ctx, u.ID) {
 		return nil, Tokens{}, errNoAccess
 	}
 	now := a.now()
@@ -180,7 +232,7 @@ func (a *Accounts) Validate(ctx context.Context, token string) (*auth.User, stri
 		return nil, "", errBadToken
 	}
 	u, err := a.users.UserByID(ctx, userID)
-	if err != nil || u.Disabled || !a.allowed(ctx, u) {
+	if err != nil || u.Disabled || !a.allowed(ctx, u) || !a.HasPassword(ctx, u.ID) {
 		return nil, "", errNoAccess
 	}
 	a.touch(ctx, h)
@@ -226,17 +278,14 @@ type Device struct {
 	Username   string `json:"username"`
 	Client     string `json:"client"`
 	Device     string `json:"device"`
-	AppPwName  string `json:"app_password,omitempty"`
 	CreatedAt  int64  `json:"created_at"`
 	LastUsedAt int64  `json:"last_used_at"`
 }
 
 // Devices lists signed-in apps (all users when userID is 0).
 func (a *Accounts) Devices(ctx context.Context, userID int64) ([]Device, error) {
-	q := `SELECT t.family, t.user_id, u.username, MAX(t.client), MAX(t.device), COALESCE(MAX(p.name), ''),
-	        MIN(t.created_at), MAX(t.last_used_at)
+	q := `SELECT t.family, t.user_id, u.username, MAX(t.client), MAX(t.device), MIN(t.created_at), MAX(t.last_used_at)
 	      FROM audio_tokens t JOIN users u ON u.id = t.user_id
-	      LEFT JOIN audio_app_passwords p ON p.id = t.app_password_id
 	      WHERE t.revoked = 0`
 	args := []any{}
 	if userID > 0 {
@@ -252,7 +301,7 @@ func (a *Accounts) Devices(ctx context.Context, userID int64) ([]Device, error) 
 	out := []Device{}
 	for rows.Next() {
 		var d Device
-		if err := rows.Scan(&d.Family, &d.UserID, &d.Username, &d.Client, &d.Device, &d.AppPwName, &d.CreatedAt, &d.LastUsedAt); err != nil {
+		if err := rows.Scan(&d.Family, &d.UserID, &d.Username, &d.Client, &d.Device, &d.CreatedAt, &d.LastUsedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -272,71 +321,6 @@ func (a *Accounts) RevokeFamily(ctx context.Context, family string, userID int64
 	return err
 }
 
-// AppPassword is a password made for a listening app (the secret is only shown once).
-type AppPassword struct {
-	ID         int64  `json:"id"`
-	Name       string `json:"name"`
-	CreatedAt  int64  `json:"created_at"`
-	LastUsedAt int64  `json:"last_used_at"`
-	Password   string `json:"password,omitempty"`
-}
-
-// CreateAppPassword makes a new app password and returns it (the only time it's shown).
-func (a *Accounts) CreateAppPassword(ctx context.Context, userID int64, name string) (AppPassword, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		name = "Listening app"
-	}
-	if len(name) > 60 {
-		name = name[:60]
-	}
-	plain := newAppPassword()
-	hash, err := bcrypt.GenerateFromPassword([]byte(normalizeAppPassword(plain)), bcrypt.DefaultCost)
-	if err != nil {
-		return AppPassword{}, err
-	}
-	now := a.now().UnixMilli()
-	res, err := a.db.ExecContext(ctx,
-		`INSERT INTO audio_app_passwords (user_id, name, hash, created_at) VALUES (?, ?, ?, ?)`, userID, name, string(hash), now)
-	if err != nil {
-		return AppPassword{}, err
-	}
-	id, _ := res.LastInsertId()
-	return AppPassword{ID: id, Name: name, CreatedAt: now, Password: plain}, nil
-}
-
-// AppPasswords lists a user's app passwords (without secrets).
-func (a *Accounts) AppPasswords(ctx context.Context, userID int64) ([]AppPassword, error) {
-	rows, err := a.db.QueryContext(ctx,
-		`SELECT id, name, created_at, last_used_at FROM audio_app_passwords WHERE user_id = ? ORDER BY id`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := []AppPassword{}
-	for rows.Next() {
-		var p AppPassword
-		if err := rows.Scan(&p.ID, &p.Name, &p.CreatedAt, &p.LastUsedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	return out, rows.Err()
-}
-
-// DeleteAppPassword removes an app password and signs out every device that used it.
-func (a *Accounts) DeleteAppPassword(ctx context.Context, userID, id int64) error {
-	res, err := a.db.ExecContext(ctx, `DELETE FROM audio_app_passwords WHERE id = ? AND user_id = ?`, id, userID)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return errors.New("app password not found")
-	}
-	_, err = a.db.ExecContext(ctx, `UPDATE audio_tokens SET revoked = 1 WHERE app_password_id = ? AND user_id = ?`, id, userID)
-	return err
-}
-
 func randToken() string {
 	var b [32]byte
 	_, _ = rand.Read(b[:])
@@ -346,32 +330,4 @@ func randToken() string {
 func hashToken(t string) string {
 	h := sha256.Sum256([]byte(t))
 	return hex.EncodeToString(h[:])
-}
-
-// newAppPassword makes a readable password: four groups of four letters, easy to type
-// on a phone ("kfmt-qwzr-…"). 16 letters from a 23-letter alphabet ≈ 72 bits.
-func newAppPassword() string {
-	const alphabet = "abcdefghjkmnpqrstuvwxyz"
-	var b [16]byte
-	_, _ = rand.Read(b[:])
-	var sb strings.Builder
-	for i, c := range b {
-		if i > 0 && i%4 == 0 {
-			sb.WriteByte('-')
-		}
-		sb.WriteByte(alphabet[int(c)%len(alphabet)])
-	}
-	return sb.String()
-}
-
-// normalizeAppPassword ignores case, spaces and dashes, so a typed app password matches
-// however it was entered.
-func normalizeAppPassword(p string) string {
-	var sb strings.Builder
-	for _, r := range strings.ToLower(p) {
-		if r != '-' && r != ' ' {
-			sb.WriteRune(r)
-		}
-	}
-	return sb.String()
 }
