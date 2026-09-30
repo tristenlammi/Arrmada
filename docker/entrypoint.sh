@@ -14,6 +14,14 @@ mkdir -p "$DATA"
 # Best-effort: never fail boot over a chown (e.g. a read-only or odd filesystem).
 chown -R "$PUID:$PGID" "$DATA" 2>/dev/null || true
 
+# Convert's scratch folder. The image's own /transcode is root's, and a host folder the
+# installer created is too — either way the dropped-privilege user couldn't write there,
+# and every encode failed. Only touch it when it isn't writable already, so a transcode
+# folder shared with other apps keeps its owner.
+if [ -d /transcode ] && ! gosu "$PUID:$PGID" test -w /transcode; then
+  chown "$PUID:$PGID" /transcode 2>/dev/null || true
+fi
+
 # Hardware transcode: if a GPU render node was passed in (compose `devices: /dev/dri`),
 # open its permissions so the dropped-privilege PUID:PGID user can use VAAPI. The device
 # is already cgroup-whitelisted by Docker; this just avoids having to match the host's

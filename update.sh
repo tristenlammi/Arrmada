@@ -63,6 +63,22 @@ port_in_use() {
   fi
 }
 
+# ── pull latest (skip cleanly if this isn't a git checkout) ─────────────────────
+# If the pull changed this script, run the new one: it may know about settings or steps
+# this older copy doesn't, and they should apply now rather than on the next update.
+if [ "${1:-}" != "--pulled" ]; then
+  if [ -d .git ] && command -v git >/dev/null 2>&1; then
+    say "Pulling latest changes…"
+    _before=$(cksum < update.sh)
+    git pull --ff-only || say "  ! git pull skipped (local changes or detached HEAD) — continuing with current code."
+    if [ "$(cksum < update.sh)" != "$_before" ]; then
+      exec sh ./update.sh --pulled
+    fi
+  else
+    say "Not a git checkout — building the code that's here."
+  fi
+fi
+
 # Settings added since this install: give each a free value once, never overwrite.
 if ! grep -qE '^ARRMADA_AUDIOBOOK_PORT=' .env; then
   AUDIOPORT=""
@@ -72,18 +88,10 @@ if ! grep -qE '^ARRMADA_AUDIOBOOK_PORT=' .env; then
   [ -z "$AUDIOPORT" ] && AUDIOPORT=18379
   {
     say ""
-    say "# Audiobook server for listening apps (off until switched on in Books → Audiobook server)."
+    say "# Audiobook server for listening apps (off until switched on in Services → Audiobooks)."
     say "ARRMADA_AUDIOBOOK_PORT=$AUDIOPORT"
   } >> .env
   say "Added ARRMADA_AUDIOBOOK_PORT=$AUDIOPORT to .env (the audiobook server's port)."
-fi
-
-# ── pull latest (skip cleanly if this isn't a git checkout) ─────────────────────
-if [ -d .git ] && command -v git >/dev/null 2>&1; then
-  say "Pulling latest changes…"
-  git pull --ff-only || say "  ! git pull skipped (local changes or detached HEAD) — continuing with current code."
-else
-  say "Not a git checkout — building the code that's here."
 fi
 
 say "Rebuilding and restarting Arrmada…"

@@ -98,6 +98,19 @@ if [ ! -f .env ]; then
   say "1/2  Where does your media live? Give the folder that CONTAINS your libraries +"
   say "     downloads (e.g. /mnt/user/masterdirectory). Enter to use Arrmada's own managed storage."
   MEDIA=$(ask "     Media folder [blank = managed]: " "")
+  # On Unraid, "managed storage" is a Docker volume — inside docker.img (20 GB by
+  # default), which downloads fill in no time. Say so once before accepting it.
+  if [ -z "$MEDIA" ] && [ -d /mnt/user ] && [ -t 0 ]; then
+    say "     ! On Unraid, managed storage lives inside docker.img, and downloads will fill it."
+    say "       Give a share instead (e.g. /mnt/user/data), or press Enter again to use it anyway."
+    MEDIA=$(ask "     Media folder [blank = managed]: " "")
+  fi
+  # A mistyped folder would be created empty (and owned by root) by Docker, and the app
+  # would find no media. Ask again rather than guess.
+  while [ -n "$MEDIA" ] && [ ! -d "$MEDIA" ]; do
+    say "     ! $MEDIA doesn't exist. Check the path (it's case-sensitive)."
+    MEDIA=$(ask "     Media folder [blank = managed]: " "")
+  done
 
   say ""
   say "2/2  Where should Convert transcode? A fast SSD/NVMe pool, NOT the array (e.g."
@@ -147,7 +160,7 @@ if [ ! -f .env ]; then
     say "ARRMADA_PORT=$WEBPORT"
     say "ARRMADA_QBIT_WEBUI_PORT=$QBWEB"
     say "ARRMADA_PROWLARR_PORT=$PROWPORT"
-    say "# Audiobook server for listening apps (off until switched on in Books → Audiobook server)."
+    say "# Audiobook server for listening apps (off until switched on in Services → Audiobooks)."
     say "ARRMADA_AUDIOBOOK_PORT=$AUDIOPORT"
     say "ARRMADA_QBIT_PORT=$BTPORT"
     say ""
@@ -178,8 +191,8 @@ if [ ! -f .env ]; then
       say "  arrmada-app:"
       if [ -n "$MEDIA" ] || [ -n "$TRANSCODE" ]; then
         say "    volumes:"
-        [ -n "$MEDIA" ] && say "      - $MEDIA:/storage"
-        [ -n "$TRANSCODE" ] && say "      - $TRANSCODE:/transcode"
+        [ -n "$MEDIA" ] && say "      - \"$MEDIA:/storage\""
+        [ -n "$TRANSCODE" ] && say "      - \"$TRANSCODE:/transcode\""
       fi
       if [ -n "$GPU" ]; then
         say "    devices:"
@@ -188,7 +201,7 @@ if [ ! -f .env ]; then
       if [ -n "$MEDIA" ]; then
         say "  arrmada-qbittorrent:"
         say "    volumes:"
-        say "      - $MEDIA:/storage"
+        say "      - \"$MEDIA:/storage\""
       fi
     } > docker-compose.override.yml
     say "✓ Wrote docker-compose.override.yml"
@@ -201,9 +214,13 @@ if [ ! -f .env ]; then
   say "   • Web UI port:   $WEBPORT"
   say "   • qBit WebUI:    $QBWEB"
   say "   • BitTorrent:    $BTPORT   (forward this on your router, TCP+UDP)"
-  say "   • Audiobooks:    $AUDIOPORT   (listening apps; switch on in Books → Audiobook server)"
+  say "   • Audiobooks:    $AUDIOPORT   (listening apps; switch on in Services → Audiobooks)"
   say "   • Run as:        $PUID:$PGID"
-  [ -n "$GPU" ] && say "   • GPU:           /dev/dri detected → hardware transcode enabled" || say "   • GPU:           none detected → Convert will use the CPU"
+  if [ -n "$GPU" ]; then
+    say "   • GPU:           /dev/dri detected → hardware transcode enabled"
+  else
+    say "   • GPU:           none detected → Convert will use the CPU"
+  fi
   [ -n "$MEDIA" ] && say "   • Media folder:  $MEDIA → /storage inside the app"
 else
   say ".env already exists — keeping your settings."
