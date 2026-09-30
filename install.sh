@@ -5,9 +5,10 @@
 #   ./install.sh                  # core stack (app + qBittorrent + FlareSolverr)
 #   ./install.sh --with-prowlarr  # also start the optional Prowlarr indexer manager
 #
-# It asks two things — where your media lives and where to transcode — then handles the
-# rest automatically: free host ports (never clashes with Radarr/Sonarr/qBit), the run
-# user, the database location, and GPU pass-through if a GPU is present. The TMDB key and
+# It asks three things — where your media lives, where to transcode, and your timezone
+# (pre-filled from this machine) — then handles the rest automatically: free host ports
+# (never clashes with Radarr/Sonarr/qBit), the run user, the database location, and GPU
+# pass-through if a GPU is present. The TMDB key and
 # each library folder are set in the app's first-run setup, with a folder picker.
 # Update later with:  ./update.sh
 set -eu
@@ -19,6 +20,29 @@ ask() { # ask "prompt" "default" -> echoes the answer (default if non-interactiv
   if [ -t 0 ]; then printf '%s' "$_p" >&2; read -r _a || _a=""; fi
   [ -z "$_a" ] && _a="$_d"
   printf '%s' "$_a"
+}
+
+# detect_tz -> this machine's timezone name (e.g. Australia/Brisbane), or nothing.
+detect_tz() {
+  _t="${TZ:-}"
+  [ -z "$_t" ] && [ -r /etc/timezone ] && _t=$(head -n1 /etc/timezone 2>/dev/null)
+  # Unraid keeps it in its flash config (Settings → Date and Time).
+  [ -z "$_t" ] && [ -r /boot/config/ident.cfg ] && _t=$(sed -n 's/^timeZone="*\([^"]*\)"*.*/\1/p' /boot/config/ident.cfg 2>/dev/null | head -n1)
+  [ -z "$_t" ] && [ -L /etc/localtime ] && _t=$(readlink /etc/localtime 2>/dev/null | sed 's#.*/zoneinfo/##')
+  if valid_tz "$_t"; then printf '%s' "$_t"; fi
+}
+# valid_tz NAME -> 0 if NAME is a timezone this machine knows (any name, if it ships no
+# zone files to check against — the app carries its own copy of the database).
+valid_tz() {
+  case "$1" in "" | /* | *..* | *" "*) return 1 ;; esac
+  [ -d /usr/share/zoneinfo ] || return 0
+  [ -f "/usr/share/zoneinfo/$1" ]
+}
+# tz_fix_case NAME -> the correctly-capitalised zone name ("australia/brisbane" →
+# "Australia/Brisbane"), or nothing if there's no such zone.
+tz_fix_case() {
+  [ -d /usr/share/zoneinfo ] || return 0
+  find /usr/share/zoneinfo -type f -ipath "/usr/share/zoneinfo/$1" 2>/dev/null | grep -v '/right/\|/posix/' | head -n1 | sed 's#^/usr/share/zoneinfo/##'
 }
 
 # port_in_use PORT -> 0 (true) if something is already listening on PORT on this host.
@@ -88,14 +112,14 @@ fi
 
 # ── .env (created once, never overwritten) ──────────────────────────────────────
 if [ ! -f .env ]; then
-  say "First run — let's set up Arrmada. Two questions, then it's automatic."
+  say "First run — let's set up Arrmada. Three questions, then it's automatic."
   say ""
 
   # The TMDB key is entered in the app's first-run setup. An exported value is still
   # honoured, for scripted installs.
   KEY="${ARRMADA_TMDB_API_KEY:-}"
 
-  say "1/2  Where does your media live? Give the folder that CONTAINS your libraries +"
+  say "1/3  Where does your media live? Give the folder that CONTAINS your libraries +"
   say "     downloads (e.g. /mnt/user/masterdirectory). Enter to use Arrmada's own managed storage."
   MEDIA=$(ask "     Media folder [blank = managed]: " "")
   # On Unraid, "managed storage" is a Docker volume — inside docker.img (20 GB by
@@ -113,9 +137,31 @@ if [ ! -f .env ]; then
   done
 
   say ""
-  say "2/2  Where should Convert transcode? A fast SSD/NVMe pool, NOT the array (e.g."
+  say "2/3  Where should Convert transcode? A fast SSD/NVMe pool, NOT the array (e.g."
   say "     /mnt/cache/transcode). Enter to skip (transcoding uses container storage)."
   TRANSCODE=$(ask "     Transcode folder [blank = skip]: " "")
+
+  # Timezone. Schedules — the overnight encode window, nightly sweeps, listening per
+  # day — run on this clock; without it the container runs on UTC and "overnight"
+  # quietly means overnight in London.
+  DETECTED_TZ=$(detect_tz)
+  say ""
+  say "3/3  What's your timezone? Schedules like overnight encoding run on this clock."
+  say "     Use the Region/City name — e.g. Australia/Brisbane, America/New_York, Europe/London."
+  say "     Find yours in the \"TZ identifier\" column at:"
+  say "     https://en.wikipedia.org/wiki/List_of_tz_database_time_zones"
+  if [ -n "$DETECTED_TZ" ]; then
+    TZONE=$(ask "     Timezone [Enter = $DETECTED_TZ, detected from this machine]: " "$DETECTED_TZ")
+  else
+    TZONE=$(ask "     Timezone [Enter = Etc/UTC]: " "Etc/UTC")
+  fi
+  while ! valid_tz "$TZONE"; do
+    _fixed=$(tz_fix_case "$TZONE")
+    if [ -n "$_fixed" ]; then TZONE=$_fixed; break; fi
+    if [ ! -t 0 ]; then TZONE="Etc/UTC"; break; fi
+    say "     ! \"$TZONE\" isn't a timezone name. Use Region/City from the list above (e.g. Australia/Brisbane)."
+    TZONE=$(ask "     Timezone: " "${DETECTED_TZ:-Etc/UTC}")
+  done
 
   # Auto: run user. Match the media folder's owner so the app can read/write it; fall back to
   # Unraid's nobody/users (99/100) or a generic 1000/1000.
@@ -139,13 +185,6 @@ if [ ! -f .env ]; then
   # Auto: GPU pass-through when a render node exists on the host.
   GPU=""
   [ -e /dev/dri ] && GPU=1
-
-  # Auto: timezone, taken from the host. Without this the container runs on UTC, and a
-  # schedule set to "encode overnight" silently means overnight-in-London.
-  TZONE="${TZ:-}"
-  [ -z "$TZONE" ] && [ -r /etc/timezone ] && TZONE=$(cat /etc/timezone 2>/dev/null)
-  [ -z "$TZONE" ] && [ -L /etc/localtime ] && TZONE=$(readlink /etc/localtime 2>/dev/null | sed 's#.*/zoneinfo/##')
-  [ -z "$TZONE" ] && TZONE="Etc/UTC"
 
   {
     say "# ─── Arrmada configuration ─── edit, then ./update.sh to apply ───"
@@ -215,6 +254,7 @@ if [ ! -f .env ]; then
   say "   • qBit WebUI:    $QBWEB"
   say "   • BitTorrent:    $BTPORT   (forward this on your router, TCP+UDP)"
   say "   • Audiobooks:    $AUDIOPORT   (listening apps; switch on in Services → Audiobooks)"
+  say "   • Timezone:      $TZONE   (change later: TZ in .env, then ./update.sh)"
   say "   • Run as:        $PUID:$PGID"
   if [ -n "$GPU" ]; then
     say "   • GPU:           /dev/dri detected → hardware transcode enabled"

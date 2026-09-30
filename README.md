@@ -52,9 +52,11 @@ cd Arrmada
 ./install.sh
 ```
 
-The installer asks two things: the folder that holds your media and downloads, and where to
-transcode. It works out the rest itself — free ports, the user to run as, where the database
-lives, your timezone and your GPU. The first build compiles everything, so it takes a while.
+The installer asks three things: the folder that holds your media and downloads, where to
+transcode, and your timezone (it suggests the one your machine uses; find yours in the "TZ
+identifier" column of [this list](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones)).
+It works out the rest itself — free ports, the user to run as, where the database lives and
+your GPU. The first build compiles everything, so it takes a while.
 It waits until Arrmada is ready and prints the address.
 
 Open that address and create your admin account. A short setup then asks for your free
