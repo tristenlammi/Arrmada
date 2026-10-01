@@ -24,6 +24,7 @@ type Settings struct {
 	DropCommentary   bool   `json:"drop_commentary"`
 	KeepSubLangs     string `json:"keep_sub_langs"` // CSV; empty = keep all
 	ImageSubs        string `json:"image_subs"`     // keep | when_text | remove
+	TidyTracks       bool   `json:"tidy_tracks"`    // rewrite files whose only gap is a few tracks
 
 	// Advanced.
 	ScratchDir  string `json:"scratch_dir"`
@@ -55,7 +56,7 @@ func (s *Service) GetSettings(ctx context.Context) Settings {
 		AllowAV1: p.allowAV1, UseGPU: p.useGPU, PauseWatching: p.pauseWatching,
 		KeepAudioLangs:   strings.Join(p.keepAudio, ", "),
 		KeepOriginalLang: p.keepOriginal, DropCommentary: p.dropCommentary,
-		KeepSubLangs: strings.Join(p.keepSubs, ", "), ImageSubs: p.imageSubs,
+		KeepSubLangs: strings.Join(p.keepSubs, ", "), ImageSubs: p.imageSubs, TidyTracks: p.tidyTracks,
 		ScratchDir: g.Get(ctx, keyScratchDir, ""), VaapiDevice: g.Get(ctx, keyVaapiDevice, ""),
 		CPUCores: cores, Workers: s.workerCount(ctx), ScanAt: g.Get(ctx, keyScanAt, defaultScanAt),
 		ServerTime: time.Now().Format("15:04"), ServerTZ: zone,
@@ -77,6 +78,7 @@ type SettingsPatch struct {
 	DropCommentary   *bool   `json:"drop_commentary"`
 	KeepSubLangs     *string `json:"keep_sub_langs"`
 	ImageSubs        *string `json:"image_subs"`
+	TidyTracks       *bool   `json:"tidy_tracks"`
 	ScratchDir       *string `json:"scratch_dir"`
 	VaapiDevice      *string `json:"vaapi_device"`
 	CPUCores         *int    `json:"cpu_cores"`
@@ -143,6 +145,7 @@ func (s *Service) UpdateSettings(ctx context.Context, p SettingsPatch) (Settings
 	setB(keyDropCommentary, p.DropCommentary)
 	setS(keyKeepSubLangs, p.KeepSubLangs, langs)
 	setS(keyImageSubs, p.ImageSubs, trim)
+	setB(keyTidyTracks, p.TidyTracks)
 	setS(keyScratchDir, p.ScratchDir, trim)
 	setS(keyVaapiDevice, p.VaapiDevice, trim)
 	setS(keyScanAt, p.ScanAt, trim)

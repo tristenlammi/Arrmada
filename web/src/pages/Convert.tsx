@@ -214,7 +214,7 @@ function Overview({ status, jobs, stats, hw, flash, onChanged, onRescan, onShowP
           <div className="mt-2 text-[30px] font-extrabold tracking-tight">{fmtSize(hw?.reclaimed_bytes)}</div>
           <div className="mt-3 border-t pt-3 text-[12px] text-ink-dim" style={{ borderColor: "var(--line-soft)" }}>
             <span style={{ color: "var(--good)" }}>~{fmtSize(t?.reclaimable)}</span> more to save ·{" "}
-            <b style={{ color: "var(--ink)" }}>{(t?.convertible ?? 0).toLocaleString()}</b> of {n.toLocaleString()} files still need work
+            <b style={{ color: "var(--ink)" }}>{(t?.convertible ?? 0).toLocaleString()}</b> of {n.toLocaleString()} files worth converting
             {(t?.skipped ?? 0) > 0 && (
               <button onClick={onShowProblems} className="mt-1 block text-left text-[11px] underline" style={{ color: "var(--avoid)" }}>
                 {t!.skipped.toLocaleString()} file{t!.skipped === 1 ? "" : "s"} can&rsquo;t be converted — see Problems
@@ -347,16 +347,27 @@ function JobBar({ j, onCancel }: { j: ConvertJob; onCancel?: () => void }) {
 
 /* ============================= LIBRARY ============================= */
 
-type SortKey = "title" | "video" | "res" | "bitrate" | "size" | "est";
+type SortKey = "title" | "video" | "res" | "bitrate" | "size" | "save";
 const HEADERS: { label: string; key?: SortKey }[] = [
   { label: "Title", key: "title" }, { label: "Video", key: "video" }, { label: "Res", key: "res" }, { label: "HDR" },
-  { label: "Bitrate", key: "bitrate" }, { label: "Size", key: "size" }, { label: "Est. after", key: "est" }, { label: "" },
+  { label: "Bitrate", key: "bitrate" }, { label: "Size", key: "size" }, { label: "Saves", key: "save" }, { label: "" },
 ];
-type ShowSortKey = "title" | "files" | "convertible" | "size" | "est";
+type ShowSortKey = "title" | "files" | "convertible" | "size" | "save";
 const SHOW_HEADERS: { label: string; key?: ShowSortKey }[] = [
-  { label: "Show", key: "title" }, { label: "Files", key: "files" }, { label: "Need work", key: "convertible" },
-  { label: "Size", key: "size" }, { label: "Est. after", key: "est" }, { label: "" },
+  { label: "Show", key: "title" }, { label: "Files", key: "files" }, { label: "Worth converting", key: "convertible" },
+  { label: "Size", key: "size" }, { label: "Saves", key: "save" }, { label: "" },
 ];
+
+// Saves renders an estimated saving: the amount, and what share of the size it is.
+function Saves({ bytes, of, faint }: { bytes: number; of: number; faint?: boolean }) {
+  if (!bytes || bytes <= 0) return <span className="text-ink-faint">—</span>;
+  const pct = of > 0 ? Math.round((bytes / of) * 100) : 0;
+  return (
+    <span style={{ color: faint ? "var(--ink-faint)" : "var(--good)" }}>
+      ~{fmtSize(bytes)} <span className="text-[10.5px] opacity-80">({pct}%)</span>
+    </span>
+  );
+}
 
 function Pill({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
   return (
@@ -391,8 +402,8 @@ function Library({ flash, onRequested, onRescan, onCompare, running }: {
   const [items, setItems] = useState<ConvertCandidate[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [requested, setRequested] = useState<Set<string>>(new Set());
-  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "size", dir: "desc" });
-  const [showSort, setShowSort] = useState<{ key: ShowSortKey; dir: "asc" | "desc" }>({ key: "convertible", dir: "desc" });
+  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "save", dir: "desc" });
+  const [showSort, setShowSort] = useState<{ key: ShowSortKey; dir: "asc" | "desc" }>({ key: "save", dir: "desc" });
   const [codecF, setCodecF] = useState<Set<string>>(new Set());
   const [onlyConvertible, setOnlyConvertible] = useState(true);
   const [q, setQ] = useState("");
@@ -458,7 +469,7 @@ function Library({ flash, onRequested, onRescan, onCompare, running }: {
         case "res": return c.info?.height ?? 0;
         case "bitrate": return c.info?.bitrate_kbps ?? 0;
         case "size": return c.info?.size_bytes ?? 0;
-        case "est": return c.candidate ? c.est_bytes : -1;
+        case "save": return c.save_bytes ?? 0;
       }
     };
     return list.sort((a, b) => {
@@ -475,7 +486,7 @@ function Library({ flash, onRequested, onRescan, onCompare, running }: {
         case "files": return sh.files;
         case "convertible": return sh.convertible;
         case "size": return sh.total_bytes;
-        case "est": return sh.convertible ? sh.est_bytes : -1;
+        case "save": return sh.save_bytes ?? 0;
       }
     };
     const needle = q.trim().toLowerCase();
@@ -490,7 +501,7 @@ function Library({ flash, onRequested, onRescan, onCompare, running }: {
 
   const seasons = useMemo(() => {
     const s = new Set<number>();
-    for (const c of items ?? []) if (c.candidate && c.season != null) s.add(c.season);
+    for (const c of items ?? []) if (c.worth && c.season != null) s.add(c.season);
     return [...s].sort((a, b) => a - b);
   }, [items]);
 
@@ -520,7 +531,7 @@ function Library({ flash, onRequested, onRescan, onCompare, running }: {
           className={inp} style={{ ...inpStyle, minWidth: 200 }} />
         <label className="flex cursor-pointer items-center gap-1.5 text-[12px] text-ink-dim">
           <input type="checkbox" checked={onlyConvertible} onChange={(e) => setOnlyConvertible(e.target.checked)} />
-          Only files that need work
+          Only files worth converting
         </label>
       </div>
 
@@ -538,9 +549,13 @@ function Library({ flash, onRequested, onRescan, onCompare, running }: {
                     <tr key={sh.series_id} style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
                       <td className="px-3 py-2 font-semibold"><button onClick={() => setShow(sh)} className="text-left hover:underline">{sh.title} <span className="font-normal text-ink-faint">{sh.year || ""}</span></button></td>
                       <td className="px-3 py-2 font-mono tabular-nums text-ink-dim">{sh.files.toLocaleString()}</td>
-                      <td className="px-3 py-2 font-mono tabular-nums">{done ? <span style={{ color: "var(--good)" }}>none ✓</span> : <span style={{ color: "var(--avoid)" }}>{sh.convertible.toLocaleString()}</span>}</td>
+                      <td className="px-3 py-2 font-mono tabular-nums">
+                        {done ? <span className="text-ink-faint">none</span> : <span style={{ color: "var(--avoid)" }}>{sh.convertible.toLocaleString()}</span>}
+                        {sh.reencode > 0 && sh.reencode < sh.convertible && <span className="ml-1.5 text-[10.5px] text-ink-faint">{sh.reencode} re-encode</span>}
+                        {sh.tidy_only > 0 && <span className="ml-1.5 text-[10.5px] text-ink-faint" title="Only their tracks differ, and tidying them would free little — done when they're re-encoded, or with Fix tracks">+{sh.tidy_only} tracks only</span>}
+                      </td>
                       <td className="px-3 py-2 font-mono tabular-nums">{fmtSize(sh.total_bytes)}</td>
-                      <td className="px-3 py-2 font-mono tabular-nums">{done ? <span className="text-ink-faint">—</span> : <span className="text-ink-faint">~{fmtSize(sh.est_bytes)}</span>}</td>
+                      <td className="px-3 py-2 font-mono tabular-nums"><Saves bytes={sh.save_bytes} of={sh.total_bytes} /></td>
                       <td className="px-3 py-2">
                         <div className="flex items-center justify-end gap-1.5">
                           <button onClick={() => setShow(sh)} className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Episodes</button>
@@ -554,7 +569,7 @@ function Library({ flash, onRequested, onRescan, onCompare, running }: {
             </table>
           </div>
         )
-      ) : items === null ? <Empty>Loading your {noun}…</Empty> : items.length === 0 ? <Empty>{onlyConvertible ? `No ${noun} need work.` : `No downloaded ${noun} yet.`}</Empty> : (
+      ) : items === null ? <Empty>Loading your {noun}…</Empty> : items.length === 0 ? <Empty>{onlyConvertible ? `No ${noun} are worth converting.` : `No downloaded ${noun} yet.`}</Empty> : (
         <>
           {show && (
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl px-3 py-2" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
@@ -564,7 +579,7 @@ function Library({ flash, onRequested, onRescan, onCompare, running }: {
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
                 {seasons.map((n) => (
-                  <button key={n} onClick={() => convertBulk(show.series_id, n, `${show.title} season ${n}`, (items ?? []).filter((c) => c.candidate && c.season === n).length)} disabled={busy !== null}
+                  <button key={n} onClick={() => convertBulk(show.series_id, n, `${show.title} season ${n}`, (items ?? []).filter((c) => c.worth && c.season === n).length)} disabled={busy !== null}
                     className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>
                     {busy === `bulk:${show.series_id}:${n}` ? "…" : `Convert S${n}`}
                   </button>
@@ -577,7 +592,7 @@ function Library({ flash, onRequested, onRescan, onCompare, running }: {
             {codecs.map(([cc, n]) => <Pill key={cc} active={codecF.has(cc)} onClick={() => toggleCodec(cc)}>{cc} <span className="opacity-60">{n}</span></Pill>)}
             {codecF.size > 0 && <button onClick={() => setCodecF(new Set())} className="ml-1 text-[10.5px] text-ink-faint underline hover:text-[var(--ink)]">clear</button>}
           </div>
-          <p className="text-[11px] text-ink-faint">“Est. after” is a rough guess from the resolution — <b>Compare</b> encodes a few clips for a real number, and lets you watch them.</p>
+          <p className="text-[11px] text-ink-faint">“Saves” is an estimate from the bitrate and resolution — <b>Compare</b> encodes a few clips for a real number, and lets you watch them.</p>
           <div className="overflow-x-auto rounded-xl" style={{ border: "1px solid var(--line)" }}>
             <table className="w-full border-collapse text-[12.5px]" style={{ minWidth: 900 }}>
               <thead><tr style={{ background: "var(--panel-2)" }}>{HEADERS.map((h) => sortHead(h, sort, setSortKey))}</tr></thead>
@@ -598,18 +613,18 @@ function Library({ flash, onRequested, onRescan, onCompare, running }: {
                       <td className="px-3 py-2 font-mono text-ink-dim">{hdrLabel(c)}</td>
                       <td className="px-3 py-2 font-mono tabular-nums text-ink-dim">{c.info?.bitrate_kbps ? `${(c.info.bitrate_kbps / 1000).toFixed(1)} Mb/s` : "—"}</td>
                       <td className="px-3 py-2 font-mono tabular-nums">{fmtSize(c.info?.size_bytes)}</td>
-                      <td className="px-3 py-2 font-mono tabular-nums">
-                        {c.needs?.video ? <span className="text-ink-faint">~{fmtSize(c.est_bytes)}</span>
-                          : c.candidate ? <span className="text-ink-faint" title="Only the tracks change; the video is copied">{c.tracks || "same size"}</span>
-                          : <span className="text-ink-faint">—</span>}
+                      <td className="px-3 py-2 font-mono tabular-nums" title={c.tracks || undefined}>
+                        {c.candidate ? <Saves bytes={c.save_bytes} of={c.info?.size_bytes ?? 0} faint={!c.worth} /> : <span className="text-ink-faint">—</span>}
+                        {c.candidate && !c.needs?.video && <span className="ml-1 text-[10px] text-ink-faint">tracks</span>}
                       </td>
                       <td className="px-3 py-2">
                         {isRunning ? <div className="text-right"><span className="font-mono text-[10.5px]" style={{ color: "var(--accent)" }}>converting…</span></div>
                           : c.candidate ? (
                           <div className="flex items-center justify-end gap-1.5">
+                            {!c.worth && <span className="font-mono text-[10px] text-ink-faint" title="Only the tracks differ, and tidying them would free little. Done when it's re-encoded, or now with Fix tracks.">little to gain</span>}
                             {c.needs?.video && <button onClick={() => onCompare(c.key)} title="Encode a few clips as HEVC and AV1, compare size and quality, and keep the clips to watch" className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Compare</button>}
                             {requested.has(c.key) ? <span className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--good)", color: "var(--good)" }}>Next ✓</span>
-                              : <button onClick={() => convert(c)} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy === c.key ? "…" : c.needs?.video ? "Convert now" : "Fix tracks"}</button>}
+                              : <button onClick={() => convert(c)} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50" style={c.worth ? { border: "1px solid var(--accent-line)", color: "var(--accent)" } : { border: "1px solid var(--line)", color: "var(--ink-dim)" }}>{busy === c.key ? "…" : c.needs?.video ? "Convert now" : "Fix tracks"}</button>}
                           </div>
                         ) : <div className="text-right"><span className="font-mono text-[10.5px] text-ink-faint">{c.needs?.why || "on target"}</span></div>}
                       </td>
@@ -861,7 +876,7 @@ function Field({ label, hint, children }: { label: string; hint: string; childre
 }
 
 const SETTING_KEYS: (keyof ConvertSettings)[] = ["auto", "hours_start", "hours_end", "allow_av1", "use_gpu", "pause_watching", "keep_audio_langs", "keep_original_lang",
-  "drop_commentary", "keep_sub_langs", "image_subs", "scratch_dir", "vaapi_device", "cpu_cores", "workers"];
+  "drop_commentary", "keep_sub_langs", "image_subs", "tidy_tracks", "scratch_dir", "vaapi_device", "cpu_cores", "workers"];
 
 function SettingsPanel({ flash, onSaved }: { flash: (m: string) => void; onSaved: (s: ConvertSettings) => void }) {
   const [saved, setSaved] = useState<ConvertSettings | null>(null);
@@ -938,6 +953,8 @@ function SettingsPanel({ flash, onSaved }: { flash: (m: string) => void; onSaved
             </label>
           ))}
         </div>
+        <Toggle on={d.tidy_tracks} set={(v) => set({ tidy_tracks: v })} label="Tidy tracks even when that's all a file needs"
+          hint="Off: a file whose picture is already fine is only rewritten when dropping tracks frees at least 10% (a big foreign-language audio track does). Its other track changes happen when it's re-encoded, or with Fix tracks. On: every file is tidied — which rewrites it end to end, often to shed a few small subtitle tracks." />
         <p className="m-0 text-[11px] text-ink-faint">Untagged tracks are kept. A language filter that would remove every audio track or every subtitle removes none — the tags are wrong.</p>
       </Section>
 

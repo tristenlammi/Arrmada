@@ -344,7 +344,9 @@ type Candidate struct {
 	PosterURL string     `json:"poster_url,omitempty"`
 	Path      string     `json:"path"`
 	Info      *MediaInfo `json:"info,omitempty"`
-	Candidate bool       `json:"candidate"` // falls short of the target
+	Candidate bool       `json:"candidate"` // falls short of the target in some way
+	Worth     bool       `json:"worth"`     // worth converting (see Needs.Worth)
+	SaveBytes int64      `json:"save_bytes"`
 	Needs     Needs      `json:"needs"`
 	EstBytes  int64      `json:"est_bytes"` // rough estimate of the converted size
 	Tracks    string     `json:"tracks,omitempty"`
@@ -363,7 +365,7 @@ func (s *Service) LibraryConvertible(ctx context.Context, mediaType string, seri
 	}
 	out := make([]Candidate, 0, len(all))
 	for _, c := range all {
-		if c.Candidate {
+		if c.Worth {
 			out = append(out, c)
 		}
 	}

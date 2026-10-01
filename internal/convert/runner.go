@@ -204,7 +204,7 @@ func (s *Service) computeCandidates(ctx context.Context, p prefs) []autoCand {
 			continue
 		}
 		plan, n := p.planFor(&mi, path, orig, dirCache)
-		if !n.Any() {
+		if !n.Worth {
 			continue
 		}
 		c := autoCand{Key: ItemKey(mediaType, movieID, seriesID, season, episode), Title: title, Kind: mediaType,
@@ -212,9 +212,7 @@ func (s *Service) computeCandidates(ctx context.Context, p prefs) []autoCand {
 		if n.Video {
 			c.Codec = plan.VideoCodec
 		}
-		if est := estimatePlanSize(&mi, plan); est > 0 && est < size {
-			c.Saving = size - est
-		}
+		c.Saving = n.Save
 		switch {
 		case n.Video && c.Tracks != "":
 			c.Reason = "video + tracks"
@@ -283,7 +281,7 @@ func (s *Service) RequestSeries(ctx context.Context, seriesID int64, season int)
 	blocked := s.failures.blockedKeys(ctx, maxFailures)
 	n := 0
 	for _, c := range eps {
-		if !c.Candidate || (season >= 0 && c.Season != season) || waiting[c.Key] || blocked[c.Key] {
+		if !c.Needs.Worth || (season >= 0 && c.Season != season) || waiting[c.Key] || blocked[c.Key] {
 			continue
 		}
 		s.mu.Lock()

@@ -38,10 +38,12 @@ func (s *Service) process(ctx context.Context, job *Job) {
 
 	p := s.prefs(ctx)
 	plan, needs := p.planFor(mi, src, origLang, nil)
-	if !needs.Any() {
+	if !needs.Any() || (!job.Requested && !needs.Worth) {
 		note := "already matches — nothing to do"
 		if needs.Why != "" {
 			note = needs.Why + " — nothing to do"
+		} else if needs.Any() {
+			note = "only its tracks differ, and tidying them would free little — left for now"
 		}
 		s.finishSkip(job, SkipAlreadyTarget, note)
 		return

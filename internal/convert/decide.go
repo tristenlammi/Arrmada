@@ -26,6 +26,7 @@ const (
 	keyDropCommentary  = "convert_drop_commentary"    // remove commentary audio tracks
 	keyKeepSubLangs    = "convert_keep_sub_langs"     // CSV; empty = keep all subtitles
 	keyImageSubs       = "convert_image_subs"         // keep | when_text | remove
+	keyTidyTracks      = "convert_tidy_tracks"        // also rewrite files whose only gap is their tracks
 	keyScratchDir      = "convert_scratch_dir"        // transcode working dir override
 	keyVaapiDevice     = "convert_vaapi_device"       // which /dev/dri/renderD* hardware encodes on
 	keyCPUCores        = "convert_cpu_cores"          // max cores a CPU encode may use (0 = half the box)
@@ -38,10 +39,18 @@ const (
 
 // The quality bar and the rules around it are fixed, not settings: they ARE the promise.
 const (
-	minSSIM        = 0.97 // an encode must score at least this against its source
-	minSavingPct   = 20   // a re-encode must save at least this much, or the original stays
-	maxFailures    = 3    // after this many failed attempts a file is left alone
-	qualityRetries = 2    // re-encodes at a higher quality before giving up on a file
+	minSSIM      = 0.97 // an encode must score at least this against its source
+	minSavingPct = 20   // a re-encode must save at least this much, or the original stays
+	// expectedSavingPct is what the ESTIMATE must promise before a re-encode is attempted at
+	// all — above minSavingPct, so a file the estimate puts on the borderline isn't given
+	// hours of encoding only to be thrown away by the 20% rule at the end.
+	expectedSavingPct = 25
+	// tidySavingPct is what a tracks-only rewrite must free to happen automatically. Below
+	// it the file is rewritten end to end to shed a few subtitle tracks — gigabytes of disk
+	// churn for nothing you'd notice — so it waits for a re-encode, or for you.
+	tidySavingPct  = 10
+	maxFailures    = 3 // after this many failed attempts a file is left alone
+	qualityRetries = 2 // re-encodes at a higher quality before giving up on a file
 )
 
 // prefs is every setting the decision layer reads, read once so a loop over thousands of
@@ -53,6 +62,7 @@ type prefs struct {
 	keepOriginal, dropCommentary          bool
 	keepSubs                              []string
 	imageSubs                             string
+	tidyTracks                            bool
 }
 
 func (s *Service) prefs(ctx context.Context) prefs {
@@ -69,6 +79,7 @@ func (s *Service) prefs(ctx context.Context) prefs {
 		dropCommentary: g.GetBool(ctx, keyDropCommentary, false),
 		keepSubs:       splitCSV(g.Get(ctx, keyKeepSubLangs, "")),
 		imageSubs:      g.Get(ctx, keyImageSubs, ""),
+		tidyTracks:     g.GetBool(ctx, keyTidyTracks, false),
 	}
 	switch p.imageSubs {
 	case ImageSubsKeep, ImageSubsWhenText, ImageSubsRemove:
@@ -84,8 +95,8 @@ func (s *Service) prefs(ctx context.Context) prefs {
 
 // cacheKey identifies the settings that change which files need work, for cached views.
 func (p prefs) cacheKey() string {
-	return fmt.Sprintf("%v|%v|%s|%v|%s|%s", p.allowAV1, p.keepOriginal, strings.Join(p.keepAudio, ","),
-		p.dropCommentary, strings.Join(p.keepSubs, ","), p.imageSubs)
+	return fmt.Sprintf("%v|%v|%s|%v|%s|%s|%v", p.allowAV1, p.keepOriginal, strings.Join(p.keepAudio, ","),
+		p.dropCommentary, strings.Join(p.keepSubs, ","), p.imageSubs, p.tidyTracks)
 }
 
 // Needs is the gap between a file and the target.
@@ -95,6 +106,13 @@ type Needs struct {
 	Audio bool `json:"audio"` // carries audio tracks that go
 	// Why explains a file whose video is left alone ("already efficient · 9.8 Mb/s").
 	Why string `json:"why,omitempty"`
+	// Save is the estimated space freed, in bytes.
+	Save int64 `json:"save"`
+	// Worth says the work is worth doing automatically: a re-encode expected to save at
+	// least expectedSavingPct, or a tracks-only rewrite that frees at least tidySavingPct
+	// (or any tracks-only rewrite, when you've asked for tidying). Everything that lists,
+	// counts or picks work for the runner goes by this, not by Any.
+	Worth bool `json:"worth"`
 }
 
 // Any reports whether the file falls short of the target at all.
@@ -212,6 +230,26 @@ func (p prefs) planFor(mi *MediaInfo, path, origLang string, dirCache map[string
 		plan.VideoCodec = p.likelyCodec(mi)
 		plan.Quality = maxQualityCRF(plan.VideoCodec)
 		plan.VFRToCFR = true
+		// Wasteful by the bitrate test, but would the encode actually pay off? If the
+		// estimate doesn't promise a real saving, leave the picture alone.
+		if mi.SizeBytes > 0 {
+			if est := estimatePlanSize(mi, plan); est*100 > mi.SizeBytes*(100-expectedSavingPct) {
+				pct := int(100 - est*100/mi.SizeBytes)
+				n.Video, n.Why = false, fmt.Sprintf("would only save ~%d%%", max(pct, 0))
+				plan.VideoCodec, plan.Quality, plan.VFRToCFR = "", 0, false
+			}
+		}
+	}
+	if n.Any() && mi.SizeBytes > 0 {
+		if est := estimatePlanSize(mi, plan); est < mi.SizeBytes {
+			n.Save = mi.SizeBytes - est
+		}
+	}
+	switch {
+	case n.Video:
+		n.Worth = true
+	case n.Audio || n.Subs:
+		n.Worth = p.tidyTracks || n.Save*100 >= mi.SizeBytes*tidySavingPct
 	}
 	return plan, n
 }

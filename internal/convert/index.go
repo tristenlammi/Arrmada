@@ -351,9 +351,12 @@ type SeriesRollup struct {
 	Year        int    `json:"year,omitempty"`
 	PosterURL   string `json:"poster_url,omitempty"`
 	Files       int    `json:"files"`
-	Convertible int    `json:"convertible"`
+	Convertible int    `json:"convertible"` // worth converting
+	Reencode    int    `json:"reencode"`    // of those, re-encodes
+	TidyOnly    int    `json:"tidy_only"`   // tracks differ, but too little to gain to do automatically
 	TotalBytes  int64  `json:"total_bytes"`
-	EstBytes    int64  `json:"est_bytes"` // estimated size of the convertible files after conversion
+	EstBytes    int64  `json:"est_bytes"`  // estimated size of the worthwhile files after conversion
+	SaveBytes   int64  `json:"save_bytes"` // estimated space freed by them
 }
 
 // computeLibraryTVSeries returns the per-series roll-up for the TV tab — one grouped query
@@ -398,12 +401,18 @@ func (s *Service) computeLibraryTVSeries(ctx context.Context) ([]SeriesRollup, e
 		if infoJSON == "" || json.Unmarshal([]byte(infoJSON), &mi) != nil {
 			continue
 		}
-		plan, needs := p.planFor(&mi, path, orig, dirCache)
-		if !needs.Any() {
-			continue
+		_, needs := p.planFor(&mi, path, orig, dirCache)
+		switch {
+		case needs.Worth:
+			r.Convertible++
+			if needs.Video {
+				r.Reencode++
+			}
+			r.SaveBytes += needs.Save
+			r.EstBytes += mi.SizeBytes - needs.Save
+		case needs.Any():
+			r.TidyOnly++
 		}
-		r.Convertible++
-		r.EstBytes += estimatePlanSize(&mi, plan)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -542,10 +551,10 @@ func (s *Service) computeLibraryStats(ctx context.Context) (*LibraryStats, error
 		convertible := false
 		if probed {
 			hdr = mi.HDR
-			plan, needs := p.planFor(&mi, path, orig, dirCache)
-			convertible = needs.Any()
+			_, needs := p.planFor(&mi, path, orig, dirCache)
+			convertible = needs.Worth
 			if convertible {
-				est = estimatePlanSize(&mi, plan)
+				est = size - needs.Save
 			}
 		}
 		permaSkipped := convertible && skipped[key]
@@ -610,7 +619,7 @@ func (s *Service) indexedCandidates(ctx context.Context, mediaType string, serie
 				// The gap is derived here, not stored — changing a setting takes effect
 				// immediately with no reindex.
 				plan, needs := p.planFor(&mi, r.Path, r.OrigLang, dirCache)
-				c.Needs, c.Candidate = needs, needs.Any()
+				c.Needs, c.Candidate, c.Worth, c.SaveBytes = needs, needs.Any(), needs.Worth, needs.Save
 				if c.Candidate {
 					c.EstBytes = estimatePlanSize(&mi, plan)
 					c.Tracks = trackSummary(&mi, plan)

@@ -113,3 +113,41 @@ func TestEstimateTracksBitrate(t *testing.T) {
 		t.Error("AV1 should estimate smaller than HEVC")
 	}
 }
+
+// Only work that pays off is done automatically and counted.
+func TestWorthIt(t *testing.T) {
+	// Above the "lean" line, but the estimate says a re-encode would barely shrink it: the
+	// picture is left alone rather than burn hours on an encode the 20% rule throws away.
+	borderline := film("h264", 1920, 1080, 3200, aud("aac", "eng", 2))
+	if ok, _ := videoWorth(borderline); !ok {
+		t.Fatal("test setup: should pass the bitrate test")
+	}
+	_, n := (prefs{}).planFor(borderline, "", "", nil)
+	if n.Video || n.Worth || !strings.Contains(n.Why, "would only save") {
+		t.Errorf("borderline file: %+v, want left alone with a reason", n)
+	}
+
+	// A big H.264 Blu-ray re-encode is worth it, with a real saving attached.
+	_, n = (prefs{}).planFor(film("h264", 1920, 1080, 12000, aud("ac3", "eng", 6)), "", "", nil)
+	if !n.Video || !n.Worth || n.Save <= 0 {
+		t.Errorf("Blu-ray re-encode: %+v, want worth it with a saving", n)
+	}
+
+	// Efficient HEVC whose only gap is an image subtitle: rewriting the whole file to shed
+	// it isn't worth doing automatically — unless you've asked for tidying.
+	pgsOnly := withSubs(film("hevc", 1920, 1080, 5000, aud("eac3", "eng", 6)), pgs("eng"), srt("eng"))
+	p := prefs{imageSubs: ImageSubsWhenText}
+	if _, n := p.planFor(pgsOnly, "", "", nil); !n.Subs || n.Worth {
+		t.Errorf("subtitle-only tidy-up: %+v, want flagged but not worth it", n)
+	}
+	p.tidyTracks = true
+	if _, n := p.planFor(pgsOnly, "", "", nil); !n.Worth {
+		t.Errorf("with tidying on, a subtitle-only change should be worth doing: %+v", n)
+	}
+
+	// Dropping a big foreign-language audio track frees real space: worth it on its own.
+	dub := film("hevc", 1920, 1080, 5000, aud("eac3", "eng", 6), aud("truehd", "ger", 8))
+	if _, n := (prefs{keepAudio: []string{"en"}}).planFor(dub, "", "", nil); !n.Audio || !n.Worth || n.Save*100 < dub.SizeBytes*tidySavingPct {
+		t.Errorf("dropping a TrueHD dub: %+v, want worth it", n)
+	}
+}

@@ -912,12 +912,15 @@ export interface ConvertSeriesRollup {
   poster_url?: string;
   files: number;
   convertible: number;
+  reencode: number;
+  tidy_only: number;
   total_bytes: number;
   est_bytes: number;
+  save_bytes: number;
 }
 
-export interface ConvertNeeds { video: boolean; subs: boolean; audio: boolean; why?: string }
-export interface ConvertCandidate { kind: "movie" | "episode"; key: string; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; year?: number; poster_url?: string; path: string; info?: ConvertMediaInfo; candidate: boolean; needs: ConvertNeeds; est_bytes: number; tracks?: string }
+export interface ConvertNeeds { video: boolean; subs: boolean; audio: boolean; why?: string; save: number; worth: boolean }
+export interface ConvertCandidate { kind: "movie" | "episode"; key: string; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; year?: number; poster_url?: string; path: string; info?: ConvertMediaInfo; candidate: boolean; worth: boolean; save_bytes: number; needs: ConvertNeeds; est_bytes: number; tracks?: string }
 export interface ConvertJob {
   id: number; key: string; kind?: string; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string;
   state: "preparing" | "testing" | "encoding" | "verifying" | "replacing" | "done" | "failed" | "skipped" | "cancelled";
@@ -935,7 +938,7 @@ export interface ConvertStatus {
 export interface ConvertSettings {
   auto: boolean; hours_start: string; hours_end: string; allow_av1: boolean; use_gpu: boolean; pause_watching: boolean;
   keep_audio_langs: string; keep_original_lang: boolean; drop_commentary: boolean; keep_sub_langs: string;
-  image_subs: "keep" | "when_text" | "remove";
+  image_subs: "keep" | "when_text" | "remove"; tidy_tracks: boolean;
   scratch_dir: string; vaapi_device: string; cpu_cores: number; workers: number; scan_at: string;
   server_time: string; server_tz: string; plex_watching_known: boolean; can_pause: boolean;
   has_gpu: boolean; gpu_does_av1: boolean; hdr10plus_tool: boolean;
