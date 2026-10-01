@@ -122,12 +122,20 @@ func av1QIndex(crf int) int {
 	return q
 }
 
-// maxQualityCRF is the quality target for each codec — set for retention, not size. The
-// scales differ (AV1's CRF runs higher for the same picture), so each has its own. The
-// quality gate catches the rare file that still falls short and re-encodes it tighter.
-func maxQualityCRF(codec string) int {
-	if codec == "av1" {
+// maxQualityCRF is the quality target for a file — set for retention, not size. The scales
+// differ (AV1's CRF runs higher for the same picture), so each codec has its own. 4K gets a
+// tighter target: UHD films are where grain is heaviest and most visible on a big screen,
+// and holding it faithfully costs bits. The quality check catches the rare file that still
+// falls short and re-encodes it tighter.
+func maxQualityCRF(codec string, mi *MediaInfo) int {
+	uhd := mi != nil && (mi.Width >= 3200 || mi.Height >= 1700)
+	switch {
+	case codec == "av1" && uhd:
+		return 22
+	case codec == "av1":
 		return 24
+	case uhd:
+		return 18
 	}
 	return 20
 }
@@ -342,7 +350,7 @@ func videoArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int, 
 	codec := plan.VideoCodec
 	crf := plan.Quality
 	if crf <= 0 {
-		crf = maxQualityCRF(codec)
+		crf = maxQualityCRF(codec, mi)
 	}
 	var a []string
 	if plan.VFRToCFR && mi.VFR {

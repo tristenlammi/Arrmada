@@ -148,7 +148,7 @@ func parseSSIM(out string) (float64, error) {
 func higherQuality(plan Plan) int {
 	q := plan.Quality
 	if q <= 0 {
-		q = maxQualityCRF(plan.VideoCodec)
+		q = maxQualityCRF(plan.VideoCodec, nil)
 	}
 	if q -= 3; q < 16 {
 		q = 16

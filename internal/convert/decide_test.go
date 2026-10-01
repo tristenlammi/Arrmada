@@ -72,8 +72,11 @@ func TestPlanForLikelyCodec(t *testing.T) {
 	if plan, _ := (prefs{allowAV1: true}).planFor(bloated, "", "", nil); plan.VideoCodec != "av1" || plan.Quality != 24 {
 		t.Errorf("AV1 on: plan %+v, want AV1 at CRF 24", plan)
 	}
-	if plan, _ := (prefs{allowAV1: true}).planFor(hdr10p, "", "", nil); plan.VideoCodec != "hevc" {
-		t.Errorf("HDR10+ with AV1 on: codec %q, want hevc", plan.VideoCodec)
+	if plan, _ := (prefs{allowAV1: true}).planFor(hdr10p, "", "", nil); plan.VideoCodec != "hevc" || plan.Quality != 18 {
+		t.Errorf("4K HDR10+ with AV1 on: %+v, want HEVC at CRF 18 (4K gets the tighter target)", plan)
+	}
+	if q := maxQualityCRF("av1", hdr10p); q != 22 {
+		t.Errorf("4K AV1 CRF = %d, want 22", q)
 	}
 	if plan, n := (prefs{}).planFor(lean, "", "", nil); plan.VideoCodec != "" || n.Any() {
 		t.Errorf("a lean file with no track work must need nothing: plan %+v needs %+v", plan, n)
@@ -102,8 +105,14 @@ func TestTrackOnlyWorkCopiesTheVideo(t *testing.T) {
 func TestEstimateTracksBitrate(t *testing.T) {
 	remux := film("h264", 1920, 1080, 30000, aud("truehd", "eng", 8))
 	plan := Plan{VideoCodec: "hevc"}
-	if est := estimatePlanSize(remux, plan); est > remux.SizeBytes/3 {
-		t.Errorf("30 Mb/s remux estimated at %d of %d — should shrink by well over half", est, remux.SizeBytes)
+	if est := estimatePlanSize(remux, plan); est < remux.SizeBytes*45/100 || est > remux.SizeBytes*65/100 {
+		t.Errorf("30 Mb/s H.264 remux estimated at %d%% of its size — want roughly half (the video halves, the audio stays)", est*100/remux.SizeBytes)
+	}
+	// The case that started this: a grainy 4K HEVC remux at ~71 Mb/s must not be promised a
+	// tiny file. Keeping ~55% of the video bitrate puts it around 60% of its size.
+	uhd := film("hevc", 3840, 2160, 71000, aud("truehd", "eng", 8))
+	if est := estimatePlanSize(uhd, plan); est < uhd.SizeBytes/2 {
+		t.Errorf("71 Mb/s 4K remux estimated at %d%% of its size — that's the 15-GB-from-113 fantasy again", est*100/uhd.SizeBytes)
 	}
 	lean := film("h264", 1920, 1080, 3200, aud("aac", "eng", 2))
 	if est := estimatePlanSize(lean, plan); est < lean.SizeBytes*8/10 {

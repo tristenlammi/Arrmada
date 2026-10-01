@@ -93,7 +93,7 @@ func (s *Service) encodeHDR10Plus(ctx context.Context, job *Job, src, dst, scrat
 func (s *Service) encodeHEVCStream(ctx context.Context, job *Job, src, dst string, mi *MediaInfo, plan Plan) error {
 	crf := plan.Quality
 	if crf <= 0 {
-		crf = maxQualityCRF("hevc")
+		crf = maxQualityCRF("hevc", mi)
 	}
 	cores := s.cpuCores(ctx)
 	args := []string{"-y", "-hide_banner", "-nostats", "-loglevel", "warning", "-progress", "pipe:1",

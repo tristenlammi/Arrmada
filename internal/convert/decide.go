@@ -228,7 +228,7 @@ func (p prefs) planFor(mi *MediaInfo, path, origLang string, dirCache map[string
 	n := needsOf(mi, plan)
 	if n.Video {
 		plan.VideoCodec = p.likelyCodec(mi)
-		plan.Quality = maxQualityCRF(plan.VideoCodec)
+		plan.Quality = maxQualityCRF(plan.VideoCodec, mi)
 		plan.VFRToCFR = true
 		// Wasteful by the bitrate test, but would the encode actually pay off? If the
 		// estimate doesn't promise a real saving, leave the picture alone.

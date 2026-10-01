@@ -4,12 +4,8 @@ import "strings"
 
 // estimatePlanSize predicts the output size of running a Plan on a file. Audio is always
 // copied, so the dropped tracks come straight off the total; the video is predicted from
-// the bitrate a transparent encode typically needs at this resolution and frame rate.
-//
-// The old flat "H.264 × 0.55" guess was wrong in both directions at once: it promised a
-// 45% saving on a lean 2 Mb/s encode that barely shrinks, and badly under-promised on a
-// 70 Mb/s remux that shrinks by two thirds. Only a real encode gives the true number — the
-// per-file comparison does that — but this is close enough to rank files by.
+// the file's own bitrate (see predictedVideoBytes). Only a real encode gives the true
+// number — Compare does that — so this errs on the side of promising less.
 func estimatePlanSize(mi *MediaInfo, plan Plan) int64 {
 	if mi == nil || mi.SizeBytes <= 0 {
 		return 0
@@ -29,7 +25,7 @@ func estimatePlanSize(mi *MediaInfo, plan Plan) int64 {
 
 	targetVideo := srcVideo
 	if plan.VideoCodec != "" {
-		if v := predictedVideoBytes(mi, plan.VideoCodec, dur); v > 0 && v < srcVideo {
+		if v := predictedVideoBytes(mi, plan.VideoCodec, srcVideo, dur); v > 0 && v < srcVideo {
 			targetVideo = v
 		}
 	}
@@ -40,10 +36,41 @@ func estimatePlanSize(mi *MediaInfo, plan Plan) int64 {
 	return targetVideo + targetAudio
 }
 
-// predictedVideoBytes is the video size a transparent encode of this file typically lands
-// at: bits per pixel per frame by resolution (bigger frames compress better per pixel),
-// times the frame rate and runtime. AV1 is about a fifth smaller than HEVC at equal quality.
-func predictedVideoBytes(mi *MediaInfo, codec string, dur float64) int64 {
+// predictedVideoBytes is the video size a transparent encode of this file is expected to
+// land at, from the file's OWN bitrate: a faithful x265 encode keeps about 55% of an HEVC
+// remux's video bitrate, 50% of an H.264's, and 35% of MPEG-2 / VC-1 (much older, much less
+// efficient codecs). That scales with how hard the content is — a grainy film carries a
+// high bitrate and keeps a high one.
+//
+// The first version predicted from the resolution alone, a fixed bitrate per pixel: every
+// 4K film came out near 7 Mb/s, so a grainy 113 GB remux was "15 GB at the same quality" —
+// not a number anyone should believe. The resolution figure survives only as a FLOOR: no
+// encode goes below what a clean picture of that size needs, which is what keeps a lean
+// file from looking like it would shrink. AV1 is estimated 15% under HEVC.
+func predictedVideoBytes(mi *MediaInfo, codec string, srcVideo int64, dur float64) int64 {
+	if srcVideo <= 0 {
+		return 0
+	}
+	ratio := 0.35
+	switch codecClass(mi.VideoCodec) {
+	case "hevc", "vp9":
+		ratio = 0.55
+	case "h264":
+		ratio = 0.50
+	}
+	out := float64(srcVideo) * ratio
+	if floor := floorVideoBytes(mi, dur); floor > out {
+		out = floor
+	}
+	if codec == "av1" {
+		out *= 0.85
+	}
+	return int64(out)
+}
+
+// floorVideoBytes is the least a transparent encode of a clean picture needs at this
+// resolution and frame rate (bits per pixel per frame; bigger frames compress better).
+func floorVideoBytes(mi *MediaInfo, dur float64) float64 {
 	if mi.Width <= 0 || mi.Height <= 0 {
 		return 0
 	}
@@ -62,10 +89,7 @@ func predictedVideoBytes(mi *MediaInfo, codec string, dur float64) int64 {
 	default:
 		bpp = 0.10
 	}
-	if codec == "av1" {
-		bpp *= 0.8
-	}
-	return int64(bpp * float64(mi.Width*mi.Height) * fps * dur / 8)
+	return bpp * float64(mi.Width*mi.Height) * fps * dur / 8
 }
 
 // audioKbps estimates a track's bitrate from its codec + channel count.

@@ -114,7 +114,7 @@ func (s *Service) trial(ctx context.Context, job *Job, src string, mi *MediaInfo
 		enc := s.encoderChoice(mi, codec, p.useGPU)
 		side.Encoder = enc.Label
 		cp := plan
-		cp.VideoCodec, cp.Quality = codec, maxQualityCRF(codec)
+		cp.VideoCodec, cp.Quality = codec, maxQualityCRF(codec, mi)
 		var scores []float64
 		for i, c := range clips {
 			out := filepath.Join(dir, fmt.Sprintf("%s-%d.mkv", codec, i+1))

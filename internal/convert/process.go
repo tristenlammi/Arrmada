@@ -90,7 +90,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		if ctx.Err() != nil {
 			return
 		}
-		plan.VideoCodec, plan.Quality = codec, maxQualityCRF(codec)
+		plan.VideoCodec, plan.Quality = codec, maxQualityCRF(codec, mi)
 		enc = s.pickEncoder(job, mi, plan.VideoCodec, p.useGPU)
 		if !s.canPreserveHDR(mi, plan, enc, h10pJSON != "") {
 			s.finishSkip(job, SkipHDRUnsupported, hdr+" couldn't be carried through a conversion on this machine — kept the original")

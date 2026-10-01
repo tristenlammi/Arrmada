@@ -358,13 +358,17 @@ const SHOW_HEADERS: { label: string; key?: ShowSortKey }[] = [
   { label: "Size", key: "size" }, { label: "Saves", key: "save" }, { label: "" },
 ];
 
-// Saves renders an estimated saving: the amount, and what share of the size it is.
+// Saves renders an estimated saving as a reduction — "−46 GB (40%)" — with the size the
+// file ends up at underneath, so it can't be mistaken for the new size.
 function Saves({ bytes, of, faint }: { bytes: number; of: number; faint?: boolean }) {
   if (!bytes || bytes <= 0) return <span className="text-ink-faint">—</span>;
   const pct = of > 0 ? Math.round((bytes / of) * 100) : 0;
   return (
-    <span style={{ color: faint ? "var(--ink-faint)" : "var(--good)" }}>
-      ~{fmtSize(bytes)} <span className="text-[10.5px] opacity-80">({pct}%)</span>
+    <span className="inline-flex flex-col leading-tight">
+      <span style={{ color: faint ? "var(--ink-faint)" : "var(--good)" }}>
+        −{fmtSize(bytes)} <span className="text-[10.5px] opacity-80">({pct}%)</span>
+      </span>
+      {of > 0 && <span className="text-[10px] text-ink-faint">→ ~{fmtSize(of - bytes)} after</span>}
     </span>
   );
 }
@@ -592,7 +596,7 @@ function Library({ flash, onRequested, onRescan, onCompare, running }: {
             {codecs.map(([cc, n]) => <Pill key={cc} active={codecF.has(cc)} onClick={() => toggleCodec(cc)}>{cc} <span className="opacity-60">{n}</span></Pill>)}
             {codecF.size > 0 && <button onClick={() => setCodecF(new Set())} className="ml-1 text-[10.5px] text-ink-faint underline hover:text-[var(--ink)]">clear</button>}
           </div>
-          <p className="text-[11px] text-ink-faint">“Saves” is an estimate from the bitrate and resolution — <b>Compare</b> encodes a few clips for a real number, and lets you watch them.</p>
+          <p className="text-[11px] text-ink-faint">“Saves” is a deliberately cautious estimate from each file's own bitrate — <b>Compare</b> encodes a few clips for the real number, and lets you watch them.</p>
           <div className="overflow-x-auto rounded-xl" style={{ border: "1px solid var(--line)" }}>
             <table className="w-full border-collapse text-[12.5px]" style={{ minWidth: 900 }}>
               <thead><tr style={{ background: "var(--panel-2)" }}>{HEADERS.map((h) => sortHead(h, sort, setSortKey))}</tr></thead>
