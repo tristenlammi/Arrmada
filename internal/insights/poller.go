@@ -129,6 +129,15 @@ func (s *Service) reconcile(ctx context.Context, sessions []plex.Session, now ti
 		}
 	}
 
+	playing := int32(0)
+	for _, sess := range sessions {
+		if st := strings.ToLower(sess.State); st == "playing" || st == "buffering" {
+			playing++
+		}
+	}
+	s.playing.Store(playing)
+	s.playingAt.Store(now.Unix())
+
 	// Finalize sessions that vanished since the last poll.
 	for key, ls := range s.live {
 		if !seen[key] {

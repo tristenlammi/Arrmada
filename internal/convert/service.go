@@ -1,7 +1,10 @@
+// Package convert is the Convert module: it works through the Movies and TV libraries in
+// the background, re-encoding wasteful video to HEVC or AV1 at the same visual quality and
+// tidying audio/subtitle tracks — gently, inside the hours you choose, and without ever
+// putting a file at risk.
 package convert
 
 import (
-	"bufio"
 	"context"
 	"database/sql"
 	"errors"
@@ -11,8 +14,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,94 +22,28 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/movies"
-	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/series"
 	"github.com/tristenlammi/arrmada/internal/settings"
 )
-
-const (
-	keySkipHardlinked = "convert_skip_hardlinked"
-	keyReclaimed      = "convert_reclaimed_bytes"
-	keyKeepAudioLangs = "convert_keep_audio_langs" // CSV; empty = keep all audio
-	keyKeepSubLangs   = "convert_keep_sub_langs"   // CSV; empty = keep all subtitles
-	keyDropImageSubs  = "convert_drop_image_subs"  // bool; drop PGS/VobSub when a text sub exists
-	keyAddStereo      = "convert_add_stereo"       // add an AAC 2.0 downmix beside surround
-	keyLoudnorm       = "convert_loudnorm"         // EBU R128 loudness normalize
-	keyTargetCodec    = "convert_target_codec"     // "hevc" | "av1" — what the library is converted to
-	keyAuto           = "convert_auto"             // auto-convert the library on the schedule
-	keyQualityGate    = "convert_quality_gate"     // reject/retry an encode that scores too low (SSIM)
-	keyMinSSIM        = "convert_min_ssim"         // minimum acceptable SSIM vs the source
-	keyWorkers        = "convert_workers"          // number of concurrent encode workers (default 1)
-	keySweepStart     = "convert_sweep_start"      // auto-sweep window start "HH:MM" (empty = always)
-	keySweepEnd       = "convert_sweep_end"        // auto-sweep window end   "HH:MM"
-	keyMaxFailures    = "convert_max_failures"     // blocklist a movie after this many convert failures
-	keyScratchDir     = "convert_scratch_dir"      // transcode working dir override (empty = the startup default)
-	keyVaapiDevice    = "convert_vaapi_device"     // which /dev/dri/renderD* VAAPI encodes on (empty = default)
-	keyScanAt         = "convert_scan_at"          // "HH:MM" — when the daily library index sweep runs
-	keyCPUCores       = "convert_cpu_cores"        // max cores a CPU encode may use (0 = half the box)
-	keyCPUAboveHeight = "convert_cpu_above_height" // use CPU at/above this height (0 = never)
-	keyRecodeModern   = "convert_recode_modern"    // also re-encode files already in a modern codec
-)
-
-// defaultMinSSIM is the quality bar an encode must clear against its source.
-//
-// 0.97, not the old 0.95: at 0.95 an encode with visible degradation passes, which makes
-// the gate decorative when the whole promise of the module is that you won't see a
-// difference. The gate is the only mechanism enforcing that promise, so it has to be set
-// where "passed" actually means "indistinguishable".
-const (
-	defaultMinSSIM      = "0.97"
-	defaultMinSSIMValue = 0.97
-)
-
-// encodeNice is the scheduling priority CPU encodes run at. 19 is the lowest — encoding is
-// bulk background work that should yield instantly to Plex, game servers, or anything else
-// the user actually notices.
-const encodeNice = 19
-
-// cpuCores is how many cores a CPU encode may use. Default is half the machine: encoding a
-// library takes days, and it runs on a server that is also doing other things, so taking the
-// whole box is never the right default. Combined with the low priority above, a CPU encode
-// becomes something that fills idle capacity rather than something you schedule around.
-func (s *Service) cpuCores(ctx context.Context) int {
-	n, _ := strconv.Atoi(s.settings.Get(ctx, keyCPUCores, "0"))
-	if n <= 0 {
-		n = runtime.NumCPU() / 2
-	}
-	if n < 1 {
-		n = 1
-	}
-	if max := runtime.NumCPU(); n > max {
-		n = max
-	}
-	return n
-}
 
 // defaultScanAt is when the daily index sweep runs if the admin hasn't picked a time.
 // Pre-dawn by default: the sweep only touches new or changed files, but on a big first
 // run it can wake the array, so keep it away from prime viewing hours.
 const defaultScanAt = "03:00"
 
-// qualityRetries is how many times the quality gate re-encodes at a higher quality before
-// giving up and keeping the original.
-const qualityRetries = 2
+// encodeNice is the scheduling priority encodes run at. 19 is the lowest — encoding is bulk
+// background work that should yield instantly to Plex or anything else the user notices.
+const encodeNice = 19
 
-// maxQueued bounds the in-memory queue. "Convert all" over a TV library is thousands of
-// files, and the old 256 slot buffer turned that into a blocking send that never returned —
-// especially with the encode window parking the workers. The queue isn't persisted, so a
-// restart drops whatever hasn't run; re-running "Convert all" re-queues the remainder.
-const maxQueued = 16384
-
-// maxJobHistory caps how many FINISHED jobs are retained for the Queue tab. Pending and
-// running jobs are never trimmed — dropping them would hide work that's still going to
-// happen.
+// maxJobHistory caps how many FINISHED jobs are kept for the activity list.
 const maxJobHistory = 200
 
-// JobState is a conversion job's lifecycle stage.
+// JobState is a conversion's lifecycle stage.
 type JobState string
 
 const (
-	StateQueued    JobState = "queued"
+	StatePreparing JobState = "preparing" // analysing the file
+	StateTesting   JobState = "testing"   // trying HEVC and AV1 on a few clips
 	StateEncoding  JobState = "encoding"
 	StateVerifying JobState = "verifying"
 	StateReplacing JobState = "replacing"
@@ -118,13 +53,23 @@ const (
 	StateCancelled JobState = "cancelled"
 )
 
+// activeState reports whether a job is still running.
+func activeState(st JobState) bool {
+	switch st {
+	case StatePreparing, StateTesting, StateEncoding, StateVerifying, StateReplacing:
+		return true
+	}
+	return false
+}
+
 // Job is one conversion of one library file — a movie or a TV episode.
 type Job struct {
 	ID          int64    `json:"id"`
-	Kind        string   `json:"kind"` // "movie" | "episode" (empty = movie, for back-compat)
+	Key         string   `json:"key"`
+	Kind        string   `json:"kind"` // "movie" | "episode"
 	MovieID     int64    `json:"movie_id,omitempty"`
 	SeriesID    int64    `json:"series_id,omitempty"`
-	Season      int      `json:"season"` // NOT omitempty: season 0 is specials, and must survive
+	Season      int      `json:"season"` // NOT omitempty: season 0 is specials
 	Episode     int      `json:"episode,omitempty"`
 	Title       string   `json:"title"`
 	State       JobState `json:"state"`
@@ -133,19 +78,23 @@ type Job struct {
 	SpeedX      float64  `json:"speed_x"`      // × realtime
 	DurationSec float64  `json:"duration_sec"` // source runtime (for the UI's ETA)
 	Encoder     string   `json:"encoder"`
+	Codec       string   `json:"codec,omitempty"` // the format it's converting to ("" = tracks only)
 	SrcBytes    int64    `json:"src_bytes"`
 	OutBytes    int64    `json:"out_bytes"`
-	SSIM        float64  `json:"ssim,omitempty"` // quality-gate score vs the source (0 = not measured)
-	Note        string   `json:"note,omitempty"` // skip reason / error
+	SSIM        float64  `json:"ssim,omitempty"` // quality score vs the source (0 = not measured)
+	Note        string   `json:"note,omitempty"`
+	Requested   bool     `json:"requested"`        // asked for by hand
+	Paused      string   `json:"paused,omitempty"` // why it's paused; "" while running
+	StartedAt   int64    `json:"started_at"`
+	FinishedAt  int64    `json:"finished_at,omitempty"`
 
-	plan      Plan               // the compiled plan this job runs (not serialized)
 	cancel    context.CancelFunc // set while running, so the encode can be stopped mid-flight
-	cancelled bool               // cancellation requested; the worker checks before starting
+	cancelled bool
+	procs     map[int]bool // process groups currently running for this job (for pausing)
 }
 
-// Service runs the conversion engine: a single worker draining a queue, doing the safe
-// encode→verify→replace pipeline. One worker keeps this slice simple; the multi-worker
-// pool + scheduling arrive in a later phase.
+// Service runs the conversion engine: workers that pick the next file worth converting,
+// and the safe encode → verify → replace pipeline each one runs.
 type Service struct {
 	db       *sql.DB // for the swap journal; sub-stores hold their own handle
 	movies   *movies.Service
@@ -155,24 +104,24 @@ type Service struct {
 
 	ffmpeg, ffprobe        string
 	scratchDir, recycleDir string
-
-	doviTool, hdr10plusTool string // Dolby Vision / HDR10+ metadata tools (empty if not bundled)
+	hdr10plusTool          string // HDR10+ metadata tool (empty if not bundled)
 
 	// noNumaPools is set when x265's NUMA pool binding is blocked by the container's
-	// seccomp profile — see numaPoolsBlocked. Encodes then run unpooled, which is slower
-	// but doesn't crash.
+	// seccomp profile — see numaPoolsBlocked. Encodes then run unpooled.
 	noNumaPools bool
 
 	encoders []Encoder
-	encoder  Encoder
-	failures *failureStore // quarantine blocklist (repeated-failure tracking)
+	failures *failureStore // repeated-failure tracking
 	cache    *probeCache   // persisted ffprobe results (avoids re-analyzing on restart)
 	skips    *skipStore    // persisted skip reasons, so they survive a restart and are visible
-	index    *libraryIndex // persisted per-file library facts; what the library list reads
+	index    *libraryIndex // persisted per-file library facts; what the lists read
+	requests *requestStore // hand-picked files, persisted
+	choices  *choiceStore  // per-file HEVC-vs-AV1 test outcomes
 
-	indexMu sync.Mutex // serializes index sweeps so a scheduled one can't overlap an import-triggered one
-	// indexScanning is readable without taking indexMu, so the UI can poll "is the
-	// rescan still going?" without blocking behind the scan it's asking about.
+	// watching reports whether someone is watching Plex right now (from Insights).
+	watching atomic.Pointer[func() bool]
+
+	indexMu       sync.Mutex // serializes index sweeps
 	indexScanning atomic.Bool
 	lastSweep     time.Time
 
@@ -180,40 +129,35 @@ type Service struct {
 	libCacheMu sync.Mutex
 	statsCache libCacheEntry[*LibraryStats]
 	tvCache    libCacheEntry[[]SeriesRollup]
+	candCache  libCacheEntry[[]autoCand]
 
-	mu        sync.Mutex
+	mu      sync.Mutex
+	jobs    []*Job
+	nextID  int64
+	pending map[string]*Job // item key → its running job, so a file is never converted twice at once
+	wake    chan struct{}   // nudges idle workers (a request arrived, a setting changed)
+
 	reclaimMu sync.Mutex // guards the reclaimed-bytes read-modify-write across workers
-	jobs      []*Job
-	nextID    int64
-	queue     chan *Job
 
-	// hwBroken records hardware encoders that failed at runtime. detectEncoders can only
-	// tell us an encoder is COMPILED IN and its device node exists — not that it actually
-	// works. Quick Sync in particular can be present and still fail to initialise, and
-	// without this every single job pays for another doomed attempt before falling back.
 	hwBrokenMu sync.Mutex
-	hwBroken   map[string]int // failure count per encoder; broken at hwBrokenThreshold
+	hwBroken   map[string]int // runtime failures per hardware encoder
 
-	// pending maps an item key (see failures.go) to its live job so the same file is never
-	// queued twice. The sweep re-runs ConvertAll over a queue that can take days to drain,
-	// which without this re-queues everything — including files currently encoding, letting
-	// two workers write the same output. Guarded by mu.
-	pending map[string]*Job
+	compare compareState
 
 	logMu  sync.Mutex
-	logBuf []LogLine // recent human-readable convert events, for the UI console
-	logs   *logStore // durable mirror of logBuf so history survives a restart
+	logBuf []LogLine
+	logs   *logStore
 }
 
-// LogLine is one entry in the Convert activity console.
+// LogLine is one entry in the Convert activity log.
 type LogLine struct {
 	At    int64  `json:"at"`    // unix seconds
 	Level string `json:"level"` // "info" | "warn" | "error"
 	Msg   string `json:"msg"`
 }
 
-// event appends a human-readable line to the convert console (kept to the last maxLogLines,
-// persisted to the DB so history survives a restart) and mirrors it to the structured log.
+// event appends a human-readable line to the activity log (kept to the last maxLogLines,
+// persisted so history survives a restart) and mirrors it to the structured log.
 func (s *Service) event(level, msg string) {
 	ln := LogLine{At: time.Now().Unix(), Level: level, Msg: msg}
 	s.logMu.Lock()
@@ -223,6 +167,9 @@ func (s *Service) event(level, msg string) {
 	}
 	s.logMu.Unlock()
 	s.logs.append(context.Background(), ln)
+	if s.log == nil {
+		return
+	}
 	switch level {
 	case "error", "warn":
 		s.log.Warn("convert: " + msg)
@@ -231,7 +178,7 @@ func (s *Service) event(level, msg string) {
 	}
 }
 
-// Logs returns the recent convert console lines (oldest first).
+// Logs returns the recent activity-log lines (oldest first).
 func (s *Service) Logs() []LogLine {
 	s.logMu.Lock()
 	defer s.logMu.Unlock()
@@ -240,72 +187,55 @@ func (s *Service) Logs() []LogLine {
 	return out
 }
 
-// NewService wires the module, detecting the best available HEVC encoder up front.
+// NewService wires the module, verifying which encoders actually work up front.
 func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *settings.Service, ffmpeg, ffprobe, scratchDir, recycleDir string, log *slog.Logger) *Service {
 	_ = os.MkdirAll(scratchDir, 0o755)
-	encs := detectEncoders(context.Background(), ffmpeg)
 	s := &Service{
 		db:     db,
 		movies: mv, series: sr, settings: set, log: log,
 		ffmpeg: ffmpeg, ffprobe: ffprobe, scratchDir: scratchDir, recycleDir: recycleDir,
-		encoders: encs, encoder: bestHEVC(encs), failures: &failureStore{db: db},
-		cache: &probeCache{db: db}, logs: &logStore{db: db}, index: &libraryIndex{db: db},
-		skips:   &skipStore{db: db},
-		queue:   make(chan *Job, maxQueued),
+		encoders: detectEncoders(context.Background(), ffmpeg),
+		failures: &failureStore{db: db}, cache: &probeCache{db: db}, logs: &logStore{db: db},
+		index: &libraryIndex{db: db}, skips: &skipStore{db: db}, requests: &requestStore{db: db},
+		choices: &choiceStore{db: db},
 		pending: map[string]*Job{},
+		wake:    make(chan struct{}, 1),
 	}
-	s.logBuf = s.logs.recent(context.Background(), maxLogLines) // restore the console after a restart
-	s.doviTool, _ = exec.LookPath("dovi_tool")
+	s.logBuf = s.logs.recent(context.Background(), maxLogLines) // restore the log after a restart
 	s.hdr10plusTool, _ = exec.LookPath("hdr10plus_tool")
 	if s.noNumaPools = numaPoolsBlocked(context.Background(), ffmpeg); s.noNumaPools {
 		log.Warn("convert: x265 NUMA thread pools are blocked by the container's seccomp policy — " +
 			"encoding unpooled. Add cap_add: [SYS_NICE] to the container for full threading.")
 	}
-	log.Info("convert: encoder selected", "encoder", s.encoder.Label, "name", s.encoder.Name,
-		"dolby_vision", s.doviTool != "", "hdr10plus", s.hdr10plusTool != "")
+	var working []string
+	for _, e := range s.encoders {
+		if e.Available {
+			working = append(working, e.Name)
+		}
+	}
+	log.Info("convert: encoders verified", "working", strings.Join(working, ","), "hdr10plus", s.hdr10plusTool != "")
 	return s
 }
 
-// Run starts the worker pool draining the queue until ctx is cancelled (start it in a
-// goroutine). The worker count comes from settings (default 1); process() is concurrency-safe,
-// with per-job scratch files and mutex-guarded shared state.
-func (s *Service) Run(ctx context.Context) {
-	// A restart abandons any in-flight encode (jobs aren't persisted; the original
-	// file is only replaced at the very end, so nothing is lost). Sweep the scratch
-	// dir of the partial files those jobs left behind so /transcode doesn't fill up.
-	s.cleanScratch(ctx)
-	// Replay any file swap a crash interrupted before starting new work.
-	s.recoverSwaps(ctx)
-	n := s.workerCount(ctx)
-	s.log.Info("convert: worker pool started", "workers", n)
-	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case job := <-s.queue:
-					// Queueing isn't converting: the window is "quiet hours for
-					// encoding", so a job queued outside it waits here rather than
-					// starting immediately. Without this, "Convert all" would kick
-					// off thousands of encodes the moment it's clicked.
-					if !s.waitForWindow(ctx, job) {
-						return
-					}
-					s.runJob(ctx, job)
-				}
-			}
-		}()
+// SetWatching tells Convert how to ask whether someone is watching Plex, so it can pause.
+func (s *Service) SetWatching(fn func() bool) {
+	if fn == nil {
+		s.watching.Store(nil)
+		return
 	}
-	wg.Wait()
+	s.watching.Store(&fn)
 }
 
-// cleanScratch removes leftover per-job scratch files (partial encodes, samples,
-// HDR sidecars) from the working dir at startup — the debris of any convert cut
-// short by a restart. Only runs before workers start, so nothing live is touched.
+func (s *Service) isWatching() bool {
+	if fn := s.watching.Load(); fn != nil {
+		return (*fn)()
+	}
+	return false
+}
+
+// cleanScratch removes leftover per-job scratch files (partial encodes, test clips, HDR10+
+// sidecars) at startup — the debris of any conversion cut short by a restart. Only runs
+// before the workers start, so nothing live is touched.
 func (s *Service) cleanScratch(ctx context.Context) {
 	seen := map[string]bool{}
 	for _, dir := range []string{s.scratchDir, s.activeScratch(ctx)} {
@@ -320,44 +250,40 @@ func (s *Service) cleanScratch(ctx context.Context) {
 		removed := 0
 		for _, e := range entries {
 			n := e.Name()
-			if strings.HasPrefix(n, "convert-") || strings.HasPrefix(n, "sample-") ||
+			if strings.HasPrefix(n, "convert-") || strings.HasPrefix(n, "sample-") || strings.HasPrefix(n, "trial-") ||
 				strings.HasPrefix(n, "h10p-") || strings.HasPrefix(n, "dv-") {
-				if os.Remove(filepath.Join(dir, n)) == nil {
+				if os.RemoveAll(filepath.Join(dir, n)) == nil {
 					removed++
 				}
 			}
 		}
-		if removed > 0 {
+		if removed > 0 && s.log != nil {
 			s.log.Info("convert: cleaned orphaned scratch files", "dir", dir, "count", removed)
 		}
 	}
 }
 
-// workerCount reads the configured concurrency (clamped to a sane range).
-func (s *Service) workerCount(ctx context.Context) int {
-	n, _ := strconv.Atoi(s.settings.Get(ctx, keyWorkers, "1"))
-	if n < 1 {
-		n = 1
+// Hardware reports the verified encoders and a label for what conversions will run on.
+func (s *Service) Hardware(ctx context.Context) (encoders []Encoder, using string) {
+	p := s.prefs(ctx)
+	using = "CPU (x265)"
+	if p.allowAV1 {
+		using = "CPU (x265 / SVT-AV1)"
 	}
-	if n > 8 {
-		n = 8
+	if p.useGPU {
+		if hw, ok := hardwareFor("hevc", s.encoders); ok && !s.hardwareIsBroken(hw.Name) {
+			using = hw.Label + " · HDR on the CPU"
+		}
 	}
-	return n
+	return s.encoders, using
 }
 
-// Hardware reports detected encoders + the selected one.
-func (s *Service) Hardware() (encoders []Encoder, selected Encoder) {
-	return s.encoders, s.encoder
-}
-
-// Devices reports the available render nodes plus the one currently selected for
-// VAAPI — so the UI can let the user pick the discrete card over the iGPU.
+// Devices reports the available render nodes plus the one selected for hardware encoding.
 func (s *Service) Devices(ctx context.Context) (devices []RenderDevice, selected string) {
 	return renderDevices(), s.vaapiDev(ctx)
 }
 
-// vaapiDev resolves which render node VAAPI encodes on (the Convert → VAAPI device
-// setting), falling back to the default node.
+// vaapiDev resolves which render node VAAPI encodes on, falling back to the default node.
 func (s *Service) vaapiDev(ctx context.Context) string {
 	if d := strings.TrimSpace(s.settings.Get(ctx, keyVaapiDevice, "")); d != "" {
 		return d
@@ -365,33 +291,30 @@ func (s *Service) vaapiDev(ctx context.Context) string {
 	return vaapiDevice
 }
 
-// activeScratch resolves the transcode working directory: the configured override
-// (Convert → Transcode directory) when set, otherwise the startup default. This
-// is where the heavy encode happens before the finished file is moved into the
-// library, so it should live on fast storage (an SSD/NVMe pool), never the array.
-// The directory is created if missing; a bad override falls back to the default.
+// activeScratch resolves the transcode working directory: the configured override when set,
+// otherwise the startup default. The heavy encode happens here before the finished file is
+// moved into the library, so it should live on fast storage (an SSD/NVMe pool), never the
+// array. A bad override falls back to the default.
 func (s *Service) activeScratch(ctx context.Context) string {
 	dir := strings.TrimSpace(s.settings.Get(ctx, keyScratchDir, ""))
 	if dir == "" {
 		dir = s.scratchDir
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		s.log.Warn("convert: transcode dir unusable, falling back to default", "dir", dir, "err", err)
+		if s.log != nil {
+			s.log.Warn("convert: transcode dir unusable, falling back to default", "dir", dir, "err", err)
+		}
 		_ = os.MkdirAll(s.scratchDir, 0o755)
 		return s.scratchDir
 	}
 	return dir
 }
 
-// ScratchInfo reports the resolved transcode directory and its free space (for
-// the Convert UI).
+// ScratchInfo reports the resolved transcode directory and its free space.
 func (s *Service) ScratchInfo(ctx context.Context) (dir string, freeBytesN int64) {
 	dir = s.activeScratch(ctx)
 	return dir, int64(freeBytes(dir))
 }
-
-// encoderFor picks the encoder for a plan's target codec (hardware if available, else CPU).
-func (s *Service) encoderFor(codec string) Encoder { return encoderFor(codec, s.encoders) }
 
 // Reclaimed returns the cumulative bytes saved by conversions (persisted).
 func (s *Service) Reclaimed(ctx context.Context) int64 {
@@ -408,9 +331,10 @@ func (s *Service) addReclaimed(ctx context.Context, delta int64) {
 	_ = s.settings.Set(ctx, keyReclaimed, strconv.FormatInt(s.Reclaimed(ctx)+delta, 10))
 }
 
-// Candidate is a library file plus its probed spec and whether "Save space" would act on it.
+// Candidate is a library file plus its probed spec and whether it needs work.
 type Candidate struct {
 	Kind      string     `json:"kind"` // "movie" | "episode"
+	Key       string     `json:"key"`
 	MovieID   int64      `json:"movie_id,omitempty"`
 	SeriesID  int64      `json:"series_id,omitempty"`
 	Season    int        `json:"season"` // NOT omitempty — season 0 is specials
@@ -420,56 +344,18 @@ type Candidate struct {
 	PosterURL string     `json:"poster_url,omitempty"`
 	Path      string     `json:"path"`
 	Info      *MediaInfo `json:"info,omitempty"`
-	Candidate bool       `json:"candidate"` // doesn't match the target spec yet
-	// Needs says WHICH parts of the target this file doesn't meet, so the list can be
-	// tagged rather than just flagged. A file can fail on tracks alone while its video
-	// is already exactly right — that's most of a library once the codec is settled.
-	Needs    Needs `json:"needs"`
-	EstBytes int64 `json:"est_bytes"` // rough estimate of converted size
+	Candidate bool       `json:"candidate"` // falls short of the target
+	Needs     Needs      `json:"needs"`
+	EstBytes  int64      `json:"est_bytes"` // rough estimate of the converted size
+	Tracks    string     `json:"tracks,omitempty"`
 }
 
-// Needs is the gap between a file and the target spec.
-type Needs struct {
-	Video bool `json:"video"` // wrong video codec
-	Subs  bool `json:"subs"`  // carries subtitle languages that aren't kept
-	Audio bool `json:"audio"` // carries audio languages that aren't kept
-}
-
-// Any reports whether the file falls short of the target at all.
-func (n Needs) Any() bool { return n.Video || n.Subs || n.Audio }
-
-// RemuxOnly reports whether the gap can be closed by copying the video — only the tracks
-// are wrong. That's minutes and no quality loss, versus hours and a re-encode.
-func (n Needs) RemuxOnly() bool { return !n.Video && (n.Subs || n.Audio) }
-
-// Reason is a short label for the list.
-func (n Needs) Reason() string {
-	switch {
-	case n.Video && (n.Subs || n.Audio):
-		return "video + tracks"
-	case n.Video:
-		return "video"
-	case n.Subs && n.Audio:
-		return "subtitles + audio"
-	case n.Subs:
-		return "subtitles"
-	case n.Audio:
-		return "audio"
-	}
-	return ""
-}
-
-// Library returns every downloaded movie with its spec + convert candidacy.
-//
-// Reads the persisted index (migration 0058) rather than walking the library and probing
-// per request, so this is one query with no filesystem access.
+// Library returns every movie with its spec and what it needs, from the index.
 func (s *Service) Library(ctx context.Context) ([]Candidate, error) {
 	return s.indexedCandidates(ctx, "movie", 0)
 }
 
-// LibraryConvertible returns only the files that still need conversion. The movies tab
-// otherwise returns every movie with its full MediaInfo — the same unbounded-payload problem
-// the TV roll-up solved — so this lets the UI ask for just the actionable rows.
+// LibraryConvertible returns only the files that still need work.
 func (s *Service) LibraryConvertible(ctx context.Context, mediaType string, seriesID int64) ([]Candidate, error) {
 	all, err := s.indexedCandidates(ctx, mediaType, seriesID)
 	if err != nil {
@@ -484,497 +370,29 @@ func (s *Service) LibraryConvertible(ctx context.Context, mediaType string, seri
 	return out, nil
 }
 
-// LibraryTV returns every downloaded TV episode with its spec + convert candidacy,
-// reading the same persisted index as Library. Pass seriesID > 0 to scope to one show —
-// that's what keeps the TV tab responsive at library scale.
+// LibraryTV returns one show's episodes (seriesID > 0) with their specs and needs.
 func (s *Service) LibraryTV(ctx context.Context, seriesID int64) ([]Candidate, error) {
 	return s.indexedCandidates(ctx, "episode", seriesID)
 }
 
-// QueueMovie enqueues a Save-space conversion of a movie (using the default plan built from
-// the global settings) and returns the created job.
-func (s *Service) QueueMovie(ctx context.Context, movieID int64) (*Job, error) {
-	m, err := s.movies.Get(ctx, movieID)
-	if err != nil {
-		return nil, err
-	}
-	return s.queueMovie(ctx, movieID, s.planForFile(ctx, m.MovieFilePath))
-}
-
-// QueueEpisode enqueues a Save-space conversion of one TV episode.
-func (s *Service) QueueEpisode(ctx context.Context, seriesID int64, season, episode int) (*Job, error) {
-	path := ""
-	if s.series != nil {
-		path, _ = s.series.EpisodeFilePath(ctx, seriesID, season, episode)
-	}
-	return s.queueEpisode(ctx, seriesID, season, episode, s.planForFile(ctx, path))
-}
-
-func (s *Service) queueEpisode(ctx context.Context, seriesID int64, season, episode int, plan Plan) (*Job, error) {
-	if s.series == nil {
-		return nil, fmt.Errorf("series module not available")
-	}
-	path, _ := s.series.EpisodeFilePath(ctx, seriesID, season, episode)
-	if path == "" {
-		return nil, fmt.Errorf("episode has no file to convert")
-	}
-	title := fmt.Sprintf("S%02dE%02d", season, episode)
-	if sm, err := s.series.Get(ctx, seriesID); err == nil {
-		title = fmt.Sprintf("%s - S%02dE%02d", sm.Title, season, episode)
-	}
-	return s.enqueueEpisode(ctx, seriesID, season, episode, title, plan)
-}
-
-// enqueueEpisodeIndexed queues an episode using facts already read from the library index.
-// Bulk callers ("Convert all", per-series/season) go through here: the lookup version costs a
-// series.Get AND an EpisodeFilePath per episode, which at thousands of episodes is thousands
-// of redundant queries — each series.Get loads every season and episode of that show.
-func (s *Service) enqueueEpisodeIndexed(ctx context.Context, c Candidate, plan Plan) (*Job, error) {
-	if c.Path == "" {
-		return nil, fmt.Errorf("episode has no file to convert")
-	}
-	return s.enqueueEpisode(ctx, c.SeriesID, c.Season, c.Episode, c.Title, plan)
-}
-
-func (s *Service) enqueueEpisode(ctx context.Context, seriesID int64, season, episode int, title string, plan Plan) (*Job, error) {
-	key := episodeKey(seriesID, season, episode)
-	job, fresh := s.claimPending(key, func(id int64) *Job {
-		return &Job{ID: id, Kind: "episode", SeriesID: seriesID, Season: season, Episode: episode,
-			Title: title, State: StateQueued, Encoder: s.encoder.Label, plan: plan}
-	})
-	if !fresh {
-		return job, ErrAlreadyQueued
-	}
-	s.event("info", "Queued "+job.Title)
-	if err := s.enqueue(ctx, job); err != nil {
-		return nil, err
-	}
-	return job, nil
-}
-
-// defaultPlan is the single conversion plan derived from the global settings: transcode to the
-// chosen codec at maximum-retention quality, keep audio untouched, subtitles carried through
-// (the Subtitles module handles them), MKV container.
-func (s *Service) defaultPlan(ctx context.Context) Plan {
-	codec := s.targetCodec(ctx)
-	return Plan{
-		VideoCodec: codec,
-		Quality:    maxQualityCRF(codec),
-		VFRToCFR:   true,
-		Container:  "mkv",
-		// These three were readable and writable through the settings API but never read
-		// here, so setting them did nothing at all. The AudioPlan machinery they feed
-		// (compileOutputArgs, estimatePlanSize) has always been implemented.
-		Audio: AudioPlan{
-			KeepLangs: splitCSV(s.settings.Get(ctx, keyKeepAudioLangs, "")),
-			AddStereo: s.settings.GetBool(ctx, keyAddStereo, false),
-			Loudnorm:  s.settings.GetBool(ctx, keyLoudnorm, false),
-		},
-		Subs: SubPlan{
-			KeepLangs: splitCSV(s.settings.Get(ctx, keyKeepSubLangs, "")),
-			// On by default: image subtitles are the single most common reason Plex
-			// transcodes a file that would otherwise direct-play, and the guard in
-			// keptSubs means "on" can never strip a language's only subtitle.
-			DropImage: s.settings.GetBool(ctx, keyDropImageSubs, true),
-		},
-	}
-}
-
-// RemuxPlan is the default plan with the video left alone: no re-encode, just the
-// stream cleanup — dropping unwanted audio and subtitle languages and rewriting the
-// container. Minutes rather than hours, and bit-for-bit identical video.
-//
-// This is what a file that is ALREADY in the target codec needs. Such a file is not a
-// conversion candidate at all (isCandidateCodec refuses a source that already matches
-// the target), so before this there was no way to clean up its tracks.
-func (s *Service) RemuxPlan(ctx context.Context) Plan {
-	p := s.defaultPlan(ctx)
-	p.VideoCodec = "" // copy
-	p.Quality = 0
-	p.VFRToCFR = false // re-timing frames would mean re-encoding them
-	p.ScaleHeight = 0
-	return p
-}
-
-// planFor turns a file's gap into the cheapest plan that closes it: a full re-encode
-// only when the video codec is wrong, otherwise a copy that just rewrites the tracks.
-//
-// This is what makes "set a target, make everything match it" a single action. The user
-// says what they want the library to look like; deciding whether that costs an hour or
-// a minute is not their problem.
-// needsOf is THE definition of "this file doesn't match the target". Every list, roll-up
-// and stat must call it.
-//
-// It was inlined in three places, and they drifted: the show roll-up kept asking about
-// the codec alone, so a series read "all efficient" while every one of its episodes was
-// listed as needing subtitle work. Pure, and takes the settings it needs, so a hot loop
-// can hoist them out instead of re-reading per row.
-func needsOf(mi *MediaInfo, dp Plan, target string, recode bool) Needs {
-	if mi == nil {
-		return Needs{}
-	}
-	return Needs{
-		Video: isCandidateCodec(mi.VideoCodec, target, recode),
-		Subs:  (len(dp.Subs.KeepLangs) > 0 || dp.Subs.DropImage) && len(keptSubs(mi, dp)) < len(mi.Subs),
-		Audio: len(dp.Audio.KeepLangs) > 0 && len(keptAudio(mi, dp)) < len(mi.Audio),
-	}
-}
-
-// NeedsFor is needsOf with the service's current settings.
-func (s *Service) NeedsFor(ctx context.Context, mi *MediaInfo) Needs {
-	return needsOf(mi, s.defaultPlan(ctx), s.targetCodec(ctx), s.recodesModern(ctx))
-}
-
-// planForFile picks the cheapest plan that brings one file to the target. A file that
-// can't be probed gets the full plan: doing the whole job is the safe answer when we
-// can't tell what's wrong, since the alternative silently copies video that may be in
-// the wrong codec.
-func (s *Service) planForFile(ctx context.Context, path string) Plan {
-	if strings.TrimSpace(path) == "" {
-		return s.defaultPlan(ctx)
-	}
-	mi, err := s.probeCached(ctx, path)
-	if err != nil {
-		return s.defaultPlan(ctx)
-	}
-	dp := withSidecars(s.defaultPlan(ctx), path, nil)
-	n := needsOf(mi, dp, s.targetCodec(ctx), s.recodesModern(ctx))
-	if n.Video {
-		return dp
-	}
-	r := s.RemuxPlan(ctx)
-	r.Subs.TextSidecarLangs = dp.Subs.TextSidecarLangs
-	return r
-}
-
-func (s *Service) planFor(ctx context.Context, n Needs) Plan {
-	if n.Video {
-		return s.defaultPlan(ctx)
-	}
-	return s.RemuxPlan(ctx)
-}
-
-// splitCSV parses a comma-separated setting into trimmed, non-empty values.
-func splitCSV(v string) []string {
-	var out []string
-	for _, p := range strings.Split(v, ",") {
-		if t := strings.TrimSpace(p); t != "" {
-			out = append(out, t)
-		}
-	}
-	return out
-}
-
-// recodesModern reports whether files already in a modern codec (HEVC, AV1) should be
-// re-encoded into the target anyway. Off by default — see isCandidateCodec for why.
-func (s *Service) recodesModern(ctx context.Context) bool {
-	return s.settings.GetBool(ctx, keyRecodeModern, false)
-}
-
-// targetCodec is the codec the library is being converted to (hevc | av1), default HEVC.
-func (s *Service) targetCodec(ctx context.Context) string {
-	if s.settings.Get(ctx, keyTargetCodec, "hevc") == "av1" {
-		return "av1"
-	}
-	return "hevc"
-}
-
-// maxQualityCRF is the quality-preserving CRF for a codec — deliberately higher-quality than the
-// space-first default; the SSIM quality gate (on by default) catches anything that still drops.
-func maxQualityCRF(codec string) int {
-	if codec == "av1" {
-		return 24
-	}
-	return 20
-}
-
-// modernCodec reports whether a codec is already an efficient modern one. These are the
-// files there's little to gain from re-encoding — they're the DESTINATION of a conversion,
-// not a wasteful source in need of one.
-func modernCodec(c string) bool {
-	switch codecClass(c) {
-	case "hevc", "av1", "vp9":
-		return true
-	}
-	return false
-}
-
-// isCandidateCodec decides whether a file's codec makes it worth converting to target.
-//
-// The point of the module is taking wasteful old encodes — H.264, MPEG-2, VC-1 — and
-// bringing them to a modern codec. Re-encoding something already modern is a different
-// proposition entirely:
-//
-//   - HEVC → AV1 is a SECOND lossy generation for maybe 20-30% more space, compounding the
-//     artifacts of an encode that's already efficient.
-//   - AV1 → HEVC is worse still: a second generation that also produces a BIGGER file,
-//     since AV1 is the more efficient codec. There's no space to save, only quality to
-//     lose. The only reason to want it is device compatibility.
-//
-// So neither happens by default. recodeModern is the opt-in for both.
-func isCandidateCodec(codec, target string, recodeModern bool) bool {
-	if codec == "" || strings.EqualFold(codec, target) {
-		return false
-	}
-	// HEVC → AV1 is never worth doing, and "recode modern" must not buy it. The gain over
-	// an already-efficient encode is modest, and it costs a SECOND generation of loss on
-	// video that is already lossy — the one trade this library is not willing to make.
-	// H.264 and older are the wasteful sources worth re-encoding; those still qualify.
-	if modernCodec(codec) && target == "av1" {
-		return false
-	}
-	if modernCodec(codec) && !recodeModern {
-		return false
-	}
-	return true
-}
-
-func (s *Service) queueMovie(ctx context.Context, movieID int64, plan Plan) (*Job, error) {
-	m, err := s.movies.Get(ctx, movieID)
-	if err != nil {
-		return nil, err
-	}
-	if !m.HasFile || m.MovieFilePath == "" {
-		return nil, fmt.Errorf("movie has no file to convert")
-	}
-	key := movieKey(movieID)
-	job, fresh := s.claimPending(key, func(id int64) *Job {
-		return &Job{ID: id, MovieID: movieID, Title: m.Title, State: StateQueued, Encoder: s.encoder.Label, plan: plan}
-	})
-	if !fresh {
-		return job, ErrAlreadyQueued
-	}
-	s.event("info", "Queued "+job.Title)
-	if err := s.enqueue(ctx, job); err != nil {
-		return nil, err
-	}
-	return job, nil
-}
-
-// finishSkip ends a job as skipped and records the reason durably. The in-memory job list
-// holds only the last 200 entries and is lost on restart, so without this a skip was
-// effectively invisible: the file stayed a candidate, kept inflating the reclaimable
-// figure, and was re-probed by every sweep with nothing to show for it.
-func (s *Service) finishSkip(job *Job, kind, note string) {
-	// A cancelled job records nothing durable — "couldn't verify the encode" after
-	// the user killed the verify is not a real quality-gate skip, and recording it
-	// permanently excluded the file from the reclaimable figure.
-	if s.wasCancelled(job) {
-		s.finish(job, StateCancelled, "cancelled")
-		return
-	}
-	s.skips.record(context.Background(), jobKey(job), kind, note)
-	s.finish(job, StateSkipped, note)
-}
-
-// finishAfterEncode skips a job that already burned a full encode (or three, via the quality
-// gate) and would do so again on every sweep: the outcome is deterministic for that file, and
-// it stays a candidate because its codec never changed. Counting it toward the blocklist is
-// what stops the library re-transcoding the same unshrinkable file forever.
-func (s *Service) finishAfterEncode(job *Job, kind, note string) {
-	if s.wasCancelled(job) {
-		s.finish(job, StateCancelled, "cancelled")
-		return
-	}
-	s.failures.recordFailure(context.Background(), jobKey(job), note)
-	s.finishSkip(job, kind, note)
-}
-
-// reindexConverted updates the library index for the file a job just converted.
-func (s *Service) reindexConverted(ctx context.Context, job *Job) {
-	var err error
-	if job.Kind == "episode" {
-		err = s.IndexSeries(ctx, job.SeriesID)
-	} else {
-		err = s.IndexMovie(ctx, job.MovieID)
-	}
-	if err != nil {
-		s.log.Warn("convert: reindex after convert failed", "title", job.Title, "err", err)
-	}
-}
-
-// pendingState reports whether a job still has work left to do (so it must not be trimmed).
-func pendingState(st JobState) bool {
-	switch st {
-	case StateQueued, StateEncoding, StateVerifying, StateReplacing:
-		return true
-	}
-	return false
-}
-
-// trimJobsLocked drops the oldest FINISHED jobs once history grows past the cap, leaving
-// every queued/running job in place. Callers must hold s.mu.
-func (s *Service) trimJobsLocked() {
-	finished := 0
-	for _, j := range s.jobs {
-		if !pendingState(j.State) {
-			finished++
-		}
-	}
-	if finished <= maxJobHistory {
-		return
-	}
-	drop := finished - maxJobHistory
-	kept := make([]*Job, 0, len(s.jobs)-drop)
-	for i := len(s.jobs) - 1; i >= 0; i-- { // oldest first
-		if drop > 0 && !pendingState(s.jobs[i].State) {
-			drop--
-			continue
-		}
-		kept = append(kept, s.jobs[i])
-	}
-	// kept is oldest-first; restore newest-first ordering.
-	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
-		kept[i], kept[j] = kept[j], kept[i]
-	}
-	s.jobs = kept
-}
-
-// claimPending atomically claims an item key with a freshly-built job, or returns the
-// job already working on it. Check and insert MUST be one critical section: as two
-// separate lock windows, an hourly Sweep racing a user's "Convert all" both saw the
-// key absent and two workers encoded the same source concurrently — the second
-// finalize then retired the first job's freshly-converted file.
-// Callers must NOT hold mu.
-func (s *Service) claimPending(key string, mk func(id int64) *Job) (*Job, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if j, ok := s.pending[key]; ok {
-		return j, false
-	}
-	s.nextID++
-	job := mk(s.nextID)
-	s.pending[key] = job
-	s.jobs = append([]*Job{job}, s.jobs...) // newest first
-	s.trimJobsLocked()
-	return job, true
-}
-
-// releasePending drops a finished job's claim so the file can be queued again later.
-func (s *Service) releasePending(key string, job *Job) {
-	s.mu.Lock()
-	if s.pending[key] == job {
-		delete(s.pending, key)
-	}
-	s.mu.Unlock()
-}
-
-// ErrAlreadyQueued means this exact file already has a job waiting or running.
-var ErrAlreadyQueued = errors.New("this file is already queued")
-
-// Cancel stops a job: a queued one never starts, a running one has its encode killed. The
-// original file is only ever replaced at the very end of a job, so cancelling mid-encode
-// leaves the library untouched.
-func (s *Service) Cancel(id int64) error {
-	s.mu.Lock()
-	var job *Job
-	for _, j := range s.jobs {
-		if j.ID == id {
-			job = j
-			break
-		}
-	}
-	if job == nil {
-		s.mu.Unlock()
-		return fmt.Errorf("no such job")
-	}
-	if !pendingState(job.State) {
-		s.mu.Unlock()
-		return fmt.Errorf("job already finished")
-	}
-	job.cancelled = true
-	cancel := job.cancel
-	s.mu.Unlock()
-
-	if cancel != nil {
-		cancel() // kills ffmpeg; process() unwinds and marks the job cancelled
-		return nil
-	}
-	// Still sitting in the queue — mark it now so the UI updates immediately; the worker
-	// will drop it when it reaches the front.
-	s.finish(job, StateCancelled, "cancelled")
-	return nil
-}
-
-// CancelQueued cancels everything not yet started, leaving in-flight encodes alone. This is
-// the escape hatch for "I queued my whole library with the wrong settings".
-func (s *Service) CancelQueued() int {
-	s.mu.Lock()
-	var queued, running []*Job
-	var cancels []context.CancelFunc
-	for _, j := range s.jobs {
-		if j.State != StateQueued {
-			continue
-		}
-		j.cancelled = true
-		// A job can be StateQueued yet already IN a worker (resolveSource/probe/HDR
-		// extraction run before the state flips to Encoding). Finishing those here
-		// released their pending key while the worker carried on — the job later
-		// "un-cancelled" itself in the UI, and the freed key allowed a second
-		// concurrent encode of the same file. Signal their context instead and let
-		// the worker unwind and finish them as cancelled.
-		if j.cancel != nil {
-			running = append(running, j)
-			cancels = append(cancels, j.cancel) // capture under mu — runJob nils it on return
-		} else {
-			queued = append(queued, j)
-		}
-	}
-	s.mu.Unlock()
-	for _, cancel := range cancels {
-		cancel()
-	}
-	for _, j := range queued {
-		s.finish(j, StateCancelled, "cancelled")
-	}
-	n := len(queued) + len(running)
-	if n > 0 {
-		s.event("info", fmt.Sprintf("Cancelled %d queued job%s", n, plural(n)))
-	}
-	return n
-}
-
-func plural(n int) string {
-	if n == 1 {
-		return ""
-	}
-	return "s"
-}
-
-// Blocklist returns the files automation is currently skipping because they kept failing,
-// with titles resolved. Without this the user has no way to discover that a handful of files
-// silently never convert.
+// Blocklist returns the files left alone after repeated failures, with titles resolved.
 func (s *Service) Blocklist(ctx context.Context) ([]Blocked, error) {
 	list, err := s.failures.list(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for i := range list {
-		b := &list[i]
-		switch b.Kind {
-		case "movie":
-			if s.movies != nil {
-				if m, err := s.movies.Get(ctx, b.MovieID); err == nil {
-					b.Title = m.Title
-				}
-			}
-		case "episode":
-			if s.series != nil {
-				if sm, err := s.series.Get(ctx, b.SeriesID); err == nil {
-					b.Title = fmt.Sprintf("%s - S%02dE%02d", sm.Title, b.Season, b.Episode)
-				}
-			}
+	out := list[:0]
+	for _, b := range list {
+		if b.Count < maxFailures {
+			continue // still being retried — not blocked yet
 		}
-		if b.Title == "" {
-			b.Title = b.Key
-		}
+		b.Title = s.titleForKey(ctx, b.Kind, b.MovieID, b.SeriesID, b.Season, b.Episode, b.Key)
+		out = append(out, b)
 	}
-	return list, nil
+	return out, nil
 }
 
 // Skips returns the files that couldn't be converted and why, with titles resolved.
-// Without this the reasons lived only in a 200-entry in-memory list that vanished on
-// restart, so "some of my library never converts" was undiscoverable.
 func (s *Service) Skips(ctx context.Context) ([]Skipped, error) {
 	list, err := s.skips.list(ctx)
 	if err != nil {
@@ -986,13 +404,26 @@ func (s *Service) Skips(ctx context.Context) ([]Skipped, error) {
 	return list, nil
 }
 
-// ClearSkip forgets an item's skip (or all of them) so it's retried next time.
+// ClearSkip forgets an item's skip (or all of them) so it's tried again.
 func (s *Service) ClearSkip(ctx context.Context, key string) error {
+	defer s.wakeUp()
 	s.invalidateLibraryCache()
 	if key == "" {
 		return s.skips.clearAll(ctx)
 	}
 	s.skips.clear(ctx, key)
+	return nil
+}
+
+// ClearBlocklist forgets an item's failures (or all of them when key is empty).
+func (s *Service) ClearBlocklist(ctx context.Context, key string) error {
+	defer s.wakeUp()
+	s.invalidateLibraryCache()
+	if key == "" {
+		_, err := s.failures.db.ExecContext(ctx, `DELETE FROM convert_failures`)
+		return err
+	}
+	s.failures.clearFailures(ctx, key)
 	return nil
 }
 
@@ -1015,26 +446,12 @@ func (s *Service) titleForKey(ctx context.Context, kind string, movieID, seriesI
 	return key
 }
 
-// ClearBlocklist forgets an item's failures (or all of them when key is empty) so it will be
-// retried by the next convert.
-func (s *Service) ClearBlocklist(ctx context.Context, key string) error {
-	s.invalidateLibraryCache()
-	if key == "" {
-		_, err := s.failures.db.ExecContext(ctx, `DELETE FROM convert_failures`)
-		return err
-	}
-	s.failures.clearFailures(ctx, key)
-	return nil
-}
-
 // hwBrokenThreshold is how many distinct hardware-encode failures it takes before the
-// encoder is treated as broken for the rest of the run. One failure can be one corrupt
-// source file; writing the encoder off run-wide on a single sample punished the whole
-// library for one bad input.
+// encoder is treated as broken for the rest of the run. One failure can be one bad file.
 const hwBrokenThreshold = 2
 
 // markHardwareBroken records that a hardware encoder failed; after hwBrokenThreshold
-// failures it stops being preferred for the rest of the run.
+// failures it stops being used for the rest of the run.
 func (s *Service) markHardwareBroken(name, reason string) {
 	s.hwBrokenMu.Lock()
 	if s.hwBroken == nil {
@@ -1058,26 +475,6 @@ func (s *Service) hardwareIsBroken(name string) bool {
 	return s.hwBroken[name] >= hwBrokenThreshold
 }
 
-// enqueue hands a job to the workers without blocking forever if the queue is saturated.
-func (s *Service) enqueue(ctx context.Context, job *Job) error {
-	select {
-	case s.queue <- job:
-		return nil
-	case <-ctx.Done():
-		// Finish the job or its pending claim leaks: the file could never be queued
-		// again until restart, and the job sat "queued" in the list forever.
-		s.finish(job, StateCancelled, "cancelled before it could be queued")
-		return ctx.Err()
-	default:
-		// Deliberately NOT a durable skip: a full queue is transient by definition,
-		// yet it was recorded in the Problems list en masse — a "Convert all",
-		// CancelQueued, then second "Convert all" filled the Problems page with
-		// thousands of queue-full rows.
-		s.finish(job, StateSkipped, "convert queue is full — try again once it drains")
-		return fmt.Errorf("convert queue is full")
-	}
-}
-
 // Jobs returns a snapshot of recent jobs (newest first).
 func (s *Service) Jobs() []Job {
 	s.mu.Lock()
@@ -1085,290 +482,9 @@ func (s *Service) Jobs() []Job {
 	out := make([]Job, len(s.jobs))
 	for i, j := range s.jobs {
 		out[i] = *j
+		out[i].procs = nil
 	}
 	return out
-}
-
-// --- Rules (C2) ---
-
-func (s *Service) maxFailures(ctx context.Context) int {
-	n, _ := strconv.Atoi(s.settings.Get(ctx, keyMaxFailures, "3"))
-	if n < 1 {
-		n = 3
-	}
-	return n
-}
-
-// SampleResult is the outcome of a 30-second sample encode — a content-exact size estimate.
-type SampleResult struct {
-	MovieID   int64  `json:"movie_id"`
-	Title     string `json:"title"`
-	SrcBytes  int64  `json:"src_bytes"`
-	EstBytes  int64  `json:"est_bytes"` // extrapolated full-file size
-	Percent   int    `json:"percent"`   // reduction %
-	SampleSec int    `json:"sample_sec"`
-}
-
-// SampleMovie samples one movie with the default plan.
-func (s *Service) SampleMovie(ctx context.Context, movieID int64) (SampleResult, error) {
-	return s.sample(ctx, movieID, s.defaultPlan(ctx))
-}
-
-func (s *Service) sample(ctx context.Context, movieID int64, plan Plan) (SampleResult, error) {
-	m, err := s.movies.Get(ctx, movieID)
-	if err != nil {
-		return SampleResult{}, err
-	}
-	if !m.HasFile || m.MovieFilePath == "" {
-		return SampleResult{}, fmt.Errorf("movie has no file")
-	}
-	src := m.MovieFilePath
-	mi, err := probe(ctx, s.ffprobe, src)
-	if err != nil {
-		return SampleResult{}, err
-	}
-	dur := mi.DurationSec
-	if dur <= 0 {
-		dur = 1
-	}
-	ext := ".mkv"
-	if plan.Container == "mp4" {
-		ext = ".mp4"
-	}
-
-	// Sample several short slices spread across the film so the estimate averages out
-	// scene complexity (a single slice can land on an unrepresentatively easy/busy scene).
-	// Short clips just get one full-length pass.
-	type slice struct{ start, length float64 }
-	var slices []slice
-	if dur > 120 {
-		for _, frac := range []float64{0.20, 0.50, 0.80} {
-			slices = append(slices, slice{start: dur * frac, length: 12})
-		}
-	} else {
-		start, length := 0.0, 30.0
-		if dur > 90 {
-			start = dur * 0.35
-		}
-		if dur-start < length {
-			length = dur - start
-		}
-		if length <= 0 {
-			start, length = 0, dur
-		}
-		slices = append(slices, slice{start: start, length: length})
-	}
-
-	encodeSlice := func(enc Encoder, sl slice, dst string) error {
-		args := []string{"-y", "-hide_banner", "-ss", fmt.Sprintf("%.2f", sl.start), "-t", fmt.Sprintf("%.2f", sl.length)}
-		args = append(args, globalArgs(enc, false, s.vaapiDev(ctx))...) // sample = software decode (short, keep it simple/robust)
-		args = append(args, "-i", src)
-		args = append(args, compileOutputArgs(enc, mi, withSidecars(plan, src, nil), false, s.cpuCores(ctx), s.noNumaPools)...)
-		args = append(args, dst)
-		cmd := exec.CommandContext(ctx, s.ffmpeg, args...)
-		lowPriority(cmd)
-		if err := cmd.Start(); err != nil {
-			return err
-		}
-		applyNice(cmd.Process.Pid, encodeNice)
-		return cmd.Wait()
-	}
-
-	enc := s.encoderFor(plan.VideoCodec)
-	scratch := s.activeScratch(ctx)
-	var sampledBytes int64
-	var sampledSec float64
-	for i, sl := range slices {
-		// Unique per invocation: two concurrent samples of the same movie used to
-		// collide on identical filenames and interleave their outputs.
-		dst := filepath.Join(scratch, fmt.Sprintf("sample-%d-%d-%d%s", movieID, i, time.Now().UnixNano(), ext))
-		if err := encodeSlice(enc, sl, dst); err != nil {
-			if enc.Hardware { // retry this slice on CPU
-				err = encodeSlice(cpuEncoder(plan.VideoCodec), sl, dst)
-			}
-			if err != nil {
-				os.Remove(dst)
-				return SampleResult{}, fmt.Errorf("sample encode failed: %w", err)
-			}
-		}
-		sampledBytes += fileSize(dst)
-		sampledSec += sl.length
-		os.Remove(dst)
-	}
-	if sampledSec <= 0 {
-		return SampleResult{}, fmt.Errorf("sample produced no output")
-	}
-	estFull := int64(float64(sampledBytes) * dur / sampledSec)
-	percent := 0
-	if mi.SizeBytes > 0 {
-		percent = int((1 - float64(estFull)/float64(mi.SizeBytes)) * 100)
-	}
-	return SampleResult{MovieID: movieID, Title: m.Title, SrcBytes: mi.SizeBytes, EstBytes: estFull, Percent: percent, SampleSec: int(sampledSec)}, nil
-}
-
-// Sweep is the scheduled auto-conversion: if auto-convert is on and we're inside the schedule
-// window, queue every file that isn't already the target codec. (No rules — one focused job.)
-func (s *Service) Sweep(ctx context.Context) {
-	if !s.settings.GetBool(ctx, keyAuto, false) {
-		return
-	}
-	if !s.inSweepWindow(ctx) {
-		s.log.Info("convert: outside the schedule window, skipping")
-		return
-	}
-	if r, _ := s.ConvertAll(ctx); r.Queued > 0 {
-		s.log.Info("convert: scheduled conversion queued",
-			"queued", r.Queued, "movies", r.Movies, "episodes", r.Episodes, "blocklisted", r.Blocklisted)
-	}
-}
-
-// ConvertAll queues every library file (movies + TV episodes) that isn't already the target
-// codec, skipping anything that has failed too many times. The manual "Convert all" button and
-// the schedule both use it. Queueing is not converting: the workers still hold each job until
-// the encode window opens.
-// ConvertAllResult breaks down what a "Convert all" actually did. The button used to show a
-// movies-only count while this queued TV as well, so the number on screen was far lower than
-// the work it started.
-type ConvertAllResult struct {
-	Movies      int `json:"movies"`
-	Episodes    int `json:"episodes"`
-	Queued      int `json:"queued"`
-	Blocklisted int `json:"blocklisted"` // skipped: failed too many times already
-	Skipped     int `json:"skipped"`     // skipped: a permanent skip reason is on record
-}
-
-func (s *Service) ConvertAll(ctx context.Context) (ConvertAllResult, error) {
-	plan := s.defaultPlan(ctx)
-	maxFail := s.maxFailures(ctx)
-	var res ConvertAllResult
-
-	// Permanently-skipped files (DV that can't be preserved, encodes that never get
-	// smaller, quality-gate failures) are deterministic: re-queueing them burned a
-	// probe — and for the quality-gate class a full encode — on every hourly sweep,
-	// forever, while flooding the job history with identical skip rows.
-	skippedKeys := s.skips.permanentKeys(ctx)
-
-	cands, err := s.Library(ctx)
-	if err != nil {
-		return res, err
-	}
-	for _, c := range cands {
-		if !c.Candidate {
-			continue
-		}
-		if skippedKeys[movieKey(c.MovieID)] {
-			res.Skipped++
-			continue
-		}
-		if s.failures.blocklisted(ctx, movieKey(c.MovieID), maxFail) {
-			res.Blocklisted++
-			continue
-		}
-		if _, err := s.queueMovie(ctx, c.MovieID, plan); err == nil {
-			res.Movies++
-		}
-	}
-
-	tv, err := s.LibraryTV(ctx, 0)
-	if err == nil {
-		for _, c := range tv {
-			if !c.Candidate {
-				continue
-			}
-			if skippedKeys[episodeKey(c.SeriesID, c.Season, c.Episode)] {
-				res.Skipped++
-				continue
-			}
-			if s.failures.blocklisted(ctx, episodeKey(c.SeriesID, c.Season, c.Episode), maxFail) {
-				res.Blocklisted++
-				continue
-			}
-			if _, err := s.enqueueEpisodeIndexed(ctx, c, plan); err == nil {
-				res.Episodes++
-			}
-		}
-	}
-	res.Queued = res.Movies + res.Episodes
-	return res, nil
-}
-
-// waitForWindow blocks until the encode window opens, parking the job in the queue with a
-// note so the UI can explain why nothing is running. Returns false if ctx was cancelled.
-func (s *Service) waitForWindow(ctx context.Context, job *Job) bool {
-	// A cancelled job doesn't wait: report ready and let runJob drop it immediately.
-	// (false means "shutting down" to the worker loop — a worker must never exit
-	// just because one job was cancelled, and must not park on it for hours either.)
-	if s.wasCancelled(job) {
-		return true
-	}
-	if s.inSweepWindow(ctx) {
-		return true
-	}
-	start := s.settings.Get(ctx, keySweepStart, "")
-	end := s.settings.Get(ctx, keySweepEnd, "")
-	s.update(job, func(j *Job) { j.Note = fmt.Sprintf("waiting for the %s–%s window", start, end) })
-	// The server's own clock, named, because the window is measured against it and NOT
-	// against the browser's. A container stuck on UTC turns an overnight window into a
-	// midday one: nothing runs at night, and a parked worker is otherwise silent, so the
-	// only symptom is "the schedule does nothing". Print the clock being compared.
-	zone, _ := time.Now().Zone()
-	s.log.Info("convert: job waiting for the encode window",
-		"title", job.Title, "window", start+"-"+end,
-		"server_time", time.Now().Format("15:04"), "server_tz", zone)
-	for {
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(time.Minute):
-			if s.wasCancelled(job) {
-				return true // runJob drops it; the worker moves on to the next job
-			}
-			if s.inSweepWindow(ctx) {
-				s.update(job, func(j *Job) { j.Note = "" })
-				return true
-			}
-		}
-	}
-}
-
-// inSweepWindow reports whether now falls inside the global auto-sweep window (a master
-// quiet-hours gate in Settings). An unset window means "always". Per-rule windows narrow it
-// further (see Sweep).
-func (s *Service) inSweepWindow(ctx context.Context) bool {
-	return windowAllows(s.settings.Get(ctx, keySweepStart, ""), s.settings.Get(ctx, keySweepEnd, ""))
-}
-
-// windowAllows reports whether the current time falls within an "HH:MM"–"HH:MM" window. An empty
-// or unparseable window means "always". Windows may wrap past midnight (e.g. 22:00–06:00).
-func windowAllows(start, end string) bool {
-	if start == "" || end == "" {
-		return true
-	}
-	s0, ok1 := parseHM(start)
-	e0, ok2 := parseHM(end)
-	if !ok1 || !ok2 || s0 == e0 {
-		return true
-	}
-	now := time.Now()
-	cur := now.Hour()*60 + now.Minute()
-	if s0 < e0 {
-		return cur >= s0 && cur < e0
-	}
-	return cur >= s0 || cur < e0 // wraps past midnight
-}
-
-// parseHM parses "HH:MM" into minutes-since-midnight.
-func parseHM(s string) (int, bool) {
-	p := strings.SplitN(s, ":", 2)
-	if len(p) != 2 {
-		return 0, false
-	}
-	h, e1 := strconv.Atoi(strings.TrimSpace(p[0]))
-	m, e2 := strconv.Atoi(strings.TrimSpace(p[1]))
-	if e1 != nil || e2 != nil || h < 0 || h > 23 || m < 0 || m > 59 {
-		return 0, false
-	}
-	return h*60 + m, true
 }
 
 func (s *Service) update(job *Job, fn func(*Job)) {
@@ -1377,713 +493,86 @@ func (s *Service) update(job *Job, fn func(*Job)) {
 	s.mu.Unlock()
 }
 
-// runJob wraps process() with per-job cancellation, and drops a job that was cancelled while
-// it sat in the queue.
-func (s *Service) runJob(ctx context.Context, job *Job) {
-	jobCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
+// claimPending atomically claims an item key with a freshly-built job, or reports that the
+// item is already being converted. Check and insert are one critical section so two
+// workers can never convert the same file at once.
+func (s *Service) claimPending(key string, mk func(id int64) *Job) (*Job, bool) {
 	s.mu.Lock()
-	if job.cancelled {
-		// Read the state under the same lock — reading it after unlocking raced a
-		// concurrent Cancel writing it (a genuine data race, caught by -race).
-		pending := pendingState(job.State)
-		s.mu.Unlock()
-		if pending {
-			s.finish(job, StateCancelled, "cancelled")
-		}
-		return
+	defer s.mu.Unlock()
+	if j, ok := s.pending[key]; ok {
+		return j, false
 	}
-	job.cancel = cancel
-	s.mu.Unlock()
+	s.nextID++
+	job := mk(s.nextID)
+	job.Key = key
+	s.pending[key] = job
+	s.jobs = append([]*Job{job}, s.jobs...) // newest first
+	s.trimJobsLocked()
+	return job, true
+}
 
-	s.process(jobCtx, job)
-
+// releasePending drops a finished job's claim so the file can be picked again later.
+func (s *Service) releasePending(key string, job *Job) {
 	s.mu.Lock()
-	job.cancel = nil
-	wasCancelled := job.cancelled
-	state := job.State
+	if s.pending[key] == job {
+		delete(s.pending, key)
+	}
 	s.mu.Unlock()
-	// process() reports a killed ffmpeg as a failure; relabel it so the user sees their own
-	// action rather than an error they didn't cause.
-	if wasCancelled && state == StateFailed {
-		s.update(job, func(j *Job) { j.State = StateCancelled; j.Note = "cancelled" })
-	}
 }
 
-func (s *Service) process(ctx context.Context, job *Job) {
-	src, title, ok := s.resolveSource(ctx, job)
-	if !ok {
-		s.finish(job, StateFailed, "source file is gone")
+// trimJobsLocked drops the oldest FINISHED jobs once history grows past the cap. Callers
+// must hold s.mu.
+func (s *Service) trimJobsLocked() {
+	finished := 0
+	for _, j := range s.jobs {
+		if !activeState(j.State) {
+			finished++
+		}
+	}
+	if finished <= maxJobHistory {
 		return
 	}
-	mi, err := probe(ctx, s.ffprobe, src)
-	if err != nil {
-		s.finish(job, StateFailed, "could not analyze file: "+err.Error())
-		return
-	}
-	s.update(job, func(j *Job) { j.SrcBytes = mi.SizeBytes; j.DurationSec = mi.DurationSec })
-
-	plan := job.plan // the compiled plan this job runs (a rule's, or the save-space default)
-
-	// Health check is a read-only corruption scan (no transcode) — report and return (R5).
-	if plan.HealthCheck && plan.VideoCodec == "" {
-		s.runHealthCheck(ctx, job, src, mi)
-		return
-	}
-	if wouldBeNoOp(mi, plan) {
-		s.finishSkip(job, SkipAlreadyTarget, "already "+strings.ToUpper(mi.VideoCodec)+" — nothing to do")
-		return
-	}
-	// Encoder routing — ordered, first match wins. See CONVERT-QUALITY-PLAN.md.
-	enc := s.pickEncoder(ctx, job, mi, plan)
-
-	// Whatever still can't be preserved after routing (Dolby Vision or HDR10+ with an AV1
-	// target, or a missing dovi_tool / hdr10plus_tool) is skipped rather than silently
-	// flattened. The format cards in Settings warn about this before the user commits.
-	if isHDR(mi.HDR) && !s.canPreserveHDR(mi, plan, enc) {
-		// The goal is a library with no H.264 left in it — not AV1 at any cost. When AV1
-		// can't carry this file's HDR metadata but HEVC can, convert to HEVC instead of
-		// skipping: the metadata survives intact AND the file still gets off H.264.
-		// Skipping is reserved for what NEITHER codec can preserve (Dolby Vision profile 5,
-		// or a missing dovi_tool/hdr10plus_tool).
-		if alt := s.hdrFallbackCodec(mi, plan); alt != "" {
-			s.log.Info("convert: routing to HEVC — AV1 can't carry this file's HDR metadata",
-				"title", job.Title, "hdr", mi.HDR)
-			s.event("info", job.Title+" — "+mi.HDR+" can't be carried into AV1; converting to HEVC instead")
-			plan.VideoCodec = alt
-			plan.Quality = maxQualityCRF(alt) // CRF scales differ per codec — re-target, don't reuse AV1's
-			enc = s.pickEncoder(ctx, job, mi, plan)
-		}
-		if !s.canPreserveHDR(mi, plan, enc) {
-			s.finishSkip(job, SkipHDRUnsupported, skipReasonHDR(mi.HDR, plan.VideoCodec))
-			return
-		}
-	}
-
-	// Seeding-safety: skip hardlinked files by default so we don't duplicate a seeding copy.
-	if s.settings.GetBool(ctx, keySkipHardlinked, true) && fileLinks(src) > 1 {
-		s.finishSkip(job, SkipHardlinked, "file is hardlinked (likely still seeding) — skipped")
-		return
-	}
-	// The transcode working dir (fast/SSD when configured) — heavy encode I/O lands here.
-	scratch := s.activeScratch(ctx)
-	// Disk-space guard: need room for a worst-case same-size output on the scratch volume.
-	if free := freeBytes(scratch); free > 0 && int64(free) < mi.SizeBytes+(256<<20) {
-		s.finish(job, StateFailed, "not enough scratch space to convert safely")
-		return
-	}
-
-	// HDR10+ dynamic metadata: any HDR10 file may carry it (ffprobe won't reliably say so), and
-	// the bundled x265 can't re-embed it, so extract it up front — a successful extract means the
-	// file has HDR10+ and we route to the inject pipeline. Absence is normal and silent.
-	h10pJSON := ""
-	if mi.HDR != "Dolby Vision" && (mi.HDR == "HDR10" || mi.HDR == "HDR10+") && s.hdr10plusTool != "" &&
-		(plan.VideoCodec == "hevc" || plan.VideoCodec == "av1") {
-		jf := filepath.Join(scratch, fmt.Sprintf("h10p-%d.json", job.ID))
-		err := s.extractHDR10Plus(ctx, src, jf)
-		switch {
-		case err == nil && plan.VideoCodec == "av1":
-			// The file carries HDR10+ dynamic metadata, which the AV1 pipeline can't
-			// re-embed but the HEVC one can (extract → encode → inject). Route to HEVC
-			// rather than skip: the dynamic metadata survives and the file leaves H.264.
-			//
-			// This is the common case, not an edge one — ffprobe won't reliably report
-			// HDR10+, so most files carrying it are labelled plain "HDR10" and only the
-			// extract above can tell.
-			s.log.Info("convert: HDR10+ found — routing to HEVC so the dynamic metadata survives",
-				"title", job.Title)
-			s.event("info", job.Title+" — carries HDR10+; converting to HEVC so the dynamic metadata survives")
-			plan.VideoCodec = "hevc"
-			plan.Quality = maxQualityCRF("hevc")
-			enc = s.pickEncoder(ctx, job, mi, plan)
-			if !s.canPreserveHDR(mi, plan, enc) {
-				_ = os.Remove(jf)
-				s.finishSkip(job, SkipHDRUnsupported, skipReasonHDR("HDR10+", "hevc"))
-				return
-			}
-			h10pJSON = jf
-			defer os.Remove(jf)
-		case err == nil:
-			h10pJSON = jf
-			defer os.Remove(jf)
-		case mi.HDR == "HDR10+":
-			// This file is KNOWN to carry HDR10+. Continuing would encode it with static
-			// HDR10 only and quietly lose the dynamic metadata, so stop instead.
-			_ = os.Remove(jf)
-			s.finish(job, StateSkipped,
-				"HDR10+ metadata could not be extracted — kept the original rather than re-encoding without it")
-			return
-		default:
-			// Labelled plain HDR10: a failed extract just means it has no HDR10+. Normal.
-			_ = os.Remove(jf)
-		}
-	}
-
-	// Output extension follows the plan's container, except the Dolby Vision and HDR10+ inject
-	// pipelines always produce MKV (DV in MP4 needs finicky dvh1 tagging; both re-mux a raw ES).
-	ext := ".mkv"
-	if plan.Container == "mp4" && mi.HDR != "Dolby Vision" && h10pJSON == "" {
-		ext = ".mp4"
-	}
-	dst := filepath.Join(scratch, fmt.Sprintf("convert-%d%s", job.ID, ext))
-	defer os.Remove(dst)
-
-	// Encode, then (if the quality gate is on for a real transcode) score the result and
-	// re-encode at a higher quality until it passes or we run out of attempts.
-	// Default true, matching the settings API (httpapi/settings.go) — they disagreed, so a
-	// fresh install showed the gate as ON in the UI while encoding with it OFF.
-	gate := plan.VideoCodec != "" && s.settings.GetBool(ctx, keyQualityGate, true)
-	minSSIM := parseFloatDefault(s.settings.Get(ctx, keyMinSSIM, defaultMinSSIM), defaultMinSSIMValue)
-	s.update(job, func(j *Job) { j.State = StateEncoding; j.Encoder = enc.Label })
-	s.event("info", fmt.Sprintf("%s — source: %s · %s", title, mediaSpec(mi), humanBytes(mi.SizeBytes)))
-	s.event("info", fmt.Sprintf("Encoding %s → %s on %s (%s source)", title, strings.ToUpper(plan.VideoCodec), enc.Label, humanBytes(mi.SizeBytes)))
-	for attempt := 0; ; attempt++ {
-		if err := s.runEncode(ctx, job, src, dst, mi, enc, plan, h10pJSON); err != nil {
-			if errors.Is(err, errDVProfile5) {
-				// Not a defect — the file's DV profile is only visible in its RPU
-				// (no stream-level record, so the router couldn't refuse it earlier).
-				// A permanent skip, not a failure.
-				s.finishSkip(job, SkipHDRUnsupported, err.Error())
-				return
-			}
-			s.finish(job, StateFailed, "encode failed: "+err.Error())
-			return
-		}
-		if !gate {
-			break
-		}
-		s.update(job, func(j *Job) { j.State = StateVerifying })
-		s.event("info", fmt.Sprintf("Verifying %s (SSIM vs source)…", title))
-		// Cap the verify: SSIM decodes both files, which is slow on a long movie and must
-		// never hang the whole queue.
-		sctx, cancel := context.WithTimeout(ctx, 25*time.Minute)
-		score, err := s.computeSSIM(sctx, dst, src)
-		cancel()
-		if err != nil {
-			// FAIL CLOSED. This used to accept the encode and recycle the original when the
-			// comparison couldn't be made — which is backwards for the one mechanism
-			// enforcing "you won't see a difference". An unmeasurable result is not a pass,
-			// and it happens most often on exactly the long, complex files most likely to
-			// have encoded badly. Keep the original instead — and count it toward the
-			// blocklist (finishAfterEncode): the outcome is deterministic for this file
-			// and its codec never changes, so without escalation every hourly sweep
-			// burned a full encode plus a 25-minute verify on it, forever.
-			s.log.Warn("convert: quality gate could not measure SSIM — keeping the original", "err", err)
-			s.finishAfterEncode(job, SkipQualityGate,
-				"couldn't verify the encode matched the source — kept the original")
-			return
-		}
-		s.update(job, func(j *Job) { j.SSIM = score })
-		if score >= minSSIM {
-			s.event("info", fmt.Sprintf("%s: quality gate passed (SSIM %.4f ≥ %.2f)", title, score, minSSIM))
-			break
-		}
-		if attempt >= qualityRetries {
-			s.finishAfterEncode(job, SkipQualityGate, fmt.Sprintf("quality gate failed — SSIM %.4f < %.4f after %d attempts; kept the original", score, minSSIM, attempt+1))
-			return
-		}
-		plan.Quality = higherQuality(plan)
-		// Each retry is a FULL re-encode. Without this check, a job that started at
-		// 23:50 of a 22:00–00:00 window could run attempt 2 and 3 well into the next
-		// day — wait for the window to reopen instead (the failed attempt's output is
-		// discarded either way; only the retry work is deferred).
-		if !s.waitForWindow(ctx, job) {
-			s.finish(job, StateCancelled, "cancelled")
-			return
-		}
-		if s.wasCancelled(job) {
-			s.finish(job, StateCancelled, "cancelled")
-			return
-		}
-		s.event("warn", fmt.Sprintf("%s: SSIM %.4f < %.2f — re-encoding at higher quality (attempt %d)", title, score, minSSIM, attempt+2))
-		s.update(job, func(j *Job) { j.State = StateEncoding; j.Progress = 0 })
-	}
-
-	s.finalizeOutput(ctx, job, src, dst, ext, mi, plan, title)
-}
-
-// resolveSource re-resolves a job's current source file path + display title,
-// covering both movie and TV-episode jobs. ok is false when the file is gone.
-func (s *Service) resolveSource(ctx context.Context, job *Job) (src, title string, ok bool) {
-	if job.Kind == "episode" {
-		if s.series == nil {
-			return "", "", false
-		}
-		path, _ := s.series.EpisodeFilePath(ctx, job.SeriesID, job.Season, job.Episode)
-		if path == "" {
-			return "", "", false
-		}
-		return path, job.Title, true
-	}
-	m, err := s.movies.Get(ctx, job.MovieID)
-	if err != nil || !m.HasFile || m.MovieFilePath == "" {
-		return "", "", false
-	}
-	return m.MovieFilePath, m.Title, true
-}
-
-// markConverted records a finished conversion against the right library record
-// (movie or episode) as a PATH-ONLY repoint. It must never run the import flow:
-// MarkImported stamped source_release with a synthetic "arrmada-convert:…" tag that
-// parsed to nothing, so upgrade scoring saw a worthless file and re-downloaded the
-// exact release it came from — an endless download → re-encode loop — and the
-// import quality gate could even refuse the update, leaving the DB pointing at a
-// recycled file.
-func (s *Service) markConverted(ctx context.Context, job *Job, src, finalPath, codec string) error {
-	size := fileSize(finalPath)
-	token := codecToken(codec)
-	if job.Kind == "episode" {
-		if s.series == nil {
-			return fmt.Errorf("series module not available")
-		}
-		// One file can serve several episodes — a double-length "S03E01E02" is a single
-		// file with two episode rows. Repoint by PATH so they all follow the conversion;
-		// updating only this job's episode left the others pointing at the old path, which
-		// no longer exists whenever the container changed.
-		if src != "" {
-			if n, err := s.series.RepointEpisodeFile(ctx, job.SeriesID, src, finalPath, size); err == nil && n > 0 {
-				if n > 1 {
-					s.log.Info("convert: file serves multiple episodes — all repointed",
-						"title", job.Title, "episodes", n)
-				}
-				s.stampEpisodeCodec(ctx, job, token)
-				return nil
-			}
-		}
-		if err := s.series.MarkEpisodeImported(ctx, job.SeriesID, job.Season, job.Episode, finalPath, size); err != nil {
-			return err
-		}
-		s.stampEpisodeCodec(ctx, job, token)
-		return nil
-	}
-	n, err := s.movies.RepointMovieFile(ctx, job.MovieID, src, finalPath, size, token)
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return fmt.Errorf("no movie file record at %s to repoint", src)
-	}
-	return nil
-}
-
-// codecToken is the release-name token for a conversion target, appended to the
-// recorded source release so bitrate-upgrade scoring costs the shrunken file at the
-// new codec's efficiency instead of treating it as a starving old-codec encode.
-func codecToken(codec string) string {
-	switch codec {
-	case "av1":
-		return "AV1"
-	case "hevc":
-		return "x265"
-	}
-	return "" // unknown (e.g. swap recovery) — don't stamp anything
-}
-
-// stampEpisodeCodec appends the new codec token to the episode's recorded source
-// release (when it doesn't already read as that codec).
-func (s *Service) stampEpisodeCodec(ctx context.Context, job *Job, token string) {
-	if token == "" {
-		return
-	}
-	cur := s.series.CurrentEpisodeFile(ctx, job.SeriesID, job.Season, job.Episode)
-	if cur.SourceRelease == "" {
-		return
-	}
-	if parser.Parse(cur.SourceRelease).Codec == parser.Parse("x "+token).Codec {
-		return
-	}
-	_ = s.series.SetEpisodeSourceRelease(ctx, job.SeriesID, job.Season, job.Episode, cur.SourceRelease+" "+token)
-}
-
-// runEncode dispatches to the right pipeline (standard, Dolby Vision, or HDR10+) and produces
-// dst, with a one-time CPU fallback if a hardware encoder fails. Returns an error the caller
-// turns into a job failure.
-func (s *Service) runEncode(ctx context.Context, job *Job, src, dst string, mi *MediaInfo, enc Encoder, plan Plan, h10pJSON string) error {
-	switch {
-	case mi.HDR == "Dolby Vision":
-		s.update(job, func(j *Job) { j.Encoder = "CPU (x265) + Dolby Vision" })
-		return s.encodeDolbyVision(ctx, job, src, dst, mi, plan)
-	case h10pJSON != "":
-		s.update(job, func(j *Job) { j.Encoder = "CPU (x265) + HDR10+" })
-		return s.encodeHDR10Plus(ctx, job, src, dst, mi, plan, h10pJSON)
-	default:
-		// VAAPI: first try a full-GPU pipeline (hardware decode → GPU encode) so the CPU
-		// isn't stuck doing software decode. If the source can't be hardware-decoded (odd
-		// codec / unsupported profile) fall back to software decode + GPU encode, then CPU.
-		if enc.Kind == "vaapi" {
-			if err := s.encode(ctx, job, src, dst, mi, enc, plan, true); err == nil {
-				return nil
-			} else if ctx.Err() != nil {
-				return err // cancelled — don't burn a software-decode retry
-			} else {
-				s.log.Warn("convert: hardware decode failed, retrying with software decode", "err", err)
-				s.update(job, func(j *Job) { j.Progress = 0 })
-			}
-		}
-		err := s.encode(ctx, job, src, dst, mi, enc, plan, false)
-		if err != nil && ctx.Err() != nil {
-			// The job was cancelled: the kill signal is not the hardware's fault.
-			// Marking the encoder broken here routed EVERY later job to the CPU for
-			// the rest of the run because a user pressed Cancel — and then pointlessly
-			// started a CPU re-encode of the very job they cancelled.
-			return err
-		}
-		if err != nil && enc.Hardware { // hardware encoder failed → fall back to CPU once
-			cpu := cpuEncoder(plan.VideoCodec)
-			s.markHardwareBroken(enc.Name, err.Error())
-			s.update(job, func(j *Job) { j.Encoder = cpu.Label; j.Progress = 0 })
-			err = s.encode(ctx, job, src, dst, mi, cpu, plan, false)
-		}
-		return err
-	}
-}
-
-// finalizeOutput verifies a freshly-encoded file, then safely replaces the original: recycle the
-// source, move the new file into place, re-tag the library record, and record the space saved.
-// Shared by the standard and Dolby Vision encode paths.
-func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst, ext string, mi *MediaInfo, plan Plan, title string) {
-	s.update(job, func(j *Job) { j.State = StateVerifying; j.Progress = 1 })
-	outInfo, err := probe(ctx, s.ffprobe, dst)
-	if err != nil || outInfo.VideoCodec == "" || outInfo.DurationSec < mi.DurationSec*0.90 {
-		s.finish(job, StateFailed, "output failed verification — kept the original")
-		return
-	}
-	outSize := fileSize(dst)
-	if outSize <= 0 {
-		s.finish(job, StateFailed, "output was empty — kept the original")
-		return
-	}
-	// Save-space safety only applies to transcodes; a remux/container change is about the
-	// container, not size, so reject it only if it grew unreasonably.
-	if plan.VideoCodec != "" && outSize >= mi.SizeBytes {
-		s.finishAfterEncode(job, SkipNotSmaller, "converted file wasn't smaller — kept the original")
-		return
-	}
-	if plan.VideoCodec == "" && outSize > mi.SizeBytes*12/10 {
-		s.finishSkip(job, SkipNotSmaller, "remuxed file was unexpectedly larger — kept the original")
-		return
-	}
-	pct := 0
-	if mi.SizeBytes > 0 {
-		pct = int(100 - outSize*100/mi.SizeBytes)
-	}
-	s.event("info", fmt.Sprintf("%s — output: %s · %s (%d%% smaller)", title, mediaSpec(outInfo), humanBytes(outSize), pct))
-
-	// Safe replace. Ordering matters enormously here: the original must remain on disk and
-	// intact until the converted file is completely written to the destination volume.
-	//
-	// This used to recycle the original FIRST and then move the new file in. Those two steps
-	// fail together — a full array breaks both — and the deferred scratch cleanup then removed
-	// the encode, destroying the only copy. Worse, the move is a cross-volume COPY on every
-	// job (scratch deliberately lives on separate fast storage), so an interrupted copy left a
-	// truncated file at the real library path.
-	//
-	// Now: copy to a sibling .arrpart file, and only once that succeeds do we retire the
-	// original and swap the part file in with a same-directory rename, which is atomic.
-	s.update(job, func(j *Job) { j.State = StateReplacing })
-	// The encode may have taken hours: make sure the library file we're about to
-	// retire is still the one we converted. An import/upgrade landing mid-encode
-	// changed it — replacing THAT with output from the old source would silently
-	// undo the user's brand-new file with hours-old content.
-	if cur, _, ok := s.resolveSource(ctx, job); !ok || cur != src {
-		s.finish(job, StateSkipped, "the library file changed during the conversion — left the new file alone")
-		return
-	}
-	if fi, err := os.Stat(src); err != nil || fi.Size() != mi.SizeBytes {
-		s.finish(job, StateSkipped, "the source file changed during the conversion — left it alone")
-		return
-	}
-	// A hardlinked source (still seeding) means retiring the library link frees no
-	// space — the download client's link keeps the data alive until seed cleanup
-	// removes the torrent. Don't claim those bytes as reclaimed.
-	reclaimDeferred := fileLinks(src) > 1
-	finalPath := strings.TrimSuffix(src, filepath.Ext(src)) + ext
-	part := finalPath + ".arrpart"
-	_ = os.Remove(part) // a leftover from an interrupted job
-	if err := moveFile(dst, part); err != nil {
-		_ = os.Remove(part)
-		s.finish(job, StateFailed, "could not stage the converted file: "+err.Error()+" — kept the original")
-		return
-	}
-	// Journal the swap BEFORE retiring the original: a crash between retire and
-	// rename used to leave the library record pointing at a recycled path with the
-	// complete converted file stranded as .arrpart — recoverable only by hand.
-	// recoverSwaps replays this row at startup.
-	s.recordSwap(job, part, finalPath, src)
-
-	// The original is only retired once the replacement is safely on the same volume.
-	if err := s.retire(src); err != nil {
-		_ = os.Remove(part)
-		s.clearSwap(part)
-		s.finish(job, StateFailed, "could not move the original to the recycle bin: "+err.Error()+" — kept the original")
-		return
-	}
-	if finalPath != src {
-		if _, e := os.Stat(finalPath); e == nil {
-			if err := s.retire(finalPath); err != nil {
-				s.log.Warn("convert: could not retire the file being replaced", "path", finalPath, "err", err)
-			}
-		}
-	}
-	// Same-directory rename: atomic, so the library never sees a partial file.
-	// On failure the journal row is deliberately KEPT — startup reconciliation
-	// completes the swap and repoints the record.
-	if err := os.Rename(part, finalPath); err != nil {
-		s.log.Error("convert: converted file is staged but could not be swapped in",
-			"part", part, "final", finalPath, "err", err)
-		s.finish(job, StateFailed, "converted file is staged at "+filepath.Base(part)+
-			" but could not replace the original — it will be reconciled at the next startup")
-		return
-	}
-	if err := s.markConverted(ctx, job, src, finalPath, codecTag(plan)); err != nil {
-		// The file swap succeeded but the library record didn't follow. Do NOT report
-		// success — the record points at a recycled path. The journal row is kept so
-		// startup reconciliation retries the repoint.
-		s.log.Error("convert: library record update failed after the swap", "title", title, "err", err)
-		s.finish(job, StateFailed, "converted, but the library record could not be updated: "+err.Error()+
-			" — it will be reconciled at the next startup")
-		return
-	}
-	s.clearSwap(part)
-	// Refresh this item in the library index. Without it a converted file keeps its OLD codec
-	// in the index: it shows as convertible forever, inflates "reclaimable", and gets re-queued
-	// by every sweep. Episodes self-heal on the next size comparison, but movies never did —
-	// nothing else calls IndexMovie.
-	s.reindexConverted(ctx, job)
-	s.update(job, func(j *Job) { j.OutBytes = outSize })
-	if reclaimDeferred {
-		s.event("info", title+": space reclaim deferred — the download client still holds a hardlinked copy of the original")
-	} else {
-		s.addReclaimed(ctx, mi.SizeBytes-outSize)
-	}
-	// Surface what the conversion couldn't carry (lossless audio transcoded for MP4,
-	// image subs dropped, embedded closed captions lost) — these were silent before.
-	warnNote := ""
-	if warns := planWarnings(mi, plan); len(warns) > 0 {
-		for _, w := range warns {
-			s.event("warn", title+": "+w)
-		}
-		warnNote = strings.Join(warns, "; ")
-	}
-	s.finish(job, StateDone, warnNote)
-	// "title", not "movie" — this path handles episodes too, and labelling one as a movie
-	// makes the logs quietly misleading.
-	s.log.Info("convert: done", "title", title, "src_mb", mi.SizeBytes>>20, "out_mb", outSize>>20, "saved_mb", (mi.SizeBytes-outSize)>>20)
-}
-
-// looksLikeDecodeError reports whether an ffmpeg -v error stderr line describes actual
-// stream corruption rather than an informational notice.
-func looksLikeDecodeError(ln string) bool {
-	l := strings.ToLower(ln)
-	for _, m := range []string{
-		"error", "corrupt", "invalid", "damaged", "missing", "failed",
-		"concealing", "truncated", "malformed", "broken",
-	} {
-		if strings.Contains(l, m) {
-			return true
-		}
-	}
-	return false
-}
-
-// runHealthCheck decodes the whole file looking for decode errors (a corruption scan, like
-// Tdarr's health check) and reports the result on the job without touching the file (R5).
-func (s *Service) runHealthCheck(ctx context.Context, job *Job, src string, mi *MediaInfo) {
-	s.update(job, func(j *Job) { j.State = StateVerifying; j.Encoder = "Health scan"; j.SrcBytes = mi.SizeBytes })
-	cmd := exec.CommandContext(ctx, s.ffmpeg, "-v", "error", "-i", src, "-f", "null", "-")
-	var buf strings.Builder
-	cmd.Stderr = &buf
-	runErr := cmd.Run()
-	issues := 0
-	for _, ln := range strings.Split(buf.String(), "\n") {
-		// Only decode-error shaped lines count: -v error still emits harmless notices
-		// (attachments, codec parameters) that were flagging healthy files as
-		// "may be corrupt".
-		if !looksLikeDecodeError(ln) {
+	drop := finished - maxJobHistory
+	kept := make([]*Job, 0, len(s.jobs)-drop)
+	for i := len(s.jobs) - 1; i >= 0; i-- { // oldest first
+		if drop > 0 && !activeState(s.jobs[i].State) {
+			drop--
 			continue
 		}
-		if strings.TrimSpace(ln) != "" {
-			issues++
+		kept = append(kept, s.jobs[i])
+	}
+	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
+		kept[i], kept[j] = kept[j], kept[i]
+	}
+	s.jobs = kept
+}
+
+// Cancel stops a running job. The original is only ever replaced at the very end of a job,
+// so cancelling leaves the library untouched. The file isn't picked again for a while.
+func (s *Service) Cancel(id int64) error {
+	s.mu.Lock()
+	var job *Job
+	for _, j := range s.jobs {
+		if j.ID == id {
+			job = j
+			break
 		}
 	}
-	s.update(job, func(j *Job) { j.Progress = 1 })
-	switch {
-	case runErr != nil && issues == 0:
-		s.finish(job, StateFailed, "health scan could not run: "+runErr.Error())
-	case issues == 0:
-		s.finish(job, StateDone, "healthy — no decode errors")
-	default:
-		s.finish(job, StateFailed, fmt.Sprintf("%d decode issue(s) found — file may be corrupt", issues))
+	if job == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("no such job")
 	}
-}
-
-// wouldBeNoOp reports whether running this plan on this file would change nothing (already the
-// target codec, no downscale, same container) — so the worker can skip it cleanly.
-func wouldBeNoOp(mi *MediaInfo, plan Plan) bool {
-	if plan.VideoCodec == "" { // remux / container / track work still happens
-		return false
+	if !activeState(job.State) {
+		s.mu.Unlock()
+		return fmt.Errorf("job already finished")
 	}
-	if !strings.EqualFold(mi.VideoCodec, plan.VideoCodec) {
-		return false
+	job.cancelled = true
+	cancel := job.cancel
+	s.mu.Unlock()
+	if cancel != nil {
+		cancel() // kills ffmpeg; the job unwinds and finishes as cancelled
 	}
-	if plan.ScaleHeight > 0 && mi.Height > plan.ScaleHeight {
-		return false
-	}
-	if plan.Container != "" && !strings.EqualFold(mi.Container, plan.Container) {
-		return false
-	}
-	return true
-}
-
-// canPreserveHDR reports whether this plan can convert an HDR file without losing its metadata.
-// A remux/copy keeps the stream (and metadata) intact. Re-encoding preserves HDR only on the
-// CPU/HEVC path: HDR10 static metadata is re-passed to x265; HDR10+ dynamic metadata and Dolby
-// Vision RPU each require their bundled tool. When none applies the caller skips the file rather
-// than silently degrading it.
-func (s *Service) canPreserveHDR(mi *MediaInfo, plan Plan, enc Encoder) bool {
-	if plan.VideoCodec == "" { // remux / container work copies the video stream as-is
-		return true
-	}
-	// Dolby Vision profile 5 (IPT-PQ-c2): converting the RPU cannot convert the
-	// IPT-encoded pixels — the "HDR10-compatible" output renders wrong colors on any
-	// non-DV display. Refuse up front (the pipeline sentinel errDVProfile5 backstops
-	// sources whose profile is only visible in the extracted RPU).
-	if mi.HDR == "Dolby Vision" && mi.DVProfile == 5 {
-		return false
-	}
-
-	// AV1. The format itself handles all of these — Netflix ships AV1-HDR10+ at scale — but
-	// our bundled tools can't write the metadata into an AV1 bitstream: dovi_tool 2.3.3 and
-	// hdr10plus_tool 1.7.2 both read and write HEVC only. So what AV1 can carry here is
-	// whatever lives in the bitstream headers, not what needs injecting afterwards.
-	if plan.VideoCodec == "av1" {
-		switch mi.HDR {
-		case "HLG":
-			return true // transfer curve only — nothing to inject
-		case "HDR10":
-			// Verified against the bundled ffmpeg: SVT-AV1 accepts mastering-display and
-			// content-light via -svtav1-params, and the values round-trip into the output
-			// as Mastering display / Content light level side data.
-			return true
-		}
-		return false // HDR10+ and Dolby Vision: no injection path for AV1
-	}
-
-	// HEVC. Everything is preservable, but only on the x265 path — hdr10Params emits
-	// -x265-params, and the HDR10+ / DV pipelines encode an x265 elementary stream before
-	// re-injecting. Hardware encoders have no equivalent, so HDR routes to CPU (see process).
-	if plan.VideoCodec != "hevc" || enc.Name != "libx265" {
-		return false
-	}
-	if !cpuWorks("hevc", s.encoders) {
-		return false // x265 doesn't run here, so nothing can be preserved through it
-	}
-	switch mi.HDR {
-	case "HDR10", "HLG":
-		// Colour tags survive a re-encode; mastering-display / max-cll are re-passed for PQ.
-		return true
-	case "HDR10+":
-		// x265 here isn't built with dhdr10-info, so the dynamic metadata is injected after
-		// the encode. Without the tool it would silently degrade to static HDR10.
-		return s.hdr10plusTool != ""
-	case "Dolby Vision":
-		return s.doviTool != ""
-	}
-	return false
-}
-
-// hdrFallbackCodec names the codec that CAN preserve this file's HDR when the planned one
-// can't — today only AV1→HEVC, since dovi_tool and hdr10plus_tool read and write HEVC only.
-// Returns "" when there's no better option, which is the caller's signal to skip.
-//
-// The HEVC check is made against x265 deliberately: every HDR metadata path is software-only
-// (hdr10Params emits -x265-params; HDR10+ and Dolby Vision inject into an x265 elementary
-// stream), and pickEncoder already forces HDR to the CPU encoder — so x265 is what the
-// rerouted job will actually run on.
-func (s *Service) hdrFallbackCodec(mi *MediaInfo, plan Plan) string {
-	if plan.VideoCodec != "av1" {
-		return ""
-	}
-	alt := plan
-	alt.VideoCodec = "hevc"
-	if s.canPreserveHDR(mi, alt, cpuEncoder("hevc")) {
-		return "hevc"
-	}
-	return ""
-}
-
-// pickEncoder applies the ordered routing rules:
-//
-//  1. HDR of any kind → CPU. Forced: every HDR metadata path is software-only. hdr10Params
-//     emits -x265-params, and the HDR10+ / Dolby Vision pipelines encode an x265 elementary
-//     stream before re-injecting. This is checked BEFORE resolution, which is why a 1080p
-//     HDR file goes to CPU — resolution never enters into it.
-//  2. Height >= threshold (default 2160) → CPU. A preference, not a requirement: 4K files
-//     are few and large, so the efficiency gain is tens of GB each.
-//  3. Otherwise → hardware, falling back to CPU if none is available.
-func (s *Service) pickEncoder(ctx context.Context, job *Job, mi *MediaInfo, plan Plan) Encoder {
-	hw := s.encoderFor(plan.VideoCodec)
-	cpu := cpuEncoder(plan.VideoCodec)
-	// The CPU encoder is normally the safe harbour, but it isn't guaranteed — a broken
-	// libx265 build fails every file. When it doesn't work there's nothing to fall back
-	// to, so stay on hardware and let the HDR check below decide what's preservable.
-	cpuOK := cpuWorks(plan.VideoCodec, s.encoders)
-	if hw.Hardware && s.hardwareIsBroken(hw.Name) && cpuOK {
-		return cpu // proven not to work on this machine; don't waste an attempt on it
-	}
-	if !cpuOK {
-		return hw
-	}
-
-	reason := ""
-	switch {
-	case isHDR(mi.HDR):
-		reason = mi.HDR + " metadata can only be preserved on the CPU encoder"
-	case plan.VideoCodec != "" && mi.Height > 0 && mi.Height >= s.cpuAboveHeight(ctx):
-		reason = "high resolution — CPU gives a better result per byte"
-	default:
-		return hw
-	}
-	if hw.Name == cpu.Name {
-		return cpu // already on CPU; nothing to say
-	}
-	s.update(job, func(j *Job) { j.Encoder = cpu.Label }) // don't claim GPU in the UI
-	s.log.Info("convert: routing to the CPU encoder", "title", job.Title, "reason", reason,
-		"instead_of", hw.Name)
-	return cpu
-}
-
-// cpuAboveHeight is the resolution at or above which conversions use the CPU encoder.
-// 0 disables the rule (hardware for everything that isn't forced to CPU).
-func (s *Service) cpuAboveHeight(ctx context.Context) int {
-	n, err := strconv.Atoi(s.settings.Get(ctx, keyCPUAboveHeight, "2160"))
-	if err != nil || n < 0 {
-		return 2160
-	}
-	if n == 0 {
-		return 1 << 30 // effectively never
-	}
-	return n
-}
-
-// skipReasonHDR explains, in the user's terms, why a file can't be converted to this format.
-func skipReasonHDR(hdr, target string) string {
-	if target == "av1" {
-		return hdr + " can't be converted to AV1 — the metadata can't be carried, so this file was left as it is"
-	}
-	return hdr + " — skipped (metadata passthrough not available for this target)"
-}
-
-// isHDR reports whether a probed HDR label means the file carries HDR metadata.
-func isHDR(hdr string) bool { return hdr != "" && hdr != "SDR" }
-
-// codecTag is the source-release marker written to the library record after a conversion.
-func codecTag(plan Plan) string {
-	if plan.VideoCodec == "" {
-		return "remux"
-	}
-	return plan.VideoCodec
+	return nil
 }
 
 // wasCancelled reports whether the user cancelled this job.
@@ -2093,16 +582,34 @@ func (s *Service) wasCancelled(job *Job) bool {
 	return job.cancelled
 }
 
-// transientFailure reports whether a failure note describes a condition that will
-// clear on its own (full scratch disk, a file mid-move). These must not count
-// toward the quarantine blocklist: three nights of a full scratch volume used to
-// permanently blocklist large parts of the library.
+// finishSkip ends a job as skipped and records the reason durably, so it shows in Problems
+// and the file isn't picked again until it could make a difference.
+func (s *Service) finishSkip(job *Job, kind, note string) {
+	if s.wasCancelled(job) {
+		s.finish(job, StateCancelled, "cancelled")
+		return
+	}
+	s.skips.record(context.Background(), job.Key, kind, note)
+	s.finish(job, StateSkipped, note)
+}
+
+// finishAfterEncode skips a job that already burned a full encode and would do so again:
+// the outcome is deterministic for that file. Counting it toward the failure limit is what
+// stops the library re-encoding the same unshrinkable file forever.
+func (s *Service) finishAfterEncode(job *Job, kind, note string) {
+	if s.wasCancelled(job) {
+		s.finish(job, StateCancelled, "cancelled")
+		return
+	}
+	s.failures.recordFailure(context.Background(), job.Key, note)
+	s.finishSkip(job, kind, note)
+}
+
+// transientFailure reports whether a failure describes a condition that will clear on its
+// own. These must not count toward the failure limit: three nights of a full scratch volume
+// used to permanently blocklist large parts of the library.
 func transientFailure(note string) bool {
-	for _, marker := range []string{
-		"not enough scratch space",
-		"source file is gone",
-		"no space left on device",
-	} {
+	for _, marker := range []string{"not enough scratch space", "source file is gone", "no space left on device"} {
 		if strings.Contains(note, marker) {
 			return true
 		}
@@ -2111,44 +618,57 @@ func transientFailure(note string) bool {
 }
 
 func (s *Service) finish(job *Job, state JobState, note string) {
-	// A cancelled job's failure is the user's own kill signal, not a defect: don't
-	// record it against the blocklist (three cancels used to silently quarantine the
-	// title) and label it as what it was. Done stays Done — the work finished.
 	if state != StateDone && s.wasCancelled(job) {
 		state, note = StateCancelled, "cancelled"
 	}
 	s.update(job, func(j *Job) {
-		j.State = state
-		j.Note = note
+		j.State, j.Note, j.Paused = state, note, ""
+		j.FinishedAt = time.Now().Unix()
 		if state == StateDone {
 			j.Progress = 1
 		}
 	})
-	// Mirror the outcome to the console log.
+	ctx := context.Background()
 	switch state {
 	case StateDone:
 		saved := job.SrcBytes - job.OutBytes
-		s.event("info", fmt.Sprintf("✓ Done %s — %s → %s (saved %s)", job.Title, humanBytes(job.SrcBytes), humanBytes(job.OutBytes), humanBytes(saved)))
+		if job.Codec == "" {
+			s.event("info", fmt.Sprintf("✓ Done %s — tracks tidied (%s)", job.Title, note))
+		} else {
+			s.event("info", fmt.Sprintf("✓ Done %s — %s → %s (saved %s)", job.Title, humanBytes(job.SrcBytes), humanBytes(job.OutBytes), humanBytes(saved)))
+		}
+		s.failures.clearFailures(ctx, job.Key)
+		s.skips.clear(ctx, job.Key)
 	case StateFailed:
 		s.event("error", fmt.Sprintf("✗ Failed %s — %s", job.Title, note))
+		if !transientFailure(note) {
+			s.failures.recordFailure(ctx, job.Key, note)
+		}
 	case StateSkipped:
 		s.event("info", fmt.Sprintf("Skipped %s — %s", job.Title, note))
-	}
-	// Track hard failures for the quarantine blocklist; a success clears the record.
-	// (Skips are intentional outcomes, not failures, so they don't count.) Keyed per
-	// item, so episodes quarantine exactly like movies — without this a file that
-	// always fails to encode is re-queued by every sweep, forever.
-	key := jobKey(job)
-	s.releasePending(key, job) // the file can be queued again once this job is over
-	switch state {
-	case StateFailed:
-		s.log.Warn("convert: job failed", "title", job.Title, "note", note)
-		if !transientFailure(note) {
-			s.failures.recordFailure(context.Background(), key, note)
+	case StateCancelled:
+		s.event("info", "Cancelled "+job.Title)
+		if !job.Requested {
+			// Otherwise the runner would pick the very file you just stopped, right away.
+			s.skips.record(ctx, job.Key, SkipCancelled, "cancelled by you")
 		}
-	case StateDone:
-		s.failures.clearFailures(context.Background(), key)
-		s.skips.clear(context.Background(), key) // it converted after all
+	}
+	s.requests.remove(ctx, job.Key)
+	s.releasePending(job.Key, job)
+	s.invalidateLibraryCache()
+	s.wakeUp()
+}
+
+// reindexConverted updates the library index for the file a job just converted.
+func (s *Service) reindexConverted(ctx context.Context, job *Job) {
+	var err error
+	if job.Kind == "episode" {
+		err = s.IndexSeries(ctx, job.SeriesID)
+	} else {
+		err = s.IndexMovie(ctx, job.MovieID)
+	}
+	if err != nil {
+		s.log.Warn("convert: reindex after convert failed", "title", job.Title, "err", err)
 	}
 }
 
@@ -2172,122 +692,13 @@ func (t *lineTail) add(line string) {
 	t.mu.Unlock()
 }
 
-// String returns the retained lines, most useful last. Lines that are plainly metadata
-// rather than diagnostics are dropped, since they crowd out the actual error.
 func (t *lineTail) String() string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(t.lines) == 0 {
-		// A crash can kill ffmpeg before it says anything. Saying so plainly is more use
-		// than dredging up whatever text happened to be last.
 		return "no output from ffmpeg"
 	}
 	return strings.Join(t.lines, " | ")
-}
-
-// encode runs ffmpeg for one job, parsing live progress from the -progress pipe. hwDecode
-// asks the GPU to decode too (VAAPI only) — set for the full-GPU attempt, cleared for the
-// software-decode fallback.
-func (s *Service) encode(ctx context.Context, job *Job, src, dst string, mi *MediaInfo, enc Encoder, plan Plan, hwDecode bool) error {
-	cores := s.cpuCores(ctx)
-	// -loglevel warning suppresses ffmpeg's input stream dump. That dump is emitted at
-	// info level and floods stderr, so the retained tail filled up with "Side data:" and
-	// "title:" lines and the actual diagnostic — if there was one — scrolled away. Warnings
-	// and errors still come through, which is all the tail is for.
-	args := []string{"-y", "-hide_banner", "-nostats", "-loglevel", "warning",
-		"-progress", "pipe:1", "-threads", strconv.Itoa(cores)}
-	args = append(args, globalArgs(enc, hwDecode, s.vaapiDev(ctx))...) // device / hwaccel init must precede the input
-	args = append(args, "-i", src)
-	args = append(args, compileOutputArgs(enc, mi, withSidecars(plan, src, nil), hwDecode, cores, s.noNumaPools)...)
-	args = append(args, dst)
-
-	err := s.runWithProgress(ctx, job, args, mi.DurationSec)
-	if err == nil || ctx.Err() != nil {
-		return err
-	}
-	// Safe-mode retry. The quality-tuning parameters are a far larger surface than a plain
-	// preset/CRF encode, and they vary with the machine (core counts, driver, ffmpeg build)
-	// in ways that can't all be verified up front. A failure there shouldn't cost the user
-	// the conversion when the simple form would have worked — so try once without them
-	// before giving up, and say so.
-	simple := stripTuningParams(args)
-	// Element-wise compare, not length: stripTuningParams now REWRITES -x265-params
-	// (keeping the HDR/pools portion) instead of deleting the flag, so the argument
-	// count usually doesn't change — a length check made the retry never fire.
-	if slices.Equal(simple, args) {
-		return err // nothing to strip; the failure is something else
-	}
-	s.log.Warn("convert: encode failed with tuned settings — retrying with plain preset/CRF",
-		"title", job.Title, "err", err)
-	s.update(job, func(j *Job) { j.Progress = 0 })
-	if err2 := s.runWithProgress(ctx, job, simple, mi.DurationSec); err2 != nil {
-		return err // report the ORIGINAL failure; the retry is a bonus, not the diagnosis
-	}
-	s.event("warn", job.Title+": converted with default encoder settings — the tuned ones failed on this machine")
-	return nil
-}
-
-// runWithProgress runs an ffmpeg command whose stdout is a -progress stream, updating the job
-// live and returning any error with a tail of stderr for diagnosis.
-func (s *Service) runWithProgress(ctx context.Context, job *Job, args []string, durationSec float64) error {
-	cmd := exec.CommandContext(ctx, s.ffmpeg, args...)
-	lowPriority(cmd) // own process group, so the whole encode can be niced and signalled together
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	// Keep the LAST few stderr lines, not just one. ffmpeg's final line is usually stream
-	// metadata, so a one-line tail reported things like "title: English (SDH)" as the cause
-	// of a segfault. The mutex matters too: this goroutine outlives Wait() in principle, and
-	// the old unsynchronized Builder was a genuine data race.
-	tail := &lineTail{max: 12}
-	if errPipe, e := cmd.StderrPipe(); e == nil {
-		go func() {
-			sc := bufio.NewScanner(errPipe)
-			for sc.Scan() {
-				tail.add(sc.Text())
-			}
-		}()
-	}
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	applyNice(cmd.Process.Pid, encodeNice) // bulk work — yield to anything interactive
-	s.readProgress(job, stdout, durationSec)
-	if err := cmd.Wait(); err != nil {
-		return fmt.Errorf("%v: %s", err, tail.String())
-	}
-	return nil
-}
-
-// readProgress consumes ffmpeg's -progress key=value stream and updates the job live.
-func (s *Service) readProgress(job *Job, r io.Reader, durationSec float64) {
-	sc := bufio.NewScanner(r)
-	for sc.Scan() {
-		line := sc.Text()
-		k, v, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		switch k {
-		case "out_time_ms":
-			if us, err := strconv.ParseFloat(v, 64); err == nil && durationSec > 0 {
-				p := (us / 1e6) / durationSec
-				if p > 1 {
-					p = 1
-				}
-				s.update(job, func(j *Job) { j.Progress = p })
-			}
-		case "fps":
-			if f, err := strconv.ParseFloat(v, 64); err == nil {
-				s.update(job, func(j *Job) { j.FPS = f })
-			}
-		case "speed":
-			if sp, err := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSpace(v), "x"), 64); err == nil {
-				s.update(job, func(j *Job) { j.SpeedX = sp })
-			}
-		}
-	}
 }
 
 func fileSize(path string) int64 {
@@ -2297,7 +708,7 @@ func fileSize(path string) int64 {
 	return 0
 }
 
-// humanBytes renders a byte count for the console log.
+// humanBytes renders a byte count for the activity log.
 func humanBytes(b int64) string {
 	switch {
 	case b >= 1<<40:
@@ -2311,16 +722,12 @@ func humanBytes(b int64) string {
 	}
 }
 
-// moveFile renames src→dst, falling back to copy+remove across filesystems (scratch is
-// often a different volume from the library).
 // retire moves a library file out of the way before it's replaced: into the recycle bin, or
-// deleted outright if the admin switched the bin off. It never silently relocates a file —
-// see library.ErrRecycleDisabled.
+// deleted outright if the admin switched the bin off. It never silently relocates a file.
 func (s *Service) retire(path string) error {
 	dst, err := library.RecycleFile(s.recycleDir, path)
 	switch {
 	case errors.Is(err, library.ErrRecycleDisabled):
-		// Deliberate: the user turned the bin off, so deletion is the configured behaviour.
 		if rerr := os.Remove(path); rerr != nil && !os.IsNotExist(rerr) {
 			return rerr
 		}
@@ -2333,10 +740,9 @@ func (s *Service) retire(path string) error {
 	return nil
 }
 
-// moveFile moves src to dst, falling back to copy+remove across filesystems. The copy is
-// fsynced before the source is removed: without that, a crash between the copy and the
-// filesystem flushing it leaves a zero-length or partial destination while the source is
-// already gone. Callers must pass a temporary dst and rename it into place.
+// moveFile moves src to dst, falling back to copy+remove across filesystems (scratch is
+// usually a different volume from the library). The copy is fsynced before the source is
+// removed. Callers must pass a temporary dst and rename it into place.
 func moveFile(src, dst string) error {
 	if err := os.Rename(src, dst); err == nil {
 		return nil
@@ -2354,7 +760,7 @@ func moveFile(src, dst string) error {
 		out.Close()
 		return err
 	}
-	if err := out.Sync(); err != nil { // durable before we drop the only other copy
+	if err := out.Sync(); err != nil {
 		out.Close()
 		return err
 	}

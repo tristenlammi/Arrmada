@@ -8,16 +8,6 @@ import (
 	"strings"
 )
 
-// isCandidate reports whether the "Save space" preset would act on this file — i.e. it's
-// not already an efficient modern codec.
-func isCandidate(mi *MediaInfo) bool {
-	switch mi.VideoCodec {
-	case "hevc", "av1", "vp9":
-		return false
-	}
-	return mi.VideoCodec != ""
-}
-
 // langIn reports whether an audio/subtitle language tag matches any wanted language,
 // tolerating 2- vs 3-letter codes for the common languages.
 func langIn(lang string, wanted []string) bool {
@@ -52,17 +42,6 @@ func normLang(c string) string {
 	return c
 }
 
-// losslessAudio reports whether a codec carries lossless or object-based audio — TrueHD
-// (Atmos), DTS-HD MA / DTS:X, FLAC, PCM. Re-encoding these to AAC is an irreversible loss of
-// exactly the thing this module exists to preserve.
-func losslessAudio(codec string) bool {
-	switch strings.ToLower(strings.TrimSpace(codec)) {
-	case "truehd", "mlp", "flac", "alac", "dts", "dtshd", "dts-hd", "pcm_s16le", "pcm_s24le", "pcm_bluray", "pcm_dvd":
-		return true
-	}
-	return false
-}
-
 // twoToThree maps common ISO 639-1 codes to 639-2/T (terminological) so "en" matches an
 // "eng" track. Bibliographic variants are folded in separately (biblioToTerm).
 var twoToThree = map[string]string{
@@ -70,7 +49,10 @@ var twoToThree = map[string]string{
 	"nl": "nld", "sv": "swe", "pl": "pol", "ru": "rus", "tr": "tur", "ar": "ara",
 	"hi": "hin", "ja": "jpn", "ko": "kor", "zh": "zho", "cs": "ces", "el": "ell",
 	"da": "dan", "no": "nor", "fi": "fin", "he": "heb", "th": "tha", "vi": "vie",
-	"uk": "ukr", "hu": "hun", "ro": "ron", "id": "ind",
+	"uk": "ukr", "hu": "hun", "ro": "ron", "id": "ind", "ta": "tam", "te": "tel",
+	"ms": "msa", "fa": "fas", "bn": "ben", "tl": "tgl", "is": "isl", "sk": "slk",
+	"bg": "bul", "hr": "hrv", "sr": "srp", "sl": "slv", "et": "est", "lv": "lav",
+	"lt": "lit", "ca": "cat", "eu": "eus", "gl": "glg", "cy": "cym",
 }
 
 // biblioToTerm maps the ISO 639-2/B (bibliographic) codes to their /T (terminological)
@@ -86,7 +68,7 @@ var biblioToTerm = map[string]string{
 
 // vaapiDevice is the default DRM render node VAAPI encodes through. On a box with
 // both an iGPU and a discrete card there are several (renderD128, renderD129, …);
-// the Convert → VAAPI device setting picks which one.
+// the Convert → GPU device setting picks which one.
 const vaapiDevice = "/dev/dri/renderD128"
 
 // globalArgs returns ffmpeg options that must appear before the input (device init). Only
@@ -113,11 +95,7 @@ func globalArgs(enc Encoder, hwDecode bool, device string) []string {
 // the same CRF number we'd give x265 or SVT-AV1 therefore lands softer than intended: the
 // first real conversion here dropped a 1080p episode from 12.1 to 2.1 Mb/s, an 83% cut,
 // with SSIM falling to 0.9754 — comfortably more aggressive than "maximum quality
-// retention" should be.
-//
-// Four points is a deliberate, conservative correction rather than a measured constant.
-// The CPU-vs-GPU comparison (plan phase 6) is what would replace this heuristic with a
-// number derived from real content.
+// retention" should be. The quality gate still has the final word.
 const hardwareQualityOffset = 4
 
 // hardwareQuality converts a software-scale CRF target into the tighter one a hardware
@@ -131,7 +109,7 @@ func hardwareQuality(crf int) int {
 }
 
 // av1QIndex converts a CRF-scale quality target (0-63, what SVT-AV1 uses) into AV1's
-// quantizer index (0-255), which is what the hardware AV1 encoders take. They're the same
+// quantizer index (0-255), which is what VAAPI's AV1 encoder takes. They're the same
 // scale stretched by 4, so a CRF of 24 becomes a qindex of 96.
 func av1QIndex(crf int) int {
 	q := crf * 4
@@ -144,18 +122,14 @@ func av1QIndex(crf int) int {
 	return q
 }
 
-// crfDefault is the quality target for a codec when the plan doesn't set one. The scales
-// differ per codec (AV1's CRF runs higher for the same perceived quality), so each has its own
-// baseline. HEVC's 24 preserves the pre-R5 "Save space" behavior.
-func crfDefault(codec string) int {
-	switch codec {
-	case "h264":
-		return 23
-	case "av1":
-		return 32
-	default: // hevc
+// maxQualityCRF is the quality target for each codec — set for retention, not size. The
+// scales differ (AV1's CRF runs higher for the same picture), so each has its own. The
+// quality gate catches the rare file that still falls short and re-encodes it tighter.
+func maxQualityCRF(codec string) int {
+	if codec == "av1" {
 		return 24
 	}
+	return 20
 }
 
 // mkvSub reports whether a subtitle codec can be copied into Matroska as-is. The MP4 family
@@ -169,105 +143,159 @@ func mkvSub(codec string) bool {
 	return true
 }
 
-// keptAudio applies the plan's language filter to the probed audio tracks: keep the matching
-// tracks, or all of them when there's no filter / nothing matched. Shared by the compiler
-// and the warnings list so they can never disagree about which tracks survive.
+// keptAudio applies the plan's audio choices to the probed tracks. Shared by the compiler,
+// the verification and the "needs work" check so they can never disagree about which
+// tracks survive.
+//
+// Two rules make it impossible to end up with a silent file: commentary is only dropped
+// when something else remains, and a language filter that matches nothing keeps every
+// track (the tags are wrong, and no audio at all is worse than the wrong languages).
 func keptAudio(mi *MediaInfo, plan Plan) []AudioStream {
-	var keep []AudioStream
-	if len(plan.Audio.KeepLangs) > 0 {
+	cand := mi.Audio
+	if plan.Audio.DropCommentary {
+		var nc []AudioStream
 		for _, au := range mi.Audio {
-			if langIn(au.Lang, plan.Audio.KeepLangs) {
-				keep = append(keep, au)
+			if !au.Commentary {
+				nc = append(nc, au)
 			}
+		}
+		if len(nc) > 0 {
+			cand = nc
+		}
+	}
+	if len(plan.Audio.KeepLangs) == 0 {
+		return cand
+	}
+	wanted := append([]string{}, plan.Audio.KeepLangs...)
+	if plan.Audio.OriginalLang != "" {
+		wanted = append(wanted, plan.Audio.OriginalLang)
+	}
+	var keep []AudioStream
+	for _, au := range cand {
+		if langIn(au.Lang, wanted) {
+			keep = append(keep, au)
 		}
 	}
 	if len(keep) == 0 {
-		keep = mi.Audio
+		return cand
 	}
 	return keep
 }
 
-// mp4Audio reports whether an audio codec can be copied into an MP4 container as-is. Anything
-// else (TrueHD/DTS/FLAC/PCM…) is re-encoded to AAC so MP4 output never fails to mux.
-func mp4Audio(codec string) bool {
-	switch strings.ToLower(codec) {
-	case "aac", "ac3", "eac3", "mp3", "alac":
-		return true
+// defaultAudio picks which kept track should be flagged default: the first one in the
+// first language you listed, so players start in your language rather than whichever track
+// the release happened to put first. -1 = leave the flags as they are.
+func defaultAudio(kept []AudioStream, plan Plan) int {
+	if len(plan.Audio.KeepLangs) == 0 {
+		return -1
 	}
-	return false
+	first := []string{plan.Audio.KeepLangs[0]}
+	for i, au := range kept {
+		l := strings.ToLower(strings.TrimSpace(au.Lang))
+		if !au.Commentary && l != "" && l != "und" && langIn(au.Lang, first) {
+			return i
+		}
+	}
+	return -1
 }
 
-// compileOutputArgs turns a Plan into the ffmpeg output options: re-encode (or copy) the video
-// to the target codec, optionally downscaling; keep/convert/downmix/normalize the wanted audio
-// (container-safe); extract or repackage subtitles; set the container. This is the generalized
-// compiler (Rules v2 R1, extended in R5) — every Plan runs through here.
-func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int, noNumaPools bool) []string {
-	container := plan.Container
-	if container == "" {
-		container = "mkv"
-	}
-	mp4 := container == "mp4"
-	// Map the REAL video stream: cover art is a video stream too (attached_pic), so 0:v:0
-	// isn't always the movie.
-	a := []string{"-map", fmt.Sprintf("0:v:%d", mi.VideoIndex)}
-
-	// Audio: keep the wanted-language tracks (all if no filter / nothing matched), each copied
-	// (or loudnorm-/container-re-encoded), plus an optional AAC 2.0 stereo downmix for surround.
-	keepAud := keptAudio(mi, plan)
-	if len(keepAud) == 0 {
-		if mp4 {
-			a = append(a, "-map", "0:a?", "-c:a", "aac", "-b:a", "256k") // unknown tracks → AAC for MP4 safety
-		} else {
-			a = append(a, "-map", "0:a?", "-c:a", "copy")
-		}
-	} else {
-		outAud := 0
-		for _, au := range keepAud {
-			a = append(a, "-map", fmt.Sprintf("0:a:%d", au.AudIndex))
-			switch {
-			// Never loudnorm lossless/object-based audio: it would re-encode Atmos/TrueHD/
-			// DTS-HD down to 256k AAC. Those tracks are copied untouched (MKV) — but MP4
-			// can't hold them at all, so the container branch below still applies.
-			case plan.Audio.Loudnorm && !losslessAudio(au.Codec):
-				a = append(a, fmt.Sprintf("-c:a:%d", outAud), "aac", fmt.Sprintf("-b:a:%d", outAud), "256k", fmt.Sprintf("-filter:a:%d", outAud), "loudnorm=I=-16:TP=-1.5:LRA=11")
-			case mp4 && !mp4Audio(au.Codec):
-				// MP4 can't hold TrueHD/DTS/… → AAC. Checked even when loudnorm exempted a
-				// lossless track above: copying TrueHD into MP4 fails at mux time.
-				a = append(a, fmt.Sprintf("-c:a:%d", outAud), "aac", fmt.Sprintf("-b:a:%d", outAud), "256k")
-			default:
-				a = append(a, fmt.Sprintf("-c:a:%d", outAud), "copy")
-			}
-			outAud++
-			if plan.Audio.AddStereo && au.Channels > 2 {
-				a = append(a, "-map", fmt.Sprintf("0:a:%d", au.AudIndex),
-					fmt.Sprintf("-c:a:%d", outAud), "aac", fmt.Sprintf("-ac:a:%d", outAud), "2", fmt.Sprintf("-b:a:%d", outAud), "192k",
-					fmt.Sprintf("-metadata:s:a:%d", outAud), "title=Stereo")
-				outAud++
+// keptSubs applies the plan's subtitle choices. With no filter and image subs kept, every
+// track is kept, so the untouched path stays byte-identical.
+func keptSubs(mi *MediaInfo, plan Plan) []SubStream {
+	out := mi.Subs
+	if len(plan.Subs.KeepLangs) > 0 {
+		out = make([]SubStream, 0, len(mi.Subs))
+		for _, s := range mi.Subs {
+			if langIn(s.Lang, plan.Subs.KeepLangs) {
+				out = append(out, s)
 			}
 		}
+		// Never strip every subtitle with a language filter. If it matches nothing, the
+		// tags are wrong or unexpected, and silently shipping a file with no subtitles at
+		// all is worse than keeping the clutter.
+		if len(out) == 0 {
+			out = mi.Subs
+		}
 	}
-
-	// Subtitles. MKV carries every stream as-is; MP4 can't hold image subs (PGS/VOBSUB),
-	// so an MP4 target keeps only text subs, re-encoded to mov_text. A language filter
-	// narrows either — a WEB-DL with thirty-odd tracks is unusable in a player's menu.
-	subs := keptSubs(mi, plan)
-	if mp4 {
-		mapped := false
-		for _, s := range subs {
+	switch plan.Subs.ImageSubs {
+	case ImageSubsRemove:
+		// Asked for outright: every image track goes, even a language's only subtitle.
+		// The Subtitles module can fetch or generate a text one in its place.
+		kept := make([]SubStream, 0, len(out))
+		for _, s := range out {
 			if s.Text {
-				a = append(a, "-map", fmt.Sprintf("0:s:%d", s.SubIndex))
-				mapped = true
+				kept = append(kept, s)
 			}
 		}
-		if mapped {
-			a = append(a, "-c:s", "mov_text")
+		return kept
+	case ImageSubsWhenText:
+		return dropCoveredImageSubs(out, plan.Subs.TextSidecarLangs)
+	}
+	return out
+}
+
+// dropCoveredImageSubs removes image tracks only where a text subtitle for that language
+// will remain: an embedded text track that survived the language filter, or a sidecar. An
+// untagged image track is dropped only if some text subtitle exists at all — we can't know
+// its language, but we do know the viewer isn't left with nothing.
+func dropCoveredImageSubs(out []SubStream, sidecarLangs []string) []SubStream {
+	textLangs := map[string]bool{}
+	anyText := false
+	for _, s := range out {
+		if s.Text {
+			textLangs[normLang(s.Lang)] = true
+			anyText = true
 		}
-	} else if len(subs) == len(mi.Subs) {
-		a = append(a, "-map", "0:s?", "-c:s", "copy")
-		// Matroska can't mux MP4-family text subs (mov_text/tx3g): with -c:s copy every MKV
+	}
+	for _, l := range sidecarLangs {
+		textLangs[normLang(l)] = true
+		anyText = true
+	}
+	kept := make([]SubStream, 0, len(out))
+	for _, s := range out {
+		if s.Text {
+			kept = append(kept, s)
+			continue
+		}
+		l := strings.ToLower(strings.TrimSpace(s.Lang))
+		covered := anyText && (l == "" || l == "und" || textLangs[normLang(l)])
+		if !covered {
+			kept = append(kept, s) // the only subtitle in its language — stays
+		}
+	}
+	return kept
+}
+
+// trackArgs maps the kept audio, subtitles and attachments of input `in` into the output.
+// Audio and image subtitles are always COPIED — Atmos, TrueHD and DTS-HD pass through bit
+// for bit. Used by the standard encode (in = 0) and by the HDR10+ pipeline's final mux,
+// where the video comes from input 0 and everything else from the original (in = 1).
+func trackArgs(mi *MediaInfo, plan Plan, in int) []string {
+	var a []string
+	keepAud := keptAudio(mi, plan)
+	if len(keepAud) == len(mi.Audio) && defaultAudio(keepAud, plan) < 0 {
+		a = append(a, "-map", fmt.Sprintf("%d:a?", in), "-c:a", "copy")
+	} else {
+		def := defaultAudio(keepAud, plan)
+		for out, au := range keepAud {
+			a = append(a, "-map", fmt.Sprintf("%d:a:%d", in, au.AudIndex))
+			if def >= 0 {
+				flag := "-default"
+				if out == def {
+					flag = "+default"
+				}
+				a = append(a, fmt.Sprintf("-disposition:a:%d", out), flag)
+			}
+		}
+		a = append(a, "-c:a", "copy")
+	}
+
+	subs := keptSubs(mi, plan)
+	if len(subs) == len(mi.Subs) {
+		a = append(a, "-map", fmt.Sprintf("%d:s?", in), "-c:s", "copy")
+		// Matroska can't mux MP4-family text subs (mov_text/tx3g): with -c:s copy every
 		// conversion of an MP4-with-subs source fails at header write. Transcode just those
-		// streams to SRT; image subs (PGS/VOBSUB) and native text subs still copy. All subs
-		// are mapped in order, so output sub N is input sub N and per-stream overrides land.
+		// streams to SRT. All subs are mapped in order, so output sub N is input sub N.
 		for _, s := range mi.Subs {
 			if !mkvSub(s.Codec) {
 				a = append(a, fmt.Sprintf("-c:s:%d", s.SubIndex), "srt")
@@ -275,15 +303,13 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cor
 		}
 	} else {
 		// Filtered: map the kept streams individually. Output indexes RENUMBER from 0 as
-		// they're mapped, so a per-stream codec override has to use the output position,
-		// not the input's SubIndex — using the input index here would point the override
-		// at the wrong stream, or at one that no longer exists.
+		// they're mapped, so a per-stream codec override uses the output position.
 		for out, s := range subs {
-			a = append(a, "-map", fmt.Sprintf("0:s:%d", s.SubIndex))
-			if !mkvSub(s.Codec) {
-				a = append(a, fmt.Sprintf("-c:s:%d", out), "srt")
-			} else {
+			a = append(a, "-map", fmt.Sprintf("%d:s:%d", in, s.SubIndex))
+			if mkvSub(s.Codec) {
 				a = append(a, fmt.Sprintf("-c:s:%d", out), "copy")
+			} else {
+				a = append(a, fmt.Sprintf("-c:s:%d", out), "srt")
 			}
 		}
 	}
@@ -291,222 +317,155 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cor
 	// Attachments — embedded fonts, cover art. Once ANY -map is given, ffmpeg's default
 	// stream selection is off, so without this every attachment is silently dropped: ASS/SSA
 	// subtitles (anime especially) then render in a fallback font with the typesetting and
-	// karaoke styling destroyed. MP4 can't hold attachments, so this is MKV-only.
-	if !mp4 {
-		a = append(a, "-map", "0:t?", "-c:t", "copy")
-	}
-
-	// Video: copy for remux-only, else re-encode to the target codec (optionally downscaled).
-	if plan.VideoCodec == "" {
-		a = append(a, "-c:v", "copy")
-	} else {
-		codec := plan.VideoCodec
-		crf := plan.Quality
-		if crf <= 0 {
-			crf = crfDefault(codec)
-		}
-		if plan.VFRToCFR && mi.VFR {
-			a = append(a, "-fps_mode", "cfr") // normalize VFR → prevents A/V desync
-		}
-		scale := plan.ScaleHeight > 0 && mi.Height > plan.ScaleHeight // downscale only, never up
-		// The software-frame filter chain (every path except full-GPU VAAPI): deinterlace
-		// first when the source is interlaced — encoding combed fields as progressive frames
-		// bakes the combing in permanently — then the optional downscale.
-		swVF := swFilterChain(mi, scale, plan.ScaleHeight)
-		switch enc.Kind {
-		case "vaapi": // AMD/Intel hardware — scale + encode on the GPU.
-			if hwDecode {
-				// Frames arrive as VAAPI surfaces straight from the hardware decoder, so no
-				// software decode / hwupload — deinterlace/scale on the GPU, then encode.
-				var chain []string
-				if mi.Interlaced {
-					chain = append(chain, "deinterlace_vaapi")
-				}
-				if scale {
-					chain = append(chain, fmt.Sprintf("scale_vaapi=w=-2:h=%d", plan.ScaleHeight))
-				}
-				if len(chain) > 0 {
-					a = append(a, "-vf", strings.Join(chain, ","))
-				}
-			} else {
-				// Software decode: (deinterlace,) convert to the right pixel format and
-				// upload each frame; scaling happens on the GPU after upload.
-				pix := "nv12"
-				if mi.TenBit && codec != "h264" {
-					pix = "p010"
-				}
-				var chain []string
-				if mi.Interlaced {
-					chain = append(chain, deintFilter)
-				}
-				chain = append(chain, "format="+pix, "hwupload")
-				if scale {
-					chain = append(chain, fmt.Sprintf("scale_vaapi=w=-2:h=%d", plan.ScaleHeight))
-				}
-				a = append(a, "-vf", strings.Join(chain, ","))
-			}
-			// Quality has to be expressed in the ENCODER's own scale, not ours.
-			//
-			// hevc_vaapi/h264_vaapi take -qp on a 0-52 scale, close enough to CRF to pass
-			// straight through. av1_vaapi doesn't expose -qp at all: AV1 quantizes on a
-			// 0-255 index, so the value goes via -global_quality after being rescaled.
-			// Passing our CRF-scale number as -qp meant av1_vaapi ignored it entirely and
-			// used its own default — which produced files LARGER than the source, so every
-			// AV1 conversion was discarded by the never-grow guard.
-			a = append(a, "-c:v", enc.Name, "-rc_mode", "CQP")
-			if codec == "av1" {
-				a = append(a, "-global_quality", strconv.Itoa(av1QIndex(hardwareQuality(crf))))
-			} else {
-				a = append(a, "-qp", strconv.Itoa(hardwareQuality(crf)))
-			}
-			if mi.TenBit && codec != "h264" {
-				a = append(a, "-profile:v", "main10")
-			}
-			a = append(a, colourTagArgs(mi)...)
-		case "nvenc":
-			if swVF != "" {
-				a = append(a, "-vf", swVF)
-			}
-			// -b:v 0 matters: NVENC's constant-quality mode is otherwise still capped by the
-			// default average bitrate (2 Mb/s), which silently overrides the -cq target.
-			a = append(a, "-c:v", enc.Name, "-preset", "p5", "-rc", "vbr", "-cq", strconv.Itoa(hardwareQuality(crf)), "-b:v", "0")
-			if mi.TenBit && codec != "h264" {
-				a = append(a, "-pix_fmt", "p010le")
-			}
-			a = append(a, colourTagArgs(mi)...)
-		case "qsv":
-			if swVF != "" {
-				a = append(a, "-vf", swVF)
-			}
-			// QSV's -global_quality is ICQ on a 1-51 CRF-like scale for EVERY codec —
-			// including av1_qsv. Rescaling to the AV1 0-255 qindex here fed it ~80+, which
-			// clamps to worst quality. (VAAPI's AV1 path genuinely is 0-255; QSV's is not.)
-			a = append(a, "-c:v", enc.Name, "-global_quality", strconv.Itoa(hardwareQuality(crf)), "-preset", "medium")
-			if mi.TenBit && codec != "h264" {
-				a = append(a, "-pix_fmt", "p010le")
-			}
-			a = append(a, colourTagArgs(mi)...)
-		case "videotoolbox":
-			if swVF != "" {
-				a = append(a, "-vf", swVF)
-			}
-			// -q:v is VideoToolbox's 1-100 quality scale (higher = better); the plan's CRF
-			// target is mapped onto it rather than ignored (it was hardcoded to 55).
-			a = append(a, "-c:v", enc.Name, "-q:v", strconv.Itoa(vtQuality(crf)))
-			if mi.TenBit && codec != "h264" {
-				a = append(a, "-profile:v", "main10", "-pix_fmt", "p010le")
-			}
-			a = append(a, colourTagArgs(mi)...)
-		default: // CPU
-			if swVF != "" {
-				a = append(a, "-vf", swVF)
-			}
-			// HDR10/HLG static passthrough: ffmpeg keeps the colour tags on a re-encode but
-			// drops the mastering-display / max-cll, so they're re-passed to x265. (HDR10+
-			// dynamic metadata and the DV RPU are re-injected by their own pipelines.)
-			hdrParams, colourTags := "", []string(nil)
-			if isHDR(mi.HDR) {
-				switch {
-				case codec == "hevc" && enc.Name == "libx265":
-					hdrParams, colourTags = hdr10Params(mi)
-				case codec == "av1" && enc.Name == "libsvtav1":
-					hdrParams, colourTags = av1HDRParams(mi)
-				}
-			}
-			// ALWAYS 10-bit, not just when the source is. Encoding 8-bit content into a
-			// 10-bit stream is standard practice for both x265 and SVT-AV1: the extra
-			// precision in the internal transforms near-eliminates the banding on skies,
-			// smoke and dark gradients that is the first thing anyone notices in a
-			// re-encode, and it IMPROVES efficiency by roughly 5-10% at equal quality
-			// rather than costing anything. HEVC Main10 and AV1 Main both require 10-bit
-			// decode support, so nothing loses playback compatibility.
-			//
-			// h264 is left alone: 8-bit High is the universally-played profile, and High10
-			// is not. It isn't a conversion target here anyway.
-			tenBit := mi.TenBit || codec != "h264"
-			a = append(a, cpuVideoArgs(enc.Name, codec, crf, tenBit, cores, hdrParams, noNumaPools)...)
-			a = append(a, colourTags...)
-		}
-	}
-
-	a = append(a, "-map_metadata", "0", "-map_chapters", "0")
-	if mp4 {
-		a = append(a, "-movflags", "+faststart") // stream-friendly: moov atom up front
-	}
-	a = append(a, plan.ExtraArgs...) // advanced raw-ffmpeg escape hatch (usually empty)
+	// karaoke styling destroyed.
+	a = append(a, "-map", fmt.Sprintf("%d:t?", in), "-c:t", "copy")
 	return a
 }
 
-// planWarnings lists, in human-readable form, what running this plan on this file will lose.
-// The degradations themselves are deliberate (MP4 physically can't hold lossless audio or
-// image subs), but they must never be silent: the job note should say exactly what was
-// traded away. Derived from the same inputs as compileOutputArgs so the two can't disagree.
+// compileOutputArgs turns a Plan into the ffmpeg output options: re-encode (or copy) the
+// video to the target codec, then the kept tracks, metadata and chapters. Always Matroska.
+func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int, noNumaPools bool) []string {
+	// Map the REAL video stream: cover art is a video stream too (attached_pic), so 0:v:0
+	// isn't always the movie.
+	a := []string{"-map", fmt.Sprintf("0:v:%d", mi.VideoIndex)}
+	a = append(a, trackArgs(mi, plan, 0)...)
+	a = append(a, videoArgs(enc, mi, plan, hwDecode, cores, noNumaPools)...)
+	a = append(a, "-map_metadata", "0", "-map_chapters", "0")
+	return a
+}
+
+// videoArgs is the video half of the command: copy, or encode with the chosen encoder.
+func videoArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int, noNumaPools bool) []string {
+	if plan.VideoCodec == "" {
+		return []string{"-c:v", "copy"}
+	}
+	codec := plan.VideoCodec
+	crf := plan.Quality
+	if crf <= 0 {
+		crf = maxQualityCRF(codec)
+	}
+	var a []string
+	if plan.VFRToCFR && mi.VFR {
+		a = append(a, "-fps_mode", "cfr") // normalize VFR → prevents A/V desync
+	}
+	// Deinterlace first when the source is interlaced — encoding combed fields as
+	// progressive frames bakes the combing in permanently.
+	swVF := swFilterChain(mi)
+	switch enc.Kind {
+	case "vaapi": // AMD/Intel hardware
+		if hwDecode {
+			// Frames arrive as VAAPI surfaces straight from the hardware decoder.
+			if mi.Interlaced {
+				a = append(a, "-vf", "deinterlace_vaapi")
+			}
+		} else {
+			pix := "nv12"
+			if mi.TenBit {
+				pix = "p010"
+			}
+			var chain []string
+			if mi.Interlaced {
+				chain = append(chain, deintFilter)
+			}
+			chain = append(chain, "format="+pix, "hwupload")
+			a = append(a, "-vf", strings.Join(chain, ","))
+		}
+		// Quality in the ENCODER's own scale: hevc_vaapi takes -qp (0-52, close to CRF);
+		// av1_vaapi has no -qp and quantizes on a 0-255 index via -global_quality.
+		a = append(a, "-c:v", enc.Name, "-rc_mode", "CQP")
+		if codec == "av1" {
+			a = append(a, "-global_quality", strconv.Itoa(av1QIndex(hardwareQuality(crf))))
+		} else {
+			a = append(a, "-qp", strconv.Itoa(hardwareQuality(crf)))
+		}
+		if mi.TenBit {
+			a = append(a, "-profile:v", "main10")
+		}
+		a = append(a, colourTagArgs(mi)...)
+	case "nvenc":
+		if swVF != "" {
+			a = append(a, "-vf", swVF)
+		}
+		// -b:v 0 matters: NVENC's constant-quality mode is otherwise still capped by the
+		// default average bitrate (2 Mb/s), which silently overrides the -cq target.
+		a = append(a, "-c:v", enc.Name, "-preset", "p6", "-tune", "hq", "-rc", "vbr", "-cq", strconv.Itoa(hardwareQuality(crf)), "-b:v", "0",
+			"-spatial-aq", "1", "-temporal-aq", "1", "-rc-lookahead", "32")
+		if mi.TenBit {
+			a = append(a, "-pix_fmt", "p010le")
+		}
+		a = append(a, colourTagArgs(mi)...)
+	case "qsv":
+		if swVF != "" {
+			a = append(a, "-vf", swVF)
+		}
+		// QSV's -global_quality is ICQ on a 1-51 CRF-like scale for EVERY codec, av1_qsv
+		// included. Look-ahead and adaptive quantisation keep dark and flat areas from being
+		// starved — the blocky-shadows problem fixed-quality hardware encodes are known for.
+		a = append(a, "-c:v", enc.Name, "-global_quality", strconv.Itoa(hardwareQuality(crf)), "-preset", "slower",
+			"-look_ahead_depth", "40", "-extbrc", "1", "-adaptive_i", "1", "-adaptive_b", "1")
+		if mi.TenBit {
+			a = append(a, "-pix_fmt", "p010le")
+		}
+		a = append(a, colourTagArgs(mi)...)
+	default: // CPU
+		if swVF != "" {
+			a = append(a, "-vf", swVF)
+		}
+		// Static HDR is re-passed: ffmpeg keeps the colour tags on a re-encode but drops the
+		// mastering-display / max-cll. (HDR10+ is re-injected by its own pipeline.)
+		hdrParams, colourTags := "", []string(nil)
+		if isHDR(mi.EncodeHDR()) {
+			switch codec {
+			case "hevc":
+				hdrParams, colourTags = hdr10Params(mi)
+			case "av1":
+				hdrParams, colourTags = av1HDRParams(mi)
+			}
+		}
+		a = append(a, cpuVideoArgs(enc.Name, codec, crf, cores, hdrParams, noNumaPools)...)
+		a = append(a, colourTags...)
+	}
+	return a
+}
+
+// trackSummary describes what a plan does to a file's tracks, for the job note and the log
+// ("audio 5 → 2 · subtitles 31 → 1"). Empty when nothing changes.
+func trackSummary(mi *MediaInfo, plan Plan) string {
+	var parts []string
+	if n := len(keptAudio(mi, plan)); n < len(mi.Audio) {
+		parts = append(parts, fmt.Sprintf("audio %d → %d", len(mi.Audio), n))
+	}
+	if n := len(keptSubs(mi, plan)); n < len(mi.Subs) {
+		parts = append(parts, fmt.Sprintf("subtitles %d → %d", len(mi.Subs), n))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// planWarnings lists what running this plan on this file will lose that the user didn't
+// explicitly ask to lose. They must never be silent.
 func planWarnings(mi *MediaInfo, plan Plan) []string {
 	var w []string
-	if plan.Container == "mp4" {
-		for _, au := range keptAudio(mi, plan) {
-			if mp4Audio(au.Codec) {
-				continue
-			}
-			if plan.Audio.Loudnorm && !losslessAudio(au.Codec) {
-				continue // the user asked for this track to be re-encoded anyway
-			}
-			label := strings.ToUpper(au.Codec)
-			if lay := channelLayout(au.Channels); lay != "" {
-				label += " " + lay
-			}
-			if au.Lang != "" && au.Lang != "und" {
-				label += " [" + au.Lang + "]"
-			}
-			if losslessAudio(au.Codec) {
-				w = append(w, fmt.Sprintf("lossless %s audio re-encoded to AAC 256k — MP4 can't hold it", label))
-			} else {
-				w = append(w, fmt.Sprintf("%s audio re-encoded to AAC 256k — MP4 can't hold it", label))
-			}
-		}
-		img, styled := 0, 0
-		for _, sub := range mi.Subs {
-			switch {
-			case !sub.Text:
-				img++
-			case strings.EqualFold(sub.Codec, "ass") || strings.EqualFold(sub.Codec, "ssa"):
-				styled++
-			}
-		}
-		if img > 0 {
-			w = append(w, fmt.Sprintf("%d image subtitle track(s) (PGS/VOBSUB) dropped — MP4 can't hold them", img))
-		}
-		if styled > 0 {
-			w = append(w, fmt.Sprintf("%d styled subtitle track(s) (ASS/SSA) flattened to plain mov_text", styled))
-		}
-	}
 	if plan.VideoCodec != "" && mi.HasCC {
 		w = append(w, "embedded closed captions (CEA-608/708) are lost on re-encode")
+	}
+	if plan.VideoCodec != "" && mi.HDR == "Dolby Vision" {
+		w = append(w, "Dolby Vision layer dropped — kept as "+mi.EncodeHDR())
 	}
 	return w
 }
 
-// scaleCPU builds the software scale filter that downscales to a target height while keeping
-// the aspect ratio and forcing an even width (required by most codecs).
-func scaleCPU(height int) string { return fmt.Sprintf("scale=-2:%d", height) }
-
 // deintFilter is the software deinterlacer. send_frame keeps the frame count 1:1 with the
 // source (bwdif's default, send_field, doubles the rate) — important both for A/V timing and
-// for the DV/HDR10+ pipelines, where per-frame metadata must stay aligned.
+// for the HDR10+ pipeline, where per-frame metadata must stay aligned.
 const deintFilter = "bwdif=mode=send_frame"
 
-// swFilterChain builds the software video-filter chain shared by every path that feeds the
-// encoder system-memory frames (CPU, NVENC, QSV, VideoToolbox, and the VAAPI software-decode
-// leg before upload): deinterlace when needed, then the optional downscale. "" = no filter.
-func swFilterChain(mi *MediaInfo, scale bool, height int) string {
-	var chain []string
+// swFilterChain builds the software video-filter chain for paths that feed the encoder
+// system-memory frames: deinterlace when needed. "" = no filter.
+func swFilterChain(mi *MediaInfo) string {
 	if mi.Interlaced {
-		chain = append(chain, deintFilter)
+		return deintFilter
 	}
-	if scale {
-		chain = append(chain, scaleCPU(height))
-	}
-	return strings.Join(chain, ",")
+	return ""
 }
 
 // colourTagArgs re-asserts the source's colour tags on a hardware encode. Hardware encoders
@@ -527,36 +486,21 @@ func colourTagArgs(mi *MediaInfo) []string {
 	return a
 }
 
-// vtQuality maps a CRF-scale target onto VideoToolbox's -q:v, a 1-100 scale where higher is
-// better. The mapping is a documented heuristic (VT exposes no CRF equivalent): the default
-// CRF 24 lands near the old fixed value of 55, and lower CRFs push quality up from there.
-func vtQuality(crf int) int {
-	q := 100 - 2*crf
-	if q < 1 {
-		q = 1
-	}
-	if q > 100 {
-		q = 100
-	}
-	return q
-}
-
-// hdr10Args re-applies HDR10 static metadata to a libx265 encode: the BT.2020/PQ colour tags plus
-// the mastering-display + max-cll (hdr10=1 emits the SEI, repeat-headers keeps it on every IDR so
-// seeking stays HDR-correct). HDR10+ dynamic metadata and Dolby Vision RPU are re-embedded
-// post-encode by their tools (the bundled x265 isn't built with dhdr10-info support). m may be nil.
+// hdr10Params re-applies static HDR to a libx265 encode: the BT.2020 colour tags plus the
+// mastering-display + max-cll (hdr10=1 emits the SEI, repeat-headers keeps it on every IDR so
+// seeking stays HDR-correct). HDR10+ dynamic metadata is re-embedded post-encode by its tool
+// (the bundled x265 isn't built with dhdr10-info support).
 func hdr10Params(mi *MediaInfo) (params string, colourTags []string) {
-	// The transfer curve must follow the SOURCE. This was hardcoded to smpte2084 (PQ), so
-	// every HLG file was re-tagged as PQ — it then plays back with wrong brightness, washed
-	// out or crushed, with the original already in the recycle bin.
+	// The transfer curve must follow the SOURCE. Every HLG file re-tagged as PQ plays back
+	// with wrong brightness, washed out or crushed.
 	trc := "smpte2084"
-	if mi.HDR == "HLG" {
+	if mi.EncodeHDR() == "HLG" {
 		trc = "arib-std-b67"
 	}
 	params = "hdr10=1:repeat-headers=1:colorprim=bt2020:transfer=" + trc + ":colormatrix=bt2020nc"
 	// Mastering display / max-cll describe an absolute-luminance (PQ) grade. HLG is relative
 	// and self-describing, so it carries neither.
-	if mi.HDR != "HLG" && mi.HDR10 != nil {
+	if trc != "arib-std-b67" && mi.HDR10 != nil {
 		if mi.HDR10.MasterDisplay != "" {
 			params += ":master-display=" + mi.HDR10.MasterDisplay
 		}
@@ -569,20 +513,17 @@ func hdr10Params(mi *MediaInfo) (params string, colourTags []string) {
 
 // av1HDRParams builds the SVT-AV1 static-HDR parameters plus the colour tags. AV1 carries
 // the colour description in its sequence header via ffmpeg's -color_* flags, and the
-// mastering display / content light as metadata OBUs via -svtav1-params.
-//
-// Unlike the x265 form there's no hdr10=1 or colorprim= — those are x265-specific knobs.
+// mastering display / content light as metadata OBUs via -svtav1-params (verified against
+// the bundled SVT-AV1 3.1.2: the values round-trip into the output).
 func av1HDRParams(mi *MediaInfo) (params string, colourTags []string) {
 	trc := "smpte2084"
-	if mi.HDR == "HLG" {
+	if mi.EncodeHDR() == "HLG" {
 		trc = "arib-std-b67"
 	}
-	// HLG is relative and self-describing: no mastering metadata applies.
-	if mi.HDR != "HLG" && mi.HDR10 != nil {
+	if trc != "arib-std-b67" && mi.HDR10 != nil {
 		if mi.HDR10.MasterDisplay != "" {
-			// SVT-AV1's documented mastering-display form uses FLOATS — chromaticities as
-			// G(0.2650,0.6900)… and luminance as L(1000.0000,0.0100) — while x265 takes the
-			// raw integer units. The probed x265 string is converted, not reused.
+			// SVT-AV1's mastering-display form uses FLOATS, while x265 takes the raw integer
+			// units the probe records. The probed x265 string is converted, not reused.
 			params = "mastering-display=" + svtMasterDisplay(mi.HDR10.MasterDisplay)
 		}
 		if mi.HDR10.MaxCLL != "" {
@@ -634,15 +575,23 @@ func svtMasterDisplay(x265 string) string {
 
 // stripTuningParams removes the quality-tuning parameters from a compiled command, leaving
 // the plain preset/CRF encode. Used for the safe-mode retry: the tuned parameters are a much
-// larger surface than "-preset slow -crf 18", and a failure there shouldn't cost the user
-// the conversion when the simple form would have worked. HDR metadata and environment
-// workarounds inside -x265-params/-svtav1-params are NOT tuning and survive the strip (see
-// stripTuningKeys) — the old whole-argument removal silently produced SDR-tagged output on
-// every safe-mode retry of an HDR file. When the stripped value is empty the flag pair is
-// dropped entirely (preserving the old "nothing left" shape).
+// larger surface than "-preset slow -crf 20", and a failure there shouldn't cost the user
+// the conversion when the simple form would have worked. HDR metadata, the core budget and
+// AV1's dark-scene protection are NOT tuning and survive the strip (see stripTuningKeys).
 func stripTuningParams(args []string) []string {
+	// The hardware encoders' tuning flags, dropped whole (flag + value). Look-ahead and
+	// adaptive quantisation depend on the driver and chip generation in ways a startup
+	// test can't cover; the plain constant-quality encode is the dependable fallback.
+	hwTuning := map[string]bool{
+		"-look_ahead_depth": true, "-extbrc": true, "-adaptive_i": true, "-adaptive_b": true,
+		"-spatial-aq": true, "-temporal-aq": true, "-rc-lookahead": true, "-tune": true,
+	}
 	out := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
+		if hwTuning[args[i]] && i+1 < len(args) {
+			i++
+			continue
+		}
 		if (args[i] == "-x265-params" || args[i] == "-svtav1-params") && i+1 < len(args) {
 			if kept := stripTuningKeys(args[i+1]); kept != "" {
 				out = append(out, args[i], kept)
@@ -656,17 +605,17 @@ func stripTuningParams(args []string) []string {
 }
 
 // stripTuningKeys removes the quality-TUNING keys from an x265/SVT-AV1 params string while
-// keeping everything that isn't tuning: the HDR metadata (hdr10, repeat-headers, colorprim,
-// transfer, colormatrix, master-display/mastering-display, max-cll/content-light, chromaloc)
-// and the pools key (the NUMA workaround / core budget — dropping it can crash the encode or
-// unbound it from the core budget). Package-level so the safe-mode retry in service.go can
-// reuse it on any params string.
+// keeping everything that isn't tuning: the HDR metadata, the pools/lp core budget (dropping
+// it can crash the encode or unbound it from the budget), and SVT-AV1's visual-quality mode
+// and dark-scene protection (without them AV1 crushes shadows — measured, not assumed).
 func stripTuningKeys(params string) string {
 	keep := map[string]bool{
 		"hdr10": true, "repeat-headers": true, "colorprim": true, "transfer": true,
 		"colormatrix": true, "master-display": true, "max-cll": true, "chromaloc": true,
 		"mastering-display": true, "content-light": true, // the SVT-AV1 spellings
-		"pools": true,
+		"pools": true, "lp": true,
+		"bframes": true, // the HDR10+ pipeline's bframes=0 is a correctness requirement, not tuning
+		"tune":    true, "enable-variance-boost": true, "luminance-qp-bias": true,
 	}
 	var out []string
 	for _, kv := range strings.Split(params, ":") {
@@ -681,120 +630,56 @@ func stripTuningKeys(params string) string {
 	return strings.Join(out, ":")
 }
 
+// av1QualityParams is SVT-AV1's quality configuration.
+//
+//	tune=0                   visual quality, not PSNR — the default visibly over-smooths
+//	enable-variance-boost=1  gives flat and low-contrast areas (skies, walls, shadows) the
+//	                         bits they need; off, SVT starves them
+//	luminance-qp-bias=20     spends more on dark frames, where AV1 otherwise crushes blacks
+//
+// Measured on dark footage with the bundled SVT-AV1 3.1.2 at the same CRF: plain tune=0
+// scored 29.3 dB XPSNR — visibly crushed shadows; with both protections, 36.0 dB.
+const av1QualityParams = "tune=0:enable-variance-boost=1:luminance-qp-bias=20"
+
 // cpuVideoArgs builds the CPU encoder args. cores bounds the encoder's own thread pool so a
-// library conversion can't take the whole machine — the server is also running Plex and
-// whatever else, and an encode that saturates every core makes the box unusable for days.
-func cpuVideoArgs(name, codec string, crf int, tenBit bool, cores int, hdrParams string, noNumaPools bool) []string {
-	switch codec {
-	case "h264":
-		return []string{"-c:v", name, "-preset", "medium", "-crf", strconv.Itoa(crf), "-pix_fmt", "yuv420p"}
-
-	case "av1":
-		// preset 5, not 8. SVT-AV1's presets run 0 (slowest) to 13; 8 is a *fast* preset and
-		// was plainly at odds with a module whose purpose is quality retention. tune=0
-		// targets subjective quality — the default tunes for PSNR, which visibly
-		// over-smooths. lp bounds the thread pool.
-		params := fmt.Sprintf("tune=0:lp=%d", cores)
-		// hdrParams arrives already in SVT-AV1's own format (float mastering-display via
-		// av1HDRParams/svtMasterDisplay — NOT x265's integer units, which SVT misreads).
+// library conversion can't take the whole machine. Output is always 10-bit: the extra
+// precision near-eliminates the banding on skies, smoke and dark gradients that is the first
+// thing anyone notices in a re-encode, and it improves efficiency rather than costing any.
+//
+// -dolbyvision 0: this ffmpeg's x265 and SVT-AV1 wrappers default to copying a source's
+// Dolby Vision RPU into the output. Dolby Vision is deliberately dropped (only its HDR10/
+// HLG base is kept), so that passthrough is switched off explicitly.
+func cpuVideoArgs(name, codec string, crf, cores int, hdrParams string, noNumaPools bool) []string {
+	if codec == "av1" {
+		params := fmt.Sprintf("%s:lp=%d", av1QualityParams, cores)
 		if hdrParams != "" {
 			params += ":" + hdrParams
 		}
-		out := []string{"-c:v", name, "-preset", "5", "-crf", strconv.Itoa(crf), "-svtav1-params", params}
-		if tenBit {
-			out = append(out, "-pix_fmt", "yuv420p10le")
-		}
-		return out
-
-	default: // hevc
-		// preset slow (~1.6x medium's time for a real fidelity gain), plus the params that
-		// matter for retaining detail rather than for speed:
-		//   aq-mode=3   better bit distribution in dark scenes and gradients
-		//   psy-rd      preserves texture/grain the default happily smooths away
-		//   no-sao      SAO is x265's classic detail-smearer at high quality
-		//   rc-lookahead / bframes  more context for rate decisions
-		params := "aq-mode=3:psy-rd=2.0:psy-rdoq=1.0:no-sao=1:bframes=8:rc-lookahead=40"
-		switch {
-		case noNumaPools:
-			// Worker pools bind to NUMA nodes via set_mempolicy, which this environment
-			// denies. Unpooled keeps frame-level parallelism and, unlike the default,
-			// finishes. See numaPoolsBlocked.
-			params += ":pools=none"
-		case cores > 0:
-			// pools=<N> is what actually bounds x265's own worker threads to the core
-			// budget. ffmpeg's -threads (placed before -i) only bounds the DECODER — with
-			// pools unset, x265 spins up a pool per NUMA node sized to the whole machine
-			// and the "half the cores" setting did nothing for the encode itself.
-			params += fmt.Sprintf(":pools=%d", cores)
-		}
-		// HDR params must be MERGED here, not appended as a second -x265-params: ffmpeg keeps
-		// only the last occurrence, so two flags means one set is silently discarded.
-		if hdrParams != "" {
-			params += ":" + hdrParams
-		}
-		// Always 10-bit, even for 8-bit sources: x265's Main10 avoids banding that its 8-bit
-		// path introduces in gradients, at no compatibility cost for HEVC playback.
-		return []string{"-c:v", name, "-preset", "slow", "-crf", strconv.Itoa(crf),
-			"-x265-params", params, "-pix_fmt", "yuv420p10le"}
+		return []string{"-c:v", name, "-preset", "5", "-crf", strconv.Itoa(crf), "-dolbyvision", "0",
+			"-svtav1-params", params, "-pix_fmt", "yuv420p10le"}
 	}
-}
-
-// keptSubs applies the subtitle language filter. With no filter every track is kept, so
-// the untouched path stays byte-identical to what it was.
-func keptSubs(mi *MediaInfo, plan Plan) []SubStream {
-	out := mi.Subs
-	if len(plan.Subs.KeepLangs) > 0 {
-		out = make([]SubStream, 0, len(mi.Subs))
-		for _, s := range mi.Subs {
-			if langIn(s.Lang, plan.Subs.KeepLangs) {
-				out = append(out, s)
-			}
-		}
-		// Never strip every subtitle. If the filter matches nothing, the tags are wrong
-		// or unexpected, and silently shipping a file with no subtitles at all is worse
-		// than keeping the clutter.
-		if len(out) == 0 {
-			out = mi.Subs
-		}
+	// HEVC. preset slow, plus the params that matter for retaining detail rather than speed:
+	//   aq-mode=3   better bit distribution in dark scenes and gradients
+	//   psy-rd      preserves texture/grain the default happily smooths away
+	//   no-sao      SAO is x265's classic detail-smearer at high quality
+	//   rc-lookahead / bframes  more context for rate decisions
+	params := "aq-mode=3:psy-rd=2.0:psy-rdoq=1.0:no-sao=1:bframes=8:rc-lookahead=40"
+	switch {
+	case noNumaPools:
+		// Worker pools bind to NUMA nodes via set_mempolicy, which this environment denies.
+		// Unpooled keeps frame-level parallelism and, unlike the default, finishes.
+		params += ":pools=none"
+	case cores > 0:
+		// pools=<N> is what actually bounds x265's own worker threads to the core budget.
+		params += fmt.Sprintf(":pools=%d", cores)
 	}
-	if !plan.Subs.DropImage {
-		return out
+	// HDR params must be MERGED here, not appended as a second -x265-params: ffmpeg keeps
+	// only the last occurrence, so two flags means one set is silently discarded.
+	if hdrParams != "" {
+		params += ":" + hdrParams
 	}
-	// Image tracks go only where a text subtitle for that language will remain: an
-	// embedded text track that survived the language filter, or a sidecar. An untagged
-	// image track is dropped only if some text subtitle exists at all — we can't know
-	// its language, but we do know the viewer isn't left with nothing.
-	textLangs := map[string]bool{}
-	anyText := false
-	for _, s := range out {
-		if s.Text {
-			textLangs[normLang(strings.ToLower(s.Lang))] = true
-			anyText = true
-		}
-	}
-	for _, l := range plan.Subs.TextSidecarLangs {
-		textLangs[normLang(strings.ToLower(l))] = true
-		anyText = true
-	}
-	kept := make([]SubStream, 0, len(out))
-	for _, s := range out {
-		if s.Text {
-			kept = append(kept, s)
-			continue
-		}
-		l := strings.ToLower(strings.TrimSpace(s.Lang))
-		hasText := anyText && (l == "" || l == "und" || textLangs[normLang(l)])
-		if !hasText {
-			kept = append(kept, s) // the only subtitle in its language — stays
-		}
-	}
-	// Same rule as above — never leave a file with no subtitles at all — but a sidecar
-	// counts. Every image track going because an .srt sits beside the file is the goal,
-	// not the failure case.
-	if len(kept) == 0 && len(out) > 0 && !anyText {
-		return out
-	}
-	return kept
+	return []string{"-c:v", name, "-preset", "slow", "-crf", strconv.Itoa(crf), "-dolbyvision", "0",
+		"-x265-params", params, "-pix_fmt", "yuv420p10le"}
 }
 
 // sidecarLangs lists the languages with an external .srt next to path, by the
@@ -848,22 +733,4 @@ func sidecarLangs(path string, cache map[string][]string) []string {
 func withSidecars(plan Plan, path string, cache map[string][]string) Plan {
 	plan.Subs.TextSidecarLangs = sidecarLangs(path, cache)
 	return plan
-}
-
-// NeedsTrackCleanup reports whether a remux would actually drop anything from this file.
-//
-// A remux rewrites the whole file and replaces the original. Doing that to a file whose
-// tracks are already exactly what you asked for is pure I/O for no change, so a sweep
-// has to be able to tell the difference rather than churning the entire library.
-func NeedsTrackCleanup(mi *MediaInfo, plan Plan) bool {
-	if mi == nil {
-		return false
-	}
-	if (len(plan.Subs.KeepLangs) > 0 || plan.Subs.DropImage) && len(keptSubs(mi, plan)) < len(mi.Subs) {
-		return true
-	}
-	if len(plan.Audio.KeepLangs) > 0 && len(keptAudio(mi, plan)) < len(mi.Audio) {
-		return true
-	}
-	return false
 }

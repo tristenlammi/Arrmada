@@ -427,31 +427,9 @@ export interface AppSettings {
   plex_login_auto_approve: boolean;
   /** Discovery region for TMDB lists (ISO 3166-1 alpha-2, e.g. "AU"); "" = global. */
   tmdb_region: string;
-  // Convert module (focused model: target codec + subs + schedule + safety).
-  convert_target_codec: string;
-  convert_auto: boolean;
-  convert_skip_hardlinked: boolean;
-  convert_keep_audio_langs: string;
-  convert_keep_sub_langs: string;
-  convert_drop_image_subs: boolean;
-  convert_add_stereo: boolean;
-  convert_loudnorm: boolean;
-  convert_quality_gate: boolean;
-  convert_min_ssim: string;
-  convert_workers: string;
-  convert_sweep_start: string;
-  /** Read-only: the clock the server evaluates the encode window against. */
+  /** Read-only: the server's own clock and zone. */
   server_time?: string;
   server_tz?: string;
-  convert_scan_at: string;
-  convert_cpu_cores: string;
-  convert_cpu_above_height: string;
-  convert_recode_modern: boolean;
-  convert_setup_done: boolean;
-  convert_sweep_end: string;
-  convert_max_failures: string;
-  convert_scratch_dir: string;
-  convert_vaapi_device: string;
   // Recycle bin guard rails.
   recycle_max_gb: string;
   recycle_retention_days: string;
@@ -897,7 +875,7 @@ export interface SeriesSubStatus {
 // --- Convert ---
 export interface ConvertEncoder { codec: string; name: string; kind: string; label: string; hardware: boolean; available: boolean }
 export interface ConvertMediaInfo {
-  container: string; video_codec: string; width: number; height: number; resolution: string; hdr: string;
+  container: string; video_codec: string; width: number; height: number; resolution: string; hdr: string; dv_base?: string;
   bitrate_kbps: number; frame_rate: number; duration_sec: number; size_bytes: number; audio_tracks: number; sub_tracks: number; ten_bit: boolean;
 }
 export interface ConvertSkipped {
@@ -926,7 +904,6 @@ export interface BookSeriesEntry {
 export interface BookSeries { name: string; entries: BookSeriesEntry[]; gaps: number; source?: "catalogue" | "library"; total?: number; key?: string }
 
 export interface ConvertLibraryStats { movies: ConvertMediaStats; tv: ConvertMediaStats; total: ConvertMediaStats; as_of?: number }
-export interface ConvertAllResult { movies: number; episodes: number; queued: number; blocklisted: number }
 
 export interface ConvertSeriesRollup {
   series_id: number;
@@ -939,10 +916,33 @@ export interface ConvertSeriesRollup {
   est_bytes: number;
 }
 
-export interface ConvertNeeds { video: boolean; subs: boolean; audio: boolean }
-export interface ConvertCandidate { kind: "movie" | "episode"; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; year?: number; poster_url?: string; path: string; info?: ConvertMediaInfo; candidate: boolean; needs: ConvertNeeds; est_bytes: number }
-export interface ConvertSample { movie_id: number; title: string; src_bytes: number; est_bytes: number; percent: number; sample_sec: number }
-export interface ConvertJob { id: number; kind?: string; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; state: string; progress: number; fps: number; speed_x: number; duration_sec?: number; encoder: string; src_bytes: number; out_bytes: number; ssim?: number; note?: string }
+export interface ConvertNeeds { video: boolean; subs: boolean; audio: boolean; why?: string }
+export interface ConvertCandidate { kind: "movie" | "episode"; key: string; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; year?: number; poster_url?: string; path: string; info?: ConvertMediaInfo; candidate: boolean; needs: ConvertNeeds; est_bytes: number; tracks?: string }
+export interface ConvertJob {
+  id: number; key: string; kind?: string; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string;
+  state: "preparing" | "testing" | "encoding" | "verifying" | "replacing" | "done" | "failed" | "skipped" | "cancelled";
+  progress: number; fps: number; speed_x: number; duration_sec?: number; encoder: string; codec?: string;
+  src_bytes: number; out_bytes: number; ssim?: number; note?: string; requested: boolean; paused?: string;
+  started_at: number; finished_at?: number;
+}
+export interface ConvertUpNext { key: string; title: string; kind: string; video: boolean; saving: number; size: number; tracks: string; reason: string; codec: string; current: string }
+export interface ConvertRequest { key: string; title: string; requested_at: number }
+export interface ConvertStatus {
+  state: "working" | "starting" | "paused" | "waiting" | "off" | "done"; message: string;
+  auto: boolean; window?: string; watching: boolean;
+  requests: ConvertRequest[]; up_next: ConvertUpNext[]; remaining: number;
+}
+export interface ConvertSettings {
+  auto: boolean; hours_start: string; hours_end: string; allow_av1: boolean; use_gpu: boolean; pause_watching: boolean;
+  keep_audio_langs: string; keep_original_lang: boolean; drop_commentary: boolean; keep_sub_langs: string;
+  image_subs: "keep" | "when_text" | "remove";
+  scratch_dir: string; vaapi_device: string; cpu_cores: number; workers: number; scan_at: string;
+  server_time: string; server_tz: string; plex_watching_known: boolean; can_pause: boolean;
+  has_gpu: boolean; gpu_does_av1: boolean; hdr10plus_tool: boolean;
+}
+export interface ConvertTrialSide { codec: string; encoder: string; bytes: number; ssim: number; est_bytes: number }
+export interface ConvertTrialResult { key: string; title: string; src_bytes: number; clips: number; seconds: number; hevc: ConvertTrialSide; av1: ConvertTrialSide; pick: string; why: string; files?: string[] }
+export interface ConvertCompareStatus { running: boolean; key?: string; title?: string; started?: number; result?: ConvertTrialResult; error?: string }
 
 // Insights (Plex watch monitoring).
 export interface PlexLibrary { key: string; title: string; type: string }
@@ -1471,22 +1471,24 @@ export const api = {
   searchSeriesSubs: (id: number) => req<{ status: string }>(`/api/v1/subtitles/series/${id}/search`, { method: "POST" }),
 
   // Convert
-  convertHardware: () => req<{ encoders: ConvertEncoder[]; selected: ConvertEncoder; reclaimed_bytes: number; scratch_dir: string; scratch_free_bytes: number; render_devices: { path: string; pci: string; vendor: string }[]; vaapi_device: string }>("/api/v1/convert/hardware"),
+  convertHardware: () => req<{ encoders: ConvertEncoder[]; using: string; reclaimed_bytes: number; scratch_dir: string; scratch_free_bytes: number; render_devices: { path: string; pci: string; vendor: string }[]; vaapi_device: string }>("/api/v1/convert/hardware"),
+  convertStatus: () => req<ConvertStatus>("/api/v1/convert/status"),
+  convertSettings: () => req<ConvertSettings>("/api/v1/convert/settings"),
+  updateConvertSettings: (patch: Partial<ConvertSettings>) => req<ConvertSettings>("/api/v1/convert/settings", { method: "PUT", body: JSON.stringify(patch) }),
   convertReindex: () => req<{ started: boolean; reason?: string }>("/api/v1/convert/reindex", { method: "POST" }),
   convertReindexStatus: () => req<{ running: boolean }>("/api/v1/convert/reindex"),
-  convertSweep: () => req<ConvertAllResult>("/api/v1/convert/sweep", { method: "POST" }),
   convertLibrary: (media: "movies" | "tv" = "movies", seriesID?: number, convertibleOnly = false) => {
     const q = new URLSearchParams();
-    if (media === "tv") { q.set("media", "tv"); q.set("series", String(seriesID)); }
+    if (media === "tv") q.set("media", "tv");
+    if (seriesID) q.set("series", String(seriesID));
     if (convertibleOnly) q.set("convertible", "1");
     const qs = q.toString();
     return req<{ items: ConvertCandidate[] }>(`/api/v1/convert/library${qs ? `?${qs}` : ""}`).then((r) => r.items);
   },
-  // The TV tab lists shows, not episodes — one roll-up row per series keeps the payload
-  // small no matter how many episodes the library holds.
   convertStats: () => req<ConvertLibraryStats>("/api/v1/convert/stats"),
+  convertRequest: (key: string) => req<{ requested: string }>("/api/v1/convert/requests", { method: "POST", body: JSON.stringify({ key }) }),
+  convertCancelRequest: (key?: string) => req<{ cancelled: number }>(`/api/v1/convert/requests?${key ? `key=${encodeURIComponent(key)}` : "all=1"}`, { method: "DELETE" }),
   convertCancel: (id: number) => req<{ cancelled: number }>(`/api/v1/convert/jobs/${id}/cancel`, { method: "POST" }),
-  convertCancelQueued: () => req<{ cancelled: number }>("/api/v1/convert/jobs/cancel-queued", { method: "POST" }),
   convertBlocklist: () => req<{ items: ConvertBlocked[] }>("/api/v1/convert/blocklist").then((r) => r.items),
   convertSkips: () => req<{ items: ConvertSkipped[] }>("/api/v1/convert/skips").then((r) => r.items),
   convertSkipsClear: (key?: string) =>
@@ -1495,12 +1497,12 @@ export const api = {
     req<{ cleared: boolean }>(`/api/v1/convert/blocklist/clear?${key ? `key=${encodeURIComponent(key)}` : "all=1"}`, { method: "POST" }),
   convertLibrarySeries: () => req<{ series: ConvertSeriesRollup[] }>("/api/v1/convert/library?media=tv").then((r) => r.series),
   convertSeries: (seriesID: number, season?: number) =>
-    req<{ queued: number }>(`/api/v1/convert/series/${seriesID}${season === undefined ? "" : `?season=${season}`}`, { method: "POST" }),
+    req<{ requested: number }>(`/api/v1/convert/series/${seriesID}${season === undefined ? "" : `?season=${season}`}`, { method: "POST" }),
   convertJobs: () => req<{ jobs: ConvertJob[] }>("/api/v1/convert/jobs").then((r) => r.jobs),
   convertLogs: () => req<{ lines: { at: number; level: string; msg: string }[] }>("/api/v1/convert/logs").then((r) => r.lines),
-  convertMovie: (id: number) => req<ConvertJob>(`/api/v1/convert/movies/${id}`, { method: "POST" }),
-  convertEpisode: (seriesID: number, season: number, episode: number) => req<ConvertJob>(`/api/v1/convert/episodes/${seriesID}/${season}/${episode}`, { method: "POST" }),
-  convertSampleMovie: (id: number) => req<ConvertSample>(`/api/v1/convert/movies/${id}/sample`, { method: "POST" }),
+  convertCompare: (key: string) => req<ConvertCompareStatus>("/api/v1/convert/compare", { method: "POST", body: JSON.stringify({ key }) }),
+  convertCompareStatus: () => req<ConvertCompareStatus>("/api/v1/convert/compare"),
+  convertCompareFileURL: (name: string) => `/api/v1/convert/compare/files/${encodeURIComponent(name)}`,
 
   // Insights (Plex)
   insightsConfig: () => req<PlexConfig>("/api/v1/insights/plex"),

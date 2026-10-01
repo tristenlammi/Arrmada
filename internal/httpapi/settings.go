@@ -71,37 +71,10 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"plex_login_enabled":      a.deps.Settings.GetBool(ctx, "plex_login_enabled", false),
 		"tmdb_region":             a.deps.Settings.Get(ctx, "tmdb_region", ""),
 		"plex_login_auto_approve": a.deps.Settings.GetBool(ctx, "plex_login_auto_approve", true),
-		// Convert module.
-		"convert_skip_hardlinked":  a.deps.Settings.GetBool(ctx, "convert_skip_hardlinked", true),
-		"convert_keep_audio_langs": a.deps.Settings.Get(ctx, "convert_keep_audio_langs", ""),
-		"convert_keep_sub_langs":   a.deps.Settings.Get(ctx, "convert_keep_sub_langs", ""),
-		"convert_drop_image_subs":  a.deps.Settings.GetBool(ctx, "convert_drop_image_subs", true),
-		"convert_add_stereo":       a.deps.Settings.GetBool(ctx, "convert_add_stereo", false),
-		"convert_loudnorm":         a.deps.Settings.GetBool(ctx, "convert_loudnorm", false),
-		// Convert — focused model: target codec, subtitle toggle, schedule, quality safety.
-		"convert_target_codec": a.deps.Settings.Get(ctx, "convert_target_codec", "hevc"),
-		"convert_auto":         a.deps.Settings.GetBool(ctx, "convert_auto", false),
-		"convert_quality_gate": a.deps.Settings.GetBool(ctx, "convert_quality_gate", true),
-		"convert_min_ssim":     a.deps.Settings.Get(ctx, "convert_min_ssim", "0.97"),
-		"convert_workers":      a.deps.Settings.Get(ctx, "convert_workers", "1"),
-		"convert_sweep_start":  a.deps.Settings.Get(ctx, "convert_sweep_start", ""),
-		// The encode window is compared against the SERVER's clock, not the browser's.
-		// When the two disagree the window silently never opens, so hand the UI the
-		// server's own time and zone to show beside the inputs.
-		"server_time":              time.Now().Format("15:04"),
-		"server_tz":                serverZone(),
-		"convert_scan_at":          a.deps.Settings.Get(ctx, "convert_scan_at", "03:00"),
-		"convert_cpu_cores":        a.deps.Settings.Get(ctx, "convert_cpu_cores", "0"),
-		"convert_cpu_above_height": a.deps.Settings.Get(ctx, "convert_cpu_above_height", "2160"),
-		"convert_recode_modern":    a.deps.Settings.GetBool(ctx, "convert_recode_modern", false),
-		// Distinguishes "chose HEVC" from "never chose" — convert_target_codec defaults to
-		// hevc, so it can't answer that on its own. Must be READ as well as written, or the
-		// first-run setup screen can never dismiss.
-		"convert_setup_done":   a.deps.Settings.GetBool(ctx, "convert_setup_done", false),
-		"convert_sweep_end":    a.deps.Settings.Get(ctx, "convert_sweep_end", ""),
-		"convert_max_failures": a.deps.Settings.Get(ctx, "convert_max_failures", "3"),
-		"convert_scratch_dir":  a.deps.Settings.Get(ctx, "convert_scratch_dir", ""),
-		"convert_vaapi_device": a.deps.Settings.Get(ctx, "convert_vaapi_device", ""),
+		// The server's own clock and zone, for anything scheduled (Convert has its own
+		// settings endpoint, which reports the same).
+		"server_time": time.Now().Format("15:04"),
+		"server_tz":   serverZone(),
 		// Recycle bin guard rails. These default to REAL limits, not 0/unlimited: the
 		// bin is on by default and every delete, quality upgrade and Convert original
 		// lands in it, so an unlimited default silently grows until the volume fills.
@@ -119,45 +92,24 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 // handleUpdateSettings persists changed preferences (only provided keys change).
 func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		SearchOnAdd           *bool   `json:"search_on_add"`
-		NamingMovieFolder     *string `json:"naming_movie_folder"`
-		NamingMovieFile       *string `json:"naming_movie_file"`
-		NamingSeriesFolder    *string `json:"naming_series_folder"`
-		NamingSeriesSeason    *string `json:"naming_series_season"`
-		NamingSeriesEpisode   *string `json:"naming_series_episode"`
-		WriteNFO              *bool   `json:"write_nfo"`
-		DownloadArtwork       *bool   `json:"download_artwork"`
-		BooksEnabled          *bool   `json:"books_enabled"`
-		MusicEnabled          *bool   `json:"music_enabled"`
-		PlexLoginEnabled      *bool   `json:"plex_login_enabled"`
-		TMDBRegion            *string `json:"tmdb_region"`
-		PlexLoginAutoApprove  *bool   `json:"plex_login_auto_approve"`
-		ConvertSkipHardlinked *bool   `json:"convert_skip_hardlinked"`
-		ConvertKeepAudioLangs *string `json:"convert_keep_audio_langs"`
-		ConvertKeepSubLangs   *string `json:"convert_keep_sub_langs"`
-		ConvertDropImageSubs  *bool   `json:"convert_drop_image_subs"`
-		ConvertAddStereo      *bool   `json:"convert_add_stereo"`
-		ConvertLoudnorm       *bool   `json:"convert_loudnorm"`
-		ConvertTargetCodec    *string `json:"convert_target_codec"`
-		ConvertAuto           *bool   `json:"convert_auto"`
-		ConvertQualityGate    *bool   `json:"convert_quality_gate"`
-		ConvertMinSSIM        *string `json:"convert_min_ssim"`
-		ConvertWorkers        *string `json:"convert_workers"`
-		ConvertSweepStart     *string `json:"convert_sweep_start"`
-		ConvertScanAt         *string `json:"convert_scan_at"`
-		ConvertCPUCores       *string `json:"convert_cpu_cores"`
-		ConvertCPUAboveHeight *string `json:"convert_cpu_above_height"`
-		ConvertRecodeModern   *bool   `json:"convert_recode_modern"`
-		ConvertSetupDone      *bool   `json:"convert_setup_done"`
-		ConvertSweepEnd       *string `json:"convert_sweep_end"`
-		ConvertMaxFailures    *string `json:"convert_max_failures"`
-		ConvertScratchDir     *string `json:"convert_scratch_dir"`
-		ConvertVaapiDevice    *string `json:"convert_vaapi_device"`
-		RecycleMaxGB          *string `json:"recycle_max_gb"`
-		RecycleRetentionDays  *string `json:"recycle_retention_days"`
-		DiskGuard             *bool   `json:"downloads_disk_guard"`
-		DiskGuardPausePct     *string `json:"downloads_disk_guard_pause_pct"`
-		DiskGuardResumePct    *string `json:"downloads_disk_guard_resume_pct"`
+		SearchOnAdd          *bool   `json:"search_on_add"`
+		NamingMovieFolder    *string `json:"naming_movie_folder"`
+		NamingMovieFile      *string `json:"naming_movie_file"`
+		NamingSeriesFolder   *string `json:"naming_series_folder"`
+		NamingSeriesSeason   *string `json:"naming_series_season"`
+		NamingSeriesEpisode  *string `json:"naming_series_episode"`
+		WriteNFO             *bool   `json:"write_nfo"`
+		DownloadArtwork      *bool   `json:"download_artwork"`
+		BooksEnabled         *bool   `json:"books_enabled"`
+		MusicEnabled         *bool   `json:"music_enabled"`
+		PlexLoginEnabled     *bool   `json:"plex_login_enabled"`
+		TMDBRegion           *string `json:"tmdb_region"`
+		PlexLoginAutoApprove *bool   `json:"plex_login_auto_approve"`
+		RecycleMaxGB         *string `json:"recycle_max_gb"`
+		RecycleRetentionDays *string `json:"recycle_retention_days"`
+		DiskGuard            *bool   `json:"downloads_disk_guard"`
+		DiskGuardPausePct    *string `json:"downloads_disk_guard_pause_pct"`
+		DiskGuardResumePct   *string `json:"downloads_disk_guard_resume_pct"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -171,35 +123,6 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
-	// Convert settings are validated here rather than trusted from the client: the UI's
-	// min/max attributes aren't enforced for programmatic writes, and a value like
-	// min_ssim=2.0 is unreachable, so every encode would be discarded with no explanation.
-	if req.ConvertMinSSIM != nil {
-		if v, err := strconv.ParseFloat(strings.TrimSpace(*req.ConvertMinSSIM), 64); err != nil || v <= 0 || v > 1 {
-			a.writeError(w, http.StatusBadRequest, "quality gate minimum must be between 0 and 1")
-			return
-		}
-	}
-	for _, f := range []struct {
-		v    *string
-		name string
-	}{
-		{req.ConvertSweepStart, "schedule start"}, {req.ConvertSweepEnd, "schedule end"}, {req.ConvertScanAt, "scan time"},
-	} {
-		if f.v == nil {
-			continue
-		}
-		if t := strings.TrimSpace(*f.v); t != "" && !validHHMM(t) {
-			a.writeError(w, http.StatusBadRequest, f.name+" must be a time like 03:00")
-			return
-		}
-	}
-	if req.ConvertTargetCodec != nil {
-		if c := strings.TrimSpace(*req.ConvertTargetCodec); c != "hevc" && c != "av1" {
-			a.writeError(w, http.StatusBadRequest, "target codec must be hevc or av1")
-			return
-		}
-	}
 	// The disk guard's two thresholds are validated together: a resume point at or
 	// above the pause point pauses and resumes on alternate passes forever. The guard
 	// corrects that defensively at read time, but rejecting it here means the UI says
@@ -259,69 +182,6 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if req.PlexLoginAutoApprove != nil && !save(a.deps.Settings.SetBool(ctx, "plex_login_auto_approve", *req.PlexLoginAutoApprove)) {
-		return
-	}
-	if req.ConvertSkipHardlinked != nil && !save(a.deps.Settings.SetBool(ctx, "convert_skip_hardlinked", *req.ConvertSkipHardlinked)) {
-		return
-	}
-	if req.ConvertKeepAudioLangs != nil && !save(a.deps.Settings.Set(ctx, "convert_keep_audio_langs", *req.ConvertKeepAudioLangs)) {
-		return
-	}
-	if req.ConvertKeepSubLangs != nil && !save(a.deps.Settings.Set(ctx, "convert_keep_sub_langs", strings.TrimSpace(*req.ConvertKeepSubLangs))) {
-		return
-	}
-	if req.ConvertDropImageSubs != nil && !save(a.deps.Settings.SetBool(ctx, "convert_drop_image_subs", *req.ConvertDropImageSubs)) {
-		return
-	}
-	if req.ConvertAddStereo != nil && !save(a.deps.Settings.SetBool(ctx, "convert_add_stereo", *req.ConvertAddStereo)) {
-		return
-	}
-	if req.ConvertLoudnorm != nil && !save(a.deps.Settings.SetBool(ctx, "convert_loudnorm", *req.ConvertLoudnorm)) {
-		return
-	}
-	if req.ConvertTargetCodec != nil && !save(a.deps.Settings.Set(ctx, "convert_target_codec", *req.ConvertTargetCodec)) {
-		return
-	}
-	if req.ConvertAuto != nil && !save(a.deps.Settings.SetBool(ctx, "convert_auto", *req.ConvertAuto)) {
-		return
-	}
-	if req.ConvertQualityGate != nil && !save(a.deps.Settings.SetBool(ctx, "convert_quality_gate", *req.ConvertQualityGate)) {
-		return
-	}
-	if req.ConvertMinSSIM != nil && !save(a.deps.Settings.Set(ctx, "convert_min_ssim", *req.ConvertMinSSIM)) {
-		return
-	}
-	if req.ConvertWorkers != nil && !save(a.deps.Settings.Set(ctx, "convert_workers", *req.ConvertWorkers)) {
-		return
-	}
-	if req.ConvertScanAt != nil && !save(a.deps.Settings.Set(ctx, "convert_scan_at", *req.ConvertScanAt)) {
-		return
-	}
-	if req.ConvertCPUCores != nil && !save(a.deps.Settings.Set(ctx, "convert_cpu_cores", *req.ConvertCPUCores)) {
-		return
-	}
-	if req.ConvertCPUAboveHeight != nil && !save(a.deps.Settings.Set(ctx, "convert_cpu_above_height", *req.ConvertCPUAboveHeight)) {
-		return
-	}
-	if req.ConvertRecodeModern != nil && !save(a.deps.Settings.SetBool(ctx, "convert_recode_modern", *req.ConvertRecodeModern)) {
-		return
-	}
-	if req.ConvertSetupDone != nil && !save(a.deps.Settings.SetBool(ctx, "convert_setup_done", *req.ConvertSetupDone)) {
-		return
-	}
-	if req.ConvertSweepStart != nil && !save(a.deps.Settings.Set(ctx, "convert_sweep_start", *req.ConvertSweepStart)) {
-		return
-	}
-	if req.ConvertSweepEnd != nil && !save(a.deps.Settings.Set(ctx, "convert_sweep_end", *req.ConvertSweepEnd)) {
-		return
-	}
-	if req.ConvertMaxFailures != nil && !save(a.deps.Settings.Set(ctx, "convert_max_failures", *req.ConvertMaxFailures)) {
-		return
-	}
-	if req.ConvertScratchDir != nil && !save(a.deps.Settings.Set(ctx, "convert_scratch_dir", strings.TrimSpace(*req.ConvertScratchDir))) {
-		return
-	}
-	if req.ConvertVaapiDevice != nil && !save(a.deps.Settings.Set(ctx, "convert_vaapi_device", strings.TrimSpace(*req.ConvertVaapiDevice))) {
 		return
 	}
 	if req.RecycleMaxGB != nil && !save(a.deps.Settings.Set(ctx, "recycle_max_gb", strings.TrimSpace(*req.RecycleMaxGB))) {

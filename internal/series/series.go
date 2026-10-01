@@ -50,6 +50,9 @@ type SeriesExtra struct {
 	// OriginalTitle is TMDB's original_name (e.g. romaji for anime). Used as an
 	// alternate search title, since anime is often released under its romaji name.
 	OriginalTitle string `json:"original_title,omitempty"`
+	// OriginalLanguage is TMDB's original_language ("ja", "en"…), so Convert can keep a
+	// show's original-language audio when it trims audio tracks to your languages.
+	OriginalLanguage string `json:"original_language,omitempty"`
 }
 
 // IsAnime reports whether the series uses anime (absolute) episode numbering.

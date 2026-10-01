@@ -3,18 +3,32 @@ package convert
 import (
 	"context"
 	"database/sql"
+	"time"
 )
 
 // Skip kinds. These group the Problems list, so they're coarse on purpose — the user cares
 // "why won't these convert", not which line of code returned.
 const (
-	SkipHDRUnsupported = "hdr_unsupported" // the target format can't carry this file's HDR metadata
+	SkipHDRUnsupported = "hdr_unsupported" // this file's HDR can't be carried through a conversion
 	SkipHardlinked     = "hardlinked"      // still seeding / hardlinked, so it isn't ours to replace
-	SkipNotSmaller     = "not_smaller"     // the encode came out no smaller than the source
+	SkipNotSmaller     = "not_smaller"     // the encode didn't save enough to be worth keeping
 	SkipQualityGate    = "quality_gate"    // the encode couldn't meet the quality threshold
-	SkipQueueFull      = "queue_full"      // transient: the queue was saturated
+	SkipCancelled      = "cancelled"       // you cancelled it; left alone for a while
 	SkipAlreadyTarget  = "already_target"  // nothing to do; not worth recording
 )
+
+// retryDelay is how long a temporary skip waits before the file is picked again. A seeding
+// file is checked twice a day; a file you cancelled stays out of the way for a month (or
+// until you press "Try again").
+func retryDelay(kind string) time.Duration {
+	switch kind {
+	case SkipHardlinked:
+		return 12 * time.Hour
+	case SkipCancelled:
+		return 30 * 24 * time.Hour
+	}
+	return 0
+}
 
 // permanentSkip reports whether a skip reason will still hold next time, unchanged.
 //
@@ -59,13 +73,17 @@ func (st *skipStore) record(ctx context.Context, key, kind, reason string) {
 	if permanentSkip(kind) {
 		perm = 1
 	}
+	var retry int64
+	if d := retryDelay(kind); d > 0 {
+		retry = time.Now().Add(d).Unix()
+	}
 	_, _ = st.db.ExecContext(ctx,
-		`INSERT INTO convert_skips (item_key, kind, reason, permanent, updated_at)
-		 VALUES (?, ?, ?, ?, datetime('now'))
+		`INSERT INTO convert_skips (item_key, kind, reason, permanent, retry_after, updated_at)
+		 VALUES (?, ?, ?, ?, ?, datetime('now'))
 		 ON CONFLICT(item_key) DO UPDATE SET
-		   kind = excluded.kind, reason = excluded.reason,
-		   permanent = excluded.permanent, updated_at = datetime('now')`,
-		key, kind, reason, perm)
+		   kind = excluded.kind, reason = excluded.reason, permanent = excluded.permanent,
+		   retry_after = excluded.retry_after, updated_at = datetime('now')`,
+		key, kind, reason, perm, retry)
 }
 
 // clear forgets an item's skip — called when it converts successfully, or when the user
@@ -84,6 +102,25 @@ func (st *skipStore) clearAll(ctx context.Context) error {
 func (st *skipStore) permanentKeys(ctx context.Context) map[string]bool {
 	out := map[string]bool{}
 	rows, err := st.db.QueryContext(ctx, `SELECT item_key FROM convert_skips WHERE permanent = 1`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		if rows.Scan(&k) == nil {
+			out[k] = true
+		}
+	}
+	return out
+}
+
+// waitingKeys returns the items the runner must not pick right now: permanent skips, and
+// temporary ones whose retry time hasn't come.
+func (st *skipStore) waitingKeys(ctx context.Context) map[string]bool {
+	out := map[string]bool{}
+	rows, err := st.db.QueryContext(ctx,
+		`SELECT item_key FROM convert_skips WHERE permanent = 1 OR retry_after > ?`, time.Now().Unix())
 	if err != nil {
 		return out
 	}

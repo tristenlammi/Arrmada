@@ -1,58 +1,57 @@
 package convert
 
-// Plan is the compiled description of a conversion — what the flow decided to do, separated
-// from how it's executed. A flow (Rules v2) builds a Plan by walking its nodes; for now the
-// "Save space" preset builds it from the global settings. The compiler (compileOutputArgs)
-// turns a Plan into an ffmpeg command, and preview reads the Plan directly — which is what
-// makes the preview exact (you preview the literal thing that will run).
+// Plan is what a conversion does to one file, separated from how it's executed: the
+// compiler (compileOutputArgs) turns it into an ffmpeg command, and the estimates read it
+// directly. Built per file by planFor (decide.go) from the settings and what's in the file.
+//
+// The output is always Matroska: it carries every audio codec (TrueHD/Atmos, DTS-HD),
+// every subtitle format and the attached fonts untouched, which is the whole promise.
 type Plan struct {
-	// Video.
-	VideoCodec  string // target video codec: "hevc" | "h264" | "av1"; "" = copy (remux only)
-	Quality     int    // CRF/CQ target; 0 = codec default (hw encoders map internally)
-	VFRToCFR    bool   // normalize variable frame rate when present
-	ScaleHeight int    // downscale to this height (0 = keep); never upscales
+	// VideoCodec is the target: "hevc" | "av1", or "" to copy the video untouched (a file
+	// whose picture is already right but whose tracks need cleaning up).
+	VideoCodec string
+	Quality    int  // CRF target; 0 = the codec's own default (maxQualityCRF)
+	VFRToCFR   bool // normalize variable frame rate when present
 
-	Audio     AudioPlan
-	Subs      SubPlan
-	Container string // "mkv" | "mp4"
-
-	// HealthCheck, with no transcode (VideoCodec == ""), turns the job into a read-only
-	// corruption scan that reports issues instead of replacing the file (R5).
-	HealthCheck bool
-	// ExtraArgs are raw ffmpeg output args appended verbatim — the advanced escape hatch
-	// for anything the structured actions don't cover (R5). Empty for the common case.
-	ExtraArgs []string
+	Audio AudioPlan
+	Subs  SubPlan
 }
 
-// SubPlan is the subtitle portion of a Plan.
+// AudioPlan is which audio tracks a file ends up with. Audio is always COPIED — Atmos,
+// TrueHD and DTS-HD pass through bit for bit; only the choice of tracks changes.
+type AudioPlan struct {
+	// KeepLangs keeps only these languages (empty = keep every language). "en" and "eng"
+	// both match. An untagged track is kept rather than guessed at, and if nothing at all
+	// would survive, every track stays: a file with no audio is broken, not tidy.
+	KeepLangs []string
+	// OriginalLang is the title's original language (from TMDB), kept alongside KeepLangs
+	// when set — a Japanese film keeps its Japanese track even if you only listed English.
+	// Per file; empty when the option is off or the language isn't known.
+	OriginalLang string
+	// DropCommentary removes commentary tracks (flagged as such, or titled "Commentary").
+	DropCommentary bool
+}
+
+// Image-subtitle policies (SubPlan.ImageSubs).
+const (
+	ImageSubsKeep     = "keep"      // leave PGS / VobSub tracks alone
+	ImageSubsWhenText = "when_text" // drop an image track only when a text one covers its language
+	ImageSubsRemove   = "remove"    // drop every image track
+)
+
+// SubPlan is which subtitle tracks a file ends up with.
 //
 // A WEB-DL commonly ships thirty-odd subtitle tracks for languages nobody in the house
-// reads. They cost little space, but they clutter every player's track menu and some
-// clients pick one at random.
+// reads. They cost little space, but they clutter every player's track menu.
 type SubPlan struct {
-	// KeepLangs keeps only these languages (empty = keep all). Matched the same way as
-	// audio, so "en" and "eng" both work, and an untagged track is kept rather than
-	// guessed at.
+	// KeepLangs keeps only these languages (empty = keep all), matched the same way as audio.
+	// If the filter would remove every subtitle, none are removed: the tags are wrong.
 	KeepLangs []string
-	// DropImage removes image-based subtitle tracks (PGS, VobSub, DVB). Plex can't send
-	// those to most clients as-is: it burns them into the picture, which means
-	// transcoding the video every time that subtitle is on. A text subtitle for the
-	// same language direct-plays.
-	//
-	// Guarded: an image track is only dropped when a TEXT subtitle for its language
-	// exists — an embedded text track that survives the filter, or an .srt sidecar (see
-	// TextSidecarLangs). Otherwise the image track is the only subtitle there is, and
-	// it stays until the Subtitles module has produced a text one.
-	DropImage bool
-	// TextSidecarLangs lists the languages that have an external .srt beside THIS file.
-	// Per-file, filled in by the caller (withSidecars) right before use; the rest of the
-	// plan comes from settings.
+	// ImageSubs is what happens to image-based tracks (PGS, VobSub, DVB). Plex can't send
+	// those to most clients as-is: it burns them into the picture, transcoding the video
+	// every time that subtitle is on. A text subtitle for the same language direct-plays.
+	ImageSubs string
+	// TextSidecarLangs lists the languages with an external .srt beside THIS file (they
+	// count as a text version for ImageSubsWhenText). Per file, filled in by withSidecars.
 	TextSidecarLangs []string
-}
-
-// AudioPlan is the audio portion of a Plan.
-type AudioPlan struct {
-	KeepLangs []string // keep only these languages (empty = keep all)
-	AddStereo bool     // add an AAC 2.0 downmix beside surround tracks
-	Loudnorm  bool     // EBU R128 loudness normalize (re-encodes to AAC)
 }

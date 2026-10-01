@@ -105,3 +105,20 @@ func parseItemKey(b *Blocked) {
 func (f *failureStore) blocklisted(ctx context.Context, key string, max int) bool {
 	return f.failureCount(ctx, key) >= max
 }
+
+// blockedKeys returns every item that has failed at least max times.
+func (f *failureStore) blockedKeys(ctx context.Context, max int) map[string]bool {
+	out := map[string]bool{}
+	rows, err := f.db.QueryContext(ctx, `SELECT item_key FROM convert_failures WHERE count >= ?`, max)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		if rows.Scan(&k) == nil {
+			out[k] = true
+		}
+	}
+	return out
+}

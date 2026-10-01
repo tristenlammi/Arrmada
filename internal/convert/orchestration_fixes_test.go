@@ -14,11 +14,11 @@ func testLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard,
 // separate lock sections, so a racing sweep and user click both encoded the file).
 func TestClaimPendingIsAtomic(t *testing.T) {
 	s := &Service{pending: map[string]*Job{}}
-	j1, fresh := s.claimPending("movie:1", func(id int64) *Job { return &Job{ID: id, State: StateQueued} })
+	j1, fresh := s.claimPending("movie:1", func(id int64) *Job { return &Job{ID: id, State: StatePreparing} })
 	if !fresh || j1 == nil {
 		t.Fatal("first claim must succeed")
 	}
-	j2, fresh2 := s.claimPending("movie:1", func(id int64) *Job { return &Job{ID: id, State: StateQueued} })
+	j2, fresh2 := s.claimPending("movie:1", func(id int64) *Job { return &Job{ID: id, State: StatePreparing} })
 	if fresh2 {
 		t.Fatal("second claim must be refused")
 	}
@@ -64,8 +64,8 @@ func TestHardwareBrokenThreshold(t *testing.T) {
 // job's "failure" must surface as Cancelled, and finishSkip must not record a
 // durable skip for it.
 func TestCancelledJobFinishesCancelled(t *testing.T) {
-	s := &Service{log: testLogger(), pending: map[string]*Job{}}
-	job := &Job{ID: 1, MovieID: 7, State: StateEncoding, cancelled: true}
+	s := newTestService(t)
+	job := &Job{ID: 1, Key: movieKey(7), MovieID: 7, State: StateEncoding, cancelled: true, Requested: true}
 	s.jobs = []*Job{job}
 	s.finish(job, StateFailed, "encode failed: signal: killed")
 	if job.State != StateCancelled {

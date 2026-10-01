@@ -27,3 +27,15 @@ func lowPriority(cmd *exec.Cmd) {
 func applyNice(pid, nice int) {
 	_ = syscall.Setpriority(syscall.PRIO_PGRP, pid, nice)
 }
+
+// suspendGroup freezes an encode's whole process group (ffmpeg and anything it spawned)
+// with SIGSTOP. The encode keeps its place: SIGCONT resumes it exactly where it stopped,
+// which is how a job started inside the encode hours waits out the day instead of either
+// running into prime time or being thrown away and redone.
+func suspendGroup(pid int) error { return syscall.Kill(-pid, syscall.SIGSTOP) }
+
+// resumeGroup continues a group frozen by suspendGroup.
+func resumeGroup(pid int) error { return syscall.Kill(-pid, syscall.SIGCONT) }
+
+// canSuspend reports whether running encodes can be paused on this platform.
+const canSuspend = true

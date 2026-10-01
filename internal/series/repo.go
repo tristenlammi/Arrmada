@@ -498,6 +498,16 @@ func (r *Repo) SetMonitored(ctx context.Context, id int64, monitored bool) error
 }
 
 // SetTVDBID records a series' TVDB id (the TheXEM lookup key).
+// SetExtra replaces a series' stored extra-metadata blob.
+func (r *Repo) SetExtra(ctx context.Context, id int64, ex *SeriesExtra) error {
+	b, err := json.Marshal(ex)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `UPDATE series SET extra_json = ? WHERE id = ?`, string(b), id)
+	return err
+}
+
 func (r *Repo) SetTVDBID(ctx context.Context, id int64, tvdbID int) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE series SET tvdb_id = ? WHERE id = ?`, tvdbID, id)
 	return err

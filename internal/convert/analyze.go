@@ -15,14 +15,19 @@ import (
 
 // MediaInfo is the probed spec of a single media file.
 type MediaInfo struct {
-	Container   string  `json:"container"`
-	VideoCodec  string  `json:"video_codec"`
-	VideoIndex  int     `json:"video_index,omitempty"` // position among VIDEO streams (the N in 0:v:N) — nonzero when cover art precedes the movie
-	Width       int     `json:"width"`
-	Height      int     `json:"height"`
-	Resolution  string  `json:"resolution"`           // "2160p" | "1080p" | "720p" | "SD"
-	HDR         string  `json:"hdr"`                  // "SDR" | "HDR10" | "HDR10+" | "Dolby Vision"
-	DVProfile   int     `json:"dv_profile,omitempty"` // Dolby Vision profile (5, 7, 8…); 0 = unknown / not DV
+	Container  string `json:"container"`
+	VideoCodec string `json:"video_codec"`
+	VideoIndex int    `json:"video_index,omitempty"` // position among VIDEO streams (the N in 0:v:N) — nonzero when cover art precedes the movie
+	Width      int    `json:"width"`
+	Height     int    `json:"height"`
+	Resolution string `json:"resolution"`           // "2160p" | "1080p" | "720p" | "SD"
+	HDR        string `json:"hdr"`                  // "SDR" | "HDR10" | "HDR10+" | "HLG" | "Dolby Vision"
+	DVProfile  int    `json:"dv_profile,omitempty"` // Dolby Vision profile (5, 7, 8…); 0 = unknown / not DV
+	// DVBase is the HDR format UNDER a Dolby Vision layer — what a conversion keeps once the
+	// DV layer is dropped: "HDR10" (profiles 7 and 8.1), "HDR10+" (when the base also carries
+	// dynamic metadata), "HLG" (8.4), or "SDR" when the base isn't a standard HDR grade at all
+	// (profile 5's IPT-PQ-c2, which can't be converted without wrecking the colour).
+	DVBase      string  `json:"dv_base,omitempty"`
 	BitrateKbps int     `json:"bitrate_kbps"`
 	FrameRate   float64 `json:"frame_rate"`
 	// FrameRateRat is the frame rate as ffprobe's exact rational (e.g. "24000/1001"), from
@@ -52,15 +57,18 @@ type MediaInfo struct {
 type HDR10Meta struct {
 	MasterDisplay string `json:"master_display"` // x265 form: G(gx,gy)B(bx,by)R(rx,ry)WP(wx,wy)L(max,min)
 	MaxCLL        string `json:"max_cll"`        // "max_content,max_average", e.g. "1000,400"
+	dynamic       bool   // the first frame carries HDR10+ (probe only; not stored)
 }
 
 // AudioStream is one audio track. AudIndex is its position among audio streams (the N in
 // ffmpeg's "0:a:N").
 type AudioStream struct {
-	AudIndex int    `json:"aud_index"`
-	Codec    string `json:"codec"`
-	Lang     string `json:"lang"`
-	Channels int    `json:"channels"`
+	AudIndex   int    `json:"aud_index"`
+	Codec      string `json:"codec"`
+	Lang       string `json:"lang"`
+	Channels   int    `json:"channels"`
+	Title      string `json:"title,omitempty"`
+	Commentary bool   `json:"commentary,omitempty"` // a commentary track (flagged, or titled so)
 }
 
 // SubStream is one subtitle track. SubIndex is its position among subtitle streams (the N
@@ -71,6 +79,27 @@ type SubStream struct {
 	Codec    string `json:"codec"`
 	Lang     string `json:"lang"`
 	Text     bool   `json:"text"`
+	Forced   bool   `json:"forced,omitempty"`
+}
+
+// EncodeHDR is the HDR format a conversion carries forward. For everything but Dolby Vision
+// that's the file's own format; a Dolby Vision file keeps its base layer — the DV layer itself
+// is deliberately dropped.
+func (mi *MediaInfo) EncodeHDR() string {
+	if mi.HDR == "Dolby Vision" {
+		if mi.DVBase == "" {
+			return "HDR10" // probed before DVBase existed; the common base, re-probed at job time
+		}
+		return mi.DVBase
+	}
+	return mi.HDR
+}
+
+// DVUnconvertible reports a Dolby Vision file whose base layer isn't a standard picture
+// (profile 5). Dropping the DV layer from one of those leaves colours that are simply wrong
+// on every display, so it's left alone.
+func (mi *MediaInfo) DVUnconvertible() bool {
+	return mi.HDR == "Dolby Vision" && (mi.DVProfile == 5 || mi.DVBase == "SDR")
 }
 
 // textSubCodecs are subtitle codecs we can extract to SRT.
@@ -220,9 +249,12 @@ func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 			Channels       int    `json:"channels"`
 			Disposition    struct {
 				AttachedPic int `json:"attached_pic"`
+				Comment     int `json:"comment"`
+				Forced      int `json:"forced"`
 			} `json:"disposition"`
 			Tags struct {
 				Language string `json:"language"`
+				Title    string `json:"title"`
 			} `json:"tags"`
 			SideDataList []struct {
 				SideDataType string `json:"side_data_type"`
@@ -286,39 +318,48 @@ func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 			mi.TenBit = strings.Contains(s.PixFmt, "10") || strings.Contains(s.PixFmt, "p10") ||
 				strings.Contains(s.PixFmt, "12") || strings.Contains(s.PixFmt, "14") ||
 				strings.Contains(s.PixFmt, "16")
+			base := "SDR"
 			if s.ColorTransfer == "smpte2084" || s.ColorTransfer == "arib-std-b67" {
 				// HLG is its own format, not HDR10. Folding it in meant the encode re-tagged
 				// it with PQ's transfer curve, which visibly breaks the picture.
 				if s.ColorTransfer == "arib-std-b67" {
-					mi.HDR = "HLG"
+					base = "HLG"
 				} else {
-					mi.HDR = "HDR10"
+					base = "HDR10"
 				}
 			}
+			dv := false
 			for _, sd := range s.SideDataList {
 				t := strings.ToLower(sd.SideDataType)
 				switch {
 				// ffprobe's stream-level name is "DOVI configuration record", so matching only
 				// "dolby vision" (the FRAME-level name) made this branch dead code.
 				case strings.Contains(t, "dolby vision") || strings.Contains(t, "dovi"):
-					mi.HDR = "Dolby Vision"
+					dv = true
 					if sd.DVProfile > 0 {
 						mi.DVProfile = sd.DVProfile
 					}
 				case strings.Contains(t, "hdr dynamic") || strings.Contains(t, "hdr10+"):
-					if mi.HDR != "Dolby Vision" { // DV+HDR10+ discs exist; DV routing wins
-						mi.HDR = "HDR10+"
+					if base == "HDR10" {
+						base = "HDR10+" // DV+HDR10+ discs exist: the base keeps its HDR10+
 					}
 				}
+			}
+			mi.HDR = base
+			if dv {
+				mi.HDR, mi.DVBase = "Dolby Vision", base
 			}
 		case "audio":
 			mi.Audio = append(mi.Audio, AudioStream{
 				AudIndex: mi.AudioTracks, Codec: s.CodecName, Lang: s.Tags.Language, Channels: s.Channels,
+				Title:      s.Tags.Title,
+				Commentary: s.Disposition.Comment == 1 || strings.Contains(strings.ToLower(s.Tags.Title), "commentary"),
 			})
 			mi.AudioTracks++
 		case "subtitle":
 			mi.Subs = append(mi.Subs, SubStream{
 				SubIndex: mi.SubTracks, Codec: s.CodecName, Lang: s.Tags.Language, Text: textSubCodecs[s.CodecName],
+				Forced: s.Disposition.Forced == 1,
 			})
 			mi.SubTracks++
 		}
@@ -333,8 +374,15 @@ func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 		(mi.TenBit && mi.VideoCodec == "hevc") {
 		meta, hasDV := probeHDR10(ctx, ffprobe, path, mi.VideoIndex)
 		mi.HDR10 = meta
-		if hasDV {
-			mi.HDR = "Dolby Vision"
+		if meta != nil && meta.dynamic {
+			if mi.HDR == "HDR10" {
+				mi.HDR = "HDR10+"
+			} else if mi.HDR == "Dolby Vision" && mi.DVBase == "HDR10" {
+				mi.DVBase = "HDR10+"
+			}
+		}
+		if hasDV && mi.HDR != "Dolby Vision" {
+			mi.HDR, mi.DVBase = "Dolby Vision", mi.HDR
 		}
 	}
 	return mi, nil
@@ -396,6 +444,12 @@ func probeHDR10(ctx context.Context, ffprobe, path string, videoIndex int) (meta
 		if strings.Contains(t, "dolby vision") || strings.Contains(t, "dovi") {
 			hasDV = true
 		}
+		// This ffprobe reports HDR10+ on the frame ("HDR Dynamic Metadata SMPTE2094-40
+		// (HDR10+)"). The conversion still confirms it by extracting the metadata, but the
+		// lists can now say HDR10+ instead of HDR10.
+		if strings.Contains(t, "2094-40") || strings.Contains(t, "hdr10+") {
+			m.dynamic = true
+		}
 		switch sd.SideDataType {
 		case "Mastering display metadata":
 			// x265 wants the raw numerators (colour coords in 0.00002 units, luminance in
@@ -408,7 +462,7 @@ func probeHDR10(ctx context.Context, ffprobe, path string, videoIndex int) (meta
 			m.MaxCLL = fmt.Sprintf("%d,%d", sd.MaxContent, sd.MaxAverage)
 		}
 	}
-	if m.MasterDisplay == "" && m.MaxCLL == "" {
+	if m.MasterDisplay == "" && m.MaxCLL == "" && !m.dynamic {
 		return nil, hasDV
 	}
 	return m, hasDV

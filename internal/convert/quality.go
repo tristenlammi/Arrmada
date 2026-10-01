@@ -35,7 +35,7 @@ func (s *Service) computeSSIM(ctx context.Context, distorted, reference string) 
 	var sum float64
 	var n int
 	for _, wnd := range ssimWindows(di.DurationSec) {
-		sc, err := s.ssimWindow(ctx, distorted, reference, wnd.start, wnd.dur, di.Width, di.Height)
+		sc, err := s.ssimWindow(ctx, distorted, reference, wnd.start, wnd.start, wnd.dur, di.Width, di.Height, di.FrameRateRat)
 		if err != nil {
 			continue // a single unreadable slice shouldn't fail the whole measurement
 		}
@@ -80,10 +80,25 @@ func ssimWindows(dur float64) []ssimWnd {
 // regardless of how high the encode quality is). The reference is scaled to the output resolution
 // first so an intentional downscale isn't scored as a defect. ssim prints its "All:" summary to
 // stderr; exit status is ignored — we rely on parsing that score.
-func (s *Service) ssimWindow(ctx context.Context, distorted, reference string, start, dur float64, w, h int) (float64, error) {
-	lavfi := fmt.Sprintf("[0:v]setpts=PTS-STARTPTS[d];[1:v]scale=%d:%d:flags=bicubic,setpts=PTS-STARTPTS[r];[d][r]ssim", w, h)
+//
+// dStart and rStart are where each file's window begins — the same point for a full encode,
+// but 0 vs the clip's position for a test clip cut from the middle of the original.
+//
+// Frames are paired by POSITION, not timestamp. Both streams are re-timed onto the output's
+// exact frame rate and renumbered, so frame N is compared with frame N. Pairing by timestamp
+// broke on any file whose video doesn't start at zero (an audio track starting a few ms
+// earlier is enough): Matroska rounds timestamps to the millisecond, and after subtracting
+// the different start points every third frame lined up with its neighbour — scoring 0.90
+// on a perfect encode, dragging the average to ~0.96, and failing the quality check on files
+// that were fine.
+func (s *Service) ssimWindow(ctx context.Context, distorted, reference string, dStart, rStart, dur float64, w, h int, rate string) (float64, error) {
+	align := "setpts=PTS-STARTPTS"
+	if validRate(rate) {
+		align += ",fps=" + rate + ",setpts=N/FRAME_RATE/TB"
+	}
+	lavfi := fmt.Sprintf("[0:v]%s[d];[1:v]scale=%d:%d:flags=bicubic,%s[r];[d][r]ssim", align, w, h, align)
 	args := []string{"-nostdin", "-hide_banner"}
-	seek := func(path string) {
+	seek := func(path string, start float64) {
 		if start > 0 {
 			args = append(args, "-ss", strconv.FormatFloat(start, 'f', 3, 64))
 		}
@@ -92,11 +107,22 @@ func (s *Service) ssimWindow(ctx context.Context, distorted, reference string, s
 		}
 		args = append(args, "-i", path)
 	}
-	seek(distorted)
-	seek(reference)
+	seek(distorted, dStart)
+	seek(reference, rStart)
 	args = append(args, "-lavfi", lavfi, "-an", "-sn", "-f", "null", "-")
 	out, _ := exec.CommandContext(ctx, s.ffmpeg, args...).CombinedOutput()
 	return parseSSIM(string(out))
+}
+
+// validRate reports whether a probed frame rate ("24000/1001") is usable for re-timing.
+func validRate(r string) bool {
+	num, den, ok := strings.Cut(r, "/")
+	if !ok {
+		return false
+	}
+	n, e1 := strconv.Atoi(num)
+	d, e2 := strconv.Atoi(den)
+	return e1 == nil && e2 == nil && n > 0 && d > 0 && n/d < 1000
 }
 
 // parseSSIM extracts the aggregate SSIM ("All:0.987…") from ffmpeg's ssim-filter output.
@@ -122,7 +148,7 @@ func parseSSIM(out string) (float64, error) {
 func higherQuality(plan Plan) int {
 	q := plan.Quality
 	if q <= 0 {
-		q = crfDefault(plan.VideoCodec)
+		q = maxQualityCRF(plan.VideoCodec)
 	}
 	if q -= 3; q < 16 {
 		q = 16

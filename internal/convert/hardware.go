@@ -42,20 +42,12 @@ type Encoder struct {
 // This ordering matters much less now that encoders are verified with a real test encode at
 // startup rather than assumed to work, so a broken one is dropped before it's ever chosen.
 var knownEncoders = []Encoder{
-	// HEVC (the default "save space" target).
+	// HEVC.
 	{Codec: "hevc", Name: "hevc_nvenc", Kind: "nvenc", Label: "NVENC (HEVC)", Hardware: true},
 	{Codec: "hevc", Name: "hevc_vaapi", Kind: "vaapi", Label: "VAAPI (HEVC)", Hardware: true},
 	{Codec: "hevc", Name: "hevc_qsv", Kind: "qsv", Label: "Quick Sync (HEVC)", Hardware: true},
-	{Codec: "hevc", Name: "hevc_videotoolbox", Kind: "videotoolbox", Label: "VideoToolbox (HEVC)", Hardware: true},
 	{Codec: "hevc", Name: "libx265", Kind: "cpu", Label: "CPU (x265)", Hardware: false},
-	// H.264 (maximum compatibility).
-	{Codec: "h264", Name: "h264_nvenc", Kind: "nvenc", Label: "NVENC (H.264)", Hardware: true},
-	{Codec: "h264", Name: "h264_vaapi", Kind: "vaapi", Label: "VAAPI (H.264)", Hardware: true},
-	{Codec: "h264", Name: "h264_qsv", Kind: "qsv", Label: "Quick Sync (H.264)", Hardware: true},
-	{Codec: "h264", Name: "h264_videotoolbox", Kind: "videotoolbox", Label: "VideoToolbox (H.264)", Hardware: true},
-	{Codec: "h264", Name: "libx264", Kind: "cpu", Label: "CPU (x264)", Hardware: false},
-	// AV1 (smallest, newest).
-	// SVT-AV1 leads the AV1 entries, and encoderFor honours that — see the note there.
+	// AV1.
 	{Codec: "av1", Name: "libsvtav1", Kind: "cpu", Label: "CPU (SVT-AV1)", Hardware: false},
 	{Codec: "av1", Name: "av1_nvenc", Kind: "nvenc", Label: "NVENC (AV1)", Hardware: true},
 	{Codec: "av1", Name: "av1_vaapi", Kind: "vaapi", Label: "VAAPI (AV1)", Hardware: true},
@@ -92,8 +84,6 @@ func detectEncoders(ctx context.Context, ffmpeg string) []Encoder {
 			e.Available = dri && intel
 		case "vaapi": // AMD + Intel
 			e.Available = dri && (amd || intel)
-		case "videotoolbox":
-			e.Available = true // presence implies macOS host
 		}
 		out = append(out, e)
 	}
@@ -154,40 +144,14 @@ func firstLine(s string) string {
 	return s
 }
 
-// encoderFor picks the encoder to use for a target codec: an available hardware encoder if
-// present, else that codec's CPU encoder (always available). "" targets HEVC (the default).
-func encoderFor(codec string, encs []Encoder) Encoder {
-	if codec == "" {
-		codec = "hevc"
-	}
-	// Hardware first for every codec EXCEPT AV1.
-	//
-	// AV1 is chosen for efficiency, and a fixed-function AV1 block gives most of that
-	// efficiency straight back: the silicon has far simpler rate-distortion optimisation
-	// and runs constant-QP with no adaptive quantisation, so a flat gradient and a complex
-	// action shot get quantised identically. The output is both bigger and softer than
-	// SVT-AV1's — which defeats the reason for picking AV1 over HEVC in the first place.
-	// When speed matters more, HEVC on the GPU is the better trade than AV1 on it.
-	if codec != "av1" {
-		for _, e := range encs {
-			if e.Codec == codec && e.Hardware && e.Available {
-				return e
-			}
-		}
-	}
-	for _, e := range encs { // detected CPU encoder
-		if e.Codec == codec && e.Kind == "cpu" && e.Available {
-			return e
-		}
-	}
-	// AV1 lands here only when SVT-AV1 failed startup verification. A hardware block is
-	// then better than not converting at all.
+// hardwareFor returns the first working hardware encoder for a format, in preference order.
+func hardwareFor(codec string, encs []Encoder) (Encoder, bool) {
 	for _, e := range encs {
 		if e.Codec == codec && e.Hardware && e.Available {
-			return e
+			return e, true
 		}
 	}
-	return cpuEncoder(codec) // last-resort fallback
+	return Encoder{}, false
 }
 
 // cpuWorks reports whether the CPU encoder for a codec passed startup verification. It is
@@ -206,8 +170,6 @@ func cpuWorks(codec string, encs []Encoder) bool {
 // cpuEncoder returns the CPU software encoder for a codec (the guaranteed fallback path).
 func cpuEncoder(codec string) Encoder {
 	switch codec {
-	case "h264":
-		return Encoder{Codec: "h264", Name: "libx264", Kind: "cpu", Label: "CPU (x264)", Available: true}
 	case "av1":
 		return Encoder{Codec: "av1", Name: "libsvtav1", Kind: "cpu", Label: "CPU (SVT-AV1)", Available: true}
 	default:
@@ -238,21 +200,6 @@ func gpuVendors() (intel, amd, any bool) {
 		}
 	}
 	return
-}
-
-// bestHEVC picks the encoder to use: an available hardware encoder if present, else CPU.
-func bestHEVC(encs []Encoder) Encoder {
-	for _, e := range encs {
-		if e.Hardware && e.Available {
-			return e
-		}
-	}
-	for _, e := range encs {
-		if e.Kind == "cpu" {
-			return e
-		}
-	}
-	return Encoder{Codec: "hevc", Name: "libx265", Kind: "cpu", Label: "CPU (x265)", Available: true}
 }
 
 func deviceExists(path string) bool {

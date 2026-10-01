@@ -261,6 +261,17 @@ func (s *Service) Refresh(ctx context.Context, id int64) (Series, bool, error) {
 		if d.TVDBID > 0 && d.TVDBID != sr.TVDBID {
 			_ = s.repo.SetTVDBID(ctx, id, d.TVDBID)
 		}
+		// Shows added before the original language was stored pick it up here.
+		if d.OriginalLang != "" && (sr.Extra == nil || sr.Extra.OriginalLanguage != d.OriginalLang) {
+			ex := sr.Extra
+			if ex == nil {
+				ex = extraFrom(d)
+			}
+			ex.OriginalLanguage = d.OriginalLang
+			if err := s.repo.SetExtra(ctx, id, ex); err != nil {
+				s.log.Warn("series: could not store the original language", "series", sr.Title, "err", err)
+			}
+		}
 		// Refresh the TheXEM scene map for anime, so split-season releases resolve.
 		if sr.IsAnime() || detectSeriesType(d) == SeriesTypeAnime {
 			s.refreshSceneMap(ctx, id, d.TVDBID)
@@ -1155,7 +1166,7 @@ func NormTitle(s string) string { return normKey(s) }
 
 // extraFrom projects metadata into the stored extra blob.
 func extraFrom(d *metadata.SeriesDetails) *SeriesExtra {
-	ex := &SeriesExtra{Genres: d.Genres, BackdropURL: d.BackdropURL}
+	ex := &SeriesExtra{Genres: d.Genres, BackdropURL: d.BackdropURL, OriginalLanguage: d.OriginalLang}
 	// Keep the romaji/original title only when it differs from the display title, so
 	// anime searches can also query the name releases are actually tagged with.
 	if d.OriginalName != "" && !strings.EqualFold(d.OriginalName, d.Title) {

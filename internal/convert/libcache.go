@@ -2,7 +2,6 @@ package convert
 
 import (
 	"context"
-	"fmt"
 	"time"
 )
 
@@ -38,7 +37,7 @@ func (s *Service) indexGen() uint64 {
 // libCacheKey folds in the settings the computations depend on, so changing the target
 // codec or the track plan invalidates them like an index write would.
 func (s *Service) libCacheKey(ctx context.Context) string {
-	return fmt.Sprintf("%+v|%s|%t", s.defaultPlan(ctx), s.targetCodec(ctx), s.recodesModern(ctx))
+	return s.prefs(ctx).cacheKey()
 }
 
 // invalidateLibraryCache forces the next read to recompute — for changes that don't go

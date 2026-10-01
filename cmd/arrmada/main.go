@@ -539,14 +539,6 @@ func main() {
 			}
 		}
 	}()
-	// Auto-convert sweep. Hourly, not 12-hourly: Sweep only queues while inside the encode
-	// window, so two daily ticks against a typical few-hour window usually landed outside it
-	// and auto-convert silently never fired. Re-queueing is cheap now that jobs are deduped,
-	// and waitForWindow gates the actual encoding regardless.
-	sched.Register("convert-sweep", time.Hour, false, func(ctx context.Context) error {
-		convertSvc.Sweep(ctx)
-		return nil
-	})
 
 	// Insights (Plex watch monitoring — Tautulli replacement).
 	geoDB := cfg.GeoIPDB
@@ -559,6 +551,8 @@ func main() {
 	insightsSvc := insights.NewService(st.DB(), settingsSvc, geoResolver, bus, log)
 	insightsSvc.SeedFromEnv(runCtx, cfg.PlexURL, cfg.PlexToken)
 	go insightsSvc.Run(runCtx) // Plex watch-monitoring poller (records when enabled + configured)
+	// Convert pauses its encodes while someone is watching.
+	convertSvc.SetWatching(insightsSvc.Watching)
 	// Prune raw bandwidth samples older than 90 days: the poller writes one row per
 	// cycle, so at the 5s default that's ~17k/day and every graph query scans them all.
 	// Watch history itself is kept — only the high-frequency bandwidth series is rolled off.

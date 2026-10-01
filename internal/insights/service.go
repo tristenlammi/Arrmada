@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/eventbus"
@@ -40,6 +41,22 @@ type Service struct {
 	// ownerLookupAt rate-limits the plex.tv account lookup. Poller-goroutine only, same
 	// as live — nothing else touches it.
 	ownerLookupAt time.Time
+
+	// playing is how many streams were playing at the last successful poll, and playingAt
+	// when that was — read from other goroutines (Convert pauses while someone watches).
+	playing   atomic.Int32
+	playingAt atomic.Int64
+}
+
+// Watching reports whether anyone is playing something on Plex right now. A paused stream
+// doesn't count, and neither does a reading older than a few minutes (Plex unreachable, or
+// monitoring switched off) — then nobody is known to be watching.
+func (s *Service) Watching() bool {
+	at := s.playingAt.Load()
+	if at == 0 || time.Since(time.Unix(at, 0)) > 3*time.Minute {
+		return false
+	}
+	return s.playing.Load() > 0
 }
 
 // NewService wires the module. geo may be nil (geolocation then only flags LAN as "Local").

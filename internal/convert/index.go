@@ -34,7 +34,55 @@ type indexRow struct {
 	PosterURL string
 	SizeBytes int64
 	Codec     string
+	OrigLang  string // the title's original language (TMDB), for keep-original-language audio
 	Info      *MediaInfo
+}
+
+// rowMeta is what the indexer needs to know about an indexed file to decide whether it's
+// up to date without touching the disk.
+type rowMeta struct {
+	size     int64
+	codec    string
+	ver      int
+	origLang string
+}
+
+// current reports whether an indexed row still describes the file: same size, a probe that
+// succeeded, written by the current analysis. An empty codec marks a probe that FAILED
+// (spun-down array, transient I/O) — that must be retried, not latched forever.
+func (m rowMeta) current(size int64) bool {
+	return m.size == size && size > 0 && m.codec != "" && m.ver == probeSchemaVersion
+}
+
+// metaFor returns path → rowMeta for a scope.
+func (ix *libraryIndex) metaFor(ctx context.Context, mediaType string, seriesID int64) map[string]rowMeta {
+	q := `SELECT path, size_bytes, video_codec, info_ver, orig_lang FROM convert_library WHERE media_type = ?`
+	args := []any{mediaType}
+	if seriesID > 0 {
+		q += ` AND series_id = ?`
+		args = append(args, seriesID)
+	}
+	out := map[string]rowMeta{}
+	rows, err := ix.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p string
+		var m rowMeta
+		if rows.Scan(&p, &m.size, &m.codec, &m.ver, &m.origLang) == nil {
+			out[p] = m
+		}
+	}
+	return out
+}
+
+// setOrigLang updates just the original language of an otherwise-current row.
+func (ix *libraryIndex) setOrigLang(ctx context.Context, path, lang string) {
+	if _, err := ix.db.ExecContext(ctx, `UPDATE convert_library SET orig_lang = ? WHERE path = ?`, lang, path); err == nil {
+		ix.gen.Add(1)
+	}
 }
 
 // sizesFor returns path → indexed size for a scope, so the indexer can spot unchanged
@@ -62,30 +110,6 @@ func (ix *libraryIndex) sizesFor(ctx context.Context, mediaType string, seriesID
 	return out
 }
 
-// codecsFor returns path → recorded codec for a scope. An empty codec marks a row whose
-// probe failed, which must be retried rather than treated as up to date.
-func (ix *libraryIndex) codecsFor(ctx context.Context, mediaType string, seriesID int64) map[string]string {
-	q := `SELECT path, video_codec FROM convert_library WHERE media_type = ?`
-	args := []any{mediaType}
-	if seriesID > 0 {
-		q += ` AND series_id = ?`
-		args = append(args, seriesID)
-	}
-	rows, err := ix.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return map[string]string{}
-	}
-	defer rows.Close()
-	out := map[string]string{}
-	for rows.Next() {
-		var p, c string
-		if rows.Scan(&p, &c) == nil {
-			out[p] = c
-		}
-	}
-	return out
-}
-
 func (ix *libraryIndex) upsert(ctx context.Context, r indexRow) error {
 	var infoJSON string
 	if r.Info != nil {
@@ -96,16 +120,17 @@ func (ix *libraryIndex) upsert(ctx context.Context, r indexRow) error {
 	_, err := ix.db.ExecContext(ctx,
 		`INSERT INTO convert_library
 		   (path, media_type, movie_id, series_id, season, episode, title, year, poster_url,
-		    size_bytes, video_codec, info_json, indexed_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		    size_bytes, video_codec, info_json, orig_lang, info_ver, indexed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 		 ON CONFLICT(path) DO UPDATE SET
 		   media_type = excluded.media_type, movie_id = excluded.movie_id,
 		   series_id = excluded.series_id, season = excluded.season, episode = excluded.episode,
 		   title = excluded.title, year = excluded.year, poster_url = excluded.poster_url,
 		   size_bytes = excluded.size_bytes, video_codec = excluded.video_codec,
-		   info_json = excluded.info_json, indexed_at = datetime('now')`,
+		   info_json = excluded.info_json, orig_lang = excluded.orig_lang,
+		   info_ver = excluded.info_ver, indexed_at = datetime('now')`,
 		r.Path, r.MediaType, r.MovieID, r.SeriesID, r.Season, r.Episode, r.Title, r.Year,
-		r.PosterURL, r.SizeBytes, r.Codec, infoJSON)
+		r.PosterURL, r.SizeBytes, r.Codec, infoJSON, r.OrigLang, probeSchemaVersion)
 	if err == nil {
 		ix.gen.Add(1)
 	}
@@ -134,8 +159,11 @@ func (s *Service) IndexSeries(ctx context.Context, seriesID int64) error {
 	if err != nil {
 		return err
 	}
-	known := s.index.sizesFor(ctx, "episode", seriesID)
-	codecs := s.index.codecsFor(ctx, "episode", seriesID)
+	known := s.index.metaFor(ctx, "episode", seriesID)
+	origLang := ""
+	if full.Extra != nil {
+		origLang = full.Extra.OriginalLanguage
+	}
 	keep := map[string]bool{}
 	for _, sn := range full.Seasons {
 		for _, e := range sn.Episodes {
@@ -148,7 +176,10 @@ func (s *Service) IndexSeries(ctx context.Context, seriesID int64) error {
 			// An empty recorded codec means a PREVIOUS probe failed (spun-down array,
 			// transient I/O); skipping on size alone latched that forever, so the file
 			// never became a candidate, never appeared in any list, and was never retried.
-			if size, ok := known[e.FilePath]; ok && size == e.SizeBytes && e.SizeBytes > 0 && codecs[e.FilePath] != "" {
+			if m, ok := known[e.FilePath]; ok && m.current(e.SizeBytes) {
+				if m.origLang != origLang {
+					s.index.setOrigLang(ctx, e.FilePath, origLang)
+				}
 				continue
 			}
 			row := indexRow{
@@ -158,6 +189,7 @@ func (s *Service) IndexSeries(ctx context.Context, seriesID int64) error {
 				Year:      full.Year,
 				PosterURL: full.PosterURL,
 				SizeBytes: e.SizeBytes,
+				OrigLang:  origLang,
 			}
 			if mi, err := s.probeCached(ctx, e.FilePath); err == nil {
 				row.Info, row.Codec = mi, mi.VideoCodec
@@ -188,7 +220,7 @@ func (s *Service) IndexMovie(ctx context.Context, movieID int64) error {
 	}
 	row := indexRow{
 		Path: m.MovieFilePath, MediaType: "movie", MovieID: m.ID,
-		Title: m.Title, Year: m.Year, PosterURL: m.PosterURL,
+		Title: m.Title, Year: m.Year, PosterURL: m.PosterURL, OrigLang: movieOrigLang(m),
 	}
 	if mi, err := s.probeCached(ctx, m.MovieFilePath); err == nil {
 		row.Info, row.Codec, row.SizeBytes = mi, mi.VideoCodec, mi.SizeBytes
@@ -216,8 +248,7 @@ func (s *Service) IndexAll(ctx context.Context) {
 
 	if s.movies != nil {
 		if list, err := s.movies.List(ctx); err == nil {
-			known := s.index.sizesFor(ctx, "movie", 0)
-			codecs := s.index.codecsFor(ctx, "movie", 0)
+			known := s.index.metaFor(ctx, "movie", 0)
 			keep := map[string]bool{}
 			for _, m := range list {
 				if ctx.Err() != nil {
@@ -229,7 +260,13 @@ func (s *Service) IndexAll(ctx context.Context) {
 				keep[m.MovieFilePath] = true
 				// Re-probe when the recorded codec is empty (a previous probe failed), so a
 				// transient error doesn't hide the file from Convert permanently.
-				if _, ok := known[m.MovieFilePath]; ok && codecs[m.MovieFilePath] != "" {
+				// Movie rows carry no size to compare against without a stat, so an indexed
+				// row with a successful, current probe is taken as up to date (a convert or
+				// re-import reindexes the movie directly).
+				if meta, ok := known[m.MovieFilePath]; ok && meta.codec != "" && meta.ver == probeSchemaVersion {
+					if meta.origLang != movieOrigLang(m) {
+						s.index.setOrigLang(ctx, m.MovieFilePath, movieOrigLang(m))
+					}
 					continue
 				}
 				if err := s.IndexMovie(ctx, m.ID); err != nil {
@@ -325,16 +362,14 @@ func (s *Service) computeLibraryTVSeries(ctx context.Context) ([]SeriesRollup, e
 	if s.index == nil {
 		return nil, nil
 	}
-	dp := s.defaultPlan(ctx)
-	target := s.targetCodec(ctx)
-	recode := s.recodesModern(ctx)
+	p := s.prefs(ctx)
 
 	// One sequential scan of the index, aggregated in Go. Aggregating here rather than
 	// in SQL is what lets the estimated saving use the same estimatePlanSize the detail
 	// view does — and it's still one query with no filesystem access, which was the
 	// actual cost. Only the aggregate crosses the wire.
 	rows, err := s.index.db.QueryContext(ctx,
-		`SELECT series_id, size_bytes, video_codec, info_json, path
+		`SELECT series_id, size_bytes, info_json, path, orig_lang
 		   FROM convert_library WHERE media_type = 'episode'`)
 	if err != nil {
 		return nil, err
@@ -345,8 +380,8 @@ func (s *Service) computeLibraryTVSeries(ctx context.Context) ([]SeriesRollup, e
 	dirCache := map[string][]string{} // one ReadDir per season folder, not per episode
 	for rows.Next() {
 		var id, size int64
-		var codec, infoJSON, path string
-		if err := rows.Scan(&id, &size, &codec, &infoJSON, &path); err != nil {
+		var infoJSON, path, orig string
+		if err := rows.Scan(&id, &size, &infoJSON, &path, &orig); err != nil {
 			return nil, err
 		}
 		r := agg[id]
@@ -360,24 +395,15 @@ func (s *Service) computeLibraryTVSeries(ctx context.Context) ([]SeriesRollup, e
 		// reads "all efficient" while every one of its episodes is listed as needing
 		// work. That is exactly what happened when this counted codecs alone.
 		var mi MediaInfo
-		probed := infoJSON != "" && json.Unmarshal([]byte(infoJSON), &mi) == nil
-		needs := Needs{Video: isCandidateCodec(codec, target, recode)}
-		if probed {
-			needs = needsOf(&mi, withSidecars(dp, path, dirCache), target, recode)
+		if infoJSON == "" || json.Unmarshal([]byte(infoJSON), &mi) != nil {
+			continue
 		}
+		plan, needs := p.planFor(&mi, path, orig, dirCache)
 		if !needs.Any() {
 			continue
 		}
 		r.Convertible++
-		if needs.Video {
-			if probed {
-				r.EstBytes += estimatePlanSize(&mi, dp)
-			}
-			continue
-		}
-		// A track rewrite copies the video, so the file keeps its size. Counting a
-		// saving here would promise space that never arrives.
-		r.EstBytes += size
+		r.EstBytes += estimatePlanSize(&mi, plan)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -479,25 +505,6 @@ func (m *MediaStats) add(codec string, size, est int64, convertible bool) {
 	}
 }
 
-// codecClass buckets a codec name for the Overview's breakdown bar.
-func codecClass(c string) string {
-	switch strings.ToLower(c) {
-	case "h264", "avc", "avc1":
-		return "h264"
-	case "hevc", "h265", "hev1", "hvc1":
-		return "hevc"
-	case "av1", "av01":
-		return "av1"
-	case "vp9", "vp09":
-		// Modern and efficient: re-encoding a VP9 web-dl to HEVC is a second lossy
-		// generation for roughly nothing — the class the module's own philosophy
-		// (see isCandidateCodec) says not to touch by default.
-		return "vp9"
-	default:
-		return "other"
-	}
-}
-
 // computeLibraryStats aggregates the whole index in one pass. LibraryStats (libcache.go)
 // is the cached front for it.
 func (s *Service) computeLibraryStats(ctx context.Context) (*LibraryStats, error) {
@@ -505,14 +512,12 @@ func (s *Service) computeLibraryStats(ctx context.Context) (*LibraryStats, error
 	if s.index == nil {
 		return out, nil
 	}
-	dp := s.defaultPlan(ctx)
-	target := s.targetCodec(ctx)
-	recode := s.recodesModern(ctx)
+	p := s.prefs(ctx)
 	// Files whose skip won't resolve on its own aren't reclaimable space, however
-	// convertible their codec looks.
+	// convertible they look.
 	skipped := s.skips.permanentKeys(ctx)
 	rows, err := s.index.db.QueryContext(ctx,
-		`SELECT media_type, movie_id, series_id, season, episode, size_bytes, video_codec, info_json, path
+		`SELECT media_type, movie_id, series_id, season, episode, size_bytes, video_codec, info_json, path, orig_lang
 		   FROM convert_library`)
 	if err != nil {
 		return nil, err
@@ -520,23 +525,16 @@ func (s *Service) computeLibraryStats(ctx context.Context) (*LibraryStats, error
 	defer rows.Close()
 	dirCache := map[string][]string{}
 	for rows.Next() {
-		var mediaType, codec, infoJSON, path string
+		var mediaType, codec, infoJSON, path, orig string
 		var movieID, seriesID, size int64
 		var season, episode int
-		if err := rows.Scan(&mediaType, &movieID, &seriesID, &season, &episode, &size, &codec, &infoJSON, &path); err != nil {
+		if err := rows.Scan(&mediaType, &movieID, &seriesID, &season, &episode, &size, &codec, &infoJSON, &path, &orig); err != nil {
 			return nil, err
 		}
 		key := movieKey(movieID)
 		if mediaType == "episode" {
 			key = episodeKey(seriesID, season, episode)
 		}
-		// Convertibility has to be decided the SAME way indexedCandidates decides it, or
-		// the Overview promises space that "Convert all" will never queue. That function
-		// reads the codec out of the probe JSON and treats a row without one as not a
-		// candidate; this one read the codec column and counted the file regardless. A
-		// file whose probe failed (spun-down array, transient I/O) therefore showed up as
-		// reclaimable here — with est=0, so its ENTIRE size was booked as savings — while
-		// being invisible everywhere else.
 		var mi MediaInfo
 		probed := infoJSON != "" && json.Unmarshal([]byte(infoJSON), &mi) == nil
 		hdr := ""
@@ -544,19 +542,12 @@ func (s *Service) computeLibraryStats(ctx context.Context) (*LibraryStats, error
 		convertible := false
 		if probed {
 			hdr = mi.HDR
-			needs := needsOf(&mi, withSidecars(dp, path, dirCache), target, recode)
+			plan, needs := p.planFor(&mi, path, orig, dirCache)
 			convertible = needs.Any()
-			switch {
-			case needs.Video:
-				est = estimatePlanSize(&mi, dp)
-			case convertible:
-				// Reclaimable is computed as size-est, so a track rewrite — which copies
-				// the video and keeps the file's size — must estimate its own size. It
-				// counts as work to do without booking any space as recovered.
-				est = size
+			if convertible {
+				est = estimatePlanSize(&mi, plan)
 			}
 		}
-		_ = codec // the column is kept for the breakdown bar below; candidacy uses the probe
 		permaSkipped := convertible && skipped[key]
 		per := &out.Movies
 		if mediaType == "episode" {
@@ -575,38 +566,6 @@ func (s *Service) computeLibraryStats(ctx context.Context) (*LibraryStats, error
 	return out, rows.Err()
 }
 
-// QueueSeries enqueues every convertible episode of a series — or of one season when
-// season >= 0 — and returns how many were queued. Episodes already in the target codec
-// are skipped, so re-running it is harmless.
-func (s *Service) QueueSeries(ctx context.Context, seriesID int64, season int) (int, error) {
-	eps, err := s.indexedCandidates(ctx, "episode", seriesID)
-	if err != nil {
-		return 0, err
-	}
-	maxFail := s.maxFailures(ctx)
-	queued := 0
-	for _, c := range eps {
-		if !c.Candidate {
-			continue
-		}
-		if season >= 0 && c.Season != season {
-			continue
-		}
-		if s.failures.blocklisted(ctx, episodeKey(c.SeriesID, c.Season, c.Episode), maxFail) {
-			continue // keeps failing — don't re-queue it every time
-		}
-		// Per file: a re-encode when the codec is wrong, a copy when only the tracks are.
-		plan := s.planFor(ctx, c.Needs)
-		if _, err := s.enqueueEpisodeIndexed(ctx, c, plan); err != nil {
-			s.log.Warn("convert: queue episode failed",
-				"series", seriesID, "season", c.Season, "episode", c.Episode, "err", err)
-			continue
-		}
-		queued++
-	}
-	return queued, nil
-}
-
 // indexedCandidates reads the index and shapes it into the list the UI consumes.
 // One query — no filesystem access, no probing. seriesID > 0 narrows to a single show.
 func (s *Service) indexedCandidates(ctx context.Context, mediaType string, seriesID int64) ([]Candidate, error) {
@@ -614,7 +573,7 @@ func (s *Service) indexedCandidates(ctx context.Context, mediaType string, serie
 		return nil, nil
 	}
 	q := `SELECT path, media_type, movie_id, series_id, season, episode, title, year,
-	             poster_url, size_bytes, video_codec, info_json
+	             poster_url, size_bytes, video_codec, info_json, orig_lang
 	      FROM convert_library WHERE media_type = ?`
 	args := []any{mediaType}
 	if seriesID > 0 {
@@ -628,20 +587,19 @@ func (s *Service) indexedCandidates(ctx context.Context, mediaType string, serie
 	}
 	defer rows.Close()
 
-	dp := s.defaultPlan(ctx)
-	target := s.targetCodec(ctx)
-	recode := s.recodesModern(ctx)
+	p := s.prefs(ctx)
 	dirCache := map[string][]string{}
 	var out []Candidate
 	for rows.Next() {
 		var r indexRow
 		var infoJSON string
 		if err := rows.Scan(&r.Path, &r.MediaType, &r.MovieID, &r.SeriesID, &r.Season, &r.Episode,
-			&r.Title, &r.Year, &r.PosterURL, &r.SizeBytes, &r.Codec, &infoJSON); err != nil {
+			&r.Title, &r.Year, &r.PosterURL, &r.SizeBytes, &r.Codec, &infoJSON, &r.OrigLang); err != nil {
 			return nil, err
 		}
 		c := Candidate{
-			Kind: r.MediaType, MovieID: r.MovieID, SeriesID: r.SeriesID,
+			Kind: r.MediaType, Key: ItemKey(r.MediaType, r.MovieID, r.SeriesID, r.Season, r.Episode),
+			MovieID: r.MovieID, SeriesID: r.SeriesID,
 			Season: r.Season, Episode: r.Episode, Title: r.Title, Year: r.Year,
 			PosterURL: r.PosterURL, Path: r.Path,
 		}
@@ -649,16 +607,13 @@ func (s *Service) indexedCandidates(ctx context.Context, mediaType string, serie
 			var mi MediaInfo
 			if json.Unmarshal([]byte(infoJSON), &mi) == nil {
 				c.Info = &mi
-				// The gap is derived here, not stored — changing the target codec or the
-				// kept languages takes effect immediately with no reindex.
-				c.Needs = needsOf(&mi, withSidecars(dp, r.Path, dirCache), target, recode)
-				c.Candidate = c.Needs.Any()
-				// Only a re-encode reclaims space. A track-only rewrite copies the video,
-				// so estimating a saving there would promise space that never arrives.
-				if c.Needs.Video {
-					c.EstBytes = estimatePlanSize(&mi, dp)
-				} else if c.Candidate {
-					c.EstBytes = r.SizeBytes
+				// The gap is derived here, not stored — changing a setting takes effect
+				// immediately with no reindex.
+				plan, needs := p.planFor(&mi, r.Path, r.OrigLang, dirCache)
+				c.Needs, c.Candidate = needs, needs.Any()
+				if c.Candidate {
+					c.EstBytes = estimatePlanSize(&mi, plan)
+					c.Tracks = trackSummary(&mi, plan)
 				}
 			}
 		}

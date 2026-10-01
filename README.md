@@ -39,7 +39,7 @@ with qBittorrent and FlareSolverr already wired up.
 **Media tools**
 
 - **Subtitles** — pulls embedded subtitles out, fetches them from OpenSubtitles, or writes them with local Whisper AI (GPU-accelerated on Intel).
-- **Convert** — HEVC or AV1 transcoding on Intel or AMD (VAAPI), Intel Quick Sync, NVIDIA NVENC, or the CPU. Dolby Vision and HDR10+ are kept.
+- **Convert** — switch it on and it works through your library during the hours you choose, re-encoding only wasteful video to HEVC (or AV1, when a quick test shows it's clearly smaller and your devices play it). Every result is checked against the original and must look the same and save at least 20%, or the original stays. Atmos and every audio track are copied untouched, HDR10 and HDR10+ are kept, and Dolby Vision keeps its HDR10 base. Pauses while someone is watching Plex, can use the GPU, and trims audio and subtitle tracks to your languages.
 - **Insights** — Plex watch history, stats and buffering diagnostics, Tautulli-style.
 
 ## Install
