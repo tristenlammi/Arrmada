@@ -621,7 +621,7 @@ func (s *Service) indexedCandidates(ctx context.Context, mediaType string, serie
 				plan, needs := p.planFor(&mi, r.Path, r.OrigLang, dirCache)
 				c.Needs, c.Candidate, c.Worth, c.SaveBytes = needs, needs.Any(), needs.Worth, needs.Save
 				if c.Candidate {
-					c.EstBytes = estimatePlanSize(&mi, plan)
+					c.EstBytes = mi.SizeBytes - needs.Save
 					c.Tracks = trackSummary(&mi, plan)
 				}
 			}

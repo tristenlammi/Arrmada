@@ -172,6 +172,18 @@ func (s *Service) trial(ctx context.Context, job *Job, src string, mi *MediaInfo
 	res.HEVC.EstBytes = int64(float64(res.HEVC.Bytes) * scale)
 	res.AV1.EstBytes = int64(float64(res.AV1.Bytes) * scale)
 	res.Pick, res.Why = pickCodec(res.HEVC, res.AV1)
+	source := "test encode"
+	if keepDir != "" {
+		source = "compare"
+	}
+	for _, side := range []TrialSide{res.HEVC, res.AV1} {
+		video := float64(side.EstBytes)
+		if side.Codec == "hevc" && mi.EncodeHDR() == "HDR10+" {
+			video *= hdr10plusStreamCost // converts through the HDR10+ pipeline
+		}
+		s.recordMeasurement(ctx, src, side.Codec, measurement{Size: mi.SizeBytes, CRF: maxQualityCRF(side.Codec, mi),
+			VideoBytes: int64(video), SSIM: side.SSIM, Source: source})
+	}
 	if keepDir != "" {
 		// The original clips, for comparing by eye. A stream copy starts on the nearest
 		// keyframe, so it may begin a moment before the encoded clip.

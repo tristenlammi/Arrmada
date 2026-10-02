@@ -63,6 +63,8 @@ type prefs struct {
 	keepSubs                              []string
 	imageSubs                             string
 	tidyTracks                            bool
+	// measured holds what test encodes measured (see measured.go), keyed by measureKey.
+	measured map[string]measurement
 }
 
 func (s *Service) prefs(ctx context.Context) prefs {
@@ -80,6 +82,7 @@ func (s *Service) prefs(ctx context.Context) prefs {
 		keepSubs:       splitCSV(g.Get(ctx, keyKeepSubLangs, "")),
 		imageSubs:      g.Get(ctx, keyImageSubs, ""),
 		tidyTracks:     g.GetBool(ctx, keyTidyTracks, false),
+		measured:       s.measured.all(ctx),
 	}
 	switch p.imageSubs {
 	case ImageSubsKeep, ImageSubsWhenText, ImageSubsRemove:
@@ -106,8 +109,10 @@ type Needs struct {
 	Audio bool `json:"audio"` // carries audio tracks that go
 	// Why explains a file whose video is left alone ("already efficient · 9.8 Mb/s").
 	Why string `json:"why,omitempty"`
-	// Save is the estimated space freed, in bytes.
+	// Save is the expected space freed, in bytes — estimated, or measured (below).
 	Save int64 `json:"save"`
+	// Measured says Save comes from a test encode of this file rather than the estimate.
+	Measured bool `json:"measured,omitempty"`
 	// Worth says the work is worth doing automatically: a re-encode expected to save at
 	// least expectedSavingPct, or a tracks-only rewrite that frees at least tidySavingPct
 	// (or any tracks-only rewrite, when you've asked for tidying). Everything that lists,
@@ -231,18 +236,24 @@ func (p prefs) planFor(mi *MediaInfo, path, origLang string, dirCache map[string
 		plan.Quality = maxQualityCRF(plan.VideoCodec, mi)
 		plan.VFRToCFR = true
 		// Wasteful by the bitrate test, but would the encode actually pay off? If the
-		// estimate doesn't promise a real saving, leave the picture alone.
+		// estimate doesn't promise a real saving, leave the picture alone. A measured
+		// size is held to the final bar instead: it IS the result, give or take a little.
 		if mi.SizeBytes > 0 {
-			if est := estimatePlanSize(mi, plan); est*100 > mi.SizeBytes*(100-expectedSavingPct) {
-				pct := int(100 - est*100/mi.SizeBytes)
-				n.Video, n.Why = false, fmt.Sprintf("would only save ~%d%%", max(pct, 0))
+			est, measured := p.sizeAfter(mi, path, plan)
+			bar, note := expectedSavingPct, "would only save ~%d%%"
+			if measured {
+				bar, note = minSavingPct, "a test encode measured only ~%d%% smaller"
+			}
+			if est*100 > mi.SizeBytes*int64(100-bar) {
+				n.Video, n.Why = false, fmt.Sprintf(note, savedPct(mi.SizeBytes, est))
 				plan.VideoCodec, plan.Quality, plan.VFRToCFR = "", 0, false
 			}
 		}
 	}
 	if n.Any() && mi.SizeBytes > 0 {
-		if est := estimatePlanSize(mi, plan); est < mi.SizeBytes {
-			n.Save = mi.SizeBytes - est
+		est, measured := p.sizeAfter(mi, path, plan)
+		if est < mi.SizeBytes {
+			n.Save, n.Measured = mi.SizeBytes-est, measured
 		}
 	}
 	switch {

@@ -96,6 +96,9 @@ func (s *Service) preflight(ctx context.Context, job *Job, src string, mi *Media
 			video *= hdr10plusStreamCost
 		}
 		v.projected = int64(video) + keptAudioBytes(mi, plan)
+		// The Library shows this from now on instead of the estimate.
+		s.recordMeasurement(ctx, src, plan.VideoCodec, measurement{Size: mi.SizeBytes, CRF: v.quality,
+			VideoBytes: int64(video), SSIM: v.ssim, Source: "test encode"})
 		if limit > 0 && v.projected > limit {
 			v.skipKind = SkipNotSmaller
 			v.reason = fmt.Sprintf("a test encode predicts only %d%% smaller (%s → ~%s) — not worth another generation of compression, kept the original",

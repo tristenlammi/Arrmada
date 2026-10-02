@@ -297,6 +297,13 @@ func TestRealConversions(t *testing.T) {
 	if !rehearsed {
 		t.Error("the long film should have been rehearsed on clips before its full encode")
 	}
+	if m := s.prefs(ctx).measured; len(m) > 0 {
+		for k := range m {
+			if strings.HasSuffix(k, slow) {
+				t.Errorf("the converted film's test-encode measurement should be forgotten: %s", k)
+			}
+		}
+	}
 }
 
 func must(t *testing.T, err error) {

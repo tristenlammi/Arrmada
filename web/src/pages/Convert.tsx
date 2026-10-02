@@ -58,6 +58,7 @@ export function Convert() {
   const [hw, setHw] = useState<{ using: string; reclaimed_bytes: number } | null>(null);
   const [settings, setSettings] = useState<ConvertSettings | null>(null);
   const [compareKey, setCompareKey] = useState<string | null>(null);
+  const [libReload, setLibReload] = useState(0); // bumped when Compare closes: it may have measured a file
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
   const flash = useCallback((m: string) => {
@@ -154,12 +155,12 @@ export function Convert() {
         </div>
 
         {tab === "overview" && <Overview status={status} jobs={jobs} stats={stats} hw={hw} flash={flash} onChanged={refresh} onRescan={rescanLibrary} onShowProblems={() => setTab("problems")} />}
-        {tab === "library" && <Library flash={flash} onRequested={refresh} onRescan={rescanLibrary} onCompare={setCompareKey} running={jobs} />}
+        {tab === "library" && <Library flash={flash} onRequested={refresh} onRescan={rescanLibrary} onCompare={setCompareKey} running={jobs} reload={libReload} />}
         {tab === "problems" && <Problems flash={flash} />}
         {tab === "activity" && <LogsConsole />}
         {tab === "settings" && <SettingsPanel flash={flash} onSaved={(s) => { setSettings(s); refresh(); loadHw(); }} />}
       </div>
-      {compareKey && <CompareModal itemKey={compareKey} onClose={() => setCompareKey(null)} flash={flash} />}
+      {compareKey && <CompareModal itemKey={compareKey} onClose={() => { setCompareKey(null); setLibReload((n) => n + 1); }} flash={flash} />}
       {toast && <div role="status" aria-live="polite" className="fixed bottom-5 left-1/2 z-[60] -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
     </>
   );
@@ -358,9 +359,10 @@ const SHOW_HEADERS: { label: string; key?: ShowSortKey }[] = [
   { label: "Size", key: "size" }, { label: "Saves", key: "save" }, { label: "" },
 ];
 
-// Saves renders an estimated saving as a reduction — "−46 GB (40%)" — with the size the
-// file ends up at underneath, so it can't be mistaken for the new size.
-function Saves({ bytes, of, faint }: { bytes: number; of: number; faint?: boolean }) {
+// Saves renders an expected saving as a reduction — "−46 GB (40%)" — with the size the
+// file ends up at underneath, so it can't be mistaken for the new size. measured marks a
+// figure from a test encode of the file rather than the estimate.
+function Saves({ bytes, of, faint, measured }: { bytes: number; of: number; faint?: boolean; measured?: boolean }) {
   if (!bytes || bytes <= 0) return <span className="text-ink-faint">—</span>;
   const pct = of > 0 ? Math.round((bytes / of) * 100) : 0;
   return (
@@ -368,7 +370,12 @@ function Saves({ bytes, of, faint }: { bytes: number; of: number; faint?: boolea
       <span style={{ color: faint ? "var(--ink-faint)" : "var(--good)" }}>
         −{fmtSize(bytes)} <span className="text-[10.5px] opacity-80">({pct}%)</span>
       </span>
-      {of > 0 && <span className="text-[10px] text-ink-faint">→ ~{fmtSize(of - bytes)} after</span>}
+      {of > 0 && (
+        <span className="text-[10px] text-ink-faint">
+          → ~{fmtSize(of - bytes)} after
+          {measured && <span className="ml-1 rounded px-1 font-semibold" style={{ color: "var(--good)", border: "1px solid var(--good)" }} title="Measured by a test encode of this file at the real settings — not the estimate">measured</span>}
+        </span>
+      )}
     </span>
   );
 }
@@ -397,8 +404,8 @@ function hdrLabel(c: ConvertCandidate): string {
   return h;
 }
 
-function Library({ flash, onRequested, onRescan, onCompare, running }: {
-  flash: (m: string) => void; onRequested: () => void; onRescan: () => Promise<boolean>; onCompare: (key: string) => void; running: ConvertJob[];
+function Library({ flash, onRequested, onRescan, onCompare, running, reload }: {
+  flash: (m: string) => void; onRequested: () => void; onRescan: () => Promise<boolean>; onCompare: (key: string) => void; running: ConvertJob[]; reload: number;
 }) {
   const [media, setMedia] = useState<"movies" | "tv">("movies");
   const [shows, setShows] = useState<ConvertSeriesRollup[] | null>(null);
@@ -430,6 +437,19 @@ function Library({ flash, onRequested, onRescan, onCompare, running }: {
     setItems(null); setCodecF(new Set()); setLoadErr(false);
     api.convertLibrary("tv", show.series_id, onlyConvertible).then(setItems).catch(() => { setItems([]); setLoadErr(true); });
   }, [media, show, onlyConvertible, refreshKey]);
+
+  // Re-read in place (keeping the open show and filters) when something outside this view
+  // changed the numbers — a Compare that just measured a file.
+  useEffect(() => {
+    if (!reload) return;
+    if (media === "tv") {
+      api.convertLibrarySeries().then(setShows).catch(() => {});
+      if (show) api.convertLibrary("tv", show.series_id, onlyConvertible).then(setItems).catch(() => {});
+    } else {
+      api.convertLibrary("movies", undefined, onlyConvertible).then(setItems).catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reload]);
 
   const convert = async (c: ConvertCandidate) => {
     setBusy(c.key);
@@ -596,7 +616,7 @@ function Library({ flash, onRequested, onRescan, onCompare, running }: {
             {codecs.map(([cc, n]) => <Pill key={cc} active={codecF.has(cc)} onClick={() => toggleCodec(cc)}>{cc} <span className="opacity-60">{n}</span></Pill>)}
             {codecF.size > 0 && <button onClick={() => setCodecF(new Set())} className="ml-1 text-[10.5px] text-ink-faint underline hover:text-[var(--ink)]">clear</button>}
           </div>
-          <p className="text-[11px] text-ink-faint">“Saves” is a deliberately cautious estimate from each file's own bitrate — <b>Compare</b> encodes a few clips for the real number, and lets you watch them.</p>
+          <p className="text-[11px] text-ink-faint">“Saves” is a deliberately cautious estimate from each file's own bitrate until a file has been test-encoded — then it's the <b>measured</b> number. <b>Compare</b> measures one now, and lets you watch the clips.</p>
           <div className="overflow-x-auto rounded-xl" style={{ border: "1px solid var(--line)" }}>
             <table className="w-full border-collapse text-[12.5px]" style={{ minWidth: 900 }}>
               <thead><tr style={{ background: "var(--panel-2)" }}>{HEADERS.map((h) => sortHead(h, sort, setSortKey))}</tr></thead>
@@ -618,7 +638,7 @@ function Library({ flash, onRequested, onRescan, onCompare, running }: {
                       <td className="px-3 py-2 font-mono tabular-nums text-ink-dim">{c.info?.bitrate_kbps ? `${(c.info.bitrate_kbps / 1000).toFixed(1)} Mb/s` : "—"}</td>
                       <td className="px-3 py-2 font-mono tabular-nums">{fmtSize(c.info?.size_bytes)}</td>
                       <td className="px-3 py-2 font-mono tabular-nums" title={c.tracks || undefined}>
-                        {c.candidate ? <Saves bytes={c.save_bytes} of={c.info?.size_bytes ?? 0} faint={!c.worth} /> : <span className="text-ink-faint">—</span>}
+                        {c.candidate ? <Saves bytes={c.save_bytes} of={c.info?.size_bytes ?? 0} faint={!c.worth} measured={c.needs?.measured} /> : <span className="text-ink-faint">—</span>}
                         {c.candidate && !c.needs?.video && <span className="ml-1 text-[10px] text-ink-faint">tracks</span>}
                       </td>
                       <td className="px-3 py-2">
@@ -697,7 +717,7 @@ function CompareModal({ itemKey, onClose, flash }: { itemKey: string; onClose: (
           <>
             <div className="mt-3 flex gap-2.5">{side(r.hevc, r.pick === "hevc")}{side(r.av1, r.pick === "av1")}</div>
             <p className="mt-3 text-[12.5px]">{r.why}</p>
-            <p className="mt-1 text-[11px] text-ink-faint">Original: {fmtSize(r.src_bytes)} · tested on {r.clips} clip{r.clips === 1 ? "" : "s"} ({Math.round(r.seconds)}s). Audio is copied as is, so it adds the same to both.</p>
+            <p className="mt-1 text-[11px] text-ink-faint">Original: {fmtSize(r.src_bytes)} · tested on {r.clips} clip{r.clips === 1 ? "" : "s"} ({Math.round(r.seconds)}s). Audio is copied as is, so it adds the same to both. The Library now shows this file's measured size.</p>
             {r.files && r.files.length > 0 && (
               <div className="mt-3">
                 <div className={lbl}>Watch the clips (VLC or mpv)</div>

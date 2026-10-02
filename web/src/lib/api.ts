@@ -919,7 +919,7 @@ export interface ConvertSeriesRollup {
   save_bytes: number;
 }
 
-export interface ConvertNeeds { video: boolean; subs: boolean; audio: boolean; why?: string; save: number; worth: boolean }
+export interface ConvertNeeds { video: boolean; subs: boolean; audio: boolean; why?: string; save: number; worth: boolean; measured?: boolean }
 export interface ConvertCandidate { kind: "movie" | "episode"; key: string; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string; year?: number; poster_url?: string; path: string; info?: ConvertMediaInfo; candidate: boolean; worth: boolean; save_bytes: number; needs: ConvertNeeds; est_bytes: number; tracks?: string }
 export interface ConvertJob {
   id: number; key: string; kind?: string; movie_id?: number; series_id?: number; season?: number; episode?: number; title: string;

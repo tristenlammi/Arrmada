@@ -625,6 +625,7 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst string,
 		return
 	}
 	s.clearSwap(part)
+	s.measured.forget(ctx, src)
 	s.reindexConverted(ctx, job)
 	s.update(job, func(j *Job) { j.OutBytes = outSize })
 	if reclaimDeferred {

@@ -117,6 +117,7 @@ type Service struct {
 	index    *libraryIndex // persisted per-file library facts; what the lists read
 	requests *requestStore // hand-picked files, persisted
 	choices  *choiceStore  // per-file HEVC-vs-AV1 test outcomes
+	measured *measureStore // what test encodes measured, per file and format
 
 	// watching reports whether someone is watching Plex right now (from Insights).
 	watching atomic.Pointer[func() bool]
@@ -197,7 +198,7 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 		encoders: detectEncoders(context.Background(), ffmpeg),
 		failures: &failureStore{db: db}, cache: &probeCache{db: db}, logs: &logStore{db: db},
 		index: &libraryIndex{db: db}, skips: &skipStore{db: db}, requests: &requestStore{db: db},
-		choices: &choiceStore{db: db},
+		choices: &choiceStore{db: db}, measured: &measureStore{db: db},
 		pending: map[string]*Job{},
 		wake:    make(chan struct{}, 1),
 	}
