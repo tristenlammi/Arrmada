@@ -66,11 +66,15 @@ func TestPlanForLikelyCodec(t *testing.T) {
 	hdr10p.HDR = "HDR10+"
 	lean := film("h264", 1920, 1080, 2000, aud("aac", "eng", 2))
 
-	if plan, _ := (prefs{}).planFor(bloated, "", "", nil); plan.VideoCodec != "hevc" || plan.Quality != 20 {
-		t.Errorf("AV1 off: plan %+v, want HEVC at CRF 20", plan)
+	if plan, _ := (prefs{}).planFor(bloated, "", "", nil); plan.VideoCodec != "hevc" || plan.Quality != 18 {
+		t.Errorf("1080p, AV1 off: plan %+v, want HEVC at CRF 18", plan)
 	}
-	if plan, _ := (prefs{allowAV1: true}).planFor(bloated, "", "", nil); plan.VideoCodec != "av1" || plan.Quality != 24 {
-		t.Errorf("AV1 on: plan %+v, want AV1 at CRF 24", plan)
+	if plan, _ := (prefs{allowAV1: true}).planFor(bloated, "", "", nil); plan.VideoCodec != "av1" || plan.Quality != 22 {
+		t.Errorf("1080p, AV1 on: plan %+v, want AV1 at CRF 22", plan)
+	}
+	sd := film("h264", 1280, 720, 8000, aud("ac3", "eng", 6))
+	if q, qa := maxQualityCRF("hevc", sd), maxQualityCRF("av1", sd); q != 20 || qa != 24 {
+		t.Errorf("720p CRF = HEVC %d / AV1 %d, want 20 / 24", q, qa)
 	}
 	if plan, _ := (prefs{allowAV1: true}).planFor(hdr10p, "", "", nil); plan.VideoCodec != "hevc" || plan.Quality != 18 {
 		t.Errorf("4K HDR10+ with AV1 on: %+v, want HEVC at CRF 18 (4K gets the tighter target)", plan)

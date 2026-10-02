@@ -123,18 +123,21 @@ func av1QIndex(crf int) int {
 }
 
 // maxQualityCRF is the quality target for a file — set for retention, not size. The scales
-// differ (AV1's CRF runs higher for the same picture), so each codec has its own. 4K gets a
-// tighter target: UHD films are where grain is heaviest and most visible on a big screen,
-// and holding it faithfully costs bits. The quality check catches the rare file that still
-// falls short and re-encodes it tighter.
+// differ (AV1's CRF runs higher for the same picture), so each codec has its own.
+//
+// 1080p and 4K get the tighter target. Those are what's watched on the big screen (this
+// library's is 100"), where a 1080p picture is upscaled about four times over and any
+// softening of grain is magnified with it; holding it faithfully costs roughly a fifth more
+// space. Below 1080p the looser target is already transparent. The quality check catches
+// the rare file that still falls short and re-encodes it tighter.
 func maxQualityCRF(codec string, mi *MediaInfo) int {
-	uhd := mi != nil && (mi.Width >= 3200 || mi.Height >= 1700)
+	hd := mi != nil && (mi.Width >= 1800 || mi.Height >= 950)
 	switch {
-	case codec == "av1" && uhd:
+	case codec == "av1" && hd:
 		return 22
 	case codec == "av1":
 		return 24
-	case uhd:
+	case hd:
 		return 18
 	}
 	return 20
