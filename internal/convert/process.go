@@ -55,11 +55,6 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		return
 	}
 	scratch := s.activeScratch(ctx)
-	// Disk-space guard: room for a worst-case same-size output on the scratch volume.
-	if free := freeBytes(scratch); free > 0 && int64(free) < mi.SizeBytes+(256<<20) {
-		s.finish(job, StateFailed, "not enough scratch space to convert safely")
-		return
-	}
 
 	h10pJSON := ""
 	var enc Encoder
@@ -71,8 +66,12 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		}
 		// HDR10+ is dynamic metadata ffprobe doesn't reliably report, so any PQ grade in an
 		// HEVC stream is checked by extracting it. Success means the file has it, and it is
-		// carried through the HEVC pipeline (the only one that can hold it).
+		// carried through the HEVC pipeline (the only one that can hold it). Reading it
+		// means reading the whole file, so it waits its turn like an encode.
 		if (hdr == "HDR10" || hdr == "HDR10+") && codecClass(mi.VideoCodec) == "hevc" && s.hdr10plusTool != "" {
+			if !s.waitAllowed(ctx, job) {
+				return
+			}
 			jf := filepath.Join(scratch, fmt.Sprintf("h10p-%d.json", job.ID))
 			switch err := s.extractHDR10Plus(ctx, src, jf); {
 			case err == nil:
@@ -97,7 +96,33 @@ func (s *Service) process(ctx context.Context, job *Job) {
 			return
 		}
 	}
+	// Disk-space guard: room for the biggest output that could be kept (a re-encode is
+	// stopped once it passes that) and the HDR10+ pipeline's intermediate copy.
+	if free := freeBytes(scratch); free > 0 && int64(free) < scratchNeeded(mi, plan, h10pJSON != "") {
+		s.finish(job, StateFailed, "not enough scratch space to convert safely")
+		return
+	}
 	s.update(job, func(j *Job) { j.Codec = plan.VideoCodec })
+
+	// A re-encode is rehearsed on clips first, so a film that wouldn't pass the quality
+	// check or wouldn't shrink enough is found out in minutes rather than after a day.
+	if plan.VideoCodec != "" {
+		v, err := s.preflight(ctx, job, src, mi, enc, plan, h10pJSON != "")
+		switch {
+		case ctx.Err() != nil:
+			return
+		case err != nil:
+			// Advisory: the full encode is still checked end to end.
+			s.event("warn", fmt.Sprintf("%s: the test encode didn't finish (%v) — encoding without it", job.Title, err))
+		case v.ran && v.skipKind != "":
+			s.finishSkip(job, v.skipKind, v.reason)
+			return
+		case v.ran:
+			plan.Quality = v.quality
+			s.event("info", fmt.Sprintf("%s: test encode at CRF %d scored SSIM %.4f and predicts ~%s (%d%% smaller)",
+				job.Title, v.quality, v.ssim, humanBytes(v.projected), savedPct(mi.SizeBytes, v.projected)))
+		}
+	}
 
 	dst := filepath.Join(scratch, fmt.Sprintf("convert-%d.mkv", job.ID))
 	defer os.Remove(dst)
@@ -119,6 +144,14 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	for attempt := 0; ; attempt++ {
 		if err := s.runEncode(ctx, job, src, dst, scratch, mi, enc, plan, h10pJSON); err != nil {
 			if ctx.Err() != nil {
+				return
+			}
+			if errors.Is(err, errTooBig) {
+				s.mu.Lock()
+				done := int(job.Progress * 100)
+				s.mu.Unlock()
+				s.finishAfterEncode(job, SkipNotSmaller, fmt.Sprintf("stopped %d%% of the way through — it had already reached %d%% of the original's size, so it couldn't come out %d%% smaller; kept the original",
+					done, 100-minSavingPct, minSavingPct))
 				return
 			}
 			s.finish(job, StateFailed, "encode failed: "+err.Error())
@@ -147,11 +180,12 @@ func (s *Service) process(ctx context.Context, job *Job) {
 			s.event("info", fmt.Sprintf("%s: quality check passed (SSIM %.4f)", job.Title, score))
 			break
 		}
-		if attempt >= qualityRetries {
+		next, ok := higherQuality(plan.VideoCodec, plan.Quality)
+		if !ok || attempt >= qualityRetries {
 			s.finishAfterEncode(job, SkipQualityGate, fmt.Sprintf("couldn't reach the quality bar (SSIM %.4f after %d tries) — kept the original", score, attempt+1))
 			return
 		}
-		plan.Quality = higherQuality(plan)
+		plan.Quality = next
 		if !s.waitAllowed(ctx, job) {
 			return
 		}
@@ -297,9 +331,62 @@ func (s *Service) gpuCan(codec string) bool {
 	return ok && !s.hardwareIsBroken(hw.Name)
 }
 
-// runEncode dispatches to the standard or HDR10+ pipeline, with one CPU fallback if a
-// hardware encoder fails.
+// errTooBig means a re-encode was stopped at its size cap: it was on course to come out
+// less than minSavingPct smaller, so finishing it would only have thrown hours away.
+var errTooBig = errors.New("the encode reached its size cap")
+
+// sizeCap is the largest a re-encode may grow before it's stopped: past it, the result
+// would fail the minSavingPct rule anyway. 0 = no cap (a track tidy-up copies the video).
+func sizeCap(mi *MediaInfo, plan Plan) int64 {
+	if plan.VideoCodec == "" || mi.SizeBytes <= 0 {
+		return 0
+	}
+	return mi.SizeBytes * (100 - minSavingPct) / 100
+}
+
+// keptAudioBytes estimates the audio a plan carries into the output (copied, so unchanged).
+func keptAudioBytes(mi *MediaInfo, plan Plan) int64 {
+	var n int64
+	for _, au := range keptAudio(mi, plan) {
+		n += audioBytes(au.Codec, au.Channels, mi.DurationSec)
+	}
+	return n
+}
+
+// scratchNeeded is the scratch space a conversion can use at its peak: the whole output for
+// a track tidy-up, the size cap (plus muxing slack) for a re-encode, and twice that for the
+// HDR10+ pipeline, which holds the stream and its injected copy at once.
+func scratchNeeded(mi *MediaInfo, plan Plan, hdr10plus bool) int64 {
+	const slack = 512 << 20
+	limit := sizeCap(mi, plan)
+	switch {
+	case limit == 0:
+		return mi.SizeBytes + slack
+	case hdr10plus:
+		return 2*limit + slack
+	}
+	return limit + slack
+}
+
+func savedPct(src, out int64) int {
+	if src <= 0 {
+		return 0
+	}
+	return max(int(100-out*100/src), 0)
+}
+
+// runEncode runs the encode and reports errTooBig when it was stopped at its size cap.
 func (s *Service) runEncode(ctx context.Context, job *Job, src, dst, scratch string, mi *MediaInfo, enc Encoder, plan Plan, h10pJSON string) error {
+	err := s.runEncodeOnce(ctx, job, src, dst, scratch, mi, enc, plan, h10pJSON)
+	if limit := sizeCap(mi, plan); err == nil && limit > 0 && fileSize(dst) >= limit {
+		return errTooBig
+	}
+	return err
+}
+
+// runEncodeOnce dispatches to the standard or HDR10+ pipeline, with one CPU fallback if a
+// hardware encoder fails.
+func (s *Service) runEncodeOnce(ctx context.Context, job *Job, src, dst, scratch string, mi *MediaInfo, enc Encoder, plan Plan, h10pJSON string) error {
 	if h10pJSON != "" && plan.VideoCodec == "hevc" {
 		s.update(job, func(j *Job) { j.Encoder = "CPU (x265) + HDR10+" })
 		return s.encodeHDR10Plus(ctx, job, src, dst, scratch, mi, plan, h10pJSON)
@@ -339,6 +426,10 @@ func (s *Service) encode(ctx context.Context, job *Job, src, dst string, mi *Med
 	args = append(args, globalArgs(enc, hwDecode, s.vaapiDev(ctx))...)
 	args = append(args, "-i", src)
 	args = append(args, compileOutputArgs(enc, mi, plan, hwDecode, cores, s.noNumaPools)...)
+	if limit := sizeCap(mi, plan); limit > 0 {
+		// Stops the encode cleanly once it can no longer save enough (see errTooBig).
+		args = append(args, "-fs", strconv.FormatInt(limit, 10))
+	}
 	args = append(args, dst)
 
 	err := s.runWithProgress(ctx, job, args, mi.DurationSec)

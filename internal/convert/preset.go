@@ -339,6 +339,24 @@ func compileOutputArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cor
 	a = append(a, trackArgs(mi, plan, 0)...)
 	a = append(a, videoArgs(enc, mi, plan, hwDecode, cores, noNumaPools)...)
 	a = append(a, "-map_metadata", "0", "-map_chapters", "0")
+	if plan.VideoCodec != "" {
+		a = append(a, clearStatsTags("v:0")...)
+	}
+	return a
+}
+
+// clearStatsTags removes a stream's Matroska statistics tags. mkvmerge writes them per
+// track (bitrate, byte and frame counts) and ffmpeg copies them onto a re-encoded stream
+// unchanged, so a converted 4K film went on claiming the remux's 70 Mb/s and 100 GB to
+// every tool that reads them. Copied tracks keep theirs — they're still true. A plain
+// DURATION is left alone: the muxer writes its own.
+func clearStatsTags(stream string) []string {
+	a := []string{"-metadata:s:" + stream, "DURATION-eng="}
+	for _, k := range []string{"BPS", "NUMBER_OF_FRAMES", "NUMBER_OF_BYTES",
+		"_STATISTICS_WRITING_APP", "_STATISTICS_WRITING_DATE_UTC", "_STATISTICS_TAGS"} {
+		// Tags written with a language carry it as a suffix ("BPS-eng").
+		a = append(a, "-metadata:s:"+stream, k+"=", "-metadata:s:"+stream, k+"-eng=")
+	}
 	return a
 }
 

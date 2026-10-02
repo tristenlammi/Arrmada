@@ -64,12 +64,22 @@ func (s *Service) encodeHDR10Plus(ctx context.Context, job *Job, src, dst, scrat
 	defer os.Remove(encoded)
 	defer os.Remove(injected)
 
-	if err := s.encodeHEVCStream(ctx, job, src, encoded, mi, plan); err != nil {
+	// The video stream gets what's left of the size cap after the copied audio. Hitting it
+	// leaves a truncated stream, which is never injected or muxed.
+	videoCap := int64(0)
+	if limit := sizeCap(mi, plan); limit > 0 {
+		videoCap = max(limit-keptAudioBytes(mi, plan), 1<<20)
+	}
+	if err := s.encodeHEVCStream(ctx, job, src, encoded, mi, plan, videoCap); err != nil {
 		return fmt.Errorf("encode: %w", err)
+	}
+	if videoCap > 0 && fileSize(encoded) >= videoCap {
+		return errTooBig
 	}
 	if out, err := exec.CommandContext(ctx, s.hdr10plusTool, "inject", "-i", encoded, "-j", jsonPath, "-o", injected).CombinedOutput(); err != nil {
 		return fmt.Errorf("inject HDR10+: %v (%s)", err, tailStr(out))
 	}
+	_ = os.Remove(encoded) // each stage frees the last: a 4K stream is tens of gigabytes
 	if err := s.remuxVideoStream(ctx, injected, src, dst, mi, plan); err != nil {
 		return fmt.Errorf("remux: %w", err)
 	}
@@ -90,7 +100,7 @@ func (s *Service) encodeHDR10Plus(ctx context.Context, job *Job, src, dst, scrat
 // SSIM 0.88), so no HDR10+ file could ever pass the quality check. Without them the stream
 // is in display order and comes out exact; it costs roughly 15% in size, on HDR10+ titles
 // only.
-func (s *Service) encodeHEVCStream(ctx context.Context, job *Job, src, dst string, mi *MediaInfo, plan Plan) error {
+func (s *Service) encodeHEVCStream(ctx context.Context, job *Job, src, dst string, mi *MediaInfo, plan Plan, sizeLimit int64) error {
 	crf := plan.Quality
 	if crf <= 0 {
 		crf = maxQualityCRF("hevc", mi)
@@ -105,6 +115,9 @@ func (s *Service) encodeHEVCStream(ctx context.Context, job *Job, src, dst strin
 	hdrParams, colourTags := hdr10Params(mi)
 	args = append(args, cpuVideoArgs("libx265", "hevc", crf, cores, hdrParams+":bframes=0", s.noNumaPools)...)
 	args = append(args, colourTags...)
+	if sizeLimit > 0 {
+		args = append(args, "-fs", strconv.FormatInt(sizeLimit, 10))
+	}
 	args = append(args, "-f", "hevc", dst)
 	return s.runWithProgress(ctx, job, args, mi.DurationSec)
 }
@@ -128,6 +141,7 @@ func (s *Service) remuxVideoStream(ctx context.Context, video, src, dst string, 
 		"-r", r, "-i", video, "-c", "copy", "-tag:v", "hvc1", tmp).CombinedOutput(); err != nil {
 		return fmt.Errorf("package video: %v (%s)", err, tailStr(out))
 	}
+	_ = os.Remove(video)
 	// 2) MP4 video + the original's kept tracks → final MKV. Metadata and chapters come from
 	// the original (input 1), not the throwaway video-only temp file.
 	args := []string{"-y", "-hide_banner", "-loglevel", "error", "-i", tmp, "-i", src, "-map", "0:v:0"}

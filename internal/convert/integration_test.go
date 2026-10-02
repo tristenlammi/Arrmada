@@ -242,7 +242,10 @@ func TestRealConversions(t *testing.T) {
 	}
 
 	// --- 6: pausing a running encode while someone watches -----------------------------
+	// This one is rehearsed on clips first, as a feature film would be.
 	set(t, s, map[string]string{keyAllowAV1: "false"})
+	preflightMinDuration = 30
+	defer func() { preflightMinDuration = 20 * 60 }()
 	slow := filepath.Join(lib, "Long (2022).mkv")
 	ff("-f", "lavfi", "-i", "testsrc2=s=1280x720:r=24:d=60,noise=alls=3:allf=u", "-c:v", "libx264", "-preset", "veryfast", "-crf", "0", "-pix_fmt", "yuv420p", slow)
 	addMovie(6, "Long", slow)
@@ -284,6 +287,16 @@ func TestRealConversions(t *testing.T) {
 		t.Fatalf("long film after pause/resume: %s — %s", j.State, j.Note)
 	}
 	t.Logf("long: paused and resumed, then %s → %s", humanBytes(j.SrcBytes), humanBytes(j.OutBytes))
+	rehearsed := false
+	for _, l := range s.Logs() {
+		if strings.Contains(l.Msg, "Long") && strings.Contains(l.Msg, "test encode at CRF") {
+			rehearsed = true
+			t.Logf("long: %s", l.Msg)
+		}
+	}
+	if !rehearsed {
+		t.Error("the long film should have been rehearsed on clips before its full encode")
+	}
 }
 
 func must(t *testing.T, err error) {

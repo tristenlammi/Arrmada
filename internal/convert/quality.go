@@ -143,17 +143,22 @@ func parseSSIM(out string) (float64, error) {
 	return v, nil
 }
 
-// higherQuality returns a lower CRF (better quality) for a quality-gate retry, floored so we
-// don't chase perfection into an enormous file.
-func higherQuality(plan Plan) int {
-	q := plan.Quality
+// higherQuality returns the next, tighter quality target for a retry, and false once the
+// floor is reached. The floor used to be applied silently: a 4K film at CRF 18 retried at
+// 16, then at 16 again — a second full encode guaranteed to reproduce the first.
+func higherQuality(codec string, q int) (int, bool) {
 	if q <= 0 {
-		q = maxQualityCRF(plan.VideoCodec, nil)
+		q = maxQualityCRF(codec, nil)
 	}
-	if q -= 3; q < 16 {
-		q = 16
+	floor := 14
+	if codec == "av1" {
+		floor = 16
 	}
-	return q
+	next := q - 2
+	if next < floor {
+		next = floor
+	}
+	return next, next < q
 }
 
 // parseFloatDefault parses a float, returning def on failure.

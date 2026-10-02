@@ -151,3 +151,59 @@ func TestTrialClips(t *testing.T) {
 		t.Error("unknown length: nothing to test")
 	}
 }
+
+// A quality retry must actually raise the quality — and say so when it can't, rather than
+// re-running an identical day-long encode.
+func TestHigherQuality(t *testing.T) {
+	cases := []struct {
+		codec    string
+		q, want  int
+		improved bool
+	}{
+		{"hevc", 18, 16, true},
+		{"hevc", 16, 14, true},
+		{"hevc", 15, 14, true},
+		{"hevc", 14, 14, false},
+		{"av1", 22, 20, true},
+		{"av1", 16, 16, false},
+	}
+	for _, c := range cases {
+		if got, ok := higherQuality(c.codec, c.q); got != c.want || ok != c.improved {
+			t.Errorf("higherQuality(%s, %d) = %d, %v; want %d, %v", c.codec, c.q, got, ok, c.want, c.improved)
+		}
+	}
+}
+
+// The size cap stops a re-encode that can't save enough; a track tidy-up has none. Scratch
+// space follows it.
+func TestSizeCapAndScratch(t *testing.T) {
+	mi := film("hevc", 3840, 2160, 70000, aud("truehd", "eng", 8))
+	reencode := Plan{VideoCodec: "hevc"}
+	if got, want := sizeCap(mi, reencode), mi.SizeBytes*80/100; got != want {
+		t.Errorf("size cap = %d, want %d (80%% of the source)", got, want)
+	}
+	if sizeCap(mi, Plan{}) != 0 {
+		t.Error("a track tidy-up copies the video and must not be capped")
+	}
+	if n := scratchNeeded(mi, reencode, true); n < 2*sizeCap(mi, reencode) {
+		t.Errorf("HDR10+ scratch %d must hold the stream and its injected copy", n)
+	}
+	if n := scratchNeeded(mi, Plan{}, false); n < mi.SizeBytes {
+		t.Errorf("tidy-up scratch %d must hold a whole copy", n)
+	}
+}
+
+// A re-encode must not carry the original's Matroska statistics (bitrate, byte count) on
+// its new video track, and must be capped; a copy keeps both untouched.
+func TestReencodeArgsClearStatsAndCap(t *testing.T) {
+	mi := film("h264", 1920, 1080, 30000, aud("ac3", "eng", 6))
+	args := strings.Join(compileOutputArgs(cpuEncoder("hevc"), mi, Plan{VideoCodec: "hevc", Quality: 20}, false, 4, false), " ")
+	for _, want := range []string{"-metadata:s:v:0 BPS=", "-metadata:s:v:0 NUMBER_OF_BYTES=", "-metadata:s:v:0 BPS-eng="} {
+		if !strings.Contains(args, want) {
+			t.Errorf("re-encode args lack %q: %s", want, args)
+		}
+	}
+	if copyArgs := strings.Join(compileOutputArgs(cpuEncoder("hevc"), mi, Plan{}, false, 4, false), " "); strings.Contains(copyArgs, "BPS=") {
+		t.Errorf("a copied video's stats are still true and must be kept: %s", copyArgs)
+	}
+}

@@ -47,7 +47,7 @@ function fmtEta(sec: number): string {
 }
 
 const STATE_LABEL: Record<string, string> = {
-  preparing: "analysing", testing: "testing HEVC vs AV1", encoding: "encoding", verifying: "checking quality", replacing: "swapping in",
+  preparing: "analysing", testing: "test-encoding clips", encoding: "encoding", verifying: "checking quality", replacing: "swapping in",
 };
 
 export function Convert() {
