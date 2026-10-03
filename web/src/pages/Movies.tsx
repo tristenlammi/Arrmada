@@ -363,6 +363,7 @@ function YesNo({ on, label }: { on: boolean; label?: string }) {
 }
 
 type SortKey = "title" | "status" | "resolution" | "codec" | "audio" | "atmos" | "hdr" | "type" | "size" | "bitrate" | "fit";
+const MOVIE_SORT_KEYS: SortKey[] = ["title", "status", "resolution", "codec", "audio", "atmos", "hdr", "type", "size", "bitrate", "fit"];
 
 // sortValue returns a comparable value per column (undefined = empty → sorted last regardless of dir).
 function sortValue(m: Movie, key: SortKey, fit?: FitItem): number | string | undefined {
@@ -385,8 +386,14 @@ function sortValue(m: Movie, key: SortKey, fit?: FitItem): number | string | und
 function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }: { movies: Movie[]; multiSelect: boolean; selected: Set<number>; onToggleSelect: (id: number) => void; onSearch: (m: Movie) => void }) {
   const th = "px-2.5 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-[0.06em] text-ink-faint";
   const td = "px-2.5 py-2 align-middle";
-  const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "title", dir: "asc" });
-  const onSort = (key: SortKey) => setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
+  // Remembered across visits, like the grid/table choice ("size:desc").
+  const [sortPref, setSortPref] = usePersisted<string>("movies.table.sort", "title:asc");
+  const sort = useMemo(() => {
+    const [k, d] = sortPref.split(":");
+    const key: SortKey = (MOVIE_SORT_KEYS as string[]).includes(k) ? (k as SortKey) : "title";
+    return { key, dir: d === "desc" ? ("desc" as const) : ("asc" as const) };
+  }, [sortPref]);
+  const onSort = (key: SortKey) => setSortPref(sort.key === key ? `${key}:${sort.dir === "asc" ? "desc" : "asc"}` : `${key}:asc`);
   // How each file fits its profile's ideal file — report only, from the analysed library.
   const [fits, setFits] = useState<Map<number, FitItem>>(new Map());
   const [misfitsPref, setMisfitsPref] = usePersisted("movies.table.misfits", "all", ["all", "misfits"] as const);
