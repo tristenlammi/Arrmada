@@ -247,7 +247,8 @@ export interface StoredProfile {
   ideal?: IdealFile; // the target file: drives grabbing, ranking and the library fit check
 }
 
-// TargetPref is one option's state in the target file. "" = no opinion.
+// TargetPref is one option's state in the target file. "" = no opinion; "want" is shown as
+// Prefer (ranks releases, doesn't decide what fits). "ok" is retired — the server drops it.
 export type TargetPref = "" | "ok" | "want" | "must" | "avoid";
 // IdealFile mirrors quality.IdealFile: every part optional.
 export interface IdealFile {

@@ -99,31 +99,31 @@ const SIZE_LEANS = [
 // --- The target file -----------------------------------------------------------------
 
 type Row = "codec" | "hdr" | "audio";
-const TARGET_ROWS: { row: Row; label: string; hint: string; alts: boolean; options: { k: string; l: string }[] }[] = [
+const TARGET_ROWS: { row: Row; label: string; hint: string; options: { k: string; l: string }[] }[] = [
   {
-    row: "codec", label: "Video codec", alts: true,
-    hint: "A file is one of these. Two Musts means either.",
+    row: "codec", label: "Video codec",
+    hint: "A file is one of these.",
     options: [{ k: "hevc", l: "HEVC (H.265)" }, { k: "av1", l: "AV1" }, { k: "h264", l: "H.264" }],
   },
   {
-    row: "hdr", label: "HDR", alts: true,
+    row: "hdr", label: "HDR",
     hint: "HDR10+ counts as HDR10 too. A Dolby Vision file counts as the format under it unless Dolby Vision has a setting.",
     options: [{ k: "HDR10+", l: "HDR10+" }, { k: "HDR10", l: "HDR10" }, { k: "DV", l: "Dolby Vision" }, { k: "HLG", l: "HLG" }, { k: "SDR", l: "SDR (no HDR)" }],
   },
   {
-    row: "audio", label: "Audio", alts: false,
+    row: "audio", label: "Audio",
     hint: "Features a file has or doesn't.",
     options: [{ k: "atmos", l: "Dolby Atmos" }, { k: "lossless", l: "Lossless (TrueHD, DTS-HD MA, FLAC)" }],
   },
 ];
 
-// Each state's look and meaning — shown in the key above the rows and on hover.
-const PREF_TONE: Record<string, { bg: string; fg: string; label: string; means: string; feature?: string }> = {
-  avoid: { bg: "var(--reject)", fg: "#fff", label: "Avoid", means: "Doesn't fit. Grabbed only when nothing else is available.", feature: "A file with it doesn't fit. Releases with it are grabbed only when nothing else is available." },
-  "": { bg: "var(--line)", fg: "var(--ink)", label: "—", means: "No opinion. Doesn't fit if you've picked something else in this row.", feature: "No opinion — with or without it is fine." },
-  ok: { bg: "var(--ink-dim)", fg: "var(--bg)", label: "OK", means: "Fits. No preference when choosing between releases." },
-  want: { bg: "var(--good)", fg: "#fff", label: "Want", means: "Fits, and preferred when choosing between releases.", feature: "A file needs it to fit. Releases with it are preferred." },
-  must: { bg: "var(--accent)", fg: "var(--accent-ink)", label: "Must", means: "Never grabbed without it. With two in a row, either will do.", feature: "Never grabbed without it." },
+// Each state's look and meaning — shown in the key above the rows and on hover. Only Must
+// and Avoid decide whether a library file fits; Prefer just ranks releases.
+const PREF_TONE: Record<string, { bg: string; fg: string; label: string; means: string }> = {
+  must: { bg: "var(--accent)", fg: "var(--accent-ink)", label: "Must", means: "Never grabbed without it, and a file without it doesn't fit. Two in a row means either will do." },
+  want: { bg: "var(--good)", fg: "#fff", label: "Prefer", means: "Picked over releases without it. A file without it still fits." },
+  "": { bg: "var(--line)", fg: "var(--ink)", label: "—", means: "No opinion either way." },
+  avoid: { bg: "var(--reject)", fg: "#fff", label: "Avoid", means: "Grabbed only when nothing else is available, and a file with it doesn't fit." },
 };
 
 // The bitrate windows are per resolution, with 576p and 480p together as "SD" (how files
@@ -181,7 +181,7 @@ const VIDEO_TEMPLATES: { key: string; name: string; desc: string; make: (media: 
     make: (m) => ({
       ...emptyProfile(m), allowed_resolutions: ["2160p", "1080p"], min_source: "WEB-DL",
       ideal: {
-        codec: { hevc: "want", av1: "want" }, hdr: { "HDR10+": "want", HDR10: "ok", DV: "ok" }, audio: { atmos: "want" },
+        codec: { hevc: "want", av1: "want" }, hdr: { "HDR10+": "want" }, audio: { atmos: "want" },
         bitrate: { "2160p": { min: 15, max: 35 }, "1080p": { min: 5, max: 15 } },
       },
     }),
@@ -190,7 +190,7 @@ const VIDEO_TEMPLATES: { key: string; name: string; desc: string; make: (media: 
     key: "1080", name: "1080p efficient", desc: "1080p in HEVC or AV1, 720p as a fallback. Good quality without remux-sized files.",
     make: (m) => ({
       ...emptyProfile(m), allowed_resolutions: ["1080p", "720p"], min_source: "WEB-DL",
-      ideal: { codec: { hevc: "want", av1: "want", h264: "ok" }, bitrate: { "1080p": { min: 5, max: 15 }, "720p": { min: 3, max: 8 } } },
+      ideal: { codec: { hevc: "want", av1: "want" }, bitrate: { "1080p": { min: 5, max: 15 }, "720p": { min: 3, max: 8 } } },
     }),
   },
   {
@@ -653,7 +653,7 @@ function TargetEditor({ sp, ideal, onIdeal, onResolutions }: { sp: StoredProfile
             {row.options.map((o) => (
               <div key={o.k} className="flex flex-wrap items-center justify-between gap-2 rounded-lg py-1 pl-2.5 pr-1" style={{ background: "var(--panel-2)" }}>
                 <span className="text-[12.5px]">{o.l}</span>
-                <PrefPicker alts={row.alts} value={(ideal[row.row]?.[o.k] ?? "") as TargetPref} onChange={(p) => onIdeal((cur) => setPref(cur, row.row, o.k, p))} label={o.l} />
+                <PrefPicker value={(ideal[row.row]?.[o.k] ?? "") as TargetPref} onChange={(p) => onIdeal((cur) => setPref(cur, row.row, o.k, p))} label={o.l} />
               </div>
             ))}
           </div>
@@ -680,9 +680,8 @@ function TargetEditor({ sp, ideal, onIdeal, onResolutions }: { sp: StoredProfile
   );
 }
 
-function PrefPicker({ value, alts, onChange, label }: { value: TargetPref; alts: boolean; onChange: (p: TargetPref) => void; label: string }) {
-  // A feature (Atmos) is had or not: "OK" would mean the same as no opinion, so it's left out.
-  const opts: TargetPref[] = alts ? ["avoid", "", "ok", "want", "must"] : ["avoid", "", "want", "must"];
+function PrefPicker({ value, onChange, label }: { value: TargetPref; onChange: (p: TargetPref) => void; label: string }) {
+  const opts: TargetPref[] = ["avoid", "", "want", "must"];
   return (
     <div role="radiogroup" aria-label={label} className="inline-flex rounded-lg p-0.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
       {opts.map((o) => {
@@ -690,8 +689,8 @@ function PrefPicker({ value, alts, onChange, label }: { value: TargetPref; alts:
         const t = PREF_TONE[o];
         return (
           <button key={o || "none"} role="radio" aria-checked={on} onClick={() => onChange(o)} className="rounded-md px-2 py-1 text-[10.5px] font-semibold"
-            title={`${t.label === "—" ? "No opinion" : t.label}: ${alts ? t.means : (t.feature ?? t.means)}`}
-            aria-label={`${t.label === "—" ? "No opinion" : t.label} — ${alts ? t.means : (t.feature ?? t.means)}`}
+            title={`${t.label === "—" ? "No opinion" : t.label}: ${t.means}`}
+            aria-label={`${t.label === "—" ? "No opinion" : t.label} — ${t.means}`}
             style={{ background: on ? t.bg : "transparent", color: on ? t.fg : "var(--ink-faint)", minWidth: 38 }}>
             {t.label}
           </button>
@@ -703,7 +702,7 @@ function PrefPicker({ value, alts, onChange, label }: { value: TargetPref; alts:
 
 // PrefKey explains the buttons, in their own colours, before the first row uses them.
 function PrefKey() {
-  const order: TargetPref[] = ["must", "want", "ok", "", "avoid"];
+  const order: TargetPref[] = ["must", "want", "", "avoid"];
   return (
     <div className="mb-4 rounded-lg p-3" style={{ background: "var(--panel-2)", border: "1px solid var(--line-soft)" }}>
       <div className="mb-2 text-[11px] font-semibold text-ink-dim">What the buttons mean</div>
@@ -718,7 +717,7 @@ function PrefKey() {
           );
         })}
       </div>
-      <div className="mt-2 text-[10.5px] text-ink-faint">Audio options are features a file has or doesn't: there, Want means a file needs it to fit. Hover any button for its meaning.</div>
+      <div className="mt-2 text-[10.5px] text-ink-faint">Only Must and Avoid flag a file in your library as not fitting. Hover any button for its meaning.</div>
     </div>
   );
 }
@@ -754,7 +753,7 @@ function UpgradesEditor({ sp, patch }: { sp: StoredProfile; patch: (p: Partial<S
           <div className="text-[12.5px] font-semibold">Automatically upgrade</div>
           <div className="text-[10.5px] leading-[1.45] text-ink-faint">
             After a file is imported, keep watching for a better release and replace it. Stops once the file is the target — the goal resolution,
-            everything you Want, inside a bitrate window that has a floor.
+            everything you prefer, inside a bitrate window that has a floor.
           </div>
         </div>
         <Switch on={sp.upgrades_enabled} onChange={(v) => patch({ upgrades_enabled: v })} label="Automatically upgrade" />
@@ -1369,7 +1368,7 @@ function FormatToggle({ format, score, required, advanced, onChange }: { format:
   const opts: { key: string; label: string; val: number; req: boolean; tone: string }[] = [
     { key: "avoid", label: "Avoid", val: -50, req: false, tone: "var(--reject)" },
     { key: "ignore", label: "—", val: 0, req: false, tone: "var(--ink-faint)" },
-    { key: "prefer", label: "Want", val: 50, req: false, tone: "var(--good)" },
+    { key: "prefer", label: "Prefer", val: 50, req: false, tone: "var(--good)" },
     { key: "require", label: "Must", val: 50, req: true, tone: "var(--accent)" },
   ];
   return (

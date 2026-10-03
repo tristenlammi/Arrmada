@@ -24,13 +24,17 @@ import (
 // target into them on save, and Migrate reads a profile written before targets existed back
 // out of them, so nothing about an existing profile's grabbing changes.
 
-// Option states.
+// Option states. Only Must and Avoid decide whether a file fits; Prefer (stored as "want")
+// only ranks releases — a file without a preferred format is still fine.
 const (
 	PrefNone  = ""      // no opinion
-	PrefOK    = "ok"    // fits the target; no pull either way when grabbing
-	PrefWant  = "want"  // fits the target, and ranks a release up
-	PrefMust  = "must"  // never grabbed without (one of a row's musts)
-	PrefAvoid = "avoid" // doesn't fit, and ranks a release down
+	PrefWant  = "want"  // shown as Prefer: ranks a release up; not needed to fit
+	PrefMust  = "must"  // never grabbed without (one of a row's musts); needed to fit
+	PrefAvoid = "avoid" // ranks a release down; a file with it doesn't fit
+	// PrefOK was a state that marked an option as fitting while others in its row didn't.
+	// With Prefer no longer narrowing what fits, it meant nothing more than no opinion, and
+	// it's dropped when read.
+	PrefOK = "ok"
 )
 
 // IdealFile is a profile's target file. Every part is optional.
@@ -68,10 +72,8 @@ func (f *IdealFile) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	*f = IdealFile{Codec: raw.Codec, Audio: raw.Audio, Bitrate: raw.Bitrate}
-	// The first form's lists meant "these fit" — ok, so grabbing is unchanged by reading them.
-	for _, c := range raw.Codecs {
-		f.set(&f.Codec, c, PrefOK)
-	}
+	// The first form's lists meant "these fit"; nothing narrows what fits short of a Must
+	// now, so they read as no opinion — and grabbing is unchanged by reading them.
 	if len(raw.HDR) > 0 && string(raw.HDR) != "null" {
 		var m map[string]string
 		if json.Unmarshal(raw.HDR, &m) == nil {
@@ -81,17 +83,21 @@ func (f *IdealFile) UnmarshalJSON(b []byte) error {
 			if err := json.Unmarshal(raw.HDR, &list); err != nil {
 				return err
 			}
-			for _, h := range list {
-				f.set(&f.HDR, h, PrefOK)
-			}
 		}
 	}
-	// Its flags meant "the file must have it" — the nearest state is want.
+	// Its flags meant "I'd like it" — Prefer.
 	if raw.Atmos {
 		f.set(&f.Audio, "atmos", PrefWant)
 	}
 	if raw.Lossless {
 		f.set(&f.Audio, "lossless", PrefWant)
+	}
+	for _, m := range []map[string]string{f.Codec, f.HDR, f.Audio} {
+		for k, st := range m {
+			if st == PrefOK || st == PrefNone {
+				delete(m, k)
+			}
+		}
 	}
 	return nil
 }
@@ -365,7 +371,7 @@ func CheckFit(ideal IdealFile, allowed []string, f FileFacts) Fit {
 		has        bool
 	}{{"atmos", "Dolby Atmos", f.Atmos}, {"lossless", "lossless audio", f.Lossless}} {
 		switch ideal.Audio[ft.key] {
-		case PrefWant, PrefMust:
+		case PrefMust:
 			if !ft.has {
 				add(ft.key, "no "+ft.label+" track")
 			}
@@ -402,8 +408,7 @@ func CheckFit(ideal IdealFile, allowed []string, f FileFacts) Fit {
 //
 //   - any value avoided → it doesn't fit;
 //   - the row has musts → one of the file's values must be a must;
-//   - otherwise, if the row names anything as ok/want, one of the values must be one of
-//     those; a row with nothing chosen accepts anything.
+//   - otherwise it fits — preferences only rank releases.
 func rowMiss(row map[string]string, vals []string, have string, name func(string) string) string {
 	if len(row) == 0 {
 		return ""
@@ -421,35 +426,70 @@ func rowMiss(row map[string]string, vals []string, have string, name func(string
 			return have + ", which this profile avoids"
 		}
 	}
-	var musts, fits []string
+	var musts []string
 	for k, st := range row {
-		switch st {
-		case PrefMust:
+		if st == PrefMust {
 			musts = append(musts, k)
-		case PrefOK, PrefWant:
-			fits = append(fits, k)
 		}
 	}
-	want := fits
-	accept := func(st string) bool { return st == PrefOK || st == PrefWant || st == PrefMust }
-	if len(musts) > 0 {
-		want = musts
-		accept = func(st string) bool { return st == PrefMust }
-	}
-	if len(want) == 0 {
-		return ""
+	if len(musts) == 0 {
+		return "" // preferences rank releases; they don't decide what fits
 	}
 	for _, v := range vals {
-		if accept(state(v)) {
+		if state(v) == PrefMust {
 			return ""
 		}
 	}
-	sort.Strings(want)
-	return fmt.Sprintf("%s, not %s", have, joinNames(want, name))
+	sort.Strings(musts)
+	return fmt.Sprintf("%s, not %s", have, joinNames(musts, name))
+}
+
+// prefersMet reports whether a file has everything the target prefers: in each row that
+// prefers something, one of its values is preferred (or a must), and every preferred
+// feature is present. Used only to decide when upgrading is done — a file without a
+// preferred format still fits, but a release with it is still worth having.
+func prefersMet(ideal IdealFile, f FileFacts) bool {
+	rowOK := func(row map[string]string, vals []string) bool {
+		any := false
+		for _, st := range row {
+			if st == PrefWant {
+				any = true
+			}
+		}
+		if !any {
+			return true
+		}
+		for _, v := range vals {
+			for k, st := range row {
+				if strings.EqualFold(k, v) && (st == PrefWant || st == PrefMust) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	hdrVals := []string{f.HDR}
+	if f.HDR == "HDR10+" {
+		hdrVals = append(hdrVals, "HDR10")
+	}
+	if f.DolbyVision {
+		hdrVals = append([]string{"DV"}, hdrVals...)
+	}
+	if !rowOK(ideal.Codec, []string{f.Codec}) || !rowOK(ideal.HDR, hdrVals) {
+		return false
+	}
+	if ideal.Audio["atmos"] == PrefWant && !f.Atmos {
+		return false
+	}
+	if ideal.Audio["lossless"] == PrefWant && !f.Lossless {
+		return false
+	}
+	return true
 }
 
 // TargetMet reports whether a file already is the profile's target, so upgrading can stop:
-// at the best resolution the profile allows, fitting the target — and inside a bitrate
+// at the best resolution the profile allows, fitting the target, with everything it
+// prefers — and inside a bitrate
 // window that has a floor. A ceiling alone can't say a file is good enough (a thin encode
 // sits under it too), so a target with no floor for the resolution never stops upgrades:
 // they run exactly as they did before targets.
@@ -463,7 +503,7 @@ func (sp StoredProfile) TargetMet(f FileFacts) bool {
 	if w := sp.Ideal.Bitrate[f.Resolution]; w.Min <= 0 || f.BitrateMbps <= 0 {
 		return false
 	}
-	return CheckFit(*sp.Ideal, sp.AllowedResolutions, f).Status == FitOK
+	return CheckFit(*sp.Ideal, sp.AllowedResolutions, f).Status == FitOK && prefersMet(*sp.Ideal, f)
 }
 
 // bestResolutionKey is the highest resolution a profile allows, as a target key ("" = any).
@@ -542,7 +582,7 @@ func (f IdealFile) summary(allowed []string) []string {
 		case len(musts) > 0:
 			return strings.Join(musts, "/") + " only"
 		case len(wants) > 0:
-			return strings.Join(wants, "/")
+			return strings.Join(wants, "/") + " preferred"
 		}
 		return strings.Join(oks, "/")
 	}
@@ -557,7 +597,7 @@ func (f IdealFile) summary(allowed []string) []string {
 		case PrefMust:
 			parts = append(parts, a.label+" required")
 		case PrefWant:
-			parts = append(parts, a.label)
+			parts = append(parts, a.label+" preferred")
 		}
 	}
 	for _, key := range []string{"2160p", "1080p", "720p", "SD"} {

@@ -9,11 +9,12 @@ import (
 	"github.com/tristenlammi/arrmada/internal/parser"
 )
 
-// The example the feature was asked for: HEVC or AV1, HDR10+, Atmos, 20–30 Mb/s at 4K.
+// The example the feature was asked for: prefer HEVC or AV1 and HDR10+, avoid Dolby
+// Vision, Atmos required, 20–30 Mb/s at 4K.
 func exampleTarget() IdealFile {
 	return IdealFile{
 		Codec:   map[string]string{"hevc": PrefWant, "av1": PrefWant},
-		HDR:     map[string]string{"HDR10+": PrefWant, "HDR10": PrefOK, "DV": PrefAvoid},
+		HDR:     map[string]string{"HDR10+": PrefWant, "DV": PrefAvoid},
 		Audio:   map[string]string{"atmos": PrefMust},
 		Bitrate: map[string]BitrateWindow{"2160p": {Min: 20, Max: 30}},
 	}
@@ -29,13 +30,15 @@ func TestCheckFit(t *testing.T) {
 		kinds  []string
 	}{
 		{"fits", func(*FileFacts) {}, FitOK, nil},
-		{"plain HDR10 is ok", func(f *FileFacts) { f.HDR = "HDR10" }, FitOK, nil},
+		// Preferences rank releases; a file without them still fits.
+		{"plain HDR10 still fits", func(f *FileFacts) { f.HDR = "HDR10" }, FitOK, nil},
+		{"H.264 still fits", func(f *FileFacts) { f.Codec = "h264" }, FitOK, nil},
+		{"SDR still fits", func(f *FileFacts) { f.HDR = "SDR" }, FitOK, nil},
 		{"remux over the ceiling", func(f *FileFacts) { f.BitrateMbps = 71 }, FitOver, []string{"bitrate"}},
 		{"starved", func(f *FileFacts) { f.BitrateMbps = 9 }, FitUnder, []string{"bitrate"}},
-		{"H.264 without Atmos", func(f *FileFacts) { f.Codec = "h264"; f.Atmos = false }, FitMismatch, []string{"codec", "atmos"}},
-		{"SDR isn't in the row", func(f *FileFacts) { f.HDR = "SDR" }, FitMismatch, []string{"hdr"}},
+		{"no Atmos when it's a must", func(f *FileFacts) { f.Codec = "h264"; f.Atmos = false }, FitMismatch, []string{"atmos"}},
 		{"Dolby Vision is avoided", func(f *FileFacts) { f.DolbyVision = true }, FitMismatch, []string{"hdr"}},
-		{"over AND wrong codec: over wins, both listed", func(f *FileFacts) { f.BitrateMbps = 50; f.Codec = "h264" }, FitOver, []string{"codec", "bitrate"}},
+		{"over AND avoided: over wins, both listed", func(f *FileFacts) { f.BitrateMbps = 50; f.DolbyVision = true }, FitOver, []string{"hdr", "bitrate"}},
 		{"unknown bitrate isn't judged", func(f *FileFacts) { f.BitrateMbps = 0 }, FitOK, nil},
 	}
 	for _, c := range cases {
@@ -50,7 +53,8 @@ func TestCheckFit(t *testing.T) {
 			t.Errorf("%s: got %s %v, want %s %v (%+v)", c.name, got.Status, kinds, c.status, c.kinds, got.Issues)
 		}
 	}
-	if msg := CheckFit(ideal, nil, FileFacts{Resolution: "2160p", Codec: "h264", HDR: "HDR10", Atmos: true, BitrateMbps: 25}).Issues[0].Msg; msg != "H.264, not AV1 or HEVC" {
+	mustCodec := IdealFile{Codec: map[string]string{"hevc": PrefMust, "av1": PrefMust}}
+	if msg := CheckFit(mustCodec, nil, FileFacts{Codec: "h264", HDR: "SDR"}).Issues[0].Msg; msg != "H.264, not AV1 or HEVC" {
 		t.Errorf("codec message = %q", msg)
 	}
 }
@@ -63,12 +67,15 @@ func TestCheckFitRows(t *testing.T) {
 	if CheckFit(mustHEVC, nil, FileFacts{Codec: "av1"}).Status != FitMismatch {
 		t.Error("an AV1 file can't fit a profile that must have HEVC")
 	}
-	hdr10 := IdealFile{HDR: map[string]string{"HDR10": PrefWant}}
+	hdr10 := IdealFile{HDR: map[string]string{"HDR10": PrefMust}}
 	if got := CheckFit(hdr10, nil, FileFacts{HDR: "HDR10+"}); got.Status != FitOK {
 		t.Errorf("HDR10+ should satisfy HDR10: %+v", got)
 	}
 	if got := CheckFit(hdr10, nil, FileFacts{HDR: "HDR10", DolbyVision: true}); got.Status != FitOK {
 		t.Errorf("Dolby Vision over HDR10 should be judged by its base: %+v", got)
+	}
+	if got := CheckFit(hdr10, nil, FileFacts{HDR: "SDR"}); got.Status != FitMismatch {
+		t.Errorf("an SDR file can't meet an HDR10 must: %+v", got)
 	}
 	// A 1080p file under a 4K-only profile; SD covers 576p/480p.
 	if got := CheckFit(IdealFile{}, []string{"2160p"}, FileFacts{Resolution: "1080p"}); got.Status != FitMismatch {
@@ -86,8 +93,14 @@ func TestIdealReadsFirstForm(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"codecs":["hevc","av1"],"hdr":["HDR10+"],"atmos":true,"bitrate":{"2160p":{"min":20,"max":30}}}`), &f); err != nil {
 		t.Fatal(err)
 	}
-	if f.Codec["hevc"] != PrefOK || f.Codec["av1"] != PrefOK || f.HDR["HDR10+"] != PrefOK || f.Audio["atmos"] != PrefWant || f.Bitrate["2160p"].Max != 30 {
+	// Its lists meant "these fit" — nothing narrows that short of a Must now, so they read
+	// as no opinion; its flags read as Prefer.
+	if len(f.Codec) != 0 || len(f.HDR) != 0 || f.Audio["atmos"] != PrefWant || f.Bitrate["2160p"].Max != 30 {
 		t.Errorf("first form read as %+v", f)
+	}
+	var ok IdealFile
+	if err := json.Unmarshal([]byte(`{"codec":{"hevc":"ok","av1":"want"}}`), &ok); err != nil || len(ok.Codec) != 1 || ok.Codec["av1"] != PrefWant {
+		t.Errorf("the retired OK state should read as no opinion: %+v (%v)", ok, err)
 	}
 	var g IdealFile
 	if err := json.Unmarshal([]byte(`{"hdr":{"HDR10+":"want"}}`), &g); err != nil || g.HDR["HDR10+"] != PrefWant {
@@ -192,6 +205,11 @@ func TestTargetMet(t *testing.T) {
 	}
 	if (StoredProfile{AllowedResolutions: []string{"2160p"}}).TargetMet(fits) {
 		t.Error("with no target set up, nothing is 'the target'")
+	}
+	// Fits, but without the preferred HDR10+: a release with it is still worth upgrading to.
+	noPref := ReleaseFacts(parser.Parse("Film.2024.2160p.WEB-DL.DDP5.1.Atmos.HDR.x265-GRP"), 24)
+	if CheckFit(*sp.Ideal, sp.AllowedResolutions, noPref).Status != FitOK || sp.TargetMet(noPref) {
+		t.Errorf("an HDR10 file fits, but isn't the target while HDR10+ is preferred: %+v", noPref)
 	}
 }
 
