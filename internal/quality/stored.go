@@ -44,6 +44,10 @@ type StoredProfile struct {
 	// A percentage rather than Mbps because it means the same thing at every resolution:
 	// "2 Mbps better" more than doubles a 480p file and is noise on a 2160p one.
 	UpgradeMinPercent float64 `json:"upgrade_min_percent"`
+	// Ideal describes the file this profile is aiming for, so the library can show which
+	// files don't fit it (see ideal.go). Report only — it never changes what's downloaded.
+	// nil = not set up.
+	Ideal *IdealFile `json:"ideal,omitempty"`
 }
 
 // Keyword scores releases whose name contains Term (case-insensitive). Positive

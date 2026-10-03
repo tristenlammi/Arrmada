@@ -240,7 +240,22 @@ export interface StoredProfile {
   stall_minutes: number;
   upgrades_enabled: boolean;
   upgrade_min_percent: number;
+  ideal?: IdealFile; // the file this profile aims for — flags library files that don't fit (report only)
 }
+
+// IdealFile mirrors quality.IdealFile: every part optional, empty = anything goes.
+export interface IdealFile {
+  codecs?: string[]; // "hevc" | "av1" | "h264"
+  hdr?: string[]; // "SDR" | "HDR10" | "HDR10+" | "HLG" | "DV"
+  atmos?: boolean;
+  lossless?: boolean;
+  bitrate?: Record<string, { min: number; max: number }>; // per "2160p" | "1080p" | "720p" | "SD", Mb/s
+}
+export interface FileFacts { resolution: string; codec: string; hdr: string; dolby_vision?: boolean; atmos?: boolean; lossless?: boolean; bitrate_mbps: number }
+export type FitStatus = "fits" | "over" | "under" | "mismatch";
+export interface FileFit { status: FitStatus; window?: { min: number; max: number }; issues?: { kind: string; msg: string }[] }
+export interface FitItem { movie_id?: number; series_id?: number; season: number; episode?: number; facts: FileFacts; fit?: FileFit; profile?: string }
+export interface SeriesFitSummary { series_id: number; checked: number; fits: number; over: number; under: number; mismatch: number }
 
 export interface DownloadClient {
   id: number;
@@ -1065,6 +1080,9 @@ export const api = {
     req<{ profiles: QualityProfileInfo[]; formats: FormatInfo[] }>(`/api/v1/quality/profiles?media=${media}`),
   setDefaultProfile: (media: string, profile: string) =>
     req<{ media: string; profile: string }>("/api/v1/quality/default", { method: "POST", body: JSON.stringify({ media, profile }) }),
+  libraryFitMovies: () => req<{ items: FitItem[] }>("/api/v1/library/fit?media=movies"),
+  libraryFitSeries: () => req<{ items: SeriesFitSummary[] }>("/api/v1/library/fit?media=series"),
+  libraryFitEpisodes: (seriesID: number) => req<{ items: FitItem[] }>(`/api/v1/library/fit?media=series&series=${seriesID}`),
   qualityProfile: (ref: string) => req<StoredProfile>(`/api/v1/quality/profiles/${encodeURIComponent(ref)}`),
   createQualityProfile: (sp: StoredProfile) =>
     req<StoredProfile>("/api/v1/quality/profiles", { method: "POST", body: JSON.stringify(sp) }),

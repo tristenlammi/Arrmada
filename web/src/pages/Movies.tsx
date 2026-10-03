@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { api, type Movie, type MovieLookup } from "../lib/api";
+import { api, type FitItem, type Movie, type MovieLookup } from "../lib/api";
+import { FitBadge, FIT_COLOR, bitrateColor, fitRank, hasIssue } from "../components/FitBadge";
 import { posterThumb } from "../lib/img";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { usePersisted } from "../lib/persist";
@@ -361,10 +362,10 @@ function YesNo({ on, label }: { on: boolean; label?: string }) {
   );
 }
 
-type SortKey = "title" | "status" | "resolution" | "codec" | "audio" | "atmos" | "hdr" | "type" | "size" | "bitrate";
+type SortKey = "title" | "status" | "resolution" | "codec" | "audio" | "atmos" | "hdr" | "type" | "size" | "bitrate" | "fit";
 
 // sortValue returns a comparable value per column (undefined = empty → sorted last regardless of dir).
-function sortValue(m: Movie, key: SortKey): number | string | undefined {
+function sortValue(m: Movie, key: SortKey, fit?: FitItem): number | string | undefined {
   const f = m.file;
   switch (key) {
     case "title": return m.title.toLowerCase();
@@ -377,6 +378,7 @@ function sortValue(m: Movie, key: SortKey): number | string | undefined {
     case "type": { const e = fileExt(f); return e === "—" ? undefined : e; }
     case "size": return f?.size_bytes || undefined;
     case "bitrate": return bitrateNum(f);
+    case "fit": return fitRank(fit);
   }
 }
 
@@ -385,11 +387,21 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }:
   const td = "px-2.5 py-2 align-middle";
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "title", dir: "asc" });
   const onSort = (key: SortKey) => setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
+  // How each file fits its profile's ideal file — report only, from the analysed library.
+  const [fits, setFits] = useState<Map<number, FitItem>>(new Map());
+  const [misfitsPref, setMisfitsPref] = usePersisted("movies.table.misfits", "all", ["all", "misfits"] as const);
+  const misfitsOnly = misfitsPref === "misfits";
+  const setMisfitsOnly = (on: boolean) => setMisfitsPref(on ? "misfits" : "all");
+  useEffect(() => {
+    api.libraryFitMovies().then((r) => setFits(new Map((r.items ?? []).map((it) => [it.movie_id ?? 0, it])))).catch(() => {});
+  }, []);
+  const judged = useMemo(() => movies.filter((m) => fits.get(m.id)?.fit).length, [movies, fits]);
+  const misfits = useMemo(() => movies.filter((m) => { const s = fits.get(m.id)?.fit?.status; return !!s && s !== "fits"; }).length, [movies, fits]);
 
   const sorted = useMemo(() => {
-    const arr = [...movies];
+    const arr = misfitsOnly ? movies.filter((m) => { const s = fits.get(m.id)?.fit?.status; return !!s && s !== "fits"; }) : [...movies];
     arr.sort((a, b) => {
-      const av = sortValue(a, sort.key), bv = sortValue(b, sort.key);
+      const av = sortValue(a, sort.key, fits.get(a.id)), bv = sortValue(b, sort.key, fits.get(b.id));
       const aE = av === undefined, bE = bv === undefined;
       if (aE && bE) return 0;
       if (aE) return 1; // empties always last
@@ -400,7 +412,7 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }:
       return sort.dir === "asc" ? r : -r;
     });
     return arr;
-  }, [movies, sort]);
+  }, [movies, sort, fits, misfitsOnly]);
 
   const Th = ({ label, k, align }: { label: string; k: SortKey; align?: "right" }) => {
     const active = sort.key === k;
@@ -415,6 +427,21 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }:
   };
 
   return (
+    <>
+    {judged > 0 && (
+      <div className="mb-2 flex flex-wrap items-center gap-3 text-[11.5px] text-ink-dim">
+        <label className="inline-flex cursor-pointer items-center gap-1.5">
+          <input type="checkbox" checked={misfitsOnly} onChange={(e) => setMisfitsOnly(e.target.checked)} />
+          Only files that don't fit their profile ({misfits} of {judged})
+        </label>
+        <span className="text-[10.5px] text-ink-faint">
+          <span style={{ color: FIT_COLOR.over }}>■</span> over the bitrate ceiling ·{" "}
+          <span style={{ color: FIT_COLOR.under }}>■</span> under the floor ·{" "}
+          <span style={{ color: FIT_COLOR.mismatch }}>■</span> bitrate fine, spec isn't ·{" "}
+          <span style={{ color: FIT_COLOR.fits }}>■</span> fits — hover for why
+        </span>
+      </div>
+    )}
     <div className="overflow-x-auto thin-scroll rounded-xl" style={{ border: "1px solid var(--line)" }}>
       <table className="w-full border-collapse text-[12px]" style={{ minWidth: "900px" }}>
         <thead>
@@ -430,6 +457,7 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }:
             <Th label="Type" k="type" />
             <Th label="Size" k="size" align="right" />
             <Th label="Bitrate" k="bitrate" align="right" />
+            <Th label="Fit" k="fit" />
             <th className={th}></th>
           </tr>
         </thead>
@@ -437,6 +465,8 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }:
           {sorted.map((m) => {
             const f = m.file;
             const st = statusOf(m);
+            const fi = fits.get(m.id);
+            const bad = (kind: string) => (hasIssue(fi?.fit, kind) ? { color: FIT_COLOR.over, fontWeight: 600 } : undefined);
             return (
               <tr key={m.id} className="transition-colors hover:bg-[var(--panel-2)]" style={{ background: selected.has(m.id) ? "var(--accent-soft)" : "var(--panel)", borderBottom: "1px solid var(--line-soft)" }}>
                 {multiSelect && (
@@ -453,13 +483,17 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }:
                 </td>
                 <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: st.tone }}>{st.label}</span></td>
                 <td className={td}>{f?.resolution || (f?.quality ? f.quality.split(" ")[0] : "—")}</td>
-                <td className={td}>{f?.codec || "—"}</td>
-                <td className={td}>{f?.audio?.length ? f.audio.join(", ") : "—"}</td>
-                <td className={td}><YesNo on={hasAtmos(f)} /></td>
-                <td className={td}>{f?.hdr?.length ? <YesNo on label={f.hdr.join("/")} /> : <YesNo on={false} />}</td>
+                <td className={td} style={bad("codec")}>{f?.codec || "—"}</td>
+                <td className={td} style={bad("lossless")}>{f?.audio?.length ? f.audio.join(", ") : "—"}</td>
+                <td className={td}>{hasIssue(fi?.fit, "atmos") ? <span className="text-[11px] font-semibold" style={{ color: FIT_COLOR.over }}>No</span> : <YesNo on={hasAtmos(f)} />}</td>
+                <td className={td}>{hasIssue(fi?.fit, "hdr")
+                  ? <span className="text-[11px] font-semibold" style={{ color: FIT_COLOR.over }}>{f?.hdr?.length ? f.hdr.join("/") : "SDR"}</span>
+                  : f?.hdr?.length ? <YesNo on label={f.hdr.join("/")} /> : <YesNo on={false} />}</td>
                 <td className={td}><span className="font-mono text-[11px] text-ink-dim">{fileExt(f)}</span></td>
                 <td className={`${td} text-right font-mono text-[11px] text-ink-dim`}>{gb(f?.size_bytes)}</td>
-                <td className={`${td} text-right font-mono text-[11px] text-ink-dim`}>{bitrateMbps(f)}</td>
+                <td className={`${td} text-right font-mono text-[11px] text-ink-dim`} style={bitrateColor(fi?.fit) ? { color: bitrateColor(fi?.fit), fontWeight: 600 } : undefined}
+                  title={fi?.fit?.window ? `Window ${fi.fit.window.min || 0}–${fi.fit.window.max || "∞"} Mb/s` : undefined}>{bitrateMbps(f)}</td>
+                <td className={td}><FitBadge item={fi} /></td>
                 <td className={`${td} text-right`}>
                   <button onClick={() => onSearch(m)} title="Search your indexers and pick a release" className="whitespace-nowrap rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Search</button>
                 </td>
@@ -469,6 +503,7 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }:
         </tbody>
       </table>
     </div>
+    </>
   );
 }
 

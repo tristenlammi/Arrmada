@@ -25,6 +25,8 @@
   --avoid: #e0a93b;
   --reject: #cf5442;
   --reject-soft: rgba(207, 84, 66, 0.15);
+  --under: #e8863a; /* ideal-file check: under the bitrate floor */
+  --mismatch: #d9c24a; /* ideal-file check: bitrate fine, spec isn't */
 }
 
 @media (prefers-color-scheme: light) {
@@ -48,6 +50,8 @@
     --avoid: #b07d1e;
     --reject: #b23f30;
     --reject-soft: rgba(178, 63, 48, 0.11);
+    --under: #c0601a;
+    --mismatch: #9a8410;
   }
 }
 
@@ -58,6 +62,7 @@
   --accent-soft: rgba(219,122,84,.15); --accent-line: rgba(219,122,84,.42);
   --good: #7fb069; --good-soft: rgba(127,176,105,.16); --avoid: #e0a93b;
   --reject: #cf5442; --reject-soft: rgba(207,84,66,.15);
+  --under: #e8863a; --mismatch: #d9c24a;
 }
 
 :root[data-theme="light"] {
@@ -67,6 +72,7 @@
   --accent-soft: rgba(193,94,57,.1); --accent-line: rgba(193,94,57,.35);
   --good: #5b8c46; --good-soft: rgba(91,140,70,.13); --avoid: #b07d1e;
   --reject: #b23f30; --reject-soft: rgba(178,63,48,.11);
+  --under: #c0601a; --mismatch: #9a8410;
 }
 
 html,

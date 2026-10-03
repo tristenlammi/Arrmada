@@ -18,18 +18,19 @@ func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const profileCols = `id, media_type, name, base, allowed_resolutions, min_source, bitrate_cap_mbps,
 	small_bias, min_format_score, format_scores, custom_formats, keywords, rejected, min_seeders, stall_minutes, max_source,
-	upgrades_enabled, upgrade_min_percent`
+	upgrades_enabled, upgrade_min_percent, required_formats, ideal`
 
 func (r *Repo) scan(row interface{ Scan(...any) error }) (StoredProfile, error) {
 	var (
 		sp                                                    StoredProfile
 		allowedJSON, scoresJSON, cfJSON, kwJSON, rejectedJSON string
+		requiredJSON, idealJSON                               string
 		upgradesEnabled                                       int
 	)
 	err := row.Scan(&sp.ID, &sp.MediaType, &sp.Name, &sp.Base, &allowedJSON, &sp.MinSource,
 		&sp.BitrateCapMbps, &sp.SmallBias, &sp.MinFormatScore, &scoresJSON, &cfJSON,
 		&kwJSON, &rejectedJSON, &sp.MinSeeders, &sp.StallMinutes, &sp.MaxSource,
-		&upgradesEnabled, &sp.UpgradeMinPercent)
+		&upgradesEnabled, &sp.UpgradeMinPercent, &requiredJSON, &idealJSON)
 	if err != nil {
 		return StoredProfile{}, err
 	}
@@ -39,6 +40,13 @@ func (r *Repo) scan(row interface{ Scan(...any) error }) (StoredProfile, error) 
 	_ = json.Unmarshal([]byte(cfJSON), &sp.CustomFormats)
 	_ = json.Unmarshal([]byte(kwJSON), &sp.Keywords)
 	_ = json.Unmarshal([]byte(rejectedJSON), &sp.Rejected)
+	_ = json.Unmarshal([]byte(requiredJSON), &sp.RequiredFormats)
+	if idealJSON != "" {
+		var ideal IdealFile
+		if json.Unmarshal([]byte(idealJSON), &ideal) == nil && !ideal.Empty() {
+			sp.Ideal = &ideal
+		}
+	}
 	if sp.FormatScores == nil {
 		sp.FormatScores = map[string]int{}
 	}
@@ -77,14 +85,16 @@ func (r *Repo) Get(ctx context.Context, id int64) (StoredProfile, error) {
 // Create inserts a profile and returns it with its new id.
 func (r *Repo) Create(ctx context.Context, sp StoredProfile) (StoredProfile, error) {
 	allowed, scores, cf, kw, rej := marshalJSON(sp)
+	required, ideal := marshalExtra(sp)
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO quality_profiles (media_type, name, base, allowed_resolutions, min_source,
 			bitrate_cap_mbps, small_bias, min_format_score, format_scores, custom_formats,
-			keywords, rejected, min_seeders, stall_minutes, max_source, upgrades_enabled, upgrade_min_percent)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			keywords, rejected, min_seeders, stall_minutes, max_source, upgrades_enabled, upgrade_min_percent,
+			required_formats, ideal)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sp.MediaType, sp.Name, sp.Base, allowed, sp.MinSource, sp.BitrateCapMbps, sp.SmallBias,
 		sp.MinFormatScore, scores, cf, kw, rej, sp.MinSeeders, sp.StallMinutes, sp.MaxSource,
-		boolToInt(sp.UpgradesEnabled), sp.UpgradeMinPercent)
+		boolToInt(sp.UpgradesEnabled), sp.UpgradeMinPercent, required, ideal)
 	if err != nil {
 		return StoredProfile{}, err
 	}
@@ -95,15 +105,16 @@ func (r *Repo) Create(ctx context.Context, sp StoredProfile) (StoredProfile, err
 // Update writes an existing profile.
 func (r *Repo) Update(ctx context.Context, id int64, sp StoredProfile) error {
 	allowed, scores, cf, kw, rej := marshalJSON(sp)
+	required, ideal := marshalExtra(sp)
 	res, err := r.db.ExecContext(ctx,
 		`UPDATE quality_profiles SET name = ?, base = ?, allowed_resolutions = ?, min_source = ?,
 			bitrate_cap_mbps = ?, small_bias = ?, min_format_score = ?, format_scores = ?, custom_formats = ?,
 			keywords = ?, rejected = ?, min_seeders = ?, stall_minutes = ?, max_source = ?,
-			upgrades_enabled = ?, upgrade_min_percent = ?
+			upgrades_enabled = ?, upgrade_min_percent = ?, required_formats = ?, ideal = ?
 		 WHERE id = ?`,
 		sp.Name, sp.Base, allowed, sp.MinSource, sp.BitrateCapMbps, sp.SmallBias, sp.MinFormatScore,
 		scores, cf, kw, rej, sp.MinSeeders, sp.StallMinutes, sp.MaxSource,
-		boolToInt(sp.UpgradesEnabled), sp.UpgradeMinPercent, id)
+		boolToInt(sp.UpgradesEnabled), sp.UpgradeMinPercent, required, ideal, id)
 	if err != nil {
 		return err
 	}
@@ -158,4 +169,18 @@ func marshalJSON(sp StoredProfile) (allowed, scores, cf, keywords, rejected stri
 	k, _ := json.Marshal(sp.Keywords)
 	rj, _ := json.Marshal(sp.Rejected)
 	return string(a), string(s), string(c), string(k), string(rj)
+}
+
+// marshalExtra encodes the required formats and the ideal file ("" when not set up).
+func marshalExtra(sp StoredProfile) (required, ideal string) {
+	rq := sp.RequiredFormats
+	if rq == nil {
+		rq = []string{}
+	}
+	b, _ := json.Marshal(rq)
+	if sp.Ideal != nil && !sp.Ideal.Empty() {
+		i, _ := json.Marshal(sp.Ideal)
+		ideal = string(i)
+	}
+	return string(b), ideal
 }

@@ -69,6 +69,23 @@ type AudioStream struct {
 	Channels   int    `json:"channels"`
 	Title      string `json:"title,omitempty"`
 	Commentary bool   `json:"commentary,omitempty"` // a commentary track (flagged, or titled so)
+	// Atmos and Lossless come from the codec and ffprobe's profile ("Dolby TrueHD + Dolby
+	// Atmos", "DTS-HD MA"), for the library's ideal-file check.
+	Atmos    bool `json:"atmos,omitempty"`
+	Lossless bool `json:"lossless,omitempty"`
+}
+
+// audioTraits reads Atmos and lossless from an audio stream's codec, profile and title.
+func audioTraits(codec, profile, title string) (atmos, lossless bool) {
+	p := strings.ToLower(profile)
+	atmos = strings.Contains(p, "atmos") || strings.Contains(strings.ToLower(title), "atmos")
+	switch c := strings.ToLower(codec); {
+	case c == "truehd" || c == "mlp" || c == "flac" || c == "alac" || strings.HasPrefix(c, "pcm_"):
+		lossless = true
+	case c == "dts":
+		lossless = strings.Contains(p, "dts-hd ma") // DTS-HD HRA and core DTS are lossy
+	}
+	return atmos, lossless
 }
 
 // SubStream is one subtitle track. SubIndex is its position among subtitle streams (the N
@@ -247,6 +264,7 @@ func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 			AvgFrameRate   string `json:"avg_frame_rate"`
 			ClosedCaptions int    `json:"closed_captions"`
 			Channels       int    `json:"channels"`
+			Profile        string `json:"profile"`
 			Disposition    struct {
 				AttachedPic int `json:"attached_pic"`
 				Comment     int `json:"comment"`
@@ -350,7 +368,9 @@ func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 				mi.HDR, mi.DVBase = "Dolby Vision", base
 			}
 		case "audio":
+			atmos, lossless := audioTraits(s.CodecName, s.Profile, s.Tags.Title)
 			mi.Audio = append(mi.Audio, AudioStream{
+				Atmos: atmos, Lossless: lossless,
 				AudIndex: mi.AudioTracks, Codec: s.CodecName, Lang: s.Tags.Language, Channels: s.Channels,
 				Title:      s.Tags.Title,
 				Commentary: s.Disposition.Comment == 1 || strings.Contains(strings.ToLower(s.Tags.Title), "commentary"),

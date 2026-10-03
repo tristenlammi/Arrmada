@@ -237,6 +237,8 @@ func New(d Deps) *http.Server {
 
 	// Movies
 	mux.HandleFunc("GET "+base+"/api/v1/movies", a.protected(a.handleListMovies))
+	// How each library file fits its profile's ideal file (report-only; from the Convert index).
+	mux.HandleFunc("GET "+base+"/api/v1/library/fit", a.protected(a.handleLibraryFit))
 	mux.HandleFunc("GET "+base+"/api/v1/movies/lookup", a.protected(a.handleLookupMovies))
 	mux.HandleFunc("POST "+base+"/api/v1/movies/scan", a.requireRole(auth.RoleManager, a.handleScanLibrary))
 	mux.HandleFunc("GET "+base+"/api/v1/movies/unmatched", a.requireRole(auth.RoleManager, a.handleMovieUnmatched))

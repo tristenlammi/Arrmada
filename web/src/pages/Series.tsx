@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { api, type Series as SeriesT, type SeriesLookup } from "../lib/api";
+import { api, type Series as SeriesT, type SeriesFitSummary, type SeriesLookup } from "../lib/api";
+import { FIT_COLOR } from "../components/FitBadge";
 import { posterThumb } from "../lib/img";
 import { SeriesSearchModal } from "../components/SeriesSearchModal";
 import { usePersisted } from "../lib/persist";
@@ -390,9 +391,27 @@ function gb(bytes?: number): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
 
+// SeriesFit summarises a show's episode files against its profile's ideal file: "✓ all 24",
+// or the counts that don't fit, worst first.
+function SeriesFit({ f }: { f?: SeriesFitSummary }) {
+  if (!f || f.checked === 0) return <span className="text-[11px] text-ink-faint" title="No episodes judged — the profile has no ideal file set up, or nothing's analysed yet">—</span>;
+  if (f.fits === f.checked) return <span className="font-mono text-[10.5px] font-bold" style={{ color: FIT_COLOR.fits }}>✓ all {f.checked}</span>;
+  const parts: [number, string, string][] = [[f.over, "over", FIT_COLOR.over], [f.under, "under", FIT_COLOR.under], [f.mismatch, "don't fit", FIT_COLOR.mismatch]];
+  return (
+    <span className="inline-flex flex-wrap gap-x-2 font-mono text-[10.5px] font-semibold" title={`${f.fits} of ${f.checked} episodes fit`}>
+      {parts.filter(([n]) => n > 0).map(([n, label, c]) => <span key={label} style={{ color: c }}>{n} {label}</span>)}
+    </span>
+  );
+}
+
 function SeriesTable({ list, multiSelect, selected, onToggleSelect, onSearch }: { list: SeriesT[]; multiSelect: boolean; selected: Set<number>; onToggleSelect: (id: number) => void; onSearch: (s: SeriesT) => void }) {
   const th = "px-2.5 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-[0.06em] text-ink-faint";
   const td = "px-2.5 py-2 align-middle";
+  // How each show's episode files fit its profile's ideal file — report only.
+  const [fits, setFits] = useState<Map<number, SeriesFitSummary>>(new Map());
+  useEffect(() => {
+    api.libraryFitSeries().then((r) => setFits(new Map((r.items ?? []).map((it) => [it.series_id, it])))).catch(() => {});
+  }, []);
   return (
     <div className="thin-scroll overflow-x-auto rounded-xl" style={{ border: "1px solid var(--line)" }}>
       <table className="w-full border-collapse text-[12px]" style={{ minWidth: "820px" }}>
@@ -406,6 +425,7 @@ function SeriesTable({ list, multiSelect, selected, onToggleSelect, onSearch }: 
             <th className={`${th} text-right`}>Episodes</th>
             <th className={`${th} text-right`}>Size</th>
             <th className={th}>Monitored</th>
+            <th className={th} title="How the episode files fit this show's profile's ideal file — open the show for each episode's reasons">Fit</th>
             <th className={th}></th>
           </tr>
         </thead>
@@ -431,6 +451,7 @@ function SeriesTable({ list, multiSelect, selected, onToggleSelect, onSearch }: 
                 <td className={`${td} text-right font-mono text-[11px]`}><span style={{ color: st.have_files >= st.episodes && st.episodes > 0 ? "var(--good)" : "var(--ink-dim)" }}>{st.have_files}/{st.episodes}</span></td>
                 <td className={`${td} text-right font-mono text-[11px] text-ink-dim`}>{gb(st.size_bytes)}</td>
                 <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: s.monitored ? "var(--accent)" : "var(--ink-faint)" }}>{s.monitored ? "Yes" : "No"}</span></td>
+                <td className={td}><SeriesFit f={fits.get(s.id)} /></td>
                 <td className={`${td} text-right`}>
                   <button onClick={() => onSearch(s)} title="Search your indexers — whole show or one season" className="whitespace-nowrap rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Search</button>
                 </td>

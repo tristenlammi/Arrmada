@@ -4,7 +4,8 @@ import { PageHeader } from "../components/PageHeader";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
-import { api, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile } from "../lib/api";
+import { FitBadge } from "../components/FitBadge";
+import { api, type FitItem, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile } from "../lib/api";
 
 // Auto-grab is fire-and-forget: the API answers 202 and searches in the background, and a
 // search that turns up nothing leaves no trace at all — which is exactly when you most need
@@ -74,6 +75,12 @@ export function SeriesDetail() {
   }, [sid]);
 
   useEffect(() => { load(); }, [load]);
+
+  // How each episode file fits the show's profile's ideal file — report only.
+  const [fits, setFits] = useState<Map<string, FitItem>>(new Map());
+  useEffect(() => {
+    api.libraryFitEpisodes(sid).then((r) => setFits(new Map((r.items ?? []).map((it) => [`${it.season}:${it.episode}`, it])))).catch(() => {});
+  }, [sid]);
 
   // While any episode is downloading, refresh so the progress ticks up.
   const anyDownloading = !!s?.seasons?.some((sn) => sn.episodes?.some((e) => e.download));
@@ -160,7 +167,7 @@ export function SeriesDetail() {
 
       <div className="mx-auto w-full max-w-[1200px] px-4 pb-10 sm:px-6">
         <div className="mt-2 flex flex-col gap-3">
-          {seasons.map((sn) => <SeasonBlock key={sn.id} series={s} season={sn} onChange={load} flash={flash} defaultOpen={false} />)}
+          {seasons.map((sn) => <SeasonBlock key={sn.id} series={s} season={sn} onChange={load} flash={flash} defaultOpen={false} fits={fits} />)}
         </div>
 
         <SeriesBlocklistPanel seriesId={s.id} refreshKey={s.seasons} />
@@ -288,7 +295,7 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
   );
 }
 
-function SeasonBlock({ series, season, onChange, flash, defaultOpen }: { series: SeriesT; season: Season; onChange: () => void; flash: (m: string) => void; defaultOpen: boolean }) {
+function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { series: SeriesT; season: Season; onChange: () => void; flash: (m: string) => void; defaultOpen: boolean; fits: Map<string, FitItem> }) {
   const [open, setOpen] = useState(defaultOpen);
   const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -371,7 +378,7 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen }: { series:
       </div>
       {open && total > 0 && (
         <div style={{ borderTop: "1px solid var(--line)" }}>
-          {eps.map((e) => <EpisodeRow key={e.id} series={series} ep={e} onChange={onChange} flash={flash} />)}
+          {eps.map((e) => <EpisodeRow key={e.id} series={series} ep={e} onChange={onChange} flash={flash} fit={fits.get(`${e.season_number}:${e.episode_number}`)} />)}
         </div>
       )}
       {searching && (
@@ -387,7 +394,7 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen }: { series:
   );
 }
 
-function EpisodeRow({ series, ep, onChange, flash }: { series: SeriesT; ep: Episode; onChange: () => void; flash: (m: string) => void }) {
+function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep: Episode; onChange: () => void; flash: (m: string) => void; fit?: FitItem }) {
   const [searching, setSearching] = useState(false);
   const [showFile, setShowFile] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -458,6 +465,12 @@ function EpisodeRow({ series, ep, onChange, flash }: { series: SeriesT; ep: Epis
       )}
       <span className="hidden w-[92px] flex-none font-mono text-[10.5px] text-ink-faint sm:block">{ep.air_date || "—"}</span>
       <span className="w-[80px] flex-none text-right font-mono text-[10px] uppercase" style={{ color: status.tone }}>{status.label}</span>
+      {ep.has_file && fit?.fit && (
+        <span className="hidden w-[76px] flex-none text-right sm:block">
+          <FitBadge item={fit} />
+          <span className="ml-1 font-mono text-[10px] text-ink-faint">{fit.facts.bitrate_mbps ? fit.facts.bitrate_mbps.toFixed(1) : ""}</span>
+        </span>
+      )}
       <div className="flex flex-none items-center gap-1">
         {ep.has_file ? (<>
           <button onClick={replaceEp} disabled={busy} title="Blocklist this release and grab a different one" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy ? "…" : "Replace"}</button>

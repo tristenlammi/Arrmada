@@ -4,6 +4,7 @@ import {
   api,
   type Evaluation,
   type FormatInfo,
+  type IdealFile,
   type QualityProfileInfo,
   type StoredProfile,
 } from "../lib/api";
@@ -508,6 +509,13 @@ function Builder({ formats, initial, onCancel, onSaved }: { formats: FormatInfo[
             )}
           </div>
 
+          {(sp.media_type === "movie" || sp.media_type === "series") && (
+            <>
+              <SectionLabel>Ideal file</SectionLabel>
+              <IdealEditor ideal={sp.ideal} resolutions={sp.allowed_resolutions} onChange={(ideal) => patch({ ideal })} />
+            </>
+          )}
+
           <div className="mt-4 flex items-center justify-between">
             <button onClick={() => setAdvanced((a) => !a)} className="text-[11.5px] font-semibold" style={{ color: "var(--accent)" }}>{advanced ? "Hide advanced" : "Advanced…"}</button>
           </div>
@@ -860,6 +868,72 @@ function CmpRow({ ev, skip, advanced }: { ev: Evaluation; skip?: boolean; advanc
       <span className="min-w-[108px] text-[12.5px] font-semibold">{r.resolution} {r.source}</span>
       <span className="min-w-[50px] font-mono text-[11.5px] text-ink-dim">{ev.candidate.size_gb.toFixed(1)} GB</span>
       <span className="ml-auto text-right text-[12px]" style={{ color: skip ? "var(--reject)" : "var(--ink-faint)" }}>{skip ? ev.reject_reason : advanced ? `score ${ev.total}` : (ev.matched && ev.matched.length ? ev.matched.join(", ") : "eligible")}</span>
+    </div>
+  );
+}
+
+// The ideal-file windows are per resolution, with 576p and 480p together as "SD" (that's how
+// files are labelled once analysed).
+const IDEAL_RES = [
+  { key: "2160p", label: "4K", from: ["2160p"] },
+  { key: "1080p", label: "1080p", from: ["1080p"] },
+  { key: "720p", label: "720p", from: ["720p"] },
+  { key: "SD", label: "SD", from: ["576p", "480p"] },
+];
+const IDEAL_CODECS = [{ v: "hevc", l: "HEVC (H.265)" }, { v: "av1", l: "AV1" }, { v: "h264", l: "H.264" }];
+const IDEAL_HDR = [{ v: "SDR", l: "SDR" }, { v: "HDR10", l: "HDR10" }, { v: "HDR10+", l: "HDR10+" }, { v: "HLG", l: "HLG" }, { v: "DV", l: "Dolby Vision" }];
+
+// IdealEditor sets what a file in the library should look like. Report only: files that
+// don't match are flagged in the Movies and TV tables; nothing is downloaded or changed.
+function IdealEditor({ ideal, resolutions, onChange }: { ideal?: IdealFile; resolutions: string[]; onChange: (i: IdealFile | undefined) => void }) {
+  const cur: IdealFile = ideal ?? {};
+  const set = (p: Partial<IdealFile>) => onChange({ ...cur, ...p });
+  const toggle = (list: string[] | undefined, v: string) => (list ?? []).includes(v) ? (list ?? []).filter((x) => x !== v) : [...(list ?? []), v];
+  const rows = IDEAL_RES.filter((r) => resolutions.length === 0 || r.from.some((f) => resolutions.includes(f)));
+  const setWindow = (key: string, part: "min" | "max", v: number) => {
+    const b = { ...(cur.bitrate ?? {}) };
+    const w = { min: b[key]?.min ?? 0, max: b[key]?.max ?? 0, [part]: Math.max(0, v || 0) };
+    if (!w.min && !w.max) delete b[key]; else b[key] = w;
+    set({ bitrate: b });
+  };
+  const chip = (on: boolean, label: string, click: () => void) => (
+    <button key={label} onClick={click} className="rounded-full px-2.5 py-1 text-[11.5px] font-semibold"
+      style={{ border: `1px solid ${on ? "var(--accent)" : "var(--line)"}`, background: on ? "var(--accent-soft)" : "var(--panel-2)", color: on ? "var(--accent)" : "var(--ink-dim)" }}>{label}</button>
+  );
+  const numIn = (value: number | undefined, onSet: (v: number) => void, label: string) => (
+    <input type="number" min={0} step={1} aria-label={label} value={value || ""} placeholder="any" onChange={(e) => onSet(Number(e.target.value))}
+      className="w-[64px] rounded-lg px-2 py-1 text-right font-mono text-[12.5px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+  );
+  return (
+    <div className="rounded-xl p-4" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+      <p className="mb-3 text-[10.5px] text-ink-faint">
+        What a file in your library should look like. The Movies and TV tables then show which files don't fit, and why.
+        This only reports — it never changes what's downloaded or converted. Leave a part empty to accept anything.
+      </p>
+      <div className="mb-1 text-[12px] font-semibold">Video codec</div>
+      <div className="mb-3 flex flex-wrap gap-1.5">{IDEAL_CODECS.map((c) => chip((cur.codecs ?? []).includes(c.v), c.l, () => set({ codecs: toggle(cur.codecs, c.v) })))}</div>
+      <div className="mb-1 text-[12px] font-semibold">HDR</div>
+      <div className="mb-1 flex flex-wrap gap-1.5">{IDEAL_HDR.map((h) => chip((cur.hdr ?? []).includes(h.v), h.l, () => set({ hdr: toggle(cur.hdr, h.v) })))}</div>
+      <p className="mb-3 text-[10.5px] text-ink-faint">A Dolby Vision file counts as the format underneath it (often HDR10, sometimes HDR10+) unless you pick Dolby Vision itself.</p>
+      <div className="mb-1 text-[12px] font-semibold">Audio</div>
+      <div className="mb-3 flex flex-wrap gap-1.5">
+        {chip(!!cur.atmos, "Dolby Atmos", () => set({ atmos: !cur.atmos }))}
+        {chip(!!cur.lossless, "Lossless (TrueHD, DTS-HD MA)", () => set({ lossless: !cur.lossless }))}
+      </div>
+      <div className="mb-1 text-[12px] font-semibold">Bitrate</div>
+      <p className="mb-2 text-[10.5px] text-ink-faint">The whole file's average, as the library table shows it. Over the ceiling shows red, under the floor orange.</p>
+      <div className="flex flex-col gap-1.5">
+        {rows.map((r) => (
+          <div key={r.key} className="flex items-center gap-2 text-[12px]">
+            <span className="w-[52px] font-mono text-ink-dim">{r.label}</span>
+            {numIn(cur.bitrate?.[r.key]?.min, (v) => setWindow(r.key, "min", v), `${r.label} minimum Mb/s`)}
+            <span className="text-ink-faint">to</span>
+            {numIn(cur.bitrate?.[r.key]?.max, (v) => setWindow(r.key, "max", v), `${r.label} maximum Mb/s`)}
+            <span className="text-[11px] text-ink-faint">Mb/s</span>
+          </div>
+        ))}
+      </div>
+      {ideal && <button onClick={() => onChange(undefined)} className="mt-3 text-[11.5px] font-semibold" style={{ color: "var(--ink-faint)" }}>Clear the ideal file</button>}
     </div>
   );
 }

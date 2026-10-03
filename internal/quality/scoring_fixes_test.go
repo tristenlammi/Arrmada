@@ -186,6 +186,8 @@ func testService(t *testing.T) (*Service, context.Context) {
 		max_source TEXT NOT NULL DEFAULT '',
 		upgrades_enabled INTEGER NOT NULL DEFAULT 1,
 		upgrade_min_percent REAL NOT NULL DEFAULT 0,
+		required_formats TEXT NOT NULL DEFAULT '[]',
+		ideal TEXT NOT NULL DEFAULT '',
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
 		t.Fatal(err)
 	}

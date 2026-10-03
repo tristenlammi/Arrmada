@@ -18,7 +18,7 @@ type probeCache struct{ db *sql.DB }
 // pipelines rely on. Bumped for DVProfile / Interlaced / VideoIndex / FrameRateRat —
 // without this, a DV profile 5 file with a stale cache entry could still reach the
 // encoder router looking like plain HDR.
-const probeSchemaVersion = 3 // 3: track titles/commentary/forced, Dolby Vision base layer
+const probeSchemaVersion = 4 // 3: track titles/commentary/forced, Dolby Vision base layer; 4: Atmos/lossless audio
 
 // cachedProbe wraps MediaInfo with the schema version it was probed under.
 type cachedProbe struct {
