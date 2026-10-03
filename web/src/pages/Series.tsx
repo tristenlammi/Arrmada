@@ -404,6 +404,28 @@ function SeriesFit({ f }: { f?: SeriesFitSummary }) {
   );
 }
 
+type SeriesSortKey = "title" | "status" | "network" | "seasons" | "episodes" | "size" | "monitored" | "fit";
+const SERIES_SORT_KEYS: SeriesSortKey[] = ["title", "status", "network", "seasons", "episodes", "size", "monitored", "fit"];
+// Counts read best biggest-first; everything else starts A→Z / best-first.
+const SERIES_DESC_FIRST = new Set<SeriesSortKey>(["seasons", "episodes", "size"]);
+
+// seriesSortValue is a comparable value per column (undefined = empty, always sorted last).
+function seriesSortValue(s: SeriesT, key: SeriesSortKey, fit?: SeriesFitSummary): number | string | undefined {
+  const st = statsOf(s);
+  switch (key) {
+    case "title": return s.title.toLowerCase();
+    case "status": return { Complete: 0, Partial: 1, Wanted: 2, Unmonitored: 3 }[statusOf(s).label] ?? 4;
+    case "network": return s.network ? s.network.toLowerCase() : undefined;
+    case "seasons": return st.seasons;
+    // How complete the show is, then how big: 151/163 sorts below 8/8.
+    case "episodes": return st.episodes > 0 ? st.have_files / st.episodes + st.episodes / 1e6 : undefined;
+    case "size": return st.size_bytes || undefined;
+    case "monitored": return s.monitored ? 0 : 1;
+    // Share of judged episodes that fit: ascending puts the worst shows first.
+    case "fit": return fit && fit.checked > 0 ? fit.fits / fit.checked : undefined;
+  }
+}
+
 function SeriesTable({ list, multiSelect, selected, onToggleSelect, onSearch }: { list: SeriesT[]; multiSelect: boolean; selected: Set<number>; onToggleSelect: (id: number) => void; onSearch: (s: SeriesT) => void }) {
   const th = "px-2.5 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-[0.06em] text-ink-faint";
   const td = "px-2.5 py-2 align-middle";
@@ -412,25 +434,57 @@ function SeriesTable({ list, multiSelect, selected, onToggleSelect, onSearch }: 
   useEffect(() => {
     api.libraryFitSeries().then((r) => setFits(new Map((r.items ?? []).map((it) => [it.series_id, it])))).catch(() => {});
   }, []);
+
+  // Sorting, remembered like the grid/table choice ("size:desc").
+  const [sortPref, setSortPref] = usePersisted<string>("series.table.sort", "title:asc");
+  const [rawKey, rawDir] = sortPref.split(":");
+  const sortKey: SeriesSortKey = (SERIES_SORT_KEYS as string[]).includes(rawKey) ? (rawKey as SeriesSortKey) : "title";
+  const sortDir = rawDir === "desc" ? "desc" : "asc";
+  const onSort = (k: SeriesSortKey) =>
+    setSortPref(k === sortKey ? `${k}:${sortDir === "asc" ? "desc" : "asc"}` : `${k}:${SERIES_DESC_FIRST.has(k) ? "desc" : "asc"}`);
+  const sorted = useMemo(() => {
+    const arr = [...list];
+    arr.sort((a, b) => {
+      const av = seriesSortValue(a, sortKey, fits.get(a.id)), bv = seriesSortValue(b, sortKey, fits.get(b.id));
+      if (av === undefined && bv === undefined) return a.title.localeCompare(b.title);
+      if (av === undefined) return 1; // empties always last
+      if (bv === undefined) return -1;
+      const r = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
+      if (r === 0) return a.title.localeCompare(b.title);
+      return sortDir === "asc" ? r : -r;
+    });
+    return arr;
+  }, [list, sortKey, sortDir, fits]);
+  const Th = ({ label, k, align, title }: { label: string; k: SeriesSortKey; align?: "right"; title?: string }) => {
+    const active = sortKey === k;
+    return (
+      <th className={`${th}${align === "right" ? " text-right" : ""}`} title={title} aria-sort={active ? (sortDir === "asc" ? "ascending" : "descending") : undefined}>
+        <button onClick={() => onSort(k)} className={`inline-flex items-center gap-1 hover:text-[var(--ink)] ${align === "right" ? "flex-row-reverse" : ""}`} style={{ color: active ? "var(--accent)" : undefined }}>
+          {label}
+          <span className="text-[8px]" style={{ opacity: active ? 1 : 0.3 }}>{active ? (sortDir === "asc" ? "▲" : "▼") : "▲"}</span>
+        </button>
+      </th>
+    );
+  };
   return (
     <div className="thin-scroll overflow-x-auto rounded-xl" style={{ border: "1px solid var(--line)" }}>
       <table className="w-full border-collapse text-[12px]" style={{ minWidth: "820px" }}>
         <thead>
           <tr style={{ background: "var(--panel)", borderBottom: "1px solid var(--line)" }}>
             {multiSelect && <th className={th}></th>}
-            <th className={th}>Title</th>
-            <th className={th}>Status</th>
-            <th className={th}>Network</th>
-            <th className={`${th} text-right`}>Seasons</th>
-            <th className={`${th} text-right`}>Episodes</th>
-            <th className={`${th} text-right`}>Size</th>
-            <th className={th}>Monitored</th>
-            <th className={th} title="How the episode files fit this show's profile's ideal file — open the show for each episode's reasons">Fit</th>
+            <Th label="Title" k="title" />
+            <Th label="Status" k="status" />
+            <Th label="Network" k="network" />
+            <Th label="Seasons" k="seasons" align="right" />
+            <Th label="Episodes" k="episodes" align="right" />
+            <Th label="Size" k="size" align="right" />
+            <Th label="Monitored" k="monitored" />
+            <Th label="Fit" k="fit" title="How the episode files fit this show's profile — sort ascending for the worst first; open a show for each episode's reasons" />
             <th className={th}></th>
           </tr>
         </thead>
         <tbody>
-          {list.map((s) => {
+          {sorted.map((s) => {
             const st = statsOf(s);
             const status = statusOf(s);
             return (
