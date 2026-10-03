@@ -50,6 +50,9 @@ func (r *Repo) scan(row interface{ Scan(...any) error }) (StoredProfile, error) 
 	if sp.FormatScores == nil {
 		sp.FormatScores = map[string]int{}
 	}
+	// A profile written before targets existed is read as one (see Migrate), so the
+	// builder, the library check and the engine all see the same thing.
+	sp.Migrate()
 	return sp, nil
 }
 

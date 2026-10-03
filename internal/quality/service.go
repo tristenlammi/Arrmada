@@ -128,6 +128,11 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 	if err != nil || !sp.UpgradesEnabled || strings.TrimSpace(currentRelease) == "" {
 		return Candidate{}, false
 	}
+	// The file already is the profile's target — "upgrade until it fits" stops here, even
+	// if some release would technically score higher.
+	if sp.TargetMet(ReleaseFacts(parser.Parse(currentRelease), BitrateMbps(currentSizeGB, runtimeMin))) {
+		return Candidate{}, false
+	}
 	p, e := s.Resolve(ctx, ref)
 	curCand := NewCandidate(currentRelease, currentSizeGB, 1_000_000)
 	cur := e.Evaluate(p, curCand)
@@ -330,17 +335,23 @@ func (s *Service) AtCeiling(ctx context.Context, ref, currentRelease string, siz
 	if err != nil {
 		return false
 	}
+	cur := parser.Parse(currentRelease)
+	// The file already is the profile's target: the search is over, whatever else might
+	// technically still score higher. This is "upgrade until it fits".
+	if sp.TargetMet(ReleaseFacts(cur, BitrateMbps(sizeGB, runtimeMin))) {
+		return true
+	}
+	p, _ := s.Resolve(ctx, ref)
+	limit := p.capFor(cur.Resolution)
 	// No cap is no ceiling, and with no percentage step there's no bitrate upgrade path to
 	// exhaust in the first place — in both cases only a quality gain can win, and that
 	// can't be ruled out here.
-	if sp.BitrateCapMbps <= 0 || sp.UpgradeMinPercent <= 0 {
+	if limit <= 0 || sp.UpgradeMinPercent <= 0 {
 		return false
 	}
 	if runtimeMin <= 0 || sizeGB <= 0 {
 		return false // can't express the file as a bitrate — don't guess
 	}
-	p, _ := s.Resolve(ctx, ref)
-	cur := parser.Parse(currentRelease)
 	// A resolution the profile allows and we don't have is still an upgrade, whatever the
 	// bitrate says.
 	best := 0
@@ -366,7 +377,7 @@ func (s *Service) AtCeiling(ctx context.Context, ref, currentRelease string, siz
 	if floor := curBr + MinUpgradeMarginMbps; floor > needed {
 		needed = floor
 	}
-	return needed > sp.BitrateCapMbps
+	return needed > limit
 }
 
 // Create, Update, Delete manage user profiles.
@@ -380,11 +391,19 @@ func (s *Service) Update(ctx context.Context, id int64, sp StoredProfile) error 
 	return s.repo.Update(ctx, id, sp)
 }
 
+// DecideSpec runs the engine for a profile that may not be saved yet — the builder's "test
+// on a real title" uses it with your unsaved edits.
+func (s *Service) DecideSpec(sp StoredProfile, cands []Candidate) Decision {
+	normalize(&sp)
+	return sp.Engine().Decide(sp.ToProfile(), cands)
+}
+
 func (s *Service) Delete(ctx context.Context, id int64) error { return s.repo.Delete(ctx, id) }
 
 // Preview scores a (possibly unsaved) profile over the built-in sample set — the
 // live feedback behind the builder.
 func (s *Service) Preview(sp StoredProfile) Decision {
+	normalize(&sp) // an edited target takes effect in the preview before it's saved
 	return sp.Engine().Decide(sp.ToProfile(), SampleCandidates())
 }
 
@@ -394,6 +413,16 @@ func normalize(sp *StoredProfile) {
 	}
 	if sp.FormatScores == nil {
 		sp.FormatScores = map[string]int{}
+	}
+	// A video profile's target is the source of truth for the formats it covers and for
+	// the bitrate ceiling: write it into what the engine reads. A profile sent with no
+	// target at all (rather than an empty one, which is how the builder clears it) is
+	// read as one first, so a caller that only knows scores keeps them.
+	if sp.MediaType == MediaMovie || sp.MediaType == MediaSeries {
+		if sp.Ideal == nil {
+			sp.Migrate()
+		}
+		sp.Compile()
 	}
 }
 

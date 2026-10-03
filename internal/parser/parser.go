@@ -711,6 +711,8 @@ func detectHDR(lc string) []string {
 		out = append(out, "HDR10+", "HDR10")
 	case strings.Contains(lc, "hdr10") || strings.Contains(lc, " hdr "):
 		out = append(out, "HDR10")
+	case contains(lc, "hlg"):
+		out = append(out, "HLG")
 	}
 	return out
 }

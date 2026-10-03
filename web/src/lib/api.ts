@@ -109,6 +109,8 @@ export interface Evaluation {
   size_score: number;
   total: number;
   matched?: string[];
+  avoided?: boolean; // ranked in the lower tier (an avoided format, or under the bitrate floor)
+  avoided_formats?: string[];
 }
 
 export interface Decision {
@@ -207,6 +209,7 @@ export interface FormatInfo {
   name: string;
   description: string;
   group: string; // hdr | audio | codec
+  target?: boolean; // set through the target file; the rest are advanced scores
 }
 
 export interface QualityCondition {
@@ -240,17 +243,20 @@ export interface StoredProfile {
   stall_minutes: number;
   upgrades_enabled: boolean;
   upgrade_min_percent: number;
-  ideal?: IdealFile; // the file this profile aims for — flags library files that don't fit (report only)
+  ideal?: IdealFile; // the target file: drives grabbing, ranking and the library fit check
 }
 
-// IdealFile mirrors quality.IdealFile: every part optional, empty = anything goes.
+// TargetPref is one option's state in the target file. "" = no opinion.
+export type TargetPref = "" | "ok" | "want" | "must" | "avoid";
+// IdealFile mirrors quality.IdealFile: every part optional.
 export interface IdealFile {
-  codecs?: string[]; // "hevc" | "av1" | "h264"
-  hdr?: string[]; // "SDR" | "HDR10" | "HDR10+" | "HLG" | "DV"
-  atmos?: boolean;
-  lossless?: boolean;
+  codec?: Record<string, TargetPref>; // "hevc" | "av1" | "h264"
+  hdr?: Record<string, TargetPref>; // "SDR" | "HDR10" | "HDR10+" | "HLG" | "DV"
+  audio?: Record<string, TargetPref>; // "atmos" | "lossless"
   bitrate?: Record<string, { min: number; max: number }>; // per "2160p" | "1080p" | "720p" | "SD", Mb/s
 }
+export interface FitCounts { titles: number; files: number; fits: number; over: number; under: number; mismatch: number }
+export interface MusicPreset { name: string; description: string; format_scores: Record<string, number>; min_format_score: number; upgrades_enabled: boolean }
 export interface FileFacts { resolution: string; codec: string; hdr: string; dolby_vision?: boolean; atmos?: boolean; lossless?: boolean; bitrate_mbps: number }
 export type FitStatus = "fits" | "over" | "under" | "mismatch";
 export interface FileFit { status: FitStatus; window?: { min: number; max: number }; issues?: { kind: string; msg: string }[] }
@@ -1077,7 +1083,12 @@ export const api = {
   setClientSettings: (id: number, body: ClientSettings) =>
     req<{ status: string }>(`/api/v1/downloadclients/${id}/settings`, { method: "PUT", body: JSON.stringify(body) }),
   qualityProfiles: (media: string) =>
-    req<{ profiles: QualityProfileInfo[]; formats: FormatInfo[] }>(`/api/v1/quality/profiles?media=${media}`),
+    req<{ profiles: QualityProfileInfo[]; formats: FormatInfo[]; music_ladder?: string[]; music_presets?: MusicPreset[] }>(`/api/v1/quality/profiles?media=${media}`),
+  libraryFitProfiles: (media: string) => req<{ profiles: Record<string, FitCounts> }>(`/api/v1/library/fit/profiles?media=${media}`),
+  libraryFitPreview: (profile: StoredProfile) =>
+    req<{ scope: "profile" | "library"; counts: FitCounts }>("/api/v1/library/fit/preview", { method: "POST", body: JSON.stringify({ profile }) }),
+  qualityTest: (body: { profile: StoredProfile; movie_id?: number; series_id?: number; season?: number }) =>
+    req<ReleaseList>("/api/v1/quality/test", { method: "POST", body: JSON.stringify(body) }),
   setDefaultProfile: (media: string, profile: string) =>
     req<{ media: string; profile: string }>("/api/v1/quality/default", { method: "POST", body: JSON.stringify({ media, profile }) }),
   libraryFitMovies: () => req<{ items: FitItem[] }>("/api/v1/library/fit?media=movies"),

@@ -414,6 +414,14 @@ func bitrateMbps(sizeGB float64, runtimeMin int) float64 {
 // and Atmos, so a manual search recommended a Dolby Vision release even to someone who set
 // DV to Avoid. Their default profile is the right preference to apply; only when they have
 // no profiles at all does the generic fallback remain.
+// decideWith decides under spec when it's set, else under the profile reference.
+func (c *Coordinator) decideWith(ctx context.Context, ref string, spec *quality.StoredProfile, cands []quality.Candidate) quality.Decision {
+	if spec != nil {
+		return c.quality.DecideSpec(*spec, cands)
+	}
+	return c.quality.Decide(ctx, ref, cands)
+}
+
 func (c *Coordinator) effectiveProfile(ctx context.Context, profile, mediaType string) string {
 	if profile != "n/a" && c.quality.Known(ctx, profile) {
 		return profile // a real profile of its own — honour it
@@ -425,6 +433,12 @@ func (c *Coordinator) effectiveProfile(ctx context.Context, profile, mediaType s
 }
 
 func (c *Coordinator) RankReleases(ctx context.Context, id int64) (ReleaseList, error) {
+	return c.RankReleasesWith(ctx, id, nil)
+}
+
+// RankReleasesWith ranks a movie's releases under spec instead of the movie's own profile
+// when spec is set — the quality builder's "test on a real title", run with unsaved edits.
+func (c *Coordinator) RankReleasesWith(ctx context.Context, id int64, spec *quality.StoredProfile) (ReleaseList, error) {
 	m, err := c.movies.Get(ctx, id)
 	if err != nil {
 		return ReleaseList{}, err
@@ -448,7 +462,7 @@ func (c *Coordinator) RankReleases(ctx context.Context, id int64) (ReleaseList, 
 		cands = append(cands, quality.NewCandidate(rel.Title, rel.SizeGB(), rel.Seeders))
 	}
 	profile := c.effectiveProfile(ctx, m.QualityProfile, "movie")
-	decision := c.quality.Decide(ctx, profile, tagRuntime(cands, m.Runtime))
+	decision := c.decideWith(ctx, profile, spec, tagRuntime(cands, m.Runtime))
 	blocked := c.blockedSet(ctx, m.ID)
 
 	winnerName := ""

@@ -38,16 +38,38 @@ type profileIdeals struct {
 	q     *quality.Service
 	def   string
 	cache map[string]*quality.StoredProfile
+	known map[string]bool
 }
 
 func newProfileIdeals(ctx context.Context, q *quality.Service, media string) *profileIdeals {
 	return &profileIdeals{q: q, def: q.DefaultProfile(ctx, media), cache: map[string]*quality.StoredProfile{}}
 }
 
-func (p *profileIdeals) get(ctx context.Context, ref string) *quality.StoredProfile {
-	if ref == "" {
-		ref = p.def
+// resolve is the profile a title actually runs under: its own, or — when it has none, or
+// one that's been deleted — the default, the same way acquisition resolves it.
+func (p *profileIdeals) resolve(ctx context.Context, ref string) string {
+	if ref == "" || ref == "n/a" {
+		return p.def
 	}
+	if known, ok := p.known[ref]; ok {
+		if known {
+			return ref
+		}
+		return p.def
+	}
+	known := p.q.Known(ctx, ref)
+	if p.known == nil {
+		p.known = map[string]bool{}
+	}
+	p.known[ref] = known
+	if known {
+		return ref
+	}
+	return p.def
+}
+
+func (p *profileIdeals) get(ctx context.Context, ref string) *quality.StoredProfile {
+	ref = p.resolve(ctx, ref)
 	if sp, ok := p.cache[ref]; ok {
 		return sp
 	}
@@ -59,8 +81,11 @@ func (p *profileIdeals) get(ctx context.Context, ref string) *quality.StoredProf
 	return out
 }
 
+// convertFacts is what the target judges in an analysed file.
+func convertFacts(mi *convert.MediaInfo) quality.FileFacts { return convert.Facts(mi) }
+
 func judge(ctx context.Context, ideals *profileIdeals, ref string, mi *convert.MediaInfo) fitItem {
-	it := fitItem{Facts: convert.Facts(mi)}
+	it := fitItem{Facts: convertFacts(mi)}
 	if sp := ideals.get(ctx, ref); sp != nil {
 		fit := quality.CheckFit(*sp.Ideal, sp.AllowedResolutions, it.Facts)
 		it.Fit, it.Profile = &fit, sp.Name

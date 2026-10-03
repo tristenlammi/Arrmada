@@ -176,6 +176,7 @@ func New(d Deps) *http.Server {
 	// Quality profiles + custom-format builder
 	mux.HandleFunc("GET "+base+"/api/v1/quality/preview", a.protected(a.handleQualityPreview))
 	mux.HandleFunc("POST "+base+"/api/v1/quality/preview", a.protected(a.handleQualityPreview))
+	mux.HandleFunc("POST "+base+"/api/v1/quality/test", a.requireRole(auth.RoleManager, a.handleQualityTest))
 	mux.HandleFunc("GET "+base+"/api/v1/quality/profiles", a.protected(a.handleListQualityProfiles))
 	mux.HandleFunc("POST "+base+"/api/v1/quality/profiles", a.requireRole(auth.RoleManager, a.handleCreateQualityProfile))
 	mux.HandleFunc("POST "+base+"/api/v1/quality/default", a.requireRole(auth.RoleManager, a.handleSetDefaultProfile))
@@ -239,6 +240,8 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/movies", a.protected(a.handleListMovies))
 	// How each library file fits its profile's ideal file (report-only; from the Convert index).
 	mux.HandleFunc("GET "+base+"/api/v1/library/fit", a.protected(a.handleLibraryFit))
+	mux.HandleFunc("GET "+base+"/api/v1/library/fit/profiles", a.protected(a.handleLibraryFitProfiles))
+	mux.HandleFunc("POST "+base+"/api/v1/library/fit/preview", a.protected(a.handleLibraryFitPreview))
 	mux.HandleFunc("GET "+base+"/api/v1/movies/lookup", a.protected(a.handleLookupMovies))
 	mux.HandleFunc("POST "+base+"/api/v1/movies/scan", a.requireRole(auth.RoleManager, a.handleScanLibrary))
 	mux.HandleFunc("GET "+base+"/api/v1/movies/unmatched", a.requireRole(auth.RoleManager, a.handleMovieUnmatched))

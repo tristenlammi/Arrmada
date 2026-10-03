@@ -110,26 +110,39 @@ type Condition struct {
 	Negate bool          `json:"negate,omitempty"`
 }
 
+// matches tests one condition. A Value may list alternatives ("TrueHD|DTS-HD|FLAC"), any
+// of which matches; dynamic range "SDR" matches a release with no HDR tag at all.
 func (c Condition) matches(r parser.Release) bool {
-	var hit bool
-	switch c.Type {
-	case CondDynamicRange:
-		hit = containsStr(r.HDR, c.Value)
-	case CondAudio:
-		hit = containsStr(r.Audio, c.Value)
-	case CondCodec:
-		hit = string(r.Codec) == c.Value
-	case CondSource:
-		hit = string(r.Source) == c.Value
-	case CondResolution:
-		hit = string(r.Resolution) == c.Value
-	case CondEdition:
-		hit = strings.EqualFold(r.Edition, c.Value)
-	case CondReleaseGroup:
-		hit = strings.EqualFold(r.Group, c.Value)
+	hit := false
+	for _, v := range strings.Split(c.Value, "|") {
+		if c.matchOne(r, v) {
+			hit = true
+			break
+		}
 	}
 	if c.Negate {
 		return !hit
+	}
+	return hit
+}
+
+func (c Condition) matchOne(r parser.Release, v string) bool {
+	var hit bool
+	switch c.Type {
+	case CondDynamicRange:
+		hit = containsStr(r.HDR, v) || (v == "SDR" && len(r.HDR) == 0)
+	case CondAudio:
+		hit = containsStr(r.Audio, v)
+	case CondCodec:
+		hit = string(r.Codec) == v
+	case CondSource:
+		hit = string(r.Source) == v
+	case CondResolution:
+		hit = string(r.Resolution) == v
+	case CondEdition:
+		hit = strings.EqualFold(r.Edition, v)
+	case CondReleaseGroup:
+		hit = strings.EqualFold(r.Group, v)
 	}
 	return hit
 }
@@ -150,6 +163,52 @@ func (f CustomFormat) Matches(r parser.Release) bool {
 	return len(f.Conditions) > 0
 }
 
+// capFor is the bitrate ceiling for a resolution: its window's, else the profile-wide one.
+func (p Profile) capFor(res parser.Resolution) float64 {
+	if w, ok := p.Windows[ResolutionKey(res)]; ok && w.Max > 0 {
+		return w.Max
+	}
+	return p.BitrateCapMbps
+}
+
+// missingRequired returns a required format the release lacks ("" when it has them all).
+// Required formats that are alternatives of one another (two codecs, two HDR formats)
+// need only one of them: requiring HEVC and AV1 means "either", not "both".
+func (e *Engine) missingRequired(required []string, r parser.Release) string {
+	groups := map[string][]string{}
+	var order []string
+	for _, name := range required {
+		f, ok := e.formats[name]
+		if !ok {
+			continue
+		}
+		g := anyOfGroup(name)
+		if g == "" {
+			if !f.Matches(r) {
+				return name
+			}
+			continue
+		}
+		if _, seen := groups[g]; !seen {
+			order = append(order, g)
+		}
+		groups[g] = append(groups[g], name)
+	}
+	for _, g := range order {
+		hit := false
+		for _, name := range groups[g] {
+			if e.formats[name].Matches(r) {
+				hit = true
+				break
+			}
+		}
+		if !hit {
+			return strings.Join(groups[g], " or ")
+		}
+	}
+	return ""
+}
+
 // --- Profile & candidates -------------------------------------------------
 
 // Profile expresses "what a good release looks like".
@@ -159,8 +218,12 @@ type Profile struct {
 	MinSource          parser.Source       `json:"min_source,omitempty"`
 	MaxSource          parser.Source       `json:"max_source,omitempty"`       // empty = no upper bound
 	BitrateCapMbps     float64             `json:"bitrate_cap_mbps,omitempty"` // 0 = no cap; rejects releases whose bitrate exceeds it (length-independent)
-	SmallBias          float64             `json:"small_bias,omitempty"`       // score penalty per GB; any value > 0 also breaks score ties toward the smaller file (0 = ties go to the larger, i.e. higher-bitrate, file)
-	FormatScores       map[string]int      `json:"format_scores,omitempty"`
+	// Windows are the target's bitrate windows by resolution key (ResolutionKey). A
+	// window's ceiling replaces BitrateCapMbps for its resolution; falling under its floor
+	// puts a release in the avoided tier.
+	Windows      map[string]BitrateWindow `json:"windows,omitempty"`
+	SmallBias    float64                  `json:"small_bias,omitempty"` // score penalty per GB; any value > 0 also breaks score ties toward the smaller file (0 = ties go to the larger, i.e. higher-bitrate, file)
+	FormatScores map[string]int           `json:"format_scores,omitempty"`
 	// Required names formats a release must carry to be eligible at all — "Atmos"
 	// here rejects everything without an Atmos track, where a score only prefers it.
 	Required       []string  `json:"required_formats,omitempty"`
@@ -304,13 +367,13 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 	}
 	// Bitrate ceiling (length-independent). Only applies when we know the runtime; without it
 	// we can't turn a file size into a bitrate, so the cap is skipped rather than guessed.
-	if p.BitrateCapMbps > 0 {
+	if limit := p.capFor(r.Resolution); limit > 0 {
 		// The raw number, in the units the user typed. A ceiling is set to bound file
 		// size or streaming bandwidth, and for that a bit is a bit; judging it in
 		// H.264-equivalent terms threw out 25 Mbps HEVC releases as "over 40". The codec
 		// equivalence stays where it belongs, in deciding what counts as an upgrade.
-		if br := c.bitrateMbps(); br > p.BitrateCapMbps {
-			ev.RejectReason = fmt.Sprintf("Over your %.0f Mbps ceiling (%.1f Mbps)", p.BitrateCapMbps, br)
+		if br := c.bitrateMbps(); br > limit {
+			ev.RejectReason = fmt.Sprintf("Over your %.0f Mbps ceiling (%.1f Mbps)", limit, br)
 			return ev
 		}
 	}
@@ -326,11 +389,9 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 		}
 	}
 
-	for _, name := range p.Required {
-		if f, ok := e.formats[name]; ok && !f.Matches(r) {
-			ev.RejectReason = "No " + name + " — your profile requires it"
-			return ev
-		}
+	if missing := e.missingRequired(p.Required, r); missing != "" {
+		ev.RejectReason = "No " + missing + " — your profile requires it"
+		return ev
 	}
 
 	ev.QualityScore = qualityScore(r)
@@ -369,12 +430,23 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 	// A required format that carries no score still counts as matched, so the
 	// recommendation can say the release has it.
 	for _, name := range p.Required {
-		if _, ok := e.formats[name]; ok && !containsStr(ev.Matched, name) {
+		// Only the ones the release has: of "HEVC or AV1", it carries one.
+		if f, ok := e.formats[name]; ok && f.Matches(r) && !containsStr(ev.Matched, name) {
 			ev.Matched = append(ev.Matched, name)
 		}
 	}
 	sort.Strings(ev.Matched) // stable output
 	sort.Strings(ev.AvoidedFormats)
+
+	// Under the resolution's bitrate floor: a starved encode. Still grabbable, but in the
+	// avoided tier — anything comfortably inside the window is picked first.
+	if w, ok := p.Windows[ResolutionKey(r.Resolution)]; ok && w.Min > 0 {
+		if br := c.bitrateMbps(); br > 0 && br < w.Min {
+			ev.Avoided = true
+			// Read as "it has <this>, which you avoid" in the decision's explanation.
+			ev.AvoidedFormats = append(ev.AvoidedFormats, fmt.Sprintf("a bitrate under your %.0f Mbps floor", w.Min))
+		}
+	}
 
 	if ev.FormatScore < p.MinFormatScore {
 		ev.RejectReason = "Below the profile's minimum format score"
@@ -532,8 +604,8 @@ func whyReasons(p Profile, e Evaluation) []string {
 		out = append(out, "Smallest watchable size")
 	case p.SmallBias > 0:
 		out = append(out, "Best quality for the size")
-	case p.BitrateCapMbps > 0:
-		out = append(out, fmt.Sprintf("Highest bitrate under your %.0f Mbps ceiling", p.BitrateCapMbps))
+	case p.capFor(r.Resolution) > 0:
+		out = append(out, fmt.Sprintf("Highest bitrate under your %.0f Mbps ceiling", p.capFor(r.Resolution)))
 	default:
 		out = append(out, "Highest bitrate available")
 	}

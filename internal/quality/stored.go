@@ -44,9 +44,9 @@ type StoredProfile struct {
 	// A percentage rather than Mbps because it means the same thing at every resolution:
 	// "2 Mbps better" more than doubles a 480p file and is noise on a 2160p one.
 	UpgradeMinPercent float64 `json:"upgrade_min_percent"`
-	// Ideal describes the file this profile is aiming for, so the library can show which
-	// files don't fit it (see ideal.go). Report only — it never changes what's downloaded.
-	// nil = not set up.
+	// Ideal is the profile's target file (ideal.go): what's grabbed, how releases rank and
+	// what the library check judges against. nil = not set up. On save, a missing target
+	// is read from the scores, while an empty one clears it.
 	Ideal *IdealFile `json:"ideal,omitempty"`
 }
 
@@ -97,6 +97,7 @@ func (sp StoredProfile) ToProfile() Profile {
 		MinSource:          parser.Source(sp.MinSource),
 		MaxSource:          parser.Source(sp.MaxSource),
 		BitrateCapMbps:     sp.BitrateCapMbps,
+		Windows:            sp.windows(),
 		SmallBias:          sp.SmallBias,
 		FormatScores:       sp.FormatScores,
 		Required:           sp.RequiredFormats,
@@ -105,6 +106,14 @@ func (sp StoredProfile) ToProfile() Profile {
 		Rejected:           sp.Rejected,
 		MinSeeders:         sp.MinSeeders,
 	}
+}
+
+// windows is the target's bitrate windows, for the engine.
+func (sp StoredProfile) windows() map[string]BitrateWindow {
+	if sp.Ideal == nil {
+		return nil
+	}
+	return sp.Ideal.Bitrate
 }
 
 // Engine builds an engine that knows both the built-in formats and this
@@ -137,6 +146,11 @@ func (sp StoredProfile) Summary() string {
 	case sp.MaxSource != "":
 		parts = append(parts, "up to "+string(sp.MaxSource))
 	}
+	if sp.Ideal != nil {
+		// The target says it all, in the order it's set up.
+		parts = append(parts, sp.Ideal.summary(sp.AllowedResolutions)...)
+		return strings.Join(parts, " · ")
+	}
 	if sp.BitrateCapMbps > 0 {
 		parts = append(parts, fmt.Sprintf("≤%.0f Mbps", sp.BitrateCapMbps))
 	}
@@ -149,6 +163,7 @@ func (sp StoredProfile) Summary() string {
 			prefs = append(prefs, name)
 		}
 	}
+	sort.Strings(prefs)
 	if len(prefs) > 0 {
 		parts = append(parts, "prefers "+strings.Join(prefs, ", "))
 	}
@@ -198,22 +213,48 @@ type FormatInfo struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Group       string `json:"group"` // hdr | audio | codec
+	// Target marks a format the target file sets (ideal.go); the builder shows the rest
+	// among the advanced scores.
+	Target bool `json:"target,omitempty"`
+}
+
+// formatMeta describes the built-in formats.
+var formatMeta = map[string]struct{ desc, group string }{
+	"Dolby Vision": {"Dynamic HDR — the premium colour format", "hdr"},
+	"HDR10+":       {"HDR10 with dynamic metadata", "hdr"},
+	"HDR10":        {"Standard high dynamic range (also matches HDR10+)", "hdr"},
+	"HLG":          {"Broadcast HDR", "hdr"},
+	"SDR":          {"No HDR", "hdr"},
+	"Atmos":        {"Object-based surround audio", "audio"},
+	"Lossless":     {"TrueHD, DTS-HD MA or FLAC", "audio"},
+	"TrueHD":       {"Lossless surround audio", "audio"},
+	"DTS-HD":       {"Lossless DTS audio", "audio"},
+	"HEVC":         {"x265 — smaller files, same quality", "codec"},
+	"AV1":          {"The most efficient codec — needs newer players", "codec"},
+	"H.264":        {"x264 — plays everywhere, biggest files", "codec"},
+}
+
+// anyOfGroup is the group a built-in format is an alternative within — a release is
+// exactly one codec and (bar a Dolby Vision hybrid) one HDR format, so requiring two of a
+// group means "either". "" for formats that are features (Atmos) or custom formats.
+func anyOfGroup(name string) string {
+	switch g := formatMeta[name].group; g {
+	case "codec", "hdr":
+		return g
+	}
+	return ""
 }
 
 // Catalog returns the built-in formats with friendly descriptions + groups.
 func Catalog() []FormatInfo {
-	meta := map[string]struct{ desc, group string }{
-		"Dolby Vision": {"Dynamic HDR — the premium colour format", "hdr"},
-		"HDR10":        {"Standard high dynamic range (also matches HDR10+)", "hdr"},
-		"Atmos":        {"Object-based surround audio", "audio"},
-		"TrueHD":       {"Lossless surround audio", "audio"},
-		"DTS-HD":       {"Lossless DTS audio", "audio"},
-		"HEVC":         {"x265 — smaller files, same quality", "codec"},
+	inTarget := map[string]bool{}
+	for _, tf := range targetFormats {
+		inTarget[tf.format] = true
 	}
 	var out []FormatInfo
 	for _, f := range DefaultFormats() {
-		m := meta[f.Name]
-		out = append(out, FormatInfo{Name: f.Name, Description: m.desc, Group: m.group})
+		m := formatMeta[f.Name]
+		out = append(out, FormatInfo{Name: f.Name, Description: m.desc, Group: m.group, Target: inTarget[f.Name]})
 	}
 	return out
 }

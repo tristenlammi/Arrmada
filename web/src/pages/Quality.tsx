@@ -1,13 +1,25 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import {
   api,
   type Evaluation,
+  type FitCounts,
   type FormatInfo,
   type IdealFile,
+  type Movie,
+  type MusicPreset,
   type QualityProfileInfo,
+  type ReleaseList,
+  type Series,
   type StoredProfile,
+  type TargetPref,
 } from "../lib/api";
+
+// Quality profiles. A video profile is built around its TARGET FILE — the codec, HDR, audio
+// and bitrate window you want — which decides what's grabbed, how releases rank, and how the
+// library's files are judged. Sources, rules and upgrades sit underneath it; raw scores and
+// custom formats live in Advanced. Books and music have their own, simpler builders.
 
 const MEDIA_TABS = [
   { key: "movie", label: "Movies" },
@@ -23,6 +35,7 @@ const RESOLUTIONS = [
   { v: "576p", l: "576p" },
   { v: "480p", l: "480p" },
 ];
+const RES_RANK: Record<string, number> = { "2160p": 5, "1080p": 4, "720p": 3, "576p": 2, "480p": 1 };
 
 const SOURCES = [
   { v: "", l: "Any source" },
@@ -53,6 +66,86 @@ const CONDITION_TYPES = [
   { v: "release_group", l: "Release group" },
 ];
 
+// Common junk file-types / sources worth one-click rejecting.
+const REJECT_TYPES = ["CAM", "TS", "XviD", "AVI", "WMV", "3D", "HDCAM", "R5"];
+// Executable/script extensions — pre-rejected on new profiles for safety.
+const EXECUTABLE_TYPES = ["exe", "bat", "cmd", "scr", "msi", "com", "vbs", "ps1"];
+
+// Book file formats, grouped by edition — the score-able formats in a book profile.
+const BOOK_FORMATS: { group: string; formats: string[] }[] = [
+  { group: "Ebook", formats: ["EPUB", "AZW3", "MOBI", "AZW", "PDF", "CBZ", "CBR", "FB2"] },
+  { group: "Audiobook", formats: ["M4B", "MP3", "M4A", "FLAC", "AAC", "OGG", "OPUS"] },
+];
+
+// How much better a release must be before it's worth replacing a same-resolution file.
+// Expressed as a percentage, not Mbps: "2 Mbps better" more than doubles a 480p file and
+// is noise on a 2160p one. 20% is the server's floor (quality.MinUpgradePercent), so the
+// options start above it and the UI never promises something the server overrides.
+const UPGRADE_STEPS = [
+  { percent: 0, label: "Off", detail: "Size is ignored. A file is only replaced by a better resolution or a format you want." },
+  { percent: 25, label: "Noticeably better", detail: "A 2.0 GB episode is replaced at about 2.5 GB. Swaps a thin, heavily-compressed encode for a normal one." },
+  { percent: 50, label: "Clearly better", detail: "A 2.0 GB episode is replaced at about 3.0 GB. The new file has to be visibly heavier." },
+  { percent: 100, label: "Much better", detail: "A 2.0 GB episode is replaced at about 4.0 GB. Only a dramatic jump, like a compact web rip giving way to a near-source encode." },
+];
+
+// How strongly smaller files win among equals (StoredProfile.small_bias).
+const SIZE_LEANS = [
+  { v: 0, l: "Off" },
+  { v: 0.15, l: "Slightly" },
+  { v: 4, l: "Strongly" },
+];
+
+// --- The target file -----------------------------------------------------------------
+
+type Row = "codec" | "hdr" | "audio";
+const TARGET_ROWS: { row: Row; label: string; hint: string; alts: boolean; options: { k: string; l: string }[] }[] = [
+  {
+    row: "codec", label: "Video codec", alts: true,
+    hint: "A file is one of these. Two Musts means either.",
+    options: [{ k: "hevc", l: "HEVC (H.265)" }, { k: "av1", l: "AV1" }, { k: "h264", l: "H.264" }],
+  },
+  {
+    row: "hdr", label: "HDR", alts: true,
+    hint: "HDR10+ counts as HDR10 too. A Dolby Vision file counts as the format under it unless Dolby Vision has a setting.",
+    options: [{ k: "HDR10+", l: "HDR10+" }, { k: "HDR10", l: "HDR10" }, { k: "DV", l: "Dolby Vision" }, { k: "HLG", l: "HLG" }, { k: "SDR", l: "SDR (no HDR)" }],
+  },
+  {
+    row: "audio", label: "Audio", alts: false,
+    hint: "Features a file has or doesn't.",
+    options: [{ k: "atmos", l: "Dolby Atmos" }, { k: "lossless", l: "Lossless (TrueHD, DTS-HD MA, FLAC)" }],
+  },
+];
+
+const PREF_TONE: Record<string, { bg: string; fg: string; label: string }> = {
+  avoid: { bg: "var(--reject)", fg: "#fff", label: "Avoid" },
+  "": { bg: "var(--line)", fg: "var(--ink)", label: "—" },
+  ok: { bg: "var(--ink-dim)", fg: "var(--bg)", label: "OK" },
+  want: { bg: "var(--good)", fg: "#fff", label: "Want" },
+  must: { bg: "var(--accent)", fg: "var(--accent-ink)", label: "Must" },
+};
+
+// The bitrate windows are per resolution, with 576p and 480p together as "SD" (how files
+// are labelled once analysed).
+const WINDOW_KEYS = [
+  { key: "2160p", label: "4K", from: ["2160p"] },
+  { key: "1080p", label: "1080p", from: ["1080p"] },
+  { key: "720p", label: "720p", from: ["720p"] },
+  { key: "SD", label: "SD", from: ["576p", "480p"] },
+];
+
+function setPref(ideal: IdealFile, row: Row, key: string, pref: TargetPref): IdealFile {
+  const m = { ...(ideal[row] ?? {}) };
+  if (pref) m[key] = pref;
+  else delete m[key];
+  return { ...ideal, [row]: m };
+}
+
+function windowKeys(allowed: string[]) {
+  return WINDOW_KEYS.filter((w) => allowed.length === 0 || w.from.some((f) => allowed.includes(f)));
+}
+
+// --- Starting points ------------------------------------------------------------------
+
 function emptyProfile(media: string): StoredProfile {
   return {
     id: 0,
@@ -74,58 +167,63 @@ function emptyProfile(media: string): StoredProfile {
     stall_minutes: 0,
     upgrades_enabled: true,
     upgrade_min_percent: 0,
+    ideal: media === "movie" || media === "series" ? {} : undefined,
   };
 }
 
-// Common junk file-types / sources worth one-click rejecting.
-const REJECT_TYPES = ["CAM", "TS", "XviD", "AVI", "WMV", "3D", "HDCAM", "R5"];
-// Executable/script extensions — pre-rejected on new profiles for safety.
-const EXECUTABLE_TYPES = ["exe", "bat", "cmd", "scr", "msi", "com", "vbs", "ps1"];
-
-// Book file formats, grouped by edition — the score-able formats in a book profile.
-const BOOK_FORMATS: { group: string; formats: string[] }[] = [
-  { group: "Ebook", formats: ["EPUB", "AZW3", "MOBI", "AZW", "PDF", "CBZ", "CBR", "FB2"] },
-  { group: "Audiobook", formats: ["M4B", "MP3", "M4A", "FLAC", "AAC", "OGG", "OPUS"] },
+// Templates for a new video profile. Windows follow the bitrates that look like the source
+// on a big screen in HEVC: 4K 15–35 Mb/s, 1080p 5–15, 720p 3–8.
+const VIDEO_TEMPLATES: { key: string; name: string; desc: string; make: (media: string) => StoredProfile }[] = [
+  {
+    key: "4k", name: "4K HDR collection", desc: "4K first, 1080p if that's all there is. HEVC or AV1, HDR10+ preferred, Atmos wanted.",
+    make: (m) => ({
+      ...emptyProfile(m), allowed_resolutions: ["2160p", "1080p"], min_source: "WEB-DL",
+      ideal: {
+        codec: { hevc: "want", av1: "want" }, hdr: { "HDR10+": "want", HDR10: "ok", DV: "ok" }, audio: { atmos: "want" },
+        bitrate: { "2160p": { min: 15, max: 35 }, "1080p": { min: 5, max: 15 } },
+      },
+    }),
+  },
+  {
+    key: "1080", name: "1080p efficient", desc: "1080p in HEVC or AV1, 720p as a fallback. Good quality without remux-sized files.",
+    make: (m) => ({
+      ...emptyProfile(m), allowed_resolutions: ["1080p", "720p"], min_source: "WEB-DL",
+      ideal: { codec: { hevc: "want", av1: "want", h264: "ok" }, bitrate: { "1080p": { min: 5, max: 15 }, "720p": { min: 3, max: 8 } } },
+    }),
+  },
+  {
+    key: "compact", name: "Compact", desc: "The smallest watchable files — for big TV libraries or limited space.",
+    make: (m) => ({
+      ...emptyProfile(m), allowed_resolutions: ["1080p", "720p"], small_bias: 4,
+      ideal: { codec: { hevc: "want", av1: "want" }, bitrate: { "1080p": { min: 3, max: 8 }, "720p": { min: 2, max: 5 } } },
+    }),
+  },
+  { key: "blank", name: "Start from scratch", desc: "An empty profile — set everything yourself.", make: (m) => emptyProfile(m) },
 ];
 
-// How much better a release must be before it's worth replacing a same-resolution file.
-// Expressed as a percentage, not Mbps: "2 Mbps better" more than doubles a 480p file and
-// is noise on a 2160p one, so the same number would mean something different for every
-// show. A percentage is the same promise everywhere.
-//
-// 20% is the server's floor (quality.MinUpgradePercent) — below that, "better" is within
-// the noise of how two groups encoded the same source, and acting on it re-downloads a
-// library for nothing. The options start above it so the UI can never promise something
-// the server will quietly override.
-const UPGRADE_STEPS = [
-  {
-    percent: 0,
-    label: "Off",
-    detail: "Size is ignored. A file is only replaced by a better resolution or a format you prefer.",
-  },
-  {
-    percent: 25,
-    label: "Noticeably better",
-    detail: "A 2.0 GB episode is replaced at about 2.5 GB. Swaps a thin, heavily-compressed encode for a normal one.",
-  },
-  {
-    percent: 50,
-    label: "Clearly better",
-    detail: "A 2.0 GB episode is replaced at about 3.0 GB. Ignores middling differences — the new file has to be visibly heavier.",
-  },
-  {
-    percent: 100,
-    label: "Much better",
-    detail: "A 2.0 GB episode is replaced at about 4.0 GB. Only a dramatic jump, like a compact web rip giving way to a near-source encode.",
-  },
-];
+const NO_COUNTS: FitCounts = { titles: 0, files: 0, fits: 0, over: 0, under: 0, mismatch: 0 };
+
+// --- Shared look ---------------------------------------------------------------------
+
+const panelStyle = { background: "var(--panel)", border: "1px solid var(--line)" };
+const fieldStyle = { background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" };
+const primaryStyle = { background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" };
+
+// =====================================================================================
+// List
+// =====================================================================================
 
 export function Quality() {
   const [media, setMedia] = useState("movie");
   const [profiles, setProfiles] = useState<QualityProfileInfo[]>([]);
   const [formats, setFormats] = useState<FormatInfo[]>([]);
+  const [ladder, setLadder] = useState<string[]>([]);
+  const [musicPresets, setMusicPresets] = useState<MusicPreset[]>([]);
+  const [fits, setFits] = useState<Record<string, FitCounts>>({});
   const [editing, setEditing] = useState<StoredProfile | null>(null);
+  const [picking, setPicking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isVideo = media === "movie" || media === "series";
 
   const refresh = useCallback(() => {
     api
@@ -133,62 +231,71 @@ export function Quality() {
       .then((r) => {
         setProfiles(r.profiles);
         setFormats(r.formats);
+        setLadder(r.music_ladder ?? []);
+        setMusicPresets(r.music_presets ?? []);
         setError(null);
       })
       .catch((e: Error) => setError(e.message));
+    if (media === "movie" || media === "series") {
+      api.libraryFitProfiles(media).then((r) => setFits(r.profiles ?? {})).catch(() => setFits({}));
+    } else {
+      setFits({});
+    }
   }, [media]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
-  const isBook = media === "book";
-
-  const openNew = () => setEditing(emptyProfile(media));
-  const editRef = async (info: QualityProfileInfo) => {
+  const openNew = () => (isVideo ? setPicking(true) : setEditing(emptyProfile(media)));
+  const editRef = async (info: QualityProfileInfo) => setEditing(await api.qualityProfile(info.key));
+  const duplicate = async (info: QualityProfileInfo) => {
     const sp = await api.qualityProfile(info.key);
-    setEditing(sp);
+    setEditing({ ...sp, id: 0, name: `${sp.name} (copy)` });
   };
 
   if (editing) {
     const done = { onCancel: () => setEditing(null), onSaved: () => { setEditing(null); refresh(); } };
-    // Books tune formats + keywords, not resolution/bitrate — their own builder.
-    return editing.media_type === "book"
-      ? <BookBuilder initial={editing} {...done} />
-      : <Builder formats={formats} initial={editing} {...done} />;
+    if (editing.media_type === "book") return <BookBuilder initial={editing} {...done} />;
+    if (editing.media_type === "music") return <MusicBuilder initial={editing} ladder={ladder} presets={musicPresets} {...done} />;
+    return <VideoBuilder formats={formats} initial={editing} {...done} />;
   }
 
   return (
     <>
       <PageHeader title="Quality profiles" crumb="System / Quality" />
       <div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6">
-        <div className="mb-5 flex items-center justify-between">
+        <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
           <Tabs value={media} onChange={setMedia} />
-          <button onClick={openNew} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
-            + New profile
-          </button>
+          <button onClick={openNew} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={primaryStyle}>+ New profile</button>
         </div>
 
         <p className="mb-4 text-[12.5px] text-ink-dim">
-          {isBook
-            ? "A book profile picks which formats to grab (EPUB, M4B…) and can boost releases by keyword — e.g. GraphicAudio +100 to prefer full-cast dramatizations, or M4B where available. Higher score wins."
-            : "A profile tells Arrmada what a good release looks like. Two come pre-loaded to get you going — edit them, delete them, or add your own. See exactly what you'd get, no scores to decode."}
+          {media === "book"
+            ? "A book profile picks which formats to grab (EPUB, M4B…) and can boost releases by keyword — e.g. GraphicAudio +100 to prefer full-cast dramatizations. Higher score wins."
+            : media === "music"
+              ? "A music profile is a ladder of audio qualities. It grabs the best tier available and keeps upgrading until it reaches the top of the ladder you set."
+              : "A profile describes the file you want — codec, HDR, audio and a bitrate window. Arrmada grabs to it, ranks releases by it, and shows which files in your library don't fit."}
         </p>
 
         {error && <div className="mb-3 rounded-lg p-3 text-[12px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
 
         {profiles.length === 0 ? (
           <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>
-            No quality profiles. Add one to tell Arrmada what to grab.
+            No quality profiles yet. Add one to tell Arrmada what to grab.
           </div>
         ) : (
           <div className="flex flex-col gap-2.5">
             {profiles.map((p) => (
-              <ProfileCard key={p.key} info={p} media={media} preset={false} onEdit={() => editRef(p)} onChange={refresh} />
+              <ProfileCard key={p.key} info={p} media={media} counts={isVideo ? (fits[p.key] ?? NO_COUNTS) : undefined}
+                onEdit={() => editRef(p)} onDuplicate={() => duplicate(p)} onChange={refresh} />
             ))}
           </div>
         )}
       </div>
+      {picking && (
+        <TemplatePicker onClose={() => setPicking(false)} onPick={(sp) => { setPicking(false); setEditing(sp); }} media={media} />
+      )}
     </>
   );
 }
@@ -208,147 +315,169 @@ function Tabs({ value, onChange }: { value: string; onChange: (v: string) => voi
   );
 }
 
-// Plain-English summary for the fixed book presets (no scores to show).
-const BOOK_PRESET_SUMMARY: Record<string, string> = {
-  "Ebook": "Grabs the ebook only — prefers EPUB, then AZW3, MOBI, PDF.",
-  "Audiobook": "Grabs the audiobook only — prefers M4B, then MP3.",
-  "Ebook + Audiobook": "Grabs both the ebook and the audiobook, each in its best format.",
-};
-
-function ProfileCard({ info, media, preset, onEdit, onChange }: { info: QualityProfileInfo; media: string; preset: boolean; onEdit: () => void; onChange: () => void }) {
+function ProfileCard({ info, media, counts, onEdit, onDuplicate, onChange }: {
+  info: QualityProfileInfo; media: string; counts?: FitCounts; onEdit: () => void; onDuplicate: () => void; onChange: () => void;
+}) {
   const [confirming, setConfirming] = useState(false);
   const del = async () => {
-    const id = Number(info.key.replace("custom:", ""));
-    await api.deleteQualityProfile(id);
+    await api.deleteQualityProfile(Number(info.key.replace("custom:", "")));
     onChange();
   };
   const makeDefault = async () => {
     await api.setDefaultProfile(media, info.key);
     onChange();
   };
-  const summary = preset ? (BOOK_PRESET_SUMMARY[info.name] ?? info.summary) : (info.summary || "Any quality");
+  const titles = counts?.titles ?? 0;
+  const noun = media === "series" ? (titles === 1 ? "show" : "shows") : titles === 1 ? "film" : "films";
   return (
-    <div className="flex items-center gap-4 rounded-xl p-3.5" style={{ background: "var(--panel)", border: `1px solid ${info.is_default ? "var(--accent)" : "var(--line)"}` }}>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <span className="text-[13.5px] font-semibold">{info.name}</span>
-          {info.is_default && <span className="rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Default</span>}
+    <div className="rounded-xl p-3.5" style={{ ...panelStyle, border: `1px solid ${info.is_default ? "var(--accent)" : "var(--line)"}` }}>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2.5">
+        {/* A floor on the title's width: on a phone the buttons wrap below it rather than over it. */}
+        <div className="min-w-[200px] flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-[13.5px] font-semibold">{info.name}</span>
+            {info.is_default && <span className="rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Default</span>}
+          </div>
+          <div className="mt-1 truncate text-[11.5px] text-ink-dim" title={info.summary}>{info.summary || "Any quality"}</div>
         </div>
-        <div className="mt-1 truncate text-[11.5px] text-ink-dim" title={summary}>{summary}</div>
+        <div className="flex flex-none flex-wrap items-center gap-2">
+          {!info.is_default && (
+            <button onClick={makeDefault} title="Use this profile by default when adding" className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>Make default</button>
+          )}
+          <button onClick={onEdit} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>Edit</button>
+          <button onClick={onDuplicate} title="Start a new profile from this one" className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Duplicate</button>
+          {confirming ? (
+            <>
+              <button onClick={del} className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--reject)", color: "#fff" }}>
+                {titles > 0 ? `Delete — ${titles} ${noun} move to your default` : "Delete"}
+              </button>
+              <button onClick={() => setConfirming(false)} aria-label="Keep the profile" className="rounded-lg px-2.5 py-1.5 text-[11.5px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>✕</button>
+            </>
+          ) : (
+            <button onClick={() => setConfirming(true)} className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Delete</button>
+          )}
+        </div>
       </div>
-      <div className="flex flex-none items-center gap-2">
-        {!info.is_default && (
-          <button onClick={makeDefault} title="Use this profile by default when adding" className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>Make default</button>
-        )}
-        {!preset && (
-          <>
-            <button onClick={onEdit} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>
-              Edit
-            </button>
-            {confirming ? (
-              <>
-                <button onClick={del} className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--reject)", color: "#fff" }}>Delete</button>
-                <button onClick={() => setConfirming(false)} className="rounded-lg px-2.5 py-1.5 text-[11.5px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>✕</button>
-              </>
-            ) : (
-              <button onClick={() => setConfirming(true)} className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Delete</button>
-            )}
-          </>
-        )}
+      {counts && (
+        <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t pt-2.5" style={{ borderColor: "var(--line-soft)" }}>
+          <span className="font-mono text-[10.5px] text-ink-faint">Used by {titles} {noun}</span>
+          {counts.files > 0 && <div className="min-w-[180px] flex-1"><FitBar counts={counts} /></div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// FitBar shows how a set of files fits its target: green fits, red over the ceiling,
+// orange under the floor, yellow the bitrate's fine but something else isn't.
+function FitBar({ counts }: { counts: FitCounts }) {
+  if (counts.files === 0) return <span className="text-[11px] text-ink-faint">No analysed files to judge yet</span>;
+  const segs: [number, string][] = [[counts.fits, "var(--good)"], [counts.over, "var(--reject)"], [counts.under, "var(--under)"], [counts.mismatch, "var(--mismatch)"]];
+  return (
+    <div>
+      <div className="flex h-[7px] overflow-hidden rounded-full" style={{ background: "var(--panel-2)" }}>
+        {segs.filter(([n]) => n > 0).map(([n, c], i) => <span key={i} style={{ flex: n, background: c }} />)}
+      </div>
+      <div className="mt-1 font-mono text-[10.5px] text-ink-faint">
+        <span style={{ color: "var(--good)" }}>{counts.fits} fit</span>
+        {counts.over > 0 && <> · <span style={{ color: "var(--reject)" }}>{counts.over} over</span></>}
+        {counts.under > 0 && <> · <span style={{ color: "var(--under)" }}>{counts.under} under</span></>}
+        {counts.mismatch > 0 && <> · <span style={{ color: "var(--mismatch)" }}>{counts.mismatch} don't fit</span></>}
+        {" "}of {counts.files} file{counts.files === 1 ? "" : "s"}
       </div>
     </div>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Builder
-// ---------------------------------------------------------------------------
+function TemplatePicker({ media, onPick, onClose }: { media: string; onPick: (sp: StoredProfile) => void; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return (
+    <div role="dialog" aria-modal="true" aria-labelledby="tpl-title" className="fixed inset-0 z-50 grid place-items-start justify-center overflow-y-auto p-6" style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose}>
+      <div className="mt-[8vh] w-full max-w-[640px] rounded-xl p-5" style={{ ...panelStyle, boxShadow: "var(--shadow)" }} onClick={(e) => e.stopPropagation()}>
+        <h3 id="tpl-title" className="text-[15px] font-bold">New {media === "series" ? "series" : "movie"} profile</h3>
+        <p className="mt-1 text-[12px] text-ink-dim">Pick a starting point — everything can be changed after.</p>
+        <div className="mt-4 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+          {VIDEO_TEMPLATES.map((t) => (
+            <button key={t.key} onClick={() => onPick(t.make(media))} className="rounded-xl p-3.5 text-left transition-colors hover:border-[var(--accent)]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+              <div className="text-[13px] font-semibold">{t.name}</div>
+              <div className="mt-1 text-[11.5px] leading-[1.45] text-ink-dim">{t.desc}</div>
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
 
-function Builder({ formats, initial, onCancel, onSaved }: { formats: FormatInfo[]; initial: StoredProfile; onCancel: () => void; onSaved: () => void }) {
-  const [sp, setSp] = useState<StoredProfile>(initial);
-  const [preview, setPreview] = useState<Evaluation[] | null>(null);
-  const [decision, setDecision] = useState<{ winner: Evaluation | null; why?: string[]; chosen_over?: string; eligible: Evaluation[]; rejected: Evaluation[] } | null>(null);
-  const [advanced, setAdvanced] = useState(false);
+// =====================================================================================
+// Video builder
+// =====================================================================================
+
+type DecisionView = { winner: Evaluation | null; why?: string[]; chosen_over?: string; eligible: Evaluation[]; rejected: Evaluation[] };
+
+function withTarget(sp: StoredProfile): StoredProfile {
+  // An empty target (not a missing one) is how the builder says "no target": the server
+  // reads a missing one from the scores instead.
+  return { ...sp, ideal: sp.ideal ?? {}, required_formats: sp.required_formats ?? [], keywords: sp.keywords ?? [], rejected: sp.rejected ?? [], custom_formats: sp.custom_formats ?? [] };
+}
+
+function useUnsaved(dirty: boolean) {
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+}
+
+function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: FormatInfo[]; initial: StoredProfile; onCancel: () => void; onSaved: () => void }) {
+  const start = useMemo(() => withTarget(initial), [initial]);
+  const [sp, setSp] = useState<StoredProfile>(start);
+  const [decision, setDecision] = useState<DecisionView | null>(null);
+  const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [open, setOpen] = useState(false);
+  const startJSON = useRef(JSON.stringify(start));
+  const dirty = JSON.stringify(sp) !== startJSON.current;
+  useUnsaved(dirty);
 
-  // Live preview, debounced.
+  // Live preview over the sample releases, debounced.
   useEffect(() => {
     let alive = true;
     const t = window.setTimeout(() => {
-      api
-        .qualityPreviewSpec(sp)
-        .then((p) => {
-          if (!alive) return;
-          // Go marshals empty slices as null — coalesce so .length/.map are safe.
-          const d = { ...p.decision, eligible: p.decision.eligible ?? [], rejected: p.decision.rejected ?? [] };
-          setDecision(d);
-          setPreview(d.eligible);
-        })
-        .catch(() => {});
+      api.qualityPreviewSpec(sp).then((p) => {
+        if (!alive) return;
+        // Go marshals empty slices as null — coalesce so .length/.map are safe.
+        setDecision({ ...p.decision, eligible: p.decision.eligible ?? [], rejected: p.decision.rejected ?? [] });
+      }).catch(() => {});
     }, 250);
-    return () => {
-      alive = false;
-      window.clearTimeout(t);
-    };
+    return () => { alive = false; window.clearTimeout(t); };
   }, [sp]);
 
   const patch = (p: Partial<StoredProfile>) => setSp((s) => ({ ...s, ...p }));
+  const ideal = sp.ideal ?? {};
+  // Target edits apply to the latest state, so two quick changes can't overwrite each other.
+  const updateIdeal = (fn: (i: IdealFile) => IdealFile) => setSp((s) => ({ ...s, ideal: fn(s.ideal ?? {}) }));
 
-  const toggleRes = (v: string) => {
-    const has = sp.allowed_resolutions.includes(v);
-    patch({ allowed_resolutions: has ? sp.allowed_resolutions.filter((r) => r !== v) : [...sp.allowed_resolutions, v] });
+  const leave = () => {
+    if (dirty && !window.confirm("Discard your changes to this profile?")) return;
+    onCancel();
   };
-
-  const setFormatScore = (name: string, score: number) => {
-    const next = { ...sp.format_scores };
-    if (score === 0) {
-      delete next[name];
-    } else {
-      next[name] = score;
-      // You can't *prefer* two formats in the same conflict group (e.g. prefer
-      // both Dolby Vision and HDR10). But Avoiding one while Preferring the other
-      // is valid — a TV that can't play DV still wants HDR10 — so only a positive
-      // score clears sibling *preferences*; Avoid/Neutral are left untouched.
-      if (score > 0) {
-        const group = formats.find((f) => f.name === name)?.group;
-        if (group) {
-          for (const f of formats) {
-            if (f.name !== name && f.group === group && (next[f.name] ?? 0) > 0) delete next[f.name];
-          }
-        }
-      }
-    }
-    patch({ format_scores: next });
-  };
-
-  // Require is a gate: releases without the format are rejected outright, where Prefer
-  // only ranks them lower. A required format keeps a preference score too, so among
-  // releases that have it the ranking is unchanged.
-  const setRequired = (name: string, on: boolean) => {
-    const cur = sp.required_formats ?? [];
-    patch({ required_formats: on ? [...cur.filter((n) => n !== name), name] : cur.filter((n) => n !== name) });
-  };
-  const setFormatState = (name: string, score: number, required: boolean) => {
-    setFormatScore(name, score);
-    setRequired(name, required);
-  };
-  const isRequired = (name: string) => (sp.required_formats ?? []).includes(name);
-
-  const videoFormats = formats.filter((f) => f.group === "hdr" || f.group === "codec");
-  const audioFormats = formats.filter((f) => f.group === "audio");
-
   const save = async () => {
-    if (!sp.name.trim()) {
-      setError("Give your profile a name.");
-      return;
+    if (!sp.name.trim()) { setError("Give your profile a name."); return; }
+    for (const [key, w] of Object.entries(ideal.bitrate ?? {})) {
+      if (w.min > 0 && w.max > 0 && w.min > w.max) { setError(`The ${key === "2160p" ? "4K" : key} bitrate floor is above its ceiling.`); return; }
     }
     setSaving(true);
     setError(null);
     try {
       if (sp.id > 0) await api.updateQualityProfile(sp.id, sp);
       else await api.createQualityProfile(sp);
+      startJSON.current = JSON.stringify(sp);
       onSaved();
     } catch (e) {
       setError((e as Error).message);
@@ -358,225 +487,707 @@ function Builder({ formats, initial, onCancel, onSaved }: { formats: FormatInfo[
 
   const winner = decision?.winner ?? null;
   const total = (decision?.eligible.length ?? 0) + (decision?.rejected.length ?? 0);
+  const otherFormats = formats.filter((f) => !f.target);
 
   return (
     <>
-      <PageHeader title={sp.id > 0 ? "Edit profile" : "New profile"} crumb="System / Quality" />
-      <div className="mx-auto grid w-full max-w-[1240px] grid-cols-1 gap-7 px-4 py-6 sm:px-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.05fr)]">
-        {/* Builder form */}
-        <section>
-          <div className="mb-4 flex items-center gap-2">
-            <button onClick={onCancel} className="text-[12px] text-ink-dim hover:text-[var(--ink)]">← Back</button>
+      <PageHeader title={sp.id > 0 ? "Edit profile" : "New profile"} crumb={`System / Quality / ${sp.media_type === "series" ? "Series" : "Movies"}`} />
+      <div className="mx-auto grid w-full max-w-[1240px] grid-cols-1 gap-7 px-4 pb-4 pt-6 sm:px-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
+        <section className="min-w-0">
+          <div className="mb-4">
+            <button onClick={leave} className="text-[12px] text-ink-dim hover:text-[var(--ink)]">← Back</button>
           </div>
+          <label htmlFor="qp-name" className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-wide text-accent">Name</label>
+          <input id="qp-name" value={sp.name} onChange={(e) => patch({ name: e.target.value })} placeholder="My 4K collection" className="w-full rounded-lg px-3 py-2 text-[13px]" style={fieldStyle} />
 
-          <label className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-wide text-accent">Name</label>
-          <input value={sp.name} onChange={(e) => patch({ name: e.target.value })} placeholder="e.g. My 4K collection" className="mb-5 w-full rounded-lg px-3 py-2 text-[13px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+          <SectionLabel>1 · The file you want</SectionLabel>
+          <TargetEditor sp={sp} ideal={ideal} onIdeal={updateIdeal} onResolutions={(r) => patch({ allowed_resolutions: r })} />
 
-          <SectionLabel>Resolution goal</SectionLabel>
-          <div className="flex flex-wrap gap-2">
-            {RESOLUTIONS.map((r) => {
-              const active = sp.allowed_resolutions.includes(r.v);
-              return (
-                <button key={r.v} onClick={() => toggleRes(r.v)} className="rounded-lg px-3 py-1.5 text-[12px] font-semibold" style={{ border: `1px solid ${active ? "var(--accent)" : "var(--line)"}`, background: active ? "var(--accent-soft)" : "var(--panel)", color: active ? "var(--accent)" : "var(--ink-dim)" }}>
-                  {r.l}
-                </button>
-              );
-            })}
-          </div>
-          <p className="mt-1.5 text-[11px] text-ink-faint">{sp.allowed_resolutions.length === 0 ? "Any resolution allowed." : "Only these resolutions will be grabbed."}</p>
-
-          <SectionLabel>Source range</SectionLabel>
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <span className="mb-1 block text-[10.5px] text-ink-faint">Minimum</span>
-              <select value={sp.min_source} onChange={(e) => patch({ min_source: e.target.value })} className="w-full rounded-lg px-3 py-2 text-[12.5px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
-                {SOURCES.map((s) => <option key={s.v} value={s.v}>{s.l}</option>)}
-              </select>
-            </div>
-            <div>
-              <span className="mb-1 block text-[10.5px] text-ink-faint">Maximum</span>
-              <select value={sp.max_source} onChange={(e) => patch({ max_source: e.target.value })} className="w-full rounded-lg px-3 py-2 text-[12.5px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
-                {MAX_SOURCES.map((s) => <option key={s.v} value={s.v}>{s.l}</option>)}
-              </select>
-            </div>
-          </div>
-          <p className="mt-1.5 text-[10.5px] text-ink-faint">Within this range and your bitrate cap, Arrmada picks the highest-bitrate release.</p>
-
-          <SectionLabel>Bitrate ceiling</SectionLabel>
-          <div className="rounded-xl p-4" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
-            <div className="mb-1 flex items-baseline justify-between">
-              <span className="text-[12.5px] text-ink-dim">Reject releases above</span>
-              <span className="flex items-center gap-1.5">
-                <input type="number" min={0} step={1} value={sp.bitrate_cap_mbps}
-                  onChange={(e) => patch({ bitrate_cap_mbps: Math.max(0, Number(e.target.value)) })}
-                  className="w-[68px] rounded-lg px-2 py-1 text-right font-mono text-[13px] font-semibold"
-                  style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: sp.bitrate_cap_mbps === 0 ? "var(--ink-dim)" : "var(--accent)" }} />
-                <span className="text-[11px] text-ink-faint">{sp.bitrate_cap_mbps === 0 ? "· no limit" : "Mbps"}</span>
-              </span>
-            </div>
-            <input type="range" min={0} max={100} step={1} value={Math.min(100, sp.bitrate_cap_mbps)} onChange={(e) => patch({ bitrate_cap_mbps: Number(e.target.value) })} className="w-full" style={{ accentColor: "var(--accent)" }} />
-            <div className="mt-2 flex justify-between font-mono text-[10px] text-ink-faint"><span>No limit</span><span>50 Mbps</span><span>100+ Mbps</span></div>
-            <p className="mt-2.5 text-[10.5px] text-ink-faint">Length-independent — caps quality per second, so it treats a 90-minute film and a 3-hour epic (or a full season) the same. Drag to 100, or type a higher number for remux-grade limits. ~15–25 Mbps is a great 1080p target, ~40–60 for 4K.</p>
-          </div>
-
-          <SectionLabel>Video</SectionLabel>
-          <p className="-mt-1 mb-2 text-[10.5px] text-ink-faint">Prefer one HDR format. You can Avoid the one your TV can't play (e.g. Dolby Vision) while Preferring HDR10. Require means a release without it is never grabbed.</p>
-          <div className="flex flex-col gap-2">
-            {videoFormats.map((f) => (
-              <FormatToggle key={f.name} format={f} score={sp.format_scores[f.name] ?? 0} required={isRequired(f.name)} advanced={advanced} onChange={(s, req) => setFormatState(f.name, s, req)} />
-            ))}
-          </div>
-
-          <SectionLabel>Audio</SectionLabel>
-          <p className="-mt-1 mb-2 text-[10.5px] text-ink-faint">Pick one preferred audio format, or Require it (nothing without it is grabbed — for TV that can rule out most episodes).</p>
-          <div className="flex flex-col gap-2">
-            {audioFormats.map((f) => (
-              <FormatToggle key={f.name} format={f} score={sp.format_scores[f.name] ?? 0} required={isRequired(f.name)} advanced={advanced} onChange={(s, req) => setFormatState(f.name, s, req)} />
-            ))}
-          </div>
-
-          <SectionLabel>Preferred keywords</SectionLabel>
-          <KeywordEditor keywords={sp.keywords ?? []} onChange={(kw) => patch({ keywords: kw })} />
-
-          <SectionLabel>Reject</SectionLabel>
-          <RejectEditor rejected={sp.rejected ?? []} onChange={(r) => patch({ rejected: r })} />
-
-          <SectionLabel>Grab rules</SectionLabel>
-          <div className="grid grid-cols-2 gap-3">
-            <NumberField label="Minimum seeders" hint="Skip releases with fewer" value={sp.min_seeders} onChange={(v) => patch({ min_seeders: v })} />
-            <NumberField label="Stall timeout (min)" hint="0 = off. Try another release if it stalls" value={sp.stall_minutes} onChange={(v) => patch({ stall_minutes: v })} />
-          </div>
-
-          <SectionLabel>Upgrades</SectionLabel>
-          <div className="rounded-xl p-4" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-[12.5px] font-semibold">Automatically upgrade</div>
-                <div className="text-[10.5px] text-ink-faint">After a file is imported, keep watching for a better release and replace it. Stops once you're at the best resolution with all your preferred formats.</div>
+          <div className="mt-6 flex flex-col gap-2.5">
+            <Collapsible n={2} title="Sources" summary={sourceSummary(sp)}>
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label className="block">
+                  <span className="mb-1 block text-[10.5px] text-ink-faint">Minimum</span>
+                  <select value={sp.min_source} onChange={(e) => patch({ min_source: e.target.value })} className="w-full rounded-lg px-3 py-2 text-[12.5px]" style={fieldStyle}>
+                    {SOURCES.map((s) => <option key={s.v} value={s.v}>{s.l}</option>)}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="mb-1 block text-[10.5px] text-ink-faint">Maximum</span>
+                  <select value={sp.max_source} onChange={(e) => patch({ max_source: e.target.value })} className="w-full rounded-lg px-3 py-2 text-[12.5px]" style={fieldStyle}>
+                    {MAX_SOURCES.map((s) => <option key={s.v} value={s.v}>{s.l}</option>)}
+                  </select>
+                </label>
               </div>
-              <button
-                role="switch"
-                aria-checked={sp.upgrades_enabled}
-                onClick={() => patch({ upgrades_enabled: !sp.upgrades_enabled })}
-                className="relative inline-flex h-6 w-11 flex-none items-center rounded-full transition-colors"
-                style={{ background: sp.upgrades_enabled ? "var(--accent)" : "var(--panel-2)", border: "1px solid var(--line)" }}
-              >
-                <span className="inline-block h-4 w-4 transform rounded-full bg-white transition-transform" style={{ transform: sp.upgrades_enabled ? "translateX(22px)" : "translateX(3px)" }} />
-              </button>
-            </div>
-            {sp.upgrades_enabled && (
-              <div className="mt-3.5 border-t pt-3" style={{ borderColor: "var(--line)" }}>
-                <div className="text-[12px] font-semibold">Also replace a same-quality file when it's bigger</div>
-                <div className="mt-0.5 text-[10.5px] text-ink-faint">
-                  Two releases can both be 1080p and still look different — one encoded at twice the bitrate of the other.
-                  Pick how much better a release has to be before it's worth re-downloading.
-                </div>
-                <div className="mt-2.5 flex flex-col gap-1.5">
-                  {UPGRADE_STEPS.map((step) => {
-                    const on = sp.upgrade_min_percent === step.percent;
-                    return (
-                      <button
-                        key={step.percent}
-                        onClick={() => patch({ upgrade_min_percent: step.percent })}
-                        className="flex items-start gap-2.5 rounded-lg px-3 py-2 text-left"
-                        style={{
-                          border: `1px solid ${on ? "var(--accent)" : "var(--line)"}`,
-                          background: on ? "var(--accent-soft)" : "var(--panel-2)",
-                        }}
-                      >
-                        <span
-                          className="mt-[3px] inline-block h-3 w-3 flex-none rounded-full"
-                          style={{ border: `1px solid ${on ? "var(--accent)" : "var(--line)"}`, background: on ? "var(--accent)" : "transparent" }}
-                        />
-                        <span className="min-w-0">
-                          <span className="flex items-baseline gap-1.5">
-                            <span className="text-[11.5px] font-semibold" style={{ color: on ? "var(--accent)" : "var(--ink)" }}>{step.label}</span>
-                            {step.percent > 0 && (
-                              <span className="font-mono text-[10px] text-ink-faint">+{step.percent}% bitrate</span>
-                            )}
-                          </span>
-                          <span className="mt-0.5 block text-[10.5px] leading-[1.45] text-ink-faint">{step.detail}</span>
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-                <div className="mt-2 text-[10.5px] text-ink-faint">
-                  Sizes are examples for a one-hour episode — the same proportion applies whatever the length or resolution.
-                  Comparisons account for codec, so a smaller HEVC file isn't treated as worse than a bloated H.264 one.
-                </div>
+              <p className="mt-2 text-[10.5px] text-ink-faint">Within these sources and your target, Arrmada picks the highest-bitrate release.</p>
+            </Collapsible>
+
+            <Collapsible n={3} title="Rules" summary={rulesSummary(sp)}>
+              <div className="mb-1.5 text-[12px] font-semibold">Reject</div>
+              <RejectEditor rejected={sp.rejected ?? []} onChange={(r) => patch({ rejected: r })} />
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <NumberField label="Minimum seeders" hint="Skip releases with fewer" value={sp.min_seeders} onChange={(v) => patch({ min_seeders: v })} />
+                <NumberField label="Stall timeout (min)" hint="0 = off. Try another release if it stalls" value={sp.stall_minutes} onChange={(v) => patch({ stall_minutes: v })} />
               </div>
-            )}
-          </div>
+            </Collapsible>
 
-          {(sp.media_type === "movie" || sp.media_type === "series") && (
-            <>
-              <SectionLabel>Ideal file</SectionLabel>
-              <IdealEditor ideal={sp.ideal} resolutions={sp.allowed_resolutions} onChange={(ideal) => patch({ ideal })} />
-            </>
-          )}
+            <Collapsible n={4} title="Upgrades" summary={upgradesSummary(sp)}>
+              <UpgradesEditor sp={sp} patch={patch} />
+            </Collapsible>
 
-          <div className="mt-4 flex items-center justify-between">
-            <button onClick={() => setAdvanced((a) => !a)} className="text-[11.5px] font-semibold" style={{ color: "var(--accent)" }}>{advanced ? "Hide advanced" : "Advanced…"}</button>
-          </div>
-
-          {advanced && (
-            <AdvancedPanel sp={sp} patch={patch} setFormatScore={setFormatScore} />
-          )}
-
-          {error && <div className="mt-4 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
-          <div className="mt-5 flex gap-2.5">
-            <button onClick={save} disabled={saving} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{saving ? "Saving…" : "Save profile"}</button>
-            <button onClick={onCancel} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Cancel</button>
+            <Collapsible title="Advanced" summary={advancedSummary(sp, otherFormats)}>
+              <AdvancedPanel sp={sp} patch={patch} otherFormats={otherFormats} />
+            </Collapsible>
           </div>
         </section>
 
-        {/* Live result */}
-        <section>
-          <div className="mb-1 flex items-center gap-2 text-[15px] font-bold">
-            <span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--accent)" }} />
-            What you'll get
+        <aside className="min-w-0">
+          <div className="flex flex-col gap-4 lg:sticky lg:top-[72px]">
+            <div>
+              <div className="mb-1 flex items-center gap-2 text-[15px] font-bold">
+                <span className="inline-block h-2 w-2 rounded-full" style={{ background: "var(--accent)" }} />
+                What you'll get
+              </div>
+              <p className="mb-3 mt-1 text-[11.5px] text-ink-faint">Live on a sample set of real-world releases — change anything and it re-decides.</p>
+              {!winner ? (
+                <div className="rounded-xl p-7 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Nothing in the sample matches this profile. Loosen a Must or widen a bitrate window.</div>
+              ) : (
+                <Hero winner={winner} why={decision?.why ?? []} chosenOver={decision?.chosen_over} open={open} onToggle={() => setOpen((o) => !o)} eligible={decision?.eligible.slice(1) ?? []} rejected={decision?.rejected ?? []} total={total} />
+              )}
+            </div>
+            <LibraryFitPanel sp={sp} />
+            <TestPanel sp={sp} />
           </div>
-          <p className="mb-4 mt-1 text-[11.5px] text-ink-faint">Live from the scoring engine on a sample release set — change anything and it re-decides.</p>
-          {!winner ? (
-            <div className="rounded-xl p-7 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Nothing matches this profile yet. Loosen a preference or raise the size ceiling.</div>
-          ) : (
-            <Hero winner={winner} why={decision?.why ?? []} chosenOver={decision?.chosen_over} open={open} onToggle={() => setOpen((o) => !o)} eligible={preview?.slice(1) ?? []} rejected={decision?.rejected ?? []} total={total} advanced={advanced} />
-          )}
-        </section>
+        </aside>
       </div>
+      <SaveBar dirty={dirty} saving={saving} error={error} onSave={save} onCancel={leave}
+        mobileNote={winner ? `Would grab ${winner.candidate.release.resolution} ${winner.candidate.release.source}` : undefined} />
     </>
   );
 }
 
-function NumberField({ label, hint, value, onChange }: { label: string; hint: string; value: number; onChange: (v: number) => void }) {
+function sourceSummary(sp: StoredProfile): string {
+  const min = SOURCES.find((s) => s.v === sp.min_source)?.l ?? "Any source";
+  if (!sp.max_source) return sp.min_source ? min : "Any source";
+  return `${sp.min_source ? sp.min_source : "Any"} to ${sp.max_source}`;
+}
+
+function rulesSummary(sp: StoredProfile): string {
+  const rej = (sp.rejected ?? []).filter((r) => !EXECUTABLE_TYPES.some((t) => t.toLowerCase() === r.toLowerCase()));
+  const parts: string[] = [];
+  if (rej.length) parts.push(`rejects ${rej.slice(0, 3).join(", ")}${rej.length > 3 ? "…" : ""}`);
+  if (EXECUTABLE_TYPES.every((t) => (sp.rejected ?? []).some((r) => r.toLowerCase() === t))) parts.push("no executables");
+  if (sp.min_seeders > 0) parts.push(`${sp.min_seeders}+ seeders`);
+  if (sp.stall_minutes > 0) parts.push(`stall ${sp.stall_minutes} min`);
+  return parts.join(" · ") || "None";
+}
+
+function upgradesSummary(sp: StoredProfile): string {
+  if (!sp.upgrades_enabled) return "Off";
+  const parts = ["On"];
+  // Upgrading only stops at the target where a resolution's window has a floor.
+  if (Object.values(sp.ideal?.bitrate ?? {}).some((w) => w.min > 0)) parts.push("stops at the target");
+  const step = UPGRADE_STEPS.find((s) => s.percent === sp.upgrade_min_percent);
+  if (step && step.percent > 0) parts.push(`also +${step.percent}% bitrate`);
+  return parts.join(" · ");
+}
+
+function advancedSummary(sp: StoredProfile, other: FormatInfo[]): string {
+  const parts: string[] = [];
+  const scored = other.filter((f) => (sp.format_scores[f.name] ?? 0) !== 0 || (sp.required_formats ?? []).includes(f.name)).length;
+  if (scored) parts.push(`${scored} other format${scored === 1 ? "" : "s"}`);
+  if ((sp.custom_formats ?? []).length) parts.push(`${sp.custom_formats!.length} custom`);
+  if ((sp.keywords ?? []).length) parts.push(`${sp.keywords!.length} keyword${sp.keywords!.length === 1 ? "" : "s"}`);
+  if (sp.small_bias > 0) parts.push("prefers smaller files");
+  return parts.join(" · ") || "Custom formats, keywords, raw scores";
+}
+
+// TargetEditor sets the file the profile aims for: its resolutions, a state for each codec,
+// HDR and audio option, and a bitrate window per resolution.
+function TargetEditor({ sp, ideal, onIdeal, onResolutions }: { sp: StoredProfile; ideal: IdealFile; onIdeal: (fn: (i: IdealFile) => IdealFile) => void; onResolutions: (r: string[]) => void }) {
+  const allowed = sp.allowed_resolutions;
+  const best = allowed.reduce((b, r) => (RES_RANK[r] > (RES_RANK[b] ?? 0) ? r : b), "");
+  const toggleRes = (v: string) => onResolutions(allowed.includes(v) ? allowed.filter((r) => r !== v) : [...allowed, v]);
+  const setWindow = (key: string, part: "min" | "max", v: number) => onIdeal((cur) => {
+    const b = { ...(cur.bitrate ?? {}) };
+    const w = { min: b[key]?.min ?? 0, max: b[key]?.max ?? 0, [part]: Math.max(0, v || 0) };
+    if (!w.min && !w.max) delete b[key];
+    else b[key] = w;
+    return { ...cur, bitrate: b };
+  });
   return (
-    <div className="rounded-xl p-3" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
-      <div className="text-[12px] font-semibold">{label}</div>
-      <div className="mb-2 text-[10.5px] text-ink-faint">{hint}</div>
-      <input type="number" min={0} value={value} onChange={(e) => onChange(Math.max(0, Number(e.target.value)))} className="w-full rounded-lg px-2.5 py-1.5 text-[13px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+    <div className="rounded-xl p-4" style={panelStyle}>
+      <p className="mb-3.5 text-[11px] leading-[1.5] text-ink-faint">
+        One description drives everything: what's grabbed, how releases rank, and which files in your library are flagged as not fitting.
+      </p>
+
+      <div className="mb-1 text-[12px] font-semibold">Resolution</div>
+      <div className="flex flex-wrap gap-2">
+        {RESOLUTIONS.map((r) => {
+          const active = allowed.includes(r.v);
+          return (
+            <button key={r.v} onClick={() => toggleRes(r.v)} className="inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold" style={{ border: `1px solid ${active ? "var(--accent)" : "var(--line)"}`, background: active ? "var(--accent-soft)" : "var(--panel)", color: active ? "var(--accent)" : "var(--ink-dim)" }}>
+              {r.l}
+              {active && <span className="font-mono text-[9px] font-bold uppercase opacity-80">{r.v === best ? "goal" : "fallback"}</span>}
+            </button>
+          );
+        })}
+      </div>
+      <p className="mb-4 mt-1.5 text-[10.5px] text-ink-faint">
+        {allowed.length === 0 ? "Any resolution. Pick some to limit what's grabbed." : "Only these are grabbed. The highest is the goal; the rest are fallbacks while it isn't available."}
+      </p>
+
+      {TARGET_ROWS.map((row) => (
+        <div key={row.row} className="mb-4">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-[12px] font-semibold">{row.label}</span>
+          </div>
+          <div className="mb-1.5 text-[10.5px] text-ink-faint">{row.hint}</div>
+          <div className="flex flex-col gap-1.5">
+            {row.options.map((o) => (
+              <div key={o.k} className="flex flex-wrap items-center justify-between gap-2 rounded-lg py-1 pl-2.5 pr-1" style={{ background: "var(--panel-2)" }}>
+                <span className="text-[12.5px]">{o.l}</span>
+                <PrefPicker alts={row.alts} value={(ideal[row.row]?.[o.k] ?? "") as TargetPref} onChange={(p) => onIdeal((cur) => setPref(cur, row.row, o.k, p))} label={o.l} />
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+
+      <div className="text-[12px] font-semibold">Bitrate window</div>
+      <div className="mb-2 text-[10.5px] text-ink-faint">
+        The whole file's average, as the library shows it. Above the ceiling isn't grabbed; under the floor is only grabbed when nothing better exists.
+      </div>
+      <div className="flex flex-col gap-1.5">
+        {windowKeys(allowed).map((w) => (
+          <div key={w.key} className="flex items-center gap-2 text-[12px]">
+            <span className="w-[52px] font-mono text-ink-dim">{w.label}</span>
+            <NumIn value={ideal.bitrate?.[w.key]?.min} onSet={(v) => setWindow(w.key, "min", v)} label={`${w.label} floor in Mb/s`} />
+            <span className="text-ink-faint">to</span>
+            <NumIn value={ideal.bitrate?.[w.key]?.max} onSet={(v) => setWindow(w.key, "max", v)} label={`${w.label} ceiling in Mb/s`} />
+            <span className="text-[11px] text-ink-faint">Mb/s</span>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 gap-x-4 gap-y-0.5 border-t pt-3 text-[10.5px] text-ink-faint sm:grid-cols-2" style={{ borderColor: "var(--line-soft)" }}>
+        <span><b style={{ color: "var(--accent)" }}>Must</b> — never grabbed without</span>
+        <span><b style={{ color: "var(--good)" }}>Want</b> — fits, and ranks a release up</span>
+        <span><b className="text-ink">OK</b> — fits, no preference</span>
+        <span><b style={{ color: "var(--reject)" }}>Avoid</b> — doesn't fit, ranks a release down</span>
+      </div>
     </div>
   );
 }
 
-// BookBuilder edits a book quality profile: which formats to grab (per edition)
-// and keyword boosts (e.g. GraphicAudio +100), plus hard-reject terms. No
-// resolution/bitrate — those don't apply to books.
-function BookBuilder({ initial, onCancel, onSaved }: { initial: StoredProfile; onCancel: () => void; onSaved: () => void }) {
-  const [sp, setSp] = useState<StoredProfile>({
-    ...initial,
-    format_scores: initial.format_scores ?? {},
-    keywords: initial.keywords ?? [],
-    rejected: initial.rejected ?? [],
-  });
+function PrefPicker({ value, alts, onChange, label }: { value: TargetPref; alts: boolean; onChange: (p: TargetPref) => void; label: string }) {
+  // A feature (Atmos) is had or not: "OK" would mean the same as no opinion, so it's left out.
+  const opts: TargetPref[] = alts ? ["avoid", "", "ok", "want", "must"] : ["avoid", "", "want", "must"];
+  return (
+    <div role="radiogroup" aria-label={label} className="inline-flex rounded-lg p-0.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+      {opts.map((o) => {
+        const on = value === o;
+        const t = PREF_TONE[o];
+        return (
+          <button key={o || "none"} role="radio" aria-checked={on} onClick={() => onChange(o)} className="rounded-md px-2 py-1 text-[10.5px] font-semibold"
+            style={{ background: on ? t.bg : "transparent", color: on ? t.fg : "var(--ink-faint)", minWidth: 38 }}>
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function NumIn({ value, onSet, label }: { value?: number; onSet: (v: number) => void; label: string }) {
+  return (
+    <input type="number" min={0} step={1} aria-label={label} value={value || ""} placeholder="any" onChange={(e) => onSet(Number(e.target.value))}
+      className="w-[64px] rounded-lg px-2 py-1 text-right font-mono text-[12.5px]" style={fieldStyle} />
+  );
+}
+
+function Collapsible({ n, title, summary, children }: { n?: number; title: string; summary: string; children: React.ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-xl" style={panelStyle}>
+      <button onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex w-full items-center gap-3 px-4 py-3 text-left">
+        <span className="min-w-0 flex-1">
+          <span className="text-[13px] font-semibold">{n ? `${n} · ` : ""}{title}</span>
+          <span className="ml-2 text-[11.5px] text-ink-faint">{summary}</span>
+        </span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .2s", color: "var(--ink-faint)" }}><path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+      </button>
+      {open && <div className="border-t px-4 pb-4 pt-3.5" style={{ borderColor: "var(--line-soft)" }}>{children}</div>}
+    </div>
+  );
+}
+
+function UpgradesEditor({ sp, patch }: { sp: StoredProfile; patch: (p: Partial<StoredProfile>) => void }) {
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[12.5px] font-semibold">Automatically upgrade</div>
+          <div className="text-[10.5px] leading-[1.45] text-ink-faint">
+            After a file is imported, keep watching for a better release and replace it. Stops once the file is the target — the goal resolution,
+            everything you Want, inside a bitrate window that has a floor.
+          </div>
+        </div>
+        <Switch on={sp.upgrades_enabled} onChange={(v) => patch({ upgrades_enabled: v })} label="Automatically upgrade" />
+      </div>
+      {sp.upgrades_enabled && (
+        <div className="mt-3.5 border-t pt-3" style={{ borderColor: "var(--line)" }}>
+          <div className="text-[12px] font-semibold">Also replace a same-quality file when it's bigger</div>
+          <div className="mt-0.5 text-[10.5px] text-ink-faint">Two releases can both be 1080p and still look different. Pick how much better one has to be before it's worth re-downloading.</div>
+          <div className="mt-2.5 flex flex-col gap-1.5">
+            {UPGRADE_STEPS.map((step) => {
+              const on = sp.upgrade_min_percent === step.percent;
+              return (
+                <button key={step.percent} onClick={() => patch({ upgrade_min_percent: step.percent })} className="flex items-start gap-2.5 rounded-lg px-3 py-2 text-left"
+                  style={{ border: `1px solid ${on ? "var(--accent)" : "var(--line)"}`, background: on ? "var(--accent-soft)" : "var(--panel-2)" }}>
+                  <span className="mt-[3px] inline-block h-3 w-3 flex-none rounded-full" style={{ border: `1px solid ${on ? "var(--accent)" : "var(--line)"}`, background: on ? "var(--accent)" : "transparent" }} />
+                  <span className="min-w-0">
+                    <span className="flex items-baseline gap-1.5">
+                      <span className="text-[11.5px] font-semibold" style={{ color: on ? "var(--accent)" : "var(--ink)" }}>{step.label}</span>
+                      {step.percent > 0 && <span className="font-mono text-[10px] text-ink-faint">+{step.percent}% bitrate</span>}
+                    </span>
+                    <span className="mt-0.5 block text-[10.5px] leading-[1.45] text-ink-faint">{step.detail}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="mt-2 text-[10.5px] text-ink-faint">Never above a bitrate ceiling. Comparisons account for codec, so a smaller HEVC file isn't treated as worse than a bloated H.264 one.</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Switch({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
+  return (
+    <button role="switch" aria-checked={on} aria-label={label} onClick={() => onChange(!on)} className="relative inline-flex h-6 w-11 flex-none items-center rounded-full transition-colors"
+      style={{ background: on ? "var(--accent)" : "var(--panel-2)", border: "1px solid var(--line)" }}>
+      <span className="inline-block h-4 w-4 transform rounded-full bg-white transition-transform" style={{ transform: on ? "translateX(22px)" : "translateX(3px)" }} />
+    </button>
+  );
+}
+
+function AdvancedPanel({ sp, patch, otherFormats }: { sp: StoredProfile; patch: (p: Partial<StoredProfile>) => void; otherFormats: FormatInfo[] }) {
+  const [scores, setScores] = useState(false);
+  const [cfName, setCfName] = useState("");
+  const [cfType, setCfType] = useState("release_group");
+  const [cfValue, setCfValue] = useState("");
+  const [cfScore, setCfScore] = useState(50);
+
+  const setScore = (name: string, score: number) => {
+    const next = { ...sp.format_scores };
+    if (score === 0) delete next[name];
+    else next[name] = score;
+    patch({ format_scores: next });
+  };
+  const setFormat = (name: string, score: number, required: boolean) => {
+    const next = { ...sp.format_scores };
+    if (score === 0) delete next[name];
+    else next[name] = score;
+    const cur = sp.required_formats ?? [];
+    patch({ format_scores: next, required_formats: required ? [...cur.filter((n) => n !== name), name] : cur.filter((n) => n !== name) });
+  };
+  const addCustom = () => {
+    if (!cfName.trim() || !cfValue.trim()) return;
+    const cf = { name: cfName.trim(), conditions: [{ type: cfType, value: cfValue.trim() }] };
+    patch({ custom_formats: [...(sp.custom_formats ?? []), cf], format_scores: { ...sp.format_scores, [cf.name]: cfScore } });
+    setCfName("");
+    setCfValue("");
+  };
+  const removeCustom = (name: string) => {
+    const next = { ...sp.format_scores };
+    delete next[name];
+    patch({ custom_formats: (sp.custom_formats ?? []).filter((c) => c.name !== name), format_scores: next });
+  };
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div>
+        <div className="mb-1 flex items-center justify-between gap-2">
+          <span className="text-[12px] font-semibold">Other formats</span>
+          <label className="flex items-center gap-1.5 text-[10.5px] text-ink-faint">
+            <input type="checkbox" checked={scores} onChange={(e) => setScores(e.target.checked)} /> show raw scores
+          </label>
+        </div>
+        <div className="mb-2 text-[10.5px] text-ink-faint">Formats the target doesn't cover, scored directly.</div>
+        <div className="flex flex-col gap-2">
+          {otherFormats.map((f) => (
+            <FormatToggle key={f.name} format={f} score={sp.format_scores[f.name] ?? 0} required={(sp.required_formats ?? []).includes(f.name)} advanced={scores} onChange={(s, req) => setFormat(f.name, s, req)} />
+          ))}
+        </div>
+      </div>
+
+      <div>
+        <div className="text-[12px] font-semibold">Custom formats</div>
+        <p className="mb-2 text-[10.5px] text-ink-faint">Match anything the parser reads — a favourite release group, an edition, a source — and score it.</p>
+        {(sp.custom_formats ?? []).map((c) => (
+          <div key={c.name} className="mb-2 flex items-center gap-2 rounded-lg p-2 text-[11.5px]" style={{ background: "var(--panel-2)" }}>
+            <span className="font-semibold">{c.name}</span>
+            <span className="font-mono text-[10.5px] text-ink-faint">{c.conditions[0]?.type} = {c.conditions[0]?.value}</span>
+            <input type="number" aria-label={`${c.name} score`} value={sp.format_scores[c.name] ?? 0} onChange={(e) => setScore(c.name, Number(e.target.value))}
+              className="ml-auto w-[64px] rounded-lg px-2 py-0.5 text-right font-mono text-[11.5px]" style={{ ...fieldStyle, color: (sp.format_scores[c.name] ?? 0) >= 0 ? "var(--good)" : "var(--reject)" }} />
+            <button onClick={() => removeCustom(c.name)} aria-label={`Remove ${c.name}`} className="text-ink-faint hover:text-[var(--reject)]">✕</button>
+          </div>
+        ))}
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <input value={cfName} onChange={(e) => setCfName(e.target.value)} placeholder="Format name" className="rounded-lg px-2.5 py-1.5 text-[12px]" style={fieldStyle} />
+          <select value={cfType} onChange={(e) => setCfType(e.target.value)} className="rounded-lg px-2 py-1.5 text-[12px]" style={fieldStyle}>
+            {CONDITION_TYPES.map((t) => <option key={t.v} value={t.v}>{t.l}</option>)}
+          </select>
+          <input value={cfValue} onChange={(e) => setCfValue(e.target.value)} placeholder="FraMeSToR" className="rounded-lg px-2.5 py-1.5 text-[12px]" style={fieldStyle} />
+          <div className="flex items-center gap-2">
+            <input type="number" aria-label="Score" value={cfScore} onChange={(e) => setCfScore(Number(e.target.value))} className="w-full rounded-lg px-2 py-1.5 text-right font-mono text-[12px]" style={fieldStyle} />
+            <button onClick={addCustom} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>Add</button>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div className="text-[12px] font-semibold">Name contains</div>
+        <p className="mb-2 text-[10.5px] text-ink-faint">Points for any release whose name contains a word — IMAX, Criterion, PROPER. Negative to push one down.</p>
+        <KeywordEditor keywords={sp.keywords ?? []} onChange={(kw) => patch({ keywords: kw })} />
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <label className="block rounded-xl p-3" style={panelStyle}>
+          <span className="text-[12px] font-semibold">Prefer smaller files</span>
+          <span className="mb-2 block text-[10.5px] text-ink-faint">Off: the biggest of equals wins. Strongly: the smallest watchable.</span>
+          <select value={SIZE_LEANS.some((s) => s.v === sp.small_bias) ? sp.small_bias : 0.15} onChange={(e) => patch({ small_bias: Number(e.target.value) })} className="w-full rounded-lg px-2.5 py-1.5 text-[12.5px]" style={fieldStyle}>
+            {SIZE_LEANS.map((s) => <option key={s.v} value={s.v}>{s.l}</option>)}
+          </select>
+        </label>
+        <NumberField label="Minimum total score" hint="Refuse releases scoring below this" value={sp.min_format_score} onChange={(v) => patch({ min_format_score: v })} allowNegative />
+      </div>
+    </div>
+  );
+}
+
+// LibraryFitPanel judges the library against the target as edited: the titles using this
+// profile, or — for a new profile — every title, as if they all used it.
+function LibraryFitPanel({ sp }: { sp: StoredProfile }) {
+  const [res, setRes] = useState<{ scope: "profile" | "library"; counts: FitCounts } | null>(null);
+  const navigate = useNavigate();
+  const key = JSON.stringify({ i: sp.ideal, r: sp.allowed_resolutions, id: sp.id, m: sp.media_type });
+  useEffect(() => {
+    let alive = true;
+    const t = window.setTimeout(() => { api.libraryFitPreview(sp).then((r) => alive && setRes(r)).catch(() => {}); }, 400);
+    return () => { alive = false; window.clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  const series = sp.media_type === "series";
+  const misfits = res ? res.counts.over + res.counts.under + res.counts.mismatch : 0;
+  const show = () => {
+    // Open the library table filtered to what doesn't fit (the tables remember their view).
+    try {
+      if (series) localStorage.setItem("series.view", "table");
+      else { localStorage.setItem("movies.view", "table"); localStorage.setItem("movies.table.misfits", "misfits"); }
+    } catch { /* storage blocked */ }
+    navigate(series ? "/series" : "/movies");
+  };
+  return (
+    <div className="rounded-xl p-4" style={panelStyle}>
+      <div className="mb-0.5 text-[13px] font-semibold">In your library</div>
+      <div className="mb-2.5 text-[11px] text-ink-faint">
+        {!res ? "Checking…"
+          : res.scope === "library"
+            ? `Every ${series ? "show" : "film"} judged as if it used this profile (${res.counts.titles} ${series ? "shows" : "films"})`
+            : `${res.counts.titles} ${series ? (res.counts.titles === 1 ? "show uses" : "shows use") : res.counts.titles === 1 ? "film uses" : "films use"} this profile — as edited`}
+      </div>
+      {res && <FitBar counts={res.counts} />}
+      {res && misfits > 0 && (
+        <button onClick={show} className="mt-2.5 text-[11.5px] font-semibold" style={{ color: "var(--accent)" }}>
+          {series ? "Open the shows table →" : `Show the films that don't fit →`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// TestPanel runs the profile, as edited, against a real title's indexer results.
+function TestPanel({ sp }: { sp: StoredProfile }) {
+  const series = sp.media_type === "series";
+  const [movies, setMovies] = useState<Movie[] | null>(null);
+  const [shows, setShows] = useState<Series[] | null>(null);
+  const [q, setQ] = useState("");
+  const [pick, setPick] = useState<{ id: number; title: string } | null>(null);
+  const [season, setSeason] = useState(1);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<ReleaseList | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
+
+  const loadTitles = () => {
+    if (series && shows === null) api.series().then((r) => setShows(r.series ?? [])).catch(() => setShows([]));
+    if (!series && movies === null) api.movies().then((r) => setMovies(r.movies ?? [])).catch(() => setMovies([]));
+  };
+  const matches = useMemo(() => {
+    const n = q.trim().toLowerCase();
+    if (!n || pick) return [];
+    const list: { id: number; title: string; year?: number }[] = series ? (shows ?? []) : (movies ?? []);
+    return list.filter((t) => t.title.toLowerCase().includes(n)).slice(0, 6);
+  }, [q, pick, series, movies, shows]);
+
+  const run = async () => {
+    if (!pick) return;
+    setBusy(true);
+    setErr(null);
+    setResult(null);
+    setShowAll(false);
+    try {
+      setResult(await api.qualityTest(series ? { profile: sp, series_id: pick.id, season } : { profile: sp, movie_id: pick.id }));
+    } catch (e) {
+      setErr((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const releases = result?.releases ?? [];
+  const winner = releases.find((r) => r.recommended);
+  const eligible = releases.filter((r) => r.eligible && !r.recommended);
+  const skipped = releases.filter((r) => !r.eligible);
+
+  return (
+    <div className="rounded-xl p-4" style={panelStyle}>
+      <div className="mb-0.5 text-[13px] font-semibold">Test on a real title</div>
+      <div className="mb-2.5 text-[11px] text-ink-faint">Searches your indexers and shows what this profile, as edited, would pick.</div>
+      <div className="relative">
+        <div className="flex gap-2">
+          <input value={pick ? pick.title : q} onFocus={loadTitles} onChange={(e) => { setPick(null); setQ(e.target.value); setResult(null); }}
+            placeholder={series ? "A show in your library" : "A film in your library"} aria-label="Title to test" className="min-w-0 flex-1 rounded-lg px-2.5 py-1.5 text-[12.5px]" style={fieldStyle} />
+          {series && (
+            <input type="number" min={1} value={season} onChange={(e) => setSeason(Math.max(1, Number(e.target.value) || 1))} aria-label="Season"
+              className="w-[64px] rounded-lg px-2 py-1.5 text-right font-mono text-[12.5px]" style={fieldStyle} title="Season" />
+          )}
+          <button onClick={run} disabled={!pick || busy} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
+            {busy ? "Searching…" : "Search"}
+          </button>
+        </div>
+        {matches.length > 0 && (
+          <div className="absolute left-0 right-0 z-10 mt-1 overflow-hidden rounded-lg" style={{ ...panelStyle, boxShadow: "var(--shadow)" }}>
+            {matches.map((t) => (
+              <button key={t.id} onClick={() => { setPick({ id: t.id, title: t.title }); setQ(""); }} className="block w-full px-3 py-1.5 text-left text-[12px] hover:bg-[var(--panel-2)]">
+                {t.title} <span className="text-ink-faint">{t.year || ""}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      {err && <div className="mt-2.5 text-[11.5px]" style={{ color: "var(--reject)" }}>{err}</div>}
+      {result && (
+        <div className="mt-3">
+          {winner ? (
+            <div className="rounded-lg p-3" style={{ background: "var(--accent-soft)", border: "1px solid var(--accent-line)" }}>
+              <div className="font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-accent">Would grab</div>
+              <div className="mt-1 text-[13px] font-semibold">{winner.summary}</div>
+              <div className="mt-0.5 font-mono text-[10.5px] text-ink-dim">
+                {winner.size_gb.toFixed(1)} GB{winner.bitrate_mbps ? ` · ${winner.bitrate_mbps.toFixed(1)} Mb/s` : ""} · ▲ {winner.seeders}
+              </div>
+              <div className="mt-1 truncate font-mono text-[10px] text-ink-faint" title={winner.title}>{winner.title}</div>
+            </div>
+          ) : (
+            <div className="rounded-lg p-3 text-[12px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>
+              {releases.length === 0 ? "Your indexers found no releases for this." : "Nothing found fits this profile."}
+            </div>
+          )}
+          {(result.why ?? []).length > 0 && winner && (
+            <ul className="mt-2 flex flex-col gap-0.5 text-[11.5px] text-ink-dim">
+              {(result.why ?? []).map((w) => <li key={w}>✓ {w}</li>)}
+            </ul>
+          )}
+          {releases.length > 0 && (
+            <button onClick={() => setShowAll((s) => !s)} className="mt-2 text-[11.5px] font-semibold" style={{ color: "var(--accent)" }}>
+              {showAll ? "Hide the others" : `${eligible.length} other eligible · ${skipped.length} skipped`}
+            </button>
+          )}
+          {showAll && (
+            <div className="mt-2 max-h-[280px] overflow-y-auto rounded-lg thin-scroll" style={{ border: "1px solid var(--line)" }}>
+              {[...eligible, ...skipped].map((r) => (
+                <div key={r.title} className="flex items-center gap-2 px-3 py-1.5 text-[11.5px]" style={{ borderBottom: "1px solid var(--line-soft)", opacity: r.eligible ? 1 : 0.6 }}>
+                  <span className="min-w-0 flex-1 truncate" title={r.title}>{r.summary}</span>
+                  <span className="font-mono text-[10.5px] text-ink-faint">{r.size_gb.toFixed(1)} GB</span>
+                  {!r.eligible && <span className="max-w-[45%] truncate text-right text-[10.5px]" style={{ color: "var(--reject)" }} title={r.reject_reason}>{r.reject_reason}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// SaveBar stays at the bottom of the page while editing.
+function SaveBar({ dirty, saving, error, onSave, onCancel, mobileNote }: { dirty: boolean; saving: boolean; error: string | null; onSave: () => void; onCancel: () => void; mobileNote?: string }) {
+  return (
+    <div className="sticky bottom-0 z-20 mt-2" style={{ background: "var(--bg)", borderTop: "1px solid var(--line)" }}>
+      <div className="mx-auto flex w-full max-w-[1240px] flex-wrap items-center gap-3 px-4 py-3 sm:px-6">
+        <div className="min-w-0 flex-1 text-[12px]">
+          {error ? <span style={{ color: "var(--reject)" }}>{error}</span>
+            : dirty ? <span className="text-ink-dim">Unsaved changes</span>
+              : <span className="text-ink-faint">No changes</span>}
+          {mobileNote && <span className="ml-2 font-mono text-[10.5px] text-ink-faint lg:hidden">· {mobileNote}</span>}
+        </div>
+        <button onClick={onCancel} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Cancel</button>
+        <button onClick={onSave} disabled={saving} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-60" style={primaryStyle}>{saving ? "Saving…" : "Save profile"}</button>
+      </div>
+    </div>
+  );
+}
+
+function NumberField({ label, hint, value, onChange, allowNegative }: { label: string; hint: string; value: number; onChange: (v: number) => void; allowNegative?: boolean }) {
+  return (
+    <label className="block rounded-xl p-3" style={panelStyle}>
+      <span className="block text-[12px] font-semibold">{label}</span>
+      <span className="mb-2 block text-[10.5px] text-ink-faint">{hint}</span>
+      <input type="number" min={allowNegative ? undefined : 0} value={value} onChange={(e) => onChange(allowNegative ? Number(e.target.value) : Math.max(0, Number(e.target.value)))} className="w-full rounded-lg px-2.5 py-1.5 text-[13px]" style={fieldStyle} />
+    </label>
+  );
+}
+
+// =====================================================================================
+// Music builder
+// =====================================================================================
+
+// A music profile is a ladder: each tier on it is grabbed, the highest available wins, and
+// upgrading stops at the top tier you kept. Scores follow the ladder's rank, the same spacing
+// the presets use, and anything off the ladder scores nothing — which the engine refuses.
+function MusicBuilder({ initial, ladder, presets, onCancel, onSaved }: { initial: StoredProfile; ladder: string[]; presets: MusicPreset[]; onCancel: () => void; onSaved: () => void }) {
+  const start = useMemo(() => ({ ...initial, format_scores: initial.format_scores ?? {}, rejected: initial.rejected ?? [] }), [initial]);
+  const [sp, setSp] = useState<StoredProfile>(start);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const startJSON = useRef(JSON.stringify(start));
+  const dirty = JSON.stringify(sp) !== startJSON.current;
+  useUnsaved(dirty);
+  const patch = (p: Partial<StoredProfile>) => setSp((s) => ({ ...s, ...p }));
+
+  // Each tier's score: the full-ladder preset's value, else spaced by rank.
+  const canonical = useMemo(() => {
+    const full = presets.reduce<Record<string, number>>((best, p) => (Object.keys(p.format_scores).length > Object.keys(best).length ? p.format_scores : best), {});
+    const out: Record<string, number> = {};
+    ladder.forEach((t, i) => { out[t] = full[t] ?? (ladder.length - i) * 10; });
+    return out;
+  }, [ladder, presets]);
+
+  const on = (tier: string) => (sp.format_scores[tier] ?? 0) > 0;
+  const toggle = (tier: string) => {
+    const next = { ...sp.format_scores };
+    if (on(tier)) delete next[tier];
+    else next[tier] = canonical[tier];
+    patch({ format_scores: next, min_format_score: 1 });
+  };
+  const applyPreset = (p: MusicPreset) => patch({ format_scores: { ...p.format_scores }, min_format_score: p.min_format_score, upgrades_enabled: p.upgrades_enabled, name: sp.name || p.name });
+  const top = ladder.find((t) => on(t));
+  const kept = ladder.filter((t) => on(t)).length;
+
+  const leave = () => {
+    if (dirty && !window.confirm("Discard your changes to this profile?")) return;
+    onCancel();
+  };
+  const save = async () => {
+    if (!sp.name.trim()) { setError("Give the profile a name."); return; }
+    if (kept === 0) { setError("Keep at least one quality tier on the ladder."); return; }
+    setSaving(true);
+    setError(null);
+    try {
+      if (sp.id > 0) await api.updateQualityProfile(sp.id, sp);
+      else await api.createQualityProfile(sp);
+      onSaved();
+    } catch (e) { setError((e as Error).message); setSaving(false); }
+  };
+
+  return (
+    <>
+      <PageHeader title={sp.id > 0 ? "Edit music profile" : "New music profile"} crumb="System / Quality / Music" />
+      <div className="mx-auto w-full max-w-[720px] px-4 pb-4 pt-6 sm:px-6">
+        <div className="mb-4"><button onClick={leave} className="text-[12px] text-ink-dim hover:text-[var(--ink)]">← Back</button></div>
+        <label htmlFor="mp-name" className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-wide text-accent">Name</label>
+        <input id="mp-name" value={sp.name} onChange={(e) => patch({ name: e.target.value })} placeholder="Lossless, or the best MP3" className="w-full rounded-lg px-3 py-2 text-[13px]" style={fieldStyle} />
+
+        {presets.length > 0 && (
+          <>
+            <SectionLabel>Start from</SectionLabel>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {presets.map((p) => (
+                <button key={p.name} onClick={() => applyPreset(p)} className="rounded-xl p-3 text-left transition-colors hover:border-[var(--accent)]" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+                  <div className="text-[12.5px] font-semibold">{p.name}</div>
+                  <div className="mt-0.5 text-[11px] leading-[1.45] text-ink-faint">{p.description}</div>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        <SectionLabel>Quality ladder</SectionLabel>
+        <p className="-mt-1 mb-2 text-[10.5px] text-ink-faint">
+          Best first. Every tier you keep can be grabbed; the highest available wins, and upgrading stops at {top ? <b className="text-ink">{top}</b> : "the top tier you keep"}. Tiers you leave off are never grabbed.
+        </p>
+        <div className="overflow-hidden rounded-xl" style={panelStyle}>
+          {ladder.map((tier, i) => {
+            const active = on(tier);
+            const lossless = ["FLAC-24", "FLAC", "ALAC", "WAV"].includes(tier);
+            return (
+              <button key={tier} onClick={() => toggle(tier)} role="checkbox" aria-checked={active} className="flex w-full items-center gap-3 px-3.5 py-2 text-left"
+                style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)", background: active ? "var(--accent-soft)" : "transparent" }}>
+                <span className="grid h-4 w-4 flex-none place-items-center rounded" style={{ background: active ? "var(--accent)" : "transparent", border: `1px solid ${active ? "var(--accent)" : "var(--line)"}` }}>
+                  {active && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 12l5 5L20 6" stroke="var(--accent-ink)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+                </span>
+                <span className="w-[80px] font-mono text-[12.5px] font-semibold" style={{ color: active ? "var(--ink)" : "var(--ink-faint)" }}>{tier}</span>
+                <span className="text-[10.5px] text-ink-faint">{lossless ? "lossless" : "lossy"}</span>
+                {active && tier === top && <span className="ml-auto rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Top</span>}
+              </button>
+            );
+          })}
+        </div>
+
+        <SectionLabel>Upgrades</SectionLabel>
+        <div className="flex items-center justify-between gap-3 rounded-xl p-4" style={panelStyle}>
+          <div className="min-w-0">
+            <div className="text-[12.5px] font-semibold">Automatically upgrade</div>
+            <div className="text-[10.5px] text-ink-faint">Replace an album when a higher tier on your ladder turns up. Stops at the top tier.</div>
+          </div>
+          <Switch on={sp.upgrades_enabled} onChange={(v) => patch({ upgrades_enabled: v })} label="Automatically upgrade" />
+        </div>
+
+        <SectionLabel>Reject</SectionLabel>
+        <RejectEditor rejected={sp.rejected ?? []} onChange={(r) => patch({ rejected: r })} />
+      </div>
+      <SaveBar dirty={dirty} saving={saving} error={error} onSave={save} onCancel={leave} />
+    </>
+  );
+}
+
+// =====================================================================================
+// Book builder
+// =====================================================================================
+
+// BookBuilder edits a book quality profile: which formats to grab (per edition) and keyword
+// boosts (e.g. GraphicAudio +100), plus hard-reject terms. No resolution/bitrate.
+function BookBuilder({ initial, onCancel, onSaved }: { initial: StoredProfile; onCancel: () => void; onSaved: () => void }) {
+  const start = useMemo(() => ({ ...initial, format_scores: initial.format_scores ?? {}, keywords: initial.keywords ?? [], rejected: initial.rejected ?? [] }), [initial]);
+  const [sp, setSp] = useState<StoredProfile>(start);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const startJSON = useRef(JSON.stringify(start));
+  const dirty = JSON.stringify(sp) !== startJSON.current;
+  useUnsaved(dirty);
   const patch = (p: Partial<StoredProfile>) => setSp((s) => ({ ...s, ...p }));
   const setFormatScore = (name: string, score: number) => {
     const next = { ...sp.format_scores };
     if (score <= 0) delete next[name];
     else next[name] = score;
     patch({ format_scores: next });
+  };
+  const leave = () => {
+    if (dirty && !window.confirm("Discard your changes to this profile?")) return;
+    onCancel();
   };
   const save = async () => {
     if (!sp.name.trim()) { setError("Give the profile a name."); return; }
@@ -586,32 +1197,29 @@ function BookBuilder({ initial, onCancel, onSaved }: { initial: StoredProfile; o
       if (sp.id > 0) await api.updateQualityProfile(sp.id, sp);
       else await api.createQualityProfile(sp);
       onSaved();
-    } catch (e) { setError((e as Error).message); } finally { setSaving(false); }
+    } catch (e) { setError((e as Error).message); setSaving(false); }
   };
 
   return (
     <>
-      <PageHeader title={sp.id > 0 ? "Edit book profile" : "New book profile"} crumb="System / Quality" />
-      <div className="mx-auto w-full max-w-[720px] px-4 py-6 sm:px-6">
-        <div className="mb-4 flex items-center gap-2">
-          <button onClick={onCancel} className="text-[12px] text-ink-dim hover:text-[var(--ink)]">← Back</button>
-        </div>
-
-        <label className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-wide text-accent">Name</label>
-        <input value={sp.name} onChange={(e) => patch({ name: e.target.value })} placeholder="e.g. Audiobooks — GraphicAudio first" className="mb-5 w-full rounded-lg px-3 py-2 text-[13px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+      <PageHeader title={sp.id > 0 ? "Edit book profile" : "New book profile"} crumb="System / Quality / Books" />
+      <div className="mx-auto w-full max-w-[720px] px-4 pb-4 pt-6 sm:px-6">
+        <div className="mb-4"><button onClick={leave} className="text-[12px] text-ink-dim hover:text-[var(--ink)]">← Back</button></div>
+        <label htmlFor="bp-name" className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-wide text-accent">Name</label>
+        <input id="bp-name" value={sp.name} onChange={(e) => patch({ name: e.target.value })} placeholder="Audiobooks — GraphicAudio first" className="mb-1 w-full rounded-lg px-3 py-2 text-[13px]" style={fieldStyle} />
 
         {BOOK_FORMATS.map((grp) => (
-          <div key={grp.group} className="mb-5">
+          <div key={grp.group} className="mb-2">
             <SectionLabel>{grp.group} formats</SectionLabel>
-            <p className="mb-2 text-[10.5px] text-ink-faint">Score a format above 0 to grab it (higher = preferred); 0 skips it. The {grp.group.toLowerCase()} edition is fetched only if at least one of its formats is scored.</p>
+            <p className="-mt-1 mb-2 text-[10.5px] text-ink-faint">Score a format above 0 to grab it (higher = preferred); 0 skips it. The {grp.group.toLowerCase()} edition is fetched only if at least one of its formats is scored.</p>
             <div className="flex flex-col gap-1.5">
               {grp.formats.map((f) => {
                 const v = sp.format_scores?.[f] ?? 0;
                 return (
-                  <div key={f} className="flex items-center gap-3 rounded-lg px-2.5 py-1.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+                  <div key={f} className="flex items-center gap-3 rounded-lg px-2.5 py-1.5" style={panelStyle}>
                     <span className="w-[56px] font-mono text-[12px] font-semibold">{f}</span>
-                    <input type="range" min={0} max={100} step={5} value={v} onChange={(e) => setFormatScore(f, Number(e.target.value))} className="flex-1 accent-[var(--accent)]" />
-                    <input type="number" min={0} value={v} onChange={(e) => setFormatScore(f, Math.max(0, Number(e.target.value)))} className="w-[60px] rounded-lg px-2 py-1 text-right font-mono text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+                    <input type="range" min={0} max={100} step={5} value={v} aria-label={`${f} score`} onChange={(e) => setFormatScore(f, Number(e.target.value))} className="flex-1 accent-[var(--accent)]" />
+                    <input type="number" min={0} value={v} aria-label={`${f} score`} onChange={(e) => setFormatScore(f, Math.max(0, Number(e.target.value)))} className="w-[60px] rounded-lg px-2 py-1 text-right font-mono text-[12px]" style={fieldStyle} />
                   </div>
                 );
               })}
@@ -619,24 +1227,21 @@ function BookBuilder({ initial, onCancel, onSaved }: { initial: StoredProfile; o
           </div>
         ))}
 
-        <SectionLabel>Preferred keywords</SectionLabel>
-        <p className="mb-2 text-[10.5px] text-ink-faint">Add points to any release whose name contains a term — e.g. GraphicAudio +100, Dramatized +80, Unabridged +20. Combined with the format score; highest total wins.</p>
+        <SectionLabel>Name contains</SectionLabel>
+        <p className="-mt-1 mb-2 text-[10.5px] text-ink-faint">Add points to any release whose name contains a term — GraphicAudio +100, Dramatized +80, Unabridged +20. Combined with the format score; highest total wins.</p>
         <KeywordEditor keywords={sp.keywords ?? []} onChange={(kw) => patch({ keywords: kw })} />
 
-        <div className="mt-5">
-          <SectionLabel>Reject</SectionLabel>
-          <RejectEditor rejected={sp.rejected ?? []} onChange={(r) => patch({ rejected: r })} />
-        </div>
-
-        {error && <div className="mt-4 rounded-lg p-3 text-[12px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
-        <div className="mt-6 flex items-center justify-end gap-3">
-          <button onClick={onCancel} className="text-[12.5px] text-ink-dim hover:text-[var(--ink)]">Cancel</button>
-          <button onClick={save} disabled={saving} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{saving ? "Saving…" : "Save profile"}</button>
-        </div>
+        <SectionLabel>Reject</SectionLabel>
+        <RejectEditor rejected={sp.rejected ?? []} onChange={(r) => patch({ rejected: r })} />
       </div>
+      <SaveBar dirty={dirty} saving={saving} error={error} onSave={save} onCancel={leave} />
     </>
   );
 }
+
+// =====================================================================================
+// Shared editors
+// =====================================================================================
 
 function KeywordEditor({ keywords, onChange }: { keywords: { term: string; score: number }[]; onChange: (kw: { term: string; score: number }[]) => void }) {
   const [term, setTerm] = useState("");
@@ -651,20 +1256,19 @@ function KeywordEditor({ keywords, onChange }: { keywords: { term: string; score
       {keywords.length > 0 && (
         <div className="mb-2 flex flex-col gap-1.5">
           {keywords.map((k, i) => (
-            <div key={i} className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px]" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+            <div key={i} className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12px]" style={panelStyle}>
               <span className="font-semibold">{k.term}</span>
               <span className="ml-auto font-mono" style={{ color: k.score >= 0 ? "var(--good)" : "var(--reject)" }}>{k.score > 0 ? `+${k.score}` : k.score}</span>
-              <button onClick={() => onChange(keywords.filter((_, j) => j !== i))} className="text-ink-faint hover:text-[var(--reject)]">✕</button>
+              <button onClick={() => onChange(keywords.filter((_, j) => j !== i))} aria-label={`Remove ${k.term}`} className="text-ink-faint hover:text-[var(--reject)]">✕</button>
             </div>
           ))}
         </div>
       )}
       <div className="flex items-center gap-2">
-        <input value={term} onChange={(e) => setTerm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} placeholder="e.g. IMAX, Criterion, PROPER" className="flex-1 rounded-lg px-2.5 py-1.5 text-[12.5px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
-        <input type="number" value={score} onChange={(e) => setScore(Number(e.target.value))} className="w-[70px] rounded-lg px-2 py-1.5 text-right font-mono text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+        <input value={term} onChange={(e) => setTerm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} placeholder="IMAX" aria-label="Word" className="min-w-0 flex-1 rounded-lg px-2.5 py-1.5 text-[12.5px]" style={fieldStyle} />
+        <input type="number" value={score} aria-label="Points" onChange={(e) => setScore(Number(e.target.value))} className="w-[70px] rounded-lg px-2 py-1.5 text-right font-mono text-[12px]" style={fieldStyle} />
         <button onClick={add} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>Add</button>
       </div>
-      <p className="mt-1.5 text-[10.5px] text-ink-faint">Words in the release name that add (or subtract, if negative) score.</p>
     </div>
   );
 }
@@ -687,32 +1291,32 @@ function RejectEditor({ rejected, onChange }: { rejected: string[]; onChange: (r
       : onChange([...rejected.filter((r) => !EXECUTABLE_TYPES.some((t) => t.toLowerCase() === r.toLowerCase())), ...EXECUTABLE_TYPES]);
   return (
     <div>
-      <button onClick={toggleExec} className="mb-2 flex w-full items-center gap-2.5 rounded-lg p-2.5 text-left" style={{ border: `1px solid ${execOn ? "var(--reject)" : "var(--line)"}`, background: execOn ? "var(--reject-soft)" : "var(--panel)" }}>
+      <button onClick={toggleExec} role="checkbox" aria-checked={execOn} className="mb-2 flex w-full items-center gap-2.5 rounded-lg p-2.5 text-left" style={{ border: `1px solid ${execOn ? "var(--reject)" : "var(--line)"}`, background: execOn ? "var(--reject-soft)" : "var(--panel)" }}>
         <span className="grid h-4 w-4 flex-none place-items-center rounded" style={{ background: execOn ? "var(--reject)" : "transparent", border: `1px solid ${execOn ? "var(--reject)" : "var(--line)"}` }}>
-          {execOn && <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="M4 12l5 5L20 6" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+          {execOn && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 12l5 5L20 6" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" /></svg>}
         </span>
         <span className="min-w-0 flex-1">
-          <span className="text-[12.5px] font-semibold" style={{ color: execOn ? "var(--reject)" : "var(--ink)" }}>Reject executables & scripts</span>
+          <span className="text-[12.5px] font-semibold" style={{ color: execOn ? "var(--reject)" : "var(--ink)" }}>Reject executables and scripts</span>
           <span className="block text-[10.5px] text-ink-faint">.exe .bat .cmd .scr .msi … — malware safety, on by default</span>
         </span>
       </button>
       <div className="mb-2 flex flex-wrap gap-1.5">
         {REJECT_TYPES.map((t) => (
-          <button key={t} onClick={() => toggle(t)} className="rounded-lg px-2.5 py-1 text-[11.5px] font-semibold" style={{ border: `1px solid ${has(t) ? "var(--reject)" : "var(--line)"}`, background: has(t) ? "var(--reject-soft)" : "var(--panel)", color: has(t) ? "var(--reject)" : "var(--ink-dim)" }}>{t}</button>
+          <button key={t} onClick={() => toggle(t)} aria-pressed={has(t)} className="rounded-lg px-2.5 py-1 text-[11.5px] font-semibold" style={{ border: `1px solid ${has(t) ? "var(--reject)" : "var(--line)"}`, background: has(t) ? "var(--reject-soft)" : "var(--panel)", color: has(t) ? "var(--reject)" : "var(--ink-dim)" }}>{t}</button>
         ))}
       </div>
       {custom.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">
           {custom.map((r) => (
-            <span key={r} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11.5px]" style={{ background: "var(--reject-soft)", color: "var(--reject)" }}>{r}<button onClick={() => toggle(r)}>✕</button></span>
+            <span key={r} className="flex items-center gap-1.5 rounded-lg px-2 py-1 text-[11.5px]" style={{ background: "var(--reject-soft)", color: "var(--reject)" }}>{r}<button onClick={() => toggle(r)} aria-label={`Stop rejecting ${r}`}>✕</button></span>
           ))}
         </div>
       )}
       <div className="flex items-center gap-2">
-        <input value={term} onChange={(e) => setTerm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addCustom()} placeholder="Reject any release containing… (e.g. HDCAM, Telesync)" className="flex-1 rounded-lg px-2.5 py-1.5 text-[12.5px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+        <input value={term} onChange={(e) => setTerm(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addCustom()} placeholder="Telesync" aria-label="Reject any release containing" className="min-w-0 flex-1 rounded-lg px-2.5 py-1.5 text-[12.5px]" style={fieldStyle} />
         <button onClick={addCustom} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Reject</button>
       </div>
-      <p className="mt-1.5 text-[10.5px] text-ink-faint">Toggle file-types/sources to reject, or add your own terms. Any match is skipped entirely.</p>
+      <p className="mt-1.5 text-[10.5px] text-ink-faint">Any release whose name contains one of these is skipped entirely.</p>
     </div>
   );
 }
@@ -721,12 +1325,12 @@ function FormatToggle({ format, score, required, advanced, onChange }: { format:
   const state = required ? "require" : score > 0 ? "prefer" : score < 0 ? "avoid" : "ignore";
   const opts: { key: string; label: string; val: number; req: boolean; tone: string }[] = [
     { key: "avoid", label: "Avoid", val: -50, req: false, tone: "var(--reject)" },
-    { key: "ignore", label: "Neutral", val: 0, req: false, tone: "var(--ink-faint)" },
-    { key: "prefer", label: "Prefer", val: 50, req: false, tone: "var(--good)" },
-    { key: "require", label: "Require", val: 50, req: true, tone: "var(--accent)" },
+    { key: "ignore", label: "—", val: 0, req: false, tone: "var(--ink-faint)" },
+    { key: "prefer", label: "Want", val: 50, req: false, tone: "var(--good)" },
+    { key: "require", label: "Must", val: 50, req: true, tone: "var(--accent)" },
   ];
   return (
-    <div className="flex items-center gap-3 rounded-lg p-2.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+    <div className="flex flex-wrap items-center gap-3 rounded-lg p-2.5" style={{ background: "var(--panel-2)" }}>
       <div className="min-w-0 flex-1">
         <div className="text-[12.5px] font-semibold">{format.name}</div>
         <div className="truncate text-[11px] text-ink-faint" title={format.description}>{format.description}</div>
@@ -734,14 +1338,14 @@ function FormatToggle({ format, score, required, advanced, onChange }: { format:
       {advanced ? (
         <div className="flex items-center gap-2">
           <label className="flex items-center gap-1 text-[10.5px] text-ink-faint" title="Reject any release without this format">
-            <input type="checkbox" checked={required} onChange={(e) => onChange(score, e.target.checked)} /> required
+            <input type="checkbox" checked={required} onChange={(e) => onChange(score, e.target.checked)} /> must
           </label>
-          <input type="number" value={score} onChange={(e) => onChange(Number(e.target.value), required)} className="w-[72px] rounded-lg px-2 py-1 text-right font-mono text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+          <input type="number" value={score} aria-label={`${format.name} score`} onChange={(e) => onChange(Number(e.target.value), required)} className="w-[72px] rounded-lg px-2 py-1 text-right font-mono text-[12px]" style={fieldStyle} />
         </div>
       ) : (
-        <div className="inline-flex rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+        <div className="inline-flex rounded-lg p-0.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
           {opts.map((o) => (
-            <button key={o.key} onClick={() => onChange(o.val, o.req)} className="rounded-md px-2.5 py-1 text-[11px] font-semibold" style={{ background: state === o.key ? o.tone : "transparent", color: state === o.key ? "#fff" : "var(--ink-faint)" }}>{o.label}</button>
+            <button key={o.key} onClick={() => onChange(o.val, o.req)} aria-pressed={state === o.key} className="rounded-md px-2.5 py-1 text-[11px] font-semibold" style={{ background: state === o.key ? o.tone : "transparent", color: state === o.key ? "#fff" : "var(--ink-faint)" }}>{o.label}</button>
           ))}
         </div>
       )}
@@ -749,73 +1353,17 @@ function FormatToggle({ format, score, required, advanced, onChange }: { format:
   );
 }
 
-function AdvancedPanel({ sp, patch, setFormatScore }: { sp: StoredProfile; patch: (p: Partial<StoredProfile>) => void; setFormatScore: (name: string, score: number) => void }) {
-  const [cfName, setCfName] = useState("");
-  const [cfType, setCfType] = useState("release_group");
-  const [cfValue, setCfValue] = useState("");
-  const [cfScore, setCfScore] = useState(50);
-
-  const addCustom = () => {
-    if (!cfName.trim() || !cfValue.trim()) return;
-    const cf = { name: cfName.trim(), conditions: [{ type: cfType, value: cfValue.trim() }] };
-    patch({ custom_formats: [...(sp.custom_formats ?? []), cf] });
-    setFormatScore(cf.name, cfScore);
-    setCfName("");
-    setCfValue("");
-  };
-
-  const removeCustom = (name: string) => {
-    patch({ custom_formats: (sp.custom_formats ?? []).filter((c) => c.name !== name) });
-    setFormatScore(name, 0);
-  };
-
-  return (
-    <div className="mt-3 rounded-xl p-4" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
-      <div className="mb-3 flex items-center justify-between">
-        <span className="font-mono text-[10px] font-bold uppercase tracking-wide text-accent">Custom formats</span>
-      </div>
-      <p className="mb-3 text-[11px] text-ink-dim">Match anything the parser reads — a favourite release group, a specific edition, a codec — and score it.</p>
-
-      {(sp.custom_formats ?? []).map((c) => (
-        <div key={c.name} className="mb-2 flex items-center gap-2 rounded-lg p-2 text-[11.5px]" style={{ background: "var(--panel-2)" }}>
-          <span className="font-semibold">{c.name}</span>
-          <span className="font-mono text-[10.5px] text-ink-faint">{c.conditions[0]?.type} = {c.conditions[0]?.value}</span>
-          <span className="ml-auto font-mono" style={{ color: (sp.format_scores[c.name] ?? 0) >= 0 ? "var(--good)" : "var(--reject)" }}>{sp.format_scores[c.name] ?? 0}</span>
-          <button onClick={() => removeCustom(c.name)} className="text-ink-faint hover:text-[var(--reject)]">✕</button>
-        </div>
-      ))}
-
-      <div className="mt-2 grid grid-cols-2 gap-2">
-        <input value={cfName} onChange={(e) => setCfName(e.target.value)} placeholder="Format name" className="rounded-lg px-2.5 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
-        <select value={cfType} onChange={(e) => setCfType(e.target.value)} className="rounded-lg px-2 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
-          {CONDITION_TYPES.map((t) => <option key={t.v} value={t.v}>{t.l}</option>)}
-        </select>
-        <input value={cfValue} onChange={(e) => setCfValue(e.target.value)} placeholder="Value (e.g. FraMeSToR)" className="rounded-lg px-2.5 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
-        <div className="flex items-center gap-2">
-          <input type="number" value={cfScore} onChange={(e) => setCfScore(Number(e.target.value))} className="w-full rounded-lg px-2 py-1.5 text-right font-mono text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
-          <button onClick={addCustom} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>Add</button>
-        </div>
-      </div>
-
-      <div className="mt-4 flex items-center justify-between">
-        <span className="text-[12px] text-ink-dim">Require at least this preferred-score to grab</span>
-        <input type="number" value={sp.min_format_score} onChange={(e) => patch({ min_format_score: Number(e.target.value) })} className="w-[80px] rounded-lg px-2 py-1 text-right font-mono text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
-      </div>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
-// Preview (reused from the original page)
+// Preview
 // ---------------------------------------------------------------------------
 
-function Hero({ winner, why, chosenOver, open, onToggle, eligible, rejected, total, advanced }: { winner: Evaluation; why: string[]; chosenOver?: string; open: boolean; onToggle: () => void; eligible: Evaluation[]; rejected: Evaluation[]; total: number; advanced: boolean }) {
+function Hero({ winner, why, chosenOver, open, onToggle, eligible, rejected, total }: { winner: Evaluation; why: string[]; chosenOver?: string; open: boolean; onToggle: () => void; eligible: Evaluation[]; rejected: Evaluation[]; total: number }) {
   const r = winner.candidate.release;
   return (
     <>
       <div className="rounded-2xl p-5" style={{ background: "linear-gradient(180deg, var(--accent-soft), var(--panel) 62%)", border: "1px solid var(--accent)", boxShadow: "var(--shadow)" }}>
         <div className="mb-2.5 font-mono text-[10px] font-bold uppercase tracking-[0.12em] text-accent">★ Arrmada would grab this</div>
-        <div className="mb-3 text-[24px] font-bold tracking-tight">{r.resolution} {r.source}</div>
+        <div className="mb-3 text-[22px] font-bold tracking-tight">{r.resolution} {r.source}</div>
         <div className="mb-4 flex flex-wrap gap-1.5">
           {(r.hdr ?? []).map((h) => <Chip key={h} accent>{h}</Chip>)}
           {(r.audio ?? []).map((a) => <Chip key={a} accent>{a}</Chip>)}
@@ -828,7 +1376,7 @@ function Hero({ winner, why, chosenOver, open, onToggle, eligible, rejected, tot
           <div className="flex flex-col gap-2">
             {why.map((w) => (
               <div key={w} className="flex items-start gap-2 text-[13px]">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ color: "var(--accent)", flex: "none", marginTop: 2 }}><path d="M4 12l5 5L20 6" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" /></svg>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ color: "var(--accent)", flex: "none", marginTop: 2 }}><path d="M4 12l5 5L20 6" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" /></svg>
                 <span>{w}</span>
               </div>
             ))}
@@ -837,16 +1385,16 @@ function Hero({ winner, why, chosenOver, open, onToggle, eligible, rejected, tot
         {chosenOver && <div className="mt-3.5 border-t border-dashed pt-3.5 text-[12.5px] text-ink-dim" style={{ borderColor: "var(--line)" }}>{chosenOver}</div>}
         <div className="mt-3 truncate font-mono text-[10.5px] text-ink-faint" title={winner.candidate.name}>{winner.candidate.name}</div>
       </div>
-      <button onClick={onToggle} aria-expanded={open} className="mt-3.5 flex w-full items-center justify-center gap-2 rounded-xl p-2.5 text-[12.5px] font-semibold text-ink-dim transition-colors hover:text-ink" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
-        {open ? "Hide" : `Compare all ${total}`} releases
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .2s" }}><path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none" /></svg>
+      <button onClick={onToggle} aria-expanded={open} className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl p-2.5 text-[12.5px] font-semibold text-ink-dim transition-colors hover:text-ink" style={panelStyle}>
+        {open ? "Hide" : `Compare all ${total}`} sample releases
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true" style={{ transform: open ? "rotate(180deg)" : "none", transition: "transform .2s" }}><path d="M6 9l6 6 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" fill="none" /></svg>
       </button>
       {open && (
         <div className="mt-2.5 overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)", background: "var(--line-soft)" }}>
           {eligible.length > 0 && <CmpLabel>Also eligible</CmpLabel>}
-          {eligible.map((e, i) => <CmpRow key={`e${i}`} ev={e} advanced={advanced} />)}
+          {eligible.map((e, i) => <CmpRow key={`e${i}`} ev={e} />)}
           {rejected.length > 0 && <CmpLabel>Skipped</CmpLabel>}
-          {rejected.map((e, i) => <CmpRow key={`r${i}`} ev={e} skip advanced={advanced} />)}
+          {rejected.map((e, i) => <CmpRow key={`r${i}`} ev={e} skip />)}
         </div>
       )}
     </>
@@ -861,79 +1409,16 @@ function CmpLabel({ children }: { children: React.ReactNode }) {
   return <div className="px-3.5 pb-1 pt-2.5 font-mono text-[9px] font-bold uppercase tracking-[0.09em] text-ink-faint" style={{ background: "var(--panel)" }}>{children}</div>;
 }
 
-function CmpRow({ ev, skip, advanced }: { ev: Evaluation; skip?: boolean; advanced?: boolean }) {
+function CmpRow({ ev, skip }: { ev: Evaluation; skip?: boolean }) {
   const r = ev.candidate.release;
+  const note = skip ? ev.reject_reason
+    : ev.avoided_formats?.length ? `ranked down — ${ev.avoided_formats.join(", ")}`
+      : ev.matched?.length ? ev.matched.join(", ") : "eligible";
   return (
     <div className="flex items-center gap-3 px-3.5 py-2.5" style={{ background: "var(--panel)", opacity: skip ? 0.6 : 1 }}>
       <span className="min-w-[108px] text-[12.5px] font-semibold">{r.resolution} {r.source}</span>
       <span className="min-w-[50px] font-mono text-[11.5px] text-ink-dim">{ev.candidate.size_gb.toFixed(1)} GB</span>
-      <span className="ml-auto text-right text-[12px]" style={{ color: skip ? "var(--reject)" : "var(--ink-faint)" }}>{skip ? ev.reject_reason : advanced ? `score ${ev.total}` : (ev.matched && ev.matched.length ? ev.matched.join(", ") : "eligible")}</span>
-    </div>
-  );
-}
-
-// The ideal-file windows are per resolution, with 576p and 480p together as "SD" (that's how
-// files are labelled once analysed).
-const IDEAL_RES = [
-  { key: "2160p", label: "4K", from: ["2160p"] },
-  { key: "1080p", label: "1080p", from: ["1080p"] },
-  { key: "720p", label: "720p", from: ["720p"] },
-  { key: "SD", label: "SD", from: ["576p", "480p"] },
-];
-const IDEAL_CODECS = [{ v: "hevc", l: "HEVC (H.265)" }, { v: "av1", l: "AV1" }, { v: "h264", l: "H.264" }];
-const IDEAL_HDR = [{ v: "SDR", l: "SDR" }, { v: "HDR10", l: "HDR10" }, { v: "HDR10+", l: "HDR10+" }, { v: "HLG", l: "HLG" }, { v: "DV", l: "Dolby Vision" }];
-
-// IdealEditor sets what a file in the library should look like. Report only: files that
-// don't match are flagged in the Movies and TV tables; nothing is downloaded or changed.
-function IdealEditor({ ideal, resolutions, onChange }: { ideal?: IdealFile; resolutions: string[]; onChange: (i: IdealFile | undefined) => void }) {
-  const cur: IdealFile = ideal ?? {};
-  const set = (p: Partial<IdealFile>) => onChange({ ...cur, ...p });
-  const toggle = (list: string[] | undefined, v: string) => (list ?? []).includes(v) ? (list ?? []).filter((x) => x !== v) : [...(list ?? []), v];
-  const rows = IDEAL_RES.filter((r) => resolutions.length === 0 || r.from.some((f) => resolutions.includes(f)));
-  const setWindow = (key: string, part: "min" | "max", v: number) => {
-    const b = { ...(cur.bitrate ?? {}) };
-    const w = { min: b[key]?.min ?? 0, max: b[key]?.max ?? 0, [part]: Math.max(0, v || 0) };
-    if (!w.min && !w.max) delete b[key]; else b[key] = w;
-    set({ bitrate: b });
-  };
-  const chip = (on: boolean, label: string, click: () => void) => (
-    <button key={label} onClick={click} className="rounded-full px-2.5 py-1 text-[11.5px] font-semibold"
-      style={{ border: `1px solid ${on ? "var(--accent)" : "var(--line)"}`, background: on ? "var(--accent-soft)" : "var(--panel-2)", color: on ? "var(--accent)" : "var(--ink-dim)" }}>{label}</button>
-  );
-  const numIn = (value: number | undefined, onSet: (v: number) => void, label: string) => (
-    <input type="number" min={0} step={1} aria-label={label} value={value || ""} placeholder="any" onChange={(e) => onSet(Number(e.target.value))}
-      className="w-[64px] rounded-lg px-2 py-1 text-right font-mono text-[12.5px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
-  );
-  return (
-    <div className="rounded-xl p-4" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
-      <p className="mb-3 text-[10.5px] text-ink-faint">
-        What a file in your library should look like. The Movies and TV tables then show which files don't fit, and why.
-        This only reports — it never changes what's downloaded or converted. Leave a part empty to accept anything.
-      </p>
-      <div className="mb-1 text-[12px] font-semibold">Video codec</div>
-      <div className="mb-3 flex flex-wrap gap-1.5">{IDEAL_CODECS.map((c) => chip((cur.codecs ?? []).includes(c.v), c.l, () => set({ codecs: toggle(cur.codecs, c.v) })))}</div>
-      <div className="mb-1 text-[12px] font-semibold">HDR</div>
-      <div className="mb-1 flex flex-wrap gap-1.5">{IDEAL_HDR.map((h) => chip((cur.hdr ?? []).includes(h.v), h.l, () => set({ hdr: toggle(cur.hdr, h.v) })))}</div>
-      <p className="mb-3 text-[10.5px] text-ink-faint">A Dolby Vision file counts as the format underneath it (often HDR10, sometimes HDR10+) unless you pick Dolby Vision itself.</p>
-      <div className="mb-1 text-[12px] font-semibold">Audio</div>
-      <div className="mb-3 flex flex-wrap gap-1.5">
-        {chip(!!cur.atmos, "Dolby Atmos", () => set({ atmos: !cur.atmos }))}
-        {chip(!!cur.lossless, "Lossless (TrueHD, DTS-HD MA)", () => set({ lossless: !cur.lossless }))}
-      </div>
-      <div className="mb-1 text-[12px] font-semibold">Bitrate</div>
-      <p className="mb-2 text-[10.5px] text-ink-faint">The whole file's average, as the library table shows it. Over the ceiling shows red, under the floor orange.</p>
-      <div className="flex flex-col gap-1.5">
-        {rows.map((r) => (
-          <div key={r.key} className="flex items-center gap-2 text-[12px]">
-            <span className="w-[52px] font-mono text-ink-dim">{r.label}</span>
-            {numIn(cur.bitrate?.[r.key]?.min, (v) => setWindow(r.key, "min", v), `${r.label} minimum Mb/s`)}
-            <span className="text-ink-faint">to</span>
-            {numIn(cur.bitrate?.[r.key]?.max, (v) => setWindow(r.key, "max", v), `${r.label} maximum Mb/s`)}
-            <span className="text-[11px] text-ink-faint">Mb/s</span>
-          </div>
-        ))}
-      </div>
-      {ideal && <button onClick={() => onChange(undefined)} className="mt-3 text-[11.5px] font-semibold" style={{ color: "var(--ink-faint)" }}>Clear the ideal file</button>}
+      <span className="ml-auto text-right text-[12px]" style={{ color: skip ? "var(--reject)" : "var(--ink-faint)" }}>{note}</span>
     </div>
   );
 }

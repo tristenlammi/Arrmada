@@ -5,11 +5,17 @@ package quality
 func DefaultFormats() []CustomFormat {
 	return []CustomFormat{
 		{Name: "Dolby Vision", Conditions: []Condition{{Type: CondDynamicRange, Value: "DV"}}},
+		{Name: "HDR10+", Conditions: []Condition{{Type: CondDynamicRange, Value: "HDR10+"}}},
 		{Name: "HDR10", Conditions: []Condition{{Type: CondDynamicRange, Value: "HDR10"}}},
+		{Name: "HLG", Conditions: []Condition{{Type: CondDynamicRange, Value: "HLG"}}},
+		{Name: "SDR", Conditions: []Condition{{Type: CondDynamicRange, Value: "SDR"}}},
 		{Name: "Atmos", Conditions: []Condition{{Type: CondAudio, Value: "Atmos"}}},
+		{Name: "Lossless", Conditions: []Condition{{Type: CondAudio, Value: "TrueHD|DTS-HD|FLAC"}}},
 		{Name: "TrueHD", Conditions: []Condition{{Type: CondAudio, Value: "TrueHD"}}},
 		{Name: "DTS-HD", Conditions: []Condition{{Type: CondAudio, Value: "DTS-HD"}}},
 		{Name: "HEVC", Conditions: []Condition{{Type: CondCodec, Value: "x265"}}},
+		{Name: "AV1", Conditions: []Condition{{Type: CondCodec, Value: "AV1"}}},
+		{Name: "H.264", Conditions: []Condition{{Type: CondCodec, Value: "x264"}}},
 	}
 }
 

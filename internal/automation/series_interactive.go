@@ -21,6 +21,12 @@ import (
 // quality profile and returning them ranked best-first — WITHOUT grabbing. This is
 // the manual "search indexers" backend, shared by the season- and episode-level UI.
 func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, season, episode int) (ReleaseList, error) {
+	return c.RankSeriesReleasesWith(ctx, seriesID, season, episode, nil)
+}
+
+// RankSeriesReleasesWith ranks under spec instead of the show's own profile when it's set
+// (the quality builder's "test on a real title").
+func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64, season, episode int, spec *quality.StoredProfile) (ReleaseList, error) {
 	if c.series == nil {
 		return ReleaseList{}, nil
 	}
@@ -131,7 +137,7 @@ func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, se
 			"series", s.Title, "want_season", season, "want_episode", episode,
 			"samples", strings.Join(sampleScope, " | "))
 	}
-	decision := c.quality.Decide(ctx, c.effectiveProfile(ctx, s.QualityProfile, "series"), cands)
+	decision := c.decideWith(ctx, c.effectiveProfile(ctx, s.QualityProfile, "series"), spec, cands)
 
 	// For a single-episode search we can show a bitrate (size ÷ episode runtime). Season/series
 	// packs cover many episodes, so leave bitrate off there rather than mislead.
