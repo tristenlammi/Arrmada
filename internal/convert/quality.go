@@ -24,7 +24,10 @@ import (
 //
 // Decode is on the CPU: it's the reliable path (hardware-decoded SSIM could stall the pipeline on
 // some GPUs). The caller wraps this in a timeout so a slow/hung verify can never block a job.
-func (s *Service) computeSSIM(ctx context.Context, distorted, reference string) (float64, error) {
+//
+// crop is the black-bar crop the encode applied (or ""): the reference gets the same crop,
+// so the picture is compared with the picture rather than squashed to the output's size.
+func (s *Service) computeSSIM(ctx context.Context, distorted, reference, crop string) (float64, error) {
 	di, err := probe(ctx, s.ffprobe, distorted)
 	if err != nil {
 		return 0, err
@@ -35,7 +38,7 @@ func (s *Service) computeSSIM(ctx context.Context, distorted, reference string) 
 	var sum float64
 	var n int
 	for _, wnd := range ssimWindows(di.DurationSec) {
-		sc, err := s.ssimWindow(ctx, distorted, reference, wnd.start, wnd.start, wnd.dur, di.Width, di.Height, di.FrameRateRat)
+		sc, err := s.ssimWindow(ctx, distorted, reference, wnd.start, wnd.start, wnd.dur, di.Width, di.Height, di.FrameRateRat, crop)
 		if err != nil {
 			continue // a single unreadable slice shouldn't fail the whole measurement
 		}
@@ -91,12 +94,16 @@ func ssimWindows(dur float64) []ssimWnd {
 // the different start points every third frame lined up with its neighbour — scoring 0.90
 // on a perfect encode, dragging the average to ~0.96, and failing the quality check on files
 // that were fine.
-func (s *Service) ssimWindow(ctx context.Context, distorted, reference string, dStart, rStart, dur float64, w, h int, rate string) (float64, error) {
+func (s *Service) ssimWindow(ctx context.Context, distorted, reference string, dStart, rStart, dur float64, w, h int, rate, crop string) (float64, error) {
 	align := "setpts=PTS-STARTPTS"
 	if validRate(rate) {
 		align += ",fps=" + rate + ",setpts=N/FRAME_RATE/TB"
 	}
-	lavfi := fmt.Sprintf("[0:v]%s[d];[1:v]scale=%d:%d:flags=bicubic,%s[r];[d][r]ssim", align, w, h, align)
+	ref := ""
+	if crop != "" {
+		ref = crop + ","
+	}
+	lavfi := fmt.Sprintf("[0:v]%s[d];[1:v]%sscale=%d:%d:flags=bicubic,%s[r];[d][r]ssim", align, ref, w, h, align)
 	args := []string{"-nostdin", "-hide_banner"}
 	seek := func(path string, start float64) {
 		if start > 0 {

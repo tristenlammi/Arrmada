@@ -938,7 +938,7 @@ export interface ConvertStatus {
 export interface ConvertSettings {
   auto: boolean; hours_start: string; hours_end: string; allow_av1: boolean; use_gpu: boolean; pause_watching: boolean;
   keep_audio_langs: string; keep_original_lang: boolean; drop_commentary: boolean; keep_sub_langs: string;
-  image_subs: "keep" | "when_text" | "remove"; tidy_tracks: boolean;
+  image_subs: "keep" | "when_text" | "remove"; tidy_tracks: boolean; crop: boolean;
   scratch_dir: string; vaapi_device: string; cpu_cores: number; workers: number; scan_at: string;
   server_time: string; server_tz: string; plex_watching_known: boolean; can_pause: boolean;
   has_gpu: boolean; gpu_does_av1: boolean; hdr10plus_tool: boolean;

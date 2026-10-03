@@ -78,7 +78,7 @@ func (s *Service) preflight(ctx context.Context, job *Job, src string, mi *Media
 			if err != nil || di.Width <= 0 {
 				return v, fmt.Errorf("a test clip couldn't be read")
 			}
-			sc, err := s.ssimWindow(ctx, out, src, 0, w.start, w.dur, di.Width, di.Height, di.FrameRateRat)
+			sc, err := s.ssimWindow(ctx, out, src, 0, w.start, w.dur, di.Width, di.Height, di.FrameRateRat, cp.Crop.filter())
 			if err != nil {
 				return v, err
 			}

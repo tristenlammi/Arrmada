@@ -379,7 +379,7 @@ func videoArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int, 
 	}
 	// Deinterlace first when the source is interlaced — encoding combed fields as
 	// progressive frames bakes the combing in permanently.
-	swVF := swFilterChain(mi)
+	swVF := swFilterChain(mi, plan)
 	switch enc.Kind {
 	case "vaapi": // AMD/Intel hardware
 		if hwDecode {
@@ -395,6 +395,9 @@ func videoArgs(enc Encoder, mi *MediaInfo, plan Plan, hwDecode bool, cores int, 
 			var chain []string
 			if mi.Interlaced {
 				chain = append(chain, deintFilter)
+			}
+			if c := plan.Crop.filter(); c != "" {
+				chain = append(chain, c)
 			}
 			chain = append(chain, "format="+pix, "hwupload")
 			a = append(a, "-vf", strings.Join(chain, ","))
@@ -489,12 +492,16 @@ func planWarnings(mi *MediaInfo, plan Plan) []string {
 const deintFilter = "bwdif=mode=send_frame"
 
 // swFilterChain builds the software video-filter chain for paths that feed the encoder
-// system-memory frames: deinterlace when needed. "" = no filter.
-func swFilterChain(mi *MediaInfo) string {
+// system-memory frames: deinterlace when needed, then remove black bars. "" = no filter.
+func swFilterChain(mi *MediaInfo, plan Plan) string {
+	var chain []string
 	if mi.Interlaced {
-		return deintFilter
+		chain = append(chain, deintFilter)
 	}
-	return ""
+	if c := plan.Crop.filter(); c != "" {
+		chain = append(chain, c)
+	}
+	return strings.Join(chain, ",")
 }
 
 // colourTagArgs re-asserts the source's colour tags on a hardware encode. Hardware encoders

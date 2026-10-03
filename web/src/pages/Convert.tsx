@@ -900,7 +900,7 @@ function Field({ label, hint, children }: { label: string; hint: string; childre
 }
 
 const SETTING_KEYS: (keyof ConvertSettings)[] = ["auto", "hours_start", "hours_end", "allow_av1", "use_gpu", "pause_watching", "keep_audio_langs", "keep_original_lang",
-  "drop_commentary", "keep_sub_langs", "image_subs", "tidy_tracks", "scratch_dir", "vaapi_device", "cpu_cores", "workers"];
+  "drop_commentary", "keep_sub_langs", "image_subs", "tidy_tracks", "crop", "scratch_dir", "vaapi_device", "cpu_cores", "workers"];
 
 function SettingsPanel({ flash, onSaved }: { flash: (m: string) => void; onSaved: (s: ConvertSettings) => void }) {
   const [saved, setSaved] = useState<ConvertSettings | null>(null);
@@ -955,6 +955,8 @@ function SettingsPanel({ flash, onSaved }: { flash: (m: string) => void; onSaved
           <Toggle on={d.use_gpu} set={(v) => set({ use_gpu: v })} label="Use my GPU"
             hint={`Many times faster, but files come out somewhat bigger for the same quality. HDR always encodes on the CPU (the GPU can't carry its metadata).${d.gpu_does_av1 ? "" : " Your GPU has no AV1 encoder, so GPU mode converts to HEVC."}`} />
         )}
+        <Toggle on={d.crop} set={(v) => set({ crop: v })} label="Remove black bars"
+          hint="Widescreen films are encoded without the black bars above and below (or beside) the picture. The picture and its shape stay exactly the same and your TV letterboxes it as before. Files come out slightly smaller, and the quality check judges the picture alone instead of counting the bars as a perfect match. Only what's black across the whole film is removed, so films that change shape (IMAX scenes) keep their full frame. Files that keep image subtitles keep their bars too — those subtitles are placed on the full frame." />
         {!d.hdr10plus_tool && <p className="text-[11px]" style={{ color: "var(--avoid)" }}>hdr10plus_tool isn't installed, so HDR10 files in HEVC are left alone (their HDR10+ couldn't be checked).</p>}
       </Section>
 

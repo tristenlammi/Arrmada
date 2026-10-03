@@ -242,12 +242,13 @@ func TestRealConversions(t *testing.T) {
 	}
 
 	// --- 6: pausing a running encode while someone watches -----------------------------
-	// This one is rehearsed on clips first, as a feature film would be.
+	// This one is rehearsed on clips first, as a feature film would be — and it's
+	// letterboxed (a 2.39:1 picture in a 16:9 frame), so its black bars come off.
 	set(t, s, map[string]string{keyAllowAV1: "false"})
 	preflightMinDuration = 30
 	defer func() { preflightMinDuration = 20 * 60 }()
 	slow := filepath.Join(lib, "Long (2022).mkv")
-	ff("-f", "lavfi", "-i", "testsrc2=s=1280x720:r=24:d=60,noise=alls=3:allf=u", "-c:v", "libx264", "-preset", "veryfast", "-crf", "0", "-pix_fmt", "yuv420p", slow)
+	ff("-f", "lavfi", "-i", "testsrc2=s=1280x536:r=24:d=60,noise=alls=3:allf=u,pad=1280:720:0:92", "-c:v", "libx264", "-preset", "veryfast", "-crf", "0", "-pix_fmt", "yuv420p", slow)
 	addMovie(6, "Long", slow)
 	requestOK(t, s.Request(ctx, movieKey(6)))
 	var pid int
@@ -296,6 +297,13 @@ func TestRealConversions(t *testing.T) {
 	}
 	if !rehearsed {
 		t.Error("the long film should have been rehearsed on clips before its full encode")
+	}
+	// The bars are gone, the picture isn't: 1280×536, and it passed the quality check
+	// against the original's picture area (a job only finishes Done if it did).
+	if out := mustProbe(t, slow); out.Width != 1280 || out.Height != 536 {
+		t.Errorf("letterboxed film: output %d×%d, want the 1280×536 picture without its bars", out.Width, out.Height)
+	} else {
+		t.Logf("long: black bars removed, %d×%d, SSIM %.4f", out.Width, out.Height, j.SSIM)
 	}
 	if m := s.prefs(ctx).measured; len(m) > 0 {
 		for k := range m {

@@ -27,6 +27,7 @@ const (
 	keyKeepSubLangs    = "convert_keep_sub_langs"     // CSV; empty = keep all subtitles
 	keyImageSubs       = "convert_image_subs"         // keep | when_text | remove
 	keyTidyTracks      = "convert_tidy_tracks"        // also rewrite files whose only gap is their tracks
+	keyCrop            = "convert_crop"               // remove black bars from re-encoded films
 	keyScratchDir      = "convert_scratch_dir"        // transcode working dir override
 	keyVaapiDevice     = "convert_vaapi_device"       // which /dev/dri/renderD* hardware encodes on
 	keyCPUCores        = "convert_cpu_cores"          // max cores a CPU encode may use (0 = half the box)
@@ -63,6 +64,7 @@ type prefs struct {
 	keepSubs                              []string
 	imageSubs                             string
 	tidyTracks                            bool
+	crop                                  bool
 	// measured holds what test encodes measured (see measured.go), keyed by measureKey.
 	measured map[string]measurement
 }
@@ -82,6 +84,7 @@ func (s *Service) prefs(ctx context.Context) prefs {
 		keepSubs:       splitCSV(g.Get(ctx, keyKeepSubLangs, "")),
 		imageSubs:      g.Get(ctx, keyImageSubs, ""),
 		tidyTracks:     g.GetBool(ctx, keyTidyTracks, false),
+		crop:           g.GetBool(ctx, keyCrop, true),
 		measured:       s.measured.all(ctx),
 	}
 	switch p.imageSubs {

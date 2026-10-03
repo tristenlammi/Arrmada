@@ -85,6 +85,15 @@ func (s *Service) process(ctx context.Context, job *Job) {
 				_ = os.Remove(jf) // labelled plain HDR10: no HDR10+ is normal
 			}
 		}
+		// Black bars are found before the format test, so the test encodes what the
+		// conversion will.
+		plan = s.withCrop(ctx, src, mi, plan, p)
+		if ctx.Err() != nil {
+			return
+		}
+		if c := plan.Crop; c != nil {
+			s.event("info", fmt.Sprintf("%s: removing black bars — %d×%d → %d×%d", job.Title, mi.Width, mi.Height, c.W, c.H))
+		}
 		codec := s.chooseCodec(ctx, job, src, mi, plan, p, h10pJSON != "")
 		if ctx.Err() != nil {
 			return
@@ -163,7 +172,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		s.update(job, func(j *Job) { j.State = StateVerifying })
 		s.event("info", fmt.Sprintf("Checking %s against the original…", job.Title))
 		sctx, cancel := context.WithTimeout(ctx, 25*time.Minute)
-		score, err := s.computeSSIM(sctx, dst, src)
+		score, err := s.computeSSIM(sctx, dst, src, plan.Crop.filter())
 		cancel()
 		if ctx.Err() != nil {
 			return
@@ -393,7 +402,8 @@ func (s *Service) runEncodeOnce(ctx context.Context, job *Job, src, dst, scratch
 	}
 	// VAAPI: first try a full-GPU pipeline (hardware decode → GPU encode). If the source
 	// can't be hardware-decoded, fall back to software decode + GPU encode, then CPU.
-	if enc.Kind == "vaapi" && plan.VideoCodec != "" {
+	// (Not when removing black bars: the crop runs on system-memory frames.)
+	if enc.Kind == "vaapi" && plan.VideoCodec != "" && plan.Crop == nil {
 		if err := s.encode(ctx, job, src, dst, mi, enc, plan, true); err == nil {
 			return nil
 		} else if ctx.Err() != nil {

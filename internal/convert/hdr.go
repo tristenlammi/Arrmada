@@ -109,7 +109,7 @@ func (s *Service) encodeHEVCStream(ctx context.Context, job *Job, src, dst strin
 	args := []string{"-y", "-hide_banner", "-nostats", "-loglevel", "warning", "-progress", "pipe:1",
 		"-threads", strconv.Itoa(cores),
 		"-i", src, "-map", fmt.Sprintf("0:v:%d", mi.VideoIndex), "-an", "-sn"}
-	if vf := swFilterChain(mi); vf != "" {
+	if vf := swFilterChain(mi, plan); vf != "" {
 		args = append(args, "-vf", vf)
 	}
 	hdrParams, colourTags := hdr10Params(mi)

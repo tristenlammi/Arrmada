@@ -70,6 +70,9 @@ func TestRealFile(t *testing.T) {
 	}
 	codec := s.chooseCodec(ctx, job, src, mi, plan, p, h10p)
 	plan.VideoCodec, plan.Quality = codec, maxQualityCRF(codec, mi)
+	cs := time.Now()
+	plan = s.withCrop(ctx, src, mi, plan, p)
+	t.Logf("black bars (%s): %+v", time.Since(cs).Round(time.Second), plan.Crop)
 	enc := s.pickEncoder(job, mi, codec, p.useGPU)
 	t.Logf("plan: %s CRF %d on %s · keeps HDR: %v · cores %d", codec, plan.Quality, enc.Label,
 		s.canPreserveHDR(mi, plan, enc, h10p), s.cpuCores(ctx))
@@ -125,7 +128,7 @@ func TestRealFile(t *testing.T) {
 		took := time.Since(t0)
 		cmi, err := probe(ctx, s.ffprobe, conv)
 		must(t, err)
-		sc, _ := s.computeSSIM(ctx, conv, orig)
+		sc, _ := s.computeSSIM(ctx, conv, orig, plan.Crop.filter())
 		fps := smi.FrameRate * smi.DurationSec / took.Seconds()
 		t.Logf("sample %d @ %s: %s → %s (%d%% smaller) · SSIM %.4f · %.2f fps (%s for %s of film) · out: %s",
 			i+1, clock(at), humanBytes(fileSize(orig)), humanBytes(fileSize(conv)), savedPct(fileSize(orig), fileSize(conv)),

@@ -12,6 +12,9 @@ type Plan struct {
 	VideoCodec string
 	Quality    int  // CRF target; 0 = the codec's own default (maxQualityCRF)
 	VFRToCFR   bool // normalize variable frame rate when present
+	// Crop removes black bars (see crop.go); nil keeps the full frame. Set per file at
+	// conversion time, never by planFor — finding the bars means decoding the film.
+	Crop *Crop
 
 	Audio AudioPlan
 	Subs  SubPlan

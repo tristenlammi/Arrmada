@@ -131,7 +131,7 @@ func (s *Service) trial(ctx context.Context, job *Job, src string, mi *MediaInfo
 			}
 			side.Bytes += fileSize(out)
 			if di, err := probe(ctx, s.ffprobe, out); err == nil && di.Width > 0 {
-				if sc, err := s.ssimWindow(ctx, out, src, 0, c.start, c.dur, di.Width, di.Height, di.FrameRateRat); err == nil {
+				if sc, err := s.ssimWindow(ctx, out, src, 0, c.start, c.dur, di.Width, di.Height, di.FrameRateRat, cp.Crop.filter()); err == nil {
 					scores = append(scores, sc)
 				}
 			}
@@ -316,6 +316,10 @@ func (s *Service) StartCompare(ctx context.Context, key string) error {
 		if err == nil {
 			p := s.prefs(bg)
 			plan, _ := p.planFor(mi, src, origLang, nil)
+			if plan.VideoCodec == "" {
+				plan.VideoCodec = "hevc" // Compare tests the picture even when it would not convert
+			}
+			plan = s.withCrop(bg, src, mi, plan, p) // the clips match what a conversion would encode
 			res, err = s.trial(bg, nil, src, mi, plan, p, dir)
 			res.Key, res.Title = key, title
 			if err == nil && mi.EncodeHDR() == "HDR10+" {
