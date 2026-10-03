@@ -23,14 +23,17 @@ type IndexedFile struct {
 }
 
 // IndexedFiles returns the analysed files of a media type ("movie" | "episode"); seriesID
-// > 0 narrows episodes to one show. Files not analysed yet are left out.
+// > 0 narrows episodes to one show. Files not analysed yet are left out — and so are
+// files analysed by an older version, which may lack facts the check reads (before
+// version 4 there was no Atmos), so they'd be flagged for something they do have. They
+// reappear once the background pass re-analyses them.
 func (s *Service) IndexedFiles(ctx context.Context, mediaType string, seriesID int64) ([]IndexedFile, error) {
 	if s.index == nil {
 		return nil, nil
 	}
 	q := `SELECT media_type, movie_id, series_id, season, episode, path, info_json
-	      FROM convert_library WHERE media_type = ? AND info_json <> ''`
-	args := []any{mediaType}
+	      FROM convert_library WHERE media_type = ? AND info_json <> '' AND info_ver = ?`
+	args := []any{mediaType, probeSchemaVersion}
 	if seriesID > 0 {
 		q += ` AND series_id = ?`
 		args = append(args, seriesID)
