@@ -243,6 +243,7 @@ export interface StoredProfile {
   stall_minutes: number;
   upgrades_enabled: boolean;
   upgrade_min_percent: number;
+  allow_prerelease?: boolean; // grab cams/telesyncs/screeners (movie & series; off = refused)
   ideal?: IdealFile; // the target file: drives grabbing, ranking and the library fit check
 }
 

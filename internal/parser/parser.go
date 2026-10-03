@@ -656,6 +656,29 @@ func detectResolution(lc string) Resolution {
 	return ResUnknown
 }
 
+// Pre-release copies — filmed in a cinema, or leaked before release — all count as CAM.
+// Long tags are matched anywhere; short ones only as whole tokens, so "ts" doesn't match
+// inside "DTS" and "tc" doesn't match inside a word.
+var (
+	preReleaseTags = []string{"hdcam", "camrip", "cam rip", "hqcam", "telesync", "telecine",
+		"dvdscr", "bdscr", "webscr", "screener", "workprint", "predvd", "pdvd"}
+	preReleaseTokens = []string{"cam", "ts", "hdts", "tsrip", "tc", "hdtc", "scr", "r5", "r6"}
+)
+
+func isPreRelease(lc string) bool {
+	for _, t := range preReleaseTags {
+		if strings.Contains(lc, t) {
+			return true
+		}
+	}
+	for _, t := range preReleaseTokens {
+		if contains(lc, t) {
+			return true
+		}
+	}
+	return false
+}
+
 func detectSource(lc string) Source {
 	switch {
 	case strings.Contains(lc, "remux"):
@@ -671,8 +694,7 @@ func detectSource(lc string) Source {
 		return SourceHDTV
 	case strings.Contains(lc, "dvdrip"), strings.Contains(lc, " dvd "):
 		return SourceDVD
-	case strings.Contains(lc, "hdcam"), strings.Contains(lc, " cam "),
-		strings.Contains(lc, "telesync"), strings.Contains(lc, " ts "):
+	case isPreRelease(lc):
 		return SourceCAM
 	case strings.Contains(lc, " web "):
 		// The bare " web " token LAST: it's a word in real titles ("Charlottes

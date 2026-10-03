@@ -18,23 +18,24 @@ func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const profileCols = `id, media_type, name, base, allowed_resolutions, min_source, bitrate_cap_mbps,
 	small_bias, min_format_score, format_scores, custom_formats, keywords, rejected, min_seeders, stall_minutes, max_source,
-	upgrades_enabled, upgrade_min_percent, required_formats, ideal`
+	upgrades_enabled, upgrade_min_percent, required_formats, ideal, allow_prerelease`
 
 func (r *Repo) scan(row interface{ Scan(...any) error }) (StoredProfile, error) {
 	var (
 		sp                                                    StoredProfile
 		allowedJSON, scoresJSON, cfJSON, kwJSON, rejectedJSON string
 		requiredJSON, idealJSON                               string
-		upgradesEnabled                                       int
+		upgradesEnabled, allowPreRelease                      int
 	)
 	err := row.Scan(&sp.ID, &sp.MediaType, &sp.Name, &sp.Base, &allowedJSON, &sp.MinSource,
 		&sp.BitrateCapMbps, &sp.SmallBias, &sp.MinFormatScore, &scoresJSON, &cfJSON,
 		&kwJSON, &rejectedJSON, &sp.MinSeeders, &sp.StallMinutes, &sp.MaxSource,
-		&upgradesEnabled, &sp.UpgradeMinPercent, &requiredJSON, &idealJSON)
+		&upgradesEnabled, &sp.UpgradeMinPercent, &requiredJSON, &idealJSON, &allowPreRelease)
 	if err != nil {
 		return StoredProfile{}, err
 	}
 	sp.UpgradesEnabled = upgradesEnabled != 0
+	sp.AllowPreRelease = allowPreRelease != 0
 	_ = json.Unmarshal([]byte(allowedJSON), &sp.AllowedResolutions)
 	_ = json.Unmarshal([]byte(scoresJSON), &sp.FormatScores)
 	_ = json.Unmarshal([]byte(cfJSON), &sp.CustomFormats)
@@ -93,11 +94,11 @@ func (r *Repo) Create(ctx context.Context, sp StoredProfile) (StoredProfile, err
 		`INSERT INTO quality_profiles (media_type, name, base, allowed_resolutions, min_source,
 			bitrate_cap_mbps, small_bias, min_format_score, format_scores, custom_formats,
 			keywords, rejected, min_seeders, stall_minutes, max_source, upgrades_enabled, upgrade_min_percent,
-			required_formats, ideal)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			required_formats, ideal, allow_prerelease)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sp.MediaType, sp.Name, sp.Base, allowed, sp.MinSource, sp.BitrateCapMbps, sp.SmallBias,
 		sp.MinFormatScore, scores, cf, kw, rej, sp.MinSeeders, sp.StallMinutes, sp.MaxSource,
-		boolToInt(sp.UpgradesEnabled), sp.UpgradeMinPercent, required, ideal)
+		boolToInt(sp.UpgradesEnabled), sp.UpgradeMinPercent, required, ideal, boolToInt(sp.AllowPreRelease))
 	if err != nil {
 		return StoredProfile{}, err
 	}
@@ -113,11 +114,11 @@ func (r *Repo) Update(ctx context.Context, id int64, sp StoredProfile) error {
 		`UPDATE quality_profiles SET name = ?, base = ?, allowed_resolutions = ?, min_source = ?,
 			bitrate_cap_mbps = ?, small_bias = ?, min_format_score = ?, format_scores = ?, custom_formats = ?,
 			keywords = ?, rejected = ?, min_seeders = ?, stall_minutes = ?, max_source = ?,
-			upgrades_enabled = ?, upgrade_min_percent = ?, required_formats = ?, ideal = ?
+			upgrades_enabled = ?, upgrade_min_percent = ?, required_formats = ?, ideal = ?, allow_prerelease = ?
 		 WHERE id = ?`,
 		sp.Name, sp.Base, allowed, sp.MinSource, sp.BitrateCapMbps, sp.SmallBias, sp.MinFormatScore,
 		scores, cf, kw, rej, sp.MinSeeders, sp.StallMinutes, sp.MaxSource,
-		boolToInt(sp.UpgradesEnabled), sp.UpgradeMinPercent, required, ideal, id)
+		boolToInt(sp.UpgradesEnabled), sp.UpgradeMinPercent, required, ideal, boolToInt(sp.AllowPreRelease), id)
 	if err != nil {
 		return err
 	}

@@ -67,7 +67,8 @@ const CONDITION_TYPES = [
 ];
 
 // Common junk file-types / sources worth one-click rejecting.
-const REJECT_TYPES = ["CAM", "TS", "XviD", "AVI", "WMV", "3D", "HDCAM", "R5"];
+// (Cams, telesyncs and screeners have their own rule — see PreReleaseRule.)
+const REJECT_TYPES = ["XviD", "AVI", "WMV", "3D"];
 // Executable/script extensions — pre-rejected on new profiles for safety.
 const EXECUTABLE_TYPES = ["exe", "bat", "cmd", "scr", "msi", "com", "vbs", "ps1"];
 
@@ -116,12 +117,13 @@ const TARGET_ROWS: { row: Row; label: string; hint: string; alts: boolean; optio
   },
 ];
 
-const PREF_TONE: Record<string, { bg: string; fg: string; label: string }> = {
-  avoid: { bg: "var(--reject)", fg: "#fff", label: "Avoid" },
-  "": { bg: "var(--line)", fg: "var(--ink)", label: "—" },
-  ok: { bg: "var(--ink-dim)", fg: "var(--bg)", label: "OK" },
-  want: { bg: "var(--good)", fg: "#fff", label: "Want" },
-  must: { bg: "var(--accent)", fg: "var(--accent-ink)", label: "Must" },
+// Each state's look and meaning — shown in the key above the rows and on hover.
+const PREF_TONE: Record<string, { bg: string; fg: string; label: string; means: string; feature?: string }> = {
+  avoid: { bg: "var(--reject)", fg: "#fff", label: "Avoid", means: "Doesn't fit. Grabbed only when nothing else is available.", feature: "A file with it doesn't fit. Releases with it are grabbed only when nothing else is available." },
+  "": { bg: "var(--line)", fg: "var(--ink)", label: "—", means: "No opinion. Doesn't fit if you've picked something else in this row.", feature: "No opinion — with or without it is fine." },
+  ok: { bg: "var(--ink-dim)", fg: "var(--bg)", label: "OK", means: "Fits. No preference when choosing between releases." },
+  want: { bg: "var(--good)", fg: "#fff", label: "Want", means: "Fits, and preferred when choosing between releases.", feature: "A file needs it to fit. Releases with it are preferred." },
+  must: { bg: "var(--accent)", fg: "var(--accent-ink)", label: "Must", means: "Never grabbed without it. With two in a row, either will do.", feature: "Never grabbed without it." },
 };
 
 // The bitrate windows are per resolution, with 576p and 480p together as "SD" (how files
@@ -524,6 +526,7 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
 
             <Collapsible n={3} title="Rules" summary={rulesSummary(sp)}>
               <div className="mb-1.5 text-[12px] font-semibold">Reject</div>
+              <PreReleaseRule allowed={!!sp.allow_prerelease} onChange={(allowed) => patch({ allow_prerelease: allowed })} />
               <RejectEditor rejected={sp.rejected ?? []} onChange={(r) => patch({ rejected: r })} />
               <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <NumberField label="Minimum seeders" hint="Skip releases with fewer" value={sp.min_seeders} onChange={(v) => patch({ min_seeders: v })} />
@@ -575,6 +578,7 @@ function sourceSummary(sp: StoredProfile): string {
 function rulesSummary(sp: StoredProfile): string {
   const rej = (sp.rejected ?? []).filter((r) => !EXECUTABLE_TYPES.some((t) => t.toLowerCase() === r.toLowerCase()));
   const parts: string[] = [];
+  if (!sp.allow_prerelease) parts.push("no cams or screeners");
   if (rej.length) parts.push(`rejects ${rej.slice(0, 3).join(", ")}${rej.length > 3 ? "…" : ""}`);
   if (EXECUTABLE_TYPES.every((t) => (sp.rejected ?? []).some((r) => r.toLowerCase() === t))) parts.push("no executables");
   if (sp.min_seeders > 0) parts.push(`${sp.min_seeders}+ seeders`);
@@ -637,6 +641,8 @@ function TargetEditor({ sp, ideal, onIdeal, onResolutions }: { sp: StoredProfile
         {allowed.length === 0 ? "Any resolution. Pick some to limit what's grabbed." : "Only these are grabbed. The highest is the goal; the rest are fallbacks while it isn't available."}
       </p>
 
+      <PrefKey />
+
       {TARGET_ROWS.map((row) => (
         <div key={row.row} className="mb-4">
           <div className="flex items-baseline justify-between gap-2">
@@ -670,12 +676,6 @@ function TargetEditor({ sp, ideal, onIdeal, onResolutions }: { sp: StoredProfile
         ))}
       </div>
 
-      <div className="mt-4 grid grid-cols-1 gap-x-4 gap-y-0.5 border-t pt-3 text-[10.5px] text-ink-faint sm:grid-cols-2" style={{ borderColor: "var(--line-soft)" }}>
-        <span><b style={{ color: "var(--accent)" }}>Must</b> — never grabbed without</span>
-        <span><b style={{ color: "var(--good)" }}>Want</b> — fits, and ranks a release up</span>
-        <span><b className="text-ink">OK</b> — fits, no preference</span>
-        <span><b style={{ color: "var(--reject)" }}>Avoid</b> — doesn't fit, ranks a release down</span>
-      </div>
     </div>
   );
 }
@@ -690,11 +690,35 @@ function PrefPicker({ value, alts, onChange, label }: { value: TargetPref; alts:
         const t = PREF_TONE[o];
         return (
           <button key={o || "none"} role="radio" aria-checked={on} onClick={() => onChange(o)} className="rounded-md px-2 py-1 text-[10.5px] font-semibold"
+            title={`${t.label === "—" ? "No opinion" : t.label}: ${alts ? t.means : (t.feature ?? t.means)}`}
+            aria-label={`${t.label === "—" ? "No opinion" : t.label} — ${alts ? t.means : (t.feature ?? t.means)}`}
             style={{ background: on ? t.bg : "transparent", color: on ? t.fg : "var(--ink-faint)", minWidth: 38 }}>
             {t.label}
           </button>
         );
       })}
+    </div>
+  );
+}
+
+// PrefKey explains the buttons, in their own colours, before the first row uses them.
+function PrefKey() {
+  const order: TargetPref[] = ["must", "want", "ok", "", "avoid"];
+  return (
+    <div className="mb-4 rounded-lg p-3" style={{ background: "var(--panel-2)", border: "1px solid var(--line-soft)" }}>
+      <div className="mb-2 text-[11px] font-semibold text-ink-dim">What the buttons mean</div>
+      <div className="flex flex-col gap-1.5">
+        {order.map((o) => {
+          const t = PREF_TONE[o];
+          return (
+            <div key={o || "none"} className="flex items-start gap-2.5 text-[11px] leading-[1.45]">
+              <span className="w-[46px] flex-none rounded-md py-0.5 text-center text-[10.5px] font-semibold" style={{ background: t.bg, color: t.fg }}>{t.label}</span>
+              <span className="text-ink-dim">{t.means}</span>
+            </div>
+          );
+        })}
+      </div>
+      <div className="mt-2 text-[10.5px] text-ink-faint">Audio options are features a file has or doesn't: there, Want means a file needs it to fit. Hover any button for its meaning.</div>
     </div>
   );
 }
@@ -1270,6 +1294,25 @@ function KeywordEditor({ keywords, onChange }: { keywords: { term: string; score
         <button onClick={add} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>Add</button>
       </div>
     </div>
+  );
+}
+
+// PreReleaseRule is the switch for cams, telesyncs, telecines, screeners and workprints —
+// refused unless a profile opts in. It's a rule over the parsed source, so it catches every
+// spelling (HDCAM, CAMRip, HDTS, TELECINE, DVDSCR…), not just one word.
+function PreReleaseRule({ allowed, onChange }: { allowed: boolean; onChange: (allowed: boolean) => void }) {
+  const on = !allowed;
+  return (
+    <button onClick={() => onChange(on)} role="checkbox" aria-checked={on} className="mb-2 flex w-full items-center gap-2.5 rounded-lg p-2.5 text-left"
+      style={{ border: `1px solid ${on ? "var(--reject)" : "var(--line)"}`, background: on ? "var(--reject-soft)" : "var(--panel)" }}>
+      <span className="grid h-4 w-4 flex-none place-items-center rounded" style={{ background: on ? "var(--reject)" : "transparent", border: `1px solid ${on ? "var(--reject)" : "var(--line)"}` }}>
+        {on && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 12l5 5L20 6" stroke="#fff" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="text-[12.5px] font-semibold" style={{ color: on ? "var(--reject)" : "var(--ink)" }}>Reject cams, telesyncs and screeners</span>
+        <span className="block text-[10.5px] text-ink-faint">CAM, HDCAM, TS, HDTS, telecine, DVDSCR, workprint, R5 — however they're spelled. On by default.</span>
+      </span>
+    </button>
   );
 }
 

@@ -231,6 +231,9 @@ type Profile struct {
 	Keywords       []Keyword `json:"keywords,omitempty"`
 	Rejected       []string  `json:"rejected,omitempty"`
 	MinSeeders     int       `json:"min_seeders,omitempty"`
+	// RejectPreRelease refuses cams, telesyncs, telecines, screeners and workprints
+	// outright (they parse as CAM), rather than only ranking them last.
+	RejectPreRelease bool `json:"reject_prerelease,omitempty"`
 }
 
 // Candidate is a release under consideration (release + indexer metadata).
@@ -359,6 +362,10 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 	}
 	if p.MinSource != "" && sourceRank[r.Source] < sourceRank[p.MinSource] {
 		ev.RejectReason = fmt.Sprintf("Not %s — this is %s", p.MinSource, sourceLabel(r.Source))
+		return ev
+	}
+	if p.RejectPreRelease && r.Source == parser.SourceCAM {
+		ev.RejectReason = "A cam, telesync or screener copy — this profile never grabs those"
 		return ev
 	}
 	if p.MaxSource != "" && sourceRank[r.Source] > sourceRank[p.MaxSource] {

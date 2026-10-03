@@ -44,6 +44,9 @@ type StoredProfile struct {
 	// A percentage rather than Mbps because it means the same thing at every resolution:
 	// "2 Mbps better" more than doubles a 480p file and is noise on a 2160p one.
 	UpgradeMinPercent float64 `json:"upgrade_min_percent"`
+	// AllowPreRelease lets a movie/series profile grab cams, telesyncs, screeners and the
+	// like. Off — the default — refuses them.
+	AllowPreRelease bool `json:"allow_prerelease"`
 	// Ideal is the profile's target file (ideal.go): what's grabbed, how releases rank and
 	// what the library check judges against. nil = not set up. On save, a missing target
 	// is read from the scores, while an empty one clears it.
@@ -105,6 +108,8 @@ func (sp StoredProfile) ToProfile() Profile {
 		Keywords:           sp.Keywords,
 		Rejected:           sp.Rejected,
 		MinSeeders:         sp.MinSeeders,
+		// Video only: a book titled "TS Eliot…" must not be taken for a telesync.
+		RejectPreRelease: (sp.MediaType == MediaMovie || sp.MediaType == MediaSeries) && !sp.AllowPreRelease,
 	}
 }
 

@@ -224,3 +224,21 @@ func TestProfileSavesIdealAndRequired(t *testing.T) {
 		t.Errorf("a cleared target should clear what it compiled to: %+v %v %v", again.Ideal, again.RequiredFormats, again.FormatScores)
 	}
 }
+
+// Cams and their kin are refused by video profiles unless allowed — not just ranked last —
+// and never by a book profile, where "TS" is an author's initials.
+func TestPreReleaseRefused(t *testing.T) {
+	cam := NewCandidate("Movie.2025.1080p.HDTS.x264-GRP", 2, 500)
+	movie := StoredProfile{MediaType: MediaMovie}
+	if ev := movie.Engine().Evaluate(movie.ToProfile(), cam); ev.Eligible {
+		t.Error("a telesync must be refused by a movie profile")
+	}
+	movie.AllowPreRelease = true
+	if ev := movie.Engine().Evaluate(movie.ToProfile(), cam); !ev.Eligible {
+		t.Errorf("a profile that allows pre-release copies should take it: %s", ev.RejectReason)
+	}
+	book := StoredProfile{MediaType: MediaBook, FormatScores: map[string]int{}}
+	if p := book.ToProfile(); p.RejectPreRelease {
+		t.Error("book profiles must not refuse 'pre-release' names")
+	}
+}
