@@ -564,5 +564,6 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 	for _, it := range mine {
 		list = append(list, s.itemMinified(ctx, it, prog))
 	}
-	writeJSON(w, http.StatusOK, obj{"id": id, "name": name, "libraryId": libraryID, "books": list, "libraryItems": list})
+	writeJSON(w, http.StatusOK, obj{"id": id, "name": name, "nameIgnorePrefix": ignorePrefix(name), "description": nil,
+		"libraryId": libraryID, "addedAt": mine[0].AddedAt, "updatedAt": mine[0].AddedAt, "books": list, "libraryItems": list})
 }

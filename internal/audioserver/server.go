@@ -157,6 +157,16 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/me/item/{id}/bookmark", a(s.handleAddBookmark))
 	mux.HandleFunc("DELETE /api/me/item/{id}/bookmark/{time}", a(s.handleDeleteBookmark))
 	mux.HandleFunc("GET /api/me/listening-stats", a(s.handleMyStats))
+	mux.HandleFunc("GET /api/me/progress", a(s.handleAllProgress))
+	mux.HandleFunc("GET /api/me/progress/{id}/{episode}", a(s.handleNoPodcasts))
+	mux.HandleFunc("GET /api/me/bookmarks", a(s.handleBookmarks))
+	mux.HandleFunc("GET /api/me/bookmarks/{id}", a(s.handleBookmarks))
+	mux.HandleFunc("GET /api/me/listening-sessions", a(s.handleNoSessions))
+	mux.HandleFunc("GET /api/me/item/listening-sessions/{id}", a(s.handleNoSessions))
+	mux.HandleFunc("GET /api/me/item/listening-sessions/{id}/{episode}", a(s.handleNoSessions))
+	mux.HandleFunc("GET /api/me/sessions", a(s.handleNoSessions))
+	mux.HandleFunc("GET /api/me/series/{id}/remove-from-continue-listening", a(s.handleSeriesContinue))
+	mux.HandleFunc("GET /api/me/series/{id}/readd-to-continue-listening", a(s.handleSeriesContinue))
 
 	mux.HandleFunc("GET /api/libraries", a(s.handleLibraries))
 	mux.HandleFunc("GET /api/libraries/{lib}", a(s.handleLibrary))
@@ -166,6 +176,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/libraries/{lib}/series", a(s.handleSeriesList))
 	mux.HandleFunc("GET /api/libraries/{lib}/search", a(s.handleSearch))
 	mux.HandleFunc("GET /api/libraries/{lib}/filterdata", a(s.handleFilterData))
+	mux.HandleFunc("GET /api/libraries/{lib}/series/{sid}", a(s.handleSeries))
+	mux.HandleFunc("GET /api/libraries/{lib}/narrators", a(s.handleNarrators))
+	mux.HandleFunc("GET /api/libraries/{lib}/stats", a(s.handleLibraryStats))
+	mux.HandleFunc("GET /api/libraries/{lib}/collections", a(s.handleEmptyPaged))
+	mux.HandleFunc("GET /api/libraries/{lib}/playlists", a(s.handleEmptyPaged))
+	mux.HandleFunc("GET /api/libraries/{lib}/recent-episodes", a(s.handleEmptyPaged))
+	mux.HandleFunc("GET /api/collections", a(s.handleNoCollections))
+	mux.HandleFunc("GET /api/playlists", a(s.handleNoPlaylists))
 
 	mux.HandleFunc("GET /api/items/{id}", a(s.handleItem))
 	mux.HandleFunc("POST /api/items/batch/get", a(s.handleBatchGet))
@@ -185,6 +203,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/authors/{aid}", a(s.handleAuthor))
 	mux.HandleFunc("GET /api/authors/{aid}/image", a(s.handleAuthorImage))
 	mux.HandleFunc("GET /api/series/{sid}", a(s.handleSeries))
+	// Anything else is answered 404 and logged, so an app's unmet calls show up.
+	mux.HandleFunc("/", s.handleUnsupported)
 
 	return s.withCommon(mux)
 }
@@ -218,6 +238,8 @@ func (s *Server) requireAuth(h http.HandlerFunc) http.HandlerFunc {
 		tok := bearer(r)
 		u, family, err := s.Accounts.Validate(r.Context(), tok)
 		if err != nil {
+			// Logged (never the token): an app that keeps being refused shows up here.
+			s.log.Info("audiobook server: refused a request", "path", r.URL.Path, "token", tok != "", "client", r.UserAgent())
 			writeError(w, http.StatusUnauthorized, "Unauthorized")
 			return
 		}

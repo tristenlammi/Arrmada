@@ -52,6 +52,7 @@ func metadataExpanded(it Item) obj {
 		series = append(series, obj{"id": seriesID(it.Book.SeriesName), "name": it.Book.SeriesName, "sequence": seq})
 	}
 	m["authors"], m["narrators"], m["series"] = authors, []string{}, series
+	m["descriptionPlain"] = it.Book.Description
 	return m
 }
 
@@ -91,19 +92,24 @@ func (s *Server) itemExpanded(ctx context.Context, it Item, p *listening.Progres
 	for _, f := range files {
 		meta := obj{"filename": f.Name, "ext": f.Ext, "path": f.Path, "relPath": f.Name, "size": f.Size,
 			"mtimeMs": f.MTimeMs, "ctimeMs": f.MTimeMs, "birthtimeMs": f.MTimeMs}
-		audio = append(audio, obj{
+		af := obj{
 			"index": f.Index, "ino": f.Ino, "metadata": meta, "addedAt": it.AddedAt, "updatedAt": f.MTimeMs,
 			"trackNumFromMeta": nil, "discNumFromMeta": nil, "trackNumFromFilename": f.Index, "discNumFromFilename": nil,
 			"manuallyVerified": false, "exclude": false, "error": nil, "format": strings.TrimPrefix(f.Ext, "."),
 			"duration": f.Duration, "bitRate": f.Bitrate, "language": nil, "codec": f.Codec, "timeBase": "1/44100",
 			"channels": 2, "channelLayout": "stereo", "chapters": nonNilChapters(f.Chapters), "embeddedCoverArt": nil,
 			"metaTags": obj{"tagTitle": nilIfEmpty(f.Title)}, "mimeType": mimeFor(f.Ext),
-		})
-		tracks = append(tracks, obj{
-			"index": f.Index, "startOffset": offset, "duration": f.Duration, "title": firstNonEmpty(f.Title, f.Name),
-			"contentUrl": "/api/items/" + it.Key + "/file/" + f.Ino, "mimeType": mimeFor(f.Ext), "codec": f.Codec,
-			"metadata": meta,
-		})
+		}
+		audio = append(audio, af)
+		// Audiobookshelf's play track is the whole audio file plus where it starts and how
+		// to fetch it; clients that read file fields off a track find them.
+		track := obj{}
+		for k, v := range af {
+			track[k] = v
+		}
+		track["startOffset"], track["title"] = offset, firstNonEmpty(f.Title, f.Name)
+		track["contentUrl"] = "/api/items/" + it.Key + "/file/" + f.Ino
+		tracks = append(tracks, track)
 		offset += f.Duration
 	}
 	chapters := bookChapters(files)
@@ -118,10 +124,11 @@ func (s *Server) itemExpanded(ctx context.Context, it Item, p *listening.Progres
 		"media": obj{
 			"id": "m" + it.Key, "libraryItemId": it.Key, "metadata": metadataExpanded(it), "coverPath": coverPath(it),
 			"tags": []string{}, "audioFiles": audio, "chapters": chapters, "duration": totalDuration(files),
-			"size": totalSize(files), "tracks": tracks, "ebookFile": nil, "numTracks": len(files),
+			"size": totalSize(files), "tracks": tracks, "ebookFile": nil, "ebookFormat": nil, "numTracks": len(files),
 			"numAudioFiles": len(files), "numChapters": len(chapters),
 		},
-		"libraryFiles": []obj{}, "size": totalSize(files),
+		// Since Audiobookshelf 2.36 the expanded item carries every list field too.
+		"libraryFiles": []obj{}, "numFiles": len(files), "size": totalSize(files),
 	}
 	if p != nil {
 		o["userMediaProgress"] = mediaProgress(*p)

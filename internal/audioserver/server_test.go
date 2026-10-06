@@ -420,3 +420,62 @@ func TestLoginLimitPerAccount(t *testing.T) {
 		t.Fatalf("11th attempt on one account from a new address: HTTP %d, want 429", code)
 	}
 }
+
+// Routes newer Audiobookshelf clients (Plappa) call while loading answer in the right
+// shape, and the expanded item is a superset of the list item, as Audiobookshelf 2.36+
+// promises.
+func TestNewerClientRoutes(t *testing.T) {
+	h := newHarness(t)
+	key := itemKeyFor(h.book.ID, 0)
+	_, out := h.do("POST", "/login", map[string]string{"username": "reader", "password": "listen-pass-1"}, nil)
+	var login map[string]any
+	_ = json.Unmarshal(out, &login)
+	h.token = obj1(t, login["user"])["accessToken"].(string)
+
+	h.json("PATCH", "/api/me/progress/"+key, map[string]any{"currentTime": 120, "duration": 36000})
+	h.json("POST", "/api/me/item/"+key+"/bookmark", map[string]any{"time": 60, "title": "Mordecai"})
+	if mp := list1(t, h.json("GET", "/api/me/progress", nil)["mediaProgress"]); len(mp) != 1 || obj1(t, mp[0])["libraryItemId"] != key {
+		t.Fatalf("/api/me/progress = %v", mp)
+	}
+	if bm := list1(t, h.json("GET", "/api/me/bookmarks", nil)["bookmarks"]); len(bm) != 1 {
+		t.Fatalf("/api/me/bookmarks = %v", bm)
+	}
+	if bm := list1(t, h.json("GET", "/api/me/bookmarks/"+key, nil)["bookmarks"]); len(bm) != 1 {
+		t.Fatalf("/api/me/bookmarks/{id} = %v", bm)
+	}
+	for _, p := range []string{"/api/me/listening-sessions?itemsPerPage=10&page=0", "/api/me/item/listening-sessions/" + key, "/api/me/sessions"} {
+		need(t, p, h.json("GET", p, nil), "sessions", "total", "numPages", "itemsPerPage")
+	}
+	lib := "/api/libraries/" + libraryID
+	for _, p := range []string{lib + "/collections", lib + "/playlists", lib + "/recent-episodes"} {
+		need(t, p, h.json("GET", p, nil), "results", "total")
+	}
+	need(t, "narrators", h.json("GET", lib+"/narrators", nil), "narrators")
+	need(t, "stats", h.json("GET", lib+"/stats", nil), "totalItems", "totalDuration", "totalSize")
+	need(t, "collections", h.json("GET", "/api/collections", nil), "collections")
+	need(t, "playlists", h.json("GET", "/api/playlists", nil), "playlists")
+	h.json("GET", "/api/me/series/x/remove-from-continue-listening", nil)
+
+	list := obj1(t, list1(t, h.json("GET", lib+"/items?limit=10&page=0", nil)["results"])[0])
+	full := h.json("GET", "/api/items/"+key+"?expanded=1", nil)
+	for k := range list {
+		if _, ok := full[k]; !ok && k != "userMediaProgress" {
+			t.Errorf("expanded item lacks list field %q", k)
+		}
+	}
+	fullMedia := obj1(t, full["media"])
+	for k := range obj1(t, list["media"]) {
+		if _, ok := fullMedia[k]; !ok {
+			t.Errorf("expanded media lacks list field %q", k)
+		}
+	}
+	for k := range obj1(t, obj1(t, list["media"])["metadata"]) {
+		if _, ok := obj1(t, fullMedia["metadata"])[k]; !ok {
+			t.Errorf("expanded metadata lacks list field %q", k)
+		}
+	}
+
+	if code, _ := h.do("GET", "/api/no-such-route", nil, nil); code != 404 {
+		t.Fatalf("unknown route: HTTP %d", code)
+	}
+}
