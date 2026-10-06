@@ -202,7 +202,7 @@ func (s *Server) handleLibraryItems(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, obj{
 		"results": results, "total": total, "limit": limit, "page": page, "sortBy": sortKey,
 		"sortDesc": q.Get("desc") == "1", "filterBy": q.Get("filter"), "mediaType": "book", "minified": true,
-		"collapseseries": false, "include": "",
+		"collapseseries": false, "include": "", "offset": page * limit,
 	})
 }
 

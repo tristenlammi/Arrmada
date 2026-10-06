@@ -532,3 +532,37 @@ func TestFormLoginCookieRefreshAndTokenShape(t *testing.T) {
 	h.token = access
 	h.json("GET", "/api/libraries", nil)
 }
+
+// An offline upload in the types an iOS app may send — fractional times, ISO dates,
+// numeric ids, an odd device block — is taken like Audiobookshelf takes it, and an empty
+// upload is nothing to sync rather than an error.
+func TestLenientOfflineUpload(t *testing.T) {
+	h := newHarness(t)
+	key := itemKeyFor(h.book.ID, 0)
+	_, out := h.do("POST", "/login", map[string]string{"username": "reader", "password": "listen-pass-1"}, nil)
+	var login map[string]any
+	_ = json.Unmarshal(out, &login)
+	h.token = obj1(t, login["user"])["accessToken"].(string)
+
+	if code, out := h.do("POST", "/api/session/local-all", nil, nil); code != 200 {
+		t.Fatalf("empty upload: HTTP %d %s", code, out)
+	}
+	now := time.Now()
+	body := map[string]any{
+		"deviceInfo": map[string]any{"deviceId": 42, "clientName": "plappa", "sdkVersion": 26},
+		"sessions": []any{
+			map[string]any{"id": 7, "libraryItemId": key, "episodeId": nil, "duration": "36000", "currentTime": 300.5,
+				"timeListening": 30.25, "startTime": 270.25, "startedAt": float64(now.Add(-time.Minute).UnixMilli()) + 0.5,
+				"updatedAt": now.UTC().Format(time.RFC3339Nano), "displayTitle": "Dungeon Crawler Carl"},
+			"not a session",
+		},
+	}
+	res := list1(t, h.json("POST", "/api/session/local-all", body)["results"])
+	if len(res) != 2 || obj1(t, res[0])["success"] != true || obj1(t, res[1])["success"] != false {
+		t.Fatalf("results = %v", res)
+	}
+	p := h.json("GET", "/api/me/progress/"+key, nil)
+	if p["currentTime"].(float64) != 300.5 {
+		t.Fatalf("place after upload = %v", p["currentTime"])
+	}
+}

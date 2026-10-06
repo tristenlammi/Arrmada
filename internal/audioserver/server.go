@@ -230,7 +230,7 @@ func (s *Server) withCommon(next http.Handler) http.Handler {
 		}
 		sw := &statusWriter{ResponseWriter: w}
 		next.ServeHTTP(sw, r)
-		s.logRequest(r, sw.status)
+		s.logRequest(r, sw.status, sw.bytes)
 	})
 }
 
@@ -541,6 +541,7 @@ func (m *Manager) Stop() { m.Apply(false) }
 type statusWriter struct {
 	http.ResponseWriter
 	status int
+	bytes  int64
 }
 
 func (w *statusWriter) WriteHeader(code int) {
@@ -554,14 +555,18 @@ func (w *statusWriter) Write(b []byte) (int, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	return w.ResponseWriter.Write(b)
+	n, err := w.ResponseWriter.Write(b)
+	w.bytes += int64(n)
+	return n, err
 }
 
 func (w *statusWriter) ReadFrom(src io.Reader) (int64, error) {
 	if w.status == 0 {
 		w.status = http.StatusOK
 	}
-	return io.Copy(w.ResponseWriter, src)
+	n, err := io.Copy(w.ResponseWriter, src)
+	w.bytes += n
+	return n, err
 }
 
 func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
@@ -569,20 +574,25 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 // signInPaths are the steps of connecting an app, logged whatever the answer.
 var signInPaths = map[string]bool{"/status": true, "/ping": true, "/login": true, "/auth/refresh": true, "/logout": true, "/api/authorize": true}
 
-// logRequest logs what explains an app that won't connect: each sign-in step, and every
-// request that was refused or failed — with the app's name, never a token or query.
-// A book nobody has started has no place yet, which isn't worth a line.
-func (s *Server) logRequest(r *http.Request, status int) {
+// logRequest logs what explains an app that won't connect or shows nothing: every request
+// an app makes while signing in and browsing, with its answer and size — the app's name,
+// never a token or query. The steady traffic of playing (audio, covers, place syncs) is
+// only logged when it fails, and a book nobody has started having no place yet isn't
+// worth a line.
+func (s *Server) logRequest(r *http.Request, status int, bytes int64) {
 	if status == 0 {
 		status = http.StatusOK
 	}
-	if !signInPaths[r.URL.Path] && status < 400 {
+	p := r.URL.Path
+	if status < 400 && !signInPaths[p] && (strings.Contains(p, "/file/") || strings.HasSuffix(p, "/cover") ||
+		strings.HasSuffix(p, "/image") || strings.HasSuffix(p, "/sync") || strings.HasSuffix(p, "/download") ||
+		strings.HasPrefix(p, "/api/me/progress") || strings.HasPrefix(p, "/api/session/") && r.Method == http.MethodGet) {
 		return
 	}
-	if status == http.StatusNotFound && r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/me/progress/") {
+	if status == http.StatusNotFound && r.Method == http.MethodGet && strings.HasPrefix(p, "/api/me/progress/") {
 		return
 	}
-	s.log.Info("audiobook server: request", "method", r.Method, "path", r.URL.Path, "status", status,
+	s.log.Info("audiobook server: request", "method", r.Method, "path", p, "status", status, "bytes", bytes,
 		"token", bearer(r) != "", "client", r.UserAgent())
 }
 

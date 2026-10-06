@@ -2,6 +2,7 @@ package audioserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -134,25 +135,78 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 		"startTime": sess.StartPos, "timeListening": sess.Listened, "startedAt": sess.StartedAt, "updatedAt": sess.LastAt})
 }
 
+// localSession is an offline listening session an app uploads. Audiobookshelf takes
+// whatever types an app sends, so these do too: a number may come as a string or with a
+// fraction, a time as an ISO date, an id as a number.
 type localSession struct {
-	ID            string     `json:"id"`
-	LibraryItemID string     `json:"libraryItemId"`
-	EpisodeID     *string    `json:"episodeId"`
-	Duration      float64    `json:"duration"`
+	ID            flexString `json:"id"`
+	LibraryItemID flexString `json:"libraryItemId"`
+	EpisodeID     flexString `json:"episodeId"`
+	Duration      flexNum    `json:"duration"`
 	DeviceInfo    deviceInfo `json:"deviceInfo"`
-	StartTime     float64    `json:"startTime"`
-	CurrentTime   float64    `json:"currentTime"`
-	TimeListening float64    `json:"timeListening"`
-	StartedAt     int64      `json:"startedAt"`
-	UpdatedAt     int64      `json:"updatedAt"`
-	MediaPlayer   string     `json:"mediaPlayer"`
+	StartTime     flexNum    `json:"startTime"`
+	CurrentTime   flexNum    `json:"currentTime"`
+	TimeListening flexNum    `json:"timeListening"`
+	StartedAt     flexNum    `json:"startedAt"`
+	UpdatedAt     flexNum    `json:"updatedAt"`
+	MediaPlayer   flexString `json:"mediaPlayer"`
+}
+
+// flexNum is a number sent as a number, a numeric string or an ISO time (read as Unix
+// milliseconds). Anything else reads as zero rather than failing the whole upload.
+type flexNum float64
+
+func (f *flexNum) UnmarshalJSON(b []byte) error {
+	var v any
+	if json.Unmarshal(b, &v) != nil {
+		return nil
+	}
+	switch t := v.(type) {
+	case float64:
+		*f = flexNum(t)
+	case string:
+		if n, err := strconv.ParseFloat(strings.TrimSpace(t), 64); err == nil {
+			*f = flexNum(n)
+		} else if tm, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(t)); err == nil {
+			*f = flexNum(tm.UnixMilli())
+		}
+	}
+	return nil
+}
+
+// flexString is a string, or a number written as one; anything else reads as "".
+type flexString string
+
+func (f *flexString) UnmarshalJSON(b []byte) error {
+	var v any
+	if json.Unmarshal(b, &v) != nil {
+		return nil
+	}
+	switch t := v.(type) {
+	case string:
+		*f = flexString(t)
+	case float64:
+		*f = flexString(strconv.FormatFloat(t, 'f', -1, 64))
+	}
+	return nil
+}
+
+// deviceInfo is read leniently too: a bad device block mustn't lose the sessions.
+func (d *deviceInfo) UnmarshalJSON(b []byte) error {
+	var raw map[string]flexString
+	if json.Unmarshal(b, &raw) != nil {
+		return nil
+	}
+	*d = deviceInfo{ClientName: string(raw["clientName"]), DeviceID: string(raw["deviceId"]),
+		DeviceName: string(raw["deviceName"]), Model: string(raw["model"]), Manufact: string(raw["manufacturer"])}
+	return nil
 }
 
 func (s *Server) applyLocal(ctx context.Context, r *http.Request, ls localSession, fallback deviceInfo) error {
-	if ls.EpisodeID != nil && *ls.EpisodeID != "" {
+	if ls.EpisodeID != "" {
 		return errors.New("podcast episodes aren't served here")
 	}
-	if _, err := s.item(ctx, ls.LibraryItemID); err != nil {
+	if _, err := s.item(ctx, string(ls.LibraryItemID)); err != nil {
 		return errors.New("item not found")
 	}
 	di := ls.DeviceInfo
@@ -161,16 +215,17 @@ func (s *Server) applyLocal(ctx context.Context, r *http.Request, ls localSessio
 	}
 	client := firstNonEmpty(di.ClientName, fallback.ClientName, clientName(r))
 	_, err := s.listen.SyncOffline(ctx, userOf(r).ID, listening.OfflineSession{
-		ID: ls.ID, ItemKey: ls.LibraryItemID, DeviceID: di.DeviceID, Device: firstNonEmpty(di.name(), client),
-		Client: client, StartTime: ls.StartTime, Position: ls.CurrentTime, Duration: ls.Duration,
-		Listened: ls.TimeListening, StartedAt: ls.StartedAt, UpdatedAt: ls.UpdatedAt,
+		ID: string(ls.ID), ItemKey: string(ls.LibraryItemID), DeviceID: di.DeviceID, Device: firstNonEmpty(di.name(), client),
+		Client: client, StartTime: float64(ls.StartTime), Position: float64(ls.CurrentTime), Duration: float64(ls.Duration),
+		Listened: float64(ls.TimeListening), StartedAt: int64(ls.StartedAt), UpdatedAt: int64(ls.UpdatedAt),
 	})
 	return err
 }
 
 func (s *Server) handleLocalSession(w http.ResponseWriter, r *http.Request) {
 	var ls localSession
-	if !readJSON(w, r, &ls) {
+	if err := readOptionalJSON(r, &ls); err != nil {
+		writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
 	if err := s.applyLocal(r.Context(), r, ls, ls.DeviceInfo); err != nil {
@@ -183,15 +238,22 @@ func (s *Server) handleLocalSession(w http.ResponseWriter, r *http.Request) {
 // handleLocalAll takes a batch of offline sessions and answers each one by id, so the
 // app knows exactly which to drop and which to retry.
 func (s *Server) handleLocalAll(w http.ResponseWriter, r *http.Request) {
+	// Like Audiobookshelf: no body, or no session list, is simply nothing to sync, and a
+	// session that can't be read fails alone.
 	var body struct {
-		DeviceInfo deviceInfo     `json:"deviceInfo"`
-		Sessions   []localSession `json:"sessions"`
+		DeviceInfo deviceInfo        `json:"deviceInfo"`
+		Sessions   []json.RawMessage `json:"sessions"`
 	}
-	if !readJSON(w, r, &body) {
-		return
+	if err := readOptionalJSON(r, &body); err != nil {
+		s.log.Info("audiobook server: unreadable offline sessions", "err", err, "client", r.UserAgent())
 	}
 	results := make([]obj, 0, len(body.Sessions))
-	for _, ls := range body.Sessions {
+	for _, raw := range body.Sessions {
+		var ls localSession
+		if err := json.Unmarshal(raw, &ls); err != nil {
+			results = append(results, obj{"id": ls.ID, "success": false, "error": "unreadable session"})
+			continue
+		}
 		if err := s.applyLocal(r.Context(), r, ls, body.DeviceInfo); err != nil {
 			results = append(results, obj{"id": ls.ID, "success": false, "error": err.Error()})
 			continue
