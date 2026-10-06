@@ -3,15 +3,19 @@ package audioserver
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/books"
@@ -478,4 +482,53 @@ func TestNewerClientRoutes(t *testing.T) {
 	if code, _ := h.do("GET", "/api/no-such-route", nil, nil); code != 404 {
 		t.Fatalf("unknown route: HTTP %d", code)
 	}
+}
+
+// Signing in the other ways Audiobookshelf allows: a form post, and refreshing with the
+// refresh_token cookie. Access tokens read like Audiobookshelf's JWTs.
+func TestFormLoginCookieRefreshAndTokenShape(t *testing.T) {
+	h := newHarness(t)
+	form := url.Values{"username": {"reader"}, "password": {"listen-pass-1"}}.Encode()
+	req, _ := http.NewRequest("POST", h.http.URL+"/login", strings.NewReader(form))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Fatalf("form login: HTTP %d", resp.StatusCode)
+	}
+	var login map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&login)
+	access := obj1(t, login["user"])["accessToken"].(string)
+
+	parts := strings.Split(access, ".")
+	if len(parts) != 3 {
+		t.Fatalf("access token isn't JWT-shaped: %d parts", len(parts))
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
+	var claims map[string]any
+	if err != nil || json.Unmarshal(raw, &claims) != nil {
+		t.Fatalf("claims don't decode: %v", err)
+	}
+	if exp, _ := claims["exp"].(float64); exp < float64(time.Now().Add(29*24*time.Hour).Unix()) || claims["type"] != "access" || claims["username"] != "reader" {
+		t.Fatalf("claims = %v", claims)
+	}
+
+	var cookie *http.Cookie
+	for _, c := range resp.Cookies() {
+		if c.Name == "refresh_token" {
+			cookie = c
+		}
+	}
+	if cookie == nil || !cookie.HttpOnly {
+		t.Fatalf("no refresh_token cookie: %v", resp.Cookies())
+	}
+	code, out := h.do("POST", "/auth/refresh", nil, map[string]string{"Cookie": "refresh_token=" + cookie.Value})
+	if code != 200 {
+		t.Fatalf("cookie refresh: HTTP %d %s", code, out)
+	}
+	h.token = access
+	h.json("GET", "/api/libraries", nil)
 }

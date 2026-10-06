@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -227,7 +228,9 @@ func (s *Server) withCommon(next http.Handler) http.Handler {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		next.ServeHTTP(w, r)
+		sw := &statusWriter{ResponseWriter: w}
+		next.ServeHTTP(sw, r)
+		s.logRequest(r, sw.status)
 	})
 }
 
@@ -238,8 +241,6 @@ func (s *Server) requireAuth(h http.HandlerFunc) http.HandlerFunc {
 		tok := bearer(r)
 		u, family, err := s.Accounts.Validate(r.Context(), tok)
 		if err != nil {
-			// Logged (never the token): an app that keeps being refused shows up here.
-			s.log.Info("audiobook server: refused a request", "path", r.URL.Path, "token", tok != "", "client", r.UserAgent())
 			writeError(w, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
@@ -276,7 +277,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Password string `json:"password"`
 	}
-	if !readJSON(w, r, &body) {
+	// Audiobookshelf takes a form post as well as JSON.
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded") {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<16)
+		if err := r.ParseForm(); err != nil {
+			writeError(w, http.StatusBadRequest, "Invalid request body")
+			return
+		}
+		body.Username, body.Password = r.PostForm.Get("username"), r.PostForm.Get("password")
+	} else if !readJSON(w, r, &body) {
 		return
 	}
 	// A second limit per account, so many addresses can't take turns guessing one
@@ -299,6 +308,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	s.limiter.reset("ip:" + ip)
 	s.limiter.reset(userKey)
 	s.log.Info("audiobook server: signed in", "user", u.Username, "client", clientName(r))
+	// Apps that don't ask for the refresh token in the reply get it as a cookie, as
+	// Audiobookshelf does, and refresh with that.
+	if r.Header.Get("x-return-tokens") != "true" {
+		setRefreshCookie(w, r, t.Refresh)
+	}
 	writeJSON(w, http.StatusOK, s.loginJSON(r.Context(), u, &t))
 }
 
@@ -310,6 +324,11 @@ func (s *Server) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body)
 		rt = body.RefreshToken
+	}
+	if rt == "" {
+		if c, err := r.Cookie("refresh_token"); err == nil {
+			rt = c.Value
+		}
 	}
 	u, t, err := s.Accounts.Refresh(r.Context(), rt)
 	if err != nil {
@@ -516,3 +535,60 @@ func (m *Manager) Apply(enabled bool) {
 
 // Stop shuts the listener down (app shutdown).
 func (m *Manager) Stop() { m.Apply(false) }
+
+// statusWriter remembers the status a handler answered with. It passes ReadFrom through
+// so file streams keep the fast path, and Unwrap for http.ResponseController.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	if w.status == 0 {
+		w.status = code
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return w.ResponseWriter.Write(b)
+}
+
+func (w *statusWriter) ReadFrom(src io.Reader) (int64, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	return io.Copy(w.ResponseWriter, src)
+}
+
+func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// signInPaths are the steps of connecting an app, logged whatever the answer.
+var signInPaths = map[string]bool{"/status": true, "/ping": true, "/login": true, "/auth/refresh": true, "/logout": true, "/api/authorize": true}
+
+// logRequest logs what explains an app that won't connect: each sign-in step, and every
+// request that was refused or failed — with the app's name, never a token or query.
+// A book nobody has started has no place yet, which isn't worth a line.
+func (s *Server) logRequest(r *http.Request, status int) {
+	if status == 0 {
+		status = http.StatusOK
+	}
+	if !signInPaths[r.URL.Path] && status < 400 {
+		return
+	}
+	if status == http.StatusNotFound && r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/me/progress/") {
+		return
+	}
+	s.log.Info("audiobook server: request", "method", r.Method, "path", r.URL.Path, "status", status,
+		"token", bearer(r) != "", "client", r.UserAgent())
+}
+
+// setRefreshCookie hands the refresh token over as Audiobookshelf's refresh_token cookie.
+func setRefreshCookie(w http.ResponseWriter, r *http.Request, token string) {
+	http.SetCookie(w, &http.Cookie{Name: "refresh_token", Value: token, Path: "/", HttpOnly: true,
+		Secure:   r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https"),
+		SameSite: http.SameSiteLaxMode, MaxAge: int(refreshTTL / time.Second)})
+}

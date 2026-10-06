@@ -124,9 +124,7 @@ func (s *Server) handleLibraryStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleUnsupported answers any route this server doesn't have, and logs it: when an app
-// misbehaves, the log names what it asked for.
+// handleUnsupported answers any route this server doesn't have (logged by logRequest).
 func (s *Server) handleUnsupported(w http.ResponseWriter, r *http.Request) {
-	s.log.Info("audiobook server: unsupported request", "method", r.Method, "path", r.URL.Path, "client", r.UserAgent())
 	writeError(w, http.StatusNotFound, "Not Found")
 }

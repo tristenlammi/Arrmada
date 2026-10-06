@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -72,7 +73,7 @@ func (a *Accounts) Login(ctx context.Context, username, password, client string)
 	if !a.allowed(ctx, u) {
 		return nil, Tokens{}, errNoAccess
 	}
-	t, err := a.issue(ctx, u.ID, client)
+	t, err := a.issue(ctx, u, client)
 	return u, t, err
 }
 
@@ -161,9 +162,11 @@ func (a *Accounts) RemovePassword(ctx context.Context, userID int64) error {
 	return err
 }
 
-func (a *Accounts) issue(ctx context.Context, userID int64, client string) (Tokens, error) {
+func (a *Accounts) issue(ctx context.Context, u *auth.User, client string) (Tokens, error) {
+	userID := u.ID
 	now := a.now()
-	t := Tokens{Legacy: randToken(), Access: randToken(), Refresh: randToken(), Family: randToken()[:16]}
+	t := Tokens{Legacy: jwtShaped(u, "", now, time.Time{}), Access: jwtShaped(u, "access", now, now.Add(accessTTL)),
+		Refresh: randToken(), Family: randToken()[:16]}
 	for _, row := range []struct {
 		tok, kind string
 		exp       int64
@@ -201,7 +204,7 @@ func (a *Accounts) Refresh(ctx context.Context, refreshToken string) (*auth.User
 		return nil, Tokens{}, errNoAccess
 	}
 	now := a.now()
-	access := randToken()
+	access := jwtShaped(u, "access", now, now.Add(accessTTL))
 	if _, err := a.db.ExecContext(ctx,
 		`INSERT INTO audio_tokens (user_id, hash, kind, family, client, created_at, expires_at, last_used_at)
 		 VALUES (?, ?, 'access', ?, ?, ?, ?, ?)`,
@@ -325,6 +328,24 @@ func randToken() string {
 	var b [32]byte
 	_, _ = rand.Read(b[:])
 	return base64.RawURLEncoding.EncodeToString(b[:])
+}
+
+// jwtShaped is a token laid out like Audiobookshelf's JWTs, so apps that read a token's
+// expiry to know when to refresh (as newer iOS clients do) find one. It's still checked
+// only by looking up its hash: the claims are informational, and the signature part is
+// random, so the token is exactly as unguessable as randToken.
+func jwtShaped(u *auth.User, kind string, iat, exp time.Time) string {
+	enc := base64.RawURLEncoding
+	claims := map[string]any{"userId": "u" + itoa(u.ID), "username": u.Username, "iat": iat.Unix()}
+	if kind != "" {
+		claims["type"] = kind
+		claims["jti"] = randToken()[:22]
+	}
+	if !exp.IsZero() {
+		claims["exp"] = exp.Unix()
+	}
+	body, _ := json.Marshal(claims)
+	return enc.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`)) + "." + enc.EncodeToString(body) + "." + randToken()
 }
 
 func hashToken(t string) string {
