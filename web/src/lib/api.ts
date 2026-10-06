@@ -386,6 +386,27 @@ export interface DashboardData {
   queue_note?: string;
   library: LibraryCounts;
   activity: ActivityEvent[];
+  listening?: NowListening[];
+  audio_off?: boolean;
+}
+
+// NowListening is one live audiobook session. Others' sessions say who, on what and for
+// how long — never which book; the book fields are only set on your own (mine).
+export interface NowListening {
+  user: string;
+  device: string;
+  client: string;
+  started_at: number;
+  last_at: number;
+  seconds: number;
+  playing: boolean;
+  mine: boolean;
+  book_id?: number;
+  title?: string;
+  author?: string;
+  cover_url?: string;
+  position?: number;
+  duration?: number;
 }
 
 export interface DiskGuardStatus {

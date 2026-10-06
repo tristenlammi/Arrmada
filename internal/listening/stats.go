@@ -139,3 +139,48 @@ func (s *Store) Daily(ctx context.Context, since time.Time, userID int64) ([]Day
 	})
 	return out, nil
 }
+
+// LiveListen is a session someone is listening in right now, as the dashboard shows it to
+// a manager: who, on what, since when and how much — never what. SessionID only lets the
+// caller recognise the viewer's own sessions (see SessionItem); it isn't for display.
+type LiveListen struct {
+	SessionID string  `json:"-"`
+	UserID    int64   `json:"user_id"`
+	Device    string  `json:"device"`
+	Client    string  `json:"client"`
+	StartedAt int64   `json:"started_at"`
+	LastAt    int64   `json:"last_at"`
+	Seconds   float64 `json:"seconds"`
+}
+
+// Live lists play sessions that reported since a time, most recent first. It reads the
+// listening log (no book column); offline uploads are past listening, not live, and are
+// left out.
+func (s *Store) Live(ctx context.Context, since time.Time) ([]LiveListen, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT l.session_id, l.user_id, l.device, l.client, l.started_at, l.ended_at, l.seconds
+		 FROM listen_log l JOIN listen_sessions s ON s.id = l.session_id
+		 WHERE l.ended_at >= ? AND s.offline = 0 AND s.closed = 0
+		 ORDER BY l.ended_at DESC`, since.UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []LiveListen{}
+	for rows.Next() {
+		var e LiveListen
+		if err := rows.Scan(&e.SessionID, &e.UserID, &e.Device, &e.Client, &e.StartedAt, &e.LastAt, &e.Seconds); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// SessionItem returns the book and place of one of the user's own sessions. It's keyed by
+// the user, so it can only ever answer for the person asking.
+func (s *Store) SessionItem(ctx context.Context, userID int64, sessionID string) (itemKey string, position float64, ok bool) {
+	err := s.db.QueryRowContext(ctx, `SELECT item_key, cur_pos FROM listen_sessions WHERE id = ? AND user_id = ?`,
+		sessionID, userID).Scan(&itemKey, &position)
+	return itemKey, position, err == nil
+}

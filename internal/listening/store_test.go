@@ -199,3 +199,34 @@ func TestDailyTotals(t *testing.T) {
 		t.Fatalf("daily = %+v", got)
 	}
 }
+
+// Live lists sessions playing now — not closed ones, not offline uploads — and
+// SessionItem answers only for the session's own listener.
+func TestLiveAndSessionItem(t *testing.T) {
+	s, db, uid, clock := testStore(t)
+	ctx := context.Background()
+	res, _ := db.Exec(`INSERT INTO users (username, password_hash, role) VALUES ('other', 'x', 'requester')`)
+	other, _ := res.LastInsertId()
+
+	live, _, _ := s.OpenSession(ctx, uid, "b1", "dev1", "Pixel", "Lissen")
+	done, _, _ := s.OpenSession(ctx, uid, "b2", "dev1", "Pixel", "Lissen")
+	*clock = clock.Add(30 * time.Second)
+	_, _ = s.Sync(ctx, uid, live.ID, 300, 30, 3600, false)
+	_, _ = s.Sync(ctx, uid, done.ID, 30, 30, 3600, true)
+	_, _ = s.SyncOffline(ctx, uid, OfflineSession{ID: "off1", ItemKey: "b3", Position: 50, Duration: 3600, Listened: 50,
+		StartedAt: clock.Add(-time.Minute).UnixMilli(), UpdatedAt: clock.UnixMilli()})
+
+	got, err := s.Live(ctx, clock.Add(-10*time.Minute))
+	if err != nil || len(got) != 1 || got[0].SessionID != live.ID || got[0].Seconds != 30 {
+		t.Fatalf("live = %+v (%v), want only the open session", got, err)
+	}
+	if key, pos, ok := s.SessionItem(ctx, uid, live.ID); !ok || key != "b1" || pos != 300 {
+		t.Fatalf("own session item = %q %v %v", key, pos, ok)
+	}
+	if _, _, ok := s.SessionItem(ctx, other, live.ID); ok {
+		t.Fatal("another user could read which book a session is")
+	}
+	if got, _ := s.Live(ctx, clock.Add(time.Minute)); len(got) != 0 {
+		t.Fatalf("a session quiet since before the window is still live: %+v", got)
+	}
+}
