@@ -592,8 +592,10 @@ func (s *Server) logRequest(r *http.Request, status int, bytes int64) {
 	if status == http.StatusNotFound && r.Method == http.MethodGet && strings.HasPrefix(p, "/api/me/progress/") {
 		return
 	}
-	s.log.Info("audiobook server: request", "method", r.Method, "path", p, "status", status, "bytes", bytes,
-		"token", bearer(r) != "", "client", r.UserAgent())
+	q := r.URL.Query()
+	q.Del("token")
+	s.log.Info("audiobook server: request", "method", r.Method, "path", p, "query", q.Encode(), "status", status,
+		"bytes", bytes, "token", bearer(r) != "", "client", r.UserAgent())
 }
 
 // setRefreshCookie hands the refresh token over as Audiobookshelf's refresh_token cookie.

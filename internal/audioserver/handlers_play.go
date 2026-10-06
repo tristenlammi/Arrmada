@@ -1,6 +1,7 @@
 package audioserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -244,8 +245,15 @@ func (s *Server) handleLocalAll(w http.ResponseWriter, r *http.Request) {
 		DeviceInfo deviceInfo        `json:"deviceInfo"`
 		Sessions   []json.RawMessage `json:"sessions"`
 	}
-	if err := readOptionalJSON(r, &body); err != nil {
+	var raw json.RawMessage
+	if err := readOptionalJSON(r, &raw); err != nil {
 		s.log.Info("audiobook server: unreadable offline sessions", "err", err, "client", r.UserAgent())
+	}
+	// Some apps (Plappa) send the sessions as a bare list rather than {"sessions": [...]}.
+	if t := bytes.TrimSpace(raw); len(t) > 0 && t[0] == '[' {
+		_ = json.Unmarshal(t, &body.Sessions)
+	} else if len(t) > 0 {
+		_ = json.Unmarshal(t, &body)
 	}
 	results := make([]obj, 0, len(body.Sessions))
 	for _, raw := range body.Sessions {

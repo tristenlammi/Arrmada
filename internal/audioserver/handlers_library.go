@@ -12,7 +12,27 @@ import (
 )
 
 func (s *Server) handleLibraries(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, obj{"libraries": []obj{libraryJSON()}})
+	lib := libraryJSON()
+	if strings.Contains(r.URL.Query().Get("include"), "stats") {
+		lib["stats"] = s.libraryTotals(r.Context())
+	}
+	writeJSON(w, http.StatusOK, obj{"libraries": []obj{lib}})
+}
+
+// libraryTotals is the library's ?include=stats block. Only files already read count —
+// listing libraries mustn't probe the whole library.
+func (s *Server) libraryTotals(ctx context.Context) obj {
+	items, _ := s.items(ctx)
+	var size int64
+	var dur float64
+	files := 0
+	for _, it := range items {
+		f, _ := s.probe.files(ctx, it.Path, false)
+		size += totalSize(f)
+		dur += totalDuration(f)
+		files += len(f)
+	}
+	return obj{"totalSize": size, "totalDuration": dur, "numAudioFiles": files, "totalItems": len(items)}
 }
 
 func (s *Server) checkLibrary(w http.ResponseWriter, r *http.Request) bool {
@@ -27,7 +47,11 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 	if !s.checkLibrary(w, r) {
 		return
 	}
-	out := obj{"library": libraryJSON(), "issues": 0, "numUserPlaylists": 0}
+	lib := libraryJSON()
+	if strings.Contains(r.URL.Query().Get("include"), "stats") {
+		lib["stats"] = s.libraryTotals(r.Context())
+	}
+	out := obj{"library": lib, "issues": 0, "numUserPlaylists": 0}
 	if strings.Contains(r.URL.Query().Get("include"), "filterdata") {
 		items, err := s.items(r.Context())
 		if err != nil {

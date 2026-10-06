@@ -565,4 +565,19 @@ func TestLenientOfflineUpload(t *testing.T) {
 	if p["currentTime"].(float64) != 300.5 {
 		t.Fatalf("place after upload = %v", p["currentTime"])
 	}
+
+	// Plappa's form: the sessions as a bare list.
+	bare := []any{map[string]any{"id": "s2", "libraryItemId": key, "currentTime": 400, "duration": 36000,
+		"timeListening": 20, "startTime": 380, "startedAt": now.UnixMilli(), "updatedAt": now.Add(time.Second).UnixMilli()}}
+	code, out := h.do("POST", "/api/session/local-all", bare, nil)
+	var got map[string]any
+	_ = json.Unmarshal(out, &got)
+	if code != 200 || len(list1(t, got["results"])) != 1 || obj1(t, list1(t, got["results"])[0])["success"] != true {
+		t.Fatalf("bare-list upload: HTTP %d %s", code, out)
+	}
+
+	lib := obj1(t, list1(t, h.json("GET", "/api/libraries?include=stats", nil)["libraries"])[0])
+	need(t, "library.stats", obj1(t, lib["stats"]), "totalItems", "totalSize", "totalDuration", "numAudioFiles")
+	need(t, "library.settings", obj1(t, lib["settings"]), "metadataPrecedence", "coverAspectRatio")
+	need(t, "library.folders[0]", obj1(t, list1(t, lib["folders"])[0]), "addedAt", "fullPath")
 }

@@ -207,10 +207,15 @@ func (s *Server) serverSettings() obj {
 
 func libraryJSON() obj {
 	return obj{
-		"id": libraryID, "name": "Audiobooks", "folders": []obj{{"id": libraryID, "fullPath": "/", "libraryId": libraryID}},
+		"id": libraryID, "name": "Audiobooks", "folders": []obj{{"id": libraryID, "fullPath": "/", "libraryId": libraryID, "addedAt": 0}},
 		"displayOrder": 1, "icon": "audiobookshelf", "mediaType": "book", "provider": "audible",
+		// Audiobookshelf's full default set for a book library: an app that reads the
+		// settings into a fixed model finds every one.
 		"settings": obj{"coverAspectRatio": 1, "disableWatcher": true, "skipMatchingMediaWithAsin": false,
-			"skipMatchingMediaWithIsbn": false, "autoScanCronExpression": nil, "audiobooksOnly": true, "hideSingleBookSeries": false},
+			"skipMatchingMediaWithIsbn": false, "autoScanCronExpression": nil, "audiobooksOnly": true, "hideSingleBookSeries": false,
+			"epubsAllowScriptedContent": false, "onlyShowLaterBooksInContinueSeries": false,
+			"markAsFinishedPercentComplete": nil, "markAsFinishedTimeRemaining": 10,
+			"metadataPrecedence": []string{"folderStructure", "audioMetatags", "nfoFile", "txtFiles", "opfFile", "absMetadata"}},
 		"lastScan": nil, "lastScanVersion": nil, "createdAt": 0, "lastUpdate": 0,
 	}
 }
