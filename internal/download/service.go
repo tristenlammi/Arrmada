@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // Service manages download clients and dispatches downloads to them.
@@ -192,6 +193,39 @@ func (s *Service) Pause(ctx context.Context, hash string) error {
 // Resume restarts a stopped torrent on whichever enabled client holds it.
 func (s *Service) Resume(ctx context.Context, hash string) error {
 	return s.onHash(ctx, func(impl Downloader, c Client) error { return impl.Resume(ctx, c, hash) })
+}
+
+// ResumeMany restarts several torrents with one request per enabled client, hashes joined
+// the way qBittorrent's start/resume endpoint takes them. Every client gets the whole
+// list: qBittorrent ignores hashes it doesn't have, so stopping at the first client
+// that answers (as onHash does) would never reach a second client's torrents. Fails
+// only when no client took the request.
+func (s *Service) ResumeMany(ctx context.Context, hashes []string) error {
+	if len(hashes) == 0 {
+		return nil
+	}
+	clients, err := s.repo.ListEnabled(ctx)
+	if err != nil {
+		return err
+	}
+	joined := strings.Join(hashes, "|")
+	var lastErr error
+	ok := false
+	for _, c := range clients {
+		impl, found := s.registry.For(c.Kind)
+		if !found {
+			continue
+		}
+		if err := impl.Resume(ctx, c, joined); err != nil {
+			lastErr = err
+			continue
+		}
+		ok = true
+	}
+	if ok {
+		return nil
+	}
+	return lastErr
 }
 
 // Action runs a hash-scoped command (recheck/reannounce/prio_up/prio_down).

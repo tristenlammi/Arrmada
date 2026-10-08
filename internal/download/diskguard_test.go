@@ -224,6 +224,10 @@ func TestGuardPrunesHeldTorrentsThatAreGone(t *testing.T) {
 	fake.items = fake.items[:1] // bbb deleted while held
 	usageAt(g, 83)              // between the lines: still holding, nothing to pause
 	_ = g.Check(ctx)
+	if len(g.held(ctx)) != 2 {
+		t.Fatalf("held = %v; one missed pass shouldn't forget a torrent", g.held(ctx))
+	}
+	_ = g.Check(ctx)
 	if held := g.held(ctx); len(held) != 1 || held[0] != "aaa" {
 		t.Errorf("held = %v, want only the torrent the client still has", held)
 	}
@@ -233,11 +237,26 @@ func TestGuardPrunesHeldTorrentsThatAreGone(t *testing.T) {
 // forgetting them would leave them paused for good.
 func TestGuardKeepsHeldTorrentsWhenTheQueueIsPartial(t *testing.T) {
 	held := []string{"aaa", "bbb"}
-	if got := prunedHeld(held, []Item{{Hash: "aaa"}}, false); len(got) != 2 {
+	if got, _ := prunedHeld(held, []Item{{Hash: "aaa"}}, false, nil); len(got) != 2 {
 		t.Errorf("partial queue pruned %v → %v; nothing should be dropped", held, got)
 	}
-	if got := prunedHeld(held, []Item{{Hash: "AAA"}}, true); len(got) != 1 || got[0] != "aaa" {
-		t.Errorf("complete queue: %v, want only aaa (hashes compared case-insensitively)", got)
+	got, missed := prunedHeld(held, []Item{{Hash: "AAA"}}, true, nil)
+	if len(got) != 2 {
+		t.Errorf("first miss pruned %v → %v; a hash must be missing twice in a row", held, got)
+	}
+	if got, _ = prunedHeld(held, []Item{{Hash: "AAA"}}, true, missed); len(got) != 1 || got[0] != "aaa" {
+		t.Errorf("second miss: %v, want only aaa (hashes compared case-insensitively)", got)
+	}
+}
+
+// A qBittorrent that has just restarted lists nothing while it loads its torrents. An
+// empty queue must not read as "every held torrent was deleted" — they'd stay paused
+// for good once forgotten.
+func TestGuardKeepsHeldTorrentsWhenTheQueueIsEmpty(t *testing.T) {
+	held := []string{"aaa", "bbb"}
+	missed := map[string]int{"aaa": 1, "bbb": 1} // already missed once
+	if got, _ := prunedHeld(held, nil, true, missed); len(got) != 2 {
+		t.Errorf("empty queue pruned %v → %v; nothing should be dropped", held, got)
 	}
 }
 

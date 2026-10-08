@@ -51,6 +51,10 @@ type DiskGuard struct {
 	// manual trigger from the API can land alongside one, and two passes racing
 	// would double-pause and lose track of what's held.
 	mu sync.Mutex
+	// missed counts, per held hash, the passes in a row it was absent from a complete
+	// queue (under mu). Memory only: a restart starts the count over, which only ever
+	// keeps a hash longer.
+	missed map[string]int
 }
 
 // NewDiskGuard wires a guard over the volume at dir.
@@ -173,31 +177,48 @@ func (g *DiskGuard) Check(ctx context.Context) error {
 		if err != nil {
 			return nil
 		}
-		if kept := prunedHeld(held, items, whole); len(kept) != len(held) {
+		kept, missed := prunedHeld(held, items, whole, g.missed)
+		g.missed = missed
+		if len(kept) != len(held) {
 			g.save(ctx, kept)
 		}
 	}
 	return nil
 }
 
-// prunedHeld drops held hashes the client no longer has. Only a complete queue (every
-// client answered) can prove a torrent is gone; with one client down its torrents are
-// just missing from the list, and forgetting them would leave them paused for good.
-func prunedHeld(held []string, items []Item, whole bool) []string {
-	if !whole {
-		return held
+// pruneAfterMisses is how many passes in a row a held hash must be missing from a
+// complete queue before the guard forgets it.
+const pruneAfterMisses = 2
+
+// prunedHeld drops held hashes the client no longer has, and returns the updated
+// missed-pass counts. Forgetting a hash wrongly is the costly mistake — that torrent
+// then stays paused for good, since the guard only resumes what it holds — so it's
+// cautious three ways. Only a complete queue (every client answered) counts; with one
+// client down its torrents are just missing from the list. An empty queue doesn't
+// count either: a qBittorrent that has just restarted answers with nothing (or a
+// partial list) while it's still loading torrents. And a hash must be missing on two
+// passes in a row, which outlasts that loading window.
+func prunedHeld(held []string, items []Item, whole bool, missed map[string]int) ([]string, map[string]int) {
+	if !whole || len(items) == 0 {
+		return held, missed
 	}
 	present := make(map[string]bool, len(items))
 	for _, it := range items {
 		present[strings.ToLower(it.Hash)] = true
 	}
 	kept := make([]string, 0, len(held))
+	next := map[string]int{}
 	for _, h := range held {
 		if present[h] {
 			kept = append(kept, h)
+			continue
+		}
+		if n := missed[h] + 1; n < pruneAfterMisses {
+			next[h] = n
+			kept = append(kept, h)
 		}
 	}
-	return kept
+	return kept, next
 }
 
 // pauseActive pauses every torrent still pulling data, and adds them to the held set.
@@ -216,7 +237,8 @@ func (g *DiskGuard) pauseActive(ctx context.Context, held []string, usedPct floa
 		g.log.Warn("disk guard: could not read the queue", "err", err)
 		return
 	}
-	kept := prunedHeld(held, items, whole)
+	kept, missed := prunedHeld(held, items, whole, g.missed)
+	g.missed = missed
 	changed := len(kept) != len(held)
 	owned := map[string]bool{}
 	for _, h := range kept {

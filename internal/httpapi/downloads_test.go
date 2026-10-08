@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +24,7 @@ type fakeQbit struct {
 	mu      sync.Mutex
 	states  map[string]string // hash -> raw qBittorrent state
 	started []string
+	calls   int // start/stop requests, however many hashes each carried
 }
 
 func (f *fakeQbit) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -39,12 +41,14 @@ func (f *fakeQbit) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(list)
 	case "/api/v2/torrents/start", "/api/v2/torrents/stop":
 		_ = r.ParseForm()
-		h := r.Form.Get("hashes")
-		if r.URL.Path == "/api/v2/torrents/start" {
-			f.started = append(f.started, h)
-			f.states[h] = "downloading"
-		} else {
-			f.states[h] = "pausedDL"
+		f.calls++
+		for _, h := range strings.Split(r.Form.Get("hashes"), "|") {
+			if r.URL.Path == "/api/v2/torrents/start" {
+				f.started = append(f.started, h)
+				f.states[h] = "downloading"
+			} else {
+				f.states[h] = "pausedDL"
+			}
 		}
 	default:
 		http.NotFound(w, r)
@@ -92,7 +96,7 @@ func postResume(a *api, hash string) *httptest.ResponseRecorder {
 // During a hold, "Resume all" resumes only what the user paused, and says how many it
 // left for the guard. It used to be forwarded to qBittorrent as hash "all".
 func TestResumeAllSkipsTorrentsTheGuardHolds(t *testing.T) {
-	a, fq, ctx := guardAPI(t, map[string]string{"aaa": "downloading", "bbb": "pausedDL"})
+	a, fq, ctx := guardAPI(t, map[string]string{"aaa": "downloading", "bbb": "pausedDL", "ccc": "pausedDL"})
 	if err := a.deps.DiskGuard.Check(ctx); err != nil { // pauses aaa and holds it
 		t.Fatal(err)
 	}
@@ -109,11 +113,15 @@ func TestResumeAllSkipsTorrentsTheGuardHolds(t *testing.T) {
 		Held    int `json:"held_by_guard"`
 	}
 	_ = json.Unmarshal(rec.Body.Bytes(), &body)
-	if body.Resumed != 1 || body.Held != 1 {
-		t.Errorf("resumed=%d held_by_guard=%d, want 1 and 1", body.Resumed, body.Held)
+	if body.Resumed != 2 || body.Held != 1 {
+		t.Errorf("resumed=%d held_by_guard=%d, want 2 and 1", body.Resumed, body.Held)
 	}
-	if len(fq.started) != 1 || fq.started[0] != "bbb" {
-		t.Errorf("started %v, want only the manually paused torrent", fq.started)
+	sort.Strings(fq.started)
+	if len(fq.started) != 2 || fq.started[0] != "bbb" || fq.started[1] != "ccc" {
+		t.Errorf("started %v, want only the manually paused torrents", fq.started)
+	}
+	if fq.calls != 2 { // the guard's one pause, then one batched start
+		t.Errorf("%d start/stop requests; resume all should send one batched start", fq.calls)
 	}
 }
 

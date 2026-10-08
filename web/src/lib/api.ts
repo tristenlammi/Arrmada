@@ -192,7 +192,6 @@ export interface ResumeResult {
   status: string;
   resumed?: number;
   held_by_guard?: number;
-  failed?: number;
 }
 
 export interface APIKeyStatus {

@@ -118,7 +118,7 @@ export function Downloads() {
   const resumeAll = () => act("all", async () => {
     const r = await api.resumeDownload("all");
     const held = r.held_by_guard ?? 0;
-    flash(`Resumed ${r.resumed ?? 0}${held > 0 ? ` · ${held} held by the disk guard` : ""}${r.failed ? ` · ${r.failed} failed` : ""}.`);
+    flash(`Resumed ${r.resumed ?? 0}${held > 0 ? ` · ${held} held by the disk guard` : ""}.`);
   });
 
   const activeDownloads = useMemo(() => downloads.filter((d) => d.progress < 1), [downloads]);

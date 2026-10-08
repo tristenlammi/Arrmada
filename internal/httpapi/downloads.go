@@ -55,8 +55,8 @@ func (a *api) resumeAllDownloads(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	holding, _ := a.guardHolding(ctx)
-	var resumed, held, failed int
-	var lastErr error
+	var resume []string
+	held := 0
 	for _, it := range items {
 		if it.State != "paused" {
 			continue
@@ -65,19 +65,16 @@ func (a *api) resumeAllDownloads(w http.ResponseWriter, r *http.Request) {
 			held++
 			continue
 		}
-		if err := a.deps.Downloads.Resume(ctx, it.Hash); err != nil {
-			failed++
-			lastErr = err
-			continue
-		}
-		resumed++
+		resume = append(resume, it.Hash)
 	}
-	if failed > 0 && resumed == 0 {
-		a.writeError(w, http.StatusBadGateway, lastErr.Error())
+	// One request for the lot: a queue of a few hundred paused torrents would otherwise
+	// be a few hundred round trips inside this request.
+	if err := a.deps.Downloads.ResumeMany(ctx, resume); err != nil {
+		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{
-		"status": "resumed", "resumed": resumed, "held_by_guard": held, "failed": failed,
+		"status": "resumed", "resumed": len(resume), "held_by_guard": held,
 	})
 }
 
