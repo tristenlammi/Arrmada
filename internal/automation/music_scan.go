@@ -44,6 +44,9 @@ func (c *Coordinator) ScanMusicLibrary(ctx context.Context) (MusicScanResult, er
 	if c.music == nil || c.imp == nil {
 		return res, nil
 	}
+	if !c.moduleOn(ctx, "music") {
+		return res, ErrModuleOff
+	}
 	root := c.imp.MusicDir()
 	folders := findAlbumFolders(root)
 	if len(folders) == 0 {

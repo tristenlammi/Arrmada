@@ -22,7 +22,7 @@ with qBittorrent and FlareSolverr already wired up.
 - **TV** — episodes and season packs, anime numbering (TheXEM and TheTVDB), and airing shows kept up to date.
 - **Books** — ebooks and audiobooks with Hardcover or Open Library metadata, series tracking, several audiobook versions per book (standard and full cast), and multi-file audiobooks merged into one M4B.
 - **Audiobook server** — listening apps built for Audiobookshelf (Lissen) connect to Arrmada directly. Places sync reliably across devices and restarts, a glitch can't reset anyone to the start, and earlier places can be put back. Everyone gets their own audiobook password, per-device sign-out and a page showing where they're up to and how much they've listened. The admin sees how much and when people listen, never what. Imports everyone's places from Audiobookshelf.
-- **Music** (early) — artists, albums and whole-discography grabs.
+- **Music** (preview, off by default) — artists, albums and whole-discography grabs. Switch it on in Settings → System → Modules.
 - **Quality profiles** — a bitrate ceiling, required formats (Atmos, HDR, Dolby Vision), and preferred or rejected words.
 - **Indexers** — any Torznab indexer, one-click sync from Prowlarr, and built-in MyAnonaMouse, TorrentLeech and 1337x. FlareSolverr handles Cloudflare-protected trackers.
 - **Downloads** — the bundled qBittorrent sets itself up. Imports hardlink instead of copying, seeding rules clean up, stalled downloads fail over, and mismatched downloads wait in a review queue.

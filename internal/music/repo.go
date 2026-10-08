@@ -95,6 +95,14 @@ func (r *Repo) artistStats(ctx context.Context) (map[int64]ArtistStats, error) {
 	return out, rows.Err()
 }
 
+// HasArtists reports whether the library holds any artist at all. A cheap EXISTS rather
+// than a count: it's asked at startup only to tell "never used Music" from "uses it".
+func (r *Repo) HasArtists(ctx context.Context) (bool, error) {
+	var has bool
+	err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM artists)`).Scan(&has)
+	return has, err
+}
+
 // GetArtist returns one artist by id (without albums).
 func (r *Repo) GetArtist(ctx context.Context, id int64) (Artist, error) {
 	row := r.db.QueryRowContext(ctx, `SELECT `+artistCols+` FROM artists WHERE id = ?`, id)

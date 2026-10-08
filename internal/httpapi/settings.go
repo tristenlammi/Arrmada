@@ -10,6 +10,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
+	"github.com/tristenlammi/arrmada/internal/settings"
 )
 
 // serverZone names the timezone the server evaluates schedules in, so the UI can say
@@ -35,8 +36,6 @@ const (
 	keyNamingSeriesEpisode = "naming_series_episode"
 	keyWriteNFO            = "write_nfo"
 	keyDownloadArtwrk      = "download_artwork"
-	keyBooksEnabled        = "module_books_enabled"
-	keyMusicEnabled        = "module_music_enabled"
 	keyDiskGuard           = download.KeyDiskGuard
 	keyDiskGuardPause      = download.KeyDiskGuardPause
 	keyDiskGuardResume     = download.KeyDiskGuardResum
@@ -45,13 +44,14 @@ const (
 // booksEnabled reports whether the Books module is turned on (default true). Used to gate
 // the nav entry + Discover tab; disabling hides Books without deleting any data.
 func (a *api) booksEnabled(ctx context.Context) bool {
-	return a.deps.Settings.GetBool(ctx, keyBooksEnabled, true)
+	return a.deps.Settings.GetBool(ctx, settings.KeyModuleBooks, true)
 }
 
-// musicEnabled reports whether the Music module is turned on (default true). Gates the nav
-// entry (the module itself is still on the roadmap).
+// musicEnabled reports whether the Music module is turned on (off by default — it's a
+// preview). Off hides the nav entry, 404s the Music API and stops its searches and imports;
+// nothing is deleted.
 func (a *api) musicEnabled(ctx context.Context) bool {
-	return a.deps.Settings.GetBool(ctx, keyMusicEnabled, true)
+	return a.deps.Settings.GetBool(ctx, settings.KeyModuleMusic, settings.ModuleMusicDefault)
 }
 
 // handleGetSettings returns the user-facing app preferences.
@@ -164,7 +164,7 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if req.DownloadArtwork != nil && !save(a.deps.Settings.SetBool(ctx, keyDownloadArtwrk, *req.DownloadArtwork)) {
 		return
 	}
-	if req.BooksEnabled != nil && !save(a.deps.Settings.SetBool(ctx, keyBooksEnabled, *req.BooksEnabled)) {
+	if req.BooksEnabled != nil && !save(a.deps.Settings.SetBool(ctx, settings.KeyModuleBooks, *req.BooksEnabled)) {
 		return
 	}
 	if req.PlexLoginEnabled != nil && !save(a.deps.Settings.SetBool(ctx, "plex_login_enabled", *req.PlexLoginEnabled)) {
@@ -190,7 +190,7 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if req.RecycleRetentionDays != nil && !save(a.deps.Settings.Set(ctx, "recycle_retention_days", strings.TrimSpace(*req.RecycleRetentionDays))) {
 		return
 	}
-	if req.MusicEnabled != nil && !save(a.deps.Settings.SetBool(ctx, keyMusicEnabled, *req.MusicEnabled)) {
+	if req.MusicEnabled != nil && !save(a.deps.Settings.SetBool(ctx, settings.KeyModuleMusic, *req.MusicEnabled)) {
 		return
 	}
 	if req.DiskGuard != nil && !save(a.deps.Settings.SetBool(ctx, keyDiskGuard, *req.DiskGuard)) {

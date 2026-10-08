@@ -28,7 +28,7 @@ const musicCategory = "arrmada-music"
 // backoff so an album no indexer carries doesn't cost a full search every cycle forever, and
 // a disk-space check before committing to a grab.
 func (c *Coordinator) SearchMusicMissing(ctx context.Context) {
-	if c.music == nil {
+	if c.music == nil || !c.moduleOn(ctx, "music") {
 		return
 	}
 	artists, err := c.music.ListArtists(ctx)
@@ -185,8 +185,11 @@ func (c *Coordinator) musicProfile(ctx context.Context, ref string) quality.Stor
 }
 
 // ImportMusicDownloads imports finished album downloads.
+//
+// Paused while the Music module is off: the finished torrents simply wait in the client and
+// import on the first cycle after it's switched back on.
 func (c *Coordinator) ImportMusicDownloads(ctx context.Context) {
-	if c.music == nil || c.imp == nil {
+	if c.music == nil || c.imp == nil || !c.moduleOn(ctx, "music") {
 		return
 	}
 	completed, err := c.downloads.CompletedInCategory(ctx, musicCategory)
@@ -515,6 +518,9 @@ var _ = library.FoundVideo{}
 func (c *Coordinator) GrabDiscography(ctx context.Context, artistID int64) error {
 	if c.music == nil {
 		return fmt.Errorf("music module unavailable")
+	}
+	if !c.moduleOn(ctx, "music") {
+		return ErrModuleOff
 	}
 	a, err := c.music.GetArtist(ctx, artistID)
 	if err != nil {

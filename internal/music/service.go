@@ -32,6 +32,10 @@ func (s *Service) Lookup(ctx context.Context, query string) ([]metadata.ArtistRe
 // ListArtists returns the library.
 func (s *Service) ListArtists(ctx context.Context) ([]Artist, error) { return s.repo.ListArtists(ctx) }
 
+// HasArtists reports whether anyone has added an artist, which is what decides whether an
+// existing install keeps the Music module on now that it's off by default.
+func (s *Service) HasArtists(ctx context.Context) (bool, error) { return s.repo.HasArtists(ctx) }
+
 // GetArtist returns one artist with its albums.
 func (s *Service) GetArtist(ctx context.Context, id int64) (Artist, error) {
 	a, err := s.repo.GetArtist(ctx, id)

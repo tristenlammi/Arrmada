@@ -7,6 +7,7 @@ package automation
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -49,6 +50,11 @@ type Coordinator struct {
 	music        *music.Service  // set post-construction via SetMusic
 	imp          *library.Importer
 	recycle      string // recycle-bin dir for book deletes ("" = hard delete); set via SetRecycleDir
+
+	// moduleGate says whether a switchable module is on right now. Asked on every run
+	// rather than captured at startup, so flipping a module in Settings takes effect on
+	// the next cycle without a restart. nil (tests, or nothing wired) means on.
+	moduleGate func(ctx context.Context, module string) bool
 
 	// unmatched counts how many import sweeps have failed to match a download to a
 	// series, keyed by torrent hash. Without it the 30-second sweep logs the same failure
@@ -106,6 +112,19 @@ func (c *Coordinator) SetBooks(b *books.Service) { c.books = b }
 
 // SetMusic wires the music module (shares the importer set by SetSeries).
 func (c *Coordinator) SetMusic(m *music.Service) { c.music = m }
+
+// ErrModuleOff is returned by a manual music action while the Music module is switched off.
+var ErrModuleOff = errors.New("the Music module is turned off")
+
+// SetModuleGate wires the check for whether a module is switched on (see moduleGate).
+func (c *Coordinator) SetModuleGate(fn func(ctx context.Context, module string) bool) {
+	c.moduleGate = fn
+}
+
+// moduleOn reports whether a module's background work and actions should run.
+func (c *Coordinator) moduleOn(ctx context.Context, module string) bool {
+	return c.moduleGate == nil || c.moduleGate(ctx, module)
+}
 
 // New wires the coordinator.
 func New(m *movies.Service, ix *indexer.Service, dl *download.Service, q *quality.Service, db *sql.DB, bus *eventbus.Bus, log *slog.Logger, downloadsDir string) *Coordinator {

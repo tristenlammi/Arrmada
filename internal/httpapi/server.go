@@ -4,6 +4,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -398,20 +399,22 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("DELETE "+base+"/api/v1/books/{id}/audio-versions/{vid}/file", a.requireRole(auth.RoleManager, a.handleDeleteAudioVersionFile))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/audio-versions/{vid}/search", a.requireRole(auth.RoleManager, a.handleSearchAudioVersion))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/merge-audiobook", a.requireRole(auth.RoleManager, a.handleMergeAudiobook))
-	// Music (Lidarr replacement - MusicBrainz metadata + album acquisition).
-	mux.HandleFunc("GET "+base+"/api/v1/music/artists", a.protected(a.handleListArtists))
-	mux.HandleFunc("GET "+base+"/api/v1/music/lookup", a.protected(a.handleLookupArtists))
-	mux.HandleFunc("POST "+base+"/api/v1/music/scan", a.requireRole(auth.RoleManager, a.handleScanMusicLibrary))
-	mux.HandleFunc("POST "+base+"/api/v1/music/artists", a.requireRole(auth.RoleManager, a.handleAddArtist))
-	mux.HandleFunc("GET "+base+"/api/v1/music/artists/{id}", a.protected(a.handleGetArtist))
-	mux.HandleFunc("POST "+base+"/api/v1/music/artists/{id}/refresh", a.requireRole(auth.RoleManager, a.handleRefreshArtist))
-	mux.HandleFunc("POST "+base+"/api/v1/music/artists/{id}/discography", a.requireRole(auth.RoleManager, a.handleGrabDiscography))
-	mux.HandleFunc("PUT "+base+"/api/v1/music/artists/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetArtistMonitored))
-	mux.HandleFunc("PUT "+base+"/api/v1/music/artists/{id}/profile", a.requireRole(auth.RoleManager, a.handleSetArtistProfile))
-	mux.HandleFunc("DELETE "+base+"/api/v1/music/artists/{id}", a.requireRole(auth.RoleManager, a.handleDeleteArtist))
-	mux.HandleFunc("GET "+base+"/api/v1/music/artists/{id}/history", a.protected(a.handleArtistHistory))
-	mux.HandleFunc("GET "+base+"/api/v1/music/albums/{id}", a.protected(a.handleGetAlbum))
-	mux.HandleFunc("PUT "+base+"/api/v1/music/albums/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetAlbumMonitored))
+	// Music (Lidarr replacement - MusicBrainz metadata + album acquisition). A preview that's
+	// off by default: musicRoute 404s every endpoint while it's switched off. It sits inside
+	// the auth wrapper so an anonymous caller still gets 401 and learns nothing about it.
+	mux.HandleFunc("GET "+base+"/api/v1/music/artists", a.protected(a.musicRoute(a.handleListArtists)))
+	mux.HandleFunc("GET "+base+"/api/v1/music/lookup", a.protected(a.musicRoute(a.handleLookupArtists)))
+	mux.HandleFunc("POST "+base+"/api/v1/music/scan", a.requireRole(auth.RoleManager, a.musicRoute(a.handleScanMusicLibrary)))
+	mux.HandleFunc("POST "+base+"/api/v1/music/artists", a.requireRole(auth.RoleManager, a.musicRoute(a.handleAddArtist)))
+	mux.HandleFunc("GET "+base+"/api/v1/music/artists/{id}", a.protected(a.musicRoute(a.handleGetArtist)))
+	mux.HandleFunc("POST "+base+"/api/v1/music/artists/{id}/refresh", a.requireRole(auth.RoleManager, a.musicRoute(a.handleRefreshArtist)))
+	mux.HandleFunc("POST "+base+"/api/v1/music/artists/{id}/discography", a.requireRole(auth.RoleManager, a.musicRoute(a.handleGrabDiscography)))
+	mux.HandleFunc("PUT "+base+"/api/v1/music/artists/{id}/monitor", a.requireRole(auth.RoleManager, a.musicRoute(a.handleSetArtistMonitored)))
+	mux.HandleFunc("PUT "+base+"/api/v1/music/artists/{id}/profile", a.requireRole(auth.RoleManager, a.musicRoute(a.handleSetArtistProfile)))
+	mux.HandleFunc("DELETE "+base+"/api/v1/music/artists/{id}", a.requireRole(auth.RoleManager, a.musicRoute(a.handleDeleteArtist)))
+	mux.HandleFunc("GET "+base+"/api/v1/music/artists/{id}/history", a.protected(a.musicRoute(a.handleArtistHistory)))
+	mux.HandleFunc("GET "+base+"/api/v1/music/albums/{id}", a.protected(a.musicRoute(a.handleGetAlbum)))
+	mux.HandleFunc("PUT "+base+"/api/v1/music/albums/{id}/monitor", a.requireRole(auth.RoleManager, a.musicRoute(a.handleSetAlbumMonitored)))
 
 	// Books Discover (Open Library browse/search + author catalogues).
 	mux.HandleFunc("GET "+base+"/api/v1/books/discover/trending", a.protected(a.handleBookDiscoverTrending))
@@ -504,17 +507,35 @@ type module struct {
 	Status  string `json:"status"`
 }
 
-// plannedModules reflects what actually ships. Movies/Series/Books/Requests/Subtitles/Convert are
-// live; Insights and Music are still on the roadmap.
-var plannedModules = []module{
-	{"movies", "Movies", true, "available"},
-	{"series", "Series", true, "available"},
-	{"books", "Books", true, "available"},
-	{"requests", "Requests", true, "available"},
-	{"subtitles", "Subtitles", true, "available"},
-	{"convert", "Convert", true, "available"},
-	{"insights", "Insights", true, "available"},
-	{"music", "Music", false, "planned"},
+// modules lists what ships and whether each is switched on right now. Music is a preview,
+// off by default; Books and Music follow their Settings toggles, the rest are always on.
+func (a *api) modules(ctx context.Context) []module {
+	return []module{
+		{"movies", "Movies", true, "available"},
+		{"series", "Series", true, "available"},
+		{"books", "Books", a.booksEnabled(ctx), "available"},
+		{"requests", "Requests", true, "available"},
+		{"subtitles", "Subtitles", true, "available"},
+		{"convert", "Convert", true, "available"},
+		{"insights", "Insights", true, "available"},
+		{"music", "Music", a.musicEnabled(ctx), "preview"},
+	}
+}
+
+// musicOffMessage is what every Music endpoint answers while the module is switched off.
+const musicOffMessage = "The Music module is turned off (Settings → System → Modules)"
+
+// musicRoute 404s a Music endpoint while the module is switched off, so turning it off
+// stops the manual actions (add, discography, scan…) as well as the background sweep.
+// Checked per request, so switching it back on needs no restart.
+func (a *api) musicRoute(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !a.musicEnabled(r.Context()) {
+			a.writeError(w, http.StatusNotFound, musicOffMessage)
+			return
+		}
+		h(w, r)
+	}
 }
 
 func (a *api) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -564,7 +585,7 @@ func (a *api) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"plex_login":     a.deps.Settings.GetBool(r.Context(), "plex_login_enabled", false),
 		"external":       isExternalRequest(r), // request came from outside the LAN → Discover-only
 
-		"modules":       plannedModules,
+		"modules":       a.modules(r.Context()),
 		"books_enabled": a.booksEnabled(r.Context()),
 		"music_enabled": a.musicEnabled(r.Context()),
 	})

@@ -34,7 +34,7 @@ import { Placeholder } from "./pages/Placeholder";
 
 // Module routes still awaiting their build → placeholders.
 export default function App() {
-  const { user, loading, external, booksEnabled } = useMe();
+  const { user, loading, external, booksEnabled, musicEnabled } = useMe();
 
   if (loading) {
     return <div className="grid h-full place-items-center text-[13px] text-ink-dim">Loading…</div>;
@@ -91,9 +91,10 @@ export default function App() {
         <Route path="/series/:id" element={<SeriesDetail />} />
         <Route path="/discover" element={<Discover />} />
         <Route path="/calendar" element={<Calendar />} />
-        <Route path="/music" element={<Music />} />
-        <Route path="/music/album/:id" element={<AlbumDetail />} />
-        <Route path="/music/:id" element={<ArtistDetail />} />
+        {/* Music is a preview module; while it's off its pages fall through to Not found. */}
+        {musicEnabled && <Route path="/music" element={<Music />} />}
+        {musicEnabled && <Route path="/music/album/:id" element={<AlbumDetail />} />}
+        {musicEnabled && <Route path="/music/:id" element={<ArtistDetail />} />}
         <Route path="/books" element={<Books />} />
         <Route path="/books/author/:name" element={<AuthorDetail />} />
         <Route path="/books/:id" element={<BookDetail />} />
