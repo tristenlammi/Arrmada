@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/convert"
+	"github.com/tristenlammi/arrmada/internal/pathguard"
 )
 
 // "Which torrent is this file?" had no answer anywhere in the app. The chain exists —
@@ -102,32 +103,11 @@ func (a *api) handleFileInfo(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, out)
 }
 
-// underLibraryRoot reports whether path sits inside a configured media root. Compared on
-// cleaned absolute paths with a separator boundary, so "/library-old" can't pass as
-// "/library".
+// underLibraryRoot reports whether path sits inside a configured media root (the same
+// roots manual import may read from). Both sides are fully resolved, so neither
+// "/library-old" nor a symlink inside the library that points at /etc can pass.
 func (a *api) underLibraryRoot(path string) bool {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return false
-	}
-	abs = filepath.Clean(abs)
-	c := a.deps.Config
-	for _, root := range []string{
-		c.LibraryDir, c.MoviesDir, c.TVDir, c.EbooksDir, c.AudiobooksDir, c.MusicDir, c.DownloadsDir,
-	} {
-		if strings.TrimSpace(root) == "" {
-			continue
-		}
-		rabs, err := filepath.Abs(root)
-		if err != nil {
-			continue
-		}
-		rabs = filepath.Clean(rabs)
-		if abs == rabs || strings.HasPrefix(abs, rabs+string(filepath.Separator)) {
-			return true
-		}
-	}
-	return false
+	return pathguard.Within(path, a.importRoots(context.Background())...)
 }
 
 // fileSourceFor joins a library path back to the release it came from:

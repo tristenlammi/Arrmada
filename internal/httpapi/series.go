@@ -586,15 +586,16 @@ func (a *api) handleSeriesManualImportList(w http.ResponseWriter, r *http.Reques
 	if _, ok := a.pathID(w, r); !ok {
 		return
 	}
-	dir := r.URL.Query().Get("path")
-	if dir == "" {
-		dir = a.deps.Config.DownloadsDir
+	dir, err := a.checkImportPath(r.Context(), r.URL.Query().Get("path"))
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	cands := a.deps.Automation.SeriesImportCandidates(dir)
 	if cands == nil {
 		cands = []automation.SeriesImportCandidate{}
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"candidates": cands})
+	a.writeJSON(w, http.StatusOK, map[string]any{"path": dir, "candidates": cands})
 }
 
 func (a *api) handleSeriesManualImport(w http.ResponseWriter, r *http.Request) {
@@ -609,23 +610,28 @@ func (a *api) handleSeriesManualImport(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "path is required")
 		return
 	}
+	src, err := a.checkImportPath(r.Context(), req.Path)
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	// A whole-folder import is long work — a 122-file season pack took 14 minutes — so it
 	// runs detached. Holding the request open outlasts any sensible HTTP timeout and
 	// leaves the user staring at a spinner, unsure whether navigating away cancels it.
 	// Single files stay synchronous: they're quick, and immediate feedback is better.
-	if fi, statErr := os.Stat(req.Path); statErr == nil && fi.IsDir() {
+	if fi, statErr := os.Stat(src); statErr == nil && fi.IsDir() {
 		go func(seriesID int64, path string) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
 			defer cancel()
 			if err := a.deps.Automation.ManualImportSeries(ctx, seriesID, path); err != nil {
 				a.deps.Log.Warn("series: folder import failed", "series_id", seriesID, "path", path, "err", err)
 			}
-		}(id, req.Path)
+		}(id, src)
 		a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "importing", "background": true})
 		return
 	}
 
-	if err := a.deps.Automation.ManualImportSeries(r.Context(), id, req.Path); err != nil {
+	if err := a.deps.Automation.ManualImportSeries(r.Context(), id, src); err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}

@@ -260,15 +260,16 @@ func (a *api) handleBookManualImportList(w http.ResponseWriter, r *http.Request)
 	if _, ok := a.pathID(w, r); !ok {
 		return
 	}
-	dir := r.URL.Query().Get("path")
-	if dir == "" {
-		dir = a.deps.Config.DownloadsDir
+	dir, err := a.checkImportPath(r.Context(), r.URL.Query().Get("path"))
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	cands := a.deps.Automation.BookImportCandidates(dir)
 	if cands == nil {
 		cands = []automation.BookImportCandidate{}
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"candidates": cands})
+	a.writeJSON(w, http.StatusOK, map[string]any{"path": dir, "candidates": cands})
 }
 
 func (a *api) handleBookManualImport(w http.ResponseWriter, r *http.Request) {
@@ -284,7 +285,12 @@ func (a *api) handleBookManualImport(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "path is required")
 		return
 	}
-	if err := a.deps.Automation.ManualImportBook(r.Context(), id, req.VersionID, req.Path); err != nil {
+	src, err := a.checkImportPath(r.Context(), req.Path)
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.deps.Automation.ManualImportBook(r.Context(), id, req.VersionID, src); err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
