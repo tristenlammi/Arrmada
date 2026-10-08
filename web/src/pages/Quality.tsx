@@ -9,6 +9,7 @@ import {
   type IdealFile,
   type Movie,
   type MusicPreset,
+  type ProfileMoveCounts,
   type QualityProfileInfo,
   type ReleaseList,
   type Series,
@@ -225,6 +226,9 @@ export function Quality() {
   const [editing, setEditing] = useState<StoredProfile | null>(null);
   const [picking, setPicking] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // "Moved 12 films to …" after a delete. It lives here, not on the card, because the
+  // card is gone once the list refreshes.
+  const [notice, setNotice] = useState<string | null>(null);
   const isVideo = media === "movie" || media === "series";
 
   const refresh = useCallback(() => {
@@ -248,6 +252,7 @@ export function Quality() {
   useEffect(() => {
     refresh();
   }, [refresh]);
+  useEffect(() => setNotice(null), [media]);
 
   const openNew = () => (isVideo ? setPicking(true) : setEditing(emptyProfile(media)));
   const editRef = async (info: QualityProfileInfo) => setEditing(await api.qualityProfile(info.key));
@@ -281,6 +286,12 @@ export function Quality() {
         </p>
 
         {error && <div className="mb-3 rounded-lg p-3 text-[12px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
+        {notice && (
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-lg p-3 text-[12px]" style={{ border: "1px solid var(--accent-line)", color: "var(--ink)" }}>
+            <span>{notice}</span>
+            <button onClick={() => setNotice(null)} aria-label="Dismiss" className="text-ink-dim">✕</button>
+          </div>
+        )}
 
         {profiles.length === 0 ? (
           <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>
@@ -290,7 +301,9 @@ export function Quality() {
           <div className="flex flex-col gap-2.5">
             {profiles.map((p) => (
               <ProfileCard key={p.key} info={p} media={media} counts={isVideo ? (fits[p.key] ?? NO_COUNTS) : undefined}
-                onEdit={() => editRef(p)} onDuplicate={() => duplicate(p)} onChange={refresh} />
+                others={profiles.filter((o) => o.key !== p.key)}
+                onEdit={() => editRef(p)} onDuplicate={() => duplicate(p)} onChange={refresh}
+                onDeleted={(msg) => { setNotice(msg); refresh(); }} onError={setError} />
             ))}
           </div>
         )}
@@ -317,13 +330,43 @@ function Tabs({ value, onChange }: { value: string; onChange: (v: string) => voi
   );
 }
 
-function ProfileCard({ info, media, counts, onEdit, onDuplicate, onChange }: {
-  info: QualityProfileInfo; media: string; counts?: FitCounts; onEdit: () => void; onDuplicate: () => void; onChange: () => void;
+// movedSummary reads a delete's counts back as "12 films and 1 request". Extra versions
+// are the same films again, so they aren't counted twice.
+function movedSummary(m: ProfileMoveCounts): string {
+  const n = (count: number, one: string, many: string) => (count > 0 ? [`${count} ${count === 1 ? one : many}`] : []);
+  const parts = [
+    ...n(m.movies, "film", "films"),
+    ...n(m.series, "show", "shows"),
+    ...n(m.books, "book", "books"),
+    ...n(m.artists, "artist", "artists"),
+    ...n(m.requests, "request", "requests"),
+    ...n(m.grabs, "download", "downloads"),
+  ];
+  if (parts.length <= 1) return parts[0] ?? "";
+  return `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+}
+
+function ProfileCard({ info, media, counts, others, onEdit, onDuplicate, onChange, onDeleted, onError }: {
+  info: QualityProfileInfo; media: string; counts?: FitCounts; others: QualityProfileInfo[];
+  onEdit: () => void; onDuplicate: () => void; onChange: () => void;
+  onDeleted: (message: string) => void; onError: (message: string) => void;
 }) {
   const [confirming, setConfirming] = useState(false);
+  // Where this profile's titles go: the default, or the first other profile when this is
+  // the default.
+  const fallback = (others.find((o) => o.is_default) ?? others[0])?.key ?? "";
+  const [moveTo, setMoveTo] = useState(fallback);
+  const target = others.find((o) => o.key === moveTo) ?? others.find((o) => o.key === fallback);
   const del = async () => {
-    await api.deleteQualityProfile(Number(info.key.replace("custom:", "")));
-    onChange();
+    if (!target) return;
+    try {
+      const r = await api.deleteQualityProfile(Number(info.key.replace("custom:", "")), target.key);
+      const what = movedSummary(r.moved);
+      onDeleted(what ? `Deleted ${info.name}. Moved ${what} to ${target.name}.` : `Deleted ${info.name}.`);
+    } catch (e) {
+      setConfirming(false);
+      onError((e as Error).message);
+    }
   };
   const makeDefault = async () => {
     await api.setDefaultProfile(media, info.key);
@@ -331,6 +374,8 @@ function ProfileCard({ info, media, counts, onEdit, onDuplicate, onChange }: {
   };
   const titles = counts?.titles ?? 0;
   const noun = media === "series" ? (titles === 1 ? "show" : "shows") : titles === 1 ? "film" : "films";
+  // Books and music have no fit counts, so their titles go unnumbered.
+  const what = counts ? `${titles} ${noun}` : media === "book" ? "its books" : "its artists";
   return (
     <div className="rounded-xl p-3.5" style={{ ...panelStyle, border: `1px solid ${info.is_default ? "var(--accent)" : "var(--line)"}` }}>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2.5">
@@ -348,15 +393,24 @@ function ProfileCard({ info, media, counts, onEdit, onDuplicate, onChange }: {
           )}
           <button onClick={onEdit} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>Edit</button>
           <button onClick={onDuplicate} title="Start a new profile from this one" className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Duplicate</button>
-          {confirming ? (
+          {confirming && target ? (
             <>
+              {/* Every title on a profile needs somewhere real to go, so the delete asks where. */}
+              <label className="flex items-center gap-1.5 text-[11.5px] text-ink-dim">
+                Move {what} to
+                <select value={target.key} onChange={(e) => setMoveTo(e.target.value)} className="rounded-lg px-2 py-1.5 text-[11.5px]" style={fieldStyle}>
+                  {others.map((o) => <option key={o.key} value={o.key}>{o.name}</option>)}
+                </select>
+              </label>
               <button onClick={del} className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--reject)", color: "#fff" }}>
-                {titles > 0 ? `Delete — ${titles} ${noun} move to your default` : "Delete"}
+                {counts && titles === 0 ? "Delete" : `Delete and move ${what} to ${target.name}`}
               </button>
               <button onClick={() => setConfirming(false)} aria-label="Keep the profile" className="rounded-lg px-2.5 py-1.5 text-[11.5px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>✕</button>
             </>
           ) : (
-            <button onClick={() => setConfirming(true)} className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Delete</button>
+            <button onClick={() => setConfirming(true)} disabled={others.length === 0}
+              title={others.length === 0 ? "Create another profile first" : undefined}
+              className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold disabled:cursor-not-allowed disabled:opacity-40" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Delete</button>
           )}
         </div>
       </div>

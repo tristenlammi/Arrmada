@@ -119,6 +119,17 @@ export interface QualityProfileInfo {
   summary: string;
 }
 
+// What a profile delete moved onto its replacement.
+export interface ProfileMoveCounts {
+  movies: number;
+  versions: number;
+  series: number;
+  books: number;
+  artists: number;
+  requests: number;
+  grabs: number;
+}
+
 export interface SearchingItem {
   movie_id?: number;
   series_id?: number;
@@ -1224,8 +1235,10 @@ export const api = {
     req<StoredProfile>("/api/v1/quality/profiles", { method: "POST", body: JSON.stringify(sp) }),
   updateQualityProfile: (id: number, sp: StoredProfile) =>
     req<{ status: string }>(`/api/v1/quality/profiles/${id}`, { method: "PUT", body: JSON.stringify(sp) }),
-  deleteQualityProfile: (id: number) =>
-    req<void>(`/api/v1/quality/profiles/${id}`, { method: "DELETE" }),
+  // Deletes a profile and moves everything on it to moveTo ("" = the media's default).
+  deleteQualityProfile: (id: number, moveTo: string) =>
+    req<{ moved: ProfileMoveCounts; moved_to: string }>(
+      `/api/v1/quality/profiles/${id}?move_to=${encodeURIComponent(moveTo)}`, { method: "DELETE" }),
   qualityPreviewSpec: (sp: StoredProfile) =>
     req<QualityPreview>("/api/v1/quality/preview", { method: "POST", body: JSON.stringify(sp) }),
 

@@ -439,7 +439,93 @@ func (s *Service) DecideSpec(sp StoredProfile, cands []Candidate) Decision {
 	return sp.Engine().Decide(sp.ToProfile(), cands)
 }
 
-func (s *Service) Delete(ctx context.Context, id int64) error { return s.repo.Delete(ctx, id) }
+// Delete removes a profile and moves every title, pending request and in-flight grab
+// on it to moveTo, returning the counts and the ref they moved to. An empty moveTo means
+// the media type's default, or the first other profile when the default is the one
+// going. The last profile of a media type can't be deleted: its titles would have
+// nowhere real to go.
+func (s *Service) Delete(ctx context.Context, id int64, moveTo string) (Reassigned, string, error) {
+	sp, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return Reassigned{}, "", err
+	}
+	others, err := s.repo.List(ctx, sp.MediaType)
+	if err != nil {
+		return Reassigned{}, "", err
+	}
+	first := ""
+	for _, o := range others {
+		if o.ID != id {
+			first = "custom:" + strconv.FormatInt(o.ID, 10)
+			break
+		}
+	}
+	if first == "" {
+		return Reassigned{}, "", ErrLastProfile
+	}
+	if moveTo == "" {
+		moveTo = s.DefaultProfile(ctx, sp.MediaType)
+		if moveTo == "" || moveTo == "custom:"+strconv.FormatInt(id, 10) {
+			moveTo = first
+		}
+	}
+	moved, err := s.repo.DeleteAndReassign(ctx, id, moveTo)
+	if err != nil {
+		return Reassigned{}, "", err
+	}
+	return moved, moveTo, nil
+}
+
+// RepairDanglingRefs points every title, request and grab whose profile no longer
+// exists at its media type's default, returning the counts per table. Profiles deleted
+// before deletes reassigned their titles left these behind; Effective already runs them
+// on the default, and this makes the stored ref say so. Only refs naming a missing
+// profile are touched — "n/a", "" and every real ref stay as they are — so it is cheap
+// and safe to run on every boot.
+func (s *Service) RepairDanglingRefs(ctx context.Context) (map[string]int, error) {
+	out := map[string]int{}
+	repair := func(key, table, media, where string, args ...any) error {
+		def := s.DefaultProfile(ctx, media)
+		if def == "" {
+			return nil // no profile of this media at all: nothing better to point at
+		}
+		n, err := s.repo.repointDangling(ctx, table, where, def, args...)
+		if err != nil {
+			return err
+		}
+		if n > 0 {
+			out[key] += n
+		}
+		return nil
+	}
+	fixed := []struct{ key, table, media string }{
+		{"movies", "movies", MediaMovie},
+		{"movie_versions", "movie_versions", MediaMovie},
+		{"series", "series", MediaSeries},
+		{"books", "books", MediaBook},
+		{"artists", "artists", MediaMusic},
+	}
+	for _, f := range fixed {
+		if err := repair(f.key, f.table, f.media, ""); err != nil {
+			return out, err
+		}
+	}
+	// Requests and grabs carry their own media type. Grabs written before series
+	// existed have '' for a film.
+	for _, media := range []string{MediaMovie, MediaSeries, MediaBook, MediaMusic} {
+		if err := repair("requests", "requests", media, "media_type = ?", media); err != nil {
+			return out, err
+		}
+		where := "media_type = ?"
+		if media == MediaMovie {
+			where = "media_type IN (?, '')"
+		}
+		if err := repair("grabs", "grabs", media, where, media); err != nil {
+			return out, err
+		}
+	}
+	return out, nil
+}
 
 // Preview scores a (possibly unsaved) profile over the built-in sample set — the
 // live feedback behind the builder.

@@ -176,6 +176,18 @@ func main() {
 	hardcover.SetDiskCache(diskCache)
 	openlib := metadata.NewBookSources(hardcover, metadata.NewBooksWithFallback(olProvider, metadata.NewGoogleBooks()))
 	qualitySvc := quality.NewService(st.DB())
+	// Titles left on a profile deleted before deletes reassigned them already run on the
+	// default; point their stored ref there too, so the UI and the database agree. Only
+	// refs naming a missing profile are touched.
+	if fixed, err := qualitySvc.RepairDanglingRefs(context.Background()); err != nil {
+		log.Warn("quality: dangling profile repair failed", "err", err)
+	} else if len(fixed) > 0 {
+		args := []any{}
+		for table, n := range fixed {
+			args = append(args, table, n)
+		}
+		log.Info("quality: repointed titles on deleted profiles to the default", args...)
+	}
 	notifySvc := notify.NewService(st.DB(), bus, log)
 	pushSvc := push.New(st.DB(), settingsSvc, log)
 	// Episode NUMBERING comes from TVmaze; everything else about a show still comes from
