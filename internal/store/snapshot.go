@@ -29,6 +29,11 @@ const spaceHeadroom = 1.2
 // and returns its path. The copy is checked before it gets its final name, so a
 // file that exists under a backup name is always a usable database.
 func (s *Store) Snapshot(ctx context.Context, kind BackupKind) (string, error) {
+	// Held across the name pick and the copy, so a second caller sees the first
+	// one's finished file and moves on to the next free name.
+	s.snapMu.Lock()
+	defer s.snapMu.Unlock()
+
 	dir := BackupsDir(s.dataDir)
 	at := time.Now()
 	dst := filepath.Join(dir, BackupName(kind, at))

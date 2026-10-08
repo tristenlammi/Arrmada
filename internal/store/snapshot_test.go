@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -253,6 +254,87 @@ func TestSnapshotSameSecondKeepsBoth(t *testing.T) {
 	}
 	if a == b {
 		t.Fatalf("second snapshot replaced the first: %s", a)
+	}
+}
+
+func TestSnapshotConcurrentCallsKeepBoth(t *testing.T) {
+	dir := t.TempDir()
+	st, err := openWith(t, dir, snapV1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := make([]string, 2)
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range paths {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			paths[i], errs[i] = st.Snapshot(context.Background(), BackupManual)
+		}()
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("snapshot %d: %v", i, err)
+		}
+	}
+	if paths[0] == paths[1] {
+		t.Fatalf("both snapshots got %s", paths[0])
+	}
+	if files := backupFiles(t, dir); len(files) != 2 {
+		t.Fatalf("backups = %v, want two finished copies", files)
+	}
+}
+
+// A migration that keeps failing puts the container in a restart loop, and every
+// boot snapshots the half-upgraded database. None of that may cost the copy taken
+// before the upgrade began.
+func TestFailingUpgradeKeepsThePreUpgradeSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	st, err := openWith(t, dir, snapV1, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+
+	v1 := `CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT); INSERT INTO t (id, v) VALUES (1, 'before');`
+	broken := memFS(map[string]string{
+		"0001_t.sql":    v1,
+		"0002_wipe.sql": `DELETE FROM t;`,
+		"0003_typo.sql": `CREAT TABLE nope (id INTEGER);`,
+	})
+	const boots = preMigrateKeep + 2
+	for i := 0; i < boots; i++ {
+		if _, err := openWith(t, dir, broken, Options{}); err == nil {
+			t.Fatalf("boot %d: the broken upgrade succeeded", i)
+		}
+	}
+	files := backupFiles(t, dir)
+	if len(files) != boots {
+		t.Fatalf("backups = %v, want all %d kept while the upgrade keeps failing", files, boots)
+	}
+	// Names sort by time, so the first is the copy from before 0002 ran.
+	snap := openReadOnly(t, filepath.Join(BackupsDir(dir), files[0]))
+	var v string
+	if err := snap.QueryRow(`SELECT v FROM t WHERE id = 1`).Scan(&v); err != nil || v != "before" {
+		t.Fatalf("oldest snapshot row = %q, %v; want the pre-upgrade row", v, err)
+	}
+	if n := count(t, snap, `SELECT COUNT(*) FROM schema_migrations`); n != 1 {
+		t.Fatalf("oldest snapshot schema_migrations rows = %d, want 1", n)
+	}
+
+	// Once the upgrade goes through, the usual limit applies again.
+	fixed := memFS(map[string]string{
+		"0001_t.sql":    v1,
+		"0002_wipe.sql": `DELETE FROM t;`,
+		"0003_typo.sql": `CREATE TABLE fine (id INTEGER);`,
+	})
+	if _, err := openWith(t, dir, fixed, Options{}); err != nil {
+		t.Fatalf("fixed upgrade: %v", err)
+	}
+	if files := backupFiles(t, dir); len(files) != preMigrateKeep {
+		t.Fatalf("backups after a good upgrade = %v, want %d", files, preMigrateKeep)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -23,6 +24,10 @@ type Store struct {
 	db      *sql.DB
 	dataDir string
 	dbPath  string
+
+	// snapMu serialises Snapshot: two copies picking a name in the same second
+	// would otherwise share a .tmp file and clobber each other.
+	snapMu sync.Mutex
 }
 
 // Options tunes OpenWith. The zero value is what Open uses.
@@ -45,7 +50,7 @@ type Options struct {
 }
 
 // preMigrateKeep is how many pre-migrate snapshots are kept; older ones are
-// deleted after each new one is taken.
+// deleted after each upgrade that succeeds.
 const preMigrateKeep = 5
 
 // Open ensures the data directory exists, opens the SQLite database with sane
@@ -108,8 +113,10 @@ func (s *Store) migrate(ctx context.Context, opt Options, log *slog.Logger) erro
 	fresh := last == ""
 	newest := strings.TrimSuffix(pend[len(pend)-1], ".sql")
 
+	snapshotted := false
 	if !fresh {
-		if err := s.snapshotBeforeMigrate(ctx, opt, log, last, newest, len(pend)); err != nil {
+		var err error
+		if snapshotted, err = s.snapshotBeforeMigrate(ctx, opt, log, last, newest, len(pend)); err != nil {
 			return err
 		}
 	}
@@ -130,6 +137,14 @@ func (s *Store) migrate(ctx context.Context, opt Options, log *slog.Logger) erro
 	if err := applyMigrations(ctx, s.db, fsys, pend, stepLog); err != nil {
 		return fmt.Errorf("run migrations: %w", err)
 	}
+	// Prune only once the upgrade has gone through. A migration that keeps failing
+	// sends the container round a restart loop, and every boot snapshots the
+	// half-upgraded database again; pruning then would soon delete the one copy
+	// from before the upgrade started. Until an upgrade succeeds every snapshot is
+	// kept, and the free-space check stops them filling the disk.
+	if snapshotted {
+		s.prunePreMigrate(log)
+	}
 	if fresh {
 		log.Info("database created", "migrations", len(pend), "version", newest,
 			"duration", time.Since(start).Round(time.Millisecond).String())
@@ -138,19 +153,20 @@ func (s *Store) migrate(ctx context.Context, opt Options, log *slog.Logger) erro
 }
 
 // snapshotBeforeMigrate copies the database aside before an upgrade, so a
-// migration that commits a mistake has something to roll back to.
-func (s *Store) snapshotBeforeMigrate(ctx context.Context, opt Options, log *slog.Logger, from, to string, count int) error {
+// migration that commits a mistake has something to roll back to. It reports
+// whether a snapshot was taken.
+func (s *Store) snapshotBeforeMigrate(ctx context.Context, opt Options, log *slog.Logger, from, to string, count int) (bool, error) {
 	dir := BackupsDir(s.dataDir)
 	if opt.SkipMigrationSnapshot {
 		log.Warn("ARRMADA_SKIP_MIGRATION_SNAPSHOT is set: upgrading the database WITHOUT a snapshot, so there is nothing to roll back to if this goes wrong",
 			"from", from, "to", to, "count", count)
-		return nil
+		return false, nil
 	}
 
 	start := time.Now()
 	path, err := s.Snapshot(ctx, BackupPreMigrate)
 	if err != nil {
-		return fmt.Errorf("couldn't snapshot the database before upgrading it from %s to %s: %w — nothing was changed. "+
+		return false, fmt.Errorf("couldn't snapshot the database before upgrading it from %s to %s: %w — nothing was changed. "+
 			"Free space in %s or set ARRMADA_SKIP_MIGRATION_SNAPSHOT=1 to upgrade without one", from, to, err, dir)
 	}
 	var size int64
@@ -161,15 +177,18 @@ func (s *Store) snapshotBeforeMigrate(ctx context.Context, opt Options, log *slo
 		"path", path, "size", formatBytes(uint64(size)),
 		"duration", time.Since(start).Round(time.Millisecond).String(),
 		"from", from, "to", to, "count", count)
+	return true, nil
+}
 
-	// Pruning is housekeeping; failing it mustn't block the upgrade the snapshot
-	// was taken for.
+// prunePreMigrate trims the pre-migrate snapshots to the newest preMigrateKeep.
+// Pruning is housekeeping; failing it mustn't fail the upgrade that just finished.
+func (s *Store) prunePreMigrate(log *slog.Logger) {
+	dir := BackupsDir(s.dataDir)
 	if removed, err := PruneBackups(dir, BackupPreMigrate, preMigrateKeep); err != nil {
 		log.Warn("couldn't prune old pre-migrate snapshots", "dir", dir, "err", err)
 	} else if len(removed) > 0 {
 		log.Info("pruned old pre-migrate snapshots", "removed", removed)
 	}
-	return nil
 }
 
 // openDB opens the pool every Store uses: WAL, foreign keys on, busy timeout.
