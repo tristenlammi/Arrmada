@@ -23,6 +23,8 @@ func TestRestampCodec(t *testing.T) {
 		{"AVC inside a word untouched", "Film.2021.1080p.XAVC.BluRay.x264-GRP", CodecAV1, "Film.2021.1080p.XAVC.BluRay.AV1-GRP"},
 		{"WEB-DL is not a group", "Film.2021.1080p.WEB-DL", CodecAV1, "Film.2021.1080p.WEB-DL.AV1"},
 		{"container extension kept last", "Film.2021.1080p.BluRay.x264-GRP.mkv", CodecAV1, "Film.2021.1080p.BluRay.AV1-GRP.mkv"},
+		{"bracketed library name", "Movie (2020) [1080p] [x265]", CodecAV1, "Movie (2020) [1080p] [AV1]"},
+		{"group spelled like a codec is kept", "Show.S01E01.720p.HDTV.x264-AVC", CodecAV1, "Show.S01E01.720p.HDTV.AV1-AVC"},
 		{"unknown target leaves it alone", "Film.2021.1080p.BluRay.x264-GRP", CodecUnknown, "Film.2021.1080p.BluRay.x264-GRP"},
 	}
 	for _, c := range cases {

@@ -51,6 +51,14 @@ func codecSpans(name string) []nameSpan {
 			}
 		}
 	}
+	// A group that happens to be a codec spelling ("...HDTV.x264-AVC") is the group, not
+	// a second codec: restamping must keep it, or the release loses its group.
+	if n := len(out); n > 1 {
+		last := out[n-1]
+		if m := reGroup.FindStringSubmatchIndex(name); m != nil && m[2] == last.start && last.end == len(name) {
+			out = out[:n-1]
+		}
+	}
 	return out
 }
 

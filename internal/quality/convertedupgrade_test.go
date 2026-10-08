@@ -37,3 +37,25 @@ func TestUpgradeCandidateLeavesConvertedFileAlone(t *testing.T) {
 		t.Error("the import gate took the original release as an upgrade of its conversion")
 	}
 }
+
+// The converted-from skip only covers a file in a codec Convert writes. An x264 file is
+// still upgraded to the same group's x265 release under a profile that prefers HEVC.
+func TestSameGroupCodecUpgradeStillAllowed(t *testing.T) {
+	s, ctx := testService(t)
+	sp, err := s.Create(ctx, StoredProfile{
+		MediaType: MediaMovie, Name: "Prefer HEVC", UpgradesEnabled: true,
+		FormatScores: map[string]int{"HEVC": 50},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := "custom:" + strconv.FormatInt(sp.ID, 10)
+	cur := "Film.2021.1080p.BluRay.x264-RARBG"
+	cand := "Film.2021.1080p.BluRay.x265-RARBG"
+	if pick, ok := s.UpgradeCandidate(ctx, ref, cur, 8, 120, []Candidate{NewCandidate(cand, 5, 200).WithRuntime(120)}); !ok || pick.Name != cand {
+		t.Errorf("x264 -> x265 of the same release was not taken: %q %v", pick.Name, ok)
+	}
+	if !s.IsQualityUpgrade(ctx, ref, cand, 5, cur, 8) {
+		t.Error("the import gate refused x264 -> x265 of the same release")
+	}
+}

@@ -157,7 +157,6 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 	cur := e.Evaluate(p, curCand)
 	curResRank := resRank[curCand.Release.Resolution]
 	curKey := strings.ToLower(strings.TrimSpace(currentRelease))
-	curBare := parser.WithoutCodec(currentRelease)
 
 	d := e.Decide(p, cands)
 	for _, ev := range d.Eligible { // sorted best-first
@@ -173,7 +172,7 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 		if strings.ToLower(strings.TrimSpace(ev.Candidate.Name)) == curKey {
 			continue // the release we already have
 		}
-		if parser.WithoutCodec(ev.Candidate.Name) == curBare {
+		if convertedFrom(ev.Candidate.Name, currentRelease) {
 			// The release this file was converted from: the same name but for the codec
 			// Convert stamped in. Grabbing it would undo the conversion and loop forever.
 			continue
@@ -218,7 +217,7 @@ func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string,
 	}
 	// The release a converted file came from is never an upgrade of it, whatever the
 	// codec stamp makes the two score.
-	if parser.WithoutCodec(candRelease) == parser.WithoutCodec(currentRelease) {
+	if convertedFrom(candRelease, currentRelease) {
 		return false
 	}
 	p, e := s.Resolve(ctx, ref)
@@ -230,6 +229,18 @@ func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string,
 		return false
 	}
 	return cand.Total > cur.Total
+}
+
+// convertedFrom reports whether cand looks like the release the current file was
+// converted from: the current file reads as a codec Convert writes (AV1 or x265), and
+// cand is the same release name with a different codec. It is deliberately no wider than
+// that, so an x264 file can still be upgraded to the same group's x265 release.
+func convertedFrom(cand, current string) bool {
+	cur := parser.Parse(current).Codec
+	if cur != parser.CodecAV1 && cur != parser.CodecX265 {
+		return false
+	}
+	return parser.Parse(cand).Codec != cur && parser.WithoutCodec(cand) == parser.WithoutCodec(current)
 }
 
 // Encode is one side of a bitrate comparison: how big it is and what codec it used.
