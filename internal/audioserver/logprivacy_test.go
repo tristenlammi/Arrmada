@@ -117,6 +117,21 @@ func TestScrubLegacyEntry(t *testing.T) {
 			"saved=3000 reported=10",
 		},
 		{
+			"audiobook server: holding a jump back until playback continues from it",
+			"user=John Smith item=b45v2 saved=3000 reported=10",
+			"saved=3000 reported=10",
+		},
+		{
+			"audiobook server: refused a request",
+			"path=/api/items/b45/cover token=true client=Lissen/1.9 (Android 15)",
+			"route=/api/items/{id}/cover token=true client=Lissen/1.9 (Android 15)",
+		},
+		{
+			"audiobook server: unsupported request",
+			"method=GET path=/api/items/b45v2/chapters/3 client=Plappa",
+			"route=GET /api/items/{id}/chapters/{id} client=Plappa",
+		},
+		{
 			"audiobook server: panic",
 			"path=/api/authors/au0123456789ab err=boom",
 			"route=/api/authors/{id} err=boom",

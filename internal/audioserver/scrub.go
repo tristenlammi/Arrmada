@@ -29,13 +29,20 @@ func ScrubLegacyEntry(e applog.Entry) (applog.Entry, bool) {
 	case "audiobook server: request":
 		e.Attrs = scrubRequestAttrs(e.Attrs)
 	case "audiobook server: holding a jump back until playback continues from it":
+		// A display name can hold a space ("John Smith"), so the next key bounds the
+		// user, not whitespace; the regexes then catch whatever shape is left.
+		if s, end, ok := attrSpan(e.Attrs, "user", "item"); ok {
+			e.Attrs = e.Attrs[:s-len("user=")] + e.Attrs[end+1:]
+		}
 		e.Attrs = strings.TrimSpace(itemAttr.ReplaceAllString(userAttr.ReplaceAllString(e.Attrs, ""), ""))
 	case "audiobook server: panic":
-		if s, end, ok := attrSpan(e.Attrs, "path", "err"); ok {
-			e.Attrs = e.Attrs[:s-len("path=")] + "route=" + applog.RedactPath(e.Attrs[s:end]) + e.Attrs[end:]
-		} else {
-			e.Attrs = redactAttr(e.Attrs, "path", "")
-		}
+		e.Attrs = pathToRoute(e.Attrs, "err")
+	// Two lines the audiobook server wrote until early October 2026, both with the raw
+	// path (so the item key) of the request.
+	case "audiobook server: refused a request":
+		e.Attrs = pathToRoute(e.Attrs, "token")
+	case "audiobook server: unsupported request":
+		e.Attrs = pathToRoute(e.Attrs, "client")
 	case "request": // the main API's per-request debug line
 		e.Attrs = redactAttr(e.Attrs, "path", "status")
 	case "panic recovered":
@@ -69,6 +76,22 @@ func scrubRequestAttrs(attrs string) string {
 		start = ps - len("path=")
 	}
 	return attrs[:start] + "route=" + route + " query_keys=" + keys + attrs[qe:]
+}
+
+// pathToRoute turns "[method=M ]path=P" (P bounded by the next key) into the current
+// "route=[M ]P'", with ids in P replaced. When the next key isn't there it still
+// redacts everything after "path=".
+func pathToRoute(attrs, next string) string {
+	ps, pe, ok := attrSpan(attrs, "path", next)
+	if !ok {
+		return redactAttr(attrs, "path", "")
+	}
+	start, method := ps-len("path="), ""
+	if ms, me, ok := attrSpan(attrs, "method", "path"); ok && me <= ps {
+		start, method = ms-len("method="), strings.TrimSpace(attrs[ms:me])
+	}
+	route := strings.TrimSpace(method + " " + applog.RedactPath(strings.TrimSpace(attrs[ps:pe])))
+	return attrs[:start] + "route=" + route + attrs[pe:]
 }
 
 // redactAttr replaces the value of key (bounded by the next key, or the end) with its
