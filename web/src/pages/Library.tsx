@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type LibraryPaths, type BrowseResult, type UnmatchedFolder, type MatchCandidate } from "../lib/api";
+import { useMe } from "../lib/me";
 
 // LibraryFolders — points each library at a folder (with an in-app picker) and scans it.
 // Lives inside Settings → Library. Mount your media into the container (see the
@@ -22,6 +23,7 @@ export function LibraryFolders() {
   const [reviewKey, setReviewKey] = useState(0); // bump to reload the unmatched lists
   const [toast, setToast] = useState<string | null>(null);
   const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); };
+  const { musicEnabled } = useMe();
 
   useEffect(() => { api.libraryPaths().then((p) => { setPaths(p); setDraft(p); }).catch(() => flash("Could not load library paths")); }, []);
   if (!draft) return <div className="text-[12.5px] text-ink-dim">Loading…</div>;
@@ -47,14 +49,18 @@ export function LibraryFolders() {
       <p className="mb-4 max-w-[64ch] text-[12.5px] text-ink-dim">Point each library at a folder inside your mounted media. Use <b>Browse</b> to pick from the folders Arrmada can see, then <b>Scan</b> to catalog what's there. Ebooks and audiobooks can share one folder.</p>
 
       <div className="flex flex-col gap-2.5">
-        {ROWS.map((row) => (
+        {ROWS.map((row) => {
+          // The folder can be set ahead of switching Music on, but a scan while it's off
+          // only hits the gated endpoint and flashes "module is turned off".
+          const canScan = row.scan && (row.key !== "music" || musicEnabled);
+          return (
           <div key={row.key} className="rounded-xl p-3.5" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-[13px] font-semibold">{row.label}</div>
                 <div className="text-[10.5px] text-ink-faint">{row.hint}</div>
               </div>
-              {row.scan && <button onClick={() => scan(row)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>Scan</button>}
+              {canScan && <button onClick={() => scan(row)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>Scan</button>}
             </div>
             <div className="mt-2 flex gap-2">
               <input
@@ -67,7 +73,8 @@ export function LibraryFolders() {
               <button onClick={() => setPicking(row.key)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel)", color: "var(--ink)" }}>Browse…</button>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
 
       <div className="mt-4 flex items-center justify-end gap-3">
