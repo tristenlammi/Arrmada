@@ -173,6 +173,19 @@ func (s *Service) Albums(ctx context.Context, artistID int64) ([]Album, error) {
 	return s.repo.AlbumsFor(ctx, artistID)
 }
 
+// WantedAlbums returns the monitored albums of monitored artists, with track counts.
+func (s *Service) WantedAlbums(ctx context.Context) ([]Album, error) { return s.repo.WantedAlbums(ctx) }
+
+// RecordSearchMiss counts a search that found nothing usable for an album (see the sweep).
+func (s *Service) RecordSearchMiss(ctx context.Context, albumID int64) error {
+	return s.repo.RecordSearchMiss(ctx, albumID)
+}
+
+// ResetSearchMisses clears an album's search backoff after a grab.
+func (s *Service) ResetSearchMisses(ctx context.Context, albumID int64) error {
+	return s.repo.ResetSearchMisses(ctx, albumID)
+}
+
 // Tracks returns an album's tracks.
 func (s *Service) Tracks(ctx context.Context, albumID int64) ([]Track, error) {
 	return s.repo.TracksFor(ctx, albumID)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -23,10 +24,14 @@ const musicCategory = "arrmada-music"
 // SearchMusicMissing sweeps monitored albums that are missing tracks and grabs the best
 // release for each.
 //
-// Every guard the other modules learned the hard way is here from the start: an in-flight
-// check so a sweep can't stack a second grab on a download already running, exponential
-// backoff so an album no indexer carries doesn't cost a full search every cycle forever, and
-// a disk-space check before committing to a grab.
+// An album is due when it isn't complete, isn't already downloading, has been released, and
+// its backoff has run out (see musicSearchWait). Never-searched albums go first, then the
+// ones searched longest ago, and no more than musicSweepCap albums are searched per sweep, so
+// a big wanted list is worked through over several sweeps instead of hammering every indexer
+// at once. An album with no MusicBrainz track listing is counted as a miss without an indexer
+// search: there'd be nothing to import a download against. A grab resets the backoff; a
+// search that failed for reasons of our own (indexers down, a grab error) doesn't count.
+// Running out of disk space ends the sweep, since every other album would hit the same wall.
 func (c *Coordinator) SearchMusicMissing(ctx context.Context) {
 	if c.music == nil || !c.moduleOn(ctx, "music") {
 		return
@@ -35,31 +40,145 @@ func (c *Coordinator) SearchMusicMissing(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	queue, qerr := c.downloads.Queue(ctx)
+	byID := make(map[int64]music.Artist, len(artists))
+	for _, a := range artists {
+		byID[a.ID] = a
+	}
+	albums, err := c.music.WantedAlbums(ctx)
+	if err != nil {
+		c.log.Warn("music: couldn't list wanted albums", "err", err)
+		return
+	}
+	queue, qerr := c.musicQueue(ctx)
 	if qerr != nil {
 		// An unreadable queue looks exactly like an empty one, so every in-flight album
 		// would read as "not downloading" and the sweep would stack duplicate grabs.
 		c.log.Warn("music: couldn't read the download queue — skipping this sweep", "err", qerr)
 		return
 	}
-	for _, a := range artists {
-		if !a.Monitored {
+
+	now := time.Now().UTC()
+	today := now.Format("2006-01-02")
+	type dueAlbum struct {
+		artist music.Artist
+		album  music.Album
+		last   time.Time
+	}
+	var due []dueAlbum
+	for _, al := range albums {
+		a, ok := byID[al.ArtistID]
+		if !ok || al.Complete() {
 			continue
 		}
-		albums, err := c.music.Albums(ctx, a.ID)
-		if err != nil {
+		if !albumReleased(al, today) {
+			continue // announced but not out yet — not a miss, just not yet
+		}
+		if c.albumDownloading(queue, a, al) {
+			continue // already downloading — let it finish
+		}
+		last := parseTime(al.LastSearchAt)
+		if wait := musicSearchWait(al.SearchMisses); wait > 0 && !last.IsZero() && now.Sub(last) < wait {
 			continue
 		}
-		for _, al := range albums {
-			if !al.Monitored || al.Complete() {
-				continue
+		due = append(due, dueAlbum{artist: a, album: al, last: last})
+	}
+	// Never searched first (a zero time sorts first), then the longest-waiting.
+	sort.SliceStable(due, func(i, j int) bool { return due[i].last.Before(due[j].last) })
+	if len(due) > musicSweepCap {
+		c.log.Info("music: more albums due than one sweep searches — the rest wait for the next",
+			"due", len(due), "searching", musicSweepCap)
+		due = due[:musicSweepCap]
+	}
+
+	for _, d := range due {
+		out := c.grabAlbum(ctx, d.artist, d.album)
+		switch {
+		case out.Code == outcomeGrabbed:
+			if err := c.music.ResetSearchMisses(ctx, d.album.ID); err != nil {
+				c.log.Warn("music: clearing the search backoff failed", "album", d.album.Title, "err", err)
 			}
-			if c.albumDownloading(queue, a, al) {
-				continue // already downloading — let it finish
+		case out.miss():
+			if err := c.music.RecordSearchMiss(ctx, d.album.ID); err != nil {
+				c.log.Warn("music: recording a search miss failed", "album", d.album.Title, "err", err)
 			}
-			c.grabAlbum(ctx, a, al)
+			// Say so once, at the transition. An album that has quietly dropped to weekly
+			// looks identical to one nobody has got to yet.
+			if d.album.SearchMisses+1 == musicWeeklyAfter {
+				c.log.Info("music: nothing found 7 times, searching weekly from now on",
+					"artist", d.artist.Name, "album", d.album.Title, "last", out.Code)
+			}
+		case out.Code == outcomeNoSpace:
+			return
 		}
 	}
+}
+
+// musicSweepCap is how many albums one sweep searches at most. Each is a search on every
+// indexer, and a newly added discography can make dozens due at once.
+const musicSweepCap = 25
+
+// musicWeeklyAfter is the miss count from which an album is only searched weekly.
+const musicWeeklyAfter = 7
+
+// musicSearchWait is how long the sweep leaves an album alone after `misses` searches in a
+// row found nothing: the same 30 min → 12 h ladder series use for the first six misses, then
+// once a week. An album that never turns up is retried rarely, not forgotten.
+func musicSearchWait(misses int) time.Duration {
+	switch {
+	case misses <= 0:
+		return 0
+	case misses < musicWeeklyAfter:
+		return searchBackoff(misses)
+	default:
+		return 7 * 24 * time.Hour
+	}
+}
+
+// albumReleased reports whether an album is out by today (YYYY-MM-DD). MusicBrainz dates
+// come as a full date, a year-month or a bare year; each is compared at its own precision,
+// so "2027" is future in 2026 and "2026" counts as out. An album with no date at all is
+// treated as out unless its year says otherwise — most old records have no exact date.
+func albumReleased(al music.Album, today string) bool {
+	d := strings.TrimSpace(al.ReleaseDate)
+	if d == "" {
+		return al.Year == 0 || fmt.Sprintf("%04d", al.Year) <= today[:4]
+	}
+	if len(d) > len(today) {
+		d = d[:len(today)]
+	}
+	return d <= today[:len(d)]
+}
+
+// Album search outcomes. A miss lengthens the album's backoff; the others either succeeded
+// or failed for a reason of our own, which says nothing about whether the album exists.
+const (
+	outcomeGrabbed      = "grabbed"
+	outcomeNoListing    = "no_listing"    // MusicBrainz has no track listing for it
+	outcomeNoResults    = "no_results"    // the indexers returned nothing at all
+	outcomeNoMatch      = "no_match"      // releases came back, none of them this album
+	outcomeBlocked      = "blocked"       // every match is blocklisted or already grabbed
+	outcomeBelowProfile = "below_profile" // matches exist, none the profile accepts
+	outcomeIndexerError = "indexer_error" // the search failed, or every indexer errored
+	outcomeListingError = "listing_error" // couldn't reach MusicBrainz for the listing
+	outcomeGrabFailed   = "grab_failed"   // the download client refused the release
+	outcomeNoSpace      = "no_space"      // not enough free disk for the release
+)
+
+// albumOutcome is what one album search came to, so the sweep can decide its backoff.
+type albumOutcome struct {
+	Code    string
+	Detail  string
+	Release string // the release grabbed, or the one that didn't fit on disk
+}
+
+// miss reports whether the outcome counts towards the album's backoff. Errors on our side
+// never do: an indexer outage must not push every album out to weekly searches.
+func (o albumOutcome) miss() bool {
+	switch o.Code {
+	case outcomeNoListing, outcomeNoResults, outcomeNoMatch, outcomeBlocked, outcomeBelowProfile:
+		return true
+	}
+	return false
 }
 
 // albumDownloading reports whether the queue already holds a release for this album.
@@ -76,21 +195,43 @@ func (c *Coordinator) albumDownloading(queue []download.Item, a music.Artist, al
 }
 
 // grabAlbum searches for one album and grabs the best release the profile allows.
-func (c *Coordinator) grabAlbum(ctx context.Context, a music.Artist, al music.Album) {
+func (c *Coordinator) grabAlbum(ctx context.Context, a music.Artist, al music.Album) albumOutcome {
 	// The album needs its track listing before anything can be imported against it, and the
 	// listing is fetched lazily. Do it here rather than at import time so a grabbed release
 	// always has somewhere to land.
 	if err := c.music.EnsureTracks(ctx, al); err != nil {
 		c.log.Warn("music: couldn't fetch the track listing — skipping", "album", al.Title, "err", err)
-		return
+		return albumOutcome{Code: outcomeListingError, Detail: err.Error()}
+	}
+	if al.TrackCount == 0 {
+		// Still nothing after asking MusicBrainz means no official release carries a
+		// listing. Searching the indexers would be pointless — a download would have
+		// nothing to land against — so it's a miss without the search.
+		tracks, err := c.music.Tracks(ctx, al.ID)
+		if err != nil {
+			return albumOutcome{Code: outcomeListingError, Detail: err.Error()}
+		}
+		if len(tracks) == 0 {
+			c.log.Info("music: no track listing on MusicBrainz yet — not searching", "artist", a.Name, "album", al.Title)
+			return albumOutcome{Code: outcomeNoListing, Detail: "MusicBrainz lists no tracks for this album"}
+		}
 	}
 	sp := c.musicProfile(ctx, a.QualityProfile)
 	query := a.Name + " " + al.Title
-	res, err := c.indexers.Search(ctx, indexer.SearchQuery{
+	res, err := c.searchMusic(ctx, indexer.SearchQuery{
 		Text: query, MediaType: indexer.MediaMusic, Limit: 100,
 	})
-	if err != nil || len(res.Releases) == 0 {
-		return
+	if err != nil {
+		c.log.Warn("music: search failed", "album", al.Title, "err", err)
+		return albumOutcome{Code: outcomeIndexerError, Detail: err.Error()}
+	}
+	if len(res.Releases) == 0 {
+		if len(res.Errors) > 0 {
+			// Nothing came back because every indexer asked failed. That says nothing
+			// about the album, so it mustn't count against it.
+			return albumOutcome{Code: outcomeIndexerError, Detail: fmt.Sprintf("%d indexer(s) failed", len(res.Errors))}
+		}
+		return albumOutcome{Code: outcomeNoResults, Detail: "no releases"}
 	}
 
 	// Only releases that actually name THIS artist and album. Without this a search for one
@@ -104,31 +245,59 @@ func (c *Coordinator) grabAlbum(ctx context.Context, a music.Artist, al music.Al
 	}
 	if len(cands) == 0 {
 		c.log.Info("music: no release matched this album", "artist", a.Name, "album", al.Title)
-		return
+		return albumOutcome{Code: outcomeNoMatch, Detail: fmt.Sprintf("%d release(s), none named this album", len(res.Releases))}
 	}
+	matched := len(cands)
 	cands = c.dropBlockedMusic(ctx, al.ID, cands)
 	cands = dropPendingMusic(cands, c.pendingMusicGrabTitles(ctx, al.ID))
+	if len(cands) == 0 {
+		return albumOutcome{Code: outcomeBlocked, Detail: fmt.Sprintf("%d match(es), all blocklisted or already grabbed", matched)}
+	}
 
 	best := pickBestAlbum(sp, cands)
 	if best == nil {
 		c.log.Info("music: no release met the quality profile", "artist", a.Name, "album", al.Title,
 			"candidates", len(cands))
-		return
+		return albumOutcome{Code: outcomeBelowProfile, Detail: fmt.Sprintf("%d match(es), none accepted by %q", len(cands), sp.Name)}
 	}
 	if !c.diskOKFor(float64(best.SizeBytes) / (1 << 30)) {
 		c.log.Warn("music: not enough free space for this release", "album", al.Title, "release", best.Title)
-		return
+		return albumOutcome{Code: outcomeNoSpace, Release: best.Title}
 	}
-	hash, err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, musicCategory)
+	hash, err := c.grabMusic(ctx, best.Indexer, best.DownloadURL, best.Title, musicCategory)
 	if err != nil {
 		c.log.Warn("music: grab failed", "album", al.Title, "err", err)
-		return
+		return albumOutcome{Code: outcomeGrabFailed, Detail: err.Error(), Release: best.Title}
 	}
 	c.recordMusicGrab(ctx, al.ID, best.Title, best.Indexer, a.QualityProfile, hash)
 	c.music.AddEvent(ctx, a.ID, "grabbed",
 		fmt.Sprintf("Grabbed %q from %s: %s", al.Title, best.Indexer, best.Title))
 	c.log.Info("music: grabbing", "artist", a.Name, "album", al.Title,
 		"release", best.Title, "quality", music.DetectQuality(best.Title))
+	return albumOutcome{Code: outcomeGrabbed, Release: best.Title}
+}
+
+// searchMusic, musicQueue and grabMusic are the music path's calls out to the indexers and
+// the download client, each overridable by a test seam (nil means the real service).
+func (c *Coordinator) searchMusic(ctx context.Context, q indexer.SearchQuery) (indexer.SearchResult, error) {
+	if c.musicSearchFn != nil {
+		return c.musicSearchFn(ctx, q)
+	}
+	return c.indexers.Search(ctx, q)
+}
+
+func (c *Coordinator) musicQueue(ctx context.Context) ([]download.Item, error) {
+	if c.musicQueueFn != nil {
+		return c.musicQueueFn(ctx)
+	}
+	return c.downloads.Queue(ctx)
+}
+
+func (c *Coordinator) grabMusic(ctx context.Context, indexerName, url, title, category string) (string, error) {
+	if c.musicGrabFn != nil {
+		return c.musicGrabFn(ctx, indexerName, url, title, category)
+	}
+	return c.grabTo(ctx, indexerName, url, title, category)
 }
 
 // pickBestAlbum ranks releases by the profile's quality ladder, seeders breaking ties.
@@ -527,7 +696,7 @@ func (c *Coordinator) GrabDiscography(ctx context.Context, artistID int64) error
 		return err
 	}
 	sp := c.musicProfile(ctx, a.QualityProfile)
-	res, err := c.indexers.Search(ctx, indexer.SearchQuery{
+	res, err := c.searchMusic(ctx, indexer.SearchQuery{
 		Text: a.Name + " discography", MediaType: indexer.MediaMusic, Limit: 100,
 	})
 	if err != nil {
@@ -550,7 +719,7 @@ func (c *Coordinator) GrabDiscography(ctx context.Context, artistID int64) error
 	if !c.diskOKFor(float64(best.SizeBytes) / (1 << 30)) {
 		return fmt.Errorf("not enough free space for %q (%.1f GB)", best.Title, float64(best.SizeBytes)/(1<<30))
 	}
-	hash, err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, musicCategory)
+	hash, err := c.grabMusic(ctx, best.Indexer, best.DownloadURL, best.Title, musicCategory)
 	if err != nil {
 		return err
 	}

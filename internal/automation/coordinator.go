@@ -56,6 +56,12 @@ type Coordinator struct {
 	// the next cycle without a restart. nil (tests, or nothing wired) means on.
 	moduleGate func(ctx context.Context, module string) bool
 
+	// Test seams for the music path's calls to the indexers and the download client;
+	// nil means the real service. See searchMusic, musicQueue and grabMusic.
+	musicSearchFn func(ctx context.Context, q indexer.SearchQuery) (indexer.SearchResult, error)
+	musicQueueFn  func(ctx context.Context) ([]download.Item, error)
+	musicGrabFn   func(ctx context.Context, indexerName, url, title, category string) (string, error)
+
 	// unmatched counts how many import sweeps have failed to match a download to a
 	// series, keyed by torrent hash. Without it the 30-second sweep logs the same failure
 	// forever and nothing ever escalates. Guarded by unmatchedMu. Entries are pruned when

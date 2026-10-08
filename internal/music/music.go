@@ -54,6 +54,10 @@ type Album struct {
 	ReleaseDate string `json:"release_date,omitempty"`
 	Monitored   bool   `json:"monitored"`
 	AddedAt     string `json:"added_at,omitempty"`
+	// LastSearchAt/SearchMisses drive the sweep's backoff: how long ago it last looked
+	// for this album, and how many looks in a row found nothing usable.
+	LastSearchAt string `json:"last_search_at,omitempty"`
+	SearchMisses int    `json:"search_misses"`
 
 	Tracks []Track `json:"tracks,omitempty"`
 	// TrackCount/HaveTracks let the UI show "7/12" without loading every track.
