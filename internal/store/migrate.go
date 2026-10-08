@@ -41,7 +41,7 @@ import (
 // episodes...) silently vanish and the migration still "succeeds". With the
 // directive the runner turns foreign keys off on a dedicated connection before the
 // transaction, runs PRAGMA foreign_key_check before committing (any dangling
-// reference rolls the whole migration back), and turns them on again before the
+// reference it adds rolls the whole migration back), and turns them on again before the
 // connection goes back to the pool. "-- arrmada:foreign-keys=off" is accepted as
 // the same directive; any other "-- arrmada:" line, or a directive that isn't the
 // first line, stops the boot rather than being ignored. migrations_lint_test.go
@@ -267,7 +267,7 @@ func applyFKOff(ctx context.Context, db *sql.DB, version, body string) (err erro
 		return err
 	}
 	defer func() {
-		if rerr := restoreForeignKeys(conn); rerr != nil {
+		if rerr := restoreFK(conn); rerr != nil {
 			// Raw returning ErrBadConn makes database/sql close the connection
 			// rather than reuse it.
 			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
@@ -294,10 +294,17 @@ func applyFKOff(ctx context.Context, db *sql.DB, version, body string) (err erro
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	// An owner's database may already hold a dangling reference from long ago.
+	// That isn't this migration's doing, and failing on it would block every
+	// future rebuild, so only references the migration adds count against it.
+	before, err := foreignKeyViolations(ctx, tx)
+	if err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, body); err != nil {
 		return err
 	}
-	if err := foreignKeyCheck(ctx, tx); err != nil {
+	if err := foreignKeyCheck(ctx, tx, before); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version) VALUES (?)`, version); err != nil {
@@ -305,6 +312,9 @@ func applyFKOff(ctx context.Context, db *sql.DB, version, body string) (err erro
 	}
 	return tx.Commit()
 }
+
+// restoreFK is restoreForeignKeys, swappable so tests can make it fail.
+var restoreFK = restoreForeignKeys
 
 // restoreForeignKeys switches foreign keys back on and confirms it took. It uses
 // its own short context so a cancelled migration context can't leave the
@@ -333,41 +343,78 @@ func foreignKeysOn(ctx context.Context, conn *sql.Conn) (bool, error) {
 	return v == 1, nil
 }
 
-// foreignKeyCheck fails when the migration left any row pointing at a parent row
-// that no longer exists, listing the first few so the cause is obvious from the log.
-func foreignKeyCheck(ctx context.Context, tx *sql.Tx) error {
+// fkViolation is one row of PRAGMA foreign_key_check.
+type fkViolation struct {
+	table  string
+	rowid  sql.NullInt64
+	parent string
+	fkid   int
+}
+
+func (v fkViolation) String() string {
+	id := "-"
+	if v.rowid.Valid {
+		id = fmt.Sprint(v.rowid.Int64)
+	}
+	return fmt.Sprintf("%s rowid %s -> %s (fk %d)", v.table, id, v.parent, v.fkid)
+}
+
+// foreignKeyViolations lists every row pointing at a parent row that doesn't exist.
+func foreignKeyViolations(ctx context.Context, tx *sql.Tx) ([]fkViolation, error) {
 	rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
 	if err != nil {
-		return fmt.Errorf("foreign_key_check: %w", err)
+		return nil, fmt.Errorf("foreign_key_check: %w", err)
 	}
 	defer rows.Close()
 
+	var out []fkViolation
+	for rows.Next() {
+		var v fkViolation
+		if err := rows.Scan(&v.table, &v.rowid, &v.parent, &v.fkid); err != nil {
+			return nil, fmt.Errorf("foreign_key_check: %w", err)
+		}
+		out = append(out, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("foreign_key_check: %w", err)
+	}
+	return out, nil
+}
+
+// foreignKeyCheck fails when the migration left a row pointing at a parent row
+// that no longer exists, listing the first few so the cause is obvious from the
+// log. before is what the check found ahead of the migration; those don't count.
+func foreignKeyCheck(ctx context.Context, tx *sql.Tx, before []fkViolation) error {
+	after, err := foreignKeyViolations(ctx, tx)
+	if err != nil {
+		return err
+	}
+	// A multiset, since rows of a table without rowids all report a NULL one.
+	old := map[fkViolation]int{}
+	for _, v := range before {
+		old[v]++
+	}
 	var found []string
 	total := 0
-	for rows.Next() {
-		var (
-			table, parent string
-			rowid         sql.NullInt64
-			fkid          int
-		)
-		if err := rows.Scan(&table, &rowid, &parent, &fkid); err != nil {
-			return fmt.Errorf("foreign_key_check: %w", err)
+	for _, v := range after {
+		if old[v] > 0 {
+			old[v]--
+			continue
 		}
 		total++
 		if len(found) < maxFKViolations {
-			id := "-"
-			if rowid.Valid {
-				id = fmt.Sprint(rowid.Int64)
-			}
-			found = append(found, fmt.Sprintf("%s rowid %s -> %s (fk %d)", table, id, parent, fkid))
+			found = append(found, v.String())
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("foreign_key_check: %w", err)
+	if total == 0 {
+		return nil
 	}
-	if total > 0 {
-		return fmt.Errorf("foreign_key_check found %d dangling reference(s), nothing was applied: %s",
-			total, strings.Join(found, "; "))
+	msg := fmt.Sprintf("foreign_key_check found %d dangling reference(s), nothing was applied: %s",
+		total, strings.Join(found, "; "))
+	if len(before) > 0 {
+		// A rebuild that renumbers a child table's rows makes old orphans look new,
+		// so say they were there first rather than let the migration take the blame.
+		msg += fmt.Sprintf(" (the database already had %d dangling reference(s) before this migration ran)", len(before))
 	}
-	return nil
+	return errors.New(msg)
 }

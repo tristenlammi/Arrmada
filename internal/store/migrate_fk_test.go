@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -67,6 +69,85 @@ func TestFKOffMigrationFailsOnViolations(t *testing.T) {
 	}
 	if n := count(t, db, `SELECT COUNT(*) FROM schema_migrations`); n != 1 {
 		t.Errorf("schema_migrations rows = %d, want 1", n)
+	}
+}
+
+// A dangling reference that was already in the database isn't the migration's
+// fault and mustn't block it; one the migration adds still rolls it back, and the
+// error says the old ones were there first.
+func TestFKOffMigrationIgnoresExistingOrphans(t *testing.T) {
+	db := testDB(t, 1)
+	ctx := context.Background()
+	if err := runMigrations(ctx, db, memFS(map[string]string{"0001_init.sql": parentChildSchema})); err != nil {
+		t.Fatal(err)
+	}
+	// An orphan from long ago, written the only way one can be: with foreign keys off.
+	for _, q := range []string{`PRAGMA foreign_keys=OFF`, `INSERT INTO c (id, p_id) VALUES (50, 500)`, `PRAGMA foreign_keys=ON`} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+
+	addsOne := memFS(map[string]string{
+		"0001_init.sql":      parentChildSchema,
+		"0002_rebuild_p.sql": fkOffDirective + "\n" + rebuildP + "\nINSERT INTO c (id, p_id) VALUES (99, 999);\n",
+	})
+	err := runMigrations(ctx, db, addsOne)
+	if err == nil || !strings.Contains(err.Error(), "found 1 dangling") || !strings.Contains(err.Error(), "c rowid 99 -> p") {
+		t.Fatalf("err = %v, want exactly the new c rowid 99 reported", err)
+	}
+	if strings.Contains(err.Error(), "rowid 50 ") || !strings.Contains(err.Error(), "already had 1 dangling") {
+		t.Fatalf("error should blame only the new row and mention the old one: %v", err)
+	}
+
+	clean := memFS(map[string]string{
+		"0001_init.sql":      parentChildSchema,
+		"0002_rebuild_p.sql": fkOffDirective + "\n" + rebuildP,
+	})
+	if err := runMigrations(ctx, db, clean); err != nil {
+		t.Fatalf("a clean rebuild was blocked by an old orphan: %v", err)
+	}
+	if n := count(t, db, `SELECT COUNT(*) FROM c`); n != 4 {
+		t.Errorf("child rows = %d, want the 3 plus the old orphan", n)
+	}
+}
+
+// If foreign keys can't be switched back on, the connection must be thrown away
+// rather than handed to the next caller with them off.
+func TestFKOffRestoreFailureDiscardsConn(t *testing.T) {
+	db := testDB(t, 4)
+	ctx := context.Background()
+	orig := restoreFK
+	t.Cleanup(func() { restoreFK = orig })
+	stuck := errors.New("stuck")
+	restoreFK = func(*sql.Conn) error { return stuck }
+
+	fsys := memFS(map[string]string{
+		"0001_init.sql":      parentChildSchema,
+		"0002_rebuild_p.sql": fkOffDirective + "\n" + rebuildP,
+	})
+	if err := runMigrations(ctx, db, fsys); !errors.Is(err, stuck) {
+		t.Fatalf("err = %v, want the restore failure", err)
+	}
+	// Hold every connection the pool can give at once: had the pinned one gone
+	// back, it would be among them, still with foreign keys off.
+	conns := make([]*sql.Conn, 4)
+	for i := range conns {
+		c, err := db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("conn %d: %v", i, err)
+		}
+		conns[i] = c
+	}
+	for i, c := range conns {
+		var fk int
+		if err := c.QueryRowContext(ctx, `PRAGMA foreign_keys`).Scan(&fk); err != nil {
+			t.Fatalf("conn %d: %v", i, err)
+		}
+		if fk != 1 {
+			t.Errorf("conn %d foreign_keys = %d, want 1", i, fk)
+		}
+		_ = c.Close()
 	}
 }
 
