@@ -141,9 +141,6 @@ func (c *Coordinator) SetBooks(b *books.Service) { c.books = b }
 // SetMusic wires the music module (shares the importer set by SetSeries).
 func (c *Coordinator) SetMusic(m *music.Service) { c.music = m }
 
-// ErrModuleOff is returned by a manual music action while the Music module is switched off.
-var ErrModuleOff = errors.New("the Music module is turned off")
-
 // SetModuleGate wires the check for whether a module is switched on (see moduleGate).
 func (c *Coordinator) SetModuleGate(fn func(ctx context.Context, module string) bool) {
 	c.moduleGate = fn
@@ -359,6 +356,8 @@ func (c *Coordinator) SearchMissing(ctx context.Context) {
 		return
 	}
 	queue, _ := c.downloads.Queue(ctx)
+	var outage outageTally
+	defer outage.report(c.log, "movie search sweep")
 	for _, m := range all {
 		if !c.movies.IsAvailable(m) {
 			continue // not yet at its minimum-availability threshold
@@ -377,14 +376,20 @@ func (c *Coordinator) SearchMissing(ctx context.Context) {
 			}
 		}
 		n, searched, err := c.searchAndGrab(ctx, m)
-		switch {
-		case err != nil:
+		if outage.note(err) {
+			if outage.stop() {
+				break // the indexers are down: the rest would only fail the same way
+			}
+			continue
+		}
+		if err != nil {
 			c.log.Warn("automation: search failed", "movie", m.Title, "err", err)
-		case !searched:
-			// Nothing wanted, no query spent — not a miss.
-		case n > 0:
+		}
+		reset, miss := sweepOutcome(err, searched, n)
+		if reset {
 			c.movies.ResetSearchMisses(ctx, m.ID)
-		default:
+		}
+		if miss {
 			c.movies.RecordSearchMiss(ctx, m.ID)
 		}
 	}
@@ -783,6 +788,9 @@ func (c *Coordinator) RSSSync(ctx context.Context) {
 		return
 	}
 	res, err := c.indexers.Recent(ctx, 100)
+	if errors.Is(err, indexer.ErrNoIndexers) {
+		return // no indexer has a feed — nothing to sync, and nothing to warn about every cycle
+	}
 	if err != nil {
 		c.log.Warn("rss: fetch feeds failed", "err", err)
 		return
@@ -841,6 +849,8 @@ func (c *Coordinator) UpgradeMovies(ctx context.Context) {
 		c.log.Warn("automation: upgrade sweep skipped — can't read the download queue", "err", err)
 		return
 	}
+	var outage outageTally
+	defer outage.report(c.log, "movie upgrade sweep")
 	for _, m := range all {
 		if !m.Monitored || !m.HasFile {
 			continue
@@ -848,7 +858,14 @@ func (c *Coordinator) UpgradeMovies(ctx context.Context) {
 		if inQueue(queue, m) {
 			continue // already grabbing something for this movie
 		}
-		if err := c.upgradeMovie(ctx, m); err != nil {
+		err := c.upgradeMovie(ctx, m)
+		if outage.note(err) {
+			if outage.stop() {
+				break
+			}
+			continue
+		}
+		if err != nil {
 			c.log.Warn("automation: upgrade search failed", "movie", m.Title, "err", err)
 		}
 	}

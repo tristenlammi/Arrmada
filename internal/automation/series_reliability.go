@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -47,6 +48,9 @@ func (c *Coordinator) RSSSyncSeries(ctx context.Context) {
 		return
 	}
 	res, err := c.indexers.Recent(ctx, 100)
+	if errors.Is(err, indexer.ErrNoIndexers) {
+		return // no indexer has a feed — nothing to sync, and nothing to warn about every cycle
+	}
 	if err != nil {
 		c.log.Warn("rss: fetch feeds failed", "err", err)
 		return
@@ -106,6 +110,8 @@ func (c *Coordinator) UpgradeSeries(ctx context.Context) {
 		c.log.Warn("series: upgrade sweep skipped — can't read the download queue", "err", err)
 		return
 	}
+	var outage outageTally
+	defer outage.report(c.log, "series upgrade sweep")
 	for _, meta := range all {
 		if !meta.Monitored {
 			continue
@@ -114,7 +120,14 @@ func (c *Coordinator) UpgradeSeries(ctx context.Context) {
 			c.log.Info("series: skipping upgrade sweep — a grab is still downloading", "series", meta.Title, "release", busy)
 			continue
 		}
-		if err := c.upgradeSeries(ctx, meta.ID); err != nil {
+		err := c.upgradeSeries(ctx, meta.ID)
+		if outage.note(err) {
+			if outage.stop() {
+				break
+			}
+			continue
+		}
+		if err != nil {
 			c.log.Warn("series: upgrade search failed", "series", meta.Title, "err", err)
 		}
 	}

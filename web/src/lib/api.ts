@@ -150,6 +150,15 @@ export interface ActivityDownload {
   imported?: boolean; // Arrmada has imported this download into the library
   quality_profile: string;
   media_type?: string;
+  held_by_guard?: boolean; // paused by the disk guard, which won't let it resume yet
+}
+
+// What the disk guard is holding; present only while it holds something.
+export interface DiskGuardHold {
+  holding: number;
+  used_pct: number;
+  pause_pct: number;
+  resume_pct: number;
 }
 
 export type RemoveDownloadMode = "keep_files" | "delete_files" | "block";
@@ -168,6 +177,14 @@ export interface ActivityFeed {
   downloads: ActivityDownload[];
   totals?: { down_speed: number; up_speed: number; active: number };
   free_gb?: number;
+  disk_guard?: DiskGuardHold;
+}
+
+// Resume's answer. "all" also reports what it resumed and what it left for the disk guard.
+export interface ResumeResult {
+  status: string;
+  resumed?: number;
+  held_by_guard?: number;
 }
 
 export interface APIKeyStatus {
@@ -1167,7 +1184,7 @@ export const api = {
 
   activity: () => req<ActivityFeed>("/api/v1/downloads"),
   pauseDownload: (hash: string) => req<{ status: string }>(`/api/v1/queue/${hash}/pause`, { method: "POST" }),
-  resumeDownload: (hash: string) => req<{ status: string }>(`/api/v1/queue/${hash}/resume`, { method: "POST" }),
+  resumeDownload: (hash: string) => req<ResumeResult>(`/api/v1/queue/${hash}/resume`, { method: "POST" }),
   // mode: keep_files keeps what was downloaded (the default), delete_files deletes it, block
   // deletes it, blocklists the release and finds another. unmonitor stops wanting exactly
   // what the download was for. name helps find the grab when it has no recorded hash.
@@ -1270,8 +1287,12 @@ export const api = {
   reviews: () => req<{ reviews: ImportReview[] }>("/api/v1/reviews").then((r) => r.reviews),
   rejectReview: (id: number) => req<{ status: string }>(`/api/v1/reviews/${id}/reject`, { method: "POST" }),
   dismissReview: (id: number) => req<{ status: string }>(`/api/v1/reviews/${id}/dismiss`, { method: "POST" }),
-  importReview: (id: number, targetId?: number) =>
-    req<{ status: string }>(`/api/v1/reviews/${id}/import`, { method: "POST", body: JSON.stringify({ target_id: targetId ?? 0 }) }),
+  // targetKind names what targetId is; the server refuses one that isn't the review's own kind.
+  importReview: (id: number, targetId?: number, targetKind?: ReviewKind) =>
+    req<{ status: string }>(`/api/v1/reviews/${id}/import`, { method: "POST", body: JSON.stringify({ target_id: targetId ?? 0, target_kind: targetKind ?? "" }) }),
+  // truncated: more items matched than the server lists — the picker asks for a filter.
+  reviewTargets: (id: number, q: string) =>
+    req<{ targets: ReviewTarget[]; truncated?: boolean }>(`/api/v1/reviews/${id}/targets?q=${encodeURIComponent(q)}`),
 
   movies: () => req<{ movies: Movie[]; metadata_available: boolean }>("/api/v1/movies"),
   lookupMovies: (q: string) =>
@@ -1961,12 +1982,24 @@ export interface ImportRecord {
   imported_at: string;
 }
 
+export type ReviewKind = "series" | "movie" | "book" | "music";
+
+// One library item a held download could be imported into (same kind as the review).
+export interface ReviewTarget {
+  id: number;
+  kind: ReviewKind;
+  title: string;
+  year?: number;
+  subtitle?: string; // author for books, artist for albums
+  poster_url?: string;
+}
+
 export interface ImportReview {
   id: number;
   hash: string;
   name: string;
   content_path: string;
-  media_type: "series" | "movie";
+  media_type: ReviewKind;
   expected_id: number;
   expected_title: string;
   parsed_title: string;

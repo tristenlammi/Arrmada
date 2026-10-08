@@ -2,10 +2,12 @@ package automation
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/extract"
@@ -23,6 +25,68 @@ var ErrDownloadGone = errors.New("the download is no longer on disk — it was r
 // was fine and so is the server, so it must not answer 500 — the user needs to know it's
 // the file's naming, not a fault to report.
 var ErrNothingToImport = errors.New("nothing in this download could be imported")
+
+// ErrWrongTargetKind means the item picked to import into is a different kind of thing
+// from the download (a movie id sent for a book review). Ids are only unique per table,
+// so without this check a movie's id filed the audiobook under whichever book happened
+// to share that number.
+var ErrWrongTargetKind = errors.New("that isn't the right kind of library item for this download")
+
+// ErrNeedsTarget means the review isn't tied to any library item and no target was
+// given, so there is nowhere to import it. Unmatched book and music reviews carry id 0,
+// and "Import anyway" on one used to look up item 0 and answer 500.
+var ErrNeedsTarget = errors.New("this download isn't tied to a library item — choose one")
+
+// ErrModuleOff means the review belongs to a module that isn't running, so nothing of
+// its kind can be listed or imported into.
+var ErrModuleOff = errors.New("that module is turned off")
+
+// ErrReviewNotFound means the review id doesn't exist (another tab already resolved and
+// it was cleaned up, or a stale link).
+var ErrReviewNotFound = errors.New("review not found")
+
+// reviewKindLabel is what the user calls each kind of library item, for messages.
+var reviewKindLabel = map[string]string{"series": "show", "movie": "movie", "book": "book", "music": "album"}
+
+// reviewModuleLabel names the module a review kind belongs to, for "turn on X" messages.
+var reviewModuleLabel = map[string]string{"series": "Series", "movie": "Movies", "book": "Books", "music": "Music"}
+
+// ReviewTarget is one library item a held download could be imported into, shaped for
+// the reassign picker: one list type for every media kind.
+type ReviewTarget struct {
+	ID        int64  `json:"id"`
+	Kind      string `json:"kind"`
+	Title     string `json:"title"`
+	Year      int    `json:"year,omitempty"`
+	Subtitle  string `json:"subtitle,omitempty"` // author for books, artist for albums
+	PosterURL string `json:"poster_url,omitempty"`
+}
+
+// reviewTargetCap bounds the picker list. The filter narrows it; nobody scrolls 2,000 rows.
+const reviewTargetCap = 200
+
+// moduleOffError is ErrModuleOff with the module named, so the message tells the user
+// what to switch on rather than just that something is off.
+type moduleOffError struct{ module string }
+
+func (e moduleOffError) Error() string   { return "Turn on " + e.module + " to import this" }
+func (e moduleOffError) Is(t error) bool { return t == ErrModuleOff }
+
+// needsTargetError is ErrNeedsTarget naming the kind of item to choose.
+type needsTargetError struct{ kind string }
+
+func (e needsTargetError) Error() string {
+	return "this download isn't tied to a library " + e.kind + " — choose one"
+}
+func (e needsTargetError) Is(t error) bool { return t == ErrNeedsTarget }
+
+// kindLabel is reviewKindLabel with a fallback for a kind it doesn't know.
+func kindLabel(kind string) string {
+	if l, ok := reviewKindLabel[kind]; ok {
+		return l
+	}
+	return kind
+}
 
 // Review is a finished download held back from import because its content doesn't
 // match what it was grabbed for (e.g. a "Below Deck Mediterranean" pack grabbed
@@ -102,6 +166,9 @@ func (c *Coordinator) getReview(ctx context.Context, id int64) (Review, error) {
 		`SELECT id, hash, name, content_path, media_type, expected_id, expected_title, parsed_title, reason, size_bytes, indexer, created_at
 		 FROM import_reviews WHERE id = ?`, id).
 		Scan(&r.ID, &r.Hash, &r.Name, &r.ContentPath, &r.MediaType, &r.ExpectedID, &r.ExpectedTitle, &r.ParsedTitle, &r.Reason, &r.SizeBytes, &r.Indexer, &r.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return r, ErrReviewNotFound
+	}
 	return r, err
 }
 
@@ -299,13 +366,124 @@ func (c *Coordinator) DismissReview(ctx context.Context, id int64) error {
 	return c.resolveReview(ctx, id)
 }
 
+// ReviewTargets lists the library items a review's download could be imported into:
+// always items of the review's own kind, filtered by q (title, or author/artist).
+// The picker used to load the movie list for anything that wasn't a show, so a book or
+// album review offered movies — and the chosen movie's id was then used as a book id.
+//
+// truncated reports that more items matched than limit allows, so the picker can say
+// "type to narrow" — otherwise a big library's empty filter shows the first 200 titles
+// and anything later in the alphabet looks like it isn't in the library at all.
+func (c *Coordinator) ReviewTargets(ctx context.Context, reviewID int64, q string, limit int) (targets []ReviewTarget, truncated bool, err error) {
+	r, err := c.getReview(ctx, reviewID)
+	if err != nil {
+		return nil, false, err
+	}
+	if limit <= 0 || limit > reviewTargetCap {
+		limit = reviewTargetCap
+	}
+	q = strings.TrimSpace(q)
+	needle := strings.ToLower(q)
+	matches := func(fields ...string) bool {
+		if needle == "" {
+			return true
+		}
+		for _, f := range fields {
+			if strings.Contains(strings.ToLower(f), needle) {
+				return true
+			}
+		}
+		return false
+	}
+	out := []ReviewTarget{}
+	switch r.MediaType {
+	case "movie":
+		if c.movies == nil {
+			return nil, false, moduleOffError{reviewModuleLabel[r.MediaType]}
+		}
+		list, err := c.movies.List(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, m := range list {
+			if matches(m.Title) {
+				out = append(out, ReviewTarget{ID: m.ID, Kind: "movie", Title: m.Title, Year: m.Year, PosterURL: m.PosterURL})
+			}
+		}
+	case "series":
+		if c.series == nil {
+			return nil, false, moduleOffError{reviewModuleLabel[r.MediaType]}
+		}
+		list, err := c.series.List(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, s := range list {
+			if matches(s.Title) {
+				out = append(out, ReviewTarget{ID: s.ID, Kind: "series", Title: s.Title, Year: s.Year, PosterURL: s.PosterURL})
+			}
+		}
+	case "book":
+		if c.books == nil {
+			return nil, false, moduleOffError{reviewModuleLabel[r.MediaType]}
+		}
+		list, err := c.books.List(ctx)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, b := range list {
+			if matches(b.Title, b.Author) {
+				out = append(out, ReviewTarget{ID: b.ID, Kind: "book", Title: b.Title, Year: b.Year, Subtitle: b.Author, PosterURL: b.CoverURL})
+			}
+		}
+	case "music":
+		if c.music == nil {
+			return nil, false, moduleOffError{reviewModuleLabel[r.MediaType]}
+		}
+		// Albums are searched in SQL: a library of a few hundred artists holds thousands
+		// of albums, and one searchable list replaces the artist-then-album two-step.
+		hits, err := c.music.SearchAlbums(ctx, q, limit+1) // one extra to tell "exactly limit" from "more"
+		if err != nil {
+			return nil, false, err
+		}
+		for _, h := range hits {
+			out = append(out, ReviewTarget{ID: h.ID, Kind: "music", Title: h.Title, Year: h.Year, Subtitle: h.Artist, PosterURL: h.CoverURL})
+		}
+	default:
+		return nil, false, fmt.Errorf("unknown media type %q", r.MediaType)
+	}
+	if r.MediaType != "music" { // albums come back already ordered (by artist) from SQL
+		sort.SliceStable(out, func(i, j int) bool { return strings.ToLower(out[i].Title) < strings.ToLower(out[j].Title) })
+	}
+	if len(out) > limit {
+		return out[:limit], true, nil
+	}
+	return out, false, nil
+}
+
 // ImportReview imports a held download into a library item and resolves it. When
 // targetID > 0 the content is imported into that item (reassign); otherwise into
 // the item it was originally grabbed for (import anyway).
-func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) error {
+//
+// targetKind names what targetID is (series | movie | book | music). It must match the
+// review's own kind: ids are per table, so a movie id applied to a book review files the
+// download under an unrelated book. Empty means "same kind as the review", which keeps
+// a page loaded before this check existed working.
+func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64, targetKind string) error {
 	r, err := c.getReview(ctx, id)
 	if err != nil {
 		return err
+	}
+	if targetKind != "" && targetKind != r.MediaType {
+		return fmt.Errorf("%w: this download is a %s, not a %s", ErrWrongTargetKind,
+			kindLabel(r.MediaType), kindLabel(targetKind))
+	}
+	dest := r.ExpectedID
+	if targetID > 0 {
+		dest = targetID
+	}
+	if dest <= 0 {
+		return needsTargetError{kindLabel(r.MediaType)}
 	}
 	// A review can outlive its download: the torrent gets removed, or the folder is
 	// cleaned up, long after the item was held. That's an ordinary situation and the user
@@ -317,14 +495,10 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 	if _, serr := os.Stat(r.ContentPath); serr != nil {
 		return fmt.Errorf("%w: %s", ErrDownloadGone, r.ContentPath)
 	}
-	dest := r.ExpectedID
-	if targetID > 0 {
-		dest = targetID
-	}
 	switch r.MediaType {
 	case "series":
 		if c.series == nil {
-			return fmt.Errorf("series module unavailable")
+			return moduleOffError{reviewModuleLabel[r.MediaType]}
 		}
 		s, err := c.series.Get(ctx, dest)
 		if err != nil {
@@ -352,7 +526,7 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 		c.seriesImported(ctx, s.ID, placed)
 	case "movie":
 		if c.movies == nil {
-			return fmt.Errorf("movies module unavailable")
+			return moduleOffError{reviewModuleLabel[r.MediaType]}
 		}
 		if err := c.movies.ManualImport(ctx, dest, r.ContentPath); err != nil {
 			return err
@@ -361,7 +535,7 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 		// Books shipped with reviews their own ImportReview couldn't handle, so every
 		// "Import anyway" failed with "unknown media type". Music gets its case up front.
 		if c.music == nil {
-			return fmt.Errorf("music module unavailable")
+			return moduleOffError{reviewModuleLabel[r.MediaType]}
 		}
 		al, err := c.music.GetAlbum(ctx, dest)
 		if err != nil {
@@ -384,7 +558,7 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 		// and failed with "unknown media type". The escalation path books built led to a
 		// queue whose primary action could not work.
 		if c.books == nil {
-			return fmt.Errorf("books module unavailable")
+			return moduleOffError{reviewModuleLabel[r.MediaType]}
 		}
 		b, err := c.books.Get(ctx, dest)
 		if err != nil {

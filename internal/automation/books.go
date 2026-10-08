@@ -53,6 +53,8 @@ func (c *Coordinator) SearchBooksMissing(ctx context.Context) {
 		c.log.Warn("book: couldn't read the download queue — skipping the missing-books sweep this cycle", "err", qerr)
 		return
 	}
+	var outage outageTally
+	defer outage.report(c.log, "book search sweep")
 	for _, b := range all {
 		if !b.Monitored {
 			continue
@@ -71,10 +73,19 @@ func (c *Coordinator) SearchBooksMissing(ctx context.Context) {
 			}
 		}
 		n, err := c.searchBookOnce(ctx, b.ID)
-		switch {
-		case err != nil:
+		// An error — above all an indexer outage — is not a miss. Books get only two
+		// automatic tries, so counting a search nobody could answer used to drop a book
+		// requested during an outage out of automatic search for good.
+		if outage.note(err) {
+			if outage.stop() {
+				break // the indexers are down: the rest would only fail the same way
+			}
+			continue
+		}
+		if err != nil {
 			c.log.Warn("book: search failed", "title", b.Title, "err", err)
-		case n == 0:
+		}
+		if _, miss := sweepOutcome(err, true, n); miss {
 			c.books.RecordSearchMiss(ctx, b.ID)
 			// Say so once, at the transition. A book that has quietly stopped being
 			// searched looks identical to one nobody has got to yet.
@@ -145,21 +156,36 @@ func (c *Coordinator) searchBookOnce(ctx context.Context, bookID int64) (int, er
 	}
 	sp := c.bookProfile(ctx, b.QualityProfile)
 	wantEbook, wantAudio := books.WantedEditions(sp.FormatScores)
+	// A search that couldn't run stops the pass: the next edition would only hit the same
+	// dead indexers, and returning the error is what keeps the sweep from counting a miss.
 	grabbed := 0
+	var searchErr error
 	if wantEbook && b.Ebook == nil {
-		if c.grabBookEdition(ctx, b, books.KindEbook, sp) {
+		ok, err := c.grabBookEdition(ctx, b, books.KindEbook, sp)
+		if ok {
 			grabbed++
 		}
+		searchErr = err
 	}
-	if wantAudio && b.Audiobook == nil {
-		if c.grabBookEdition(ctx, b, books.KindAudiobook, sp) {
+	if searchErr == nil && wantAudio && b.Audiobook == nil {
+		ok, err := c.grabBookEdition(ctx, b, books.KindAudiobook, sp)
+		if ok {
 			grabbed++
 		}
+		searchErr = err
 	}
 	for _, v := range b.AudioVersions {
-		if versionWanted(v) && c.grabAudioVersion(ctx, b, v, sp) {
+		if searchErr != nil {
+			break
+		}
+		if !versionWanted(v) {
+			continue
+		}
+		ok, err := c.grabAudioVersion(ctx, b, v, sp)
+		if ok {
 			grabbed++
 		}
+		searchErr = err
 	}
 	if grabbed > 0 {
 		// Something was findable after all. Clearing here rather than in the sweep covers
@@ -167,15 +193,20 @@ func (c *Coordinator) searchBookOnce(ctx context.Context, bookID int64) (int, er
 		// swept normally, which matters when only one of its two editions landed.
 		c.books.ResetSearchMisses(ctx, bookID)
 	}
-	return grabbed, nil
+	return grabbed, searchErr
 }
 
 // grabBookEdition searches for one edition and grabs the best release. Reports whether a
-// grab actually happened, which is what tells the sweep to clear this book's backoff.
-func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind string, sp quality.StoredProfile) bool {
+// grab actually happened, which is what tells the sweep to clear this book's backoff, and
+// the search's error when it couldn't run at all (every indexer failed, or none serves
+// books) — swallowing that made an outage look like "nothing found".
+func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind string, sp quality.StoredProfile) (bool, error) {
 	res, err := c.searchBook(ctx, b, kind)
-	if err != nil || len(res.Releases) == 0 {
-		return false
+	if err != nil {
+		return false, err
+	}
+	if len(res.Releases) == 0 {
+		return false, nil
 	}
 	// Only releases that actually name THIS book. Book indexers fuzzy-match, so a query of
 	// "Frank Herbert Dune" routinely returns Dune Messiah and Children of Dune; nothing
@@ -189,7 +220,7 @@ func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind st
 	}
 	if len(res.Releases) == 0 {
 		c.log.Info("book: no release matched this title", "title", b.Title, "edition", kind)
-		return false
+		return false, nil
 	}
 	res.Releases = c.dropBlockedBook(ctx, b.ID, res.Releases) // don't re-grab a blocklisted (e.g. stalled) release
 	// DB pending-grab guard, mirroring the movie path's pendingGrabTitles: a release
@@ -199,18 +230,18 @@ func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind st
 	best := pickBestBookForKind(sp, res.Releases, kind)
 	if best == nil {
 		c.log.Info("book: no matching-format release", "title", b.Title, "edition", kind)
-		return false
+		return false, nil
 	}
 	hash, err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, bookCategory)
 	if err != nil {
 		c.log.Warn("book: grab failed", "title", b.Title, "err", err)
-		return false
+		return false, nil
 	}
 	c.recordBookGrab(ctx, b.ID, 0, best.Title, best.Indexer, b.QualityProfile, hash)
 	c.learnBookSeries(ctx, b, *best)
 	c.books.AddEvent(ctx, b.ID, "grabbed", fmt.Sprintf("Grabbed the %s edition from %s: %s", kind, best.Indexer, best.Title))
 	c.log.Info("book: grabbing", "title", b.Title, "edition", kind, "release", best.Title, "format", detectBookFormat(best.Title))
-	return true
+	return true, nil
 }
 
 // releasesForThisBook keeps only the releases whose name resolves to b when matched against
@@ -469,7 +500,9 @@ func bookQuery(b books.Book) string {
 func (c *Coordinator) searchBook(ctx context.Context, b books.Book, edition string) (indexer.SearchResult, error) {
 	res, err := c.indexers.Search(ctx, indexer.SearchQuery{
 		Text: bookQuery(b), MediaType: indexer.MediaBook, BookEdition: edition, Limit: 60})
-	if b.Author == "" || (err == nil && len(res.Releases) > 0) {
+	// A search that couldn't run (every indexer down, none serving books) says nothing
+	// about the author: retrying with the title alone would only fail the same way.
+	if err != nil || b.Author == "" || len(res.Releases) > 0 {
 		return res, err
 	}
 	c.log.Info("book: nothing for author + title — trying the title alone", "title", b.Title, "author", b.Author)
@@ -964,11 +997,15 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 	// rather than a suffix on the text, so each indexer narrows it the way its own API can
 	// — a category on a book tracker, an extra query word on a general one. Appending the
 	// word unconditionally made the second pass return nothing at all on MyAnonaMouse.
+	answered := false
+	var searchErr error
 	for _, edition := range []string{"", books.KindAudiobook} {
 		res, err := c.searchBook(ctx, b, edition)
 		if err != nil {
+			searchErr = err
 			continue
 		}
+		answered = true
 		for _, rel := range res.Releases {
 			key := rel.DownloadURL
 			if key == "" {
@@ -980,6 +1017,11 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 			seen[key] = true
 			all = append(all, rel)
 		}
+	}
+	// Neither pass could run: say why rather than show an empty list that reads as
+	// "this book doesn't exist anywhere".
+	if !answered && searchErr != nil {
+		return ReleaseList{}, searchErr
 	}
 
 	// Score each release once (keyword scoring now spans narrator/series/author,

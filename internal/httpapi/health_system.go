@@ -5,9 +5,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/diskspace"
+	"github.com/tristenlammi/arrmada/internal/download"
 )
 
 // healthWarning is one operational problem surfaced to the user.
@@ -38,10 +40,14 @@ func (a *api) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Download client — configured and reachable.
+	var queue []download.Item
+	queueRead := false
 	if clients, err := a.deps.Downloads.List(ctx); err != nil || len(clients) == 0 {
 		add("error", "No download client is configured — grabbed releases have nowhere to download.")
-	} else if _, err := a.deps.Downloads.Queue(ctx); err != nil {
+	} else if q, err := a.deps.Downloads.Queue(ctx); err != nil {
 		add("error", "The download client is unreachable: "+err.Error())
+	} else {
+		queue, queueRead = q, true
 	}
 
 	// Library folder — must exist and be writable, or imports fail.
@@ -54,11 +60,18 @@ func (a *api) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 	// for "nothing is downloading" — everything else looks healthy — so say it plainly
 	// and before the raw free-space line.
 	if a.deps.DiskGuard != nil {
-		if g := a.deps.DiskGuard.Status(ctx); g.Enabled && g.Holding > 0 {
+		g := a.deps.DiskGuard.Status(ctx)
+		// Count only held torrents the client still has: one deleted while held would
+		// otherwise keep promising a resume that can never happen.
+		holding := g.Holding
+		if queueRead {
+			holding = heldInQueue(a.deps.DiskGuard.Held(ctx), queue)
+		}
+		if g.Enabled && holding > 0 {
 			add("warning", fmt.Sprintf(
 				"Downloads are paused: the downloads volume is %.1f%% full (pause at %d%%). "+
 					"%d torrent%s will resume automatically once it drops below %d%%.",
-				g.UsedPct, g.PausePct, g.Holding, plural(g.Holding), g.ResumePct))
+				g.UsedPct, g.PausePct, holding, plural(holding), g.ResumePct))
 		}
 	}
 
@@ -122,4 +135,15 @@ func plural(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// heldInQueue counts the guard's held torrents that the client still has.
+func heldInQueue(held map[string]bool, queue []download.Item) int {
+	n := 0
+	for _, it := range queue {
+		if held[strings.ToLower(it.Hash)] {
+			n++
+		}
+	}
+	return n
 }

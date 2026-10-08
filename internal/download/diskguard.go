@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/tristenlammi/arrmada/internal/diskspace"
@@ -42,16 +43,23 @@ type DiskGuard struct {
 	settings *settings.Service
 	log      *slog.Logger
 	dir      string // the volume to watch — where the download client writes
+	// usage measures the volume. diskspace.Of in production; a test swaps it to put the
+	// guard on either side of its thresholds without filling a real disk.
+	usage func(path string) (diskspace.Usage, bool)
 
 	// mu serialises Check against itself. The scheduler won't overlap runs, but a
 	// manual trigger from the API can land alongside one, and two passes racing
 	// would double-pause and lose track of what's held.
 	mu sync.Mutex
+	// missed counts, per held hash, the passes in a row it was absent from a complete
+	// queue (under mu). Memory only: a restart starts the count over, which only ever
+	// keeps a hash longer.
+	missed map[string]int
 }
 
 // NewDiskGuard wires a guard over the volume at dir.
 func NewDiskGuard(svc *Service, set *settings.Service, log *slog.Logger, dir string) *DiskGuard {
-	return &DiskGuard{svc: svc, settings: set, log: log, dir: dir}
+	return &DiskGuard{svc: svc, settings: set, log: log, dir: dir, usage: diskspace.Of}
 }
 
 // GuardStatus is what the guard is currently doing, for the API and the health panel.
@@ -75,10 +83,29 @@ func (g *DiskGuard) Status(ctx context.Context) GuardStatus {
 		ResumePct: resume,
 		Holding:   len(g.held(ctx)),
 	}
-	if u, ok := diskspace.Of(g.dir); ok {
+	if u, ok := g.usage(g.dir); ok {
 		st.Measurable, st.UsedPct = true, u.UsedPct
 	}
 	return st
+}
+
+// Held returns the hashes the guard has paused and owns, lowercased for comparison
+// against a client's queue.
+func (g *DiskGuard) Held(ctx context.Context) map[string]bool {
+	out := map[string]bool{}
+	for _, h := range g.held(ctx) {
+		out[h] = true
+	}
+	return out
+}
+
+// Engaged reports whether the guard is actively holding downloads right now: it's on,
+// the volume can be measured and is still above the resume point, and it owns
+// something. While engaged, resuming a held torrent by hand would only fill the disk the
+// guard is protecting — and the guard would pause it again on its next pass.
+func (g *DiskGuard) Engaged(ctx context.Context) bool {
+	st := g.Status(ctx)
+	return st.Enabled && st.Measurable && st.UsedPct > float64(st.ResumePct) && st.Holding > 0
 }
 
 // thresholds reads the pause/resume points, repairing anything nonsensical.
@@ -128,7 +155,7 @@ func (g *DiskGuard) Check(ctx context.Context) error {
 		return nil
 	}
 
-	u, ok := diskspace.Of(g.dir)
+	u, ok := g.usage(g.dir)
 	if !ok {
 		// Can't measure: do nothing at all. Guessing here would either pause a
 		// perfectly healthy queue or give false assurance.
@@ -143,8 +170,55 @@ func (g *DiskGuard) Check(ctx context.Context) error {
 		g.log.Info("disk guard: space recovered, resuming downloads",
 			"used_pct", round1(u.UsedPct), "resume_at_pct", resume, "torrents", len(held), "path", g.dir)
 		g.resume(ctx, held)
+	case len(held) > 0:
+		// Between the two lines and still holding: nothing to pause or release, but drop
+		// torrents deleted in the meantime so "holding N" stays true.
+		items, whole, err := g.svc.QueueComplete(ctx)
+		if err != nil {
+			return nil
+		}
+		kept, missed := prunedHeld(held, items, whole, g.missed)
+		g.missed = missed
+		if len(kept) != len(held) {
+			g.save(ctx, kept)
+		}
 	}
 	return nil
+}
+
+// pruneAfterMisses is how many passes in a row a held hash must be missing from a
+// complete queue before the guard forgets it.
+const pruneAfterMisses = 2
+
+// prunedHeld drops held hashes the client no longer has, and returns the updated
+// missed-pass counts. Forgetting a hash wrongly is the costly mistake — that torrent
+// then stays paused for good, since the guard only resumes what it holds — so it's
+// cautious three ways. Only a complete queue (every client answered) counts; with one
+// client down its torrents are just missing from the list. An empty queue doesn't
+// count either: a qBittorrent that has just restarted answers with nothing (or a
+// partial list) while it's still loading torrents. And a hash must be missing on two
+// passes in a row, which outlasts that loading window.
+func prunedHeld(held []string, items []Item, whole bool, missed map[string]int) ([]string, map[string]int) {
+	if !whole || len(items) == 0 {
+		return held, missed
+	}
+	present := make(map[string]bool, len(items))
+	for _, it := range items {
+		present[strings.ToLower(it.Hash)] = true
+	}
+	kept := make([]string, 0, len(held))
+	next := map[string]int{}
+	for _, h := range held {
+		if present[h] {
+			kept = append(kept, h)
+			continue
+		}
+		if n := missed[h] + 1; n < pruneAfterMisses {
+			next[h] = n
+			kept = append(kept, h)
+		}
+	}
+	return kept, next
 }
 
 // pauseActive pauses every torrent still pulling data, and adds them to the held set.
@@ -152,38 +226,58 @@ func (g *DiskGuard) Check(ctx context.Context) error {
 // Seeding torrents are deliberately left alone: they aren't writing anything, and
 // pausing them would stall seed goals and put the private trackers' hit-and-run
 // clocks at risk for a problem they aren't causing.
+//
+// A torrent the guard already holds that is downloading again was resumed behind its
+// back — "Resume all", or by hand in qBittorrent. It is paused again: the volume is
+// still over the line, and leaving it running is exactly how the cache pool filled
+// with the guard switched on.
 func (g *DiskGuard) pauseActive(ctx context.Context, held []string, usedPct float64, pausePct int) {
-	items, err := g.svc.Queue(ctx)
+	items, whole, err := g.svc.QueueComplete(ctx)
 	if err != nil {
 		g.log.Warn("disk guard: could not read the queue", "err", err)
 		return
 	}
+	kept, missed := prunedHeld(held, items, whole, g.missed)
+	g.missed = missed
+	changed := len(kept) != len(held)
 	owned := map[string]bool{}
-	for _, h := range held {
+	for _, h := range kept {
 		owned[h] = true
 	}
 
 	var newly []string
+	repaused := 0
 	for _, it := range items {
-		if it.State != "downloading" || owned[it.Hash] {
+		if it.State != "downloading" {
 			continue
 		}
+		h := strings.ToLower(it.Hash)
 		if err := g.svc.Pause(ctx, it.Hash); err != nil {
 			g.log.Warn("disk guard: could not pause a download", "name", it.Name, "err", err)
 			continue
 		}
-		newly = append(newly, it.Hash)
-		owned[it.Hash] = true
+		if owned[h] {
+			repaused++
+			continue
+		}
+		newly = append(newly, h)
+		owned[h] = true
 	}
-	if len(newly) == 0 {
-		return
+	if repaused > 0 {
+		g.log.Warn("disk guard: paused downloads again that were resumed while the volume is still too full",
+			"used_pct", round1(usedPct), "pause_at_pct", pausePct, "repaused", repaused, "path", g.dir)
 	}
-	// Loud on purpose: "nothing is downloading" is otherwise a mystery, and this is
-	// the first place anyone will look for the reason.
-	g.log.Warn("disk guard: paused downloads — the volume is too full",
-		"used_pct", round1(usedPct), "pause_at_pct", pausePct,
-		"paused", len(newly), "path", g.dir)
-	g.save(ctx, append(held, newly...))
+	if len(newly) > 0 {
+		// Loud on purpose: "nothing is downloading" is otherwise a mystery, and this is
+		// the first place anyone will look for the reason.
+		g.log.Warn("disk guard: paused downloads — the volume is too full",
+			"used_pct", round1(usedPct), "pause_at_pct", pausePct,
+			"paused", len(newly), "path", g.dir)
+		changed = true
+	}
+	if changed {
+		g.save(ctx, append(kept, newly...))
+	}
 }
 
 // resume restarts the held torrents and clears the set. A hash that no longer exists
@@ -198,15 +292,25 @@ func (g *DiskGuard) resume(ctx context.Context, held []string) {
 	g.save(ctx, nil)
 }
 
-// held returns the hashes the guard has paused.
+// held returns the hashes the guard has paused, lowercased: clients and older saved
+// sets don't agree on case, and a case mismatch would read a held torrent as unowned.
 func (g *DiskGuard) held(ctx context.Context) []string {
 	raw := g.settings.Get(ctx, keyDiskGuardHeld, "")
 	if raw == "" {
 		return nil
 	}
-	var out []string
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+	var stored []string
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
 		return nil
+	}
+	out := make([]string, 0, len(stored))
+	seen := map[string]bool{}
+	for _, h := range stored {
+		h = strings.ToLower(h)
+		if h != "" && !seen[h] {
+			seen[h] = true
+			out = append(out, h)
+		}
 	}
 	return out
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/books"
+	"github.com/tristenlammi/arrmada/internal/indexer"
 )
 
 // Extra audiobook versions of a book (a full-cast production beside the standard
@@ -150,6 +151,11 @@ func (a *api) handleSearchAudioVersion(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, books.ErrVersionNotFound) || errors.Is(err, books.ErrNotFound) {
 			a.writeVersionError(w, err)
+			return
+		}
+		// No indexer could answer: an upstream failure, not a bad request.
+		if indexer.IsOutage(err) {
+			a.writeError(w, http.StatusBadGateway, err.Error())
 			return
 		}
 		a.writeError(w, http.StatusBadRequest, err.Error())

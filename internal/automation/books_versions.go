@@ -89,33 +89,37 @@ func versionWanted(v books.AudioVersion) bool {
 	return v.Monitored && v.File == nil && len(v.Terms) > 0
 }
 
-// grabAudioVersion searches for one version and grabs the best release for it.
-func (c *Coordinator) grabAudioVersion(ctx context.Context, b books.Book, v books.AudioVersion, sp quality.StoredProfile) bool {
+// grabAudioVersion searches for one version and grabs the best release for it. The error
+// is the search's, when it couldn't run at all, so an outage isn't read as "not found".
+func (c *Coordinator) grabAudioVersion(ctx context.Context, b books.Book, v books.AudioVersion, sp quality.StoredProfile) (bool, error) {
 	res, err := c.searchBook(ctx, b, books.KindAudiobook)
-	if err != nil || len(res.Releases) == 0 {
-		return false
+	if err != nil {
+		return false, err
+	}
+	if len(res.Releases) == 0 {
+		return false, nil
 	}
 	rels := releasesForVersion(v, c.releasesForThisBook(ctx, b, res.Releases))
 	if len(rels) == 0 {
 		c.log.Info("book: no release matched this audiobook version", "title", b.Title, "version", v.Label, "terms", strings.Join(v.Terms, ", "))
-		return false
+		return false, nil
 	}
 	rels = c.dropBlockedBook(ctx, b.ID, rels)
 	rels = dropPendingBook(rels, c.pendingBookGrabTitles(ctx, b.ID))
 	best := pickBestBookForKind(versionProfile(sp, v), rels, books.KindAudiobook)
 	if best == nil {
 		c.log.Info("book: no acceptable release for this audiobook version", "title", b.Title, "version", v.Label)
-		return false
+		return false, nil
 	}
 	hash, err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, bookCategory)
 	if err != nil {
 		c.log.Warn("book: grab failed", "title", b.Title, "version", v.Label, "err", err)
-		return false
+		return false, nil
 	}
 	c.recordBookGrab(ctx, b.ID, v.ID, best.Title, best.Indexer, b.QualityProfile, hash)
 	c.books.AddEvent(ctx, b.ID, "grabbed", fmt.Sprintf("Grabbed the %q audiobook from %s: %s", v.Label, best.Indexer, best.Title))
 	c.log.Info("book: grabbing audiobook version", "title", b.Title, "version", v.Label, "release", best.Title)
-	return true
+	return true, nil
 }
 
 // SearchAudioVersionNow searches for one version right away (the version's Search
@@ -135,7 +139,7 @@ func (c *Coordinator) SearchAudioVersionNow(ctx context.Context, bookID, version
 		if len(v.Terms) == 0 {
 			return false, fmt.Errorf("the %q version has no search words — add some, or grab a release for it by hand", v.Label)
 		}
-		return c.grabAudioVersion(ctx, b, v, c.bookProfile(ctx, b.QualityProfile)), nil
+		return c.grabAudioVersion(ctx, b, v, c.bookProfile(ctx, b.QualityProfile))
 	}
 	return false, books.ErrVersionNotFound
 }

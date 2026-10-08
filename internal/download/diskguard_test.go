@@ -7,6 +7,7 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/settings"
 	"github.com/tristenlammi/arrmada/internal/store"
 )
@@ -174,5 +175,114 @@ func TestHeldSetSurvivesAReload(t *testing.T) {
 	sort.Strings(got)
 	if len(got) != 2 || got[0] != "aaa" || got[1] != "bbb" {
 		t.Errorf("a new guard read back %v, want both hashes", got)
+	}
+}
+
+// usageAt makes the guard read the volume as pct full, without filling a real disk.
+func usageAt(g *DiskGuard, pct float64) {
+	g.usage = func(string) (diskspace.Usage, bool) { return diskspace.Usage{UsedPct: pct}, true }
+}
+
+// A torrent the guard paused and someone resumed (Resume all, or by hand in the client)
+// is paused again on the next pass while the volume is still over the line. Skipping
+// held hashes is how the cache pool filled with the guard switched on.
+func TestGuardRePausesAHeldTorrentResumedBehindItsBack(t *testing.T) {
+	g, fake, _, ctx := guardFixture(t, []Item{{Hash: "AAA", State: "downloading"}})
+	usageAt(g, 91)
+	if err := g.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.paused) != 1 {
+		t.Fatalf("first pass paused %v, want the active download", fake.paused)
+	}
+
+	fake.items[0].State = "downloading" // resumed outside the guard
+	if err := g.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.paused) != 2 || fake.paused[1] != "AAA" {
+		t.Fatalf("paused %v, want the resumed torrent paused again", fake.paused)
+	}
+	if held := g.held(ctx); len(held) != 1 || held[0] != "aaa" {
+		t.Errorf("held = %v, want one lowercased entry, no duplicate", held)
+	}
+}
+
+// A held torrent deleted from the client is dropped from the held set once a complete
+// queue proves it's gone, so "holding N" stays true.
+func TestGuardPrunesHeldTorrentsThatAreGone(t *testing.T) {
+	g, fake, _, ctx := guardFixture(t, []Item{
+		{Hash: "aaa", State: "downloading"},
+		{Hash: "bbb", State: "downloading"},
+	})
+	usageAt(g, 91)
+	_ = g.Check(ctx)
+	if len(g.held(ctx)) != 2 {
+		t.Fatalf("held = %v, want both", g.held(ctx))
+	}
+
+	fake.items = fake.items[:1] // bbb deleted while held
+	usageAt(g, 83)              // between the lines: still holding, nothing to pause
+	_ = g.Check(ctx)
+	if len(g.held(ctx)) != 2 {
+		t.Fatalf("held = %v; one missed pass shouldn't forget a torrent", g.held(ctx))
+	}
+	_ = g.Check(ctx)
+	if held := g.held(ctx); len(held) != 1 || held[0] != "aaa" {
+		t.Errorf("held = %v, want only the torrent the client still has", held)
+	}
+}
+
+// With a client unreachable its torrents are merely missing from the list, not gone —
+// forgetting them would leave them paused for good.
+func TestGuardKeepsHeldTorrentsWhenTheQueueIsPartial(t *testing.T) {
+	held := []string{"aaa", "bbb"}
+	if got, _ := prunedHeld(held, []Item{{Hash: "aaa"}}, false, nil); len(got) != 2 {
+		t.Errorf("partial queue pruned %v → %v; nothing should be dropped", held, got)
+	}
+	got, missed := prunedHeld(held, []Item{{Hash: "AAA"}}, true, nil)
+	if len(got) != 2 {
+		t.Errorf("first miss pruned %v → %v; a hash must be missing twice in a row", held, got)
+	}
+	if got, _ = prunedHeld(held, []Item{{Hash: "AAA"}}, true, missed); len(got) != 1 || got[0] != "aaa" {
+		t.Errorf("second miss: %v, want only aaa (hashes compared case-insensitively)", got)
+	}
+}
+
+// A qBittorrent that has just restarted lists nothing while it loads its torrents. An
+// empty queue must not read as "every held torrent was deleted" — they'd stay paused
+// for good once forgotten.
+func TestGuardKeepsHeldTorrentsWhenTheQueueIsEmpty(t *testing.T) {
+	held := []string{"aaa", "bbb"}
+	missed := map[string]int{"aaa": 1, "bbb": 1} // already missed once
+	if got, _ := prunedHeld(held, nil, true, missed); len(got) != 2 {
+		t.Errorf("empty queue pruned %v → %v; nothing should be dropped", held, got)
+	}
+}
+
+// Engaged is what the API uses to refuse a resume: on, measurable, above the resume
+// point, and holding something.
+func TestGuardEngaged(t *testing.T) {
+	g, _, set, ctx := guardFixture(t, []Item{{Hash: "aaa", State: "downloading"}})
+	usageAt(g, 91)
+	if g.Engaged(ctx) {
+		t.Error("nothing held yet — not engaged")
+	}
+	_ = g.Check(ctx)
+	if !g.Engaged(ctx) || !g.Held(ctx)["aaa"] {
+		t.Error("holding a torrent over the line should be engaged")
+	}
+	usageAt(g, 83)
+	if !g.Engaged(ctx) {
+		t.Error("between the lines and still holding should stay engaged")
+	}
+	usageAt(g, 70)
+	if g.Engaged(ctx) {
+		t.Error("below the resume point the guard is about to release — not engaged")
+	}
+	usageAt(g, 91)
+	_ = set.SetBool(ctx, KeyDiskGuard, false)
+	if g.Engaged(ctx) {
+		t.Error("a disabled guard is never engaged")
 	}
 }

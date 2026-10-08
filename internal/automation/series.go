@@ -144,6 +144,8 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 	if qerr != nil {
 		queue = nil
 	}
+	var outage outageTally
+	defer outage.report(c.log, "series search sweep")
 	for _, s := range all {
 		if !s.Monitored {
 			continue
@@ -168,12 +170,20 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 			}
 		}
 		n, err := c.searchSeriesOnce(ctx, s.ID)
-		switch {
-		case err != nil:
+		if outage.note(err) {
+			if outage.stop() {
+				break // the indexers are down: the rest would only fail the same way
+			}
+			continue
+		}
+		if err != nil {
 			c.log.Warn("series: search failed", "series", s.Title, "err", err)
-		case n > 0:
+		}
+		reset, miss := sweepOutcome(err, true, n)
+		if reset {
 			c.series.ResetSearchMisses(ctx, s.ID)
-		default:
+		}
+		if miss {
 			c.series.RecordSearchMiss(ctx, s.ID)
 		}
 	}
