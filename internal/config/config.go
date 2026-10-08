@@ -19,7 +19,8 @@ type Config struct {
 	Port int
 	// BaseURL is an optional reverse-proxy sub-path (e.g. "/arrmada"). Empty = root.
 	BaseURL string
-	// DataDir holds the database, config, logs, and backups.
+	// DataDir holds the database, config and logs, plus backups/, where a snapshot
+	// of the database is taken automatically before any schema change.
 	DataDir string
 	// LogLevel is one of: debug, info, warn, error.
 	LogLevel string
@@ -82,6 +83,10 @@ type Config struct {
 	// ConvertScratchDir is the working directory the Convert module encodes into before
 	// atomically replacing the original. Ideally a fast local disk. Empty = <DataDir>/convert.
 	ConvertScratchDir string
+	// SkipMigrationSnapshot upgrades the database without the automatic pre-migrate
+	// snapshot. Only for a data disk too full to hold the copy; the app refuses to
+	// upgrade otherwise rather than risk the only copy.
+	SkipMigrationSnapshot bool
 }
 
 // Load builds a Config from environment variables, falling back to defaults.
@@ -132,6 +137,10 @@ func Load() (Config, error) {
 
 	// Optional; ignore a blank/garbage value (0 = don't manage the client's port).
 	c.QbittorrentPort, _ = strconv.Atoi(env("ARRMADA_QBIT_PORT", "0"))
+
+	// Anything that isn't clearly "yes" keeps the snapshot: skipping it is the risky
+	// choice, so a typo shouldn't make it.
+	c.SkipMigrationSnapshot, _ = strconv.ParseBool(env("ARRMADA_SKIP_MIGRATION_SNAPSHOT", "false"))
 
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":

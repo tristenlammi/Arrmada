@@ -8,8 +8,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -17,18 +21,178 @@ import (
 
 // Store wraps the database connection pool.
 type Store struct {
-	db *sql.DB
+	db      *sql.DB
+	dataDir string
+	dbPath  string
+
+	// snapMu serialises Snapshot: two copies picking a name in the same second
+	// would otherwise share a .tmp file and clobber each other.
+	snapMu sync.Mutex
 }
+
+// Options tunes OpenWith. The zero value is what Open uses.
+type Options struct {
+	// Log receives migration and snapshot progress. Nil discards it.
+	Log *slog.Logger
+
+	// SkipMigrationSnapshot upgrades an existing database without first copying
+	// it to the backups folder. It is the escape hatch for a disk too full to hold
+	// the copy, nothing more (ARRMADA_SKIP_MIGRATION_SNAPSHOT).
+	SkipMigrationSnapshot bool
+
+	// BeforeMigrate, when set, runs once with the pending migration file names
+	// before any of them is applied, and only when there is at least one. An error
+	// aborts Open with nothing applied.
+	BeforeMigrate func(ctx context.Context, db *sql.DB, pending []string) error
+
+	// migrations replaces the embedded migration set. Tests only.
+	migrations fs.FS
+}
+
+// preMigrateKeep is how many pre-migrate snapshots are kept; older ones are
+// deleted after each upgrade that succeeds.
+const preMigrateKeep = 5
 
 // Open ensures the data directory exists, opens the SQLite database with sane
 // pragmas (WAL, foreign keys, busy timeout), verifies connectivity, and applies
-// any pending migrations.
+// any pending migrations, snapshotting an existing database first.
 func Open(dataDir string) (*Store, error) {
+	return OpenWith(dataDir, Options{})
+}
+
+// OpenWith is Open with options.
+func OpenWith(dataDir string, opt Options) (*Store, error) {
+	log := opt.Log
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create data dir %q: %w", dataDir, err)
 	}
 
-	dbPath := filepath.Join(dataDir, "arrmada.db")
+	st := &Store{dataDir: dataDir, dbPath: filepath.Join(dataDir, "arrmada.db")}
+	db, err := openDB(st.dbPath)
+	if err != nil {
+		return nil, err
+	}
+	st.db = db
+
+	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping sqlite: %w", err)
+	}
+
+	// The snapshot and the migrations get no deadline: on a large database either
+	// can legitimately take longer than a ping should, and failing the boot halfway
+	// through an upgrade helps nobody.
+	if err := st.migrate(context.Background(), opt, log); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return st, nil
+}
+
+// migrate applies pending migrations. On an existing database (anything already
+// applied) it first takes a pre-migrate snapshot, and changes nothing if that
+// copy can't be made.
+func (s *Store) migrate(ctx context.Context, opt Options, log *slog.Logger) error {
+	fsys := opt.migrations
+	if fsys == nil {
+		fsys = embeddedMigrations()
+	}
+	pend, last, err := pendingMigrations(ctx, s.db, fsys)
+	if err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
+	if len(pend) == 0 {
+		return nil
+	}
+	// A fresh install has nothing worth copying.
+	fresh := last == ""
+	newest := strings.TrimSuffix(pend[len(pend)-1], ".sql")
+
+	snapshotted := false
+	if !fresh {
+		var err error
+		if snapshotted, err = s.snapshotBeforeMigrate(ctx, opt, log, last, newest, len(pend)); err != nil {
+			return err
+		}
+	}
+
+	if opt.BeforeMigrate != nil {
+		if err := opt.BeforeMigrate(ctx, s.db, pend); err != nil {
+			return fmt.Errorf("before migrations: %w", err)
+		}
+	}
+
+	// A fresh install applies every migration; one summary line says that better
+	// than ninety.
+	stepLog := log
+	if fresh {
+		stepLog = nil
+	}
+	start := time.Now()
+	if err := applyMigrations(ctx, s.db, fsys, pend, stepLog); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
+	// Prune only once the upgrade has gone through. A migration that keeps failing
+	// sends the container round a restart loop, and every boot snapshots the
+	// half-upgraded database again; pruning then would soon delete the one copy
+	// from before the upgrade started. Until an upgrade succeeds every snapshot is
+	// kept, and the free-space check stops them filling the disk.
+	if snapshotted {
+		s.prunePreMigrate(log)
+	}
+	if fresh {
+		log.Info("database created", "migrations", len(pend), "version", newest,
+			"duration", time.Since(start).Round(time.Millisecond).String())
+	}
+	return nil
+}
+
+// snapshotBeforeMigrate copies the database aside before an upgrade, so a
+// migration that commits a mistake has something to roll back to. It reports
+// whether a snapshot was taken.
+func (s *Store) snapshotBeforeMigrate(ctx context.Context, opt Options, log *slog.Logger, from, to string, count int) (bool, error) {
+	dir := BackupsDir(s.dataDir)
+	if opt.SkipMigrationSnapshot {
+		log.Warn("ARRMADA_SKIP_MIGRATION_SNAPSHOT is set: upgrading the database WITHOUT a snapshot, so there is nothing to roll back to if this goes wrong",
+			"from", from, "to", to, "count", count)
+		return false, nil
+	}
+
+	start := time.Now()
+	path, err := s.Snapshot(ctx, BackupPreMigrate)
+	if err != nil {
+		return false, fmt.Errorf("couldn't snapshot the database before upgrading it from %s to %s: %w — nothing was changed. "+
+			"Free space in %s or set ARRMADA_SKIP_MIGRATION_SNAPSHOT=1 to upgrade without one", from, to, err, dir)
+	}
+	var size int64
+	if fi, err := os.Stat(path); err == nil {
+		size = fi.Size()
+	}
+	log.Info("database snapshot taken before migrations",
+		"path", path, "size", formatBytes(uint64(size)),
+		"duration", time.Since(start).Round(time.Millisecond).String(),
+		"from", from, "to", to, "count", count)
+	return true, nil
+}
+
+// prunePreMigrate trims the pre-migrate snapshots to the newest preMigrateKeep.
+// Pruning is housekeeping; failing it mustn't fail the upgrade that just finished.
+func (s *Store) prunePreMigrate(log *slog.Logger) {
+	dir := BackupsDir(s.dataDir)
+	if removed, err := PruneBackups(dir, BackupPreMigrate, preMigrateKeep); err != nil {
+		log.Warn("couldn't prune old pre-migrate snapshots", "dir", dir, "err", err)
+	} else if len(removed) > 0 {
+		log.Info("pruned old pre-migrate snapshots", "removed", removed)
+	}
+}
+
+// openDB opens the pool every Store uses: WAL, foreign keys on, busy timeout.
+func openDB(dbPath string) (*sql.DB, error) {
 	dsn := "file:" + dbPath +
 		"?_pragma=busy_timeout(5000)" +
 		"&_pragma=journal_mode(WAL)" +
@@ -43,20 +207,7 @@ func Open(dataDir string) (*Store, error) {
 	db.SetMaxOpenConns(4)
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(time.Hour)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping sqlite: %w", err)
-	}
-
-	if err := runMigrations(ctx, db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("run migrations: %w", err)
-	}
-
-	return &Store{db: db}, nil
+	return db, nil
 }
 
 // DB exposes the underlying pool for repositories built on top of the store.
