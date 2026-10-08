@@ -689,7 +689,7 @@ func (s *Service) markConverted(ctx context.Context, job *Job, src, finalPath, c
 	return nil
 }
 
-// codecToken is the release-name token for a conversion target, appended to the recorded
+// codecToken is the release-name token for a conversion target, swapped into the recorded
 // source release so upgrade scoring costs the shrunken file at the new codec's efficiency.
 func codecToken(codec string) string {
 	switch codec {
@@ -701,7 +701,9 @@ func codecToken(codec string) string {
 	return ""
 }
 
-// stampEpisodeCodec appends the new codec token to the episode's recorded source release.
+// stampEpisodeCodec puts the new codec token into the episode's recorded source release,
+// in place of the old one (parser.RestampCodec), so it reads as the new codec and keeps
+// its release group.
 func (s *Service) stampEpisodeCodec(ctx context.Context, job *Job, token string) {
 	if token == "" {
 		return
@@ -710,10 +712,11 @@ func (s *Service) stampEpisodeCodec(ctx context.Context, job *Job, token string)
 	if cur.SourceRelease == "" {
 		return
 	}
-	if parser.Parse(cur.SourceRelease).Codec == parser.Parse("x "+token).Codec {
+	codec := parser.Parse("x " + token).Codec
+	if parser.Parse(cur.SourceRelease).Codec == codec {
 		return
 	}
-	_ = s.series.SetEpisodeSourceRelease(ctx, job.SeriesID, job.Season, job.Episode, cur.SourceRelease+" "+token)
+	_ = s.series.SetEpisodeSourceRelease(ctx, job.SeriesID, job.Season, job.Episode, parser.RestampCodec(cur.SourceRelease, codec))
 }
 
 // errNoClip is returned when a trial couldn't produce any clip.

@@ -155,6 +155,7 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 	cur := e.Evaluate(p, curCand)
 	curResRank := resRank[curCand.Release.Resolution]
 	curKey := strings.ToLower(strings.TrimSpace(currentRelease))
+	curBare := parser.WithoutCodec(currentRelease)
 
 	d := e.Decide(p, cands)
 	for _, ev := range d.Eligible { // sorted best-first
@@ -169,6 +170,11 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 		}
 		if strings.ToLower(strings.TrimSpace(ev.Candidate.Name)) == curKey {
 			continue // the release we already have
+		}
+		if parser.WithoutCodec(ev.Candidate.Name) == curBare {
+			// The release this file was converted from: the same name but for the codec
+			// Convert stamped in. Grabbing it would undo the conversion and loop forever.
+			continue
 		}
 		qualityBetter := ev.Total > cur.Total
 		// Same helper the import gate uses, so the two can't drift apart again — the
@@ -206,6 +212,11 @@ func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string,
 	// would never have chosen this release, so the importer replacing a file on its own
 	// initiative would break the one promise that setting makes: the library stops churning.
 	if sp, err := s.GetStored(ctx, ref); err != nil || !sp.UpgradesEnabled {
+		return false
+	}
+	// The release a converted file came from is never an upgrade of it, whatever the
+	// codec stamp makes the two score.
+	if parser.WithoutCodec(candRelease) == parser.WithoutCodec(currentRelease) {
 		return false
 	}
 	p, e := s.Resolve(ctx, ref)

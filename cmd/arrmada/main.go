@@ -135,6 +135,11 @@ func main() {
 	}
 	defer func() { _ = st.Close() }()
 	log.Info("database ready", "data_dir", cfg.DataDir)
+	// One-time: converted files used to have " AV1" / " x265" appended to their recorded
+	// release, which read back as the old codec and hid the group. Rewrite those in place.
+	if _, err := convert.RepairCodecStamps(context.Background(), st.DB(), log); err != nil {
+		log.Warn("convert: codec stamp repair failed", "err", err)
+	}
 
 	bus := eventbus.New(log)
 	authSvc := auth.NewService(st.DB())

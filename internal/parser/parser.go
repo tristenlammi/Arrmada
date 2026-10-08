@@ -706,6 +706,11 @@ func detectSource(lc string) Source {
 
 func detectCodec(lc string) Codec {
 	switch {
+	// AV1 first, as a whole token: a release only names AV1 when it is AV1, and a file
+	// converted before codec tokens were swapped in place carries both — the old codec in
+	// the name and " AV1" appended ("...H.264-GRP AV1") — which must read as what's on disk.
+	case strings.Contains(lc, " av1 "):
+		return CodecAV1
 	case strings.Contains(lc, "x265"), strings.Contains(lc, "h265"),
 		strings.Contains(lc, "h 265"), strings.Contains(lc, "hevc"):
 		return CodecX265
