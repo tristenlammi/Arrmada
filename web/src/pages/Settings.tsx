@@ -445,7 +445,11 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
           </div>
           {stats?.dir && <div className="truncate font-mono text-[10.5px] text-ink-faint" title={stats.dir}>{stats.dir}</div>}
           {stats && stats.over_cap_bytes > 0 && (
-            <p className="m-0 text-[11.5px]" style={{ color: "var(--avoid)" }}>Over the cap by {fmtBytes(stats.over_cap_bytes)} — items from the last 3 days are kept until they're older.</p>
+            <p className="m-0 text-[11.5px]" style={{ color: "var(--avoid)" }}>
+              Over the cap by {fmtBytes(stats.over_cap_bytes)} — {stats.protected_bytes > 0 && stats.over_cap_bytes <= stats.protected_bytes
+                ? "items from the last 3 days are kept until they're older."
+                : "the next hourly clean-up will trim it."}
+            </p>
           )}
           {stats && stats.max_gb > 0 && stats.largest_item_bytes > stats.max_gb * 1024 ** 3 && (
             <p className="m-0 text-[11.5px]" style={{ color: "var(--avoid)" }}>Your cap ({stats.max_gb} GB) is smaller than the largest file here ({fmtBytes(stats.largest_item_bytes)}).</p>
