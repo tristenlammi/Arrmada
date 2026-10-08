@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -30,5 +31,36 @@ func TestDecodeJSONLimitReportsOversize(t *testing.T) {
 	w = httptest.NewRecorder()
 	if a.decodeJSON(w, r, &dst) || w.Code != http.StatusBadRequest {
 		t.Errorf("malformed JSON: got %d, want 400", w.Code)
+	}
+}
+
+// A field the handler doesn't take is named in the 400, so a client/server mismatch can
+// be read straight off the UI's error line. Malformed JSON keeps the generic message.
+func TestDecodeUnknownFieldMessage(t *testing.T) {
+	a := &api{}
+	var dst struct {
+		Name string `json:"name"`
+	}
+	r := httptest.NewRequest("PUT", "/", strings.NewReader(`{"name":"x","bogus_key":1}`))
+	w := httptest.NewRecorder()
+	if a.decodeJSON(w, r, &dst) {
+		t.Fatal("an unknown field must be rejected")
+	}
+	var body struct{ Message string }
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding %q: %v", w.Body.String(), err)
+	}
+	if want := `invalid request body: unknown field "bogus_key"`; w.Code != http.StatusBadRequest || body.Message != want {
+		t.Errorf("got %d %q, want 400 %q", w.Code, body.Message, want)
+	}
+
+	r = httptest.NewRequest("PUT", "/", strings.NewReader(`{"name":`))
+	w = httptest.NewRecorder()
+	_ = a.decodeJSON(w, r, &dst)
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding %q: %v", w.Body.String(), err)
+	}
+	if body.Message != "invalid request body" {
+		t.Errorf("malformed JSON message = %q, want the generic one", body.Message)
 	}
 }
