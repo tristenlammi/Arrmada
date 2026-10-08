@@ -96,3 +96,37 @@ func TestMoveSamePathIsNoop(t *testing.T) {
 		t.Error("a no-op move must leave the file alone")
 	}
 }
+
+// A case-only rename moves the one file to its new name, whichever kind of disk it's on:
+// on a case-insensitive one the two names are a single entry (removing "from" would delete
+// the file), and on a case-sensitive one two hardlinks named that way are two entries
+// (renaming one onto the other does nothing, leaving the old name behind).
+func TestMoveCaseOnlyRename(t *testing.T) {
+	im, root := moveTestImporter(t)
+	from := filepath.Join(root, "show - s01e01.mkv")
+	to := filepath.Join(root, "Show - S01E01.mkv")
+	writeMoveFile(t, from, "the episode")
+	if _, err := os.Lstat(to); err != nil {
+		// Case-sensitive disk: make the second name a hardlink, as an import would.
+		if err := os.Link(from, to); err != nil {
+			t.Skipf("hardlinks unsupported here: %v", err)
+		}
+	}
+	if err := im.Move(from, to); err != nil {
+		t.Fatalf("case-only Move: %v", err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(to) {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("folder holds %v, want only %q", names, filepath.Base(to))
+	}
+	if readMoveFile(t, to) != "the episode" {
+		t.Error("the file must survive under its new name")
+	}
+}

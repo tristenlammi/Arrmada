@@ -384,3 +384,93 @@ func TestSeriesRenameSkipsChangedSincePreview(t *testing.T) {
 		t.Errorf("an empty confirmation moved %d (%v)", res.Moved, err)
 	}
 }
+
+// A file a failed rename couldn't put back is recorded under its temporary name. The next
+// rename has to give it a real video name back, not "Show - S01E01.arrmada-rename-0".
+func TestSeriesRenameRecoversFileLeftUnderTempName(t *testing.T) {
+	f := newRenameFixture(t, [2]int{1, 1})
+	orig := filepath.Join(f.root, f.folder, "Season 1", "Show.S01E01.1080p.WEB-DL.mkv")
+	tmp := renameTempPath(orig, 0)
+	f.place(t, 1, 1, tmp, "the episode")
+	// Its subtitle was moved aside with it, the way phase 1 names it.
+	if err := os.WriteFile(filepath.Join(filepath.Dir(orig), ".Show.S01E01.1080p.WEB-DL.mkv.en.srt"), []byte("subs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := f.c.SeriesRenamePreview(f.ctx, f.id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].To != f.canonical(1, 1) || items[0].Conflict != "" {
+		t.Fatalf("preview = %+v, want the temp file renamed to %s", items, f.canonical(1, 1))
+	}
+	res, err := f.c.SeriesRename(f.ctx, f.id, items)
+	if err != nil || res.Moved != 1 {
+		t.Fatalf("result = %+v, %v", res, err)
+	}
+	if p := f.pathOf(t, 1, 1); p != f.canonical(1, 1) || mustRead(t, p) != "the episode" {
+		t.Errorf("S01E01 row points at %s, want the canonical .mkv name", p)
+	}
+	if mustRead(t, strings.TrimSuffix(f.canonical(1, 1), ".mkv")+".en.srt") != "subs" {
+		t.Error("the subtitle should follow the video out of its temporary name")
+	}
+}
+
+// The process stops between moving a chained file aside and moving it on: the row still
+// names the original path, which is now empty, and the file sits hidden under its
+// temporary name. A rescan used to mark the episode missing (so it was downloaded again)
+// and nothing ever brought the file back.
+func TestInterruptedRenameIsPutBack(t *testing.T) {
+	f := newRenameFixture(t, [2]int{1, 1})
+	orig := f.canonical(1, 1)
+	f.place(t, 1, 1, orig, "the episode")
+	if err := os.Rename(orig, renameTempPath(orig, 0)); err != nil {
+		t.Fatal(err)
+	}
+
+	f.c.RescanSeries(f.ctx, f.id)
+	if mustRead(t, orig) != "the episode" {
+		t.Fatal("the file should be back under its original name")
+	}
+	s, _ := f.c.series.Get(f.ctx, f.id)
+	if !s.Seasons[0].Episodes[0].HasFile {
+		t.Error("the episode was marked missing while its file was only set aside")
+	}
+
+	// The same through a rename, where the original name is free again.
+	g := newRenameFixture(t, [2]int{1, 1})
+	src := filepath.Join(g.root, g.folder, "Season 1", "Show.S01E01.1080p.WEB-DL.mkv")
+	g.place(t, 1, 1, src, "the episode")
+	if err := os.Rename(src, renameTempPath(src, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := g.c.SeriesRename(g.ctx, g.id, nil); err != nil || res.Moved != 1 {
+		t.Fatalf("result = %+v, %v", res, err)
+	}
+	if mustRead(t, g.canonical(1, 1)) != "the episode" || g.pathOf(t, 1, 1) != g.canonical(1, 1) {
+		t.Error("the set-aside file should be restored and then renamed")
+	}
+}
+
+// A leftover temporary file whose original name is taken stays where it is, and doesn't
+// stop the file now at that name being moved through a temporary name of its own.
+func TestSeriesRenameSkipsPastLeftoverTemp(t *testing.T) {
+	g := newRenameFixture(t, [2]int{1, 1}, [2]int{1, 2})
+	a, b := g.canonical(1, 1), g.canonical(1, 2)
+	g.place(t, 1, 1, b, "belongs to E01")
+	g.place(t, 1, 2, a, "belongs to E02")
+	leftover := renameTempPath(a, 0)
+	if err := os.WriteFile(leftover, []byte("leftover"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := g.c.SeriesRename(g.ctx, g.id, nil)
+	if err != nil || res.Moved != 2 || len(res.Skipped) != 0 {
+		t.Fatalf("swap past a leftover: %+v, %v", res, err)
+	}
+	if mustRead(t, a) != "belongs to E01" || mustRead(t, b) != "belongs to E02" {
+		t.Error("swap: files didn't end up under each other's names")
+	}
+	if mustRead(t, leftover) != "leftover" {
+		t.Error("the leftover temporary file must be left alone")
+	}
+}

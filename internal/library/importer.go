@@ -897,12 +897,14 @@ func (im *Importer) Move(from, to string) error {
 		return err
 	}
 	if toInfo, err := os.Lstat(to); err == nil {
-		// A case-only rename on a case-insensitive filesystem stats as the same file but
-		// is ONE directory entry — removing "from" there would delete the file itself.
-		if strings.EqualFold(from, to) && os.SameFile(fromInfo, toInfo) {
-			return os.Rename(from, to)
-		}
 		if os.SameFile(fromInfo, toInfo) {
+			// A case-only rename on a case-insensitive filesystem stats as the same file
+			// but is ONE directory entry — removing "from" there would delete the file
+			// itself. Two hardlinks named "a.mkv" and "A.mkv" on a case-sensitive disk
+			// are two entries, and renaming one onto the other does nothing at all.
+			if strings.EqualFold(from, to) && !twoDirEntries(from, to) {
+				return os.Rename(from, to)
+			}
 			return os.Remove(from)
 		}
 		return fmt.Errorf("%w: %s", ErrTargetExists, to)
@@ -913,6 +915,38 @@ func (im *Importer) Move(from, to string) error {
 		return err
 	}
 	return os.Rename(from, to)
+}
+
+// twoDirEntries reports whether two paths that differ only in case are separate directory
+// entries (so the filesystem is case-sensitive) rather than one entry reached either way.
+// Anything it can't tell answers false, which makes Move rename instead of remove: at
+// worst a name is left over, never a file deleted.
+func twoDirEntries(from, to string) bool {
+	fromDir, err1 := os.Stat(filepath.Dir(from))
+	toDir, err2 := os.Stat(filepath.Dir(to))
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	if !os.SameFile(fromDir, toDir) {
+		return true // two folders whose names differ in case: only a case-sensitive disk has both
+	}
+	if filepath.Base(from) == filepath.Base(to) {
+		return false // the same name in the same folder
+	}
+	entries, err := os.ReadDir(filepath.Dir(to))
+	if err != nil {
+		return false
+	}
+	var hasFrom, hasTo bool
+	for _, e := range entries {
+		switch e.Name() {
+		case filepath.Base(from):
+			hasFrom = true
+		case filepath.Base(to):
+			hasTo = true
+		}
+	}
+	return hasFrom && hasTo
 }
 
 // SeriesLibraryFiles walks a series' library folder and returns the episode files

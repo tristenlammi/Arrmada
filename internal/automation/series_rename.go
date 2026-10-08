@@ -165,11 +165,73 @@ func renameOccupied(from, to string) bool {
 	return err != nil || !os.SameFile(fromInfo, toInfo)
 }
 
+// renameTempMarker is what a chained file's temporary name carries; see renameTempPath.
+const renameTempMarker = ".arrmada-rename-"
+
 // renameTempPath is where a chained file waits during a rename: a dot-file in its own
 // folder whose extension isn't a video one, so a library scan never mistakes it for an
 // episode while it's there.
 func renameTempPath(from string, n int) string {
-	return filepath.Join(filepath.Dir(from), fmt.Sprintf(".%s.arrmada-rename-%d", filepath.Base(from), n))
+	return filepath.Join(filepath.Dir(from), fmt.Sprintf(".%s%s%d", filepath.Base(from), renameTempMarker, n))
+}
+
+// freeRenameTempPath is the first temporary name for from that nothing holds yet. A
+// leftover from an interrupted rename would otherwise block every later rename of the file
+// (Move never replaces), and the leftover itself must not be touched.
+func freeRenameTempPath(from string) string {
+	for n := 0; ; n++ {
+		tmp := renameTempPath(from, n)
+		if _, err := os.Lstat(tmp); err != nil {
+			return tmp // free — or unreadable, and the move into it will say so
+		}
+	}
+}
+
+// renameTempOriginal reports whether path is a rename's temporary name, and the name the
+// file had before it.
+func renameTempOriginal(path string) (string, bool) {
+	base := filepath.Base(path)
+	i := strings.LastIndex(base, renameTempMarker)
+	if !strings.HasPrefix(base, ".") || i < 2 {
+		return "", false
+	}
+	return filepath.Join(filepath.Dir(path), base[1:i]), true
+}
+
+// restoreRenameTemps puts back any episode file an interrupted rename left under its
+// temporary name. If the process stopped between moving a file aside and moving it on,
+// the database still points at the original name, which is now empty: a rescan marked the
+// episode missing and it was downloaded again, while the real file sat hidden for good. A
+// file goes back only when its original name is free; Move never replaces anything.
+func (c *Coordinator) restoreRenameTemps(s series.Series) {
+	for _, sn := range s.Seasons {
+		for _, e := range sn.Episodes {
+			if !e.HasFile || e.FilePath == "" || fileExists(e.FilePath) {
+				continue
+			}
+			dir := filepath.Dir(e.FilePath)
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				continue
+			}
+			prefix := "." + filepath.Base(e.FilePath) + renameTempMarker
+			for _, ent := range entries {
+				if ent.IsDir() || !strings.HasPrefix(ent.Name(), prefix) {
+					continue
+				}
+				tmp := filepath.Join(dir, ent.Name())
+				if err := c.imp.Move(tmp, e.FilePath); err != nil {
+					c.log.Warn("series: couldn't put back a file an interrupted rename left aside",
+						"file", tmp, "original", e.FilePath, "err", err)
+					break
+				}
+				c.imp.MoveEpisodeSubs(tmp, e.FilePath)
+				c.log.Info("series: put back a file an interrupted rename left aside",
+					"series", s.Title, "file", e.FilePath)
+				break
+			}
+		}
+	}
 }
 
 // seriesRenameRows lists every episode row with a file, and its canonical path.
@@ -180,7 +242,14 @@ func (c *Coordinator) seriesRenameRows(s series.Series, folder string) []renameR
 			if !e.HasFile || e.FilePath == "" {
 				continue
 			}
-			target := c.imp.EpisodeTargetIn(folder, s.Title, s.Year, e.SeasonNumber, e.EpisodeNumber, filepath.Base(e.FilePath), filepath.Ext(e.FilePath))
+			// A file a failed rename couldn't put back is recorded under its temporary
+			// name. Its target comes from the name it had, so it gets a real video
+			// extension back rather than keeping ".arrmada-rename-N".
+			name := e.FilePath
+			if orig, ok := renameTempOriginal(name); ok {
+				name = orig
+			}
+			target := c.imp.EpisodeTargetIn(folder, s.Title, s.Year, e.SeasonNumber, e.EpisodeNumber, filepath.Base(name), filepath.Ext(name))
 			rows = append(rows, renameRow{Season: e.SeasonNumber, Episode: e.EpisodeNumber, Path: e.FilePath, Target: target, Size: e.SizeBytes})
 		}
 	}
@@ -237,6 +306,7 @@ func (c *Coordinator) SeriesRename(ctx context.Context, seriesID int64, only []S
 	if err != nil {
 		return res, err
 	}
+	c.restoreRenameTemps(s)
 	rows := c.seriesRenameRows(s, c.series.ExistingFolderName(ctx, seriesID))
 
 	if only != nil {
@@ -248,13 +318,11 @@ func (c *Coordinator) SeriesRename(ctx context.Context, seriesID int64, only []S
 	// Phase 1: move every chained source out of the way, subtitles with it.
 	temps := make(map[int]string)
 	failed := make(map[int]bool)
-	n := 0
 	for i, st := range steps {
 		if !st.viaTemp {
 			continue
 		}
-		tmp := renameTempPath(st.From, n)
-		n++
+		tmp := freeRenameTempPath(st.From)
 		if err := c.imp.Move(st.From, tmp); err != nil {
 			c.log.Warn("series: rename — couldn't move a file aside", "from", st.From, "err", err)
 			res.Skipped = append(res.Skipped, st.skip(err.Error()))

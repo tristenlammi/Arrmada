@@ -393,6 +393,9 @@ func (c *Coordinator) RescanSeries(ctx context.Context, seriesID int64) {
 	if err != nil {
 		return
 	}
+	// Before anything reads as missing: a file an interrupted rename left under its
+	// temporary name would otherwise be cleared below and downloaded again.
+	c.restoreRenameTemps(s)
 	folder := c.series.ExistingFolderName(ctx, seriesID) // "" → importer derives the name
 
 	// Group by resolved episode first, rather than marking as we walk. Several files on
