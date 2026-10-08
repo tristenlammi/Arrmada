@@ -1493,63 +1493,6 @@ func (c *Coordinator) EditionFiles(ctx context.Context, bookID int64, kind strin
 // MergeAudiobookAvailable reports whether ffmpeg is present for the merge feature.
 func (c *Coordinator) MergeAudiobookAvailable() bool { return audiobook.Available() }
 
-// MergeAudiobook combines a multi-file audiobook into a single chapterized .m4b (one
-// chapter per source file). Runs synchronously — callers should background it.
-func (c *Coordinator) MergeAudiobook(ctx context.Context, bookID int64) error {
-	if c.books == nil {
-		return errBooksNotReady
-	}
-	b, err := c.books.Get(ctx, bookID)
-	if err != nil {
-		return err
-	}
-	if b.Audiobook == nil || b.Audiobook.FileCount <= 1 {
-		return errString("nothing to merge — the audiobook is a single file")
-	}
-	files := library.FindBookFiles(b.Audiobook.Path)
-	var paths []string
-	for _, f := range files {
-		if library.IsAudiobookFile(f.Path) {
-			paths = append(paths, f.Path)
-		}
-	}
-	// NATURAL order, not lexical. sort.Strings puts "Chapter 10" before "Chapter 2", so a
-	// book with ten or more unpadded chapter files was concatenated in the wrong order —
-	// and the sources are deleted on success, so the result is unrecoverable.
-	sortNatural(paths)
-	if len(paths) < 2 {
-		return errString("nothing to merge")
-	}
-	out := filepath.Join(b.Audiobook.Path, sanitizeName(b.Title)+".m4b")
-	// Say which way it's going before spending an hour on it: a remux is the audio
-	// untouched, an encode is a second lossy generation and worth knowing about.
-	plan := audiobook.PlanFor(ctx, paths)
-	if plan.Copy {
-		c.log.Info("book: merging audiobook — copying the audio untouched",
-			"title", b.Title, "files", len(paths))
-	} else {
-		c.log.Info("book: merging audiobook — re-encoding (the sources can't be copied into an m4b as-is)",
-			"title", b.Title, "files", len(paths), "target_kbps", plan.BitrateBPS/1000,
-			"sample_rate", plan.SampleRate, "channels", plan.Channels)
-	}
-	if err := audiobook.Merge(ctx, paths, out); err != nil {
-		return err
-	}
-	// Success: drop the source chapter files, keep the single m4b, update the edition.
-	for _, p := range paths {
-		_ = os.Remove(p)
-	}
-	fi, _ := os.Stat(out)
-	var size int64
-	if fi != nil {
-		size = fi.Size()
-	}
-	c.log.Info("book: merged audiobook", "title", b.Title, "out", out)
-	c.books.AddEvent(ctx, b.ID, "merged", fmt.Sprintf("Merged %d chapter files into a single m4b", len(paths)))
-	c.bus.Publish("book.imported", map[string]any{"title": b.Title, "id": b.ID, "edition": "audiobook"})
-	return c.books.MarkImported(ctx, bookID, books.KindAudiobook, out, "M4B", size, 1)
-}
-
 // sortNatural orders paths the way a person reads chapter numbers: digit runs compare as
 // numbers, everything else byte-wise and case-insensitively. "Chapter 2" before
 // "Chapter 10", "Part 1 - 09" before "Part 1 - 10".

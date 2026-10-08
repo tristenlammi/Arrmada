@@ -65,6 +65,11 @@ func FindBookFiles(contentPath string) []FoundFile {
 	}
 	var out []FoundFile
 	_ = filepath.WalkDir(contentPath, func(p string, d os.DirEntry, err error) error {
+		// Hidden folders inside a book are Arrmada's own (merge backups) or a system's
+		// (.AppleDouble, .recycle): never book files.
+		if err == nil && d.IsDir() && p != contentPath && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
 		if err != nil || d.IsDir() || !isBookFile(p) {
 			return nil
 		}
@@ -414,6 +419,9 @@ func (im *Importer) ebookDir() string {
 	}
 	return im.root
 }
+
+// AudiobookRoot is the folder audiobooks are placed under.
+func (im *Importer) AudiobookRoot() string { return im.audiobookDir() }
 
 func (im *Importer) audiobookDir() string {
 	if im.audiobookRoot != "" {

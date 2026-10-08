@@ -571,6 +571,8 @@ func main() {
 		recycleSvc.Enforce(ctx)
 		return nil
 	})
+	// Originals of merged audiobooks kept while the bin is off go after 14 days.
+	sched.Register("book-merge-backup-prune", 24*time.Hour, true, coordinator.PruneMergeBackups)
 
 	// Audiobook server: listening apps (Lissen and other Audiobookshelf clients) connect to
 	// its own port. Off until an admin switches it on in Books → Audiobook server.

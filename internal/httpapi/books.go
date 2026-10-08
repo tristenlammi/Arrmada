@@ -377,13 +377,15 @@ func (a *api) handleMergeAudiobook(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "ffmpeg isn't available on the server, so audiobooks can't be merged")
 		return
 	}
-	go func(bid int64) {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
-		if err := a.deps.Automation.MergeAudiobook(ctx, bid); err != nil {
-			a.deps.Log.Warn("audiobook merge failed", "book_id", bid, "err", err)
-		}
-	}(id)
+	if a.deps.Automation.MergingAudiobook(id) {
+		a.writeError(w, http.StatusConflict, "this audiobook is already being merged")
+		return
+	}
+	// The outcome lands on the book as a 'merged' or 'merge-failed' event, which the page
+	// watches for; the log line is for the server's side.
+	go a.bgFor(30*time.Minute, func(ctx context.Context) error {
+		return a.deps.Automation.MergeAudiobook(ctx, id)
+	}, "audiobook merge", id)
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "merging"})
 }
 

@@ -478,7 +478,12 @@ func (a *api) handleRegrab(w http.ResponseWriter, r *http.Request) {
 
 // bg runs fn in the background with a bounded timeout, logging failures.
 func (a *api) bg(fn func(context.Context) error, what string, id int64) {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	a.bgFor(3*time.Minute, fn, what, id)
+}
+
+// bgFor is bg with its own time budget, for work that legitimately runs long.
+func (a *api) bgFor(budget time.Duration, fn func(context.Context) error, what string, id int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	defer cancel()
 	if err := fn(ctx); err != nil {
 		a.deps.Log.Warn(what+" failed", "id", id, "err", err)
