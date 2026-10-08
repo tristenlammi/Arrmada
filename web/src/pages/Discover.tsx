@@ -6,6 +6,7 @@ import { BooksDiscover } from "./BooksDiscover";
 import { useMe, isStaff } from "../lib/me";
 import { api, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaDetail, type MediaRequest } from "../lib/api";
 import { posterThumb } from "../lib/img";
+import { useCanHover } from "../lib/useCanHover";
 
 type Tab = "discover" | "movies" | "series" | "books";
 const BASE_TABS: { key: Tab; label: string }[] = [
@@ -577,6 +578,7 @@ function MyRequestsRow({ flash }: { flash: (m: string) => void }) {
 
 function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest; staff: boolean; own: boolean; onChanged: () => void; flash: (m: string) => void }) {
   const [busy, setBusy] = useState(false);
+  const canHover = useCanHover();
   const tr = rq.tracking;
   const stage = requestStage(rq);
   const status = { label: stage.badge, tone: stage.tone };
@@ -594,6 +596,13 @@ function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest;
     if (!window.confirm(`Withdraw your request for “${rq.title}”?`)) return;
     act(() => api.deleteRequest(rq.id), `Withdrew “${rq.title}”`);
   };
+  const approve = () => act(() => api.approveRequest(rq.id), "Approved — searching now");
+  // Declining notifies the requester and can't be undone from here, so it always asks first.
+  const decline = () => {
+    if (!window.confirm(`Decline “${rq.title}”${rq.requested_by_name ? ` requested by ${rq.requested_by_name}` : ""}? They’ll be told.`)) return;
+    act(() => api.declineRequest(rq.id), "Declined");
+  };
+  const pending = rq.status === "pending";
   return (
     <div className="w-[150px] flex-none" style={{ scrollSnapAlign: "start" }}>
       <div className="group relative overflow-hidden rounded-xl" style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}>
@@ -634,23 +643,28 @@ function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest;
             />
           </div>
         )}
-        <div className="absolute inset-x-0 bottom-0 flex flex-col gap-1.5 p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.92), transparent)" }}>
-          <div className="truncate text-[11.5px] font-semibold text-white">{rq.title}</div>
-          {staff && rq.status === "pending" ? (
-            <div className="flex gap-1.5">
-              <button disabled={busy} onClick={() => act(() => api.approveRequest(rq.id), "Approved — searching now")} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Approve</button>
-              <button disabled={busy} onClick={() => act(() => api.declineRequest(rq.id), "Declined")} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>Decline</button>
-              {own && <button disabled={busy} onClick={withdraw} title="Withdraw your request" className="w-6 flex-none rounded px-0 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>✕</button>}
-            </div>
-          ) : own && rq.status === "pending" ? (
-            <div className="flex items-center justify-between gap-1.5">
-              <span className="text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{rq.year || ""}</span>
-              <button disabled={busy} onClick={withdraw} className="rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>✕ Withdraw</button>
-            </div>
-          ) : (
-            <div className="text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{rq.year || ""}</div>
-          )}
-        </div>
+        {/* Hover strip with the actions, mouse only. It ignores the pointer until hover or
+            keyboard focus reveals it: an invisible strip that still took taps let a phone
+            approve or decline by accident. Touch gets the visible row under the caption. */}
+        {canHover && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col gap-1.5 p-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.92), transparent)" }}>
+            <div className="truncate text-[11.5px] font-semibold text-white">{rq.title}</div>
+            {staff && pending ? (
+              <div className="flex gap-1.5">
+                <button disabled={busy} onClick={approve} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Approve</button>
+                <button disabled={busy} onClick={decline} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>Decline</button>
+                {own && <button disabled={busy} onClick={withdraw} title="Withdraw your request" className="w-6 flex-none rounded px-0 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>✕</button>}
+              </div>
+            ) : own && pending ? (
+              <div className="flex items-center justify-between gap-1.5">
+                <span className="text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{rq.year || ""}</span>
+                <button disabled={busy} onClick={withdraw} className="rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>✕ Withdraw</button>
+              </div>
+            ) : (
+              <div className="text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{rq.year || ""}</div>
+            )}
+          </div>
+        )}
       </div>
       {/* Always-visible caption: the title, and where it's got to in plain words. */}
       <div className="px-0.5 pt-2">
@@ -658,6 +672,18 @@ function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest;
         <div className="mt-0.5 truncate text-[11px]" style={{ color: stage.detailTone ?? "var(--ink-faint)" }} title={stage.detail}>
           {stage.detail}
         </div>
+        {/* Touch has no hover, so the same actions sit here in plain sight. */}
+        {!canHover && pending && (staff || own) && (
+          <div className="mt-1.5 flex gap-1.5">
+            {staff && <button disabled={busy} onClick={approve} className="min-h-[32px] flex-1 rounded-md px-2 text-[11px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Approve</button>}
+            {staff && <button disabled={busy} onClick={decline} className="min-h-[32px] flex-1 rounded-md px-2 text-[11px] font-semibold" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Decline</button>}
+            {own && (
+              <button disabled={busy} onClick={withdraw} title="Withdraw your request" className={`min-h-[32px] rounded-md px-2 text-[11px] font-semibold ${staff ? "w-8 flex-none" : "flex-1"}`} style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
+                {staff ? "✕" : "Withdraw"}
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1073,14 +1099,17 @@ function StatusChip({ badge, className }: { badge: { label: string; tone: string
 function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: boolean }) {
   const [open, setOpen] = useState(false);
   const [quickBusy, setQuickBusy] = useState(false);
+  const canHover = useCanHover();
   const requested = ctx.isRequested(c);
   const badge = badgeFor(c, requested);
   const requestable = !badge; // no badge → nothing in library/queue yet
+  // The quick-request button only exists where a mouse can reveal it first. On touch
+  // the whole poster opens the sheet, which has its own visible Request button.
+  const showQuick = canHover && ctx.canRequest && requestable;
 
   // Quick-request straight from the hover overlay — same honest flow as the modal:
   // doRequest toasts success/failure and only marks requested on success.
-  const quick = async (e: React.MouseEvent | React.KeyboardEvent) => {
-    e.stopPropagation();
+  const quick = async () => {
     if (quickBusy) return;
     setQuickBusy(true);
     try { await ctx.doRequest(c); } catch { /* toast already shown */ }
@@ -1089,42 +1118,49 @@ function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: bool
 
   return (
     <div className={`group ${full ? "w-full" : "w-[150px] flex-none"}`} style={{ scrollSnapAlign: "start" }}>
-      <button
-        onClick={() => setOpen(true)}
-        aria-label={`View details for ${c.title}`}
-        className="relative block w-full overflow-hidden rounded-xl text-left transition-[transform,box-shadow] duration-200 will-change-transform group-hover:-translate-y-1 group-hover:scale-[1.03] group-hover:shadow-[0_12px_30px_rgba(0,0,0,0.45)]"
+      <div
+        className="relative overflow-hidden rounded-xl transition-[transform,box-shadow] duration-200 will-change-transform group-hover:-translate-y-1 group-hover:scale-[1.03] group-hover:shadow-[0_12px_30px_rgba(0,0,0,0.45)]"
         style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}
       >
-        {c.poster_url ? (
-          <img src={posterThumb(c.poster_url)} alt={c.title} className="h-full w-full object-cover" loading="lazy" decoding="async" />
-        ) : (
-          <PosterPlaceholder title={c.title} year={c.year} />
-        )}
-        {badge && <StatusChip badge={badge} className="absolute right-1.5 top-1.5" />}
-        {/* Terracotta download bar along the bottom of the poster while it's grabbing. */}
-        {c.download_progress != null && c.download_progress > 0 && c.download_progress < 1 && (
-          <div className="absolute inset-x-0 bottom-0 z-10 h-1.5" style={{ background: "rgba(20,12,7,.55)" }}>
-            <div className="h-full" style={{ width: `${Math.round(c.download_progress * 100)}%`, background: "var(--accent)" }} />
-          </div>
-        )}
-        {/* Hover overlay: quick-request + a details affordance (touch users tap the card). */}
-        <div className="absolute inset-0 flex flex-col justify-end gap-1.5 p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.82) 0%, rgba(0,0,0,.15) 42%, transparent 70%)" }}>
-          {ctx.canRequest && requestable ? (
-            <span
-              role="button"
-              tabIndex={0}
-              onClick={quick}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") quick(e); }}
-              className="self-start rounded-md px-2.5 py-1 text-[10.5px] font-semibold"
-              style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)", opacity: quickBusy ? 0.6 : 1 }}
-            >
-              {quickBusy ? "Requesting…" : "＋ Request"}
-            </span>
+        <button
+          onClick={() => setOpen(true)}
+          aria-label={`View details for ${c.title}`}
+          className="absolute inset-0 block h-full w-full text-left"
+        >
+          {c.poster_url ? (
+            <img src={posterThumb(c.poster_url)} alt={c.title} className="h-full w-full object-cover" loading="lazy" decoding="async" />
           ) : (
-            <span className="self-start rounded-md px-2.5 py-1 text-[10.5px] font-semibold" style={{ background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.26)", color: "#fff" }}>Details</span>
+            <PosterPlaceholder title={c.title} year={c.year} />
           )}
-        </div>
-      </button>
+          {badge && <StatusChip badge={badge} className="absolute right-1.5 top-1.5" />}
+          {/* Terracotta download bar along the bottom of the poster while it's grabbing. */}
+          {c.download_progress != null && c.download_progress > 0 && c.download_progress < 1 && (
+            <div className="absolute inset-x-0 bottom-0 z-10 h-1.5" style={{ background: "rgba(20,12,7,.55)" }}>
+              <div className="h-full" style={{ width: `${Math.round(c.download_progress * 100)}%`, background: "var(--accent)" }} />
+            </div>
+          )}
+          {/* Hover scrim, purely decorative: pointer-events-none so a tap anywhere on the
+              poster opens the sheet, never something the user couldn't see. */}
+          <div className="pointer-events-none absolute inset-0 flex flex-col justify-end p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.82) 0%, rgba(0,0,0,.15) 42%, transparent 70%)" }}>
+            {!showQuick && (
+              <span className="self-start rounded-md px-2.5 py-1 text-[10.5px] font-semibold" style={{ background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.26)", color: "#fff" }}>Details</span>
+            )}
+          </div>
+        </button>
+        {/* A sibling of the details button, not nested in it: a control inside a button is
+            invalid HTML, and its invisible hit area filed requests from stray taps. It only
+            takes clicks once hover or keyboard focus has revealed it. */}
+        {showQuick && (
+          <button
+            onClick={quick}
+            disabled={quickBusy}
+            className="pointer-events-none absolute bottom-2 left-2 z-20 rounded-md px-2.5 py-1 text-[10.5px] font-semibold opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
+            style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}
+          >
+            {quickBusy ? "Requesting…" : "＋ Request"}
+          </button>
+        )}
+      </div>
       {/* Always-visible caption strip so cards read before hover (Plex style). */}
       <div className="px-0.5 pt-2">
         <div className="truncate text-[12px] font-semibold" style={{ color: "var(--ink)" }} title={c.title}>{c.title}</div>

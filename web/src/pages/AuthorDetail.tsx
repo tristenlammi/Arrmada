@@ -159,7 +159,8 @@ function OwnedCard({ b }: { b: Book }) {
     <Link to={`/books/${b.id}`} className="group relative block overflow-hidden rounded-xl" style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}>
       <BookCover url={b.cover_url} title={b.title} />
       <span className="absolute left-1.5 top-1.5 rounded-full px-1.5 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: "rgba(20,12,7,.72)", color: st.tone }}>{st.label}</span>
-      <div className="absolute inset-x-0 bottom-0 p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.9), transparent)" }}>
+      {/* Decorative caption only, so it never eats the tap meant for the card link. */}
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.9), transparent)" }}>
         <div className="truncate text-[11.5px] font-semibold text-white">{b.title}</div>
         {b.year > 0 && <div className="text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{b.year}</div>}
       </div>
