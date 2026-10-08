@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { api, type APIKeyStatus, type AppSettings, type AuthUser, type DiskGuardStatus, type RecycleStats, type RecycleItem } from "../lib/api";
 import { useMe, isAdmin } from "../lib/me";
@@ -67,10 +67,15 @@ export function Settings() {
 
   const patch = (p: Partial<AppSettings>) => setS((x) => (x ? { ...x, ...p } : x));
 
+  // Only the newest message's timer may clear it; otherwise an earlier save's timer
+  // wipes "Saved ✓" a moment after it appears.
+  const flashTimer = useRef<number | undefined>(undefined);
   const showFlash = (text: string, good: boolean) => {
     setFlash({ text, good });
-    window.setTimeout(() => setFlash(null), 2000);
+    window.clearTimeout(flashTimer.current);
+    flashTimer.current = window.setTimeout(() => setFlash(null), 2000);
   };
+  useEffect(() => () => window.clearTimeout(flashTimer.current), []);
 
   const save = async () => {
     if (!s || !loaded) return;
@@ -84,8 +89,18 @@ export function Settings() {
       return;
     }
     try {
+      const sent = s;
       const next = await api.updateSettings(diff as Partial<AppSettings>);
-      setS(next);
+      // Take the server's copy, except for fields edited while the request was in
+      // flight: those stay as typed and show up as unsaved changes for the next Save.
+      setS((cur) => {
+        if (!cur) return next;
+        const merged = { ...next };
+        for (const k of Object.keys(cur) as (keyof AppSettings)[]) {
+          if (cur[k] !== sent[k]) (merged as Record<string, unknown>)[k] = cur[k];
+        }
+        return merged;
+      });
       setLoaded(next);
       setBooksEnabled(next.books_enabled); // reflect module on/off in nav + Discover live
       setMusicEnabled(next.music_enabled);
@@ -97,7 +112,7 @@ export function Settings() {
 
   // The Discovery region has its own Save button; keep both copies in step with it so
   // the page's snapshot never disagrees with what was just stored.
-  const regionSaved = (region: string) => {
+  const syncRegion = (region: string) => {
     setS((x) => (x ? { ...x, tmdb_region: region } : x));
     setLoaded((x) => (x ? { ...x, tmdb_region: region } : x));
   };
@@ -193,7 +208,7 @@ export function Settings() {
                 <Toggle label="Allow Sign in with Plex" hint="Adds a 'Sign in with Plex' button to the login page." checked={s.plex_login_enabled} onChange={(v) => patch({ plex_login_enabled: v })} />
                 <Toggle label="Auto-approve their requests" hint="Plex sign-ins' requests download immediately instead of waiting for your approval." checked={s.plex_login_auto_approve} onChange={(v) => patch({ plex_login_auto_approve: v })} />
               </Section>
-              <APIKeysSection onRegionSaved={regionSaved} />
+              <APIKeysSection onRegionSaved={syncRegion} />
               <DiskGuardSection s={s} patch={patch} />
               <RecycleBin s={s} patch={patch} />
               <SaveBar />
