@@ -678,13 +678,14 @@ function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest;
         <div className="mt-0.5 truncate text-[11px]" style={{ color: stage.detailTone ?? "var(--ink-faint)" }} title={stage.detail}>
           {stage.detail}
         </div>
-        {/* Touch has no hover, so the same actions sit here in plain sight. */}
+        {/* Touch has no hover, so the same actions sit here in plain sight. min-w-0 and the
+            tight padding keep Approve + Decline + ✕ inside the 150px card. */}
         {!canHover && pending && (staff || own) && (
-          <div className="mt-1.5 flex gap-1.5">
-            {staff && <button disabled={busy} onClick={approve} className="min-h-[32px] flex-1 rounded-md px-2 text-[11px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Approve</button>}
-            {staff && <button disabled={busy} onClick={decline} className="min-h-[32px] flex-1 rounded-md px-2 text-[11px] font-semibold" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Decline</button>}
+          <div className="mt-1.5 flex gap-1">
+            {staff && <button disabled={busy} onClick={approve} className="min-h-[32px] min-w-0 flex-1 rounded-md px-1.5 text-[11px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Approve</button>}
+            {staff && <button disabled={busy} onClick={decline} className="min-h-[32px] min-w-0 flex-1 rounded-md px-1.5 text-[11px] font-semibold" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Decline</button>}
             {own && (
-              <button disabled={busy} onClick={withdraw} title="Withdraw your request" className={`min-h-[32px] rounded-md px-2 text-[11px] font-semibold ${staff ? "w-8 flex-none" : "flex-1"}`} style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
+              <button disabled={busy} onClick={withdraw} title="Withdraw your request" className={`min-h-[32px] rounded-md text-[11px] font-semibold ${staff ? "w-7 flex-none" : "flex-1 px-2"}`} style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
                 {staff ? "✕" : "Withdraw"}
               </button>
             )}
@@ -1160,8 +1161,9 @@ function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: bool
           <button
             onClick={quick}
             disabled={quickBusy}
-            className="pointer-events-none absolute bottom-2 left-2 z-20 rounded-md px-2.5 py-1 text-[10.5px] font-semibold opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100"
-            style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}
+            className="pointer-events-none absolute bottom-2 left-2 z-20 rounded-md px-2.5 py-1 text-[10.5px] font-semibold opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 disabled:cursor-default"
+            // Dimmed with a filter, not opacity, so the busy look doesn't fight the hover reveal.
+            style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)", filter: quickBusy ? "brightness(.8)" : undefined }}
           >
             {quickBusy ? "Requesting…" : "＋ Request"}
           </button>
