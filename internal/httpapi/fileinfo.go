@@ -72,7 +72,7 @@ func (a *api) handleFileInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	// Only ever describe files inside a configured library root. Without this the
 	// endpoint reads arbitrary paths on the host for any signed-in manager.
-	if !a.underLibraryRoot(path) {
+	if !a.underLibraryRoot(r.Context(), path) {
 		a.writeError(w, http.StatusForbidden, "that path isn't inside a library folder")
 		return
 	}
@@ -106,8 +106,8 @@ func (a *api) handleFileInfo(w http.ResponseWriter, r *http.Request) {
 // underLibraryRoot reports whether path sits inside a configured media root (the same
 // roots manual import may read from). Both sides are fully resolved, so neither
 // "/library-old" nor a symlink inside the library that points at /etc can pass.
-func (a *api) underLibraryRoot(path string) bool {
-	return pathguard.Within(path, a.importRoots(context.Background())...)
+func (a *api) underLibraryRoot(ctx context.Context, path string) bool {
+	return pathguard.Within(path, a.importRoots(ctx)...)
 }
 
 // fileSourceFor joins a library path back to the release it came from:
