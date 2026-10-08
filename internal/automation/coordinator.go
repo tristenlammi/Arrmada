@@ -332,7 +332,13 @@ func (c *Coordinator) SearchMissing(ctx context.Context) {
 			}
 		}
 		n, searched, err := c.searchAndGrab(ctx, m)
-		if err != nil && !outage.note(err) {
+		if outage.note(err) {
+			if outage.stop() {
+				break // the indexers are down: the rest would only fail the same way
+			}
+			continue
+		}
+		if err != nil {
 			c.log.Warn("automation: search failed", "movie", m.Title, "err", err)
 		}
 		reset, miss := sweepOutcome(err, searched, n)
@@ -802,7 +808,14 @@ func (c *Coordinator) UpgradeMovies(ctx context.Context) {
 		if inQueue(queue, m) {
 			continue // already grabbing something for this movie
 		}
-		if err := c.upgradeMovie(ctx, m); err != nil && !outage.note(err) {
+		err := c.upgradeMovie(ctx, m)
+		if outage.note(err) {
+			if outage.stop() {
+				break
+			}
+			continue
+		}
+		if err != nil {
 			c.log.Warn("automation: upgrade search failed", "movie", m.Title, "err", err)
 		}
 	}

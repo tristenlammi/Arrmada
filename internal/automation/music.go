@@ -44,6 +44,7 @@ func (c *Coordinator) SearchMusicMissing(ctx context.Context) {
 	}
 	var outage outageTally
 	defer outage.report(c.log, "music search sweep")
+artists:
 	for _, a := range artists {
 		if !a.Monitored {
 			continue
@@ -61,7 +62,14 @@ func (c *Coordinator) SearchMusicMissing(ctx context.Context) {
 			}
 			// An outage is noted once for the sweep and never counts as the album having
 			// been searched; any backoff for music must read it as "didn't run".
-			if err := c.grabAlbum(ctx, a, al); err != nil && !outage.note(err) {
+			err := c.grabAlbum(ctx, a, al)
+			if outage.note(err) {
+				if outage.stop() {
+					break artists // the indexers are down: the rest would only fail the same way
+				}
+				continue
+			}
+			if err != nil {
 				c.log.Warn("music: search failed", "artist", a.Name, "album", al.Title, "err", err)
 			}
 		}

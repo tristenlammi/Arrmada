@@ -120,7 +120,14 @@ func (c *Coordinator) UpgradeSeries(ctx context.Context) {
 			c.log.Info("series: skipping upgrade sweep — a grab is still downloading", "series", meta.Title, "release", busy)
 			continue
 		}
-		if err := c.upgradeSeries(ctx, meta.ID); err != nil && !outage.note(err) {
+		err := c.upgradeSeries(ctx, meta.ID)
+		if outage.note(err) {
+			if outage.stop() {
+				break
+			}
+			continue
+		}
+		if err != nil {
 			c.log.Warn("series: upgrade search failed", "series", meta.Title, "err", err)
 		}
 	}

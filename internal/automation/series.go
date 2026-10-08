@@ -170,7 +170,13 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 			}
 		}
 		n, err := c.searchSeriesOnce(ctx, s.ID)
-		if err != nil && !outage.note(err) {
+		if outage.note(err) {
+			if outage.stop() {
+				break // the indexers are down: the rest would only fail the same way
+			}
+			continue
+		}
+		if err != nil {
 			c.log.Warn("series: search failed", "series", s.Title, "err", err)
 		}
 		reset, miss := sweepOutcome(err, true, n)

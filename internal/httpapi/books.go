@@ -14,6 +14,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/books"
+	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 )
 
@@ -742,8 +743,16 @@ func (a *api) handleAddAuthor(w http.ResponseWriter, r *http.Request) {
 		go func(ids []int64) {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 			defer cancel()
-			for _, id := range ids {
-				if err := a.deps.Automation.SearchBookNow(ctx, id); err != nil {
+			for i, id := range ids {
+				err := a.deps.Automation.SearchBookNow(ctx, id)
+				if indexer.IsOutage(err) {
+					// The indexers can't answer: the rest would only fail the same way. No miss
+					// is recorded, so the scheduled sweep picks these books up once they're back.
+					a.deps.Log.Warn("add author: no indexer could answer — leaving the rest to the scheduled sweep",
+						"searched", i+1, "of", len(ids), "err", err)
+					return
+				}
+				if err != nil {
 					a.deps.Log.Warn("add author: search failed", "book_id", id, "err", err)
 				}
 			}

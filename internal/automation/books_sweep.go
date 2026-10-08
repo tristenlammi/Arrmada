@@ -2,10 +2,12 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/books"
+	"github.com/tristenlammi/arrmada/internal/indexer"
 )
 
 // The scheduled missing-books sweep gives a book two tries and then leaves it to the
@@ -33,6 +35,14 @@ const (
 	bookSweepPause    = 3 * time.Second // between books: one search per wanted edition, across every indexer
 	bookSweepMaxNotes = 12
 )
+
+// outageNote words an indexer outage for the sweep's notes.
+func outageNote(err error) string {
+	if errors.Is(err, indexer.ErrNoIndexers) {
+		return "no enabled indexer serves books"
+	}
+	return fmt.Sprintf("every indexer failed (%v)", err)
+}
 
 // BookSweepStatus reports the manual sweep's state.
 func (c *Coordinator) BookSweepStatus() BookSweepStatus {
@@ -97,6 +107,10 @@ func (c *Coordinator) runBookSweep(ctx context.Context) {
 	if qerr != nil {
 		c.log.Warn("book sweep: couldn't read the download queue — treating nothing as in flight", "err", qerr)
 	}
+	// Two outages in a row end the run, the same as the scheduled sweeps: walking the rest
+	// would only hit the dead indexers once per book and fill the notes with copies of one
+	// error, when what the user needs to hear is "the indexers are down".
+	var outage outageTally
 	for i, b := range targets {
 		if ctx.Err() != nil {
 			return
@@ -106,6 +120,14 @@ func (c *Coordinator) runBookSweep(ctx context.Context) {
 			continue
 		}
 		n, err := c.searchBookOnce(ctx, b.ID)
+		if outage.note(err) && outage.stop() {
+			set(func(st *BookSweepStatus) {
+				st.Done++
+				st.Notes = append(st.Notes, fmt.Sprintf("Stopped: %s", outageNote(err)))
+			})
+			c.log.Warn("book sweep: stopped — no indexer could answer", "searched", i+1, "of", len(targets), "err", err)
+			return
+		}
 		set(func(st *BookSweepStatus) {
 			st.Done++
 			st.Grabbed += n

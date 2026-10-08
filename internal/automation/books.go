@@ -76,7 +76,13 @@ func (c *Coordinator) SearchBooksMissing(ctx context.Context) {
 		// An error — above all an indexer outage — is not a miss. Books get only two
 		// automatic tries, so counting a search nobody could answer used to drop a book
 		// requested during an outage out of automatic search for good.
-		if err != nil && !outage.note(err) {
+		if outage.note(err) {
+			if outage.stop() {
+				break // the indexers are down: the rest would only fail the same way
+			}
+			continue
+		}
+		if err != nil {
 			c.log.Warn("book: search failed", "title", b.Title, "err", err)
 		}
 		if _, miss := sweepOutcome(err, true, n); miss {
