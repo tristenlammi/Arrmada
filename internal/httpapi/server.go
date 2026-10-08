@@ -235,6 +235,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/reviews/{id}/reject", a.requireRole(auth.RoleManager, a.handleRejectReview))
 	mux.HandleFunc("POST "+base+"/api/v1/reviews/{id}/dismiss", a.requireRole(auth.RoleManager, a.handleDismissReview))
 	mux.HandleFunc("POST "+base+"/api/v1/reviews/{id}/import", a.requireRole(auth.RoleManager, a.handleImportReview))
+	mux.HandleFunc("GET "+base+"/api/v1/reviews/{id}/targets", a.requireRole(auth.RoleManager, a.handleReviewTargets))
 
 	// Movies
 	mux.HandleFunc("GET "+base+"/api/v1/movies", a.protected(a.handleListMovies))

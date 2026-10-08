@@ -1,6 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type ImportReview, type Movie, type Series } from "../lib/api";
+import { api, type ImportReview, type ReviewKind, type ReviewTarget } from "../lib/api";
+
+// What the user calls a library item of each review kind.
+const KIND_LABEL: Record<ReviewKind, string> = { series: "show", movie: "movie", book: "book", music: "album" };
 
 // Reviews — downloads Arrmada grabbed but held back because their content doesn't
 // match what they were grabbed for. The admin reviews each: reject, import anyway,
@@ -29,7 +32,7 @@ export function Reviews() {
         <p className="mb-5 max-w-[70ch] text-[12.5px] text-ink-dim">
           Downloads that finished but whose content didn't match what they were grabbed for are held here instead of
           being imported. Reject to remove + blocklist them, import anyway if it's a false alarm, import into a
-          different show/movie, or dismiss to handle it yourself.
+          different library item, or dismiss to handle it yourself.
         </p>
 
         {list === null ? (
@@ -51,7 +54,7 @@ export function Reviews() {
                     </div>
                     <div className="mt-2 text-[12.5px]" style={{ color: "var(--avoid)" }}>{r.reason}</div>
                     <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[10.5px] text-ink-faint">
-                      <span>Grabbed for: <b className="text-ink-dim">{r.expected_title}</b></span>
+                      <span>Grabbed for: <b className="text-ink-dim">{r.expected_id > 0 && r.expected_title ? r.expected_title : "not tied to a title"}</b></span>
                       <span>Looks like: <b className="text-ink-dim">{r.parsed_title || "?"}</b></span>
                       {r.size_bytes > 0 && <span>{gb(r.size_bytes)}</span>}
                       {r.indexer && <span>{r.indexer}</span>}
@@ -60,8 +63,11 @@ export function Reviews() {
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <button onClick={() => act(r.id, () => api.rejectReview(r.id), "Rejected + blocklisted.")} disabled={busy === r.id} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--reject)", color: "#fff" }}>Reject</button>
-                  <button onClick={() => act(r.id, () => api.importReview(r.id), `Imported into ${r.expected_title}.`)} disabled={busy === r.id} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink)" }}>Import anyway</button>
-                  <button onClick={() => setReassign(r)} disabled={busy === r.id} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>Import into a different {r.media_type === "series" ? "show" : "movie"}…</button>
+                  {/* With no item to import into, "anyway" has nowhere to go — the reassign picker is the only way in. */}
+                  {r.expected_id > 0 && (
+                    <button onClick={() => act(r.id, () => api.importReview(r.id), `Imported into ${r.expected_title}.`)} disabled={busy === r.id} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink)" }}>Import anyway</button>
+                  )}
+                  <button onClick={() => setReassign(r)} disabled={busy === r.id} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>Import into a different {kindLabel(r.media_type)}…</button>
                   <button onClick={() => act(r.id, () => api.dismissReview(r.id), "Dismissed.")} disabled={busy === r.id} className="ml-auto rounded-lg px-3 py-1.5 text-[11.5px] text-ink-dim hover:text-[var(--ink)]">Dismiss</button>
                 </div>
               </div>
@@ -75,8 +81,9 @@ export function Reviews() {
           onClose={() => setReassign(null)}
           onPicked={(targetId, label) => {
             const id = reassign.id;
+            const kind = reassign.media_type;
             setReassign(null);
-            act(id, () => api.importReview(id, targetId), `Imported into ${label}.`);
+            act(id, () => api.importReview(id, targetId, kind), `Imported into ${label}.`);
           }}
         />
       )}
@@ -90,44 +97,53 @@ function gb(bytes: number): string {
   return g >= 1 ? `${g.toFixed(2)} GB` : `${(bytes / 1024 ** 2).toFixed(0)} MB`;
 }
 
+function kindLabel(kind: ReviewKind): string {
+  return KIND_LABEL[kind] ?? kind;
+}
+
 // ReassignModal lets the admin pick an existing library item (of the review's
-// media type) to import the held content into.
+// media type) to import the held content into. The server does the listing and the
+// filtering, so a book review lists books and an album review lists albums — never
+// movies, whose ids would land on an unrelated book or album.
 function ReassignModal({ review, onClose, onPicked }: { review: ImportReview; onClose: () => void; onPicked: (targetId: number, label: string) => void }) {
-  const [items, setItems] = useState<{ id: number; title: string; year: number }[] | null>(null);
+  const [items, setItems] = useState<ReviewTarget[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [q, setQ] = useState("");
+  const label = kindLabel(review.media_type);
 
+  // Debounced so typing a title doesn't fire a request per keystroke.
   useEffect(() => {
-    if (review.media_type === "series") {
-      api.series().then((r) => setItems(r.series.map((s: Series) => ({ id: s.id, title: s.title, year: s.year })))).catch(() => setItems([]));
-    } else {
-      api.movies().then((r) => setItems(r.movies.map((m: Movie) => ({ id: m.id, title: m.title, year: m.year })))).catch(() => setItems([]));
-    }
-  }, [review.media_type]);
-
-  const filtered = useMemo(() => {
-    const list = (items ?? []).slice().sort((a, b) => a.title.localeCompare(b.title));
-    const t = q.trim().toLowerCase();
-    return t ? list.filter((i) => i.title.toLowerCase().includes(t)) : list;
-  }, [items, q]);
+    let live = true;
+    const t = window.setTimeout(() => {
+      api.reviewTargets(review.id, q.trim())
+        .then((list) => { if (live) { setItems(list); setError(null); } })
+        .catch((e) => { if (live) { setItems([]); setError((e as Error).message); } });
+    }, q ? 250 : 0);
+    return () => { live = false; window.clearTimeout(t); };
+  }, [review.id, q]);
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-start justify-center overflow-y-auto p-6" style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose}>
       <div className="mt-12 w-full max-w-[560px] rounded-2xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }} onClick={(e) => e.stopPropagation()}>
         <div className="mb-1 flex items-center justify-between gap-3">
-          <h2 className="m-0 text-[15px] font-bold">Import into a different {review.media_type === "series" ? "show" : "movie"}</h2>
+          <h2 className="m-0 text-[15px] font-bold">Import into a different {label}…</h2>
           <button onClick={onClose} className="text-ink-faint hover:text-[var(--ink)]">✕</button>
         </div>
-        <p className="mb-3 text-[11.5px] text-ink-dim">Pick the correct library {review.media_type === "series" ? "series" : "movie"} to import <span className="font-mono">{review.name}</span> into.</p>
-        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter your library…" className="mb-3 w-full rounded-lg px-3 py-2 text-[13px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+        <p className="mb-3 text-[11.5px] text-ink-dim">Pick the correct library {label} to import <span className="font-mono">{review.name}</span> into.</p>
+        <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={review.media_type === "book" ? "Filter by title or author…" : review.media_type === "music" ? "Filter by album or artist…" : "Filter your library…"} className="mb-3 w-full rounded-lg px-3 py-2 text-[13px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
         <div className="thin-scroll max-h-[52vh] overflow-y-auto rounded-lg" style={{ border: "1px solid var(--line)" }}>
-          {items === null ? (
+          {error ? (
+            <div className="p-6 text-center text-[12px]" style={{ color: "var(--avoid)" }}>{error}</div>
+          ) : items === null ? (
             <div className="p-6 text-center text-[12px] text-ink-faint">Loading…</div>
-          ) : filtered.length === 0 ? (
+          ) : items.length === 0 ? (
             <div className="p-6 text-center text-[12px] text-ink-faint">No matching library items.</div>
-          ) : filtered.map((i) => (
+          ) : items.map((i) => (
             <button key={i.id} onClick={() => onPicked(i.id, i.title)} className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-[12.5px] hover:bg-[var(--panel-2)]" style={{ borderTop: "1px solid var(--line-soft)" }}>
-              <span className="truncate font-semibold">{i.title}</span>
-              <span className="flex-none font-mono text-[10.5px] text-ink-faint">{i.year || ""}</span>
+              <span className="min-w-0 truncate">
+                <span className="font-semibold">{i.title}{i.year ? ` (${i.year})` : ""}</span>
+                {i.subtitle && <span className="ml-2 text-[11px] text-ink-dim">{i.subtitle}</span>}
+              </span>
             </button>
           ))}
         </div>

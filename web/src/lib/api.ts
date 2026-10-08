@@ -1202,8 +1202,11 @@ export const api = {
   reviews: () => req<{ reviews: ImportReview[] }>("/api/v1/reviews").then((r) => r.reviews),
   rejectReview: (id: number) => req<{ status: string }>(`/api/v1/reviews/${id}/reject`, { method: "POST" }),
   dismissReview: (id: number) => req<{ status: string }>(`/api/v1/reviews/${id}/dismiss`, { method: "POST" }),
-  importReview: (id: number, targetId?: number) =>
-    req<{ status: string }>(`/api/v1/reviews/${id}/import`, { method: "POST", body: JSON.stringify({ target_id: targetId ?? 0 }) }),
+  // targetKind names what targetId is; the server refuses one that isn't the review's own kind.
+  importReview: (id: number, targetId?: number, targetKind?: ReviewKind) =>
+    req<{ status: string }>(`/api/v1/reviews/${id}/import`, { method: "POST", body: JSON.stringify({ target_id: targetId ?? 0, target_kind: targetKind ?? "" }) }),
+  reviewTargets: (id: number, q: string) =>
+    req<{ targets: ReviewTarget[] }>(`/api/v1/reviews/${id}/targets?q=${encodeURIComponent(q)}`).then((r) => r.targets),
 
   movies: () => req<{ movies: Movie[]; metadata_available: boolean }>("/api/v1/movies"),
   lookupMovies: (q: string) =>
@@ -1880,12 +1883,24 @@ export interface ImportRecord {
   imported_at: string;
 }
 
+export type ReviewKind = "series" | "movie" | "book" | "music";
+
+// One library item a held download could be imported into (same kind as the review).
+export interface ReviewTarget {
+  id: number;
+  kind: ReviewKind;
+  title: string;
+  year?: number;
+  subtitle?: string; // author for books, artist for albums
+  poster_url?: string;
+}
+
 export interface ImportReview {
   id: number;
   hash: string;
   name: string;
   content_path: string;
-  media_type: "series" | "movie";
+  media_type: ReviewKind;
   expected_id: number;
   expected_title: string;
   parsed_title: string;

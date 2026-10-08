@@ -169,6 +169,12 @@ func (s *Service) Albums(ctx context.Context, artistID int64) ([]Album, error) {
 	return s.repo.AlbumsFor(ctx, artistID)
 }
 
+// SearchAlbums finds library albums by album title or artist name, for pickers that
+// need one album out of the whole library.
+func (s *Service) SearchAlbums(ctx context.Context, q string, limit int) ([]AlbumHit, error) {
+	return s.repo.SearchAlbums(ctx, q, limit)
+}
+
 // Tracks returns an album's tracks.
 func (s *Service) Tracks(ctx context.Context, albumID int64) ([]Track, error) {
 	return s.repo.TracksFor(ctx, albumID)

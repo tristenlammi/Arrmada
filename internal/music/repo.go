@@ -217,6 +217,48 @@ func (r *Repo) AlbumsFor(ctx context.Context, artistID int64) ([]Album, error) {
 	return out, nil
 }
 
+// AlbumHit is one row of an album search: just enough to label it in a picker.
+type AlbumHit struct {
+	ID       int64
+	Title    string
+	Year     int
+	Artist   string
+	CoverURL string
+}
+
+// SearchAlbums finds library albums whose title or artist contains q (case-insensitive;
+// SQLite's LIKE folds ASCII case). An empty q lists everything up to limit. It runs in
+// SQL rather than in memory because a big discography makes loading every album with
+// its track counts just to filter a picker far too slow.
+func (r *Repo) SearchAlbums(ctx context.Context, q string, limit int) ([]AlbumHit, error) {
+	pat := "%" + escapeLike(q) + "%"
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT al.id, al.title, al.year, ar.name, al.cover_url
+		   FROM albums al JOIN artists ar ON ar.id = al.artist_id
+		  WHERE al.title LIKE ? ESCAPE '\' OR ar.name LIKE ? ESCAPE '\'
+		  ORDER BY ar.name COLLATE NOCASE, al.year, al.title COLLATE NOCASE
+		  LIMIT ?`, pat, pat, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AlbumHit
+	for rows.Next() {
+		var h AlbumHit
+		if err := rows.Scan(&h.ID, &h.Title, &h.Year, &h.Artist, &h.CoverURL); err != nil {
+			return nil, err
+		}
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// escapeLike makes q match literally inside a LIKE pattern, so a search for "100%" or
+// "a_b" doesn't turn into a wildcard.
+func escapeLike(q string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(q)
+}
+
 func (r *Repo) fillAlbumCounts(ctx context.Context, al *Album) error {
 	var have, size sql.NullInt64
 	return r.db.QueryRowContext(ctx,
