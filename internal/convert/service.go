@@ -610,8 +610,10 @@ func (s *Service) finishAfterEncode(job *Job, kind, note string) {
 
 // transientFailure reports whether a failure describes a condition that will clear on its
 // own. These must not count toward the failure limit: three nights of a full scratch volume
-// used to permanently blocklist large parts of the library.
+// used to permanently blocklist large parts of the library. Case is ignored: ffmpeg says
+// "No space left on device".
 func transientFailure(note string) bool {
+	note = strings.ToLower(note)
 	for _, marker := range []string{"not enough scratch space", "source file is gone", "no space left on device"} {
 		if strings.Contains(note, marker) {
 			return true
@@ -644,7 +646,11 @@ func (s *Service) finish(job *Job, state JobState, note string) {
 		s.skips.clear(ctx, job.Key)
 	case StateFailed:
 		s.event("error", fmt.Sprintf("✗ Failed %s — %s", job.Title, note))
-		if !transientFailure(note) {
+		if transientFailure(note) {
+			// It will clear on its own, so it doesn't count toward the failure limit — but
+			// it must still wait, or the runner picks the same file straight back up.
+			s.skips.record(ctx, job.Key, SkipTransient, note)
+		} else {
 			s.failures.recordFailure(ctx, job.Key, note)
 		}
 	case StateSkipped:

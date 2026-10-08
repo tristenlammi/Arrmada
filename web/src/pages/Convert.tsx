@@ -743,7 +743,20 @@ const SKIP_LABEL: Record<string, string> = {
   not_smaller: "Converting them didn't save enough to be worth it, so the originals were kept",
   quality_gate: "The conversion couldn't match the original's quality, so the originals were kept",
   cancelled: "You stopped these — they're left alone for a month unless you try them again",
+  no_scratch: "The transcode folder hasn't enough free space for these. Each is tried again after an hour, then six, then once a day — or free some space and try them now",
+  library_full: "The library disk hasn't room for the converted file next to the original. The originals were kept; each is tried again after an hour, then six, then once a day",
+  source_gone: "The library file was missing when Convert went to read it — usually mid-import or mid-upgrade. Checked again later",
+  transient: "These hit a problem that usually clears on its own (often a full disk). Each is tried again after an hour, then six, then once a day",
 };
+
+// retryIn says when a temporary skip is next tried, or "" when it isn't waiting.
+function retryIn(unix: number): string {
+  const sec = unix - Date.now() / 1000;
+  if (!unix || sec <= 0) return "";
+  if (sec < 3600) return `tries again in ${Math.max(1, Math.round(sec / 60))} min`;
+  if (sec < 48 * 3600) return `tries again in ${Math.round(sec / 3600)} h`;
+  return `tries again in ${Math.round(sec / 86400)} days`;
+}
 
 function Problems({ flash }: { flash: (m: string) => void }) {
   const [skips, setSkips] = useState<ConvertSkipped[] | null>(null);
@@ -791,7 +804,8 @@ function Problems({ flash }: { flash: (m: string) => void }) {
             {list.slice(0, 12).map((s) => (
               <div key={s.key} className="flex items-center gap-2.5 text-[12px]">
                 <span className="min-w-0 flex-1 truncate text-ink-dim" title={s.reason}>{s.title}</span>
-                <span className="hidden max-w-[45%] truncate text-[11px] text-ink-faint sm:block">{s.reason}</span>
+                <span className="hidden max-w-[45%] truncate text-[11px] text-ink-faint sm:block" title={s.reason}>{s.reason}</span>
+                {!s.permanent && retryIn(s.retry_after) && <span className="shrink-0 font-mono text-[10px] text-ink-faint">{retryIn(s.retry_after)}</span>}
                 <button onClick={() => retrySkips(undefined, s.key)} disabled={busy !== null} className="rounded px-1.5 py-0.5 font-mono text-[10px] text-ink-faint hover:text-[var(--accent)]">retry</button>
               </div>
             ))}

@@ -941,6 +941,7 @@ export interface ConvertMediaInfo {
 }
 export interface ConvertSkipped {
   key: string; kind: string; reason: string; permanent: boolean; updated_at: string;
+  retry_after: number; attempts: number; // unix seconds (0 = no wait); same-kind repeats in a row
   media_kind: string; movie_id?: number; series_id?: number; season: number; episode: number; title: string;
 }
 
