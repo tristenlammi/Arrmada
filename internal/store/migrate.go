@@ -42,7 +42,10 @@ import (
 // directive the runner turns foreign keys off on a dedicated connection before the
 // transaction, runs PRAGMA foreign_key_check before committing (any dangling
 // reference rolls the whole migration back), and turns them on again before the
-// connection goes back to the pool. migrations_lint_test.go enforces all of this.
+// connection goes back to the pool. "-- arrmada:foreign-keys=off" is accepted as
+// the same directive; any other "-- arrmada:" line, or a directive that isn't the
+// first line, stops the boot rather than being ignored. migrations_lint_test.go
+// enforces all of this in CI.
 //
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
@@ -162,18 +165,52 @@ func applyMigrations(ctx context.Context, db *sql.DB, fsys fs.FS, names []string
 	return nil
 }
 
+// fkOffAliases are other spellings of fkOffDirective that mean the same thing.
+// The roadmap wrote it both ways, and a migration author following either must
+// get the safe path.
+var fkOffAliases = []string{"-- arrmada:foreign-keys=off"}
+
+// directivePrefix marks a comment line as an instruction to this runner.
+const directivePrefix = "-- arrmada:"
+
 // migrationDirective reports whether the file opts into the foreign-keys-off path,
-// which it does when its first non-blank line is the directive.
+// which it does when its first non-blank line is the directive. A directive that is
+// misspelled, or not on the first line, is an error rather than being ignored:
+// ignoring it would quietly run a parent-table rebuild the cascading way.
 func migrationDirective(body string) (fkOff bool, err error) {
 	sc := bufio.NewScanner(strings.NewReader(body))
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	first := true
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
 		if line == "" {
 			continue
 		}
-		return line == fkOffDirective, nil
+		isDirective := strings.HasPrefix(strings.ToLower(line), directivePrefix)
+		if !first {
+			if isDirective {
+				return false, fmt.Errorf("directive %q must be the first line of the file", line)
+			}
+			continue
+		}
+		first = false
+		if !isDirective {
+			continue
+		}
+		if line == fkOffDirective {
+			fkOff = true
+			continue
+		}
+		known := false
+		for _, a := range fkOffAliases {
+			known = known || line == a
+		}
+		if !known {
+			return false, fmt.Errorf("unknown directive %q (did you mean %q?)", line, fkOffDirective)
+		}
+		fkOff = true
 	}
-	return false, sc.Err()
+	return fkOff, sc.Err()
 }
 
 func appliedVersions(ctx context.Context, db *sql.DB) (map[string]bool, error) {

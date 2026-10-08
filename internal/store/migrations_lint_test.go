@@ -46,7 +46,8 @@ func lintMigrations(t *testing.T, fsys fs.FS) []string {
 		}
 		fkOff, err := migrationDirective(string(raw))
 		if err != nil {
-			t.Fatalf("%s: %v", name, err)
+			// The runner would refuse this file at boot; catch it in CI instead.
+			problems = append(problems, fmt.Sprintf("%s: %v", name, err))
 		}
 		// Comments can mention anything; only statements count.
 		body := lintCommentRe.ReplaceAllString(string(raw), "")
