@@ -1,6 +1,10 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  // hover: and group-hover: only apply on devices that can really hover. Without
+  // this, a tap on a phone leaves hover styles "stuck" on, and a tap could land
+  // on a control that had just faded in under the finger.
+  future: { hoverOnlyWhenSupported: true },
   theme: {
     extend: {
       // Design tokens are defined as CSS variables in index.css (so light/dark

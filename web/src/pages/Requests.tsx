@@ -109,7 +109,11 @@ export function RequestsPanel() {
                 busy={busy === r.id}
                 canManage={canManage}
                 onApprove={() => act(r.id, () => api.approveRequest(r.id), `Approved “${r.title}” — searching now.`)}
-                onDecline={() => act(r.id, () => api.declineRequest(r.id), `Declined “${r.title}”.`)}
+                onDecline={() => {
+                  // The requester gets told, and there's no undo, so it always asks first.
+                  if (!window.confirm(`Decline “${r.title}”${r.requested_by_name ? ` requested by ${r.requested_by_name}` : ""}? They’ll be told.`)) return;
+                  act(r.id, () => api.declineRequest(r.id), `Declined “${r.title}”.`);
+                }}
                 onDelete={() => act(r.id, () => api.deleteRequest(r.id), `Removed request.`)}
               />
             ))}

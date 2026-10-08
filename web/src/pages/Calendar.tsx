@@ -51,7 +51,8 @@ export function Calendar({ chrome = true }: { chrome?: boolean }) {
           <div className="flex items-center gap-2">
             <h2 className="m-0 text-[18px] font-bold">{MONTHS[monthIdx]} {cursor.getFullYear()}</h2>
           </div>
-          <div className="flex items-center gap-2">
+          {/* Wraps on a narrow phone rather than pushing the page sideways. */}
+          <div className="flex flex-wrap items-center gap-2">
             <div className="flex items-center gap-3 text-[11px]">
               <Legend color="var(--accent)" label="Episodes" />
               <Legend color="var(--good)" label="Movies" />

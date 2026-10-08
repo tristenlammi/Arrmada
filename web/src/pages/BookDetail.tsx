@@ -7,6 +7,7 @@ import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
 import { AddAudioVersion, AudioVersionPanel } from "../components/AudioVersions";
 import { api, type BookSeriesEntry, type BookSource, type Book, type BookFile, type BookFileEntry, type BookImportCandidate, type BookLookup, type BookSeries, type MovieEvent } from "../lib/api";
+import { useCanHover } from "../lib/useCanHover";
 
 function fmtSize(bytes?: number): string {
   if (!bytes || bytes <= 0) return "";
@@ -92,8 +93,11 @@ export function BookDetail() {
 }
 
 // Poster shows the cover with a hover "Edit cover" affordance that opens the picker.
+// Touch can't hover, so there it's a plain button under the cover instead.
 function Poster({ book, onChange, flash }: { book: Book; onChange: () => void; flash: (m: string) => void }) {
   const [picking, setPicking] = useState(false);
+  const canHover = useCanHover();
+  const pencil = <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M4 20h4l10-10-4-4L4 16v4z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>;
   return (
     <div className="flex-none">
       <div className="group relative w-[180px] overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)", aspectRatio: "2/3", background: "var(--panel-2)" }}>
@@ -102,13 +106,21 @@ function Poster({ book, onChange, flash }: { book: Book; onChange: () => void; f
         ) : (
           <div className="flex h-full items-center justify-center p-3 text-center text-[13px] font-bold text-white" style={{ background: "linear-gradient(150deg, hsl(28 30% 26%), hsl(24 28% 16%))" }}>{book.title}</div>
         )}
-        <button onClick={() => setPicking(true)} className="absolute inset-0 flex items-end justify-center opacity-0 transition-opacity duration-150 group-hover:opacity-100" style={{ background: "linear-gradient(180deg, transparent 45%, rgba(0,0,0,.68))" }}>
-          <span className="mb-3 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold text-white" style={{ background: "rgba(0,0,0,.55)", border: "1px solid rgba(255,255,255,.28)" }}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M4 20h4l10-10-4-4L4 16v4z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
-            Edit cover
-          </span>
-        </button>
+        {canHover && (
+          <button onClick={() => setPicking(true)} className="pointer-events-none absolute inset-0 flex items-end justify-center opacity-0 transition-opacity duration-150 focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100" style={{ background: "linear-gradient(180deg, transparent 45%, rgba(0,0,0,.68))" }}>
+            <span className="mb-3 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold text-white" style={{ background: "rgba(0,0,0,.55)", border: "1px solid rgba(255,255,255,.28)" }}>
+              {pencil}
+              Edit cover
+            </span>
+          </button>
+        )}
       </div>
+      {!canHover && (
+        <button onClick={() => setPicking(true)} className="mt-2 inline-flex min-h-[32px] w-[180px] items-center justify-center gap-1.5 rounded-lg px-3 text-[12px] font-semibold" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
+          {pencil}
+          Edit cover
+        </button>
+      )}
       {picking && <CoverPickerModal book={book} onClose={() => setPicking(false)} onChange={onChange} flash={flash} />}
     </div>
   );

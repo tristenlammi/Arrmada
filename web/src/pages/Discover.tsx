@@ -6,6 +6,7 @@ import { BooksDiscover } from "./BooksDiscover";
 import { useMe, isStaff } from "../lib/me";
 import { api, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaDetail, type MediaRequest } from "../lib/api";
 import { posterThumb } from "../lib/img";
+import { useCanHover } from "../lib/useCanHover";
 
 type Tab = "discover" | "movies" | "series" | "books";
 const BASE_TABS: { key: Tab; label: string }[] = [
@@ -74,30 +75,33 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
     <>
       {chrome && <PageHeader title="Discover" crumb="Services / Discover" />}
       <div className="mx-auto w-full max-w-[1600px] px-4 py-5 sm:px-6">
-        {/* Tabs + search */}
-        <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border-b" style={{ borderColor: "var(--line)" }}>
-          <div className="flex gap-1">
+        {/* Tabs + search. On a phone they stack, search on top so the tabs still sit on the
+            underline, and the tabs scroll sideways rather than widening the page. Search comes
+            first in the DOM as well, so focus order matches what a phone shows; sm:order-last
+            puts it back after the tabs on wider screens. */}
+        <div className="mb-5 flex flex-col gap-2 border-b sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-3" style={{ borderColor: "var(--line)" }}>
+          <div className="flex w-full items-center justify-end gap-2 sm:order-last sm:w-auto sm:justify-start">
+            {/* Books have their own search inside BooksDiscover — hide the movie/TV one there. */}
+            {tab !== "books" && (
+              <SearchBox value={searchInput} onChange={onSearchChange} onSeeAll={(q) => { setSearchInput(q); setSearch(q); }} ctx={ctx} />
+            )}
+            <NotificationBell />
+          </div>
+          <div className="thin-scroll -mb-px flex min-w-0 gap-1 overflow-x-auto sm:mb-0 sm:overflow-visible">
             {TABS.map((t) => {
               const active = tab === t.key && !search;
               return (
                 <button
                   key={t.key}
                   onClick={() => setTab(t.key)}
-                  className="relative px-4 py-2.5 text-[13.5px] font-semibold transition-colors"
+                  className="relative flex-none px-3 py-2.5 text-[13.5px] font-semibold transition-colors sm:px-4"
                   style={{ color: active ? "var(--ink)" : "var(--ink-faint)" }}
                 >
                   {t.label}
-                  {active && <span className="absolute inset-x-2 -bottom-px h-[2px] rounded-full" style={{ background: "var(--accent)" }} />}
+                  {active && <span className="absolute inset-x-2 bottom-0 h-[2px] rounded-full sm:-bottom-px" style={{ background: "var(--accent)" }} />}
                 </button>
               );
             })}
-          </div>
-          <div className="mb-2 flex items-center gap-2 sm:mb-0">
-            {/* Books have their own search inside BooksDiscover — hide the movie/TV one there. */}
-            {tab !== "books" && (
-              <SearchBox value={searchInput} onChange={onSearchChange} onSeeAll={(q) => { setSearchInput(q); setSearch(q); }} ctx={ctx} />
-            )}
-            <NotificationBell />
           </div>
         </div>
 
@@ -237,7 +241,7 @@ function SearchBox({ value, onChange, onSeeAll, ctx }: { value: string; onChange
   };
 
   return (
-    <div ref={wrap} className="relative">
+    <div ref={wrap} className="relative min-w-0 flex-1 sm:flex-initial">
       <svg className="pointer-events-none absolute left-2.5 top-1/2 z-10 -translate-y-1/2" width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ color: "var(--ink-faint)" }}>
         <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" /><path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
       </svg>
@@ -249,7 +253,7 @@ function SearchBox({ value, onChange, onSeeAll, ctx }: { value: string; onChange
         onKeyDown={onKeyDown}
         placeholder="Search movies & TV…"
         aria-label="Search movies and TV"
-        className="w-[210px] rounded-lg py-2 pl-8 pr-7 text-[12.5px] transition-[width,box-shadow] focus:w-[300px]"
+        className="w-full rounded-lg py-2 pl-8 pr-7 text-[12.5px] transition-[width,box-shadow] sm:w-[210px] sm:focus:w-[300px]"
         style={{ background: "var(--panel-2)", border: `1px solid ${focused ? "var(--accent-line)" : "var(--line)"}`, color: "var(--ink)" }}
       />
       {value && (
@@ -257,8 +261,11 @@ function SearchBox({ value, onChange, onSeeAll, ctx }: { value: string; onChange
       )}
 
       {open && (
+        /* Phone: pinned to the viewport edges (fixed, auto top), the same fix as the
+           notification bell, since a 340px panel right-anchored to the box ran off the left
+           edge. sm+ keeps the box-anchored dropdown. */
         <div
-          className="thin-scroll absolute right-0 z-40 mt-2 max-h-[70vh] w-[340px] overflow-y-auto rounded-xl py-1.5"
+          className="thin-scroll fixed inset-x-3 z-50 mt-2 max-h-[70vh] overflow-y-auto rounded-xl py-1.5 sm:absolute sm:inset-x-auto sm:right-0 sm:w-[340px]"
           style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "0 16px 40px rgba(0,0,0,.45)" }}
         >
           {!showResults ? (
@@ -577,6 +584,7 @@ function MyRequestsRow({ flash }: { flash: (m: string) => void }) {
 
 function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest; staff: boolean; own: boolean; onChanged: () => void; flash: (m: string) => void }) {
   const [busy, setBusy] = useState(false);
+  const canHover = useCanHover();
   const tr = rq.tracking;
   const stage = requestStage(rq);
   const status = { label: stage.badge, tone: stage.tone };
@@ -594,6 +602,13 @@ function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest;
     if (!window.confirm(`Withdraw your request for “${rq.title}”?`)) return;
     act(() => api.deleteRequest(rq.id), `Withdrew “${rq.title}”`);
   };
+  const approve = () => act(() => api.approveRequest(rq.id), "Approved — searching now");
+  // Declining notifies the requester and can't be undone from here, so it always asks first.
+  const decline = () => {
+    if (!window.confirm(`Decline “${rq.title}”${rq.requested_by_name ? ` requested by ${rq.requested_by_name}` : ""}? They’ll be told.`)) return;
+    act(() => api.declineRequest(rq.id), "Declined");
+  };
+  const pending = rq.status === "pending";
   return (
     <div className="w-[150px] flex-none" style={{ scrollSnapAlign: "start" }}>
       <div className="group relative overflow-hidden rounded-xl" style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}>
@@ -634,23 +649,28 @@ function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest;
             />
           </div>
         )}
-        <div className="absolute inset-x-0 bottom-0 flex flex-col gap-1.5 p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.92), transparent)" }}>
-          <div className="truncate text-[11.5px] font-semibold text-white">{rq.title}</div>
-          {staff && rq.status === "pending" ? (
-            <div className="flex gap-1.5">
-              <button disabled={busy} onClick={() => act(() => api.approveRequest(rq.id), "Approved — searching now")} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Approve</button>
-              <button disabled={busy} onClick={() => act(() => api.declineRequest(rq.id), "Declined")} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>Decline</button>
-              {own && <button disabled={busy} onClick={withdraw} title="Withdraw your request" className="w-6 flex-none rounded px-0 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>✕</button>}
-            </div>
-          ) : own && rq.status === "pending" ? (
-            <div className="flex items-center justify-between gap-1.5">
-              <span className="text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{rq.year || ""}</span>
-              <button disabled={busy} onClick={withdraw} className="rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>✕ Withdraw</button>
-            </div>
-          ) : (
-            <div className="text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{rq.year || ""}</div>
-          )}
-        </div>
+        {/* Hover strip with the actions, mouse only. It ignores the pointer until hover or
+            keyboard focus reveals it: an invisible strip that still took taps let a phone
+            approve or decline by accident. Touch gets the visible row under the caption. */}
+        {canHover && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col gap-1.5 p-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.92), transparent)" }}>
+            <div className="truncate text-[11.5px] font-semibold text-white">{rq.title}</div>
+            {staff && pending ? (
+              <div className="flex gap-1.5">
+                <button disabled={busy} onClick={approve} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Approve</button>
+                <button disabled={busy} onClick={decline} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>Decline</button>
+                {own && <button disabled={busy} onClick={withdraw} title="Withdraw your request" className="w-6 flex-none rounded px-0 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>✕</button>}
+              </div>
+            ) : own && pending ? (
+              <div className="flex items-center justify-between gap-1.5">
+                <span className="text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{rq.year || ""}</span>
+                <button disabled={busy} onClick={withdraw} className="rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>✕ Withdraw</button>
+              </div>
+            ) : (
+              <div className="text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{rq.year || ""}</div>
+            )}
+          </div>
+        )}
       </div>
       {/* Always-visible caption: the title, and where it's got to in plain words. */}
       <div className="px-0.5 pt-2">
@@ -658,6 +678,19 @@ function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest;
         <div className="mt-0.5 truncate text-[11px]" style={{ color: stage.detailTone ?? "var(--ink-faint)" }} title={stage.detail}>
           {stage.detail}
         </div>
+        {/* Touch has no hover, so the same actions sit here in plain sight. min-w-0 and the
+            tight padding keep Approve + Decline + ✕ inside the 150px card. */}
+        {!canHover && pending && (staff || own) && (
+          <div className="mt-1.5 flex gap-1">
+            {staff && <button disabled={busy} onClick={approve} className="min-h-[32px] min-w-0 flex-1 rounded-md px-1.5 text-[11px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Approve</button>}
+            {staff && <button disabled={busy} onClick={decline} className="min-h-[32px] min-w-0 flex-1 rounded-md px-1.5 text-[11px] font-semibold" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Decline</button>}
+            {own && (
+              <button disabled={busy} onClick={withdraw} title="Withdraw your request" className={`min-h-[32px] rounded-md text-[11px] font-semibold ${staff ? "w-7 flex-none" : "flex-1 px-2"}`} style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
+                {staff ? "✕" : "Withdraw"}
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1073,14 +1106,17 @@ function StatusChip({ badge, className }: { badge: { label: string; tone: string
 function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: boolean }) {
   const [open, setOpen] = useState(false);
   const [quickBusy, setQuickBusy] = useState(false);
+  const canHover = useCanHover();
   const requested = ctx.isRequested(c);
   const badge = badgeFor(c, requested);
   const requestable = !badge; // no badge → nothing in library/queue yet
+  // The quick-request button only exists where a mouse can reveal it first. On touch
+  // the whole poster opens the sheet, which has its own visible Request button.
+  const showQuick = canHover && ctx.canRequest && requestable;
 
   // Quick-request straight from the hover overlay — same honest flow as the modal:
   // doRequest toasts success/failure and only marks requested on success.
-  const quick = async (e: React.MouseEvent | React.KeyboardEvent) => {
-    e.stopPropagation();
+  const quick = async () => {
     if (quickBusy) return;
     setQuickBusy(true);
     try { await ctx.doRequest(c); } catch { /* toast already shown */ }
@@ -1089,42 +1125,50 @@ function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: bool
 
   return (
     <div className={`group ${full ? "w-full" : "w-[150px] flex-none"}`} style={{ scrollSnapAlign: "start" }}>
-      <button
-        onClick={() => setOpen(true)}
-        aria-label={`View details for ${c.title}`}
-        className="relative block w-full overflow-hidden rounded-xl text-left transition-[transform,box-shadow] duration-200 will-change-transform group-hover:-translate-y-1 group-hover:scale-[1.03] group-hover:shadow-[0_12px_30px_rgba(0,0,0,0.45)]"
+      <div
+        className="relative overflow-hidden rounded-xl transition-[transform,box-shadow] duration-200 will-change-transform group-hover:-translate-y-1 group-hover:scale-[1.03] group-hover:shadow-[0_12px_30px_rgba(0,0,0,0.45)]"
         style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}
       >
-        {c.poster_url ? (
-          <img src={posterThumb(c.poster_url)} alt={c.title} className="h-full w-full object-cover" loading="lazy" decoding="async" />
-        ) : (
-          <PosterPlaceholder title={c.title} year={c.year} />
-        )}
-        {badge && <StatusChip badge={badge} className="absolute right-1.5 top-1.5" />}
-        {/* Terracotta download bar along the bottom of the poster while it's grabbing. */}
-        {c.download_progress != null && c.download_progress > 0 && c.download_progress < 1 && (
-          <div className="absolute inset-x-0 bottom-0 z-10 h-1.5" style={{ background: "rgba(20,12,7,.55)" }}>
-            <div className="h-full" style={{ width: `${Math.round(c.download_progress * 100)}%`, background: "var(--accent)" }} />
-          </div>
-        )}
-        {/* Hover overlay: quick-request + a details affordance (touch users tap the card). */}
-        <div className="absolute inset-0 flex flex-col justify-end gap-1.5 p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.82) 0%, rgba(0,0,0,.15) 42%, transparent 70%)" }}>
-          {ctx.canRequest && requestable ? (
-            <span
-              role="button"
-              tabIndex={0}
-              onClick={quick}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") quick(e); }}
-              className="self-start rounded-md px-2.5 py-1 text-[10.5px] font-semibold"
-              style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)", opacity: quickBusy ? 0.6 : 1 }}
-            >
-              {quickBusy ? "Requesting…" : "＋ Request"}
-            </span>
+        <button
+          onClick={() => setOpen(true)}
+          aria-label={`View details for ${c.title}`}
+          className="absolute inset-0 block h-full w-full text-left"
+        >
+          {c.poster_url ? (
+            <img src={posterThumb(c.poster_url)} alt={c.title} className="h-full w-full object-cover" loading="lazy" decoding="async" />
           ) : (
-            <span className="self-start rounded-md px-2.5 py-1 text-[10.5px] font-semibold" style={{ background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.26)", color: "#fff" }}>Details</span>
+            <PosterPlaceholder title={c.title} year={c.year} />
           )}
-        </div>
-      </button>
+          {badge && <StatusChip badge={badge} className="absolute right-1.5 top-1.5" />}
+          {/* Terracotta download bar along the bottom of the poster while it's grabbing. */}
+          {c.download_progress != null && c.download_progress > 0 && c.download_progress < 1 && (
+            <div className="absolute inset-x-0 bottom-0 z-10 h-1.5" style={{ background: "rgba(20,12,7,.55)" }}>
+              <div className="h-full" style={{ width: `${Math.round(c.download_progress * 100)}%`, background: "var(--accent)" }} />
+            </div>
+          )}
+          {/* Hover scrim, purely decorative: pointer-events-none so a tap anywhere on the
+              poster opens the sheet, never something the user couldn't see. */}
+          <div className="pointer-events-none absolute inset-0 flex flex-col justify-end p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.82) 0%, rgba(0,0,0,.15) 42%, transparent 70%)" }}>
+            {!showQuick && (
+              <span className="self-start rounded-md px-2.5 py-1 text-[10.5px] font-semibold" style={{ background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.26)", color: "#fff" }}>Details</span>
+            )}
+          </div>
+        </button>
+        {/* A sibling of the details button, not nested in it: a control inside a button is
+            invalid HTML, and its invisible hit area filed requests from stray taps. It only
+            takes clicks once hover or keyboard focus has revealed it. */}
+        {showQuick && (
+          <button
+            onClick={quick}
+            disabled={quickBusy}
+            className="pointer-events-none absolute bottom-2 left-2 z-20 rounded-md px-2.5 py-1 text-[10.5px] font-semibold opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 disabled:cursor-default"
+            // Dimmed with a filter, not opacity, so the busy look doesn't fight the hover reveal.
+            style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)", filter: quickBusy ? "brightness(.8)" : undefined }}
+          >
+            {quickBusy ? "Requesting…" : "＋ Request"}
+          </button>
+        )}
+      </div>
       {/* Always-visible caption strip so cards read before hover (Plex style). */}
       <div className="px-0.5 pt-2">
         <div className="truncate text-[12px] font-semibold" style={{ color: "var(--ink)" }} title={c.title}>{c.title}</div>

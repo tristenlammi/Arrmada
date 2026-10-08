@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type BookSource, type BookAuthor, type BookDiscoverCard, type BookMeta, type BookRecommendedRow } from "../lib/api";
+import { useCanHover } from "../lib/useCanHover";
 
 // BooksDiscover is the Books area of Discover — deliberately separate from the movie/TV
 // experience: its own search (titles + authors), Open Library browse rows, author
@@ -449,12 +450,14 @@ function badgeFor(b: BookDiscoverCard, requested: boolean): { label: string; ton
 function BookCard({ b, ctx, authorName, full }: { b: BookDiscoverCard; ctx: BookCtx; authorName?: string; full?: boolean }) {
   const [open, setOpen] = useState(false);
   const [quickBusy, setQuickBusy] = useState(false);
+  const canHover = useCanHover();
   const requested = ctx.isRequested(b.key);
   const badge = badgeFor(b, requested);
   const requestable = !badge;
+  // Mouse only: on touch the whole cover opens the sheet, which has a visible Request.
+  const showQuick = canHover && ctx.canRequest && requestable;
 
-  const quick = async (e: React.MouseEvent) => {
-    e.stopPropagation();
+  const quick = async () => {
     if (quickBusy) return;
     setQuickBusy(true);
     try { await ctx.request(b, authorName); } catch { /* toast already shown */ }
@@ -465,39 +468,45 @@ function BookCard({ b, ctx, authorName, full }: { b: BookDiscoverCard; ctx: Book
 
   return (
     <div className={`group ${full ? "w-full" : "w-[150px] flex-none"}`} style={{ scrollSnapAlign: "start" }}>
-      <button
-        onClick={() => setOpen(true)}
-        aria-label={`View details for ${b.title}`}
-        className="relative block w-full overflow-hidden rounded-xl text-left transition-[transform,box-shadow] duration-200 will-change-transform group-hover:-translate-y-1 group-hover:scale-[1.03] group-hover:shadow-[0_12px_30px_rgba(0,0,0,0.45)]"
+      <div
+        className="relative overflow-hidden rounded-xl transition-[transform,box-shadow] duration-200 will-change-transform group-hover:-translate-y-1 group-hover:scale-[1.03] group-hover:shadow-[0_12px_30px_rgba(0,0,0,0.45)]"
         style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}
       >
-        {b.cover_url ? (
-          <img src={b.cover_url} alt={b.title} className="h-full w-full object-cover" loading="lazy" decoding="async" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} />
-        ) : (
-          <div className="flex h-full w-full items-center justify-center p-2 text-center" style={{ background: "linear-gradient(150deg, hsl(28 30% 26%), hsl(24 28% 16%))" }}><span className="text-[11.5px] font-bold text-white">{b.title}</span></div>
-        )}
-        {badge && (
-          <span className="absolute right-1.5 top-1.5 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: BADGE_BG, color: badge.tone, border: `1px solid ${badge.tone}` }}>{badge.label}</span>
-        )}
-        {/* Hover overlay: quick-request + a details affordance (touch users tap the card). */}
-        {/* span, not button — the whole card is already a <button> and nesting is invalid HTML */}
-        <div className="absolute inset-0 flex flex-col justify-end gap-1.5 p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.82) 0%, rgba(0,0,0,.15) 42%, transparent 70%)" }}>
-          {ctx.canRequest && requestable ? (
-            <span
-              role="button"
-              tabIndex={0}
-              onClick={quick}
-              onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); quick(e as unknown as React.MouseEvent); } }}
-              className="self-start rounded-md px-2.5 py-1 text-[10.5px] font-semibold"
-              style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)", opacity: quickBusy ? 0.6 : 1 }}
-            >
-              {quickBusy ? "Requesting…" : "＋ Request"}
-            </span>
+        <button
+          onClick={() => setOpen(true)}
+          aria-label={`View details for ${b.title}`}
+          className="absolute inset-0 block h-full w-full text-left"
+        >
+          {b.cover_url ? (
+            <img src={b.cover_url} alt={b.title} className="h-full w-full object-cover" loading="lazy" decoding="async" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} />
           ) : (
-            <span className="self-start rounded-md px-2.5 py-1 text-[10.5px] font-semibold" style={{ background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.26)", color: "#fff" }}>Details</span>
+            <div className="flex h-full w-full items-center justify-center p-2 text-center" style={{ background: "linear-gradient(150deg, hsl(28 30% 26%), hsl(24 28% 16%))" }}><span className="text-[11.5px] font-bold text-white">{b.title}</span></div>
           )}
-        </div>
-      </button>
+          {badge && (
+            <span className="absolute right-1.5 top-1.5 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: BADGE_BG, color: badge.tone, border: `1px solid ${badge.tone}` }}>{badge.label}</span>
+          )}
+          {/* Hover scrim, purely decorative: pointer-events-none so a tap anywhere on the
+              cover opens the sheet, never something the user couldn't see. */}
+          <div className="pointer-events-none absolute inset-0 flex flex-col justify-end p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.82) 0%, rgba(0,0,0,.15) 42%, transparent 70%)" }}>
+            {!showQuick && (
+              <span className="self-start rounded-md px-2.5 py-1 text-[10.5px] font-semibold" style={{ background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.26)", color: "#fff" }}>Details</span>
+            )}
+          </div>
+        </button>
+        {/* A sibling of the details button, not nested in it (invalid HTML, and its invisible
+            hit area filed requests from stray taps). Clickable only once revealed. */}
+        {showQuick && (
+          <button
+            onClick={quick}
+            disabled={quickBusy}
+            className="pointer-events-none absolute bottom-2 left-2 z-20 rounded-md px-2.5 py-1 text-[10.5px] font-semibold opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-visible:pointer-events-auto focus-visible:opacity-100 disabled:cursor-default"
+            // Dimmed with a filter, not opacity, so the busy look doesn't fight the hover reveal.
+            style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)", filter: quickBusy ? "brightness(.8)" : undefined }}
+          >
+            {quickBusy ? "Requesting…" : "＋ Request"}
+          </button>
+        )}
+      </div>
       {/* Always-visible caption strip — many Open Library covers are blank leather
           with no printed title, so the cover alone can't identify the book. */}
       <div className="px-0.5 pt-2">
