@@ -5,6 +5,7 @@ import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
 import { FitBadge } from "../components/FitBadge";
+import { RenameModal } from "./series/RenameModal";
 import { api, type FitItem, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile } from "../lib/api";
 
 // Auto-grab is fire-and-forget: the API answers 202 and searches in the background, and a
@@ -221,13 +222,7 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
   const btn = "rounded-lg px-3 py-2 text-[12.5px] font-semibold disabled:opacity-50";
   const ghost = { border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" } as const;
 
-  const rename = async () => {
-    const p = await api.seriesRenamePreview(series.id);
-    if (p.matches) { flash("Episode files are already named correctly."); return; }
-    const res = await api.renameSeries(series.id);
-    flash(`Renamed ${res.renamed} file${res.renamed === 1 ? "" : "s"}.`);
-    onChange();
-  };
+  const [showRename, setShowRename] = useState(false);
 
   return (
     <>
@@ -268,7 +263,7 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowSearch(true)}>Search indexers</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowPaste(true)}>Upload torrent</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowImport(true)}>Manual import</button>
-        <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("rename", rename)}>{busy === "rename" ? "Renaming…" : "Rename"}</button>
+        <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowRename(true)}>Rename</button>
         <DeleteButton onDelete={async (df) => { await api.deleteSeries(series.id, df); window.location.href = "/series"; }} />
       </div>
       {series.series_type === "anime" && <AliasPanel series={series} />}
@@ -281,6 +276,7 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
           onClose={() => setShowPaste(false)}
         />
       )}
+      {showRename && <RenameModal seriesId={series.id} title={series.title} onClose={() => setShowRename(false)} onRenamed={onChange} />}
       {showImport && <ManualImportModal series={series} onClose={() => setShowImport(false)} onImported={() => { onChange(); flash("Imported."); }} />}
       {showSearch && (
         <ReleaseSearchModal

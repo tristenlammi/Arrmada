@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -856,6 +857,9 @@ func (im *Importer) MoveEpisodeSubs(oldVideo, newVideo string) {
 		target := newBase + stem[len(oldBase):] + filepath.Ext(p) // carry ".en"/".forced"
 		if err := im.Move(p, target); err == nil {
 			im.log.Info("moved subtitle with rename", "from", p, "to", target)
+		} else if errors.Is(err, ErrTargetExists) {
+			// Another subtitle already has that name; both stay where they are.
+			im.log.Warn("subtitle not moved with rename — a different file already has its new name", "from", p, "to", target)
 		}
 	}
 }
@@ -873,11 +877,37 @@ func (im *Importer) RemoveDirIfEmpty(dir string) {
 	}
 }
 
+// ErrTargetExists is returned by Move when a different file already sits at the target.
+var ErrTargetExists = errors.New("a different file already exists there")
+
 // Move relocates a file within the library (same volume), creating parent dirs. A
 // no-op when from == to.
+//
+// It never replaces an existing file. os.Rename silently overwrites its target on Linux,
+// so a rename after a renumber — S03E01's row now holding S02E22's file — used to land on
+// the real S03E01 and destroy it. A target that's just another name for the same file (a
+// hardlink, common because imports hardlink) isn't a different file: the source name is
+// dropped and the file stays put under the target name.
 func (im *Importer) Move(from, to string) error {
 	if from == to {
 		return nil
+	}
+	fromInfo, err := os.Lstat(from)
+	if err != nil {
+		return err
+	}
+	if toInfo, err := os.Lstat(to); err == nil {
+		// A case-only rename on a case-insensitive filesystem stats as the same file but
+		// is ONE directory entry — removing "from" there would delete the file itself.
+		if strings.EqualFold(from, to) && os.SameFile(fromInfo, toInfo) {
+			return os.Rename(from, to)
+		}
+		if os.SameFile(fromInfo, toInfo) {
+			return os.Remove(from)
+		}
+		return fmt.Errorf("%w: %s", ErrTargetExists, to)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
 		return err

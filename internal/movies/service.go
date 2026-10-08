@@ -1211,10 +1211,9 @@ func (s *Service) Rename(ctx context.Context, id int64) error {
 		return nil
 	}
 	oldDir := filepath.Dir(m.MovieFilePath)
-	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return fmt.Errorf("create dir: %w", err)
-	}
-	if err := os.Rename(m.MovieFilePath, target); err != nil {
+	// Through the importer's Move, not os.Rename: a bare rename replaces whatever already
+	// sits at the target, and Move refuses to.
+	if err := s.imp.Move(m.MovieFilePath, target); err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}
 	s.imp.MoveEpisodeSubs(m.MovieFilePath, target) // carry sidecar subtitles along

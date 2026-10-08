@@ -527,10 +527,11 @@ func (a *api) handleRefreshSeries(w http.ResponseWriter, r *http.Request) {
 	// A rebuild moved files to new (season, episode) rows but left them at their old on-disk
 	// names; rename brings the library into line before the rescan reads it.
 	if renumbered {
-		if moved, rerr := a.deps.Automation.SeriesRename(ctx, id); rerr != nil {
+		if res, rerr := a.deps.Automation.SeriesRename(ctx, id, nil); rerr != nil {
 			a.deps.Log.Warn("series: rename after renumber failed", "series_id", id, "err", rerr)
 		} else {
-			a.deps.Log.Info("series: renamed files after renumber", "series_id", id, "moved", moved)
+			a.deps.Log.Info("series: renamed files after renumber", "series_id", id, "moved", res.Moved)
+			a.deps.Automation.LogRenameSkips(id, res)
 		}
 	}
 	a.deps.Automation.RescanSeries(ctx, id)
@@ -596,8 +597,10 @@ func (a *api) refreshSeriesSweep(ids []int64) {
 			continue
 		}
 		if renumbered {
-			if _, rerr := a.deps.Automation.SeriesRename(each, id); rerr != nil {
+			if res, rerr := a.deps.Automation.SeriesRename(each, id, nil); rerr != nil {
 				a.deps.Log.Warn("series: rename after renumber failed", "series_id", id, "err", rerr)
+			} else {
+				a.deps.Automation.LogRenameSkips(id, res)
 			}
 		}
 		a.deps.Automation.RescanSeries(each, id)
@@ -680,17 +683,30 @@ func (a *api) handleSeriesRenamePreview(w http.ResponseWriter, r *http.Request) 
 	a.writeJSON(w, http.StatusOK, map[string]any{"items": items, "matches": len(items) == 0})
 }
 
+// The body is optional: {items} is the previewed list the user confirmed, and only those
+// moves are applied. Without it every pending rename is applied, as before.
 func (a *api) handleSeriesRename(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)
 	if !ok {
 		return
 	}
-	moved, err := a.deps.Automation.SeriesRename(r.Context(), id)
+	var req struct {
+		Items []automation.SeriesRenameItem `json:"items"`
+	}
+	if r.ContentLength != 0 {
+		if !a.decodeJSON(w, r, &req) {
+			return
+		}
+		if req.Items == nil {
+			req.Items = []automation.SeriesRenameItem{} // "{}" confirms nothing, not everything
+		}
+	}
+	res, err := a.deps.Automation.SeriesRename(r.Context(), id, req.Items)
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not rename")
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"renamed": moved})
+	a.writeJSON(w, http.StatusOK, res)
 }
 
 // --- blocklist + per-episode actions (mirrors the movie surface) ---

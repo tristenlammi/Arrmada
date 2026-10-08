@@ -53,10 +53,11 @@ func (c *Coordinator) RefreshContinuingSeries(ctx context.Context) {
 		} else {
 			refreshed++
 			if renumbered {
-				if moved, rerr := c.SeriesRename(ctx, s.ID); rerr != nil {
+				if res, rerr := c.SeriesRename(ctx, s.ID, nil); rerr != nil {
 					c.log.Warn("series: rename after renumber failed", "series", s.Title, "err", rerr)
 				} else {
-					c.log.Info("series: renamed files after renumber", "series", s.Title, "moved", moved)
+					c.log.Info("series: renamed files after renumber", "series", s.Title, "moved", res.Moved)
+					c.LogRenameSkips(s.ID, res)
 				}
 			}
 		}
