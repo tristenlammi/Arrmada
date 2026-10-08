@@ -247,6 +247,9 @@ func (s *Service) Test(ctx context.Context, id int64) error {
 type SearchResult struct {
 	Releases []Release         `json:"releases"`
 	Errors   map[string]string `json:"errors,omitempty"` // indexer name -> error
+	// Asked is how many indexers the search went to, so a caller can tell "every indexer
+	// failed" from "one failed and the rest found nothing". Set by Search only.
+	Asked int `json:"-"`
 }
 
 // Recent fetches the newest releases from every enabled indexer that supports an
@@ -382,6 +385,7 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 			continue // this indexer isn't scoped to the media type being searched
 		}
 		priority[idx.Name] = idx.Priority
+		result.Asked++
 		wg.Add(1)
 		go func(idx Indexer) {
 			defer wg.Done()

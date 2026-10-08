@@ -1,6 +1,7 @@
 package automation
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -161,14 +162,15 @@ func TestMusicSweepSkipsUnreleasedAlbums(t *testing.T) {
 }
 
 // A failed search says nothing about the album, so it's not held against it — whether the
-// search itself errored or every indexer did.
+// search itself errored or every indexer did. The time is still stamped, so the album
+// rotates behind the others rather than taking the first slot again next sweep.
 func TestMusicSweepSearchErrorIsNotAMiss(t *testing.T) {
 	for name, answer := range map[string]func(indexer.SearchQuery) (indexer.SearchResult, error){
 		"search error": func(indexer.SearchQuery) (indexer.SearchResult, error) {
 			return indexer.SearchResult{}, errors.New("db locked")
 		},
 		"every indexer failed": func(indexer.SearchQuery) (indexer.SearchResult, error) {
-			return indexer.SearchResult{Errors: map[string]string{"Test": "timeout"}}, nil
+			return indexer.SearchResult{Asked: 2, Errors: map[string]string{"Test": "timeout", "Other": "403"}}, nil
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -179,10 +181,92 @@ func TestMusicSweepSearchErrorIsNotAMiss(t *testing.T) {
 			if len(h.queries) != 1 {
 				t.Fatalf("%d searches, want 1", len(h.queries))
 			}
-			if al := h.album(t, a.ID, "OK Computer"); al.SearchMisses != 0 || al.LastSearchAt != "" {
-				t.Errorf("misses=%d last=%q, want the album untouched", al.SearchMisses, al.LastSearchAt)
+			if al := h.album(t, a.ID, "OK Computer"); al.SearchMisses != 0 || al.LastSearchAt == "" {
+				t.Errorf("misses=%d last=%q, want no miss but a stamp", al.SearchMisses, al.LastSearchAt)
 			}
 		})
+	}
+}
+
+// One broken indexer among healthy ones that found nothing is a miss: otherwise a single
+// dead tracker would keep every unfindable album out of the backoff for good.
+func TestMusicSweepOneDeadIndexerIsStillAMiss(t *testing.T) {
+	h := musicTestCoord(t)
+	h.releases = func(indexer.SearchQuery) (indexer.SearchResult, error) {
+		return indexer.SearchResult{Asked: 2, Errors: map[string]string{"Dead": "cloudflare"}}, nil
+	}
+	a := h.addArtist(t, "Radiohead", "", []string{"OK Computer"}, nil, "")
+	h.c.SearchMusicMissing(h.ctx)
+	if al := h.album(t, a.ID, "OK Computer"); al.SearchMisses != 1 {
+		t.Errorf("misses = %d, want 1", al.SearchMisses)
+	}
+}
+
+// An album whose grab fails every time must not hold the first slot: after one failure it
+// goes behind albums that have been waiting, even when more are due than a sweep takes.
+func TestMusicSweepGrabFailureRotatesToTheBack(t *testing.T) {
+	h := musicTestCoord(t)
+	titles := make([]string, 40)
+	for i := range titles {
+		titles[i] = fmt.Sprintf("Album %02d", i)
+	}
+	a := h.addArtist(t, "Prolific", "", titles, nil, "")
+	// Album 00 has never been searched; the rest missed once, (i) hours ago, so all are due.
+	for i := 1; i < 40; i++ {
+		if _, err := h.st.DB().Exec(
+			`UPDATE albums SET search_misses = 1, last_search_at = datetime('now', ?) WHERE artist_id = ? AND title = ?`,
+			fmt.Sprintf("-%d hours", i), a.ID, titles[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Only Album 00 turns up, and its grab always fails.
+	h.releases = func(q indexer.SearchQuery) (indexer.SearchResult, error) {
+		if q.Text != "Prolific Album 00" {
+			return indexer.SearchResult{}, nil
+		}
+		return indexer.SearchResult{Releases: []indexer.Release{rel("Prolific - Album 00 (2001) [FLAC]")}}, nil
+	}
+	h.c.musicGrabFn = func(context.Context, string, string, string, string) (string, error) {
+		return "", errors.New("dead .torrent link")
+	}
+
+	h.c.SearchMusicMissing(h.ctx)
+	if len(h.queries) != musicSweepCap || h.queries[0] != "Prolific Album 00" {
+		t.Fatalf("first sweep: %d searches %v, want %d starting with the never-searched album",
+			len(h.queries), h.queries, musicSweepCap)
+	}
+	if al := h.album(t, a.ID, "Album 00"); al.SearchMisses != 0 || al.LastSearchAt == "" {
+		t.Fatalf("after a failed grab: misses=%d last=%q, want no miss but a stamp", al.SearchMisses, al.LastSearchAt)
+	}
+
+	// Second sweep: Albums 01..15 are still due from hours ago and go first. Album 00 is
+	// still retried, since a failed grab isn't a miss, but last.
+	h.queries = nil
+	h.c.SearchMusicMissing(h.ctx)
+	if len(h.queries) != 16 {
+		t.Fatalf("second sweep searched %d albums, want 16: %v", len(h.queries), h.queries)
+	}
+	if last := h.queries[len(h.queries)-1]; last != "Prolific Album 00" {
+		t.Errorf("second sweep ended with %q, want the album whose grab failed: %v", last, h.queries)
+	}
+}
+
+// There's no usenet client, so a usenet FLAC must lose to a torrent MP3 rather than win the
+// pick and fail the grab on every sweep; usenet on its own finds nothing to grab.
+func TestGrabAlbumSkipsUsenet(t *testing.T) {
+	h := musicTestCoord(t)
+	a := h.addArtist(t, "Radiohead", "", []string{"OK Computer"}, nil, "")
+	al := h.album(t, a.ID, "OK Computer")
+	nzb := rel("Radiohead - OK Computer (1997) [FLAC]")
+	nzb.Transport = indexer.TransportUsenet
+
+	h.releases = found(nzb)
+	if out := h.c.grabAlbum(h.ctx, a, al); out.Code != outcomeNoMatch || len(h.grabs) != 0 {
+		t.Fatalf("usenet only: %+v, grabs %v; want no_match and nothing grabbed", out, h.grabs)
+	}
+	h.releases = found(nzb, rel("Radiohead - OK Computer (1997) [MP3 320]"))
+	if out := h.c.grabAlbum(h.ctx, a, al); out.Code != outcomeGrabbed || len(h.grabs) != 1 || !strings.Contains(h.grabs[0], "MP3") {
+		t.Errorf("usenet FLAC + torrent MP3: %+v, grabs %v; want the MP3", out, h.grabs)
 	}
 }
 

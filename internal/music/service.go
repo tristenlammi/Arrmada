@@ -186,6 +186,11 @@ func (s *Service) ResetSearchMisses(ctx context.Context, albumID int64) error {
 	return s.repo.ResetSearchMisses(ctx, albumID)
 }
 
+// TouchSearch stamps an album's search time without counting a miss (see the sweep).
+func (s *Service) TouchSearch(ctx context.Context, albumID int64) error {
+	return s.repo.TouchSearch(ctx, albumID)
+}
+
 // Tracks returns an album's tracks.
 func (s *Service) Tracks(ctx context.Context, albumID int64) ([]Track, error) {
 	return s.repo.TracksFor(ctx, albumID)

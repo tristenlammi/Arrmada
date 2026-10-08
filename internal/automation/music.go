@@ -30,7 +30,8 @@ const musicCategory = "arrmada-music"
 // a big wanted list is worked through over several sweeps instead of hammering every indexer
 // at once. An album with no MusicBrainz track listing is counted as a miss without an indexer
 // search: there'd be nothing to import a download against. A grab resets the backoff; a
-// search that failed for reasons of our own (indexers down, a grab error) doesn't count.
+// search that failed for reasons of our own (indexers down, a grab error) doesn't count,
+// though it still moves the album to the back of the line.
 // Running out of disk space ends the sweep, since every other album would hit the same wall.
 func (c *Coordinator) SearchMusicMissing(ctx context.Context) {
 	if c.music == nil || !c.moduleOn(ctx, "music") {
@@ -109,6 +110,13 @@ func (c *Coordinator) SearchMusicMissing(ctx context.Context) {
 			}
 		case out.Code == outcomeNoSpace:
 			return
+		default:
+			// Failed on our side. Not a miss, but stamp the time anyway: left at zero, an
+			// album that fails the same way every time (a dead .torrent link, say) would
+			// sort first every sweep and, 25 of them, take every slot.
+			if err := c.music.TouchSearch(ctx, d.album.ID); err != nil {
+				c.log.Warn("music: stamping the search time failed", "album", d.album.Title, "err", err)
+			}
 		}
 	}
 }
@@ -158,7 +166,7 @@ const (
 	outcomeNoMatch      = "no_match"      // releases came back, none of them this album
 	outcomeBlocked      = "blocked"       // every match is blocklisted or already grabbed
 	outcomeBelowProfile = "below_profile" // matches exist, none the profile accepts
-	outcomeIndexerError = "indexer_error" // the search failed, or every indexer errored
+	outcomeIndexerError = "indexer_error" // the search failed, or every indexer asked errored
 	outcomeListingError = "listing_error" // couldn't reach MusicBrainz for the listing
 	outcomeGrabFailed   = "grab_failed"   // the download client refused the release
 	outcomeNoSpace      = "no_space"      // not enough free disk for the release
@@ -226,9 +234,11 @@ func (c *Coordinator) grabAlbum(ctx context.Context, a music.Artist, al music.Al
 		return albumOutcome{Code: outcomeIndexerError, Detail: err.Error()}
 	}
 	if len(res.Releases) == 0 {
-		if len(res.Errors) > 0 {
+		if len(res.Errors) > 0 && len(res.Errors) >= res.Asked {
 			// Nothing came back because every indexer asked failed. That says nothing
-			// about the album, so it mustn't count against it.
+			// about the album, so it mustn't count against it. One dead indexer among
+			// healthy ones that found nothing is a plain miss, though, or a single broken
+			// tracker would keep every unfindable album out of the backoff for good.
 			return albumOutcome{Code: outcomeIndexerError, Detail: fmt.Sprintf("%d indexer(s) failed", len(res.Errors))}
 		}
 		return albumOutcome{Code: outcomeNoResults, Detail: "no releases"}
@@ -236,16 +246,19 @@ func (c *Coordinator) grabAlbum(ctx context.Context, a music.Artist, al music.Al
 
 	// Only releases that actually name THIS artist and album. Without this a search for one
 	// album happily grabs another by the same artist — the hole the Books module shipped
-	// with, and the reason its downloads landed on the wrong title.
+	// with, and the reason its downloads landed on the wrong title. Usenet releases go too:
+	// there's no client to hand them to, and a FLAC from usenet would otherwise outrank
+	// every torrent and fail the grab on every sweep.
+	usable := grabbable(res.Releases)
 	var cands []indexer.Release
-	for _, rel := range res.Releases {
+	for _, rel := range usable {
 		if music.ReleaseIsForAlbum(rel.Title, a.Name, al.Title) {
 			cands = append(cands, rel)
 		}
 	}
 	if len(cands) == 0 {
 		c.log.Info("music: no release matched this album", "artist", a.Name, "album", al.Title)
-		return albumOutcome{Code: outcomeNoMatch, Detail: fmt.Sprintf("%d release(s), none named this album", len(res.Releases))}
+		return albumOutcome{Code: outcomeNoMatch, Detail: fmt.Sprintf("%d torrent release(s), none named this album", len(usable))}
 	}
 	matched := len(cands)
 	cands = c.dropBlockedMusic(ctx, al.ID, cands)
@@ -703,7 +716,7 @@ func (c *Coordinator) GrabDiscography(ctx context.Context, artistID int64) error
 		return fmt.Errorf("search failed: %w", err)
 	}
 	var cands []indexer.Release
-	for _, rel := range res.Releases {
+	for _, rel := range grabbable(res.Releases) { // usenet has no client to go to
 		if music.ReleaseIsDiscographyFor(rel.Title, a.Name) {
 			cands = append(cands, rel)
 		}

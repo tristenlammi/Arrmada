@@ -325,6 +325,14 @@ func (r *Repo) ResetSearchMisses(ctx context.Context, id int64) error {
 	return err
 }
 
+// TouchSearch stamps the search time without counting a miss. Used when a search failed
+// for a reason of our own: the album rotates behind the others instead of taking the
+// first slot again every sweep, but its backoff doesn't grow.
+func (r *Repo) TouchSearch(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE albums SET last_search_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+	return err
+}
+
 // SetAlbumMonitored toggles an album and its tracks.
 func (r *Repo) SetAlbumMonitored(ctx context.Context, id int64, monitored bool) error {
 	if _, err := r.db.ExecContext(ctx, `UPDATE albums SET monitored = ? WHERE id = ?`, b2i(monitored), id); err != nil {
