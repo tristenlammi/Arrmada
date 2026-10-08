@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -859,6 +860,9 @@ func (im *Importer) MoveEpisodeSubs(oldVideo, newVideo string) {
 		target := newBase + stem[len(oldBase):] + filepath.Ext(p) // carry ".en"/".forced"
 		if err := im.Move(p, target); err == nil {
 			im.log.Info("moved subtitle with rename", "from", p, "to", target)
+		} else if errors.Is(err, ErrTargetExists) {
+			// Another subtitle already has that name; both stay where they are.
+			im.log.Warn("subtitle not moved with rename — a different file already has its new name", "from", p, "to", target)
 		}
 	}
 }
@@ -901,16 +905,76 @@ func (im *Importer) RemoveDirIfEmpty(dir string) {
 	}
 }
 
+// ErrTargetExists is returned by Move when a different file already sits at the target.
+var ErrTargetExists = errors.New("a different file already exists there")
+
 // Move relocates a file within the library (same volume), creating parent dirs. A
 // no-op when from == to.
+//
+// It never replaces an existing file. os.Rename silently overwrites its target on Linux,
+// so a rename after a renumber — S03E01's row now holding S02E22's file — used to land on
+// the real S03E01 and destroy it. A target that's just another name for the same file (a
+// hardlink, common because imports hardlink) isn't a different file: the source name is
+// dropped and the file stays put under the target name.
 func (im *Importer) Move(from, to string) error {
 	if from == to {
 		return nil
+	}
+	fromInfo, err := os.Lstat(from)
+	if err != nil {
+		return err
+	}
+	if toInfo, err := os.Lstat(to); err == nil {
+		if os.SameFile(fromInfo, toInfo) {
+			// A case-only rename on a case-insensitive filesystem stats as the same file
+			// but is ONE directory entry — removing "from" there would delete the file
+			// itself. Two hardlinks named "a.mkv" and "A.mkv" on a case-sensitive disk
+			// are two entries, and renaming one onto the other does nothing at all.
+			if strings.EqualFold(from, to) && !twoDirEntries(from, to) {
+				return os.Rename(from, to)
+			}
+			return os.Remove(from)
+		}
+		return fmt.Errorf("%w: %s", ErrTargetExists, to)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return err
 	}
 	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
 		return err
 	}
 	return os.Rename(from, to)
+}
+
+// twoDirEntries reports whether two paths that differ only in case are separate directory
+// entries (so the filesystem is case-sensitive) rather than one entry reached either way.
+// Anything it can't tell answers false, which makes Move rename instead of remove: at
+// worst a name is left over, never a file deleted.
+func twoDirEntries(from, to string) bool {
+	fromDir, err1 := os.Stat(filepath.Dir(from))
+	toDir, err2 := os.Stat(filepath.Dir(to))
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	if !os.SameFile(fromDir, toDir) {
+		return true // two folders whose names differ in case: only a case-sensitive disk has both
+	}
+	if filepath.Base(from) == filepath.Base(to) {
+		return false // the same name in the same folder
+	}
+	entries, err := os.ReadDir(filepath.Dir(to))
+	if err != nil {
+		return false
+	}
+	var hasFrom, hasTo bool
+	for _, e := range entries {
+		switch e.Name() {
+		case filepath.Base(from):
+			hasFrom = true
+		case filepath.Base(to):
+			hasTo = true
+		}
+	}
+	return hasFrom && hasTo
 }
 
 // SeriesLibraryFiles walks a series' library folder and returns the episode files

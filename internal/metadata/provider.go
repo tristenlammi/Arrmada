@@ -173,6 +173,14 @@ type SeriesDetails struct {
 	OriginalName string          `json:"original_name,omitempty"` // TMDB original_name (romaji for anime)
 	OriginalLang string          `json:"original_language,omitempty"`
 	TVDBID       int             `json:"tvdb_id,omitempty"` // for TheXEM scene mapping
+
+	// NumberingSource names whose listing Seasons came from: "tmdb", "tvdb" or "tvmaze".
+	// NumberingFallback is set when that listing is NOT the one the show would normally
+	// get — a higher-priority source that was available returned an error (or a TMDB
+	// season failed to load) — so the series module must not renumber or move files on
+	// it. Internal: never part of the API.
+	NumberingSource   string `json:"-"`
+	NumberingFallback bool   `json:"-"`
 }
 
 // SeasonDetails is one season plus its episodes.

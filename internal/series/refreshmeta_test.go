@@ -2,10 +2,9 @@ package series
 
 import (
 	"context"
-	"database/sql"
 	"testing"
 
-	_ "modernc.org/sqlite"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // A refresh must actually refresh. INSERT OR IGNORE alone froze an episode's metadata at
@@ -67,33 +66,16 @@ func TestRefreshUpdatesEpisodeMetadata(t *testing.T) {
 	}
 }
 
+// testRepo is a repo on the real schema (every migration applied) in a temp dir, so new
+// columns — numbering_source, and whatever comes after it — never break these tests.
 func testRepo(t *testing.T) (*Repo, context.Context) {
 	t.Helper()
-	db, err := sql.Open("sqlite", "file:"+t.TempDir()+"/t.db")
+	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
-	schema := []string{
-		`CREATE TABLE series (id INTEGER PRIMARY KEY AUTOINCREMENT, tmdb_id INTEGER UNIQUE, imdb_id TEXT DEFAULT '',
-		 title TEXT, year INTEGER DEFAULT 0, overview TEXT DEFAULT '', poster_url TEXT DEFAULT '', status TEXT DEFAULT '',
-		 network TEXT DEFAULT '', monitored INTEGER DEFAULT 1, quality_profile TEXT DEFAULT '', extra_json TEXT DEFAULT '',
-		 series_type TEXT DEFAULT 'standard', tvdb_id INTEGER DEFAULT 0, added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`,
-		`CREATE TABLE seasons (id INTEGER PRIMARY KEY AUTOINCREMENT, series_id INTEGER, season_number INTEGER,
-		 name TEXT DEFAULT '', overview TEXT DEFAULT '', poster_url TEXT DEFAULT '', monitored INTEGER DEFAULT 1,
-		 UNIQUE(series_id, season_number))`,
-		`CREATE TABLE episodes (id INTEGER PRIMARY KEY AUTOINCREMENT, series_id INTEGER, season_number INTEGER,
-		 episode_number INTEGER, title TEXT DEFAULT '', overview TEXT DEFAULT '', air_date TEXT DEFAULT '',
-		 runtime INTEGER DEFAULT 0, still_url TEXT DEFAULT '', monitored INTEGER DEFAULT 1, has_file INTEGER DEFAULT 0,
-		 file_path TEXT DEFAULT '', size_bytes INTEGER DEFAULT 0, absolute_number INTEGER DEFAULT 0,
-		 source_release TEXT DEFAULT '', UNIQUE(series_id, season_number, episode_number))`,
-	}
-	for _, q := range schema {
-		if _, err := db.Exec(q); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return NewRepo(db), context.Background()
+	t.Cleanup(func() { _ = st.Close() })
+	return NewRepo(st.DB()), context.Background()
 }
 
 // A refresh that can only ADD leaves a show stuck with whatever a previous metadata

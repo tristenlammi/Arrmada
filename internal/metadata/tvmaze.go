@@ -55,6 +55,9 @@ func NewTVmaze() *TVmaze {
 // it's always available — failures are handled per-request by falling back.
 func (t *TVmaze) Available() bool { return t != nil }
 
+// Name identifies TVmaze as a numbering source.
+func (t *TVmaze) Name() string { return "tvmaze" }
+
 // Episodes returns a show's seasons and episodes, matched by TVDB id (preferred) or IMDb
 // id. Returns nil with no error when the show simply isn't on TVmaze — a miss is normal
 // and the caller keeps its existing numbering.

@@ -27,6 +27,9 @@ const (
 	tvdbMinInterval = 200 * time.Millisecond
 	tvdbTimeout     = 20 * time.Second
 	tvdbMaxPages    = 20 // a very long anime tops out well under this at 500/page
+	// tvdbBadKeyRetry is how long a key TVDB rejected is left alone before it's tried
+	// again, so a rejection TVDB itself got wrong clears without a restart.
+	tvdbBadKeyRetry = time.Hour
 )
 
 // TVDB fetches episode listings, numbered the way releases are, with absolute numbers.
@@ -39,6 +42,11 @@ type TVDB struct {
 	token string    // cached bearer token
 	tokAt time.Time // when it was minted (re-login well before the ~1 month expiry)
 	last  time.Time // request pacing
+
+	// badKey is a key /login rejected, and badAt when. While the configured key is still
+	// that one, TVDB is unavailable rather than failing — see Available.
+	badKey string
+	badAt  time.Time
 }
 
 // NewTVDB builds the client. key resolves the API key lazily; empty means unavailable.
@@ -48,7 +56,26 @@ func NewTVDB(key func() string) *TVDB {
 
 // Available reports whether a key is configured, so the decorator can skip TVDB entirely
 // when it can't be used.
-func (t *TVDB) Available() bool { return t != nil && t.key() != "" }
+//
+// A key TVDB has rejected counts as no key. A wrong or expired key never starts working on
+// its own, and treated as an outage it flagged every show's listing as a stand-in on every
+// refresh, so nothing in the library refreshed properly until the key was fixed. The key
+// is tried again once it changes, or after tvdbBadKeyRetry.
+func (t *TVDB) Available() bool {
+	if t == nil {
+		return false
+	}
+	key := t.key()
+	if key == "" {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return key != t.badKey || time.Since(t.badAt) >= tvdbBadKeyRetry
+}
+
+// Name identifies TVDB as a numbering source.
+func (t *TVDB) Name() string { return "tvdb" }
 
 // Episodes returns a show's seasons and episodes in TVDB's aired-order numbering, each
 // carrying its absolute number. Matched by TVDB id — which TMDB already gives us. A show
@@ -208,8 +235,14 @@ func (t *TVDB) ensureToken(ctx context.Context) (string, error) {
 		return "", err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		t.mu.Lock()
+		t.badKey, t.badAt = key, time.Now()
+		t.mu.Unlock()
+		return "", fmt.Errorf("%w: tvdb login rejected the API key (%s) — check it in Settings", ErrSourceUnavailable, resp.Status)
+	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("tvdb login failed: %s (check the API key)", resp.Status)
+		return "", fmt.Errorf("tvdb login failed: %s", resp.Status)
 	}
 	var body struct {
 		Data struct {

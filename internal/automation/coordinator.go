@@ -70,6 +70,10 @@ type Coordinator struct {
 	// lifetime.
 	unmatchedMu sync.Mutex
 	unmatched   map[string]int
+	// metaRetry counts import sweeps that deferred a series download because the show's
+	// episode listing couldn't be trusted, keyed by content path (see importSeriesInto).
+	// Also guarded by unmatchedMu, and pruned the same way.
+	metaRetry map[string]int
 
 	// stallProgress remembers each pending grab's last observed download progress and
 	// when it last increased, keyed by grab ID. Stall detection compares against this:
@@ -1126,7 +1130,9 @@ func (c *Coordinator) RegrabEpisode(ctx context.Context, seriesID int64, season,
 			c.addBlockSeries(ctx, seriesID, title, "", "replaced by regrab")
 		}
 	}
-	return c.GrabBestForScope(ctx, seriesID, season, episode)
+	// Replace is the user saying "replace this episode", so its file goes in whatever it
+	// scores — but only this episode's. Anything else the release carries is gated.
+	return c.GrabBestForScope(ctx, seriesID, season, episode, true)
 }
 
 // stallSample is one observation of a grab's download progress: how far along it was
@@ -1665,6 +1671,44 @@ func (c *Coordinator) noteUnmatched(hash string) int {
 	}
 	c.unmatched[hash]++
 	return c.unmatched[hash]
+}
+
+// metadataRetryReviewAfter is how many sweeps a series file is retried while the show's
+// episode listing can't be trusted, before it's left for Review instead. At one sweep every
+// 30s that's ten minutes: long enough for a numbering source's blip to pass, short of
+// hiding a download for good behind a renumber that waits on the owner.
+const metadataRetryReviewAfter = 20
+
+// noteMetadataRetry records another deferred import of a series download and returns the
+// running count.
+func (c *Coordinator) noteMetadataRetry(contentPath string) int {
+	c.unmatchedMu.Lock()
+	defer c.unmatchedMu.Unlock()
+	if c.metaRetry == nil {
+		c.metaRetry = map[string]int{}
+	}
+	c.metaRetry[contentPath]++
+	return c.metaRetry[contentPath]
+}
+
+// forgetMetadataRetry clears a download's deferred-import count once an import of it could
+// check the metadata properly.
+func (c *Coordinator) forgetMetadataRetry(contentPath string) {
+	c.unmatchedMu.Lock()
+	defer c.unmatchedMu.Unlock()
+	delete(c.metaRetry, contentPath)
+}
+
+// pruneMetadataRetries drops deferred-import counts for downloads no longer in the
+// completed list.
+func (c *Coordinator) pruneMetadataRetries(active map[string]bool) {
+	c.unmatchedMu.Lock()
+	defer c.unmatchedMu.Unlock()
+	for p := range c.metaRetry {
+		if !active[p] {
+			delete(c.metaRetry, p)
+		}
+	}
 }
 
 // pruneUnmatched drops counters for downloads no longer in the completed list (removed,

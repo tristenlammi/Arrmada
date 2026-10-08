@@ -8,6 +8,7 @@ import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
 import { FitBadge } from "../components/FitBadge";
+import { RenameModal } from "./series/RenameModal";
 import { api, type FitItem, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile } from "../lib/api";
 
 // Auto-grab is fire-and-forget: the API answers 202 and searches in the background, and a
@@ -224,13 +225,7 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
   const btn = "rounded-lg px-3 py-2 text-[12.5px] font-semibold disabled:opacity-50";
   const ghost = { border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" } as const;
 
-  const rename = async () => {
-    const p = await api.seriesRenamePreview(series.id);
-    if (p.matches) { flash("Episode files are already named correctly."); return; }
-    const res = await api.renameSeries(series.id);
-    flash(`Renamed ${res.renamed} file${res.renamed === 1 ? "" : "s"}.`);
-    onChange();
-  };
+  const [showRename, setShowRename] = useState(false);
 
   return (
     <>
@@ -271,7 +266,7 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowSearch(true)}>Search indexers</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowPaste(true)}>Upload torrent</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowImport(true)}>Manual import</button>
-        <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("rename", rename)}>{busy === "rename" ? "Renaming…" : "Rename"}</button>
+        <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowRename(true)}>Rename</button>
         <DeleteButton series={series} />
       </div>
       {series.series_type === "anime" && <AliasPanel series={series} />}
@@ -284,6 +279,7 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
           onClose={() => setShowPaste(false)}
         />
       )}
+      {showRename && <RenameModal seriesId={series.id} title={series.title} onClose={() => setShowRename(false)} onRenamed={onChange} />}
       {showImport && <ManualImportModal series={series} onClose={() => setShowImport(false)} onImported={() => { onChange(); flash("Imported."); }} />}
       {showSearch && (
         <ReleaseSearchModal
@@ -316,6 +312,10 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
   const state: "unreleased" | "upcoming" | "normal" = total === 0 ? "unreleased" : airedCount === 0 ? "upcoming" : "normal";
   const name = season.season_number === 0 ? "Specials" : `Season ${season.season_number}`;
   const pct = counted ? Math.round((have / counted) * 100) : 0;
+  // The season Grab only fills gaps, so it's offered only while there is one: an aired,
+  // monitored episode with no file. On a full season it could only fetch a pack that the
+  // import gate then throws away.
+  const anyMissing = eps.some((e) => !e.has_file && e.monitored && aired(e));
 
   // A season pack request is settled once the pack is actually coming down or the season is
   // full — same rule as an episode, just read off the season as a whole.
@@ -361,7 +361,7 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
         )}
         {state !== "unreleased" && (
           <>
-            <button
+            {anyMissing && <button
               onClick={grabSeason}
               disabled={busy}
               title={requested ? `Already requested — the search runs in the background. Click to try again.` : `Auto-grab the best ${name} pack`}
@@ -371,7 +371,7 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
                 : { border: "1px solid var(--accent-line)", color: "var(--accent)" }}
             >
               {busy ? "…" : requested ? "✓ Requested" : "Grab"}
-            </button>
+            </button>}
             <button onClick={() => setSearching(true)} title={`Search indexers for ${name}`} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Search</button>
           </>
         )}
@@ -389,7 +389,7 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
           title={`${series.title} — ${name}`}
           subtitle="Season packs and episodes for this season."
           fetchReleases={() => api.seriesReleases(series.id, season.season_number)}
-          onGrab={async (rel) => { await api.grabSeries(series.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title }); onChange(); }}
+          onGrab={async (rel) => { await api.grabSeries(series.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title, season: season.season_number }); onChange(); }}
           onClose={() => setSearching(false)}
         />
       )}
@@ -432,6 +432,9 @@ function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep:
     finally { setBusy(false); }
   };
   const replaceEp = async () => {
+    // Replace blocklists a release and downloads another one in the background, so it asks
+    // first — and says how far it reaches: a pack it lands only overrides this episode.
+    if (!window.confirm(`Blocklist the current release of ${sxe(ep)} and download a different one? Only this episode's file is replaced.`)) return;
     setBusy(true);
     try { await api.regrabEpisode(series.id, ep.season_number, ep.episode_number); flash(`Replacing ${sxe(ep)} — blocklisted the current release, searching…`); }
     catch (e) { flash((e as Error).message); }
@@ -521,7 +524,7 @@ function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep:
           title={`${series.title} — ${sxe(ep)}`}
           subtitle={ep.title || undefined}
           fetchReleases={() => api.seriesReleases(series.id, ep.season_number, ep.episode_number)}
-          onGrab={async (rel) => { await api.grabSeries(series.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title }); onChange(); }}
+          onGrab={async (rel) => { await api.grabSeries(series.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title, season: ep.season_number, episode: ep.episode_number }); onChange(); }}
           onClose={() => setSearching(false)}
         />
       )}

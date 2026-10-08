@@ -330,7 +330,7 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 		if err != nil {
 			return err
 		}
-		placed, matched, unresolved, failed := c.importSeriesInto(ctx, s, r.ContentPath, true)
+		placed, matched, unresolved, failed := c.importSeriesInto(ctx, s, r.ContentPath, forceAll)
 		n := len(placed)
 		if matched == 0 {
 			// Wrapped in ErrNothingToImport so the API answers 422 rather than 500: the
@@ -429,9 +429,14 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 // the AUTOMATION downgrading a file; when the user picked the release, "is it better" was
 // already answered by them choosing it.
 //
+// But only for what they chose it FOR. A complete-series pack picked from the Season 3
+// modal, or landed by Replace on one episode, carries every other season too, and the user
+// said nothing about those — so force.Scope limits the say-so, and every episode outside
+// it goes through the gate like an automatic grab.
+//
 // placed lists the episodes that got a new file, so callers can act on exactly those
 // (the subtitles hook used to be handed only the series and queued the whole show).
-func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, contentPath string, force bool) (placed []series.EpisodeRef, matched, unresolved, failed int) {
+func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, contentPath string, force forceRule) (placed []series.EpisodeRef, matched, unresolved, failed int) {
 	// Unpack any archives first (scene releases ship the episode inside a RAR set — this
 	// is the Unpackerr job). Recursive, so a season pack's per-episode subfolders unpack.
 	if fi, err := os.Stat(contentPath); err == nil && fi.IsDir() {
@@ -486,6 +491,19 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	// more often than a numbering fault, an episode TMDB listed after the show was last
 	// refreshed. Refresh once per import and look again before calling it unresolved.
 	refreshed := false
+	// refreshUntrusted: that refresh couldn't trust the listing it got — a numbering source
+	// failed, or (anime) the listing numbers the show differently from what's stored and an
+	// unattended refresh won't apply that — so an episode it didn't add may well exist. The
+	// file is retried next sweep instead of sent to Review, but only for
+	// metadataRetryReviewAfter sweeps: a renumber waiting on the owner, or a source that
+	// stays down, won't clear by itself, and retrying forever kept the download out of sight.
+	refreshUntrusted := false
+	retries := 0 // this download's retry count, taken once per import when it's needed
+	defer func() {
+		if retries == 0 {
+			c.forgetMetadataRetry(contentPath) // checked properly this time — start over
+		}
+	}()
 	knownEpisode := func(ref series.EpisodeRef) bool {
 		if c.series.EpisodeExists(ctx, s.ID, ref.Season, ref.Episode) {
 			return true
@@ -496,10 +514,13 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		refreshed = true
 		c.log.Info("series import: file resolves to an episode the metadata doesn't have yet — refreshing the show",
 			"series", s.Title, "season", ref.Season, "episode", ref.Episode)
-		if _, _, err := c.series.Refresh(ctx, s.ID); err != nil {
+		// Never a rebuild: an import mustn't renumber the show under the files it's placing.
+		_, rr, err := c.series.Refresh(ctx, s.ID, series.RefreshOptions{})
+		if err != nil {
 			c.log.Warn("series import: refresh failed", "series", s.Title, "err", err)
 			return false
 		}
+		refreshUntrusted = rr.Fallback || rr.ModelChanged
 		return c.series.EpisodeExists(ctx, s.ID, ref.Season, ref.Episode)
 	}
 	for _, v := range videos {
@@ -532,6 +553,25 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			}
 		}
 		if len(known) == 0 {
+			if refreshUntrusted {
+				if retries == 0 {
+					retries = c.noteMetadataRetry(contentPath)
+				}
+				if retries < metadataRetryReviewAfter {
+					// The metadata couldn't be checked properly, so "doesn't exist" isn't
+					// known yet. Counted as failed, the download stays unhandled and the
+					// next sweep tries again; unresolved would send a perfectly good new
+					// episode to Review.
+					failed++
+					c.log.Warn("series import: the show's episode listing couldn't be trusted — will retry this file next sweep",
+						"series", s.Title, "file", filepath.Base(v.Path), "resolved_to", refsLabel(refs), "attempt", retries)
+					continue
+				}
+				// Out of retries: fall through to unresolved, so a human sees it. The
+				// show's History says why its listing is stuck.
+				c.log.Warn("series import: the show's episode listing still can't be trusted — giving up on retrying",
+					"series", s.Title, "file", filepath.Base(v.Path), "attempts", retries)
+			}
 			unresolved++
 			c.log.Warn("series import: file resolves to episodes the metadata doesn't have — not placing",
 				"series", s.Title, "file", filepath.Base(v.Path),
@@ -551,15 +591,12 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		if parser.Parse(sourceName).Resolution == "" && release.Resolution != "" {
 			sourceName = filepath.Base(contentPath)
 		}
-		wanted := refs[:0:0]
-		for _, ref := range refs {
-			if force || c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rel, sourceName, v.Size) {
-				wanted = append(wanted, ref)
-			}
-		}
-		if force && len(wanted) > 0 {
+		wanted, forced := refsToPlace(refs, force, func(ref series.EpisodeRef) bool {
+			return c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rel, sourceName, v.Size)
+		})
+		if len(forced) > 0 {
 			c.log.Info("series import: replacing on the user's say-so — quality gate skipped",
-				"series", s.Title, "file", filepath.Base(v.Path), "resolved_to", refsLabel(refs))
+				"series", s.Title, "file", filepath.Base(v.Path), "resolved_to", refsLabel(forced))
 		}
 		if len(wanted) == 0 {
 			// Say so. Without this a whole pack can resolve onto episodes that already

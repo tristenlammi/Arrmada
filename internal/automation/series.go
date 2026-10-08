@@ -1055,8 +1055,9 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			continue // not something we grabbed and not a library title — leave alone
 		}
 		// A release the user picked by hand imports regardless of what it scores against
-		// the current file — see importSeriesInto.
-		placed, matched, unresolved, importFailed := c.importSeriesInto(ctx, s, it.ContentPath, c.grabWasManual(ctx, it.Hash))
+		// the current file — but only for the season or episode it was picked for. See
+		// importSeriesInto.
+		placed, matched, unresolved, importFailed := c.importSeriesInto(ctx, s, it.ContentPath, c.grabForce(ctx, it.Hash))
 		imported := len(placed)
 		if importFailed > 0 {
 			// Some files resolved to wanted episodes but couldn't be placed (disk full,
@@ -1139,10 +1140,13 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 	// Forget unmatched counters for downloads that are gone from the completed list,
 	// so the map only ever tracks what's actually in the client.
 	active := make(map[string]bool, len(completed))
+	activePaths := make(map[string]bool, len(completed))
 	for _, it := range completed {
 		active[it.Hash] = true
+		activePaths[it.ContentPath] = true
 	}
 	c.pruneUnmatched(active)
+	c.pruneMetadataRetries(activePaths)
 }
 
 // incompleteSeasonReason explains why a re-processed release added nothing, given how many

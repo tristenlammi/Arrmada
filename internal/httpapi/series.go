@@ -490,6 +490,10 @@ func (a *api) handleGrabSeries(w http.ResponseWriter, r *http.Request) {
 		Indexer     string `json:"indexer"`
 		DownloadURL string `json:"download_url"`
 		Title       string `json:"title"`
+		// The modal it was picked from. Absent season = the whole-show search; season 0
+		// is Specials, a real season — so these are pointers, not zero-means-unset.
+		Season  *int `json:"season"`
+		Episode *int `json:"episode"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -498,11 +502,36 @@ func (a *api) handleGrabSeries(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "download_url is required")
 		return
 	}
-	if err := a.deps.Automation.GrabForSeries(r.Context(), id, req.Indexer, req.DownloadURL, req.Title); err != nil {
+	scope, ok := grabScopeOf(req.Season, req.Episode)
+	if !ok {
+		a.writeError(w, http.StatusBadRequest, "episode needs a season, and neither can be negative")
+		return
+	}
+	if err := a.deps.Automation.GrabForSeries(r.Context(), id, req.Indexer, req.DownloadURL, req.Title, scope); err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "grabbed", "title": req.Title})
+}
+
+// grabScopeOf turns the optional season/episode of a grab request into its scope. The
+// scope decides which episodes skip the import gate, so anything ambiguous is refused
+// rather than guessed at — guessing wide would re-open the overwrite it exists to stop.
+func grabScopeOf(season, episode *int) (automation.GrabScope, bool) {
+	if season == nil {
+		if episode != nil {
+			return automation.GrabScope{}, false
+		}
+		return automation.WholeShow, true
+	}
+	ep := 0
+	if episode != nil {
+		ep = *episode
+	}
+	if *season < 0 || ep < 0 {
+		return automation.GrabScope{}, false
+	}
+	return automation.ScopeFor(*season, ep), true
 }
 
 // handleAutoGrabSeries auto-grabs the best eligible release for a season/episode
@@ -522,7 +551,8 @@ func (a *api) handleAutoGrabSeries(w http.ResponseWriter, r *http.Request) {
 	go func(sid, season, episode int64) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
-		if err := a.deps.Automation.GrabBestForScope(ctx, sid, int(season), int(episode)); err != nil {
+		// Not manual: the app picks the release, so the import gate still guards every file.
+		if err := a.deps.Automation.GrabBestForScope(ctx, sid, int(season), int(episode), false); err != nil {
 			a.deps.Log.Warn("series scope auto-grab failed", "series_id", sid, "err", err)
 		}
 	}(id, int64(req.Season), int64(req.Episode))
@@ -537,7 +567,8 @@ func (a *api) handleRefreshSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	_, renumbered, err := a.deps.Series.Refresh(ctx, id)
+	// The owner's own Refresh is the one place a renumber may move files.
+	_, rr, err := a.deps.Series.Refresh(ctx, id, series.RefreshOptions{AllowRebuild: true})
 	if err != nil {
 		if errors.Is(err, series.ErrNotFound) {
 			a.writeError(w, http.StatusNotFound, "series not found")
@@ -547,12 +578,14 @@ func (a *api) handleRefreshSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A rebuild moved files to new (season, episode) rows but left them at their old on-disk
-	// names; rename brings the library into line before the rescan reads it.
-	if renumbered {
-		if moved, rerr := a.deps.Automation.SeriesRename(ctx, id); rerr != nil {
+	// names; rename brings the library into line before the rescan reads it — through the
+	// collision-safe rename, so no file is ever replaced.
+	if rr.Renumbered {
+		if res, rerr := a.deps.Automation.SeriesRename(ctx, id, nil); rerr != nil {
 			a.deps.Log.Warn("series: rename after renumber failed", "series_id", id, "err", rerr)
 		} else {
-			a.deps.Log.Info("series: renamed files after renumber", "series_id", id, "moved", moved)
+			a.deps.Log.Info("series: renamed files after renumber", "series_id", id, "moved", res.Moved)
+			a.deps.Automation.LogRenameSkips(id, res)
 		}
 	}
 	a.deps.Automation.RescanSeries(ctx, id)
@@ -607,7 +640,9 @@ func (a *api) refreshSeriesSweep(ids []int64) {
 	for _, id := range ids {
 		// Per-series budget, so one hung metadata call can't stall the whole sweep.
 		each, cancelEach := context.WithTimeout(ctx, 60*time.Second)
-		_, renumbered, err := a.deps.Series.Refresh(each, id)
+		// Never a rebuild: refresh-all runs unattended across the whole library, so a
+		// numbering change is only noted in History for the owner to apply per show.
+		_, _, err := a.deps.Series.Refresh(each, id, series.RefreshOptions{})
 		if err != nil {
 			failed++
 			a.deps.Log.Warn("series: refresh failed", "series_id", id, "err", err)
@@ -616,11 +651,6 @@ func (a *api) refreshSeriesSweep(ids []int64) {
 				break // the whole sweep timed out or was cancelled
 			}
 			continue
-		}
-		if renumbered {
-			if _, rerr := a.deps.Automation.SeriesRename(each, id); rerr != nil {
-				a.deps.Log.Warn("series: rename after renumber failed", "series_id", id, "err", rerr)
-			}
 		}
 		a.deps.Automation.RescanSeries(each, id)
 		cancelEach()
@@ -708,17 +738,30 @@ func (a *api) handleSeriesRenamePreview(w http.ResponseWriter, r *http.Request) 
 	a.writeJSON(w, http.StatusOK, map[string]any{"items": items, "matches": len(items) == 0})
 }
 
+// The body is optional: {items} is the previewed list the user confirmed, and only those
+// moves are applied. Without it every pending rename is applied, as before.
 func (a *api) handleSeriesRename(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)
 	if !ok {
 		return
 	}
-	moved, err := a.deps.Automation.SeriesRename(r.Context(), id)
+	var req struct {
+		Items []automation.SeriesRenameItem `json:"items"`
+	}
+	if r.ContentLength != 0 {
+		if !a.decodeJSON(w, r, &req) {
+			return
+		}
+		if req.Items == nil {
+			req.Items = []automation.SeriesRenameItem{} // "{}" confirms nothing, not everything
+		}
+	}
+	res, err := a.deps.Automation.SeriesRename(r.Context(), id, req.Items)
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not rename")
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"renamed": moved})
+	a.writeJSON(w, http.StatusOK, res)
 }
 
 // --- blocklist + per-episode actions (mirrors the movie surface) ---

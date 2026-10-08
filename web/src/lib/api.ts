@@ -749,6 +749,9 @@ export interface Series {
   monitored: boolean;
   quality_profile: string;
   series_type?: string; // "standard" | "anime"
+  // Whose listing the stored episode numbering follows: "tvdb" | "tvmaze" | "tmdb", or ""
+  // when not yet recorded.
+  numbering_source?: string;
   scene_overrides?: SceneOverride[];
   added_at?: string;
   extra?: SeriesExtra;
@@ -879,6 +882,25 @@ export interface SeriesImportCandidate {
   episode: number;
   size_bytes: number;
   quality?: string;
+}
+
+// One proposed episode-file rename. conflict is set when it can't happen (another file
+// already has the new name) and says why.
+export interface SeriesRenameItem {
+  from: string;
+  to: string;
+  season: number;
+  episode: number;
+  conflict?: string;
+}
+
+// A rename the server left alone, and why.
+export interface RenameSkip {
+  from: string;
+  to: string;
+  season: number;
+  episode: number;
+  reason: string;
 }
 
 export interface QueueItem {
@@ -1346,12 +1368,15 @@ export const api = {
     req<{ status: string }>(`/api/v1/series/${id}/search`, { method: "POST" }),
   seriesReleases: (id: number, season?: number, episode?: number) => {
     const q = new URLSearchParams();
-    if (season) q.set("season", String(season));
-    if (episode) q.set("episode", String(episode));
+    // Season 0 is Specials, not "no season" — send it whenever it's given.
+    if (season !== undefined) q.set("season", String(season));
+    if (episode !== undefined) q.set("episode", String(episode));
     const qs = q.toString();
     return req<ReleaseList>(`/api/v1/series/${id}/releases${qs ? `?${qs}` : ""}`);
   },
-  grabSeries: (id: number, body: { indexer?: string; download_url: string; title: string }) =>
+  // season/episode name the modal the release was picked from. The server skips the import
+  // quality gate only for episodes inside it; leave both out for the whole-show search.
+  grabSeries: (id: number, body: { indexer?: string; download_url: string; title: string; season?: number; episode?: number }) =>
     req<{ status: string }>(`/api/v1/series/${id}/grab`, { method: "POST", body: JSON.stringify(body) }),
   autoGrabSeries: (id: number, season: number, episode: number) =>
     req<{ status: string }>(`/api/v1/series/${id}/autograb`, { method: "POST", body: JSON.stringify({ season, episode }) }),
@@ -1411,9 +1436,11 @@ export const api = {
   seriesManualImport: (id: number, path: string) =>
     req<{ status: string; background?: boolean }>(`/api/v1/series/${id}/manualimport`, { method: "POST", body: JSON.stringify({ path }) }),
   seriesRenamePreview: (id: number) =>
-    req<{ items: { from: string; to: string }[]; matches: boolean }>(`/api/v1/series/${id}/rename`),
-  renameSeries: (id: number) =>
-    req<{ renamed: number }>(`/api/v1/series/${id}/rename`, { method: "POST" }),
+    req<{ items: SeriesRenameItem[]; matches: boolean }>(`/api/v1/series/${id}/rename`),
+  // Applies only the previewed items: anything that changed since the preview is skipped
+  // and reported, never moved blind.
+  renameSeries: (id: number, items: SeriesRenameItem[]) =>
+    req<{ renamed: number; skipped: RenameSkip[] }>(`/api/v1/series/${id}/rename`, { method: "POST", body: JSON.stringify({ items }) }),
   setSeriesMonitored: (id: number, monitored: boolean) =>
     req<{ monitored: boolean }>(`/api/v1/series/${id}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
   setSeriesProfile: (id: number, quality_profile: string) =>

@@ -210,9 +210,16 @@ type stubEpisodes struct {
 	seasons     []SeasonDetails
 	err         error
 	unavailable bool // toggled at runtime to model a key added/removed while the app runs
+	name        string
 }
 
 func (s *stubEpisodes) Available() bool { return !s.unavailable }
+func (s *stubEpisodes) Name() string {
+	if s.name == "" {
+		return "stub"
+	}
+	return s.name
+}
 func (s *stubEpisodes) Episodes(context.Context, int, string) ([]SeasonDetails, error) {
 	return s.seasons, s.err
 }

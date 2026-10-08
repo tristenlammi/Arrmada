@@ -1,0 +1,12 @@
+-- 0092_series_numbering_source: which listing numbers a show's episodes — 'tvdb', 'tvmaze'
+-- or 'tmdb' — as of the last refresh that applied one.
+--
+-- The episode source falls back from TVDB to TVmaze to TMDB on any error, and nothing
+-- recorded which one numbered the show. So a TVmaze timeout handed a refresh TMDB's
+-- numbering, the refresh "renumbered" the show, files moved, and the next good refresh
+-- moved them back. With the source stored, a refresh can tell a real renumber from a
+-- stand-in listing and leave the files alone.
+--
+-- Existing shows start at '' (unknown), which is never treated as authoritative, so
+-- nothing is rebuilt automatically after the upgrade.
+ALTER TABLE series ADD COLUMN numbering_source TEXT NOT NULL DEFAULT '';
