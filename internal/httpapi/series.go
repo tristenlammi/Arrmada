@@ -358,7 +358,10 @@ func (a *api) handleDeleteSeries(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	sum, err := a.deps.Series.Delete(ctx, id, deleteFiles)
+	// Detached from the request: moving a big show to a bin on another filesystem copies
+	// for a long time, and if the browser or a proxy gives up meanwhile, the files would
+	// all be in the bin while the series row stayed, still claiming them.
+	sum, err := a.deps.Series.Delete(context.WithoutCancel(ctx), id, deleteFiles)
 	if errors.Is(err, series.ErrFilesNotRemoved) {
 		a.writeJSON(w, http.StatusConflict, map[string]any{
 			"status": "error", "message": err.Error(), "moved": sum.Moved, "failed": sum.Failed,
