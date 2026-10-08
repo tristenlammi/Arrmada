@@ -639,7 +639,8 @@ func main() {
 			}
 		},
 		// Safety copies before destructive admin actions (user delete). Newest 3 of each
-		// kind are kept in <data>/backups.
+		// kind are kept in <data>/backups; deleting an account with no listening data is a
+		// kind of its own, so it can't push out a copy that holds someone's places.
 		Snapshot: func(ctx context.Context, kind string) (string, error) {
 			return st.SafetyCopy(ctx, cfg.DataDir, kind, 3)
 		},

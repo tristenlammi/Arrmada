@@ -199,7 +199,14 @@ func (a *api) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, "couldn't take a safety copy first — nothing was deleted")
 		return
 	}
-	path, err := a.deps.Snapshot(r.Context(), "pre-delete-user")
+	// Accounts with nothing to lose get a kind of their own. Only the newest few copies of
+	// each kind are kept, so clearing out a few empty test or guest accounts must not prune
+	// the one copy that still holds a family member's audiobook places.
+	kind := "pre-delete-user"
+	if !imp.HasListeningData() && imp.Bookmarks == 0 {
+		kind = "pre-delete-empty-user"
+	}
+	path, err := a.deps.Snapshot(r.Context(), kind)
 	if err != nil {
 		a.deps.Log.Error("users: safety copy before delete failed", "user_id", id, "err", err)
 		a.writeError(w, http.StatusInternalServerError, "couldn't take a safety copy first — nothing was deleted ("+err.Error()+")")

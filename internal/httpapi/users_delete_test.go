@@ -75,10 +75,14 @@ func TestDeleteUserRequiresConfirmWhenListeningData(t *testing.T) {
 	if s.userExists(t, kid.ID) {
 		t.Error("user should be gone after a confirmed delete")
 	}
+	if len(snap.calls) != 1 || snap.calls[0] != "pre-delete-user" {
+		t.Errorf("snapshot calls = %v, want one pre-delete-user", snap.calls)
+	}
 }
 
 // A user with no listening data can be deleted without typing anything, but the database
-// is still copied first.
+// is still copied first — as a kind of its own, so deleting empty accounts can't prune the
+// copy that holds someone's audiobook places.
 func TestDeleteUserTakesSnapshot(t *testing.T) {
 	snap := &snapshotRecorder{}
 	s := newRouteServer(t, func(d *Deps) { d.Snapshot = snap.fn })
@@ -90,8 +94,8 @@ func TestDeleteUserTakesSnapshot(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("HTTP %d: %s", rec.Code, rec.Body)
 	}
-	if len(snap.calls) != 1 || snap.calls[0] != "pre-delete-user" {
-		t.Fatalf("snapshot calls = %v, want one pre-delete-user", snap.calls)
+	if len(snap.calls) != 1 || snap.calls[0] != "pre-delete-empty-user" {
+		t.Fatalf("snapshot calls = %v, want one pre-delete-empty-user", snap.calls)
 	}
 	if !snap.userAlive[0] {
 		t.Error("the snapshot ran after the user was already deleted")
