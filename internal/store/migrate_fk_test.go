@@ -14,13 +14,18 @@ INSERT INTO n (id, p_id) VALUES (20, 1), (21, 2);
 `
 
 func TestFKOffMigrationKeepsChildRows(t *testing.T) {
-	// Both spellings of the directive take the safe path.
-	for _, directive := range append([]string{fkOffDirective}, fkOffAliases...) {
-		t.Run(directive, func(t *testing.T) {
+	// Both spellings of the directive take the safe path, and so does a file an
+	// editor saved with a byte-order mark in front of it.
+	heads := map[string]string{"after a BOM": utf8BOM + fkOffDirective}
+	for _, d := range append([]string{fkOffDirective}, fkOffAliases...) {
+		heads[d] = d
+	}
+	for name, head := range heads {
+		t.Run(name, func(t *testing.T) {
 			db := testDB(t, 1)
 			fsys := memFS(map[string]string{
 				"0001_init.sql":      setNullSchema,
-				"0002_rebuild_p.sql": directive + "\n" + rebuildP,
+				"0002_rebuild_p.sql": head + "\n" + rebuildP,
 			})
 			if err := runMigrations(context.Background(), db, fsys); err != nil {
 				t.Fatalf("migrate: %v", err)
@@ -69,8 +74,9 @@ func TestFKOffMigrationFailsOnViolations(t *testing.T) {
 // the ordinary path, which is exactly the cascade it was meant to prevent.
 func TestBadDirectiveRefusesToRun(t *testing.T) {
 	cases := map[string]string{
-		"misspelled": "-- arrmada:foreign-keys off\n" + rebuildP,
-		"misplaced":  "-- Rebuild p to add a column.\n" + fkOffDirective + "\n" + rebuildP,
+		"misspelled":             "-- arrmada:foreign-keys off\n" + rebuildP,
+		"misplaced":              "-- Rebuild p to add a column.\n" + fkOffDirective + "\n" + rebuildP,
+		"misspelled after a BOM": utf8BOM + "-- arrmada:foreign-keys off\n" + rebuildP,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

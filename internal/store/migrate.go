@@ -141,19 +141,20 @@ func pendingMigrations(ctx context.Context, db *sql.DB, fsys fs.FS) (pend []stri
 func applyMigrations(ctx context.Context, db *sql.DB, fsys fs.FS, names []string, log *slog.Logger) error {
 	for _, name := range names {
 		version := strings.TrimSuffix(name, ".sql")
-		body, err := fs.ReadFile(fsys, name)
+		raw, err := fs.ReadFile(fsys, name)
 		if err != nil {
 			return fmt.Errorf("read migration %s: %w", name, err)
 		}
+		body := strings.TrimPrefix(string(raw), utf8BOM)
 		start := time.Now()
-		fkOff, err := migrationDirective(string(body))
+		fkOff, err := migrationDirective(body)
 		if err != nil {
 			return fmt.Errorf("migration %s: %w", name, err)
 		}
 		if fkOff {
-			err = applyFKOff(ctx, db, version, string(body))
+			err = applyFKOff(ctx, db, version, body)
 		} else {
-			err = applyOne(ctx, db, version, string(body))
+			err = applyOne(ctx, db, version, body)
 		}
 		if err != nil {
 			return fmt.Errorf("apply migration %s: %w", name, err)
@@ -173,12 +174,17 @@ var fkOffAliases = []string{"-- arrmada:foreign-keys=off"}
 // directivePrefix marks a comment line as an instruction to this runner.
 const directivePrefix = "-- arrmada:"
 
+// utf8BOM is what some Windows editors write at the start of a file. It isn't
+// whitespace, so left in place it would hide a directive on the first line and
+// the rebuild would quietly run the cascading way.
+const utf8BOM = "\uFEFF"
+
 // migrationDirective reports whether the file opts into the foreign-keys-off path,
 // which it does when its first non-blank line is the directive. A directive that is
 // misspelled, or not on the first line, is an error rather than being ignored:
 // ignoring it would quietly run a parent-table rebuild the cascading way.
 func migrationDirective(body string) (fkOff bool, err error) {
-	sc := bufio.NewScanner(strings.NewReader(body))
+	sc := bufio.NewScanner(strings.NewReader(strings.TrimPrefix(body, utf8BOM)))
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	first := true
 	for sc.Scan() {
