@@ -99,17 +99,6 @@ func (a *api) handleLookupBooks(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"results": results, "source": a.deps.Books.MetadataSource()})
 }
 
-// handleMergeBookDuplicates folds books that are the same title and author into one row
-// each — the fix for a library that collected the same novel under several catalogue keys.
-func (a *api) handleMergeBookDuplicates(w http.ResponseWriter, r *http.Request) {
-	n, err := a.deps.Books.MergeDuplicates(r.Context())
-	if err != nil {
-		a.writeError(w, http.StatusInternalServerError, "could not merge duplicates")
-		return
-	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"merged": n})
-}
-
 func (a *api) handleAddBook(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		OLKey          string `json:"ol_key"`

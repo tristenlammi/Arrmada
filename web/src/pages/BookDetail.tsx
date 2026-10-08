@@ -523,6 +523,7 @@ const EVENT_TONES: Record<string, string> = {
   grabbed: "var(--accent)",
   imported: "var(--good)",
   merged: "var(--good)",
+  possible_duplicate: "var(--accent)",
   matched: "var(--accent)",
   edited: "var(--ink-dim)",
   renamed: "var(--ink-dim)",

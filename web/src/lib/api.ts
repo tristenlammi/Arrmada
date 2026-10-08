@@ -736,7 +736,7 @@ export interface Series {
 // --- Books ---
 export type BookSource = "openlibrary" | "hardcover";
 export interface BookUpgradeStatus {
-  running: boolean; total: number; done: number; upgraded: number; merged: number; unmatched: number;
+  running: boolean; total: number; done: number; upgraded: number; flagged: number; unmatched: number;
   started_at?: number; ended_at?: number; error?: string;
   notes?: string[]; // why the first few books didn't match
   left?: { id: number; title: string; author?: string; reason: string }[]; // every book left as it was
@@ -1401,7 +1401,6 @@ export const api = {
   // the response says which catalogue the default search uses.
   lookupBooks: (q: string, source?: "openlibrary" | "hardcover") =>
     req<{ results: BookLookup[]; source: BookSource }>(`/api/v1/books/lookup?q=${encodeURIComponent(q)}${source ? `&source=${source}` : ""}`),
-  mergeBookDuplicates: () => req<{ merged: number }>("/api/v1/books/dedupe", { method: "POST" }),
   addBook: (body: { ol_key: string; quality_profile?: string; monitored?: boolean; search_on_add?: boolean; title?: string; author?: string; year?: number; cover_url?: string }) =>
     req<Book>("/api/v1/books", { method: "POST", body: JSON.stringify(body) }),
   bookDetail: (id: number) => req<Book>(`/api/v1/books/${id}`),
