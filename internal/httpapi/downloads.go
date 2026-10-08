@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/download"
@@ -19,13 +21,84 @@ func (a *api) handlePauseDownload(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "paused"})
 }
 
-// handleResumeDownload restarts a stopped torrent.
+// handleResumeDownload restarts a stopped torrent. "all" resumes every paused torrent
+// except those the disk guard is holding.
+//
+// Resume used to go straight to qBittorrent, hash "all" included. The guard skipped
+// anything it already held, so a torrent it paused and the user resumed was never
+// paused again and the cache pool filled with the guard switched on.
 func (a *api) handleResumeDownload(w http.ResponseWriter, r *http.Request) {
-	if err := a.deps.Downloads.Resume(r.Context(), r.PathValue("hash")); err != nil {
+	ctx := r.Context()
+	hash := r.PathValue("hash")
+	if hash == "all" {
+		a.resumeAllDownloads(w, r)
+		return
+	}
+	if holding, st := a.guardHolding(ctx); holding[strings.ToLower(hash)] {
+		a.writeError(w, http.StatusConflict, guardHeldMessage(st))
+		return
+	}
+	if err := a.deps.Downloads.Resume(ctx, hash); err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "resumed"})
+}
+
+// resumeAllDownloads resumes each paused torrent the disk guard isn't holding, and says
+// how many it left for the guard so the page can explain why they're still paused.
+func (a *api) resumeAllDownloads(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	items, err := a.deps.Downloads.Queue(ctx)
+	if err != nil {
+		a.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	holding, _ := a.guardHolding(ctx)
+	var resumed, held, failed int
+	var lastErr error
+	for _, it := range items {
+		if it.State != "paused" {
+			continue
+		}
+		if holding[strings.ToLower(it.Hash)] {
+			held++
+			continue
+		}
+		if err := a.deps.Downloads.Resume(ctx, it.Hash); err != nil {
+			failed++
+			lastErr = err
+			continue
+		}
+		resumed++
+	}
+	if failed > 0 && resumed == 0 {
+		a.writeError(w, http.StatusBadGateway, lastErr.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"status": "resumed", "resumed": resumed, "held_by_guard": held, "failed": failed,
+	})
+}
+
+// guardHolding returns the torrents the disk guard is holding right now (lowercased
+// hashes), with its status for messages. Empty when there's no guard or it isn't
+// engaged: a guard that has drained below its resume point, been turned off, or can't
+// measure the disk releases what it holds on its next pass, so nothing should be
+// refused in its name.
+func (a *api) guardHolding(ctx context.Context) (map[string]bool, download.GuardStatus) {
+	g := a.deps.DiskGuard
+	if g == nil || !g.Engaged(ctx) {
+		return nil, download.GuardStatus{}
+	}
+	return g.Held(ctx), g.Status(ctx)
+}
+
+// guardHeldMessage explains a refused resume, including how to override it.
+func guardHeldMessage(st download.GuardStatus) string {
+	return fmt.Sprintf("Held by the disk guard: %s is %.0f%% full (pauses at %d%%, resumes below %d%%). "+
+		"It will resume on its own once space is freed, or turn the guard off in Settings → Downloads.",
+		st.Path, st.UsedPct, st.PausePct, st.ResumePct)
 }
 
 // handleDeleteDownload removes a torrent, optionally with its data (?delete_data=true).

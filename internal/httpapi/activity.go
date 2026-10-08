@@ -138,6 +138,11 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// What the disk guard is holding, so a guard pause reads differently from one the
+	// user made — and the page doesn't offer a Resume that the server will refuse.
+	guardHeld, guardSt := a.guardHolding(ctx)
+	heldCount := 0
+
 	downloads := make([]map[string]any, 0, len(queue))
 	var totalDown, totalUp int64
 	var unmatched []string
@@ -184,6 +189,10 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 			"media_type":      mediaType,
 			"imported":        imported[it.Hash],
 		}
+		if it.State == "paused" && guardHeld[strings.ToLower(it.Hash)] {
+			entry["held_by_guard"] = true
+			heldCount++
+		}
 		// Info hash first: the indexer's listing title is often a prettified rendering of
 		// the actual torrent, so matching on the name alone missed entire trackers and
 		// labelled genuinely-managed torrents "Not managed by Arrmada".
@@ -204,13 +213,20 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	a.logUnmatchedSeeds(ctx, unmatched, seedPolicies)
 
 	freeGB, _ := diskspace.FreeGB(a.deps.Config.DownloadsDir)
-	a.writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"searching": searching,
 		"upcoming":  upcoming,
 		"downloads": downloads,
 		"totals":    map[string]any{"down_speed": totalDown, "up_speed": totalUp, "active": active},
 		"free_gb":   freeGB,
-	})
+	}
+	if heldCount > 0 {
+		out["disk_guard"] = map[string]any{
+			"holding": heldCount, "used_pct": guardSt.UsedPct,
+			"pause_pct": guardSt.PausePct, "resume_pct": guardSt.ResumePct,
+		}
+	}
+	a.writeJSON(w, http.StatusOK, out)
 }
 
 // profileName resolves a profile reference to a friendly name.

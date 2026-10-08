@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { api, type ActivityDownload, type ClientSettings, type SearchingItem } from "../lib/api";
+import { api, type ActivityDownload, type ClientSettings, type DiskGuardHold, type SearchingItem } from "../lib/api";
 import { useMe } from "../lib/me";
 
 type MediaFilter = "all" | "movie" | "series" | "book" | "music";
@@ -61,6 +61,9 @@ export function Downloads() {
   const [downloads, setDownloads] = useState<ActivityDownload[]>([]);
   const [totals, setTotals] = useState<{ down_speed: number; up_speed: number; active: number }>({ down_speed: 0, up_speed: 0, active: 0 });
   const [freeGb, setFreeGb] = useState<number | null>(null);
+  const [guard, setGuard] = useState<DiskGuardHold | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 4500); };
   const [reconnecting, setReconnecting] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [query, setQuery] = useState("");
@@ -92,6 +95,7 @@ export function Downloads() {
         setDownloads(a.downloads ?? []);
         if (a.totals) setTotals(a.totals);
         if (typeof a.free_gb === "number") setFreeGb(a.free_gb);
+        setGuard(a.disk_guard ?? null);
         setReconnecting(false);
         setLoaded(true);
       }).catch(() => {
@@ -105,10 +109,17 @@ export function Downloads() {
     return () => { alive = false; clearInterval(t); };
   }, []);
 
+  // The next poll reflects what happened; a refusal (e.g. the disk guard holding a
+  // torrent) is shown, since the poll alone can't say why nothing changed.
   const act = async (hash: string, fn: () => Promise<unknown>) => {
     setBusy((b) => ({ ...b, [hash]: true }));
-    try { await fn(); } catch { /* next poll reflects reality */ } finally { setBusy((b) => ({ ...b, [hash]: false })); }
+    try { await fn(); } catch (e) { flash((e as Error).message); } finally { setBusy((b) => ({ ...b, [hash]: false })); }
   };
+  const resumeAll = () => act("all", async () => {
+    const r = await api.resumeDownload("all");
+    const held = r.held_by_guard ?? 0;
+    flash(`Resumed ${r.resumed ?? 0}${held > 0 ? ` · ${held} held by the disk guard` : ""}${r.failed ? ` · ${r.failed} failed` : ""}.`);
+  });
 
   const activeDownloads = useMemo(() => downloads.filter((d) => d.progress < 1), [downloads]);
   const seedingDownloads = useMemo(() => downloads.filter((d) => d.progress >= 1), [downloads]);
@@ -169,7 +180,7 @@ export function Downloads() {
           {freeGb != null && <Stat label="free" value={`${freeGb.toFixed(0)} GB`} tone={freeGb < 20 ? "var(--reject)" : undefined} />}
           <div className="ml-auto flex items-center gap-2">
             <button onClick={() => act("all", () => api.pauseDownload("all"))} className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Pause all</button>
-            <button onClick={() => act("all", () => api.resumeDownload("all"))} className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Resume all</button>
+            <button onClick={resumeAll} title={guard ? "Torrents the disk guard paused stay paused until the volume drains" : undefined} className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Resume all{guard && guard.holding > 0 ? ` (${guard.holding} held by disk guard)` : ""}</button>
             {clientId != null && (
               <button onClick={() => setShowSettings((s) => !s)} className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: `1px solid ${showSettings ? "var(--accent)" : "var(--line)"}`, color: showSettings ? "var(--accent)" : "var(--ink-dim)" }}>⚙ Speed & limits</button>
             )}
@@ -224,14 +235,14 @@ export function Downloads() {
         {!loaded ? null : tab === "downloads" ? (
           shownDownloads.length === 0 ? <Empty>Nothing downloading. Grab a release and it'll appear here.</Empty> : (
             <div className="flex flex-col gap-2">
-              {shownDownloads.map((it) => <DownloadCard key={it.hash} it={it} busy={!!busy[it.hash]} act={act} />)}
+              {shownDownloads.map((it) => <DownloadCard key={it.hash} it={it} guard={guard} busy={!!busy[it.hash]} act={act} />)}
             </div>
           )
         ) : tab === "seeding" ? (
           shownSeeding.length === 0 ? <Empty>Nothing seeding right now.</Empty> : (
             <div className="flex flex-col gap-2">
               <SeedingSummary items={shownSeeding} />
-              {shownSeeding.map((it) => <SeedingCard key={it.hash} it={it} busy={!!busy[it.hash]} act={act} />)}
+              {shownSeeding.map((it) => <SeedingCard key={it.hash} it={it} guard={guard} busy={!!busy[it.hash]} act={act} />)}
             </div>
           )
         ) : tab === "searching" ? (
@@ -248,8 +259,33 @@ export function Downloads() {
           )
         )}
       </div>
+      {toast && <div className="fixed bottom-5 left-1/2 max-w-[90vw] -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
     </>
   );
+}
+
+// GuardChip marks a torrent the disk guard paused, so it doesn't read as one paused by hand.
+function GuardChip({ guard }: { guard: DiskGuardHold | null }) {
+  return (
+    <span className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--avoid-soft)", color: "var(--avoid)" }}>
+      Paused · disk {guard ? `${Math.round(guard.used_pct)}% ` : ""}full
+    </span>
+  );
+}
+
+// guardTip explains why a held torrent's Resume is unavailable.
+function guardTip(guard: DiskGuardHold | null): string {
+  const when = guard ? ` once the downloads volume drops below ${guard.resume_pct}%` : "";
+  return `Held by the disk guard — it resumes on its own${when}. Free some space, or turn the guard off in Settings → Downloads.`;
+}
+
+// ResumeBtn is Pause/Resume, disabled (with the reason on hover) while the disk guard holds the torrent.
+function ResumeBtn({ it, guard, busy, act }: { it: ActivityDownload; guard: DiskGuardHold | null; busy: boolean; act: (hash: string, fn: () => Promise<unknown>) => void }) {
+  const paused = it.state === "paused";
+  if (paused && it.held_by_guard) {
+    return <span title={guardTip(guard)}><IconBtn label="Resume" title={guardTip(guard)} disabled onClick={() => {}} /></span>;
+  }
+  return <IconBtn label={paused ? "Resume" : "Pause"} disabled={busy} onClick={() => act(it.hash, () => (paused ? api.resumeDownload(it.hash) : api.pauseDownload(it.hash)))} />;
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
@@ -264,7 +300,7 @@ function TypeChip({ mediaType }: { mediaType?: string }) {
 }
 
 // DownloadCard is an in-flight (incomplete) transfer: progress bar, speed, ETA, queue controls.
-function DownloadCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; act: (hash: string, fn: () => Promise<unknown>) => void }) {
+function DownloadCard({ it, guard, busy, act }: { it: ActivityDownload; guard: DiskGuardHold | null; busy: boolean; act: (hash: string, fn: () => Promise<unknown>) => void }) {
   const paused = it.state === "paused";
   return (
     <div className="rounded-xl p-3.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
@@ -272,7 +308,7 @@ function DownloadCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; 
         <div className="min-w-0 flex-1">
           <div className="truncate font-mono text-[11.5px]" title={it.name}>{it.name}</div>
           <div className="mt-1 flex flex-wrap items-center gap-2">
-            <span className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--panel-2)", color: STATE_TONE[it.state] ?? "var(--ink-faint)" }}>{it.state}</span>
+            {paused && it.held_by_guard ? <GuardChip guard={guard} /> : <span className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--panel-2)", color: STATE_TONE[it.state] ?? "var(--ink-faint)" }}>{it.state}</span>}
             <TypeChip mediaType={it.media_type} />
             <ProfileChip profile={it.quality_profile} />
             <span className="font-mono text-[10px] text-ink-faint">{bytes(it.size_bytes)}</span>
@@ -281,7 +317,7 @@ function DownloadCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; 
           </div>
         </div>
         <div className="flex flex-none items-center gap-1">
-          <IconBtn label={paused ? "Resume" : "Pause"} disabled={busy} onClick={() => act(it.hash, () => (paused ? api.resumeDownload(it.hash) : api.pauseDownload(it.hash)))} />
+          <ResumeBtn it={it} guard={guard} busy={busy} act={act} />
           <IconBtn label="↑" title="Move up the queue" disabled={busy} onClick={() => act(it.hash, () => api.torrentAction(it.hash, "prio_up"))} />
           <IconBtn label="↓" title="Move down the queue" disabled={busy} onClick={() => act(it.hash, () => api.torrentAction(it.hash, "prio_down"))} />
           <IconBtn label="Block" tone="var(--avoid)" title="Blocklist this release and grab a different one" disabled={busy} onClick={() => act(it.hash, () => api.blockDownload(it.hash, it.name))} />
@@ -335,7 +371,7 @@ function SeedingSummary({ items }: { items: ActivityDownload[] }) {
 }
 
 // SeedingCard is a completed torrent that's sharing back: ratio, seed time, goal progress.
-function SeedingCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; act: (hash: string, fn: () => Promise<unknown>) => void }) {
+function SeedingCard({ it, guard, busy, act }: { it: ActivityDownload; guard: DiskGuardHold | null; busy: boolean; act: (hash: string, fn: () => Promise<unknown>) => void }) {
   const paused = it.state === "paused";
   const goal = seedGoal(it);
   return (
@@ -344,7 +380,7 @@ function SeedingCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; a
         <div className="min-w-0 flex-1">
           <div className="truncate font-mono text-[11.5px]" title={it.name}>{it.name}</div>
           <div className="mt-1 flex flex-wrap items-center gap-2">
-            <span className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--panel-2)", color: paused ? "var(--ink-faint)" : "var(--good)" }}>{paused ? "paused" : "seeding"}</span>
+            {paused && it.held_by_guard ? <GuardChip guard={guard} /> : <span className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--panel-2)", color: paused ? "var(--ink-faint)" : "var(--good)" }}>{paused ? "paused" : "seeding"}</span>}
             <TypeChip mediaType={it.media_type} />
             <span className="font-mono text-[10px] text-ink-faint">{bytes(it.size_bytes)}</span>
             <span className="font-mono text-[10.5px]" title="Share ratio" style={{ color: "var(--good)" }}>⇅ {it.ratio.toFixed(2)}</span>
@@ -353,7 +389,7 @@ function SeedingCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; a
           </div>
         </div>
         <div className="flex flex-none items-center gap-1">
-          <IconBtn label={paused ? "Resume" : "Pause"} disabled={busy} onClick={() => act(it.hash, () => (paused ? api.resumeDownload(it.hash) : api.pauseDownload(it.hash)))} />
+          <ResumeBtn it={it} guard={guard} busy={busy} act={act} />
           <IconBtn label="Delete" tone="var(--reject)" title="Stop seeding and remove from the client" disabled={busy} onClick={() => act(it.hash, () => api.deleteDownload(it.hash, true))} />
         </div>
       </div>

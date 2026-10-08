@@ -167,6 +167,15 @@ export interface ActivityDownload {
   imported?: boolean; // Arrmada has imported this download into the library
   quality_profile: string;
   media_type?: string;
+  held_by_guard?: boolean; // paused by the disk guard, which won't let it resume yet
+}
+
+// What the disk guard is holding; present only while it holds something.
+export interface DiskGuardHold {
+  holding: number;
+  used_pct: number;
+  pause_pct: number;
+  resume_pct: number;
 }
 
 export interface ActivityFeed {
@@ -175,6 +184,15 @@ export interface ActivityFeed {
   downloads: ActivityDownload[];
   totals?: { down_speed: number; up_speed: number; active: number };
   free_gb?: number;
+  disk_guard?: DiskGuardHold;
+}
+
+// Resume's answer. "all" also reports what it resumed and what it left for the disk guard.
+export interface ResumeResult {
+  status: string;
+  resumed?: number;
+  held_by_guard?: number;
+  failed?: number;
 }
 
 export interface APIKeyStatus {
@@ -1106,7 +1124,7 @@ export const api = {
 
   activity: () => req<ActivityFeed>("/api/v1/downloads"),
   pauseDownload: (hash: string) => req<{ status: string }>(`/api/v1/queue/${hash}/pause`, { method: "POST" }),
-  resumeDownload: (hash: string) => req<{ status: string }>(`/api/v1/queue/${hash}/resume`, { method: "POST" }),
+  resumeDownload: (hash: string) => req<ResumeResult>(`/api/v1/queue/${hash}/resume`, { method: "POST" }),
   deleteDownload: (hash: string, deleteData: boolean) =>
     req<void>(`/api/v1/queue/${hash}${deleteData ? "?delete_data=true" : ""}`, { method: "DELETE" }),
   blockDownload: (hash: string, name: string) =>
