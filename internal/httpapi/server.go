@@ -403,7 +403,6 @@ func (a *api) registerRoutes(mux *router) {
 	// Books (Readarr replacement — Open Library metadata + ebook acquisition).
 	mux.HandleFunc("GET "+base+"/api/v1/books", a.requireRole(auth.RoleManager, a.handleListBooks))
 	mux.HandleFunc("GET "+base+"/api/v1/books/lookup", a.requireRole(auth.RoleManager, a.handleLookupBooks))
-	mux.HandleFunc("POST "+base+"/api/v1/books/dedupe", a.requireRole(auth.RoleManager, a.handleMergeBookDuplicates))
 	mux.HandleFunc("POST "+base+"/api/v1/books/upgrade", a.requireRole(auth.RoleManager, a.handleStartBookUpgrade))
 	mux.HandleFunc("GET "+base+"/api/v1/books/upgrade", a.requireRole(auth.RoleManager, a.handleBookUpgradeStatus))
 	mux.HandleFunc("POST "+base+"/api/v1/books/scan", a.requireRole(auth.RoleManager, a.handleScanBookLibrary))

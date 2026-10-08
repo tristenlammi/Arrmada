@@ -142,6 +142,11 @@ func main() {
 	}
 	defer func() { _ = st.Close() }()
 	log.Info("database ready", "data_dir", cfg.DataDir)
+	// One-time: converted files used to have " AV1" / " x265" appended to their recorded
+	// release, which read back as the old codec and hid the group. Rewrite those in place.
+	if _, err := convert.RepairCodecStamps(context.Background(), st.DB(), log); err != nil {
+		log.Warn("convert: codec stamp repair failed", "err", err)
+	}
 
 	bus := eventbus.New(log)
 	authSvc := auth.NewService(st.DB())
@@ -188,19 +193,12 @@ func main() {
 	seriesSvc := series.NewService(st.DB(), tvSeries, cfg.TVDir, log)
 	seriesSvc.SetSceneMapper(xem.New(cfg.FlaresolverrURL, log)) // TheXEM scene mapping (via FlareSolverr past Cloudflare)
 	booksSvc := books.NewService(st.DB(), openlib, log)
-	// Fold any duplicate book rows (the same title under several catalogue keys) into
-	// one, once at startup. Cheap on a home library, and it's what makes the new
-	// title-and-author check meaningful for what's already there.
-	go func() {
-		if n, err := booksSvc.MergeDuplicates(context.Background()); err != nil {
-			log.Warn("books: duplicate merge failed", "err", err)
-		} else if n > 0 {
-			log.Info("books: merged duplicate entries", "removed", n)
-		}
-		// Hardcover is the catalogue when a key is set; anything still on Open Library
-		// keys is re-matched without being asked.
-		booksSvc.MaybeStartUpgrade(context.Background())
-	}()
+	// Hardcover is the catalogue when a key is set; anything still on Open Library keys
+	// is re-matched without being asked. Nothing here merges book rows any more: the old
+	// boot-time fold deleted prefix siblings ('Mistborn: The Final Empire' / 'Mistborn:
+	// Secret History') along with their audio versions and everyone's listening place.
+	// Possible duplicates are flagged on the book's timeline for a person to review.
+	go booksSvc.MaybeStartUpgrade(context.Background())
 	// MusicBrainz needs no key, the way Open Library needs none for books.
 	musicSvc := music.NewService(st.DB(), metadata.NewMusicBrainz(), log)
 	// Recycle bin: default to <library>/.recycle so deletes are undoable; "off" hard-deletes.

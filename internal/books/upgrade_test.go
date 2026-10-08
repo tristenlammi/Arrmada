@@ -1,10 +1,156 @@
 package books
 
 import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
 	"testing"
 
 	"github.com/tristenlammi/arrmada/internal/metadata"
 )
+
+// hardcoverCatalogue answers every Hardcover search with the same results and hands
+// back a canned book for GetBook, so the upgrade can be run without the network.
+type hardcoverCatalogue struct {
+	stubCatalogue
+	results []metadata.BookResult
+}
+
+func (h *hardcoverCatalogue) Source() string { return metadata.SourceHardcover }
+func (h *hardcoverCatalogue) SearchBooksFrom(context.Context, string, string) ([]metadata.BookResult, error) {
+	return h.results, nil
+}
+func (h *hardcoverCatalogue) GetBook(_ context.Context, key string) (*metadata.BookDetails, error) {
+	for _, r := range h.results {
+		if r.Key == key {
+			return &metadata.BookDetails{BookResult: r}, nil
+		}
+	}
+	return nil, errors.New("not found")
+}
+
+// upgradeFixture is a library with one row already on Hardcover and one Open Library
+// row that Hardcover places on the very same book.
+func upgradeFixture(t *testing.T) (*Service, *Repo, context.Context, Book, Book) {
+	t.Helper()
+	repo, ctx := historyRepo(t)
+	cat := &hardcoverCatalogue{results: []metadata.BookResult{
+		{Key: "hc:42", Title: "Mistborn: The Final Empire", Author: "Brandon Sanderson"},
+	}}
+	s := &Service{repo: repo, meta: cat, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	held, err := repo.Create(ctx, Book{OLKey: "hc:42", Title: "Mistborn: The Final Empire", Author: "Brandon Sanderson"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := repo.Create(ctx, Book{OLKey: "OL1W", Title: "Mistborn: The Final Empire", Author: "Sanderson, Brandon"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s, repo, ctx, held, old
+}
+
+// A re-match that lands on a key another row already holds leaves both rows exactly
+// as they were and says so on both timelines — it never folds one into the other.
+func TestUpgradeFlagsInsteadOfMerging(t *testing.T) {
+	s, repo, ctx, held, old := upgradeFixture(t)
+
+	outcome, reason, err := s.upgradeOne(ctx, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if outcome != "flagged" {
+		t.Fatalf("outcome = %q (%s), want flagged", outcome, reason)
+	}
+	list, _ := repo.List(ctx)
+	if len(list) != 2 {
+		t.Fatalf("%d rows left, want both: %+v", len(list), list)
+	}
+	if got, _ := repo.Get(ctx, old.ID); got.OLKey != "OL1W" {
+		t.Errorf("the flagged row moved to %q; it must keep its own key", got.OLKey)
+	}
+	for _, id := range []int64{held.ID, old.ID} {
+		evs, _ := repo.Events(ctx, id, 10)
+		if len(evs) == 0 || evs[0].Event != "possible_duplicate" {
+			t.Errorf("book %d: want a possible_duplicate event, got %+v", id, evs)
+		}
+	}
+}
+
+// The duplicate's audio versions and the family's listening places survive a whole
+// upgrade run, and the run reports the row as flagged rather than merged.
+func TestUpgradeRunKeepsDuplicateAudioAndListening(t *testing.T) {
+	s, repo, ctx, _, old := upgradeFixture(t)
+	db := repo.db
+	if _, err := repo.createAudioVersion(ctx, old.ID, "GraphicAudio", []string{"graphicaudio"}, true); err != nil {
+		t.Fatal(err)
+	}
+	res, err := db.ExecContext(ctx, `INSERT INTO users (username, password_hash, role) VALUES ('kid', 'x', 'requester')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uid, _ := res.LastInsertId()
+	key := fmt.Sprintf("b%d", old.ID)
+	if _, err := db.ExecContext(ctx, `INSERT INTO listen_progress (user_id, item_key, position, updated_at) VALUES (?, ?, 1234, 1)`, uid, key); err != nil {
+		t.Fatal(err)
+	}
+
+	s.upgrade.status = UpgradeStatus{Running: true}
+	s.runUpgrade(ctx)
+
+	st := s.UpgradeStatus()
+	if st.Flagged != 1 || st.Upgraded != 0 || st.Unmatched != 0 {
+		t.Errorf("status = %+v, want one flagged", st)
+	}
+	if vs, _ := repo.ListAudioVersions(ctx, old.ID); len(vs) != 1 {
+		t.Errorf("audio versions = %d, want the one the duplicate had", len(vs))
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM listen_progress WHERE item_key = ?`, key).Scan(&n); err != nil || n != 1 {
+		t.Errorf("listening place lost: n=%d err=%v", n, err)
+	}
+	if _, err := repo.Get(ctx, old.ID); err != nil {
+		t.Errorf("the duplicate row is gone: %v", err)
+	}
+}
+
+// The flagged row keeps its old key, so every boot re-runs the upgrade over it. The
+// timelines must say "possible duplicate" once, not once per run, and the row must be
+// offered for Ignore, which takes it out of the count and out of later runs.
+func TestUpgradeFlagIsIdempotentAndIgnorable(t *testing.T) {
+	s, repo, ctx, held, old := upgradeFixture(t)
+	for run := 0; run < 2; run++ {
+		s.upgrade.status = UpgradeStatus{Running: true}
+		s.runUpgrade(ctx)
+	}
+	for _, id := range []int64{held.ID, old.ID} {
+		evs, _ := repo.Events(ctx, id, 100)
+		n := 0
+		for _, e := range evs {
+			if e.Event == "possible_duplicate" {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("book %d has %d possible_duplicate events after two runs, want 1", id, n)
+		}
+	}
+
+	st := s.UpgradeStatus()
+	if len(st.Left) != 1 || st.Left[0].ID != old.ID || !st.Left[0].Flagged {
+		t.Fatalf("Left = %+v, want the flagged row so it can be ignored", st.Left)
+	}
+	if err := s.SetKeepCatalogue(ctx, old.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if st := s.UpgradeStatus(); st.Flagged != 0 || st.Unmatched != 0 || len(st.Left) != 0 {
+		t.Errorf("after Ignore status = %+v, want nothing left to report", st)
+	}
+	if n := s.Upgradable(ctx); n != 0 {
+		t.Errorf("Upgradable = %d after Ignore, want 0", n)
+	}
+}
 
 // The re-match must land on the catalogue's entry for the same book across the ways
 // catalogues render it, and must not land on a different book of the same title.

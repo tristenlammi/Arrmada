@@ -17,8 +17,10 @@ import (
 // Books added before a Hardcover key went in carry Open Library (or Google Books)
 // keys, so they still refresh from there — no series, the odd duplicate work, weaker
 // covers. The upgrade re-matches each of them to Hardcover by title and author,
-// rewrites the row to the Hardcover entry (key, description, cover, subjects, series)
-// and, when two old rows land on the same Hardcover book, folds them into one.
+// rewrites the row to the Hardcover entry (key, description, cover, subjects, series).
+// When a row lands on a Hardcover book another row already holds, the two are flagged
+// as a possible duplicate on both timelines and left alone: merging deletes a row, and
+// with it audio versions and listening places, so it is a person's call.
 // Files, monitoring and the quality profile are never touched.
 //
 // It runs by itself: at startup and when the key is saved, whenever books are left on
@@ -30,7 +32,7 @@ type UpgradeStatus struct {
 	Total     int      `json:"total"`
 	Done      int      `json:"done"`
 	Upgraded  int      `json:"upgraded"`
-	Merged    int      `json:"merged"`
+	Flagged   int      `json:"flagged"` // landed on a book another row holds; left for review
 	Unmatched int      `json:"unmatched"`
 	StartedAt int64    `json:"started_at,omitempty"`
 	EndedAt   int64    `json:"ended_at,omitempty"`
@@ -47,6 +49,9 @@ type UnmatchedBook struct {
 	Title  string `json:"title"`
 	Author string `json:"author,omitempty"`
 	Reason string `json:"reason"`
+	// Flagged: Hardcover placed it on a book another row holds. It stays on its old
+	// key, so the re-match keeps finding it until it is ignored or reviewed.
+	Flagged bool `json:"flagged,omitempty"`
 }
 
 type upgradeState struct {
@@ -108,10 +113,10 @@ func (s *Service) MaybeStartUpgrade(ctx context.Context) bool {
 func (s *Service) forgetUnmatched(id int64) {
 	s.setUpgrade(func(st *UpgradeStatus) {
 		var left []UnmatchedBook
-		title := ""
+		title, flagged := "", false
 		for _, u := range st.Left {
 			if u.ID == id {
-				title = u.Title
+				title, flagged = u.Title, u.Flagged
 				continue
 			}
 			left = append(left, u)
@@ -120,7 +125,11 @@ func (s *Service) forgetUnmatched(id int64) {
 			return
 		}
 		st.Left = left
-		if st.Unmatched > 0 {
+		if flagged {
+			if st.Flagged > 0 {
+				st.Flagged--
+			}
+		} else if st.Unmatched > 0 {
 			st.Unmatched--
 		}
 		var notes []string
@@ -181,8 +190,11 @@ func (s *Service) runUpgrade(ctx context.Context) {
 			switch outcome {
 			case "upgraded":
 				st.Upgraded++
-			case "merged":
-				st.Merged++
+			case "flagged":
+				st.Flagged++
+				// Listed with the unmatched so the page offers Ignore, which stops the
+				// re-match asking Hardcover about it on every run.
+				st.Left = append(st.Left, UnmatchedBook{ID: b.ID, Title: b.Title, Author: b.Author, Reason: reason, Flagged: true})
 			default:
 				st.Unmatched++
 				if len(st.Notes) < upgradeNoteLimit {
@@ -196,11 +208,11 @@ func (s *Service) runUpgrade(ctx context.Context) {
 		}
 	}
 	st := s.UpgradeStatus()
-	s.log.Info("books: upgrade to Hardcover finished", "total", len(todo), "upgraded", st.Upgraded, "merged", st.Merged, "unmatched", st.Unmatched)
+	s.log.Info("books: upgrade to Hardcover finished", "total", len(todo), "upgraded", st.Upgraded, "flagged", st.Flagged, "unmatched", st.Unmatched)
 }
 
-// upgradeOne re-matches a single book. Outcomes: "upgraded", "merged", "unmatched"
-// (with a reason). A returned error is one that would stop every book.
+// upgradeOne re-matches a single book. Outcomes: "upgraded", "flagged" (another row
+// already holds that Hardcover book), "unmatched" (with a reason). A returned error is one that would stop every book.
 func (s *Service) upgradeOne(ctx context.Context, b Book) (outcome, reason string, err error) {
 	sl, ok := s.meta.(sourceLookup)
 	if !ok {
@@ -265,20 +277,17 @@ func (s *Service) upgradeOne(ctx context.Context, b Book) (outcome, reason strin
 		}
 		return "unmatched", "matched " + match.Key + " but fetching it failed: " + err.Error(), nil
 	}
-	// Another row already sits on this Hardcover book: this one is its duplicate.
+	// Another row already sits on this Hardcover book, so this one may be its duplicate.
+	// Say so on both timelines and touch neither: b keeps its current key, and both rows
+	// keep their files, audio versions and listening places until a person decides.
 	if other, ok := s.findByKey(ctx, d.Key); ok && other.ID != b.ID {
-		keeper, dup := other, b
-		if editionCount(b) > editionCount(other) {
-			keeper, dup = b, other
-			// Point the keeper at the Hardcover entry before folding the other in.
-			if err := s.applyUpgrade(ctx, keeper, d); err != nil {
-				return "unmatched", "could not rewrite the row: " + err.Error(), nil
-			}
-		}
-		if err := s.foldInto(ctx, keeper, dup); err != nil {
-			return "unmatched", "could not merge with its duplicate: " + err.Error(), nil
-		}
-		return "merged", note, nil
+		// The flagged row stays on its old key, so every later run (each boot, each key
+		// save) lands here again: note each pairing once, not once per run.
+		s.flagOnce(ctx, b.ID, possibleDuplicateNote(other))
+		s.flagOnce(ctx, other.ID, possibleDuplicateNote(b))
+		// Ids only: the log never needs a title to say two rows collided.
+		s.log.Info("books: upgrade found a possible duplicate", "book_id", b.ID, "other_id", other.ID)
+		return "flagged", fmt.Sprintf("Hardcover lists it as the same book as %q (book %d); not merged", other.Title, other.ID), nil
 	}
 	if err := s.applyUpgrade(ctx, b, d); err != nil {
 		return "unmatched", "could not rewrite the row: " + err.Error(), nil
@@ -287,6 +296,20 @@ func (s *Service) upgradeOne(ctx context.Context, b Book) (outcome, reason strin
 		s.repo.AddEvent(ctx, b.ID, "upgraded", "Re-matched: "+note)
 	}
 	return "upgraded", note, nil
+}
+
+// flagOnce adds a possible_duplicate entry to a book's timeline unless it already has
+// that exact one.
+func (s *Service) flagOnce(ctx context.Context, bookID int64, detail string) {
+	if !s.repo.HasEvent(ctx, bookID, "possible_duplicate", detail) {
+		s.repo.AddEvent(ctx, bookID, "possible_duplicate", detail)
+	}
+}
+
+// possibleDuplicateNote is the timeline entry for a row Hardcover places on the same
+// book as other.
+func possibleDuplicateNote(other Book) string {
+	return fmt.Sprintf("Hardcover lists this as the same book as “%s” (book %d). Not merged; review it under Possible duplicates.", other.Title, other.ID)
 }
 
 // byAuthorRe reads "<work> by <Author Name>" off the end of a title: the author is up

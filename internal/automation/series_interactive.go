@@ -137,7 +137,8 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 			"series", s.Title, "want_season", season, "want_episode", episode,
 			"samples", strings.Join(sampleScope, " | "))
 	}
-	decision := c.decideWith(ctx, c.effectiveProfile(ctx, s.QualityProfile, "series"), spec, cands)
+	profile := c.effectiveProfile(ctx, s.QualityProfile, quality.MediaSeries)
+	decision := c.decideWith(ctx, profile, spec, cands)
 
 	// For a single-episode search we can show a bitrate (size ÷ episode runtime). Season/series
 	// packs cover many episodes, so leave bitrate off there rather than mislead.
@@ -188,7 +189,7 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 	for _, ev := range decision.Rejected {
 		appendEval(ev)
 	}
-	return ReleaseList{Profile: s.QualityProfile, Why: decision.Why, Releases: out}, nil
+	return ReleaseList{Profile: profile, Why: decision.Why, Releases: out}, nil
 }
 
 // seriesReleaseMatches reports whether a release is relevant to a season/episode

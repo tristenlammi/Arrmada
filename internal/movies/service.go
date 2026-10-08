@@ -619,20 +619,23 @@ func (s *Service) fetchArt(ctx context.Context, dst, url string) {
 // import quality gate could even refuse the update, leaving the record pointing at
 // a recycled file. codecToken (e.g. "x265" after an HEVC conversion) keeps
 // bitrate-upgrade scoring honest: without it the halved file was costed at the old
-// codec's efficiency and looked like a starving encode begging to be replaced.
+// codec's efficiency and looked like a starving encode begging to be replaced. The token
+// replaces the old codec in place (parser.RestampCodec) rather than being appended, so
+// the name still reads as the new codec and its "-GROUP" still parses.
 func (s *Service) RepointMovieFile(ctx context.Context, movieID int64, oldPath, newPath string, size int64, codecToken string) (int, error) {
 	versions, err := s.Versions(ctx, movieID)
 	if err != nil {
 		return 0, err
 	}
-	appendToken := func(rel string) string {
+	restamp := func(rel string) string {
 		if rel == "" || codecToken == "" {
 			return rel
 		}
-		if parser.Parse(rel).Codec == parser.Parse("x "+codecToken).Codec {
+		codec := parser.Parse("x " + codecToken).Codec
+		if parser.Parse(rel).Codec == codec {
 			return rel // already reads as the new codec
 		}
-		return rel + " " + codecToken
+		return parser.RestampCodec(rel, codec)
 	}
 	n := 0
 	for _, v := range versions {
@@ -647,14 +650,14 @@ func (s *Service) RepointMovieFile(ctx context.Context, movieID int64, oldPath, 
 			if err := s.repo.SetFile(ctx, movieID, newPath); err != nil {
 				return n, err
 			}
-			if upd := appendToken(v.SourceRelease); upd != v.SourceRelease {
+			if upd := restamp(v.SourceRelease); upd != v.SourceRelease {
 				_ = s.repo.SetSourceRelease(ctx, movieID, upd)
 			}
 		} else {
 			if err := s.repo.SetVersionFile(ctx, v.ID, newPath, size); err != nil {
 				return n, err
 			}
-			if upd := appendToken(v.SourceRelease); upd != v.SourceRelease {
+			if upd := restamp(v.SourceRelease); upd != v.SourceRelease {
 				_ = s.repo.SetVersionSourceRelease(ctx, v.ID, upd)
 			}
 		}

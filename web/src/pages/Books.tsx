@@ -88,7 +88,7 @@ export function Books() {
         setUpgrade(st);
         if (!st.running) {
           refresh();
-          flash(st.error ? `Upgrade stopped: ${st.error}` : `Upgraded ${st.upgraded}, merged ${st.merged}, no match for ${st.unmatched}.${st.notes?.length ? ` E.g. ${st.notes[0]}` : ""}`);
+          flash(st.error ? `Upgrade stopped: ${st.error}` : `Upgraded ${st.upgraded}, flagged ${st.flagged} as possible duplicates, no match for ${st.unmatched}.${st.notes?.length ? ` E.g. ${st.notes[0]}` : ""}`);
         }
       }).catch(() => {});
     }, 2000);
@@ -312,7 +312,7 @@ export function Books() {
           <div className="mb-4 rounded-lg px-3.5 py-2.5 text-[12px]" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink-dim)" }}>
             <div className="flex items-start justify-between gap-3">
               <div>
-                <b>Hardcover re-match:</b> {upgrade.upgraded} upgraded, {upgrade.merged} merged, {upgrade.unmatched} left as they were{upgrade.error ? ` — stopped: ${upgrade.error}` : "."}
+                <b>Hardcover re-match:</b> {upgrade.upgraded} upgraded, {upgrade.flagged} flagged as possible duplicates, {upgrade.unmatched} left as they were{upgrade.error ? ` — stopped: ${upgrade.error}` : "."}
                 {leftVisible.length > 0 && <span className="ml-1 text-ink-faint">Ignore a book and the re-match leaves it alone for good.</span>}
               </div>
               <div className="flex flex-none items-center gap-2">

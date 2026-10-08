@@ -395,6 +395,7 @@ const EVENT_ICON: Record<string, string> = {
   failed: "⛔",
   added: "✚",
   merged: "🧩",
+  possible_duplicate: "⚠",
 };
 
 function ActivityRow({ e }: { e: ActivityEvent }) {

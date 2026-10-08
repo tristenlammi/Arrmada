@@ -5,6 +5,32 @@ import (
 	"testing"
 )
 
+// A converted file's legacy appended stamp reads as the codec on disk, AV1 is checked as
+// a whole token before the older codecs, and the ordinary codec readings still hold.
+func TestCodecDetection(t *testing.T) {
+	cases := []struct {
+		name  string
+		codec Codec
+	}{
+		{"Movie.2020.1080p.WEB.H.264-GRP AV1", CodecAV1}, // legacy stamp on an H.264 source
+		{"Movie.2020.2160p.WEB.x265-GRP AV1", CodecAV1},  // legacy stamp on an HEVC source
+		{"Movie.2020.1080p.WEB.H.264-GRP x265", CodecX265},
+		{"Movie.2020.1080p.BluRay.AV1-GRP", CodecAV1},
+		{"Movie.2020.1080p.BluRay.x264-GRP", CodecX264},
+		{"Movie.2020.1080p.WEB-DL.H.264-GRP", CodecX264},
+		{"Movie.2020.2160p.WEB-DL.HEVC-GRP", CodecX265},
+		{"Movie.2020.1080p.BluRay.REMUX.AVC.DTS-HD.MA-GRP", CodecX264},
+		{"Movie.2004.DVDRip.XviD-GRP", CodecXvid},
+		{"Movie.2008.1080p.BluRay.VC-1.DTS-GRP", CodecVC1},
+		{"Movie.2020.1080p.BluRay-GRP", CodecUnknown},
+	}
+	for _, c := range cases {
+		if got := Parse(c.name).Codec; got != c.codec {
+			t.Errorf("Parse(%q).Codec = %q, want %q", c.name, got, c.codec)
+		}
+	}
+}
+
 // Fix 1: year-titled shows. A name that OPENS with its only year token ("1923",
 // "1984") cut the title at position 0 and yielded Title="". The token is the
 // title; the cut falls back to the season/episode/quality marker.

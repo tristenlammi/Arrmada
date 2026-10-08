@@ -32,9 +32,11 @@ type ProfileInfo struct {
 // DefaultProfile returns the profile reference used when adding media of this
 // type. It honors the saved default when it still exists, otherwise falls back
 // to the first available profile (empty string if the user has deleted them all).
+// It is always a real profile: "n/a" is a marker on scanned titles, not a default, and
+// one saved before SetDefaultProfile refused it is passed over.
 func (s *Service) DefaultProfile(ctx context.Context, mediaType string) string {
 	v, err := s.repo.getSetting(ctx, "default_profile:"+mediaType)
-	if err == nil && v != "" && s.Known(ctx, v) {
+	if err == nil && v != "" && v != "n/a" && s.Known(ctx, v) {
 		return v
 	}
 	if custom, err := s.repo.List(ctx, mediaType); err == nil && len(custom) > 0 {
@@ -45,7 +47,7 @@ func (s *Service) DefaultProfile(ctx context.Context, mediaType string) string {
 
 // SetDefaultProfile records the default profile for a media type.
 func (s *Service) SetDefaultProfile(ctx context.Context, mediaType, ref string) error {
-	if !s.Known(ctx, ref) {
+	if ref == "n/a" || !s.Known(ctx, ref) {
 		return errNotKnown
 	}
 	return s.repo.setSetting(ctx, "default_profile:"+mediaType, ref)
@@ -57,9 +59,26 @@ type errorString string
 
 func (e errorString) Error() string { return string(e) }
 
-// Resolve turns a profile reference into a runnable (Profile, Engine). Falls
-// back to a permissive profile if the reference is unknown (e.g. it was
-// deleted), so acquisition never stalls.
+// Effective is the profile a title actually runs under. Its own profile when that still
+// exists; otherwise — "n/a" on a library-scanned title, nothing at all, or a profile
+// that was deleted — the default profile of its media type. Every acquisition path goes
+// through this so one title can't be judged three different ways depending on which
+// code path looks at it. Only with no profile of that media at all does the ref come
+// back unchanged, and Resolve then uses the fallback.
+func (s *Service) Effective(ctx context.Context, ref, media string) string {
+	// "n/a" first: Known accepts it as a valid marker, but it names no real profile.
+	if ref != "n/a" && s.Known(ctx, ref) {
+		return ref
+	}
+	if def := s.DefaultProfile(ctx, media); def != "" {
+		return def
+	}
+	return ref
+}
+
+// Resolve turns a profile reference into a runnable (Profile, Engine). An unknown
+// reference gets the hidden fallback profile; callers resolve through Effective first,
+// so in practice the fallback only runs when no profile of the media type exists.
 func (s *Service) Resolve(ctx context.Context, ref string) (Profile, *Engine) {
 	if id, ok := customID(ref); ok {
 		if sp, err := s.repo.Get(ctx, id); err == nil {
@@ -153,6 +172,11 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 		if strings.ToLower(strings.TrimSpace(ev.Candidate.Name)) == curKey {
 			continue // the release we already have
 		}
+		if convertedFrom(ev.Candidate.Name, currentRelease) {
+			// The release this file was converted from: the same name but for the codec
+			// Convert stamped in. Grabbing it would undo the conversion and loop forever.
+			continue
+		}
 		qualityBetter := ev.Total > cur.Total
 		// Same helper the import gate uses, so the two can't drift apart again — the
 		// searcher deciding a release is worth grabbing and the importer then refusing to
@@ -191,6 +215,11 @@ func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string,
 	if sp, err := s.GetStored(ctx, ref); err != nil || !sp.UpgradesEnabled {
 		return false
 	}
+	// The release a converted file came from is never an upgrade of it, whatever the
+	// codec stamp makes the two score.
+	if convertedFrom(candRelease, currentRelease) {
+		return false
+	}
 	p, e := s.Resolve(ctx, ref)
 	// Seeders are irrelevant here and unknown for a file on disk, so both sides get the
 	// same large value rather than letting a seeder term skew the comparison.
@@ -200,6 +229,18 @@ func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string,
 		return false
 	}
 	return cand.Total > cur.Total
+}
+
+// convertedFrom reports whether cand looks like the release the current file was
+// converted from: the current file reads as a codec Convert writes (AV1 or x265), and
+// cand is the same release name with a different codec. It is deliberately no wider than
+// that, so an x264 file can still be upgraded to the same group's x265 release.
+func convertedFrom(cand, current string) bool {
+	cur := parser.Parse(current).Codec
+	if cur != parser.CodecAV1 && cur != parser.CodecX265 {
+		return false
+	}
+	return parser.Parse(cand).Codec != cur && parser.WithoutCodec(cand) == parser.WithoutCodec(current)
 }
 
 // Encode is one side of a bitrate comparison: how big it is and what codec it used.

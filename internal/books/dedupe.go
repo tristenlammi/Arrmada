@@ -2,7 +2,6 @@ package books
 
 import (
 	"context"
-	"fmt"
 	"regexp"
 	"sort"
 	"strings"
@@ -139,104 +138,7 @@ func (s *Service) findByKey(ctx context.Context, key string) (Book, bool) {
 	return Book{}, false
 }
 
-// MergeDuplicates folds books that are the same title and author into one row each —
-// keeping the one with files (then the oldest), carrying over any edition, monitoring,
-// series, description or cover the keeper lacks — and returns how many were removed.
-func (s *Service) MergeDuplicates(ctx context.Context) (int, error) {
-	list, err := s.repo.List(ctx)
-	if err != nil {
-		return 0, err
-	}
-	groups := map[string][]Book{}
-	var order []string
-	for _, b := range list {
-		key := DedupeKey(b.Title, b.Author)
-		if key == "" {
-			continue
-		}
-		if _, seen := groups[key]; !seen {
-			order = append(order, key)
-		}
-		groups[key] = append(groups[key], b)
-	}
-	merged := 0
-	for _, key := range order {
-		g := groups[key]
-		if len(g) < 2 {
-			continue
-		}
-		sort.SliceStable(g, func(i, j int) bool {
-			// Files first (both editions beats one), then the earliest added.
-			fi, fj := editionCount(g[i]), editionCount(g[j])
-			if fi != fj {
-				return fi > fj
-			}
-			return g[i].ID < g[j].ID
-		})
-		keeper := g[0]
-		for _, dup := range g[1:] {
-			if err := s.foldInto(ctx, keeper, dup); err != nil {
-				s.log.Warn("book dedupe: merge failed", "keep", keeper.Title, "drop_id", dup.ID, "err", err)
-				continue
-			}
-			merged++
-			// Re-read so a second duplicate sees what the first contributed.
-			if k, err := s.repo.Get(ctx, keeper.ID); err == nil {
-				keeper = k
-			}
-		}
-	}
-	if merged > 0 {
-		s.log.Info("book dedupe: merged duplicate books", "removed", merged)
-	}
-	return merged, nil
-}
-
-func editionCount(b Book) int {
-	n := 0
-	if b.Ebook != nil {
-		n++
-	}
-	if b.Audiobook != nil {
-		n++
-	}
-	return n
-}
-
-// foldInto moves what dup has and keeper lacks onto keeper, then deletes dup's row.
-func (s *Service) foldInto(ctx context.Context, keeper, dup Book) error {
-	if dup.Ebook != nil && keeper.Ebook == nil {
-		if err := s.repo.SetEdition(ctx, keeper.ID, KindEbook, dup.Ebook.Path, dup.Ebook.Format, dup.Ebook.SizeBytes, dup.Ebook.FileCount); err != nil {
-			return err
-		}
-	}
-	if dup.Audiobook != nil && keeper.Audiobook == nil {
-		if err := s.repo.SetEdition(ctx, keeper.ID, KindAudiobook, dup.Audiobook.Path, dup.Audiobook.Format, dup.Audiobook.SizeBytes, dup.Audiobook.FileCount); err != nil {
-			return err
-		}
-	}
-	if dup.Monitored && !keeper.Monitored {
-		_ = s.repo.SetMonitored(ctx, keeper.ID, true)
-	}
-	if keeper.SeriesName == "" && dup.SeriesName != "" {
-		_ = s.repo.SetSeries(ctx, keeper.ID, dup.SeriesName, dup.SeriesPosition)
-	}
-	if (keeper.Description == "" && dup.Description != "") || (keeper.CoverURL == "" && dup.CoverURL != "") || (len(keeper.Subjects) == 0 && len(dup.Subjects) > 0) {
-		desc, cover, subj := keeper.Description, keeper.CoverURL, keeper.Subjects
-		if desc == "" {
-			desc = dup.Description
-		}
-		if cover == "" {
-			cover = dup.CoverURL
-		}
-		if len(subj) == 0 {
-			subj = dup.Subjects
-		}
-		_ = s.repo.UpdateMeta(ctx, keeper.ID, desc, cover, subj)
-	}
-	if err := s.repo.Delete(ctx, dup.ID); err != nil {
-		return err
-	}
-	s.repo.AddEvent(ctx, keeper.ID, "merged", fmt.Sprintf("Merged duplicate entry %q (%s)", dup.Title, dup.OLKey))
-	return nil
-}
+// Two rows that look like one book are never merged automatically. The old fold keyed
+// on a title cut at the first colon, so same-author prefix siblings were "duplicates",
+// and deleting the losing row took its audio versions and everyone's listening place
+// with it. A merge is a decision for a person; the Hardcover upgrade flags the pair.

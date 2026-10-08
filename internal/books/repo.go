@@ -351,6 +351,16 @@ func (r *Repo) AddEvent(ctx context.Context, bookID int64, event, detail string)
 		`INSERT INTO book_events (book_id, event, detail) VALUES (?, ?, ?)`, bookID, event, detail)
 }
 
+// HasEvent reports whether a book's timeline already holds this exact entry, so a
+// check that reruns on every boot can say a thing once rather than every time.
+func (r *Repo) HasEvent(ctx context.Context, bookID int64, event, detail string) bool {
+	var one int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT 1 FROM book_events WHERE book_id = ? AND event = ? AND detail = ? LIMIT 1`,
+		bookID, event, detail).Scan(&one)
+	return err == nil
+}
+
 // Events returns a book's timeline, newest first.
 func (r *Repo) Events(ctx context.Context, bookID int64, limit int) ([]Event, error) {
 	rows, err := r.db.QueryContext(ctx,

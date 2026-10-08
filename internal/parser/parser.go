@@ -706,6 +706,13 @@ func detectSource(lc string) Source {
 
 func detectCodec(lc string) Codec {
 	switch {
+	// AV1 first, as a whole token: a release only names AV1 when it is AV1, and a file
+	// converted before codec tokens were swapped in place carries both — the old codec in
+	// the name and " AV1" appended ("...H.264-GRP AV1") — which must read as what's on disk.
+	// Brackets count as bounds too: normalize leaves them, and a library-style name
+	// restamped by Convert reads "Movie (2020) [1080p] [AV1]".
+	case bracketedWord(lc, "av1"):
+		return CodecAV1
 	case strings.Contains(lc, "x265"), strings.Contains(lc, "h265"),
 		strings.Contains(lc, "h 265"), strings.Contains(lc, "hevc"):
 		return CodecX265
@@ -720,6 +727,29 @@ func detectCodec(lc string) Codec {
 		return CodecAV1
 	}
 	return CodecUnknown
+}
+
+// bracketedWord reports whether word stands alone in lc, bounded by spaces, brackets or
+// parentheses on both sides.
+func bracketedWord(lc, word string) bool {
+	bound := func(c byte) bool {
+		switch c {
+		case ' ', '[', ']', '(', ')':
+			return true
+		}
+		return false
+	}
+	for from := 0; ; {
+		i := strings.Index(lc[from:], word)
+		if i < 0 {
+			return false
+		}
+		start, end := from+i, from+i+len(word)
+		if (start == 0 || bound(lc[start-1])) && (end == len(lc) || bound(lc[end])) {
+			return true
+		}
+		from = start + 1
+	}
 }
 
 func detectHDR(lc string) []string {

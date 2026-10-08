@@ -35,37 +35,26 @@ type seriesFit struct {
 // profileIdeals resolves profile refs (a title's, or the default for "") to profiles
 // with an ideal file set up, once per ref.
 type profileIdeals struct {
-	q     *quality.Service
-	def   string
-	cache map[string]*quality.StoredProfile
-	known map[string]bool
+	q        *quality.Service
+	media    string
+	cache    map[string]*quality.StoredProfile
+	resolved map[string]string
 }
 
-func newProfileIdeals(ctx context.Context, q *quality.Service, media string) *profileIdeals {
-	return &profileIdeals{q: q, def: q.DefaultProfile(ctx, media), cache: map[string]*quality.StoredProfile{}}
+func newProfileIdeals(_ context.Context, q *quality.Service, media string) *profileIdeals {
+	return &profileIdeals{q: q, media: media, cache: map[string]*quality.StoredProfile{}, resolved: map[string]string{}}
 }
 
 // resolve is the profile a title actually runs under: its own, or — when it has none, or
-// one that's been deleted — the default, the same way acquisition resolves it.
+// one that's been deleted — the default. It asks quality.Effective, the same resolver
+// acquisition uses, and remembers the answer for the rest of the request.
 func (p *profileIdeals) resolve(ctx context.Context, ref string) string {
-	if ref == "" || ref == "n/a" {
-		return p.def
+	if r, ok := p.resolved[ref]; ok {
+		return r
 	}
-	if known, ok := p.known[ref]; ok {
-		if known {
-			return ref
-		}
-		return p.def
-	}
-	known := p.q.Known(ctx, ref)
-	if p.known == nil {
-		p.known = map[string]bool{}
-	}
-	p.known[ref] = known
-	if known {
-		return ref
-	}
-	return p.def
+	r := p.q.Effective(ctx, ref, p.media)
+	p.resolved[ref] = r
+	return r
 }
 
 func (p *profileIdeals) get(ctx context.Context, ref string) *quality.StoredProfile {

@@ -557,10 +557,12 @@ func bookRelScore(sp quality.StoredProfile, rel indexer.Release) (int, bool) {
 	return (fs+quality.KeywordScore(sp.Keywords, text))*1_000_000 + rel.Seeders, true
 }
 
-// bookProfile resolves the book's quality profile, falling back to a sensible
-// ebook-preferring default when unset.
+// bookProfile resolves the book's quality profile the way every other path does — its
+// own, or the default book profile when it has none or it was deleted — and falls back
+// to a sensible ebook-preferring set of scores only when no book profile exists at all.
 func (c *Coordinator) bookProfile(ctx context.Context, profileRef string) quality.StoredProfile {
-	if sp, err := c.quality.GetStored(ctx, profileRef); err == nil && len(sp.FormatScores) > 0 {
+	ref := c.effectiveProfile(ctx, profileRef, quality.MediaBook)
+	if sp, err := c.quality.GetStored(ctx, ref); err == nil && len(sp.FormatScores) > 0 {
 		return sp
 	}
 	return quality.StoredProfile{FormatScores: map[string]int{"EPUB": 40, "AZW3": 30, "MOBI": 20, "PDF": 10}}
@@ -1592,6 +1594,9 @@ func dropPendingBook(releases []indexer.Release, pending map[string]bool) []inde
 
 // recordBookGrab tracks a book grab for seed cleanup (media_type=book, movie_id=bookID).
 func (c *Coordinator) recordBookGrab(ctx context.Context, bookID, versionID int64, title, indexer, profile, infoHash string) {
+	// Recorded under the profile the book actually runs under, so a deleted one still
+	// gets the default's stall window.
+	profile = c.effectiveProfile(ctx, profile, quality.MediaBook)
 	seedEnabled, seedRatio, seedHours := c.seedRules(ctx, indexer)
 	// stall_minutes must come from the profile. It was written as a literal 0, and
 	// detectStalledBook returns immediately when it isn't positive — so the entire book
