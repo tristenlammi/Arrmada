@@ -5,26 +5,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
 )
-
-// serverZone names the timezone the server evaluates schedules in, so the UI can say
-// which clock the encode window is measured against. Falls back to the UTC offset when
-// the zone is unnamed (a bare TZ=UTC, or a container with no tzdata).
-func serverZone() string {
-	name, offset := time.Now().Zone()
-	if name != "" && name != "UTC" {
-		return name
-	}
-	if offset == 0 {
-		return "UTC"
-	}
-	return time.Now().Format("-07:00")
-}
 
 const (
 	keySearchOnAdd         = "search_on_add"
@@ -54,7 +39,11 @@ func (a *api) musicEnabled(ctx context.Context) bool {
 	return a.deps.Settings.GetBool(ctx, keyMusicEnabled, true)
 }
 
-// handleGetSettings returns the user-facing app preferences.
+// handleGetSettings returns the user-facing app preferences. Every key here must also be
+// accepted by handleUpdateSettings: clients PUT these values back, and the decoder
+// rejects fields it doesn't know. A read-only server_time/server_tz in this response
+// broke every Settings save for weeks, so read-only facts go on their own endpoint
+// (Convert reports the server clock from /convert/settings).
 func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	a.writeJSON(w, http.StatusOK, map[string]any{
@@ -71,10 +60,6 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"plex_login_enabled":      a.deps.Settings.GetBool(ctx, "plex_login_enabled", false),
 		"tmdb_region":             a.deps.Settings.Get(ctx, "tmdb_region", ""),
 		"plex_login_auto_approve": a.deps.Settings.GetBool(ctx, "plex_login_auto_approve", true),
-		// The server's own clock and zone, for anything scheduled (Convert has its own
-		// settings endpoint, which reports the same).
-		"server_time": time.Now().Format("15:04"),
-		"server_tz":   serverZone(),
 		// Recycle bin guard rails. These default to REAL limits, not 0/unlimited: the
 		// bin is on by default and every delete, quality upgrade and Convert original
 		// lands in it, so an unlimited default silently grows until the volume fills.

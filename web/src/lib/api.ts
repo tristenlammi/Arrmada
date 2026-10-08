@@ -471,9 +471,6 @@ export interface AppSettings {
   plex_login_auto_approve: boolean;
   /** Discovery region for TMDB lists (ISO 3166-1 alpha-2, e.g. "AU"); "" = global. */
   tmdb_region: string;
-  /** Read-only: the server's own clock and zone. */
-  server_time?: string;
-  server_tz?: string;
   // Recycle bin guard rails.
   recycle_max_gb: string;
   recycle_retention_days: string;

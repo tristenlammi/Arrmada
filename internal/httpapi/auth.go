@@ -251,6 +251,13 @@ func (a *api) decodeJSONLimit(w http.ResponseWriter, r *http.Request, dst any, l
 				fmt.Sprintf("request body is too large (over %d MB)", limit>>20))
 			return false
 		}
+		// Name the field when the body carries one the handler doesn't take, so the
+		// next client/server mismatch can be diagnosed from the UI's error line. The
+		// encoding/json message has no typed error, so match its fixed prefix.
+		if field, ok := strings.CutPrefix(err.Error(), "json: unknown field "); ok {
+			a.writeError(w, http.StatusBadRequest, "invalid request body: unknown field "+field)
+			return false
+		}
 		a.writeError(w, http.StatusBadRequest, "invalid request body")
 		return false
 	}
