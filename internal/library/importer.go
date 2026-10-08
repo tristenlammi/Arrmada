@@ -152,6 +152,12 @@ func (im *Importer) FindBookFoldersIn(roots ...string) []BookFolder {
 	}
 	for _, root := range roots {
 		_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			// Hidden folders are Arrmada's own (the merge backups under the audiobooks
+			// root) or a system's: scanned as books they'd turn into bogus titles, or an
+			// edition that vanishes when the backup is pruned.
+			if err == nil && d.IsDir() && p != root && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
 			if err != nil || d.IsDir() || !isBookFile(p) {
 				return nil
 			}

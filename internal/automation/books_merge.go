@@ -22,7 +22,8 @@ var ErrAlreadyMerging = errors.New("this audiobook is already being merged")
 
 const (
 	// mergeBackupDir holds merge sources when the recycle bin is off, under the audiobooks
-	// root: hidden, so no scan treats it as a book.
+	// root: hidden, and both book scans (FindBookFiles, FindBookFoldersIn) skip hidden
+	// folders, so none treats it as a book.
 	mergeBackupDir = ".arrmada-merge-backup"
 	// mergeBackupKeep is how long those sources are kept before the daily prune drops them.
 	mergeBackupKeep = 14 * 24 * time.Hour
