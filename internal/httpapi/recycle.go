@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
@@ -14,7 +15,16 @@ func (a *api) handleRecycleStats(w http.ResponseWriter, r *http.Request) {
 // handleRecycleMode is the cheap "where do deleted files go" answer every delete dialog
 // asks before it words its warning. Unlike handleRecycleStats it never walks the bin.
 func (a *api) handleRecycleMode(w http.ResponseWriter, r *http.Request) {
-	a.writeJSON(w, http.StatusOK, a.deps.Recycle.Mode(r.Context()))
+	a.writeJSON(w, http.StatusOK, a.recycleMode(r.Context()))
+}
+
+// recycleMode is the bin's mode, or "off" when no bin manager is wired (deletes are
+// then permanent, so saying so is the honest default).
+func (a *api) recycleMode(ctx context.Context) recyclebin.Mode {
+	if a.deps.Recycle == nil {
+		return recyclebin.Mode{Dirs: []string{}}
+	}
+	return a.deps.Recycle.Mode(ctx)
 }
 
 // handleRecycleItems lists the individual files in the bin (for the management UI).

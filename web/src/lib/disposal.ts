@@ -40,7 +40,7 @@ export function fmtBytes(b: number): string {
 // long it can come back), or erase it because the bin is switched off. Dialogs use this
 // instead of hard-coding "recycle bin", which was untrue whenever the bin was off.
 export function disposalLine(bytes: number, mode: RecycleMode | null): string {
-  const size = fmtBytes(bytes);
+  const size = bytes > 0 ? fmtBytes(bytes) : "it"; // size not known yet: still say where it goes
   if (!mode) return `Deletes ${size} — checking whether the recycle bin is on…`;
   if (!mode.enabled) return `Permanently deletes ${size} — the recycle bin is switched off`;
   const keep = mode.retention_days > 0

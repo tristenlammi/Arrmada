@@ -519,6 +519,14 @@ export interface RecycleMode {
   retention_days: number;
   max_gb: number;
 }
+// What deleting something with its files would move, and where it goes.
+export interface DeletePreview {
+  files: number;
+  sidecars: number;
+  bytes: number;
+  confirm_over_bytes: number; // above this, the title must be typed
+  recycle: RecycleMode;
+}
 export interface RecycleItem {
   id: string;
   name: string;
@@ -1439,8 +1447,16 @@ export const api = {
     req<{ monitored: boolean }>(`/api/v1/series/${id}/seasons/${season}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
   setEpisodeMonitored: (eid: number, monitored: boolean) =>
     req<{ monitored: boolean }>(`/api/v1/series/episodes/${eid}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
-  deleteSeries: (id: number, deleteFiles?: boolean) =>
-    req<void>(`/api/v1/series/${id}${deleteFiles ? "?delete_files=true" : ""}`, { method: "DELETE" }),
+  // confirm is the series title, required by the server when deleting files over its size
+  // threshold. A 409 (ApiError) carries body.moved / body.failed.
+  deleteSeries: (id: number, deleteFiles?: boolean, confirm?: string) => {
+    const q = new URLSearchParams();
+    if (deleteFiles) q.set("delete_files", "true");
+    if (deleteFiles && confirm) q.set("confirm", confirm);
+    const qs = q.toString();
+    return req<void>(`/api/v1/series/${id}${qs ? `?${qs}` : ""}`, { method: "DELETE" });
+  },
+  seriesDeletePreview: (id: number) => req<DeletePreview>(`/api/v1/series/${id}/delete-preview`),
   seriesBlocklist: (id: number) => req<{ blocklist: BlockEntry[] }>(`/api/v1/series/${id}/blocklist`).then((r) => r.blocklist),
   unblockSeries: (id: number, bid: number) => req<void>(`/api/v1/series/${id}/blocklist/${bid}`, { method: "DELETE" }),
   regrabEpisode: (id: number, season: number, episode: number) =>

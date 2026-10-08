@@ -206,6 +206,7 @@ func main() {
 	}
 	movieSvc := movies.NewService(st.DB(), tmdb, qualitySvc, cfg.MoviesDir, recycleDir, bus, log)
 	seriesSvc.SetRecycleDir(recycleDir) // per-episode file deletes go to the recycle bin, like movies
+	seriesSvc.SetBus(bus)               // deletes announce file.removed so imports forget them
 	prefs := libPrefs{s: settingsSvc}
 	movieSvc.SetNaming(prefs)
 	movieSvc.SetPrefs(prefs)

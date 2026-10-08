@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/eventbus"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/parser"
@@ -27,12 +29,13 @@ type SceneMapper interface {
 
 // Service is the Series module's application logic.
 type Service struct {
-	repo    *Repo
-	meta    metadata.SeriesProvider
-	root    string // library root, for delete-with-files and library scan
-	recycle string // recycle-bin dir ("" = hard delete), matching movies
-	log     *slog.Logger
-	scene   SceneMapper // TheXEM client (nil → scene mapping falls back to air-date gaps)
+	repo  *Repo
+	meta  metadata.SeriesProvider
+	root  string      // library root, for delete-with-files and library scan
+	bin   library.Bin // where deleted files go (a bin that's off hard-deletes)
+	bus   *eventbus.Bus
+	log   *slog.Logger
+	scene SceneMapper // TheXEM client (nil → scene mapping falls back to air-date gaps)
 
 	muUnmatched   sync.Mutex
 	lastUnmatched []UnmatchedFolder // folders the last scan couldn't identify, for manual pick
@@ -53,36 +56,60 @@ type UnmatchedFolder struct {
 	Candidates []metadata.SeriesResult `json:"candidates"`
 }
 
-// SetRecycleDir points episode-file deletion at the recycle bin (matching movies).
-func (s *Service) SetRecycleDir(dir string) { s.recycle = dir }
+// SetRecycleDir points episode-file deletion at the recycle bin (matching movies). ""
+// means the bin is switched off and deletes are permanent.
+func (s *Service) SetRecycleDir(dir string) { s.bin = library.SingleBin(dir) }
 
-// DeleteEpisodeFile removes one episode's file (to the recycle bin when configured) and flips
-// the episode back to wanted, without touching the rest of the show.
+// SetBus lets deletes announce file.removed, so the import pipeline forgets a deleted
+// file instead of importing the still-seeding torrent straight back.
+func (s *Service) SetBus(b *eventbus.Bus) { s.bus = b }
+
+// fileRemoved announces that a library file is gone.
+func (s *Service) fileRemoved(path string) {
+	if s.bus != nil {
+		s.bus.Publish("file.removed", map[string]any{"path": path})
+	}
+}
+
+// DeleteEpisodeFile moves one episode's file and its subtitles to the recycle bin (or
+// deletes them when the bin is off) and flips the episode back to wanted, without touching
+// the rest of the show. If the bin can't take the video, nothing changes and the error
+// says why — it never falls back to a permanent delete.
 func (s *Service) DeleteEpisodeFile(ctx context.Context, seriesID int64, season, episode int) error {
 	path, err := s.repo.EpisodeFilePath(ctx, seriesID, season, episode)
 	if err != nil {
 		return err
 	}
+	var subFailed []string
 	if path != "" {
-		if s.recycle != "" {
-			if _, rerr := library.RecycleFile(s.recycle, path); rerr != nil {
-				s.log.Warn("series: recycle episode file failed, hard-deleting", "path", path, "err", rerr)
-				_ = os.Remove(path)
+		subs := library.Sidecars(path)
+		if _, err := library.RemoveToBin(s.bin, path); err != nil {
+			return err
+		}
+		s.fileRemoved(path)
+		for _, sub := range subs {
+			if _, err := library.RemoveToBin(s.bin, sub); err != nil {
+				s.log.Warn("series: subtitle left behind", "path", sub, "err", err)
+				subFailed = append(subFailed, filepath.Base(sub))
+				continue
 			}
-		} else {
-			_ = os.Remove(path)
+			s.fileRemoved(sub)
 		}
 	}
 	if err := s.repo.ClearEpisodeFile(ctx, seriesID, season, episode); err != nil {
 		return err
 	}
-	s.repo.AddEvent(ctx, seriesID, "file.deleted", fmt.Sprintf("S%02dE%02d file deleted", season, episode))
+	detail := fmt.Sprintf("S%02dE%02d file deleted", season, episode)
+	if len(subFailed) > 0 {
+		detail += " (subtitles left in place: " + strings.Join(subFailed, ", ") + ")"
+	}
+	s.repo.AddEvent(ctx, seriesID, "file.deleted", detail)
 	return nil
 }
 
 // NewService wires the module. root is the library directory (for scan / delete-files).
 func NewService(db *sql.DB, meta metadata.SeriesProvider, root string, log *slog.Logger) *Service {
-	return &Service{repo: NewRepo(db), meta: meta, root: root, log: log}
+	return &Service{repo: NewRepo(db), meta: meta, root: root, bin: library.SingleBin(""), log: log}
 }
 
 // MetadataAvailable reports whether the metadata provider is configured.
@@ -694,41 +721,167 @@ func (s *Service) SetType(ctx context.Context, id int64, seriesType string) erro
 	return nil
 }
 
-// Delete removes a series. When deleteFiles is set, its episode files are removed
-// from disk first (and now-empty season/series folders pruned).
-func (s *Service) Delete(ctx context.Context, id int64, deleteFiles bool) error {
-	if deleteFiles {
-		if seasons, err := s.repo.SeasonsFor(ctx, id); err == nil {
-			s.removeEpisodeFiles(seasons)
-		}
-	}
-	return s.repo.Delete(ctx, id)
+// ErrFilesNotRemoved means a series delete stopped because a file couldn't go to the
+// recycle bin. The show stays in the library; the summary says what moved and what didn't.
+var ErrFilesNotRemoved = errors.New("some files couldn't be moved to the recycle bin — the series was kept")
+
+// DeletePlan is what deleting a series with its files would touch, for the dialog to show
+// before anything happens.
+type DeletePlan struct {
+	Files    int      `json:"files"`    // distinct episode video files (a double episode counts once)
+	Sidecars int      `json:"sidecars"` // subtitle files that travel with them
+	Bytes    int64    `json:"bytes"`    // videos plus subtitles
+	Paths    []string `json:"-"`        // the videos, in delete order
 }
 
-// removeEpisodeFiles deletes each episode file on disk and prunes emptied folders
-// (deepest first, so a season dir is removed before its series dir).
-func (s *Service) removeEpisodeFiles(seasons []Season) {
-	dirs := map[string]bool{}
+// DeleteSummary reports what a delete did with the files.
+type DeleteSummary struct {
+	Moved  []string `json:"moved"`
+	Failed []string `json:"failed"`
+	Bytes  int64    `json:"bytes"`
+}
+
+// DeletePlan lists a series' episode files and their subtitles without changing anything.
+func (s *Service) DeletePlan(ctx context.Context, id int64) (DeletePlan, error) {
+	seasons, err := s.repo.SeasonsFor(ctx, id)
+	if err != nil {
+		return DeletePlan{}, err
+	}
+	var plan DeletePlan
+	seen := map[string]bool{}
 	for _, sn := range seasons {
 		for _, e := range sn.Episodes {
-			if !e.HasFile || e.FilePath == "" {
+			if !e.HasFile || e.FilePath == "" || seen[e.FilePath] {
 				continue
 			}
-			if err := os.Remove(e.FilePath); err != nil && !os.IsNotExist(err) {
-				s.log.Warn("series: delete file failed", "path", e.FilePath, "err", err)
-				continue
+			seen[e.FilePath] = true
+			fi, err := os.Stat(e.FilePath)
+			if err != nil {
+				continue // already gone from disk: nothing to move
 			}
-			dirs[filepath.Dir(e.FilePath)] = true               // season folder
-			dirs[filepath.Dir(filepath.Dir(e.FilePath))] = true // series folder
+			plan.Paths = append(plan.Paths, e.FilePath)
+			plan.Files++
+			plan.Bytes += fi.Size()
+			for _, sub := range library.Sidecars(e.FilePath) {
+				plan.Sidecars++
+				if si, err := os.Stat(sub); err == nil {
+					plan.Bytes += si.Size()
+				}
+			}
 		}
 	}
+	sort.Strings(plan.Paths)
+	return plan, nil
+}
+
+// Delete removes a series. With deleteFiles, every episode video and its subtitles go to
+// the recycle bin first (or are deleted when the bin is off) and emptied season/series
+// folders are pruned. The show's rows are deleted only once every file has moved: on the
+// first file the bin refuses, it stops, marks the episodes already moved as missing so
+// the library tells the truth, keeps the series, and returns ErrFilesNotRemoved.
+func (s *Service) Delete(ctx context.Context, id int64, deleteFiles bool) (DeleteSummary, error) {
+	sum := DeleteSummary{Moved: []string{}, Failed: []string{}}
+	if !deleteFiles {
+		return sum, s.repo.Delete(ctx, id)
+	}
+	seasons, err := s.repo.SeasonsFor(ctx, id)
+	if err != nil {
+		return sum, err
+	}
+	plan, err := s.DeletePlan(ctx, id)
+	if err != nil {
+		return sum, err
+	}
+	bin := s.bin
+	if bin == nil {
+		bin = library.SingleBin("")
+	}
+	// Pre-flight: a bin that can't even be created fails before a single file moves.
+	if len(plan.Paths) > 0 {
+		dir, err := bin.For(plan.Paths[0])
+		if err == nil {
+			err = os.MkdirAll(dir, 0o755)
+		}
+		if err != nil && !errors.Is(err, library.ErrRecycleDisabled) {
+			sum.Failed = append(sum.Failed, filepath.Base(plan.Paths[0]))
+			s.repo.AddEvent(ctx, id, "delete.failed", "Couldn't use the recycle bin, so nothing was deleted: "+err.Error())
+			return sum, fmt.Errorf("%w: %v", ErrFilesNotRemoved, err)
+		}
+	}
+
+	dirs := map[string]bool{}
+	var movedVideos []string
+	var failure error
+	for _, video := range plan.Paths {
+		subs := library.Sidecars(video)
+		size := int64(0)
+		if fi, err := os.Stat(video); err == nil {
+			size = fi.Size()
+		}
+		if _, err := library.RemoveToBin(bin, video); err != nil {
+			sum.Failed = append(sum.Failed, filepath.Base(video))
+			failure = err
+			break
+		}
+		movedVideos = append(movedVideos, video)
+		sum.Moved = append(sum.Moved, filepath.Base(video))
+		sum.Bytes += size
+		s.fileRemoved(video)
+		dirs[filepath.Dir(video)] = true               // season folder
+		dirs[filepath.Dir(filepath.Dir(video))] = true // series folder
+		for _, sub := range subs {
+			if _, err := library.RemoveToBin(bin, sub); err != nil {
+				sum.Failed = append(sum.Failed, filepath.Base(sub))
+				failure = err
+				break
+			}
+			sum.Moved = append(sum.Moved, filepath.Base(sub))
+			s.fileRemoved(sub)
+		}
+		if failure != nil {
+			break
+		}
+	}
+	s.pruneEmptyDirs(dirs)
+
+	if failure != nil {
+		// The moved videos are in the bin now; their episodes must read as missing.
+		moved := map[string]bool{}
+		for _, v := range movedVideos {
+			moved[v] = true
+		}
+		for _, sn := range seasons {
+			for _, e := range sn.Episodes {
+				if moved[e.FilePath] {
+					if err := s.repo.ClearEpisodeFile(ctx, id, e.SeasonNumber, e.EpisodeNumber); err != nil {
+						s.log.Warn("series: couldn't mark a moved episode missing", "err", err)
+					}
+				}
+			}
+		}
+		s.repo.AddEvent(ctx, id, "delete.failed", fmt.Sprintf("Stopped deleting after %d file(s): %v", len(sum.Moved), failure))
+		return sum, fmt.Errorf("%w: %v", ErrFilesNotRemoved, failure)
+	}
+	return sum, s.repo.Delete(ctx, id)
+}
+
+// pruneEmptyDirs removes folders a delete emptied, deepest first so a season folder goes
+// before its series folder. Only empty folders inside the library root are removed —
+// never the root itself, even when the last show in it was just deleted.
+func (s *Service) pruneEmptyDirs(dirs map[string]bool) {
 	ordered := make([]string, 0, len(dirs))
 	for d := range dirs {
+		if s.root != "" {
+			rel, err := filepath.Rel(s.root, d)
+			if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+				continue
+			}
+		}
 		ordered = append(ordered, d)
 	}
 	sort.Slice(ordered, func(i, j int) bool { return len(ordered[i]) > len(ordered[j]) })
 	for _, d := range ordered {
-		_ = os.Remove(d) // only succeeds when empty — best effort
+		_ = os.Remove(d) // only succeeds when empty
 	}
 }
 
@@ -973,11 +1126,9 @@ func (s *Service) SupersedeEpisodeFile(ctx context.Context, seriesID int64, seas
 			s.log.Info("series: old file still serves other episodes — keeping it",
 				"old", old, "shared_by", n, "new", path)
 		} else if _, err := os.Stat(old); err == nil {
-			if s.recycle != "" {
-				if _, rerr := library.RecycleFile(s.recycle, old); rerr != nil {
-					_ = os.Remove(old)
-				}
-			} else {
+			// As before, an upgrade whose old file the bin refuses still deletes it;
+			// keeping the old file in that case is a separate, later change.
+			if _, rerr := library.RemoveToBin(s.bin, old); rerr != nil {
 				_ = os.Remove(old)
 			}
 			s.log.Info("series: superseded old episode file", "old", old, "new", path)

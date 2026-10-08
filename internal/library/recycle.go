@@ -89,6 +89,65 @@ func RecycleFile(recycleDir, path string) (string, error) {
 	return dst, nil
 }
 
+// Bin says which recycle bin a file being deleted goes to. ErrRecycleDisabled means the
+// bin is deliberately switched off; any other error means it can't take the file.
+type Bin interface {
+	For(path string) (string, error)
+}
+
+// SingleBin is one bin for every file — today's ARRMADA_RECYCLE_DIR. "" is the bin
+// switched off.
+func SingleBin(dir string) Bin { return singleBin(dir) }
+
+type singleBin string
+
+func (b singleBin) For(string) (string, error) {
+	if b == "" {
+		return "", ErrRecycleDisabled
+	}
+	return string(b), nil
+}
+
+// RemoveToBin is the one way a library file should be deleted: it moves path into the
+// bin and returns where it went. Only a bin that is deliberately off hard-deletes. If the
+// bin can't take the file, nothing is deleted and the error says so — it never falls back
+// to os.Remove, which is how "deleted to the recycle bin" used to mean "gone for good".
+// A file that's already missing is not an error.
+func RemoveToBin(bin Bin, path string) (string, error) {
+	if bin == nil {
+		bin = SingleBin("")
+	}
+	dir, err := bin.For(path)
+	if errors.Is(err, ErrRecycleDisabled) {
+		if rerr := os.Remove(path); rerr != nil && !os.IsNotExist(rerr) {
+			return "", rerr
+		}
+		return "", nil
+	}
+	if err == nil {
+		var dst string
+		if dst, err = RecycleFile(dir, path); err == nil {
+			return dst, nil
+		}
+	}
+	return "", &binError{name: filepath.Base(path), err: err}
+}
+
+// ErrBinRefused matches (errors.Is) any RemoveToBin failure, so a handler can answer
+// "the bin said no" (409) apart from other failures.
+var ErrBinRefused = errors.New("the recycle bin couldn't take the file")
+
+type binError struct {
+	name string
+	err  error
+}
+
+func (e *binError) Error() string {
+	return fmt.Sprintf("couldn't move %s to the recycle bin (%v) — nothing was deleted", e.name, e.err)
+}
+
+func (e *binError) Unwrap() []error { return []error{ErrBinRefused, e.err} }
+
 // ReadRecycleMeta reads a recycled file's sidecar (empty RecycleMeta when absent).
 func ReadRecycleMeta(recycledPath string) RecycleMeta {
 	var m RecycleMeta

@@ -297,6 +297,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("DELETE "+base+"/api/v1/series/{id}/blocklist/{bid}", a.requireRole(auth.RoleManager, a.handleSeriesUnblock))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/seasons/{season}/episodes/{episode}/regrab", a.requireRole(auth.RoleManager, a.handleRegrabEpisode))
 	mux.HandleFunc("DELETE "+base+"/api/v1/series/{id}/seasons/{season}/episodes/{episode}/file", a.requireRole(auth.RoleManager, a.handleDeleteEpisodeFile))
+	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/delete-preview", a.requireRole(auth.RoleManager, a.handleSeriesDeletePreview))
 	mux.HandleFunc("DELETE "+base+"/api/v1/series/{id}", a.requireRole(auth.RoleManager, a.handleDeleteSeries))
 
 	// Requests (Overseerr-style): request media → approve → add to Movies/Series.

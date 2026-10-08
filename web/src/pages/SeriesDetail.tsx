@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { disposalLine, useRecycleMode } from "../lib/disposal";
+import { DeleteSeriesDialog } from "../components/DeleteSeriesDialog";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
@@ -269,7 +272,7 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowPaste(true)}>Upload torrent</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowImport(true)}>Manual import</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("rename", rename)}>{busy === "rename" ? "Renaming…" : "Rename"}</button>
-        <DeleteButton onDelete={async (df) => { await api.deleteSeries(series.id, df); window.location.href = "/series"; }} />
+        <DeleteButton series={series} />
       </div>
       {series.series_type === "anime" && <AliasPanel series={series} />}
       {series.series_type === "anime" && <SceneMapPanel series={series} />}
@@ -434,11 +437,14 @@ function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep:
     catch (e) { flash((e as Error).message); }
     finally { setBusy(false); }
   };
+  // Asks first, and says truthfully where the file goes. A bin refusal shows in the dialog.
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [delErr, setDelErr] = useState<string | null>(null);
+  const binMode = useRecycleMode();
   const deleteEpFile = async () => {
-    if (!window.confirm(`Delete the file for ${sxe(ep)}? It goes to the recycle bin and the episode becomes wanted again.`)) return;
-    setBusy(true);
-    try { await api.deleteEpisodeFile(series.id, ep.season_number, ep.episode_number); flash(`Deleted ${sxe(ep)} file`); onChange(); }
-    catch (e) { flash((e as Error).message); }
+    setBusy(true); setDelErr(null);
+    try { await api.deleteEpisodeFile(series.id, ep.season_number, ep.episode_number); setConfirmDel(false); flash(`Deleted ${sxe(ep)} file`); onChange(); }
+    catch (e) { setDelErr((e as Error).message); }
     finally { setBusy(false); }
   };
 
@@ -474,7 +480,7 @@ function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep:
       <div className="flex flex-none items-center gap-1">
         {ep.has_file ? (<>
           <button onClick={replaceEp} disabled={busy} title="Blocklist this release and grab a different one" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy ? "…" : "Replace"}</button>
-          <button onClick={deleteEpFile} disabled={busy} title="Delete this episode's file (to recycle bin)" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>Delete</button>
+          <button onClick={() => setConfirmDel(true)} disabled={busy} title="Delete this episode's file" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>Delete</button>
         </>) : !dl && (
           // "Requested", not "Grabbed" — the search runs in the background and may find
           // nothing, so the mark says what actually happened: you asked. Still clickable,
@@ -493,6 +499,18 @@ function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep:
         )}
         <button onClick={() => setSearching(true)} title="Search indexers for this episode" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Search</button>
       </div>
+      {confirmDel && (
+        <ConfirmDialog
+          title={<>Delete the file for {sxe(ep)}?</>}
+          body={<>{disposalLine(ep.size_bytes ?? 0, binMode)}, with its subtitles. The episode becomes wanted again.</>}
+          confirmLabel="Delete file"
+          busyLabel="Deleting…"
+          busy={busy}
+          error={delErr}
+          onConfirm={deleteEpFile}
+          onCancel={() => { setConfirmDel(false); setDelErr(null); }}
+        />
+      )}
       {dl && (
         <div className="absolute inset-x-0 bottom-0 h-[2px]" style={{ background: "var(--panel-2)" }}>
           <div className="h-full" style={{ width: `${dlPct}%`, background: "var(--accent)", transition: "width 1s linear" }} />
@@ -662,18 +680,13 @@ function ProfileSelector({ series, onChange }: { series: SeriesT; onChange: () =
   );
 }
 
-function DeleteButton({ onDelete }: { onDelete: (deleteFiles: boolean) => void }) {
-  const [confirm, setConfirm] = useState(false);
-  const [deleteFiles, setDeleteFiles] = useState(true);
-  if (!confirm) return <button onClick={() => setConfirm(true)} className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Delete</button>;
+function DeleteButton({ series }: { series: SeriesT }) {
+  const [open, setOpen] = useState(false);
   return (
-    <div className="flex items-center gap-2">
-      <label className="flex items-center gap-1.5 text-[11.5px] text-ink-dim" title="Also delete every episode file from disk">
-        <input type="checkbox" checked={deleteFiles} onChange={(e) => setDeleteFiles(e.target.checked)} /> delete files
-      </label>
-      <button onClick={() => onDelete(deleteFiles)} className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ background: "var(--reject)", color: "#fff" }}>{deleteFiles ? "Remove + files" : "Remove series"}</button>
-      <button onClick={() => setConfirm(false)} className="rounded-lg px-2 py-2 text-[12.5px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>✕</button>
-    </div>
+    <>
+      <button onClick={() => setOpen(true)} className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Delete</button>
+      {open && <DeleteSeriesDialog series={series} onClose={() => setOpen(false)} onDeleted={() => { window.location.href = "/series"; }} />}
+    </>
   );
 }
 
