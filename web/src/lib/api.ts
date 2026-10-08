@@ -965,6 +965,7 @@ export interface SubtitleJob {
   stage?: string;    // what a running job is doing
   started_at?: number; // unix seconds the worker picked it up
   redo?: boolean; // replacing the sidecars already there
+  priority: number; // 0 import · 1 manual · 2 sweep — the worker takes the lowest first
 }
 // SubtitleCoverage is the Overview's totals, from the last library pass (not a live walk).
 export interface SubtitleCoverage {
