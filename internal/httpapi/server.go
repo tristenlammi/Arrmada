@@ -101,19 +101,42 @@ type api struct {
 func New(d Deps) *http.Server {
 	a := &api{deps: d, start: time.Now(), loginLimiter: newLoginLimiter(10, 15*time.Minute)}
 
-	mux := http.NewServeMux()
-	base := d.Config.BaseURL // "" for root, or "/sub-path"
+	rt := newRouter(a, d.Config.BaseURL) // base: "" for root, or "/sub-path"
+	a.registerRoutes(rt)
 
-	mux.HandleFunc("GET "+base+"/api/health", a.handleHealth)
-	mux.HandleFunc("GET "+base+"/api/v1/health/system", a.protected(a.handleSystemHealth))
-	mux.HandleFunc("GET "+base+"/api/v1/status", a.handleStatus)
+	// Chain: recover → authenticate (resolves the user) → external gate (LAN vs
+	// outside) → log → routes.
+	handler := a.recoverPanics(a.securityHeaders(a.authenticate(a.externalGate(a.logRequests(rt)))))
+
+	return &http.Server{
+		Addr:              d.Config.Addr(),
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		// Keep idle keep-alive connections open well past the UI's 3s poll so the
+		// server never closes a connection the browser is about to reuse (which
+		// surfaces as a spurious "failed to fetch").
+		IdleTimeout: 120 * time.Second,
+	}
+}
+
+// registerRoutes is the route table. mux is the scoped router, not a bare ServeMux:
+// its HandleFunc only takes a guard (public, signedIn or requireRole), so every route
+// says who may call it. Anything that isn't part of the requester-facing surface is
+// staff (requireRole(auth.RoleManager, …)) or admin; testdata/routes.golden lists the
+// result.
+func (a *api) registerRoutes(mux *router) {
+	base := mux.base
+
+	mux.HandleFunc("GET "+base+"/api/health", a.public(a.handleHealth).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/health/system", a.requireRole(auth.RoleManager, a.handleSystemHealth))
+	mux.HandleFunc("GET "+base+"/api/v1/status", a.public(a.handleStatus).ext())
 	mux.HandleFunc("GET "+base+"/api/v1/dashboard", a.requireRole(auth.RoleManager, a.handleDashboard))
 
 	// App preferences
 	mux.HandleFunc("GET "+base+"/api/v1/apikeys", a.requireRole(auth.RoleManager, a.handleGetAPIKeys))
 	mux.HandleFunc("PUT "+base+"/api/v1/apikeys/{id}", a.requireRole(auth.RoleManager, a.handleSetAPIKey))
 	mux.HandleFunc("POST "+base+"/api/v1/apikeys/{id}/test", a.requireRole(auth.RoleManager, a.handleTestAPIKey))
-	mux.HandleFunc("GET "+base+"/api/v1/settings", a.protected(a.handleGetSettings))
+	mux.HandleFunc("GET "+base+"/api/v1/settings", a.requireRole(auth.RoleManager, a.handleGetSettings))
 	mux.HandleFunc("PUT "+base+"/api/v1/settings", a.requireRole(auth.RoleManager, a.handleUpdateSettings))
 	// Library folders + filesystem browser (in-app folder picker).
 	mux.HandleFunc("GET "+base+"/api/v1/system/library", a.requireRole(auth.RoleManager, a.handleGetLibraryPaths))
@@ -132,34 +155,34 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/audioserver/listening", a.requireRole(auth.RoleAdmin, a.handleAudioListening))
 	mux.HandleFunc("POST "+base+"/api/v1/audioserver/import", a.requireRole(auth.RoleAdmin, a.handleAudioImportUpload))
 	mux.HandleFunc("POST "+base+"/api/v1/audioserver/import/apply", a.requireRole(auth.RoleAdmin, a.handleAudioImportApply))
-	mux.HandleFunc("GET "+base+"/api/v1/me/audio", a.protected(a.handleMyAudio))
-	mux.HandleFunc("PUT "+base+"/api/v1/me/audio/password", a.protected(a.handleSetMyAudioPassword))
-	mux.HandleFunc("DELETE "+base+"/api/v1/me/audio/password", a.protected(a.handleRemoveMyAudioPassword))
-	mux.HandleFunc("GET "+base+"/api/v1/me/audio/listening", a.protected(a.handleMyAudioListening))
-	mux.HandleFunc("POST "+base+"/api/v1/me/audio/accept", a.protected(a.handleMyAudioAccept))
-	mux.HandleFunc("DELETE "+base+"/api/v1/me/audio/devices/{family}", a.protected(a.handleRevokeMyDevice))
-	mux.HandleFunc("GET "+base+"/api/v1/me/audio/history", a.protected(a.handleMyAudioHistory))
-	mux.HandleFunc("POST "+base+"/api/v1/me/audio/restore", a.protected(a.handleMyAudioRestore))
-	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/audiobook", a.protected(a.handleBookAudiobook))
+	mux.HandleFunc("GET "+base+"/api/v1/me/audio", a.signedIn(a.handleMyAudio).ext())
+	mux.HandleFunc("PUT "+base+"/api/v1/me/audio/password", a.signedIn(a.handleSetMyAudioPassword).ext())
+	mux.HandleFunc("DELETE "+base+"/api/v1/me/audio/password", a.signedIn(a.handleRemoveMyAudioPassword).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/me/audio/listening", a.signedIn(a.handleMyAudioListening).ext())
+	mux.HandleFunc("POST "+base+"/api/v1/me/audio/accept", a.signedIn(a.handleMyAudioAccept).ext())
+	mux.HandleFunc("DELETE "+base+"/api/v1/me/audio/devices/{family}", a.signedIn(a.handleRevokeMyDevice).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/me/audio/history", a.signedIn(a.handleMyAudioHistory).ext())
+	mux.HandleFunc("POST "+base+"/api/v1/me/audio/restore", a.signedIn(a.handleMyAudioRestore).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/audiobook", a.signedIn(a.handleBookAudiobook).ext())
 
 	// Auth
-	mux.HandleFunc("POST "+base+"/api/v1/auth/setup", a.handleSetup)
-	mux.HandleFunc("POST "+base+"/api/v1/auth/login", a.handleLogin)
-	mux.HandleFunc("POST "+base+"/api/v1/auth/plex/pin", a.handlePlexLoginStart)
-	mux.HandleFunc("GET "+base+"/api/v1/auth/plex/pin/{id}", a.handlePlexLoginPoll)
-	mux.HandleFunc("POST "+base+"/api/v1/auth/logout", a.handleLogout)
-	mux.HandleFunc("GET "+base+"/api/v1/auth/me", a.protected(a.handleMe))
+	mux.HandleFunc("POST "+base+"/api/v1/auth/setup", a.public(a.handleSetup).ext())
+	mux.HandleFunc("POST "+base+"/api/v1/auth/login", a.public(a.handleLogin).ext())
+	mux.HandleFunc("POST "+base+"/api/v1/auth/plex/pin", a.public(a.handlePlexLoginStart).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/auth/plex/pin/{id}", a.public(a.handlePlexLoginPoll).ext())
+	mux.HandleFunc("POST "+base+"/api/v1/auth/logout", a.public(a.handleLogout).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/auth/me", a.signedIn(a.handleMe).ext())
 	// Per-user notifications (in-app inbox + personal Apprise URL).
-	mux.HandleFunc("GET "+base+"/api/v1/me/notifications", a.protected(a.handleMyNotifications))
-	mux.HandleFunc("POST "+base+"/api/v1/me/notifications/read-all", a.protected(a.handleMarkAllNotificationsRead))
-	mux.HandleFunc("POST "+base+"/api/v1/me/notifications/{id}/read", a.protected(a.handleMarkNotificationRead))
+	mux.HandleFunc("GET "+base+"/api/v1/me/notifications", a.signedIn(a.handleMyNotifications).ext())
+	mux.HandleFunc("POST "+base+"/api/v1/me/notifications/read-all", a.signedIn(a.handleMarkAllNotificationsRead).ext())
+	mux.HandleFunc("POST "+base+"/api/v1/me/notifications/{id}/read", a.signedIn(a.handleMarkNotificationRead).ext())
 	// Web Push (PWA notifications): key + per-device subscribe/unsubscribe.
-	mux.HandleFunc("GET "+base+"/api/v1/me/push/key", a.protected(a.handlePushKey))
-	mux.HandleFunc("POST "+base+"/api/v1/me/push/subscribe", a.protected(a.handlePushSubscribe))
-	mux.HandleFunc("POST "+base+"/api/v1/me/push/unsubscribe", a.protected(a.handlePushUnsubscribe))
-	mux.HandleFunc("GET "+base+"/api/v1/me/apprise", a.protected(a.handleGetMyApprise))
-	mux.HandleFunc("GET "+base+"/api/v1/me/books", a.protected(a.handleMyBooks))
-	mux.HandleFunc("PUT "+base+"/api/v1/me/apprise", a.protected(a.handleSetMyApprise))
+	mux.HandleFunc("GET "+base+"/api/v1/me/push/key", a.signedIn(a.handlePushKey).ext())
+	mux.HandleFunc("POST "+base+"/api/v1/me/push/subscribe", a.signedIn(a.handlePushSubscribe).ext())
+	mux.HandleFunc("POST "+base+"/api/v1/me/push/unsubscribe", a.signedIn(a.handlePushUnsubscribe).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/me/apprise", a.signedIn(a.handleGetMyApprise).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/me/books", a.signedIn(a.handleMyBooks).ext())
+	mux.HandleFunc("PUT "+base+"/api/v1/me/apprise", a.signedIn(a.handleSetMyApprise).ext())
 
 	// User management (admin only).
 	mux.HandleFunc("GET "+base+"/api/v1/users", a.requireRole(auth.RoleAdmin, a.handleListUsers))
@@ -168,49 +191,48 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("DELETE "+base+"/api/v1/users/{id}", a.requireRole(auth.RoleAdmin, a.handleDeleteUser))
 
 	// Realtime updates
-	mux.HandleFunc("GET "+base+"/api/v1/ws", a.protected(a.handleWS))
+	mux.HandleFunc("GET "+base+"/api/v1/ws", a.signedIn(a.handleWS))
 
 	// Acquisition utilities
-	mux.HandleFunc("GET "+base+"/api/v1/parse", a.protected(a.handleParse))
+	mux.HandleFunc("GET "+base+"/api/v1/parse", a.requireRole(auth.RoleManager, a.handleParse))
 
 	// Quality profiles + custom-format builder
-	mux.HandleFunc("GET "+base+"/api/v1/quality/preview", a.protected(a.handleQualityPreview))
-	mux.HandleFunc("POST "+base+"/api/v1/quality/preview", a.protected(a.handleQualityPreview))
+	mux.HandleFunc("GET "+base+"/api/v1/quality/preview", a.requireRole(auth.RoleManager, a.handleQualityPreview))
+	mux.HandleFunc("POST "+base+"/api/v1/quality/preview", a.requireRole(auth.RoleManager, a.handleQualityPreview))
 	mux.HandleFunc("POST "+base+"/api/v1/quality/test", a.requireRole(auth.RoleManager, a.handleQualityTest))
-	mux.HandleFunc("GET "+base+"/api/v1/quality/profiles", a.protected(a.handleListQualityProfiles))
+	mux.HandleFunc("GET "+base+"/api/v1/quality/profiles", a.requireRole(auth.RoleManager, a.handleListQualityProfiles))
 	mux.HandleFunc("POST "+base+"/api/v1/quality/profiles", a.requireRole(auth.RoleManager, a.handleCreateQualityProfile))
 	mux.HandleFunc("POST "+base+"/api/v1/quality/default", a.requireRole(auth.RoleManager, a.handleSetDefaultProfile))
-	mux.HandleFunc("GET "+base+"/api/v1/quality/profiles/{ref}", a.protected(a.handleGetQualityProfile))
+	mux.HandleFunc("GET "+base+"/api/v1/quality/profiles/{ref}", a.requireRole(auth.RoleManager, a.handleGetQualityProfile))
 	mux.HandleFunc("PUT "+base+"/api/v1/quality/profiles/{id}", a.requireRole(auth.RoleManager, a.handleUpdateQualityProfile))
 	mux.HandleFunc("DELETE "+base+"/api/v1/quality/profiles/{id}", a.requireRole(auth.RoleManager, a.handleDeleteQualityProfile))
 
 	// Indexers + search
-	mux.HandleFunc("GET "+base+"/api/v1/indexers", a.protected(a.handleListIndexers))
+	mux.HandleFunc("GET "+base+"/api/v1/indexers", a.requireRole(auth.RoleManager, a.handleListIndexers))
 	mux.HandleFunc("POST "+base+"/api/v1/indexers", a.requireRole(auth.RoleManager, a.handleCreateIndexer))
 	mux.HandleFunc("PUT "+base+"/api/v1/indexers/{id}", a.requireRole(auth.RoleManager, a.handleUpdateIndexer))
 	mux.HandleFunc("DELETE "+base+"/api/v1/indexers/{id}", a.requireRole(auth.RoleManager, a.handleDeleteIndexer))
 	mux.HandleFunc("POST "+base+"/api/v1/indexers/{id}/test", a.requireRole(auth.RoleManager, a.handleTestIndexer))
-	mux.HandleFunc("GET "+base+"/api/v1/search", a.protected(a.handleSearch))
 
 	// Download clients + queue
-	mux.HandleFunc("GET "+base+"/api/v1/downloadclients", a.protected(a.handleListDownloadClients))
+	mux.HandleFunc("GET "+base+"/api/v1/downloadclients", a.requireRole(auth.RoleManager, a.handleListDownloadClients))
 	mux.HandleFunc("POST "+base+"/api/v1/downloadclients", a.requireRole(auth.RoleManager, a.handleCreateDownloadClient))
 	mux.HandleFunc("DELETE "+base+"/api/v1/downloadclients/{id}", a.requireRole(auth.RoleManager, a.handleDeleteDownloadClient))
 	mux.HandleFunc("POST "+base+"/api/v1/downloadclients/{id}/test", a.requireRole(auth.RoleManager, a.handleTestDownloadClient))
-	mux.HandleFunc("GET "+base+"/api/v1/downloadclients/{id}/status", a.protected(a.handleDownloadClientStatus))
-	mux.HandleFunc("GET "+base+"/api/v1/downloadclients/{id}/settings", a.protected(a.handleGetClientSettings))
+	mux.HandleFunc("GET "+base+"/api/v1/downloadclients/{id}/status", a.requireRole(auth.RoleManager, a.handleDownloadClientStatus))
+	mux.HandleFunc("GET "+base+"/api/v1/downloadclients/{id}/settings", a.requireRole(auth.RoleManager, a.handleGetClientSettings))
 	mux.HandleFunc("PUT "+base+"/api/v1/downloadclients/{id}/settings", a.requireRole(auth.RoleManager, a.handleSetClientSettings))
-	mux.HandleFunc("GET "+base+"/api/v1/indexers/prowlarr", a.protected(a.handleProwlarrInfo))
+	mux.HandleFunc("GET "+base+"/api/v1/indexers/prowlarr", a.requireRole(auth.RoleManager, a.handleProwlarrInfo))
 	mux.HandleFunc("POST "+base+"/api/v1/indexers/prowlarr/sync", a.requireRole(auth.RoleManager, a.handleProwlarrSync))
 	mux.HandleFunc("GET "+base+"/api/v1/notifications", a.requireRole(auth.RoleManager, a.handleListNotifications))
 	mux.HandleFunc("POST "+base+"/api/v1/notifications", a.requireRole(auth.RoleManager, a.handleCreateNotification))
 	mux.HandleFunc("PUT "+base+"/api/v1/notifications/{id}", a.requireRole(auth.RoleManager, a.handleUpdateNotification))
 	mux.HandleFunc("DELETE "+base+"/api/v1/notifications/{id}", a.requireRole(auth.RoleManager, a.handleDeleteNotification))
 	mux.HandleFunc("POST "+base+"/api/v1/notifications/test", a.requireRole(auth.RoleManager, a.handleTestNotification))
-	mux.HandleFunc("GET "+base+"/api/v1/queue", a.protected(a.handleQueue))
+	mux.HandleFunc("GET "+base+"/api/v1/queue", a.requireRole(auth.RoleManager, a.handleQueue))
 	mux.HandleFunc("GET "+base+"/api/v1/downloads/disk-guard", a.requireRole(auth.RoleManager, a.handleDiskGuardStatus))
 	mux.HandleFunc("GET "+base+"/api/v1/files/info", a.requireRole(auth.RoleManager, a.handleFileInfo))
-	mux.HandleFunc("GET "+base+"/api/v1/downloads", a.protected(a.handleDownloadsFeed))
+	mux.HandleFunc("GET "+base+"/api/v1/downloads", a.requireRole(auth.RoleManager, a.handleDownloadsFeed))
 	mux.HandleFunc("POST "+base+"/api/v1/queue/{hash}/pause", a.requireRole(auth.RoleManager, a.handlePauseDownload))
 	mux.HandleFunc("POST "+base+"/api/v1/queue/{hash}/resume", a.requireRole(auth.RoleManager, a.handleResumeDownload))
 	mux.HandleFunc("POST "+base+"/api/v1/queue/{hash}/block", a.requireRole(auth.RoleManager, a.handleBlockDownload))
@@ -223,11 +245,11 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/movies/{id}/grabtorrent", a.requireRole(auth.RoleManager, a.handleMovieGrabTorrent))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/grabtorrent", a.requireRole(auth.RoleManager, a.handleSeriesGrabTorrent))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/grabtorrent", a.requireRole(auth.RoleManager, a.handleBookGrabTorrent))
-	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/series", a.protected(a.handleBookSeries))
+	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/series", a.requireRole(auth.RoleManager, a.handleBookSeries))
 	mux.HandleFunc("POST "+base+"/api/v1/books/series-backfill", a.requireRole(auth.RoleManager, a.handleBackfillBookSeries))
 
 	// Import history
-	mux.HandleFunc("GET "+base+"/api/v1/history", a.protected(a.handleHistory))
+	mux.HandleFunc("GET "+base+"/api/v1/history", a.requireRole(auth.RoleManager, a.handleHistory))
 
 	// Import review — downloads held because their content didn't match what they
 	// were grabbed for (admin-only).
@@ -237,56 +259,56 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/reviews/{id}/import", a.requireRole(auth.RoleManager, a.handleImportReview))
 
 	// Movies
-	mux.HandleFunc("GET "+base+"/api/v1/movies", a.protected(a.handleListMovies))
+	mux.HandleFunc("GET "+base+"/api/v1/movies", a.requireRole(auth.RoleManager, a.handleListMovies))
 	// How each library file fits its profile's ideal file (report-only; from the Convert index).
-	mux.HandleFunc("GET "+base+"/api/v1/library/fit", a.protected(a.handleLibraryFit))
-	mux.HandleFunc("GET "+base+"/api/v1/library/fit/profiles", a.protected(a.handleLibraryFitProfiles))
-	mux.HandleFunc("POST "+base+"/api/v1/library/fit/preview", a.protected(a.handleLibraryFitPreview))
-	mux.HandleFunc("GET "+base+"/api/v1/movies/lookup", a.protected(a.handleLookupMovies))
+	mux.HandleFunc("GET "+base+"/api/v1/library/fit", a.requireRole(auth.RoleManager, a.handleLibraryFit))
+	mux.HandleFunc("GET "+base+"/api/v1/library/fit/profiles", a.requireRole(auth.RoleManager, a.handleLibraryFitProfiles))
+	mux.HandleFunc("POST "+base+"/api/v1/library/fit/preview", a.requireRole(auth.RoleManager, a.handleLibraryFitPreview))
+	mux.HandleFunc("GET "+base+"/api/v1/movies/lookup", a.requireRole(auth.RoleManager, a.handleLookupMovies))
 	mux.HandleFunc("POST "+base+"/api/v1/movies/scan", a.requireRole(auth.RoleManager, a.handleScanLibrary))
 	mux.HandleFunc("GET "+base+"/api/v1/movies/unmatched", a.requireRole(auth.RoleManager, a.handleMovieUnmatched))
 	mux.HandleFunc("POST "+base+"/api/v1/movies/import", a.requireRole(auth.RoleManager, a.handleMovieImportFolder))
-	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}", a.protected(a.handleGetMovie))
+	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}", a.requireRole(auth.RoleManager, a.handleGetMovie))
 	mux.HandleFunc("POST "+base+"/api/v1/movies", a.requireRole(auth.RoleManager, a.handleAddMovie))
 	mux.HandleFunc("POST "+base+"/api/v1/movies/{id}/search", a.requireRole(auth.RoleManager, a.handleSearchMovie))
-	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/releases", a.protected(a.handleMovieReleases))
-	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/history", a.protected(a.handleMovieHistory))
-	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/collection", a.protected(a.handleMovieCollection))
+	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/releases", a.requireRole(auth.RoleManager, a.handleMovieReleases))
+	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/history", a.requireRole(auth.RoleManager, a.handleMovieHistory))
+	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/collection", a.requireRole(auth.RoleManager, a.handleMovieCollection))
 
 	// Series (TV).
-	mux.HandleFunc("GET "+base+"/api/v1/series", a.protected(a.handleListSeries))
-	mux.HandleFunc("GET "+base+"/api/v1/series/lookup", a.protected(a.handleLookupSeries))
+	mux.HandleFunc("GET "+base+"/api/v1/series", a.requireRole(auth.RoleManager, a.handleListSeries))
+	mux.HandleFunc("GET "+base+"/api/v1/series/lookup", a.requireRole(auth.RoleManager, a.handleLookupSeries))
 	mux.HandleFunc("POST "+base+"/api/v1/series/scan", a.requireRole(auth.RoleManager, a.handleScanSeriesLibrary))
 	mux.HandleFunc("GET "+base+"/api/v1/series/unmatched", a.requireRole(auth.RoleManager, a.handleSeriesUnmatched))
 	mux.HandleFunc("POST "+base+"/api/v1/series/import", a.requireRole(auth.RoleManager, a.handleSeriesImportFolder))
 	mux.HandleFunc("POST "+base+"/api/v1/series", a.requireRole(auth.RoleManager, a.handleAddSeries))
-	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/history", a.protected(a.handleSeriesHistory))
+	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/history", a.requireRole(auth.RoleManager, a.handleSeriesHistory))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/search", a.requireRole(auth.RoleManager, a.handleSearchSeries))
-	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/releases", a.protected(a.handleSeriesReleases))
+	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/releases", a.requireRole(auth.RoleManager, a.handleSeriesReleases))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/grab", a.requireRole(auth.RoleManager, a.handleGrabSeries))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/autograb", a.requireRole(auth.RoleManager, a.handleAutoGrabSeries))
 	mux.HandleFunc("POST "+base+"/api/v1/series/refresh", a.requireRole(auth.RoleManager, a.handleRefreshAllSeries))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/refresh", a.requireRole(auth.RoleManager, a.handleRefreshSeries))
 	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/manualimport", a.requireRole(auth.RoleManager, a.handleSeriesManualImportList))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/manualimport", a.requireRole(auth.RoleManager, a.handleSeriesManualImport))
-	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/duplicates", a.protected(a.handleSeriesDuplicates))
+	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/duplicates", a.requireRole(auth.RoleManager, a.handleSeriesDuplicates))
 	mux.HandleFunc("DELETE "+base+"/api/v1/series/{id}/duplicates", a.requireRole(auth.RoleManager, a.handleDeleteSeriesDuplicate))
-	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/rename", a.protected(a.handleSeriesRenamePreview))
+	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/rename", a.requireRole(auth.RoleManager, a.handleSeriesRenamePreview))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/rename", a.requireRole(auth.RoleManager, a.handleSeriesRename))
-	mux.HandleFunc("GET "+base+"/api/v1/series/{id}", a.protected(a.handleGetSeries))
+	mux.HandleFunc("GET "+base+"/api/v1/series/{id}", a.requireRole(auth.RoleManager, a.handleGetSeries))
 	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetSeriesMonitored))
 	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/profile", a.requireRole(auth.RoleManager, a.handleSetSeriesProfile))
 	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/type", a.requireRole(auth.RoleManager, a.handleSetSeriesType))
 	// Manual scene-season mapping (anime whose cours don't match TMDB numbering).
-	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/scene-map", a.protected(a.handleListSceneOverrides))
+	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/scene-map", a.requireRole(auth.RoleManager, a.handleListSceneOverrides))
 	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/scene-map", a.requireRole(auth.RoleManager, a.handleSetSceneOverride))
 	mux.HandleFunc("DELETE "+base+"/api/v1/series/{id}/scene-map/{season}", a.requireRole(auth.RoleManager, a.handleDeleteSceneOverride))
-	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/aliases", a.protected(a.handleListAliases))
+	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/aliases", a.requireRole(auth.RoleManager, a.handleListAliases))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/aliases", a.requireRole(auth.RoleManager, a.handleAddAlias))
 	mux.HandleFunc("DELETE "+base+"/api/v1/series/{id}/aliases/{alias}", a.requireRole(auth.RoleManager, a.handleDeleteAlias))
 	mux.HandleFunc("PUT "+base+"/api/v1/series/{id}/seasons/{season}/monitor", a.requireRole(auth.RoleManager, a.handleSetSeasonMonitored))
 	mux.HandleFunc("PUT "+base+"/api/v1/series/episodes/{eid}/monitor", a.requireRole(auth.RoleManager, a.handleSetEpisodeMonitored))
-	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/blocklist", a.protected(a.handleSeriesBlocklist))
+	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/blocklist", a.requireRole(auth.RoleManager, a.handleSeriesBlocklist))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/blocklist", a.requireRole(auth.RoleManager, a.handleSeriesBlock))
 	mux.HandleFunc("DELETE "+base+"/api/v1/series/{id}/blocklist/{bid}", a.requireRole(auth.RoleManager, a.handleSeriesUnblock))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/seasons/{season}/episodes/{episode}/regrab", a.requireRole(auth.RoleManager, a.handleRegrabEpisode))
@@ -294,14 +316,14 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("DELETE "+base+"/api/v1/series/{id}", a.requireRole(auth.RoleManager, a.handleDeleteSeries))
 
 	// Requests (Overseerr-style): request media → approve → add to Movies/Series.
-	mux.HandleFunc("GET "+base+"/api/v1/requests", a.protected(a.handleListRequests))
-	mux.HandleFunc("POST "+base+"/api/v1/requests", a.requireRole(auth.RoleRequester, a.handleCreateRequest))
-	mux.HandleFunc("POST "+base+"/api/v1/requests/{id}/approve", a.requireRole(auth.RoleManager, a.handleApproveRequest))
-	mux.HandleFunc("POST "+base+"/api/v1/requests/{id}/decline", a.requireRole(auth.RoleManager, a.handleDeclineRequest))
+	mux.HandleFunc("GET "+base+"/api/v1/requests", a.signedIn(a.handleListRequests).ext())
+	mux.HandleFunc("POST "+base+"/api/v1/requests", a.requireRole(auth.RoleRequester, a.handleCreateRequest).ext())
+	mux.HandleFunc("POST "+base+"/api/v1/requests/{id}/approve", a.requireRole(auth.RoleManager, a.handleApproveRequest).ext())
+	mux.HandleFunc("POST "+base+"/api/v1/requests/{id}/decline", a.requireRole(auth.RoleManager, a.handleDeclineRequest).ext())
 	// Owner-withdraw is allowed (own request, still pending), so the route admits
 	// requesters; the handler enforces ownership vs manager.
-	mux.HandleFunc("DELETE "+base+"/api/v1/requests/{id}", a.requireRole(auth.RoleRequester, a.handleDeleteRequest))
-	mux.HandleFunc("POST "+base+"/api/v1/requests/import/overseerr", a.requireRole(auth.RoleAdmin, a.handleImportOverseerr))
+	mux.HandleFunc("DELETE "+base+"/api/v1/requests/{id}", a.requireRole(auth.RoleRequester, a.handleDeleteRequest).ext())
+	mux.HandleFunc("POST "+base+"/api/v1/requests/import/overseerr", a.requireRole(auth.RoleAdmin, a.handleImportOverseerr).ext())
 	mux.HandleFunc("POST "+base+"/api/v1/insights/import/tautulli", a.requireRole(auth.RoleAdmin, a.handleImportTautulli))
 
 	// Convert (Tdarr replacement — GPU transcoding/cleanup over the Movies/Series catalogs).
@@ -311,25 +333,25 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/empty", a.requireRole(auth.RoleManager, a.handleRecycleEmpty))
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/restore", a.requireRole(auth.RoleManager, a.handleRecycleRestore))
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/delete", a.requireRole(auth.RoleManager, a.handleRecycleDeleteItem))
-	mux.HandleFunc("GET "+base+"/api/v1/convert/hardware", a.protected(a.handleConvertHardware))
-	mux.HandleFunc("GET "+base+"/api/v1/convert/status", a.protected(a.handleConvertStatus))
-	mux.HandleFunc("GET "+base+"/api/v1/convert/settings", a.protected(a.handleConvertSettings))
+	mux.HandleFunc("GET "+base+"/api/v1/convert/hardware", a.requireRole(auth.RoleManager, a.handleConvertHardware))
+	mux.HandleFunc("GET "+base+"/api/v1/convert/status", a.requireRole(auth.RoleManager, a.handleConvertStatus))
+	mux.HandleFunc("GET "+base+"/api/v1/convert/settings", a.requireRole(auth.RoleManager, a.handleConvertSettings))
 	mux.HandleFunc("PUT "+base+"/api/v1/convert/settings", a.requireRole(auth.RoleManager, a.handleConvertSettingsUpdate))
-	mux.HandleFunc("GET "+base+"/api/v1/convert/library", a.protected(a.handleConvertLibrary))
-	mux.HandleFunc("GET "+base+"/api/v1/convert/stats", a.protected(a.handleConvertStats))
-	mux.HandleFunc("GET "+base+"/api/v1/convert/jobs", a.protected(a.handleConvertJobs))
-	mux.HandleFunc("GET "+base+"/api/v1/convert/logs", a.protected(a.handleConvertLogs))
+	mux.HandleFunc("GET "+base+"/api/v1/convert/library", a.requireRole(auth.RoleManager, a.handleConvertLibrary))
+	mux.HandleFunc("GET "+base+"/api/v1/convert/stats", a.requireRole(auth.RoleManager, a.handleConvertStats))
+	mux.HandleFunc("GET "+base+"/api/v1/convert/jobs", a.requireRole(auth.RoleManager, a.handleConvertJobs))
+	mux.HandleFunc("GET "+base+"/api/v1/convert/logs", a.requireRole(auth.RoleManager, a.handleConvertLogs))
 	mux.HandleFunc("POST "+base+"/api/v1/convert/reindex", a.requireRole(auth.RoleManager, a.handleConvertReindex))
-	mux.HandleFunc("GET "+base+"/api/v1/convert/reindex", a.protected(a.handleConvertReindexStatus))
+	mux.HandleFunc("GET "+base+"/api/v1/convert/reindex", a.requireRole(auth.RoleManager, a.handleConvertReindexStatus))
 	mux.HandleFunc("POST "+base+"/api/v1/convert/requests", a.requireRole(auth.RoleManager, a.handleConvertRequest))
 	mux.HandleFunc("DELETE "+base+"/api/v1/convert/requests", a.requireRole(auth.RoleManager, a.handleConvertRequestCancel))
 	mux.HandleFunc("POST "+base+"/api/v1/convert/series/{series}", a.requireRole(auth.RoleManager, a.handleConvertSeries))
 	mux.HandleFunc("POST "+base+"/api/v1/convert/jobs/{id}/cancel", a.requireRole(auth.RoleManager, a.handleConvertCancel))
 	mux.HandleFunc("POST "+base+"/api/v1/convert/compare", a.requireRole(auth.RoleManager, a.handleConvertCompare))
-	mux.HandleFunc("GET "+base+"/api/v1/convert/compare", a.protected(a.handleConvertCompareStatus))
-	mux.HandleFunc("GET "+base+"/api/v1/convert/compare/files/{name}", a.protected(a.handleConvertCompareFile))
-	mux.HandleFunc("GET "+base+"/api/v1/convert/blocklist", a.protected(a.handleConvertBlocklist))
-	mux.HandleFunc("GET "+base+"/api/v1/convert/skips", a.protected(a.handleConvertSkips))
+	mux.HandleFunc("GET "+base+"/api/v1/convert/compare", a.requireRole(auth.RoleManager, a.handleConvertCompareStatus))
+	mux.HandleFunc("GET "+base+"/api/v1/convert/compare/files/{name}", a.requireRole(auth.RoleManager, a.handleConvertCompareFile))
+	mux.HandleFunc("GET "+base+"/api/v1/convert/blocklist", a.requireRole(auth.RoleManager, a.handleConvertBlocklist))
+	mux.HandleFunc("GET "+base+"/api/v1/convert/skips", a.requireRole(auth.RoleManager, a.handleConvertSkips))
 	mux.HandleFunc("POST "+base+"/api/v1/convert/skips/clear", a.requireRole(auth.RoleManager, a.handleConvertSkipsClear))
 	mux.HandleFunc("POST "+base+"/api/v1/convert/blocklist/clear", a.requireRole(auth.RoleManager, a.handleConvertBlocklistClear))
 
@@ -350,48 +372,48 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/insights/image", a.requireRole(auth.RoleManager, a.handleInsightsImage))
 
 	// Subtitles (Bazarr replacement — external SRT sidecars over the Movies/Series catalogs).
-	mux.HandleFunc("GET "+base+"/api/v1/subtitles/library", a.protected(a.handleSubtitleLibrary))
-	mux.HandleFunc("GET "+base+"/api/v1/subtitles/coverage", a.protected(a.handleSubtitleCoverage))
+	mux.HandleFunc("GET "+base+"/api/v1/subtitles/library", a.requireRole(auth.RoleManager, a.handleSubtitleLibrary))
+	mux.HandleFunc("GET "+base+"/api/v1/subtitles/coverage", a.requireRole(auth.RoleManager, a.handleSubtitleCoverage))
 	mux.HandleFunc("POST "+base+"/api/v1/subtitles/library/rescan", a.requireRole(auth.RoleManager, a.handleSubtitleRescan))
-	mux.HandleFunc("GET "+base+"/api/v1/subtitles/models", a.protected(a.handleSubtitleModels))
+	mux.HandleFunc("GET "+base+"/api/v1/subtitles/models", a.requireRole(auth.RoleManager, a.handleSubtitleModels))
 	mux.HandleFunc("POST "+base+"/api/v1/subtitles/models/{name}", a.requireRole(auth.RoleManager, a.handleSubtitleDownloadModel))
-	mux.HandleFunc("GET "+base+"/api/v1/subtitles/jobs", a.protected(a.handleSubtitleJobs))
+	mux.HandleFunc("GET "+base+"/api/v1/subtitles/jobs", a.requireRole(auth.RoleManager, a.handleSubtitleJobs))
 	mux.HandleFunc("POST "+base+"/api/v1/subtitles/jobs/clear", a.requireRole(auth.RoleManager, a.handleSubtitleClearQueue))
 	mux.HandleFunc("POST "+base+"/api/v1/subtitles/jobs/{id}/cancel", a.requireRole(auth.RoleManager, a.handleSubtitleCancelJob))
-	mux.HandleFunc("GET "+base+"/api/v1/subtitles/logs", a.protected(a.handleSubtitleLogs))
+	mux.HandleFunc("GET "+base+"/api/v1/subtitles/logs", a.requireRole(auth.RoleManager, a.handleSubtitleLogs))
 	mux.HandleFunc("POST "+base+"/api/v1/subtitles/sweep", a.requireRole(auth.RoleManager, a.handleSubtitleSweep))
 	mux.HandleFunc("POST "+base+"/api/v1/subtitles/library/movies/{id}", a.requireRole(auth.RoleManager, a.handleSubtitleQueueMovie))
 	mux.HandleFunc("POST "+base+"/api/v1/subtitles/library/episodes/{series}/{season}/{episode}", a.requireRole(auth.RoleManager, a.handleSubtitleQueueEpisode))
 	mux.HandleFunc("POST "+base+"/api/v1/subtitles/library/series/{id}", a.requireRole(auth.RoleManager, a.handleSubtitleQueueSeries))
-	mux.HandleFunc("GET "+base+"/api/v1/subtitles/settings", a.protected(a.handleGetSubtitleSettings))
+	mux.HandleFunc("GET "+base+"/api/v1/subtitles/settings", a.requireRole(auth.RoleManager, a.handleGetSubtitleSettings))
 	mux.HandleFunc("PUT "+base+"/api/v1/subtitles/settings", a.requireRole(auth.RoleManager, a.handleUpdateSubtitleSettings))
-	mux.HandleFunc("GET "+base+"/api/v1/subtitles/movies", a.protected(a.handleSubtitleMovies))
-	mux.HandleFunc("GET "+base+"/api/v1/subtitles/series", a.protected(a.handleSubtitleSeries))
+	mux.HandleFunc("GET "+base+"/api/v1/subtitles/movies", a.requireRole(auth.RoleManager, a.handleSubtitleMovies))
+	mux.HandleFunc("GET "+base+"/api/v1/subtitles/series", a.requireRole(auth.RoleManager, a.handleSubtitleSeries))
 	mux.HandleFunc("POST "+base+"/api/v1/subtitles/movies/{id}/search", a.requireRole(auth.RoleManager, a.handleSubtitleSearchMovie))
 	mux.HandleFunc("POST "+base+"/api/v1/subtitles/series/{id}/search", a.requireRole(auth.RoleManager, a.handleSubtitleSearchSeries))
 
 	// Books (Readarr replacement — Open Library metadata + ebook acquisition).
-	mux.HandleFunc("GET "+base+"/api/v1/books", a.protected(a.handleListBooks))
-	mux.HandleFunc("GET "+base+"/api/v1/books/lookup", a.protected(a.handleLookupBooks))
+	mux.HandleFunc("GET "+base+"/api/v1/books", a.requireRole(auth.RoleManager, a.handleListBooks))
+	mux.HandleFunc("GET "+base+"/api/v1/books/lookup", a.requireRole(auth.RoleManager, a.handleLookupBooks))
 	mux.HandleFunc("POST "+base+"/api/v1/books/dedupe", a.requireRole(auth.RoleManager, a.handleMergeBookDuplicates))
 	mux.HandleFunc("POST "+base+"/api/v1/books/upgrade", a.requireRole(auth.RoleManager, a.handleStartBookUpgrade))
-	mux.HandleFunc("GET "+base+"/api/v1/books/upgrade", a.protected(a.handleBookUpgradeStatus))
+	mux.HandleFunc("GET "+base+"/api/v1/books/upgrade", a.requireRole(auth.RoleManager, a.handleBookUpgradeStatus))
 	mux.HandleFunc("POST "+base+"/api/v1/books/scan", a.requireRole(auth.RoleManager, a.handleScanBookLibrary))
 	mux.HandleFunc("POST "+base+"/api/v1/books/search-missing", a.requireRole(auth.RoleManager, a.handleStartBookSweep))
-	mux.HandleFunc("GET "+base+"/api/v1/books/search-missing", a.protected(a.handleBookSweepStatus))
+	mux.HandleFunc("GET "+base+"/api/v1/books/search-missing", a.requireRole(auth.RoleManager, a.handleBookSweepStatus))
 	mux.HandleFunc("POST "+base+"/api/v1/books/author", a.requireRole(auth.RoleManager, a.handleAddAuthor))
 	mux.HandleFunc("POST "+base+"/api/v1/books", a.requireRole(auth.RoleManager, a.handleAddBook))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/search", a.requireRole(auth.RoleManager, a.handleSearchBook))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/refresh", a.requireRole(auth.RoleManager, a.handleRefreshBook))
-	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/releases", a.protected(a.handleBookReleases))
+	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/releases", a.requireRole(auth.RoleManager, a.handleBookReleases))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/grab", a.requireRole(auth.RoleManager, a.handleGrabBook))
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/manualimport", a.requireRole(auth.RoleManager, a.handleBookManualImportList))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/manualimport", a.requireRole(auth.RoleManager, a.handleBookManualImport))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/rename", a.requireRole(auth.RoleManager, a.handleBookRename))
-	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/history", a.protected(a.handleBookHistory))
+	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/history", a.requireRole(auth.RoleManager, a.handleBookHistory))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/rematch", a.requireRole(auth.RoleManager, a.handleRematchBook))
-	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/edition-files", a.protected(a.handleBookEditionFiles))
-	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/ebook", a.protected(a.handleBookEbook))
+	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/edition-files", a.requireRole(auth.RoleManager, a.handleBookEditionFiles))
+	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/ebook", a.signedIn(a.handleBookEbook).ext())
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/audio-versions", a.requireRole(auth.RoleManager, a.handleAddAudioVersion))
 	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/audio-versions/{vid}", a.requireRole(auth.RoleManager, a.handleUpdateAudioVersion))
 	mux.HandleFunc("DELETE "+base+"/api/v1/books/{id}/audio-versions/{vid}", a.requireRole(auth.RoleManager, a.handleDeleteAudioVersion))
@@ -399,38 +421,38 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/audio-versions/{vid}/search", a.requireRole(auth.RoleManager, a.handleSearchAudioVersion))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/merge-audiobook", a.requireRole(auth.RoleManager, a.handleMergeAudiobook))
 	// Music (Lidarr replacement - MusicBrainz metadata + album acquisition).
-	mux.HandleFunc("GET "+base+"/api/v1/music/artists", a.protected(a.handleListArtists))
-	mux.HandleFunc("GET "+base+"/api/v1/music/lookup", a.protected(a.handleLookupArtists))
+	mux.HandleFunc("GET "+base+"/api/v1/music/artists", a.requireRole(auth.RoleManager, a.handleListArtists))
+	mux.HandleFunc("GET "+base+"/api/v1/music/lookup", a.requireRole(auth.RoleManager, a.handleLookupArtists))
 	mux.HandleFunc("POST "+base+"/api/v1/music/scan", a.requireRole(auth.RoleManager, a.handleScanMusicLibrary))
 	mux.HandleFunc("POST "+base+"/api/v1/music/artists", a.requireRole(auth.RoleManager, a.handleAddArtist))
-	mux.HandleFunc("GET "+base+"/api/v1/music/artists/{id}", a.protected(a.handleGetArtist))
+	mux.HandleFunc("GET "+base+"/api/v1/music/artists/{id}", a.requireRole(auth.RoleManager, a.handleGetArtist))
 	mux.HandleFunc("POST "+base+"/api/v1/music/artists/{id}/refresh", a.requireRole(auth.RoleManager, a.handleRefreshArtist))
 	mux.HandleFunc("POST "+base+"/api/v1/music/artists/{id}/discography", a.requireRole(auth.RoleManager, a.handleGrabDiscography))
 	mux.HandleFunc("PUT "+base+"/api/v1/music/artists/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetArtistMonitored))
 	mux.HandleFunc("PUT "+base+"/api/v1/music/artists/{id}/profile", a.requireRole(auth.RoleManager, a.handleSetArtistProfile))
 	mux.HandleFunc("DELETE "+base+"/api/v1/music/artists/{id}", a.requireRole(auth.RoleManager, a.handleDeleteArtist))
-	mux.HandleFunc("GET "+base+"/api/v1/music/artists/{id}/history", a.protected(a.handleArtistHistory))
-	mux.HandleFunc("GET "+base+"/api/v1/music/albums/{id}", a.protected(a.handleGetAlbum))
+	mux.HandleFunc("GET "+base+"/api/v1/music/artists/{id}/history", a.requireRole(auth.RoleManager, a.handleArtistHistory))
+	mux.HandleFunc("GET "+base+"/api/v1/music/albums/{id}", a.requireRole(auth.RoleManager, a.handleGetAlbum))
 	mux.HandleFunc("PUT "+base+"/api/v1/music/albums/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetAlbumMonitored))
 
 	// Books Discover (Open Library browse/search + author catalogues).
-	mux.HandleFunc("GET "+base+"/api/v1/books/discover/trending", a.protected(a.handleBookDiscoverTrending))
-	mux.HandleFunc("GET "+base+"/api/v1/books/discover/browse/{kind}", a.protected(a.handleBookDiscoverBrowse))
-	mux.HandleFunc("GET "+base+"/api/v1/books/discover/recommended", a.protected(a.handleBookDiscoverRecommended))
-	mux.HandleFunc("GET "+base+"/api/v1/books/discover/search", a.protected(a.handleBookDiscoverSearch))
-	mux.HandleFunc("GET "+base+"/api/v1/books/discover/authors", a.protected(a.handleBookAuthorSearch))
-	mux.HandleFunc("GET "+base+"/api/v1/books/discover/authors/{key}/works", a.protected(a.handleBookAuthorWorks))
-	mux.HandleFunc("GET "+base+"/api/v1/books/discover/authors/{key}", a.protected(a.handleBookAuthorDetail))
-	mux.HandleFunc("GET "+base+"/api/v1/books/discover/similar", a.protected(a.handleBookDiscoverSimilar))
-	mux.HandleFunc("GET "+base+"/api/v1/books/authors/images", a.protected(a.handleBookAuthorImages))
+	mux.HandleFunc("GET "+base+"/api/v1/books/discover/trending", a.signedIn(a.handleBookDiscoverTrending).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/books/discover/browse/{kind}", a.signedIn(a.handleBookDiscoverBrowse).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/books/discover/recommended", a.signedIn(a.handleBookDiscoverRecommended).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/books/discover/search", a.signedIn(a.handleBookDiscoverSearch).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/books/discover/authors", a.signedIn(a.handleBookAuthorSearch).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/books/discover/authors/{key}/works", a.signedIn(a.handleBookAuthorWorks).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/books/discover/authors/{key}", a.signedIn(a.handleBookAuthorDetail).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/books/discover/similar", a.signedIn(a.handleBookDiscoverSimilar).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/books/authors/images", a.requireRole(auth.RoleManager, a.handleBookAuthorImages))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/series/add-missing", a.requireRole(auth.RoleManager, a.handleAddMissingInSeries))
-	mux.HandleFunc("GET "+base+"/api/v1/books/discover/subjects/{name}", a.protected(a.handleBookDiscoverSubject))
-	mux.HandleFunc("GET "+base+"/api/v1/books/discover/detail", a.protected(a.handleBookDiscoverDetail))
-	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/covers", a.protected(a.handleBookCovers))
-	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/cover-image", a.protected(a.handleBookCoverImage))
+	mux.HandleFunc("GET "+base+"/api/v1/books/discover/subjects/{name}", a.signedIn(a.handleBookDiscoverSubject).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/books/discover/detail", a.signedIn(a.handleBookDiscoverDetail).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/covers", a.requireRole(auth.RoleManager, a.handleBookCovers))
+	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/cover-image", a.signedIn(a.handleBookCoverImage))
 	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/cover", a.requireRole(auth.RoleManager, a.handleSetBookCover))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/cover", a.requireRole(auth.RoleManager, a.handleUploadBookCover))
-	mux.HandleFunc("GET "+base+"/api/v1/books/{id}", a.protected(a.handleGetBook))
+	mux.HandleFunc("GET "+base+"/api/v1/books/{id}", a.requireRole(auth.RoleManager, a.handleGetBook))
 	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetBookMonitored))
 	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/keep-catalogue", a.requireRole(auth.RoleManager, a.handleSetBookKeepCatalogue))
 	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/profile", a.requireRole(auth.RoleManager, a.handleSetBookProfile))
@@ -439,21 +461,21 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("DELETE "+base+"/api/v1/books/{id}", a.requireRole(auth.RoleManager, a.handleDeleteBook))
 
 	// Discover (browse trending/popular/upcoming/by-genre; enriched with library status).
-	mux.HandleFunc("GET "+base+"/api/v1/calendar", a.protected(a.handleCalendar))
-	mux.HandleFunc("GET "+base+"/api/v1/discover/trending", a.protected(a.handleDiscoverTrending))
-	mux.HandleFunc("GET "+base+"/api/v1/discover/popular", a.protected(a.handleDiscoverPopular))
-	mux.HandleFunc("GET "+base+"/api/v1/discover/upcoming", a.protected(a.handleDiscoverUpcoming))
-	mux.HandleFunc("GET "+base+"/api/v1/discover/recommended", a.protected(a.handleDiscoverRecommended))
-	mux.HandleFunc("GET "+base+"/api/v1/discover/search", a.protected(a.handleDiscoverSearch))
-	mux.HandleFunc("GET "+base+"/api/v1/discover/genres", a.protected(a.handleDiscoverGenres))
-	mux.HandleFunc("GET "+base+"/api/v1/discover/rows/{kind}", a.protected(a.handleDiscoverRow))
-	mux.HandleFunc("GET "+base+"/api/v1/discover/providers", a.protected(a.handleDiscoverProviders))
-	mux.HandleFunc("GET "+base+"/api/v1/discover/provider", a.protected(a.handleDiscoverProviderNew))
-	mux.HandleFunc("GET "+base+"/api/v1/discover/because", a.protected(a.handleDiscoverBecause))
-	mux.HandleFunc("GET "+base+"/api/v1/discover/collections", a.protected(a.handleDiscoverCollections))
-	mux.HandleFunc("GET "+base+"/api/v1/discover", a.protected(a.handleDiscoverByGenre))
-	mux.HandleFunc("GET "+base+"/api/v1/media/{media}/{id}", a.protected(a.handleMediaDetail))
-	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/blocklist", a.protected(a.handleListBlocklist))
+	mux.HandleFunc("GET "+base+"/api/v1/calendar", a.signedIn(a.handleCalendar))
+	mux.HandleFunc("GET "+base+"/api/v1/discover/trending", a.signedIn(a.handleDiscoverTrending).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/discover/popular", a.signedIn(a.handleDiscoverPopular).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/discover/upcoming", a.signedIn(a.handleDiscoverUpcoming).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/discover/recommended", a.signedIn(a.handleDiscoverRecommended).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/discover/search", a.signedIn(a.handleDiscoverSearch).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/discover/genres", a.signedIn(a.handleDiscoverGenres).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/discover/rows/{kind}", a.signedIn(a.handleDiscoverRow).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/discover/providers", a.signedIn(a.handleDiscoverProviders).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/discover/provider", a.signedIn(a.handleDiscoverProviderNew).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/discover/because", a.signedIn(a.handleDiscoverBecause).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/discover/collections", a.signedIn(a.handleDiscoverCollections).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/discover", a.signedIn(a.handleDiscoverByGenre).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/media/{media}/{id}", a.signedIn(a.handleMediaDetail).ext())
+	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/blocklist", a.requireRole(auth.RoleManager, a.handleListBlocklist))
 	mux.HandleFunc("POST "+base+"/api/v1/movies/{id}/blocklist", a.requireRole(auth.RoleManager, a.handleBlocklist))
 	mux.HandleFunc("DELETE "+base+"/api/v1/movies/{id}/blocklist/{bid}", a.requireRole(auth.RoleManager, a.handleUnblock))
 	mux.HandleFunc("POST "+base+"/api/v1/movies/{id}/refresh", a.requireRole(auth.RoleManager, a.handleRefreshMovie))
@@ -463,10 +485,10 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("PUT "+base+"/api/v1/movies/{id}/availability", a.requireRole(auth.RoleManager, a.handleSetAvailability))
 	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/manualimport", a.requireRole(auth.RoleManager, a.handleManualImportList))
 	mux.HandleFunc("POST "+base+"/api/v1/movies/{id}/manualimport", a.requireRole(auth.RoleManager, a.handleManualImport))
-	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/rename", a.protected(a.handleRenamePreview))
+	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/rename", a.requireRole(auth.RoleManager, a.handleRenamePreview))
 	mux.HandleFunc("POST "+base+"/api/v1/movies/{id}/rename", a.requireRole(auth.RoleManager, a.handleRename))
 	// Multi-version tracks (opt-in)
-	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/versions", a.protected(a.handleListVersions))
+	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/versions", a.requireRole(auth.RoleManager, a.handleListVersions))
 	mux.HandleFunc("POST "+base+"/api/v1/movies/{id}/versions", a.requireRole(auth.RoleManager, a.handleAddVersion))
 	mux.HandleFunc("PUT "+base+"/api/v1/movies/{id}/versions/{vid}", a.requireRole(auth.RoleManager, a.handleUpdateVersion))
 	mux.HandleFunc("DELETE "+base+"/api/v1/movies/{id}/versions/{vid}/file", a.requireRole(auth.RoleManager, a.handleDeleteVersionFile))
@@ -476,23 +498,9 @@ func New(d Deps) *http.Server {
 
 	ui := webui.Handler()
 	if base != "" {
-		mux.Handle(base+"/", http.StripPrefix(base, ui))
+		mux.HandleFunc(base+"/", a.public(a.spa(http.StripPrefix(base, ui))).ext())
 	} else {
-		mux.Handle("/", ui)
-	}
-
-	// Chain: recover → authenticate (resolves the user) → external gate (LAN vs
-	// outside) → log → routes.
-	handler := a.recoverPanics(a.securityHeaders(a.authenticate(a.externalGate(a.logRequests(mux)))))
-
-	return &http.Server{
-		Addr:              d.Config.Addr(),
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		// Keep idle keep-alive connections open well past the UI's 3s poll so the
-		// server never closes a connection the browser is about to reuse (which
-		// surfaces as a spurious "failed to fetch").
-		IdleTimeout: 120 * time.Second,
+		mux.HandleFunc("/", a.public(a.spa(ui)).ext())
 	}
 }
 

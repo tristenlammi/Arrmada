@@ -64,23 +64,6 @@ export interface NewIndexer {
   enabled?: boolean;
 }
 
-export interface Release {
-  title: string;
-  download_url: string;
-  info_hash?: string;
-  size_bytes: number;
-  seeders?: number;
-  peers?: number;
-  indexer: string;
-  protocol: string;
-  categories?: number[];
-}
-
-export interface SearchResult {
-  releases: Release[];
-  errors?: Record<string, string>;
-}
-
 export interface ParsedRelease {
   title: string;
   year?: number;
@@ -1102,7 +1085,6 @@ export const api = {
   syncProwlarr: (body: { url: string; api_key: string }) =>
     req<{ synced: number; flaresolverr_ready: boolean }>("/api/v1/indexers/prowlarr/sync", { method: "POST", body: JSON.stringify(body) }),
 
-  search: (q: string) => req<SearchResult>(`/api/v1/search?q=${encodeURIComponent(q)}`),
 
   activity: () => req<ActivityFeed>("/api/v1/downloads"),
   pauseDownload: (hash: string) => req<{ status: string }>(`/api/v1/queue/${hash}/pause`, { method: "POST" }),
