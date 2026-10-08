@@ -32,9 +32,11 @@ type ProfileInfo struct {
 // DefaultProfile returns the profile reference used when adding media of this
 // type. It honors the saved default when it still exists, otherwise falls back
 // to the first available profile (empty string if the user has deleted them all).
+// It is always a real profile: "n/a" is a marker on scanned titles, not a default, and
+// one saved before SetDefaultProfile refused it is passed over.
 func (s *Service) DefaultProfile(ctx context.Context, mediaType string) string {
 	v, err := s.repo.getSetting(ctx, "default_profile:"+mediaType)
-	if err == nil && v != "" && s.Known(ctx, v) {
+	if err == nil && v != "" && v != "n/a" && s.Known(ctx, v) {
 		return v
 	}
 	if custom, err := s.repo.List(ctx, mediaType); err == nil && len(custom) > 0 {
@@ -45,7 +47,7 @@ func (s *Service) DefaultProfile(ctx context.Context, mediaType string) string {
 
 // SetDefaultProfile records the default profile for a media type.
 func (s *Service) SetDefaultProfile(ctx context.Context, mediaType, ref string) error {
-	if !s.Known(ctx, ref) {
+	if ref == "n/a" || !s.Known(ctx, ref) {
 		return errNotKnown
 	}
 	return s.repo.setSetting(ctx, "default_profile:"+mediaType, ref)
