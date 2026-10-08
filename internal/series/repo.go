@@ -229,6 +229,31 @@ func (r *Repo) InsertNewEpisodes(ctx context.Context, seriesID int64, seasons []
 	return added, nil
 }
 
+// RefreshEpisodeMetadata writes the listing's title, overview, air date, runtime and still
+// onto the episodes that already exist, by (season, episode), in one transaction — the
+// metadata half of InsertSeasons. Monitoring, file state and absolute numbers are left
+// alone. Only for a listing numbered the same way as the stored rows: otherwise one
+// episode's title and date would land on another.
+func (r *Repo) RefreshEpisodeMetadata(ctx context.Context, seriesID int64, seasons []Season) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, sn := range seasons {
+		for _, ep := range sn.Episodes {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE episodes SET title = ?, overview = ?, air_date = ?, runtime = ?, still_url = ?
+				 WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
+				ep.Title, ep.Overview, ep.AirDate, ep.Runtime, ep.StillURL,
+				seriesID, sn.SeasonNumber, ep.EpisodeNumber); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
 // ReassignAbsolutes writes the listing's absolute numbers onto the episodes by (season,
 // episode), in one transaction. For a show numbered by season and episode that's its
 // identity, so when an earlier season gains or loses an episode, every later absolute

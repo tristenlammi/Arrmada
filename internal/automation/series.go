@@ -1137,10 +1137,13 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 	// Forget unmatched counters for downloads that are gone from the completed list,
 	// so the map only ever tracks what's actually in the client.
 	active := make(map[string]bool, len(completed))
+	activePaths := make(map[string]bool, len(completed))
 	for _, it := range completed {
 		active[it.Hash] = true
+		activePaths[it.ContentPath] = true
 	}
 	c.pruneUnmatched(active)
+	c.pruneMetadataRetries(activePaths)
 }
 
 // incompleteSeasonReason explains why a re-processed release added nothing, given how many

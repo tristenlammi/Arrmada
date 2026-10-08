@@ -2,8 +2,11 @@ package metadata
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -77,5 +80,55 @@ func TestGetSeriesNumberingSourceName(t *testing.T) {
 	got, _ := NewSeriesWithEpisodes(numberingBase(), log, &stubEpisodes{name: "tvdb", seasons: goodListing}).GetSeries(context.Background(), 1)
 	if got.NumberingSource != "tvdb" {
 		t.Errorf("NumberingSource = %q, want the source whose listing was used", got.NumberingSource)
+	}
+}
+
+// A wrong or expired TVDB key never fixes itself. Counted as an outage, it flagged every
+// show's listing as a stand-in on every refresh, so nothing in the library refreshed
+// properly. A rejected login makes TVDB unavailable instead: the next source's listing is
+// the normal answer, and TVDB isn't asked again until the key changes.
+func TestRejectedTVDBKeyIsUnavailableNotAFailure(t *testing.T) {
+	logins := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login" {
+			logins++
+			var body struct {
+				APIKey string `json:"apikey"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if body.APIKey != "good" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			_, _ = io.WriteString(w, `{"status":"success","data":{"token":"tok"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"status":"success","data":{"episodes":[{"seasonNumber":1,"number":1,"absoluteNumber":1,"name":"Ep"}]},"links":{"next":""}}`)
+	}))
+	t.Cleanup(srv.Close)
+	key := "bad"
+	tv := NewTVDB(func() string { return key })
+	tv.http, tv.base = srv.Client(), srv.URL
+
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	provider := NewSeriesWithEpisodes(numberingBase(), log, tv, &stubEpisodes{name: "tvmaze", seasons: goodListing})
+	for i := 0; i < 3; i++ {
+		got, err := provider.GetSeries(context.Background(), 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.NumberingSource != "tvmaze" || got.NumberingFallback {
+			t.Fatalf("refresh %d: source=%q fallback=%v, want tvmaze and not a fallback", i, got.NumberingSource, got.NumberingFallback)
+		}
+	}
+	if logins != 1 {
+		t.Errorf("a rejected key was tried %d times; it should be left alone until it changes", logins)
+	}
+
+	// The owner fixes the key: TVDB is used again on the next refresh, no restart.
+	key = "good"
+	got, _ := provider.GetSeries(context.Background(), 1)
+	if got.NumberingSource != "tvdb" {
+		t.Errorf("after the key changed, source=%q, want tvdb", got.NumberingSource)
 	}
 }

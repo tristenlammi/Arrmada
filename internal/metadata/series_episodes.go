@@ -2,6 +2,7 @@ package metadata
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 )
@@ -12,8 +13,15 @@ type EpisodeSource interface {
 	// Name identifies the source in SeriesDetails.NumberingSource: "tvdb", "tvmaze".
 	Name() string
 	Available() bool
+	// Episodes returns an error wrapping ErrSourceUnavailable when the source can't be
+	// used at all right now for a reason that won't pass by itself (a rejected key).
 	Episodes(ctx context.Context, tvdbID int, imdbID string) ([]SeasonDetails, error)
 }
+
+// ErrSourceUnavailable marks an episode-source error that means "this source can't be
+// used", not "this request failed": a rejected API key, say. It's treated like no key at
+// all, so the next source's listing is the normal answer rather than a stand-in.
+var ErrSourceUnavailable = errors.New("episode source unavailable")
 
 // seriesWithEpisodeSource keeps the primary provider for everything about a SHOW —
 // artwork, overview, status, discovery, search — and takes only the EPISODE LISTING from
@@ -79,6 +87,15 @@ func (s *seriesWithEpisodeSource) GetSeries(ctx context.Context, tmdbID int) (*S
 			// added in settings takes effect on the next add or refresh, without a restart.
 		}
 		seasons, err := src.Episodes(ctx, d.TVDBID, d.IMDBID)
+		if errors.Is(err, ErrSourceUnavailable) {
+			// A bad key is a setting to fix, not an outage to wait out: counting it as a
+			// failure kept every show in the library on stand-in refreshes until it was
+			// fixed. The source reports itself unavailable from here on (TVDB re-tries a
+			// rejected key hourly), so this is logged once, not once per show.
+			s.log.Warn("episode numbering source can't be used — numbering from the next source until it's fixed",
+				"source", src.Name(), "err", err)
+			continue
+		}
 		if err != nil {
 			// A numbering source being down must never stop a show being added or
 			// refreshed — just move to the next source, then to the primary.

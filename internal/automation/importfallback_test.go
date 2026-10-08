@@ -81,6 +81,28 @@ func TestImportRetriesWhenNumberingSourceFails(t *testing.T) {
 			if len(placed) != 0 || failed != tc.wantFailed || unresolved != tc.wantUn {
 				t.Errorf("placed=%d failed=%d unresolved=%d, want 0/%d/%d", len(placed), failed, unresolved, tc.wantFailed, tc.wantUn)
 			}
+			if !tc.fallback {
+				return
+			}
+
+			// A source that stays down doesn't hold the download back for good: after
+			// metadataRetryReviewAfter sweeps the file is left unresolved, for Review.
+			for i := 2; i < metadataRetryReviewAfter; i++ {
+				if _, _, un, fl := c.importSeriesInto(ctx, s, dl, forceRule{}); fl != 1 || un != 0 {
+					t.Fatalf("sweep %d: failed=%d unresolved=%d, want still retrying", i, fl, un)
+				}
+			}
+			if _, _, un, fl := c.importSeriesInto(ctx, s, dl, forceRule{}); fl != 0 || un != 1 {
+				t.Errorf("last sweep: failed=%d unresolved=%d, want it given up as unresolved", fl, un)
+			}
+
+			// An import that could check the listing properly starts the count over.
+			meta.d.NumberingSource, meta.d.NumberingFallback = "tvmaze", false
+			c.importSeriesInto(ctx, s, dl, forceRule{})
+			meta.d.NumberingSource, meta.d.NumberingFallback = "tmdb", true
+			if _, _, un, fl := c.importSeriesInto(ctx, s, dl, forceRule{}); fl != 1 || un != 0 {
+				t.Errorf("after a good check: failed=%d unresolved=%d, want retrying again", fl, un)
+			}
 		})
 	}
 }

@@ -491,9 +491,19 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	// more often than a numbering fault, an episode TMDB listed after the show was last
 	// refreshed. Refresh once per import and look again before calling it unresolved.
 	refreshed := false
-	// refreshFellBack: that refresh's numbering source failed, so an episode it couldn't
-	// add may well exist — the file is retried next sweep instead of sent to Review.
-	refreshFellBack := false
+	// refreshUntrusted: that refresh couldn't trust the listing it got — a numbering source
+	// failed, or (anime) the listing numbers the show differently from what's stored and an
+	// unattended refresh won't apply that — so an episode it didn't add may well exist. The
+	// file is retried next sweep instead of sent to Review, but only for
+	// metadataRetryReviewAfter sweeps: a renumber waiting on the owner, or a source that
+	// stays down, won't clear by itself, and retrying forever kept the download out of sight.
+	refreshUntrusted := false
+	retries := 0 // this download's retry count, taken once per import when it's needed
+	defer func() {
+		if retries == 0 {
+			c.forgetMetadataRetry(contentPath) // checked properly this time — start over
+		}
+	}()
 	knownEpisode := func(ref series.EpisodeRef) bool {
 		if c.series.EpisodeExists(ctx, s.ID, ref.Season, ref.Episode) {
 			return true
@@ -510,7 +520,7 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			c.log.Warn("series import: refresh failed", "series", s.Title, "err", err)
 			return false
 		}
-		refreshFellBack = rr.Fallback
+		refreshUntrusted = rr.Fallback || rr.ModelChanged
 		return c.series.EpisodeExists(ctx, s.ID, ref.Season, ref.Episode)
 	}
 	for _, v := range videos {
@@ -543,15 +553,24 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			}
 		}
 		if len(known) == 0 {
-			if refreshFellBack {
-				// The metadata couldn't be checked properly (a numbering source is down),
-				// so "doesn't exist" isn't known yet. Counted as failed, the download
-				// stays unhandled and the next sweep tries again; unresolved would send a
-				// perfectly good new episode to Review.
-				failed++
-				c.log.Warn("series import: numbering source unavailable — will retry this file next sweep",
-					"series", s.Title, "file", filepath.Base(v.Path), "resolved_to", refsLabel(refs))
-				continue
+			if refreshUntrusted {
+				if retries == 0 {
+					retries = c.noteMetadataRetry(contentPath)
+				}
+				if retries < metadataRetryReviewAfter {
+					// The metadata couldn't be checked properly, so "doesn't exist" isn't
+					// known yet. Counted as failed, the download stays unhandled and the
+					// next sweep tries again; unresolved would send a perfectly good new
+					// episode to Review.
+					failed++
+					c.log.Warn("series import: the show's episode listing couldn't be trusted — will retry this file next sweep",
+						"series", s.Title, "file", filepath.Base(v.Path), "resolved_to", refsLabel(refs), "attempt", retries)
+					continue
+				}
+				// Out of retries: fall through to unresolved, so a human sees it. The
+				// show's History says why its listing is stuck.
+				c.log.Warn("series import: the show's episode listing still can't be trusted — giving up on retrying",
+					"series", s.Title, "file", filepath.Base(v.Path), "attempts", retries)
 			}
 			unresolved++
 			c.log.Warn("series import: file resolves to episodes the metadata doesn't have — not placing",
