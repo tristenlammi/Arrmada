@@ -318,6 +318,9 @@ function MergeButton({ bookId, fileCount, onDone, flash }: { bookId: number; fil
             flash(`Merge failed: ${ev.detail ?? "unknown reason"} — the original files are untouched.`);
           } else if (ev?.event === "merged" && eventKey(ev) !== baseline) {
             flash("Combined into one .m4b.");
+          } else {
+            // Only a server restart mid-merge leaves no outcome; say so rather than nothing.
+            flash("The merge didn't report back — check the book's history before trying again.");
           }
         }
       }, 5000);

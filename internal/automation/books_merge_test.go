@@ -150,6 +150,67 @@ func TestMergeFailureLeavesNoPartialFile(t *testing.T) {
 	f.noM4B(t)
 }
 
+// Running out of the time budget is the failure most likely on a slow CPU, and by then
+// the job's context is done. The outcome must still reach the book, or the page would sit
+// on "Merging…" for half an hour and then stop with nothing to say.
+func TestMergeTimeoutIsRecorded(t *testing.T) {
+	f := newMergeFixture(t)
+	f.c.mergeFn = func(ctx context.Context, _ []string, _ string, _ audiobook.MergeOptions) (audiobook.MergeResult, error) {
+		<-ctx.Done()
+		return audiobook.MergeResult{}, ctx.Err()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := f.c.MergeAudiobook(ctx, f.id); err == nil {
+		t.Fatal("a merge that ran out of time must fail")
+	}
+	f.sourcesIntact(t)
+	f.noM4B(t)
+	if ev, detail := f.lastEvent(t); ev != "merge-failed" || !strings.Contains(detail, "ran out of time") {
+		t.Errorf("event = %s %q, want merge-failed saying it ran out of time", ev, detail)
+	}
+}
+
+// A merge that stops before it starts still leaves an outcome on the book, and the
+// handler's pre-check refuses it up front.
+func TestMergeNothingToMergeIsRecorded(t *testing.T) {
+	f := newMergeFixture(t)
+	for _, p := range f.sources[1:] {
+		_ = os.Remove(p)
+	}
+	if err := f.c.CheckAudiobookMerge(context.Background(), f.id); err == nil {
+		t.Error("the pre-check should refuse a folder with one audio file")
+	}
+	if err := f.c.MergeAudiobook(context.Background(), f.id); err == nil {
+		t.Fatal("expected nothing to merge")
+	}
+	if ev, detail := f.lastEvent(t); ev != "merge-failed" || !strings.Contains(detail, "nothing to merge") {
+		t.Errorf("event = %s %q", ev, detail)
+	}
+	if g := newMergeFixture(t); g.c.CheckAudiobookMerge(context.Background(), g.id) != nil {
+		t.Error("a three-chapter book should pass the pre-check")
+	}
+}
+
+// ffprobe's quick figure for a headerless VBR MP3 is a bitrate estimate. When it disagrees
+// with the merged file, the MP3s are measured again by decoding before the merge is refused.
+func TestMergeRechecksVBRMP3ByDecoding(t *testing.T) {
+	f := newMergeFixture(t)
+	f.outSecs = 330 // the quick probe says 3 × 100 s: 10% out
+	f.c.decodedDurationFn = func(context.Context, string) (float64, error) { return 110, nil }
+	if err := f.c.MergeAudiobook(context.Background(), f.id); err != nil {
+		t.Fatalf("decoded lengths match the output, so the merge should pass: %v", err)
+	}
+
+	g := newMergeFixture(t)
+	g.outSecs = 330
+	g.c.decodedDurationFn = func(context.Context, string) (float64, error) { return 100, nil }
+	if err := g.c.MergeAudiobook(context.Background(), g.id); err == nil {
+		t.Fatal("when decoding agrees with the probe, a 10% gap must still fail")
+	}
+	g.sourcesIntact(t)
+}
+
 func TestMergeMovesSourcesNotDeletes(t *testing.T) {
 	t.Run("bin on", func(t *testing.T) {
 		f := newMergeFixture(t)

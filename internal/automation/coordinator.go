@@ -57,9 +57,11 @@ type Coordinator struct {
 	// merging holds the IDs of books with an audiobook merge running, so a second click
 	// can't start another ffmpeg over the same files.
 	merging sync.Map
-	// mergeFn and durationFn default to the audiobook package; tests swap them.
-	mergeFn    func(ctx context.Context, files []string, out string, opts audiobook.MergeOptions) (audiobook.MergeResult, error)
-	durationFn func(ctx context.Context, path string) (float64, error)
+	// mergeFn, durationFn and decodedDurationFn default to the audiobook package; tests
+	// swap them.
+	mergeFn           func(ctx context.Context, files []string, out string, opts audiobook.MergeOptions) (audiobook.MergeResult, error)
+	durationFn        func(ctx context.Context, path string) (float64, error)
+	decodedDurationFn func(ctx context.Context, path string) (float64, error)
 
 	// unmatched counts how many import sweeps have failed to match a download to a
 	// series, keyed by torrent hash. Without it the 30-second sweep logs the same failure

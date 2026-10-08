@@ -104,3 +104,19 @@ func contains(hay, needle string) bool {
 	}
 	return false
 }
+
+// DecodedDuration reads the last position ffmpeg reports while decoding. Both the current
+// key and the older, misnamed one carry microseconds.
+func TestLastProgressSeconds(t *testing.T) {
+	cases := map[string]float64{
+		"out_time_us=1000000\nprogress=continue\nout_time_us=2500000\nprogress=end\n": 2.5,
+		"out_time_ms=4000000\r\nprogress=end\r\n":                                     4,
+		"out_time_us=N/A\nprogress=end\n":                                             0,
+		"":                                                                            0,
+	}
+	for in, want := range cases {
+		if got := lastProgressSeconds(in); got != want {
+			t.Errorf("lastProgressSeconds(%q) = %v, want %v", in, got, want)
+		}
+	}
+}

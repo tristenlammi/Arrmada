@@ -158,6 +158,39 @@ func Duration(ctx context.Context, path string) (float64, error) {
 	return float64(ms) / 1000, nil
 }
 
+// DecodedDuration measures one audio file by decoding all of it, rather than trusting the
+// container's figure. Slower than Duration, but exact: ffprobe estimates a VBR MP3 with no
+// Xing/VBRI header from its bitrate and can be several percent out, which would fail a
+// perfectly good merge's length check every time.
+func DecodedDuration(ctx context.Context, path string) (float64, error) {
+	out, err := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-v", "error", "-i", path,
+		"-map", "0:a:0", "-f", "null", "-progress", "pipe:1", "-").Output()
+	if err != nil {
+		return 0, fmt.Errorf("couldn't decode %s: %v", filepath.Base(path), err)
+	}
+	if secs := lastProgressSeconds(string(out)); secs > 0 {
+		return secs, nil
+	}
+	return 0, fmt.Errorf("couldn't read the decoded length of %s", filepath.Base(path))
+}
+
+// lastProgressSeconds reads the final position from ffmpeg's -progress output. out_time_us
+// is microseconds; older builds only print out_time_ms, which despite its name is also
+// microseconds.
+func lastProgressSeconds(progress string) float64 {
+	var us int64
+	for _, line := range strings.Split(progress, "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || (k != "out_time_us" && k != "out_time_ms") {
+			continue
+		}
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			us = n
+		}
+	}
+	return float64(us) / 1e6
+}
+
 // carriedTags are the global tags worth keeping from the first source.
 var carriedTags = []string{"title", "artist", "album_artist", "album", "genre", "date", "comment"}
 

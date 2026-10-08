@@ -35,6 +35,41 @@ func (c *Coordinator) MergingAudiobook(bookID int64) bool {
 	return busy
 }
 
+// CheckAudiobookMerge reports why a book can't be merged ("nothing to merge", no such
+// book), so the handler can say so straight away instead of answering 202 for a merge
+// that would stop before it started.
+func (c *Coordinator) CheckAudiobookMerge(ctx context.Context, bookID int64) error {
+	_, _, err := c.audiobookMergeSources(ctx, bookID)
+	return err
+}
+
+// audiobookMergeSources loads the book and its chapter files in play order.
+func (c *Coordinator) audiobookMergeSources(ctx context.Context, bookID int64) (books.Book, []string, error) {
+	if c.books == nil {
+		return books.Book{}, nil, errBooksNotReady
+	}
+	b, err := c.books.Get(ctx, bookID)
+	if err != nil {
+		return b, nil, err
+	}
+	if b.Audiobook == nil || b.Audiobook.FileCount <= 1 {
+		return b, nil, errString("nothing to merge — the audiobook is a single file")
+	}
+	var paths []string
+	for _, f := range library.FindBookFiles(b.Audiobook.Path) {
+		if library.IsAudiobookFile(f.Path) {
+			paths = append(paths, f.Path)
+		}
+	}
+	// NATURAL order, not lexical. sort.Strings puts "Chapter 10" before "Chapter 2", so a
+	// book with ten or more unpadded chapter files was concatenated in the wrong order.
+	sortNatural(paths)
+	if len(paths) < 2 {
+		return b, nil, errString("nothing to merge — fewer than two audio files in the book folder")
+	}
+	return b, paths, nil
+}
+
 // MergeAudiobook combines a multi-file audiobook into a single chapterized .m4b (one
 // chapter per source file). Runs synchronously — callers should background it.
 //
@@ -45,38 +80,33 @@ func (c *Coordinator) MergingAudiobook(bookID int64) bool {
 // temp file, leaves the sources exactly as they were, and records why on the book.
 func (c *Coordinator) MergeAudiobook(ctx context.Context, bookID int64) error {
 	if _, busy := c.merging.LoadOrStore(bookID, true); busy {
+		// No event: the merge already running will record its own outcome, and the page
+		// is watching for that one.
 		return ErrAlreadyMerging
 	}
 	defer c.merging.Delete(bookID)
 	if c.books == nil {
 		return errBooksNotReady
 	}
-	b, err := c.books.Get(ctx, bookID)
-	if err != nil {
-		return err
-	}
-	if b.Audiobook == nil || b.Audiobook.FileCount <= 1 {
-		return errString("nothing to merge — the audiobook is a single file")
-	}
-	bookDir := b.Audiobook.Path
-	files := library.FindBookFiles(bookDir)
-	var paths []string
-	for _, f := range files {
-		if library.IsAudiobookFile(f.Path) {
-			paths = append(paths, f.Path)
-		}
-	}
-	// NATURAL order, not lexical. sort.Strings puts "Chapter 10" before "Chapter 2", so a
-	// book with ten or more unpadded chapter files was concatenated in the wrong order.
-	sortNatural(paths)
-	if len(paths) < 2 {
-		return errString("nothing to merge")
-	}
+	// Every outcome is written with a context that outlives ctx. The page waits for a
+	// 'merged' or 'merge-failed' event, and the case most likely to fail — running out
+	// of the time budget on a long re-encode — is exactly when ctx is already done.
+	bk := context.WithoutCancel(ctx)
+	title := ""
 	fail := func(reason string) error {
-		c.books.AddEvent(ctx, b.ID, "merge-failed", reason)
-		c.log.Warn("book: audiobook merge failed — the original files are untouched", "title", b.Title, "reason", reason)
+		c.books.AddEvent(bk, bookID, "merge-failed", reason)
+		c.log.Warn("book: audiobook merge failed — the original files are untouched", "book_id", bookID, "title", title, "reason", reason)
 		return errString("merge failed: " + reason)
 	}
+	b, paths, err := c.audiobookMergeSources(ctx, bookID)
+	if err != nil {
+		if errors.Is(err, books.ErrNotFound) {
+			return err // nothing to record it on
+		}
+		return fail(err.Error())
+	}
+	title = b.Title
+	bookDir := b.Audiobook.Path
 
 	final := mergeTarget(bookDir, sanitizeName(b.Title))
 	tmp := filepath.Join(bookDir, "."+filepath.Base(final)+".merging")
@@ -95,8 +125,12 @@ func (c *Coordinator) MergeAudiobook(ctx context.Context, bookID int64) error {
 				"sample_rate", plan.SampleRate, "channels", plan.Channels)
 		}
 	}
+	decoded := c.decodedDurationFn
 	if duration == nil {
 		duration = audiobook.Duration
+		if decoded == nil {
+			decoded = audiobook.DecodedDuration
+		}
 	}
 
 	if _, err := merge(ctx, paths, tmp, audiobook.MergeOptions{Title: b.Title, Author: b.Author}); err != nil {
@@ -106,8 +140,11 @@ func (c *Coordinator) MergeAudiobook(ctx context.Context, bookID int64) error {
 		}
 		return fail(err.Error())
 	}
-	if reason := verifyMerge(ctx, duration, paths, tmp); reason != "" {
+	if reason := verifyMerge(ctx, duration, decoded, paths, tmp); reason != "" {
 		_ = os.Remove(tmp)
+		if ctx.Err() != nil {
+			return fail("it ran out of time while checking the result (" + ctx.Err().Error() + ")")
+		}
 		return fail(reason)
 	}
 	if err := os.Rename(tmp, final); err != nil {
@@ -128,11 +165,18 @@ func (c *Coordinator) MergeAudiobook(ctx context.Context, bookID int64) error {
 		detail += " Couldn't move " + strings.Join(failed, ", ") + " — still in the book folder."
 	}
 	c.log.Info("book: merged audiobook", "title", b.Title, "out", final, "sources_left", len(failed))
-	c.books.AddEvent(ctx, b.ID, "merged", detail)
+	// The sources have moved, so the book must point at the merged file whatever
+	// became of ctx in the meantime. It still reads as 'merged' if that fails — the
+	// merge itself worked — with what to do about it.
+	markErr := c.books.MarkImported(bk, bookID, books.KindAudiobook, final, "M4B", size, 1)
+	if markErr != nil {
+		detail += " The book couldn't be pointed at the new file (" + markErr.Error() + ") — rescan it."
+	}
+	c.books.AddEvent(bk, b.ID, "merged", detail)
 	if c.bus != nil {
 		c.bus.Publish("book.imported", map[string]any{"title": b.Title, "id": b.ID, "edition": "audiobook"})
 	}
-	return c.books.MarkImported(ctx, bookID, books.KindAudiobook, final, "M4B", size, 1)
+	return markErr
 }
 
 // mergeTarget picks the merged file's name: "<title>.m4b", or "<title> (merged).m4b" when
@@ -153,23 +197,60 @@ func mergeTarget(dir, title string) string {
 
 // verifyMerge checks the output against the sources: every source's length must be known,
 // and the output must be within max(1%, 5 s) of their sum. Returns why not, or "".
-func verifyMerge(ctx context.Context, duration func(context.Context, string) (float64, error), sources []string, out string) string {
-	var sum float64
-	for _, p := range sources {
-		d, err := duration(ctx, p)
-		if err != nil || d <= 0 {
-			return fmt.Sprintf("couldn't measure %s, so the result can't be checked", filepath.Base(p))
-		}
-		sum += d
+//
+// A quick probe of a VBR MP3 without a Xing/VBRI header is only an estimate from its
+// bitrate, so when the figures disagree and decoded is set, the MP3 sources are measured
+// again by decoding them before the merge is refused.
+func verifyMerge(ctx context.Context, duration, decoded func(context.Context, string) (float64, error), sources []string, out string) string {
+	sum, reason := sumDurations(ctx, duration, sources)
+	if reason != "" {
+		return reason
 	}
 	got, err := duration(ctx, out)
 	if err != nil || got <= 0 {
 		return "the merged file has no readable length"
 	}
-	if tol := math.Max(sum*0.01, 5); math.Abs(got-sum) > tol {
-		return fmt.Sprintf("the merged file is %s long but the chapters add up to %s", fmtDur(got), fmtDur(sum))
+	within := func(sum float64) bool { return math.Abs(got-sum) <= math.Max(sum*0.01, 5) }
+	if within(sum) {
+		return ""
 	}
-	return ""
+	if decoded != nil && hasMP3(sources) {
+		exact := func(ctx context.Context, p string) (float64, error) {
+			if strings.EqualFold(filepath.Ext(p), ".mp3") {
+				return decoded(ctx, p)
+			}
+			return duration(ctx, p)
+		}
+		if again, reason := sumDurations(ctx, exact, sources); reason == "" {
+			if within(again) {
+				return ""
+			}
+			sum = again
+		}
+	}
+	return fmt.Sprintf("the merged file is %s long but the chapters add up to %s", fmtDur(got), fmtDur(sum))
+}
+
+// sumDurations adds up the sources' lengths, or says which one couldn't be measured.
+func sumDurations(ctx context.Context, duration func(context.Context, string) (float64, error), sources []string) (float64, string) {
+	var sum float64
+	for _, p := range sources {
+		d, err := duration(ctx, p)
+		if err != nil || d <= 0 {
+			return 0, fmt.Sprintf("couldn't measure %s, so the result can't be checked", filepath.Base(p))
+		}
+		sum += d
+	}
+	return sum, ""
+}
+
+func hasMP3(paths []string) bool {
+	for _, p := range paths {
+		if strings.EqualFold(filepath.Ext(p), ".mp3") {
+			return true
+		}
+	}
+	return false
 }
 
 func fmtDur(secs float64) string {
