@@ -11,12 +11,12 @@ import (
 
 func TestConnectBroadcastDisconnect(t *testing.T) {
 	h := NewHub(nil)
-	c := h.Connect()
+	c := h.Connect(Viewer{UserID: 1, Staff: true})
 	if h.Count() != 1 {
 		t.Fatalf("expected 1 client, got %d", h.Count())
 	}
 
-	h.broadcast([]byte("hello"))
+	h.broadcast("server.heartbeat", []byte("hello"))
 	select {
 	case m := <-c.Send():
 		if string(m) != "hello" {
@@ -35,7 +35,7 @@ func TestConnectBroadcastDisconnect(t *testing.T) {
 func TestRunForwardsBusEvents(t *testing.T) {
 	bus := eventbus.New(nil)
 	h := NewHub(nil)
-	c := h.Connect()
+	c := h.Connect(Viewer{UserID: 1, Staff: true})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
