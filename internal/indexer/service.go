@@ -285,6 +285,8 @@ func (s *Service) fetchRecent(ctx context.Context, limit int) (SearchResult, err
 		wg       sync.WaitGroup
 		result   = SearchResult{Errors: map[string]string{}}
 		priority = map[string]int{}
+		eligible int
+		failed   int
 	)
 	for _, idx := range indexers {
 		searcher, err := s.registry.For(idx.Kind)
@@ -302,6 +304,7 @@ func (s *Service) fetchRecent(ctx context.Context, limit int) (SearchResult, err
 			continue // this indexer kind has no feed
 		}
 		priority[idx.Name] = idx.Priority
+		eligible++
 		wg.Add(1)
 		go func(idx Indexer, rec Recenter) {
 			defer wg.Done()
@@ -313,6 +316,7 @@ func (s *Service) fetchRecent(ctx context.Context, limit int) (SearchResult, err
 			if err != nil {
 				mu.Lock()
 				result.Errors[idx.Name] = err.Error()
+				failed++
 				mu.Unlock()
 				s.log.Warn("indexer recent failed", "indexer", idx.Name, "err", err)
 				return
@@ -342,10 +346,13 @@ func (s *Service) fetchRecent(ctx context.Context, limit int) (SearchResult, err
 		}
 		return priority[a.Indexer] < priority[b.Indexer]
 	})
+	// Every feed failing is an outage, not a quiet hour. Returned as an error so Recent
+	// doesn't cache it and the next sweep asks again.
+	err = outcome(eligible, failed, result.Errors)
 	if len(result.Errors) == 0 {
 		result.Errors = nil
 	}
-	return result, nil
+	return result, err
 }
 
 // perIndexerTimeout caps each indexer goroutine's share of a fan-out. The fan-out
@@ -375,6 +382,8 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 		wg       sync.WaitGroup
 		result   = SearchResult{Errors: map[string]string{}}
 		priority = map[string]int{}
+		eligible int
+		failed   int
 	)
 
 	for _, idx := range indexers {
@@ -382,6 +391,7 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 			continue // this indexer isn't scoped to the media type being searched
 		}
 		priority[idx.Name] = idx.Priority
+		eligible++
 		wg.Add(1)
 		go func(idx Indexer) {
 			defer wg.Done()
@@ -422,6 +432,7 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 			}
 			mu.Lock()
 			result.Errors[idx.Name] = err.Error()
+			failed++
 			mu.Unlock()
 			s.log.Warn("indexer search failed", "indexer", idx.Name, "err", err)
 		}(idx)
@@ -443,10 +454,14 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 		return priority[a.Indexer] < priority[b.Indexer]
 	})
 
+	// An empty result only means "nothing found" when someone was asked and answered.
+	// One indexer failing while another answers with nothing is still a real miss; only
+	// a search where nobody could answer is reported as an error.
+	err = outcome(eligible, failed, result.Errors)
 	if len(result.Errors) == 0 {
 		result.Errors = nil
 	}
-	return result, nil
+	return result, err
 }
 
 // dedupeByInfoHash collapses releases sharing a non-empty infohash, keeping the

@@ -213,6 +213,12 @@ func (a *api) handleSearch(w http.ResponseWriter, r *http.Request) {
 		Text:  r.URL.Query().Get("q"),
 		Limit: limit,
 	})
+	// Every indexer failing is reported with each one's reason, so the page can say why
+	// instead of showing "no results".
+	if indexer.IsOutage(err) {
+		a.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "search failed")
 		return

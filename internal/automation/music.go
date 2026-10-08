@@ -42,6 +42,8 @@ func (c *Coordinator) SearchMusicMissing(ctx context.Context) {
 		c.log.Warn("music: couldn't read the download queue — skipping this sweep", "err", qerr)
 		return
 	}
+	var outage outageTally
+	defer outage.report(c.log, "music search sweep")
 	for _, a := range artists {
 		if !a.Monitored {
 			continue
@@ -57,7 +59,11 @@ func (c *Coordinator) SearchMusicMissing(ctx context.Context) {
 			if c.albumDownloading(queue, a, al) {
 				continue // already downloading — let it finish
 			}
-			c.grabAlbum(ctx, a, al)
+			// An outage is noted once for the sweep and never counts as the album having
+			// been searched; any backoff for music must read it as "didn't run".
+			if err := c.grabAlbum(ctx, a, al); err != nil && !outage.note(err) {
+				c.log.Warn("music: search failed", "artist", a.Name, "album", al.Title, "err", err)
+			}
 		}
 	}
 }
@@ -75,22 +81,27 @@ func (c *Coordinator) albumDownloading(queue []download.Item, a music.Artist, al
 	return false
 }
 
-// grabAlbum searches for one album and grabs the best release the profile allows.
-func (c *Coordinator) grabAlbum(ctx context.Context, a music.Artist, al music.Album) {
+// grabAlbum searches for one album and grabs the best release the profile allows. It
+// returns the indexer search's error when the search couldn't run — an outage must not
+// look like an album nobody carries.
+func (c *Coordinator) grabAlbum(ctx context.Context, a music.Artist, al music.Album) error {
 	// The album needs its track listing before anything can be imported against it, and the
 	// listing is fetched lazily. Do it here rather than at import time so a grabbed release
 	// always has somewhere to land.
 	if err := c.music.EnsureTracks(ctx, al); err != nil {
 		c.log.Warn("music: couldn't fetch the track listing — skipping", "album", al.Title, "err", err)
-		return
+		return nil
 	}
 	sp := c.musicProfile(ctx, a.QualityProfile)
 	query := a.Name + " " + al.Title
 	res, err := c.indexers.Search(ctx, indexer.SearchQuery{
 		Text: query, MediaType: indexer.MediaMusic, Limit: 100,
 	})
-	if err != nil || len(res.Releases) == 0 {
-		return
+	if err != nil {
+		return err
+	}
+	if len(res.Releases) == 0 {
+		return nil
 	}
 
 	// Only releases that actually name THIS artist and album. Without this a search for one
@@ -104,7 +115,7 @@ func (c *Coordinator) grabAlbum(ctx context.Context, a music.Artist, al music.Al
 	}
 	if len(cands) == 0 {
 		c.log.Info("music: no release matched this album", "artist", a.Name, "album", al.Title)
-		return
+		return nil
 	}
 	cands = c.dropBlockedMusic(ctx, al.ID, cands)
 	cands = dropPendingMusic(cands, c.pendingMusicGrabTitles(ctx, al.ID))
@@ -113,22 +124,23 @@ func (c *Coordinator) grabAlbum(ctx context.Context, a music.Artist, al music.Al
 	if best == nil {
 		c.log.Info("music: no release met the quality profile", "artist", a.Name, "album", al.Title,
 			"candidates", len(cands))
-		return
+		return nil
 	}
 	if !c.diskOKFor(float64(best.SizeBytes) / (1 << 30)) {
 		c.log.Warn("music: not enough free space for this release", "album", al.Title, "release", best.Title)
-		return
+		return nil
 	}
 	hash, err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, musicCategory)
 	if err != nil {
 		c.log.Warn("music: grab failed", "album", al.Title, "err", err)
-		return
+		return nil
 	}
 	c.recordMusicGrab(ctx, al.ID, best.Title, best.Indexer, a.QualityProfile, hash)
 	c.music.AddEvent(ctx, a.ID, "grabbed",
 		fmt.Sprintf("Grabbed %q from %s: %s", al.Title, best.Indexer, best.Title))
 	c.log.Info("music: grabbing", "artist", a.Name, "album", al.Title,
 		"release", best.Title, "quality", music.DetectQuality(best.Title))
+	return nil
 }
 
 // pickBestAlbum ranks releases by the profile's quality ladder, seeders breaking ties.

@@ -7,6 +7,7 @@ package automation
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -311,6 +312,8 @@ func (c *Coordinator) SearchMissing(ctx context.Context) {
 		return
 	}
 	queue, _ := c.downloads.Queue(ctx)
+	var outage outageTally
+	defer outage.report(c.log, "movie search sweep")
 	for _, m := range all {
 		if !c.movies.IsAvailable(m) {
 			continue // not yet at its minimum-availability threshold
@@ -329,14 +332,14 @@ func (c *Coordinator) SearchMissing(ctx context.Context) {
 			}
 		}
 		n, searched, err := c.searchAndGrab(ctx, m)
-		switch {
-		case err != nil:
+		if err != nil && !outage.note(err) {
 			c.log.Warn("automation: search failed", "movie", m.Title, "err", err)
-		case !searched:
-			// Nothing wanted, no query spent — not a miss.
-		case n > 0:
+		}
+		reset, miss := sweepOutcome(err, searched, n)
+		if reset {
 			c.movies.ResetSearchMisses(ctx, m.ID)
-		default:
+		}
+		if miss {
 			c.movies.RecordSearchMiss(ctx, m.ID)
 		}
 	}
@@ -729,6 +732,9 @@ func (c *Coordinator) RSSSync(ctx context.Context) {
 		return
 	}
 	res, err := c.indexers.Recent(ctx, 100)
+	if errors.Is(err, indexer.ErrNoIndexers) {
+		return // no indexer has a feed — nothing to sync, and nothing to warn about every cycle
+	}
 	if err != nil {
 		c.log.Warn("rss: fetch feeds failed", "err", err)
 		return
@@ -787,6 +793,8 @@ func (c *Coordinator) UpgradeMovies(ctx context.Context) {
 		c.log.Warn("automation: upgrade sweep skipped — can't read the download queue", "err", err)
 		return
 	}
+	var outage outageTally
+	defer outage.report(c.log, "movie upgrade sweep")
 	for _, m := range all {
 		if !m.Monitored || !m.HasFile {
 			continue
@@ -794,7 +802,7 @@ func (c *Coordinator) UpgradeMovies(ctx context.Context) {
 		if inQueue(queue, m) {
 			continue // already grabbing something for this movie
 		}
-		if err := c.upgradeMovie(ctx, m); err != nil {
+		if err := c.upgradeMovie(ctx, m); err != nil && !outage.note(err) {
 			c.log.Warn("automation: upgrade search failed", "movie", m.Title, "err", err)
 		}
 	}
