@@ -84,13 +84,33 @@ func TestDeleteDownloadRejectsNonHash(t *testing.T) {
 			t.Errorf("DELETE %s: HTTP %d, want 400", p, rec.Code)
 		}
 	}
-	for _, p := range []string{"/api/v1/queue/all/pause", "/api/v1/queue/all/resume"} {
+	for _, p := range []string{
+		"/api/v1/queue/%7C/pause",
+		"/api/v1/queue/" + testHash + "%7C" + testHash + "/resume",
+		"/api/v1/queue/all/block",
+		"/api/v1/queue/all/action",
+	} {
 		if rec := s.do("POST", p, mgr); rec.Code != http.StatusBadRequest {
 			t.Errorf("POST %s: HTTP %d, want 400", p, rec.Code)
 		}
 	}
 	if paths, _ := q.snapshot(); len(paths) != 0 {
 		t.Fatalf("the client was called: %v", paths)
+	}
+}
+
+// Pause all / Resume all on the Downloads page send the literal "all" — that one stays
+// allowed for pause and resume, which are harmless and undone with a click.
+func TestPauseResumeAll(t *testing.T) {
+	s, q, mgr := downloadServer(t)
+	for _, p := range []string{"/api/v1/queue/all/pause", "/api/v1/queue/all/resume"} {
+		if rec := s.do("POST", p, mgr); rec.Code != http.StatusOK {
+			t.Errorf("POST %s: HTTP %d, want 200: %s", p, rec.Code, rec.Body)
+		}
+	}
+	_, forms := q.snapshot()
+	if len(forms) != 2 || forms[0].Get("hashes") != "all" || forms[1].Get("hashes") != "all" {
+		t.Fatalf("client calls = %v, want two calls with hashes=all", forms)
 	}
 }
 

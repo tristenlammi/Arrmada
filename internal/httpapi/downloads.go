@@ -23,9 +23,19 @@ func (a *api) torrentHash(w http.ResponseWriter, r *http.Request) (string, bool)
 	return h, true
 }
 
+// pausableHash is torrentHash for pause and resume, which also take the literal "all":
+// the Downloads page's Pause all / Resume all use it, and pausing everything is harmless
+// and undone with one click. Delete, action and block stay one hash only.
+func (a *api) pausableHash(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if r.PathValue("hash") == "all" {
+		return "all", true
+	}
+	return a.torrentHash(w, r)
+}
+
 // handlePauseDownload stops an in-progress torrent.
 func (a *api) handlePauseDownload(w http.ResponseWriter, r *http.Request) {
-	hash, ok := a.torrentHash(w, r)
+	hash, ok := a.pausableHash(w, r)
 	if !ok {
 		return
 	}
@@ -38,7 +48,7 @@ func (a *api) handlePauseDownload(w http.ResponseWriter, r *http.Request) {
 
 // handleResumeDownload restarts a stopped torrent.
 func (a *api) handleResumeDownload(w http.ResponseWriter, r *http.Request) {
-	hash, ok := a.torrentHash(w, r)
+	hash, ok := a.pausableHash(w, r)
 	if !ok {
 		return
 	}
