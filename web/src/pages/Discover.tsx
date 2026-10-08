@@ -76,8 +76,17 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
       {chrome && <PageHeader title="Discover" crumb="Services / Discover" />}
       <div className="mx-auto w-full max-w-[1600px] px-4 py-5 sm:px-6">
         {/* Tabs + search. On a phone they stack, search on top so the tabs still sit on the
-            underline, and the tabs scroll sideways rather than widening the page. */}
+            underline, and the tabs scroll sideways rather than widening the page. Search comes
+            first in the DOM as well, so focus order matches what a phone shows; sm:order-last
+            puts it back after the tabs on wider screens. */}
         <div className="mb-5 flex flex-col gap-2 border-b sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-3" style={{ borderColor: "var(--line)" }}>
+          <div className="flex w-full items-center justify-end gap-2 sm:order-last sm:w-auto sm:justify-start">
+            {/* Books have their own search inside BooksDiscover — hide the movie/TV one there. */}
+            {tab !== "books" && (
+              <SearchBox value={searchInput} onChange={onSearchChange} onSeeAll={(q) => { setSearchInput(q); setSearch(q); }} ctx={ctx} />
+            )}
+            <NotificationBell />
+          </div>
           <div className="thin-scroll -mb-px flex min-w-0 gap-1 overflow-x-auto sm:mb-0 sm:overflow-visible">
             {TABS.map((t) => {
               const active = tab === t.key && !search;
@@ -93,13 +102,6 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
                 </button>
               );
             })}
-          </div>
-          <div className="order-first flex w-full items-center justify-end gap-2 sm:order-none sm:w-auto sm:justify-start">
-            {/* Books have their own search inside BooksDiscover — hide the movie/TV one there. */}
-            {tab !== "books" && (
-              <SearchBox value={searchInput} onChange={onSearchChange} onSeeAll={(q) => { setSearchInput(q); setSearch(q); }} ctx={ctx} />
-            )}
-            <NotificationBell />
           </div>
         </div>
 
