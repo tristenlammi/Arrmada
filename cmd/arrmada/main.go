@@ -478,6 +478,11 @@ func main() {
 		}
 	}
 	convertSvc := convert.NewService(st.DB(), movieSvc, seriesSvc, settingsSvc, "ffmpeg", "ffprobe", convertScratch, recycleDir, log)
+	// Convert's originals go to the recycle bin, so it has to know how much room is left
+	// under the bin's cap: an original that doesn't fit would make Enforce purge it (and
+	// everything older) within the hour.
+	recycleSvc := recyclebin.New(recycleDir, settingsSvc, log)
+	convertSvc.SetBinHeadroom(recycleSvc.Headroom)
 	go convertSvc.Run(runCtx)
 	// Warm the probe cache off the request path so the first Convert page load after
 	// a restart is instant instead of re-analyzing the whole library, then build the
@@ -573,7 +578,6 @@ func main() {
 	})
 
 	// Recycle bin: enforce the user's size/age guard rails on a schedule (and once at startup).
-	recycleSvc := recyclebin.New(recycleDir, settingsSvc, log)
 	sched.Register("recycle-enforce", time.Hour, true, func(ctx context.Context) error {
 		recycleSvc.Enforce(ctx)
 		return nil

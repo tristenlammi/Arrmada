@@ -53,7 +53,14 @@ type Tab = "media" | "library" | "system" | "users";
 export function Settings() {
   const { user, setBooksEnabled, setMusicEnabled } = useMe();
   const admin = isAdmin(user);
-  const [tab, setTab] = useState<Tab>("media");
+  // ?tab=system opens straight onto a tab, so other pages (Convert's Problems) can link to a setting.
+  const [picked, setTab] = useState<Tab>(() => {
+    const t = new URLSearchParams(window.location.search).get("tab");
+    return t === "library" || t === "system" || t === "users" ? t : "media";
+  });
+  // The admin-only tabs fall back to Media for everyone else, so a link to one never opens
+  // onto an empty page.
+  const tab: Tab = !admin && (picked === "system" || picked === "users") ? "media" : picked;
   const [s, setS] = useState<AppSettings | null>(null);
   // What the server last told us. Save sends only the keys that differ from it, so a
   // value saved elsewhere on the page (the Discovery region) or by another tab isn't
@@ -473,9 +480,9 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
   const digits = (v: string) => v.replace(/[^0-9]/g, "");
 
   return (
-    <Section title="Recycle bin" subtitle="Deleted & replaced files (movie/episode deletes and Convert originals) are moved here instead of being erased — so a mistake is recoverable. Set guard rails so it can't grow forever.">
+    <Section title="Recycle bin" subtitle="Deleted & replaced files (movie/episode deletes and Convert originals) are moved here instead of being erased, so a mistake can be undone until the guard rails below purge it — the oldest files go first once the bin is over its size cap. Convert only starts a file whose original fits under the cap. To restore a converted film, delete the converted file first: the bin won't restore over it.">
       {stats && !stats.enabled ? (
-        <p className="text-[12px] text-ink-dim">Recycling is turned off (<code>ARRMADA_RECYCLE_DIR=off</code>) — deleted files are erased immediately.</p>
+        <p className="text-[12px] text-ink-dim">Recycling is turned off (<code>ARRMADA_RECYCLE_DIR=off</code>) — deleted files are erased immediately, and Convert deletes each original once its conversion is verified, with no undo.</p>
       ) : (
         <>
           <div className="flex flex-wrap items-baseline gap-x-5 gap-y-1 text-[12.5px]">

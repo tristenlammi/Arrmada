@@ -15,17 +15,51 @@ const (
 	SkipQualityGate    = "quality_gate"    // the encode couldn't meet the quality threshold
 	SkipCancelled      = "cancelled"       // you cancelled it; left alone for a while
 	SkipAlreadyTarget  = "already_target"  // nothing to do; not worth recording
+
+	// Conditions that clear on their own (someone frees space, a file reappears). They back
+	// off instead of being retried on the very next pick — that used to hot-loop the runner.
+	SkipNoScratch   = "no_scratch"   // the transcode folder hasn't room for this file
+	SkipLibraryFull = "library_full" // the library disk hasn't room for the converted file
+	SkipSourceGone  = "source_gone"  // the library file is missing
+	SkipTransient   = "transient"    // any other failure that should clear on its own
+
+	// The original wouldn't fit in the recycle bin under its cap, so retiring it would make
+	// the bin purge it within the hour. Waits for the owner to raise the cap (saving the
+	// bin's settings clears these) or for the bin to empty; checked daily.
+	SkipBinFull = "bin_full"
 )
+
+// backoffSkip reports whether a skip kind waits longer each time it repeats.
+func backoffSkip(kind string) bool {
+	switch kind {
+	case SkipNoScratch, SkipLibraryFull, SkipSourceGone, SkipTransient:
+		return true
+	}
+	return false
+}
 
 // retryDelay is how long a temporary skip waits before the file is picked again. A seeding
 // file is checked twice a day; a file you cancelled stays out of the way for a month (or
-// until you press "Try again").
-func retryDelay(kind string) time.Duration {
+// until you press "Try again"). A full disk is looked at again after an hour, then six,
+// then daily — soon enough to notice space was freed, rarely enough not to flood the log.
+// attempts counts this kind in a row, starting at 1.
+func retryDelay(kind string, attempts int) time.Duration {
 	switch kind {
 	case SkipHardlinked:
 		return 12 * time.Hour
 	case SkipCancelled:
 		return 30 * 24 * time.Hour
+	case SkipBinFull:
+		return 24 * time.Hour
+	}
+	if backoffSkip(kind) {
+		switch {
+		case attempts <= 1:
+			return time.Hour
+		case attempts == 2:
+			return 6 * time.Hour
+		}
+		return 24 * time.Hour
 	}
 	return 0
 }
@@ -55,6 +89,10 @@ type Skipped struct {
 	Reason    string `json:"reason"`
 	Permanent bool   `json:"permanent"`
 	UpdatedAt string `json:"updated_at"`
+	// When a temporary skip is next tried (unix seconds; 0 = no wait), and how many times
+	// in a row it has hit this same kind.
+	RetryAfter int64 `json:"retry_after"`
+	Attempts   int   `json:"attempts"`
 
 	// Resolved for display.
 	MediaKind string `json:"media_kind"`
@@ -65,25 +103,36 @@ type Skipped struct {
 	Title     string `json:"title"`
 }
 
-func (st *skipStore) record(ctx context.Context, key, kind, reason string) {
+// record stores why an item was skipped and returns how many times in a row it has now hit
+// this kind (1 for a new or different kind), which sets how long a backing-off skip waits.
+// Only one job runs per item at a time, so the read and the write can't interleave.
+func (st *skipStore) record(ctx context.Context, key, kind, reason string) int {
 	if key == "" || kind == "" || kind == SkipAlreadyTarget {
-		return // "already the target codec" isn't a problem, it's success
+		return 0 // "already the target codec" isn't a problem, it's success
 	}
 	perm := 0
 	if permanentSkip(kind) {
 		perm = 1
 	}
+	attempts := 1
+	var prevKind string
+	var prevAttempts int
+	if st.db.QueryRowContext(ctx, `SELECT kind, attempts FROM convert_skips WHERE item_key = ?`, key).
+		Scan(&prevKind, &prevAttempts) == nil && prevKind == kind {
+		attempts = prevAttempts + 1
+	}
 	var retry int64
-	if d := retryDelay(kind); d > 0 {
+	if d := retryDelay(kind, attempts); d > 0 {
 		retry = time.Now().Add(d).Unix()
 	}
 	_, _ = st.db.ExecContext(ctx,
-		`INSERT INTO convert_skips (item_key, kind, reason, permanent, retry_after, updated_at)
-		 VALUES (?, ?, ?, ?, ?, datetime('now'))
+		`INSERT INTO convert_skips (item_key, kind, reason, permanent, retry_after, attempts, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
 		 ON CONFLICT(item_key) DO UPDATE SET
 		   kind = excluded.kind, reason = excluded.reason, permanent = excluded.permanent,
-		   retry_after = excluded.retry_after, updated_at = datetime('now')`,
-		key, kind, reason, perm, retry)
+		   retry_after = excluded.retry_after, attempts = excluded.attempts, updated_at = datetime('now')`,
+		key, kind, reason, perm, retry, attempts)
+	return attempts
 }
 
 // clear forgets an item's skip — called when it converts successfully, or when the user
@@ -95,6 +144,33 @@ func (st *skipStore) clear(ctx context.Context, key string) {
 func (st *skipStore) clearAll(ctx context.Context) error {
 	_, err := st.db.ExecContext(ctx, `DELETE FROM convert_skips`)
 	return err
+}
+
+// clearKind forgets every skip of one kind, reporting how many there were.
+func (st *skipStore) clearKind(ctx context.Context, kind string) int64 {
+	res, err := st.db.ExecContext(ctx, `DELETE FROM convert_skips WHERE kind = ?`, kind)
+	if err != nil {
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	return n
+}
+
+// keysOfKind returns the items currently skipped for one reason.
+func (st *skipStore) keysOfKind(ctx context.Context, kind string) map[string]bool {
+	out := map[string]bool{}
+	rows, err := st.db.QueryContext(ctx, `SELECT item_key FROM convert_skips WHERE kind = ?`, kind)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		if rows.Scan(&k) == nil {
+			out[k] = true
+		}
+	}
+	return out
 }
 
 // permanentKeys returns the items whose skip won't resolve on its own, so their space can
@@ -136,7 +212,7 @@ func (st *skipStore) waitingKeys(ctx context.Context) map[string]bool {
 
 func (st *skipStore) list(ctx context.Context) ([]Skipped, error) {
 	rows, err := st.db.QueryContext(ctx,
-		`SELECT item_key, kind, reason, permanent, updated_at FROM convert_skips
+		`SELECT item_key, kind, reason, permanent, updated_at, retry_after, attempts FROM convert_skips
 		 ORDER BY permanent DESC, kind, updated_at DESC`)
 	if err != nil {
 		return nil, err
@@ -146,7 +222,7 @@ func (st *skipStore) list(ctx context.Context) ([]Skipped, error) {
 	for rows.Next() {
 		var s Skipped
 		var perm int
-		if err := rows.Scan(&s.Key, &s.Kind, &s.Reason, &perm, &s.UpdatedAt); err != nil {
+		if err := rows.Scan(&s.Key, &s.Kind, &s.Reason, &perm, &s.UpdatedAt, &s.RetryAfter, &s.Attempts); err != nil {
 			return nil, err
 		}
 		s.Permanent = perm == 1

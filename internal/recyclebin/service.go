@@ -339,6 +339,26 @@ func (s *Service) lowOnDisk() bool {
 	return ok && 100-u.UsedPct < lowDiskPct
 }
 
+// Headroom reports how many more bytes the bin can take before Enforce starts purging the
+// oldest items to get back under the size cap. capped is false when there's no cap (free
+// is then meaningless), and enabled is false when recycling is off and deletes are final.
+// Convert asks before it retires an original: one that doesn't fit would push out other
+// people's deletions and then be purged itself within the hour.
+func (s *Service) Headroom(ctx context.Context) (free int64, capped, enabled bool) {
+	if s.dir == "" {
+		return 0, false, false
+	}
+	maxGB := s.maxGB(ctx)
+	if maxGB == 0 {
+		return 0, false, true
+	}
+	var used int64
+	for _, e := range s.walk() {
+		used += e.size
+	}
+	return max(int64(maxGB)<<30-used, 0), true, true
+}
+
 // Default guard rails. The bin is on by default and absorbs every delete, quality
 // upgrade and Convert original, so shipping "unlimited" quietly grows it until the
 // volume fills. These are the single source of truth — the settings API renders the

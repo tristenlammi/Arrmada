@@ -64,7 +64,10 @@ func TestRealFile(t *testing.T) {
 		start := time.Now()
 		jf := filepath.Join(dir, "h10p.json")
 		_ = os.MkdirAll(dir, 0o755)
-		err := s.extractHDR10Plus(ctx, src, jf)
+		err := s.hasHDR10Plus(ctx, src, jf)
+		if err == nil {
+			err = s.readHDR10Plus(ctx, src, jf)
+		}
 		h10p = err == nil
 		t.Logf("HDR10+ check: present=%v (%v, %s)", h10p, err, time.Since(start).Round(time.Second))
 	}

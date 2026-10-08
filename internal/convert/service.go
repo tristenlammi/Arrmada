@@ -121,6 +121,11 @@ type Service struct {
 
 	// watching reports whether someone is watching Plex right now (from Insights).
 	watching atomic.Pointer[func() bool]
+	// binHeadroom reports the recycle bin's room under its cap (see SetBinHeadroom). binMu
+	// makes "does it fit" and the move into the bin one step, so two workers finishing
+	// together can't both fit into the same room.
+	binHeadroom atomic.Pointer[binHeadroomFunc]
+	binMu       sync.Mutex
 
 	indexMu       sync.Mutex // serializes index sweeps
 	indexScanning atomic.Bool
@@ -232,6 +237,37 @@ func (s *Service) isWatching() bool {
 		return (*fn)()
 	}
 	return false
+}
+
+// binHeadroomFunc reports how many more bytes the recycle bin takes before its cap purges
+// anything; capped is false with no cap, enabled false when recycling is off.
+type binHeadroomFunc func(ctx context.Context) (free int64, capped, enabled bool)
+
+// SetBinHeadroom tells Convert how to ask the recycle bin for its room under the cap.
+func (s *Service) SetBinHeadroom(fn func(ctx context.Context) (free int64, capped, enabled bool)) {
+	if fn == nil {
+		s.binHeadroom.Store(nil)
+		return
+	}
+	f := binHeadroomFunc(fn)
+	s.binHeadroom.Store(&f)
+}
+
+// binRoomFor reports whether an original of size bytes can go to the recycle bin without
+// the bin's cap purging it — and everything older — within the hour. A bin that's off or
+// uncapped always has room (off means the original is deleted once the result is
+// verified, which is what the owner chose). On false, reason says why for Problems.
+func (s *Service) binRoomFor(ctx context.Context, size int64) (ok bool, reason string) {
+	fn := s.binHeadroom.Load()
+	if fn == nil {
+		return true, ""
+	}
+	free, capped, enabled := (*fn)(ctx)
+	if !enabled || !capped || size <= free {
+		return true, ""
+	}
+	return false, fmt.Sprintf("the original (%s) doesn't fit in the recycle bin's free room (%s left under its size cap), "+
+		"so it would be permanently deleted within the hour. Raise the cap in Settings → Recycle bin", humanBytes(size), humanBytes(free))
 }
 
 // cleanScratch removes leftover per-job scratch files (partial encodes, test clips, HDR10+
@@ -416,6 +452,16 @@ func (s *Service) ClearSkip(ctx context.Context, key string) error {
 	}
 	s.skips.clear(ctx, key)
 	return nil
+}
+
+// BinSettingsChanged is told when the recycle bin's cap or retention is saved. Files waiting
+// for room in the bin are tried again straight away rather than up to a day later: raising
+// the cap is exactly what their Problems entry asks for.
+func (s *Service) BinSettingsChanged(ctx context.Context) {
+	if s.skips.clearKind(ctx, SkipBinFull) > 0 {
+		s.invalidateLibraryCache()
+		s.wakeUp()
+	}
 }
 
 // ClearBlocklist forgets an item's failures (or all of them when key is empty).
@@ -610,8 +656,10 @@ func (s *Service) finishAfterEncode(job *Job, kind, note string) {
 
 // transientFailure reports whether a failure describes a condition that will clear on its
 // own. These must not count toward the failure limit: three nights of a full scratch volume
-// used to permanently blocklist large parts of the library.
+// used to permanently blocklist large parts of the library. Case is ignored: ffmpeg says
+// "No space left on device".
 func transientFailure(note string) bool {
+	note = strings.ToLower(note)
 	for _, marker := range []string{"not enough scratch space", "source file is gone", "no space left on device"} {
 		if strings.Contains(note, marker) {
 			return true
@@ -644,7 +692,11 @@ func (s *Service) finish(job *Job, state JobState, note string) {
 		s.skips.clear(ctx, job.Key)
 	case StateFailed:
 		s.event("error", fmt.Sprintf("✗ Failed %s — %s", job.Title, note))
-		if !transientFailure(note) {
+		if transientFailure(note) {
+			// It will clear on its own, so it doesn't count toward the failure limit — but
+			// it must still wait, or the runner picks the same file straight back up.
+			s.skips.record(ctx, job.Key, SkipTransient, note)
+		} else {
 			s.failures.recordFailure(ctx, job.Key, note)
 		}
 	case StateSkipped:

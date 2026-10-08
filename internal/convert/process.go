@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"os/exec"
@@ -13,9 +14,18 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/parser"
+)
+
+// Seams over the disks and ffprobe, so tests can stage a full disk or a probed film without
+// needing either.
+var (
+	freeBytesFn = freeBytes
+	moveFileFn  = moveFile
+	probeFn     = probe
 )
 
 // process converts one file: analyse it, decide what it needs, settle the codec, encode,
@@ -23,13 +33,19 @@ import (
 func (s *Service) process(ctx context.Context, job *Job) {
 	src, title, origLang, ok := s.resolveSource(ctx, job)
 	if !ok {
-		s.finish(job, StateFailed, "source file is gone")
+		s.dropGone(ctx, job)
 		return
 	}
 	if title != "" && job.Kind != "episode" {
 		s.update(job, func(j *Job) { j.Title = title })
 	}
-	mi, err := probe(ctx, s.ffprobe, src)
+	// Recorded but not on disk: usually mid-import or mid-upgrade. Look again later rather
+	// than fail it — a missing file says nothing about whether it can be converted.
+	if _, err := os.Stat(src); errors.Is(err, fs.ErrNotExist) {
+		s.finishSkip(job, SkipSourceGone, "the library file is missing from disk — checking again later")
+		return
+	}
+	mi, err := probeFn(ctx, s.ffprobe, src)
 	if err != nil {
 		s.finish(job, StateFailed, "could not analyze file: "+err.Error())
 		return
@@ -54,16 +70,22 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		s.finishSkip(job, SkipHardlinked, "still seeding (hardlinked to your downloads) — will try again later")
 		return
 	}
+	if needs.Video && mi.DVUnconvertible() {
+		s.finishSkip(job, SkipHDRUnsupported, needs.Why)
+		return
+	}
 	scratch := s.activeScratch(ctx)
+	// Room on both disks and in the recycle bin is checked before anything heavy: the HDR10+
+	// read, crop detection and the format test all read the film, and a file that can't fit
+	// would only fail after them — then be picked again and do it all over.
+	if !s.spaceCheck(ctx, job, src, mi, plan, scratch) {
+		return
+	}
 
 	h10pJSON := ""
 	var enc Encoder
 	if needs.Video {
 		hdr := mi.EncodeHDR()
-		if mi.DVUnconvertible() {
-			s.finishSkip(job, SkipHDRUnsupported, needs.Why)
-			return
-		}
 		// HDR10+ is dynamic metadata ffprobe doesn't reliably report, so any PQ grade in an
 		// HEVC stream is checked by extracting it. Success means the file has it, and it is
 		// carried through the HEVC pipeline (the only one that can hold it). Reading it
@@ -73,8 +95,27 @@ func (s *Service) process(ctx context.Context, job *Job) {
 				return
 			}
 			jf := filepath.Join(scratch, fmt.Sprintf("h10p-%d.json", job.ID))
-			switch err := s.extractHDR10Plus(ctx, src, jf); {
-			case err == nil:
+			found := s.hasHDR10Plus(ctx, src, jf) == nil
+			if ctx.Err() != nil {
+				_ = os.Remove(jf)
+				return
+			}
+			switch {
+			case found:
+				// The HDR10+ pipeline holds the stream twice in scratch. Check for that room
+				// before the whole-file read, not after it.
+				if !s.scratchFits(job, scratch, scratchNeeded(mi, plan, true)) {
+					_ = os.Remove(jf)
+					return
+				}
+				if err := s.readHDR10Plus(ctx, src, jf); err != nil {
+					_ = os.Remove(jf)
+					if ctx.Err() != nil {
+						return
+					}
+					s.hdr10PlusReadFailed(job, err)
+					return
+				}
 				h10pJSON = jf
 				defer os.Remove(jf)
 			case hdr == "HDR10+":
@@ -105,10 +146,10 @@ func (s *Service) process(ctx context.Context, job *Job) {
 			return
 		}
 	}
-	// Disk-space guard: room for the biggest output that could be kept (a re-encode is
-	// stopped once it passes that) and the HDR10+ pipeline's intermediate copy.
-	if free := freeBytes(scratch); free > 0 && int64(free) < scratchNeeded(mi, plan, h10pJSON != "") {
-		s.finish(job, StateFailed, "not enough scratch space to convert safely")
+	// The exact disk-space guard, now the codec is settled: room for the biggest output that
+	// could be kept (a re-encode is stopped once it passes that) and the HDR10+ pipeline's
+	// intermediate copy. The early check above worked from the provisional plan.
+	if !s.scratchFits(job, scratch, scratchNeeded(mi, plan, h10pJSON != "")) {
 		return
 	}
 	s.update(job, func(j *Job) { j.Codec = plan.VideoCodec })
@@ -202,6 +243,72 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		s.update(job, func(j *Job) { j.State = StateEncoding; j.Progress = 0 })
 	}
 	s.finalizeOutput(ctx, job, src, dst, mi, plan)
+}
+
+// dropGone ends a job whose title or episode no longer has a file recorded at all — deleted
+// since the index was built. That won't change by waiting, so nothing is recorded in
+// Problems; the stale index row goes instead, so the runner stops picking it. A new import
+// reindexes the item and brings it back.
+func (s *Service) dropGone(ctx context.Context, job *Job) {
+	s.skips.clear(ctx, job.Key)
+	if s.index != nil {
+		s.index.forget(ctx, job)
+	}
+	s.finish(job, StateSkipped, "no longer has a file in the library — removed from the list")
+}
+
+// hdr10PlusReadFailed ends a job whose full HDR10+ read failed after the 100-frame look
+// found it. A full scratch disk or a read error off the array clears on its own, so those
+// wait and try again; only a failure of the tool itself means the metadata can't be carried.
+func (s *Service) hdr10PlusReadFailed(job *Job, err error) {
+	switch {
+	case errors.Is(err, syscall.ENOSPC) || transientFailure(err.Error()):
+		s.finishSkip(job, SkipNoScratch, "the scratch disk filled up while reading the HDR10+ metadata — will try again later")
+	case errors.Is(err, errSourceStream):
+		// Usually the disk, but a damaged file fails the same way every time: counting it
+		// toward the failure limit stops a daily whole-file read of a file that never reads.
+		s.finishAfterEncode(job, SkipTransient, "couldn't read the whole file for its HDR10+ metadata — will try again later")
+	default:
+		// It has HDR10+ we couldn't read in full: converting would drop it.
+		s.finishSkip(job, SkipHDRUnsupported, "HDR10+ metadata couldn't be read — kept the original rather than lose it")
+	}
+}
+
+// spaceCheck makes sure there's room for this file before any heavy work, and skips it with
+// a wait when there isn't. The original goes to the recycle bin, and one that doesn't fit
+// under the bin's cap would be purged within the hour, taking older deletions with it. The
+// scratch folder holds the encode, and the finished file is then put next to the original.
+// The library disk is always checked too: two mounts of one share (Unraid's /mnt/user, say)
+// can't rename into each other, so the hand-in is a full copy even when both report the
+// same disk — and on a genuinely shared disk this is the figure scratch already passed.
+func (s *Service) spaceCheck(ctx context.Context, job *Job, src string, mi *MediaInfo, plan Plan, scratch string) bool {
+	if ok, reason := s.binRoomFor(ctx, mi.SizeBytes); !ok {
+		s.finishSkip(job, SkipBinFull, reason)
+		return false
+	}
+	need := scratchNeeded(mi, plan, false)
+	if !s.scratchFits(job, scratch, need) {
+		return false
+	}
+	dir := filepath.Dir(src)
+	if free := freeBytesFn(dir); free > 0 && int64(free) < need {
+		s.finishSkip(job, SkipLibraryFull, fmt.Sprintf("needs ~%s free on the library disk for the converted file, it has %s — will try again later",
+			humanBytes(need), humanBytes(int64(free))))
+		return false
+	}
+	return true
+}
+
+// scratchFits skips the job (with a backoff) when the scratch folder has less than need
+// free. An unreadable free figure (0) doesn't block: the encode itself still fails cleanly
+// on a full disk.
+func (s *Service) scratchFits(job *Job, scratch string, need int64) bool {
+	if free := freeBytesFn(scratch); free > 0 && int64(free) < need {
+		s.finishSkip(job, SkipNoScratch, fmt.Sprintf("needs ~%s of scratch in %s, it has %s free — will try again later",
+			humanBytes(need), scratch, humanBytes(int64(free))))
+		return false
+	}
+	return true
 }
 
 // resolveSource re-resolves a job's current source file, title and the title's original
@@ -565,7 +672,7 @@ func clock(sec float64) string {
 // finalizeOutput verifies a freshly-encoded file, then safely replaces the original.
 func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst string, mi *MediaInfo, plan Plan) {
 	s.update(job, func(j *Job) { j.State = StateVerifying; j.Progress = 1 })
-	outInfo, err := probe(ctx, s.ffprobe, dst)
+	outInfo, err := probeFn(ctx, s.ffprobe, dst)
 	if err != nil {
 		s.finish(job, StateFailed, "the converted file couldn't be read — kept the original")
 		return
@@ -603,13 +710,39 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst string,
 	finalPath := strings.TrimSuffix(src, filepath.Ext(src)) + ".mkv"
 	part := finalPath + ".arrpart"
 	_ = os.Remove(part) // a leftover from an interrupted job
-	if err := moveFile(dst, part); err != nil {
+	// A quick look at the bin before staging: from another filesystem staging is a full
+	// copy onto the library disk, wasted if the original then has nowhere to go. The check
+	// under binMu below is the one that counts.
+	if ok, reason := s.binRoomFor(ctx, mi.SizeBytes); !ok {
+		s.finishSkip(job, SkipBinFull, reason+" — the encode was discarded and the original kept")
+		return
+	}
+	if err := moveFileFn(dst, part); err != nil {
 		_ = os.Remove(part)
+		if errors.Is(err, syscall.ENOSPC) {
+			// The library disk filled up. Retrying straight away would re-run the whole encode
+			// only to fail the same way, so wait for space to be freed.
+			s.finishSkip(job, SkipLibraryFull, fmt.Sprintf("the library disk had %s free; staging needed %s — the encode was discarded and the original kept",
+				humanBytes(int64(freeBytesFn(filepath.Dir(part)))), humanBytes(outSize)))
+			return
+		}
 		s.finish(job, StateFailed, "could not stage the converted file: "+err.Error()+" — kept the original")
 		return
 	}
+	// The bin may have filled during the encode. Ask again right before the original goes
+	// in, and hold the answer until it has: if it no longer fits, the encode is lost but
+	// nothing is destroyed.
+	s.binMu.Lock()
+	if ok, reason := s.binRoomFor(ctx, mi.SizeBytes); !ok {
+		s.binMu.Unlock()
+		_ = os.Remove(part)
+		s.finishSkip(job, SkipBinFull, reason+" — the encode was discarded and the original kept")
+		return
+	}
 	s.recordSwap(job, part, finalPath, src)
-	if err := s.retire(src); err != nil {
+	err = s.retire(src)
+	s.binMu.Unlock()
+	if err != nil {
 		_ = os.Remove(part)
 		s.clearSwap(part)
 		s.finish(job, StateFailed, "could not move the original to the recycle bin: "+err.Error()+" — kept the original")

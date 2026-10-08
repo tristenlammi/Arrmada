@@ -365,3 +365,38 @@ func TestRecycleModeOffAndOn(t *testing.T) {
 		t.Error("Mode must not create or touch the bin")
 	}
 }
+
+// sparseFile makes a file that reports n bytes without writing them, so a test can fill a
+// 50 GB bin without the disk.
+func sparseFile(t *testing.T, dir, sub, name string, n int64) {
+	t.Helper()
+	p := writeFile(t, dir, sub, name, 0, 0)
+	if err := os.Truncate(p, n); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Headroom is what the bin can still take before Enforce purges anything.
+func TestHeadroom(t *testing.T) {
+	svc, set, dir := newTestSvc(t)
+	ctx := context.Background()
+	sparseFile(t, dir, "A (2020)", "a.mkv", 10<<30)
+	sparseFile(t, dir, "B (2021)", "b.mkv", 20<<30)
+
+	// The default cap is 50 GB: 30 GB held leaves 20.
+	if free, capped, enabled := svc.Headroom(ctx); !enabled || !capped || free != 20<<30 {
+		t.Fatalf("headroom = %d (capped %v, enabled %v), want 20 GiB", free, capped, enabled)
+	}
+	_ = set.Set(ctx, keyMaxGB, "25")
+	if free, _, _ := svc.Headroom(ctx); free != 0 {
+		t.Fatalf("over the cap: headroom = %d, want 0", free)
+	}
+	_ = set.Set(ctx, keyMaxGB, "0")
+	if _, capped, enabled := svc.Headroom(ctx); capped || !enabled {
+		t.Fatalf("cap 0 is unlimited: capped %v enabled %v", capped, enabled)
+	}
+	off := New("", set, svc.log)
+	if _, capped, enabled := off.Headroom(ctx); capped || enabled {
+		t.Fatalf("recycling off: capped %v enabled %v", capped, enabled)
+	}
+}

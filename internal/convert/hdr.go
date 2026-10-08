@@ -2,6 +2,7 @@ package convert
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -20,36 +21,42 @@ import (
 // Dolby Vision is not carried at all — only its HDR10/HLG base layer — so there is no
 // Dolby Vision pipeline; those files go through the standard encode.
 
-// extractHDR10Plus pulls the HDR10+ dynamic metadata from a file's HEVC stream into a JSON
-// file. Returns an error (and writes nothing usable) if the file carries no HDR10+.
-//
-// It looks before it reads: the first 100 frames say whether there's HDR10+ at all, and only
-// then is the whole stream read for the full metadata. Without that, checking a 60 GB remux
-// meant streaming the entire file off the array just to learn it had none.
-func (s *Service) extractHDR10Plus(ctx context.Context, src, jsonOut string) error {
-	extract := func(limit int) error {
-		ff := exec.CommandContext(ctx, s.ffmpeg, "-loglevel", "error", "-i", src,
-			"-map", "0:v:0", "-c", "copy", "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", "-")
-		args := []string{"extract", "-o", jsonOut}
-		if limit > 0 {
-			args = append(args, "--limit", strconv.Itoa(limit))
-		}
-		h10 := exec.CommandContext(ctx, s.hdr10plusTool, append(args, "-")...)
-		// With a frame limit the tool stops reading early on purpose, so ffmpeg then hits a
-		// broken pipe — expected, not a failure. Reading everything, ffmpeg must succeed:
-		// a stream cut short would leave metadata for only part of the film.
-		if err := pipeCommands(ff, h10, limit > 0); err != nil {
-			return err
-		}
-		if fi, err := os.Stat(jsonOut); err != nil || fi.Size() < 8 {
-			return fmt.Errorf("no HDR10+ metadata found")
-		}
-		return nil
+// Pulling the HDR10+ dynamic metadata from a file's HEVC stream into a JSON file is two
+// steps. It looks before it reads: hasHDR10Plus checks the first 100 frames, and only then
+// does readHDR10Plus read the whole stream for the full metadata. Without that, checking a
+// 60 GB remux meant streaming the entire file off the array just to learn it had none. The
+// caller checks scratch space in between, so the whole-file read never runs for a file the
+// HDR10+ pipeline couldn't fit.
+
+// hasHDR10Plus returns an error (and writes nothing usable) if the file carries no HDR10+.
+func (s *Service) hasHDR10Plus(ctx context.Context, src, jsonOut string) error {
+	return s.extractHDR10Plus(ctx, src, jsonOut, 100)
+}
+
+// readHDR10Plus reads the metadata for the whole film into jsonOut.
+func (s *Service) readHDR10Plus(ctx context.Context, src, jsonOut string) error {
+	return s.extractHDR10Plus(ctx, src, jsonOut, 0)
+}
+
+// extractHDR10Plus extracts up to limit frames' metadata (0 = all of them).
+func (s *Service) extractHDR10Plus(ctx context.Context, src, jsonOut string, limit int) error {
+	ff := exec.CommandContext(ctx, s.ffmpeg, "-loglevel", "error", "-i", src,
+		"-map", "0:v:0", "-c", "copy", "-bsf:v", "hevc_mp4toannexb", "-f", "hevc", "-")
+	args := []string{"extract", "-o", jsonOut}
+	if limit > 0 {
+		args = append(args, "--limit", strconv.Itoa(limit))
 	}
-	if err := extract(100); err != nil {
+	h10 := exec.CommandContext(ctx, s.hdr10plusTool, append(args, "-")...)
+	// With a frame limit the tool stops reading early on purpose, so ffmpeg then hits a
+	// broken pipe — expected, not a failure. Reading everything, ffmpeg must succeed:
+	// a stream cut short would leave metadata for only part of the film.
+	if err := pipeCommands(ff, h10, limit > 0); err != nil {
 		return err
 	}
-	return extract(0)
+	if fi, err := os.Stat(jsonOut); err != nil || fi.Size() < 8 {
+		return fmt.Errorf("no HDR10+ metadata found")
+	}
+	return nil
 }
 
 // encodeHDR10Plus runs the HDR10+ pipeline into dst: encode the video to a raw HEVC stream
@@ -153,6 +160,10 @@ func (s *Service) remuxVideoStream(ctx context.Context, video, src, dst string, 
 	return nil
 }
 
+// errSourceStream marks a pipe whose producer failed reading the source while the consumer
+// was fine: usually the disk, not the file.
+var errSourceStream = errors.New("source stream failed")
+
 // pipeCommands runs producer | consumer and returns the consumer's error if it failed (the
 // meaningful one — a producer that then can't write is just a consequence), else the
 // producer's — unless consumerMayStopEarly, when a producer cut off by a consumer that
@@ -188,7 +199,7 @@ func pipeCommands(producer, consumer *exec.Cmd, consumerMayStopEarly bool) error
 		return fmt.Errorf("%v (%s)", err, tailStr([]byte(cerr.String())))
 	}
 	if perr != nil && !consumerMayStopEarly {
-		return fmt.Errorf("source stream failed: %w", perr)
+		return fmt.Errorf("%w: %w", errSourceStream, perr)
 	}
 	return nil
 }
