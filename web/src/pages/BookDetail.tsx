@@ -518,6 +518,12 @@ function EditMetadataModal({ book, onClose, onSaved }: { book: Book; onClose: ()
   );
 }
 
+// Short names for events whose stored name won't fit the History column. The stored
+// name stays as it is: the duplicate review reads it.
+const EVENT_LABELS: Record<string, string> = {
+  possible_duplicate: "dup?",
+};
+
 const EVENT_TONES: Record<string, string> = {
   added: "var(--ink-faint)",
   grabbed: "var(--accent)",
@@ -557,7 +563,7 @@ function HistoryPanel({ bookId, refreshKey }: { bookId: number; refreshKey: unkn
         <div className="flex flex-col">
           {events.map((e, i) => (
             <div key={i} className="flex items-center gap-3 border-b py-2 text-[12px]" style={{ borderColor: "var(--line)" }}>
-              <span className="w-[74px] flex-none font-mono text-[10px] font-bold uppercase" style={{ color: EVENT_TONES[e.event] ?? "var(--ink-dim)" }}>{e.event}</span>
+              <span className="w-[74px] flex-none truncate font-mono text-[10px] font-bold uppercase" style={{ color: EVENT_TONES[e.event] ?? "var(--ink-dim)" }}>{EVENT_LABELS[e.event] ?? e.event}</span>
               <span className="min-w-0 flex-1 truncate text-ink-dim" title={e.detail}>{e.detail || "—"}</span>
               <span className="flex-none font-mono text-[10.5px] text-ink-faint">{fmtEventTime(e.created_at)}</span>
             </div>

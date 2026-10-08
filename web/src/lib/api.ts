@@ -739,7 +739,7 @@ export interface BookUpgradeStatus {
   running: boolean; total: number; done: number; upgraded: number; flagged: number; unmatched: number;
   started_at?: number; ended_at?: number; error?: string;
   notes?: string[]; // why the first few books didn't match
-  left?: { id: number; title: string; author?: string; reason: string }[]; // every book left as it was
+  left?: { id: number; title: string; author?: string; reason: string; flagged?: boolean }[]; // every book left as it was, flagged duplicates included
 }
 export interface BookSweepStatus {
   running: boolean; total: number; done: number; grabbed: number; skipped: number;

@@ -49,6 +49,9 @@ type UnmatchedBook struct {
 	Title  string `json:"title"`
 	Author string `json:"author,omitempty"`
 	Reason string `json:"reason"`
+	// Flagged: Hardcover placed it on a book another row holds. It stays on its old
+	// key, so the re-match keeps finding it until it is ignored or reviewed.
+	Flagged bool `json:"flagged,omitempty"`
 }
 
 type upgradeState struct {
@@ -110,10 +113,10 @@ func (s *Service) MaybeStartUpgrade(ctx context.Context) bool {
 func (s *Service) forgetUnmatched(id int64) {
 	s.setUpgrade(func(st *UpgradeStatus) {
 		var left []UnmatchedBook
-		title := ""
+		title, flagged := "", false
 		for _, u := range st.Left {
 			if u.ID == id {
-				title = u.Title
+				title, flagged = u.Title, u.Flagged
 				continue
 			}
 			left = append(left, u)
@@ -122,7 +125,11 @@ func (s *Service) forgetUnmatched(id int64) {
 			return
 		}
 		st.Left = left
-		if st.Unmatched > 0 {
+		if flagged {
+			if st.Flagged > 0 {
+				st.Flagged--
+			}
+		} else if st.Unmatched > 0 {
 			st.Unmatched--
 		}
 		var notes []string
@@ -185,6 +192,9 @@ func (s *Service) runUpgrade(ctx context.Context) {
 				st.Upgraded++
 			case "flagged":
 				st.Flagged++
+				// Listed with the unmatched so the page offers Ignore, which stops the
+				// re-match asking Hardcover about it on every run.
+				st.Left = append(st.Left, UnmatchedBook{ID: b.ID, Title: b.Title, Author: b.Author, Reason: reason, Flagged: true})
 			default:
 				st.Unmatched++
 				if len(st.Notes) < upgradeNoteLimit {
@@ -271,8 +281,10 @@ func (s *Service) upgradeOne(ctx context.Context, b Book) (outcome, reason strin
 	// Say so on both timelines and touch neither: b keeps its current key, and both rows
 	// keep their files, audio versions and listening places until a person decides.
 	if other, ok := s.findByKey(ctx, d.Key); ok && other.ID != b.ID {
-		s.repo.AddEvent(ctx, b.ID, "possible_duplicate", possibleDuplicateNote(other))
-		s.repo.AddEvent(ctx, other.ID, "possible_duplicate", possibleDuplicateNote(b))
+		// The flagged row stays on its old key, so every later run (each boot, each key
+		// save) lands here again: note each pairing once, not once per run.
+		s.flagOnce(ctx, b.ID, possibleDuplicateNote(other))
+		s.flagOnce(ctx, other.ID, possibleDuplicateNote(b))
 		// Ids only: the log never needs a title to say two rows collided.
 		s.log.Info("books: upgrade found a possible duplicate", "book_id", b.ID, "other_id", other.ID)
 		return "flagged", fmt.Sprintf("Hardcover lists it as the same book as %q (book %d); not merged", other.Title, other.ID), nil
@@ -284,6 +296,14 @@ func (s *Service) upgradeOne(ctx context.Context, b Book) (outcome, reason strin
 		s.repo.AddEvent(ctx, b.ID, "upgraded", "Re-matched: "+note)
 	}
 	return "upgraded", note, nil
+}
+
+// flagOnce adds a possible_duplicate entry to a book's timeline unless it already has
+// that exact one.
+func (s *Service) flagOnce(ctx context.Context, bookID int64, detail string) {
+	if !s.repo.HasEvent(ctx, bookID, "possible_duplicate", detail) {
+		s.repo.AddEvent(ctx, bookID, "possible_duplicate", detail)
+	}
 }
 
 // possibleDuplicateNote is the timeline entry for a row Hardcover places on the same

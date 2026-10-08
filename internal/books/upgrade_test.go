@@ -115,6 +115,43 @@ func TestUpgradeRunKeepsDuplicateAudioAndListening(t *testing.T) {
 	}
 }
 
+// The flagged row keeps its old key, so every boot re-runs the upgrade over it. The
+// timelines must say "possible duplicate" once, not once per run, and the row must be
+// offered for Ignore, which takes it out of the count and out of later runs.
+func TestUpgradeFlagIsIdempotentAndIgnorable(t *testing.T) {
+	s, repo, ctx, held, old := upgradeFixture(t)
+	for run := 0; run < 2; run++ {
+		s.upgrade.status = UpgradeStatus{Running: true}
+		s.runUpgrade(ctx)
+	}
+	for _, id := range []int64{held.ID, old.ID} {
+		evs, _ := repo.Events(ctx, id, 100)
+		n := 0
+		for _, e := range evs {
+			if e.Event == "possible_duplicate" {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("book %d has %d possible_duplicate events after two runs, want 1", id, n)
+		}
+	}
+
+	st := s.UpgradeStatus()
+	if len(st.Left) != 1 || st.Left[0].ID != old.ID || !st.Left[0].Flagged {
+		t.Fatalf("Left = %+v, want the flagged row so it can be ignored", st.Left)
+	}
+	if err := s.SetKeepCatalogue(ctx, old.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if st := s.UpgradeStatus(); st.Flagged != 0 || st.Unmatched != 0 || len(st.Left) != 0 {
+		t.Errorf("after Ignore status = %+v, want nothing left to report", st)
+	}
+	if n := s.Upgradable(ctx); n != 0 {
+		t.Errorf("Upgradable = %d after Ignore, want 0", n)
+	}
+}
+
 // The re-match must land on the catalogue's entry for the same book across the ways
 // catalogues render it, and must not land on a different book of the same title.
 func TestMatchUpgrade(t *testing.T) {
