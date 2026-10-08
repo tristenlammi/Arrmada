@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/store"
 )
 
@@ -30,7 +31,7 @@ func TestSupersedeRecyclesOld(t *testing.T) {
 	os.WriteFile(oldF, []byte("old"), 0o644)
 	os.WriteFile(newF, []byte("new"), 0o644)
 
-	svc := &Service{repo: NewRepo(db), recycle: recycle, log: slog.Default()}
+	svc := &Service{repo: NewRepo(db), bin: library.SingleBin(recycle), log: slog.Default()}
 	if err := svc.MarkEpisodeImported(ctx, 1, 1, 1, oldF, 3); err != nil {
 		t.Fatal(err)
 	}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/download"
+	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
@@ -338,12 +339,63 @@ func (a *api) handleDeleteSeries(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	ctx := r.Context()
 	deleteFiles := r.URL.Query().Get("delete_files") == "true"
-	if err := a.deps.Series.Delete(r.Context(), id, deleteFiles); err != nil {
+	if deleteFiles {
+		sr, err := a.deps.Series.Get(ctx, id)
+		if err != nil {
+			a.writeError(w, http.StatusNotFound, "series not found")
+			return
+		}
+		plan, err := a.deps.Series.DeletePlan(ctx, id)
+		if err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not list the series' files")
+			return
+		}
+		// A very large show needs its title typed — the API asks too, not just the dialog.
+		if plan.Bytes > bigSeriesDeleteBytes && r.URL.Query().Get("confirm") != sr.Title {
+			a.writeError(w, http.StatusBadRequest, "this deletes over 100 GB — type the series title to confirm")
+			return
+		}
+	}
+	// Detached from the request: moving a big show to a bin on another filesystem copies
+	// for a long time, and if the browser or a proxy gives up meanwhile, the files would
+	// all be in the bin while the series row stayed, still claiming them.
+	sum, err := a.deps.Series.Delete(context.WithoutCancel(ctx), id, deleteFiles)
+	if errors.Is(err, series.ErrFilesNotRemoved) {
+		a.writeJSON(w, http.StatusConflict, map[string]any{
+			"status": "error", "message": err.Error(), "moved": sum.Moved, "failed": sum.Failed,
+		})
+		return
+	}
+	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not delete series")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// bigSeriesDeleteBytes is where deleting a show's files needs its title typed (100 GiB).
+// A var only so tests can lower it.
+var bigSeriesDeleteBytes int64 = 100 << 30
+
+// handleSeriesDeletePreview says what deleting a series with its files would move and
+// where it would go, so the dialog can state it before anything happens.
+func (a *api) handleSeriesDeletePreview(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	plan, err := a.deps.Series.DeletePlan(r.Context(), id)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not list the series' files")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"files": plan.Files, "sidecars": plan.Sidecars, "bytes": plan.Bytes,
+		"confirm_over_bytes": bigSeriesDeleteBytes,
+		"recycle":            a.recycleMode(r.Context()),
+	})
 }
 
 // handleSeriesHistory returns a series' activity timeline.
@@ -752,6 +804,10 @@ func (a *api) handleDeleteEpisodeFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.deps.Series.DeleteEpisodeFile(r.Context(), id, season, episode); err != nil {
+		if errors.Is(err, library.ErrBinRefused) {
+			a.writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		a.writeError(w, http.StatusInternalServerError, "could not delete episode file")
 		return
 	}

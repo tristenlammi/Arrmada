@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { DeleteSeriesDialog } from "../components/DeleteSeriesDialog";
 import { api, type Series as SeriesT, type SeriesFitSummary, type SeriesLookup } from "../lib/api";
 import { FIT_COLOR } from "../components/FitBadge";
 import { posterThumb } from "../lib/img";
@@ -132,11 +133,6 @@ export function Series() {
     }
   };
 
-  const doDelete = async (id: number, deleteFiles: boolean) => {
-    await api.deleteSeries(id, deleteFiles);
-    setConfirmDelete(null);
-    refresh();
-  };
 
   const search = async (s: SeriesT) => {
     try {
@@ -285,7 +281,7 @@ export function Series() {
         )}
       </div>
       {adding && <AddSeriesModal onClose={() => setAdding(false)} onAdded={() => { setAdding(false); refresh(); }} />}
-      {confirmDelete && <DeleteSeriesModal series={confirmDelete} onClose={() => setConfirmDelete(null)} onConfirm={(df) => doDelete(confirmDelete.id, df)} />}
+      {confirmDelete && <DeleteSeriesDialog series={confirmDelete} onClose={() => setConfirmDelete(null)} onDeleted={() => { setConfirmDelete(null); refresh(); }} />}
     </>
   );
 }
@@ -514,46 +510,6 @@ function SeriesTable({ list, multiSelect, selected, onToggleSelect, onSearch }: 
           })}
         </tbody>
       </table>
-    </div>
-  );
-}
-
-function DeleteSeriesModal({ series, onClose, onConfirm }: { series: SeriesT; onClose: () => void; onConfirm: (deleteFiles: boolean) => void }) {
-  const [deleteFiles, setDeleteFiles] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const hasFiles = (series.stats?.have_files ?? 0) > 0;
-  const confirm = async () => {
-    setBusy(true);
-    try { await onConfirm(deleteFiles); } finally { setBusy(false); }
-  };
-  return (
-    <div className="fixed inset-0 z-50 grid place-items-center p-6" style={{ background: "rgba(0,0,0,.6)" }} onClick={onClose}>
-      <div className="w-full max-w-[440px] rounded-2xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }} onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-start gap-3">
-          <div className="h-[84px] w-[56px] flex-none overflow-hidden rounded-lg" style={{ background: "var(--panel-2)" }}>
-            {series.poster_url && <img src={series.poster_url} alt="" className="h-full w-full object-cover" />}
-          </div>
-          <div className="min-w-0">
-            <h2 className="m-0 text-[15px] font-bold">Remove “{series.title}”?</h2>
-            <p className="mt-1 text-[12px] text-ink-dim">It'll be removed from your library and Arrmada will stop monitoring it.</p>
-          </div>
-        </div>
-
-        <label className="mt-4 flex items-start gap-2.5 rounded-lg p-3 text-[12.5px]" style={{ border: `1px solid ${deleteFiles ? "var(--reject)" : "var(--line)"}`, background: deleteFiles ? "var(--reject-soft)" : "var(--panel-2)" }}>
-          <input type="checkbox" checked={deleteFiles} onChange={(e) => setDeleteFiles(e.target.checked)} className="mt-0.5" />
-          <span>
-            <span className="font-semibold" style={{ color: deleteFiles ? "var(--reject)" : "var(--ink)" }}>Also delete files from disk</span>
-            <span className="mt-0.5 block text-[11px] text-ink-faint">{hasFiles ? "Deletes every episode file and the show folder." : "This series has no files on disk."}</span>
-          </span>
-        </label>
-
-        <div className="mt-4 flex justify-end gap-2.5">
-          <button onClick={onClose} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Cancel</button>
-          <button onClick={confirm} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "var(--reject)", color: "#fff" }}>
-            {busy ? "Removing…" : deleteFiles ? "Remove + delete files" : "Remove"}
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

@@ -425,8 +425,7 @@ func (c *Coordinator) recordMusicGrab(ctx context.Context, albumID int64, title,
 func (c *Coordinator) pendingMusicGrabTitles(ctx context.Context, albumID int64) map[string]bool {
 	out := map[string]bool{}
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT title FROM grabs WHERE movie_id = ? AND media_type = 'music' AND status = 'grabbed'
-		   AND grabbed_at > datetime('now', '-24 hours')`, albumID)
+		`SELECT title FROM grabs WHERE movie_id = ? AND media_type = 'music' AND `+pendingTitleWhere, albumID)
 	if err != nil {
 		return out
 	}

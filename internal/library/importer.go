@@ -65,6 +65,11 @@ func FindBookFiles(contentPath string) []FoundFile {
 	}
 	var out []FoundFile
 	_ = filepath.WalkDir(contentPath, func(p string, d os.DirEntry, err error) error {
+		// Hidden folders inside a book are Arrmada's own (merge backups) or a system's
+		// (.AppleDouble, .recycle): never book files.
+		if err == nil && d.IsDir() && p != contentPath && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
 		if err != nil || d.IsDir() || !isBookFile(p) {
 			return nil
 		}
@@ -147,6 +152,12 @@ func (im *Importer) FindBookFoldersIn(roots ...string) []BookFolder {
 	}
 	for _, root := range roots {
 		_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			// Hidden folders are Arrmada's own (the merge backups under the audiobooks
+			// root) or a system's: scanned as books they'd turn into bogus titles, or an
+			// edition that vanishes when the backup is pruned.
+			if err == nil && d.IsDir() && p != root && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
 			if err != nil || d.IsDir() || !isBookFile(p) {
 				return nil
 			}
@@ -414,6 +425,9 @@ func (im *Importer) ebookDir() string {
 	}
 	return im.root
 }
+
+// AudiobookRoot is the folder audiobooks are placed under.
+func (im *Importer) AudiobookRoot() string { return im.audiobookDir() }
 
 func (im *Importer) audiobookDir() string {
 	if im.audiobookRoot != "" {
@@ -840,24 +854,38 @@ func (im *Importer) EpisodeTargetIn(seriesFolder, title string, year, season, ep
 func (im *Importer) MoveEpisodeSubs(oldVideo, newVideo string) {
 	oldBase := strings.TrimSuffix(oldVideo, filepath.Ext(oldVideo))
 	newBase := strings.TrimSuffix(newVideo, filepath.Ext(newVideo))
-	entries, err := os.ReadDir(filepath.Dir(oldVideo))
-	if err != nil {
-		return
-	}
-	for _, e := range entries {
-		if e.IsDir() || !subtitleExts[strings.ToLower(filepath.Ext(e.Name()))] {
-			continue
-		}
-		p := filepath.Join(filepath.Dir(oldVideo), e.Name())
+	for _, p := range Sidecars(oldVideo) {
 		stem := strings.TrimSuffix(p, filepath.Ext(p))
-		if stem != oldBase && !strings.HasPrefix(stem, oldBase+".") {
-			continue // not this video's sidecar
-		}
 		target := newBase + stem[len(oldBase):] + filepath.Ext(p) // carry ".en"/".forced"
 		if err := im.Move(p, target); err == nil {
 			im.log.Info("moved subtitle with rename", "from", p, "to", target)
 		}
 	}
+}
+
+// Sidecars lists the subtitle files paired with video: same folder, and named either
+// exactly like the video or the video's name plus a ".<lang>"/".forced" suffix. Unrelated
+// neighbours are never included, so whatever happens to the video can safely happen to
+// these too (a rename, a delete to the recycle bin).
+func Sidecars(video string) []string {
+	base := strings.TrimSuffix(video, filepath.Ext(video))
+	entries, err := os.ReadDir(filepath.Dir(video))
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() || !subtitleExts[strings.ToLower(filepath.Ext(e.Name()))] {
+			continue
+		}
+		p := filepath.Join(filepath.Dir(video), e.Name())
+		stem := strings.TrimSuffix(p, filepath.Ext(p))
+		if stem != base && !strings.HasPrefix(stem, base+".") {
+			continue // not this video's sidecar
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // RemoveDirIfEmpty deletes dir only when it contains no entries — used after a rename

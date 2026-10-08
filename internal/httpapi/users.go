@@ -128,6 +128,27 @@ func (a *api) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"id": id, "role": role, "auto_approve": autoApprove})
 }
 
+// handleUserImpact reports, as counts only, what deleting a user would take with them.
+// It never names a book: admins see how much someone listened, never what.
+func (a *api) handleUserImpact(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	imp, err := a.deps.Auth.DeletionImpact(r.Context(), id)
+	if errors.Is(err, auth.ErrNotFound) {
+		a.writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not count this user's data")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, imp)
+}
+
+// handleDeleteUser removes an account. When the account holds listening data the request
+// must carry ?confirm=<username>, and the database is copied first either way.
 func (a *api) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)
 	if !ok {
@@ -138,7 +159,11 @@ func (a *api) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Don't strand the instance with no admin.
-	users, _ := a.deps.Auth.ListUsers(r.Context())
+	users, err := a.deps.Auth.ListUsers(r.Context())
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not load users")
+		return
+	}
 	admins := 0
 	var target *auth.User
 	for i := range users {
@@ -149,10 +174,45 @@ func (a *api) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 			target = &users[i]
 		}
 	}
-	if target != nil && target.Role == auth.RoleAdmin && admins <= 1 {
+	if target == nil {
+		a.writeError(w, http.StatusNotFound, "user not found")
+		return
+	}
+	if target.Role == auth.RoleAdmin && admins <= 1 {
 		a.writeError(w, http.StatusBadRequest, "can't delete the last admin account")
 		return
 	}
+	// Deleting someone erases their audiobook places and listening history with them. The
+	// dialog asks for the username in that case; the API asks too, so a script or a stray
+	// request can't skip it.
+	imp, err := a.deps.Auth.DeletionImpact(r.Context(), id)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not check what deleting this user would remove")
+		return
+	}
+	if imp.HasListeningData() && r.URL.Query().Get("confirm") != target.Username {
+		a.writeError(w, http.StatusBadRequest, "this user has audiobook places and listening history — type their username to confirm the delete")
+		return
+	}
+	// A copy of the database first, so a mistaken delete can be undone from a backup.
+	if a.deps.Snapshot == nil {
+		a.writeError(w, http.StatusInternalServerError, "couldn't take a safety copy first — nothing was deleted")
+		return
+	}
+	// Accounts with nothing to lose get a kind of their own. Only the newest few copies of
+	// each kind are kept, so clearing out a few empty test or guest accounts must not prune
+	// the one copy that still holds a family member's audiobook places.
+	kind := "pre-delete-user"
+	if !imp.HasListeningData() && imp.Bookmarks == 0 {
+		kind = "pre-delete-empty-user"
+	}
+	path, err := a.deps.Snapshot(r.Context(), kind)
+	if err != nil {
+		a.deps.Log.Error("users: safety copy before delete failed", "user_id", id, "err", err)
+		a.writeError(w, http.StatusInternalServerError, "couldn't take a safety copy first — nothing was deleted ("+err.Error()+")")
+		return
+	}
+	a.deps.Log.Info("users: database copied before deleting a user", "user_id", id, "backup", path)
 	if err := a.deps.Auth.DeleteUser(r.Context(), id); err != nil {
 		if errors.Is(err, auth.ErrNotFound) {
 			a.writeError(w, http.StatusNotFound, "user not found")

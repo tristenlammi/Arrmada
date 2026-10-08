@@ -4,6 +4,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -79,6 +80,10 @@ type Deps struct {
 	// Restart shuts the app down cleanly so Docker's restart policy starts it again
 	// (first-run setup uses it to apply new library folders). nil = not offered.
 	Restart func()
+	// Snapshot copies the database to <data>/backups/arrmada-<kind>-<UTC>.db before an
+	// action that erases data a backup is the only way back from (deleting a user takes
+	// their audiobook places with it). nil = no copy possible, so those actions refuse.
+	Snapshot func(ctx context.Context, kind string) (string, error)
 }
 
 type api struct {
@@ -188,6 +193,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET "+base+"/api/v1/users", a.requireRole(auth.RoleAdmin, a.handleListUsers))
 	mux.HandleFunc("POST "+base+"/api/v1/users", a.requireRole(auth.RoleAdmin, a.handleCreateUser))
 	mux.HandleFunc("PUT "+base+"/api/v1/users/{id}", a.requireRole(auth.RoleAdmin, a.handleUpdateUser))
+	mux.HandleFunc("GET "+base+"/api/v1/users/{id}/impact", a.requireRole(auth.RoleAdmin, a.handleUserImpact))
 	mux.HandleFunc("DELETE "+base+"/api/v1/users/{id}", a.requireRole(auth.RoleAdmin, a.handleDeleteUser))
 
 	// Realtime updates
@@ -313,6 +319,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("DELETE "+base+"/api/v1/series/{id}/blocklist/{bid}", a.requireRole(auth.RoleManager, a.handleSeriesUnblock))
 	mux.HandleFunc("POST "+base+"/api/v1/series/{id}/seasons/{season}/episodes/{episode}/regrab", a.requireRole(auth.RoleManager, a.handleRegrabEpisode))
 	mux.HandleFunc("DELETE "+base+"/api/v1/series/{id}/seasons/{season}/episodes/{episode}/file", a.requireRole(auth.RoleManager, a.handleDeleteEpisodeFile))
+	mux.HandleFunc("GET "+base+"/api/v1/series/{id}/delete-preview", a.requireRole(auth.RoleManager, a.handleSeriesDeletePreview))
 	mux.HandleFunc("DELETE "+base+"/api/v1/series/{id}", a.requireRole(auth.RoleManager, a.handleDeleteSeries))
 
 	// Requests (Overseerr-style): request media → approve → add to Movies/Series.
@@ -329,6 +336,7 @@ func (a *api) registerRoutes(mux *router) {
 	// Convert (Tdarr replacement — GPU transcoding/cleanup over the Movies/Series catalogs).
 	mux.HandleFunc("GET "+base+"/api/v1/logs", a.requireRole(auth.RoleManager, a.handleLogs))
 	mux.HandleFunc("GET "+base+"/api/v1/recycle", a.requireRole(auth.RoleManager, a.handleRecycleStats))
+	mux.HandleFunc("GET "+base+"/api/v1/recycle/mode", a.requireRole(auth.RoleManager, a.handleRecycleMode))
 	mux.HandleFunc("GET "+base+"/api/v1/recycle/items", a.requireRole(auth.RoleManager, a.handleRecycleItems))
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/empty", a.requireRole(auth.RoleManager, a.handleRecycleEmpty))
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/restore", a.requireRole(auth.RoleManager, a.handleRecycleRestore))

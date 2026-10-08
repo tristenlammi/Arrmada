@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { BookReleaseModal } from "../components/BookReleaseModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
@@ -221,7 +222,7 @@ function EditionPanel({ label, file, wanted, bookId, kind, onChange, flash }: { 
           {multi && <FileList bookId={bookId} kind={kind} count={file.file_count} />}
         </div>
         <div className="flex flex-none flex-col items-end gap-1.5">
-          {multi && kind === "audiobook" && <MergeButton bookId={bookId} onDone={onChange} flash={flash} />}
+          {multi && kind === "audiobook" && <MergeButton bookId={bookId} fileCount={file.file_count} onDone={onChange} flash={flash} />}
           {confirming ? (
             <div className="flex items-center gap-2">
               <button onClick={del} disabled={busy} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--reject)", color: "#fff" }}>{busy ? "Deleting…" : "Delete"}</button>
@@ -276,22 +277,76 @@ function FileList({ bookId, kind, count }: { bookId: number; kind: "ebook" | "au
   );
 }
 
-function MergeButton({ bookId, onDone, flash }: { bookId: number; onDone: () => void; flash: (m: string) => void }) {
+// The newest merge outcome in a book's history ('merged' or 'merge-failed'), if any.
+function lastMergeEvent(events: MovieEvent[]): MovieEvent | undefined {
+  return events.find((e) => e.event === "merged" || e.event === "merge-failed");
+}
+const eventKey = (e?: MovieEvent) => (e ? `${e.event}|${e.created_at}|${e.detail ?? ""}` : "");
+
+// MergeButton asks before combining, then watches the book's history for the outcome the
+// server records ('merged' or 'merge-failed') instead of guessing from a timer. The wording
+// is the same for everyone and never says who is listening.
+function MergeButton({ bookId, fileCount, onDone, flash }: { bookId: number; fileCount: number; onDone: () => void; flash: (m: string) => void }) {
+  const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
+  useEffect(() => () => { if (timer.current) clearInterval(timer.current); }, []);
+
   const merge = async () => {
-    setBusy(true);
+    setBusy(true); setErr(null); setFailure(null);
     try {
+      const baseline = eventKey(lastMergeEvent(await api.bookHistory(bookId).catch(() => [])));
       await api.mergeAudiobook(bookId);
+      setAsking(false);
+      setRunning(true);
       flash("Combining into a single chapterized .m4b — this runs in the background and may take a while.");
-      // Poll for the merge to finish (edition collapses to 1 file).
       let ticks = 0;
-      const t = setInterval(() => { onDone(); if (++ticks >= 40) clearInterval(t); }, 5000);
-    } catch (e) { flash((e as Error).message); } finally { setBusy(false); }
+      timer.current = setInterval(async () => {
+        ticks++;
+        const ev = lastMergeEvent(await api.bookHistory(bookId).catch(() => []));
+        // The server gives a merge 30 minutes; stop watching a little after that.
+        if ((ev && eventKey(ev) !== baseline) || ticks >= 400) {
+          if (timer.current) clearInterval(timer.current);
+          timer.current = null;
+          setRunning(false);
+          onDone();
+          if (ev?.event === "merge-failed" && eventKey(ev) !== baseline) {
+            setFailure(ev.detail ?? "unknown reason");
+            flash(`Merge failed: ${ev.detail ?? "unknown reason"} — the original files are untouched.`);
+          } else if (ev?.event === "merged" && eventKey(ev) !== baseline) {
+            flash("Combined into one .m4b.");
+          } else {
+            // Only a server restart mid-merge leaves no outcome; say so rather than nothing.
+            flash("The merge didn't report back — check the book's history before trying again.");
+          }
+        }
+      }, 5000);
+    } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   };
+
   return (
-    <button onClick={merge} disabled={busy} title="Merge all chapter files into one chapterized .m4b (needs ffmpeg)" className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>
-      {busy ? "Merging…" : "⧉ Combine into one file"}
-    </button>
+    <>
+      <button onClick={() => { setErr(null); setAsking(true); }} disabled={busy || running} title="Merge all chapter files into one chapterized .m4b (needs ffmpeg)" className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-60" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>
+        {running ? "Merging…" : "⧉ Combine into one file"}
+      </button>
+      {failure && <span className="max-w-[260px] text-right text-[11px]" style={{ color: "var(--reject)" }}>Merge failed: {failure}</span>}
+      {asking && (
+        <ConfirmDialog
+          title="Combine into one file?"
+          body={`Combine ${fileCount} files into one .m4b? The originals go to the recycle bin (or are kept for 14 days). Apps that downloaded this audiobook will need to download it again, and anyone listening right now will need to reopen it.`}
+          confirmLabel="Combine"
+          busyLabel="Starting…"
+          tone="accent"
+          busy={busy}
+          error={err}
+          onConfirm={merge}
+          onCancel={() => setAsking(false)}
+        />
+      )}
+    </>
   );
 }
 

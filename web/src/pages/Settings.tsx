@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type APIKeyStatus, type AppSettings, type AuthUser, type DiskGuardStatus, type RecycleStats, type RecycleItem } from "../lib/api";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { api, type APIKeyStatus, type AppSettings, type AuthUser, type DiskGuardStatus, type RecycleStats, type RecycleItem, type UserImpact } from "../lib/api";
 import { useMe, isAdmin } from "../lib/me";
 import { LibraryFolders } from "./Library";
 
@@ -250,11 +251,8 @@ function UsersManager({ meId }: { meId?: number }) {
     finally { setBusy(false); }
   };
 
-  const remove = async (id: number) => {
-    setErr(null);
-    try { await api.deleteUser(id); load(); }
-    catch (e) { setErr((e as Error).message); }
-  };
+  // The X only opens the dialog; nothing is deleted until it's confirmed there.
+  const [removing, setRemoving] = useState<AuthUser | null>(null);
 
   return (
     <Section title="Users" subtitle="Add people who can request media. Requesters see only the Discover page. Auto-approve lets a user's requests skip the queue and download immediately.">
@@ -274,7 +272,7 @@ function UsersManager({ meId }: { meId?: number }) {
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M4 20h4L18 10l-4-4L4 16v4z M14 6l4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
               </button>
               {u.id !== meId && (
-                <button onClick={() => remove(u.id)} title="Remove user" className="grid h-7 w-7 flex-none place-items-center rounded-lg" style={{ border: "1px solid var(--line)", color: "var(--ink-faint)" }}>
+                <button onClick={() => setRemoving(u)} title="Remove user" className="grid h-7 w-7 flex-none place-items-center rounded-lg" style={{ border: "1px solid var(--line)", color: "var(--ink-faint)" }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 5l14 14M19 5L5 19" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" /></svg>
                 </button>
               )}
@@ -305,7 +303,56 @@ function UsersManager({ meId }: { meId?: number }) {
       </form>
 
       {editing && <EditUserModal user={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
+      {removing && <DeleteUserDialog user={removing} onClose={() => setRemoving(null)} onDeleted={() => { setRemoving(null); load(); }} />}
     </Section>
+  );
+}
+
+const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+
+// DeleteUserDialog says what a delete would erase before it happens — as counts only, never
+// which books (admins see how much, not what) — and asks for the username when it would
+// erase someone's audiobook places. The server copies the database first either way.
+function DeleteUserDialog({ user, onClose, onDeleted }: { user: AuthUser; onClose: () => void; onDeleted: () => void }) {
+  const [impact, setImpact] = useState<UserImpact | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.userImpact(user.id).then(setImpact).catch((e: Error) => setErr(`Couldn't check what this would remove: ${e.message}`));
+  }, [user.id]);
+
+  const listening = !!impact && (impact.places > 0 || impact.listening_hours > 0);
+  const hours = impact ? (impact.listening_hours >= 10 ? Math.round(impact.listening_hours) : Math.round(impact.listening_hours * 10) / 10) : 0;
+
+  const confirm = async () => {
+    setBusy(true); setErr(null);
+    try { await api.deleteUser(user.id, listening ? user.username : undefined); onDeleted(); }
+    catch (e) { setErr((e as Error).message); setBusy(false); }
+  };
+
+  return (
+    <ConfirmDialog
+      title={<>Delete {user.username}?</>}
+      body={impact ? (
+        <>
+          <p className="m-0">
+            This permanently removes their place in {plural(impact.places, "audiobook")}, {hours} hour{hours === 1 ? "" : "s"} of listening history, {plural(impact.bookmarks, "bookmark")} and {plural(impact.devices, "signed-in device")}.
+            {" "}Their {plural(impact.requests, "request")} stay.
+          </p>
+          <p className="m-0 mt-2">A copy of the database from just before is kept under Backups.</p>
+          {impact.plex_linked && <p className="m-0 mt-2">They can sign in again with Plex unless you disable them or remove their access in Plex.</p>}
+        </>
+      ) : !err ? "Checking what this would remove…" : null}
+      typedPhrase={listening ? user.username : undefined}
+      confirmLabel="Delete user"
+      busyLabel="Deleting…"
+      busy={busy}
+      error={err}
+      confirmDisabled={!impact}
+      onConfirm={confirm}
+      onCancel={onClose}
+    />
   );
 }
 
@@ -370,6 +417,9 @@ function fmtBytes(b: number): string {
   if (gb >= 1) return `${gb.toFixed(1)} GB`;
   return `${(b / 1024 ** 2).toFixed(0)} MB`;
 }
+function fmtDay(unix: number): string {
+  return new Date(unix * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
 function ageOf(unix: number): string {
   const days = Math.floor((Date.now() / 1000 - unix) / 86400);
   return days <= 0 ? "today" : `${days} day${days === 1 ? "" : "s"} ago`;
@@ -391,14 +441,19 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
   useEffect(() => { load(); }, []);
   useEffect(() => { if (showItems) loadItems(); }, [showItems]);
 
+  // Both "for good" actions ask through the shared dialog; a refusal shows inside it.
+  const [confirm, setConfirm] = useState<{ kind: "empty" } | { kind: "item"; it: RecycleItem } | null>(null);
+  const [confirmErr, setConfirmErr] = useState<string | null>(null);
+  const closeConfirm = () => { setConfirm(null); setConfirmErr(null); };
+
   const empty = async () => {
-    if (!window.confirm("Permanently delete everything in the recycle bin? This can't be undone.")) return;
-    setBusy(true); setMsg(null);
+    setBusy(true); setMsg(null); setConfirmErr(null);
     try {
       const r = await api.emptyRecycle();
       setMsg(`Freed ${fmtBytes(r.freed_bytes)}.`);
+      closeConfirm();
       load(); if (showItems) loadItems();
-    } catch (e) { setMsg((e as Error).message); }
+    } catch (e) { setConfirmErr((e as Error).message); }
     finally { setBusy(false); }
   };
 
@@ -409,10 +464,9 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
     finally { setRowBusy(null); }
   };
   const deleteItem = async (it: RecycleItem) => {
-    if (!window.confirm(`Permanently delete "${it.name}"? This can't be undone.`)) return;
-    setRowBusy(it.id); setMsg(null);
-    try { await api.deleteRecycleItem(it.id); load(); loadItems(); }
-    catch (e) { setMsg((e as Error).message); }
+    setRowBusy(it.id); setMsg(null); setConfirmErr(null);
+    try { await api.deleteRecycleItem(it.id); closeConfirm(); load(); loadItems(); }
+    catch (e) { setConfirmErr((e as Error).message); }
     finally { setRowBusy(null); }
   };
 
@@ -429,10 +483,20 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
             {stats?.oldest_unix ? <span className="text-ink-faint">oldest {ageOf(stats.oldest_unix)}</span> : null}
           </div>
           {stats?.dir && <div className="truncate font-mono text-[10.5px] text-ink-faint" title={stats.dir}>{stats.dir}</div>}
+          {stats && stats.over_cap_bytes > 0 && (
+            <p className="m-0 text-[11.5px]" style={{ color: "var(--avoid)" }}>
+              Over the cap by {fmtBytes(stats.over_cap_bytes)} — {stats.protected_bytes > 0 && stats.over_cap_bytes <= stats.protected_bytes
+                ? "items from the last 3 days are kept until they're older."
+                : "the next hourly clean-up will trim it."}
+            </p>
+          )}
+          {stats && stats.max_gb > 0 && stats.largest_item_bytes > stats.max_gb * 1024 ** 3 && (
+            <p className="m-0 text-[11.5px]" style={{ color: "var(--avoid)" }}>Your cap ({stats.max_gb} GB) is smaller than the largest file here ({fmtBytes(stats.largest_item_bytes)}).</p>
+          )}
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Max size (GB)">
               <input inputMode="numeric" value={s.recycle_max_gb} onChange={(e) => patch({ recycle_max_gb: digits(e.target.value) })} placeholder="0" className={input} style={inputStyle} />
-              <span className="text-[10.5px] text-ink-faint">0 = unlimited. Over this, the oldest files are purged first.</span>
+              <span className="text-[10.5px] text-ink-faint">0 = unlimited. Over this, the oldest files are purged first — never anything deleted in the last 3 days, or the newest file.</span>
             </Field>
             <Field label="Keep for (days)">
               <input inputMode="numeric" value={s.recycle_retention_days} onChange={(e) => patch({ recycle_retention_days: digits(e.target.value) })} placeholder="0" className={input} style={inputStyle} />
@@ -441,7 +505,7 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <button onClick={() => setShowItems((v) => !v)} disabled={(stats?.files ?? 0) === 0} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", color: "var(--ink)" }}>{showItems ? "Hide contents" : `Manage contents${stats ? ` (${stats.files})` : ""}`}</button>
-            <button onClick={empty} disabled={busy || (stats?.files ?? 0) === 0} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{busy ? "Emptying…" : "Empty now"}</button>
+            <button onClick={() => setConfirm({ kind: "empty" })} disabled={busy || (stats?.files ?? 0) === 0} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{busy ? "Emptying…" : "Empty now"}</button>
             {msg && <span className="text-[11.5px] text-ink-dim">{msg}</span>}
           </div>
 
@@ -458,11 +522,12 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-[12.5px] font-medium" title={it.name}>{it.name}</div>
                         <div className="truncate font-mono text-[10px] text-ink-faint" title={it.orig_path || "origin not recorded"}>{it.orig_path || "origin not recorded"}</div>
+                        {it.expires_at > 0 && <div className="text-[10px] text-ink-faint">Deleted for good on {fmtDay(it.expires_at)}</div>}
                       </div>
                       <span className="flex-none font-mono text-[10.5px] text-ink-faint">{fmtBytes(it.size_bytes)}</span>
                       <span className="hidden flex-none font-mono text-[10.5px] text-ink-faint sm:block">{ageOf(it.deleted_unix)}</span>
                       <button onClick={() => restore(it)} disabled={!it.restorable || rowBusy !== null} title={it.restorable ? "Move back to its original location" : "Original location wasn't recorded for this item"} className="flex-none rounded-md px-2.5 py-1 text-[11px] font-semibold disabled:opacity-40" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{rowBusy === it.id ? "…" : "Restore"}</button>
-                      <button onClick={() => deleteItem(it)} disabled={rowBusy !== null} title="Delete permanently" className="flex-none rounded-md px-2.5 py-1 text-[11px] font-semibold disabled:opacity-40" style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>Delete</button>
+                      <button onClick={() => setConfirm({ kind: "item", it })} disabled={rowBusy !== null} title="Delete permanently" className="flex-none rounded-md px-2.5 py-1 text-[11px] font-semibold disabled:opacity-40" style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>Delete</button>
                     </div>
                   ))}
                 </div>
@@ -472,6 +537,30 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
 
           <p className="text-[10.5px] text-ink-faint">Guard rails run automatically about once an hour. The size/retention values save with the button below. Restore moves a file back to where it was deleted from (when that location is free).</p>
         </>
+      )}
+      {confirm?.kind === "empty" && (
+        <ConfirmDialog
+          title="Empty the recycle bin?"
+          body={<>Permanently deletes {stats ? <b>{fmtBytes(stats.bytes)}</b> : "everything"}{stats ? ` (${stats.files} file${stats.files === 1 ? "" : "s"})` : ""}. This can't be undone.</>}
+          confirmLabel="Delete everything for good"
+          busyLabel="Emptying…"
+          busy={busy}
+          error={confirmErr}
+          onConfirm={empty}
+          onCancel={closeConfirm}
+        />
+      )}
+      {confirm?.kind === "item" && (
+        <ConfirmDialog
+          title={<>Delete “{confirm.it.name}” for good?</>}
+          body={<>Permanently deletes {fmtBytes(confirm.it.size_bytes)}. It can't be restored afterwards.</>}
+          confirmLabel="Delete for good"
+          busyLabel="Deleting…"
+          busy={rowBusy !== null}
+          error={confirmErr}
+          onConfirm={() => deleteItem(confirm.it)}
+          onCancel={closeConfirm}
+        />
       )}
     </Section>
   );

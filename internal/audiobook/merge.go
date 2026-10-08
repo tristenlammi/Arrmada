@@ -45,25 +45,51 @@ type audioInfo struct {
 // the sources are deleted afterwards. An MP3 set is re-encoded instead, generously.
 var copyableCodecs = map[string]bool{"aac": true, "alac": true}
 
+// MergeOptions carries what the library knows about the book, used for the merged file's
+// tags when the first source doesn't have them.
+type MergeOptions struct {
+	Title  string
+	Author string
+}
+
+// MergeResult is the measured length of the sources and of what came out, so the caller
+// can refuse a short output before it replaces anything.
+type MergeResult struct {
+	SourceSeconds float64 // sum of the sources; 0 if any couldn't be measured
+	OutputSeconds float64
+}
+
 // Merge concatenates the given audio files (in order) into a single .m4b at outPath, with
-// one chapter per input file. It does not delete the sources — the caller decides.
-func Merge(ctx context.Context, files []string, outPath string) error {
+// one chapter per input file, the first source's tags (title, author, album…) and its
+// embedded cover when it has one. outPath may be any name — the format is set explicitly,
+// so the caller can write to a hidden temp name and rename it into place only once it's
+// verified. It does not delete the sources — the caller decides.
+func Merge(ctx context.Context, files []string, outPath string, opts MergeOptions) (MergeResult, error) {
+	var res MergeResult
 	if !Available() {
-		return fmt.Errorf("audiobook merge needs ffmpeg — not installed")
+		return res, fmt.Errorf("audiobook merge needs ffmpeg — not installed")
 	}
 	if len(files) < 2 {
-		return fmt.Errorf("need at least two files to merge")
+		return res, fmt.Errorf("need at least two files to merge")
 	}
 
 	tmp, err := os.MkdirTemp("", "arrmada-merge-")
 	if err != nil {
-		return err
+		return res, err
 	}
 	defer os.RemoveAll(tmp)
 
 	infos := make([]audioInfo, len(files))
+	known := true
 	for i, f := range files {
 		infos[i] = probeAudio(ctx, f)
+		if infos[i].DurationMS <= 0 {
+			known = false
+		}
+		res.SourceSeconds += float64(infos[i].DurationMS) / 1000
+	}
+	if !known {
+		res.SourceSeconds = 0
 	}
 
 	// 1) concat list for ffmpeg's concat demuxer.
@@ -74,7 +100,7 @@ func Merge(ctx context.Context, files []string, outPath string) error {
 	}
 	listPath := filepath.Join(tmp, "list.txt")
 	if err := os.WriteFile(listPath, []byte(list.String()), 0o644); err != nil {
-		return err
+		return res, err
 	}
 
 	// 2) chapter metadata (ffmetadata) — cumulative durations, title = filename.
@@ -92,24 +118,133 @@ func Merge(ctx context.Context, files []string, outPath string) error {
 	}
 	metaPath := filepath.Join(tmp, "chapters.ffmeta")
 	if err := os.WriteFile(metaPath, []byte(meta.String()), 0o644); err != nil {
-		return err
+		return res, err
 	}
 
 	// 3) mux into a single .m4b, copying the audio when the container can carry it.
+	// Input 1 is only the chapter list: taking its (empty) global tags is what left merged
+	// files with no title or author. Global tags come from the first source instead, and
+	// input 2 — the first source again — supplies its embedded cover when there is one.
 	args := []string{
 		"-y", "-hide_banner", "-loglevel", "error",
 		"-f", "concat", "-safe", "0", "-i", listPath,
-		"-i", metaPath, "-map_metadata", "1",
-		"-map", "0:a",
+		"-i", metaPath,
+		"-i", files[0],
+		"-map_metadata", "-1", "-map_chapters", "1",
+		"-map", "0:a", "-map", "2:v:0?",
 	}
 	args = append(args, encodeArgs(infos)...)
-	args = append(args, "-movflags", "+faststart", outPath)
+	args = append(args, "-c:v", "copy", "-disposition:v:0", "attached_pic")
+	for _, kv := range mergeTags(readTags(ctx, files[0]), opts) {
+		args = append(args, "-metadata", kv)
+	}
+	args = append(args, "-movflags", "+faststart", "-f", "mp4", outPath)
 
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("ffmpeg merge failed: %v — %s", err, strings.TrimSpace(string(out)))
+		return res, fmt.Errorf("ffmpeg merge failed: %v — %s", err, strings.TrimSpace(string(out)))
 	}
-	return nil
+	res.OutputSeconds = float64(probeAudio(ctx, outPath).DurationMS) / 1000
+	return res, nil
+}
+
+// Duration measures one audio file in seconds. An unreadable file or one with no known
+// length is an error: a merge must never be judged complete against a guess.
+func Duration(ctx context.Context, path string) (float64, error) {
+	ms := probeAudio(ctx, path).DurationMS
+	if ms <= 0 {
+		return 0, fmt.Errorf("couldn't read the length of %s", filepath.Base(path))
+	}
+	return float64(ms) / 1000, nil
+}
+
+// DecodedDuration measures one audio file by decoding all of it, rather than trusting the
+// container's figure. Slower than Duration, but exact: ffprobe estimates a VBR MP3 with no
+// Xing/VBRI header from its bitrate and can be several percent out, which would fail a
+// perfectly good merge's length check every time.
+func DecodedDuration(ctx context.Context, path string) (float64, error) {
+	out, err := exec.CommandContext(ctx, "ffmpeg", "-nostdin", "-v", "error", "-i", path,
+		"-map", "0:a:0", "-f", "null", "-progress", "pipe:1", "-").Output()
+	if err != nil {
+		return 0, fmt.Errorf("couldn't decode %s: %v", filepath.Base(path), err)
+	}
+	if secs := lastProgressSeconds(string(out)); secs > 0 {
+		return secs, nil
+	}
+	return 0, fmt.Errorf("couldn't read the decoded length of %s", filepath.Base(path))
+}
+
+// lastProgressSeconds reads the final position from ffmpeg's -progress output. out_time_us
+// is microseconds; older builds only print out_time_ms, which despite its name is also
+// microseconds.
+func lastProgressSeconds(progress string) float64 {
+	var us int64
+	for _, line := range strings.Split(progress, "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || (k != "out_time_us" && k != "out_time_ms") {
+			continue
+		}
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			us = n
+		}
+	}
+	return float64(us) / 1e6
+}
+
+// carriedTags are the global tags worth keeping from the first source.
+var carriedTags = []string{"title", "artist", "album_artist", "album", "genre", "date", "comment"}
+
+// readTags reads a file's global (format-level) tags, keys lower-cased.
+func readTags(ctx context.Context, path string) map[string]string {
+	tags := map[string]string{}
+	out, err := exec.CommandContext(ctx, "ffprobe", "-v", "quiet",
+		"-show_entries", "format_tags", "-of", "default=noprint_wrappers=1", path).Output()
+	if err != nil {
+		return tags
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || v == "" {
+			continue
+		}
+		tags[strings.ToLower(strings.TrimPrefix(k, "TAG:"))] = v
+	}
+	return tags
+}
+
+// mergeTags picks the merged file's tags: the first source's where it has them, else the
+// library's title and author. A chapter file's own title ("Chapter 01") isn't the book's,
+// so the book title comes from the album tag first, then the library.
+func mergeTags(src map[string]string, opts MergeOptions) []string {
+	pick := map[string]string{}
+	for _, k := range carriedTags {
+		if v := strings.TrimSpace(src[k]); v != "" {
+			pick[k] = v
+		}
+	}
+	title := pick["album"]
+	if title == "" {
+		title = opts.Title
+	}
+	if title != "" {
+		pick["title"] = title
+		if pick["album"] == "" {
+			pick["album"] = title
+		}
+	}
+	if pick["artist"] == "" && opts.Author != "" {
+		pick["artist"] = opts.Author
+	}
+	if pick["album_artist"] == "" && pick["artist"] != "" {
+		pick["album_artist"] = pick["artist"]
+	}
+	var out []string
+	for _, k := range carriedTags {
+		if v, ok := pick[k]; ok {
+			out = append(out, k+"="+v)
+		}
+	}
+	return out
 }
 
 // Plan describes how a set of files would be merged, so the caller can say so in the log

@@ -213,6 +213,7 @@ func main() {
 	}
 	movieSvc := movies.NewService(st.DB(), tmdb, qualitySvc, cfg.MoviesDir, recycleDir, bus, log)
 	seriesSvc.SetRecycleDir(recycleDir) // per-episode file deletes go to the recycle bin, like movies
+	seriesSvc.SetBus(bus)               // deletes announce file.removed so imports forget them
 	prefs := libPrefs{s: settingsSvc}
 	movieSvc.SetNaming(prefs)
 	movieSvc.SetPrefs(prefs)
@@ -577,6 +578,8 @@ func main() {
 		recycleSvc.Enforce(ctx)
 		return nil
 	})
+	// Originals of merged audiobooks kept while the bin is off go after 14 days.
+	sched.Register("book-merge-backup-prune", 24*time.Hour, true, coordinator.PruneMergeBackups)
 
 	// Audiobook server: listening apps (Lissen and other Audiobookshelf clients) connect to
 	// its own port. Off until an admin switches it on in Books → Audiobook server.
@@ -641,6 +644,12 @@ func main() {
 			case restartCh <- struct{}{}:
 			default:
 			}
+		},
+		// Safety copies before destructive admin actions (user delete). Newest 3 of each
+		// kind are kept in <data>/backups; deleting an account with no listening data is a
+		// kind of its own, so it can't push out a copy that holds someone's places.
+		Snapshot: func(ctx context.Context, kind string) (string, error) {
+			return st.SafetyCopy(ctx, cfg.DataDir, kind, 3)
 		},
 	})
 

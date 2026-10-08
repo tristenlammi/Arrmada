@@ -152,6 +152,16 @@ export interface ActivityDownload {
   media_type?: string;
 }
 
+export type RemoveDownloadMode = "keep_files" | "delete_files" | "block";
+// What a removed download was for, and what "stop wanting" switched off.
+export interface RemoveDownloadResult {
+  kind?: string;
+  id?: number;
+  title?: string;
+  mode: RemoveDownloadMode;
+  unmonitored?: string;
+}
+
 export interface ActivityFeed {
   searching: SearchingItem[];
   upcoming?: SearchingItem[];
@@ -481,6 +491,25 @@ export interface RecycleStats {
   oldest_unix?: number;
   max_gb: number;
   retention_days: number;
+  over_cap_bytes: number; // how far over the size cap (0 = under, or no cap)
+  protected_bytes: number; // held from the cap: deleted in the last 3 days, plus the newest item
+  largest_item_bytes: number;
+  protected_until?: number; // unix: when the last recent item becomes purgeable
+}
+// Where deleted files go right now — the cheap answer every delete dialog words itself from.
+export interface RecycleMode {
+  enabled: boolean;
+  dirs: string[];
+  retention_days: number;
+  max_gb: number;
+}
+// What deleting something with its files would move, and where it goes.
+export interface DeletePreview {
+  files: number;
+  sidecars: number;
+  bytes: number;
+  confirm_over_bytes: number; // above this, the title must be typed
+  recycle: RecycleMode;
 }
 export interface RecycleItem {
   id: string;
@@ -489,6 +518,7 @@ export interface RecycleItem {
   size_bytes: number;
   deleted_unix: number;
   restorable: boolean;
+  expires_at: number; // unix: when retention deletes it for good (0 = retention off)
 }
 
 export interface MediaRequest {
@@ -588,6 +618,18 @@ export interface AuthUser {
   disabled?: boolean;
   auto_approve: boolean;
   created_at?: string;
+}
+
+// What deleting a user takes with them — counts only, never which books (privacy rule).
+export interface UserImpact {
+  places: number;
+  listening_hours: number;
+  bookmarks: number;
+  devices: number;
+  requests: number;
+  sessions: number;
+  push_subscriptions: number;
+  plex_linked: boolean;
 }
 
 export interface CrewMember {
@@ -1030,6 +1072,20 @@ export interface BufferEvent { at: number; offset_ms: number; duration_ms: numbe
 export interface CauseCount { cause: string; label: string; count: number; stall_ms: number }
 export interface Reliability { summary: ReliabilitySummary; causes: CauseCount[]; by_user: BufferGroup[]; by_platform: BufferGroup[]; by_title: BufferGroup[]; events: BufferEvent[] }
 
+// ApiError is still an Error (every existing catch keeps reading .message), but it also
+// carries the status and the decoded body, so a refusal can show its details — e.g.
+// which files a delete moved to the recycle bin and which it couldn't.
+export class ApiError extends Error {
+  status: number;
+  body?: Record<string, unknown>;
+  constructor(message: string, status: number, body?: Record<string, unknown>) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -1037,13 +1093,14 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
+    let body: Record<string, unknown> | undefined;
     try {
-      const body = (await res.json()) as { message?: string };
-      if (body.message) msg = body.message;
+      body = (await res.json()) as Record<string, unknown>;
+      if (typeof body.message === "string" && body.message) msg = body.message;
     } catch {
       /* non-JSON error */
     }
-    throw new Error(msg);
+    throw new ApiError(msg, res.status, body);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -1064,7 +1121,10 @@ export const api = {
     req<AuthUser>("/api/v1/users", { method: "POST", body: JSON.stringify(body) }),
   updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string }) =>
     req<{ id: number; role: string; auto_approve: boolean }>(`/api/v1/users/${id}`, { method: "PUT", body: JSON.stringify(body) }),
-  deleteUser: (id: number) => req<void>(`/api/v1/users/${id}`, { method: "DELETE" }),
+  userImpact: (id: number) => req<UserImpact>(`/api/v1/users/${id}/impact`),
+  // confirm is the username, required by the server when the user has listening data.
+  deleteUser: (id: number, confirm?: string) =>
+    req<void>(`/api/v1/users/${id}${confirm ? `?confirm=${encodeURIComponent(confirm)}` : ""}`, { method: "DELETE" }),
   importOverseerr: (url: string, api_key: string) =>
     req<{ status: string; found: number }>("/api/v1/requests/import/overseerr", { method: "POST", body: JSON.stringify({ url, api_key }) }),
   importTautulli: (url: string, api_key: string) =>
@@ -1085,8 +1145,15 @@ export const api = {
   activity: () => req<ActivityFeed>("/api/v1/downloads"),
   pauseDownload: (hash: string) => req<{ status: string }>(`/api/v1/queue/${hash}/pause`, { method: "POST" }),
   resumeDownload: (hash: string) => req<{ status: string }>(`/api/v1/queue/${hash}/resume`, { method: "POST" }),
-  deleteDownload: (hash: string, deleteData: boolean) =>
-    req<void>(`/api/v1/queue/${hash}${deleteData ? "?delete_data=true" : ""}`, { method: "DELETE" }),
+  // mode: keep_files keeps what was downloaded (the default), delete_files deletes it, block
+  // deletes it, blocklists the release and finds another. unmonitor stops wanting exactly
+  // what the download was for. name helps find the grab when it has no recorded hash.
+  deleteDownload: (hash: string, opts: { mode: RemoveDownloadMode; unmonitor?: boolean; name?: string }) => {
+    const q = new URLSearchParams({ mode: opts.mode });
+    if (opts.unmonitor) q.set("unmonitor", "true");
+    if (opts.name) q.set("name", opts.name);
+    return req<RemoveDownloadResult>(`/api/v1/queue/${encodeURIComponent(hash)}?${q}`, { method: "DELETE" });
+  },
   blockDownload: (hash: string, name: string) =>
     req<{ status: string }>(`/api/v1/queue/${hash}/block`, { method: "POST", body: JSON.stringify({ name }) }),
   torrentAction: (hash: string, action: "recheck" | "reannounce" | "prio_up" | "prio_down") =>
@@ -1201,6 +1268,7 @@ export const api = {
     return req<{ entries: LogEntry[] }>(`/api/v1/logs${qs ? `?${qs}` : ""}`).then((r) => r.entries);
   },
   recycleStats: () => req<RecycleStats>("/api/v1/recycle"),
+  recycleMode: () => req<RecycleMode>("/api/v1/recycle/mode"),
   recycleItems: () => req<{ items: RecycleItem[] }>("/api/v1/recycle/items").then((r) => r.items),
   emptyRecycle: () => req<{ freed_bytes: number }>("/api/v1/recycle/empty", { method: "POST" }),
   restoreRecycle: (id: string) => req<{ status: string }>("/api/v1/recycle/restore", { method: "POST", body: JSON.stringify({ id }) }),
@@ -1362,8 +1430,16 @@ export const api = {
     req<{ monitored: boolean }>(`/api/v1/series/${id}/seasons/${season}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
   setEpisodeMonitored: (eid: number, monitored: boolean) =>
     req<{ monitored: boolean }>(`/api/v1/series/episodes/${eid}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
-  deleteSeries: (id: number, deleteFiles?: boolean) =>
-    req<void>(`/api/v1/series/${id}${deleteFiles ? "?delete_files=true" : ""}`, { method: "DELETE" }),
+  // confirm is the series title, required by the server when deleting files over its size
+  // threshold. A 409 (ApiError) carries body.moved / body.failed.
+  deleteSeries: (id: number, deleteFiles?: boolean, confirm?: string) => {
+    const q = new URLSearchParams();
+    if (deleteFiles) q.set("delete_files", "true");
+    if (deleteFiles && confirm) q.set("confirm", confirm);
+    const qs = q.toString();
+    return req<void>(`/api/v1/series/${id}${qs ? `?${qs}` : ""}`, { method: "DELETE" });
+  },
+  seriesDeletePreview: (id: number) => req<DeletePreview>(`/api/v1/series/${id}/delete-preview`),
   seriesBlocklist: (id: number) => req<{ blocklist: BlockEntry[] }>(`/api/v1/series/${id}/blocklist`).then((r) => r.blocklist),
   unblockSeries: (id: number, bid: number) => req<void>(`/api/v1/series/${id}/blocklist/${bid}`, { method: "DELETE" }),
   regrabEpisode: (id: number, season: number, episode: number) =>
