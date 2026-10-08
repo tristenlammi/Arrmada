@@ -378,6 +378,9 @@ function fmtBytes(b: number): string {
   if (gb >= 1) return `${gb.toFixed(1)} GB`;
   return `${(b / 1024 ** 2).toFixed(0)} MB`;
 }
+function fmtDay(unix: number): string {
+  return new Date(unix * 1000).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+}
 function ageOf(unix: number): string {
   const days = Math.floor((Date.now() / 1000 - unix) / 86400);
   return days <= 0 ? "today" : `${days} day${days === 1 ? "" : "s"} ago`;
@@ -441,10 +444,16 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
             {stats?.oldest_unix ? <span className="text-ink-faint">oldest {ageOf(stats.oldest_unix)}</span> : null}
           </div>
           {stats?.dir && <div className="truncate font-mono text-[10.5px] text-ink-faint" title={stats.dir}>{stats.dir}</div>}
+          {stats && stats.over_cap_bytes > 0 && (
+            <p className="m-0 text-[11.5px]" style={{ color: "var(--avoid)" }}>Over the cap by {fmtBytes(stats.over_cap_bytes)} — items from the last 3 days are kept until they're older.</p>
+          )}
+          {stats && stats.max_gb > 0 && stats.largest_item_bytes > stats.max_gb * 1024 ** 3 && (
+            <p className="m-0 text-[11.5px]" style={{ color: "var(--avoid)" }}>Your cap ({stats.max_gb} GB) is smaller than the largest file here ({fmtBytes(stats.largest_item_bytes)}).</p>
+          )}
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Max size (GB)">
               <input inputMode="numeric" value={s.recycle_max_gb} onChange={(e) => patch({ recycle_max_gb: digits(e.target.value) })} placeholder="0" className={input} style={inputStyle} />
-              <span className="text-[10.5px] text-ink-faint">0 = unlimited. Over this, the oldest files are purged first.</span>
+              <span className="text-[10.5px] text-ink-faint">0 = unlimited. Over this, the oldest files are purged first — never anything deleted in the last 3 days, or the newest file.</span>
             </Field>
             <Field label="Keep for (days)">
               <input inputMode="numeric" value={s.recycle_retention_days} onChange={(e) => patch({ recycle_retention_days: digits(e.target.value) })} placeholder="0" className={input} style={inputStyle} />
@@ -470,6 +479,7 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-[12.5px] font-medium" title={it.name}>{it.name}</div>
                         <div className="truncate font-mono text-[10px] text-ink-faint" title={it.orig_path || "origin not recorded"}>{it.orig_path || "origin not recorded"}</div>
+                        {it.expires_at > 0 && <div className="text-[10px] text-ink-faint">Deleted for good on {fmtDay(it.expires_at)}</div>}
                       </div>
                       <span className="flex-none font-mono text-[10.5px] text-ink-faint">{fmtBytes(it.size_bytes)}</span>
                       <span className="hidden flex-none font-mono text-[10.5px] text-ink-faint sm:block">{ageOf(it.deleted_unix)}</span>

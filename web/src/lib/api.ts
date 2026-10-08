@@ -511,6 +511,10 @@ export interface RecycleStats {
   oldest_unix?: number;
   max_gb: number;
   retention_days: number;
+  over_cap_bytes: number; // how far over the size cap (0 = under, or no cap)
+  protected_bytes: number; // held from the cap: deleted in the last 3 days, plus the newest item
+  largest_item_bytes: number;
+  protected_until?: number; // unix: when the last recent item becomes purgeable
 }
 // Where deleted files go right now — the cheap answer every delete dialog words itself from.
 export interface RecycleMode {
@@ -534,6 +538,7 @@ export interface RecycleItem {
   size_bytes: number;
   deleted_unix: number;
   restorable: boolean;
+  expires_at: number; // unix: when retention deletes it for good (0 = retention off)
 }
 
 export interface MediaRequest {

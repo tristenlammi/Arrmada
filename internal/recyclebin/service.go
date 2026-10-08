@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/settings"
 )
@@ -30,12 +31,25 @@ type Service struct {
 	dir      string
 	settings *settings.Service
 	log      *slog.Logger
+	// now and free are the clock and the free-space reading; tests swap them.
+	now  func() time.Time
+	free func(path string) (diskspace.Usage, bool)
 }
 
 // New builds the manager. dir is the resolved recycle directory ("" when recycling is disabled).
 func New(dir string, set *settings.Service, log *slog.Logger) *Service {
-	return &Service{dir: dir, settings: set, log: log}
+	return &Service{dir: dir, settings: set, log: log, now: time.Now, free: diskspace.Of}
 }
+
+const (
+	// capHold is how long a freshly deleted item is safe from the size cap. Without it a
+	// single 4K remux bigger than the cap — or the very file an upgrade just replaced —
+	// was purged at the next hourly run, before anyone could notice the mistake.
+	capHold = 72 * time.Hour
+	// lowDiskPct is the free space below which the hold gives way: a full disk is worse
+	// than losing a recently deleted file, and the log says what went.
+	lowDiskPct = 5.0
+)
 
 // Stats is a snapshot of the recycle bin plus the configured guard rails.
 type Stats struct {
@@ -46,6 +60,14 @@ type Stats struct {
 	OldestUnix    int64  `json:"oldest_unix,omitempty"`
 	MaxGB         int    `json:"max_gb"`
 	RetentionDays int    `json:"retention_days"`
+	// OverCapBytes is how far the bin is over its size cap (0 when under, or no cap).
+	OverCapBytes int64 `json:"over_cap_bytes"`
+	// ProtectedBytes is what the size cap may not touch yet: items deleted in the last
+	// three days, plus the newest item.
+	ProtectedBytes   int64 `json:"protected_bytes"`
+	LargestItemBytes int64 `json:"largest_item_bytes"`
+	// ProtectedUntil is when the last of the recent items becomes purgeable (unix, 0 = none).
+	ProtectedUntil int64 `json:"protected_until,omitempty"`
 }
 
 // Mode answers "what happens to a file I delete right now?" for the delete dialogs.
@@ -109,10 +131,14 @@ type Item struct {
 	SizeBytes   int64  `json:"size_bytes"`
 	DeletedUnix int64  `json:"deleted_unix"`
 	Restorable  bool   `json:"restorable"` // false for legacy items with no recorded origin
+	// ExpiresAt is when retention deletes it for good (unix; 0 = retention is off). The
+	// size cap can take it sooner, but never within three days of its deletion.
+	ExpiresAt int64 `json:"expires_at"`
 }
 
 // List returns the bin's contents, most-recently-deleted first.
 func (s *Service) List(ctx context.Context) []Item {
+	retention := s.retentionDays(ctx)
 	items := s.walk()
 	sort.Slice(items, func(i, j int) bool { return items[i].mod.After(items[j].mod) })
 	out := make([]Item, 0, len(items))
@@ -128,6 +154,9 @@ func (s *Service) List(ctx context.Context) []Item {
 			if m.Deleted > 0 {
 				it.DeletedUnix = m.Deleted
 			}
+		}
+		if retention > 0 {
+			it.ExpiresAt = time.Unix(it.DeletedUnix, 0).AddDate(0, 0, retention).Unix()
 		}
 		out = append(out, it)
 	}
@@ -244,17 +273,70 @@ func (s *Service) Stats(ctx context.Context) Stats {
 		return st
 	}
 	var oldest time.Time
-	for _, e := range s.walk() {
+	items := s.walk()
+	now := s.clock()
+	protected := capProtected(items, now)
+	for _, e := range items {
 		st.Files++
 		st.Bytes += e.size
 		if oldest.IsZero() || e.mod.Before(oldest) {
 			oldest = e.mod
 		}
+		if e.size > st.LargestItemBytes {
+			st.LargestItemBytes = e.size
+		}
+		if protected[e.path] {
+			st.ProtectedBytes += e.size
+			if until := e.mod.Add(capHold).Unix(); until > st.ProtectedUntil && e.mod.Add(capHold).After(now) {
+				st.ProtectedUntil = until
+			}
+		}
 	}
 	if !oldest.IsZero() {
 		st.OldestUnix = oldest.Unix()
 	}
+	if limit := int64(st.MaxGB) << 30; st.MaxGB > 0 && st.Bytes > limit {
+		st.OverCapBytes = st.Bytes - limit
+	}
 	return st
+}
+
+func (s *Service) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
+// capProtected marks what the size cap may not purge: anything deleted within capHold of
+// now, and the single newest item whatever its age (the thing just deleted is the thing
+// most likely to be wanted back).
+func capProtected(items []entry, now time.Time) map[string]bool {
+	out := map[string]bool{}
+	var newest *entry
+	for i := range items {
+		if now.Sub(items[i].mod) < capHold {
+			out[items[i].path] = true
+		}
+		if newest == nil || items[i].mod.After(newest.mod) {
+			newest = &items[i]
+		}
+	}
+	if newest != nil {
+		out[newest.path] = true
+	}
+	return out
+}
+
+// lowOnDisk reports whether the bin's disk is nearly full (under lowDiskPct free).
+// Unknown means no: the hold is only lifted on evidence.
+func (s *Service) lowOnDisk() bool {
+	free := s.free
+	if free == nil {
+		free = diskspace.Of
+	}
+	u, ok := free(s.dir)
+	return ok && 100-u.UsedPct < lowDiskPct
 }
 
 // Default guard rails. The bin is on by default and absorbs every delete, quality
@@ -306,8 +388,9 @@ func (s *Service) Empty(ctx context.Context) (int64, error) {
 }
 
 // Enforce applies the guard rails: first drop anything past the retention window, then, if the bin
-// is still over the size cap, delete oldest-first until it's under. A no-op when both caps are off.
-// Safe to call on a schedule.
+// is still over the size cap, delete oldest-first until it's under — skipping anything deleted in
+// the last three days and the newest item, unless the bin's disk is nearly full. A no-op when both
+// caps are off. Safe to call on a schedule.
 func (s *Service) Enforce(ctx context.Context) {
 	if s.dir == "" {
 		return
@@ -323,10 +406,15 @@ func (s *Service) Enforce(ctx context.Context) {
 	removed := 0
 	var freed int64
 
+	now := s.clock()
+	// The newest item is judged before retention runs, so the cap can't take it later in
+	// this pass just because older ones were retired first.
+	protected := capProtected(items, now)
+
 	// Retention: delete files older than the cutoff.
 	kept := items[:0]
 	if retentionDays > 0 {
-		cutoff := time.Now().AddDate(0, 0, -retentionDays)
+		cutoff := now.AddDate(0, 0, -retentionDays)
 		for _, e := range items {
 			if e.mod.Before(cutoff) {
 				if removeItem(e.path) == nil {
@@ -350,15 +438,40 @@ func (s *Service) Enforce(ctx context.Context) {
 		}
 		if total > limit {
 			sort.Slice(kept, func(i, j int) bool { return kept[i].mod.Before(kept[j].mod) })
+			var held []entry
 			for _, e := range kept {
 				if total <= limit {
 					break
+				}
+				if protected[e.path] {
+					held = append(held, e)
+					continue
 				}
 				if removeItem(e.path) == nil {
 					total -= e.size
 					removed++
 					freed += e.size
 				}
+			}
+			// A nearly full disk outranks the hold: purge the protected items too, oldest
+			// first, and say exactly what went.
+			if total > limit && len(held) > 0 && s.lowOnDisk() {
+				for _, e := range held {
+					if total <= limit {
+						break
+					}
+					if removeItem(e.path) == nil {
+						total -= e.size
+						removed++
+						freed += e.size
+						s.log.Warn("recyclebin: disk nearly full — purged a recently deleted item early",
+							"file", e.path, "size_mb", e.size>>20, "deleted", e.mod.Format(time.RFC3339))
+					}
+				}
+			}
+			if total > limit {
+				s.log.Warn("recyclebin: over its size cap only because of recently deleted items — they're kept for 3 days",
+					"over_mb", (total-limit)>>20, "max_gb", maxGB)
 			}
 		}
 	}
