@@ -98,7 +98,11 @@ func (s *Store) GetSession(ctx context.Context, userID int64, id string) (Sessio
 
 // Sync applies a live progress report to a session. A closed or long-idle session is
 // simply picked up again — it never becomes "not found" while it's kept.
-func (s *Store) Sync(ctx context.Context, userID int64, sessionID string, position, listened, duration float64, closeIt bool) (Decision, error) {
+//
+// position is nil when the app didn't say where it is (a close with no body, or a sync
+// carrying only listening time). That still counts the listening and closes the
+// session, but never moves the place: reading "nothing" as 0:00 would reset people.
+func (s *Store) Sync(ctx context.Context, userID int64, sessionID string, position *float64, listened, duration float64, closeIt bool) (Decision, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, err := s.GetSession(ctx, userID, sessionID)
@@ -111,16 +115,25 @@ func (s *Store) Sync(ctx context.Context, userID int64, sessionID string, positi
 	maxListen := float64(now-sess.LastAt)/1000 + listenSlack
 	listened = math.Min(math.Max(0, sanitize(listened)), maxListen)
 
-	d, err := s.apply(ctx, userID, sess.ItemKey, Report{
-		Kind: Live, Position: position, Duration: duration, Listened: listened, At: now,
-		SessionID: sess.ID, Device: sess.Device,
-	})
-	if err != nil {
-		return Decision{}, err
+	var d Decision
+	if position == nil {
+		p, _, err := s.progress(ctx, userID, sess.ItemKey)
+		if err != nil {
+			return Decision{}, err
+		}
+		d = Decision{Progress: p, Reason: "no-position"}
+	} else {
+		d, err = s.apply(ctx, userID, sess.ItemKey, Report{
+			Kind: Live, Position: *position, Duration: duration, Listened: listened, At: now,
+			SessionID: sess.ID, Device: sess.Device,
+		})
+		if err != nil {
+			return Decision{}, err
+		}
+		sess.CurPos = clamp(sanitize(*position), duration)
 	}
 	sess.Listened += listened
 	sess.LastAt = now
-	sess.CurPos = clamp(sanitize(position), duration)
 	closed := 0
 	if closeIt {
 		closed = 1

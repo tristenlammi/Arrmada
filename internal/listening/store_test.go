@@ -27,6 +27,9 @@ func testStore(t *testing.T) (*Store, *sql.DB, int64, *time.Time) {
 	return s, st.DB(), uid, &clock
 }
 
+// at is a reported position, for Sync's "maybe not sent" argument.
+func at(v float64) *float64 { return &v }
+
 // A session survives a "restart" (a fresh Store on the same database) and keeps
 // syncing — Audiobookshelf answered "session not found" and dropped every report.
 func TestSessionSurvivesRestart(t *testing.T) {
@@ -37,13 +40,13 @@ func TestSessionSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	*clock = clock.Add(30 * time.Second)
-	if _, err := s.Sync(ctx, uid, sess.ID, 30, 30, 3600, false); err != nil {
+	if _, err := s.Sync(ctx, uid, sess.ID, at(30), 30, 3600, false); err != nil {
 		t.Fatal(err)
 	}
 	restarted := NewStore(db)
 	restarted.now = func() time.Time { return *clock }
 	*clock = clock.Add(30 * time.Second)
-	d, err := restarted.Sync(ctx, uid, sess.ID, 60, 30, 3600, false)
+	d, err := restarted.Sync(ctx, uid, sess.ID, at(60), 30, 3600, false)
 	if err != nil {
 		t.Fatalf("sync after restart failed: %v", err)
 	}
@@ -52,11 +55,11 @@ func TestSessionSurvivesRestart(t *testing.T) {
 	}
 	// A closed session is picked up again too.
 	*clock = clock.Add(time.Minute)
-	if _, err := restarted.Sync(ctx, uid, sess.ID, 90, 30, 3600, true); err != nil {
+	if _, err := restarted.Sync(ctx, uid, sess.ID, at(90), 30, 3600, true); err != nil {
 		t.Fatal(err)
 	}
 	*clock = clock.Add(time.Hour)
-	if _, err := restarted.Sync(ctx, uid, sess.ID, 120, 30, 3600, false); err != nil {
+	if _, err := restarted.Sync(ctx, uid, sess.ID, at(120), 30, 3600, false); err != nil {
 		t.Fatalf("sync to a closed session failed: %v", err)
 	}
 }
@@ -67,7 +70,7 @@ func TestListeningIsCapped(t *testing.T) {
 	ctx := context.Background()
 	sess, _, _ := s.OpenSession(ctx, uid, "b1", "d", "Pixel", "Lissen")
 	*clock = clock.Add(10 * time.Second)
-	if _, err := s.Sync(ctx, uid, sess.ID, 10, 99999, 3600, false); err != nil {
+	if _, err := s.Sync(ctx, uid, sess.ID, at(10), 99999, 3600, false); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.GetSession(ctx, uid, sess.ID)
@@ -134,11 +137,11 @@ func TestLogHasNoBookAndSkipsTaps(t *testing.T) {
 	ctx := context.Background()
 	tap, _, _ := s.OpenSession(ctx, uid, "b1", "d", "Pixel", "Lissen")
 	*clock = clock.Add(5 * time.Second)
-	_, _ = s.Sync(ctx, uid, tap.ID, 5, 5, 3600, true)
+	_, _ = s.Sync(ctx, uid, tap.ID, at(5), 5, 3600, true)
 	long, _, _ := s.OpenSession(ctx, uid, "b2", "d", "Pixel", "Lissen")
 	for i := 0; i < 5; i++ {
 		*clock = clock.Add(30 * time.Second)
-		_, _ = s.Sync(ctx, uid, long.ID, float64(30*(i+1)), 30, 3600, false)
+		_, _ = s.Sync(ctx, uid, long.ID, at(float64(30*(i+1))), 30, 3600, false)
 	}
 	log, err := s.Log(ctx, clock.Add(-time.Hour), 0, 0)
 	if err != nil {
@@ -158,14 +161,14 @@ func TestAcceptPendingJump(t *testing.T) {
 		t.Fatal(err)
 	}
 	*clock = clock.Add(time.Minute)
-	if _, err := s.Sync(ctx, uid, sess.ID, 3000, 60, 36000, false); err != nil {
+	if _, err := s.Sync(ctx, uid, sess.ID, at(3000), 60, 36000, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.AcceptPending(ctx, uid, "b1"); err != ErrNoPending {
 		t.Fatalf("accept with nothing held = %v, want ErrNoPending", err)
 	}
 	*clock = clock.Add(15 * time.Second)
-	d, err := s.Sync(ctx, uid, sess.ID, 0, 15, 36000, false)
+	d, err := s.Sync(ctx, uid, sess.ID, at(0), 15, 36000, false)
 	if err != nil || d.Reason != "held" {
 		t.Fatalf("jump to 0 = %+v %v, want held", d, err)
 	}
@@ -211,8 +214,8 @@ func TestLiveAndSessionItem(t *testing.T) {
 	live, _, _ := s.OpenSession(ctx, uid, "b1", "dev1", "Pixel", "Lissen")
 	done, _, _ := s.OpenSession(ctx, uid, "b2", "dev1", "Pixel", "Lissen")
 	*clock = clock.Add(30 * time.Second)
-	_, _ = s.Sync(ctx, uid, live.ID, 300, 30, 3600, false)
-	_, _ = s.Sync(ctx, uid, done.ID, 30, 30, 3600, true)
+	_, _ = s.Sync(ctx, uid, live.ID, at(300), 30, 3600, false)
+	_, _ = s.Sync(ctx, uid, done.ID, at(30), 30, 3600, true)
 	_, _ = s.SyncOffline(ctx, uid, OfflineSession{ID: "off1", ItemKey: "b3", Position: 50, Duration: 3600, Listened: 50,
 		StartedAt: clock.Add(-time.Minute).UnixMilli(), UpdatedAt: clock.UnixMilli()})
 
@@ -228,5 +231,42 @@ func TestLiveAndSessionItem(t *testing.T) {
 	}
 	if got, _ := s.Live(ctx, clock.Add(time.Minute)); len(got) != 0 {
 		t.Fatalf("a session quiet since before the window is still live: %+v", got)
+	}
+}
+
+// A sync or close that doesn't say where the app is (no body, or only listening time)
+// counts the listening and closes the session, but never moves the place or starts a
+// held jump to 0:00.
+func TestSyncWithoutPositionKeepsPlace(t *testing.T) {
+	for _, saved := range []float64{3600, 90} {
+		s, _, uid, clock := testStore(t)
+		ctx := context.Background()
+		if _, err := s.SetProgress(ctx, uid, "b1", saved, 36000, nil, "web"); err != nil {
+			t.Fatal(err)
+		}
+		sess, _, err := s.OpenSession(ctx, uid, "b1", "dev1", "Pixel", "Lissen")
+		if err != nil {
+			t.Fatal(err)
+		}
+		*clock = clock.Add(40 * time.Second)
+		d, err := s.Sync(ctx, uid, sess.ID, nil, 40, 36000, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p, _, _ := s.Progress(ctx, uid, "b1")
+		if d.Changed || p.Position != saved || p.PendingPosition != nil || p.Finished {
+			t.Fatalf("saved %v: an empty close moved the place: %+v (decision %+v)", saved, p, d)
+		}
+		if d.Progress.Position != saved {
+			t.Fatalf("saved %v: decision reports place %v", saved, d.Progress.Position)
+		}
+		got, _ := s.GetSession(ctx, uid, sess.ID)
+		if !got.Closed || got.Listened != 40 || got.CurPos != saved {
+			t.Fatalf("saved %v: session after empty close = %+v", saved, got)
+		}
+		log, _ := s.Log(ctx, clock.Add(-time.Hour), 0, 0)
+		if len(log) != 1 || log[0].Seconds != 40 {
+			t.Fatalf("saved %v: listening log = %+v, want the 40 s", saved, log)
+		}
 	}
 }

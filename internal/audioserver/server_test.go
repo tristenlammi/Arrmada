@@ -237,6 +237,13 @@ func TestLissenConversation(t *testing.T) {
 	if prog["currentTime"].(float64) != 120 {
 		t.Fatalf("progress currentTime = %v", prog["currentTime"])
 	}
+	// Closing with no body says nothing about where the app is: the place stays put.
+	if code, out := h.do("POST", "/api/session/"+sid+"/close", nil, nil); code != 200 {
+		t.Fatalf("close: HTTP %d %s", code, out)
+	}
+	if got := h.json("GET", "/api/me/progress/"+key, nil)["currentTime"].(float64); got != 120 {
+		t.Fatalf("an empty close moved the place to %v", got)
+	}
 
 	// Streaming, with a Range request (seeking).
 	ino := f0["ino"].(string)
