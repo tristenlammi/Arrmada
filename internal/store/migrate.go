@@ -156,7 +156,7 @@ func applyMigrations(ctx context.Context, db *sql.DB, fsys fs.FS, names []string
 			return fmt.Errorf("apply migration %s: %w", name, err)
 		}
 		if log != nil {
-			log.Debug("migration applied", "version", version, "foreign_keys_off", fkOff, "duration", time.Since(start).Round(time.Millisecond).String())
+			log.Info("migration applied", "version", version, "foreign_keys_off", fkOff, "duration", time.Since(start).Round(time.Millisecond).String())
 		}
 	}
 	return nil

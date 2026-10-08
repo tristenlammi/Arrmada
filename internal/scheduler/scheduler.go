@@ -1,5 +1,6 @@
-// Package scheduler runs Arrmada's recurring background jobs (session cleanup
-// now; RSS sync, library refresh, backups later). M0 provides fixed-interval
+// Package scheduler runs Arrmada's recurring background jobs (session cleanup,
+// RSS sync, library refresh and the like; there is no scheduled backup yet, only
+// the snapshot store.Open takes before a schema change). M0 provides fixed-interval
 // scheduling; cron expressions can layer on without changing callers.
 package scheduler
 

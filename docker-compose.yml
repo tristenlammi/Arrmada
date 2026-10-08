@@ -33,6 +33,10 @@ services:
       # it) is treated as "outside the LAN" and limited to the Discover page.
       ARRMADA_EXTERNAL_HEADER: "${ARRMADA_EXTERNAL_HEADER:-Cf-Connecting-Ip}"
       ARRMADA_LOG_LEVEL: "info"
+      # Before any schema change the database is copied to <data>/backups first, and the
+      # app won't upgrade if that copy can't be made. Set this to 1 in .env only to get
+      # past a data disk too full for the copy.
+      ARRMADA_SKIP_MIGRATION_SNAPSHOT: "${ARRMADA_SKIP_MIGRATION_SNAPSHOT:-}"
       # The host's timezone (install.sh writes it to .env). Schedules — the Convert encode
       # window, the nightly sweeps, listening-per-day — run on this clock; without it the
       # app ran on UTC while its companions below were already on local time.

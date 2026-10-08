@@ -110,3 +110,4 @@ WEBPORT=$(grep -E '^ARRMADA_PORT=' .env | cut -d= -f2)
 HOSTIP=$(hostname -I 2>/dev/null | awk '{print $1}')
 say ""
 say "✓ Arrmada updated.  Open http://${HOSTIP:-localhost}:${WEBPORT:-7878}"
+say "  A database snapshot is taken automatically before any schema change (<data>/backups, newest 5 kept)."

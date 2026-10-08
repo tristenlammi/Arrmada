@@ -72,7 +72,10 @@ You can skip it and do both later in Settings.
 ```
 
 This pulls the latest code, rebuilds only the app, and waits until it's running again. Your
-settings, database, downloads and media are untouched.
+settings, downloads and media are untouched. A database snapshot is taken automatically before
+any schema change (`<data>/backups`, newest 5 kept). If the data disk is too full for that copy,
+Arrmada refuses to upgrade and says so; free some space, or set
+`ARRMADA_SKIP_MIGRATION_SNAPSHOT=1` in `.env` to upgrade without one.
 
 ## Ports
 

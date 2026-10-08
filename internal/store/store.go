@@ -9,8 +9,10 @@ import (
 	"database/sql"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -18,11 +20,21 @@ import (
 
 // Store wraps the database connection pool.
 type Store struct {
-	db *sql.DB
+	db      *sql.DB
+	dataDir string
+	dbPath  string
 }
 
 // Options tunes OpenWith. The zero value is what Open uses.
 type Options struct {
+	// Log receives migration and snapshot progress. Nil discards it.
+	Log *slog.Logger
+
+	// SkipMigrationSnapshot upgrades an existing database without first copying
+	// it to the backups folder. It is the escape hatch for a disk too full to hold
+	// the copy, nothing more (ARRMADA_SKIP_MIGRATION_SNAPSHOT).
+	SkipMigrationSnapshot bool
+
 	// BeforeMigrate, when set, runs once with the pending migration file names
 	// before any of them is applied, and only when there is at least one. An error
 	// aborts Open with nothing applied.
@@ -32,52 +44,132 @@ type Options struct {
 	migrations fs.FS
 }
 
+// preMigrateKeep is how many pre-migrate snapshots are kept; older ones are
+// deleted after each new one is taken.
+const preMigrateKeep = 5
+
 // Open ensures the data directory exists, opens the SQLite database with sane
 // pragmas (WAL, foreign keys, busy timeout), verifies connectivity, and applies
-// any pending migrations.
+// any pending migrations, snapshotting an existing database first.
 func Open(dataDir string) (*Store, error) {
 	return OpenWith(dataDir, Options{})
 }
 
 // OpenWith is Open with options.
 func OpenWith(dataDir string, opt Options) (*Store, error) {
+	log := opt.Log
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create data dir %q: %w", dataDir, err)
 	}
 
-	db, err := openDB(filepath.Join(dataDir, "arrmada.db"))
+	st := &Store{dataDir: dataDir, dbPath: filepath.Join(dataDir, "arrmada.db")}
+	db, err := openDB(st.dbPath)
 	if err != nil {
 		return nil, err
 	}
+	st.db = db
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
+	if err := db.PingContext(pingCtx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
 
+	// The snapshot and the migrations get no deadline: on a large database either
+	// can legitimately take longer than a ping should, and failing the boot halfway
+	// through an upgrade helps nobody.
+	if err := st.migrate(context.Background(), opt, log); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return st, nil
+}
+
+// migrate applies pending migrations. On an existing database (anything already
+// applied) it first takes a pre-migrate snapshot, and changes nothing if that
+// copy can't be made.
+func (s *Store) migrate(ctx context.Context, opt Options, log *slog.Logger) error {
 	fsys := opt.migrations
 	if fsys == nil {
 		fsys = embeddedMigrations()
 	}
-	pend, err := pending(ctx, db, fsys)
+	pend, last, err := pendingMigrations(ctx, s.db, fsys)
 	if err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("run migrations: %w", err)
+		return fmt.Errorf("run migrations: %w", err)
 	}
-	if len(pend) > 0 && opt.BeforeMigrate != nil {
-		if err := opt.BeforeMigrate(ctx, db, pend); err != nil {
-			_ = db.Close()
-			return nil, fmt.Errorf("before migrations: %w", err)
+	if len(pend) == 0 {
+		return nil
+	}
+	// A fresh install has nothing worth copying.
+	fresh := last == ""
+	newest := strings.TrimSuffix(pend[len(pend)-1], ".sql")
+
+	if !fresh {
+		if err := s.snapshotBeforeMigrate(ctx, opt, log, last, newest, len(pend)); err != nil {
+			return err
 		}
 	}
-	if err := applyMigrations(ctx, db, fsys, pend, nil); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("run migrations: %w", err)
+
+	if opt.BeforeMigrate != nil {
+		if err := opt.BeforeMigrate(ctx, s.db, pend); err != nil {
+			return fmt.Errorf("before migrations: %w", err)
+		}
 	}
 
-	return &Store{db: db}, nil
+	// A fresh install applies every migration; one summary line says that better
+	// than ninety.
+	stepLog := log
+	if fresh {
+		stepLog = nil
+	}
+	start := time.Now()
+	if err := applyMigrations(ctx, s.db, fsys, pend, stepLog); err != nil {
+		return fmt.Errorf("run migrations: %w", err)
+	}
+	if fresh {
+		log.Info("database created", "migrations", len(pend), "version", newest,
+			"duration", time.Since(start).Round(time.Millisecond).String())
+	}
+	return nil
+}
+
+// snapshotBeforeMigrate copies the database aside before an upgrade, so a
+// migration that commits a mistake has something to roll back to.
+func (s *Store) snapshotBeforeMigrate(ctx context.Context, opt Options, log *slog.Logger, from, to string, count int) error {
+	dir := BackupsDir(s.dataDir)
+	if opt.SkipMigrationSnapshot {
+		log.Warn("ARRMADA_SKIP_MIGRATION_SNAPSHOT is set: upgrading the database WITHOUT a snapshot, so there is nothing to roll back to if this goes wrong",
+			"from", from, "to", to, "count", count)
+		return nil
+	}
+
+	start := time.Now()
+	path, err := s.Snapshot(ctx, BackupPreMigrate)
+	if err != nil {
+		return fmt.Errorf("couldn't snapshot the database before upgrading it from %s to %s: %w — nothing was changed. "+
+			"Free space in %s or set ARRMADA_SKIP_MIGRATION_SNAPSHOT=1 to upgrade without one", from, to, err, dir)
+	}
+	var size int64
+	if fi, err := os.Stat(path); err == nil {
+		size = fi.Size()
+	}
+	log.Info("database snapshot taken before migrations",
+		"path", path, "size", formatBytes(uint64(size)),
+		"duration", time.Since(start).Round(time.Millisecond).String(),
+		"from", from, "to", to, "count", count)
+
+	// Pruning is housekeeping; failing it mustn't block the upgrade the snapshot
+	// was taken for.
+	if removed, err := PruneBackups(dir, BackupPreMigrate, preMigrateKeep); err != nil {
+		log.Warn("couldn't prune old pre-migrate snapshots", "dir", dir, "err", err)
+	} else if len(removed) > 0 {
+		log.Info("pruned old pre-migrate snapshots", "removed", removed)
+	}
+	return nil
 }
 
 // openDB opens the pool every Store uses: WAL, foreign keys on, busy timeout.
