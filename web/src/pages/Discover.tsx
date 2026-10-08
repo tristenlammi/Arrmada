@@ -75,25 +75,26 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
     <>
       {chrome && <PageHeader title="Discover" crumb="Services / Discover" />}
       <div className="mx-auto w-full max-w-[1600px] px-4 py-5 sm:px-6">
-        {/* Tabs + search */}
-        <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border-b" style={{ borderColor: "var(--line)" }}>
-          <div className="flex gap-1">
+        {/* Tabs + search. On a phone they stack, search on top so the tabs still sit on the
+            underline, and the tabs scroll sideways rather than widening the page. */}
+        <div className="mb-5 flex flex-col gap-2 border-b sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-3" style={{ borderColor: "var(--line)" }}>
+          <div className="thin-scroll -mb-px flex min-w-0 gap-1 overflow-x-auto sm:mb-0 sm:overflow-visible">
             {TABS.map((t) => {
               const active = tab === t.key && !search;
               return (
                 <button
                   key={t.key}
                   onClick={() => setTab(t.key)}
-                  className="relative px-4 py-2.5 text-[13.5px] font-semibold transition-colors"
+                  className="relative flex-none px-3 py-2.5 text-[13.5px] font-semibold transition-colors sm:px-4"
                   style={{ color: active ? "var(--ink)" : "var(--ink-faint)" }}
                 >
                   {t.label}
-                  {active && <span className="absolute inset-x-2 -bottom-px h-[2px] rounded-full" style={{ background: "var(--accent)" }} />}
+                  {active && <span className="absolute inset-x-2 bottom-0 h-[2px] rounded-full sm:-bottom-px" style={{ background: "var(--accent)" }} />}
                 </button>
               );
             })}
           </div>
-          <div className="mb-2 flex items-center gap-2 sm:mb-0">
+          <div className="order-first flex w-full items-center justify-end gap-2 sm:order-none sm:w-auto sm:justify-start">
             {/* Books have their own search inside BooksDiscover — hide the movie/TV one there. */}
             {tab !== "books" && (
               <SearchBox value={searchInput} onChange={onSearchChange} onSeeAll={(q) => { setSearchInput(q); setSearch(q); }} ctx={ctx} />
@@ -238,7 +239,7 @@ function SearchBox({ value, onChange, onSeeAll, ctx }: { value: string; onChange
   };
 
   return (
-    <div ref={wrap} className="relative">
+    <div ref={wrap} className="relative min-w-0 flex-1 sm:flex-initial">
       <svg className="pointer-events-none absolute left-2.5 top-1/2 z-10 -translate-y-1/2" width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ color: "var(--ink-faint)" }}>
         <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" /><path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
       </svg>
@@ -250,7 +251,7 @@ function SearchBox({ value, onChange, onSeeAll, ctx }: { value: string; onChange
         onKeyDown={onKeyDown}
         placeholder="Search movies & TV…"
         aria-label="Search movies and TV"
-        className="w-[210px] rounded-lg py-2 pl-8 pr-7 text-[12.5px] transition-[width,box-shadow] focus:w-[300px]"
+        className="w-full rounded-lg py-2 pl-8 pr-7 text-[12.5px] transition-[width,box-shadow] sm:w-[210px] sm:focus:w-[300px]"
         style={{ background: "var(--panel-2)", border: `1px solid ${focused ? "var(--accent-line)" : "var(--line)"}`, color: "var(--ink)" }}
       />
       {value && (
@@ -258,8 +259,11 @@ function SearchBox({ value, onChange, onSeeAll, ctx }: { value: string; onChange
       )}
 
       {open && (
+        /* Phone: pinned to the viewport edges (fixed, auto top), the same fix as the
+           notification bell, since a 340px panel right-anchored to the box ran off the left
+           edge. sm+ keeps the box-anchored dropdown. */
         <div
-          className="thin-scroll absolute right-0 z-40 mt-2 max-h-[70vh] w-[340px] overflow-y-auto rounded-xl py-1.5"
+          className="thin-scroll fixed inset-x-3 z-50 mt-2 max-h-[70vh] overflow-y-auto rounded-xl py-1.5 sm:absolute sm:inset-x-auto sm:right-0 sm:w-[340px]"
           style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "0 16px 40px rgba(0,0,0,.45)" }}
         >
           {!showResults ? (

@@ -129,7 +129,8 @@ function Field({ label, value, note }: { label: string; value: string; note?: st
     <div className="mb-2">
       <div className="text-[11px] font-semibold text-ink-faint">{label}{note ? ` · ${note}` : ""}</div>
       <div className="flex items-center gap-2">
-        <code className="min-w-0 flex-1 truncate rounded-lg px-2.5 py-1.5 text-[12.5px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>{value}</code>
+        {/* Wraps rather than truncating: on a phone you need the whole address to type it in. */}
+        <code className="min-w-0 flex-1 break-all rounded-lg px-2.5 py-1.5 text-[12.5px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>{value}</code>
         <button onClick={copy} className="flex-none rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={ghost}>{copied ? "Copied" : "Copy"}</button>
       </div>
     </div>
@@ -161,7 +162,8 @@ function DailyBars({ since, days, perDay }: { since: string; days: number; perDa
   return (
     <div>
       <div className="mb-1 text-right text-[10.5px] text-ink-faint">top {fmtHours(max)}</div>
-      <div className="flex h-[110px] items-end gap-[3px]">
+      {/* 1px gaps on a phone: 90 days of 3px gaps alone outgrow a 320px screen's card. */}
+      <div className="flex h-[110px] items-end gap-px sm:gap-[3px]">
         {list.map((x) => (
           <div key={x.key} className="group relative flex h-full flex-1 items-end" title={`${x.dt.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" })} · ${fmtHours(x.secs)}`}>
             <div className="w-full rounded-t-[3px]" style={{ height: x.secs > 0 ? `${Math.max(4, (x.secs / max) * 100)}%` : "2px", background: x.secs > 0 ? "var(--accent)" : "var(--line)", opacity: x.secs > 0 ? 0.9 : 1 }} />

@@ -25,19 +25,21 @@ export function UserLayout() {
 
   return (
     <div className="flex h-full flex-col font-sans">
-      <header className="flex items-center justify-between px-4 py-2.5 sm:px-6" style={{ borderBottom: "1px solid var(--line)", background: "var(--sidebar)" }}>
-        <div className="flex items-center gap-2.5">
+      {/* On a phone the wordmark drops out and the nav scrolls sideways inside its own
+          strip, so the header never pushes the page wider than the screen. */}
+      <header className="flex items-center justify-between gap-2 px-4 py-2.5 sm:px-6" style={{ borderBottom: "1px solid var(--line)", background: "var(--sidebar)" }}>
+        <div className="flex flex-none items-center gap-2.5">
           <span className="grid h-[28px] w-[28px] place-items-center rounded-lg" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
             <FleetMark className="h-[16px] w-[16px]" />
           </span>
-          <span className="text-[15px] font-extrabold tracking-[0.12em]">ARRMADA</span>
+          <span className="hidden text-[15px] font-extrabold tracking-[0.12em] sm:inline">ARRMADA</span>
         </div>
-        <nav className="flex items-center gap-1">
+        <nav className="thin-scroll flex min-w-0 flex-1 items-center gap-1 overflow-x-auto whitespace-nowrap sm:flex-initial">
           {nav.map((n) => (
-            <NavLink key={n.to} to={n.to} className="rounded-lg px-3 py-1.5 text-[12.5px] font-semibold" style={({ isActive }) => ({ background: isActive ? "var(--accent-soft)" : "transparent", color: isActive ? "var(--accent)" : "var(--ink-dim)" })}>{n.label}</NavLink>
+            <NavLink key={n.to} to={n.to} className="flex-none rounded-lg px-2 py-1.5 text-[12.5px] font-semibold sm:px-3" style={({ isActive }) => ({ background: isActive ? "var(--accent-soft)" : "transparent", color: isActive ? "var(--accent)" : "var(--ink-dim)" })}>{n.label}</NavLink>
           ))}
         </nav>
-        <div className="relative">
+        <div className="relative flex-none">
           <button onClick={() => setMenu((m) => !m)} className="grid h-8 w-8 place-items-center rounded-full text-[12px] font-bold" style={{ background: "var(--accent-soft)", color: "var(--accent)", border: "1px solid var(--accent-line)" }}>
             {(user?.username?.[0] ?? "?").toUpperCase()}
           </button>
