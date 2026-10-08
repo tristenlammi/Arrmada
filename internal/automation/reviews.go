@@ -491,6 +491,9 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 	// more often than a numbering fault, an episode TMDB listed after the show was last
 	// refreshed. Refresh once per import and look again before calling it unresolved.
 	refreshed := false
+	// refreshFellBack: that refresh's numbering source failed, so an episode it couldn't
+	// add may well exist — the file is retried next sweep instead of sent to Review.
+	refreshFellBack := false
 	knownEpisode := func(ref series.EpisodeRef) bool {
 		if c.series.EpisodeExists(ctx, s.ID, ref.Season, ref.Episode) {
 			return true
@@ -501,10 +504,13 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		refreshed = true
 		c.log.Info("series import: file resolves to an episode the metadata doesn't have yet — refreshing the show",
 			"series", s.Title, "season", ref.Season, "episode", ref.Episode)
-		if _, _, err := c.series.Refresh(ctx, s.ID); err != nil {
+		// Never a rebuild: an import mustn't renumber the show under the files it's placing.
+		_, rr, err := c.series.Refresh(ctx, s.ID, series.RefreshOptions{})
+		if err != nil {
 			c.log.Warn("series import: refresh failed", "series", s.Title, "err", err)
 			return false
 		}
+		refreshFellBack = rr.Fallback
 		return c.series.EpisodeExists(ctx, s.ID, ref.Season, ref.Episode)
 	}
 	for _, v := range videos {
@@ -537,6 +543,16 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			}
 		}
 		if len(known) == 0 {
+			if refreshFellBack {
+				// The metadata couldn't be checked properly (a numbering source is down),
+				// so "doesn't exist" isn't known yet. Counted as failed, the download
+				// stays unhandled and the next sweep tries again; unresolved would send a
+				// perfectly good new episode to Review.
+				failed++
+				c.log.Warn("series import: numbering source unavailable — will retry this file next sweep",
+					"series", s.Title, "file", filepath.Base(v.Path), "resolved_to", refsLabel(refs))
+				continue
+			}
 			unresolved++
 			c.log.Warn("series import: file resolves to episodes the metadata doesn't have — not placing",
 				"series", s.Title, "file", filepath.Base(v.Path),

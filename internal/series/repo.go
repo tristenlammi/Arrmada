@@ -22,7 +22,7 @@ type Repo struct{ db *sql.DB }
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const seriesCols = `id, tmdb_id, imdb_id, title, year, overview, poster_url, status, network,
-	monitored, quality_profile, extra_json, series_type, tvdb_id, added_at`
+	monitored, quality_profile, extra_json, series_type, tvdb_id, added_at, numbering_source`
 
 func scanSeries(row interface{ Scan(...any) error }) (Series, error) {
 	var (
@@ -31,7 +31,7 @@ func scanSeries(row interface{ Scan(...any) error }) (Series, error) {
 		extraJSON string
 	)
 	err := row.Scan(&s.ID, &s.TMDBID, &s.IMDBID, &s.Title, &s.Year, &s.Overview, &s.PosterURL,
-		&s.Status, &s.Network, &mon, &s.QualityProfile, &extraJSON, &s.SeriesType, &s.TVDBID, &s.AddedAt)
+		&s.Status, &s.Network, &mon, &s.QualityProfile, &extraJSON, &s.SeriesType, &s.TVDBID, &s.AddedAt, &s.NumberingSource)
 	if err != nil {
 		return Series{}, err
 	}
@@ -187,6 +187,69 @@ func (r *Repo) InsertSeasons(ctx context.Context, seriesID int64, seasons []Seas
 		}
 	}
 	return nil
+}
+
+// SetNumberingSource records whose listing the stored episode numbering now follows.
+func (r *Repo) SetNumberingSource(ctx context.Context, seriesID int64, source string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE series SET numbering_source = ? WHERE id = ?`, source, seriesID)
+	return err
+}
+
+// InsertNewEpisodes adds only the (season, episode) rows the series doesn't have yet, and
+// leaves every existing row exactly as it is — title, air date and absolute number
+// included. It's what a refresh can safely do with a listing it doesn't trust to number
+// the show (a stand-in after a source failed, or one the stored numbering disagrees with):
+// that listing may number episodes differently, so writing its metadata onto existing rows
+// by (season, episode) would put one episode's title and date on another.
+//
+// New rows get no absolute number of their own; BackfillAbsolute counts one in, so a
+// stand-in's absolutes can't collide with the stored ones.
+func (r *Repo) InsertNewEpisodes(ctx context.Context, seriesID int64, seasons []Season) (int, error) {
+	added := 0
+	for _, sn := range seasons {
+		if _, err := r.db.ExecContext(ctx,
+			`INSERT OR IGNORE INTO seasons (series_id, season_number, name, overview, poster_url, monitored)
+			 VALUES (?, ?, ?, ?, ?, ?)`,
+			seriesID, sn.SeasonNumber, sn.Name, sn.Overview, sn.PosterURL, b2i(sn.Monitored)); err != nil {
+			return added, err
+		}
+		for _, ep := range sn.Episodes {
+			res, err := r.db.ExecContext(ctx,
+				`INSERT OR IGNORE INTO episodes (series_id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored, absolute_number)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+				seriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.Overview, ep.AirDate, ep.Runtime, ep.StillURL, b2i(ep.Monitored))
+			if err != nil {
+				return added, err
+			}
+			if n, _ := res.RowsAffected(); n > 0 {
+				added++
+			}
+		}
+	}
+	return added, nil
+}
+
+// ReassignAbsolutes writes the listing's absolute numbers onto the episodes by (season,
+// episode), in one transaction. For a show numbered by season and episode that's its
+// identity, so when an earlier season gains or loses an episode, every later absolute
+// shifts but nothing else does: each file stays on the (season, episode) it was on. It
+// never reads or touches a file.
+func (r *Repo) ReassignAbsolutes(ctx context.Context, seriesID int64, seasons []Season) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	for _, sn := range seasons {
+		for _, ep := range sn.Episodes {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE episodes SET absolute_number = ? WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
+				ep.AbsoluteNumber, seriesID, sn.SeasonNumber, ep.EpisodeNumber); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
 }
 
 // StoredNumbering returns the series' current absolute → (season, episode) mapping, for

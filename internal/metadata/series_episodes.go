@@ -9,6 +9,8 @@ import (
 // EpisodeSource supplies a show's season/episode listing from somewhere other than the
 // primary provider. Implemented by TVmaze.
 type EpisodeSource interface {
+	// Name identifies the source in SeriesDetails.NumberingSource: "tvdb", "tvmaze".
+	Name() string
 	Available() bool
 	Episodes(ctx context.Context, tvdbID int, imdbID string) ([]SeasonDetails, error)
 }
@@ -65,6 +67,12 @@ func (s *seriesWithEpisodeSource) GetSeries(ctx context.Context, tmdbID int) (*S
 	if d.TVDBID == 0 && d.IMDBID == "" {
 		return d, nil
 	}
+	// Whether a source that would normally have numbered this show failed. Whatever
+	// listing is used after that is a stand-in, numbered by a different convention, and
+	// the series module must not move files on it. Skipping a source that has no key, or
+	// doesn't carry the show, or models it differently, is the normal answer every time,
+	// so it doesn't count.
+	failed := false
 	for _, src := range s.sources {
 		if !src.Available() {
 			continue // e.g. no key configured right now — re-checked every request so a key
@@ -74,7 +82,8 @@ func (s *seriesWithEpisodeSource) GetSeries(ctx context.Context, tmdbID int) (*S
 		if err != nil {
 			// A numbering source being down must never stop a show being added or
 			// refreshed — just move to the next source, then to the primary.
-			s.log.Warn("episode numbering source failed — trying the next", "title", d.Title, "err", err)
+			s.log.Warn("episode numbering source failed — trying the next", "title", d.Title, "source", src.Name(), "err", err)
+			failed = true
 			continue
 		}
 		if !usableListing(seasons) {
@@ -86,9 +95,13 @@ func (s *seriesWithEpisodeSource) GetSeries(ctx context.Context, tmdbID int) (*S
 			continue
 		}
 		d.Seasons = mergeSeasonArt(seasons, d.Seasons)
+		d.NumberingSource, d.NumberingFallback = src.Name(), failed
 		return d, nil
 	}
-	return d, nil // no source usable — keep the primary's listing
+	// No source usable — keep the primary's listing (and whatever it said about its own
+	// completeness).
+	d.NumberingFallback = d.NumberingFallback || failed
+	return d, nil
 }
 
 // usableListing rejects an empty or obviously incomplete reply. Replacing a full listing

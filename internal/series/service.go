@@ -142,6 +142,11 @@ func (s *Service) Add(ctx context.Context, tmdbID int, qualityProfile string, mo
 	seasons := seasonsFromDetails(d, monitored)
 	if err := s.repo.InsertSeasons(ctx, created.ID, seasons); err != nil {
 		s.log.Warn("series: insert seasons failed", "series", created.Title, "err", err)
+	} else if !d.NumberingFallback && d.NumberingSource != "" {
+		// The rows now follow this listing. A stand-in listing (its source failed) leaves
+		// the source unrecorded, so the first good refresh is free to adopt the real one.
+		s.setNumberingSource(ctx, created, d.NumberingSource)
+		created.NumberingSource = d.NumberingSource
 	}
 	if created.IsAnime() {
 		s.refreshSceneMap(ctx, created.ID, d.TVDBID) // TheXEM scene mapping for split-season anime
@@ -200,64 +205,47 @@ func detectSeriesType(d *metadata.SeriesDetails) string {
 	return SeriesTypeStandard
 }
 
+// RefreshOptions says what a refresh may do beyond keeping the listing current.
+type RefreshOptions struct {
+	// AllowRebuild lets the refresh renumber the show — move files onto new (season,
+	// episode) rows — when an authoritative source says the numbering model changed. Only
+	// the owner's own Refresh sets it. A scheduled, refresh-all or import-time refresh
+	// runs unattended, and a renumber it got wrong moved and renamed files on its own.
+	AllowRebuild bool
+}
+
+// RefreshResult reports what a refresh did to the episode numbering.
+type RefreshResult struct {
+	// Renumbered: files ended up on a new (season, episode), so the caller should rename
+	// them on disk to match. Never set unless RefreshOptions.AllowRebuild was.
+	Renumbered bool
+	Remaps     []EpisodeRemap
+	// Fallback: the numbering source failed, so the listing was a stand-in and only
+	// genuinely new episodes were added.
+	Fallback bool
+	// ModelChanged: the fresh listing numbers the show differently from what's stored,
+	// whether or not the refresh was allowed to act on it.
+	ModelChanged bool
+}
+
 // Refresh re-pulls metadata for a series, adding any newly-announced seasons or episodes.
-// In the ordinary case existing rows are left untouched (INSERT OR IGNORE), so monitor/file
-// state is preserved and only genuinely new episodes appear.
+// Existing rows keep their monitor and file state, and each file stays on its (season,
+// episode) — only titles, dates and absolute numbers follow the metadata.
 //
 // When the source has changed the season MODEL — e.g. a TVDB key was added and anime that
 // was on TMDB's 20-season, continuously-numbered listing is now TVDB's 22-season, per-season
-// listing — INSERT OR IGNORE can't help: it never renumbers an episode that already exists.
-// So Refresh detects that case and rebuilds the listing, carrying files across by absolute
-// number. It returns renumbered=true when files ended up at a new (season, episode), so the
-// caller can rename them on disk to match.
-func (s *Service) Refresh(ctx context.Context, id int64) (Series, bool, error) {
+// listing — keeping each file on its (season, episode) would be wrong. Refresh detects that
+// case and, when opts.AllowRebuild says the owner asked for it, rebuilds the listing,
+// carrying files across by absolute number; RefreshResult.Renumbered then tells the caller
+// to rename them on disk. See applyNumbering for when a rebuild is trusted.
+func (s *Service) Refresh(ctx context.Context, id int64, opts RefreshOptions) (Series, RefreshResult, error) {
+	var res RefreshResult
 	sr, err := s.repo.Get(ctx, id)
 	if err != nil {
-		return Series{}, false, err
+		return Series{}, res, err
 	}
-	renumbered := false
 	if d, derr := s.meta.GetSeries(ctx, sr.TMDBID); derr == nil {
-		seasons := seasonsFromDetails(d, sr.Monitored)
-		stored, _ := s.repo.StoredNumbering(ctx, id)
-		if numberingModelChanged(seasons, stored) {
-			remaps, rerr := s.repo.RebuildEpisodes(ctx, id, seasons)
-			if rerr != nil {
-				// A rebuild that can't complete falls back to the additive path — better a
-				// show with stale numbering than one left half-rebuilt.
-				s.log.Warn("series: numbering rebuild failed — falling back to insert", "series", sr.Title, "err", rerr)
-				if err := s.repo.InsertSeasons(ctx, id, seasons); err != nil {
-					s.log.Warn("series: refresh insert seasons failed", "series", sr.Title, "err", err)
-				}
-			} else {
-				renumbered = len(remaps) > 0
-				s.log.Info("series: rebuilt episode numbering to match the metadata source",
-					"series", sr.Title, "files_remapped", len(remaps))
-				if renumbered {
-					s.AddEvent(ctx, id, "renumbered", fmt.Sprintf(
-						"Episode numbering rebuilt from updated metadata; %d file(s) remapped and renamed", len(remaps)))
-				}
-			}
-		} else if err := s.repo.InsertSeasons(ctx, id, seasons); err != nil {
-			s.log.Warn("series: refresh insert seasons failed", "series", sr.Title, "err", err)
-		}
-		// Drop seasons the metadata no longer lists. A refresh that can only ADD leaves
-		// a show stuck with whatever a previous source invented — Naruto kept seasons
-		// 2002-2007 from a year-numbered listing, with no way back short of deleting the
-		// show. Anything holding a file is kept regardless.
-		keep := make([]int, 0, len(seasons))
-		for _, sn := range seasons {
-			keep = append(keep, sn.SeasonNumber)
-		}
-		if n, perr := s.repo.PruneSeasonsNotIn(ctx, id, keep); perr != nil {
-			s.log.Warn("series: prune stale seasons failed", "series", sr.Title, "err", perr)
-		} else if n > 0 {
-			s.log.Info("series: removed seasons the metadata no longer lists", "series", sr.Title, "removed", n)
-		}
-		// Fill absolute numbers only where they're still unset — never overwriting the
-		// authoritative ones a source like TVDB supplied (see BackfillAbsolute).
-		if err := s.repo.BackfillAbsolute(ctx, id); err != nil {
-			s.log.Warn("series: backfill absolute numbers failed", "series", sr.Title, "err", err)
-		}
+		res = s.applyNumbering(ctx, sr, d, seasonsFromDetails(d, sr.Monitored), opts)
 		if d.TVDBID > 0 && d.TVDBID != sr.TVDBID {
 			_ = s.repo.SetTVDBID(ctx, id, d.TVDBID)
 		}
@@ -280,31 +268,260 @@ func (s *Service) Refresh(ctx context.Context, id int64) (Series, bool, error) {
 		s.log.Warn("series: refresh metadata failed", "series", sr.Title, "err", derr)
 	}
 	got, err := s.Get(ctx, id)
-	return got, renumbered, err
+	return got, res, err
 }
 
-// numberingModelChanged reports whether fresh metadata places a shared absolute episode at
-// a different (season, episode) than what's stored — i.e. the season model itself changed,
-// not merely its episode boundaries. That's the signal that a plain INSERT-OR-IGNORE would
-// silently do nothing and a rebuild is needed. Compared on absolute number because it's the
-// one identity both models share.
-func numberingModelChanged(desired []Season, stored map[int][2]int) bool {
+// applyNumbering brings the stored episode listing in line with a fresh one, without ever
+// moving a file on a listing that can't be trusted to number the show.
+//
+// Counted absolute numbers used to drive automatic file moves: one episode added to an
+// earlier season shifted every later absolute, which read as a "model change", rebuilt the
+// listing by absolute and renamed files onto the wrong episodes — and a TVmaze timeout
+// handing over TMDB's numbering did the same, until the next good refresh moved them back.
+// The rules now:
+//   - A fallback listing (the numbering source failed) only adds genuinely new episodes.
+//   - Otherwise a file's identity is its (season, episode). A model change is a season
+//     holding files that the fresh listing no longer has, or — for anime, and only when
+//     the absolutes are real TVDB numbers — an absolute at a different (season, episode).
+//   - A rebuild (which carries files by absolute number) runs only for anime, only when
+//     the owner asked (AllowRebuild), and only when the change is authoritative: TVDB on
+//     both sides, or moving onto TVDB from TMDB or an unrecorded source (the
+//     TVDB-key-added case the rebuild exists for). A standard show is never rebuilt by
+//     absolute number. Anything else keeps the stored numbering and says so in History.
+func (s *Service) applyNumbering(ctx context.Context, sr Series, d *metadata.SeriesDetails, seasons []Season, opts RefreshOptions) RefreshResult {
+	var res RefreshResult
+	id := sr.ID
+	fresh := d.NumberingSource
+	if fresh == "" {
+		fresh = "tmdb" // a provider that doesn't say is the primary
+	}
+	if d.NumberingFallback {
+		res.Fallback = true
+		s.log.Warn("series: numbering source failed — metadata only", "series", sr.Title, "listing_from", fresh)
+		s.addOnlyNewEpisodes(ctx, sr, seasons)
+		return res
+	}
+
+	stored := sr.NumberingSource
+	storedSeasons, err := s.repo.SeasonsFor(ctx, id)
+	if err != nil {
+		s.log.Warn("series: refresh couldn't read the stored listing — adding new episodes only", "series", sr.Title, "err", err)
+		s.addOnlyNewEpisodes(ctx, sr, seasons)
+		return res
+	}
+	authoritative := sr.IsAnime() && fresh == "tvdb" && (stored == "tvdb" || stored == "" || stored == "tmdb")
+	res.ModelChanged = numberingModelChanged(seasons, storedSeasons, authoritative)
+
+	switch {
+	case res.ModelChanged && opts.AllowRebuild && authoritative:
+		remaps, rerr := s.repo.RebuildEpisodes(ctx, id, seasons)
+		if rerr != nil {
+			// A rebuild that can't complete falls back to the additive path — better a
+			// show with stale numbering than one left half-rebuilt.
+			s.log.Warn("series: numbering rebuild failed — adding new episodes only", "series", sr.Title, "err", rerr)
+			s.addOnlyNewEpisodes(ctx, sr, seasons)
+			return res
+		}
+		res.Remaps = remaps
+		res.Renumbered = len(remaps) > 0
+		s.log.Info("series: rebuilt episode numbering to match the metadata source",
+			"series", sr.Title, "source", fresh, "files_remapped", len(remaps))
+		if res.Renumbered {
+			s.AddEvent(ctx, id, "renumbered", fmt.Sprintf(
+				"Episode numbering rebuilt from %s; %d file(s) remapped and renamed", sourceLabel(fresh), len(remaps)))
+		}
+		s.pruneAndBackfill(ctx, sr, seasons)
+		s.setNumberingSource(ctx, sr, fresh)
+
+	case res.ModelChanged:
+		// Not allowed to act on it: keep the stored numbering, add only what's new, and
+		// tell the owner what a manual Refresh would do (or that nothing will).
+		n := filesThatWouldMove(seasons, storedSeasons)
+		var detail string
+		if authoritative {
+			detail = fmt.Sprintf("Numbering from %s differs from what's stored — %d file%s would move. Press Refresh & rescan to apply it.",
+				sourceLabel(fresh), n, plural(n))
+		} else {
+			detail = fmt.Sprintf("Numbering from %s differs from what's stored (%s) — kept the stored numbering; nothing was moved.",
+				sourceLabel(fresh), sourceLabel(stored))
+		}
+		s.log.Warn("series: numbering model changed — not rebuilding", "series", sr.Title,
+			"stored_source", stored, "fresh_source", fresh, "files_that_would_move", n, "manual", opts.AllowRebuild)
+		s.addEventOnce(ctx, id, "numbering", detail)
+		s.addOnlyNewEpisodes(ctx, sr, seasons)
+
+	default:
+		if err := s.repo.InsertSeasons(ctx, id, seasons); err != nil {
+			s.log.Warn("series: refresh insert seasons failed", "series", sr.Title, "err", err)
+			return res
+		}
+		// Same model: each file keeps its (season, episode), and absolutes follow the
+		// listing. Moving nothing is the point — a shifted count is not a renumber.
+		if err := s.repo.ReassignAbsolutes(ctx, id, seasons); err != nil {
+			s.log.Warn("series: reassign absolute numbers failed", "series", sr.Title, "err", err)
+		}
+		s.pruneAndBackfill(ctx, sr, seasons)
+		s.setNumberingSource(ctx, sr, fresh)
+	}
+	return res
+}
+
+// addOnlyNewEpisodes is the additive path for a listing that mustn't number the show. For
+// anime it adds nothing: a stand-in listing for anime is numbered so differently (TMDB's
+// one 500-episode season against TVDB's twenty) that its "new" episodes are phantoms, and
+// an airing show's new episodes arrive with the next good refresh instead.
+func (s *Service) addOnlyNewEpisodes(ctx context.Context, sr Series, seasons []Season) {
+	if sr.IsAnime() {
+		s.log.Info("series: anime refreshed without a trusted listing — no episodes added until the next good refresh", "series", sr.Title)
+		return
+	}
+	if n, err := s.repo.InsertNewEpisodes(ctx, sr.ID, seasons); err != nil {
+		s.log.Warn("series: refresh insert new episodes failed", "series", sr.Title, "err", err)
+	} else if n > 0 {
+		s.log.Info("series: added newly listed episodes", "series", sr.Title, "added", n)
+	}
+	if err := s.repo.BackfillAbsolute(ctx, sr.ID); err != nil {
+		s.log.Warn("series: backfill absolute numbers failed", "series", sr.Title, "err", err)
+	}
+}
+
+// pruneAndBackfill drops seasons the metadata no longer lists and fills any absolute
+// number still unset. Only run once the stored listing follows the fresh one.
+func (s *Service) pruneAndBackfill(ctx context.Context, sr Series, seasons []Season) {
+	// Drop seasons the metadata no longer lists. A refresh that can only ADD leaves
+	// a show stuck with whatever a previous source invented — Naruto kept seasons
+	// 2002-2007 from a year-numbered listing, with no way back short of deleting the
+	// show. Anything holding a file is kept regardless.
+	keep := make([]int, 0, len(seasons))
+	for _, sn := range seasons {
+		keep = append(keep, sn.SeasonNumber)
+	}
+	if n, perr := s.repo.PruneSeasonsNotIn(ctx, sr.ID, keep); perr != nil {
+		s.log.Warn("series: prune stale seasons failed", "series", sr.Title, "err", perr)
+	} else if n > 0 {
+		s.log.Info("series: removed seasons the metadata no longer lists", "series", sr.Title, "removed", n)
+	}
+	// Fill absolute numbers only where they're still unset — never overwriting the
+	// authoritative ones a source like TVDB supplied (see BackfillAbsolute).
+	if err := s.repo.BackfillAbsolute(ctx, sr.ID); err != nil {
+		s.log.Warn("series: backfill absolute numbers failed", "series", sr.Title, "err", err)
+	}
+}
+
+func (s *Service) setNumberingSource(ctx context.Context, sr Series, source string) {
+	if source == sr.NumberingSource {
+		return
+	}
+	if err := s.repo.SetNumberingSource(ctx, sr.ID, source); err != nil {
+		s.log.Warn("series: could not record the numbering source", "series", sr.Title, "err", err)
+	}
+}
+
+// addEventOnce adds a History event unless the latest event of that kind already says the
+// same thing — a declined renumber is re-noticed on every scheduled refresh, and one line
+// per change is what's useful, not one every six hours.
+func (s *Service) addEventOnce(ctx context.Context, id int64, event, detail string) {
+	if evs, err := s.repo.Events(ctx, id, 50); err == nil {
+		for _, e := range evs {
+			if e.Event == event {
+				if e.Detail == detail {
+					return
+				}
+				break
+			}
+		}
+	}
+	s.AddEvent(ctx, id, event, detail)
+}
+
+func sourceLabel(src string) string {
+	switch src {
+	case "tvdb":
+		return "TVDB"
+	case "tvmaze":
+		return "TVmaze"
+	case "tmdb":
+		return "TMDB"
+	}
+	return "an unrecorded source"
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
+// numberingModelChanged reports whether a fresh listing numbers the show differently from
+// what's stored, in a way that keeping each file on its (season, episode) would get wrong:
+//   - a season (other than Specials) that holds files is missing from the fresh listing; or
+//   - when authoritative (the fresh absolutes are real TVDB numbers the caller trusts to
+//     identify episodes — see applyNumbering), a shared absolute episode now sits at a
+//     different (season, episode).
+//
+// A counted absolute shifting — one episode added to an earlier season — is NOT a change:
+// counted absolutes are derived from the listing, so they always shift with it.
+func numberingModelChanged(desired []Season, stored []Season, authoritative bool) bool {
 	if len(stored) == 0 {
 		return false // nothing to reconcile against — the additive path is correct
+	}
+	listed := make(map[int]bool, len(desired))
+	for _, sn := range desired {
+		listed[sn.SeasonNumber] = true
+	}
+	storedAt := map[int][2]int{}
+	for _, sn := range stored {
+		for _, ep := range sn.Episodes {
+			// Specials are left out: they carry no absolute, a rebuild leaves them in
+			// place, and sources disagree about listing season 0 at all.
+			if ep.HasFile && sn.SeasonNumber > 0 && !listed[sn.SeasonNumber] {
+				return true
+			}
+			if ep.AbsoluteNumber > 0 && sn.SeasonNumber > 0 {
+				storedAt[ep.AbsoluteNumber] = [2]int{sn.SeasonNumber, ep.EpisodeNumber}
+			}
+		}
+	}
+	if !authoritative {
+		return false
 	}
 	for _, sn := range desired {
 		for _, ep := range sn.Episodes {
 			if ep.AbsoluteNumber <= 0 {
 				continue
 			}
-			if se, ok := stored[ep.AbsoluteNumber]; ok {
-				if se[0] != sn.SeasonNumber || se[1] != ep.EpisodeNumber {
-					return true
-				}
+			if se, ok := storedAt[ep.AbsoluteNumber]; ok && (se[0] != sn.SeasonNumber || se[1] != ep.EpisodeNumber) {
+				return true
 			}
 		}
 	}
 	return false
+}
+
+// filesThatWouldMove counts stored files whose absolute episode the fresh listing places
+// at a different (season, episode) — what a rebuild would remap and rename.
+func filesThatWouldMove(desired []Season, stored []Season) int {
+	at := map[int][2]int{}
+	for _, sn := range desired {
+		for _, ep := range sn.Episodes {
+			if ep.AbsoluteNumber > 0 {
+				at[ep.AbsoluteNumber] = [2]int{sn.SeasonNumber, ep.EpisodeNumber}
+			}
+		}
+	}
+	n := 0
+	for _, sn := range stored {
+		for _, ep := range sn.Episodes {
+			if !ep.HasFile || ep.AbsoluteNumber <= 0 {
+				continue
+			}
+			if se, ok := at[ep.AbsoluteNumber]; ok && (se[0] != sn.SeasonNumber || se[1] != ep.EpisodeNumber) {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // SetMonitored toggles a series.

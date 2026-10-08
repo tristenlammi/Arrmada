@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -216,7 +217,9 @@ func (t *TMDB) GetSeries(ctx context.Context, tmdbID int) (*SeriesDetails, error
 
 	// Fetch each season's episodes concurrently.
 	d.Seasons = make([]SeasonDetails, len(s.Seasons))
+	d.NumberingSource = "tmdb"
 	var wg sync.WaitGroup
+	var partial atomic.Bool
 	for i, sn := range s.Seasons {
 		sd := SeasonDetails{SeasonNumber: sn.SeasonNumber, Name: sn.Name, Overview: sn.Overview, AirDate: sn.AirDate}
 		if sn.PosterPath != "" {
@@ -229,10 +232,16 @@ func (t *TMDB) GetSeries(ctx context.Context, tmdbID int) (*SeriesDetails, error
 			eps, err := t.seasonEpisodes(ctx, tmdbID, seasonNum)
 			if err == nil {
 				d.Seasons[i].Episodes = eps
+			} else {
+				partial.Store(true)
 			}
 		}(i, sn.SeasonNumber)
 	}
 	wg.Wait()
+	// A season that failed to load comes back empty, which reads exactly like a season
+	// with no episodes. The listing is incomplete, so it must not be trusted to number
+	// the show — the series module treats it like a failed numbering source.
+	d.NumberingFallback = partial.Load()
 	return d, nil
 }
 

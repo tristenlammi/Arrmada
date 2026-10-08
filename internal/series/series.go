@@ -24,6 +24,11 @@ type Series struct {
 	// Add (TMDB Animation genre + Japanese original language) and user-overridable.
 	SeriesType string `json:"series_type,omitempty"`
 	AddedAt    string `json:"added_at,omitempty"`
+	// NumberingSource is whose listing the stored episode numbering follows: "tvdb",
+	// "tvmaze" or "tmdb", or "" when unknown (shows added before it was recorded). A
+	// refresh compares it with the fresh listing's source to decide whether a numbering
+	// difference is a real renumber or a stand-in listing that must not move files.
+	NumberingSource string `json:"numbering_source"`
 
 	Extra *SeriesExtra `json:"extra,omitempty"`
 	// Aliases are the other titles this show is released under. Populated on read so

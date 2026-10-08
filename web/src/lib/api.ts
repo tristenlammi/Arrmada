@@ -727,6 +727,9 @@ export interface Series {
   monitored: boolean;
   quality_profile: string;
   series_type?: string; // "standard" | "anime"
+  // Whose listing the stored episode numbering follows: "tvdb" | "tvmaze" | "tmdb", or ""
+  // when not yet recorded.
+  numbering_source?: string;
   scene_overrides?: SceneOverride[];
   added_at?: string;
   extra?: SeriesExtra;

@@ -515,7 +515,8 @@ func (a *api) handleRefreshSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	_, renumbered, err := a.deps.Series.Refresh(ctx, id)
+	// The owner's own Refresh is the one place a renumber may move files.
+	_, rr, err := a.deps.Series.Refresh(ctx, id, series.RefreshOptions{AllowRebuild: true})
 	if err != nil {
 		if errors.Is(err, series.ErrNotFound) {
 			a.writeError(w, http.StatusNotFound, "series not found")
@@ -525,8 +526,9 @@ func (a *api) handleRefreshSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// A rebuild moved files to new (season, episode) rows but left them at their old on-disk
-	// names; rename brings the library into line before the rescan reads it.
-	if renumbered {
+	// names; rename brings the library into line before the rescan reads it — through the
+	// collision-safe rename, so no file is ever replaced.
+	if rr.Renumbered {
 		if res, rerr := a.deps.Automation.SeriesRename(ctx, id, nil); rerr != nil {
 			a.deps.Log.Warn("series: rename after renumber failed", "series_id", id, "err", rerr)
 		} else {
@@ -586,7 +588,9 @@ func (a *api) refreshSeriesSweep(ids []int64) {
 	for _, id := range ids {
 		// Per-series budget, so one hung metadata call can't stall the whole sweep.
 		each, cancelEach := context.WithTimeout(ctx, 60*time.Second)
-		_, renumbered, err := a.deps.Series.Refresh(each, id)
+		// Never a rebuild: refresh-all runs unattended across the whole library, so a
+		// numbering change is only noted in History for the owner to apply per show.
+		_, _, err := a.deps.Series.Refresh(each, id, series.RefreshOptions{})
 		if err != nil {
 			failed++
 			a.deps.Log.Warn("series: refresh failed", "series_id", id, "err", err)
@@ -595,13 +599,6 @@ func (a *api) refreshSeriesSweep(ids []int64) {
 				break // the whole sweep timed out or was cancelled
 			}
 			continue
-		}
-		if renumbered {
-			if res, rerr := a.deps.Automation.SeriesRename(each, id, nil); rerr != nil {
-				a.deps.Log.Warn("series: rename after renumber failed", "series_id", id, "err", rerr)
-			} else {
-				a.deps.Automation.LogRenameSkips(id, res)
-			}
 		}
 		a.deps.Automation.RescanSeries(each, id)
 		cancelEach()

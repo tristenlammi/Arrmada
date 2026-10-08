@@ -50,6 +50,9 @@ func NewTVDB(key func() string) *TVDB {
 // when it can't be used.
 func (t *TVDB) Available() bool { return t != nil && t.key() != "" }
 
+// Name identifies TVDB as a numbering source.
+func (t *TVDB) Name() string { return "tvdb" }
+
 // Episodes returns a show's seasons and episodes in TVDB's aired-order numbering, each
 // carrying its absolute number. Matched by TVDB id — which TMDB already gives us. A show
 // with no TVDB id, or one TVDB can't resolve, returns nil with no error so the caller

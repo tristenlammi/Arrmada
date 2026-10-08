@@ -130,22 +130,63 @@ func TestRebuildKeepsUnmappedFileInPlace(t *testing.T) {
 	}
 }
 
-// Detection: only a genuine season-MODEL change (a shared absolute at a different
-// season/episode) triggers a rebuild. Matching numbering, or a first-time listing, does not.
+// Detection: only a genuine season-MODEL change triggers a rebuild — a shared absolute at
+// a different season/episode when both sides' absolutes are real, or a season holding
+// files that the listing no longer has. Matching numbering, or a first-time listing, does not.
 func TestNumberingModelChanged(t *testing.T) {
-	stored := map[int][2]int{33: {2, 33}, 1: {1, 1}}
+	stored := []Season{
+		{SeasonNumber: 1, Episodes: []Episode{{SeasonNumber: 1, EpisodeNumber: 1, AbsoluteNumber: 1}}},
+		{SeasonNumber: 2, Episodes: []Episode{{SeasonNumber: 2, EpisodeNumber: 33, AbsoluteNumber: 33, HasFile: true}}},
+	}
 
-	sameModel := []Season{{SeasonNumber: 2, Episodes: []Episode{{SeasonNumber: 2, EpisodeNumber: 33, AbsoluteNumber: 33}}}}
-	if numberingModelChanged(sameModel, stored) {
+	sameModel := []Season{
+		{SeasonNumber: 1, Episodes: []Episode{{SeasonNumber: 1, EpisodeNumber: 1, AbsoluteNumber: 1}}},
+		{SeasonNumber: 2, Episodes: []Episode{{SeasonNumber: 2, EpisodeNumber: 33, AbsoluteNumber: 33}}},
+	}
+	if numberingModelChanged(sameModel, stored, true) {
 		t.Error("identical numbering should not trigger a rebuild")
 	}
 
-	newModel := []Season{{SeasonNumber: 2, Episodes: []Episode{{SeasonNumber: 2, EpisodeNumber: 1, AbsoluteNumber: 33}}}}
-	if !numberingModelChanged(newModel, stored) {
-		t.Error("absolute 33 moving from S02E33 to S02E01 is a model change and must rebuild")
+	newModel := []Season{
+		{SeasonNumber: 1, Episodes: []Episode{{SeasonNumber: 1, EpisodeNumber: 1, AbsoluteNumber: 1}}},
+		{SeasonNumber: 2, Episodes: []Episode{{SeasonNumber: 2, EpisodeNumber: 1, AbsoluteNumber: 33}}},
+	}
+	if !numberingModelChanged(newModel, stored, true) {
+		t.Error("absolute 33 moving from S02E33 to S02E01 is a model change when the absolutes are authoritative")
+	}
+	if numberingModelChanged(newModel, stored, false) {
+		t.Error("counted absolutes disagreeing is not a model change — counts shift with the listing")
 	}
 
-	if numberingModelChanged(newModel, map[int][2]int{}) {
+	// A season holding a file vanishing from the listing is a change either way.
+	noSeason2 := []Season{{SeasonNumber: 1, Episodes: []Episode{{SeasonNumber: 1, EpisodeNumber: 1, AbsoluteNumber: 1}}}}
+	if !numberingModelChanged(noSeason2, stored, false) {
+		t.Error("a season with files missing from the listing is a model change")
+	}
+	// ...but a vanished season without files is just a stale season for the prune.
+	emptyS2 := []Season{stored[0], {SeasonNumber: 2, Episodes: []Episode{{SeasonNumber: 2, EpisodeNumber: 33, AbsoluteNumber: 33}}}}
+	if numberingModelChanged([]Season{stored[0]}, emptyS2, false) {
+		t.Error("a file-less season leaving the listing is not a model change")
+	}
+
+	if numberingModelChanged(newModel, nil, true) {
 		t.Error("with nothing stored there's nothing to reconcile — the additive path is correct")
+	}
+}
+
+// One episode added to season 1 shifts every later counted absolute by one. That used to
+// read as a renumber, rebuild the show by absolute, and move every later file onto the
+// wrong episode. A counted shift is not a model change.
+func TestNumberingModelChangedIgnoresCountedShift(t *testing.T) {
+	stored := []Season{
+		{SeasonNumber: 1, Episodes: []Episode{{SeasonNumber: 1, EpisodeNumber: 1, AbsoluteNumber: 1}, {SeasonNumber: 1, EpisodeNumber: 2, AbsoluteNumber: 2}}},
+		{SeasonNumber: 2, Episodes: []Episode{{SeasonNumber: 2, EpisodeNumber: 1, AbsoluteNumber: 3, HasFile: true}}},
+	}
+	shifted := []Season{
+		{SeasonNumber: 1, Episodes: []Episode{{SeasonNumber: 1, EpisodeNumber: 1, AbsoluteNumber: 1}, {SeasonNumber: 1, EpisodeNumber: 2, AbsoluteNumber: 2}, {SeasonNumber: 1, EpisodeNumber: 3, AbsoluteNumber: 3}}},
+		{SeasonNumber: 2, Episodes: []Episode{{SeasonNumber: 2, EpisodeNumber: 1, AbsoluteNumber: 4}}},
+	}
+	if numberingModelChanged(shifted, stored, false) {
+		t.Error("a one-episode count change must not be treated as a renumber")
 	}
 }
