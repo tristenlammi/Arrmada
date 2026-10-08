@@ -108,6 +108,10 @@ func main() {
 	// the Logs page still has history after a restart — which is exactly when you go
 	// looking, since an update or a crash is usually what sent you there.
 	logPath := filepath.Join(cfg.DataDir, "logs", "arrmada.log.jsonl")
+	// Once, before the old lines are read back: take book, author and search details out
+	// of request lines earlier versions wrote. Reported after Persist, so the warning
+	// lands in the log it's about.
+	scrubErr := scrubLegacyLogs(logPath)
 	restored := logRing.Restore(logPath)
 	stopLogFile, logFileErr := logRing.Persist(logPath)
 	if logFileErr != nil {
@@ -125,6 +129,9 @@ func main() {
 	)
 	if restored > 0 {
 		log.Info("restored logs from the previous run", "lines", restored, "path", logPath)
+	}
+	if scrubErr != nil {
+		log.Warn("couldn't scrub audiobook details from older log files; will retry next start", "err", scrubErr)
 	}
 	logEnvironment(log, cfg)
 
@@ -685,6 +692,29 @@ func main() {
 // look at. At ~200 bytes an entry this is ~10 MB of memory, which is cheap next to
 // losing the evidence. The on-disk files hold considerably more than the ring does.
 var logRing = applog.NewRing(50000)
+
+// scrubLegacyMarker records that the one-time audiobook scrub has run.
+const scrubLegacyMarker = ".scrub-audiobook-v1"
+
+// scrubLegacyLogs rewrites log files written before request logging switched to route
+// patterns, so no line on disk still names a book someone opened, played or bookmarked,
+// or what they searched for. It runs once: a marker beside the logs stops it repeating,
+// and is only written when the rewrite succeeded. Copies of old lines in Docker's own
+// stdout log aren't reachable from here; recreating the container drops them.
+func scrubLegacyLogs(logPath string) error {
+	dir := filepath.Dir(logPath)
+	marker := filepath.Join(dir, scrubLegacyMarker)
+	if _, err := os.Stat(marker); err == nil {
+		return nil
+	}
+	if err := applog.RewriteFiles(logPath, audioserver.ScrubLegacyEntry); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(marker, []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
+}
 
 func newLogger(level string) *slog.Logger {
 	var l slog.Level

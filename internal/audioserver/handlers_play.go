@@ -110,8 +110,10 @@ func (s *Server) sync(w http.ResponseWriter, r *http.Request, closeIt bool) {
 		return
 	}
 	if d.Reason == "held" {
+		// Positions only: a username next to an item key would record who is listening to
+		// what.
 		s.log.Debug("audiobook server: holding a jump back until playback continues from it",
-			"user", u.Username, "item", d.Progress.ItemKey, "saved", d.Progress.Position, "reported", body.CurrentTime)
+			"saved", d.Progress.Position, "reported", body.CurrentTime)
 	}
 	w.WriteHeader(http.StatusOK)
 }
