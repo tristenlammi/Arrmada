@@ -22,6 +22,11 @@ const (
 	SkipLibraryFull = "library_full" // the library disk hasn't room for the converted file
 	SkipSourceGone  = "source_gone"  // the library file is missing
 	SkipTransient   = "transient"    // any other failure that should clear on its own
+
+	// The original wouldn't fit in the recycle bin under its cap, so retiring it would make
+	// the bin purge it within the hour. Waits for the owner to raise the cap (or for the
+	// bin to empty); checked daily.
+	SkipBinFull = "bin_full"
 )
 
 // backoffSkip reports whether a skip kind waits longer each time it repeats.
@@ -44,6 +49,8 @@ func retryDelay(kind string, attempts int) time.Duration {
 		return 12 * time.Hour
 	case SkipCancelled:
 		return 30 * 24 * time.Hour
+	case SkipBinFull:
+		return 24 * time.Hour
 	}
 	if backoffSkip(kind) {
 		switch {

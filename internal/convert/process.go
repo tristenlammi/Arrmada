@@ -70,10 +70,10 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		return
 	}
 	scratch := s.activeScratch(ctx)
-	// Room on both disks is checked before anything heavy: the HDR10+ read, crop detection
-	// and the format test all read the film, and a file that can't fit would only fail
-	// after them — then be picked again and do it all over.
-	if !s.spaceCheck(job, src, mi, plan, scratch) {
+	// Room on both disks and in the recycle bin is checked before anything heavy: the HDR10+
+	// read, crop detection and the format test all read the film, and a file that can't fit
+	// would only fail after them — then be picked again and do it all over.
+	if !s.spaceCheck(ctx, job, src, mi, plan, scratch) {
 		return
 	}
 
@@ -241,11 +241,17 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	s.finalizeOutput(ctx, job, src, dst, mi, plan)
 }
 
-// spaceCheck makes sure both disks have room for this file before any heavy work, and
-// skips it with a backoff when they don't. The scratch folder holds the encode; when it's
-// on another filesystem from the library, the finished file is then copied in next to the
-// original, so the library disk needs room for it too (on the same one it's a rename).
-func (s *Service) spaceCheck(job *Job, src string, mi *MediaInfo, plan Plan, scratch string) bool {
+// spaceCheck makes sure there's room for this file before any heavy work, and skips it with
+// a wait when there isn't. The original goes to the recycle bin, and one that doesn't fit
+// under the bin's cap would be purged within the hour, taking older deletions with it. The
+// scratch folder holds the encode; when it's on another filesystem from the library, the
+// finished file is then copied in next to the original, so the library disk needs room for
+// it too (on the same one it's a rename).
+func (s *Service) spaceCheck(ctx context.Context, job *Job, src string, mi *MediaInfo, plan Plan, scratch string) bool {
+	if ok, reason := s.binRoomFor(ctx, mi.SizeBytes); !ok {
+		s.finishSkip(job, SkipBinFull, reason)
+		return false
+	}
 	need := scratchNeeded(mi, plan, false)
 	if !s.scratchFits(job, scratch, need) {
 		return false
@@ -685,8 +691,20 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst string,
 		s.finish(job, StateFailed, "could not stage the converted file: "+err.Error()+" — kept the original")
 		return
 	}
+	// The bin may have filled during the encode. Ask again right before the original goes
+	// in, and hold the answer until it has: if it no longer fits, the encode is lost but
+	// nothing is destroyed.
+	s.binMu.Lock()
+	if ok, reason := s.binRoomFor(ctx, mi.SizeBytes); !ok {
+		s.binMu.Unlock()
+		_ = os.Remove(part)
+		s.finishSkip(job, SkipBinFull, reason+" — the encode was discarded and the original kept")
+		return
+	}
 	s.recordSwap(job, part, finalPath, src)
-	if err := s.retire(src); err != nil {
+	err = s.retire(src)
+	s.binMu.Unlock()
+	if err != nil {
 		_ = os.Remove(part)
 		s.clearSwap(part)
 		s.finish(job, StateFailed, "could not move the original to the recycle bin: "+err.Error()+" — kept the original")

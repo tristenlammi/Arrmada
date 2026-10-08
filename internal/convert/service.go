@@ -121,6 +121,11 @@ type Service struct {
 
 	// watching reports whether someone is watching Plex right now (from Insights).
 	watching atomic.Pointer[func() bool]
+	// binHeadroom reports the recycle bin's room under its cap (see SetBinHeadroom). binMu
+	// makes "does it fit" and the move into the bin one step, so two workers finishing
+	// together can't both fit into the same room.
+	binHeadroom atomic.Pointer[binHeadroomFunc]
+	binMu       sync.Mutex
 
 	indexMu       sync.Mutex // serializes index sweeps
 	indexScanning atomic.Bool
@@ -232,6 +237,37 @@ func (s *Service) isWatching() bool {
 		return (*fn)()
 	}
 	return false
+}
+
+// binHeadroomFunc reports how many more bytes the recycle bin takes before its cap purges
+// anything; capped is false with no cap, enabled false when recycling is off.
+type binHeadroomFunc func(ctx context.Context) (free int64, capped, enabled bool)
+
+// SetBinHeadroom tells Convert how to ask the recycle bin for its room under the cap.
+func (s *Service) SetBinHeadroom(fn func(ctx context.Context) (free int64, capped, enabled bool)) {
+	if fn == nil {
+		s.binHeadroom.Store(nil)
+		return
+	}
+	f := binHeadroomFunc(fn)
+	s.binHeadroom.Store(&f)
+}
+
+// binRoomFor reports whether an original of size bytes can go to the recycle bin without
+// the bin's cap purging it — and everything older — within the hour. A bin that's off or
+// uncapped always has room (off means the original is deleted once the result is
+// verified, which is what the owner chose). On false, reason says why for Problems.
+func (s *Service) binRoomFor(ctx context.Context, size int64) (ok bool, reason string) {
+	fn := s.binHeadroom.Load()
+	if fn == nil {
+		return true, ""
+	}
+	free, capped, enabled := (*fn)(ctx)
+	if !enabled || !capped || size <= free {
+		return true, ""
+	}
+	return false, fmt.Sprintf("the original (%s) doesn't fit in the recycle bin's free room (%s left under its size cap), "+
+		"so it would be permanently deleted within the hour. Raise the cap in Settings → Recycle bin", humanBytes(size), humanBytes(free))
 }
 
 // cleanScratch removes leftover per-job scratch files (partial encodes, test clips, HDR10+
