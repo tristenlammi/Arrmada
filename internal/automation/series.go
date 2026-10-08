@@ -1052,8 +1052,9 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			continue // not something we grabbed and not a library title — leave alone
 		}
 		// A release the user picked by hand imports regardless of what it scores against
-		// the current file — see importSeriesInto.
-		placed, matched, unresolved, importFailed := c.importSeriesInto(ctx, s, it.ContentPath, c.grabWasManual(ctx, it.Hash))
+		// the current file — but only for the season or episode it was picked for. See
+		// importSeriesInto.
+		placed, matched, unresolved, importFailed := c.importSeriesInto(ctx, s, it.ContentPath, c.grabForce(ctx, it.Hash))
 		imported := len(placed)
 		if importFailed > 0 {
 			// Some files resolved to wanted episodes but couldn't be placed (disk full,

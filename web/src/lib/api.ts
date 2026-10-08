@@ -1299,12 +1299,15 @@ export const api = {
     req<{ status: string }>(`/api/v1/series/${id}/search`, { method: "POST" }),
   seriesReleases: (id: number, season?: number, episode?: number) => {
     const q = new URLSearchParams();
-    if (season) q.set("season", String(season));
-    if (episode) q.set("episode", String(episode));
+    // Season 0 is Specials, not "no season" — send it whenever it's given.
+    if (season !== undefined) q.set("season", String(season));
+    if (episode !== undefined) q.set("episode", String(episode));
     const qs = q.toString();
     return req<ReleaseList>(`/api/v1/series/${id}/releases${qs ? `?${qs}` : ""}`);
   },
-  grabSeries: (id: number, body: { indexer?: string; download_url: string; title: string }) =>
+  // season/episode name the modal the release was picked from. The server skips the import
+  // quality gate only for episodes inside it; leave both out for the whole-show search.
+  grabSeries: (id: number, body: { indexer?: string; download_url: string; title: string; season?: number; episode?: number }) =>
     req<{ status: string }>(`/api/v1/series/${id}/grab`, { method: "POST", body: JSON.stringify(body) }),
   autoGrabSeries: (id: number, season: number, episode: number) =>
     req<{ status: string }>(`/api/v1/series/${id}/autograb`, { method: "POST", body: JSON.stringify({ season, episode }) }),

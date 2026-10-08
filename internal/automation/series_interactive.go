@@ -297,17 +297,19 @@ func joinSeasons(seasons []int) string {
 
 // GrabForSeries resolves a release and hands it to the download client in the series
 // category, recorded as a series grab (so seed cleanup manages it like an auto grab).
-func (c *Coordinator) GrabForSeries(ctx context.Context, seriesID int64, indexerName, downloadURL, title string) error {
-	return c.grabForSeries(ctx, seriesID, indexerName, downloadURL, title, true)
+// scope is the modal it was picked from — the whole show, a season or an episode — and
+// limits which episodes skip the import gate.
+func (c *Coordinator) GrabForSeries(ctx context.Context, seriesID int64, indexerName, downloadURL, title string, scope GrabScope) error {
+	return c.grabForSeries(ctx, seriesID, indexerName, downloadURL, title, true, scope)
 }
 
 // GrabForSeriesAuto is the same grab made by the automation rather than the user, so the
 // import gate still applies: a sweep must not replace a good file with a worse one.
 func (c *Coordinator) GrabForSeriesAuto(ctx context.Context, seriesID int64, indexerName, downloadURL, title string) error {
-	return c.grabForSeries(ctx, seriesID, indexerName, downloadURL, title, false)
+	return c.grabForSeries(ctx, seriesID, indexerName, downloadURL, title, false, WholeShow)
 }
 
-func (c *Coordinator) grabForSeries(ctx context.Context, seriesID int64, indexerName, downloadURL, title string, manual bool) error {
+func (c *Coordinator) grabForSeries(ctx context.Context, seriesID int64, indexerName, downloadURL, title string, manual bool, scope GrabScope) error {
 	hash, err := c.grabTo(ctx, indexerName, downloadURL, title, seriesCategory)
 	if err != nil {
 		return err
@@ -315,10 +317,12 @@ func (c *Coordinator) grabForSeries(ctx context.Context, seriesID int64, indexer
 	if s, err := c.series.Get(ctx, seriesID); err == nil {
 		c.recordSeriesGrab(ctx, seriesID, title, indexerName, s.QualityProfile, hash)
 	}
-	if manual {
-		// Picked out of the interactive search: the user saw the options and chose this
-		// one, so the import gate must not second-guess it on score.
-		c.markGrabManual(ctx, hash)
+	// manual: picked out of the interactive search (or Replace), so the import gate must
+	// not second-guess it on score — inside scope. Anything else the release carries is
+	// gated like an automatic grab. An automatic whole-show grab is the column defaults,
+	// so there's nothing to write.
+	if manual || scope != WholeShow {
+		c.markGrab(ctx, hash, manual, scope)
 	}
 	c.series.AddEvent(ctx, seriesID, "grabbed", title+" · "+indexerName)
 	return nil
@@ -326,7 +330,12 @@ func (c *Coordinator) grabForSeries(ctx context.Context, seriesID int64, indexer
 
 // GrabBestForScope auto-grabs the best eligible release for a season/episode scope —
 // the per-episode / per-season "grab" quick action.
-func (c *Coordinator) GrabBestForScope(ctx context.Context, seriesID int64, season, episode int) error {
+//
+// manual is false for the quick buttons: the app picked the release, not the user, so the
+// import gate applies to every file — a season Grab that lands a complete-series pack can
+// fill gaps but never downgrade what's there. Replace passes true, scoped to its episode.
+func (c *Coordinator) GrabBestForScope(ctx context.Context, seriesID int64, season, episode int, manual bool) error {
+	scope := ScopeFor(season, episode)
 	list, err := c.RankSeriesReleases(ctx, seriesID, season, episode)
 	if err != nil {
 		return err
@@ -351,11 +360,11 @@ func (c *Coordinator) GrabBestForScope(ctx context.Context, seriesID int64, seas
 	// singles only when no pack is eligible, which is the normal state of an airing season.
 	if episode <= 0 {
 		if rel := pick(true); rel != nil {
-			return c.GrabForSeries(ctx, seriesID, rel.Indexer, rel.DownloadURL, rel.Title)
+			return c.grabForSeries(ctx, seriesID, rel.Indexer, rel.DownloadURL, rel.Title, manual, scope)
 		}
 	}
 	if rel := pick(false); rel != nil {
-		return c.GrabForSeries(ctx, seriesID, rel.Indexer, rel.DownloadURL, rel.Title)
+		return c.grabForSeries(ctx, seriesID, rel.Indexer, rel.DownloadURL, rel.Title, manual, scope)
 	}
 	return fmt.Errorf("no eligible release found for that %s", scopeLabel(season, episode))
 }
@@ -492,7 +501,7 @@ func (c *Coordinator) ManualImportSeries(ctx context.Context, seriesID int64, pa
 	// still has gaps, so when a fix changes what WOULD have imported, pointing manual
 	// import at the folder is what applies it.
 	if fi, statErr := os.Stat(path); statErr == nil && fi.IsDir() {
-		placedRefs, matched, unresolved, importFailed := c.importSeriesInto(ctx, s, path, true)
+		placedRefs, matched, unresolved, importFailed := c.importSeriesInto(ctx, s, path, forceAll)
 		placed := len(placedRefs)
 		if matched == 0 {
 			return fmt.Errorf("none of the video files in that folder could be matched to an episode of %q", s.Title)

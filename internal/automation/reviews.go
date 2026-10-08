@@ -330,7 +330,7 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 		if err != nil {
 			return err
 		}
-		placed, matched, unresolved, failed := c.importSeriesInto(ctx, s, r.ContentPath, true)
+		placed, matched, unresolved, failed := c.importSeriesInto(ctx, s, r.ContentPath, forceAll)
 		n := len(placed)
 		if matched == 0 {
 			// Wrapped in ErrNothingToImport so the API answers 422 rather than 500: the
@@ -429,9 +429,14 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64) erro
 // the AUTOMATION downgrading a file; when the user picked the release, "is it better" was
 // already answered by them choosing it.
 //
+// But only for what they chose it FOR. A complete-series pack picked from the Season 3
+// modal, or landed by Replace on one episode, carries every other season too, and the user
+// said nothing about those — so force.Scope limits the say-so, and every episode outside
+// it goes through the gate like an automatic grab.
+//
 // placed lists the episodes that got a new file, so callers can act on exactly those
 // (the subtitles hook used to be handed only the series and queued the whole show).
-func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, contentPath string, force bool) (placed []series.EpisodeRef, matched, unresolved, failed int) {
+func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, contentPath string, force forceRule) (placed []series.EpisodeRef, matched, unresolved, failed int) {
 	// Unpack any archives first (scene releases ship the episode inside a RAR set — this
 	// is the Unpackerr job). Recursive, so a season pack's per-episode subfolders unpack.
 	if fi, err := os.Stat(contentPath); err == nil && fi.IsDir() {
@@ -551,15 +556,12 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		if parser.Parse(sourceName).Resolution == "" && release.Resolution != "" {
 			sourceName = filepath.Base(contentPath)
 		}
-		wanted := refs[:0:0]
-		for _, ref := range refs {
-			if force || c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rel, sourceName, v.Size) {
-				wanted = append(wanted, ref)
-			}
-		}
-		if force && len(wanted) > 0 {
+		wanted, forced := refsToPlace(refs, force, func(ref series.EpisodeRef) bool {
+			return c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rel, sourceName, v.Size)
+		})
+		if len(forced) > 0 {
 			c.log.Info("series import: replacing on the user's say-so — quality gate skipped",
-				"series", s.Title, "file", filepath.Base(v.Path), "resolved_to", refsLabel(refs))
+				"series", s.Title, "file", filepath.Base(v.Path), "resolved_to", refsLabel(forced))
 		}
 		if len(wanted) == 0 {
 			// Say so. Without this a whole pack can resolve onto episodes that already

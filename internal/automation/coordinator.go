@@ -1099,7 +1099,9 @@ func (c *Coordinator) RegrabEpisode(ctx context.Context, seriesID int64, season,
 			c.addBlockSeries(ctx, seriesID, title, "", "replaced by regrab")
 		}
 	}
-	return c.GrabBestForScope(ctx, seriesID, season, episode)
+	// Replace is the user saying "replace this episode", so its file goes in whatever it
+	// scores — but only this episode's. Anything else the release carries is gated.
+	return c.GrabBestForScope(ctx, seriesID, season, episode, true)
 }
 
 // stallSample is one observation of a grab's download progress: how far along it was

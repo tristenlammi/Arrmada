@@ -1,0 +1,11 @@
+-- 0091_grab_scope: which part of the show a grab was made for — '' (the whole show),
+-- 'S03' (one season) or 'S03E04' (one episode).
+--
+-- grabs.manual says the user chose the release, which skips the import's quality gate. On
+-- its own it skipped the gate for EVERY file in the release, so a complete-series pack
+-- picked from the Season 3 modal (or landed by a quick Replace) overwrote every season with
+-- no comparison. The scope narrows that say-so to what the user actually asked for; the rest
+-- of the release goes through the gate like any automatic grab.
+--
+-- No backfill: older manual rows keep scope '' and import exactly as they did before.
+ALTER TABLE grabs ADD COLUMN scope TEXT NOT NULL DEFAULT '';

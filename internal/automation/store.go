@@ -214,30 +214,51 @@ func boolToInt(b bool) int {
 // Set after recording rather than as a column on every record path: only two callers ever
 // want it, and threading a bool through every grab recorder for their sake would put the
 // question in a dozen places that have no opinion on it.
+//
+// It covers the whole release, which is what movies and books want and what an uploaded
+// series torrent means. A series grab made for one season or episode uses markGrab.
 func (c *Coordinator) markGrabManual(ctx context.Context, infoHash string) {
+	c.markGrab(ctx, infoHash, true, WholeShow)
+}
+
+// markGrab records, on the most recent grab for this info hash, whether the user chose the
+// release and which part of the show it was chosen for. The import gate is skipped only for
+// episodes inside that scope.
+func (c *Coordinator) markGrab(ctx context.Context, infoHash string, manual bool, scope GrabScope) {
 	if infoHash == "" {
 		return
 	}
 	if _, err := c.db.ExecContext(ctx,
-		`UPDATE grabs SET manual = 1
+		`UPDATE grabs SET manual = ?, scope = ?
 		  WHERE id = (SELECT id FROM grabs WHERE lower(info_hash) = lower(?) ORDER BY id DESC LIMIT 1)`,
-		infoHash); err != nil {
-		c.log.Warn("automation: could not mark the grab as manual", "err", err)
+		boolToInt(manual), scope.String(), infoHash); err != nil {
+		c.log.Warn("automation: could not record the grab's say-so and scope", "err", err)
 	}
 }
 
-// grabWasManual reports whether this download came from a release the user chose by hand.
+// grabForce reads which episodes of this download skip the import gate: none for an
+// automatic grab, the recorded scope for one the user chose.
 // Matched on info hash only: a name can be rewritten by the client, and getting this
 // wrong in the permissive direction would let an automatic grab overwrite a better file.
-func (c *Coordinator) grabWasManual(ctx context.Context, infoHash string) bool {
+func (c *Coordinator) grabForce(ctx context.Context, infoHash string) forceRule {
 	if infoHash == "" {
-		return false
+		return forceRule{}
 	}
 	var manual int
-	_ = c.db.QueryRowContext(ctx,
-		`SELECT manual FROM grabs WHERE lower(info_hash) = lower(?) ORDER BY id DESC LIMIT 1`,
-		infoHash).Scan(&manual)
-	return manual != 0
+	var scope string
+	if err := c.db.QueryRowContext(ctx,
+		`SELECT manual, scope FROM grabs WHERE lower(info_hash) = lower(?) ORDER BY id DESC LIMIT 1`,
+		infoHash).Scan(&manual, &scope); err != nil || manual == 0 {
+		return forceRule{}
+	}
+	sc, ok := parseGrabScope(scope)
+	if !ok {
+		// Unreadable scope: gate everything. Too strict only costs a re-pick; too
+		// permissive is the library-wide overwrite this column exists to stop.
+		c.log.Warn("automation: unreadable grab scope — applying the import gate", "scope", scope)
+		return forceRule{}
+	}
+	return forceRule{On: true, Scope: sc}
 }
 
 // pendingGrabs returns grabs still awaiting import.

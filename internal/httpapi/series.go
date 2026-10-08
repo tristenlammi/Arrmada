@@ -438,6 +438,10 @@ func (a *api) handleGrabSeries(w http.ResponseWriter, r *http.Request) {
 		Indexer     string `json:"indexer"`
 		DownloadURL string `json:"download_url"`
 		Title       string `json:"title"`
+		// The modal it was picked from. Absent season = the whole-show search; season 0
+		// is Specials, a real season — so these are pointers, not zero-means-unset.
+		Season  *int `json:"season"`
+		Episode *int `json:"episode"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -446,11 +450,36 @@ func (a *api) handleGrabSeries(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "download_url is required")
 		return
 	}
-	if err := a.deps.Automation.GrabForSeries(r.Context(), id, req.Indexer, req.DownloadURL, req.Title); err != nil {
+	scope, ok := grabScopeOf(req.Season, req.Episode)
+	if !ok {
+		a.writeError(w, http.StatusBadRequest, "episode needs a season, and neither can be negative")
+		return
+	}
+	if err := a.deps.Automation.GrabForSeries(r.Context(), id, req.Indexer, req.DownloadURL, req.Title, scope); err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "grabbed", "title": req.Title})
+}
+
+// grabScopeOf turns the optional season/episode of a grab request into its scope. The
+// scope decides which episodes skip the import gate, so anything ambiguous is refused
+// rather than guessed at — guessing wide would re-open the overwrite it exists to stop.
+func grabScopeOf(season, episode *int) (automation.GrabScope, bool) {
+	if season == nil {
+		if episode != nil {
+			return automation.GrabScope{}, false
+		}
+		return automation.WholeShow, true
+	}
+	ep := 0
+	if episode != nil {
+		ep = *episode
+	}
+	if *season < 0 || ep < 0 {
+		return automation.GrabScope{}, false
+	}
+	return automation.ScopeFor(*season, ep), true
 }
 
 // handleAutoGrabSeries auto-grabs the best eligible release for a season/episode
@@ -470,7 +499,8 @@ func (a *api) handleAutoGrabSeries(w http.ResponseWriter, r *http.Request) {
 	go func(sid, season, episode int64) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
-		if err := a.deps.Automation.GrabBestForScope(ctx, sid, int(season), int(episode)); err != nil {
+		// Not manual: the app picks the release, so the import gate still guards every file.
+		if err := a.deps.Automation.GrabBestForScope(ctx, sid, int(season), int(episode), false); err != nil {
 			a.deps.Log.Warn("series scope auto-grab failed", "series_id", sid, "err", err)
 		}
 	}(id, int64(req.Season), int64(req.Episode))
