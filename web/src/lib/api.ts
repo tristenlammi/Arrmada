@@ -1222,8 +1222,9 @@ export const api = {
   // targetKind names what targetId is; the server refuses one that isn't the review's own kind.
   importReview: (id: number, targetId?: number, targetKind?: ReviewKind) =>
     req<{ status: string }>(`/api/v1/reviews/${id}/import`, { method: "POST", body: JSON.stringify({ target_id: targetId ?? 0, target_kind: targetKind ?? "" }) }),
+  // truncated: more items matched than the server lists — the picker asks for a filter.
   reviewTargets: (id: number, q: string) =>
-    req<{ targets: ReviewTarget[] }>(`/api/v1/reviews/${id}/targets?q=${encodeURIComponent(q)}`).then((r) => r.targets),
+    req<{ targets: ReviewTarget[]; truncated?: boolean }>(`/api/v1/reviews/${id}/targets?q=${encodeURIComponent(q)}`),
 
   movies: () => req<{ movies: Movie[]; metadata_available: boolean }>("/api/v1/movies"),
   lookupMovies: (q: string) =>

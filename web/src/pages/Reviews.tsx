@@ -107,6 +107,7 @@ function kindLabel(kind: ReviewKind): string {
 // movies, whose ids would land on an unrelated book or album.
 function ReassignModal({ review, onClose, onPicked }: { review: ImportReview; onClose: () => void; onPicked: (targetId: number, label: string) => void }) {
   const [items, setItems] = useState<ReviewTarget[] | null>(null);
+  const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const label = kindLabel(review.media_type);
@@ -116,8 +117,8 @@ function ReassignModal({ review, onClose, onPicked }: { review: ImportReview; on
     let live = true;
     const t = window.setTimeout(() => {
       api.reviewTargets(review.id, q.trim())
-        .then((list) => { if (live) { setItems(list); setError(null); } })
-        .catch((e) => { if (live) { setItems([]); setError((e as Error).message); } });
+        .then((r) => { if (live) { setItems(r.targets); setTruncated(!!r.truncated); setError(null); } })
+        .catch((e) => { if (live) { setItems([]); setTruncated(false); setError((e as Error).message); } });
     }, q ? 250 : 0);
     return () => { live = false; window.clearTimeout(t); };
   }, [review.id, q]);
@@ -147,6 +148,9 @@ function ReassignModal({ review, onClose, onPicked }: { review: ImportReview; on
             </button>
           ))}
         </div>
+        {truncated && !error && (
+          <p className="mb-0 mt-2 text-[11px] text-ink-faint">Showing the first {items?.length ?? 0} — type to narrow.</p>
+        )}
       </div>
     </div>
   );

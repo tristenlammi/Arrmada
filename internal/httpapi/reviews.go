@@ -56,12 +56,12 @@ func (a *api) handleReviewTargets(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	list, err := a.deps.Automation.ReviewTargets(r.Context(), id, r.URL.Query().Get("q"), 0)
+	list, truncated, err := a.deps.Automation.ReviewTargets(r.Context(), id, r.URL.Query().Get("q"), 0)
 	if err != nil {
 		a.writeReviewError(w, err, "could not list library items")
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"targets": list})
+	a.writeJSON(w, http.StatusOK, map[string]any{"targets": list, "truncated": truncated})
 }
 
 // handleImportReview imports a held download into the item it was grabbed for, or

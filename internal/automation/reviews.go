@@ -370,10 +370,14 @@ func (c *Coordinator) DismissReview(ctx context.Context, id int64) error {
 // always items of the review's own kind, filtered by q (title, or author/artist).
 // The picker used to load the movie list for anything that wasn't a show, so a book or
 // album review offered movies — and the chosen movie's id was then used as a book id.
-func (c *Coordinator) ReviewTargets(ctx context.Context, reviewID int64, q string, limit int) ([]ReviewTarget, error) {
+//
+// truncated reports that more items matched than limit allows, so the picker can say
+// "type to narrow" — otherwise a big library's empty filter shows the first 200 titles
+// and anything later in the alphabet looks like it isn't in the library at all.
+func (c *Coordinator) ReviewTargets(ctx context.Context, reviewID int64, q string, limit int) (targets []ReviewTarget, truncated bool, err error) {
 	r, err := c.getReview(ctx, reviewID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if limit <= 0 || limit > reviewTargetCap {
 		limit = reviewTargetCap
@@ -395,11 +399,11 @@ func (c *Coordinator) ReviewTargets(ctx context.Context, reviewID int64, q strin
 	switch r.MediaType {
 	case "movie":
 		if c.movies == nil {
-			return nil, moduleOffError{reviewModuleLabel[r.MediaType]}
+			return nil, false, moduleOffError{reviewModuleLabel[r.MediaType]}
 		}
 		list, err := c.movies.List(ctx)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		for _, m := range list {
 			if matches(m.Title) {
@@ -408,11 +412,11 @@ func (c *Coordinator) ReviewTargets(ctx context.Context, reviewID int64, q strin
 		}
 	case "series":
 		if c.series == nil {
-			return nil, moduleOffError{reviewModuleLabel[r.MediaType]}
+			return nil, false, moduleOffError{reviewModuleLabel[r.MediaType]}
 		}
 		list, err := c.series.List(ctx)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		for _, s := range list {
 			if matches(s.Title) {
@@ -421,11 +425,11 @@ func (c *Coordinator) ReviewTargets(ctx context.Context, reviewID int64, q strin
 		}
 	case "book":
 		if c.books == nil {
-			return nil, moduleOffError{reviewModuleLabel[r.MediaType]}
+			return nil, false, moduleOffError{reviewModuleLabel[r.MediaType]}
 		}
 		list, err := c.books.List(ctx)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		for _, b := range list {
 			if matches(b.Title, b.Author) {
@@ -434,26 +438,27 @@ func (c *Coordinator) ReviewTargets(ctx context.Context, reviewID int64, q strin
 		}
 	case "music":
 		if c.music == nil {
-			return nil, moduleOffError{reviewModuleLabel[r.MediaType]}
+			return nil, false, moduleOffError{reviewModuleLabel[r.MediaType]}
 		}
 		// Albums are searched in SQL: a library of a few hundred artists holds thousands
 		// of albums, and one searchable list replaces the artist-then-album two-step.
-		hits, err := c.music.SearchAlbums(ctx, q, limit)
+		hits, err := c.music.SearchAlbums(ctx, q, limit+1) // one extra to tell "exactly limit" from "more"
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		for _, h := range hits {
 			out = append(out, ReviewTarget{ID: h.ID, Kind: "music", Title: h.Title, Year: h.Year, Subtitle: h.Artist, PosterURL: h.CoverURL})
 		}
-		return out, nil
 	default:
-		return nil, fmt.Errorf("unknown media type %q", r.MediaType)
+		return nil, false, fmt.Errorf("unknown media type %q", r.MediaType)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return strings.ToLower(out[i].Title) < strings.ToLower(out[j].Title) })
+	if r.MediaType != "music" { // albums come back already ordered (by artist) from SQL
+		sort.SliceStable(out, func(i, j int) bool { return strings.ToLower(out[i].Title) < strings.ToLower(out[j].Title) })
+	}
 	if len(out) > limit {
-		out = out[:limit]
+		return out[:limit], true, nil
 	}
-	return out, nil
+	return out, false, nil
 }
 
 // ImportReview imports a held download into a library item and resolves it. When

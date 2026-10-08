@@ -105,7 +105,7 @@ func TestReviewTargetsForMusicListsAlbums(t *testing.T) {
 	mustExec(t, c, `INSERT INTO movies (id, tmdb_id, title, monitored) VALUES (1, 1, 'OK Computer: The Movie', 1)`)
 
 	id := seedReview(t, c, "music", 0, t.TempDir())
-	all, err := c.ReviewTargets(ctx, id, "", 0)
+	all, _, err := c.ReviewTargets(ctx, id, "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,16 +121,16 @@ func TestReviewTargetsForMusicListsAlbums(t *testing.T) {
 		}
 	}
 
-	byArtist, _ := c.ReviewTargets(ctx, id, "radio", 0)
+	byArtist, _, _ := c.ReviewTargets(ctx, id, "radio", 0)
 	if len(byArtist) != 2 {
 		t.Errorf("q=radio should match both Radiohead albums, got %+v", byArtist)
 	}
-	byTitle, _ := c.ReviewTargets(ctx, id, "dumm", 0)
+	byTitle, _, _ := c.ReviewTargets(ctx, id, "dumm", 0)
 	if len(byTitle) != 1 || byTitle[0].ID != 3 {
 		t.Errorf("q=dumm should match only Dummy, got %+v", byTitle)
 	}
 	// LIKE wildcards in the query are literal, not "match anything".
-	if pct, _ := c.ReviewTargets(ctx, id, "%", 0); len(pct) != 0 {
+	if pct, _, _ := c.ReviewTargets(ctx, id, "%", 0); len(pct) != 0 {
 		t.Errorf("q=%% matched %d albums; it should be literal", len(pct))
 	}
 }
@@ -145,14 +145,14 @@ func TestReviewTargetsForBooksListsBooks(t *testing.T) {
 	mustExec(t, c, `INSERT INTO movies (tmdb_id, title, monitored) VALUES (1, 'Dune', 1)`)
 
 	id := seedReview(t, c, "book", 0, t.TempDir())
-	got, err := c.ReviewTargets(ctx, id, "sanderson", 0)
+	got, _, err := c.ReviewTargets(ctx, id, "sanderson", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0].Title != "Mistborn" || got[0].Subtitle != "Brandon Sanderson" || got[0].Kind != "book" {
 		t.Errorf("q=sanderson → %+v", got)
 	}
-	all, _ := c.ReviewTargets(ctx, id, "", 0)
+	all, _, _ := c.ReviewTargets(ctx, id, "", 0)
 	if len(all) != 2 {
 		t.Errorf("want 2 books and no movies, got %+v", all)
 	}
@@ -163,8 +163,37 @@ func TestReviewTargetsModuleOff(t *testing.T) {
 	c, _, ctx := reviewTestCoord(t)
 	c.music = nil
 	id := seedReview(t, c, "music", 0, t.TempDir())
-	_, err := c.ReviewTargets(ctx, id, "", 0)
+	_, _, err := c.ReviewTargets(ctx, id, "", 0)
 	if !errors.Is(err, ErrModuleOff) || err.Error() != "Turn on Music to import this" {
 		t.Errorf("want ErrModuleOff naming Music, got %v", err)
+	}
+}
+
+// A library bigger than the picker's limit says so, for books and albums alike, so the
+// page can ask for a filter instead of implying the rest don't exist.
+func TestReviewTargetsReportsTruncation(t *testing.T) {
+	c, bk, ctx := reviewTestCoord(t)
+	_, _ = bk.AddWorks(ctx, []metadata.BookResult{
+		{Key: "OL1W", Title: "Dune", Author: "Frank Herbert"},
+		{Key: "OL2W", Title: "Mistborn", Author: "Brandon Sanderson"},
+		{Key: "OL3W", Title: "Zodiac", Author: "Neal Stephenson"},
+	}, "", true)
+	id := seedReview(t, c, "book", 0, t.TempDir())
+	if got, more, _ := c.ReviewTargets(ctx, id, "", 2); len(got) != 2 || !more {
+		t.Errorf("limit 2 of 3 books: %d rows, truncated=%v; want 2 and true", len(got), more)
+	}
+	if got, more, _ := c.ReviewTargets(ctx, id, "", 3); len(got) != 3 || more {
+		t.Errorf("limit 3 of 3 books: %d rows, truncated=%v; want 3 and false", len(got), more)
+	}
+
+	mustExec(t, c, `INSERT INTO artists (id, mbid, name) VALUES (1, 'a1', 'Radiohead')`)
+	mustExec(t, c, `INSERT INTO albums (id, artist_id, mbid, title, year) VALUES
+		(1, 1, 'r1', 'OK Computer', 1997), (2, 1, 'r2', 'Kid A', 2000), (3, 1, 'r3', 'Amnesiac', 2001)`)
+	mid := seedReview(t, c, "music", 0, t.TempDir())
+	if got, more, _ := c.ReviewTargets(ctx, mid, "", 2); len(got) != 2 || !more {
+		t.Errorf("limit 2 of 3 albums: %d rows, truncated=%v; want 2 and true", len(got), more)
+	}
+	if got, more, _ := c.ReviewTargets(ctx, mid, "", 3); len(got) != 3 || more {
+		t.Errorf("limit 3 of 3 albums: %d rows, truncated=%v; want 3 and false", len(got), more)
 	}
 }
