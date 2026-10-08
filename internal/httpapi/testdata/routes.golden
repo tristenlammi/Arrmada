@@ -139,14 +139,17 @@ GET /api/v1/quality/profiles/{ref} staff -
 GET /api/v1/queue staff -
 GET /api/v1/recycle staff -
 GET /api/v1/recycle/items staff -
+GET /api/v1/recycle/mode staff -
 GET /api/v1/requests user ext
 GET /api/v1/reviews staff -
+GET /api/v1/reviews/{id}/targets staff -
 GET /api/v1/series staff -
 GET /api/v1/series/lookup staff -
 GET /api/v1/series/unmatched staff -
 GET /api/v1/series/{id} staff -
 GET /api/v1/series/{id}/aliases staff -
 GET /api/v1/series/{id}/blocklist staff -
+GET /api/v1/series/{id}/delete-preview staff -
 GET /api/v1/series/{id}/duplicates staff -
 GET /api/v1/series/{id}/history staff -
 GET /api/v1/series/{id}/manualimport staff -
@@ -167,6 +170,7 @@ GET /api/v1/subtitles/settings staff -
 GET /api/v1/system/browse staff -
 GET /api/v1/system/library staff -
 GET /api/v1/users admin -
+GET /api/v1/users/{id}/impact admin -
 GET /api/v1/ws user -
 POST /api/v1/apikeys/{id}/test staff -
 POST /api/v1/audioserver/import admin -
@@ -177,7 +181,6 @@ POST /api/v1/auth/plex/pin public ext
 POST /api/v1/auth/setup public ext
 POST /api/v1/books staff -
 POST /api/v1/books/author staff -
-POST /api/v1/books/dedupe staff -
 POST /api/v1/books/scan staff -
 POST /api/v1/books/search-missing staff -
 POST /api/v1/books/series-backfill staff -

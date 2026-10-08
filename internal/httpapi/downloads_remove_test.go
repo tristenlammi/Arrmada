@@ -99,18 +99,18 @@ func TestDeleteDownloadRejectsNonHash(t *testing.T) {
 	}
 }
 
-// Pause all / Resume all on the Downloads page send the literal "all" — that one stays
-// allowed for pause and resume, which are harmless and undone with a click.
-func TestPauseResumeAll(t *testing.T) {
+// Pause all on the Downloads page sends the literal "all" — that one stays allowed: pausing
+// is harmless and undone with a click. (Resume all is no longer forwarded as "all": it
+// resumes each paused torrent the disk guard isn't holding — see
+// TestResumeAllSkipsTorrentsTheGuardHolds.)
+func TestPauseAll(t *testing.T) {
 	s, q, mgr := downloadServer(t)
-	for _, p := range []string{"/api/v1/queue/all/pause", "/api/v1/queue/all/resume"} {
-		if rec := s.do("POST", p, mgr); rec.Code != http.StatusOK {
-			t.Errorf("POST %s: HTTP %d, want 200: %s", p, rec.Code, rec.Body)
-		}
+	if rec := s.do("POST", "/api/v1/queue/all/pause", mgr); rec.Code != http.StatusOK {
+		t.Errorf("POST pause all: HTTP %d, want 200: %s", rec.Code, rec.Body)
 	}
 	_, forms := q.snapshot()
-	if len(forms) != 2 || forms[0].Get("hashes") != "all" || forms[1].Get("hashes") != "all" {
-		t.Fatalf("client calls = %v, want two calls with hashes=all", forms)
+	if len(forms) != 1 || forms[0].Get("hashes") != "all" {
+		t.Fatalf("client calls = %v, want one call with hashes=all", forms)
 	}
 }
 

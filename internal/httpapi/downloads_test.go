@@ -127,10 +127,12 @@ func TestResumeAllSkipsTorrentsTheGuardHolds(t *testing.T) {
 
 // Resuming a held torrent from its card is refused with a reason and a way out.
 func TestResumeHeldTorrentIsRefused(t *testing.T) {
-	a, fq, ctx := guardAPI(t, map[string]string{"aaa": "downloading"})
+	// A real 40-character hash: single-torrent routes refuse anything else.
+	h := strings.Repeat("a", 40)
+	a, fq, ctx := guardAPI(t, map[string]string{h: "downloading"})
 	_ = a.deps.DiskGuard.Check(ctx)
 
-	rec := postResume(a, "AAA")
+	rec := postResume(a, strings.ToUpper(h)) // hashes match case-insensitively
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("held resume: %d %s, want 409", rec.Code, rec.Body.String())
 	}
@@ -143,7 +145,7 @@ func TestResumeHeldTorrentIsRefused(t *testing.T) {
 
 	// With the guard off it isn't holding anything, so the same resume goes through.
 	_ = a.deps.Settings.SetBool(ctx, download.KeyDiskGuard, false)
-	if rec := postResume(a, "aaa"); rec.Code != http.StatusOK {
+	if rec := postResume(a, h); rec.Code != http.StatusOK {
 		t.Errorf("resume with the guard off: %d %s", rec.Code, rec.Body.String())
 	}
 }
