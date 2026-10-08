@@ -137,7 +137,6 @@ export function Movies() {
     if (!anyDownloading) return;
     const t = setInterval(refresh, 4000);
     return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [anyDownloading]);
 
   const doDelete = async (id: number, deleteFiles: boolean) => {

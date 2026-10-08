@@ -945,7 +945,6 @@ function PlexSettings({ cfg, onSaved, flash }: { cfg: PlexConfig | null; onSaved
       const { id, auth_url } = await api.insightsPlexAuthStart();
       const popup = window.open(auth_url, "plex-auth", "width=800,height=720");
       const deadline = Date.now() + 3 * 60 * 1000;
-      // eslint-disable-next-line no-constant-condition
       while (true) {
         await new Promise((r) => setTimeout(r, 2000));
         if (Date.now() > deadline) { flash("Plex sign-in timed out — try again."); break; }

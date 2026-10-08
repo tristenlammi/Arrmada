@@ -107,7 +107,7 @@ function UnmatchedReview({ media, reloadKey, flash }: { media: "movie" | "series
 
   const load = () =>
     (media === "movie" ? api.moviesUnmatched() : api.seriesUnmatched()).then(setItems).catch(() => setItems([]));
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [reloadKey]);
+  useEffect(() => { load(); }, [reloadKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const pick = async (folder: string, tmdb_id: number) => {
     setBusy(true);
@@ -197,7 +197,7 @@ export function FolderPicker({ initial, onClose, onSelect }: { initial?: string;
   const [data, setData] = useState<BrowseResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const go = (path?: string) => { setErr(null); api.browseFolders(path).then(setData).catch((e) => setErr((e as Error).message)); };
-  useEffect(() => { go(initial); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { go(initial); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-start justify-center overflow-y-auto p-6" style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose}>

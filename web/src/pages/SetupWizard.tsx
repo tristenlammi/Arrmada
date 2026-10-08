@@ -38,7 +38,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
       f.key, s.libraries_chosen ? s.library[f.key] : (s.suggestions[f.key] ?? s.library[f.key] ?? ""),
     ])) as unknown as LibraryPaths);
   }).catch((e) => setError((e as Error).message));
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+  useEffect(() => { load(); }, []);
 
   const run = async (fn: () => Promise<void>) => {
     setBusy(true); setError(null);

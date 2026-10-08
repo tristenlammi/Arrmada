@@ -959,7 +959,6 @@ function PosterRow({ title, load, ctx, order, excludeOwned, hideOnError, hideUnt
       pull(false);
     }, 30000);
     return () => { alive = false; clearInterval(t); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const scroll = (dir: -1 | 1) => scroller.current?.scrollBy({ left: dir * Math.max(600, scroller.current.clientWidth * 0.8), behavior: "smooth" });
