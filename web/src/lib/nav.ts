@@ -2,6 +2,8 @@ export interface NavItem {
   to: string;
   label: string;
   end?: boolean;
+  /** A short tag shown beside the label, e.g. "Preview" for a module still being hardened. */
+  badge?: string;
 }
 
 export interface NavGroup {
@@ -25,7 +27,7 @@ export const NAV: NavGroup[] = [
       { to: "/movies", label: "Movies" },
       { to: "/series", label: "Series" },
       { to: "/books", label: "Books" },
-      { to: "/music", label: "Music" },
+      { to: "/music", label: "Music", badge: "Preview" },
     ],
   },
   {

@@ -201,6 +201,14 @@ func main() {
 	go booksSvc.MaybeStartUpgrade(context.Background())
 	// MusicBrainz needs no key, the way Open Library needs none for books.
 	musicSvc := music.NewService(st.DB(), metadata.NewMusicBrainz(), log)
+	// Music is off by default now (it's a preview), but an install already using it must
+	// not have it switched off underneath it by an upgrade: an unsaved toggle on a library
+	// with artists is pinned on. A saved choice, either way, is never touched.
+	if changed, err := settingsSvc.EnsureModuleDefault(context.Background(), settings.KeyModuleMusic, musicSvc.HasArtists); err != nil {
+		log.Warn("music: couldn't check whether to keep the Music module on", "err", err)
+	} else if changed {
+		log.Info("music: kept the Music module on because your library has artists. Switch it off in Settings → System → Modules.")
+	}
 	// Recycle bin: default to <library>/.recycle so deletes are undoable; "off" hard-deletes.
 	recycleDir := cfg.RecycleDir
 	switch recycleDir {
@@ -334,6 +342,14 @@ func main() {
 	coordinator.SetBooks(booksSvc)
 	// Music shares the same importer; albums land in their own category.
 	coordinator.SetMusic(musicSvc)
+	// Switching Music off in Settings stops its searches, imports and manual actions on the
+	// next cycle; Books keeps its old behaviour (the toggle only hides it) for now.
+	coordinator.SetModuleGate(func(ctx context.Context, module string) bool {
+		if module == "music" {
+			return settingsSvc.GetBool(ctx, settings.KeyModuleMusic, settings.ModuleMusicDefault)
+		}
+		return true
+	})
 	// Book file deletion honors the same recycle bin as movies.
 	coordinator.SetRecycleDir(recycleDir)
 	sched.Register("import-completed", 30*time.Second, false, func(ctx context.Context) error {

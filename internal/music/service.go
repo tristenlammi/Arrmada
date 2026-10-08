@@ -32,6 +32,10 @@ func (s *Service) Lookup(ctx context.Context, query string) ([]metadata.ArtistRe
 // ListArtists returns the library.
 func (s *Service) ListArtists(ctx context.Context) ([]Artist, error) { return s.repo.ListArtists(ctx) }
 
+// HasArtists reports whether anyone has added an artist, which is what decides whether an
+// existing install keeps the Music module on now that it's off by default.
+func (s *Service) HasArtists(ctx context.Context) (bool, error) { return s.repo.HasArtists(ctx) }
+
 // GetArtist returns one artist with its albums.
 func (s *Service) GetArtist(ctx context.Context, id int64) (Artist, error) {
 	a, err := s.repo.GetArtist(ctx, id)
@@ -167,6 +171,24 @@ func (s *Service) Refresh(ctx context.Context, id int64) (Artist, error) {
 // Albums returns an artist's albums.
 func (s *Service) Albums(ctx context.Context, artistID int64) ([]Album, error) {
 	return s.repo.AlbumsFor(ctx, artistID)
+}
+
+// WantedAlbums returns the monitored albums of monitored artists, with track counts.
+func (s *Service) WantedAlbums(ctx context.Context) ([]Album, error) { return s.repo.WantedAlbums(ctx) }
+
+// RecordSearchMiss counts a search that found nothing usable for an album (see the sweep).
+func (s *Service) RecordSearchMiss(ctx context.Context, albumID int64) error {
+	return s.repo.RecordSearchMiss(ctx, albumID)
+}
+
+// ResetSearchMisses clears an album's search backoff after a grab.
+func (s *Service) ResetSearchMisses(ctx context.Context, albumID int64) error {
+	return s.repo.ResetSearchMisses(ctx, albumID)
+}
+
+// TouchSearch stamps an album's search time without counting a miss (see the sweep).
+func (s *Service) TouchSearch(ctx context.Context, albumID int64) error {
+	return s.repo.TouchSearch(ctx, albumID)
 }
 
 // Tracks returns an album's tracks.

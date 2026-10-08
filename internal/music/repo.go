@@ -95,6 +95,14 @@ func (r *Repo) artistStats(ctx context.Context) (map[int64]ArtistStats, error) {
 	return out, rows.Err()
 }
 
+// HasArtists reports whether the library holds any artist at all. A cheap EXISTS rather
+// than a count: it's asked at startup only to tell "never used Music" from "uses it".
+func (r *Repo) HasArtists(ctx context.Context) (bool, error) {
+	var has bool
+	err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM artists)`).Scan(&has)
+	return has, err
+}
+
 // GetArtist returns one artist by id (without albums).
 func (r *Repo) GetArtist(ctx context.Context, id int64) (Artist, error) {
 	row := r.db.QueryRowContext(ctx, `SELECT `+artistCols+` FROM artists WHERE id = ?`, id)
@@ -175,18 +183,26 @@ func (r *Repo) DeleteArtist(ctx context.Context, id int64) error {
 	return affected(res, err)
 }
 
-const albumCols = `id, artist_id, mbid, title, year, album_type, cover_url, release_date, monitored, added_at`
+const albumCols = `id, artist_id, mbid, title, year, album_type, cover_url, release_date, monitored, added_at,
+	last_search_at, search_misses`
 
-func scanAlbum(row interface{ Scan(...any) error }) (Album, error) {
+// albumColsAl is albumCols qualified with the "al" alias, for queries that join albums to
+// artists or tracks (where a bare "id" would be ambiguous).
+var albumColsAl = "al." + strings.Join(strings.Fields(strings.ReplaceAll(albumCols, ",", " ")), ", al.")
+
+func scanAlbum(row interface{ Scan(...any) error }, extra ...any) (Album, error) {
 	var (
-		al  Album
-		mon int
+		al   Album
+		mon  int
+		last sql.NullString
 	)
-	if err := row.Scan(&al.ID, &al.ArtistID, &al.MBID, &al.Title, &al.Year, &al.AlbumType,
-		&al.CoverURL, &al.ReleaseDate, &mon, &al.AddedAt); err != nil {
+	dest := append([]any{&al.ID, &al.ArtistID, &al.MBID, &al.Title, &al.Year, &al.AlbumType,
+		&al.CoverURL, &al.ReleaseDate, &mon, &al.AddedAt, &last, &al.SearchMisses}, extra...)
+	if err := row.Scan(dest...); err != nil {
 		return Album{}, err
 	}
 	al.Monitored = mon != 0
+	al.LastSearchAt = last.String
 	return al, nil
 }
 
@@ -259,6 +275,62 @@ func (r *Repo) UpsertAlbum(ctx context.Context, al Album) (int64, error) {
 	var id int64
 	err = r.db.QueryRowContext(ctx, `SELECT id FROM albums WHERE mbid = ?`, al.MBID).Scan(&id)
 	return id, err
+}
+
+// WantedAlbums returns every monitored album of a monitored artist, each with its track and
+// have counts, in one grouped query. The sweep used to list each artist's albums and then
+// count tracks album by album; this is the same answer without a query per album.
+func (r *Repo) WantedAlbums(ctx context.Context) ([]Album, error) {
+	rows, err := r.db.QueryContext(ctx, `
+		SELECT `+albumColsAl+`,
+		       COUNT(t.id),
+		       SUM(CASE WHEN t.has_file = 1 THEN 1 ELSE 0 END),
+		       SUM(COALESCE(t.size_bytes, 0))
+		  FROM albums al
+		  JOIN artists ar ON ar.id = al.artist_id
+		  LEFT JOIN tracks t ON t.album_id = al.id
+		 WHERE al.monitored = 1 AND ar.monitored = 1
+		 GROUP BY al.id
+		 ORDER BY al.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Album
+	for rows.Next() {
+		var have, size sql.NullInt64
+		var count int
+		al, err := scanAlbum(rows, &count, &have, &size)
+		if err != nil {
+			return nil, err
+		}
+		al.TrackCount, al.HaveTracks, al.SizeBytes = count, int(have.Int64), size.Int64
+		out = append(out, al)
+	}
+	return out, rows.Err()
+}
+
+// RecordSearchMiss stamps the search time and counts one more search that found nothing
+// usable, which lengthens the wait before the sweep tries this album again.
+func (r *Repo) RecordSearchMiss(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE albums SET last_search_at = CURRENT_TIMESTAMP, search_misses = search_misses + 1 WHERE id = ?`, id)
+	return err
+}
+
+// ResetSearchMisses stamps the search time and clears the backoff after a grab.
+func (r *Repo) ResetSearchMisses(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE albums SET last_search_at = CURRENT_TIMESTAMP, search_misses = 0 WHERE id = ?`, id)
+	return err
+}
+
+// TouchSearch stamps the search time without counting a miss. Used when a search failed
+// for a reason of our own: the album rotates behind the others instead of taking the
+// first slot again every sweep, but its backoff doesn't grow.
+func (r *Repo) TouchSearch(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE albums SET last_search_at = CURRENT_TIMESTAMP WHERE id = ?`, id)
+	return err
 }
 
 // SetAlbumMonitored toggles an album and its tracks.

@@ -76,6 +76,14 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   }
                 >
                   {item.label}
+                  {item.badge && (
+                    <span
+                      className="ml-auto rounded-full px-1.5 py-px font-mono text-[10.5px] uppercase"
+                      style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}
+                    >
+                      {item.badge}
+                    </span>
+                  )}
                   {item.to === "/audiobooks" && audioDot && (
                     <span className="ml-auto h-1.5 w-1.5 rounded-full" style={{ background: audioDot }} title={audioDot === "var(--good)" ? "Running" : "Switched on but not running"} />
                   )}

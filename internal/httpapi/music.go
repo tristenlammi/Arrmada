@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/music"
 	"github.com/tristenlammi/arrmada/internal/quality"
 )
@@ -252,6 +253,11 @@ func (a *api) handleGrabDiscography(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.deps.Automation.GrabDiscography(r.Context(), id); err != nil {
+		if errors.Is(err, automation.ErrModuleOff) {
+			// Switched off between the route check and here; same answer as the route gives.
+			a.writeError(w, http.StatusNotFound, musicOffMessage)
+			return
+		}
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}

@@ -12,7 +12,7 @@ interface MeState {
   setMusicEnabled: (v: boolean) => void;
 }
 
-const MeContext = createContext<MeState>({ user: null, loading: true, external: false, booksEnabled: true, setBooksEnabled: () => {}, musicEnabled: true, setMusicEnabled: () => {} });
+const MeContext = createContext<MeState>({ user: null, loading: true, external: false, booksEnabled: true, setBooksEnabled: () => {}, musicEnabled: false, setMusicEnabled: () => {} });
 
 // MeProvider fetches the current user and module toggles once at boot so the whole app can
 // branch on role (staff get the full console; requesters get the Discover-only shell) and
@@ -22,7 +22,8 @@ export function MeProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [external, setExternal] = useState(false);
   const [booksEnabled, setBooksEnabled] = useState(true);
-  const [musicEnabled, setMusicEnabled] = useState(true);
+  // Music is a preview and off by default, so don't flash its nav entry before /status lands.
+  const [musicEnabled, setMusicEnabled] = useState(false);
   useEffect(() => {
     Promise.allSettled([api.me(), api.status()]).then(([me, status]) => {
       if (me.status === "fulfilled") setUser(me.value);
