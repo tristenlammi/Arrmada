@@ -46,7 +46,24 @@ function fmtReleaseDate(iso: string): string {
 
 const STATE_TONE: Record<string, string> = {
   downloading: "var(--accent)", seeding: "var(--good)", paused: "var(--ink-faint)", error: "var(--reject)", checking: "var(--avoid)",
+  stalled: "var(--avoid)", metadata: "var(--ink-faint)", queued: "var(--ink-faint)", moving: "var(--avoid)", allocating: "var(--ink-faint)",
 };
+
+// phaseLabel is the in-flight chip's text. The phase (when the server sends one) tells a
+// torrent nobody is seeding, or one still fetching its file list, from a live download —
+// the plain state calls all of those "downloading".
+function phaseLabel(it: ActivityDownload): { text: string; tone: string; tip?: string } {
+  const phase = it.phase || it.state;
+  const tone = STATE_TONE[phase] ?? "var(--ink-faint)";
+  if (phase === "stalled") {
+    const seeds = it.seeds ?? 0;
+    const swarm = it.swarm_seeds ?? 0;
+    return { text: `stalled · ${seeds} seed${seeds === 1 ? "" : "s"}`, tone, tip: `No peer is sending data. Connected to ${seeds} seed${seeds === 1 ? "" : "s"}; the tracker reports ${swarm} in the swarm.` };
+  }
+  if (phase === "metadata") return { text: "fetching metadata", tone, tip: "Waiting for peers to send the torrent's file list." };
+  if (phase === "queued") return { text: "queued", tone, tip: "Waiting for a slot — the client's active-download limit is reached." };
+  return { text: phase, tone };
+}
 
 type SortKey = "name" | "progress" | "speed" | "size" | "ratio" | "seedtime";
 type Tab = "downloads" | "seeding" | "searching" | "upcoming";
@@ -304,13 +321,14 @@ function TypeChip({ mediaType }: { mediaType?: string }) {
 function DownloadCard({ it, guard, busy, act, onRemoved }: { it: ActivityDownload; guard: DiskGuardHold | null; busy: boolean; act: (hash: string, fn: () => Promise<unknown>) => void; onRemoved: (m: string) => void }) {
   const paused = it.state === "paused";
   const [removing, setRemoving] = useState(false);
+  const chip = phaseLabel(it);
   return (
     <div className="rounded-xl p-3.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
       <div className="flex items-center gap-3">
         <div className="min-w-0 flex-1">
           <div className="truncate font-mono text-[11.5px]" title={it.name}>{it.name}</div>
           <div className="mt-1 flex flex-wrap items-center gap-2">
-            {paused && it.held_by_guard ? <GuardChip guard={guard} /> : <span className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--panel-2)", color: STATE_TONE[it.state] ?? "var(--ink-faint)" }}>{it.state}</span>}
+            {paused && it.held_by_guard ? <GuardChip guard={guard} /> : <span className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" title={chip.tip} style={{ background: "var(--panel-2)", color: chip.tone }}>{chip.text}</span>}
             <TypeChip mediaType={it.media_type} />
             <ProfileChip profile={it.quality_profile} />
             <span className="font-mono text-[10px] text-ink-faint">{bytes(it.size_bytes)}</span>

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/tristenlammi/arrmada/internal/config"
+	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/store"
 )
 
@@ -116,5 +117,24 @@ func TestStorageVolumesFoldSharedFilesystems(t *testing.T) {
 	}
 	if vols[0].UsedPct <= 0 || vols[0].UsedPct > 100 {
 		t.Errorf("used_pct = %v, outside 0-100", vols[0].UsedPct)
+	}
+}
+
+// A torrent nobody is seeding used to count as downloading, so a queue of dead torrents
+// looked busy on the Dashboard. It counts as stalled now, and a queued seed stays a seed.
+func TestSummarizeQueueSeparatesStalled(t *testing.T) {
+	q := summarizeQueue([]download.Item{
+		{RawState: "stalledDL", State: "downloading", Progress: 0.1, RemainingBytes: 1},
+		{RawState: "downloading", State: "downloading", Progress: 0.5, RemainingBytes: 1, DownSpeed: 100},
+		{RawState: "metaDL", State: "downloading"},
+		{RawState: "queuedDL", State: "downloading", Progress: 0.2, RemainingBytes: 1},
+		{RawState: "queuedUP", State: "seeding", Progress: 1},
+		{RawState: "stalledUP", State: "seeding", Progress: 1, UpSpeed: 7},
+		{RawState: "stoppedDL", State: "paused", Progress: 0.3, RemainingBytes: 1},
+		{RawState: "missingFiles", State: "error"},
+	})
+	want := queueSummary{Downloading: 3, Stalled: 1, Seeding: 2, Paused: 1, Errored: 1, DownSpeed: 100, UpSpeed: 7}
+	if q != want {
+		t.Errorf("summary = %+v\nwant      %+v", q, want)
 	}
 }

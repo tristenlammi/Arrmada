@@ -146,7 +146,7 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	downloads := make([]map[string]any, 0, len(queue))
 	var totalDown, totalUp int64
 	var unmatched []string
-	active := 0
+	active, stalled := 0, 0
 	for i, it := range queue {
 		profile := "n/a"
 		mediaType := "movie"
@@ -170,6 +170,10 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		if it.State == "downloading" {
 			active++
 		}
+		phase := it.Phase()
+		if phase == "stalled" {
+			stalled++
+		}
 		entry := map[string]any{
 			"hash":        it.Hash,
 			"name":        it.Name,
@@ -179,6 +183,15 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 			"down_speed":  it.DownSpeed,
 			"up_speed":    it.UpSpeed,
 			"eta_seconds": it.ETASeconds,
+			// The client's own state and the finer phase read from it, with the swarm
+			// numbers: "downloading" alone can't tell a dead torrent from a live one.
+			"raw_state":     it.RawState,
+			"phase":         phase,
+			"seeds":         it.Seeds,
+			"peers":         it.Peers,
+			"swarm_seeds":   it.SwarmSeeds,
+			"last_activity": it.LastActivity,
+			"added_on":      it.AddedOn,
 			// The computed ratio, not the client's field: qBittorrent reports an unbounded
 			// ratio as a 9999 sentinel, so the page would show that while the seed-goal
 			// logic (which now works from the byte counters) sees the real figure.
@@ -217,7 +230,7 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		"searching": searching,
 		"upcoming":  upcoming,
 		"downloads": downloads,
-		"totals":    map[string]any{"down_speed": totalDown, "up_speed": totalUp, "active": active},
+		"totals":    map[string]any{"down_speed": totalDown, "up_speed": totalUp, "active": active, "stalled": stalled},
 		"free_gb":   freeGB,
 	}
 	if heldCount > 0 {

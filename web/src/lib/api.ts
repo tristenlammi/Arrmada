@@ -136,6 +136,15 @@ export interface ActivityDownload {
   hash: string;
   name: string;
   state: string;
+  raw_state?: string; // the client's own state, e.g. "stalledDL"
+  // finer than state: stalled | metadata | queued | checking | moving | allocating |
+  // downloading | seeding | paused | error
+  phase?: string;
+  seeds?: number; // seeds connected right now
+  peers?: number; // leechers connected right now
+  swarm_seeds?: number; // seeds in the whole swarm, per the tracker
+  last_activity?: number; // unix seconds; 0 = never
+  added_on?: number; // unix seconds
   progress: number;
   size_bytes: number;
   down_speed: number;
@@ -175,7 +184,7 @@ export interface ActivityFeed {
   searching: SearchingItem[];
   upcoming?: SearchingItem[];
   downloads: ActivityDownload[];
-  totals?: { down_speed: number; up_speed: number; active: number };
+  totals?: { down_speed: number; up_speed: number; active: number; stalled?: number };
   free_gb?: number;
   disk_guard?: DiskGuardHold;
 }
@@ -375,7 +384,7 @@ export interface StorageVolume {
   used_pct: number;
 }
 export interface QueueSummary {
-  downloading: number; seeding: number; paused: number; errored: number;
+  downloading: number; stalled?: number; seeding: number; paused: number; errored: number;
   down_speed: number; up_speed: number;
 }
 export interface LibraryCounts {

@@ -44,6 +44,24 @@ func TestPausedTorrentIsNotStalled(t *testing.T) {
 	}
 }
 
+// qBittorrent's checkingDL used to normalize to "downloading", so a long recheck after a
+// crash ran the stall window down and the torrent could be failed over mid-check.
+func TestRecheckingTorrentHoldsTheStallClock(t *testing.T) {
+	c := &Coordinator{}
+	g := grab{ID: 7}
+	const window = time.Minute
+	c.holdStallClock(g.ID, 0.3)
+	c.stallProgress[g.ID] = stallSample{progress: 0.3, at: time.Now().Add(-2 * window)}
+
+	checking := download.Item{RawState: "checkingDL", State: "checking", Progress: 0.3, RemainingBytes: 1}
+	if c.stalledInQueue(g, checking, true, window) {
+		t.Fatal("a rechecking torrent past its window must not be stalled")
+	}
+	if got := c.stallProgress[g.ID]; time.Since(got.at) > time.Second {
+		t.Error("the stall clock must be held while rechecking")
+	}
+}
+
 // The two sides carry the container differently — the torrent as a filename extension, the
 // indexer's listing as a trailing word — so their keys differed by "mp4" and no seed rule
 // could ever be found for the download.

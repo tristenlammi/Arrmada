@@ -475,6 +475,14 @@ type qbitTorrent struct {
 	AmountLeft  int64   `json:"amount_left"`
 	ContentPath string  `json:"content_path"`
 	SeedingTime int64   `json:"seeding_time"` // seconds spent seeding after completion
+	// Swarm health and activity, kept so a dead torrent can be told from a live one.
+	NumSeeds      int     `json:"num_seeds"`      // seeds connected to
+	NumLeechs     int     `json:"num_leechs"`     // leechers connected to
+	NumComplete   int     `json:"num_complete"`   // seeds in the whole swarm (tracker-reported)
+	NumIncomplete int     `json:"num_incomplete"` // leechers in the whole swarm
+	LastActivity  int64   `json:"last_activity"`  // unix seconds
+	AddedOn       int64   `json:"added_on"`       // unix seconds
+	Availability  float64 `json:"availability"`   // distributed copies; -1 when unknown
 }
 
 func parseTorrentsInfo(body []byte) ([]Item, error) {
@@ -502,15 +510,27 @@ func parseTorrentsInfo(body []byte) ([]Item, error) {
 			Category:         t.Category,
 			ContentPath:      t.ContentPath,
 			SeedingTime:      t.SeedingTime,
+			RawState:         t.State,
+			Seeds:            t.NumSeeds,
+			Peers:            t.NumLeechs,
+			SwarmSeeds:       t.NumComplete,
+			SwarmPeers:       t.NumIncomplete,
+			LastActivity:     t.LastActivity,
+			AddedOn:          t.AddedOn,
+			Availability:     t.Availability,
 		})
 	}
 	return items, nil
 }
 
-// normalizeState collapses qBittorrent's many states into a small set.
+// normalizeState collapses qBittorrent's many states into a small set. Item.RawState keeps
+// the original, and Item.Phase reads it, for callers that need the difference.
+//
+// checkingDL is "checking", not "downloading": a recheck moves no progress, and counting it
+// as downloading let a long recheck after a crash run down the stall window.
 func normalizeState(s string) string {
 	switch s {
-	case "downloading", "metaDL", "stalledDL", "forcedDL", "queuedDL", "allocating", "checkingDL":
+	case "downloading", "metaDL", "forcedMetaDL", "stalledDL", "forcedDL", "queuedDL", "allocating":
 		return "downloading"
 	case "uploading", "stalledUP", "forcedUP", "queuedUP", "checkingUP":
 		return "seeding"
@@ -518,7 +538,7 @@ func normalizeState(s string) string {
 		return "paused"
 	case "error", "missingFiles":
 		return "error"
-	case "checkingResumeData", "moving":
+	case "checkingDL", "checkingResumeData", "moving":
 		return "checking"
 	default:
 		return s
