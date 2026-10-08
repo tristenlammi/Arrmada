@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
+	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/requests"
 )
 
@@ -27,21 +28,14 @@ func (a *api) handleListRequests(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []requests.Request{}
 	}
-	// Attach live download progress so the Discover "Your requests" row shows a bar.
-	if queue, qerr := a.deps.Downloads.Queue(r.Context()); qerr == nil && len(queue) > 0 {
-		for i := range list {
-			if list[i].Available {
-				continue
-			}
-			year := list[i].Year
-			if list[i].MediaType == "series" {
-				year = 0 // a series pack rarely carries the show's year
-			}
-			if p, ok := queueProgressByTitle(queue, list[i].Title, year); ok {
-				list[i].DownloadProgress = p
-			}
-		}
+	// Where each request has got to — searching, downloading (with progress), importing,
+	// ready — from its own downloads, so the Discover requests row can show it. Without
+	// the download client the stages that don't need it still show.
+	var queue []download.Item
+	if a.deps.Downloads != nil {
+		queue, _ = a.deps.Downloads.Queue(r.Context())
 	}
+	a.deps.Requests.Track(r.Context(), list, queue)
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"requests":     list,
 		"auto_approve": autoApprove, // this viewer's own auto-approve status

@@ -37,8 +37,17 @@ type Request struct {
 	Note             string  `json:"note,omitempty"`
 	Available        bool    `json:"available"`                   // computed at read time, not stored
 	DownloadProgress float64 `json:"download_progress,omitempty"` // 0..1 while downloading; computed at read time
-	CreatedAt        string  `json:"created_at"`
-	UpdatedAt        string  `json:"updated_at"`
+	// Tracking is where the request has got to, from request to ready (see Track).
+	Tracking  *Tracking `json:"tracking,omitempty"`
+	CreatedAt string    `json:"created_at"`
+	UpdatedAt string    `json:"updated_at"`
+
+	// Filled by enrichAvailability for Track: the library item the request became, and
+	// for a series how much of it is on disk.
+	libID    int64
+	epHave   int
+	epTotal  int
+	released bool
 }
 
 // Repo persists requests in SQLite.

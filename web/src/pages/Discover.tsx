@@ -390,8 +390,8 @@ function DiscoverTab({ ctx }: { ctx: RowCtx }) {
   return (
     <RowRegistryCtx.Provider value={registry}>
       <div className="flex flex-col gap-7">
-        {/* Admins get the request queue first, above everything — it's the thing they
-            came to act on. Non-admins never see this row. */}
+        {/* Requests first, above everything: admins see everyone's (to act on), everyone
+            else their own, each with how far along it is. */}
         <MyRequestsRow flash={ctx.flash} />
         <Hero ctx={ctx} />
         {/* Personalized to the viewer's watch history/requests. Hidden entirely (no header,
@@ -527,10 +527,16 @@ function Hero({ ctx }: { ctx: RowCtx }) {
   );
 }
 
-// MyRequestsRow is the strip of every request, first thing on Discover — for admins
-// only, who approve and decline from it inline. Everyone else's Discover starts with
-// the hero; their own request status reaches them through the inbox and the badges
-// on the cards.
+// Order in the requests row: what's moving first, then what's waiting, then what's done.
+const STAGE_ORDER: Record<string, number> = {
+  downloading: 0, importing: 1, queued: 2, paused: 3, failed: 4, searching: 5, pending: 6,
+  partial: 7, available: 8, declined: 9,
+};
+
+// MyRequestsRow is the strip of requests, first thing on Discover. Admins see every
+// request and approve or decline inline; everyone else sees their own (the server scopes
+// the list), each showing how far along it is — searching, downloading with progress,
+// importing, ready.
 function MyRequestsRow({ flash }: { flash: (m: string) => void }) {
   const { user } = useMe();
   const staff = isStaff(user);
@@ -545,16 +551,25 @@ function MyRequestsRow({ flash }: { flash: (m: string) => void }) {
     return () => clearInterval(t);
   }, [load]);
 
-  if (!admin || !items || items.length === 0) return null;
+  if (!items || items.length === 0) return null;
+  const sorted = [...items].sort(
+    (a, b) =>
+      (STAGE_ORDER[a.tracking?.stage ?? ""] ?? 6) - (STAGE_ORDER[b.tracking?.stage ?? ""] ?? 6) ||
+      b.updated_at.localeCompare(a.updated_at),
+  );
+  const moving = items.filter((rq) => ["downloading", "importing", "queued"].includes(rq.tracking?.stage ?? "")).length;
   const scroll = (dir: -1 | 1) => scroller.current?.scrollBy({ left: dir * Math.max(600, scroller.current.clientWidth * 0.8), behavior: "smooth" });
   return (
     <div>
       <div className="mb-2.5 flex items-center justify-between">
-        <h2 className="m-0 text-[15px] font-bold">Requests</h2>
+        <h2 className="m-0 text-[15px] font-bold">
+          {admin ? "Requests" : "Your requests"}
+          {moving > 0 && <span className="ml-2 text-[11.5px] font-medium" style={{ color: "var(--accent)" }}>{moving} on the way</span>}
+        </h2>
         <div className="flex gap-1"><ArrowBtn dir={-1} onClick={() => scroll(-1)} /><ArrowBtn dir={1} onClick={() => scroll(1)} /></div>
       </div>
       <div ref={scroller} className="thin-scroll flex gap-3 overflow-x-auto pb-2" style={{ scrollSnapType: "x proximity" }}>
-        {items.map((rq) => <RequestPoster key={rq.id} rq={rq} staff={staff} own={!!user && rq.requested_by === user.id} onChanged={load} flash={flash} />)}
+        {sorted.map((rq) => <RequestPoster key={rq.id} rq={rq} staff={staff} own={!!user && rq.requested_by === user.id} onChanged={load} flash={flash} />)}
       </div>
     </div>
   );
@@ -562,14 +577,11 @@ function MyRequestsRow({ flash }: { flash: (m: string) => void }) {
 
 function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest; staff: boolean; own: boolean; onChanged: () => void; flash: (m: string) => void }) {
   const [busy, setBusy] = useState(false);
-  const pct = rq.download_progress != null ? Math.round(rq.download_progress * 100) : 0;
-  // "Downloading" only when something is actually downloading — an approved-but-not-
-  // -yet-released title stays "Requested".
-  const status = rq.available ? { label: "Available", tone: "var(--good)" }
-    : rq.status === "declined" ? { label: "Declined", tone: "var(--reject)" }
-    : pct > 0 ? { label: "Downloading", tone: "var(--accent)" }
-    : rq.status === "approved" ? { label: "Requested", tone: "var(--accent)" }
-    : { label: "Pending", tone: "var(--avoid)" };
+  const tr = rq.tracking;
+  const stage = requestStage(rq);
+  const status = { label: stage.badge, tone: stage.tone };
+  const pct = tr && (tr.stage === "downloading" || tr.stage === "paused") && tr.progress != null ? Math.round(tr.progress * 100) : 0;
+  const showBar = tr?.stage === "downloading" || tr?.stage === "paused" || tr?.stage === "importing";
   // Staff/owner actions get honest feedback: a success toast on success, the server's
   // message on failure — never a silent no-op.
   const act = async (fn: () => Promise<unknown>, okMsg: string) => {
@@ -583,59 +595,120 @@ function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest;
     act(() => api.deleteRequest(rq.id), `Withdrew “${rq.title}”`);
   };
   return (
-    <div className="group relative w-[150px] flex-none overflow-hidden rounded-xl" style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)", scrollSnapAlign: "start" }}>
-      {rq.poster_url ? (
-        <img src={posterThumb(rq.poster_url)} alt={rq.title} className="h-full w-full object-cover" loading="lazy" decoding="async" />
-      ) : (
-        <PosterPlaceholder title={rq.title} year={rq.year} />
-      )}
-      {/* One flex row, not two independent absolutes: the requester chip and the status
-          badge used to be positioned left and right on a 150px card, so a long username
-          painted straight over the badge ("AVAILABLE" read as "ABLE"). Now the name
-          shrinks and truncates while the badge always keeps its full width. */}
-      <div className="absolute inset-x-1.5 top-1.5 z-10 flex items-start justify-between gap-1">
-        {/* Who asked for it — staff only, and always visible (not hover-gated), since staff
-            see everyone's requests and "whose is this?" is the first question. */}
-        {staff && rq.requested_by_name ? (
-          <span
-            className="flex min-w-0 items-center gap-1 rounded-full py-[2px] pl-[2px] pr-1.5"
-            style={{ background: BADGE_BG, border: "1px solid rgba(255,255,255,.18)" }}
-            title={`Requested by ${rq.requested_by_name}`}
-          >
-            <span className="grid h-[14px] w-[14px] flex-none place-items-center rounded-full text-[8px] font-bold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>
-              {rq.requested_by_name[0]?.toUpperCase()}
+    <div className="w-[150px] flex-none" style={{ scrollSnapAlign: "start" }}>
+      <div className="group relative overflow-hidden rounded-xl" style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}>
+        {rq.poster_url ? (
+          <img src={posterThumb(rq.poster_url)} alt={rq.title} className="h-full w-full object-cover" loading="lazy" decoding="async" />
+        ) : (
+          <PosterPlaceholder title={rq.title} year={rq.year} />
+        )}
+        {/* One flex row, not two independent absolutes: the requester chip and the status
+            badge used to be positioned left and right on a 150px card, so a long username
+            painted straight over the badge ("AVAILABLE" read as "ABLE"). Now the name
+            shrinks and truncates while the badge always keeps its full width. */}
+        <div className="absolute inset-x-1.5 top-1.5 z-10 flex items-start justify-between gap-1">
+          {/* Who asked for it — staff only, and always visible (not hover-gated), since staff
+              see everyone's requests and "whose is this?" is the first question. */}
+          {staff && rq.requested_by_name ? (
+            <span
+              className="flex min-w-0 items-center gap-1 rounded-full py-[2px] pl-[2px] pr-1.5"
+              style={{ background: BADGE_BG, border: "1px solid rgba(255,255,255,.18)" }}
+              title={`Requested by ${rq.requested_by_name}`}
+            >
+              <span className="grid h-[14px] w-[14px] flex-none place-items-center rounded-full text-[8px] font-bold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>
+                {rq.requested_by_name[0]?.toUpperCase()}
+              </span>
+              <span className="truncate text-[9px] font-semibold text-white">{rq.requested_by_name}</span>
             </span>
-            <span className="truncate text-[9px] font-semibold text-white">{rq.requested_by_name}</span>
-          </span>
-        ) : (
-          <span />
-        )}
-        <span className="flex-none rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: BADGE_BG, color: status.tone, border: `1px solid ${status.tone}` }}>{status.label}</span>
-      </div>
-      {pct > 0 && pct < 100 && (
-        <div className="absolute inset-x-0 bottom-0 z-10 h-1.5" style={{ background: "rgba(20,12,7,.55)" }}>
-          <div className="h-full" style={{ width: `${pct}%`, background: "var(--accent)" }} />
+          ) : (
+            <span />
+          )}
+          <span className="flex-none rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: BADGE_BG, color: status.tone, border: `1px solid ${status.tone}` }}>{status.label}</span>
         </div>
-      )}
-      <div className="absolute inset-x-0 bottom-0 flex flex-col gap-1.5 p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.92), transparent)" }}>
-        <div className="truncate text-[11.5px] font-semibold text-white">{rq.title}</div>
-        {staff && rq.status === "pending" ? (
-          <div className="flex gap-1.5">
-            <button disabled={busy} onClick={() => act(() => api.approveRequest(rq.id), "Approved — searching now")} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Approve</button>
-            <button disabled={busy} onClick={() => act(() => api.declineRequest(rq.id), "Declined")} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>Decline</button>
-            {own && <button disabled={busy} onClick={withdraw} title="Withdraw your request" className="w-6 flex-none rounded px-0 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>✕</button>}
+        {/* Progress along the bottom while it's on its way; importing fills the bar. */}
+        {showBar && (
+          <div className="absolute inset-x-0 bottom-0 z-10 h-1.5" style={{ background: "rgba(20,12,7,.55)" }}>
+            <div
+              className={`h-full ${tr?.stage === "importing" ? "animate-pulse" : ""}`}
+              style={{ width: `${tr?.stage === "importing" ? 100 : Math.max(2, pct)}%`, background: tr?.stage === "paused" ? "var(--ink-faint)" : stage.tone }}
+            />
           </div>
-        ) : own && rq.status === "pending" ? (
-          <div className="flex items-center justify-between gap-1.5">
-            <span className="text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{rq.year || ""}</span>
-            <button disabled={busy} onClick={withdraw} className="rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>✕ Withdraw</button>
-          </div>
-        ) : (
-          <div className="text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{rq.year || ""}</div>
         )}
+        <div className="absolute inset-x-0 bottom-0 flex flex-col gap-1.5 p-2 opacity-0 transition-opacity group-hover:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.92), transparent)" }}>
+          <div className="truncate text-[11.5px] font-semibold text-white">{rq.title}</div>
+          {staff && rq.status === "pending" ? (
+            <div className="flex gap-1.5">
+              <button disabled={busy} onClick={() => act(() => api.approveRequest(rq.id), "Approved — searching now")} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Approve</button>
+              <button disabled={busy} onClick={() => act(() => api.declineRequest(rq.id), "Declined")} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>Decline</button>
+              {own && <button disabled={busy} onClick={withdraw} title="Withdraw your request" className="w-6 flex-none rounded px-0 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>✕</button>}
+            </div>
+          ) : own && rq.status === "pending" ? (
+            <div className="flex items-center justify-between gap-1.5">
+              <span className="text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{rq.year || ""}</span>
+              <button disabled={busy} onClick={withdraw} className="rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>✕ Withdraw</button>
+            </div>
+          ) : (
+            <div className="text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{rq.year || ""}</div>
+          )}
+        </div>
+      </div>
+      {/* Always-visible caption: the title, and where it's got to in plain words. */}
+      <div className="px-0.5 pt-2">
+        <div className="truncate text-[12px] font-semibold" style={{ color: "var(--ink)" }} title={rq.title}>{rq.title}</div>
+        <div className="mt-0.5 truncate text-[11px]" style={{ color: stage.detailTone ?? "var(--ink-faint)" }} title={stage.detail}>
+          {stage.detail}
+        </div>
       </div>
     </div>
   );
+}
+
+// requestStage turns a request's tracking into its badge and a one-line detail.
+function requestStage(rq: MediaRequest): { badge: string; tone: string; detail: string; detailTone?: string } {
+  const tr = rq.tracking;
+  const ready = rq.media_type === "book" ? "Ready" : "Ready to watch";
+  const eps = tr?.total ? `${tr.have ?? 0} of ${tr.total} episodes` : "";
+  const pct = Math.round((tr?.progress ?? 0) * 100);
+  switch (tr?.stage) {
+    case "available":
+      return { badge: "Ready", tone: "var(--good)", detail: ready, detailTone: "var(--good)" };
+    case "partial":
+      return { badge: "Partly ready", tone: "var(--good)", detail: `${eps} ready`, detailTone: "var(--good)" };
+    case "downloading": {
+      const parts = [`${pct}%`];
+      if (tr.eta_seconds) parts.push(`${etaText(tr.eta_seconds)} left`);
+      else if (tr.note) parts.push(tr.note.toLowerCase());
+      if (eps) parts.push(eps);
+      return { badge: "Downloading", tone: "var(--accent)", detail: parts.join(" · "), detailTone: "var(--accent)" };
+    }
+    case "importing":
+      return { badge: "Importing", tone: "var(--accent)", detail: "Adding to the library…", detailTone: "var(--accent)" };
+    case "queued":
+      return { badge: "Starting", tone: "var(--accent)", detail: tr.note || "Starting the download" };
+    case "paused":
+      return { badge: "Paused", tone: "var(--ink-faint)", detail: `Paused at ${pct}%` };
+    case "failed":
+      return { badge: "Retrying", tone: "var(--avoid)", detail: tr.note || "The download failed" };
+    case "searching":
+      return { badge: "Searching", tone: "var(--accent)", detail: tr.note || (eps ? `${eps} · looking for more` : "Looking for a release") };
+    case "declined":
+      return { badge: "Declined", tone: "var(--reject)", detail: "Declined" };
+    case "pending":
+      return { badge: "Pending", tone: "var(--avoid)", detail: "Waiting for approval" };
+  }
+  // No tracking (an older server): fall back to the plain status.
+  return rq.available ? { badge: "Ready", tone: "var(--good)", detail: ready }
+    : rq.status === "declined" ? { badge: "Declined", tone: "var(--reject)", detail: "Declined" }
+    : rq.status === "approved" ? { badge: "Requested", tone: "var(--accent)", detail: "Looking for a release" }
+    : { badge: "Pending", tone: "var(--avoid)", detail: "Waiting for approval" };
+}
+
+function etaText(sec: number): string {
+  if (sec < 60) return "under a minute";
+  const m = Math.round(sec / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return h < 24 ? `${h}h ${m % 60}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
 }
 
 // BecauseRows are the per-title strips ("Because you watched Silo"): the viewer's two

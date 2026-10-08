@@ -261,32 +261,45 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 	if len(reqs) == 0 {
 		return
 	}
-	movHave := map[int]bool{}
+	type lib struct {
+		id              int64
+		have            bool
+		epHave, epTotal int
+		released        bool
+	}
+	movHave := map[int]lib{}
 	if ms, err := s.movies.List(ctx); err == nil {
 		for _, m := range ms {
-			movHave[m.TMDBID] = m.HasFile
+			movHave[m.TMDBID] = lib{id: m.ID, have: m.HasFile, released: m.Status == "" || m.Status == "Released"}
 		}
 	}
-	serHave := map[int]bool{}
+	serHave := map[int]lib{}
 	if ss, err := s.series.List(ctx); err == nil {
 		for _, sr := range ss {
-			serHave[sr.TMDBID] = sr.Stats != nil && sr.Stats.HaveFiles > 0
+			l := lib{id: sr.ID, released: true}
+			if sr.Stats != nil {
+				l.have, l.epHave, l.epTotal = sr.Stats.HaveFiles > 0, sr.Stats.HaveFiles, sr.Stats.Episodes
+			}
+			serHave[sr.TMDBID] = l
 		}
 	}
-	bookHave := map[string]bool{}
+	bookHave := map[string]lib{}
 	if bs, err := s.books.List(ctx); err == nil {
 		for _, b := range bs {
-			bookHave[b.OLKey] = b.HasFile
+			bookHave[b.OLKey] = lib{id: b.ID, have: b.HasFile, released: true}
 		}
 	}
 	for i := range reqs {
+		var l lib
 		switch reqs[i].MediaType {
 		case "movie":
-			reqs[i].Available = movHave[reqs[i].TMDBID]
+			l = movHave[reqs[i].TMDBID]
 		case "series":
-			reqs[i].Available = serHave[reqs[i].TMDBID]
+			l = serHave[reqs[i].TMDBID]
 		case "book":
-			reqs[i].Available = bookHave[reqs[i].OLKey]
+			l = bookHave[reqs[i].OLKey]
 		}
+		reqs[i].Available = l.have
+		reqs[i].libID, reqs[i].epHave, reqs[i].epTotal, reqs[i].released = l.id, l.epHave, l.epTotal, l.released
 	}
 }

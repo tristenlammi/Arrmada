@@ -528,8 +528,25 @@ export interface MediaRequest {
   note?: string;
   available: boolean;
   download_progress?: number; // 0..1 while the requested item is downloading
+  tracking?: RequestTracking;
   created_at: string;
   updated_at: string;
+}
+
+// RequestTracking is where a request has got to, from its own downloads.
+export type RequestStage =
+  | "pending" | "declined" | "searching" | "queued" | "downloading" | "paused"
+  | "failed" | "importing" | "partial" | "available";
+export interface RequestTracking {
+  stage: RequestStage;
+  progress?: number; // 0..1 across its active downloads
+  eta_seconds?: number;
+  speed_bps?: number;
+  size_bytes?: number;
+  downloads?: number;
+  have?: number; // series: episodes on disk
+  total?: number; // series: aired episodes wanted
+  note?: string;
 }
 
 // MyBook is one library book as a requester sees it: an ebook to download, an
