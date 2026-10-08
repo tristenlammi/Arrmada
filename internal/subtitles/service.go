@@ -45,6 +45,13 @@ type Service struct {
 	whisper  *whisperGen
 	log      *slog.Logger
 
+	// Test seams for process(). Nil means the real code path: resolveFile, probeCached,
+	// the ffmpeg extraction, and s.whisper.
+	resolve func(ctx context.Context, job *Job) (fileRef, bool)
+	probe   func(ctx context.Context, path string) (*mediaInfo, error)
+	extract func(ctx context.Context, path string, picks []extractPick) error
+	ai      aiRunner
+
 	mu        sync.Mutex
 	jobs      []*Job           // recent subtitle-ensure jobs (newest first), for the Queue tab
 	pending   [numPrios][]*Job // waiting for the worker, one oldest-first line per priority — unbounded, see Run
@@ -323,6 +330,11 @@ func (s *Service) AutoGrab(ctx context.Context) {
 // grabOne searches for and downloads the best subtitle for one media file + language,
 // writing it as a sidecar. Returns whether a file was written.
 func (s *Service) grabOne(ctx context.Context, imdb, title string, year, season, episode int, mediaPath, hash, lang string) (bool, error) {
+	// A paused quota means no requests at all: searching would spend the API's rate
+	// limit on results that can't be downloaded until the reset.
+	if s.providerPaused() {
+		return false, ErrQuotaExhausted
+	}
 	results, err := s.provider.Search(ctx, SearchRequest{
 		IMDBID: imdb, Title: title, Year: year, Season: season, Episode: episode, Language: lang,
 		MovieHash: hash,

@@ -701,7 +701,10 @@ function EmbBadge({ kind }: { kind: "txt" | "pgs" | "vob" }) {
 }
 function CoverChip({ l }: { l: SubLangStatus }) {
   if (l.have) return <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: "var(--good-soft, rgba(127,176,105,.16))", color: "var(--good)" }} title="External SRT present">✓ {l.lang}</span>;
-  return <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: "var(--avoid-soft)", color: "var(--avoid)" }} title={`Missing — will ${SOURCE_LABEL[l.source ?? "ai"] ?? l.source}`}>{l.lang} · {SOURCE_LABEL[l.source ?? "ai"] ?? l.source}</span>;
+  // The ladder tries the first source, then falls back to AI when that comes up empty.
+  const first = SOURCE_LABEL[l.source ?? "ai"] ?? l.source;
+  const plan = l.fallback ? `${first} → ${SOURCE_LABEL[l.fallback] ?? l.fallback}` : first;
+  return <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: "var(--avoid-soft)", color: "var(--avoid)" }} title={`Missing — will try ${plan}`}>{l.lang} · {plan}</span>;
 }
 
 /* ============================= LOGS ============================= */

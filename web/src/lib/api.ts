@@ -949,7 +949,7 @@ export interface SubtitleSettings {
   pending: number;
 }
 export interface SubTrack { index: number; codec: string; lang: string; text: boolean; forced?: boolean }
-export interface SubLangStatus { lang: string; have: boolean; source?: "extract" | "ocr" | "download" | "ai" }
+export interface SubLangStatus { lang: string; have: boolean; source?: "extract" | "ocr" | "download" | "ai"; fallback?: "ai" }
 export interface SubHealth { score: number; notes?: string[] }
 export interface SubFileEntry {
   kind: "movie" | "episode";

@@ -247,6 +247,9 @@ func (w *whisperGen) available() bool {
 	return w != nil && w.bin != "" && (w.hasModel(modelTurbo) || w.hasModel(modelLarge))
 }
 
+// canRun reports whether a model for the task is installed (see modelPath).
+func (w *whisperGen) canRun(translate bool) bool { return w.modelPath(translate) != "" }
+
 // modelPath picks the model for the task: translate-to-English requires large-v3 (turbo can't
 // translate); same-language transcription prefers turbo and falls back to large-v3. "" = no
 // suitable model.

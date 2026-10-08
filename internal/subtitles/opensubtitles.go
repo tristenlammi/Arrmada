@@ -59,6 +59,10 @@ func (o *OpenSubtitles) quotaPaused() bool {
 	return !reset.IsZero()
 }
 
+// Paused implements the pipeline's pauser: while the quota is spent, the download rung
+// sends nothing — not even a search — and the languages go straight to the AI rung.
+func (o *OpenSubtitles) Paused() bool { return o.quotaPaused() }
+
 // noteQuota records what a /download response said about the allowance.
 func (o *OpenSubtitles) noteQuota(remaining int, resetUTC string, exhausted bool) {
 	o.quotaMu.Lock()
