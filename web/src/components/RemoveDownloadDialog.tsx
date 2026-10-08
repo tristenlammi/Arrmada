@@ -3,9 +3,15 @@ import { api, type ActivityDownload, type RemoveDownloadMode, type RemoveDownloa
 import { ConfirmDialog, type ConfirmChoice } from "./ConfirmDialog";
 
 // seriesScope reads what a TV release covers from its name, so "stop wanting" can say
-// exactly what it will switch off. null when it can't tell (the server then unmonitors
-// nothing rather than the whole show).
+// exactly what it will switch off. "" when the name covers more than one simple scope (a
+// season range, several episodes, a "Complete" pack): the label then stays generic and the
+// server's answer says what it did. null when it can't tell at all (the server then
+// unmonitors nothing rather than the whole show).
 function seriesScope(name: string): string | null {
+  const multi = /\bComplete\b/i.test(name)
+    || /\bS\d{1,2}\s*[-–]\s*S?\d{1,2}(?![0-9E])/i.test(name)
+    || /S\d{1,2}E\d{1,3}[ ._-]*(?:E|-)\d{1,3}/i.test(name);
+  if (multi) return "";
   const ep = name.match(/S(\d{1,2})E(\d{1,3})/i);
   if (ep) return `S${ep[1].padStart(2, "0")}E${ep[2].padStart(2, "0")}`;
   const season = name.match(/\bS(\d{1,2})(?![0-9E])/i) ?? name.match(/\bSeason[ ._-]?(\d{1,2})\b/i);
@@ -17,14 +23,25 @@ function stopWantingLabel(it: ActivityDownload): { label: string; disabled: bool
   switch (it.media_type) {
     case "series": {
       const scope = seriesScope(it.name);
-      return scope
-        ? { label: `Also stop wanting ${scope}`, disabled: false }
-        : { label: "Also stop wanting these episodes — can't tell which ones this covers", disabled: true };
+      if (scope === null) return { label: "Also stop wanting these episodes — can't tell which ones this covers", disabled: true };
+      return { label: scope ? `Also stop wanting ${scope}` : "Also stop wanting what this download was for", disabled: false };
     }
     case "book": return { label: "Also stop wanting this book", disabled: false };
     case "music": return { label: "Also stop wanting this album", disabled: false };
     default: return { label: "Also stop wanting this movie", disabled: false };
   }
+}
+
+// removedMessage says what a removal actually did, including what "stop wanting" switched
+// off as the server reports it, or why it switched off nothing.
+export function removedMessage(r: RemoveDownloadResult): string {
+  if (r.mode === "block") return "Removed — the release is blocklisted and another copy is being searched for.";
+  let msg = r.mode === "delete_files" ? "Removed and its files deleted." : "Removed — the files are kept.";
+  const u = r.unmonitored;
+  if (u) {
+    msg += /^(nothing|couldn't)/.test(u) ? ` Still wanted: ${u.replace(/^nothing — /, "")}.` : ` Stopped wanting ${u}.`;
+  }
+  return msg;
 }
 
 const CONFIRM_LABEL: Record<RemoveDownloadMode, string> = {

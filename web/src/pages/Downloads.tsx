@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { RemoveDownloadDialog } from "../components/RemoveDownloadDialog";
+import { RemoveDownloadDialog, removedMessage } from "../components/RemoveDownloadDialog";
 import { api, type ActivityDownload, type ClientSettings, type SearchingItem } from "../lib/api";
 import { useMe } from "../lib/me";
 
@@ -73,6 +73,8 @@ export function Downloads() {
   const [showSettings, setShowSettings] = useState(false);
   const [tab, setTab] = useState<Tab>("downloads");
   const [seedSort, setSeedSort] = useState<SortKey>("ratio");
+  const [toast, setToast] = useState<string | null>(null);
+  const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 5000); };
 
   useEffect(() => {
     api.downloadClients().then((cs) => {
@@ -225,14 +227,14 @@ export function Downloads() {
         {!loaded ? null : tab === "downloads" ? (
           shownDownloads.length === 0 ? <Empty>Nothing downloading. Grab a release and it'll appear here.</Empty> : (
             <div className="flex flex-col gap-2">
-              {shownDownloads.map((it) => <DownloadCard key={it.hash} it={it} busy={!!busy[it.hash]} act={act} />)}
+              {shownDownloads.map((it) => <DownloadCard key={it.hash} it={it} busy={!!busy[it.hash]} act={act} onRemoved={flash} />)}
             </div>
           )
         ) : tab === "seeding" ? (
           shownSeeding.length === 0 ? <Empty>Nothing seeding right now.</Empty> : (
             <div className="flex flex-col gap-2">
               <SeedingSummary items={shownSeeding} />
-              {shownSeeding.map((it) => <SeedingCard key={it.hash} it={it} busy={!!busy[it.hash]} act={act} />)}
+              {shownSeeding.map((it) => <SeedingCard key={it.hash} it={it} busy={!!busy[it.hash]} act={act} onRemoved={flash} />)}
             </div>
           )
         ) : tab === "searching" ? (
@@ -249,6 +251,7 @@ export function Downloads() {
           )
         )}
       </div>
+      {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
     </>
   );
 }
@@ -265,7 +268,7 @@ function TypeChip({ mediaType }: { mediaType?: string }) {
 }
 
 // DownloadCard is an in-flight (incomplete) transfer: progress bar, speed, ETA, queue controls.
-function DownloadCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; act: (hash: string, fn: () => Promise<unknown>) => void }) {
+function DownloadCard({ it, busy, act, onRemoved }: { it: ActivityDownload; busy: boolean; act: (hash: string, fn: () => Promise<unknown>) => void; onRemoved: (m: string) => void }) {
   const paused = it.state === "paused";
   const [removing, setRemoving] = useState(false);
   return (
@@ -296,7 +299,7 @@ function DownloadCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; 
         </div>
         <span className="w-10 text-right font-mono text-[10.5px] text-ink-dim">{Math.round(it.progress * 100)}%</span>
       </div>
-      {removing && <RemoveDownloadDialog it={it} onClose={() => setRemoving(false)} onDone={() => setRemoving(false)} />}
+      {removing && <RemoveDownloadDialog it={it} onClose={() => setRemoving(false)} onDone={(r) => { setRemoving(false); onRemoved(removedMessage(r)); }} />}
     </div>
   );
 }
@@ -338,7 +341,7 @@ function SeedingSummary({ items }: { items: ActivityDownload[] }) {
 }
 
 // SeedingCard is a completed torrent that's sharing back: ratio, seed time, goal progress.
-function SeedingCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; act: (hash: string, fn: () => Promise<unknown>) => void }) {
+function SeedingCard({ it, busy, act, onRemoved }: { it: ActivityDownload; busy: boolean; act: (hash: string, fn: () => Promise<unknown>) => void; onRemoved: (m: string) => void }) {
   const paused = it.state === "paused";
   const goal = seedGoal(it);
   const [removing, setRemoving] = useState(false);
@@ -369,7 +372,7 @@ function SeedingCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; a
         ) : <div className="flex-1" />}
         <span className="font-mono text-[10px] text-ink-faint">{goal.label}</span>
       </div>
-      {removing && <RemoveDownloadDialog it={it} onClose={() => setRemoving(false)} onDone={() => setRemoving(false)} />}
+      {removing && <RemoveDownloadDialog it={it} onClose={() => setRemoving(false)} onDone={(r) => { setRemoving(false); onRemoved(removedMessage(r)); }} />}
     </div>
   );
 }
