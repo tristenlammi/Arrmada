@@ -8,6 +8,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -20,15 +21,67 @@ type Store struct {
 	db *sql.DB
 }
 
+// Options tunes OpenWith. The zero value is what Open uses.
+type Options struct {
+	// BeforeMigrate, when set, runs once with the pending migration file names
+	// before any of them is applied, and only when there is at least one. An error
+	// aborts Open with nothing applied.
+	BeforeMigrate func(ctx context.Context, db *sql.DB, pending []string) error
+
+	// migrations replaces the embedded migration set. Tests only.
+	migrations fs.FS
+}
+
 // Open ensures the data directory exists, opens the SQLite database with sane
 // pragmas (WAL, foreign keys, busy timeout), verifies connectivity, and applies
 // any pending migrations.
 func Open(dataDir string) (*Store, error) {
+	return OpenWith(dataDir, Options{})
+}
+
+// OpenWith is Open with options.
+func OpenWith(dataDir string, opt Options) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create data dir %q: %w", dataDir, err)
 	}
 
-	dbPath := filepath.Join(dataDir, "arrmada.db")
+	db, err := openDB(filepath.Join(dataDir, "arrmada.db"))
+	if err != nil {
+		return nil, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping sqlite: %w", err)
+	}
+
+	fsys := opt.migrations
+	if fsys == nil {
+		fsys = embeddedMigrations()
+	}
+	pend, err := pending(ctx, db, fsys)
+	if err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("run migrations: %w", err)
+	}
+	if len(pend) > 0 && opt.BeforeMigrate != nil {
+		if err := opt.BeforeMigrate(ctx, db, pend); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("before migrations: %w", err)
+		}
+	}
+	if err := applyMigrations(ctx, db, fsys, pend, nil); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("run migrations: %w", err)
+	}
+
+	return &Store{db: db}, nil
+}
+
+// openDB opens the pool every Store uses: WAL, foreign keys on, busy timeout.
+func openDB(dbPath string) (*sql.DB, error) {
 	dsn := "file:" + dbPath +
 		"?_pragma=busy_timeout(5000)" +
 		"&_pragma=journal_mode(WAL)" +
@@ -43,20 +96,7 @@ func Open(dataDir string) (*Store, error) {
 	db.SetMaxOpenConns(4)
 	db.SetMaxIdleConns(4)
 	db.SetConnMaxLifetime(time.Hour)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("ping sqlite: %w", err)
-	}
-
-	if err := runMigrations(ctx, db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("run migrations: %w", err)
-	}
-
-	return &Store{db: db}, nil
+	return db, nil
 }
 
 // DB exposes the underlying pool for repositories built on top of the store.
