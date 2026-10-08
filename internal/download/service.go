@@ -92,6 +92,11 @@ func (s *Service) Add(ctx context.Context, req AddRequest) error {
 // Remove deletes a torrent (and optionally its data) from whichever enabled
 // client holds it.
 func (s *Service) Remove(ctx context.Context, hash string, deleteData bool) error {
+	// Checked here as well as at the HTTP edge: every caller that removes a torrent goes
+	// through this, and a bad value here can empty the whole client.
+	if !ValidHash(hash) {
+		return ErrInvalidHash
+	}
 	clients, err := s.repo.ListEnabled(ctx)
 	if err != nil {
 		return err

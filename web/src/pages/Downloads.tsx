@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { RemoveDownloadDialog } from "../components/RemoveDownloadDialog";
 import { api, type ActivityDownload, type ClientSettings, type SearchingItem } from "../lib/api";
 import { useMe } from "../lib/me";
 
@@ -266,6 +267,7 @@ function TypeChip({ mediaType }: { mediaType?: string }) {
 // DownloadCard is an in-flight (incomplete) transfer: progress bar, speed, ETA, queue controls.
 function DownloadCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; act: (hash: string, fn: () => Promise<unknown>) => void }) {
   const paused = it.state === "paused";
+  const [removing, setRemoving] = useState(false);
   return (
     <div className="rounded-xl p-3.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
       <div className="flex items-center gap-3">
@@ -285,7 +287,7 @@ function DownloadCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; 
           <IconBtn label="↑" title="Move up the queue" disabled={busy} onClick={() => act(it.hash, () => api.torrentAction(it.hash, "prio_up"))} />
           <IconBtn label="↓" title="Move down the queue" disabled={busy} onClick={() => act(it.hash, () => api.torrentAction(it.hash, "prio_down"))} />
           <IconBtn label="Block" tone="var(--avoid)" title="Blocklist this release and grab a different one" disabled={busy} onClick={() => act(it.hash, () => api.blockDownload(it.hash, it.name))} />
-          <IconBtn label="Delete" tone="var(--reject)" disabled={busy} onClick={() => act(it.hash, () => api.deleteDownload(it.hash, true))} />
+          <IconBtn label="Delete" tone="var(--reject)" title="Remove from the client — asks what to do with the files" disabled={busy} onClick={() => setRemoving(true)} />
         </div>
       </div>
       <div className="mt-2.5 flex items-center gap-2">
@@ -294,6 +296,7 @@ function DownloadCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; 
         </div>
         <span className="w-10 text-right font-mono text-[10.5px] text-ink-dim">{Math.round(it.progress * 100)}%</span>
       </div>
+      {removing && <RemoveDownloadDialog it={it} onClose={() => setRemoving(false)} onDone={() => setRemoving(false)} />}
     </div>
   );
 }
@@ -338,6 +341,7 @@ function SeedingSummary({ items }: { items: ActivityDownload[] }) {
 function SeedingCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; act: (hash: string, fn: () => Promise<unknown>) => void }) {
   const paused = it.state === "paused";
   const goal = seedGoal(it);
+  const [removing, setRemoving] = useState(false);
   return (
     <div className="rounded-xl p-3.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
       <div className="flex items-center gap-3">
@@ -354,7 +358,7 @@ function SeedingCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; a
         </div>
         <div className="flex flex-none items-center gap-1">
           <IconBtn label={paused ? "Resume" : "Pause"} disabled={busy} onClick={() => act(it.hash, () => (paused ? api.resumeDownload(it.hash) : api.pauseDownload(it.hash)))} />
-          <IconBtn label="Delete" tone="var(--reject)" title="Stop seeding and remove from the client" disabled={busy} onClick={() => act(it.hash, () => api.deleteDownload(it.hash, true))} />
+          <IconBtn label="Delete" tone="var(--reject)" title="Stop seeding and remove from the client — asks what to do with the files" disabled={busy} onClick={() => setRemoving(true)} />
         </div>
       </div>
       <div className="mt-2.5 flex items-center gap-2.5">
@@ -365,6 +369,7 @@ function SeedingCard({ it, busy, act }: { it: ActivityDownload; busy: boolean; a
         ) : <div className="flex-1" />}
         <span className="font-mono text-[10px] text-ink-faint">{goal.label}</span>
       </div>
+      {removing && <RemoveDownloadDialog it={it} onClose={() => setRemoving(false)} onDone={() => setRemoving(false)} />}
     </div>
   );
 }

@@ -50,6 +50,9 @@ type Coordinator struct {
 	imp          *library.Importer
 	recycle      string // recycle-bin dir for book deletes ("" = hard delete); set via SetRecycleDir
 
+	// removeTorrent overrides downloads.Remove in tests; nil uses the real client.
+	removeTorrent func(ctx context.Context, hash string, deleteData bool) error
+
 	// unmatched counts how many import sweeps have failed to match a download to a
 	// series, keyed by torrent hash. Without it the 30-second sweep logs the same failure
 	// forever and nothing ever escalates. Guarded by unmatchedMu. Entries are pruned when

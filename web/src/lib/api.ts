@@ -169,6 +169,16 @@ export interface ActivityDownload {
   media_type?: string;
 }
 
+export type RemoveDownloadMode = "keep_files" | "delete_files" | "block";
+// What a removed download was for, and what "stop wanting" switched off.
+export interface RemoveDownloadResult {
+  kind?: string;
+  id?: number;
+  title?: string;
+  mode: RemoveDownloadMode;
+  unmonitored?: string;
+}
+
 export interface ActivityFeed {
   searching: SearchingItem[];
   upcoming?: SearchingItem[];
@@ -1144,8 +1154,15 @@ export const api = {
   activity: () => req<ActivityFeed>("/api/v1/downloads"),
   pauseDownload: (hash: string) => req<{ status: string }>(`/api/v1/queue/${hash}/pause`, { method: "POST" }),
   resumeDownload: (hash: string) => req<{ status: string }>(`/api/v1/queue/${hash}/resume`, { method: "POST" }),
-  deleteDownload: (hash: string, deleteData: boolean) =>
-    req<void>(`/api/v1/queue/${hash}${deleteData ? "?delete_data=true" : ""}`, { method: "DELETE" }),
+  // mode: keep_files keeps what was downloaded (the default), delete_files deletes it, block
+  // deletes it, blocklists the release and finds another. unmonitor stops wanting exactly
+  // what the download was for. name helps find the grab when it has no recorded hash.
+  deleteDownload: (hash: string, opts: { mode: RemoveDownloadMode; unmonitor?: boolean; name?: string }) => {
+    const q = new URLSearchParams({ mode: opts.mode });
+    if (opts.unmonitor) q.set("unmonitor", "true");
+    if (opts.name) q.set("name", opts.name);
+    return req<RemoveDownloadResult>(`/api/v1/queue/${encodeURIComponent(hash)}?${q}`, { method: "DELETE" });
+  },
   blockDownload: (hash: string, name: string) =>
     req<{ status: string }>(`/api/v1/queue/${hash}/block`, { method: "POST", body: JSON.stringify({ name }) }),
   torrentAction: (hash: string, action: "recheck" | "reannounce" | "prio_up" | "prio_down") =>

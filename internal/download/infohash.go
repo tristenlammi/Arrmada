@@ -46,6 +46,25 @@ func InfoHashFromFile(b []byte) (string, error) {
 	return "", errors.New("no info dictionary")
 }
 
+// ValidHash reports whether h is one torrent's info hash: 40 hex characters (v1) or 64
+// (v2). Anything else must never reach a client — qBittorrent reads "all" as every torrent
+// it holds and "a|b" as several, so a delete with such a value wiped the whole client.
+func ValidHash(h string) bool {
+	if len(h) != 40 && len(h) != 64 {
+		return false
+	}
+	for i := 0; i < len(h); i++ {
+		c := h[i]
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// ErrInvalidHash is returned for a hash ValidHash rejects.
+var ErrInvalidHash = errors.New("not a single torrent hash — remove torrents one at a time")
+
 // InfoHashFromMagnet extracts the info hash from a magnet URI's xt=urn:btih parameter,
 // accepting both the 40-char hex and 32-char base32 forms trackers use.
 func InfoHashFromMagnet(raw string) (string, error) {

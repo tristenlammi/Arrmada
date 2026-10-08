@@ -4,15 +4,32 @@ import (
 	"context"
 	"net/http"
 
+	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/download"
 )
 
 var allowedActions = map[string]bool{"recheck": true, "reannounce": true, "prio_up": true, "prio_down": true}
 
+// torrentHash reads the {hash} path value and refuses anything that isn't exactly one
+// torrent's info hash. qBittorrent reads "all" as every torrent it holds and "a|b" as
+// several, so passing the value through let one request act on the whole client.
+func (a *api) torrentHash(w http.ResponseWriter, r *http.Request) (string, bool) {
+	h := r.PathValue("hash")
+	if !download.ValidHash(h) {
+		a.writeError(w, http.StatusBadRequest, "not a torrent hash — remove torrents one at a time")
+		return "", false
+	}
+	return h, true
+}
+
 // handlePauseDownload stops an in-progress torrent.
 func (a *api) handlePauseDownload(w http.ResponseWriter, r *http.Request) {
-	if err := a.deps.Downloads.Pause(r.Context(), r.PathValue("hash")); err != nil {
+	hash, ok := a.torrentHash(w, r)
+	if !ok {
+		return
+	}
+	if err := a.deps.Downloads.Pause(r.Context(), hash); err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -21,26 +38,70 @@ func (a *api) handlePauseDownload(w http.ResponseWriter, r *http.Request) {
 
 // handleResumeDownload restarts a stopped torrent.
 func (a *api) handleResumeDownload(w http.ResponseWriter, r *http.Request) {
-	if err := a.deps.Downloads.Resume(r.Context(), r.PathValue("hash")); err != nil {
+	hash, ok := a.torrentHash(w, r)
+	if !ok {
+		return
+	}
+	if err := a.deps.Downloads.Resume(r.Context(), hash); err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "resumed"})
 }
 
-// handleDeleteDownload removes a torrent, optionally with its data (?delete_data=true).
+// handleDeleteDownload removes one torrent the way the user chose:
+// ?mode=keep_files (default) | delete_files | block, plus &unmonitor=true to stop wanting
+// what it was for and &name=<torrent name> to find its grab when it has no recorded hash.
+// The old ?delete_data=true still means delete_files for one release.
 func (a *api) handleDeleteDownload(w http.ResponseWriter, r *http.Request) {
-	deleteData := r.URL.Query().Get("delete_data") == "true"
-	if err := a.deps.Downloads.Remove(r.Context(), r.PathValue("hash"), deleteData); err != nil {
+	hash, ok := a.torrentHash(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	mode := automation.RemoveMode(q.Get("mode"))
+	if mode == "" {
+		mode = automation.RemoveKeepFiles
+		// The delete_data alias stays for one release so an old cached UI still works.
+		if q.Get("delete_data") == "true" {
+			mode = automation.RemoveDeleteFiles
+		}
+	}
+	if !automation.ValidRemoveMode(mode) {
+		a.writeError(w, http.StatusBadRequest, "mode must be keep_files, delete_files or block")
+		return
+	}
+	unmonitor := q.Get("unmonitor") == "true"
+	name := q.Get("name")
+	if mode == automation.RemoveBlock {
+		if unmonitor {
+			a.writeError(w, http.StatusBadRequest, "blocking finds another copy, so it can't also stop wanting the title")
+			return
+		}
+		// Blocking searches for an alternate, which can take a while: run it like the
+		// Block button does and answer straight away.
+		go a.bg(func(ctx context.Context) error {
+			_, err := a.deps.Automation.RemoveDownload(ctx, hash, name, mode, false)
+			return err
+		}, "block download", 0)
+		a.writeJSON(w, http.StatusAccepted, automation.RemoveResult{Mode: mode})
+		return
+	}
+	res, err := a.deps.Automation.RemoveDownload(r.Context(), hash, name, mode, unmonitor)
+	if err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	a.writeJSON(w, http.StatusOK, res)
 }
 
 // handleTorrentAction runs a per-torrent command: recheck, reannounce, or move
 // up/down the queue.
 func (a *api) handleTorrentAction(w http.ResponseWriter, r *http.Request) {
+	hash, ok := a.torrentHash(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		Action string `json:"action"`
 	}
@@ -51,7 +112,7 @@ func (a *api) handleTorrentAction(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "unknown action")
 		return
 	}
-	if err := a.deps.Downloads.Action(r.Context(), r.PathValue("hash"), req.Action); err != nil {
+	if err := a.deps.Downloads.Action(r.Context(), hash, req.Action); err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -92,7 +153,10 @@ func (a *api) handleSetClientSettings(w http.ResponseWriter, r *http.Request) {
 // handleBlockDownload removes a torrent, blocklists the release for its movie, and
 // searches for an alternate — the "grab something else" action.
 func (a *api) handleBlockDownload(w http.ResponseWriter, r *http.Request) {
-	hash := r.PathValue("hash")
+	hash, ok := a.torrentHash(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		Name string `json:"name"`
 	}
