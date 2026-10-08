@@ -19,14 +19,17 @@ func DefaultFormats() []CustomFormat {
 	}
 }
 
-// fallbackProfile is a permissive, unlisted profile used only when a movie
-// references a quality profile that no longer exists (e.g. it was deleted). It
-// keeps acquisition from stalling — it accepts any resolution and mildly
-// prefers the common premium formats. It is never shown in the UI.
+// fallbackProfile is a permissive, unlisted profile used only when no profile of the
+// title's media type exists at all (a deleted profile resolves to the default through
+// Effective instead). It keeps acquisition from stalling — it accepts any resolution
+// and mildly prefers the common premium formats — but it still refuses cams and other
+// pre-release copies, which nobody wants in their library by accident. It is never
+// shown in the UI.
 func fallbackProfile() Profile {
 	return Profile{
-		Name:         "Any quality",
-		SmallBias:    0.15,
-		FormatScores: map[string]int{"Dolby Vision": 30, "HDR10": 25, "Atmos": 20},
+		Name:             "Any quality",
+		SmallBias:        0.15,
+		FormatScores:     map[string]int{"Dolby Vision": 30, "HDR10": 25, "Atmos": 20},
+		RejectPreRelease: true,
 	}
 }

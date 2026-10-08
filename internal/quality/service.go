@@ -57,9 +57,26 @@ type errorString string
 
 func (e errorString) Error() string { return string(e) }
 
-// Resolve turns a profile reference into a runnable (Profile, Engine). Falls
-// back to a permissive profile if the reference is unknown (e.g. it was
-// deleted), so acquisition never stalls.
+// Effective is the profile a title actually runs under. Its own profile when that still
+// exists; otherwise — "n/a" on a library-scanned title, nothing at all, or a profile
+// that was deleted — the default profile of its media type. Every acquisition path goes
+// through this so one title can't be judged three different ways depending on which
+// code path looks at it. Only with no profile of that media at all does the ref come
+// back unchanged, and Resolve then uses the fallback.
+func (s *Service) Effective(ctx context.Context, ref, media string) string {
+	// "n/a" first: Known accepts it as a valid marker, but it names no real profile.
+	if ref != "n/a" && s.Known(ctx, ref) {
+		return ref
+	}
+	if def := s.DefaultProfile(ctx, media); def != "" {
+		return def
+	}
+	return ref
+}
+
+// Resolve turns a profile reference into a runnable (Profile, Engine). An unknown
+// reference gets the hidden fallback profile; callers resolve through Effective first,
+// so in practice the fallback only runs when no profile of the media type exists.
 func (s *Service) Resolve(ctx context.Context, ref string) (Profile, *Engine) {
 	if id, ok := customID(ref); ok {
 		if sp, err := s.repo.Get(ctx, id); err == nil {

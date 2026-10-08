@@ -400,7 +400,10 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 		byName[rel.Title] = rel
 		cands = append(cands, quality.NewCandidate(rel.Title, rel.SizeGB(), rel.Seeders))
 	}
-	decision := c.quality.Decide(ctx, s.QualityProfile, cands)
+	// Resolved once: the decision and every grab this pass records run under the same
+	// profile, the default when the series' own was deleted.
+	profile := c.effectiveProfile(ctx, s.QualityProfile, quality.MediaSeries)
+	decision := c.quality.Decide(ctx, profile, cands)
 	eligible := decision.Eligible // sorted best (highest quality) first
 
 	// Registered before the `remaining` defer below, so it runs after it: by then the
@@ -482,7 +485,7 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 		grabbed[rel.DownloadURL] = true
 		grabbedN++
 		grabbedGB += rel.SizeGB()
-		c.recordSeriesGrab(ctx, s.ID, rel.Title, rel.Indexer, s.QualityProfile, hash)
+		c.recordSeriesGrab(ctx, s.ID, rel.Title, rel.Indexer, profile, hash)
 		c.series.AddEvent(ctx, s.ID, "grabbed", label+": "+rel.Title+" · "+rel.Indexer)
 		c.log.Info("series: grabbing", "series", s.Title, "release", rel.Title, "tier", label)
 		return true
@@ -1176,6 +1179,9 @@ func aired(date string) bool {
 
 // recordSeriesGrab tracks a series grab for seed cleanup (media_type=series).
 func (c *Coordinator) recordSeriesGrab(ctx context.Context, seriesID int64, title, indexer, profile, infoHash string) {
+	// The stall window comes from the profile the grab ran under, so a deleted profile
+	// must mean the default here too — not 0, which switches fail-over off.
+	profile = c.effectiveProfile(ctx, profile, quality.MediaSeries)
 	seedEnabled, seedRatio, seedHours := c.seedRules(ctx, indexer)
 	// stall_minutes was hardcoded to 0, and detectStalledSeries returns immediately when
 	// it isn't positive — so the entire series stall fail-over was dead code. A TV

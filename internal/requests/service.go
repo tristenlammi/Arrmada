@@ -168,6 +168,12 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 	}
 	if profile == "" {
 		profile = req.QualityProfile
+		// The profile stored on the request may have been deleted since it was made. The
+		// approver didn't pick it, so fall to the default rather than adding the title
+		// on a ref that no longer exists (an explicit unknown pick is still refused above).
+		if profile != "" && s.quality != nil && !s.quality.Known(ctx, profile) {
+			profile = ""
+		}
 	}
 	if profile == "" {
 		profile = s.quality.DefaultProfile(ctx, req.MediaType)

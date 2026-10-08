@@ -72,6 +72,11 @@ type Coordinator struct {
 	bookSweepMu sync.Mutex
 	bookSweep   BookSweepStatus
 
+	// danglingLogged remembers which deleted profile refs effectiveProfile has already
+	// reported, so a library full of titles on one deleted profile logs it once per
+	// process instead of on every sweep.
+	danglingLogged sync.Map
+
 	// onSeriesImported fires after episodes land, so the Convert library index can
 	// refresh just that show rather than waiting for the nightly sweep, and Subtitles
 	// can fetch for exactly the episodes that arrived. Optional.
@@ -299,7 +304,8 @@ func (c *Coordinator) RecordManualGrab(ctx context.Context, movieID int64, title
 	if err != nil {
 		return
 	}
-	c.recordGrab(ctx, movieID, 0, title, indexerName, m.QualityProfile, c.quality.StallMinutes(ctx, m.QualityProfile), infoHash)
+	profile := c.effectiveProfile(ctx, m.QualityProfile, quality.MediaMovie)
+	c.recordGrab(ctx, movieID, 0, title, indexerName, profile, c.quality.StallMinutes(ctx, profile), infoHash)
 }
 
 // SearchMissing searches for and grabs any monitored version that has no file
@@ -408,12 +414,6 @@ func bitrateMbps(sizeGB float64, runtimeMin int) float64 {
 	return sizeGB * (1024 * 1024 * 1024 * 8 / 1e6) / float64(runtimeMin*60)
 }
 
-// effectiveProfile substitutes the user's configured default profile when a title carries
-// no real profile of its own — "n/a", as library-scanned movies and series do. Without it,
-// scoring a scanned title falls back to a generic preset that PREFERS Dolby Vision, HDR10
-// and Atmos, so a manual search recommended a Dolby Vision release even to someone who set
-// DV to Avoid. Their default profile is the right preference to apply; only when they have
-// no profiles at all does the generic fallback remain.
 // decideWith decides under spec when it's set, else under the profile reference.
 func (c *Coordinator) decideWith(ctx context.Context, ref string, spec *quality.StoredProfile, cands []quality.Candidate) quality.Decision {
 	if spec != nil {
@@ -422,14 +422,23 @@ func (c *Coordinator) decideWith(ctx context.Context, ref string, spec *quality.
 	return c.quality.Decide(ctx, ref, cands)
 }
 
+// effectiveProfile substitutes the user's configured default profile when a title carries
+// no real profile of its own — "n/a", as library-scanned movies and series do, or a
+// profile that has since been deleted. Without it, scoring falls back to a generic preset
+// that PREFERS Dolby Vision, HDR10 and Atmos (so a manual search recommended a Dolby
+// Vision release even to someone who set DV to Avoid), and for a deleted profile it also
+// turned off upgrades and stall fail-over without a word. Every acquisition path resolves
+// through here, so a title is judged the same way wherever it is looked at; only when
+// there are no profiles at all does the generic fallback remain.
 func (c *Coordinator) effectiveProfile(ctx context.Context, profile, mediaType string) string {
-	if profile != "n/a" && c.quality.Known(ctx, profile) {
-		return profile // a real profile of its own — honour it
+	ref := c.quality.Effective(ctx, profile, mediaType)
+	if ref != profile && profile != "" && profile != "n/a" && c.log != nil {
+		if _, seen := c.danglingLogged.LoadOrStore(profile, true); !seen {
+			c.log.Warn("quality: title's profile no longer exists — using the default",
+				"ref", profile, "default", ref, "media", mediaType)
+		}
 	}
-	if def := c.quality.DefaultProfile(ctx, mediaType); def != "" && def != "n/a" {
-		return def
-	}
-	return profile
+	return ref
 }
 
 func (c *Coordinator) RankReleases(ctx context.Context, id int64) (ReleaseList, error) {
@@ -664,7 +673,10 @@ func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []mo
 	// can't jointly overcommit the same free-space reading (the series path has done this).
 	grabbedGB := 0.0
 	for _, v := range want {
-		decision := c.quality.Decide(ctx, v.QualityProfile, tagRuntime(cands, m.Runtime))
+		// Resolved once and used for the decision, the stall window and the grab record,
+		// so a deleted profile means the default here rather than the permissive fallback.
+		profile := c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)
+		decision := c.quality.Decide(ctx, profile, tagRuntime(cands, m.Runtime))
 		if decision.Winner == nil {
 			// The profile rejected everything on offer. Silent before, which made a
 			// too-strict profile look identical to an indexer returning nothing — and
@@ -672,7 +684,7 @@ func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []mo
 			if len(cands) > 0 {
 				c.log.Info("automation: no release met the quality profile",
 					"movie", m.Title, "version", v.Label,
-					"profile", v.QualityProfile, "candidates", len(cands))
+					"profile", profile, "candidates", len(cands))
 			}
 			continue
 		}
@@ -696,7 +708,7 @@ func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []mo
 		}
 		grabbed[winner.DownloadURL] = true
 		grabbedGB += decision.Winner.Candidate.SizeGB
-		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, v.QualityProfile, c.quality.StallMinutes(ctx, v.QualityProfile), hash)
+		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, profile, c.quality.StallMinutes(ctx, profile), hash)
 		detail := winner.Title + " · " + winner.Indexer
 		if !v.IsDefault {
 			detail += " → " + v.Label
@@ -825,7 +837,7 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 		// Include any monitored version with a file whose profile allows upgrades — regardless of
 		// whether Arrmada grabbed it or found it on a library scan. The AllowsUpgrades gate keeps
 		// us from indexer-searching movies on a non-upgrading profile.
-		if v.Monitored && v.HasFile && c.quality.AllowsUpgrades(ctx, v.QualityProfile) {
+		if v.Monitored && v.HasFile && c.quality.AllowsUpgrades(ctx, c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)) {
 			want = append(want, v)
 		}
 	}
@@ -868,7 +880,8 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 			curSizeGB = gbOf(v.File.SizeBytes)
 		}
 		baseline := upgradeBaseline(m, v)
-		pick, ok := c.quality.UpgradeCandidate(ctx, v.QualityProfile, baseline, curSizeGB, m.Runtime, cands)
+		profile := c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)
+		pick, ok := c.quality.UpgradeCandidate(ctx, profile, baseline, curSizeGB, m.Runtime, cands)
 		if !ok {
 			continue
 		}
@@ -891,7 +904,7 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 		}
 		grabbed[winner.DownloadURL] = true
 		grabbedGB += pick.SizeGB
-		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, v.QualityProfile, c.quality.StallMinutes(ctx, v.QualityProfile), hash)
+		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, profile, c.quality.StallMinutes(ctx, profile), hash)
 		detail := "Upgrade: " + winner.Title + " · " + winner.Indexer
 		if !v.IsDefault {
 			detail += " → " + v.Label
@@ -968,7 +981,8 @@ func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
 		if !v.Monitored {
 			continue
 		}
-		decision := c.quality.Decide(ctx, v.QualityProfile, tagRuntime(cands, m.Runtime))
+		profile := c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)
+		decision := c.quality.Decide(ctx, profile, tagRuntime(cands, m.Runtime))
 		if decision.Winner == nil {
 			continue
 		}
@@ -987,7 +1001,7 @@ func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
 		}
 		grabbed[winner.DownloadURL] = true
 		grabbedGB += decision.Winner.Candidate.SizeGB
-		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, v.QualityProfile, c.quality.StallMinutes(ctx, v.QualityProfile), hash)
+		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, profile, c.quality.StallMinutes(ctx, profile), hash)
 		c.movies.AddEvent(ctx, m.ID, "grabbed", "Re-grab: "+winner.Title+" · "+winner.Indexer)
 	}
 	return nil
