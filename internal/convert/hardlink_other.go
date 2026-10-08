@@ -9,6 +9,3 @@ func fileLinks(path string) uint64 { return 1 }
 // freeBytes is unavailable off Linux; return max so the space guard never blocks on the
 // dev host (production runs in the Linux container with a real check).
 func freeBytes(dir string) uint64 { return 1 << 62 }
-
-// sameDevice can't be told off Linux; the dev host treats every path as one filesystem.
-func sameDevice(a, b string) bool { return true }

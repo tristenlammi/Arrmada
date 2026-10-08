@@ -149,6 +149,23 @@ func (ix *libraryIndex) prune(ctx context.Context, mediaType string, seriesID in
 	}
 }
 
+// forget drops a job's item from the index — the library no longer records a file for it,
+// so it can't be converted until an import reindexes it.
+func (ix *libraryIndex) forget(ctx context.Context, job *Job) {
+	var err error
+	if job.Kind == "episode" {
+		_, err = ix.db.ExecContext(ctx,
+			`DELETE FROM convert_library WHERE media_type = 'episode' AND series_id = ? AND season = ? AND episode = ?`,
+			job.SeriesID, job.Season, job.Episode)
+	} else {
+		_, err = ix.db.ExecContext(ctx,
+			`DELETE FROM convert_library WHERE media_type = 'movie' AND movie_id = ?`, job.MovieID)
+	}
+	if err == nil {
+		ix.gen.Add(1)
+	}
+}
+
 // IndexSeries reindexes one series' episodes. Called after an import so the Convert
 // library reflects new files immediately, without re-walking the whole library.
 func (s *Service) IndexSeries(ctx context.Context, seriesID int64) error {

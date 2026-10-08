@@ -21,7 +21,7 @@ func TestBinFullSkipsBeforeAnyWork(t *testing.T) {
 	src := r.addMovie(t, 1, "Remux", 64)
 	mi := film("h264", 3840, 2160, 85000, aud("truehd", "eng", 8)) // ~76 GB
 	stubProbe(t, mi)
-	stubDisks(t, r.scratch, 1<<50, 1<<50, true)
+	stubDisks(t, r.scratch, 1<<50, 1<<50)
 	binWith(r.Service, 12<<30)
 
 	job := r.run(t, 1, "Remux")
@@ -72,7 +72,7 @@ func finalizeRig(t *testing.T) (r *spaceRig, src, dst string, mi *MediaInfo, pla
 	plan = Plan{VideoCodec: "hevc"}
 	stubProbe(t, &MediaInfo{VideoCodec: "hevc", DurationSec: mi.DurationSec,
 		AudioTracks: len(keptAudio(mi, plan)), SubTracks: len(keptSubs(mi, plan))})
-	stubDisks(t, r.scratch, 1<<50, 1<<50, false)
+	stubDisks(t, r.scratch, 1<<50, 1<<50)
 	dst = filepath.Join(r.scratch, "convert-1.mkv")
 	if err := os.WriteFile(dst, []byte(strings.Repeat("y", 500)), 0o644); err != nil {
 		t.Fatal(err)

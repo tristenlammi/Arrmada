@@ -2,6 +2,7 @@ package convert
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -159,6 +160,10 @@ func (s *Service) remuxVideoStream(ctx context.Context, video, src, dst string, 
 	return nil
 }
 
+// errSourceStream marks a pipe whose producer failed reading the source while the consumer
+// was fine: usually the disk, not the file.
+var errSourceStream = errors.New("source stream failed")
+
 // pipeCommands runs producer | consumer and returns the consumer's error if it failed (the
 // meaningful one — a producer that then can't write is just a consequence), else the
 // producer's — unless consumerMayStopEarly, when a producer cut off by a consumer that
@@ -194,7 +199,7 @@ func pipeCommands(producer, consumer *exec.Cmd, consumerMayStopEarly bool) error
 		return fmt.Errorf("%v (%s)", err, tailStr([]byte(cerr.String())))
 	}
 	if perr != nil && !consumerMayStopEarly {
-		return fmt.Errorf("source stream failed: %w", perr)
+		return fmt.Errorf("%w: %w", errSourceStream, perr)
 	}
 	return nil
 }

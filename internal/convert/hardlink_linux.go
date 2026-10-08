@@ -24,14 +24,3 @@ func freeBytes(dir string) uint64 {
 	}
 	return st.Bavail * uint64(st.Bsize)
 }
-
-// sameDevice reports whether two paths live on the same filesystem, so a file moves between
-// them by rename instead of a full copy. Unknown counts as different: assuming a copy only
-// asks for more free space, never less.
-func sameDevice(a, b string) bool {
-	var sa, sb syscall.Stat_t
-	if syscall.Stat(a, &sa) != nil || syscall.Stat(b, &sb) != nil {
-		return false
-	}
-	return sa.Dev == sb.Dev
-}

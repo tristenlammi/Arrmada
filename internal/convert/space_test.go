@@ -2,6 +2,8 @@ package convert
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -60,19 +62,17 @@ func stubProbe(t *testing.T, mi *MediaInfo) {
 	t.Cleanup(func() { probeFn = old })
 }
 
-// stubDisks reports scratchFree for the scratch folder and libFree everywhere else, with the
-// library on its own filesystem unless same is set.
-func stubDisks(t *testing.T, scratch string, scratchFree, libFree uint64, same bool) {
+// stubDisks reports scratchFree for the scratch folder and libFree everywhere else.
+func stubDisks(t *testing.T, scratch string, scratchFree, libFree uint64) {
 	t.Helper()
-	oldFree, oldSame := freeBytesFn, sameDeviceFn
+	oldFree := freeBytesFn
 	freeBytesFn = func(dir string) uint64 {
 		if dir == scratch {
 			return scratchFree
 		}
 		return libFree
 	}
-	sameDeviceFn = func(a, b string) bool { return same }
-	t.Cleanup(func() { freeBytesFn, sameDeviceFn = oldFree, oldSame })
+	t.Cleanup(func() { freeBytesFn = oldFree })
 }
 
 func (r *spaceRig) skipOf(t *testing.T, key string) (kind string, retryAfter int64, attempts int) {
@@ -108,7 +108,7 @@ func TestNoScratchBacksOff(t *testing.T) {
 	r := newSpaceRig(t)
 	r.addMovie(t, 1, "Remux", 64)
 	stubProbe(t, film("h264", 1920, 1080, 35000, aud("truehd", "eng", 8)))
-	stubDisks(t, r.scratch, 1<<30, 1<<50, false)
+	stubDisks(t, r.scratch, 1<<30, 1<<50)
 
 	for i, want := range []time.Duration{time.Hour, 6 * time.Hour, 24 * time.Hour, 24 * time.Hour} {
 		job := r.run(t, 1, "Remux")
@@ -143,36 +143,70 @@ func TestNoScratchBacksOff(t *testing.T) {
 	near(t, retry, time.Hour)
 }
 
-// The library disk needs room for the converted file when scratch is elsewhere; on the
-// same filesystem the hand-in is a rename and needs none.
-func TestLibraryDiskCheckedWhenScratchIsElsewhere(t *testing.T) {
+// The library disk needs room for the converted file wherever scratch is: two mounts of one
+// share can't rename into each other, so the hand-in may be a full copy either way.
+func TestLibraryDiskAlwaysChecked(t *testing.T) {
 	r := newSpaceRig(t)
 	r.addMovie(t, 1, "Remux", 64)
 	stubProbe(t, film("h264", 1920, 1080, 35000, aud("truehd", "eng", 8)))
 
-	stubDisks(t, r.scratch, 1<<50, 1<<30, false)
+	stubDisks(t, r.scratch, 1<<50, 1<<30)
 	job := r.run(t, 1, "Remux")
 	if kind, _, _ := r.skipOf(t, movieKey(1)); kind != SkipLibraryFull || !strings.Contains(job.Note, "library disk") {
 		t.Fatalf("got %q (%s), want library_full", kind, job.Note)
 	}
 
 	r.skips.clear(context.Background(), movieKey(1))
-	stubDisks(t, r.scratch, 1<<50, 1<<30, true)
+	stubDisks(t, r.scratch, 1<<50, 1<<50)
 	job = r.run(t, 1, "Remux")
 	if kind, _, _ := r.skipOf(t, movieKey(1)); kind == SkipLibraryFull || kind == SkipNoScratch {
-		t.Fatalf("same filesystem: no library check expected, got %s (%s)", kind, job.Note)
+		t.Fatalf("with room on both disks: got %s (%s)", kind, job.Note)
 	}
 }
 
-// A missing library file is a backing-off skip, not a failure retried on every pick.
+// A file the library records but that isn't on disk (mid-import, mid-upgrade) is a
+// backing-off skip — not a probe failure counted toward the failure limit.
 func TestSourceGoneBacksOff(t *testing.T) {
 	r := newSpaceRig(t)
-	job := r.run(t, 5, "Nowhere")
+	src := r.addMovie(t, 5, "Elsewhere", 64)
+	if err := os.Remove(src); err != nil {
+		t.Fatal(err)
+	}
+	stubProbe(t, film("h264", 1920, 1080, 35000, aud("truehd", "eng", 8)))
+	job := r.run(t, 5, "Elsewhere")
 	kind, retry, _ := r.skipOf(t, movieKey(5))
 	if job.State != StateSkipped || kind != SkipSourceGone {
-		t.Fatalf("state %s, skip %q", job.State, kind)
+		t.Fatalf("state %s (%s), skip %q", job.State, job.Note, kind)
 	}
 	near(t, retry, time.Hour)
+	if n := r.failures.failureCount(context.Background(), movieKey(5)); n != 0 {
+		t.Fatalf("a missing file counted %d time(s) toward the failure limit", n)
+	}
+}
+
+// A title with no file recorded at all (deleted since it was indexed) won't come back by
+// waiting: nothing goes to Problems, and its stale index row goes so it isn't picked again.
+func TestNoRecordedFileLeavesNoSkip(t *testing.T) {
+	ctx := context.Background()
+	r := newSpaceRig(t)
+	set(t, r.Service, map[string]string{keyAuto: "true"})
+	indexMovie(t, r.Service, 5, "Deleted", film("h264", 1920, 1080, 35000, aud("truehd", "eng", 8)))
+
+	job := r.pickJob(ctx)
+	if job == nil || job.MovieID != 5 {
+		t.Fatalf("want the indexed movie picked, got %+v", job)
+	}
+	r.skips.record(ctx, movieKey(5), SkipSourceGone, "missing from disk") // from an earlier try
+	r.process(ctx, job)
+	if job.State != StateSkipped {
+		t.Fatalf("state %s (%s), want skipped", job.State, job.Note)
+	}
+	if kind, _, _ := r.skipOf(t, movieKey(5)); kind != "" {
+		t.Fatalf("a title with no file left a %q skip in Problems", kind)
+	}
+	if next := r.pickJob(ctx); next != nil {
+		t.Fatalf("the stale index row should be gone, but %+v was picked", next)
+	}
 }
 
 // After a file is skipped for space the runner moves on to the next one in the same window.
@@ -184,7 +218,7 @@ func TestPickMovesOnAfterNoScratch(t *testing.T) {
 	indexMovie(t, r.Service, 3, "BluRay", film("h264", 1920, 1080, 12000, aud("ac3", "eng", 6)))
 	r.addMovie(t, 2, "Remux", 64)
 	stubProbe(t, film("h264", 1920, 1080, 35000, aud("truehd", "eng", 8)))
-	stubDisks(t, r.scratch, 1<<30, 1<<50, true)
+	stubDisks(t, r.scratch, 1<<30, 1<<50)
 
 	job := r.pickJob(ctx)
 	if job == nil || job.MovieID != 2 {
@@ -228,7 +262,7 @@ func TestSpaceCheckRunsBeforeHeavyWork(t *testing.T) {
 	plan, _ := r.prefs(context.Background()).planFor(mi, "", "", nil)
 	plan.VideoCodec = "hevc"
 	plain := scratchNeeded(mi, plan, false)
-	stubDisks(t, r.scratch, uint64(plain-1), 1<<50, true)
+	stubDisks(t, r.scratch, uint64(plain-1), 1<<50)
 	r.run(t, 1, "HDR")
 	if kind, _, _ := r.skipOf(t, movieKey(1)); kind != SkipNoScratch {
 		t.Fatalf("skip %q, want no_scratch", kind)
@@ -240,7 +274,7 @@ func TestSpaceCheckRunsBeforeHeavyWork(t *testing.T) {
 	// Room for a plain encode but not the HDR10+ pipeline: the 100-frame look runs, the
 	// whole-file read doesn't.
 	r.skips.clear(context.Background(), movieKey(1))
-	stubDisks(t, r.scratch, uint64(plain+1), 1<<50, true)
+	stubDisks(t, r.scratch, uint64(plain+1), 1<<50)
 	r.run(t, 1, "HDR")
 	if kind, _, _ := r.skipOf(t, movieKey(1)); kind != SkipNoScratch {
 		t.Fatalf("skip %q, want no_scratch", kind)
@@ -269,7 +303,7 @@ func TestStagingENOSPCIsLibraryFull(t *testing.T) {
 	plan := Plan{VideoCodec: "hevc"}
 	stubProbe(t, &MediaInfo{VideoCodec: "hevc", DurationSec: mi.DurationSec,
 		AudioTracks: len(keptAudio(mi, plan)), SubTracks: len(keptSubs(mi, plan))})
-	stubDisks(t, r.scratch, 1<<50, 1<<20, false)
+	stubDisks(t, r.scratch, 1<<50, 1<<20)
 	dst := filepath.Join(r.scratch, "convert-1.mkv")
 	if err := os.WriteFile(dst, []byte(strings.Repeat("y", 500)), 0o644); err != nil {
 		t.Fatal(err)
@@ -340,5 +374,36 @@ func TestSkipAttempts(t *testing.T) {
 	}
 	if d := retryDelay(SkipHardlinked, 5); d != 12*time.Hour {
 		t.Fatalf("seeding files keep their fixed wait, got %s", d)
+	}
+}
+
+// A failed whole-file HDR10+ read is only "can't carry it" when the tool itself failed: a
+// full scratch disk or a read error off the array waits and tries again.
+func TestHDR10PlusReadFailureKinds(t *testing.T) {
+	ctx := context.Background()
+	s := newTestService(t)
+	for i, c := range []struct {
+		err   error
+		kind  string
+		count int
+	}{
+		{fmt.Errorf("exit status 1 (Error: No space left on device (os error 28))"), SkipNoScratch, 0},
+		{&os.PathError{Op: "write", Path: "x", Err: syscall.ENOSPC}, SkipNoScratch, 0},
+		{fmt.Errorf("%w: %w", errSourceStream, errors.New("exit status 1")), SkipTransient, 1},
+		{errors.New("exit status 1 (Error: invalid HDR10+ payload)"), SkipHDRUnsupported, 0},
+	} {
+		id := int64(i + 1)
+		it, _ := parseKey(movieKey(id))
+		job := s.claim(it, "HDR", false)
+		s.hdr10PlusReadFailed(job, c.err)
+		var kind string
+		var perm int
+		_ = s.db.QueryRow(`SELECT kind, permanent FROM convert_skips WHERE item_key = ?`, movieKey(id)).Scan(&kind, &perm)
+		if kind != c.kind || (perm == 1) != permanentSkip(c.kind) {
+			t.Errorf("%v: skip %q (permanent %d), want %q", c.err, kind, perm, c.kind)
+		}
+		if n := s.failures.failureCount(ctx, movieKey(id)); n != c.count {
+			t.Errorf("%v: %d failure(s) counted, want %d", c.err, n, c.count)
+		}
 	}
 }

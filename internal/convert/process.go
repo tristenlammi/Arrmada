@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"os"
 	"os/exec"
@@ -22,10 +23,9 @@ import (
 // Seams over the disks and ffprobe, so tests can stage a full disk or a probed film without
 // needing either.
 var (
-	freeBytesFn  = freeBytes
-	sameDeviceFn = sameDevice
-	moveFileFn   = moveFile
-	probeFn      = probe
+	freeBytesFn = freeBytes
+	moveFileFn  = moveFile
+	probeFn     = probe
 )
 
 // process converts one file: analyse it, decide what it needs, settle the codec, encode,
@@ -33,12 +33,17 @@ var (
 func (s *Service) process(ctx context.Context, job *Job) {
 	src, title, origLang, ok := s.resolveSource(ctx, job)
 	if !ok {
-		// Usually mid-import or mid-upgrade: look again later rather than on the next pick.
-		s.finishSkip(job, SkipSourceGone, "the library file is missing — checking again later")
+		s.dropGone(ctx, job)
 		return
 	}
 	if title != "" && job.Kind != "episode" {
 		s.update(job, func(j *Job) { j.Title = title })
+	}
+	// Recorded but not on disk: usually mid-import or mid-upgrade. Look again later rather
+	// than fail it — a missing file says nothing about whether it can be converted.
+	if _, err := os.Stat(src); errors.Is(err, fs.ErrNotExist) {
+		s.finishSkip(job, SkipSourceGone, "the library file is missing from disk — checking again later")
+		return
 	}
 	mi, err := probeFn(ctx, s.ffprobe, src)
 	if err != nil {
@@ -108,8 +113,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 					if ctx.Err() != nil {
 						return
 					}
-					// It has HDR10+ we couldn't read in full: converting would drop it.
-					s.finishSkip(job, SkipHDRUnsupported, "HDR10+ metadata couldn't be read — kept the original rather than lose it")
+					s.hdr10PlusReadFailed(job, err)
 					return
 				}
 				h10pJSON = jf
@@ -241,12 +245,42 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	s.finalizeOutput(ctx, job, src, dst, mi, plan)
 }
 
+// dropGone ends a job whose title or episode no longer has a file recorded at all — deleted
+// since the index was built. That won't change by waiting, so nothing is recorded in
+// Problems; the stale index row goes instead, so the runner stops picking it. A new import
+// reindexes the item and brings it back.
+func (s *Service) dropGone(ctx context.Context, job *Job) {
+	s.skips.clear(ctx, job.Key)
+	if s.index != nil {
+		s.index.forget(ctx, job)
+	}
+	s.finish(job, StateSkipped, "no longer has a file in the library — removed from the list")
+}
+
+// hdr10PlusReadFailed ends a job whose full HDR10+ read failed after the 100-frame look
+// found it. A full scratch disk or a read error off the array clears on its own, so those
+// wait and try again; only a failure of the tool itself means the metadata can't be carried.
+func (s *Service) hdr10PlusReadFailed(job *Job, err error) {
+	switch {
+	case errors.Is(err, syscall.ENOSPC) || transientFailure(err.Error()):
+		s.finishSkip(job, SkipNoScratch, "the scratch disk filled up while reading the HDR10+ metadata — will try again later")
+	case errors.Is(err, errSourceStream):
+		// Usually the disk, but a damaged file fails the same way every time: counting it
+		// toward the failure limit stops a daily whole-file read of a file that never reads.
+		s.finishAfterEncode(job, SkipTransient, "couldn't read the whole file for its HDR10+ metadata — will try again later")
+	default:
+		// It has HDR10+ we couldn't read in full: converting would drop it.
+		s.finishSkip(job, SkipHDRUnsupported, "HDR10+ metadata couldn't be read — kept the original rather than lose it")
+	}
+}
+
 // spaceCheck makes sure there's room for this file before any heavy work, and skips it with
 // a wait when there isn't. The original goes to the recycle bin, and one that doesn't fit
 // under the bin's cap would be purged within the hour, taking older deletions with it. The
-// scratch folder holds the encode; when it's on another filesystem from the library, the
-// finished file is then copied in next to the original, so the library disk needs room for
-// it too (on the same one it's a rename).
+// scratch folder holds the encode, and the finished file is then put next to the original.
+// The library disk is always checked too: two mounts of one share (Unraid's /mnt/user, say)
+// can't rename into each other, so the hand-in is a full copy even when both report the
+// same disk — and on a genuinely shared disk this is the figure scratch already passed.
 func (s *Service) spaceCheck(ctx context.Context, job *Job, src string, mi *MediaInfo, plan Plan, scratch string) bool {
 	if ok, reason := s.binRoomFor(ctx, mi.SizeBytes); !ok {
 		s.finishSkip(job, SkipBinFull, reason)
@@ -257,9 +291,6 @@ func (s *Service) spaceCheck(ctx context.Context, job *Job, src string, mi *Medi
 		return false
 	}
 	dir := filepath.Dir(src)
-	if sameDeviceFn(scratch, dir) {
-		return true
-	}
 	if free := freeBytesFn(dir); free > 0 && int64(free) < need {
 		s.finishSkip(job, SkipLibraryFull, fmt.Sprintf("needs ~%s free on the library disk for the converted file, it has %s — will try again later",
 			humanBytes(need), humanBytes(int64(free))))
