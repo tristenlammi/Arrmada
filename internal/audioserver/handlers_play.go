@@ -58,6 +58,13 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	if prog.UpdatedAt > 0 {
 		pp = &prog
 	}
+	if sess.Restart {
+		// Listening again from the start. Some apps seek to the item's progress rather
+		// than the session's startTime, so that says 0:00, unfinished, too.
+		view := prog
+		view.Position, view.Finished, view.FinishedAt, view.PendingPosition = 0, false, 0, nil
+		pp = &view
+	}
 	item, files := s.itemExpanded(ctx, it, pp)
 	writeJSON(w, http.StatusOK, s.sessionJSON(it, sess, item, files, body.MediaPlayer, body.DeviceInfo))
 }

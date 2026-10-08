@@ -270,3 +270,54 @@ func TestSyncWithoutPositionKeepsPlace(t *testing.T) {
 		}
 	}
 }
+
+// A finished book opened again ("Listen again") starts from 0:00. Listening on from
+// there saves the restart; just opening and closing it leaves the book finished.
+func TestFinishedBookReopensAtStart(t *testing.T) {
+	s, _, uid, clock := testStore(t)
+	ctx := context.Background()
+	yes := true
+	if _, err := s.SetProgress(ctx, uid, "b1", 0, 36000, &yes, "web"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Tap and close: still finished, at the end.
+	*clock = clock.Add(time.Minute)
+	tap, _, err := s.OpenSession(ctx, uid, "b1", "dev1", "Pixel", "Lissen")
+	if err != nil || !tap.Restart || tap.StartPos != 0 {
+		t.Fatalf("reopened finished book = %+v %v, want a restart from 0", tap, err)
+	}
+	*clock = clock.Add(5 * time.Second)
+	if _, err := s.Sync(ctx, uid, tap.ID, nil, 5, 36000, true); err != nil {
+		t.Fatal(err)
+	}
+	if p, _, _ := s.Progress(ctx, uid, "b1"); !p.Finished || p.Position != 36000 {
+		t.Fatalf("opening and closing a finished book changed it: %+v", p)
+	}
+
+	*clock = clock.Add(time.Hour)
+	sess, p, err := s.OpenSession(ctx, uid, "b1", "dev1", "Pixel", "Lissen")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sess.Restart || sess.StartPos != 0 || sess.CurPos != 0 {
+		t.Fatalf("session = %+v, want a restart from 0", sess)
+	}
+	if p.PendingPosition == nil || *p.PendingPosition != 0 || p.PendingSession != sess.ID || !p.Finished {
+		t.Fatalf("progress = %+v, want finished with a restart held for this session", p)
+	}
+	var d Decision
+	for _, pos := range []float64{15, 30} {
+		*clock = clock.Add(15 * time.Second)
+		if d, err = s.Sync(ctx, uid, sess.ID, at(pos), 15, 36000, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if d.Reason != "rewind" || d.Progress.Finished || d.Progress.Position != 30 || d.Progress.PendingPosition != nil {
+		t.Fatalf("after 30 s from the start: %s %+v, want the restart saved at 30 s", d.Reason, d.Progress)
+	}
+	hist, _ := s.History(ctx, uid, "b1")
+	if len(hist) == 0 || hist[0].Reason != "rewind" {
+		t.Fatalf("history = %+v, want a rewind entry", hist)
+	}
+}

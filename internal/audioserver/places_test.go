@@ -68,6 +68,52 @@ func TestCloseWithoutBodyKeepsPlace(t *testing.T) {
 	}
 }
 
+// "Listen again": playing a finished book starts from 0:00, and listening on from there
+// saves it. Opening and closing it without listening leaves it finished.
+func TestListenAgainStartsFromZero(t *testing.T) {
+	h := newHarness(t)
+	h.signIn()
+	key := itemKeyFor(h.book.ID, 0)
+	finished := func() map[string]any {
+		return h.json("PATCH", "/api/me/progress/"+key, map[string]any{"isFinished": true, "duration": 36000})
+	}
+	if p := finished(); p["isFinished"] != true {
+		t.Fatalf("mark finished: %v", p)
+	}
+
+	// Tap and close.
+	sid := h.play(key)
+	if code, out := h.do("POST", "/api/session/"+sid+"/close", nil, nil); code != 200 {
+		t.Fatalf("close: HTTP %d %s", code, out)
+	}
+	if p := h.json("GET", "/api/me/progress/"+key, nil); p["isFinished"] != true {
+		t.Fatalf("tap and close unfinished the book: %v", p)
+	}
+	code, out := h.do("GET", "/api/libraries/"+libraryID+"/personalized", nil, nil)
+	var shelves []map[string]any
+	if code != 200 || json.Unmarshal(out, &shelves) != nil || shelves[len(shelves)-1]["id"] != "listen-again" {
+		t.Fatalf("the book left Listen Again: %s", out)
+	}
+
+	play := h.json("POST", "/api/items/"+key+"/play", map[string]any{"deviceInfo": map[string]string{"clientName": "Lissen", "deviceName": "Pixel 8"}})
+	if play["startTime"] != 0.0 || play["currentTime"] != 0.0 {
+		t.Fatalf("play started at %v / %v, want 0", play["startTime"], play["currentTime"])
+	}
+	ump := obj1(t, obj1(t, play["libraryItem"])["userMediaProgress"])
+	if ump["currentTime"] != 0.0 || ump["isFinished"] != false {
+		t.Fatalf("play's userMediaProgress = %v, want 0:00 unfinished", ump)
+	}
+	sid = play["id"].(string)
+	for _, pos := range []float64{15, 30} {
+		if code, out := h.do("POST", "/api/session/"+sid+"/sync", map[string]any{"currentTime": pos, "timeListened": 15}, nil); code != 200 {
+			t.Fatalf("sync: HTTP %d %s", code, out)
+		}
+	}
+	if p := h.json("GET", "/api/me/progress/"+key, nil); p["isFinished"] != false || p["currentTime"] != 30.0 {
+		t.Fatalf("after listening again for 30 s: %v", p)
+	}
+}
+
 // Numbers sent as strings are read as numbers, like Audiobookshelf reads them.
 func TestSyncNumericStringsAccepted(t *testing.T) {
 	h := newHarness(t)

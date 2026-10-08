@@ -54,19 +54,37 @@ type Session struct {
 	CurPos    float64 `json:"cur_pos"`
 	Listened  float64 `json:"listened"`
 	Closed    bool    `json:"closed"`
+	// Restart: the book was finished, so this session starts again from the beginning
+	// (not stored; it tells the caller to describe the place as 0:00, unfinished).
+	Restart bool `json:"-"`
 }
 
 // OpenSession starts a play session at the user's saved place (or 0).
+//
+// A finished book starts again from 0:00 — opening one from "Listen again" must not play
+// the last few seconds and stop. The restart is held like any jump back, tied to this
+// session: carrying on listening from the start for a moment saves it (and clears
+// Finished), while just opening and closing the book leaves it finished.
 func (s *Store) OpenSession(ctx context.Context, userID int64, itemKey, deviceID, device, client string) (Session, Progress, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.nowMs()
-	p, _, err := s.progress(ctx, userID, itemKey)
+	p, found, err := s.progress(ctx, userID, itemKey)
 	if err != nil {
 		return Session{}, Progress{}, err
 	}
 	sess := Session{ID: newID(), UserID: userID, ItemKey: itemKey, DeviceID: deviceID, Device: device, Client: client,
 		StartedAt: now, LastAt: now, StartPos: p.Position, CurPos: p.Position}
+	if found && p.Finished {
+		sess.StartPos, sess.CurPos, sess.Restart = 0, 0, true
+		zero := 0.0
+		p.PendingPosition, p.PendingSession, p.PendingListened, p.PendingAt = &zero, sess.ID, 0, now
+		// Only the pending state changes: the saved place, its time and its history stay
+		// as they were until the restart proves itself.
+		if err := s.writeProgress(ctx, p); err != nil {
+			return Session{}, Progress{}, err
+		}
+	}
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO listen_sessions (id, user_id, item_key, device_id, device, client, offline, started_at, last_at, start_pos, cur_pos)
 		 VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,

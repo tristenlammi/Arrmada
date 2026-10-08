@@ -372,7 +372,15 @@ function PlaceRow({ p, onChange }: { p: AudioPlace; onChange: () => void }) {
         </div>
         <button onClick={toggle} className="flex-none rounded-lg px-2.5 py-1 text-[11.5px] font-semibold" style={ghost}>{open ? "Hide" : "Earlier places"}</button>
       </div>
-      {pending !== null && (
+      {pending !== null && p.finished && (
+        // A finished book opened again starts from 0:00 and is held until listening
+        // carries on from there — that's "Listen again", not a glitch, so no warning.
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line-soft)" }}>
+          <span>{pending === 0 ? "Listening again from the start" : <>Listening again from <b>{fmtClock(pending)}</b></>} — saved once you've listened for a moment.</span>
+          <button onClick={() => act(() => api.acceptAudioJump(p.item_key))} disabled={busy} className="flex-none rounded-lg px-2.5 py-1 text-[11.5px] font-semibold disabled:opacity-60" style={primary}>{pending === 0 ? "Start over now" : "Use this spot"}</button>
+        </div>
+      )}
+      {pending !== null && !p.finished && (
         <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2 text-[12px]" style={{ background: "var(--avoid-soft)", border: "1px solid var(--avoid)" }}>
           <span>An app jumped back to <b>{fmtClock(pending)}</b>. It's kept once you listen on from there for a bit — or use it now if that was you.</span>
           <button onClick={() => act(() => api.acceptAudioJump(p.item_key))} disabled={busy} className="flex-none rounded-lg px-2.5 py-1 text-[11.5px] font-semibold disabled:opacity-60" style={primary}>Use this spot</button>
