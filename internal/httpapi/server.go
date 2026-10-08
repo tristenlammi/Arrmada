@@ -4,6 +4,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -79,6 +80,10 @@ type Deps struct {
 	// Restart shuts the app down cleanly so Docker's restart policy starts it again
 	// (first-run setup uses it to apply new library folders). nil = not offered.
 	Restart func()
+	// Snapshot copies the database to <data>/backups/arrmada-<kind>-<UTC>.db before an
+	// action that erases data a backup is the only way back from (deleting a user takes
+	// their audiobook places with it). nil = no copy possible, so those actions refuse.
+	Snapshot func(ctx context.Context, kind string) (string, error)
 }
 
 type api struct {
@@ -165,6 +170,7 @@ func New(d Deps) *http.Server {
 	mux.HandleFunc("GET "+base+"/api/v1/users", a.requireRole(auth.RoleAdmin, a.handleListUsers))
 	mux.HandleFunc("POST "+base+"/api/v1/users", a.requireRole(auth.RoleAdmin, a.handleCreateUser))
 	mux.HandleFunc("PUT "+base+"/api/v1/users/{id}", a.requireRole(auth.RoleAdmin, a.handleUpdateUser))
+	mux.HandleFunc("GET "+base+"/api/v1/users/{id}/impact", a.requireRole(auth.RoleAdmin, a.handleUserImpact))
 	mux.HandleFunc("DELETE "+base+"/api/v1/users/{id}", a.requireRole(auth.RoleAdmin, a.handleDeleteUser))
 
 	// Realtime updates

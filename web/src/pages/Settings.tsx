@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { api, type APIKeyStatus, type AppSettings, type AuthUser, type DiskGuardStatus, type RecycleStats, type RecycleItem } from "../lib/api";
+import { api, type APIKeyStatus, type AppSettings, type AuthUser, type DiskGuardStatus, type RecycleStats, type RecycleItem, type UserImpact } from "../lib/api";
 import { useMe, isAdmin } from "../lib/me";
 import { LibraryFolders } from "./Library";
 
@@ -212,11 +212,8 @@ function UsersManager({ meId }: { meId?: number }) {
     finally { setBusy(false); }
   };
 
-  const remove = async (id: number) => {
-    setErr(null);
-    try { await api.deleteUser(id); load(); }
-    catch (e) { setErr((e as Error).message); }
-  };
+  // The X only opens the dialog; nothing is deleted until it's confirmed there.
+  const [removing, setRemoving] = useState<AuthUser | null>(null);
 
   return (
     <Section title="Users" subtitle="Add people who can request media. Requesters see only the Discover page. Auto-approve lets a user's requests skip the queue and download immediately.">
@@ -236,7 +233,7 @@ function UsersManager({ meId }: { meId?: number }) {
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M4 20h4L18 10l-4-4L4 16v4z M14 6l4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
               </button>
               {u.id !== meId && (
-                <button onClick={() => remove(u.id)} title="Remove user" className="grid h-7 w-7 flex-none place-items-center rounded-lg" style={{ border: "1px solid var(--line)", color: "var(--ink-faint)" }}>
+                <button onClick={() => setRemoving(u)} title="Remove user" className="grid h-7 w-7 flex-none place-items-center rounded-lg" style={{ border: "1px solid var(--line)", color: "var(--ink-faint)" }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 5l14 14M19 5L5 19" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" /></svg>
                 </button>
               )}
@@ -267,7 +264,56 @@ function UsersManager({ meId }: { meId?: number }) {
       </form>
 
       {editing && <EditUserModal user={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
+      {removing && <DeleteUserDialog user={removing} onClose={() => setRemoving(null)} onDeleted={() => { setRemoving(null); load(); }} />}
     </Section>
+  );
+}
+
+const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+
+// DeleteUserDialog says what a delete would erase before it happens — as counts only, never
+// which books (admins see how much, not what) — and asks for the username when it would
+// erase someone's audiobook places. The server copies the database first either way.
+function DeleteUserDialog({ user, onClose, onDeleted }: { user: AuthUser; onClose: () => void; onDeleted: () => void }) {
+  const [impact, setImpact] = useState<UserImpact | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.userImpact(user.id).then(setImpact).catch((e: Error) => setErr(`Couldn't check what this would remove: ${e.message}`));
+  }, [user.id]);
+
+  const listening = !!impact && (impact.places > 0 || impact.listening_hours > 0);
+  const hours = impact ? (impact.listening_hours >= 10 ? Math.round(impact.listening_hours) : Math.round(impact.listening_hours * 10) / 10) : 0;
+
+  const confirm = async () => {
+    setBusy(true); setErr(null);
+    try { await api.deleteUser(user.id, listening ? user.username : undefined); onDeleted(); }
+    catch (e) { setErr((e as Error).message); setBusy(false); }
+  };
+
+  return (
+    <ConfirmDialog
+      title={<>Delete {user.username}?</>}
+      body={impact ? (
+        <>
+          <p className="m-0">
+            This permanently removes their place in {plural(impact.places, "audiobook")}, {hours} hour{hours === 1 ? "" : "s"} of listening history, {plural(impact.bookmarks, "bookmark")} and {plural(impact.devices, "signed-in device")}.
+            {" "}Their {plural(impact.requests, "request")} stay.
+          </p>
+          <p className="m-0 mt-2">A copy of the database from just before is kept under Backups.</p>
+          {impact.plex_linked && <p className="m-0 mt-2">They can sign in again with Plex unless you disable them or remove their access in Plex.</p>}
+        </>
+      ) : !err ? "Checking what this would remove…" : null}
+      typedPhrase={listening ? user.username : undefined}
+      confirmLabel="Delete user"
+      busyLabel="Deleting…"
+      busy={busy}
+      error={err}
+      confirmDisabled={!impact}
+      onConfirm={confirm}
+      onCancel={onClose}
+    />
   );
 }
 

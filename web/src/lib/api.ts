@@ -617,6 +617,18 @@ export interface AuthUser {
   created_at?: string;
 }
 
+// What deleting a user takes with them — counts only, never which books (privacy rule).
+export interface UserImpact {
+  places: number;
+  listening_hours: number;
+  bookmarks: number;
+  devices: number;
+  requests: number;
+  sessions: number;
+  push_subscriptions: number;
+  plex_linked: boolean;
+}
+
 export interface CrewMember {
   name: string;
   job: string;
@@ -1106,7 +1118,10 @@ export const api = {
     req<AuthUser>("/api/v1/users", { method: "POST", body: JSON.stringify(body) }),
   updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string }) =>
     req<{ id: number; role: string; auto_approve: boolean }>(`/api/v1/users/${id}`, { method: "PUT", body: JSON.stringify(body) }),
-  deleteUser: (id: number) => req<void>(`/api/v1/users/${id}`, { method: "DELETE" }),
+  userImpact: (id: number) => req<UserImpact>(`/api/v1/users/${id}/impact`),
+  // confirm is the username, required by the server when the user has listening data.
+  deleteUser: (id: number, confirm?: string) =>
+    req<void>(`/api/v1/users/${id}${confirm ? `?confirm=${encodeURIComponent(confirm)}` : ""}`, { method: "DELETE" }),
   importOverseerr: (url: string, api_key: string) =>
     req<{ status: string; found: number }>("/api/v1/requests/import/overseerr", { method: "POST", body: JSON.stringify({ url, api_key }) }),
   importTautulli: (url: string, api_key: string) =>
