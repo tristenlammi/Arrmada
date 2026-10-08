@@ -1,6 +1,7 @@
 // Package realtime fans internal events out to connected websocket clients, so
 // the UI updates live (queues, activity, health) without polling. It bridges the
-// event bus to browsers: subscribe once to the bus, broadcast to every client.
+// event bus to browsers: subscribe once to the bus, then send each event to the
+// clients the topic policy (policy.go) lets see it.
 package realtime
 
 import (
@@ -14,7 +15,8 @@ import (
 
 // Client is one connected websocket subscriber.
 type Client struct {
-	send chan []byte
+	send   chan []byte
+	viewer Viewer
 }
 
 // Send is the outbound message channel; closed when the client disconnects.
@@ -32,9 +34,10 @@ func NewHub(log *slog.Logger) *Hub {
 	return &Hub{log: log, clients: make(map[*Client]struct{})}
 }
 
-// Connect registers a new client with a buffered outbound channel.
-func (h *Hub) Connect() *Client {
-	c := &Client{send: make(chan []byte, 32)}
+// Connect registers a new client with a buffered outbound channel. The viewer is fixed
+// for the connection's life, so a role change takes effect on the next reconnect.
+func (h *Hub) Connect(v Viewer) *Client {
+	c := &Client{send: make(chan []byte, 32), viewer: v}
 	h.mu.Lock()
 	h.clients[c] = struct{}{}
 	h.mu.Unlock()
@@ -58,8 +61,9 @@ func (h *Hub) Count() int {
 	return len(h.clients)
 }
 
-// Run subscribes to every event on the bus and broadcasts each to all clients as
-// JSON {"topic":...,"data":...}. Returns when ctx is cancelled.
+// Run subscribes to every event on the bus and sends each, as JSON
+// {"topic":...,"data":...}, to the clients allowed to see it. Each event is encoded
+// once; only the policy check runs per client. Returns when ctx is cancelled.
 func (h *Hub) Run(ctx context.Context, bus *eventbus.Bus) {
 	events, cancel := bus.Subscribe("*")
 	defer cancel()
@@ -78,15 +82,18 @@ func (h *Hub) Run(ctx context.Context, bus *eventbus.Bus) {
 				}
 				continue
 			}
-			h.broadcast(msg)
+			h.broadcast(ev.Topic, msg)
 		}
 	}
 }
 
-func (h *Hub) broadcast(msg []byte) {
+func (h *Hub) broadcast(topic string, msg []byte) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for c := range h.clients {
+		if !allowed(topic, c.viewer) {
+			continue
+		}
 		select {
 		case c.send <- msg:
 		default:

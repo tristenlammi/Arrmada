@@ -114,7 +114,7 @@ func TestFileInfoRefusesPathsOutsideTheLibrary(t *testing.T) {
 		filepath.Join(lib, "..", "elsewhere", "secret.txt"),
 		lib + "-other/file.mkv", // prefix of the root, but a different folder
 	} {
-		if a.underLibraryRoot(p) {
+		if a.underLibraryRoot(context.Background(), p) {
 			t.Errorf("%q was accepted as a library path", p)
 		}
 	}
@@ -123,7 +123,7 @@ func TestFileInfoRefusesPathsOutsideTheLibrary(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, p := range []string{lib, filepath.Join(lib, "tvshows", "Show", "ep.mkv")} {
-		if !a.underLibraryRoot(p) {
+		if !a.underLibraryRoot(context.Background(), p) {
 			t.Errorf("%q was rejected, but it's inside the library", p)
 		}
 	}

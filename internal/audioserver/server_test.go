@@ -36,6 +36,12 @@ type harness struct {
 
 func newHarness(t *testing.T) *harness {
 	t.Helper()
+	return newHarnessLogging(t, slog.Default())
+}
+
+// newHarnessLogging is newHarness with the server logging to log.
+func newHarnessLogging(t *testing.T, log *slog.Logger) *harness {
+	t.Helper()
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "db"))
 	if err != nil {
@@ -68,7 +74,7 @@ func newHarness(t *testing.T) *harness {
 	}
 	b, _ := bs.Get(ctx, added[0].ID)
 	s := New(Options{DB: db, Books: bs, Listen: listening.NewStore(db), Users: users, Settings: settings.NewService(db),
-		Log: slog.Default(), FFprobe: "ffprobe-not-installed", DataDir: dir})
+		Log: log, FFprobe: "ffprobe-not-installed", DataDir: dir})
 	for name, pw := range map[string]string{"reader": "listen-pass-1", "viewer": "listen-pass-2"} {
 		u, _ := users.UserByUsername(ctx, name)
 		if err := s.Accounts.SetPassword(ctx, u.ID, pw, false); err != nil {

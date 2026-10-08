@@ -202,27 +202,6 @@ func (a *api) handleTestIndexer(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (a *api) handleSearch(w http.ResponseWriter, r *http.Request) {
-	limit := 100
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			limit = n
-		}
-	}
-	result, err := a.deps.Indexers.Search(r.Context(), indexer.SearchQuery{
-		Text:  r.URL.Query().Get("q"),
-		Limit: limit,
-	})
-	if err != nil {
-		a.writeError(w, http.StatusInternalServerError, "search failed")
-		return
-	}
-	if result.Releases == nil {
-		result.Releases = []indexer.Release{}
-	}
-	a.writeJSON(w, http.StatusOK, result)
-}
-
 // pathID parses the {id} path segment, writing a 400 on failure.
 func (a *api) pathID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	return a.pathValueID(w, r, "id")

@@ -626,9 +626,10 @@ func (a *api) handleManualImportList(w http.ResponseWriter, r *http.Request) {
 	if _, ok := a.pathID(w, r); !ok {
 		return
 	}
-	dir := r.URL.Query().Get("path")
-	if dir == "" {
-		dir = a.deps.Config.DownloadsDir
+	dir, err := a.checkImportPath(r.Context(), r.URL.Query().Get("path"))
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	cands, err := a.deps.Movies.ManualImportCandidates(dir)
 	if err != nil {
@@ -656,7 +657,12 @@ func (a *api) handleManualImport(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "path is required")
 		return
 	}
-	if err := a.deps.Movies.ManualImport(r.Context(), id, req.Path); err != nil {
+	src, err := a.checkImportPath(r.Context(), req.Path)
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.deps.Movies.ManualImport(r.Context(), id, src); err != nil {
 		if errors.Is(err, movies.ErrNotFound) {
 			a.writeError(w, http.StatusNotFound, "movie not found")
 			return

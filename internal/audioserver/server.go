@@ -20,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/applog"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/listening"
@@ -215,7 +216,7 @@ func (s *Server) withCommon(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				s.log.Error("audiobook server: panic", "path", r.URL.Path, "err", rec)
+				s.log.Error("audiobook server: panic", "route", applog.RouteLabel(r), "err", rec)
 				http.Error(w, "internal error", http.StatusInternalServerError)
 			}
 		}()
@@ -575,10 +576,12 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 var signInPaths = map[string]bool{"/status": true, "/ping": true, "/login": true, "/auth/refresh": true, "/logout": true, "/api/authorize": true}
 
 // logRequest logs what explains an app that won't connect or shows nothing: every request
-// an app makes while signing in and browsing, with its answer and size — the app's name,
-// never a token or query. The steady traffic of playing (audio, covers, place syncs) is
-// only logged when it fails, and a book nobody has started having no place yet isn't
-// worth a line.
+// an app makes while signing in and browsing, with its answer and size and the app's name.
+// It names the kind of call, never the thing: the route pattern ("POST /api/items/{id}/play")
+// and the names of the query parameters, never a book, author, series, search term or
+// token — admins see how much and when people listen, never what. The steady traffic of
+// playing (audio, covers, place syncs) is only logged when it fails, and a book nobody has
+// started having no place yet isn't worth a line.
 func (s *Server) logRequest(r *http.Request, status int, bytes int64) {
 	if status == 0 {
 		status = http.StatusOK
@@ -592,10 +595,8 @@ func (s *Server) logRequest(r *http.Request, status int, bytes int64) {
 	if status == http.StatusNotFound && r.Method == http.MethodGet && strings.HasPrefix(p, "/api/me/progress/") {
 		return
 	}
-	q := r.URL.Query()
-	q.Del("token")
-	s.log.Info("audiobook server: request", "method", r.Method, "path", p, "query", q.Encode(), "status", status,
-		"bytes", bytes, "token", bearer(r) != "", "client", r.UserAgent())
+	s.log.Info("audiobook server: request", "route", applog.RouteLabel(r), "query_keys", applog.QueryKeys(r.URL.Query(), "token"),
+		"status", status, "bytes", bytes, "token", bearer(r) != "", "client", r.UserAgent())
 }
 
 // setRefreshCookie hands the refresh token over as Audiobookshelf's refresh_token cookie.

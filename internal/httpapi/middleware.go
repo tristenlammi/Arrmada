@@ -3,6 +3,8 @@ package httpapi
 import (
 	"net/http"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/applog"
 )
 
 // statusRecorder captures the response status code for request logging.
@@ -20,8 +22,10 @@ func (r *statusRecorder) WriteHeader(code int) {
 // the websocket hijack) even though we've wrapped it for status capture.
 func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
 
-// logRequests emits one structured line per request at debug level (info for
-// slow or error responses).
+// logRequests emits one structured line per request at debug level (error level for
+// server errors). It logs the route pattern ("GET /api/v1/books/{id}/audiobook"), never
+// the raw path: ids in a path say which book someone downloaded. The router fills
+// r.Pattern in place, so it's set by the time the handler returns.
 func (a *api) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -29,8 +33,7 @@ func (a *api) logRequests(next http.Handler) http.Handler {
 		next.ServeHTTP(rec, r)
 
 		attrs := []any{
-			"method", r.Method,
-			"path", r.URL.Path,
+			"route", applog.RouteLabel(r),
 			"status", rec.status,
 			"dur_ms", time.Since(start).Milliseconds(),
 		}
@@ -68,7 +71,9 @@ func (a *api) recoverPanics(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if v := recover(); v != nil {
-				a.deps.Log.Error("panic recovered", "panic", v, "path", r.URL.Path)
+				// This sits outside the router, so no route pattern is known here; the
+				// path is logged with its ids taken out.
+				a.deps.Log.Error("panic recovered", "panic", v, "path", applog.RedactPath(r.URL.Path))
 				http.Error(w, `{"status":"error","message":"internal server error"}`, http.StatusInternalServerError)
 			}
 		}()

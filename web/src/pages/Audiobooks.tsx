@@ -513,7 +513,7 @@ function AllListeningView() {
   const sessions = who ? data.sessions.filter((s) => s.user_id === who) : data.sessions;
   return (
     <div className="flex flex-col gap-4">
-      <p className="m-0 text-[11.5px] text-ink-faint">How much and when people listen — never what. The listening log doesn't record books.</p>
+      <p className="m-0 text-[11.5px] text-ink-faint">How much and when people listen — never what. Nothing in Arrmada, logs included, records which book anyone plays.</p>
       <div className="overflow-x-auto rounded-xl" style={card}>
         <table className="w-full text-[12.5px]">
           <thead><tr className="text-left text-[11px] text-ink-faint"><th className="p-2.5">Person</th><th className="p-2.5">Today</th><th className="p-2.5">7 days</th><th className="p-2.5">30 days</th><th className="p-2.5">All time</th><th className="p-2.5">Last listened</th></tr></thead>
