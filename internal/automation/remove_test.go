@@ -1,13 +1,17 @@
 package automation
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/movies"
+	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
 	"github.com/tristenlammi/arrmada/internal/store"
 )
@@ -110,6 +114,86 @@ func TestRemoveDownloadKeepFiles(t *testing.T) {
 	}
 	if m, _ := c.movies.Get(ctx, mid); !m.Monitored {
 		t.Error("keep files without 'stop wanting' must not unmonitor")
+	}
+}
+
+// After "remove, keep files" the movie is still monitored and missing, so the next search
+// or RSS sweep picks the same top-ranked release. The 'removed' grab must hold it: nothing
+// may grab it straight back. (Before the fix the row left the per-title guard the moment
+// it stopped being 'grabbed'.)
+func TestRemovedReleaseIsNotGrabbedAgain(t *testing.T) {
+	c, _ := removeCoord(t)
+	ctx := context.Background()
+	var logs bytes.Buffer
+	c.log = slog.New(slog.NewTextHandler(&logs, nil))
+	c.quality = quality.NewService(c.db)
+	sp, err := c.quality.Create(ctx, quality.StoredProfile{MediaType: quality.MediaMovie, Name: "Any"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := "custom:" + strconv.FormatInt(sp.ID, 10)
+
+	const rel = "Arrival.2016.1080p.BluRay.x264-GRP"
+	mid := addMovie(t, c, "Arrival")
+	m, _ := c.movies.Get(ctx, mid)
+	want := []movies.Version{{ID: 1, Label: "Default", QualityProfile: ref, IsDefault: true}}
+	byName := map[string]indexer.Release{rel: {Title: rel, Indexer: "idx", DownloadURL: "http://idx/1"}}
+	cands := []quality.Candidate{quality.NewCandidate(rel, 8, 50)}
+	if d := c.quality.Decide(ctx, ref, cands); d.Winner == nil {
+		t.Fatal("setup: the profile must pick the release, or this test proves nothing")
+	}
+
+	// tryGrab runs the shared search/RSS grab step and reports whether it went for the
+	// release. There are no indexers wired up, so reaching Grab panics; that's caught and
+	// read as "it tried".
+	tryGrab := func() (tried bool) {
+		logs.Reset()
+		defer func() {
+			if recover() != nil {
+				tried = true
+			}
+		}()
+		c.grabMissing(ctx, m, want, byName, cands)
+		return strings.Contains(logs.String(), "automation: grabbing")
+	}
+	if !tryGrab() {
+		t.Fatal("control: with no grab on record the release should be grabbed")
+	}
+
+	addGrab(t, c, "movie", mid, rel, hashA)
+	if _, err := c.RemoveDownload(ctx, hashA, "", RemoveKeepFiles, false); err != nil {
+		t.Fatal(err)
+	}
+	if tryGrab() {
+		t.Fatal("the release the user just removed was grabbed again")
+	}
+
+	// The hold doesn't last forever: a month on, the release is fair game again.
+	if _, err := c.db.Exec(`UPDATE grabs SET grabbed_at = datetime('now', '-31 days')`); err != nil {
+		t.Fatal(err)
+	}
+	if !tryGrab() {
+		t.Fatal("a removal from over a month ago still blocks the release")
+	}
+}
+
+// The same hold applies to series, books and music.
+func TestRemovedGrabHoldsEveryKind(t *testing.T) {
+	c, _ := removeCoord(t)
+	ctx := context.Background()
+	for _, kind := range []string{"series", "book", "music"} {
+		gid := addGrab(t, c, kind, 7, "Some.Release-GRP", "")
+		c.setGrabStatus(ctx, gid, grabStatusRemoved)
+	}
+	key := normTitle("Some.Release-GRP")
+	if !c.pendingSeriesGrabTitles(ctx, 7)[key] {
+		t.Error("series guard ignores a removed grab")
+	}
+	if !c.pendingBookGrabTitles(ctx, 7)[key] {
+		t.Error("book guard ignores a removed grab")
+	}
+	if !c.pendingMusicGrabTitles(ctx, 7)[key] {
+		t.Error("music guard ignores a removed grab")
 	}
 }
 

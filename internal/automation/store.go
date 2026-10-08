@@ -270,8 +270,7 @@ func (c *Coordinator) pendingGrabTitles(ctx context.Context, movieID int64) map[
 	// release permanently.
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT title FROM grabs
-		 WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'movie'
-		   AND grabbed_at > datetime('now', '-1 day')`, movieID)
+		 WHERE movie_id = ? AND media_type = 'movie' AND `+pendingTitleWhere, movieID)
 	if err != nil {
 		return nil
 	}
@@ -302,8 +301,7 @@ func (c *Coordinator) pendingSeriesGrabTitles(ctx context.Context, seriesID int6
 	// duplicate it prevents. After 24h, re-grabbing is the right call.
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT title FROM grabs
-		 WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'series'
-		   AND grabbed_at > datetime('now', '-1 day')`, seriesID)
+		 WHERE movie_id = ? AND media_type = 'series' AND `+pendingTitleWhere, seriesID)
 	if err != nil {
 		return nil
 	}

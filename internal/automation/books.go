@@ -1561,8 +1561,7 @@ func sanitizeName(s string) string {
 func (c *Coordinator) pendingBookGrabTitles(ctx context.Context, bookID int64) map[string]bool {
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT title FROM grabs
-		 WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'book'
-		   AND grabbed_at > datetime('now', '-1 day')`, bookID)
+		 WHERE movie_id = ? AND media_type = 'book' AND `+pendingTitleWhere, bookID)
 	if err != nil {
 		return nil
 	}
