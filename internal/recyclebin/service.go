@@ -48,6 +48,28 @@ type Stats struct {
 	RetentionDays int    `json:"retention_days"`
 }
 
+// Mode answers "what happens to a file I delete right now?" for the delete dialogs.
+// It never walks the bin, so every dialog can ask for it without paying for a scan of
+// a bin holding thousands of files.
+type Mode struct {
+	Enabled bool `json:"enabled"`
+	// Dirs is every bin a deleted file could land in. Today that's the one configured
+	// bin; per-library bins will list each of theirs here.
+	Dirs          []string `json:"dirs"`
+	RetentionDays int      `json:"retention_days"`
+	MaxGB         int      `json:"max_gb"`
+}
+
+// Mode reports whether deletes go to the bin (and which one) or are permanent, plus the
+// guard rails, without reading the bin's contents.
+func (s *Service) Mode(ctx context.Context) Mode {
+	m := Mode{Enabled: s.dir != "", Dirs: []string{}, RetentionDays: s.retentionDays(ctx), MaxGB: s.maxGB(ctx)}
+	if m.Enabled {
+		m.Dirs = append(m.Dirs, s.dir)
+	}
+	return m
+}
+
 type entry struct {
 	path string
 	size int64

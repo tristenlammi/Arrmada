@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { api, type APIKeyStatus, type AppSettings, type AuthUser, type DiskGuardStatus, type RecycleStats, type RecycleItem } from "../lib/api";
 import { useMe, isAdmin } from "../lib/me";
 import { LibraryFolders } from "./Library";
@@ -352,14 +353,19 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
   useEffect(() => { load(); }, []);
   useEffect(() => { if (showItems) loadItems(); }, [showItems]);
 
+  // Both "for good" actions ask through the shared dialog; a refusal shows inside it.
+  const [confirm, setConfirm] = useState<{ kind: "empty" } | { kind: "item"; it: RecycleItem } | null>(null);
+  const [confirmErr, setConfirmErr] = useState<string | null>(null);
+  const closeConfirm = () => { setConfirm(null); setConfirmErr(null); };
+
   const empty = async () => {
-    if (!window.confirm("Permanently delete everything in the recycle bin? This can't be undone.")) return;
-    setBusy(true); setMsg(null);
+    setBusy(true); setMsg(null); setConfirmErr(null);
     try {
       const r = await api.emptyRecycle();
       setMsg(`Freed ${fmtBytes(r.freed_bytes)}.`);
+      closeConfirm();
       load(); if (showItems) loadItems();
-    } catch (e) { setMsg((e as Error).message); }
+    } catch (e) { setConfirmErr((e as Error).message); }
     finally { setBusy(false); }
   };
 
@@ -370,10 +376,9 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
     finally { setRowBusy(null); }
   };
   const deleteItem = async (it: RecycleItem) => {
-    if (!window.confirm(`Permanently delete "${it.name}"? This can't be undone.`)) return;
-    setRowBusy(it.id); setMsg(null);
-    try { await api.deleteRecycleItem(it.id); load(); loadItems(); }
-    catch (e) { setMsg((e as Error).message); }
+    setRowBusy(it.id); setMsg(null); setConfirmErr(null);
+    try { await api.deleteRecycleItem(it.id); closeConfirm(); load(); loadItems(); }
+    catch (e) { setConfirmErr((e as Error).message); }
     finally { setRowBusy(null); }
   };
 
@@ -402,7 +407,7 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <button onClick={() => setShowItems((v) => !v)} disabled={(stats?.files ?? 0) === 0} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", color: "var(--ink)" }}>{showItems ? "Hide contents" : `Manage contents${stats ? ` (${stats.files})` : ""}`}</button>
-            <button onClick={empty} disabled={busy || (stats?.files ?? 0) === 0} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{busy ? "Emptying…" : "Empty now"}</button>
+            <button onClick={() => setConfirm({ kind: "empty" })} disabled={busy || (stats?.files ?? 0) === 0} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{busy ? "Emptying…" : "Empty now"}</button>
             {msg && <span className="text-[11.5px] text-ink-dim">{msg}</span>}
           </div>
 
@@ -423,7 +428,7 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
                       <span className="flex-none font-mono text-[10.5px] text-ink-faint">{fmtBytes(it.size_bytes)}</span>
                       <span className="hidden flex-none font-mono text-[10.5px] text-ink-faint sm:block">{ageOf(it.deleted_unix)}</span>
                       <button onClick={() => restore(it)} disabled={!it.restorable || rowBusy !== null} title={it.restorable ? "Move back to its original location" : "Original location wasn't recorded for this item"} className="flex-none rounded-md px-2.5 py-1 text-[11px] font-semibold disabled:opacity-40" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{rowBusy === it.id ? "…" : "Restore"}</button>
-                      <button onClick={() => deleteItem(it)} disabled={rowBusy !== null} title="Delete permanently" className="flex-none rounded-md px-2.5 py-1 text-[11px] font-semibold disabled:opacity-40" style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>Delete</button>
+                      <button onClick={() => setConfirm({ kind: "item", it })} disabled={rowBusy !== null} title="Delete permanently" className="flex-none rounded-md px-2.5 py-1 text-[11px] font-semibold disabled:opacity-40" style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>Delete</button>
                     </div>
                   ))}
                 </div>
@@ -433,6 +438,30 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
 
           <p className="text-[10.5px] text-ink-faint">Guard rails run automatically about once an hour. The size/retention values save with the button below. Restore moves a file back to where it was deleted from (when that location is free).</p>
         </>
+      )}
+      {confirm?.kind === "empty" && (
+        <ConfirmDialog
+          title="Empty the recycle bin?"
+          body={<>Permanently deletes {stats ? <b>{fmtBytes(stats.bytes)}</b> : "everything"}{stats ? ` (${stats.files} file${stats.files === 1 ? "" : "s"})` : ""}. This can't be undone.</>}
+          confirmLabel="Delete everything for good"
+          busyLabel="Emptying…"
+          busy={busy}
+          error={confirmErr}
+          onConfirm={empty}
+          onCancel={closeConfirm}
+        />
+      )}
+      {confirm?.kind === "item" && (
+        <ConfirmDialog
+          title={<>Delete “{confirm.it.name}” for good?</>}
+          body={<>Permanently deletes {fmtBytes(confirm.it.size_bytes)}. It can't be restored afterwards.</>}
+          confirmLabel="Delete for good"
+          busyLabel="Deleting…"
+          busy={rowBusy !== null}
+          error={confirmErr}
+          onConfirm={() => deleteItem(confirm.it)}
+          onCancel={closeConfirm}
+        />
       )}
     </Section>
   );

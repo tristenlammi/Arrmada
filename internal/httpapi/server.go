@@ -307,6 +307,7 @@ func New(d Deps) *http.Server {
 	// Convert (Tdarr replacement — GPU transcoding/cleanup over the Movies/Series catalogs).
 	mux.HandleFunc("GET "+base+"/api/v1/logs", a.requireRole(auth.RoleManager, a.handleLogs))
 	mux.HandleFunc("GET "+base+"/api/v1/recycle", a.requireRole(auth.RoleManager, a.handleRecycleStats))
+	mux.HandleFunc("GET "+base+"/api/v1/recycle/mode", a.requireRole(auth.RoleManager, a.handleRecycleMode))
 	mux.HandleFunc("GET "+base+"/api/v1/recycle/items", a.requireRole(auth.RoleManager, a.handleRecycleItems))
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/empty", a.requireRole(auth.RoleManager, a.handleRecycleEmpty))
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/restore", a.requireRole(auth.RoleManager, a.handleRecycleRestore))

@@ -11,6 +11,12 @@ func (a *api) handleRecycleStats(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, a.deps.Recycle.Stats(r.Context()))
 }
 
+// handleRecycleMode is the cheap "where do deleted files go" answer every delete dialog
+// asks before it words its warning. Unlike handleRecycleStats it never walks the bin.
+func (a *api) handleRecycleMode(w http.ResponseWriter, r *http.Request) {
+	a.writeJSON(w, http.StatusOK, a.deps.Recycle.Mode(r.Context()))
+}
+
 // handleRecycleItems lists the individual files in the bin (for the management UI).
 func (a *api) handleRecycleItems(w http.ResponseWriter, r *http.Request) {
 	items := a.deps.Recycle.List(r.Context())

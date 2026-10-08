@@ -193,3 +193,34 @@ func TestEnforceMaxSize(t *testing.T) {
 		t.Error("newest file should remain")
 	}
 }
+
+// Mode is what every delete dialog asks before wording its warning. Off must say so
+// (deletes are permanent); on must name the bin. It must not depend on the bin's
+// contents — a bin that doesn't even exist yet still reports where files will go.
+func TestRecycleModeOffAndOn(t *testing.T) {
+	_, set, _ := newTestSvc(t)
+	ctx := context.Background()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	off := New("", set, log).Mode(ctx)
+	if off.Enabled || len(off.Dirs) != 0 {
+		t.Fatalf("bin off: mode = %+v, want disabled with no dirs", off)
+	}
+	if off.Dirs == nil {
+		t.Error("dirs must be an empty list, not null, so the UI can iterate it")
+	}
+
+	missing := filepath.Join(t.TempDir(), "not-created-yet")
+	_ = set.Set(ctx, keyMaxGB, "75")
+	_ = set.Set(ctx, keyRetention, "14")
+	on := New(missing, set, log).Mode(ctx)
+	if !on.Enabled || len(on.Dirs) != 1 || on.Dirs[0] != missing {
+		t.Fatalf("bin on: mode = %+v, want enabled at %s", on, missing)
+	}
+	if on.MaxGB != 75 || on.RetentionDays != 14 {
+		t.Errorf("guard rails = %d GB / %d days, want 75 / 14", on.MaxGB, on.RetentionDays)
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Error("Mode must not create or touch the bin")
+	}
+}

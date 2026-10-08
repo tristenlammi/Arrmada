@@ -502,6 +502,13 @@ export interface RecycleStats {
   max_gb: number;
   retention_days: number;
 }
+// Where deleted files go right now — the cheap answer every delete dialog words itself from.
+export interface RecycleMode {
+  enabled: boolean;
+  dirs: string[];
+  retention_days: number;
+  max_gb: number;
+}
 export interface RecycleItem {
   id: string;
   name: string;
@@ -1050,6 +1057,20 @@ export interface BufferEvent { at: number; offset_ms: number; duration_ms: numbe
 export interface CauseCount { cause: string; label: string; count: number; stall_ms: number }
 export interface Reliability { summary: ReliabilitySummary; causes: CauseCount[]; by_user: BufferGroup[]; by_platform: BufferGroup[]; by_title: BufferGroup[]; events: BufferEvent[] }
 
+// ApiError is still an Error (every existing catch keeps reading .message), but it also
+// carries the status and the decoded body, so a refusal can show its details — e.g.
+// which files a delete moved to the recycle bin and which it couldn't.
+export class ApiError extends Error {
+  status: number;
+  body?: Record<string, unknown>;
+  constructor(message: string, status: number, body?: Record<string, unknown>) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.body = body;
+  }
+}
+
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -1057,13 +1078,14 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     let msg = `HTTP ${res.status}`;
+    let body: Record<string, unknown> | undefined;
     try {
-      const body = (await res.json()) as { message?: string };
-      if (body.message) msg = body.message;
+      body = (await res.json()) as Record<string, unknown>;
+      if (typeof body.message === "string" && body.message) msg = body.message;
     } catch {
       /* non-JSON error */
     }
-    throw new Error(msg);
+    throw new ApiError(msg, res.status, body);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -1223,6 +1245,7 @@ export const api = {
     return req<{ entries: LogEntry[] }>(`/api/v1/logs${qs ? `?${qs}` : ""}`).then((r) => r.entries);
   },
   recycleStats: () => req<RecycleStats>("/api/v1/recycle"),
+  recycleMode: () => req<RecycleMode>("/api/v1/recycle/mode"),
   recycleItems: () => req<{ items: RecycleItem[] }>("/api/v1/recycle/items").then((r) => r.items),
   emptyRecycle: () => req<{ freed_bytes: number }>("/api/v1/recycle/empty", { method: "POST" }),
   restoreRecycle: (id: string) => req<{ status: string }>("/api/v1/recycle/restore", { method: "POST", body: JSON.stringify({ id }) }),
