@@ -710,6 +710,13 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst string,
 	finalPath := strings.TrimSuffix(src, filepath.Ext(src)) + ".mkv"
 	part := finalPath + ".arrpart"
 	_ = os.Remove(part) // a leftover from an interrupted job
+	// A quick look at the bin before staging: from another filesystem staging is a full
+	// copy onto the library disk, wasted if the original then has nowhere to go. The check
+	// under binMu below is the one that counts.
+	if ok, reason := s.binRoomFor(ctx, mi.SizeBytes); !ok {
+		s.finishSkip(job, SkipBinFull, reason+" — the encode was discarded and the original kept")
+		return
+	}
 	if err := moveFileFn(dst, part); err != nil {
 		_ = os.Remove(part)
 		if errors.Is(err, syscall.ENOSPC) {

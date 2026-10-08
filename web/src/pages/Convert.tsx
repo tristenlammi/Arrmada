@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { RescanButton, ago } from "../components/RescanButton";
+import { useMe, isAdmin } from "../lib/me";
 import {
   api, type ConvertCandidate, type ConvertSeriesRollup, type ConvertLibraryStats, type ConvertBlocked, type ConvertSkipped,
   type ConvertJob, type ConvertStatus, type ConvertSettings, type ConvertCompareStatus, type RecycleStats,
@@ -762,7 +763,7 @@ const SKIP_LABEL: Record<string, string> = {
   library_full: "The library disk hasn't room for the converted file next to the original. The originals were kept; each is tried again after an hour, then six, then once a day",
   source_gone: "The library file was missing when Convert went to read it — usually mid-import or mid-upgrade. Checked again later",
   transient: "These hit a problem that usually clears on its own (often a full disk). Each is tried again after an hour, then six, then once a day",
-  bin_full: "Their originals are bigger than the room left in the recycle bin under its size cap. Keeping one there would make the bin delete it — and older deletions — within the hour, so these aren't converted until the cap is raised. Large 4K remuxes wait here; checked again daily",
+  bin_full: "Their originals are bigger than the room left in the recycle bin under its size cap. Keeping one there would make the bin delete it — and older deletions — within the hour, so these aren't converted until the cap is raised. Large 4K remuxes wait here; checked again daily, and straight away when the cap changes",
 };
 
 // retryIn says when a temporary skip is next tried, or "" when it isn't waiting.
@@ -775,6 +776,7 @@ function retryIn(unix: number): string {
 }
 
 function Problems({ flash }: { flash: (m: string) => void }) {
+  const admin = isAdmin(useMe().user); // the recycle bin's cap is an admin setting
   const [skips, setSkips] = useState<ConvertSkipped[] | null>(null);
   const [blocked, setBlocked] = useState<ConvertBlocked[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -813,7 +815,9 @@ function Problems({ flash }: { flash: (m: string) => void }) {
             <div>
               <div className="text-[14px] font-bold">{list.length.toLocaleString()} file{list.length === 1 ? "" : "s"}{list[0].permanent ? null : <span className="ml-2 font-mono text-[10px] font-normal text-ink-faint">TEMPORARY</span>}</div>
               <p className="mt-0.5 text-[12px] text-ink-dim">{SKIP_LABEL[kind] ?? list[0].reason}</p>
-              {kind === "bin_full" && <Link to="/settings?tab=system" className="mt-1 inline-block text-[12px] font-semibold" style={{ color: "var(--accent)" }}>Raise the cap in Settings → Recycle bin</Link>}
+              {kind === "bin_full" && (admin
+                ? <Link to="/settings?tab=system" className="mt-1 inline-block text-[12px] font-semibold" style={{ color: "var(--accent)" }}>Raise the cap in Settings → Recycle bin</Link>
+                : <p className="mt-1 text-[12px] text-ink-faint">Ask an admin to raise the recycle bin's cap</p>)}
             </div>
             <button onClick={() => retrySkips(kind)} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>{busy === kind ? "…" : "Try these again"}</button>
           </div>

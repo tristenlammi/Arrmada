@@ -454,6 +454,16 @@ func (s *Service) ClearSkip(ctx context.Context, key string) error {
 	return nil
 }
 
+// BinSettingsChanged is told when the recycle bin's cap or retention is saved. Files waiting
+// for room in the bin are tried again straight away rather than up to a day later: raising
+// the cap is exactly what their Problems entry asks for.
+func (s *Service) BinSettingsChanged(ctx context.Context) {
+	if s.skips.clearKind(ctx, SkipBinFull) > 0 {
+		s.invalidateLibraryCache()
+		s.wakeUp()
+	}
+}
+
 // ClearBlocklist forgets an item's failures (or all of them when key is empty).
 func (s *Service) ClearBlocklist(ctx context.Context, key string) error {
 	defer s.wakeUp()

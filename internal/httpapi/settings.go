@@ -184,11 +184,21 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if req.PlexLoginAutoApprove != nil && !save(a.deps.Settings.SetBool(ctx, "plex_login_auto_approve", *req.PlexLoginAutoApprove)) {
 		return
 	}
+	// The page sends every setting on each save, so note whether the bin's rules really changed.
+	binWas := a.deps.Settings.Get(ctx, "recycle_max_gb", recyclebin.DefaultMaxGB) + "/" +
+		a.deps.Settings.Get(ctx, "recycle_retention_days", recyclebin.DefaultRetentionDays)
 	if req.RecycleMaxGB != nil && !save(a.deps.Settings.Set(ctx, "recycle_max_gb", strings.TrimSpace(*req.RecycleMaxGB))) {
 		return
 	}
 	if req.RecycleRetentionDays != nil && !save(a.deps.Settings.Set(ctx, "recycle_retention_days", strings.TrimSpace(*req.RecycleRetentionDays))) {
 		return
+	}
+	binNow := a.deps.Settings.Get(ctx, "recycle_max_gb", recyclebin.DefaultMaxGB) + "/" +
+		a.deps.Settings.Get(ctx, "recycle_retention_days", recyclebin.DefaultRetentionDays)
+	if binNow != binWas && a.deps.Convert != nil {
+		// Convert holds back files whose originals didn't fit in the bin; a new cap is
+		// the owner's answer to that, so they shouldn't wait a day to see it.
+		a.deps.Convert.BinSettingsChanged(ctx)
 	}
 	if req.MusicEnabled != nil && !save(a.deps.Settings.SetBool(ctx, keyMusicEnabled, *req.MusicEnabled)) {
 		return

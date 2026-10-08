@@ -106,6 +106,86 @@ func TestBinRecheckBeforeRetire(t *testing.T) {
 	}
 }
 
+// The bin fills while the finished file is being staged: the check under the lock, right
+// before the original goes in, still catches it.
+func TestBinRecheckAfterStaging(t *testing.T) {
+	r, src, dst, mi, plan := finalizeRig(t)
+	calls := 0
+	r.SetBinHeadroom(func(context.Context) (int64, bool, bool) {
+		calls++
+		if calls == 1 {
+			return 1000, true, true // room before staging
+		}
+		return 999, true, true
+	})
+	it, _ := parseKey(movieKey(1))
+	job := r.claim(it, "Remux", true)
+	r.finalizeOutput(context.Background(), job, src, dst, mi, plan)
+
+	if kind, _, _ := r.skipOf(t, movieKey(1)); job.State != StateSkipped || kind != SkipBinFull || calls != 2 {
+		t.Fatalf("state %s, skip %q after %d check(s) (%s)", job.State, kind, calls, job.Note)
+	}
+	if b, err := os.ReadFile(src); err != nil || len(b) != 1000 {
+		t.Fatalf("the original was touched: %v", err)
+	}
+	if _, err := os.Stat(src + ".arrpart"); !os.IsNotExist(err) {
+		t.Fatal("the staged .arrpart was left behind")
+	}
+}
+
+// A bin that's too full is noticed before the finished file is copied onto the library disk.
+func TestBinFullBeforeStaging(t *testing.T) {
+	r, src, dst, mi, plan := finalizeRig(t)
+	binWith(r.Service, 999)
+	oldMove := moveFileFn
+	moveFileFn = func(from, to string) error {
+		t.Fatal("the encode was staged for an original the bin can't take")
+		return nil
+	}
+	t.Cleanup(func() { moveFileFn = oldMove })
+	it, _ := parseKey(movieKey(1))
+	job := r.claim(it, "Remux", true)
+	r.finalizeOutput(context.Background(), job, src, dst, mi, plan)
+	if kind, _, _ := r.skipOf(t, movieKey(1)); kind != SkipBinFull {
+		t.Fatalf("skip %q (%s), want bin_full", kind, job.Note)
+	}
+}
+
+// Saving the bin's settings retries the files waiting for room straight away, and leaves
+// every other kind of skip alone.
+func TestBinSettingsChangedClearsBinFull(t *testing.T) {
+	ctx := context.Background()
+	s := newTestService(t)
+	s.skips.record(ctx, movieKey(1), SkipBinFull, "too big")
+	s.skips.record(ctx, movieKey(2), SkipNoScratch, "full")
+	s.BinSettingsChanged(ctx)
+	waiting := s.skips.waitingKeys(ctx)
+	if waiting[movieKey(1)] || !waiting[movieKey(2)] {
+		t.Fatalf("waiting after the change: %v", waiting)
+	}
+}
+
+// Once a file is waiting for room in the bin, the runner passes over it without a probe or a
+// log line while its original still doesn't fit — and picks it once it does.
+func TestPickPassesOverStillTooBigForBin(t *testing.T) {
+	ctx := context.Background()
+	s := newTestService(t)
+	set(t, s, map[string]string{keyAuto: "true"})
+	indexMovie(t, s, 1, "Remux", film("h264", 3840, 2160, 85000, aud("truehd", "eng", 8)))
+	if _, err := s.db.Exec(`INSERT INTO convert_skips (item_key, kind, reason, permanent, retry_after, attempts, updated_at)
+		VALUES (?, ?, 'too big', 0, 0, 1, datetime('now'))`, movieKey(1), SkipBinFull); err != nil {
+		t.Fatal(err) // a bin_full skip whose daily wait is over
+	}
+	binWith(s, 12<<30)
+	if job := s.pickJob(ctx); job != nil {
+		t.Fatalf("picked %+v though its original still can't fit", job)
+	}
+	binWith(s, 1<<50)
+	if job := s.pickJob(ctx); job == nil || job.MovieID != 1 {
+		t.Fatalf("with room in the bin it should be picked, got %+v", job)
+	}
+}
+
 // With room in the bin the swap goes ahead as before.
 func TestBinWithRoomRetiresTheOriginal(t *testing.T) {
 	r, src, dst, mi, plan := finalizeRig(t)

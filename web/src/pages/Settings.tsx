@@ -53,10 +53,13 @@ export function Settings() {
   const { user, setBooksEnabled, setMusicEnabled } = useMe();
   const admin = isAdmin(user);
   // ?tab=system opens straight onto a tab, so other pages (Convert's Problems) can link to a setting.
-  const [tab, setTab] = useState<Tab>(() => {
+  const [picked, setTab] = useState<Tab>(() => {
     const t = new URLSearchParams(window.location.search).get("tab");
     return t === "library" || t === "system" || t === "users" ? t : "media";
   });
+  // The admin-only tabs fall back to Media for everyone else, so a link to one never opens
+  // onto an empty page.
+  const tab: Tab = !admin && (picked === "system" || picked === "users") ? "media" : picked;
   const [s, setS] = useState<AppSettings | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);

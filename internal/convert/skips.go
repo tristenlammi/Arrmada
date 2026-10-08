@@ -24,8 +24,8 @@ const (
 	SkipTransient   = "transient"    // any other failure that should clear on its own
 
 	// The original wouldn't fit in the recycle bin under its cap, so retiring it would make
-	// the bin purge it within the hour. Waits for the owner to raise the cap (or for the
-	// bin to empty); checked daily.
+	// the bin purge it within the hour. Waits for the owner to raise the cap (saving the
+	// bin's settings clears these) or for the bin to empty; checked daily.
 	SkipBinFull = "bin_full"
 )
 
@@ -144,6 +144,33 @@ func (st *skipStore) clear(ctx context.Context, key string) {
 func (st *skipStore) clearAll(ctx context.Context) error {
 	_, err := st.db.ExecContext(ctx, `DELETE FROM convert_skips`)
 	return err
+}
+
+// clearKind forgets every skip of one kind, reporting how many there were.
+func (st *skipStore) clearKind(ctx context.Context, kind string) int64 {
+	res, err := st.db.ExecContext(ctx, `DELETE FROM convert_skips WHERE kind = ?`, kind)
+	if err != nil {
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	return n
+}
+
+// keysOfKind returns the items currently skipped for one reason.
+func (st *skipStore) keysOfKind(ctx context.Context, kind string) map[string]bool {
+	out := map[string]bool{}
+	rows, err := st.db.QueryContext(ctx, `SELECT item_key FROM convert_skips WHERE kind = ?`, kind)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		if rows.Scan(&k) == nil {
+			out[k] = true
+		}
+	}
+	return out
 }
 
 // permanentKeys returns the items whose skip won't resolve on its own, so their space can
