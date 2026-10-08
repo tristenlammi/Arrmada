@@ -169,7 +169,7 @@ Logs:
 _Every Settings tab saves. API keys can't be cleared by accident. Changing a folder shows a banner with Restart-and-wait. Folders are checked (exists, writable, hardlinks, never under /data) before they are stored._
 
 <a id="cfg-01"></a>
-- [ ] **CFG-01 · Fix 'Save settings': drop read-only fields from GET /settings, send only changed keys, name unknown fields in 400s** — `P0` · `S` · Phase 0
+- [x] **CFG-01 · Fix 'Save settings': drop read-only fields from GET /settings, send only changed keys, name unknown fields in 400s** — `P0` · `S` · Phase 0
   - **Problem:** Since 8b04078 (2026-08-17), handleGetSettings returns `server_time` and `server_tz` (internal/httpapi/settings.go:76-77). Settings.tsx:70 PUTs the whole `s` object back. handleUpdateSettings decodes through decodeJSONLimit, which calls DisallowUnknownFields (auth.go:246) and turns any decode error into a bare 400 'invalid request body'.
 
 Effects:

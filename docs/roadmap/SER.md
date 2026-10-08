@@ -203,7 +203,7 @@ The series package tests move from the hand-rolled schema in refreshmeta_test.go
 _The quick Grab, Replace, Specials and Choose-release paths can no longer pull a box set and overwrite the library. A rename can never destroy a file, and it always shows its preview first. A metadata-source outage or a shifted counted number can no longer move or rename files._
 
 <a id="ser-01"></a>
-- [ ] **SER-01 · Quick Grab and Replace stop bypassing the import gate: record each grab's scope and force only inside it** — `P0` · `M` · Phase 0
+- [x] **SER-01 · Quick Grab and Replace stop bypassing the import gate: record each grab's scope and force only inside it** — `P0` · `M` · Phase 0
   - **Problem:** GrabBestForScope (internal/automation/series_interactive.go:329-361) grabs through GrabForSeries, which passes manual=true (lines 300-322). markGrabManual (store.go:217) flags the grab, and ImportSeriesDownloads then passes grabWasManual(hash) as `force` into importSeriesInto (series.go:1056). force skips wantsEpisodeFile for every ref of every file in the release (reviews.go:555-556). So a season Grab or an episode Replace that lands a complete-series pack replaces every episode of every season with no quality comparison.
 
 Interactive picks have the same blanket force: a complete pack chosen from the Season 3 modal overwrites seasons 1-10 too. Replaced files go to the recycle bin, so this is recoverable, but it is a silent library-wide downgrade.
@@ -329,7 +329,7 @@ The result is huge unwanted downloads. RegrabEpisode (coordinator.go:1076-1103) 
   - **Risk:** This breaks the 'season<=0 means whole show' convention. Every caller of RankSeriesReleases / searchSeriesScope must be checked: httpapi/series.go, fit_profiles.go, and the SeriesSearchModal 'Full show' tab. Grep for `season <= 0` and `season > 0` in automation before merging.
   - **Resolves:** series-2
 <a id="ser-04"></a>
-- [ ] **SER-04 · Renames can never overwrite a file, and Rename shows its preview before moving anything** — `P0` · `M` · Phase 0
+- [x] **SER-04 · Renames can never overwrite a file, and Rename shows its preview before moving anything** — `P0` · `M` · Phase 0
   - **Problem:** SeriesRename (series_interactive.go:591-631) walks episode rows in order and calls Importer.Move, a bare os.Rename with no existence check (library/importer.go:878-886). On Linux that silently replaces the target. After a renumber, the S3E01 row, now holding S2E22's file, is renamed onto the real S3E01 file's path and destroys it, and the loss cascades down the season.
 
 Other problems:
@@ -376,7 +376,7 @@ Other problems:
   - **Risk:** Move is shared with books and movies, so its new error must be handled at every call site; grep for `.Move(` and `os.Rename(` in internal/. Temporary names must never be left behind; the failure path restores them, and RescanSeries ignores dot-prefixed files. Tests must use t.TempDir fixtures only, never the real library.
   - **Resolves:** series-4, series-12
 <a id="ser-05"></a>
-- [ ] **SER-05 · Pin the numbering source per series; scheduled, import-time and fallback refreshes never renumber or move files** — `P0` · `M` · Phase 0
+- [x] **SER-05 · Pin the numbering source per series; scheduled, import-time and fallback refreshes never renumber or move files** — `P0` · `M` · Phase 0
   - **Problem:** Counted absolute numbers drive automatic file moves and renames:
 - seasonsFromDetails (series/service.go:158-187) gives every show counted absolute numbers 1..N unless TVDB supplied real ones.
 - numberingModelChanged (service.go:291-308) fires on any single shifted absolute, which contradicts its own comment.

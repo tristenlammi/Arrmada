@@ -151,7 +151,7 @@ This applies to the audiobook server and the main API's `logRequests`, so it als
 _Requester and read-only accounts get 403 from every staff API (searches, releases, queue, downloads, history, library, settings, logs and the rest). They can't list server folders or receive anyone's Plex activity over the websocket. A route-walk test and a golden route table stop regressions. Discover, Calendar, My Books, Audiobooks and the notification bell still work for them._
 
 <a id="sec-01"></a>
-- [ ] **SEC-01 · Manual-import listing: staff only, confined to library/download roots, never /data** — `P0` · `S` · Phase 0
+- [x] **SEC-01 · Manual-import listing: staff only, confined to library/download roots, never /data** — `P0` · `S` · Phase 0
   - **Problem:** GET /api/v1/{movies,series,books}/{id}/manualimport are registered with a.protected (server.go:270, 388, 464), so any signed-in role can call them, readonly and requester included. ?path= goes straight to a recursive walk:
 - movies.Service.ManualImportCandidates (filepath.WalkDir, movies/service.go:1146)
 - library.FindVideos (via Coordinator.SeriesImportCandidates)
@@ -180,7 +180,7 @@ The walk returns the full path of every large video, ebook or audio file anywher
   - **Risk:** A manager who imports from an ad-hoc mount outside the configured roots loses that ability. The error message names the fix (add the folder in Settings → Library). EvalSymlinks on Unraid /mnt/user shares resolves fine. Note that this is not a download-client path mapping: Arrmada and qBittorrent share DownloadsDir, so no client save-path roots are needed.
   - **Resolves:** backend-1, books-10, movies-3
 <a id="sec-02"></a>
-- [ ] **SEC-02 · Deny-by-default route scopes with one requester allowlist, a golden route table and a route-walk test** — `P0` · `M` · Phase 0
+- [x] **SEC-02 · Deny-by-default route scopes with one requester allowlist, a golden route table and a route-walk test** — `P0` · `M` · Phase 0
   - **Problem:** server.go registers 124 routes with a.protected (auth.go:57-65), which accepts any signed-in role. 77 of those are staff functionality. Examples:
 - /search and the /movies, /series and /books/{id}/releases routes: live multi-indexer searches whose JSON carries download_url with the Prowlarr apikey or the MAM dl token.
 - /queue (content_path), /downloads and /history.
@@ -230,7 +230,7 @@ The UI shows non-staff only Discover (App.tsx:64-77). The server enforces that o
   - **Risk:** Missing a route the requester UI calls would break that page for family accounts. The import-graph reach check in step 7, the TS-to-spec mapping and a manual click-through cover this. The diff is large but mechanical. Land it in one commit, with the golden file reviewed line by line. SEC-01 may land first; if it does, its three GET routes simply move into routes_staff.go.
   - **Resolves:** backend-2, backend-16, ops-13, movies-3, integrations-7, books-10
 <a id="sec-03"></a>
-- [ ] **SEC-03 · Websocket topic policy: non-staff receive only their own events and the heartbeat** — `P0` · `S` · Phase 0
+- [x] **SEC-03 · Websocket topic policy: non-staff receive only their own events and the heartbeat** — `P0` · `S` · Phase 0
   - **Problem:** realtime.Hub.Run subscribes to '*' and broadcasts every bus event to every connected client (hub.go:63-96). /api/v1/ws only needs a signed-in user. The Insights poller publishes plex.stream.started and plex.buffering with {user, title, player, platform, decision} (insights/poller.go:224-227), so any LAN requester or read-only account can watch live who is watching what. That data is manager-only everywhere else (Insights routes, server.go:337-350). release.grabbed, import.held, file.removed (with a path) and the rest leak too. Only staff pages (Dashboard.tsx, MovieDetail.tsx) use the socket today.
   - **Approach:** 1. internal/realtime/hub.go:
        - type Viewer struct{UserID int64; Staff bool}. Client gets a viewer field. Connect(v Viewer) *Client.
@@ -258,7 +258,7 @@ The UI shows non-staff only Discover (App.tsx:64-77). The server enforces that o
 _No log line, live or already on disk, names a book, an author or a search term from the audiobook apps, and no line pairs a user with an item. The 'how much and when, never what' mandate holds again._
 
 <a id="sec-04"></a>
-- [ ] **SEC-04 · Audiobook privacy: request logs carry route patterns and query keys only, plus a one-time scrub of old log files** — `P0` · `S` · Phase 0
+- [x] **SEC-04 · Audiobook privacy: request logs carry route patterns and query keys only, plus a one-time scrub of old log files** — `P0` · `S` · Phase 0
   - **Problem:** internal/audioserver/server.go logRequest (582-599) logs every non-skipped request at INFO with the raw path and q.Encode(), and removes only `token`. That records:
 - POST /api/items/b45/play and GET /api/items/{id};
 - the bookmark routes;

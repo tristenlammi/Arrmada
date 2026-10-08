@@ -145,7 +145,7 @@ Keywords and reject terms match on separator-normalised names, so 'Directors Cut
 _Deleting a profile moves its titles to a chosen profile, and the last one can't be deleted. A title never grabs under the hidden permissive fallback, and cams stay rejected. Existing dangling refs are repaired at boot. AV1/HEVC-converted files read back as their real codec and are no longer re-downloaded over._
 
 <a id="qual-01"></a>
-- [ ] **QUAL-01 · One profile resolver: every acquisition path resolves a missing profile to the default, and the fallback never grabs cams** — `P0` · `S` · Phase 0
+- [x] **QUAL-01 · One profile resolver: every acquisition path resolves a missing profile to the default, and the fallback never grabs cams** — `P0` · `S` · Phase 0
   - **Problem:** Several automation paths pass a title's raw profile ref straight to the quality service:
 - RecordManualGrab (coordinator.go:302)
 - grabMissing (coordinator.go:667 and :699)
@@ -237,7 +237,7 @@ You can also delete the last profile of a media type, leaving everything on the 
   - **Risk:** A wrong media-type check could move book or music titles onto a video profile, so validate inside the tx and test the mismatch. The boot repair rewrites user data: it must only touch refs whose profile id does not exist, and it logs counts. If REQ's approve-sheet work lands in parallel, both edit request profile handling; rebase carefully.
   - **Resolves:** quality-2
 <a id="qual-03"></a>
-- [ ] **QUAL-03 · AV1/HEVC conversions read back as their real codec: restamp the codec token in place, repair existing rows, and never re-grab the release a file was converted from** — `P0` · `S` · Phase 0
+- [x] **QUAL-03 · AV1/HEVC conversions read back as their real codec: restamp the codec token in place, repair existing rows, and never re-grab the release a file was converted from** — `P0` · `S` · Phase 0
   - **Problem:** After a conversion, Convert appends ' AV1' or ' x265' to the recorded source_release:
 - convert/process.go stampEpisodeCodec (~700-717)
 - movies/service.go RepointMovieFile appendToken (~628-636)

@@ -139,7 +139,7 @@ Go backfills (`BackfillBookIDs`, `BackfillAuthors`) are idempotent and run once 
 _Booting never deletes a book again. Prefix-sibling books ('Thrawn' / 'Thrawn: Alliances') can be added and requested. Every book request, including those made before the Hardcover upgrade, finds its book, shows Available and sends 'ready'. Wanted books stay on a search ladder instead of being dropped after two tries._
 
 <a id="book-01"></a>
-- [ ] **BOOK-01 · Turn off every automatic book merge (boot, the merge-all endpoint, the Hardcover upgrade fold)** — `P0` · `S` · Phase 0
+- [x] **BOOK-01 · Turn off every automatic book merge (boot, the merge-all endpoint, the Hardcover upgrade fold)** — `P0` · `S` · Phase 0
   - **Problem:** Three paths delete book rows with no one asking.
 - On every start, the boot goroutine calls booksSvc.MergeDuplicates (cmd/arrmada/main.go:184-193), keyed on the truncating DedupeKey. Same-author prefix siblings ('Mistborn: The Final Empire' / 'Mistborn: Secret History', every 'Star Wars: X') get folded.
 - POST /api/v1/books/dedupe (server.go:376) merges every group blind.

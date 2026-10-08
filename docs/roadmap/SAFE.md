@@ -144,7 +144,7 @@ Testing:
 _An update that ships a migration always leaves a pre-migrate snapshot. Deleting a user, removing a download, deleting a series and merging an audiobook all ask first, default to keeping data, and send files to the bin or a backup instead of erasing them._
 
 <a id="safe-01"></a>
-- [ ] **SAFE-01 · Snapshot the database automatically before pending migrations run** — `P0` · `M` · Phase 0
+- [x] **SAFE-01 · Snapshot the database automatically before pending migrations run** — `P0` · `M` · Phase 0
   - **Problem:** store.Open (internal/store/store.go:54) applies every pending migration in place with no copy taken first. There are 89 migrations, and seven of them drop or rebuild tables (0085 drops audio_app_passwords, for example). Each migration is transactional, so one that fails is safe. One that commits a logical mistake, or corruption during an update, loses every account, request, Insights history, audiobook place and setting with nothing to roll back to. config.go:22 and scheduler.go:2 say backups exist, but none do. One 10 s context also covers the ping and every migration, so a long migration fails the boot.
   - **Approach:** 1. New internal/store/backupname.go:
        - Kinds: pre-migrate, nightly, manual, pre-restore, pre-delete-user, uploaded.
@@ -178,7 +178,7 @@ _An update that ships a migration always leaves a pre-migrate snapshot. Deleting
   - **Risk:** Boot takes as long as VACUUM INTO: seconds for a few hundred MB, where Insights bandwidth samples dominate. Disk use on /data briefly doubles. Refusing to start is deliberate, and the env var is the escape hatch. Snapshots sit on the same disk as the DB, so they protect against bad migrations and corruption, not against losing the disk; SAFE-12 adds download. modernc SQLite supports VACUUM INTO.
   - **Resolves:** system-2, backend-5, product-6
 <a id="safe-02"></a>
-- [ ] **SAFE-02 · Shared destructive-action dialog and a cheap 'where do deleted files go' endpoint** — `P0` · `S` · Phase 0
+- [x] **SAFE-02 · Shared destructive-action dialog and a cheap 'where do deleted files go' endpoint** — `P0` · `S` · Phase 0
   - **Problem:** Destructive actions are confirmed inconsistently:
 - Downloads Delete (Downloads.tsx:288, 357) and user delete (Settings.tsx:238) don't ask at all.
 - VersionCard deletes fire on one click.
@@ -204,7 +204,7 @@ The copy always promises the recycle bin (Movies.tsx:628), even when ARRMADA_REC
   - **Risk:** Low. Keep the props surface small so FE's component kit can absorb it later without touching callers.
   - **Resolves:** movies-6
 <a id="safe-03"></a>
-- [ ] **SAFE-03 · User delete asks first, states what will be lost (counts only), and snapshots the DB beforehand** — `P0` · `S` · Phase 0
+- [x] **SAFE-03 · User delete asks first, states what will be lost (counts only), and snapshots the DB beforehand** — `P0` · `S` · Phase 0
   - **Problem:** The X next to Edit in Settings → Users calls api.deleteUser immediately (Settings.tsx:214-218, 238), with no confirmation. DeleteUser is a plain DELETE (auth/service.go:262), which cascades to listen_progress, listen_history (the 'put your place back' net), listen_log, bookmarks, audio passwords and tokens, sessions and API keys. One misclick permanently erases a family member's audiobook places, and there are no backups.
   - **Approach:** 1. Add auth.Service.DeletionImpact(ctx, id) (UserImpact, error). Counts only, every query indexed by user_id:
        - places: COUNT(*) FROM listen_progress
@@ -237,7 +237,7 @@ The copy always promises the recycle bin (Movies.tsx:628), even when ARRMADA_REC
   - **Risk:** Low. Keep the impact queries cheap; all are indexed by user_id. The snapshot adds a few seconds to a delete on a large DB. That is acceptable for a rare admin action.
   - **Resolves:** system-5
 <a id="safe-04"></a>
-- [ ] **SAFE-04 · Removing a download asks what to do with the files, can't wipe the whole client, and closes out the grab** — `P0` · `M` · Phase 0
+- [x] **SAFE-04 · Removing a download asks what to do with the files, can't wipe the whole client, and closes out the grab** — `P0` · `M` · Phase 0
   - **Problem:** Delete on both Downloads cards calls api.deleteDownload(hash, true) with no confirmation (Downloads.tsx:288, 357). That deletes the data, which may be the only copy of an un-imported download. handleDeleteDownload passes any path value through (downloads.go:33-34), and qBittorrent's Remove sets hashes=<value> (qbittorrent.go:262). So DELETE /queue/all?delete_data=true wipes every torrent in the client, and 'a|b' removes several. The grab row stays 'grabbed'. With a stall timeout set, stalledInQueue reads the missing torrent as stalled (coordinator.go:1165), then blocklists it and grabs another, so Delete quietly becomes 'block and re-grab'.
   - **Approach:** Backend
     1. Add download.ValidHash(h) to internal/download/infohash.go: 40 or 64 hex chars. handleDeleteDownload, handlePauseDownload, handleResumeDownload, handleTorrentAction and handleBlockDownload return 400 for anything else ('remove torrents one at a time'), so 'all', '' and 'a|b' never reach qBittorrent. download.Service.Remove checks it as well, as defence in depth.
@@ -278,7 +278,7 @@ The copy always promises the recycle bin (Movies.tsx:628), even when ARRMADA_REC
   - **Risk:** This changes the API contract, so update every api.ts caller. The series unmonitor scope must never widen to the whole show. Data is only lost when the owner explicitly picks delete. The Importing / Held / Import failed tab states from ops-5 belong to ACQ, not here.
   - **Resolves:** ops-5
 <a id="safe-05"></a>
-- [ ] **SAFE-05 · Whole-series delete goes to the recycle bin with its subtitles, refuses on bin failure, and doesn't delete files by default** — `P0` · `M` · Phase 0
+- [x] **SAFE-05 · Whole-series delete goes to the recycle bin with its subtitles, refuses on bin failure, and doesn't delete files by default** — `P0` · `M` · Phase 0
   - **Problem:** Both delete dialogs start with 'Also delete files' checked: DeleteSeriesModal (Series.tsx:521) and DeleteButton (SeriesDetail.tsx:665). Service.Delete calls removeEpisodeFiles (series/service.go:699-733), which runs os.Remove on each tracked video only. There is no recycle bin and no file.removed event, and series.Service has no bus. Sidecar subtitles are left behind, so the folders never empty and Plex keeps scanning them. One hover-X plus Remove permanently wipes a whole show. DeleteEpisodeFile (service.go:66-74) also hard-deletes when recycling fails.
   - **Approach:** 1. internal/library/recycle.go:
        - `type Bin interface{ For(path string) (string, error) }`
@@ -316,7 +316,7 @@ The copy always promises the recycle bin (Movies.tsx:628), even when ARRMADA_REC
   - **Risk:** Until SAFE-17, a bin on another filesystem means a full copy, and a 1 TB show copies for a long time inside the request. The preview's size sets expectations, and SAFE-17 makes it a rename. A partial failure leaves a half-recycled show. It is reported, and the files are restorable.
   - **Resolves:** series-11
 <a id="safe-06"></a>
-- [ ] **SAFE-06 · Audiobook merge never hard-deletes sources: temp output, duration check, sources to the bin or a 14-day backup, tags kept** — `P0` · `M` · Phase 0
+- [x] **SAFE-06 · Audiobook merge never hard-deletes sources: temp output, duration check, sources to the bin or a 14-day backup, tags kept** — `P0` · `M` · Phase 0
   - **Problem:** MergeAudiobook (internal/automation/books.go:1503-1550) deletes every source with `_ = os.Remove(p)` once ffmpeg exits 0. It never compares the output's duration to the sum of the sources, which Merge already probes (merge.go:64-67), and it bypasses removeBookFile, the bin helper in the same file. ffmpeg writes straight to the final <title>.m4b in the book folder with -y:
 - A failure or the 30-minute timeout leaves a partial .m4b that later scans pick up.
 - A source with the same name is overwritten mid-read.
@@ -387,7 +387,7 @@ Importer.linkOrCopy (library/importer.go:1439-1443) overwrites the replaced file
   - **Risk:** Deletes that used to 'work' by hard-deleting now fail visibly when the bin is broken. That is intended, and the message says what to fix. The constructor signatures change in several packages, so expect conflicts with MOV, SER and CONV work touching the same files. Land this early in M2.
   - **Resolves:** backend-8, backend-16
 <a id="safe-08"></a>
-- [ ] **SAFE-08 · The size cap never purges what was just deleted; bin rows show when they go for good** — `P1` · `S` · Phase 0
+- [x] **SAFE-08 · The size cap never purges what was just deleted; bin rows show when they go for good** — `P1` · `S` · Phase 0
   - **Problem:** recyclebin.Enforce (service.go:290-341) deletes oldest-first until the bin is under the cap (DefaultMaxGB=50), runs hourly (main.go:569) and has no protection for fresh items. A single 60-110 GB remux, the file just replaced, or one night of Convert originals is purged at the next run, together with everything older. The UI never says when an item will disappear.
   - **Approach:** 1. Enforce size-cap pass:
        - Skip entries whose deletion time (sidecar Deleted, else mtime) is within minHold (72 h).
@@ -544,7 +544,7 @@ _Nightly and manual snapshots with retention. An admin Backups card with downloa
   - **Risk:** A restore replaces every module's state, including audiobook positions, so the typed confirmation and the automatic pre-restore copy are mandatory. A partially copied file never becomes live, because of tmp plus rename.
   - **Resolves:** system-2, backend-5, product-6
 <a id="safe-14"></a>
-- [ ] **SAFE-14 · Rebuild-safe migrations: run table-rebuild migrations with foreign keys off and a foreign_key_check** — `P1` · `S` · Phase 0
+- [x] **SAFE-14 · Rebuild-safe migrations: run table-rebuild migrations with foreign keys off and a foreign_key_check** — `P1` · `S` · Phase 0
   - **Problem:** store.Open sets foreign_keys(ON) in the DSN (store.go:33-36) and applies each migration inside a transaction, where PRAGMA foreign_keys is a no-op. A table rebuild, the DROP + recreate pattern used in 0034 and 0085, against a table with ON DELETE CASCADE children would therefore cascade-delete them. Rebuilding users would wipe sessions, listen_progress, listen_history and audio tokens, and the migration would 'succeed'.
   - **Approach:** 1. A directive on the migration's first line: '-- arrmada:foreign-keys=off'.
     2. The applyOne path for such migrations:

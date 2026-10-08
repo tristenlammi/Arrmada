@@ -287,6 +287,8 @@ flowchart LR
 
 ### Phase 0 — Stop the bleeding
 
+> **Status: shipped 2026-10-09** — all 29 tasks merged to main (each lane implemented, adversarially reviewed and fixed; full race suite green).
+
 **Theme:** Small P0 fixes for data loss, security/privacy leaks and silent failures  
 **Goal:** Nothing a person or a background job does can silently destroy files, rows or listening privacy. Requesters can reach only their own surface. Settings save again. The worst silent acquisition losses stop. BE-01 and SAFE-14 land as one migration-runner change, with SAFE-01's snapshot running in its BeforeMigrate hook.  
 **Why now:** These are live data-loss, privacy and security defects on a server the family uses every day. Every later phase ships migrations and destructive paths, so two things must exist first: the snapshot-before-migrate and the confirm/bin primitives. Without the Settings save fix, ACQ-06, SAFE-08 and MUS-01 can't be configured at all.  

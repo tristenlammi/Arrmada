@@ -189,7 +189,7 @@ Standing rules:
 _Book and music reviews import into the item the owner picks, and never into a movie id. An indexer outage no longer pushes titles into a 12h backoff or drops books from automatic search. 'Resume all' can no longer defeat the disk guard, and Downloads shows what the guard is holding._
 
 <a id="acq-01"></a>
-- [ ] **ACQ-01 · Review: 'Import into a different…' and 'Import anyway' work for book and music reviews** — `P0` · `S` · Phase 0
+- [x] **ACQ-01 · Review: 'Import into a different…' and 'Import anyway' work for book and music reviews** — `P0` · `S` · Phase 0
   - **Problem:** ReassignModal (web/src/pages/Reviews.tsx:99-105) loads api.movies() for every review that isn't a series, and labels the button and modal 'movie'. ImportReview (internal/automation/reviews.go:305-407) uses targetID as the destination with no kind check. A picked movie id therefore goes straight to books.Get (reviews.go:389) or music.GetAlbum (:366), and the files are filed under whatever book or album shares that number. Unmatched book and music reviews carry ExpectedID 0 (books.go:626, music.go:258), so 'Import anyway' calls Get(0) and answers 500. api.ts:1883-1890 types media_type as series|movie only.
   - **Approach:** Backend
     1. internal/automation/reviews.go:
@@ -233,7 +233,7 @@ _Book and music reviews import into the item the owner picks, and never into a m
   - **Risk:** Low. The kind check could reject a request from a stale browser tab, which is why an empty kind is treated as the review's own kind. The modal is shared by all four kinds, so re-check the series and movie reassign flows.
   - **Resolves:** ops-1, music-11
 <a id="acq-02"></a>
-- [ ] **ACQ-02 · An indexer outage is never recorded as a search miss** — `P0` · `S` · Phase 0
+- [x] **ACQ-02 · An indexer outage is never recorded as a search miss** — `P0` · `S` · Phase 0
   - **Problem:** When every indexer fails, Search still returns err=nil with no releases.
 - Movies: searchAndGrab returns (0, true, nil) (coordinator.go:554-556), and SearchMissing records a miss (:339-340).
 - Series: the same pattern (series.go:171-177); searchBackoff then climbs to 12h.
@@ -269,7 +269,7 @@ A book requested during a Prowlarr, FlareSolverr or TorrentLeech outage can ther
   - **Risk:** About 19 indexers.Search/Recent callers relied on 'nil error, empty result'. Grep each one and keep 'continue on error' where that was intended (the series per-season and alias loops), so a partial outage doesn't abort a whole sweep. Until ACQ-14 lands, interactive modals show a 502 message on a total outage, which is more truthful than today.
   - **Resolves:** integrations-1
 <a id="acq-03"></a>
-- [ ] **ACQ-03 · Disk guard: a manual Resume can't defeat it, and Downloads shows what it is holding** — `P0` · `S` · Phase 0
+- [x] **ACQ-03 · Disk guard: a manual Resume can't defeat it, and Downloads shows what it is holding** — `P0` · `S` · Phase 0
   - **Problem:** pauseActive (internal/download/diskguard.go:155-190) skips any hash in its held set, even when that torrent is downloading again. Resume and 'Resume all' (httpapi/downloads.go:22-29; Downloads.tsx sends hash 'all') go straight to qBittorrent. A torrent the guard paused and the user resumed is never paused again, so the cache pool fills. The Dashboard keeps saying 'N torrents will resume automatically' (health_system.go:56-62), and the Downloads page can't tell a guard pause from a manual one.
   - **Approach:** 1. diskguard.go pauseActive: while UsedPct ≥ pause, also re-pause held hashes whose live State is 'downloading', and log a Warn with the count re-paused. Read with svc.QueueComplete and prune held hashes that are absent from a complete queue (whole=true only), so Holding stays truthful. Compare hashes in lowercase.
     2. Export `Held(ctx) map[string]bool` (lowercased) and `Engaged(ctx) bool` (enabled, measurable, UsedPct > ResumePct and something held). [ACQ-06](#acq-06) and [ACQ-28](#acq-28) reuse Held.

@@ -147,7 +147,7 @@ On a phone (<640px), every requester page has the same frame, top to bottom:
 _On a phone, no tap can file, approve or decline a request without a visible button. No requester page scrolls sideways at 375px. Adding Arrmada to the Home Screen gives the real icon. Sign in with Plex works on an iPhone and in the installed app._
 
 <a id="app-01"></a>
-- [ ] **APP-01 · No invisible tap targets on touch: Discover/Books quick-request and request-strip Approve/Decline** — `P0` · `S` · Phase 0
+- [x] **APP-01 · No invisible tap targets on touch: Discover/Books quick-request and request-strip Approve/Decline** — `P0` · `S` · Phase 0
   - **Problem:** On touch devices, opacity-0 hover overlays still take taps.
 - MediaCard's '＋ Request' is a `<span role=button>` nested inside the card's `<button>` (Discover.tsx:1111-1122). It calls stopPropagation and ctx.doRequest, so tapping the lower-left of any poster files a request. Plex sign-ins get that request auto-approved.
 - BooksDiscover.tsx:484-497 copies the same pattern.
@@ -187,7 +187,7 @@ _On a phone, no tap can file, approve or decline a request without a visible but
   - **Risk:** hoverOnlyWhenSupported applies globally, so any control reachable only through sticky hover becomes unreachable on touch. Today that means the 5 opacity-0 overlays handled here, plus staff grid actions that were already unreachable on touch. Touch laptops report hover:hover and keep the desktop behaviour.
   - **Resolves:** discover-7, frontend-4, product-7
 <a id="app-02"></a>
-- [ ] **APP-02 · No sideways scroll at 375px: requester header stopgap and a Discover toolbar that fits a phone** — `P0` · `S` · Phase 0
+- [x] **APP-02 · No sideways scroll at 375px: requester header stopgap and a Discover toolbar that fits a phone** — `P0` · `S` · Phase 0
   - **Problem:** The UserLayout header (UserLayout.tsx:28-56) is a single non-wrapping justify-between row with a min-content width of about 450-520px. Every requester page therefore scrolls horizontally at 375-430px, and index.css has no overflow guard.
 
 Discover's search also overflows:

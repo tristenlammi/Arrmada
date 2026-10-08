@@ -216,7 +216,7 @@ Keep the existing dark warm palette, terracotta accent and type scale. Reuse the
 _Music is off on fresh installs and labelled Preview. Switching it off stops its jobs, manual actions and API. When it is on, each incomplete album is searched on a 30 min → 12 h → weekly backoff, at most 25 albums per sweep, never for albums with no listing or not yet released._
 
 <a id="mus-01"></a>
-- [ ] **MUS-01 · Music off by default and labelled Preview; switching it off stops its jobs, actions and API** — `P0` · `S` · Phase 0
+- [x] **MUS-01 · Music off by default and labelled Preview; switching it off stops its jobs, actions and API** — `P0` · `S` · Phase 0
   - **Problem:** module_music_enabled defaults to true (internal/httpapi/settings.go:51-55), so Music shows in the nav of every install. Meanwhile:
 - /status reports {music, false, 'planned'} (server.go:517). The plannedModules comment also wrongly says Insights is on the roadmap.
 - The Settings hint says the module is 'still on the roadmap' (Settings.tsx:166).
@@ -278,7 +278,7 @@ Switching Music off therefore leaves background grabbing running for every monit
   - **Risk:** The startup keep-on check is the only thing that stops an active music user from having the module silently switched off, so it must log clearly and must never overwrite an explicit value. While the module is off, finished music torrents sit unimported and import once it is switched back on (the hint says so). Books keeps its current toggle behaviour. The gate is built so Books can reuse it later.
   - **Resolves:** music-12
 <a id="mus-02"></a>
-- [ ] **MUS-02 · Per-album search backoff, 25-album cap per sweep, and no searches for albums with no listing or not yet released** — `P0` · `M` · Phase 0
+- [x] **MUS-02 · Per-album search backoff, 25-album cap per sweep, and no searches for albums with no listing or not yet released** — `P0` · `M` · Phase 0
   - **Problem:** The SearchMusicMissing doc comment promises exponential backoff, but the loop (internal/automation/music.go:45-62) only skips albums that are unmonitored, complete or downloading, then calls grabAlbum. grabAlbum runs a full multi-indexer search every time and never records a miss. The albums table (0070_music.sql) has no search-state columns. The job runs every 30 minutes (main.go:396).
 
 Costs:

@@ -112,7 +112,7 @@ There is no big-bang split.
 _Migrations can no longer cascade-delete child rows. A panic anywhere in background work is logged and contained instead of restarting the app mid-encode or mid-stream. Every finished movie import attaches to its movie even after a dropped event or a crash, so movies stop sticking at Wanted and requesters get their ready message._
 
 <a id="be-01"></a>
-- [ ] **BE-01 · Migration runner: safe parent-table rebuilds (FKs off outside the tx + foreign_key_check), lint test, pre-migrate hook for SAFE's snapshot** — `P1` · `S` · Phase 0
+- [x] **BE-01 · Migration runner: safe parent-table rebuilds (FKs off outside the tx + foreign_key_check), lint test, pre-migrate hook for SAFE's snapshot** — `P1` · `S` · Phase 0
   - **Problem:** applyOne (internal/store/migrate.go:80-94) runs every migration inside a tx on a pool whose DSN sets foreign_keys(ON) (store.go:32-36). PRAGMA foreign_keys is a no-op inside a tx. A future 'create new / copy / DROP old / rename' rebuild of users (10 child tables), series, books, artists or albums would therefore cascade-delete audiobook progress, sessions, episodes and similar rows on the owner's next ./update.sh, while the app still looks healthy. That pattern has already been used on non-parent tables in 0003, 0034 and 0059. Separately, SAFE's pre-migration VACUUM INTO snapshot needs a way to see that migrations are pending before they apply.
   - **Approach:** 1) migrate.go changes:
        - `runMigrations(ctx, db, fsys fs.FS)` takes the FS so tests can inject one; production passes migrationsFS.
