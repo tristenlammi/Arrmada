@@ -53,6 +53,7 @@ func (a *api) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 		Overview       string `json:"overview"`
 		Note           string `json:"note"`
 		QualityProfile string `json:"quality_profile"`
+		Formats        string `json:"formats"` // books: ebook | audiobook | both; absent = the default profile's editions
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -60,7 +61,7 @@ func (a *api) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 	u, _ := userFrom(r)
 	in := requests.Request{
 		MediaType: req.MediaType, TMDBID: req.TMDBID, OLKey: req.OLKey, Title: req.Title, Author: req.Author, Year: req.Year,
-		PosterURL: req.PosterURL, Overview: req.Overview, Note: req.Note, QualityProfile: req.QualityProfile,
+		PosterURL: req.PosterURL, Overview: req.Overview, Note: req.Note, QualityProfile: req.QualityProfile, Formats: req.Formats,
 		RequestedBy: u.ID, RequestedByName: u.Username,
 	}
 	// Canonicalize display metadata from the TMDB id. Title/poster/overview came

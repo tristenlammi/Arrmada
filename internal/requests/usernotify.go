@@ -154,7 +154,7 @@ func (s *Service) NotifyBookReady(ctx context.Context, bookID int64) error {
 	if err != nil {
 		return err
 	}
-	return s.notifyBookRequesters(ctx, b.ID, b.OLKey)
+	return s.notifyBookRequesters(ctx, b)
 }
 
 // requestRef is the stable de-dupe key for a request's media ("movie:123",
@@ -188,23 +188,64 @@ func (s *Service) notifyRequester(ctx context.Context, mediaType string, tmdbID 
 // notifyBookRequesters alerts everyone behind the requests for a just-imported book. The
 // link survives the book's catalogue key changing; a request not linked yet is still
 // found by the key it was made under, current or former.
-func (s *Service) notifyBookRequesters(ctx context.Context, bookID int64, olKey string) error {
-	keys := []string{olKey}
-	if ks, err := s.books.KeysFor(ctx, bookID); err == nil {
+//
+// The import's edition isn't trusted to say what arrived: two imports can share one
+// outbox row. Each request is told about every format it asked for that is on disk now,
+// and the per-format refs keep that to once each.
+func (s *Service) notifyBookRequesters(ctx context.Context, b books.Book) error {
+	keys := []string{b.OLKey}
+	if ks, err := s.books.KeysFor(ctx, b.ID); err == nil {
 		keys = keys[:0]
 		for _, k := range ks {
 			keys = append(keys, k.Key)
 		}
 	}
-	linked, err := s.repo.ListForBook(ctx, bookID, keys)
+	linked, err := s.repo.ListForBook(ctx, b.ID, keys)
 	if err != nil {
 		// Without the list the linked requesters would be skipped for good; fail so a
 		// retrying caller (an outbox row) tries again.
-		return fmt.Errorf("list requests for book %d: %w", bookID, err)
+		return fmt.Errorf("list requests for book %d: %w", b.ID, err)
 	}
 	var errs []error
 	for _, req := range linked {
-		errs = append(errs, s.notifyReady(ctx, req))
+		errs = append(errs, s.notifyBookReady(ctx, req, b, true))
+	}
+	return errors.Join(errs...)
+}
+
+// notifyBookReady sends a book request's "ready" messages: one per format it asked for
+// that is on disk — "ready to read" for the ebook, "ready to listen to" for the
+// audiobook. A request from before the format choice gets the one message it always
+// did: on any import, or (from the sweep) once the book has a file.
+//
+// The ebook's message keeps the old single ref, so a request that predates the choice
+// and is widened later isn't told about its ebook a second time.
+func (s *Service) notifyBookReady(ctx context.Context, req Request, b books.Book, imported bool) error {
+	if req.Formats == "" {
+		if !imported && !b.HasFile {
+			return nil
+		}
+		return s.notifyReady(ctx, req)
+	}
+	wantE, wantA := editionsOf(req.Formats)
+	told := 0
+	var errs []error
+	if wantE && hasEbook(b) {
+		n, err := s.notifyPartiesCount(ctx, req, "Your request is ready",
+			fmt.Sprintf("“%s” is ready to read.", req.Title), requestRef(req), "request-ready")
+		told, errs = told+n, append(errs, err)
+	}
+	if wantA && hasAudiobook(b) {
+		n, err := s.notifyPartiesCount(ctx, req, "Your request is ready",
+			fmt.Sprintf("The audiobook of “%s” is ready to listen to.", req.Title), requestRef(req)+":"+books.KindAudiobook, "request-ready")
+		told, errs = told+n, append(errs, err)
+	}
+	if told > 0 {
+		status := req.Status // half of a "both" request: changed, not yet ready
+		if bookReady(req.Formats, b) {
+			status = eventAvailable
+		}
+		s.publishUpdated(req, status, s.parties(ctx, req))
 	}
 	return errors.Join(errs...)
 }
@@ -296,7 +337,9 @@ func (s *Service) notifyPartiesCount(ctx context.Context, req Request, title, bo
 			// inbox insert above already deduped repeats, so this can't double-ping.
 			s.push.SendToUserAsync(uid, title, body, "/discover")
 		}
-		s.log.Info(kind+" notified", "title", req.Title, "user", uid)
+		// The request id, not the title: an audiobook's "ready" pairs a user with what they
+		// will listen to, and the log is staff-readable.
+		s.log.Info(kind+" notified", "request", req.ID, "user", uid)
 	}
 	return told, errors.Join(errs...)
 }
@@ -330,15 +373,13 @@ func (s *Service) SweepReadyRequests(ctx context.Context) error {
 			serByTMDB[sr.TMDBID] = serInfo{id: sr.ID, hasFiles: sr.Stats != nil && sr.Stats.HaveFiles > 0}
 		}
 	}
-	bookHave := map[string]bool{}
-	bookByID := map[int64]bool{}
+	bookByKey := map[string]books.Book{}
+	bookByID := map[int64]books.Book{}
 	if bs, err := s.books.List(ctx); err == nil {
 		for _, b := range bs {
-			bookByID[b.ID] = b.HasFile
+			bookByID[b.ID] = b
 		}
-		for k, b := range s.books.KeyIndex(ctx, bs) { // any key a book has had
-			bookHave[k] = b.HasFile
-		}
+		bookByKey = s.books.KeyIndex(ctx, bs) // any key a book has had
 	}
 	for i := range reqs {
 		ready := false
@@ -352,12 +393,16 @@ func (s *Service) SweepReadyRequests(ctx context.Context) error {
 				ready = !s.series.HasWantedEpisodes(ctx, info.id)
 			}
 		case "book":
-			// By the linked row first: the catalogue key may have changed since.
-			if has, ok := bookByID[reqs[i].BookID]; ok {
-				ready = has
-			} else {
-				ready = bookHave[reqs[i].OLKey]
+			// By the linked row first: the catalogue key may have changed since. Each
+			// format the request asked for that is here gets its own message.
+			b, ok := bookByID[reqs[i].BookID]
+			if !ok {
+				b, ok = bookByKey[reqs[i].OLKey]
 			}
+			if ok {
+				_ = s.notifyBookReady(ctx, reqs[i], b, false) // logged inside; the next sweep tries again
+			}
+			continue
 		}
 		if ready {
 			_ = s.notifyReady(ctx, reqs[i]) // logged inside; the next sweep tries again

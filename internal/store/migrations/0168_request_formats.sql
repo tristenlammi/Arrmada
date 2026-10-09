@@ -1,0 +1,11 @@
+-- 0168_request_formats: which format a book request asked for.
+--
+-- A requester can now ask to read a book, listen to it, or both. The request's quality
+-- profile follows the choice (the Ebook, Audiobook or Ebook + Audiobook preset), and
+-- the "ready" message and progress are per format: someone who asked for the
+-- audiobook isn't told an EPUB is "ready to read".
+--
+--   formats  'ebook' | 'audiobook' | 'both' — what was asked for;
+--            '' — a request made before the choice existed: readiness and its single
+--            "ready" message work as they always did, so nothing re-fires on deploy.
+ALTER TABLE requests ADD COLUMN formats TEXT NOT NULL DEFAULT '';

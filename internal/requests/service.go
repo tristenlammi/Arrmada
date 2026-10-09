@@ -168,6 +168,10 @@ func (s *Service) Create(ctx context.Context, in Request, autoApprove bool) (cre
 				in.BookID = id
 			}
 		}
+		// Read, listen or both — and the profile that goes with the choice.
+		if err := s.normalizeBookFormats(ctx, &in); err != nil {
+			return Request{}, false, err
+		}
 	default:
 		return Request{}, false, fmt.Errorf("media_type must be movie, series or book")
 	}
@@ -192,7 +196,13 @@ func (s *Service) Create(ctx context.Context, in Request, autoApprove bool) (cre
 	}
 	s.log.Info("request created", "media", in.MediaType, "title", in.Title, "by", in.RequestedByName, "auto_approve", autoApprove)
 	if autoApprove {
-		created, err = s.Approve(ctx, created.ID, in.QualityProfile) // publishes approved
+		profile := in.QualityProfile
+		if in.MediaType == "book" {
+			// The request already carries the profile for its format choice; passing it
+			// as an approver's pick would re-derive the choice from the profile.
+			profile = ""
+		}
+		created, err = s.Approve(ctx, created.ID, profile) // publishes approved
 		return created, false, err
 	}
 	s.publishUpdated(created, StatusPending, s.parties(ctx, created))
@@ -273,6 +283,12 @@ func (s *Service) attachToExisting(ctx context.Context, existing, in Request) (R
 		if err := s.repo.RemoveSubscriber(ctx, existing.ID, in.RequestedBy); err != nil {
 			s.log.Warn("request: could not clean subscriber row", "id", existing.ID, "err", err)
 		}
+		// A re-opened book request asks for what its new requester chose.
+		if existing.MediaType == "book" && in.Formats != "" {
+			if err := s.repo.SetFormats(ctx, existing.ID, in.Formats, in.QualityProfile); err != nil {
+				s.log.Warn("request: could not set the formats", "id", existing.ID, "err", err)
+			}
+		}
 		s.log.Info("request re-opened", "media", existing.MediaType, "title", existing.Title, "by", in.RequestedByName)
 		req, err := s.repo.Get(ctx, existing.ID)
 		return req, false, err
@@ -284,7 +300,62 @@ func (s *Service) attachToExisting(ctx context.Context, existing, in Request) (R
 		}
 		s.log.Info("request subscribed", "media", existing.MediaType, "title", existing.Title, "by", in.RequestedByName)
 	}
+	if existing.MediaType == "book" && in.Formats != "" {
+		if req, ok := s.widenRequest(ctx, existing, in); ok {
+			existing = req
+		}
+	}
 	return existing, true, nil
+}
+
+// widenRequest folds a second book request's format choice into the existing one:
+// someone asking to listen to a book another asked to read makes the request "both".
+// An approved request widens its library book too and searches for what is missing.
+// It never narrows anything. ok reports the request changed.
+func (s *Service) widenRequest(ctx context.Context, existing, in Request) (Request, bool) {
+	had := s.requestedFormats(ctx, existing)
+	union := unionFormats(had, in.Formats)
+	if union == had {
+		return existing, false // nothing new asked for; an older request keeps its old ways
+	}
+	if err := s.repo.SetFormats(ctx, existing.ID, union, s.profileForFormats(ctx, union)); err != nil {
+		s.log.Warn("request: could not widen the formats", "id", existing.ID, "err", err)
+		return existing, false
+	}
+	if existing.Status == StatusApproved && s.books != nil {
+		bookID := existing.BookID
+		if bookID == 0 {
+			bookID = in.BookID
+		}
+		if bookID == 0 {
+			bookID, _ = s.books.BookIDForKey(ctx, existing.OLKey)
+		}
+		if bookID > 0 {
+			if existing.BookID == 0 {
+				_ = s.repo.SetBookID(ctx, existing.ID, bookID)
+			}
+			if s.widenBook(ctx, bookID, union) {
+				s.searchRequestedBook(ctx, existing.ID, bookID, existing.Title)
+			}
+		}
+	}
+	req, err := s.repo.Get(ctx, existing.ID)
+	if err != nil {
+		return existing, false
+	}
+	return req, true
+}
+
+// searchRequestedBook starts a search for a requested book that lacks an edition the
+// request asked for — unless something is already downloading for it, which a second
+// grab would only duplicate.
+func (s *Service) searchRequestedBook(ctx context.Context, requestID, bookID int64, title string) {
+	if s.searchBook == nil || len(s.activeGrabs(ctx, "book", bookID)) > 0 {
+		return
+	}
+	s.background("book.search", fmt.Sprintf("book:%d", bookID), fmt.Sprintf("request:%d", requestID), title, "book", 0, 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
+		return s.searchBook(c, bookID)
+	})
 }
 
 // Approve adds the requested media to the Movies/Series module (monitored) and starts
@@ -298,6 +369,7 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 	if profile != "" && s.quality != nil && !s.quality.Known(ctx, profile) {
 		return Request{}, ErrUnknownProfile
 	}
+	explicit := profile != ""
 	if profile == "" {
 		profile = req.QualityProfile
 		// The profile stored on the request may have been deleted since it was made. The
@@ -338,6 +410,15 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 			})
 		}
 	case "book":
+		// An approver's explicit profile is their call on the format too.
+		if explicit && s.quality != nil {
+			if f := s.formatsForProfile(ctx, profile); f != req.Formats {
+				if err := s.repo.SetFormats(ctx, id, f, ""); err != nil {
+					s.log.Warn("request: could not set the formats", "request", id, "err", err)
+				}
+				req.Formats = f
+			}
+		}
 		b, addErr := s.books.Add(ctx, req.OLKey, profile, true, metadata.BookResult{
 			Key: req.OLKey, Title: req.Title, Author: req.Author, Year: req.Year, CoverURL: req.PosterURL,
 		})
@@ -351,15 +432,22 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 				s.log.Warn("request: could not link the book", "request", id, "err", err)
 			}
 		}
-		// A new row always wants a search; one already there only when it lacks an
-		// edition its profile wants (an audiobook request for a book we have as an ebook)
-		// and nothing is already downloading for it, which a second grab would duplicate.
-		existingWants := addErr != nil && s.lacksWantedEdition(ctx, b) && len(s.activeGrabs(ctx, "book", b.ID)) == 0
-		if b.ID > 0 && (addErr == nil || existingWants) && s.searchBook != nil {
-			bid := b.ID
-			s.background("book.search", fmt.Sprintf("book:%d", bid), trigger, req.Title, "book", 0, 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
-				return s.searchBook(c, bid)
-			})
+		switch {
+		case b.ID > 0 && addErr == nil:
+			// A new row always wants a search.
+			if s.searchBook != nil {
+				bid := b.ID
+				s.background("book.search", fmt.Sprintf("book:%d", bid), trigger, req.Title, "book", 0, 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
+					return s.searchBook(c, bid)
+				})
+			}
+		case b.ID > 0:
+			// Already in the library: it now wants every edition the request asked for
+			// as well as its own (an audiobook request for a book we have as an ebook),
+			// and is searched when one of those is missing.
+			if s.widenBook(ctx, b.ID, s.requestedFormatsFor(ctx, req, profile)) {
+				s.searchRequestedBook(ctx, id, b.ID, req.Title)
+			}
 		}
 	}
 
@@ -451,19 +539,13 @@ func (s *Service) logKeyConflicts(ctx context.Context) {
 	}
 }
 
-// lacksWantedEdition reports whether a library book is missing an edition its profile
-// wants — the same rule the book page uses to show wanted-but-missing editions.
-func (s *Service) lacksWantedEdition(ctx context.Context, b books.Book) bool {
-	wantEbook, wantAudio := true, false
-	if s.quality != nil {
-		ref := s.quality.Effective(ctx, b.QualityProfile, quality.MediaBook)
-		if sp, err := s.quality.GetStored(ctx, ref); err == nil {
-			wantEbook, wantAudio = books.WantedEditions(sp.FormatScores)
-		}
+// requestedFormatsFor is what a book request being approved on profile asks for: its
+// own choice, or for a request from before the choice existed, that profile's editions.
+func (s *Service) requestedFormatsFor(ctx context.Context, req Request, profile string) string {
+	if req.Formats != "" {
+		return req.Formats
 	}
-	hasEbook := b.Ebook != nil && b.Ebook.Path != ""
-	hasAudio := b.Audiobook != nil && b.Audiobook.Path != ""
-	return (wantEbook && !hasEbook) || (wantAudio && !hasAudio)
+	return s.formatsForProfile(ctx, profile)
 }
 
 // Decline rejects a request without adding anything. The stored quality profile
@@ -530,21 +612,14 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 	}
 	// Books by the row a request is linked to, falling back to the catalogue key for a
 	// request not linked yet. The key alone loses the book once it is re-matched.
-	bookHave := map[string]lib{}
-	bookByID := map[int64]lib{}
+	// Whether it is ready depends on the formats the request asked for, so keep the book.
+	bookByKey := map[string]books.Book{}
+	bookByID := map[int64]books.Book{}
 	if bs, err := s.books.List(ctx); err == nil {
 		for _, b := range bs {
-			l := lib{id: b.ID, have: b.HasFile, released: true, misses: b.SearchMisses}
-			// Only a monitored book has a next check: the sweep never looks at the others.
-			if next := books.NextSearchAt(b.LastSearchAt, b.SearchMisses); b.Monitored && !next.IsZero() {
-				l.nextCheck = next.UTC().Format(time.RFC3339)
-			}
-			bookByID[b.ID] = l
+			bookByID[b.ID] = b
 		}
-		// Any key a book has had, not only its current one.
-		for k, b := range s.books.KeyIndex(ctx, bs) {
-			bookHave[k] = bookByID[b.ID]
-		}
+		bookByKey = s.books.KeyIndex(ctx, bs) // any key a book has had, not only its current one
 	}
 	for i := range reqs {
 		var l lib
@@ -554,9 +629,17 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 		case "series":
 			l = serHave[reqs[i].TMDBID]
 		case "book":
-			l = bookHave[reqs[i].OLKey]
-			if linked, ok := bookByID[reqs[i].BookID]; ok {
-				l = linked
+			b, ok := bookByID[reqs[i].BookID]
+			if !ok {
+				b, ok = bookByKey[reqs[i].OLKey]
+			}
+			if ok {
+				l = lib{id: b.ID, have: bookReady(reqs[i].Formats, b), released: true, misses: b.SearchMisses}
+				// Only a monitored book has a next check: the sweep never looks at the others.
+				if next := books.NextSearchAt(b.LastSearchAt, b.SearchMisses); b.Monitored && !next.IsZero() {
+					l.nextCheck = next.UTC().Format(time.RFC3339)
+				}
+				reqs[i].partNote = partialNote(reqs[i].Formats, b)
 			}
 		}
 		reqs[i].Available = l.have

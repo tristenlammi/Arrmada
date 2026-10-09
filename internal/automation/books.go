@@ -1679,17 +1679,10 @@ func (c *Coordinator) ScanBookLibrary(ctx context.Context, ebookRoot, audiobookR
 }
 
 // bookProfileFor returns the book profile ref whose wanted editions match the files
-// found on disk, falling back to the default book profile.
+// found on disk, falling back to the default book profile. The same rule a book
+// request's Read / Listen / Both choice goes through.
 func (c *Coordinator) bookProfileFor(ctx context.Context, wantEbook, wantAudio bool) string {
-	if profiles, err := c.quality.ListStored(ctx, "book"); err == nil {
-		for _, sp := range profiles {
-			e, a := books.WantedEditions(sp.FormatScores)
-			if e == wantEbook && a == wantAudio {
-				return "custom:" + strconv.FormatInt(sp.ID, 10)
-			}
-		}
-	}
-	return c.quality.DefaultProfile(ctx, "book")
+	return c.quality.BookProfileFor(ctx, wantEbook, wantAudio)
 }
 
 // BookFileEntry is one file inside an edition (for the collapsible file list).

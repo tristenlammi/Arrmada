@@ -57,6 +57,8 @@ type MyRequest struct {
 	CoverURL    string `json:"cover_url,omitempty"`
 	Status      string `json:"status"` // pending | approved | declined
 	RequestedAt string `json:"requested_at"`
+	Formats     string `json:"formats,omitempty"` // what was asked for: ebook | audiobook | both ("" on an older request)
+	Waiting     string `json:"waiting,omitempty"` // which of those is still on the way: ebook | audiobook | both
 	// Stage, Note and NextCheckAt are where the request has got to (requests.Tracking):
 	// "searching" with "Not found yet" and the next check's time (RFC3339) for a book the
 	// searches keep missing. Stage is left out when the download client couldn't be read.
@@ -138,9 +140,15 @@ func (a *api) handleMyBooks(w http.ResponseWriter, r *http.Request) {
 		}
 		shelf = append(shelf, mb)
 	}
+	// Still on the way until every format it asked for is here (Available, set per format
+	// by List): a "both" request with only its ebook stays listed, saying the audiobook is
+	// coming. A request from before the format choice is here once its book is on the shelf.
 	var open []requests.Request
 	for _, rq := range reqs {
-		if rq.MediaType != "book" || haveID[rq.BookID] || (rq.BookID == 0 && have[rq.OLKey]) {
+		if rq.MediaType != "book" || rq.Available {
+			continue
+		}
+		if rq.Formats == "" && (haveID[rq.BookID] || (rq.BookID == 0 && have[rq.OLKey])) {
 			continue
 		}
 		open = append(open, rq)
@@ -155,10 +163,25 @@ func (a *api) handleMyBooks(w http.ResponseWriter, r *http.Request) {
 			tracked = true
 		}
 	}
+	// Which of the formats asked for is still coming, from the library row itself, so the
+	// shelf can say "Audiobook on the way" even when the download client can't be read.
+	byID := map[int64]books.Book{}
+	for _, b := range all {
+		byID[b.ID] = b
+	}
+	var byKey map[string]books.Book
+	if len(open) > 0 && a.deps.Books != nil {
+		byKey = a.deps.Books.KeyIndex(r.Context(), all)
+	}
 	pending := []MyRequest{}
 	for _, rq := range open {
 		mr := MyRequest{Title: rq.Title, Author: rq.Author, Year: rq.Year,
-			CoverURL: rq.PosterURL, Status: rq.Status, RequestedAt: rq.CreatedAt}
+			CoverURL: rq.PosterURL, Status: rq.Status, RequestedAt: rq.CreatedAt, Formats: rq.Formats}
+		b, ok := byID[rq.BookID]
+		if !ok {
+			b = byKey[rq.OLKey]
+		}
+		mr.Waiting = requests.StillComing(rq.Formats, b)
 		if t := rq.Tracking; tracked && t != nil {
 			mr.Stage, mr.Note, mr.NextCheckAt = t.Stage, t.Note, t.NextCheckAt
 		}

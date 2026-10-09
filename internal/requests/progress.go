@@ -144,6 +144,10 @@ func (s *Service) track(ctx context.Context, rq *Request, byHash, byName map[str
 	case rq.Available:
 		t.Stage = StagePartial // a series with some episodes, nothing more coming yet
 		return t
+	case rq.partNote != "":
+		// A book asked for in both formats with one of them here.
+		t.Stage, t.Note = StagePartial, rq.partNote
+		return t
 	default:
 		t.Stage = StageSearching
 		switch {

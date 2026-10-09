@@ -178,11 +178,11 @@ func TestLinkedRequestSurvivesRematch(t *testing.T) {
 		t.Errorf("available=%v libID=%d, want available on book %d", list[0].Available, list[0].libID, b.ID)
 	}
 
-	s.notifyBookRequesters(ctx, b.ID, "hc:42") // the book.imported event
+	_ = s.NotifyBookReady(ctx, b.ID) // the book.imported event
 	if err := s.SweepReadyRequests(ctx); err != nil {
 		t.Fatal(err)
 	}
-	s.notifyBookRequesters(ctx, b.ID, "hc:42")
+	_ = s.NotifyBookReady(ctx, b.ID)
 	for _, uid := range []int64{7, 8} {
 		inbox, err := s.repo.listUserNotifications(ctx, uid)
 		if err != nil {
