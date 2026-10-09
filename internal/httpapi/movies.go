@@ -120,7 +120,7 @@ func (a *api) handleAddMovie(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if m.Monitored && searchOnAdd {
-		_, _, _ = a.submit(r, a.movieSearchJob(m.ID))
+		_, _, _ = a.submit(r, triggered(automation.TriggerAdd, a.movieSearchJob(m.ID)))
 	}
 
 	a.writeJSON(w, http.StatusCreated, m)
@@ -415,7 +415,7 @@ func (a *api) handleAddVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if monitored {
-		_, _, _ = a.submit(r, a.movieSearchJob(id))
+		_, _, _ = a.submit(r, triggered(automation.TriggerAdd, a.movieSearchJob(id)))
 	}
 	a.writeJSON(w, http.StatusCreated, v)
 }

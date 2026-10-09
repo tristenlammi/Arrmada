@@ -653,6 +653,7 @@ func findAudioFiles(contentPath string) []music.AudioFile {
 // see it. stall_minutes comes from the profile — writing a literal 0 is what made the book
 // stall fail-over dead code for months.
 func (c *Coordinator) recordMusicGrab(ctx context.Context, albumID int64, title, indexerName, profile, infoHash string) {
+	notesFrom(ctx).grabbed(title) // the search attempt this grab came from, if any
 	// Same profile the album was chosen under (musicProfile), so the stall window matches.
 	profile = c.effectiveProfile(ctx, profile, quality.MediaMusic)
 	seedEnabled, seedRatio, seedHours := c.seedRules(ctx, indexerName)

@@ -237,6 +237,7 @@ func (g *seriesGrabber) try(ctx context.Context, name, label string) bool {
 		// bytes twice and stacks a duplicate torrent in the client.
 		c.log.Info("series: skipping grab — already grabbed and still importing",
 			"series", s.Title, "release", rel.Title)
+		notesFrom(ctx).mark(rel.Title, DropPending)
 		g.pendingHits++
 		return true
 	}

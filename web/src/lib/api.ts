@@ -743,7 +743,49 @@ export interface SearchOutcome {
   usable: number;
   grabbed: number;
   grabbed_titles?: string[];
-  reason: "nothing-wanted" | "no-releases" | "none-for-this-title" | "all-blocklisted-or-below-profile" | "grabbed" | "already-searching";
+  reason:
+    | "nothing-wanted" | "no-releases" | "none-for-this-title" | "all-blocklisted-or-below-profile" | "grabbed"
+    | "already-searching" | "indexers-paused" | "indexers-failed" | "no-indexers" | "already-downloading";
+  // Where the releases went (ACQ-15): counts over the distinct releases seen, reasons by code.
+  wrong_title?: number;
+  blocklisted?: number;
+  pending?: number;
+  out_of_scope?: number;
+  rejected?: number;
+  eligible?: number;
+  reasons?: Record<string, number>;
+  top_reason?: string;
+  example?: string;
+  indexer_errors?: Record<string, string>;
+  attempt_id?: number;
+}
+
+// One stored search attempt (GET /api/v1/searches): what a title search found and why
+// nothing was taken. started_at is unix ms.
+export interface SearchAttempt {
+  id: number;
+  media_type: "movie" | "series" | "book" | "music";
+  media_id: number;
+  scope: string;
+  trigger: string;
+  started_at: number;
+  duration_ms: number;
+  returned: number;
+  wrong_title: number;
+  blocklisted: number;
+  pending: number;
+  out_of_scope: number;
+  rejected: number;
+  eligible: number;
+  grabbed: number;
+  reasons: Record<string, number>;
+  top_reason: string;
+  example: string;
+  grabbed_titles: string[];
+  indexer_errors: Record<string, string>;
+  outcome: "grabbed" | "nothing_found" | "none_suitable" | "indexers_failed" | "skipped_in_flight" | "error";
+  reason: string;
+  error?: string;
 }
 
 // One recurring task as GET /api/v1/system/tasks reports it. Times are ISO strings, null
@@ -1821,6 +1863,13 @@ export const api = {
   },
   recycleStats: () => req<RecycleStats>("/api/v1/recycle"),
   recycleMode: () => req<RecycleMode>("/api/v1/recycle/mode"),
+  // A title's stored search attempts, newest first (staff). since is unix ms.
+  searches: (kind: SearchAttempt["media_type"], id: number, opts: { since?: number; limit?: number } = {}) => {
+    const p = new URLSearchParams({ kind, id: String(id) });
+    if (opts.since) p.set("since", String(opts.since));
+    if (opts.limit) p.set("limit", String(opts.limit));
+    return req<{ attempts: SearchAttempt[] }>(`/api/v1/searches?${p}`).then((r) => r.attempts ?? []);
+  },
   // Background jobs: follow the work a button started (useJob), list and cancel (staff).
   job: (id: number) => req<Job>(`/api/v1/jobs/${id}`),
   jobs: (q: { kind?: string; target?: string; status?: string; limit?: number } = {}) => {

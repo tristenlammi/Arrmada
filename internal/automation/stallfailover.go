@@ -250,7 +250,7 @@ func (c *Coordinator) failOver(ctx context.Context, g grab, item download.Item, 
 		}
 		c.setGrabStatus(ctx, g.ID, grabStatusFailed)
 		t.event(ctx, g.Title+" disappeared from the download client — searching for another")
-		repl, err := t.replace(ctx, exclude)
+		repl, err := c.replaceRecorded(ctx, t, exclude)
 		if err != nil {
 			c.log.Warn("automation: replacement search failed", "kind", t.kind, "title", t.name, "err", err)
 		}
@@ -263,7 +263,7 @@ func (c *Coordinator) failOver(ctx context.Context, g grab, item download.Item, 
 	if item.Phase() == "error" {
 		why, reason = "The download client reported an error", "client error"
 	}
-	repl, err := t.replace(ctx, exclude)
+	repl, err := c.replaceRecorded(ctx, t, exclude)
 	outage := indexer.IsOutage(err) || errors.Is(err, errSearchUnavailable)
 	if err != nil && !outage {
 		c.log.Warn("automation: replacement search failed", "kind", t.kind, "title", t.name, "err", err)

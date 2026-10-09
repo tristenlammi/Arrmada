@@ -65,7 +65,7 @@ func (s *Service) background(kind, target, trigger, title, noun string, timeout 
 		_, _, err := s.jobs.Submit(context.Background(), jobs.Spec{
 			Kind: kind, Target: target, Trigger: trigger, Class: jobs.ClassIndexerSearch, Timeout: timeout,
 			Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
-				out, err := fn(ctx)
+				out, err := fn(automation.WithSearchTrigger(ctx, automation.TriggerRequest))
 				if errors.Is(err, automation.ErrAlreadySearching) {
 					out.Reason, err = automation.ReasonAlreadySearching, nil
 				}
@@ -85,7 +85,7 @@ func (s *Service) background(kind, target, trigger, title, noun string, timeout 
 	run := func(parent context.Context) {
 		c, cancel := context.WithTimeout(parent, timeout)
 		defer cancel()
-		if _, err := fn(c); err != nil && !errors.Is(err, automation.ErrAlreadySearching) {
+		if _, err := fn(automation.WithSearchTrigger(c, automation.TriggerRequest)); err != nil && !errors.Is(err, automation.ErrAlreadySearching) {
 			s.log.Warn("request: "+name+" failed", "title", title, "err", err)
 		}
 	}

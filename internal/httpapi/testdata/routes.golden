@@ -157,6 +157,7 @@ GET /api/v1/requests user ext
 GET /api/v1/reviews staff -
 GET /api/v1/reviews/{id}/files staff -
 GET /api/v1/reviews/{id}/targets staff -
+GET /api/v1/searches staff -
 GET /api/v1/series staff -
 GET /api/v1/series/lookup staff -
 GET /api/v1/series/unmatched staff -

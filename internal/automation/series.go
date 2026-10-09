@@ -135,6 +135,7 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 	if c.series == nil {
 		return
 	}
+	ctx = WithDefaultSearchTrigger(ctx, TriggerSweep)
 	all, err := c.series.List(ctx)
 	if err != nil {
 		return
@@ -220,10 +221,14 @@ func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (Sea
 //
 // Said out loud in the log: a show held back used to be skipped in total silence, so one
 // frozen out of the sweep looked identical to one with nothing to find.
-func (c *Coordinator) searchSeriesOnceScoped(ctx context.Context, seriesID int64, queue []download.Item) (SearchOutcome, error) {
+func (c *Coordinator) searchSeriesOnceScoped(ctx context.Context, seriesID int64, queue []download.Item) (out SearchOutcome, err error) {
 	if c.series == nil {
 		return SearchOutcome{Reason: ReasonNothingWanted}, nil
 	}
+	// Every search that runs (and every skip for a download in flight) leaves a
+	// search_attempts row; the broad, alias, per-season and absolute passes are one attempt.
+	ctx, notes := newSearchNotes(ctx)
+	defer func() { c.recordAttempt(ctx, notes, AttemptSeries, seriesID, "", &out, err) }()
 	release, ok := c.claims.claim(seriesKey(seriesID))
 	if !ok {
 		return SearchOutcome{Reason: ReasonAlreadySearching}, ErrAlreadySearching
@@ -247,18 +252,23 @@ func (c *Coordinator) searchSeriesOnceScoped(ctx context.Context, seriesID int64
 	inSeasons, whole, busy := seriesInFlightScope(queue, s)
 	if whole {
 		c.log.Info("series: skipping sweep — a pack covering the whole show is still downloading", "series", s.Title, "release", busy[0])
-		return SearchOutcome{Reason: ReasonNothingWanted}, nil
+		return SearchOutcome{Reason: ReasonAlreadyDownloading, Example: busy[0]}, nil
 	}
 	only, ok := c.notInFlight(s, inSeasons, busy, "series")
 	if !ok {
+		if len(busy) > 0 {
+			// Everything missing is in seasons still downloading.
+			return SearchOutcome{Reason: ReasonAlreadyDownloading, Example: busy[0]}, nil
+		}
 		return SearchOutcome{Reason: ReasonNothingWanted}, nil
 	}
-	out := SearchOutcome{Searched: true}
+	out = SearchOutcome{Searched: true}
 	releases, err := c.searchSeriesReleasesExcept(ctx, s, inSeasons)
 	if err != nil {
 		out.noteSearchErr(err)
 		return out, err
 	}
+	notes.consider(releases)
 	// The series search already narrows releases to this show, so what came back is
 	// what matched; which of them were usable isn't separated out on this path.
 	out.Returned, out.Matching = len(releases), len(releases)
@@ -462,9 +472,13 @@ func (c *Coordinator) grabSeriesScoped(ctx context.Context, s series.Series, rel
 	var nBlocked, nWrongTitle int
 	var exampleWrongTitle string
 	rts := newRuntimeIndex(s)
-	for _, rel := range bestByTitle(grabbable(releases)) {
+	notes := notesFrom(ctx)
+	torrents := grabbable(releases)
+	notes.dropped(releases, torrents, DropNotTorrent)
+	for _, rel := range bestByTitle(torrents) {
 		if blocked[normTitle(rel.Title)] || exclude[normTitle(rel.Title)] {
 			nBlocked++
+			notes.mark(rel.Title, DropBlocklisted)
 			continue
 		}
 		if !seriesTitleMatches(rel.Title, s) {
@@ -472,6 +486,7 @@ func (c *Coordinator) grabSeriesScoped(ctx context.Context, s series.Series, rel
 			// Mediterranean" for "Below Deck") — or, for anime, the same show under its
 			// romaji name, which only matches once the series is flagged as anime.
 			nWrongTitle++
+			notes.mark(rel.Title, DropWrongTitle)
 			if exampleWrongTitle == "" {
 				exampleWrongTitle = rel.Title
 			}
@@ -484,6 +499,7 @@ func (c *Coordinator) grabSeriesScoped(ctx context.Context, s series.Series, rel
 	// profile, the default when the series' own was deleted.
 	profile := c.effectiveProfile(ctx, s.QualityProfile, quality.MediaSeries)
 	decision := c.quality.Decide(ctx, profile, cands)
+	notes.decided(decision)
 	eligible := decision.Eligible // sorted best (highest quality) first
 
 	// Deferred so it sees the final grabbedN and remaining.
@@ -505,7 +521,7 @@ func (c *Coordinator) grabSeriesScoped(ctx context.Context, s series.Series, rel
 		// lengths or episode list are off, a pack is wrongly "over the ceiling" — name one,
 		// with the runtime it was costed against, so that's diagnosable from the log.
 		for _, ev := range decision.Rejected {
-			if strings.HasPrefix(ev.RejectReason, "Over your") && ev.Candidate.RuntimeMin > 0 {
+			if ev.RejectCode == quality.RejectBitrateCeiling && ev.Candidate.RuntimeMin > 0 {
 				attrs = append(attrs, "example_over_ceiling", fmt.Sprintf("%s (%d min, %.1f Mb/s)",
 					ev.Candidate.Name, ev.Candidate.RuntimeMin, bitrateMbps(ev.Candidate.SizeGB, ev.Candidate.RuntimeMin)))
 				break
@@ -1142,6 +1158,7 @@ func aired(date string) bool {
 
 // recordSeriesGrab tracks a series grab for seed cleanup (media_type=series).
 func (c *Coordinator) recordSeriesGrab(ctx context.Context, seriesID int64, title, indexer, profile, infoHash string) {
+	notesFrom(ctx).grabbed(title) // the search attempt this grab came from, if any
 	// The stall window comes from the profile the grab ran under, so a deleted profile
 	// must mean the default here too — not 0, which switches fail-over off.
 	profile = c.effectiveProfile(ctx, profile, quality.MediaSeries)

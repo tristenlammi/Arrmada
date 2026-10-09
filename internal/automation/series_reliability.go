@@ -71,7 +71,14 @@ func (c *Coordinator) RSSSyncSeries(ctx context.Context) {
 			continue
 		}
 		c.log.Info("rss: series match", "series", s.Title, "candidates", len(matched))
-		c.grabSeriesLimited(ctx, s, matched, only)
+		sctx, notes := newSearchNotes(WithDefaultSearchTrigger(ctx, TriggerRSS))
+		notes.consider(matched)
+		// Recorded only when it grabs, like the movie feed: the same uploads come round
+		// every cycle for hours.
+		if n, _ := c.grabSeriesLimited(sctx, s, matched, only); n > 0 {
+			out := SearchOutcome{Searched: true}
+			c.recordAttempt(sctx, notes, AttemptSeries, s.ID, "", &out, nil)
+		}
 	}
 }
 
@@ -128,7 +135,13 @@ func (c *Coordinator) UpgradeSeries(ctx context.Context) {
 // a file. Upgrades are surgical — only individual-episode releases are considered (not
 // whole-season packs), so a single better episode doesn't re-download the season. b is
 // the sweep's upgrade budget (nil = unlimited); each episode grabbed counts as one.
-func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64, b *upgradeBudget) error {
+func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64, b *upgradeBudget) (err error) {
+	// Recorded under scope "upgrade", so the Wanted view's summaries can leave it out.
+	ctx, notes := newSearchNotes(WithDefaultSearchTrigger(ctx, TriggerUpgrade))
+	defer func() {
+		var out SearchOutcome
+		c.recordAttempt(ctx, notes, AttemptSeries, seriesID, ScopeUpgrade, &out, err)
+	}()
 	s, err := c.series.Get(ctx, seriesID)
 	if err != nil {
 		return err
@@ -212,6 +225,7 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64, b *upgr
 	if err != nil || len(res.Releases) == 0 {
 		return err
 	}
+	notes.consider(res.Releases)
 	blocked, err := c.blockedSetSeries(ctx, s.ID)
 	if err != nil {
 		c.skipUnreadable(s.Title, err)
@@ -228,9 +242,11 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64, b *upgr
 		// and interactive searches have always gated on this; the upgrade sweep didn't.
 		if !seriesTitleMatches(rel.Title, s) {
 			droppedTitle++
+			notes.mark(rel.Title, DropWrongTitle)
 			continue
 		}
 		if blocked[normTitle(rel.Title)] {
+			notes.mark(rel.Title, DropBlocklisted)
 			continue
 		}
 		byName[rel.Title] = rel

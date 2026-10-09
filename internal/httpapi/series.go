@@ -104,7 +104,7 @@ func (a *api) handleAddSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.Monitored && searchOnAdd {
-		_, _, _ = a.submit(r, a.seriesSearchJob(s.ID))
+		_, _, _ = a.submit(r, triggered(automation.TriggerAdd, a.seriesSearchJob(s.ID)))
 	}
 	a.writeJSON(w, http.StatusCreated, s)
 }

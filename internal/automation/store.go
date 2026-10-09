@@ -213,6 +213,7 @@ func (c *Coordinator) addBlockGlobal(ctx context.Context, title, indexer, reason
 // the originating indexer's seed policy so cleanup survives the indexer being
 // removed or renamed later.
 func (c *Coordinator) recordGrab(ctx context.Context, movieID, versionID int64, title, indexer, profile string, stallMinutes int, infoHash string) {
+	notesFrom(ctx).grabbed(title) // the search attempt this grab came from, if any
 	seedEnabled, seedRatio, seedHours := c.seedRules(ctx, indexer)
 	_, err := c.db.ExecContext(ctx,
 		`INSERT INTO grabs (movie_id, version_id, title, indexer, quality_profile, stall_minutes, seed_enabled, seed_ratio, seed_hours, info_hash)

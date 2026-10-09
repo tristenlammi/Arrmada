@@ -155,7 +155,7 @@ func (a *api) handleAddBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if b.Monitored && searchOnAdd {
-		_, _, _ = a.submit(r, a.bookSearchJob(b.ID))
+		_, _, _ = a.submit(r, triggered(automation.TriggerAdd, a.bookSearchJob(b.ID)))
 	}
 	a.writeJSON(w, http.StatusCreated, b)
 }
@@ -810,7 +810,7 @@ func (a *api) handleAddAuthor(w http.ResponseWriter, r *http.Request) {
 		_, _, _ = a.submit(r, jobs.Spec{Kind: "books.add-author-search", Target: "author:" + req.AuthorKey, Class: jobs.ClassIndexerSearch, Timeout: 20 * time.Minute,
 			Fn: errFn(func(ctx context.Context) error {
 				for i, id := range ids {
-					_, err := a.deps.Automation.SearchBookNow(ctx, id)
+					_, err := a.deps.Automation.SearchBookNow(automation.WithSearchTrigger(ctx, automation.TriggerAdd), id)
 					if errors.Is(err, automation.ErrAlreadySearching) {
 						continue // already being searched: that search covers it
 					}

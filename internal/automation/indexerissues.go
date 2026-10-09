@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/connstatus"
 	"github.com/tristenlammi/arrmada/internal/indexer"
@@ -29,6 +30,15 @@ type searchNotes struct {
 	errors  map[string]string // indexer -> its first error, redacted
 	skipped map[string]string // indexer -> why it was paused
 	asked   int               // the most indexers any one query went to
+	ran     bool              // at least one indexer query was made
+
+	// What became of each distinct release the search looked at, for a recorded attempt
+	// (searchlog.go). Empty for an interactive list, which shows every release instead.
+	started  time.Time
+	seen     map[string]bool   // release titles considered
+	class    map[string]string // release title -> what happened to it (reject code)
+	examples map[string]string // reject code -> the first release it applied to
+	took     []string          // releases grabbed, in order
 }
 
 type searchNotesKey struct{}
@@ -40,7 +50,13 @@ func withSearchNotes(ctx context.Context) (context.Context, *searchNotes) {
 	if n := notesFrom(ctx); n != nil {
 		return ctx, n
 	}
-	n := &searchNotes{}
+	return newSearchNotes(ctx)
+}
+
+// newSearchNotes always starts a fresh collector: one recorded attempt per title search,
+// whatever the caller's context carried.
+func newSearchNotes(ctx context.Context) (context.Context, *searchNotes) {
+	n := &searchNotes{started: time.Now()}
 	return context.WithValue(ctx, searchNotesKey{}, n), n
 }
 
@@ -60,6 +76,7 @@ func (n *searchNotes) note(res indexer.SearchResult, err error) {
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	n.ran = true
 	add := func(dst *map[string]string, src map[string]string) {
 		for name, msg := range src {
 			if *dst == nil {

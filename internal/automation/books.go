@@ -1762,6 +1762,7 @@ func dropPendingBook(releases []indexer.Release, pending map[string]bool) []inde
 
 // recordBookGrab tracks a book grab for seed cleanup (media_type=book, movie_id=bookID).
 func (c *Coordinator) recordBookGrab(ctx context.Context, bookID, versionID int64, title, indexer, profile, infoHash string) {
+	notesFrom(ctx).grabbed(title) // the search attempt this grab came from, if any
 	// Recorded under the profile the book actually runs under, so a deleted one still
 	// gets the default's stall window.
 	profile = c.effectiveProfile(ctx, profile, quality.MediaBook)
