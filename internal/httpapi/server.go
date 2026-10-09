@@ -205,6 +205,9 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("PUT "+base+"/api/v1/users/{id}", a.requireRole(auth.RoleAdmin, a.handleUpdateUser))
 	mux.HandleFunc("GET "+base+"/api/v1/users/{id}/impact", a.requireRole(auth.RoleAdmin, a.handleUserImpact))
 	mux.HandleFunc("DELETE "+base+"/api/v1/users/{id}", a.requireRole(auth.RoleAdmin, a.handleDeleteUser))
+	mux.HandleFunc("GET "+base+"/api/v1/users/plex-blocks", a.requireRole(auth.RoleAdmin, a.handleListPlexBlocks))
+	mux.HandleFunc("POST "+base+"/api/v1/users/{id}/block-plex", a.requireRole(auth.RoleAdmin, a.handleBlockUserPlex))
+	mux.HandleFunc("DELETE "+base+"/api/v1/users/plex-blocks/{plexID}", a.requireRole(auth.RoleAdmin, a.handleUnblockPlex))
 
 	// Realtime updates
 	mux.HandleFunc("GET "+base+"/api/v1/ws", a.signedIn(a.handleWS))

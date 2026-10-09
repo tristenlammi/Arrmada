@@ -55,6 +55,8 @@ type User struct {
 	Disabled    bool   `json:"disabled"`
 	AutoApprove bool   `json:"auto_approve"`
 	CreatedAt   string `json:"created_at,omitempty"`
+	// PlexLinked: signs in with Plex, so the admin can block that Plex account.
+	PlexLinked bool `json:"plex_linked"`
 }
 
 // Service provides authentication operations backed by the database.
@@ -239,7 +241,7 @@ func boolToInt(b bool) int {
 // ListUsers returns all accounts (no secrets), oldest first.
 func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, username, role, disabled, auto_approve, created_at FROM users ORDER BY id`)
+		`SELECT id, username, role, disabled, auto_approve, created_at, COALESCE(plex_id, '') != '' FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -248,7 +250,7 @@ func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	for rows.Next() {
 		var u User
 		var disabled, autoApprove int
-		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &disabled, &autoApprove, &u.CreatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &disabled, &autoApprove, &u.CreatedAt, &u.PlexLinked); err != nil {
 			return nil, err
 		}
 		u.Disabled = disabled != 0
@@ -332,8 +334,8 @@ func (s *Service) userWhere(ctx context.Context, where string, arg any) (*User, 
 	var u User
 	var disabled, autoApprove int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, role, disabled, auto_approve, created_at FROM users WHERE `+where+` LIMIT 1`, arg).
-		Scan(&u.ID, &u.Username, &u.Role, &disabled, &autoApprove, &u.CreatedAt)
+		`SELECT id, username, role, disabled, auto_approve, created_at, COALESCE(plex_id, '') != '' FROM users WHERE `+where+` LIMIT 1`, arg).
+		Scan(&u.ID, &u.Username, &u.Role, &disabled, &autoApprove, &u.CreatedAt, &u.PlexLinked)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrInvalidCredentials
 	}
@@ -384,6 +386,34 @@ func (s *Service) SetPassword(ctx context.Context, id int64, password string) er
 	// leave 30-day tokens valid.
 	_, _ = s.db.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id)
 	return nil
+}
+
+// SetDisabled turns an account's sign-in off or back on. Disabling also signs them out
+// everywhere: web sessions are dropped and audiobook-app tokens revoked, in one
+// transaction. Nothing else is touched — requests, listening places and history stay,
+// so re-enabling gives back exactly what they had (the apps just sign in again).
+func (s *Service) SetDisabled(ctx context.Context, id int64, disabled bool) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `UPDATE users SET disabled = ? WHERE id = ?`, boolToInt(disabled), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	if disabled {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE audio_tokens SET revoked = 1 WHERE user_id = ?`, id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // RevokeUserSessions logs a user out of every device (also used on disable).

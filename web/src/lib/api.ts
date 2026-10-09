@@ -672,6 +672,16 @@ export interface AuthUser {
   disabled?: boolean;
   auto_approve: boolean;
   created_at?: string;
+  // Signs in with Plex; plex_blocked means that Plex account is on the block list.
+  plex_linked?: boolean;
+  plex_blocked?: boolean;
+}
+
+// A Plex account kept from signing in (it would otherwise make a new account each time).
+export interface PlexBlock {
+  plex_id: string;
+  name: string;
+  at: string;
 }
 
 // What deleting a user takes with them — counts only, never which books (privacy rule).
@@ -1214,12 +1224,23 @@ export const api = {
   users: () => req<{ users: AuthUser[] }>("/api/v1/users").then((r) => r.users),
   createUser: (body: { email: string; password: string; role: string; auto_approve: boolean }) =>
     req<AuthUser>("/api/v1/users", { method: "POST", body: JSON.stringify(body) }),
-  updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string }) =>
-    req<{ id: number; role: string; auto_approve: boolean }>(`/api/v1/users/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  // disabled: true turns off their sign-in and signs them out everywhere; nothing is deleted.
+  updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string; disabled?: boolean }) =>
+    req<{ id: number; role: string; auto_approve: boolean; disabled: boolean }>(`/api/v1/users/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   userImpact: (id: number) => req<UserImpact>(`/api/v1/users/${id}/impact`),
   // confirm is the username, required by the server when the user has listening data.
-  deleteUser: (id: number, confirm?: string) =>
-    req<void>(`/api/v1/users/${id}${confirm ? `?confirm=${encodeURIComponent(confirm)}` : ""}`, { method: "DELETE" }),
+  // blockPlex also blocks their Plex account, so they can't come straight back via Plex.
+  deleteUser: (id: number, confirm?: string, blockPlex?: boolean) => {
+    const q = new URLSearchParams();
+    if (confirm) q.set("confirm", confirm);
+    if (blockPlex) q.set("block_plex", "1");
+    const qs = q.toString();
+    return req<void>(`/api/v1/users/${id}${qs ? `?${qs}` : ""}`, { method: "DELETE" });
+  },
+  plexBlocks: () => req<{ blocks: PlexBlock[] }>("/api/v1/users/plex-blocks").then((r) => r.blocks),
+  blockUserPlex: (id: number) => req<{ blocks: PlexBlock[] }>(`/api/v1/users/${id}/block-plex`, { method: "POST" }).then((r) => r.blocks),
+  unblockPlex: (plexID: string) =>
+    req<{ blocks: PlexBlock[] }>(`/api/v1/users/plex-blocks/${encodeURIComponent(plexID)}`, { method: "DELETE" }).then((r) => r.blocks),
   importOverseerr: (url: string, api_key: string) =>
     req<{ status: string; found: number }>("/api/v1/requests/import/overseerr", { method: "POST", body: JSON.stringify({ url, api_key }) }),
   importTautulli: (url: string, api_key: string) =>
