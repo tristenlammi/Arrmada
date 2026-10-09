@@ -358,6 +358,12 @@ func (s *Service) Matcher(ctx context.Context) func(releaseName string) (Book, b
 		// than silently matching everything.
 		return func(string) (Book, bool) { return Book{}, false }
 	}
+	return MatcherOver(all)
+}
+
+// MatcherOver is Matcher over a library snapshot the caller already holds, so a sweep that
+// has just listed the books doesn't read the table a second time to match against it.
+func MatcherOver(all []Book) func(releaseName string) (Book, bool) {
 	return func(name string) (Book, bool) { return matchRelease(all, name) }
 }
 

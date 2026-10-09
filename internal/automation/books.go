@@ -72,6 +72,7 @@ func (c *Coordinator) searchBooksMissing(ctx context.Context, maxSearches int) {
 		b     books.Book
 		state books.SearchState
 	}
+	downloading := booksDownloading(queue, books.MatcherOver(all))
 	var due []dueBook
 	for _, b := range all {
 		if !b.Monitored || !c.bookLacksWanted(ctx, b) {
@@ -81,7 +82,7 @@ func (c *Coordinator) searchBooksMissing(ctx context.Context, maxSearches int) {
 		if next := books.NextSearchAt(st.LastAt, st.Misses); !next.IsZero() && now.Before(next) {
 			continue
 		}
-		if c.bookDownloading(ctx, queue, b.ID) {
+		if downloading[b.ID] {
 			continue // already downloading for this book — let it finish
 		}
 		due = append(due, dueBook{b, st})
@@ -167,21 +168,23 @@ func (c *Coordinator) clock() time.Time {
 	return time.Now()
 }
 
-// bookDownloading reports whether the queue already holds a book torrent for this book,
+// booksDownloading returns the IDs of books the queue already holds a book torrent for,
 // so search/RSS sweeps don't stack a second grab on an in-flight one.
-func (c *Coordinator) bookDownloading(ctx context.Context, queue []download.Item, bookID int64) bool {
-	if c.books == nil {
-		return false
-	}
+//
+// It resolves each queue item once against one library snapshot. The per-book form ran
+// MatchByRelease — a full books-table read — for every queue item and every book, each
+// cycle.
+func booksDownloading(queue []download.Item, match func(string) (books.Book, bool)) map[int64]bool {
+	out := map[int64]bool{}
 	for _, it := range queue {
 		if it.Category != bookCategory {
 			continue
 		}
-		if b, ok := c.books.MatchByRelease(ctx, it.Name); ok && b.ID == bookID {
-			return true
+		if b, ok := match(it.Name); ok {
+			out[b.ID] = true
 		}
 	}
-	return false
+	return out
 }
 
 // SearchBookNow searches for each wanted edition (ebook/audiobook, per the profile)
@@ -285,8 +288,8 @@ func (c *Coordinator) grabBookEditionCounted(ctx context.Context, b books.Book, 
 	// downstream checked the title, so a sequel could out-score the book we asked for, be
 	// grabbed, import into this book's folder, and satisfy the edition forever (there is no
 	// upgrade pass to correct it later). Movies and series both gate their search results
-	// this way, and the books RSS path already did — only this path was missing it.
-	res.Releases = c.releasesForThisBook(ctx, b, res.Releases)
+	// this way, and the books RSS path runs the same gate (releasesForBookWith).
+	res.Releases = releasesForBookWith(c.books.Matcher(ctx), b, res.Releases)
 	if kind == books.KindAudiobook {
 		res.Releases = dropVersionReleases(b, res.Releases) // those belong to a version
 	}
@@ -323,8 +326,9 @@ func (c *Coordinator) grabBookEditionCounted(ctx context.Context, b books.Book, 
 	return best.Title, st, nil
 }
 
-// releasesForThisBook keeps only the releases whose name resolves to b when matched against
-// the whole library.
+// releasesForBookWith keeps only the releases whose name resolves to b when matched against
+// the whole library (match is one library snapshot: books.Matcher or books.MatcherOver).
+// The search path and the RSS path both filter through it.
 //
 // It reuses the import-side matcher deliberately, so the searcher and the importer agree on
 // what a release is: whole-word title containment, author-confirmed candidates preferred,
@@ -335,8 +339,7 @@ func (c *Coordinator) grabBookEditionCounted(ctx context.Context, b books.Book, 
 // Limit worth knowing: if the sequel is NOT in the library there is no longer title to beat
 // "Dune", so such a release still passes. Catching that needs a book database we don't have;
 // the import-side identity gate is what stops it landing on the wrong book unnoticed.
-func (c *Coordinator) releasesForThisBook(ctx context.Context, b books.Book, releases []indexer.Release) []indexer.Release {
-	match := c.books.Matcher(ctx)
+func releasesForBookWith(match func(string) (books.Book, bool), b books.Book, releases []indexer.Release) []indexer.Release {
 	out := make([]indexer.Release, 0, len(releases))
 	for _, rel := range releases {
 		if mb, ok := match(rel.Title); ok && mb.ID == b.ID {
@@ -425,6 +428,7 @@ func (c *Coordinator) BackfillBookSeries(ctx context.Context) (BookSeriesBackfil
 	if err != nil {
 		return res, err
 	}
+	match := books.MatcherOver(all) // recording a series doesn't change what matches
 	for _, b := range all {
 		if ctx.Err() != nil {
 			c.log.Info("book: series backfill cancelled", "scanned", res.Scanned, "learned", res.Learned)
@@ -438,7 +442,7 @@ func (c *Coordinator) BackfillBookSeries(ctx context.Context) (BookSeriesBackfil
 		if err != nil || len(out.Releases) == 0 {
 			continue
 		}
-		for _, rel := range c.releasesForThisBook(ctx, b, out.Releases) {
+		for _, rel := range releasesForBookWith(match, b, out.Releases) {
 			if rel.Series == "" {
 				continue
 			}
@@ -1874,15 +1878,21 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 		c.log.Warn("rss: couldn't read the download queue — skipping the book RSS sync this cycle", "err", qerr)
 		return
 	}
+	// One library snapshot for the whole cycle: the in-flight check and every book's
+	// release filter resolve names against it, with the same word-boundary matcher the
+	// search path and the importer use.
+	match := books.MatcherOver(all)
+	downloading := booksDownloading(queue, match)
 	for _, b := range all {
 		if !b.Monitored {
 			continue
 		}
-		if c.bookDownloading(ctx, queue, b.ID) {
+		if downloading[b.ID] {
 			continue // already downloading for this book — don't stack another grab
 		}
 		sp := c.bookProfile(ctx, b.QualityProfile)
-		matched := releasesForBook(res.Releases, b)
+		wantE, wantA := books.WantedEditions(sp.FormatScores)
+		matched := rssReleasesForBook(match, b, res.Releases)
 		if len(matched) == 0 {
 			continue
 		}
@@ -1896,10 +1906,12 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 		if len(matched) == 0 {
 			continue
 		}
-		// Grab any wanted edition the book still lacks.
+		// Grab any edition the profile wants that the book still lacks — the same editions
+		// the search path asks for, so an Ebook-only book never gets an audiobook here.
 		for _, kind := range []string{books.KindEbook, books.KindAudiobook} {
-			if (kind == books.KindEbook && b.Ebook != nil) || (kind == books.KindAudiobook && b.Audiobook != nil) {
-				continue // already have this edition
+			if (kind == books.KindEbook && (!wantE || b.Ebook != nil)) ||
+				(kind == books.KindAudiobook && (!wantA || b.Audiobook != nil)) {
+				continue // not wanted, or already have this edition
 			}
 			pool := matched
 			if kind == books.KindAudiobook {
@@ -1911,9 +1923,12 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 			}
 			hash, err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, bookCategory)
 			if err != nil {
+				c.log.Warn("rss: book grab failed", "title", b.Title, "edition", kind, "err", err)
 				continue
 			}
 			c.recordBookGrab(ctx, b.ID, 0, best.Title, best.Indexer, b.QualityProfile, hash)
+			c.learnBookSeries(ctx, b, *best)
+			c.books.AddEvent(ctx, b.ID, "grabbed", fmt.Sprintf("Grabbed the %s edition from %s: %s", kind, best.Indexer, best.Title))
 			c.log.Info("rss: grabbing book", "title", b.Title, "edition", kind, "release", best.Title)
 		}
 		for _, v := range b.AudioVersions {
@@ -1926,27 +1941,38 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 			}
 			hash, err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, bookCategory)
 			if err != nil {
+				c.log.Warn("rss: audiobook version grab failed", "title", b.Title, "version", v.Label, "err", err)
 				continue
 			}
 			c.recordBookGrab(ctx, b.ID, v.ID, best.Title, best.Indexer, b.QualityProfile, hash)
+			c.books.AddEvent(ctx, b.ID, "grabbed", fmt.Sprintf("Grabbed the %q audiobook from %s: %s", v.Label, best.Indexer, best.Title))
 			c.log.Info("rss: grabbing audiobook version", "title", b.Title, "version", v.Label, "release", best.Title)
 		}
 	}
 }
 
-// releasesForBook keeps releases whose normalized name contains the book's title (and, when a
-// distinctive author is set, the author) — a conservative match for the messy world of book names.
-func releasesForBook(releases []indexer.Release, b books.Book) []indexer.Release {
-	title := normTitle(b.Title)
-	author := normTitle(b.Author)
-	var out []indexer.Release
-	for _, rel := range releases {
-		n := normTitle(rel.Title)
-		if title != "" && strings.Contains(n, title) && (author == "" || strings.Contains(n, author)) {
-			out = append(out, rel)
+// rssReleasesForBook is releasesForBookWith plus the author, for the RSS feed.
+//
+// A search was asked for "<author> <title>", so its results already lean to the right
+// writer. A feed is every new upload on the tracker, so a short title collides far more
+// often ("It" by someone else entirely): when the book has an author, the release must
+// name them too — in its title or the indexer's own author field.
+//
+// The old filter here was a substring test over keys with the spaces squeezed out, so
+// "It" matched "The Institute" and "Dune" matched "Dune Messiah"; the word-boundary
+// matcher with its longest-title rule is what stops both.
+func rssReleasesForBook(match func(string) (books.Book, bool), b books.Book, releases []indexer.Release) []indexer.Release {
+	out := releasesForBookWith(match, b, releases)
+	if strings.TrimSpace(b.Author) == "" {
+		return out
+	}
+	kept := out[:0]
+	for _, rel := range out {
+		if books.AuthorsOverlap(b.Author, rel.Title+" "+rel.Author) {
+			kept = append(kept, rel)
 		}
 	}
-	return out
+	return kept
 }
 
 // bookImportDetail renders the history line for an imported edition: what landed, in what

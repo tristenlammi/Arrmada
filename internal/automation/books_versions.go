@@ -109,7 +109,7 @@ func (c *Coordinator) grabAudioVersionCounted(ctx context.Context, b books.Book,
 	if len(res.Releases) == 0 {
 		return "", st, nil
 	}
-	rels := releasesForVersion(v, c.releasesForThisBook(ctx, b, res.Releases))
+	rels := releasesForVersion(v, releasesForBookWith(c.books.Matcher(ctx), b, res.Releases))
 	st.matching = len(rels)
 	if len(rels) == 0 {
 		c.log.Info("book: no release matched this audiobook version", "title", b.Title, "version", v.Label, "terms", strings.Join(v.Terms, ", "))

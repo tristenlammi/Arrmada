@@ -145,6 +145,10 @@ func (c *Coordinator) runBookSweep(ctx context.Context) {
 	if qerr != nil {
 		c.log.Warn("book sweep: couldn't read the download queue — treating nothing as in flight", "err", qerr)
 	}
+	var downloading map[int64]bool
+	if qerr == nil && len(targets) > 0 { // no targets also covers a nil books service
+		downloading = booksDownloading(queue, c.books.Matcher(ctx))
+	}
 	// Two outages in a row end the run, the same as the scheduled sweeps: walking the rest
 	// would only hit the dead indexers once per book and fill the notes with copies of one
 	// error, when what the user needs to hear is "the indexers are down".
@@ -153,7 +157,7 @@ func (c *Coordinator) runBookSweep(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if qerr == nil && c.bookDownloading(ctx, queue, b.ID) {
+		if downloading[b.ID] {
 			set(func(st *BookSweepStatus) { st.Skipped++; st.Done++ })
 			continue
 		}

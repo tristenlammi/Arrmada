@@ -26,7 +26,7 @@ func bookTestCoord(t *testing.T) (*Coordinator, *books.Service, context.Context)
 // indexers fuzzy-match, so "Frank Herbert Dune" returns Dune Messiah — which could out-score
 // Dune, be grabbed for it, and satisfy that edition forever.
 func TestReleasesForThisBookRejectsSequel(t *testing.T) {
-	c, svc, ctx := bookTestCoord(t)
+	_, svc, ctx := bookTestCoord(t)
 	// AddWorks creates rows straight from metadata (no network fetch), which is what the
 	// author-catalogue bulk add uses.
 	added, _ := svc.AddWorks(ctx, []metadata.BookResult{
@@ -44,12 +44,12 @@ func TestReleasesForThisBookRejectsSequel(t *testing.T) {
 		{Title: "Brandon Sanderson - Mistborn [EPUB]"}, // not in the library at all
 	}
 
-	kept := c.releasesForThisBook(ctx, dune, releases)
+	kept := releasesForBookWith(svc.Matcher(ctx), dune, releases)
 	if len(kept) != 1 || kept[0].Title != "Frank Herbert - Dune [EPUB]" {
 		t.Errorf("Dune should keep only its own release, got %+v", titles(kept))
 	}
 
-	kept = c.releasesForThisBook(ctx, messiah, releases)
+	kept = releasesForBookWith(svc.Matcher(ctx), messiah, releases)
 	if len(kept) != 1 || kept[0].Title != "Frank Herbert - Dune Messiah [EPUB]" {
 		t.Errorf("Dune Messiah should keep only its own release, got %+v", titles(kept))
 	}
