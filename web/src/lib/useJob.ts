@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { api, type Job, type JobStatus } from "./api";
+import { api, SIGNED_OUT_EVENT, type Job, type JobStatus } from "./api";
 import type { LiveEvent } from "./useLive";
 
 // Following the background job a button started (a search, a scan, an import), so the
 // button can say what actually happened instead of "searching" and silence.
+//
+// This keeps its own wait loop rather than usePoll: a job.updated event has to cut the
+// current wait short (usePoll has no "run now"), and following ends by itself — on a
+// finished job, or after five minutes — with one onDone. It follows usePoll's rules
+// otherwise: one request at a time, none while the tab is hidden, a check on return, and
+// it stops on sign-out.
 
 export const JOB_POLL_MS = 1500; // between checks when no live socket is connected
 export const JOB_POLL_LIVE_MS = 5000; // a backstop when job.updated events arrive live
@@ -116,10 +122,13 @@ export function useJob(
     });
     // A tab coming back into view checks at once rather than at the next tick.
     const onVis = () => { if (!document.hidden) wake.current?.(); };
+    const onSignedOut = () => { stopped = true; wake.current?.(); };
     document.addEventListener("visibilitychange", onVis);
+    window.addEventListener(SIGNED_OUT_EVENT, onSignedOut);
     return () => {
       stopped = true;
       document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener(SIGNED_OUT_EVENT, onSignedOut);
       wake.current?.();
     };
   }, [jobId]);
