@@ -37,3 +37,6 @@ Thumbs.db
 
 # User-specific compose override (existing-library mounts)
 docker-compose.override.yml
+
+# update.sh: the commit that was checked out before the last pull
+.arrmada-previous

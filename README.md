@@ -72,11 +72,27 @@ You can skip it and do both later in Settings.
 ```
 
 This pulls the latest code, rebuilds only the app, and waits until it's running again. Your
-settings, downloads and media are untouched. A database snapshot is taken automatically before
-any schema change (`<data>/backups`, newest 5 kept), and another every night after 04:00 local
-time (newest 7 kept). If the data disk is too full for the pre-upgrade copy,
-Arrmada refuses to upgrade and says so; free some space, or set
+`.env`, downloads and media files aren't touched, and the companions keep running. The
+database is kept too, but a new version may upgrade its tables when it starts, so a
+snapshot is taken automatically before any schema change (`<data>/backups`, newest 5 kept),
+and another every night after 04:00 local time (newest 7 kept). If the data disk is too full
+for the pre-upgrade copy, Arrmada refuses to upgrade and says so; free some space, or set
 `ARRMADA_SKIP_MIGRATION_SNAPSHOT=1` in `.env` to upgrade without one.
+
+If the pull fails (local edits, or a branch that has diverged), the script stops without
+rebuilding anything; `git status` shows what's in the way. `./update.sh --force-local` skips
+the pull and rebuilds the code that's in the folder.
+
+The build that was running before an update is kept as the Docker image `arrmada:previous`,
+so `./update.sh --rollback` can start it again in a few seconds (the build you leave is kept
+as `arrmada:rolled-back`, and the next `./update.sh` goes forward again). Keeping it costs
+one extra image of disk, several GB with the subtitle and GPU tooling. The Dashboard and
+`/api/health` show the version and commit that's running.
+
+If you deploy with Komodo or another tool instead of `update.sh`, mirror these steps there:
+pass `ARRMADA_VERSION` (`git describe --tags --always --dirty`) and `ARRMADA_COMMIT`
+(`git rev-parse --short HEAD`) as build environment, and tag the running image
+`arrmada:previous` before each build. Otherwise none of this protection applies.
 
 ## Ports
 

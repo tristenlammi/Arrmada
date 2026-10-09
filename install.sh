@@ -273,6 +273,11 @@ if [ "${1:-}" = "--with-prowlarr" ]; then
   say "Including the optional Prowlarr indexer manager."
 fi
 
+# Stamp the build with what it was built from, so the Dashboard says which code is running.
+ARRMADA_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev-docker)
+ARRMADA_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+export ARRMADA_VERSION ARRMADA_COMMIT
+
 say ""
 say "Building and starting Arrmada… (the first build compiles everything — a few minutes)"
 # shellcheck disable=SC2086

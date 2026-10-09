@@ -5,8 +5,12 @@ services:
   arrmada-app:
     build:
       context: .
+      # What the build is stamped with (Dashboard, /api/health). update.sh and install.sh
+      # export these from git; a plain `docker compose build` falls back to the defaults.
       args:
-        VERSION: dev-docker
+        VERSION: ${ARRMADA_VERSION:-dev-docker}
+        COMMIT: ${ARRMADA_COMMIT:-unknown}
+    # update.sh keeps the build that ran before as arrmada:previous (./update.sh --rollback).
     image: arrmada:dev
     container_name: Arrmada-app
     # x265 binds its worker thread pools to NUMA nodes with set_mempolicy(2), which

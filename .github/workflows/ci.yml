@@ -2,8 +2,8 @@ name: CI
 
 # Guards every push and PR to main: the Go module must build, vet clean, and pass
 # its full test suite; the embedded web UI must lint (errors only), pass its unit
-# tests, type-check and build. This is the net under all future changes — nothing
-# merges red.
+# tests, type-check and build; the install and update scripts must pass shellcheck.
+# This is the net under all future changes — nothing merges red.
 on:
   push:
     branches: [main]
@@ -55,6 +55,17 @@ jobs:
           fi
       - name: Test (race)
         run: go test -race ./...
+
+  scripts:
+    name: Shell scripts (shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # update.sh runs on the owner's server and has to survive a bad pull or a failed
+      # build without leaving the app down; a quoting slip there is not caught anywhere
+      # else. shellcheck is preinstalled on ubuntu-latest. -s sh: they are POSIX sh.
+      - name: shellcheck
+        run: shellcheck -s sh update.sh install.sh docker/entrypoint.sh
 
   web:
     name: Web build
