@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -57,25 +58,31 @@ func TestLibraryPathsRoundTrip(t *testing.T) {
 		t.Fatalf("defaults not returned: %+v", got)
 	}
 
-	body := `{"music":"/storage/media/music","movies":"/storage/media/movies"}`
-	w := httptest.NewRecorder()
-	a.handleSetLibraryPaths(w, httptest.NewRequest(http.MethodPut, "/", strings.NewReader(body)))
+	// Saved folders must exist now, so the "share" is a temp dir.
+	storage := t.TempDir()
+	music, movies := filepath.Join(storage, "media", "music"), filepath.Join(storage, "media", "movies")
+	for _, d := range []string{music, movies} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := putPaths(t, a, map[string]any{"music": music, "movies": movies})
 	if w.Code != http.StatusOK {
 		t.Fatalf("save returned %d: %s", w.Code, w.Body.String())
 	}
 	// The save response itself must already reflect the new values.
 	var saved map[string]string
 	_ = json.Unmarshal(w.Body.Bytes(), &saved)
-	if saved["music"] != "/storage/media/music" {
+	if saved["music"] != music {
 		t.Errorf("save response music = %q", saved["music"])
 	}
 
 	// And a fresh read must return them, not the defaults.
 	got := getPaths(t, a)
-	if got["music"] != "/storage/media/music" {
+	if got["music"] != music {
 		t.Errorf("music did not persist: %q", got["music"])
 	}
-	if got["movies"] != "/storage/media/movies" {
+	if got["movies"] != movies {
 		t.Errorf("movies did not persist: %q", got["movies"])
 	}
 	// A field omitted from the request is left alone, not blanked.
@@ -226,5 +233,134 @@ func TestSystemHealthFlagsLibraryUnderDataDir(t *testing.T) {
 	}
 	if !found {
 		t.Error("no warning for a TV folder inside the data dir")
+	}
+}
+
+// A mistyped folder is refused with a reason the UI can offer to fix; a file is refused
+// outright. Nothing is saved either way.
+func TestSetLibraryPathsRejectsMissing(t *testing.T) {
+	a, base := folderTestAPI(t)
+	before := getPaths(t, a)
+	typo := filepath.Join(base, "media", "movise")
+
+	w := putPaths(t, a, map[string]any{"movies": typo})
+	var body map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if w.Code != http.StatusBadRequest || body["folder"] != "movies" || body["missing"] != true {
+		t.Fatalf("missing folder: HTTP %d %+v", w.Code, body)
+	}
+	if _, err := os.Stat(typo); !os.IsNotExist(err) {
+		t.Errorf("a refused save created the folder: %v", err)
+	}
+
+	file := filepath.Join(base, "media", "notes.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if w := putPaths(t, a, map[string]any{"tv": file}); w.Code != http.StatusBadRequest {
+		t.Errorf("a file saved as a folder: HTTP %d", w.Code)
+	}
+	if w := putPaths(t, a, map[string]any{"tv": "media/tv"}); w.Code != http.StatusBadRequest {
+		t.Errorf("a relative path saved: HTTP %d", w.Code)
+	}
+	if got := getPaths(t, a); got["movies"] != before["movies"] || got["tv"] != before["tv"] {
+		t.Errorf("refused saves wrote something: %+v", got)
+	}
+
+	// Blank still means "use the install default".
+	if w := putPaths(t, a, map[string]any{"ebooks": ""}); w.Code != http.StatusOK {
+		t.Errorf("blank refused: HTTP %d %s", w.Code, w.Body.String())
+	}
+}
+
+// "Create it" makes the folder and saves it in one go.
+func TestSetLibraryPathsCreate(t *testing.T) {
+	a, base := folderTestAPI(t)
+	p := filepath.Join(base, "media", "tv")
+	w := putPaths(t, a, map[string]any{"tv": p, "create": true})
+	if w.Code != http.StatusOK {
+		t.Fatalf("create: HTTP %d %s", w.Code, w.Body.String())
+	}
+	if fi, err := os.Stat(p); err != nil || !fi.IsDir() {
+		t.Errorf("folder not created: %v", err)
+	}
+	if got := getPaths(t, a); got["tv"] != p {
+		t.Errorf("tv = %q, want %q", got["tv"], p)
+	}
+	// Create never reaches into the data folder.
+	inData := filepath.Join(a.deps.Config.DataDir, "tv")
+	if w := putPaths(t, a, map[string]any{"tv": inData, "create": true}); w.Code != http.StatusBadRequest {
+		t.Errorf("create inside the data dir: HTTP %d", w.Code)
+	}
+	if _, err := os.Stat(inData); !os.IsNotExist(err) {
+		t.Errorf("a folder was created inside the data dir: %v", err)
+	}
+}
+
+// Saving one folder never fails because a different, untouched folder is odd — here a
+// Music folder whose share isn't mounted right now.
+func TestSetLibraryPathsIgnoresUntouchedOddFolder(t *testing.T) {
+	a, base := folderTestAPI(t)
+	a.deps.Config.MusicDir = filepath.Join(base, "unmounted", "music")
+	all := getPaths(t, a)
+	all["movies"] = filepath.Join(base, "media", "movies")
+	body := map[string]any{}
+	for k, v := range all {
+		body[k] = v
+	}
+	if w := putPaths(t, a, body); w.Code != http.StatusOK {
+		t.Errorf("save blocked by an untouched folder: HTTP %d %s", w.Code, w.Body.String())
+	}
+}
+
+// The picker walks through "/" and the data folder's parent, but can't select them.
+func TestBrowseMarksDataDirDisabled(t *testing.T) {
+	a, base := folderTestAPI(t)
+	browse := func(p string) map[string]any {
+		w := httptest.NewRecorder()
+		a.handleBrowse(w, httptest.NewRequest(http.MethodGet, "/?path="+url.QueryEscape(p), nil))
+		var got map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &got)
+		return got
+	}
+	if got := browse(base); got["path_disabled"] != true {
+		t.Errorf("the data folder's parent is selectable: %+v", got)
+	}
+	if got := browse(filepath.Join(base, "media")); got["path_disabled"] != false {
+		t.Errorf("an ordinary folder is not selectable: %+v", got)
+	}
+}
+
+// The live check reports the facts behind the chips, and the save-time refusal in the
+// same words.
+func TestCheckLibraryFolder(t *testing.T) {
+	a, base := folderTestAPI(t)
+	check := func(q string) map[string]any {
+		w := httptest.NewRecorder()
+		a.handleCheckLibraryFolder(w, httptest.NewRequest(http.MethodGet, "/?"+q, nil))
+		var got map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &got)
+		got["_code"] = w.Code
+		return got
+	}
+	movies := filepath.Join(base, "media", "movies")
+	got := check("kind=movies&path=" + url.QueryEscape(movies))
+	if got["exists"] != true || got["writable"] != true || got["hardlink_with_downloads"] != true || got["error"] != nil {
+		t.Errorf("good folder: %+v", got)
+	}
+	got = check("kind=movies&path=" + url.QueryEscape(filepath.Join(base, "media", "nope")))
+	if got["exists"] != false || got["error"] == nil {
+		t.Errorf("missing folder: %+v", got)
+	}
+	got = check("kind=movies&path=" + url.QueryEscape(a.deps.Config.DataDir))
+	if got["under_data_dir"] != true || !strings.Contains(fmt.Sprint(got["error"]), "data folder") {
+		t.Errorf("data folder: %+v", got)
+	}
+	got = check("kind=downloads&path=" + url.QueryEscape(a.deps.Config.DownloadsDir))
+	if got["hardlink_with_downloads"] != nil {
+		t.Errorf("downloads linked against itself: %+v", got)
+	}
+	if got := check("kind=nonsense&path=/x"); got["_code"] != http.StatusBadRequest {
+		t.Errorf("unknown kind: %+v", got)
 	}
 }

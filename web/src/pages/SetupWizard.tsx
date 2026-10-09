@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { api, type APIKeyStatus, type LibraryPaths, type SetupState } from "../lib/api";
-import { FolderPicker } from "./Library";
+import { FolderChips, FolderPicker } from "./Library";
 import { FleetMark } from "../components/FleetMark";
 
 // SetupWizard is the first thing an admin sees on a fresh install: the metadata key,
@@ -30,6 +30,9 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
   const [folders, setFolders] = useState<LibraryPaths | null>(null);
   const [picking, setPicking] = useState<keyof LibraryPaths | null>(null);
   const [restarting, setRestarting] = useState(false);
+  const [blocking, setBlocking] = useState<Partial<Record<keyof LibraryPaths, boolean>>>({});
+  const onBlocking = useCallback((k: keyof LibraryPaths, b: boolean) => setBlocking((cur) => (cur[k] === b ? cur : { ...cur, [k]: b })), []);
+  const folderBlocked = Object.values(blocking).some(Boolean);
 
   const load = () => api.setupState().then((s) => {
     setState(s);
@@ -151,10 +154,18 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
                   />
                   <button onClick={() => setPicking(f.key)} className="flex-none rounded-lg px-3 py-2 text-[12px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>Browse</button>
                 </div>
+                <FolderChips
+                  kind={f.key}
+                  path={folders[f.key]}
+                  current={state.library[f.key] ?? ""}
+                  downloads={folders.downloads}
+                  onBlocking={onBlocking}
+                  onCreated={(saved) => setFolders((cur) => (cur ? { ...cur, [f.key]: saved[f.key] } : cur))}
+                />
               </div>
             ))}
           </div>
-          <Nav busy={busy} onBack={() => setStep("keys")} onSkip={finish} onNext={saveFolders} nextLabel="Save and continue" />
+          <Nav busy={busy} blocked={folderBlocked} onBack={() => setStep("keys")} onSkip={finish} onNext={saveFolders} nextLabel="Save and continue" />
           {picking && (
             <FolderPicker
               initial={folders[picking] || state.mounts[0]}
@@ -241,13 +252,13 @@ function KeyField({ status, label, note, value, onChange }: { status?: APIKeySta
   );
 }
 
-function Nav({ busy, onBack, onSkip, onNext, nextLabel }: { busy: boolean; onBack?: () => void; onSkip: () => void; onNext: () => void; nextLabel: string }) {
+function Nav({ busy, blocked, onBack, onSkip, onNext, nextLabel }: { busy: boolean; blocked?: boolean; onBack?: () => void; onSkip: () => void; onNext: () => void; nextLabel: string }) {
   return (
     <div className="mt-6 flex items-center justify-between gap-2">
       <button onClick={onSkip} disabled={busy} className="text-[12px] text-ink-faint hover:text-[var(--ink)]" title="Finish now; everything can be set later in Settings">Skip setup</button>
       <div className="flex gap-2">
         {onBack && <button onClick={onBack} disabled={busy} className="rounded-lg px-3.5 py-2 text-[12.5px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Back</button>}
-        <button onClick={onNext} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-60" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>{busy ? "Saving…" : nextLabel}</button>
+        <button onClick={onNext} disabled={busy || blocked} title={blocked ? "Fix the folders marked in red first" : undefined} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-60" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>{busy ? "Saving…" : nextLabel}</button>
       </div>
     </div>
   );

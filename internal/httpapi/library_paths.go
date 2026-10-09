@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -95,13 +97,31 @@ func (a *api) dataDirShown() string {
 }
 
 // writeFolderError is a 400 naming the folder it's about, so the UI can mark that row.
-func (a *api) writeFolderError(w http.ResponseWriter, folder, message string) {
-	a.writeJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "message": message, "folder": folder})
+// missing tells the UI it may offer to create the folder.
+func (a *api) writeFolderError(w http.ResponseWriter, folder, message string, missing bool) {
+	body := map[string]any{"status": "error", "message": message, "folder": folder}
+	if missing {
+		body["missing"] = true
+	}
+	a.writeJSON(w, http.StatusBadRequest, body)
+}
+
+// folderMissing and folderNotDir explain why a folder can't be saved as it stands.
+func folderMissing(label, p string) string {
+	return fmt.Sprintf("%s: %s doesn't exist. Check the spelling, or create it.", label, p)
+}
+
+func folderNotDir(label, p string) string {
+	return fmt.Sprintf("%s: %s is a file, not a folder.", label, p)
 }
 
 // handleSetLibraryPaths saves whichever folders were provided (nil = leave unchanged).
 // Every provided folder is checked before any is written, so one bad field never leaves
 // a half-saved set behind.
+//
+// The data-folder rule applies to every folder sent. Existence is checked only for a
+// folder that is changing: an install whose current folder is odd (a mount that's down
+// right now) must still be able to save its other folders.
 func (a *api) handleSetLibraryPaths(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Movies     *string `json:"movies"`
@@ -110,30 +130,66 @@ func (a *api) handleSetLibraryPaths(w http.ResponseWriter, r *http.Request) {
 		Audiobooks *string `json:"audiobooks"`
 		Music      *string `json:"music"`
 		Downloads  *string `json:"downloads"`
+		// Create makes any missing folder (after the user clicked "Create it") instead
+		// of refusing it.
+		Create bool `json:"create"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
 	folders := []struct {
-		name  string
-		key   string
-		value *string
+		name    string
+		key     string
+		value   *string
+		current string
 	}{
-		{"movies", keyLibMovies, req.Movies},
-		{"tv", keyLibTV, req.TV},
-		{"ebooks", keyLibEbooks, req.Ebooks},
-		{"audiobooks", keyLibAudiobooks, req.Audiobooks},
-		{"music", keyLibMusic, req.Music},
-		{"downloads", keyLibDownloads, req.Downloads},
+		{"movies", keyLibMovies, req.Movies, a.libMovies(r)},
+		{"tv", keyLibTV, req.TV, a.libTV(r)},
+		{"ebooks", keyLibEbooks, req.Ebooks, a.libEbooks(r)},
+		{"audiobooks", keyLibAudiobooks, req.Audiobooks, a.libAudiobooks(r)},
+		{"music", keyLibMusic, req.Music, a.libMusic(r)},
+		{"downloads", keyLibDownloads, req.Downloads, a.libDownloads(r)},
 	}
+	var create []string
 	for _, f := range folders {
 		if f.value == nil {
 			continue
 		}
 		*f.value = strings.TrimSpace(*f.value)
+		label := folderLabel[f.name]
 		// Blank means "use the install default", which is the environment's business.
-		if err := a.dataDirConflict(folderLabel[f.name], *f.value); err != nil {
-			a.writeFolderError(w, f.name, err.Error())
+		if err := a.dataDirConflict(label, *f.value); err != nil {
+			a.writeFolderError(w, f.name, err.Error(), false)
+			return
+		}
+		if *f.value == "" || *f.value == f.current {
+			continue
+		}
+		if !filepath.IsAbs(*f.value) {
+			a.writeFolderError(w, f.name, fmt.Sprintf("%s: use the full path, starting with / (for example /storage/media/%s).", label, f.name), false)
+			return
+		}
+		fi, err := os.Stat(*f.value)
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			if !req.Create {
+				a.writeFolderError(w, f.name, folderMissing(label, *f.value), true)
+				return
+			}
+			create = append(create, *f.value)
+		case err != nil:
+			a.writeFolderError(w, f.name, fmt.Sprintf("%s: Arrmada can't open %s (%v).", label, *f.value, err), false)
+			return
+		case !fi.IsDir():
+			a.writeFolderError(w, f.name, folderNotDir(label, *f.value), false)
+			return
+		}
+	}
+	// Folders are made only once every field has passed, as the app user, group-writable
+	// so the download client (often the same PGID) can write into them too.
+	for _, p := range create {
+		if err := os.MkdirAll(p, 0o775); err != nil {
+			a.writeError(w, http.StatusBadRequest, fmt.Sprintf("Couldn't create %s: %v", p, err))
 			return
 		}
 	}
@@ -191,5 +247,54 @@ func (a *api) handleBrowse(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(dirs, func(i, j int) bool { return strings.ToLower(dirs[i].Name) < strings.ToLower(dirs[j].Name) })
 
 	parent := filepath.ToSlash(filepath.Dir(p))
-	a.writeJSON(w, http.StatusOK, map[string]any{"path": p, "parent": parent, "dirs": dirs})
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"path": p, "parent": parent, "dirs": dirs,
+		// The folder on screen can be walked through but not chosen: "/" and anything
+		// else holding the data folder, or the data folder itself.
+		"path_disabled": libroots.UnderDataDir(p, a.deps.Config.DataDir),
+	})
+}
+
+// handleCheckLibraryFolder — GET /api/v1/system/library/check?path=&kind=[&downloads=]
+// reports what a folder looks like before it's saved, for the chips beside each row:
+// there, writable, hardlinks with Downloads, free space, how many folders. kind=downloads
+// checks the downloads folder itself, so there's no link to test. downloads= lets the
+// form test against a Downloads folder it hasn't saved yet. error carries the reason
+// the folder would be refused on save, in the same words.
+func (a *api) handleCheckLibraryFolder(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	p := strings.TrimSpace(q.Get("path"))
+	kind := q.Get("kind")
+	label, ok := folderLabel[kind]
+	if !ok {
+		a.writeError(w, http.StatusBadRequest, "kind must be movies, tv, ebooks, audiobooks, music or downloads")
+		return
+	}
+	if p == "" {
+		a.writeError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	downloads := ""
+	if kind != "downloads" {
+		downloads = strings.TrimSpace(q.Get("downloads"))
+		if downloads == "" {
+			downloads = a.libDownloads(r)
+		}
+	}
+	c := libroots.CheckFolder(p, downloads, a.deps.Config.DataDir)
+	problem := ""
+	switch {
+	case c.UnderDataDir:
+		problem = a.dataDirConflict(label, p).Error()
+	case !filepath.IsAbs(p):
+		problem = fmt.Sprintf("%s: use the full path, starting with /.", label)
+	case !c.Exists:
+		problem = folderMissing(label, p)
+	case !c.IsDir:
+		problem = folderNotDir(label, p)
+	}
+	a.writeJSON(w, http.StatusOK, struct {
+		libroots.FolderCheck
+		Error string `json:"error,omitempty"`
+	}{c, problem})
 }

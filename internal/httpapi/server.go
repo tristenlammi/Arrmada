@@ -155,6 +155,7 @@ func (a *api) registerRoutes(mux *router) {
 	// Library folders + filesystem browser (in-app folder picker).
 	mux.HandleFunc("GET "+base+"/api/v1/system/library", a.requireRole(auth.RoleManager, a.handleGetLibraryPaths))
 	mux.HandleFunc("PUT "+base+"/api/v1/system/library", a.requireRole(auth.RoleManager, a.handleSetLibraryPaths))
+	mux.HandleFunc("GET "+base+"/api/v1/system/library/check", a.requireRole(auth.RoleManager, a.handleCheckLibraryFolder))
 	mux.HandleFunc("GET "+base+"/api/v1/system/browse", a.requireRole(auth.RoleManager, a.handleBrowse))
 	// First-run setup wizard + restart to apply new folders.
 	mux.HandleFunc("GET "+base+"/api/v1/setup", a.requireRole(auth.RoleAdmin, a.handleSetupState))

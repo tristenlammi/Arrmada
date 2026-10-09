@@ -172,6 +172,7 @@ GET /api/v1/subtitles/series staff -
 GET /api/v1/subtitles/settings staff -
 GET /api/v1/system/browse staff -
 GET /api/v1/system/library staff -
+GET /api/v1/system/library/check staff -
 GET /api/v1/users admin -
 GET /api/v1/users/{id}/impact admin -
 GET /api/v1/ws user -

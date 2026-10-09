@@ -376,7 +376,18 @@ export interface SetupState {
   mounts: string[];
   suggestions: Partial<LibraryPaths>;
 }
-export interface BrowseResult { path: string; parent: string; dirs: { name: string; path: string }[] }
+// path_disabled: the folder on screen holds (or is) Arrmada's data folder, so it can be
+// walked through but not selected.
+export interface BrowseResult { path: string; parent: string; dirs: { name: string; path: string }[]; path_disabled?: boolean }
+// FolderCheck is what a folder looks like before it's saved (Settings → Library, the
+// wizard). hardlink_with_downloads is null when it couldn't be tried; error is the reason
+// a save would refuse it, in the server's words.
+export interface FolderCheck {
+  path: string; exists: boolean; is_dir: boolean; writable: boolean;
+  hardlink_with_downloads: boolean | null; under_data_dir: boolean;
+  free_bytes: number; total_bytes: number; entries: number; entries_capped: boolean;
+  error?: string;
+}
 
 export interface HealthWarning {
   level: string; // "error" | "warning"
@@ -1408,7 +1419,10 @@ export const api = {
   setupState: () => req<SetupState>("/api/v1/setup"),
   completeSetup: () => req<{ status: string }>("/api/v1/setup/complete", { method: "POST" }),
   restartApp: () => req<{ status: string }>("/api/v1/system/restart", { method: "POST" }),
-  setLibraryPaths: (body: Partial<LibraryPaths>) => req<LibraryPaths>("/api/v1/system/library", { method: "PUT", body: JSON.stringify(body) }),
+  // create: make any missing folder instead of refusing it (the "Create it" button).
+  setLibraryPaths: (body: Partial<LibraryPaths> & { create?: boolean }) => req<LibraryPaths>("/api/v1/system/library", { method: "PUT", body: JSON.stringify(body) }),
+  checkLibraryFolder: (path: string, kind: keyof LibraryPaths, downloads?: string) =>
+    req<FolderCheck>(`/api/v1/system/library/check?kind=${kind}&path=${encodeURIComponent(path)}${downloads ? `&downloads=${encodeURIComponent(downloads)}` : ""}`),
   browseFolders: (path?: string) => req<BrowseResult>(`/api/v1/system/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   addMovie: (body: { tmdb_id: number; quality_profile: string; monitored?: boolean; search_on_add?: boolean }) =>
     req<Movie>("/api/v1/movies", { method: "POST", body: JSON.stringify(body) }),
