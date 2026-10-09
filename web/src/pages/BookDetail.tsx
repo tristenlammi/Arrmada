@@ -37,7 +37,7 @@ export function BookDetail() {
   if (notFound) return <Shell><div className="py-10 text-center text-[13px] text-ink-dim">That book isn't in your library. <Link to="/books" className="underline" style={{ color: "var(--accent)" }}>Back to Books</Link></div></Shell>;
   if (!b) return <Shell><p className="text-[12.5px] text-ink-dim">{error ?? "Loading…"}</p></Shell>;
 
-  const st = b.has_file ? { label: "Downloaded", tone: "var(--good)", soft: "var(--good-soft, rgba(90,140,90,.14))" } : b.monitored ? { label: "Wanted", tone: "var(--avoid)", soft: "var(--avoid-soft)" } : { label: "Unmonitored", tone: "var(--ink-faint)", soft: "var(--panel-2)" };
+  const st = b.has_file ? { label: "Downloaded", tone: "var(--good-text)", soft: "var(--good-soft)" } : b.monitored ? { label: "Wanted", tone: "var(--avoid-text)", soft: "var(--avoid-soft)" } : { label: "Unmonitored", tone: "var(--ink-faint)", soft: "var(--panel-2)" };
 
   return (
     <>
@@ -224,7 +224,7 @@ function EditionPanel({ label, file, wanted, bookId, kind, onChange, flash }: { 
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase" style={{ background: "var(--good-soft, rgba(90,140,90,.14))", color: "var(--good)" }}>{label}</span>
+            <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase" style={{ background: "var(--good-soft)", color: "var(--good)" }}>{label}</span>
             <span className="rounded px-2 py-0.5 text-[11px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{file.format}</span>
             {multi && <span className="rounded px-2 py-0.5 text-[11px] font-semibold" style={{ background: "var(--panel-2)", color: "var(--ink-dim)" }}>{file.file_count} files</span>}
             <span className="font-mono text-[12px] text-ink-dim">{fmtSize(file.size_bytes)}</span>

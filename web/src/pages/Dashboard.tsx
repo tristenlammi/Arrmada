@@ -71,8 +71,8 @@ export function Dashboard() {
                 className="flex items-center gap-2.5 rounded-lg px-3.5 py-2.5 text-[12.5px]"
                 style={{
                   background:
-                    wrn.level === "error" ? "var(--reject-soft)" : "var(--avoid-soft, var(--panel-2))",
-                  border: `1px solid ${wrn.level === "error" ? "var(--reject)" : "var(--avoid, var(--line))"}`,
+                    wrn.level === "error" ? "var(--reject-soft)" : "var(--avoid-soft)",
+                  border: `1px solid ${wrn.level === "error" ? "var(--reject)" : "var(--avoid)"}`,
                   color: wrn.level === "error" ? "var(--reject)" : "var(--ink-dim)",
                 }}
               >
@@ -361,7 +361,7 @@ function StorageBar({ v }: { v: StorageVolume }) {
   // Anything past 85% is where imports start running out of room, so the bar changes
   // colour before it's a warning in the log rather than after.
   const tone =
-    v.used_pct >= 95 ? "var(--reject)" : v.used_pct >= 85 ? "var(--avoid, #d08b3c)" : "var(--good)";
+    v.used_pct >= 95 ? "var(--reject)" : v.used_pct >= 85 ? "var(--avoid)" : "var(--good)";
   return (
     <div>
       <div className="mb-1.5 flex items-baseline justify-between gap-3">
@@ -438,7 +438,7 @@ function Tile({
     >
       <div className="text-[10px] uppercase tracking-[0.1em] text-ink-faint">{label}</div>
       <div className="mt-0.5 text-[22px] font-bold leading-tight">{value}</div>
-      <div className="text-[11px]" style={{ color: warn ? "var(--avoid, var(--ink-dim))" : "var(--ink-faint)" }}>
+      <div className="text-[11px]" style={{ color: warn ? "var(--avoid-text)" : "var(--ink-faint)" }}>
         {sub}
       </div>
     </Link>
@@ -447,7 +447,7 @@ function Tile({
 
 function Pill({ children, tone }: { children: React.ReactNode; tone?: "good" | "warn" }) {
   const color =
-    tone === "good" ? "var(--good)" : tone === "warn" ? "var(--avoid, #d08b3c)" : "var(--ink-faint)";
+    tone === "good" ? "var(--good-text)" : tone === "warn" ? "var(--avoid-text)" : "var(--ink-faint)";
   return (
     <span className="rounded px-1.5 py-0.5" style={{ background: "var(--panel-2)", color }}>
       {children}

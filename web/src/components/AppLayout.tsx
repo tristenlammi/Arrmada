@@ -1,10 +1,12 @@
 import { useState } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { FleetMark } from "./FleetMark";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 export function AppLayout() {
   const [navOpen, setNavOpen] = useState(false);
+  const { pathname } = useLocation();
   return (
     <div className="flex h-full font-sans">
       <Sidebar open={navOpen} onClose={() => setNavOpen(false)} />
@@ -20,7 +22,11 @@ export function AppLayout() {
           <span className="text-[14px] font-extrabold tracking-[0.12em]">ARRMADA</span>
         </div>
         <main className="min-w-0 flex-1 overflow-y-auto">
-          <Outlet />
+          {/* Keyed by path: a broken page shows its error card inside the shell, and
+              navigating elsewhere clears it. */}
+          <ErrorBoundary resetKey={pathname}>
+            <Outlet />
+          </ErrorBoundary>
         </main>
       </div>
     </div>

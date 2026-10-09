@@ -183,8 +183,8 @@ export function MovieDetail() {
 }
 
 function statusOf(m: Movie): { label: string; tone: string; soft: string } {
-  if (m.has_file) return { label: "Downloaded", tone: "var(--good)", soft: "var(--good-soft, rgba(90,140,90,.12))" };
-  if (m.monitored) return { label: "Wanted", tone: "var(--avoid)", soft: "var(--avoid-soft)" };
+  if (m.has_file) return { label: "Downloaded", tone: "var(--good-text)", soft: "var(--good-soft)" };
+  if (m.monitored) return { label: "Wanted", tone: "var(--avoid-text)", soft: "var(--avoid-soft)" };
   return { label: "Unmonitored", tone: "var(--ink-faint)", soft: "var(--panel-2)" };
 }
 
@@ -278,7 +278,7 @@ function VersionCard({ movieId, version, onChange, flash, profileName }: { movie
   // Both destructive buttons ask first, naming the file, its size and where it goes.
   const [confirm, setConfirm] = useState<"file" | "version" | null>(null);
 
-  const status = f ? { label: "Downloaded", tone: "var(--good)" } : version.monitored ? { label: "Wanted", tone: "var(--avoid)" } : { label: "Unmonitored", tone: "var(--ink-faint)" };
+  const status = f ? { label: "Downloaded", tone: "var(--good-text)" } : version.monitored ? { label: "Wanted", tone: "var(--avoid-text)" } : { label: "Unmonitored", tone: "var(--ink-faint)" };
   const chips: string[] = [];
   if (f?.codec) chips.push(f.codec);
   if (f?.audio) chips.push(...f.audio);
@@ -630,7 +630,7 @@ function ProfileSelector({ movie, onChange }: { movie: Movie; onChange: () => vo
         {saved && <span className="text-[11px]" style={{ color: "var(--good)" }}>Saved ✓</span>}
       </div>
       {downgrade && (
-        <div className="rounded-lg p-3 text-[12px]" style={{ background: "var(--avoid-soft, var(--panel-2))", border: "1px solid var(--avoid, var(--line))" }}>
+        <div className="rounded-lg p-3 text-[12px]" style={{ background: "var(--avoid-soft)", border: "1px solid var(--avoid)" }}>
           <div className="mb-2 text-ink-dim">Your current file is higher quality than this profile targets. Download a smaller release to match it, or keep the file you have?</div>
           <div className="flex gap-2">
             <button onClick={doRegrab} disabled={regrabbing} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>

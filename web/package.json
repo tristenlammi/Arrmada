@@ -6,7 +6,8 @@
   "description": "Arrmada web UI — served embedded by the Go binary.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "prebuild": "node scripts/check-tokens.mjs",
+    "build": "tsc --noEmit && vite build && node scripts/compress.mjs",
     "preview": "vite preview",
     "lint": "eslint src",
     "lint:fix": "eslint src --fix",

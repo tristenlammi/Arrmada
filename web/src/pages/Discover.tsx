@@ -704,18 +704,18 @@ function requestStage(rq: MediaRequest): { badge: string; tone: string; detail: 
   const pct = Math.round((tr?.progress ?? 0) * 100);
   switch (tr?.stage) {
     case "available":
-      return { badge: "Ready", tone: "var(--good)", detail: ready, detailTone: "var(--good)" };
+      return { badge: "Ready", tone: "var(--good)", detail: ready, detailTone: "var(--good-text)" };
     case "partial":
-      return { badge: "Partly ready", tone: "var(--good)", detail: `${eps} ready`, detailTone: "var(--good)" };
+      return { badge: "Partly ready", tone: "var(--good)", detail: `${eps} ready`, detailTone: "var(--good-text)" };
     case "downloading": {
       const parts = [`${pct}%`];
       if (tr.eta_seconds) parts.push(`${etaText(tr.eta_seconds)} left`);
       else if (tr.note) parts.push(tr.note.toLowerCase());
       if (eps) parts.push(eps);
-      return { badge: "Downloading", tone: "var(--accent)", detail: parts.join(" · "), detailTone: "var(--accent)" };
+      return { badge: "Downloading", tone: "var(--accent)", detail: parts.join(" · "), detailTone: "var(--accent-text)" };
     }
     case "importing":
-      return { badge: "Importing", tone: "var(--accent)", detail: "Adding to the library…", detailTone: "var(--accent)" };
+      return { badge: "Importing", tone: "var(--accent)", detail: "Adding to the library…", detailTone: "var(--accent-text)" };
     case "queued":
       return { badge: "Starting", tone: "var(--accent)", detail: tr.note || "Starting the download" };
     case "paused":
@@ -1292,8 +1292,8 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
         aria-modal="true"
         aria-label={c.title}
         tabIndex={-1}
-        className="relative flex h-full w-full flex-col overflow-hidden outline-none sm:h-auto sm:max-h-[92vh] sm:max-w-[820px] sm:rounded-2xl sm:shadow-2xl"
-        style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }}
+        className="relative flex h-full w-full flex-col overflow-hidden outline-none sm:h-auto sm:max-h-[92vh] sm:max-w-[820px] sm:rounded-2xl sm:shadow-panel"
+        style={{ background: "var(--panel)", border: "1px solid var(--line)" }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Close sits on the dialog, not the backdrop, so it stays put while the body scrolls. */}
@@ -1344,7 +1344,7 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
                 </div>
               )}
               {c.release_date && new Date(c.release_date) > new Date() && (
-                <div className="mt-2 font-mono text-[10.5px]" style={{ color: "var(--avoid)" }}>Releases {c.release_date} — request ahead</div>
+                <div className="mt-2 font-mono text-[10.5px]" style={{ color: "var(--avoid-text)" }}>Releases {c.release_date} — request ahead</div>
               )}
               <div className="mt-3 flex flex-wrap items-center gap-2">
                 {done && subscribed ? (

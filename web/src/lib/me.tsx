@@ -1,5 +1,5 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { api, SIGNED_OUT_EVENT, type AuthUser } from "./api";
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { api, ApiError, SIGNED_OUT_EVENT, type AuthUser } from "./api";
 import { rememberNext } from "./session";
 
 interface MeState {
@@ -13,9 +13,14 @@ interface MeState {
   setBooksEnabled: (v: boolean) => void;
   musicEnabled: boolean;
   setMusicEnabled: (v: boolean) => void;
+  // The boot calls got no answer from Arrmada (network down, server restarting, a
+  // proxy's 502), so App shows "Can't reach Arrmada" rather than the login form.
+  unreachable: boolean;
+  // retry re-runs the boot calls and resolves true once Arrmada answered.
+  retry: () => Promise<boolean>;
 }
 
-const MeContext = createContext<MeState>({ user: null, loading: true, signedOut: false, external: false, booksEnabled: true, setBooksEnabled: () => {}, musicEnabled: false, setMusicEnabled: () => {} });
+const MeContext = createContext<MeState>({ user: null, loading: true, signedOut: false, external: false, booksEnabled: true, setBooksEnabled: () => {}, musicEnabled: false, setMusicEnabled: () => {}, unreachable: false, retry: async () => false });
 
 // MeProvider fetches the current user and module toggles once at boot so the whole app can
 // branch on role (staff get the full console; requesters get the Discover-only shell) and
@@ -27,16 +32,23 @@ export function MeProvider({ children }: { children: ReactNode }) {
   const [booksEnabled, setBooksEnabled] = useState(true);
   // Music is a preview and off by default, so don't flash its nav entry before /status lands.
   const [musicEnabled, setMusicEnabled] = useState(false);
-  useEffect(() => {
-    Promise.allSettled([api.me(), api.status()]).then(([me, status]) => {
-      if (me.status === "fulfilled") setUser(me.value);
-      if (status.status === "fulfilled") {
-        setExternal(status.value.external);
-        setBooksEnabled(status.value.books_enabled);
-        setMusicEnabled(status.value.music_enabled);
-      }
+  const [unreachable, setUnreachable] = useState(false);
+  const boot = useCallback(async (): Promise<boolean> => {
+    const [me, status] = await Promise.allSettled([api.me(), api.status()]);
+    if (bootUnreachable(me, status)) {
+      setUnreachable(true);
       setLoading(false);
-    });
+      return false;
+    }
+    setUser(me.status === "fulfilled" ? me.value : null);
+    if (status.status === "fulfilled") {
+      setExternal(status.value.external);
+      setBooksEnabled(status.value.books_enabled);
+      setMusicEnabled(status.value.music_enabled);
+    }
+    setUnreachable(false);
+    setLoading(false);
+    return true;
   }, []);
   // A session that ends mid-use (expired, revoked, password changed, account turned off)
   // swaps the whole app for the sign-in screen, remembering the page to come back to.
@@ -51,7 +63,19 @@ export function MeProvider({ children }: { children: ReactNode }) {
     window.addEventListener(SIGNED_OUT_EVENT, onSignedOut);
     return () => window.removeEventListener(SIGNED_OUT_EVENT, onSignedOut);
   }, []);
-  return <MeContext.Provider value={{ user, loading, signedOut, external, booksEnabled, setBooksEnabled, musicEnabled, setMusicEnabled }}>{children}</MeContext.Provider>;
+  useEffect(() => {
+    void boot();
+  }, [boot]);
+  return <MeContext.Provider value={{ user, loading, signedOut, external, booksEnabled, setBooksEnabled, musicEnabled, setMusicEnabled, unreachable, retry: boot }}>{children}</MeContext.Provider>;
+}
+
+// bootUnreachable decides between "show Login" and "Can't reach Arrmada". A 401 or
+// 403 from /me is Arrmada answering "not signed in", so Login is right. Anything
+// else (a fetch TypeError, a 5xx, a proxy's 502 or HTML error page) means no real
+// answer came back; /status is public, so any failure there counts the same way.
+export function bootUnreachable(me: PromiseSettledResult<unknown>, status: PromiseSettledResult<unknown>): boolean {
+  if (status.status === "rejected") return true;
+  return me.status === "rejected" && !(me.reason instanceof ApiError && (me.reason.status === 401 || me.reason.status === 403));
 }
 
 export function useMe(): MeState {

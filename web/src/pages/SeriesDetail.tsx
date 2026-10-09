@@ -206,8 +206,8 @@ export function SeriesDetail() {
 }
 
 function statusOf(have: number, total: number, monitored: boolean): { label: string; tone: string; soft: string } {
-  if (total > 0 && have >= total) return { label: "Complete", tone: "var(--good)", soft: "var(--good-soft, rgba(90,140,90,.12))" };
-  if (monitored) return { label: have > 0 ? "In progress" : "Wanted", tone: "var(--avoid)", soft: "var(--avoid-soft)" };
+  if (total > 0 && have >= total) return { label: "Complete", tone: "var(--good-text)", soft: "var(--good-soft)" };
+  if (monitored) return { label: have > 0 ? "In progress" : "Wanted", tone: "var(--avoid-text)", soft: "var(--avoid-soft)" };
   return { label: "Unmonitored", tone: "var(--ink-faint)", soft: "var(--panel-2)" };
 }
 
@@ -416,10 +416,10 @@ function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep:
     }
   }, [settled, ep.id]);
   const status = ep.has_file
-    ? { label: "Downloaded", tone: "var(--good)" }
+    ? { label: "Downloaded", tone: "var(--good-text)" }
     : dl
-      ? { label: `↓ ${dlPct}%`, tone: "var(--accent)" }
-      : aired(ep) ? (ep.monitored ? { label: "Missing", tone: "var(--avoid)" } : { label: "Not monitored", tone: "var(--ink-faint)" }) : { label: "Unaired", tone: "var(--ink-faint)" };
+      ? { label: `↓ ${dlPct}%`, tone: "var(--accent-text)" }
+      : aired(ep) ? (ep.monitored ? { label: "Missing", tone: "var(--avoid-text)" } : { label: "Not monitored", tone: "var(--ink-faint)" }) : { label: "Unaired", tone: "var(--ink-faint)" };
 
   const grabEp = async () => {
     setBusy(true);

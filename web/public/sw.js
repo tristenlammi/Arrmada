@@ -1,7 +1,12 @@
 // Arrmada service worker — enables PWA install + a resilient app shell.
 // Strategy: network-first for navigations (so the SPA always gets fresh HTML when
-// online, and the cached shell when offline); cache-first for hashed build assets.
-const CACHE = "arrmada-v1";
+// online, and the cached shell when offline); cache-first only for the hashed build
+// assets under /assets/; network-first for everything else.
+//
+// The build stamps __BUILD__ (web/scripts/compress.mjs), so every deploy ships a
+// byte-different sw.js: the browser installs it, and activate drops the previous
+// build's cache instead of old bundles piling up forever.
+const CACHE = "arrmada-__BUILD__";
 const SHELL = ["/", "/index.html", "/icon.svg", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
@@ -10,14 +15,24 @@ self.addEventListener("install", (e) => {
 
 self.addEventListener("activate", (e) => {
   e.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((k) => k.startsWith("arrmada-") && k !== CACHE).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim())
   );
 });
+
+// Only real build output is worth keeping: a missing chunk must never get an HTML
+// page (or an error) cached under a .js URL.
+const CACHEABLE = /javascript|css|^image\/|font/;
+function cacheableAsset(res) {
+  return res.ok && CACHEABLE.test(res.headers.get("content-type") || "");
+}
 
 self.addEventListener("fetch", (e) => {
   const req = e.request;
   if (req.method !== "GET") return;
   const url = new URL(req.url);
+  if (url.origin !== self.location.origin) return;
   // Never cache the API — always hit the network for live data.
   if (url.pathname.startsWith("/api/")) return;
 
@@ -29,19 +44,26 @@ self.addEventListener("fetch", (e) => {
     return;
   }
 
-  // Static assets: cache-first, then network (and cache the result).
-  e.respondWith(
-    caches.match(req).then((hit) =>
-      hit ||
-      fetch(req).then((res) => {
-        if (res.ok && (url.origin === self.location.origin)) {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put(req, copy));
-        }
-        return res;
-      }).catch(() => hit)
-    )
-  );
+  // Hashed build assets never change under a name: cache-first, then network
+  // (keeping the result only if it really is JS, CSS, an image or a font).
+  if (url.pathname.startsWith("/assets/")) {
+    e.respondWith(
+      caches.match(req).then((hit) =>
+        hit ||
+        fetch(req).then((res) => {
+          if (cacheableAsset(res)) {
+            const copy = res.clone();
+            caches.open(CACHE).then((c) => c.put(req, copy));
+          }
+          return res;
+        })
+      )
+    );
+    return;
+  }
+
+  // Everything else (icon, manifest, …): network-first, the shell copy offline.
+  e.respondWith(fetch(req).catch(() => caches.match(req).then((r) => r || Response.error())));
 });
 
 // --- Web Push -------------------------------------------------------------
