@@ -558,10 +558,22 @@ func (e *Engine) Decide(p Profile, cands []Candidate) Decision {
 		if a.Avoided != b.Avoided {
 			return !a.Avoided // non-avoided first
 		}
+		// A dead torrent (no seeders, or an indexer that doesn't say) never downloads, so
+		// within a tier it goes after every seeded release however well it scores. Ranks
+		// only: it's still the pick when nothing seeded is eligible.
+		if (a.Candidate.Seeders > 0) != (b.Candidate.Seeders > 0) {
+			return a.Candidate.Seeders > 0
+		}
 		if a.Total != b.Total {
 			return a.Total > b.Total
 		}
 		if am, bm := magnitudes(a.Candidate, b.Candidate); am != bm {
+			// Releases within 10% of each other are the same encode for every practical
+			// purpose, so health decides: a 10 GB release with 2 seeders losing to a 9.5 GB
+			// one with 150 is the right call. Outside the band, size (bitrate) still rules.
+			if nearEqual(am, bm) && a.Candidate.Seeders != b.Candidate.Seeders {
+				return a.Candidate.Seeders > b.Candidate.Seeders
+			}
 			if preferSmaller {
 				return am < bm
 			}
@@ -585,13 +597,30 @@ func (e *Engine) Decide(p Profile, cands []Candidate) Decision {
 		if len(d.Eligible) > 1 {
 			ru := d.Eligible[1]
 			reason := loseReason(d.Winner.Candidate.Release, ru.Candidate.Release)
-			if ru.Avoided && !d.Winner.Avoided {
+			switch w := d.Winner; {
+			case ru.Avoided && !w.Avoided:
 				reason = "it has " + strings.Join(ru.AvoidedFormats, ", ") + ", which you avoid"
+			case ru.Candidate.Seeders == 0 && w.Candidate.Seeders > 0:
+				reason = "it has no seeders"
+			case ru.Total == w.Total && ru.Candidate.Seeders < w.Candidate.Seeders && nearEqual(magnitudes(w.Candidate, ru.Candidate)):
+				reason = "fewer seeders"
 			}
 			d.ChosenOver = fmt.Sprintf("Chosen over the %s — %s", releaseLabel(ru.Candidate.Release), reason)
 		}
 	}
 	return d
+}
+
+// nearEqualBand is how close two magnitudes must be for seeders to decide between them.
+const nearEqualBand = 0.10
+
+// nearEqual reports whether a and b are within nearEqualBand of the larger.
+func nearEqual(a, b float64) bool {
+	hi, lo := a, b
+	if lo > hi {
+		hi, lo = lo, hi
+	}
+	return hi > 0 && hi-lo <= hi*nearEqualBand
 }
 
 // magnitudes is what an equal-score tie compares: the two bitrates when both runtimes are

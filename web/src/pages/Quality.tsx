@@ -194,7 +194,7 @@ const VIDEO_TEMPLATES: { key: string; name: string; desc: string; make: (media: 
   {
     key: "4k", name: "4K HDR collection", desc: "4K first, 1080p if that's all there is. HEVC or AV1, HDR10+ preferred, Atmos wanted.",
     make: (m) => ({
-      ...emptyProfile(m), allowed_resolutions: ["2160p", "1080p"],
+      ...emptyProfile(m), allowed_resolutions: ["2160p", "1080p"], min_seeders: 1,
       ideal: {
         codec: { hevc: "want", av1: "want" }, hdr: { "HDR10+": "want" }, audio: { atmos: "want" },
         bitrate: m === "series"
@@ -206,7 +206,7 @@ const VIDEO_TEMPLATES: { key: string; name: string; desc: string; make: (media: 
   {
     key: "1080", name: "1080p efficient", desc: "1080p in HEVC or AV1, 720p as a fallback. Good quality without remux-sized files.",
     make: (m) => ({
-      ...emptyProfile(m), allowed_resolutions: ["1080p", "720p"],
+      ...emptyProfile(m), allowed_resolutions: ["1080p", "720p"], min_seeders: 1,
       ideal: {
         codec: { hevc: "want", av1: "want" },
         bitrate: m === "series"
@@ -218,7 +218,7 @@ const VIDEO_TEMPLATES: { key: string; name: string; desc: string; make: (media: 
   {
     key: "compact", name: "Compact", desc: "The smallest watchable files — for big TV libraries or limited space.",
     make: (m) => ({
-      ...emptyProfile(m), allowed_resolutions: ["1080p", "720p"], small_bias: 4,
+      ...emptyProfile(m), allowed_resolutions: ["1080p", "720p"], small_bias: 4, min_seeders: 1,
       ideal: { codec: { hevc: "want", av1: "want" }, bitrate: { "1080p": { min: 3, max: 8 }, "720p": { min: 2, max: 5 } } },
     }),
   },
@@ -616,7 +616,7 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
               <PreReleaseRule allowed={!!sp.allow_prerelease} onChange={(allowed) => patch({ allow_prerelease: allowed })} />
               <RejectEditor rejected={sp.rejected ?? []} onChange={(r) => patch({ rejected: r })} />
               <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <NumberField label="Minimum seeders" hint="Skip releases with fewer" value={sp.min_seeders} onChange={(v) => patch({ min_seeders: v })} />
+                <NumberField label="Minimum seeders" hint="Skip releases with fewer. Some indexers don't report seeders — leave 0 if releases vanish" value={sp.min_seeders} onChange={(v) => patch({ min_seeders: v })} />
                 <StallField value={sp.stall_minutes} onChange={(v) => patch({ stall_minutes: v })} />
               </div>
             </Collapsible>
