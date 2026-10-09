@@ -33,6 +33,9 @@ type Service struct {
 	push       PushSender // optional: Web Push fan-out alongside inbox + Apprise
 	runner     Runner     // where approval searches run; nil = untracked, panic-safe goroutines
 	log        *slog.Logger
+	// searchBook starts a book search (the coordinator's SearchBookNow); a field so
+	// tests can see it called without a coordinator.
+	searchBook func(ctx context.Context, bookID int64) error
 }
 
 // Runner starts named background work with the app's run context (cancelled at
@@ -74,7 +77,11 @@ func (s *Service) SetPushSender(p PushSender) { s.push = p }
 
 // NewService wires the module. bus + appriseBin drive request-ready notifications (both optional).
 func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, bk *books.Service, coord *automation.Coordinator, q *quality.Service, bus *eventbus.Bus, appriseBin string, log *slog.Logger) *Service {
-	return &Service{repo: NewRepo(db), movies: mv, series: sr, books: bk, coord: coord, quality: q, bus: bus, appriseBin: appriseBin, log: log}
+	s := &Service{repo: NewRepo(db), movies: mv, series: sr, books: bk, coord: coord, quality: q, bus: bus, appriseBin: appriseBin, log: log}
+	if coord != nil {
+		s.searchBook = coord.SearchBookNow
+	}
+	return s
 }
 
 // List returns requests (optionally filtered by status and/or requesting user), each
@@ -238,10 +245,21 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		if addErr != nil && !errors.Is(addErr, books.ErrExists) {
 			return Request{}, addErr
 		}
-		if addErr == nil {
+		// Remember which row the request became. On ErrExists that row may sit under
+		// another catalogue key than the request, and only this link finds it later.
+		if b.ID > 0 {
+			if err := s.repo.SetBookID(ctx, id, b.ID); err != nil {
+				s.log.Warn("request: could not link the book", "request", id, "err", err)
+			}
+		}
+		// A new row always wants a search; one already there only when it lacks an
+		// edition its profile wants (an audiobook request for a book we have as an ebook)
+		// and nothing is already downloading for it, which a second grab would duplicate.
+		existingWants := addErr != nil && s.lacksWantedEdition(ctx, b) && len(s.activeGrabs(ctx, "book", b.ID)) == 0
+		if b.ID > 0 && (addErr == nil || existingWants) && s.searchBook != nil {
 			bid := b.ID
 			s.background("book search", req.Title, 5*time.Minute, func(c context.Context) error {
-				return s.coord.SearchBookNow(c, bid)
+				return s.searchBook(c, bid)
 			})
 		}
 	}
@@ -260,6 +278,64 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 	s.log.Info("request approved", "media", req.MediaType, "title", req.Title, "profile", profile)
 	s.notifyDecision(ctx, req, true)
 	return s.repo.Get(ctx, id)
+}
+
+// BackfillBookIDs links book requests made before requests remembered their library row.
+// A request whose catalogue key still names a row links to it; otherwise one with the
+// same title and author links only when exactly one row matches, so two copies of a
+// book never get a request pinned to the wrong one. It only fills empty links and never
+// deletes anything, so it is safe to run on every boot.
+func (s *Service) BackfillBookIDs(ctx context.Context) (linked, ambiguous int, err error) {
+	reqs, err := s.repo.unlinkedBookRequests(ctx)
+	if err != nil || len(reqs) == 0 || s.books == nil {
+		return 0, 0, err
+	}
+	list, err := s.books.List(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	byKey := map[string]int64{}
+	for _, b := range list {
+		byKey[b.OLKey] = b.ID
+	}
+	same := books.NewIdentityIndex(list)
+	for _, rq := range reqs {
+		id := byKey[rq.OLKey]
+		if id == 0 {
+			switch matches := same.FindAll(rq.Title, rq.Author); len(matches) {
+			case 0:
+				continue // not in the library (yet): it still resolves by its key
+			case 1:
+				id = matches[0].ID
+			default:
+				ambiguous++
+				continue
+			}
+		}
+		if err := s.repo.SetBookID(ctx, rq.ID, id); err != nil {
+			return linked, ambiguous, err
+		}
+		linked++
+	}
+	if linked > 0 || ambiguous > 0 {
+		s.log.Info(fmt.Sprintf("requests: backfilled %d book requests (%d ambiguous)", linked, ambiguous))
+	}
+	return linked, ambiguous, nil
+}
+
+// lacksWantedEdition reports whether a library book is missing an edition its profile
+// wants — the same rule the book page uses to show wanted-but-missing editions.
+func (s *Service) lacksWantedEdition(ctx context.Context, b books.Book) bool {
+	wantEbook, wantAudio := true, false
+	if s.quality != nil {
+		ref := s.quality.Effective(ctx, b.QualityProfile, quality.MediaBook)
+		if sp, err := s.quality.GetStored(ctx, ref); err == nil {
+			wantEbook, wantAudio = books.WantedEditions(sp.FormatScores)
+		}
+	}
+	hasEbook := b.Ebook != nil && b.Ebook.Path != ""
+	hasAudio := b.Audiobook != nil && b.Audiobook.Path != ""
+	return (wantEbook && !hasEbook) || (wantAudio && !hasAudio)
 }
 
 // Decline rejects a request without adding anything. The stored quality profile
@@ -309,10 +385,15 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 			serHave[sr.TMDBID] = l
 		}
 	}
+	// Books by the row a request is linked to, falling back to the catalogue key for a
+	// request not linked yet. The key alone loses the book once it is re-matched.
 	bookHave := map[string]lib{}
+	bookByID := map[int64]lib{}
 	if bs, err := s.books.List(ctx); err == nil {
 		for _, b := range bs {
-			bookHave[b.OLKey] = lib{id: b.ID, have: b.HasFile, released: true}
+			l := lib{id: b.ID, have: b.HasFile, released: true}
+			bookHave[b.OLKey] = l
+			bookByID[b.ID] = l
 		}
 	}
 	for i := range reqs {
@@ -324,6 +405,9 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 			l = serHave[reqs[i].TMDBID]
 		case "book":
 			l = bookHave[reqs[i].OLKey]
+			if linked, ok := bookByID[reqs[i].BookID]; ok {
+				l = linked
+			}
 		}
 		reqs[i].Available = l.have
 		reqs[i].libID, reqs[i].epHave, reqs[i].epTotal, reqs[i].released = l.id, l.epHave, l.epTotal, l.released

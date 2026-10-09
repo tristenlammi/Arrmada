@@ -22,9 +22,10 @@ const (
 // Request is one user request for a movie, series, or book.
 type Request struct {
 	ID               int64   `json:"id"`
-	MediaType        string  `json:"media_type"`       // "movie" | "series" | "book"
-	TMDBID           int     `json:"tmdb_id"`          // movies/series
-	OLKey            string  `json:"ol_key,omitempty"` // books (Open Library work key)
+	MediaType        string  `json:"media_type"`        // "movie" | "series" | "book"
+	TMDBID           int     `json:"tmdb_id"`           // movies/series
+	OLKey            string  `json:"ol_key,omitempty"`  // books (Open Library work key)
+	BookID           int64   `json:"book_id,omitempty"` // books: the library row it became; survives that row's key changing
 	Title            string  `json:"title"`
 	Author           string  `json:"author,omitempty"` // books
 	Year             int     `json:"year"`
@@ -57,23 +58,33 @@ type Repo struct{ db *sql.DB }
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const cols = `id, media_type, tmdb_id, ol_key, title, author, year, poster_url, overview, status,
-	quality_profile, requested_by, requested_by_name, note, created_at, updated_at`
+	quality_profile, requested_by, requested_by_name, note, created_at, updated_at, book_id`
 
 func scan(row interface{ Scan(...any) error }) (Request, error) {
 	var r Request
+	var bookID sql.NullInt64
 	err := row.Scan(&r.ID, &r.MediaType, &r.TMDBID, &r.OLKey, &r.Title, &r.Author, &r.Year, &r.PosterURL, &r.Overview,
-		&r.Status, &r.QualityProfile, &r.RequestedBy, &r.RequestedByName, &r.Note, &r.CreatedAt, &r.UpdatedAt)
+		&r.Status, &r.QualityProfile, &r.RequestedBy, &r.RequestedByName, &r.Note, &r.CreatedAt, &r.UpdatedAt, &bookID)
+	r.BookID = bookID.Int64
 	return r, err
+}
+
+// nullID stores 0 as NULL: the column references books(id), and there is no book 0.
+func nullID(id int64) any {
+	if id <= 0 {
+		return nil
+	}
+	return id
 }
 
 // Create inserts a request. Returns ErrExists (wrapped) on a duplicate media.
 func (r *Repo) Create(ctx context.Context, req Request) (Request, error) {
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO requests (media_type, tmdb_id, ol_key, title, author, year, poster_url, overview, status,
-			quality_profile, requested_by, requested_by_name, note)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			quality_profile, requested_by, requested_by_name, note, book_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.MediaType, req.TMDBID, req.OLKey, req.Title, req.Author, req.Year, req.PosterURL, req.Overview, req.Status,
-		req.QualityProfile, req.RequestedBy, req.RequestedByName, req.Note)
+		req.QualityProfile, req.RequestedBy, req.RequestedByName, req.Note, nullID(req.BookID))
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return Request{}, ErrExists
@@ -117,6 +128,39 @@ func (r *Repo) GetByBook(ctx context.Context, olKey string) (Request, bool) {
 	return req, true
 }
 
+// SetBookID links a book request to the library row it became.
+func (r *Repo) SetBookID(ctx context.Context, id, bookID int64) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE requests SET book_id = ? WHERE id = ?`, nullID(bookID), id)
+	return err
+}
+
+// ListByBookID returns the book requests linked to one library row (oldest first).
+func (r *Repo) ListByBookID(ctx context.Context, bookID int64) ([]Request, error) {
+	return r.query(ctx, `SELECT `+cols+` FROM requests WHERE media_type = 'book' AND book_id = ? ORDER BY id`, bookID)
+}
+
+// unlinkedBookRequests returns the book requests not yet linked to a library row.
+func (r *Repo) unlinkedBookRequests(ctx context.Context) ([]Request, error) {
+	return r.query(ctx, `SELECT `+cols+` FROM requests WHERE media_type = 'book' AND book_id IS NULL ORDER BY id`)
+}
+
+func (r *Repo) query(ctx context.Context, q string, args ...any) ([]Request, error) {
+	rows, err := r.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Request
+	for rows.Next() {
+		req, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, req)
+	}
+	return out, rows.Err()
+}
+
 // List returns requests (newest first), optionally filtered by status and/or the
 // requesting user (requestedBy = 0 means all users).
 func (r *Repo) List(ctx context.Context, status string, requestedBy int64) ([]Request, error) {
@@ -135,20 +179,7 @@ func (r *Repo) List(ctx context.Context, status string, requestedBy int64) ([]Re
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
 	q += ` ORDER BY id DESC`
-	rows, err := r.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []Request
-	for rows.Next() {
-		req, err := scan(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, req)
-	}
-	return out, rows.Err()
+	return r.query(ctx, q, args...)
 }
 
 // SetStatus updates a request's status. A non-empty profile also updates the

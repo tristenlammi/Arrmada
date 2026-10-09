@@ -191,6 +191,18 @@ func main() {
 	hardcover.SetDiskCache(diskCache)
 	openlib := metadata.NewBookSources(hardcover, metadata.NewBooksWithFallback(olProvider, metadata.NewGoogleBooks()))
 	qualitySvc := quality.NewService(st.DB())
+	// Titles left on a profile deleted before deletes reassigned them already run on the
+	// default; point their stored ref there too, so the UI and the database agree. Only
+	// refs naming a missing profile are touched.
+	if fixed, err := qualitySvc.RepairDanglingRefs(context.Background()); err != nil {
+		log.Warn("quality: dangling profile repair failed", "err", err)
+	} else if len(fixed) > 0 {
+		args := []any{}
+		for table, n := range fixed {
+			args = append(args, table, n)
+		}
+		log.Info("quality: repointed titles on deleted profiles to the default", args...)
+	}
 	notifySvc := notify.NewService(st.DB(), bus, log)
 	pushSvc := push.New(st.DB(), settingsSvc, log)
 	// Episode NUMBERING comes from TVmaze; everything else about a show still comes from
@@ -485,6 +497,14 @@ func main() {
 	requestsSvc.SetRunner(grp)         // approval searches stop at shutdown
 	// Alert requesters when their request is imported.
 	grp.Loop("requests: ready notifier", requestsSvc.RunNotifier)
+	// Book requests made before they remembered their library row are linked to it by
+	// title and author, so the ones whose book was re-matched to a new catalogue key
+	// stop showing "Searching" and get their "ready".
+	grp.Go("requests: book link backfill", func(ctx context.Context) {
+		if _, _, err := requestsSvc.BackfillBookIDs(ctx); err != nil {
+			log.Warn("requests: book link backfill failed", "err", err)
+		}
+	})
 	// Backstop for request-ready notifications: catches availability that arrived
 	// without an import event (library scan) or whose event was dropped under load.
 	// Idempotent (unique inbox ref), so re-running never double-notifies.

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/tristenlammi/arrmada/internal/quality"
@@ -136,9 +137,19 @@ func (a *api) handleDeleteQualityProfile(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	if err := a.deps.Quality.Delete(r.Context(), id); err != nil {
+	// ?move_to=custom:N picks where the profile's titles go; empty means the default.
+	moved, to, err := a.deps.Quality.Delete(r.Context(), id, r.URL.Query().Get("move_to"))
+	switch {
+	case err == nil:
+		a.writeJSON(w, http.StatusOK, map[string]any{"moved": moved, "moved_to": to})
+	case errors.Is(err, quality.ErrNotFound):
+		a.writeError(w, http.StatusNotFound, "profile not found")
+	case errors.Is(err, quality.ErrLastProfile):
+		a.writeError(w, http.StatusConflict, "Create another profile first")
+	case errors.Is(err, quality.ErrMediaMismatch), errors.Is(err, quality.ErrSameProfile),
+		errors.Is(err, quality.ErrTargetNotFound):
+		a.writeError(w, http.StatusBadRequest, err.Error())
+	default:
 		a.writeError(w, http.StatusInternalServerError, "could not delete profile")
-		return
 	}
-	w.WriteHeader(http.StatusNoContent)
 }

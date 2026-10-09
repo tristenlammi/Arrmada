@@ -143,7 +143,7 @@ func (s *Service) RunNotifier(ctx context.Context) {
 		case ev := <-bookCh:
 			if id, ok := evID(ev.Data); ok {
 				if b, err := s.books.Get(ctx, id); err == nil {
-					s.notifyRequester(ctx, "book", 0, b.OLKey)
+					s.notifyBookRequesters(ctx, b.ID, b.OLKey)
 				}
 			}
 		}
@@ -176,6 +176,23 @@ func (s *Service) notifyRequester(ctx context.Context, mediaType string, tmdbID 
 		return
 	}
 	s.notifyReady(ctx, req)
+}
+
+// notifyBookRequesters alerts everyone behind the requests linked to a just-imported
+// book. The link survives the book's catalogue key changing; a request not linked yet
+// is still found by the key it was made under.
+func (s *Service) notifyBookRequesters(ctx context.Context, bookID int64, olKey string) {
+	linked, err := s.repo.ListByBookID(ctx, bookID)
+	if err != nil {
+		s.log.Warn("request-ready: could not list book requests", "book", bookID, "err", err)
+	}
+	if len(linked) == 0 {
+		s.notifyRequester(ctx, "book", 0, olKey)
+		return
+	}
+	for _, req := range linked {
+		s.notifyReady(ctx, req)
+	}
 }
 
 // notifyReady sends the "your request is ready" notification for one request.
@@ -276,9 +293,11 @@ func (s *Service) SweepReadyRequests(ctx context.Context) error {
 		}
 	}
 	bookHave := map[string]bool{}
+	bookByID := map[int64]bool{}
 	if bs, err := s.books.List(ctx); err == nil {
 		for _, b := range bs {
 			bookHave[b.OLKey] = b.HasFile
+			bookByID[b.ID] = b.HasFile
 		}
 	}
 	for i := range reqs {
@@ -293,7 +312,12 @@ func (s *Service) SweepReadyRequests(ctx context.Context) error {
 				ready = !s.series.HasWantedEpisodes(ctx, info.id)
 			}
 		case "book":
-			ready = bookHave[reqs[i].OLKey]
+			// By the linked row first: the catalogue key may have changed since.
+			if has, ok := bookByID[reqs[i].BookID]; ok {
+				ready = has
+			} else {
+				ready = bookHave[reqs[i].OLKey]
+			}
 		}
 		if ready {
 			s.notifyReady(ctx, reqs[i])

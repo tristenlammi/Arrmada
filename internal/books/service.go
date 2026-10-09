@@ -192,17 +192,13 @@ func (s *Service) AddWorks(ctx context.Context, works []metadata.BookResult, pro
 	// One pass over the library for the title-and-author check, then each incoming
 	// work is checked against the library AND the works already taken from this list:
 	// an author's catalogue routinely lists the same novel several times.
-	have := map[string]bool{}
-	if list, err := s.repo.List(ctx); err == nil {
-		for _, b := range list {
-			have[DedupeKey(b.Title, b.Author)] = true
-		}
-	}
+	list, _ := s.repo.List(ctx)
+	have := NewIdentityIndex(list)
 	for _, wk := range works {
 		if wk.Key == "" || wk.Title == "" {
 			continue
 		}
-		if k := DedupeKey(wk.Title, wk.Author); k != "" && have[k] {
+		if _, ok := have.Find(wk.Title, wk.Author); ok {
 			skipped++
 			continue
 		}
@@ -218,7 +214,7 @@ func (s *Service) AddWorks(ctx context.Context, works []metadata.BookResult, pro
 			s.log.Warn("add author: create failed", "title", wk.Title, "err", err)
 			continue
 		}
-		have[DedupeKey(created.Title, created.Author)] = true
+		have.Add(created)
 		s.repo.AddEvent(ctx, created.ID, "added", "Added from the author's catalogue")
 		added = append(added, created)
 	}
