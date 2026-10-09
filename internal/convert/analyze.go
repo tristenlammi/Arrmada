@@ -1,8 +1,7 @@
-// Package convert is the Convert module (Tdarr replacement): GPU-accelerated transcoding,
-// remuxing and cleanup for the Movies & TV libraries. This first slice implements the
-// analysis + safe conversion engine and the "Save space" preset (→ HEVC); the full rules
-// engine, HDR/DV handling, quality gate and UI land in later phases.
 package convert
+
+// analyze.go probes a file (ffprobe) into MediaInfo: video, HDR / Dolby Vision base, audio
+// and subtitle tracks. The package doc lives in service.go.
 
 import (
 	"context"
