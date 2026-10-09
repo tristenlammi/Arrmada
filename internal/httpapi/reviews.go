@@ -124,6 +124,65 @@ func (a *api) handleReviewFiles(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"files": files, "truncated": truncated})
 }
 
+// mapInBackground is how many files a hand mapping places before it runs as a job: a big
+// pack's hardlinks and supersedes outlast a sensible request.
+const mapInBackground = 20
+
+// handleMapReview imports a held series download by mapping its files to episodes by hand:
+// {series_id, files:[{rel_path, season, episodes}]}. The mapping is checked before
+// anything is touched; a pack of more than 20 files then imports as a job (202).
+func (a *api) handleMapReview(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		SeriesID int64                    `json:"series_id"`
+		Files    []automation.FileMapping `json:"files"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	rv, err := a.deps.Automation.GetReview(r.Context(), id)
+	if err != nil {
+		a.writeReviewError(w, err, "")
+		return
+	}
+	// The same folder rule as a manual import: only what's inside the downloads or
+	// library folders goes into the library.
+	if _, err := a.checkImportPath(r.Context(), rv.ContentPath); err != nil {
+		a.writeError(w, http.StatusUnprocessableEntity, "This download is outside your downloads and library folders, so it can't be imported from here. "+err.Error())
+		return
+	}
+	plan, err := a.deps.Automation.PlanReviewMap(r.Context(), id, req.SeriesID, req.Files)
+	if err != nil {
+		a.writeReviewError(w, err, "could not check that mapping")
+		return
+	}
+	if plan.Files() > mapInBackground {
+		jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "review.map", Target: jobTarget("review", id), Class: jobs.ClassImport, Timeout: 2 * time.Hour,
+			Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
+				n, err := a.deps.Automation.ApplyReviewMap(ctx, plan)
+				if err != nil {
+					return nil, err
+				}
+				p.SetMessage(countOf(n, "episode") + " imported")
+				return map[string]int{"placed": n}, nil
+			}})
+		if !ok {
+			return
+		}
+		a.accepted(w, jobID, existing, map[string]any{"status": "importing", "background": true})
+		return
+	}
+	n, err := a.deps.Automation.ApplyReviewMap(r.Context(), plan)
+	if err != nil {
+		a.writeReviewError(w, err, "could not import the mapped files")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"status": "imported", "placed": n})
+}
+
 // maxBulkReviews bounds one bulk action: each Reject is a call to the download client.
 const maxBulkReviews = 100
 
@@ -242,7 +301,8 @@ func reviewErrorStatus(err error) int {
 	case errors.Is(err, automation.ErrNothingToImport),
 		errors.Is(err, automation.ErrWrongTargetKind),
 		errors.Is(err, automation.ErrNeedsTarget),
-		errors.Is(err, automation.ErrWrongReason):
+		errors.Is(err, automation.ErrWrongReason),
+		errors.Is(err, automation.ErrBadMapping):
 		return http.StatusUnprocessableEntity
 	}
 	return http.StatusInternalServerError

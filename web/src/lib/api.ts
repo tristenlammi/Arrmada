@@ -1661,6 +1661,10 @@ export const api = {
   // Clears an "import keeps failing" review so the import sweep tries the download again.
   retryReview: (id: number) => req<{ status: string }>(`/api/v1/reviews/${id}/retry`, { method: "POST" }),
   reviewFiles: (id: number) => req<{ files: ReviewFile[]; truncated: boolean }>(`/api/v1/reviews/${id}/files`),
+  // Imports a held show download by mapping its files to episodes by hand. A big pack
+  // imports as a job (job_id set); a small one answers with how many episodes landed.
+  mapReview: (id: number, seriesId: number, files: { rel_path: string; season: number; episodes: number[] }[]) =>
+    req<{ status: string; placed?: number; background?: boolean } & JobRef>(`/api/v1/reviews/${id}/map`, { method: "POST", body: JSON.stringify({ series_id: seriesId, files }) }),
   bulkReviews: (ids: number[], action: "dismiss" | "reject") =>
     req<{ done: number; failed: { id: number; error: string }[] }>("/api/v1/reviews/bulk", { method: "POST", body: JSON.stringify({ ids, action }) }),
   // targetKind names what targetId is; the server refuses one that isn't the review's own kind.

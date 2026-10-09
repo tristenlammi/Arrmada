@@ -304,6 +304,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/reviews/{id}/targets", a.requireRole(auth.RoleManager, a.handleReviewTargets))
 	mux.HandleFunc("GET /api/v1/reviews/{id}/files", a.requireRole(auth.RoleManager, a.handleReviewFiles))
 	mux.HandleFunc("POST /api/v1/reviews/{id}/retry", a.requireRole(auth.RoleManager, a.handleRetryReview))
+	mux.HandleFunc("POST /api/v1/reviews/{id}/map", a.requireRole(auth.RoleManager, a.handleMapReview))
 	mux.HandleFunc("POST /api/v1/reviews/bulk", a.requireRole(auth.RoleManager, a.handleBulkReviews))
 
 	// The blocklist across every media type, global entries included.

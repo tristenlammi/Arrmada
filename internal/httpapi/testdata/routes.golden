@@ -275,6 +275,7 @@ POST /api/v1/requests/{id}/decline staff ext
 POST /api/v1/reviews/bulk staff -
 POST /api/v1/reviews/{id}/dismiss staff -
 POST /api/v1/reviews/{id}/import staff -
+POST /api/v1/reviews/{id}/map staff -
 POST /api/v1/reviews/{id}/reject staff -
 POST /api/v1/reviews/{id}/retry staff -
 POST /api/v1/series staff -

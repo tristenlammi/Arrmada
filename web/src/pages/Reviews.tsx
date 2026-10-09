@@ -6,6 +6,8 @@ import { formatAgo, formatBytes } from "../lib/format";
 import { useLive } from "../lib/useLive";
 import { usePoll } from "../lib/usePoll";
 import { ConfirmDialog, Modal, StatusChip, useConfirm, useToast, type Tone } from "../ui";
+import { MapFilesModal } from "./reviews/MapFilesModal";
+import { guessLabel } from "./reviews/episodes";
 
 // What the user calls a library item of each review kind.
 const KIND_LABEL: Record<ReviewKind, string> = { series: "show", movie: "movie", book: "book", music: "album" };
@@ -44,6 +46,7 @@ export function Reviews() {
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [reassign, setReassign] = useState<ImportReview | null>(null);
   const [removing, setRemoving] = useState<ImportReview | null>(null);
+  const [mapping, setMapping] = useState<ImportReview | null>(null);
   const confirm = useConfirm();
   const toast = useToast();
 
@@ -185,6 +188,7 @@ export function Reviews() {
                 onReject={(findAnother) => reject(r, findAnother)}
                 onRetry={() => act(r.id, () => api.retryReview(r.id), "Retrying — the import runs again within a minute.")}
                 onRemove={() => setRemoving(r)}
+                onMap={() => setMapping(r)}
                 onDismiss={() => act(r.id, () => api.dismissReview(r.id), "Dismissed — the files stay in the downloads folder.")}
               />
             ))}
@@ -201,6 +205,13 @@ export function Reviews() {
             setReassign(null);
             act(id, () => api.importReview(id, targetId, kind), `Imported into ${label}.`);
           }}
+        />
+      )}
+      {mapping && (
+        <MapFilesModal
+          review={mapping}
+          onClose={() => setMapping(null)}
+          onDone={(msg) => { const id = mapping.id; setMapping(null); drop(id); toast(msg); }}
         />
       )}
       {removing && (
@@ -224,10 +235,11 @@ interface CardProps {
   onReject: (findAnother: boolean) => void;
   onRetry: () => void;
   onRemove: () => void;
+  onMap: () => void;
   onDismiss: () => void;
 }
 
-function ReviewCard({ r, busy, selected, onSelect, onImport, onReassign, onReject, onRetry, onRemove, onDismiss }: CardProps) {
+function ReviewCard({ r, busy, selected, onSelect, onImport, onReassign, onReject, onRetry, onRemove, onMap, onDismiss }: CardProps) {
   const [showFiles, setShowFiles] = useState(false);
   const reason = REASON[r.reason_code] ?? REASON.mismatch;
   const link = titleLink(r);
@@ -292,7 +304,10 @@ function ReviewCard({ r, busy, selected, onSelect, onImport, onReassign, onRejec
           </>
         )}
         {r.reason_code === "numbering" && (
-          <button onClick={onReassign} disabled={busy} className={btn} style={accent}>Choose different show…</button>
+          <>
+            {r.media_type === "series" && <button onClick={onMap} disabled={busy} className={btn} style={primary}>Map files…</button>}
+            <button onClick={onReassign} disabled={busy} className={btn} style={accent}>Choose different show…</button>
+          </>
         )}
         {r.reason_code === "import_failed" && (
           <button onClick={onRetry} disabled={busy} className={btn} style={primary} title="Fix the cause first — then the import sweep tries again">Retry import</button>
@@ -334,19 +349,6 @@ function FileList({ reviewId }: { reviewId: number }) {
       {truncated && <div className="px-3 py-1.5 text-[10.5px] text-ink-faint">Showing the first {files.length} files.</div>}
     </div>
   );
-}
-
-// guessLabel renders a file's own numbering: "S01E02", "S01E03-E04", "#137", or nothing.
-function guessLabel(f: ReviewFile): string {
-  const g = f.guess;
-  if (!f.video) return "";
-  if (g.season && g.episodes && g.episodes.length > 0) {
-    const pad = (n: number) => String(n).padStart(2, "0");
-    const eps = g.episodes.length > 1 ? `E${pad(g.episodes[0])}-E${pad(g.episodes[g.episodes.length - 1])}` : `E${pad(g.episodes[0])}`;
-    return `S${pad(g.season)}${eps}`;
-  }
-  if (g.absolute && g.absolute.length > 0) return `#${g.absolute.join(", #")}`;
-  return "no number";
 }
 
 // RemoveHeldDialog takes a held download out of the client, keeping its files by default

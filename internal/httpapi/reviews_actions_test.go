@@ -10,7 +10,9 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/movies"
+	"github.com/tristenlammi/arrmada/internal/series"
 )
 
 // reviewServer is the real router with a real coordinator and a job runner that records.
@@ -101,6 +103,40 @@ func TestBulkDismissReviews(t *testing.T) {
 	}
 	if rec := s.doJSON("POST", "/api/v1/reviews/bulk", mgr, `{"ids":[1],"action":"import"}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("unknown bulk action: HTTP %d, want 400", rec.Code)
+	}
+}
+
+// Map files only works on a download inside the downloads or library folders — the manual
+// import rule — and refuses a bad mapping with a 422 before touching anything.
+func TestMapReviewRoute(t *testing.T) {
+	base := t.TempDir()
+	downloads := filepath.Join(base, "downloads")
+	outside := filepath.Join(base, "elsewhere")
+	for _, d := range []string{downloads, outside} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := newRouteServer(t, func(d *Deps) {
+		d.Config.DownloadsDir = downloads
+		co := automation.New(nil, nil, nil, nil, d.Store.DB(), nil, d.Log, "")
+		co.SetSeries(series.NewService(d.Store.DB(), nil, filepath.Join(base, "tv"), d.Log), library.NewImporter(filepath.Join(base, "tv"), d.Log))
+		d.Automation = co
+	})
+	_, mgr := s.user(t, "mgr@example.com", auth.RoleManager)
+	inside := filepath.Join(downloads, "Show.S01")
+	if err := os.MkdirAll(inside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	away := addReviewRow(t, s, "aa", "series", 1, "numbering", outside)
+	in := addReviewRow(t, s, "bb", "series", 1, "numbering", inside)
+	body := `{"files":[{"rel_path":"../x.mkv","season":1,"episodes":[1]}]}`
+	if rec := s.doJSON("POST", fmt.Sprintf("/api/v1/reviews/%d/map", away), mgr, body); rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("outside the roots: HTTP %d, want 422: %s", rec.Code, rec.Body)
+	}
+	rec := s.doJSON("POST", fmt.Sprintf("/api/v1/reviews/%d/map", in), mgr, body)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("bad mapping: HTTP %d: %s", rec.Code, rec.Body)
 	}
 }
 
