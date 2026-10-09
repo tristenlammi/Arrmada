@@ -239,6 +239,32 @@ rollback() {
   if [ -n "$_cur" ]; then
     docker image tag arrmada:dev arrmada:rolled-back
   fi
+
+  # Without --with-db, ask the previous build itself, before anything is stopped,
+  # whether it can run on the database as it is now: if this update upgraded it, that
+  # build refuses to start on it, so stop here instead. Only a build labelled with the
+  # CLI is asked (an older one would start a server); one too old to know the command
+  # answers with a usage error, and then the start itself is the check.
+  _schema_ok=""
+  if [ -z "$_backup" ] && [ "$(image_label arrmada:previous org.arrmada.cli)" = "1" ]; then
+    docker image tag arrmada:previous arrmada:dev
+    _rc=0
+    _check=$(docker compose run --rm --no-deps --entrypoint /usr/local/bin/arrmada arrmada-app schema 2>&1) || _rc=$?
+    [ "$_rc" = 0 ] && _schema_ok=1
+    if [ "$_rc" = 3 ]; then
+      if [ -n "$_cur" ]; then
+        docker image tag arrmada:rolled-back arrmada:dev
+      fi
+      say "" >&2
+      say "$_check" | sed 's/^/  /' >&2
+      say "" >&2
+      say "✗ The previous build can't run on the database as it is now: the update upgraded it." >&2
+      say "  Nothing was changed. To go back together with the database from before the update" >&2
+      say "  (everything recorded since is lost): ./update.sh --rollback --with-db" >&2
+      exit 1
+    fi
+  fi
+
   if [ -n "$_backup" ]; then
     docker compose stop arrmada-app
     docker image tag arrmada:previous arrmada:dev
@@ -263,7 +289,7 @@ rollback() {
   say "✓ Rolled back. Arrmada is running commit ${_commit:-unknown} again."
   if [ -n "$_backup" ]; then
     say "  The database is back to $_backup; everything recorded after it is gone."
-  else
+  elif [ -z "$_schema_ok" ]; then
     say "  If this update ran a database migration, also restore the pre-update backup"
     say "  (./update.sh --rollback --with-db, or System → Backups)."
   fi

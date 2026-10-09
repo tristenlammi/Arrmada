@@ -40,6 +40,11 @@ type Options struct {
 	// the copy, nothing more (ARRMADA_SKIP_MIGRATION_SNAPSHOT).
 	SkipMigrationSnapshot bool
 
+	// AllowNewerSchema starts on a database a newer build has upgraded, which is
+	// otherwise refused (ARRMADA_ALLOW_NEWER_SCHEMA). The old code then runs against
+	// tables and columns it doesn't know about; it is a last resort, logged loudly.
+	AllowNewerSchema bool
+
 	// BeforeMigrate, when set, runs once with the pending migration file names
 	// before any of them is applied, and only when there is at least one. An error
 	// aborts Open with nothing applied.
@@ -105,6 +110,11 @@ func (s *Store) migrate(ctx context.Context, opt Options, log *slog.Logger) erro
 	pend, last, err := pendingMigrations(ctx, s.db, fsys)
 	if err != nil {
 		return fmt.Errorf("run migrations: %w", err)
+	}
+	// Before anything else changes: an older build must not snapshot, migrate or run on
+	// a database a newer one has already upgraded.
+	if err := s.refuseNewerSchema(ctx, fsys, opt, log); err != nil {
+		return err
 	}
 	if len(pend) == 0 {
 		return nil

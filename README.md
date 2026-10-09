@@ -88,15 +88,7 @@ If the pull fails (local edits, or a branch that has diverged), the script stops
 rebuilding anything; `git status` shows what's in the way. `./update.sh --force-local` skips
 the pull and rebuilds the code that's in the folder.
 
-The build that was running before an update is kept as the Docker image `arrmada:previous`,
-so `./update.sh --rollback` can start it again in a few seconds (the build you leave is kept
-as `arrmada:rolled-back`, and the next `./update.sh` goes forward again).
-`./update.sh --rollback --with-db` also puts back the pre-update backup, for when the update
-changed the database; everything Arrmada recorded since the update is lost, so it asks
-first (`-y` skips the question). If the previous build can't restore a backup itself, the
-script changes nothing and prints the steps to do it by hand. Keeping the old image costs
-one extra image of disk, several GB with the subtitle and GPU tooling. The Dashboard and
-`/api/health` show the version and commit that's running.
+The Dashboard and `/api/health` show the version and commit that's running.
 
 If you deploy with Komodo or another tool instead of `update.sh`, mirror these steps there:
 pass `ARRMADA_VERSION` (`git describe --tags --always --dirty`) and `ARRMADA_COMMIT`
@@ -106,6 +98,25 @@ running image `arrmada:previous` before each build. Otherwise none of this prote
 
 `docker exec Arrmada-app arrmada help` lists the maintenance commands built into the app
 (`version`, `backup`, …). With no command, `arrmada` is the server.
+
+### Rolling back an update
+
+The build that was running before an update is kept as the Docker image `arrmada:previous`,
+so `./update.sh --rollback` can start it again in a few seconds (the build you leave is kept
+as `arrmada:rolled-back`, and the next `./update.sh` goes forward again). If the previous
+build doesn't come up, the script starts the newer one again rather than leave Arrmada down.
+Keeping the old image costs one extra image of disk, several GB with the subtitle and GPU
+tooling.
+
+An older build won't start on a database a newer one has upgraded: it stops with a message
+saying so, because running old code on tables it doesn't know can damage them. So before it
+stops anything, `--rollback` asks the previous build whether it can run on the database as
+it is, and if the update changed the database it stops and says to use
+`./update.sh --rollback --with-db`. That also puts back the pre-update backup, which means
+everything Arrmada recorded since the update is lost, so it asks first (`-y` skips the
+question). If the previous build can't restore a backup itself, the script changes nothing
+and prints the steps to do it by hand. `ARRMADA_ALLOW_NEWER_SCHEMA=1` in `.env` starts an
+older build on a newer database anyway; it's a last resort.
 
 ## Ports
 

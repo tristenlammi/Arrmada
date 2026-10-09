@@ -143,7 +143,11 @@ func main() {
 	}
 	logEnvironment(log, cfg)
 
-	st, err := store.OpenWith(cfg.DataDir, store.Options{Log: log, SkipMigrationSnapshot: cfg.SkipMigrationSnapshot})
+	st, err := store.OpenWith(cfg.DataDir, store.Options{
+		Log:                   log,
+		SkipMigrationSnapshot: cfg.SkipMigrationSnapshot,
+		AllowNewerSchema:      cfg.AllowNewerSchema,
+	})
 	if err != nil {
 		log.Error("failed to open database", "err", err)
 		os.Exit(1)

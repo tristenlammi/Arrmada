@@ -163,3 +163,31 @@ func TestCLIBackupRejectsOtherKinds(t *testing.T) {
 		}
 	}
 }
+
+func TestCLIVersionSchema(t *testing.T) {
+	code, stdout, _ := runTestCLI(t, "", "version", "--schema")
+	if code != exitOK || store.LatestMigration() == "" || strings.TrimSpace(stdout) != store.LatestMigration() {
+		t.Fatalf("version --schema: exit %d, %q (want %q)", code, stdout, store.LatestMigration())
+	}
+}
+
+// update.sh asks the build it's about to roll back to whether it can run on the
+// database as it is; exit 3 means a newer build has upgraded it.
+func TestCLISchema(t *testing.T) {
+	dir := testDataDir(t)
+	if code, stdout, stderr := runTestCLI(t, "", "schema"); code != exitOK || !strings.Contains(stdout, "up to date") {
+		t.Fatalf("matching schema: exit %d, %q %q", code, stdout, stderr)
+	}
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB().Exec(`INSERT INTO schema_migrations (version) VALUES ('9999_future')`); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+	code, stdout, _ := runTestCLI(t, "", "schema")
+	if code != exitNewerSchema || !strings.Contains(stdout, "9999_future") {
+		t.Fatalf("newer schema: exit %d, %q", code, stdout)
+	}
+}

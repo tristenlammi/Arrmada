@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 
 	"github.com/tristenlammi/arrmada/internal/backup"
@@ -38,7 +39,8 @@ type cliCommand struct {
 }
 
 var cliCommands = []cliCommand{
-	{name: "version", summary: "print the version and commit this binary was built from", run: cmdVersion},
+	{name: "version", args: "[--schema]", summary: "print the version and commit this binary was built from", run: cmdVersion},
+	{name: "schema", summary: "compare the database's schema with this build's (exit 3: a newer build upgraded it)", dataDir: true, run: cmdSchema},
 	{name: "backup", args: "[--kind manual|pre-update]", summary: "copy the database to <data>/backups while the app keeps running", dataDir: true, run: cmdBackup},
 }
 
@@ -146,6 +148,7 @@ func parseFlags(fs *flag.FlagSet, args []string) (pos []string, stop bool, code 
 // to run against any image.
 func cmdVersion(_ context.Context, c *cli, args []string) int {
 	fs := newFlags(c, "version")
+	schemaOnly := fs.Bool("schema", false, "print only the newest database migration this build has")
 	pos, stop, code := parseFlags(fs, args)
 	if stop {
 		return code
@@ -154,7 +157,57 @@ func cmdVersion(_ context.Context, c *cli, args []string) int {
 		fmt.Fprintf(c.stderr, "arrmada version: unexpected argument %q\n", pos[0])
 		return exitUsage
 	}
-	fmt.Fprintf(c.stdout, "Arrmada %s (commit %s, %s)\n", buildinfo.Version, buildinfo.Commit, runtime.Version())
+	if *schemaOnly {
+		fmt.Fprintln(c.stdout, store.LatestMigration())
+		return exitOK
+	}
+	fmt.Fprintf(c.stdout, "Arrmada %s (commit %s, %s, schema %s)\n",
+		buildinfo.Version, buildinfo.Commit, runtime.Version(), store.LatestMigration())
+	return exitOK
+}
+
+// exitNewerSchema is cmdSchema's answer when a newer build has upgraded the database:
+// this binary would refuse to start on it.
+const exitNewerSchema = 3
+
+// cmdSchema compares the database's schema with this build's without changing it.
+// update.sh asks the build it's about to roll back to, before stopping anything.
+func cmdSchema(ctx context.Context, c *cli, args []string) int {
+	fs := newFlags(c, "schema")
+	pos, stop, code := parseFlags(fs, args)
+	if stop {
+		return code
+	}
+	if len(pos) > 0 {
+		fmt.Fprintf(c.stderr, "arrmada schema: unexpected argument %q\n", pos[0])
+		return exitUsage
+	}
+	st, err := store.OpenNoMigrate(c.cfg.DataDir)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "arrmada schema: %v\n", err)
+		return exitFail
+	}
+	defer func() { _ = st.Close() }()
+	s, err := st.Schema(ctx)
+	if err != nil {
+		fmt.Fprintf(c.stderr, "arrmada schema: %v\n", err)
+		return exitFail
+	}
+	applied := s.Applied
+	if applied == "" {
+		applied = "none"
+	}
+	fmt.Fprintf(c.stdout, "database:   %s\nthis build: %s\n", applied, s.Latest)
+	switch {
+	case len(s.Unknown) > 0:
+		fmt.Fprintf(c.stdout, "A newer Arrmada has upgraded this database (%s); this build won't start on it.\n",
+			strings.Join(s.Unknown, ", "))
+		return exitNewerSchema
+	case len(s.Pending) > 0:
+		fmt.Fprintf(c.stdout, "This build will upgrade the database when it starts (%d migrations).\n", len(s.Pending))
+	default:
+		fmt.Fprintln(c.stdout, "The database is up to date for this build.")
+	}
 	return exitOK
 }
 

@@ -41,6 +41,9 @@ services:
       # app won't upgrade if that copy can't be made. Set this to 1 in .env only to get
       # past a data disk too full for the copy.
       ARRMADA_SKIP_MIGRATION_SNAPSHOT: "${ARRMADA_SKIP_MIGRATION_SNAPSHOT:-}"
+      # An older build refuses to start on a database a newer one has upgraded (after a
+      # rollback without --with-db, say). Set this to 1 in .env only to start it anyway.
+      ARRMADA_ALLOW_NEWER_SCHEMA: "${ARRMADA_ALLOW_NEWER_SCHEMA:-}"
       # The host's timezone (install.sh writes it to .env). Schedules — the Convert encode
       # window, the nightly sweeps, listening-per-day — run on this clock; without it the
       # app ran on UTC while its companions below were already on local time.
