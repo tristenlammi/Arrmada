@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Job, SearchAttempt, SearchOutcome } from "./api";
-import { attemptLine, emptyTriesText, latestPerScope, nextTryText, outcomeLine, reasonsText, searchJobLine } from "./searchOutcome";
+import { attemptLine, emptyTriesText, latestPerScope, nextTryText, outcomeLine, reasonsText, searchFinishedFor, searchJobLine } from "./searchOutcome";
 
 const now = Date.parse("2026-10-09T12:00:00Z");
 const attempt = (over: Partial<SearchAttempt>): SearchAttempt => ({
@@ -20,7 +20,7 @@ describe("attemptLine", () => {
 
   it("names a grab, an outage and a download in flight", () => {
     expect(attemptLine(attempt({ outcome: "grabbed", grabbed: 1, grabbed_titles: ["Arrival.2016.1080p"] }), now)).toBe("Last search 2 h ago — Grabbed Arrival.2016.1080p");
-    expect(attemptLine(attempt({ outcome: "indexers_failed", indexer_errors: { B: "x", A: "y" } }), now)).toBe("Last search 2 h ago — Every indexer failed: A, B");
+    expect(attemptLine(attempt({ outcome: "indexers_failed", indexer_errors: { B: "x", A: "y" } }), now)).toBe("Last search 2 h ago — Every indexer failed: A, B — not counted as a miss");
     expect(attemptLine(attempt({ outcome: "skipped_in_flight", example: "Show.S03.1080p" }), now)).toBe("Last search 2 h ago — Not searched — already downloading Show.S03.1080p");
     expect(attemptLine(attempt({}), now)).toBe("Last search 2 h ago — No releases found");
   });
@@ -75,5 +75,16 @@ describe("summaries", () => {
   });
   it("caps the reasons listed", () => {
     expect(reasonsText({ a: 1, b: 5, c: 3, d: 2 }, 2)).toBe("5 b, 3 c");
+  });
+});
+
+describe("searchFinishedFor", () => {
+  it("matches only this title's finished searches", () => {
+    const ev = { topic: "search.finished", data: { media_type: "series", media_id: 7, scope: "S03", outcome: "nothing_found" } };
+    expect(searchFinishedFor(ev, "series", 7)).toBe(true);
+    expect(searchFinishedFor(ev, "series", 8)).toBe(false);
+    expect(searchFinishedFor(ev, "movie", 7)).toBe(false);
+    expect(searchFinishedFor({ topic: "series.searched", data: { id: 7 } }, "series", 7)).toBe(false);
+    expect(searchFinishedFor(null, "series", 7)).toBe(false);
   });
 });

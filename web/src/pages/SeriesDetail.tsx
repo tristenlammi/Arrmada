@@ -16,7 +16,7 @@ import { libraryStatus } from "../lib/status";
 import { useLive } from "../lib/useLive";
 import { downloadingCount, mergeDownloads } from "./series/downloads";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
-import { attemptLine, outcomeTone, searchJobLine } from "../lib/searchOutcome";
+import { attemptLine, outcomeTone, searchFinishedFor, searchJobLine } from "../lib/searchOutcome";
 import { LastSearches, refreshSearches, useSearchAttempts } from "../components/LastSearch";
 import { Button, StatusChip } from "../ui";
 import { api, importListNotice, type FitItem, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile, type SearchAttempt } from "../lib/api";
@@ -99,6 +99,10 @@ export function SeriesDetail() {
     if ((ev.topic === "series.imported" || ev.topic === "series.searched") && evID === sid) {
       load();
       if (ev.topic === "series.searched") refreshSearches("series", sid); // the per-scope last-search lines
+    } else if (searchFinishedFor(ev, "series", sid)) {
+      // Any stored search of this show — the sweep's, RSS's, or a Grab pressed on another
+      // device — updates the season and episode lines here, without a reload.
+      refreshSearches("series", sid);
     } else if (ev.topic === "release.grabbed") {
       // The grab names no show, and the client takes a moment to list the torrent: look
       // twice, cheaply, rather than reload the whole page for every grab anywhere.

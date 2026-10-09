@@ -66,9 +66,7 @@ export function wantedLine(r: WantedRow, now = Date.now()): string {
   const parts: string[] = [];
   const s = r.last_search;
   if (s) {
-    let line = attemptLine(s.latest, now);
-    if (s.latest.outcome === "indexers_failed") line += " — not counted as a miss";
-    parts.push(line);
+    parts.push(attemptLine(s.latest, now));
   } else if (r.last_search_at) {
     parts.push(`Last searched ${ago(r.last_search_at, now)}`);
   } else {

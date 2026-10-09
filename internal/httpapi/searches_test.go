@@ -74,3 +74,44 @@ func TestListSearches(t *testing.T) {
 		t.Errorf("a requester read search attempts: HTTP %d", rec.Code)
 	}
 }
+
+// SER-19: the series page's season and episode buttons read their own scope's last
+// search from the server ("S03", "S03E04"; the whole show is ""), so a Grab that found
+// nothing still says so after a reload and on another device.
+func TestSeriesSearchesKeepTheirScope(t *testing.T) {
+	s := newRouteServer(t, func(d *Deps) {
+		mv := movies.NewService(d.Store.DB(), nil, nil, t.TempDir(), "", nil, d.Log)
+		d.Movies = mv
+		d.Automation = automation.New(mv, nil, nil, nil, d.Store.DB(), nil, d.Log, "")
+	})
+	_, mgr := s.user(t, "mgr@example.com", auth.RoleManager)
+	if _, err := s.st.DB().Exec(`INSERT INTO search_attempts (media_type, media_id, scope, started_at, returned, outcome, top_reason, reasons_json)
+		VALUES ('series', 9, '', 1000, 0, 'nothing_found', '', '{}'),
+		       ('series', 9, 'S03', 2000, 37, 'none_suitable', 'wrong_title', '{"wrong_title":22,"bitrate_ceiling":15}'),
+		       ('series', 9, 'S03E04', 3000, 0, 'indexers_failed', '', '{}')`); err != nil {
+		t.Fatal(err)
+	}
+	rec := s.do("GET", "/api/v1/searches?kind=series&id=9&limit=20", mgr)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HTTP %d: %s", rec.Code, rec.Body)
+	}
+	var body struct {
+		Attempts []automation.Attempt `json:"attempts"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	byScope := map[string]automation.Attempt{}
+	for _, a := range body.Attempts {
+		byScope[a.Scope] = a
+	}
+	if len(byScope) != 3 {
+		t.Fatalf("scopes = %v, want the show, S03 and S03E04", byScope)
+	}
+	if a := byScope["S03"]; a.Outcome != automation.OutcomeNoneSuitable || a.Returned != 37 || a.Reasons["wrong_title"] != 22 {
+		t.Errorf("S03 = %+v, want 37 found with their reasons", a)
+	}
+	if a := byScope["S03E04"]; a.Outcome != automation.OutcomeIndexersFailed {
+		t.Errorf("S03E04 = %+v, want the indexer outage", a)
+	}
+}
