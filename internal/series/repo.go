@@ -24,7 +24,8 @@ type Repo struct{ db *sql.DB }
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const seriesCols = `id, tmdb_id, imdb_id, title, year, overview, poster_url, status, network,
-	monitored, quality_profile, extra_json, series_type, tvdb_id, added_at, numbering_source`
+	monitored, quality_profile, extra_json, series_type, tvdb_id, added_at, numbering_source,
+	last_refreshed_at`
 
 func scanSeries(row interface{ Scan(...any) error }) (Series, error) {
 	var (
@@ -33,7 +34,8 @@ func scanSeries(row interface{ Scan(...any) error }) (Series, error) {
 		extraJSON string
 	)
 	err := row.Scan(&s.ID, &s.TMDBID, &s.IMDBID, &s.Title, &s.Year, &s.Overview, &s.PosterURL,
-		&s.Status, &s.Network, &mon, &s.QualityProfile, &extraJSON, &s.SeriesType, &s.TVDBID, &s.AddedAt, &s.NumberingSource)
+		&s.Status, &s.Network, &mon, &s.QualityProfile, &extraJSON, &s.SeriesType, &s.TVDBID, &s.AddedAt, &s.NumberingSource,
+		&s.LastRefreshedAt)
 	if err != nil {
 		return Series{}, err
 	}
@@ -580,17 +582,91 @@ func (r *Repo) SetMonitored(ctx context.Context, id int64, monitored bool) error
 	})
 }
 
-// SetTVDBID records a series' TVDB id (the TheXEM lookup key).
-// SetExtra replaces a series' stored extra-metadata blob.
-func (r *Repo) SetExtra(ctx context.Context, id int64, ex *SeriesExtra) error {
-	b, err := json.Marshal(ex)
+// SeriesMeta is the show-level metadata a refresh brings up to date. A zero value means
+// "the provider didn't say", never "clear it".
+type SeriesMeta struct {
+	Title, Overview, PosterURL, Status, Network string
+	Year                                        int
+	Extra                                       *SeriesExtra
+}
+
+// UpdateSeriesMetadata writes a refresh's show-level metadata, overwriting a column only
+// with a non-empty fresh value: a provider that answers with half a record (a timeout on
+// its credits call, a show it only partly knows) must not blank out what's stored. The
+// extra blob is merged field by field the same way. Returns the row as it now stands.
+func (r *Repo) UpdateSeriesMetadata(ctx context.Context, id int64, m SeriesMeta) (Series, error) {
+	cur, err := r.Get(ctx, id)
 	if err != nil {
-		return err
+		return Series{}, err
 	}
-	_, err = r.db.ExecContext(ctx, `UPDATE series SET extra_json = ? WHERE id = ?`, string(b), id)
+	next := cur
+	setStr := func(dst *string, v string) {
+		if v = strings.TrimSpace(v); v != "" {
+			*dst = v
+		}
+	}
+	setStr(&next.Title, m.Title)
+	setStr(&next.Overview, m.Overview)
+	setStr(&next.PosterURL, m.PosterURL)
+	setStr(&next.Status, m.Status)
+	setStr(&next.Network, m.Network)
+	if m.Year > 0 {
+		next.Year = m.Year
+	}
+	next.Extra = mergeExtra(cur.Extra, m.Extra)
+	extraJSON := ""
+	if next.Extra != nil {
+		b, err := json.Marshal(next.Extra)
+		if err != nil {
+			return Series{}, err
+		}
+		extraJSON = string(b)
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE series SET title = ?, overview = ?, poster_url = ?, status = ?, network = ?, year = ?, extra_json = ?
+		 WHERE id = ?`,
+		next.Title, next.Overview, next.PosterURL, next.Status, next.Network, next.Year, extraJSON, id); err != nil {
+		return Series{}, err
+	}
+	return next, nil
+}
+
+// mergeExtra lays a fresh extra blob over the stored one, keeping each stored field the
+// fresh one leaves empty.
+func mergeExtra(stored, fresh *SeriesExtra) *SeriesExtra {
+	if fresh == nil {
+		return stored
+	}
+	out := SeriesExtra{}
+	if stored != nil {
+		out = *stored
+	}
+	if len(fresh.Genres) > 0 {
+		out.Genres = fresh.Genres
+	}
+	if fresh.BackdropURL != "" {
+		out.BackdropURL = fresh.BackdropURL
+	}
+	if len(fresh.Cast) > 0 {
+		out.Cast = fresh.Cast
+	}
+	if fresh.OriginalTitle != "" {
+		out.OriginalTitle = fresh.OriginalTitle
+	}
+	if fresh.OriginalLanguage != "" {
+		out.OriginalLanguage = fresh.OriginalLanguage
+	}
+	return &out
+}
+
+// MarkRefreshed stamps a successful metadata pull, so the weekly re-check of ended shows
+// knows which are due.
+func (r *Repo) MarkRefreshed(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE series SET last_refreshed_at = datetime('now') WHERE id = ?`, id)
 	return err
 }
 
+// SetTVDBID records a series' TVDB id (the TheXEM lookup key).
 func (r *Repo) SetTVDBID(ctx context.Context, id int64, tvdbID int) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE series SET tvdb_id = ? WHERE id = ?`, tvdbID, id)
 	return err

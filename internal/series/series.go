@@ -29,6 +29,9 @@ type Series struct {
 	// refresh compares it with the fresh listing's source to decide whether a numbering
 	// difference is a real renumber or a stand-in listing that must not move files.
 	NumberingSource string `json:"numbering_source"`
+	// LastRefreshedAt is when metadata was last pulled successfully (SQLite datetime, UTC),
+	// or "" when never. The weekly re-check of ended shows reads it.
+	LastRefreshedAt string `json:"last_refreshed_at,omitempty"`
 
 	Extra *SeriesExtra `json:"extra,omitempty"`
 	// Aliases are the other titles this show is released under. Populated on read so

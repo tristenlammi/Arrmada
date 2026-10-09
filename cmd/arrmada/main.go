@@ -533,6 +533,12 @@ func main() {
 		coordinator.RefreshContinuingSeries(ctx)
 		return nil
 	}, scheduler.Label("Refresh running shows"), scheduler.Description("Updates the episode lists of shows that are still airing."))
+	// A show stored as ended can come back; re-check those once a week (checked daily, so
+	// each one is at most a day past its week) so a revived show gains its new season.
+	sched.Register("refresh-ended-series", 24*time.Hour, false, func(ctx context.Context) error {
+		coordinator.RefreshEndedSeries(ctx)
+		return nil
+	}, scheduler.Label("Re-check ended shows"), scheduler.Description("Once a week, checks whether shows that ended or were cancelled have come back with new episodes."))
 	// Sweep monitored, file-less books and grab the best-format release.
 	sched.Register("search-missing-books", 30*time.Minute, false, func(ctx context.Context) error {
 		coordinator.SearchBooksMissing(ctx)

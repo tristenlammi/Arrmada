@@ -1029,6 +1029,7 @@ export interface Series {
   numbering_source?: string;
   scene_overrides?: SceneOverride[];
   added_at?: string;
+  last_refreshed_at?: string; // when metadata was last pulled ("" / absent = never)
   extra?: SeriesExtra;
   seasons?: Season[];
   stats?: SeriesStats;

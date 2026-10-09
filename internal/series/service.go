@@ -202,6 +202,7 @@ func (s *Service) Add(ctx context.Context, tmdbID int, qualityProfile string, mo
 	if created.IsAnime() {
 		s.refreshSceneMap(ctx, created.ID, d.TVDBID) // TheXEM scene mapping for split-season anime
 	}
+	_ = s.repo.MarkRefreshed(ctx, created.ID)
 	s.AddEvent(ctx, created.ID, "added", fmt.Sprintf("Added — %d seasons", len(seasons)))
 	s.log.Info("series added", "title", created.Title, "year", created.Year, "seasons", len(seasons))
 	return created, nil
@@ -300,16 +301,11 @@ func (s *Service) Refresh(ctx context.Context, id int64, opts RefreshOptions) (S
 		if d.TVDBID > 0 && d.TVDBID != sr.TVDBID {
 			_ = s.repo.SetTVDBID(ctx, id, d.TVDBID)
 		}
-		// Shows added before the original language was stored pick it up here.
-		if d.OriginalLang != "" && (sr.Extra == nil || sr.Extra.OriginalLanguage != d.OriginalLang) {
-			ex := sr.Extra
-			if ex == nil {
-				ex = extraFrom(d)
-			}
-			ex.OriginalLanguage = d.OriginalLang
-			if err := s.repo.SetExtra(ctx, id, ex); err != nil {
-				s.log.Warn("series: could not store the original language", "series", sr.Title, "err", err)
-			}
+		// The show row doesn't depend on numbering, so it follows the provider whatever
+		// applyNumbering decided about the episodes.
+		s.refreshShow(ctx, sr, d)
+		if err := s.repo.MarkRefreshed(ctx, id); err != nil {
+			s.log.Warn("series: could not record the refresh time", "series", sr.Title, "err", err)
 		}
 		// Refresh the TheXEM scene map for anime, so split-season releases resolve.
 		if sr.IsAnime() || detectSeriesType(d) == SeriesTypeAnime {
@@ -320,6 +316,49 @@ func (s *Service) Refresh(ctx context.Context, id int64, opts RefreshOptions) (S
 	}
 	got, err := s.Get(ctx, id)
 	return got, res, err
+}
+
+// refreshShow brings the show's own row up to date — title, status, poster, overview,
+// network, year and the extra blob — which used to be written only once, on Add. The
+// stored status gates complete and multi-season packs and decides whether the scheduled
+// refresh still visits the show, so a show that ended has to read as ended.
+//
+// A changed title keeps the old one as a title-only alias, so releases still named the
+// old way keep matching. The library folder keeps its name on purpose: imports go into
+// the folder the show already has (ExistingFolderName).
+func (s *Service) refreshShow(ctx context.Context, sr Series, d *metadata.SeriesDetails) {
+	got, err := s.repo.UpdateSeriesMetadata(ctx, sr.ID, SeriesMeta{
+		Title: d.Title, Overview: d.Overview, PosterURL: d.PosterURL, Status: d.Status,
+		Network: d.Network, Year: d.Year, Extra: extraFrom(d),
+	})
+	if err != nil {
+		s.log.Warn("series: could not update the show's metadata", "series", sr.Title, "err", err)
+		return
+	}
+	if got.Title != sr.Title && parser.TitleKey(got.Title) != parser.TitleKey(sr.Title) {
+		// Unless the owner already has an alias for it: re-adding would reset the season
+		// they pinned it to.
+		if !s.hasAliasKey(ctx, sr.ID, parser.TitleKey(sr.Title)) {
+			if _, err := s.AddAlias(ctx, sr.ID, sr.Title, 0); err != nil {
+				s.log.Warn("series: could not keep the old title as an alias", "series", got.Title, "old", sr.Title, "err", err)
+			}
+		}
+		s.AddEvent(ctx, sr.ID, "title", fmt.Sprintf("Title changed: %s → %s", sr.Title, got.Title))
+		s.log.Info("series: title changed", "old", sr.Title, "new", got.Title)
+	}
+	if sr.Status != "" && got.Status != sr.Status {
+		s.AddEvent(ctx, sr.ID, "status", fmt.Sprintf("Status: %s → %s", sr.Status, got.Status))
+		s.log.Info("series: status changed", "series", got.Title, "old", sr.Status, "new", got.Status)
+	}
+}
+
+func (s *Service) hasAliasKey(ctx context.Context, id int64, key string) bool {
+	for _, a := range s.repo.Aliases(ctx, id) {
+		if a.Key() == key {
+			return true
+		}
+	}
+	return false
 }
 
 // applyNumbering brings the stored episode listing in line with a fresh one, without ever
