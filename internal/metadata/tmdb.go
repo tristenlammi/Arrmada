@@ -249,12 +249,13 @@ func (t *TMDB) GetSeries(ctx context.Context, tmdbID int) (*SeriesDetails, error
 		return nil, fmt.Errorf("tmdb: parse series: %w", err)
 	}
 	d := &SeriesDetails{
-		SeriesResult: s.toResult(),
-		IMDBID:       s.ExternalIDs.IMDBID,
-		Status:       s.Status,
-		OriginalName: s.OriginalName,
-		OriginalLang: s.OriginalLanguage,
-		TVDBID:       s.ExternalIDs.TVDBID,
+		SeriesResult:  s.toResult(),
+		IMDBID:        s.ExternalIDs.IMDBID,
+		Status:        s.Status,
+		OriginalName:  s.OriginalName,
+		OriginalLang:  s.OriginalLanguage,
+		OriginCountry: s.OriginCountry,
+		TVDBID:        s.ExternalIDs.TVDBID,
 	}
 	if s.BackdropPath != "" {
 		d.BackdropURL = tmdbBackdropBase + s.BackdropPath
@@ -346,6 +347,7 @@ type tmdbSeries struct {
 	Name             string      `json:"name"`
 	OriginalName     string      `json:"original_name"`
 	OriginalLanguage string      `json:"original_language"`
+	OriginCountry    []string    `json:"origin_country"`
 	FirstAirDate     string      `json:"first_air_date"`
 	Overview         string      `json:"overview"`
 	PosterPath       string      `json:"poster_path"`

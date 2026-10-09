@@ -8,17 +8,15 @@ import (
 
 // A release carrying a romaji alternate title in parentheses must resolve to the show —
 // otherwise its download won't show progress on the series page and, worse, the finished
-// pack won't route to the series to import. Mirrors the real call: match on the parsed
-// TITLE, normalized.
+// pack won't route to the series to import. The air year after the season marker must not
+// count against the show's own year.
 func TestAltTitleMatchesSeries(t *testing.T) {
-	match := (&Service{}).TitleMatcher([]Series{{ID: 1, Title: "My Hero Academia"}})
+	match := (&Service{}).ReleaseMatcher([]Series{{ID: 1, Title: "My Hero Academia", Year: 2016}})
 
-	release := "My Hero Academia (Boku no Hero Academia) S04 2019 1080p WEB-DL"
-	title := parser.Parse(release).Title // "My Hero Academia (Boku no Hero Academia)"
-	if _, ok := match(NormTitle(title)); !ok {
-		t.Errorf("parsed title %q with a parenthesised alt-title should match the library show", title)
+	if _, ok, _ := match(parser.Parse("My Hero Academia (Boku no Hero Academia) S04 2019 1080p WEB-DL")); !ok {
+		t.Error("a parenthesised alt-title with an air year after the marker should match the library show")
 	}
-	if _, ok := match(NormTitle(parser.Parse("Some Other Anime S01").Title)); ok {
+	if _, ok, _ := match(parser.Parse("Some Other Anime S01")); ok {
 		t.Error("an unrelated title must not match")
 	}
 }

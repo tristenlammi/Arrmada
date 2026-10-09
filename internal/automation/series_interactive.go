@@ -48,14 +48,19 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 	var sampleDropped, sampleScope []string
 	rts := newRuntimeIndex(s)
 	for _, rel := range bestByTitle(releases) {
-		if !seriesTitleMatches(rel.Title, s) {
+		p := parser.Parse(rel.Title)
+		if ok, why := seriesIdentity(p, s); !ok {
 			droppedTitle++
 			if len(sampleDropped) < 8 {
-				sampleDropped = append(sampleDropped, rel.Title+" → "+parser.Parse(rel.Title).Title)
+				label := rel.Title + " → " + p.Title
+				if why != "" {
+					label += " (" + why + ")" // the right title, but another show's year or country
+				}
+				sampleDropped = append(sampleDropped, label)
 			}
 			continue // a different show that merely shares a title prefix (e.g. "Below Deck Mediterranean" for "Below Deck")
 		}
-		if p := parser.Parse(rel.Title); !c.releaseMatchesScope(ctx, s, p, season, episode) {
+		if !c.releaseMatchesScope(ctx, s, p, season, episode) {
 			droppedScope++
 			// What a right-show release DID resolve to is the answer to "there are
 			// torrents for this episode, why won't it take them?" — usually that they

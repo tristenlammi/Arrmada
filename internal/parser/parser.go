@@ -71,8 +71,14 @@ const (
 
 // Release is the structured result of parsing a release name.
 type Release struct {
-	Title      string     `json:"title"`
-	Year       int        `json:"year,omitempty"`
+	Title string `json:"title"`
+	Year  int    `json:"year,omitempty"`
+	// TitleYear is a year that belongs to the TITLE of a TV release: the last year token
+	// before its season/episode marker ("Doctor.Who.2005.S01E01" → 2005). Year takes the
+	// last year anywhere, so an air year written after the marker ("Show.S01E01.2019")
+	// lands there too; that one says when the episode aired, not which show it is, and
+	// TitleYear leaves it out. 0 for movies and for TV names with no such year.
+	TitleYear  int        `json:"title_year,omitempty"`
 	Resolution Resolution `json:"resolution,omitempty"`
 	Source     Source     `json:"source,omitempty"`
 	Codec      Codec      `json:"codec,omitempty"`
@@ -472,6 +478,10 @@ func Parse(name string) Release {
 			titleStart = 0
 		}
 		r.Title = cleanTitle(name[titleStart:cut], packCtx)
+	}
+
+	if r.IsTV() && r.Year > 0 {
+		r.TitleYear = titleYear(name, absCut)
 	}
 
 	// A pre-release word in the TITLE isn't a pre-release copy: "Cam.2018.1080p.WEB" is the
@@ -995,4 +1005,67 @@ func EpisodeTitleFrom(name string) string {
 		return "" // nothing meaningful — don't invent a title
 	}
 	return strings.Join(strings.Fields(rest), " ")
+}
+
+// reCompleteWord finds a "complete" pack word, which ends the title of a complete-series
+// pack that has no season marker ("Doctor.Who.2005.Complete.Series").
+var reCompleteWord = regexp.MustCompile(`(?i)\bcomplete\b`)
+
+// reYearSpan is a run of years ("2005-2013"): the years a show aired, not part of its title.
+var reYearSpan = regexp.MustCompile(`\b(?:19|20)\d{2}\s*[-–~]\s*(?:19|20)\d{2}\b`)
+
+// titleYear is the last year token that sits before a TV release's season/episode marker,
+// or 0 when there is no marker or no year before it. absCut is where an anime absolute
+// number starts (len(name) when there is none).
+//
+// Only a year before the marker can name the show: "Doctor.Who.2005.S01E01" is the 2005
+// show, while "Show.S01E01.2019.1080p" is an air year that P2P groups add after the
+// episode. A year inside a span ("Show.2005-2013.S01-S08") is the run, not the title.
+func titleYear(name string, absCut int) int {
+	mark := -1
+	at := func(loc []int) {
+		if loc != nil && (mark < 0 || loc[0] < mark) {
+			mark = loc[0]
+		}
+	}
+	at(reSxxExx.FindStringIndex(name))
+	at(reSeason.FindStringIndex(name))
+	at(reNxNN.FindStringIndex(name))
+	at(reSeasonSingleWord.FindStringIndex(name))
+	at(reSeasonRange.FindStringIndex(name))
+	at(reSeasonWord.FindStringIndex(name))
+	at(reSeasonRangeShort.FindStringIndex(name))
+	at(reCompleteWord.FindStringIndex(name))
+	if absCut < len(name) {
+		at([]int{absCut, absCut})
+	}
+	if mark <= 0 {
+		return 0
+	}
+	head := name[:mark]
+	start := 0 // where the title begins: after a leading fansub tag
+	if m := reAnimeGroup.FindStringIndex(head); m != nil {
+		start = m[1]
+	}
+	spans := reYearSpan.FindAllStringIndex(head, -1)
+	year := 0
+	for _, loc := range reYear.FindAllStringIndex(head, -1) {
+		if loc[0] <= start {
+			continue // the title opens with it: a year-titled show ("1923.S01E01")
+		}
+		inSpan := false
+		for _, sp := range spans {
+			if loc[0] >= sp[0] && loc[1] <= sp[1] {
+				inSpan = true
+				break
+			}
+		}
+		if inSpan {
+			continue
+		}
+		if y, err := strconv.Atoi(head[loc[0]:loc[1]]); err == nil {
+			year = y
+		}
+	}
+	return year
 }

@@ -571,6 +571,9 @@ func mergeExtra(stored, fresh *SeriesExtra) *SeriesExtra {
 	if fresh.OriginalLanguage != "" {
 		out.OriginalLanguage = fresh.OriginalLanguage
 	}
+	if len(fresh.OriginCountry) > 0 {
+		out.OriginCountry = fresh.OriginCountry
+	}
 	return &out
 }
 

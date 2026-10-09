@@ -74,6 +74,10 @@ type SeriesExtra struct {
 	// OriginalLanguage is TMDB's original_language ("ja", "en"…), so Convert can keep a
 	// show's original-language audio when it trims audio tracks to your languages.
 	OriginalLanguage string `json:"original_language,omitempty"`
+	// OriginCountry is TMDB's origin_country ("US", "GB"…). A release that tags a country
+	// ("The.Office.US") only matches a show from that country. Empty for shows not
+	// refreshed since it was stored, which keeps their old matching until they are.
+	OriginCountry []string `json:"origin_country,omitempty"`
 }
 
 // IsAnime reports whether the series uses anime (absolute) episode numbering.

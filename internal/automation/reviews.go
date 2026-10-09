@@ -304,6 +304,54 @@ func (c *Coordinator) grabbedMediaForHash(ctx context.Context, hash, name, media
 	return nameID, nameIdx, nameHit
 }
 
+// grabIndex is grabbedMediaForHash for a sweep that looks up many downloads: the recent
+// grabs are read once, and each lookup gives the same answer the per-download query would
+// (the info hash first, then the newest grab with the same normalized name). When the read
+// fails, each lookup falls back to its own query.
+func (c *Coordinator) grabIndex(ctx context.Context, mediaType string) func(hash, name string) (int64, string, bool) {
+	type hit struct {
+		id  int64
+		idx string
+	}
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT movie_id, title, indexer, info_hash FROM grabs WHERE media_type = ? ORDER BY id DESC LIMIT 1000`, mediaType)
+	if err != nil {
+		return func(hash, name string) (int64, string, bool) {
+			return c.grabbedMediaForHash(ctx, hash, name, mediaType)
+		}
+	}
+	defer rows.Close()
+	byHash, byName := map[string]hit{}, map[string]hit{}
+	for rows.Next() {
+		var mid int64
+		var title, idx, ihash string
+		if rows.Scan(&mid, &title, &idx, &ihash) != nil {
+			continue
+		}
+		if h := strings.ToLower(ihash); h != "" {
+			if _, seen := byHash[h]; !seen {
+				byHash[h] = hit{mid, idx}
+			}
+		}
+		if n := normRelease(title); n != "" {
+			if _, seen := byName[n]; !seen {
+				byName[n] = hit{mid, idx}
+			}
+		}
+	}
+	return func(hash, name string) (int64, string, bool) {
+		if h := strings.ToLower(hash); h != "" {
+			if g, ok := byHash[h]; ok {
+				return g.id, g.idx, true
+			}
+		}
+		if g, ok := byName[normRelease(name)]; ok {
+			return g.id, g.idx, true
+		}
+		return 0, "", false
+	}
+}
+
 // HoldMovieImport is the import gate for the generic movie importer: it holds a
 // finished movie download for review when it was grabbed for one movie but its
 // content parses to a different one. Returns (reason, hold).

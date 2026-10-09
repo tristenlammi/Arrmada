@@ -1363,7 +1363,7 @@ func (c *Coordinator) ResolveBlock(ctx context.Context, hash, name string) (Bloc
 	switch kind {
 	case "series":
 		if c.series != nil {
-			if s, ok := c.series.MatchByTitle(ctx, series.NormTitle(parser.Parse(name).Title)); ok {
+			if s, ok, _ := c.series.MatchRelease(ctx, parser.Parse(name)); ok {
 				id = s.ID
 			}
 		}

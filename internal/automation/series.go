@@ -919,12 +919,20 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	// The library and the grab records are read once for the pass, not per download: the
+	// completed list includes everything still seeding, and this runs every 30 seconds.
+	all, err := c.series.List(ctx)
+	if err != nil {
+		return
+	}
+	matchRelease := c.series.ReleaseMatcher(all)
+	grabbedFor := c.grabIndex(ctx, "series")
 	for _, it := range completed {
 		if it.Category != seriesCategory {
 			// Diagnostic: a completed TV download that matches a library series but isn't
 			// in the TV category won't import — flag it so it's not a silent no-op.
 			if p := parser.Parse(it.Name); p.IsTV() {
-				if _, ok := c.series.MatchByTitle(ctx, series.NormTitle(p.Title)); ok {
+				if _, ok, cands := matchRelease(p); ok || len(cands) > 0 {
 					c.log.Warn("series import: a completed TV download is in the wrong category — it won't import; re-grab via Arrmada or set its qBittorrent category to "+seriesCategory,
 						"release", it.Name, "category", it.Category)
 				}
@@ -938,7 +946,29 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			continue // already held for review (or resolved) — don't re-flag or import
 		}
 		parsed := parser.Parse(it.Name)
-		s, matchOK := c.series.MatchByTitle(ctx, series.NormTitle(parsed.Title))
+		// Which show this is. A download grabbed for a show goes to that show whenever its
+		// name is that show's — under an alias, its romaji title or a country tag included —
+		// since the grab already decided between same-named shows. Anything else is matched
+		// by its name, year and country tag (MatchRelease).
+		gid, gIndexer, grabbed := grabbedFor(it.Hash, it.Name)
+		var s series.Series
+		matchOK := false
+		var expected *series.Series
+		if grabbed {
+			for i := range all {
+				if all[i].ID == gid {
+					expected = &all[i]
+					break
+				}
+			}
+			if expected != nil && seriesTitleMatches(it.Name, *expected) {
+				s, matchOK = *expected, true
+			}
+		}
+		var ambiguous []series.Series
+		if !matchOK {
+			s, matchOK, ambiguous = matchRelease(parsed)
+		}
 
 		// Given-up guard: if we've already blocklisted this exact release for the series
 		// (it downloaded but couldn't import — junk, a fake, or unresolvable numbering),
@@ -979,16 +1009,29 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 		// If this download was grabbed for a specific series, verify its content is
 		// actually that series — otherwise hold it for admin review rather than skip
 		// it silently (e.g. a "Below Deck Mediterranean" pack grabbed for "Below Deck").
-		if gid, indexer, grabbed := c.grabbedMediaForHash(ctx, it.Hash, it.Name, "series"); grabbed {
-			if expected, err := c.series.Get(ctx, gid); err == nil && (!matchOK || s.ID != expected.ID) {
-				reason := fmt.Sprintf("Grabbed for %q but the download looks like %q", expected.Title, parsed.Title)
-				c.addReview(ctx, Review{
-					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "series", ReasonCode: ReasonMismatch,
-					ExpectedID: expected.ID, ExpectedTitle: expected.Title, ParsedTitle: parsed.Title,
-					Reason: reason, SizeBytes: it.SizeBytes, Indexer: indexer,
-				})
-				continue
+		if expected != nil && (!matchOK || s.ID != expected.ID) {
+			reason := fmt.Sprintf("Grabbed for %q but the download looks like %q", expected.Title, parsed.Title)
+			if _, why := seriesIdentity(parsed, *expected); why != "" {
+				reason = fmt.Sprintf("Grabbed for %q, but %s", expected.Title, why) // the right title, another show's year or country
 			}
+			c.addReview(ctx, Review{
+				Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "series", ReasonCode: ReasonMismatch,
+				ExpectedID: expected.ID, ExpectedTitle: expected.Title, ParsedTitle: parsed.Title,
+				Reason: reason, SizeBytes: it.SizeBytes, Indexer: gIndexer,
+			})
+			continue
+		}
+		if len(ambiguous) > 0 {
+			// Same-titled shows and nothing in the name to choose between them (a yearless
+			// "Doctor.Who.S01E01" with both Doctor Whos in the library). Importing into the
+			// newest one is how a remake's episodes landed in the original's folder, so a
+			// human picks — straight away, since waiting won't make the name any clearer.
+			c.addReview(ctx, Review{
+				Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "series", ReasonCode: ReasonUnmatched,
+				ParsedTitle: parsed.Title, SizeBytes: it.SizeBytes, Indexer: gIndexer,
+				Reason: "Matches several shows: " + series.DescribeCandidates(ambiguous),
+			})
+			continue
 		}
 		if !matchOK {
 			// The import sweep runs every 30 seconds, so an unmatchable download used to

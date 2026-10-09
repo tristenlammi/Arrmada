@@ -172,7 +172,10 @@ type SeriesDetails struct {
 	Seasons      []SeasonDetails `json:"seasons,omitempty"`
 	OriginalName string          `json:"original_name,omitempty"` // TMDB original_name (romaji for anime)
 	OriginalLang string          `json:"original_language,omitempty"`
-	TVDBID       int             `json:"tvdb_id,omitempty"` // for TheXEM scene mapping
+	// OriginCountry is TMDB's origin_country (ISO 3166 codes: "US", "GB"), which tells
+	// same-named shows apart when a release tags its country ("The.Office.US").
+	OriginCountry []string `json:"origin_country,omitempty"`
+	TVDBID        int      `json:"tvdb_id,omitempty"` // for TheXEM scene mapping
 
 	// NumberingSource names whose listing Seasons came from: "tmdb", "tvdb" or "tvmaze".
 	// NumberingFallback is set when that listing is NOT the one the show would normally

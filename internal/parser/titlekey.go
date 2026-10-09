@@ -156,3 +156,40 @@ func TitleHasPrefix(title, prefix string) bool {
 	}
 	return true
 }
+
+// countryCodes are the country tags release groups put after a show's title to tell
+// same-named shows apart ("The.Office.US", "Ghosts.UK"), mapped to the ISO 3166 code
+// TMDB uses for origin_country. UK is GB there.
+var countryCodes = map[string]string{"us": "US", "uk": "GB", "gb": "GB", "au": "AU", "nz": "NZ", "ca": "CA"}
+
+// SplitCountry splits a trailing country tag off a title: "The Office US" and "The
+// Office (US)" both give ("The Office", "US"). cc is the ISO 3166 code ("GB" for a UK
+// tag); it is "" and base is the title unchanged when there is no tag, or when the tag
+// would be the whole title.
+//
+// A tag can also be a real last word ("This Is Us"). Callers only ever use it to rule a
+// show out when the show's own title doesn't end the same way — see series.FitRelease.
+func SplitCountry(title string) (base, cc string) {
+	t := strings.TrimRight(strings.TrimSpace(title), " .-_")
+	// "(US)" / "[UK]" at the end.
+	if n := len(t); n >= 4 && (t[n-1] == ')' || t[n-1] == ']') {
+		open := strings.LastIndexAny(t, "([")
+		if open > 0 {
+			if code, ok := countryCodes[strings.ToLower(strings.TrimSpace(t[open+1:n-1]))]; ok {
+				if b := strings.TrimRight(t[:open], " .-_"); b != "" {
+					return b, code
+				}
+			}
+		}
+	}
+	// A bare trailing word, however the words are separated.
+	words := strings.FieldsFunc(t, func(r rune) bool { return r == ' ' || r == '.' || r == '_' })
+	if len(words) < 2 {
+		return title, ""
+	}
+	code, ok := countryCodes[strings.ToLower(words[len(words)-1])]
+	if !ok {
+		return title, ""
+	}
+	return strings.Join(words[:len(words)-1], " "), code
+}

@@ -447,30 +447,27 @@ func releaseIsForSeries(relTitle, seriesTitle string) bool {
 	return titleKey(parser.Parse(relTitle).Title) == titleKey(seriesTitle)
 }
 
-// seriesTitleMatches is releaseIsForSeries that also accepts an anime series' romaji
-// (original) title, since anime is frequently released under its romaji name.
+// seriesTitleMatches reports whether a release belongs to the series, by seriesIdentity.
 func seriesTitleMatches(relTitle string, s series.Series) bool {
-	if releaseIsForSeries(relTitle, s.Title) {
-		return true
-	}
-	if s.IsAnime() && s.Extra != nil && s.Extra.OriginalTitle != "" && releaseIsForSeries(relTitle, s.Extra.OriginalTitle) {
-		return true
-	}
-	// User-declared alternate titles. Anime arcs are routinely released as if they were
-	// a separate show ("BLEACH Thousand-Year Blood War" for Bleach), which no amount of
-	// normalizing the real title will ever match. Purely additive: a series with no
-	// aliases behaves exactly as it did before.
-	for _, a := range s.Aliases {
-		// Whole-word prefix, not equality: groups suffix an arc's name with a per-cour
-		// subtitle ("... The Calamity") or leave junk the parser didn't strip. The word
-		// boundary keeps "Bleach" from matching "Bleachers"; the series' own title is
-		// still compared for equality, so "Below Deck" can't swallow "Below Deck
-		// Mediterranean" — only titles the user declared get this treatment.
-		if parser.TitleHasPrefix(parser.Parse(relTitle).Title, a.Title) {
-			return true
-		}
-	}
-	return false
+	ok, _ := seriesIdentity(parser.Parse(relTitle), s)
+	return ok
+}
+
+// seriesIdentity is whether a parsed release is this show, and if not, what disagreed
+// (empty when the title doesn't name the show at all). It is series.FitRelease — one rule
+// for the sweeps, RSS, interactive search, upgrades, the in-flight check and import:
+//
+//   - the title key matches the show's title, an anime's original (romaji) title, or a
+//     user-declared alias. Aliases match as a whole-word prefix: anime arcs are released
+//     as if they were their own show ("BLEACH Thousand-Year Blood War"), and groups suffix
+//     an arc's name with a per-cour subtitle. The show's own title is still compared for
+//     equality, so "Below Deck" can't swallow "Below Deck Mediterranean".
+//   - a year before the season marker is within a year of the show's ("Doctor.Who.2005"
+//     is never the 1963 show). An air year after the marker doesn't count.
+//   - a country tag is the show's origin country ("The.Office.US" is never the UK show).
+func seriesIdentity(p parser.Release, s series.Series) (bool, string) {
+	f := series.FitRelease(p, s)
+	return f.OK, f.Why
 }
 
 // episodeRelease reports whether a parsed release is a single-episode release for the

@@ -134,10 +134,10 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	// One-pass matchers over already-loaded snapshots, so labelling each torrent is a map
 	// lookup — not a full-table reload of the movies/series table per torrent as before.
 	matchMovie := a.deps.Movies.Matcher(list)
-	var matchSeries func(string) (series.Series, bool)
+	var matchSeries func(parser.Release) (series.Series, bool, []series.Series)
 	if a.deps.Series != nil {
 		if seriesList, err := a.deps.Series.List(ctx); err == nil {
-			matchSeries = a.deps.Series.TitleMatcher(seriesList)
+			matchSeries = a.deps.Series.ReleaseMatcher(seriesList)
 		}
 	}
 
@@ -157,7 +157,7 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		case seriesDownloadCategory:
 			mediaType = "series"
 			if matchSeries != nil {
-				if sr, ok := matchSeries(series.NormTitle(qParsed[i].Title)); ok {
+				if sr, ok, _ := matchSeries(qParsed[i]); ok {
 					profile = pname(sr.QualityProfile)
 				}
 			}
