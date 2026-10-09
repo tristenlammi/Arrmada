@@ -561,11 +561,11 @@ func (e *Engine) Decide(p Profile, cands []Candidate) Decision {
 		if a.Total != b.Total {
 			return a.Total > b.Total
 		}
-		if a.Candidate.SizeGB != b.Candidate.SizeGB {
+		if am, bm := magnitudes(a.Candidate, b.Candidate); am != bm {
 			if preferSmaller {
-				return a.Candidate.SizeGB < b.Candidate.SizeGB
+				return am < bm
 			}
-			return a.Candidate.SizeGB > b.Candidate.SizeGB // higher bitrate
+			return am > bm // higher bitrate
 		}
 		// Same bitrate → prefer the better source, then more seeders.
 		if sourceRank[a.Candidate.Release.Source] != sourceRank[b.Candidate.Release.Source] {
@@ -592,6 +592,18 @@ func (e *Engine) Decide(p Profile, cands []Candidate) Decision {
 		}
 	}
 	return d
+}
+
+// magnitudes is what an equal-score tie compares: the two bitrates when both runtimes are
+// known, else the two sizes. For one movie every candidate has the same runtime, so the
+// order is the size order it always was. Series candidates cover different lengths — an
+// episode, a season, the whole show — and comparing raw size there let a huge pack beat a
+// better-encoded episode just by holding more of them.
+func magnitudes(a, b Candidate) (float64, float64) {
+	if a.RuntimeMin > 0 && b.RuntimeMin > 0 {
+		return a.bitrateMbps(), b.bitrateMbps()
+	}
+	return a.SizeGB, b.SizeGB
 }
 
 // bonusCollapseRatio: a release keeps its preference bonuses only while its bitrate

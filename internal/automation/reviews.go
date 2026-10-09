@@ -784,7 +784,7 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 			sourceName = filepath.Base(contentPath)
 		}
 		wanted, forced := refsToPlace(refs, force, func(ref series.EpisodeRef) bool {
-			return c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rel, sourceName, v.Size)
+			return c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rel, sourceName, v.Size, len(refs))
 		})
 		if len(forced) > 0 {
 			c.log.Info("series import: replacing on the user's say-so — quality gate skipped",
@@ -1016,9 +1016,13 @@ func inheritQuality(file, release parser.Release) parser.Release {
 // file discarded, episode unchanged, and free to happen again on the next sweep.
 //
 // Resolution still governs first — it must never DROP, and a genuine resolution increase
-// is always taken. The bitrate margin only decides the equal-resolution case, which is
-// exactly where the old rule said "no" to everything.
-func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, season, episode int, cand parser.Release, candName string, candBytes int64) bool {
+// is always taken unless it's over the profile's bitrate ceiling. The bitrate margin only
+// decides the equal-resolution case, which is exactly where the old rule said "no" to
+// everything.
+//
+// fileEpisodes is how many episodes the file holds. Its bytes are shared between them: an
+// E01E02 file costed against one episode's runtime read at twice its real bitrate.
+func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, season, episode int, cand parser.Release, candName string, candBytes int64, fileEpisodes int) bool {
 	res := cand.Resolution
 	cur := c.series.CurrentEpisodeFile(ctx, s.ID, season, episode)
 	if cur.Path == "" {
@@ -1026,6 +1030,20 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	}
 	if _, err := os.Stat(cur.Path); err != nil {
 		return true // recorded file is gone from disk — re-import it
+	}
+
+	const bytesPerGB = 1 << 30
+	candShareGB := float64(candBytes) / bytesPerGB / float64(max(1, fileEpisodes))
+	profile := c.effectiveProfile(ctx, s.QualityProfile, "series")
+	epLabel := fmt.Sprintf("S%02dE%02d", season, episode)
+	// Never replace a file with one over the profile's ceiling — not even for a higher
+	// resolution. The searcher already refuses those, so this only catches grabs from
+	// before series candidates carried a runtime, or from outside the planner. A first
+	// import (nothing there yet) is never refused: something beats nothing.
+	if over, why := c.quality.ExceedsCeiling(ctx, profile, candName, candShareGB, cur.RuntimeMin); over {
+		c.log.Info("series import: refusing an over-ceiling replacement",
+			"series", s.Title, "episode", epLabel, "candidate", candName, "reason", why)
+		return false
 	}
 
 	// The library file is renamed on import, so its name often carries neither the
@@ -1053,16 +1071,13 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	// UpgradeCandidate — the profile resolved identically, so a release it chose can't be
 	// turned away on arrival. That mismatch cost a full download and then left the torrent
 	// seeding in the client, which froze the show's sweeps for as long as it sat there.
-	const bytesPerGB = 1 << 30
-	profile := c.effectiveProfile(ctx, s.QualityProfile, "series")
-	epLabel := fmt.Sprintf("S%02dE%02d", season, episode)
 	if c.quality.IsBitrateUpgrade(ctx, profile,
-		quality.Encode{SizeGB: float64(candBytes) / bytesPerGB, Codec: cand.Codec},
+		quality.Encode{SizeGB: candShareGB, Codec: cand.Codec},
 		quality.Encode{SizeGB: float64(cur.SizeBytes) / bytesPerGB, Codec: curParsed.Codec},
 		cur.RuntimeMin) {
 		c.log.Info("series import: replacing an equal-resolution file — the profile's bitrate margin is met",
 			"series", s.Title, "episode", epLabel,
-			"current_gb", float64(cur.SizeBytes)/bytesPerGB, "candidate_gb", float64(candBytes)/bytesPerGB)
+			"current_gb", float64(cur.SizeBytes)/bytesPerGB, "candidate_gb", candShareGB)
 		return true
 	}
 	// Scoring needs the release the current file came FROM. The library file is renamed to
@@ -1070,7 +1085,7 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	// re-import the same episode forever — the loop upgradeSeries guards against the same
 	// way. Without it, fall through to the resolution/bitrate answer above.
 	if cur.SourceRelease != "" && c.quality.IsQualityUpgrade(ctx, profile,
-		candName, float64(candBytes)/bytesPerGB,
+		candName, candShareGB,
 		cur.SourceRelease, float64(cur.SizeBytes)/bytesPerGB) {
 		c.log.Info("series import: replacing an equal-resolution file — it scores higher on this profile",
 			"series", s.Title, "episode", epLabel,
