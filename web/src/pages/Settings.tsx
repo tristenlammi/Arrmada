@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { api, type APIKeyStatus, type AppSettings, type AuthUser, type DiskGuardStatus, type PlexBlock, type RecycleStats, type RecycleItem, type UserImpact } from "../lib/api";
+import { api, type APIKeyStatus, type AppSettings, type AuthUser, type DiskGuardStatus, type PlexBlock, type RecycleBinStats, type RecycleStats, type RecycleItem, type UserImpact } from "../lib/api";
 import { useMe, isAdmin } from "../lib/me";
 import { LibraryFolders } from "./Library";
 import { Backups } from "./settings/Backups";
@@ -566,14 +566,15 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
   useEffect(() => { if (showItems) loadItems(); }, [showItems]);
 
   // Both "for good" actions ask through the shared dialog; a refusal shows inside it.
-  const [confirm, setConfirm] = useState<{ kind: "empty" } | { kind: "item"; it: RecycleItem } | null>(null);
+  // An empty with a bin empties just that one.
+  const [confirm, setConfirm] = useState<{ kind: "empty"; bin?: RecycleBinStats } | { kind: "item"; it: RecycleItem } | null>(null);
   const [confirmErr, setConfirmErr] = useState<string | null>(null);
   const closeConfirm = () => { setConfirm(null); setConfirmErr(null); };
 
-  const empty = async () => {
+  const empty = async (bin?: RecycleBinStats) => {
     setBusy(true); setMsg(null); setConfirmErr(null);
     try {
-      const r = await api.emptyRecycle();
+      const r = await api.emptyRecycle(bin?.key);
       setMsg(`Freed ${fmtBytes(r.freed_bytes)}.`);
       closeConfirm();
       load(); if (showItems) loadItems();
@@ -595,9 +596,11 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
   };
 
   const digits = (v: string) => v.replace(/[^0-9]/g, "");
+  const bins = stats?.bins ?? [];
+  const emptying = confirm?.kind === "empty" ? confirm : null;
 
   return (
-    <Section id="recycle-bin" title="Recycle bin" subtitle="Deleted & replaced files (movie/episode deletes and Convert originals) are moved here instead of being erased, so a mistake can be undone until the guard rails below purge it — the oldest files go first once the bin is over its size cap. Convert only starts a file whose original fits under the cap. To restore a converted film, delete the converted file first: the bin won't restore over it.">
+    <Section id="recycle-bin" title="Recycle bin" subtitle="Deleted & replaced files (movie/episode deletes and Convert originals) are moved to a recycle bin instead of being erased, so a mistake can be undone until the guard rails below purge it. The size cap counts every bin together, and the oldest files go first once they're over it. Convert only starts a file whose original fits under the cap. To restore a converted film, delete the converted file first: the bin won't restore over it.">
       {stats && !stats.enabled ? (
         <p className="text-[12px] text-ink-dim">Recycling is turned off (<code>ARRMADA_RECYCLE_DIR=off</code>) — deleted files are erased immediately, and Convert deletes each original once its conversion is verified, with no undo.</p>
       ) : (
@@ -606,7 +609,27 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
             <span>Holding <b>{stats ? fmtBytes(stats.bytes) : "…"}</b>{stats ? ` · ${stats.files} file${stats.files === 1 ? "" : "s"}` : ""}</span>
             {stats?.oldest_unix ? <span className="text-ink-faint">oldest {ageOf(stats.oldest_unix)}</span> : null}
           </div>
-          {stats?.dir && <div className="truncate font-mono text-[10.5px] text-ink-faint" title={stats.dir}>{stats.dir}</div>}
+          {bins.length > 0 && (
+            <div className="rounded-lg" style={{ border: "1px solid var(--line)" }}>
+              {bins.map((b, i) => (
+                <div key={b.key} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2" style={i > 0 ? { borderTop: "1px solid var(--line-soft)" } : undefined}>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2 text-[12.5px] font-medium">
+                      {b.label}
+                      {b.legacy && <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold" style={{ border: "1px solid var(--avoid)", color: "var(--avoid)" }}>Legacy bin</span>}
+                    </div>
+                    <div className="truncate font-mono text-[10.5px] text-ink-faint" title={b.dir}>{b.dir}</div>
+                    {b.legacy && <div className="text-[10.5px] text-ink-faint">Where deletes used to go. Empty it once you've checked it.</div>}
+                    {b.other_drive && <div className="text-[10.5px]" style={{ color: "var(--avoid)" }}>On a different drive from your library — every delete into it is a full copy.</div>}
+                  </div>
+                  <span className="flex-none font-mono text-[10.5px] text-ink-faint">{fmtBytes(b.bytes)} · {b.files} file{b.files === 1 ? "" : "s"}{b.free_known ? ` · ${fmtBytes(b.free_bytes)} free` : ""}</span>
+                  {bins.length > 1 && (
+                    <button onClick={() => setConfirm({ kind: "empty", bin: b })} disabled={busy || b.files === 0} className="flex-none rounded-md px-2.5 py-1 text-[11px] font-semibold disabled:opacity-40" style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>Empty this bin</button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
           {stats && stats.over_cap_bytes > 0 && (
             <p className="m-0 text-[11.5px]" style={{ color: "var(--avoid)" }}>
               Over the cap by {fmtBytes(stats.over_cap_bytes)} — {stats.protected_bytes > 0 && stats.over_cap_bytes <= stats.protected_bytes
@@ -646,6 +669,7 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-[12.5px] font-medium" title={it.name}>{it.name}</div>
                         <div className="truncate font-mono text-[10px] text-ink-faint" title={it.orig_path || "origin not recorded"}>{it.orig_path || "origin not recorded"}</div>
+                        {bins.length > 1 && <div className="text-[10px] text-ink-faint">In: {it.bin_label}{it.legacy ? " (legacy bin)" : ""}</div>}
                         {it.expires_at > 0 && <div className="text-[10px] text-ink-faint">Deleted for good on {fmtDay(it.expires_at)}</div>}
                       </div>
                       <span className="flex-none font-mono text-[10.5px] text-ink-faint">{fmtBytes(it.size_bytes)}</span>
@@ -662,15 +686,17 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
           <p className="text-[10.5px] text-ink-faint">Guard rails run automatically about once an hour. The size/retention values save with the button below. Restore moves a file back to where it was deleted from (when that location is free).</p>
         </>
       )}
-      {confirm?.kind === "empty" && (
+      {emptying && (
         <ConfirmDialog
-          title="Empty the recycle bin?"
-          body={<>Permanently deletes {stats ? <b>{fmtBytes(stats.bytes)}</b> : "everything"}{stats ? ` (${stats.files} file${stats.files === 1 ? "" : "s"})` : ""}. This can't be undone.</>}
-          confirmLabel="Delete everything for good"
+          title={emptying.bin ? <>Empty the “{emptying.bin.label}” bin?</> : bins.length > 1 ? "Empty every recycle bin?" : "Empty the recycle bin?"}
+          body={emptying.bin
+            ? <>Permanently deletes <b>{fmtBytes(emptying.bin.bytes)}</b> ({emptying.bin.files} file{emptying.bin.files === 1 ? "" : "s"}) from {emptying.bin.dir}. The other bins are left alone. This can't be undone.</>
+            : <>Permanently deletes {stats ? <b>{fmtBytes(stats.bytes)}</b> : "everything"}{stats ? ` (${stats.files} file${stats.files === 1 ? "" : "s"})` : ""}. This can't be undone.</>}
+          confirmLabel={emptying.bin ? "Delete this bin's files for good" : "Delete everything for good"}
           busyLabel="Emptying…"
           busy={busy}
           error={confirmErr}
-          onConfirm={empty}
+          onConfirm={() => empty(emptying.bin)}
           onCancel={closeConfirm}
         />
       )}

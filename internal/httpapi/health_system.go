@@ -76,19 +76,16 @@ func (a *api) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// TODO(SAFE): drop this once the recycle bin keeps one bin per filesystem.
-	// Deletes move files into the recycle bin; a bin on another drive turns every
-	// delete into a full copy.
+	// Deletes move files into a recycle bin; a bin on another drive from the library it
+	// serves turns every delete into a full copy. The old shared bin still holding files
+	// is worth a nudge too: it drains only when someone empties it or it ages out.
 	if a.deps.Recycle != nil {
-		if bin := a.deps.Recycle.Dir(); bin != "" {
-			for _, f := range folders {
-				if f.Role != "movies" && f.Role != "tv" {
-					continue
-				}
-				if same, ok := health.SameFilesystem(bin, f.Path); ok && !same {
-					add("warning", fmt.Sprintf("Deleted files are copied to %s on a different drive, which is slow and fills that drive.", bin))
-					break
-				}
+		for _, p := range a.deps.Recycle.Problems() {
+			if p.OtherDrive {
+				add("warning", fmt.Sprintf("The recycle bin %s is on a different drive from your library, so every delete is a full copy, which is slow and fills that drive.", p.Dir))
+			}
+			if p.LegacyFull {
+				add("warning", fmt.Sprintf("The old shared recycle bin (%s) still holds deleted files; new deletes no longer go there. Empty it in Settings → System → Recycle bin once you've checked what's in it.", p.Dir))
 			}
 		}
 	}

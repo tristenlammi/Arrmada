@@ -69,7 +69,7 @@ func TestStatsAndEmpty(t *testing.T) {
 	if !st.Enabled || st.Files != 2 || st.Bytes != 3000 {
 		t.Fatalf("stats = %+v, want 2 files / 3000 bytes", st)
 	}
-	freed, err := svc.Empty(ctx)
+	freed, err := svc.Empty(ctx, "")
 	if err != nil || freed != 3000 {
 		t.Fatalf("empty freed=%d err=%v, want 3000", freed, err)
 	}

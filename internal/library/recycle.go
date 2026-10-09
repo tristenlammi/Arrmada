@@ -15,6 +15,10 @@ import (
 // deletion time, so the recycle bin can restore it and age it correctly.
 const RecycleMetaExt = ".arrmeta"
 
+// PartialSuffix ends the name of a copy still being written (copyFile's temp file). The
+// bin manager never counts one as a recycled item, and clears old ones.
+const PartialSuffix = ".arrmada-tmp"
+
 // ErrRecycleDisabled is returned when the recycle bin is switched off. Callers decide
 // whether that means "hard-delete" or "refuse" — it must never mean "move it somewhere
 // arbitrary and report success".
@@ -93,6 +97,18 @@ func RecycleFile(recycleDir, path string) (string, error) {
 // bin is deliberately switched off; any other error means it can't take the file.
 type Bin interface {
 	For(path string) (string, error)
+}
+
+// BinDir is one recycle bin as the bin manager (recyclebin) sees it.
+type BinDir struct {
+	Dir   string
+	Label string // how the UI names it ("Movies", "Old shared bin")
+	// Legacy marks the old shared bin: still listed, restorable, aged and capped, but
+	// new deletes only land in it when no library folder holds the file.
+	Legacy bool
+	// Serves lists the library folders whose deletes can land here, for the "on a
+	// different drive from your library" check.
+	Serves []string
 }
 
 // SingleBin is one bin for every file — today's ARRMADA_RECYCLE_DIR. "" is the bin

@@ -586,7 +586,24 @@ func main() {
 	// Convert's originals go to the recycle bin, so it has to know how much room is left
 	// under the bin's cap: an original that doesn't fit would make Enforce purge it (and
 	// everything older) within the hour.
-	recycleSvc := recyclebin.New(recycleDir, settingsSvc, log)
+	// The manager looks after the bin deletes go to, plus the old shared bin while it
+	// still holds files and isn't that bin, so what's in it stays listed, restorable,
+	// aged and capped until it drains.
+	legacyBin := filepath.Join(cfg.LibraryDir, ".recycle")
+	recycleSvc := recyclebin.NewBins(func() []library.BinDir {
+		if recycleDir == "" {
+			return nil
+		}
+		var serves []string
+		for _, r := range roots.Libraries(context.Background()) {
+			serves = append(serves, r.Path)
+		}
+		var bins []library.BinDir
+		if filepath.Clean(legacyBin) != filepath.Clean(recycleDir) && recyclebin.HasItems(legacyBin) {
+			bins = append(bins, library.BinDir{Dir: legacyBin, Label: "Old shared bin", Legacy: true, Serves: serves})
+		}
+		return append(bins, library.BinDir{Dir: recycleDir, Label: "Recycle bin", Serves: serves})
+	}, settingsSvc, log)
 	convertSvc.SetBinHeadroom(recycleSvc.Headroom)
 	grp.Loop("convert: runner", convertSvc.Run)
 	// Warm the probe cache off the request path so the first Convert page load after

@@ -1742,7 +1742,7 @@ func copyFile(src, dst string) error {
 	}
 	defer in.Close()
 
-	out, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".*.arrmada-tmp")
+	out, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".*"+PartialSuffix)
 	if err != nil {
 		return err
 	}
@@ -1783,7 +1783,7 @@ func cleanStaleTemps(dir string) {
 	}
 	cutoff := time.Now().Add(-24 * time.Hour)
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".arrmada-tmp") {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), PartialSuffix) {
 			continue
 		}
 		if fi, err := e.Info(); err == nil && fi.ModTime().Before(cutoff) {

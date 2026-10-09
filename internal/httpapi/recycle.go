@@ -1,8 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 
 	"github.com/tristenlammi/arrmada/internal/library"
@@ -87,9 +90,30 @@ func (a *api) handleRecycleDeleteItem(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "deleted"})
 }
 
-// handleRecycleEmpty deletes everything in the recycle bin and returns the space freed.
+// handleRecycleEmpty deletes everything in the recycle bins — or, with {"bin": key}, in
+// that one bin — and returns the space freed. An empty body still empties them all.
 func (a *api) handleRecycleEmpty(w http.ResponseWriter, r *http.Request) {
-	freed, err := a.deps.Recycle.Empty(r.Context())
+	var req struct {
+		Bin string `json:"bin"`
+	}
+	if r.ContentLength != 0 && r.Body != nil {
+		body, err := io.ReadAll(io.LimitReader(r.Body, 4<<10))
+		if err != nil {
+			a.writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if len(bytes.TrimSpace(body)) > 0 {
+			if err := json.Unmarshal(body, &req); err != nil {
+				a.writeError(w, http.StatusBadRequest, "invalid request body")
+				return
+			}
+		}
+	}
+	freed, err := a.deps.Recycle.Empty(r.Context(), req.Bin)
+	if errors.Is(err, recyclebin.ErrUnknownBin) {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not empty the recycle bin: "+err.Error())
 		return
