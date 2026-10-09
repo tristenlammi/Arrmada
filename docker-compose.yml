@@ -8,7 +8,7 @@ services:
       # What the build is stamped with (Dashboard, /api/health). update.sh and install.sh
       # export these from git; a plain `docker compose build` falls back to the defaults.
       args:
-        VERSION: ${ARRMADA_VERSION:-dev-docker}
+        VERSION: ${ARRMADA_VERSION:-dev}
         COMMIT: ${ARRMADA_COMMIT:-unknown}
     # update.sh keeps the build that ran before as arrmada:previous (./update.sh --rollback).
     image: arrmada:dev

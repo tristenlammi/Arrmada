@@ -63,7 +63,11 @@ export function BookDetail() {
               <div className="flex flex-wrap items-center gap-2.5">
                 <span className="rounded-full px-2.5 py-1 font-mono text-[10.5px] font-semibold uppercase" style={{ background: st.soft, color: st.tone }}>{st.label}</span>
                 {b.year > 0 && <span className="font-mono text-[11px] text-ink-faint">{b.year}</span>}
-                <a href={`https://openlibrary.org/works/${b.ol_key}`} target="_blank" rel="noreferrer" className="rounded px-1.5 py-0.5 font-mono text-[10px] font-bold" style={{ background: "#0a3d62", color: "#fff" }}>Open Library</a>
+                {/* The catalogue the book actually came from. Open Library keeps its navy
+                    chip; the others use the panel style so the palette doesn't grow. */}
+                {b.catalogue && (
+                  <a href={b.catalogue.url} target="_blank" rel="noreferrer" className="rounded px-1.5 py-0.5 font-mono text-[10px] font-bold" style={b.catalogue.name === "Open Library" ? { background: "#0a3d62", color: "#fff" } : { background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>{b.catalogue.name}</a>
+                )}
               </div>
               <div className="mt-1.5 text-[14px] font-semibold text-ink-dim">{b.author || "Unknown author"}</div>
               {b.description && <p className="mt-3 max-h-[180px] overflow-y-auto text-[13px] leading-relaxed text-ink-dim">{b.description}</p>}
@@ -129,8 +133,8 @@ function Poster({ book, onChange, flash }: { book: Book; onChange: () => void; f
   );
 }
 
-// CoverPickerModal lets the user pick from searched covers (Open Library editions + Google
-// Books) or upload a custom image.
+// CoverPickerModal lets the user pick from searched covers (the book's own catalogue:
+// Hardcover editions, or Open Library editions + Google Books) or upload a custom image.
 function CoverPickerModal({ book, onClose, onChange, flash }: { book: Book; onClose: () => void; onChange: () => void; flash: (m: string) => void }) {
   const [covers, setCovers] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -159,7 +163,7 @@ function CoverPickerModal({ book, onClose, onChange, flash }: { book: Book; onCl
           <h2 className="m-0 text-[15px] font-bold">Choose a cover</h2>
           <button onClick={onClose} className="text-ink-faint hover:text-[var(--ink)]">✕</button>
         </div>
-        <p className="mb-3 text-[12px] text-ink-dim">Covers from Open Library editions and Google Books — or upload your own.</p>
+        <p className="mb-3 text-[12px] text-ink-dim">{book.catalogue?.name === "Hardcover" ? "Covers from Hardcover editions" : "Covers from Open Library editions and Google Books"} — or upload your own.</p>
         {error && <div className="mb-2 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
         <div className="mb-3">
           <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/webp,image/gif" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) upload(f); e.target.value = ""; }} />
@@ -410,7 +414,7 @@ function Toolbar({ book, onChange, flash }: { book: Book; onChange: () => void; 
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowImport(true)}>Manual import</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("rename", rename)}>{busy === "rename" ? "Renaming…" : "Rename"}</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowEdit(true)} title="Manually fix title/author/year when the metadata providers got it wrong">Edit metadata</button>
-        <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowMatch(true)} title="This is the wrong book — search Open Library and re-link it to the right one, keeping your files">Change match</button>
+        <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowMatch(true)} title="This is the wrong book — search the catalogue and re-link it to the right one, keeping your files">Change match</button>
         <DeleteButton book={book} />
       </div>
       {showEdit && <EditMetadataModal book={book} onClose={() => setShowEdit(false)} onSaved={() => { onChange(); flash("Metadata updated."); }} />}
@@ -634,7 +638,7 @@ function HistoryPanel({ bookId, refreshKey }: { bookId: number; refreshKey: unkn
   );
 }
 
-// RematchModal re-points the book at a different Open Library work. This is the fix for a
+// RematchModal re-points the book at a different catalogue entry. This is the fix for a
 // book identified as the wrong title — most often one catalogued by the library scan, which
 // takes the first search hit. Files on disk, monitoring and the quality profile are kept.
 function RematchModal({ book, onClose, onMatched }: { book: Book; onClose: () => void; onMatched: () => void }) {

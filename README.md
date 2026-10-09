@@ -96,7 +96,8 @@ the pull and rebuilds the code that's in the folder.
 The Dashboard and `/api/health` show the version and commit that's running.
 
 If you deploy with Komodo or another tool instead of `update.sh`, mirror these steps there:
-pass `ARRMADA_VERSION` (`git describe --tags --always --dirty`) and `ARRMADA_COMMIT`
+pass `ARRMADA_VERSION` (a release tag, or the commit date:
+`git log -1 --format=%cd --date=format:%Y.%m.%d`) and `ARRMADA_COMMIT`
 (`git rev-parse --short HEAD`) as build environment, run
 `docker exec -u <PUID>:<PGID> Arrmada-app arrmada backup --kind pre-update` and tag the
 running image `arrmada:previous` before each build. Otherwise none of this protection applies.

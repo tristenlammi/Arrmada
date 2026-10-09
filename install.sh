@@ -272,9 +272,13 @@ if [ "${1:-}" = "--with-prowlarr" ]; then
   say "Including the optional Prowlarr indexer manager."
 fi
 
-# Stamp the build with what it was built from, so the Dashboard says which code is running.
-ARRMADA_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev-docker)
+# Stamp the build with what it was built from, so the Dashboard says which code is running:
+# a release tag, or else the commit's date with the short commit beside it (same as update.sh).
 ARRMADA_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+ARRMADA_VERSION=$(git describe --tags --exact-match 2>/dev/null || git log -1 --format=%cd --date=format:%Y.%m.%d 2>/dev/null || echo dev)
+if [ "$ARRMADA_COMMIT" != unknown ] && ! git diff --quiet HEAD -- 2>/dev/null; then
+  ARRMADA_VERSION="$ARRMADA_VERSION-dirty"
+fi
 export ARRMADA_VERSION ARRMADA_COMMIT
 
 say ""

@@ -16,6 +16,10 @@ const LEVEL_STYLE: Record<string, { color: string; label: string }> = {
 // buffer. One click to drop it.
 const NOISE = "torznab page,indexer search";
 
+// How many lines the page asks for. It is only the viewer's window: the server keeps far
+// more in memory and on disk, which the footer says.
+const LOG_LIMIT = 2000;
+
 function fmtTime(ms: number): string {
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, "0");
@@ -53,7 +57,7 @@ export function Logs() {
   }, [q, hide]);
 
   const load = useCallback(() =>
-    api.logs({ limit: 2000, level, q: dq, hide: dhide })
+    api.logs({ limit: LOG_LIMIT, level, q: dq, hide: dhide })
       .then((e) => { setEntries(e); setErr(null); })
       .catch((e: Error) => setErr(e.message)), [level, dq, dhide]);
 
@@ -147,7 +151,7 @@ export function Logs() {
           )}
         </div>
         <p className="text-[10.5px] text-ink-faint">
-          Showing the most recent {entries?.length ?? 0} lines{dhide ? " (some hidden by your filter)" : ""} — kept in memory, up to 5000. Same stream as the container logs.
+          Showing the newest {(entries?.length ?? 0).toLocaleString()} lines{dhide ? " (some hidden by your filter)" : ""} — the viewer loads up to {LOG_LIMIT.toLocaleString()}. Arrmada keeps the last 50,000 in memory and also writes them to rotating log files in its data folder. Same stream as the container logs.
         </p>
       </div>
     </>

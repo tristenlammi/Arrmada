@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/insights"
+	"github.com/tristenlammi/arrmada/internal/plex"
 )
 
 // The dashboard is one request that fans out over every subsystem, and any of them
@@ -25,10 +27,13 @@ type dashboardPayload struct {
 	Storage     []storageVolume    `json:"storage"`
 	Streams     *insights.Activity `json:"streams,omitempty"`
 	StreamsNote string             `json:"streams_note,omitempty"`
-	Queue       queueSummary       `json:"queue"`
-	QueueNote   string             `json:"queue_note,omitempty"`
-	Library     libraryCounts      `json:"library"`
-	Activity    []activityEvent    `json:"activity"`
+	// PlexConfigured: a server URL and token are set. Without one there's nothing to be
+	// unreachable, so StreamsNote stays empty and the page offers to connect instead.
+	PlexConfigured bool            `json:"plex_configured"`
+	Queue          queueSummary    `json:"queue"`
+	QueueNote      string          `json:"queue_note,omitempty"`
+	Library        libraryCounts   `json:"library"`
+	Activity       []activityEvent `json:"activity"`
 	// Listening is who's listening to audiobooks right now. AudioOff: the audiobook
 	// server isn't running, so there's nothing to show.
 	Listening []nowListening `json:"listening"`
@@ -155,10 +160,20 @@ func (a *api) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if a.deps.Insights != nil {
-		if act, err := a.deps.Insights.Activity(ctx); err != nil {
-			out.StreamsNote = err.Error()
-		} else {
-			out.Streams = &act
+		cfg := a.deps.Insights.Config(ctx)
+		out.PlexConfigured = cfg.URL != "" && cfg.TokenSet
+		if out.PlexConfigured {
+			if act, err := a.deps.Insights.Activity(ctx); err != nil {
+				// The settings can be cleared between the check and the call; that is
+				// still "not connected", not a failure to report.
+				if errors.Is(err, plex.ErrNotConfigured) {
+					out.PlexConfigured = false
+				} else {
+					out.StreamsNote = err.Error()
+				}
+			} else {
+				out.Streams = &act
+			}
 		}
 	}
 

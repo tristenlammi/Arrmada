@@ -167,6 +167,7 @@ func (a *api) handleGetBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.enrichBookWants(r, &b)
+	setBookCatalogue(&b)
 	a.writeJSON(w, http.StatusOK, b)
 }
 
@@ -177,6 +178,15 @@ func (a *api) enrichBookWants(r *http.Request, b *books.Book) {
 		b.WantEbook, b.WantAudiobook = books.WantedEditions(sp.FormatScores)
 	} else {
 		b.WantEbook = true
+	}
+}
+
+// setBookCatalogue names and links the catalogue the book's metadata came from, for the
+// detail page's badge. No Hardcover slug is stored yet, so a Hardcover book links to a
+// search for its title and author.
+func setBookCatalogue(b *books.Book) {
+	if ref := books.CatalogueLink(b.OLKey, "", b.Title, b.Author); ref.URL != "" {
+		b.Catalogue = &ref
 	}
 }
 
@@ -197,6 +207,7 @@ func (a *api) handleRefreshBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.enrichBookWants(r, &b)
+	setBookCatalogue(&b)
 	a.writeJSON(w, http.StatusOK, b)
 }
 
@@ -413,8 +424,9 @@ func (a *api) handleDeleteBookFile(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "deleted"})
 }
 
-// handleBookCovers returns candidate cover images (Open Library editions + Google Books)
-// for the cover picker.
+// handleBookCovers returns candidate cover images for the cover picker, from the book's
+// own catalogue: Hardcover's editions for a Hardcover book, otherwise Open Library
+// editions plus Google Books.
 func (a *api) handleBookCovers(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)
 	if !ok {

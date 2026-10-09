@@ -6,6 +6,7 @@ package plex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path"
@@ -13,6 +14,11 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrNotConfigured means no server URL or token is set. Callers that only want to report
+// real failures (the Dashboard's "Plex isn't reachable") check for it and say "not
+// connected yet" instead of passing it on as an error.
+var ErrNotConfigured = errors.New("plex is not configured")
 
 // Client talks to one Plex server (base URL + token).
 type Client struct {
@@ -33,7 +39,7 @@ func New(baseURL, token string) *Client {
 // get fetches a Plex endpoint as JSON and decodes it into out.
 func (c *Client) get(ctx context.Context, path string, out any) error {
 	if c.base == "" || c.token == "" {
-		return fmt.Errorf("plex is not configured")
+		return ErrNotConfigured
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
 	if err != nil {
@@ -164,7 +170,7 @@ func (c *Client) RecentlyAdded(ctx context.Context, limit int) ([]RecentItem, er
 // Arrmada can proxy it to the browser without exposing the token. Caller closes the body.
 func (c *Client) Image(ctx context.Context, imgPath string) (*http.Response, error) {
 	if c.base == "" || c.token == "" {
-		return nil, fmt.Errorf("plex is not configured")
+		return nil, ErrNotConfigured
 	}
 	// Defense in depth: the httpapi handler already validates this path, but the
 	// token attached below makes any un-normalized path a traversal/SSRF vector,

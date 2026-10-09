@@ -6,7 +6,8 @@ import { useCanHover } from "../lib/useCanHover";
 
 // AuthorDetail unifies an author's shelf: the books you already own (link through to the
 // full book detail page for grab / auto-grab / etc.) plus the rest of their official
-// catalogue (from Open Library, bundle-filtered) that you can add in a click.
+// catalogue (from Hardcover when a key is set, else Open Library; bundle-filtered) that you
+// can add in a click.
 export function AuthorDetail() {
   const { name: raw } = useParams();
   const name = decodeURIComponent(raw ?? "");
@@ -24,7 +25,7 @@ export function AuthorDetail() {
 
   const loadLibrary = useCallback(() => api.books().then((r) => setLibrary(r.books)).catch(() => setLibrary([])), []);
 
-  // Resolve the author's Open Library key from the name, then pull their catalogue.
+  // Resolve the author's catalogue key from the name, then pull their catalogue.
   const loadCatalogue = useCallback(() => {
     setWorks(null);
     api.searchBookAuthors(name).then((authors) => {
@@ -49,6 +50,9 @@ export function AuthorDetail() {
   const owned = useMemo(() => (library ?? []).filter((b) => (b.author || "Unknown author") === name), [library, name]);
   const ownedKeys = useMemo(() => new Set(owned.map((b) => b.ol_key)), [owned]);
   const missing = useMemo(() => (works ?? []).filter((w) => !w.in_library && !ownedKeys.has(w.key)), [works, ownedKeys]);
+  // Which catalogue answered for this author: Hardcover author keys start "hc:a:", and the
+  // fallback is Open Library. Unknown while no author matched.
+  const catalogueName = author ? (author.key.startsWith("hc:a:") ? "Hardcover" : "Open Library") : null;
 
   const add = async (w: BookDiscoverCard) => {
     setAddingKey(w.key);
@@ -121,7 +125,7 @@ export function AuthorDetail() {
             {Array.from({ length: 8 }).map((_, i) => <div key={i} className="rounded-xl" style={{ aspectRatio: "2/3", background: "var(--panel-2)" }} />)}
           </div>
         ) : missing.length === 0 ? (
-          <Empty>{owned.length > 0 ? "You have this author's whole catalogue. 🎉" : "Couldn't find more books for this author on Open Library."}</Empty>
+          <Empty>{owned.length > 0 ? "You have this author's whole catalogue. 🎉" : `Couldn't find more books for this author ${catalogueName ? `on ${catalogueName}` : "in the catalogue"}.`}</Empty>
         ) : (
           <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))" }}>
             {missing.map((w) => <CatalogueCard key={w.key} w={w} onAdd={() => add(w)} busy={addingKey === w.key} disabled={addingKey !== null} />)}

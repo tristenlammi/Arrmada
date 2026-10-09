@@ -12,6 +12,7 @@ import {
   type InsightsStream,
   type NowListening,
 } from "../lib/api";
+import { LINKS } from "../lib/links";
 import { useLive } from "../lib/useLive";
 import { usePoll } from "../lib/usePoll";
 
@@ -104,9 +105,20 @@ export function Dashboard() {
         {streams.length === 0 ? (
           <Card>
             <p className="m-0 text-[12.5px] text-ink-faint">
-              {data?.streams_note
-                ? `Plex isn't reachable — ${data.streams_note}`
-                : "Nothing is streaming right now."}
+              {!data ? (
+                "Loading…"
+              ) : !data.plex_configured ? (
+                <>
+                  Plex isn't connected yet.{" "}
+                  <Link to={LINKS.plexConnection} className="font-semibold" style={{ color: "var(--accent)" }}>
+                    Connect Plex
+                  </Link>
+                </>
+              ) : data.streams_note ? (
+                `Plex isn't reachable — ${data.streams_note}`
+              ) : (
+                "Nothing is streaming right now."
+              )}
             </p>
           </Card>
         ) : (
@@ -217,11 +229,11 @@ export function Dashboard() {
         {/* System, demoted to the bottom: it's reassurance, not information. */}
         <SectionLabel>System</SectionLabel>
         <Card>
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 font-mono text-[12px] text-ink-dim sm:grid-cols-5">
-            <Stat k="Version" v={status?.version ?? "—"} />
+          {/* No Auth stat: sign-in is always enforced, so it could only ever say "enabled". */}
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 font-mono text-[12px] text-ink-dim sm:grid-cols-4">
+            <Stat k="Version" v={status ? versionLabel(status.version, status.commit) : "—"} />
             <Stat k="Uptime" v={status ? uptime(status.uptime_seconds) : "—"} />
             <Stat k="Database" v={dbOK ? "ok" : "down"} tone={dbOK ? "good" : "bad"} />
-            <Stat k="Auth" v={status?.auth_enabled ? "enabled" : "disabled"} />
             <Stat k="Realtime" v={connected ? "connected" : "offline"} tone={connected ? "good" : "bad"} />
           </dl>
         </Card>
@@ -480,6 +492,12 @@ function SectionLabel({ children, right }: { children: React.ReactNode; right?: 
       {right && <span className="font-normal normal-case tracking-normal">{right}</span>}
     </div>
   );
+}
+
+// versionLabel adds the short commit when the build knows it, so two builds of the same
+// day can be told apart. Older images, and builds outside a git checkout, say "unknown".
+function versionLabel(version: string, commit: string): string {
+  return commit && commit !== "unknown" && !version.includes(commit) ? `${version} · ${commit}` : version;
 }
 
 function Stat({ k, v, tone }: { k: string; v: string; tone?: "good" | "bad" }) {
