@@ -3,7 +3,7 @@ import { AppLayout } from "./components/AppLayout";
 import { UserLayout } from "./components/UserLayout";
 import { MyBooks } from "./pages/MyBooks";
 import { SetupGate } from "./components/SetupGate";
-import { useMe, isStaff } from "./lib/me";
+import { useMe, isStaff, isAdmin } from "./lib/me";
 import { Dashboard } from "./pages/Dashboard";
 import { Quality } from "./pages/Quality";
 import { Indexers } from "./pages/Indexers";
@@ -108,7 +108,8 @@ export default function App() {
         <Route path="/notifications" element={<Navigate to="/insights" replace />} />
         <Route path="/settings" element={<Settings />} />
         <Route path="/quality" element={<Quality />} />
-        <Route path="/logs" element={<Logs />} />
+        {/* The log is admin-only on the server; for a manager the page falls through to Not found. */}
+        {isAdmin(user) && <Route path="/logs" element={<Logs />} />}
         <Route path="/library" element={<Navigate to="/settings" replace />} />
         <Route
           path="*"

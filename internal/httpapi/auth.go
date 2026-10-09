@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
+	"github.com/tristenlammi/arrmada/internal/netutil"
 )
 
 const sessionCookieName = "arrmada_session"
@@ -111,7 +112,7 @@ func (a *api) handleSetup(w http.ResponseWriter, r *http.Request) {
 	}
 	// Throttle the unauthenticated setup endpoint too — it's externally reachable
 	// on a fresh instance until the first admin exists.
-	if !a.loginAllowed(w, r, "setup:"+clientIP(r)) {
+	if !a.loginAllowed(w, r, "setup:"+netutil.ClientIP(r)) {
 		return
 	}
 
@@ -134,16 +135,66 @@ func (a *api) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !a.decodeJSON(w, r, &body) {
 		return
 	}
-	// Throttle by IP and by username so neither dimension can be brute-forced.
-	if !a.loginAllowed(w, r, "login:"+clientIP(r), "login-user:"+strings.ToLower(strings.TrimSpace(body.Username))) {
-		return
+	ip := netutil.ClientIP(r)
+	name := strings.ToLower(strings.TrimSpace(body.Username))
+	ipKey, userKey := "login:"+ip, "login-user:"+name
+	l := a.loginLimiter
+	// Two limits, both counting wrong passwords only. Per address: 10 failures in 15
+	// minutes. Per username: a back-off that grows after 5 failures in an hour, applied
+	// only to sign-ins from outside the LAN, so a stranger guessing the owner's name on
+	// the internet can never stop the owner signing in at home.
+	if l != nil {
+		if ok, retry := l.blocked(ipKey); ok {
+			a.tooManyAttempts(w, retry)
+			return
+		}
+		if a.classifyExternal(r) {
+			if ok, retry := l.delayed(userKey); ok {
+				a.tooManyAttempts(w, retry)
+				return
+			}
+		}
 	}
 	u, err := a.deps.Auth.Authenticate(r.Context(), body.Username, body.Password)
 	if err != nil {
+		if l != nil && errors.Is(err, auth.ErrInvalidCredentials) {
+			l.fail(ipKey, name)
+			if n := l.fail(userKey, name); n >= loginAlertAt && n%loginAlertAt == 0 {
+				a.loginFailuresAlert(name, n, ip)
+			}
+		}
 		a.writeAuthError(w, err)
 		return
 	}
+	if l != nil {
+		// Only this username's failures leave the address's record: knowing one
+		// account's password mustn't wipe out guesses made at the others.
+		l.reset(userKey, "")
+		l.reset(ipKey, name)
+	}
 	a.startSession(w, r, u, http.StatusOK)
+}
+
+// loginAlertAt is how many wrong passwords for one username within an hour raise a
+// security.login_failures event (again at each further multiple).
+const loginAlertAt = 20
+
+// loginFailuresAlert reports a username under sustained guessing: a Warn line and a
+// security.login_failures bus event (staff-only on the websocket, like every topic
+// that isn't a user's own). Never the password.
+func (a *api) loginFailuresAlert(username string, count int, lastIP string) {
+	if a.deps.Log != nil {
+		a.deps.Log.Warn("many failed sign-ins for one username", "username", username, "failures_last_hour", count, "last_ip", lastIP)
+	}
+	if a.deps.Bus != nil {
+		a.deps.Bus.Publish("security.login_failures", map[string]any{"username": username, "count": count, "last_ip": lastIP})
+	}
+}
+
+// tooManyAttempts answers 429 with a Retry-After of retry, rounded up to a second.
+func (a *api) tooManyAttempts(w http.ResponseWriter, retry time.Duration) {
+	w.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())+1))
+	a.writeError(w, http.StatusTooManyRequests, "too many attempts — try again in a bit")
 }
 
 // loginAllowed checks every provided rate-limit key; the first that trips writes
@@ -154,9 +205,7 @@ func (a *api) loginAllowed(w http.ResponseWriter, r *http.Request, keys ...strin
 	}
 	for _, k := range keys {
 		if ok, retry := a.loginLimiter.allow(k); !ok {
-			secs := int(retry.Seconds()) + 1
-			w.Header().Set("Retry-After", strconv.Itoa(secs))
-			a.writeError(w, http.StatusTooManyRequests, "too many attempts — try again in a bit")
+			a.tooManyAttempts(w, retry)
 			return false
 		}
 	}

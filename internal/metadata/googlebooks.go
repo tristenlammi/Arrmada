@@ -81,6 +81,7 @@ func (v gbVolume) toResult() BookResult {
 		Author:   author,
 		Year:     yearFromDate(v.VolumeInfo.PublishedDate),
 		CoverURL: httpsCover(cover),
+		Tags:     capTags(v.VolumeInfo.Categories),
 	}
 }
 

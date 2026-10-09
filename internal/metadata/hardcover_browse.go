@@ -25,7 +25,7 @@ func (h *Hardcover) BrowseBooks(ctx context.Context, kind string) ([]BookResult,
 	default:
 		return nil, ErrNotSupported
 	}
-	return cached(ctx, h.cache, "browse:"+kind, hcTTLList, func(ctx context.Context) ([]BookResult, error) {
+	return cached(ctx, h.cache, "browse:v2:"+kind, hcTTLList, func(ctx context.Context) ([]BookResult, error) {
 		var where, order string
 		vars := map[string]any{}
 		switch kind {

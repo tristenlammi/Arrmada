@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
 import { NAV } from "../lib/nav";
-import { useMe } from "../lib/me";
+import { useMe, isAdmin } from "../lib/me";
 import { api } from "../lib/api";
 import { FleetMark } from "./FleetMark";
 
@@ -27,11 +27,13 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
     try { await api.logout(); } catch { /* ignore — clearing the session locally is enough */ }
     window.location.href = "/";
   };
-  // Hide nav entries for modules an admin has turned off.
+  // Hide nav entries for modules an admin has turned off, and admin-only pages (Logs)
+  // from managers.
+  const admin = isAdmin(user);
   const nav = NAV.map((group) => ({
     ...group,
     items: group.items.filter((item) =>
-      (booksEnabled || item.to !== "/books") && (musicEnabled || item.to !== "/music")),
+      (booksEnabled || item.to !== "/books") && (musicEnabled || item.to !== "/music") && (admin || !item.adminOnly)),
   }));
   return (
     <>

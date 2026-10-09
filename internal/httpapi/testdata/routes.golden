@@ -1,5 +1,5 @@
 ANY / public ext
-DELETE /api/v1/apikeys/{id} staff -
+DELETE /api/v1/apikeys/{id} admin -
 DELETE /api/v1/audioserver/devices/{family} admin -
 DELETE /api/v1/books/{id} staff -
 DELETE /api/v1/books/{id}/audio-versions/{vid} staff -
@@ -29,7 +29,7 @@ DELETE /api/v1/series/{id}/seasons/{season}/episodes/{episode}/file staff -
 DELETE /api/v1/users/plex-blocks/{plexID} admin -
 DELETE /api/v1/users/{id} admin -
 GET /api/health public ext
-GET /api/v1/apikeys staff -
+GET /api/v1/apikeys admin -
 GET /api/v1/audioserver admin -
 GET /api/v1/audioserver/listening admin -
 GET /api/v1/auth/me user ext
@@ -51,7 +51,7 @@ GET /api/v1/books/search-missing staff -
 GET /api/v1/books/upgrade staff -
 GET /api/v1/books/{id} staff -
 GET /api/v1/books/{id}/audiobook user ext
-GET /api/v1/books/{id}/cover-image user -
+GET /api/v1/books/{id}/cover-image user ext
 GET /api/v1/books/{id}/covers staff -
 GET /api/v1/books/{id}/ebook user ext
 GET /api/v1/books/{id}/edition-files staff -
@@ -110,7 +110,7 @@ GET /api/v1/insights/stats staff -
 GET /api/v1/insights/users staff -
 GET /api/v1/library/fit staff -
 GET /api/v1/library/fit/profiles staff -
-GET /api/v1/logs staff -
+GET /api/v1/logs admin -
 GET /api/v1/me/apprise user ext
 GET /api/v1/me/audio user ext
 GET /api/v1/me/audio/history user ext
@@ -172,13 +172,13 @@ GET /api/v1/subtitles/models staff -
 GET /api/v1/subtitles/movies staff -
 GET /api/v1/subtitles/series staff -
 GET /api/v1/subtitles/settings staff -
-GET /api/v1/system/browse staff -
+GET /api/v1/system/browse admin -
 GET /api/v1/system/library staff -
 GET /api/v1/users admin -
 GET /api/v1/users/plex-blocks admin -
 GET /api/v1/users/{id}/impact admin -
 GET /api/v1/ws user -
-POST /api/v1/apikeys/{id}/test staff -
+POST /api/v1/apikeys/{id}/test admin -
 POST /api/v1/audioserver/import admin -
 POST /api/v1/audioserver/import/apply admin -
 POST /api/v1/auth/login public ext
@@ -252,8 +252,8 @@ POST /api/v1/queue/{hash}/action staff -
 POST /api/v1/queue/{hash}/block staff -
 POST /api/v1/queue/{hash}/pause staff -
 POST /api/v1/queue/{hash}/resume staff -
-POST /api/v1/recycle/delete staff -
-POST /api/v1/recycle/empty staff -
+POST /api/v1/recycle/delete admin -
+POST /api/v1/recycle/empty admin -
 POST /api/v1/recycle/restore staff -
 POST /api/v1/requests requester ext
 POST /api/v1/requests/import/overseerr admin ext
@@ -291,7 +291,7 @@ POST /api/v1/system/backups admin -
 POST /api/v1/system/restart admin -
 POST /api/v1/users admin -
 POST /api/v1/users/{id}/block-plex admin -
-PUT /api/v1/apikeys/{id} staff -
+PUT /api/v1/apikeys/{id} admin -
 PUT /api/v1/audioserver admin -
 PUT /api/v1/audioserver/users/{id} admin -
 PUT /api/v1/books/{id}/audio-versions/{vid} staff -
@@ -323,5 +323,5 @@ PUT /api/v1/series/{id}/seasons/{season}/monitor staff -
 PUT /api/v1/series/{id}/type staff -
 PUT /api/v1/settings staff -
 PUT /api/v1/subtitles/settings staff -
-PUT /api/v1/system/library staff -
+PUT /api/v1/system/library admin -
 PUT /api/v1/users/{id} admin -

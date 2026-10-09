@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type LibraryPaths, type BrowseResult, type UnmatchedFolder, type MatchCandidate } from "../lib/api";
-import { useMe } from "../lib/me";
+import { useMe, isAdmin } from "../lib/me";
 
 // LibraryFolders — points each library at a folder (with an in-app picker) and scans it.
 // Lives inside Settings → Library. Mount your media into the container (see the
@@ -23,7 +23,10 @@ export function LibraryFolders() {
   const [reviewKey, setReviewKey] = useState(0); // bump to reload the unmatched lists
   const [toast, setToast] = useState<string | null>(null);
   const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); };
-  const { musicEnabled } = useMe();
+  const { user, musicEnabled } = useMe();
+  // Moving a library or browsing the host's folders is the admin's call; a manager sees
+  // where each library lives and can still scan it.
+  const admin = isAdmin(user);
 
   useEffect(() => { api.libraryPaths().then((p) => { setPaths(p); setDraft(p); }).catch(() => flash("Could not load library paths")); }, []);
   if (!draft) return <div className="text-[12.5px] text-ink-dim">Loading…</div>;
@@ -66,21 +69,26 @@ export function LibraryFolders() {
               <input
                 value={draft[row.key]}
                 onChange={(e) => setDraft({ ...draft, [row.key]: e.target.value })}
-                placeholder="/storage/media/…"
+                readOnly={!admin}
+                placeholder={admin ? "/storage/media/…" : "Not set"}
                 className="flex-1 rounded-lg px-2.5 py-1.5 font-mono text-[11.5px]"
-                style={{ background: "var(--panel)", border: "1px solid var(--line)", color: "var(--ink)" }}
+                style={{ background: "var(--panel)", border: "1px solid var(--line)", color: admin ? "var(--ink)" : "var(--ink-dim)" }}
               />
-              <button onClick={() => setPicking(row.key)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel)", color: "var(--ink)" }}>Browse…</button>
+              {admin && <button onClick={() => setPicking(row.key)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel)", color: "var(--ink)" }}>Browse…</button>}
             </div>
           </div>
           );
         })}
       </div>
 
-      <div className="mt-4 flex items-center justify-end gap-3">
-        {dirty && <span className="text-[11.5px] text-ink-faint">Unsaved changes</span>}
-        <button onClick={save} disabled={!dirty || busy} className="rounded-lg px-4 py-2 text-[13px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy ? "Saving…" : "Save folders"}</button>
-      </div>
+      {admin ? (
+        <div className="mt-4 flex items-center justify-end gap-3">
+          {dirty && <span className="text-[11.5px] text-ink-faint">Unsaved changes</span>}
+          <button onClick={save} disabled={!dirty || busy} className="rounded-lg px-4 py-2 text-[13px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy ? "Saving…" : "Save folders"}</button>
+        </div>
+      ) : (
+        <p className="mt-3 text-[11.5px] text-ink-faint">Only an admin can change these folders.</p>
+      )}
 
       <UnmatchedReview media="movie" reloadKey={reviewKey} flash={flash} />
       <UnmatchedReview media="series" reloadKey={reviewKey} flash={flash} />

@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
+	"github.com/tristenlammi/arrmada/internal/netutil"
 	"github.com/tristenlammi/arrmada/internal/plex"
 )
 
@@ -35,7 +36,7 @@ func (a *api) handlePlexLoginStart(w http.ResponseWriter, r *http.Request) {
 	}
 	// Each pin start hits plex.tv; throttle so the unauthenticated endpoint can't
 	// be used to amplify traffic at plex.tv or spin up pins without bound.
-	if !a.loginAllowed(w, r, "plexpin:"+clientIP(r)) {
+	if !a.loginAllowed(w, r, "plexpin:"+netutil.ClientIP(r)) {
 		return
 	}
 	clientID := a.plexClientID(ctx)

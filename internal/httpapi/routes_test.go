@@ -284,6 +284,42 @@ func TestRequesterGetsForbiddenFromStaffAPIs(t *testing.T) {
 	}
 }
 
+// Admin means admin: a manager runs the media day to day, but the owner's API keys,
+// moving library folders, walking the host's folders, purging the recycle bin and the
+// log are the admin's alone.
+func TestManagerGetsForbiddenFromAdminAPIs(t *testing.T) {
+	rt := testRouter(t, "", true)
+	for _, call := range []string{
+		"GET /api/v1/apikeys", "PUT /api/v1/apikeys/tmdb", "POST /api/v1/apikeys/tmdb/test",
+		"PUT /api/v1/system/library", "GET /api/v1/system/browse",
+		"POST /api/v1/recycle/empty", "POST /api/v1/recycle/delete", "GET /api/v1/logs",
+	} {
+		method, path, _ := strings.Cut(call, " ")
+		rec := httptest.NewRecorder()
+		rt.ServeHTTP(rec, asRole(httptest.NewRequest(method, path, nil), auth.RoleManager))
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s as manager: HTTP %d, want 403", call, rec.Code)
+		}
+		rec = httptest.NewRecorder()
+		rt.ServeHTTP(rec, asRole(httptest.NewRequest(method, path, nil), auth.RoleAdmin))
+		if rec.Code != sentinelStatus {
+			t.Errorf("%s as admin: HTTP %d, want it let through", call, rec.Code)
+		}
+	}
+	// What a manager still needs from the same areas.
+	for _, call := range []string{
+		"GET /api/v1/settings", "PUT /api/v1/settings", "GET /api/v1/system/library",
+		"GET /api/v1/recycle", "GET /api/v1/recycle/items", "POST /api/v1/recycle/restore",
+	} {
+		method, path, _ := strings.Cut(call, " ")
+		rec := httptest.NewRecorder()
+		rt.ServeHTTP(rec, asRole(httptest.NewRequest(method, path, nil), auth.RoleManager))
+		if rec.Code != sentinelStatus {
+			t.Errorf("%s as manager: HTTP %d, want it let through", call, rec.Code)
+		}
+	}
+}
+
 // The live multi-indexer search had no caller left and handed out raw download URLs
 // (with indexer API keys in them). It's gone, and an unknown API path is a JSON 404
 // rather than the web app's index page.
@@ -301,18 +337,6 @@ func TestUnknownAPIPathIsNotFound(t *testing.T) {
 	rt.ServeHTTP(rec, httptest.NewRequest("GET", "/movies/12", nil))
 	if rec.Code != http.StatusOK {
 		t.Errorf("GET /movies/12: HTTP %d, want the SPA", rec.Code)
-	}
-}
-
-// Until externalGate reads the route table itself, the ext column must agree with its
-// prefix list for every route, or off-LAN behaviour would silently differ from what
-// the golden file says.
-func TestExternalParity(t *testing.T) {
-	for _, spec := range testRouter(t, "", true).specs {
-		path := samplePath(spec.Pattern)
-		if got := externalAllowed(path); got != spec.External {
-			t.Errorf("%s: the external gate says reachable=%v", spec, got)
-		}
 	}
 }
 

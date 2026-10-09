@@ -4,6 +4,8 @@ export interface NavItem {
   end?: boolean;
   /** A short tag shown beside the label, e.g. "Preview" for a module still being hardened. */
   badge?: string;
+  /** Shown to admins only (the server refuses everyone else anyway). */
+  adminOnly?: boolean;
 }
 
 export interface NavGroup {
@@ -47,7 +49,7 @@ export const NAV: NavGroup[] = [
       { to: "/indexers", label: "Indexers" },
       { to: "/downloadclients", label: "Download clients" },
       { to: "/quality", label: "Quality profiles" },
-      { to: "/logs", label: "Logs" },
+      { to: "/logs", label: "Logs", adminOnly: true },
       { to: "/settings", label: "Settings" },
     ],
   },

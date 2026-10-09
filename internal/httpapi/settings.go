@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/library"
@@ -79,33 +80,83 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// settingsUpdate is a PUT /settings body: a nil field is left as it is.
+type settingsUpdate struct {
+	SearchOnAdd          *bool   `json:"search_on_add"`
+	NamingMovieFolder    *string `json:"naming_movie_folder"`
+	NamingMovieFile      *string `json:"naming_movie_file"`
+	NamingSeriesFolder   *string `json:"naming_series_folder"`
+	NamingSeriesSeason   *string `json:"naming_series_season"`
+	NamingSeriesEpisode  *string `json:"naming_series_episode"`
+	WriteNFO             *bool   `json:"write_nfo"`
+	DownloadArtwork      *bool   `json:"download_artwork"`
+	BooksEnabled         *bool   `json:"books_enabled"`
+	MusicEnabled         *bool   `json:"music_enabled"`
+	PlexLoginEnabled     *bool   `json:"plex_login_enabled"`
+	TMDBRegion           *string `json:"tmdb_region"`
+	PlexLoginAutoApprove *bool   `json:"plex_login_auto_approve"`
+	RecycleMaxGB         *string `json:"recycle_max_gb"`
+	RecycleRetentionDays *string `json:"recycle_retention_days"`
+	DiskGuard            *bool   `json:"downloads_disk_guard"`
+	DiskGuardPausePct    *string `json:"downloads_disk_guard_pause_pct"`
+	DiskGuardResumePct   *string `json:"downloads_disk_guard_resume_pct"`
+	StallMinutes         *int    `json:"downloads_stall_minutes"`
+}
+
+// adminSettingChange names the first admin-only setting req would change, or "" if it
+// changes none. Module switches, who may sign in with Plex, the Discovery region and the
+// bin and disk guard limits are the owner's calls; a manager runs the media day to day
+// (naming, metadata files, search on add, stall fail-over).
+//
+// A field only counts when it differs from what's in effect now, defaults included (the
+// same Get/GetBool defaults handleGetSettings answers with), so a client that sends the
+// whole settings object back with those fields untouched still saves.
+func (a *api) adminSettingChange(ctx context.Context, req *settingsUpdate) string {
+	st := a.deps.Settings
+	boolChanged := func(p *bool, cur bool) bool { return p != nil && *p != cur }
+	strChanged := func(p *string, cur string) bool {
+		return p != nil && strings.TrimSpace(*p) != strings.TrimSpace(cur)
+	}
+	switch {
+	case boolChanged(req.BooksEnabled, a.booksEnabled(ctx)):
+		return "the Books module"
+	case boolChanged(req.MusicEnabled, a.musicEnabled(ctx)):
+		return "the Music module"
+	case boolChanged(req.PlexLoginEnabled, st.GetBool(ctx, "plex_login_enabled", false)):
+		return "Plex sign-in"
+	case boolChanged(req.PlexLoginAutoApprove, st.GetBool(ctx, "plex_login_auto_approve", true)):
+		return "auto-approval of Plex sign-ins' requests"
+	case req.TMDBRegion != nil && !strings.EqualFold(strings.TrimSpace(*req.TMDBRegion), strings.TrimSpace(st.Get(ctx, "tmdb_region", ""))):
+		return "the Discovery region"
+	case strChanged(req.RecycleMaxGB, st.Get(ctx, "recycle_max_gb", recyclebin.DefaultMaxGB)):
+		return "the recycle bin size limit"
+	case strChanged(req.RecycleRetentionDays, st.Get(ctx, "recycle_retention_days", recyclebin.DefaultRetentionDays)):
+		return "how long the recycle bin keeps files"
+	case boolChanged(req.DiskGuard, st.GetBool(ctx, keyDiskGuard, download.DefaultDiskGuard)):
+		return "the downloads disk guard"
+	case strChanged(req.DiskGuardPausePct, st.Get(ctx, keyDiskGuardPause, strconv.Itoa(download.DefaultDiskGuardPause))),
+		strChanged(req.DiskGuardResumePct, st.Get(ctx, keyDiskGuardResume, strconv.Itoa(download.DefaultDiskGuardResum))):
+		return "the disk guard's thresholds"
+	}
+	return ""
+}
+
 // handleUpdateSettings persists changed preferences (only provided keys change).
 func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		SearchOnAdd          *bool   `json:"search_on_add"`
-		NamingMovieFolder    *string `json:"naming_movie_folder"`
-		NamingMovieFile      *string `json:"naming_movie_file"`
-		NamingSeriesFolder   *string `json:"naming_series_folder"`
-		NamingSeriesSeason   *string `json:"naming_series_season"`
-		NamingSeriesEpisode  *string `json:"naming_series_episode"`
-		WriteNFO             *bool   `json:"write_nfo"`
-		DownloadArtwork      *bool   `json:"download_artwork"`
-		BooksEnabled         *bool   `json:"books_enabled"`
-		MusicEnabled         *bool   `json:"music_enabled"`
-		PlexLoginEnabled     *bool   `json:"plex_login_enabled"`
-		TMDBRegion           *string `json:"tmdb_region"`
-		PlexLoginAutoApprove *bool   `json:"plex_login_auto_approve"`
-		RecycleMaxGB         *string `json:"recycle_max_gb"`
-		RecycleRetentionDays *string `json:"recycle_retention_days"`
-		DiskGuard            *bool   `json:"downloads_disk_guard"`
-		DiskGuardPausePct    *string `json:"downloads_disk_guard_pause_pct"`
-		DiskGuardResumePct   *string `json:"downloads_disk_guard_resume_pct"`
-		StallMinutes         *int    `json:"downloads_stall_minutes"`
-	}
+	var req settingsUpdate
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
 	ctx := r.Context()
+
+	// Checked before anything is written, so a body with one forbidden change saves
+	// nothing at all rather than half of itself.
+	if u, ok := userFrom(r); !ok || u == nil || !u.Role.AtLeast(auth.RoleAdmin) {
+		if label := a.adminSettingChange(ctx, &req); label != "" {
+			a.writeError(w, http.StatusForbidden, "Only an admin can change "+label)
+			return
+		}
+	}
 	save := func(err error) bool {
 		if err != nil {
 			a.writeError(w, http.StatusInternalServerError, "could not save settings")
@@ -134,6 +185,16 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if req.StallMinutes != nil && (*req.StallMinutes < 0 || *req.StallMinutes > quality.StallMaxMinutes) {
 		a.writeError(w, http.StatusBadRequest, "the stall timeout must be between 0 (never) and 10080 minutes (a week)")
 		return
+	}
+	// ISO 3166-1 alpha-2 ("AU"), or empty to go back to TMDB's global lists. Checked up
+	// here with the rest, so a bad region doesn't leave the keys before it saved.
+	var region string
+	if req.TMDBRegion != nil {
+		region = strings.ToUpper(strings.TrimSpace(*req.TMDBRegion))
+		if region != "" && (len(region) != 2 || region[0] < 'A' || region[0] > 'Z' || region[1] < 'A' || region[1] > 'Z') {
+			a.writeError(w, http.StatusBadRequest, "region must be a two-letter country code, e.g. AU")
+			return
+		}
 	}
 
 	if req.SearchOnAdd != nil && !save(a.deps.Settings.SetBool(ctx, keySearchOnAdd, *req.SearchOnAdd)) {
@@ -166,16 +227,8 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if req.PlexLoginEnabled != nil && !save(a.deps.Settings.SetBool(ctx, "plex_login_enabled", *req.PlexLoginEnabled)) {
 		return
 	}
-	if req.TMDBRegion != nil {
-		// ISO 3166-1 alpha-2 ("AU"), or empty to go back to TMDB's global lists.
-		region := strings.ToUpper(strings.TrimSpace(*req.TMDBRegion))
-		if region != "" && (len(region) != 2 || region[0] < 'A' || region[0] > 'Z' || region[1] < 'A' || region[1] > 'Z') {
-			a.writeError(w, http.StatusBadRequest, "region must be a two-letter country code, e.g. AU")
-			return
-		}
-		if !save(a.deps.Settings.Set(ctx, "tmdb_region", region)) {
-			return
-		}
+	if req.TMDBRegion != nil && !save(a.deps.Settings.Set(ctx, "tmdb_region", region)) {
+		return
 	}
 	if req.PlexLoginAutoApprove != nil && !save(a.deps.Settings.SetBool(ctx, "plex_login_auto_approve", *req.PlexLoginAutoApprove)) {
 		return

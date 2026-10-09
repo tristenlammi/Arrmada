@@ -6,24 +6,27 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/books"
 )
 
-// The ebook download is the one book endpoint open from outside the network; its
-// neighbours (the book itself, its files, its cover) stay LAN-only.
+// My Books' downloads and uploaded covers are the book endpoints open from outside the
+// network; their neighbours (the book itself, its files) stay LAN-only.
 func TestExternalAllowsOnlyTheEbookDownload(t *testing.T) {
+	rt := testRouter(t, "", true)
 	for path, want := range map[string]bool{
 		"/api/v1/books/12/ebook":         true,
 		"/api/v1/books/12/audiobook":     true,
+		"/api/v1/books/12/cover-image":   true,
 		"/api/v1/me/books":               true,
 		"/api/v1/books/12":               false,
 		"/api/v1/books/12/edition-files": false,
-		"/api/v1/books/12/ebook/extra":   false,
-		"/api/v1/books/abc/ebook":        false,
+		"/api/v1/books/12/covers":        false,
 		"/api/v1/books":                  false,
 	} {
-		if got := externalAllowed(path); got != want {
-			t.Errorf("externalAllowed(%q) = %v, want %v", path, got, want)
+		rec := callFromOutside(rt, "GET", path, &auth.User{ID: 7, Role: auth.RoleRequester})
+		if got := rec.Code == sentinelStatus; got != want {
+			t.Errorf("GET %s from outside as a requester: HTTP %d, reachable=%v, want %v", path, rec.Code, got, want)
 		}
 	}
 }
