@@ -439,7 +439,8 @@ func (c *Coordinator) recordAttempt(ctx context.Context, n *searchNotes, mediaTy
 // history in identical rows. A grab already has its own "grabbed" line, and an upgrade
 // search that found nothing better is the normal case, not news.
 func (c *Coordinator) movieSearchedEvent(ctx context.Context, id int64, trigger, kind string, out SearchOutcome, err error, repeat bool) {
-	if c.movies == nil || kind == OutcomeGrabbed || trigger == TriggerUpgrade {
+	// A stall fail-over writes its own history lines ("still waiting", "replaced with").
+	if c.movies == nil || kind == OutcomeGrabbed || trigger == TriggerUpgrade || trigger == TriggerStall {
 		return
 	}
 	if trigger == TriggerSweep && repeat {

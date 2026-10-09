@@ -23,6 +23,8 @@ import { api, importListNotice, type FitItem, type Series as SeriesT, type Seaso
 // buttons read the latest one back from the server — what was found and why nothing was
 // taken — rather than a "Requested" mark kept in this browser.
 const seasonScope = (n: number) => `S${String(n).padStart(2, "0")}`;
+// The old marks are dead weight in this browser now; drop them once.
+try { localStorage.removeItem("arrmada.grabRequested"); } catch { /* storage unavailable */ }
 
 // latestFor is the newest stored attempt under scope, if any.
 function latestFor(attempts: SearchAttempt[], scope: string): SearchAttempt | undefined {

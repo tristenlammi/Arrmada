@@ -388,7 +388,11 @@ func (c *Coordinator) searchAndGrabExcluding(ctx context.Context, m movies.Movie
 	if err != nil {
 		return nil, err
 	}
-	byName, cands, err := c.candidatesExcluding(ctx, m.ID, matchingMovieReleases(m, result.Releases), exclude)
+	notes := notesFrom(ctx) // the fail-over's search attempt (replaceRecorded)
+	notes.consider(result.Releases)
+	matching := matchingMovieReleases(m, result.Releases)
+	notes.dropped(result.Releases, matching, DropWrongTitle)
+	byName, cands, err := c.candidatesExcluding(ctx, m.ID, matching, exclude)
 	if err != nil {
 		c.skipUnreadable(m.Title, err)
 		return nil, err
