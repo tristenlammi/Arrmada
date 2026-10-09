@@ -828,11 +828,11 @@ function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<App
     >
       <Note tone="warn">
         <b>This only works if your torrents live on their own drive.</b> The guard measures
-        one folder — <code>ARRMADA_DOWNLOADS_DIR</code> in your <code>.env</code> — and nothing
-        else. If that points at a folder on your main array rather than at the cache/torrent
-        drive, the percentage here is measuring the array, and it will either never trigger or
-        pause your queue for a reason that has nothing to do with downloads. Set it in
-        <code>.env</code> and re-run <code>./update.sh</code> before relying on this.
+        one folder — the Downloads folder in Settings → Library (or <code>ARRMADA_DOWNLOADS_DIR</code>
+        when none is picked there) — and nothing else. If that points at a folder on your main
+        array rather than at the cache/torrent drive, the percentage here is measuring the array,
+        and it will either never trigger or pause your queue for a reason that has nothing to do
+        with downloads. Pick the torrent drive's folder and restart Arrmada before relying on this.
       </Note>
 
       {status && (
@@ -857,9 +857,9 @@ function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<App
               path exists and is mounted into the container.
             </div>
           )}
-          {status.shared_with_library && (
+          {(status.shared_with?.length ?? 0) > 0 && (
             <div className="mt-1.5 text-[11.5px]" style={{ color: "var(--reject)" }}>
-              This is the same drive as your library (<span className="font-mono">{status.library_path}</span>).
+              Shares a drive with: {status.shared_with.map((f) => f.label).join(", ")}.
               The guard will be measuring your whole array, not a torrent drive — a threshold like
               85% almost certainly isn't what you want here.
             </div>

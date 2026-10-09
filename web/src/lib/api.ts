@@ -469,8 +469,10 @@ export interface DiskGuardStatus {
   pause_pct: number;
   resume_pct: number;
   holding: number;
+  // The library folders (the ones picked in Settings → Library) on the same drive as
+  // the downloads folder. shared_with_library is just shared_with.length > 0.
+  shared_with: { role: string; label: string; path: string }[];
   shared_with_library: boolean;
-  library_path: string;
 }
 
 export interface SeriesAlias { id: number; title: string; tmdb_season: number }

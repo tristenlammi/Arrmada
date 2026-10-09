@@ -16,3 +16,12 @@ func stat(path string) (total, free uint64, ok bool) {
 	// it is what we can really write. Deliberately not Bfree.
 	return st.Blocks * bs, st.Bavail * bs, true
 }
+
+// device returns the id of the filesystem holding path.
+func device(path string) (uint64, bool) {
+	var st syscall.Stat_t
+	if err := syscall.Stat(path, &st); err != nil {
+		return 0, false
+	}
+	return uint64(st.Dev), true // Dev's width differs between architectures
+}

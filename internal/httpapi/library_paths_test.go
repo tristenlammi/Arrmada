@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/tristenlammi/arrmada/internal/config"
+	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/settings"
@@ -362,5 +364,85 @@ func TestCheckLibraryFolder(t *testing.T) {
 	}
 	if got := check("kind=nonsense&path=/x"); got["_code"] != http.StatusBadRequest {
 		t.Errorf("unknown kind: %+v", got)
+	}
+}
+
+// The health panel judges the folders the user picked, one by one, and never creates a
+// missing one on the way.
+func TestSystemHealthChecksEachLibraryFolder(t *testing.T) {
+	a, base := folderTestAPI(t)
+	healthAPI(t, a)
+	ctx := context.Background()
+	// The user picked TV on the media share; it isn't there yet but its parent is.
+	tv := filepath.Join(base, "media", "tv")
+	if err := a.deps.Settings.Set(ctx, keyLibTV, tv); err != nil {
+		t.Fatal(err)
+	}
+	// Movies picked on a share that isn't mounted at all.
+	movies := filepath.Join(base, "unmounted", "movies")
+	if err := a.deps.Settings.Set(ctx, keyLibMovies, movies); err != nil {
+		t.Fatal(err)
+	}
+	// ARRMADA_LIBRARY_DIR is gone; it must not be what's judged (or created).
+	a.deps.Config.LibraryDir = filepath.Join(base, "managed-volume")
+
+	var tvWarn, moviesErr *healthWarning
+	warns := healthWarnings(t, a)
+	for i, w := range warns {
+		switch {
+		case strings.Contains(w.Message, "TV folder "+tv):
+			tvWarn = &warns[i]
+		case strings.Contains(w.Message, "Movies folder "+movies):
+			moviesErr = &warns[i]
+		case strings.Contains(w.Message, "library folder"):
+			t.Errorf("the managed library dir was judged: %s", w.Message)
+		}
+	}
+	if tvWarn == nil || tvWarn.Level != "warning" || !strings.Contains(tvWarn.Message, "doesn't exist yet") {
+		t.Errorf("missing TV folder with its parent present: %+v", tvWarn)
+	}
+	if moviesErr == nil || moviesErr.Level != "error" || !strings.Contains(moviesErr.Message, "isn't mounted") {
+		t.Errorf("missing Movies share: %+v", moviesErr)
+	}
+	for _, p := range []string{tv, filepath.Dir(movies), a.deps.Config.LibraryDir} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("the health check created %s", p)
+		}
+	}
+	// Books is on by default but its folders aren't there; Music is off, so its folder
+	// isn't judged at all.
+	for _, w := range warns {
+		if strings.Contains(w.Message, "Music folder") {
+			t.Errorf("music is off but was checked: %s", w.Message)
+		}
+	}
+}
+
+// The disk guard panel names each library folder on the downloads drive.
+func TestDiskGuardSharedWithReportsRoots(t *testing.T) {
+	a, _ := folderTestAPI(t)
+	if _, ok := diskspace.Device(a.deps.Config.DownloadsDir); !ok {
+		t.Skip("filesystem ids can't be read on this platform")
+	}
+	healthAPI(t, a)
+	a.deps.DiskGuard = download.NewDiskGuard(a.deps.Downloads, a.deps.Settings, a.deps.Log, a.deps.Config.DownloadsDir)
+
+	w := httptest.NewRecorder()
+	a.handleDiskGuardStatus(w, httptest.NewRequest(http.MethodGet, "/", nil))
+	var got struct {
+		SharedWith []struct {
+			Role, Label, Path string
+		} `json:"shared_with"`
+		SharedWithLibrary bool `json:"shared_with_library"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decoding %q: %v", w.Body.String(), err)
+	}
+	roles := map[string]bool{}
+	for _, f := range got.SharedWith {
+		roles[f.Role] = true
+	}
+	if !roles["movies"] || !roles["tv"] || roles["downloads"] || !got.SharedWithLibrary {
+		t.Errorf("all temp dirs share one filesystem; got %+v", got)
 	}
 }

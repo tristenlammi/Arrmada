@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
-	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/download"
+	"github.com/tristenlammi/arrmada/internal/health"
 )
 
 var allowedActions = map[string]bool{"recheck": true, "reannounce": true, "prio_up": true, "prio_down": true}
@@ -254,12 +254,13 @@ func (a *api) handleBlockDownload(w http.ResponseWriter, r *http.Request) {
 // whether that volume is genuinely separate from the library.
 type diskGuardStatus struct {
 	download.GuardStatus
-	// SharedWithLibrary means the downloads folder and the library measure as the
-	// same filesystem. The guard still functions, but it is then watching the whole
+	// SharedWith lists the library folders that measure as the same filesystem as the
+	// downloads folder. The guard still functions, but it is then watching the whole
 	// array rather than a torrent drive, so a threshold tuned for a cache pool is
 	// measuring the wrong thing entirely.
-	SharedWithLibrary bool   `json:"shared_with_library"`
-	LibraryPath       string `json:"library_path"`
+	SharedWith []health.Folder `json:"shared_with"`
+	// SharedWithLibrary is len(SharedWith) > 0, kept for one release for a cached UI.
+	SharedWithLibrary bool `json:"shared_with_library"`
 }
 
 // handleDiskGuardStatus reports what the disk guard is watching and what it sees.
@@ -272,16 +273,28 @@ func (a *api) handleDiskGuardStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
-	out := diskGuardStatus{
-		GuardStatus: a.deps.DiskGuard.Status(ctx),
-		LibraryPath: a.deps.Config.LibraryDir,
+	out := diskGuardStatus{GuardStatus: a.deps.DiskGuard.Status(ctx)}
+	out.SharedWith = a.sharedWithDownloads(ctx, out.Path)
+	out.SharedWithLibrary = len(out.SharedWith) > 0
+	a.writeJSON(w, http.StatusOK, out)
+}
+
+// sharedWithDownloads lists the library folders the user picked that sit on the same
+// filesystem as the downloads folder the guard watches. It used to compare against
+// ARRMADA_LIBRARY_DIR — the managed volume — and so reported the wrong disk on any
+// install whose libraries live on the array.
+func (a *api) sharedWithDownloads(ctx context.Context, downloads string) []health.Folder {
+	shared := []health.Folder{}
+	if downloads == "" {
+		return shared
 	}
-	// The same identity test the dashboard uses: two paths on one filesystem report
-	// byte-identical totals, which is cheaper and more portable than a device id.
-	if dl, ok := diskspace.Of(a.deps.Config.DownloadsDir); ok {
-		if lib, ok := diskspace.Of(a.deps.Config.LibraryDir); ok {
-			out.SharedWithLibrary = dl.TotalBytes == lib.TotalBytes && dl.FreeBytes == lib.FreeBytes
+	for _, f := range health.LibraryFolders(a.pickedConfig(ctx), a.booksEnabled(ctx), a.musicEnabled(ctx)) {
+		if f.Role == "downloads" {
+			continue
+		}
+		if same, ok := health.SameFilesystem(downloads, f.Path); ok && same {
+			shared = append(shared, f)
 		}
 	}
-	a.writeJSON(w, http.StatusOK, out)
+	return shared
 }
