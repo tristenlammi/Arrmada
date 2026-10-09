@@ -42,6 +42,8 @@ func (a *api) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 	if !auth.ValidRole(role) {
 		role = auth.RoleRequester
 	}
+	// CreateUser lowercases the email and refuses one that differs from an existing account
+	// only by case; the client just trims, so the two can't disagree.
 	u, err := a.deps.Auth.CreateUser(r.Context(), email, req.Password, role, req.AutoApprove)
 	if errors.Is(err, auth.ErrUserExists) {
 		a.writeError(w, http.StatusConflict, "an account with that email already exists")

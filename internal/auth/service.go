@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -60,11 +61,38 @@ type User struct {
 type Service struct {
 	db         *sql.DB
 	sessionTTL time.Duration
+	log        *slog.Logger
 }
 
 // NewService builds an auth service over the given database pool.
 func NewService(db *sql.DB) *Service {
-	return &Service{db: db, sessionTTL: 30 * 24 * time.Hour}
+	return &Service{db: db, sessionTTL: 30 * 24 * time.Hour, log: slog.New(slog.DiscardHandler)}
+}
+
+// SetLogger sets where the service reports things the owner should fix (e.g. two accounts
+// that differ only by case). Without one those warnings are dropped.
+func (s *Service) SetLogger(l *slog.Logger) {
+	if l != nil {
+		s.log = l
+	}
+}
+
+// normalizeUsername trims a new account's name and lowercases it when it's an email, so
+// 'Mum@Gmail.com' and 'mum@gmail.com' are one account. Other names (the setup admin's
+// chosen name) keep their case; lookups ignore case anyway. Only ASCII is folded, to
+// match SQLite's lower(), which the case-insensitive lookups use.
+func normalizeUsername(name string) string {
+	name = strings.TrimSpace(name)
+	if !strings.Contains(name, "@") {
+		return name
+	}
+	b := []byte(name)
+	for i, c := range b {
+		if 'A' <= c && c <= 'Z' {
+			b[i] = c + ('a' - 'A')
+		}
+	}
+	return string(b)
 }
 
 // UserCount returns the number of user accounts (0 means first-run setup needed).
@@ -74,9 +102,10 @@ func (s *Service) UserCount(ctx context.Context) (int, error) {
 	return n, err
 }
 
-// CreateUser creates a user with a bcrypt-hashed password.
+// CreateUser creates a user with a bcrypt-hashed password. Emails are stored lowercased,
+// and a name that matches an existing one ignoring case is taken.
 func (s *Service) CreateUser(ctx context.Context, username, password string, role Role, autoApprove bool) (*User, error) {
-	username = strings.TrimSpace(username)
+	username = normalizeUsername(username)
 	if username == "" {
 		return nil, ErrUsernameRequired
 	}
@@ -85,6 +114,14 @@ func (s *Service) CreateUser(ctx context.Context, username, password string, rol
 	}
 	if !ValidRole(role) {
 		role = RoleAdmin
+	}
+	var taken int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM users WHERE lower(username) = lower(?)`, username).Scan(&taken); err != nil {
+		return nil, err
+	}
+	if taken > 0 {
+		return nil, ErrUserExists
 	}
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
@@ -157,7 +194,7 @@ func (s *Service) uniqueUsername(ctx context.Context, base string) string {
 	name := base
 	for i := 2; i < 1000; i++ {
 		var n int
-		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE username = ?`, name).Scan(&n); err == nil && n == 0 {
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE lower(username) = lower(?)`, name).Scan(&n); err == nil && n == 0 {
 			return name
 		}
 		name = base + "-" + strconv.Itoa(i)
@@ -226,13 +263,69 @@ func (s *Service) UserByID(ctx context.Context, id int64) (*User, error) {
 	return s.userWhere(ctx, `id = ?`, id)
 }
 
-// UserByUsername loads one user by username, exact match first, then ignoring case.
+// UserByUsername loads one user by username, exact match first, then ignoring case. Two
+// accounts that differ only by case match neither way round (as in Authenticate), so a
+// sign-in can never land in the wrong one.
 func (s *Service) UserByUsername(ctx context.Context, username string) (*User, error) {
 	username = strings.TrimSpace(username)
 	if u, err := s.userWhere(ctx, `username = ?`, username); err == nil {
 		return u, nil
 	}
-	return s.userWhere(ctx, `lower(username) = lower(?)`, username)
+	ids, err := s.caseInsensitiveIDs(ctx, username)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) != 1 {
+		if len(ids) > 1 {
+			s.warnAmbiguous(ids)
+		}
+		return nil, ErrInvalidCredentials
+	}
+	return s.userWhere(ctx, `id = ?`, ids[0])
+}
+
+// caseInsensitiveIDs returns every account whose name matches ignoring case.
+func (s *Service) caseInsensitiveIDs(ctx context.Context, username string) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM users WHERE lower(username) = lower(?) ORDER BY id`, username)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (s *Service) warnAmbiguous(ids []int64) {
+	s.log.Warn("auth: sign-in refused — the name matches more than one account ignoring case; merge or delete one in Settings → Users",
+		"user_ids", ids)
+}
+
+// ReportCaseDuplicates logs, once, any accounts whose names differ only by case. Those
+// were possible before names were compared ignoring case. Nothing is merged or deleted:
+// both keep signing in with their exact spelling, and the owner decides which to keep.
+func (s *Service) ReportCaseDuplicates(ctx context.Context) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT group_concat(id, ','), group_concat(username, ', ') FROM users
+		GROUP BY lower(username) HAVING COUNT(*) > 1`)
+	if err != nil {
+		s.log.Warn("auth: could not check for duplicate account names", "err", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var ids, names string
+		if rows.Scan(&ids, &names) == nil {
+			s.log.Warn("auth: these accounts have the same name ignoring case; each still signs in with its exact spelling — merge or delete one in Settings → Users",
+				"user_ids", ids, "usernames", names)
+		}
+	}
 }
 
 func (s *Service) userWhere(ctx context.Context, where string, arg any) (*User, error) {
@@ -299,7 +392,10 @@ func (s *Service) RevokeUserSessions(ctx context.Context, id int64) error {
 	return err
 }
 
-// Authenticate verifies a username/password and returns the user on success.
+// Authenticate verifies a username/password and returns the user on success. The exact
+// name is tried first, so a legacy mixed-case account still signs in as typed; then the
+// name ignoring case, but only when exactly one account matches. Two accounts differing
+// only by case fail closed rather than guess which one was meant.
 func (s *Service) Authenticate(ctx context.Context, username, password string) (*User, error) {
 	var (
 		u           User
@@ -307,10 +403,27 @@ func (s *Service) Authenticate(ctx context.Context, username, password string) (
 		disabled    int
 		autoApprove int
 	)
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, password_hash, role, disabled, auto_approve FROM users WHERE username = ?`,
-		strings.TrimSpace(username)).
+	username = strings.TrimSpace(username)
+	const cols = `SELECT id, username, password_hash, role, disabled, auto_approve FROM users WHERE `
+	err := s.db.QueryRowContext(ctx, cols+`username = ?`, username).
 		Scan(&u.ID, &u.Username, &hash, &u.Role, &disabled, &autoApprove)
+	if errors.Is(err, sql.ErrNoRows) {
+		var ids []int64
+		if ids, err = s.caseInsensitiveIDs(ctx, username); err != nil {
+			return nil, err
+		}
+		switch {
+		case len(ids) == 1:
+			err = s.db.QueryRowContext(ctx, cols+`id = ?`, ids[0]).
+				Scan(&u.ID, &u.Username, &hash, &u.Role, &disabled, &autoApprove)
+		case len(ids) > 1:
+			s.warnAmbiguous(ids)
+			_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(password))
+			return nil, ErrInvalidCredentials
+		default:
+			err = sql.ErrNoRows
+		}
+	}
 	u.AutoApprove = autoApprove != 0
 	if errors.Is(err, sql.ErrNoRows) {
 		// Spend a REAL bcrypt cycle so response time doesn't leak whether the

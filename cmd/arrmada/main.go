@@ -165,6 +165,9 @@ func main() {
 		bus.Publish("system.panic", map[string]any{"name": name})
 	})
 	authSvc := auth.NewService(st.DB())
+	authSvc.SetLogger(log)
+	// Accounts that differ only by case predate case-insensitive names; say so once.
+	authSvc.ReportCaseDuplicates(context.Background())
 	indexers := indexer.NewService(st.DB(), log, cfg.FlaresolverrURL)
 	downloads := download.NewService(st.DB(), log)
 	settingsSvc := settings.NewService(st.DB())
