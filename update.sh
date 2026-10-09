@@ -25,7 +25,7 @@ usage() {
   say "  --no-backup     don't take the pre-update database backup"
   say "  --rollback      start the build that ran before the last update again"
   say "  --with-db       with --rollback: also put back the database backup taken before that update"
-  say "  -y, --yes       don't ask for confirmation"
+  say "  -y, --yes       don't ask for confirmation (also: ARRMADA_UPDATE_FORCE=1)"
 }
 
 PULLED=""
@@ -46,6 +46,10 @@ for _arg in "$@"; do
     *) say "✗ Unknown option: $_arg" >&2; usage >&2; exit 2 ;;
   esac
 done
+# For unattended runs that pass no options: the same as -y.
+if [ "${ARRMADA_UPDATE_FORCE:-}" = 1 ]; then
+  YES=1
+fi
 if [ -n "$WITH_DB" ] && [ -z "$ROLLBACK" ]; then
   say "✗ --with-db only goes with --rollback." >&2; usage >&2; exit 2
 fi
@@ -76,6 +80,11 @@ health_json() {
 # json_str KEY reads a string field from one line of JSON on stdin (no jq on Unraid).
 json_str() {
   sed -n "s/.*\"$1\":\"\([^\"]*\)\".*/\1/p"
+}
+
+# json_num KEY reads a whole-number field from one line of JSON on stdin.
+json_num() {
+  sed -n "s/.*\"$1\":\([0-9][0-9]*\).*/\1/p"
 }
 
 # image_id REF -> the image's ID, or nothing if there's no such image.
@@ -299,6 +308,25 @@ rollback() {
 if [ -n "$ROLLBACK" ]; then
   rollback
   exit 0
+fi
+
+# ── long conversion? ───────────────────────────────────────────────────────────
+# Restarting the app abandons a conversion in flight, and a 4K encode can take a day.
+# Asked before anything changes (the pull included), and only once: a copy of this
+# script re-run after the pull (--pulled) has already been through it. Only asks on a
+# terminal; -y, ARRMADA_UPDATE_FORCE=1 and unattended runs print the warning and go on.
+# The app reports this only to callers inside its own container.
+if [ -z "$PULLED" ]; then
+  _health=$(health_json)
+  _sec=$(printf '%s\n' "$_health" | json_num convert_running_sec)
+  if [ -n "$_sec" ] && [ "$_sec" -gt 7200 ]; then
+    _pct=$(printf '%s\n' "$_health" | json_num convert_progress)
+    say "! A conversion has been running for $((_sec / 3600))h $(((_sec % 3600) / 60))m (${_pct:-0}%). Updating now restarts it from the beginning."
+    if ! confirm "Update anyway?"; then
+      say "Not updating; nothing was changed. Run ./update.sh again once it's done (or with -y to go ahead)."
+      exit 0
+    fi
+  fi
 fi
 
 # ── pull latest (skip cleanly if this isn't a git checkout) ─────────────────────

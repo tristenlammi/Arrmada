@@ -575,7 +575,7 @@ func (a *api) handleHealth(w http.ResponseWriter, r *http.Request) {
 		status, code = "degraded", http.StatusServiceUnavailable
 	}
 
-	a.writeJSON(w, code, map[string]any{
+	body := map[string]any{
 		"status":         status,
 		"version":        buildinfo.Version,
 		"commit":         buildinfo.Commit,
@@ -583,7 +583,13 @@ func (a *api) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"checks": map[string]string{
 			"database": boolStatus(dbOK),
 		},
-	})
+	}
+	// Only for callers inside the container (update.sh); everyone else gets the payload
+	// above exactly.
+	if a.isLocalCaller(r) {
+		body["busy"] = a.healthBusy()
+	}
+	a.writeJSON(w, code, body)
 }
 
 func boolStatus(ok bool) string {

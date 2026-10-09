@@ -84,6 +84,11 @@ Before it rebuilds, the script also backs the database up with the running app's
 and stops if that fails; `./update.sh --no-backup` updates without it. Builds older than
 this feature can't take one, so the first update after it says so and carries on.
 
+Restarting abandons a conversion in progress, so if one has been running for over two
+hours the script says so and asks before it changes anything. `./update.sh -y` (or
+`ARRMADA_UPDATE_FORCE=1`) goes ahead without asking, and so does a run with no terminal,
+such as a scheduled one: it prints the warning and updates.
+
 If the pull fails (local edits, or a branch that has diverged), the script stops without
 rebuilding anything; `git status` shows what's in the way. `./update.sh --force-local` skips
 the pull and rebuilds the code that's in the folder.
