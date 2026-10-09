@@ -53,10 +53,10 @@ var bannedCopy = []bannedPhrase{
 	phrase(`stripped from the video`, "Subtitles never edits the video; Convert drops languages under its own setting"),
 	// COPY-03: pages that don't exist.
 	phrase(`(appear|show)[a-z]* in Activity`, "there is no Activity page — name Downloads → Searching via PAGE.downloads"),
-	phrase(`Requests page`, "there is no Requests page — requests show in the row on Discover (LINKS.requests)"),
+	// (REQ-05 routed /requests, so "Requests page" is no longer a dead end.)
 	// COPY-09: what requesters actually get.
-	phrase(`Discover-only`, "requesters get Discover, Calendar, Books and Audiobooks — list the real pages"),
-	phrase(`only the Discover page`, "requesters get Discover, Calendar, Books and Audiobooks — list the real pages"),
+	phrase(`Discover-only`, "requesters get Discover, Requests, Calendar, Books and Audiobooks — list the real pages (requesterNav)"),
+	phrase(`only the Discover page`, "requesters get Discover, Requests, Calendar, Books and Audiobooks — list the real pages (requesterNav)"),
 	webPhrase(`update\.sh`, "the UI never sends people to the install scripts; name the setting or the container"),
 	// CFG-13: Settings is a hub of sections with their own URLs.
 	phrase(`Settings → System → (Recycle bin|Disk guard|Download disk guard)`, "the recycle bin and disk guard live in Settings → Downloads (LINKS.recycleBin, LINKS.diskGuard)"),
@@ -219,7 +219,6 @@ func TestCopyGuardMatcher(t *testing.T) {
 		`everything else is stripped from the video`,
 		`it'll appear in Activity once grabbed`,
 		`it'll show in Activity once grabbed`,
-		`they'll appear on the Requests page`,
 		`a Requester account (Discover-only)`,
 		`Requesters see only the Discover page.`,
 		`re-run ./update.sh`,

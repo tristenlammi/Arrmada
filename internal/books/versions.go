@@ -164,6 +164,32 @@ func (r *Repo) AllAudioVersions(ctx context.Context) (map[int64][]AudioVersion, 
 	return out, rows.Err()
 }
 
+// AudioVersionsFor returns the extra audio versions of these books, grouped by book.
+func (r *Repo) AudioVersionsFor(ctx context.Context, bookIDs []int64) (map[int64][]AudioVersion, error) {
+	out := map[int64][]AudioVersion{}
+	if len(bookIDs) == 0 {
+		return out, nil
+	}
+	args := make([]any, 0, len(bookIDs))
+	for _, id := range bookIDs {
+		args = append(args, id)
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT `+versionCols+` FROM book_audio_versions WHERE book_id IN (`+
+		strings.TrimSuffix(strings.Repeat("?,", len(bookIDs)), ",")+`) ORDER BY id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		v, err := scanVersion(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[v.BookID] = append(out[v.BookID], v)
+	}
+	return out, rows.Err()
+}
+
 // GetAudioVersion loads one version, checking it belongs to the book.
 func (r *Repo) GetAudioVersion(ctx context.Context, bookID, id int64) (AudioVersion, error) {
 	v, err := scanVersion(r.db.QueryRowContext(ctx,

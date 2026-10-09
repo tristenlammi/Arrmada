@@ -639,7 +639,7 @@ func (a *api) enrichBookCards(ctx context.Context, results []metadata.BookResult
 	type reqInfo struct{ status, formats string }
 	reqStatus := map[string]reqInfo{}
 	reqByBook := map[int64]reqInfo{}
-	if reqs, err := a.deps.Requests.List(ctx, "", 0); err == nil {
+	if reqs, err := a.deps.Requests.Records(ctx, requests.ListFilter{MediaType: "book"}); err == nil {
 		for _, rq := range reqs {
 			if rq.MediaType != "book" {
 				continue

@@ -45,7 +45,10 @@ func bookLinkFixture(t *testing.T, cat catalogue) (*Service, *books.Repo, *sql.D
 		series:  series.NewService(db, nil, root, log),
 		books:   books.NewService(db, cat, log),
 		quality: quality.NewService(db),
-		log:     log,
+		// The acquisition record, for tracking and the in-flight check (searches here go
+		// through searchBook).
+		coord: automation.New(nil, nil, nil, nil, db, nil, log, ""),
+		log:   log,
 	}
 	return s, books.NewRepo(db), db, context.Background()
 }
@@ -76,7 +79,7 @@ func TestApproveLinksExistingBookAndSearches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Approve(ctx, req.ID, "")
+	got, err := s.Approve(ctx, req.ID, ApproveOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +104,7 @@ func TestApproveLinksExistingBookAndSearches(t *testing.T) {
 	s.books = books.NewService(s.repo.db, catalogue{byKey: map[string]metadata.BookResult{
 		"OL2W": {Key: "OL2W", Title: "Dune", Author: "Frank Herbert"},
 	}}, s.log)
-	if _, err := s.Approve(ctx, again.ID, ""); err != nil {
+	if _, err := s.Approve(ctx, again.ID, ApproveOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -133,7 +136,7 @@ func TestApproveSkipsSearchWhileDownloading(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Approve(ctx, req.ID, "")
+	got, err := s.Approve(ctx, req.ID, ApproveOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,12 +168,12 @@ func TestLinkedRequestSurvivesRematch(t *testing.T) {
 	if _, err := s.repo.db.ExecContext(ctx, `INSERT INTO request_subscribers (request_id, user_id, user_name) VALUES (?, 8, 'bob')`, req.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.books.Rematch(ctx, b.ID, "hc:42", metadata.BookResult{}); err != nil {
+	if _, err := s.books.(*books.Service).Rematch(ctx, b.ID, "hc:42", metadata.BookResult{}); err != nil {
 		t.Fatal(err)
 	}
 	giveEbook(t, repo, ctx, b.ID)
 
-	list, err := s.List(ctx, "", 0)
+	list, _, err := s.List(ctx, ListFilter{})
 	if err != nil || len(list) != 1 {
 		t.Fatalf("list: %v %d", err, len(list))
 	}
@@ -255,11 +258,11 @@ func TestCreateWithAliasKeyAttachesToExistingRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.books.Rematch(ctx, b.ID, "hc:42", metadata.BookResult{}); err != nil {
+	if _, err := s.books.(*books.Service).Rematch(ctx, b.ID, "hc:42", metadata.BookResult{}); err != nil {
 		t.Fatal(err)
 	}
 	first, sub, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert",
-		RequestedBy: 7, RequestedByName: "alice"}, false)
+		RequestedBy: 7, RequestedByName: "alice"}, CreateOptions{})
 	if err != nil || sub {
 		t.Fatalf("first request: %v subscribed=%v", err, sub)
 	}
@@ -267,7 +270,7 @@ func TestCreateWithAliasKeyAttachesToExistingRequest(t *testing.T) {
 		t.Errorf("first request book_id = %d, want %d (its key is the book's former key)", first.BookID, b.ID)
 	}
 	second, sub, err := s.Create(ctx, Request{MediaType: "book", OLKey: "hc:42", Title: "Dune", Author: "Frank Herbert",
-		RequestedBy: 8, RequestedByName: "bob"}, false)
+		RequestedBy: 8, RequestedByName: "bob"}, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,11 +287,11 @@ func TestCreateWithAliasKeyAttachesToExistingRequest(t *testing.T) {
 // card, is one request too: same title and author.
 func TestCreateSameBookOtherCatalogueAttaches(t *testing.T) {
 	s, _, _, ctx := bookLinkFixture(t, catalogue{})
-	first, _, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", RequestedBy: 7}, false)
+	first, _, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", RequestedBy: 7}, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, sub, err := s.Create(ctx, Request{MediaType: "book", OLKey: "hc:42", Title: "Dune", Author: "Herbert, Frank", RequestedBy: 8}, false)
+	second, sub, err := s.Create(ctx, Request{MediaType: "book", OLKey: "hc:42", Title: "Dune", Author: "Herbert, Frank", RequestedBy: 8}, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +299,7 @@ func TestCreateSameBookOtherCatalogueAttaches(t *testing.T) {
 		t.Errorf("second = %d subscribed=%v, want subscribed to %d", second.ID, sub, first.ID)
 	}
 	// A prefix sibling is another book.
-	third, sub, err := s.Create(ctx, Request{MediaType: "book", OLKey: "hc:43", Title: "Dune Messiah", Author: "Frank Herbert", RequestedBy: 8}, false)
+	third, sub, err := s.Create(ctx, Request{MediaType: "book", OLKey: "hc:43", Title: "Dune Messiah", Author: "Frank Herbert", RequestedBy: 8}, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

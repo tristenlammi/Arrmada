@@ -107,6 +107,26 @@ func (s *Service) List(ctx context.Context) ([]Book, error) {
 	return list, nil
 }
 
+// ByKeysOrIDs returns the books under any of these catalogue keys (current or former) or
+// with any of these ids, each with its extra audio versions: a request for the audiobook
+// is fulfilled by one of those as much as by the standard edition.
+func (s *Service) ByKeysOrIDs(ctx context.Context, olKeys []string, ids []int64) ([]Book, error) {
+	list, err := s.repo.ByKeysOrIDs(ctx, olKeys, ids)
+	if err != nil || len(list) == 0 {
+		return list, err
+	}
+	bookIDs := make([]int64, 0, len(list))
+	for _, b := range list {
+		bookIDs = append(bookIDs, b.ID)
+	}
+	if vs, verr := s.repo.AudioVersionsFor(ctx, bookIDs); verr == nil {
+		for i := range list {
+			list[i].AudioVersions = vs[list[i].ID]
+		}
+	}
+	return list, nil
+}
+
 // Get returns one book with its extra audio versions.
 func (s *Service) Get(ctx context.Context, id int64) (Book, error) {
 	b, err := s.repo.Get(ctx, id)

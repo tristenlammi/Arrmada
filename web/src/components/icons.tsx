@@ -18,6 +18,13 @@ const PATHS = {
       <path d="M15.5 8.5l-2 5-5 2 2-5z" />
     </>
   ),
+  // A raised hand: someone asking for something.
+  requests: (
+    <>
+      <path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V11M11 10V4a1.5 1.5 0 0 1 3 0v7M14 10.5V6a1.5 1.5 0 0 1 3 0v8" />
+      <path d="M8 12.5l-1.6-1.6a1.6 1.6 0 0 0-2.3 2.3L8 17.5c1.3 1.6 2.9 3 5.4 3 3.2 0 3.6-2.6 3.6-6.5" />
+    </>
+  ),
   downloads: <path d="M12 4v11M7 10l5 5 5-5M5 20h14" />,
   history: (
     <>

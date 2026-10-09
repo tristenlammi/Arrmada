@@ -41,9 +41,20 @@ type Request struct {
 	Available        bool    `json:"available"`                   // computed at read time, not stored
 	DownloadProgress float64 `json:"download_progress,omitempty"` // 0..1 while downloading; computed at read time
 	// Tracking is where the request has got to, from request to ready (see Track).
-	Tracking  *Tracking `json:"tracking,omitempty"`
-	CreatedAt string    `json:"created_at"`
-	UpdatedAt string    `json:"updated_at"`
+	Tracking *Tracking `json:"tracking,omitempty"`
+	// ReadyAt is when the requester (and followers) were told it's ready, unix seconds;
+	// 0 until then. It also sorts approved requests into in progress and ready.
+	ReadyAt   int64  `json:"ready_at"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	// Relation is how the viewer stands to it in their own list: owner or subscriber.
+	// Empty in a staff list of everyone's requests.
+	Relation string `json:"relation,omitempty"`
+	// LibraryID is the library item it became, for staff ("Open in library"). The HTTP
+	// layer fills it for staff only; requesters never see library ids.
+	LibraryID int64 `json:"library_id,omitempty"`
+	// Followers names who else follows it, on the staff detail view only.
+	Followers []Follower `json:"followers,omitempty"`
 
 	// Seasons are the regular seasons a series request asks for, ascending; empty means
 	// the whole show (every request made before seasons existed, and "All seasons").
@@ -80,14 +91,15 @@ type Repo struct{ db *sql.DB }
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const cols = `id, media_type, tmdb_id, ol_key, title, author, year, poster_url, overview, status,
-	quality_profile, requested_by, requested_by_name, note, created_at, updated_at, book_id, formats, seasons`
+	quality_profile, requested_by, requested_by_name, note, created_at, updated_at, book_id, formats, seasons, ready_at`
 
 func scan(row interface{ Scan(...any) error }) (Request, error) {
 	var r Request
 	var bookID sql.NullInt64
 	var seasons string
 	err := row.Scan(&r.ID, &r.MediaType, &r.TMDBID, &r.OLKey, &r.Title, &r.Author, &r.Year, &r.PosterURL, &r.Overview,
-		&r.Status, &r.QualityProfile, &r.RequestedBy, &r.RequestedByName, &r.Note, &r.CreatedAt, &r.UpdatedAt, &bookID, &r.Formats, &seasons)
+		&r.Status, &r.QualityProfile, &r.RequestedBy, &r.RequestedByName, &r.Note, &r.CreatedAt, &r.UpdatedAt, &bookID, &r.Formats, &seasons,
+		&r.ReadyAt)
 	r.BookID = bookID.Int64
 	r.Seasons = decodeSeasons(seasons)
 	return r, err
@@ -212,15 +224,19 @@ func (r *Repo) ListByBookID(ctx context.Context, bookID int64) ([]Request, error
 }
 
 // SetFormats records a book request's format choice and the profile that goes with it
-// (an empty profile leaves the stored one alone).
+// (an empty profile leaves the stored one alone). A change of formats un-stamps ready_at:
+// the request has to be judged ready again over what it asks for now (an audiobook added
+// to a delivered ebook request is still on its way). Each format's message has its own
+// inbox reference, so nobody hears about one twice when it is stamped again.
 func (r *Repo) SetFormats(ctx context.Context, id int64, formats, profile string) error {
 	_, err := r.db.ExecContext(ctx,
 		`UPDATE requests
-		    SET formats = ?,
+		    SET ready_at = CASE WHEN formats = ? THEN ready_at ELSE 0 END,
+		        formats = ?,
 		        quality_profile = CASE WHEN ? = '' THEN quality_profile ELSE ? END,
 		        updated_at = CURRENT_TIMESTAMP
 		  WHERE id = ?`,
-		formats, profile, profile, id)
+		formats, formats, profile, profile, id)
 	return err
 }
 
@@ -266,25 +282,17 @@ func (r *Repo) query(ctx context.Context, q string, args ...any) ([]Request, err
 	return out, rows.Err()
 }
 
-// List returns requests (newest first), optionally filtered by status and/or the
-// requesting user (requestedBy = 0 means all users).
-func (r *Repo) List(ctx context.Context, status string, requestedBy int64) ([]Request, error) {
-	q := `SELECT ` + cols + ` FROM requests`
-	var where []string
-	var args []any
-	if status != "" {
-		where = append(where, "status = ?")
-		args = append(args, status)
-	}
-	if requestedBy != 0 {
-		where = append(where, "requested_by = ?")
-		args = append(args, requestedBy)
-	}
-	if len(where) > 0 {
-		q += " WHERE " + strings.Join(where, " AND ")
-	}
-	q += ` ORDER BY id DESC`
-	return r.query(ctx, q, args...)
+// ListAwaitingReady returns the approved requests whose requester hasn't been told it's
+// ready yet: the ready sweep's work list.
+func (r *Repo) ListAwaitingReady(ctx context.Context) ([]Request, error) {
+	return r.query(ctx, `SELECT `+cols+` FROM requests WHERE status = ? AND ready_at = 0 ORDER BY id`, StatusApproved)
+}
+
+// MarkReady records when the requester was told a request is ready. Only the first time
+// counts: a request already stamped keeps its stamp.
+func (r *Repo) MarkReady(ctx context.Context, id, at int64) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE requests SET ready_at = ? WHERE id = ? AND ready_at = 0`, at, id)
+	return err
 }
 
 // SetStatus updates a request's status. A non-empty profile also updates the
@@ -362,6 +370,23 @@ func (r *Repo) RemoveSubscriber(ctx context.Context, requestID, userID int64) er
 	_, err := r.db.ExecContext(ctx,
 		`DELETE FROM request_subscribers WHERE request_id = ? AND user_id = ?`, requestID, userID)
 	return err
+}
+
+// Unsubscribe detaches a user who follows a request. removed is false when they didn't
+// follow it (an owner has no subscription to drop).
+func (r *Repo) Unsubscribe(ctx context.Context, requestID, userID int64) (removed bool, err error) {
+	res, err := r.db.ExecContext(ctx,
+		`DELETE FROM request_subscribers WHERE request_id = ? AND user_id = ?`, requestID, userID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// Follower is someone following a request, as staff see them on its detail view.
+type Follower struct {
+	Name string `json:"name"`
 }
 
 // Subscribers lists the extra users attached to a request.

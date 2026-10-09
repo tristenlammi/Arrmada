@@ -21,6 +21,7 @@ DELETE /api/v1/notifications/{id} staff -
 DELETE /api/v1/quality/profiles/{id} staff -
 DELETE /api/v1/queue/{hash} staff -
 DELETE /api/v1/requests/{id} requester ext
+DELETE /api/v1/requests/{id}/subscription requester ext
 DELETE /api/v1/series/{id} staff -
 DELETE /api/v1/series/{id}/aliases/{alias} staff -
 DELETE /api/v1/series/{id}/blocklist/{bid} staff -
@@ -158,6 +159,7 @@ GET /api/v1/recycle staff -
 GET /api/v1/recycle/items staff -
 GET /api/v1/recycle/mode staff -
 GET /api/v1/requests user ext
+GET /api/v1/requests/{id} user ext
 GET /api/v1/reviews staff -
 GET /api/v1/reviews/{id}/files staff -
 GET /api/v1/reviews/{id}/targets staff -
@@ -286,6 +288,7 @@ POST /api/v1/recycle/delete admin -
 POST /api/v1/recycle/empty admin -
 POST /api/v1/recycle/restore staff -
 POST /api/v1/requests requester ext
+POST /api/v1/requests/bulk staff ext
 POST /api/v1/requests/import/overseerr admin ext
 POST /api/v1/requests/{id}/approve staff ext
 POST /api/v1/requests/{id}/decline staff ext

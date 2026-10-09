@@ -11,6 +11,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
@@ -123,7 +124,7 @@ func (a *api) buildDiscoverSnapshot(ctx context.Context) (snap *discoverEnrichSn
 	} else {
 		complete = false
 	}
-	if rs, err := a.deps.Requests.List(ctx, "", 0); err == nil {
+	if rs, err := a.deps.Requests.Records(ctx, requests.ListFilter{}); err == nil {
 		// A show can have several requests (one per ask for more seasons): the card shows
 		// the furthest along, approved over pending over declined.
 		rank := map[string]int{"declined": 1, "pending": 2, "approved": 3}

@@ -1091,6 +1091,33 @@ export interface MediaRequest {
   tracking?: RequestTracking;
   created_at: string;
   updated_at: string;
+  /** When the requester was told it's ready (unix seconds); 0 until then. */
+  ready_at?: number;
+  /** How the viewer stands to it in their own list: they asked, or they follow it. */
+  relation?: "owner" | "subscriber";
+  /** Staff only: the library item it became (movie, series or book id). */
+  library_id?: number;
+  /** Staff only, on GET /requests/{id}: who else follows it. */
+  followers?: { name: string }[];
+}
+
+/** A section of the request list (GET /api/v1/requests?section=). */
+export type RequestSection = "needs_approval" | "in_progress" | "ready" | "declined" | "all" | "strip";
+
+/** How many requests each section holds, for the viewer's scope and filters. */
+export interface RequestCounts {
+  needs_approval: number;
+  in_progress: number;
+  ready: number;
+  declined: number;
+}
+
+export interface RequestList {
+  requests: MediaRequest[];
+  counts?: RequestCounts;
+  total?: number;
+  auto_approve: boolean;
+  client_health?: QueueHealth;
 }
 
 // RequestTracking is where a request has got to, from its own downloads.
@@ -2247,8 +2274,24 @@ export const api = {
   myBooks: () => req<{ books: MyBook[]; requests: MyRequest[] }>("/api/v1/me/books"),
   // A plain link, not a fetch: the browser saves the file with the server's filename.
   ebookDownloadURL: (bookId: number) => `/api/v1/books/${bookId}/ebook`,
-  requests: (status?: string) =>
-    req<{ requests: MediaRequest[]; auto_approve: boolean; client_health?: QueueHealth }>(`/api/v1/requests${status ? `?status=${status}` : ""}`),
+  // Without a section: every request the viewer may see, newest first. With one: a page
+  // of that section (default 50), plus counts for every section.
+  requests: (opts: { section?: RequestSection; limit?: number; offset?: number; media_type?: string; q?: string; status?: string } = {}) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(opts)) if (v !== undefined && v !== "") qs.set(k, String(v));
+    const s = qs.toString();
+    return req<RequestList>(`/api/v1/requests${s ? `?${s}` : ""}`);
+  },
+  getRequest: (id: number) =>
+    req<{ request: MediaRequest; client_health?: QueueHealth }>(`/api/v1/requests/${id}`),
+  // Stop following a request someone else made: no more notifications, and it leaves
+  // your list. The request itself stays.
+  unsubscribeRequest: (id: number) =>
+    req<void>(`/api/v1/requests/${id}/subscription`, { method: "DELETE" }),
+  // Approve or decline several at once; each is decided on its own, so one failure
+  // doesn't stop the rest.
+  bulkRequests: (body: { action: "approve" | "decline"; ids: number[]; quality_profile?: string }) =>
+    req<{ results: { id: number; ok: boolean; error?: string }[] }>("/api/v1/requests/bulk", { method: "POST", body: JSON.stringify(body) }),
   // Returns 200 even for already-requested titles: subscribed=true means "you were
   // attached to an existing request and will be notified too". Requesting a declined
   // title resurrects it as pending. A series request may name `seasons` (empty or absent:
@@ -2258,9 +2301,17 @@ export const api = {
   createRequest: (body: { media_type: "movie" | "series" | "book"; tmdb_id?: number; ol_key?: string; author?: string; title: string; year: number; poster_url?: string; overview?: string; quality_profile?: string; note?: string; formats?: "ebook" | "audiobook" | "both"; seasons?: number[] }) =>
     req<{ request: MediaRequest; subscribed: boolean } | MediaRequest>("/api/v1/requests", { method: "POST", body: JSON.stringify(body) })
       .then((r): { request: MediaRequest; subscribed: boolean } => ("request" in r ? r : { request: r, subscribed: false })),
-  /** `seasons` trims a series request to a subset of what it asked for (the rest is declined). */
-  approveRequest: (id: number, quality_profile?: string, seasons?: number[]) =>
-    req<MediaRequest>(`/api/v1/requests/${id}/approve`, { method: "POST", body: JSON.stringify({ quality_profile: quality_profile ?? "", ...(seasons?.length ? { seasons } : {}) }) }),
+  // body.quality_profile: "" or absent keeps the request's own profile (or the default).
+  // body.seasons trims a series request to a subset of what it asked for (the rest isn't
+  // approved); empty or absent approves it as asked. A plain string is still accepted as
+  // the profile, for older callers.
+  approveRequest: (id: number, body: string | { quality_profile?: string; seasons?: number[] } = {}) => {
+    const b = typeof body === "string" ? { quality_profile: body } : body;
+    return req<MediaRequest>(`/api/v1/requests/${id}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ quality_profile: b.quality_profile ?? "", ...(b.seasons?.length ? { seasons: b.seasons } : {}) }),
+    });
+  },
   declineRequest: (id: number) =>
     req<{ status: string }>(`/api/v1/requests/${id}/decline`, { method: "POST" }),
   deleteRequest: (id: number) =>

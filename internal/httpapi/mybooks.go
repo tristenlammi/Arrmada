@@ -83,7 +83,7 @@ func (a *api) handleMyBooks(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusUnauthorized, "sign in first")
 		return
 	}
-	reqs, err := a.deps.Requests.List(r.Context(), "", u.ID)
+	reqs, _, err := a.deps.Requests.List(r.Context(), requests.ListFilter{UserID: u.ID, MediaType: "book"})
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not list requests")
 		return
@@ -159,7 +159,7 @@ func (a *api) handleMyBooks(w http.ResponseWriter, r *http.Request) {
 	tracked := false
 	if len(open) > 0 && a.deps.Downloads != nil {
 		if queue, qerr := a.deps.Downloads.Queue(r.Context()); qerr == nil {
-			a.deps.Requests.Track(r.Context(), open, queue)
+			a.deps.Requests.Track(r.Context(), open, queue, true)
 			tracked = true
 		}
 	}

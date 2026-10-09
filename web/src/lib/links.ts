@@ -13,7 +13,7 @@ export const LINKS = {
   indexers: "/indexers",
   subtitlesSettings: "/subtitles?tab=settings",
   convertSettings: "/convert?tab=settings",
-  requests: "/discover",
+  requests: "/requests",
   backups: "/settings/system#backups",
   audiobookServer: "/audiobooks",
   status: "/settings/status",

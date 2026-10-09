@@ -81,6 +81,53 @@ func (r *Repo) List(ctx context.Context) ([]Series, error) {
 	return out, nil
 }
 
+// ByTMDBIDs returns the series with these TMDB ids, each with its roll-up stats — the
+// same numbers List gives them — in two queries however many there are (a page of
+// requests, say), instead of the whole library.
+func (r *Repo) ByTMDBIDs(ctx context.Context, tmdbIDs []int) ([]Series, error) {
+	if len(tmdbIDs) == 0 {
+		return nil, nil
+	}
+	args := make([]any, len(tmdbIDs))
+	for i, id := range tmdbIDs {
+		args[i] = id
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT `+seriesCols+` FROM series WHERE tmdb_id IN (`+
+		strings.TrimSuffix(strings.Repeat("?,", len(tmdbIDs)), ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Series
+	var ids []int64
+	for rows.Next() {
+		s, err := scanSeries(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+		ids = append(ids, s.ID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	stats, err := r.queryStats(ctx, ids...)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		if st, ok := stats[out[i].ID]; ok {
+			out[i].Stats = st
+		} else {
+			out[i].Stats = &Stats{}
+		}
+	}
+	return out, nil
+}
+
 // statsSQL is the per-series roll-up behind both the list and the detail page, so the two
 // can't disagree. It counts what's actually wanted: an episode is wanted when it and its
 // season are monitored and it has aired ("aired" as automation's aired(): a dated episode
@@ -106,16 +153,19 @@ const (
 	statsAiredSQL = `(e.air_date <> '' AND date(e.air_date) <= date('now'))`
 )
 
-// queryStats runs statsSQL, for every series or (id > 0) just one.
-func (r *Repo) queryStats(ctx context.Context, id int64) (map[int64]*Stats, error) {
+// queryStats runs statsSQL, for every series or (ids given) just those.
+func (r *Repo) queryStats(ctx context.Context, ids ...int64) (map[int64]*Stats, error) {
 	out := map[int64]*Stats{}
 	q, args := statsSQL, []any{}
 	sq, sargs := `SELECT series_id, COUNT(*) FROM seasons WHERE season_number > 0`, []any{}
-	if id > 0 {
-		q += ` AND e.series_id = ?`
-		args = append(args, id)
-		sq += ` AND series_id = ?`
-		sargs = append(sargs, id)
+	if len(ids) > 0 {
+		marks := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+		q += ` AND e.series_id IN (` + marks + `)`
+		sq += ` AND series_id IN (` + marks + `)`
+		for _, id := range ids {
+			args = append(args, id)
+			sargs = append(sargs, id)
+		}
 	}
 	rows, err := r.db.QueryContext(ctx, q+` GROUP BY e.series_id`, args...)
 	if err != nil {
@@ -154,7 +204,7 @@ func (r *Repo) queryStats(ctx context.Context, id int64) (map[int64]*Stats, erro
 
 // allStats returns per-series episode/file roll-ups keyed by series id.
 func (r *Repo) allStats(ctx context.Context) (map[int64]*Stats, error) {
-	return r.queryStats(ctx, 0)
+	return r.queryStats(ctx)
 }
 
 // StatsFor is one series' roll-up — the same numbers the list shows for it.

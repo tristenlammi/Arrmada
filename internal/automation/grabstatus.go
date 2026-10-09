@@ -46,11 +46,6 @@ const (
 		grabStatusImported + `', '` + grabStatusDismissed + `')`
 )
 
-// GrabInFlightWhere is inFlightWhere for the requests package: a requester's progress
-// counts a grab until it is imported or closed out, and stops saying "Importing" the
-// moment a review is resolved.
-const GrabInFlightWhere = inFlightWhere
-
 // pendingTitleWhere is the grab-row filter behind the per-title re-grab guards (movies,
 // series, books, music).
 //   - A 'grabbed' row holds its release for a day, so a grab stuck there forever can't

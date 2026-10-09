@@ -57,10 +57,10 @@ func TestApproveDanglingStoredProfileUsesDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := s.Approve(ctx, req.ID, "custom:998"); err != ErrUnknownProfile {
+	if _, err := s.Approve(ctx, req.ID, ApproveOptions{Profile: "custom:998"}); err != ErrUnknownProfile {
 		t.Fatalf("explicit unknown profile: err = %v, want ErrUnknownProfile", err)
 	}
-	got, err := s.Approve(ctx, req.ID, "")
+	got, err := s.Approve(ctx, req.ID, ApproveOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,7 +6,7 @@ import { requestableCard } from "./fixtures/discover";
 // shipped broken here before and nothing caught them: the page growing wider than the
 // screen, and a poster tap filing a request through an invisible hover button.
 
-const PAGES = ["/discover", "/calendar", "/books", "/audiobooks"];
+const PAGES = ["/discover", "/requests", "/calendar", "/books", "/audiobooks"];
 const VIEWPORTS = [
   { width: 375, height: 812 },
   { width: 320, height: 640 },
@@ -97,6 +97,32 @@ test.describe("requester", () => {
     await expect(dialog).toBeVisible();
     await api.quiet();
     expect(api.callsTo("POST", "/api/v1/requests"), "a tap must never file a request").toEqual([]);
+  });
+});
+
+// REQ-06: a request poster on the strip is one button that opens its sheet. No tap,
+// wherever it lands, approves, declines or withdraws anything.
+test.describe("requester strip", () => {
+  test.use({ persona: "requester" });
+
+  test("tapping a request poster opens its sheet and changes nothing", async ({ page, api }) => {
+    await open(page, "/discover", api);
+    const poster = page.getByRole("button", { name: "Open the request for Saltwind" });
+    await poster.scrollIntoViewIfNeeded();
+    expect(await invisibleTapTargets(page), "tappable but invisible until hover").toEqual([]);
+    // A followed request says so.
+    await expect(page.getByText("Following").first()).toBeVisible();
+
+    for (const [x, y] of [[8, 8], [140, 8], [8, 215], [140, 215]]) {
+      await poster.tap({ position: { x, y } });
+      const sheet = page.getByRole("dialog", { name: "Saltwind" });
+      await expect(sheet).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(sheet).toHaveCount(0);
+    }
+    await api.quiet();
+    const changed = api.calls.filter((c) => c.method !== "GET" && c.path.startsWith("/api/v1/requests"));
+    expect(changed, "a tap must never decide or withdraw a request").toEqual([]);
   });
 });
 

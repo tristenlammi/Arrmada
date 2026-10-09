@@ -32,6 +32,7 @@ export interface NavGroup {
 export function requesterNav({ external, booksEnabled }: { external: boolean; booksEnabled: boolean }): Pick<NavItem, "to" | "label">[] {
   return [
     { to: "/discover", label: "Discover" },
+    { to: "/requests", label: "Requests" },
     ...(external ? [] : [{ to: "/calendar", label: "Calendar" }]),
     ...(booksEnabled ? [{ to: "/books", label: "Books" }] : []),
     { to: "/audiobooks", label: "Audiobooks" },
@@ -48,6 +49,7 @@ export const NAV: NavGroup[] = [
     items: [
       { to: "/", label: "Dashboard", icon: "dashboard", end: true },
       { to: "/discover", label: "Discover", icon: "discover" },
+      { to: "/requests", label: "Requests", icon: "requests", badge: "requests" },
     ],
   },
   {

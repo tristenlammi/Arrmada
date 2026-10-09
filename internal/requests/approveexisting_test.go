@@ -81,6 +81,10 @@ func newApproveFixture(t *testing.T, show metadata.SeriesDetails) approveFixture
 	return approveFixture{s: s, jobs: rec, meta: meta, ctx: context.Background()}
 }
 
+// shows is the real series service behind the fixture, for the calls the requests module
+// itself never makes (adding a show as a scan would, importing episodes).
+func (f approveFixture) shows() *series.Service { return f.s.series.(*series.Service) }
+
 // searched lists the targets of the search jobs submitted so far, by kind.
 func (f approveFixture) searched(kind string) []string {
 	var out []string
@@ -96,7 +100,7 @@ func (f approveFixture) searched(kind string) []string {
 // monitors it, starts a search, and says so in the show's History.
 func TestApproveExistingUnmonitoredSeriesMonitorsAndSearches(t *testing.T) {
 	f := newApproveFixture(t, showListing(2, 2))
-	sr, err := f.s.series.Add(f.ctx, 77, "", false) // as a library scan adds it
+	sr, err := f.shows().Add(f.ctx, 77, "", false) // as a library scan adds it
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +108,7 @@ func TestApproveExistingUnmonitoredSeriesMonitorsAndSearches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := f.s.Approve(f.ctx, req.ID, "")
+	got, err := f.s.Approve(f.ctx, req.ID, ApproveOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +122,7 @@ func TestApproveExistingUnmonitoredSeriesMonitorsAndSearches(t *testing.T) {
 	if s := f.searched("series.search"); len(s) != 1 || s[0] != fmt.Sprintf("series:%d", sr.ID) {
 		t.Errorf("series searches = %v, want one for the show", s)
 	}
-	evs, _ := f.s.series.Events(f.ctx, sr.ID, 5)
+	evs, _ := f.shows().Events(f.ctx, sr.ID, 5)
 	if len(evs) == 0 || !strings.Contains(evs[0].Detail, "Monitored by request from alice") {
 		t.Errorf("history = %+v", evs)
 	}
@@ -128,15 +132,15 @@ func TestApproveExistingUnmonitoredSeriesMonitorsAndSearches(t *testing.T) {
 // change, no search.
 func TestApproveExistingCompleteSeriesJustApproves(t *testing.T) {
 	f := newApproveFixture(t, showListing(1))
-	sr, err := f.s.series.Add(f.ctx, 77, "", false)
+	sr, err := f.shows().Add(f.ctx, 77, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.s.series.MarkEpisodeImported(f.ctx, sr.ID, 1, 1, "/tv/show/s01e01.mkv", 1); err != nil {
+	if err := f.shows().MarkEpisodeImported(f.ctx, sr.ID, 1, 1, "/tv/show/s01e01.mkv", 1); err != nil {
 		t.Fatal(err)
 	}
 	req, _ := f.s.repo.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", Status: StatusPending, RequestedBy: 7})
-	if _, err := f.s.Approve(f.ctx, req.ID, ""); err != nil {
+	if _, err := f.s.Approve(f.ctx, req.ID, ApproveOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	after, _ := f.s.series.Get(f.ctx, sr.ID)
@@ -156,7 +160,7 @@ func TestApproveExistingMovieWithoutFileSearches(t *testing.T) {
 		t.Fatal("fixture movie should start unmonitored")
 	}
 	req, _ := f.s.repo.Create(f.ctx, Request{MediaType: "movie", TMDBID: 949, Title: "Heat", Status: StatusPending, RequestedBy: 7, RequestedByName: "bob"})
-	if _, err := f.s.Approve(f.ctx, req.ID, ""); err != nil {
+	if _, err := f.s.Approve(f.ctx, req.ID, ApproveOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	after, err := f.s.movies.Get(f.ctx, m.ID)

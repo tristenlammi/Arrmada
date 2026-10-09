@@ -11,10 +11,9 @@ import (
 // disk, and something is. Counting monitored episodes only means an episode the owner gave
 // up on (stopped monitoring) doesn't hold the request back forever.
 //
-// It is REQ-02's whole-show rule (Have > 0 && Have >= Total over monitored episodes)
-// restricted to one season; when the two branches meet, both must stay this one rule.
+// It is seriesComplete, the whole-show rule, asked of one season's monitored episodes.
 func seasonReady(p series.SeasonProgress) bool {
-	return p.MonHave > 0 && p.MonHave >= p.MonTotal
+	return seriesComplete(p.MonHave, p.MonTotal)
 }
 
 // seasonsProgress sums a season-scoped request's own seasons — episodes on disk and
@@ -91,18 +90,8 @@ func (s *Service) SeasonRequests(ctx context.Context, tmdbID int, viewer int64, 
 }
 
 // delivered reports whether a request's "ready" notice has already gone out, so it no
-// longer stands for its seasons (a season deleted or aired since must be asked for anew).
-// Read from the requester's inbox, which holds one row per reference; a request with no
-// requester (an import) counts as delivered once anyone was told.
-//
-// When phase6/requests' ready_at stamp lands, this should read that instead.
-func (s *Service) delivered(ctx context.Context, req Request) bool {
-	q := `SELECT 1 FROM user_notifications WHERE ref = ?`
-	args := []any{requestRef(req)}
-	if req.RequestedBy > 0 {
-		q += ` AND user_id = ?`
-		args = append(args, req.RequestedBy)
-	}
-	var one int
-	return s.repo.db.QueryRowContext(ctx, q+` LIMIT 1`, args...).Scan(&one) == nil
+// longer stands for its seasons (a season deleted or aired since must be asked for anew):
+// its ready_at stamp, set once everyone behind it was told.
+func (s *Service) delivered(_ context.Context, req Request) bool {
+	return req.ReadyAt > 0
 }

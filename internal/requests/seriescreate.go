@@ -11,23 +11,34 @@ import (
 // createSeries records a series request, split against what's already covered (see
 // planSeasons): a row for the seasons nobody has asked for yet, the caller following the
 // rows that cover the rest. It runs under seriesMu, so two people asking at once can
-// never both cover the same season.
-func (s *Service) createSeries(ctx context.Context, in Request, autoApprove bool) (Request, bool, error) {
+// never both cover the same season. A new row (or a declined one asked for again) is
+// announced like any new ask; following an existing request isn't one.
+func (s *Service) createSeries(ctx context.Context, in Request, opts CreateOptions) (Request, bool, error) {
 	s.seriesMu.Lock()
 	created, subscribed, inserted, err := s.createSeriesLocked(ctx, in)
 	s.seriesMu.Unlock()
 	if err != nil {
 		return Request{}, false, err
 	}
-	if inserted {
+	switch {
+	case inserted:
 		s.log.Info("request created", "media", in.MediaType, "title", in.Title, "seasons", series.SeasonsLabel(created.Seasons),
-			"by", in.RequestedByName, "auto_approve", autoApprove)
-		if autoApprove {
-			created, err = s.Approve(ctx, created.ID, in.QualityProfile) // publishes approved
-			return created, false, err
+			"by", in.RequestedByName, "auto_approve", opts.AutoApprove)
+		if opts.AutoApprove {
+			approved, err := s.autoApprove(ctx, created, opts)
+			if err != nil {
+				// The request stands, pending, for staff to approve by hand.
+				s.announceCreated(ctx, created, opts)
+				return Request{}, false, err
+			}
+			created = approved
 		}
+		s.announceCreated(ctx, created, opts)
+	case !subscribed:
+		s.announceCreated(ctx, created, opts) // a declined request re-opened
+	case !opts.Silent:
+		s.publishUpdated(created, created.Status, s.parties(ctx, created))
 	}
-	s.publishUpdated(created, created.Status, s.parties(ctx, created))
 	return created, subscribed, nil
 }
 

@@ -26,6 +26,7 @@ const MoviesWanted = lazyPage(() => import("../pages/MoviesWanted"), "MoviesWant
 const Series = lazyPage(() => import("../pages/Series"), "Series");
 const SeriesDetail = lazyPage(() => import("../pages/SeriesDetail"), "SeriesDetail");
 const Discover = lazyPage(() => import("../pages/Discover"), "Discover");
+const Requests = lazyPage(() => import("../pages/Requests"), "Requests");
 const Books = lazyPage(() => import("../pages/Books"), "Books");
 const Music = lazyPage(() => import("../pages/Music"), "Music");
 const ArtistDetail = lazyPage(() => import("../pages/ArtistDetail"), "ArtistDetail");
@@ -66,6 +67,8 @@ function requesterRoutes(shell: "external" | "requester"): RouteObject[] {
   const home = "/discover";
   return [
     page("/discover", "Discover", <Discover chrome={false} />),
+    // Their own requests and the ones they follow (/api/v1/requests is allowed from outside).
+    page("/requests", "Requests", <Requests chrome={false} />),
     // Outside sessions get no Calendar: the API isn't allowlisted for them.
     ...(shell === "requester" ? [page("/calendar", "Calendar", <Calendar chrome={false} />)] : []),
     page("/books", "Books", <ModuleGate module="books" home={home}><MyBooks /></ModuleGate>),
@@ -91,6 +94,7 @@ function staffRoutes(admin: boolean): RouteObject[] {
     page("/series", "Series", <Series />),
     page("/series/:id", "Series", <SeriesDetail />),
     page("/discover", "Discover", <Discover />),
+    page("/requests", "Requests", <Requests />),
     page("/calendar", "Calendar", <Calendar />),
     page("/music", "Music", music(<Music />)),
     page("/music/album/:id", "Album", music(<AlbumDetail />)),

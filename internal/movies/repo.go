@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/store"
 )
@@ -225,6 +226,32 @@ func (r *Repo) GetByTMDB(ctx context.Context, tmdbID int) (Movie, error) {
 		return Movie{}, ErrNotFound
 	}
 	return m, err
+}
+
+// ByTMDBIDs returns the library movies with these TMDB ids, in one query.
+func (r *Repo) ByTMDBIDs(ctx context.Context, tmdbIDs []int) ([]Movie, error) {
+	if len(tmdbIDs) == 0 {
+		return nil, nil
+	}
+	args := make([]any, len(tmdbIDs))
+	for i, id := range tmdbIDs {
+		args[i] = id
+	}
+	rows, err := r.q().QueryContext(ctx, `SELECT `+movieCols+` FROM movies WHERE tmdb_id IN (`+
+		strings.TrimSuffix(strings.Repeat("?,", len(tmdbIDs)), ",")+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Movie
+	for rows.Next() {
+		m, err := r.scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
 }
 
 // Create inserts a movie.

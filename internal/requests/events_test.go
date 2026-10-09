@@ -39,7 +39,7 @@ func TestRequestUpdatedEvents(t *testing.T) {
 	defer cancel()
 	ctx := context.Background()
 
-	req, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 42, Title: "Heat", RequestedBy: 7}, false)
+	req, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 42, Title: "Heat", RequestedBy: 7}, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,14 +48,14 @@ func TestRequestUpdatedEvents(t *testing.T) {
 	}
 
 	// A second user subscribes: both of them hear about it.
-	if _, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 42, Title: "Heat", RequestedBy: 8}, false); err != nil {
+	if _, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 42, Title: "Heat", RequestedBy: 8}, CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := drain(t, events); fmt.Sprint(got) != "[request.updated pending user.7.request.updated pending user.8.request.updated pending]" {
 		t.Errorf("subscribe: %v", got)
 	}
 
-	if err := s.Decline(ctx, req.ID); err != nil {
+	if err := s.Decline(ctx, req.ID, DeclineOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := drain(t, events); fmt.Sprint(got) != "[request.updated declined user.7.request.updated declined user.8.request.updated declined]" {
@@ -74,7 +74,7 @@ func TestRequestUpdatedEvents(t *testing.T) {
 func TestRequestReadyPublishesOnce(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
-	if _, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 11, Title: "Alien", RequestedBy: 7}, false); err != nil {
+	if _, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 11, Title: "Alien", RequestedBy: 7}, CreateOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	s.bus = eventbus.New(nil)

@@ -84,6 +84,13 @@ func UntrackedMovieItem(untracked []download.Item, m movies.Movie) string {
 // AcqHeld reports whether an acquisition is finished but held in Review for a decision.
 func AcqHeld(a Acquisition) bool { return a.Status == grabStatusHeld }
 
+// AcqFinished reports whether the client last saw an acquisition's torrent complete.
+func AcqFinished(a Acquisition) bool { return a.Phase == phaseComplete }
+
+// AcqGone reports whether a complete read of the client no longer lists an acquisition's
+// torrent (it stays in flight for a grace period before the record lets it go).
+func AcqGone(a Acquisition) bool { return a.Phase == phaseMissing }
+
 // AcqStalled reports whether the client last saw an acquisition's torrent stalled: no
 // peer sending data.
 func AcqStalled(a Acquisition) bool { return a.Phase == "stalled" }

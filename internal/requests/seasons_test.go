@@ -14,7 +14,7 @@ import (
 func fillSeason(t *testing.T, f approveFixture, seriesID int64, season, episodes int) {
 	t.Helper()
 	for e := 1; e <= episodes; e++ {
-		if err := f.s.series.MarkEpisodeImported(f.ctx, seriesID, season, e, fmt.Sprintf("/tv/show/s%02de%02d.mkv", season, e), 1); err != nil {
+		if err := f.shows().MarkEpisodeImported(f.ctx, seriesID, season, e, fmt.Sprintf("/tv/show/s%02de%02d.mkv", season, e), 1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -61,7 +61,7 @@ func refs(ns []UserNotification) []string {
 // the first request, and a third asking for [4,5] follows [4] and asks for [5].
 func TestRequestMoreSeasonsOfAPartlyOwnedShow(t *testing.T) {
 	f := newApproveFixture(t, showListing(2, 2, 2, 2, 2))
-	sr, err := f.s.series.Add(f.ctx, 77, "", false) // a library scan found S1-3
+	sr, err := f.shows().Add(f.ctx, 77, "", false) // a library scan found S1-3
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,21 +70,21 @@ func TestRequestMoreSeasonsOfAPartlyOwnedShow(t *testing.T) {
 	}
 	known := []int{1, 2, 3, 4, 5}
 
-	req, subscribed, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", Seasons: []int{4}, KnownSeasons: known, RequestedBy: 7, RequestedByName: "alice"}, false)
+	req, subscribed, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", Seasons: []int{4}, KnownSeasons: known, RequestedBy: 7, RequestedByName: "alice"}, CreateOptions{})
 	if err != nil || subscribed {
 		t.Fatalf("create: %v subscribed=%v", err, subscribed)
 	}
 	if req.Status != StatusPending || !reflect.DeepEqual(req.Seasons, []int{4}) {
 		t.Fatalf("request = %+v, want pending [4]", req)
 	}
-	if _, _, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", Seasons: []int{2}, KnownSeasons: known, RequestedBy: 8}, false); err != ErrAlreadyAvailable {
+	if _, _, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", Seasons: []int{2}, KnownSeasons: known, RequestedBy: 8}, CreateOptions{}); err != ErrAlreadyAvailable {
 		t.Errorf("asking for a season on disk: err = %v, want ErrAlreadyAvailable", err)
 	}
-	got, subscribed, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", Seasons: []int{4}, KnownSeasons: known, RequestedBy: 8, RequestedByName: "bob"}, false)
+	got, subscribed, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", Seasons: []int{4}, KnownSeasons: known, RequestedBy: 8, RequestedByName: "bob"}, CreateOptions{})
 	if err != nil || !subscribed || got.ID != req.ID {
 		t.Fatalf("second ask for [4]: %+v subscribed=%v err=%v", got, subscribed, err)
 	}
-	more, subscribed, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", Seasons: []int{4, 5}, KnownSeasons: known, RequestedBy: 9, RequestedByName: "carol"}, false)
+	more, subscribed, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", Seasons: []int{4, 5}, KnownSeasons: known, RequestedBy: 9, RequestedByName: "carol"}, CreateOptions{})
 	if err != nil || subscribed || !reflect.DeepEqual(more.Seasons, []int{5}) {
 		t.Fatalf("ask for [4,5]: %+v subscribed=%v err=%v, want a new request for [5]", more, subscribed, err)
 	}
@@ -93,7 +93,7 @@ func TestRequestMoreSeasonsOfAPartlyOwnedShow(t *testing.T) {
 	}
 
 	before := monitoredBySeason(t, f, sr.ID)
-	if _, err := f.s.Approve(f.ctx, req.ID, ""); err != nil {
+	if _, err := f.s.Approve(f.ctx, req.ID, ApproveOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	after := monitoredBySeason(t, f, sr.ID)
@@ -118,11 +118,11 @@ func TestRequestMoreSeasonsOfAPartlyOwnedShow(t *testing.T) {
 // seasons aren't monitored.
 func TestApproveMonitorsOnlyRequestedSeasons(t *testing.T) {
 	f := newApproveFixture(t, showListing(2, 2, 2))
-	req, _, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", Seasons: []int{2, 1}, KnownSeasons: []int{1, 2, 3}, RequestedBy: 7}, false)
+	req, _, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", Seasons: []int{2, 1}, KnownSeasons: []int{1, 2, 3}, RequestedBy: 7}, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.s.Approve(f.ctx, req.ID, ""); err != nil {
+	if _, err := f.s.Approve(f.ctx, req.ID, ApproveOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	sr, err := f.s.series.GetByTMDB(f.ctx, 77)
@@ -145,14 +145,14 @@ func TestApproveMonitorsOnlyRequestedSeasons(t *testing.T) {
 // ask for is refused.
 func TestApproveTrimsSeasons(t *testing.T) {
 	f := newApproveFixture(t, showListing(2, 2, 2, 2))
-	req, _, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", Seasons: []int{1, 2, 3}, KnownSeasons: []int{1, 2, 3, 4}, RequestedBy: 7}, false)
+	req, _, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", Seasons: []int{1, 2, 3}, KnownSeasons: []int{1, 2, 3, 4}, RequestedBy: 7}, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.s.ApproveWith(f.ctx, req.ID, ApproveOptions{Seasons: []int{1, 4}}); err != ErrSeasonsNotRequested {
+	if _, err := f.s.Approve(f.ctx, req.ID, ApproveOptions{Seasons: []int{1, 4}}); err != ErrSeasonsNotRequested {
 		t.Fatalf("approving an unasked season: err = %v", err)
 	}
-	got, err := f.s.ApproveWith(f.ctx, req.ID, ApproveOptions{Seasons: []int{2, 1}})
+	got, err := f.s.Approve(f.ctx, req.ID, ApproveOptions{Seasons: []int{2, 1}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestCreateSeriesConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(user int64, seasons []int) {
 			defer wg.Done()
-			if _, _, err := f.s.Create(context.Background(), Request{MediaType: "series", TMDBID: 77, Title: "Show", Seasons: seasons, KnownSeasons: []int{1, 2, 3, 4}, RequestedBy: user}, false); err != nil {
+			if _, _, err := f.s.Create(context.Background(), Request{MediaType: "series", TMDBID: 77, Title: "Show", Seasons: seasons, KnownSeasons: []int{1, 2, 3, 4}, RequestedBy: user}, CreateOptions{}); err != nil {
 				t.Errorf("create %v: %v", seasons, err)
 			}
 		}(int64(i+1), a)
@@ -210,17 +210,17 @@ func TestCreateSeriesConcurrent(t *testing.T) {
 // references; a whole-show request keeps the reference it always had.
 func TestReadyPerSeasonRequest(t *testing.T) {
 	f := newApproveFixture(t, showListing(2, 2, 2, 2))
-	sr, err := f.s.series.Add(f.ctx, 77, "", false)
+	sr, err := f.shows().Add(f.ctx, 77, "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// S1 has a gap the request doesn't care about.
 	fillSeason(t, f, sr.ID, 1, 1)
-	pair, _, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", Seasons: []int{3, 4}, KnownSeasons: []int{1, 2, 3, 4}, RequestedBy: 7}, false)
+	pair, _, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", Seasons: []int{3, 4}, KnownSeasons: []int{1, 2, 3, 4}, RequestedBy: 7}, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.s.Approve(f.ctx, pair.ID, ""); err != nil {
+	if _, err := f.s.Approve(f.ctx, pair.ID, ApproveOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	approvedRef := fmt.Sprintf("series:77:r%d:approved", pair.ID)
@@ -253,11 +253,11 @@ func TestReadyPerSeasonRequest(t *testing.T) {
 	}
 
 	// The request now reads available over its own seasons, despite S1's gap.
-	list, err := f.s.List(f.ctx, "", 0)
+	list, _, err := f.s.List(f.ctx, ListFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.s.Track(f.ctx, list, nil)
+	f.s.Track(f.ctx, list, nil, true)
 	for _, r := range list {
 		if r.ID == pair.ID && (r.Tracking == nil || r.Tracking.Stage != StageAvailable || r.Tracking.Have != 4 || r.Tracking.Total != 4) {
 			t.Errorf("tracking = %+v, want available 4/4", r.Tracking)
@@ -269,7 +269,7 @@ func TestReadyPerSeasonRequest(t *testing.T) {
 // before: the plain "series:<tmdb>" reference, once.
 func TestLegacyWholeShowReadyUnchanged(t *testing.T) {
 	f := newApproveFixture(t, showListing(2))
-	sr, err := f.s.series.Add(f.ctx, 77, "", true)
+	sr, err := f.shows().Add(f.ctx, 77, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,10 +292,10 @@ func TestLegacyWholeShowReadyUnchanged(t *testing.T) {
 
 	// Once delivered it covers nothing: a later ask for the show (files gone, or a new
 	// season) is a new request by list, under its own reference.
-	if err := f.s.series.MarkEpisodeMissing(f.ctx, sr.ID, 1, 2); err != nil {
+	if err := f.shows().MarkEpisodeMissing(f.ctx, sr.ID, 1, 2); err != nil {
 		t.Fatal(err)
 	}
-	again, subscribed, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", KnownSeasons: []int{1}, RequestedBy: 7}, false)
+	again, subscribed, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", KnownSeasons: []int{1}, RequestedBy: 7}, CreateOptions{})
 	if err != nil || subscribed || !reflect.DeepEqual(again.Seasons, []int{1}) {
 		t.Errorf("ask after delivery: %+v subscribed=%v err=%v, want a new request for [1]", again, subscribed, err)
 	}
@@ -305,11 +305,11 @@ func TestLegacyWholeShowReadyUnchanged(t *testing.T) {
 // whole-show request, as before seasons existed, and a second one follows it.
 func TestCreateWholeShowWithoutCatalogue(t *testing.T) {
 	f := newApproveFixture(t, showListing(1))
-	first, _, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", RequestedBy: 7}, false)
+	first, _, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", RequestedBy: 7}, CreateOptions{})
 	if err != nil || first.Seasons != nil {
 		t.Fatalf("first = %+v err %v", first, err)
 	}
-	second, subscribed, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", RequestedBy: 8}, false)
+	second, subscribed, err := f.s.Create(f.ctx, Request{MediaType: "series", TMDBID: 77, Title: "Show", RequestedBy: 8}, CreateOptions{})
 	if err != nil || !subscribed || second.ID != first.ID {
 		t.Fatalf("second = %+v subscribed %v err %v", second, subscribed, err)
 	}

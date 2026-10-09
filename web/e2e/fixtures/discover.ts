@@ -1,4 +1,4 @@
-import type { DiscoverCard, DiscoverRow, Genre, MediaDetail, MediaRequest, UserNotification, WatchProvider } from "../../src/lib/api";
+import type { DiscoverCard, DiscoverRow, Genre, MediaDetail, MediaRequest, RequestList, UserNotification, WatchProvider } from "../../src/lib/api";
 import type { PersonaInfo } from "./users";
 
 // Discover's poster rows. The mix covers every badge a card can wear (none, Pending,
@@ -79,16 +79,33 @@ export function mediaDetail(media: string, tmdbID: number): MediaDetail {
 
 const at = "2026-10-01T09:00:00Z";
 
-export const requests: { requests: MediaRequest[]; auto_approve: boolean; client_health?: { ok: boolean } } = {
+// GET /api/v1/requests (every section and the Discover strip answer the same rows): one
+// waiting, two on their way (one a book asked for as an audiobook), and one the viewer
+// follows rather than made.
+export const requests: RequestList = {
   client_health: { ok: true },
   auto_approve: false,
+  counts: { needs_approval: 1, in_progress: 3, ready: 0, declined: 0 },
+  total: 4,
   requests: [
-    { id: 1, media_type: "movie", tmdb_id: 1003, title: "Saltwind", year: 2023, poster_url: poster(3), status: "pending", requested_by: 3, requested_by_name: "deckhand", available: false, tracking: { stage: "pending" }, created_at: at, updated_at: at },
-    { id: 2, media_type: "movie", tmdb_id: 1005, title: "Driftwood", year: 2025, poster_url: poster(5), status: "approved", requested_by: 3, requested_by_name: "deckhand", available: false, download_progress: 0.42, tracking: { stage: "downloading", progress: 0.42, eta_seconds: 900 }, created_at: at, updated_at: at },
+    { id: 1, media_type: "movie", tmdb_id: 1003, title: "Saltwind", year: 2023, poster_url: poster(3), status: "pending", requested_by: 3, requested_by_name: "deckhand", note: "The extended cut, if there is one", relation: "owner", available: false, tracking: { stage: "pending" }, created_at: at, updated_at: at },
+    { id: 2, media_type: "movie", tmdb_id: 1005, title: "Driftwood", year: 2025, poster_url: poster(5), status: "approved", requested_by: 3, requested_by_name: "deckhand", relation: "owner", available: false, download_progress: 0.42, tracking: { stage: "downloading", progress: 0.42, eta_seconds: 900 }, created_at: at, updated_at: at },
+    { id: 3, media_type: "series", tmdb_id: 1009, title: "Undertow", year: 2025, poster_url: poster(9), status: "approved", requested_by: 0, relation: "subscriber", available: false, tracking: { stage: "searching" }, created_at: at, updated_at: at },
     // A book asked for as an audiobook: its card carries the "Listen" badge.
-    { id: 3, media_type: "book", tmdb_id: 0, ol_key: "OL9003W", author: "Hal Yard", formats: "audiobook", title: "Knots and Splices", year: 2017, status: "pending", requested_by: 3, requested_by_name: "deckhand", available: false, tracking: { stage: "pending" }, created_at: at, updated_at: at },
+    { id: 4, media_type: "book", tmdb_id: 0, ol_key: "OL9003W", author: "Hal Yard", formats: "audiobook", title: "Knots and Splices", year: 2017, status: "approved", requested_by: 3, requested_by_name: "deckhand", relation: "owner", available: false, tracking: { stage: "searching" }, created_at: at, updated_at: at },
   ],
 };
+
+// requestDetail is GET /api/v1/requests/{id}: the listed request with that id.
+export function requestDetail(id: number): { request: MediaRequest; client_health: { ok: boolean } } {
+  return { request: requests.requests.find((r) => r.id === id) ?? requests.requests[0], client_health: { ok: true } };
+}
+
+// bulk is POST /api/v1/requests/bulk: every id goes through.
+export function bulk(body: unknown): { results: { id: number; ok: boolean }[] } {
+  const ids = ((body ?? {}) as { ids?: number[] }).ids ?? [];
+  return { results: ids.map((id) => ({ id, ok: true })) };
+}
 
 // created is what POST /api/v1/requests answers: a pending request for the card sent.
 export function created(p: PersonaInfo, body: unknown): { request: MediaRequest; subscribed: boolean } {

@@ -46,7 +46,7 @@ func TestCreateBookFormatsMapToPreset(t *testing.T) {
 		{"", FormatsEbook, "Ebook"}, // the default book profile is the Ebook preset
 	} {
 		req, _, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL" + strconv.Itoa(100+i) + "W",
-			Title: "Book " + strconv.Itoa(i), Author: "Someone", RequestedBy: 7, Formats: tc.formats}, false)
+			Title: "Book " + strconv.Itoa(i), Author: "Someone", RequestedBy: 7, Formats: tc.formats}, CreateOptions{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -54,12 +54,12 @@ func TestCreateBookFormatsMapToPreset(t *testing.T) {
 			t.Errorf("formats %q: got formats %q profile %q, want %q on %s", tc.formats, req.Formats, req.QualityProfile, tc.want, tc.preset)
 		}
 	}
-	if _, _, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL9W", Title: "X", RequestedBy: 7, Formats: "paperback"}, false); !errors.Is(err, ErrBadFormats) {
+	if _, _, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL9W", Title: "X", RequestedBy: 7, Formats: "paperback"}, CreateOptions{}); !errors.Is(err, ErrBadFormats) {
 		t.Errorf("formats=paperback: err = %v, want ErrBadFormats", err)
 	}
 	// A profile the requester named stands in for the choice when none is given.
 	req, _, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL8W", Title: "Y", RequestedBy: 7,
-		QualityProfile: presetRef(t, s, "Audiobook")}, false)
+		QualityProfile: presetRef(t, s, "Audiobook")}, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,11 +72,11 @@ func TestCreateBookFormatsMapToPreset(t *testing.T) {
 // and the request now asks for both.
 func TestAttachUnionsFormats(t *testing.T) {
 	s, _, _, ctx := bookLinkFixture(t, duneCatalogue())
-	first, _, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", RequestedBy: 7, Formats: FormatsEbook}, false)
+	first, _, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", RequestedBy: 7, Formats: FormatsEbook}, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, sub, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", RequestedBy: 8, Formats: FormatsAudiobook}, false)
+	got, sub, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", RequestedBy: 8, Formats: FormatsAudiobook}, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestAttachUnionsFormats(t *testing.T) {
 		t.Errorf("after the listener joined: formats %q profile %q, want both", got.Formats, got.QualityProfile)
 	}
 	// Asking again for what is already asked for changes nothing.
-	again, _, _ := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", RequestedBy: 9, Formats: FormatsEbook}, false)
+	again, _, _ := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", RequestedBy: 9, Formats: FormatsEbook}, CreateOptions{})
 	if again.Formats != FormatsBoth {
 		t.Errorf("formats narrowed to %q", again.Formats)
 	}
@@ -127,11 +127,11 @@ func TestApproveWidensExistingBook(t *testing.T) {
 	}
 	giveEbook(t, repo, ctx, b.ID)
 
-	req, _, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", RequestedBy: 7, Formats: FormatsAudiobook}, false)
+	req, _, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", RequestedBy: 7, Formats: FormatsAudiobook}, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Approve(ctx, req.ID, ""); err != nil {
+	if _, err := s.Approve(ctx, req.ID, ApproveOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := repo.Get(ctx, b.ID)
@@ -152,11 +152,11 @@ func TestApproveWidensExistingBook(t *testing.T) {
 	s.books = books.NewService(s.repo.db, catalogue{byKey: map[string]metadata.BookResult{
 		"OL2W": {Key: "OL2W", Title: "Children of Dune", Author: "Frank Herbert"},
 	}}, s.log)
-	narrow, _, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL2W", Title: "Children of Dune", Author: "Frank Herbert", RequestedBy: 7, Formats: FormatsEbook}, false)
+	narrow, _, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL2W", Title: "Children of Dune", Author: "Frank Herbert", RequestedBy: 7, Formats: FormatsEbook}, CreateOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Approve(ctx, narrow.ID, ""); err != nil {
+	if _, err := s.Approve(ctx, narrow.ID, ApproveOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := repo.Get(ctx, other.ID); got.QualityProfile != both {
@@ -174,14 +174,14 @@ func TestAttachToApprovedWidensBook(t *testing.T) {
 		t.Fatal(err)
 	}
 	giveEbook(t, repo, ctx, b.ID)
-	first, _, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", RequestedBy: 7, Formats: FormatsEbook}, true)
+	first, _, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", RequestedBy: 7, Formats: FormatsEbook}, CreateOptions{AutoApprove: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if first.Status != StatusApproved {
 		t.Fatalf("auto-approved request is %q", first.Status)
 	}
-	got, sub, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", RequestedBy: 8, Formats: FormatsAudiobook}, false)
+	got, sub, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", RequestedBy: 8, Formats: FormatsAudiobook}, CreateOptions{})
 	if err != nil || !sub {
 		t.Fatalf("listener: %v subscribed=%v", err, sub)
 	}
@@ -306,11 +306,11 @@ func TestListPerFormatReadiness(t *testing.T) {
 	mk("OL1W", FormatsBoth)
 	mk("OL2W", FormatsAudiobook)
 	mk("OL3W", FormatsEbook)
-	list, err := s.List(ctx, "", 0)
+	list, _, err := s.List(ctx, ListFilter{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Track(ctx, list, nil)
+	s.Track(ctx, list, nil, true)
 	byFormat := map[string]Request{}
 	for _, r := range list {
 		byFormat[r.Formats] = r

@@ -160,6 +160,45 @@ func (r *Repo) AllKeys(ctx context.Context) (map[string]int64, error) {
 	return out, cur.Err()
 }
 
+// KeyOwners maps each of these keys, current or former, to the book it belongs to; a key
+// no book has had is left out. A book's current key wins over an older alias row, as in
+// AllKeys.
+func (r *Repo) KeyOwners(ctx context.Context, keys []string) (map[string]int64, error) {
+	out := map[string]int64{}
+	if len(keys) == 0 {
+		return out, nil
+	}
+	in := `(` + strings.TrimSuffix(strings.Repeat("?,", len(keys)), ",") + `)`
+	args := make([]any, 0, len(keys))
+	for _, k := range keys {
+		args = append(args, k)
+	}
+	for _, q := range []string{
+		`SELECT key, book_id FROM book_keys WHERE key IN ` + in,
+		`SELECT ol_key, id FROM books WHERE ol_key IN ` + in,
+	} {
+		rows, err := r.db.QueryContext(ctx, q, args...)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var k string
+			var id int64
+			if err := rows.Scan(&k, &id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[k] = id
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 // dropKey forgets one of a book's former keys. Only a Change match that corrects a
 // wrong identification does this: the old key named a different book.
 func dropKey(ctx context.Context, ex store.Execer, key string, bookID int64) error {
@@ -183,6 +222,11 @@ func (s *Service) BookIDForKey(ctx context.Context, key string) (int64, bool) {
 // KeysFor returns every key a book has had.
 func (s *Service) KeysFor(ctx context.Context, bookID int64) ([]BookKey, error) {
 	return s.repo.KeysFor(ctx, bookID)
+}
+
+// KeyOwners maps each of these keys, current or former, to its book.
+func (s *Service) KeyOwners(ctx context.Context, keys []string) (map[string]int64, error) {
+	return s.repo.KeyOwners(ctx, keys)
 }
 
 // AllKeys maps every key, current and former, to its book.
