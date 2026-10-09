@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { api, type HealthCheck, type SystemHealth } from "../../lib/api";
 import { fixLink } from "../../lib/links";
 import { ago } from "../../lib/taskTime";
-import { useVisiblePoll } from "../../lib/useVisiblePoll";
+import { usePoll } from "../../lib/usePoll";
 
 // HealthList: every background health check, grouped by category, with its level, what's
 // wrong and where to fix it. It reads the server's cached results (cheap), so it re-reads
@@ -35,7 +35,7 @@ export function HealthList() {
       .catch((e: Error) => { if (alive.current) setErr(e.message); });
 
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
-  useVisiblePoll(() => { setTick((t) => t + 1); load(); }, 10_000);
+  usePoll(() => { setTick((t) => t + 1); return load(); }, 10_000);
 
   const checkNow = async () => {
     setChecking(true);

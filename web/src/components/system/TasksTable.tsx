@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ApiError, api, type SystemTask } from "../../lib/api";
 import { ago, every, took, until } from "../../lib/taskTime";
-import { useVisiblePoll } from "../../lib/useVisiblePoll";
+import { usePoll } from "../../lib/usePoll";
 
 // TasksTable: every scheduled background job — how often it runs, when it last ran and
 // how that went, when it runs next — with Run now. It re-reads every 10 s while the tab is
@@ -56,7 +56,7 @@ export function TasksTable() {
         else setErr(e.message);
       });
 
-  useVisiblePoll(() => { setTick((n) => n + 1); load(); }, 10_000);
+  usePoll(() => { setTick((n) => n + 1); return load(); }, 10_000);
 
   const runNow = async (t: SystemTask) => {
     setMsg(null);
