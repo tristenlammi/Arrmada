@@ -127,6 +127,29 @@ func TestBlockReleaseTVNeverMatchesAMovie(t *testing.T) {
 	}
 }
 
+// The grab's listing title is what a search offers again, so that's what gets blocked —
+// along with the torrent's own name when a tracker prettified the listing.
+func TestBlockReleaseBlocksTheListingTitle(t *testing.T) {
+	h, _ := blockHarness(t)
+	mid := h.addMovie(t, 7, "Arrival", 2016)
+	listing := "Arrival 2016 1080p BluRay DD+ 5.1"
+	hash := hashFor(listing)
+	addGrab(t, h.c, "movie", mid, listing, hash)
+	torrent := "Arrival.2016.1080p.BluRay.EAC3.5.1.x264-GRP"
+
+	got, err := h.c.ResolveBlock(h.ctx, hash, torrent)
+	if err != nil || got.Kind != "movie" || got.ID != mid {
+		t.Fatalf("resolved %+v, %v", got, err)
+	}
+	if err := h.c.BlockResolved(h.ctx, hash, got); err != nil {
+		t.Fatal(err)
+	}
+	set, _ := h.c.blockedSet(h.ctx, mid)
+	if !set[normTitle(listing)] || !set[normTitle(torrent)] {
+		t.Errorf("blocked set %v should hold both the listing and the torrent name", set)
+	}
+}
+
 // A torrent tied to nothing is left alone: no removal, no blocklist row.
 func TestBlockReleaseNothingToBlock(t *testing.T) {
 	h, removed := blockHarness(t)

@@ -50,10 +50,10 @@ func (c *Coordinator) ReviewFiles(ctx context.Context, id int64) (files []Review
 	if err != nil {
 		return nil, false, err
 	}
-	root := filepath.Clean(r.ContentPath)
 	if r.ContentPath == "" {
 		return nil, false, ErrDownloadGone
 	}
+	root := filepath.Clean(r.ContentPath)
 	fi, err := os.Lstat(root)
 	if err != nil {
 		return nil, false, fmt.Errorf("%w: %s", ErrDownloadGone, r.ContentPath)

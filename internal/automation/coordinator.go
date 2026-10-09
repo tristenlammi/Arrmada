@@ -1251,6 +1251,7 @@ type BlockTarget struct {
 	Title string `json:"title"`
 
 	release     string // the release name blocklisted
+	alsoBlock   string // the torrent's own name, when it differs from the grab's listing title
 	indexer     string // where it came from, when a grab recorded it
 	discography bool   // a music discography, recorded against the artist
 }
@@ -1279,11 +1280,13 @@ func (c *Coordinator) BlockRelease(ctx context.Context, hash, name string) (Bloc
 // straight back.
 func (c *Coordinator) ResolveBlock(ctx context.Context, hash, name string) (BlockTarget, error) {
 	if g, status := c.grabForDownload(ctx, hash, name); g != nil && status != "" {
-		release := g.Title
-		if name != "" {
-			release = name
-		}
-		if t, ok := c.blockTargetFor(ctx, g.MediaType, g.MovieID, release, g.Indexer); ok {
+		// The grab's title is the indexer's listing — what a search will offer again — so
+		// that's what is blocked. The torrent's own name is blocked too when it differs
+		// (a tracker's prettified listing vs the .torrent's name).
+		if t, ok := c.blockTargetFor(ctx, g.MediaType, g.MovieID, g.Title, g.Indexer); ok {
+			if name != "" && normTitle(name) != normTitle(g.Title) {
+				t.alsoBlock = name
+			}
 			return t, nil
 		}
 	}
@@ -1414,19 +1417,24 @@ func (c *Coordinator) blockTargetFor(ctx context.Context, kind string, id int64,
 // held in, and search for another release.
 func (c *Coordinator) BlockResolved(ctx context.Context, hash string, t BlockTarget) error {
 	const reason = "manually blocklisted"
-	switch t.Kind {
-	case "movie":
-		if err := c.addBlock(ctx, t.ID, t.release, t.indexer, "", reason); err != nil {
-			return err
+	for _, title := range []string{t.release, t.alsoBlock} {
+		if title == "" {
+			continue
 		}
-	case "series":
-		c.addBlockSeries(ctx, t.ID, t.release, t.indexer, reason)
-	case "book":
-		c.addBlockBook(ctx, t.ID, t.release, t.indexer, reason)
-	case "music":
-		c.addBlockMusic(ctx, t.ID, t.release, t.indexer, reason)
-	default:
-		return ErrNothingToBlock
+		switch t.Kind {
+		case "movie":
+			if err := c.addBlock(ctx, t.ID, title, t.indexer, "", reason); err != nil {
+				return err
+			}
+		case "series":
+			c.addBlockSeries(ctx, t.ID, title, t.indexer, reason)
+		case "book":
+			c.addBlockBook(ctx, t.ID, title, t.indexer, reason)
+		case "music":
+			c.addBlockMusic(ctx, t.ID, title, t.indexer, reason)
+		default:
+			return ErrNothingToBlock
+		}
 	}
 	if err := c.dropTorrent(ctx, hash, true); err != nil {
 		c.log.Warn("downloads: block — couldn't remove the torrent", "release", t.release, "err", err)
