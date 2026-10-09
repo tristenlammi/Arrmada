@@ -582,8 +582,9 @@ func (c *Coordinator) ManualImportSeries(ctx context.Context, seriesID int64, pa
 	return lastErr
 }
 
-// recordHashForContentPath finds the completed download whose content path matches
-// and records its hash as imported. Used after manual imports, which are given a
+// recordHashForContentPath finds the completed download whose content path matches,
+// records its hash as imported and closes out its grab as 'imported', so seed cleanup
+// removes the torrent at its goal. Used after manual imports, which are given a
 // filesystem path rather than a torrent hash.
 func (c *Coordinator) recordHashForContentPath(ctx context.Context, path string) {
 	if c.downloads == nil {
@@ -597,6 +598,7 @@ func (c *Coordinator) recordHashForContentPath(ctx context.Context, path string)
 	for _, it := range completed {
 		if it.ContentPath != "" && filepath.Clean(it.ContentPath) == clean {
 			c.recordImportedHash(ctx, it.Hash, it.Name, it.SizeBytes)
+			c.setGrabStatusByHash(ctx, it.Hash, it.Name, "series", grabStatusImported)
 			return
 		}
 	}

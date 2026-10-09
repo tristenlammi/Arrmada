@@ -36,9 +36,13 @@ type grab struct {
 	SeedEnabled  bool
 	SeedRatio    float64
 	SeedHours    int
-	MediaType    string // "movie" | "series"
+	MediaType    string // "movie" | "series" | "book" | "music"
 	InfoHash     string // the torrent's real identity; "" for rows predating migration 0062
+	Status       string // one of the grabStatus* words (grabstatus.go)
 }
+
+// grabCols is the column list scanGrab reads, in its order.
+const grabCols = `id, movie_id, version_id, title, indexer, quality_profile, stall_minutes, grabbed_at, seed_enabled, seed_ratio, seed_hours, media_type, info_hash, status`
 
 // addBlock blocklists a release for a movie.
 func (c *Coordinator) addBlock(ctx context.Context, movieID int64, title, indexer, downloadURL, reason string) error {
@@ -300,11 +304,15 @@ func (c *Coordinator) grabForce(ctx context.Context, infoHash string) forceRule 
 	return forceRule{On: true, Scope: sc}
 }
 
-// pendingGrabs returns grabs still awaiting import.
+// pendingGrabs returns grabs still downloading as far as we know — the ones the stall
+// check judges. A grab held in Review is complete and isn't one of them.
 func (c *Coordinator) pendingGrabs(ctx context.Context) ([]grab, error) {
-	rows, err := c.db.QueryContext(ctx,
-		`SELECT id, movie_id, version_id, title, indexer, quality_profile, stall_minutes, grabbed_at, seed_enabled, seed_ratio, seed_hours, media_type, info_hash
-		 FROM grabs WHERE status = 'grabbed' ORDER BY id`)
+	return c.grabsWhere(ctx, stallWatchWhere)
+}
+
+// grabsWhere reads every grab matching one of the status sets in grabstatus.go, oldest first.
+func (c *Coordinator) grabsWhere(ctx context.Context, where string, args ...any) ([]grab, error) {
+	rows, err := c.db.QueryContext(ctx, `SELECT `+grabCols+` FROM grabs WHERE `+where+` ORDER BY id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -348,65 +356,86 @@ func (c *Coordinator) pendingSeriesGrabTitles(ctx context.Context, seriesID int6
 	return c.pendingTitlesOf(ctx, seriesID, "series")
 }
 
-// setGrabStatus marks a grab imported or failed.
+// setGrabStatus moves one grab to status (a grabStatus* word).
 func (c *Coordinator) setGrabStatus(ctx context.Context, id int64, status string) {
 	_, _ = c.db.ExecContext(ctx, `UPDATE grabs SET status = ? WHERE id = ?`, status, id)
 }
 
-// importedGrabs returns grabs whose file has imported (candidates for seed cleanup).
-func (c *Coordinator) importedGrabs(ctx context.Context) ([]grab, error) {
-	rows, err := c.db.QueryContext(ctx,
-		`SELECT id, movie_id, version_id, title, indexer, quality_profile, stall_minutes, grabbed_at, seed_enabled, seed_ratio, seed_hours, media_type, info_hash
-		 FROM grabs WHERE status = 'imported' ORDER BY id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []grab
-	for rows.Next() {
-		g, err := scanGrab(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, g)
-	}
-	return out, rows.Err()
+// seedCleanupGrabs returns grabs whose torrent may leave the client at its seed goal:
+// imported ones, and dismissed ones (removed with their files kept). Never a grab still
+// downloading or held in Review — nothing has landed from those yet.
+func (c *Coordinator) seedCleanupGrabs(ctx context.Context) ([]grab, error) {
+	return c.grabsWhere(ctx, seedCleanupWhere)
 }
 
-// liveGrabs returns every grab still in play — downloading OR imported-and-seeding.
+// liveGrabs returns every grab still in play — downloading, held, or imported-and-seeding.
 //
-// Distinct from importedGrabs on purpose: seed CLEANUP must only consider imported
-// grabs (never remove a torrent before its data has landed), but the Seeding tab wants
-// the rule for anything currently in the client. Using the imported-only set there made
-// a torrent that had finished downloading but not yet imported read "Not managed by
+// Distinct from seedCleanupGrabs on purpose: seed CLEANUP must only consider grabs whose
+// data has landed (never remove a torrent before then), but the Seeding tab wants the
+// rule for anything currently in the client. Using the imported-only set there made a
+// torrent that had finished downloading but not yet imported read "Not managed by
 // Arrmada — no seed rule", even though its rule was recorded at grab time.
 func (c *Coordinator) liveGrabs(ctx context.Context) ([]grab, error) {
-	rows, err := c.db.QueryContext(ctx,
-		`SELECT id, movie_id, version_id, title, indexer, quality_profile, stall_minutes, grabbed_at, seed_enabled, seed_ratio, seed_hours, media_type, info_hash
-		 FROM grabs WHERE status IN ('grabbed', 'imported') ORDER BY id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []grab
-	for rows.Next() {
-		g, err := scanGrab(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, g)
-	}
-	return out, rows.Err()
+	return c.grabsWhere(ctx, liveWhere)
 }
 
-// scanGrab reads a grab row (columns in the order the queries select them).
+// scanGrab reads a grab row selected with grabCols.
 func scanGrab(row interface{ Scan(...any) error }) (grab, error) {
 	var g grab
 	var seedEnabled int
 	err := row.Scan(&g.ID, &g.MovieID, &g.VersionID, &g.Title, &g.Indexer, &g.Profile,
-		&g.StallMinutes, &g.GrabbedAt, &seedEnabled, &g.SeedRatio, &g.SeedHours, &g.MediaType, &g.InfoHash)
+		&g.StallMinutes, &g.GrabbedAt, &seedEnabled, &g.SeedRatio, &g.SeedHours, &g.MediaType, &g.InfoHash, &g.Status)
 	g.SeedEnabled = seedEnabled != 0
 	return g, err
+}
+
+// setGrabStatusByHash closes out the grab a download came from, wherever that download
+// was decided (Review, a manual import, an import sweep). It moves every in-flight
+// (grabbed or held) row whose info hash is hash; with no such row it falls back to
+// hashless in-flight rows of mediaType whose normalized title is name — rows predating
+// migration 0062 and unparseable torrents. Returns the rows it moved.
+//
+// A grab already closed out is left alone: an imported grab mustn't be dragged back to
+// 'held', and a seeded one is history.
+func (c *Coordinator) setGrabStatusByHash(ctx context.Context, hash, name, mediaType, to string) []grab {
+	var moved []grab
+	if hash != "" {
+		hits, err := c.grabsWhere(ctx, inFlightWhere+` AND info_hash != '' AND lower(info_hash) = lower(?)`, hash)
+		if err != nil {
+			c.log.Warn("automation: couldn't read the grab to close out", "hash", hash, "err", err)
+			return nil
+		}
+		moved = hits
+	}
+	if len(moved) == 0 && name != "" {
+		where, args := inFlightWhere+` AND info_hash = ''`, []any{}
+		if mediaType != "" {
+			where += ` AND media_type = ?`
+			args = append(args, mediaType)
+		}
+		hits, err := c.grabsWhere(ctx, where, args...)
+		if err != nil {
+			c.log.Warn("automation: couldn't read the grab to close out", "release", name, "err", err)
+			return nil
+		}
+		want := normRelease(name)
+		for _, g := range hits {
+			if normRelease(g.Title) == want {
+				moved = append(moved, g)
+			}
+		}
+	}
+	for i := range moved {
+		if moved[i].Status == to {
+			continue
+		}
+		if _, err := c.db.ExecContext(ctx, `UPDATE grabs SET status = ? WHERE id = ?`, to, moved[i].ID); err != nil {
+			c.log.Warn("automation: couldn't record the grab's status", "status", to, "err", err)
+			continue
+		}
+		moved[i].Status = to
+	}
+	return moved
 }
 
 // markGrabImportedForMovie flips the ONE grab this import came from to imported, the
@@ -421,7 +450,7 @@ func scanGrab(row interface{ Scan(...any) error }) (grab, error) {
 // flips it via movieHasFileFor once its own version gains a file.
 func (c *Coordinator) markGrabImportedForMovie(ctx context.Context, movieID int64, releaseName string) {
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT id, title FROM grabs WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'movie'`, movieID)
+		`SELECT id, title FROM grabs WHERE movie_id = ? AND media_type = 'movie' AND `+inFlightWhere, movieID)
 	if err != nil {
 		return
 	}
@@ -436,7 +465,7 @@ func (c *Coordinator) markGrabImportedForMovie(ctx context.Context, movieID int6
 	}
 	rows.Close() // close before writing — SQLite won't take a write while a read is open
 	for _, id := range ids {
-		if _, err := c.db.ExecContext(ctx, `UPDATE grabs SET status = 'imported' WHERE id = ?`, id); err != nil {
+		if _, err := c.db.ExecContext(ctx, `UPDATE grabs SET status = ? WHERE id = ?`, grabStatusImported, id); err != nil {
 			c.log.Warn("automation: mark grab imported failed", "err", err)
 		}
 	}
@@ -461,18 +490,18 @@ func (c *Coordinator) markGrabImportedForMovie(ctx context.Context, movieID int6
 // importing" for a full day about a torrent that no longer exists and can never import,
 // and the show can't grab an alternate for the whole of it.
 func (c *Coordinator) markSeriesGrabFailed(ctx context.Context, seriesID int64, infoHash, releaseName string) {
-	c.setSeriesGrabStatus(ctx, seriesID, infoHash, releaseName, "failed")
+	c.setSeriesGrabStatus(ctx, seriesID, infoHash, releaseName, grabStatusFailed)
 }
 
 func (c *Coordinator) markSeriesGrabImported(ctx context.Context, seriesID int64, infoHash, releaseName string) {
-	c.setSeriesGrabStatus(ctx, seriesID, infoHash, releaseName, "imported")
+	c.setSeriesGrabStatus(ctx, seriesID, infoHash, releaseName, grabStatusImported)
 }
 
 // setSeriesGrabStatus finds the grab a download came from — by info hash first, since a
 // name survives the round trip through the client only by luck — and sets its status.
 func (c *Coordinator) setSeriesGrabStatus(ctx context.Context, seriesID int64, infoHash, releaseName, status string) {
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT id, title, info_hash FROM grabs WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'series'`, seriesID)
+		`SELECT id, title, info_hash FROM grabs WHERE movie_id = ? AND media_type = 'series' AND `+inFlightWhere, seriesID)
 	if err != nil {
 		return
 	}
@@ -503,6 +532,16 @@ func (c *Coordinator) setSeriesGrabStatus(ctx context.Context, seriesID int64, i
 	}
 }
 
+// grabForHash returns the newest grab recorded for a torrent's info hash, whatever its
+// status. sql.ErrNoRows when there is none.
+func (c *Coordinator) grabForHash(ctx context.Context, hash string) (grab, error) {
+	if hash == "" {
+		return grab{}, sql.ErrNoRows
+	}
+	return scanGrab(c.db.QueryRowContext(ctx,
+		`SELECT `+grabCols+` FROM grabs WHERE info_hash != '' AND lower(info_hash) = lower(?) ORDER BY id DESC LIMIT 1`, hash))
+}
+
 // movieIDForGrabHash resolves which movie a download was grabbed for, by torrent
 // info hash — the one identity that survives the round trip through the download
 // client unchanged. Any grab status counts: by attach time the row may already be
@@ -530,8 +569,6 @@ func normTitle(s string) string {
 	}
 	return b.String()
 }
-
-var _ = sql.ErrNoRows
 
 // addBlockMusic blocklists a release for one album.
 func (c *Coordinator) addBlockMusic(ctx context.Context, albumID int64, title, indexer, reason string) {

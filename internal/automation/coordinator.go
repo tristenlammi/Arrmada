@@ -1245,11 +1245,7 @@ func (c *Coordinator) BlockRelease(ctx context.Context, hash, name string) error
 	_ = c.downloads.Remove(ctx, hash, true)
 	// Whatever it was, its grab row must not stay 'grabbed' — that would hold the
 	// pending-grab guard for a day and hide the block from stall detection.
-	if pending, err := c.pendingGrabs(ctx); err == nil {
-		if g := matchGrab(pending, hash, name); g != nil {
-			c.setGrabStatus(ctx, g.ID, "failed")
-		}
-	}
+	c.setGrabStatusByHash(ctx, hash, name, "", grabStatusFailed)
 	if m, ok := c.movies.MatchRelease(ctx, name); ok {
 		_, err := c.BlocklistAndSearch(ctx, m.ID, name, "", "")
 		if errors.Is(err, ErrAlreadySearching) {
@@ -1499,10 +1495,12 @@ func (c *Coordinator) DetectStalled(ctx context.Context) {
 	}
 }
 
-// ManageSeeding removes imported torrents once they hit their indexer's seed
-// goal (ratio or time). Safe because the library keeps its own copy of the file.
+// ManageSeeding removes finished torrents once they hit their indexer's seed goal (ratio
+// or time). An imported one goes with its data — safe, the library keeps its own copy. A
+// dismissed one goes with its files kept: Arrmada never imported them, and the user said
+// they'd handle them, so they may be the only copy.
 func (c *Coordinator) ManageSeeding(ctx context.Context) {
-	grabs, err := c.importedGrabs(ctx)
+	grabs, err := c.seedCleanupGrabs(ctx)
 	if err != nil || len(grabs) == 0 {
 		return
 	}
@@ -1515,7 +1513,7 @@ func (c *Coordinator) ManageSeeding(ctx context.Context) {
 	// silently doesn't apply — pairing once and writing the hash makes every subsequent
 	// pass exact. Re-reads the grabs when anything changed so this pass uses them.
 	if n := c.AdoptTorrentHashes(ctx, queue); n > 0 {
-		if refreshed, err := c.importedGrabs(ctx); err == nil {
+		if refreshed, err := c.seedCleanupGrabs(ctx); err == nil {
 			grabs = refreshed
 		}
 	}
@@ -1546,21 +1544,33 @@ func (c *Coordinator) ManageSeeding(ctx context.Context) {
 		if !over {
 			continue
 		}
-		if err := c.downloads.Remove(ctx, it.Hash, true); err != nil {
+		// Only data whose content Arrmada imported is deleted with the torrent.
+		deleteData := g.Status == grabStatusImported
+		if err := c.dropTorrent(ctx, it.Hash, deleteData); err != nil {
 			c.log.Warn("automation: remove seeded torrent failed", "release", g.Title, "err", err)
 			continue
 		}
-		c.setGrabStatus(ctx, g.ID, "seeded")
+		c.setGrabStatus(ctx, g.ID, grabStatusSeeded)
 		reason := "seed goal met"
 		if !g.SeedEnabled {
 			reason = "seeding off — removed after import"
 		}
-		c.log.Info("automation: removed torrent", "release", g.Title, "indexer", g.Indexer, "reason", reason,
-			"ratio", ratio, "uploaded_bytes", it.UploadedBytes, "seed_time_s", it.SeedingTime)
-		if g.MediaType == "movie" {
-			c.movies.AddEvent(ctx, g.MovieID, "seeded", g.Title+" — "+reason+", download removed")
+		what := "download removed"
+		if !deleteData {
+			what = "torrent removed, files kept in the downloads folder"
 		}
+		c.log.Info("automation: removed torrent", "release", g.Title, "indexer", g.Indexer, "reason", reason,
+			"delete_data", deleteData, "ratio", ratio, "uploaded_bytes", it.UploadedBytes, "seed_time_s", it.SeedingTime)
+		c.addMediaEvent(ctx, g, "seeded", g.Title+" — "+reason+", "+what)
 	}
+}
+
+// dropTorrent removes a torrent from the client through the test seam when one is set.
+func (c *Coordinator) dropTorrent(ctx context.Context, hash string, deleteData bool) error {
+	if c.removeTorrent != nil {
+		return c.removeTorrent(ctx, hash, deleteData)
+	}
+	return c.downloads.Remove(ctx, hash, deleteData)
 }
 
 // SeedPolicy is the recorded seed goal for a grabbed release, so the downloads feed
@@ -1574,7 +1584,7 @@ type SeedPolicy struct {
 // SeedPolicies returns the seed policy for every live grab (downloading or seeding),
 // keyed by a normalized release title (use NormReleaseKey on a download name to look it
 // up). Built in one query so the feed can annotate seeding torrents without a per-item
-// lookup. Uses liveGrabs, not importedGrabs: a torrent that has finished downloading but
+// lookup. Uses liveGrabs, not seedCleanupGrabs: a torrent that has finished downloading but
 // not yet imported still has a rule, and the UI should show it.
 // Keyed by BOTH the torrent's info hash and its normalized title. The hash is the
 // reliable key — an indexer's listing title is often a prettified rendering of the actual

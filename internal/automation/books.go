@@ -1780,7 +1780,7 @@ func (c *Coordinator) recordBookGrab(ctx context.Context, bookID, versionID int6
 // detectStalledBook resolves it once its own edition lands.
 func (c *Coordinator) markBookGrabImported(ctx context.Context, bookID int64, infoHash, downloadName string) {
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT id, title, info_hash FROM grabs WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'book'`, bookID)
+		`SELECT id, title, info_hash FROM grabs WHERE movie_id = ? AND media_type = 'book' AND `+inFlightWhere, bookID)
 	if err != nil {
 		return
 	}
@@ -1805,7 +1805,7 @@ func (c *Coordinator) markBookGrabImported(ctx context.Context, bookID int64, in
 	}
 	rows.Close() // close before writing — SQLite won't take a write while a read is open
 	for _, id := range ids {
-		if _, err := c.db.ExecContext(ctx, `UPDATE grabs SET status = 'imported' WHERE id = ?`, id); err != nil {
+		if _, err := c.db.ExecContext(ctx, `UPDATE grabs SET status = ? WHERE id = ?`, grabStatusImported, id); err != nil {
 			c.log.Warn("book: mark grab imported failed", "err", err)
 		}
 	}

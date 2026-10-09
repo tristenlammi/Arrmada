@@ -75,14 +75,15 @@ func (c *Coordinator) RemoveDownload(ctx context.Context, hash, name string, mod
 	if err := remove(ctx, hash, deleteFiles); err != nil {
 		return res, err
 	}
-	if g != nil && status == grabStatusGrabbed {
+	if g != nil && (status == grabStatusGrabbed || status == grabStatusHeld) {
 		c.setGrabStatus(ctx, g.ID, grabStatusRemoved)
 	}
 	// A download held in Review (one grabbed for a movie since deleted, say) is settled
 	// once it's out of the client; left pending, the review would offer an import of
 	// files that may be gone.
 	if _, err := c.db.ExecContext(ctx,
-		`UPDATE import_reviews SET status = 'resolved' WHERE lower(hash) = lower(?) AND status = 'pending'`, hash); err != nil {
+		`UPDATE import_reviews SET status = 'resolved', resolution = ?, resolved_at = CURRENT_TIMESTAMP
+		  WHERE lower(hash) = lower(?) AND status = 'pending'`, ResolutionRemoved, hash); err != nil {
 		c.log.Warn("downloads: couldn't settle the review for a removed download", "hash", hash, "err", err)
 	}
 	what := "files kept"
@@ -99,35 +100,21 @@ func (c *Coordinator) RemoveDownload(ctx context.Context, hash, name string, mod
 // grabForDownload finds the grab a download came from: by info hash (newest row wins),
 // else by release name among grabs still in play. Returns nil when it's untracked.
 func (c *Coordinator) grabForDownload(ctx context.Context, hash, name string) (*grab, string) {
-	const cols = `id, movie_id, version_id, title, indexer, quality_profile, stall_minutes, grabbed_at, seed_enabled, seed_ratio, seed_hours, media_type, info_hash, status`
-	scan := func(row interface{ Scan(...any) error }) (grab, string, error) {
-		var g grab
-		var seedEnabled int
-		var status string
-		err := row.Scan(&g.ID, &g.MovieID, &g.VersionID, &g.Title, &g.Indexer, &g.Profile,
-			&g.StallMinutes, &g.GrabbedAt, &seedEnabled, &g.SeedRatio, &g.SeedHours, &g.MediaType, &g.InfoHash, &status)
-		g.SeedEnabled = seedEnabled != 0
-		return g, status, err
-	}
-	g, status, err := scan(c.db.QueryRowContext(ctx,
-		`SELECT `+cols+` FROM grabs WHERE info_hash != '' AND lower(info_hash) = lower(?) ORDER BY id DESC LIMIT 1`, hash))
+	g, err := c.grabForHash(ctx, hash)
 	if err == nil {
-		return &g, status
+		return &g, g.Status
 	}
 	if !errors.Is(err, sql.ErrNoRows) || name == "" {
 		return nil, ""
 	}
-	rows, err := c.db.QueryContext(ctx,
-		`SELECT `+cols+` FROM grabs WHERE status IN ('grabbed', 'imported') ORDER BY id DESC`)
+	live, err := c.liveGrabs(ctx)
 	if err != nil {
 		return nil, ""
 	}
-	defer rows.Close()
 	want := normRelease(name)
-	for rows.Next() {
-		g, status, err := scan(rows)
-		if err == nil && normRelease(g.Title) == want {
-			return &g, status
+	for i := len(live) - 1; i >= 0; i-- { // newest first
+		if normRelease(live[i].Title) == want {
+			return &live[i], live[i].Status
 		}
 	}
 	return nil, ""

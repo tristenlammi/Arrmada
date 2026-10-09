@@ -46,7 +46,7 @@ func (c *Coordinator) regrabbedForVersion(ctx context.Context, hash string) bool
 	}
 	rows, err := c.db.QueryContext(ctx,
 		`SELECT movie_id, version_id FROM grabs
-		 WHERE media_type = 'book' AND status = 'grabbed' AND version_id > 0 AND lower(info_hash) = ?`,
+		 WHERE media_type = 'book' AND `+inFlightWhere+` AND version_id > 0 AND lower(info_hash) = ?`,
 		strings.ToLower(hash))
 	if err != nil {
 		return false

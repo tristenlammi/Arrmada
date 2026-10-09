@@ -248,7 +248,7 @@ func (c *Coordinator) failOver(ctx context.Context, g grab, item download.Item, 
 			c.log.Warn("automation: stall blocklist failed — leaving the grab for the next check", "release", g.Title, "err", err)
 			return
 		}
-		c.setGrabStatus(ctx, g.ID, "failed")
+		c.setGrabStatus(ctx, g.ID, grabStatusFailed)
 		t.event(ctx, g.Title+" disappeared from the download client — searching for another")
 		repl, err := t.replace(ctx, exclude)
 		if err != nil {
@@ -294,7 +294,7 @@ func (c *Coordinator) failOver(ctx context.Context, g grab, item download.Item, 
 	if err := c.removeStalled(ctx, item.Hash); err != nil {
 		c.log.Warn("automation: couldn't remove the stalled torrent", "release", g.Title, "err", err)
 	}
-	c.setGrabStatus(ctx, g.ID, "failed")
+	c.setGrabStatus(ctx, g.ID, grabStatusFailed)
 	t.event(ctx, fmt.Sprintf("%s — replaced by %s", why, repl))
 	payload["replaced"], payload["replacement"] = true, repl
 	c.publishStall(payload)
@@ -349,7 +349,7 @@ func stallSpan(minutes int) string {
 // file is done; otherwise a stall is replaced with another release for that version.
 func (c *Coordinator) detectStalledMovie(ctx context.Context, g grab, queue []download.Item, tick *stallTick) {
 	if c.movieHasFileFor(ctx, g) {
-		c.setGrabStatus(ctx, g.ID, "imported")
+		c.setGrabStatus(ctx, g.ID, grabStatusImported)
 		return
 	}
 	c.judgeStall(ctx, g, queue, tick, func(ctx context.Context) (stallTarget, bool) {
@@ -446,12 +446,12 @@ func (c *Coordinator) replaceSeriesGrab(ctx context.Context, s series.Series, g 
 // that same edition.
 func (c *Coordinator) detectStalledBook(ctx context.Context, g grab, queue []download.Item, tick *stallTick) {
 	if c.books == nil {
-		c.setGrabStatus(ctx, g.ID, "failed")
+		c.setGrabStatus(ctx, g.ID, grabStatusFailed)
 		return
 	}
 	b, err := c.books.Get(ctx, g.MovieID) // book id is stored in movie_id on the shared grabs table
 	if err != nil {
-		c.setGrabStatus(ctx, g.ID, "failed")
+		c.setGrabStatus(ctx, g.ID, grabStatusFailed)
 		return
 	}
 	// Only the edition THIS grab was for counts as landed. Checking b.HasFile (ebook OR
@@ -472,7 +472,7 @@ func (c *Coordinator) detectStalledBook(ctx context.Context, g grab, queue []dow
 		}
 	}
 	if landed {
-		c.setGrabStatus(ctx, g.ID, "imported")
+		c.setGrabStatus(ctx, g.ID, grabStatusImported)
 		return
 	}
 	c.judgeStall(ctx, g, queue, tick, func(context.Context) (stallTarget, bool) {
@@ -522,16 +522,16 @@ func (c *Coordinator) replaceBookGrab(ctx context.Context, b books.Book, g grab,
 // otherwise replaced with another release of the album.
 func (c *Coordinator) detectStalledMusic(ctx context.Context, g grab, queue []download.Item, tick *stallTick) {
 	if c.music == nil {
-		c.setGrabStatus(ctx, g.ID, "failed")
+		c.setGrabStatus(ctx, g.ID, grabStatusFailed)
 		return
 	}
 	al, err := c.music.GetAlbum(ctx, g.MovieID) // album id lives in movie_id on the shared table
 	if err != nil {
-		c.setGrabStatus(ctx, g.ID, "failed")
+		c.setGrabStatus(ctx, g.ID, grabStatusFailed)
 		return
 	}
 	if al.Complete() {
-		c.setGrabStatus(ctx, g.ID, "imported")
+		c.setGrabStatus(ctx, g.ID, grabStatusImported)
 		return
 	}
 	c.judgeStall(ctx, g, queue, tick, func(ctx context.Context) (stallTarget, bool) {

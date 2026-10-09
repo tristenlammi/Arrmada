@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/download"
 )
 
@@ -153,11 +154,13 @@ func (s *Service) track(ctx context.Context, rq *Request, byHash, byName map[str
 	return t
 }
 
-// activeGrabs is every grab for one library item that hasn't been imported or failed.
-// movie_id holds the series or book id for those media types.
+// activeGrabs is every grab for one library item that hasn't been closed out: still
+// downloading, or finished and waiting in Review. Resolving the review closes the grab, so
+// the requester stops seeing "Importing" then. movie_id holds the series or book id for
+// those media types.
 func (s *Service) activeGrabs(ctx context.Context, mediaType string, id int64) []grabRow {
 	rows, err := s.repo.db.QueryContext(ctx,
-		`SELECT info_hash, title, grabbed_at FROM grabs WHERE media_type = ? AND movie_id = ? AND status = 'grabbed'`,
+		`SELECT info_hash, title, grabbed_at FROM grabs WHERE media_type = ? AND movie_id = ? AND `+automation.GrabInFlightWhere,
 		mediaType, id)
 	if err != nil {
 		return nil
