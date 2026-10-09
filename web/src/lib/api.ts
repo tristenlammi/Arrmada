@@ -443,6 +443,24 @@ export interface HealthCheck {
   findings: HealthWarning[];
 }
 
+// One scheduled task's schedule and run history (GET /api/v1/system/tasks). Times arrive
+// as RFC 3339 strings or unix seconds, and an unset one as null, "" or Go's zero time;
+// lib/taskTime.ts reads them all.
+export interface SystemTask {
+  name: string;
+  label?: string;
+  description?: string;
+  interval_seconds: number;
+  last_start: string | number | null;
+  last_duration_ms: number;
+  last_error: string;
+  runs: number;
+  failures: number;
+  consecutive_failures?: number;
+  running: boolean;
+  next_run: string | number | null;
+}
+
 export interface SystemHealth {
   status: string; // "ok" | "warning" | "error"
   warnings: HealthWarning[];
@@ -1560,6 +1578,14 @@ export const api = {
   },
   recycleStats: () => req<RecycleStats>("/api/v1/recycle"),
   recycleMode: () => req<RecycleMode>("/api/v1/recycle/mode"),
+  // Scheduled tasks (System → Status). The list is an array, or {tasks: [...]}; Run now
+  // answers 409 while the task is already running.
+  systemTasks: async (): Promise<SystemTask[]> => {
+    const r = await req<SystemTask[] | { tasks?: SystemTask[] }>("/api/v1/system/tasks");
+    return Array.isArray(r) ? r : (r?.tasks ?? []);
+  },
+  runSystemTask: (name: string) =>
+    req<unknown>(`/api/v1/system/tasks/${encodeURIComponent(name)}/run`, { method: "POST" }),
   // Database backups — admin only (a backup holds every secret the app has).
   backups: () => req<BackupsState>("/api/v1/system/backups"),
   // A manual database backup, taken synchronously.
