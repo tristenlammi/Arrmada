@@ -984,6 +984,13 @@ export interface Book {
   added_at?: string;
   /** Extra audiobooks beyond the standard one — a full-cast production, another narrator. */
   audio_versions?: AudioVersion[];
+  /** Where the metadata came from, with a link to the book there. Detail endpoints only;
+   *  absent when the key is from no known catalogue. */
+  catalogue?: CatalogueRef;
+}
+export interface CatalogueRef {
+  name: "Hardcover" | "Open Library" | "Google Books";
+  url: string;
 }
 // AudioVersion is one extra audiobook of a book. A release belongs to it when it
 // mentions one of its terms; with no terms it is filled by hand only.

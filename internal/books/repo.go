@@ -64,6 +64,10 @@ type Book struct {
 	// AudioVersions are extra audiobooks of this book beyond the standard one (the
 	// Audiobook field): a full-cast production, another narrator. Filled by the service.
 	AudioVersions []AudioVersion `json:"audio_versions,omitempty"`
+	// Catalogue is where the metadata came from, with a link to the book there. Computed
+	// by the HTTP layer for the detail page (not stored); nil when the key is from no
+	// catalogue Arrmada knows.
+	Catalogue *CatalogueRef `json:"catalogue,omitempty"`
 }
 
 // SearchState returns when the missing-books sweep last searched for this book and how

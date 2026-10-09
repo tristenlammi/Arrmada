@@ -65,6 +65,10 @@ var bannedCopy = []bannedPhrase{
 	phrase(`kept in memory, up to`, "the viewer loads up to LOG_LIMIT lines; Arrmada keeps 50,000 in memory and writes rotating log files"),
 	webPhrase(`ARRMADA_BASE_URL`, "sub-path hosting isn't supported — Arrmada is served at the root of its own port or hostname"),
 	webPhrase(`dev-docker`, "builds are stamped with a dated version and the short commit (update.sh)"),
+	// COPY-11: books come from Hardcover, Open Library or Google Books — name the right one.
+	webPhrase(`openlibrary\.org/works/\$\{`, "link the book's own catalogue with b.catalogue.url (books.CatalogueLink); Hardcover and Google Books keys aren't Open Library works"),
+	phrase(`search Open Library and re-link`, "Change match searches the current catalogue — say 'search the catalogue'"),
+	phrase(`this author on Open Library`, "name the catalogue that answered: Hardcover for hc:a: authors, else Open Library"),
 	// COPY-04: no music upgrade sweep exists.
 	phrase(`keeps upgrading until`, "music albums aren't upgraded after the first grab"),
 	phrase(`upgrades later if`, "music albums aren't upgraded after the first grab"),
@@ -214,6 +218,9 @@ func TestCopyGuardMatcher(t *testing.T) {
 		`lines — kept in memory, up to 5000.`,
 		`set ARRMADA_BASE_URL to serve under a path`,
 		`version dev-docker`,
+		"<a href={`https://openlibrary.org/works/${b.ol_key}`}>Open Library</a>",
+		`This is the wrong book — search Open Library and re-link it to the right one`,
+		`Couldn't find more books for this author on Open Library.`,
 		`keeps upgrading until it reaches the top`,
 		`and upgrades later if one appears`,
 		`Replace an album when a higher tier turns up`,
