@@ -564,16 +564,12 @@ func (a *api) enrichBookCards(ctx context.Context, results []metadata.BookResult
 	// and a second Open Library "work" for the same novel must not look like a new book.
 	inLib := map[string]bool{}
 	hasFile := map[string]bool{}
-	if list, err := a.deps.Books.List(ctx); err == nil {
-		for _, b := range list {
-			inLib[b.OLKey] = true
-			hasFile[b.OLKey] = b.HasFile
-			if k := books.DedupeKey(b.Title, b.Author); k != "" {
-				inLib["d:"+k] = true
-				hasFile["d:"+k] = hasFile["d:"+k] || b.HasFile
-			}
-		}
+	list, _ := a.deps.Books.List(ctx)
+	for _, b := range list {
+		inLib[b.OLKey] = true
+		hasFile[b.OLKey] = b.HasFile
 	}
+	same := books.NewIdentityIndex(list)
 	// Requests.List returns newest first; iterating in order and overwriting means the
 	// OLDEST request would win, so only set a key on first sight — the newest request
 	// for a book determines its badge (matching the movie/series discover behavior of
@@ -591,11 +587,14 @@ func (a *api) enrichBookCards(ctx context.Context, results []metadata.BookResult
 	cards := make([]bookCard, 0, len(results))
 	for _, br := range results {
 		st := reqStatus[br.Key]
-		dk := "d:" + books.DedupeKey(br.Title, br.Author)
+		in, has := inLib[br.Key], hasFile[br.Key]
+		if lb, ok := same.Find(br.Title, br.Author); ok {
+			in, has = true, has || lb.HasFile // Find prefers the row with files
+		}
 		cards = append(cards, bookCard{
 			BookResult:    br,
-			InLibrary:     inLib[br.Key] || inLib[dk],
-			HasFile:       hasFile[br.Key] || hasFile[dk],
+			InLibrary:     in,
+			HasFile:       has,
 			Requested:     st == "pending",
 			RequestStatus: st,
 		})

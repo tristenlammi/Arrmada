@@ -77,22 +77,17 @@ func (s *Service) catalogueSeries(ctx context.Context, bookID int64) (*SeriesVie
 	// so books still on Open Library keys count as owned.
 	list, _ := s.repo.List(ctx)
 	byKey := map[string]Book{}
-	byDedupe := map[string]Book{}
 	for _, lb := range list {
 		byKey[lb.OLKey] = lb
-		if k := DedupeKey(lb.Title, lb.Author); k != "" {
-			if prev, seen := byDedupe[k]; !seen || (lb.HasFile && !prev.HasFile) {
-				byDedupe[k] = lb
-			}
-		}
 	}
+	same := NewIdentityIndex(list)
 	view := &SeriesView{Key: info.Key, Name: info.Name, Total: info.Count}
 	var missing []metadata.BookResult
 	for _, r := range info.Books {
 		e := SeriesEntry{Key: r.Key, Title: r.Title, Author: r.Author, Year: r.Year, CoverURL: r.CoverURL, Position: r.SeriesPosition}
 		owned, has := byKey[r.Key]
 		if !has {
-			owned, has = byDedupe[DedupeKey(r.Title, r.Author)]
+			owned, has = same.Find(r.Title, r.Author)
 		}
 		if has {
 			e.BookID, e.HasFile = owned.ID, owned.HasFile

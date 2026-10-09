@@ -355,21 +355,21 @@ func AuthorsOverlap(a, b string) bool { return authorsOverlap(a, b) }
 // "Hugh Howey" matches "Howey, Hugh" and an initial-only rendering); failing that,
 // with no author to check, the sole result of that title.
 func matchUpgrade(b Book, results []metadata.BookResult) *metadata.BookResult {
-	want := DedupeKey(b.Title, b.Author)
 	for i := range results {
-		if DedupeKey(results[i].Title, results[i].Author) == want {
+		if SameBook(b.Title, b.Author, results[i].Title, results[i].Author) {
 			return &results[i]
 		}
 	}
-	keys := titleKeys(b.Title)
-	if keys[0] == "" {
+	want := IdentityOf(b.Title, b.Author)
+	if want.Full == "" {
 		return nil
 	}
 	// The same title read either way round: a library "The Final Empire" is the
-	// catalogue's "Mistborn: The Final Empire", and vice versa.
+	// catalogue's "Mistborn: The Final Empire", and vice versa. Never a shared prefix:
+	// a library "Thrawn" is not the catalogue's "Thrawn: Alliances".
 	var sameTitle []*metadata.BookResult
 	for i := range results {
-		if keysOverlap(keys, titleKeys(results[i].Title)) {
+		if want.SameTitle(IdentityOf(results[i].Title, results[i].Author)) {
 			sameTitle = append(sameTitle, &results[i])
 		}
 	}
