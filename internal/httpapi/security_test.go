@@ -303,6 +303,15 @@ func TestLoginLimitUsesTheRealAddress(t *testing.T) {
 		t.Errorf("rotating forged headers dodged the limit: HTTP %d", code)
 	}
 
+	// A machine on the LAN is a "private peer" too; making up a private forwarded
+	// address on every attempt mustn't give it a fresh limit each time.
+	for i := 0; i < 10; i++ {
+		_ = signIn(s, "192.168.1.66:5000", fmt.Sprintf("user%d", i), "wrong", map[string]string{"X-Forwarded-For": fmt.Sprintf("10.9.8.%d", i)})
+	}
+	if code := signIn(s, "192.168.1.66:5000", "someone", "wrong", map[string]string{"X-Forwarded-For": "10.9.8.99"}); code != http.StatusTooManyRequests {
+		t.Errorf("a LAN machine dodged the limit with made-up private addresses: HTTP %d", code)
+	}
+
 	// Through the tunnel: the peer is cloudflared's private address for everyone.
 	tunnel := "172.18.0.4:5000"
 	for i := 0; i < 10; i++ {

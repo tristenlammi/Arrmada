@@ -15,10 +15,15 @@ import (
 	"strings"
 )
 
-// ClientIP is the address to hold a request to: the forwarded visitor when a local
-// proxy vouches for one, otherwise the TCP peer.
+// ClientIP is the address to hold a request to (rate limits): the forwarded visitor
+// when a local proxy vouches for an internet address, otherwise the TCP peer.
+//
+// A forwarded private address is not taken. Any machine on the LAN is a "private peer",
+// so one that made up a fresh X-Forwarded-For: 10.x.y.z on every sign-in attempt would
+// otherwise get a fresh limit each time. LAN clients behind a local proxy share the
+// proxy's address instead, which only makes their limit stricter.
 func ClientIP(r *http.Request) string {
-	if ip := ForwardedClientIP(r); ip != nil {
+	if ip := ForwardedClientIP(r); IsPublic(ip) {
 		return ip.String()
 	}
 	host, _ := peer(r)

@@ -18,11 +18,13 @@ func TestClientIP(t *testing.T) {
 		{"loopback proxy, Cf header", "127.0.0.1:5000", map[string]string{"Cf-Connecting-Ip": "203.0.113.9"}, "203.0.113.9"},
 		{"XFF right to left", "10.0.0.2:5000", map[string]string{"X-Forwarded-For": "6.6.6.6, 203.0.113.9"}, "203.0.113.9"},
 		{"XFF skips our private proxies", "10.0.0.2:5000", map[string]string{"X-Forwarded-For": "6.6.6.6, 203.0.113.9, 10.0.0.5"}, "203.0.113.9"},
-		{"XFF all private → leftmost", "127.0.0.1:5000", map[string]string{"X-Forwarded-For": "192.168.1.20, 10.0.0.5"}, "192.168.1.20"},
+		{"XFF all private → the peer", "127.0.0.1:5000", map[string]string{"X-Forwarded-For": "192.168.1.20, 10.0.0.5"}, "127.0.0.1"},
+		{"LAN machine making up a private XFF", "192.168.1.30:5000", map[string]string{"X-Forwarded-For": "10.9.9.9"}, "192.168.1.30"},
+		{"LAN machine making up a private Cf header", "192.168.1.30:5000", map[string]string{"Cf-Connecting-Ip": "10.9.9.9"}, "192.168.1.30"},
 		{"XFF junk skipped", "127.0.0.1:5000", map[string]string{"X-Forwarded-For": "unknown, 203.0.113.9"}, "203.0.113.9"},
 		{"bad Cf header falls through", "127.0.0.1:5000", map[string]string{"Cf-Connecting-Ip": "nope", "X-Forwarded-For": "203.0.113.9"}, "203.0.113.9"},
-		{"Forwarded with port and quotes", "127.0.0.1:5000", map[string]string{"Forwarded": `for="192.168.1.5:443";proto=https`}, "192.168.1.5"},
-		{"Forwarded IPv6 in brackets", "127.0.0.1:5000", map[string]string{"Forwarded": `for="[2001:db8::1]:4711"`}, "2001:db8::1"},
+		{"Forwarded with port and quotes", "127.0.0.1:5000", map[string]string{"Forwarded": `for="198.51.100.5:443";proto=https`}, "198.51.100.5"},
+		{"Forwarded IPv6 in brackets", "127.0.0.1:5000", map[string]string{"Forwarded": `for="[2606:4700::1]:4711"`}, "2606:4700::1"},
 		{"Forwarded right to left", "127.0.0.1:5000", map[string]string{"Forwarded": `for=6.6.6.6, for=203.0.113.9;proto=https`}, "203.0.113.9"},
 		{"private peer, no headers", "192.168.1.30:5000", nil, "192.168.1.30"},
 		{"IPv6 loopback peer", "[::1]:5000", map[string]string{"Cf-Connecting-Ip": "203.0.113.9"}, "203.0.113.9"},
@@ -48,6 +50,19 @@ func TestForwardedClientIP(t *testing.T) {
 	if ip := ForwardedClientIP(r); ip == nil || ip.String() != "203.0.113.9" {
 		t.Errorf("got %v, want 203.0.113.9", ip)
 	}
+	// All-private chain: the leftmost, a LAN client behind a local proxy (what the
+	// LAN/outside verdict needs).
+	r.Header.Set("X-Forwarded-For", "192.168.1.20, 10.0.0.5")
+	if ip := ForwardedClientIP(r); ip == nil || ip.String() != "192.168.1.20" {
+		t.Errorf("all-private chain: got %v, want 192.168.1.20", ip)
+	}
+	r.Header.Del("X-Forwarded-For")
+	r.Header.Set("Forwarded", `for="192.168.1.5:443";proto=https`)
+	if ip := ForwardedClientIP(r); ip == nil || ip.String() != "192.168.1.5" {
+		t.Errorf("Forwarded for: got %v, want 192.168.1.5", ip)
+	}
+	r.Header.Del("Forwarded")
+	r.Header.Set("X-Forwarded-For", "203.0.113.9")
 	r.RemoteAddr = "203.0.113.50:5000"
 	if ip := ForwardedClientIP(r); ip != nil {
 		t.Errorf("a public peer's headers were believed: %v", ip)
