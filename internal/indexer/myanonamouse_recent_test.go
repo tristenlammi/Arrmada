@@ -142,7 +142,7 @@ func TestFetchRecentIncludesMAM(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	s := NewService(st.DB(), slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	s := NewService(st.DB(), slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	searcher, err := s.registry.For(KindMAM)
 	if err != nil {
 		t.Fatal(err)
