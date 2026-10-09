@@ -22,7 +22,8 @@ func newTestService(t *testing.T) *Service {
 		db: db, settings: settings.NewService(db), log: testLogger(),
 		failures: &failureStore{db: db}, cache: &probeCache{db: db}, logs: &logStore{db: db},
 		index: &libraryIndex{db: db}, skips: &skipStore{db: db}, requests: &requestStore{db: db},
-		choices: &choiceStore{db: db}, measured: &measureStore{db: db}, pending: map[string]*Job{}, wake: make(chan struct{}, 1),
+		choices: &choiceStore{db: db}, measured: &measureStore{db: db}, history: &historyStore{db: db},
+		pending: map[string]*Job{}, wake: make(chan struct{}, 1),
 		encoders: workingCPUEncoders(),
 	}
 }

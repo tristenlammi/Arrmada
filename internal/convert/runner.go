@@ -22,6 +22,11 @@ func (s *Service) Run(ctx context.Context) {
 	// end, so nothing is lost). Clear its debris, then replay any file swap a crash cut off.
 	s.cleanScratch(ctx)
 	s.recoverSwaps(ctx)
+	// Ledger rows still in progress belong to jobs the restart cut off; no worker has
+	// started yet, so none of them is live.
+	if n := s.history.interrupted(ctx); n > 0 {
+		s.log.Info("convert: closed ledger rows interrupted by the restart", "count", n)
+	}
 	s.log.Info("convert: runner started", "workers", s.workerCount(ctx))
 	done := make(chan struct{})
 	go s.pauseLoop(ctx, done)

@@ -1051,6 +1051,22 @@ export interface ConvertJob {
   src_bytes: number; out_bytes: number; ssim?: number; note?: string; requested: boolean; paused?: string;
   started_at: number; finished_at?: number;
 }
+export interface ConvertTrackDecision {
+  type: "audio" | "subtitle"; index: number; codec: string; lang?: string; title?: string; channels?: number;
+  forced?: boolean; image?: boolean; keep: boolean; reason?: string;
+}
+export type ConvertHistoryOutcome = "in_progress" | "done" | "failed" | "skipped" | "cancelled";
+// One row of the conversion ledger (GET /convert/history). src_info/out_info only on the single-row read.
+export interface ConvertHistoryEntry {
+  id: number; key: string; kind: "movie" | "episode"; movie_id?: number; series_id?: number; season: number; episode?: number; title: string;
+  outcome: ConvertHistoryOutcome; outcome_kind?: string; note?: string; requested: boolean;
+  src_path?: string; src_release?: string; src_size: number; src_spec?: string;
+  out_path?: string; out_size: number; out_spec?: string; codec?: string; crf?: number; encoder?: string; crop?: string;
+  ssim_mean?: number; ssim_min?: number; ssim_windows?: number[];
+  kept_tracks?: ConvertTrackDecision[]; dropped_tracks?: ConvertTrackDecision[]; warnings?: string[]; reclaim_deferred?: boolean;
+  started_at: number; finished_at?: number; encode_secs?: number;
+  src_info?: ConvertMediaInfo; out_info?: ConvertMediaInfo;
+}
 export interface ConvertUpNext { key: string; title: string; kind: string; video: boolean; saving: number; size: number; tracks: string; reason: string; codec: string; current: string }
 export interface ConvertRequest { key: string; title: string; requested_at: number }
 export interface ConvertStatus {
@@ -1674,6 +1690,17 @@ export const api = {
     req<{ requested: number }>(`/api/v1/convert/series/${seriesID}${season === undefined ? "" : `?season=${season}`}`, { method: "POST" }),
   convertJobs: () => req<{ jobs: ConvertJob[] }>("/api/v1/convert/jobs").then((r) => r.jobs),
   convertLogs: () => req<{ lines: { at: number; level: string; msg: string }[] }>("/api/v1/convert/logs").then((r) => r.lines),
+  convertHistory: (f: { outcome?: ConvertHistoryOutcome; media?: "movie" | "episode"; q?: string; before?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (f.outcome) q.set("outcome", f.outcome);
+    if (f.media) q.set("media", f.media);
+    if (f.q) q.set("q", f.q);
+    if (f.before) q.set("before", f.before);
+    if (f.limit) q.set("limit", String(f.limit));
+    const qs = q.toString();
+    return req<{ items: ConvertHistoryEntry[]; next: string }>(`/api/v1/convert/history${qs ? `?${qs}` : ""}`);
+  },
+  convertHistoryEntry: (id: number) => req<ConvertHistoryEntry>(`/api/v1/convert/history/${id}`),
   convertCompare: (key: string) => req<ConvertCompareStatus>("/api/v1/convert/compare", { method: "POST", body: JSON.stringify({ key }) }),
   convertCompareStatus: () => req<ConvertCompareStatus>("/api/v1/convert/compare"),
   convertCompareFileURL: (name: string) => `/api/v1/convert/compare/files/${encodeURIComponent(name)}`,

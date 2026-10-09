@@ -27,28 +27,30 @@ import (
 //
 // crop is the black-bar crop the encode applied (or ""): the reference gets the same crop,
 // so the picture is compared with the picture rather than squashed to the output's size.
-func (s *Service) computeSSIM(ctx context.Context, distorted, reference, crop string) (float64, error) {
+//
+// It returns the mean and each window's own score (for the ledger).
+func (s *Service) computeSSIM(ctx context.Context, distorted, reference, crop string) (float64, []float64, error) {
 	di, err := probe(ctx, s.ffprobe, distorted)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if di.Width <= 0 || di.Height <= 0 {
-		return 0, fmt.Errorf("could not read output resolution")
+		return 0, nil, fmt.Errorf("could not read output resolution")
 	}
 	var sum float64
-	var n int
+	var scores []float64
 	for _, wnd := range ssimWindows(di.DurationSec) {
 		sc, err := s.ssimWindow(ctx, distorted, reference, wnd.start, wnd.start, wnd.dur, di.Width, di.Height, di.FrameRateRat, crop)
 		if err != nil {
 			continue // a single unreadable slice shouldn't fail the whole measurement
 		}
 		sum += sc
-		n++
+		scores = append(scores, sc)
 	}
-	if n == 0 {
-		return 0, fmt.Errorf("no SSIM score in ffmpeg output")
+	if len(scores) == 0 {
+		return 0, nil, fmt.Errorf("no SSIM score in ffmpeg output")
 	}
-	return sum / float64(n), nil
+	return sum / float64(len(scores)), scores, nil
 }
 
 // ssimWnd is one sample window (seconds).

@@ -343,6 +343,7 @@ func (s *Service) MaybeIndexSweep(ctx context.Context) {
 		return
 	}
 	s.lastSweep = now
+	s.history.prune(ctx) // once a day is plenty for a 90-day horizon
 	s.IndexAll(ctx)
 }
 

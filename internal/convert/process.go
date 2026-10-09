@@ -31,11 +31,13 @@ var (
 // process converts one file: analyse it, decide what it needs, settle the codec, encode,
 // check the result against the source, and only then swap it into the library.
 func (s *Service) process(ctx context.Context, job *Job) {
+	rec := s.record(job) // what the ledger keeps about this job, filled in as it runs
 	src, title, origLang, ok := s.resolveSource(ctx, job)
 	if !ok {
 		s.dropGone(ctx, job)
 		return
 	}
+	rec.srcPath = src
 	if title != "" && job.Kind != "episode" {
 		s.update(job, func(j *Job) { j.Title = title })
 	}
@@ -51,9 +53,13 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		return
 	}
 	s.update(job, func(j *Job) { j.SrcBytes = mi.SizeBytes; j.DurationSec = mi.DurationSec })
+	rec.srcInfo = mi
+	// Read now, before markConverted restamps it: the ledger keeps what the file came from.
+	rec.srcRelease = s.sourceRelease(ctx, job, src)
 
 	p := s.prefs(ctx)
 	plan, needs := p.planFor(mi, src, origLang, nil)
+	rec.setPlan(plan)
 	if !needs.Any() || (!job.Requested && !needs.Worth) {
 		note := "already matches — nothing to do"
 		if needs.Why != "" {
@@ -153,6 +159,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		return
 	}
 	s.update(job, func(j *Job) { j.Codec = plan.VideoCodec })
+	rec.setPlan(plan)
 
 	// A re-encode is rehearsed on clips first, so a film that wouldn't pass the quality
 	// check or wouldn't shrink enough is found out in minutes rather than after a day.
@@ -165,6 +172,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 			// Advisory: the full encode is still checked end to end.
 			s.event("warn", fmt.Sprintf("%s: the test encode didn't finish (%v) — encoding without it", job.Title, err))
 		case v.ran && v.skipKind != "":
+			rec.plan.Quality = v.quality // the target the test encodes ended on
 			s.finishSkip(job, v.skipKind, v.reason)
 			return
 		case v.ran:
@@ -190,6 +198,8 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	if plan.VideoCodec == "" {
 		s.update(job, func(j *Job) { j.Encoder = "Copy" })
 	}
+	rec.setPlan(plan)
+	s.beginHistory(job)
 
 	for attempt := 0; ; attempt++ {
 		if err := s.runEncode(ctx, job, src, dst, scratch, mi, enc, plan, h10pJSON); err != nil {
@@ -213,8 +223,9 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		s.update(job, func(j *Job) { j.State = StateVerifying })
 		s.event("info", fmt.Sprintf("Checking %s against the original…", job.Title))
 		sctx, cancel := context.WithTimeout(ctx, 25*time.Minute)
-		score, err := s.computeSSIM(sctx, dst, src, plan.Crop.filter())
+		score, windows, err := s.computeSSIM(sctx, dst, src, plan.Crop.filter())
 		cancel()
+		rec.ssimMean, rec.ssimWindows = score, windows
 		if ctx.Err() != nil {
 			return
 		}
@@ -236,13 +247,36 @@ func (s *Service) process(ctx context.Context, job *Job) {
 			return
 		}
 		plan.Quality = next
+		rec.setPlan(plan)
 		if !s.waitAllowed(ctx, job) {
 			return
 		}
 		s.event("warn", fmt.Sprintf("%s: SSIM %.4f is below %.2f — encoding again at higher quality (try %d)", job.Title, score, minSSIM, attempt+2))
 		s.update(job, func(j *Job) { j.State = StateEncoding; j.Progress = 0 })
 	}
+	rec.encodeEnd = time.Now()
 	s.finalizeOutput(ctx, job, src, dst, mi, plan)
+}
+
+// sourceRelease is the release name the library recorded for the file being converted, or
+// "" when it has none (or the record now points at another file).
+func (s *Service) sourceRelease(ctx context.Context, job *Job, src string) string {
+	if job.Kind == "episode" {
+		if s.series == nil {
+			return ""
+		}
+		if f := s.series.CurrentEpisodeFile(ctx, job.SeriesID, job.Season, job.Episode); f.Path == src {
+			return f.SourceRelease
+		}
+		return ""
+	}
+	if s.movies == nil {
+		return ""
+	}
+	if m, err := s.movies.Get(ctx, job.MovieID); err == nil && m.MovieFilePath == src {
+		return m.SourceRelease
+	}
+	return ""
 }
 
 // dropGone ends a job whose title or episode no longer has a file recorded at all — deleted
@@ -672,12 +706,15 @@ func clock(sec float64) string {
 // finalizeOutput verifies a freshly-encoded file, then safely replaces the original.
 func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst string, mi *MediaInfo, plan Plan) {
 	s.update(job, func(j *Job) { j.State = StateVerifying; j.Progress = 1 })
+	rec := s.record(job)
+	rec.setPlan(plan)
 	outInfo, err := probeFn(ctx, s.ffprobe, dst)
 	if err != nil {
 		s.finish(job, StateFailed, "the converted file couldn't be read — kept the original")
 		return
 	}
 	outSize := fileSize(dst)
+	rec.outInfo, rec.outSize = outInfo, outSize
 	if kind, reason := verifyOutput(mi, outInfo, outSize, plan); reason != "" {
 		if kind != "" {
 			s.finishAfterEncode(job, kind, reason)
@@ -707,6 +744,7 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst string,
 		return
 	}
 	reclaimDeferred := fileLinks(src) > 1
+	rec.reclaimDeferred = reclaimDeferred
 	finalPath := strings.TrimSuffix(src, filepath.Ext(src)) + ".mkv"
 	part := finalPath + ".arrpart"
 	_ = os.Remove(part) // a leftover from an interrupted job
@@ -761,6 +799,7 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst string,
 			" but could not replace the original — it will be reconciled at the next startup")
 		return
 	}
+	rec.outPath = finalPath
 	if err := s.markConverted(ctx, job, src, finalPath, plan.VideoCodec); err != nil {
 		s.log.Error("convert: library record update failed after the swap", "title", job.Title, "err", err)
 		s.finish(job, StateFailed, "converted, but the library record could not be updated: "+err.Error()+

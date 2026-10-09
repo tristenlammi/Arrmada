@@ -282,6 +282,68 @@ func (a *api) handleConvertLogs(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"lines": logs})
 }
 
+// handleConvertHistory — GET /api/v1/convert/history?outcome=&media=&q=&before=&limit=: one
+// page of the conversion ledger, newest first. next is the cursor for the following page
+// ("" on the last). Manager-only like the rest of Convert: rows carry library file paths.
+func (a *api) handleConvertHistory(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := convert.HistoryFilter{Q: q.Get("q"), Before: q.Get("before")}
+	switch o := q.Get("outcome"); o {
+	case "", convert.OutcomeDone, convert.OutcomeFailed, convert.OutcomeSkipped, convert.OutcomeCancelled, convert.OutcomeInProgress:
+		f.Outcome = o
+	default:
+		a.writeError(w, http.StatusBadRequest, "invalid outcome")
+		return
+	}
+	switch q.Get("media") {
+	case "", "all":
+	case "movie", "movies":
+		f.Media = "movie"
+	case "episode", "tv":
+		f.Media = "episode"
+	default:
+		a.writeError(w, http.StatusBadRequest, "invalid media")
+		return
+	}
+	if raw := q.Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			a.writeError(w, http.StatusBadRequest, "invalid limit")
+			return
+		}
+		f.Limit = n // capped at 200 by the store
+	}
+	items, next, err := a.deps.Convert.History(r.Context(), f)
+	switch {
+	case errors.Is(err, convert.ErrHistoryCursor):
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	case err != nil:
+		a.writeError(w, http.StatusInternalServerError, "could not read the conversion history")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"items": items, "next": next})
+}
+
+// handleConvertHistoryEntry — GET /api/v1/convert/history/{id}: one ledger row in full,
+// with the probed spec of the original and the result.
+func (a *api) handleConvertHistoryEntry(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathValueID(w, r, "id")
+	if !ok {
+		return
+	}
+	e, err := a.deps.Convert.HistoryEntry(r.Context(), id)
+	switch {
+	case errors.Is(err, convert.ErrNoHistory):
+		a.writeError(w, http.StatusNotFound, err.Error())
+		return
+	case err != nil:
+		a.writeError(w, http.StatusInternalServerError, "could not read the conversion record")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, e)
+}
+
 // handleConvertJobs returns recent and running conversions (polled for progress).
 func (a *api) handleConvertJobs(w http.ResponseWriter, r *http.Request) {
 	jobs := a.deps.Convert.Jobs()
