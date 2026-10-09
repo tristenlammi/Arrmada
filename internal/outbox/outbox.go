@@ -193,8 +193,9 @@ func (o *Outbox) Run(ctx context.Context) {
 	defer t.Stop()
 	for {
 		// Keep going while full batches come back, so a backlog clears without waiting
-		// a poll between every twenty rows.
-		for {
+		// a poll between every twenty rows — but only so far: rows that stay due (their
+		// outcome couldn't be written) mustn't turn this into a spin.
+		for batches := 0; batches < 50; batches++ {
 			n, err := o.Drain(ctx)
 			if err != nil && ctx.Err() == nil {
 				o.log.Warn("outbox: couldn't read due rows", "err", err)

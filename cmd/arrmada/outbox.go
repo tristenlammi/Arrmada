@@ -8,7 +8,6 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/convert"
-	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/outbox"
 	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/safego"
@@ -31,16 +30,20 @@ type importConsumers struct {
 // register adds every consumer. It must run before anything can import — the scheduler's
 // sweeps, the HTTP manual-import routes — because Enqueue writes rows only for the
 // consumers registered at that moment.
+//
+// Within a topic the requester's "ready" is registered first: one import's rows are
+// written in registration order and run oldest first, one at a time, so the message
+// isn't held behind Convert probing a file on a sleeping array.
 func (c importConsumers) register(box *outbox.Outbox) {
+	box.Register(outbox.TopicMovieImported, "requests.ready", decode(func(ctx context.Context, p outbox.MovieImported) error {
+		return c.requests.NotifyMovieReady(ctx, p.MovieID)
+	}))
 	box.Register(outbox.TopicMovieImported, "convert", decode(func(ctx context.Context, p outbox.MovieImported) error {
-		return gone(c.convert.IndexMovie(ctx, p.MovieID), movies.ErrNotFound)
+		return c.convert.IndexMovie(ctx, p.MovieID) // a movie deleted since is simply forgotten
 	}))
 	box.Register(outbox.TopicMovieImported, "subtitles", decode(func(ctx context.Context, p outbox.MovieImported) error {
 		c.subtitles.OnMovieImported(ctx, p.MovieID)
 		return nil
-	}))
-	box.Register(outbox.TopicMovieImported, "requests.ready", decode(func(ctx context.Context, p outbox.MovieImported) error {
-		return c.requests.NotifyMovieReady(ctx, p.MovieID)
 	}))
 
 	// Renames and deletes: both indexes follow the movie's current record — a new path
@@ -52,6 +55,9 @@ func (c importConsumers) register(box *outbox.Outbox) {
 		return c.subtitles.OnMovieChanged(ctx, p.MovieID)
 	}))
 
+	box.Register(outbox.TopicSeriesImported, "requests.ready", decode(func(ctx context.Context, p outbox.SeriesImported) error {
+		return c.requests.NotifySeriesReady(ctx, p.SeriesID)
+	}))
 	box.Register(outbox.TopicSeriesImported, "convert", decode(func(ctx context.Context, p outbox.SeriesImported) error {
 		return gone(c.convert.IndexSeries(ctx, p.SeriesID), series.ErrNotFound)
 	}))
@@ -62,9 +68,6 @@ func (c importConsumers) register(box *outbox.Outbox) {
 		}
 		c.subtitles.OnSeriesImported(ctx, p.SeriesID, eps)
 		return nil
-	}))
-	box.Register(outbox.TopicSeriesImported, "requests.ready", decode(func(ctx context.Context, p outbox.SeriesImported) error {
-		return c.requests.NotifySeriesReady(ctx, p.SeriesID)
 	}))
 
 	box.Register(outbox.TopicBookImported, "requests.ready", decode(func(ctx context.Context, p outbox.BookImported) error {
