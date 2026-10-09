@@ -251,6 +251,45 @@ func (r *Repo) repointDangling(ctx context.Context, table, where, to string, arg
 	return int(n), nil
 }
 
+// heldByRef counts the files kept out of upgrades (upgrade_hold) per stored profile ref, for
+// a video media type: movies' default files and extra tracks, or episodes by their show's
+// profile. Refs are as stored — the caller resolves "n/a" and dangling ones.
+func (r *Repo) heldByRef(ctx context.Context, media string) (map[string]int, error) {
+	var queries []string
+	switch media {
+	case MediaMovie:
+		queries = []string{
+			`SELECT quality_profile, COUNT(*) FROM movies WHERE upgrade_hold = 1 AND has_file = 1 GROUP BY quality_profile`,
+			`SELECT quality_profile, COUNT(*) FROM movie_versions WHERE upgrade_hold = 1 AND has_file = 1 GROUP BY quality_profile`,
+		}
+	case MediaSeries:
+		queries = []string{`SELECT s.quality_profile, COUNT(*) FROM episodes e JOIN series s ON s.id = e.series_id
+			WHERE e.upgrade_hold = 1 AND e.has_file = 1 GROUP BY s.quality_profile`}
+	}
+	out := map[string]int{}
+	for _, q := range queries {
+		if err := func() error {
+			rows, err := r.db.QueryContext(ctx, q)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var ref string
+				var n int
+				if err := rows.Scan(&ref, &n); err != nil {
+					return err
+				}
+				out[ref] += n
+			}
+			return rows.Err()
+		}(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 func boolToInt(b bool) int {
 	if b {
 		return 1

@@ -1040,7 +1040,8 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 		// Include any monitored version with a file whose profile allows upgrades — regardless of
 		// whether Arrmada grabbed it or found it on a library scan. The AllowsUpgrades gate keeps
 		// us from indexer-searching movies on a non-upgrading profile.
-		if v.Monitored && v.HasFile && c.quality.AllowsUpgrades(ctx, c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)) {
+		// A held file ("keep existing files" when its profile changed) is left as it is.
+		if v.Monitored && v.HasFile && !v.UpgradeHold && c.quality.AllowsUpgrades(ctx, c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)) {
 			want = append(want, v)
 		}
 	}

@@ -453,6 +453,12 @@ function ProfileCard({ info, media, counts, others, onEdit, onDuplicate, onChang
       {counts && (
         <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t pt-2.5" style={{ borderColor: "var(--line-soft)" }}>
           <span className="font-mono text-[10.5px] text-ink-faint">Used by {titles} {noun}</span>
+          {(info.kept ?? 0) > 0 && (
+            <span className="font-mono text-[10.5px]" style={{ color: "var(--accent-text)" }}
+              title="Kept as they were when this profile changed — each one's page has Resume to let upgrades replace it again">
+              {info.kept} file{info.kept === 1 ? "" : "s"} kept as is
+            </span>
+          )}
           {counts.files > 0 && <div className="min-w-[180px] flex-1"><FitBar counts={counts} /></div>}
         </div>
       )}
@@ -575,6 +581,22 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
       setSaving(false);
     }
   };
+  // "Save — keep existing files": hold the files the edit would make eligible for
+  // replacement, then save. Holding first means no upgrade sweep can start on them in
+  // between; if the save then fails they stay held, which the profile card shows and
+  // Resume undoes.
+  const keepAndWrite = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await api.holdExistingFiles(sp.id, sp);
+    } catch (e) {
+      setError(`Couldn't keep the existing files, so nothing was saved: ${(e as Error).message}`);
+      setSaving(false);
+      return;
+    }
+    await write(sp);
+  };
   const save = async () => {
     if (!sp.name.trim()) { setError("Give your profile a name."); return; }
     for (const [key, w] of Object.entries(ideal.bitrate ?? {})) {
@@ -684,6 +706,7 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
       {impact && (
         <ImpactDialog impact={impact.impact} failed={impact.failed} saving={saving}
           onAllow={() => { setImpact(null); void write(sp); }}
+          onKeepFiles={() => { setImpact(null); void keepAndWrite(); }}
           onUpgradesOff={() => { setImpact(null); const off = { ...sp, upgrades_enabled: false }; setSp(off); void write(off); }}
           onKeepEditing={() => setImpact(null)} />
       )}
@@ -694,9 +717,9 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
 // ImpactDialog is the Save dry run's answer: how many files (and how much) saving makes
 // eligible for replacement. "Eligible", never "will be replaced" — what's actually grabbed
 // depends on what the indexers offer.
-function ImpactDialog({ impact, failed, saving, onAllow, onUpgradesOff, onKeepEditing }: {
+function ImpactDialog({ impact, failed, saving, onAllow, onKeepFiles, onUpgradesOff, onKeepEditing }: {
   impact?: ProfileImpact; failed?: string; saving: boolean;
-  onAllow: () => void; onUpgradesOff: () => void; onKeepEditing: () => void;
+  onAllow: () => void; onKeepFiles: () => void; onUpgradesOff: () => void; onKeepEditing: () => void;
 }) {
   const files = impact ? impact.replace.files + impact.search.files : 0;
   const bytes = impact ? impact.replace.bytes + impact.search.bytes : 0;
@@ -711,7 +734,10 @@ function ImpactDialog({ impact, failed, saving, onAllow, onUpgradesOff, onKeepEd
       footer={
         <>
           <Button variant="ghost" onClick={onKeepEditing} disabled={saving}>Keep editing</Button>
-          <Button variant="secondary" onClick={onUpgradesOff} disabled={saving}>Save with upgrades off</Button>
+          {/* Holding needs the same count that just failed, so the fallback is upgrades off. */}
+          {failed
+            ? <Button variant="secondary" onClick={onUpgradesOff} disabled={saving}>Save with upgrades off</Button>
+            : <Button variant="secondary" onClick={onKeepFiles} disabled={saving} title="Saves the profile for everything grabbed from now on; these files stay as they are until you resume upgrades on them">Save — keep existing files</Button>}
           <Button variant="primary" onClick={onAllow} busy={saving} busyLabel="Saving…">Save and allow upgrades</Button>
         </>
       }>
@@ -728,6 +754,7 @@ function ImpactDialog({ impact, failed, saving, onAllow, onUpgradesOff, onKeepEd
               {files > examples.length && <li className="text-ink-faint">…and more</li>}
             </ul>
           )}
+          <p className="mt-3 text-[11.5px] leading-[1.5] text-ink-faint">Keep existing files applies the edit to what's grabbed from now on and leaves these files as they are. Each one shows "Upgrades paused" with Resume on its page.</p>
         </>
       )}
     </Modal>

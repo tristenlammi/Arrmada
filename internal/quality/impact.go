@@ -58,6 +58,31 @@ const (
 // saved) and counts the ones whose state got worse. Both must be the same saved profile:
 // edited.ID is old.ID.
 func (s *Service) Impact(ctx context.Context, old, edited StoredProfile, files []ImpactFile) Impact {
+	out := Impact{Replace: Bucket{Examples: []string{}}, Search: Bucket{Examples: []string{}}, Files: len(files)}
+	for i, now := range s.worsened(ctx, old, edited, files) {
+		switch now {
+		case stateReplace:
+			out.Replace.add(files[i])
+		case stateSearch:
+			out.Search.add(files[i])
+		}
+	}
+	return out
+}
+
+// Worsened reports, file by file, whether saving edited over old makes its state worse —
+// exactly the files Impact counts, for acting on them ("keep existing files" holds them).
+func (s *Service) Worsened(ctx context.Context, old, edited StoredProfile, files []ImpactFile) []bool {
+	out := make([]bool, len(files))
+	for i, now := range s.worsened(ctx, old, edited, files) {
+		out[i] = now != stateSettled
+	}
+	return out
+}
+
+// worsened is each file's state under edited when that's worse than under old, else
+// stateSettled.
+func (s *Service) worsened(ctx context.Context, old, edited StoredProfile, files []ImpactFile) []upgradeState {
 	// Both sides as Update would store them. Saving normalises the profile whether or not
 	// anything changed, so a difference that normalising alone makes isn't the edit's.
 	edited.ID, edited.MediaType = old.ID, old.MediaType
@@ -65,19 +90,10 @@ func (s *Service) Impact(ctx context.Context, old, edited StoredProfile, files [
 	normalize(&edited)
 	ref := "custom:" + strconv.FormatInt(old.ID, 10)
 	before, after := s.withSpecs(old), s.withSpecs(edited)
-
-	out := Impact{Replace: Bucket{Examples: []string{}}, Search: Bucket{Examples: []string{}}}
-	for _, f := range files {
-		out.Files++
-		was, now := before.upgradeState(ctx, ref, f), after.upgradeState(ctx, ref, f)
-		if now <= was {
-			continue
-		}
-		switch now {
-		case stateReplace:
-			out.Replace.add(f)
-		case stateSearch:
-			out.Search.add(f)
+	out := make([]upgradeState, len(files))
+	for i, f := range files {
+		if now := after.upgradeState(ctx, ref, f); now > before.upgradeState(ctx, ref, f) {
+			out[i] = now
 		}
 	}
 	return out

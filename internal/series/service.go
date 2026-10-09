@@ -639,9 +639,33 @@ func (s *Service) SetEpisodeMonitored(ctx context.Context, episodeID int64, moni
 	return s.repo.SetEpisodeMonitored(ctx, episodeID, monitored)
 }
 
-// SetQualityProfile changes a series' quality profile.
+// SetQualityProfile changes a series' quality profile. A real change ends every episode's
+// upgrade hold.
 func (s *Service) SetQualityProfile(ctx context.Context, id int64, profile string) error {
 	return s.repo.SetQualityProfile(ctx, id, profile)
+}
+
+// HoldUpgrades keeps the given episodes' files out of profile-driven upgrades ("keep
+// existing files"), returning how many it held.
+func (s *Service) HoldUpgrades(ctx context.Context, episodeIDs []int64) (int, error) {
+	return s.repo.HoldUpgrades(ctx, episodeIDs)
+}
+
+// ResumeUpgrades ends the upgrade hold on a show's episodes — one season's when season >= 0,
+// all of them otherwise — returning how many were held. The show must exist.
+func (s *Service) ResumeUpgrades(ctx context.Context, id int64, season int) (int, error) {
+	if _, err := s.repo.Get(ctx, id); err != nil {
+		return 0, err
+	}
+	n, err := s.repo.ResumeUpgrades(ctx, id, season)
+	if err == nil && n > 0 {
+		what := "Upgrades resumed"
+		if season >= 0 {
+			what = fmt.Sprintf("Upgrades resumed for season %d", season)
+		}
+		s.repo.AddEvent(ctx, id, "upgrades.resumed", what)
+	}
+	return n, err
 }
 
 // EpisodeRef is a concrete (season, episode) that a file or release maps to.
@@ -1407,7 +1431,15 @@ func (s *Service) SupersedeEpisodeFile(ctx context.Context, seriesID int64, seas
 			s.log.Warn("series: record source release failed", "err", err)
 		}
 	}
-	if old, _ := s.repo.EpisodeFilePath(ctx, seriesID, season, episode); old != "" && old != path {
+	old, _ := s.repo.EpisodeFilePath(ctx, seriesID, season, episode)
+	if old != path {
+		// A new file ends the episode's upgrade hold: the hold kept the file it had. (Convert
+		// and rename go through RepointEpisodeFile / MarkEpisodeImported and keep it.)
+		if err := s.repo.ClearEpisodeHold(ctx, seriesID, season, episode); err != nil {
+			s.log.Warn("series: clear upgrade hold failed", "err", err)
+		}
+	}
+	if old != "" && old != path {
 		// A double-episode file serves several episode rows. If any sibling still
 		// points at the old path, recycling it would yank the file out from under
 		// them — the library would claim a file that's sitting in the recycle bin.

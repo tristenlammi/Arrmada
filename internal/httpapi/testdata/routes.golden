@@ -246,6 +246,7 @@ POST /api/v1/movies/{id}/manualimport staff -
 POST /api/v1/movies/{id}/refresh staff -
 POST /api/v1/movies/{id}/regrab staff -
 POST /api/v1/movies/{id}/rename staff -
+POST /api/v1/movies/{id}/resume-upgrades staff -
 POST /api/v1/movies/{id}/search staff -
 POST /api/v1/movies/{id}/versions staff -
 POST /api/v1/music/artists staff -
@@ -258,6 +259,7 @@ POST /api/v1/quality/default staff -
 POST /api/v1/quality/impact staff -
 POST /api/v1/quality/preview staff -
 POST /api/v1/quality/profiles staff -
+POST /api/v1/quality/profiles/{id}/hold-existing staff -
 POST /api/v1/quality/test staff -
 POST /api/v1/queue/{hash}/action staff -
 POST /api/v1/queue/{hash}/block staff -
@@ -285,6 +287,7 @@ POST /api/v1/series/{id}/grabtorrent staff -
 POST /api/v1/series/{id}/manualimport staff -
 POST /api/v1/series/{id}/refresh staff -
 POST /api/v1/series/{id}/rename staff -
+POST /api/v1/series/{id}/resume-upgrades staff -
 POST /api/v1/series/{id}/search staff -
 POST /api/v1/series/{id}/seasons/{season}/episodes/{episode}/regrab staff -
 POST /api/v1/setup/complete admin -

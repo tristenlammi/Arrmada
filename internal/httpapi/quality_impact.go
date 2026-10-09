@@ -2,12 +2,15 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/quality"
+	"github.com/tristenlammi/arrmada/internal/series"
 )
 
 // profileFile is one library file whose title runs under a profile, as the upgrade
@@ -46,7 +49,7 @@ func (a *api) filesOnProfile(ctx context.Context, ref, media string) ([]profileF
 					continue
 				}
 				pf := profileFile{table: "movie_versions", id: v.ID, file: quality.ImpactFile{
-					Title: title, Release: automation.UpgradeBaseline(m, v), Bytes: v.SizeBytes, RuntimeMin: m.Runtime,
+					Title: title, Release: automation.UpgradeBaseline(m, v), Bytes: v.SizeBytes, RuntimeMin: m.Runtime, Held: v.UpgradeHold,
 				}}
 				if v.IsDefault {
 					pf.table, pf.id = "movies", m.ID
@@ -69,7 +72,7 @@ func (a *api) filesOnProfile(ctx context.Context, ref, media string) ([]profileF
 				continue
 			}
 			out = append(out, profileFile{table: "episodes", id: e.EpisodeID, file: quality.ImpactFile{
-				Title: e.SeriesTitle, Release: e.SourceRelease, Bytes: e.SizeBytes, RuntimeMin: e.RuntimeMin,
+				Title: e.SeriesTitle, Release: e.SourceRelease, Bytes: e.SizeBytes, RuntimeMin: e.RuntimeMin, Held: e.Held,
 			},
 				// UpgradeSeries visits monitored shows, and in them monitored episodes with a
 				// file, never specials.
@@ -113,4 +116,144 @@ func (a *api) handleQualityImpact(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a.writeJSON(w, http.StatusOK, a.deps.Quality.Impact(ctx, old, req.Profile, judged))
+}
+
+// handleHoldExisting is "Save — keep existing files": it holds the files on a profile out of
+// profile-driven upgrades, so an edit applies to what's grabbed from now on while today's
+// files stay as they are. Missing files are still searched for.
+//
+//	POST /api/v1/quality/profiles/{id}/hold-existing {}
+//	POST /api/v1/quality/profiles/{id}/hold-existing {"only_affected": true, "profile": {...edited...}}
+//
+// With only_affected it holds just the files the edit would make eligible for replacement —
+// the ones the Save dialog counted — judged against the profile as saved, so the builder
+// calls it before saving the edit: that way no upgrade sweep can start on them in between.
+func (a *api) handleHoldExisting(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		OnlyAffected bool                   `json:"only_affected"`
+		Profile      *quality.StoredProfile `json:"profile"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	if req.OnlyAffected && req.Profile == nil {
+		a.writeError(w, http.StatusBadRequest, "only_affected needs the edited profile")
+		return
+	}
+	ctx := r.Context()
+	ref := "custom:" + strconv.FormatInt(id, 10)
+	old, err := a.deps.Quality.GetStored(ctx, ref)
+	if err != nil {
+		a.writeError(w, http.StatusNotFound, "profile not found")
+		return
+	}
+	files, err := a.filesOnProfile(ctx, ref, old.MediaType)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not read the library")
+		return
+	}
+	if req.OnlyAffected {
+		judged := make([]quality.ImpactFile, len(files))
+		for i, f := range files {
+			judged[i] = f.file
+			if !f.swept {
+				judged[i].Held = true // never visited by a sweep: no edit can make it worse
+			}
+		}
+		worse := a.deps.Quality.Worsened(ctx, old, *req.Profile, judged)
+		kept := files[:0:0]
+		for i, f := range files {
+			if worse[i] {
+				kept = append(kept, f)
+			}
+		}
+		files = kept
+	}
+	var movieIDs, versionIDs, episodeIDs []int64
+	for _, f := range files {
+		if f.file.Held {
+			continue
+		}
+		switch f.table {
+		case "movies":
+			movieIDs = append(movieIDs, f.id)
+		case "movie_versions":
+			versionIDs = append(versionIDs, f.id)
+		case "episodes":
+			episodeIDs = append(episodeIDs, f.id)
+		}
+	}
+	out := map[string]int{"movies": 0, "versions": 0, "episodes": 0}
+	if len(movieIDs)+len(versionIDs) > 0 && a.deps.Movies != nil {
+		m, v, err := a.deps.Movies.HoldUpgrades(ctx, movieIDs, versionIDs)
+		if err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not keep the files")
+			return
+		}
+		out["movies"], out["versions"] = m, v
+	}
+	if len(episodeIDs) > 0 && a.deps.Series != nil {
+		n, err := a.deps.Series.HoldUpgrades(ctx, episodeIDs)
+		if err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not keep the files")
+			return
+		}
+		out["episodes"] = n
+	}
+	out["held"] = out["movies"] + out["versions"] + out["episodes"]
+	a.writeJSON(w, http.StatusOK, out)
+}
+
+// handleResumeMovieUpgrades ends a movie's upgrade hold, on every track.
+//
+//	POST /api/v1/movies/{id}/resume-upgrades
+func (a *api) handleResumeMovieUpgrades(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	n, err := a.deps.Movies.ResumeUpgrades(r.Context(), id)
+	if errors.Is(err, movies.ErrNotFound) {
+		a.writeError(w, http.StatusNotFound, "movie not found")
+		return
+	}
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not resume upgrades")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"resumed": n})
+}
+
+// handleResumeSeriesUpgrades ends a show's upgrade hold: every episode's, or one season's
+// with ?season=N.
+//
+//	POST /api/v1/series/{id}/resume-upgrades[?season=N]
+func (a *api) handleResumeSeriesUpgrades(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	season := -1
+	if s := r.URL.Query().Get("season"); s != "" {
+		n, err := strconv.Atoi(s)
+		if err != nil || n < 0 {
+			a.writeError(w, http.StatusBadRequest, "season must be a season number")
+			return
+		}
+		season = n
+	}
+	n, err := a.deps.Series.ResumeUpgrades(r.Context(), id, season)
+	if errors.Is(err, series.ErrNotFound) {
+		a.writeError(w, http.StatusNotFound, "series not found")
+		return
+	}
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not resume upgrades")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"resumed": n})
 }

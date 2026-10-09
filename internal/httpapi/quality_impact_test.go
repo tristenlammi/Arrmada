@@ -102,3 +102,66 @@ func TestQualityImpactRefusesUnsavedProfiles(t *testing.T) {
 		t.Errorf("unknown: HTTP %d", rec.Code)
 	}
 }
+
+// "Save — keep existing files": holding the files an edit affects takes them out of the
+// next dry run, shows on the profile card, and Resume on a movie lets it go again.
+func TestHoldExistingAndResume(t *testing.T) {
+	s, sp, mgr := impactServer(t)
+	ctx := context.Background()
+	edited := sp
+	edited.Ideal = &quality.IdealFile{Codec: map[string]string{"hevc": quality.PrefMust}}
+	body, _ := json.Marshal(map[string]any{"only_affected": true, "profile": edited})
+	rec := s.doJSON("POST", fmt.Sprintf("/api/v1/quality/profiles/%d/hold-existing", sp.ID), mgr, string(body))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HTTP %d: %s", rec.Code, rec.Body)
+	}
+	var held map[string]int
+	if err := json.Unmarshal(rec.Body.Bytes(), &held); err != nil || held["movies"] != 3 || held["held"] != 3 {
+		t.Fatalf("held %s, want the 3 affected films (not the unmonitored one)", rec.Body)
+	}
+
+	// The dry run now finds nothing worse: the affected files are kept as they are.
+	body, _ = json.Marshal(map[string]any{"profile": edited})
+	rec = s.doJSON("POST", "/api/v1/quality/impact", mgr, string(body))
+	var got quality.Impact
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got.Replace.Files != 0 {
+		t.Errorf("impact after holding: %s", rec.Body)
+	}
+
+	// The profile card counts them.
+	list, err := s.deps.Quality.List(ctx, quality.MediaMovie)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range list {
+		if p.Key == fmt.Sprintf("custom:%d", sp.ID) && p.Kept != 3 {
+			t.Errorf("profile card kept = %d, want 3", p.Kept)
+		}
+	}
+
+	// Resume on one film.
+	var heatID int64
+	_ = s.st.DB().QueryRow(`SELECT id FROM movies WHERE title = 'Heat'`).Scan(&heatID)
+	rec = s.doJSON("POST", fmt.Sprintf("/api/v1/movies/%d/resume-upgrades", heatID), mgr, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("resume: HTTP %d: %s", rec.Code, rec.Body)
+	}
+	var n int
+	_ = s.st.DB().QueryRow(`SELECT COUNT(*) FROM movies WHERE upgrade_hold = 1`).Scan(&n)
+	if n != 2 {
+		t.Errorf("%d films still held after resuming one, want 2", n)
+	}
+	if rec := s.doJSON("POST", "/api/v1/movies/999/resume-upgrades", mgr, ""); rec.Code != http.StatusNotFound {
+		t.Errorf("resume unknown movie: HTTP %d", rec.Code)
+	}
+
+	// Without only_affected every file on the profile is held, the unmonitored one too.
+	rec = s.doJSON("POST", fmt.Sprintf("/api/v1/quality/profiles/%d/hold-existing", sp.ID), mgr, `{}`)
+	_ = s.st.DB().QueryRow(`SELECT COUNT(*) FROM movies WHERE upgrade_hold = 1`).Scan(&n)
+	if rec.Code != http.StatusOK || n != 4 {
+		t.Errorf("hold all: HTTP %d, %d held, want 4", rec.Code, n)
+	}
+	if rec := s.doJSON("POST", fmt.Sprintf("/api/v1/quality/profiles/%d/hold-existing", sp.ID), mgr, `{"only_affected":true}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("only_affected without the profile: HTTP %d", rec.Code)
+	}
+}

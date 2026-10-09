@@ -44,6 +44,9 @@ type ProfileInfo struct {
 	BuiltIn   bool   `json:"built_in"`
 	IsDefault bool   `json:"is_default"`
 	Summary   string `json:"summary"`
+	// Kept is how many files on the profile are held out of upgrades ("keep existing
+	// files"), so a forgotten hold stays visible on the profile's card. Video only.
+	Kept int `json:"kept,omitempty"`
 }
 
 // DefaultProfile returns the profile reference used when adding media of this
@@ -351,12 +354,31 @@ func (s *Service) List(ctx context.Context, mediaType string) ([]ProfileInfo, er
 	if err != nil {
 		return nil, err
 	}
+	kept := s.keptByProfile(ctx, mediaType)
 	var out []ProfileInfo
 	for _, sp := range custom {
 		key := "custom:" + strconv.FormatInt(sp.ID, 10)
-		out = append(out, ProfileInfo{Key: key, Name: sp.Name, MediaType: sp.MediaType, BuiltIn: false, IsDefault: key == def, Summary: sp.Summary()})
+		out = append(out, ProfileInfo{Key: key, Name: sp.Name, MediaType: sp.MediaType, BuiltIn: false, IsDefault: key == def, Summary: sp.Summary(), Kept: kept[key]})
 	}
 	return out, nil
+}
+
+// keptByProfile counts held files per profile each title actually runs under (Effective),
+// so a title on "n/a" or a deleted profile counts toward the default. Best effort: a failed
+// count shows no number rather than failing the list.
+func (s *Service) keptByProfile(ctx context.Context, media string) map[string]int {
+	out := map[string]int{}
+	if media != MediaMovie && media != MediaSeries {
+		return out
+	}
+	byRef, err := s.repo.heldByRef(ctx, media)
+	if err != nil {
+		return out
+	}
+	for ref, n := range byRef {
+		out[s.Effective(ctx, ref, media)] += n
+	}
+	return out
 }
 
 // ListStored returns all custom profiles for a media type (with their format scores).

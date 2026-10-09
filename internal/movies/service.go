@@ -454,9 +454,29 @@ func (s *Service) SetMonitored(ctx context.Context, id int64, monitored bool) er
 	return s.repo.SetMonitored(ctx, id, monitored)
 }
 
-// SetQualityProfile changes a movie's quality profile.
+// SetQualityProfile changes a movie's quality profile. A real change ends the default
+// file's upgrade hold.
 func (s *Service) SetQualityProfile(ctx context.Context, id int64, profile string) error {
 	return s.repo.SetQualityProfile(ctx, id, profile)
+}
+
+// HoldUpgrades keeps the given movies' default files and extra tracks' files out of
+// profile-driven upgrades ("keep existing files"), returning how many rows it held.
+func (s *Service) HoldUpgrades(ctx context.Context, movieIDs, versionIDs []int64) (movies, versions int, err error) {
+	return s.repo.HoldUpgrades(ctx, movieIDs, versionIDs)
+}
+
+// ResumeUpgrades ends the upgrade hold on a movie and all its tracks, returning how many
+// were held. The movie must exist.
+func (s *Service) ResumeUpgrades(ctx context.Context, id int64) (int, error) {
+	if _, err := s.repo.Get(ctx, id); err != nil {
+		return 0, err
+	}
+	n, err := s.repo.ResumeUpgrades(ctx, id)
+	if err == nil && n > 0 {
+		_ = s.repo.AddEvent(ctx, id, "upgrades.resumed", "Upgrades resumed")
+	}
+	return n, err
 }
 
 // ErrWorseQuality is returned when an automatic import would replace an existing
@@ -563,6 +583,11 @@ func (s *Service) markImported(ctx context.Context, id int64, path, sourceReleas
 		}
 		if !again {
 			_ = r.AddEvent(ctx, id, event, detail)
+			// A new file ends this track's upgrade hold: the hold kept the file it had, and
+			// that file is gone. (A convert or rename repoints instead, and keeps it.)
+			if err := r.clearHold(ctx, id, target.ID); err != nil {
+				return err
+			}
 		}
 		return s.enqueue(ctx, tx, outbox.TopicMovieImported,
 			outbox.MovieImported{MovieID: id, VersionID: target.ID, Path: path, Upgrade: upgrade}, movieKey(id))
@@ -859,7 +884,7 @@ func defaultVersionRow(m Movie) Version {
 	def := Version{
 		ID: 0, IsDefault: true, Label: "Default",
 		QualityProfile: m.QualityProfile, Monitored: m.Monitored,
-		HasFile: m.HasFile, FilePath: m.MovieFilePath, SourceRelease: m.SourceRelease,
+		HasFile: m.HasFile, FilePath: m.MovieFilePath, SourceRelease: m.SourceRelease, UpgradeHold: m.UpgradeHold,
 	}
 	if m.HasFile && m.File != nil {
 		f := *m.File
@@ -881,7 +906,7 @@ func (s *Service) VersionsLive(ctx context.Context, id int64) ([]Version, error)
 	def := Version{
 		ID: 0, IsDefault: true, Label: "Default",
 		QualityProfile: m.QualityProfile, Monitored: m.Monitored,
-		HasFile: m.HasFile, FilePath: m.MovieFilePath, SourceRelease: m.SourceRelease,
+		HasFile: m.HasFile, FilePath: m.MovieFilePath, SourceRelease: m.SourceRelease, UpgradeHold: m.UpgradeHold,
 		File: s.fileInfo(m.MovieFilePath, m.HasFile),
 	}
 	out := []Version{def}
