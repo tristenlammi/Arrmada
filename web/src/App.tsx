@@ -30,9 +30,9 @@ import { Audiobooks } from "./pages/Audiobooks";
 import { Calendar } from "./pages/Calendar";
 import { Logs } from "./pages/Logs";
 import { Login } from "./pages/Login";
-import { Placeholder } from "./pages/Placeholder";
+import { NotFound } from "./pages/NotFound";
 
-// Module routes still awaiting their build → placeholders.
+// Staff get the whole console; requesters and outside visitors get their own small shell.
 export default function App() {
   const { user, loading, external, booksEnabled, musicEnabled } = useMe();
 
@@ -45,7 +45,7 @@ export default function App() {
     return <Login />;
   }
 
-  // "external" is the server's verdict that this session is limited to Discover: from
+  // "external" is the server's verdict that this session gets the outside shell: from
   // outside the LAN and not staff. Admins and managers get the whole app wherever they
   // sign in from; the backend enforces the same rule.
   if (external) {
@@ -61,7 +61,7 @@ export default function App() {
     );
   }
 
-  // Non-staff (requesters/readonly) only ever get the Discover experience — no nav.
+  // Non-staff (requesters/readonly) get their own shell — Discover, Calendar, Books, Audiobooks.
   if (!isStaff(user)) {
     return (
       <Routes>
@@ -109,10 +109,7 @@ export default function App() {
         <Route path="/quality" element={<Quality />} />
         <Route path="/logs" element={<Logs />} />
         <Route path="/library" element={<Navigate to="/settings" replace />} />
-        <Route
-          path="*"
-          element={<Placeholder title="Not found" note="No such page." />}
-        />
+        <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>
     </SetupGate>

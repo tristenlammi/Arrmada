@@ -7,6 +7,7 @@ import { FileDetailsModal } from "../components/FileDetailsModal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DeleteMovieDialog } from "../components/DeleteMovieDialog";
 import { disposalLine, useRecycleMode } from "../lib/disposal";
+import { PAGE } from "../lib/links";
 import {
   api,
   type BlockEntry,
@@ -742,7 +743,7 @@ function Toolbar({ movie, onChange, flash }: { movie: Movie; onChange: () => voi
           {busy === "refresh" ? "Refreshing…" : "Refresh & rescan"}
         </button>
         {!movie.has_file && (
-          <button className={btn} style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }} disabled={busy !== null} onClick={() => run("search", async () => { await api.searchMovie(movie.id); flash("Searching — it'll show in Activity once grabbed."); })}>
+          <button className={btn} style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }} disabled={busy !== null} onClick={() => run("search", async () => { await api.searchMovie(movie.id); flash(`Searching — follow it in ${PAGE.downloads} → Searching.`); })}>
             {busy === "search" ? "Searching…" : "Auto-grab best"}
           </button>
         )}

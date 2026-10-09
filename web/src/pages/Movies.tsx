@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { MetadataMissing } from "../components/MetadataMissing";
+import { PAGE } from "../lib/links";
 import { api, type FitItem, type Movie, type MovieLookup } from "../lib/api";
 import { FitBadge, FIT_COLOR, bitrateColor, fitRank, hasIssue } from "../components/FitBadge";
 import { posterThumb } from "../lib/img";
@@ -144,7 +145,7 @@ export function Movies() {
   const search = async (m: Movie) => {
     try {
       await api.searchMovie(m.id);
-      flash(`Searching for “${m.title}” — it'll appear in Activity once grabbed.`);
+      flash(`Searching for “${m.title}” — follow it in ${PAGE.downloads} → Searching.`);
     } catch (e) {
       flash((e as Error).message);
     }

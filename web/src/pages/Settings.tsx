@@ -214,7 +214,7 @@ export function Settings() {
           admin && (
             <div className="flex flex-col gap-6">
               <Section title="Modules" subtitle="Turn modules on or off. Disabling hides a module from the navigation and from Discover — nothing is deleted, and it can be re-enabled anytime.">
-                <Toggle label="Books" hint="Open Library metadata, ebook & audiobook library, and the Books tab in Discover." checked={s.books_enabled} onChange={(v) => patch({ books_enabled: v })} />
+                <Toggle label="Books" hint="Ebook and audiobook library, and the Books tab in Discover. Metadata comes from Hardcover when a key is set, otherwise Open Library." checked={s.books_enabled} onChange={(v) => patch({ books_enabled: v })} />
                 <Toggle label="Music (preview)" hint="Artists and albums from MusicBrainz with automatic album downloads. Still being hardened. Turning it off hides Music and stops its searches and imports; finished downloads wait until it's back on. Nothing is deleted." checked={s.music_enabled} onChange={(v) => patch({ music_enabled: v })} />
               </Section>
               <Section title="Plex sign-in" subtitle="Let your Plex Home members and shared users sign in with Plex — no accounts to hand out. They get a Requester account (Discover-only), and only people who actually have access to your Plex server are allowed in. Requires your Plex server to be connected in Insights.">
@@ -989,7 +989,7 @@ function OverseerrImport() {
     setMsg(null);
     try {
       const r = await api.importOverseerr(url.trim(), key.trim());
-      setMsg({ ok: true, text: `Found ${r.found} request${r.found === 1 ? "" : "s"} — importing in the background. Approved titles are added to your library and searched; they'll appear on the Requests page as they process.` });
+      setMsg({ ok: true, text: `Found ${r.found} request${r.found === 1 ? "" : "s"} — importing in the background. Approved titles are added to your library and searched; they'll show in the requests row on Discover as they process.` });
     } catch (e) {
       setMsg({ ok: false, text: (e as Error).message });
     } finally {
