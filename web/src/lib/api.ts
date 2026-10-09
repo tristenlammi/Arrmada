@@ -1322,6 +1322,9 @@ export const api = {
   },
   recycleStats: () => req<RecycleStats>("/api/v1/recycle"),
   recycleMode: () => req<RecycleMode>("/api/v1/recycle/mode"),
+  // Admin only: a manual database backup, taken synchronously.
+  backupNow: () =>
+    req<{ name: string; kind: string; size_bytes: number; created_at: string; schema_version: string }>("/api/v1/system/backups", { method: "POST" }),
   recycleItems: () => req<{ items: RecycleItem[] }>("/api/v1/recycle/items").then((r) => r.items),
   emptyRecycle: () => req<{ freed_bytes: number }>("/api/v1/recycle/empty", { method: "POST" }),
   restoreRecycle: (id: string) => req<{ status: string }>("/api/v1/recycle/restore", { method: "POST", body: JSON.stringify({ id }) }),

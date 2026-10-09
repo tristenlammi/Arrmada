@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/diskspace"
@@ -95,6 +96,13 @@ func (a *api) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 				msg += " " + lastErr
 			}
 			add("error", msg)
+		}
+	}
+
+	// Nightly database backups have stopped (usually a full disk on the data volume).
+	if a.deps.Backups != nil {
+		if msg := a.deps.Backups.HealthWarning(ctx, time.Since(a.start)); msg != "" {
+			add("warning", msg)
 		}
 	}
 

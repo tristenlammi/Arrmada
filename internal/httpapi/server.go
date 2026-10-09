@@ -16,6 +16,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/backup"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/buildinfo"
 	"github.com/tristenlammi/arrmada/internal/config"
@@ -84,6 +85,9 @@ type Deps struct {
 	// action that erases data a backup is the only way back from (deleting a user takes
 	// their audiobook places with it). nil = no copy possible, so those actions refuse.
 	Snapshot func(ctx context.Context, kind string) (string, error)
+	// Backups makes the nightly and manual database copies. nil = no backups wired: the
+	// manual action answers 503 and the health panel says nothing about them.
+	Backups *backup.Service
 }
 
 type api struct {
@@ -342,6 +346,8 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/empty", a.requireRole(auth.RoleManager, a.handleRecycleEmpty))
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/restore", a.requireRole(auth.RoleManager, a.handleRecycleRestore))
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/delete", a.requireRole(auth.RoleManager, a.handleRecycleDeleteItem))
+	// Admin only: a backup holds API keys, the Plex token and password hashes.
+	mux.HandleFunc("POST "+base+"/api/v1/system/backups", a.requireRole(auth.RoleAdmin, a.handleBackupNow))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/hardware", a.requireRole(auth.RoleManager, a.handleConvertHardware))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/status", a.requireRole(auth.RoleManager, a.handleConvertStatus))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/settings", a.requireRole(auth.RoleManager, a.handleConvertSettings))
