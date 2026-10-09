@@ -282,13 +282,45 @@ func removeStr(xs []string, v string) []string {
 
 // FileFacts is what a file actually is, as far as the target cares.
 type FileFacts struct {
-	Resolution  string  `json:"resolution"` // "2160p" | "1080p" | "720p" | "SD"
-	Codec       string  `json:"codec"`      // "hevc" | "av1" | "h264" | "other"
-	HDR         string  `json:"hdr"`        // the picture's own format: SDR | HDR10 | HDR10+ | HLG
-	DolbyVision bool    `json:"dolby_vision,omitempty"`
-	Atmos       bool    `json:"atmos,omitempty"`
-	Lossless    bool    `json:"lossless,omitempty"`
-	BitrateMbps float64 `json:"bitrate_mbps"`
+	Resolution  string `json:"resolution"` // "2160p" | "1080p" | "720p" | "SD"
+	Codec       string `json:"codec"`      // "hevc" | "av1" | "h264" | "other"
+	HDR         string `json:"hdr"`        // the picture's own format: SDR | HDR10 | HDR10+ | HLG
+	DolbyVision bool   `json:"dolby_vision,omitempty"`
+	// DVNoFallback marks a Dolby Vision picture with no HDR10 or HLG base to fall back on
+	// (profile 5, or a release name tagged DV and nothing else). Such a file is Dolby
+	// Vision and only that — never "SDR" as well.
+	DVNoFallback bool `json:"dv_no_fallback,omitempty"`
+	Atmos        bool `json:"atmos,omitempty"`
+	Lossless     bool `json:"lossless,omitempty"`
+	// LosslessCodec names the lossless track as a release name would ("TrueHD", "DTS-HD",
+	// "FLAC", "LPCM"), so a probed file scores like a release that says so. Probe only.
+	LosslessCodec string  `json:"lossless_codec,omitempty"`
+	BitrateMbps   float64 `json:"bitrate_mbps"`
+}
+
+// dvOnly reports a Dolby Vision file with nothing under its Dolby Vision layer that the
+// target could judge: a profile-5 picture, or a DV release name with no HDR tag.
+func (f FileFacts) dvOnly() bool {
+	return f.DolbyVision && (f.DVNoFallback || f.HDR == "" || f.HDR == "SDR")
+}
+
+// hdrValues are a file's values in the target's HDR row, most specific first. An HDR10+
+// picture is an HDR10 one too (the base layer), and a Dolby Vision file is also whatever
+// is under its Dolby Vision layer. A Dolby Vision file with no HDR base is just ["DV"] —
+// the same as the engine reads it, where the SDR format needs no HDR tag at all — so
+// "Avoid SDR" can't flag it in the Library fit while the upgrader keeps it.
+func hdrValues(f FileFacts) []string {
+	if f.dvOnly() {
+		return []string{"DV"}
+	}
+	vals := []string{f.HDR}
+	if f.HDR == "HDR10+" {
+		vals = append(vals, "HDR10")
+	}
+	if f.DolbyVision {
+		vals = append([]string{"DV"}, vals...)
+	}
+	return vals
 }
 
 // ReleaseFacts reads the target's facts from a release name (and its bitrate, 0 when
@@ -314,6 +346,7 @@ func ReleaseFacts(r parser.Release, bitrateMbps float64) FileFacts {
 		f.HDR = "HLG"
 	}
 	f.DolbyVision = containsStr(r.HDR, "DV")
+	f.DVNoFallback = f.DolbyVision && f.HDR == "SDR"
 	f.Atmos = containsStr(r.Audio, "Atmos")
 	f.Lossless = losslessAudio(r)
 	return f
@@ -352,18 +385,14 @@ func CheckFit(ideal IdealFile, allowed []string, f FileFacts) Fit {
 	if msg := rowMiss(ideal.Codec, []string{f.Codec}, codecName(f.Codec), codecName); msg != "" {
 		add("codec", msg)
 	}
-	// An HDR10+ picture is an HDR10 one too (the base layer), and a Dolby Vision file is
-	// whatever is under its Dolby Vision layer — unless Dolby Vision itself has a state.
-	hdrVals := []string{f.HDR}
-	if f.HDR == "HDR10+" {
-		hdrVals = append(hdrVals, "HDR10")
-	}
 	have := f.HDR
-	if f.DolbyVision {
-		hdrVals = append([]string{"DV"}, hdrVals...)
+	switch {
+	case f.dvOnly():
+		have = "Dolby Vision"
+	case f.DolbyVision:
 		have = "Dolby Vision (" + f.HDR + " base)"
 	}
-	if msg := rowMiss(ideal.HDR, hdrVals, have, hdrName); msg != "" {
+	if msg := rowMiss(ideal.HDR, hdrValues(f), have, hdrName); msg != "" {
 		add("hdr", msg)
 	}
 	for _, ft := range []struct {
@@ -468,14 +497,7 @@ func prefersMet(ideal IdealFile, f FileFacts) bool {
 		}
 		return false
 	}
-	hdrVals := []string{f.HDR}
-	if f.HDR == "HDR10+" {
-		hdrVals = append(hdrVals, "HDR10")
-	}
-	if f.DolbyVision {
-		hdrVals = append([]string{"DV"}, hdrVals...)
-	}
-	if !rowOK(ideal.Codec, []string{f.Codec}) || !rowOK(ideal.HDR, hdrVals) {
+	if !rowOK(ideal.Codec, []string{f.Codec}) || !rowOK(ideal.HDR, hdrValues(f)) {
 		return false
 	}
 	if ideal.Audio["atmos"] == PrefWant && !f.Atmos {

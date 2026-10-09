@@ -163,7 +163,7 @@ func TestEpisodeUpgradeStaysUnderTheCeiling(t *testing.T) {
 			t.Errorf("%s: runtime %d, want %d", cd.Name, cd.RuntimeMin, want)
 		}
 	}
-	pick, ok := q.UpgradeCandidate(ctx, ref, "Show.S01E01.720p.HDTV.x264-OLD", 0.5, 45, cands)
+	pick, ok := q.UpgradeCandidate(ctx, ref, quality.CurrentFile{Release: "Show.S01E01.720p.HDTV.x264-OLD", SizeGB: 0.5, RuntimeMin: 45}, cands)
 	if !ok {
 		t.Fatal("no upgrade picked")
 	}

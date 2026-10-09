@@ -48,6 +48,25 @@ func TestImpactMustHEVCMovesH264ToReplace(t *testing.T) {
 	}
 }
 
+// The dry run reads a file the way the sweeps do: Convert's probed facts beat the release
+// name. A file Convert found to be HEVC meets a new "Must HEVC" whatever its x264 name
+// says, so it isn't counted as eligible for replacement.
+func TestImpactProbedFactsMeetMustOverName(t *testing.T) {
+	s, ctx := testService(t)
+	old := impactProfile(t, s, ctx, nil)
+	hevc := &FileFacts{Resolution: "1080p", Codec: "hevc", HDR: "SDR"}
+	files := []ImpactFile{
+		{Title: "Name only", Release: "A.2020.1080p.BluRay.x264-GRP", Bytes: bytesAt(10), RuntimeMin: 120},
+		{Title: "Probed HEVC", Release: "B.2020.1080p.BluRay.x264-GRP", Bytes: bytesAt(10), RuntimeMin: 120, Facts: hevc},
+	}
+	edited := old
+	edited.Ideal = &IdealFile{Codec: map[string]string{"hevc": PrefMust}}
+	got := s.Impact(ctx, old, edited, files)
+	if got.Replace.Files != 1 || len(got.Replace.Examples) != 1 || got.Replace.Examples[0] != "Name only" {
+		t.Errorf("replace = %+v, want only the file without probed facts", got.Replace)
+	}
+}
+
 func TestImpactPreferAtmosMovesFilesToSearch(t *testing.T) {
 	s, ctx := testService(t)
 	// A target with a floor, so a file inside it is finished and the sweeps leave it be.

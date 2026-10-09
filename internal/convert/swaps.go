@@ -74,7 +74,7 @@ func (s *Service) recoverSwaps(ctx context.Context) {
 		}
 		// The final file exists; make sure the library record points at it.
 		job := &Job{Kind: w.kind, MovieID: w.movieID, SeriesID: w.seriesID, Season: w.season, Episode: w.episode}
-		if err := s.markConverted(ctx, job, w.src, w.final, ""); err != nil {
+		if err := s.markConverted(ctx, job, w.src, w.final, "", 0); err != nil {
 			s.log.Warn("convert: could not repoint the library record for a recovered swap",
 				"final", w.final, "err", err)
 			continue // keep the row for the next startup

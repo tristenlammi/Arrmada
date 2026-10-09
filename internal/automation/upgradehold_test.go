@@ -96,14 +96,14 @@ func TestUpgradeSweepsSkipHeldFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := h.c.upgradeMovie(ctx, m); err != nil {
+	if err := h.c.upgradeMovie(ctx, m, nil); err != nil {
 		t.Fatal(err)
 	}
 	if n := h.searches.Load(); n != 0 {
 		t.Fatalf("held movie: %d searches, want 0", n)
 	}
 	h.exec(`UPDATE movies SET upgrade_hold = 0`)
-	if err := h.c.upgradeMovie(ctx, m); err != nil {
+	if err := h.c.upgradeMovie(ctx, m, nil); err != nil {
 		t.Fatal(err)
 	}
 	if n := h.searches.Load(); n != 1 {
@@ -115,14 +115,14 @@ func TestUpgradeSweepsSkipHeldFiles(t *testing.T) {
 	h.exec(`INSERT INTO seasons (series_id, season_number, monitored) VALUES (1, 1, 1)`)
 	h.exec(`INSERT INTO episodes (series_id, season_number, episode_number, monitored, has_file, file_path, size_bytes, source_release, runtime, upgrade_hold)
 		VALUES (1, 1, 1, 1, 1, '/lib/Show/S01E01.mkv', 1000000, 'Show.S01E01.720p.WEB-DL.x264-GRP', 45, 1)`)
-	if err := h.c.upgradeSeries(ctx, 1); err != nil {
+	if err := h.c.upgradeSeries(ctx, 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	if n := h.searches.Load(); n != 0 {
 		t.Fatalf("held episode: %d searches, want 0", n)
 	}
 	h.exec(`UPDATE episodes SET upgrade_hold = 0`)
-	if err := h.c.upgradeSeries(ctx, 1); err != nil {
+	if err := h.c.upgradeSeries(ctx, 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	if n := h.searches.Load(); n != 1 {

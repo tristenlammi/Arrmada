@@ -129,6 +129,11 @@ type Episode struct {
 	// UpgradeHold keeps the episode's file out of profile-driven upgrades ("keep existing
 	// files" when its profile changed). Cleared by a new import, a profile change or Resume.
 	UpgradeHold bool `json:"upgrade_hold,omitempty"`
+	// ConvertedFromRelease and ConvertedFromSize are what the file was before Convert first
+	// shrank it (size in bytes, 0 = unknown). Upgrades must beat that, not the converted
+	// file. Empty for a file never converted; cleared when a new file is imported.
+	ConvertedFromRelease string `json:"converted_from_release,omitempty"`
+	ConvertedFromSize    int64  `json:"converted_from_size,omitempty"`
 	// Download reflects an in-flight download for this episode (attached by the HTTP
 	// layer from the live queue; nil when nothing is downloading).
 	Download *EpisodeDownload `json:"download,omitempty"`

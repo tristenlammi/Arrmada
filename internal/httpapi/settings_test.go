@@ -213,6 +213,37 @@ func TestSettingsStallMinutes(t *testing.T) {
 	}
 }
 
+// The per-sweep upgrade budget defaults to 10, round-trips (0 = no limit included), and a
+// value outside 0..1000 is refused rather than stored.
+func TestSettingsUpgradeBudget(t *testing.T) {
+	a := settingsAPI(t)
+	if _, got := getSettings(t, a); got["upgrade_max_grabs_per_sweep"] != float64(10) {
+		t.Fatalf("default = %v, want 10", got["upgrade_max_grabs_per_sweep"])
+	}
+	for _, n := range []string{"25", "0"} {
+		if w := putSettings(t, a, `{"upgrade_max_grabs_per_sweep":`+n+`}`); w.Code != http.StatusOK {
+			t.Fatalf("PUT %s returned %d: %s", n, w.Code, w.Body.String())
+		}
+		if _, got := getSettings(t, a); got["upgrade_max_grabs_per_sweep"] != float64(mustAtoi(t, n)) {
+			t.Errorf("after saving %s, got %v", n, got["upgrade_max_grabs_per_sweep"])
+		}
+	}
+	for _, bad := range []string{"-1", "1001"} {
+		if w := putSettings(t, a, `{"upgrade_max_grabs_per_sweep":`+bad+`}`); w.Code != http.StatusBadRequest {
+			t.Errorf("PUT %s returned %d, want 400", bad, w.Code)
+		}
+	}
+}
+
+func mustAtoi(t *testing.T, s string) int {
+	t.Helper()
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
 // A profile's stall timeout is -1 (off), 0 (the default) or up to a week; anything else is
 // a 400 on create and on update, before anything is stored.
 func TestQualityProfileStallValidation(t *testing.T) {

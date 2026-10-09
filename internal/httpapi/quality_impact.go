@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/convert"
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
@@ -26,9 +27,12 @@ type profileFile struct {
 }
 
 // filesOnProfile lists every file whose effective profile is ref, from the database alone:
-// one movies query plus one versions query, or one episodes query, however big the library.
+// one movies query plus one versions query, or one episodes query, however big the library,
+// and one read of Convert's analysis for the media type so each file is judged on its
+// probed facts the way the sweeps judge it.
 func (a *api) filesOnProfile(ctx context.Context, ref, media string) ([]profileFile, error) {
 	ideals := newProfileIdeals(ctx, a.deps.Quality, media)
+	facts := a.factsIndex(ctx, media)
 	var out []profileFile
 	switch media {
 	case quality.MediaMovie:
@@ -50,6 +54,7 @@ func (a *api) filesOnProfile(ctx context.Context, ref, media string) ([]profileF
 				}
 				pf := profileFile{table: "movie_versions", id: v.ID, file: quality.ImpactFile{
 					Title: title, Release: automation.UpgradeBaseline(m, v), Bytes: v.SizeBytes, RuntimeMin: m.Runtime, Held: v.UpgradeHold,
+					Facts: facts.lookup(v.FilePath, v.SizeBytes), OrigRelease: v.ConvertedFromRelease, OrigBytes: v.ConvertedFromSize,
 				}}
 				if v.IsDefault {
 					pf.table, pf.id = "movies", m.ID
@@ -73,6 +78,7 @@ func (a *api) filesOnProfile(ctx context.Context, ref, media string) ([]profileF
 			}
 			out = append(out, profileFile{table: "episodes", id: e.EpisodeID, file: quality.ImpactFile{
 				Title: e.SeriesTitle, Release: e.SourceRelease, Bytes: e.SizeBytes, RuntimeMin: e.RuntimeMin, Held: e.Held,
+				Facts: facts.lookup(e.Path, e.SizeBytes), OrigRelease: e.ConvertedFromRelease, OrigBytes: e.ConvertedFromSize,
 			},
 				// UpgradeSeries visits monitored shows, and in them monitored episodes with a
 				// file, never specials.
@@ -80,6 +86,40 @@ func (a *api) filesOnProfile(ctx context.Context, ref, media string) ([]profileF
 		}
 	}
 	return out, nil
+}
+
+// impactFacts is Convert's analysis for one media type, keyed by path; nil (no Convert, or
+// it couldn't be read) answers every lookup with no facts, so files are judged by their
+// release names as the sweeps judge them without a fact source.
+type impactFacts convert.FactsIndex
+
+func (a *api) factsIndex(ctx context.Context, media string) impactFacts {
+	if a.deps.Convert == nil {
+		return nil
+	}
+	kind := "movie"
+	if media == quality.MediaSeries {
+		kind = "episode"
+	}
+	ix, err := a.deps.Convert.FactsByPath(ctx, kind)
+	if err != nil {
+		a.deps.Log.Warn("quality impact: could not read Convert's analysis — judging by release names", "err", err)
+		return nil
+	}
+	return impactFacts(ix)
+}
+
+// lookup is the file's probed facts when the analysis still describes it (same size,
+// current probe), else nil.
+func (f impactFacts) lookup(path string, sizeBytes int64) *quality.FileFacts {
+	if f == nil || path == "" {
+		return nil
+	}
+	ff, ok := convert.FactsIndex(f).Lookup(path, sizeBytes)
+	if !ok {
+		return nil
+	}
+	return &ff
 }
 
 // handleQualityImpact is the dry run behind the builder's Save: what saving this edit to a

@@ -1174,6 +1174,13 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 			curParsed.Codec = src.Codec
 		}
 	}
+	// What Convert's analysis found in the file beats both names: a converted file is
+	// AV1 or HEVC whatever it was released as, and its real resolution is known.
+	curFile := c.episodeFileOf(ctx, cur)
+	if curFile.Facts != nil {
+		probed := quality.ReleaseWithFacts(curParsed, *curFile.Facts)
+		curParsed.Resolution, curParsed.Codec = probed.Resolution, probed.Codec
+	}
 	curRes := curParsed.Resolution
 	switch {
 	case parser.ResolutionRank(res) > parser.ResolutionRank(curRes):
@@ -1186,10 +1193,15 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	// UpgradeCandidate — the profile resolved identically, so a release it chose can't be
 	// turned away on arrival. That mismatch cost a full download and then left the torrent
 	// seeding in the client, which froze the show's sweeps for as long as it sat there.
+	// A converted file is measured as what it was before Convert shrank it, or the release
+	// it came from (or another group's of the same size) passes as a big bitrate upgrade.
+	curEncode := quality.Encode{SizeGB: float64(cur.SizeBytes) / bytesPerGB, Codec: curParsed.Codec}
+	if orig, ok := curFile.OriginalEncode(); ok {
+		curEncode = orig
+	}
 	if c.quality.IsBitrateUpgrade(ctx, profile,
 		quality.Encode{SizeGB: candShareGB, Codec: cand.Codec},
-		quality.Encode{SizeGB: float64(cur.SizeBytes) / bytesPerGB, Codec: curParsed.Codec},
-		cur.RuntimeMin) {
+		curEncode, cur.RuntimeMin) {
 		c.log.Info("series import: replacing an equal-resolution file — the profile's bitrate margin is met",
 			"series", s.Title, "episode", epLabel,
 			"current_gb", float64(cur.SizeBytes)/bytesPerGB, "candidate_gb", candShareGB)
@@ -1200,8 +1212,7 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	// re-import the same episode forever — the loop upgradeSeries guards against the same
 	// way. Without it, fall through to the resolution/bitrate answer above.
 	if cur.SourceRelease != "" && c.quality.IsQualityUpgrade(ctx, profile,
-		candName, candShareGB,
-		cur.SourceRelease, float64(cur.SizeBytes)/bytesPerGB) {
+		candName, candShareGB, curFile) {
 		c.log.Info("series import: replacing an equal-resolution file — it scores higher on this profile",
 			"series", s.Title, "episode", epLabel,
 			"current", cur.SourceRelease, "candidate", candName)

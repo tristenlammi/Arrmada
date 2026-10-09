@@ -48,6 +48,7 @@ export const SEARCH_INDEX: readonly SearchEntry[] = [
   { label: "Download clients and indexers", keywords: "qbittorrent prowlarr torrent client indexer", section: "downloads", anchor: "download-links" },
   { label: "Download disk guard", keywords: "disk full space free pause resume threshold percent drive cache", section: "downloads", anchor: "disk-guard" },
   { label: "Stalled downloads", keywords: "stall stuck timeout no progress replacement fail over hours", section: "downloads", anchor: "stalled-downloads" },
+  { label: "Upgrades per sweep", keywords: "upgrade limit budget sweep quality profile replace better release grabs at once", section: "downloads", anchor: "upgrade-limit" },
   { label: "Recycle bin", keywords: "trash deleted restore empty retention size cap purge undo", section: "downloads", anchor: "recycle-bin" },
   { label: "Users", keywords: "add user people accounts roles admin manager requester read-only password auto-approve block delete disable sign in", section: "users", anchor: "users" },
   { label: "Plex sign-in", keywords: "plex login sign in with plex auto-approve home shared users", section: "users", anchor: "plex-sign-in" },

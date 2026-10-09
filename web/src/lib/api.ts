@@ -646,6 +646,8 @@ export interface AppSettings {
   downloads_disk_guard_resume_pct: string;
   /** Minutes with no progress before another release is tried; 0 = never. Default 360. */
   downloads_stall_minutes: number;
+  /** How many upgrades one upgrade sweep may grab; 0 = no limit. Default 10. */
+  upgrade_max_grabs_per_sweep: number;
 }
 
 export interface TorrentPreview {

@@ -12,9 +12,9 @@ import (
 // a new Prefer sends the sweep looking again — with no number shown first.
 //
 // Each file is judged twice, under the profile as saved and as edited, by the same
-// exported decisions the sweeps and the profile-change prompt run (AllowsUpgrades,
-// WouldReject, AtCeiling), so the estimate follows them wherever they change. Only the
-// files whose state got worse are counted.
+// decisions the sweeps and the profile-change prompt run (AllowsUpgrades and JudgeFile —
+// the verdict behind WouldReject and AtCeiling), so the estimate follows them wherever
+// they change. Only the files whose state got worse are counted.
 
 // ImpactFile is one file on the profile, as the upgrade sweeps see it.
 type ImpactFile struct {
@@ -26,6 +26,22 @@ type ImpactFile struct {
 	RuntimeMin int // the movie's or episode's length, so the bitrate window applies
 	// Held files are kept out of upgrades ("keep existing files"), so no edit moves them.
 	Held bool
+	// Facts are Convert's probed facts for the file, nil when no current analysis exists;
+	// like the sweeps, they win over what the release name says.
+	Facts *FileFacts
+	// OrigRelease and OrigBytes are what a converted file was before Convert first shrank
+	// it ("" / 0 when never converted), the baseline the sweeps measure an upgrade from.
+	OrigRelease string
+	OrigBytes   int64
+}
+
+// current is the file as the sweeps' decisions read it.
+func (f ImpactFile) current() CurrentFile {
+	const bytesPerGB = 1 << 30
+	return CurrentFile{
+		Release: f.Release, SizeGB: float64(f.Bytes) / bytesPerGB, RuntimeMin: f.RuntimeMin,
+		Facts: f.Facts, OrigRelease: f.OrigRelease, OrigSizeGB: float64(f.OrigBytes) / bytesPerGB,
+	}
 }
 
 // Bucket counts the files that moved into one state.
@@ -105,11 +121,12 @@ func (s *Service) upgradeState(ctx context.Context, ref string, f ImpactFile) up
 	if f.Held || strings.TrimSpace(f.Release) == "" || !s.AllowsUpgrades(ctx, ref) {
 		return stateSettled
 	}
-	gb := float64(f.Bytes) / (1 << 30)
-	if s.WouldReject(ctx, ref, f.Release, gb, f.RuntimeMin) {
+	// One verdict for both questions: WouldReject is !Eligible, AtCeiling is AtCeiling.
+	v := s.JudgeFile(ctx, ref, f.current())
+	if !v.Eligible {
 		return stateReplace
 	}
-	if !s.AtCeiling(ctx, ref, f.Release, gb, f.RuntimeMin) {
+	if !v.AtCeiling {
 		return stateSearch
 	}
 	return stateSettled

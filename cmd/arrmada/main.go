@@ -179,6 +179,11 @@ func main() {
 	if _, err := convert.RepairCodecStamps(context.Background(), st.DB(), settingsSvc, log); err != nil {
 		log.Warn("convert: codec stamp repair failed", "err", err)
 	}
+	// One-time: files converted before their pre-conversion baseline was recorded get it
+	// from the Convert ledger, so upgrades can't undo those conversions either.
+	if _, err := convert.BackfillConvertedFrom(context.Background(), st.DB(), settingsSvc, log); err != nil {
+		log.Warn("convert: pre-conversion baseline backfill failed", "err", err)
+	}
 
 	bus := eventbus.New(log)
 	// What must happen after an import (Convert and Subtitles reindexing, the requester's
@@ -495,6 +500,10 @@ func main() {
 	coordinator.SetStallDefault(func(ctx context.Context) int {
 		return automation.ParseStallMinutes(settingsSvc.Get(ctx, automation.KeyStallMinutes, ""))
 	})
+	// How many upgrades one sweep may grab (Settings → Downloads), read at each sweep.
+	coordinator.SetUpgradeBudget(func(ctx context.Context) int {
+		return automation.ParseUpgradeBudget(settingsSvc.Get(ctx, automation.KeyUpgradeBudget, ""))
+	})
 	sched.Register("import-completed", 30*time.Second, false, func(ctx context.Context) error {
 		completed, err := downloads.CompletedInCategory(ctx, cfg.DownloadCategory)
 		if err != nil {
@@ -531,7 +540,7 @@ func main() {
 	sched.Register("upgrade-movies", 6*time.Hour, false, func(ctx context.Context) error {
 		coordinator.UpgradeMovies(ctx)
 		return nil
-	}, scheduler.Label("Look for better movie releases"), scheduler.Description("Grabs a better release when a movie's quality profile allows upgrades."))
+	}, scheduler.Label("Look for better movie releases"), scheduler.Description("Grabs a better release when a movie's quality profile allows upgrades, up to the per-sweep limit (Settings → Downloads)."))
 	// Fail over stalled downloads: replace, then remove, after the profile's (or the global
 	// default) timeout with no progress.
 	sched.Register("detect-stalled", 2*time.Minute, false, func(ctx context.Context) error {
@@ -597,7 +606,7 @@ func main() {
 	sched.Register("upgrade-series", 6*time.Hour, false, func(ctx context.Context) error {
 		coordinator.UpgradeSeries(ctx)
 		return nil
-	}, scheduler.Label("Look for better episode releases"), scheduler.Description("Grabs a better release when a show's quality profile allows upgrades."))
+	}, scheduler.Label("Look for better episode releases"), scheduler.Description("Grabs a better release when a show's quality profile allows upgrades, up to the per-sweep limit (Settings → Downloads)."))
 	// Remove imported torrents once they hit their indexer's seed goal (also on
 	// startup, so anything left over from a previous run is tidied promptly).
 	sched.Register("manage-seeding", 10*time.Minute, true, func(ctx context.Context) error {
@@ -656,6 +665,9 @@ func main() {
 	}
 	convertSvc := convert.NewService(st.DB(), movieSvc, seriesSvc, settingsSvc, "ffmpeg", "ffprobe", convertScratch, "", log)
 	convertSvc.SetBin(bins) // originals go to the bin on their own library folder
+	// Upgrade decisions judge a library file by what Convert's analysis found in it, not
+	// only by its release name — the same facts the Library fit bars read.
+	coordinator.SetFileFacts(convertSvc)
 	// The manager looks after every bin: one per library folder (or the one override),
 	// plus the old shared bin while it still holds files, so what's in it stays listed,
 	// restorable, aged and capped until it drains. Convert's originals go to the bins, so

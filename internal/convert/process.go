@@ -808,7 +808,7 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst string,
 		return
 	}
 	rec.outPath = finalPath
-	if err := s.markConverted(ctx, job, src, finalPath, plan.VideoCodec); err != nil {
+	if err := s.markConverted(ctx, job, src, finalPath, plan.VideoCodec, mi.SizeBytes); err != nil {
 		s.log.Error("convert: library record update failed after the swap", "title", job.Title, "err", err)
 		s.finish(job, StateFailed, "converted, but the library record could not be updated: "+err.Error()+
 			" — it will be reconciled at the next startup")
@@ -838,12 +838,22 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst string,
 // markConverted repoints the library record (movie or episode) at the converted file —
 // path only. It must never run the import flow: that stamped a synthetic release name and
 // set off an endless download → re-encode loop.
-func (s *Service) markConverted(ctx context.Context, job *Job, src, finalPath, codec string) error {
+//
+// Before the repoint it records what the file was (its release, still naming the old codec,
+// and srcSize, 0 when unknown) as the pre-conversion baseline, so a quality upgrade has to
+// beat the original rather than the smaller converted file — or the sweep re-grabs the
+// very kind of release this just shrank. A record that already has a baseline keeps it.
+func (s *Service) markConverted(ctx context.Context, job *Job, src, finalPath, codec string, srcSize int64) error {
 	size := fileSize(finalPath)
 	token := codecToken(codec)
 	if job.Kind == "episode" {
 		if s.series == nil {
 			return fmt.Errorf("series module not available")
+		}
+		if src != "" {
+			if err := s.series.SetConvertedFrom(ctx, job.SeriesID, src, srcSize); err != nil {
+				s.log.Warn("convert: could not record the pre-conversion baseline", "title", job.Title, "err", err)
+			}
 		}
 		// One file can serve several episodes ("S03E01E02"). Repoint by PATH so they all
 		// follow the conversion.
@@ -858,6 +868,11 @@ func (s *Service) markConverted(ctx context.Context, job *Job, src, finalPath, c
 		}
 		s.stampEpisodeCodec(ctx, job, token)
 		return nil
+	}
+	if src != "" {
+		if err := s.movies.SetConvertedFrom(ctx, job.MovieID, src, srcSize); err != nil {
+			s.log.Warn("convert: could not record the pre-conversion baseline", "title", job.Title, "err", err)
+		}
 	}
 	n, err := s.movies.RepointMovieFile(ctx, job.MovieID, src, finalPath, size, token)
 	if err != nil {

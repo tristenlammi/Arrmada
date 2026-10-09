@@ -47,7 +47,7 @@ func (r *Repo) inTx(ctx context.Context, fn func(tx *sql.Tx, r *Repo) error) err
 
 const movieCols = `id, tmdb_id, imdb_id, title, year, overview, poster_url, runtime, status,
 	monitored, quality_profile, min_availability, has_file, movie_file_path, added_at, extra_json, media_json,
-	source_release, upgrade_hold`
+	source_release, upgrade_hold, converted_from_release, converted_from_size`
 
 func (r *Repo) scan(row interface{ Scan(...any) error }) (Movie, error) {
 	var (
@@ -57,7 +57,7 @@ func (r *Repo) scan(row interface{ Scan(...any) error }) (Movie, error) {
 	)
 	err := row.Scan(&m.ID, &m.TMDBID, &m.IMDBID, &m.Title, &m.Year, &m.Overview, &m.PosterURL,
 		&m.Runtime, &m.Status, &mon, &m.QualityProfile, &m.MinAvailability, &hf, &m.MovieFilePath,
-		&m.AddedAt, &extraJSON, &mediaJSON, &m.SourceRelease, &hold)
+		&m.AddedAt, &extraJSON, &mediaJSON, &m.SourceRelease, &hold, &m.ConvertedFromRelease, &m.ConvertedFromSize)
 	if err != nil {
 		return Movie{}, err
 	}
@@ -245,7 +245,42 @@ func (r *Repo) SetFile(ctx context.Context, id int64, path string) error {
 
 // ClearFile marks a movie as having no file (after its file is deleted).
 func (r *Repo) ClearFile(ctx context.Context, id int64) error {
-	_, err := r.q().ExecContext(ctx, `UPDATE movies SET has_file = 0, movie_file_path = '', media_json = '', source_release = '', upgrade_hold = 0 WHERE id = ?`, id)
+	_, err := r.q().ExecContext(ctx, `UPDATE movies SET has_file = 0, movie_file_path = '', media_json = '', source_release = '', upgrade_hold = 0,
+		converted_from_release = '', converted_from_size = 0 WHERE id = ?`, id)
+	return err
+}
+
+// SetConvertedFromForPath records, on every track of a movie whose file is at path, the
+// release and size the file had before Convert first shrank it. The release is the
+// track's recorded source release as it stands — call this BEFORE the repoint restamps
+// its codec. A track that already has a baseline keeps it: a re-conversion's "before" is
+// itself a conversion, and upgrades must beat the first original.
+func (r *Repo) SetConvertedFromForPath(ctx context.Context, movieID int64, path string, size int64) error {
+	return r.inTx(ctx, func(_ *sql.Tx, r *Repo) error {
+		if _, err := r.q().ExecContext(ctx,
+			`UPDATE movies SET converted_from_release = source_release, converted_from_size = ?
+			  WHERE id = ? AND has_file = 1 AND movie_file_path = ?
+			    AND converted_from_release = '' AND converted_from_size = 0`, size, movieID, path); err != nil {
+			return err
+		}
+		_, err := r.q().ExecContext(ctx,
+			`UPDATE movie_versions SET converted_from_release = source_release, converted_from_size = ?
+			  WHERE movie_id = ? AND has_file = 1 AND file_path = ?
+			    AND converted_from_release = '' AND converted_from_size = 0`, size, movieID, path)
+		return err
+	})
+}
+
+// ClearConvertedFrom forgets a track's pre-conversion baseline: a new file was imported
+// into it. versionID 0 is the default track (the movie row).
+func (r *Repo) ClearConvertedFrom(ctx context.Context, movieID, versionID int64) error {
+	if versionID == 0 {
+		_, err := r.q().ExecContext(ctx,
+			`UPDATE movies SET converted_from_release = '', converted_from_size = 0 WHERE id = ?`, movieID)
+		return err
+	}
+	_, err := r.q().ExecContext(ctx,
+		`UPDATE movie_versions SET converted_from_release = '', converted_from_size = 0 WHERE id = ?`, versionID)
 	return err
 }
 
@@ -308,7 +343,8 @@ func (r *Repo) UpdateMetadata(ctx context.Context, id int64, m Movie) error {
 
 // --- extra version tracks -------------------------------------------------
 
-const versionCols = `id, movie_id, label, quality_profile, edition, monitored, has_file, file_path, size_bytes, source_release, upgrade_hold`
+const versionCols = `id, movie_id, label, quality_profile, edition, monitored, has_file, file_path, size_bytes, source_release, upgrade_hold,
+	converted_from_release, converted_from_size`
 
 func scanVersion(row interface{ Scan(...any) error }) (Version, int64, error) {
 	var (
@@ -316,7 +352,8 @@ func scanVersion(row interface{ Scan(...any) error }) (Version, int64, error) {
 		movieID       int64
 		mon, hf, hold int
 	)
-	err := row.Scan(&v.ID, &movieID, &v.Label, &v.QualityProfile, &v.Edition, &mon, &hf, &v.FilePath, &v.SizeBytes, &v.SourceRelease, &hold)
+	err := row.Scan(&v.ID, &movieID, &v.Label, &v.QualityProfile, &v.Edition, &mon, &hf, &v.FilePath, &v.SizeBytes, &v.SourceRelease, &hold,
+		&v.ConvertedFromRelease, &v.ConvertedFromSize)
 	if err != nil {
 		return Version{}, 0, err
 	}
@@ -412,7 +449,8 @@ func (r *Repo) SetVersionFile(ctx context.Context, id int64, path string, size i
 
 // ClearVersionFile marks an extra version as having no file.
 func (r *Repo) ClearVersionFile(ctx context.Context, id int64) error {
-	_, err := r.q().ExecContext(ctx, `UPDATE movie_versions SET has_file = 0, file_path = '', size_bytes = 0, source_release = '', upgrade_hold = 0 WHERE id = ?`, id)
+	_, err := r.q().ExecContext(ctx, `UPDATE movie_versions SET has_file = 0, file_path = '', size_bytes = 0, source_release = '', upgrade_hold = 0,
+		converted_from_release = '', converted_from_size = 0 WHERE id = ?`, id)
 	return err
 }
 

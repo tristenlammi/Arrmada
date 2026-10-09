@@ -26,6 +26,11 @@ type Movie struct {
 	// UpgradeHold keeps the default file out of profile-driven upgrades ("keep existing
 	// files" when its profile changed). Cleared by a new import, a profile change or Resume.
 	UpgradeHold bool `json:"upgrade_hold,omitempty"`
+	// ConvertedFromRelease and ConvertedFromSize are what the default file was before
+	// Convert first shrank it (size in bytes, 0 = unknown). Upgrades must beat that, not
+	// the smaller converted file. Empty for a file never converted; cleared on import.
+	ConvertedFromRelease string `json:"converted_from_release,omitempty"`
+	ConvertedFromSize    int64  `json:"converted_from_size,omitempty"`
 
 	// Extra holds enriched metadata (genres, cast, collection, …), stored as
 	// JSON. Present on both list and detail responses.
@@ -90,6 +95,9 @@ type Version struct {
 	File           *MovieFile `json:"file,omitempty"` // enriched on the detail endpoint
 	// UpgradeHold keeps this track's file out of profile-driven upgrades (see Movie).
 	UpgradeHold bool `json:"upgrade_hold,omitempty"`
+	// The track's pre-conversion baseline (see Movie.ConvertedFromRelease).
+	ConvertedFromRelease string `json:"converted_from_release,omitempty"`
+	ConvertedFromSize    int64  `json:"converted_from_size,omitempty"`
 }
 
 // MovieFile describes the on-disk file for a movie: size plus media info parsed

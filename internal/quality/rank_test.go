@@ -140,11 +140,11 @@ func TestUpgradeTriggerGatesUpgrades(t *testing.T) {
 			ref = triggerProfile(t, s, tc.trigger)
 			refs[tc.trigger] = ref
 		}
-		_, got := s.UpgradeCandidate(ctx, ref, cur, 8, 120, []Candidate{NewCandidate(tc.cand, 8, 100).WithRuntime(120)})
+		_, got := s.UpgradeCandidate(ctx, ref, cf(cur, 8, 120), []Candidate{NewCandidate(tc.cand, 8, 100).WithRuntime(120)})
 		if got != tc.want {
 			t.Errorf("UpgradeCandidate %s ← %s = %v, want %v", tc.trigger, tc.cand, got, tc.want)
 		}
-		if gate := s.IsQualityUpgrade(ctx, ref, tc.cand, 8, cur, 8); gate != tc.want {
+		if gate := s.IsQualityUpgrade(ctx, ref, tc.cand, 8, cf(cur, 8, 0)); gate != tc.want {
 			t.Errorf("IsQualityUpgrade %s ← %s = %v, want %v", tc.trigger, tc.cand, gate, tc.want)
 		}
 	}
@@ -164,7 +164,7 @@ func TestResolutionTriggerKeepsBitrateUpgrades(t *testing.T) {
 	ref := "custom:" + strconv.FormatInt(sp.ID, 10)
 	cur := "Film.2021.1080p.WEB-DL.x264-GRP"
 	cand := "Film.2021.1080p.WEB-DL.x264-OTHER"
-	if _, ok := s.UpgradeCandidate(ctx, ref, cur, 4, 120, []Candidate{NewCandidate(cand, 12, 100).WithRuntime(120)}); !ok {
+	if _, ok := s.UpgradeCandidate(ctx, ref, cf(cur, 4, 120), []Candidate{NewCandidate(cand, 12, 100).WithRuntime(120)}); !ok {
 		t.Error("a 3x heavier same-quality release was refused under 'resolution only' with a +25% step")
 	}
 }

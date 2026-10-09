@@ -336,26 +336,31 @@ func rebuildEpisodesTx(ctx context.Context, tx *sql.Tx, seriesID int64, seasons 
 		size            int64
 		release         string
 		hold            bool // upgrade_hold: a kept file stays kept wherever it moves
+		// The pre-conversion baseline follows its file, or a renumbered converted episode
+		// would look like a small file worth replacing.
+		convRelease string
+		convSize    int64
 	}
 	filesByAbs := map[int]placement{}   // absolute → file placement (absolute > 0)
 	filesBySE := map[[2]int]placement{} // (season, episode) → file (absolute == 0, e.g. specials)
 	monByAbs := map[int]bool{}
 	monBySE := map[[2]int]bool{}
 	rows, err := tx.QueryContext(ctx,
-		`SELECT absolute_number, season_number, episode_number, has_file, file_path, size_bytes, source_release, monitored, upgrade_hold
+		`SELECT absolute_number, season_number, episode_number, has_file, file_path, size_bytes, source_release, monitored, upgrade_hold,
+		        converted_from_release, converted_from_size
 		   FROM episodes WHERE series_id = ?`, seriesID)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
 		var abs, s, e, hf, mon, hold int
-		var path, rel string
-		var size int64
-		if err := rows.Scan(&abs, &s, &e, &hf, &path, &size, &rel, &mon, &hold); err != nil {
+		var path, rel, convRel string
+		var size, convSize int64
+		if err := rows.Scan(&abs, &s, &e, &hf, &path, &size, &rel, &mon, &hold, &convRel, &convSize); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		p := placement{season: s, episode: e, path: path, size: size, release: rel, hold: hold != 0}
+		p := placement{season: s, episode: e, path: path, size: size, release: rel, hold: hold != 0, convRelease: convRel, convSize: convSize}
 		if abs > 0 {
 			monByAbs[abs] = mon != 0
 			if hf != 0 && path != "" {
@@ -401,9 +406,10 @@ func rebuildEpisodesTx(ctx context.Context, tx *sql.Tx, seriesID int64, seasons 
 
 	applyFile := func(ns, ne int, p placement) error {
 		_, err := tx.ExecContext(ctx,
-			`UPDATE episodes SET has_file = 1, file_path = ?, size_bytes = ?, source_release = ?, upgrade_hold = ?
+			`UPDATE episodes SET has_file = 1, file_path = ?, size_bytes = ?, source_release = ?, upgrade_hold = ?,
+			        converted_from_release = ?, converted_from_size = ?
 			   WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
-			p.path, p.size, p.release, b2i(p.hold), seriesID, ns, ne)
+			p.path, p.size, p.release, b2i(p.hold), p.convRelease, p.convSize, seriesID, ns, ne)
 		return err
 	}
 	existsSE := func(season, episode int) bool {
@@ -531,7 +537,8 @@ func (r *Repo) SeasonsFor(ctx context.Context, seriesID int64) ([]Season, error)
 		return nil, err
 	}
 	eps, err := r.db.QueryContext(ctx,
-		`SELECT id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored, has_file, file_path, size_bytes, absolute_number, source_release, upgrade_hold
+		`SELECT id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored, has_file, file_path, size_bytes, absolute_number, source_release, upgrade_hold,
+		        converted_from_release, converted_from_size
 		 FROM episodes WHERE series_id = ? ORDER BY season_number, episode_number`, seriesID)
 	if err != nil {
 		return seasons, nil
@@ -540,7 +547,8 @@ func (r *Repo) SeasonsFor(ctx context.Context, seriesID int64) ([]Season, error)
 	for eps.Next() {
 		var e Episode
 		var mon, hf, hold int
-		if err := eps.Scan(&e.ID, &e.SeasonNumber, &e.EpisodeNumber, &e.Title, &e.Overview, &e.AirDate, &e.Runtime, &e.StillURL, &mon, &hf, &e.FilePath, &e.SizeBytes, &e.AbsoluteNumber, &e.SourceRelease, &hold); err != nil {
+		if err := eps.Scan(&e.ID, &e.SeasonNumber, &e.EpisodeNumber, &e.Title, &e.Overview, &e.AirDate, &e.Runtime, &e.StillURL, &mon, &hf, &e.FilePath, &e.SizeBytes, &e.AbsoluteNumber, &e.SourceRelease, &hold,
+			&e.ConvertedFromRelease, &e.ConvertedFromSize); err != nil {
 			return seasons, nil
 		}
 		e.Monitored, e.HasFile, e.UpgradeHold = mon != 0, hf != 0, hold != 0
@@ -1030,6 +1038,27 @@ func (r *Repo) RepointEpisodeFile(ctx context.Context, seriesID int64, oldPath, 
 	return n, nil
 }
 
+// SetConvertedFromForPath records, on every episode of the series served by the file at
+// path, the release and size it had before Convert first shrank it. The release is the
+// episode's recorded source release as it stands — call this BEFORE its codec is
+// restamped. An episode that already has a baseline keeps its first one.
+func (r *Repo) SetConvertedFromForPath(ctx context.Context, seriesID int64, path string, size int64) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE episodes SET converted_from_release = source_release, converted_from_size = ?
+		  WHERE series_id = ? AND has_file = 1 AND file_path = ?
+		    AND converted_from_release = '' AND converted_from_size = 0`, size, seriesID, path)
+	return err
+}
+
+// ClearEpisodeConvertedFrom forgets an episode's pre-conversion baseline: a new file was
+// imported for it.
+func (r *Repo) ClearEpisodeConvertedFrom(ctx context.Context, seriesID int64, season, episode int) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE episodes SET converted_from_release = '', converted_from_size = 0
+		  WHERE series_id = ? AND season_number = ? AND episode_number = ?`, seriesID, season, episode)
+	return err
+}
+
 // SetEpisodeSourceRelease records the release name an episode's file was imported from.
 // Kept separate from SetEpisodeFile so path-only updates (rename, transcode) preserve it.
 func (r *Repo) SetEpisodeSourceRelease(ctx context.Context, seriesID int64, season, episode int, release string) error {
@@ -1042,7 +1071,8 @@ func (r *Repo) SetEpisodeSourceRelease(ctx context.Context, seriesID int64, seas
 // ClearEpisodeFile flips an episode back to wanted (no file), e.g. after deleting its file.
 func (r *Repo) ClearEpisodeFile(ctx context.Context, seriesID int64, season, episode int) error {
 	_, err := r.db.ExecContext(ctx,
-		`UPDATE episodes SET has_file = 0, file_path = '', size_bytes = 0, upgrade_hold = 0 WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
+		`UPDATE episodes SET has_file = 0, file_path = '', size_bytes = 0, upgrade_hold = 0, converted_from_release = '', converted_from_size = 0
+		  WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
 		seriesID, season, episode)
 	return err
 }
@@ -1056,6 +1086,9 @@ type EpisodeFile struct {
 	SourceRelease string // the release it came from, not the renamed library file
 	RuntimeMin    int    // needed to turn size into a bitrate
 	Held          bool   // kept out of profile-driven upgrades (upgrade_hold)
+	// What the file was before Convert first shrank it ("" / 0 when never converted).
+	ConvertedFromRelease string
+	ConvertedFromSize    int64
 }
 
 // LibraryEpisodeFile is one episode with a file, with what the upgrade sweep needs to know
@@ -1073,6 +1106,9 @@ type LibraryEpisodeFile struct {
 	SourceRelease   string
 	RuntimeMin      int
 	Held            bool // kept out of profile-driven upgrades (upgrade_hold)
+	// What the file was before Convert first shrank it ("" / 0 when never converted).
+	ConvertedFromRelease string
+	ConvertedFromSize    int64
 }
 
 // LibraryEpisodeFiles lists every episode that has a file, across all shows, in one query —
@@ -1080,7 +1116,8 @@ type LibraryEpisodeFile struct {
 func (r *Repo) LibraryEpisodeFiles(ctx context.Context) ([]LibraryEpisodeFile, error) {
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT e.id, e.series_id, s.title, s.quality_profile, s.monitored, e.season_number, e.episode_number,
-		        e.monitored, e.file_path, e.size_bytes, e.source_release, e.runtime, e.upgrade_hold
+		        e.monitored, e.file_path, e.size_bytes, e.source_release, e.runtime, e.upgrade_hold,
+		        e.converted_from_release, e.converted_from_size
 		   FROM episodes e JOIN series s ON s.id = e.series_id
 		  WHERE e.has_file = 1
 		  ORDER BY s.title, e.season_number, e.episode_number`)
@@ -1093,7 +1130,8 @@ func (r *Repo) LibraryEpisodeFiles(ctx context.Context) ([]LibraryEpisodeFile, e
 		var f LibraryEpisodeFile
 		var smon, emon, hold int
 		if err := rows.Scan(&f.EpisodeID, &f.SeriesID, &f.SeriesTitle, &f.SeriesProfile, &smon, &f.Season, &f.Episode,
-			&emon, &f.Path, &f.SizeBytes, &f.SourceRelease, &f.RuntimeMin, &hold); err != nil {
+			&emon, &f.Path, &f.SizeBytes, &f.SourceRelease, &f.RuntimeMin, &hold,
+			&f.ConvertedFromRelease, &f.ConvertedFromSize); err != nil {
 			return nil, err
 		}
 		f.SeriesMonitored, f.Monitored, f.Held = smon != 0, emon != 0, hold != 0
@@ -1108,9 +1146,10 @@ func (r *Repo) CurrentEpisodeFile(ctx context.Context, seriesID int64, season, e
 	var f EpisodeFile
 	var hold int
 	err := r.db.QueryRowContext(ctx,
-		`SELECT file_path, size_bytes, source_release, runtime, upgrade_hold FROM episodes
+		`SELECT file_path, size_bytes, source_release, runtime, upgrade_hold, converted_from_release, converted_from_size FROM episodes
 		 WHERE series_id = ? AND season_number = ? AND episode_number = ? AND has_file = 1`,
-		seriesID, season, episode).Scan(&f.Path, &f.SizeBytes, &f.SourceRelease, &f.RuntimeMin, &hold)
+		seriesID, season, episode).Scan(&f.Path, &f.SizeBytes, &f.SourceRelease, &f.RuntimeMin, &hold,
+		&f.ConvertedFromRelease, &f.ConvertedFromSize)
 	if err != nil {
 		return EpisodeFile{}
 	}
