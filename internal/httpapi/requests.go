@@ -4,41 +4,180 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
+	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/requests"
 )
 
+// Paging for GET /api/v1/requests: a page of 50 unless asked, never more than 200.
+const (
+	requestsPageDefault = 50
+	requestsPageMax     = 200
+)
+
+// handleListRequests lists requests. Staff see everyone's; anyone else sees their own and
+// the ones they follow, whatever the query asks — the scope is forced here.
+//
+//	GET /api/v1/requests?section=needs_approval|in_progress|ready|declined|all|strip
+//	                    &limit=&offset=&media_type=movie|series|book&q=&status=
+//
+// It answers {requests, counts, total, auto_approve, client_health}. With no section and
+// no limit it is the old list: everything, newest first, unpaged. section=strip is the
+// Discover strip (requests.Service.Strip).
 func (a *api) handleListRequests(w http.ResponseWriter, r *http.Request) {
-	// Managers/admins see every request (to approve); everyone else sees only theirs.
-	var scope int64
-	autoApprove := false
-	if u, ok := userFrom(r); ok {
-		autoApprove = u.AutoApprove
-		if !u.Role.AtLeast(auth.RoleManager) {
-			scope = u.ID
-		}
+	u, ok := userFrom(r)
+	if !ok || u == nil {
+		a.writeError(w, http.StatusUnauthorized, "sign in first")
+		return
 	}
-	list, err := a.deps.Requests.List(r.Context(), r.URL.Query().Get("status"), scope)
+	staff := u.Role.AtLeast(auth.RoleManager)
+	q := r.URL.Query()
+	section := q.Get("section")
+	f := requests.ListFilter{Status: q.Get("status"), MediaType: q.Get("media_type"), Query: q.Get("q")}
+	if !staff {
+		f.UserID, f.IncludeJoined = u.ID, true
+	}
+	switch f.MediaType {
+	case "", "movie", "series", "book":
+	default:
+		a.writeError(w, http.StatusBadRequest, "media_type must be movie, series or book")
+		return
+	}
+	var (
+		list  []requests.Request
+		total int
+		err   error
+	)
+	if section == "strip" {
+		list, err = a.deps.Requests.Strip(r.Context(), u.ID, staff)
+		total = len(list)
+	} else {
+		if !requests.ValidSection(section) {
+			a.writeError(w, http.StatusBadRequest, "unknown section")
+			return
+		}
+		f.Section = section
+		if (section != "" && section != requests.SectionAll) || q.Has("limit") {
+			f.Limit = requestsPageDefault
+			if n, perr := strconv.Atoi(q.Get("limit")); perr == nil && n > 0 {
+				f.Limit = min(n, requestsPageMax)
+			}
+			if n, perr := strconv.Atoi(q.Get("offset")); perr == nil && n > 0 {
+				f.Offset = n
+			}
+		}
+		list, total, err = a.deps.Requests.List(r.Context(), f)
+	}
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not list requests")
 		return
 	}
-	if list == nil {
-		list = []requests.Request{}
+	// The counts ignore the section: every tab shows its own number.
+	counts, err := a.deps.Requests.Counts(r.Context(), f)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not count requests")
+		return
 	}
-	// Where each request has got to — searching, downloading (with progress), importing,
-	// ready — from its own downloads, so the Discover requests row can show it. Without
-	// the download client the stages that don't need it still show.
-	// When the client can't be read, the cards say the status is unknown rather than
-	// "Searching" — and a requester is told only that, never which client or why.
-	snap, queueKnown, _ := a.queueSnapshot(r.Context())
-	a.deps.Requests.Track(r.Context(), list, snap.Items)
+	queueKnown := a.trackRequests(r, list)
+	shapeRequests(list, staff)
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"requests":      list,
-		"auto_approve":  autoApprove, // this viewer's own auto-approve status
+		"counts":        counts,
+		"total":         total,
+		"auto_approve":  u.AutoApprove, // this viewer's own auto-approve status
 		"client_health": queueHealth{OK: queueKnown},
 	})
+}
+
+// handleGetRequest is one request with its tracking. Staff can open any, and see who
+// follows it; anyone else only one they made or follow (404 otherwise, the same answer
+// as for a request that doesn't exist).
+//
+//	GET /api/v1/requests/{id}
+func (a *api) handleGetRequest(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	u, ok := userFrom(r)
+	if !ok || u == nil {
+		a.writeError(w, http.StatusUnauthorized, "sign in first")
+		return
+	}
+	staff := u.Role.AtLeast(auth.RoleManager)
+	req, err := a.deps.Requests.Detail(r.Context(), id, u.ID, staff)
+	if errors.Is(err, requests.ErrNotFound) {
+		a.writeError(w, http.StatusNotFound, "request not found")
+		return
+	}
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not load request")
+		return
+	}
+	list := []requests.Request{req}
+	queueKnown := a.trackRequests(r, list)
+	shapeRequests(list, staff)
+	a.writeJSON(w, http.StatusOK, map[string]any{"request": list[0], "client_health": queueHealth{OK: queueKnown}})
+}
+
+// handleUnsubscribeRequest stops the caller following someone else's request: they hear
+// nothing more about it and it leaves their list. 404 when they don't follow it.
+//
+//	DELETE /api/v1/requests/{id}/subscription
+func (a *api) handleUnsubscribeRequest(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	u, ok := userFrom(r)
+	if !ok || u == nil {
+		a.writeError(w, http.StatusUnauthorized, "sign in first")
+		return
+	}
+	if err := a.deps.Requests.Unsubscribe(r.Context(), id, u.ID); err != nil {
+		if errors.Is(err, requests.ErrNotFound) {
+			a.writeError(w, http.StatusNotFound, "you don't follow that request")
+			return
+		}
+		a.writeError(w, http.StatusInternalServerError, "could not stop following the request")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// trackRequests works out where each request has got to — searching, downloading (with
+// progress), importing, ready — from the acquisition record, reading the download queue
+// only when something on the page could be in flight. It reports whether the queue was
+// known: when the client can't be read the cards say the status is unknown rather than
+// "Searching", and a requester is told only that, never which client or why. A queue
+// that can't be read never fails the page.
+func (a *api) trackRequests(r *http.Request, list []requests.Request) bool {
+	var queue []download.Item
+	known := true
+	if requests.NeedsQueue(list) {
+		snap, ok, _ := a.queueSnapshot(r.Context())
+		queue, known = snap.Items, ok
+	}
+	a.deps.Requests.Track(r.Context(), list, queue, known)
+	return known
+}
+
+// shapeRequests readies requests for the viewer. Staff get the library item each became
+// (for "Open in library"). A requester never sees another person: on a request they only
+// follow, the owner's id, name and note are cleared.
+func shapeRequests(list []requests.Request, staff bool) {
+	for i := range list {
+		if staff {
+			list[i].LibraryID = list[i].InLibrary()
+			continue
+		}
+		list[i].LibraryID = 0
+		if list[i].Relation != requests.RelationOwner {
+			list[i].RequestedBy, list[i].RequestedByName, list[i].Note = 0, "", ""
+		}
+	}
 }
 
 func (a *api) handleCreateRequest(w http.ResponseWriter, r *http.Request) {

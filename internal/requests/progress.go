@@ -62,27 +62,27 @@ func statsComplete(st *series.Stats) bool {
 // whose download has gone isn't in flight any more.
 const startingWindow = 30 * time.Minute
 
-type grabRow struct {
-	hash      string
-	title     string
-	grabbedAt time.Time
-}
-
-// Track works out each request's stage from the library and the download client's queue.
-// Downloads are found by the grabs recorded for the request's library item, matched to
-// the queue by info hash — the torrent's real identity — falling back to the release name
-// for grabs recorded before hashes were. Call after List (which fills the library links).
-func (s *Service) Track(ctx context.Context, reqs []Request, queue []download.Item) {
-	byHash := map[string]*download.Item{}
-	byName := map[string]*download.Item{}
+// Track works out each request's stage from the library and the acquisition record: the
+// grabs in flight for its library item, read once for the whole page, and their torrents
+// found in the download queue by info hash — the torrent's real identity. Nothing is
+// matched by name. queueKnown false says the queue couldn't be read; a download the
+// record last saw running then still counts as in flight. Call after List (which fills
+// the library links).
+func (s *Service) Track(ctx context.Context, reqs []Request, queue []download.Item, queueKnown bool) {
+	acqs := s.inFlightFor(ctx, reqs)
+	byHash := make(map[string]*download.Item, len(queue))
 	for i := range queue {
 		if h := strings.ToLower(queue[i].Hash); h != "" {
 			byHash[h] = &queue[i]
 		}
-		byName[normName(queue[i].Name)] = &queue[i]
 	}
+	now := time.Now()
 	for i := range reqs {
-		reqs[i].Tracking = s.track(ctx, &reqs[i], byHash, byName)
+		var mine []automation.Acquisition
+		if reqs[i].libID > 0 {
+			mine = acqs[reqs[i].MediaType][reqs[i].libID]
+		}
+		reqs[i].Tracking = track(&reqs[i], mine, byHash, queueKnown, now)
 		// Keep the older field in step for anything still reading it.
 		if t := reqs[i].Tracking; t != nil && t.Stage == StageDownloading {
 			reqs[i].DownloadProgress = t.Progress
@@ -90,7 +90,49 @@ func (s *Service) Track(ctx context.Context, reqs []Request, queue []download.It
 	}
 }
 
-func (s *Service) track(ctx context.Context, rq *Request, byHash, byName map[string]*download.Item) *Tracking {
+// NeedsQueue reports whether any of reqs could have a download in flight, so a caller
+// reads the download client only when it matters: approved, in the library and not told
+// it's ready yet — or a series, which keeps getting new episodes. Call after List.
+func NeedsQueue(reqs []Request) bool {
+	for _, rq := range reqs {
+		if rq.Status == StatusApproved && rq.libID > 0 && (rq.ReadyAt == 0 || rq.MediaType == "series") {
+			return true
+		}
+	}
+	return false
+}
+
+// tracked reports whether a request's stage can depend on downloads: it's in the library,
+// and approved or already (partly) there.
+func tracked(rq Request) bool {
+	return rq.libID > 0 && (rq.Available || rq.Status == StatusApproved)
+}
+
+// inFlightFor reads the acquisition record once per media type on the page — never once
+// per request. An unreadable record leaves the page without in-flight stages (searching,
+// or ready when the file is there) rather than failing it.
+func (s *Service) inFlightFor(ctx context.Context, reqs []Request) map[string]map[int64][]automation.Acquisition {
+	out := map[string]map[int64][]automation.Acquisition{}
+	if s.coord == nil {
+		return out
+	}
+	for _, rq := range reqs {
+		if !tracked(rq) {
+			continue
+		}
+		if _, done := out[rq.MediaType]; done {
+			continue
+		}
+		byItem, err := s.coord.ActiveByItem(ctx, rq.MediaType)
+		if err != nil {
+			s.log.Warn("requests: couldn't read what's downloading", "media", rq.MediaType, "err", err)
+		}
+		out[rq.MediaType] = byItem
+	}
+	return out
+}
+
+func track(rq *Request, acqs []automation.Acquisition, byHash map[string]*download.Item, queueKnown bool, now time.Time) *Tracking {
 	t := &Tracking{}
 	if rq.MediaType == "series" {
 		t.Have, t.Total = rq.epHave, rq.epTotal
@@ -109,34 +151,45 @@ func (s *Service) track(ctx context.Context, rq *Request, byHash, byName map[str
 	var active, done, failed, paused int
 	var size, got, speed, eta int64
 	matched := 0
-	if rq.libID > 0 {
-		for _, g := range s.activeGrabs(ctx, rq.MediaType, rq.libID) {
-			it := byHash[strings.ToLower(g.hash)]
-			if it == nil && g.hash == "" {
-				it = byName[normName(g.title)]
-			}
-			if it == nil {
-				if time.Since(g.grabbedAt) < startingWindow {
-					matched++
-					active++ // just grabbed; the client hasn't shown it yet
-				}
-				continue
-			}
-			matched++
+	for _, a := range acqs {
+		var it *download.Item
+		if a.InfoHash != "" {
+			it = byHash[strings.ToLower(a.InfoHash)]
+		}
+		if it == nil {
 			switch {
-			case it.Progress >= 1:
+			case automation.AcqHeld(a):
+				// Finished and waiting in Review: it's here, being decided on.
+				matched++
 				done++
-			case it.State == "error":
-				failed++
-			case it.State == "paused":
-				paused++
-				size, got = size+it.SizeBytes, got+it.DownloadedBytes
-			default:
+			case !queueKnown && automation.AcqFinished(a):
+				// The queue can't be read; the record last saw it finished.
+				matched++
+				done++
+			case !queueKnown && a.Phase != "" && !automation.AcqGone(a):
+				// The queue can't be read; the record last saw it under way.
+				matched++
 				active++
-				size, got, speed = size+it.SizeBytes, got+it.DownloadedBytes, speed+it.DownSpeed
-				if it.ETASeconds > eta && it.ETASeconds < 100*24*3600 { // qBittorrent's "infinite" is 8640000
-					eta = it.ETASeconds
-				}
+			case now.Sub(parseSQLiteTime(a.GrabbedAt)) < startingWindow:
+				matched++
+				active++ // just grabbed; the client hasn't shown it yet
+			}
+			continue
+		}
+		matched++
+		switch {
+		case it.Progress >= 1:
+			done++
+		case it.State == "error":
+			failed++
+		case it.State == "paused":
+			paused++
+			size, got = size+it.SizeBytes, got+it.DownloadedBytes
+		default:
+			active++
+			size, got, speed = size+it.SizeBytes, got+it.DownloadedBytes, speed+it.DownSpeed
+			if it.ETASeconds > eta && it.ETASeconds < 100*24*3600 { // qBittorrent's "infinite" is 8640000
+				eta = it.ETASeconds
 			}
 		}
 	}
@@ -181,30 +234,6 @@ func (s *Service) track(ctx context.Context, rq *Request, byHash, byName map[str
 	return t
 }
 
-// activeGrabs is every grab for one library item that hasn't been closed out: still
-// downloading, or finished and waiting in Review. Resolving the review closes the grab, so
-// the requester stops seeing "Importing" then. movie_id holds the series or book id for
-// those media types.
-func (s *Service) activeGrabs(ctx context.Context, mediaType string, id int64) []grabRow {
-	rows, err := s.repo.db.QueryContext(ctx,
-		`SELECT info_hash, title, grabbed_at FROM grabs WHERE media_type = ? AND movie_id = ? AND `+automation.GrabInFlightWhere,
-		mediaType, id)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	var out []grabRow
-	for rows.Next() {
-		var g grabRow
-		var at string
-		if rows.Scan(&g.hash, &g.title, &at) == nil {
-			g.grabbedAt = parseSQLiteTime(at)
-			out = append(out, g)
-		}
-	}
-	return out
-}
-
 // parseSQLiteTime reads a CURRENT_TIMESTAMP value; an unreadable one counts as long ago.
 func parseSQLiteTime(s string) time.Time {
 	for _, layout := range []string{"2006-01-02 15:04:05", time.RFC3339Nano, "2006-01-02T15:04:05Z"} {
@@ -213,15 +242,4 @@ func parseSQLiteTime(s string) time.Time {
 		}
 	}
 	return time.Time{}
-}
-
-// normName folds a release name to letters and digits, for grabs recorded without a hash.
-func normName(s string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(s) {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }

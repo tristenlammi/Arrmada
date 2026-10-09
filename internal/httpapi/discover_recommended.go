@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
 
@@ -171,7 +172,7 @@ func (a *api) recommendationSeeds(ctx context.Context, userID int64) ([]seed, ma
 
 	// Then recent requests (explicit intent), which carry the TMDB id directly.
 	if a.deps.Requests != nil && len(seeds) < recSeedCap {
-		if reqs, err := a.deps.Requests.List(ctx, "", userID); err == nil {
+		if reqs, err := a.deps.Requests.Records(ctx, requests.ListFilter{UserID: userID, IncludeJoined: true, Limit: recReqSeedScan}); err == nil {
 			for i, rq := range reqs {
 				if i >= recReqSeedScan || len(seeds) >= recSeedCap {
 					break

@@ -19,7 +19,6 @@ import (
 type movieLib interface {
 	Add(ctx context.Context, tmdbID int, qualityProfile string, monitored bool) (movies.Movie, error)
 	Get(ctx context.Context, id int64) (movies.Movie, error)
-	List(ctx context.Context) ([]movies.Movie, error)
 	// ByTMDBIDs is the library movies with these TMDB ids, in one query (a page's worth).
 	ByTMDBIDs(ctx context.Context, tmdbIDs []int) ([]movies.Movie, error)
 }
@@ -28,7 +27,6 @@ type movieLib interface {
 type seriesLib interface {
 	AddWith(ctx context.Context, tmdbID int, qualityProfile string, opts series.AddOptions) (series.Series, error)
 	Get(ctx context.Context, id int64) (series.Series, error)
-	List(ctx context.Context) ([]series.Series, error)
 	// ByTMDBIDs is the library shows with these TMDB ids, each with its Stats roll-up.
 	ByTMDBIDs(ctx context.Context, tmdbIDs []int) ([]series.Series, error)
 }
@@ -48,6 +46,8 @@ type searcher interface {
 	SearchMovie(ctx context.Context, id int64) (automation.SearchOutcome, error)
 	SearchSeriesNow(ctx context.Context, seriesID int64) (automation.SearchOutcome, error)
 	EnqueueMovieSearch(ctx context.Context, sub jobs.Submitter, id int64, spec jobs.Spec) (automation.MovieQueued, error)
+	// ActiveByItem is the acquisition record's in-flight grabs of one media type, by item.
+	ActiveByItem(ctx context.Context, mediaType string) (map[int64][]automation.Acquisition, error)
 }
 
 // The concrete services are what main wires in.

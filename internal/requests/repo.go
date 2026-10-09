@@ -45,6 +45,14 @@ type Request struct {
 	ReadyAt   int64  `json:"ready_at"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
+	// Relation is how the viewer stands to it in their own list: owner or subscriber.
+	// Empty in a staff list of everyone's requests.
+	Relation string `json:"relation,omitempty"`
+	// LibraryID is the library item it became, for staff ("Open in library"). The HTTP
+	// layer fills it for staff only; requesters never see library ids.
+	LibraryID int64 `json:"library_id,omitempty"`
+	// Followers names who else follows it, on the staff detail view only.
+	Followers []Follower `json:"followers,omitempty"`
 
 	// Filled by enrichAvailability for Track: the library item the request became, and
 	// for a series how much of it is on disk.
@@ -167,27 +175,6 @@ func (r *Repo) query(ctx context.Context, q string, args ...any) ([]Request, err
 	return out, rows.Err()
 }
 
-// List returns requests (newest first), optionally filtered by status and/or the
-// requesting user (requestedBy = 0 means all users).
-func (r *Repo) List(ctx context.Context, status string, requestedBy int64) ([]Request, error) {
-	q := `SELECT ` + cols + ` FROM requests`
-	var where []string
-	var args []any
-	if status != "" {
-		where = append(where, "status = ?")
-		args = append(args, status)
-	}
-	if requestedBy != 0 {
-		where = append(where, "requested_by = ?")
-		args = append(args, requestedBy)
-	}
-	if len(where) > 0 {
-		q += " WHERE " + strings.Join(where, " AND ")
-	}
-	q += ` ORDER BY id DESC`
-	return r.query(ctx, q, args...)
-}
-
 // ListAwaitingReady returns the approved requests whose requester hasn't been told it's
 // ready yet: the ready sweep's work list.
 func (r *Repo) ListAwaitingReady(ctx context.Context) ([]Request, error) {
@@ -276,6 +263,23 @@ func (r *Repo) RemoveSubscriber(ctx context.Context, requestID, userID int64) er
 	_, err := r.db.ExecContext(ctx,
 		`DELETE FROM request_subscribers WHERE request_id = ? AND user_id = ?`, requestID, userID)
 	return err
+}
+
+// Unsubscribe detaches a user who follows a request. removed is false when they didn't
+// follow it (an owner has no subscription to drop).
+func (r *Repo) Unsubscribe(ctx context.Context, requestID, userID int64) (removed bool, err error) {
+	res, err := r.db.ExecContext(ctx,
+		`DELETE FROM request_subscribers WHERE request_id = ? AND user_id = ?`, requestID, userID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// Follower is someone following a request, as staff see them on its detail view.
+type Follower struct {
+	Name string `json:"name"`
 }
 
 // Subscribers lists the extra users attached to a request.

@@ -137,17 +137,111 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, bk *books.Se
 	return s
 }
 
-// List returns requests (optionally filtered by status and/or requesting user), each
-// enriched with whether the media is available in the library yet. requestedBy = 0
-// returns everyone's requests (for managers); a user id scopes to that user.
-func (s *Service) List(ctx context.Context, status string, requestedBy int64) ([]Request, error) {
-	reqs, err := s.repo.List(ctx, status, requestedBy)
+// List returns one page of requests (see ListFilter) and how many match in all, each
+// enriched with whether its media is in the library yet. Only the page's own media is
+// looked up.
+func (s *Service) List(ctx context.Context, f ListFilter) ([]Request, int, error) {
+	reqs, total, err := s.repo.List(ctx, f)
+	if err != nil {
+		return nil, 0, err
+	}
+	s.enrichAvailability(ctx, reqs)
+	return reqs, total, nil
+}
+
+// Records is List without the library lookups: the bare request rows, for callers that
+// only need who asked for what (Discover's badges, the Because rows' seeds).
+func (s *Service) Records(ctx context.Context, f ListFilter) ([]Request, error) {
+	reqs, _, err := s.repo.List(ctx, f)
+	return reqs, err
+}
+
+// Counts is how many requests each section holds under f's scope and filters.
+func (s *Service) Counts(ctx context.Context, f ListFilter) (Counts, error) {
+	return s.repo.Counts(ctx, f)
+}
+
+// Strip limits for the Discover strip.
+const (
+	stripStaffEach = 20 // staff: this many waiting, then this many in progress
+	stripMine      = 40 // a requester: their recent requests, at most this many
+)
+
+// Strip is the Discover strip's requests. Staff get what's waiting for a decision, oldest
+// first, then what's in progress. A requester gets their own and followed requests that
+// are waiting or on their way, ready in the last two weeks or declined in the last month,
+// most recently changed first.
+func (s *Service) Strip(ctx context.Context, viewer int64, staff bool) ([]Request, error) {
+	if !staff {
+		reqs, _, err := s.List(ctx, ListFilter{Section: sectionStripMine, UserID: viewer, IncludeJoined: true, Limit: stripMine})
+		return reqs, err
+	}
+	waiting, _, err := s.repo.List(ctx, ListFilter{Section: SectionNeedsApproval, Limit: stripStaffEach})
 	if err != nil {
 		return nil, err
 	}
+	moving, _, err := s.repo.List(ctx, ListFilter{Section: SectionInProgress, Limit: stripStaffEach})
+	if err != nil {
+		return nil, err
+	}
+	reqs := append(waiting, moving...)
 	s.enrichAvailability(ctx, reqs)
 	return reqs, nil
 }
+
+// Detail is one request as viewer sees it: with enrichment, the viewer's relation to it
+// and, for staff, who follows it. A requester who neither made nor follows it gets
+// ErrNotFound, exactly as for a request that doesn't exist.
+func (s *Service) Detail(ctx context.Context, id, viewer int64, staff bool) (Request, error) {
+	rel, err := s.repo.RelationOf(ctx, id, viewer)
+	if err != nil {
+		return Request{}, err
+	}
+	if !staff && rel == "" {
+		return Request{}, ErrNotFound
+	}
+	req, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return Request{}, err
+	}
+	req.Relation = rel
+	if staff {
+		subs, err := s.repo.Subscribers(ctx, id)
+		if err != nil {
+			return Request{}, err
+		}
+		for _, sub := range subs {
+			req.Followers = append(req.Followers, Follower{Name: sub.UserName})
+		}
+	}
+	reqs := []Request{req}
+	s.enrichAvailability(ctx, reqs)
+	return reqs[0], nil
+}
+
+// Unsubscribe stops user uid following request id: no more notifications about it, and
+// it leaves their list. ErrNotFound when they didn't follow it.
+func (s *Service) Unsubscribe(ctx context.Context, id, uid int64) error {
+	req, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	removed, err := s.repo.Unsubscribe(ctx, id, uid)
+	if err != nil {
+		return err
+	}
+	if !removed {
+		return ErrNotFound
+	}
+	s.log.Info("request unfollowed", "media", req.MediaType, "title", req.Title, "user", uid)
+	// Their open pages drop it; staff pages refresh the follower list.
+	s.publishUpdated(req, req.Status, []int64{uid})
+	return nil
+}
+
+// InLibrary is the library item (movie, series or book id) a listed request became, 0
+// when it isn't in the library. Filled by List.
+func (r Request) InLibrary() int64 { return r.libID }
 
 // ErrUnknownProfile is returned when a supplied quality profile doesn't resolve.
 var ErrUnknownProfile = errors.New("unknown quality profile")
@@ -394,7 +488,7 @@ func (s *Service) Approve(ctx context.Context, id int64, o ApproveOptions) (Requ
 		// A new row always wants a search; one already there only when it lacks an
 		// edition its profile wants (an audiobook request for a book we have as an ebook)
 		// and nothing is already downloading for it, which a second grab would duplicate.
-		existingWants := addErr != nil && s.lacksWantedEdition(ctx, b) && len(s.activeGrabs(ctx, "book", b.ID)) == 0
+		existingWants := addErr != nil && s.lacksWantedEdition(ctx, b) && !s.bookInFlight(ctx, b.ID)
 		if b.ID > 0 && (addErr == nil || existingWants) && s.searchBook != nil && !o.DeferSearch {
 			bid := b.ID
 			s.background("book.search", fmt.Sprintf("book:%d", bid), trigger, req.Title, "book", 0, 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
@@ -471,6 +565,20 @@ func (s *Service) BackfillBookIDs(ctx context.Context) (linked, ambiguous int, e
 	return linked, ambiguous, nil
 }
 
+// bookInFlight reports whether the acquisition record has a download in flight for a
+// book. An unreadable record counts as in flight: a second grab on top of one already
+// downloading is the mistake to avoid, and the sweeps search the book anyway.
+func (s *Service) bookInFlight(ctx context.Context, bookID int64) bool {
+	if s.coord == nil {
+		return false
+	}
+	byItem, err := s.coord.ActiveByItem(ctx, "book")
+	if err != nil {
+		return true
+	}
+	return len(byItem[bookID]) > 0
+}
+
 // lacksWantedEdition reports whether a library book is missing an edition its profile
 // wants — the same rule the book page uses to show wanted-but-missing editions.
 func (s *Service) lacksWantedEdition(ctx context.Context, b books.Book) bool {
@@ -519,6 +627,18 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
+// chunkSize keeps IN lists well inside SQLite's limit on bound values.
+const chunkSize = 500
+
+// chunks splits a lookup into IN lists of at most chunkSize.
+func chunks[T any](xs []T) [][]T {
+	var out [][]T
+	for lo := 0; lo < len(xs); lo += chunkSize {
+		out = append(out, xs[lo:min(lo+chunkSize, len(xs))])
+	}
+	return out
+}
+
 // enrichAvailability marks each request available if its media is (partly) on disk.
 func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 	if len(reqs) == 0 {
@@ -532,14 +652,48 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 		misses          int    // books: searches in a row that found nothing
 		nextCheck       string // books: when the ladder looks again (RFC3339)
 	}
+	// Only these requests' media: a query per media type (per few hundred requests), not
+	// the whole library.
+	var movieIDs, seriesIDs []int
+	var olKeys []string
+	var bookIDs []int64
+	for _, rq := range reqs {
+		switch rq.MediaType {
+		case "movie":
+			movieIDs = append(movieIDs, rq.TMDBID)
+		case "series":
+			seriesIDs = append(seriesIDs, rq.TMDBID)
+		case "book":
+			olKeys = append(olKeys, rq.OLKey)
+			if rq.BookID > 0 {
+				bookIDs = append(bookIDs, rq.BookID)
+			}
+		}
+	}
 	movHave := map[int]lib{}
-	if ms, err := s.movies.List(ctx); err == nil {
+	for _, part := range chunks(movieIDs) {
+		if s.movies == nil {
+			break
+		}
+		ms, err := s.movies.ByTMDBIDs(ctx, part)
+		if err != nil {
+			s.log.Warn("requests: couldn't look up the requested movies", "err", err)
+			break
+		}
 		for _, m := range ms {
 			movHave[m.TMDBID] = lib{id: m.ID, have: m.HasFile, released: m.Status == "" || m.Status == "Released"}
 		}
 	}
 	serHave := map[int]lib{}
-	if ss, err := s.series.List(ctx); err == nil {
+	for _, part := range chunks(seriesIDs) {
+		if s.series == nil {
+			break
+		}
+		ss, err := s.series.ByTMDBIDs(ctx, part)
+		if err != nil {
+			s.log.Warn("requests: couldn't look up the requested shows", "err", err)
+			break
+		}
 		for _, sr := range ss {
 			l := lib{id: sr.ID, released: true}
 			if sr.Stats != nil {
@@ -552,7 +706,26 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 	// request not linked yet. The key alone loses the book once it is re-matched.
 	bookHave := map[string]lib{}
 	bookByID := map[int64]lib{}
-	if bs, err := s.books.List(ctx); err == nil {
+	var bs []books.Book
+	if s.books != nil && (len(olKeys) > 0 || len(bookIDs) > 0) {
+		for _, part := range chunks(olKeys) {
+			got, err := s.books.ByKeysOrIDs(ctx, part, nil)
+			if err != nil {
+				s.log.Warn("requests: couldn't look up the requested books", "err", err)
+				break
+			}
+			bs = append(bs, got...)
+		}
+		for _, part := range chunks(bookIDs) {
+			got, err := s.books.ByKeysOrIDs(ctx, nil, part)
+			if err != nil {
+				s.log.Warn("requests: couldn't look up the requested books", "err", err)
+				break
+			}
+			bs = append(bs, got...)
+		}
+	}
+	{
 		for _, b := range bs {
 			l := lib{id: b.ID, have: b.HasFile, released: true, misses: b.SearchMisses}
 			// Only a monitored book has a next check: the sweep never looks at the others.

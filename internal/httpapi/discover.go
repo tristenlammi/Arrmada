@@ -11,6 +11,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
@@ -115,7 +116,7 @@ func (a *api) buildDiscoverSnapshot(ctx context.Context) (snap *discoverEnrichSn
 	} else {
 		complete = false
 	}
-	if rs, err := a.deps.Requests.List(ctx, "", 0); err == nil {
+	if rs, err := a.deps.Requests.Records(ctx, requests.ListFilter{}); err == nil {
 		for _, req := range rs {
 			snap.reqStatus[req.MediaType+":"+strconv.Itoa(req.TMDBID)] = req.Status
 		}

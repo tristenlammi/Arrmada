@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
 
@@ -147,7 +148,7 @@ func (a *api) becauseSeeds(ctx context.Context, userID int64) []titledSeed {
 		}
 	}
 	if a.deps.Requests != nil && len(out) < becauseRows {
-		if reqs, err := a.deps.Requests.List(ctx, "", userID); err == nil {
+		if reqs, err := a.deps.Requests.Records(ctx, requests.ListFilter{UserID: userID, IncludeJoined: true, Limit: recReqSeedScan}); err == nil {
 			for i, rq := range reqs {
 				if i >= recReqSeedScan || len(out) >= becauseRows {
 					break

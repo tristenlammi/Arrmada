@@ -75,11 +75,11 @@ func TestTrackAndNotifierAgree(t *testing.T) {
 			}
 
 			// The card.
-			list, err := s.List(ctx, "", 0)
+			list, _, err := s.List(ctx, ListFilter{})
 			if err != nil || len(list) != 1 {
 				t.Fatalf("list: %v %d", err, len(list))
 			}
-			s.Track(ctx, list, nil)
+			s.Track(ctx, list, nil, true)
 			cardReady := list[0].Tracking.Stage == StageAvailable
 
 			// The sweep's view, and the import event's.

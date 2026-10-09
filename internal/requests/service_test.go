@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/store"
 )
@@ -20,7 +21,9 @@ func newTestService(t *testing.T) *Service {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	return &Service{repo: NewRepo(st.DB()), quality: quality.NewService(st.DB()), log: slog.Default()}
+	// The acquisition record over the same store, for tracking (no searches run here).
+	coord := automation.New(nil, nil, nil, nil, st.DB(), nil, slog.Default(), "")
+	return &Service{repo: NewRepo(st.DB()), quality: quality.NewService(st.DB()), coord: coord, log: slog.Default()}
 }
 
 // TestCreateSubscribesDuplicates verifies a second user requesting the same title

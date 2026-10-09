@@ -18,6 +18,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/requests"
 )
 
 func (a *api) handleListBooks(w http.ResponseWriter, r *http.Request) {
@@ -616,7 +617,7 @@ func (a *api) enrichBookCards(ctx context.Context, results []metadata.BookResult
 	// book's new catalogue key still reads Requested after a re-match.
 	reqStatus := map[string]string{}
 	reqByBook := map[int64]string{}
-	if reqs, err := a.deps.Requests.List(ctx, "", 0); err == nil {
+	if reqs, err := a.deps.Requests.Records(ctx, requests.ListFilter{MediaType: "book"}); err == nil {
 		for _, rq := range reqs {
 			if rq.MediaType != "book" {
 				continue

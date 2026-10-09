@@ -21,13 +21,13 @@ func TestTrackStages(t *testing.T) {
 		}
 	}
 	old := time.Now().Add(-3 * time.Hour)
-	grab("movie", 1, "AAA", "Heat.1995.2160p", old)        // downloading
-	grab("movie", 2, "BBB", "Alien.1979.1080p", old)       // finished → importing
-	grab("movie", 3, "", "Arrival.2016.1080p.WEB-DL", old) // no hash: matched by name, paused
-	grab("movie", 4, "DDD", "Gone.2020", old)              // no longer in the client
-	grab("movie", 5, "EEE", "Fresh.2024", time.Now())      // just grabbed, not in the client yet
-	grab("movie", 6, "FFF", "Broken.2021", old)            // errored
-	grab("series", 7, "GGG", "Show.S02.1080p", old)        // season pack downloading
+	grab("movie", 1, "AAA", "Heat.1995.2160p", old)           // downloading
+	grab("movie", 2, "BBB", "Alien.1979.1080p", old)          // finished → importing
+	grab("movie", 3, "CCC", "Arrival.2016.1080p.WEB-DL", old) // paused
+	grab("movie", 4, "DDD", "Gone.2020", old)                 // no longer in the client
+	grab("movie", 5, "EEE", "Fresh.2024", time.Now())         // just grabbed, not in the client yet
+	grab("movie", 6, "FFF", "Broken.2021", old)               // errored
+	grab("series", 7, "GGG", "Show.S02.1080p", old)           // season pack downloading
 	queue := []download.Item{
 		{Hash: "aaa", Name: "Heat 1995 2160p", State: "downloading", Progress: 0.4, SizeBytes: 1000, DownloadedBytes: 400, DownSpeed: 50, ETASeconds: 12},
 		{Hash: "bbb", Name: "Alien", State: "seeding", Progress: 1, SizeBytes: 500, DownloadedBytes: 500},
@@ -51,7 +51,7 @@ func TestTrackStages(t *testing.T) {
 		{Title: "whole show", Status: StatusApproved, MediaType: "series", libID: 11, Available: true, epHave: 10, epTotal: 10, released: true},
 		{Title: "pending but there", Status: StatusPending, MediaType: "movie", libID: 12, Available: true},
 	}
-	s.Track(ctx, reqs, queue)
+	s.Track(ctx, reqs, queue, true)
 	want := map[string]string{
 		"pending": StagePending, "declined": StageDeclined, "heat": StageDownloading, "alien": StageImporting,
 		"arrival": StagePaused, "gone": StageSearching, "fresh": StageQueued, "broken": StageFailed,
@@ -89,7 +89,7 @@ func TestTrackStopsImportingOnceTheReviewIsResolved(t *testing.T) {
 	queue := []download.Item{{Hash: "bbb", Name: "Alien", State: "seeding", Progress: 1, SizeBytes: 500, DownloadedBytes: 500}}
 	stage := func() string {
 		reqs := []Request{{Title: "alien", Status: StatusApproved, MediaType: "movie", libID: 2, released: true}}
-		s.Track(ctx, reqs, queue)
+		s.Track(ctx, reqs, queue, true)
 		return reqs[0].Tracking.Stage
 	}
 	if got := stage(); got != StageImporting {

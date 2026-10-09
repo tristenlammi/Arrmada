@@ -45,7 +45,10 @@ func bookLinkFixture(t *testing.T, cat catalogue) (*Service, *books.Repo, *sql.D
 		series:  series.NewService(db, nil, root, log),
 		books:   books.NewService(db, cat, log),
 		quality: quality.NewService(db),
-		log:     log,
+		// The acquisition record, for tracking and the in-flight check (searches here go
+		// through searchBook).
+		coord: automation.New(nil, nil, nil, nil, db, nil, log, ""),
+		log:   log,
 	}
 	return s, books.NewRepo(db), db, context.Background()
 }
@@ -170,7 +173,7 @@ func TestLinkedRequestSurvivesRematch(t *testing.T) {
 	}
 	giveEbook(t, repo, ctx, b.ID)
 
-	list, err := s.List(ctx, "", 0)
+	list, _, err := s.List(ctx, ListFilter{})
 	if err != nil || len(list) != 1 {
 		t.Fatalf("list: %v %d", err, len(list))
 	}

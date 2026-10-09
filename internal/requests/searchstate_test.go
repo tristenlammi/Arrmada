@@ -34,11 +34,11 @@ func TestTrackBookNotFoundYet(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	reqs, err := s.List(ctx, "", 7)
+	reqs, _, err := s.List(ctx, ListFilter{UserID: 7})
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Track(ctx, reqs, nil)
+	s.Track(ctx, reqs, nil, true)
 	byTitle := map[string]*Tracking{}
 	for _, rq := range reqs {
 		byTitle[rq.Title] = rq.Tracking
@@ -55,11 +55,11 @@ func TestTrackBookNotFoundYet(t *testing.T) {
 	if _, err := db.Exec(`UPDATE books SET monitored = 0 WHERE id = ?`, lost.ID); err != nil {
 		t.Fatal(err)
 	}
-	reqs, err = s.List(ctx, "", 7)
+	reqs, _, err = s.List(ctx, ListFilter{UserID: 7})
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Track(ctx, reqs, nil)
+	s.Track(ctx, reqs, nil, true)
 	for _, rq := range reqs {
 		if rq.Title == "Dune" && (rq.Tracking.Note != "Not found yet" || rq.Tracking.NextCheckAt != "") {
 			t.Errorf("unmonitored Dune tracking = %+v, want Not found yet and no next check", rq.Tracking)
