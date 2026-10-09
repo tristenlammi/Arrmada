@@ -76,7 +76,7 @@ func grabServer(t *testing.T) (*routeServer, *fakeTracker, *fakeQbit) {
 	s := newRouteServer(t, func(d *Deps) {
 		ctx := context.Background()
 		db := d.Store.DB()
-		ix := indexer.NewService(db, d.Log, "")
+		ix := indexer.NewService(db, d.Log, nil)
 		if _, err := ix.Create(ctx, indexer.Indexer{Name: "Tracker", Kind: indexer.KindTorznab, URL: ft.srv.URL, APIKey: trackerKey, Priority: 10, Enabled: true}); err != nil {
 			t.Fatal(err)
 		}
