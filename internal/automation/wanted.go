@@ -6,6 +6,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/download"
+	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/music"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
@@ -71,6 +72,13 @@ func (c *Coordinator) UntrackedQueue(ctx context.Context, queue []download.Item)
 // "waiting on S03" exactly when the sweep is waiting on it.
 func SeriesInFlightScope(acqs []Acquisition, untracked []download.Item, s series.Series) (seasons map[int]bool, whole bool, names []string) {
 	return seriesInFlightScope(acqs, untracked, s)
+}
+
+// UntrackedMovieItem is the torrent nobody grabbed through Arrmada that the movie sweep
+// takes to be fetching m already (untrackedMovie), "" for none: the sweep leaves m alone
+// while it is there, so the Wanted view says it is waiting on it.
+func UntrackedMovieItem(untracked []download.Item, m movies.Movie) string {
+	return untrackedMovieItem(untracked, m)
 }
 
 // AcqHeld reports whether an acquisition is finished but held in Review for a decision.

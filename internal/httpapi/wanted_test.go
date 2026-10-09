@@ -190,6 +190,37 @@ func TestWantedClientDownIsUnknown(t *testing.T) {
 	}
 }
 
+// A torrent added by hand, named for a wanted film, holds the movie sweep off it — so the
+// Wanted view says it's waiting on that torrent, not searching.
+func TestWantedMovieWaitsOnAHandAddedTorrent(t *testing.T) {
+	s := wantedServer(t, nil)
+	_, mgr := s.user(t, "mgr@example.com", auth.RoleManager)
+	mustExecAll(t, s, `INSERT INTO movies (id, tmdb_id, title, year, monitored, min_availability) VALUES (1, 1, 'Alpha', 2001, 1, 'announced'),
+		(2, 2, 'Bravo', 2002, 1, 'announced')`)
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			_, _ = w.Write([]byte("Ok."))
+		case "/api/v2/torrents/info":
+			_, _ = w.Write([]byte(`[{"hash":"0000000000000000000000000000000000000001","name":"Alpha.2001.1080p.BluRay.x264-HAND","state":"downloading","progress":0.2,"size":100,"amount_left":80}]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(up.Close)
+	if _, err := s.deps.Downloads.Create(context.Background(), download.Client{Name: "qb", Kind: download.KindQbittorrent, URL: up.URL, Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	s.deps.Downloads.InvalidateSnapshot()
+	w := getWanted(t, s, mgr, "?kind=movie")
+	if r, ok := rowFor(w.Searching, "movie", 1); !ok || r.State != wantedWaiting || r.WaitingOn != "Alpha.2001.1080p.BluRay.x264-HAND" || r.NextSearchAt != "" {
+		t.Errorf("movie with a hand-added torrent = %+v, want waiting on it", r)
+	}
+	if r, ok := rowFor(w.Searching, "movie", 2); !ok || r.State != wantedSearching {
+		t.Errorf("the other movie = %+v, want plain searching", r)
+	}
+}
+
 // Search now clears the title's backoff and starts the same search job its own page's
 // Search button does, for each kind; an unknown title is 404 and an unknown kind 400.
 func TestWantedSearchNowResetsAndDispatches(t *testing.T) {

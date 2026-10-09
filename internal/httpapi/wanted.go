@@ -115,6 +115,9 @@ type wantedBuild struct {
 	now        time.Time
 	queue      []download.Item
 	queueKnown bool
+	// untracked is the unfinished torrents no grab knows by hash (added by hand or by
+	// another tool): the sweeps still hold a title back for one named like it.
+	untracked []download.Item
 	reviews    map[string]int64 // "<kind>:<id>" → a pending review's id
 	profiles   map[string]string
 }
@@ -177,6 +180,9 @@ func (a *api) buildWanted(ctx context.Context, kinds wantedKinds) wantedLists {
 				}
 			}
 		}
+	}
+	if a.deps.Automation != nil && known {
+		b.untracked, _ = a.deps.Automation.UntrackedQueue(ctx, b.queue)
 	}
 	out := wantedLists{Searching: []wantedRow{}, Upcoming: []wantedRow{}, QueueKnown: known}
 	add := func(searching, upcoming []wantedRow) {
@@ -283,6 +289,9 @@ func (b *wantedBuild) movies() (searching, upcoming []wantedRow) {
 		b.schedule(&row, st.LastAt, st.Misses)
 		if held {
 			row.State, row.ReviewID = wantedHeld, b.reviews[fmt.Sprintf("movie:%d", m.ID)]
+		} else if name := automation.UntrackedMovieItem(b.untracked, m); name != "" {
+			// The sweep leaves it alone while a torrent named for it is in the client.
+			row.State, row.WaitingOn = wantedWaiting, name
 		}
 		searching = append(searching, row)
 	}
@@ -296,12 +305,8 @@ func (b *wantedBuild) movies() (searching, upcoming []wantedRow) {
 // same rule the sweep holds seasons back by; a partial cover is noted on the row.
 func (b *wantedBuild) series() (searching, upcoming []wantedRow) {
 	active := b.active(automation.AttemptSeries)
-	var untracked []download.Item
-	if b.a.deps.Automation != nil && b.queueKnown {
-		untracked, _ = b.a.deps.Automation.UntrackedQueue(b.ctx, b.queue)
-	}
 	untrackedTV := false
-	for _, it := range untracked {
+	for _, it := range b.untracked {
 		if it.Category == download.CategoryTV {
 			untrackedTV = true
 			break
@@ -329,7 +334,7 @@ func (b *wantedBuild) series() (searching, upcoming []wantedRow) {
 			}
 		}
 		if len(acqs) > 0 || untrackedTV {
-			b.seriesInFlight(&row, sa, acqs, untracked)
+			b.seriesInFlight(&row, sa, acqs, b.untracked)
 		}
 		searching = append(searching, row)
 	}
