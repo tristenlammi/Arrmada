@@ -572,6 +572,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/discover/collections", a.signedIn(a.handleDiscoverCollections).ext())
 	mux.HandleFunc("GET /api/v1/discover", a.signedIn(a.handleDiscoverByGenre).ext())
 	mux.HandleFunc("GET /api/v1/media/{media}/{id}", a.signedIn(a.handleMediaDetail).ext())
+	mux.HandleFunc("GET /api/v1/media/series/{id}/seasons", a.signedIn(a.handleSeriesSeasons).ext())
 	mux.HandleFunc("GET /api/v1/movies/{id}/blocklist", a.requireRole(auth.RoleManager, a.handleListBlocklist))
 	mux.HandleFunc("POST /api/v1/movies/{id}/blocklist", a.requireRole(auth.RoleManager, a.handleBlocklist))
 	mux.HandleFunc("DELETE /api/v1/movies/{id}/blocklist/{bid}", a.requireRole(auth.RoleManager, a.handleUnblock))

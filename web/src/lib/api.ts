@@ -1226,6 +1226,25 @@ export interface MediaDetail {
   // Enrichment added by the metadata worker — render defensively (only when present).
   trailer_url?: string; // YouTube (or similar) trailer link
   similar?: DiscoverCard[]; // "more like this" — same shape as a Discover card
+  seasons?: SeasonSummary[]; // series: regular seasons, specials left out
+}
+
+export interface SeasonSummary { number: number; name?: string; episode_count: number; air_date?: string; poster_url?: string }
+
+/**
+ * A season's state for the requester: on disk, partly there, already being fetched,
+ * not out yet, or free to ask for. Never carries monitoring flags or anyone's name.
+ */
+export type SeasonState = "in_library" | "partial" | "on_the_way" | "unaired" | "requestable";
+export interface SeriesSeason {
+  number: number;
+  name?: string;
+  episode_count: number;
+  air_date?: string;
+  have: number; // episodes on disk
+  aired: number; // episodes out so far
+  state: SeasonState;
+  requestable: boolean; // a request may ask for it (requestable, or partial with nothing fetching the rest)
 }
 
 // --- Series (TV) ---
@@ -2238,6 +2257,9 @@ export const api = {
     req<{ genres: Genre[] }>(`/api/v1/discover/genres?media=${media}`).then((r) => r.genres),
   mediaDetail: (media: string, tmdbId: number) =>
     req<MediaDetail>(`/api/v1/media/${media}/${tmdbId}`),
+  /** Which seasons of a show exist and, for each, what asking for it would mean. */
+  seriesSeasons: (tmdbId: number) =>
+    req<{ seasons: SeriesSeason[] }>(`/api/v1/media/series/${tmdbId}/seasons`).then((r) => r.seasons),
   discoverSearch: (q: string) =>
     req<{ items: DiscoverCard[] }>(`/api/v1/discover/search?q=${encodeURIComponent(q)}`).then((r) => r.items),
 

@@ -367,6 +367,7 @@ type tmdbSeries struct {
 		Overview     string `json:"overview"`
 		AirDate      string `json:"air_date"`
 		PosterPath   string `json:"poster_path"`
+		EpisodeCount int    `json:"episode_count"`
 	} `json:"seasons"`
 	ExternalIDs struct {
 		IMDBID string `json:"imdb_id"`
