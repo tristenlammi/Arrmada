@@ -118,6 +118,19 @@ question). If the previous build can't restore a backup itself, the script chang
 and prints the steps to do it by hand. `ARRMADA_ALLOW_NEWER_SCHEMA=1` in `.env` starts an
 older build on a newer database anyway; it's a last resort.
 
+## Locked out?
+
+If you've forgotten the admin password, set a new one from the server:
+
+```sh
+docker exec -it Arrmada-app arrmada reset-password you@example.com
+```
+
+It prints a new password once, in your terminal only (never in a log), and signs that
+account out everywhere. To choose the password yourself, pipe it in with
+`--password-stdin`. A name that matches no account lists the admin accounts. Anyone with
+shell access to the server can do this, the same as they could edit the database.
+
 ## Ports
 
 The installer picks free ports so nothing clashes with apps you already run. It prints them
