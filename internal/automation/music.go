@@ -37,6 +37,7 @@ func (c *Coordinator) SearchMusicMissing(ctx context.Context) {
 	if c.music == nil || !c.moduleOn(ctx, "music") {
 		return
 	}
+	ctx = WithDefaultSearchTrigger(ctx, TriggerSweep)
 	artists, err := c.music.ListArtists(ctx)
 	if err != nil {
 		return
@@ -203,9 +204,41 @@ func (c *Coordinator) albumDownloading(queue []download.Item, a music.Artist, al
 	return false
 }
 
-// grabAlbum searches for one album and grabs the best release the profile allows.
+// grabAlbum searches for one album and grabs the best release the profile allows. Each
+// call is one search attempt (scope "album"); the sweep's backoff still reads the
+// albumOutcome as before.
 func (c *Coordinator) grabAlbum(ctx context.Context, a music.Artist, al music.Album) albumOutcome {
-	return c.grabAlbumExcluding(ctx, a, al, nil)
+	ctx, notes := newSearchNotes(ctx)
+	out := c.grabAlbumExcluding(ctx, a, al, nil)
+	so, err := out.searchOutcome()
+	c.recordAttempt(ctx, notes, AttemptMusic, al.ID, ScopeAlbum, &so, err)
+	return out
+}
+
+// searchOutcome is an album search's result in the shared outcome's terms. A failure on our
+// side (indexers, the client, disk, MusicBrainz) is an error, not a miss.
+func (o albumOutcome) searchOutcome() (SearchOutcome, error) {
+	res := SearchOutcome{Searched: true}
+	switch o.Code {
+	case outcomeGrabbed:
+		res.Grabbed, res.GrabbedTitles = 1, []string{o.Release}
+		res.Reason = ReasonGrabbed
+	case outcomeNoResults:
+		res.Reason = ReasonNoReleases
+	case outcomeNoMatch:
+		res.Reason = ReasonNoneForTitle
+	case outcomeBlocked, outcomeBelowProfile:
+		res.Reason = ReasonBlockedOrBelow
+	case outcomeNoListing:
+		res.Searched, res.Reason = false, ReasonNothingWanted
+	case outcomeIndexerError:
+		// Nobody could answer: recorded as indexers_failed, with each indexer's error.
+		res.Reason = ReasonIndexersFailed
+		return res, fmt.Errorf("album search: %s %s", o.Code, o.Detail)
+	default:
+		return res, fmt.Errorf("album search: %s %s", o.Code, o.Detail)
+	}
+	return res, nil
 }
 
 // SearchAlbumNow searches for one album now and grabs the best release, the way the
@@ -228,24 +261,7 @@ func (c *Coordinator) SearchAlbumNow(ctx context.Context, albumID int64) (Search
 		return SearchOutcome{}, err
 	}
 	out := c.grabAlbum(ctx, a, al)
-	res := SearchOutcome{Searched: true}
-	switch out.Code {
-	case outcomeGrabbed:
-		res.Grabbed, res.GrabbedTitles = 1, []string{out.Release}
-		res.Reason = ReasonGrabbed
-	case outcomeNoResults:
-		res.Reason = ReasonNoReleases
-	case outcomeNoMatch:
-		res.Reason = ReasonNoneForTitle
-	case outcomeBlocked, outcomeBelowProfile:
-		res.Reason = ReasonBlockedOrBelow
-	case outcomeNoListing:
-		res.Searched, res.Reason = false, ReasonNothingWanted
-	default:
-		// Failed on our side (indexers, the client, disk, MusicBrainz): an error, not a miss.
-		return res, fmt.Errorf("album search: %s %s", out.Code, out.Detail)
-	}
-	return res, nil
+	return out.searchOutcome()
 }
 
 // grabAlbumExcluding is grabAlbum that also skips the normalized titles in exclude: a stall
@@ -281,6 +297,8 @@ func (c *Coordinator) grabAlbumExcluding(ctx context.Context, a music.Artist, al
 		c.log.Warn("music: search failed", "album", al.Title, "err", err)
 		return albumOutcome{Code: outcomeIndexerError, Detail: err.Error()}
 	}
+	notes := notesFrom(ctx) // the album's search attempt, when it is recorded
+	notes.consider(res.Releases)
 	if len(res.Releases) == 0 {
 		if len(res.Errors) > 0 && len(res.Errors) >= res.Asked {
 			// Nothing came back because every indexer asked failed. That says nothing
@@ -298,10 +316,13 @@ func (c *Coordinator) grabAlbumExcluding(ctx context.Context, a music.Artist, al
 	// there's no client to hand them to, and a FLAC from usenet would otherwise outrank
 	// every torrent and fail the grab on every sweep.
 	usable := grabbable(res.Releases)
+	notes.dropped(res.Releases, usable, DropNotTorrent)
 	var cands []indexer.Release
 	for _, rel := range usable {
 		if music.ReleaseIsForAlbum(rel.Title, a.Name, al.Title) {
 			cands = append(cands, rel)
+		} else {
+			notes.mark(rel.Title, DropWrongTitle)
 		}
 	}
 	if len(cands) == 0 {
@@ -309,7 +330,9 @@ func (c *Coordinator) grabAlbumExcluding(ctx context.Context, a music.Artist, al
 		return albumOutcome{Code: outcomeNoMatch, Detail: fmt.Sprintf("%d torrent release(s), none named this album", len(usable))}
 	}
 	matched := len(cands)
+	before := append([]indexer.Release(nil), cands...)
 	cands, err = c.dropBlockedMusic(ctx, al.ID, cands)
+	notes.dropped(before, cands, DropBlocklisted)
 	var pending map[string]bool
 	if err == nil {
 		pending, err = c.pendingMusicGrabTitles(ctx, al.ID)
@@ -318,12 +341,23 @@ func (c *Coordinator) grabAlbumExcluding(ctx context.Context, a music.Artist, al
 		c.skipUnreadable(a.Name+" — "+al.Title, err)
 		return albumOutcome{Code: outcomeUnreadable, Detail: err.Error()}
 	}
+	before = append(before[:0], cands...)
 	cands = dropPendingMusic(cands, pending)
+	notes.dropped(before, cands, DropPending)
+	before = append(before[:0], cands...)
 	cands = dropPendingMusic(cands, exclude) // same normalized-title filter
+	notes.dropped(before, cands, DropBlocklisted)
 	if len(cands) == 0 {
 		return albumOutcome{Code: outcomeBlocked, Detail: fmt.Sprintf("%d match(es), all blocklisted or already grabbed", matched)}
 	}
 
+	for _, rel := range cands {
+		if _, code := albumVerdict(sp, rel); code != "" {
+			notes.mark(rel.Title, code)
+		} else {
+			notes.mark(rel.Title, classEligible)
+		}
+	}
 	best := pickBestAlbum(sp, cands)
 	if best == nil {
 		c.log.Info("music: no release met the quality profile", "artist", a.Name, "album", al.Title,
@@ -395,24 +429,31 @@ func pickBestAlbum(sp quality.StoredProfile, releases []indexer.Release) *indexe
 // albumScore scores one release. ok=false when the tier isn't wanted (score at or below
 // zero, which is how "Lossless only" refuses an MP3 outright) or a reject term matches.
 func albumScore(sp quality.StoredProfile, rel indexer.Release) (int, bool) {
+	score, code := albumVerdict(sp, rel)
+	return score, code == ""
+}
+
+// albumVerdict is albumScore saying why a release was turned down ("" when it's
+// acceptable), for the search attempt's counts.
+func albumVerdict(sp quality.StoredProfile, rel indexer.Release) (int, string) {
 	q := string(music.DetectQuality(rel.Title))
 	if q == "" {
-		return 0, false // an untagged release could be anything; don't gamble the slot on it
+		return 0, DropNotWanted // an untagged release could be anything; don't gamble the slot on it
 	}
 	fs, ok := sp.FormatScores[q]
 	if !ok || fs <= 0 {
-		return 0, false
+		return 0, DropNotWanted
 	}
 	text := rel.Title + " " + rel.Description
 	if quality.Rejects(sp.Rejected, text) {
-		return 0, false
+		return 0, quality.RejectTerm
 	}
 	total := fs + quality.KeywordScore(sp.Keywords, text)
 	if total < sp.MinFormatScore {
-		return 0, false
+		return 0, quality.RejectMinFormatScore
 	}
 	// Seeders as the low-order tiebreak, so the tier always dominates.
-	return total*1_000_000 + rel.Seeders, true
+	return total*1_000_000 + rel.Seeders, ""
 }
 
 // musicProfile resolves an artist's profile, falling back to the user's configured default

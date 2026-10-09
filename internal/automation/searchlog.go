@@ -76,7 +76,7 @@ const (
 	DropWrongTitle  = "wrong_title"  // for a different film, show, book or album
 	DropBlocklisted = "blocklisted"  // blocklisted for this title
 	DropPending     = "pending"      // already grabbed and still downloading
-	DropOutOfScope  = "out_of_scope" // the right show, but episodes nobody asked for
+	DropOutOfScope  = "out_of_scope" // the right title, but other episodes, another edition or version
 	DropNotTorrent  = "not_torrent"  // a usenet release, which no download client takes
 	DropNotWanted   = "not_wanted"   // a book format the profile doesn't want
 	// The two "taken" states, never counted as reasons.
@@ -311,6 +311,17 @@ const maxAttemptsPerTitle = 20
 // ScopeUpgrade is the scope an upgrade search is stored under: the title has its file,
 // so its attempts are left out of the "why is it missing?" summaries.
 const ScopeUpgrade = "upgrade"
+
+// ScopeAlbum is the scope an album search is stored under.
+const ScopeAlbum = "album"
+
+// recordRSSGrab stores a grab the RSS feed made as an attempt. The feed only records what
+// it grabs: the same uploads come round every cycle for hours, and a row each time saying
+// they still don't fit would bury the real searches.
+func (c *Coordinator) recordRSSGrab(ctx context.Context, mediaType string, id int64, scope, title string) {
+	out := SearchOutcome{Searched: true, Returned: 1, Matching: 1, Usable: 1, Grabbed: 1, GrabbedTitles: []string{title}, Reason: ReasonGrabbed, Eligible: 1}
+	c.recordAttempt(WithDefaultSearchTrigger(ctx, TriggerRSS), nil, mediaType, id, scope, &out, nil)
+}
 
 // replaceRecorded runs a stall fail-over's replacement search as a recorded attempt. The
 // target's kind (movie, series, book, music) is the attempt's media type.
@@ -629,7 +640,7 @@ var reasonLabels = map[string]string{
 	DropWrongTitle:                "for other titles",
 	DropBlocklisted:               "blocklisted",
 	DropPending:                   "already downloading",
-	DropOutOfScope:                "for other episodes",
+	DropOutOfScope:                "for other episodes or editions",
 	DropNotTorrent:                "usenet only",
 	DropNotWanted:                 "a format you don't want",
 	rejectedUncoded:               "rejected by your profile",

@@ -76,7 +76,7 @@ func (c *Coordinator) AbandonBookSweep() {
 
 // RunBookSweep runs a claimed sweep to the end and returns its final status.
 func (c *Coordinator) RunBookSweep(ctx context.Context) BookSweepStatus {
-	c.runBookSweep(ctx)
+	c.runBookSweep(WithDefaultSearchTrigger(ctx, TriggerManual)) // a person asked for it
 	return c.BookSweepStatus()
 }
 
