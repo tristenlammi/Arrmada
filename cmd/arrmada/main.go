@@ -370,6 +370,10 @@ func main() {
 	})
 	// Book file deletion honors the same recycle bin as movies.
 	coordinator.SetRecycleDir(recycleDir)
+	// The stall timeout a profile left at "use the default" falls back to, read each check.
+	coordinator.SetStallDefault(func(ctx context.Context) int {
+		return automation.ParseStallMinutes(settingsSvc.Get(ctx, automation.KeyStallMinutes, ""))
+	})
 	sched.Register("import-completed", 30*time.Second, false, func(ctx context.Context) error {
 		completed, err := downloads.CompletedInCategory(ctx, cfg.DownloadCategory)
 		if err != nil {
@@ -402,7 +406,8 @@ func main() {
 		coordinator.UpgradeMovies(ctx)
 		return nil
 	})
-	// Fail over stalled downloads (blocklist + re-search) per each profile's timeout.
+	// Fail over stalled downloads: replace, then remove, after the profile's (or the global
+	// default) timeout with no progress.
 	sched.Register("detect-stalled", 2*time.Minute, false, func(ctx context.Context) error {
 		coordinator.DetectStalled(ctx)
 		return nil
@@ -413,6 +418,8 @@ func main() {
 	// plus one queue read, so it costs nothing to run often.
 	diskGuard := download.NewDiskGuard(downloads, settingsSvc, log, cfg.DownloadsDir)
 	sched.Register("downloads-disk-guard", time.Minute, true, diskGuard.Check)
+	// A torrent the guard paused is waiting for space, not stalled: its clock holds.
+	coordinator.SetGuardHeld(diskGuard.Held)
 	// Import finished TV downloads (arrmada-tv category): hardlink every episode file
 	// out of a completed torrent (season packs yield many) into the library.
 	sched.Register("import-series", 30*time.Second, false, func(ctx context.Context) error {

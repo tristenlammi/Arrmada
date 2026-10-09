@@ -62,6 +62,59 @@ type Item struct {
 	SeedingTime    int64   `json:"seeding_time,omitempty"` // seconds seeded after completion
 	Category       string  `json:"category,omitempty"`
 	ContentPath    string  `json:"content_path,omitempty"` // path on disk (for import)
+
+	// RawState is the client's own state string ("stalledDL", "metaDL", "queuedDL", …).
+	// State folds these together for its many existing callers, which hid a dead torrent
+	// behind "downloading"; Phase() reads this to tell them apart again.
+	RawState string `json:"raw_state,omitempty"`
+	// Seeds/Peers are the peers this client is connected to right now; SwarmSeeds and
+	// SwarmPeers are what the tracker reports for the whole swarm. A torrent with zero of
+	// both has nobody to download from.
+	Seeds      int `json:"seeds"`
+	Peers      int `json:"peers"`
+	SwarmSeeds int `json:"swarm_seeds"`
+	SwarmPeers int `json:"swarm_peers"`
+	// LastActivity is when a piece last moved in either direction, and AddedOn when the
+	// torrent was added — both unix seconds, 0 when the client didn't say.
+	LastActivity int64 `json:"last_activity,omitempty"`
+	AddedOn      int64 `json:"added_on,omitempty"`
+	// Availability is distributed copies of the torrent among connected peers; below 1
+	// means no connected peer has every piece. qBittorrent reports -1 when unknown.
+	Availability float64 `json:"availability"`
+}
+
+// Phase is a finer reading of the torrent's state than State, for the places that need to
+// tell a dead download from a live one: "stalled" (no peers sending), "metadata" (a magnet
+// still fetching its file list), "queued" (held by the client's active-download limit),
+// "checking", "moving", "allocating", "downloading", "seeding", "paused" or "error".
+//
+// State keeps its old meaning for every existing caller; this only adds information. A
+// raw state this doesn't know (a future client version, or a client that doesn't report
+// one) falls back to State, so nothing reads as a phase it isn't.
+func (i Item) Phase() string {
+	switch i.RawState {
+	case "metaDL", "forcedMetaDL":
+		return "metadata"
+	case "queuedDL", "queuedUP":
+		return "queued"
+	case "stalledDL":
+		return "stalled"
+	case "checkingDL", "checkingUP", "checkingResumeData":
+		return "checking"
+	case "moving":
+		return "moving"
+	case "allocating":
+		return "allocating"
+	case "downloading", "forcedDL":
+		return "downloading"
+	case "uploading", "stalledUP", "forcedUP":
+		return "seeding"
+	case "pausedDL", "pausedUP", "stoppedDL", "stoppedUP":
+		return "paused"
+	case "error", "missingFiles":
+		return "error"
+	}
+	return i.State
 }
 
 // Complete reports whether everything this torrent was told to fetch is on disk.

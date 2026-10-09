@@ -370,6 +370,15 @@ func (c *Coordinator) grabSeriesFrom(ctx context.Context, s series.Series, relea
 // episode the first pass already handled — wantedEpisodes still lists those, because a
 // grab isn't reflected until it imports.
 func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, releases []indexer.Release, only []epKey) (grabbedN int, remaining []epKey) {
+	grabbedN, remaining, _ = c.grabSeriesScoped(ctx, s, releases, only, nil)
+	return grabbedN, remaining
+}
+
+// grabSeriesScoped is grabSeriesLimited that also skips the normalized titles in exclude
+// and reports the titles it grabbed. A stall fail-over uses both: the stalled release
+// isn't blocklisted while it waits for a replacement, so it has to be kept out by hand,
+// and the history line names what replaced it.
+func (c *Coordinator) grabSeriesScoped(ctx context.Context, s series.Series, releases []indexer.Release, only []epKey, exclude map[string]bool) (grabbedN int, remaining []epKey, took []string) {
 	wanted, seriesSeasons := wantedEpisodes(s)
 	if only != nil {
 		wanted = only
@@ -393,7 +402,7 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 	var nBlocked, nWrongTitle int
 	var exampleWrongTitle string
 	for _, rel := range bestByTitle(grabbable(releases)) {
-		if blocked[normTitle(rel.Title)] {
+		if blocked[normTitle(rel.Title)] || exclude[normTitle(rel.Title)] {
 			nBlocked++
 			continue
 		}
@@ -494,6 +503,7 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 		}
 		grabbed[rel.DownloadURL] = true
 		grabbedN++
+		took = append(took, rel.Title)
 		grabbedGB += rel.SizeGB()
 		c.recordSeriesGrab(ctx, s.ID, rel.Title, rel.Indexer, profile, hash)
 		c.series.AddEvent(ctx, s.ID, "grabbed", label+": "+rel.Title+" · "+rel.Indexer)
@@ -607,7 +617,7 @@ func (c *Coordinator) grabSeriesLimited(ctx context.Context, s series.Series, re
 	if len(needed) > 0 {
 		takePacks(false)
 	}
-	return grabbedN, nil // remaining is filled by the deferred sortedKeys(needed)
+	return grabbedN, nil, took // remaining is filled by the deferred sortedKeys(needed)
 }
 
 // sortedKeys returns the still-uncovered episodes in a stable order, so follow-up

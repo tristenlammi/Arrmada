@@ -96,6 +96,16 @@ type Coordinator struct {
 	// just restarts the observation window.
 	stallMu       sync.Mutex
 	stallProgress map[int64]stallSample
+	// stillWaitingAt is when a stalled grab last came up with no replacement, keyed by
+	// grab ID. The torrent is left in place, and this keeps it from costing a fresh
+	// search — and a fresh "still waiting" history line — more than once per window.
+	// Guarded by stallMu and pruned with stallProgress.
+	stillWaitingAt map[int64]time.Time
+	// stallDefaultFn reads the global stall timeout (Settings → Downloads) that a grab and
+	// profile left at 0 fall back to; guardHeldFn reads the hashes the disk guard has
+	// paused. Both are set once at startup; nil means DefaultStallMinutes / none held.
+	stallDefaultFn func(ctx context.Context) int
+	guardHeldFn    func(ctx context.Context) map[string]bool
 
 	// The manual missing-editions sweep for books (books_sweep.go).
 	bookSweepMu sync.Mutex
@@ -606,11 +616,7 @@ func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (int, b
 	if len(want) == 0 {
 		return 0, false, nil
 	}
-	query := m.Title
-	if m.Year > 0 {
-		query += " " + strconv.Itoa(m.Year)
-	}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
+	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: movieQuery(m), MediaType: indexer.MediaMovie, Limit: 100})
 	if err != nil {
 		return 0, true, err
 	}
@@ -633,6 +639,14 @@ func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (int, b
 			"wrong_title", len(result.Releases)-len(matching), "blocklisted", len(matching))
 	}
 	return c.grabMissing(ctx, m, want, byName, cands), true, nil
+}
+
+// movieQuery is the indexer search text for a movie: its title, and its year when known.
+func movieQuery(m movies.Movie) string {
+	if m.Year > 0 {
+		return m.Title + " " + strconv.Itoa(m.Year)
+	}
+	return m.Title
 }
 
 // matchingMovieReleases keeps only releases whose parsed title + year match the
@@ -703,12 +717,19 @@ func grabbable(releases []indexer.Release) []indexer.Release {
 // any that are blocklisted for this movie, ungrabbable (usenet), or duplicate
 // copies of a title already kept.
 func (c *Coordinator) candidatesFrom(ctx context.Context, movieID int64, releases []indexer.Release) (map[string]indexer.Release, []quality.Candidate) {
+	return c.candidatesExcluding(ctx, movieID, releases, nil)
+}
+
+// candidatesExcluding is candidatesFrom that also drops the normalized titles in exclude —
+// the stalled release a fail-over is replacing, which isn't blocklisted yet because it
+// stays put until something else is found.
+func (c *Coordinator) candidatesExcluding(ctx context.Context, movieID int64, releases []indexer.Release, exclude map[string]bool) (map[string]indexer.Release, []quality.Candidate) {
 	blocked := c.blockedSet(ctx, movieID)
 	releases = bestByTitle(grabbable(releases))
 	byName := make(map[string]indexer.Release, len(releases))
 	cands := make([]quality.Candidate, 0, len(releases))
 	for _, rel := range releases {
-		if blocked[normTitle(rel.Title)] {
+		if blocked[normTitle(rel.Title)] || exclude[normTitle(rel.Title)] {
 			continue
 		}
 		byName[rel.Title] = rel
@@ -721,6 +742,13 @@ func (c *Coordinator) candidatesFrom(ctx context.Context, movieID int64, release
 // Shared by live search (searchAndGrab) and RSS sync — only the candidate source
 // differs.
 func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []movies.Version, byName map[string]indexer.Release, cands []quality.Candidate) int {
+	return len(c.grabMissingTitles(ctx, m, want, byName, cands))
+}
+
+// grabMissingTitles is grabMissing returning the release titles it grabbed, so a stall
+// fail-over can say what replaced the stalled download.
+func (c *Coordinator) grabMissingTitles(ctx context.Context, m movies.Movie, want []movies.Version, byName map[string]indexer.Release, cands []quality.Candidate) []string {
+	var titles []string
 	grabbed := map[string]bool{}
 	pending := c.pendingGrabTitles(ctx, m.ID) // releases already grabbed for this movie, not yet imported
 	// grabbedGB accumulates what this pass has already committed, so two version tracks
@@ -761,6 +789,7 @@ func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []mo
 			continue
 		}
 		grabbed[winner.DownloadURL] = true
+		titles = append(titles, winner.Title)
 		grabbedGB += decision.Winner.Candidate.SizeGB
 		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, profile, c.quality.StallMinutes(ctx, profile), hash)
 		detail := winner.Title + " · " + winner.Indexer
@@ -769,7 +798,7 @@ func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []mo
 		}
 		c.movies.AddEvent(ctx, m.ID, "grabbed", detail)
 	}
-	return len(grabbed)
+	return titles
 }
 
 // diskOKFor reports whether there's room to grab a release of the given size,
@@ -1237,6 +1266,11 @@ func (c *Coordinator) pruneStallSamples(pending []grab) {
 			delete(c.stallProgress, id)
 		}
 	}
+	for id := range c.stillWaitingAt {
+		if !live[id] {
+			delete(c.stillWaitingAt, id)
+		}
+	}
 }
 
 // stalledInQueue is the shared verdict for a pending grab found (or not found) in the
@@ -1258,7 +1292,15 @@ func (c *Coordinator) stalledInQueue(g grab, item download.Item, found bool, win
 	//
 	// "checking" gets the same treatment: after a disk-full crash qBittorrent rechecks its
 	// torrents, which on a large pack takes a long while and moves no progress meanwhile.
+	// So do the phases where the client itself is holding the torrent back — waiting for
+	// a slot under its max-active limit, moving or allocating files. Fetching metadata is
+	// NOT held: a magnet nobody will send a file list for is as dead as one with no seeds.
 	if item.State == "paused" || item.State == "checking" {
+		c.holdStallClock(g.ID, item.Progress)
+		return false
+	}
+	switch item.Phase() {
+	case "queued", "checking", "moving", "allocating":
 		c.holdStallClock(g.ID, item.Progress)
 		return false
 	}
@@ -1266,14 +1308,19 @@ func (c *Coordinator) stalledInQueue(g grab, item download.Item, found bool, win
 	// second check for it could never fire. A hard client error stays an immediate stall —
 	// that's a deliberate call from the stall rewrite, pinned by TestStalledNeedsSustained-
 	// NoProgress, and a full cache drive reaches this code as "paused" above.
+	//
+	// A COMPLETE torrent is never a stall, errored or not: the bytes are on disk (often
+	// waiting in Review), and with fail-over on by default a client I/O error on a finished
+	// download would otherwise get it replaced and its data deleted.
 	if item.State == "error" {
-		return true
+		return !item.Complete()
 	}
 	return !item.Complete() && c.noProgressFor(g.ID, item.Progress, window)
 }
 
-// DetectStalled fails over grabs that haven't progressed within their profile's
-// stall timeout: blocklist the release, remove it from the client, re-search.
+// DetectStalled fails over grabs that haven't progressed within their profile's stall
+// timeout. A torrent still in the client is replaced before it is removed, and kept when
+// nothing else can be found — see failOver.
 func (c *Coordinator) DetectStalled(ctx context.Context) {
 	pending, err := c.pendingGrabs(ctx)
 	if err != nil || len(pending) == 0 {
@@ -1297,51 +1344,24 @@ func (c *Coordinator) DetectStalled(ctx context.Context) {
 		c.log.Warn("automation: stall check skipped — a download client didn't answer, so a missing torrent can't be told from a down client")
 		return
 	}
+	// One budget across every kind: each fail-over costs a search, and once the timeout is
+	// on for every existing grab a backlog of dead torrents mustn't all go in one tick.
+	tick := &stallTick{left: maxStallFailoversPerCheck, held: c.guardHeld(ctx)}
 	for _, g := range pending {
-		if g.MediaType == "series" {
-			c.detectStalledSeries(ctx, g, queue)
-			continue
+		switch g.MediaType {
+		case "series":
+			c.detectStalledSeries(ctx, g, queue, tick)
+		case "music":
+			c.detectStalledMusic(ctx, g, queue, tick)
+		case "book":
+			c.detectStalledBook(ctx, g, queue, tick)
+		default:
+			c.detectStalledMovie(ctx, g, queue, tick)
 		}
-		if g.MediaType == "music" {
-			c.detectStalledMusic(ctx, g, queue)
-			continue
-		}
-		if g.MediaType == "book" {
-			c.detectStalledBook(ctx, g, queue)
-			continue
-		}
-		// Already imported? (a version gained a file)
-		if c.movieHasFileFor(ctx, g) {
-			c.setGrabStatus(ctx, g.ID, "imported")
-			continue
-		}
-		if g.StallMinutes <= 0 {
-			continue // fail-over disabled for this profile
-		}
-		window := time.Duration(g.StallMinutes) * time.Minute
-		age := time.Since(parseTime(g.GrabbedAt))
-		if age < window {
-			continue
-		}
-		item, found := findQueued(queue, g)
-		if !c.stalledInQueue(g, item, found, window) {
-			continue
-		}
-		c.log.Info("automation: download stalled, failing over", "movie", g.MovieID, "release", g.Title, "age_min", int(age.Minutes()))
-		if err := c.addBlock(ctx, g.MovieID, g.Title, g.Indexer, "", fmt.Sprintf("stalled after %d min", g.StallMinutes)); err != nil {
-			// If the blocklist insert fails, the re-search below would just re-grab the
-			// release that stalled — skip the fail-over and retry next tick.
-			c.log.Warn("automation: stall blocklist failed — leaving the grab for the next tick", "release", g.Title, "err", err)
-			continue
-		}
-		if found {
-			_ = c.downloads.Remove(ctx, item.Hash, true)
-		}
-		c.setGrabStatus(ctx, g.ID, "failed")
-		c.movies.AddEvent(ctx, g.MovieID, "failed", g.Title+" stalled — blocklisted, searching for an alternate")
-		if m, err := c.movies.Get(ctx, g.MovieID); err == nil {
-			_, _, _ = c.searchAndGrab(ctx, m) // stall fail-over ignores the sweep backoff
-		}
+	}
+	if tick.deferred > 0 {
+		c.log.Info("automation: deferring stalled downloads to the next check",
+			"deferred", tick.deferred, "limit_per_check", maxStallFailoversPerCheck)
 	}
 }
 

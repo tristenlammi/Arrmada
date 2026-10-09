@@ -48,6 +48,35 @@ func TestParseTorrentsInfo(t *testing.T) {
 	}
 }
 
+// A dead torrent and a live one both normalize to "downloading"; only the raw state and
+// the swarm numbers tell them apart, so the parse has to keep them.
+func TestParseTorrentsInfoKeepsRawStateAndSwarm(t *testing.T) {
+	const payload = `[
+	  {"hash":"ccc","name":"Rare.Film.1971.1080p","size":8000000000,"progress":0.03,
+	   "dlspeed":0,"upspeed":0,"eta":8640000,"state":"stalledDL","ratio":0,
+	   "category":"arrmada","completed":240000000,"amount_left":7760000000,
+	   "num_seeds":0,"num_leechs":2,"num_complete":1,"num_incomplete":7,
+	   "last_activity":1759900000,"added_on":1759800000,"availability":0.41}
+	]`
+	items, err := parseTorrentsInfo([]byte(payload))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	it := items[0]
+	if it.State != "downloading" {
+		t.Errorf("State = %q — existing callers still expect downloading", it.State)
+	}
+	if it.RawState != "stalledDL" || it.Phase() != "stalled" {
+		t.Errorf("RawState = %q, Phase = %q; want stalledDL / stalled", it.RawState, it.Phase())
+	}
+	if it.Seeds != 0 || it.Peers != 2 || it.SwarmSeeds != 1 || it.SwarmPeers != 7 {
+		t.Errorf("swarm = seeds %d peers %d swarm %d/%d", it.Seeds, it.Peers, it.SwarmSeeds, it.SwarmPeers)
+	}
+	if it.LastActivity != 1759900000 || it.AddedOn != 1759800000 || it.Availability != 0.41 {
+		t.Errorf("activity = last %d added %d avail %v", it.LastActivity, it.AddedOn, it.Availability)
+	}
+}
+
 // qbitTestServer is an httptest qBittorrent stub. Every /api/v2/auth/login
 // bumps logins and sets a fresh SID cookie; handle serves everything else.
 func qbitTestServer(t *testing.T, logins *int32, handle http.HandlerFunc) *httptest.Server {
@@ -264,6 +293,10 @@ func TestNormalizeState(t *testing.T) {
 		"pausedDL":    "paused",
 		"error":       "error",
 		"moving":      "checking",
+		// A recheck moves no progress, so it must not read as downloading — that let a
+		// long recheck run down the stall window.
+		"checkingDL":   "checking",
+		"forcedMetaDL": "downloading",
 	}
 	for in, want := range cases {
 		if got := normalizeState(in); got != want {

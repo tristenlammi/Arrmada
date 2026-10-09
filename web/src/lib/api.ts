@@ -136,6 +136,15 @@ export interface ActivityDownload {
   hash: string;
   name: string;
   state: string;
+  raw_state?: string; // the client's own state, e.g. "stalledDL"
+  // finer than state: stalled | metadata | queued | checking | moving | allocating |
+  // downloading | seeding | paused | error
+  phase?: string;
+  seeds?: number; // seeds connected right now
+  peers?: number; // leechers connected right now
+  swarm_seeds?: number; // seeds in the whole swarm, per the tracker
+  last_activity?: number; // unix seconds; 0 = never
+  added_on?: number; // unix seconds
   progress: number;
   size_bytes: number;
   down_speed: number;
@@ -151,6 +160,9 @@ export interface ActivityDownload {
   quality_profile: string;
   media_type?: string;
   held_by_guard?: boolean; // paused by the disk guard, which won't let it resume yet
+  // How an in-flight grab stands against its stall window; absent for torrents Arrmada
+  // didn't grab. idle_minutes stays 0 while the clock is held (paused, queued, checking).
+  stall?: { idle_minutes: number; failover_in_minutes: number; off: boolean };
 }
 
 // What the disk guard is holding; present only while it holds something.
@@ -175,7 +187,7 @@ export interface ActivityFeed {
   searching: SearchingItem[];
   upcoming?: SearchingItem[];
   downloads: ActivityDownload[];
-  totals?: { down_speed: number; up_speed: number; active: number };
+  totals?: { down_speed: number; up_speed: number; active: number; stalled?: number };
   free_gb?: number;
   disk_guard?: DiskGuardHold;
 }
@@ -375,7 +387,7 @@ export interface StorageVolume {
   used_pct: number;
 }
 export interface QueueSummary {
-  downloading: number; seeding: number; paused: number; errored: number;
+  downloading: number; stalled?: number; seeding: number; paused: number; errored: number;
   down_speed: number; up_speed: number;
 }
 export interface LibraryCounts {
@@ -487,6 +499,8 @@ export interface AppSettings {
   downloads_disk_guard: boolean;
   downloads_disk_guard_pause_pct: string;
   downloads_disk_guard_resume_pct: string;
+  /** Minutes with no progress before another release is tried; 0 = never. Default 360. */
+  downloads_stall_minutes: number;
 }
 
 export interface TorrentPreview {

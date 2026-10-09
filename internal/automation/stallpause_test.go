@@ -44,6 +44,60 @@ func TestPausedTorrentIsNotStalled(t *testing.T) {
 	}
 }
 
+// qBittorrent's checkingDL used to normalize to "downloading", so a long recheck after a
+// crash ran the stall window down and the torrent could be failed over mid-check.
+func TestRecheckingTorrentHoldsTheStallClock(t *testing.T) {
+	c := &Coordinator{}
+	g := grab{ID: 7}
+	const window = time.Minute
+	c.holdStallClock(g.ID, 0.3)
+	c.stallProgress[g.ID] = stallSample{progress: 0.3, at: time.Now().Add(-2 * window)}
+
+	checking := download.Item{RawState: "checkingDL", State: "checking", Progress: 0.3, RemainingBytes: 1}
+	if c.stalledInQueue(g, checking, true, window) {
+		t.Fatal("a rechecking torrent past its window must not be stalled")
+	}
+	if got := c.stallProgress[g.ID]; time.Since(got.at) > time.Second {
+		t.Error("the stall clock must be held while rechecking")
+	}
+}
+
+// With fail-over on by default, a torrent waiting for a slot under qBittorrent's
+// max-active limit would be condemned for the client's own queueing. It holds the clock;
+// a magnet nobody will send metadata for does not.
+func TestQueuedTorrentHoldsMetadataDoesNot(t *testing.T) {
+	c := &Coordinator{}
+	const window = time.Minute
+	expire := func(id int64) {
+		c.holdStallClock(id, 0)
+		c.stallProgress[id] = stallSample{progress: 0, at: time.Now().Add(-2 * window)}
+	}
+
+	queued := grab{ID: 1}
+	expire(queued.ID)
+	if c.stalledInQueue(queued, download.Item{RawState: "queuedDL", State: "downloading", RemainingBytes: 1}, true, window) {
+		t.Error("a torrent queued by the client past its window must not be stalled")
+	}
+	for _, raw := range []string{"moving", "allocating"} {
+		expire(queued.ID)
+		if c.stalledInQueue(queued, download.Item{RawState: raw, State: "downloading", RemainingBytes: 1}, true, window) {
+			t.Errorf("a %s torrent must not be stalled", raw)
+		}
+	}
+
+	// A finished download in a client error state is not a stall — its data is on disk,
+	// often waiting in Review, and failing it over would delete it.
+	if c.stalledInQueue(grab{ID: 3}, download.Item{RawState: "error", State: "error", Progress: 1}, true, window) {
+		t.Error("a complete torrent in an error state must not be stalled")
+	}
+
+	meta := grab{ID: 2}
+	expire(meta.ID)
+	if !c.stalledInQueue(meta, download.Item{RawState: "metaDL", State: "downloading", RemainingBytes: 1}, true, window) {
+		t.Error("a magnet stuck fetching metadata past its window must be stalled")
+	}
+}
+
 // The two sides carry the container differently — the torrent as a filename extension, the
 // indexer's listing as a trailing word — so their keys differed by "mp4" and no seed rule
 // could ever be found for the download.

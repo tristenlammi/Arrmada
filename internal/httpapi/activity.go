@@ -124,8 +124,12 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	// Seed goals recorded at grab time, so the Seeding tab can show each torrent's
 	// target ratio / time and whether it's set to seed at all.
 	var seedPolicies map[string]automation.SeedPolicy
+	// How each in-flight grab stands against its stall window, so the page can say how
+	// long a download has made no progress and when another release will be tried.
+	var stallInfo map[string]automation.StallState
 	if a.deps.Automation != nil {
 		seedPolicies = a.deps.Automation.SeedPolicies(ctx)
+		stallInfo = a.deps.Automation.StallInfo(ctx)
 	}
 
 	// One-pass matchers over already-loaded snapshots, so labelling each torrent is a map
@@ -146,7 +150,7 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	downloads := make([]map[string]any, 0, len(queue))
 	var totalDown, totalUp int64
 	var unmatched []string
-	active := 0
+	active, stalled := 0, 0
 	for i, it := range queue {
 		profile := "n/a"
 		mediaType := "movie"
@@ -170,6 +174,10 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		if it.State == "downloading" {
 			active++
 		}
+		phase := it.Phase()
+		if phase == "stalled" {
+			stalled++
+		}
 		entry := map[string]any{
 			"hash":        it.Hash,
 			"name":        it.Name,
@@ -179,6 +187,15 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 			"down_speed":  it.DownSpeed,
 			"up_speed":    it.UpSpeed,
 			"eta_seconds": it.ETASeconds,
+			// The client's own state and the finer phase read from it, with the swarm
+			// numbers: "downloading" alone can't tell a dead torrent from a live one.
+			"raw_state":     it.RawState,
+			"phase":         phase,
+			"seeds":         it.Seeds,
+			"peers":         it.Peers,
+			"swarm_seeds":   it.SwarmSeeds,
+			"last_activity": it.LastActivity,
+			"added_on":      it.AddedOn,
 			// The computed ratio, not the client's field: qBittorrent reports an unbounded
 			// ratio as a 9999 sentinel, so the page would show that while the seed-goal
 			// logic (which now works from the byte counters) sees the real figure.
@@ -188,6 +205,9 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 			"quality_profile": profile,
 			"media_type":      mediaType,
 			"imported":        imported[it.Hash],
+		}
+		if st, ok := stallInfo[strings.ToLower(it.Hash)]; ok && !it.Complete() {
+			entry["stall"] = st
 		}
 		if it.State == "paused" && guardHeld[strings.ToLower(it.Hash)] {
 			entry["held_by_guard"] = true
@@ -217,7 +237,7 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		"searching": searching,
 		"upcoming":  upcoming,
 		"downloads": downloads,
-		"totals":    map[string]any{"down_speed": totalDown, "up_speed": totalUp, "active": active},
+		"totals":    map[string]any{"down_speed": totalDown, "up_speed": totalUp, "active": active, "stalled": stalled},
 		"free_gb":   freeGB,
 	}
 	if heldCount > 0 {

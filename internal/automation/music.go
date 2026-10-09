@@ -204,6 +204,13 @@ func (c *Coordinator) albumDownloading(queue []download.Item, a music.Artist, al
 
 // grabAlbum searches for one album and grabs the best release the profile allows.
 func (c *Coordinator) grabAlbum(ctx context.Context, a music.Artist, al music.Album) albumOutcome {
+	return c.grabAlbumExcluding(ctx, a, al, nil)
+}
+
+// grabAlbumExcluding is grabAlbum that also skips the normalized titles in exclude: a stall
+// fail-over keeps the stalled release out of the replacement search without blocklisting
+// it, because it stays in the client until something else is found.
+func (c *Coordinator) grabAlbumExcluding(ctx context.Context, a music.Artist, al music.Album, exclude map[string]bool) albumOutcome {
 	// The album needs its track listing before anything can be imported against it, and the
 	// listing is fetched lazily. Do it here rather than at import time so a grabbed release
 	// always has somewhere to land.
@@ -263,6 +270,7 @@ func (c *Coordinator) grabAlbum(ctx context.Context, a music.Artist, al music.Al
 	matched := len(cands)
 	cands = c.dropBlockedMusic(ctx, al.ID, cands)
 	cands = dropPendingMusic(cands, c.pendingMusicGrabTitles(ctx, al.ID))
+	cands = dropPendingMusic(cands, exclude) // same normalized-title filter
 	if len(cands) == 0 {
 		return albumOutcome{Code: outcomeBlocked, Detail: fmt.Sprintf("%d match(es), all blocklisted or already grabbed", matched)}
 	}
@@ -652,40 +660,6 @@ func (c *Coordinator) dropBlockedMusic(ctx context.Context, albumID int64, relea
 		}
 	}
 	return out
-}
-
-// detectStalledMusic fails over a stalled album grab: blocklist it, remove it, re-search.
-func (c *Coordinator) detectStalledMusic(ctx context.Context, g grab, queue []download.Item) {
-	if c.music == nil {
-		c.setGrabStatus(ctx, g.ID, "failed")
-		return
-	}
-	al, err := c.music.GetAlbum(ctx, g.MovieID) // album id lives in movie_id on the shared table
-	if err != nil {
-		c.setGrabStatus(ctx, g.ID, "failed")
-		return
-	}
-	if al.Complete() {
-		c.setGrabStatus(ctx, g.ID, "imported")
-		return
-	}
-	if g.StallMinutes <= 0 {
-		return
-	}
-	window := time.Duration(g.StallMinutes) * time.Minute
-	if time.Since(parseTime(g.GrabbedAt)) < window {
-		return
-	}
-	item, found := findQueued(queue, g)
-	if !c.stalledInQueue(g, item, found, window) {
-		return
-	}
-	c.log.Info("music: download stalled, failing over", "album", al.Title, "release", g.Title)
-	c.addBlockMusic(ctx, g.MovieID, g.Title, g.Indexer, fmt.Sprintf("stalled after %d min", g.StallMinutes))
-	if found {
-		_ = c.downloads.Remove(ctx, item.Hash, true)
-	}
-	c.setGrabStatus(ctx, g.ID, "failed")
 }
 
 // ensure the library importer is referenced even if the album helpers move.

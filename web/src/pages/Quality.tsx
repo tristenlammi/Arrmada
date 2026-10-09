@@ -530,7 +530,7 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
               <RejectEditor rejected={sp.rejected ?? []} onChange={(r) => patch({ rejected: r })} />
               <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <NumberField label="Minimum seeders" hint="Skip releases with fewer" value={sp.min_seeders} onChange={(v) => patch({ min_seeders: v })} />
-                <NumberField label="Stall timeout (min)" hint="0 = off. Try another release if it stalls" value={sp.stall_minutes} onChange={(v) => patch({ stall_minutes: v })} />
+                <StallField value={sp.stall_minutes} onChange={(v) => patch({ stall_minutes: v })} />
               </div>
             </Collapsible>
 
@@ -582,7 +582,7 @@ function rulesSummary(sp: StoredProfile): string {
   if (rej.length) parts.push(`rejects ${rej.slice(0, 3).join(", ")}${rej.length > 3 ? "…" : ""}`);
   if (EXECUTABLE_TYPES.every((t) => (sp.rejected ?? []).some((r) => r.toLowerCase() === t))) parts.push("no executables");
   if (sp.min_seeders > 0) parts.push(`${sp.min_seeders}+ seeders`);
-  if (sp.stall_minutes > 0) parts.push(`stall ${sp.stall_minutes} min`);
+  parts.push(`stall: ${stallLabel(sp.stall_minutes)}`);
   return parts.join(" · ") || "None";
 }
 
@@ -1061,6 +1061,58 @@ function SaveBar({ dirty, saving, error, onSave, onCancel, mobileNote }: { dirty
         <button onClick={onSave} disabled={saving} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-60" style={primaryStyle}>{saving ? "Saving…" : "Save profile"}</button>
       </div>
     </div>
+  );
+}
+
+// A profile's stall timeout: 0 follows the global default (Settings → Downloads), -1 is
+// off, anything else is minutes. 0 used to mean off, which left dead torrents at 0% forever.
+function stallLabel(minutes: number): string {
+  if (minutes < 0) return "off";
+  if (minutes === 0) return "default";
+  const h = minutes / 60;
+  return Number.isInteger(h) ? `${h}h` : `${Math.round(h * 10) / 10}h`;
+}
+
+function StallField({ value, onChange }: { value: number; onChange: (v: number) => void }) {
+  // The global default is only shown, never edited, here — it lives in Settings. If it
+  // can't be read (a manager without access to Settings) the shipped default is shown.
+  const [globalMin, setGlobalMin] = useState<number | null>(null);
+  useEffect(() => {
+    api.settings().then((s) => setGlobalMin(s.downloads_stall_minutes ?? 360)).catch(() => setGlobalMin(360));
+  }, []);
+  const mode = value < 0 ? "off" : value === 0 ? "default" : "custom";
+  const def = globalMin == null ? "6h" : globalMin === 0 ? "never" : stallLabel(globalMin);
+  return (
+    <label className="block rounded-xl p-3" style={panelStyle}>
+      <span className="block text-[12px] font-semibold">Stall timeout</span>
+      <span className="mb-2 block text-[10.5px] text-ink-faint">Try another release after this long without progress</span>
+      <div className="flex gap-2">
+        <select
+          value={mode}
+          onChange={(e) => onChange(e.target.value === "off" ? -1 : e.target.value === "default" ? 0 : value > 0 ? value : 360)}
+          className="flex-1 rounded-lg px-2.5 py-1.5 text-[12.5px]"
+          style={fieldStyle}
+        >
+          <option value="default">Use default ({def})</option>
+          <option value="off">Off</option>
+          <option value="custom">Custom</option>
+        </select>
+        {mode === "custom" && (
+          <input
+            type="number"
+            min={0.5}
+            max={168}
+            step={0.5}
+            aria-label="Hours"
+            value={Math.round((value / 60) * 10) / 10}
+            onChange={(e) => onChange(Math.min(10080, Math.max(30, Math.round((Number(e.target.value) || 0) * 60))))}
+            className="w-20 rounded-lg px-2.5 py-1.5 text-[13px]"
+            style={fieldStyle}
+          />
+        )}
+        {mode === "custom" && <span className="self-center text-[11px] text-ink-faint">h</span>}
+      </div>
+    </label>
   );
 }
 

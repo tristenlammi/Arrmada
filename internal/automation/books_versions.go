@@ -92,34 +92,42 @@ func versionWanted(v books.AudioVersion) bool {
 // grabAudioVersion searches for one version and grabs the best release for it. The error
 // is the search's, when it couldn't run at all, so an outage isn't read as "not found".
 func (c *Coordinator) grabAudioVersion(ctx context.Context, b books.Book, v books.AudioVersion, sp quality.StoredProfile) (bool, error) {
+	title, err := c.grabAudioVersionExcluding(ctx, b, v, sp, nil)
+	return title != "", err
+}
+
+// grabAudioVersionExcluding is grabAudioVersion that also skips the normalized titles in
+// exclude and returns the title it grabbed ("" for none) — for a stall fail-over.
+func (c *Coordinator) grabAudioVersionExcluding(ctx context.Context, b books.Book, v books.AudioVersion, sp quality.StoredProfile, exclude map[string]bool) (string, error) {
 	res, err := c.searchBook(ctx, b, books.KindAudiobook)
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	if len(res.Releases) == 0 {
-		return false, nil
+		return "", nil
 	}
 	rels := releasesForVersion(v, c.releasesForThisBook(ctx, b, res.Releases))
 	if len(rels) == 0 {
 		c.log.Info("book: no release matched this audiobook version", "title", b.Title, "version", v.Label, "terms", strings.Join(v.Terms, ", "))
-		return false, nil
+		return "", nil
 	}
 	rels = c.dropBlockedBook(ctx, b.ID, rels)
 	rels = dropPendingBook(rels, c.pendingBookGrabTitles(ctx, b.ID))
+	rels = dropPendingBook(rels, exclude) // same normalized-title filter
 	best := pickBestBookForKind(versionProfile(sp, v), rels, books.KindAudiobook)
 	if best == nil {
 		c.log.Info("book: no acceptable release for this audiobook version", "title", b.Title, "version", v.Label)
-		return false, nil
+		return "", nil
 	}
 	hash, err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, bookCategory)
 	if err != nil {
 		c.log.Warn("book: grab failed", "title", b.Title, "version", v.Label, "err", err)
-		return false, nil
+		return "", nil
 	}
 	c.recordBookGrab(ctx, b.ID, v.ID, best.Title, best.Indexer, b.QualityProfile, hash)
 	c.books.AddEvent(ctx, b.ID, "grabbed", fmt.Sprintf("Grabbed the %q audiobook from %s: %s", v.Label, best.Indexer, best.Title))
 	c.log.Info("book: grabbing audiobook version", "title", b.Title, "version", v.Label, "release", best.Title)
-	return true, nil
+	return best.Title, nil
 }
 
 // SearchAudioVersionNow searches for one version right away (the version's Search

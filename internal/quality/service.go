@@ -99,8 +99,20 @@ func (s *Service) AllowedResolutions(ctx context.Context, ref string) []string {
 	return out
 }
 
-// StallMinutes returns the stall-timeout (minutes) for a profile reference; 0
-// means fail-over detection is off.
+// Stall-timeout values a profile may hold. 0 used to mean "off", which left every default
+// install with dead torrents sitting at 0% forever; it now means "use the global default"
+// (Settings → Downloads), and turning fail-over off for a profile is an explicit -1.
+const (
+	StallOff        = -1
+	StallMaxMinutes = 7 * 24 * 60 // a week; anything longer is indistinguishable from off
+)
+
+// ValidStallMinutes reports whether n is an acceptable profile stall timeout.
+func ValidStallMinutes(n int) bool { return n >= StallOff && n <= StallMaxMinutes }
+
+// StallMinutes returns a profile's stall timeout in minutes: >0 a custom window, StallOff
+// for off, 0 for "use the global default". An unknown profile also reads 0, so it gets
+// the default rather than silently never failing over.
 func (s *Service) StallMinutes(ctx context.Context, ref string) int {
 	sp, err := s.GetStored(ctx, ref)
 	if err != nil {

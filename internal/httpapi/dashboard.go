@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/diskspace"
+	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/insights"
 )
 
@@ -73,11 +74,42 @@ type storageVolume struct {
 
 type queueSummary struct {
 	Downloading int   `json:"downloading"`
+	Stalled     int   `json:"stalled"` // incomplete with no peer sending — not counted in Downloading
 	Seeding     int   `json:"seeding"`
 	Paused      int   `json:"paused"`
 	Errored     int   `json:"errored"`
 	DownSpeed   int64 `json:"down_speed"`
 	UpSpeed     int64 `json:"up_speed"`
+}
+
+// summarizeQueue counts the client's torrents for the Dashboard tile by phase. A stalled
+// torrent used to count as downloading, so a queue of dead torrents looked busy.
+//
+// Phases that aren't a verdict on their own (queued, checking, moving, …) go by whether the
+// torrent is finished: a queued seed is still a seed.
+func summarizeQueue(items []download.Item) queueSummary {
+	var q queueSummary
+	for _, it := range items {
+		q.DownSpeed += it.DownSpeed
+		q.UpSpeed += it.UpSpeed
+		switch it.Phase() {
+		case "error":
+			q.Errored++
+		case "paused":
+			q.Paused++
+		case "stalled":
+			q.Stalled++
+		case "seeding":
+			q.Seeding++
+		case "downloading", "metadata", "queued", "checking", "moving", "allocating":
+			if it.Complete() {
+				q.Seeding++
+			} else {
+				q.Downloading++
+			}
+		}
+	}
+	return q
 }
 
 type libraryCounts struct {
@@ -118,20 +150,7 @@ func (a *api) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		if items, err := a.deps.Downloads.Queue(ctx); err != nil {
 			out.QueueNote = err.Error()
 		} else {
-			for _, it := range items {
-				out.Queue.DownSpeed += it.DownSpeed
-				out.Queue.UpSpeed += it.UpSpeed
-				switch {
-				case strings.Contains(it.State, "error") || strings.Contains(it.State, "missingFiles"):
-					out.Queue.Errored++
-				case strings.Contains(strings.ToLower(it.State), "paus"):
-					out.Queue.Paused++
-				case strings.Contains(it.State, "download") || it.State == "stalledDL":
-					out.Queue.Downloading++
-				case strings.Contains(strings.ToLower(it.State), "seed") || strings.Contains(it.State, "UP"):
-					out.Queue.Seeding++
-				}
-			}
+			out.Queue = summarizeQueue(items)
 		}
 	}
 

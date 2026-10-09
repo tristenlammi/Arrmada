@@ -68,6 +68,9 @@ func (a *api) handleGetQualityProfile(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, sp)
 }
 
+// stallMinutesError explains a rejected stall timeout in the profile editor's own terms.
+const stallMinutesError = "stall timeout must be -1 (off), 0 (use the default) or up to 10080 minutes (a week)"
+
 func (a *api) handleCreateQualityProfile(w http.ResponseWriter, r *http.Request) {
 	var sp quality.StoredProfile
 	if !a.decodeJSON(w, r, &sp) {
@@ -75,6 +78,10 @@ func (a *api) handleCreateQualityProfile(w http.ResponseWriter, r *http.Request)
 	}
 	if sp.Name == "" {
 		a.writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if !quality.ValidStallMinutes(sp.StallMinutes) {
+		a.writeError(w, http.StatusBadRequest, stallMinutesError)
 		return
 	}
 	created, err := a.deps.Quality.Create(r.Context(), sp)
@@ -92,6 +99,10 @@ func (a *api) handleUpdateQualityProfile(w http.ResponseWriter, r *http.Request)
 	}
 	var sp quality.StoredProfile
 	if !a.decodeJSON(w, r, &sp) {
+		return
+	}
+	if !quality.ValidStallMinutes(sp.StallMinutes) {
+		a.writeError(w, http.StatusBadRequest, stallMinutesError)
 		return
 	}
 	if err := a.deps.Quality.Update(r.Context(), id, sp); err != nil {

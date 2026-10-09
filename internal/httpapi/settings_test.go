@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -104,5 +105,46 @@ func TestSettingsUnknownKeyNamed(t *testing.T) {
 	}
 	if _, got := getSettings(t, a); got["write_nfo"] != false {
 		t.Error("a rejected body must not save its other keys")
+	}
+}
+
+// Stall fail-over is on by default at six hours, 0 turns it off and persists, and
+// anything outside 0..a week is refused rather than stored.
+func TestSettingsStallMinutes(t *testing.T) {
+	a := settingsAPI(t)
+	if _, got := getSettings(t, a); got["downloads_stall_minutes"] != float64(360) {
+		t.Fatalf("default = %v, want 360", got["downloads_stall_minutes"])
+	}
+	if w := putSettings(t, a, `{"downloads_stall_minutes":0}`); w.Code != http.StatusOK {
+		t.Fatalf("PUT 0 returned %d: %s", w.Code, w.Body.String())
+	}
+	if _, got := getSettings(t, a); got["downloads_stall_minutes"] != float64(0) {
+		t.Errorf("after saving 0, got %v", got["downloads_stall_minutes"])
+	}
+	for _, bad := range []string{"-1", "10081"} {
+		if w := putSettings(t, a, `{"downloads_stall_minutes":`+bad+`}`); w.Code != http.StatusBadRequest {
+			t.Errorf("PUT %s returned %d, want 400", bad, w.Code)
+		}
+	}
+}
+
+// A profile's stall timeout is -1 (off), 0 (the default) or up to a week; anything else is
+// a 400 on create and on update, before anything is stored.
+func TestQualityProfileStallValidation(t *testing.T) {
+	a := settingsAPI(t)
+	for _, bad := range []int{-2, 10081} {
+		body := `{"name":"P","media_type":"movie","stall_minutes":` + strconv.Itoa(bad) + `}`
+		w := httptest.NewRecorder()
+		a.handleCreateQualityProfile(w, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body)))
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("create with stall_minutes %d returned %d, want 400", bad, w.Code)
+		}
+		w = httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, "/", strings.NewReader(body))
+		req.SetPathValue("id", "1")
+		a.handleUpdateQualityProfile(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("update with stall_minutes %d returned %d, want 400", bad, w.Code)
+		}
 	}
 }

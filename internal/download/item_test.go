@@ -2,6 +2,47 @@ package download
 
 import "testing"
 
+// Phase is what lets a dead torrent read differently from a live one. Every state string
+// qBittorrent 4.x and 5.x report is listed, so a renamed or new state shows up here.
+func TestItemPhase(t *testing.T) {
+	cases := map[string]string{
+		"metaDL":             "metadata",
+		"forcedMetaDL":       "metadata", // v5
+		"queuedDL":           "queued",
+		"queuedUP":           "queued",
+		"stalledDL":          "stalled",
+		"checkingDL":         "checking",
+		"checkingUP":         "checking",
+		"checkingResumeData": "checking",
+		"moving":             "moving",
+		"allocating":         "allocating",
+		"downloading":        "downloading",
+		"forcedDL":           "downloading",
+		"uploading":          "seeding",
+		"stalledUP":          "seeding",
+		"forcedUP":           "seeding",
+		"pausedDL":           "paused",
+		"pausedUP":           "paused",
+		"stoppedDL":          "paused", // v5 renamed paused → stopped
+		"stoppedUP":          "paused",
+		"error":              "error",
+		"missingFiles":       "error",
+	}
+	for raw, want := range cases {
+		it := Item{RawState: raw, State: normalizeState(raw)}
+		if got := it.Phase(); got != want {
+			t.Errorf("Phase(%q) = %q, want %q", raw, got, want)
+		}
+	}
+	// A state this build doesn't know, or a client that reports none, falls back to State.
+	if got := (Item{RawState: "someFutureState", State: "downloading"}).Phase(); got != "downloading" {
+		t.Errorf("unknown raw state: Phase = %q, want the normalized state", got)
+	}
+	if got := (Item{State: "seeding"}).Phase(); got != "seeding" {
+		t.Errorf("no raw state: Phase = %q, want seeding", got)
+	}
+}
+
 // Completion drove four decisions off one float — import it, judge it for stalling, allow
 // seed cleanup, and consider the series free for another grab. RemainingBytes is a second
 // opinion from the same payload, and both have to agree.
