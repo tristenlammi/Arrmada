@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/notify"
 )
@@ -25,8 +26,15 @@ func (a *api) handleCreateNotification(w http.ResponseWriter, r *http.Request) {
 	if !a.decodeJSON(w, r, &c) {
 		return
 	}
+	c.Name, c.URL = strings.TrimSpace(c.Name), strings.TrimSpace(c.URL)
 	if c.Name == "" || c.URL == "" {
 		a.writeError(w, http.StatusBadRequest, "name and url are required")
+		return
+	}
+	// Checked on save, not at send time: a typo or an option-looking string would
+	// otherwise be stored and only fail when an alert is due.
+	if err := notify.ValidateAppriseURL(c.URL); err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	created, err := a.deps.Notify.Create(r.Context(), c)
@@ -44,6 +52,15 @@ func (a *api) handleUpdateNotification(w http.ResponseWriter, r *http.Request) {
 	}
 	var c notify.Connection
 	if !a.decodeJSON(w, r, &c) {
+		return
+	}
+	c.Name, c.URL = strings.TrimSpace(c.Name), strings.TrimSpace(c.URL)
+	if c.Name == "" {
+		a.writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if err := notify.ValidateAppriseURL(c.URL); err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err := a.deps.Notify.Update(r.Context(), id, c); err != nil {
@@ -74,6 +91,11 @@ func (a *api) handleDeleteNotification(w http.ResponseWriter, r *http.Request) {
 func (a *api) handleTestNotification(w http.ResponseWriter, r *http.Request) {
 	var c notify.Connection
 	if !a.decodeJSON(w, r, &c) {
+		return
+	}
+	c.URL = strings.TrimSpace(c.URL)
+	if err := notify.ValidateAppriseURL(c.URL); err != nil {
+		a.writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
 	if err := a.deps.Notify.Test(r.Context(), c); err != nil {

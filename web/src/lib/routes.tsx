@@ -7,6 +7,7 @@ import { UserLayout } from "../components/UserLayout";
 import { RouteError } from "../components/RouteError";
 import { ModuleGate } from "../components/ModuleGate";
 import { lazyPage } from "./lazyPage";
+import { LINKS } from "./links";
 
 // Every page is its own chunk (FE-06): a requester downloads Discover and their few
 // pages, never Quality, Convert, Settings or the rest of the console.
@@ -104,7 +105,9 @@ function staffRoutes(admin: boolean): RouteObject[] {
     page("/audiobooks", "Audiobooks", <Audiobooks />),
     page("/indexers", "Indexers", <Indexers />),
     page("/downloadclients", "Download clients", <DownloadClients />),
-    redirect("/notifications", "/insights?tab=notifications"),
+    // Alerts moved out of Insights into Settings; both old addresses land there.
+    redirect("/notifications", LINKS.alerts),
+    redirect("/alerts", LINKS.alerts),
     // A splat (which also matches plain /settings), so Settings can give its sections
     // their own addresses.
     page("/settings/*", "Settings", <Settings />),

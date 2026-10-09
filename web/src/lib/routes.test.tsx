@@ -51,9 +51,11 @@ describe("buildRoutes", () => {
     }
   });
 
-  it("opens Insights on the Notifications tab for the old address", () => {
-    const r = routes(buildRoutes({ role: "admin", external: false })).find((x) => x.path === "/notifications");
-    expect((r?.element as { props?: { to?: string } })?.props?.to).toBe("/insights?tab=notifications");
+  it("sends the old alert addresses to Settings → Alerts", () => {
+    for (const path of ["/notifications", "/alerts"]) {
+      const r = routes(buildRoutes({ role: "admin", external: false })).find((x) => x.path === path);
+      expect((r?.element as { props?: { to?: string } })?.props?.to, path).toBe("/settings/alerts");
+    }
   });
 
   it("titles every page and gives it an error card", () => {
