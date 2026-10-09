@@ -162,10 +162,10 @@ func (a *api) handleDeleteDownload(w http.ResponseWriter, r *http.Request) {
 		// Blocking searches for an alternate, which can take a while: run it like the
 		// Block button does and answer straight away.
 		if _, _, err := a.submit(r, jobs.Spec{Kind: "download.block", Target: "hash:" + hash, Class: jobs.ClassIndexerSearch, Timeout: 3 * time.Minute,
-			Fn: errFn(func(ctx context.Context) error {
+			Fn: interactive(errFn(func(ctx context.Context) error {
 				_, err := a.deps.Automation.RemoveDownload(ctx, hash, name, mode, false)
 				return err
-			})}); err != nil {
+			}))}); err != nil {
 			a.writeError(w, http.StatusServiceUnavailable, "couldn't start that just now — try again in a moment")
 			return
 		}
@@ -249,7 +249,7 @@ func (a *api) handleBlockDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "download.block", Target: "hash:" + hash, Class: jobs.ClassIndexerSearch, Timeout: 3 * time.Minute,
-		Fn: errFn(func(ctx context.Context) error { return a.deps.Automation.BlockRelease(ctx, hash, req.Name) })})
+		Fn: interactive(errFn(func(ctx context.Context) error { return a.deps.Automation.BlockRelease(ctx, hash, req.Name) }))})
 	if !ok {
 		return
 	}

@@ -32,6 +32,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/buildinfo"
 	"github.com/tristenlammi/arrmada/internal/config"
+	"github.com/tristenlammi/arrmada/internal/connstatus"
 	"github.com/tristenlammi/arrmada/internal/convert"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/eventbus"
@@ -211,6 +212,19 @@ func main() {
 	authSvc.ReportCaseDuplicates(context.Background())
 	indexers := indexer.NewService(st.DB(), log, cfg.FlaresolverrURL)
 	downloads := download.NewService(st.DB(), log)
+	// How each indexer and download client has been answering, kept across restarts: a
+	// failing indexer backs off for background searches, and the Indexers page and the
+	// health panel show it. Each visible change is announced (no names or error text —
+	// pages re-read the details through the API).
+	connStatus := connstatus.New(st.DB(), log)
+	if err := connStatus.Load(context.Background()); err != nil {
+		log.Warn("couldn't load saved integration status; starting without it", "err", err)
+	}
+	connStatus.OnChange(func(s connstatus.State) {
+		bus.Publish("integration.status", map[string]any{"kind": s.Kind, "ref": s.Ref, "state": s.Phase(time.Now())})
+	})
+	indexers.SetStatus(connStatus)
+	downloads.SetStatus(connStatus)
 	// Library folders chosen in the app (first-run setup, Settings → Library) win over the
 	// environment's, for everything — importer, qBittorrent save path, disk guard — and
 	// they're resolved on every use, so a change applies without a restart. cfg keeps the
@@ -486,6 +500,11 @@ func main() {
 		imports.Process(ctx, cands)
 		return nil
 	}, scheduler.Label("Import finished movie downloads"), scheduler.Description("Moves completed movie downloads into the library and attaches them to their movie."))
+	// Integration status changes that matter are saved as they happen; this saves the
+	// rest (hourly counters, average response times) once a minute.
+	sched.Register("integration-status-flush", time.Minute, false, connStatus.Flush,
+		scheduler.Label("Save integration status"),
+		scheduler.Description("Saves how often each indexer and download client was used and how it answered, for the Indexers page."))
 	// Periodically sweep for monitored movies that still have no file and grab them.
 	sched.Register("search-missing-movies", 5*time.Minute, false, func(ctx context.Context) error {
 		coordinator.SearchMissing(ctx)
@@ -910,6 +929,12 @@ func main() {
 		clean = false
 		log.Warn("shutdown: background work still running", "count", len(left), "names", summarizeNames(left, 20))
 	}
+	// The last minute of integration counters, which the flush task would have saved.
+	flushCtx, cancelFlush := context.WithTimeout(context.Background(), 2*time.Second)
+	if err := connStatus.Flush(flushCtx); err != nil {
+		log.Warn("shutdown: couldn't save integration status", "err", err)
+	}
+	cancelFlush()
 	if clean {
 		log.Info("stopped cleanly")
 	} else {

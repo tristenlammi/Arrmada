@@ -64,6 +64,28 @@ func (a *api) registerHealthChecks(reg *health.Registry) {
 			}
 			return n, err
 		}))
+		// Indexers backing off after repeated failures, from the integration status
+		// tracker (the same state as the dots on the Indexers page).
+		reg.Register(health.IndexerStatusCheck(func(ctx context.Context) (int, []health.PausedIndexer, error) {
+			ix, err := a.deps.Indexers.List(ctx)
+			if err != nil {
+				return 0, nil, err
+			}
+			now := time.Now()
+			enabled := 0
+			var paused []health.PausedIndexer
+			for _, i := range ix {
+				if !i.Enabled {
+					continue
+				}
+				enabled++
+				st, _, ok := a.deps.Indexers.Status(i.ID)
+				if ok && now.Before(st.BackoffUntil) {
+					paused = append(paused, health.PausedIndexer{ID: i.ID, Name: i.Name, Failures: st.ConsecutiveFailures, Until: st.BackoffUntil, LastError: st.LastError})
+				}
+			}
+			return enabled, paused, nil
+		}))
 	}
 
 	if a.deps.Downloads != nil {

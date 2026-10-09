@@ -238,6 +238,9 @@ func (c *Coordinator) searchBookOnce(ctx context.Context, bookID int64) (SearchO
 	} else {
 		out.settle()
 	}
+	if searchErr != nil && out.Grabbed == 0 {
+		out.noteSearchErr(searchErr)
+	}
 	return out, searchErr
 }
 

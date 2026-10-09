@@ -237,6 +237,7 @@ func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (Sea
 	out := SearchOutcome{Searched: true}
 	releases, err := c.searchSeriesReleases(ctx, s)
 	if err != nil {
+		out.noteSearchErr(err)
 		return out, err
 	}
 	// The series search already narrows releases to this show, so what came back is

@@ -67,6 +67,22 @@ func (r *Registry) SetSessionPersister(persist func(id int64, session string)) {
 	}
 }
 
+// resetter is a searcher that keeps something per indexer (TorrentLeech's logged-in
+// session) that must go when the indexer is edited or deleted.
+type resetter interface {
+	Reset(id int64)
+}
+
+// Reset drops whatever any searcher holds for the indexer, so new credentials are used
+// for the next login instead of a session made with the old ones.
+func (r *Registry) Reset(id int64) {
+	for _, s := range r.searchers {
+		if rs, ok := s.(resetter); ok {
+			rs.Reset(id)
+		}
+	}
+}
+
 // For returns the searcher for a kind.
 func (r *Registry) For(kind Kind) (Searcher, error) {
 	s, ok := r.searchers[kind]

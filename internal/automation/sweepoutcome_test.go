@@ -128,6 +128,34 @@ func TestOutageTallyStops(t *testing.T) {
 	if !none.note(indexer.ErrNoIndexers) || !none.stop() {
 		t.Error("ErrNoIndexers should stop the sweep immediately")
 	}
+
+	// Every indexer paused after repeated failures: also true of every title until the
+	// first pause runs out, so stop at once — and it is an outage, never a miss.
+	paused := &indexer.AllFailedError{Skipped: map[string]string{"A": "paused until 15:00 after 2 failures"}}
+	var p outageTally
+	if !p.note(paused) || !p.stop() {
+		t.Error("every indexer paused should stop the sweep immediately")
+	}
+	if reset, miss := sweepOutcome(paused, true, 0); reset || miss {
+		t.Error("a paused search must not count as a miss")
+	}
+}
+
+// A search that asked nobody because every indexer is paused says so, not "no releases".
+func TestPausedSearchOutcome(t *testing.T) {
+	out := SearchOutcome{Searched: true}
+	out.noteSearchErr(&indexer.AllFailedError{Skipped: map[string]string{"A": "paused"}})
+	if out.Reason != ReasonIndexersPaused || out.Searched {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if msg := out.Message("movie"); !strings.Contains(msg, "paused") {
+		t.Errorf("message = %q", msg)
+	}
+	plain := SearchOutcome{Searched: true}
+	plain.noteSearchErr(&indexer.AllFailedError{Errors: map[string]string{"A": "down"}})
+	if plain.Reason != "" || !plain.Searched {
+		t.Errorf("an ordinary outage shouldn't be called paused: %+v", plain)
+	}
 }
 
 // A movie sweep during a total outage stops after a couple of searches instead of

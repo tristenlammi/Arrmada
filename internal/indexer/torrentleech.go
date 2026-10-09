@@ -177,6 +177,9 @@ func (t *TorrentLeechSearcher) dropSession(id int64) {
 	t.sessMu.Unlock()
 }
 
+// Reset drops the indexer's cached session (it was edited or deleted).
+func (t *TorrentLeechSearcher) Reset(id int64) { t.dropSession(id) }
+
 // Test verifies credentials (and Cloudflare/FlareSolverr) with a fresh login.
 func (t *TorrentLeechSearcher) Test(ctx context.Context, idx Indexer) error {
 	_, err := t.newSession(ctx, idx)

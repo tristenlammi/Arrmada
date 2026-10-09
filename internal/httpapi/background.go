@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/safego"
 )
@@ -105,6 +106,16 @@ func errFn(fn func(ctx context.Context) error) func(context.Context, *jobs.Progr
 	return func(ctx context.Context, _ *jobs.Progress) (any, error) { return nil, fn(ctx) }
 }
 
+// interactive marks a job's searches as a person's own (a Search, Block or Regrab
+// button): they still ask an indexer that background sweeps are leaving alone after
+// repeated failures, so a fixed indexer is noticed and one success clears its pause. Only
+// for work about one title — a job that searches a whole author or library is a sweep.
+func interactive(fn func(context.Context, *jobs.Progress) (any, error)) func(context.Context, *jobs.Progress) (any, error) {
+	return func(ctx context.Context, p *jobs.Progress) (any, error) {
+		return fn(indexer.WithInteractive(ctx), p)
+	}
+}
+
 // searchFn adapts a title search: finding the title already being searched (by the sweep
 // or another click) is not a failure — the search in flight covers it.
 func searchFn(fn func(ctx context.Context) error) func(context.Context, *jobs.Progress) (any, error) {
@@ -121,10 +132,11 @@ func searchFn(fn func(ctx context.Context) error) func(context.Context, *jobs.Pr
 // outcomeFn adapts a title search that reports what it found: the outcome is the job's
 // result and its plain sentence the job's message ("Grabbed …", "No releases found"),
 // which the Search button shows when the job ends. Finding the title already being
-// searched is a success with that reason.
+// searched is a success with that reason. Every such search is a person's (see
+// interactive).
 func outcomeFn(noun string, fn func(ctx context.Context) (automation.SearchOutcome, error)) func(context.Context, *jobs.Progress) (any, error) {
 	return func(ctx context.Context, p *jobs.Progress) (any, error) {
-		out, err := fn(ctx)
+		out, err := fn(indexer.WithInteractive(ctx))
 		if errors.Is(err, automation.ErrAlreadySearching) {
 			out.Reason, err = automation.ReasonAlreadySearching, nil
 		}

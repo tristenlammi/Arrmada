@@ -178,6 +178,9 @@ func (c *Coordinator) SearchAudioVersionNow(ctx context.Context, bookID, version
 		var out SearchOutcome
 		err := c.searchVersion(ctx, b, v, c.bookProfile(ctx, b.QualityProfile), &out)
 		out.settle()
+		if err != nil {
+			out.noteSearchErr(err)
+		}
 		return out, err
 	}
 	return SearchOutcome{}, books.ErrVersionNotFound

@@ -215,7 +215,7 @@ func (c *Coordinator) GrabForScope(ctx context.Context, seriesID int64, sc Serie
 	if serr != nil {
 		var all *indexer.AllFailedError
 		if errors.As(serr, &all) {
-			out.IndexersFailed, out.IndexerErrors = true, len(all.Errors)
+			out.IndexersFailed, out.IndexerErrors = true, len(all.Errors)+len(all.Skipped)
 			return out, nil
 		}
 		return out, serr

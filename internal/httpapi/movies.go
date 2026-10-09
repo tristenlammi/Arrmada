@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/movies"
@@ -503,7 +504,7 @@ func (a *api) handleSetProfile(w http.ResponseWriter, r *http.Request) {
 		default:
 			// The file still fits → look for a better release under the new profile.
 			_, _, _ = a.submit(r, jobs.Spec{Kind: "movie.upgrade", Target: jobTarget("movie", id), Class: jobs.ClassIndexerSearch, Timeout: 3 * time.Minute,
-				Fn: searchFn(func(ctx context.Context) error { return a.deps.Automation.UpgradeMovie(ctx, id) })})
+				Fn: interactive(searchFn(func(ctx context.Context) error { return a.deps.Automation.UpgradeMovie(ctx, id) }))})
 		}
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"quality_profile": req.QualityProfile, "downgrade": downgrade})
@@ -518,7 +519,7 @@ func (a *api) handleRegrab(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "movie.regrab", Target: jobTarget("movie", id), Class: jobs.ClassIndexerSearch, Timeout: 3 * time.Minute,
-		Fn: errFn(func(ctx context.Context) error { return a.deps.Automation.RegrabMovie(ctx, id) })})
+		Fn: interactive(errFn(func(ctx context.Context) error { return a.deps.Automation.RegrabMovie(ctx, id) }))})
 	if !ok {
 		return
 	}
@@ -561,7 +562,7 @@ func (a *api) handleMovieReleases(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(indexer.WithInteractive(r.Context()), 90*time.Second)
 	defer cancel()
 	list, err := a.deps.Automation.RankReleases(ctx, id)
 	if errors.Is(err, movies.ErrNotFound) {
