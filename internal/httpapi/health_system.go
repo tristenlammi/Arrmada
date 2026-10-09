@@ -114,8 +114,9 @@ func (a *api) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 
 	// Free disk space on the downloads volume.
 	var disk map[string]any
-	if free, ok := diskspace.FreeGB(a.deps.Config.DownloadsDir); ok {
-		disk = map[string]any{"free_gb": fmt.Sprintf("%.1f", free), "path": a.deps.Config.DownloadsDir}
+	dl := picked.DownloadsDir
+	if free, ok := diskspace.FreeGB(dl); ok {
+		disk = map[string]any{"free_gb": fmt.Sprintf("%.1f", free), "path": dl}
 		switch {
 		case free < 2:
 			add("error", fmt.Sprintf("Very low free disk space (%.1f GB) on the downloads volume.", free))

@@ -182,29 +182,12 @@ type BookFolder struct {
 	Audiobooks []FoundFile
 }
 
-// SetBookRoots configures the folders scanned for books (ebook + audiobook). Duplicates and
-// empties are collapsed, so passing the same path twice (books under one folder) scans it once.
-func (im *Importer) SetBookRoots(roots ...string) {
-	seen := map[string]bool{}
-	im.bookRoots = im.bookRoots[:0]
-	for _, r := range roots {
-		if r == "" || seen[r] {
-			continue
-		}
-		seen[r] = true
-		im.bookRoots = append(im.bookRoots, r)
-	}
-}
-
-// FindBookFolders walks the configured book roots (ebook + audiobook, falling back to the
-// library root) for folders containing ebook/audiobook files, grouped by author (parent folder)
-// and title (the folder name). Used by the book library scan.
+// FindBookFolders walks the book roots (ebook + audiobook, once when they're the same
+// folder) for folders containing ebook/audiobook files, grouped by author (parent folder)
+// and title (the folder name). Used by the book library scan. The roots are resolved on
+// every call, so a folder changed in Settings is scanned from then on.
 func (im *Importer) FindBookFolders() []BookFolder {
-	roots := im.bookRoots
-	if len(roots) == 0 {
-		roots = []string{im.root}
-	}
-	return im.FindBookFoldersIn(roots...)
+	return im.FindBookFoldersIn(im.ebookDir(), im.audiobookDir())
 }
 
 // FindBookFoldersIn is FindBookFolders over explicit roots (empty/duplicate roots are skipped).
@@ -422,23 +405,28 @@ type SeriesNamingProvider interface {
 
 // Importer moves media into a library root.
 type Importer struct {
-	root string
-	// Per-media-type import destinations. Empty → fall back to root, so a
-	// single-library setup (no per-library dirs configured) keeps working.
-	movieRoot     string
-	tvRoot        string
-	ebookRoot     string
-	musicRoot     string
-	musicRootFn   func() string
-	audiobookRoot string
-	bookRoots     []string // ebook + audiobook scan roots (falls back to root)
-	bin           Bin      // when on, a replaced library file is recycled instead of overwritten
-	log           *slog.Logger
-	naming        NamingProvider       // nil → built-in defaults
-	seriesNaming  SeriesNamingProvider // nil → built-in defaults
+	// root is what a type with no folder of its own falls back to. Only tests and
+	// NewImporter's single-folder callers use it: SetRootFuncs clears it, because the
+	// fallback used to be ARRMADA_LIBRARY_DIR — the managed volume, not a share the user
+	// chose — and an import landing there looked like it had vanished.
+	root         string
+	roots        RootFuncs
+	bin          Bin // when on, a replaced library file is recycled instead of overwritten
+	log          *slog.Logger
+	naming       NamingProvider       // nil → built-in defaults
+	seriesNaming SeriesNamingProvider // nil → built-in defaults
 	// epTitleFn resolves an episode's metadata title for naming ("" when unknown or
 	// unset). Keyed by show name/year since the importer only knows the show by name.
 	epTitleFn func(seriesTitle string, year, season, episode int) string
+}
+
+// RootFuncs resolve each library folder at the moment it's needed. They're read on every
+// import, so a folder changed in Settings → Library applies to the next import with no
+// restart; an import that's already running finishes in the folder it started with.
+// A nil func, or one that returns "", means that kind of media has no folder, and its
+// imports fail with an error saying so.
+type RootFuncs struct {
+	Movie, TV, Ebook, Audiobook, Music func() string
 }
 
 // SetEpisodeTitleFunc installs a lookup so episode files are named with their
@@ -447,65 +435,46 @@ func (im *Importer) SetEpisodeTitleFunc(f func(seriesTitle string, year, season,
 	im.epTitleFn = f
 }
 
-// SetRoots routes each media type to its own library folder (movies, TV, ebooks,
-// audiobooks). Any empty value falls back to the importer's base root, so an
-// unconfigured type still lands in the shared library.
+// SetRootFuncs makes the importer resolve each library folder live (see RootFuncs). It
+// drops the NewImporter root as a fallback: a missing folder is an error, never a
+// quiet write somewhere else.
+func (im *Importer) SetRootFuncs(f RootFuncs) {
+	im.roots = f
+	im.root = ""
+}
+
+// SetRoots fixes each media type's folder (movies, TV, ebooks, audiobooks). An empty
+// value falls back to the NewImporter root. Tests use it; the app uses SetRootFuncs.
 func (im *Importer) SetRoots(movie, tv, ebook, audiobook string) {
-	im.movieRoot, im.tvRoot, im.ebookRoot, im.audiobookRoot = movie, tv, ebook, audiobook
+	fixed := func(p string) func() string {
+		if p == "" {
+			return nil
+		}
+		return func() string { return p }
+	}
+	im.roots.Movie, im.roots.TV, im.roots.Ebook, im.roots.Audiobook = fixed(movie), fixed(tv), fixed(ebook), fixed(audiobook)
 }
 
-func (im *Importer) movieDir() string {
-	if im.movieRoot != "" {
-		return im.movieRoot
+// rootFor resolves one folder: its func when set, otherwise the NewImporter root.
+func (im *Importer) rootFor(fn func() string) string {
+	if fn != nil {
+		return strings.TrimSpace(fn())
 	}
 	return im.root
 }
 
-func (im *Importer) tvDir() string {
-	if im.tvRoot != "" {
-		return im.tvRoot
-	}
-	return im.root
-}
-
-// SetMusicRoot points album imports at the music library folder.
-func (im *Importer) SetMusicRoot(root string) { im.musicRoot = root }
-
-// SetMusicRootFunc resolves the music root on every use instead of baking it in at startup,
-// so a folder picked in Settings takes effect for IMPORTS as well as scans. Without it the
-// scan would look in the folder the user chose while imports still wrote to the env default
-// — two different places, which is worse than either alone.
-func (im *Importer) SetMusicRootFunc(fn func() string) { im.musicRootFn = fn }
+func (im *Importer) movieDir() string { return im.rootFor(im.roots.Movie) }
+func (im *Importer) tvDir() string    { return im.rootFor(im.roots.TV) }
 
 // MusicDir is where album folders are written.
-func (im *Importer) MusicDir() string {
-	if im.musicRootFn != nil {
-		if v := strings.TrimSpace(im.musicRootFn()); v != "" {
-			return v
-		}
-	}
-	if im.musicRoot != "" {
-		return im.musicRoot
-	}
-	return im.root
-}
+func (im *Importer) MusicDir() string { return im.rootFor(im.roots.Music) }
 
-func (im *Importer) ebookDir() string {
-	if im.ebookRoot != "" {
-		return im.ebookRoot
-	}
-	return im.root
-}
+func (im *Importer) ebookDir() string { return im.rootFor(im.roots.Ebook) }
 
 // AudiobookRoot is the folder audiobooks are placed under.
 func (im *Importer) AudiobookRoot() string { return im.audiobookDir() }
 
-func (im *Importer) audiobookDir() string {
-	if im.audiobookRoot != "" {
-		return im.audiobookRoot
-	}
-	return im.root
-}
+func (im *Importer) audiobookDir() string { return im.rootFor(im.roots.Audiobook) }
 
 // bookRootForFiles picks the audiobook or ebook root from the files being
 // imported (a single edition is one kind — the coordinator imports each kind
@@ -517,7 +486,8 @@ func (im *Importer) bookRootForFiles(files []FoundFile) string {
 	return im.ebookDir()
 }
 
-// NewImporter creates an importer targeting the given library root directory.
+// NewImporter creates an importer whose every media type lands under root until
+// SetRoots or SetRootFuncs says otherwise. The app passes "" and sets live folders.
 func NewImporter(root string, log *slog.Logger) *Importer {
 	return &Importer{root: root, log: log}
 }
@@ -527,6 +497,9 @@ func NewImporter(root string, log *slog.Logger) *Importer {
 // the replacement can hardlink) instead of being overwritten in place. Empty means the
 // bin is switched off, and a replacement overwrites as before.
 func (im *Importer) SetRecycleDir(dir string) { im.bin = SingleBin(dir) }
+
+// SetBin is SetRecycleDir for any Bin, such as the per-library bins (RootBins).
+func (im *Importer) SetBin(b Bin) { im.bin = b }
 
 // SetNaming installs a naming provider (user-configurable folder/file formats).
 func (im *Importer) SetNaming(np NamingProvider) { im.naming = np }
@@ -715,10 +688,17 @@ func (im *Importer) Import(name, contentPath string) (*Result, error) {
 	return &Result{SourcePath: src, TargetPath: target, Title: rel.Title, Year: rel.Year, SizeBytes: size}, nil
 }
 
+// ErrNoLibraryFolder is an import for a kind of media with no folder set. It used to
+// land in ARRMADA_LIBRARY_DIR instead, inside the managed Docker volume.
+var ErrNoLibraryFolder = errors.New("no library folder is set for this kind of media — choose one in Settings → Library")
+
 // checkRoot verifies a configured library root exists before anything is created
 // under it. When a mount is down, MkdirAll would silently recreate the root on the
 // host filesystem and imports would land there — better to fail loudly.
 func (im *Importer) checkRoot(root string) error {
+	if strings.TrimSpace(root) == "" {
+		return ErrNoLibraryFolder
+	}
 	fi, err := os.Stat(root)
 	if err != nil {
 		return fmt.Errorf("library root missing/unmounted: %s: %w", root, err)

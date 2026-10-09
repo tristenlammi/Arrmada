@@ -5,8 +5,8 @@ import { restartAndWait } from "../lib/restart";
 import { FleetMark } from "../components/FleetMark";
 
 // SetupWizard is the first thing an admin sees on a fresh install: the metadata key,
-// then each library folder (pre-filled from what's on the mount), then a restart so
-// the importer and qBittorrent start using those folders. Everything is optional and
+// then each library folder (pre-filled from what's on the mount). Folders apply live, so
+// the restart step only appears if a startup-only setting is waiting. Everything is optional and
 // can be changed later in Settings; "Skip setup" never nags again.
 
 type Step = "keys" | "folders" | "finish";

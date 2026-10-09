@@ -960,14 +960,8 @@ function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<App
   // the torrent drive is not knowable from in here, so show the resolved path and the
   // reading taken from it and let the user confirm it against their own setup.
   const [status, setStatus] = useState<DiskGuardStatus | null>(null);
-  // A Downloads folder saved but not yet in use: the guard keeps watching the old one
-  // until a restart, so show where it's going.
-  const [nextDownloads, setNextDownloads] = useState<string | null>(null);
   useEffect(() => {
     api.diskGuard().then(setStatus).catch(() => setStatus(null));
-    api.pendingRestart()
-      .then((p) => setNextDownloads(p.changed.find((c) => c.library === "downloads")?.saved ?? null))
-      .catch(() => setNextDownloads(null));
   }, []);
 
   return (
@@ -984,7 +978,7 @@ function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<App
         your main array rather than the torrent or cache drive, the percentage measures the
         array, and it will either never trigger or pause your queue for a reason that has
         nothing to do with downloads — choose the right folder there. A changed folder is
-        used after Arrmada restarts.
+        watched from the next check, a minute at most.
       </Note>
 
       {status && (
@@ -992,7 +986,6 @@ function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<App
           <div className="text-[10px] uppercase tracking-[0.1em] text-ink-faint">Currently watching</div>
           <div className="mt-0.5 break-all font-mono text-[11.5px]">
             {status.path || "(not set)"}
-            {nextDownloads && <span className="font-sans" style={{ color: "var(--avoid)" }}> → <span className="font-mono">{nextDownloads}</span> after restart</span>}
           </div>
           {status.measurable ? (
             <div className="mt-1 text-[11.5px] text-ink-dim">

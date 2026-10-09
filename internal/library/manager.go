@@ -401,11 +401,17 @@ func (m *Manager) SetRecycleDir(dir string) { m.imp.SetRecycleDir(dir) }
 // movie folders match the library record rather than the scene release name.
 func (m *Manager) SetTitleResolver(r TitleResolver) { m.resolver = r }
 
-// SetRoots routes imports to per-media-type destinations (movies, TV, ebooks,
-// audiobooks); empty values fall back to the base library root.
+// SetRoots routes imports to fixed per-media-type destinations (movies, TV, ebooks,
+// audiobooks); empty values fall back to the base library root. Tests use it.
 func (m *Manager) SetRoots(movie, tv, ebook, audiobook string) {
 	m.imp.SetRoots(movie, tv, ebook, audiobook)
 }
+
+// SetRootFuncs resolves each destination live (see Importer.SetRootFuncs).
+func (m *Manager) SetRootFuncs(f RootFuncs) { m.imp.SetRootFuncs(f) }
+
+// SetBin routes replaced library files to bin during imports (see Importer.SetBin).
+func (m *Manager) SetBin(b Bin) { m.imp.SetBin(b) }
 
 // Recent returns the latest imports.
 func (m *Manager) Recent(ctx context.Context, limit int) ([]ImportRecord, error) {

@@ -15,8 +15,9 @@ import (
 // First-run setup. The installer used to ask for the TMDB key in a terminal and write
 // library paths guessed from one person's folder layout (media/movies, torrents…). Now
 // it only mounts the media folder, and the app walks an admin through the rest: the
-// metadata key, then each library folder with the folder picker, then a restart so the
-// importer, qBittorrent and the disk guard pick the folders up.
+// metadata key, then each library folder with the folder picker. The importer,
+// qBittorrent's save path and the disk guard read the folders live (libroots), so no
+// restart is needed to apply them.
 
 const keySetupComplete = "setup_complete"
 
@@ -40,30 +41,21 @@ func libraryDirSettings(cfg *config.Config) []struct {
 	}
 }
 
-// ApplySavedLibraryDirs makes folders chosen in the app the ones the whole app uses.
-// They used to steer only the library scans, while imports, qBittorrent's save path and
-// the disk guard kept the startup environment's folders — so picking a folder in the
-// app changed where scans looked but not where downloads landed. Call once at startup,
-// before anything reads the library folders.
-func ApplySavedLibraryDirs(ctx context.Context, get func(ctx context.Context, key, def string) string, cfg *config.Config, log *slog.Logger) {
-	for _, d := range libraryDirSettings(cfg) {
-		v := strings.TrimSpace(get(ctx, d.key, ""))
-		if v == "" || v == *d.field {
-			continue
+// LogLibraryDirs records, once at startup, where each folder resolves and whether it
+// came from the app or the environment. It changes nothing: every part of the app
+// resolves the folders live through roots. A folder in or above the data dir (an older
+// save, or the environment) still runs — refusing to start would be worse — but it's
+// said loudly, here and on the health panel.
+func LogLibraryDirs(ctx context.Context, roots *libroots.Roots, env config.Config, log *slog.Logger) {
+	envDirs := libraryDirSettings(&env)
+	resolved := roots.Config(ctx)
+	for i, d := range libraryDirSettings(&resolved) {
+		if *d.field != *envDirs[i].field {
+			log.Info("library folder: using the folder chosen in the app", "library", d.name, "folder", *d.field, "environment_default", *envDirs[i].field)
 		}
-		if log != nil {
-			log.Info("library folder: using the folder chosen in the app", "library", d.name, "folder", v, "environment_default", *d.field)
-		}
-		*d.field = v
-	}
-	// A folder in or above the data dir (an older save, or the environment) still runs —
-	// refusing to start would be worse — but it's said loudly, here and on the health panel.
-	if log != nil {
-		for _, d := range libraryDirSettings(cfg) {
-			if *d.field != "" && libroots.UnderDataDir(*d.field, cfg.DataDir) {
-				log.Error("library folder is inside or contains Arrmada's data folder; move it to its own mount",
-					"library", d.name, "folder", *d.field, "data_dir", cfg.DataDir)
-			}
+		if *d.field != "" && libroots.UnderDataDir(*d.field, env.DataDir) {
+			log.Error("library folder is inside or contains Arrmada's data folder; move it to its own mount",
+				"library", d.name, "folder", *d.field, "data_dir", env.DataDir)
 		}
 	}
 }
@@ -160,47 +152,27 @@ func (a *api) librariesChosen(ctx context.Context) bool {
 	return false
 }
 
-// folderChange is one folder saved in the app that the running app isn't using yet.
+// folderChange is one setting saved in the app that the running app isn't using yet.
 type folderChange struct {
 	Library string `json:"library"`
 	Saved   string `json:"saved"`
 	Running string `json:"running"`
 }
 
-// restartState says whether saved folders are waiting on a restart.
+// restartState says whether saved settings are waiting on a restart.
 type restartState struct {
 	Needed     bool           `json:"restart_needed"`
 	CanRestart bool           `json:"can_restart"`
 	Changed    []folderChange `json:"changed"`
 }
 
-// folderRestartState compares each saved folder with the one the running app was built
-// with. The importer, qBittorrent's save path, the coordinator and the disk guard take
-// their folders at startup, so a new pick does nothing for them until a restart — and
-// new episodes keep landing in the old folder in the meantime.
-//
-// Music is skipped: it's read from settings on every use, so it's already live. A blank
-// saved value means "the install default", which is what's running.
-func (a *api) folderRestartState(ctx context.Context) restartState {
-	c := a.deps.Config
-	st := restartState{CanRestart: a.deps.Restart != nil && inContainer(), Changed: []folderChange{}}
-	for _, d := range []struct {
-		name, key, running string
-	}{
-		{"movies", keyLibMovies, c.MoviesDir},
-		{"tv", keyLibTV, c.TVDir},
-		{"ebooks", keyLibEbooks, c.EbooksDir},
-		{"audiobooks", keyLibAudiobooks, c.AudiobooksDir},
-		{"downloads", keyLibDownloads, c.DownloadsDir},
-	} {
-		saved := strings.TrimSpace(a.deps.Settings.Get(ctx, d.key, ""))
-		if saved == "" || saved == d.running {
-			continue
-		}
-		st.Changed = append(st.Changed, folderChange{Library: d.name, Saved: saved, Running: d.running})
-	}
-	st.Needed = len(st.Changed) > 0
-	return st
+// folderRestartState lists settings saved in the app that only take effect at the next
+// start. Every library folder and the downloads folder now apply live — the importer,
+// the coordinator, the disk guard and qBittorrent's save path resolve them on each use —
+// so nothing is listed today. The endpoint and the banner stay for the next setting that
+// genuinely needs a restart.
+func (a *api) folderRestartState(_ context.Context) restartState {
+	return restartState{CanRestart: a.deps.Restart != nil && inContainer(), Changed: []folderChange{}}
 }
 
 // handleSetupState — GET /api/v1/setup
@@ -214,11 +186,8 @@ func (a *api) handleSetupState(w http.ResponseWriter, r *http.Request) {
 		"movies": a.libMovies(r), "tv": a.libTV(r), "ebooks": a.libEbooks(r),
 		"audiobooks": a.libAudiobooks(r), "music": a.libMusic(r), "downloads": a.libDownloads(r),
 	}
-	c := a.deps.Config
-	running := map[string]string{
-		"movies": c.MoviesDir, "tv": c.TVDir, "ebooks": c.EbooksDir,
-		"audiobooks": c.AudiobooksDir, "music": c.MusicDir, "downloads": c.DownloadsDir,
-	}
+	// Folders apply live, so what's running is what's saved.
+	running := saved
 	rs := a.folderRestartState(ctx)
 	mounts := []string{}
 	for _, m := range candidateMounts {

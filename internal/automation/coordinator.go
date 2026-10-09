@@ -45,12 +45,14 @@ type Coordinator struct {
 	db           *sql.DB
 	bus          *eventbus.Bus
 	log          *slog.Logger
-	downloadsDir string          // filesystem checked for free space before auto-grabs
+	downloadsDir string          // the startup downloads folder; downloadsPath reads the live one
+	downloadsFn  func() string   // the live downloads folder (Settings → Library); nil = downloadsDir
 	series       *series.Service // set post-construction via SetSeries
 	books        *books.Service  // set post-construction via SetBooks
 	music        *music.Service  // set post-construction via SetMusic
 	imp          *library.Importer
-	recycle      string // recycle-bin dir for book deletes ("" = bin off); set via SetRecycleDir
+	recycle      string      // recycle-bin dir for book deletes ("" = bin off); set via SetRecycleDir
+	binv         library.Bin // the bins set by SetBin; nil = the single bin at recycle
 
 	// removeTorrent overrides downloads.Remove in tests; nil uses the real client.
 	removeTorrent func(ctx context.Context, hash string, deleteData bool) error
@@ -143,8 +145,30 @@ func (c *Coordinator) seriesImported(ctx context.Context, seriesID int64, episod
 // means the bin is switched off and deletes are permanent.
 func (c *Coordinator) SetRecycleDir(dir string) { c.recycle = dir }
 
+// SetBin points book file and series duplicate deletion at bin (the per-library bins in
+// the app). Call it at startup, before anything runs.
+func (c *Coordinator) SetBin(b library.Bin) { c.binv = b }
+
 // bin is where book files and series duplicates go when deleted (off = permanent).
-func (c *Coordinator) bin() library.Bin { return library.SingleBin(c.recycle) }
+func (c *Coordinator) bin() library.Bin {
+	if c.binv != nil {
+		return c.binv
+	}
+	return library.SingleBin(c.recycle)
+}
+
+// SetDownloadsDirFunc makes the downloads folder live: every grab's save path and the
+// free-space check before an auto-grab read it, so a folder changed in Settings → Library
+// is used from the next grab. Call it at startup, before anything runs.
+func (c *Coordinator) SetDownloadsDirFunc(fn func() string) { c.downloadsFn = fn }
+
+// downloadsPath is the downloads folder now.
+func (c *Coordinator) downloadsPath() string {
+	if c.downloadsFn != nil {
+		return strings.TrimSpace(c.downloadsFn())
+	}
+	return c.downloadsDir
+}
 
 // SetSeries wires the series module + its importer for TV acquisition.
 func (c *Coordinator) SetSeries(s *series.Service, imp *library.Importer) {
@@ -212,7 +236,7 @@ func (c *Coordinator) grabTo(ctx context.Context, indexerName, downloadURL, titl
 	if err != nil {
 		return "", err
 	}
-	add := download.AddRequest{Name: title, SavePath: c.downloadsDir, Category: category}
+	add := download.AddRequest{Name: title, SavePath: c.downloadsPath(), Category: category}
 	var hash string
 	switch {
 	case len(res.File) > 0:
@@ -273,7 +297,7 @@ func (c *Coordinator) addTorrentFile(ctx context.Context, file []byte, filename,
 	if filename == "" {
 		filename = "arrmada.torrent"
 	}
-	add := download.AddRequest{Name: title, SavePath: c.downloadsDir, Category: category, File: file, Filename: filename}
+	add := download.AddRequest{Name: title, SavePath: c.downloadsPath(), Category: category, File: file, Filename: filename}
 	if err := c.downloads.Add(ctx, add); err != nil {
 		return "", err
 	}
@@ -824,7 +848,7 @@ func (c *Coordinator) grabMissingTitles(ctx context.Context, m movies.Movie, wan
 // keeping a small safety buffer. If free space can't be measured (e.g. non-Linux
 // dev), it doesn't block.
 func (c *Coordinator) diskOKFor(sizeGB float64) bool {
-	free, ok := diskspace.FreeGB(c.downloadsDir)
+	free, ok := diskspace.FreeGB(c.downloadsPath())
 	if !ok {
 		return true
 	}

@@ -43,6 +43,9 @@ type DiskGuard struct {
 	settings *settings.Service
 	log      *slog.Logger
 	dir      string // the volume to watch — where the download client writes
+	// dirFn is the live downloads folder (Settings → Library), read on every pass so a
+	// changed folder is watched from the next minute; nil = dir.
+	dirFn func() string
 	// usage measures the volume. diskspace.Of in production; a test swaps it to put the
 	// guard on either side of its thresholds without filling a real disk.
 	usage func(path string) (diskspace.Usage, bool)
@@ -62,6 +65,18 @@ func NewDiskGuard(svc *Service, set *settings.Service, log *slog.Logger, dir str
 	return &DiskGuard{svc: svc, settings: set, log: log, dir: dir, usage: diskspace.Of}
 }
 
+// SetDirFunc makes the watched folder live (see dirFn). Call it at startup, before the
+// first Check.
+func (g *DiskGuard) SetDirFunc(fn func() string) { g.dirFn = fn }
+
+// path is the folder being watched now.
+func (g *DiskGuard) path() string {
+	if g.dirFn != nil {
+		return strings.TrimSpace(g.dirFn())
+	}
+	return g.dir
+}
+
 // GuardStatus is what the guard is currently doing, for the API and the health panel.
 type GuardStatus struct {
 	Enabled    bool    `json:"enabled"`
@@ -78,12 +93,12 @@ func (g *DiskGuard) Status(ctx context.Context) GuardStatus {
 	pause, resume := g.thresholds(ctx)
 	st := GuardStatus{
 		Enabled:   g.settings.GetBool(ctx, KeyDiskGuard, DefaultDiskGuard),
-		Path:      g.dir,
+		Path:      g.path(),
 		PausePct:  pause,
 		ResumePct: resume,
 		Holding:   len(g.held(ctx)),
 	}
-	if u, ok := g.usage(g.dir); ok {
+	if u, ok := g.usage(st.Path); ok {
 		st.Measurable, st.UsedPct = true, u.UsedPct
 	}
 	return st
@@ -155,7 +170,8 @@ func (g *DiskGuard) Check(ctx context.Context) error {
 		return nil
 	}
 
-	u, ok := g.usage(g.dir)
+	dir := g.path()
+	u, ok := g.usage(dir)
 	if !ok {
 		// Can't measure: do nothing at all. Guessing here would either pause a
 		// perfectly healthy queue or give false assurance.
@@ -168,7 +184,7 @@ func (g *DiskGuard) Check(ctx context.Context) error {
 		g.pauseActive(ctx, held, u.UsedPct, pause)
 	case u.UsedPct <= float64(resume) && len(held) > 0:
 		g.log.Info("disk guard: space recovered, resuming downloads",
-			"used_pct", round1(u.UsedPct), "resume_at_pct", resume, "torrents", len(held), "path", g.dir)
+			"used_pct", round1(u.UsedPct), "resume_at_pct", resume, "torrents", len(held), "path", dir)
 		g.resume(ctx, held)
 	case len(held) > 0:
 		// Between the two lines and still holding: nothing to pause or release, but drop
@@ -265,14 +281,14 @@ func (g *DiskGuard) pauseActive(ctx context.Context, held []string, usedPct floa
 	}
 	if repaused > 0 {
 		g.log.Warn("disk guard: paused downloads again that were resumed while the volume is still too full",
-			"used_pct", round1(usedPct), "pause_at_pct", pausePct, "repaused", repaused, "path", g.dir)
+			"used_pct", round1(usedPct), "pause_at_pct", pausePct, "repaused", repaused, "path", g.path())
 	}
 	if len(newly) > 0 {
 		// Loud on purpose: "nothing is downloading" is otherwise a mystery, and this is
 		// the first place anyone will look for the reason.
 		g.log.Warn("disk guard: paused downloads — the volume is too full",
 			"used_pct", round1(usedPct), "pause_at_pct", pausePct,
-			"paused", len(newly), "path", g.dir)
+			"paused", len(newly), "path", g.path())
 		changed = true
 	}
 	if changed {

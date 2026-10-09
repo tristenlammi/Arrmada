@@ -29,13 +29,14 @@ type SceneMapper interface {
 
 // Service is the Series module's application logic.
 type Service struct {
-	repo  *Repo
-	meta  metadata.SeriesProvider
-	root  string      // library root, for delete-with-files and library scan
-	bin   library.Bin // where deleted files go (a bin that's off hard-deletes)
-	bus   *eventbus.Bus
-	log   *slog.Logger
-	scene SceneMapper // TheXEM client (nil → scene mapping falls back to air-date gaps)
+	repo   *Repo
+	meta   metadata.SeriesProvider
+	root   string        // library root, for delete-with-files and library scan (see libRoot)
+	rootFn func() string // the live library root; nil = root
+	bin    library.Bin   // where deleted files go (a bin that's off hard-deletes)
+	bus    *eventbus.Bus
+	log    *slog.Logger
+	scene  SceneMapper // TheXEM client (nil → scene mapping falls back to air-date gaps)
 
 	muUnmatched   sync.Mutex
 	lastUnmatched []UnmatchedFolder // folders the last scan couldn't identify, for manual pick
@@ -59,6 +60,23 @@ type UnmatchedFolder struct {
 // SetRecycleDir points episode-file deletion at the recycle bin (matching movies). ""
 // means the bin is switched off and deletes are permanent.
 func (s *Service) SetRecycleDir(dir string) { s.bin = library.SingleBin(dir) }
+
+// SetBin routes deleted files to bin (the per-library bins in the app). Call it at
+// startup, before anything runs.
+func (s *Service) SetBin(b library.Bin) { s.bin = b }
+
+// SetRootFunc makes the TV folder live: the library scan, manual imports and the
+// delete tidy-up read it on every use, so a folder changed in Settings → Library applies
+// without a restart. Call it at startup, before anything runs.
+func (s *Service) SetRootFunc(fn func() string) { s.rootFn = fn }
+
+// libRoot is the TV folder now.
+func (s *Service) libRoot() string {
+	if s.rootFn != nil {
+		return strings.TrimSpace(s.rootFn())
+	}
+	return s.root
+}
 
 // SetBus lets deletes announce file.removed, so the import pipeline forgets a deleted
 // file instead of importing the still-seeding torrent straight back.
@@ -1143,8 +1161,8 @@ func (s *Service) Delete(ctx context.Context, id int64, deleteFiles bool) (Delet
 func (s *Service) pruneEmptyDirs(dirs map[string]bool) {
 	ordered := make([]string, 0, len(dirs))
 	for d := range dirs {
-		if s.root != "" {
-			rel, err := filepath.Rel(s.root, d)
+		if root := s.libRoot(); root != "" {
+			rel, err := filepath.Rel(root, d)
 			if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 				continue
 			}
@@ -1228,7 +1246,7 @@ func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanRes
 	}
 	root := rootOverride
 	if root == "" {
-		root = s.root
+		root = s.libRoot()
 	}
 	if root == "" {
 		return res, fmt.Errorf("no library directory configured")
@@ -1312,7 +1330,7 @@ func (s *Service) importSeriesFolder(ctx context.Context, videos []library.Found
 func (s *Service) ImportFolderAs(ctx context.Context, rootOverride, folder string, tmdbID int) error {
 	root := rootOverride
 	if root == "" {
-		root = s.root
+		root = s.libRoot()
 	}
 	videos, _ := library.FindVideos(filepath.Join(root, folder))
 	if len(videos) == 0 {
