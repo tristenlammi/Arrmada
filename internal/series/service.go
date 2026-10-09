@@ -82,7 +82,10 @@ func (s *Service) DeleteEpisodeFile(ctx context.Context, seriesID int64, season,
 	}
 	var subFailed []string
 	if path != "" {
-		subs := library.Sidecars(path)
+		var subs []string
+		if !library.SharesBase(path) { // a same-name sibling video still pairs with them
+			subs = library.Sidecars(path)
+		}
 		if _, err := library.RemoveToBin(s.bin, path); err != nil {
 			return err
 		}
@@ -1395,12 +1398,26 @@ func (s *Service) SupersedeEpisodeFile(ctx context.Context, seriesID int64, seas
 			s.log.Info("series: old file still serves other episodes — keeping it",
 				"old", old, "shared_by", n, "new", path)
 		} else if _, err := os.Stat(old); err == nil {
-			// As before, an upgrade whose old file the bin refuses still deletes it;
-			// keeping the old file in that case is a separate, later change.
-			if _, rerr := library.RemoveToBin(s.bin, old); rerr != nil {
-				_ = os.Remove(old)
+			// The old release's subtitles go with it: left behind they'd sit unpaired
+			// next to the new file. A same-name container swap keeps them (they pair
+			// with the new video too).
+			var subs []string
+			if !library.SharesBase(old) {
+				subs = library.PairedSidecars(old)
 			}
-			s.log.Info("series: superseded old episode file", "old", old, "new", path)
+			// As before, an upgrade whose old file the bin refuses still deletes it;
+			// keeping the old file in that case is a separate, later change. The
+			// sidecars take exactly the same path as the video.
+			discard := func(p string) {
+				if _, rerr := library.RemoveToBin(s.bin, p); rerr != nil {
+					_ = os.Remove(p)
+				}
+			}
+			discard(old)
+			for _, sub := range subs {
+				discard(sub)
+			}
+			s.log.Info("series: superseded old episode file", "old", old, "new", path, "subtitles", len(subs))
 		}
 	}
 	return s.MarkEpisodeImported(ctx, seriesID, season, episode, path, size)

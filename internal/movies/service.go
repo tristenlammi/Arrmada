@@ -975,17 +975,24 @@ func (s *Service) DeleteFile(ctx context.Context, id int64) error {
 	return s.repo.ClearFile(ctx, id)
 }
 
-// removeFile deletes a file (moving it to the recycle bin if configured) and
-// prunes its now-empty parent directory.
+// removeFile deletes a file (moving it to the recycle bin if configured) together with
+// the subtitle sidecars paired with it, and prunes its now-empty parent directory.
+//
+// The sidecars share the video's fate through the same discardFile path: recycled next
+// to it when it was recycled, deleted when it was deleted. Left behind, an upgraded-away
+// release's "Old Name.en.srt" was credited to the new file (which Plex can't pair it
+// with) and kept the folder from ever being pruned. A same-name container swap
+// (X.mp4 → X.mkv) keeps them, since they pair with the new video too.
 func (s *Service) removeFile(path string) {
-	if s.recycle != "" {
-		if err := s.recycleFile(path); err != nil {
-			s.log.Warn("recycle failed, hard-deleting", "path", path, "err", err)
-			_ = os.Remove(path)
-		}
-	} else if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		s.log.Warn("could not delete file", "path", path, "err", err)
+	var subs []string
+	if !library.SharesBase(path) {
+		subs = library.PairedSidecars(path)
+	}
+	if !s.discardFile(path) {
 		return
+	}
+	for _, sub := range subs {
+		s.discardFile(sub)
 	}
 	// Best-effort: remove the movie folder if nothing else is left in it.
 	_ = os.Remove(filepath.Dir(path))
@@ -994,6 +1001,21 @@ func (s *Service) removeFile(path string) {
 	if s.bus != nil {
 		s.bus.Publish("file.removed", map[string]any{"path": path})
 	}
+}
+
+// discardFile moves one file to the recycle bin (or deletes it when the bin is off).
+// False means it is still on disk and the caller should stop.
+func (s *Service) discardFile(path string) bool {
+	if s.recycle != "" {
+		if err := s.recycleFile(path); err != nil {
+			s.log.Warn("recycle failed, hard-deleting", "path", path, "err", err)
+			_ = os.Remove(path)
+		}
+	} else if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		s.log.Warn("could not delete file", "path", path, "err", err)
+		return false
+	}
+	return true
 }
 
 // recycleFile moves a file into the recycle bin, keeping its folder name so it's

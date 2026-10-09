@@ -853,11 +853,16 @@ func (im *Importer) EpisodeTargetIn(seriesFolder, title string, year, season, ep
 // the renamed video (newVideo), preserving each ".<lang>"/".forced" suffix. Only files
 // sharing the old video's base name are moved, so unrelated neighbors are left alone.
 func (im *Importer) MoveEpisodeSubs(oldVideo, newVideo string) {
-	oldBase := strings.TrimSuffix(oldVideo, filepath.Ext(oldVideo))
+	oldBase := strings.TrimSuffix(filepath.Base(oldVideo), filepath.Ext(oldVideo))
 	newBase := strings.TrimSuffix(newVideo, filepath.Ext(newVideo))
-	for _, p := range Sidecars(oldVideo) {
-		stem := strings.TrimSuffix(p, filepath.Ext(p))
-		target := newBase + stem[len(oldBase):] + filepath.Ext(p) // carry ".en"/".forced"
+	for _, p := range PairedSidecars(oldVideo) {
+		// The pairing ignores case, so cut by length: the part after the old base name
+		// is the ".en"/".forced" suffix to carry over.
+		stem := strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))
+		if len(stem) < len(oldBase) {
+			continue // a case fold that changed the length; leave it rather than guess
+		}
+		target := newBase + stem[len(oldBase):] + filepath.Ext(p)
 		if err := im.Move(p, target); err == nil {
 			im.log.Info("moved subtitle with rename", "from", p, "to", target)
 		} else if errors.Is(err, ErrTargetExists) {
@@ -867,30 +872,8 @@ func (im *Importer) MoveEpisodeSubs(oldVideo, newVideo string) {
 	}
 }
 
-// Sidecars lists the subtitle files paired with video: same folder, and named either
-// exactly like the video or the video's name plus a ".<lang>"/".forced" suffix. Unrelated
-// neighbours are never included, so whatever happens to the video can safely happen to
-// these too (a rename, a delete to the recycle bin).
-func Sidecars(video string) []string {
-	base := strings.TrimSuffix(video, filepath.Ext(video))
-	entries, err := os.ReadDir(filepath.Dir(video))
-	if err != nil {
-		return nil
-	}
-	var out []string
-	for _, e := range entries {
-		if e.IsDir() || !subtitleExts[strings.ToLower(filepath.Ext(e.Name()))] {
-			continue
-		}
-		p := filepath.Join(filepath.Dir(video), e.Name())
-		stem := strings.TrimSuffix(p, filepath.Ext(p))
-		if stem != base && !strings.HasPrefix(stem, base+".") {
-			continue // not this video's sidecar
-		}
-		out = append(out, p)
-	}
-	return out
-}
+// Sidecars is PairedSidecars (sidecars.go), kept under its older name for existing callers.
+func Sidecars(video string) []string { return PairedSidecars(video) }
 
 // RemoveDirIfEmpty deletes dir only when it contains no entries — used after a rename
 // empties a legacy season folder ("Season 04") so it doesn't linger next to the new
