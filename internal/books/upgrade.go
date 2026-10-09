@@ -9,8 +9,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/metadata"
-	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 // Upgrading the library to Hardcover.
@@ -84,30 +84,76 @@ func (s *Service) UpgradeStatus() UpgradeStatus {
 	return s.upgrade.status
 }
 
-// StartUpgrade begins re-matching in the background. False when one is already running
-// or Hardcover isn't the current source.
-func (s *Service) StartUpgrade(ctx context.Context) bool {
+// BeginUpgrade claims the re-match: false when one is already running or Hardcover isn't
+// the current source. The caller then runs it with RunUpgrade, or gives the claim back
+// with AbandonUpgrade if it couldn't be started. Claimed up front, not in the job, so the
+// Books page's first status read already says it is running.
+func (s *Service) BeginUpgrade() bool {
 	if s.MetadataSource() != metadata.SourceHardcover {
 		return false
 	}
 	s.upgrade.mu.Lock()
+	defer s.upgrade.mu.Unlock()
 	if s.upgrade.status.Running {
-		s.upgrade.mu.Unlock()
 		return false
 	}
 	s.upgrade.status = UpgradeStatus{Running: true, StartedAt: time.Now().Unix()}
-	s.upgrade.mu.Unlock()
-	safego.Go(s.log, "books: catalogue upgrade", func() { s.runUpgrade(ctx) })
 	return true
 }
 
-// MaybeStartUpgrade runs the upgrade when Hardcover is the source and books are still
-// on other keys — called at startup and when the key is saved.
-func (s *Service) MaybeStartUpgrade(ctx context.Context) bool {
+// AbandonUpgrade releases a claim that never ran.
+func (s *Service) AbandonUpgrade() {
+	s.setUpgrade(func(st *UpgradeStatus) { st.Running = false; st.EndedAt = time.Now().Unix() })
+}
+
+// RunUpgrade runs a claimed re-match to the end and returns how it went.
+func (s *Service) RunUpgrade(ctx context.Context) UpgradeStatus {
+	s.runUpgrade(ctx)
+	return s.UpgradeStatus()
+}
+
+// UpgradeResult is the re-match's outcome as a job result: the counts, not the list of
+// books left behind (the Books page reads that from the status endpoint).
+type UpgradeResult struct {
+	Total     int    `json:"total"`
+	Upgraded  int    `json:"upgraded"`
+	Flagged   int    `json:"flagged"`
+	Unmatched int    `json:"unmatched"`
+	Error     string `json:"error,omitempty"`
+}
+
+// SubmitUpgrade claims the re-match and starts it as a books.upgrade job. started is false
+// when one is already running or Hardcover isn't the source.
+func (s *Service) SubmitUpgrade(ctx context.Context, sub jobs.Submitter, trigger string) (jobID int64, started bool, err error) {
+	if !s.BeginUpgrade() {
+		return 0, false, nil
+	}
+	id, existing, err := jobs.Start(ctx, sub, s.log, jobs.Spec{
+		Kind: "books.upgrade", Target: "all", Trigger: trigger, Class: "books.upgrade", Abandon: s.AbandonUpgrade,
+		Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
+			st := s.RunUpgrade(ctx)
+			p.SetMessage(fmt.Sprintf("Re-matched %d of %d books to Hardcover", st.Upgraded, st.Total))
+			return UpgradeResult{Total: st.Total, Upgraded: st.Upgraded, Flagged: st.Flagged, Unmatched: st.Unmatched, Error: st.Error}, nil
+		},
+	})
+	if err != nil || existing {
+		s.AbandonUpgrade()
+		return id, false, err
+	}
+	return id, true, nil
+}
+
+// MaybeSubmitUpgrade starts the re-match when Hardcover is the source and books are still
+// on other keys — at startup and when the key is saved.
+func (s *Service) MaybeSubmitUpgrade(ctx context.Context, sub jobs.Submitter, trigger string) bool {
 	if s.MetadataSource() != metadata.SourceHardcover || s.Upgradable(ctx) == 0 {
 		return false
 	}
-	return s.StartUpgrade(ctx)
+	_, started, err := s.SubmitUpgrade(ctx, sub, trigger)
+	if err != nil {
+		s.log.Warn("books: couldn't start the catalogue upgrade", "err", err)
+	}
+	return started
 }
 
 // forgetUnmatched drops an ignored book from the last run's report.
@@ -149,6 +195,7 @@ func (s *Service) setUpgrade(fn func(*UpgradeStatus)) {
 	s.upgrade.mu.Unlock()
 }
 
+// runUpgrade does the re-match for a claimed run and releases the claim.
 func (s *Service) runUpgrade(ctx context.Context) {
 	defer s.setUpgrade(func(st *UpgradeStatus) { st.Running = false; st.EndedAt = time.Now().Unix() })
 	list, err := s.repo.List(ctx)

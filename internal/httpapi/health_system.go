@@ -12,6 +12,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/health"
+	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 )
 
@@ -116,7 +117,7 @@ func (a *api) registerHealthChecks(reg *health.Registry) {
 	}
 
 	// The Downloads folder is read live: one picked since boot is the one filling up.
-	reg.Register(health.DiskFreeCheck(func() string { return a.roots().Downloads(context.Background()) }))
+	reg.Register(health.DiskFreeCheck(func() string { return a.roots().Downloads(a.runCtx()) }))
 
 	if a.deps.AudioManager != nil && a.deps.Settings != nil {
 		reg.Register(health.AudiobookServerCheck(func(ctx context.Context) (bool, bool, string) {
@@ -138,16 +139,17 @@ func (a *api) registerHealthChecks(reg *health.Registry) {
 // recheckHealth re-runs the named checks in the background after something they judge was
 // just changed (a key saved, a folder picked), so the panel catches up now rather than at
 // the check's next turn.
-func (a *api) recheckHealth(keys ...string) {
+func (a *api) recheckHealth(r *http.Request, keys ...string) {
 	if a.deps.Health == nil {
 		return
 	}
-	a.bg("health check", strings.Join(keys, ","), time.Minute, func(ctx context.Context) error {
-		for _, k := range keys {
-			a.deps.Health.RunNow(ctx, k)
-		}
-		return nil
-	})
+	_, _, _ = a.submit(r, jobs.Spec{Kind: "health.check", Target: strings.Join(keys, ","), Timeout: time.Minute,
+		Fn: errFn(func(ctx context.Context) error {
+			for _, k := range keys {
+				a.deps.Health.RunNow(ctx, k)
+			}
+			return nil
+		})})
 }
 
 // tmdbValidator is the TMDB provider's key check (metadata.TMDB.Validate).

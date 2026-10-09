@@ -21,7 +21,8 @@ import {
   type MovieFile,
   type MovieVersion,
 } from "../lib/api";
-import { useLive } from "../lib/useLive";
+import { useLive, type LiveEvent } from "../lib/useLive";
+import { jobFailed, jobToast, useJob } from "../lib/useJob";
 
 const AVAILABILITY_LABELS: Record<string, string> = {
   announced: "Announced",
@@ -36,10 +37,14 @@ export function MovieDetail() {
   const [error, setError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
-  const { last } = useLive();
+  const [toastErr, setToastErr] = useState(false);
+  const live = useLive();
+  const { last } = live;
 
-  const flash = (msg: string) => {
+  // err shows the toast in the error colour: a search that failed says so plainly.
+  const flash = (msg: string, err = false) => {
     setToast(msg);
+    setToastErr(err);
     window.setTimeout(() => setToast(null), 3500);
   };
 
@@ -159,7 +164,7 @@ export function MovieDetail() {
               </div>
 
               <WhyPanel movie={movie} />
-              <Toolbar movie={movie} onChange={load} flash={flash} />
+              <Toolbar movie={movie} onChange={load} flash={flash} live={live} />
             </div>
           </div>
         </div>
@@ -174,7 +179,7 @@ export function MovieDetail() {
       </div>
 
       {toast && (
-        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: toastErr ? "var(--reject)" : "var(--ink)" }}>
           {toast}
         </div>
       )}
@@ -703,8 +708,18 @@ function WhyPanel({ movie }: { movie: Movie }) {
   );
 }
 
-function Toolbar({ movie, onChange, flash }: { movie: Movie; onChange: () => void; flash: (m: string) => void }) {
+function Toolbar({ movie, onChange, flash, live }: { movie: Movie; onChange: () => void; flash: (m: string, err?: boolean) => void; live: { connected: boolean; last: LiveEvent | null } }) {
   const [busy, setBusy] = useState<string | null>(null);
+  // The search runs as a job; when it ends the toast says what it actually found.
+  const [searchJob, setSearchJob] = useState<number | null>(null);
+  const search = useJob(searchJob, {
+    live,
+    onDone: (j) => {
+      setSearchJob(null);
+      flash(jobToast(j, "Search finished."), jobFailed(j));
+      onChange();
+    },
+  });
   const [showImport, setShowImport] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showPaste, setShowPaste] = useState(false);
@@ -756,8 +771,8 @@ function Toolbar({ movie, onChange, flash }: { movie: Movie; onChange: () => voi
           {busy === "refresh" ? "Refreshing…" : "Refresh & rescan"}
         </button>
         {!movie.has_file && (
-          <button className={btn} style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }} disabled={busy !== null} onClick={() => run("search", async () => { await api.searchMovie(movie.id); flash(`Searching — follow it in ${PAGE.downloads} → Searching.`); })}>
-            {busy === "search" ? "Searching…" : "Auto-grab best"}
+          <button className={btn} style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }} disabled={busy !== null || search.running} onClick={() => run("search", async () => { const r = await api.searchMovie(movie.id); if (r.job_id) setSearchJob(r.job_id); flash(`Searching — follow it in ${PAGE.downloads} → Searching.`); })}>
+            {busy === "search" || search.running ? "Searching…" : "Auto-grab best"}
           </button>
         )}
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowSearch(true)}>Search indexers</button>

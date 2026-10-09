@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/indexer"
+	"github.com/tristenlammi/arrmada/internal/jobs"
 )
 
 // Extra audiobook versions of a book (a full-cast production beside the standard
@@ -55,10 +57,10 @@ func (a *api) handleAddAudioVersion(w http.ResponseWriter, r *http.Request) {
 		// never look for the new version; give it a fresh start and search now.
 		a.deps.Books.ResetSearchMisses(r.Context(), id)
 		vid := v.ID
-		a.bg("book: first search for a new audiobook version", fmt.Sprintf("book %d version %d", id, vid), 5*time.Minute, func(ctx context.Context) error {
-			_, err := a.deps.Automation.SearchAudioVersionNow(ctx, id, vid)
-			return err
-		})
+		_, _, _ = a.submit(r, jobs.Spec{Kind: "book.search-version", Target: fmt.Sprintf("book:%d:v%d", id, vid), Class: jobs.ClassIndexerSearch, Timeout: 5 * time.Minute,
+			Fn: outcomeFn("version", func(ctx context.Context) (automation.SearchOutcome, error) {
+				return a.deps.Automation.SearchAudioVersionNow(ctx, id, vid)
+			})})
 	}
 	a.writeJSON(w, http.StatusCreated, v)
 }
@@ -149,7 +151,10 @@ func (a *api) handleSearchAudioVersion(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	grabbed, err := a.deps.Automation.SearchAudioVersionNow(r.Context(), id, vid)
+	out, err := a.deps.Automation.SearchAudioVersionNow(r.Context(), id, vid)
+	if errors.Is(err, automation.ErrAlreadySearching) {
+		out.Reason, err = automation.ReasonAlreadySearching, nil
+	}
 	if err != nil {
 		if errors.Is(err, books.ErrVersionNotFound) || errors.Is(err, books.ErrNotFound) {
 			a.writeVersionError(w, err)
@@ -163,5 +168,5 @@ func (a *api) handleSearchAudioVersion(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"grabbed": grabbed})
+	a.writeJSON(w, http.StatusOK, map[string]any{"grabbed": out.Grabbed > 0, "message": out.Message("version"), "outcome": out})
 }

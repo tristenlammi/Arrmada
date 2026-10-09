@@ -19,19 +19,19 @@ func TestConsecutiveFailures(t *testing.T) {
 	})
 	task := s.tasks[0]
 	ctx := context.Background()
-	consecutive := func() uint64 { return s.Tasks()[0].ConsecutiveFailures }
+	consecutive := func() uint64 { return s.Snapshot()[0].ConsecutiveFailures }
 
-	s.exec(ctx, task)
-	s.exec(ctx, task)
+	s.exec(ctx, task, TriggerSchedule)
+	s.exec(ctx, task, TriggerSchedule)
 	if got := consecutive(); got != 2 {
 		t.Fatalf("after two failures: %d", got)
 	}
 	fail = false
-	s.exec(ctx, task)
+	s.exec(ctx, task, TriggerSchedule)
 	if got := consecutive(); got != 0 {
 		t.Fatalf("after a success: %d", got)
 	}
-	if got := s.Tasks()[0].Failures; got != 2 {
+	if got := s.Snapshot()[0].Failures; got != 2 {
 		t.Errorf("total failures %d, want 2", got)
 	}
 }

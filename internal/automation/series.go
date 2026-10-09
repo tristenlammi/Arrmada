@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -169,7 +170,12 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 				continue
 			}
 		}
-		n, err := c.searchSeriesOnce(ctx, s.ID)
+		out, err := c.searchSeriesOnce(ctx, s.ID)
+		n := out.Grabbed
+		if errors.Is(err, ErrAlreadySearching) {
+			c.log.Debug("series: skipping a show that is already being searched", "series", s.Title)
+			continue
+		}
 		if outage.note(err) {
 			if outage.stop() {
 				break // the indexers are down: the rest would only fail the same way
@@ -196,36 +202,46 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 //   - STILL-RUNNING shows: single-season packs, then individual episodes — no whole-show
 //     or multi-season packs, since the show isn't finished and each new season is best
 //     picked up as its own pack.
-func (c *Coordinator) SearchSeriesNow(ctx context.Context, seriesID int64) error {
-	_, err := c.searchSeriesOnce(ctx, seriesID)
-	return err
+//
+// The outcome says what it found, for the Search button.
+func (c *Coordinator) SearchSeriesNow(ctx context.Context, seriesID int64) (SearchOutcome, error) {
+	return c.searchSeriesOnce(ctx, seriesID)
 }
 
-// searchSeriesOnce is SearchSeriesNow that also reports how many releases it grabbed,
-// so the missing-sweep can back off a series that keeps coming up empty.
-func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (int, error) {
+// searchSeriesOnce is SearchSeriesNow; the missing-sweep reads the outcome's grab count to
+// back off a series that keeps coming up empty.
+func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (SearchOutcome, error) {
 	if c.series == nil {
-		return 0, nil
+		return SearchOutcome{Reason: ReasonNothingWanted}, nil
 	}
+	release, ok := c.claims.claim(seriesKey(seriesID))
+	if !ok {
+		return SearchOutcome{Reason: ReasonAlreadySearching}, ErrAlreadySearching
+	}
+	defer release()
 	s, err := c.series.Get(ctx, seriesID)
 	if err != nil {
-		return 0, err
+		return SearchOutcome{}, err
 	}
 	// The grab step refuses to grab with an unreadable blocklist or pending-grab list.
 	// Checked up front as well, so that case is an error for the sweep (no backoff miss,
 	// and Search now says so) and costs no indexer queries that couldn't be acted on.
 	if _, err := c.blockedSetSeries(ctx, s.ID); err != nil {
 		c.skipUnreadable(s.Title, err)
-		return 0, err
+		return SearchOutcome{}, err
 	}
 	if _, err := c.pendingSeriesGrabTitles(ctx, s.ID); err != nil {
 		c.skipUnreadable(s.Title, err)
-		return 0, err
+		return SearchOutcome{}, err
 	}
+	out := SearchOutcome{Searched: true}
 	releases, err := c.searchSeriesReleases(ctx, s)
 	if err != nil {
-		return 0, err
+		return out, err
 	}
+	// The series search already narrows releases to this show, so what came back is
+	// what matched; which of them were usable isn't separated out on this path.
+	out.Returned, out.Matching = len(releases), len(releases)
 	grabbed, remaining := 0, []epKey(nil)
 	if len(releases) > 0 {
 		grabbed, remaining = c.grabSeriesFrom(ctx, s, releases)
@@ -233,7 +249,10 @@ func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (int
 		remaining = sortedKeys(setOf(wanted))
 	}
 	grabbed += c.searchByAbsolute(ctx, s, remaining)
-	return grabbed, nil
+	out.Grabbed = grabbed
+	out.Usable = out.Matching
+	out.settle()
+	return out, nil
 }
 
 // maxAbsoluteQueries caps the follow-up searches per series per sweep. A title search

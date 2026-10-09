@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/config"
+	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/libroots"
 )
 
@@ -217,12 +218,13 @@ func (a *api) handleSetLibraryPaths(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(changed) > 0 && a.deps.OnFoldersChanged != nil {
 		hook := a.deps.OnFoldersChanged
-		a.bg("apply changed folders", strings.Join(changed, ","), 5*time.Minute, func(ctx context.Context) error {
-			hook(ctx, changed)
-			return nil
-		})
+		_, _, _ = a.submit(r, jobs.Spec{Kind: "library.apply-folders", Target: strings.Join(changed, ","), Timeout: 5 * time.Minute,
+			Fn: errFn(func(ctx context.Context) error {
+				hook(ctx, changed)
+				return nil
+			})})
 	}
-	a.recheckHealth("library", "recycle.drive")
+	a.recheckHealth(r, "library", "recycle.drive")
 	a.handleGetLibraryPaths(w, r)
 }
 

@@ -3,11 +3,13 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/music"
 	"github.com/tristenlammi/arrmada/internal/quality"
 )
@@ -219,25 +221,36 @@ func (a *api) musicErr(w http.ResponseWriter, err error, msg string) {
 // collection means one MusicBrainz lookup per unknown artist at one request per second,
 // far longer than any sensible request timeout.
 func (a *api) handleScanMusicLibrary(w http.ResponseWriter, r *http.Request) {
-	if !a.musicScan.CompareAndSwap(false, true) {
-		a.writeError(w, http.StatusConflict, "a music scan is already running")
+	// One scan at a time (single-flight): two overlapping runs would double every
+	// MusicBrainz lookup and race each other's writes. Its own class, so a two-hour music
+	// scan doesn't hold up the other libraries' scans.
+	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "music.scan", Target: "all", Class: "music.scan", Timeout: 2 * time.Hour,
+		Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
+			res, err := a.deps.Automation.ScanMusicLibrary(ctx)
+			if err != nil {
+				return nil, err
+			}
+			a.deps.Log.Info("music scan complete", "artists", res.Artists, "albums", res.Albums,
+				"tracks", res.Tracks, "unmatched", len(res.Unmatched))
+			a.deps.Bus.Publish("library.scanned", map[string]any{
+				"media": "music", "artists": res.Artists, "albums": res.Albums,
+				"tracks": res.Tracks, "unmatched": len(res.Unmatched),
+			})
+			msg := fmt.Sprintf("Found %s, %s and %s", countOf(res.Artists, "artist"), countOf(res.Albums, "album"), countOf(res.Tracks, "track"))
+			if n := len(res.Unmatched); n > 0 {
+				msg += "; " + countOf(n, "folder") + " not recognised"
+			}
+			p.SetMessage(msg)
+			return map[string]int{"artists": res.Artists, "albums": res.Albums, "tracks": res.Tracks, "unmatched": len(res.Unmatched)}, nil
+		}})
+	if !ok {
 		return
 	}
-	a.bg("music scan", "music", 2*time.Hour, func(ctx context.Context) error {
-		defer a.musicScan.Store(false)
-		res, err := a.deps.Automation.ScanMusicLibrary(ctx)
-		if err != nil {
-			return err
-		}
-		a.deps.Log.Info("music scan complete", "artists", res.Artists, "albums", res.Albums,
-			"tracks", res.Tracks, "unmatched", len(res.Unmatched))
-		a.deps.Bus.Publish("library.scanned", map[string]any{
-			"media": "music", "artists": res.Artists, "albums": res.Albums,
-			"tracks": res.Tracks, "unmatched": len(res.Unmatched),
-		})
-		return nil
-	})
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "scanning"})
+	if existing {
+		a.alreadyRunning(w, jobID, "a music scan is already running")
+		return
+	}
+	a.accepted(w, jobID, false, map[string]any{"status": "scanning"})
 }
 
 // handleGrabDiscography grabs a whole-catalogue pack for an artist.

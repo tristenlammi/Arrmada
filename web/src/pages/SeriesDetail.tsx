@@ -10,6 +10,7 @@ import { FileDetailsModal } from "../components/FileDetailsModal";
 import { FitBadge } from "../components/FitBadge";
 import { RenameModal } from "./series/RenameModal";
 import { usePoll } from "../lib/usePoll";
+import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { api, importListNotice, type FitItem, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile } from "../lib/api";
 
 // Auto-grab is fire-and-forget: the API answers 202 and searches in the background, and a
@@ -69,8 +70,10 @@ export function SeriesDetail() {
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [toastErr, setToastErr] = useState(false);
 
-  const flash = (msg: string) => { setToast(msg); window.setTimeout(() => setToast(null), 3500); };
+  // err shows the toast in the error colour: a search that failed says so plainly.
+  const flash = (msg: string, err = false) => { setToast(msg); setToastErr(err); window.setTimeout(() => setToast(null), 3500); };
 
   const load = useCallback(() => {
     return api.seriesDetail(sid).then(setS).catch((e: Error) => {
@@ -196,7 +199,7 @@ export function SeriesDetail() {
       </div>
 
       {toast && (
-        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>
+        <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: toastErr ? "var(--reject)" : "var(--ink)" }}>{toast}</div>
       )}
     </>
   );
@@ -208,8 +211,18 @@ function statusOf(have: number, total: number, monitored: boolean): { label: str
   return { label: "Unmonitored", tone: "var(--ink-faint)", soft: "var(--panel-2)" };
 }
 
-function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () => void; flash: (m: string) => void }) {
+function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () => void; flash: (m: string, err?: boolean) => void }) {
   const [busy, setBusy] = useState<string | null>(null);
+  // The search and a whole-folder import run as jobs; when one ends the toast says what
+  // actually happened.
+  const [searchJob, setSearchJob] = useState<number | null>(null);
+  const [importJob, setImportJob] = useState<number | null>(null);
+  const search = useJob(searchJob, {
+    onDone: (j) => { setSearchJob(null); flash(jobToast(j, "Search finished."), jobFailed(j)); onChange(); },
+  });
+  useJob(importJob, {
+    onDone: (j) => { setImportJob(null); flash(jobToast(j, "Import finished."), jobFailed(j)); onChange(); },
+  });
   const [showImport, setShowImport] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showPaste, setShowPaste] = useState(false);
@@ -257,8 +270,8 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
         >
           {busy === "type" ? "Saving…" : series.series_type === "anime" ? "Anime ✓" : "Anime"}
         </button>
-        <button className={btn} style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }} disabled={busy !== null} onClick={() => run("search", async () => { await api.searchSeries(series.id); flash("Searching — packs and episodes will show in Downloads once grabbed."); })}>
-          {busy === "search" ? "Searching…" : "Auto-grab missing"}
+        <button className={btn} style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }} disabled={busy !== null || search.running} onClick={() => run("search", async () => { const r = await api.searchSeries(series.id); if (r.job_id) setSearchJob(r.job_id); flash("Searching — packs and episodes will show in Downloads once grabbed."); })}>
+          {busy === "search" || search.running ? "Searching…" : "Auto-grab missing"}
         </button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowSearch(true)}>Search indexers</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowPaste(true)}>Upload torrent</button>
@@ -277,7 +290,14 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
         />
       )}
       {showRename && <RenameModal seriesId={series.id} title={series.title} onClose={() => setShowRename(false)} onRenamed={onChange} />}
-      {showImport && <ManualImportModal series={series} onClose={() => setShowImport(false)} onImported={() => { onChange(); flash("Imported."); }} />}
+      {showImport && (
+        <ManualImportModal
+          series={series}
+          onClose={() => setShowImport(false)}
+          onImported={() => { onChange(); flash("Imported."); }}
+          onBackground={(jobId) => { onChange(); if (jobId) setImportJob(jobId); }}
+        />
+      )}
       {showSearch && (
         <ReleaseSearchModal
           title={`Search indexers — ${series.title}`}
@@ -540,7 +560,7 @@ function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep:
   );
 }
 
-function ManualImportModal({ series, onClose, onImported }: { series: SeriesT; onClose: () => void; onImported: () => void }) {
+function ManualImportModal({ series, onClose, onImported, onBackground }: { series: SeriesT; onClose: () => void; onImported: () => void; onBackground: (jobId?: number) => void }) {
   const [cands, setCands] = useState<SeriesImportCandidate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState<string | null>(null);
@@ -579,7 +599,7 @@ function ManualImportModal({ series, onClose, onImported }: { series: SeriesT; o
       // a spinner wondering whether navigating away cancels it.
       if (res.background) {
         setBackground(true);
-        onImported();
+        onBackground(res.job_id);
         return;
       }
       onImported();
@@ -606,7 +626,7 @@ function ManualImportModal({ series, onClose, onImported }: { series: SeriesT; o
         {background && (
           <div className="mb-3 rounded-lg p-3 text-[12px]" style={{ border: "1px solid var(--accent-line)", background: "var(--accent-soft)", color: "var(--accent)" }}>
             Importing in the background — this can take several minutes for a large pack.
-            You can close this and keep using Arrmada; progress appears in the log and the episode list updates as it goes.
+            You can close this and keep using the page; the episode list updates as it goes, and a note appears when it's done.
           </div>
         )}
         {folders.length > 0 && (

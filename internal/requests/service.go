@@ -11,6 +11,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/eventbus"
+	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/quality"
@@ -31,11 +32,12 @@ type Service struct {
 	bus        *eventbus.Bus
 	appriseBin string
 	push       PushSender // optional: Web Push fan-out alongside inbox + Apprise
-	runner     Runner     // where approval searches run; nil = untracked, panic-safe goroutines
+	runner     Runner     // where approval searches run without a job runner; nil = untracked, panic-safe goroutines
+	jobs       jobs.Submitter
 	log        *slog.Logger
 	// searchBook starts a book search (the coordinator's SearchBookNow); a field so
 	// tests can see it called without a coordinator.
-	searchBook func(ctx context.Context, bookID int64) error
+	searchBook func(ctx context.Context, bookID int64) (automation.SearchOutcome, error)
 }
 
 // Runner starts named background work with the app's run context (cancelled at
@@ -46,15 +48,44 @@ type Runner interface {
 
 // SetRunner sets where the searches an approval starts run, so shutdown cancels them
 // and a panic in one is contained (optional; without it they still can't crash the app).
+// Used only when no job runner is set.
 func (s *Service) SetRunner(r Runner) { s.runner = r }
+
+// SetJobs makes an approval's search a job (movie.search, series.search or book.search,
+// trigger request:<id>): recorded, single-flight with a Search click on the same title,
+// and in the indexer-search class with every other search.
+func (s *Service) SetJobs(sub jobs.Submitter) { s.jobs = sub }
 
 // background runs fn after the approval has answered, bounded by timeout and logged on
 // failure. Detached from the request: an approval returns as soon as the title is added.
-func (s *Service) background(name, title string, timeout time.Duration, fn func(ctx context.Context) error) {
+// With a job runner it is a job of kind on target; finding the title already being
+// searched is fine — that search covers it.
+func (s *Service) background(kind, target, trigger, title, noun string, timeout time.Duration, fn func(ctx context.Context) (automation.SearchOutcome, error)) {
+	if s.jobs != nil {
+		_, _, err := s.jobs.Submit(context.Background(), jobs.Spec{
+			Kind: kind, Target: target, Trigger: trigger, Class: jobs.ClassIndexerSearch, Timeout: timeout,
+			Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
+				out, err := fn(ctx)
+				if errors.Is(err, automation.ErrAlreadySearching) {
+					out.Reason, err = automation.ReasonAlreadySearching, nil
+				}
+				if err != nil {
+					return out, err
+				}
+				p.SetMessage(out.Message(noun))
+				return out, nil
+			},
+		})
+		if err != nil {
+			s.log.Warn("request: couldn't start the search", "title", title, "err", err)
+		}
+		return
+	}
+	name := kind + " " + target
 	run := func(parent context.Context) {
 		c, cancel := context.WithTimeout(parent, timeout)
 		defer cancel()
-		if err := fn(c); err != nil {
+		if _, err := fn(c); err != nil && !errors.Is(err, automation.ErrAlreadySearching) {
 			s.log.Warn("request: "+name+" failed", "title", title, "err", err)
 		}
 	}
@@ -215,6 +246,7 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		profile = s.quality.DefaultProfile(ctx, req.MediaType)
 	}
 
+	trigger := fmt.Sprintf("request:%d", id)
 	switch req.MediaType {
 	case "movie":
 		m, addErr := s.movies.Add(ctx, req.TMDBID, profile, true)
@@ -223,7 +255,7 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		}
 		if addErr == nil {
 			mid := m.ID
-			s.background("movie search", req.Title, 3*time.Minute, func(c context.Context) error {
+			s.background("movie.search", fmt.Sprintf("movie:%d", mid), trigger, req.Title, "movie", 3*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
 				return s.coord.SearchMovie(c, mid)
 			})
 		}
@@ -234,7 +266,7 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		}
 		if addErr == nil {
 			sid := sr.ID
-			s.background("series search", req.Title, 5*time.Minute, func(c context.Context) error {
+			s.background("series.search", fmt.Sprintf("series:%d", sid), trigger, req.Title, "show", 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
 				return s.coord.SearchSeriesNow(c, sid)
 			})
 		}
@@ -258,7 +290,7 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		existingWants := addErr != nil && s.lacksWantedEdition(ctx, b) && len(s.activeGrabs(ctx, "book", b.ID)) == 0
 		if b.ID > 0 && (addErr == nil || existingWants) && s.searchBook != nil {
 			bid := b.ID
-			s.background("book search", req.Title, 5*time.Minute, func(c context.Context) error {
+			s.background("book.search", fmt.Sprintf("book:%d", bid), trigger, req.Title, "book", 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
 				return s.searchBook(c, bid)
 			})
 		}

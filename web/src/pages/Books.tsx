@@ -4,6 +4,7 @@ import { PageHeader } from "../components/PageHeader";
 import { DeleteBookDialog } from "../components/DeleteBookDialog";
 import { api, type BookSource, type BookUpgradeStatus, type BookSweepStatus, type Book, type BookLookup, type BookAuthor, type BookDiscoverCard } from "../lib/api";
 import { usePersisted } from "../lib/persist";
+import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { posterThumb } from "../lib/img";
 import { LINKS } from "../lib/links";
 import { useMe, isAdmin } from "../lib/me";
@@ -89,7 +90,9 @@ export function Books() {
     return () => { alive = false; window.clearTimeout(timer); };
   }, [list.length]);
 
-  const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); };
+  const [toastErr, setToastErr] = useState(false);
+  // err shows the toast in the error colour: a search or scan that failed says so plainly.
+  const flash = (m: string, err = false) => { setToast(m); setToastErr(err); window.setTimeout(() => setToast(null), 3500); };
   const refresh = booksQ.refetch;
   // Poll the upgrade while it runs, then reload the library once it lands.
   usePoll(() => api.bookUpgradeStatus().then((st) => {
@@ -200,8 +203,22 @@ export function Books() {
       .sort((a, b) => a.name.localeCompare(b.name)); // authors A→Z, books A→Z within each
   }, [filtered]);
 
+  // A search runs as a job; when the latest one ends the toast says what it found.
+  const [searchJob, setSearchJob] = useState<{ id: number; title: string } | null>(null);
+  useJob(searchJob?.id, {
+    onDone: (j) => {
+      const title = searchJob?.title;
+      setSearchJob(null);
+      flash(title ? `“${title}”: ${jobToast(j, "search finished.")}` : jobToast(j, "Search finished."), jobFailed(j));
+      refresh();
+    },
+  });
   const search = async (b: Book) => {
-    try { await api.searchBook(b.id); flash(`Searching for “${b.title}”…`); } catch (e) { flash((e as Error).message); }
+    try {
+      const r = await api.searchBook(b.id);
+      if (r.job_id) setSearchJob({ id: r.job_id, title: b.title });
+      flash(`Searching for “${b.title}”…`);
+    } catch (e) { flash((e as Error).message); }
   };
   // One-off: a series is normally learned from the release that matched a book, so a
   // library assembled before that existed knows nothing — and a book you already own is
@@ -217,10 +234,16 @@ export function Books() {
   };
   // After a scan starts, refresh the grid a dozen times as books land.
   const watchScan = usePollBurst(() => refresh(), 2500, 12, () => setScanning(false));
+  // The scan runs as a job; when it ends the toast says what it added.
+  const [scanJob, setScanJob] = useState<number | null>(null);
+  const scan = useJob(scanJob, {
+    onDone: (j) => { setScanJob(null); refresh(); flash(jobToast(j, "Scan finished."), jobFailed(j)); },
+  });
   const scanLibrary = async () => {
     setScanning(true);
     try {
-      await api.scanBooks();
+      const r = await api.scanBooks();
+      if (r.job_id) setScanJob(r.job_id);
       flash("Scanning your library — books will appear shortly.");
       watchScan();
     } catch (e) { flash((e as Error).message); setScanning(false); }
@@ -258,7 +281,7 @@ export function Books() {
               </button>
             )}
             <button onClick={backfillSeries} disabled={backfilling} title="One-off: look up which series your books belong to. Searches indexers to read the series off, and downloads nothing." className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{backfilling ? "Looking up…" : "Find series"}</button>
-            <button onClick={scanLibrary} disabled={scanning} title="Find books already in your library folder and catalog them" className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{scanning ? "Scanning…" : "Scan library"}</button>
+            <button onClick={scanLibrary} disabled={scanning || scan.running} title="Find books already in your library folder and catalog them" className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{scanning || scan.running ? "Scanning…" : "Scan library"}</button>
             <button onClick={() => (multiSelect ? exitMultiSelect() : enterSelect())} className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: `1px solid ${multiSelect ? "var(--accent)" : "var(--line)"}`, background: multiSelect ? "var(--accent-soft)" : "var(--panel-2)", color: multiSelect ? "var(--accent)" : "var(--ink)" }}>{multiSelect ? "Done" : "Select"}</button>
             <button onClick={() => setAddingAuthor(true)} disabled={!metaOK} title="Add an author's entire catalogue of official books" className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", background: "var(--panel-2)", color: "var(--accent)", opacity: metaOK ? 1 : 0.5 }}>+ Add author</button>
             <button onClick={() => setAdding(true)} disabled={!metaOK} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)", opacity: metaOK ? 1 : 0.5 }}>+ Add book</button>
@@ -381,7 +404,7 @@ export function Books() {
           </div>
         )}
 
-        {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
+        {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: toastErr ? "var(--reject)" : "var(--ink)" }}>{toast}</div>}
       </div>
       {adding && <AddBookModal onClose={() => setAdding(false)} onAdded={() => { setAdding(false); refresh(); }} />}
       {addingAuthor && <AddAuthorModal onClose={() => setAddingAuthor(false)} onAdded={(msg) => { setAddingAuthor(false); refresh(); flash(msg); }} />}

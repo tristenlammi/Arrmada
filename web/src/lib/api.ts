@@ -442,24 +442,6 @@ export interface HealthCheck {
   findings: HealthWarning[];
 }
 
-// One scheduled task's schedule and run history (GET /api/v1/system/tasks). Times arrive
-// as RFC 3339 strings or unix seconds, and an unset one as null, "" or Go's zero time;
-// lib/taskTime.ts reads them all.
-export interface SystemTask {
-  name: string;
-  label?: string;
-  description?: string;
-  interval_seconds: number;
-  last_start: string | number | null;
-  last_duration_ms: number;
-  last_error: string;
-  runs: number;
-  failures: number;
-  consecutive_failures?: number;
-  running: boolean;
-  next_run: string | number | null;
-}
-
 export interface SystemHealth {
   status: string; // "ok" | "warning" | "error"
   warnings: HealthWarning[];
@@ -651,6 +633,66 @@ export interface RestoreStaged {
   restarting: boolean; // false: restart by hand (manual_command), or cancel
   manual_command: string;
   schema_version: string;
+}
+
+// What a POST that starts background work adds to its answer: the job that is doing it
+// (GET /api/v1/jobs/{id}), and whether that job was already running from an earlier click.
+export interface JobRef {
+  job_id?: number;
+  existing?: boolean;
+}
+
+export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "panicked" | "interrupted";
+
+// A background job (staff only): a search, scan, import or Run now, with how it ended.
+// message is a plain sentence for a toast ("Grabbed …", "Added 3 movies").
+export interface Job {
+  id: number;
+  kind: string;
+  target: string;
+  trigger: string;
+  status: JobStatus;
+  progress: number; // 0..1
+  message: string;
+  error: string;
+  result?: unknown;
+  created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+// What a search job's result holds.
+export interface SearchOutcome {
+  searched: boolean;
+  returned: number;
+  matching: number;
+  usable: number;
+  grabbed: number;
+  grabbed_titles?: string[];
+  reason: "nothing-wanted" | "no-releases" | "none-for-this-title" | "all-blocklisted-or-below-profile" | "grabbed" | "already-searching";
+}
+
+// One recurring task as GET /api/v1/system/tasks reports it. Times are ISO strings, null
+// until they happen; last_error is empty once a run succeeds.
+export interface TaskStatus {
+  name: string;
+  label: string;
+  description: string;
+  interval_seconds: number;
+  running: boolean;
+  last_start: string | null;
+  last_end: string | null;
+  last_duration_ms: number;
+  last_status: "" | "ok" | "failed" | "panicked";
+  last_ok: boolean;
+  last_error: string;
+  last_error_at: string | null;
+  runs: number;
+  failures: number;
+  consecutive_failures: number;
+  skipped: number;
+  next_run: string | null;
+  job_id?: number; // the Run now in progress
 }
 
 // The download link for a backup (a .db.gz streamed by the server, admin only).
@@ -1452,9 +1494,9 @@ export const api = {
   unblockPlex: (plexID: string) =>
     req<{ blocks: PlexBlock[] }>(`/api/v1/users/plex-blocks/${encodeURIComponent(plexID)}`, { method: "DELETE" }).then((r) => r.blocks),
   importOverseerr: (url: string, api_key: string) =>
-    req<{ status: string; found: number }>("/api/v1/requests/import/overseerr", { method: "POST", body: JSON.stringify({ url, api_key }) }),
+    req<{ status: string; found: number } & JobRef>("/api/v1/requests/import/overseerr", { method: "POST", body: JSON.stringify({ url, api_key }) }),
   importTautulli: (url: string, api_key: string) =>
-    req<{ status: string }>("/api/v1/insights/import/tautulli", { method: "POST", body: JSON.stringify({ url, api_key }) }),
+    req<{ status: string } & JobRef>("/api/v1/insights/import/tautulli", { method: "POST", body: JSON.stringify({ url, api_key }) }),
 
   indexers: () => req<{ indexers: Indexer[] }>("/api/v1/indexers").then((r) => r.indexers),
   createIndexer: (body: NewIndexer) =>
@@ -1481,7 +1523,7 @@ export const api = {
     return req<RemoveDownloadResult>(`/api/v1/queue/${encodeURIComponent(hash)}?${q}`, { method: "DELETE" });
   },
   blockDownload: (hash: string, name: string) =>
-    req<{ status: string }>(`/api/v1/queue/${hash}/block`, { method: "POST", body: JSON.stringify({ name }) }),
+    req<{ status: string } & JobRef>(`/api/v1/queue/${hash}/block`, { method: "POST", body: JSON.stringify({ name }) }),
   torrentAction: (hash: string, action: "recheck" | "reannounce" | "prio_up" | "prio_down") =>
     req<{ status: string }>(`/api/v1/queue/${hash}/action`, { method: "POST", body: JSON.stringify({ action }) }),
   // External service credentials, settable in-app (settings-first, env-fallback). The
@@ -1604,14 +1646,22 @@ export const api = {
   },
   recycleStats: () => req<RecycleStats>("/api/v1/recycle"),
   recycleMode: () => req<RecycleMode>("/api/v1/recycle/mode"),
-  // Scheduled tasks (System → Status). The list is an array, or {tasks: [...]}; Run now
-  // answers 409 while the task is already running.
-  systemTasks: async (): Promise<SystemTask[]> => {
-    const r = await req<SystemTask[] | { tasks?: SystemTask[] }>("/api/v1/system/tasks");
-    return Array.isArray(r) ? r : (r?.tasks ?? []);
+  // Background jobs: follow the work a button started (useJob), list and cancel (staff).
+  job: (id: number) => req<Job>(`/api/v1/jobs/${id}`),
+  jobs: (q: { kind?: string; target?: string; status?: string; limit?: number } = {}) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== "") p.set(k, String(v));
+    const qs = p.toString();
+    return req<{ jobs: Job[] }>(`/api/v1/jobs${qs ? `?${qs}` : ""}`).then((r) => r.jobs);
   },
-  runSystemTask: (name: string) =>
-    req<unknown>(`/api/v1/system/tasks/${encodeURIComponent(name)}/run`, { method: "POST" }),
+  cancelJob: (id: number) => req<{ status: string; job_id: number }>(`/api/v1/jobs/${id}/cancel`, { method: "POST" }),
+  // Recurring tasks (System → Status): staff can list them; Run now is admin-only and
+  // answers 409 when the task is already running.
+  tasks: () => req<TaskStatus[]>("/api/v1/system/tasks"),
+  runTask: (name: string) =>
+    req<{ status: string; job_id: number; existing: boolean }>(`/api/v1/system/tasks/${encodeURIComponent(name)}/run`, {
+      method: "POST",
+    }),
   // Database backups — admin only (a backup holds every secret the app has).
   backups: () => req<BackupsState>("/api/v1/system/backups"),
   // A manual database backup, taken synchronously.
@@ -1629,7 +1679,7 @@ export const api = {
   emptyRecycle: (bin?: string) => req<{ freed_bytes: number }>("/api/v1/recycle/empty", { method: "POST", body: JSON.stringify(bin ? { bin } : {}) }),
   restoreRecycle: (id: string) => req<{ status: string }>("/api/v1/recycle/restore", { method: "POST", body: JSON.stringify({ id }) }),
   deleteRecycleItem: (id: string) => req<{ status: string }>("/api/v1/recycle/delete", { method: "POST", body: JSON.stringify({ id }) }),
-  scanLibrary: () => req<{ status: string }>("/api/v1/movies/scan", { method: "POST" }),
+  scanLibrary: () => req<{ status: string } & JobRef>("/api/v1/movies/scan", { method: "POST" }),
   moviesUnmatched: () => req<{ unmatched: UnmatchedFolder[] }>("/api/v1/movies/unmatched").then((r) => r.unmatched),
   importMovieFolder: (folder: string, tmdb_id: number) =>
     req<{ status: string }>("/api/v1/movies/import", { method: "POST", body: JSON.stringify({ folder, tmdb_id }) }),
@@ -1680,7 +1730,7 @@ export const api = {
   bookDiscoverSimilar: (key: string) => req<{ books: BookDiscoverCard[] }>(`/api/v1/books/discover/similar?key=${encodeURIComponent(key)}`).then((r) => r.books),
   bookAuthorImages: () => req<{ images: Record<string, string>; pending: number }>("/api/v1/books/authors/images"),
   backfillBookSeries: () =>
-    req<{ status: string }>("/api/v1/books/series-backfill", { method: "POST" }),
+    req<{ status: string } & JobRef>("/api/v1/books/series-backfill", { method: "POST" }),
   grabBookTorrent: (id: number, torrent: string, filename: string, title: string, versionId?: number) =>
     req<{ status: string }>(`/api/v1/books/${id}/grabtorrent`, { method: "POST", body: JSON.stringify({ torrent, filename, title, version_id: versionId || 0 }) }),
   deleteMovie: (id: number, deleteFiles?: boolean, cancelDownloads?: boolean) => {
@@ -1692,7 +1742,7 @@ export const api = {
   },
   movieDeletePreview: (id: number) => req<MovieDeletePreview>(`/api/v1/movies/${id}/delete-preview`),
   searchMovie: (id: number) =>
-    req<{ status: string }>(`/api/v1/movies/${id}/search`, { method: "POST" }),
+    req<{ status: string } & JobRef>(`/api/v1/movies/${id}/search`, { method: "POST" }),
   movie: (id: number) => req<Movie>(`/api/v1/movies/${id}`),
   movieCollection: (id: number) =>
     req<{ name: string; members: CollectionMember[] }>(`/api/v1/movies/${id}/collection`),
@@ -1704,7 +1754,7 @@ export const api = {
     req<Series>("/api/v1/series", { method: "POST", body: JSON.stringify(body) }),
   seriesDetail: (id: number) => req<Series>(`/api/v1/series/${id}`),
   searchSeries: (id: number) =>
-    req<{ status: string }>(`/api/v1/series/${id}/search`, { method: "POST" }),
+    req<{ status: string } & JobRef>(`/api/v1/series/${id}/search`, { method: "POST" }),
   seriesReleases: (id: number, season?: number, episode?: number) => {
     const q = new URLSearchParams();
     // Season 0 is Specials, not "no season" — send it whenever it's given.
@@ -1718,11 +1768,11 @@ export const api = {
   grabSeries: (id: number, body: { indexer?: string; download_url: string; title: string; season?: number; episode?: number }) =>
     req<{ status: string }>(`/api/v1/series/${id}/grab`, { method: "POST", body: JSON.stringify(body) }),
   autoGrabSeries: (id: number, season: number, episode: number) =>
-    req<{ status: string }>(`/api/v1/series/${id}/autograb`, { method: "POST", body: JSON.stringify({ season, episode }) }),
+    req<{ status: string } & JobRef>(`/api/v1/series/${id}/autograb`, { method: "POST", body: JSON.stringify({ season, episode }) }),
   refreshSeries: (id: number) => req<Series>(`/api/v1/series/${id}/refresh`, { method: "POST" }),
   // Bulk refresh: re-pulls metadata and rescans the disk for every series. Runs in the
   // background — the response only reports how many were queued.
-  refreshAllSeries: () => req<{ queued: number }>(`/api/v1/series/refresh`, { method: "POST" }),
+  refreshAllSeries: () => req<{ queued: number } & JobRef>(`/api/v1/series/refresh`, { method: "POST" }),
   // Requests
   myBooks: () => req<{ books: MyBook[]; requests: MyRequest[] }>("/api/v1/me/books"),
   // A plain link, not a fetch: the browser saves the file with the server's filename.
@@ -1773,7 +1823,7 @@ export const api = {
   seriesManualImportList: (id: number) =>
     req<ManualImportList<SeriesImportCandidate>>(`/api/v1/series/${id}/manualimport`),
   seriesManualImport: (id: number, path: string) =>
-    req<{ status: string; background?: boolean }>(`/api/v1/series/${id}/manualimport`, { method: "POST", body: JSON.stringify({ path }) }),
+    req<{ status: string; background?: boolean } & JobRef>(`/api/v1/series/${id}/manualimport`, { method: "POST", body: JSON.stringify({ path }) }),
   seriesRenamePreview: (id: number) =>
     req<{ items: SeriesRenameItem[]; matches: boolean }>(`/api/v1/series/${id}/rename`),
   // Applies only the previewed items: anything that changed since the preview is skipped
@@ -1810,13 +1860,13 @@ export const api = {
   seriesBlocklist: (id: number) => req<{ blocklist: BlockEntry[] }>(`/api/v1/series/${id}/blocklist`).then((r) => r.blocklist),
   unblockSeries: (id: number, bid: number) => req<void>(`/api/v1/series/${id}/blocklist/${bid}`, { method: "DELETE" }),
   regrabEpisode: (id: number, season: number, episode: number) =>
-    req<{ status: string }>(`/api/v1/series/${id}/seasons/${season}/episodes/${episode}/regrab`, { method: "POST" }),
+    req<{ status: string } & JobRef>(`/api/v1/series/${id}/seasons/${season}/episodes/${episode}/regrab`, { method: "POST" }),
   deleteEpisodeFile: (id: number, season: number, episode: number) =>
     req<void>(`/api/v1/series/${id}/seasons/${season}/episodes/${episode}/file`, { method: "DELETE" }),
 
   // Books
   books: () => req<{ books: Book[]; metadata_available: boolean; metadata_source?: BookSource; upgradable?: number }>("/api/v1/books"),
-  startBookUpgrade: () => req<{ started: boolean; status: BookUpgradeStatus }>("/api/v1/books/upgrade", { method: "POST" }),
+  startBookUpgrade: () => req<{ started: boolean; status: BookUpgradeStatus } & JobRef>("/api/v1/books/upgrade", { method: "POST" }),
   bookUpgradeStatus: () => req<BookUpgradeStatus>("/api/v1/books/upgrade"),
   // source: "openlibrary" asks Open Library explicitly ("show Open Library results too");
   // the response says which catalogue the default search uses.
@@ -1825,7 +1875,7 @@ export const api = {
   addBook: (body: { ol_key: string; quality_profile?: string; monitored?: boolean; search_on_add?: boolean; title?: string; author?: string; year?: number; cover_url?: string }) =>
     req<Book>("/api/v1/books", { method: "POST", body: JSON.stringify(body) }),
   bookDetail: (id: number) => req<Book>(`/api/v1/books/${id}`),
-  searchBook: (id: number) => req<{ status: string }>(`/api/v1/books/${id}/search`, { method: "POST" }),
+  searchBook: (id: number) => req<{ status: string } & JobRef>(`/api/v1/books/${id}/search`, { method: "POST" }),
   refreshBook: (id: number) => req<Book>(`/api/v1/books/${id}/refresh`, { method: "POST" }),
   bookReleases: (id: number) => req<ReleaseList>(`/api/v1/books/${id}/releases`),
   grabBook: (id: number, body: { indexer?: string; download_url: string; title: string; version_id?: number }) =>
@@ -1843,18 +1893,18 @@ export const api = {
   deleteAudioVersionFile: (id: number, vid: number) =>
     req<{ status: string }>(`/api/v1/books/${id}/audio-versions/${vid}/file`, { method: "DELETE" }),
   searchAudioVersion: (id: number, vid: number) =>
-    req<{ grabbed: boolean }>(`/api/v1/books/${id}/audio-versions/${vid}/search`, { method: "POST" }),
+    req<{ grabbed: boolean; message?: string; outcome?: SearchOutcome }>(`/api/v1/books/${id}/audio-versions/${vid}/search`, { method: "POST" }),
   renameBook: (id: number) => req<{ renamed: number }>(`/api/v1/books/${id}/rename`, { method: "POST" }),
   deleteBookFile: (id: number, edition: "ebook" | "audiobook") =>
     req<{ status: string }>(`/api/v1/books/${id}/file?edition=${edition}`, { method: "DELETE" }),
-  scanBooks: () => req<{ status: string }>("/api/v1/books/scan", { method: "POST" }),
+  scanBooks: () => req<{ status: string } & JobRef>("/api/v1/books/scan", { method: "POST" }),
   // The manual sweep: every monitored book missing an edition its profile wants.
-  startBookSweep: () => req<{ started: boolean; status: BookSweepStatus }>("/api/v1/books/search-missing", { method: "POST" }),
+  startBookSweep: () => req<{ started: boolean; status: BookSweepStatus } & JobRef>("/api/v1/books/search-missing", { method: "POST" }),
   bookSweepStatus: () => req<BookSweepStatus>("/api/v1/books/search-missing"),
   bookEditionFiles: (id: number, edition: "ebook" | "audiobook") =>
     req<{ files: BookFileEntry[] }>(`/api/v1/books/${id}/edition-files?edition=${edition}`).then((r) => r.files),
   mergeAudiobook: (id: number) =>
-    req<{ status: string }>(`/api/v1/books/${id}/merge-audiobook`, { method: "POST" }),
+    req<{ status: string } & JobRef>(`/api/v1/books/${id}/merge-audiobook`, { method: "POST" }),
   bookCovers: (id: number) =>
     req<{ covers: string[] }>(`/api/v1/books/${id}/covers`).then((r) => r.covers),
   setBookCover: (id: number, url: string) =>
@@ -1907,7 +1957,7 @@ export const api = {
     req<{ results: ArtistLookup[] }>(`/api/v1/music/lookup?q=${encodeURIComponent(q)}`).then((r) => r.results ?? []),
   addArtist: (body: { mbid: string; quality_profile?: string; monitored?: boolean }) =>
     req<Artist>("/api/v1/music/artists", { method: "POST", body: JSON.stringify(body) }),
-  scanMusic: () => req<{ status: string }>("/api/v1/music/scan", { method: "POST" }),
+  scanMusic: () => req<{ status: string } & JobRef>("/api/v1/music/scan", { method: "POST" }),
   artistDetail: (id: number) => req<Artist>(`/api/v1/music/artists/${id}`),
   refreshArtist: (id: number) => req<Artist>(`/api/v1/music/artists/${id}/refresh`, { method: "POST" }),
   grabDiscography: (id: number) =>
@@ -1949,15 +1999,15 @@ export const api = {
   subtitleDownloadModel: (name: string) => req<{ status: string }>(`/api/v1/subtitles/models/${encodeURIComponent(name)}`, { method: "POST" }),
   subtitleMovies: () => req<{ movies: MovieSubStatus[] }>("/api/v1/subtitles/movies").then((r) => r.movies),
   subtitleSeries: () => req<{ series: SeriesSubStatus[] }>("/api/v1/subtitles/series").then((r) => r.series),
-  searchMovieSubs: (id: number) => req<{ status: string }>(`/api/v1/subtitles/movies/${id}/search`, { method: "POST" }),
-  searchSeriesSubs: (id: number) => req<{ status: string }>(`/api/v1/subtitles/series/${id}/search`, { method: "POST" }),
+  searchMovieSubs: (id: number) => req<{ status: string } & JobRef>(`/api/v1/subtitles/movies/${id}/search`, { method: "POST" }),
+  searchSeriesSubs: (id: number) => req<{ status: string } & JobRef>(`/api/v1/subtitles/series/${id}/search`, { method: "POST" }),
 
   // Convert
   convertHardware: () => req<{ encoders: ConvertEncoder[]; using: string; reclaimed_bytes: number; scratch_dir: string; scratch_free_bytes: number; scratch_need_bytes?: number; scratch_need_title?: string; render_devices: { path: string; pci: string; vendor: string }[]; vaapi_device: string }>("/api/v1/convert/hardware"),
   convertStatus: () => req<ConvertStatus>("/api/v1/convert/status"),
   convertSettings: () => req<ConvertSettings>("/api/v1/convert/settings"),
   updateConvertSettings: (patch: Partial<ConvertSettings>) => req<ConvertSettings>("/api/v1/convert/settings", { method: "PUT", body: JSON.stringify(patch) }),
-  convertReindex: () => req<{ started: boolean; reason?: string }>("/api/v1/convert/reindex", { method: "POST" }),
+  convertReindex: () => req<{ started: boolean; reason?: string } & JobRef>("/api/v1/convert/reindex", { method: "POST" }),
   convertReindexStatus: () => req<{ running: boolean }>("/api/v1/convert/reindex"),
   convertLibrary: (media: "movies" | "tv" = "movies", seriesID?: number, convertibleOnly = false) => {
     const q = new URLSearchParams();
@@ -2022,7 +2072,7 @@ export const api = {
   insightsRecentlyAdded: (limit = 20) => req<{ items: RecentItem[] }>(`/api/v1/insights/recently-added?limit=${limit}`).then((r) => r.items),
   insightsGraphs: (window = 30) => req<InsightsGraphs>(`/api/v1/insights/graphs?window=${window}`),
   insightsReliability: (window = 30) => req<Reliability>(`/api/v1/insights/reliability?window=${window}`),
-  scanSeries: () => req<{ status: string }>("/api/v1/series/scan", { method: "POST" }),
+  scanSeries: () => req<{ status: string } & JobRef>("/api/v1/series/scan", { method: "POST" }),
   seriesUnmatched: () => req<{ unmatched: UnmatchedFolder[] }>("/api/v1/series/unmatched").then((r) => r.unmatched),
   importSeriesFolder: (folder: string, tmdb_id: number) =>
     req<{ status: string }>("/api/v1/series/import", { method: "POST", body: JSON.stringify({ folder, tmdb_id }) }),
@@ -2048,7 +2098,7 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ quality_profile }),
     }),
-  regrabMovie: (id: number) => req<{ status: string }>(`/api/v1/movies/${id}/regrab`, { method: "POST" }),
+  regrabMovie: (id: number) => req<{ status: string } & JobRef>(`/api/v1/movies/${id}/regrab`, { method: "POST" }),
   refreshMovie: (id: number) => req<Movie>(`/api/v1/movies/${id}/refresh`, { method: "POST" }),
   movieHistory: (id: number) =>
     req<{ events: MovieEvent[] }>(`/api/v1/movies/${id}/history`).then((r) => r.events),

@@ -37,6 +37,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
 	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/safego"
+	"github.com/tristenlammi/arrmada/internal/scheduler"
 	"github.com/tristenlammi/arrmada/internal/series"
 	"github.com/tristenlammi/arrmada/internal/settings"
 	"github.com/tristenlammi/arrmada/internal/store"
@@ -102,18 +103,18 @@ type Deps struct {
 	// outlives the request but not shutdown. Everything else reads the folders live;
 	// this is for what has to be told, like qBittorrent's default save path. nil = none.
 	OnFoldersChanged func(ctx context.Context, changed []string)
+	// Scheduler runs the recurring tasks; the Tasks API reads and triggers it. nil = the
+	// task list is empty and Run now answers 503.
+	Scheduler *scheduler.Scheduler
+	// Jobs runs and records the work requests start (searches, scans, imports). nil
+	// (tests, tools) runs that work untracked on the run group instead.
+	Jobs JobRunner
 }
 
 type api struct {
 	deps         Deps
 	start        time.Time
 	loginLimiter *loginLimiter // throttles auth attempts (login/setup/plex-pin)
-	// refreshAll guards the bulk series refresh so two overlapping sweeps can't
-	// double every metadata pull and race each other's episode writes.
-	refreshAll atomic.Bool
-	// musicScan guards the background music library scan: two overlapping runs would
-	// double every MusicBrainz lookup and race each other's writes.
-	musicScan atomic.Bool
 	// seedDiagAt throttles the unmatched-seed-rule diagnostic. The Downloads page polls
 	// continuously, so an unthrottled line would bury the log it's meant to help read.
 	seedDiagAt atomic.Int64
@@ -177,6 +178,14 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/setup", a.requireRole(auth.RoleAdmin, a.handleSetupState))
 	mux.HandleFunc("POST /api/v1/setup/complete", a.requireRole(auth.RoleAdmin, a.handleSetupComplete))
 	mux.HandleFunc("POST /api/v1/system/restart", a.requireRole(auth.RoleAdmin, a.handleRestart))
+	// Recurring tasks: staff can see how they're doing; starting one by hand (a backup, a
+	// whole-library sweep) is a system action, so Run now is admin-only.
+	mux.HandleFunc("GET /api/v1/system/tasks", a.requireRole(auth.RoleManager, a.handleListTasks))
+	mux.HandleFunc("POST /api/v1/system/tasks/{name}/run", a.requireRole(auth.RoleAdmin, a.handleRunTask))
+	// Background jobs (searches, scans, imports, Run now): staff follow and cancel them.
+	mux.HandleFunc("GET /api/v1/jobs", a.requireRole(auth.RoleManager, a.handleListJobs))
+	mux.HandleFunc("GET /api/v1/jobs/{id}", a.requireRole(auth.RoleManager, a.handleGetJob))
+	mux.HandleFunc("POST /api/v1/jobs/{id}/cancel", a.requireRole(auth.RoleManager, a.handleCancelJob))
 
 	// Audiobook server (listening apps): admin panel + each user's own connection card.
 	mux.HandleFunc("GET /api/v1/audioserver", a.requireRole(auth.RoleAdmin, a.handleAudioServer))

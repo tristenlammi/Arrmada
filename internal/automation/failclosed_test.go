@@ -39,7 +39,7 @@ func TestSearchGrabsWhenSafetyReadsWork(t *testing.T) {
 	h := newStallHarness(t)
 	mid := h.addMovie(t, 1, "Arrival", 2016)
 	h.ix.offer(arrivalRelease)
-	if err := h.c.SearchMovie(h.ctx, mid); err != nil {
+	if _, err := h.c.SearchMovie(h.ctx, mid); err != nil {
 		t.Fatal(err)
 	}
 	if h.adds() != 1 {
@@ -56,7 +56,7 @@ func TestUnreadableBlocklistGrabsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := h.c.SearchMovie(h.ctx, mid); err == nil {
+	if _, err := h.c.SearchMovie(h.ctx, mid); err == nil {
 		t.Error("search with an unreadable blocklist reported success")
 	}
 	if n := h.adds(); n != 0 {
@@ -88,7 +88,7 @@ func TestUnreadablePendingGrabsGrabsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_ = h.c.SearchMovie(h.ctx, mid)
+	_, _ = h.c.SearchMovie(h.ctx, mid)
 	if n := h.adds(); n != 0 {
 		t.Fatalf("%d release(s) handed to the client with the pending grabs unreadable", n)
 	}
@@ -118,7 +118,7 @@ func TestUnreadableBlocklistGrabsNoEpisodes(t *testing.T) {
 	if _, err := h.c.GrabForScope(h.ctx, sr.ID, SeriesScope{Season: 1, Episode: 1}); err == nil {
 		t.Error("episode search with an unreadable blocklist reported success")
 	}
-	if err := h.c.SearchSeriesNow(h.ctx, sr.ID); err == nil {
+	if _, err := h.c.SearchSeriesNow(h.ctx, sr.ID); err == nil {
 		t.Error("series search with an unreadable blocklist reported success")
 	}
 	// The grab step itself refuses too (RSS and stall fail-over reach it directly).

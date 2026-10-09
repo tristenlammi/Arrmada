@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { ApiError, api, type SystemTask } from "../../lib/api";
+import { ApiError, api, type TaskStatus } from "../../lib/api";
+import { isAdmin, useMe } from "../../lib/me";
 import { ago, every, took, until } from "../../lib/taskTime";
 import { usePoll } from "../../lib/usePoll";
 
 // TasksTable: every scheduled background job — how often it runs, when it last ran and
 // how that went, when it runs next — with Run now. It re-reads every 10 s while the tab is
 // visible, so a run started here flips to Running and then OK or Failed on its own.
-// Self-contained so the Settings hub can mount it as is. On a server without the tasks
-// API it says so instead of failing.
+// Self-contained so the Settings hub can mount it as is. Run now is admin-only on the
+// server, so only admins see the button.
 
 const rowBtn = "flex-none rounded-md px-2.5 py-1 text-[11px] font-semibold disabled:opacity-40";
 // Columns on a wide screen; below 640px each task is a card.
@@ -21,17 +22,18 @@ const RESULT: Record<"running" | "failed" | "ok" | "never", Result> = {
   never: { label: "Not run yet", color: "var(--ink-faint)", border: "var(--line)" },
 };
 
-function resultOf(t: SystemTask, starting: boolean): keyof typeof RESULT {
+function resultOf(t: TaskStatus, starting: boolean): keyof typeof RESULT {
   if (t.running || starting) return "running";
-  if (t.last_error) return "failed";
-  return t.runs > 0 ? "ok" : "never";
+  if (t.last_status === "failed" || t.last_status === "panicked") return "failed";
+  return t.last_status === "ok" ? "ok" : "never";
 }
 
-const nameOf = (t: SystemTask) => t.label || t.name;
+const nameOf = (t: TaskStatus) => t.label || t.name;
 
 export function TasksTable() {
-  const [tasks, setTasks] = useState<SystemTask[] | null>(null);
-  const [unavailable, setUnavailable] = useState(false);
+  const { user } = useMe();
+  const admin = isAdmin(user);
+  const [tasks, setTasks] = useState<TaskStatus[] | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [starting, setStarting] = useState<Set<string>>(new Set());
@@ -47,23 +49,19 @@ export function TasksTable() {
   }, []);
 
   const load = () =>
-    api.systemTasks()
-      .then((ts) => { if (alive.current) { setTasks(ts); setUnavailable(false); setErr(null); } })
-      .catch((e: Error) => {
-        if (!alive.current) return;
-        // This build's server may not have the tasks API yet.
-        if (e instanceof ApiError && (e.status === 404 || e.status === 405)) setUnavailable(true);
-        else setErr(e.message);
-      });
+    api.tasks()
+      .then((ts) => { if (alive.current) { setTasks(ts); setErr(null); } })
+      .catch((e: Error) => { if (alive.current) setErr(e.message); });
 
   usePoll(() => { setTick((n) => n + 1); return load(); }, 10_000);
 
-  const runNow = async (t: SystemTask) => {
+  const runNow = async (t: TaskStatus) => {
     setMsg(null);
     setStarting((s) => new Set(s).add(t.name));
     try {
-      await api.runSystemTask(t.name);
-      setMsg({ ok: true, text: `Started “${nameOf(t)}”.` });
+      const r = await api.runTask(t.name);
+      // existing: a Run now for this task was already queued or running; this joined it.
+      setMsg(r.existing ? { ok: false, text: `“${nameOf(t)}” is already running.` } : { ok: true, text: `Started “${nameOf(t)}”.` });
     } catch (e) {
       if (e instanceof ApiError && e.status === 409) setMsg({ ok: false, text: `“${nameOf(t)}” is already running.` });
       else setMsg({ ok: false, text: (e as Error).message });
@@ -74,10 +72,6 @@ export function TasksTable() {
       timers.current.push(window.setTimeout(load, 2000));
     }
   };
-
-  if (unavailable) {
-    return <p className="m-0 text-[12px] text-ink-dim">Task history isn't available yet.</p>;
-  }
 
   return (
     <div className="flex flex-col gap-3">
@@ -102,8 +96,8 @@ export function TasksTable() {
                 <div key={t.name} className="px-3 py-2.5" style={{ borderTop: i === 0 ? undefined : "1px solid var(--line-soft)" }}>
                   <div className={`flex flex-col gap-1.5 ${grid}`}>
                     <div className="min-w-0">
-                      <div className="truncate text-[12.5px] font-semibold" title={t.description || t.name}>{nameOf(t)}</div>
-                      {t.label && t.label !== t.name && <div className="truncate font-mono text-[10px] text-ink-faint">{t.name}</div>}
+                      <div className="truncate text-[12.5px] font-semibold" title={t.name}>{nameOf(t)}</div>
+                      {t.description && <div className="truncate text-[11px] text-ink-faint" title={t.description}>{t.description}</div>}
                     </div>
                     <Cell label="Every">{every(t.interval_seconds)}</Cell>
                     <Cell label="Last run">
@@ -119,7 +113,7 @@ export function TasksTable() {
                           className="rounded px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase tracking-[0.06em]"
                           style={{ color: res.color, border: `1px solid ${res.border}` }}
                         >
-                          {res.label}{t.consecutive_failures && t.consecutive_failures > 1 ? ` ×${t.consecutive_failures}` : ""}
+                          {res.label}{t.consecutive_failures > 1 ? ` ×${t.consecutive_failures}` : ""}
                         </button>
                       ) : (
                         <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase tracking-[0.06em]" style={{ color: res.color, border: `1px solid ${res.border}` }}>{res.label}</span>
@@ -127,14 +121,16 @@ export function TasksTable() {
                     </Cell>
                     <Cell label="Next">{running ? "—" : until(t.next_run)}</Cell>
                     <div className="sm:text-right">
-                      <button
-                        onClick={() => runNow(t)}
-                        disabled={running}
-                        className={rowBtn}
-                        style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}
-                      >
-                        Run now
-                      </button>
+                      {admin && (
+                        <button
+                          onClick={() => runNow(t)}
+                          disabled={running}
+                          className={rowBtn}
+                          style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}
+                        >
+                          Run now
+                        </button>
+                      )}
                     </div>
                   </div>
                   {showErr && (

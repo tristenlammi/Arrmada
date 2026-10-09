@@ -138,7 +138,9 @@ export function AudioVersionPanel({ book, v, onChange, flash }: { book: Book; v:
   };
   const search = () => run("search", async () => {
     const r = await api.searchAudioVersion(book.id, v.id);
-    flash(r.grabbed ? `Grabbed a release for “${v.label}”.` : `Nothing found for “${v.label}” right now.`);
+    // The server says what the search actually found ("12 releases found, none for this
+    // version"); older answers only had grabbed.
+    flash(r.message ? `“${v.label}”: ${r.message}` : r.grabbed ? `Grabbed a release for “${v.label}”.` : `Nothing found for “${v.label}” right now.`);
     onChange();
   });
   const toggleMonitor = () => run("monitor", async () => { await api.updateAudioVersion(book.id, v.id, { monitored: !v.monitored }); onChange(); });

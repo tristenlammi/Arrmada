@@ -119,12 +119,12 @@ func TestPanickingTaskRunsAgainNextTick(t *testing.T) {
 	if got := atomic.LoadInt32(&runs); got < 3 {
 		t.Fatalf("task stopped after panicking: %d runs", got)
 	}
-	infos := s.Tasks()
+	infos := s.Snapshot()
 	if len(infos) != 1 {
 		t.Fatalf("tasks = %+v", infos)
 	}
 	ti := infos[0]
-	if ti.Failures != 1 || ti.Runs < 3 || ti.LastErr != "" || ti.Running {
+	if ti.Failures != 1 || ti.Runs < 3 || ti.LastError != "" || ti.Running || ti.ConsecutiveFailures != 0 {
 		t.Fatalf("task info = %+v, want 1 failure, >=3 runs, last run clean", ti)
 	}
 }

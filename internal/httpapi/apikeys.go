@@ -13,7 +13,7 @@ import (
 
 // recheckTMDB re-runs the health panel's TMDB key check after the key changed or was
 // tested, so a fixed key clears the warning now instead of at the next six-hourly check.
-func (a *api) recheckTMDB() { a.recheckHealth("tmdb.key") }
+func (a *api) recheckTMDB(r *http.Request) { a.recheckHealth(r, "tmdb.key") }
 
 // handleGetAPIKeys returns the state of every credential — configured or not, from where,
 // and a short hint — but never a secret itself.
@@ -49,7 +49,7 @@ func (a *api) handleTestAPIKey(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, health.ErrKeyMissing):
 			err = errors.New("no TMDB key is set")
 		}
-		a.recheckTMDB()
+		a.recheckTMDB(r)
 	default:
 		a.writeError(w, http.StatusBadRequest, "no test is available for that key")
 		return
@@ -91,11 +91,11 @@ func (a *api) handleSetAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if id == "tmdb" {
-		a.recheckTMDB()
+		a.recheckTMDB(r)
 	}
 	// A Hardcover key makes Hardcover the books catalogue; bring the library across now.
 	if id == "hardcover" && strings.TrimSpace(req.Value) != "" && a.deps.Books != nil {
-		a.deps.Books.MaybeStartUpgrade(a.runCtx())
+		a.deps.Books.MaybeSubmitUpgrade(a.runCtx(), a.jobSubmitter(), triggerFor(r))
 	}
 	// Return the fresh status so the UI reflects the new state (masked) without a reload.
 	a.writeJSON(w, http.StatusOK, map[string]any{"keys": a.deps.APIKeys.Status(r.Context())})
@@ -118,7 +118,7 @@ func (a *api) handleClearAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.PathValue("id") == "tmdb" {
-		a.recheckTMDB()
+		a.recheckTMDB(r)
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"keys": a.deps.APIKeys.Status(r.Context())})
 }

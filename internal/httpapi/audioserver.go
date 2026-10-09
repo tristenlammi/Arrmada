@@ -13,6 +13,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/auth"
+	"github.com/tristenlammi/arrmada/internal/jobs"
 )
 
 // The audiobook server's pages in Arrmada: the admin panel (switch it on, who may
@@ -93,10 +94,12 @@ func (a *api) handleSetAudioServer(w http.ResponseWriter, r *http.Request) {
 		if *req.Enabled && a.deps.AudioServer != nil {
 			// Read the audiobooks' lengths and chapters now rather than on the first
 			// app's first request.
-			a.bg("audiobook server warm-up", "", 30*time.Minute, func(ctx context.Context) error {
-				a.deps.AudioServer.Warm(ctx)
-				return nil
-			})
+			// Target "all": an audiobook-server job never names a book or a listener.
+			_, _, _ = a.submit(r, jobs.Spec{Kind: "audioserver.warm", Target: "all", Timeout: 30 * time.Minute,
+				Fn: errFn(func(ctx context.Context) error {
+					a.deps.AudioServer.Warm(ctx)
+					return nil
+				})})
 		}
 	}
 	a.handleAudioServer(w, r)
