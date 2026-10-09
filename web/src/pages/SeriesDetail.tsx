@@ -312,10 +312,11 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
   const state: "unreleased" | "upcoming" | "normal" = total === 0 ? "unreleased" : airedCount === 0 ? "upcoming" : "normal";
   const name = season.season_number === 0 ? "Specials" : `Season ${season.season_number}`;
   const pct = counted ? Math.round((have / counted) * 100) : 0;
-  // The season Grab only fills gaps, so it's offered only while there is one: an aired,
+  // Grab missing only fills gaps, so it's offered only while there is one: an aired,
   // monitored episode with no file. On a full season it could only fetch a pack that the
-  // import gate then throws away.
-  const anyMissing = eps.some((e) => !e.has_file && e.monitored && aired(e));
+  // import gate then throws away. Never on Specials: they have no packs, so they're grabbed
+  // one special at a time from their own rows.
+  const anyMissing = season.season_number > 0 && eps.some((e) => !e.has_file && e.monitored && aired(e));
 
   // A season pack request is settled once the pack is actually coming down or the season is
   // full — same rule as an episode, just read off the season as a whole.
@@ -333,7 +334,7 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
       await api.autoGrabSeries(series.id, season.season_number, 0);
       markGrabRequested(seasonKey(series.id, season.season_number));
       setRequested(true);
-      flash(`Searching for a ${name} pack…`);
+      flash(`Searching for ${name}'s missing episodes…`);
     }
     catch (e) { flash((e as Error).message); }
     finally { setBusy(false); }
@@ -364,13 +365,13 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
             {anyMissing && <button
               onClick={grabSeason}
               disabled={busy}
-              title={requested ? `Already requested — the search runs in the background. Click to try again.` : `Auto-grab the best ${name} pack`}
+              title={requested ? `Already requested — the search runs in the background. Click to try again.` : `Grabs ${name}'s missing episodes — a season pack when most of the season is missing or no single episodes exist`}
               className="rounded-lg px-2.5 py-1 text-[11px] font-semibold"
               style={requested
                 ? { border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink-faint)" }
                 : { border: "1px solid var(--accent-line)", color: "var(--accent)" }}
             >
-              {busy ? "…" : requested ? "✓ Requested" : "Grab"}
+              {busy ? "…" : requested ? "✓ Requested" : "Grab missing"}
             </button>}
             <button onClick={() => setSearching(true)} title={`Search indexers for ${name}`} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Search</button>
           </>
@@ -387,7 +388,7 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
       {searching && (
         <ReleaseSearchModal
           title={`${series.title} — ${name}`}
-          subtitle="Season packs and episodes for this season."
+          subtitle={season.season_number === 0 ? "Releases tagged S00 for this show." : "Season packs and episodes for this season."}
           fetchReleases={() => api.seriesReleases(series.id, season.season_number)}
           onGrab={async (rel) => { await api.grabSeries(series.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title, season: season.season_number }); onChange(); }}
           onClose={() => setSearching(false)}
@@ -484,10 +485,11 @@ function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep:
         {ep.has_file ? (<>
           <button onClick={replaceEp} disabled={busy} title="Blocklist this release and grab a different one" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy ? "…" : "Replace"}</button>
           <button onClick={() => setConfirmDel(true)} disabled={busy} title="Delete this episode's file" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>Delete</button>
-        </>) : !dl && (
+        </>) : !dl && aired(ep) && (
           // "Requested", not "Grabbed" — the search runs in the background and may find
           // nothing, so the mark says what actually happened: you asked. Still clickable,
-          // since asking again after a release shows up is the normal next move.
+          // since asking again after a release shows up is the normal next move. Unaired
+          // episodes get none: there's nothing to grab yet, and Search still reaches them.
           <button
             onClick={grabEp}
             disabled={busy}
@@ -696,6 +698,7 @@ function DeleteButton({ series }: { series: SeriesT }) {
 const EVENT_TONES: Record<string, string> = {
   added: "var(--ink-faint)",
   grabbed: "var(--accent)",
+  searched: "var(--ink-dim)",
   imported: "var(--good)",
   upgraded: "var(--good)",
   renamed: "var(--ink-dim)",

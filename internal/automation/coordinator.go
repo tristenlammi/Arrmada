@@ -1188,6 +1188,11 @@ func (c *Coordinator) RegrabEpisode(ctx context.Context, seriesID int64, season,
 	if c.series == nil {
 		return fmt.Errorf("series module not available")
 	}
+	// Refused before anything is blocklisted: a scope the grab will reject must not cost
+	// the episode its current release.
+	if err := (SeriesScope{Season: season, Episode: episode, Replace: true}).Validate(); err != nil {
+		return err
+	}
 	blockedCurrent := false
 	if s, err := c.series.Get(ctx, seriesID); err == nil {
 		for _, sn := range s.Seasons {
@@ -1211,8 +1216,10 @@ func (c *Coordinator) RegrabEpisode(ctx context.Context, seriesID int64, season,
 		}
 	}
 	// Replace is the user saying "replace this episode", so its file goes in whatever it
-	// scores — but only this episode's. Anything else the release carries is gated.
-	return c.GrabBestForScope(ctx, seriesID, season, episode, true)
+	// scores — but only this episode's. It never takes a pack, and anything else a
+	// multi-episode release carries is gated.
+	_, err := c.GrabForScope(ctx, seriesID, SeriesScope{Season: season, Episode: episode, Replace: true, Trigger: "replace"})
+	return err
 }
 
 // stallSample is one observation of a grab's download progress: how far along it was

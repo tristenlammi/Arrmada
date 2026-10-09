@@ -459,8 +459,7 @@ func (a *api) handleSeriesReleases(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	season, _ := strconv.Atoi(r.URL.Query().Get("season"))
-	episode, _ := strconv.Atoi(r.URL.Query().Get("episode"))
+	season, episode := releasesScope(r.URL.Query().Get("season"), r.URL.Query().Get("episode"))
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	list, err := a.deps.Automation.RankSeriesReleases(ctx, id, season, episode)
@@ -469,6 +468,24 @@ func (a *api) handleSeriesReleases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.writeJSON(w, http.StatusOK, list)
+}
+
+// releasesScope reads the releases search's season/episode params. No season means the
+// whole show (-1); season=0 is Specials, so it can't double as "absent" the way a bare
+// Atoi would make it.
+func releasesScope(seasonParam, episodeParam string) (season, episode int) {
+	season = -1
+	if seasonParam != "" {
+		if n, err := strconv.Atoi(seasonParam); err == nil && n >= 0 {
+			season = n
+		}
+	}
+	if season >= 0 && episodeParam != "" {
+		if n, err := strconv.Atoi(episodeParam); err == nil && n > 0 {
+			episode = n
+		}
+	}
+	return season, episode
 }
 
 // handleGrabSeries grabs a chosen release for a series (into the TV category).
@@ -525,8 +542,10 @@ func grabScopeOf(season, episode *int) (automation.GrabScope, bool) {
 	return automation.ScopeFor(*season, ep), true
 }
 
-// handleAutoGrabSeries auto-grabs the best eligible release for a season/episode
-// scope — the per-episode / per-season quick "grab" action.
+// handleAutoGrabSeries is the quick Grab missing (season) / Grab (episode) action. The
+// scope is checked here so a bad click gets a 400 rather than a silent background failure;
+// the search itself runs in the background and reports its outcome as a 'searched' series
+// event and a series.searched bus message.
 func (a *api) handleAutoGrabSeries(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)
 	if !ok {
@@ -539,10 +558,14 @@ func (a *api) handleAutoGrabSeries(w http.ResponseWriter, r *http.Request) {
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
-	season, episode := req.Season, req.Episode
+	sc := automation.SeriesScope{Season: req.Season, Episode: req.Episode, Trigger: "grab"}
+	if err := sc.Validate(); err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	a.bg("series scope auto-grab", idTarget("series", id), 5*time.Minute, func(ctx context.Context) error {
-		// Not manual: the app picks the release, so the import gate still guards every file.
-		return a.deps.Automation.GrabBestForScope(ctx, id, season, episode, false)
+		_, err := a.deps.Automation.GrabForScope(ctx, id, sc)
+		return err
 	})
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
 }
@@ -816,7 +839,11 @@ func (a *api) handleRegrabEpisode(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.bg("regrab-episode", idTarget("series", id), 3*time.Minute, func(ctx context.Context) error {
+	if err := (automation.SeriesScope{Season: season, Episode: episode, Replace: true}).Validate(); err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	a.bg("regrab-episode", idTarget("series", id), 5*time.Minute, func(ctx context.Context) error {
 		return a.deps.Automation.RegrabEpisode(ctx, id, season, episode)
 	})
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})

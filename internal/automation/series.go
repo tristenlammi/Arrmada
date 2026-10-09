@@ -417,7 +417,7 @@ func (c *Coordinator) grabSeriesScoped(ctx context.Context, s series.Series, rel
 			continue
 		}
 		byName[rel.Title] = rel
-		cands = append(cands, quality.NewCandidate(rel.Title, rel.SizeGB(), rel.Seeders))
+		cands = append(cands, newSeriesCandidate(rel))
 	}
 	// Resolved once: the decision and every grab this pass records run under the same
 	// profile, the default when the series' own was deleted.
@@ -425,8 +425,7 @@ func (c *Coordinator) grabSeriesScoped(ctx context.Context, s series.Series, rel
 	decision := c.quality.Decide(ctx, profile, cands)
 	eligible := decision.Eligible // sorted best (highest quality) first
 
-	// Registered before the `remaining` defer below, so it runs after it: by then the
-	// pass is finished and grabbedN is final.
+	// Deferred so it sees the final grabbedN and remaining.
 	defer func() {
 		if grabbedN > 0 || len(releases) == 0 {
 			return
@@ -451,173 +450,23 @@ func (c *Coordinator) grabSeriesScoped(ctx context.Context, s series.Series, rel
 		c.log.Info("series: found releases but grabbed none", attrs...)
 	}()
 
-	needed := map[epKey]bool{}
 	// Report back what no release here covered, so the caller can follow up with a
-	// targeted search (anime: query by absolute episode number). Deferred so the
-	// existing early returns report accurately too.
-	defer func() { remaining = sortedKeys(needed) }()
-	for _, k := range wanted {
-		needed[k] = true
-	}
-	grabbed := map[string]bool{}
-	// grabFailed marks releases this pass tried and couldn't grab (indexer error, disk
-	// guard). The pack passes must both skip them when re-selecting AND not treat their
-	// episodes as covered — a transient error on the best pack used to delete its
-	// episodes from `needed`, hiding them from every fallback pass and the anime
-	// follow-up, then recording a "miss" that grew the backoff up to 12h.
-	grabFailed := map[string]bool{}
-	// grabbedGB tracks what this pass has already committed, so a series with many
-	// missing seasons can't queue past the free space by checking each pack against the
-	// same (pre-download) free-space reading.
-	grabbedGB := 0.0
-	// grab returns whether the release is now in flight — freshly grabbed, a duplicate
-	// of one this pass already took, or pending from an earlier sweep. Only then may the
-	// caller count its episodes as covered.
-	grab := func(name string, label string) bool {
-		rel := byName[name]
-		if rel.DownloadURL == "" {
-			return false
-		}
-		if grabbed[rel.DownloadURL] {
-			return true // already taken this pass — its episodes are covered
-		}
-		if pending[normTitle(rel.Title)] {
-			// Already grabbed and still in flight. Grabbing it again just downloads the
-			// same bytes twice and stacks a duplicate torrent in the client.
-			c.log.Info("series: skipping grab — already grabbed and still importing",
-				"series", s.Title, "release", rel.Title)
-			return true
-		}
-		// Space guard — the movie path has had this; TV (where packs are far bigger) did not.
-		if !c.diskOKFor(grabbedGB + rel.SizeGB()) {
-			c.log.Warn("series: skipping grab — not enough free space in the downloads dir",
-				"series", s.Title, "release", rel.Title, "release_gb", rel.SizeGB(), "already_queued_gb", grabbedGB)
-			grabFailed[name] = true
-			return false
-		}
-		hash, err := c.grabTo(ctx, rel.Indexer, rel.DownloadURL, rel.Title, seriesCategory)
-		if err != nil {
-			c.log.Warn("series: grab failed", "series", s.Title, "release", rel.Title, "err", err)
-			grabFailed[name] = true
-			return false
-		}
-		grabbed[rel.DownloadURL] = true
-		grabbedN++
-		took = append(took, rel.Title)
-		grabbedGB += rel.SizeGB()
-		c.recordSeriesGrab(ctx, s.ID, rel.Title, rel.Indexer, profile, hash)
-		c.series.AddEvent(ctx, s.ID, "grabbed", label+": "+rel.Title+" · "+rel.Indexer)
-		c.log.Info("series: grabbing", "series", s.Title, "release", rel.Title, "tier", label)
-		return true
-	}
-
-	// A whole-show / multi-season pack only makes sense once the show has actually
-	// finished — for a still-running series we stick to single-season packs so each
-	// new season is grabbed cleanly as its own release.
-	ended := showEnded(s.Status)
-
-	// Pass 1 — a complete-series pack that covers every needed season (ended shows only).
-	neededSeasons := seasonsOf(needed)
-	if ended {
-		for _, ev := range eligible {
-			r := ev.Candidate.Release
-			if r.Kind() != parser.KindCompleteShow {
-				continue
-			}
-			if !coversAllSeasons(r, neededSeasons, seriesSeasons) {
-				continue
-			}
-			// Covering what's needed isn't enough — the pack has to be mostly useful.
-			// Otherwise one missing episode pulls down an entire six-season show.
-			if !packIsProportionate(neededSeasons, packSeasonsOf(r, seriesSeasons)) {
-				c.log.Info("series: skipping complete-series pack — too little of it is needed",
-					"series", s.Title, "release", r.Title,
-					"needed_seasons", len(neededSeasons), "pack_seasons", len(packSeasonsOf(r, seriesSeasons)))
-				continue
-			}
-			if !grab(ev.Candidate.Name, "complete series") {
-				continue // this one couldn't be grabbed — try the next complete pack
-			}
-			// The pack covers everything wanted: clear `needed` so `remaining` reports
-			// nothing uncovered. Returning with it full made the anime absolute-number
-			// follow-up grab single episodes the pack already contains.
-			needed = map[epKey]bool{}
-			return
-		}
-	}
-
-	// Pass 2 — packs, greedily taking the one that covers the most still-needed
-	// episodes. Ended shows may take multi-season (or leftover complete-show) packs so
-	// a multi-season pack beats separate season packs; running shows are restricted to
-	// single-season packs.
-	counts := seasonEpisodeCounts(s)
-	// worthItOnly first: prefer packs that are mostly useful. A second lap without that
-	// restriction runs later, so a gap is never left unfilled just because the only release
-	// covering it happens to be a big pack.
-	takePacks := func(worthItOnly bool) {
-		for {
-			var best *quality.Evaluation
-			var bestCover int
-			for i := range eligible {
-				if grabFailed[eligible[i].Candidate.Name] {
-					continue // couldn't be grabbed this pass — re-selecting it would loop
-				}
-				r := eligible[i].Candidate.Release
-				if !isPackTier(r.Kind(), ended) {
-					continue
-				}
-				n := len(c.coveredByFor(ctx, s, r, needed))
-				if n == 0 {
-					continue
-				}
-				if worthItOnly && !packIsWorthIt(r, n, seriesSeasons, counts) {
-					continue
-				}
-				if n > bestCover {
-					bestCover, best = n, &eligible[i]
-				}
-			}
-			if best == nil || bestCover == 0 {
-				return
-			}
-			if !grab(best.Candidate.Name, "pack") {
-				continue // grab failed — its episodes stay needed; the failed-set skips it next lap
-			}
-			for _, k := range c.coveredByFor(ctx, s, best.Candidate.Release, needed) {
-				delete(needed, k)
-			}
-		}
-	}
-	takePacks(true)
-
-	// Pass 3 — individual episodes for whatever's left. Cheaper and more targeted than a
-	// pack when only a few are missing, which is why the disproportionate packs were held
-	// back above.
-	for _, ev := range eligible {
-		if len(needed) == 0 {
-			break
-		}
-		r := ev.Candidate.Release
-		if r.Kind() != parser.KindEpisode {
-			continue
-		}
-		covered := c.coveredByFor(ctx, s, r, needed)
-		if len(covered) == 0 {
-			continue
-		}
-		if !grab(ev.Candidate.Name, "episode") {
-			continue // grab failed — leave its episodes needed for the next candidate
-		}
-		for _, k := range covered {
-			delete(needed, k)
-		}
-	}
-	// Pass 4 — last resort. Anything still missing had no single-episode release either, so
-	// take an oversized pack rather than leave the gap: an inefficient grab beats none.
-	if len(needed) > 0 {
-		takePacks(false)
-	}
-	return grabbedN, nil, took // remaining is filled by the deferred sortedKeys(needed)
+	// targeted search (anime: query by absolute episode number).
+	g := c.newSeriesGrabber(s, profile, byName, pending, false, WholeShow)
+	remaining = planSeriesGrabs(planInput{
+		eligible:      eligible,
+		wanted:        wanted,
+		seriesSeasons: seriesSeasons,
+		counts:        seasonEpisodeCounts(s),
+		ended:         showEnded(s.Status),
+		cover: func(r parser.Release, needed map[epKey]bool) []epKey {
+			return c.coveredByFor(ctx, s, r, needed)
+		},
+		try:   func(name, label string) bool { return g.try(ctx, name, label) },
+		log:   c.log,
+		title: s.Title,
+	})
+	return g.n, remaining, g.titles
 }
 
 // sortedKeys returns the still-uncovered episodes in a stable order, so follow-up

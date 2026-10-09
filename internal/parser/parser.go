@@ -93,6 +93,10 @@ type Release struct {
 	// AbsoluteEpisodes holds anime-style absolute episode numbers ("[Group] Show - 137"),
 	// numbered 1..N across the whole run. Only consulted for series flagged as anime.
 	AbsoluteEpisodes []int `json:"absolute_episodes,omitempty"`
+	// SeasonExplicit is set when the name spelled out its season and episode ("S00E05",
+	// "0x05"). Season 0 is otherwise also what a release with no season at all reads as,
+	// so this is what tells a real special from an absolute-numbered "[Grp] Show - 05".
+	SeasonExplicit bool `json:"season_explicit,omitempty"`
 }
 
 // Kind classifies a TV release by the breadth it covers.
@@ -299,11 +303,13 @@ func Parse(name string) Release {
 	if m := reSxxExx.FindStringSubmatch(name); m != nil {
 		r.Season, _ = strconv.Atoi(m[1])
 		r.Episodes = parseEpisodeList(m[2], m[3])
+		r.SeasonExplicit = true
 	} else if m := reNxNN.FindStringSubmatch(name); m != nil {
 		// Checked before the season-only forms on purpose: "Flu Season 2" in an episode
 		// title would otherwise win and report season 2 for a file that is plainly 6x19.
 		r.Season, _ = strconv.Atoi(m[1])
 		r.Episodes = parseNxNNList(m[2], m[3])
+		r.SeasonExplicit = true
 	} else if m := reSeason.FindStringSubmatch(name); m != nil {
 		// Season pack (no episode markers).
 		r.Season, _ = strconv.Atoi(m[1])
