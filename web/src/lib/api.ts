@@ -292,6 +292,11 @@ export interface StoredProfile {
 
 export type UpgradeTrigger = "any" | "source" | "format" | "resolution";
 
+// ProfileImpact mirrors quality.Impact: the files an edit would make eligible for
+// replacement — no longer meeting the profile (replace), or searched again (search).
+export interface ImpactBucket { files: number; bytes: number; examples: string[] }
+export interface ProfileImpact { replace: ImpactBucket; search: ImpactBucket; files: number }
+
 // TargetPref is one option's state in the target file. "" = no opinion; "want" is shown as
 // Prefer (ranks releases, doesn't decide what fits). "ok" is retired — the server drops it.
 export type TargetPref = "" | "ok" | "want" | "must" | "avoid";
@@ -1565,6 +1570,10 @@ export const api = {
       `/api/v1/quality/profiles/${id}?move_to=${encodeURIComponent(moveTo)}`, { method: "DELETE" }),
   qualityPreviewSpec: (sp: StoredProfile) =>
     req<QualityPreview>("/api/v1/quality/preview", { method: "POST", body: JSON.stringify(sp) }),
+  // The dry run before saving an edit to a saved profile: which files it would make eligible
+  // for replacement.
+  qualityImpact: (profile: StoredProfile) =>
+    req<ProfileImpact>("/api/v1/quality/impact", { method: "POST", body: JSON.stringify({ profile }) }),
 
   downloadClients: () =>
     req<{ clients: DownloadClient[] }>("/api/v1/downloadclients").then((r) => r.clients),

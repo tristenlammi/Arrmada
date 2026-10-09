@@ -826,6 +826,36 @@ func (s *Service) VersionRows(ctx context.Context, id int64) ([]Version, error) 
 	if err != nil {
 		return nil, err
 	}
+	out := []Version{defaultVersionRow(m)}
+	extras, err := s.repo.ListVersions(ctx, id)
+	if err != nil {
+		return out, nil // degrade to default-only, as VersionsLive does
+	}
+	return append(out, extras...), nil
+}
+
+// LibraryVersionRows is VersionRows for every movie at once (keyed by movie id), in two
+// queries however big the library: the whole-library passes (a profile edit's dry run)
+// use it rather than asking per movie.
+func (s *Service) LibraryVersionRows(ctx context.Context) (map[int64][]Version, []Movie, error) {
+	all, err := s.repo.List(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	extras, err := s.repo.ListAllVersions(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	out := make(map[int64][]Version, len(all))
+	for _, m := range all {
+		out[m.ID] = append([]Version{defaultVersionRow(m)}, extras[m.ID]...)
+	}
+	return out, all, nil
+}
+
+// defaultVersionRow is the default track as the database has it: the movie row, with the
+// cached media info as its File (nil when none is cached yet).
+func defaultVersionRow(m Movie) Version {
 	def := Version{
 		ID: 0, IsDefault: true, Label: "Default",
 		QualityProfile: m.QualityProfile, Monitored: m.Monitored,
@@ -836,12 +866,7 @@ func (s *Service) VersionRows(ctx context.Context, id int64) ([]Version, error) 
 		def.File = &f
 		def.SizeBytes = f.SizeBytes
 	}
-	out := []Version{def}
-	extras, err := s.repo.ListVersions(ctx, id)
-	if err != nil {
-		return out, nil // degrade to default-only, as VersionsLive does
-	}
-	return append(out, extras...), nil
+	return def
 }
 
 // VersionsLive returns all tracks for a movie, each enriched with on-disk file info: a

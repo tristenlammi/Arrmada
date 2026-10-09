@@ -338,6 +338,25 @@ func (r *Repo) ListVersions(ctx context.Context, movieID int64) ([]Version, erro
 	return out, rows.Err()
 }
 
+// ListAllVersions returns every movie's extra version tracks, keyed by movie id, in one
+// query — for whole-library passes that would otherwise ask once per movie.
+func (r *Repo) ListAllVersions(ctx context.Context) (map[int64][]Version, error) {
+	rows, err := r.q().QueryContext(ctx, `SELECT `+versionCols+` FROM movie_versions ORDER BY movie_id, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][]Version{}
+	for rows.Next() {
+		v, movieID, err := scanVersion(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[movieID] = append(out[movieID], v)
+	}
+	return out, rows.Err()
+}
+
 // GetVersion returns one extra version plus its movie id.
 func (r *Repo) GetVersion(ctx context.Context, id int64) (Version, int64, error) {
 	row := r.q().QueryRowContext(ctx, `SELECT `+versionCols+` FROM movie_versions WHERE id = ?`, id)

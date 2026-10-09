@@ -11,6 +11,7 @@ import {
   type IdealFile,
   type Movie,
   type MusicPreset,
+  type ProfileImpact,
   type ProfileMoveCounts,
   type QualityProfileInfo,
   type ReleaseList,
@@ -19,8 +20,9 @@ import {
   type TargetPref,
   type UpgradeTrigger,
 } from "../lib/api";
+import { formatBytes } from "../lib/format";
 import { useQuery } from "../lib/query";
-import { ErrorState, Skeleton, StaleBanner } from "../ui";
+import { Button, ErrorState, Modal, Skeleton, StaleBanner } from "../ui";
 
 const NO_PROFILES: QualityProfileInfo[] = [];
 const NO_FORMATS: FormatInfo[] = [];
@@ -531,6 +533,8 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The Save dry run's answer, while its dialog is open.
+  const [impact, setImpact] = useState<{ impact?: ProfileImpact; failed?: string } | null>(null);
   const startJSON = useRef(JSON.stringify(start));
   const dirty = JSON.stringify(sp) !== startJSON.current;
   useUnsaved(dirty);
@@ -557,22 +561,46 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
     if (dirty && !window.confirm("Discard your changes to this profile?")) return;
     onCancel();
   };
-  const save = async () => {
-    if (!sp.name.trim()) { setError("Give your profile a name."); return; }
-    for (const [key, w] of Object.entries(ideal.bitrate ?? {})) {
-      if (w.min > 0 && w.max > 0 && w.min > w.max) { setError(`The ${key === "2160p" ? "4K" : key} bitrate floor is above its ceiling.`); return; }
-    }
+  // write saves body as is; save checks first what saving would set off.
+  const write = async (body: StoredProfile) => {
     setSaving(true);
     setError(null);
     try {
-      if (sp.id > 0) await api.updateQualityProfile(sp.id, sp);
-      else await api.createQualityProfile(sp);
-      startJSON.current = JSON.stringify(sp);
+      if (body.id > 0) await api.updateQualityProfile(body.id, body);
+      else await api.createQualityProfile(body);
+      startJSON.current = JSON.stringify(body);
       onSaved();
     } catch (e) {
       setError((e as Error).message);
       setSaving(false);
     }
+  };
+  const save = async () => {
+    if (!sp.name.trim()) { setError("Give your profile a name."); return; }
+    for (const [key, w] of Object.entries(ideal.bitrate ?? {})) {
+      if (w.min > 0 && w.max > 0 && w.min > w.max) { setError(`The ${key === "2160p" ? "4K" : key} bitrate floor is above its ceiling.`); return; }
+    }
+    // An edit to a saved profile can quietly queue a library's worth of re-downloads (a new
+    // Must, a new Prefer, a lower ceiling), so the count comes first. A new profile has no
+    // files yet.
+    if (sp.id > 0) {
+      setSaving(true);
+      setError(null);
+      try {
+        const im = await api.qualityImpact(sp);
+        if (im.replace.files + im.search.files > 0) {
+          setImpact({ impact: im });
+          setSaving(false);
+          return;
+        }
+      } catch (e) {
+        // Say so and let the owner decide, rather than saving blind or not at all.
+        setImpact({ failed: (e as Error).message });
+        setSaving(false);
+        return;
+      }
+    }
+    await write(sp);
   };
 
   const winner = decision?.winner ?? null;
@@ -653,7 +681,56 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
       </div>
       <SaveBar dirty={dirty} saving={saving} error={error} onSave={save} onCancel={leave}
         mobileNote={winner ? `Would grab ${winner.candidate.release.resolution} ${winner.candidate.release.source}` : undefined} />
+      {impact && (
+        <ImpactDialog impact={impact.impact} failed={impact.failed} saving={saving}
+          onAllow={() => { setImpact(null); void write(sp); }}
+          onUpgradesOff={() => { setImpact(null); const off = { ...sp, upgrades_enabled: false }; setSp(off); void write(off); }}
+          onKeepEditing={() => setImpact(null)} />
+      )}
     </>
+  );
+}
+
+// ImpactDialog is the Save dry run's answer: how many files (and how much) saving makes
+// eligible for replacement. "Eligible", never "will be replaced" — what's actually grabbed
+// depends on what the indexers offer.
+function ImpactDialog({ impact, failed, saving, onAllow, onUpgradesOff, onKeepEditing }: {
+  impact?: ProfileImpact; failed?: string; saving: boolean;
+  onAllow: () => void; onUpgradesOff: () => void; onKeepEditing: () => void;
+}) {
+  const files = impact ? impact.replace.files + impact.search.files : 0;
+  const bytes = impact ? impact.replace.bytes + impact.search.bytes : 0;
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const parts: string[] = [];
+  if (impact?.replace.files) parts.push(`${impact.replace.files} no longer meet this profile`);
+  if (impact?.search.files) parts.push(`${impact.search.files} met it and will be searched again for something better`);
+  const examples = [...new Set([...(impact?.replace.examples ?? []), ...(impact?.search.examples ?? [])])].slice(0, 5);
+  return (
+    <Modal onClose={onKeepEditing} size="md" dismissible={!saving}
+      title={failed ? "Couldn't check what saving would change" : `Saving will make ${plural(files, "file", "files")} (~${formatBytes(bytes)}) eligible for replacement`}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onKeepEditing} disabled={saving}>Keep editing</Button>
+          <Button variant="secondary" onClick={onUpgradesOff} disabled={saving}>Save with upgrades off</Button>
+          <Button variant="primary" onClick={onAllow} busy={saving} busyLabel="Saving…">Save and allow upgrades</Button>
+        </>
+      }>
+      {failed ? (
+        <p className="text-[12.5px] leading-[1.5] text-ink-dim">
+          The count of files this edit would make eligible for replacement couldn't be worked out ({failed}). Saving with upgrades on may start re-downloading files that no longer fit.
+        </p>
+      ) : (
+        <>
+          <p className="text-[12.5px] leading-[1.5] text-ink-dim">{parts.join(", ")}. The upgrade sweeps would look for replacements for them; what's actually grabbed depends on what turns up.</p>
+          {examples.length > 0 && (
+            <ul className="mt-3 flex flex-col gap-1 text-[12px]">
+              {examples.map((t) => <li key={t} className="truncate">{t}</li>)}
+              {files > examples.length && <li className="text-ink-faint">…and more</li>}
+            </ul>
+          )}
+        </>
+      )}
+    </Modal>
   );
 }
 

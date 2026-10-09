@@ -1462,6 +1462,12 @@ func (s *Service) SetEpisodeSourceRelease(ctx context.Context, seriesID int64, s
 	return s.repo.SetEpisodeSourceRelease(ctx, seriesID, season, episode, release)
 }
 
+// LibraryEpisodeFiles lists every episode with a file across the library, with its show's
+// title, profile and monitoring — one query, for whole-library passes.
+func (s *Service) LibraryEpisodeFiles(ctx context.Context) ([]LibraryEpisodeFile, error) {
+	return s.repo.LibraryEpisodeFiles(ctx)
+}
+
 // CurrentEpisodeFile returns what an episode currently holds, for upgrade decisions that
 // need more than the filename (size, source release, runtime).
 func (s *Service) CurrentEpisodeFile(ctx context.Context, seriesID int64, season, episode int) EpisodeFile {

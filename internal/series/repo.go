@@ -1056,6 +1056,49 @@ type EpisodeFile struct {
 	RuntimeMin    int    // needed to turn size into a bitrate
 }
 
+// LibraryEpisodeFile is one episode with a file, with what the upgrade sweep needs to know
+// about it and its show.
+type LibraryEpisodeFile struct {
+	EpisodeID       int64
+	SeriesID        int64
+	SeriesTitle     string
+	SeriesProfile   string // the show's stored quality profile ref
+	SeriesMonitored bool
+	Season, Episode int
+	Monitored       bool
+	Path            string
+	SizeBytes       int64
+	SourceRelease   string
+	RuntimeMin      int
+}
+
+// LibraryEpisodeFiles lists every episode that has a file, across all shows, in one query —
+// for whole-library passes (a profile edit's dry run) that can't afford one per show.
+func (r *Repo) LibraryEpisodeFiles(ctx context.Context) ([]LibraryEpisodeFile, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT e.id, e.series_id, s.title, s.quality_profile, s.monitored, e.season_number, e.episode_number,
+		        e.monitored, e.file_path, e.size_bytes, e.source_release, e.runtime
+		   FROM episodes e JOIN series s ON s.id = e.series_id
+		  WHERE e.has_file = 1
+		  ORDER BY s.title, e.season_number, e.episode_number`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LibraryEpisodeFile
+	for rows.Next() {
+		var f LibraryEpisodeFile
+		var smon, emon int
+		if err := rows.Scan(&f.EpisodeID, &f.SeriesID, &f.SeriesTitle, &f.SeriesProfile, &smon, &f.Season, &f.Episode,
+			&emon, &f.Path, &f.SizeBytes, &f.SourceRelease, &f.RuntimeMin); err != nil {
+			return nil, err
+		}
+		f.SeriesMonitored, f.Monitored = smon != 0, emon != 0
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
 // CurrentEpisodeFile returns what an episode currently holds, so an import can be judged
 // against it on more than resolution alone.
 func (r *Repo) CurrentEpisodeFile(ctx context.Context, seriesID int64, season, episode int) EpisodeFile {

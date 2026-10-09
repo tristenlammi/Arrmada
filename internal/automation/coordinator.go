@@ -1152,6 +1152,11 @@ func upgradeBaseline(m movies.Movie, v movies.Version) string {
 	return ""
 }
 
+// UpgradeBaseline is the release string the movie upgrade sweep scores a version's file
+// by, for callers outside the sweep that must judge the file the same way (a profile
+// edit's dry run).
+func UpgradeBaseline(m movies.Movie, v movies.Version) string { return upgradeBaseline(m, v) }
+
 // RegrabMovie grabs the best release under each monitored version's current
 // profile even when a file already exists — a deliberate re-grab, used when the
 // user switches to a different (e.g. lower) profile and chooses to replace their

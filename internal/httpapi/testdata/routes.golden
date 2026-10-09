@@ -255,6 +255,7 @@ POST /api/v1/music/scan staff -
 POST /api/v1/notifications staff -
 POST /api/v1/notifications/test staff -
 POST /api/v1/quality/default staff -
+POST /api/v1/quality/impact staff -
 POST /api/v1/quality/preview staff -
 POST /api/v1/quality/profiles staff -
 POST /api/v1/quality/test staff -

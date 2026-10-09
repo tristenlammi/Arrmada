@@ -17,6 +17,10 @@ import (
 type Service struct {
 	repo     *Repo
 	settings *settings.Service // holds each media type's default profile
+	// specs, when set, answer GetStored and Resolve for their ids instead of the database:
+	// how Impact runs the upgrade decisions against a profile as edited, before it's saved
+	// (see withSpecs). nil on the app's service.
+	specs map[int64]StoredProfile
 }
 
 // NewService wires the quality service over the database with a settings service of its
@@ -93,6 +97,9 @@ func (s *Service) Effective(ctx context.Context, ref, media string) string {
 // so in practice the fallback only runs when no profile of the media type exists.
 func (s *Service) Resolve(ctx context.Context, ref string) (Profile, *Engine) {
 	if id, ok := customID(ref); ok {
+		if sp, ok := s.specs[id]; ok {
+			return sp.ToProfile(), sp.Engine()
+		}
 		if sp, err := s.repo.Get(ctx, id); err == nil {
 			return sp.ToProfile(), sp.Engine()
 		}
@@ -360,6 +367,9 @@ func (s *Service) ListStored(ctx context.Context, mediaType string) ([]StoredPro
 // GetStored returns an editable profile for a custom reference.
 func (s *Service) GetStored(ctx context.Context, ref string) (StoredProfile, error) {
 	if id, ok := customID(ref); ok {
+		if sp, ok := s.specs[id]; ok {
+			return sp, nil
+		}
 		return s.repo.Get(ctx, id)
 	}
 	return StoredProfile{}, ErrNotFound
