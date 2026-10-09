@@ -13,6 +13,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -90,6 +91,9 @@ var ErrBadName = store.ErrBadBackupName
 func (s *Service) Create(ctx context.Context, kind store.BackupKind) (Backup, error) {
 	if kind == store.BackupPreMigrate {
 		return Backup{}, fmt.Errorf("pre-migrate backups are taken by the upgrade itself")
+	}
+	if s.store == nil {
+		return Backup{}, errors.New("no database open to back up")
 	}
 	if _, _, ok := store.ParseBackupName(store.BackupName(kind, time.Now())); !ok {
 		return Backup{}, fmt.Errorf("invalid backup kind %q", kind)
@@ -258,10 +262,88 @@ func (s *Service) CancelRestore() (bool, error) {
 }
 
 // PendingRestore is the staged restore, or nil.
-func (s *Service) PendingRestore() (*store.RestoreMarker, error) { return store.PendingRestore(s.dataDir) }
+func (s *Service) PendingRestore() (*store.RestoreMarker, error) {
+	return store.PendingRestore(s.dataDir)
+}
 
 // LastRestore is how the last restore at boot went, or nil when none has run.
 func (s *Service) LastRestore() (*store.RestoreResult, error) { return store.LastRestore(s.dataDir) }
+
+// Size limits for a backup brought in from outside: MaxUploadBytes is what an upload may
+// send (a .db.gz, or a .db), MaxImportBytes what the database may be once decompressed.
+const (
+	MaxUploadBytes = 4 << 30
+	MaxImportBytes = 16 << 30
+)
+
+// Import brings in a backup from r — a .db, or a .db.gz from Download — as an uploaded
+// backup, once it has passed the same validation a restore does. It then shows up in the
+// list and is restored through the normal Restore flow.
+func (s *Service) Import(ctx context.Context, r io.Reader) (Backup, error) {
+	name, _, err := store.ImportBackup(s.dataDir, r, MaxImportBytes)
+	if err != nil {
+		return Backup{}, err
+	}
+	b, err := s.describe(ctx, name)
+	if err != nil {
+		return Backup{}, err
+	}
+	s.log.Info("database backup uploaded", "name", b.Name, "size_bytes", b.SizeBytes, "schema", b.SchemaVersion)
+	if removed, err := store.PruneBackups(s.dir, store.BackupUploaded, s.keepFor(ctx, store.BackupUploaded)); err != nil {
+		s.log.Warn("pruning old backups failed", "kind", store.BackupUploaded, "err", err)
+	} else {
+		s.forget(removed)
+	}
+	return b, nil
+}
+
+// ForDataDir is a Service over <dataDir>/backups with no database open: it lists, stages
+// and imports, but can't take a backup. The CLI uses it when the app isn't running.
+func ForDataDir(dataDir string, log *slog.Logger) *Service {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	return &Service{dir: store.BackupsDir(dataDir), dataDir: dataDir, log: log, now: time.Now, versions: map[string]string{}}
+}
+
+// StageTarget stages a restore from the command line. target is a backup's name in the
+// backups folder, or a path to a .db or .db.gz anywhere, which is first copied in as an
+// uploaded backup (and validated). It returns the staged backup's name.
+func (s *Service) StageTarget(ctx context.Context, target, requestedBy string) (Backup, store.BackupInfo, error) {
+	name := target
+	// A path to one of the backups already in the folder is just that backup.
+	if abs, err := filepath.Abs(target); err == nil {
+		if dirAbs, err := filepath.Abs(s.dir); err == nil && filepath.Dir(abs) == dirAbs && validName(filepath.Base(abs)) {
+			name = filepath.Base(abs)
+		}
+	}
+	if !validName(name) || !fileExists(filepath.Join(s.dir, name)) {
+		f, err := os.Open(target)
+		if err != nil {
+			if validName(target) {
+				return Backup{}, store.BackupInfo{}, fmt.Errorf("no backup called %s in %s", target, s.dir)
+			}
+			return Backup{}, store.BackupInfo{}, err
+		}
+		b, err := s.Import(ctx, f)
+		_ = f.Close()
+		if err != nil {
+			return Backup{}, store.BackupInfo{}, err
+		}
+		name = b.Name
+	}
+	info, err := s.StageRestore(name, requestedBy)
+	if err != nil {
+		return Backup{}, info, err
+	}
+	b, err := s.describe(ctx, name)
+	return b, info, err
+}
+
+func fileExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.Mode().IsRegular()
+}
 
 // Open opens one backup for reading (a download). The same exact-name rule as Delete
 // applies; the caller closes the file.

@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
-import { api, backupDownloadURL, type BackupFile, type BackupKind, type BackupSchedule, type BackupsState } from "../../lib/api";
+import { api, backupDownloadURL, uploadBackup, type BackupFile, type BackupKind, type BackupSchedule, type BackupsState } from "../../lib/api";
 import { restartAndWait, startedAt, waitForRestart } from "../../lib/restart";
 
 // The Backups card (Settings → System, admin only): every database copy with why it was
-// taken, Back up now, Download, Delete and the nightly schedule. It shows file names,
-// sizes and schema versions only — never anything from inside a backup.
+// taken, Back up now, Download, Restore (from the list or an uploaded file), Delete and the
+// nightly schedule. It shows file names, sizes and schema versions only — never anything
+// from inside a backup.
 
 const KIND: Record<BackupKind, { label: string; tone: string }> = {
   "pre-migrate": { label: "Before update", tone: "var(--accent)" },
@@ -43,6 +44,9 @@ const when = (iso: string) => new Date(iso).toLocaleString(undefined, { day: "nu
 const hourLabel = (h: number) => `${String(h).padStart(2, "0")}:00`;
 const kindLabel = (k: BackupKind) => (KIND[k]?.label ?? k).toLowerCase();
 
+// The server's upload limit (backup.MaxUploadBytes), checked here to fail fast.
+const MAX_UPLOAD = 4 * 1024 ** 3;
+
 // The last restore result this browser has dismissed (per-viewer convenience only).
 const SEEN_RESTORE_KEY = "arrmada.backups.seenRestore";
 
@@ -56,6 +60,9 @@ export function Backups() {
   const [toDelete, setToDelete] = useState<BackupFile | null>(null);
   const [toRestore, setToRestore] = useState<BackupFile | null>(null);
   const [restarting, setRestarting] = useState<"waiting" | "timeout" | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [progress, setProgress] = useState<number | null>(null);
+  const [uploaded, setUploaded] = useState<BackupFile | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [confirmErr, setConfirmErr] = useState<string | null>(null);
 
@@ -63,6 +70,19 @@ export function Backups() {
     .then((s) => { setState(s); setLoadErr(null); setSchedule((cur) => cur ?? s.settings); })
     .catch((e: Error) => setLoadErr(e.message));
   useEffect(() => { load(); }, []);
+
+  // Restore from file: upload a .db or .db.gz, which the server checks before it joins the
+  // list as Uploaded; restoring it is then the normal Restore.
+  const upload = async (f: File) => {
+    if (f.size > MAX_UPLOAD) { setMsg({ ok: false, text: `${f.name} is ${fmtBytes(f.size)}; the limit is 4 GB.` }); return; }
+    setMsg(null); setUploaded(null); setProgress(0);
+    try {
+      const b = await uploadBackup(f, setProgress);
+      setUploaded(b);
+      load();
+    } catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
+    finally { setProgress(null); }
+  };
 
   const backUpNow = async () => {
     setBusy(true); setMsg(null);
@@ -108,7 +128,7 @@ export function Backups() {
     try {
       const before = await startedAt();
       const r = await api.restoreBackup(b.name);
-      closeConfirm();
+      closeConfirm(); setUploaded(null);
       if (r.restarting) await awaitRestart(() => waitForRestart(before));
       else load();
     } catch (e) { setConfirmErr((e as Error).message); }
@@ -174,7 +194,9 @@ export function Backups() {
         )}
 
         <div className="flex flex-wrap items-center gap-3">
-          <button onClick={backUpNow} disabled={busy} className={btn} style={btnStyle}>{busy ? "Backing up…" : "Back up now"}</button>
+          <button onClick={backUpNow} disabled={busy || progress !== null} className={btn} style={btnStyle}>{busy ? "Backing up…" : "Back up now"}</button>
+          <button onClick={() => fileRef.current?.click()} disabled={busy || progress !== null} title="A .db, or a .db.gz from Download — up to 4 GB" className={btn} style={btnStyle}>Restore from file…</button>
+          <input ref={fileRef} type="file" accept=".db,.gz,.sqlite,application/gzip" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; if (f) upload(f); }} />
           {state && (
             <span className="text-[12px] text-ink-dim">
               {state.backups.length} backup{state.backups.length === 1 ? "" : "s"} · <b>{fmtBytes(state.total_bytes)}</b>
@@ -182,7 +204,21 @@ export function Backups() {
             </span>
           )}
         </div>
+        {progress !== null && (
+          <div className="flex items-center gap-3 text-[11.5px] text-ink-dim">
+            <div className="h-1.5 flex-1 overflow-hidden rounded-full" style={{ background: "var(--panel-2)" }} role="progressbar" aria-label="Upload progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}>
+              <div className="h-full rounded-full" style={{ width: `${Math.round(progress * 100)}%`, background: "var(--accent)" }} />
+            </div>
+            <span className="flex-none font-mono">{progress < 1 ? `${Math.round(progress * 100)}%` : "Checking…"}</span>
+          </div>
+        )}
         {msg && <p className="m-0 break-all text-[12px]" style={{ color: msg.ok ? "var(--good)" : "var(--reject)" }}>{msg.text}</p>}
+        {uploaded && (
+          <div className="flex flex-wrap items-center gap-3 rounded-lg p-3 text-[12px]" style={{ border: "1px solid var(--accent-line)", background: "var(--accent-soft)" }}>
+            <span className="min-w-0 flex-1">Uploaded and checked: {uploaded.name} ({fmtBytes(uploaded.size_bytes)}). It's in the list as Uploaded.</span>
+            <button onClick={() => setToRestore(uploaded)} className={btn} style={btnStyle}>Restore it…</button>
+          </div>
+        )}
 
         <div className="rounded-lg" style={{ border: "1px solid var(--line)" }}>
           {state === null ? (
@@ -257,7 +293,7 @@ export function Backups() {
         )}
 
         {state && <p className="m-0 truncate font-mono text-[10.5px] text-ink-faint" title={state.dir}>{state.dir}</p>}
-        <p className="m-0 text-[10.5px] text-ink-faint">Backups sit on the same disk as the database, so they cover a bad update or a mistake — not a failed disk. That's what Download is for.</p>
+        <p className="m-0 text-[10.5px] text-ink-faint">Backups sit on the same disk as the database, so they cover a bad update or a mistake — not a failed disk. That's what Download is for. Restore from file takes a .db or a downloaded .db.gz up to 4 GB; behind Cloudflare anything over 100 MB fails, so upload big ones from your home network.</p>
       </div>
 
       {toDelete && (

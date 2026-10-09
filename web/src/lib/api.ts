@@ -574,6 +574,29 @@ export interface RestoreStaged {
 // The download link for a backup (a .db.gz streamed by the server, admin only).
 export const backupDownloadURL = (name: string) => `/api/v1/system/backups/${encodeURIComponent(name)}/download`;
 
+// uploadBackup sends a .db or .db.gz to become an "Uploaded" backup. It uses XHR rather
+// than fetch for the upload progress (0..1) a multi-gigabyte file needs.
+export function uploadBackup(file: File, onProgress?: (fraction: number) => void): Promise<BackupFile> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/v1/system/backups/upload");
+    xhr.setRequestHeader("Accept", "application/json");
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); };
+    xhr.onload = () => {
+      let body: Record<string, unknown> | undefined;
+      try { body = JSON.parse(xhr.responseText) as Record<string, unknown>; } catch { /* non-JSON answer */ }
+      if (xhr.status >= 200 && xhr.status < 300 && body) { resolve(body as unknown as BackupFile); return; }
+      const msg = typeof body?.message === "string" && body.message ? body.message
+        : xhr.status === 413 ? "The file is too large to upload here." : `HTTP ${xhr.status}`;
+      reject(new ApiError(msg, xhr.status, body));
+    };
+    xhr.onerror = () => reject(new Error("The upload was cut off. Behind Cloudflare, uploads over 100 MB fail; use Arrmada's LAN address."));
+    const form = new FormData();
+    form.append("file", file);
+    xhr.send(form);
+  });
+}
+
 export interface RecycleStats {
   enabled: boolean;
   dir: string;

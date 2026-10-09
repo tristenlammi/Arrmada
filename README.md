@@ -106,6 +106,26 @@ if the swap fails at start-up Arrmada starts on the database as it was and the c
 Everything since the backup was taken is lost: requests, watch history, listening places,
 users and settings.
 
+**Restore from file…** takes a `.db`, or a `.db.gz` from Download (up to 4 GB). It's checked
+the same way, listed as "Uploaded", and restored with that row's Restore. Behind Cloudflare,
+request bodies over 100 MB are refused, so upload big backups from your home network.
+
+### Restoring when Arrmada won't start
+
+The same restore works from the command line, without the web UI. It only stages the
+backup; the swap happens when Arrmada next starts:
+
+```sh
+docker compose run --rm --no-deps arrmada-app backups          # list them
+docker compose run --rm --no-deps arrmada-app restore arrmada-nightly-20261008T040012Z.db
+docker compose up -d arrmada-app
+```
+
+If the container is running, `docker exec Arrmada-app arrmada restore <name>` followed by
+`docker restart Arrmada-app` does the same. `restore` also takes a path to a `.db` or `.db.gz`
+the container can see (it's copied into the backups folder first), and
+`restore --cancel` drops a staged restore that hasn't run.
+
 ## Ports
 
 The installer picks free ports so nothing clashes with apps you already run. It prints them

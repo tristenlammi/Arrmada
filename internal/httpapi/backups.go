@@ -135,7 +135,67 @@ func (a *api) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	a.deps.Restart()
 }
 
-// handleBackupRestoreCancel — DELETE /api/v1/system/backups/restore-pending. Drops a
+// maxBackupUpload caps an upload's body; a variable so tests can lower it.
+var maxBackupUpload int64 = backup.MaxUploadBytes
+
+// handleBackupUpload — POST /api/v1/system/backups/upload (multipart, field "file": a .db,
+// or a .db.gz from Download). The body is streamed straight to disk, never held in
+// memory, and the file only joins the list as "Uploaded" once it passes the same checks
+// a restore makes. Restoring it is then the normal Restore on its row.
+func (a *api) handleBackupUpload(w http.ResponseWriter, r *http.Request) {
+	if !a.backupsReady(w) {
+		return
+	}
+	tooLarge := func() {
+		a.writeError(w, http.StatusRequestEntityTooLarge, "the upload is over the "+strconv.FormatInt(maxBackupUpload>>30, 10)+" GB limit")
+	}
+	if r.ContentLength > maxBackupUpload {
+		tooLarge()
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBackupUpload)
+	mr, err := r.MultipartReader()
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, `upload the backup as multipart form field "file"`)
+		return
+	}
+	var part io.Reader
+	for {
+		p, err := mr.NextPart()
+		if err != nil {
+			if errors.As(err, new(*http.MaxBytesError)) {
+				tooLarge()
+				return
+			}
+			a.writeError(w, http.StatusBadRequest, `upload the backup as multipart form field "file"`)
+			return
+		}
+		if p.FormName() == "file" {
+			part = p
+			break
+		}
+	}
+	// Detached from the request: once the body is in, a closed tab mustn't cut the
+	// validation short and leave a half-checked file behind.
+	ctx := context.WithoutCancel(r.Context())
+	b, err := a.deps.Backups.Import(ctx, part)
+	switch {
+	case err == nil:
+		a.writeJSON(w, http.StatusOK, b)
+	case errors.As(err, new(*http.MaxBytesError)), errors.Is(err, store.ErrTooLarge):
+		tooLarge()
+	case errors.Is(err, store.ErrNoSpace):
+		a.writeError(w, http.StatusInsufficientStorage, err.Error())
+	case errors.Is(err, store.ErrNotSQLite), errors.Is(err, store.ErrCorrupt), errors.Is(err, store.ErrNotArrmada), errors.Is(err, store.ErrNewerSchema):
+		a.deps.Log.Warn("uploaded backup refused", "err", err)
+		a.writeError(w, http.StatusBadRequest, "can't use this file: "+err.Error())
+	default:
+		a.deps.Log.Warn("backup upload failed", "err", err)
+		a.writeError(w, http.StatusBadRequest, "the upload didn't finish: "+err.Error())
+	}
+}
+
+// handleBackupRestoreCancel —DELETE /api/v1/system/backups/restore-pending. Drops a
 // staged restore that hasn't run yet (one waiting for a manual restart).
 func (a *api) handleBackupRestoreCancel(w http.ResponseWriter, r *http.Request) {
 	if !a.backupsReady(w) {

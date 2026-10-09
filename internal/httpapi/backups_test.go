@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -326,5 +327,156 @@ func TestBackupRestoreRefusesDamaged(t *testing.T) {
 	}
 	if rec := s.doBody("POST", "/api/v1/system/backups/..%2Farrmada.db/restore", admin, `{"confirm":"RESTORE"}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("bad name: HTTP %d, want 400", rec.Code)
+	}
+}
+
+// upload posts data as the multipart "file" field.
+func (s *routeServer) upload(t *testing.T, c *http.Cookie, data []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, err := mw.CreateFormFile("file", "backup.db.gz")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = fw.Write(data)
+	_ = mw.Close()
+	r := httptest.NewRequest("POST", "http://arrmada.local/api/v1/system/backups/upload", &body)
+	r.RemoteAddr = "192.168.1.20:5000"
+	r.Header.Set("Content-Type", mw.FormDataContentType())
+	if c != nil {
+		r.AddCookie(c)
+	}
+	rec := httptest.NewRecorder()
+	s.h.ServeHTTP(rec, r)
+	return rec
+}
+
+func gzipped(t *testing.T, b []byte) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	zw := gzip.NewWriter(&out)
+	_, _ = zw.Write(b)
+	_ = zw.Close()
+	return out.Bytes()
+}
+
+// leftovers lists anything in the backups folder that isn't a listed backup (a .part).
+func leftovers(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, _ := os.ReadDir(dir)
+	var out []string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".part") || strings.HasSuffix(e.Name(), ".tmp") {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
+
+// A plain .db and the .db.gz Download makes are both taken in as Uploaded backups, and
+// an uploaded backup restores through the normal flow.
+func TestUploadAcceptsGzipAndPlain(t *testing.T) {
+	s := newBackupServer(t)
+	_, admin := s.user(t, "admin@example.com", auth.RoleAdmin)
+	_, mgr := s.user(t, "mgr@example.com", auth.RoleManager)
+	name := manualBackup(t, s, admin)
+	db, err := os.ReadFile(filepath.Join(s.deps.Backups.Dir(), name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec := s.upload(t, mgr, db); rec.Code != http.StatusForbidden {
+		t.Errorf("manager upload: HTTP %d, want 403", rec.Code)
+	}
+
+	var names []string
+	for label, data := range map[string][]byte{"plain": db, "gzip": gzipped(t, db)} {
+		rec := s.upload(t, admin, data)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: HTTP %d: %s", label, rec.Code, rec.Body)
+		}
+		var b backup.Backup
+		_ = json.Unmarshal(rec.Body.Bytes(), &b)
+		if b.Kind != "uploaded" || b.SchemaVersion == "" {
+			t.Errorf("%s: uploaded = %+v", label, b)
+		}
+		got, _ := os.ReadFile(filepath.Join(s.deps.Backups.Dir(), b.Name))
+		if !bytes.Equal(got, db) {
+			t.Errorf("%s: the stored file differs from what was uploaded", label)
+		}
+		names = append(names, b.Name)
+	}
+	if names[0] == names[1] {
+		t.Errorf("two uploads in the same second share a name: %v", names)
+	}
+	if rec := s.doBody("POST", "/api/v1/system/backups/"+names[1]+"/restore", admin, `{"confirm":"RESTORE"}`); rec.Code != http.StatusOK {
+		t.Errorf("restoring the upload: HTTP %d: %s", rec.Code, rec.Body)
+	}
+	if l := leftovers(t, s.deps.Backups.Dir()); len(l) > 0 {
+		t.Errorf("left behind: %v", l)
+	}
+}
+
+// Anything that isn't a sound Arrmada database is refused with a reason, and leaves
+// nothing behind.
+func TestUploadRejectsBadMagicAndCorrupt(t *testing.T) {
+	s := newBackupServer(t)
+	_, admin := s.user(t, "admin@example.com", auth.RoleAdmin)
+	junk := bytes.Repeat([]byte("not a database "), 500)
+	header := append([]byte("SQLite format 3\x00"), junk...)
+	cases := map[string][]byte{
+		"text":             junk,
+		"empty":            nil,
+		"gzipped text":     gzipped(t, junk),
+		"header + garbage": header,
+		"gzipped garbage":  gzipped(t, header),
+		"truncated gzip":   gzipped(t, header)[:20],
+	}
+	for label, data := range cases {
+		rec := s.upload(t, admin, data)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: HTTP %d, want 400: %s", label, rec.Code, rec.Body)
+		}
+	}
+	list, _ := s.deps.Backups.List(t.Context())
+	if len(list) != 0 {
+		t.Errorf("refused uploads were listed: %+v", list)
+	}
+	if l := leftovers(t, s.deps.Backups.Dir()); len(l) > 0 {
+		t.Errorf("left behind: %v", l)
+	}
+}
+
+// Over the size limit is a 413, whether the client says so up front or not.
+func TestUploadTooLarge(t *testing.T) {
+	old := maxBackupUpload
+	maxBackupUpload = 4096
+	t.Cleanup(func() { maxBackupUpload = old })
+	s := newBackupServer(t)
+	_, admin := s.user(t, "admin@example.com", auth.RoleAdmin)
+	big := append([]byte("SQLite format 3\x00"), make([]byte, 64<<10)...)
+
+	if rec := s.upload(t, admin, big); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("declared length: HTTP %d, want 413: %s", rec.Code, rec.Body)
+	}
+
+	// Chunked: no Content-Length, so the cap is only found while reading.
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, _ := mw.CreateFormFile("file", "backup.db")
+	_, _ = fw.Write(big)
+	_ = mw.Close()
+	r := httptest.NewRequest("POST", "http://arrmada.local/api/v1/system/backups/upload", io.MultiReader(&body))
+	r.ContentLength = -1
+	r.RemoteAddr = "192.168.1.20:5000"
+	r.Header.Set("Content-Type", mw.FormDataContentType())
+	r.AddCookie(admin)
+	rec := httptest.NewRecorder()
+	s.h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("streamed: HTTP %d, want 413: %s", rec.Code, rec.Body)
+	}
+	if l := leftovers(t, s.deps.Backups.Dir()); len(l) > 0 {
+		t.Errorf("left behind: %v", l)
 	}
 }

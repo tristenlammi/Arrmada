@@ -359,6 +359,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("DELETE "+base+"/api/v1/system/backups/{name}", a.requireRole(auth.RoleAdmin, a.handleBackupDelete))
 	mux.HandleFunc("POST "+base+"/api/v1/system/backups/{name}/restore", a.requireRole(auth.RoleAdmin, a.handleBackupRestore))
 	mux.HandleFunc("DELETE "+base+"/api/v1/system/backups/restore-pending", a.requireRole(auth.RoleAdmin, a.handleBackupRestoreCancel))
+	mux.HandleFunc("POST "+base+"/api/v1/system/backups/upload", a.requireRole(auth.RoleAdmin, a.handleBackupUpload))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/hardware", a.requireRole(auth.RoleManager, a.handleConvertHardware))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/status", a.requireRole(auth.RoleManager, a.handleConvertStatus))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/settings", a.requireRole(auth.RoleManager, a.handleConvertSettings))

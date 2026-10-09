@@ -98,6 +98,12 @@ func (r movieTitleResolver) ResolveMovie(ctx context.Context, name string) (stri
 }
 
 func main() {
+	// Maintenance commands (arrmada restore, arrmada backups) run and exit before anything
+	// else starts, so they work while the server is stopped or crash-looping.
+	if code, ok := runSubcommand(os.Args[1:], os.Stdout, os.Stderr); ok {
+		os.Exit(code)
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("failed to load config", "err", err)
