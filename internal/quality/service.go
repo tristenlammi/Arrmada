@@ -153,31 +153,35 @@ func (s *Service) Decide(ctx context.Context, ref string, cands []Candidate) Dec
 }
 
 // UpgradeCandidate returns the best release that would upgrade the current file
-// under the profile, or (zero, false) if none qualifies. currentRelease is the
-// release the on-disk file was imported from (scored to represent the file);
-// currentSizeGB is its size. Rules:
+// under the profile, or (zero, false) if none qualifies. current.Release is the
+// release the on-disk file was imported from (scored to represent the file), laid
+// over with its probed facts when current.Facts is set. Rules:
 //   - the profile must have upgrades enabled;
-//   - we must know what the current file is (empty currentRelease → skip, so we
-//     never churn on a guess);
+//   - we must know what the current file is (empty Release → skip, so we never churn
+//     on a guess);
+//   - a file that already meets the profile's target is done (JudgeFile);
 //   - a candidate never drops resolution (that's a downgrade, handled elsewhere);
 //   - it wins if it scores strictly higher (better resolution/formats), OR — when
 //     upgrade_min_percent > 0 — it's at least that much better on bitrate and no worse
 //     on quality.
 //
-// runtimeMin is the content length (movie/episode minutes), needed to turn sizes
-// into bitrates; 0 disables the bitrate-based upgrade (quality-only still applies).
-func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease string, currentSizeGB float64, runtimeMin int, cands []Candidate) (Candidate, bool) {
+// current.RuntimeMin is the content length (movie/episode minutes), needed to turn
+// sizes into bitrates; 0 disables the bitrate-based upgrade (quality-only still applies).
+func (s *Service) UpgradeCandidate(ctx context.Context, ref string, current CurrentFile, cands []Candidate) (Candidate, bool) {
+	currentRelease, currentSizeGB, runtimeMin := current.Release, current.SizeGB, current.RuntimeMin
 	sp, err := s.GetStored(ctx, ref)
 	if err != nil || !sp.UpgradesEnabled || strings.TrimSpace(currentRelease) == "" {
 		return Candidate{}, false
 	}
 	// The file already is the profile's target — "upgrade until it fits" stops here, even
 	// if some release would technically score higher.
-	if sp.TargetMet(ReleaseFacts(parser.Parse(currentRelease), BitrateMbps(currentSizeGB, runtimeMin))) {
+	if sp.JudgeFile(current).TargetMet {
 		return Candidate{}, false
 	}
 	p, e := s.Resolve(ctx, ref)
-	curCand := NewCandidate(currentRelease, currentSizeGB, 1_000_000)
+	// No runtime on the file's own candidate: scored as it always was, so a file over a
+	// lowered ceiling isn't treated as worthless and replaced by anything at all.
+	curCand := current.candidate()
 	cur := e.Evaluate(p, curCand)
 	curResRank := resRank[curCand.Release.Resolution]
 	curKey := strings.ToLower(strings.TrimSpace(currentRelease))
@@ -196,7 +200,7 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 		if strings.ToLower(strings.TrimSpace(ev.Candidate.Name)) == curKey {
 			continue // the release we already have
 		}
-		if convertedFrom(ev.Candidate.Name, currentRelease) {
+		if convertedFrom(ev.Candidate.Name, currentRelease, curCand.Release.Codec) {
 			// The release this file was converted from: the same name but for the codec
 			// Convert stamped in. Grabbing it would undo the conversion and loop forever.
 			continue
@@ -229,7 +233,9 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 //
 // Avoided formats are refused the same way UpgradeCandidate refuses them: keeping the
 // current file is always preferable to swapping into something the profile avoids.
-func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string, candSizeGB float64, currentRelease string, currentSizeGB float64) bool {
+// The current side is read like UpgradeCandidate reads it: probed facts over the name.
+func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string, candSizeGB float64, current CurrentFile) bool {
+	currentRelease := current.Release
 	if strings.TrimSpace(candRelease) == "" || strings.TrimSpace(currentRelease) == "" {
 		return false // no baseline to beat — the caller's other gates decide
 	}
@@ -241,14 +247,15 @@ func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string,
 	}
 	// The release a converted file came from is never an upgrade of it, whatever the
 	// codec stamp makes the two score.
-	if convertedFrom(candRelease, currentRelease) {
+	curCand := current.candidate()
+	if convertedFrom(candRelease, currentRelease, curCand.Release.Codec) {
 		return false
 	}
 	p, e := s.Resolve(ctx, ref)
 	// Seeders are irrelevant here and unknown for a file on disk, so both sides get the
 	// same large value rather than letting a seeder term skew the comparison.
 	cand := e.Evaluate(p, NewCandidate(candRelease, candSizeGB, 1_000_000))
-	cur := e.Evaluate(p, NewCandidate(currentRelease, currentSizeGB, 1_000_000))
+	cur := e.Evaluate(p, curCand)
 	if cand.Avoided && !cur.Avoided {
 		return false
 	}
@@ -256,15 +263,15 @@ func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string,
 }
 
 // convertedFrom reports whether cand looks like the release the current file was
-// converted from: the current file reads as a codec Convert writes (AV1 or x265), and
-// cand is the same release name with a different codec. It is deliberately no wider than
-// that, so an x264 file can still be upgraded to the same group's x265 release.
-func convertedFrom(cand, current string) bool {
-	cur := parser.Parse(current).Codec
-	if cur != parser.CodecAV1 && cur != parser.CodecX265 {
+// converted from: the current file is a codec Convert writes (AV1 or x265 — curCodec,
+// probed when known), and cand is the same release name with a different codec. It is
+// deliberately no wider than that, so an x264 file can still be upgraded to the same
+// group's x265 release.
+func convertedFrom(cand, current string, curCodec parser.Codec) bool {
+	if curCodec != parser.CodecAV1 && curCodec != parser.CodecX265 {
 		return false
 	}
-	return parser.Parse(cand).Codec != cur && parser.WithoutCodec(cand) == parser.WithoutCodec(current)
+	return parser.Parse(cand).Codec != curCodec && parser.WithoutCodec(cand) == parser.WithoutCodec(current)
 }
 
 // Encode is one side of a bitrate comparison: how big it is and what codec it used.
@@ -320,15 +327,15 @@ func (s *Service) IsBitrateUpgrade(ctx context.Context, ref string, cand, curren
 
 // WouldReject reports whether the profile would reject the given release — used
 // to tell if switching a movie to this profile is a downgrade (its current file
-// no longer fits). currentRelease is the file's source release name. runtimeMin
-// is the content length in minutes, needed to turn the size into a bitrate so
-// the profile's bitrate ceiling can apply; 0 skips the ceiling check.
-func (s *Service) WouldReject(ctx context.Context, ref, currentRelease string, sizeGB float64, runtimeMin int) bool {
-	if strings.TrimSpace(currentRelease) == "" {
+// no longer fits). current.Release is the file's source release name, with its
+// probed facts laid over it when known. current.RuntimeMin is the content length in
+// minutes, needed to turn the size into a bitrate so the profile's bitrate ceiling can
+// apply; 0 skips the ceiling check.
+func (s *Service) WouldReject(ctx context.Context, ref string, current CurrentFile) bool {
+	if strings.TrimSpace(current.Release) == "" {
 		return false
 	}
-	p, e := s.Resolve(ctx, ref)
-	return !e.Evaluate(p, NewCandidate(currentRelease, sizeGB, 1_000_000).WithRuntime(runtimeMin)).Eligible
+	return !s.JudgeFile(ctx, ref, current).Eligible
 }
 
 // List returns the user's quality profiles for a media type. Every profile is a
@@ -392,57 +399,18 @@ func (s *Service) AllowsUpgrades(ctx context.Context, ref string) bool {
 // Deliberately not part of the test: source and format scores. Those can technically still
 // improve (a BluRay over a WEB-DL at the same resolution), and giving up that churn is the
 // point of a ceiling — "it meets the profile" should mean the searching stops.
-func (s *Service) AtCeiling(ctx context.Context, ref, currentRelease string, sizeGB float64, runtimeMin int) bool {
-	if strings.TrimSpace(currentRelease) == "" {
+//
+// The file is judged by JudgeFile: probed facts (current.Facts) when there are any, its
+// release name otherwise.
+func (s *Service) AtCeiling(ctx context.Context, ref string, current CurrentFile) bool {
+	if strings.TrimSpace(current.Release) == "" {
 		return false // nothing recorded to judge — let the normal path decide
 	}
 	sp, err := s.GetStored(ctx, ref)
 	if err != nil {
 		return false
 	}
-	cur := parser.Parse(currentRelease)
-	// The file already is the profile's target: the search is over, whatever else might
-	// technically still score higher. This is "upgrade until it fits".
-	if sp.TargetMet(ReleaseFacts(cur, BitrateMbps(sizeGB, runtimeMin))) {
-		return true
-	}
-	p, _ := s.Resolve(ctx, ref)
-	limit := p.capFor(cur.Resolution)
-	// No cap is no ceiling, and with no percentage step there's no bitrate upgrade path to
-	// exhaust in the first place — in both cases only a quality gain can win, and that
-	// can't be ruled out here.
-	if limit <= 0 || sp.UpgradeMinPercent <= 0 {
-		return false
-	}
-	if runtimeMin <= 0 || sizeGB <= 0 {
-		return false // can't express the file as a bitrate — don't guess
-	}
-	// A resolution the profile allows and we don't have is still an upgrade, whatever the
-	// bitrate says.
-	best := 0
-	for _, res := range p.AllowedResolutions {
-		if resRank[res] > best {
-			best = resRank[res]
-		}
-	}
-	if resRank[cur.Resolution] < best {
-		return false
-	}
-
-	// Raw, like the ceiling itself (Evaluate): the question is whether a permitted
-	// release can be the required step above this one.
-	curBr := BitrateMbps(sizeGB, runtimeMin)
-	pct := sp.UpgradeMinPercent
-	if pct < MinUpgradePercent {
-		pct = MinUpgradePercent
-	}
-	// The smallest bitrate that would actually count as an upgrade — both gates from
-	// IsBitrateUpgrade, so the ceiling can't disagree with the thing it's predicting.
-	needed := curBr * (1 + pct/100)
-	if floor := curBr + MinUpgradeMarginMbps; floor > needed {
-		needed = floor
-	}
-	return needed > limit
+	return sp.JudgeFile(current).AtCeiling
 }
 
 // Create, Update, Delete manage user profiles.

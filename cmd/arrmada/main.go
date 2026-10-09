@@ -625,6 +625,9 @@ func main() {
 	}
 	convertSvc := convert.NewService(st.DB(), movieSvc, seriesSvc, settingsSvc, "ffmpeg", "ffprobe", convertScratch, "", log)
 	convertSvc.SetBin(bins) // originals go to the bin on their own library folder
+	// Upgrade decisions judge a library file by what Convert's analysis found in it, not
+	// only by its release name — the same facts the Library fit bars read.
+	coordinator.SetFileFacts(convertSvc)
 	// The manager looks after every bin: one per library folder (or the one override),
 	// plus the old shared bin while it still holds files, so what's in it stays listed,
 	// restorable, aged and capped until it drains. Convert's originals go to the bins, so

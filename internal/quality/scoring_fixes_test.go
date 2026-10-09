@@ -212,14 +212,14 @@ func TestProperIsAnUpgradeOfTheSameRelease(t *testing.T) {
 	current := "Movie.2024.1080p.WEB-DL.DDP5.1.H.264-GRP"
 	proper := NewCandidate("Movie.2024.1080p.WEB-DL.DDP5.1.PROPER.H.264-GRP", 8, 50)
 
-	got, ok := svc.UpgradeCandidate(ctx, ref, current, 8, 0, []Candidate{proper})
+	got, ok := svc.UpgradeCandidate(ctx, ref, cf(current, 8, 0), []Candidate{proper})
 	if !ok || got.Name != proper.Name {
 		t.Fatalf("the PROPER of the imported release should be an upgrade, got ok=%v cand=%+v", ok, got)
 	}
 
 	// Sanity: the identical non-proper release is NOT an upgrade.
 	same := NewCandidate(current, 8, 50)
-	if _, ok := svc.UpgradeCandidate(ctx, ref, current, 8, 0, []Candidate{same}); ok {
+	if _, ok := svc.UpgradeCandidate(ctx, ref, cf(current, 8, 0), []Candidate{same}); ok {
 		t.Error("the release we already have must not count as an upgrade")
 	}
 }
@@ -236,15 +236,15 @@ func TestWouldRejectAppliesBitrateCap(t *testing.T) {
 
 	// 20 GiB over 60 minutes ≈ 48 Mbps H.264 — way over a 20 Mbps ceiling.
 	name := "Movie.2024.1080p.BluRay.x264-GRP"
-	if !svc.WouldReject(ctx, ref, name, 20, 60) {
+	if !svc.WouldReject(ctx, ref, cf(name, 20, 60)) {
 		t.Error("a ~48 Mbps file must be rejected by a 20 Mbps ceiling when the runtime is known")
 	}
 	// Without a runtime the size can't become a bitrate: the cap is skipped.
-	if svc.WouldReject(ctx, ref, name, 20, 0) {
+	if svc.WouldReject(ctx, ref, cf(name, 20, 0)) {
 		t.Error("with no runtime the bitrate cap cannot apply")
 	}
 	// A file comfortably under the ceiling passes with runtime known.
-	if svc.WouldReject(ctx, ref, name, 5, 60) {
+	if svc.WouldReject(ctx, ref, cf(name, 5, 60)) {
 		t.Error("a ~12 Mbps file fits under a 20 Mbps ceiling")
 	}
 }

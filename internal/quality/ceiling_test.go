@@ -49,7 +49,7 @@ func TestAtCeilingUsesBitrateCapAndStep(t *testing.T) {
 		{"x265 is judged on its raw bitrate like the cap", "Show.S01E01.1080p.WEB-DL.x265-GRP", 20, false},
 	}
 	for _, tc := range cases {
-		got := s.AtCeiling(ctx, ref, tc.release, sizeForBitrate(tc.mbps, runtime), runtime)
+		got := s.AtCeiling(ctx, ref, cf(tc.release, sizeForBitrate(tc.mbps, runtime), runtime))
 		if got != tc.want {
 			t.Errorf("%s: AtCeiling(%.0f Mbps) = %v, want %v", tc.name, tc.mbps, got, tc.want)
 		}
@@ -58,15 +58,15 @@ func TestAtCeilingUsesBitrateCapAndStep(t *testing.T) {
 	// A 720p file can be pinned against the bitrate ceiling and still have a 1080p release
 	// waiting for it — UpgradeCandidate takes that on quality alone, so the ceiling must not
 	// skip it.
-	if s.AtCeiling(ctx, ref, "Show.S01E01.720p.WEB-DL.H.264-GRP", sizeForBitrate(28, runtime), runtime) {
+	if s.AtCeiling(ctx, ref, cf("Show.S01E01.720p.WEB-DL.H.264-GRP", sizeForBitrate(28, runtime), runtime)) {
 		t.Error("a below-max resolution must never be reported at the ceiling")
 	}
 
 	// Nothing to divide by → don't guess.
-	if s.AtCeiling(ctx, ref, "Show.S01E01.1080p.WEB-DL.H.264-GRP", sizeForBitrate(28, runtime), 0) {
+	if s.AtCeiling(ctx, ref, cf("Show.S01E01.1080p.WEB-DL.H.264-GRP", sizeForBitrate(28, runtime), 0)) {
 		t.Error("unknown runtime must not report a ceiling")
 	}
-	if s.AtCeiling(ctx, ref, "", 1, runtime) {
+	if s.AtCeiling(ctx, ref, cf("", 1, runtime)) {
 		t.Error("no recorded release must not report a ceiling")
 	}
 }
@@ -85,7 +85,7 @@ func TestAtCeilingNeedsACapAndAStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s.AtCeiling(ctx, "custom:"+strconv.FormatInt(noCap.ID, 10),
-		"Show.S01E01.1080p.WEB-DL.H.264-GRP", sizeForBitrate(80, runtime), runtime) {
+		cf("Show.S01E01.1080p.WEB-DL.H.264-GRP", sizeForBitrate(80, runtime), runtime)) {
 		t.Error("a profile with no bitrate cap has no ceiling to reach")
 	}
 
@@ -97,7 +97,7 @@ func TestAtCeilingNeedsACapAndAStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s.AtCeiling(ctx, "custom:"+strconv.FormatInt(noStep.ID, 10),
-		"Show.S01E01.1080p.WEB-DL.H.264-GRP", sizeForBitrate(29, runtime), runtime) {
+		cf("Show.S01E01.1080p.WEB-DL.H.264-GRP", sizeForBitrate(29, runtime), runtime)) {
 		t.Error("with no percentage step there's no bitrate band to exhaust — only quality gains, which this can't rule out")
 	}
 }
@@ -123,16 +123,16 @@ func TestIsQualityUpgradeMatchesTheSearcher(t *testing.T) {
 		ethel = "Lioness 2023 S03E01 1080p WEB h264-ETHEL"
 		flux  = "Lioness 2023 S03E01 1080p AMZN WEB-DL DDP5 1 Atmos H 264-FLUX"
 	)
-	if !s.IsQualityUpgrade(ctx, ref, flux, 2.0, ethel, 2.0) {
+	if !s.IsQualityUpgrade(ctx, ref, flux, 2.0, cf(ethel, 2.0, 0)) {
 		t.Error("the release the searcher chose must not be refused on arrival")
 	}
-	if s.IsQualityUpgrade(ctx, ref, ethel, 2.0, flux, 2.0) {
+	if s.IsQualityUpgrade(ctx, ref, ethel, 2.0, cf(flux, 2.0, 0)) {
 		t.Error("the reverse is a downgrade")
 	}
-	if s.IsQualityUpgrade(ctx, ref, flux, 2.0, flux, 2.0) {
+	if s.IsQualityUpgrade(ctx, ref, flux, 2.0, cf(flux, 2.0, 0)) {
 		t.Error("the same release must not score as an upgrade over itself — that's a re-import loop")
 	}
-	if s.IsQualityUpgrade(ctx, ref, flux, 2.0, "", 2.0) {
+	if s.IsQualityUpgrade(ctx, ref, flux, 2.0, cf("", 2.0, 0)) {
 		t.Error("no recorded baseline must not count as an upgrade")
 	}
 
@@ -146,7 +146,7 @@ func TestIsQualityUpgradeMatchesTheSearcher(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.IsQualityUpgrade(ctx, "custom:"+strconv.FormatInt(off.ID, 10), flux, 2.0, ethel, 2.0) {
+	if s.IsQualityUpgrade(ctx, "custom:"+strconv.FormatInt(off.ID, 10), flux, 2.0, cf(ethel, 2.0, 0)) {
 		t.Error("upgrades disabled must stop the import gate replacing files too")
 	}
 }

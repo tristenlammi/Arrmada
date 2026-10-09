@@ -496,7 +496,7 @@ func (a *api) handleSetProfile(w http.ResponseWriter, r *http.Request) {
 		case !m.HasFile:
 			// Missing → search under the new criteria.
 			_, _, _ = a.submit(r, a.movieSearchJob(id))
-		case a.deps.Quality.WouldReject(r.Context(), req.QualityProfile, m.SourceRelease, sizeGB(m), m.Runtime):
+		case a.deps.Quality.WouldReject(r.Context(), req.QualityProfile, a.deps.Automation.CurrentMovieFile(r.Context(), m)):
 			// The existing file no longer fits the new (lower) profile → this is a
 			// downgrade. Don't act automatically; let the UI ask the user.
 			downgrade = true
@@ -523,14 +523,6 @@ func (a *api) handleRegrab(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.accepted(w, jobID, existing, map[string]any{"status": "searching"})
-}
-
-// sizeGB returns a movie's on-disk file size in GB (0 if unknown).
-func sizeGB(m movies.Movie) float64 {
-	if m.File != nil && m.File.SizeBytes > 0 {
-		return float64(m.File.SizeBytes) / (1024 * 1024 * 1024)
-	}
-	return 0
 }
 
 // handleDeleteMovieFile deletes a movie's file from disk (flipping it back to

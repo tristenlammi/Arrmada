@@ -24,16 +24,16 @@ func TestUpgradeCandidateLeavesConvertedFileAlone(t *testing.T) {
 		NewCandidate("Film.2021.1080p.BluRay.x265-OTHER", 6, 200).WithRuntime(120),
 		NewCandidate("Film.2021.1080p.BluRay.x264-GRP", 8, 400).WithRuntime(120),
 	}
-	if pick, ok := s.UpgradeCandidate(ctx, ref, baseline, 4, 120, cands); ok {
+	if pick, ok := s.UpgradeCandidate(ctx, ref, cf(baseline, 4, 120), cands); ok {
 		t.Errorf("picked %q as an upgrade of the converted file", pick.Name)
 	}
 	// The original alone, under a profile that would otherwise reward its bitrate: still
 	// never re-grabbed over the file converted from it.
-	if pick, ok := s.UpgradeCandidate(ctx, ref, baseline, 1, 120, cands[1:]); ok {
+	if pick, ok := s.UpgradeCandidate(ctx, ref, cf(baseline, 1, 120), cands[1:]); ok {
 		t.Errorf("re-grabbed the release the file was converted from: %q", pick.Name)
 	}
 	// The import gate agrees.
-	if s.IsQualityUpgrade(ctx, ref, "Film.2021.1080p.BluRay.x264-GRP", 8, baseline, 4) {
+	if s.IsQualityUpgrade(ctx, ref, "Film.2021.1080p.BluRay.x264-GRP", 8, cf(baseline, 4, 0)) {
 		t.Error("the import gate took the original release as an upgrade of its conversion")
 	}
 }
@@ -52,10 +52,10 @@ func TestSameGroupCodecUpgradeStillAllowed(t *testing.T) {
 	ref := "custom:" + strconv.FormatInt(sp.ID, 10)
 	cur := "Film.2021.1080p.BluRay.x264-RARBG"
 	cand := "Film.2021.1080p.BluRay.x265-RARBG"
-	if pick, ok := s.UpgradeCandidate(ctx, ref, cur, 8, 120, []Candidate{NewCandidate(cand, 5, 200).WithRuntime(120)}); !ok || pick.Name != cand {
+	if pick, ok := s.UpgradeCandidate(ctx, ref, cf(cur, 8, 120), []Candidate{NewCandidate(cand, 5, 200).WithRuntime(120)}); !ok || pick.Name != cand {
 		t.Errorf("x264 -> x265 of the same release was not taken: %q %v", pick.Name, ok)
 	}
-	if !s.IsQualityUpgrade(ctx, ref, cand, 5, cur, 8) {
+	if !s.IsQualityUpgrade(ctx, ref, cand, 5, cf(cur, 8, 0)) {
 		t.Error("the import gate refused x264 -> x265 of the same release")
 	}
 }

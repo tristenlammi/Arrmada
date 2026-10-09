@@ -1039,6 +1039,13 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 			curParsed.Codec = src.Codec
 		}
 	}
+	// What Convert's analysis found in the file beats both names: a converted file is
+	// AV1 or HEVC whatever it was released as, and its real resolution is known.
+	curFile := c.episodeFileOf(ctx, cur)
+	if curFile.Facts != nil {
+		probed := quality.ReleaseWithFacts(curParsed, *curFile.Facts)
+		curParsed.Resolution, curParsed.Codec = probed.Resolution, probed.Codec
+	}
 	curRes := curParsed.Resolution
 	switch {
 	case parser.ResolutionRank(res) > parser.ResolutionRank(curRes):
@@ -1068,8 +1075,7 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	// re-import the same episode forever — the loop upgradeSeries guards against the same
 	// way. Without it, fall through to the resolution/bitrate answer above.
 	if cur.SourceRelease != "" && c.quality.IsQualityUpgrade(ctx, profile,
-		candName, float64(candBytes)/bytesPerGB,
-		cur.SourceRelease, float64(cur.SizeBytes)/bytesPerGB) {
+		candName, float64(candBytes)/bytesPerGB, curFile) {
 		c.log.Info("series import: replacing an equal-resolution file — it scores higher on this profile",
 			"series", s.Title, "episode", epLabel,
 			"current", cur.SourceRelease, "candidate", candName)

@@ -126,9 +126,10 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 	}
 	type have struct {
 		season, episode int
-		release         string // the release it was imported from (NOT the renamed library file)
-		sizeGB          float64
-		runtimeMin      int // episode length, for the bitrate-based upgrade threshold
+		// cur is the file as the decisions judge it: the release it was imported from
+		// (NOT the renamed library file), its size, the episode length for the bitrate
+		// threshold, and Convert's probed facts when they still describe it.
+		cur quality.CurrentFile
 	}
 	var haveEps []have
 	atCeiling := 0
@@ -147,17 +148,19 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 				if e.SourceRelease == "" {
 					continue
 				}
-				// Out of headroom: at the best resolution the profile allows, and far
-				// enough up the bitrate ceiling that the next percentage step lands above
-				// it. Nothing the profile would accept can win, so searching only produces
-				// work whose one possible outcome is "rejected".
-				if c.quality.AtCeiling(ctx, profile, e.SourceRelease, gbOf(e.SizeBytes), e.Runtime) {
+				// e.Runtime (episode minutes) drives the bitrate threshold; 0 (unknown)
+				// falls back to quality-only upgrades inside UpgradeCandidate.
+				cur := c.currentEpisodeFile(ctx, e.FilePath, e.SourceRelease, e.SizeBytes, e.Runtime)
+				// Out of headroom: the file meets the profile's target, or it's at the best
+				// resolution the profile allows and far enough up the bitrate ceiling that
+				// the next percentage step lands above it. Nothing the profile would accept
+				// can win, so searching only produces work whose one possible outcome is
+				// "rejected".
+				if c.quality.AtCeiling(ctx, profile, cur) {
 					atCeiling++
 					continue
 				}
-				// e.Runtime (episode minutes) drives the bitrate threshold; 0 (unknown)
-				// falls back to quality-only upgrades inside UpgradeCandidate.
-				haveEps = append(haveEps, have{e.SeasonNumber, e.EpisodeNumber, e.SourceRelease, gbOf(e.SizeBytes), e.Runtime})
+				haveEps = append(haveEps, have{e.SeasonNumber, e.EpisodeNumber, cur})
 			}
 		}
 	}
@@ -225,7 +228,7 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 		if len(cands) == 0 {
 			continue
 		}
-		pick, ok := c.quality.UpgradeCandidate(ctx, profile, ep.release, ep.sizeGB, ep.runtimeMin, cands)
+		pick, ok := c.quality.UpgradeCandidate(ctx, profile, ep.cur, cands)
 		if !ok {
 			continue
 		}

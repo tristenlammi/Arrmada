@@ -49,6 +49,7 @@ type Coordinator struct {
 	downloadsDir string          // the startup downloads folder; downloadsPath reads the live one
 	downloadsFn  func() string   // the live downloads folder (Settings → Library); nil = downloadsDir
 	series       *series.Service // set post-construction via SetSeries
+	fileFacts    FileFactsSource // Convert's probed facts for library files; nil = release names only
 	books        *books.Service  // set post-construction via SetBooks
 	music        *music.Service  // set post-construction via SetMusic
 	imp          *library.Importer
@@ -1086,13 +1087,10 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 		return err
 	}
 	for _, v := range want {
-		curSizeGB := gbOf(v.SizeBytes)
-		if v.File != nil && v.File.SizeBytes > 0 {
-			curSizeGB = gbOf(v.File.SizeBytes)
-		}
-		baseline := upgradeBaseline(m, v)
+		cur := c.currentMovieFile(ctx, m, v)
+		baseline := cur.Release
 		profile := c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)
-		pick, ok := c.quality.UpgradeCandidate(ctx, profile, baseline, curSizeGB, m.Runtime, cands)
+		pick, ok := c.quality.UpgradeCandidate(ctx, profile, cur, cands)
 		if !ok {
 			continue
 		}
@@ -1126,31 +1124,6 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 }
 
 func gbOf(bytes int64) float64 { return float64(bytes) / (1024 * 1024 * 1024) }
-
-// upgradeBaseline is the "what we already have" release string the upgrade comparison scores
-// against. Files Arrmada grabbed carry their SourceRelease; files found by a library scan don't —
-// so fall back to their probed quality (e.g. "Bambi 1942 1080p BluRay x264"), then the filename.
-// Without this, disk-imported movies could never be considered for an upgrade at all.
-func upgradeBaseline(m movies.Movie, v movies.Version) string {
-	if s := strings.TrimSpace(v.SourceRelease); s != "" {
-		return s
-	}
-	if v.File != nil && v.File.Quality != "" {
-		parts := []string{m.Title}
-		if m.Year > 0 {
-			parts = append(parts, strconv.Itoa(m.Year))
-		}
-		parts = append(parts, v.File.Quality) // e.g. "1080p BluRay"
-		if v.File.Codec != "" {
-			parts = append(parts, v.File.Codec)
-		}
-		return strings.Join(parts, " ")
-	}
-	if v.FilePath != "" {
-		return filepath.Base(v.FilePath)
-	}
-	return ""
-}
 
 // RegrabMovie grabs the best release under each monitored version's current
 // profile even when a file already exists — a deliberate re-grab, used when the
