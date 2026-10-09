@@ -12,6 +12,7 @@ import { usePersisted } from "../lib/persist";
 import { usePoll, usePollBurst } from "../lib/usePoll";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { useQuery } from "../lib/query";
+import { movieStatus } from "../lib/movieStatus";
 import { ErrorState, Skeleton, StaleBanner } from "../ui";
 
 const NO_MOVIES: Movie[] = [];
@@ -294,12 +295,6 @@ export function Movies() {
   );
 }
 
-function statusOf(m: Movie): { label: string; tone: string } {
-  if (m.has_file) return { label: "Downloaded", tone: "var(--good)" };
-  if (m.monitored) return { label: "Wanted", tone: "var(--avoid)" };
-  return { label: "Unmonitored", tone: "var(--ink-faint)" };
-}
-
 function Poster({ url, title }: { url?: string; title: string }) {
   if (url) {
     return <img src={posterThumb(url)} alt={title} className="h-full w-full object-cover" loading="lazy" decoding="async" />;
@@ -462,7 +457,7 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }:
         <tbody>
           {sorted.map((m) => {
             const f = m.file;
-            const st = statusOf(m);
+            const st = movieStatus(m);
             const fi = fits.get(m.id);
             const bad = (kind: string) => (hasIssue(fi?.fit, kind) ? { color: FIT_COLOR.over, fontWeight: 600 } : undefined);
             return (
@@ -479,7 +474,7 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }:
                     <Link to={`/movies/${m.id}`} className="font-semibold hover:text-[var(--accent)]">{m.title} <span className="font-normal text-ink-faint">{m.year || ""}</span></Link>
                   )}
                 </td>
-                <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: st.tone }}>{st.label}</span></td>
+                <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: st.color }}>{st.label}</span></td>
                 <td className={td}>{f?.resolution || (f?.quality ? f.quality.split(" ")[0] : "—")}</td>
                 <td className={td} style={bad("codec")}>{f?.codec || "—"}</td>
                 <td className={td} style={bad("lossless")}>{f?.audio?.length ? f.audio.join(", ") : "—"}</td>
@@ -506,7 +501,7 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }:
 }
 
 function MovieCard({ m, onDelete, onSearch, selectable, selected, onToggleSelect }: { m: Movie; onDelete: () => void; onSearch: () => void; selectable?: boolean; selected?: boolean; onToggleSelect?: () => void }) {
-  const st = statusOf(m);
+  const st = movieStatus(m);
   const [searching, setSearching] = useState(false);
   const doSearch = async () => {
     setSearching(true);
@@ -572,7 +567,7 @@ function MovieCard({ m, onDelete, onSearch, selectable, selected, onToggleSelect
           <div className="truncate text-[12.5px] font-semibold" title={m.title}>{m.title}</div>
           <div className="mt-1 flex items-center justify-between">
             <span className="font-mono text-[10.5px] text-ink-faint">{m.year || "—"}</span>
-            <span className="font-mono text-[9.5px] uppercase" style={{ color: st.tone }}>{st.label}</span>
+            <span className="font-mono text-[9.5px] uppercase" style={{ color: st.color }}>{st.label}</span>
           </div>
         </button>
       ) : (
@@ -580,7 +575,7 @@ function MovieCard({ m, onDelete, onSearch, selectable, selected, onToggleSelect
         <div className="truncate text-[12.5px] font-semibold" title={m.title}>{m.title}</div>
         <div className="mt-1 flex items-center justify-between">
           <span className="font-mono text-[10.5px] text-ink-faint">{m.year || "—"}</span>
-          <span className="font-mono text-[9.5px] uppercase" style={{ color: st.tone }}>{st.label}</span>
+          <span className="font-mono text-[9.5px] uppercase" style={{ color: st.color }}>{st.label}</span>
         </div>
       </Link>
       )}

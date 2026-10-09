@@ -24,6 +24,7 @@ import {
 import { useLive, type LiveEvent } from "../lib/useLive";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { Button, StatusChip } from "../ui";
+import { movieStatus, trackStatus } from "../lib/movieStatus";
 
 const AVAILABILITY_LABELS: Record<string, string> = {
   announced: "Announced",
@@ -106,7 +107,7 @@ export function MovieDetail() {
     );
   }
 
-  const st = statusOf(movie);
+  const st = movieStatus(movie);
   const ex = movie.extra;
 
   return (
@@ -143,7 +144,7 @@ export function MovieDetail() {
 
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2.5">
-                <span className="rounded-full px-2.5 py-1 font-mono text-[10.5px] font-semibold uppercase" style={{ background: st.soft, color: st.tone }}>{st.label}</span>
+                <span className="rounded-full px-2.5 py-1 font-mono text-[10.5px] font-semibold uppercase" style={{ background: st.soft, color: st.color }}>{st.label}</span>
                 {ex?.certification && (
                   <span className="rounded px-1.5 py-0.5 font-mono text-[10.5px] font-bold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>{ex.certification}</span>
                 )}
@@ -189,14 +190,6 @@ export function MovieDetail() {
   );
 }
 
-function statusOf(m: Movie): { label: string; tone: string; soft: string } {
-  // A recorded file that's gone from disk isn't "Downloaded" — the panel below says the same.
-  if (m.file?.missing) return { label: "File missing", tone: "var(--reject)", soft: "var(--reject-soft)" };
-  if (m.has_file) return { label: "Downloaded", tone: "var(--good-text)", soft: "var(--good-soft)" };
-  if (m.monitored) return { label: "Wanted", tone: "var(--avoid-text)", soft: "var(--avoid-soft)" };
-  return { label: "Unmonitored", tone: "var(--ink-faint)", soft: "var(--panel-2)" };
-}
-
 function fmtRuntime(min: number): string {
   const h = Math.floor(min / 60);
   const m = min % 60;
@@ -240,11 +233,18 @@ function VersionsArea({ movie, onChange, flash }: { movie: Movie; onChange: () =
       .catch(() => {});
   }, []);
   const profileName = (ref: string) => (ref === "n/a" ? "Not set" : profileNames[ref] ?? ref);
+  // After a missing file's record is cleared, a monitored movie gets a one-click search.
+  const [cleared, setCleared] = useState(false);
+  const onCleared = () => { setCleared(true); onChange(); };
+  const clearedNotice = cleared && (
+    <ClearedNotice movie={movie} flash={flash} onDismiss={() => setCleared(false)} />
+  );
 
   if (extras.length === 0) {
     return (
       <>
-        {movie.file && <FilePanel file={movie.file} movieId={movie.id} onChange={onChange} />}
+        {clearedNotice}
+        {movie.file && <FilePanel file={movie.file} movieId={movie.id} onChange={onChange} onCleared={onCleared} />}
         <button onClick={() => setAdding(true)} className="mt-4 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold" style={{ border: "1px dashed var(--line)", color: "var(--ink-dim)" }}>
           ＋ Keep another version <span className="text-ink-faint">(e.g. 1080p + 4K, or a Director's Cut)</span>
         </button>
@@ -255,13 +255,14 @@ function VersionsArea({ movie, onChange, flash }: { movie: Movie; onChange: () =
 
   return (
     <div className="mt-6">
+      {clearedNotice}
       <div className="mb-3 flex items-center justify-between">
         <h2 className="m-0 text-[14px] font-bold">Versions <span className="font-normal text-ink-faint">· {versions.length} tracks</span></h2>
         <button onClick={() => setAdding(true)} className="rounded-lg px-3 py-1.5 text-[12px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>＋ Add version</button>
       </div>
       <div className="flex flex-col gap-2.5">
         {versions.map((v) => (
-          <VersionCard key={`${v.is_default ? "d" : v.id}`} movieId={movie.id} version={v} onChange={onChange} flash={flash} profileName={profileName} />
+          <VersionCard key={`${v.is_default ? "d" : v.id}`} movieId={movie.id} version={v} onChange={onChange} onCleared={onCleared} flash={flash} profileName={profileName} />
         ))}
       </div>
       {adding && <AddVersionModal movieId={movie.id} onClose={() => setAdding(false)} onAdded={() => { setAdding(false); onChange(); flash("Version added — searching for it."); }} />}
@@ -269,7 +270,35 @@ function VersionsArea({ movie, onChange, flash }: { movie: Movie; onChange: () =
   );
 }
 
-function VersionCard({ movieId, version, onChange, flash, profileName }: { movieId: number; version: MovieVersion; onChange: () => void; flash: (m: string) => void; profileName: (ref: string) => string }) {
+// ClearedNotice follows a cleared missing-file record: nothing on disk was touched, and a
+// monitored movie can be searched for right away instead of waiting for the next sweep.
+function ClearedNotice({ movie, flash, onDismiss }: { movie: Movie; flash: (m: string, err?: boolean) => void; onDismiss: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const search = async () => {
+    setBusy(true);
+    try {
+      await api.searchMovie(movie.id);
+      flash(`Searching — follow it in ${PAGE.downloads} → Searching.`);
+      onDismiss();
+    } catch (e) {
+      flash((e as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mt-6 flex flex-wrap items-center gap-3 rounded-xl p-3.5 text-[12px] text-ink-dim" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
+      <span className="min-w-0 flex-1">
+        Record cleared — nothing on disk was touched.
+        {movie.monitored ? " Arrmada will look for it on its next sweep, or search now." : " Turn on Monitor for Arrmada to look for it."}
+      </span>
+      {movie.monitored && <Button size="sm" variant="primary" onClick={search} busy={busy} busyLabel="Searching…">Search now</Button>}
+      <Button size="sm" variant="ghost" onClick={onDismiss}>Dismiss</Button>
+    </div>
+  );
+}
+
+function VersionCard({ movieId, version, onChange, onCleared, flash, profileName }: { movieId: number; version: MovieVersion; onChange: () => void; onCleared: () => void; flash: (m: string) => void; profileName: (ref: string) => string }) {
   const [busy, setBusy] = useState(false);
   const f = version.file;
 
@@ -287,7 +316,8 @@ function VersionCard({ movieId, version, onChange, flash, profileName }: { movie
   // Both destructive buttons ask first, naming the file, its size and where it goes.
   const [confirm, setConfirm] = useState<"file" | "version" | null>(null);
 
-  const status = f ? { label: "Downloaded", tone: "var(--good-text)" } : version.monitored ? { label: "Wanted", tone: "var(--avoid-text)" } : { label: "Unmonitored", tone: "var(--ink-faint)" };
+  const status = trackStatus(version);
+  const missing = status.key === "missing";
   const chips: string[] = [];
   if (f?.codec) chips.push(f.codec);
   if (f?.audio) chips.push(...f.audio);
@@ -302,7 +332,7 @@ function VersionCard({ movieId, version, onChange, flash, profileName }: { movie
             {version.is_default && <span className="rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>Default</span>}
             <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{profileName(version.quality_profile)}</span>
             {version.edition && <span className="rounded px-1.5 py-0.5 text-[10.5px]" style={{ background: "var(--panel-2)", color: "var(--ink-dim)" }}>{version.edition}</span>}
-            <span className="font-mono text-[9.5px] uppercase" style={{ color: status.tone }}>{status.label}</span>
+            <span className="font-mono text-[9.5px] uppercase" style={{ color: status.color }}>{status.label}</span>
           </div>
           {f ? (
             <>
@@ -312,6 +342,7 @@ function VersionCard({ movieId, version, onChange, flash, profileName }: { movie
                 <span className="font-mono text-ink-dim">{fmtSize(f.size_bytes)}</span>
               </div>
               <div className="mt-1 break-all font-mono text-[11px] text-ink-faint">{f.path}</div>
+              {missing && <div className="mt-1 text-[11.5px]" style={{ color: "var(--avoid)" }}>Tracked but not on disk. Refresh & rescan to look again, or clear the record (nothing on disk is touched).</div>}
             </>
           ) : (
             <div className="mt-1.5 text-[12px] text-ink-dim">{version.monitored ? "No file yet — Arrmada is searching for this track." : "Not monitored."}</div>
@@ -319,11 +350,20 @@ function VersionCard({ movieId, version, onChange, flash, profileName }: { movie
         </div>
         <div className="flex flex-none flex-col items-end gap-1.5">
           <button onClick={toggleMonitor} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{version.monitored ? "Monitored" : "Unmonitored"}</button>
-          {f && <button onClick={() => setConfirm("file")} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Delete file</button>}
+          {f && <button onClick={() => setConfirm("file")} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{missing ? "Clear record" : "Delete file"}</button>}
           {!version.is_default && <button onClick={() => setConfirm("version")} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px]" style={{ color: "var(--ink-faint)" }}>Remove version</button>}
         </div>
       </div>
-      {confirm === "file" && f && (
+      {confirm === "file" && f && missing && (
+        <ClearRecordDialog
+          movieId={movieId}
+          versionId={version.id}
+          file={f}
+          onDone={() => { setConfirm(null); onCleared(); }}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
+      {confirm === "file" && f && !missing && (
         <FileDeleteDialog
           title={<>Delete the “{version.label}” file?</>}
           file={f}
@@ -387,6 +427,47 @@ function FileDeleteDialog({ title, file, note, confirmLabel, run, onDone, onCanc
       }
       confirmLabel={confirmLabel}
       busyLabel="Deleting…"
+      busy={busy}
+      error={err}
+      onConfirm={confirm}
+      onCancel={onCancel}
+    />
+  );
+}
+
+// ClearRecordDialog forgets a track whose file is gone from disk. Unlike Delete file it
+// never touches the disk: the server checks the file is really gone and refuses (409) when
+// it's back, and that refusal stays on screen.
+function ClearRecordDialog({ movieId, versionId, file, onDone, onCancel }: {
+  movieId: number;
+  versionId: number;
+  file: MovieFile;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const confirm = async () => {
+    setBusy(true); setErr(null);
+    try {
+      await api.forgetMissingFile(movieId, versionId);
+      onDone();
+    } catch (e) {
+      setErr((e as Error).message);
+      setBusy(false);
+    }
+  };
+  return (
+    <ConfirmDialog
+      title="Clear the missing file's record?"
+      body={
+        <>
+          <div className="mt-1 break-all font-mono text-[11.5px]" style={{ color: "var(--ink)" }}>{file.filename || file.path}</div>
+          <p className="mb-0 mt-1.5">Nothing on disk is touched — the file is already gone. The movie stays, so Arrmada searches for it again while it's monitored.</p>
+        </>
+      }
+      confirmLabel="Clear record"
+      busyLabel="Clearing…"
       busy={busy}
       error={err}
       onConfirm={confirm}
@@ -684,7 +765,7 @@ function WhyPanel({ movie }: { movie: Movie }) {
   let msg: string;
   let tone = "var(--ink-dim)";
   if (movie.file?.missing) {
-    msg = "Arrmada recorded a file for this movie but it's no longer on disk. Refresh & rescan, or search again.";
+    msg = "Arrmada has a record of this file but it isn't on disk. Refresh & rescan to look again; if it's really gone, clear the record and Arrmada will search for it (when monitored).";
     tone = "var(--reject)";
   } else if (movie.has_file && !movie.monitored) {
     msg = "You have this movie. It isn't monitored, so Arrmada won't look for upgrades — turn on Monitor to allow them.";
@@ -775,6 +856,17 @@ function Toolbar({ movie, onChange, flash, live }: { movie: Movie; onChange: () 
   const btn = "rounded-lg px-3 py-2 text-[12.5px] font-semibold disabled:opacity-50";
   const ghost = { border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" } as const;
 
+  // A recorded file that's gone from disk blocks the search (the track reads as having a
+  // file), so Auto-grab clears that record first. The server refuses if the file is back.
+  const missing = movie.has_file && !!movie.file?.missing;
+  const autoGrab = async () => {
+    if (missing) await api.forgetMissingFile(movie.id, 0);
+    const r = await api.searchMovie(movie.id);
+    if (r.job_id) setSearchJob(r.job_id);
+    flash(missing ? `Cleared the missing file's record — searching. Follow it in ${PAGE.downloads} → Searching.` : `Searching — follow it in ${PAGE.downloads} → Searching.`);
+    onChange();
+  };
+
   const rename = async () => {
     const p = await api.renamePreview(movie.id);
     if (p.matches) {
@@ -805,15 +897,21 @@ function Toolbar({ movie, onChange, flash, live }: { movie: Movie; onChange: () 
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("refresh", async () => { await api.refreshMovie(movie.id); onChange(); flash("Refreshed metadata and rescanned disk."); })}>
           {busy === "refresh" ? "Refreshing…" : "Refresh & rescan"}
         </button>
-        {!movie.has_file && (
-          <button className={btn} style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }} disabled={busy !== null || search.running} onClick={() => run("search", async () => { const r = await api.searchMovie(movie.id); if (r.job_id) setSearchJob(r.job_id); flash(`Searching — follow it in ${PAGE.downloads} → Searching.`); })}>
+        {(!movie.has_file || missing) && (
+          <button
+            className={btn}
+            style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}
+            disabled={busy !== null || search.running}
+            title={missing ? "Clears the missing file's record (nothing on disk is touched), then searches" : undefined}
+            onClick={() => run("search", autoGrab)}
+          >
             {busy === "search" || search.running ? "Searching…" : "Auto-grab best"}
           </button>
         )}
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowSearch(true)}>Search indexers</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowPaste(true)}>Upload torrent</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowImport(true)}>Manual import</button>
-        {movie.has_file && (
+        {movie.has_file && !missing && (
           <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("rename", rename)}>
             {busy === "rename" ? "Renaming…" : "Rename"}
           </button>
@@ -845,7 +943,7 @@ function Toolbar({ movie, onChange, flash, live }: { movie: Movie; onChange: () 
   );
 }
 
-function FilePanel({ file, movieId, onChange }: { file: MovieFile; movieId: number; onChange: () => void }) {
+function FilePanel({ file, movieId, onChange, onCleared }: { file: MovieFile; movieId: number; onChange: () => void; onCleared: () => void }) {
   const [confirming, setConfirming] = useState(false);
   const [showFile, setShowFile] = useState(false);
 
@@ -894,18 +992,27 @@ function FilePanel({ file, movieId, onChange }: { file: MovieFile; movieId: numb
               ))}
             </div>
           )}
-          {file.missing && <div className="mt-1.5 text-[11.5px]" style={{ color: "var(--avoid)" }}>Tracked but not on disk. Refresh & rescan, or clear the record to search again.</div>}
+          {file.missing && <div className="mt-1.5 text-[11.5px]" style={{ color: "var(--avoid)" }}>Tracked but not on disk. Refresh & rescan to look again, or clear the record (nothing on disk is touched) to search again.</div>}
         </div>
         <div className="flex-none">
-          <button onClick={() => setConfirming(true)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{file.missing ? "Clear record" : "Delete file"}</button>
+          <button onClick={() => setConfirming(true)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={file.missing ? { border: "1px solid var(--line)", color: "var(--ink)" } : { border: "1px solid var(--reject)", color: "var(--reject)" }}>{file.missing ? "Clear record" : "Delete file"}</button>
         </div>
       </div>
-      {confirming && (
+      {confirming && file.missing && (
+        <ClearRecordDialog
+          movieId={movieId}
+          versionId={0}
+          file={file}
+          onDone={() => { setConfirming(false); onCleared(); }}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
+      {confirming && !file.missing && (
         <FileDeleteDialog
-          title={file.missing ? "Clear the missing file's record?" : "Delete this file?"}
+          title="Delete this file?"
           file={file}
           note="The movie stays, so Arrmada looks for it again while it's monitored."
-          confirmLabel={file.missing ? "Clear record" : "Delete file"}
+          confirmLabel="Delete file"
           run={() => api.deleteMovieFile(movieId)}
           onDone={() => { setConfirming(false); onChange(); }}
           onCancel={() => setConfirming(false)}
@@ -1046,6 +1153,7 @@ const EVENT_TONES: Record<string, string> = {
   detected: "var(--good)",
   deleted: "var(--reject)",
   missing: "var(--avoid)",
+  missing_cleared: "var(--ink-dim)",
   renamed: "var(--ink-dim)",
   refreshed: "var(--ink-faint)",
 };

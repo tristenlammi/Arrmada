@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -151,6 +152,67 @@ func (s *Service) DeleteFile(ctx context.Context, id int64) error {
 		}
 		return r.ClearFile(ctx, id)
 	})
+}
+
+// ErrFileExists means a "missing" file is on disk after all, so its record wasn't cleared.
+var ErrFileExists = errors.New("the file is back on disk — refresh instead")
+
+// ForgetMissingFile clears the record of a track whose file is gone from disk (versionID 0
+// is the default track). It never touches the disk: it checks the file really is gone and
+// refuses with ErrFileExists when it's there, because a remounted disk can bring a
+// "missing" file back between the page loading and the click. Clearing the record lets a
+// monitored movie be searched for again.
+func (s *Service) ForgetMissingFile(ctx context.Context, movieID, versionID int64) error {
+	var path, label string
+	var hasFile bool
+	if versionID == 0 {
+		m, err := s.repo.Get(ctx, movieID)
+		if err != nil {
+			return err
+		}
+		path, hasFile = m.MovieFilePath, m.HasFile
+	} else {
+		v, owner, err := s.repo.GetVersion(ctx, versionID)
+		if err != nil {
+			return err
+		}
+		if owner != movieID {
+			return ErrNotFound
+		}
+		path, hasFile, label = v.FilePath, v.HasFile, v.Label
+	}
+	if !hasFile {
+		return nil // nothing recorded: already cleared
+	}
+	if path != "" {
+		if _, err := s.statFile(path); err == nil {
+			return ErrFileExists
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			// Unreadable is not the same as gone (a permissions slip, a flaky mount):
+			// keep the record rather than guess.
+			return fmt.Errorf("couldn't check the file on disk: %w", err)
+		}
+	}
+	detail := "Cleared record of missing file"
+	if path != "" {
+		detail += " " + filepath.Base(path)
+	}
+	if label != "" {
+		detail += " (" + label + ")"
+	}
+	err := s.clearTrack(ctx, movieID, versionID, path, func(r *Repo) error {
+		_ = r.AddEvent(ctx, movieID, "missing_cleared", detail)
+		if versionID == 0 {
+			return r.ClearFile(ctx, movieID)
+		}
+		return r.ClearVersionFile(ctx, versionID)
+	})
+	// The import pipeline forgets the file too, so a re-grab of the same release imports
+	// again instead of being deduped against a file that no longer exists.
+	if err == nil && s.onFileRemoved != nil && path != "" {
+		s.onFileRemoved(ctx, path)
+	}
+	return err
 }
 
 // clearTrack runs a track's record change (clear) in one transaction with the

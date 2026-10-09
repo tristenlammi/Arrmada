@@ -560,6 +560,33 @@ func (a *api) handleDeleteMovieFile(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleForgetMissingFile clears the record of a track whose file is gone from disk. It
+// never deletes anything: a file that's back on disk answers 409 and stays recorded.
+func (a *api) handleForgetMissingFile(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		VersionID int64 `json:"version_id"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	if err := a.deps.Movies.ForgetMissingFile(r.Context(), id, req.VersionID); err != nil {
+		switch {
+		case errors.Is(err, movies.ErrNotFound):
+			a.writeError(w, http.StatusNotFound, "movie not found")
+		case errors.Is(err, movies.ErrFileExists):
+			a.writeError(w, http.StatusConflict, "the file is back on disk — refresh instead")
+		default:
+			a.writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"status": "cleared"})
+}
+
 // handleMovieReleases runs an interactive search and returns ranked releases
 // (best first) without grabbing — the user picks one to grab via /grab.
 func (a *api) handleMovieReleases(w http.ResponseWriter, r *http.Request) {

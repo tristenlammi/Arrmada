@@ -225,3 +225,72 @@ func TestMarkImportedReplacementRecyclesOld(t *testing.T) {
 		t.Errorf("default file = %q after a refused import, want the 2160p file", m.MovieFilePath)
 	}
 }
+
+// Clear record on a missing file never touches the disk: with the file present it refuses
+// and the file stays; with the file gone it clears the track and records missing_cleared,
+// not deleted. The same holds for an extra track.
+func TestForgetMissingFile(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	f := newDeleteFixture(t, bin)
+	ctx := context.Background()
+
+	// Present: refused, nothing changes.
+	if err := f.svc.ForgetMissingFile(ctx, f.id, 0); !errors.Is(err, ErrFileExists) {
+		t.Fatalf("file on disk: err = %v, want ErrFileExists", err)
+	}
+	if !exists(f.main) {
+		t.Fatal("the file on disk was touched")
+	}
+	if m, _ := f.svc.repo.Get(ctx, f.id); !m.HasFile {
+		t.Fatal("the record was cleared although the file is there")
+	}
+
+	// Gone (removed by the test, standing in for a pulled disk): cleared, event recorded.
+	if err := os.Remove(f.main); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.ForgetMissingFile(ctx, f.id, 0); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := f.svc.repo.Get(ctx, f.id); m.HasFile || m.MovieFilePath != "" {
+		t.Fatalf("record not cleared: %+v", m)
+	}
+	assertLastEvent(t, f.svc, f.id, "missing_cleared")
+	if !exists(f.extra) || !exists(f.subs[0]) {
+		t.Fatal("clearing one record touched other files")
+	}
+
+	// Extra track: refused while present, cleared once gone.
+	if err := f.svc.ForgetMissingFile(ctx, f.id, f.vid); !errors.Is(err, ErrFileExists) {
+		t.Fatalf("extra on disk: err = %v, want ErrFileExists", err)
+	}
+	if err := os.Remove(f.extra); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.ForgetMissingFile(ctx, f.id, f.vid); err != nil {
+		t.Fatal(err)
+	}
+	if v, _, _ := f.svc.repo.GetVersion(ctx, f.vid); v.HasFile || v.FilePath != "" {
+		t.Fatalf("extra record not cleared: %+v", v)
+	}
+	assertLastEvent(t, f.svc, f.id, "missing_cleared")
+	if !exists(f.extraSub) {
+		t.Fatal("the extra track's subtitle was touched")
+	}
+
+	// A version id that belongs to another movie is not found.
+	if err := f.svc.ForgetMissingFile(ctx, f.id+1, f.vid); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("foreign version: err = %v, want ErrNotFound", err)
+	}
+}
+
+func assertLastEvent(t *testing.T, svc *Service, id int64, want string) {
+	t.Helper()
+	evs, err := svc.Events(context.Background(), id, 1)
+	if err != nil || len(evs) == 0 {
+		t.Fatalf("no events: %v", err)
+	}
+	if evs[0].Event != want {
+		t.Fatalf("last event = %q (%s), want %q", evs[0].Event, evs[0].Detail, want)
+	}
+}

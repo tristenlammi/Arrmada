@@ -2284,6 +2284,10 @@ export const api = {
       body: JSON.stringify({ monitored }),
     }),
   deleteMovieFile: (id: number) => req<void>(`/api/v1/movies/${id}/file`, { method: "DELETE" }),
+  // Clears the record of a track whose file is gone from disk (version 0 = the default
+  // track). Never deletes anything; answers 409 when the file is back on disk.
+  forgetMissingFile: (id: number, versionId = 0) =>
+    req<{ status: string }>(`/api/v1/movies/${id}/file/forget`, { method: "POST", body: JSON.stringify({ version_id: versionId }) }),
   setQualityProfile: (id: number, quality_profile: string) =>
     req<{ quality_profile: string; downgrade: boolean }>(`/api/v1/movies/${id}/profile`, {
       method: "PUT",

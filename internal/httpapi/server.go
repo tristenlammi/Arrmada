@@ -583,6 +583,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("DELETE /api/v1/movies/{id}/versions/{vid}/file", a.requireRole(auth.RoleManager, a.handleDeleteVersionFile))
 	mux.HandleFunc("DELETE /api/v1/movies/{id}/versions/{vid}", a.requireRole(auth.RoleManager, a.handleDeleteVersion))
 	mux.HandleFunc("DELETE /api/v1/movies/{id}/file", a.requireRole(auth.RoleManager, a.handleDeleteMovieFile))
+	mux.HandleFunc("POST /api/v1/movies/{id}/file/forget", a.requireRole(auth.RoleManager, a.handleForgetMissingFile))
 	mux.HandleFunc("GET /api/v1/movies/{id}/delete-preview", a.requireRole(auth.RoleManager, a.handleMovieDeletePreview))
 	mux.HandleFunc("DELETE /api/v1/movies/{id}", a.requireRole(auth.RoleManager, a.handleDeleteMovie))
 
