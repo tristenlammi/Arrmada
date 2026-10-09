@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type APIKeyStatus, type LibraryPaths, type SetupState } from "../lib/api";
 import { FolderChips, FolderPicker } from "./Library";
+import { restartAndWait } from "../lib/restart";
 import { FleetMark } from "../components/FleetMark";
 
 // SetupWizard is the first thing an admin sees on a fresh install: the metadata key,
@@ -64,17 +65,15 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
     setStep("finish");
   });
 
-  // Restart and wait for the app to come back, then finish.
+  // Restart and wait for the NEW process (not the old one's last answers), then finish.
   const restart = () => run(async () => {
     setRestarting(true);
-    await api.restartApp();
-    const started = Date.now();
-    await new Promise((r) => setTimeout(r, 2500));
-    while (Date.now() - started < 120_000) {
-      try { await api.health(); break; } catch { await new Promise((r) => setTimeout(r, 1500)); }
+    try {
+      await restartAndWait({ then: async () => { await api.completeSetup(); window.location.reload(); } });
+    } catch (e) {
+      setRestarting(false);
+      throw e;
     }
-    await api.completeSetup();
-    window.location.reload();
   });
 
   if (!state || !folders) {

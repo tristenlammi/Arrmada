@@ -28,6 +28,31 @@ func TestWindowAllows(t *testing.T) {
 	}
 }
 
+// The restart confirm names the longest-running conversion's age and progress; finished
+// jobs don't count.
+func TestConvertActiveSummary(t *testing.T) {
+	now := time.Now().Unix()
+	s := &Service{jobs: []*Job{
+		{State: StateEncoding, StartedAt: now - 600, Progress: 0.9},
+		{State: StateEncoding, StartedAt: now - 3*3600, Progress: 0.41},
+		{State: StateDone, StartedAt: now - 10*3600, Progress: 1},
+		{State: StateVerifying, StartedAt: now - 60, Progress: 1},
+	}}
+	n, longest, progress := s.ActiveSummary()
+	if n != 3 {
+		t.Errorf("running = %d, want 3", n)
+	}
+	if longest < 3*3600 || longest > 3*3600+5 {
+		t.Errorf("longest = %ds, want about 3h", longest)
+	}
+	if progress != 0.41 {
+		t.Errorf("progress = %v, want the longest job's 0.41", progress)
+	}
+	if n, longest, progress := (&Service{}).ActiveSummary(); n != 0 || longest != 0 || progress != 0 {
+		t.Errorf("idle: %d %d %v", n, longest, progress)
+	}
+}
+
 // Hand-picked files ignore the hours (you asked for them); nothing runs while someone is
 // watching.
 func TestPauseReason(t *testing.T) {

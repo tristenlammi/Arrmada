@@ -160,6 +160,49 @@ func (a *api) librariesChosen(ctx context.Context) bool {
 	return false
 }
 
+// folderChange is one folder saved in the app that the running app isn't using yet.
+type folderChange struct {
+	Library string `json:"library"`
+	Saved   string `json:"saved"`
+	Running string `json:"running"`
+}
+
+// restartState says whether saved folders are waiting on a restart.
+type restartState struct {
+	Needed     bool           `json:"restart_needed"`
+	CanRestart bool           `json:"can_restart"`
+	Changed    []folderChange `json:"changed"`
+}
+
+// folderRestartState compares each saved folder with the one the running app was built
+// with. The importer, qBittorrent's save path, the coordinator and the disk guard take
+// their folders at startup, so a new pick does nothing for them until a restart — and
+// new episodes keep landing in the old folder in the meantime.
+//
+// Music is skipped: it's read from settings on every use, so it's already live. A blank
+// saved value means "the install default", which is what's running.
+func (a *api) folderRestartState(ctx context.Context) restartState {
+	c := a.deps.Config
+	st := restartState{CanRestart: a.deps.Restart != nil && inContainer(), Changed: []folderChange{}}
+	for _, d := range []struct {
+		name, key, running string
+	}{
+		{"movies", keyLibMovies, c.MoviesDir},
+		{"tv", keyLibTV, c.TVDir},
+		{"ebooks", keyLibEbooks, c.EbooksDir},
+		{"audiobooks", keyLibAudiobooks, c.AudiobooksDir},
+		{"downloads", keyLibDownloads, c.DownloadsDir},
+	} {
+		saved := strings.TrimSpace(a.deps.Settings.Get(ctx, d.key, ""))
+		if saved == "" || saved == d.running {
+			continue
+		}
+		st.Changed = append(st.Changed, folderChange{Library: d.name, Saved: saved, Running: d.running})
+	}
+	st.Needed = len(st.Changed) > 0
+	return st
+}
+
 // handleSetupState — GET /api/v1/setup
 func (a *api) handleSetupState(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -176,12 +219,7 @@ func (a *api) handleSetupState(w http.ResponseWriter, r *http.Request) {
 		"movies": c.MoviesDir, "tv": c.TVDir, "ebooks": c.EbooksDir,
 		"audiobooks": c.AudiobooksDir, "music": c.MusicDir, "downloads": c.DownloadsDir,
 	}
-	restartNeeded := false
-	for k, v := range saved {
-		if v != running[k] {
-			restartNeeded = true
-		}
-	}
+	rs := a.folderRestartState(ctx)
 	mounts := []string{}
 	for _, m := range candidateMounts {
 		if fi, err := os.Stat(m); err == nil && fi.IsDir() {
@@ -200,8 +238,8 @@ func (a *api) handleSetupState(w http.ResponseWriter, r *http.Request) {
 		"keys":             keys,
 		"library":          saved,
 		"running":          running,
-		"restart_needed":   restartNeeded,
-		"can_restart":      a.deps.Restart != nil && inContainer(),
+		"restart_needed":   rs.Needed,
+		"can_restart":      rs.CanRestart,
 		"mounts":           mounts,
 		"suggestions":      suggestFolders(mounts),
 	})

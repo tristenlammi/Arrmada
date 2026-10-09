@@ -469,6 +469,29 @@ func (s *Service) pauseLoop(ctx context.Context, done <-chan struct{}) {
 	}
 }
 
+// ActiveSummary is what a restart would interrupt: how many conversions are running, how
+// long the longest-running one has been going, and how far it has got (0..1). No titles,
+// so the restart confirm can show it on any staff page.
+func (s *Service) ActiveSummary() (n int, longestSec int64, progress float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().Unix()
+	for _, j := range s.jobs {
+		if !activeState(j.State) {
+			continue
+		}
+		n++
+		age := int64(0)
+		if j.StartedAt > 0 && now > j.StartedAt {
+			age = now - j.StartedAt
+		}
+		if n == 1 || age > longestSec {
+			longestSec, progress = age, j.Progress
+		}
+	}
+	return n, longestSec, progress
+}
+
 func (s *Service) applyPauses(ctx context.Context) {
 	if !canSuspend {
 		return

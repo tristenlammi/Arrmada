@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { FleetMark } from "./FleetMark";
+import { RestartBanner } from "./RestartBanner";
 
 export function AppLayout() {
   const [navOpen, setNavOpen] = useState(false);
@@ -19,6 +20,7 @@ export function AppLayout() {
           </span>
           <span className="text-[14px] font-extrabold tracking-[0.12em]">ARRMADA</span>
         </div>
+        <RestartBanner />
         <main className="min-w-0 flex-1 overflow-y-auto">
           <Outlet />
         </main>

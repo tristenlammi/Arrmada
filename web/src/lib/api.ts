@@ -379,6 +379,14 @@ export interface SetupState {
 // path_disabled: the folder on screen holds (or is) Arrmada's data folder, so it can be
 // walked through but not selected.
 export interface BrowseResult { path: string; parent: string; dirs: { name: string; path: string }[]; path_disabled?: boolean }
+// PendingRestart: folders saved in the app that the running app isn't using yet (they
+// apply at the next start), and what a restart would interrupt. Counts only, no titles.
+export interface PendingRestart {
+  restart_needed: boolean;
+  can_restart: boolean;
+  changed: { library: keyof LibraryPaths; saved: string; running: string }[];
+  busy: { convert_running: number; convert_longest_sec: number; convert_progress: number; subtitles_running: number; subtitles_queued: number };
+}
 // FolderCheck is what a folder looks like before it's saved (Settings → Library, the
 // wizard). hardlink_with_downloads is null when it couldn't be tried; error is the reason
 // a save would refuse it, in the server's words.
@@ -1419,6 +1427,7 @@ export const api = {
   setupState: () => req<SetupState>("/api/v1/setup"),
   completeSetup: () => req<{ status: string }>("/api/v1/setup/complete", { method: "POST" }),
   restartApp: () => req<{ status: string }>("/api/v1/system/restart", { method: "POST" }),
+  pendingRestart: () => req<PendingRestart>("/api/v1/system/pending-restart"),
   // create: make any missing folder instead of refusing it (the "Create it" button).
   setLibraryPaths: (body: Partial<LibraryPaths> & { create?: boolean }) => req<LibraryPaths>("/api/v1/system/library", { method: "PUT", body: JSON.stringify(body) }),
   checkLibraryFolder: (path: string, kind: keyof LibraryPaths, downloads?: string) =>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, type LibraryPaths, type BrowseResult, type FolderCheck, type UnmatchedFolder, type MatchCandidate } from "../lib/api";
 import { useMe } from "../lib/me";
 import { fmtBytes } from "../lib/disposal";
+import { announceFoldersSaved } from "../lib/restart";
 
 // LibraryFolders — points each library at a folder (with an in-app picker) and scans it.
 // Lives inside Settings → Library. Mount your media into the container (see the
@@ -39,13 +40,24 @@ export function LibraryFolders() {
     // Only what changed is sent, so an untouched folder that's odd right now (a share
     // that isn't mounted) can never block saving the others.
     const changes = Object.fromEntries(changedKeys.map((k) => [k, draft[k]])) as Partial<LibraryPaths>;
-    try { const p = await api.setLibraryPaths(changes); setPaths(p); setDraft(p); flash("Saved"); }
+    try {
+      const p = await api.setLibraryPaths(changes);
+      setPaths(p); setDraft(p);
+      announceFoldersSaved();
+      // Most folders only reach imports and the download client at the next start; say
+      // so here rather than letting "Saved" imply they're live.
+      const pending = await api.pendingRestart().catch(() => null);
+      flash(pending?.restart_needed
+        ? "Saved — restart Arrmada to apply them to downloads and imports. Files already imported stay where they are."
+        : "Saved");
+    }
     catch (e) { flash((e as Error).message); } finally { setBusy(false); }
   };
   // "Create it" saved that one folder; keep any other edits in progress.
   const created = (k: PathKey) => (saved: LibraryPaths) => {
     setPaths(saved);
     setDraft((d) => (d ? { ...d, [k]: saved[k] } : saved));
+    announceFoldersSaved();
   };
   const scan = async (row: typeof ROWS[number]) => {
     if (!row.scan) return;
