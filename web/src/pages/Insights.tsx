@@ -152,38 +152,58 @@ function ActivityView({ connected, onConfigure }: { connected: boolean; onConfig
     clock.current = next; // ended sessions drop out
   }, [act]);
 
-  if (!connected) return <ConnectPlex tab="activity" connected={false} onConfigure={onConfigure} />;
-  if (err) return <div className="rounded-xl p-6 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Couldn’t reach Plex: {err}</div>;
-  if (!act) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading activity…</div>;
+  // The watch statistics come from the database, so they stay on screen whatever the live
+  // call does: without a server they sit under the Connect state (when there are any), and
+  // an unreachable server only replaces the live-streams part.
+  if (!connected) {
+    return (
+      <div className="flex flex-col gap-3.5">
+        <ConnectPlex tab="activity" connected={false} onConfigure={onConfigure} />
+        <HomeExtras live={false} />
+      </div>
+    );
+  }
 
-  const streams = act.streams;
   // liveOffset reads the smoothed clock: advance while playing, hold otherwise; capped.
   const liveOffset = (s: InsightsStream): number => {
     const c = clock.current[s.session_key];
     const off = c ? (s.state === "playing" ? c.base + (Date.now() - c.at) : c.base) : s.offset_ms;
     return s.duration_ms > 0 ? Math.min(s.duration_ms, off) : off;
   };
+  let live: ReactNode;
+  if (err) {
+    live = <div className="rounded-xl p-6 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Couldn’t reach Plex: {err}</div>;
+  } else if (!act) {
+    live = <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading activity…</div>;
+  } else {
+    const streams = act.streams;
+    live = (
+      <>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="text-[12.5px] text-ink-dim">{streams.length ? `${streams.length} stream${streams.length === 1 ? "" : "s"} active` : "Nothing is playing right now."}</div>
+          <div className="flex items-center gap-3 font-mono text-[11px]">
+            <BW label="TOTAL" v={act.bandwidth.total_kbps} accent />
+            <BW label="LAN" v={act.bandwidth.lan_kbps} />
+            <BW label="WAN" v={act.bandwidth.wan_kbps} />
+          </div>
+        </div>
+        {streams.length === 0 ? (
+          <div className="rounded-xl p-12 text-center text-[12.5px] text-ink-faint" style={{ border: "1px dashed var(--line)" }}>No active streams.</div>
+        ) : (
+          <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))" }}>
+            {streams.map((s) => <StreamCard key={s.session_key} s={s} offsetMs={liveOffset(s)} onOpen={() => setDetail(s)} />)}
+          </div>
+        )}
+        {!act.geo_active && streams.some((s) => !s.geo.local) && (
+          <div className="text-[10.5px] text-ink-faint">Tip: drop a MaxMind <code>GeoLite2-City.mmdb</code> into the data dir (or set <code>ARRMADA_GEOIP_DB</code>) to resolve remote IPs to a city.</div>
+        )}
+      </>
+    );
+  }
   return (
     <div className="flex flex-col gap-3.5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="text-[12.5px] text-ink-dim">{streams.length ? `${streams.length} stream${streams.length === 1 ? "" : "s"} active` : "Nothing is playing right now."}</div>
-        <div className="flex items-center gap-3 font-mono text-[11px]">
-          <BW label="TOTAL" v={act.bandwidth.total_kbps} accent />
-          <BW label="LAN" v={act.bandwidth.lan_kbps} />
-          <BW label="WAN" v={act.bandwidth.wan_kbps} />
-        </div>
-      </div>
-      {streams.length === 0 ? (
-        <div className="rounded-xl p-12 text-center text-[12.5px] text-ink-faint" style={{ border: "1px dashed var(--line)" }}>No active streams.</div>
-      ) : (
-        <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))" }}>
-          {streams.map((s) => <StreamCard key={s.session_key} s={s} offsetMs={liveOffset(s)} onOpen={() => setDetail(s)} />)}
-        </div>
-      )}
-      {!act.geo_active && streams.some((s) => !s.geo.local) && (
-        <div className="text-[10.5px] text-ink-faint">Tip: drop a MaxMind <code>GeoLite2-City.mmdb</code> into the data dir (or set <code>ARRMADA_GEOIP_DB</code>) to resolve remote IPs to a city.</div>
-      )}
-      <HomeExtras />
+      {live}
+      <HomeExtras live />
       {detail && <DeepDive s={detail} onClose={() => setDetail(null)} />}
     </div>
   );
@@ -196,7 +216,10 @@ function fmtHours(secs: number): string {
   return h >= 10 ? `${h.toFixed(0)}h` : h >= 1 ? `${h.toFixed(1)}h` : `${Math.round(secs / 60)}m`;
 }
 
-function HomeExtras() {
+// HomeExtras: watch statistics (from the database) plus library counts and recently added,
+// which Plex answers live. Without a server (live=false) the Plex calls are skipped, and the
+// block shows only when there are imported statistics to show.
+function HomeExtras({ live }: { live: boolean }) {
   const [stats, setStats] = useState<InsightsStats | null>(null);
   const [libs, setLibs] = useState<LibraryStat[] | null>(null);
   const [recent, setRecent] = useState<RecentItem[] | null>(null);
@@ -204,11 +227,13 @@ function HomeExtras() {
 
   useEffect(() => { api.insightsStats(30, metric).then(setStats).catch(() => setStats(null)); }, [metric]);
   useEffect(() => {
+    if (!live) return;
     api.insightsLibraries().then(setLibs).catch(() => setLibs([]));
     api.insightsRecentlyAdded(20).then(setRecent).catch(() => setRecent([]));
-  }, []);
+  }, [live]);
 
   const hasStats = stats && (stats.most_watched_movies.length || stats.most_watched_shows.length || stats.most_active_users.length);
+  if (!live && !hasStats) return null;
 
   return (
     <div className="mt-4 flex flex-col gap-5">
@@ -297,28 +322,32 @@ function StatCard({ title, rows, metric }: { title: string; rows: { label: strin
 /* ============================= USERS ============================= */
 function UsersView({ connected, onConfigure }: { connected: boolean; onConfigure: () => void }) {
   const [users, setUsers] = useState<UserEntry[] | null>(null);
-  useEffect(() => { if (connected) api.insightsUsers().then(setUsers).catch(() => setUsers([])); }, [connected]);
-  if (!connected) return <ConnectPlex tab="users" connected={false} onConfigure={onConfigure} />;
+  // Users come from recorded plays, so an import shows here before Plex is connected.
+  useEffect(() => { api.insightsUsers().then(setUsers).catch(() => setUsers([])); }, []);
   if (!users) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading users…</div>;
+  if (users.length === 0 && !connected) return <ConnectPlex tab="users" connected={false} onConfigure={onConfigure} />;
   if (users.length === 0) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-faint" style={{ border: "1px solid var(--line)" }}>No users seen yet.</div>;
   return (
-    <div className="overflow-x-auto rounded-xl" style={{ border: "1px solid var(--line)" }}>
-      <table className="w-full border-collapse text-[12.5px]" style={{ minWidth: 820 }}>
-        <thead><tr style={{ background: "var(--panel-2)" }}>{["User", "Last seen", "Location", "Platform", "Last played", "Plays", "Watch time"].map((h) => <th key={h} className="px-3 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint">{h}</th>)}</tr></thead>
-        <tbody>
-          {users.map((u, i) => (
-            <tr key={u.id} style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
-              <td className="px-3 py-2 font-semibold">{u.username}</td>
-              <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-ink-dim">{u.last_seen ? fmtDate(u.last_seen) : "never"}</td>
-              <td className="px-3 py-2 font-mono text-[10.5px] text-ink-dim">{u.last_ip ? geoLabel(u.geo) : "—"}</td>
-              <td className="px-3 py-2 text-ink-dim">{u.last_platform || "—"}</td>
-              <td className="px-3 py-2 text-ink-dim"><div className="max-w-[240px] truncate">{u.last_title || "—"}</div></td>
-              <td className="px-3 py-2 font-mono tabular-nums">{u.total_plays.toLocaleString()}</td>
-              <td className="whitespace-nowrap px-3 py-2 font-mono tabular-nums text-ink-dim">{fmtDur(u.total_secs)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="flex flex-col gap-3">
+      {!connected && <ImportedNotice onConfigure={onConfigure} />}
+      <div className="overflow-x-auto rounded-xl" style={{ border: "1px solid var(--line)" }}>
+        <table className="w-full border-collapse text-[12.5px]" style={{ minWidth: 820 }}>
+          <thead><tr style={{ background: "var(--panel-2)" }}>{["User", "Last seen", "Location", "Platform", "Last played", "Plays", "Watch time"].map((h) => <th key={h} className="px-3 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint">{h}</th>)}</tr></thead>
+          <tbody>
+            {users.map((u, i) => (
+              <tr key={u.id} style={{ borderTop: i === 0 ? "none" : "1px solid var(--line-soft)" }}>
+                <td className="px-3 py-2 font-semibold">{u.username}</td>
+                <td className="whitespace-nowrap px-3 py-2 font-mono text-[11px] text-ink-dim">{u.last_seen ? fmtDate(u.last_seen) : "never"}</td>
+                <td className="px-3 py-2 font-mono text-[10.5px] text-ink-dim">{u.last_ip ? geoLabel(u.geo) : "—"}</td>
+                <td className="px-3 py-2 text-ink-dim">{u.last_platform || "—"}</td>
+                <td className="px-3 py-2 text-ink-dim"><div className="max-w-[240px] truncate">{u.last_title || "—"}</div></td>
+                <td className="px-3 py-2 font-mono tabular-nums">{u.total_plays.toLocaleString()}</td>
+                <td className="whitespace-nowrap px-3 py-2 font-mono tabular-nums text-ink-dim">{fmtDur(u.total_secs)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -464,8 +493,9 @@ function HistoryView({ connected, onConfigure }: { connected: boolean; onConfigu
   const pageSize = 50;
 
   useEffect(() => { setPage(1); }, [type, decision, q]);
+  // History is read from the database, not from Plex, so a Tautulli import is listed even
+  // before a server is connected.
   useEffect(() => {
-    if (!connected) return;
     let alive = true;
     setLoading(true);
     const run = () => api.insightsHistory({ type, decision, q, page, page_size: pageSize })
@@ -474,9 +504,12 @@ function HistoryView({ connected, onConfigure }: { connected: boolean; onConfigu
       .finally(() => { if (alive) setLoading(false); });
     const t = setTimeout(run, q ? 300 : 0); // debounce search
     return () => { alive = false; clearTimeout(t); };
-  }, [connected, type, decision, q, page]);
+  }, [type, decision, q, page]);
 
-  if (!connected) return <ConnectPlex tab="history" connected={false} onConfigure={onConfigure} />;
+  // Nothing recorded at all (not just nothing matching a filter) and no server to record
+  // from: the Connect state says more than an empty table.
+  const unfiltered = !type && !decision && !q;
+  if (!connected && !loading && total === 0 && unfiltered) return <ConnectPlex tab="history" connected={false} onConfigure={onConfigure} />;
 
   const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const to = Math.min(page * pageSize, total);
@@ -484,6 +517,7 @@ function HistoryView({ connected, onConfigure }: { connected: boolean; onConfigu
 
   return (
     <div className="flex flex-col gap-3">
+      {!connected && <ImportedNotice onConfigure={onConfigure} />}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <FilterGroup label="Type">{TYPE_FILTERS.map((f) => <Chip key={f.key} active={type === f.key} onClick={() => setType(f.key)}>{f.label}</Chip>)}</FilterGroup>
         <FilterGroup label="Stream">{DEC_FILTERS.map((f) => <Chip key={f.key} active={decision === f.key} onClick={() => setDecision(f.key)}>{f.label}</Chip>)}</FilterGroup>
@@ -570,15 +604,19 @@ const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 function GraphsView({ connected, onConfigure }: { connected: boolean; onConfigure: () => void }) {
   const [g, setG] = useState<InsightsGraphs | null>(null);
   const [win, setWin] = useState(30);
-  useEffect(() => { if (connected) api.insightsGraphs(win).then(setG).catch(() => setG(null)); }, [connected, win]);
-  if (!connected) return <ConnectPlex tab="graphs" connected={false} onConfigure={onConfigure} />;
+  // Graphs are drawn from recorded plays, so imported history charts before Plex is connected.
+  useEffect(() => { api.insightsGraphs(win).then(setG).catch(() => setG(null)); }, [win]);
   if (!g) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading graphs…</div>;
 
   const anyPlays = g.daily_tv.some(Boolean) || g.daily_movies.some(Boolean) || g.daily_music.some(Boolean);
   const dayLabels = g.days.map((d) => { const [, m, day] = d.split("-"); return `${+m}/${+day}`; });
+  // Nothing to chart and no server to record from. The window chips stay above it, so an
+  // older import is still one click away.
+  const nothing = !connected && !anyPlays && g.bandwidth.length === 0;
 
   return (
     <div className="flex flex-col gap-4">
+      {!connected && !nothing && <ImportedNotice onConfigure={onConfigure} />}
       <div className="flex items-center justify-between">
         <div className="flex gap-1">{[7, 30, 90].map((w) => <Chip key={w} active={win === w} onClick={() => setWin(w)}>{w}d</Chip>)}</div>
         <div className="flex items-center gap-3 text-[10.5px]">
@@ -586,7 +624,9 @@ function GraphsView({ connected, onConfigure }: { connected: boolean; onConfigur
         </div>
       </div>
 
-      {!anyPlays ? (
+      {nothing ? (
+        <ConnectPlex tab="graphs" connected={false} onConfigure={onConfigure} />
+      ) : !anyPlays ? (
         <div className="rounded-xl p-10 text-center text-[12px] text-ink-faint" style={{ border: "1px dashed var(--line)" }}>No plays in this window yet — graphs fill in as history accrues.</div>
       ) : (
         <>
@@ -607,7 +647,7 @@ function GraphsView({ connected, onConfigure }: { connected: boolean; onConfigur
         </>
       )}
 
-      <ChartCard title="Bandwidth (peak per hour)">
+      {!nothing && <ChartCard title="Bandwidth (peak per hour)">
         {g.bandwidth.length === 0 ? <div className="py-6 text-center text-[11px] text-ink-faint">No bandwidth recorded yet.</div> : (
           <>
             <div className="mb-1 flex items-center gap-3 text-[10.5px]"><Legend c="var(--accent)" label="Total" /><Legend c="var(--good)" label="LAN" /><Legend c="var(--avoid)" label="WAN" /></div>
@@ -618,7 +658,7 @@ function GraphsView({ connected, onConfigure }: { connected: boolean; onConfigur
             ]} unit=" Mb/s" />
           </>
         )}
-      </ChartCard>
+      </ChartCard>}
     </div>
   );
 }
@@ -692,29 +732,35 @@ function HBarChart({ rows }: { rows: { label: string; value: number }[] }) {
 function ReliabilityView({ connected, onConfigure }: { connected: boolean; onConfigure: () => void }) {
   const [r, setR] = useState<Reliability | null>(null);
   const [win, setWin] = useState(30);
-  useEffect(() => { if (connected) api.insightsReliability(win).then(setR).catch(() => setR(null)); }, [connected, win]);
-  if (!connected) return <ConnectPlex tab="reliability" connected={false} onConfigure={onConfigure} />;
+  // Stalls are read from recorded sessions, so imported history shows before Plex is connected.
+  useEffect(() => { api.insightsReliability(win).then(setR).catch(() => setR(null)); }, [win]);
   if (!r) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading reliability…</div>;
 
   const s = r.summary;
   const clean = s.total_events === 0;
+  // No sessions in the window and no server to record more: the Connect state, with the
+  // window chips kept above it so an older import is still reachable.
+  const nothing = !connected && s.total_sessions === 0;
   const rateColor = s.buffer_rate_pct === 0 ? "var(--good)" : s.buffer_rate_pct < 10 ? "var(--avoid)" : "var(--reject)";
 
   return (
     <div className="flex flex-col gap-4">
+      {!connected && !nothing && <ImportedNotice onConfigure={onConfigure} />}
       <div className="flex items-center justify-between">
         <p className="max-w-[54ch] text-[12px] text-ink-dim">Where and when streams stalled mid-playback — sampled every few seconds, so treat counts as observed lower bounds. Startup, seeking and resume refills aren't counted.</p>
         <div className="flex gap-1">{[7, 30, 90].map((w) => <Chip key={w} active={win === w} onClick={() => setWin(w)}>{w}d</Chip>)}</div>
       </div>
 
       {/* Summary tiles */}
-      <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
+      {!nothing && <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))" }}>
         <StatTile label="Observed stall time" value={fmtStall(s.total_stall_ms)} sub="across the window" color={s.total_stall_ms ? "var(--avoid)" : "var(--good)"} />
         <StatTile label="Stall rate" value={`${s.buffer_rate_pct}%`} sub={`${s.buffered_sessions} of ${s.total_sessions} streams`} color={rateColor} />
         <StatTile label="Observed stalls" value={s.total_events.toLocaleString()} sub="sampled events" color={s.total_events ? "var(--avoid)" : "var(--good)"} />
-      </div>
+      </div>}
 
-      {clean ? (
+      {nothing ? (
+        <ConnectPlex tab="reliability" connected={false} onConfigure={onConfigure} />
+      ) : clean ? (
         <div className="rounded-xl p-12 text-center" style={{ border: "1px dashed var(--line)", background: "var(--panel)" }}>
           <div className="text-[26px]">✓</div>
           <div className="mt-1 text-[13.5px] font-bold" style={{ color: "var(--good)" }}>Smooth sailing</div>
@@ -916,6 +962,18 @@ function ConnectPlex({ tab, connected, onConfigure }: { tab: string; connected: 
       <div className="text-[13.5px] font-bold capitalize">{tab}</div>
       <p className="mx-auto mt-1.5 max-w-[52ch] text-[12px] text-ink-dim">{ABOUT[tab]}</p>
       {!connected && <div className="mt-4"><button onClick={onConfigure} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>Connect your Plex server →</button></div>}
+    </div>
+  );
+}
+
+// ImportedNotice sits above data a tab already has while no server is connected — plays
+// imported from Tautulli, or recorded before the connection was removed. The data is real;
+// it just won't grow until Plex is connected.
+function ImportedNotice({ onConfigure }: { onConfigure: () => void }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg px-3.5 py-2 text-[12px] text-ink-dim" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
+      <span>Showing imported history — connect Plex to record new plays.</span>
+      <button onClick={onConfigure} className="font-semibold" style={{ color: "var(--accent)" }}>Connect your Plex server →</button>
     </div>
   );
 }
