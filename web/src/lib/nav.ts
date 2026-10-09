@@ -13,6 +13,19 @@ export interface NavGroup {
   items: NavItem[];
 }
 
+// requesterNav is the requester shell's top bar (UserLayout), and also what Settings →
+// Users tells admins a requester gets, so the two can't drift apart. From outside the
+// network there's no Calendar (the server doesn't allow it there); Books only while the
+// module is on.
+export function requesterNav({ external, booksEnabled }: { external: boolean; booksEnabled: boolean }): NavItem[] {
+  return [
+    { to: "/discover", label: "Discover" },
+    ...(external ? [] : [{ to: "/calendar", label: "Calendar" }]),
+    ...(booksEnabled ? [{ to: "/books", label: "Books" }] : []),
+    { to: "/audiobooks", label: "Audiobooks" },
+  ];
+}
+
 export const NAV: NavGroup[] = [
   {
     group: "",

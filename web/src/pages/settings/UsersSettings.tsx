@@ -6,6 +6,7 @@ import { api, type AuthUser, type PlexBlock, type UserImpact } from "../../lib/a
 import { LINKS } from "../../lib/links";
 import { useMe } from "../../lib/me";
 import { SaveBar, useLoadedSettings } from "../../lib/useSettings";
+import { managerExceptions, requesterPages } from "./roles";
 
 // Settings → Users (admin only): the accounts, and who may sign in with Plex.
 export function UsersSettings() {
@@ -116,7 +117,6 @@ function UsersManager({ meId }: { meId?: number }) {
             <option value="readonly">Read-only</option>
             <option value="manager">Manager</option>
             <option value="admin">Admin</option>
-            <option value="readonly">Read-only</option>
           </select>
         </div>
         <div className="flex items-center justify-between gap-3">
@@ -135,21 +135,15 @@ function UsersManager({ meId }: { meId?: number }) {
   );
 }
 
-// requesterPages is what a non-staff account's top bar shows (see App.tsx's requester and
-// outside route trees): Calendar only at home, Books only while the module is on.
-function requesterPages(booksEnabled: boolean): string {
-  return ["Discover", "Calendar (at home only)", ...(booksEnabled ? ["Books"] : []), "Audiobooks"].join(", ");
-}
-
-// RoleLegend says what each role can do, from today's gates: admin-only routes are the
-// System and Users tabs, the audiobook server settings and the Overseerr/Tautulli imports.
+// RoleLegend says what each role can do, from today's gates (see roles.ts): the requester
+// pages are their top bar's, and Read-only can't request (POST /requests needs Requester).
 function RoleLegend() {
   const { booksEnabled } = useMe();
   const pages = requesterPages(booksEnabled);
   const rows: [string, string][] = [
     ["Requester", `${pages}, and can request.`],
     ["Read-only", `the same pages, but can't request.`],
-    ["Manager", "the whole console except Settings → System and Users, the audiobook server settings and the Overseerr/Tautulli imports."],
+    ["Manager", managerExceptions()],
     ["Admin", "everything."],
   ];
   return (
