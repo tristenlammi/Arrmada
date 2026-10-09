@@ -264,8 +264,8 @@ func fmtDur(secs float64) string {
 // moved stays where it is. It returns where they went and which couldn't be moved.
 func (c *Coordinator) retireMergeSources(bookID int64, bookDir string, paths []string) (string, []string) {
 	var failed []string
-	if c.recycle != "" {
-		bin := library.SingleBin(c.recycle)
+	bin := c.bin()
+	if _, err := bin.For(bookDir); !errors.Is(err, library.ErrRecycleDisabled) {
 		for _, p := range paths {
 			if _, err := library.RemoveToBin(bin, p); err != nil {
 				c.log.Warn("book: merge source left in place", "path", p, "err", err)

@@ -1264,8 +1264,8 @@ func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanRes
 		return res, err
 	}
 	for _, e := range entries {
-		if !e.IsDir() || e.Name() == "" || e.Name()[0] == '.' {
-			continue // series live in per-show folders; skip .recycle etc.
+		if !e.IsDir() || e.Name() == "" || library.SkipScanDir(e.Name()) {
+			continue // series live in per-show folders; skip the recycle bins and other hidden ones
 		}
 		folder := filepath.Join(root, e.Name())
 		videos, _ := library.FindVideos(folder)

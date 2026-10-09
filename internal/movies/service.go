@@ -302,8 +302,8 @@ func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanRes
 	}
 	for _, e := range entries {
 		name := e.Name()
-		if strings.HasPrefix(name, ".") {
-			continue // .recycle and friends
+		if library.SkipScanDir(name) {
+			continue // the recycle bins and other hidden folders
 		}
 		full := filepath.Join(root, name)
 		video, _, verr := library.FindVideo(full)

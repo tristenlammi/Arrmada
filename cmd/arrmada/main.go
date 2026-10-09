@@ -277,17 +277,28 @@ func main() {
 	} else if changed {
 		log.Info("music: kept the Music module on because your library has artists. Switch it off in Settings → System → Modules.")
 	}
-	// Recycle bin: default to <library>/.recycle so deletes are undoable; "off" hard-deletes.
-	recycleDir := cfg.RecycleDir
-	switch recycleDir {
-	case "":
-		recycleDir = filepath.Join(cfg.LibraryDir, ".recycle")
-	case "off":
-		recycleDir = ""
+	// Recycle bins: every delete goes to a hidden .arrmada-recycle folder on the library
+	// folder it came from, so it's a rename on the same drive (and Plex ignores the folder).
+	// ARRMADA_RECYCLE_DIR is now only an override: a folder makes one bin for everything,
+	// "off" hard-deletes. The old shared bin (<library>/.recycle, inside the managed
+	// volume) takes only files outside every library folder, and stays listed while it
+	// holds anything so it can drain.
+	bins := &library.RootBins{
+		Roots:  func() []libroots.Root { return roots.Libraries(context.Background()) },
+		Legacy: filepath.Join(cfg.LibraryDir, ".recycle"),
+		Log:    log,
 	}
-	movieSvc := movies.NewService(st.DB(), tmdb, qualitySvc, cfg.MoviesDir, recycleDir, bus, log)
+	switch cfg.RecycleDir {
+	case "":
+	case "off":
+		bins.Off = true
+	default:
+		bins.Explicit = cfg.RecycleDir
+	}
+	movieSvc := movies.NewService(st.DB(), tmdb, qualitySvc, cfg.MoviesDir, "", bus, log)
 	movieSvc.SetRootFunc(rootFuncs.Movie) // scans, manual imports and renames follow Settings → Library
-	seriesSvc.SetRecycleDir(recycleDir)   // per-episode file deletes go to the recycle bin, like movies
+	movieSvc.SetBin(bins)                 // deletes and replaced files go to the bins
+	seriesSvc.SetBin(bins)                // per-episode file deletes go to the recycle bin, like movies
 	seriesSvc.SetBus(bus)                 // deletes announce file.removed so imports forget them
 	prefs := libPrefs{s: settingsSvc}
 	movieSvc.SetNaming(prefs)
@@ -373,7 +384,7 @@ func main() {
 	imports.SetRootFuncs(rootFuncs)
 	// When an import replaces a same-named library file, recycle the old one first
 	// (instead of silently overwriting it) — same bin the delete paths use.
-	imports.SetRecycleDir(recycleDir)
+	imports.SetBin(bins)
 	// Name movie imports from the matched library record (metadata title), not the
 	// scene release — deterministic folders that match the movie Arrmada tracks.
 	imports.SetTitleResolver(movieTitleResolver{movieSvc})
@@ -401,7 +412,7 @@ func main() {
 	// This importer places TV episodes, book editions and albums, and scans the book
 	// folders; every folder is resolved on each use, so Settings → Library applies live.
 	bookImporter.SetRootFuncs(rootFuncs)
-	bookImporter.SetRecycleDir(recycleDir) // replaced files go to the bin here too
+	bookImporter.SetBin(bins) // replaced files go to the bins here too
 	// Name episode files with their metadata title ("<Series> - SxxEyy - <Episode> - <quality>").
 	bookImporter.SetEpisodeTitleFunc(func(seriesTitle string, year, season, episode int) string {
 		return seriesSvc.EpisodeTitleByName(context.Background(), seriesTitle, year, season, episode)
@@ -421,7 +432,7 @@ func main() {
 		return true
 	})
 	// Book file deletion honors the same recycle bin as movies.
-	coordinator.SetRecycleDir(recycleDir)
+	coordinator.SetBin(bins)
 	// The stall timeout a profile left at "use the default" falls back to, read each check.
 	coordinator.SetStallDefault(func(ctx context.Context) int {
 		return automation.ParseStallMinutes(settingsSvc.Get(ctx, automation.KeyStallMinutes, ""))
@@ -582,28 +593,14 @@ func main() {
 			convertScratch = filepath.Join(cfg.DataDir, "convert")
 		}
 	}
-	convertSvc := convert.NewService(st.DB(), movieSvc, seriesSvc, settingsSvc, "ffmpeg", "ffprobe", convertScratch, recycleDir, log)
-	// Convert's originals go to the recycle bin, so it has to know how much room is left
-	// under the bin's cap: an original that doesn't fit would make Enforce purge it (and
-	// everything older) within the hour.
-	// The manager looks after the bin deletes go to, plus the old shared bin while it
-	// still holds files and isn't that bin, so what's in it stays listed, restorable,
-	// aged and capped until it drains.
-	legacyBin := filepath.Join(cfg.LibraryDir, ".recycle")
-	recycleSvc := recyclebin.NewBins(func() []library.BinDir {
-		if recycleDir == "" {
-			return nil
-		}
-		var serves []string
-		for _, r := range roots.Libraries(context.Background()) {
-			serves = append(serves, r.Path)
-		}
-		var bins []library.BinDir
-		if filepath.Clean(legacyBin) != filepath.Clean(recycleDir) && recyclebin.HasItems(legacyBin) {
-			bins = append(bins, library.BinDir{Dir: legacyBin, Label: "Old shared bin", Legacy: true, Serves: serves})
-		}
-		return append(bins, library.BinDir{Dir: recycleDir, Label: "Recycle bin", Serves: serves})
-	}, settingsSvc, log)
+	convertSvc := convert.NewService(st.DB(), movieSvc, seriesSvc, settingsSvc, "ffmpeg", "ffprobe", convertScratch, "", log)
+	convertSvc.SetBin(bins) // originals go to the bin on their own library folder
+	// The manager looks after every bin: one per library folder (or the one override),
+	// plus the old shared bin while it still holds files, so what's in it stays listed,
+	// restorable, aged and capped until it drains. Convert's originals go to the bins, so
+	// it has to know how much room is left under the cap: an original that doesn't fit
+	// would make Enforce purge it (and everything older) within the hour.
+	recycleSvc := recyclebin.NewBins(bins.All, settingsSvc, log)
 	convertSvc.SetBinHeadroom(recycleSvc.Headroom)
 	grp.Loop("convert: runner", convertSvc.Run)
 	// Warm the probe cache off the request path so the first Convert page load after

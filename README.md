@@ -214,6 +214,24 @@ hardlink. For read-only trials or unusual layouts, see
 
 > ⚠ Never mount media at `/data`. That path holds Arrmada's own database.
 
+Changing a library or the Downloads folder in Settings → Library takes effect straight
+away: the next import, grab and disk-guard check use the new folder, and qBittorrent's
+save path follows. Files already imported stay where they are.
+
+### Recycle bin
+
+Deleted and replaced files go to a hidden `.arrmada-recycle` folder at the top of the
+library folder they came from (Movies, TV, and so on), so a delete is a quick move on the
+same drive rather than a copy. Each of those folders has a `.plexignore`, so Plex doesn't
+list what's in it, and Arrmada's own library scans skip hidden folders. Restore, size and
+age limits are in Settings → System → Recycle bin; the size limit counts every bin together.
+
+Older versions kept one shared bin in the app's library volume. It stays listed (marked
+"Legacy") until you empty it, and only takes files that sit outside every library folder.
+
+`ARRMADA_RECYCLE_DIR` in `.env` is now just an override: set it to a folder to use that one
+bin for everything, or to `off` to delete files straight away.
+
 ## Develop
 
 ```sh

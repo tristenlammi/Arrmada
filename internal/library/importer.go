@@ -125,7 +125,7 @@ func FindBookFilesCtx(ctx context.Context, contentPath string, maxResults, maxVi
 		}
 		// Hidden folders inside a book are Arrmada's own (merge backups) or a system's
 		// (.AppleDouble, .recycle): never book files.
-		if err == nil && d.IsDir() && p != contentPath && strings.HasPrefix(d.Name(), ".") {
+		if err == nil && d.IsDir() && p != contentPath && SkipScanDir(d.Name()) {
 			return filepath.SkipDir
 		}
 		if err != nil || d.IsDir() || !isBookFile(p) {
@@ -209,7 +209,7 @@ func (im *Importer) FindBookFoldersIn(roots ...string) []BookFolder {
 			// Hidden folders are Arrmada's own (the merge backups under the audiobooks
 			// root) or a system's: scanned as books they'd turn into bogus titles, or an
 			// edition that vanishes when the backup is pruned.
-			if err == nil && d.IsDir() && p != root && strings.HasPrefix(d.Name(), ".") {
+			if err == nil && d.IsDir() && p != root && SkipScanDir(d.Name()) {
 				return filepath.SkipDir
 			}
 			if err != nil || d.IsDir() || !isBookFile(p) {

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/music"
 )
 
@@ -199,6 +200,11 @@ func matchAlbumByTitle(albums []music.Album, title string) (music.Album, bool) {
 func findAlbumFolders(root string) []albumFolder {
 	byDir := map[string][]music.AudioFile{}
 	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		// The recycle bin (.arrmada-recycle) and other hidden folders aren't albums: a
+		// deleted album scanned from the bin would come straight back.
+		if err == nil && d.IsDir() && p != root && library.SkipScanDir(d.Name()) {
+			return filepath.SkipDir
+		}
 		if err != nil || d.IsDir() || !music.IsAudioFile(p) {
 			return nil
 		}

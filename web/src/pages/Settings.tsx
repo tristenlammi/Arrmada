@@ -600,7 +600,7 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
   const emptying = confirm?.kind === "empty" ? confirm : null;
 
   return (
-    <Section id="recycle-bin" title="Recycle bin" subtitle="Deleted & replaced files (movie/episode deletes and Convert originals) are moved to a recycle bin instead of being erased, so a mistake can be undone until the guard rails below purge it. The size cap counts every bin together, and the oldest files go first once they're over it. Convert only starts a file whose original fits under the cap. To restore a converted film, delete the converted file first: the bin won't restore over it.">
+    <Section id="recycle-bin" title="Recycle bin" subtitle="Deleted & replaced files (movie/episode deletes and Convert originals) are moved into a hidden .arrmada-recycle folder inside the library they came from — a quick move on the same drive, hidden from Plex — instead of being erased, so a mistake can be undone until the guard rails below purge it. The size cap counts every bin together, and the oldest files go first once they're over it. Convert only starts a file whose original fits under the cap. To restore a converted film, delete the converted file first: the bin won't restore over it.">
       {stats && !stats.enabled ? (
         <p className="text-[12px] text-ink-dim">Recycling is turned off (<code>ARRMADA_RECYCLE_DIR=off</code>) — deleted files are erased immediately, and Convert deletes each original once its conversion is verified, with no undo.</p>
       ) : (
@@ -619,7 +619,7 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
                       {b.legacy && <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold" style={{ border: "1px solid var(--avoid)", color: "var(--avoid)" }}>Legacy bin</span>}
                     </div>
                     <div className="truncate font-mono text-[10.5px] text-ink-faint" title={b.dir}>{b.dir}</div>
-                    {b.legacy && <div className="text-[10.5px] text-ink-faint">Where deletes used to go. Empty it once you've checked it.</div>}
+                    {b.legacy && <div className="text-[10.5px] text-ink-faint">Where deletes used to go. Only files outside every library folder land here now — empty it once you've checked it.</div>}
                     {b.other_drive && <div className="text-[10.5px]" style={{ color: "var(--avoid)" }}>On a different drive from your library — every delete into it is a full copy.</div>}
                   </div>
                   <span className="flex-none font-mono text-[10.5px] text-ink-faint">{fmtBytes(b.bytes)} · {b.files} file{b.files === 1 ? "" : "s"}{b.free_known ? ` · ${fmtBytes(b.free_bytes)} free` : ""}</span>
