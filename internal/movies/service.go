@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -1157,9 +1158,25 @@ type ImportCandidate struct {
 
 // ManualImportCandidates lists video files under dir that could be imported
 // (larger than a sample-clip threshold).
-func (s *Service) ManualImportCandidates(dir string) ([]ImportCandidate, error) {
+//
+// The walk is bounded: it stops when ctx ends (returning what it found with ctx.Err()),
+// after maxResults candidates, or after library.ListMaxVisited entries, and truncated
+// says the list was cut short. Listing a library root used to walk the whole array, and
+// kept going after the browser had gone.
+func (s *Service) ManualImportCandidates(ctx context.Context, dir string, maxResults int) ([]ImportCandidate, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	var out []ImportCandidate
+	visited, truncated := 0, false
 	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		if visited++; visited > library.ListMaxVisited {
+			truncated = true
+			return fs.SkipAll
+		}
 		if err != nil || d.IsDir() {
 			return nil
 		}
@@ -1170,6 +1187,10 @@ func (s *Service) ManualImportCandidates(dir string) ([]ImportCandidate, error) 
 		if e != nil || fi.Size() < 50<<20 { // skip < 50 MB (samples)
 			return nil
 		}
+		if maxResults > 0 && len(out) >= maxResults {
+			truncated = true
+			return fs.SkipAll
+		}
 		out = append(out, ImportCandidate{
 			Path:      p,
 			Filename:  filepath.Base(p),
@@ -1178,7 +1199,7 @@ func (s *Service) ManualImportCandidates(dir string) ([]ImportCandidate, error) 
 		})
 		return nil
 	})
-	return out, err
+	return out, truncated, err
 }
 
 // ManualImport imports a specific on-disk file into a movie and marks it.

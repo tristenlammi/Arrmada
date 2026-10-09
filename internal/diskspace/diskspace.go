@@ -32,6 +32,13 @@ func Of(path string) (Usage, bool) {
 	return u, true
 }
 
+// Device returns the id of the filesystem holding path (st_dev), and whether it could be
+// read. Two paths with the same id are on one filesystem: unlike comparing free space,
+// that answer doesn't wobble while a download is writing between the two readings.
+func Device(path string) (uint64, bool) {
+	return device(path)
+}
+
 // FreeGB returns the free space in GB on the filesystem containing path, and
 // whether it could be measured (false on platforms without support).
 func FreeGB(path string) (float64, bool) {

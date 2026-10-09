@@ -384,7 +384,37 @@ export interface SetupState {
   mounts: string[];
   suggestions: Partial<LibraryPaths>;
 }
-export interface BrowseResult { path: string; parent: string; dirs: { name: string; path: string }[] }
+// path_disabled: the folder on screen holds (or is) Arrmada's data folder, so it can be
+// walked through but not selected.
+export interface BrowseResult { path: string; parent: string; dirs: { name: string; path: string }[]; path_disabled?: boolean }
+// ManualImportList is one manual-import listing. The server stops after 500 files (or 30
+// seconds) so a library root can't walk the whole array: truncated says the list is cut
+// short, and note says why when it ran out of time.
+export interface ManualImportList<T> { path: string; candidates: T[]; truncated?: boolean; note?: string }
+
+// importListNotice is the line a manual-import modal shows under a cut-short list.
+export function importListNotice(r: { truncated?: boolean; note?: string }): string | null {
+  if (r.note) return r.note;
+  return r.truncated ? "Showing the first 500 files — pick a narrower folder." : null;
+}
+
+// PendingRestart: folders saved in the app that the running app isn't using yet (they
+// apply at the next start), and what a restart would interrupt. Counts only, no titles.
+export interface PendingRestart {
+  restart_needed: boolean;
+  can_restart: boolean;
+  changed: { library: keyof LibraryPaths; saved: string; running: string }[];
+  busy: { convert_running: number; convert_longest_sec: number; convert_progress: number; subtitles_running: number; subtitles_queued: number };
+}
+// FolderCheck is what a folder looks like before it's saved (Settings → Library, the
+// wizard). hardlink_with_downloads is null when it couldn't be tried; error is the reason
+// a save would refuse it, in the server's words.
+export interface FolderCheck {
+  path: string; exists: boolean; is_dir: boolean; writable: boolean;
+  hardlink_with_downloads: boolean | null; under_data_dir: boolean;
+  free_bytes: number; total_bytes: number; entries: number; entries_capped: boolean;
+  error?: string;
+}
 
 export interface HealthWarning {
   level: string; // "error" | "warning"
@@ -458,8 +488,10 @@ export interface DiskGuardStatus {
   pause_pct: number;
   resume_pct: number;
   holding: number;
+  // The library folders (the ones picked in Settings → Library) on the same drive as
+  // the downloads folder. shared_with_library is just shared_with.length > 0.
+  shared_with: { role: string; label: string; path: string }[];
   shared_with_library: boolean;
-  library_path: string;
 }
 
 export interface SeriesAlias { id: number; title: string; tmdb_season: number }
@@ -1550,7 +1582,11 @@ export const api = {
   setupState: () => req<SetupState>("/api/v1/setup"),
   completeSetup: () => req<{ status: string }>("/api/v1/setup/complete", { method: "POST" }),
   restartApp: () => req<{ status: string }>("/api/v1/system/restart", { method: "POST" }),
-  setLibraryPaths: (body: Partial<LibraryPaths>) => req<LibraryPaths>("/api/v1/system/library", { method: "PUT", body: JSON.stringify(body) }),
+  pendingRestart: () => req<PendingRestart>("/api/v1/system/pending-restart"),
+  // create: make any missing folder instead of refusing it (the "Create it" button).
+  setLibraryPaths: (body: Partial<LibraryPaths> & { create?: boolean }) => req<LibraryPaths>("/api/v1/system/library", { method: "PUT", body: JSON.stringify(body) }),
+  checkLibraryFolder: (path: string, kind: keyof LibraryPaths, downloads?: string) =>
+    req<FolderCheck>(`/api/v1/system/library/check?kind=${kind}&path=${encodeURIComponent(path)}${downloads ? `&downloads=${encodeURIComponent(downloads)}` : ""}`),
   browseFolders: (path?: string) => req<BrowseResult>(`/api/v1/system/browse${path ? `?path=${encodeURIComponent(path)}` : ""}`),
   addMovie: (body: { tmdb_id: number; quality_profile: string; monitored?: boolean; search_on_add?: boolean }) =>
     req<Movie>("/api/v1/movies", { method: "POST", body: JSON.stringify(body) }),
@@ -1658,7 +1694,7 @@ export const api = {
     req<{ items: DiscoverCard[] }>(`/api/v1/discover/search?q=${encodeURIComponent(q)}`).then((r) => r.items),
 
   seriesManualImportList: (id: number) =>
-    req<{ candidates: SeriesImportCandidate[] }>(`/api/v1/series/${id}/manualimport`),
+    req<ManualImportList<SeriesImportCandidate>>(`/api/v1/series/${id}/manualimport`),
   seriesManualImport: (id: number, path: string) =>
     req<{ status: string; background?: boolean }>(`/api/v1/series/${id}/manualimport`, { method: "POST", body: JSON.stringify({ path }) }),
   seriesRenamePreview: (id: number) =>
@@ -1718,7 +1754,7 @@ export const api = {
   grabBook: (id: number, body: { indexer?: string; download_url: string; title: string; version_id?: number }) =>
     req<{ status: string }>(`/api/v1/books/${id}/grab`, { method: "POST", body: JSON.stringify(body) }),
   bookManualImportList: (id: number) =>
-    req<{ candidates: BookImportCandidate[] }>(`/api/v1/books/${id}/manualimport`),
+    req<ManualImportList<BookImportCandidate>>(`/api/v1/books/${id}/manualimport`),
   bookManualImport: (id: number, path: string, versionId?: number) =>
     req<{ status: string }>(`/api/v1/books/${id}/manualimport`, { method: "POST", body: JSON.stringify({ path, version_id: versionId || 0 }) }),
   addAudioVersion: (id: number, body: { label: string; terms: string[]; monitored: boolean }) =>
@@ -1945,7 +1981,7 @@ export const api = {
       body: JSON.stringify({ min_availability }),
     }),
   manualImportList: (id: number, path?: string) =>
-    req<{ path: string; candidates: ImportCandidate[] }>(
+    req<ManualImportList<ImportCandidate>>(
       `/api/v1/movies/${id}/manualimport${path ? `?path=${encodeURIComponent(path)}` : ""}`,
     ),
   manualImport: (id: number, path: string) =>

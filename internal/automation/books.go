@@ -1228,9 +1228,11 @@ type BookImportCandidate struct {
 	SizeBytes int64  `json:"size_bytes"`
 }
 
-// BookImportCandidates lists importable book files under dir.
-func (c *Coordinator) BookImportCandidates(dir string) []BookImportCandidate {
-	files := library.FindBookFiles(dir)
+// BookImportCandidates lists importable book files under dir, up to
+// library.ListMaxResults; truncated says there were more (or the walk was stopped). It
+// stops early when ctx ends — the caller checks ctx.Err().
+func (c *Coordinator) BookImportCandidates(ctx context.Context, dir string) ([]BookImportCandidate, bool) {
+	files, truncated, _ := library.FindBookFilesCtx(ctx, dir, library.ListMaxResults, library.ListMaxVisited)
 	out := make([]BookImportCandidate, 0, len(files))
 	for _, f := range files {
 		edition := books.KindEbook
@@ -1242,7 +1244,7 @@ func (c *Coordinator) BookImportCandidates(dir string) []BookImportCandidate {
 			Format: library.BookFileFormat(f.Path), SizeBytes: f.Size,
 		})
 	}
-	return out
+	return out, truncated
 }
 
 // ManualImportBook imports one on-disk file into a book as the correct edition, or as

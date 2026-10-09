@@ -252,11 +252,13 @@ func (a *api) handleBookManualImportList(w http.ResponseWriter, r *http.Request)
 		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	cands := a.deps.Automation.BookImportCandidates(dir)
+	ctx, cancel := importListContext(r)
+	defer cancel()
+	cands, truncated := a.deps.Automation.BookImportCandidates(ctx, dir)
 	if cands == nil {
 		cands = []automation.BookImportCandidate{}
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"path": dir, "candidates": cands})
+	a.writeImportList(w, r, ctx, "books", dir, cands, truncated)
 }
 
 func (a *api) handleBookManualImport(w http.ResponseWriter, r *http.Request) {

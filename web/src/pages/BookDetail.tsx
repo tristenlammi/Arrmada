@@ -8,7 +8,7 @@ import { BookReleaseModal } from "../components/BookReleaseModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
 import { AddAudioVersion, AudioVersionPanel } from "../components/AudioVersions";
-import { api, type BookSeriesEntry, type BookSource, type Book, type BookFile, type BookFileEntry, type BookImportCandidate, type BookLookup, type BookSeries, type MovieEvent } from "../lib/api";
+import { api, importListNotice, type BookSeriesEntry, type BookSource, type Book, type BookFile, type BookFileEntry, type BookImportCandidate, type BookLookup, type BookSeries, type MovieEvent } from "../lib/api";
 import { useCanHover } from "../lib/useCanHover";
 
 function fmtSize(bytes?: number): string {
@@ -445,8 +445,9 @@ function ManualImportModal({ book, onClose, onImported }: { book: Book; onClose:
   const [importing, setImporting] = useState<string | null>(null);
   const versions = book.audio_versions ?? [];
   const [target, setTarget] = useState(0);
+  const [notice, setNotice] = useState<string | null>(null);
 
-  const load = () => api.bookManualImportList(book.id).then((r) => setCands(r.candidates)).catch((e: Error) => setError(e.message));
+  const load = () => api.bookManualImportList(book.id).then((r) => { setCands(r.candidates); setNotice(importListNotice(r)); }).catch((e: Error) => setError(e.message));
   useEffect(() => { load(); }, [book.id]);
 
   const doImport = async (path: string, edition: string) => {
@@ -472,6 +473,7 @@ function ManualImportModal({ book, onClose, onImported }: { book: Book; onClose:
           </label>
         )}
         {error && <div className="mb-2 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
+        {notice && <div className="mb-2 text-[11.5px] text-ink-faint">{notice}</div>}
         <div className="thin-scroll max-h-[52vh] overflow-y-auto">
           {cands === null ? (
             <div className="p-6 text-center text-[12.5px] text-ink-dim">Scanning…</div>

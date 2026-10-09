@@ -41,6 +41,10 @@ func New(dir string, set *settings.Service, log *slog.Logger) *Service {
 	return &Service{dir: dir, settings: set, log: log, now: time.Now, free: diskspace.Of}
 }
 
+// Dir is the recycle directory ("" when recycling is off), for the health panel's
+// different-drive check.
+func (s *Service) Dir() string { return s.dir }
+
 const (
 	// capHold is how long a freshly deleted item is safe from the size cap. Without it a
 	// single 4K remux bigger than the cap — or the very file an upgrade just replaced —

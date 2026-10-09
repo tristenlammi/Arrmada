@@ -5,10 +5,13 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/config"
 	"github.com/tristenlammi/arrmada/internal/diskspace"
+	"github.com/tristenlammi/arrmada/internal/health"
+	"github.com/tristenlammi/arrmada/internal/libroots"
 )
 
 // logEnvironment records the facts that every "why is it doing that?" turns out to
@@ -47,52 +50,67 @@ func logEnvironment(log *slog.Logger, cfg config.Config) {
 		}
 	}
 
-	for _, d := range []struct{ name, path string }{
-		{"data", cfg.DataDir},
-		{"library", cfg.LibraryDir},
-		{"movies", cfg.MoviesDir},
-		{"tv", cfg.TVDir},
-		{"ebooks", cfg.EbooksDir},
-		{"audiobooks", cfg.AudiobooksDir},
-		{"music", cfg.MusicDir},
-		{"downloads", cfg.DownloadsDir},
-	} {
-		if d.path == "" {
-			continue
-		}
-		attrs := []any{"role", d.name, "path", d.path}
-		st, err := os.Stat(d.path)
-		switch {
-		case err != nil:
-			// Not fatal here — some roots are created on first import. But a missing
-			// mount looks exactly like an empty library, and this is the difference.
-			log.Warn("environment: folder is not present", append(attrs, "err", err)...)
-			continue
-		case !st.IsDir():
-			log.Warn("environment: path is not a folder", attrs...)
-			continue
-		}
-		if u, ok := diskspace.Of(d.path); ok {
-			attrs = append(attrs, "free_gb", byteGB(u.FreeBytes), "used_pct", int(u.UsedPct))
-		}
-		if err := writable(d.path); err != nil {
-			log.Warn("environment: folder is not writable", append(attrs, "err", err)...)
-			continue
-		}
-		log.Info("environment: folder", attrs...)
+	// The library folders are logged later (logFolders), once the folders picked in the
+	// app are known; here, before the database opens, only the data folder is.
+	logFolder(log, "data", cfg.DataDir)
+}
+
+// logFolders records each folder the app will work in — the ones picked in the app,
+// with the environment's as the fallback — so a missing mount or a read-only share is
+// in the log the user already exports. Call after ApplySavedLibraryDirs.
+func logFolders(log *slog.Logger, cfg config.Config, booksOn, musicOn bool) {
+	folders := health.LibraryFolders(cfg, booksOn, musicOn)
+	for _, f := range folders {
+		logFolder(log, f.Role, f.Path)
 	}
 
 	// The download disk guard measures the downloads folder alone. If that folder is
-	// on the same filesystem as the library, the guard is watching the whole array
-	// rather than a torrent drive, and a threshold tuned for a cache pool means
-	// something quite different. Two paths on one filesystem measure identically.
-	if dl, ok := diskspace.Of(cfg.DownloadsDir); ok {
-		if lib, ok := diskspace.Of(cfg.LibraryDir); ok && dl == lib {
-			log.Warn("environment: downloads and library are on the same filesystem",
-				"downloads", cfg.DownloadsDir, "library", cfg.LibraryDir,
-				"impact", "the download disk guard will measure the whole volume, not a separate torrent drive")
+	// on the same filesystem as a library, the guard is watching the whole array rather
+	// than a torrent drive, and a threshold tuned for a cache pool means something quite
+	// different.
+	var shared []string
+	for _, f := range folders {
+		if f.Role == "downloads" {
+			continue
+		}
+		if same, ok := health.SameFilesystem(cfg.DownloadsDir, f.Path); ok && same {
+			shared = append(shared, f.Role)
 		}
 	}
+	if len(shared) > 0 {
+		log.Warn("environment: downloads share a filesystem with library folders",
+			"downloads", cfg.DownloadsDir, "libraries", strings.Join(shared, ","),
+			"impact", "the download disk guard will measure the whole volume, not a separate torrent drive")
+	}
+}
+
+// logFolder logs one folder: present, a folder, writable, and how full its disk is.
+func logFolder(log *slog.Logger, role, path string) {
+	if path == "" {
+		return
+	}
+	attrs := []any{"role", role, "path", path}
+	st, err := os.Stat(path)
+	switch {
+	case err != nil:
+		// Not fatal here — some roots are created on first import. But a missing
+		// mount looks exactly like an empty library, and this is the difference.
+		log.Warn("environment: folder is not present", append(attrs, "err", err)...)
+		return
+	case !st.IsDir():
+		log.Warn("environment: path is not a folder", attrs...)
+		return
+	}
+	if u, ok := diskspace.Of(path); ok {
+		attrs = append(attrs, "free_gb", byteGB(u.FreeBytes), "used_pct", int(u.UsedPct))
+	}
+	// Proven by writing, not inferred from mode bits, which say nothing useful under a
+	// read-only bind mount or a PUID mismatch.
+	if err := libroots.ProbeWritable(path); err != nil {
+		log.Warn("environment: folder is not writable", append(attrs, "err", err)...)
+		return
+	}
+	log.Info("environment: folder", attrs...)
 }
 
 // byteGB reports whole-GB-with-one-decimal. The raw division printed
@@ -101,16 +119,4 @@ func logEnvironment(log *slog.Logger, cfg config.Config) {
 func byteGB(b uint64) float64 {
 	mb := b / (1024 * 1024)
 	return float64(mb*10/1024) / 10
-}
-
-// writable proves the folder can be written rather than inferring it from the mode
-// bits, which say nothing useful under a read-only bind mount or a PUID mismatch.
-func writable(dir string) error {
-	f, err := os.CreateTemp(dir, ".arrmada-write-check-")
-	if err != nil {
-		return err
-	}
-	name := f.Name()
-	_ = f.Close()
-	return os.Remove(name)
 }

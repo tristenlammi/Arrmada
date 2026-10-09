@@ -10,6 +10,7 @@ import { disposalLine, useRecycleMode } from "../lib/disposal";
 import { PAGE } from "../lib/links";
 import {
   api,
+  importListNotice,
   type BlockEntry,
   type CollectionMember,
   type ImportCandidate,
@@ -899,11 +900,12 @@ function ManualImportModal({ movie, onClose, onImported }: { movie: Movie; onClo
   const [cands, setCands] = useState<ImportCandidate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
     api
       .manualImportList(movie.id)
-      .then((r) => setCands(r.candidates))
+      .then((r) => { setCands(r.candidates); setNotice(importListNotice(r)); })
       .catch((e: Error) => setError(e.message));
   }, [movie.id]);
 
@@ -928,6 +930,7 @@ function ManualImportModal({ movie, onClose, onImported }: { movie: Movie; onClo
         </div>
         <p className="mb-3 text-[12px] text-ink-dim">Pick a file already on disk to import as <b>{movie.title}</b>. It'll be renamed to the library scheme.</p>
         {error && <div className="mb-2 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
+        {notice && <div className="mb-2 text-[11.5px] text-ink-faint">{notice}</div>}
         <div className="thin-scroll max-h-[52vh] overflow-y-auto">
           {cands === null ? (
             <div className="p-6 text-center text-[12.5px] text-ink-dim">Scanning…</div>

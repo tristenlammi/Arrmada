@@ -960,8 +960,14 @@ function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<App
   // the torrent drive is not knowable from in here, so show the resolved path and the
   // reading taken from it and let the user confirm it against their own setup.
   const [status, setStatus] = useState<DiskGuardStatus | null>(null);
+  // A Downloads folder saved but not yet in use: the guard keeps watching the old one
+  // until a restart, so show where it's going.
+  const [nextDownloads, setNextDownloads] = useState<string | null>(null);
   useEffect(() => {
     api.diskGuard().then(setStatus).catch(() => setStatus(null));
+    api.pendingRestart()
+      .then((p) => setNextDownloads(p.changed.find((c) => c.library === "downloads")?.saved ?? null))
+      .catch(() => setNextDownloads(null));
   }, []);
 
   return (
@@ -984,7 +990,10 @@ function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<App
       {status && (
         <div className="rounded-lg p-3" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
           <div className="text-[10px] uppercase tracking-[0.1em] text-ink-faint">Currently watching</div>
-          <div className="mt-0.5 break-all font-mono text-[11.5px]">{status.path || "(not set)"}</div>
+          <div className="mt-0.5 break-all font-mono text-[11.5px]">
+            {status.path || "(not set)"}
+            {nextDownloads && <span className="font-sans" style={{ color: "var(--avoid)" }}> → <span className="font-mono">{nextDownloads}</span> after restart</span>}
+          </div>
           {status.measurable ? (
             <div className="mt-1 text-[11.5px] text-ink-dim">
               {status.used_pct.toFixed(1)}% full
@@ -1000,9 +1009,9 @@ function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<App
               path exists and is mounted into the container.
             </div>
           )}
-          {status.shared_with_library && (
+          {(status.shared_with?.length ?? 0) > 0 && (
             <div className="mt-1.5 text-[11.5px]" style={{ color: "var(--reject)" }}>
-              This is the same drive as your library (<span className="font-mono">{status.library_path}</span>).
+              Shares a drive with: {status.shared_with.map((f) => f.label).join(", ")}.
               The guard will be measuring your whole array, not a torrent drive — a threshold like
               85% almost certainly isn't what you want here.
             </div>

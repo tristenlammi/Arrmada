@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
-import { api, type LibraryPaths, type BrowseResult, type UnmatchedFolder, type MatchCandidate } from "../lib/api";
+import { useCallback, useEffect, useState } from "react";
+import { api, type LibraryPaths, type BrowseResult, type FolderCheck, type UnmatchedFolder, type MatchCandidate } from "../lib/api";
 import { useMe, isAdmin } from "../lib/me";
+import { fmtBytes } from "../lib/disposal";
+import { announceFoldersSaved } from "../lib/restart";
 
 // LibraryFolders — points each library at a folder (with an in-app picker) and scans it.
 // Lives inside Settings → Library. Mount your media into the container (see the
@@ -22,20 +24,43 @@ export function LibraryFolders() {
   const [busy, setBusy] = useState(false);
   const [reviewKey, setReviewKey] = useState(0); // bump to reload the unmatched lists
   const [toast, setToast] = useState<string | null>(null);
+  const [blocking, setBlocking] = useState<Partial<Record<PathKey, boolean>>>({});
   const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); };
   const { user, musicEnabled } = useMe();
   // Moving a library or browsing the host's folders is the admin's call; a manager sees
   // where each library lives and can still scan it.
   const admin = isAdmin(user);
+  const onBlocking = useCallback((k: PathKey, b: boolean) => setBlocking((cur) => (cur[k] === b ? cur : { ...cur, [k]: b })), []);
 
   useEffect(() => { api.libraryPaths().then((p) => { setPaths(p); setDraft(p); }).catch(() => flash("Could not load library paths")); }, []);
   if (!draft) return <div className="text-[12.5px] text-ink-dim">Loading…</div>;
 
-  const dirty = paths && (Object.keys(draft) as PathKey[]).some((k) => draft[k] !== paths[k]);
+  const changedKeys = paths ? (Object.keys(draft) as PathKey[]).filter((k) => draft[k] !== paths[k]) : [];
+  const dirty = changedKeys.length > 0;
+  const blocked = changedKeys.some((k) => blocking[k]);
   const save = async () => {
     setBusy(true);
-    try { const p = await api.setLibraryPaths(draft); setPaths(p); setDraft(p); flash("Saved"); }
+    // Only what changed is sent, so an untouched folder that's odd right now (a share
+    // that isn't mounted) can never block saving the others.
+    const changes = Object.fromEntries(changedKeys.map((k) => [k, draft[k]])) as Partial<LibraryPaths>;
+    try {
+      const p = await api.setLibraryPaths(changes);
+      setPaths(p); setDraft(p);
+      announceFoldersSaved();
+      // Most folders only reach imports and the download client at the next start; say
+      // so here rather than letting "Saved" imply they're live.
+      const pending = await api.pendingRestart().catch(() => null);
+      flash(pending?.restart_needed
+        ? "Saved — restart Arrmada to apply them to downloads and imports. Files already imported stay where they are."
+        : "Saved");
+    }
     catch (e) { flash((e as Error).message); } finally { setBusy(false); }
+  };
+  // "Create it" saved that one folder; keep any other edits in progress.
+  const created = (k: PathKey) => (saved: LibraryPaths) => {
+    setPaths(saved);
+    setDraft((d) => (d ? { ...d, [k]: saved[k] } : saved));
+    announceFoldersSaved();
   };
   const scan = async (row: typeof ROWS[number]) => {
     if (!row.scan) return;
@@ -76,6 +101,7 @@ export function LibraryFolders() {
               />
               {admin && <button onClick={() => setPicking(row.key)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel)", color: "var(--ink)" }}>Browse…</button>}
             </div>
+            <FolderChips kind={row.key} path={draft[row.key]} current={paths?.[row.key] ?? ""} downloads={draft.downloads} onBlocking={onBlocking} onCreated={created(row.key)} />
           </div>
           );
         })}
@@ -83,8 +109,8 @@ export function LibraryFolders() {
 
       {admin ? (
         <div className="mt-4 flex items-center justify-end gap-3">
-          {dirty && <span className="text-[11.5px] text-ink-faint">Unsaved changes</span>}
-          <button onClick={save} disabled={!dirty || busy} className="rounded-lg px-4 py-2 text-[13px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy ? "Saving…" : "Save folders"}</button>
+          {dirty && <span className="text-[11.5px] text-ink-faint">{blocked ? "Fix the folders marked in red to save" : "Unsaved changes"}</span>}
+          <button onClick={save} disabled={!dirty || busy || blocked} className="rounded-lg px-4 py-2 text-[13px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy ? "Saving…" : "Save folders"}</button>
         </div>
       ) : (
         <p className="mt-3 text-[11.5px] text-ink-faint">Only an admin can change these folders.</p>
@@ -201,11 +227,97 @@ function UnmatchedRow({ media, item, busy, onPick }: { media: "movie" | "series"
   );
 }
 
+// FolderChips checks a folder shortly after it's typed or picked and shows what Arrmada
+// sees there: is it there, can the app write to it, will finished downloads hardlink in
+// (or be copied), how much room, how many folders. A problem that would make the save
+// refuse it is shown in red and reported through onBlocking. The data-folder rule applies
+// to every folder; "missing" only blocks a folder that's being changed, the same as the
+// server. A missing folder can be created on the spot, which saves that one folder.
+export function FolderChips({ kind, path, current, downloads, onBlocking, onCreated }: {
+  kind: PathKey;
+  path: string;
+  current: string;
+  downloads?: string;
+  onBlocking?: (kind: PathKey, blocking: boolean) => void;
+  onCreated?: (saved: LibraryPaths) => void;
+}) {
+  const [check, setCheck] = useState<FolderCheck | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [createErr, setCreateErr] = useState<string | null>(null);
+  const [nonce, setNonce] = useState(0); // bump to re-check after creating
+  const [failed, setFailed] = useState<string | null>(null); // the path whose check errored
+  const p = path.trim();
+  const linkFrom = kind === "downloads" ? undefined : downloads?.trim() || undefined;
+
+  useEffect(() => {
+    if (!p) return;
+    let live = true;
+    const t = window.setTimeout(() => {
+      api.checkLibraryFolder(p, kind, linkFrom)
+        .then((c) => { if (live) setCheck(c); })
+        .catch(() => { if (live) setFailed(p); }); // the chips are advice; the save still checks
+    }, 500);
+    return () => { live = false; window.clearTimeout(t); };
+  }, [p, kind, linkFrom, nonce]);
+
+  // A result for an older value is stale; show nothing until the new one lands.
+  const c = check && check.path === p ? check : null;
+  const changed = p !== current.trim();
+  const blocking = !!c?.error && (c.under_data_dir || changed);
+  useEffect(() => { onBlocking?.(kind, p !== "" && blocking); }, [kind, p, blocking, onBlocking]);
+
+  const create = async () => {
+    setCreating(true); setCreateErr(null);
+    try {
+      const saved = await api.setLibraryPaths({ [kind]: p, create: true });
+      onCreated?.(saved);
+      setNonce((n) => n + 1);
+    } catch (e) { setCreateErr((e as Error).message); } finally { setCreating(false); }
+  };
+
+  if (!p) return null;
+  if (!c) return failed === p ? null : <div className="mt-1.5 text-[10.5px] text-ink-faint">Checking…</div>;
+  if (c.error) {
+    return (
+      <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px]" style={{ color: blocking ? "var(--reject)" : "var(--avoid)" }}>
+        <span>{c.error}</span>
+        {!c.exists && !c.under_data_dir && (
+          <button onClick={create} disabled={creating} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{creating ? "Creating…" : "Create it"}</button>
+        )}
+        {createErr && <span style={{ color: "var(--reject)" }}>{createErr}</span>}
+      </div>
+    );
+  }
+  const good = "var(--good)", warn = "var(--avoid)";
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-1.5 text-[10.5px]">
+      <FolderChip color={good}>✓ Exists</FolderChip>
+      {c.writable
+        ? <FolderChip color={good}>✓ Writable</FolderChip>
+        : <FolderChip color={warn} title="Arrmada can read this folder but not write to it: imports can't land here. Check PUID/PGID and the share's permissions.">⚠ Read-only</FolderChip>}
+      {c.hardlink_with_downloads === true && <FolderChip color={good}>✓ Hardlinks with Downloads</FolderChip>}
+      {c.hardlink_with_downloads === false && (
+        <FolderChip color={warn} title="Downloads and this folder are on different drives or shares, so each finished download is copied (using the space twice) instead of hardlinked.">⚠ Will copy, not hardlink</FolderChip>
+      )}
+      {c.total_bytes > 0 && <FolderChip>Free {fmtBytes(c.free_bytes)}</FolderChip>}
+      <FolderChip>{c.entries.toLocaleString()}{c.entries_capped ? "+" : ""} folder{c.entries === 1 ? "" : "s"}</FolderChip>
+    </div>
+  );
+}
+
+function FolderChip({ children, color, title }: { children: React.ReactNode; color?: string; title?: string }) {
+  return <span title={title} className="rounded px-1.5 py-0.5" style={{ background: "var(--panel)", border: "1px solid var(--line-soft)", color: color ?? "var(--ink-faint)" }}>{children}</span>;
+}
+
 export function FolderPicker({ initial, onClose, onSelect }: { initial?: string; onClose: () => void; onSelect: (path: string) => void }) {
   const [data, setData] = useState<BrowseResult | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const go = (path?: string) => { setErr(null); api.browseFolders(path).then(setData).catch((e) => setErr((e as Error).message)); };
-  useEffect(() => { go(initial); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // A saved folder that no longer exists can't be listed; open on the media mount instead
+  // of an error with nowhere to go.
+  useEffect(() => {
+    api.browseFolders(initial).then(setData).catch(() => go());
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-start justify-center overflow-y-auto p-6" style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose}>
@@ -236,8 +348,10 @@ export function FolderPicker({ initial, onClose, onSelect }: { initial?: string;
         </div>
 
         <div className="mt-3 flex items-center justify-between gap-2">
-          <span className="text-[10.5px] text-ink-faint">Navigate into the folder you want, then select it.</span>
-          <button onClick={() => data && onSelect(data.path)} disabled={!data} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>Select this folder</button>
+          <span className="text-[10.5px]" style={{ color: data?.path_disabled ? "var(--avoid)" : "var(--ink-faint)" }}>
+            {data?.path_disabled ? "This folder holds Arrmada's own data — go into your media folder and pick one there." : "Navigate into the folder you want, then select it."}
+          </span>
+          <button onClick={() => data && !data.path_disabled && onSelect(data.path)} disabled={!data || data.path_disabled}className="rounded-lg px-4 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>Select this folder</button>
         </div>
       </div>
     </div>

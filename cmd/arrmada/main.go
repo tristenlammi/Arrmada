@@ -192,6 +192,9 @@ func main() {
 	// Library folders chosen in the app (first-run setup, Settings → Library) win over the
 	// environment's, for everything — importer, qBittorrent save path, disk guard.
 	httpapi.ApplySavedLibraryDirs(context.Background(), settingsSvc.Get, &cfg, log)
+	logFolders(log, cfg,
+		settingsSvc.GetBool(context.Background(), settings.KeyModuleBooks, true),
+		settingsSvc.GetBool(context.Background(), settings.KeyModuleMusic, settings.ModuleMusicDefault))
 	// API keys resolve settings-first, env-fallback, so a key added in the settings menu
 	// takes effect without a restart while existing env-based setups keep working. Seed
 	// the store with any env values so a fresh install with only compose vars still works.

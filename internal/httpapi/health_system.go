@@ -3,14 +3,14 @@ package httpapi
 import (
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/download"
+	"github.com/tristenlammi/arrmada/internal/health"
+	"github.com/tristenlammi/arrmada/internal/libroots"
 )
 
 // healthWarning is one operational problem surfaced to the user.
@@ -51,10 +51,46 @@ func (a *api) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 		queue, queueRead = q, true
 	}
 
-	// Library folder — must exist and be writable, or imports fail.
-	lib := a.deps.Config.LibraryDir
-	if !writable(lib) {
-		add("error", "The library folder isn't writable: "+lib)
+	// Media in or above the data folder mixes it with the database, backups and logs.
+	// Saving such a folder is refused now, but an older save or the environment can
+	// still carry one, and the app keeps running on it — so say it in red.
+	picked := a.pickedConfig(ctx)
+	underData := map[string]bool{}
+	for _, d := range libraryDirSettings(&picked) {
+		if *d.field != "" && libroots.UnderDataDir(*d.field, a.deps.Config.DataDir) {
+			underData[*d.field] = true
+			add("error", fmt.Sprintf("The %s folder (%s) is inside (or contains) Arrmada's data folder — move it to its own mount.",
+				folderLabel[d.name], *d.field))
+		}
+	}
+
+	// Each folder the user picked must be there and writable, or imports (and
+	// downloads) fail. Only modules that are on are checked.
+	folders := health.LibraryFolders(picked, a.booksEnabled(ctx), a.musicEnabled(ctx))
+	for _, f := range folders {
+		if underData[f.Path] {
+			continue // already reported, and nothing is probed inside the data folder
+		}
+		if level, msg := folderProblem(f, folderProbes.ProbeFolder(f.Path)); msg != "" {
+			add(level, msg)
+		}
+	}
+
+	// TODO(SAFE): drop this once the recycle bin keeps one bin per filesystem.
+	// Deletes move files into the recycle bin; a bin on another drive turns every
+	// delete into a full copy.
+	if a.deps.Recycle != nil {
+		if bin := a.deps.Recycle.Dir(); bin != "" {
+			for _, f := range folders {
+				if f.Role != "movies" && f.Role != "tv" {
+					continue
+				}
+				if same, ok := health.SameFilesystem(bin, f.Path); ok && !same {
+					add("warning", fmt.Sprintf("Deleted files are copied to %s on a different drive, which is slow and fills that drive.", bin))
+					break
+				}
+			}
+		}
 	}
 
 	// The disk guard actively holding the queue is the single most confusing reason
@@ -120,22 +156,30 @@ func (a *api) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": status, "warnings": warns, "disk": disk})
 }
 
-// writable reports whether dir exists and the process can create files in it.
-func writable(dir string) bool {
-	if dir == "" {
-		return false
+// folderProbes keeps the polled health panel from writing a probe file into every
+// library folder on every poll — on Unraid that can wake sleeping array disks. A folder
+// that passed is trusted for an hour; one that failed is re-checked each time.
+var folderProbes = health.NewProbeCache(time.Hour)
+
+// folderProblem turns a folder probe into a health line, or "" when the folder is fine.
+// A missing folder whose parent can be written is only a warning — imports create it —
+// but a missing parent means the share isn't mounted at all.
+func folderProblem(f health.Folder, st health.FolderState) (level, msg string) {
+	switch {
+	case !st.Exists && st.Err != nil:
+		return "error", fmt.Sprintf("Arrmada can't look at the %s folder %s: %v.", f.Label, f.Path, st.Err)
+	case !st.Exists && st.ParentExists && st.ParentWritable:
+		return "warning", fmt.Sprintf("The %s folder %s doesn't exist yet. Arrmada will create it when it's first needed; if it should be an existing share, check the container's volume mapping.", f.Label, f.Path)
+	case !st.Exists && st.ParentExists:
+		return "error", fmt.Sprintf("The %s folder %s doesn't exist, and Arrmada can't create it (check the container's volume mapping and the share's permissions).", f.Label, f.Path)
+	case !st.Exists:
+		return "error", fmt.Sprintf("The %s folder %s isn't there — the share isn't mounted.", f.Label, f.Path)
+	case !st.IsDir:
+		return "error", fmt.Sprintf("The %s folder %s is a file, not a folder.", f.Label, f.Path)
+	case !st.Writable:
+		return "error", fmt.Sprintf("Arrmada can't write to the %s folder %s (check PUID/PGID and the share's permissions).", f.Label, f.Path)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return false
-	}
-	probe := filepath.Join(dir, ".arrmada-write-test")
-	f, err := os.Create(probe)
-	if err != nil {
-		return false
-	}
-	_ = f.Close()
-	_ = os.Remove(probe)
-	return true
+	return "", ""
 }
 
 func plural(n int) string {
