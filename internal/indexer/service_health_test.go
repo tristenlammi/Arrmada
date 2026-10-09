@@ -277,3 +277,40 @@ func TestParseRetryAfter(t *testing.T) {
 		}
 	}
 }
+
+// A Prowlarr re-sync with a new API key clears a synced indexer's backoff; one with the
+// same key leaves it alone.
+func TestProwlarrResyncWithNewKeyClearsStatus(t *testing.T) {
+	prowlarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `[{"id":7,"name":"Tracker","enable":true,"protocol":"torrent","priority":25}]`)
+	}))
+	t.Cleanup(prowlarr.Close)
+	s, tr, _ := healthService(t)
+	ctx := context.Background()
+	if _, err := s.SyncProwlarr(ctx, prowlarr.URL, "key-one", ""); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := s.List(ctx)
+	if len(list) != 1 {
+		t.Fatalf("synced %d indexers", len(list))
+	}
+	r := ref(list[0])
+	pause := func() {
+		for i := 0; i < 2; i++ {
+			tr.Record(connstatus.KindIndexer, r, connstatus.Outcome{Err: errors.New("HTTP 401"), Backoff: true})
+		}
+	}
+	pause()
+	if _, err := s.SyncProwlarr(ctx, prowlarr.URL, "key-one", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tr.Get(connstatus.KindIndexer, r); !ok {
+		t.Fatal("a re-sync that changed nothing cleared the status")
+	}
+	if _, err := s.SyncProwlarr(ctx, prowlarr.URL, "key-two", ""); err != nil {
+		t.Fatal(err)
+	}
+	if st, ok := tr.Get(connstatus.KindIndexer, r); ok {
+		t.Fatalf("a new key should clear the backoff: %+v", st)
+	}
+}
