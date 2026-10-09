@@ -57,6 +57,9 @@ type Coordinator struct {
 
 	// removeTorrent overrides downloads.Remove in tests; nil uses the real client.
 	removeTorrent func(ctx context.Context, hash string, deleteData bool) error
+	// importRetry drops the movie importer's back-off for a download (SetImportRetry);
+	// nil = nothing to drop.
+	importRetry func(hash string)
 
 	// merging holds the IDs of books with an audiobook merge running, so a second click
 	// can't start another ffmpeg over the same files.

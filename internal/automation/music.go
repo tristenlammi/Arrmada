@@ -481,7 +481,7 @@ func (c *Coordinator) ImportMusicDownloads(ctx context.Context) {
 				c.log.Warn("music import: download doesn't look like the album it was grabbed for — sending to review",
 					"expected", expected.Title, "release", it.Name)
 				c.addReview(ctx, Review{
-					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "music",
+					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "music", ReasonCode: ReasonMismatch,
 					ExpectedID: expected.ID, ExpectedTitle: expected.Title,
 					ParsedTitle: music.ParseRelease(it.Name).Album,
 					Reason:      fmt.Sprintf("Grabbed for %q but the download doesn't match", expected.Title),
@@ -498,7 +498,7 @@ func (c *Coordinator) ImportMusicDownloads(ctx context.Context) {
 			case n >= unmatchedReviewAfter:
 				c.log.Warn("music import: download still matches no album — sending to review", "release", it.Name)
 				c.addReview(ctx, Review{
-					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "music",
+					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "music", ReasonCode: ReasonUnmatched,
 					ParsedTitle: music.ParseRelease(it.Name).Album, SizeBytes: it.SizeBytes,
 					Reason: "Matches no album in your library",
 				})
@@ -522,7 +522,7 @@ func (c *Coordinator) ImportMusicDownloads(ctx context.Context) {
 					"album", album.Title, "release", it.Name, "path", it.ContentPath)
 			case n >= unmatchedReviewAfter:
 				c.addReview(ctx, Review{
-					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "music",
+					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "music", ReasonCode: ReasonNoMedia,
 					ExpectedID: album.ID, ExpectedTitle: album.Title, SizeBytes: it.SizeBytes,
 					Reason: "Downloaded but holds no audio files — still archived, or unreadable",
 				})

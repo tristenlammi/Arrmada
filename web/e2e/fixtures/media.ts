@@ -99,7 +99,23 @@ export const indexers: { indexers: Indexer[] } = {
 };
 
 export const history: { imports: ImportRecord[] } = { imports: [] };
-export const reviews: { reviews: ImportReview[] } = { reviews: [] };
+// One of each kind of hold the Review page renders differently.
+export const reviews: { reviews: ImportReview[] } = {
+  reviews: [
+    {
+      id: 2, hash: "2222222222222222222222222222222222222222", name: "Fixture.Show.S01.1080p.WEB-DL-GRP", content_path: "/media/downloads/Fixture.Show.S01.1080p.WEB-DL-GRP",
+      media_type: "series", expected_id: 1, expected_title: "Fixture Show", parsed_title: "Fixture Show",
+      reason: "Downloaded, but none of its 8 video files could be matched to an episode", reason_code: "numbering",
+      size_bytes: 8e9, indexer: "Fixture Indexer", created_at: "2026-10-08 09:00:00",
+    },
+    {
+      id: 1, hash: "1111111111111111111111111111111111111111", name: "Other.Movie.2019.1080p.BluRay-GRP", content_path: "/media/downloads/Other.Movie.2019.1080p.BluRay-GRP",
+      media_type: "movie", expected_id: 1, expected_title: "Fixture Movie", parsed_title: "Other Movie",
+      reason: "Grabbed for \"Fixture Movie (2020)\" but the download looks like \"Other Movie (2019)\"", reason_code: "mismatch",
+      size_bytes: 4e9, indexer: "Fixture Indexer", created_at: "2026-10-07 09:00:00",
+    },
+  ],
+};
 export const blocklist: { items: BlocklistRow[]; total: number } = {
   items: [
     { id: 2, type: "global", item_id: 0, item_title: "", title: "Totally.Legit.2024.1080p.exe", reason: "rejected in review", created_at: "2026-10-01 12:00:00" },

@@ -82,3 +82,58 @@ func TestGrabLifecycleBackfill(t *testing.T) {
 		t.Errorf("resolution column: %q, %v", resolution, err)
 	}
 }
+
+// 0133 classifies old reviews from their reason text, in order, with anything it doesn't
+// recognise falling back to 'mismatch'.
+func TestReviewReasonCodeBackfill(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	db := st.DB()
+	cases := []struct {
+		reason   string
+		expected int64
+		want     string
+	}{
+		{"Import failed 5 times: mkdir /movies/X: permission denied — fix the cause", 0, "import_failed"},
+		{"Parsed as \"Foo\", which matches no series in your library", 0, "unmatched"},
+		{"Grabbed for a movie you deleted", 0, "unmatched"},
+		{"Downloaded, but none of its 12 video files could be matched to an episode — the episode numbering isn't in a form Arrmada recognises", 7, "numbering"},
+		{"Downloaded but holds no ebook or audiobook files — still archived, or unreadable", 3, "no_media"},
+		{"Downloaded but holds no audio files — still archived, or unreadable", 4, "no_media"},
+		{"Grabbed for \"Below Deck\" but the download looks like \"Below Deck Mediterranean\"", 2, "mismatch"},
+		{"something nobody wrote a rule for", 5, "mismatch"},
+	}
+	for _, c := range cases {
+		if _, err := db.Exec(`INSERT INTO import_reviews (name, reason, expected_id) VALUES ('x', ?, ?)`, c.reason, c.expected); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A row that already carries a code keeps it.
+	if _, err := db.Exec(`INSERT INTO import_reviews (name, reason, expected_id, reason_code) VALUES ('x', 'Import failed 2 times', 1, 'numbering')`); err != nil {
+		t.Fatal(err)
+	}
+	runBackfill(t, st, "0133_review_reason_code.sql")
+	rows, err := db.Query(`SELECT reason, reason_code FROM import_reviews ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	i := 0
+	for rows.Next() {
+		var reason, code string
+		if err := rows.Scan(&reason, &code); err != nil {
+			t.Fatal(err)
+		}
+		want := "numbering"
+		if i < len(cases) {
+			want = cases[i].want
+		}
+		if code != want {
+			t.Errorf("%q: code %q, want %q", reason, code, want)
+		}
+		i++
+	}
+}

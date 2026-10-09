@@ -717,7 +717,7 @@ func (c *Coordinator) ImportBookDownloads(ctx context.Context) {
 				c.log.Warn("book import: download doesn't look like the book it was grabbed for — sending to review",
 					"expected", expected.Title, "release", it.Name, "parsed_title", parsed)
 				c.addReview(ctx, Review{
-					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "book",
+					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "book", ReasonCode: ReasonMismatch,
 					ExpectedID: expected.ID, ExpectedTitle: expected.Title, ParsedTitle: parsed,
 					Reason:    fmt.Sprintf("Grabbed for %q but the download looks like %q", expected.Title, parsed),
 					SizeBytes: it.SizeBytes, Indexer: idx,
@@ -738,7 +738,7 @@ func (c *Coordinator) ImportBookDownloads(ctx context.Context) {
 				c.log.Warn("book import: download still matches no book — sending to review",
 					"release", it.Name, "parsed_title", parsed, "attempts", n)
 				c.addReview(ctx, Review{
-					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "book",
+					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "book", ReasonCode: ReasonUnmatched,
 					ParsedTitle: parsed, SizeBytes: it.SizeBytes,
 					Reason: fmt.Sprintf("Parsed as %q, which matches no book in your library", parsed),
 				})
@@ -775,7 +775,7 @@ func (c *Coordinator) ImportBookDownloads(ctx context.Context) {
 				c.log.Warn("book import: still nothing importable — sending to review",
 					"book", b.Title, "release", it.Name, "attempts", n)
 				c.addReview(ctx, Review{
-					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "book",
+					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "book", ReasonCode: ReasonNoMedia,
 					ExpectedID: b.ID, ExpectedTitle: b.Title, ParsedTitle: bookParsedTitle(it.Name),
 					SizeBytes: it.SizeBytes,
 					Reason:    "Downloaded but holds no ebook or audiobook files — still archived, or unreadable",

@@ -1652,8 +1652,17 @@ export const api = {
   },
   unblockAny: (id: number) => req<void>(`/api/v1/blocklist/${id}`, { method: "DELETE" }),
   reviews: () => req<{ reviews: ImportReview[] }>("/api/v1/reviews").then((r) => r.reviews),
-  rejectReview: (id: number) => req<{ status: string }>(`/api/v1/reviews/${id}/reject`, { method: "POST" }),
+  // findAnother: once the release is blocklisted, search the title it was grabbed for again.
+  rejectReview: (id: number, findAnother = false) =>
+    req<{ status: string; searching?: boolean; search_error?: string } & Partial<JobRef>>(`/api/v1/reviews/${id}/reject`, findAnother
+      ? { method: "POST", body: JSON.stringify({ find_another: true }) }
+      : { method: "POST" }),
   dismissReview: (id: number) => req<{ status: string }>(`/api/v1/reviews/${id}/dismiss`, { method: "POST" }),
+  // Clears an "import keeps failing" review so the import sweep tries the download again.
+  retryReview: (id: number) => req<{ status: string }>(`/api/v1/reviews/${id}/retry`, { method: "POST" }),
+  reviewFiles: (id: number) => req<{ files: ReviewFile[]; truncated: boolean }>(`/api/v1/reviews/${id}/files`),
+  bulkReviews: (ids: number[], action: "dismiss" | "reject") =>
+    req<{ done: number; failed: { id: number; error: string }[] }>("/api/v1/reviews/bulk", { method: "POST", body: JSON.stringify({ ids, action }) }),
   // targetKind names what targetId is; the server refuses one that isn't the review's own kind.
   importReview: (id: number, targetId?: number, targetKind?: ReviewKind) =>
     req<{ status: string }>(`/api/v1/reviews/${id}/import`, { method: "POST", body: JSON.stringify({ target_id: targetId ?? 0, target_kind: targetKind ?? "" }) }),
@@ -2410,7 +2419,20 @@ export interface ImportReview {
   expected_title: string;
   parsed_title: string;
   reason: string;
+  reason_code: ReviewReason;
   size_bytes: number;
   indexer: string;
   created_at: string;
+}
+
+// Why a download is held: content that doesn't match, tied to nothing, unreadable episode
+// numbering, an import that keeps failing, or nothing importable inside.
+export type ReviewReason = "mismatch" | "unmatched" | "numbering" | "import_failed" | "no_media";
+
+// One file inside a held download, with what its name says about episode numbering.
+export interface ReviewFile {
+  rel_path: string;
+  size: number;
+  video: boolean;
+  guess: { season?: number; episodes?: number[]; absolute?: number[] };
 }

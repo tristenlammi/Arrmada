@@ -103,11 +103,49 @@ type Review struct {
 	ExpectedTitle string `json:"expected_title"`
 	ParsedTitle   string `json:"parsed_title"`
 	Reason        string `json:"reason"`
-	SizeBytes     int64  `json:"size_bytes"`
-	Indexer       string `json:"indexer"`
-	CreatedAt     string `json:"created_at"`
+	// ReasonCode is which kind of problem held it (Reason* below); the Review page offers
+	// only the actions that can work for it.
+	ReasonCode string `json:"reason_code"`
+	SizeBytes  int64  `json:"size_bytes"`
+	Indexer    string `json:"indexer"`
+	CreatedAt  string `json:"created_at"`
 
 	status string // pending | resolved; read by getReview only
+}
+
+// Why a download was held for review.
+const (
+	// ReasonMismatch: grabbed for one title, but the content looks like another.
+	ReasonMismatch = "mismatch"
+	// ReasonUnmatched: tied to no library item — it matches nothing, or what it was
+	// grabbed for has been deleted.
+	ReasonUnmatched = "unmatched"
+	// ReasonNumbering: the right show, but no file's episode numbering could be read.
+	ReasonNumbering = "numbering"
+	// ReasonImportFailed: the import itself keeps failing (a folder it can't write, a full disk).
+	ReasonImportFailed = "import_failed"
+	// ReasonNoMedia: nothing importable inside — still archived, or unreadable.
+	ReasonNoMedia = "no_media"
+)
+
+const reviewCols = `id, hash, name, content_path, media_type, expected_id, expected_title, parsed_title, reason, reason_code, size_bytes, indexer, created_at, status`
+
+func scanReview(row interface{ Scan(...any) error }) (Review, error) {
+	var r Review
+	err := row.Scan(&r.ID, &r.Hash, &r.Name, &r.ContentPath, &r.MediaType, &r.ExpectedID, &r.ExpectedTitle,
+		&r.ParsedTitle, &r.Reason, &r.ReasonCode, &r.SizeBytes, &r.Indexer, &r.CreatedAt, &r.status)
+	if r.ReasonCode == "" { // a row written by a build without codes, after 0133 ran
+		r.ReasonCode = defaultReasonCode(r)
+	}
+	return r, err
+}
+
+// defaultReasonCode is the code for a review whose caller named none.
+func defaultReasonCode(r Review) string {
+	if r.ExpectedID <= 0 {
+		return ReasonUnmatched
+	}
+	return ReasonMismatch
 }
 
 // hasReview reports whether a download hash has a PENDING review — the import loop
@@ -139,36 +177,44 @@ func (c *Coordinator) addReview(ctx context.Context, r Review) {
 	if c.hasReview(ctx, r.Hash) {
 		return
 	}
-	_, err := c.db.ExecContext(ctx,
-		`INSERT INTO import_reviews (hash, name, content_path, media_type, expected_id, expected_title, parsed_title, reason, size_bytes, indexer)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.Hash, r.Name, r.ContentPath, r.MediaType, r.ExpectedID, r.ExpectedTitle, r.ParsedTitle, r.Reason, r.SizeBytes, r.Indexer)
+	if r.ReasonCode == "" {
+		r.ReasonCode = defaultReasonCode(r)
+	}
+	res, err := c.db.ExecContext(ctx,
+		`INSERT INTO import_reviews (hash, name, content_path, media_type, expected_id, expected_title, parsed_title, reason, reason_code, size_bytes, indexer)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.Hash, r.Name, r.ContentPath, r.MediaType, r.ExpectedID, r.ExpectedTitle, r.ParsedTitle, r.Reason, r.ReasonCode, r.SizeBytes, r.Indexer)
 	if err != nil {
 		c.log.Warn("review: record failed", "name", r.Name, "err", err)
 		return
 	}
+	id, _ := res.LastInsertId()
 	// The grab is no longer downloading, and not imported either: 'held' keeps the release
 	// from being grabbed again while the review is pending, and keeps seed cleanup off it.
 	c.setGrabStatusByHash(ctx, r.Hash, r.Name, r.MediaType, grabStatusHeld)
-	c.log.Info("import held for review", "name", r.Name, "reason", r.Reason)
+	c.log.Info("import held for review", "name", r.Name, "reason", r.Reason, "reason_code", r.ReasonCode)
 	if c.bus != nil {
-		c.bus.Publish("import.held", map[string]any{"name": r.Name, "reason": r.Reason})
+		// Enough for an open Review page to refresh and for an alert to say what's held and
+		// why, without another read.
+		c.bus.Publish("import.held", map[string]any{
+			"id": id, "kind": r.MediaType, "expected_id": r.ExpectedID, "expected_title": r.ExpectedTitle,
+			"reason_code": r.ReasonCode, "reason": r.Reason, "name": r.Name,
+		})
 	}
 }
 
 // ListReviews returns the pending review items, newest first.
 func (c *Coordinator) ListReviews(ctx context.Context) ([]Review, error) {
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT id, hash, name, content_path, media_type, expected_id, expected_title, parsed_title, reason, size_bytes, indexer, created_at
-		 FROM import_reviews WHERE status = 'pending' ORDER BY id DESC`)
+		`SELECT `+reviewCols+` FROM import_reviews WHERE status = 'pending' ORDER BY id DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []Review
 	for rows.Next() {
-		var r Review
-		if err := rows.Scan(&r.ID, &r.Hash, &r.Name, &r.ContentPath, &r.MediaType, &r.ExpectedID, &r.ExpectedTitle, &r.ParsedTitle, &r.Reason, &r.SizeBytes, &r.Indexer, &r.CreatedAt); err != nil {
+		r, err := scanReview(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -176,12 +222,13 @@ func (c *Coordinator) ListReviews(ctx context.Context) ([]Review, error) {
 	return out, rows.Err()
 }
 
+// GetReview returns one review, pending or not.
+func (c *Coordinator) GetReview(ctx context.Context, id int64) (Review, error) {
+	return c.getReview(ctx, id)
+}
+
 func (c *Coordinator) getReview(ctx context.Context, id int64) (Review, error) {
-	var r Review
-	err := c.db.QueryRowContext(ctx,
-		`SELECT id, hash, name, content_path, media_type, expected_id, expected_title, parsed_title, reason, size_bytes, indexer, created_at, status
-		 FROM import_reviews WHERE id = ?`, id).
-		Scan(&r.ID, &r.Hash, &r.Name, &r.ContentPath, &r.MediaType, &r.ExpectedID, &r.ExpectedTitle, &r.ParsedTitle, &r.Reason, &r.SizeBytes, &r.Indexer, &r.CreatedAt, &r.status)
+	r, err := scanReview(c.db.QueryRowContext(ctx, `SELECT `+reviewCols+` FROM import_reviews WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, ErrReviewNotFound
 	}
@@ -282,7 +329,7 @@ func (c *Coordinator) HoldMovieImport(ctx context.Context, hash, name, contentPa
 		reason := "Grabbed for a movie you deleted"
 		parsed := parser.Parse(name)
 		c.addReview(ctx, Review{
-			Hash: hash, Name: name, ContentPath: contentPath, MediaType: "movie",
+			Hash: hash, Name: name, ContentPath: contentPath, MediaType: "movie", ReasonCode: ReasonUnmatched,
 			ExpectedID: 0, ParsedTitle: parsed.Title, Reason: reason, Indexer: indexer,
 		})
 		return reason, true
@@ -298,7 +345,7 @@ func (c *Coordinator) HoldMovieImport(ctx context.Context, hash, name, contentPa
 	}
 	reason := fmt.Sprintf("Grabbed for %q but the download looks like %q", titleYear(expected.Title, expected.Year), titleYear(parsed.Title, parsed.Year))
 	c.addReview(ctx, Review{
-		Hash: hash, Name: name, ContentPath: contentPath, MediaType: "movie",
+		Hash: hash, Name: name, ContentPath: contentPath, MediaType: "movie", ReasonCode: ReasonMismatch,
 		ExpectedID: expected.ID, ExpectedTitle: expected.Title, ParsedTitle: parsed.Title,
 		Reason: reason, Indexer: indexer,
 	})
@@ -362,7 +409,7 @@ func (c *Coordinator) HandleMovieImportStuck(ctx context.Context, hash, name, co
 	}
 	parsed := parser.Parse(name)
 	c.addReview(ctx, Review{
-		Hash: hash, Name: name, ContentPath: contentPath, MediaType: "movie",
+		Hash: hash, Name: name, ContentPath: contentPath, MediaType: "movie", ReasonCode: ReasonImportFailed,
 		ExpectedID: mid, ExpectedTitle: title, ParsedTitle: parsed.Title, Indexer: indexerName,
 		Reason: fmt.Sprintf("Import failed %d times: %v — fix the cause (a folder Arrmada can't write to, a full disk), then Import", attempts, cause),
 	})

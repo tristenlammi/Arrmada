@@ -157,6 +157,10 @@ func (m *Manager) noteFailure(hash string, err error) (attempts int, worthWarnin
 	return f.attempts, worthWarning
 }
 
+// RetryNow drops a download's failure back-off, so the next sweep tries it again at once
+// and counts its attempts from zero — Review's "Retry import", once the cause is fixed.
+func (m *Manager) RetryNow(hash string) { m.clearFailure(hash) }
+
 func (m *Manager) clearFailure(hash string) {
 	m.failMu.Lock()
 	delete(m.failures, hash)

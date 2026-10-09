@@ -45,3 +45,21 @@ func TestImportFailureBackoff(t *testing.T) {
 		t.Error("cleared: must be due")
 	}
 }
+
+// Review's Retry import makes a backed-off download due now and counts afresh.
+func TestRetryNowDropsTheBackoff(t *testing.T) {
+	m := &Manager{}
+	for i := 0; i < 5; i++ {
+		m.noteFailure("h", errors.New("permission denied"))
+	}
+	if m.retryDue("h") {
+		t.Fatal("backed off: must not be due")
+	}
+	m.RetryNow("h")
+	if !m.retryDue("h") {
+		t.Error("after RetryNow it must be due")
+	}
+	if attempts, _ := m.noteFailure("h", errors.New("permission denied")); attempts != 1 {
+		t.Errorf("attempts after RetryNow = %d, want a fresh count of 1", attempts)
+	}
+}

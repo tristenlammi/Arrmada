@@ -153,6 +153,7 @@ GET /api/v1/recycle/items staff -
 GET /api/v1/recycle/mode staff -
 GET /api/v1/requests user ext
 GET /api/v1/reviews staff -
+GET /api/v1/reviews/{id}/files staff -
 GET /api/v1/reviews/{id}/targets staff -
 GET /api/v1/series staff -
 GET /api/v1/series/lookup staff -
@@ -271,9 +272,11 @@ POST /api/v1/requests requester ext
 POST /api/v1/requests/import/overseerr admin ext
 POST /api/v1/requests/{id}/approve staff ext
 POST /api/v1/requests/{id}/decline staff ext
+POST /api/v1/reviews/bulk staff -
 POST /api/v1/reviews/{id}/dismiss staff -
 POST /api/v1/reviews/{id}/import staff -
 POST /api/v1/reviews/{id}/reject staff -
+POST /api/v1/reviews/{id}/retry staff -
 POST /api/v1/series staff -
 POST /api/v1/series/import staff -
 POST /api/v1/series/refresh staff -
