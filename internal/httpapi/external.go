@@ -130,23 +130,10 @@ func (a *api) externalGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		external := a.classifyExternal(r) && !isStaffRequest(r)
 		r = r.WithContext(context.WithValue(r.Context(), externalCtxKey, external))
-		if external && !externalAllowed(a.pathAfterBase(r.URL.Path)) {
+		if external && !externalAllowed(r.URL.Path) {
 			a.writeError(w, http.StatusForbidden, "not available outside your network")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
-}
-
-// pathAfterBase strips the configured reverse-proxy base path so allowlist checks
-// work regardless of BaseURL.
-func (a *api) pathAfterBase(p string) string {
-	b := a.deps.Config.BaseURL
-	if b != "" && b != "/" && strings.HasPrefix(p, b) {
-		p = strings.TrimPrefix(p, b)
-		if p == "" {
-			p = "/"
-		}
-	}
-	return p
 }

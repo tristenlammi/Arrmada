@@ -12,7 +12,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -127,8 +126,14 @@ func main() {
 		"version", buildinfo.Version,
 		"commit", buildinfo.Commit,
 		"addr", cfg.Addr(),
-		"base_url", orRoot(cfg.BaseURL),
 	)
+	if cfg.BaseURLIgnored != "" {
+		// Sub-path hosting was never finished (the web app always asked for /api/v1 at the
+		// root), so the option is gone. Say so rather than refuse to start: the app still
+		// works, just at the root of the hostname.
+		log.Warn("ARRMADA_BASE_URL is no longer supported and is ignored — serve Arrmada at the root of its own hostname (it is running at the root)",
+			"ARRMADA_BASE_URL", cfg.BaseURLIgnored)
+	}
 	if restored > 0 {
 		log.Info("restored logs from the previous run", "lines", restored, "path", logPath)
 	}
@@ -883,13 +888,6 @@ func newLogger(level string) *slog.Logger {
 	return slog.New(applog.NewHandler(base, logRing))
 }
 
-func orRoot(base string) string {
-	if base == "" {
-		return "/"
-	}
-	return base
-}
-
 // displayURL builds a clickable local URL, swapping a wildcard bind address for
 // localhost so the logged link actually works.
 func displayURL(cfg config.Config) string {
@@ -897,5 +895,5 @@ func displayURL(cfg config.Config) string {
 	if host == "0.0.0.0" || host == "" || host == "::" {
 		host = "localhost"
 	}
-	return fmt.Sprintf("http://%s:%d%s", host, cfg.Port, strings.TrimSuffix(cfg.BaseURL, "/"))
+	return fmt.Sprintf("http://%s:%d", host, cfg.Port)
 }

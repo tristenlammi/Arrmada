@@ -74,7 +74,6 @@ rand_port() {
 # It asks from inside the container, so it works whatever host port was picked and needs no
 # curl/wget on the host.
 wait_healthy() {
-  _base=$(grep -E '^ARRMADA_BASE_URL=' .env 2>/dev/null | cut -d= -f2)
   _i=0
   printf 'Waiting for Arrmada to start' >&2
   while [ "$_i" -lt 90 ]; do
@@ -82,7 +81,7 @@ wait_healthy() {
     case "$_state" in
       exited|dead) printf '\n' >&2; return 1 ;;
     esac
-    if docker exec Arrmada-app curl -fsS -o /dev/null "http://127.0.0.1:7878${_base%/}/api/health" 2>/dev/null; then
+    if docker exec Arrmada-app curl -fsS -o /dev/null "http://127.0.0.1:7878/api/health" 2>/dev/null; then
       printf ' ready\n' >&2; return 0
     fi
     printf '.' >&2

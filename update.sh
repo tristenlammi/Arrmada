@@ -15,7 +15,6 @@ say() { printf '%s\n' "$*"; }
 # It asks from inside the container, so it works whatever host port was picked and needs no
 # curl/wget on the host.
 wait_healthy() {
-  _base=$(grep -E '^ARRMADA_BASE_URL=' .env 2>/dev/null | cut -d= -f2)
   _i=0
   printf 'Waiting for Arrmada to start' >&2
   while [ "$_i" -lt 90 ]; do
@@ -23,7 +22,7 @@ wait_healthy() {
     case "$_state" in
       exited|dead) printf '\n' >&2; return 1 ;;
     esac
-    if docker exec Arrmada-app curl -fsS -o /dev/null "http://127.0.0.1:7878${_base%/}/api/health" 2>/dev/null; then
+    if docker exec Arrmada-app curl -fsS -o /dev/null "http://127.0.0.1:7878/api/health" 2>/dev/null; then
       printf ' ready\n' >&2; return 0
     fi
     printf '.' >&2
@@ -92,6 +91,12 @@ if ! grep -qE '^ARRMADA_AUDIOBOOK_PORT=' .env; then
     say "ARRMADA_AUDIOBOOK_PORT=$AUDIOPORT"
   } >> .env
   say "Added ARRMADA_AUDIOBOOK_PORT=$AUDIOPORT to .env (the audiobook server's port)."
+fi
+
+# Settings that were removed: the app never sees them now, so say so here.
+if grep -qE '^ARRMADA_BASE_URL=.*[^/[:space:]"'"'"']' .env; then
+  say "  ! ARRMADA_BASE_URL in .env is no longer supported and is ignored — Arrmada is served"
+  say "    at the root of its own hostname. Point your reverse proxy at the root, then delete the line."
 fi
 
 say "Rebuilding and restarting Arrmada…"

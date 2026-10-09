@@ -17,8 +17,10 @@ type Config struct {
 	Host string
 	// Port is the HTTP port. One port serves both the API and the web UI.
 	Port int
-	// BaseURL is an optional reverse-proxy sub-path (e.g. "/arrmada"). Empty = root.
-	BaseURL string
+	// BaseURLIgnored holds ARRMADA_BASE_URL when a deployment still sets it to a sub-path.
+	// The option is gone — Arrmada is served at the root of its own hostname — so this
+	// only exists for the startup warning; nothing routes by it.
+	BaseURLIgnored string
 	// DataDir holds the database, config and logs, plus backups/, where a snapshot
 	// of the database is taken automatically before any schema change and every night.
 	DataDir string
@@ -94,7 +96,7 @@ type Config struct {
 func Load() (Config, error) {
 	c := Config{
 		Host:                  env("ARRMADA_HOST", "0.0.0.0"),
-		BaseURL:               normalizeBaseURL(env("ARRMADA_BASE_URL", "")),
+		BaseURLIgnored:        ignoredBaseURL(os.Getenv("ARRMADA_BASE_URL")),
 		DataDir:               env("ARRMADA_DATA_DIR", "./data"),
 		LogLevel:              strings.ToLower(env("ARRMADA_LOG_LEVEL", "info")),
 		ExternalHeader:        env("ARRMADA_EXTERNAL_HEADER", "Cf-Connecting-Ip"),
@@ -156,14 +158,13 @@ func (c Config) Addr() string {
 	return fmt.Sprintf("%s:%d", c.Host, c.Port)
 }
 
-// normalizeBaseURL trims trailing slashes and guarantees a single leading slash
-// (or empty string for root hosting).
-func normalizeBaseURL(v string) string {
+// ignoredBaseURL returns a leftover ARRMADA_BASE_URL worth warning about. Empty and "/"
+// both meant the root, which is where Arrmada runs, so they need no warning.
+func ignoredBaseURL(v string) string {
 	v = strings.TrimSpace(v)
-	if v == "" || v == "/" {
+	if strings.Trim(v, "/") == "" {
 		return ""
 	}
-	v = "/" + strings.Trim(v, "/")
 	return v
 }
 
