@@ -6,18 +6,22 @@ package series
 
 // Series is a TV show in the library.
 type Series struct {
-	ID             int64  `json:"id"`
-	TMDBID         int    `json:"tmdb_id"`
-	TVDBID         int    `json:"tvdb_id,omitempty"`
-	IMDBID         string `json:"imdb_id,omitempty"`
-	Title          string `json:"title"`
-	Year           int    `json:"year"`
-	Overview       string `json:"overview,omitempty"`
-	PosterURL      string `json:"poster_url,omitempty"`
-	Status         string `json:"status,omitempty"` // Returning Series | Ended | Canceled
-	Network        string `json:"network,omitempty"`
-	Monitored      bool   `json:"monitored"`
-	QualityProfile string `json:"quality_profile"`
+	ID        int64  `json:"id"`
+	TMDBID    int    `json:"tmdb_id"`
+	TVDBID    int    `json:"tvdb_id,omitempty"`
+	IMDBID    string `json:"imdb_id,omitempty"`
+	Title     string `json:"title"`
+	Year      int    `json:"year"`
+	Overview  string `json:"overview,omitempty"`
+	PosterURL string `json:"poster_url,omitempty"`
+	Status    string `json:"status,omitempty"` // Returning Series | Ended | Canceled
+	Network   string `json:"network,omitempty"`
+	// Monitored is the series gate: off pauses the show without touching its season and
+	// episode choices.
+	Monitored bool `json:"monitored"`
+	// MonitorNewSeasons: a season new to the show is monitored when a refresh adds it.
+	MonitorNewSeasons bool   `json:"monitor_new_seasons"`
+	QualityProfile    string `json:"quality_profile"`
 	// SeriesType drives episode numbering. "standard" matches releases by SxxExx;
 	// "anime" also matches by absolute episode number (and falls back positionally),
 	// because anime releases number episodes 1..N across the whole run. Auto-set on

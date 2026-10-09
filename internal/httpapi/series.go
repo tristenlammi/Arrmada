@@ -187,17 +187,38 @@ func (a *api) handleSetSeriesMonitored(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Both optional: the "monitor new seasons" checkbox mustn't pause the show by leaving
+	// monitored out.
 	var req struct {
-		Monitored bool `json:"monitored"`
+		Monitored         *bool `json:"monitored"`
+		MonitorNewSeasons *bool `json:"monitor_new_seasons"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
-	if err := a.deps.Series.SetMonitored(r.Context(), id, req.Monitored); err != nil {
-		a.writeError(w, http.StatusInternalServerError, "could not update monitoring")
+	ctx := r.Context()
+	if _, err := a.deps.Series.Get(ctx, id); errors.Is(err, series.ErrNotFound) {
+		a.writeError(w, http.StatusNotFound, "series not found")
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"monitored": req.Monitored})
+	if req.MonitorNewSeasons != nil {
+		if err := a.deps.Series.SetMonitorNewSeasons(ctx, id, *req.MonitorNewSeasons); err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not update monitoring")
+			return
+		}
+	}
+	if req.Monitored != nil {
+		if err := a.deps.Series.SetMonitored(ctx, id, *req.Monitored); err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not update monitoring")
+			return
+		}
+	}
+	s, err := a.deps.Series.Get(ctx, id)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not load series")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"monitored": s.Monitored, "monitor_new_seasons": s.MonitorNewSeasons})
 }
 
 func (a *api) handleSetSeriesProfile(w http.ResponseWriter, r *http.Request) {

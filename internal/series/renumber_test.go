@@ -27,7 +27,7 @@ func renumberFixture(t *testing.T) (*Service, *fakeMeta, int64) {
 func TestPlanRebuildMatchesRebuildRemaps(t *testing.T) {
 	svc, fm, id := renumberFixture(t)
 	ctx := t.Context()
-	seasons := seasonsFromDetails(&fm.d, true)
+	seasons := seasonsFromDetails(&fm.d, func(int) bool { return true })
 	plan, err := svc.repo.PlanRebuild(ctx, id, seasons)
 	if err != nil {
 		t.Fatal(err)

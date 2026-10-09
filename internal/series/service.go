@@ -182,14 +182,14 @@ func (s *Service) Add(ctx context.Context, tmdbID int, qualityProfile string, mo
 	sr := Series{
 		TMDBID: d.TMDBID, TVDBID: d.TVDBID, IMDBID: d.IMDBID, Title: d.Title, Year: d.Year, Overview: d.Overview,
 		PosterURL: d.PosterURL, Status: d.Status, Network: d.Network,
-		Monitored: monitored, QualityProfile: qualityProfile, Extra: extraFrom(d),
+		Monitored: monitored, MonitorNewSeasons: monitored, QualityProfile: qualityProfile, Extra: extraFrom(d),
 		SeriesType: detectSeriesType(d),
 	}
 	created, err := s.repo.Create(ctx, sr)
 	if err != nil {
 		return Series{}, err
 	}
-	seasons := seasonsFromDetails(d, monitored)
+	seasons := seasonsFromDetails(d, func(int) bool { return monitored })
 	if err := s.repo.InsertSeasons(ctx, created.ID, seasons); err != nil {
 		s.log.Warn("series: insert seasons failed", "series", created.Title, "err", err)
 	} else if d.NumberingSource != "" {
@@ -211,17 +211,20 @@ func (s *Service) Add(ctx context.Context, tmdbID int, qualityProfile string, mo
 }
 
 // seasonsFromDetails projects TMDB season/episode metadata into storage rows.
-// Specials (season 0) default unmonitored; everything else follows the series flag.
+// monitorFor says whether a season (and so its episodes) is monitored; specials (season 0)
+// never are. Only rows that don't exist yet take these flags — a refresh never rewrites
+// the owner's monitoring of an existing episode.
 // Absolute numbers are assigned 1..N across the non-special seasons in order, so an
 // anime release numbered absolutely resolves to the right (season, episode).
-func seasonsFromDetails(d *metadata.SeriesDetails, monitored bool) []Season {
+func seasonsFromDetails(d *metadata.SeriesDetails, monitorFor func(seasonNumber int) bool) []Season {
 	seasons := make([]Season, 0, len(d.Seasons))
 	abs := 0
 	for _, sd := range d.Seasons {
 		special := sd.SeasonNumber == 0
+		monitored := !special && monitorFor(sd.SeasonNumber)
 		sn := Season{
 			SeasonNumber: sd.SeasonNumber, Name: sd.Name, Overview: sd.Overview, PosterURL: sd.PosterURL,
-			Monitored: monitored && !special,
+			Monitored: monitored,
 		}
 		for _, ed := range sd.Episodes {
 			absNum := 0
@@ -237,7 +240,7 @@ func seasonsFromDetails(d *metadata.SeriesDetails, monitored bool) []Season {
 			sn.Episodes = append(sn.Episodes, Episode{
 				SeasonNumber: sd.SeasonNumber, EpisodeNumber: ed.EpisodeNumber, Title: ed.Title,
 				Overview: ed.Overview, AirDate: ed.AirDate, Runtime: ed.Runtime, StillURL: ed.StillURL,
-				AbsoluteNumber: absNum, Monitored: monitored && !special,
+				AbsoluteNumber: absNum, Monitored: monitored,
 			})
 		}
 		seasons = append(seasons, sn)
@@ -320,7 +323,7 @@ func (s *Service) refresh(ctx context.Context, id int64, opts RefreshOptions) (S
 		return Series{}, res, err
 	}
 	if d, derr := s.meta.GetSeries(ctx, sr.TMDBID); derr == nil {
-		res = s.applyNumbering(ctx, sr, d, seasonsFromDetails(d, sr.Monitored), opts)
+		res = s.applyNumbering(ctx, sr, d, seasonsFromDetails(d, s.refreshMonitorFor(ctx, sr)), opts)
 		if d.TVDBID > 0 && d.TVDBID != sr.TVDBID {
 			_ = s.repo.SetTVDBID(ctx, id, d.TVDBID)
 		}
@@ -339,6 +342,23 @@ func (s *Service) refresh(ctx context.Context, id int64, opts RefreshOptions) (S
 	}
 	got, err := s.Get(ctx, id)
 	return got, res, err
+}
+
+// refreshMonitorFor is the monitoring a refresh gives rows that don't exist yet. A new
+// episode in a season the show already has takes that season's flag, so it follows what
+// the owner chose there; a season new to the show follows "monitor new seasons". Neither
+// depends on the pause gate, so a paused show has the right flags when it resumes.
+func (s *Service) refreshMonitorFor(ctx context.Context, sr Series) func(int) bool {
+	flags, err := s.repo.SeasonMonitorFlags(ctx, sr.ID)
+	if err != nil {
+		s.log.Warn("series: couldn't read season monitoring — new rows follow 'monitor new seasons'", "series", sr.Title, "err", err)
+	}
+	return func(season int) bool {
+		if on, ok := flags[season]; ok {
+			return on
+		}
+		return sr.MonitorNewSeasons
+	}
 }
 
 // refreshShow brings the show's own row up to date — title, status, poster, overview,
@@ -762,9 +782,14 @@ func (s *Service) DismissNumbering(ctx context.Context, id int64) error {
 	return nil
 }
 
-// SetMonitored toggles a series.
+// SetMonitored pauses or resumes a series (see Repo.SetMonitored: the flag is a gate).
 func (s *Service) SetMonitored(ctx context.Context, id int64, monitored bool) error {
 	return s.repo.SetMonitored(ctx, id, monitored)
+}
+
+// SetMonitorNewSeasons sets whether seasons new to the show are monitored.
+func (s *Service) SetMonitorNewSeasons(ctx context.Context, id int64, on bool) error {
+	return s.repo.SetMonitorNewSeasons(ctx, id, on)
 }
 
 // SetSeasonMonitored toggles a whole season and its episodes.

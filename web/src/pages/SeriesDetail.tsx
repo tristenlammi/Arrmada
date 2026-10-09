@@ -172,6 +172,11 @@ export function SeriesDetail() {
       </div>
 
       <div className="mx-auto w-full max-w-[1200px] px-4 pb-10 sm:px-6">
+        {!s.monitored && (
+          <div className="mt-2 rounded-lg px-3 py-2 text-[12px] text-ink-dim" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
+            Series paused — nothing is searched. Season and episode choices below are kept for when you resume.
+          </div>
+        )}
         <div className="mt-2 flex flex-col gap-3">
           {seasons.map((sn) => <SeasonBlock key={sn.id} series={s} season={sn} onChange={load} flash={flash} defaultOpen={false} fits={fits} />)}
         </div>
@@ -246,15 +251,24 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
           role="switch"
           aria-checked={series.monitored}
           disabled={busy !== null}
-          onClick={() => run("monitor", async () => { await api.setSeriesMonitored(series.id, !series.monitored); onChange(); })}
+          onClick={() => run("monitor", async () => { await api.setSeriesMonitored(series.id, !series.monitored); onChange(); flash(series.monitored ? "Paused — nothing is searched until you resume." : "Resumed."); })}
           className="inline-flex items-center gap-2 text-[12.5px] font-semibold disabled:opacity-50"
-          title={series.monitored ? "Monitored — click to stop" : "Not monitored — click to monitor"}
+          title={series.monitored ? "Monitored — click to pause. Season and episode choices are kept." : "Paused — nothing is searched. Click to resume."}
         >
           <span className="relative inline-block h-[22px] w-[38px] rounded-full transition-colors" style={{ background: series.monitored ? "var(--accent)" : "var(--line)" }}>
             <span className="absolute top-[3px] h-[16px] w-[16px] rounded-full bg-white transition-all" style={{ left: series.monitored ? "19px" : "3px" }} />
           </span>
-          <span style={{ color: series.monitored ? "var(--ink)" : "var(--ink-dim)" }}>{series.monitored ? "Monitored" : "Monitor"}</span>
+          <span style={{ color: series.monitored ? "var(--ink)" : "var(--ink-dim)" }}>{series.monitored ? "Monitored" : "Paused"}</span>
         </button>
+        <label className="inline-flex items-center gap-1.5 text-[12px] text-ink-dim" title="When a refresh finds a season the show didn't have, monitor it.">
+          <input
+            type="checkbox"
+            checked={!!series.monitor_new_seasons}
+            disabled={busy !== null}
+            onChange={(e) => { const on = e.target.checked; void run("monitor-new", async () => { await api.setSeriesMonitorNewSeasons(series.id, on); onChange(); }); }}
+          />
+          Monitor new seasons
+        </label>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("refresh", async () => { await api.refreshSeries(series.id); onChange(); flash("Refreshed metadata and rescanned disk."); })}>
           {busy === "refresh" ? "Refreshing…" : "Refresh & rescan"}
         </button>
@@ -395,7 +409,7 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
             <button onClick={() => setSearching(true)} title={`Search indexers for ${name}`} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Search</button>
           </>
         )}
-        <button onClick={async () => { await api.setSeasonMonitored(series.id, season.season_number, !season.monitored); onChange(); }} title="Monitor this whole season" className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: `1px solid ${season.monitored ? "var(--accent-line)" : "var(--line)"}`, color: season.monitored ? "var(--accent)" : "var(--ink-faint)" }}>
+        <button onClick={async () => { await api.setSeasonMonitored(series.id, season.season_number, !season.monitored); onChange(); }} title={series.monitored ? "Monitor this whole season" : "Series paused — nothing is searched. This choice applies when you resume."} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: `1px solid ${season.monitored ? "var(--accent-line)" : "var(--line)"}`, color: season.monitored ? "var(--accent)" : "var(--ink-faint)", opacity: series.monitored ? 1 : 0.5 }}>
           {season.monitored ? "Monitored" : "Unmonitored"}
         </button>
       </div>
@@ -473,7 +487,7 @@ function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep:
 
   return (
     <div className="relative flex items-center gap-3 px-4 py-2.5" style={{ borderBottom: "1px solid var(--line-soft)", opacity: ep.monitored ? 1 : 0.55 }}>
-      <button onClick={async () => { await api.setEpisodeMonitored(ep.id, !ep.monitored); onChange(); }} title={ep.monitored ? "Monitored — click to stop" : "Not monitored — click to monitor"} className="flex-none text-[13px]" style={{ color: ep.monitored ? "var(--accent)" : "var(--ink-faint)" }}>
+      <button onClick={async () => { await api.setEpisodeMonitored(ep.id, !ep.monitored); onChange(); }} title={!series.monitored ? "Series paused — nothing is searched. This choice applies when you resume." : ep.monitored ? "Monitored — click to stop" : "Not monitored — click to monitor"} className="flex-none text-[13px]" style={{ color: ep.monitored ? "var(--accent)" : "var(--ink-faint)", opacity: series.monitored ? 1 : 0.5 }}>
         {ep.monitored ? "◉" : "○"}
       </button>
       <span className="w-[64px] flex-none font-mono text-[11px] text-ink-faint">{sxe(ep)}</span>

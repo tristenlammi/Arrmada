@@ -25,21 +25,21 @@ func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const seriesCols = `id, tmdb_id, imdb_id, title, year, overview, poster_url, status, network,
 	monitored, quality_profile, extra_json, series_type, tvdb_id, added_at, numbering_source,
-	last_refreshed_at`
+	last_refreshed_at, monitor_new_seasons`
 
 func scanSeries(row interface{ Scan(...any) error }) (Series, error) {
 	var (
 		s         Series
-		mon       int
+		mon, mns  int
 		extraJSON string
 	)
 	err := row.Scan(&s.ID, &s.TMDBID, &s.IMDBID, &s.Title, &s.Year, &s.Overview, &s.PosterURL,
 		&s.Status, &s.Network, &mon, &s.QualityProfile, &extraJSON, &s.SeriesType, &s.TVDBID, &s.AddedAt, &s.NumberingSource,
-		&s.LastRefreshedAt)
+		&s.LastRefreshedAt, &mns)
 	if err != nil {
 		return Series{}, err
 	}
-	s.Monitored = mon != 0
+	s.Monitored, s.MonitorNewSeasons = mon != 0, mns != 0
 	if extraJSON != "" {
 		var ex SeriesExtra
 		if json.Unmarshal([]byte(extraJSON), &ex) == nil {
@@ -144,10 +144,10 @@ func (r *Repo) Create(ctx context.Context, s Series) (Series, error) {
 	}
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO series (tmdb_id, imdb_id, title, year, overview, poster_url, status, network,
-			monitored, quality_profile, extra_json, series_type, tvdb_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			monitored, quality_profile, extra_json, series_type, tvdb_id, monitor_new_seasons)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.TMDBID, s.IMDBID, s.Title, s.Year, s.Overview, s.PosterURL, s.Status, s.Network,
-		b2i(s.Monitored), s.QualityProfile, extraJSON, stype, s.TVDBID)
+		b2i(s.Monitored), s.QualityProfile, extraJSON, stype, s.TVDBID, b2i(s.MonitorNewSeasons))
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return Series{}, ErrExists
@@ -381,34 +381,72 @@ func (r *Repo) SeasonsFor(ctx context.Context, seriesID int64) ([]Season, error)
 	return seasons, nil
 }
 
-// SetMonitored toggles a series' monitored flag AND cascades it to the show's seasons
-// and episodes.
+// SetMonitored sets a series' monitored flag, which is a gate: off pauses the show (the
+// sweep, RSS and upgrades skip it) and leaves every season and episode choice as it is,
+// so resuming picks up exactly where the owner left off. It used to cascade both ways,
+// and pausing then resuming re-monitored seasons the owner had switched off.
 //
-// Without the cascade, flipping a show to monitored only updated the series row while
-// every episode stayed unmonitored — and the search only ever grabs episodes where
-// monitored = 1. A show would read "Monitored" in the UI and silently never grab
-// anything, which is especially misleading when monitoring shows in bulk.
-//
-// Enabling deliberately skips specials (season 0), matching how a series is added
-// (seasonsFromDetails monitors `monitored && !special`). Disabling covers everything —
-// nothing should be grabbed for a show you've switched off.
+// One case still cascades: turning on a show with no monitored regular episode — a
+// library-scanned show, added unmonitored — monitors every regular season and episode
+// and new seasons, or it would read "Monitored" and never grab anything. Specials stay
+// out of it.
 func (r *Repo) SetMonitored(ctx context.Context, id int64, monitored bool) error {
-	// season_number > 0 leaves specials alone when enabling; when disabling we want
-	// everything off, so the filter is dropped.
-	scope := ` AND season_number > 0`
-	if !monitored {
-		scope = ``
-	}
 	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE series SET monitored = ? WHERE id = ?`, b2i(monitored), id); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE seasons SET monitored = ? WHERE series_id = ?`+scope, b2i(monitored), id); err != nil {
+		if !monitored {
+			return nil
+		}
+		var one int
+		err := tx.QueryRowContext(ctx,
+			`SELECT 1 FROM episodes WHERE series_id = ? AND season_number > 0 AND monitored = 1 LIMIT 1`, id).Scan(&one)
+		if err == nil {
+			return nil // the owner's choices stand
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE episodes SET monitored = ? WHERE series_id = ?`+scope, b2i(monitored), id)
+		if _, err := tx.ExecContext(ctx, `UPDATE seasons SET monitored = 1 WHERE series_id = ? AND season_number > 0`, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE episodes SET monitored = 1 WHERE series_id = ? AND season_number > 0`, id); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE series SET monitor_new_seasons = 1 WHERE id = ?`, id)
 		return err
 	})
+}
+
+// SetMonitorNewSeasons sets whether a season new to the show is monitored when a refresh
+// adds it.
+func (r *Repo) SetMonitorNewSeasons(ctx context.Context, id int64, on bool) error {
+	res, err := r.db.ExecContext(ctx, `UPDATE series SET monitor_new_seasons = ? WHERE id = ?`, b2i(on), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SeasonMonitorFlags returns each stored season's monitored flag by season number.
+func (r *Repo) SeasonMonitorFlags(ctx context.Context, seriesID int64) (map[int]bool, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT season_number, monitored FROM seasons WHERE series_id = ?`, seriesID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int]bool{}
+	for rows.Next() {
+		var n, mon int
+		if err := rows.Scan(&n, &mon); err != nil {
+			return nil, err
+		}
+		out[n] = mon != 0
+	}
+	return out, rows.Err()
 }
 
 // SeriesMeta is the show-level metadata a refresh brings up to date. A zero value means

@@ -89,7 +89,8 @@ export function Series() {
     setBulkBusy(true);
     try {
       await Promise.all([...selected].map((id) => api.setSeriesMonitored(id, mon)));
-      flash(`${selected.size} ${mon ? "monitored" : "unmonitored"}.`);
+      // The switch is a pause gate: season and episode choices are kept either way.
+      flash(`${selected.size} ${mon ? "resumed" : "paused"}.`);
       clearSelect();
       refresh();
     } finally { setBulkBusy(false); }
@@ -231,8 +232,8 @@ export function Series() {
             <button onClick={() => setSelected(new Set(filtered.map((s) => s.id)))} className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink)" }}>Select all ({filtered.length})</button>
             <button onClick={clearSelect} disabled={selected.size === 0} className="rounded-lg px-2.5 py-1.5 text-[11.5px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Clear</button>
             <span className="mx-1 h-5 w-px" style={{ background: "var(--line)" }} />
-            <button onClick={() => bulkMonitor(true)} disabled={selected.size === 0 || bulkBusy} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>Monitor</button>
-            <button onClick={() => bulkMonitor(false)} disabled={selected.size === 0 || bulkBusy} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Unmonitor</button>
+            <button onClick={() => bulkMonitor(true)} disabled={selected.size === 0 || bulkBusy} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }} title="Resume searching. Season and episode choices are kept; a show with nothing monitored gets every regular season.">Monitor</button>
+            <button onClick={() => bulkMonitor(false)} disabled={selected.size === 0 || bulkBusy} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }} title="Pause: nothing is searched. Season and episode choices are kept for when you resume.">Unmonitor</button>
             <span className="mx-1 h-5 w-px" style={{ background: "var(--line)" }} />
             <select
               defaultValue=""

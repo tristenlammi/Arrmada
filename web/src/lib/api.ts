@@ -1021,7 +1021,8 @@ export interface Series {
   poster_url?: string;
   status?: string;
   network?: string;
-  monitored: boolean;
+  monitored: boolean; // the pause gate: off means nothing is searched, choices kept
+  monitor_new_seasons?: boolean; // a season new on refresh is monitored
   quality_profile: string;
   series_type?: string; // "standard" | "anime"
   // Whose listing the stored episode numbering follows: "tvdb" | "tvmaze" | "tmdb", or ""
@@ -1864,8 +1865,11 @@ export const api = {
     req<JobRef>(`/api/v1/series/${id}/numbering/apply`, { method: "POST", body: JSON.stringify({ plan_hash }) }),
   dismissSeriesNumbering: (id: number) =>
     req<void>(`/api/v1/series/${id}/numbering/pending`, { method: "DELETE" }),
+  // The series switch is a pause gate: season and episode choices are kept either way.
   setSeriesMonitored: (id: number, monitored: boolean) =>
-    req<{ monitored: boolean }>(`/api/v1/series/${id}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
+    req<{ monitored: boolean; monitor_new_seasons: boolean }>(`/api/v1/series/${id}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
+  setSeriesMonitorNewSeasons: (id: number, monitor_new_seasons: boolean) =>
+    req<{ monitored: boolean; monitor_new_seasons: boolean }>(`/api/v1/series/${id}/monitor`, { method: "PUT", body: JSON.stringify({ monitor_new_seasons }) }),
   setSeriesProfile: (id: number, quality_profile: string) =>
     req<{ quality_profile: string }>(`/api/v1/series/${id}/profile`, { method: "PUT", body: JSON.stringify({ quality_profile }) }),
   setSeriesType: (id: number, series_type: string) =>

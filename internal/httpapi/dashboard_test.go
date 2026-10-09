@@ -57,6 +57,36 @@ func TestLibraryCountsQueryTheRealSchema(t *testing.T) {
 	}
 }
 
+// "Episodes missing" is what the searcher is after: not a paused show's episodes, not an
+// unmonitored season's, not ones that haven't aired.
+func TestDashboardMissingIgnoresPausedShows(t *testing.T) {
+	a := dashAPI(t)
+	db := a.deps.Store.DB()
+	ctx := context.Background()
+	for _, q := range []string{
+		`INSERT INTO series (id, tmdb_id, title, monitored) VALUES (1, 1, 'Running', 1), (2, 2, 'Paused', 0)`,
+		`INSERT INTO seasons (series_id, season_number, monitored) VALUES (1, 1, 1), (1, 2, 0), (1, 0, 1), (2, 1, 1)`,
+		// Counted: S01E01 (aired, monitored, no file).
+		`INSERT INTO episodes (series_id, season_number, episode_number, air_date, monitored, has_file) VALUES (1, 1, 1, '2020-01-01', 1, 0)`,
+		// Not counted: has a file / unaired / no air date / unmonitored episode.
+		`INSERT INTO episodes (series_id, season_number, episode_number, air_date, monitored, has_file) VALUES (1, 1, 2, '2020-01-01', 1, 1)`,
+		`INSERT INTO episodes (series_id, season_number, episode_number, air_date, monitored, has_file) VALUES (1, 1, 3, '2999-01-01', 1, 0)`,
+		`INSERT INTO episodes (series_id, season_number, episode_number, air_date, monitored, has_file) VALUES (1, 1, 4, '', 1, 0)`,
+		`INSERT INTO episodes (series_id, season_number, episode_number, air_date, monitored, has_file) VALUES (1, 1, 5, '2020-01-01', 0, 0)`,
+		// Not counted: an unmonitored season, a special, a paused show.
+		`INSERT INTO episodes (series_id, season_number, episode_number, air_date, monitored, has_file) VALUES (1, 2, 1, '2020-01-01', 1, 0)`,
+		`INSERT INTO episodes (series_id, season_number, episode_number, air_date, monitored, has_file) VALUES (1, 0, 1, '2020-01-01', 1, 0)`,
+		`INSERT INTO episodes (series_id, season_number, episode_number, air_date, monitored, has_file) VALUES (2, 1, 1, '2020-01-01', 1, 0)`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	if lc := a.libraryCounts(ctx); lc.EpisodesMissing != 1 {
+		t.Errorf("episodes missing = %d, want 1", lc.EpisodesMissing)
+	}
+}
+
 // The activity feed is a three-way UNION with joins; a typo in it would show as an
 // empty panel rather than an error, so assert it actually returns rows.
 func TestRecentActivityUnionsEveryModule(t *testing.T) {
