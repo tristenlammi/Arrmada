@@ -90,6 +90,12 @@ func NewService(db *sql.DB, log *slog.Logger, fs *flaresolverr.Client) *Service 
 			s.log.Info("indexer: refreshed MyAnonaMouse session", "id", id)
 		}
 	})
+	// A TorrentLeech login keeps going after the search that started it gives up; when it
+	// ends with nobody waiting, its outcome is recorded here so the row shows it. It
+	// doesn't move the backoff: the searcher paces its own logins.
+	s.registry.SetLoginObserver(func(idx Indexer, err error) {
+		s.record(context.Background(), idx, err, 0, false)
+	})
 	return s
 }
 
