@@ -114,8 +114,12 @@ func TestTransactionsGoThroughWithTx(t *testing.T) {
 	}
 }
 
-// settingsSQL matches a statement that reads or writes the settings table.
-var settingsSQL = regexp.MustCompile(`(?i)\b(FROM|INTO|UPDATE|JOIN)\s+settings\b`)
+// settingsSQL matches a statement that reads or writes the settings table; sqlVerb keeps
+// prose such as "couldn't update settings" in a message from counting as SQL.
+var (
+	settingsSQL = regexp.MustCompile(`(?i)\b(FROM|INTO|JOIN)\s+settings\b|\bUPDATE\s+settings\s+SET\b`)
+	sqlVerb     = regexp.MustCompile(`(?i)\b(SELECT|INSERT|UPDATE|DELETE|REPLACE)\b`)
+)
 
 // TestSettingsOnlyThroughService: settings are served from memory by settings.Service,
 // which writes them through to the table. SQL that reads the table elsewhere can see a
@@ -133,7 +137,7 @@ func TestSettingsOnlyThroughService(t *testing.T) {
 		for _, f := range files {
 			ast.Inspect(f, func(n ast.Node) bool {
 				lit, ok := n.(*ast.BasicLit)
-				if !ok || lit.Kind != token.STRING || !settingsSQL.MatchString(lit.Value) {
+				if !ok || lit.Kind != token.STRING || !settingsSQL.MatchString(lit.Value) || !sqlVerb.MatchString(lit.Value) {
 					return true
 				}
 				pos := fset.Position(lit.Pos())
