@@ -51,6 +51,8 @@ type Service struct {
 	probe   func(ctx context.Context, path string) (*mediaInfo, error)
 	extract func(ctx context.Context, path string, picks []extractPick) error
 	ai      aiRunner
+	// ffprobeRun is probeCached's ffprobe call (probeSubs when nil).
+	ffprobeRun func(ctx context.Context, ffprobe, path string) (*mediaInfo, error)
 
 	mu        sync.Mutex
 	jobs      []*Job           // recent subtitle-ensure jobs (newest first), for the Queue tab
@@ -349,7 +351,13 @@ func (s *Service) grabOne(ctx context.Context, imdb, title string, year, season,
 	if err != nil {
 		return false, err
 	}
-	dst := sidecarPath(mediaPath, lang)
+	// A hearing-impaired upload is still the full subtitle; the ".sdh" qualifier lets Plex
+	// label it as such.
+	variant := VariantFull
+	if results[0].HearingImpaired {
+		variant = VariantSDH
+	}
+	dst := sidecarPathV(mediaPath, lang, variant)
 	if err := os.WriteFile(dst, data, 0o644); err != nil {
 		return false, err
 	}

@@ -146,10 +146,8 @@ func (s *Service) aiCanMake(audioLangs []string, lang string) bool {
 // It is only the starting point — a rung that comes up empty falls through to the next one, so
 // "download" means "download, then AI" (LangStatus.Fallback says whether AI can actually act).
 func bestSource(embedded []SubTrack, lang string, canDownload bool) string {
-	for _, t := range embedded {
-		if t.Text && langMatches(t.Lang, lang) {
-			return "extract"
-		}
+	if _, ok := pickFullTrack(embedded, lang); ok {
+		return "extract"
 	}
 	// An embedded IMAGE track (PGS/VobSub) would be the next-best source — but OCR isn't
 	// implemented, and routing to it sent every PGS-only file to "pending" without ever
@@ -160,6 +158,44 @@ func bestSource(embedded []SubTrack, lang string, canDownload bool) string {
 		return "download"
 	}
 	return "ai"
+}
+
+// pickFullTrack chooses the embedded text track to extract as a language's full subtitle:
+// a plain track first, then an SDH one (full dialogue plus sound cues), with the track
+// flagged default winning a tie and stream order after that. A forced track is never
+// picked — it only carries the foreign-language lines — so a language whose only text
+// track is forced falls through to download or AI.
+func pickFullTrack(subs []SubTrack, lang string) (SubTrack, bool) {
+	best, found := SubTrack{}, false
+	rank := func(t SubTrack) int {
+		r := 0
+		if t.SDH {
+			r += 2
+		}
+		if !t.Default {
+			r++
+		}
+		return r
+	}
+	for _, t := range subs {
+		if !t.Text || t.Forced || !langMatches(t.Lang, lang) {
+			continue
+		}
+		if !found || rank(t) < rank(best) {
+			best, found = t, true
+		}
+	}
+	return best, found
+}
+
+// pickForcedTrack is the first forced text track in a language, if any.
+func pickForcedTrack(subs []SubTrack, lang string) (SubTrack, bool) {
+	for _, t := range subs {
+		if t.Text && t.Forced && langMatches(t.Lang, lang) {
+			return t, true
+		}
+	}
+	return SubTrack{}, false
 }
 
 // twoToThree maps common ISO 639-1 codes to 639-2/T so a wanted "en" matches an "eng" track.

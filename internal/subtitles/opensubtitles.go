@@ -27,6 +27,7 @@ type OpenSubtitles struct {
 	usernameFn func() string
 	passwordFn func() string
 	ua         string
+	baseURL    string // osBaseURL when empty; tests point it at a local server
 
 	mu    sync.Mutex
 	token string // cached bearer token from /login
@@ -115,7 +116,11 @@ func (o *OpenSubtitles) CanDownload() bool {
 }
 
 func (o *OpenSubtitles) req(ctx context.Context, method, path string, q url.Values, body any, bearer string) (*http.Response, error) {
-	u := osBaseURL + path
+	base := o.baseURL
+	if base == "" {
+		base = osBaseURL
+	}
+	u := base + path
 	if len(q) > 0 {
 		u += "?" + q.Encode()
 	}
@@ -200,6 +205,15 @@ func (o *OpenSubtitles) Search(ctx context.Context, sr SearchRequest) ([]Subtitl
 	if sr.MovieHash != "" {
 		q.Set("moviehash", sr.MovieHash)
 	}
+	// Forced (foreign-parts-only) uploads aren't the full subtitle, and AI-translated ones
+	// are worse than our own whisper run. The API already leaves out machine translations
+	// by default; ask it to leave these out too, and filter again below in case it doesn't.
+	foreign := sr.ForeignParts
+	if foreign != "only" {
+		foreign = "exclude"
+	}
+	q.Set("foreign_parts_only", foreign)
+	q.Set("ai_translated", "exclude")
 	resp, err := o.req(ctx, http.MethodGet, "/subtitles", q, nil, "")
 	if err != nil {
 		return nil, err
@@ -217,6 +231,9 @@ func (o *OpenSubtitles) Search(ctx context.Context, sr SearchRequest) ([]Subtitl
 				DownloadCount   int    `json:"download_count"`
 				HearingImpaired bool   `json:"hearing_impaired"`
 				HashMatch       bool   `json:"moviehash_match"`
+				ForeignParts    bool   `json:"foreign_parts_only"`
+				AITranslated    bool   `json:"ai_translated"`
+				MachineTrans    bool   `json:"machine_translated"`
 				Files           []struct {
 					FileID int `json:"file_id"`
 				} `json:"files"`
@@ -229,6 +246,9 @@ func (o *OpenSubtitles) Search(ctx context.Context, sr SearchRequest) ([]Subtitl
 	var out []SubtitleResult
 	for _, d := range payload.Data {
 		if len(d.Attributes.Files) == 0 {
+			continue
+		}
+		if d.Attributes.AITranslated || d.Attributes.MachineTrans || d.Attributes.ForeignParts != (foreign == "only") {
 			continue
 		}
 		out = append(out, SubtitleResult{

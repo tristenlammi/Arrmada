@@ -34,9 +34,10 @@ type langOutcome struct {
 
 // extractPick is one embedded text track to pull out to a sidecar.
 type extractPick struct {
-	Index int    // 0:s:N
-	Lang  string // the wanted language it stands in for
-	Path  string // where the SRT goes
+	Index   int    // 0:s:N
+	Lang    string // the wanted language it stands in for
+	Variant string // VariantFull | VariantSDH (the language's full subtitle) | VariantForced (an extra)
+	Path    string // where the SRT goes
 }
 
 // aiRunner is the local AI (whisper) as process() sees it. *whisperGen is the real one;
@@ -185,24 +186,41 @@ func without(langs []string, done map[string]bool) []string {
 	return out
 }
 
-// rungExtract pulls an embedded text track out for each language that has one. A track
-// that extracts to nothing (an empty or broken stream) counts as not produced, so the
-// language falls through to the next rung. Returns the languages still missing.
+// rungExtract pulls an embedded text track out for each language that has a full (plain or
+// SDH) one. A track that extracts to nothing (an empty or broken stream) counts as not
+// produced, so the language falls through to the next rung. Returns the languages still
+// missing.
+//
+// While ffmpeg is reading the file anyway, each wanted language's forced track comes out
+// too, as "<base>.<lang>.forced.srt", so Plex keeps showing the foreign-dialogue lines.
+// It is an extra: it never counts as the language's subtitle.
 func (s *Service) rungExtract(ctx context.Context, job *Job, ref fileRef, mi *mediaInfo, langs []string) ([]string, []langOutcome) {
 	if ctx.Err() != nil || mi == nil || len(langs) == 0 {
 		return langs, nil
 	}
 	var picks []extractPick
 	for _, l := range langs {
-		for _, t := range mi.Subs {
-			if t.Text && langMatches(t.Lang, l) {
-				picks = append(picks, extractPick{Index: t.Index, Lang: l, Path: sidecarPath(ref.Path, strings.ToLower(l))})
-				break
+		if t, ok := pickFullTrack(mi.Subs, l); ok {
+			v := VariantFull
+			if t.SDH {
+				v = VariantSDH
 			}
+			picks = append(picks, extractPick{Index: t.Index, Lang: l, Variant: v, Path: sidecarPathV(ref.Path, strings.ToLower(l), v)})
 		}
 	}
 	if len(picks) == 0 {
 		return langs, nil
+	}
+	for _, l := range s.languages(ctx) {
+		t, ok := pickForcedTrack(mi.Subs, l)
+		if !ok {
+			continue
+		}
+		p := sidecarPathV(ref.Path, strings.ToLower(l), VariantForced)
+		if _, err := os.Stat(p); err == nil {
+			continue // already there (from the release, or an earlier run)
+		}
+		picks = append(picks, extractPick{Index: t.Index, Lang: l, Variant: VariantForced, Path: p})
 	}
 	s.update(job, func(j *Job) { j.Stage = "extracting embedded subtitles" })
 	err := s.runExtract(ctx, ref.Path, picks)
@@ -216,6 +234,12 @@ func (s *Service) rungExtract(ctx context.Context, job *Job, ref fileRef, mi *me
 	done := map[string]bool{}
 	for _, p := range picks {
 		fi, serr := os.Stat(p.Path)
+		if p.Variant == VariantForced {
+			if serr == nil && fi.Size() == 0 {
+				_ = os.Remove(p.Path)
+			}
+			continue // an extra, not the language's outcome
+		}
 		switch {
 		case serr != nil:
 			outs = append(outs, langOutcome{p.Lang, "extract", "error", "extract failed"})
