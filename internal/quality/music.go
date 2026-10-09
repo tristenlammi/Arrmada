@@ -6,12 +6,11 @@ package quality
 // "which of these do I want" map. Music is not like that: MP3-128 and MP3-320 are two and a
 // half times apart, and FLAC is categorically above both. The tiers are ordered.
 //
-// They're still expressed as format_scores rather than a separate ladder field, and that
-// turns out to be exactly right: score the tiers in rank order and the existing engine picks
-// the best available, refuses anything scoring 0 or below, and — because nothing can score
-// higher than the tier you already hold — stops upgrading on its own once you reach the top
-// of your ladder. That is the "upgrade until FLAC, then stop" behaviour other music managers
-// need a dedicated cutoff setting for.
+// They're still expressed as format_scores rather than a separate ladder field: score the
+// tiers in rank order and the existing engine picks the best tier available at grab time and
+// refuses anything scoring 0 or below. There is no music upgrade sweep yet — an album that
+// is complete isn't searched again — so the ladder decides the first grab only. When a sweep
+// is built, the same scores give it a natural stop: nothing outranks the top tier you kept.
 //
 // The names match what trackers actually print, so a profile reads like the release list.
 
@@ -54,7 +53,7 @@ func MusicPresets() []MusicPreset {
 		},
 		{
 			Name:        "Lossless, or the best MP3",
-			Description: "Prefers FLAC; takes MP3 320 or V0 when there's no lossless release, and upgrades later if one appears.",
+			Description: "Prefers FLAC; takes MP3 320 or V0 when there's no lossless release.",
 			FormatScores: map[string]int{
 				"FLAC-24": 130, "FLAC": 120, "ALAC": 110, "WAV": 100,
 				"MP3-320": 60, "MP3-V0": 55, "AAC-256": 45, "MP3-256": 40, "MP3-V2": 30,
