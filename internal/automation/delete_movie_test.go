@@ -19,7 +19,11 @@ import (
 func deleteMovieCoord(t *testing.T) (*Coordinator, *[]removeCall, int64, int64, <-chan eventbus.Event) {
 	t.Helper()
 	c, calls := removeCoord(t)
-	c.bus = eventbus.New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	c.bus = eventbus.New(log)
+	// movie.deleted comes from the movies service (every delete path announces it), so it
+	// shares the coordinator's bus.
+	c.movies = movies.NewService(c.db, nil, nil, t.TempDir(), "", c.bus, log)
 	events, cancel := c.bus.Subscribe("movie.deleted")
 	t.Cleanup(cancel)
 	ctx := context.Background()

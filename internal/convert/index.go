@@ -4,12 +4,14 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
@@ -168,6 +170,23 @@ func (ix *libraryIndex) forget(ctx context.Context, job *Job) {
 	}
 }
 
+// ForgetMovie drops every Convert library row for a movie — its files were deleted, or the
+// movie itself was — so it leaves the Convert pages now rather than at the nightly sweep.
+func (s *Service) ForgetMovie(ctx context.Context, movieID int64) error {
+	if s.index == nil {
+		return nil
+	}
+	res, err := s.index.db.ExecContext(ctx,
+		`DELETE FROM convert_library WHERE media_type = 'movie' AND movie_id = ?`, movieID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		s.index.gen.Add(1)
+	}
+	return nil
+}
+
 // IndexSeries reindexes one series' episodes. Called after an import so the Convert
 // library reflects new files immediately, without re-walking the whole library.
 func (s *Service) IndexSeries(ctx context.Context, seriesID int64) error {
@@ -225,17 +244,25 @@ func (s *Service) IndexSeries(ctx context.Context, seriesID int64) error {
 	return nil
 }
 
-// IndexMovie reindexes one movie.
+// IndexMovie reindexes one movie from its current record: the file it has now replaces
+// any row for a path it no longer has, and a movie with no file — or no longer in the
+// library — is forgotten. It's what every movie file change (import, rename, delete)
+// runs, so it must be safe to run again for the same state.
 func (s *Service) IndexMovie(ctx context.Context, movieID int64) error {
 	if s.movies == nil || s.index == nil {
 		return nil
 	}
 	m, err := s.movies.Get(ctx, movieID)
+	if errors.Is(err, movies.ErrNotFound) {
+		return s.ForgetMovie(ctx, movieID)
+	}
 	if err != nil {
 		return err
 	}
 	if !m.HasFile || m.MovieFilePath == "" {
-		return nil
+		// Its file was deleted: a lingering row would keep listing it as convertible
+		// (and in the Cutoff view) until the nightly sweep.
+		return s.ForgetMovie(ctx, movieID)
 	}
 	row := indexRow{
 		Path: m.MovieFilePath, MediaType: "movie", MovieID: m.ID,

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/movies"
 )
 
 // librarySnapshot is the last full pass over the library's subtitle coverage: the flat
@@ -164,6 +166,11 @@ func (s *Service) refreshSnapshot(ctx context.Context, job *Job) {
 	if err != nil || !m.HasFile || m.MovieFilePath == "" {
 		return
 	}
+	s.patchMovie(ctx, m, langs)
+}
+
+// patchMovie recomputes one movie's entry in the snapshot from its current file.
+func (s *Service) patchMovie(ctx context.Context, m movies.Movie, langs []string) {
 	fs := FileSubs{Kind: "movie", MovieID: m.ID, Title: m.Title, Year: m.Year, PosterURL: m.PosterURL, Path: m.MovieFilePath}
 	s.fillCoverage(ctx, &fs, langs, s.provider != nil && s.provider.CanDownload())
 	s.snap.mu.Lock()
@@ -175,6 +182,19 @@ func (s *Service) refreshSnapshot(ctx context.Context, job *Job) {
 		}
 	}
 	s.snap.movies = append(s.snap.movies, fs)
+}
+
+// dropMovie removes a movie's entry from the snapshot.
+func (s *Service) dropMovie(movieID int64) {
+	s.snap.mu.Lock()
+	defer s.snap.mu.Unlock()
+	kept := s.snap.movies[:0]
+	for _, fs := range s.snap.movies {
+		if fs.MovieID != movieID {
+			kept = append(kept, fs)
+		}
+	}
+	s.snap.movies = kept
 }
 
 // groupFor builds one show's roll-up: how many of its episodes on disk have every kept

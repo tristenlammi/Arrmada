@@ -43,6 +43,15 @@ func (c importConsumers) register(box *outbox.Outbox) {
 		return c.requests.NotifyMovieReady(ctx, p.MovieID)
 	}))
 
+	// Renames and deletes: both indexes follow the movie's current record — a new path
+	// replaces the old one, a movie with no file (or no longer in the library) drops out.
+	box.Register(outbox.TopicMovieChanged, "convert", decode(func(ctx context.Context, p outbox.MovieChanged) error {
+		return c.convert.IndexMovie(ctx, p.MovieID)
+	}))
+	box.Register(outbox.TopicMovieChanged, "subtitles", decode(func(ctx context.Context, p outbox.MovieChanged) error {
+		return c.subtitles.OnMovieChanged(ctx, p.MovieID)
+	}))
+
 	box.Register(outbox.TopicSeriesImported, "convert", decode(func(ctx context.Context, p outbox.SeriesImported) error {
 		return gone(c.convert.IndexSeries(ctx, p.SeriesID), series.ErrNotFound)
 	}))

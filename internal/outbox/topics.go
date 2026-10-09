@@ -6,6 +6,9 @@ package outbox
 const (
 	// TopicMovieImported: a movie file was imported (automatic, manual or from Review).
 	TopicMovieImported = "movie.imported"
+	// TopicMovieChanged: a movie's files changed some other way — renamed, deleted, the
+	// whole movie removed — so indexes that list its files must catch up.
+	TopicMovieChanged = "movie.changed"
 	// TopicSeriesImported: episodes of a show were imported.
 	TopicSeriesImported = "series.imported"
 	// TopicBookImported: a book edition or audiobook version was imported.
@@ -18,6 +21,23 @@ type MovieImported struct {
 	VersionID int64  `json:"version_id"` // 0 = the default track
 	Path      string `json:"path"`
 	Upgrade   bool   `json:"upgrade"` // it replaced an older file
+}
+
+// What a TopicMovieChanged row is about.
+const (
+	ChangeRenamed     = "renamed"
+	ChangeFileDeleted = "file_deleted"
+	ChangeDeleted     = "deleted"  // the movie itself is gone
+	ChangeDetected    = "detected" // a rescan found a different file on disk
+)
+
+// MovieChanged is TopicMovieChanged's payload.
+type MovieChanged struct {
+	MovieID   int64  `json:"movie_id"`
+	VersionID int64  `json:"version_id"`
+	Change    string `json:"change"`
+	OldPath   string `json:"old_path,omitempty"`
+	Path      string `json:"path,omitempty"`
 }
 
 // Episode is one (season, episode) an import placed.
