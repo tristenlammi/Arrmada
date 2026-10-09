@@ -24,6 +24,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/listening"
+	"github.com/tristenlammi/arrmada/internal/netutil"
 	"github.com/tristenlammi/arrmada/internal/settings"
 )
 
@@ -269,7 +270,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	ip := clientIP(r)
+	ip := netutil.ClientIP(r)
 	if !s.limiter.allow("ip:" + ip) {
 		writeError(w, http.StatusTooManyRequests, "Too many login attempts, try again in a minute")
 		return
@@ -387,29 +388,6 @@ func readJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 func itoa(n int64) string { return strconv.FormatInt(n, 10) }
-
-// clientIP is the address a request really came from. The forwarded-address headers a
-// proxy adds (Cloudflare's Cf-Connecting-Ip, X-Forwarded-For) are only believed when the
-// request reached us from a local address — a Cloudflare tunnel or reverse proxy on the
-// same machine or network. From anywhere else they're just text an attacker can set, and
-// trusting them would let each login attempt claim a fresh address and dodge the limit.
-func clientIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	peer := net.ParseIP(host)
-	if peer == nil || !(peer.IsLoopback() || peer.IsPrivate()) {
-		return host
-	}
-	if v := strings.TrimSpace(r.Header.Get("Cf-Connecting-Ip")); v != "" {
-		return v
-	}
-	if v := r.Header.Get("X-Forwarded-For"); v != "" {
-		return strings.TrimSpace(strings.Split(v, ",")[0])
-	}
-	return host
-}
 
 // clientName makes a short label from the app's User-Agent ("Lissen/1.8 …" → "Lissen").
 func clientName(r *http.Request) string {

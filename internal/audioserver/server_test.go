@@ -21,6 +21,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/listening"
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/netutil"
 	"github.com/tristenlammi/arrmada/internal/settings"
 	"github.com/tristenlammi/arrmada/internal/store"
 )
@@ -424,7 +425,7 @@ func TestClientIP(t *testing.T) {
 		if c.cf != "" {
 			r.Header.Set("Cf-Connecting-Ip", c.cf)
 		}
-		if got := clientIP(r); got != c.want {
+		if got := netutil.ClientIP(r); got != c.want {
 			t.Errorf("clientIP(%s, cf=%q) = %s, want %s", c.remote, c.cf, got, c.want)
 		}
 	}
