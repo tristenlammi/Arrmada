@@ -313,7 +313,7 @@ _Read-then-write transactions stop hitting SQLITE_BUSY. An unreadable blocklist 
 _Convert and Subtitles reindexing, requester ready notifications and the audiobook catalogue refresh survive restarts and panics, and also run for review and manual imports. Movie and series delete and replace behaviour (recycle on, off and failing) is pinned by tests._
 
 <a id="be-06"></a>
-- [ ] **BE-06 · Durable outbox for import side effects (Convert/Subtitles reindex, request-ready, audiobook catalogue); bus reserved for UI and admin alerts** — `P2` · `M` · Phase 3
+- [x] **BE-06 · Durable outbox for import side effects (Convert/Subtitles reindex, request-ready, audiobook catalogue); bus reserved for UI and admin alerts** — `P2` · `M` · Phase 3
   - **Problem:** After an import, the side effects ride the lossy bus or an in-process hook:
 - Convert IndexMovie and Subtitles OnMovieImported (the main.go:523-546 subscriber)
 - the requester 'ready' notifier (requests/usernotify.go:115-148)
@@ -391,7 +391,7 @@ A dropped event means Convert never sees a same-path upgrade, because the daily 
 _Search, Scan and Import clicks are deduplicated, cancellable on shutdown and recorded. The buttons report what actually happened. Scheduled tasks have persisted last-run, next-run and error state, plus a Run-now API for the System Tasks page._
 
 <a id="be-07"></a>
-- [ ] **BE-07 · Job runner core: jobs table, single-flight per (kind,target), class limits, progress, cancellation, staff API** — `P2` · `M` · Phase 3
+- [x] **BE-07 · Job runner core: jobs table, single-flight per (kind,target), class limits, progress, cancellation, staff API** — `P2` · `M` · Phase 3
   - **Problem:** Background work leaves no record. Nobody can see what is running, what last failed or why. Two clicks on Search, or a click during the 5-minute sweep, run concurrent searches for the same movie. Ad-hoc guards stand in for single-flight in five places, each with its own status shape: api.refreshAll, api.musicScan, Insights.TryStartImport, the bookSweep status struct and the books upgrade status struct.
   - **Approach:** 1) Migration (next free number, e.g. 00NN_jobs.sql):
        ```sql
@@ -434,7 +434,7 @@ _Search, Scan and Import clicks are deduplicated, cancellable on shutdown and re
   - **Risk:** Don't route the scheduler's 30 s tasks through the jobs table (BE-08 keeps them out), or it grows by thousands of rows a day. The module-internal queues stay as they are: subtitles ensure-jobs in subtitles/jobs.go and the convert runner. The name overlap is conceptual only.
   - **Resolves:** backend-9
 <a id="be-08"></a>
-- [ ] **BE-08 · Scheduler on the runner: persisted task state, Run-now with single-flight, tasks API** — `P2` · `S` · Phase 3
+- [x] **BE-08 · Scheduler on the runner: persisted task state, Run-now with single-flight, tasks API** — `P2` · `S` · Phase 3
   - **Problem:** The scheduler (scheduler.go) logs the outcome of its ~25 recurring tasks and keeps nothing. A Tasks page can't show last or next run, duration or last error. A run can't be triggered on demand without risking overlap with the ticker run.
   - **Approach:** 1) scheduler.go:
        - `SetExecutor(func(ctx, name, trigger string, fn TaskFunc) error)`. The default is safego.Call.
@@ -462,7 +462,7 @@ _Search, Scan and Import clicks are deduplicated, cancellable on shutdown and re
   - **Risk:** Low. A task that never finishes (a hung network call) blocks its own ticks. That is the same as today, but it's now visible as running=true with a start time. A per-task timeout is a later option.
   - **Resolves:** backend-9
 <a id="be-09"></a>
-- [ ] **BE-09 · Move HTTP- and request-triggered background work onto the job runner; per-item search claims; one media-backfill job** — `P2` · `M` · Phase 3
+- [x] **BE-09 · Move HTTP- and request-triggered background work onto the job runner; per-item search claims; one media-backfill job** — `P2` · `M` · Phase 3
   - **Problem:** Searches, regrabs, scans, imports and sweeps start from handlers and from request approval with no record, no single-flight and no way to follow the outcome. Five bespoke guards and status machines duplicate single-flight:
 - api.refreshAll
 - api.musicScan
@@ -520,7 +520,7 @@ handleListMovies spawns one EnsureMedia goroutine per stale movie on every 4 s p
   - **Risk:** The UIs that poll the book sweep and upgrade status endpoints must keep working, so keep their shapes and test them. Class limits (indexer-search 2) can queue a burst of 'search on add' from an author import. That is intended, and the queued jobs are visible.
   - **Resolves:** backend-9
 <a id="be-10"></a>
-- [ ] **BE-10 · Search, Scan and Import buttons report what actually happened (SearchOutcome + useJob)** — `P2` · `M` · Phase 3
+- [x] **BE-10 · Search, Scan and Import buttons report what actually happened (SearchOutcome + useJob)** — `P2` · `M` · Phase 3
   - **Problem:** handleSearchMovie, handleSearchSeries and handleSearchBook return 202 'searching'. Success, failure or 'nothing found' goes only to the log (movies.go:118-132). Users click Search and never learn whether anything was grabbed or why not. Library scans behave the same way.
   - **Approach:** 1) automation:
        - SearchMovie returns `(SearchOutcome, error)`, where `SearchOutcome{Searched bool; Returned, Matching, Usable, Grabbed int; GrabbedTitles []string; Reason string}`. Reason is one of nothing-wanted, no-releases, none-for-this-title, all-blocklisted-or-below-profile, grabbed or already-searching. searchAndGrab already computes these counts at coordinator.go:541-575.

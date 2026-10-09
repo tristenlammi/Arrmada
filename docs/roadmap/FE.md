@@ -350,7 +350,7 @@ Two latent bugs would bite as soon as the bundle is split (FE-06):
 _Requesters download only their own pages (first load ≤350 KB raw / ≤110 KB br, enforced at build time). Hidden tabs make no periodic API calls, and polls never overlap._
 
 <a id="fe-06"></a>
-- [ ] **FE-06 · Split the bundle by route so requesters download only their own pages, with a size budget** — `P2` · `M` · Phase 3
+- [x] **FE-06 · Split the bundle by route so requesters download only their own pages, with a size budget** — `P2` · `M` · Phase 3
   - **Problem:** App.tsx statically imports all 30 pages, and there is no lazy() or dynamic import anywhere. Every requester downloads Quality (1,475 lines), Convert, Insights, Settings, Subtitles and every other admin page in one 915 KB file. That includes external requesters limited to Discover, Books and Audiobooks.
   - **Approach:** 1) web/src/lib/lazyPage.ts
     - lazyPage(() => import('./pages/Quality'), 'Quality') maps the named export to default for React.lazy.
@@ -386,7 +386,7 @@ _Requesters download only their own pages (first load ≤350 KB raw / ≤110 KB 
   - **Risk:** Pages use named exports, so every lazy() needs the mapping helper. Expect a brief skeleton on the first visit to each page; the staff prefetch hides most of it. Moving the audiobook admin tabs touches the AUD epic's file; coordinate if AUD is changing it at the same time.
   - **Resolves:** walk-10, frontend-7
 <a id="fe-07"></a>
-- [ ] **FE-07 · One usePoll hook: pause every poll in hidden tabs, refresh on return, never overlap** — `P2` · `S` · Phase 3
+- [x] **FE-07 · One usePoll hook: pause every poll in hidden tabs, refresh on return, never overlap** — `P2` · `S` · Phase 3
   - **Problem:** web/src has 29 setInterval timers, and only Discover.tsx:924 checks visibility.
 - 3s: Downloads:104, Logs:63, MovieDetail:60, SeriesDetail:89 and Subtitles:119/803.
 - 1.5s while active: Convert and Subtitles.
@@ -478,7 +478,7 @@ _Lint, vitest and a mocked-API Playwright suite run in CI. Every modal, toast, c
   - **Risk:** Low. Its priority is raised above the draft's P2 because FE-09 and the later hooks need vitest. Expect a burst of exhaustive-deps warnings; leave them as warnings rather than mass-fixing them here.
   - **Resolves:** frontend-2, frontend-11
 <a id="fe-09"></a>
-- [ ] **FE-09 · UI kit core: Modal/Sheet, Confirm, Toast, Button/IconButton, StatusChip, Menu, and lib/format.ts, piloted on Discover** — `P1` · `M` · Phase 3
+- [x] **FE-09 · UI kit core: Modal/Sheet, Confirm, Toast, Button/IconButton, StatusChip, Menu, and lib/format.ts, piloted on Discover** — `P1` · `M` · Phase 3
   - **Problem:** There is no shared component layer.
 - 34 'fixed inset-0' overlays (about 32 of them modals) are each hand-built:
   - backdrops range from .55 to .68 opacity;
@@ -550,7 +550,7 @@ _Lint, vitest and a mocked-API Playwright suite run in CI. Every modal, toast, c
   - **Risk:** Portaled modals escape stacking contexts. Verify z-order against the sticky PageHeader, the sidebar drawer and the requester bar with the new zIndex tokens. The APP epic's requester shell must use the same tokens.
   - **Resolves:** frontend-2, frontend-11
 <a id="fe-10"></a>
-- [ ] **FE-10 · Playwright smoke suite against a mocked API: phone-width overflow, tap behaviour, and the admin shell** — `P2` · `M` · Phase 3
+- [x] **FE-10 · Playwright smoke suite against a mocked API: phone-width overflow, tap behaviour, and the admin shell** — `P2` · `M` · Phase 3
   - **Problem:** Nothing exercises the UI in a browser. The requester header overflowing at 375px, tap targets that request on the first tap, and console errors in the admin shell all shipped unnoticed (frontend-5). The type-scale (FE-30) and LibraryGrid (FE-31) work also needs screenshot and regression specs.
   - **Approach:** 1) web/playwright.config.ts (@playwright/test, chromium only)
     - webServer: 'npm run build && npx vite preview --port 4173 --outDir ../internal/webui/dist'.
@@ -724,7 +724,7 @@ Hand-built overlays and toasts:
 _The sidebar is grouped the way the app works and has icons. Breadcrumbs derive from it and can't drift. Pages share two widths, the four libraries share one toolbar and filter bar, and library pages fit a 375px phone._
 
 <a id="fe-16"></a>
-- [ ] **FE-16 · Regroup the admin sidebar around how the app works, with icons, and drive module visibility from nav.ts** — `P2` · `S` · Phase 3
+- [x] **FE-16 · Regroup the admin sidebar around how the app works, with icons, and drive module visibility from nav.ts** — `P2` · `S` · Phase 3
   - **Problem:** nav.ts has 19 text-only entries. 'Services' mixes the requester product (Discover, Calendar), file tools (Subtitles, Convert), Plex monitoring (Insights) and the audiobook server. Books sits under Library while Audiobooks sits under Services. Downloads, History and Review sit in an unnamed top group. Sidebar.tsx hard-codes the books/music filter.
   - **Approach:** 1) web/src/lib/nav.ts
     - NavItem gains:
@@ -758,7 +758,7 @@ _The sidebar is grouped the way the app works and has icons. Breadcrumbs derive 
   - **Risk:** This changes the owner's muscle memory; mention it in the commit message. REQ (/requests) and ACQ (/activity) add or merge entries later, and only nav.ts changes then.
   - **Resolves:** frontend-10, product-8
 <a id="fe-17"></a>
-- [ ] **FE-17 · Derive page breadcrumbs from nav.ts instead of 36 hand-written strings** — `P2` · `S` · Phase 3
+- [x] **FE-17 · Derive page breadcrumbs from nav.ts instead of 36 hand-written strings** — `P2` · `S` · Phase 3
   - **Problem:** PageHeader (components/PageHeader.tsx) takes a free-text crumb, and 36 call sites each write their own.
 - Subtitles:70 and Convert:130 say 'Library / …'.
 - Downloads says 'Transfers', and History says 'Imported to library'.
@@ -881,7 +881,7 @@ Any nav change silently desynchronises them.
 _Lists show skeleton, error, empty or content honestly and render from cache on Back. The data router gives per-page titles and route error elements. Tabs, filters and searches live in the URL, scroll position is restored, and the routed Quality editor and other dirty forms ask before discarding edits._
 
 <a id="fe-21"></a>
-- [ ] **FE-21 · useQuery data hook with honest loading, error, empty and content states, and a cache for Back** — `P2` · `M` · Phase 3
+- [x] **FE-21 · useQuery data hook with honest loading, error, empty and content states, and a cache for Back** — `P2` · `M` · Phase 3
   - **Problem:** Movies, Series, Books, Indexers, DownloadClients and Quality start with a list of [] and branch on length===0.
 - Before the first response they show the onboarding empty state ('No movies yet. Click Add movie…').
 - When a fetch fails, they show that empty state next to the red error (Movies.tsx:252-261, Indexers.tsx:73-75, DownloadClients.tsx:80-82).
@@ -920,7 +920,7 @@ _Lists show skeleton, error, empty or content honestly and render from cache on 
   - **Risk:** A stale cache can briefly show a deleted item. Every add and delete call invalidates its key prefix.
   - **Resolves:** frontend-9, frontend-3
 <a id="fe-22"></a>
-- [ ] **FE-22 · Move to a data router: per-role route tables, route error elements and per-page titles** — `P2` · `M` · Phase 3
+- [x] **FE-22 · Move to a data router: per-role route tables, route error elements and per-page titles** — `P2` · `M` · Phase 3
   - **Problem:** main.tsx:10 uses <BrowserRouter>, with three inline <Routes> trees in App.tsx. That rules out:
 - useBlocker, which FE-25 needs so navigation can't silently discard edits;
 - a route-level errorElement;
@@ -955,7 +955,7 @@ The 404 route renders Placeholder, whose heading reads 'Not found isn't built ye
   - **Risk:** Recreating the router when the role changes resets in-memory history. That only happens at login and logout, which already do a full load.
   - **Resolves:** frontend-12, frontend-9
 <a id="fe-23"></a>
-- [ ] **FE-23 · URL-addressable tabs on every tabbed page, with one accessible Tabs component** — `P2` · `M` · Phase 3
+- [x] **FE-23 · URL-addressable tabs on every tabbed page, with one accessible Tabs component** — `P2` · `M` · Phase 3
   - **Problem:** Seven pages keep their tab in useState: Audiobooks:27, Convert:54, Discover:21, Downloads:73, Insights:20, Settings:55 and Subtitles:26. Quality's media switch (:219) is plain state too.
 - Back leaves the page instead of going back a tab.
 - Refreshing resets the tab, and tabs can't be bookmarked.

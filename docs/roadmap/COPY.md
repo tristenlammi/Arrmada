@@ -350,7 +350,7 @@ Delete dialogs always say files go to the recycle bin, even when ARRMADA_RECYCLE
 _Insights shows a Connect Plex state instead of 'Coming soon' and shows imported history. Settings explains each role from the same list the nav uses. The disk guard points at the Downloads folder picker. The Dashboard says 'Plex isn't connected yet' with a link, shows the real version and drops the constant Auth stat. Book pages link to the catalogue the book is actually on._
 
 <a id="copy-08"></a>
-- [ ] **COPY-08 · Insights: a Connect Plex empty state instead of 'Coming soon', imported history visible, live errors scoped** — `P2` · `S` · Phase 3
+- [x] **COPY-08 · Insights: a Connect Plex empty state instead of 'Coming soon', imported history visible, live errors scoped** — `P2` · `S` · Phase 3
   - **Problem:** When Plex isn't configured, every built Insights tab returns ComingSoon with a 'Coming soon' pill (Insights.tsx:153, 299, 477, 572, 694, 909-918).
 
 History, Users, Graphs and Reliability read only from the database, but they are gated on `connected`, meaning a URL and token are set (line 26). So a Tautulli import done before connecting Plex is invisible.
@@ -383,7 +383,7 @@ The intro always ends 'Connect your server in Settings to begin' (line 33), even
   - **Risk:** Low. Un-gating the database tabs means each view must render empty data gracefully. Check every one with an empty DB. PLEX may later move the Plex connection out of Insights; ConnectPlex should then use LINKS.plexConnection.
   - **Resolves:** insights-11, walk-2, product-13
 <a id="copy-09"></a>
-- [ ] **COPY-09 · Settings: role descriptions built from the real nav, Read-only in Add user, Library intro once, disk guard points to the folder picker** — `P2` · `M` · Phase 3
+- [x] **COPY-09 · Settings: role descriptions built from the real nav, Read-only in Add user, Library intro once, disk guard points to the folder picker** — `P2` · `M` · Phase 3
   - **Problem:** Roles:
 - Settings → Users says 'Requesters see only the Discover page' (Settings.tsx:221).
 - Plex sign-in says 'Requester account (Discover-only)' (line 168).
@@ -429,7 +429,7 @@ Library and disk guard:
   - **Risk:** Low. Generating the route trees must not widen requester access; the backend external gate stays the authority. The legend describes today's gates, and SEC's route re-gating may change Manager or Read-only, so re-check it then. A changed Downloads folder only takes effect after a restart; CFG's restart banner covers that, and the note already shows the folder actually being measured.
   - **Resolves:** walk-4, walk-5, system-15, product-13
 <a id="copy-10"></a>
-- [ ] **COPY-10 · Dashboard and system strings: 'Plex isn't connected yet', the real version, no constant Auth stat, honest Logs and BASE_URL notes** — `P2` · `S` · Phase 3
+- [x] **COPY-10 · Dashboard and system strings: 'Plex isn't connected yet', the real version, no constant Auth stat, honest Logs and BASE_URL notes** — `P2` · `S` · Phase 3
   - **Problem:** Several system strings on the Dashboard, the Logs page and in docker-compose are wrong:
 - With Plex not set up, the Dashboard reads 'Plex isn't reachable — plex is not configured' (Dashboard.tsx:110). handleDashboard passes the raw error from plex/client.go:36 into streams_note.
 - The Dashboard shows the constant 'Auth: enabled' (Dashboard.tsx:231; server.go:561 hard-codes true).
@@ -463,7 +463,7 @@ Library and disk guard:
   - **Risk:** Low. update.sh runs on the owner's Unraid box, so keep the git calls guarded (`|| echo`) so a non-git copy still builds. The Logs footer may be superseded by OBS's Logs work.
   - **Resolves:** system-15, product-13
 <a id="copy-11"></a>
-- [ ] **COPY-11 · Book pages name and link the catalogue each book actually comes from** — `P2` · `S` · Phase 3
+- [x] **COPY-11 · Book pages name and link the catalogue each book actually comes from** — `P2` · `S` · Phase 3
   - **Problem:** Book pages assume every book comes from Open Library:
 - The BookDetail badge always links to `https://openlibrary.org/works/${b.ol_key}` (BookDetail.tsx:61), a broken URL for every hc: and gb: book.
 - The 'Change match' tooltip says 'search Open Library' (BookDetail.tsx:331), although the rematch search uses the current catalogue (api.lookupBooks returns its source).
@@ -554,7 +554,7 @@ Other mismatches:
   - **Risk:** Changing the filter from 'no file' to 'monitored and no file' hides unmonitored titles from it. Movies keeps its 'Unmonitored' filter; Series and Books don't have one, so say so in the release note. 'Partial' and 'Complete' for series are only as accurate as SER's monitored-only episode counts (series-10). Chips with the avoid tone need FE's --avoid-soft token (frontend-1) to get their fill.
   - **Resolves:** 
 <a id="copy-13"></a>
-- [ ] **COPY-13 · Breadcrumbs derived from the sidebar groups** — `P3` · `S` · Phase 3
+- [x] **COPY-13 · Breadcrumbs derived from the sidebar groups** — `P3` · `S` · Phase 3
   - **Problem:** Page crumbs are hard-coded strings that contradict the nav:
 - Subtitles and Convert say 'Library / …' but sit under Services (Subtitles.tsx:70, Convert.tsx:130).
 - Review says 'Activity / Review', though no Activity group exists (Reviews.tsx:27).

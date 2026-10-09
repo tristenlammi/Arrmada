@@ -598,7 +598,7 @@ _Nightly and manual snapshots with retention. An admin Backups card with downloa
 _Each library root has its own .arrmada-recycle, so recycling is always a rename on the same drive. Nothing is copied into the Docker volume. The old shared bin is still listed and drains._
 
 <a id="safe-16"></a>
-- [ ] **SAFE-16 · The recycle-bin manager handles several bins (legacy bin first), with per-bin stats and wrong-drive warnings** — `P1` · `M` · Phase 3
+- [x] **SAFE-16 · The recycle-bin manager handles several bins (legacy bin first), with per-bin stats and wrong-drive warnings** — `P1` · `M` · Phase 3
   - **Problem:** recyclebin.Service manages exactly one dir (service.go:29-38). On a documented install that dir is <LibraryDir>/.recycle (main.go:200-206), inside the managed arrmada-media Docker volume. Every delete is copied across devices into Unraid's docker.img, which is 20 GB by default, while the bin's default cap is 50 GB. Before deletes can be routed to per-root bins, the manager must be able to list, restore, age and cap several bins, including the old one, which has to drain.
   - **Approach:** 1. recyclebin.New(bins func() []BinDir, settings, log), where BinDir is {Dir, Label string; Legacy bool}. main.go supplies [current recycleDir] plus the legacy <LibraryDir>/.recycle when it differs and is non-empty, so routing is unchanged in this task.
     2. walk() unions all bins. Item.ID becomes '<binKey>/<rel>', where binKey is the first 10 hex chars of sha256(abs dir). resolve() checks that binKey is a current bin and rel stays inside it. Item gains bin_label.
@@ -622,7 +622,7 @@ _Each library root has its own .arrmada-recycle, so recycling is always a rename
   - **Risk:** Item IDs change format. The UI always refetches, so nothing persists them. On Unraid, /mnt/user is shfs and may report one device for every share, so other_drive can under-report there. The warning is advisory.
   - **Resolves:** system-3, backend-8
 <a id="safe-17"></a>
-- [ ] **SAFE-17 · Route every delete to a bin on the library root it came from, so recycling is always a rename** — `P1` · `M` · Phase 3
+- [x] **SAFE-17 · Route every delete to a bin on the library root it came from, so recycling is always a rename** — `P1` · `M` · Phase 3
   - **Problem:** With a single bin, and especially with separately mounted libraries chosen in the folder picker, every recycle is a cross-device copy. RecycleFile falls back to a copy (recycle.go:76-86), and it runs synchronously inside the DELETE request or the import sweep. That can take minutes, hit Cloudflare's 100 s timeout, double disk use, and fail outright when the bin's disk is full.
   - **Approach:** 1. library.RootBins{Explicit string; Off bool; Roots func() []string; Legacy string} implements Bin, plus All() []BinDir:
        - Off returns ErrRecycleDisabled.

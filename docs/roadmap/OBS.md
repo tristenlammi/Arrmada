@@ -193,7 +193,7 @@ _The health panel checks the Movies/TV/Books/Music/Downloads folders the owner a
 _Every background job records its last run, duration and error, survives a panic, and can be run on demand. Health runs in the background with keyed checks: each download client, Plex token, TMDB key and failing tasks. Every warning links to its fix. A System → Status page shows Health and Tasks._
 
 <a id="obs-03"></a>
-- [ ] **OBS-03 · Scheduler records every task's runs, survives panics, offers Run now, and exposes a tasks API** — `P1` · `M` · Phase 3
+- [x] **OBS-03 · Scheduler records every task's runs, survives panics, offers Run now, and exposes a tasks API** — `P1` · `M` · Phase 3
   - **Problem:** cmd/arrmada/main.go registers 28 recurring tasks, from prune-expired-sessions to audioserver-warm. scheduler.exec (scheduler.go:90-97) only logs a failure: there is no last run, duration, next run or last error, and no way to run a task now. exec has no recover(), so a nil dereference in any task kills the whole process (backend-9). The scheduler's own comment admits four real jobs 'sat dead' unnoticed.
   - **Approach:** 1. internal/scheduler/scheduler.go:
        - Store tasks as []*task.
@@ -243,7 +243,7 @@ _Every background job records its last run, duration and error, survives a panic
   - **Risk:** Concurrency in run, exec and RunNow needs the race run in Docker. Run now makes heavy tasks (convert-index, discover-warm) easy to start by hand; the running flag prevents overlap. Coordinate with BE's job runner (backend.t18): keep TaskStatus and the API stable so the job runner can feed the same page instead of building a second registry.
   - **Resolves:** system-8, product-5, backend-9
 <a id="obs-04"></a>
-- [ ] **OBS-04 · Health registry: cached background checks with keys, levels and fix links; manager-only /health/system** — `P1` · `M` · Phase 3
+- [x] **OBS-04 · Health registry: cached background checks with keys, levels and fix links; manager-only /health/system** — `P1` · `M` · Phase 3
   - **Problem:** handleSystemHealth (health_system.go:22-100) hard-codes six checks and runs them on every request. Results are shown only on the Dashboard, fetched once. Warnings are plain text with no link to the fix (Dashboard.tsx:66-84). For example, 'No indexers are enabled' right after setup doesn't take you to Indexers. The route is a.protected, so requesters can read messages that contain server paths and errors. There's no way to add per-integration checks without making the endpoint slower.
   - **Approach:** 1. internal/health/registry.go:
        - Types:
@@ -294,7 +294,7 @@ _Every background job records its last run, duration and error, survives a panic
   - **Risk:** Results are up to 30-60s old. That's acceptable, and 'Check now' covers impatience. The fix paths point at today's routes and must be updated in links.go when CFG/FE move pages.
   - **Resolves:** system-8, product-5, product-9, frontend-10
 <a id="obs-05"></a>
-- [ ] **OBS-05 · Health checks for each download client, the Plex connection, the TMDB key and failing scheduled tasks** — `P1` · `M` · Phase 3
+- [x] **OBS-05 · Health checks for each download client, the Plex connection, the TMDB key and failing scheduled tasks** — `P1` · `M` · Phase 3
   - **Problem:** Queue() errors only when every client fails (download/service.go:339-344, health_system.go:43). A dead second qBittorrent therefore leaves the panel green, while DetectStalled silently skips every cycle (coordinator.go:1208-1215). A revoked Plex token surfaces only as 'Plex isn't reachable — …' in the Now-playing card, and Insights poll errors are logged at Debug (insights/poller.go:76-87). A missing or invalid TMDB key isn't checked, and nothing checks whether scheduled tasks keep failing.
   - **Approach:** 1. Download clients:
        - download.Service.ClientStates(ctx) []ClientState{ID, Name, Kind, OK bool, Err string, LatencyMS}. It lists each ENABLED client on its own, with a 5s per-client timeout, using the same call as handleTestDownloadClient.
@@ -337,7 +337,7 @@ _Every background job records its last run, duration and error, survives a panic
   - **Risk:** External probes must honour their intervals: TMDB every 6h, Plex identity every 5 min. Plex or qBittorrent restarts can cause false positives, hence the 10-minute persistence rule for Plex. OBS-12's alerting adds a two-run confirmation. Never reuse ClientStates for stall decisions.
   - **Resolves:** integrations-3, product-5, system-8
 <a id="obs-06"></a>
-- [ ] **OBS-06 · System → Status page: Health list with Fix links and a Tasks table with Run now** — `P1` · `M` · Phase 3
+- [x] **OBS-06 · System → Status page: Health list with Fix links and a Tasks table with Run now** — `P1` · `M` · Phase 3
   - **Problem:** There's no Sonarr-style System view. The owner can't see what's running, what last failed or which checks are bad, and can't trigger a sweep on demand. Health is visible only as a list on the Dashboard.
   - **Approach:** 1. New components:
        - web/src/components/system/HealthList.tsx: checks grouped by category (Storage, Downloads, Indexers, Integrations, Tasks).

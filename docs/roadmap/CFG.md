@@ -541,7 +541,7 @@ Read-only can be chosen when editing a user but not when creating one (Settings.
 _All configuration lives under /settings/:section with a left rail and search. Controls auto-save. Connections shows every integration with a live status dot. Plex, notifications, Subtitles, Convert and audiobook server settings move into the hub, and one People & access list replaces three._
 
 <a id="cfg-13"></a>
-- [ ] **CFG-13 · Settings hub shell: /settings/:section with a left rail and search; split Settings.tsx into section files (pure move)** — `P2` · `M` · Phase 3
+- [x] **CFG-13 · Settings hub shell: /settings/:section with a left rail and search; split Settings.tsx into section files (pure move)** — `P2` · `M` · Phase 3
   - **Problem:** Settings is four tabs (Media, Library, System, Users) with mixed contents in one 852-line Settings.tsx. Other configuration sits on about seven more pages.
 
 Within Settings itself:
@@ -738,7 +738,7 @@ Decision: per-control auto-save, as the overhaul and system-9 recommend, rather 
 _Imports, grabs, qBittorrent's save path, the disk guard and the health checks follow the saved folders with no restart. LibraryDir no longer quietly decides anything._
 
 <a id="cfg-19"></a>
-- [ ] **CFG-19 · Folder changes apply live: libroots resolver for importer, coordinator and disk guard** — `P2` · `M` · Phase 3
+- [x] **CFG-19 · Folder changes apply live: libroots resolver for importer, coordinator and disk guard** — `P2` · `M` · Phase 3
   - **Problem:** Library and download roots are copied from cfg at construction and never re-read:
 - imports.SetRoots (main.go:294)
 - bookImporter.SetRoots and SetBookRoots (318-319)
@@ -774,7 +774,7 @@ Only music resolves live. The Importer also silently falls back to `im.root` (cf
   - **Risk:** This touches many constructors in main.go, so do it in one focused session and keep the old setter names compiling until the call sites move. Removing the LibraryDir fallback could surface installs with an empty per-type root, and the clear error is the intended outcome. Files already imported stay in the old folder.
   - **Resolves:** system-4, system-3
 <a id="cfg-20"></a>
-- [ ] **CFG-20 · Downloads change re-points qBittorrent live; retire LibraryDir from health, the disk-guard 'same drive' check, fileinfo and startup** — `P2` · `S` · Phase 3
+- [x] **CFG-20 · Downloads change re-points qBittorrent live; retire LibraryDir from health, the disk-guard 'same drive' check, fileinfo and startup** — `P2` · `S` · Phase 3
   - **Problem:** Several things still use the startup or legacy folders:
 - qBittorrent's default save and incomplete paths are set only at boot (main.go:233-243).
 - The health check probes Config.LibraryDir for writability (health_system.go:48). With a documented install that is the managed arrmada-media volume, not the user's Movies or TV folders.

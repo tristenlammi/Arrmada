@@ -576,7 +576,7 @@ There is no UI to edit a track's label, profile or edition, although PUT /movies
 _File-change events carry paths, so Convert and Subtitles stay in step. Rename shows old → new for every track and never clobbers. Organize applies a naming scheme across the library after a dry-run. The mass editor is one transactional bulk endpoint. Delete is reachable from the grid, the table and the detail page at 375 px._
 
 <a id="mov-15"></a>
-- [ ] **MOV-15 · Movie file-change events carry paths, come from the service layer, and keep Convert and Subtitles in step** — `P2` · `S` · Phase 3
+- [x] **MOV-15 · Movie file-change events carry paths, come from the service layer, and keep Convert and Subtitles in step** — `P2` · `S` · Phase 3
   - **Problem:** movie.renamed and movie.file_deleted are published only from HTTP handlers (httpapi/movies.go:418, 511, 702), without paths, and nothing on the backend subscribes to them. Only movie.downloaded reindexes Convert and Subtitles (main.go:523-541). handleDeleteMovie and handleDeleteVersion publish nothing.
 
 After a rename, the Convert index keeps the old path until the nightly sweep. After a delete, convert.IndexMovie returns early because !HasFile, so the stale row lingers. That also feeds MOV-08's Cutoff tab. PLEX's partial scan needs these events with paths.

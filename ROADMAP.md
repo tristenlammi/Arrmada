@@ -509,6 +509,8 @@ Most of this phase is S tasks with no prerequisites, so it moves fast.
 
 ### Phase 3 — Shared building blocks
 
+> **Status: shipped 2026-10-09** — all 29 tasks merged to main (full race suite, lint, frontend tests, typecheck, build with size budget and Playwright e2e green; checked in a local instance). Built as 9 worktree lanes: UI kit, data router, e2e, Settings hub, job runner, outbox, health, live folders/per-library bins, copy.
+
 **Theme:** Foundations that unblock the overhauls: UI kit, data router, data hook, test harness, nav, Settings shell, job runner, outbox, scheduler tasks, health registry, per-root recycle bins, live folder roots  
 **Goal:** Build each primitive that the overhaul phases compose exactly once:
 - web/src/ui kit (adopting SAFE-02's ConfirmDialog)
