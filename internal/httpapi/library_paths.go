@@ -278,7 +278,7 @@ func (a *api) handleCheckLibraryFolder(w http.ResponseWriter, r *http.Request) {
 	if kind != "downloads" {
 		downloads = strings.TrimSpace(q.Get("downloads"))
 		if downloads == "" {
-			downloads = a.libDownloads(r)
+			downloads = a.pickedConfig(r.Context()).DownloadsDir
 		}
 	}
 	c := libroots.CheckFolder(p, downloads, a.deps.Config.DataDir)

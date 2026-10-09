@@ -105,7 +105,7 @@ export function LibraryFolders() {
 
       <div className="mt-4 flex items-center justify-end gap-3">
         {dirty && <span className="text-[11.5px] text-ink-faint">{blocked ? "Fix the folders marked in red to save" : "Unsaved changes"}</span>}
-        <button onClick={save} disabled={!dirty || busy || blocked}className="rounded-lg px-4 py-2 text-[13px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy ? "Saving…" : "Save folders"}</button>
+        <button onClick={save} disabled={!dirty || busy || blocked} className="rounded-lg px-4 py-2 text-[13px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy ? "Saving…" : "Save folders"}</button>
       </div>
 
       <UnmatchedReview media="movie" reloadKey={reviewKey} flash={flash} />
