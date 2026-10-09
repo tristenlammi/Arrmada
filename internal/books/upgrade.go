@@ -477,7 +477,9 @@ func (s *Service) applyUpgrade(ctx context.Context, b Book, d *metadata.BookDeta
 	if len(nb.Subjects) == 0 {
 		nb.Subjects = b.Subjects
 	}
-	if err := s.repo.Rematch(ctx, b.ID, nb); err != nil {
+	// The upgrade only moves a book onto the same book in Hardcover, so its Open Library
+	// key stays one of its keys.
+	if err := s.repo.Rematch(ctx, b.ID, nb, true); err != nil {
 		return err
 	}
 	if d.SeriesName != "" {

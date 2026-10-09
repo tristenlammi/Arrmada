@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type BookSource, type BookAuthor, type BookDiscoverCard, type BookMeta, type BookRecommendedRow } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { useCanHover } from "../lib/useCanHover";
+import { coversFormat, editionState, initialBookFormats, lastBookFormats, rememberBookFormats, type BookFormats } from "../lib/bookFormats";
+import { FormatChoice } from "../components/BookFormats";
 
 // BooksDiscover is the Books area of Discover — deliberately separate from the movie/TV
 // experience: its own search (titles + authors), Open Library browse rows, author
@@ -46,8 +48,9 @@ export function BooksDiscover({ flash, canRequest, initialQuery }: { flash: (m: 
   const [query, setQuery] = useState("");
   const [author, setAuthor] = useState<BookAuthor | null>(null);
   const [focused, setFocused] = useState(false);
-  // ol_keys the viewer has just requested this session (optimistic badge).
-  const [requested, setRequested] = useState<Set<string>>(new Set());
+  // ol_keys the viewer has just requested this session, with the formats asked for
+  // ("" = the server's default) — the optimistic badge.
+  const [requested, setRequested] = useState<Map<string, BookFormats | "">>(new Map());
 
   // A seeded search (e.g. from a notification click) lands here after mount too.
   useEffect(() => {
@@ -62,15 +65,17 @@ export function BooksDiscover({ flash, canRequest, initialQuery }: { flash: (m: 
   }, [input]);
 
   // Rethrows on failure so the modal only flips to its success state on real success.
-  const request = useCallback(async (b: BookDiscoverCard | BookMeta, authorName?: string): Promise<{ subscribed: boolean }> => {
+  // formats: read / listen / both; left out, the server uses the owner's default.
+  const request = useCallback(async (b: BookDiscoverCard | BookMeta, authorName?: string, formats?: BookFormats): Promise<{ subscribed: boolean }> => {
     try {
       const res = await api.createRequest({
         media_type: "book", ol_key: b.key, title: b.title,
         author: ("author" in b && b.author) ? b.author : (authorName || ""),
         year: b.year || 0, poster_url: b.cover_url,
         overview: "description" in b ? b.description : undefined,
+        formats,
       });
-      setRequested((s) => new Set(s).add(b.key));
+      setRequested((s) => new Map(s).set(b.key, formats ?? ""));
       flash(res.subscribed ? "You’re on the list — we’ll notify you when it’s ready"
         : res.request.status === "approved" ? `Added “${b.title}” to your library` : `Requested “${b.title}”`);
       return { subscribed: res.subscribed };
@@ -80,7 +85,7 @@ export function BooksDiscover({ flash, canRequest, initialQuery }: { flash: (m: 
     }
   }, [flash]);
 
-  const ctx: BookCtx = { request, isRequested: (k) => requested.has(k), canRequest };
+  const ctx: BookCtx = { request, isRequested: (k) => requested.has(k), requestedFormats: (k) => requested.get(k), canRequest };
 
   return (
     <div>
@@ -118,8 +123,10 @@ export function BooksDiscover({ flash, canRequest, initialQuery }: { flash: (m: 
 }
 
 interface BookCtx {
-  request: (b: BookDiscoverCard | BookMeta, authorName?: string) => Promise<{ subscribed: boolean }>;
+  request: (b: BookDiscoverCard | BookMeta, authorName?: string, formats?: BookFormats) => Promise<{ subscribed: boolean }>;
   isRequested: (key: string) => boolean;
+  // What this session's request for a key asked for ("" = the server default).
+  requestedFormats: (key: string) => BookFormats | "" | undefined;
   canRequest: boolean;
 }
 
@@ -170,13 +177,12 @@ function BookHero({ ctx }: { ctx: BookCtx }) {
   if (items === null) return <div className="w-full animate-pulse rounded-2xl" style={{ height: "clamp(300px, 40vh, 460px)", background: "var(--panel-2)", border: "1px solid var(--line)" }} />;
   if (!cur) return null;
   const d = details[cur.key];
-  const requested = ctx.isRequested(cur.key);
-  const badge = badgeFor(cur, requested);
+  const badge = badgeFor(cur, sessionRequest(ctx, cur.key));
   const genres = (cur.genres && cur.genres.length > 0 ? cur.genres : d?.subjects ?? []).slice(0, 3);
   const quick = async () => {
     if (quickBusy) return;
     setQuickBusy(true);
-    try { await ctx.request(d ?? cur); } catch { /* toast shown */ } finally { setQuickBusy(false); }
+    try { await ctx.request(d ?? cur, undefined, quickFormats(badge)); } catch { /* toast shown */ } finally { setQuickBusy(false); }
   };
 
   return (
@@ -209,9 +215,9 @@ function BookHero({ ctx }: { ctx: BookCtx }) {
           {d?.description && <p className="m-0 line-clamp-2 text-[13px] leading-relaxed sm:line-clamp-3" style={{ color: "rgba(255,255,255,.78)" }}>{d.description}</p>}
           <div className="mt-1 flex flex-wrap items-center gap-2">
             <button onClick={() => setOpen(true)} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold backdrop-blur-sm" style={{ background: "rgba(255,255,255,.16)", border: "1px solid rgba(255,255,255,.28)", color: "#fff" }}>View details</button>
-            {ctx.canRequest && !badge && (
+            {ctx.canRequest && (!badge || badge.missing) && (
               <button onClick={quick} disabled={quickBusy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)", opacity: quickBusy ? 0.65 : 1 }}>
-                {quickBusy ? "Requesting…" : "＋ Request"}
+                {quickBusy ? "Requesting…" : badge?.missing ? `＋ ${MISSING_LABEL[badge.missing]}` : "＋ Request"}
               </button>
             )}
           </div>
@@ -433,31 +439,61 @@ function BookGrid({ books, ctx, emptyLabel, authorName, error }: { books: BookDi
   );
 }
 
-function badgeFor(b: BookDiscoverCard, requested: boolean): { label: string; tone: string; bg: string } | null {
-  if (b.has_file) return { label: "In library", tone: "var(--good)", bg: "var(--good-soft, rgba(90,140,90,.18))" };
+// CardBadge is a card's corner badge. missing is the other format of a book the library
+// holds in one — still requestable ("Ebook ✓" + "Request audiobook"); asked says that
+// other format is already requested.
+interface CardBadge { label: string; tone: string; bg: string; missing?: "ebook" | "audiobook"; asked?: "ebook" | "audiobook" }
+
+const GOOD_BADGE = { tone: "var(--good)", bg: "var(--good-soft, rgba(90,140,90,.18))" };
+
+// badgeFor reads a card's state. requested is this session's request for it: false for
+// none, else the formats asked for ("" = the server's default).
+function badgeFor(b: BookDiscoverCard, requested: boolean | BookFormats | ""): CardBadge | null {
+  // Per format once any edition is here: "Ebook ✓", "Ebook ✓ · Audiobook ✓".
+  const es = editionState(b);
+  if (es) {
+    const other = es.missing ?? es.requested;
+    const askedNow = typeof requested === "string" && other !== undefined && coversFormat(requested || undefined, other);
+    if (es.requested || askedNow) return { label: es.label, ...GOOD_BADGE, asked: other };
+    return { label: es.label, ...GOOD_BADGE, missing: es.missing };
+  }
+  if (b.has_file) return { label: "In library", ...GOOD_BADGE }; // a server without the per-format fields
   if (b.request_status === "approved") return { label: "Requested", tone: "var(--accent)", bg: "var(--accent-soft)" };
   // `requested` (this session) beats a stale "declined" — a re-request goes pending.
-  if (requested || b.request_status === "pending" || (b.requested && b.request_status !== "declined")) return { label: "Pending", tone: "var(--avoid)", bg: "var(--avoid-soft)" };
+  if (requested !== false || b.request_status === "pending" || (b.requested && b.request_status !== "declined")) return { label: "Pending", tone: "var(--avoid)", bg: "var(--avoid-soft)" };
   if (b.request_status === "declined") return { label: "Declined", tone: "var(--ink-faint)", bg: "var(--panel-2)" };
   // In the library but no file yet and no request in flight.
   if (b.in_library) return { label: "Wanted", tone: "var(--ink-faint)", bg: "var(--panel-2)" };
   return null;
 }
 
+// sessionRequest is badgeFor's "requested this session" argument for a card.
+function sessionRequest(ctx: BookCtx, key: string): boolean | BookFormats | "" {
+  return ctx.isRequested(key) ? (ctx.requestedFormats(key) ?? "") : false;
+}
+
+// quickFormats is what a one-tap request asks for: the other format of a book held in
+// one, else the viewer's last choice (else the server's default).
+function quickFormats(badge: CardBadge | null): BookFormats | undefined {
+  return badge?.missing ?? lastBookFormats() ?? undefined;
+}
+
+const MISSING_LABEL = { ebook: "Request ebook", audiobook: "Request audiobook" } as const;
+
 function BookCard({ b, ctx, authorName, full }: { b: BookDiscoverCard; ctx: BookCtx; authorName?: string; full?: boolean }) {
   const [open, setOpen] = useState(false);
   const [quickBusy, setQuickBusy] = useState(false);
   const canHover = useCanHover();
-  const requested = ctx.isRequested(b.key);
-  const badge = badgeFor(b, requested);
-  const requestable = !badge;
+  const badge = badgeFor(b, sessionRequest(ctx, b.key));
+  // Nothing in flight, or a book held in one format whose other one can be asked for.
+  const requestable = !badge || !!badge.missing;
   // Mouse only: on touch the whole cover opens the sheet, which has a visible Request.
   const showQuick = canHover && ctx.canRequest && requestable;
 
   const quick = async () => {
     if (quickBusy) return;
     setQuickBusy(true);
-    try { await ctx.request(b, authorName); } catch { /* toast already shown */ }
+    try { await ctx.request(b, authorName, quickFormats(badge)); } catch { /* toast already shown */ }
     finally { setQuickBusy(false); }
   };
 
@@ -480,7 +516,7 @@ function BookCard({ b, ctx, authorName, full }: { b: BookDiscoverCard; ctx: Book
             <div className="flex h-full w-full items-center justify-center p-2 text-center" style={{ background: "linear-gradient(150deg, hsl(28 30% 26%), hsl(24 28% 16%))" }}><span className="text-[11.5px] font-bold text-white">{b.title}</span></div>
           )}
           {badge && (
-            <span className="absolute right-1.5 top-1.5 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: BADGE_BG, color: badge.tone, border: `1px solid ${badge.tone}` }}>{badge.label}</span>
+            <span className="absolute right-1.5 top-1.5 max-w-[calc(100%-12px)] truncate rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: BADGE_BG, color: badge.tone, border: `1px solid ${badge.tone}` }} title={badge.label}>{badge.label}</span>
           )}
           {/* Hover scrim, purely decorative: pointer-events-none so a tap anywhere on the
               cover opens the sheet, never something the user couldn't see. */}
@@ -500,7 +536,7 @@ function BookCard({ b, ctx, authorName, full }: { b: BookDiscoverCard; ctx: Book
             // Dimmed with a filter, not opacity, so the busy look doesn't fight the hover reveal.
             style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)", filter: quickBusy ? "brightness(.8)" : undefined }}
           >
-            {quickBusy ? "Requesting…" : "＋ Request"}
+            {quickBusy ? "Requesting…" : badge?.missing ? `＋ ${MISSING_LABEL[badge.missing]}` : "＋ Request"}
           </button>
         )}
       </div>
@@ -542,23 +578,34 @@ function BookRequestModal({ b, ctx, authorName, onClose }: { b: BookDiscoverCard
   const [done, setDone] = useState(ctx.isRequested(b.key));
   const [subscribed, setSubscribed] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const badge = badgeFor(b, done);
+  const badge = badgeFor(b, done ? (ctx.requestedFormats(b.key) ?? "") : false);
   const declined = badge?.label === "Declined";
+  // Read / Listen / Both: the viewer's last choice, else the owner's default once the
+  // detail arrives with it. Nothing picked yet sends none, and the server uses the default.
+  const [choice, setChoice] = useState<BookFormats | null>(() => initialBookFormats());
 
   const [similar, setSimilar] = useState<BookDiscoverCard[] | null>(null);
   useEffect(() => {
     let alive = true;
-    api.bookDiscoverDetail(b.key).then((d) => alive && setDetail(d)).catch(() => {});
+    api.bookDiscoverDetail(b.key).then((d) => {
+      if (!alive) return;
+      setDetail(d);
+      setChoice((c) => c ?? initialBookFormats(d.default_book_formats));
+    }).catch(() => {});
     // The catalogue's "readers also liked" — Hardcover only; empty elsewhere.
     if (b.key.startsWith("hc:")) api.bookDiscoverSimilar(b.key).then((s) => alive && setSimilar(s)).catch(() => alive && setSimilar([]));
     return () => { alive = false; };
   }, [b.key]);
 
   // Only flip to the success state on real success; failures show inline + toast.
-  const doRequest = async () => {
+  // formats: the other format of a book held in one, else the control's choice (which
+  // is remembered for next time).
+  const doRequest = async (formats?: BookFormats) => {
     setBusy(true); setError(null);
     try {
-      const r = await ctx.request(detail ?? b, authorName);
+      const f = formats ?? choice ?? undefined;
+      if (!formats && choice) rememberBookFormats(choice);
+      const r = await ctx.request(detail ?? b, authorName, f);
       setSubscribed(r.subscribed);
       setDone(true);
     } catch (e) {
@@ -601,20 +648,35 @@ function BookRequestModal({ b, ctx, authorName, onClose }: { b: BookDiscoverCard
               <div className="mt-3">
                 {done && subscribed ? (
                   <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>You’re on the list — we’ll notify you when it’s ready</span>
+                ) : badge && (badge.missing || badge.asked) ? (
+                  // Held in one format: say which, and offer (or report) the other.
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: badge.bg, color: badge.tone }}>{badge.label}</span>
+                    {badge.asked ? (
+                      <span className="text-[12px] font-semibold" style={{ color: "var(--accent)" }}>{badge.asked === "audiobook" ? "Audiobook" : "Ebook"} requested</span>
+                    ) : badge.missing && ctx.canRequest ? (
+                      <button onClick={() => doRequest(badge.missing)} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
+                        {busy ? "Requesting…" : `＋ ${MISSING_LABEL[badge.missing]}`}
+                      </button>
+                    ) : null}
+                  </div>
                 ) : badge && !declined ? (
                   <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: badge.bg, color: badge.tone }}>
-                    {badge.label === "In library" ? "✓ In your library" : badge.label === "Pending" ? "Requested — pending approval" : badge.label === "Wanted" ? "In library — waiting for a copy" : "Requested"}
+                    {badge.label === "In library" ? "✓ In your library" : badge.label === "Pending" ? "Requested — pending approval" : badge.label === "Wanted" ? "In library — waiting for a copy" : badge.tone === GOOD_BADGE.tone ? badge.label : "Requested"}
                   </span>
                 ) : !ctx.canRequest ? (
                   <span className="text-[12px] text-ink-faint">Ask your admin for request access.</span>
                 ) : (
-                  <div className="flex flex-wrap items-center gap-2">
-                    {declined && badge && (
-                      <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: badge.bg, color: badge.tone }}>Declined</span>
-                    )}
-                    <button onClick={doRequest} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
-                      {busy ? "Requesting…" : declined ? "Request again" : "＋ Request"}
-                    </button>
+                  <div className="flex flex-col gap-2">
+                    <FormatChoice value={choice} onChange={setChoice} disabled={busy} />
+                    <div className="flex flex-wrap items-center gap-2">
+                      {declined && badge && (
+                        <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: badge.bg, color: badge.tone }}>Declined</span>
+                      )}
+                      <button onClick={() => doRequest()} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
+                        {busy ? "Requesting…" : declined ? "Request again" : "＋ Request"}
+                      </button>
+                    </div>
                   </div>
                 )}
                 {error && <div className="mt-1.5 text-[11.5px] font-medium" style={{ color: "var(--reject)" }}>{error}</div>}

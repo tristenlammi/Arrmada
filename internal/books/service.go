@@ -120,10 +120,27 @@ func (s *Service) Get(ctx context.Context, id int64) (Book, error) {
 // Add pulls details for an Open Library work id and adds it. fallback supplies the
 // year/author/cover/title from the search result — the work endpoint doesn't carry the
 // publish year, so we backfill from what the lookup already knew.
+//
+// Every key the book is reached by is kept: the one asked for, the catalogue's canonical
+// one, and — when the book is already in the library — the asked-for key as one more of
+// the existing row's keys, so the card that carried it reads In library from now on.
 func (s *Service) Add(ctx context.Context, olKey, qualityProfile string, monitored bool, fallback metadata.BookResult) (Book, error) {
+	// A key the library already knows, current or former, is that book: no fetch needed.
+	if existing, ok := s.findByKey(ctx, olKey); ok {
+		return existing, ErrExists
+	}
 	d, err := s.meta.GetBook(ctx, olKey)
 	if err != nil {
 		return Book{}, fmt.Errorf("fetch metadata: %w", err)
+	}
+	if d.Key == "" {
+		d.Key = olKey
+	}
+	if d.Key != olKey {
+		if existing, ok := s.findByKey(ctx, d.Key); ok {
+			s.aliasKey(ctx, olKey, existing.ID)
+			return existing, ErrExists
+		}
 	}
 	b := Book{
 		OLKey: d.Key, Title: orStr(d.Title, fallback.Title), Author: orStr(d.Author, fallback.Author),
@@ -137,11 +154,14 @@ func (s *Service) Add(ctx context.Context, olKey, qualityProfile string, monitor
 	// existing row with ErrExists so callers that just want "the library's copy" (the
 	// disk scan, a request) can use it.
 	if existing, ok := s.findDuplicate(ctx, b.Title, b.Author); ok {
+		s.aliasKey(ctx, olKey, existing.ID)
+		s.aliasKey(ctx, b.OLKey, existing.ID)
 		return existing, ErrExists
 	}
 	created, err := s.repo.Create(ctx, b)
 	if errors.Is(err, ErrExists) {
 		if existing, ok := s.findByKey(ctx, b.OLKey); ok {
+			s.aliasKey(ctx, olKey, existing.ID)
 			return existing, ErrExists
 		}
 		return Book{}, err
@@ -149,6 +169,8 @@ func (s *Service) Add(ctx context.Context, olKey, qualityProfile string, monitor
 	if err != nil {
 		return Book{}, err
 	}
+	// The catalogue answered with its canonical key for the one asked for: keep both.
+	s.aliasKey(ctx, olKey, created.ID)
 	if d.SeriesName != "" {
 		_ = s.repo.SetSeriesRef(ctx, created.ID, d.SeriesName, d.SeriesPosition, d.SeriesKey)
 		created.SeriesName, created.SeriesPosition, created.SeriesKey = d.SeriesName, d.SeriesPosition, d.SeriesKey
@@ -457,7 +479,12 @@ func (s *Service) Rematch(ctx context.Context, id int64, olKey string, fallback 
 	if next.Title == "" {
 		return Book{}, fmt.Errorf("the chosen work has no title")
 	}
-	if err := s.repo.Rematch(ctx, id, next); err != nil {
+	// The old key stays one of the book's keys when the new work is the same book (the
+	// usual case: moving it from one catalogue to another). When it is a different book
+	// the old key was a wrong identification, and keeping it would make that other book
+	// read as owned — and refuse to be added.
+	keepOld := SameBook(before.Title, before.Author, next.Title, next.Author)
+	if err := s.repo.Rematch(ctx, id, next, keepOld); err != nil {
 		return Book{}, err
 	}
 	s.repo.AddEvent(ctx, id, "matched", fmt.Sprintf("Re-matched from %q to %q (%s)", before.Title, next.Title, next.OLKey))

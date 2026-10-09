@@ -74,6 +74,8 @@ export const myBooks: { books: MyBook[]; requests: MyRequest[] } = {
     { title: "Knots and Splices", author: "Hal Yard", status: "pending", requested_at: "2026-10-02T10:00:00Z", stage: "pending" },
     // Searched three times and missed: the card says "Not found yet" and the next check.
     { title: "Charts of the Lesser Sounds", author: "Ada Fenwick", status: "approved", requested_at: "2026-09-20T10:00:00Z", stage: "searching", note: "Not found yet", next_check_at: "2026-10-14T09:00:00Z" },
+    // Asked for both formats; the ebook is here, the card says the audiobook is coming.
+    { title: "A Field Guide to Tides", author: "Marina Coves", status: "approved", requested_at: "2026-09-10T10:00:00Z", formats: "both", waiting: "audiobook", stage: "partial", note: "Ebook ready · audiobook on the way" },
   ],
 };
 

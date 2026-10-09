@@ -27,7 +27,8 @@ type Request struct {
 	OLKey            string  `json:"ol_key,omitempty"`  // books (Open Library work key)
 	BookID           int64   `json:"book_id,omitempty"` // books: the library row it became; survives that row's key changing
 	Title            string  `json:"title"`
-	Author           string  `json:"author,omitempty"` // books
+	Author           string  `json:"author,omitempty"`  // books
+	Formats          string  `json:"formats,omitempty"` // books: ebook | audiobook | both; "" = from before the choice (formats.go)
 	Year             int     `json:"year"`
 	PosterURL        string  `json:"poster_url,omitempty"`
 	Overview         string  `json:"overview,omitempty"`
@@ -52,6 +53,8 @@ type Request struct {
 	// Books: searches in a row that found nothing, and when the next one is due (RFC3339).
 	searchMisses int
 	nextCheckAt  string
+	// Books: for a "both" request with one format here, which one and what's coming.
+	partNote string
 }
 
 // Repo persists requests in SQLite.
@@ -61,13 +64,13 @@ type Repo struct{ db *sql.DB }
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const cols = `id, media_type, tmdb_id, ol_key, title, author, year, poster_url, overview, status,
-	quality_profile, requested_by, requested_by_name, note, created_at, updated_at, book_id`
+	quality_profile, requested_by, requested_by_name, note, created_at, updated_at, book_id, formats`
 
 func scan(row interface{ Scan(...any) error }) (Request, error) {
 	var r Request
 	var bookID sql.NullInt64
 	err := row.Scan(&r.ID, &r.MediaType, &r.TMDBID, &r.OLKey, &r.Title, &r.Author, &r.Year, &r.PosterURL, &r.Overview,
-		&r.Status, &r.QualityProfile, &r.RequestedBy, &r.RequestedByName, &r.Note, &r.CreatedAt, &r.UpdatedAt, &bookID)
+		&r.Status, &r.QualityProfile, &r.RequestedBy, &r.RequestedByName, &r.Note, &r.CreatedAt, &r.UpdatedAt, &bookID, &r.Formats)
 	r.BookID = bookID.Int64
 	return r, err
 }
@@ -84,10 +87,10 @@ func nullID(id int64) any {
 func (r *Repo) Create(ctx context.Context, req Request) (Request, error) {
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO requests (media_type, tmdb_id, ol_key, title, author, year, poster_url, overview, status,
-			quality_profile, requested_by, requested_by_name, note, book_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			quality_profile, requested_by, requested_by_name, note, book_id, formats)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.MediaType, req.TMDBID, req.OLKey, req.Title, req.Author, req.Year, req.PosterURL, req.Overview, req.Status,
-		req.QualityProfile, req.RequestedBy, req.RequestedByName, req.Note, nullID(req.BookID))
+		req.QualityProfile, req.RequestedBy, req.RequestedByName, req.Note, nullID(req.BookID), req.Formats)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return Request{}, ErrExists
@@ -140,6 +143,39 @@ func (r *Repo) SetBookID(ctx context.Context, id, bookID int64) error {
 // ListByBookID returns the book requests linked to one library row (oldest first).
 func (r *Repo) ListByBookID(ctx context.Context, bookID int64) ([]Request, error) {
 	return r.query(ctx, `SELECT `+cols+` FROM requests WHERE media_type = 'book' AND book_id = ? ORDER BY id`, bookID)
+}
+
+// SetFormats records a book request's format choice and the profile that goes with it
+// (an empty profile leaves the stored one alone).
+func (r *Repo) SetFormats(ctx context.Context, id int64, formats, profile string) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE requests
+		    SET formats = ?,
+		        quality_profile = CASE WHEN ? = '' THEN quality_profile ELSE ? END,
+		        updated_at = CURRENT_TIMESTAMP
+		  WHERE id = ?`,
+		formats, profile, profile, id)
+	return err
+}
+
+// ListForBook returns the book requests for one library row, oldest first: those linked
+// to it, and those not linked to any row yet that were made under one of its keys
+// (keys holds every catalogue key the book has had).
+func (r *Repo) ListForBook(ctx context.Context, bookID int64, keys []string) ([]Request, error) {
+	q := `SELECT ` + cols + ` FROM requests WHERE media_type = 'book' AND (book_id = ?`
+	args := []any{bookID}
+	if len(keys) > 0 {
+		q += ` OR (book_id IS NULL AND ol_key IN (?` + strings.Repeat(`, ?`, len(keys)-1) + `))`
+		for _, k := range keys {
+			args = append(args, k)
+		}
+	}
+	return r.query(ctx, q+`) ORDER BY id`, args...)
+}
+
+// bookRequests returns every book request, oldest first.
+func (r *Repo) bookRequests(ctx context.Context) ([]Request, error) {
+	return r.query(ctx, `SELECT `+cols+` FROM requests WHERE media_type = 'book' ORDER BY id`)
 }
 
 // unlinkedBookRequests returns the book requests not yet linked to a library row.

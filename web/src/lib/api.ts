@@ -1073,6 +1073,9 @@ export interface MediaRequest {
   tmdb_id: number;
   ol_key?: string;
   author?: string;
+  /** Books: read (ebook), listen (audiobook) or both. Absent on a request made before
+   *  the choice existed. */
+  formats?: "ebook" | "audiobook" | "both";
   title: string;
   year: number;
   poster_url?: string;
@@ -1132,6 +1135,9 @@ export interface MyRequest {
   cover_url?: string;
   status: "pending" | "approved" | "declined";
   requested_at: string;
+  /** What was asked for (absent on an older request), and which of it is still on its way. */
+  formats?: "ebook" | "audiobook" | "both";
+  waiting?: "ebook" | "audiobook" | "both";
   /** Where it has got to; absent when the download client couldn't be read. */
   stage?: RequestStage;
   note?: string; // "Not found yet"
@@ -1392,6 +1398,9 @@ export interface Book {
   /** Where the metadata came from, with a link to the book there. Detail endpoints only;
    *  absent when the key is from no known catalogue. */
   catalogue?: CatalogueRef;
+  /** Catalogue keys the book had before its current one (book_keys). Detail endpoints
+   *  only; a card carrying any of them is this book. */
+  aliases?: BookKeyAlias[];
   /** The search ladder: when the sweep last looked (RFC3339; absent = never), how many
    *  searches in a row found nothing, and when it looks next (absent when nothing is
    *  wanted, it isn't monitored, or it's due now). */
@@ -1402,6 +1411,12 @@ export interface Book {
 export interface CatalogueRef {
   name: "Hardcover" | "Open Library" | "Google Books";
   url: string;
+}
+export interface BookKeyAlias {
+  key: string;
+  /** The catalogue that issued it, or "request" for a key learned from a request. */
+  source: "openlibrary" | "hardcover" | "google" | "request";
+  added_at?: string;
 }
 // AudioVersion is one extra audiobook of a book. A release belongs to it when it
 // mentions one of its terms; with no terms it is filled by hand only.
@@ -1439,6 +1454,13 @@ export interface BookDiscoverCard {
   has_file: boolean;
   requested: boolean;
   request_status?: "pending" | "approved" | "declined" | "";
+  /** Per format, for a book in the library: what's on disk and what its profile wants;
+   *  and what the request badging the card asked for. */
+  has_ebook?: boolean;
+  has_audiobook?: boolean;
+  want_ebook?: boolean;
+  want_audiobook?: boolean;
+  request_formats?: "ebook" | "audiobook" | "both" | "";
 }
 export interface BookAuthor {
   key: string;
@@ -1464,6 +1486,9 @@ export interface BookMeta {
   genres?: string[];
   series_name?: string;
   series_position?: number;
+  /** Detail only: the editions of the owner's default book profile, where the request
+   *  control starts when the viewer hasn't picked before. */
+  default_book_formats?: "ebook" | "audiobook" | "both";
 }
 export interface BookRecommendedRow { title: string; seed: string; seed_id: number; books: BookDiscoverCard[] }
 
@@ -2203,7 +2228,8 @@ export const api = {
   // Returns 200 even for already-requested titles: subscribed=true means "you were
   // attached to an existing request and will be notified too". Requesting a declined
   // title resurrects it as pending.
-  createRequest: (body: { media_type: "movie" | "series" | "book"; tmdb_id?: number; ol_key?: string; author?: string; title: string; year: number; poster_url?: string; overview?: string; quality_profile?: string; note?: string }) =>
+  // formats (books): read / listen / both; left out, the server uses the owner's default.
+  createRequest: (body: { media_type: "movie" | "series" | "book"; tmdb_id?: number; ol_key?: string; author?: string; title: string; year: number; poster_url?: string; overview?: string; quality_profile?: string; note?: string; formats?: "ebook" | "audiobook" | "both" }) =>
     req<{ request: MediaRequest; subscribed: boolean } | MediaRequest>("/api/v1/requests", { method: "POST", body: JSON.stringify(body) })
       .then((r): { request: MediaRequest; subscribed: boolean } => ("request" in r ? r : { request: r, subscribed: false })),
   approveRequest: (id: number, quality_profile?: string) =>

@@ -85,6 +85,8 @@ export const requests: { requests: MediaRequest[]; auto_approve: boolean; client
   requests: [
     { id: 1, media_type: "movie", tmdb_id: 1003, title: "Saltwind", year: 2023, poster_url: poster(3), status: "pending", requested_by: 3, requested_by_name: "deckhand", available: false, tracking: { stage: "pending" }, created_at: at, updated_at: at },
     { id: 2, media_type: "movie", tmdb_id: 1005, title: "Driftwood", year: 2025, poster_url: poster(5), status: "approved", requested_by: 3, requested_by_name: "deckhand", available: false, download_progress: 0.42, tracking: { stage: "downloading", progress: 0.42, eta_seconds: 900 }, created_at: at, updated_at: at },
+    // A book asked for as an audiobook: its card carries the "Listen" badge.
+    { id: 3, media_type: "book", tmdb_id: 0, ol_key: "OL9003W", author: "Hal Yard", formats: "audiobook", title: "Knots and Splices", year: 2017, status: "pending", requested_by: 3, requested_by_name: "deckhand", available: false, tracking: { stage: "pending" }, created_at: at, updated_at: at },
   ],
 };
 

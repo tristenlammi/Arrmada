@@ -278,18 +278,26 @@ func (s *Service) findDuplicate(ctx context.Context, title, author string) (Book
 	return NewIdentityIndex(list).Find(title, author)
 }
 
-// findByKey returns the library book with this catalogue key, if any.
+// findByKey returns the library book with this catalogue key, current or former, if any.
 func (s *Service) findByKey(ctx context.Context, key string) (Book, bool) {
-	list, err := s.repo.List(ctx)
+	id, ok := s.repo.BookIDForKey(ctx, key)
+	if !ok {
+		return Book{}, false
+	}
+	b, err := s.repo.Get(ctx, id)
 	if err != nil {
 		return Book{}, false
 	}
-	for _, b := range list {
-		if b.OLKey == key {
-			return b, true
-		}
+	return b, true
+}
+
+// aliasKey records key as one more of a book's keys, logging (by ids and key only) when
+// another book already holds it — a pair for the duplicates review, never a reason to
+// fail the add that learned it.
+func (s *Service) aliasKey(ctx context.Context, key string, bookID int64) {
+	if err := s.repo.AddKey(ctx, key, bookID, ""); err != nil {
+		s.log.Info("books: a catalogue key is already another book's", "key", key, "book_id", bookID, "err", err)
 	}
-	return Book{}, false
 }
 
 // Two rows that look like one book are never merged automatically. The old fold keyed

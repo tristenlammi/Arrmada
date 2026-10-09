@@ -3,6 +3,7 @@ import { api, type MyBook, type MyRequest } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { posterThumb } from "../lib/img";
 import { formatCheckDay, notFoundYet } from "../lib/format";
+import { stillComingLine } from "../lib/bookFormats";
 import { Link } from "react-router-dom";
 
 // MyBooks is the requester's view of the book library: every book that has a file,
@@ -194,7 +195,8 @@ function requestBadge(r: MyRequest): { label: string; tone: string } {
     case "paused": return { label: "Paused", tone: "var(--ink-dim)" };
     case "importing": return { label: "Importing", tone: "var(--accent)" };
     case "failed": return { label: "Retrying", tone: "var(--avoid)" };
-    case "available": case "partial": return { label: "Ready", tone: "var(--good)" };
+    case "available": return { label: "Ready", tone: "var(--good)" };
+    case "partial": return { label: "Partly ready", tone: "var(--good)" }; // one of two formats here
     case undefined: return { label: "Approved", tone: "var(--accent)" };
     default: return { label: "Searching", tone: "var(--accent)" };
   }
@@ -203,6 +205,8 @@ function requestBadge(r: MyRequest): { label: string; tone: string } {
 function RequestCard({ r }: { r: MyRequest }) {
   const st = requestBadge(r);
   const notFound = r.status === "approved" && r.stage === "searching" && r.note === "Not found yet";
+  // Which format is still coming ("Audiobook on the way"), once it's approved.
+  const coming = r.status === "approved" ? stillComingLine(r.waiting) : "";
   return (
     <div className="w-[120px] flex-none overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
       <CoverBox url={r.cover_url} title={r.title}>
@@ -211,6 +215,7 @@ function RequestCard({ r }: { r: MyRequest }) {
       <div className="p-2">
         <div className="truncate text-[11.5px] font-semibold" title={r.title}>{r.title}</div>
         {r.author && <div className="truncate text-[10.5px] text-ink-dim" title={r.author}>{r.author}</div>}
+        {coming && <div className="mt-0.5 truncate text-[10.5px]" style={{ color: "var(--accent)" }} title={coming}>{coming}</div>}
         {notFound && r.next_check_at && <div className="mt-0.5 truncate text-[10.5px]" style={{ color: "var(--avoid)" }} title={notFoundYet(r.next_check_at)}>Next check {formatCheckDay(r.next_check_at)}</div>}
       </div>
     </div>

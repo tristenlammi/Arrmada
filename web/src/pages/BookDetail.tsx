@@ -17,6 +17,14 @@ import { LastSearches, refreshSearches } from "../components/LastSearch";
 import { wantedCopy } from "../lib/bookSearch";
 import { libraryStatus } from "../lib/status";
 
+// ALIAS_SOURCE names where a former catalogue key came from, for the "Also catalogued as" line.
+const ALIAS_SOURCE: Record<string, string> = {
+  openlibrary: "Open Library",
+  hardcover: "Hardcover",
+  google: "Google Books",
+  request: "from a request",
+};
+
 function fmtSize(bytes?: number): string {
   if (!bytes || bytes <= 0) return "";
   const mb = bytes / 1024 ** 2;
@@ -99,6 +107,16 @@ export function BookDetail() {
                 )}
               </div>
               <div className="mt-1.5 text-[14px] font-semibold text-ink-dim">{b.author || "Unknown author"}</div>
+              {/* Keys the book had before (a Change match, the Hardcover upgrade): cards
+                  still carrying one of them show this book as in the library. */}
+              {b.aliases && b.aliases.length > 0 && (
+                <div className="mt-1 text-[11px] text-ink-faint">
+                  Also catalogued as{" "}
+                  {b.aliases.map((k, i) => (
+                    <span key={k.key}>{i > 0 && " · "}<span className="font-mono">{k.key}</span> ({ALIAS_SOURCE[k.source] ?? k.source})</span>
+                  ))}
+                </div>
+              )}
               {b.description && <p className="mt-3 max-h-[180px] overflow-y-auto text-[13px] leading-relaxed text-ink-dim">{b.description}</p>}
               {b.subjects && b.subjects.length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-1.5">{b.subjects.slice(0, 8).map((s) => <span key={s} className="rounded-full px-2 py-0.5 text-[11px]" style={{ background: "var(--panel-2)", color: "var(--ink-dim)" }}>{s}</span>)}</div>
