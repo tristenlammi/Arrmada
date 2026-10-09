@@ -3,8 +3,33 @@ import { NavLink } from "react-router-dom";
 import { visibleNav } from "../lib/nav";
 import { useMe, isAdmin } from "../lib/me";
 import { api } from "../lib/api";
+import { badgeFor, useAttention, type NavBadge } from "../lib/useAttention";
 import { FleetMark } from "./FleetMark";
 import { Icon } from "./icons";
+
+const PILL_TONE: Record<NavBadge["tone"], { background: string; color: string }> = {
+  accent: { background: "var(--accent-soft)", color: "var(--accent)" },
+  reject: { background: "var(--reject-soft)", color: "var(--reject)" },
+  avoid: { background: "var(--avoid-soft)", color: "var(--avoid)" },
+};
+
+// CountPill is a sidebar entry's live count; nothing at zero.
+function CountPill({ badge }: { badge: NavBadge | null }) {
+  if (!badge) return null;
+  return (
+    <>
+      <span
+        className="ml-auto min-w-[18px] rounded-full px-1.5 py-px text-center font-mono text-[10px] font-semibold"
+        style={PILL_TONE[badge.tone]}
+        title={badge.label}
+        aria-hidden
+      >
+        {badge.count > 99 ? "99+" : badge.count}
+      </span>
+      <span className="sr-only">, {badge.label}</span>
+    </>
+  );
+}
 
 function toggleTheme() {
   const root = document.documentElement;
@@ -16,6 +41,8 @@ function toggleTheme() {
 
 export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
   const { user, booksEnabled, musicEnabled } = useMe();
+  // Count pills from the Needs-you feed (the staff layout polls it; this only reads).
+  const attention = useAttention();
   // A dot beside Audiobooks: green when the server is running, red when it's switched on
   // but couldn't start, nothing when it's off.
   const [audioDot, setAudioDot] = useState<string | null>(null);
@@ -86,6 +113,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   {item.status === "audiobook-server" && audioDot && (
                     <span className="ml-auto h-1.5 w-1.5 rounded-full" style={{ background: audioDot }} title={audioDot === "var(--good)" ? "Running" : "Switched on but not running"} />
                   )}
+                  {item.badge && <CountPill badge={badgeFor(item.badge, attention?.counts)} />}
                 </NavLink>
               ))}
             </div>

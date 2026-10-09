@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { useTabParam } from "../lib/useTabParam";
 import { TabPanel, Tabs, type TabItem } from "../ui/Tabs";
@@ -114,6 +114,13 @@ export function stallLine(it: ActivityDownload): string | null {
   return `No progress for ${mins(st.idle_minutes)} · ${next}`;
 }
 
+// isProblem: a download that needs a look — errored, stalled, or stuck fetching its file
+// list. What ?show=problems (the Needs-you card's link) narrows the lists to.
+export function isProblem(it: Pick<ActivityDownload, "phase" | "state">): boolean {
+  const phase = it.phase || it.state;
+  return phase === "error" || phase === "stalled" || phase === "metadata" || it.state === "error";
+}
+
 type SortKey = "name" | "progress" | "speed" | "size" | "ratio" | "seedtime";
 type Tab = "downloads" | "seeding" | "searching" | "upcoming";
 const TAB_KEYS: readonly Tab[] = ["downloads", "seeding", "searching", "upcoming"];
@@ -149,6 +156,10 @@ export function Downloads() {
   const [showSettings, setShowSettings] = useState(false);
   const [tab, setTab] = useTabParam(TAB_KEYS, "downloads");
   const [seedSort, setSeedSort] = useState<SortKey>("ratio");
+  // ?show=problems: only the downloads that need a look (linked from Needs you).
+  const [params, setParams] = useSearchParams();
+  const problemsOnly = params.get("show") === "problems";
+  const showAll = () => setParams((p) => { const next = new URLSearchParams(p); next.delete("show"); return next; }, { replace: true });
 
   useEffect(() => {
     api.downloadClients().then((cs) => {
@@ -211,6 +222,7 @@ export function Downloads() {
   const filterSort = (list: ActivityDownload[], sortKey: SortKey) => {
     const q = query.trim().toLowerCase();
     let l = typeFilter === "all" ? list : list.filter((d) => (d.media_type ?? "movie") === typeFilter);
+    if (problemsOnly) l = l.filter(isProblem);
     l = q ? l.filter((d) => d.name.toLowerCase().includes(q)) : [...l];
     l.sort((a, b) => {
       switch (sortKey) {
@@ -224,8 +236,8 @@ export function Downloads() {
     });
     return l;
   };
-  const shownDownloads = useMemo(() => filterSort(activeDownloads, sort), [activeDownloads, query, sort, typeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
-  const shownSeeding = useMemo(() => filterSort(seedingDownloads, seedSort), [seedingDownloads, query, seedSort, typeFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shownDownloads = useMemo(() => filterSort(activeDownloads, sort), [activeDownloads, query, sort, typeFilter, problemsOnly]); // eslint-disable-line react-hooks/exhaustive-deps
+  const shownSeeding = useMemo(() => filterSort(seedingDownloads, seedSort), [seedingDownloads, query, seedSort, typeFilter, problemsOnly]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const shownSearching = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -313,6 +325,11 @@ export function Downloads() {
                 </button>
               );
             })}
+            {isDownloadTab && problemsOnly && (
+              <button onClick={showAll} title="Show every download" className="rounded-full px-3 py-1 text-[12px] font-semibold" style={{ border: "1px solid var(--avoid)", background: "var(--avoid-soft)", color: "var(--avoid)" }}>
+                Problems only ✕
+              </button>
+            )}
             <div className="ml-auto flex items-center gap-2">
               <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search…" className="w-[200px] rounded-lg px-3 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
               {tab === "downloads" && (
@@ -337,7 +354,7 @@ export function Downloads() {
           {!loaded ? null : noClient && isDownloadTab ? (
             <NoClientCard />
           ) : tab === "downloads" ? (
-            shownDownloads.length === 0 ? <Empty>Nothing downloading. Grab a release and it'll appear here.</Empty> : (
+            shownDownloads.length === 0 ? <Empty>{problemsOnly ? "No download needs a look right now." : "Nothing downloading. Grab a release and it'll appear here."}</Empty> : (
               <div className="flex flex-col gap-2">
                 {shownDownloads.map((it) => <DownloadCard key={it.hash} it={it} guard={guard} busy={!!busy[it.hash]} act={act} onRemoved={flash} onNote={flash} />)}
               </div>

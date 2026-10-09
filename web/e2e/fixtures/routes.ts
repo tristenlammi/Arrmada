@@ -56,6 +56,8 @@ export function routes(p: PersonaInfo): MockRoute[] {
 
     // Staff console
     get("/api/v1/dashboard", media.dashboard),
+    // The staff shell polls this on every page (sidebar badges, the Dashboard card).
+    get("/api/v1/attention", sys.attention),
     get("/api/v1/downloads", media.activity),
     get("/api/v1/wanted", media.wanted),
     { method: "POST", path: /^\/api\/v1\/wanted\/(movie|series|book|music)\/(\d+)\/search$/, status: 202, body: media.wantedSearchStarted },

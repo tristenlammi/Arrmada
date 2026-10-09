@@ -9,6 +9,7 @@ export const LINKS = {
   users: "/settings/users",
   plexConnection: "/insights?tab=settings",
   downloadsSearching: "/downloads?tab=searching",
+  downloadProblems: "/downloads?show=problems",
   downloadClients: "/downloadclients",
   indexers: "/indexers",
   subtitlesSettings: "/subtitles?tab=settings",

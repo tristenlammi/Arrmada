@@ -5,6 +5,7 @@ import { api, type ImportReview, type ReviewFile, type ReviewKind, type ReviewRe
 import { formatAgo, formatBytes } from "../lib/format";
 import { useLive } from "../lib/useLive";
 import { usePoll } from "../lib/usePoll";
+import { refreshAttention } from "../lib/useAttention";
 import { ConfirmDialog, Modal, StatusChip, useConfirm, useToast, type Tone } from "../ui";
 import { MapFilesModal } from "./reviews/MapFilesModal";
 import { guessLabel } from "./reviews/episodes";
@@ -69,7 +70,7 @@ export function Reviews() {
   const drop = (id: number) => setList((xs) => (xs ?? []).filter((r) => r.id !== id));
   const act = async (id: number, fn: () => Promise<unknown>, msg: string) => {
     setBusy(id);
-    try { await fn(); drop(id); toast(msg); }
+    try { await fn(); drop(id); toast(msg); refreshAttention(); }
     catch (e) { toast((e as Error).message, { tone: "error" }); }
     finally { setBusy(null); }
   };
@@ -127,6 +128,7 @@ export function Reviews() {
     setBulkBusy(true);
     try {
       const res = await api.bulkReviews(chosen.map((r) => r.id), action);
+      refreshAttention();
       const failed = new Set(res.failed.map((f) => f.id));
       setList((xs) => (xs ?? []).filter((r) => !selected.has(r.id) || failed.has(r.id)));
       setSelected(failed);

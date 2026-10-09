@@ -12,6 +12,7 @@ import { posterThumb } from "../lib/img";
 import { useCanHover } from "../lib/useCanHover";
 import { formatEta, notFoundYet } from "../lib/format";
 import { usePoll } from "../lib/usePoll";
+import { refreshAttention } from "../lib/useAttention";
 import { Button, IconButton, Modal, StatusChip, POSTER_CHIP_BG, TONE_HUE, useConfirm, useToast, type Tone, type ToastFn } from "../ui";
 
 // The Books tab is a separate Open Library experience; its code loads only when chosen.
@@ -593,7 +594,7 @@ function RequestPoster({ rq, staff, own, onChanged, flash, queueKnown = true }: 
   // message on failure — never a silent no-op.
   const act = async (fn: () => Promise<unknown>, okMsg: string) => {
     setBusy(true);
-    try { await fn(); flash(okMsg); onChanged(); }
+    try { await fn(); flash(okMsg); onChanged(); refreshAttention(); }
     catch (e) { flash((e as Error).message, { tone: "error" }); }
     finally { setBusy(false); }
   };
