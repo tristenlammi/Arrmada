@@ -214,7 +214,7 @@ export function Dashboard() {
             value={data && !data.queue_note ? data.queue.downloading : "—"}
             sub={data ? downloadingSub(data) : ""}
             title={data?.queue_note}
-            warn={!!data && (!!data.queue_note || data.queue.errored > 0)}
+            warn={!!data && (!!data.queue_note || data.queue.errored > 0 || (data.queue.stalled ?? 0) > 0)}
           />
         </div>
 
@@ -433,16 +433,16 @@ function ActivityRow({ e }: { e: ActivityEvent }) {
 }
 
 // downloadingSub is the Downloading tile's second line. An unreachable client used to read
-// "0 seeding", which looks like a quiet queue; errors are counted rather than only tinting
-// the tile; torrents waiting for peers are mentioned (they aren't counted as downloading).
+// "0 seeding", which looks like a quiet queue. Stalled and errored torrents lead, since
+// they are what needs a look (stalled ones aren't counted as downloading).
 export function downloadingSub(d: Pick<DashboardData, "queue" | "queue_note">): string {
   if (d.queue_note) return "Client unreachable";
   const q = d.queue;
   const parts: string[] = [];
-  if (q.errored > 0) parts.push(`${q.errored} errored`);
+  if ((q.stalled ?? 0) > 0) parts.push(`${q.stalled} stalled`);
+  if (q.errored > 0) parts.push(`${q.errored} error${q.errored === 1 ? "" : "s"}`);
   if (q.down_speed > 0) parts.push(`↓ ${bytes(q.down_speed)}/s`);
   parts.push(`${q.seeding} seeding`);
-  if ((q.stalled ?? 0) > 0) parts.push(`${q.stalled} waiting for peers`);
   return parts.join(" · ");
 }
 

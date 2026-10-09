@@ -10,11 +10,11 @@ describe("downloadingSub", () => {
   });
 
   it("counts errored torrents", () => {
-    expect(downloadingSub({ queue: q({ errored: 2, seeding: 3 }) })).toBe("2 errored · 3 seeding");
+    expect(downloadingSub({ queue: q({ errored: 2, seeding: 3 }) })).toBe("2 errors · 3 seeding");
   });
 
   it("mentions torrents waiting for peers only when there are some", () => {
     expect(downloadingSub({ queue: q({ seeding: 1 }) })).toBe("1 seeding");
-    expect(downloadingSub({ queue: q({ seeding: 1, stalled: 4 }) })).toBe("1 seeding · 4 waiting for peers");
+    expect(downloadingSub({ queue: q({ seeding: 1, stalled: 4 }) })).toBe("4 stalled · 1 seeding");
   });
 });

@@ -8,6 +8,7 @@ import { RemoveDownloadDialog, removedMessage } from "../components/RemoveDownlo
 import { usePoll } from "../lib/usePoll";
 import { api, type ActivityDownload, type ClientSettings, type DiskGuardHold, type SearchingItem } from "../lib/api";
 import { useMe } from "../lib/me";
+import { Menu } from "../ui";
 
 type MediaFilter = "all" | "movie" | "series" | "book" | "music";
 const TYPE_PILLS: { key: MediaFilter; label: string }[] = [
@@ -48,25 +49,64 @@ function fmtReleaseDate(iso: string): string {
   return dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
+// Stalled and errored transfers share the avoid tone: both need a look, neither is the
+// red of a refusal.
 const STATE_TONE: Record<string, string> = {
-  downloading: "var(--accent)", seeding: "var(--good)", paused: "var(--ink-faint)", error: "var(--reject)", checking: "var(--avoid)",
+  downloading: "var(--accent)", seeding: "var(--good)", paused: "var(--ink-faint)", error: "var(--avoid)", checking: "var(--avoid)",
   stalled: "var(--avoid)", metadata: "var(--ink-faint)", queued: "var(--ink-faint)", moving: "var(--avoid)", allocating: "var(--ink-faint)",
 };
+const PHASE_TEXT: Record<string, string> = {
+  downloading: "Downloading", seeding: "Seeding", paused: "Paused", error: "Error", checking: "Checking",
+  stalled: "Stalled", metadata: "Fetching metadata", queued: "Queued", moving: "Moving", allocating: "Allocating",
+};
+
+// mins humanizes a span of minutes: "45m", "3h", "2d 4h".
+export function mins(m: number): string {
+  if (m < 60) return `${Math.max(1, Math.round(m))}m`;
+  if (m < 24 * 60) return `${Math.round(m / 60)}h`;
+  const d = Math.floor(m / (24 * 60)), h = Math.round((m % (24 * 60)) / 60);
+  return h > 0 ? `${d}d ${h}h` : `${d}d`;
+}
+
+// idleMinutes is how long a torrent has gone without moving any data, from the client's
+// own last-activity time (or when it was added, if nothing ever arrived). null = unknown.
+function idleMinutes(it: ActivityDownload, nowSec: number): number | null {
+  const since = it.last_activity || it.added_on || 0;
+  if (since <= 0 || since > nowSec) return null;
+  return (nowSec - since) / 60;
+}
 
 // phaseLabel is the in-flight chip's text. The phase (when the server sends one) tells a
 // torrent nobody is seeding, or one still fetching its file list, from a live download —
 // the plain state calls all of those "downloading".
-function phaseLabel(it: ActivityDownload): { text: string; tone: string; tip?: string } {
+export function phaseLabel(it: ActivityDownload, nowSec = Date.now() / 1000): { text: string; tone: string; tip?: string } {
   const phase = it.phase || it.state;
   const tone = STATE_TONE[phase] ?? "var(--ink-faint)";
   if (phase === "stalled") {
     const seeds = it.seeds ?? 0;
     const swarm = it.swarm_seeds ?? 0;
-    return { text: `stalled · ${seeds} seed${seeds === 1 ? "" : "s"}`, tone, tip: `No peer is sending data. Connected to ${seeds} seed${seeds === 1 ? "" : "s"}; the tracker reports ${swarm} in the swarm.` };
+    const idle = idleMinutes(it, nowSec);
+    const nothingYet = !it.last_activity;
+    const idleText = idle == null ? "" : nothingYet ? ` · no data yet (${mins(idle)})` : ` · no data for ${mins(idle)}`;
+    return { text: `Stalled · ${seeds} seed${seeds === 1 ? "" : "s"}${idleText}`, tone, tip: `No peer is sending data. Connected to ${seeds} seed${seeds === 1 ? "" : "s"}; the tracker reports ${swarm} in the swarm. Reannounce asks the trackers for peers again.` };
   }
-  if (phase === "metadata") return { text: "fetching metadata", tone, tip: "Waiting for peers to send the torrent's file list." };
-  if (phase === "queued") return { text: "queued", tone, tip: "Waiting for a slot — the client's active-download limit is reached." };
-  return { text: phase, tone };
+  if (phase === "metadata") return { text: "Fetching metadata", tone, tip: "Waiting for peers to send the torrent's file list." };
+  if (phase === "queued") return { text: "Queued", tone, tip: "Waiting for a slot — the client's active-download limit is reached." };
+  return { text: PHASE_TEXT[phase] ?? phase, tone };
+}
+
+// stallLine is the card's second line for a grab Arrmada is watching: how long it has made
+// no progress and when stall fail-over tries another release. Shown only once there is
+// something to say — a torrent that is moving doesn't need it.
+export function stallLine(it: ActivityDownload): string | null {
+  const st = it.stall;
+  if (!st) return null;
+  const phase = it.phase || it.state;
+  if (st.idle_minutes < 10 && phase !== "stalled") return null;
+  if (st.off) return st.idle_minutes > 0 ? `No progress for ${mins(st.idle_minutes)} · auto-retry off` : "Auto-retry off";
+  if (st.idle_minutes <= 0) return null; // the clock is held (paused, queued, checking)
+  const next = st.failover_in_minutes > 0 ? `trying another release in ${mins(st.failover_in_minutes)}` : "trying another release on the next check";
+  return `No progress for ${mins(st.idle_minutes)} · ${next}`;
 }
 
 type SortKey = "name" | "progress" | "speed" | "size" | "ratio" | "seedtime";
@@ -251,7 +291,7 @@ export function Downloads() {
           {!loaded ? null : tab === "downloads" ? (
             shownDownloads.length === 0 ? <Empty>Nothing downloading. Grab a release and it'll appear here.</Empty> : (
               <div className="flex flex-col gap-2">
-                {shownDownloads.map((it) => <DownloadCard key={it.hash} it={it} guard={guard} busy={!!busy[it.hash]} act={act} onRemoved={flash} />)}
+                {shownDownloads.map((it) => <DownloadCard key={it.hash} it={it} guard={guard} busy={!!busy[it.hash]} act={act} onRemoved={flash} onNote={flash} />)}
               </div>
             )
           ) : tab === "seeding" ? (
@@ -317,10 +357,11 @@ function TypeChip({ mediaType }: { mediaType?: string }) {
 }
 
 // DownloadCard is an in-flight (incomplete) transfer: progress bar, speed, ETA, queue controls.
-function DownloadCard({ it, guard, busy, act, onRemoved }: { it: ActivityDownload; guard: DiskGuardHold | null; busy: boolean; act: (hash: string, fn: () => Promise<unknown>) => void; onRemoved: (m: string) => void }) {
+function DownloadCard({ it, guard, busy, act, onRemoved, onNote }: { it: ActivityDownload; guard: DiskGuardHold | null; busy: boolean; act: (hash: string, fn: () => Promise<unknown>) => Promise<void>; onRemoved: (m: string) => void; onNote: (m: string) => void }) {
   const paused = it.state === "paused";
   const [removing, setRemoving] = useState(false);
   const chip = phaseLabel(it);
+  const stall = stallLine(it);
   return (
     <div className="rounded-xl p-3.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
       <div className="flex items-center gap-3">
@@ -334,13 +375,24 @@ function DownloadCard({ it, guard, busy, act, onRemoved }: { it: ActivityDownloa
             <span className="font-mono text-[10.5px]" style={{ color: it.down_speed > 0 ? "var(--accent)" : "var(--ink-faint)" }}>{it.down_speed > 0 ? `↓${bytes(it.down_speed)}/s` : "—"}</span>
             <span className="font-mono text-[10.5px] text-ink-faint">ETA {eta(it.eta_seconds)}</span>
           </div>
+          {stall && <div className="mt-1 font-mono text-[10.5px]" style={{ color: "var(--avoid)" }}>{stall}</div>}
         </div>
         <div className="flex flex-none items-center gap-1">
           <ResumeBtn it={it} guard={guard} busy={busy} act={act} />
-          <IconBtn label="↑" title="Move up the queue" disabled={busy} onClick={() => act(it.hash, () => api.torrentAction(it.hash, "prio_up"))} />
-          <IconBtn label="↓" title="Move down the queue" disabled={busy} onClick={() => act(it.hash, () => api.torrentAction(it.hash, "prio_down"))} />
           <IconBtn label="Block" tone="var(--avoid)" title="Blocklist this release and grab a different one" disabled={busy} onClick={() => act(it.hash, () => api.blockDownload(it.hash, it.name))} />
           <IconBtn label="Delete" tone="var(--reject)" title="Remove from the client — asks what to do with the files" disabled={busy} onClick={() => setRemoving(true)} />
+          <Menu
+            trigger="⋯"
+            label={`More actions for ${it.name}`}
+            triggerClassName="rounded-md px-2 py-1 text-[11px] font-semibold"
+            triggerStyle={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}
+            items={[
+              { label: "Reannounce", busyLabel: "Reannouncing…", disabled: busy, onSelect: () => act(it.hash, async () => { await api.torrentAction(it.hash, "reannounce"); onNote("Asked the trackers for peers again."); }) },
+              { label: "Recheck files", busyLabel: "Rechecking…", disabled: busy, onSelect: () => act(it.hash, async () => { await api.torrentAction(it.hash, "recheck"); onNote("Rechecking the downloaded data."); }) },
+              { label: "Move up the queue", disabled: busy, onSelect: () => act(it.hash, () => api.torrentAction(it.hash, "prio_up")) },
+              { label: "Move down the queue", disabled: busy, onSelect: () => act(it.hash, () => api.torrentAction(it.hash, "prio_down")) },
+            ]}
+          />
         </div>
       </div>
       <div className="mt-2.5 flex items-center gap-2">
