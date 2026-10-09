@@ -261,6 +261,7 @@ func (a *api) registerRoutes(mux *router) {
 	// Download clients + queue
 	mux.HandleFunc("GET /api/v1/downloadclients", a.requireRole(auth.RoleManager, a.handleListDownloadClients))
 	mux.HandleFunc("POST /api/v1/downloadclients", a.requireRole(auth.RoleManager, a.handleCreateDownloadClient))
+	mux.HandleFunc("PUT /api/v1/downloadclients/{id}", a.requireRole(auth.RoleManager, a.handleUpdateDownloadClient))
 	mux.HandleFunc("DELETE /api/v1/downloadclients/{id}", a.requireRole(auth.RoleManager, a.handleDeleteDownloadClient))
 	mux.HandleFunc("POST /api/v1/downloadclients/{id}/test", a.requireRole(auth.RoleManager, a.handleTestDownloadClient))
 	mux.HandleFunc("GET /api/v1/downloadclients/{id}/status", a.requireRole(auth.RoleManager, a.handleDownloadClientStatus))

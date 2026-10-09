@@ -283,6 +283,49 @@ func TestReloginFailureSurfaced(t *testing.T) {
 	}
 }
 
+// Forget drops the cached session, so the next call logs in again with whatever is
+// stored now — a changed password takes effect without a restart.
+func TestForgetDropsCachedSession(t *testing.T) {
+	var logins atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v2/auth/login":
+			logins.Add(1)
+			fmt.Fprint(w, "Ok.")
+		case "/api/v2/app/version":
+			fmt.Fprint(w, "v5.0.0")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	q := NewQBittorrent()
+	dc := Client{ID: 7, URL: srv.URL, Username: "u", Password: "p"}
+	ctx := context.Background()
+	for range 2 {
+		if err := q.Ping(ctx, dc); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := logins.Load(); n != 1 {
+		t.Fatalf("logins before Forget = %d, want 1 (the session is cached)", n)
+	}
+	q.Forget(dc.ID)
+	if err := q.Ping(ctx, dc); err != nil {
+		t.Fatal(err)
+	}
+	if n := logins.Load(); n != 2 {
+		t.Errorf("logins after Forget = %d, want 2", n)
+	}
+	q.mu.Lock()
+	_, kept := q.loginMu[dc.ID]
+	q.mu.Unlock()
+	if !kept {
+		t.Error("Forget dropped the login mutex; an in-flight login would lose its single-flight")
+	}
+}
+
 func TestNormalizeState(t *testing.T) {
 	cases := map[string]string{
 		"downloading": "downloading",

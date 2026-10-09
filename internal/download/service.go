@@ -56,8 +56,44 @@ func (s *Service) EnsureBundled(ctx context.Context, url string) error {
 // Create stores a new client.
 func (s *Service) Create(ctx context.Context, c Client) (Client, error) { return s.repo.Create(ctx, c) }
 
-// Delete removes a client.
-func (s *Service) Delete(ctx context.Context, id int64) error { return s.repo.Delete(ctx, id) }
+// Get returns one stored client.
+func (s *Service) Get(ctx context.Context, id int64) (Client, error) { return s.repo.Get(ctx, id) }
+
+// sessionForgetter is a client implementation that caches a login per client id.
+type sessionForgetter interface {
+	Forget(id int64)
+}
+
+// forget drops any cached login for the client, so the next call logs in with what's
+// stored now rather than riding a session made with the old URL or password.
+func (s *Service) forget(id int64) {
+	for _, impl := range s.registry.impls {
+		if f, ok := impl.(sessionForgetter); ok {
+			f.Forget(id)
+		}
+	}
+}
+
+// Update changes a stored client in place (a blank password keeps the stored one) and
+// returns it as saved. A disabled client gets no new downloads and drops out of the
+// queue, stall checks and health, which all read ListEnabled.
+func (s *Service) Update(ctx context.Context, c Client) (Client, error) {
+	if err := s.repo.Update(ctx, c); err != nil {
+		return Client{}, err
+	}
+	s.forget(c.ID)
+	return s.repo.Get(ctx, c.ID)
+}
+
+// Delete removes a client. Its cached login goes with it: SQLite can hand the id to the
+// next client added, which must not inherit a session for somebody else's WebUI.
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	s.forget(id)
+	return nil
+}
 
 // Test checks connectivity + auth for a stored client.
 func (s *Service) Test(ctx context.Context, id int64) error {

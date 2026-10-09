@@ -243,10 +243,17 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	if freeGB, ok := freeGBField(a.roots().Downloads(ctx)); ok {
 		out["free_gb"] = freeGB
 	}
-	// How many download clients are configured, so an empty page can say why nothing is
-	// being grabbed. Left out when the list can't be read rather than guessing zero.
+	// How many download clients can take a download, so an empty page can say why nothing
+	// is being grabbed. A switched-off client can't, so it isn't counted. Left out when the
+	// list can't be read rather than guessing zero.
 	if clients, err := a.deps.Downloads.List(ctx); err == nil {
-		out["clients"] = len(clients)
+		n := 0
+		for _, c := range clients {
+			if c.Enabled {
+				n++
+			}
+		}
+		out["clients"] = n
 	}
 	if heldCount > 0 {
 		out["disk_guard"] = map[string]any{

@@ -313,6 +313,8 @@ export interface DownloadClient {
   username?: string;
   category?: string;
   enabled: boolean;
+  /** The packaged qBittorrent: startup re-adds it, so its URL is fixed and a delete won't stick. */
+  bundled?: boolean;
 }
 
 export interface NewDownloadClient {
@@ -320,8 +322,10 @@ export interface NewDownloadClient {
   kind: string;
   url: string;
   username?: string;
+  /** On an edit, blank keeps the stored password (it is never sent back). */
   password?: string;
   category?: string;
+  enabled?: boolean;
 }
 
 export interface NotificationConn {
@@ -1565,6 +1569,8 @@ export const api = {
     req<{ clients: DownloadClient[] }>("/api/v1/downloadclients").then((r) => r.clients),
   createDownloadClient: (body: NewDownloadClient) =>
     req<DownloadClient>("/api/v1/downloadclients", { method: "POST", body: JSON.stringify(body) }),
+  updateDownloadClient: (id: number, body: NewDownloadClient) =>
+    req<DownloadClient>(`/api/v1/downloadclients/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteDownloadClient: (id: number) =>
     req<void>(`/api/v1/downloadclients/${id}`, { method: "DELETE" }),
   testDownloadClient: (id: number) =>

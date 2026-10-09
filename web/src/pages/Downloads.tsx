@@ -102,7 +102,9 @@ export function Downloads() {
 
   useEffect(() => {
     api.downloadClients().then((cs) => {
-      const qb = cs.find((c) => c.kind === "qbittorrent") ?? cs[0];
+      // A switched-off client gets no downloads, so its settings aren't the ones in play.
+      const on = cs.filter((c) => c.enabled);
+      const qb = on.find((c) => c.kind === "qbittorrent") ?? on[0];
       if (qb) setClientId(qb.id);
     }).catch(() => {});
   }, []);
@@ -209,7 +211,7 @@ export function Downloads() {
 
         {clients === 0 && (
           <div className="mb-4 rounded-lg p-3.5 text-[12.5px]" style={{ border: "1px solid var(--avoid)", background: "var(--avoid-soft)", color: "var(--avoid)" }}>
-            No download client is set up, so Arrmada can't grab anything. Add one on the{" "}
+            No download client is set up and switched on, so Arrmada can't grab anything. Add or enable one on the{" "}
             <Link to={LINKS.downloadClients} className="font-semibold underline" style={{ color: "inherit" }}>Download clients</Link> page.
           </div>
         )}

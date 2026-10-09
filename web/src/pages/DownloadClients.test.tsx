@@ -42,6 +42,56 @@ describe("DownloadClients delete (INT-04)", () => {
   });
 });
 
+describe("DownloadClients edit and enable (INT-05)", () => {
+  it("edits in place: prefilled, blank password kept, then tested", async () => {
+    vi.spyOn(api, "downloadClients").mockResolvedValue([client({ username: "admin" })]);
+    const upd = vi.spyOn(api, "updateDownloadClient").mockResolvedValue(client({ name: "Home qB" }));
+    const test = vi.spyOn(api, "testDownloadClient").mockResolvedValue({ ok: true });
+    page();
+    fireEvent.click(await screen.findByText("Edit"));
+    expect((screen.getByDisplayValue("http://qb:8080") as HTMLInputElement).readOnly).toBe(false);
+    expect(screen.getByDisplayValue("admin")).toBeTruthy();
+    const pw = screen.getByPlaceholderText(/leave blank to keep/) as HTMLInputElement;
+    expect(pw.value).toBe("");
+    fireEvent.change(screen.getByDisplayValue("qBittorrent"), { target: { value: "Home qB" } });
+    await act(async () => { fireEvent.click(screen.getByText("Save changes")); });
+    expect(upd).toHaveBeenCalledWith(1, expect.objectContaining({ name: "Home qB", url: "http://qb:8080", username: "admin", password: "", enabled: true }));
+    expect(test).toHaveBeenCalledWith(1);
+    expect(await screen.findByText("✓ Connected")).toBeTruthy();
+  });
+
+  it("keeps the bundled client's URL read-only and warns its delete won't stick", async () => {
+    vi.spyOn(api, "downloadClients").mockResolvedValue([client({ bundled: true, url: "http://arrmada-qbittorrent:8080" })]);
+    page();
+    fireEvent.click(await screen.findByText("Edit"));
+    expect((screen.getByDisplayValue("http://arrmada-qbittorrent:8080") as HTMLInputElement).readOnly).toBe(true);
+    fireEvent.click(screen.getByText("Delete"));
+    expect(within(screen.getByRole("dialog")).getByText(/re-added on the next restart; disable it instead/)).toBeTruthy();
+  });
+
+  it("the switch saves enabled via PUT, and a disabled card says it gets no downloads", async () => {
+    const list = vi.spyOn(api, "downloadClients").mockResolvedValue([client()]);
+    const upd = vi.spyOn(api, "updateDownloadClient").mockResolvedValue(client({ enabled: false }));
+    page();
+    const sw = await screen.findByRole("switch", { name: "qBittorrent enabled" });
+    expect(sw.getAttribute("aria-checked")).toBe("true");
+    list.mockResolvedValue([client({ enabled: false })]);
+    await act(async () => { fireEvent.click(sw); });
+    expect(upd).toHaveBeenCalledWith(1, expect.objectContaining({ enabled: false, password: "" }));
+    expect(await screen.findByText(/Disabled: gets no new downloads/)).toBeTruthy();
+    expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("shows a failed toggle on the card", async () => {
+    vi.spyOn(api, "downloadClients").mockResolvedValue([client()]);
+    vi.spyOn(api, "updateDownloadClient").mockRejectedValue(new Error("download client not found"));
+    page();
+    const sw = await screen.findByRole("switch");
+    await act(async () => { fireEvent.click(sw); });
+    expect(await screen.findByText(/Couldn't disable it: download client not found/)).toBeTruthy();
+  });
+});
+
 describe("DownloadClients add form (INT-04)", () => {
   it("starts with no URL, a container-relative placeholder, and one column on a phone", async () => {
     vi.spyOn(api, "downloadClients").mockResolvedValue([]);
