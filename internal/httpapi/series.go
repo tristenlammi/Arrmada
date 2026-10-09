@@ -589,26 +589,15 @@ func (a *api) handleRefreshSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	// The owner's own Refresh is the one place a renumber may move files.
-	_, rr, err := a.deps.Series.Refresh(ctx, id, series.RefreshOptions{AllowRebuild: true})
-	if err != nil {
+	// Even the owner's Refresh never renumbers: a numbering change becomes a proposal the
+	// page shows (GET .../numbering), and only its Apply moves files.
+	if _, _, err := a.deps.Series.Refresh(ctx, id, series.RefreshOptions{}); err != nil {
 		if errors.Is(err, series.ErrNotFound) {
 			a.writeError(w, http.StatusNotFound, "series not found")
 			return
 		}
 		a.writeError(w, http.StatusInternalServerError, "could not refresh series")
 		return
-	}
-	// A rebuild moved files to new (season, episode) rows but left them at their old on-disk
-	// names; rename brings the library into line before the rescan reads it — through the
-	// collision-safe rename, so no file is ever replaced.
-	if rr.Renumbered {
-		if res, rerr := a.deps.Automation.SeriesRename(ctx, id, nil); rerr != nil {
-			a.deps.Log.Warn("series: rename after renumber failed", "series_id", id, "err", rerr)
-		} else {
-			a.deps.Log.Info("series: renamed files after renumber", "series_id", id, "moved", res.Moved)
-			a.deps.Automation.LogRenameSkips(id, res)
-		}
 	}
 	a.deps.Automation.RescanSeries(ctx, id)
 	s, err := a.deps.Series.Get(ctx, id)

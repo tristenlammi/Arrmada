@@ -1186,6 +1186,31 @@ export interface RenameSkip {
   reason: string;
 }
 
+// A renumber a refresh found but didn't apply: every file it would move, for review.
+export interface NumberingRemap {
+  absolute: number;
+  old: string; // "S02E22"
+  new: string; // "S03E01", or "" when the new numbering has no place for the file
+  file: string; // base name
+}
+export interface NumberingPending {
+  from: string;
+  to: string;
+  created_at: string;
+  plan_hash: string;
+  files: number; // distinct files that would move
+  remaps: NumberingRemap[];
+}
+export interface SeriesNumbering {
+  source: string;
+  pending: NumberingPending | null;
+}
+// The Apply job's result.
+export interface NumberingApplied {
+  moved: number;
+  skipped: RenameSkip[];
+}
+
 export interface QueueItem {
   hash: string;
   name: string;
@@ -1831,6 +1856,14 @@ export const api = {
   // and reported, never moved blind.
   renameSeries: (id: number, items: SeriesRenameItem[]) =>
     req<{ renamed: number; skipped: RenameSkip[] }>(`/api/v1/series/${id}/rename`, { method: "POST", body: JSON.stringify({ items }) }),
+  // A numbering change waiting for review (pending: null when there's none).
+  seriesNumbering: (id: number) => req<SeriesNumbering>(`/api/v1/series/${id}/numbering`),
+  // Applies the reviewed plan as a job (its result is a NumberingApplied). A plan that
+  // changed since it was shown is refused with a 409 and nothing moves.
+  applySeriesNumbering: (id: number, plan_hash: string) =>
+    req<JobRef>(`/api/v1/series/${id}/numbering/apply`, { method: "POST", body: JSON.stringify({ plan_hash }) }),
+  dismissSeriesNumbering: (id: number) =>
+    req<void>(`/api/v1/series/${id}/numbering/pending`, { method: "DELETE" }),
   setSeriesMonitored: (id: number, monitored: boolean) =>
     req<{ monitored: boolean }>(`/api/v1/series/${id}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
   setSeriesProfile: (id: number, quality_profile: string) =>

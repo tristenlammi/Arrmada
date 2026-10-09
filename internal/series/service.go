@@ -43,6 +43,8 @@ type Service struct {
 
 	sceneMu    sync.Mutex
 	sceneCache map[int64]map[string]int // series id → scene "S-E" → absolute (in-memory)
+
+	seriesLocks sync.Map // series id → *sync.Mutex: one refresh or apply per show at a time
 }
 
 // SetSceneMapper installs the TheXEM client used to reconcile split-season anime.
@@ -259,17 +261,20 @@ func detectSeriesType(d *metadata.SeriesDetails) string {
 
 // RefreshOptions says what a refresh may do beyond keeping the listing current.
 type RefreshOptions struct {
-	// AllowRebuild lets the refresh renumber the show — move files onto new (season,
-	// episode) rows — when an authoritative source says the numbering model changed. Only
-	// the owner's own Refresh sets it. A scheduled, refresh-all or import-time refresh
-	// runs unattended, and a renumber it got wrong moved and renamed files on its own.
-	AllowRebuild bool
+	// ApplyPlan is the hash of a numbering proposal the owner reviewed and applied. The
+	// refresh renumbers the show — moves files onto new (season, episode) rows — only
+	// when the fresh listing still produces exactly that plan. Every other refresh, the
+	// owner's own Refresh included, at most stores a proposal: a renumber nobody looked
+	// at moved and renamed files on its own.
+	ApplyPlan string
 }
 
 // RefreshResult reports what a refresh did to the episode numbering.
 type RefreshResult struct {
-	// Renumbered: files ended up on a new (season, episode), so the caller should rename
-	// them on disk to match. Never set unless RefreshOptions.AllowRebuild was.
+	// Rebuilt: the reviewed plan (RefreshOptions.ApplyPlan) was applied and the listing
+	// now follows the fresh source. Renumbered: files ended up on a new (season,
+	// episode), so the caller should rename them on disk to match.
+	Rebuilt    bool
 	Renumbered bool
 	Remaps     []EpisodeRemap
 	// Fallback: the numbering source failed, so the listing was a stand-in and only
@@ -278,6 +283,8 @@ type RefreshResult struct {
 	// ModelChanged: the fresh listing numbers the show differently from what's stored,
 	// whether or not the refresh was allowed to act on it.
 	ModelChanged bool
+	// Proposed: the change can be applied, and is stored as a proposal for review.
+	Proposed bool
 }
 
 // Refresh re-pulls metadata for a series, adding any newly-announced seasons or episodes.
@@ -287,10 +294,26 @@ type RefreshResult struct {
 // When the source has changed the season MODEL — e.g. a TVDB key was added and anime that
 // was on TMDB's 20-season, continuously-numbered listing is now TVDB's 22-season, per-season
 // listing — keeping each file on its (season, episode) would be wrong. Refresh detects that
-// case and, when opts.AllowRebuild says the owner asked for it, rebuilds the listing,
-// carrying files across by absolute number; RefreshResult.Renumbered then tells the caller
-// to rename them on disk. See applyNumbering for when a rebuild is trusted.
+// case and stores a proposal listing every file that would move; ApplyNumbering carries the
+// files across by absolute number once the owner has reviewed it. See applyNumbering for
+// when a change can be applied at all.
+//
+// Refreshes of one show never interleave, so an Apply can't race a scheduled refresh.
 func (s *Service) Refresh(ctx context.Context, id int64, opts RefreshOptions) (Series, RefreshResult, error) {
+	unlock := s.lockSeries(id)
+	defer unlock()
+	return s.refresh(ctx, id, opts)
+}
+
+// lockSeries holds a show's refresh lock until the returned func is called.
+func (s *Service) lockSeries(id int64) func() {
+	m, _ := s.seriesLocks.LoadOrStore(id, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+func (s *Service) refresh(ctx context.Context, id int64, opts RefreshOptions) (Series, RefreshResult, error) {
 	var res RefreshResult
 	sr, err := s.repo.Get(ctx, id)
 	if err != nil {
@@ -376,11 +399,11 @@ func (s *Service) hasAliasKey(ctx context.Context, id int64, key string) bool {
 //     the whole story: files never move, so there's no model change to guard against.
 //   - For anime, a model change is a season holding files that the fresh listing no
 //     longer has, or — only when the absolutes are real TVDB numbers — an absolute at a
-//     different (season, episode). A rebuild (which carries files by absolute number)
-//     runs only when the owner asked (AllowRebuild) and the fresh listing is TVDB's: TVDB
-//     is the highest-priority source, so moving onto it from anything is an upgrade (the
-//     TVDB-key-added case the rebuild exists for). Anything else keeps the stored
-//     numbering and says so in History.
+//     different (season, episode). When the fresh listing is TVDB's — the highest-priority
+//     source, so moving onto it from anything is an upgrade (the TVDB-key-added case the
+//     rebuild exists for) — the change is stored as a proposal for the owner to review; a
+//     rebuild (which carries files by absolute number) runs only for the Apply of that
+//     exact plan. Anything else keeps the stored numbering and says so in History.
 func (s *Service) applyNumbering(ctx context.Context, sr Series, d *metadata.SeriesDetails, seasons []Season, opts RefreshOptions) RefreshResult {
 	var res RefreshResult
 	id := sr.ID
@@ -417,46 +440,51 @@ func (s *Service) applyNumbering(ctx context.Context, sr Series, d *metadata.Ser
 	res.ModelChanged = sr.IsAnime() && numberingModelChanged(seasons, storedSeasons, authoritative)
 
 	switch {
-	case res.ModelChanged && opts.AllowRebuild && authoritative:
-		remaps, rerr := s.repo.RebuildEpisodes(ctx, id, seasons)
-		if rerr != nil {
-			// A rebuild that can't complete falls back to the additive path — better a
-			// show with stale numbering than one left half-rebuilt.
-			s.log.Warn("series: numbering rebuild failed — adding new episodes only", "series", sr.Title, "err", rerr)
+	case res.ModelChanged && authoritative:
+		// The owner can apply this change, but only once they've seen it: plan it, and
+		// rebuild only when this is the Apply of exactly that plan.
+		plan, perr := s.repo.PlanRebuild(ctx, id, seasons)
+		if perr != nil {
+			s.log.Warn("series: couldn't plan the renumber — adding new episodes only", "series", sr.Title, "err", perr)
 			s.addOnlyNewEpisodes(ctx, sr, seasons)
 			return res
 		}
-		res.Remaps = remaps
-		res.Renumbered = len(remaps) > 0
-		s.log.Info("series: rebuilt episode numbering to match the metadata source",
-			"series", sr.Title, "source", fresh, "files_remapped", len(remaps))
-		if res.Renumbered {
-			s.AddEvent(ctx, id, "renumbered", fmt.Sprintf(
-				"Episode numbering rebuilt from %s; %d file(s) remapped and renamed", sourceLabel(fresh), len(remaps)))
+		hash := PlanHash(plan)
+		if opts.ApplyPlan != "" && opts.ApplyPlan == hash {
+			return s.rebuild(ctx, sr, seasons, fresh, res)
 		}
-		s.pruneAndBackfill(ctx, sr, seasons)
-		s.setNumberingSource(ctx, sr, fresh)
+		res.Proposed = true
+		n := filesInPlan(plan)
+		isNew, uerr := s.repo.UpsertNumberingPending(ctx, id, NumberingPending{From: stored, To: fresh, PlanHash: hash, Remaps: plan})
+		if uerr != nil {
+			s.log.Warn("series: couldn't store the numbering proposal", "series", sr.Title, "err", uerr)
+		}
+		s.log.Warn("series: numbering model changed — proposed for review", "series", sr.Title,
+			"stored_source", stored, "fresh_source", fresh, "files_that_would_move", n, "applying", opts.ApplyPlan != "")
+		if isNew {
+			// One History line per distinct plan, not one every six hours. Anime takes no
+			// new episodes from a listing numbered differently (see addOnlyNewEpisodes),
+			// so say that too — an airing show is stuck until this is resolved.
+			s.AddEvent(ctx, id, "numbering", fmt.Sprintf(
+				"Numbering from %s differs from what's stored — %d file%s would move. New episodes won't be added until it's applied: review it on the series page.",
+				sourceLabel(fresh), n, plural(n)))
+		}
+		s.addOnlyNewEpisodes(ctx, sr, seasons)
 
 	case res.ModelChanged:
-		// Not allowed to act on it: keep the stored numbering and tell the owner what a
-		// manual Refresh would do, or that nothing will. Anime takes no new episodes from
-		// a listing numbered differently (see addOnlyNewEpisodes), so say that too — an
-		// airing show is stuck until this is resolved.
-		n := filesThatWouldMove(seasons, storedSeasons)
-		var detail string
-		if authoritative {
-			detail = fmt.Sprintf("Numbering from %s differs from what's stored — %d file%s would move. New episodes won't be added until it's applied: press Refresh & rescan to apply it.",
-				sourceLabel(fresh), n, plural(n))
-		} else {
-			detail = fmt.Sprintf("Numbering from %s differs from what's stored (%s) — kept the stored numbering; nothing was moved. New episodes won't be added until %s.",
-				sourceLabel(fresh), sourceLabel(stored), untilStoredSourceBack(stored))
-		}
+		// Nothing the owner can apply: keep the stored numbering and say what would end
+		// this. A proposal from an earlier listing no longer stands.
+		s.clearPending(ctx, sr)
+		detail := fmt.Sprintf("Numbering from %s differs from what's stored (%s) — kept the stored numbering; nothing was moved. New episodes won't be added until %s.",
+			sourceLabel(fresh), sourceLabel(stored), untilStoredSourceBack(stored))
 		s.log.Warn("series: numbering model changed — not rebuilding", "series", sr.Title,
-			"stored_source", stored, "fresh_source", fresh, "files_that_would_move", n, "manual", opts.AllowRebuild)
+			"stored_source", stored, "fresh_source", fresh)
 		s.addEventOnce(ctx, id, "numbering", detail)
 		s.addOnlyNewEpisodes(ctx, sr, seasons)
 
 	default:
+		// The listing agrees with what's stored, so nothing is waiting for review.
+		s.clearPending(ctx, sr)
 		if err := s.repo.InsertSeasons(ctx, id, seasons); err != nil {
 			s.log.Warn("series: refresh insert seasons failed", "series", sr.Title, "err", err)
 			return res
@@ -638,29 +666,100 @@ func numberingModelChanged(desired []Season, stored []Season, authoritative bool
 	return false
 }
 
-// filesThatWouldMove counts stored files whose absolute episode the fresh listing places
-// at a different (season, episode) — what a rebuild would remap and rename.
-func filesThatWouldMove(desired []Season, stored []Season) int {
-	at := map[int][2]int{}
-	for _, sn := range desired {
-		for _, ep := range sn.Episodes {
-			if ep.AbsoluteNumber > 0 {
-				at[ep.AbsoluteNumber] = [2]int{sn.SeasonNumber, ep.EpisodeNumber}
-			}
+// filesInPlan counts the files a plan moves — one per file, however many episode rows a
+// double-length file serves.
+func filesInPlan(plan []EpisodeRemap) int {
+	seen := map[string]bool{}
+	for _, r := range plan {
+		if !r.Unplaced {
+			seen[r.FilePath] = true
 		}
 	}
-	n := 0
-	for _, sn := range stored {
-		for _, ep := range sn.Episodes {
-			if !ep.HasFile || ep.AbsoluteNumber <= 0 {
-				continue
-			}
-			if se, ok := at[ep.AbsoluteNumber]; ok && (se[0] != sn.SeasonNumber || se[1] != ep.EpisodeNumber) {
-				n++
-			}
-		}
+	return len(seen)
+}
+
+// rebuild applies a reviewed renumber: the listing is replaced, files are carried by
+// absolute number (the same planner the review showed), and the proposal is closed.
+func (s *Service) rebuild(ctx context.Context, sr Series, seasons []Season, fresh string, res RefreshResult) RefreshResult {
+	remaps, err := s.repo.RebuildEpisodes(ctx, sr.ID, seasons)
+	if err != nil {
+		// A rebuild that can't complete changes nothing (one transaction); the additive
+		// path keeps the show as it was — better stale numbering than half a rebuild.
+		s.log.Warn("series: numbering rebuild failed — adding new episodes only", "series", sr.Title, "err", err)
+		s.addOnlyNewEpisodes(ctx, sr, seasons)
+		return res
 	}
-	return n
+	res.Rebuilt = true
+	res.Remaps = remaps
+	res.Renumbered = len(remaps) > 0
+	s.log.Info("series: rebuilt episode numbering to match the metadata source",
+		"series", sr.Title, "source", fresh, "files_remapped", len(remaps))
+	detail := fmt.Sprintf("Episode numbering rebuilt from %s", sourceLabel(fresh))
+	if len(remaps) > 0 {
+		detail += ": " + remapLines(remaps)
+	}
+	s.AddEvent(ctx, sr.ID, "renumbered", detail)
+	s.pruneAndBackfill(ctx, sr, seasons)
+	s.setNumberingSource(ctx, sr, fresh)
+	s.clearPending(ctx, sr)
+	return res
+}
+
+func (s *Service) clearPending(ctx context.Context, sr Series) {
+	if err := s.repo.ClearNumberingPending(ctx, sr.ID); err != nil {
+		s.log.Warn("series: couldn't clear the numbering proposal", "series", sr.Title, "err", err)
+	}
+}
+
+// Numbering is a show's numbering source and the renumber waiting for review, if any.
+type Numbering struct {
+	Source  string            `json:"source"`
+	Pending *NumberingPending `json:"pending"`
+}
+
+// NumberingFor returns the show's numbering source and its pending proposal (nil when
+// there's none, or the owner dismissed it).
+func (s *Service) NumberingFor(ctx context.Context, id int64) (Numbering, error) {
+	sr, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return Numbering{}, err
+	}
+	p, err := s.repo.NumberingPendingFor(ctx, id)
+	if err != nil {
+		return Numbering{}, err
+	}
+	return Numbering{Source: sr.NumberingSource, Pending: p}, nil
+}
+
+// ApplyNumbering applies the proposal the owner reviewed. It re-fetches the metadata and
+// re-plans under the show's refresh lock, and rebuilds only when the fresh plan is the
+// one they saw (planHash); otherwise nothing moves and ErrStalePlan says to look again —
+// the refresh it ran has stored the current plan for review. The caller renames the
+// returned remaps on disk.
+func (s *Service) ApplyNumbering(ctx context.Context, id int64, planHash string) (RefreshResult, error) {
+	if planHash == "" {
+		return RefreshResult{}, ErrStalePlan
+	}
+	unlock := s.lockSeries(id)
+	defer unlock()
+	_, res, err := s.refresh(ctx, id, RefreshOptions{ApplyPlan: planHash})
+	if err != nil {
+		return res, err
+	}
+	if !res.Rebuilt {
+		return res, ErrStalePlan
+	}
+	return res, nil
+}
+
+// DismissNumbering hides the pending proposal and leaves everything as it is. The same
+// plan isn't proposed again; a different one is.
+func (s *Service) DismissNumbering(ctx context.Context, id int64) error {
+	if err := s.repo.DismissNumberingPending(ctx, id); err != nil {
+		return err
+	}
+	s.AddEvent(ctx, id, "numbering", "Numbering change dismissed — the stored numbering stays")
+	return nil
 }
 
 // SetMonitored toggles a series.

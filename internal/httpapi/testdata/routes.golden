@@ -24,6 +24,7 @@ DELETE /api/v1/series/{id} staff -
 DELETE /api/v1/series/{id}/aliases/{alias} staff -
 DELETE /api/v1/series/{id}/blocklist/{bid} staff -
 DELETE /api/v1/series/{id}/duplicates staff -
+DELETE /api/v1/series/{id}/numbering/pending staff -
 DELETE /api/v1/series/{id}/scene-map/{season} staff -
 DELETE /api/v1/series/{id}/seasons/{season}/episodes/{episode}/file staff -
 DELETE /api/v1/system/backups/restore-pending admin -
@@ -162,6 +163,7 @@ GET /api/v1/series/{id}/delete-preview staff -
 GET /api/v1/series/{id}/duplicates staff -
 GET /api/v1/series/{id}/history staff -
 GET /api/v1/series/{id}/manualimport staff -
+GET /api/v1/series/{id}/numbering staff -
 GET /api/v1/series/{id}/releases staff -
 GET /api/v1/series/{id}/rename staff -
 GET /api/v1/series/{id}/scene-map staff -
@@ -282,6 +284,7 @@ POST /api/v1/series/{id}/blocklist staff -
 POST /api/v1/series/{id}/grab staff -
 POST /api/v1/series/{id}/grabtorrent staff -
 POST /api/v1/series/{id}/manualimport staff -
+POST /api/v1/series/{id}/numbering/apply staff -
 POST /api/v1/series/{id}/refresh staff -
 POST /api/v1/series/{id}/rename staff -
 POST /api/v1/series/{id}/search staff -

@@ -444,6 +444,30 @@ func holdUnpreviewed(rows []renameRow, only []SeriesRenameItem) ([]renameRow, []
 	return out, skipped
 }
 
+// RenameRemapped renames exactly the files an applied renumber carried to new episodes,
+// through the collision-safe rename — the moves the owner reviewed, and nothing else. A
+// file that's merely named off-scheme stays as it is: that's the Rename button's job, with
+// its own preview. Moves that can't happen come back as skips.
+func (c *Coordinator) RenameRemapped(ctx context.Context, seriesID int64, remaps []series.EpisodeRemap) (SeriesRenameResult, error) {
+	moved := map[string]bool{}
+	for _, r := range remaps {
+		if !r.Unplaced {
+			moved[r.FilePath] = true
+		}
+	}
+	preview, err := c.SeriesRenamePreview(ctx, seriesID)
+	if err != nil {
+		return SeriesRenameResult{Skipped: []RenameSkip{}}, err
+	}
+	only := []SeriesRenameItem{} // non-nil: an empty list renames nothing
+	for _, it := range preview {
+		if moved[it.From] {
+			only = append(only, it)
+		}
+	}
+	return c.SeriesRename(ctx, seriesID, only)
+}
+
 // LogRenameSkips warns about each file a rename after a renumber left alone. Those
 // renames run unattended, so the log and the History event are the only record.
 func (c *Coordinator) LogRenameSkips(seriesID int64, res SeriesRenameResult) {

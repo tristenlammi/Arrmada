@@ -36,13 +36,13 @@ func TestRefreshFallbackNeverRebuilds(t *testing.T) {
 	}
 	fm.d.Seasons, fm.d.NumberingSource, fm.d.NumberingFallback = standIn, "tmdb", true
 
-	for _, allow := range []bool{false, true} { // even the owner's Refresh, mid-outage
-		_, res, err := svc.Refresh(ctx, sr.ID, RefreshOptions{AllowRebuild: allow})
+	for _, plan := range []string{"", "a-plan"} { // even an Apply, mid-outage
+		_, res, err := svc.Refresh(ctx, sr.ID, RefreshOptions{ApplyPlan: plan})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !res.Fallback || res.Renumbered || len(res.Remaps) != 0 {
-			t.Fatalf("allow=%v: result = %+v, want a fallback that renumbers nothing", allow, res)
+		if !res.Fallback || res.Renumbered || res.Rebuilt || len(res.Remaps) != 0 {
+			t.Fatalf("plan=%q: result = %+v, want a fallback that renumbers nothing", plan, res)
 		}
 	}
 	if got := mustFile(t, svc, ctx, sr.ID, 2, 1); got != file {
@@ -74,7 +74,7 @@ func TestRefreshFallbackNeverRebuilds(t *testing.T) {
 		t.Fatal(err)
 	}
 	afm.d.Seasons, afm.d.NumberingSource, afm.d.NumberingFallback = listing(5), "tmdb", true
-	if _, res, _ := asvc.Refresh(actx, as.ID, RefreshOptions{AllowRebuild: true}); !res.Fallback || res.Renumbered {
+	if _, res, _ := asvc.Refresh(actx, as.ID, RefreshOptions{ApplyPlan: "a-plan"}); !res.Fallback || res.Renumbered {
 		t.Fatalf("anime fallback result = %+v", res)
 	}
 	if asvc.EpisodeExists(actx, as.ID, 1, 5) {
@@ -100,13 +100,13 @@ func TestRefreshStandardCountShiftKeepsFilesOnSE(t *testing.T) {
 	}
 
 	fm.d.Seasons = listing(4, 2)
-	for _, allow := range []bool{false, true} {
-		_, res, err := svc.Refresh(ctx, sr.ID, RefreshOptions{AllowRebuild: allow})
+	for _, plan := range []string{"", "a-plan"} {
+		_, res, err := svc.Refresh(ctx, sr.ID, RefreshOptions{ApplyPlan: plan})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if res.ModelChanged || res.Renumbered || res.Fallback {
-			t.Errorf("allow=%v: result = %+v, want a plain refresh", allow, res)
+		if res.ModelChanged || res.Renumbered || res.Fallback || res.Proposed {
+			t.Errorf("plan=%q: result = %+v, want a plain refresh", plan, res)
 		}
 	}
 	if mustFile(t, svc, ctx, sr.ID, 2, 1) != f1 || mustFile(t, svc, ctx, sr.ID, 2, 2) != f2 {
@@ -126,7 +126,7 @@ func TestRefreshStandardCountShiftKeepsFilesOnSE(t *testing.T) {
 	s2, _ := svc2.Add(ctx2, d2.TMDBID, "", true)
 	_ = svc2.repo.SetEpisodeFile(ctx2, s2.ID, 2, 1, f1, 1)
 	fm2.d.Seasons = withAbsolutes(listing(4, 2))
-	if _, res, _ := svc2.Refresh(ctx2, s2.ID, RefreshOptions{AllowRebuild: true}); res.Renumbered || res.ModelChanged {
+	if _, res, _ := svc2.Refresh(ctx2, s2.ID, RefreshOptions{ApplyPlan: "a-plan"}); res.Renumbered || res.ModelChanged || res.Proposed {
 		t.Errorf("standard TVDB show: result = %+v, want no renumber", res)
 	}
 	if mustFile(t, svc2, ctx2, s2.ID, 2, 1) != f1 {
@@ -134,8 +134,8 @@ func TestRefreshStandardCountShiftKeepsFilesOnSE(t *testing.T) {
 	}
 }
 
-// Scheduled, refresh-all and import-time refreshes never rebuild, even for a real
-// authoritative renumber — they note it once in History for the owner to apply.
+// No refresh rebuilds on its own, even for a real authoritative renumber: it stores a
+// proposal, notes it once in History, and the owner's Apply of that plan moves the files.
 func TestRefreshScheduledNeverRebuilds(t *testing.T) {
 	a := animeDetails()
 	// Stored TVDB model: one season of 3 episodes, absolutes 1-3.
@@ -159,8 +159,8 @@ func TestRefreshScheduledNeverRebuilds(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !res.ModelChanged || res.Renumbered || len(res.Remaps) != 0 {
-			t.Fatalf("scheduled refresh result = %+v, want the change noticed but not applied", res)
+		if !res.ModelChanged || !res.Proposed || res.Renumbered || len(res.Remaps) != 0 {
+			t.Fatalf("scheduled refresh result = %+v, want the change proposed but not applied", res)
 		}
 	}
 	if mustFile(t, svc, ctx, sr.ID, 1, 3) != file {
@@ -171,7 +171,7 @@ func TestRefreshScheduledNeverRebuilds(t *testing.T) {
 	for _, e := range evs {
 		if e.Event == "numbering" {
 			n++
-			if !strings.Contains(e.Detail, "1 file would move") || !strings.Contains(e.Detail, "Refresh") {
+			if !strings.Contains(e.Detail, "1 file would move") || !strings.Contains(e.Detail, "review it") {
 				t.Errorf("event detail = %q", e.Detail)
 			}
 		}
@@ -180,19 +180,22 @@ func TestRefreshScheduledNeverRebuilds(t *testing.T) {
 		t.Errorf("%d numbering events, want exactly one for one unchanged proposal", n)
 	}
 
-	// The owner's Refresh then applies it.
-	_, res, err := svc.Refresh(ctx, sr.ID, RefreshOptions{AllowRebuild: true})
+	// The owner applies the proposal they reviewed.
+	res, err := svc.ApplyNumbering(ctx, sr.ID, pendingHash(t, svc, sr.ID))
 	if err != nil || !res.Renumbered || len(res.Remaps) != 1 {
-		t.Fatalf("manual refresh: %+v, %v", res, err)
+		t.Fatalf("apply: %+v, %v", res, err)
 	}
 	if mustFile(t, svc, ctx, sr.ID, 2, 1) != file {
-		t.Error("the manual refresh should carry the file to S02E01")
+		t.Error("the apply should carry the file to S02E01")
+	}
+	if n, _ := svc.NumberingFor(ctx, sr.ID); n.Pending != nil {
+		t.Errorf("an applied proposal must be closed, got %+v", n.Pending)
 	}
 }
 
 // The case the rebuild exists for: anime stored on TMDB's numbering, a TVDB key added,
-// the owner presses Refresh. It still rebuilds, records TVDB as the source, and reports
-// the remaps for the safe rename.
+// the owner presses Refresh — which proposes — then applies it. The apply rebuilds,
+// records TVDB as the source, and reports the remaps for the safe rename.
 func TestRefreshManualTVDBRebuildStillWorks(t *testing.T) {
 	a := animeDetails()
 	a.NumberingSource, a.Seasons = "tmdb", listing(4) // TMDB: one long season
@@ -209,13 +212,20 @@ func TestRefreshManualTVDBRebuildStillWorks(t *testing.T) {
 		{SeasonNumber: 1, Episodes: []metadata.EpisodeDetails{{EpisodeNumber: 1, AbsoluteNumber: 1}, {EpisodeNumber: 2, AbsoluteNumber: 2}}},
 		{SeasonNumber: 2, Episodes: []metadata.EpisodeDetails{{EpisodeNumber: 1, AbsoluteNumber: 3}, {EpisodeNumber: 2, AbsoluteNumber: 4}}},
 	}
-	got, res, err := svc.Refresh(ctx, sr.ID, RefreshOptions{AllowRebuild: true})
+	if _, res, err := svc.Refresh(ctx, sr.ID, RefreshOptions{}); err != nil || !res.Proposed || res.Renumbered {
+		t.Fatalf("the owner's Refresh should only propose: %+v, %v", res, err)
+	}
+	if mustFile(t, svc, ctx, sr.ID, 1, 4) != file {
+		t.Fatal("a proposal moved a file")
+	}
+	res, err := svc.ApplyNumbering(ctx, sr.ID, pendingHash(t, svc, sr.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !res.ModelChanged || !res.Renumbered || len(res.Remaps) != 1 {
 		t.Fatalf("result = %+v, want one remap", res)
 	}
+	got, _ := svc.Get(ctx, sr.ID)
 	r := res.Remaps[0]
 	if r.OldSeason != 1 || r.OldEpisode != 4 || r.NewSeason != 2 || r.NewEpisode != 2 || r.FilePath != file {
 		t.Errorf("remap = %+v, want S01E04 → S02E02", r)
@@ -253,15 +263,15 @@ func TestRefreshDeclinedRebuildKeepsSource(t *testing.T) {
 	}
 
 	// TVDB-numbered anime whose key is removed: TMDB's listing drops seasons holding
-	// files. Even the owner's Refresh keeps the stored numbering.
+	// files. Nothing is proposed, and even an Apply keeps the stored numbering.
 	b := animeDetails()
 	b.NumberingSource, b.Seasons = "tvdb", withAbsolutes(listing(2, 2))
 	svc2, fm2, ctx2 := refreshTestService(t, b)
 	s2, _ := svc2.Add(ctx2, b.TMDBID, "", true)
 	_ = svc2.repo.SetEpisodeFile(ctx2, s2.ID, 2, 2, "/tv/b.mkv", 1)
 	fm2.d.NumberingSource, fm2.d.Seasons = "tmdb", listing(4)
-	got2, res2, _ := svc2.Refresh(ctx2, s2.ID, RefreshOptions{AllowRebuild: true})
-	if !res2.ModelChanged || res2.Renumbered {
+	got2, res2, _ := svc2.Refresh(ctx2, s2.ID, RefreshOptions{ApplyPlan: "a-plan"})
+	if !res2.ModelChanged || res2.Renumbered || res2.Proposed {
 		t.Fatalf("key removed: result = %+v", res2)
 	}
 	if got2.NumberingSource != "tvdb" || mustFile(t, svc2, ctx2, s2.ID, 2, 2) != "/tv/b.mkv" {
@@ -297,4 +307,15 @@ func TestReassignAbsolutesLeavesFiles(t *testing.T) {
 	if repo.EpisodeExists(ctx, sr.ID, 1, 2) {
 		t.Error("ReassignAbsolutes only updates existing rows; it must not insert")
 	}
+}
+
+// pendingHash is the plan hash of the proposal waiting on a show, failing the test when
+// there's none.
+func pendingHash(t *testing.T, svc *Service, id int64) string {
+	t.Helper()
+	n, err := svc.NumberingFor(t.Context(), id)
+	if err != nil || n.Pending == nil {
+		t.Fatalf("want a pending numbering proposal, got %+v (err %v)", n, err)
+	}
+	return n.Pending.PlanHash
 }

@@ -9,6 +9,7 @@ import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
 import { FitBadge } from "../components/FitBadge";
 import { RenameModal } from "./series/RenameModal";
+import { NumberingBanner } from "./series/NumberingReviewModal";
 import { usePoll } from "../lib/usePoll";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { api, importListNotice, type FitItem, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile } from "../lib/api";
@@ -164,6 +165,7 @@ export function SeriesDetail() {
               </div>
 
               <Toolbar series={s} onChange={load} flash={flash} />
+              <NumberingBanner seriesId={s.id} refreshKey={`${s.last_refreshed_at ?? ""}|${s.numbering_source ?? ""}`} onApplied={load} />
             </div>
           </div>
         </div>
