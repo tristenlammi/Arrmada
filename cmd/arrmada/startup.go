@@ -57,7 +57,9 @@ func logEnvironment(log *slog.Logger, cfg config.Config) {
 
 // logFolders records each folder the app will work in — the ones picked in the app,
 // with the environment's as the fallback — so a missing mount or a read-only share is
-// in the log the user already exports. Call after ApplySavedLibraryDirs.
+// in the log the user already exports. cfg holds the folders as resolved at startup
+// (libroots.Roots.Config); a folder changed later applies live and is logged by the
+// Settings save instead.
 func logFolders(log *slog.Logger, cfg config.Config, booksOn, musicOn bool) {
 	folders := health.LibraryFolders(cfg, booksOn, musicOn)
 	for _, f := range folders {

@@ -771,6 +771,31 @@ func main() {
 		},
 		RunGroup: grp,
 		Backups:  backupSvc,
+		// Everything else reads the folders live; the bundled qBittorrent's default save
+		// path is the one thing that has to be told. Same retries as at boot — the client
+		// may be restarting — and each try reads the folder afresh, so of two quick saves
+		// the later one wins.
+		OnFoldersChanged: func(ctx context.Context, changed []string) {
+			for _, name := range changed {
+				if name != "downloads" || cfg.QbittorrentURL == "" {
+					continue
+				}
+				var dl string
+				switch retryBoot(ctx, func(ctx context.Context) error {
+					dl = roots.Downloads(ctx)
+					if dl == "" {
+						return nil // nothing to point it at; grabs pass no save path either
+					}
+					return downloads.SetBundledSavePath(ctx, cfg.QbittorrentURL, dl)
+				}) {
+				case nil:
+					log.Info("qBittorrent save path moved to the new Downloads folder", "path", dl)
+				case errRetriesExhausted:
+					log.Warn("could not move qBittorrent's save path to the new Downloads folder — grabs still pass it with each torrent", "path", dl)
+				}
+			}
+			bus.Publish("system.folders.applied", map[string]any{"changed": changed})
+		},
 	})
 
 	errCh := make(chan error, 1)

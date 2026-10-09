@@ -104,10 +104,10 @@ func (a *api) handleFileInfo(w http.ResponseWriter, r *http.Request) {
 }
 
 // underLibraryRoot reports whether path sits inside a configured media root (the same
-// roots manual import may read from). Both sides are fully resolved, so neither
-// "/library-old" nor a symlink inside the library that points at /etc can pass.
+// roots manual import may read from) or a recycle bin. Both sides are fully resolved, so
+// neither "/library-old" nor a symlink inside the library that points at /etc can pass.
 func (a *api) underLibraryRoot(ctx context.Context, path string) bool {
-	return pathguard.Within(path, a.importRoots(ctx)...)
+	return pathguard.Within(path, append(a.importRoots(ctx), a.recycleMode(ctx).Dirs...)...)
 }
 
 // fileSourceFor joins a library path back to the release it came from:

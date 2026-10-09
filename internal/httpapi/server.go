@@ -93,6 +93,11 @@ type Deps struct {
 	// Backups makes the nightly and manual database copies. nil = no backups wired: the
 	// manual action answers 503 and the health panel says nothing about them.
 	Backups *backup.Service
+	// OnFoldersChanged runs in the background after Settings → Library saves folders
+	// whose resolved path changed ("movies", "downloads", …), with a context that
+	// outlives the request but not shutdown. Everything else reads the folders live;
+	// this is for what has to be told, like qBittorrent's default save path. nil = none.
+	OnFoldersChanged func(ctx context.Context, changed []string)
 }
 
 type api struct {

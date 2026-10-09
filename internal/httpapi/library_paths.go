@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/config"
 	"github.com/tristenlammi/arrmada/internal/libroots"
@@ -198,7 +199,40 @@ func (a *api) handleSetLibraryPaths(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Tell whatever has to act on a moved folder (qBittorrent's default save path) —
+	// only for folders whose resolved path really changed, after every save landed. A
+	// blank save that falls back to the folder already in use isn't a change.
+	after := a.pickedConfig(ctx)
+	var changed []string
+	for _, f := range folders {
+		if f.value == nil {
+			continue
+		}
+		if now := resolvedFolder(after, f.name); now != f.current {
+			changed = append(changed, f.name)
+			if a.deps.Log != nil {
+				a.deps.Log.Info("library folder changed — in use from now on, no restart needed", "library", f.name, "from", f.current, "to", now)
+			}
+		}
+	}
+	if len(changed) > 0 && a.deps.OnFoldersChanged != nil {
+		hook := a.deps.OnFoldersChanged
+		a.bg("apply changed folders", strings.Join(changed, ","), 5*time.Minute, func(ctx context.Context) error {
+			hook(ctx, changed)
+			return nil
+		})
+	}
 	a.handleGetLibraryPaths(w, r)
+}
+
+// resolvedFolder is one named folder out of a resolved config.
+func resolvedFolder(c config.Config, name string) string {
+	for _, d := range libraryDirSettings(&c) {
+		if d.name == name {
+			return *d.field
+		}
+	}
+	return ""
 }
 
 // handleBrowse lists the sub-directories of a path, for the in-app folder picker. Admin-only,
