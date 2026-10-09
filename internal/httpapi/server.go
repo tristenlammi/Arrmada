@@ -290,6 +290,9 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/downloads/disk-guard", a.requireRole(auth.RoleManager, a.handleDiskGuardStatus))
 	mux.HandleFunc("GET /api/v1/files/info", a.requireRole(auth.RoleManager, a.handleFileInfo))
 	mux.HandleFunc("GET /api/v1/downloads", a.requireRole(auth.RoleManager, a.handleDownloadsFeed))
+	// Wanted: what is still being searched for and why it isn't downloading, with Search now.
+	mux.HandleFunc("GET /api/v1/wanted", a.requireRole(auth.RoleManager, a.handleWanted))
+	mux.HandleFunc("POST /api/v1/wanted/{kind}/{id}/search", a.requireRole(auth.RoleManager, a.handleWantedSearch))
 	mux.HandleFunc("POST /api/v1/queue/{hash}/pause", a.requireRole(auth.RoleManager, a.handlePauseDownload))
 	mux.HandleFunc("POST /api/v1/queue/{hash}/resume", a.requireRole(auth.RoleManager, a.handleResumeDownload))
 	mux.HandleFunc("POST /api/v1/queue/{hash}/block", a.requireRole(auth.RoleManager, a.handleBlockDownload))

@@ -18,6 +18,7 @@ export const LINKS = {
   audiobookServer: "/audiobooks",
   status: "/settings/status",
   tasks: "/settings/status#tasks",
+  review: "/review",
 } as const;
 
 // fixLink is where a health warning sends you: the LINKS entry the server named, else the

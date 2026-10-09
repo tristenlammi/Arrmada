@@ -180,19 +180,51 @@ export interface ProfileMoveCounts {
   grabs: number;
 }
 
-export interface SearchingItem {
+/** What is really happening to a wanted title (GET /api/v1/wanted). */
+export type WantedState =
+  | "searching" // the sweep searches it on its backoff ladder
+  | "unknown" // the download client can't be read: it may be downloading; searches paused
+  | "waiting_download" // a download in flight covers everything it is missing
+  | "held_for_review" // its download finished but is held in Review
+  | "indexers_failed" // its last search reached no indexer (not a miss)
+  | "slowed" // so many empty searches it is checked rarely (books monthly, albums weekly)
+  | "not_released"; // not out yet: Upcoming
+
+/** One title on the Wanted view: a movie, series, book or album still being looked for. */
+export interface WantedRow {
+  media_type: "movie" | "series" | "book" | "music";
+  id: number;
   movie_id?: number;
   series_id?: number;
-  media_type?: "movie" | "series";
+  book_id?: number;
+  album_id?: number;
+  artist_id?: number;
   title: string;
   year: number;
   poster_url?: string;
   quality_profile: string;
-  available_at?: string; // release date (YYYY-MM-DD) for upcoming, not-yet-searchable movies
+  byline?: string; // a book's author, an album's artist
+  missing?: string[]; // a book: "Ebook", "Audiobook", "Audio version"
   episode_count?: number; // series: how many aired episodes are being searched
-  next_label?: string; // series: "S02E13" for the upcoming episode
-  /** "unknown" while the download client can't be read: it may already be downloading. */
-  state?: "unknown";
+  state: WantedState;
+  waiting_on?: string; // the release a waiting row waits for
+  stalled?: boolean;
+  waiting_note?: string; // "S03 downloading" while the rest of the show is searched
+  review_id?: number;
+  last_search_at?: string; // RFC 3339; absent = never searched
+  search_misses: number;
+  next_search_at?: string; // RFC 3339; absent when no automatic search is coming
+  due?: boolean; // the next automatic search is on the sweep's next run
+  last_search?: AttemptSummary;
+  available_at?: string; // Upcoming: release or air date (YYYY-MM-DD, or a bare year)
+  next_label?: string; // Upcoming series: "S02E13"
+}
+
+export interface WantedLists {
+  searching: WantedRow[];
+  upcoming: WantedRow[];
+  /** false while the download client can't be read: rows read "unknown". */
+  queue_known: boolean;
 }
 
 export interface ActivityDownload {
@@ -269,8 +301,6 @@ export interface RemoveDownloadResult {
 }
 
 export interface ActivityFeed {
-  searching: SearchingItem[];
-  upcoming?: SearchingItem[];
   downloads: ActivityDownload[];
   totals?: { down_speed: number; up_speed: number; active: number; stalled?: number };
   /** null (or absent) when the downloads folder can't be measured. */
@@ -1780,6 +1810,10 @@ export const api = {
     req<ProwlarrSyncResult>("/api/v1/indexers/prowlarr/sync", { method: "POST", body: JSON.stringify(body) }),
 
   activity: () => req<ActivityFeed>("/api/v1/downloads"),
+  wanted: () => req<WantedLists>("/api/v1/wanted"),
+  /** Search now from a Wanted row: clears the title's backoff and runs its search as a job. */
+  wantedSearch: (kind: WantedRow["media_type"], id: number) =>
+    req<{ status: string; started_at_ms?: number } & JobRef>(`/api/v1/wanted/${kind}/${id}/search`, { method: "POST" }),
   pauseDownload: (hash: string) => req<{ status: string }>(`/api/v1/queue/${hash}/pause`, { method: "POST" }),
   resumeDownload: (hash: string) => req<ResumeResult>(`/api/v1/queue/${hash}/resume`, { method: "POST" }),
   // mode: keep_files keeps what was downloaded (the default), delete_files deletes it, block

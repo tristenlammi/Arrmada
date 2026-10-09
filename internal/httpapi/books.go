@@ -182,11 +182,8 @@ func (a *api) handleGetBook(w http.ResponseWriter, r *http.Request) {
 // enrichBookWants fills want_ebook/want_audiobook from the book's quality profile so
 // the detail page can show wanted-but-missing editions, and next_search_at from them.
 func (a *api) enrichBookWants(r *http.Request, b *books.Book) {
-	if sp, err := a.deps.Quality.GetStored(r.Context(), b.QualityProfile); err == nil {
-		b.WantEbook, b.WantAudiobook = books.WantedEditions(sp.FormatScores)
-	} else {
-		b.WantEbook = true
-	}
+	w := a.bookWants(r.Context(), b.QualityProfile)
+	b.WantEbook, b.WantAudiobook = w[0], w[1]
 	b.FillNextSearch()
 }
 

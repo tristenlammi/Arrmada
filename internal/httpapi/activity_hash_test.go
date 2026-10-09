@@ -66,7 +66,6 @@ func TestDownloadsFeedJoinsByHash(t *testing.T) {
 	rec := httptest.NewRecorder()
 	a.handleDownloadsFeed(rec, httptest.NewRequest(http.MethodGet, "/api/v1/downloads", nil))
 	var feed struct {
-		Searching []map[string]any `json:"searching"`
 		Downloads []struct {
 			Hash      string `json:"hash"`
 			MediaType string `json:"media_type"`
@@ -76,8 +75,8 @@ func TestDownloadsFeedJoinsByHash(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &feed); err != nil {
 		t.Fatal(err)
 	}
-	if len(feed.Searching) != 0 {
-		t.Errorf("a movie downloading under another name is listed as searching: %v", feed.Searching)
+	if w := a.buildWanted(ctx, wantedKinds{automation.AttemptMovie: true}); len(w.Searching) != 0 {
+		t.Errorf("a movie downloading under another name is listed as searching: %+v", w.Searching)
 	}
 	if len(feed.Downloads) != 2 {
 		t.Fatalf("downloads = %+v", feed.Downloads)

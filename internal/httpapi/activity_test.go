@@ -33,18 +33,10 @@ func TestDownloadsFeedClientState(t *testing.T) {
 		Movies: movies.NewService(st.DB(), nil, nil, t.TempDir(), "", nil, log),
 		Config: config.Config{DownloadsDir: filepath.Join(t.TempDir(), "does-not-exist")},
 	}}
-	// A wanted movie, so the Searching list has something to label.
-	if _, err := st.DB().Exec(`INSERT INTO movies (tmdb_id, title, year, monitored, min_availability) VALUES (1, 'Alpha', 2001, 1, 'announced')`); err != nil {
-		t.Fatal(err)
-	}
-
 	type feed struct {
-		FreeGB    *float64 `json:"free_gb"`
-		DiskPath  string   `json:"disk_path"`
-		Searching []struct {
-			State string `json:"state"`
-		} `json:"searching"`
-		Clients *struct {
+		FreeGB   *float64 `json:"free_gb"`
+		DiskPath string   `json:"disk_path"`
+		Clients  *struct {
 			Configured int    `json:"configured"`
 			Enabled    int    `json:"enabled"`
 			OK         bool   `json:"ok"`
@@ -78,8 +70,8 @@ func TestDownloadsFeedClientState(t *testing.T) {
 	if f.Clients == nil || f.Clients.Configured != 0 || !f.Clients.OK {
 		t.Fatalf("no clients: %+v", f.Clients)
 	}
-	if f.DiskPath == "" || len(f.Searching) != 1 || f.Searching[0].State != "" {
-		t.Errorf("no clients: disk_path %q, searching %+v", f.DiskPath, f.Searching)
+	if f.DiskPath == "" {
+		t.Errorf("no clients: no disk_path")
 	}
 
 	// A client pointed at a dead address: not answering, with its error and since when.
@@ -96,9 +88,6 @@ func TestDownloadsFeedClientState(t *testing.T) {
 	}
 	if f.Clients.Name != "qBittorrent" || f.Clients.Error == "" || f.Clients.Since == "" {
 		t.Errorf("dead client should be named, with its error and outage start: %+v", f.Clients)
-	}
-	if len(f.Searching) != 1 || f.Searching[0].State != "unknown" {
-		t.Errorf("with the queue unknown, wanted titles must read unknown: %+v", f.Searching)
 	}
 
 	// Pointed at a working client: healthy, and the page looks as it always did.
@@ -120,9 +109,6 @@ func TestDownloadsFeedClientState(t *testing.T) {
 	f = get()
 	if f.Clients == nil || !f.Clients.OK || f.Clients.Error != "" || f.Clients.Since != "" {
 		t.Fatalf("working client: %+v", f.Clients)
-	}
-	if f.Searching[0].State != "" {
-		t.Errorf("with a working client, wanted titles are plain searching: %+v", f.Searching)
 	}
 }
 
