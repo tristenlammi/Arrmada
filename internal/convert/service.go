@@ -154,6 +154,8 @@ type Service struct {
 	logMu  sync.Mutex
 	logBuf []LogLine
 	logs   *logStore
+	// logDBMu orders the log's database writes the way logMu orders the ring (see event).
+	logDBMu sync.Mutex
 }
 
 // LogLine is one entry in the Convert activity log.
@@ -190,14 +192,17 @@ func (s *Service) event(level, msg string) {
 			s.logBuf = s.logBuf[len(s.logBuf)-maxLogLines:]
 		}
 	}
-	// The database write stays under the lock so the durable mirror sees lines in the same
-	// order as the ring: a fold must rewrite the row it folded into, not a newer one.
+	// The database writes happen in the same order as the ring changes — a fold must rewrite
+	// the row it folded into, not a newer one — so the write lock is taken before the ring's
+	// lock is let go. Readers of the ring (Logs) don't wait on the database.
+	s.logDBMu.Lock()
+	s.logMu.Unlock()
 	if count == 1 {
 		s.logs.append(context.Background(), ln)
 	} else {
 		s.logs.updateLast(context.Background(), ln)
 	}
-	s.logMu.Unlock()
+	s.logDBMu.Unlock()
 	if s.log == nil || (count > 1 && count%10 != 0) {
 		return
 	}

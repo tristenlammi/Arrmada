@@ -38,7 +38,7 @@ type Movie struct {
 	// UpgradesAllowed is computed on the detail endpoint only: whether the 6-hourly upgrade
 	// sweep will look at this movie at all (monitored, has a file, profile upgrades on). The
 	// page says what really happens instead of hedging "if your profile allows".
-	UpgradesAllowed bool `json:"upgrades_allowed"`
+	UpgradesAllowed bool `json:"upgrades_allowed,omitempty"`
 }
 
 // DownloadStatus is a lightweight view of a movie's in-flight download.
