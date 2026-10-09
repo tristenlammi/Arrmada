@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 
 // Every open Modal, oldest first. Only the last one answers Escape and keeps Tab
@@ -69,6 +69,8 @@ export function Modal({
   dismissible = true, initialFocus, footer, panelClassName, panelStyle, panelRef, scrim = 0.6, children,
 }: ModalProps) {
   const titleId = useId();
+  // What had focus at first render, before any autoFocus child inside could take it.
+  const [firstFocus] = useState(() => (typeof document === "undefined" ? null : document.activeElement));
   const ownRef = useRef<HTMLDivElement>(null);
   const ref = panelRef ?? ownRef;
   // Latest values without re-running the open/close effect on every parent render
@@ -83,8 +85,12 @@ export function Modal({
     const id = Symbol("modal");
     stack.push(id);
     lockScroll();
-    const opener = document.activeElement as HTMLElement | null;
-    (initialFocus?.current ?? ref.current)?.focus();
+    // A child with autoFocus has already taken focus by now: leave it there, and
+    // restore to whatever had focus when the modal first rendered instead.
+    const active = document.activeElement as HTMLElement | null;
+    const focusedInside = !!active && !!ref.current?.contains(active);
+    const opener = focusedInside ? (firstFocus as HTMLElement | null) : active;
+    if (!focusedInside) (initialFocus?.current ?? ref.current)?.focus();
 
     const onKey = (e: KeyboardEvent) => {
       if (!isTop(id)) return;
@@ -137,6 +143,10 @@ export function Modal({
       // began inside the panel (selecting text) and ended outside must not.
       onMouseDown={(e) => { downOnBackdrop.current = e.target === e.currentTarget; }}
       onClick={(e) => {
+        // React bubbles events out of a portal to the component that rendered it, so
+        // a click on Confirm would otherwise also reach (and close) a hand-built
+        // overlay this modal was opened from.
+        e.stopPropagation();
         if (e.target === e.currentTarget && downOnBackdrop.current && dismissible) onClose();
         downOnBackdrop.current = true;
       }}

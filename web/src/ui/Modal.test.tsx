@@ -77,6 +77,26 @@ describe("Modal", () => {
     expect(document.activeElement).toBe(opener);
   });
 
+  it("leaves an autoFocus child focused, and still restores to the opener", () => {
+    function Opener() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button onClick={() => setOpen(true)}>Open</button>
+          {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+          {open && <Modal onClose={() => setOpen(false)} ariaLabel="m"><input aria-label="Name" autoFocus /></Modal>}
+        </>
+      );
+    }
+    render(<Opener />);
+    const opener = screen.getByText("Open");
+    opener.focus();
+    fireEvent.click(opener);
+    expect(document.activeElement).toBe(screen.getByLabelText("Name"));
+    esc();
+    expect(document.activeElement).toBe(opener);
+  });
+
   it("restores body overflow on unmount", () => {
     document.body.style.overflow = "scroll";
     const { unmount } = render(<Modal onClose={() => {}} ariaLabel="m" />);
@@ -92,6 +112,19 @@ describe("Modal", () => {
     fireEvent.mouseDown(screen.getByRole("presentation"));
     fireEvent.click(screen.getByRole("presentation"));
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("keeps clicks from bubbling to the component that opened it", () => {
+    const outer = vi.fn();
+    render(
+      // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
+      <div onClick={outer}>
+        <Modal onClose={() => {}} ariaLabel="m"><button>Confirm</button></Modal>
+      </div>,
+    );
+    fireEvent.click(screen.getByText("Confirm"));
+    fireEvent.click(screen.getByRole("presentation"));
+    expect(outer).not.toHaveBeenCalled();
   });
 
   it("closes on a backdrop click but not on a click inside the panel", () => {
