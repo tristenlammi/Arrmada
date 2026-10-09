@@ -12,6 +12,7 @@ import { usePollBurst } from "../lib/usePoll";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { useQuery } from "../lib/query";
 import { ErrorState, Skeleton, StaleBanner } from "../ui";
+import { DEFAULT_MONITOR_PRESET, MONITOR_PRESETS, isMonitorPreset, type MonitorPreset } from "./series/presets";
 
 const NO_SERIES: SeriesT[] = [];
 
@@ -93,6 +94,17 @@ export function Series() {
       flash(`${selected.size} ${mon ? "resumed" : "paused"}.`);
       clearSelect();
       refresh();
+    } finally { setBulkBusy(false); }
+  };
+  const bulkPreset = async (preset: string) => {
+    setBulkBusy(true);
+    try {
+      await Promise.all([...selected].map((id) => api.applySeriesMonitorPreset(id, preset)));
+      flash(`Monitoring set to "${MONITOR_PRESETS.find((p) => p.value === preset)?.label ?? preset}" on ${selected.size} series.`);
+      clearSelect();
+      refresh();
+    } catch (e) {
+      flash((e as Error).message, true);
     } finally { setBulkBusy(false); }
   };
   const bulkProfile = async (profile: string) => {
@@ -244,6 +256,17 @@ export function Series() {
             >
               <option value="">Set quality profile…</option>
               {profiles.map((p) => <option key={p.key} value={p.key}>{p.name}</option>)}
+            </select>
+            <select
+              defaultValue=""
+              disabled={selected.size === 0 || bulkBusy}
+              onChange={(e) => e.target.value && (bulkPreset(e.target.value), (e.target.value = ""))}
+              aria-label="Apply a monitoring preset to the selected series"
+              className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-medium"
+              style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+            >
+              <option value="">Monitoring preset…</option>
+              {MONITOR_PRESETS.map((p) => <option key={p.value} value={p.value} title={p.help}>{p.label}</option>)}
             </select>
           </div>
         )}
@@ -530,6 +553,7 @@ function AddSeriesModal({ onClose, onAdded }: { onClose: () => void; onAdded: ()
   const [profile, setProfile] = useState("");
   const [profiles, setProfiles] = useState<{ key: string; name: string }[]>([]);
   const [searchOnAdd, setSearchOnAdd] = useState(true);
+  const [monitor, setMonitor] = useState<MonitorPreset>(DEFAULT_MONITOR_PRESET);
   const [addingId, setAddingId] = useState<number | null>(null);
 
   useEffect(() => {
@@ -538,14 +562,15 @@ function AddSeriesModal({ onClose, onAdded }: { onClose: () => void; onAdded: ()
       const def = r.profiles.find((p) => p.is_default) ?? r.profiles[0];
       if (def) setProfile(def.key);
     }).catch(() => {});
-    api.settings().then((s) => setSearchOnAdd(s.search_on_add)).catch(() => {});
+    // The settings are this dialog's starting point; changing them here is for this add
+    // only (it used to rewrite the global "Search on add").
+    api.settings().then((s) => {
+      setSearchOnAdd(s.search_on_add);
+      if (isMonitorPreset(s.series_monitor_default)) setMonitor(s.series_monitor_default);
+    }).catch(() => {});
   }, []);
 
-  const toggleSearchOnAdd = () => {
-    const next = !searchOnAdd;
-    setSearchOnAdd(next);
-    api.updateSettings({ search_on_add: next }).catch(() => {});
-  };
+  const toggleSearchOnAdd = () => setSearchOnAdd((v) => !v);
 
   const search = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -556,7 +581,7 @@ function AddSeriesModal({ onClose, onAdded }: { onClose: () => void; onAdded: ()
 
   const add = async (r: SeriesLookup) => {
     setAddingId(r.tmdb_id); setError(null);
-    try { await api.addSeries({ tmdb_id: r.tmdb_id, quality_profile: profile, monitored: true, search_on_add: searchOnAdd }); onAdded(); }
+    try { await api.addSeries({ tmdb_id: r.tmdb_id, quality_profile: profile, monitored: true, search_on_add: searchOnAdd, monitor }); onAdded(); }
     catch (e) { setError((e as Error).message); setAddingId(null); }
   };
 
@@ -566,12 +591,25 @@ function AddSeriesModal({ onClose, onAdded }: { onClose: () => void; onAdded: ()
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 className="m-0 text-[15px] font-bold">Add a series</h2>
           <div className="flex items-center gap-4">
-            <button type="button" onClick={toggleSearchOnAdd} title="On: monitor and search right away. Off: add unmonitored — nothing is searched until you monitor it." className="flex items-center gap-2">
+            <button type="button" onClick={toggleSearchOnAdd} title="On: search right away. Off: add it paused — nothing is searched until you resume it. For this add only." className="flex items-center gap-2">
               <span className="relative inline-block h-[20px] w-[34px] rounded-full transition-colors" style={{ background: searchOnAdd ? "var(--accent)" : "var(--line)" }}>
                 <span className="absolute top-[3px] h-[14px] w-[14px] rounded-full bg-white transition-all" style={{ left: searchOnAdd ? "17px" : "3px" }} />
               </span>
-              <span className="text-[11.5px] font-medium" style={{ color: searchOnAdd ? "var(--ink)" : "var(--ink-dim)" }}>{searchOnAdd ? "Search on add" : "Add unmonitored"}</span>
+              <span className="text-[11.5px] font-medium" style={{ color: searchOnAdd ? "var(--ink)" : "var(--ink-dim)" }}>{searchOnAdd ? "Search on add" : "Add paused"}</span>
             </button>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[10px] uppercase text-ink-faint">Monitor</span>
+              <select
+                value={monitor}
+                onChange={(e) => setMonitor(e.target.value as MonitorPreset)}
+                title={MONITOR_PRESETS.find((p) => p.value === monitor)?.help}
+                aria-label="Which episodes to monitor"
+                className="rounded-lg px-2 py-1.5 text-[12px]"
+                style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+              >
+                {MONITOR_PRESETS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+              </select>
+            </div>
             <div className="flex items-center gap-2">
               <span className="font-mono text-[10px] uppercase text-ink-faint">Quality</span>
               <select value={profile} onChange={(e) => setProfile(e.target.value)} className="rounded-lg px-2 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>

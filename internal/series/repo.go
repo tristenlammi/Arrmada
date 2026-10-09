@@ -934,16 +934,32 @@ func (r *Repo) SetSeasonMonitored(ctx context.Context, seriesID, seasonNumber in
 	return err
 }
 
-// SetEpisodeMonitored toggles a single episode.
+// SetEpisodeMonitored toggles a single episode, and re-derives its season's flag: a season
+// is monitored when any of its episodes is. The sweep needs both flags, so monitoring one
+// episode in an unmonitored season used to do nothing.
 func (r *Repo) SetEpisodeMonitored(ctx context.Context, episodeID int64, monitored bool) error {
-	res, err := r.db.ExecContext(ctx, `UPDATE episodes SET monitored = ? WHERE id = ?`, b2i(monitored), episodeID)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		var seriesID int64
+		var season int
+		err := tx.QueryRowContext(ctx, `SELECT series_id, season_number FROM episodes WHERE id = ?`, episodeID).Scan(&seriesID, &season)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE episodes SET monitored = ? WHERE id = ?`, b2i(monitored), episodeID); err != nil {
+			return err
+		}
+		return syncSeasonsTx(ctx, tx, seriesID, season, false)
+	})
+}
+
+// SetMonitoredFlag sets only the series gate, for a caller that has just applied a preset
+// and so has already decided every episode's flag.
+func (r *Repo) SetMonitoredFlag(ctx context.Context, id int64, monitored bool) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE series SET monitored = ? WHERE id = ?`, b2i(monitored), id)
+	return err
 }
 
 // SetEpisodeFile records that an episode now has a file on disk.

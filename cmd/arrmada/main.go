@@ -276,6 +276,10 @@ func main() {
 	seriesSvc := series.NewService(st.DB(), tvSeries, cfg.TVDir, log)
 	seriesSvc.SetRootFunc(rootFuncs.TV)                         // scans and manual imports follow Settings → Library
 	seriesSvc.SetSceneMapper(xem.New(cfg.FlaresolverrURL, log)) // TheXEM scene mapping (via FlareSolverr past Cloudflare)
+	// The monitoring preset an add or a request uses when it doesn't pick one.
+	seriesSvc.SetMonitorDefaultFunc(func(ctx context.Context) string {
+		return settingsSvc.Get(ctx, series.KeyMonitorDefault, series.DefaultMonitorPreset)
+	})
 	booksSvc := books.NewService(st.DB(), openlib, log)
 	// Hardcover is the catalogue when a key is set; anything still on Open Library keys
 	// is re-matched without being asked. Nothing here merges book rows any more: the old

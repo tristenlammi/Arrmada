@@ -45,6 +45,8 @@ type Service struct {
 	sceneCache map[int64]map[string]int // series id → scene "S-E" → absolute (in-memory)
 
 	seriesLocks sync.Map // series id → *sync.Mutex: one refresh or apply per show at a time
+
+	monitorDefault func(ctx context.Context) string // the series_monitor_default setting
 }
 
 // SetSceneMapper installs the TheXEM client used to reconcile split-season anime.
@@ -172,9 +174,40 @@ func (s *Service) Get(ctx context.Context, id int64) (Series, error) {
 	return sr, nil
 }
 
-// Add pulls full metadata for a TMDB series id and adds it — series row plus every
-// season and episode. Specials (season 0) are added unmonitored by default.
+// AddOptions says how a new show is monitored.
+type AddOptions struct {
+	// Monitored is the series gate: false adds the show paused (nothing is searched),
+	// with episode flags still set by the preset for when it's resumed.
+	Monitored bool
+	// Preset picks the monitored episodes (see the Preset constants); "" means the
+	// configured default (MonitorDefault).
+	Preset string
+	// MonitorNewSeasons overrides the preset's own choice when set.
+	MonitorNewSeasons *bool
+}
+
+// Add adds a show monitored with every regular episode, or — monitored=false, as the
+// library scan adds what it finds — with nothing monitored at all.
 func (s *Service) Add(ctx context.Context, tmdbID int, qualityProfile string, monitored bool) (Series, error) {
+	preset := PresetAll
+	if !monitored {
+		preset = PresetNone
+	}
+	return s.AddWith(ctx, tmdbID, qualityProfile, AddOptions{Monitored: monitored, Preset: preset})
+}
+
+// AddWith pulls full metadata for a TMDB series id and adds it — series row plus every
+// season and episode — then applies the monitoring preset. Specials are never monitored
+// by a preset.
+func (s *Service) AddWith(ctx context.Context, tmdbID int, qualityProfile string, opts AddOptions) (Series, error) {
+	preset := opts.Preset
+	if preset == "" {
+		preset = s.MonitorDefault(ctx)
+	}
+	if !ValidPreset(preset) {
+		return Series{}, fmt.Errorf("%w: %q", ErrUnknownPreset, preset)
+	}
+	monitored := opts.Monitored
 	d, err := s.meta.GetSeries(ctx, tmdbID)
 	if err != nil {
 		return Series{}, fmt.Errorf("fetch metadata: %w", err)
@@ -182,14 +215,15 @@ func (s *Service) Add(ctx context.Context, tmdbID int, qualityProfile string, mo
 	sr := Series{
 		TMDBID: d.TMDBID, TVDBID: d.TVDBID, IMDBID: d.IMDBID, Title: d.Title, Year: d.Year, Overview: d.Overview,
 		PosterURL: d.PosterURL, Status: d.Status, Network: d.Network,
-		Monitored: monitored, MonitorNewSeasons: monitored, QualityProfile: qualityProfile, Extra: extraFrom(d),
+		Monitored: monitored, MonitorNewSeasons: presetNewSeasons(preset), QualityProfile: qualityProfile, Extra: extraFrom(d),
 		SeriesType: detectSeriesType(d),
 	}
 	created, err := s.repo.Create(ctx, sr)
 	if err != nil {
 		return Series{}, err
 	}
-	seasons := seasonsFromDetails(d, func(int) bool { return monitored })
+	// Rows go in unmonitored; the preset then decides every flag in one pass.
+	seasons := seasonsFromDetails(d, func(int) bool { return false })
 	if err := s.repo.InsertSeasons(ctx, created.ID, seasons); err != nil {
 		s.log.Warn("series: insert seasons failed", "series", created.Title, "err", err)
 	} else if d.NumberingSource != "" {
@@ -203,6 +237,11 @@ func (s *Service) Add(ctx context.Context, tmdbID int, qualityProfile string, mo
 	}
 	if created.IsAnime() {
 		s.refreshSceneMap(ctx, created.ID, d.TVDBID) // TheXEM scene mapping for split-season anime
+	}
+	if err := s.repo.ApplyMonitorPreset(ctx, created.ID, preset, opts.MonitorNewSeasons); err != nil {
+		s.log.Warn("series: couldn't apply the monitoring preset", "series", created.Title, "preset", preset, "err", err)
+	} else if got, err := s.repo.Get(ctx, created.ID); err == nil {
+		created = got
 	}
 	_ = s.repo.MarkRefreshed(ctx, created.ID)
 	s.AddEvent(ctx, created.ID, "added", fmt.Sprintf("Added — %d seasons", len(seasons)))
@@ -790,6 +829,39 @@ func (s *Service) SetMonitored(ctx context.Context, id int64, monitored bool) er
 // SetMonitorNewSeasons sets whether seasons new to the show are monitored.
 func (s *Service) SetMonitorNewSeasons(ctx context.Context, id int64, on bool) error {
 	return s.repo.SetMonitorNewSeasons(ctx, id, on)
+}
+
+// MonitorChange is one edit to a show's monitoring; nil and "" fields are left alone.
+type MonitorChange struct {
+	Monitored  *bool  // the pause gate
+	Preset     string // applied first, when set
+	NewSeasons *bool  // "monitor new seasons"
+}
+
+// SetMonitoring applies a monitoring edit. A preset decides every episode flag, so the
+// gate then changes alone; without one, turning on a show with nothing monitored still
+// monitors every regular episode (see Repo.SetMonitored). An unknown preset changes
+// nothing and returns ErrUnknownPreset.
+func (s *Service) SetMonitoring(ctx context.Context, id int64, ch MonitorChange) error {
+	if ch.Preset != "" && !ValidPreset(ch.Preset) {
+		return fmt.Errorf("%w: %q", ErrUnknownPreset, ch.Preset)
+	}
+	if ch.Preset != "" {
+		if err := s.repo.ApplyMonitorPreset(ctx, id, ch.Preset, ch.NewSeasons); err != nil {
+			return err
+		}
+	} else if ch.NewSeasons != nil {
+		if err := s.repo.SetMonitorNewSeasons(ctx, id, *ch.NewSeasons); err != nil {
+			return err
+		}
+	}
+	if ch.Monitored == nil {
+		return nil
+	}
+	if ch.Preset != "" {
+		return s.repo.SetMonitoredFlag(ctx, id, *ch.Monitored)
+	}
+	return s.repo.SetMonitored(ctx, id, *ch.Monitored)
 }
 
 // SetSeasonMonitored toggles a whole season and its episodes.

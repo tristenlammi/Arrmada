@@ -10,6 +10,7 @@ import { FileDetailsModal } from "../components/FileDetailsModal";
 import { FitBadge } from "../components/FitBadge";
 import { RenameModal } from "./series/RenameModal";
 import { NumberingBanner } from "./series/NumberingReviewModal";
+import { MONITOR_PRESETS } from "./series/presets";
 import { usePoll } from "../lib/usePoll";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { api, importListNotice, type FitItem, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile } from "../lib/api";
@@ -269,6 +270,24 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
           />
           Monitor new seasons
         </label>
+        <select
+          value=""
+          disabled={busy !== null}
+          aria-label="Apply a monitoring preset"
+          title="Sets which episodes are monitored, in one go. The pause switch is left as it is."
+          onChange={(e) => {
+            const preset = e.target.value;
+            e.target.value = "";
+            if (!preset) return;
+            const label = MONITOR_PRESETS.find((p) => p.value === preset)?.label ?? preset;
+            void run("preset", async () => { await api.applySeriesMonitorPreset(series.id, preset); onChange(); flash(`Monitoring: ${label}.`); });
+          }}
+          className="rounded-lg px-2 py-1.5 text-[12px] disabled:opacity-50"
+          style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+        >
+          <option value="">Apply monitoring…</option>
+          {MONITOR_PRESETS.map((p) => <option key={p.value} value={p.value} title={p.help}>{p.label}</option>)}
+        </select>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("refresh", async () => { await api.refreshSeries(series.id); onChange(); flash("Refreshed metadata and rescanned disk."); })}>
           {busy === "refresh" ? "Refreshing…" : "Refresh & rescan"}
         </button>

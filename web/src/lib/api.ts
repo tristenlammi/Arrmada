@@ -555,6 +555,8 @@ export interface SubSeriesGroup {
 
 export interface AppSettings {
   search_on_add: boolean;
+  /** The monitoring preset a new series gets: "all" | "future" | "missing" | "existing" | "first_season" | "latest_season" | "none". */
+  series_monitor_default: string;
   naming_movie_folder: string;
   naming_movie_file: string;
   naming_series_folder: string;
@@ -1777,7 +1779,8 @@ export const api = {
   series: () => req<{ series: Series[]; metadata_available: boolean }>("/api/v1/series"),
   lookupSeries: (q: string) =>
     req<{ results: SeriesLookup[] }>(`/api/v1/series/lookup?q=${encodeURIComponent(q)}`).then((r) => r.results),
-  addSeries: (body: { tmdb_id: number; quality_profile?: string; monitored?: boolean; search_on_add?: boolean }) =>
+  // monitor is a monitoring preset; left out, the server uses Settings' default.
+  addSeries: (body: { tmdb_id: number; quality_profile?: string; monitored?: boolean; search_on_add?: boolean; monitor?: string; monitor_new_seasons?: boolean }) =>
     req<Series>("/api/v1/series", { method: "POST", body: JSON.stringify(body) }),
   seriesDetail: (id: number) => req<Series>(`/api/v1/series/${id}`),
   searchSeries: (id: number) =>
@@ -1868,6 +1871,9 @@ export const api = {
   // The series switch is a pause gate: season and episode choices are kept either way.
   setSeriesMonitored: (id: number, monitored: boolean) =>
     req<{ monitored: boolean; monitor_new_seasons: boolean }>(`/api/v1/series/${id}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
+  // Applies a monitoring preset to the show's episodes (the pause switch is untouched).
+  applySeriesMonitorPreset: (id: number, preset: string) =>
+    req<{ monitored: boolean; monitor_new_seasons: boolean }>(`/api/v1/series/${id}/monitor`, { method: "PUT", body: JSON.stringify({ preset }) }),
   setSeriesMonitorNewSeasons: (id: number, monitor_new_seasons: boolean) =>
     req<{ monitored: boolean; monitor_new_seasons: boolean }>(`/api/v1/series/${id}/monitor`, { method: "PUT", body: JSON.stringify({ monitor_new_seasons }) }),
   setSeriesProfile: (id: number, quality_profile: string) =>

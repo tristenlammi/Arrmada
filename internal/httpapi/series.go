@@ -57,6 +57,10 @@ func (a *api) handleAddSeries(w http.ResponseWriter, r *http.Request) {
 		QualityProfile string `json:"quality_profile"`
 		Monitored      *bool  `json:"monitored"`
 		SearchOnAdd    *bool  `json:"search_on_add"`
+		// Monitor is a monitoring preset ("all", "future", …); "" uses the configured
+		// default (Settings → series_monitor_default).
+		Monitor           string `json:"monitor"`
+		MonitorNewSeasons *bool  `json:"monitor_new_seasons"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -65,12 +69,18 @@ func (a *api) handleAddSeries(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "tmdb_id is required")
 		return
 	}
+	if req.Monitor != "" && !series.ValidPreset(req.Monitor) {
+		a.writeError(w, http.StatusBadRequest, "unknown monitoring preset "+strconv.Quote(req.Monitor))
+		return
+	}
 	monitored := true
 	if req.Monitored != nil {
 		monitored = *req.Monitored
 	}
-	// "Search on add" mirrors movies: off means "just add it, don't go get it," so
-	// add it unmonitored (the periodic sweep won't chase it until the user monitors).
+	// "Search on add" mirrors movies: off means "just add it, don't go get it," so the
+	// show is added paused (the sweep won't chase it until it's resumed). The episode
+	// flags still follow the preset, ready for then. It applies to this add only: the
+	// setting is just the dialog's starting point.
 	searchOnAdd := a.deps.Settings.GetBool(r.Context(), keySearchOnAdd, true)
 	if req.SearchOnAdd != nil {
 		searchOnAdd = *req.SearchOnAdd
@@ -81,7 +91,9 @@ func (a *api) handleAddSeries(w http.ResponseWriter, r *http.Request) {
 	if req.QualityProfile == "" {
 		req.QualityProfile = a.deps.Quality.DefaultProfile(r.Context(), "series")
 	}
-	s, err := a.deps.Series.Add(r.Context(), req.TMDBID, req.QualityProfile, monitored)
+	s, err := a.deps.Series.AddWith(r.Context(), req.TMDBID, req.QualityProfile, series.AddOptions{
+		Monitored: monitored, Preset: req.Monitor, MonitorNewSeasons: req.MonitorNewSeasons,
+	})
 	if errors.Is(err, series.ErrExists) {
 		a.writeError(w, http.StatusConflict, "that series is already in your library")
 		return
@@ -187,11 +199,12 @@ func (a *api) handleSetSeriesMonitored(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Both optional: the "monitor new seasons" checkbox mustn't pause the show by leaving
-	// monitored out.
+	// All optional: the "monitor new seasons" checkbox and the preset menu mustn't pause
+	// the show by leaving monitored out. A preset applies first.
 	var req struct {
-		Monitored         *bool `json:"monitored"`
-		MonitorNewSeasons *bool `json:"monitor_new_seasons"`
+		Monitored         *bool  `json:"monitored"`
+		Preset            string `json:"preset"`
+		MonitorNewSeasons *bool  `json:"monitor_new_seasons"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -201,17 +214,16 @@ func (a *api) handleSetSeriesMonitored(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusNotFound, "series not found")
 		return
 	}
-	if req.MonitorNewSeasons != nil {
-		if err := a.deps.Series.SetMonitorNewSeasons(ctx, id, *req.MonitorNewSeasons); err != nil {
-			a.writeError(w, http.StatusInternalServerError, "could not update monitoring")
-			return
-		}
+	err := a.deps.Series.SetMonitoring(ctx, id, series.MonitorChange{
+		Monitored: req.Monitored, Preset: req.Preset, NewSeasons: req.MonitorNewSeasons,
+	})
+	if errors.Is(err, series.ErrUnknownPreset) {
+		a.writeError(w, http.StatusBadRequest, "unknown monitoring preset "+strconv.Quote(req.Preset))
+		return
 	}
-	if req.Monitored != nil {
-		if err := a.deps.Series.SetMonitored(ctx, id, *req.Monitored); err != nil {
-			a.writeError(w, http.StatusInternalServerError, "could not update monitoring")
-			return
-		}
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not update monitoring")
+		return
 	}
 	s, err := a.deps.Series.Get(ctx, id)
 	if err != nil {
