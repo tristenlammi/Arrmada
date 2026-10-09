@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { api, type Indexer, type IndexerStatus } from "../lib/api";
-import { INDEXER_DOT, indexerStatusLine } from "../lib/indexerStatus";
+import { api, type Indexer, type IndexerStatus, type NewIndexer } from "../lib/api";
+import { INDEXER_DOT, indexerStatusLine, prowlarrSyncMessage } from "../lib/indexerStatus";
 import { LINKS } from "../lib/links";
 import { useQuery } from "../lib/query";
 import { useLive } from "../lib/useLive";
@@ -10,7 +10,7 @@ import { ErrorState, Skeleton, StaleBanner, useConfirm } from "../ui";
 
 const NO_INDEXERS: Indexer[] = [];
 
-type TestState = { loading?: boolean; ok?: boolean; error?: string };
+type TestState = { loading?: boolean; ok?: boolean; error?: string; caps?: string };
 
 // Priority only orders results that are otherwise level, so say so wherever it shows.
 const TIE_BREAK_HELP = "Only breaks ties between equally seeded results, such as the same release from two indexers. 1 = preferred.";
@@ -42,7 +42,7 @@ export function Indexers() {
     setTests((t) => ({ ...t, [id]: { loading: true } }));
     try {
       const res = await api.testIndexer(id);
-      setTests((t) => ({ ...t, [id]: { ok: res.ok, error: res.error } }));
+      setTests((t) => ({ ...t, [id]: { ok: res.ok, error: res.error, caps: res.caps_summary } }));
     } catch (e) {
       setTests((t) => ({ ...t, [id]: { ok: false, error: (e as Error).message } }));
     }
@@ -75,7 +75,7 @@ export function Indexers() {
       <div className="mx-auto w-full max-w-[1100px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex items-center justify-between">
           <p className="m-0 text-[12.5px] text-ink-dim">
-            Torznab (torrent) and Newznab (usenet) search sources. Every module searches through these.
+            Torrent search sources: trackers and Prowlarr. Every module searches through these.
           </p>
           <button
             onClick={() => setShowForm((s) => !s)}
@@ -115,7 +115,7 @@ export function Indexers() {
                 <div key={idx.id} className="rounded-xl p-4" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
                   <div className="flex flex-wrap items-center gap-3">
                     <div className="min-w-0 flex-1 basis-[180px]">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         {idx.status && <StatusDot status={idx.status} />}
                         <span className="text-[13.5px] font-semibold">{idx.name}</span>
                         <span
@@ -129,10 +129,22 @@ export function Indexers() {
                             disabled
                           </span>
                         )}
+                        {idx.kind === "newznab" && (
+                          // Usenet: nothing could download what it finds, so searches skip it.
+                          <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: "var(--panel-2)", color: "var(--ink-dim)" }}>
+                            Not searched: needs a usenet download client
+                          </span>
+                        )}
                       </div>
                       <div className="mt-1 truncate font-mono text-[11px] text-ink-faint">
                         {idx.url || (idx.username ? `@${idx.username}` : "")}
                       </div>
+                      {idx.managed_note && (
+                        <div className="mt-1 text-[11.5px] text-ink-dim">{idx.managed_note}</div>
+                      )}
+                      {idx.caps_summary && (
+                        <div className="mt-1 break-words text-[11px] text-ink-faint" title="What this indexer says it supports">{idx.caps_summary}</div>
+                      )}
                       {idx.status && <StatusLine status={idx.status} />}
                     </div>
                     <span className="font-mono text-[11px] text-ink-faint" title={TIE_BREAK_HELP}>tie-break {idx.priority}</span>
@@ -151,9 +163,7 @@ export function Indexers() {
                   )}
                   <MediaPills idx={idx} onChange={refresh} />
                   {t && !t.loading && (
-                    <div className="mt-2.5 font-mono text-[11px]" style={{ color: t.ok ? "var(--good)" : "var(--reject)" }}>
-                      {t.ok ? "✓ Connected" : `✕ ${t.error ?? "failed"}`}
-                    </div>
+                    <TestLine state={t} />
                   )}
                   {editingId === idx.id && (
                     <EditForm
@@ -171,6 +181,38 @@ export function Indexers() {
         )}
       </div>
     </>
+  );
+}
+
+// TestLine is a Test's answer: connected (with what the indexer supports) or why not.
+function TestLine({ state }: { state: TestState }) {
+  return (
+    <div className="mt-2.5 break-words font-mono text-[11px]" style={{ color: state.ok ? "var(--good)" : "var(--reject)" }}>
+      {state.ok ? `✓ Connected${state.caps ? ` · ${state.caps}` : ""}` : `✕ ${state.error ?? "failed"}`}
+    </div>
+  );
+}
+
+// TestSettings checks what's in a form without saving it. A typed key or password goes
+// out for this one check only; with an id, blanks mean the saved ones.
+function TestSettings({ body }: { body: () => NewIndexer & { id?: number } }) {
+  const [state, setState] = useState<TestState>({});
+  const run = async () => {
+    setState({ loading: true });
+    try {
+      const r = await api.testIndexerSettings(body());
+      setState({ ok: r.ok, error: r.error, caps: r.caps_summary });
+    } catch (e) {
+      setState({ ok: false, error: (e as Error).message });
+    }
+  };
+  return (
+    <div className="mt-3">
+      <button type="button" onClick={run} disabled={state.loading} className="rounded-lg px-3 py-1.5 text-[12px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
+        {state.loading ? "Testing…" : "Test these settings"}
+      </button>
+      {!state.loading && state.ok !== undefined && <TestLine state={state} />}
+    </div>
   );
 }
 
@@ -231,13 +273,26 @@ function FlareSolverrLine() {
   );
 }
 
+// isBundledProwlarr: the Prowlarr that ships with Arrmada, by its compose service name.
+function isBundledProwlarr(u: string): boolean {
+  try {
+    return new URL(u).hostname.toLowerCase() === "arrmada-prowlarr";
+  } catch {
+    return false;
+  }
+}
+
 function ProwlarrSync({ onSynced }: { onSynced: () => void }) {
   const [open, setOpen] = useState(false);
   const [url, setUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [hasKey, setHasKey] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [addProxy, setAddProxy] = useState(false);
   const [result, setResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  // The bundled Prowlarr is Arrmada's own and always gets Arrmada's FlareSolverr; any other
+  // Prowlarr is someone's own setup and is only changed when this box is ticked.
+  const bundled = isBundledProwlarr(url);
 
   useEffect(() => {
     api.prowlarrInfo().then((i) => { setUrl(i.url); setHasKey(i.has_key); }).catch(() => {});
@@ -247,9 +302,8 @@ function ProwlarrSync({ onSynced }: { onSynced: () => void }) {
     setBusy(true);
     setResult(null);
     try {
-      const r = await api.syncProwlarr({ url, api_key: apiKey });
-      const fs = r.flaresolverr_ready ? " FlareSolverr is auto-configured for Cloudflare trackers." : "";
-      setResult({ ok: true, msg: `Synced ${r.synced} indexer${r.synced === 1 ? "" : "s"} from Prowlarr.${fs}` });
+      const r = await api.syncProwlarr({ url, api_key: apiKey, add_flaresolverr_proxy: !bundled && addProxy });
+      setResult({ ok: true, msg: prowlarrSyncMessage(r) });
       setHasKey(true);
       setApiKey("");
       onSynced();
@@ -271,7 +325,7 @@ function ProwlarrSync({ onSynced }: { onSynced: () => void }) {
       <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center justify-between gap-3 text-left">
         <div>
           <div className="text-[13px] font-semibold">Sync from Prowlarr <span className="ml-1 rounded px-1.5 py-0.5 align-middle font-mono text-[9px] uppercase" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>fast</span></div>
-          <div className="mt-0.5 text-[11.5px] text-ink-faint">Pull your Prowlarr indexers in as Torznab feeds — API search, no scraping. Syncing also points Prowlarr at Arrmada's FlareSolverr. Add trackers in Prowlarr first.</div>
+          <div className="mt-0.5 text-[11.5px] text-ink-faint">Pull your Prowlarr indexers in as Torznab feeds — API search, no scraping. Re-syncing keeps what you set here; indexers disabled or removed in Prowlarr are turned off. Add trackers in Prowlarr first.</div>
         </div>
         <span className="font-mono text-[16px] text-ink-faint">{open ? "−" : "+"}</span>
       </button>
@@ -299,9 +353,16 @@ function ProwlarrSync({ onSynced }: { onSynced: () => void }) {
             <div className="text-ink-dim">
               For a Cloudflare-protected tracker, add the{" "}
               <code className="rounded px-1 py-0.5 font-mono text-[10.5px]" style={{ background: "var(--panel)", color: "var(--accent)" }}>flaresolverr</code>{" "}
-              tag to that tracker in Prowlarr; syncing sets up the FlareSolverr proxy it uses. Public indexers don't need it.
+              tag to that tracker in Prowlarr; syncing the bundled Prowlarr sets up the FlareSolverr proxy it uses. Public indexers don't need it.
             </div>
           </div>
+
+          {!bundled && (
+            <label className="mt-2.5 flex items-center gap-2 text-[12px] text-ink-dim">
+              <input type="checkbox" checked={addProxy} onChange={(e) => setAddProxy(e.target.checked)} />
+              Add Arrmada's FlareSolverr to this Prowlarr
+            </label>
+          )}
 
           {result && (
             <div className="mt-2.5 text-[12px]" style={{ color: result.ok ? "var(--good)" : "var(--reject)" }}>
@@ -323,7 +384,6 @@ const KIND_NAMES: Record<string, string> = {
   torrentleech: "TorrentLeech",
   myanonamouse: "MyAnonaMouse",
   torznab: "Torznab",
-  newznab: "Newznab",
 };
 
 function AddForm({ onAdded }: { onAdded: () => void }) {
@@ -347,19 +407,21 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
   const is1337 = kind === "1337x";
   const isMAM = kind === "myanonamouse";
 
+  const body = (): NewIndexer =>
+    isTL
+      ? { name, kind, username, password, api_key: apiKey, priority, min_seeders: minSeeders }
+      : isMAM
+        ? { name, kind, api_key: apiKey, media_types: ["book"], priority, min_seeders: minSeeders }
+        : is1337
+          ? { name, kind, url, priority, min_seeders: minSeeders }
+          : { name, kind, url, api_key: apiKey, priority, min_seeders: minSeeders };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError(null);
     try {
-      const body = isTL
-        ? { name, kind, username, password, api_key: apiKey, priority, min_seeders: minSeeders }
-        : isMAM
-          ? { name, kind, api_key: apiKey, media_types: ["book"], priority, min_seeders: minSeeders }
-          : is1337
-            ? { name, kind, url, priority, min_seeders: minSeeders }
-            : { name, kind, url, api_key: apiKey, priority, min_seeders: minSeeders };
-      await api.createIndexer(body);
+      await api.createIndexer(body());
       onAdded();
     } catch (err) {
       setError((err as Error).message);
@@ -383,7 +445,6 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
             <option value="torrentleech">TorrentLeech (native)</option>
             <option value="myanonamouse">MyAnonaMouse (native, books)</option>
             <option value="torznab">Torznab (torrent, via Prowlarr/Jackett)</option>
-            <option value="newznab">Newznab (usenet)</option>
           </select>
         </Labeled>
 
@@ -441,6 +502,7 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
           Native books/audiobooks integration. In MyAnonaMouse go to <b>Preferences → Security → Create session</b>, allow your server's IP (ASN-locked is fine), and paste the <span className="font-mono">mam_id</span> here. Pulls full metadata — narrator, author, series, language, format — straight from MAM's API. Scoped to Books automatically. If you already have MAM in Prowlarr, remove that entry to avoid duplicate results.
         </p>
       )}
+      <TestSettings body={body} />
       {error && <div className="mt-3 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
       <button
         type="submit"
@@ -458,6 +520,7 @@ function EditForm({ idx, onSaved }: { idx: Indexer; onSaved: () => void }) {
   const isTL = idx.kind === "torrentleech";
   const is1337 = idx.kind === "1337x";
   const isMAM = idx.kind === "myanonamouse";
+  const managed = Boolean(idx.prowlarr_id);
   const [name, setName] = useState(idx.name);
   const [url, setUrl] = useState(idx.url ?? "");
   const [username, setUsername] = useState(idx.username ?? "");
@@ -475,27 +538,29 @@ function EditForm({ idx, onSaved }: { idx: Indexer; onSaved: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  const body = (): NewIndexer => ({
+    name,
+    kind: idx.kind,
+    url: isTL ? undefined : url,
+    username: isTL ? username : undefined,
+    password: isTL ? password : undefined,
+    api_key: apiKey, // blank = keep existing
+    categories: idx.categories,
+    media_types: idx.media_types, // scoping is edited via the row pills; preserve it here
+    priority,
+    min_seeders: minSeeders,
+    seed_enabled: seedEnabled,
+    seed_ratio: seedEnabled ? seedRatio : 0,
+    seed_hours: seedEnabled ? (seedUnit === "days" ? seedTime * 24 : seedTime) : 0,
+    enabled,
+  });
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError(null);
     try {
-      await api.updateIndexer(idx.id, {
-        name,
-        kind: idx.kind,
-        url: isTL ? undefined : url,
-        username: isTL ? username : undefined,
-        password: isTL ? password : undefined,
-        api_key: apiKey, // blank = keep existing
-        categories: idx.categories,
-        media_types: idx.media_types, // scoping is edited via the row pills; preserve it here
-        priority,
-        min_seeders: minSeeders,
-        seed_enabled: seedEnabled,
-        seed_ratio: seedEnabled ? seedRatio : 0,
-        seed_hours: seedEnabled ? (seedUnit === "days" ? seedTime * 24 : seedTime) : 0,
-        enabled,
-      });
+      await api.updateIndexer(idx.id, body());
       onSaved();
     } catch (err) {
       setError((err as Error).message);
@@ -509,9 +574,14 @@ function EditForm({ idx, onSaved }: { idx: Indexer; onSaved: () => void }) {
 
   return (
     <form onSubmit={submit} className="mt-3 rounded-lg p-3.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+      {managed && (
+        <p className="mb-3 mt-0 text-[11.5px] text-ink-dim">
+          Synced from Prowlarr: its name, URL and key come from Prowlarr. Change them there and sync again; the settings below stay yours.
+        </p>
+      )}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Labeled label="Name">
-          <input className={field} style={fieldStyle} value={name} onChange={(e) => setName(e.target.value)} required />
+          <input className={field} style={fieldStyle} value={name} onChange={(e) => setName(e.target.value)} required readOnly={managed} />
         </Labeled>
         <Labeled label="Tie-break priority (1–50)" hint={TIE_BREAK_HELP}>
           <input type="number" min={1} max={50} className={field} style={fieldStyle} value={priority} onChange={(e) => setPriority(Number(e.target.value))} />
@@ -539,7 +609,7 @@ function EditForm({ idx, onSaved }: { idx: Indexer; onSaved: () => void }) {
           <Labeled label="mam_id session (blank = keep)" span2>
             <input className={field} style={fieldStyle} value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="paste a fresh mam_id to replace the stored session" autoComplete="off" />
           </Labeled>
-        ) : (
+        ) : managed ? null : (
           <>
             <Labeled label="API URL" span2>
               <input className={field} style={fieldStyle} value={url} onChange={(e) => setUrl(e.target.value)} required />
@@ -557,6 +627,7 @@ function EditForm({ idx, onSaved }: { idx: Indexer; onSaved: () => void }) {
         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
         Enabled
       </label>
+      <TestSettings body={() => ({ ...body(), id: idx.id })} />
       {error && <div className="mt-2 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
       <button
         type="submit"

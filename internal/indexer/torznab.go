@@ -64,7 +64,18 @@ func ParseFeed(data []byte) ([]Release, error) {
 
 // parseFeedPage also returns the total the indexer claims to have, so Search knows whether
 // more pages exist.
+//
+// An indexer's own <error> answer comes back as its TorznabError ("Incorrect user
+// credentials") and a web page as errWebPage, instead of an XML parse error.
 func parseFeedPage(data []byte) ([]Release, int, error) {
+	if root, attrs, _, ok := xmlRoot(data); ok {
+		switch root {
+		case "error":
+			return nil, 0, torznabErrorFrom(attrs)
+		case "html":
+			return nil, 0, errWebPage
+		}
+	}
 	var f feed
 	if err := xml.Unmarshal(data, &f); err != nil {
 		return nil, 0, fmt.Errorf("parse feed: %w", err)
@@ -227,6 +238,7 @@ func (c *TorznabSearcher) Search(ctx context.Context, idx Indexer, q SearchQuery
 		}
 		releases, total, err := parseFeedPage(body)
 		if err != nil {
+			err = scrub(endpoint, err)
 			if page > 0 {
 				if c.log != nil {
 					c.log.Warn("torznab page unparseable; keeping earlier pages",
@@ -285,12 +297,24 @@ func (c *TorznabSearcher) Recent(ctx context.Context, idx Indexer, limit int) ([
 
 // Test performs a capabilities query to verify URL + API key.
 func (c *TorznabSearcher) Test(ctx context.Context, idx Indexer) error {
+	_, err := c.TestCaps(ctx, idx)
+	return err
+}
+
+// TestCaps asks the indexer for its capabilities and reads them. Only a real <caps>
+// answer passes: an HTTP 200 web page (Prowlarr's root URL) or an <error> document (a
+// wrong key) fails with what it is.
+func (c *TorznabSearcher) TestCaps(ctx context.Context, idx Indexer) (Caps, error) {
 	endpoint, err := buildURL(idx, "caps", SearchQuery{})
 	if err != nil {
-		return err
+		return Caps{}, err
 	}
-	_, err = c.get(ctx, endpoint)
-	return err
+	body, err := c.get(ctx, endpoint)
+	if err != nil {
+		return Caps{}, err
+	}
+	caps, err := parseCaps(body)
+	return caps, scrub(endpoint, err)
 }
 
 func (c *TorznabSearcher) get(ctx context.Context, endpoint string) ([]byte, error) {
@@ -312,21 +336,32 @@ func (c *TorznabSearcher) get(ctx context.Context, endpoint string) ([]byte, err
 		return nil, sanitizeErr(endpoint, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &HTTPStatusError{Code: resp.StatusCode, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
+		he := &HTTPStatusError{Code: resp.StatusCode, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
+		// Some indexers send their <error> document with a 4xx: its description says why.
+		if root, attrs, _, ok := xmlRoot(body); ok && root == "error" {
+			he.Detail = redactIn(endpoint, torznabErrorFrom(attrs).Error())
+		}
+		return nil, he
 	}
 	return body, nil
 }
 
-// HTTPStatusError is an indexer's non-200 answer. Its text is still the bare "HTTP 429"
-// people already see; RetryAfter carries the server's Retry-After so the integration
-// status tracker can pause the indexer for at least that long instead of asking again on
-// the next search.
+// HTTPStatusError is an indexer's non-200 answer: "HTTP 429", or "HTTP 401: Invalid API
+// Key" when the indexer said why. RetryAfter carries the server's Retry-After so the
+// integration status tracker can pause the indexer for at least that long instead of
+// asking again on the next search.
 type HTTPStatusError struct {
 	Code       int
 	RetryAfter time.Duration
+	Detail     string
 }
 
-func (e *HTTPStatusError) Error() string { return fmt.Sprintf("HTTP %d", e.Code) }
+func (e *HTTPStatusError) Error() string {
+	if e.Detail != "" {
+		return fmt.Sprintf("HTTP %d: %s", e.Code, e.Detail)
+	}
+	return fmt.Sprintf("HTTP %d", e.Code)
+}
 
 // parseRetryAfter reads a Retry-After header: whole seconds or an HTTP date. Anything
 // else, or a time already past, is zero.
@@ -463,7 +498,11 @@ func sanitizeErr(endpoint string, err error) error {
 	if err == nil {
 		return nil
 	}
-	msg := err.Error()
+	return errors.New(redactIn(endpoint, err.Error()))
+}
+
+// redactIn removes the endpoint's apikey from msg.
+func redactIn(endpoint, msg string) string {
 	if u, e := url.Parse(endpoint); e == nil {
 		if key := u.Query().Get("apikey"); key != "" {
 			msg = strings.ReplaceAll(msg, key, "REDACTED")
@@ -472,7 +511,22 @@ func sanitizeErr(endpoint string, err error) error {
 			}
 		}
 	}
-	return errors.New(msg)
+	return msg
+}
+
+// scrub is sanitizeErr for an answer the indexer sent: a TorznabError keeps its type (and
+// so its description as the text) with any echoed key removed.
+func scrub(endpoint string, err error) error {
+	var te *TorznabError
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &te):
+		return &TorznabError{Code: te.Code, Description: redactIn(endpoint, te.Description)}
+	case redactIn(endpoint, err.Error()) == err.Error():
+		return err // nothing to hide; keep its identity (errWebPage)
+	}
+	return sanitizeErr(endpoint, err)
 }
 
 // redactKey strips the apikey from a URL so it can be logged safely.

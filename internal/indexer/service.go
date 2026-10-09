@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -34,6 +35,37 @@ type Service struct {
 	// unknownKindLogged remembers which unknown searcher kinds have been warned
 	// about, so the RSS sweep doesn't repeat the warning every cycle.
 	unknownKindLogged sync.Map
+	// usenetAvailable says whether a usenet download client exists. Without one, usenet
+	// (Newznab) indexers aren't asked at all: whatever they find can't be downloaded, and
+	// asking them only took throttle slots from the indexers that can. nil = none.
+	usenetAvailable func() bool
+	// usenetSkipLogged remembers which usenet indexers have been logged as skipped.
+	usenetSkipLogged sync.Map
+}
+
+// SetUsenetAvailable wires whether a usenet download client exists. Arrmada has none
+// today; wire it from the download service if a usenet client kind is ever added.
+func (s *Service) SetUsenetAvailable(fn func() bool) { s.usenetAvailable = fn }
+
+// usenetUnusable reports whether idx is a usenet indexer with no usenet client to use it.
+func (s *Service) usenetUnusable(idx Indexer) bool {
+	return idx.Transport() == TransportUsenet && (s.usenetAvailable == nil || !s.usenetAvailable())
+}
+
+// Searched reports whether searches ask idx at all: it's enabled, and not a usenet
+// indexer without a usenet client. The health panel counts these.
+func (s *Service) Searched(idx Indexer) bool { return idx.Enabled && !s.usenetUnusable(idx) }
+
+// skipUsenet reports whether idx is a usenet indexer that can't be used, logging that
+// once per indexer.
+func (s *Service) skipUsenet(idx Indexer) bool {
+	if !s.usenetUnusable(idx) {
+		return false
+	}
+	if _, logged := s.usenetSkipLogged.LoadOrStore(idx.ID, true); !logged {
+		s.log.Info("indexer: not searching a usenet indexer; Arrmada has no usenet download client", "indexer", idx.Name)
+	}
+	return true
 }
 
 // recentTTL is how long an RSS feed pull is reused. The movie, series and book RSS
@@ -89,6 +121,12 @@ func NewService(db *sql.DB, log *slog.Logger, fs *flaresolverr.Client) *Service 
 		} else {
 			s.log.Info("indexer: refreshed MyAnonaMouse session", "id", id)
 		}
+	})
+	// A TorrentLeech login keeps going after the search that started it gives up; when it
+	// ends with nobody waiting, its outcome is recorded here so the row shows it. It
+	// doesn't move the backoff: the searcher paces its own logins.
+	s.registry.SetLoginObserver(func(idx Indexer, err error) {
+		s.record(context.Background(), idx, err, 0, false)
 	})
 	return s
 }
@@ -186,6 +224,12 @@ func (s *Service) Update(ctx context.Context, idx Indexer) error {
 	}
 	if oldErr != nil || connectionChanged(old, idx) {
 		s.resetStatus(ctx, idx.ID, false)
+	}
+	// What the old address said it supports says nothing about the new one.
+	if oldErr == nil && (old.URL != idx.URL || old.Kind != idx.Kind) && old.CapsJSON != "" {
+		if _, err := s.repo.db.ExecContext(ctx, `UPDATE indexers SET caps_json='', caps_at=NULL WHERE id=?`, idx.ID); err != nil {
+			s.log.Warn("indexer: couldn't clear its old capabilities", "id", idx.ID, "err", err)
+		}
 	}
 	return nil
 }
@@ -333,9 +377,122 @@ func (s *Service) Test(ctx context.Context, id int64) error {
 	// A Test shows on the row like any search: a pass clears a backoff, and a failure is
 	// recorded without moving the backoff ladder — pressing Test shouldn't pause anything.
 	start := time.Now()
-	err = searcher.Test(ctx, idx)
+	caps, err := testWith(ctx, searcher, idx)
 	s.record(ctx, idx, err, time.Since(start), false)
+	if err == nil && caps != nil {
+		s.saveCaps(ctx, idx, *caps)
+	}
 	return err
+}
+
+// testWith runs a searcher's Test, reading capabilities too when it can (caps is nil
+// when it can't).
+func testWith(ctx context.Context, searcher Searcher, idx Indexer) (*Caps, error) {
+	if ct, ok := searcher.(CapsTester); ok {
+		c, err := ct.TestCaps(ctx, idx)
+		if err != nil {
+			return nil, err
+		}
+		return &c, nil
+	}
+	return nil, searcher.Test(ctx, idx)
+}
+
+// saveCaps stores what an indexer said it supports. A failure only costs the row its
+// summary line, so it's logged rather than failing the Test.
+func (s *Service) saveCaps(ctx context.Context, idx Indexer, c Caps) {
+	b, err := json.Marshal(c)
+	if err == nil {
+		err = s.repo.SetCaps(ctx, idx.ID, string(b))
+	}
+	if err != nil {
+		s.log.Warn("indexer: couldn't save its capabilities", "indexer", idx.Name, "err", err)
+	}
+}
+
+// TestSettings tests settings that may not be saved — the Add form, or an edit before
+// Save — and returns what the indexer supports (a summary line; "" for kinds that don't
+// say). Nothing is stored or recorded: the row, its status and its secrets stay as they
+// are, and a key typed for the test is used for this one request only. idx.ID is 0 unless
+// the caller deliberately keeps it (see the handler).
+func (s *Service) TestSettings(ctx context.Context, idx Indexer) (string, error) {
+	searcher, err := s.registry.For(idx.Kind)
+	if err != nil {
+		return "", err
+	}
+	caps, err := testWith(ctx, searcher, idx)
+	if err != nil || caps == nil {
+		return "", err
+	}
+	return caps.Summary(), nil
+}
+
+// capsRefreshAge is how old an indexer's stored capabilities may get before the daily
+// refresh asks again.
+const capsRefreshAge = 7 * 24 * time.Hour
+
+// RefreshCaps reads the capabilities of the given indexers (Torznab ones; others say
+// nothing), e.g. the rows a Prowlarr sync just added. Each request goes through the
+// searcher's usual per-host throttle; an indexer that's backing off is left alone, and a
+// failure is logged and skipped — the next Test or refresh tries again.
+func (s *Service) RefreshCaps(ctx context.Context, ids []int64) error {
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		idx, err := s.repo.Get(ctx, id)
+		if errors.Is(err, ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		s.refreshCaps(ctx, idx)
+	}
+	return nil
+}
+
+// RefreshStaleCaps is the daily indexer-caps-refresh task: every enabled Torznab indexer
+// whose capabilities were never read, or were read over a week ago, is asked again.
+func (s *Service) RefreshStaleCaps(ctx context.Context) error {
+	list, err := s.repo.ListEnabled(ctx)
+	if err != nil {
+		return err
+	}
+	cutoff := time.Now().Add(-capsRefreshAge)
+	for _, idx := range list {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if idx.Kind != KindTorznab || (idx.CapsJSON != "" && idx.CapsAt.After(cutoff)) {
+			continue
+		}
+		s.refreshCaps(ctx, idx)
+	}
+	return nil
+}
+
+// refreshCaps reads and stores one indexer's capabilities.
+func (s *Service) refreshCaps(ctx context.Context, idx Indexer) {
+	searcher, err := s.registry.For(idx.Kind)
+	if err != nil {
+		return
+	}
+	ct, ok := searcher.(CapsTester)
+	if !ok {
+		return
+	}
+	if ok, _ := s.allow(ctx, idx); !ok {
+		return
+	}
+	ictx, cancel := context.WithTimeout(ctx, perIndexerTimeout)
+	defer cancel()
+	c, err := ct.TestCaps(ictx, idx)
+	if err != nil {
+		s.log.Info("indexer: couldn't read its capabilities", "indexer", idx.Name, "err", err)
+		return
+	}
+	s.saveCaps(ctx, idx, c)
 }
 
 // SearchResult bundles aggregated releases with per-indexer errors so a single
@@ -394,6 +551,9 @@ func (s *Service) fetchRecent(ctx context.Context, limit int) (SearchResult, err
 		skipped  int
 	)
 	for _, idx := range indexers {
+		if s.skipUsenet(idx) {
+			continue
+		}
 		searcher, err := s.registry.For(idx.Kind)
 		if err != nil {
 			// Warn once per kind: silently skipping made a misconfigured indexer
@@ -513,6 +673,9 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 	for _, idx := range indexers {
 		if !idx.Serves(q.MediaType) {
 			continue // this indexer isn't scoped to the media type being searched
+		}
+		if s.skipUsenet(idx) {
+			continue
 		}
 		priority[idx.Name] = idx.Priority
 		eligible++

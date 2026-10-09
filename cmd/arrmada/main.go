@@ -237,6 +237,12 @@ func main() {
 		bus.Publish("integration.status", map[string]any{"kind": s.Kind, "ref": s.Ref, "state": s.Phase(time.Now())})
 	})
 	indexers.SetStatus(connStatus)
+	// Rows synced from Prowlarr before rows remembered their Prowlarr id get it from their
+	// feed address, so they're treated as Prowlarr's (name and address owned by the sync)
+	// before the next sync runs.
+	if _, err := indexers.BackfillProwlarrIDs(context.Background(), settingsSvc.Get(context.Background(), "prowlarr_url", cfg.ProwlarrURL)); err != nil {
+		log.Warn("couldn't link synced indexers to their Prowlarr ids", "err", err)
+	}
 	downloads.SetStatus(connStatus)
 	// FlareSolverr answering or not is recorded like any integration (no backoff: the
 	// searches that need it are already paced by their indexers' own status).
@@ -536,6 +542,11 @@ func main() {
 		return nil
 	}, scheduler.Label("Search for missing movies"), scheduler.Description("Searches the indexers for monitored movies that don't have a file yet."))
 	// RSS sync: poll indexer feeds for new uploads matching wanted movies.
+	// What each Torznab indexer supports (its t=caps), for the Indexers page: read when
+	// never read or over a week old. Paced by the per-host throttle; paused indexers wait.
+	sched.Register("indexer-caps-refresh", 24*time.Hour, false, indexers.RefreshStaleCaps,
+		scheduler.Label("Read indexer capabilities"),
+		scheduler.Description("Asks each Torznab indexer which searches and categories it supports, when that's unknown or over a week old."))
 	sched.Register("rss-sync", 15*time.Minute, false, func(ctx context.Context) error {
 		coordinator.RSSSync(ctx)
 		return nil

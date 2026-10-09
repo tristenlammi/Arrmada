@@ -231,6 +231,7 @@ POST /api/v1/grab staff -
 POST /api/v1/grab/preview staff -
 POST /api/v1/indexers staff -
 POST /api/v1/indexers/prowlarr/sync staff -
+POST /api/v1/indexers/test staff -
 POST /api/v1/indexers/{id}/test staff -
 POST /api/v1/insights/import/tautulli admin -
 POST /api/v1/insights/plex/auth staff -

@@ -67,6 +67,14 @@ func (r *Registry) SetSessionPersister(persist func(id int64, session string)) {
 	}
 }
 
+// SetLoginObserver wires fn to hear how a TorrentLeech login ended when no search was
+// still waiting for it, so a login that outlived its search still shows on the row.
+func (r *Registry) SetLoginObserver(fn func(idx Indexer, err error)) {
+	if tl, ok := r.searchers[KindTorrentLeech].(*TorrentLeechSearcher); ok {
+		tl.onLogin = fn
+	}
+}
+
 // resetter is a searcher that keeps something per indexer (TorrentLeech's logged-in
 // session) that must go when the indexer is edited or deleted.
 type resetter interface {

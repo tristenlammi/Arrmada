@@ -1,6 +1,13 @@
 package httpapi
 
-import "net/http"
+import (
+	"context"
+	"net/http"
+	"time"
+
+	"github.com/tristenlammi/arrmada/internal/indexer"
+	"github.com/tristenlammi/arrmada/internal/jobs"
+)
 
 const (
 	keyProwlarrURL = "prowlarr_url"
@@ -22,10 +29,13 @@ func (a *api) handleProwlarrInfo(w http.ResponseWriter, r *http.Request) {
 // handleProwlarrSync pulls indexers from Prowlarr and mirrors them into Arrmada.
 // Body {url, api_key} are optional — a blank URL falls back to the configured
 // default, and a blank key reuses the stored one. Successful values are saved.
+// add_flaresolverr_proxy adds Arrmada's FlareSolverr to a Prowlarr that isn't the
+// bundled one (the bundled one always gets it).
 func (a *api) handleProwlarrSync(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		URL    string `json:"url"`
-		APIKey string `json:"api_key"`
+		URL                  string `json:"url"`
+		APIKey               string `json:"api_key"`
+		AddFlareSolverrProxy bool   `json:"add_flaresolverr_proxy"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -44,7 +54,9 @@ func (a *api) handleProwlarrSync(w http.ResponseWriter, r *http.Request) {
 	if a.deps.APIKeys != nil {
 		flare = a.deps.APIKeys.Value(ctx, "flaresolverr")
 	}
-	res, err := a.deps.Indexers.SyncProwlarr(ctx, url, key, flare)
+	res, err := a.deps.Indexers.SyncProwlarr(ctx, indexer.ProwlarrSync{
+		URL: url, APIKey: key, FlareSolverrURL: flare, AddFlareSolverrProxy: req.AddFlareSolverrProxy,
+	})
 	if err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -52,5 +64,14 @@ func (a *api) handleProwlarrSync(w http.ResponseWriter, r *http.Request) {
 	// Remember what worked for next time.
 	_ = a.deps.Settings.Set(ctx, keyProwlarrURL, url)
 	_ = a.deps.Settings.Set(ctx, keyProwlarrKey, key)
-	a.writeJSON(w, http.StatusOK, map[string]any{"synced": res.Synced, "flaresolverr_ready": res.FlareSolverrReady})
+	// Each new row's capabilities come from its own feed (one request per indexer through
+	// the per-host throttle), so they're read in the background rather than holding up
+	// the answer; the page shows them on its next read.
+	if ids := res.AddedIDs; len(ids) > 0 {
+		_, _, _ = a.submit(r, jobs.Spec{Kind: "indexer.caps", Target: "prowlarr", Class: jobs.ClassIndexerSearch, Timeout: 10 * time.Minute,
+			Fn: func(ctx context.Context, _ *jobs.Progress) (any, error) {
+				return nil, a.deps.Indexers.RefreshCaps(ctx, ids)
+			}})
+	}
+	a.writeJSON(w, http.StatusOK, res)
 }

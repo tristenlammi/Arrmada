@@ -58,7 +58,9 @@ func (a *api) registerHealthChecks(reg *health.Registry) {
 			ix, err := a.deps.Indexers.List(ctx)
 			n := 0
 			for _, i := range ix {
-				if i.Enabled {
+				// A usenet indexer with no usenet client is never searched, so it
+				// doesn't count as somewhere to search.
+				if a.deps.Indexers.Searched(i) {
 					n++
 				}
 			}
@@ -75,7 +77,7 @@ func (a *api) registerHealthChecks(reg *health.Registry) {
 			enabled := 0
 			var paused []health.PausedIndexer
 			for _, i := range ix {
-				if !i.Enabled {
+				if !a.deps.Indexers.Searched(i) {
 					continue
 				}
 				enabled++
