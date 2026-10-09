@@ -239,7 +239,7 @@ func (t *TMDB) SearchSeries(ctx context.Context, query string) ([]SeriesResult, 
 // its episodes. Seasons are fetched concurrently.
 func (t *TMDB) GetSeries(ctx context.Context, tmdbID int) (*SeriesDetails, error) {
 	q := url.Values{}
-	q.Set("append_to_response", "credits,external_ids")
+	q.Set("append_to_response", "credits,external_ids,alternative_titles")
 	body, err := t.get(ctx, "/tv/"+strconv.Itoa(tmdbID), q)
 	if err != nil {
 		return nil, err
@@ -249,12 +249,13 @@ func (t *TMDB) GetSeries(ctx context.Context, tmdbID int) (*SeriesDetails, error
 		return nil, fmt.Errorf("tmdb: parse series: %w", err)
 	}
 	d := &SeriesDetails{
-		SeriesResult: s.toResult(),
-		IMDBID:       s.ExternalIDs.IMDBID,
-		Status:       s.Status,
-		OriginalName: s.OriginalName,
-		OriginalLang: s.OriginalLanguage,
-		TVDBID:       s.ExternalIDs.TVDBID,
+		SeriesResult:  s.toResult(),
+		IMDBID:        s.ExternalIDs.IMDBID,
+		Status:        s.Status,
+		OriginalName:  s.OriginalName,
+		OriginalLang:  s.OriginalLanguage,
+		OriginCountry: s.OriginCountry,
+		TVDBID:        s.ExternalIDs.TVDBID,
 	}
 	if s.BackdropPath != "" {
 		d.BackdropURL = tmdbBackdropBase + s.BackdropPath
@@ -264,6 +265,11 @@ func (t *TMDB) GetSeries(ctx context.Context, tmdbID int) (*SeriesDetails, error
 	}
 	for _, g := range s.Genres {
 		d.Genres = append(d.Genres, g.Name)
+	}
+	for _, a := range s.AlternativeTitles.Results {
+		if title := strings.TrimSpace(a.Title); title != "" {
+			d.AltTitles = append(d.AltTitles, AltTitle{Title: title, Country: a.Country, Type: a.Type})
+		}
 	}
 	for _, c := range s.Credits.Cast {
 		if len(d.Cast) >= maxCast {
@@ -346,6 +352,7 @@ type tmdbSeries struct {
 	Name             string      `json:"name"`
 	OriginalName     string      `json:"original_name"`
 	OriginalLanguage string      `json:"original_language"`
+	OriginCountry    []string    `json:"origin_country"`
 	FirstAirDate     string      `json:"first_air_date"`
 	Overview         string      `json:"overview"`
 	PosterPath       string      `json:"poster_path"`
@@ -365,6 +372,14 @@ type tmdbSeries struct {
 		IMDBID string `json:"imdb_id"`
 		TVDBID int    `json:"tvdb_id"`
 	} `json:"external_ids"`
+	// For TV the append is {"results": [...]} (movies use "titles").
+	AlternativeTitles struct {
+		Results []struct {
+			Country string `json:"iso_3166_1"`
+			Title   string `json:"title"`
+			Type    string `json:"type"`
+		} `json:"results"`
+	} `json:"alternative_titles"`
 	CreatedBy []tmdbCast `json:"created_by"`
 	Credits   struct {
 		Cast []tmdbCast `json:"cast"`

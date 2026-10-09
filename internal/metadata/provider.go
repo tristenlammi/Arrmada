@@ -163,16 +163,25 @@ type SeriesResult struct {
 // SeriesDetails is a full TV series record with its seasons and episodes.
 type SeriesDetails struct {
 	SeriesResult
-	IMDBID       string          `json:"imdb_id,omitempty"`
-	Status       string          `json:"status,omitempty"` // Returning Series | Ended | Canceled
-	Network      string          `json:"network,omitempty"`
-	BackdropURL  string          `json:"backdrop_url,omitempty"`
-	Genres       []string        `json:"genres,omitempty"`
-	Cast         []CastMember    `json:"cast,omitempty"`
-	Seasons      []SeasonDetails `json:"seasons,omitempty"`
-	OriginalName string          `json:"original_name,omitempty"` // TMDB original_name (romaji for anime)
-	OriginalLang string          `json:"original_language,omitempty"`
-	TVDBID       int             `json:"tvdb_id,omitempty"` // for TheXEM scene mapping
+	IMDBID      string          `json:"imdb_id,omitempty"`
+	Status      string          `json:"status,omitempty"` // Returning Series | Ended | Canceled
+	Network     string          `json:"network,omitempty"`
+	BackdropURL string          `json:"backdrop_url,omitempty"`
+	Genres      []string        `json:"genres,omitempty"`
+	Cast        []CastMember    `json:"cast,omitempty"`
+	Seasons     []SeasonDetails `json:"seasons,omitempty"`
+	// OriginalName is TMDB's original_name: the title in the show's own language and script
+	// (葬送のフリーレン for a Japanese show), so for anime it is usually NOT the romaji
+	// title releases carry. The romaji form comes from AltTitles.
+	OriginalName string `json:"original_name,omitempty"`
+	// AltTitles are TMDB's alternative titles: romaji names, US/UK variant titles and
+	// translations. The series module seeds release aliases from the useful ones.
+	AltTitles    []AltTitle `json:"alt_titles,omitempty"`
+	OriginalLang string     `json:"original_language,omitempty"`
+	// OriginCountry is TMDB's origin_country (ISO 3166 codes: "US", "GB"), which tells
+	// same-named shows apart when a release tags its country ("The.Office.US").
+	OriginCountry []string `json:"origin_country,omitempty"`
+	TVDBID        int      `json:"tvdb_id,omitempty"` // for TheXEM scene mapping
 
 	// NumberingSource names whose listing Seasons came from: "tmdb", "tvdb" or "tvmaze".
 	// NumberingFallback is set when that listing is NOT the one the show would normally
@@ -181,6 +190,13 @@ type SeriesDetails struct {
 	// it. Internal: never part of the API.
 	NumberingSource   string `json:"-"`
 	NumberingFallback bool   `json:"-"`
+}
+
+// AltTitle is one of TMDB's alternative titles for a show.
+type AltTitle struct {
+	Title   string `json:"title"`
+	Country string `json:"country,omitempty"` // ISO 3166 code ("JP", "US")
+	Type    string `json:"type,omitempty"`    // free text on TMDB: "Romaji", "romanization", ""…
 }
 
 // SeasonDetails is one season plus its episodes.

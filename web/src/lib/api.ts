@@ -644,7 +644,9 @@ export interface DiskGuardStatus {
   shared_with_library: boolean;
 }
 
-export interface SeriesAlias { id: number; title: string; tmdb_season: number }
+// source: "tmdb" for an alias seeded from TMDB's alternative titles (or a renamed show's old title),
+// "user" for one the owner typed. Removing a TMDB one switches it off rather than deleting it.
+export interface SeriesAlias { id: number; title: string; tmdb_season: number; source?: "user" | "tmdb" }
 
 export interface AudioStreamInfo { aud_index: number; codec: string; lang: string; channels: number }
 export interface SubStreamInfo { sub_index: number; codec: string; lang: string; text: boolean }
@@ -1228,7 +1230,14 @@ export interface Series {
   extra?: SeriesExtra;
   seasons?: Season[];
   stats?: SeriesStats;
+  // Detail endpoint only: the newest history event's id. Panels that show the show's
+  // history reload when it moves.
+  last_event_id?: number;
 }
+
+// One episode's in-flight download, from the light poll the series page runs while
+// something downloads (GET /series/{id}/downloads).
+export interface SeriesEpisodeDownload { season: number; episode: number; state: string; progress: number }
 // --- Books ---
 export type BookSource = "openlibrary" | "hardcover";
 export interface BookUpgradeStatus {
@@ -2052,6 +2061,7 @@ export const api = {
   addSeries: (body: { tmdb_id: number; quality_profile?: string; monitored?: boolean; search_on_add?: boolean; monitor?: string; monitor_new_seasons?: boolean }) =>
     req<Series>("/api/v1/series", { method: "POST", body: JSON.stringify(body) }),
   seriesDetail: (id: number) => req<Series>(`/api/v1/series/${id}`),
+  seriesDownloads: (id: number) => req<SeriesEpisodeDownload[]>(`/api/v1/series/${id}/downloads`),
   searchSeries: (id: number) =>
     req<{ status: string; started_at_ms?: number } & JobRef>(`/api/v1/series/${id}/search`, { method: "POST" }),
   seriesReleases: (id: number, season?: number, episode?: number) => {

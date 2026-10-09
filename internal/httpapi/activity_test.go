@@ -17,7 +17,7 @@ func TestLabelQueueItemByCategory(t *testing.T) {
 			movieCalls++
 			return "custom:1", true
 		},
-		series: func(string) (string, bool) { return "custom:2", true },
+		series: func(parser.Release) (string, bool) { return "custom:2", true },
 		album:  func(string) (string, bool) { return "custom:3", true },
 	}
 	cases := []struct {

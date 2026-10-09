@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -13,6 +13,8 @@ import { NumberingBanner } from "./series/NumberingReviewModal";
 import { MONITOR_PRESETS } from "./series/presets";
 import { usePoll } from "../lib/usePoll";
 import { libraryStatus } from "../lib/status";
+import { useLive } from "../lib/useLive";
+import { downloadingCount, mergeDownloads } from "./series/downloads";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { attemptLine, outcomeTone, searchJobLine } from "../lib/searchOutcome";
 import { LastSearches, refreshSearches, useSearchAttempts } from "../components/LastSearch";
@@ -73,9 +75,40 @@ export function SeriesDetail() {
     api.libraryFitEpisodes(sid).then((r) => setFits(new Map((r.items ?? []).map((it) => [`${it.season}:${it.episode}`, it])))).catch(() => {});
   }, [sid]);
 
-  // While any episode is downloading, refresh so the progress ticks up.
-  const anyDownloading = !!s?.seasons?.some((sn) => sn.episodes?.some((e) => e.download));
-  usePoll(load, anyDownloading ? 3000 : null, { immediate: false });
+  // While any episode is downloading, poll the light downloads endpoint so the progress
+  // ticks up — not the whole show every three seconds. The full detail reloads when the
+  // server announces an import or a search for this show.
+  const live = useLive();
+  const downloading = s ? downloadingCount(s) : 0;
+  const lastCount = useRef(0);
+  const pollDownloads = useCallback(() => {
+    return api.seriesDownloads(sid).then((dls) => {
+      // Without the websocket nothing announces the import, so a download leaving the
+      // list (finished, failed or removed) is the cue to reload instead.
+      if (!live.connected && dls.length < lastCount.current) load();
+      lastCount.current = dls.length;
+      setS((cur) => (cur ? mergeDownloads(cur, dls) : cur));
+    }).catch(() => { /* the next tick tries again */ });
+  }, [sid, load, live.connected]);
+  useEffect(() => { lastCount.current = downloading; }, [downloading]);
+  usePoll(pollDownloads, downloading > 0 ? 3000 : null, { immediate: false });
+  useEffect(() => {
+    const ev = live.last;
+    if (!ev) return;
+    const evID = (ev.data as { id?: number } | null)?.id;
+    if ((ev.topic === "series.imported" || ev.topic === "series.searched") && evID === sid) {
+      load();
+      if (ev.topic === "series.searched") refreshSearches("series", sid); // the per-scope last-search lines
+    } else if (ev.topic === "release.grabbed") {
+      // The grab names no show, and the client takes a moment to list the torrent: look
+      // twice, cheaply, rather than reload the whole page for every grab anywhere.
+      pollDownloads();
+      const t = window.setTimeout(pollDownloads, 5000);
+      return () => window.clearTimeout(t);
+    }
+    // Only a new event should act; load and pollDownloads change with the page's state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live.last]);
 
   if (notFound) return <Shell><div className="py-10 text-center text-[13px] text-ink-dim">That series isn't in your library. <Link to="/series" className="underline" style={{ color: "var(--accent)" }}>Back to Series</Link></div></Shell>;
   if (!s) return <Shell><p className="text-[12.5px] text-ink-dim">{error ?? "Loading…"}</p></Shell>;
@@ -173,7 +206,9 @@ export function SeriesDetail() {
           {seasons.map((sn) => <SeasonBlock key={sn.id} series={s} season={sn} onChange={load} flash={flash} defaultOpen={false} fits={fits} />)}
         </div>
 
-        <SeriesBlocklistPanel seriesId={s.id} refreshKey={s.seasons} />
+        {/* A block isn't always a history event (a junk download is blocklisted as it
+            leaves the queue), so the panel also reloads when a download goes away. */}
+        <SeriesBlocklistPanel seriesId={s.id} refreshKey={`${s.last_event_id ?? 0}:${downloading}`} />
 
         {ex?.cast && ex.cast.length > 0 && (
           <div className="mt-8">
@@ -192,9 +227,9 @@ export function SeriesDetail() {
           </div>
         )}
 
-        <DuplicatesPanel seriesId={s.id} refreshKey={s.stats?.have_files} flash={flash} />
+        <DuplicatesPanel seriesId={s.id} refreshKey={s.last_event_id} flash={flash} />
 
-        <HistoryPanel seriesId={s.id} refreshKey={s.stats?.have_files} />
+        <HistoryPanel seriesId={s.id} refreshKey={s.last_event_id} />
       </div>
 
       {toast && (
@@ -341,7 +376,7 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
         </div>
       )}
       <LastSearches kind="series" id={series.id} />
-      {series.series_type === "anime" && <AliasPanel series={series} />}
+      <AliasPanel series={series} />
       {series.series_type === "anime" && <SceneMapPanel series={series} />}
       {showPaste && (
         <UploadTorrentModal
@@ -867,13 +902,16 @@ function SeriesBlocklistPanel({ seriesId, refreshKey }: { seriesId: number; refr
   );
 }
 
-// AliasPanel manages the other titles a show is released under.
+// AliasPanel manages the other titles a show is released under. Every show has it,
+// collapsed: refresh seeds it from TMDB's alternative titles (the romaji name fansub groups
+// use, US/UK variant titles), so most shows never need it opened.
 //
 // An arc released as its own show ("BLEACH Thousand-Year Blood War" for Bleach) is a
 // title no amount of normalising will ever match, so those releases are discarded
 // before they're scored. Pinning the alias to a TMDB season also fixes the numbering:
 // the arc's own S01/S02 are cours inside that season, not the series' own seasons.
 function AliasPanel({ series }: { series: SeriesT }) {
+  const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<SeriesAlias[] | null>(null);
   const [title, setTitle] = useState("");
   const [season, setSeason] = useState("");
@@ -899,18 +937,27 @@ function AliasPanel({ series }: { series: SeriesT }) {
     }
   };
 
-  // Nothing configured and nothing being typed: stay out of the way. This is a fix for
-  // a specific problem, not something most shows ever need.
   const empty = rows !== null && rows.length === 0;
+  const count = rows?.length ?? 0;
 
   return (
     <div className="mt-3 rounded-xl p-3.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
-      <div className="text-[12.5px] font-semibold">Alternate titles</div>
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 text-left"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="text-[12.5px] font-semibold">Alternate titles</span>
+        {count > 0 && <span className="font-mono text-[11px] text-ink-faint">{count}</span>}
+        <span className="ml-auto font-mono text-[11px] text-ink-faint">{open ? "Hide" : "Show"}</span>
+      </button>
+      {open && (<>
       <p className="mb-2.5 mt-0.5 text-[11px] text-ink-faint">
-        Other names this show is released under, for when an arc ships as its own show. Set
-        &ldquo;maps to season&rdquo; so the alias&apos; <code className="mx-1 font-mono">S02E02</code> reads as
-        &ldquo;second cour, episode 2&rdquo; of that season — without it the title matches but the numbering
-        is still wrong.
+        Other names this show is released under. Titles from TMDB are added on refresh and only match
+        exactly. Add your own for an arc that ships as its own show, and set &ldquo;maps to season&rdquo; so
+        the alias&apos; <code className="mx-1 font-mono">S02E02</code> reads as &ldquo;second cour, episode 2&rdquo; of
+        that season — without it the title matches but the numbering is still wrong.
       </p>
 
       {rows && rows.length > 0 && (
@@ -921,9 +968,16 @@ function AliasPanel({ series }: { series: SeriesT }) {
               <span className="shrink-0 font-mono text-[11px] text-ink-faint">
                 {a.tmdb_season > 0 ? `→ season ${a.tmdb_season}` : "title only"}
               </span>
+              <span
+                className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase"
+                style={{ background: "var(--panel)", color: "var(--ink-faint)", border: "1px solid var(--line)" }}
+              >
+                {a.source === "tmdb" ? "from TMDB" : "added by you"}
+              </span>
               <button
                 className="ml-auto shrink-0 text-[11px] font-semibold"
                 style={{ color: "var(--reject)" }}
+                title={a.source === "tmdb" ? "Stops matching this title; a refresh won't add it back" : undefined}
                 onClick={async () => { await api.deleteSeriesAlias(series.id, a.id); load(); }}
               >
                 Remove
@@ -968,6 +1022,7 @@ function AliasPanel({ series }: { series: SeriesT }) {
       {empty && !err && (
         <p className="mb-0 mt-2 text-[11px] text-ink-faint">No alternate titles — most shows never need one.</p>
       )}
+      </>)}
     </div>
   );
 }

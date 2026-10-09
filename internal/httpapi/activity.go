@@ -11,7 +11,6 @@ import (
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/parser"
-	"github.com/tristenlammi/arrmada/internal/series"
 )
 
 // handleDownloadsFeed returns the live acquisition feed: movies that are searching
@@ -140,9 +139,10 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	if a.deps.Series != nil {
 		if seriesList, err := a.deps.Series.List(ctx); err == nil {
-			matchSeries := a.deps.Series.TitleMatcher(seriesList)
-			match.series = func(title string) (string, bool) {
-				sr, ok := matchSeries(series.NormTitle(title))
+			// Year- and country-aware (SER-11): "Doctor.Who.2005" is never the 1963 show.
+			matchSeries := a.deps.Series.ReleaseMatcher(seriesList)
+			match.series = func(rel parser.Release) (string, bool) {
+				sr, ok, _ := matchSeries(rel)
 				return sr.QualityProfile, ok
 			}
 		}
@@ -269,7 +269,7 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 // profile reference. A nil matcher matches nothing.
 type queueMatchers struct {
 	movie  func(title string, year int) (string, bool)
-	series func(title string) (string, bool)
+	series func(rel parser.Release) (string, bool)
 	album  func(name string) (string, bool) // the whole torrent name: music matching reads artist and album from it
 }
 
@@ -284,7 +284,7 @@ func labelQueueItem(it download.Item, rel parser.Release, m queueMatchers) (medi
 	case download.CategoryTV:
 		mediaType = "series"
 		if m.series != nil {
-			ref, ok = m.series(rel.Title)
+			ref, ok = m.series(rel)
 		}
 	case download.CategoryBooks:
 		mediaType = "book"

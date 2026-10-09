@@ -56,14 +56,19 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 	rts := newRuntimeIndex(s)
 	torrents, nzbs := splitTransport(releases)
 	for _, rel := range append(torrents, nzbs...) {
-		if !seriesTitleMatches(rel.Title, s) {
+		p := parser.Parse(rel.Title)
+		if ok, why := seriesIdentity(p, s); !ok {
 			droppedTitle++
 			if len(sampleDropped) < 8 {
-				sampleDropped = append(sampleDropped, rel.Title+" → "+parser.Parse(rel.Title).Title)
+				label := rel.Title + " → " + p.Title
+				if why != "" {
+					label += " (" + why + ")" // the right title, but another show's year or country
+				}
+				sampleDropped = append(sampleDropped, label)
 			}
 			continue // a different show that merely shares a title prefix (e.g. "Below Deck Mediterranean" for "Below Deck")
 		}
-		if p := parser.Parse(rel.Title); !c.releaseMatchesScope(ctx, s, p, season, episode) {
+		if !c.releaseMatchesScope(ctx, s, p, season, episode) {
 			droppedScope++
 			// What a right-show release DID resolve to is the answer to "there are
 			// torrents for this episode, why won't it take them?" — usually that they
@@ -138,21 +143,13 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 // plus the per-indexer errors of the main query. Shared by the interactive list and the quick Grab buttons, so
 // a button searches exactly where the list the user would see does.
 func (c *Coordinator) searchSeriesScope(ctx context.Context, s series.Series, season, episode int) ([]indexer.Release, map[string]string, error) {
-	// Clean the title before it reaches an indexer: releases carry no punctuation, so
-	// "Teen Titans Go!" must be searched as "Teen Titans Go" or its packs never appear.
-	title := indexerQuery(s.Title)
-	// Season/episode go in the tvsearch PARAMETERS, not baked into the text. Indexers
-	// match those far better than "Title S07" as a string, and a bare title query returns
-	// one capped page — which is how a nine-season show showed only 35 results.
-	q := indexer.SearchQuery{Text: title, MediaType: indexer.MediaSeries, Limit: 400}
-	// Anime is released under many numbering conventions (absolute "- 137", per-cour
-	// SxxExx, or a split-season S02) — a narrow query would miss most. Search broad by
-	// title and let the resolver-backed scope filter pick releases covering the episode.
-	//
-	// Specials can't go in the parameters at all: to tvsearch, season 0 is no season.
-	if !s.IsAnime() && season > 0 {
-		q.Season, q.Episode = season, episode
+	abs := 0
+	if s.IsAnime() && season > 0 && episode > 0 {
+		abs = c.series.AbsoluteNumber(ctx, s.ID, season, episode)
 	}
+	queries := seriesScopeQueries(s, season, episode, abs, c.series.AliasSearchTerms(ctx, s.ID, season, episode))
+	q := queries[0]
+	title := q.Text
 
 	result, err := c.search(ctx, q)
 	if err != nil {
@@ -176,39 +173,16 @@ func (c *Coordinator) searchSeriesScope(ctx context.Context, s series.Series, se
 			result.Releases = append(result.Releases, sres.Releases...)
 		}
 	}
-	// Ask for the specific episode by the arc's own numbering. The broad queries above
-	// are capped by the indexer — TorrentLeech answers a bare q= with 35 rows, newest
-	// first — so an episode from two years ago is never in them however well it matches.
-	// Anime can't use tvsearch's season/ep parameters either, since the arc isn't
-	// numbered like the season. Naming the episode is the only way to reach it.
-	for _, term := range c.series.AliasSearchTerms(ctx, s.ID, season, episode) {
-		tres, terr := c.search(ctx, indexer.SearchQuery{
-			Text: indexerQuery(term), MediaType: indexer.MediaSeries, Limit: 400,
-		})
-		if terr != nil {
-			c.log.Warn("series: targeted alias search failed", "series", s.Title, "query", term, "err", terr)
+	// The targeted and alias queries (seriesScopeQueries says why each exists). One failing
+	// doesn't sink the search: the main query above already answered.
+	for _, extra := range queries[1:] {
+		res, xerr := c.search(ctx, extra)
+		if xerr != nil {
+			c.log.Warn("series: extra search failed", "series", s.Title, "query", extra.Text, "err", xerr)
 			continue
 		}
-		c.log.Info("series: targeted alias search", "series", s.Title, "query", term, "returned", len(tres.Releases))
-		result.Releases = append(result.Releases, tres.Releases...)
-	}
-
-	// The arc's own name is a different search entirely — the indexer doesn't know the
-	// two titles are one show, so the series' title never returns the arc's releases.
-	for _, a := range s.Aliases {
-		aq := indexerQuery(a.Title)
-		if aq == "" || aq == title {
-			continue
-		}
-		ares, aerr := c.search(ctx, indexer.SearchQuery{
-			Text: aq, MediaType: indexer.MediaSeries, Limit: 400,
-		})
-		if aerr != nil {
-			c.log.Warn("series: alias search failed", "series", s.Title, "alias", a.Title, "err", aerr)
-			continue
-		}
-		c.log.Info("series: alias search", "series", s.Title, "alias", a.Title, "returned", len(ares.Releases))
-		result.Releases = append(result.Releases, ares.Releases...)
+		c.log.Info("series: extra search", "series", s.Title, "query", extra.Text, "returned", len(res.Releases))
+		result.Releases = append(result.Releases, res.Releases...)
 	}
 	// Log the REQUESTED scope, not the query parameters. For anime the query is
 	// deliberately left broad (q.Season/q.Episode stay 0 so every numbering convention
@@ -227,6 +201,52 @@ func (c *Coordinator) searchSeriesScope(ctx context.Context, s series.Series, se
 // maxSpecialQueries bounds the per-special searches of one Specials browse, so a show
 // with dozens of missing specials can't flood an indexer.
 const maxSpecialQueries = 5
+
+// seriesScopeQueries are the indexer queries for one season/episode scope, main query
+// first. Pure, so what an interactive search asks for can be tested without an indexer.
+//
+//   - The main query: the cleaned title (releases carry no punctuation, so "Teen Titans
+//     Go!" is searched as "Teen Titans Go"), with season and episode in the tvsearch
+//     PARAMETERS for a standard show — indexers match those far better than "Title S07" as
+//     text. Anime stays broad: it's released under absolute "- 137", per-cour SxxExx and
+//     split-season S02 alike, and the resolver-backed scope filter picks what covers the
+//     episode. Specials can't use the parameters either: to tvsearch, season 0 is none.
+//   - The episode by the arc's own numbering (aliasTerms, "BLEACH Thousand-Year Blood War
+//     15"), and for anime by its absolute number (absoluteQueries, "Frieren 13"). Broad
+//     queries are capped — TorrentLeech answers a bare q= with 35 rows, newest first — so
+//     an episode from two years ago is only reachable by naming it.
+//   - Each alias by name (searchAliases): the indexer doesn't know an arc's name or a
+//     romaji title is the same show, so the series' title never returns those releases.
+//
+// Duplicates are dropped.
+func seriesScopeQueries(s series.Series, season, episode, abs int, aliasTerms []string) []indexer.SearchQuery {
+	title := indexerQuery(s.Title)
+	main := indexer.SearchQuery{Text: title, MediaType: indexer.MediaSeries, Limit: 400}
+	if !s.IsAnime() && season > 0 {
+		main.Season, main.Episode = season, episode
+	}
+	out := []indexer.SearchQuery{main}
+	seen := map[string]bool{title: true}
+	add := func(text string) {
+		if text == "" || seen[text] {
+			return
+		}
+		seen[text] = true
+		out = append(out, indexer.SearchQuery{Text: text, MediaType: indexer.MediaSeries, Limit: 400})
+	}
+	for _, t := range aliasTerms {
+		add(indexerQuery(t))
+	}
+	if s.IsAnime() && season > 0 && episode > 0 {
+		for _, q := range absoluteQueries(s, abs) {
+			add(q)
+		}
+	}
+	for _, a := range searchAliases(s) {
+		add(indexerQuery(a.Title))
+	}
+	return out
+}
 
 // specialsToQuery lists the specials a season-0 search names: the one asked for, or the
 // aired specials still missing a file, at most maxSpecialQueries.

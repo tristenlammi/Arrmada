@@ -37,9 +37,18 @@ func (c *Coordinator) RSSSyncSeries(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	// Match against the library snapshot first — List already carries each show's
+	// aliases, year and extra — and load a show in full only when the feed has something
+	// for it. It used to Get() every monitored show every cycle, almost always to find
+	// nothing.
+	matches := rssMatches(all, res.Releases)
+	if len(matches) == 0 {
+		return
+	}
 	queue, _ := c.downloads.Queue(ctx)
 	for _, meta := range all {
-		if !meta.Monitored {
+		matched := matches[meta.ID]
+		if len(matched) == 0 {
 			continue
 		}
 		s, err := c.series.Get(ctx, meta.ID)
@@ -58,18 +67,6 @@ func (c *Coordinator) RSSSyncSeries(ctx context.Context) {
 		if !ok {
 			continue
 		}
-		var matched []indexer.Release
-		for _, rel := range res.Releases {
-			// seriesTitleMatches, not releaseIsForSeries: anime is mostly uploaded under
-			// its romaji title, and matching English-only made the RSS fast path — the
-			// mechanism that catches new episodes promptly — dead for those shows.
-			if seriesTitleMatches(rel.Title, s) {
-				matched = append(matched, rel)
-			}
-		}
-		if len(matched) == 0 {
-			continue
-		}
 		c.log.Info("rss: series match", "series", s.Title, "candidates", len(matched))
 		sctx, notes := newSearchNotes(WithDefaultSearchTrigger(ctx, TriggerRSS))
 		notes.consider(matched)
@@ -80,6 +77,28 @@ func (c *Coordinator) RSSSyncSeries(ctx context.Context) {
 			c.recordAttempt(sctx, notes, AttemptSeries, s.ID, "", &out, nil)
 		}
 	}
+}
+
+// rssMatches maps each monitored show to the feed releases that are it, by the same
+// identity rule as every other series match (seriesIdentity) — an anime's romaji-named
+// uploads included, which is the RSS fast path's main catch. Each release is parsed once.
+func rssMatches(all []series.Series, releases []indexer.Release) map[int64][]indexer.Release {
+	parsed := make([]parser.Release, len(releases))
+	for i, rel := range releases {
+		parsed[i] = parser.Parse(rel.Title)
+	}
+	out := map[int64][]indexer.Release{}
+	for _, s := range all {
+		if !s.Monitored {
+			continue
+		}
+		for i, rel := range releases {
+			if ok, _ := seriesIdentity(parsed[i], s); ok {
+				out[s.ID] = append(out[s.ID], rel)
+			}
+		}
+	}
+	return out
 }
 
 // UpgradeSeries sweeps every monitored series and grabs a better release for any
@@ -463,30 +482,28 @@ func releaseIsForSeries(relTitle, seriesTitle string) bool {
 	return titleKey(parser.Parse(relTitle).Title) == titleKey(seriesTitle)
 }
 
-// seriesTitleMatches is releaseIsForSeries that also accepts an anime series' romaji
-// (original) title, since anime is frequently released under its romaji name.
+// seriesTitleMatches reports whether a release belongs to the series, by seriesIdentity.
 func seriesTitleMatches(relTitle string, s series.Series) bool {
-	if releaseIsForSeries(relTitle, s.Title) {
-		return true
-	}
-	if s.IsAnime() && s.Extra != nil && s.Extra.OriginalTitle != "" && releaseIsForSeries(relTitle, s.Extra.OriginalTitle) {
-		return true
-	}
-	// User-declared alternate titles. Anime arcs are routinely released as if they were
-	// a separate show ("BLEACH Thousand-Year Blood War" for Bleach), which no amount of
-	// normalizing the real title will ever match. Purely additive: a series with no
-	// aliases behaves exactly as it did before.
-	for _, a := range s.Aliases {
-		// Whole-word prefix, not equality: groups suffix an arc's name with a per-cour
-		// subtitle ("... The Calamity") or leave junk the parser didn't strip. The word
-		// boundary keeps "Bleach" from matching "Bleachers"; the series' own title is
-		// still compared for equality, so "Below Deck" can't swallow "Below Deck
-		// Mediterranean" — only titles the user declared get this treatment.
-		if parser.TitleHasPrefix(parser.Parse(relTitle).Title, a.Title) {
-			return true
-		}
-	}
-	return false
+	ok, _ := seriesIdentity(parser.Parse(relTitle), s)
+	return ok
+}
+
+// seriesIdentity is whether a parsed release is this show, and if not, what disagreed
+// (empty when the title doesn't name the show at all). It is series.FitRelease — one rule
+// for the sweeps, RSS, interactive search, upgrades, the in-flight check and import:
+//
+//   - the title key matches the show's title, an anime's Latin-script original title or
+//     an automatic alias (TMDB's romaji and US/UK variant titles) exactly, or one of the
+//     owner's aliases as a whole-word prefix: anime arcs are released as if they were
+//     their own show ("BLEACH Thousand-Year Blood War"), and groups suffix an arc's name
+//     with a per-cour subtitle. Everything else is compared for equality, so "Below Deck"
+//     can't swallow "Below Deck Mediterranean".
+//   - a year before the season marker is within a year of the show's ("Doctor.Who.2005"
+//     is never the 1963 show). An air year after the marker doesn't count.
+//   - a country tag is the show's origin country ("The.Office.US" is never the UK show).
+func seriesIdentity(p parser.Release, s series.Series) (bool, string) {
+	f := series.FitRelease(p, s)
+	return f.OK, f.Why
 }
 
 // episodeRelease reports whether a parsed release is a single-episode release for the

@@ -369,6 +369,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/series/{id}/rename", a.requireRole(auth.RoleManager, a.handleSeriesRenamePreview))
 	mux.HandleFunc("POST /api/v1/series/{id}/rename", a.requireRole(auth.RoleManager, a.handleSeriesRename))
 	mux.HandleFunc("GET /api/v1/series/{id}", a.requireRole(auth.RoleManager, a.handleGetSeries))
+	mux.HandleFunc("GET /api/v1/series/{id}/downloads", a.requireRole(auth.RoleManager, a.handleSeriesDownloads))
 	mux.HandleFunc("PUT /api/v1/series/{id}/monitor", a.requireRole(auth.RoleManager, a.handleSetSeriesMonitored))
 	mux.HandleFunc("PUT /api/v1/series/{id}/profile", a.requireRole(auth.RoleManager, a.handleSetSeriesProfile))
 	mux.HandleFunc("PUT /api/v1/series/{id}/type", a.requireRole(auth.RoleManager, a.handleSetSeriesType))

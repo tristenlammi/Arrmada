@@ -51,7 +51,24 @@ type Alias struct {
 	//	>0 — the alias' numbers are read INSIDE that season. "S02E02" then means the
 	//	     second cour's second episode of that season, not the series' own season 2.
 	TMDBSeason int `json:"tmdb_season"`
+	// Source is who added it: AliasUser (typed by the owner) or AliasTMDB (seeded from
+	// TMDB's alternative titles, or a renamed show's old title). An automatic alias is only
+	// trusted as far as the show's own title: exact match, with the year and country
+	// checks. The owner's get the looser whole-word prefix match and pinned seasons.
+	Source string `json:"source"`
+	// Disabled marks an automatic alias the owner removed. Such rows are kept so a refresh
+	// doesn't re-add them, and are never returned for matching.
+	Disabled bool `json:"disabled,omitempty"`
 }
+
+// Alias sources.
+const (
+	AliasUser = "user"
+	AliasTMDB = "tmdb"
+)
+
+// Auto reports whether the alias was added automatically rather than by the owner.
+func (a Alias) Auto() bool { return a.Source == AliasTMDB }
 
 // Key is the normalized form used for matching, shared with the release parser so an
 // alias matches exactly the way a real title does.
@@ -92,7 +109,8 @@ func (s *Service) AddAlias(ctx context.Context, seriesID int64, title string, se
 	return a, nil
 }
 
-// DeleteAlias removes an alternate title.
+// DeleteAlias removes an alternate title. One the owner typed is deleted; an automatic
+// one is switched off instead, so the next refresh doesn't put it straight back.
 func (s *Service) DeleteAlias(ctx context.Context, seriesID, aliasID int64) error {
 	return s.repo.DeleteAlias(ctx, seriesID, aliasID)
 }
@@ -114,7 +132,12 @@ func (s *Service) AliasFor(ctx context.Context, seriesID int64, releaseTitle str
 	var best Alias
 	bestLen := 0
 	for _, a := range s.repo.Aliases(ctx, seriesID) {
-		if !parser.TitleHasPrefix(title, a.Title) {
+		if a.Auto() {
+			// Automatic aliases match exactly, never as a prefix (see Alias.Source).
+			if parser.TitleKey(title) != a.Key() {
+				continue
+			}
+		} else if !parser.TitleHasPrefix(title, a.Title) {
 			continue
 		}
 		if n := len(parser.TitleWords(a.Title)); n > bestLen {

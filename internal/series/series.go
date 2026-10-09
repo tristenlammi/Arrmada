@@ -44,6 +44,9 @@ type Series struct {
 	Aliases []Alias  `json:"aliases,omitempty"`
 	Seasons []Season `json:"seasons,omitempty"` // detail endpoint only
 	Stats   *Stats   `json:"stats,omitempty"`   // aggregate counts for the grid
+	// LastEventID is the newest history event's id (detail endpoint only): the series page
+	// reloads its History, Duplicates and Blocklist panels when it moves.
+	LastEventID int64 `json:"last_event_id,omitempty"`
 }
 
 // Stats are a series' roll-up numbers, for the library grid and the detail page. Specials
@@ -68,12 +71,19 @@ type SeriesExtra struct {
 	Genres      []string     `json:"genres,omitempty"`
 	BackdropURL string       `json:"backdrop_url,omitempty"`
 	Cast        []CastMember `json:"cast,omitempty"`
-	// OriginalTitle is TMDB's original_name (e.g. romaji for anime). Used as an
-	// alternate search title, since anime is often released under its romaji name.
+	// OriginalTitle is TMDB's original_name: the title in the show's own language and
+	// script. For a Japanese show that is kana or kanji (葬送のフリーレン), not the romaji
+	// releases use, so it only counts as a release title when it is Latin script
+	// (parser.IsLatin). The romaji name arrives as an automatic alias from TMDB's
+	// alternative titles.
 	OriginalTitle string `json:"original_title,omitempty"`
 	// OriginalLanguage is TMDB's original_language ("ja", "en"…), so Convert can keep a
 	// show's original-language audio when it trims audio tracks to your languages.
 	OriginalLanguage string `json:"original_language,omitempty"`
+	// OriginCountry is TMDB's origin_country ("US", "GB"…). A release that tags a country
+	// ("The.Office.US") only matches a show from that country. Empty for shows not
+	// refreshed since it was stored, which keeps their old matching until they are.
+	OriginCountry []string `json:"origin_country,omitempty"`
 }
 
 // IsAnime reports whether the series uses anime (absolute) episode numbering.

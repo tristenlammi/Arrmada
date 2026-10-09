@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -339,10 +340,13 @@ func (c *Coordinator) searchByAbsolute(ctx context.Context, s series.Series, rem
 		// The series' own absolute number, and the arc's number for any alias covering
 		// this episode. An arc released as its own show is numbered from 1 within that
 		// arc, not from 1 across the series, so the series-absolute query can't reach it.
-		terms := c.series.AliasSearchTerms(ctx, s.ID, k.season, k.episode)
-		if abs := c.series.AbsoluteNumber(ctx, s.ID, k.season, k.episode); abs > 0 {
-			terms = append(terms, fmt.Sprintf("%s %d", s.Title, abs))
+		var terms []string
+		for _, t := range c.series.AliasSearchTerms(ctx, s.ID, k.season, k.episode) {
+			if q := indexerQuery(t); q != "" {
+				terms = append(terms, q)
+			}
 		}
+		terms = append(terms, absoluteQueries(s, c.series.AbsoluteNumber(ctx, s.ID, k.season, k.episode))...)
 		if len(terms) == 0 {
 			continue // nothing to query by
 		}
@@ -367,6 +371,51 @@ func (c *Coordinator) searchByAbsolute(ctx context.Context, s series.Series, rem
 		c.series.SetAbsoluteCursor(ctx, s.ID, epCursor(ordered[(last+1)%len(ordered)]))
 	}
 	return grabbed
+}
+
+// absoluteQueries are the searches for one anime episode by its absolute number, written
+// the way fansub releases name it ("[SubsPlease] Dr. Stone - 13"): the cleaned title
+// (indexerQuery, so punctuation can't narrow the match) and the number, padded to two
+// digits below 100 like the release's "- 05". The same again under the show's romaji name
+// — its first automatic (TMDB) alias, or else a Latin-script original title — since the
+// groups that number absolutely mostly release under it. Empty when abs is unknown.
+func absoluteQueries(s series.Series, abs int) []string {
+	if abs <= 0 {
+		return nil
+	}
+	num := strconv.Itoa(abs)
+	if abs < 100 {
+		num = fmt.Sprintf("%02d", abs)
+	}
+	var out []string
+	add := func(title string) {
+		q := indexerQuery(title)
+		if q == "" {
+			return
+		}
+		q += " " + num
+		for _, have := range out {
+			if have == q {
+				return
+			}
+		}
+		out = append(out, q)
+	}
+	add(s.Title)
+	romaji := ""
+	for _, a := range s.Aliases {
+		if a.Auto() {
+			romaji = a.Title
+			break
+		}
+	}
+	if romaji == "" && s.Extra != nil && parser.IsLatin(s.Extra.OriginalTitle) {
+		romaji = s.Extra.OriginalTitle
+	}
+	if romaji != "" {
+		add(romaji)
+	}
+	return out
 }
 
 // epCursor packs an episode key into one sortable integer, so a resume point fits in a
@@ -628,6 +677,28 @@ func indexerQuery(title string) string {
 	return strings.Join(strings.Fields(b.String()), " ")
 }
 
+// maxTMDBAliasQueries caps how many automatic (TMDB) aliases a search also queries. A show
+// can carry five; each is a full indexer query, and the first — romaji first — are the
+// ones releases are actually named after.
+const maxTMDBAliasQueries = 2
+
+// searchAliases are the aliases a search queries by name: every alias the owner added,
+// plus the first maxTMDBAliasQueries automatic ones.
+func searchAliases(s series.Series) []series.Alias {
+	var out []series.Alias
+	auto := 0
+	for _, a := range s.Aliases {
+		if a.Auto() {
+			if auto >= maxTMDBAliasQueries {
+				continue
+			}
+			auto++
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
 // sortedSeasons orders seasons so the fan-out is deterministic and the earliest missing
 // seasons are queried first when the cap bites.
 func sortedSeasons(m map[int]bool) []int {
@@ -671,9 +742,9 @@ func (c *Coordinator) searchSeriesReleasesExcept(ctx context.Context, s series.S
 
 	// Alias queries. An arc released under its own name ("BLEACH Thousand-Year Blood
 	// War") simply isn't in the results for the series' real title — the indexer has no
-	// idea the two are the same show — so each alias gets its own broad query. Only
-	// runs for a series that has aliases, which is almost none of them.
-	for _, a := range s.Aliases {
+	// idea the two are the same show — so each alias gets its own broad query: every one
+	// the owner added, and the first two from TMDB (see searchAliases).
+	for _, a := range searchAliases(s) {
 		aq := indexerQuery(a.Title)
 		if aq == "" || aq == title {
 			continue
@@ -950,12 +1021,20 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	// The library and the grab records are read once for the pass, not per download: the
+	// completed list includes everything still seeding, and this runs every 30 seconds.
+	all, err := c.series.List(ctx)
+	if err != nil {
+		return
+	}
+	matchRelease := c.series.ReleaseMatcher(all)
+	grabbedFor := c.grabIndex(ctx, "series")
 	for _, it := range completed {
 		if it.Category != seriesCategory {
 			// Diagnostic: a completed TV download that matches a library series but isn't
 			// in the TV category won't import — flag it so it's not a silent no-op.
 			if p := parser.Parse(it.Name); p.IsTV() {
-				if _, ok := c.series.MatchByTitle(ctx, series.NormTitle(p.Title)); ok {
+				if _, ok, cands := matchRelease(p); ok || len(cands) > 0 {
 					c.log.Warn("series import: a completed TV download is in the wrong category — it won't import; re-grab via Arrmada or set its qBittorrent category to "+seriesCategory,
 						"release", it.Name, "category", it.Category)
 				}
@@ -969,7 +1048,29 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			continue // already held for review (or resolved) — don't re-flag or import
 		}
 		parsed := parser.Parse(it.Name)
-		s, matchOK := c.series.MatchByTitle(ctx, series.NormTitle(parsed.Title))
+		// Which show this is. A download grabbed for a show goes to that show whenever its
+		// name is that show's — under an alias, its romaji title or a country tag included —
+		// since the grab already decided between same-named shows. Anything else is matched
+		// by its name, year and country tag (MatchRelease).
+		gid, gIndexer, grabbed := grabbedFor(it.Hash, it.Name)
+		var s series.Series
+		matchOK := false
+		var expected *series.Series
+		if grabbed {
+			for i := range all {
+				if all[i].ID == gid {
+					expected = &all[i]
+					break
+				}
+			}
+			if expected != nil && seriesTitleMatches(it.Name, *expected) {
+				s, matchOK = *expected, true
+			}
+		}
+		var ambiguous []series.Series
+		if !matchOK {
+			s, matchOK, ambiguous = matchRelease(parsed)
+		}
 
 		// Given-up guard: if we've already blocklisted this exact release for the series
 		// (it downloaded but couldn't import — junk, a fake, or unresolvable numbering),
@@ -1010,16 +1111,29 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 		// If this download was grabbed for a specific series, verify its content is
 		// actually that series — otherwise hold it for admin review rather than skip
 		// it silently (e.g. a "Below Deck Mediterranean" pack grabbed for "Below Deck").
-		if gid, indexer, grabbed := c.grabbedMediaForHash(ctx, it.Hash, it.Name, "series"); grabbed {
-			if expected, err := c.series.Get(ctx, gid); err == nil && (!matchOK || s.ID != expected.ID) {
-				reason := fmt.Sprintf("Grabbed for %q but the download looks like %q", expected.Title, parsed.Title)
-				c.addReview(ctx, Review{
-					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "series", ReasonCode: ReasonMismatch,
-					ExpectedID: expected.ID, ExpectedTitle: expected.Title, ParsedTitle: parsed.Title,
-					Reason: reason, SizeBytes: it.SizeBytes, Indexer: indexer,
-				})
-				continue
+		if expected != nil && (!matchOK || s.ID != expected.ID) {
+			reason := fmt.Sprintf("Grabbed for %q but the download looks like %q", expected.Title, parsed.Title)
+			if _, why := seriesIdentity(parsed, *expected); why != "" {
+				reason = fmt.Sprintf("Grabbed for %q, but %s", expected.Title, why) // the right title, another show's year or country
 			}
+			c.addReview(ctx, Review{
+				Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "series", ReasonCode: ReasonMismatch,
+				ExpectedID: expected.ID, ExpectedTitle: expected.Title, ParsedTitle: parsed.Title,
+				Reason: reason, SizeBytes: it.SizeBytes, Indexer: gIndexer,
+			})
+			continue
+		}
+		if len(ambiguous) > 0 {
+			// Same-titled shows and nothing in the name to choose between them (a yearless
+			// "Doctor.Who.S01E01" with both Doctor Whos in the library). Importing into the
+			// newest one is how a remake's episodes landed in the original's folder, so a
+			// human picks — straight away, since waiting won't make the name any clearer.
+			c.addReview(ctx, Review{
+				Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "series", ReasonCode: ReasonUnmatched,
+				ParsedTitle: parsed.Title, SizeBytes: it.SizeBytes, Indexer: gIndexer,
+				Reason: "Matches several shows: " + series.DescribeCandidates(ambiguous),
+			})
+			continue
 		}
 		if !matchOK {
 			// The import sweep runs every 30 seconds, so an unmatchable download used to

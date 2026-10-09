@@ -242,6 +242,7 @@ func (s *Service) AddWith(ctx context.Context, tmdbID int, qualityProfile string
 	if created.IsAnime() {
 		s.refreshSceneMap(ctx, created.ID, d.TVDBID) // TheXEM scene mapping for split-season anime
 	}
+	s.syncTMDBAliases(ctx, created.ID, d)
 	if err := s.repo.ApplyMonitorPreset(ctx, created.ID, preset, opts.MonitorNewSeasons); err != nil {
 		s.log.Warn("series: couldn't apply the monitoring preset", "series", created.Title, "preset", preset, "err", err)
 	} else if got, err := s.repo.Get(ctx, created.ID); err == nil {
@@ -376,6 +377,7 @@ func (s *Service) refresh(ctx context.Context, id int64, opts RefreshOptions) (S
 		// The show row doesn't depend on numbering, so it follows the provider whatever
 		// applyNumbering decided about the episodes.
 		s.refreshShow(ctx, sr, d)
+		s.syncTMDBAliases(ctx, id, d)
 		if err := s.repo.MarkRefreshed(ctx, id); err != nil {
 			s.log.Warn("series: could not record the refresh time", "series", sr.Title, "err", err)
 		}
@@ -425,12 +427,12 @@ func (s *Service) refreshShow(ctx context.Context, sr Series, d *metadata.Series
 		return
 	}
 	if got.Title != sr.Title && parser.TitleKey(got.Title) != parser.TitleKey(sr.Title) {
-		// Unless the owner already has an alias for it: re-adding would reset the season
-		// they pinned it to.
-		if !s.hasAliasKey(ctx, sr.ID, parser.TitleKey(sr.Title)) {
-			if _, err := s.AddAlias(ctx, sr.ID, sr.Title, 0); err != nil {
-				s.log.Warn("series: could not keep the old title as an alias", "series", got.Title, "old", sr.Title, "err", err)
-			}
+		// An automatic alias: matched exactly, like the title it was (a prefix match on an
+		// old title would swallow spin-offs named after it). It never replaces a row the
+		// owner already has for that key — that would reset a season they pinned — or one
+		// they removed.
+		if _, err := s.repo.AddAutoAlias(ctx, sr.ID, sr.Title, parser.TitleKey(sr.Title)); err != nil {
+			s.log.Warn("series: could not keep the old title as an alias", "series", got.Title, "old", sr.Title, "err", err)
 		}
 		s.AddEvent(ctx, sr.ID, "title", fmt.Sprintf("Title changed: %s → %s", sr.Title, got.Title))
 		s.log.Info("series: title changed", "old", sr.Title, "new", got.Title)
@@ -439,15 +441,6 @@ func (s *Service) refreshShow(ctx context.Context, sr Series, d *metadata.Series
 		s.AddEvent(ctx, sr.ID, "status", fmt.Sprintf("Status: %s → %s", sr.Status, got.Status))
 		s.log.Info("series: status changed", "series", got.Title, "old", sr.Status, "new", got.Status)
 	}
-}
-
-func (s *Service) hasAliasKey(ctx context.Context, id int64, key string) bool {
-	for _, a := range s.repo.Aliases(ctx, id) {
-		if a.Key() == key {
-			return true
-		}
-	}
-	return false
 }
 
 // applyNumbering brings the stored episode listing in line with a fresh one, without ever
@@ -1783,6 +1776,12 @@ func (s *Service) WantsFile(ctx context.Context, seriesID int64, season, episode
 	return parser.ResolutionRank(res) > parser.ResolutionRank(cur)
 }
 
+// LastEventID is the id of the series' newest history event (0 when none), so a page can
+// tell when there is something new to show without re-reading the history.
+func (s *Service) LastEventID(ctx context.Context, seriesID int64) int64 {
+	return s.repo.LastEventID(ctx, seriesID)
+}
+
 // AcquisitionSummary returns per-monitored-series wanted/upcoming episode counts for
 // the downloads feed (Searching + Upcoming tabs).
 func (s *Service) AcquisitionSummary(ctx context.Context) []SeriesAcquisition {
@@ -1842,7 +1841,9 @@ func (s *Service) MarkEpisodeMissing(ctx context.Context, seriesID int64, season
 	return s.repo.ClearEpisodeFile(ctx, seriesID, season, episode)
 }
 
-// MatchByTitle finds a series whose normalized title matches (for import routing).
+// MatchByTitle finds a series whose normalized title matches. It knows nothing of years,
+// countries or aliases, so it is only for titles that come from metadata (a watchlist);
+// a release name goes through MatchRelease.
 func (s *Service) MatchByTitle(ctx context.Context, normalized string) (Series, bool) {
 	all, err := s.repo.List(ctx)
 	if err != nil {
@@ -1856,23 +1857,6 @@ func (s *Service) MatchByTitle(ctx context.Context, normalized string) (Series, 
 	return Series{}, false
 }
 
-// TitleMatcher indexes a library snapshot once, keyed by normalized title, so a caller
-// resolving many torrents in one pass indexes once instead of reloading the series table
-// per torrent. Keyed the same way (and queried with the same NormTitle) as MatchByTitle.
-func (s *Service) TitleMatcher(all []Series) func(normalized string) (Series, bool) {
-	byKey := make(map[string]Series, len(all))
-	for _, sr := range all {
-		k := normKey(sr.Title)
-		if _, exists := byKey[k]; !exists { // first wins, matching MatchByTitle's scan order
-			byKey[k] = sr
-		}
-	}
-	return func(normalized string) (Series, bool) {
-		sr, ok := byKey[normalized]
-		return sr, ok
-	}
-}
-
 // EpisodeTitle returns the metadata title for one episode ("" when unknown).
 func (s *Service) EpisodeTitle(ctx context.Context, seriesID int64, season, episode int) string {
 	return s.repo.EpisodeTitle(ctx, seriesID, season, episode)
@@ -1880,12 +1864,38 @@ func (s *Service) EpisodeTitle(ctx context.Context, seriesID int64, season, epis
 
 // EpisodeTitleByName resolves a series by (normalized) title and returns one episode's
 // title. Used by the importer's naming callback, which only knows the show by name.
+//
+// The importer passes the library show's own title and year, so when two shows share a
+// title (Doctor Who 1963 and 2005) the year picks the right one. Without a year to tell
+// them apart it names no episode rather than borrow the other show's episode title.
 func (s *Service) EpisodeTitleByName(ctx context.Context, seriesTitle string, year, season, episode int) string {
-	sr, ok := s.MatchByTitle(ctx, normKey(seriesTitle))
-	if !ok {
+	all, err := s.repo.List(ctx)
+	if err != nil {
 		return ""
 	}
-	return s.repo.EpisodeTitle(ctx, sr.ID, season, episode)
+	key := normKey(seriesTitle)
+	var same []Series
+	for _, sr := range all {
+		if normKey(sr.Title) == key {
+			same = append(same, sr)
+		}
+	}
+	var pick *Series
+	switch {
+	case len(same) == 1:
+		pick = &same[0]
+	case len(same) > 1 && year > 0:
+		for i := range same {
+			if same[i].Year == year {
+				pick = &same[i]
+				break
+			}
+		}
+	}
+	if pick == nil {
+		return ""
+	}
+	return s.repo.EpisodeTitle(ctx, pick.ID, season, episode)
 }
 
 // normKey is parser.TitleKey, the one title normalizer shared with automation and the
@@ -1898,8 +1908,8 @@ func NormTitle(s string) string { return parser.TitleKey(s) }
 
 // extraFrom projects metadata into the stored extra blob.
 func extraFrom(d *metadata.SeriesDetails) *SeriesExtra {
-	ex := &SeriesExtra{Genres: d.Genres, BackdropURL: d.BackdropURL, OriginalLanguage: d.OriginalLang}
-	// Keep the romaji/original title only when it differs from the display title, so
+	ex := &SeriesExtra{Genres: d.Genres, BackdropURL: d.BackdropURL, OriginalLanguage: d.OriginalLang, OriginCountry: d.OriginCountry}
+	// Keep the original-language title only when it differs from the display title, so
 	// anime searches can also query the name releases are actually tagged with.
 	if d.OriginalName != "" && !strings.EqualFold(d.OriginalName, d.Title) {
 		ex.OriginalTitle = d.OriginalName

@@ -165,6 +165,7 @@ GET /api/v1/series/{id} staff -
 GET /api/v1/series/{id}/aliases staff -
 GET /api/v1/series/{id}/blocklist staff -
 GET /api/v1/series/{id}/delete-preview staff -
+GET /api/v1/series/{id}/downloads staff -
 GET /api/v1/series/{id}/duplicates staff -
 GET /api/v1/series/{id}/history staff -
 GET /api/v1/series/{id}/manualimport staff -
