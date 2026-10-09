@@ -19,7 +19,7 @@ import (
 
 // musicCategory keeps album downloads in their own download-client category so the album
 // importer handles them, not the movie/series/book importers.
-const musicCategory = "arrmada-music"
+const musicCategory = download.CategoryMusic
 
 // SearchMusicMissing sweeps monitored albums that are missing tracks and grabs the best
 // release for each.
@@ -529,6 +529,15 @@ func (c *Coordinator) ImportMusicDownloads(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// AlbumForRelease resolves a release name (a torrent in the music category) to the
+// library album and artist it was grabbed for; false when music is off or nothing matches.
+func (c *Coordinator) AlbumForRelease(ctx context.Context, name string) (music.Album, music.Artist, bool) {
+	if c == nil || c.music == nil {
+		return music.Album{}, music.Artist{}, false
+	}
+	return c.albumForRelease(ctx, name)
 }
 
 // albumForRelease resolves a release name to a library album.

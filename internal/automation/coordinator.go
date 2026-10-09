@@ -34,7 +34,7 @@ import (
 
 // seriesCategory keeps TV downloads in a separate download-client category so the
 // multi-file series importer processes them, not the single-file movie importer.
-const seriesCategory = "arrmada-tv"
+const seriesCategory = download.CategorySeries
 
 // Coordinator orchestrates search → grab → import-attach.
 type Coordinator struct {

@@ -14,11 +14,6 @@ import (
 	"github.com/tristenlammi/arrmada/internal/series"
 )
 
-// seriesDownloadCategory is the qBittorrent category TV downloads use (kept in sync
-// with automation.seriesCategory) so the feed can label series torrents.
-const seriesDownloadCategory = "arrmada-tv"
-const bookDownloadCategory = "arrmada-books"
-
 // handleDownloadsFeed returns the live acquisition feed: movies that are searching
 // (monitored, missing, not yet downloading) plus the download queue — each with
 // its resolved quality profile. (Served at /downloads, not /activity — the latter
@@ -35,6 +30,9 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	queuedMovieYears := map[string][]int{} // normalized title → years present in the queue
 	for i, it := range queue {
 		qParsed[i] = parser.Parse(it.Name)
+		if !movieCategory(it.Category) {
+			continue // a show, book or album named like a film isn't that film downloading
+		}
 		k := parser.TitleKey(qParsed[i].Title)
 		queuedMovieYears[k] = append(queuedMovieYears[k], qParsed[i].Year)
 	}
@@ -134,10 +132,25 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	// One-pass matchers over already-loaded snapshots, so labelling each torrent is a map
 	// lookup — not a full-table reload of the movies/series table per torrent as before.
 	matchMovie := a.deps.Movies.Matcher(list)
-	var matchSeries func(string) (series.Series, bool)
+	match := queueMatchers{
+		movie: func(title string, year int) (string, bool) {
+			mv, ok := matchMovie(title, year)
+			return mv.QualityProfile, ok
+		},
+	}
 	if a.deps.Series != nil {
 		if seriesList, err := a.deps.Series.List(ctx); err == nil {
-			matchSeries = a.deps.Series.TitleMatcher(seriesList)
+			matchSeries := a.deps.Series.TitleMatcher(seriesList)
+			match.series = func(title string) (string, bool) {
+				sr, ok := matchSeries(series.NormTitle(title))
+				return sr.QualityProfile, ok
+			}
+		}
+	}
+	if a.deps.Automation != nil {
+		match.album = func(name string) (string, bool) {
+			_, artist, ok := a.deps.Automation.AlbumForRelease(ctx, name)
+			return artist.QualityProfile, ok
 		}
 	}
 
@@ -151,22 +164,10 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	var unmatched []string
 	active, stalled := 0, 0
 	for i, it := range queue {
+		mediaType, ref := labelQueueItem(it, qParsed[i], match)
 		profile := "n/a"
-		mediaType := "movie"
-		switch it.Category {
-		case seriesDownloadCategory:
-			mediaType = "series"
-			if matchSeries != nil {
-				if sr, ok := matchSeries(series.NormTitle(qParsed[i].Title)); ok {
-					profile = pname(sr.QualityProfile)
-				}
-			}
-		case bookDownloadCategory:
-			mediaType = "book"
-		default:
-			if mv, ok := matchMovie(qParsed[i].Title, qParsed[i].Year); ok {
-				profile = pname(mv.QualityProfile)
-			}
+		if ref != "" {
+			profile = pname(ref)
 		}
 		totalDown += it.DownSpeed
 		totalUp += it.UpSpeed
@@ -261,6 +262,52 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a.writeJSON(w, http.StatusOK, out)
+}
+
+// queueMatchers find the library title a queued torrent belongs to and return its quality
+// profile reference. A nil matcher matches nothing.
+type queueMatchers struct {
+	movie  func(title string, year int) (string, bool)
+	series func(title string) (string, bool)
+	album  func(name string) (string, bool) // the whole torrent name: music matching reads artist and album from it
+}
+
+// labelQueueItem decides what a queued torrent is from its download category — each kind
+// is grabbed into its own — and finds the profile of the title it was grabbed for ("" when
+// none matches). Only a torrent outside the series, book and music categories is matched
+// against movies: an album named like a film must never take that film's profile.
+func labelQueueItem(it download.Item, rel parser.Release, m queueMatchers) (mediaType, profileRef string) {
+	var ref string
+	var ok bool
+	switch it.Category {
+	case download.CategorySeries:
+		mediaType = "series"
+		if m.series != nil {
+			ref, ok = m.series(rel.Title)
+		}
+	case download.CategoryBooks:
+		mediaType = "book"
+	case download.CategoryMusic:
+		mediaType = "music"
+		if m.album != nil {
+			ref, ok = m.album(it.Name)
+		}
+	default:
+		mediaType = "movie"
+		if m.movie != nil {
+			ref, ok = m.movie(rel.Title, rel.Year)
+		}
+	}
+	if !ok {
+		ref = ""
+	}
+	return mediaType, ref
+}
+
+// movieCategory reports whether a torrent's category is a movie one: anything but the
+// series, book and music categories (the movie category is configurable).
+func movieCategory(c string) bool {
+	return c != download.CategorySeries && c != download.CategoryBooks && c != download.CategoryMusic
 }
 
 // profileName resolves a profile reference to a friendly name.

@@ -26,7 +26,7 @@ import (
 
 // bookCategory keeps ebook/audiobook downloads in their own download-client category
 // so the book importer processes them (not the movie/series video importers).
-const bookCategory = "arrmada-books"
+const bookCategory = download.CategoryBooks
 
 var reBookFormat = regexp.MustCompile(`(?i)\b(epub|azw3|azw|mobi|pdf|cbz|cbr|fb2|djvu|lit|m4b|m4a|mp3|aac|flac|ogg|opus)\b`)
 
