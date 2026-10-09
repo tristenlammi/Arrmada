@@ -26,7 +26,8 @@ func (s *Service) FileMatcher(ctx context.Context) func(name string) (Book, bool
 	if err != nil {
 		return func(string) (Book, bool) { return Book{}, false }
 	}
-	return func(name string) (Book, bool) { return matchFileName(all, name) }
+	lib := foldLibrary(all)
+	return func(name string) (Book, bool) { return lib.matchFile(name) }
 }
 
 type fileHit struct {
@@ -38,26 +39,50 @@ type fileHit struct {
 }
 
 func matchFileName(all []Book, name string) (Book, bool) {
-	words := strings.Fields(wordKey(name))
-	if len(words) == 0 {
+	return foldLibrary(all).matchFile(name)
+}
+
+func (lib foldedLibrary) matchFile(name string) (Book, bool) {
+	n := formsOf(name)
+	if n.empty() {
 		return Book{}, false
 	}
-	rel := strings.Join(words, " ")
+	// The name's word lists, one per folded form (see foldVariants).
+	byForm := map[string][]string{}
+	for _, f := range n.forms {
+		byForm[f] = strings.Fields(f)
+	}
 	var hits []fileHit
-	for _, b := range all {
-		tw := strings.Fields(wordKey(b.Title))
-		if len(tw) == 0 {
+	for _, fb := range lib {
+		if fb.title.key() == "" {
 			continue
 		}
-		start := wordIndex(words, tw)
-		if start < 0 {
+		// The first form (joined before split) the title appears in places it.
+		found := false
+		var words []string
+		var start, length int
+		for _, h := range fb.title.hay(n) {
+			for _, tf := range fb.title.forms {
+				tw := strings.Fields(tf)
+				if len(tw) == 0 {
+					continue
+				}
+				if s := wordIndex(byForm[h], tw); s >= 0 {
+					found, words, start, length = true, byForm[h], s, len(tw)
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
 			continue
 		}
-		end := start + len(tw)
+		end := start + length
 		numbered := end < len(words) && isNumberWord(words[end])
-		a := wordKey(b.Author)
-		hits = append(hits, fileHit{book: b, start: start, length: len(tw), numbered: numbered,
-			author: a != "" && containsWords(rel, a)})
+		hits = append(hits, fileHit{book: fb.book, start: start, length: length, numbered: numbered,
+			author: fb.author.anyIn(n)})
 	}
 	if len(hits) == 0 {
 		return Book{}, false

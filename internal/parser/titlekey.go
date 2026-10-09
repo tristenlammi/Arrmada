@@ -40,7 +40,7 @@ import (
 // titlekey_test.go; separate copies of this rule drifting apart is how 'Love & Death'
 // stopped showing its download when the torrent was named 'Love.and.Death'.
 func TitleKey(s string) string {
-	lower := strings.ReplaceAll(strings.ToLower(FoldAccents(stripAltTitles(s))), "&", " and ")
+	lower := FoldTitle(stripAltTitles(s))
 	// Split on everything that isn't a letter or digit, so "and" is only recognised as a
 	// whole word. Doing this after the "&" expansion means the symbol and the spelled-out
 	// word take the same path.
@@ -57,6 +57,24 @@ func TitleKey(s string) string {
 	}
 	return b.String()
 }
+
+// FoldTitle is the fold every title matcher starts from — TitleKey and TitleWords here,
+// and the books matcher's word keys — so they agree on what counts as the same spelling:
+//
+//   - accents fold to ASCII ("Pokémon" → "pokemon", "García Márquez" → "garcia marquez");
+//   - everything is lower-case;
+//   - typographic apostrophes (’ ‘ ʼ ` ´) become the ASCII "'", so a caller that cares
+//     about apostrophes ("Ender’s" vs "Enders" vs "Ender s") has one character to handle;
+//   - "&" becomes " and ", so the symbol and the spelled-out word take the same path
+//     (callers then drop the standalone word "and"; see TitleKey for why).
+//
+// Everything else — punctuation, brackets, non-Latin scripts — is left for the caller's
+// own word split.
+func FoldTitle(s string) string {
+	return strings.ReplaceAll(apostrophes.Replace(strings.ToLower(FoldAccents(s))), "&", " and ")
+}
+
+var apostrophes = strings.NewReplacer("’", "'", "‘", "'", "ʼ", "'", "`", "'", "´", "'")
 
 // stripAltTitles drops bracketed groups that follow the title text and unwraps a group
 // at the very start (see TitleKey). A stray closer is dropped, as in StripBracketed.
@@ -96,7 +114,7 @@ func stripAltTitles(s string) string {
 // of "bleachers" once the gaps are gone, but ["bleach"] is not a prefix of
 // ["bleachers"]. Anything doing prefix work has to use this.
 func TitleWords(s string) []string {
-	lower := strings.ReplaceAll(strings.ToLower(FoldAccents(s)), "&", " and ")
+	lower := FoldTitle(s)
 	words := strings.FieldsFunc(lower, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})

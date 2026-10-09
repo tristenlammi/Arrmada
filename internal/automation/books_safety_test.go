@@ -83,6 +83,31 @@ func TestBookEditionLandedIsPerEdition(t *testing.T) {
 	}
 }
 
+// BOOK-06: a library title with an accent or an apostrophe keeps its ASCII-named releases.
+// They used to be thrown away as "no release matched this title".
+func TestReleasesForBookWithFoldedTitles(t *testing.T) {
+	_, svc, ctx := bookTestCoord(t)
+	added, _ := svc.AddWorks(ctx, []metadata.BookResult{
+		{Key: "OL1W", Title: "Pokémon Adventures, Vol. 1", Author: "Hidenori Kusaka"},
+		{Key: "OL2W", Title: "Ender’s Game", Author: "Orson Scott Card"},
+	}, "", true)
+	if len(added) != 2 {
+		t.Fatalf("expected 2 books added, got %d", len(added))
+	}
+	releases := []indexer.Release{
+		{Title: "Pokemon Adventures Vol 1 EPUB"},
+		{Title: "Orson.Scott.Card-Enders.Game.epub"},
+		{Title: "Ender s Game [M4B]"},
+	}
+	match := svc.Matcher(ctx)
+	if kept := releasesForBookWith(match, added[0], releases); len(kept) != 1 || kept[0].Title != "Pokemon Adventures Vol 1 EPUB" {
+		t.Errorf("Pokémon kept %q", titles(kept))
+	}
+	if kept := releasesForBookWith(match, added[1], releases); len(kept) != 2 {
+		t.Errorf("Ender's Game kept %q, want both spellings", titles(kept))
+	}
+}
+
 func titles(rs []indexer.Release) []string {
 	out := make([]string, 0, len(rs))
 	for _, r := range rs {
