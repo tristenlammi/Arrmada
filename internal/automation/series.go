@@ -144,10 +144,18 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 	// One queue read for the whole sweep: a series with a download already in flight is
 	// skipped, so we don't re-grab the same winner every tick while a pack downloads.
 	// (RSSSyncSeries and UpgradeSeries already do this; the missing sweep didn't.)
-	queue, qerr := c.downloads.Queue(ctx)
-	if qerr != nil {
-		queue = nil
+	// A queue that can't be read used to mean "nothing in flight" here, which switched the
+	// in-flight check off exactly when it couldn't be trusted. Sit the cycle out instead.
+	queue, ok := c.sweepQueue(ctx, "series search sweep")
+	if !ok {
+		return
 	}
+	untracked, err := c.untrackedQueue(ctx, queue)
+	if err != nil {
+		c.log.Warn("series: search sweep skipped — can't read what's already downloading", "err", err)
+		return
+	}
+	held := &inFlightView{untracked: untracked}
 	var outage outageTally
 	defer outage.report(c.log, "series search sweep")
 	for _, s := range all {
@@ -169,7 +177,7 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 				continue
 			}
 		}
-		out, err := c.searchSeriesOnceScoped(ctx, s.ID, queue)
+		out, err := c.searchSeriesOnceScoped(ctx, s.ID, held)
 		n := out.Grabbed
 		if errors.Is(err, ErrAlreadySearching) {
 			c.log.Debug("series: skipping a show that is already being searched", "series", s.Title)
@@ -208,18 +216,21 @@ func (c *Coordinator) SearchSeriesNow(ctx context.Context, seriesID int64) (Sear
 }
 
 // SearchSeriesManual is the series page's Search button: SearchSeriesNow that holds back
-// what the client is still downloading for the show, as the sweep does (ACQ-08) — a
-// season pack in flight keeps its season out of the search, and a pack covering
-// everything missing means nothing is searched ("Already downloading <release>"). A queue
-// that can't be read holds nothing back.
+// what is still downloading for the show, as the sweep does (ACQ-08) — a season pack in
+// flight keeps its season out of the search, and a pack covering everything missing means
+// nothing is searched ("Already downloading <release>"). Arrmada's own grabs are read from
+// the acquisition record; a queue that can't be read only drops the check for torrents
+// nobody grabbed through Arrmada.
 func (c *Coordinator) SearchSeriesManual(ctx context.Context, seriesID int64) (SearchOutcome, error) {
-	var queue []download.Item
+	held := &inFlightView{}
 	if c.downloads != nil {
 		if q, err := c.downloads.Queue(ctx); err == nil {
-			queue = q
+			if untracked, uerr := c.untrackedQueue(ctx, q); uerr == nil {
+				held.untracked = untracked
+			}
 		}
 	}
-	return c.searchSeriesOnceScoped(ctx, seriesID, queue)
+	return c.searchSeriesOnceScoped(ctx, seriesID, held)
 }
 
 // searchSeriesOnce is SearchSeriesNow; the missing-sweep reads the outcome's grab count to
@@ -228,16 +239,22 @@ func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (Sea
 	return c.searchSeriesOnceScoped(ctx, seriesID, nil)
 }
 
-// searchSeriesOnceScoped is searchSeriesOnce that leaves out what queue still has
-// downloading for the show (seriesInFlightScope). A pack for one season holds back just
-// that season: its per-season query isn't sent and its episodes aren't grabbed. A pack
-// covering the whole show holds back the whole show, as does one for every season that's
-// missing something; then nothing is searched and the outcome says so without counting a
-// miss. A nil queue (a manual search, or a queue that couldn't be read) holds nothing back.
+// inFlightView is what a sweep knows is already downloading beyond the acquisition record:
+// the torrents in the client that no grab knows by hash (untrackedQueue).
+type inFlightView struct {
+	untracked []download.Item
+}
+
+// searchSeriesOnceScoped is searchSeriesOnce that leaves out what is still downloading for
+// the show (seriesInFlightScope). A pack for one season holds back just that season: its
+// per-season query isn't sent and its episodes aren't grabbed. A pack covering the whole
+// show holds back the whole show, as does one for every season that's missing something;
+// then nothing is searched and the outcome says so without counting a miss. A nil held
+// (SearchSeriesNow: a re-search after a Block or a review) holds nothing back.
 //
 // Said out loud in the log: a show held back used to be skipped in total silence, so one
 // frozen out of the sweep looked identical to one with nothing to find.
-func (c *Coordinator) searchSeriesOnceScoped(ctx context.Context, seriesID int64, queue []download.Item) (out SearchOutcome, err error) {
+func (c *Coordinator) searchSeriesOnceScoped(ctx context.Context, seriesID int64, held *inFlightView) (out SearchOutcome, err error) {
 	if c.series == nil {
 		return SearchOutcome{Reason: ReasonNothingWanted}, nil
 	}
@@ -265,7 +282,16 @@ func (c *Coordinator) searchSeriesOnceScoped(ctx context.Context, seriesID int64
 		c.skipUnreadable(s.Title, err)
 		return SearchOutcome{}, err
 	}
-	inSeasons, whole, busy := seriesInFlightScope(queue, s)
+	var inSeasons map[int]bool
+	var whole bool
+	var busy []string
+	if held != nil {
+		inSeasons, whole, busy, err = c.seriesInFlightFor(ctx, s, held.untracked)
+		if err != nil {
+			c.skipUnreadable(s.Title, err)
+			return SearchOutcome{}, err
+		}
+	}
 	if whole {
 		c.log.Info("series: skipping sweep — a pack covering the whole show is still downloading", "series", s.Title, "release", busy[0])
 		return SearchOutcome{Reason: ReasonAlreadyDownloading, Example: busy[0]}, nil
@@ -1303,5 +1329,16 @@ func (c *Coordinator) recordSeriesGrab(ctx context.Context, seriesID int64, titl
 		boolToInt(seedEnabled), seedRatio, seedHours, infoHash)
 	if err != nil {
 		c.log.Warn("series: record grab failed", "err", err)
+		return
 	}
+	c.noteHashless("series", title, infoHash)
+	// What the release covers, worked out now while the show (its aliases, its anime
+	// numbering) is at hand: the in-flight checks hold back by it.
+	s := series.Series{ID: seriesID}
+	if c.series != nil {
+		if got, err := c.series.Get(ctx, seriesID); err == nil {
+			s = got
+		}
+	}
+	c.recordAcqScope(ctx, "series", seriesID, title, infoHash, seriesAcqScope(title, s))
 }

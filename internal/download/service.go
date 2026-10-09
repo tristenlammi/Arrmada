@@ -24,6 +24,8 @@ type Service struct {
 	// are never paused — a dead one is only shown — so outcomes carry no backoff.
 	status *connstatus.Tracker
 	flags  flagStore // the shared settings service (SetFlags); nil = no bundled-removed flag
+	// snap is the shared, briefly cached queue read every caller goes through (snapshot.go).
+	snap snapshotCache
 }
 
 // SetStatus wires the integration status tracker; nil records nothing.
@@ -90,6 +92,7 @@ func (s *Service) EnsureBundled(ctx context.Context, url string) error {
 			return s.repo.MarkBundled(ctx, c.ID)
 		}
 	}
+	defer s.invalidateSnapshot() // a new client: the next queue read must ask it too
 	_, err = s.repo.Create(ctx, Client{
 		Name:    "qBittorrent (bundled)",
 		Kind:    KindQbittorrent,
@@ -140,7 +143,10 @@ func (s *Service) Status(id int64) (connstatus.State, bool) {
 }
 
 // Create stores a new client.
-func (s *Service) Create(ctx context.Context, c Client) (Client, error) { return s.repo.Create(ctx, c) }
+func (s *Service) Create(ctx context.Context, c Client) (Client, error) {
+	defer s.invalidateSnapshot()
+	return s.repo.Create(ctx, c)
+}
 
 // Get returns one stored client.
 func (s *Service) Get(ctx context.Context, id int64) (Client, error) { return s.repo.Get(ctx, id) }
@@ -165,6 +171,7 @@ func (s *Service) forget(id int64) {
 // and drops out of the health check, but the torrents already in it are still read and
 // acted on — see existingClients.
 func (s *Service) Update(ctx context.Context, c Client) (Client, error) {
+	defer s.invalidateSnapshot()
 	if err := s.repo.Update(ctx, c); err != nil {
 		return Client{}, err
 	}
@@ -194,6 +201,7 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 			return fmt.Errorf("couldn't record that the bundled client was removed: %w", err)
 		}
 	}
+	defer s.invalidateSnapshot()
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return err
 	}
@@ -235,6 +243,7 @@ func (s *Service) Test(ctx context.Context, id int64) error {
 // error — ends it there: it may have taken the torrent, and adding it to a second client
 // as well would download it twice.
 func (s *Service) Add(ctx context.Context, req AddRequest) error {
+	defer s.invalidateSnapshot()
 	clients, err := s.repo.ListEnabled(ctx)
 	if err != nil {
 		return err
@@ -274,6 +283,7 @@ func (s *Service) Add(ctx context.Context, req AddRequest) error {
 // Remove deletes a torrent (and optionally its data) from whichever client
 // holds it, switched off or not.
 func (s *Service) Remove(ctx context.Context, hash string, deleteData bool) error {
+	defer s.invalidateSnapshot()
 	// Checked here as well as at the HTTP edge: every caller that removes a torrent goes
 	// through this, and a bad value here can empty the whole client.
 	if !ValidHash(hash) {
@@ -355,11 +365,13 @@ func (s *Service) ListenPort(ctx context.Context, id int64) (int, error) {
 
 // Pause stops a torrent on whichever enabled client holds it.
 func (s *Service) Pause(ctx context.Context, hash string) error {
+	defer s.invalidateSnapshot()
 	return s.onHash(ctx, func(impl Downloader, c Client) error { return impl.Pause(ctx, c, hash) })
 }
 
 // Resume restarts a stopped torrent on whichever enabled client holds it.
 func (s *Service) Resume(ctx context.Context, hash string) error {
+	defer s.invalidateSnapshot()
 	return s.onHash(ctx, func(impl Downloader, c Client) error { return impl.Resume(ctx, c, hash) })
 }
 
@@ -372,6 +384,7 @@ func (s *Service) ResumeMany(ctx context.Context, hashes []string) error {
 	if len(hashes) == 0 {
 		return nil
 	}
+	defer s.invalidateSnapshot()
 	clients, err := s.existingClients(ctx)
 	if err != nil {
 		return err
@@ -398,6 +411,7 @@ func (s *Service) ResumeMany(ctx context.Context, hashes []string) error {
 
 // Action runs a hash-scoped command (recheck/reannounce/prio_up/prio_down).
 func (s *Service) Action(ctx context.Context, hash, action string) error {
+	defer s.invalidateSnapshot()
 	return s.onHash(ctx, func(impl Downloader, c Client) error { return impl.TorrentAction(ctx, c, hash, action) })
 }
 
@@ -552,9 +566,10 @@ func (s *Service) CompletedInCategory(ctx context.Context, category string) ([]I
 	return out, nil
 }
 
-// Queue aggregates live download items across every client (see existingClients). A
-// partial result — some clients answered, some didn't — is returned without error;
-// callers that draw conclusions from a torrent's ABSENCE must use QueueComplete instead.
+// Queue is the shared queue snapshot's torrents, across every client (see
+// existingClients). A partial result — some clients answered, some didn't — is returned
+// without error; callers that draw conclusions from a torrent's ABSENCE must use
+// QueueComplete instead.
 func (s *Service) Queue(ctx context.Context) ([]Item, error) {
 	items, _, err := s.QueueComplete(ctx)
 	return items, err
@@ -567,43 +582,9 @@ func (s *Service) Queue(ctx context.Context) ([]Item, error) {
 // unreachable one makes all of its torrents vanish from the list while Queue still returns
 // nil error — so healthy downloads would be condemned for their client being down.
 func (s *Service) QueueComplete(ctx context.Context) ([]Item, bool, error) {
-	clients, err := s.existingClients(ctx)
+	snap, err := s.Snapshot(ctx)
 	if err != nil {
 		return nil, false, err
 	}
-	var items []Item
-	var listed bool
-	var failed int
-	var lastErr error
-	for _, c := range clients {
-		impl, ok := s.registry.For(c.Kind)
-		if !ok {
-			continue
-		}
-		start := time.Now()
-		part, err := impl.List(ctx, c)
-		s.record(ctx, c, err, time.Since(start))
-		if err != nil {
-			lastErr = err
-			if !c.Enabled {
-				// Switched off and not answering: most likely stopped on purpose. Its
-				// torrents can't be read, but counting it as down would pause stall
-				// fail-over for every other client for as long as it stays off.
-				s.log.Debug("disabled download client didn't answer", "client", c.Name, "err", err)
-				continue
-			}
-			s.log.Warn("download client list failed", "client", c.Name, "err", err)
-			failed++
-			continue
-		}
-		listed = true
-		items = append(items, part...)
-	}
-	// If every client failed to list, that is an outage, not an empty queue —
-	// returning ([], nil) here makes downstream consumers (import sweep, in-queue
-	// dedup, stall detection) wrongly conclude nothing is downloading.
-	if !listed && lastErr != nil {
-		return nil, false, fmt.Errorf("all download clients failed to list: %w", lastErr)
-	}
-	return items, failed == 0, nil
+	return snap.Items, snap.Complete, nil
 }

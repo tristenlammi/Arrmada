@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -94,20 +93,9 @@ type Coordinator struct {
 	// Also guarded by unmatchedMu, and pruned the same way.
 	metaRetry map[string]int
 
-	// stallProgress remembers each pending grab's last observed download progress and
-	// when it last increased, keyed by grab ID. Stall detection compares against this:
-	// "stalled" must mean NO PROGRESS for the profile's stall window, not "old and its
-	// instantaneous speed read zero once" — a big pack legitimately downloading for
-	// hours was being condemned on a single sample. Guarded by stallMu; entries are
-	// pruned when their grab leaves the pending set. In-memory on purpose: a restart
-	// just restarts the observation window.
-	stallMu       sync.Mutex
-	stallProgress map[int64]stallSample
-	// stillWaitingAt is when a stalled grab last came up with no replacement, keyed by
-	// grab ID. The torrent is left in place, and this keeps it from costing a fresh
-	// search — and a fresh "still waiting" history line — more than once per window.
-	// Guarded by stallMu and pruned with stallProgress.
-	stillWaitingAt map[int64]time.Time
+	// The stall clock — when each pending grab's download last moved forward — and when a
+	// stalled one last found no replacement are kept on its grab row (acquisitions.go), so
+	// a restart doesn't reset them.
 	// stallDefaultFn reads the global stall timeout (Settings → Downloads) that a grab and
 	// profile left at 0 fall back to; guardHeldFn reads the hashes the disk guard has
 	// paused. Both are set once at startup; nil means DefaultStallMinutes / none held.
@@ -464,16 +452,26 @@ func (c *Coordinator) SearchMissing(ctx context.Context) {
 		c.log.Warn("automation: list movies failed", "err", err)
 		return
 	}
-	queue, _ := c.downloads.Queue(ctx)
+	queue, ok := c.sweepQueue(ctx, "movie search sweep")
+	if !ok {
+		return
+	}
+	untracked, err := c.untrackedQueue(ctx, queue)
+	if err != nil {
+		c.log.Warn("automation: movie search sweep skipped — can't read what's already downloading", "err", err)
+		return
+	}
 	var outage outageTally
 	defer outage.report(c.log, "movie search sweep")
 	for _, m := range all {
 		if !c.movies.IsAvailable(m) {
 			continue // not yet at its minimum-availability threshold
 		}
-		if inQueue(queue, m) {
-			continue // a download for this title is already in flight
+		if untrackedMovie(untracked, m) {
+			continue // a torrent nobody grabbed through Arrmada is already fetching it
 		}
+		// Versions already downloading are left out by searchAndGrab (wantedVersions),
+		// by the acquisition record — whatever the torrent is called.
 		// Exponential backoff for a movie that keeps finding nothing grabbable — an
 		// unreleased title, or one whose every result is for a different film of the
 		// same name, used to cost a full multi-indexer search every cycle forever.
@@ -773,14 +771,22 @@ func (c *Coordinator) SearchMovieManual(ctx context.Context, id int64) (SearchOu
 		return SearchOutcome{}, err
 	}
 	if c.downloads != nil && len(c.missingVersions(ctx, m.ID)) > 0 {
-		// An unreadable queue doesn't stop the search: the pending-grab guard still keeps
-		// the same release from being grabbed twice.
-		if queue, qerr := c.downloads.Queue(ctx); qerr == nil {
-			if name := queueItemFor(queue, m); name != "" {
-				out := SearchOutcome{Reason: ReasonAlreadyDownloading, Example: name}
-				c.recordAttempt(ctx, nil, AttemptMovie, m.ID, "", &out, nil)
-				return out, nil
+		// In flight by the acquisition record (whatever the torrent is called), or a
+		// torrent nobody grabbed through Arrmada that is for this film. An unreadable
+		// record or queue doesn't stop the search: searchAndGrab's busy-version and
+		// pending-grab guards still keep a second copy from being grabbed.
+		name := ""
+		if acqs, aerr := c.Active(ctx, "movie", m.ID); aerr == nil && len(acqs) > 0 {
+			name = acqs[0].Title
+		} else if queue, qerr := c.downloads.Queue(ctx); qerr == nil {
+			if untracked, uerr := c.untrackedQueue(ctx, queue); uerr == nil {
+				name = untrackedMovieItem(untracked, m)
 			}
+		}
+		if name != "" {
+			out := SearchOutcome{Reason: ReasonAlreadyDownloading, Example: name}
+			c.recordAttempt(ctx, nil, AttemptMovie, m.ID, "", &out, nil)
+			return out, nil
 		}
 	}
 	return c.searchAndGrab(ctx, m)
@@ -812,8 +818,15 @@ func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (out Se
 		return SearchOutcome{Reason: ReasonAlreadySearching}, ErrAlreadySearching
 	}
 	defer release()
-	want := c.missingVersions(ctx, m.ID)
+	want, inFlight, err := c.wantedVersions(ctx, m.ID)
+	if err != nil {
+		c.skipUnreadable(m.Title, err)
+		return SearchOutcome{}, err
+	}
 	if len(want) == 0 {
+		if inFlight {
+			return SearchOutcome{Reason: ReasonAlreadyDownloading}, nil
+		}
 		return SearchOutcome{Reason: ReasonNothingWanted}, nil
 	}
 	out = SearchOutcome{Searched: true}
@@ -877,7 +890,8 @@ func matchingMovieReleases(m movies.Movie, releases []indexer.Release) []indexer
 	return out
 }
 
-// missingVersions returns the monitored version tracks that still need a file.
+// missingVersions returns the monitored version tracks that still need a file, whether or
+// not something is already downloading for them (see wantedVersions).
 func (c *Coordinator) missingVersions(ctx context.Context, movieID int64) []movies.Version {
 	versions, err := c.movies.VersionRows(ctx, movieID)
 	if err != nil {
@@ -973,9 +987,23 @@ func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []mo
 // grabMissingTitles is grabMissing returning the release titles it grabbed, so a stall
 // fail-over can say what replaced the stalled download.
 func (c *Coordinator) grabMissingTitles(ctx context.Context, m movies.Movie, want []movies.Version, byName map[string]indexer.Release, cands []quality.Candidate) []string {
+	return c.grabMissingTitlesExcept(ctx, m, want, byName, cands, 0)
+}
+
+// grabMissingTitlesExcept is grabMissingTitles that doesn't count grab exceptGrab as in
+// flight — the stalled grab a fail-over is replacing.
+func (c *Coordinator) grabMissingTitlesExcept(ctx context.Context, m movies.Movie, want []movies.Version, byName map[string]indexer.Release, cands []quality.Candidate, exceptGrab int64) []string {
 	var titles []string
 	grabbed := map[string]bool{}
 	pending, err := c.pendingGrabTitles(ctx, m.ID) // releases already grabbed for this movie, not yet imported
+	if err != nil {
+		c.skipUnreadable(m.Title, err)
+		return nil
+	}
+	// Versions with a download already in flight, by the acquisition record. The pending
+	// guard above only stops the SAME release; this stops a differently named one for a
+	// version that's already on its way.
+	busy, err := c.busyVersions(ctx, m.ID, exceptGrab)
 	if err != nil {
 		c.skipUnreadable(m.Title, err)
 		return nil
@@ -984,6 +1012,9 @@ func (c *Coordinator) grabMissingTitles(ctx context.Context, m movies.Movie, wan
 	// can't jointly overcommit the same free-space reading (the series path has done this).
 	grabbedGB := 0.0
 	for _, v := range want {
+		if busy[v.ID] {
+			continue // already downloading for this version
+		}
 		// Resolved once and used for the decision, the stall window and the grab record,
 		// so a deleted profile means the default here rather than the permissive fallback.
 		profile := c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)
@@ -1054,6 +1085,11 @@ func (c *Coordinator) RSSSync(ctx context.Context) {
 		c.log.Warn("rss: list movies failed", "err", err)
 		return
 	}
+	// Read before the feeds, so a down client costs no indexer queries.
+	queue, ok := c.sweepQueue(ctx, "movie rss sync")
+	if !ok {
+		return
+	}
 	res, err := c.indexers.Recent(ctx, 100)
 	if errors.Is(err, indexer.ErrNoIndexers) {
 		return // no indexer has a feed — nothing to sync, and nothing to warn about every cycle
@@ -1066,12 +1102,20 @@ func (c *Coordinator) RSSSync(ctx context.Context) {
 	if len(res.Releases) == 0 {
 		return
 	}
-	queue, _ := c.downloads.Queue(ctx)
+	untracked, err := c.untrackedQueue(ctx, queue)
+	if err != nil {
+		c.log.Warn("rss: movie sync skipped — can't read what's already downloading", "err", err)
+		return
+	}
 	for _, m := range all {
-		if !c.movies.IsAvailable(m) || inQueue(queue, m) {
+		if !c.movies.IsAvailable(m) || untrackedMovie(untracked, m) {
 			continue
 		}
-		want := c.missingVersions(ctx, m.ID)
+		want, _, err := c.wantedVersions(ctx, m.ID)
+		if err != nil {
+			c.skipUnreadable(m.Title, err)
+			continue
+		}
 		if len(want) == 0 {
 			continue
 		}
@@ -1128,6 +1172,11 @@ func (c *Coordinator) UpgradeMovies(ctx context.Context) {
 		c.log.Warn("automation: upgrade sweep skipped — can't read the download queue", "err", err)
 		return
 	}
+	untracked, err := c.untrackedQueue(ctx, queue)
+	if err != nil {
+		c.log.Warn("automation: upgrade sweep skipped — can't read what's already downloading", "err", err)
+		return
+	}
 	var outage outageTally
 	defer outage.report(c.log, "movie upgrade sweep")
 	budget := c.newSweepBudget(ctx)
@@ -1142,8 +1191,8 @@ func (c *Coordinator) UpgradeMovies(ctx context.Context) {
 		if !m.Monitored || !m.HasFile {
 			continue
 		}
-		if inQueue(queue, m) {
-			continue // already grabbing something for this movie
+		if busy, err := c.movieBusy(ctx, m, untracked); err != nil || busy {
+			continue // already grabbing something for this movie (or that can't be told)
 		}
 		err := c.upgradeMovie(ctx, m, budget)
 		if errors.Is(err, ErrAlreadySearching) {
@@ -1739,71 +1788,13 @@ func (c *Coordinator) RegrabEpisode(ctx context.Context, seriesID int64, season,
 	return err
 }
 
-// stallSample is one observation of a grab's download progress: how far along it was
-// and when that value last increased.
-type stallSample struct {
-	progress float64
-	at       time.Time
-}
-
-// noProgressFor reports whether grab id's download has made no progress for at least
-// window. Each call updates the sample: any forward progress restarts the clock.
-// The first observation of a grab always returns false — a genuinely dead download
-// simply waits one extra window, which is far cheaper than condemning a live one.
-func (c *Coordinator) noProgressFor(id int64, progress float64, window time.Duration) bool {
-	c.stallMu.Lock()
-	defer c.stallMu.Unlock()
-	if c.stallProgress == nil {
-		c.stallProgress = map[int64]stallSample{}
-	}
-	s, seen := c.stallProgress[id]
-	if !seen || progress > s.progress {
-		c.stallProgress[id] = stallSample{progress: progress, at: time.Now()}
-		return false
-	}
-	return time.Since(s.at) >= window
-}
-
-// holdStallClock refreshes a grab's stall sample WITHOUT counting it as progress, so time
-// spent in a state that cannot progress doesn't accumulate toward the stall window. The
-// grab resumes being judged the moment the torrent is running again.
-func (c *Coordinator) holdStallClock(id int64, progress float64) {
-	c.stallMu.Lock()
-	defer c.stallMu.Unlock()
-	if c.stallProgress == nil {
-		c.stallProgress = map[int64]stallSample{}
-	}
-	c.stallProgress[id] = stallSample{progress: progress, at: time.Now()}
-}
-
-// pruneStallSamples drops progress samples for grabs no longer pending, so the map
-// tracks only live downloads.
-func (c *Coordinator) pruneStallSamples(pending []grab) {
-	c.stallMu.Lock()
-	defer c.stallMu.Unlock()
-	live := make(map[int64]bool, len(pending))
-	for _, g := range pending {
-		live[g.ID] = true
-	}
-	for id := range c.stallProgress {
-		if !live[id] {
-			delete(c.stallProgress, id)
-		}
-	}
-	for id := range c.stillWaitingAt {
-		if !live[id] {
-			delete(c.stillWaitingAt, id)
-		}
-	}
-}
-
 // stalledInQueue is the shared verdict for a pending grab found (or not found) in the
 // client queue: gone from a *successfully read* queue, in a hard-error state, or
 // incomplete with no progress for the grab's stall window. "stalledDL" (no peers right
 // now) and a momentary zero speed are NOT stalls on their own — only sustained lack of
 // progress is; a single instantaneous sample condemned big packs that were downloading
 // fine.
-func (c *Coordinator) stalledInQueue(g grab, item download.Item, found bool, window time.Duration) bool {
+func (c *Coordinator) stalledInQueue(ctx context.Context, g grab, item download.Item, found bool, window time.Duration) bool {
 	if !found {
 		return true
 	}
@@ -1820,12 +1811,12 @@ func (c *Coordinator) stalledInQueue(g grab, item download.Item, found bool, win
 	// a slot under its max-active limit, moving or allocating files. Fetching metadata is
 	// NOT held: a magnet nobody will send a file list for is as dead as one with no seeds.
 	if item.State == "paused" || item.State == "checking" {
-		c.holdStallClock(g.ID, item.Progress)
+		c.holdStallClock(ctx, g.ID, item.Progress)
 		return false
 	}
 	switch item.Phase() {
 	case "queued", "checking", "moving", "allocating":
-		c.holdStallClock(g.ID, item.Progress)
+		c.holdStallClock(ctx, g.ID, item.Progress)
 		return false
 	}
 	// "missingFiles" isn't tested here: normalizeState already folds it into "error", so a
@@ -1839,7 +1830,7 @@ func (c *Coordinator) stalledInQueue(g grab, item download.Item, found bool, win
 	if item.State == "error" {
 		return !item.Complete()
 	}
-	return !item.Complete() && c.noProgressFor(g.ID, item.Progress, window)
+	return !item.Complete() && c.noProgressFor(ctx, g.ID, item.Progress, window)
 }
 
 // DetectStalled fails over grabs that haven't progressed within their profile's stall
@@ -1850,7 +1841,6 @@ func (c *Coordinator) DetectStalled(ctx context.Context) {
 	if err != nil || len(pending) == 0 {
 		return
 	}
-	c.pruneStallSamples(pending)
 	queue, whole, err := c.downloads.QueueComplete(ctx)
 	if err != nil {
 		// Without the queue every pending grab reads as "not found", and not-found means
@@ -1975,15 +1965,13 @@ type SeedPolicy struct {
 	Hours   int     `json:"hours"`
 }
 
-// SeedPolicies returns the seed policy for every live grab (downloading or seeding),
-// keyed by a normalized release title (use NormReleaseKey on a download name to look it
-// up). Built in one query so the feed can annotate seeding torrents without a per-item
-// lookup. Uses liveGrabs, not seedCleanupGrabs: a torrent that has finished downloading but
-// not yet imported still has a rule, and the UI should show it.
-// Keyed by BOTH the torrent's info hash and its normalized title. The hash is the
-// reliable key — an indexer's listing title is often a prettified rendering of the actual
-// torrent, so name matching silently failed for whole trackers — but rows predating
-// migration 0062 have no hash, and the name key keeps working for those.
+// SeedPolicies returns the seed policy for every live grab (downloading or seeding), keyed
+// by lowercased info hash. Built in one query so the feed can annotate seeding torrents
+// without a per-item lookup. Uses liveGrabs, not seedCleanupGrabs: a torrent that has
+// finished downloading but not yet imported still has a rule, and the UI should show it.
+// Rows predating migration 0062 have no hash; those alone are keyed by their normalized
+// release title (use NormReleaseKey on a download name to look one up). Name keys for
+// hashed rows let a different torrent of the same name borrow a rule that isn't its own.
 func (c *Coordinator) SeedPolicies(ctx context.Context) map[string]SeedPolicy {
 	grabs, err := c.liveGrabs(ctx)
 	if err != nil {
@@ -1992,77 +1980,19 @@ func (c *Coordinator) SeedPolicies(ctx context.Context) map[string]SeedPolicy {
 	out := make(map[string]SeedPolicy, len(grabs)*2)
 	for _, g := range grabs {
 		p := SeedPolicy{Enabled: g.SeedEnabled, Ratio: g.SeedRatio, Hours: g.SeedHours}
-		out[normRelease(g.Title)] = p
 		if g.InfoHash != "" {
 			out[strings.ToLower(g.InfoHash)] = p
+			continue
 		}
+		// A legacy row without a hash can only be found by its release name.
+		// TODO: drop with legacyMatchByName once no hashless grabs remain.
+		out[normRelease(g.Title)] = p
 	}
 	return out
 }
 
 // NormReleaseKey normalizes a download name to the key used by SeedPolicies.
 func NormReleaseKey(name string) string { return normRelease(name) }
-
-// GrabNearMiss is a grab row that ALMOST matches a download name.
-type GrabNearMiss struct {
-	Title  string // as recorded at grab time
-	Status string
-	Key    string // its normalized key, for comparison against the torrent's
-}
-
-// NearestGrabs returns the grab rows whose normalized key most closely resembles this
-// download name's, best first.
-//
-// An exact-match lookup can't diagnose a matching failure — it uses the very comparison
-// under suspicion, so "not found" is indistinguishable from "not recorded". Reporting the
-// near misses instead shows the two strings side by side, which is the only way to see
-// HOW they diverge: a year present on one side, a punctuation difference that survives
-// normalization, a tracker listing that differs from the .torrent's own name.
-func (c *Coordinator) NearestGrabs(ctx context.Context, name string, limit int) []GrabNearMiss {
-	rows, err := c.db.QueryContext(ctx, `SELECT title, status FROM grabs ORDER BY id DESC`)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	want := normRelease(name)
-	type scored struct {
-		m GrabNearMiss
-		n int
-	}
-	var best []scored
-	for rows.Next() {
-		var title, status string
-		if rows.Scan(&title, &status) != nil {
-			continue
-		}
-		key := normRelease(title)
-		n := commonPrefix(key, want)
-		if n < 8 {
-			continue // unrelated release; not worth reporting
-		}
-		best = append(best, scored{GrabNearMiss{Title: title, Status: status, Key: key}, n})
-	}
-	sort.Slice(best, func(i, j int) bool { return best[i].n > best[j].n })
-	out := make([]GrabNearMiss, 0, limit)
-	for i := 0; i < len(best) && i < limit; i++ {
-		out = append(out, best[i].m)
-	}
-	return out
-}
-
-// SharedPrefixLen exposes commonPrefix for diagnostics: it says where two normalized
-// keys start to differ, which points straight at the token responsible.
-func SharedPrefixLen(a, b string) int { return commonPrefix(a, b) }
-
-// commonPrefix returns how many leading characters two keys share.
-func commonPrefix(a, b string) int {
-	n := 0
-	for n < len(a) && n < len(b) && a[n] == b[n] {
-		n++
-	}
-	return n
-}
 
 // matchGrab finds the grab a download belongs to, by info hash first and falling back to
 // the normalized name for rows predating migration 0062.
@@ -2235,14 +2165,16 @@ func (c *Coordinator) AttachMovieImport(ctx context.Context, rec library.ImportR
 	return library.Attached, nil
 }
 
-// inQueue reports whether the movie is already downloading (title+year match).
-func inQueue(queue []download.Item, m movies.Movie) bool {
-	return queueItemFor(queue, m) != ""
+// untrackedMovie reports whether a torrent no grab knows (see untrackedQueue) is for the
+// movie, by its parsed title and year — the only way to tell for a torrent Arrmada didn't
+// grab. Arrmada's own downloads are found by hash, through the acquisition record.
+func untrackedMovie(untracked []download.Item, m movies.Movie) bool {
+	return untrackedMovieItem(untracked, m) != ""
 }
 
-// queueItemFor is the name of the queue item inQueue matched for m, "" for none.
-func queueItemFor(queue []download.Item, m movies.Movie) string {
-	for _, it := range queue {
+// untrackedMovieItem is the name of the untracked torrent untrackedMovie matched, "" for none.
+func untrackedMovieItem(untracked []download.Item, m movies.Movie) string {
+	for _, it := range untracked {
 		r := parser.Parse(it.Name)
 		if titleKey(r.Title) == titleKey(m.Title) && (r.Year == 0 || m.Year == 0 || abs(r.Year-m.Year) <= 1) {
 			return it.Name

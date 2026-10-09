@@ -103,24 +103,24 @@ func (c *Coordinator) StallInfo(ctx context.Context) map[string]StallState {
 	if err != nil {
 		return out
 	}
+	clocks := c.stallClocks(ctx)
+	now := c.clock()
 	for _, g := range pending {
 		if g.InfoHash == "" {
 			continue
 		}
 		window, on := c.stallWindow(ctx, g)
 		st := StallState{Off: !on}
-		c.stallMu.Lock()
-		s, seen := c.stallProgress[g.ID]
-		c.stallMu.Unlock()
+		at, seen := clocks[g.ID]
 		if seen {
-			st.IdleMinutes = int(time.Since(s.at) / time.Minute)
+			st.IdleMinutes = int(now.Sub(at) / time.Minute)
 		}
 		if on {
 			// Whichever comes later: the window running out on the clock, or the grab
 			// being old enough to judge at all. Unobserved grabs wait a full window.
 			left := window
 			if seen {
-				left = window - time.Since(s.at)
+				left = window - now.Sub(at)
 			}
 			if age := window - time.Since(parseTime(g.GrabbedAt)); age > left {
 				left = age
@@ -195,16 +195,16 @@ func (c *Coordinator) judgeStall(ctx context.Context, g grab, queue []download.I
 		// The disk guard paused it and will resume it once there's room. Usually that
 		// already reads as "paused" below; checked by hash too so a torrent the guard
 		// owns never runs its clock down whatever state the client reports mid-pass.
-		c.holdStallClock(g.ID, item.Progress)
+		c.holdStallClock(ctx, g.ID, item.Progress)
 		return
 	}
-	if !c.stalledInQueue(g, item, found, window) {
+	if !c.stalledInQueue(ctx, g, item, found, window) {
 		return
 	}
 	// The last attempt found nothing to replace it with. Try again a window later, not
 	// every tick: a torrent in a hard error state reads as stalled on every pass, and each
 	// attempt is a full indexer search.
-	if found && c.waitingOut(g.ID, window) {
+	if found && c.waitingOut(ctx, g.ID, window) {
 		return
 	}
 	t, ok := target(ctx)
@@ -271,8 +271,8 @@ func (c *Coordinator) failOver(ctx context.Context, g grab, item download.Item, 
 	if repl == "" {
 		// Restart the window rather than leave it expired, so the next attempt is one
 		// window away instead of two minutes.
-		c.holdStallClock(g.ID, item.Progress)
-		c.markStillWaiting(g.ID)
+		c.holdStallClock(ctx, g.ID, item.Progress)
+		c.markStillWaiting(ctx, g.ID)
 		what := "no other release found"
 		if outage {
 			what = "indexers unavailable"
@@ -315,24 +315,6 @@ func (c *Coordinator) publishStall(payload map[string]any) {
 	}
 }
 
-// markStillWaiting records that grab id came up with no replacement just now.
-func (c *Coordinator) markStillWaiting(id int64) {
-	c.stallMu.Lock()
-	defer c.stallMu.Unlock()
-	if c.stillWaitingAt == nil {
-		c.stillWaitingAt = map[int64]time.Time{}
-	}
-	c.stillWaitingAt[id] = time.Now()
-}
-
-// waitingOut reports whether grab id came up with no replacement less than a window ago.
-func (c *Coordinator) waitingOut(id int64, window time.Duration) bool {
-	c.stallMu.Lock()
-	defer c.stallMu.Unlock()
-	at, ok := c.stillWaitingAt[id]
-	return ok && time.Since(at) < window
-}
-
 // stallSpan renders a stall window for a history line: "45 min", "6h", "1h 30m".
 func stallSpan(minutes int) string {
 	switch {
@@ -364,20 +346,21 @@ func (c *Coordinator) detectStalledMovie(ctx context.Context, g grab, queue []do
 			},
 			event: func(ctx context.Context, detail string) { c.movies.AddEvent(ctx, m.ID, "failed", detail) },
 			replace: func(ctx context.Context, exclude map[string]bool) (string, error) {
-				titles, err := c.searchAndGrabExcluding(ctx, m, g.VersionID, exclude)
+				titles, err := c.searchAndGrabExcluding(ctx, m, g, exclude)
 				return strings.Join(titles, ", "), err
 			},
 		}, true
 	})
 }
 
-// searchAndGrabExcluding is the movie replacement search: the version the stalled grab
+// searchAndGrabExcluding is the movie replacement search: the version the stalled grab g
 // was for, never a release in exclude. It ignores the sweep backoff — a fail-over is a
-// single deliberate search, already limited to one per window.
-func (c *Coordinator) searchAndGrabExcluding(ctx context.Context, m movies.Movie, versionID int64, exclude map[string]bool) ([]string, error) {
+// single deliberate search, already limited to one per window. g itself doesn't count as
+// in flight for its version (it's what is being replaced); any other grab does.
+func (c *Coordinator) searchAndGrabExcluding(ctx context.Context, m movies.Movie, g grab, exclude map[string]bool) ([]string, error) {
 	var want []movies.Version
 	for _, v := range c.missingVersions(ctx, m.ID) {
-		if v.ID == versionID {
+		if v.ID == g.VersionID {
 			want = append(want, v)
 		}
 	}
@@ -397,7 +380,7 @@ func (c *Coordinator) searchAndGrabExcluding(ctx context.Context, m movies.Movie
 		c.skipUnreadable(m.Title, err)
 		return nil, err
 	}
-	return c.grabMissingTitles(ctx, m, want, byName, cands), nil
+	return c.grabMissingTitlesExcept(ctx, m, want, byName, cands, g.ID), nil
 }
 
 // detectStalledSeries is the series kind's stall check. Series grabs have no "landed"

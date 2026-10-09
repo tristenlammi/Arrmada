@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { mins, phaseLabel, stallLine } from "./Downloads";
+import { mins, phaseLabel, sinceLabel, stallLine } from "./Downloads";
 import type { ActivityDownload } from "../lib/api";
+
+describe("sinceLabel", () => {
+  const now = new Date(2026, 9, 9, 15, 30);
+  it("shows only the time for an outage that began today", () => {
+    const got = sinceLabel(new Date(2026, 9, 9, 14, 2).toISOString(), now);
+    expect(got).toMatch(/02/);
+    expect(got).not.toMatch(/Oct/);
+  });
+  it("adds the date for an outage that began before today", () => {
+    expect(sinceLabel(new Date(2026, 9, 7, 14, 2).toISOString(), now)).toMatch(/7/);
+  });
+  it("says nothing for a timestamp it can't read", () => {
+    expect(sinceLabel("not a time", now)).toBe("");
+  });
+});
 
 const NOW = 1_800_000_000; // unix seconds
 const dl = (over: Partial<ActivityDownload> = {}): ActivityDownload => ({

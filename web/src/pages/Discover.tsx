@@ -552,7 +552,9 @@ function MyRequestsRow({ flash }: { flash: ToastFn }) {
   const [items, setItems] = useState<MediaRequest[] | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
-  const load = useCallback(() => api.requests().then((r) => setItems(r.requests)).catch(() => setItems([])), []);
+  // false while downloads can't be checked: a request's progress is then unknown.
+  const [queueKnown, setQueueKnown] = useState(true);
+  const load = useCallback(() => api.requests().then((r) => { setItems(r.requests); setQueueKnown(r.client_health?.ok ?? true); }).catch(() => setItems([])), []);
   usePoll(load, 8000); // refresh so status/progress advance
 
   if (!items || items.length === 0) return null;
@@ -573,20 +575,20 @@ function MyRequestsRow({ flash }: { flash: ToastFn }) {
         <div className="flex gap-1"><ArrowBtn dir={-1} onClick={() => scroll(-1)} /><ArrowBtn dir={1} onClick={() => scroll(1)} /></div>
       </div>
       <div ref={scroller} className="thin-scroll flex gap-3 overflow-x-auto pb-2" style={{ scrollSnapType: "x proximity" }}>
-        {sorted.map((rq) => <RequestPoster key={rq.id} rq={rq} staff={staff} own={!!user && rq.requested_by === user.id} onChanged={load} flash={flash} />)}
+        {sorted.map((rq) => <RequestPoster key={rq.id} rq={rq} staff={staff} own={!!user && rq.requested_by === user.id} onChanged={load} flash={flash} queueKnown={queueKnown} />)}
       </div>
     </div>
   );
 }
 
-function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest; staff: boolean; own: boolean; onChanged: () => void; flash: ToastFn }) {
+function RequestPoster({ rq, staff, own, onChanged, flash, queueKnown = true }: { rq: MediaRequest; staff: boolean; own: boolean; onChanged: () => void; flash: ToastFn; queueKnown?: boolean }) {
   const [busy, setBusy] = useState(false);
   const confirm = useConfirm();
   const canHover = useCanHover();
   const tr = rq.tracking;
-  const stage = requestStage(rq);
+  const stage = requestStage(rq, queueKnown);
   const pct = tr && (tr.stage === "downloading" || tr.stage === "paused") && tr.progress != null ? Math.round(tr.progress * 100) : 0;
-  const showBar = tr?.stage === "downloading" || tr?.stage === "paused" || tr?.stage === "importing";
+  const showBar = !stage.unknown && (tr?.stage === "downloading" || tr?.stage === "paused" || tr?.stage === "importing");
   // Staff/owner actions get honest feedback: a success toast on success, the server's
   // message on failure — never a silent no-op.
   const act = async (fn: () => Promise<unknown>, okMsg: string) => {
@@ -698,9 +700,16 @@ function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest;
   );
 }
 
-// requestStage turns a request's tracking into its badge and a one-line detail.
-function requestStage(rq: MediaRequest): { badge: string; tone: Tone; detail: string; detailTone?: string } {
+// Stages read off the download queue: while downloads can't be checked, these can't be told.
+const QUEUE_STAGES = new Set(["searching", "queued", "downloading", "paused", "failed"]);
+
+// requestStage turns a request's tracking into its badge and a one-line detail. queueKnown
+// false (downloads can't be checked right now) makes a queue-read stage "Status unknown".
+function requestStage(rq: MediaRequest, queueKnown = true): { badge: string; tone: Tone; detail: string; detailTone?: string; unknown?: boolean } {
   const tr = rq.tracking;
+  if (!queueKnown && QUEUE_STAGES.has(tr?.stage ?? "")) {
+    return { badge: "Status unknown", tone: "faint", detail: "Can't check downloads right now", unknown: true };
+  }
   const ready = rq.media_type === "book" ? "Ready" : "Ready to watch";
   const eps = tr?.total ? `${tr.have ?? 0} of ${tr.total} episodes` : "";
   const pct = Math.round((tr?.progress ?? 0) * 100);

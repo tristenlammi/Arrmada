@@ -6,7 +6,7 @@ import { TabPanel, Tabs, type TabItem } from "../ui/Tabs";
 import { LINKS } from "../lib/links";
 import { RemoveDownloadDialog, removedMessage } from "../components/RemoveDownloadDialog";
 import { usePoll } from "../lib/usePoll";
-import { api, type ActivityDownload, type ClientSettings, type DiskGuardHold, type SearchingItem } from "../lib/api";
+import { api, type ActivityDownload, type ClientSettings, type DiskGuardHold, type DownloadClientsState, type SearchingItem } from "../lib/api";
 import { useMe } from "../lib/me";
 import { Menu } from "../ui";
 
@@ -124,7 +124,8 @@ export function Downloads() {
   const [downloads, setDownloads] = useState<ActivityDownload[]>([]);
   const [totals, setTotals] = useState<{ down_speed: number; up_speed: number; active: number }>({ down_speed: 0, up_speed: 0, active: 0 });
   const [freeGb, setFreeGb] = useState<number | null>(null);
-  const [clients, setClients] = useState<number | null>(null); // configured download clients; null = unknown
+  const [diskPath, setDiskPath] = useState("");
+  const [clients, setClients] = useState<DownloadClientsState | null>(null); // null = unknown
   const [guard, setGuard] = useState<DiskGuardHold | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 4500); };
@@ -158,8 +159,9 @@ export function Downloads() {
       setUpcoming(a.upcoming ?? []);
       setDownloads(a.downloads ?? []);
       if (a.totals) setTotals(a.totals);
-      setFreeGb(typeof a.free_gb === "number" ? a.free_gb : null); // absent = couldn't be measured
-      if (typeof a.clients === "number") setClients(a.clients);
+      setFreeGb(typeof a.free_gb === "number" ? a.free_gb : null); // null/absent = couldn't be measured
+      setDiskPath(a.disk_path ?? "");
+      if (a.clients) setClients(a.clients);
       setGuard(a.disk_guard ?? null);
       setReconnecting(false);
       setLoaded(true);
@@ -223,6 +225,11 @@ export function Downloads() {
     { key: "upcoming", label: "Upcoming", count: upcoming.length },
   ];
   const isDownloadTab = tab === "downloads" || tab === "seeding";
+  // No download client at all: there is no queue to show or control. Searching and
+  // Upcoming still work — they're the library's side.
+  const noClient = clients?.configured === 0;
+  // A client that isn't answering looks exactly like an empty queue unless it's said.
+  const clientDown = !!clients && clients.configured > 0 && !clients.ok;
 
   return (
     <>
@@ -230,17 +237,25 @@ export function Downloads() {
       <div className="mx-auto w-full max-w-[1360px] px-4 py-6 sm:px-6">
         {/* Header: live totals + free disk + controls */}
         <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl px-4 py-2.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
-          <span className="flex items-center gap-1.5 font-mono text-[11px]" style={{ color: reconnecting ? "var(--avoid)" : "var(--ink-faint)" }}>
-            <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: reconnecting ? "var(--avoid)" : "var(--accent)" }} />
-            {reconnecting ? "Reconnecting…" : "Live"}
-          </span>
-          <Stat label="↓" value={`${bytes(totals.down_speed)}/s`} tone="var(--accent)" />
-          <Stat label="↑" value={`${bytes(totals.up_speed)}/s`} tone="var(--good)" />
-          <Stat label="active" value={String(totals.active)} />
-          {freeGb != null && <Stat label="free" value={`${freeGb.toFixed(0)} GB`} tone={freeGb < 20 ? "var(--reject)" : undefined} />}
+          {!noClient && (
+            <>
+              <span className="flex items-center gap-1.5 font-mono text-[11px]" style={{ color: reconnecting || clientDown ? "var(--avoid)" : "var(--ink-faint)" }}>
+                <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: reconnecting || clientDown ? "var(--avoid)" : "var(--accent)" }} />
+                {reconnecting ? "Reconnecting…" : clientDown ? "Client offline" : "Live"}
+              </span>
+              <Stat label="↓" value={`${bytes(totals.down_speed)}/s`} tone="var(--accent)" />
+              <Stat label="↑" value={`${bytes(totals.up_speed)}/s`} tone="var(--good)" />
+              <Stat label="active" value={String(totals.active)} />
+              {freeGb != null && <Stat label="free" value={`${freeGb.toFixed(0)} GB`} tone={freeGb < 20 ? "var(--reject)" : undefined} title={diskPath ? `Free space on ${diskPath}` : undefined} />}
+            </>
+          )}
           <div className="ml-auto flex items-center gap-2">
-            <button onClick={() => act("all", () => api.pauseDownload("all"))} className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Pause all</button>
-            <button onClick={resumeAll} title={guard ? "Torrents the disk guard paused stay paused until the volume drains" : undefined} className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Resume all{guard && guard.holding > 0 ? ` (${guard.holding} held by disk guard)` : ""}</button>
+            {!noClient && (
+              <>
+                <button onClick={() => act("all", () => api.pauseDownload("all"))} className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Pause all</button>
+                <button onClick={resumeAll} title={guard ? "Torrents the disk guard paused stay paused until the volume drains" : undefined} className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Resume all{guard && guard.holding > 0 ? ` (${guard.holding} held by disk guard)` : ""}</button>
+              </>
+            )}
             {clientId != null && (
               <button onClick={() => setShowSettings((s) => !s)} className="rounded-lg px-2.5 py-1.5 text-[11px] font-semibold" style={{ border: `1px solid ${showSettings ? "var(--accent)" : "var(--line)"}`, color: showSettings ? "var(--accent)" : "var(--ink-dim)" }}>⚙ Speed & limits</button>
             )}
@@ -249,9 +264,16 @@ export function Downloads() {
 
         {showSettings && clientId != null && <SettingsPanel clientId={clientId} onClose={() => setShowSettings(false)} />}
 
-        {clients === 0 && (
+        {clients && clients.configured > 0 && clients.enabled === 0 && (
           <div className="mb-4 rounded-lg p-3.5 text-[12.5px]" style={{ border: "1px solid var(--avoid)", background: "var(--avoid-soft)", color: "var(--avoid)" }}>
-            No download client is set up and switched on, so Arrmada can't grab anything. Add or enable one on the{" "}
+            Every download client is switched off, so Arrmada can't grab anything. Enable one on the{" "}
+            <Link to={LINKS.downloadClients} className="font-semibold underline" style={{ color: "inherit" }}>Download clients</Link> page.
+          </div>
+        )}
+        {clientDown && clients && (
+          <div className="mb-4 rounded-lg p-3.5 text-[12.5px]" style={{ border: "1px solid var(--avoid)", background: "var(--avoid-soft)", color: "var(--avoid)" }}>
+            {clients.name || "A download client"} unreachable{clients.since ? ` since ${sinceLabel(clients.since)}` : ""} — searches are paused until it's back
+            {clients.error ? ` (${clients.error})` : ""}. Check it on the{" "}
             <Link to={LINKS.downloadClients} className="font-semibold underline" style={{ color: "inherit" }}>Download clients</Link> page.
           </div>
         )}
@@ -290,7 +312,9 @@ export function Downloads() {
             </div>
           </div>
 
-          {!loaded ? null : tab === "downloads" ? (
+          {!loaded ? null : noClient && isDownloadTab ? (
+            <NoClientCard />
+          ) : tab === "downloads" ? (
             shownDownloads.length === 0 ? <Empty>Nothing downloading. Grab a release and it'll appear here.</Empty> : (
               <div className="flex flex-col gap-2">
                 {shownDownloads.map((it) => <DownloadCard key={it.hash} it={it} guard={guard} busy={!!busy[it.hash]} act={act} onRemoved={flash} onNote={flash} />)}
@@ -345,6 +369,27 @@ function ResumeBtn({ it, guard, busy, act }: { it: ActivityDownload; guard: Disk
     return <span title={guardTip(guard)}><IconBtn label="Resume" title={guardTip(guard)} disabled onClick={() => {}} /></span>;
   }
   return <IconBtn label={paused ? "Resume" : "Pause"} disabled={busy} onClick={() => act(it.hash, () => (paused ? api.resumeDownload(it.hash) : api.pauseDownload(it.hash)))} />;
+}
+
+// NoClientCard stands in for the Downloads and Seeding lists on an install with no download
+// client: there is no queue, and nothing can be grabbed until one is added.
+function NoClientCard() {
+  return (
+    <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>
+      <div className="mb-3">No download client yet — Arrmada needs qBittorrent to download anything.</div>
+      <Link to={LINKS.downloadClients} className="inline-block rounded-lg px-3 py-1.5 text-[12px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>
+        Add a download client →
+      </Link>
+    </div>
+  );
+}
+
+// sinceLabel renders when an outage began: the time today, or the date and time before that.
+export function sinceLabel(iso: string, now: Date = new Date()): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === now.toDateString() ? time : `${d.toLocaleDateString([], { day: "numeric", month: "short" })} ${time}`;
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
@@ -485,23 +530,28 @@ function SeedingCard({ it, guard, busy, act, onRemoved }: { it: ActivityDownload
 function AcqRow({ item, kind }: { item: SearchingItem; kind: "searching" | "upcoming" }) {
   const isSeries = item.media_type === "series";
   const to = isSeries ? `/series/${item.series_id}` : `/movies/${item.movie_id}`;
-  const right = kind === "searching"
+  // While the client can't be read, a wanted title may already be downloading.
+  const unknown = kind === "searching" && item.state === "unknown";
+  const right = unknown
+    ? "Status unknown"
+    : kind === "searching"
     ? (isSeries ? `${item.episode_count ?? 0} episode${item.episode_count === 1 ? "" : "s"}` : "Searching…")
     : (item.available_at ? `${item.next_label ? item.next_label + " · " : ""}${fmtReleaseDate(item.available_at)}` : "Awaiting release");
-  const dotColor = kind === "searching" ? "var(--avoid)" : "var(--ink-faint)";
+  const live = kind === "searching" && !unknown;
+  const dotColor = live ? "var(--avoid)" : "var(--ink-faint)";
   return (
     <Link to={to} className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-[var(--panel-2)]" style={{ background: "var(--panel)", borderBottom: "1px solid var(--line-soft)" }}>
-      <span className={`inline-block h-2 w-2 flex-none rounded-full ${kind === "searching" ? "animate-pulse" : ""}`} style={{ background: dotColor }} />
+      <span className={`inline-block h-2 w-2 flex-none rounded-full ${live ? "animate-pulse" : ""}`} style={{ background: dotColor }} />
       <div className="min-w-0 flex-1"><div className="truncate text-[12.5px] font-medium">{item.title} <span className="font-mono text-[10.5px] text-ink-faint">{item.year || ""}</span></div></div>
       <TypeChip mediaType={isSeries ? "series" : "movie"} />
       <ProfileChip profile={item.quality_profile} />
-      <span className="w-[150px] text-right font-mono text-[10px] uppercase" style={{ color: kind === "searching" ? "var(--avoid)" : "var(--ink-faint)" }}>{right}</span>
+      <span className="w-[150px] text-right font-mono text-[10px] uppercase" style={{ color: live ? "var(--avoid)" : "var(--ink-faint)" }}>{right}</span>
     </Link>
   );
 }
 
-function Stat({ label, value, tone }: { label: string; value: string; tone?: string }) {
-  return <span className="font-mono text-[11.5px]"><span className="text-ink-faint">{label} </span><span style={{ color: tone ?? "var(--ink)" }}>{value}</span></span>;
+function Stat({ label, value, tone, title }: { label: string; value: string; tone?: string; title?: string }) {
+  return <span className="font-mono text-[11.5px]" title={title}><span className="text-ink-faint">{label} </span><span style={{ color: tone ?? "var(--ink)" }}>{value}</span></span>;
 }
 
 function IconBtn({ label, onClick, tone, title, disabled }: { label: string; onClick: () => void; tone?: string; title?: string; disabled?: boolean }) {

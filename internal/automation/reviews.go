@@ -189,6 +189,7 @@ func (c *Coordinator) addReview(ctx context.Context, r Review) {
 		return
 	}
 	id, _ := res.LastInsertId()
+	c.noteImportError(ctx, r.Hash, r.Reason)
 	// The grab is no longer downloading, and not imported either: 'held' keeps the release
 	// from being grabbed again while the review is pending, and keeps seed cleanup off it.
 	c.setGrabStatusByHash(ctx, r.Hash, r.Name, r.MediaType, grabStatusHeld)
@@ -435,6 +436,7 @@ func (c *Coordinator) HandleMovieImportFailure(ctx context.Context, hash, name, 
 	}
 	c.log.Warn("movie import: nothing importable — blocklisted so it isn't re-grabbed",
 		"release", name, "reason", reason, "err", cause)
+	c.noteImportError(ctx, hash, reason)
 	c.removeIfNoVideo(ctx, hash, name, contentPath)
 }
 

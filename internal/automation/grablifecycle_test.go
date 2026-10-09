@@ -67,6 +67,7 @@ func (h *lifecycleHarness) download(t *testing.T, name string, files ...string) 
 
 // seededTorrent puts a finished torrent in the fake client that has met any seed goal.
 func (h *lifecycleHarness) seededTorrent(hash, name string) {
+	defer h.c.downloads.InvalidateSnapshot() // the queue read is cached; show the new torrent
 	h.qbit.mu.Lock()
 	defer h.qbit.mu.Unlock()
 	h.qbit.torrents = append(h.qbit.torrents, map[string]any{

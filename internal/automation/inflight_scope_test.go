@@ -34,7 +34,7 @@ func showWanting() series.Series {
 func TestInFlightSeasonPackHoldsOnlyItsSeason(t *testing.T) {
 	s := showWanting()
 	queue := []download.Item{tvItem("Show.S03.1080p.WEB-DL.x264-OLD", 0.1, "stalledDL")}
-	seasons, whole, names := seriesInFlightScope(queue, s)
+	seasons, whole, names := seriesInFlightScope(nil, queue, s)
 	if whole || len(seasons) != 1 || !seasons[3] || len(names) != 1 {
 		t.Fatalf("scope = %v whole=%v names=%v, want just season 3", seasons, whole, names)
 	}
@@ -72,7 +72,7 @@ func TestInFlightWideOrUnreadablePacksHoldTheShow(t *testing.T) {
 		// An anime cour numbered as a season the listing doesn't have.
 		{"Show.S07.1080p.WEB-DL.x264-GRP", anime},
 	} {
-		_, whole, names := seriesInFlightScope([]download.Item{tvItem(tc.name, 0.3, "downloading")}, tc.s)
+		_, whole, names := seriesInFlightScope(nil, []download.Item{tvItem(tc.name, 0.3, "downloading")}, tc.s)
 		if !whole || len(names) != 1 {
 			t.Errorf("%s: whole = %v names = %v, want the whole show held", tc.name, whole, names)
 		}
@@ -89,11 +89,11 @@ func TestInFlightIgnoresErroredFinishedAndOtherShows(t *testing.T) {
 	plainErr.State = "error"
 	seeding := tvItem("Show.S03E01.1080p.WEB-DL.x264-GRP", 1, "uploading")
 	other := tvItem("Other.Show.S03.1080p.WEB-DL.x264-GRP", 0.2, "downloading")
-	seasons, whole, names := seriesInFlightScope([]download.Item{errored, missing, plainErr, seeding, other}, s)
+	seasons, whole, names := seriesInFlightScope(nil, []download.Item{errored, missing, plainErr, seeding, other}, s)
 	if whole || len(seasons) != 0 || len(names) != 0 {
 		t.Fatalf("scope = %v whole=%v names=%v, want nothing in flight", seasons, whole, names)
 	}
-	if got := seriesInFlight([]download.Item{errored}, "Show"); got != "" {
+	if got := seriesBusy(nil, []download.Item{errored}, series.Series{Title: "Show"}); got != "" {
 		t.Errorf("the show-level check counts an errored torrent: %q", got)
 	}
 }
@@ -105,11 +105,11 @@ func TestInFlightRecognisesAliasNamedPacks(t *testing.T) {
 	s.Title = "Attack on Titan"
 	s.Aliases = []series.Alias{{Title: "Shingeki no Kyojin"}, {Title: "Attack on Titan The Final Season", TMDBSeason: 4}}
 
-	seasons, whole, _ := seriesInFlightScope([]download.Item{tvItem("Shingeki.no.Kyojin.S02.1080p.BluRay.x264-GRP", 0.5, "downloading")}, s)
+	seasons, whole, _ := seriesInFlightScope(nil, []download.Item{tvItem("Shingeki.no.Kyojin.S02.1080p.BluRay.x264-GRP", 0.5, "downloading")}, s)
 	if whole || !seasons[2] || len(seasons) != 1 {
 		t.Errorf("title-only alias S02 pack: scope = %v whole = %v, want season 2", seasons, whole)
 	}
-	seasons, whole, _ = seriesInFlightScope([]download.Item{tvItem("Attack.on.Titan.The.Final.Season.S01.1080p.WEB-DL.x264-GRP", 0.5, "downloading")}, s)
+	seasons, whole, _ = seriesInFlightScope(nil, []download.Item{tvItem("Attack.on.Titan.The.Final.Season.S01.1080p.WEB-DL.x264-GRP", 0.5, "downloading")}, s)
 	if whole || !seasons[4] || len(seasons) != 1 {
 		t.Errorf("season-pinned alias pack: scope = %v whole = %v, want season 4", seasons, whole)
 	}

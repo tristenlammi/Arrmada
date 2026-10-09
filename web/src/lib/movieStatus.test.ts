@@ -49,4 +49,14 @@ describe("movieStatus", () => {
       expect(isMovieDownloaded(m)).toBe(l === "Downloaded");
     }
   });
+
+  it("says Status unknown, not Wanted, while the download client can't be read", () => {
+    const wanted = { has_file: false, monitored: true };
+    expect(movieStatus(wanted, undefined, false).label).toBe("Status unknown");
+    expect(isMovieWanted(wanted, false)).toBe(false);
+    // Only a would-be Wanted film: what's on disk, or unmonitored, is still known.
+    expect(movieStatus({ has_file: true, monitored: true }, undefined, false).label).toBe("Downloaded");
+    expect(movieStatus({ has_file: false, monitored: false }, undefined, false).label).toBe("Unmonitored");
+    expect(isMovieDownloaded({ has_file: true, monitored: true }, false)).toBe(true);
+  });
 });

@@ -105,7 +105,7 @@ func (o SearchOutcome) Message(noun string) string {
 		if o.Example != "" {
 			return "Already downloading " + o.Example
 		}
-		return "Already downloading"
+		return "Already downloading — nothing else to search for"
 	case ReasonGrabbed:
 		if len(o.GrabbedTitles) == 0 {
 			return fmt.Sprintf("Grabbed %d %s", o.Grabbed, pluralize(o.Grabbed, "release"))

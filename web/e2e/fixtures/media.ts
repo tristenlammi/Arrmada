@@ -31,7 +31,8 @@ export const calendar: { items: CalendarItem[]; start: string; end: string } = {
   ],
 };
 
-export const movies: { movies: Movie[]; metadata_available: boolean } = {
+export const movies: { movies: Movie[]; metadata_available: boolean; client_health?: { ok: boolean } } = {
+  client_health: { ok: true },
   metadata_available: true,
   movies: [
     { id: 1, tmdb_id: 1007, title: "The Cartographer", year: 2023, poster_url: poster(3), monitored: true, quality_profile: "hd-1080p", min_availability: "released", has_file: true, added_at: "2026-09-01T10:00:00Z" },
@@ -92,7 +93,8 @@ export const activity: ActivityFeed = {
   ],
   totals: { down_speed: 12_400_000, up_speed: 800_000, active: 2 },
   free_gb: 2400,
-  clients: 1,
+  disk_path: "/downloads",
+  clients: { configured: 1, enabled: 1, ok: true },
 };
 
 export const downloadClients: DownloadClientList = {

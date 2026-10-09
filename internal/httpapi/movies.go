@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/library"
@@ -25,12 +26,21 @@ func (a *api) handleListMovies(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []movies.Movie{}
 	}
-	// Attach live download progress so the grid can show an indicator.
-	queue, _ := a.deps.Downloads.Queue(r.Context())
+	// Attach live download progress so the grid can show an indicator. When the client
+	// can't be read, the grid says the status is unknown rather than "Wanted".
+	snap, queueKnown, _ := a.queueSnapshot(r.Context())
+	queue := snap.Items
+	// Joined through the acquisition record by info hash: one query and one pass, and a
+	// torrent named nothing like the film still shows on its poster.
+	var acqs map[int64][]automation.Acquisition
+	if a.deps.Automation != nil && len(queue) > 0 {
+		acqs, _ = a.deps.Automation.ActiveByItem(r.Context(), "movie")
+	}
+	byHash := queueByHash(queue)
 	var stale []int64
 	for i := range list {
-		if len(queue) > 0 {
-			list[i].Download = downloadFor(queue, list[i])
+		if len(acqs[list[i].ID]) > 0 {
+			list[i].Download = movieDownload(list[i], acqs[list[i].ID], byHash, queue)
 		}
 		if list[i].MediaStale() {
 			stale = append(stale, list[i].ID)
@@ -51,6 +61,7 @@ func (a *api) handleListMovies(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"movies":             list,
 		"metadata_available": a.deps.Movies.MetadataAvailable(),
+		"client_health":      queueHealth{OK: queueKnown},
 	})
 }
 
@@ -355,21 +366,27 @@ func (a *api) handleGetMovie(w http.ResponseWriter, r *http.Request) {
 		m.Versions = versions
 		m.File = versions[0].File
 	}
-	if a.deps.Downloads != nil {
-		if queue, qerr := a.deps.Downloads.Queue(r.Context()); qerr == nil {
-			m.Download = downloadFor(queue, m)
-		}
+	// What's in flight for it, by the acquisition record (ACQ-25), joined to the queue by
+	// info hash: the progress bar and the Acquisition card read the same grabs, whatever
+	// the torrent is called.
+	var acqs []automation.Acquisition
+	var queue []download.Item
+	if a.deps.Automation != nil {
+		acqs, _ = a.deps.Automation.Active(r.Context(), "movie", m.ID)
 	}
+	if a.deps.Downloads != nil && len(acqs) > 0 {
+		queue, _ = a.deps.Downloads.Queue(r.Context())
+	}
+	byHash := queueByHash(queue)
+	m.Download = movieDownload(m, acqs, byHash, queue)
 	m.UpgradesAllowed = upgradeWatched(m.Monitored, m.HasFile, a.anyVersionUpgrades(r.Context(), &m))
-	var pending []automation.PendingMovieDownload
 	// What searching has come to: the last search's result, the sweep's backoff and when
 	// it will next look (search_attempts), beside the movie's own fields.
 	var search automation.SearchState
 	if a.deps.Automation != nil {
-		pending, _ = a.deps.Automation.PendingMovieDownloads(r.Context(), id)
 		search = a.deps.Automation.MovieSearchState(r.Context(), m)
 	}
-	m.Acquisition = a.movieAcquisition(r.Context(), &m, pending)
+	m.Acquisition = a.movieAcquisition(r.Context(), &m, acqs, byHash, queue)
 	a.writeJSON(w, http.StatusOK, struct {
 		movies.Movie
 		automation.SearchState
@@ -379,7 +396,7 @@ func (a *api) handleGetMovie(w http.ResponseWriter, r *http.Request) {
 // movieAcquisition gathers what the Acquisition card states, from the facts the sweeps
 // act on: monitoring, the profile and whether it upgrades, availability, an in-flight
 // grab, and a recorded file that's gone. m carries its live tracks and UpgradesAllowed.
-func (a *api) movieAcquisition(ctx context.Context, m *movies.Movie, pending []automation.PendingMovieDownload) *movies.Acquisition {
+func (a *api) movieAcquisition(ctx context.Context, m *movies.Movie, acqs []automation.Acquisition, byHash map[string]download.Item, queue []download.Item) *movies.Acquisition {
 	acq := &movies.Acquisition{
 		Monitored:       m.Monitored,
 		UpgradesAllowed: m.UpgradesAllowed,
@@ -391,12 +408,14 @@ func (a *api) movieAcquisition(ctx context.Context, m *movies.Movie, pending []a
 	if m.Extra != nil {
 		acq.AvailableFrom = m.Extra.ReleaseDate
 	}
-	if len(pending) > 0 {
+	// In flight by the acquisition record — an upgrade for a film that has its file
+	// included — with the live progress when its torrent is in the queue.
+	if len(acqs) > 0 {
 		acq.Downloading = true
-		acq.DownloadTitle, acq.DownloadProgress = pending[0].Title, pending[0].Progress
-	} else if m.Download != nil {
-		acq.Downloading = true
-		acq.DownloadProgress = m.Download.Progress
+		acq.DownloadTitle, acq.DownloadProgress = acqs[0].Title, acqs[0].Progress
+		if it, ok := automation.QueueItemFor(acqs[0], byHash, queue); ok {
+			acq.DownloadProgress = it.Progress
+		}
 	}
 	return acq
 }

@@ -212,7 +212,13 @@ func (s *Service) notifyReady(ctx context.Context, req Request) error {
 	if req.MediaType == "book" {
 		body = fmt.Sprintf("“%s” is ready to read.", req.Title)
 	}
-	return s.notifyParties(ctx, req, "Your request is ready", body, requestRef(req), "request-ready")
+	told, err := s.notifyPartiesCount(ctx, req, "Your request is ready", body, requestRef(req), "request-ready")
+	// Only when someone heard it for the first time: the ready sweep calls this on a timer,
+	// and an open page needs telling once.
+	if told > 0 {
+		s.publishUpdated(req, eventAvailable, s.parties(ctx, req))
+	}
+	return err
 }
 
 // notifyDecision tells the requester and subscribers a request was approved or declined.
@@ -235,6 +241,14 @@ func (s *Service) notifyDecision(ctx context.Context, req Request, approved bool
 // told is skipped by the inbox index. A failed Apprise push isn't one: the inbox row is
 // the notification, and a retry would never re-push it anyway.
 func (s *Service) notifyParties(ctx context.Context, req Request, title, body, ref, kind string) error {
+	_, err := s.notifyPartiesCount(ctx, req, title, body, ref, kind)
+	return err
+}
+
+// notifyPartiesCount is notifyParties that also says how many people were told for the
+// first time.
+func (s *Service) notifyPartiesCount(ctx context.Context, req Request, title, body, ref, kind string) (int, error) {
+	told := 0
 	seen := map[int64]bool{}
 	var userIDs []int64
 	var errs []error
@@ -264,6 +278,7 @@ func (s *Service) notifyParties(ctx context.Context, req Request, title, body, r
 		if !inserted {
 			continue // already notified — don't re-push
 		}
+		told++
 		if s.appriseBin != "" {
 			if url, err := s.repo.getUserApprise(ctx, uid); err == nil && url != "" {
 				if err := notify.Send(ctx, s.appriseBin, "Arrmada", body, url); err != nil {
@@ -279,7 +294,7 @@ func (s *Service) notifyParties(ctx context.Context, req Request, title, body, r
 		}
 		s.log.Info(kind+" notified", "title", req.Title, "user", uid)
 	}
-	return errors.Join(errs...)
+	return told, errors.Join(errs...)
 }
 
 // SweepReadyRequests is the notification backstop: every approved request whose

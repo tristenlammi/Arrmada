@@ -9,9 +9,8 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
-	"github.com/tristenlammi/arrmada/internal/download"
+	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/metadata"
-	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
@@ -82,14 +81,24 @@ func (a *api) buildDiscoverSnapshot(ctx context.Context) (snap *discoverEnrichSn
 	if err != nil {
 		complete = false
 	}
+	// Progress comes through the acquisition record, by info hash: what was grabbed for
+	// each title, whatever its torrent is called.
+	byHash := queueByHash(queue)
+	var movAcqs, serAcqs map[int64][]automation.Acquisition
+	if len(queue) > 0 && a.deps.Automation != nil {
+		var err1, err2 error
+		movAcqs, err1 = a.deps.Automation.ActiveByItem(ctx, "movie")
+		serAcqs, err2 = a.deps.Automation.ActiveByItem(ctx, "series")
+		if err1 != nil || err2 != nil {
+			complete = false
+		}
+	}
 	if ms, err := a.deps.Movies.List(ctx); err == nil {
 		for _, m := range ms {
 			snap.movIn[m.TMDBID] = true
 			snap.movHave[m.TMDBID] = m.HasFile
-			if len(queue) > 0 {
-				if d := downloadFor(queue, m); d != nil {
-					snap.prog["movie:"+strconv.Itoa(m.TMDBID)] = d.Progress
-				}
+			if d := movieDownload(m, movAcqs[m.ID], byHash, queue); d != nil {
+				snap.prog["movie:"+strconv.Itoa(m.TMDBID)] = d.Progress
 			}
 		}
 	} else {
@@ -99,10 +108,8 @@ func (a *api) buildDiscoverSnapshot(ctx context.Context) (snap *discoverEnrichSn
 		for _, s := range ss {
 			snap.serIn[s.TMDBID] = true
 			snap.serHave[s.TMDBID] = s.Stats != nil && s.Stats.HaveFiles > 0
-			if len(queue) > 0 {
-				if p, ok := seriesQueueProgress(queue, s.Title); ok {
-					snap.prog["series:"+strconv.Itoa(s.TMDBID)] = p
-				}
+			if it, ok := inProgress(serAcqs[s.ID], byHash, queue); ok {
+				snap.prog["series:"+strconv.Itoa(s.TMDBID)] = it.Progress
 			}
 		}
 	} else {
@@ -142,33 +149,6 @@ func (a *api) enrichCards(ctx context.Context, items []metadata.DiscoverItem) []
 		cards = append(cards, c)
 	}
 	return cards
-}
-
-// seriesQueueProgress returns the progress of an in-flight download whose parsed
-// series title matches, for the discover progress bar.
-func seriesQueueProgress(queue []download.Item, title string) (float64, bool) {
-	return queueProgressByTitle(queue, title, 0)
-}
-
-// queueProgressByTitle returns the progress (0..1) of the first not-yet-finished
-// download whose parsed title matches (and year, when both are known).
-func queueProgressByTitle(queue []download.Item, title string, year int) (float64, bool) {
-	want := parser.TitleKey(title)
-	for i := range queue {
-		it := queue[i]
-		if it.Progress >= 1 {
-			continue
-		}
-		p := parser.Parse(it.Name)
-		if parser.TitleKey(p.Title) != want {
-			continue
-		}
-		if p.Year != 0 && year != 0 && absInt(p.Year-year) > 1 {
-			continue
-		}
-		return it.Progress, true
-	}
-	return 0, false
 }
 
 // metadataReady reports whether TMDB browsing works right now: a provider exists and has a

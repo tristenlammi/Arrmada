@@ -191,6 +191,8 @@ export interface SearchingItem {
   available_at?: string; // release date (YYYY-MM-DD) for upcoming, not-yet-searchable movies
   episode_count?: number; // series: how many aired episodes are being searched
   next_label?: string; // series: "S02E13" for the upcoming episode
+  /** "unknown" while the download client can't be read: it may already be downloading. */
+  state?: "unknown";
 }
 
 export interface ActivityDownload {
@@ -271,11 +273,29 @@ export interface ActivityFeed {
   upcoming?: SearchingItem[];
   downloads: ActivityDownload[];
   totals?: { down_speed: number; up_speed: number; active: number; stalled?: number };
-  /** Absent when the downloads folder can't be measured. */
-  free_gb?: number;
-  /** How many download clients are configured; absent when it couldn't be read. */
-  clients?: number;
+  /** null (or absent) when the downloads folder can't be measured. */
+  free_gb?: number | null;
+  /** The downloads folder the free figure is for. */
+  disk_path?: string;
+  /** Whether there is a download client and whether it answered; absent when unreadable. */
+  clients?: DownloadClientsState;
   disk_guard?: DiskGuardHold;
+}
+
+/** The Downloads feed's view of the download clients. ok is false when the last queue
+ *  read failed or missed a client; name/error/since then say which and since when. */
+export interface DownloadClientsState {
+  configured: number;
+  enabled: number;
+  ok: boolean;
+  name?: string;
+  error?: string;
+  since?: string;
+}
+
+/** Whether downloads could be checked just now. When not, a title's status is unknown. */
+export interface QueueHealth {
+  ok: boolean;
 }
 
 // Resume's answer. "all" also reports what it resumed and what it left for the disk guard.
@@ -1923,7 +1943,7 @@ export const api = {
   reviewTargets: (id: number, q: string) =>
     req<{ targets: ReviewTarget[]; truncated?: boolean }>(`/api/v1/reviews/${id}/targets?q=${encodeURIComponent(q)}`),
 
-  movies: () => req<{ movies: Movie[]; metadata_available: boolean }>("/api/v1/movies"),
+  movies: () => req<{ movies: Movie[]; metadata_available: boolean; client_health?: QueueHealth }>("/api/v1/movies"),
   lookupMovies: (q: string) =>
     req<{ results: MovieLookup[] }>(`/api/v1/movies/lookup?q=${encodeURIComponent(q)}`).then((r) => r.results),
   settings: () => req<AppSettings>("/api/v1/settings"),
@@ -2087,7 +2107,7 @@ export const api = {
   // A plain link, not a fetch: the browser saves the file with the server's filename.
   ebookDownloadURL: (bookId: number) => `/api/v1/books/${bookId}/ebook`,
   requests: (status?: string) =>
-    req<{ requests: MediaRequest[]; auto_approve: boolean }>(`/api/v1/requests${status ? `?status=${status}` : ""}`),
+    req<{ requests: MediaRequest[]; auto_approve: boolean; client_health?: QueueHealth }>(`/api/v1/requests${status ? `?status=${status}` : ""}`),
   // Returns 200 even for already-requested titles: subscribed=true means "you were
   // attached to an existing request and will be notified too". Requesting a declined
   // title resurrects it as pending.

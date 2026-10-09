@@ -28,16 +28,16 @@ const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "downloaded", label: "Downloaded" },
 ];
 
-function matchesFilter(m: Movie, f: FilterKey): boolean {
+function matchesFilter(m: Movie, f: FilterKey, queueKnown = true): boolean {
   switch (f) {
     case "monitored":
       return m.monitored;
     case "unmonitored":
       return !m.monitored;
     case "wanted":
-      return isMovieWanted(m);
+      return isMovieWanted(m, queueKnown);
     case "downloaded":
-      return isMovieDownloaded(m);
+      return isMovieDownloaded(m, queueKnown);
     default:
       return true;
   }
@@ -49,6 +49,8 @@ export function Movies() {
   const list = useQuery("movies", () => api.movies(), { staleMs: 0 });
   const movies = list.data?.movies ?? NO_MOVIES;
   const metaOK = list.data?.metadata_available ?? true;
+  // false while the download client can't be read: a wanted movie may already be downloading.
+  const queueKnown = list.data?.client_health?.ok ?? true;
   const error = list.error?.message ?? null;
   const [showAdd, setShowAdd] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Movie | null>(null);
@@ -101,7 +103,7 @@ export function Movies() {
 
   const q = query.trim().toLowerCase();
   const filtered = movies
-    .filter((m) => matchesFilter(m, filter))
+    .filter((m) => matchesFilter(m, filter, queueKnown))
     .filter((m) => !q || m.title.toLowerCase().includes(q))
     .sort((a, b) => a.title.localeCompare(b.title)); // default: alphabetical by title
 
@@ -196,7 +198,7 @@ export function Movies() {
         <div className="mb-4 flex flex-wrap items-center gap-2">
           {FILTERS.map((f) => {
             const active = filter === f.key;
-            const count = f.key === "all" ? movies.length : movies.filter((m) => matchesFilter(m, f.key)).length;
+            const count = f.key === "all" ? movies.length : movies.filter((m) => matchesFilter(m, f.key, queueKnown)).length;
             return (
               <button
                 key={f.key}
@@ -258,13 +260,14 @@ export function Movies() {
             {q ? <>No movies match “<b>{query.trim()}</b>”.</> : <>No movies match the <b>{FILTERS.find((f) => f.key === filter)?.label}</b> filter.</>}
           </div>
         ) : view === "table" ? (
-          <MovieTable movies={filtered} multiSelect={multiSelect} selected={selected} onToggleSelect={toggleSelect} onSearch={setSearchFor} />
+          <MovieTable movies={filtered} multiSelect={multiSelect} selected={selected} onToggleSelect={toggleSelect} onSearch={setSearchFor} queueKnown={queueKnown} />
         ) : (
           <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" }}>
             {filtered.map((m) => (
               <MovieCard
                 key={m.id}
                 m={m}
+                queueKnown={queueKnown}
                 onDelete={() => setConfirmDelete(m)}
                 onSearch={() => search(m)}
                 selectable={multiSelect}
@@ -418,7 +421,7 @@ function sortValue(m: Movie, key: SortKey, fit?: FitItem): number | string | und
   }
 }
 
-function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }: { movies: Movie[]; multiSelect: boolean; selected: Set<number>; onToggleSelect: (id: number) => void; onSearch: (m: Movie) => void }) {
+function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch, queueKnown = true }: { movies: Movie[]; multiSelect: boolean; selected: Set<number>; onToggleSelect: (id: number) => void; onSearch: (m: Movie) => void; queueKnown?: boolean }) {
   const th = "px-2.5 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-[0.06em] text-ink-faint";
   const td = "px-2.5 py-2 align-middle";
   // Remembered across visits, like the grid/table choice ("size:desc").
@@ -506,7 +509,7 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }:
         <tbody>
           {sorted.map((m) => {
             const f = m.file;
-            const st = movieStatus(m);
+            const st = movieStatus(m, undefined, queueKnown);
             const fi = fits.get(m.id);
             const bad = (kind: string) => (hasIssue(fi?.fit, kind) ? { color: FIT_COLOR.over, fontWeight: 600 } : undefined);
             return (
@@ -549,8 +552,8 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }:
   );
 }
 
-function MovieCard({ m, onDelete, onSearch, selectable, selected, onToggleSelect }: { m: Movie; onDelete: () => void; onSearch: () => void; selectable?: boolean; selected?: boolean; onToggleSelect?: () => void }) {
-  const st = movieStatus(m);
+function MovieCard({ m, onDelete, onSearch, selectable, selected, onToggleSelect, queueKnown = true }: { m: Movie; onDelete: () => void; onSearch: () => void; selectable?: boolean; selected?: boolean; onToggleSelect?: () => void; queueKnown?: boolean }) {
+  const st = movieStatus(m, undefined, queueKnown);
   const [searching, setSearching] = useState(false);
   const doSearch = async () => {
     setSearching(true);

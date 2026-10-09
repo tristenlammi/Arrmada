@@ -408,6 +408,11 @@ func main() {
 	// Realtime hub bridges the event bus to connected websocket clients.
 	hub := realtime.NewHub(log)
 	grp.Loop("realtime hub", func(ctx context.Context) { hub.Run(ctx, bus) })
+	// Live download progress for the bars, read from the shared queue snapshot and only
+	// while a browser is connected (queue.progress, staff-only).
+	grp.Loop("queue progress", func(ctx context.Context) {
+		download.RunProgress(ctx, downloads, bus, func() bool { return hub.Count() > 0 })
+	})
 
 	appStart := time.Now()
 	sched := scheduler.New(log)
@@ -551,6 +556,12 @@ func main() {
 		coordinator.DetectStalled(ctx)
 		return nil
 	}, scheduler.Label("Replace stalled downloads"), scheduler.Description("Swaps out downloads that have made no progress for too long."))
+	// Keep each grab's record (phase, progress, last seen) in step with the download client,
+	// by info hash. Reads the shared queue snapshot, and writes only rows that changed.
+	sched.Register("reconcile-acquisitions", 30*time.Second, false, func(ctx context.Context) error {
+		_, err := coordinator.ReconcileAcquisitions(ctx)
+		return err
+	}, scheduler.Label("Track download progress"), scheduler.Description("Records where each grabbed download has got to in the download client, so a restart keeps stall clocks and progress."))
 
 	// Hold downloads while the downloads volume is too full. A minute is frequent
 	// enough to catch a big torrent filling a cache pool, and the check is a statfs
