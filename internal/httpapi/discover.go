@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/parser"
@@ -169,16 +170,40 @@ func queueProgressByTitle(queue []download.Item, title string, year int) (float6
 	return 0, false
 }
 
-func (a *api) discoveryReady(w http.ResponseWriter) bool {
-	if a.deps.Discovery == nil || !a.deps.Discovery.Available() {
-		a.writeError(w, http.StatusBadRequest, "metadata isn't configured — add a TMDB key in Settings → API keys")
-		return false
+// metadataReady reports whether TMDB browsing works right now: a provider exists and has a
+// key. The key is entered in the UI and takes effect immediately, so this is read per call.
+func (a *api) metadataReady() bool {
+	return a.deps.Discovery != nil && a.deps.Discovery.Available()
+}
+
+// Without a TMDB key every Discover feed answers 400 with a message the caller can act on:
+// only an admin can enter the key, a manager can ask one, and a requester can't do anything
+// about it, so they get a plain sentence with no mention of Settings.
+const (
+	discoveryOffAdmin   = "metadata isn't configured — add a TMDB key in Settings → System → API keys"
+	discoveryOffManager = "metadata isn't configured — ask an admin to add a TMDB key (Settings → System → API keys)"
+	discoveryOffOthers  = "Movie and TV browsing isn't set up on this server yet."
+)
+
+func (a *api) discoveryReady(w http.ResponseWriter, r *http.Request) bool {
+	if a.metadataReady() {
+		return true
 	}
-	return true
+	msg := discoveryOffOthers
+	if u, ok := userFrom(r); ok && u != nil && !u.Disabled {
+		switch {
+		case u.Role.AtLeast(auth.RoleAdmin):
+			msg = discoveryOffAdmin
+		case u.Role.AtLeast(auth.RoleManager):
+			msg = discoveryOffManager
+		}
+	}
+	a.writeError(w, http.StatusBadRequest, msg)
+	return false
 }
 
 func (a *api) handleDiscoverTrending(w http.ResponseWriter, r *http.Request) {
-	if !a.discoveryReady(w) {
+	if !a.discoveryReady(w, r) {
 		return
 	}
 	media := r.URL.Query().Get("media") // all | movie | series
@@ -191,7 +216,7 @@ func (a *api) handleDiscoverTrending(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) handleDiscoverPopular(w http.ResponseWriter, r *http.Request) {
-	if !a.discoveryReady(w) {
+	if !a.discoveryReady(w, r) {
 		return
 	}
 	items, err := a.deps.Discovery.Popular(r.Context(), r.URL.Query().Get("media"))
@@ -203,7 +228,7 @@ func (a *api) handleDiscoverPopular(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) handleDiscoverSearch(w http.ResponseWriter, r *http.Request) {
-	if !a.discoveryReady(w) {
+	if !a.discoveryReady(w, r) {
 		return
 	}
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
@@ -220,7 +245,7 @@ func (a *api) handleDiscoverSearch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) handleDiscoverUpcoming(w http.ResponseWriter, r *http.Request) {
-	if !a.discoveryReady(w) {
+	if !a.discoveryReady(w, r) {
 		return
 	}
 	items, err := a.deps.Discovery.Upcoming(r.Context(), r.URL.Query().Get("media"))
@@ -232,7 +257,7 @@ func (a *api) handleDiscoverUpcoming(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) handleDiscoverByGenre(w http.ResponseWriter, r *http.Request) {
-	if !a.discoveryReady(w) {
+	if !a.discoveryReady(w, r) {
 		return
 	}
 	genre, _ := strconv.Atoi(r.URL.Query().Get("genre"))
@@ -251,7 +276,7 @@ func (a *api) handleDiscoverByGenre(w http.ResponseWriter, r *http.Request) {
 // handleMediaDetail returns the full record behind the discover detail modal: TMDB
 // metadata + cast/crew, plus external ratings (IMDB/RT/Metacritic) when OMDb is set.
 func (a *api) handleMediaDetail(w http.ResponseWriter, r *http.Request) {
-	if !a.discoveryReady(w) {
+	if !a.discoveryReady(w, r) {
 		return
 	}
 	id, err := strconv.Atoi(r.PathValue("id"))
@@ -275,7 +300,7 @@ func (a *api) handleMediaDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *api) handleDiscoverGenres(w http.ResponseWriter, r *http.Request) {
-	if !a.discoveryReady(w) {
+	if !a.discoveryReady(w, r) {
 		return
 	}
 	genres, err := a.deps.Discovery.Genres(r.Context(), r.URL.Query().Get("media"))

@@ -174,7 +174,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
             <p className="mt-1 text-[13px] text-ink-dim">Your folders are in use.</p>
           )}
           {!state.tmdb_configured && (
-            <p className="mt-2 text-[12px]" style={{ color: "var(--avoid)" }}>No TMDB key yet — Movies and TV won't find anything until you add one in Settings → API keys.</p>
+            <p className="mt-2 text-[12px]" style={{ color: "var(--avoid)" }}>No TMDB key yet — Movies and TV won't find anything until you add one in Settings → System → API keys. It takes effect straight away.</p>
           )}
           <div className="mt-4 rounded-xl p-3.5 text-[12.5px] text-ink-dim" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
             <div className="mb-1 font-semibold text-[var(--ink)]">Next:</div>

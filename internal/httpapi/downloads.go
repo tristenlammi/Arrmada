@@ -263,7 +263,8 @@ type diskGuardStatus struct {
 }
 
 // handleDiskGuardStatus reports what the disk guard is watching and what it sees.
-// The setting depends entirely on ARRMADA_DOWNLOADS_DIR pointing at the torrent
+// The setting depends entirely on the downloads folder (lib_downloads_dir from Settings →
+// Library, with ARRMADA_DOWNLOADS_DIR as the fallback) pointing at the torrent
 // drive, and there is no way to know that from inside the app — so show the resolved
 // path and the reading taken from it, and let the user confirm it themselves.
 func (a *api) handleDiskGuardStatus(w http.ResponseWriter, r *http.Request) {

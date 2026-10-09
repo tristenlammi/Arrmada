@@ -21,6 +21,8 @@ export interface Status {
   books_enabled: boolean;
   music_enabled: boolean;
   plex_login: boolean;
+  /** Whether TMDB browsing works (a key is set). Sent to signed-in callers only. */
+  metadata_ready?: boolean;
 }
 
 export interface Health {
@@ -199,7 +201,10 @@ export interface ActivityFeed {
   upcoming?: SearchingItem[];
   downloads: ActivityDownload[];
   totals?: { down_speed: number; up_speed: number; active: number; stalled?: number };
+  /** Absent when the downloads folder can't be measured. */
   free_gb?: number;
+  /** How many download clients are configured; absent when it couldn't be read. */
+  clients?: number;
   disk_guard?: DiskGuardHold;
 }
 
@@ -1835,7 +1840,7 @@ export const api = {
   searchSeriesSubs: (id: number) => req<{ status: string }>(`/api/v1/subtitles/series/${id}/search`, { method: "POST" }),
 
   // Convert
-  convertHardware: () => req<{ encoders: ConvertEncoder[]; using: string; reclaimed_bytes: number; scratch_dir: string; scratch_free_bytes: number; render_devices: { path: string; pci: string; vendor: string }[]; vaapi_device: string }>("/api/v1/convert/hardware"),
+  convertHardware: () => req<{ encoders: ConvertEncoder[]; using: string; reclaimed_bytes: number; scratch_dir: string; scratch_free_bytes: number; scratch_need_bytes?: number; scratch_need_title?: string; render_devices: { path: string; pci: string; vendor: string }[]; vaapi_device: string }>("/api/v1/convert/hardware"),
   convertStatus: () => req<ConvertStatus>("/api/v1/convert/status"),
   convertSettings: () => req<ConvertSettings>("/api/v1/convert/settings"),
   updateConvertSettings: (patch: Partial<ConvertSettings>) => req<ConvertSettings>("/api/v1/convert/settings", { method: "PUT", body: JSON.stringify(patch) }),
@@ -2164,6 +2169,8 @@ export interface Movie {
   file?: MovieFile;
   versions?: MovieVersion[];
   download?: { state: string; progress: number };
+  /** Detail only: whether the upgrade sweep will look at this movie (monitored, has a file, profile upgrades). */
+  upgrades_allowed?: boolean;
 }
 
 export interface MovieLookup {

@@ -7,7 +7,7 @@ interface MeState {
   loading: boolean;
   // The session ended while the app was open; the sign-in screen says so.
   signedOut: boolean;
-  external: boolean; // request came from outside the LAN → Discover-only
+  external: boolean; // request came from outside the LAN and isn't staff → the limited shell
   // Module toggles (from /status) so nav + Discover can hide disabled modules live.
   booksEnabled: boolean;
   setBooksEnabled: (v: boolean) => void;
@@ -18,9 +18,13 @@ interface MeState {
   unreachable: boolean;
   // retry re-runs the boot calls and resolves true once Arrmada answered.
   retry: () => Promise<boolean>;
+  // Whether a TMDB key is set. Movies, Series and Discover show one role-aware "not set up"
+  // message instead of failing feed by feed; saving the key flips it back without a reload.
+  metadataReady: boolean;
+  setMetadataReady: (v: boolean) => void;
 }
 
-const MeContext = createContext<MeState>({ user: null, loading: true, signedOut: false, external: false, booksEnabled: true, setBooksEnabled: () => {}, musicEnabled: false, setMusicEnabled: () => {}, unreachable: false, retry: async () => false });
+const MeContext = createContext<MeState>({ user: null, loading: true, signedOut: false, external: false, booksEnabled: true, setBooksEnabled: () => {}, musicEnabled: false, setMusicEnabled: () => {}, unreachable: false, retry: async () => false, metadataReady: true, setMetadataReady: () => {} });
 
 // MeProvider fetches the current user and module toggles once at boot so the whole app can
 // branch on role (staff get the full console; requesters get the Discover-only shell) and
@@ -32,6 +36,9 @@ export function MeProvider({ children }: { children: ReactNode }) {
   const [booksEnabled, setBooksEnabled] = useState(true);
   // Music is a preview and off by default, so don't flash its nav entry before /status lands.
   const [musicEnabled, setMusicEnabled] = useState(false);
+  // Assume ready until /status says otherwise, so a server that predates the field (or a
+  // failed /status) never hides working pages behind a "not set up" message.
+  const [metadataReady, setMetadataReady] = useState(true);
   const [unreachable, setUnreachable] = useState(false);
   const boot = useCallback(async (): Promise<boolean> => {
     const [me, status] = await Promise.allSettled([api.me(), api.status()]);
@@ -45,6 +52,7 @@ export function MeProvider({ children }: { children: ReactNode }) {
       setExternal(status.value.external);
       setBooksEnabled(status.value.books_enabled);
       setMusicEnabled(status.value.music_enabled);
+      setMetadataReady(status.value.metadata_ready ?? true);
     }
     setUnreachable(false);
     setLoading(false);
@@ -66,7 +74,7 @@ export function MeProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void boot();
   }, [boot]);
-  return <MeContext.Provider value={{ user, loading, signedOut, external, booksEnabled, setBooksEnabled, musicEnabled, setMusicEnabled, unreachable, retry: boot }}>{children}</MeContext.Provider>;
+  return <MeContext.Provider value={{ user, loading, signedOut, external, booksEnabled, setBooksEnabled, musicEnabled, setMusicEnabled, unreachable, retry: boot, metadataReady, setMetadataReady }}>{children}</MeContext.Provider>;
 }
 
 // bootUnreachable decides between "show Login" and "Can't reach Arrmada". A 401 or
@@ -83,7 +91,7 @@ export function useMe(): MeState {
 }
 
 // isStaff reports whether the role can administer (manager or admin). Non-staff users
-// only ever see the Discover experience.
+// get the requester shell (Discover, Calendar, Books, Audiobooks), never the console.
 export function isStaff(user: AuthUser | null): boolean {
   return !!user && (user.role === "admin" || user.role === "manager");
 }

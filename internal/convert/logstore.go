@@ -3,6 +3,8 @@ package convert
 import (
 	"context"
 	"database/sql"
+	"regexp"
+	"strconv"
 )
 
 // maxLogLines is how many Convert activity-console lines are retained — in memory and in the DB.
@@ -25,6 +27,33 @@ func (l *logStore) append(ctx context.Context, ln LogLine) {
 	// Drop anything older than the newest maxLogLines rows (no-op until the table exceeds the cap).
 	_, _ = l.db.ExecContext(ctx,
 		`DELETE FROM convert_logs WHERE id <= (SELECT MAX(id) FROM convert_logs) - ?`, maxLogLines)
+}
+
+// updateLast rewrites the newest row — a repeated line folded into "msg (×N)" with the
+// newer time — so the collapse survives a restart.
+func (l *logStore) updateLast(ctx context.Context, ln LogLine) {
+	if l == nil || l.db == nil {
+		return
+	}
+	_, _ = l.db.ExecContext(ctx,
+		`UPDATE convert_logs SET at = ?, msg = ? WHERE id = (SELECT MAX(id) FROM convert_logs)`, ln.At, ln.Msg)
+}
+
+// repeatSuffix is the " (×N)" a folded line ends with.
+var repeatSuffix = regexp.MustCompile(` \(×(\d+)\)$`)
+
+// splitRepeat splits a log message into its text and how many times it has been seen:
+// "x (×3)" is ("x", 3), and a plain "x" is ("x", 1).
+func splitRepeat(msg string) (string, int) {
+	m := repeatSuffix.FindStringSubmatchIndex(msg)
+	if m == nil {
+		return msg, 1
+	}
+	n, err := strconv.Atoi(msg[m[2]:m[3]])
+	if err != nil || n < 1 {
+		return msg, 1
+	}
+	return msg[:m[0]], n
 }
 
 // recent returns the last `limit` lines, oldest-first (the order the console renders them).

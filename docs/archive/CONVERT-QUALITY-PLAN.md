@@ -1,5 +1,23 @@
 # Convert — format choice and conversion rules
 
+> **Archived — superseded by the code and [docs/roadmap/CONV.md](../roadmap/CONV.md).**
+> This was the design plan for the Convert rebuild. Kept for its reasoning; it no longer
+> describes what ships. Read it against the code, not as a spec.
+>
+> **Shipped (in a different shape in places):** HEVC by default with an opt-in per-file AV1
+> test (a file goes AV1 only when it is clearly smaller at the same quality), HDR10 and HLG
+> carried through, HDR10+ re-injected with `hdr10plus_tool` (HEVC only), audio always
+> stream-copied, and an SSIM quality gate with a minimum saving.
+>
+> **Not shipped — now owned by roadmap tasks:**
+> - Dolby Vision RPU re-injection with `dovi_tool`: Dolby Vision files are converted from
+>   their HDR10/HLG base and lose the Dolby Vision layer (profile 5 is left alone) —
+>   [CONV-29](../roadmap/CONV.md#conv-29).
+> - The first-run format chooser with this library's real numbers —
+>   [CONV-13](../roadmap/CONV.md#conv-13).
+> - The throughput forecast ("about 3 weeks at your current speed") —
+>   [CONV-22](../roadmap/CONV.md#conv-22).
+
 ## The promise
 
 > Press Convert. Your library gets smaller. Nothing else about it changes.

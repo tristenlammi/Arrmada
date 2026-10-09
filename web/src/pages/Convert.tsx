@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { useTabParam } from "../lib/useTabParam";
+import { LINKS } from "../lib/links";
 import { RescanButton, ago } from "../components/RescanButton";
 import { useMe, isAdmin } from "../lib/me";
 import {
@@ -14,6 +16,7 @@ import {
 // while someone watches Plex. There's no queue to manage — the Overview shows what it's
 // doing, what's next and what it did; the Library lets you pick a file to do right now.
 type Tab = "overview" | "library" | "problems" | "activity" | "settings";
+const TAB_KEYS: readonly Tab[] = ["overview", "library", "problems", "activity", "settings"];
 const ACTIVE = new Set(["preparing", "testing", "encoding", "verifying", "replacing"]);
 
 const card = "rounded-xl p-4";
@@ -64,7 +67,7 @@ const STATE_LABEL: Record<string, string> = {
 };
 
 export function Convert() {
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useTabParam(TAB_KEYS, "overview");
   const [status, setStatus] = useState<ConvertStatus | null>(null);
   const [jobs, setJobs] = useState<ConvertJob[]>([]);
   const [stats, setStats] = useState<ConvertLibraryStats | null>(null);
@@ -143,13 +146,15 @@ export function Convert() {
 
   return (
     <>
-      <PageHeader title="Convert" crumb="Library / Convert" />
+      <PageHeader title="Convert" crumb="Services / Convert" />
       <div className="mx-auto w-full max-w-[1240px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
           <p className="max-w-[66ch] text-[12.5px] text-ink-dim">
-            Makes your library smaller without making it look any different. Wasteful video is re-encoded to HEVC
-            {settings?.allow_av1 ? " or AV1 (whichever is smaller at the same quality)" : ""}, one file at a time during your hours.
-            Atmos and every audio track are copied untouched; HDR10 and HDR10+ are kept.
+            Makes your library smaller at a quality checked against the original. Wasteful video is re-encoded to HEVC
+            {settings?.allow_av1 ? " or AV1 (whichever is smaller at the same quality)" : ""} during your hours.
+            Audio is never re-encoded: Atmos, TrueHD and DTS-HD pass through, and tracks you filter out in Settings are removed.
+            HDR10, HDR10+ and HLG are kept; Dolby Vision files keep their HDR10 or HLG base and lose the Dolby Vision layer
+            {stats?.total?.dolby_vision ? ` (${stats.total.dolby_vision.toLocaleString()} in your library)` : ""}.
           </p>
           {settings && (
             <button onClick={toggleAuto} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={settings.auto ? ghostBtn : accentBtn}>
@@ -207,7 +212,7 @@ function Overview({ status, jobs, stats, hw, originals, flash, onChanged, onResc
   const cancelJob = async (id: number) => { try { await api.convertCancel(id); onChanged(); } catch (e) { flash((e as Error).message); } };
   const cancelRequest = async (key: string) => { try { await api.convertCancelRequest(key); onChanged(); } catch (e) { flash((e as Error).message); } };
   const doNext = async (key: string, title: string) => {
-    try { await api.convertRequest(key); flash(`“${title}” is next`); onChanged(); } catch (e) { flash((e as Error).message); }
+    try { await api.convertRequest(key); flash(`“${title}” is queued ahead of the automatic picks`); onChanged(); } catch (e) { flash((e as Error).message); }
   };
 
   return (
@@ -478,12 +483,12 @@ function Library({ flash, onRequested, onRescan, onCompare, running, reload, ori
     try {
       await api.convertRequest(c.key);
       setRequested((s) => new Set(s).add(c.key));
-      flash(`“${c.title}” is next — it starts right away, whatever the hours`);
+      flash(`“${c.title}” is queued ahead of the automatic picks — it starts when a conversion slot is free, even outside your hours`);
       onRequested();
     } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
   };
   const convertBulk = async (seriesID: number, season: number | undefined, label: string, count: number) => {
-    if (count > 1 && !window.confirm(`Convert ${count} episode${count === 1 ? "" : "s"} from ${label} now?\n\nThey run one after another straight away, whatever your hours. ${originals}.`)) return;
+    if (count > 1 && !window.confirm(`Convert ${count} episode${count === 1 ? "" : "s"} from ${label} now?\n\nThey're queued ahead of the automatic picks and start as conversion slots free up, even outside your hours. ${originals}.`)) return;
     setBusy(`bulk:${seriesID}:${season ?? "all"}`);
     try {
       const { requested: n } = await api.convertSeries(seriesID, season);
@@ -656,7 +661,7 @@ function Library({ flash, onRequested, onRescan, onCompare, running, reload, ori
                         </div>
                       </td>
                       <td className="px-3 py-2 font-mono text-ink-dim">{c.info?.resolution ?? "—"}</td>
-                      <td className="px-3 py-2 font-mono text-ink-dim">{hdrLabel(c)}</td>
+                      <td className="px-3 py-2 font-mono text-ink-dim" title={c.info?.hdr === "Dolby Vision" ? "The Dolby Vision layer is removed when converted" : undefined}>{hdrLabel(c)}</td>
                       <td className="px-3 py-2 font-mono tabular-nums text-ink-dim">{c.info?.bitrate_kbps ? `${(c.info.bitrate_kbps / 1000).toFixed(1)} Mb/s` : "—"}</td>
                       <td className="px-3 py-2 font-mono tabular-nums">{fmtSize(c.info?.size_bytes)}</td>
                       <td className="px-3 py-2 font-mono tabular-nums" title={c.tracks || undefined}>
@@ -822,7 +827,7 @@ function Problems({ flash }: { flash: (m: string) => void }) {
               <div className="text-[14px] font-bold">{list.length.toLocaleString()} file{list.length === 1 ? "" : "s"}{list[0].permanent ? null : <span className="ml-2 font-mono text-[10px] font-normal text-ink-faint">TEMPORARY</span>}</div>
               <p className="mt-0.5 text-[12px] text-ink-dim">{SKIP_LABEL[kind] ?? list[0].reason}</p>
               {kind === "bin_full" && (admin
-                ? <Link to="/settings?tab=system" className="mt-1 inline-block text-[12px] font-semibold" style={{ color: "var(--accent)" }}>Raise the cap in Settings → Recycle bin</Link>
+                ? <Link to={LINKS.recycleBin} className="mt-1 inline-block text-[12px] font-semibold" style={{ color: "var(--accent)" }}>Raise the cap in Settings → Recycle bin</Link>
                 : <p className="mt-1 text-[12px] text-ink-faint">Ask an admin to raise the recycle bin's cap</p>)}
             </div>
             <button onClick={() => retrySkips(kind)} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>{busy === kind ? "…" : "Try these again"}</button>
@@ -1074,10 +1079,10 @@ function SettingsPanel({ flash, onSaved }: { flash: (m: string) => void; onSaved
   const [saved, setSaved] = useState<ConvertSettings | null>(null);
   const [d, setD] = useState<ConvertSettings | null>(null);
   const [busy, setBusy] = useState(false);
-  const [hw, setHw] = useState<{ dir: string; free: number; devices: { path: string; pci: string; vendor: string }[] } | null>(null);
+  const [hw, setHw] = useState<{ dir: string; free: number; need: number; needTitle: string; devices: { path: string; pci: string; vendor: string }[] } | null>(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { api.convertSettings().then((v) => { setSaved(v); setD(v); }).catch(() => flash("Could not load settings")); }, []);
-  useEffect(() => { api.convertHardware().then((h) => setHw({ dir: h.scratch_dir, free: h.scratch_free_bytes, devices: h.render_devices ?? [] })).catch(() => {}); }, []);
+  useEffect(() => { api.convertHardware().then((h) => setHw({ dir: h.scratch_dir, free: h.scratch_free_bytes, need: h.scratch_need_bytes ?? 0, needTitle: h.scratch_need_title ?? "", devices: h.render_devices ?? [] })).catch(() => {}); }, []);
   const set = (patch: Partial<ConvertSettings>) => setD((cur) => (cur ? { ...cur, ...patch } : cur));
   const dirty = useMemo(() => !!saved && !!d && SETTING_KEYS.some((k) => saved[k] !== d[k]), [saved, d]);
   const onSave = async () => {
@@ -1108,7 +1113,7 @@ function SettingsPanel({ flash, onSaved }: { flash: (m: string) => void; onSaved
               <input type="time" aria-label="End" value={d.hours_end} onChange={(e) => set({ hours_end: e.target.value })} className={inp} style={inpStyle} />
             </span>
             <span className={`text-[11px] ${clockSkewed ? "" : "text-ink-faint"}`} style={clockSkewed ? { color: "var(--avoid)" } : undefined}>
-              {clockSkewed ? "⚠ " : ""}Read on the server's clock: {d.server_time} {d.server_tz}{clockSkewed ? ` — yours says ${browserTime}. Set TZ in .env and run ./update.sh.` : "."}
+              {clockSkewed ? "⚠ " : ""}Read on the server's clock: {d.server_time} {d.server_tz}{clockSkewed ? ` — yours says ${browserTime}. Set TZ in your .env and recreate the container (docker compose up -d).` : "."}
             </span>
           </div>
         )}
@@ -1116,7 +1121,7 @@ function SettingsPanel({ flash, onSaved }: { flash: (m: string) => void; onSaved
           hint={d.plex_watching_known ? "Nothing new starts, and a running conversion is frozen until the stream stops." : "Needs Plex connected in Insights — until then this does nothing."} />
       </Section>
 
-      <Section title="Format" desc="HEVC by default: the best quality and it plays everywhere.">
+      <Section title="Format" desc="HEVC by default: the best quality, and it plays on most devices made since about 2016. Dolby Vision files are converted from their HDR10 or HLG base — the Dolby Vision layer is removed.">
         <Toggle on={d.allow_av1} set={(v) => set({ allow_av1: v })} label="My devices can play AV1"
           hint={<>Turn on only if every TV, phone and streaming box you watch on decodes AV1 — older Apple TVs, Shields and Fire Sticks don't, and Plex would transcode on the fly. When on, each file gets a quick side-by-side test and goes to AV1 only if it's clearly smaller at the same quality; otherwise HEVC. Files with HDR10+ always stay HEVC.</>} />
         {d.has_gpu && (
@@ -1158,7 +1163,9 @@ function SettingsPanel({ flash, onSaved }: { flash: (m: string) => void; onSaved
           <Field label="Transcode folder" hint="Fast storage (an SSD/NVMe pool), never the array. Blank = the default.">
             <input type="text" value={d.scratch_dir} onChange={(e) => set({ scratch_dir: e.target.value })} placeholder="/transcode" className={`${inp} w-[240px]`} style={inpStyle} />
           </Field>
-          {hw && <div className="text-[11px] text-ink-faint">Using <span className="font-mono text-ink-dim">{hw.dir}</span> · <b style={{ color: hw.free > 20 * 1024 ** 3 ? "var(--good)" : "var(--avoid)" }}>{fmtSize(hw.free)}</b> free</div>}
+          {/* Green only when the biggest of the next files fits: one 4K remux can need ~90 GB,
+              so a fixed threshold said "fine" right before a file failed for space. */}
+          {hw && <div className="text-[11px] text-ink-faint">Using <span className="font-mono text-ink-dim">{hw.dir}</span> · <b style={{ color: hw.free >= hw.need ? "var(--good)" : "var(--avoid)" }}>{fmtSize(hw.free)}</b> free{hw.need > 0 && <> · largest of the next 20 files{hw.needTitle ? <> (“{hw.needTitle}”)</> : null} needs ~{fmtSize(hw.need)}</>}</div>}
           {hw && hw.devices.length > 1 && (
             <Field label="GPU device" hint="The discrete card is usually the higher renderD number">
               <select value={d.vaapi_device || ""} onChange={(e) => set({ vaapi_device: e.target.value })} className={`${inp} w-[280px]`} style={inpStyle}>

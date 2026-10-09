@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import {
@@ -13,6 +13,7 @@ import {
   type NowListening,
 } from "../lib/api";
 import { useLive } from "../lib/useLive";
+import { useVisiblePoll } from "../lib/useVisiblePoll";
 
 // The dashboard fans out over Plex, the download client and the disks, so it isn't
 // free — but it's the page people leave open. Ten seconds keeps the streams and the
@@ -35,24 +36,17 @@ export function Dashboard() {
         setError(null);
       })
       .catch((e: Error) => setError(e.message));
-    api.systemHealth().then(setSystem).catch(() => {});
   }, []);
 
-  useEffect(() => {
-    let alive = true;
-    const pull = () => {
-      api
-        .dashboard()
-        .then((d) => alive && setData(d))
-        .catch(() => {});
-    };
-    pull();
-    const t = setInterval(pull, REFRESH_MS);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
+  // The page is left open, so the warnings are re-read too (every third tick, ~30 s): a
+  // problem that appears or clears no longer needs a reload to show. A hidden tab doesn't
+  // poll, and coming back to it refreshes at once.
+  const alive = useRef(true);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
+  useVisiblePoll((tick) => {
+    api.dashboard().then((d) => alive.current && setData(d)).catch(() => {});
+    if (tick % 3 === 0) api.systemHealth().then((s) => alive.current && setSystem(s)).catch(() => {});
+  }, REFRESH_MS);
 
   const dbOK = health?.checks?.database === "ok";
   const streams = data?.streams?.streams ?? [];
@@ -191,15 +185,10 @@ export function Dashboard() {
           <Tile
             to="/downloads"
             label="Downloading"
-            value={data ? data.queue.downloading : "—"}
-            sub={
-              data
-                ? data.queue.down_speed > 0
-                  ? `↓ ${bytes(data.queue.down_speed)}/s · ${data.queue.seeding} seeding`
-                  : `${data.queue.seeding} seeding`
-                : ""
-            }
-            warn={!!data && data.queue.errored > 0}
+            value={data && !data.queue_note ? data.queue.downloading : "—"}
+            sub={data ? downloadingSub(data) : ""}
+            title={data?.queue_note}
+            warn={!!data && (!!data.queue_note || data.queue.errored > 0)}
           />
         </div>
 
@@ -417,22 +406,39 @@ function ActivityRow({ e }: { e: ActivityEvent }) {
   );
 }
 
+// downloadingSub is the Downloading tile's second line. An unreachable client used to read
+// "0 seeding", which looks like a quiet queue; errors are counted rather than only tinting
+// the tile; torrents waiting for peers are mentioned (they aren't counted as downloading).
+export function downloadingSub(d: Pick<DashboardData, "queue" | "queue_note">): string {
+  if (d.queue_note) return "Client unreachable";
+  const q = d.queue;
+  const parts: string[] = [];
+  if (q.errored > 0) parts.push(`${q.errored} errored`);
+  if (q.down_speed > 0) parts.push(`↓ ${bytes(q.down_speed)}/s`);
+  parts.push(`${q.seeding} seeding`);
+  if ((q.stalled ?? 0) > 0) parts.push(`${q.stalled} waiting for peers`);
+  return parts.join(" · ");
+}
+
 function Tile({
   to,
   label,
   value,
   sub,
   warn,
+  title,
 }: {
   to: string;
   label: string;
   value: number | string;
   sub: string;
   warn?: boolean;
+  title?: string;
 }) {
   return (
     <Link
       to={to}
+      title={title}
       className="rounded-[11px] p-3.5 no-underline"
       style={{ background: "var(--panel)", border: "1px solid var(--line)", color: "var(--ink)" }}
     >

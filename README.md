@@ -31,7 +31,7 @@ with qBittorrent and FlareSolverr already wired up.
 **Requests and people**
 
 - **Discover and requests** — browse and request movies, TV and books, Overseerr-style. Auto-approve per user, and import your existing Overseerr requests.
-- **Users** — admin, manager, requester and read-only roles, with optional Plex sign-in. Visitors from outside your network only see Discover.
+- **Users** — admin, manager, requester and read-only roles, with optional Plex sign-in. Requesters get Discover, Calendar, Books and Audiobooks; from outside your network, everything but Calendar.
 - **Books shelf** — requesters can download any ebook in the library.
 - **Calendar** — what's coming up.
 - **Notifications** — Apprise alerts for admins; an in-app inbox and web push for requesters.

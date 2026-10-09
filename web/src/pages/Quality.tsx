@@ -281,7 +281,7 @@ export function Quality() {
           {media === "book"
             ? "A book profile picks which formats to grab (EPUB, M4B…) and can boost releases by keyword — e.g. GraphicAudio +100 to prefer full-cast dramatizations. Higher score wins."
             : media === "music"
-              ? "A music profile is a ladder of audio qualities. It grabs the best tier available and keeps upgrading until it reaches the top of the ladder you set."
+              ? "A music profile is a ladder of audio qualities. Arrmada grabs the best tier available on your ladder. Albums you already have aren't replaced when a better tier turns up — there's no music upgrade sweep yet."
               : "A profile describes the file you want — codec, HDR, audio and a bitrate window. Arrmada grabs to it, ranks releases by it, and shows which files in your library don't fit."}
         </p>
 
@@ -1184,8 +1184,8 @@ function NumberField({ label, hint, value, onChange, allowNegative }: { label: s
 // Music builder
 // =====================================================================================
 
-// A music profile is a ladder: each tier on it is grabbed, the highest available wins, and
-// upgrading stops at the top tier you kept. Scores follow the ladder's rank, the same spacing
+// A music profile is a ladder: each tier on it can be grabbed and the highest available wins.
+// There is no music upgrade sweep yet, so the profile only decides the first grab. Scores follow the ladder's rank, the same spacing
 // the presets use, and anything off the ladder scores nothing — which the engine refuses.
 function MusicBuilder({ initial, ladder, presets, onCancel, onSaved }: { initial: StoredProfile; ladder: string[]; presets: MusicPreset[]; onCancel: () => void; onSaved: () => void }) {
   const start = useMemo(() => ({ ...initial, format_scores: initial.format_scores ?? {}, rejected: initial.rejected ?? [] }), [initial]);
@@ -1256,7 +1256,7 @@ function MusicBuilder({ initial, ladder, presets, onCancel, onSaved }: { initial
 
         <SectionLabel>Quality ladder</SectionLabel>
         <p className="-mt-1 mb-2 text-[10.5px] text-ink-faint">
-          Best first. Every tier you keep can be grabbed; the highest available wins, and upgrading stops at {top ? <b className="text-ink">{top}</b> : "the top tier you keep"}. Tiers you leave off are never grabbed.
+          Best first. Every tier you keep can be grabbed and the highest available wins. Tiers you leave off are never grabbed.
         </p>
         <div className="overflow-hidden rounded-xl" style={panelStyle}>
           {ladder.map((tier, i) => {
@@ -1277,12 +1277,10 @@ function MusicBuilder({ initial, ladder, presets, onCancel, onSaved }: { initial
         </div>
 
         <SectionLabel>Upgrades</SectionLabel>
-        <div className="flex items-center justify-between gap-3 rounded-xl p-4" style={panelStyle}>
-          <div className="min-w-0">
-            <div className="text-[12.5px] font-semibold">Automatically upgrade</div>
-            <div className="text-[10.5px] text-ink-faint">Replace an album when a higher tier on your ladder turns up. Stops at the top tier.</div>
-          </div>
-          <Switch on={sp.upgrades_enabled} onChange={(v) => patch({ upgrades_enabled: v })} label="Automatically upgrade" />
+        {/* No music upgrade sweep exists, so a switch here would promise something nothing does.
+            upgrades_enabled is left as saved, so the switch can come back with the sweep. */}
+        <div className="rounded-xl p-4 text-[11.5px] text-ink-faint" style={panelStyle}>
+          Automatic album upgrades aren't built yet. An album is grabbed once, at the best tier available on your ladder.
         </div>
 
         <SectionLabel>Reject</SectionLabel>

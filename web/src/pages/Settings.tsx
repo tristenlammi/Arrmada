@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { api, type APIKeyStatus, type AppSettings, type AuthUser, type DiskGuardStatus, type PlexBlock, type RecycleStats, type RecycleItem, type UserImpact } from "../lib/api";
 import { useMe, isAdmin } from "../lib/me";
 import { LibraryFolders } from "./Library";
 import { Backups } from "./settings/Backups";
+import { useTabParam } from "../lib/useTabParam";
+import { LINKS } from "../lib/links";
 
 // Sample release used for the live naming preview.
 const SAMPLE = {
@@ -52,16 +55,17 @@ const renderSeries = (format: string) => renderWith(format, SERIES_SAMPLE);
 type Tab = "media" | "library" | "system" | "users";
 
 export function Settings() {
-  const { user, setBooksEnabled, setMusicEnabled } = useMe();
+  const { user, booksEnabled, setBooksEnabled, setMusicEnabled } = useMe();
   const admin = isAdmin(user);
-  // ?tab=system opens straight onto a tab, so other pages (Convert's Problems) can link to a setting.
-  const [picked, setTab] = useState<Tab>(() => {
-    const t = new URLSearchParams(window.location.search).get("tab");
-    return t === "library" || t === "system" || t === "users" ? t : "media";
-  });
-  // The admin-only tabs fall back to Media for everyone else, so a link to one never opens
-  // onto an empty page.
-  const tab: Tab = !admin && (picked === "system" || picked === "users") ? "media" : picked;
+  const tabs: { key: Tab; label: string }[] = [
+    { key: "media", label: "Media" },
+    { key: "library", label: "Library" },
+    ...(admin ? [{ key: "system" as Tab, label: "System" }, { key: "users" as Tab, label: "Users" }] : []),
+  ];
+  // ?tab=system opens straight onto a tab, so copy elsewhere can link to a setting. Only the
+  // tabs this viewer can see are allowed, so a link to an admin-only tab opens Media instead
+  // of an empty page.
+  const [tab, setTab] = useTabParam(tabs.map((t) => t.key), "media");
   const [s, setS] = useState<AppSettings | null>(null);
   // What the server last told us. Save sends only the keys that differ from it, so a
   // value saved elsewhere on the page (the Discovery region) or by another tab isn't
@@ -73,6 +77,14 @@ export function Settings() {
   useEffect(() => {
     api.settings().then((x) => { setS(x); setLoaded(x); }).catch((e: Error) => setError(e.message));
   }, []);
+
+  // A link like /settings?tab=system#api-keys lands on that section. The sections only exist
+  // once the settings have loaded, so wait for them rather than scrolling to nothing.
+  const { hash } = useLocation();
+  const ready = !!s;
+  useEffect(() => {
+    if (ready && hash) document.getElementById(hash.slice(1))?.scrollIntoView({ block: "start" });
+  }, [ready, hash, tab]);
 
   const patch = (p: Partial<AppSettings>) => setS((x) => (x ? { ...x, ...p } : x));
 
@@ -125,12 +137,6 @@ export function Settings() {
     setS((x) => (x ? { ...x, tmdb_region: region } : x));
     setLoaded((x) => (x ? { ...x, tmdb_region: region } : x));
   };
-
-  const tabs: { key: Tab; label: string }[] = [
-    { key: "media", label: "Media" },
-    { key: "library", label: "Library" },
-    ...(admin ? [{ key: "system" as Tab, label: "System" }, { key: "users" as Tab, label: "Users" }] : []),
-  ];
 
   const SaveBar = () => (
     <div className="flex items-center gap-3">
@@ -198,7 +204,7 @@ export function Settings() {
           </div>
         ) : tab === "library" ? (
           <div className="flex flex-col gap-6">
-            <Section title="Media folders" subtitle="Point each library at a folder in your mounted media, then scan it for existing titles. (Has its own Save folders button below the list.)">
+            <Section id="media-folders" title="Media folders" subtitle="Where each library lives on disk.">
               <LibraryFolders />
             </Section>
             <Section title="Adding titles" subtitle="Defaults when adding movies and series.">
@@ -210,10 +216,10 @@ export function Settings() {
           admin && (
             <div className="flex flex-col gap-6">
               <Section title="Modules" subtitle="Turn modules on or off. Disabling hides a module from the navigation and from Discover — nothing is deleted, and it can be re-enabled anytime.">
-                <Toggle label="Books" hint="Open Library metadata, ebook & audiobook library, and the Books tab in Discover." checked={s.books_enabled} onChange={(v) => patch({ books_enabled: v })} />
+                <Toggle label="Books" hint="Ebook and audiobook library, and the Books tab in Discover. Metadata comes from Hardcover when a key is set, otherwise Open Library." checked={s.books_enabled} onChange={(v) => patch({ books_enabled: v })} />
                 <Toggle label="Music (preview)" hint="Artists and albums from MusicBrainz with automatic album downloads. Still being hardened. Turning it off hides Music and stops its searches and imports; finished downloads wait until it's back on. Nothing is deleted." checked={s.music_enabled} onChange={(v) => patch({ music_enabled: v })} />
               </Section>
-              <Section title="Plex sign-in" subtitle="Let your Plex Home members and shared users sign in with Plex — no accounts to hand out. They get a Requester account (Discover-only), and only people who actually have access to your Plex server are allowed in. Requires your Plex server to be connected in Insights.">
+              <Section title="Plex sign-in" subtitle={<>Let your Plex Home members and shared users sign in with Plex — no accounts to hand out. They get a Requester account ({requesterPages(booksEnabled)}), and only people with access to your Plex server get in. Needs your Plex server connected in <Link to={LINKS.plexConnection} style={{ color: "var(--accent)" }}>Insights → Settings</Link>.</>}>
                 <Toggle label="Allow Sign in with Plex" hint="Adds a 'Sign in with Plex' button to the login page." checked={s.plex_login_enabled} onChange={(v) => patch({ plex_login_enabled: v })} />
                 <Toggle label="Auto-approve their requests" hint="Plex sign-ins' requests download immediately instead of waiting for your approval." checked={s.plex_login_auto_approve} onChange={(v) => patch({ plex_login_auto_approve: v })} />
               </Section>
@@ -276,7 +282,8 @@ function UsersManager({ meId }: { meId?: number }) {
   const [removing, setRemoving] = useState<AuthUser | null>(null);
 
   return (
-    <Section title="Users" subtitle="Add people who can request media. Requesters see only the Discover page. Auto-approve lets a user's requests skip the queue and download immediately.">
+    <Section id="users" title="Users" subtitle="Add people who can use Arrmada. Auto-approve lets a user's requests download without waiting for you.">
+      <RoleLegend />
       <div className="flex flex-col gap-1.5">
         {users === null ? (
           <p className="text-[12px] text-ink-dim">Loading…</p>
@@ -324,6 +331,7 @@ function UsersManager({ meId }: { meId?: number }) {
           <input type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="password (8+ chars)" className="min-w-[160px] flex-1 rounded-lg px-3 py-2 text-[12.5px]" style={inputStyle} />
           <select value={role} onChange={(e) => setRole(e.target.value)} className="rounded-lg px-2.5 py-2 text-[12.5px]" style={inputStyle}>
             <option value="requester">Requester</option>
+            <option value="readonly">Read-only</option>
             <option value="manager">Manager</option>
             <option value="admin">Admin</option>
             <option value="readonly">Read-only</option>
@@ -342,6 +350,30 @@ function UsersManager({ meId }: { meId?: number }) {
       {editing && <EditUserModal user={editing} isMe={editing.id === meId} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
       {removing && <DeleteUserDialog user={removing} onClose={() => setRemoving(null)} onDeleted={() => { setRemoving(null); load(); }} />}
     </Section>
+  );
+}
+
+// requesterPages is what a non-staff account's top bar shows (see App.tsx's requester and
+// outside route trees): Calendar only at home, Books only while the module is on.
+function requesterPages(booksEnabled: boolean): string {
+  return ["Discover", "Calendar (at home only)", ...(booksEnabled ? ["Books"] : []), "Audiobooks"].join(", ");
+}
+
+// RoleLegend says what each role can do, from today's gates: admin-only routes are the
+// System and Users tabs, the audiobook server settings and the Overseerr/Tautulli imports.
+function RoleLegend() {
+  const { booksEnabled } = useMe();
+  const pages = requesterPages(booksEnabled);
+  const rows: [string, string][] = [
+    ["Requester", `${pages}, and can request.`],
+    ["Read-only", `the same pages, but can't request.`],
+    ["Manager", "the whole console except Settings → System and Users, the audiobook server settings and the Overseerr/Tautulli imports."],
+    ["Admin", "everything."],
+  ];
+  return (
+    <div className="-mt-2 flex flex-col gap-0.5 text-[11px] text-ink-faint">
+      {rows.map(([role, what]) => <div key={role}><b className="text-ink-dim">{role}</b> — {what}</div>)}
+    </div>
   );
 }
 
@@ -565,7 +597,7 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
   const digits = (v: string) => v.replace(/[^0-9]/g, "");
 
   return (
-    <Section title="Recycle bin" subtitle="Deleted & replaced files (movie/episode deletes and Convert originals) are moved here instead of being erased, so a mistake can be undone until the guard rails below purge it — the oldest files go first once the bin is over its size cap. Convert only starts a file whose original fits under the cap. To restore a converted film, delete the converted file first: the bin won't restore over it.">
+    <Section id="recycle-bin" title="Recycle bin" subtitle="Deleted & replaced files (movie/episode deletes and Convert originals) are moved here instead of being erased, so a mistake can be undone until the guard rails below purge it — the oldest files go first once the bin is over its size cap. Convert only starts a file whose original fits under the cap. To restore a converted film, delete the converted file first: the bin won't restore over it.">
       {stats && !stats.enabled ? (
         <p className="text-[12px] text-ink-dim">Recycling is turned off (<code>ARRMADA_RECYCLE_DIR=off</code>) — deleted files are erased immediately, and Convert deletes each original once its conversion is verified, with no undo.</p>
       ) : (
@@ -671,6 +703,7 @@ const KEY_CLEAR_EFFECT: Record<string, string> = {
 };
 
 function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => void }) {
+  const { setMetadataReady } = useMe();
   const [keys, setKeys] = useState<APIKeyStatus[] | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -721,6 +754,8 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
     try {
       const next = await api.setAPIKey(id, value);
       setKeys(next);
+      // The key works the moment it's saved, so let Movies and Discover know without a reload.
+      if (id === "tmdb") setMetadataReady(!!next.find((k) => k.id === "tmdb")?.configured);
       setDrafts((d) => { const n = { ...d }; delete n[id]; return n; }); // clear the field on success
     } catch (e) {
       setErr((e as Error).message);
@@ -746,7 +781,7 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
   };
 
   return (
-    <Section title="API keys" subtitle="External services Arrmada can use. A key entered here takes effect immediately — no restart — and overrides any set at install. The saved value is never shown back to you; only whether it's set.">
+    <Section id="api-keys" title="API keys" subtitle="External services Arrmada can use. A key entered here takes effect immediately — no restart — and overrides any set at install. The saved value is never shown back to you; only whether it's set.">
       {err && <div className="rounded-lg p-2.5 text-[11.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{err}</div>}
       {keys === null ? (
         <p className="text-[11.5px] text-ink-dim">Loading…</p>
@@ -874,9 +909,11 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
   );
 }
 
-function Section({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
+// id makes a section a deep-link target (LINKS.apiKeys and friends); scroll-mt keeps the
+// sticky page header from covering its title when a link scrolls to it.
+function Section({ id, title, subtitle, children }: { id?: string; title: string; subtitle: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="rounded-xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+    <div id={id} className="scroll-mt-20 rounded-xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
       <h2 className="m-0 text-[14px] font-bold">{title}</h2>
       <p className="mb-4 mt-0.5 text-[11.5px] text-ink-faint">{subtitle}</p>
       <div className="flex flex-col gap-4">{children}</div>
@@ -918,7 +955,8 @@ function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<App
   // alternate passes forever, so the server rejects them — say so before saving.
   const bad = !Number.isNaN(pause) && !Number.isNaN(resume) && resume >= pause;
 
-  // The guard measures ARRMADA_DOWNLOADS_DIR and nothing else. Whether that path is
+  // The guard measures the downloads folder (lib_downloads_dir, picked in Settings → Library;
+  // ARRMADA_DOWNLOADS_DIR is only the fallback) and nothing else. Whether that path is
   // the torrent drive is not knowable from in here, so show the resolved path and the
   // reading taken from it and let the user confirm it against their own setup.
   const [status, setStatus] = useState<DiskGuardStatus | null>(null);
@@ -928,16 +966,19 @@ function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<App
 
   return (
     <Section
+      id="disk-guard"
       title="Download disk guard"
       subtitle="Pause downloads before the downloads volume fills up. A full disk errors every torrent at once, and on a shared cache pool it takes everything else on that pool with it. Seeding torrents are never paused — they aren't writing anything, and pausing them would put your seed goals at risk."
     >
       <Note tone="warn">
         <b>This only works if your torrents live on their own drive.</b> The guard measures
-        one folder — <code>ARRMADA_DOWNLOADS_DIR</code> in your <code>.env</code> — and nothing
-        else. If that points at a folder on your main array rather than at the cache/torrent
-        drive, the percentage here is measuring the array, and it will either never trigger or
-        pause your queue for a reason that has nothing to do with downloads. Set it in
-        <code>.env</code> and re-run <code>./update.sh</code> before relying on this.
+        one folder: your Downloads folder, set in{" "}
+        <Link to={LINKS.libraryFolders} style={{ color: "var(--accent)" }}>Settings → Library</Link>
+        {status?.path ? <> (currently <code>{status.path}</code>)</> : null}. If that folder is on
+        your main array rather than the torrent or cache drive, the percentage measures the
+        array, and it will either never trigger or pause your queue for a reason that has
+        nothing to do with downloads — choose the right folder there. A changed folder is
+        used after Arrmada restarts.
       </Note>
 
       {status && (
@@ -1089,7 +1130,7 @@ function OverseerrImport() {
     setMsg(null);
     try {
       const r = await api.importOverseerr(url.trim(), key.trim());
-      setMsg({ ok: true, text: `Found ${r.found} request${r.found === 1 ? "" : "s"} — importing in the background. Approved titles are added to your library and searched; they'll appear on the Requests page as they process.` });
+      setMsg({ ok: true, text: `Found ${r.found} request${r.found === 1 ? "" : "s"} — importing in the background. Approved titles are added to your library and searched; they'll show in the requests row on Discover as they process.` });
     } catch (e) {
       setMsg({ ok: false, text: (e as Error).message });
     } finally {

@@ -21,11 +21,16 @@ func (a *api) handleConvertHardware(w http.ResponseWriter, r *http.Request) {
 	if devices == nil {
 		devices = []convert.RenderDevice{}
 	}
+	// The biggest scratch need among the next files, so the indicator can warn that the
+	// next big remux won't fit rather than turning green above a fixed 20 GB.
+	need, needTitle := a.deps.Convert.ScratchNeed(ctx)
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"encoders": encoders, "using": using,
 		"reclaimed_bytes":    a.deps.Convert.Reclaimed(ctx),
 		"scratch_dir":        scratchDir,
 		"scratch_free_bytes": scratchFree,
+		"scratch_need_bytes": need,
+		"scratch_need_title": needTitle,
 		"render_devices":     devices,
 		"vaapi_device":       vaapiDevice,
 	})

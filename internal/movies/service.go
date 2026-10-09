@@ -256,7 +256,7 @@ type ScanResult struct {
 func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanResult, error) {
 	var res ScanResult
 	if !s.meta.Available() {
-		return res, fmt.Errorf("movie metadata isn't configured — add a TMDB key in Settings → API keys")
+		return res, fmt.Errorf("movie metadata isn't configured — add a TMDB key in Settings → System → API keys")
 	}
 	root := rootOverride
 	if root == "" {

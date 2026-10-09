@@ -38,7 +38,7 @@ func (a *api) handleLookupSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.deps.Series.MetadataAvailable() {
-		a.writeError(w, http.StatusBadRequest, "metadata isn't configured — add a TMDB key in Settings → API keys")
+		a.writeError(w, http.StatusBadRequest, "metadata isn't configured — add a TMDB key in Settings → System → API keys")
 		return
 	}
 	results, err := a.deps.Series.Lookup(r.Context(), q)

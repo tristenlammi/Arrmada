@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { useTabParam } from "../lib/useTabParam";
+import { LINKS } from "../lib/links";
 import { RemoveDownloadDialog, removedMessage } from "../components/RemoveDownloadDialog";
 import { api, type ActivityDownload, type ClientSettings, type DiskGuardHold, type SearchingItem } from "../lib/api";
 import { useMe } from "../lib/me";
@@ -67,6 +69,7 @@ function phaseLabel(it: ActivityDownload): { text: string; tone: string; tip?: s
 
 type SortKey = "name" | "progress" | "speed" | "size" | "ratio" | "seedtime";
 type Tab = "downloads" | "seeding" | "searching" | "upcoming";
+const TAB_KEYS: readonly Tab[] = ["downloads", "seeding", "searching", "upcoming"];
 
 function ProfileChip({ profile }: { profile: string }) {
   const na = profile === "n/a";
@@ -79,6 +82,7 @@ export function Downloads() {
   const [downloads, setDownloads] = useState<ActivityDownload[]>([]);
   const [totals, setTotals] = useState<{ down_speed: number; up_speed: number; active: number }>({ down_speed: 0, up_speed: 0, active: 0 });
   const [freeGb, setFreeGb] = useState<number | null>(null);
+  const [clients, setClients] = useState<number | null>(null); // configured download clients; null = unknown
   const [guard, setGuard] = useState<DiskGuardHold | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 4500); };
@@ -91,7 +95,7 @@ export function Downloads() {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [clientId, setClientId] = useState<number | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [tab, setTab] = useState<Tab>("downloads");
+  const [tab, setTab] = useTabParam(TAB_KEYS, "downloads");
   const [seedSort, setSeedSort] = useState<SortKey>("ratio");
 
   useEffect(() => {
@@ -112,7 +116,8 @@ export function Downloads() {
         setUpcoming(a.upcoming ?? []);
         setDownloads(a.downloads ?? []);
         if (a.totals) setTotals(a.totals);
-        if (typeof a.free_gb === "number") setFreeGb(a.free_gb);
+        setFreeGb(typeof a.free_gb === "number" ? a.free_gb : null); // absent = couldn't be measured
+        if (typeof a.clients === "number") setClients(a.clients);
         setGuard(a.disk_guard ?? null);
         setReconnecting(false);
         setLoaded(true);
@@ -206,6 +211,13 @@ export function Downloads() {
         </div>
 
         {showSettings && clientId != null && <SettingsPanel clientId={clientId} onClose={() => setShowSettings(false)} />}
+
+        {clients === 0 && (
+          <div className="mb-4 rounded-lg p-3.5 text-[12.5px]" style={{ border: "1px solid var(--avoid)", background: "var(--avoid-soft)", color: "var(--avoid)" }}>
+            No download client is set up, so Arrmada can't grab anything. Add one on the{" "}
+            <Link to={LINKS.downloadClients} className="font-semibold underline" style={{ color: "inherit" }}>Download clients</Link> page.
+          </div>
+        )}
 
         {/* Tabs */}
         <div className="mb-4 flex flex-wrap gap-1 border-b" style={{ borderColor: "var(--line)" }}>
