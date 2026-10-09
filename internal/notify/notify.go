@@ -9,6 +9,7 @@ package notify
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -35,6 +36,39 @@ type Connection struct {
 	URL     string   `json:"-"`
 	Events  []string `json:"events"` // catalog keys, sorted
 	Enabled bool     `json:"enabled"`
+	// Config holds what a non-Apprise kind needs: {"user_id": N} for KindWebPush.
+	Config json.RawMessage `json:"config"`
+}
+
+// KindWebPush is a connection that delivers as Web Push to one user's subscribed
+// browsers and phones ("This device") instead of through an Apprise URL.
+const KindWebPush = "webpush"
+
+// PushConfig is a KindWebPush connection's Config.
+type PushConfig struct {
+	UserID int64 `json:"user_id"`
+}
+
+// PushUserID is the user a KindWebPush connection delivers to (0 if none).
+func (c Connection) PushUserID() int64 {
+	var pc PushConfig
+	if len(c.Config) > 0 {
+		_ = json.Unmarshal(c.Config, &pc)
+	}
+	return pc.UserID
+}
+
+// PushConfigFor is the Config of a push connection for userID.
+func PushConfigFor(userID int64) json.RawMessage {
+	b, _ := json.Marshal(PushConfig{UserID: userID})
+	return b
+}
+
+func configOrEmpty(c json.RawMessage) string {
+	if len(c) == 0 {
+		return "{}"
+	}
+	return string(c)
 }
 
 // Subscribes reports whether the connection wants an event.
@@ -56,6 +90,11 @@ type Service struct {
 	// transport sends one message to one Apprise URL. It's the apprise CLI; tests swap
 	// it for a recorder (SetTransport).
 	transport Transport
+
+	// pusher delivers KindWebPush connections; pushAllowed says whether the connection's
+	// user may still receive admin alerts (still staff, not disabled). Both set by SetPusher.
+	pusher      Pusher
+	pushAllowed func(ctx context.Context, userID int64) bool
 
 	// The delivery queue (queue.go): wake nudges the worker, now and poll are the clock
 	// and the idle interval (tests shorten them).
@@ -88,22 +127,36 @@ func NewService(db *sql.DB, bus *eventbus.Bus, log *slog.Logger) *Service {
 // SetTransport replaces how messages leave the server. For tests.
 func (s *Service) SetTransport(t Transport) { s.transport = t }
 
+// Pusher sends Web Push to every device a user subscribed, saying how many took it.
+// Satisfied by *push.Service.
+type Pusher interface {
+	SendToUserResult(ctx context.Context, userID int64, title, body, url string) (int, error)
+}
+
+// SetPusher wires Web Push delivery. allowed is checked before every push: a push
+// connection belongs to the admin who made it, and stops if they're no longer staff.
+func (s *Service) SetPusher(p Pusher, allowed func(ctx context.Context, userID int64) bool) {
+	s.pusher, s.pushAllowed = p, allowed
+}
+
 // AppriseBin returns the path to the apprise binary ("" if not installed) — used by other
 // modules (e.g. per-user request-ready pushes) to send directly.
 func (s *Service) AppriseBin() string { return s.apprise }
 
-const cols = `id, name, kind, url, enabled`
+const cols = `id, name, kind, url, enabled, config`
 
 func scanConn(row interface{ Scan(...any) error }) (Connection, error) {
 	var (
-		c     Connection
-		enabl int
+		c      Connection
+		enabl  int
+		config string
 	)
-	if err := row.Scan(&c.ID, &c.Name, &c.Kind, &c.URL, &enabl); err != nil {
+	if err := row.Scan(&c.ID, &c.Name, &c.Kind, &c.URL, &enabl, &config); err != nil {
 		return Connection{}, err
 	}
 	c.Enabled = enabl != 0
 	c.Events = []string{}
+	c.Config = json.RawMessage(config)
 	return c, nil
 }
 
@@ -186,8 +239,8 @@ func (s *Service) Create(ctx context.Context, c Connection) (Connection, error) 
 	var id int64
 	err := store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
-			`INSERT INTO notifications (name, kind, url, on_grab, on_import, on_stream, on_buffering, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			c.Name, c.Kind, c.URL, grab, imp, stream, buf, b2i(c.Enabled))
+			`INSERT INTO notifications (name, kind, url, on_grab, on_import, on_stream, on_buffering, enabled, config) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			c.Name, c.Kind, c.URL, grab, imp, stream, buf, b2i(c.Enabled), configOrEmpty(c.Config))
 		if err != nil {
 			return err
 		}
@@ -207,8 +260,8 @@ func (s *Service) Update(ctx context.Context, id int64, c Connection) error {
 	grab, imp, stream, buf := legacyFlags(c)
 	return store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
 		res, err := tx.ExecContext(ctx,
-			`UPDATE notifications SET name = ?, kind = ?, url = ?, on_grab = ?, on_import = ?, on_stream = ?, on_buffering = ?, enabled = ? WHERE id = ?`,
-			c.Name, c.Kind, c.URL, grab, imp, stream, buf, b2i(c.Enabled), id)
+			`UPDATE notifications SET name = ?, kind = ?, url = ?, on_grab = ?, on_import = ?, on_stream = ?, on_buffering = ?, enabled = ?, config = ? WHERE id = ?`,
+			c.Name, c.Kind, c.URL, grab, imp, stream, buf, b2i(c.Enabled), configOrEmpty(c.Config), id)
 		if err != nil {
 			return err
 		}
@@ -312,6 +365,24 @@ func (s *Service) EmitOnce(ctx context.Context, key, dedupe string, data map[str
 	return s.DispatchOnce(ctx, key, dedupe, m)
 }
 
+// deliverPush sends a push connection's message to its user's devices; a tap opens
+// the message's link (the dashboard when it has none).
+func (s *Service) deliverPush(ctx context.Context, c Connection, m Message) error {
+	uid := c.PushUserID()
+	if s.pusher == nil {
+		return errors.New("push isn't available")
+	}
+	if uid <= 0 || s.pushAllowed == nil || !s.pushAllowed(ctx, uid) {
+		return errors.New("this push connection's account can no longer receive alerts")
+	}
+	link := m.Link
+	if link == "" {
+		link = "/"
+	}
+	_, err := s.pusher.SendToUserResult(ctx, uid, m.Title, m.Body, link)
+	return err
+}
+
 func plural(n int) string {
 	if n == 1 {
 		return ""
@@ -319,8 +390,12 @@ func plural(n int) string {
 	return "s"
 }
 
-// deliver sends a notification to one connection. The error never quotes the URL.
+// deliver sends a notification to one connection: Web Push for a push connection,
+// Apprise for everything else. The error never quotes the URL.
 func (s *Service) deliver(ctx context.Context, c Connection, m Message) error {
+	if c.Kind == KindWebPush {
+		return s.deliverPush(ctx, c, m)
+	}
 	if c.URL == "" {
 		return fmt.Errorf("no Apprise URL configured")
 	}

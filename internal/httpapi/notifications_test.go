@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -225,6 +226,41 @@ func TestMyAppriseKeepsRequestersOffInternalHosts(t *testing.T) {
 	}
 	if !strings.Contains(all, `"set":true`) {
 		t.Errorf("answers should say a URL is set:\n%s", all)
+	}
+}
+
+// A push connection always targets the admin who made it, whatever the body says, takes
+// no URL, and can't be turned into (or out of) an Apprise connection.
+func TestCreatePushConnectionTargetsSessionUser(t *testing.T) {
+	s, _ := newNotifyServer(t)
+	admin, cookie := s.user(t, "admin@example.com", auth.RoleAdmin)
+	other, _ := s.user(t, "other@example.com", auth.RoleAdmin)
+
+	body := `{"name":"My phone","kind":"webpush","enabled":true,"config":{"user_id":` + strconv.FormatInt(other.ID, 10) + `}}`
+	if rec := s.doJSON("POST", "/api/v1/notifications", cookie, body); rec.Code != http.StatusCreated {
+		t.Fatalf("create: HTTP %d %s", rec.Code, rec.Body)
+	}
+	c, err := s.deps.Notify.Get(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Kind != notify.KindWebPush || c.PushUserID() != admin.ID || c.URL != "" {
+		t.Fatalf("stored %+v (user %d), want a push connection for the admin %d", c, c.PushUserID(), admin.ID)
+	}
+	for _, tc := range []struct{ method, path, body string }{
+		{"POST", "/api/v1/notifications", `{"name":"x","kind":"webpush","url":"discord://1/2"}`},
+		{"PUT", "/api/v1/notifications/1", `{"name":"x","kind":"webpush","url":"discord://1/2"}`},
+		{"PUT", "/api/v1/notifications/1", `{"name":"x","kind":"","url":"discord://1/2"}`},
+	} {
+		if rec := s.doJSON(tc.method, tc.path, cookie, tc.body); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s %s %s: HTTP %d, want 400", tc.method, tc.path, tc.body, rec.Code)
+		}
+	}
+	if rec := s.doJSON("PUT", "/api/v1/notifications/1", cookie, `{"name":"Phone","kind":"webpush","enabled":true,"events":["release.grabbed"]}`); rec.Code != http.StatusOK {
+		t.Fatalf("rename: HTTP %d %s", rec.Code, rec.Body)
+	}
+	if c, _ = s.deps.Notify.Get(context.Background(), 1); c.Name != "Phone" || c.PushUserID() != admin.ID {
+		t.Errorf("after rename: %+v", c)
 	}
 }
 

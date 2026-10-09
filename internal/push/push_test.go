@@ -2,6 +2,7 @@ package push
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -70,5 +71,14 @@ func TestSubscribeSemantics(t *testing.T) {
 	}
 	if s.HasSubscription(ctx, 2, "https://push.example/abc") {
 		t.Fatal("owner unsubscribe didn't remove the row")
+	}
+}
+
+// A user with no device subscribed is told so, rather than "sent to nobody" passing as
+// a success in an alert's delivery log.
+func TestSendToUserResultNoDevices(t *testing.T) {
+	s := newTestService(t)
+	if n, err := s.SendToUserResult(context.Background(), 1, "t", "b", "/"); n != 0 || !errors.Is(err, ErrNoDevices) {
+		t.Fatalf("got %d, %v; want ErrNoDevices", n, err)
 	}
 }

@@ -3,6 +3,7 @@ import * as discover from "./discover";
 import * as media from "./media";
 import * as mod from "./modules";
 import * as sys from "./system";
+import * as alerts from "./alerts";
 import { NOW } from "./clock";
 
 export interface MockRoute {
@@ -100,5 +101,11 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/logs", sys.logs),
     get("/api/v1/system/tasks", sys.tasks),
     get("/api/v1/jobs", sys.jobs),
+
+    // Settings → Alerts
+    get("/api/v1/notifications", alerts.connections),
+    get("/api/v1/notifications/catalog", alerts.catalog),
+    get(/^\/api\/v1\/notifications\/\d+\/deliveries$/, alerts.deliveries),
+    { method: "POST", path: /^\/api\/v1\/notifications\/\d+\/test$/, body: { ok: true } },
   ];
 }

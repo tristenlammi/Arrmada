@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -285,6 +286,61 @@ func TestTestRecordsDelivery(t *testing.T) {
 	// An unsaved connection's Test has nowhere to be recorded.
 	if err := s.Test(ctx, Connection{URL: "ntfy://b"}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+type fakePusher struct {
+	mu   sync.Mutex
+	sent []string
+	err  error
+}
+
+func (f *fakePusher) SendToUserResult(_ context.Context, uid int64, title, body, url string) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sent = append(f.sent, fmt.Sprintf("%d|%s|%s|%s", uid, title, body, url))
+	if f.err != nil {
+		return 0, f.err
+	}
+	return 1, nil
+}
+
+// A push connection's alerts go to its user's devices through the Pusher, with the
+// message's link — never through apprise — and stop once the user isn't staff.
+func TestDeliverWebPushRoutesToPusher(t *testing.T) {
+	s, rec, _ := newTestService(t)
+	ctx := context.Background()
+	p := &fakePusher{}
+	staff := map[int64]bool{7: true}
+	s.SetPusher(p, func(_ context.Context, uid int64) bool { return staff[uid] })
+	mustCreate(t, s, Connection{Name: "My phone", Kind: KindWebPush, Config: PushConfigFor(7), Events: sub("release.grabbed", "plex.buffering"), Enabled: true})
+
+	if _, err := s.Dispatch(ctx, "release.grabbed", Message{Title: "Grabbed", Body: "🎬 Dune", Link: "/downloads"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Dispatch(ctx, "plex.buffering", Message{Title: "Buffering", Body: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	drainNow(t, s)
+	drainNow(t, s) // one at a time per connection
+	if got := fmt.Sprint(p.sent); got != "[7|Grabbed|🎬 Dune|/downloads 7|Buffering|x|/]" {
+		t.Fatalf("pushes = %s", got)
+	}
+	if rec.count() != 0 {
+		t.Fatalf("apprise was called: %v", rec.got())
+	}
+
+	// Demoted: the next alert fails with a reason instead of reaching their phone.
+	staff[7] = false
+	if _, err := s.Dispatch(ctx, "release.grabbed", Message{Title: "Grabbed", Body: "again"}); err != nil {
+		t.Fatal(err)
+	}
+	drainNow(t, s)
+	if len(p.sent) != 2 {
+		t.Fatalf("pushed to a user who isn't staff: %v", p.sent)
+	}
+	if _, attempts, _, lastErr := row(t, s, 3); attempts != 1 || lastErr == "" {
+		t.Errorf("row 3: attempts %d, error %q", attempts, lastErr)
 	}
 }
 

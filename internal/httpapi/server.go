@@ -227,6 +227,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/me/push/key", a.signedIn(a.handlePushKey).ext())
 	mux.HandleFunc("POST /api/v1/me/push/subscribe", a.signedIn(a.handlePushSubscribe).ext())
 	mux.HandleFunc("POST /api/v1/me/push/unsubscribe", a.signedIn(a.handlePushUnsubscribe).ext())
+	mux.HandleFunc("POST /api/v1/me/push/status", a.signedIn(a.handlePushStatus).ext())
 	mux.HandleFunc("GET /api/v1/me/apprise", a.signedIn(a.handleGetMyApprise).ext())
 	mux.HandleFunc("GET /api/v1/me/books", a.signedIn(a.handleMyBooks).ext())
 	mux.HandleFunc("PUT /api/v1/me/apprise", a.signedIn(a.handleSetMyApprise).ext())

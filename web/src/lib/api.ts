@@ -536,6 +536,8 @@ export interface NotificationConn {
   /** Catalog keys this connection subscribes to (GET /notifications/catalog). */
   events: string[];
   enabled: boolean;
+  /** For kind "webpush" ("This device"): the account whose devices get the pushes. */
+  config?: { user_id?: number };
   url_hint?: string;
   url_set?: boolean;
   /** A URL saved before validation existed that no longer passes it (it still sends). */
@@ -1990,6 +1992,9 @@ export const api = {
     req<{ subscribed: boolean }>("/api/v1/me/push/subscribe", { method: "POST", body: JSON.stringify(sub) }),
   pushUnsubscribe: (endpoint: string) =>
     req<{ subscribed: boolean }>("/api/v1/me/push/unsubscribe", { method: "POST", body: JSON.stringify({ endpoint }) }),
+  /** Whether this browser's endpoint is registered to the signed-in user. */
+  pushStatus: (endpoint: string) =>
+    req<{ subscribed: boolean }>("/api/v1/me/push/status", { method: "POST", body: JSON.stringify({ endpoint }) }),
   markAllNotificationsRead: () => req<void>("/api/v1/me/notifications/read-all", { method: "POST" }),
   calendar: (start: string, end: string) => req<{ items: CalendarItem[]; start: string; end: string }>(`/api/v1/calendar?start=${start}&end=${end}`),
   // The saved URL never comes back: a hint stands in, and blocked_reason says why pushes

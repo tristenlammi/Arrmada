@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type MyApprise, type UserNotification } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
+import { pushSupported, subscribeThisDevice, thisDeviceEndpoint, unsubscribeThisDevice } from "../lib/webpush";
 
 // Pull the media title out of a notification: bodies read like “Dune” is ready to
 // watch — the quoted part is the title. Falls back to the whole body if nothing is
@@ -115,22 +116,11 @@ export function NotificationBell() {
   );
 }
 
-// urlBase64ToUint8Array converts the VAPID public key into the form
-// PushManager.subscribe expects.
-function urlBase64ToUint8Array(base64: string): Uint8Array {
-  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
-  const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
-  const raw = window.atob(b64);
-  const out = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
-  return out;
-}
-
 // PushSetting is the per-device Web Push toggle: real notifications on this
 // phone/desktop when a request is ready — no extra app. iOS needs the PWA added
 // to the Home Screen (16.4+); Android/desktop work in the browser directly.
 function PushSetting() {
-  const supported = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+  const supported = pushSupported();
   const [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -144,9 +134,8 @@ function PushSetting() {
         const key = await api.pushKey();
         if (!alive || !key) return;
         setAvailable(true);
-        const reg = await navigator.serviceWorker.ready;
-        const sub = await reg.pushManager.getSubscription();
-        if (alive) setEnabled(!!sub && Notification.permission === "granted");
+        const endpoint = await thisDeviceEndpoint();
+        if (alive) setEnabled(!!endpoint);
       } catch { /* push stays hidden */ }
     })();
     return () => { alive = false; };
@@ -156,28 +145,12 @@ function PushSetting() {
     if (busy) return;
     setBusy(true); setError(null);
     try {
-      const reg = await navigator.serviceWorker.ready;
       if (enabled) {
-        const sub = await reg.pushManager.getSubscription();
-        if (sub) {
-          await api.pushUnsubscribe(sub.endpoint).catch(() => {});
-          await sub.unsubscribe();
-        }
+        await unsubscribeThisDevice();
         setEnabled(false);
       } else {
         // Permission must be requested from this user gesture (iOS requires it).
-        const perm = await Notification.requestPermission();
-        if (perm !== "granted") {
-          setError(perm === "denied" ? "Notifications are blocked for this site in your browser settings." : "Permission not granted.");
-          return;
-        }
-        const key = await api.pushKey();
-        const sub = await reg.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: urlBase64ToUint8Array(key) as BufferSource,
-        });
-        const json = sub.toJSON();
-        await api.pushSubscribe({ endpoint: sub.endpoint, keys: { p256dh: json.keys?.p256dh ?? "", auth: json.keys?.auth ?? "" } });
+        await subscribeThisDevice();
         setEnabled(true);
       }
     } catch (e) {

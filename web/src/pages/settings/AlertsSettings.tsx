@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Section, input, inputStyle } from "../../components/settings/ui";
 import { api, type AlertCatalog, type AlertEvent, type NotificationConn, type NotificationInput } from "../../lib/api";
 import { ago, until } from "../../lib/taskTime";
 import { isAdmin, useMe } from "../../lib/me";
 import { useQuery, invalidate } from "../../lib/query";
+import { pushSupported, subscribeThisDevice, thisDeviceEndpoint } from "../../lib/webpush";
 import { Button, useConfirm, useToast } from "../../ui";
 
 // Settings → Alerts: where the owner's own alerts go (a Discord channel, a phone, an
@@ -13,6 +14,11 @@ import { Button, useConfirm, useToast } from "../../ui";
 // A saved link is never sent back to the browser (it usually holds a token or a
 // password): the field shows a hint, and leaving it blank keeps what's saved, like the
 // Plex token. Managers see the list; only admins change it.
+//
+// "This device" is the other kind of connection: Web Push to the admin's own browsers
+// and phones, no outside service needed.
+
+const PUSH_NAME = "This device";
 
 export function AlertsSettings() {
   const { user, booksEnabled, musicEnabled } = useMe();
@@ -30,6 +36,25 @@ export function AlertsSettings() {
   };
   const blank = (): NotificationConn => ({ name: "", kind: "", enabled: true, events: (catalog?.events ?? []).filter((e) => e.default_on).map((e) => e.key) });
   const failed = error ?? catalogError;
+  const toast = useToast();
+  const [pushBusy, setPushBusy] = useState(false);
+  const myPush = conns?.find((c) => c.kind === "webpush" && c.config?.user_id === user?.id);
+
+  // Turn on push here, then make the connection if this admin hasn't one yet (one
+  // connection reaches every device they've turned push on for).
+  const addPush = async () => {
+    setPushBusy(true);
+    try {
+      await subscribeThisDevice();
+      if (!myPush) {
+        await api.createNotification({ name: PUSH_NAME, kind: "webpush", enabled: true, events: blank().events });
+        toast("Push alerts are on for this device", { tone: "good" });
+      } else {
+        toast(`This device now gets “${myPush.name}” alerts`, { tone: "good" });
+      }
+      reload();
+    } catch (e) { toast((e as Error).message, { tone: "error" }); } finally { setPushBusy(false); }
+  };
 
   return (
     <div className="flex flex-col gap-6">
@@ -46,8 +71,12 @@ export function AlertsSettings() {
             {admin && (adding ? (
               <ConnCard conn={blank()} catalog={shown} isNew onChange={() => { setAdding(false); reload(); }} onCancel={() => setAdding(false)} />
             ) : (
-              <Button className="self-start" onClick={() => setAdding(true)}>+ Add connection</Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button onClick={() => setAdding(true)}>+ Add connection</Button>
+                {pushSupported() && <Button onClick={addPush} busy={pushBusy} busyLabel="Turning on…">+ This device (push)</Button>}
+              </div>
             ))}
+            {admin && <p className="text-[10.5px] text-ink-faint">On iPhone, push works only when Arrmada is added to the Home Screen.</p>}
           </>
         )}
       </Section>
@@ -109,7 +138,9 @@ function ConnCard({ conn, catalog, isNew, readOnly, onChange, onCancel }: { conn
           <input type="checkbox" checked={c.enabled} disabled={readOnly} onChange={(e) => set({ enabled: e.target.checked })} /> Enabled
         </label>
       </div>
-      {readOnly ? (
+      {conn.kind === "webpush" ? (
+        <PushDevices readOnly={readOnly} onChange={onChange} />
+      ) : readOnly ? (
         <div className={`mt-2 ${input}`} style={inputStyle}>{conn.url_hint || "—"}</div>
       ) : (
         <>
@@ -123,7 +154,7 @@ function ConnCard({ conn, catalog, isNew, readOnly, onChange, onCancel }: { conn
         <p className="mt-1 text-[11px]" style={{ color: "var(--avoid)" }}>The saved link no longer passes the check ({conn.invalid_reason}). It still sends; enter a corrected link to edit this connection’s link.</p>
       )}
       <EventPicker catalog={catalog} value={c.events} readOnly={readOnly} onChange={(events) => set({ events })} />
-      {!isNew && c.id && <DeliveryLog id={c.id} catalog={catalog} />}
+      {!isNew && c.id ? <DeliveryLog id={c.id} catalog={catalog} /> : null}
       {!readOnly && (
         <div className="mt-3 flex items-center gap-2">
           <Button variant="primary" size="sm" onClick={save} busy={busy === "save"} busyLabel="Saving…" disabled={busy !== null}>{isNew ? "Add" : "Save"}</Button>
@@ -132,6 +163,41 @@ function ConnCard({ conn, catalog, isNew, readOnly, onChange, onCancel }: { conn
           {isNew ? <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button> : <Button variant="ghost" size="sm" onClick={del} style={{ color: "var(--reject)" }}>Delete</Button>}
         </div>
       )}
+    </div>
+  );
+}
+
+// PushDevices is a push connection's in place of a link: it reaches every device its
+// admin turned push on for, and says whether this browser is one of them.
+function PushDevices({ readOnly, onChange }: { readOnly?: boolean; onChange: () => void }) {
+  const [here, setHere] = useState<boolean | null>(null);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const endpoint = await thisDeviceEndpoint();
+        const on = endpoint ? (await api.pushStatus(endpoint)).subscribed : false;
+        if (alive) setHere(on);
+      } catch { if (alive) setHere(false); }
+    })();
+    return () => { alive = false; };
+  }, []);
+  const turnOn = async () => {
+    setBusy(true);
+    try { await subscribeThisDevice(); setHere(true); onChange(); } catch (e) { toast((e as Error).message, { tone: "error" }); } finally { setBusy(false); }
+  };
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11.5px] text-ink-dim">
+      <span>Web Push to every device the account turned push on for.</span>
+      {pushSupported() && here === false && (
+        <>
+          <span style={{ color: "var(--avoid)" }}>No devices subscribed on this browser.</span>
+          {!readOnly && <Button size="sm" onClick={turnOn} busy={busy} busyLabel="Turning on…">Turn on here</Button>}
+        </>
+      )}
+      {here === true && <span style={{ color: "var(--good)" }}>This device gets them.</span>}
     </div>
   );
 }

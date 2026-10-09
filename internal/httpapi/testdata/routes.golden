@@ -251,6 +251,7 @@ POST /api/v1/me/audio/accept user ext
 POST /api/v1/me/audio/restore user ext
 POST /api/v1/me/notifications/read-all user ext
 POST /api/v1/me/notifications/{id}/read user ext
+POST /api/v1/me/push/status user ext
 POST /api/v1/me/push/subscribe user ext
 POST /api/v1/me/push/unsubscribe user ext
 POST /api/v1/movies staff -

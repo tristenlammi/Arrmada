@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -28,7 +29,7 @@ type notificationView struct {
 
 func viewOf(c notify.Connection) notificationView {
 	v := notificationView{Connection: c, URLHint: notify.URLHint(c.URL), URLSet: c.URL != ""}
-	if c.URL != "" {
+	if c.URL != "" && c.Kind != notify.KindWebPush {
 		if err := notify.ValidateAppriseURL(c.URL); err != nil {
 			v.InvalidReason = err.Error()
 		}
@@ -45,6 +46,9 @@ type notificationInput struct {
 	URL     *string   `json:"url"`
 	Events  *[]string `json:"events"`
 	Enabled bool      `json:"enabled"`
+	// Config is accepted so a client may echo a connection back, but never used: a push
+	// connection's target is always the signed-in user (pushTarget).
+	Config json.RawMessage `json:"config"`
 }
 
 func (in notificationInput) url() string {
@@ -126,6 +130,21 @@ func (a *api) handleCreateNotification(w http.ResponseWriter, r *http.Request) {
 	c := notify.Connection{Events: notify.DefaultEvents()}
 	in.apply(&c)
 	c.URL = in.url()
+	if c.Kind == notify.KindWebPush {
+		// "This device": pushes to the signed-in admin's own subscribed devices. The
+		// target is always the session's user, whatever the body says, so nobody can
+		// point alerts at someone else's phone.
+		if !a.pushTarget(w, r, &c) {
+			return
+		}
+		created, err := a.deps.Notify.Create(r.Context(), c)
+		if err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not create notification")
+			return
+		}
+		a.writeJSON(w, http.StatusCreated, viewOf(created))
+		return
+	}
 	if c.Name == "" || c.URL == "" {
 		a.writeError(w, http.StatusBadRequest, "name and url are required")
 		return
@@ -165,9 +184,29 @@ func (a *api) handleUpdateNotification(w http.ResponseWriter, r *http.Request) {
 	if !a.checkEvents(w, in) {
 		return
 	}
+	stored := c
 	in.apply(&c)
 	if c.Name == "" {
 		a.writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	// A connection's kind is fixed: a push connection keeps its user and takes no URL,
+	// and an Apprise one can't become a push connection by renaming its kind.
+	if stored.Kind == notify.KindWebPush || c.Kind == notify.KindWebPush {
+		if stored.Kind != c.Kind {
+			a.writeError(w, http.StatusBadRequest, "a push connection can't become a link connection, or the other way round — add a new one")
+			return
+		}
+		if in.url() != "" {
+			a.writeError(w, http.StatusBadRequest, "a push connection doesn't take a link")
+			return
+		}
+		c.Config = stored.Config
+		if err := a.deps.Notify.Update(r.Context(), id, c); err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not update notification")
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"status": "updated"})
 		return
 	}
 	// No URL (or a blank one) keeps the stored URL, so renaming or ticking events
@@ -216,11 +255,38 @@ func (a *api) handleTestNotification(w http.ResponseWriter, r *http.Request) {
 	var c notify.Connection
 	in.apply(&c)
 	c.URL = in.url()
+	if c.Kind == notify.KindWebPush {
+		c.Name = "This device"
+		if !a.pushTarget(w, r, &c) {
+			return
+		}
+		a.answerTest(w, r, c)
+		return
+	}
 	if err := notify.ValidateAppriseURL(c.URL); err != nil {
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
 	a.answerTest(w, r, c)
+}
+
+// pushTarget makes c a push connection for the signed-in user, refusing a URL.
+func (a *api) pushTarget(w http.ResponseWriter, r *http.Request, c *notify.Connection) bool {
+	u, ok := userFrom(r)
+	if !ok || u == nil || u.ID <= 0 {
+		a.writeError(w, http.StatusBadRequest, "push alerts need a signed-in account")
+		return false
+	}
+	if c.URL != "" {
+		a.writeError(w, http.StatusBadRequest, "a push connection doesn't take a link")
+		return false
+	}
+	if c.Name == "" {
+		a.writeError(w, http.StatusBadRequest, "name is required")
+		return false
+	}
+	c.Config = notify.PushConfigFor(u.ID)
+	return true
 }
 
 // handleTestSavedNotification sends a sample message through a saved connection's

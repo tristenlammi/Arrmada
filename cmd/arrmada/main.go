@@ -404,6 +404,12 @@ func main() {
 
 	// Admin alerts: the catalog's bus topics become queued deliveries, and the worker
 	// sends them (retrying, a few at a time, rows surviving a restart).
+	// "This device" alert connections push to their admin's browsers and phones, while
+	// that account is still staff.
+	notifySvc.SetPusher(pushSvc, func(ctx context.Context, uid int64) bool {
+		u, err := authSvc.UserByID(ctx, uid)
+		return err == nil && !u.Disabled && u.Role.AtLeast(auth.RoleManager)
+	})
 	grp.Loop("notify", notifySvc.Run)
 	grp.Loop("notify: delivery worker", notifySvc.RunWorker)
 
