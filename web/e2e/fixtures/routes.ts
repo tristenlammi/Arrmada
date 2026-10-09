@@ -1,4 +1,5 @@
 import type { PersonaInfo } from "./users";
+import * as books from "./books";
 import * as discover from "./discover";
 import * as media from "./media";
 import * as mod from "./modules";
@@ -53,6 +54,11 @@ export function routes(p: PersonaInfo): MockRoute[] {
     { method: "GET", path: /^\/api\/v1\/media\/(movie|series)\/(\d+)$/, respond: ({ params }) => discover.mediaDetail(params[0], Number(params[1])) },
     get("/api/v1/calendar", media.calendar),
     get("/api/v1/me/books", media.myBooks),
+
+    // Discover → Books
+    get(/^\/api\/v1\/books\/discover\/browse\/[a-z_]+$/, books.browse),
+    get("/api/v1/books/discover/recommended", { rows: [] }),
+    { method: "GET", path: "/api/v1/books/discover/detail", respond: ({ url }) => books.detail(url.searchParams.get("key") ?? "") },
 
     // Staff console
     get("/api/v1/dashboard", media.dashboard),

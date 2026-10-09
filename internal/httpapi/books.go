@@ -18,6 +18,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/requests"
 )
 
 func (a *api) handleListBooks(w http.ResponseWriter, r *http.Request) {
@@ -602,6 +603,16 @@ type bookCard struct {
 	HasFile       bool   `json:"has_file"`
 	Requested     bool   `json:"requested"`                // kept for compatibility: a pending request exists
 	RequestStatus string `json:"request_status,omitempty"` // pending | approved | declined (mirrors discoverCard)
+
+	// Per format, for a book in the library: which editions are on disk and which its
+	// profile wants, so a card can read "Ebook ✓" and offer "Request audiobook". And
+	// what the request badging the card asked for (ebook | audiobook | both; "" for one
+	// made before the choice existed).
+	HasEbook       bool   `json:"has_ebook"`
+	HasAudiobook   bool   `json:"has_audiobook"`
+	WantEbook      bool   `json:"want_ebook"`
+	WantAudiobook  bool   `json:"want_audiobook"`
+	RequestFormats string `json:"request_formats,omitempty"`
 }
 
 // enrichBookCards annotates search/browse results with library + request status.
@@ -625,43 +636,65 @@ func (a *api) enrichBookCards(ctx context.Context, results []metadata.BookResult
 	// one-status-per-title, but declined stays distinguishable from never-requested).
 	// A request linked to a library row also badges that row, so the card under the
 	// book's new catalogue key still reads Requested after a re-match.
-	reqStatus := map[string]string{}
-	reqByBook := map[int64]string{}
+	type reqInfo struct{ status, formats string }
+	reqStatus := map[string]reqInfo{}
+	reqByBook := map[int64]reqInfo{}
 	if reqs, err := a.deps.Requests.List(ctx, "", 0); err == nil {
 		for _, rq := range reqs {
 			if rq.MediaType != "book" {
 				continue
 			}
+			ri := reqInfo{rq.Status, rq.Formats}
 			if _, seen := reqStatus[rq.OLKey]; !seen && rq.OLKey != "" {
-				reqStatus[rq.OLKey] = rq.Status
+				reqStatus[rq.OLKey] = ri
 			}
 			if _, seen := reqByBook[rq.BookID]; !seen && rq.BookID > 0 {
-				reqByBook[rq.BookID] = rq.Status
+				reqByBook[rq.BookID] = ri
 			}
 		}
+	}
+	// Which editions a library row's profile wants, read once per profile.
+	wants := map[string][2]bool{}
+	wantsOf := func(ref string) [2]bool {
+		w, ok := wants[ref]
+		if !ok {
+			w = [2]bool{true, false}
+			if a.deps.Quality != nil {
+				w[0], w[1] = a.deps.Quality.BookEditions(ctx, ref)
+			}
+			wants[ref] = w
+		}
+		return w
 	}
 	cards := make([]bookCard, 0, len(results))
 	for _, br := range results {
 		br.Tags = nil // filter-only; br is a copy, so the cached list keeps them
-		st := reqStatus[br.Key]
-		lb, in := byKey[br.Key]
-		has := in && lb.HasFile
-		if st == "" && in {
-			st = reqByBook[lb.ID]
+		ri := reqStatus[br.Key]
+		row, in := byKey[br.Key]
+		if lb, ok := same.Find(br.Title, br.Author); ok && (!in || (lb.HasFile && !row.HasFile)) {
+			row, in = lb, true // Find prefers the row with files
 		}
-		if lb, ok := same.Find(br.Title, br.Author); ok {
-			in, has = true, has || lb.HasFile // Find prefers the row with files
-			if st == "" {
-				st = reqByBook[lb.ID]
+		if ri.status == "" && in {
+			ri = reqByBook[row.ID]
+		}
+		card := bookCard{
+			BookResult:     br,
+			InLibrary:      in,
+			HasFile:        in && row.HasFile,
+			Requested:      ri.status == "pending",
+			RequestStatus:  ri.status,
+			RequestFormats: ri.formats,
+		}
+		if in {
+			card.HasEbook = row.Ebook != nil && row.Ebook.Path != ""
+			card.HasAudiobook = row.Audiobook != nil && row.Audiobook.Path != ""
+			for _, v := range row.AudioVersions {
+				card.HasAudiobook = card.HasAudiobook || (v.File != nil && v.File.Path != "")
 			}
+			w := wantsOf(row.QualityProfile)
+			card.WantEbook, card.WantAudiobook = w[0], w[1]
 		}
-		cards = append(cards, bookCard{
-			BookResult:    br,
-			InLibrary:     in,
-			HasFile:       has,
-			Requested:     st == "pending",
-			RequestStatus: st,
-		})
+		cards = append(cards, card)
 	}
 	return cards
 }
@@ -977,7 +1010,16 @@ func (a *api) handleBookDiscoverDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	out := *d // d may be the catalogue cache's own copy: don't touch it
 	out.Tags = nil
-	a.writeJSON(w, http.StatusOK, out)
+	// The request sheet's Read / Listen / Both control starts on the owner's default book
+	// profile's editions when the viewer hasn't picked one before.
+	def := requests.FormatsEbook
+	if a.deps.Quality != nil {
+		def = requests.FormatsOf(a.deps.Quality.BookEditions(r.Context(), ""))
+	}
+	a.writeJSON(w, http.StatusOK, struct {
+		metadata.BookDetails
+		DefaultBookFormats string `json:"default_book_formats"`
+	}{out, def})
 }
 
 // bookFilterFields is what the adult filter reads from a catalogue result: its title,

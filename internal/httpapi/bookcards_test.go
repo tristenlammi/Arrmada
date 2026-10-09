@@ -155,6 +155,37 @@ func TestMyBooksShowsFormatStillComing(t *testing.T) {
 	}
 }
 
+// A card for a book held as an ebook says so per format, with what its profile wants
+// and what the request on it asked for, so the page can offer "Request audiobook".
+func TestBookCardsPerFormat(t *testing.T) {
+	s := bookCardServer(t)
+	ctx := context.Background()
+	repo := books.NewRepo(s.st.DB())
+	b, err := repo.Create(ctx, books.Book{OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetEdition(ctx, b.ID, books.KindEbook, "/library/dune.epub", "EPUB", 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.st.DB().Exec(`INSERT INTO requests (media_type, ol_key, title, author, status, requested_by, book_id, formats)
+		VALUES ('book', 'OL1W', 'Dune', 'Frank Herbert', 'pending', 1, ?, 'audiobook')`, b.ID); err != nil {
+		t.Fatal(err)
+	}
+	a := &api{deps: s.deps}
+	cards := a.enrichBookCards(ctx, []metadata.BookResult{
+		{Key: "OL1W", Title: "Dune", Author: "Frank Herbert"},
+		{Key: "OL2W", Title: "Neuromancer", Author: "William Gibson"},
+	})
+	c := cards[0]
+	if !c.HasEbook || c.HasAudiobook || !c.WantEbook || c.WantAudiobook || c.RequestFormats != "audiobook" || c.RequestStatus != "pending" {
+		t.Errorf("Dune card = %+v, want ebook here, ebook wanted, audiobook requested", c)
+	}
+	if o := cards[1]; o.InLibrary || o.HasEbook || o.HasAudiobook || o.WantEbook || o.RequestFormats != "" {
+		t.Errorf("a book not in the library = %+v", o)
+	}
+}
+
 // A card still carrying a book's former key (the Open Library key from before the
 // Hardcover upgrade) reads In library even when its title differs from the library's.
 func TestBookCardsAliasKeyIsInLibrary(t *testing.T) {

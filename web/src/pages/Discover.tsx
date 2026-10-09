@@ -679,8 +679,14 @@ function RequestPoster({ rq, staff, own, onChanged, flash, queueKnown = true }: 
       {/* Always-visible caption: the title, and where it's got to in plain words. */}
       <div className="px-0.5 pt-2">
         <div className="truncate text-[12px] font-semibold" style={{ color: "var(--ink)" }} title={rq.title}>{rq.title}</div>
-        <div className="mt-0.5 truncate text-[11px]" style={{ color: stage.detailTone ?? "var(--ink-faint)" }} title={stage.detail}>
-          {stage.detail}
+        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px]" style={{ color: stage.detailTone ?? "var(--ink-faint)" }} title={stage.detail}>
+          {/* A book request says what was asked for: Read, Listen or Both. */}
+          {rq.media_type === "book" && rq.formats && (
+            <span className="flex-none rounded px-1.5 py-px font-mono text-[9px] font-bold uppercase" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
+              {BOOK_FORMAT_BADGE[rq.formats]}
+            </span>
+          )}
+          <span className="truncate">{stage.detail}</span>
         </div>
         {/* Touch has no hover, so the same actions sit here in plain sight. min-w-0 and the
             tight padding keep Approve + Decline + ✕ inside the 150px card. */}
@@ -700,6 +706,11 @@ function RequestPoster({ rq, staff, own, onChanged, flash, queueKnown = true }: 
   );
 }
 
+// BOOK_FORMAT_BADGE is the "what was asked for" tag on a book request. The same words as
+// lib/bookFormats' FORMAT_BADGE, repeated rather than imported: a module this page and the
+// Books tab (which it loads lazily) both import gets folded into this page's chunk.
+const BOOK_FORMAT_BADGE = { ebook: "Read", audiobook: "Listen", both: "Both" } as const;
+
 // Stages read off the download queue: while downloads can't be checked, these can't be told.
 const QUEUE_STAGES = new Set(["searching", "queued", "downloading", "paused", "failed"]);
 
@@ -717,7 +728,9 @@ function requestStage(rq: MediaRequest, queueKnown = true): { badge: string; ton
     case "available":
       return { badge: "Ready", tone: "good", detail: ready, detailTone: "var(--good-text)" };
     case "partial":
-      return { badge: "Partly ready", tone: "good", detail: `${eps} ready`, detailTone: "var(--good-text)" };
+      // A series: "3 of 10 episodes ready". A book asked for in both formats with one
+      // here: the server's "Ebook ready · audiobook on the way".
+      return { badge: "Partly ready", tone: "good", detail: eps ? `${eps} ready` : tr.note || "Partly ready", detailTone: "var(--good-text)" };
     case "downloading": {
       const parts = [`${pct}%`];
       if (tr.eta_seconds) parts.push(`${formatEta(tr.eta_seconds)} left`);
