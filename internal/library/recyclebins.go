@@ -74,13 +74,19 @@ func (b *RootBins) rootOf(path string) string {
 	if b.Roots == nil {
 		return ""
 	}
-	p := filepath.Clean(path)
+	p, err := filepath.Abs(path)
+	if err != nil {
+		return ""
+	}
 	best := ""
 	for _, r := range b.Roots() {
 		if strings.TrimSpace(r.Path) == "" {
 			continue
 		}
-		root := filepath.Clean(r.Path)
+		root, err := filepath.Abs(r.Path) // a relative env default ("./library/movies") too
+		if err != nil {
+			continue
+		}
 		rel, err := filepath.Rel(root, p)
 		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 			continue

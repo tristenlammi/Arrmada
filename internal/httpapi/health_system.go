@@ -81,7 +81,9 @@ func (a *api) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 	// is worth a nudge too: it drains only when someone empties it or it ages out.
 	if a.deps.Recycle != nil {
 		for _, p := range a.deps.Recycle.Problems() {
-			if p.OtherDrive {
+			// The legacy bin gets its own line below: only stray files go there now, so
+			// "every delete is a copy" would overstate it.
+			if p.OtherDrive && !p.Legacy {
 				add("warning", fmt.Sprintf("The recycle bin %s is on a different drive from your library, so every delete is a full copy, which is slow and fills that drive.", p.Dir))
 			}
 			if p.LegacyFull {

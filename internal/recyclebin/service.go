@@ -462,6 +462,7 @@ func (s *Service) otherDrive(b bin) bool {
 type Problem struct {
 	Dir        string
 	Label      string
+	Legacy     bool
 	OtherDrive bool
 	LegacyFull bool
 }
@@ -471,7 +472,7 @@ type Problem struct {
 func (s *Service) Problems() []Problem {
 	var out []Problem
 	for _, b := range s.current() {
-		p := Problem{Dir: b.Dir, Label: b.Label, OtherDrive: s.otherDrive(b), LegacyFull: b.Legacy && HasItems(b.Dir)}
+		p := Problem{Dir: b.Dir, Label: b.Label, Legacy: b.Legacy, OtherDrive: s.otherDrive(b), LegacyFull: b.Legacy && HasItems(b.Dir)}
 		if p.OtherDrive || p.LegacyFull {
 			out = append(out, p)
 		}
