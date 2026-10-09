@@ -240,7 +240,7 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	// Only a real reading: a folder that can't be measured used to show as "free 0 GB",
 	// which reads as a full disk.
-	if freeGB, ok := freeGBField(a.deps.Config.DownloadsDir); ok {
+	if freeGB, ok := freeGBField(a.roots().Downloads(ctx)); ok {
 		out["free_gb"] = freeGB
 	}
 	// How many download clients are configured, so an empty page can say why nothing is

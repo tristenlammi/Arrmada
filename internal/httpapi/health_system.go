@@ -38,8 +38,10 @@ func (a *api) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	// Free space is a statfs on one folder — cheap and local, so it's read live.
 	var disk map[string]any
-	if free, ok := diskspace.FreeGB(a.deps.Config.DownloadsDir); ok {
-		disk = map[string]any{"free_gb": fmt.Sprintf("%.1f", free), "path": a.deps.Config.DownloadsDir}
+	if dl := a.roots().Downloads(r.Context()); dl != "" {
+		if free, ok := diskspace.FreeGB(dl); ok {
+			disk = map[string]any{"free_gb": fmt.Sprintf("%.1f", free), "path": dl}
+		}
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"status": rep.Status, "warnings": rep.Warnings, "checks": rep.Checks, "disk": disk,
@@ -99,9 +101,13 @@ func (a *api) registerHealthChecks(reg *health.Registry) {
 		reg.Register(health.LibraryFoldersCheck(a.libraryState, health.NewProbeCache(time.Hour)))
 	}
 
-	if a.deps.Recycle != nil && a.deps.Settings != nil {
-		reg.Register(health.RecycleDriveCheck(a.deps.Recycle.Dir, func(ctx context.Context) []health.Folder {
-			return a.libraryState(ctx).Folders
+	if a.deps.Recycle != nil {
+		reg.Register(health.RecycleDriveCheck(func() []health.RecycleBinProblem {
+			var out []health.RecycleBinProblem
+			for _, p := range a.deps.Recycle.Problems() {
+				out = append(out, health.RecycleBinProblem{Dir: p.Dir, Legacy: p.Legacy, OtherDrive: p.OtherDrive, LegacyFull: p.LegacyFull})
+			}
+			return out
 		}))
 	}
 
@@ -109,7 +115,8 @@ func (a *api) registerHealthChecks(reg *health.Registry) {
 		reg.Register(health.DiskGuardCheck(a.diskGuardState))
 	}
 
-	reg.Register(health.DiskFreeCheck(func() string { return a.deps.Config.DownloadsDir }))
+	// The Downloads folder is read live: one picked since boot is the one filling up.
+	reg.Register(health.DiskFreeCheck(func() string { return a.roots().Downloads(context.Background()) }))
 
 	if a.deps.AudioManager != nil && a.deps.Settings != nil {
 		reg.Register(health.AudiobookServerCheck(func(ctx context.Context) (bool, bool, string) {

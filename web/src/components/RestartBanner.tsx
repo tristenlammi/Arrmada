@@ -4,11 +4,10 @@ import { isAdmin, useMe } from "../lib/me";
 import { busyLines, FOLDERS_SAVED_EVENT, LIBRARY_LABEL, restartAppAndWait } from "../lib/restart";
 import { ConfirmDialog } from "./ConfirmDialog";
 
-// RestartBanner sits above every staff page while folders saved in Settings → Library
-// aren't in use yet. Imports, qBittorrent's save path and the disk guard take their
-// folders at startup, so until a restart new episodes keep landing in the old folder and
-// the library quietly splits in two. Saving only ever flashed "Saved", which is how that
-// went unnoticed. It stays until the restart happens; there's nothing to dismiss.
+// RestartBanner sits above every staff page while a saved setting is waiting on a restart.
+// Library folders no longer do — imports, qBittorrent's save path and the disk guard read
+// them live — so today it stays hidden; it's kept for the next setting that only applies
+// at startup. It stays until the restart happens; there's nothing to dismiss.
 export function RestartBanner() {
   const { user } = useMe();
   const [st, setSt] = useState<PendingRestart | null>(null);

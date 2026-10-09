@@ -46,7 +46,8 @@ type Service struct {
 	repo     *Repo
 	meta     metadata.MovieProvider
 	log      *slog.Logger
-	root     string            // library root, for rescan/rename/manual-import
+	root     string            // library root, for rescan/rename/manual-import (see libRoot)
+	rootFn   func() string     // the live library root; nil = root
 	bin      library.Bin       // where deleted/replaced files go (off = permanent delete)
 	imp      *library.Importer // reused for naming + import
 	resolver ProfileResolver
@@ -99,6 +100,29 @@ func NewService(db *sql.DB, meta metadata.MovieProvider, resolver ProfileResolve
 		probe:    probeIfInstalled,
 		stat:     os.Stat,
 	}
+}
+
+// SetRootFunc makes the movies folder live: scans, manual imports and renames read it on
+// every use, so a folder changed in Settings → Library applies without a restart. Call
+// it at startup, before anything runs.
+func (s *Service) SetRootFunc(fn func() string) {
+	s.rootFn = fn
+	s.imp.SetRootFuncs(library.RootFuncs{Movie: s.libRoot})
+}
+
+// SetBin routes deleted and replaced files to bin (the per-library bins in the app).
+// Call it at startup, before anything runs.
+func (s *Service) SetBin(b library.Bin) {
+	s.bin = b
+	s.imp.SetBin(b)
+}
+
+// libRoot is the movies folder now.
+func (s *Service) libRoot() string {
+	if s.rootFn != nil {
+		return strings.TrimSpace(s.rootFn())
+	}
+	return s.root
 }
 
 // SetFileAccess replaces how the service probes and stats library files (nil keeps the
@@ -263,7 +287,7 @@ func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanRes
 	}
 	root := rootOverride
 	if root == "" {
-		root = s.root
+		root = s.libRoot()
 	}
 	existing, err := s.repo.List(ctx)
 	if err != nil {
@@ -280,8 +304,8 @@ func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanRes
 	}
 	for _, e := range entries {
 		name := e.Name()
-		if strings.HasPrefix(name, ".") {
-			continue // .recycle and friends
+		if library.SkipScanDir(name) {
+			continue // the recycle bins and other hidden folders
 		}
 		full := filepath.Join(root, name)
 		video, _, verr := library.FindVideo(full)
@@ -349,7 +373,7 @@ func (s *Service) importMovieFile(ctx context.Context, video string, tmdbID int)
 func (s *Service) ImportFolderAs(ctx context.Context, rootOverride, folder string, tmdbID int) error {
 	root := rootOverride
 	if root == "" {
-		root = s.root
+		root = s.libRoot()
 	}
 	video, _, err := library.FindVideo(filepath.Join(root, folder))
 	if err != nil || video == "" {

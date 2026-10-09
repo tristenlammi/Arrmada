@@ -20,17 +20,13 @@ var (
 	errImportPathOutside = errors.New("Pick a folder inside your downloads or library folders (Settings → Library)")
 )
 
-// importRoots lists every folder a manual import may read from. The config values were
-// already overridden at boot by the folders chosen in the app (ApplySavedLibraryDirs);
-// the saved settings are added too, so a folder changed since boot (music is read
-// lazily) is still honoured.
+// importRoots lists every folder a manual import may read from: downloads and each
+// library, as they resolve now. ARRMADA_LIBRARY_DIR isn't one of them: on a documented
+// install it's the managed Docker volume, not a share anyone picked.
 func (a *api) importRoots(ctx context.Context) []string {
-	c := a.deps.Config
-	roots := []string{c.DownloadsDir, c.LibraryDir, c.MoviesDir, c.TVDir, c.EbooksDir, c.AudiobooksDir, c.MusicDir}
-	if a.deps.Settings != nil {
-		for _, k := range []string{keyLibDownloads, keyLibMovies, keyLibTV, keyLibEbooks, keyLibAudiobooks, keyLibMusic} {
-			roots = append(roots, a.deps.Settings.Get(ctx, k, ""))
-		}
+	var roots []string
+	for _, r := range a.roots().All(ctx) {
+		roots = append(roots, r.Path)
 	}
 	return roots
 }
@@ -72,7 +68,7 @@ func (a *api) writeImportList(w http.ResponseWriter, r *http.Request, ctx contex
 func (a *api) checkImportPath(ctx context.Context, p string) (string, error) {
 	p = strings.TrimSpace(p)
 	if p == "" {
-		p = a.deps.Config.DownloadsDir
+		p = a.roots().Downloads(ctx)
 	}
 	clean, err := filepath.Abs(filepath.Clean(p))
 	if err != nil {

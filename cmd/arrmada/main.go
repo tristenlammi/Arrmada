@@ -41,6 +41,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/insights"
 	"github.com/tristenlammi/arrmada/internal/library"
+	"github.com/tristenlammi/arrmada/internal/libroots"
 	"github.com/tristenlammi/arrmada/internal/listening"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/movies"
@@ -202,9 +203,19 @@ func main() {
 	indexers := indexer.NewService(st.DB(), log, cfg.FlaresolverrURL)
 	downloads := download.NewService(st.DB(), log)
 	// Library folders chosen in the app (first-run setup, Settings → Library) win over the
-	// environment's, for everything — importer, qBittorrent save path, disk guard.
-	httpapi.ApplySavedLibraryDirs(context.Background(), settingsSvc.Get, &cfg, log)
-	logFolders(log, cfg,
+	// environment's, for everything — importer, qBittorrent save path, disk guard — and
+	// they're resolved on every use, so a change applies without a restart. cfg keeps the
+	// environment's folders: they're what a blank setting falls back to.
+	roots := libroots.New(settingsSvc.Get, cfg)
+	rootFuncs := library.RootFuncs{
+		Movie:     libroots.Func(roots.Movies),
+		TV:        libroots.Func(roots.TV),
+		Ebook:     libroots.Func(roots.Ebooks),
+		Audiobook: libroots.Func(roots.Audiobooks),
+		Music:     libroots.Func(roots.Music),
+	}
+	httpapi.LogLibraryDirs(context.Background(), roots, cfg, log)
+	logFolders(log, roots.Config(context.Background()),
 		settingsSvc.GetBool(context.Background(), settings.KeyModuleBooks, true),
 		settingsSvc.GetBool(context.Background(), settings.KeyModuleMusic, settings.ModuleMusicDefault))
 	// API keys resolve settings-first, env-fallback, so a key added in the settings menu
@@ -254,6 +265,7 @@ func main() {
 		metadata.NewTVmaze(),
 	)
 	seriesSvc := series.NewService(st.DB(), tvSeries, cfg.TVDir, log)
+	seriesSvc.SetRootFunc(rootFuncs.TV)                         // scans and manual imports follow Settings → Library
 	seriesSvc.SetSceneMapper(xem.New(cfg.FlaresolverrURL, log)) // TheXEM scene mapping (via FlareSolverr past Cloudflare)
 	booksSvc := books.NewService(st.DB(), openlib, log)
 	// Hardcover is the catalogue when a key is set; anything still on Open Library keys
@@ -272,17 +284,29 @@ func main() {
 	} else if changed {
 		log.Info("music: kept the Music module on because your library has artists. Switch it off in Settings → System → Modules.")
 	}
-	// Recycle bin: default to <library>/.recycle so deletes are undoable; "off" hard-deletes.
-	recycleDir := cfg.RecycleDir
-	switch recycleDir {
-	case "":
-		recycleDir = filepath.Join(cfg.LibraryDir, ".recycle")
-	case "off":
-		recycleDir = ""
+	// Recycle bins: every delete goes to a hidden .arrmada-recycle folder on the library
+	// folder it came from, so it's a rename on the same drive (and Plex ignores the folder).
+	// ARRMADA_RECYCLE_DIR is now only an override: a folder makes one bin for everything,
+	// "off" hard-deletes. The old shared bin (<library>/.recycle, inside the managed
+	// volume) takes only files outside every library folder, and stays listed while it
+	// holds anything so it can drain.
+	bins := &library.RootBins{
+		Roots:  func() []libroots.Root { return roots.Libraries(context.Background()) },
+		Legacy: filepath.Join(cfg.LibraryDir, ".recycle"),
+		Log:    log,
 	}
-	movieSvc := movies.NewService(st.DB(), tmdb, qualitySvc, cfg.MoviesDir, recycleDir, bus, log)
-	seriesSvc.SetRecycleDir(recycleDir) // per-episode file deletes go to the recycle bin, like movies
-	seriesSvc.SetBus(bus)               // deletes announce file.removed so imports forget them
+	switch cfg.RecycleDir {
+	case "":
+	case "off":
+		bins.Off = true
+	default:
+		bins.Explicit = cfg.RecycleDir
+	}
+	movieSvc := movies.NewService(st.DB(), tmdb, qualitySvc, cfg.MoviesDir, "", bus, log)
+	movieSvc.SetRootFunc(rootFuncs.Movie) // scans, manual imports and renames follow Settings → Library
+	movieSvc.SetBin(bins)                 // deletes and replaced files go to the bins
+	seriesSvc.SetBin(bins)                // per-episode file deletes go to the recycle bin, like movies
+	seriesSvc.SetBus(bus)                 // deletes announce file.removed so imports forget them
 	prefs := libPrefs{s: settingsSvc}
 	movieSvc.SetNaming(prefs)
 	movieSvc.SetPrefs(prefs)
@@ -308,15 +332,15 @@ func main() {
 		// Point qBittorrent's default save + incomplete paths at the downloads dir so
 		// an existing client (seeded before the dir changed) still lands files on the
 		// shared volume. Retry in the background; qBittorrent may still be booting.
-		if cfg.DownloadsDir != "" {
+		if dl := roots.Downloads(context.Background()); dl != "" {
 			grp.Go("qbittorrent: set save path", func(ctx context.Context) {
 				switch retryBoot(ctx, func(ctx context.Context) error {
-					return downloads.SetBundledSavePath(ctx, cfg.QbittorrentURL, cfg.DownloadsDir)
+					return downloads.SetBundledSavePath(ctx, cfg.QbittorrentURL, dl)
 				}) {
 				case nil:
-					log.Info("qBittorrent save path set", "path", cfg.DownloadsDir)
+					log.Info("qBittorrent save path set", "path", dl)
 				case errRetriesExhausted:
-					log.Warn("could not set qBittorrent save path", "path", cfg.DownloadsDir)
+					log.Warn("could not set qBittorrent save path", "path", dl)
 				}
 			})
 		}
@@ -338,6 +362,8 @@ func main() {
 	// and attaches finished imports back to the movie.
 	coordinator := automation.New(movieSvc, indexers, downloads, qualitySvc, st.DB(), bus, log, cfg.DownloadsDir)
 	coordinator.SetOutbox(box) // series and book imports queue their follow-up work
+	// Every grab's save path and the free-space check read the downloads folder live.
+	coordinator.SetDownloadsDirFunc(libroots.Func(roots.Downloads))
 
 	// Deliver grab/import notifications to configured connections.
 	grp.Loop("notify", notifySvc.Run)
@@ -360,14 +386,14 @@ func main() {
 		return nil
 	})
 	// Import finished downloads into the library.
-	imports := library.NewManager(st.DB(), cfg.LibraryDir, bus, log)
+	imports := library.NewManager(st.DB(), "", bus, log)
 	imports.SetNaming(prefs)
-	// Route each media type to its own library folder (movies/TV/ebooks/audiobooks);
-	// unset dirs fall back to LibraryDir, so a single-library setup is unchanged.
-	imports.SetRoots(cfg.MoviesDir, cfg.TVDir, cfg.EbooksDir, cfg.AudiobooksDir)
+	// Route each media type to its own library folder, resolved on every import. A type
+	// with no folder fails loudly rather than landing in the managed volume.
+	imports.SetRootFuncs(rootFuncs)
 	// When an import replaces a same-named library file, recycle the old one first
 	// (instead of silently overwriting it) — same bin the delete paths use.
-	imports.SetRecycleDir(recycleDir)
+	imports.SetBin(bins)
 	// Name movie imports from the matched library record (metadata title), not the
 	// scene release — deterministic folders that match the movie Arrmada tracks.
 	imports.SetTitleResolver(movieTitleResolver{movieSvc})
@@ -391,15 +417,11 @@ func main() {
 	})
 	// Wire the series module into the coordinator: TV downloads land in a separate
 	// category and are hardlinked file-by-file (a season pack yields many episodes).
-	bookImporter := library.NewImporter(cfg.LibraryDir, log)
-	// Resolve the music root from settings on every use, so the folder picked in
-	// Settings → Library applies to imports and not just scans.
-	bookImporter.SetMusicRootFunc(func() string {
-		return settingsSvc.Get(context.Background(), "lib_music_dir", cfg.MusicDir)
-	})
-	bookImporter.SetBookRoots(cfg.EbooksDir, cfg.AudiobooksDir)                       // scan ebooks + audiobooks (may be one folder)
-	bookImporter.SetRoots(cfg.MoviesDir, cfg.TVDir, cfg.EbooksDir, cfg.AudiobooksDir) // this importer places TV episodes + book editions
-	bookImporter.SetRecycleDir(recycleDir)                                            // replaced files go to the bin here too
+	bookImporter := library.NewImporter("", log)
+	// This importer places TV episodes, book editions and albums, and scans the book
+	// folders; every folder is resolved on each use, so Settings → Library applies live.
+	bookImporter.SetRootFuncs(rootFuncs)
+	bookImporter.SetBin(bins) // replaced files go to the bins here too
 	// Name episode files with their metadata title ("<Series> - SxxEyy - <Episode> - <quality>").
 	bookImporter.SetEpisodeTitleFunc(func(seriesTitle string, year, season, episode int) string {
 		return seriesSvc.EpisodeTitleByName(context.Background(), seriesTitle, year, season, episode)
@@ -419,7 +441,7 @@ func main() {
 		return true
 	})
 	// Book file deletion honors the same recycle bin as movies.
-	coordinator.SetRecycleDir(recycleDir)
+	coordinator.SetBin(bins)
 	// The stall timeout a profile left at "use the default" falls back to, read each check.
 	coordinator.SetStallDefault(func(ctx context.Context) int {
 		return automation.ParseStallMinutes(settingsSvc.Get(ctx, automation.KeyStallMinutes, ""))
@@ -467,6 +489,7 @@ func main() {
 	// enough to catch a big torrent filling a cache pool, and the check is a statfs
 	// plus one queue read, so it costs nothing to run often.
 	diskGuard := download.NewDiskGuard(downloads, settingsSvc, log, cfg.DownloadsDir)
+	diskGuard.SetDirFunc(libroots.Func(roots.Downloads)) // watches the folder in use now
 	sched.Register("downloads-disk-guard", time.Minute, true, diskGuard.Check)
 	// A torrent the guard paused is waiting for space, not stalled: its clock holds.
 	coordinator.SetGuardHeld(diskGuard.Held)
@@ -576,11 +599,14 @@ func main() {
 			convertScratch = filepath.Join(cfg.DataDir, "convert")
 		}
 	}
-	convertSvc := convert.NewService(st.DB(), movieSvc, seriesSvc, settingsSvc, "ffmpeg", "ffprobe", convertScratch, recycleDir, log)
-	// Convert's originals go to the recycle bin, so it has to know how much room is left
-	// under the bin's cap: an original that doesn't fit would make Enforce purge it (and
-	// everything older) within the hour.
-	recycleSvc := recyclebin.New(recycleDir, settingsSvc, log)
+	convertSvc := convert.NewService(st.DB(), movieSvc, seriesSvc, settingsSvc, "ffmpeg", "ffprobe", convertScratch, "", log)
+	convertSvc.SetBin(bins) // originals go to the bin on their own library folder
+	// The manager looks after every bin: one per library folder (or the one override),
+	// plus the old shared bin while it still holds files, so what's in it stays listed,
+	// restorable, aged and capped until it drains. Convert's originals go to the bins, so
+	// it has to know how much room is left under the cap: an original that doesn't fit
+	// would make Enforce purge it (and everything older) within the hour.
+	recycleSvc := recyclebin.NewBins(bins.All, settingsSvc, log)
 	convertSvc.SetBinHeadroom(recycleSvc.Headroom)
 	grp.Loop("convert: runner", convertSvc.Run)
 	// Warm the probe cache off the request path so the first Convert page load after
@@ -761,6 +787,31 @@ func main() {
 		RunGroup: grp,
 		Backups:  backupSvc,
 		Health:   healthReg,
+		// Everything else reads the folders live; the bundled qBittorrent's default save
+		// path is the one thing that has to be told. Same retries as at boot — the client
+		// may be restarting — and each try reads the folder afresh, so of two quick saves
+		// the later one wins.
+		OnFoldersChanged: func(ctx context.Context, changed []string) {
+			for _, name := range changed {
+				if name != "downloads" || cfg.QbittorrentURL == "" {
+					continue
+				}
+				var dl string
+				switch retryBoot(ctx, func(ctx context.Context) error {
+					dl = roots.Downloads(ctx)
+					if dl == "" {
+						return nil // nothing to point it at; grabs pass no save path either
+					}
+					return downloads.SetBundledSavePath(ctx, cfg.QbittorrentURL, dl)
+				}) {
+				case nil:
+					log.Info("qBittorrent save path moved to the new Downloads folder", "path", dl)
+				case errRetriesExhausted:
+					log.Warn("could not move qBittorrent's save path to the new Downloads folder — grabs still pass it with each torrent", "path", dl)
+				}
+			}
+			bus.Publish("system.folders.applied", map[string]any{"changed": changed})
+		},
 	})
 	// A task that keeps failing is a health problem too (it warns at three in a row).
 	healthReg.Register(health.TasksFailingCheck(func() []health.TaskState {

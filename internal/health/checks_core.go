@@ -105,29 +105,39 @@ func FolderProblem(f Folder, st FolderState) (level, msg string) {
 	return "", ""
 }
 
-// RecycleDriveCheck warns when the recycle bin is on a different drive from Movies or TV:
-// deletes move files into the bin, and across drives every move is a full copy.
-// TODO(SAFE): drop this once the recycle bin keeps one bin per filesystem.
-func RecycleDriveCheck(bin func() string, folders func(ctx context.Context) []Folder) Check {
+// RecycleBinProblem is one recycle bin the health panel should mention (the recycle bin
+// service's Problems, without importing it).
+type RecycleBinProblem struct {
+	Dir        string
+	Legacy     bool // the old shared bin from before bins lived on each library folder
+	OtherDrive bool // on a different drive from the library it serves
+	LegacyFull bool // the old shared bin, still holding deleted files
+}
+
+// RecycleDriveCheck reports the bins worth a line: a per-library bin on another drive from
+// the library it serves turns every delete into a full copy, and the old shared bin still
+// holding files only drains when someone empties it or it ages out. The legacy bin never
+// gets the "every delete" line — only stray files go there now, so it would overstate it.
+func RecycleDriveCheck(problems func() []RecycleBinProblem) Check {
 	return Check{
-		Key: "recycle.drive", Name: "Recycle bin drive", Category: CategoryStorage, Interval: folderCheckEvery, Timeout: 10 * time.Second,
+		Key: "recycle.drive", Name: "Recycle bins", Category: CategoryStorage, Interval: folderCheckEvery, Timeout: 10 * time.Second,
 		Run: func(ctx context.Context) []Finding {
-			dir := bin()
-			if dir == "" {
-				return nil
-			}
-			for _, f := range folders(ctx) {
-				if f.Role != "movies" && f.Role != "tv" {
-					continue
+			var out []Finding
+			for _, p := range problems() {
+				if p.OtherDrive && !p.Legacy {
+					out = append(out, Finding{
+						Key: "recycle.drive." + p.Dir, Level: LevelWarning, Fix: FixRecycleBin,
+						Message: fmt.Sprintf("The recycle bin %s is on a different drive from your library, so every delete is a full copy, which is slow and fills that drive.", p.Dir),
+					})
 				}
-				if same, ok := SameFilesystem(dir, f.Path); ok && !same {
-					return []Finding{{
-						Key: "recycle.drive", Level: LevelWarning, Fix: FixRecycleBin,
-						Message: fmt.Sprintf("Deleted files are copied to %s on a different drive, which is slow and fills that drive.", dir),
-					}}
+				if p.LegacyFull {
+					out = append(out, Finding{
+						Key: "recycle.legacy", Level: LevelWarning, Fix: FixRecycleBin,
+						Message: fmt.Sprintf("The old shared recycle bin (%s) still holds deleted files; new deletes no longer go there. Empty it under Recycle bin once you've checked what's in it.", p.Dir),
+					})
 				}
 			}
-			return nil
+			return out
 		},
 	}
 }

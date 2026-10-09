@@ -679,9 +679,24 @@ export function uploadBackup(file: File, onProgress?: (fraction: number) => void
   });
 }
 
+// One recycle bin: there's one inside each library folder (so a delete is a rename on the
+// same drive), plus the old shared bin while it still holds files.
+export interface RecycleBinStats {
+  key: string;
+  dir: string;
+  label: string;
+  legacy: boolean;
+  files: number;
+  bytes: number;
+  free_bytes: number;
+  free_known: boolean;
+  other_drive: boolean; // not on the drive of the library it serves: every delete is a copy
+}
+// The counts and sizes are totals across every bin; the size cap applies to the total.
 export interface RecycleStats {
   enabled: boolean;
   dir: string;
+  bins: RecycleBinStats[];
   files: number;
   bytes: number;
   oldest_unix?: number;
@@ -719,6 +734,9 @@ export interface MovieDeletePreview {
 export interface RecycleItem {
   id: string;
   name: string;
+  bin: string; // the bin's key
+  bin_label: string;
+  legacy: boolean;
   orig_path?: string;
   size_bytes: number;
   deleted_unix: number;
@@ -1607,7 +1625,8 @@ export const api = {
     req<RestoreStaged>(`/api/v1/system/backups/${encodeURIComponent(name)}/restore`, { method: "POST", body: JSON.stringify({ confirm: "RESTORE" }) }),
   cancelRestore: () => req<{ cancelled: boolean }>("/api/v1/system/backups/restore-pending", { method: "DELETE" }),
   recycleItems: () => req<{ items: RecycleItem[] }>("/api/v1/recycle/items").then((r) => r.items),
-  emptyRecycle: () => req<{ freed_bytes: number }>("/api/v1/recycle/empty", { method: "POST" }),
+  // bin: one bin's key; omitted empties every bin.
+  emptyRecycle: (bin?: string) => req<{ freed_bytes: number }>("/api/v1/recycle/empty", { method: "POST", body: JSON.stringify(bin ? { bin } : {}) }),
   restoreRecycle: (id: string) => req<{ status: string }>("/api/v1/recycle/restore", { method: "POST", body: JSON.stringify({ id }) }),
   deleteRecycleItem: (id: string) => req<{ status: string }>("/api/v1/recycle/delete", { method: "POST", body: JSON.stringify({ id }) }),
   scanLibrary: () => req<{ status: string }>("/api/v1/movies/scan", { method: "POST" }),

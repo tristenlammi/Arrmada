@@ -13,27 +13,38 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/config"
+	"github.com/tristenlammi/arrmada/internal/libroots"
 	"github.com/tristenlammi/arrmada/internal/settings"
 	"github.com/tristenlammi/arrmada/internal/store"
 )
 
-// Folders chosen in the app replace the environment's for the whole app; an empty or
-// unset choice leaves the environment's folder alone.
-func TestApplySavedLibraryDirs(t *testing.T) {
-	cfg := config.Config{MoviesDir: "/media/library/movies", TVDir: "/media/library/tvshows", DownloadsDir: "/media/downloads"}
-	saved := map[string]string{keyLibMovies: "/storage/media/movies", keyLibTV: "  ", keyLibDownloads: "/storage/torrents"}
+// The startup log names each folder chosen in the app over the environment's, leaves a
+// blank choice alone, shouts about one inside the data folder, and changes nothing.
+func TestLogLibraryDirs(t *testing.T) {
+	cfg := config.Config{MoviesDir: "/media/library/movies", TVDir: "/media/library/tvshows", DownloadsDir: "/media/downloads", DataDir: "/appdata"}
+	saved := map[string]string{keyLibMovies: "/storage/media/movies", keyLibTV: "  ", keyLibMusic: "/appdata/music"}
 	get := func(_ context.Context, key, def string) string {
 		if v, ok := saved[key]; ok {
 			return v
 		}
 		return def
 	}
-	ApplySavedLibraryDirs(context.Background(), get, &cfg, nil)
-	if cfg.MoviesDir != "/storage/media/movies" || cfg.DownloadsDir != "/storage/torrents" {
-		t.Errorf("chosen folders not applied: movies=%q downloads=%q", cfg.MoviesDir, cfg.DownloadsDir)
+	var buf strings.Builder
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	before := cfg
+	LogLibraryDirs(context.Background(), libroots.New(get, cfg), cfg, log)
+	out := buf.String()
+	if !strings.Contains(out, "folder=/storage/media/movies") {
+		t.Errorf("the chosen movies folder isn't logged:\n%s", out)
 	}
-	if cfg.TVDir != "/media/library/tvshows" {
-		t.Errorf("blank choice must keep the environment's folder, got %q", cfg.TVDir)
+	if strings.Contains(out, "library=tv ") {
+		t.Errorf("a blank tv choice must not be logged as chosen:\n%s", out)
+	}
+	if !strings.Contains(out, "level=ERROR") || !strings.Contains(out, "folder=/appdata/music") {
+		t.Errorf("a folder inside the data folder must be an error line:\n%s", out)
+	}
+	if cfg != before {
+		t.Error("LogLibraryDirs must not change the config")
 	}
 }
 
@@ -64,44 +75,26 @@ func TestSuggestFolders(t *testing.T) {
 	}
 }
 
-// A saved folder the running app isn't using yet needs a restart; music (read live), a
-// blank choice (the install default) and an unchanged folder don't.
+// Folders apply live now, so no folder change ever waits on a restart.
 func TestFolderRestartState(t *testing.T) {
-	cases := []struct {
-		name    string
-		saved   map[string]string
-		changed []string
-	}{
-		{"nothing saved", nil, nil},
-		{"saved equals running", map[string]string{keyLibMovies: "/lib/movies", keyLibDownloads: "/dl"}, nil},
-		{"downloads differs", map[string]string{keyLibDownloads: "/storage/torrents"}, []string{"downloads"}},
-		{"music differs", map[string]string{keyLibMusic: "/storage/music"}, nil},
-		{"blank saved", map[string]string{keyLibTV: "  "}, nil},
-		{"two differ", map[string]string{keyLibTV: "/storage/tv", keyLibEbooks: "/storage/books"}, []string{"tv", "ebooks"}},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
+	for name, saved := range map[string]map[string]string{
+		"nothing saved":     nil,
+		"downloads differs": {keyLibDownloads: "/storage/torrents"},
+		"music differs":     {keyLibMusic: "/storage/music"},
+		"blank saved":       {keyLibTV: "  "},
+		"two differ":        {keyLibTV: "/storage/tv", keyLibEbooks: "/storage/books"},
+	} {
+		t.Run(name, func(t *testing.T) {
 			a := pathsAPI(t)
 			ctx := context.Background()
-			for k, v := range c.saved {
+			for k, v := range saved {
 				if err := a.deps.Settings.Set(ctx, k, v); err != nil {
 					t.Fatal(err)
 				}
 			}
 			st := a.folderRestartState(ctx)
-			if st.Needed != (len(c.changed) > 0) {
-				t.Errorf("needed = %v, want %v", st.Needed, len(c.changed) > 0)
-			}
-			if len(st.Changed) != len(c.changed) {
-				t.Fatalf("changed = %+v, want %v", st.Changed, c.changed)
-			}
-			for i, lib := range c.changed {
-				if st.Changed[i].Library != lib {
-					t.Errorf("changed[%d] = %+v, want %s", i, st.Changed[i], lib)
-				}
-			}
-			if c.name == "downloads differs" && (st.Changed[0].Saved != "/storage/torrents" || st.Changed[0].Running != "/dl") {
-				t.Errorf("old → new not reported: %+v", st.Changed[0])
+			if st.Needed || len(st.Changed) != 0 || st.Changed == nil {
+				t.Errorf("state = %+v, want nothing pending (and an empty list, not null)", st)
 			}
 		})
 	}

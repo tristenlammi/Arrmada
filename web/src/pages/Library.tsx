@@ -47,12 +47,8 @@ export function LibraryFolders() {
       const p = await api.setLibraryPaths(changes);
       setPaths(p); setDraft(p);
       announceFoldersSaved();
-      // Most folders only reach imports and the download client at the next start; say
-      // so here rather than letting "Saved" imply they're live.
-      const pending = await api.pendingRestart().catch(() => null);
-      flash(pending?.restart_needed
-        ? "Saved — restart Arrmada to apply them to downloads and imports. Files already imported stay where they are."
-        : "Saved");
+      // Folders apply live: say what that means for what's already there.
+      flash("Saved. Changing a folder applies to new imports right away. What's already imported stays where it is.");
     }
     catch (e) { flash((e as Error).message); } finally { setBusy(false); }
   };

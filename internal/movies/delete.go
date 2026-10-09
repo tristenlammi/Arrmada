@@ -251,7 +251,7 @@ func (s *Service) removeFile(path string, keep []string) error {
 	}
 	// Best-effort: remove the movie folder if nothing else is left in it — never the
 	// library root itself.
-	if dir := filepath.Dir(path); s.root == "" || filepath.Clean(dir) != filepath.Clean(s.root) {
+	if dir, root := filepath.Dir(path), s.libRoot(); root == "" || filepath.Clean(dir) != filepath.Clean(root) {
 		_ = os.Remove(dir)
 	}
 	return nil

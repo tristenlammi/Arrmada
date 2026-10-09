@@ -97,6 +97,11 @@ type Deps struct {
 	// Health holds the background health checks; New registers the ones built from these
 	// deps, and /health/system serves its cached results. nil = an empty, healthy report.
 	Health *health.Registry
+	// OnFoldersChanged runs in the background after Settings → Library saves folders
+	// whose resolved path changed ("movies", "downloads", …), with a context that
+	// outlives the request but not shutdown. Everything else reads the folders live;
+	// this is for what has to be told, like qBittorrent's default save path. nil = none.
+	OnFoldersChanged func(ctx context.Context, changed []string)
 }
 
 type api struct {

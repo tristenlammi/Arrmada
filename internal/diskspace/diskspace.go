@@ -4,6 +4,11 @@
 // than guess.
 package diskspace
 
+import (
+	"os"
+	"path/filepath"
+)
+
 // Usage describes a filesystem's capacity. Free is what an unprivileged user can
 // actually write, which on a reserved-block filesystem is less than Total-Used.
 type Usage struct {
@@ -47,4 +52,44 @@ func FreeGB(path string) (float64, bool) {
 		return 0, false
 	}
 	return float64(u.FreeBytes) / (1024 * 1024 * 1024), true
+}
+
+// SameDevice reports whether a and b are on one filesystem by their filesystem ids, and
+// whether that could be told at all (ok is false off Linux, or when a path has no
+// existing parent). A folder that doesn't exist yet is judged at its nearest existing
+// parent, which is where it would be created.
+//
+// On Unraid every /mnt/user share is one shfs filesystem, so two shares can report the
+// same id while their files sit on different disks: "same" there is the best this can
+// say, and callers treat a "different" answer as advisory.
+func SameDevice(a, b string) (same, ok bool) {
+	pa, okA := existingParent(a)
+	pb, okB := existingParent(b)
+	if !okA || !okB {
+		return false, false
+	}
+	da, okA := device(pa)
+	db, okB := device(pb)
+	if !okA || !okB {
+		return false, false
+	}
+	return da == db, true
+}
+
+// existingParent returns path, or its nearest parent that exists.
+func existingParent(path string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	p := filepath.Clean(path)
+	for {
+		if _, err := os.Stat(p); err == nil {
+			return p, true
+		}
+		parent := filepath.Dir(p)
+		if parent == p {
+			return "", false
+		}
+		p = parent
+	}
 }

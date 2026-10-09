@@ -24,11 +24,12 @@ func importTestDirs(t *testing.T) (cfg config.Config, outside string) {
 	base := t.TempDir()
 	cfg = config.Config{
 		DownloadsDir: filepath.Join(base, "downloads"),
-		LibraryDir:   filepath.Join(base, "library"),
+		LibraryDir:   filepath.Join(base, "managed-volume"),
+		MoviesDir:    filepath.Join(base, "library", "movies"),
 		DataDir:      filepath.Join(base, "data"),
 	}
 	outside = filepath.Join(base, "elsewhere")
-	for _, d := range []string{cfg.DownloadsDir, filepath.Join(cfg.DownloadsDir, "sub"), cfg.LibraryDir, cfg.DataDir, outside} {
+	for _, d := range []string{cfg.DownloadsDir, filepath.Join(cfg.DownloadsDir, "sub"), cfg.LibraryDir, cfg.MoviesDir, cfg.DataDir, outside} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -46,7 +47,7 @@ func TestCheckImportPath(t *testing.T) {
 		cfg.DownloadsDir,
 		filepath.Join(cfg.DownloadsDir, "sub"),
 		filepath.Join(cfg.DownloadsDir, "sub", "Film.2020.mkv"),
-		filepath.Join(cfg.LibraryDir, "movies", "Film (2020)"),
+		filepath.Join(cfg.MoviesDir, "Film (2020)"),
 	}
 	for _, p := range ok {
 		got, err := a.checkImportPath(ctx, p)
@@ -66,6 +67,8 @@ func TestCheckImportPath(t *testing.T) {
 		"/":                                      errImportPathOutside,
 		cfg.DownloadsDir + string(filepath.Separator) + ".." + "/..": errImportPathOutside,
 		cfg.DownloadsDir + "-old":                                    errImportPathOutside,
+		// ARRMADA_LIBRARY_DIR is the managed volume, not a library anyone picked.
+		cfg.LibraryDir: errImportPathOutside,
 	}
 	for p, want := range refused {
 		if _, err := a.checkImportPath(ctx, p); !errors.Is(err, want) {

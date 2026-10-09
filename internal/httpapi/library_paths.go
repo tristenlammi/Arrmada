@@ -10,41 +10,42 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/config"
 	"github.com/tristenlammi/arrmada/internal/libroots"
 )
 
-// Settings keys for the in-app library folder config. Each falls back to the env-configured
-// default (config.*Dir) when unset, so the app works before the user picks anything.
+// Settings keys for the in-app library folder config (libroots owns them). Each falls
+// back to the env-configured default (config.*Dir) when unset or blank, so the app works
+// before the user picks anything.
 const (
-	keyLibMovies     = "lib_movies_dir"
-	keyLibTV         = "lib_tv_dir"
-	keyLibEbooks     = "lib_ebooks_dir"
-	keyLibAudiobooks = "lib_audiobooks_dir"
-	keyLibMusic      = "lib_music_dir"
-	keyLibDownloads  = "lib_downloads_dir"
+	keyLibMovies     = libroots.KeyMovies
+	keyLibTV         = libroots.KeyTV
+	keyLibEbooks     = libroots.KeyEbooks
+	keyLibAudiobooks = libroots.KeyAudiobooks
+	keyLibMusic      = libroots.KeyMusic
+	keyLibDownloads  = libroots.KeyDownloads
 )
 
+// roots resolves the folders the same way the importer, the coordinator and the disk
+// guard do (libroots), so the API never describes a folder the app isn't using.
+// Deps.Config holds the environment's folders: they're the fallback, never overlaid.
+func (a *api) roots() *libroots.Roots {
+	var get libroots.Getter
+	if a.deps.Settings != nil {
+		get = a.deps.Settings.Get
+	}
+	return libroots.New(get, a.deps.Config)
+}
+
 // libMovies etc. return the effective (settings-or-default) path for each library.
-func (a *api) libMovies(r *http.Request) string {
-	return a.deps.Settings.Get(r.Context(), keyLibMovies, a.deps.Config.MoviesDir)
-}
-func (a *api) libTV(r *http.Request) string {
-	return a.deps.Settings.Get(r.Context(), keyLibTV, a.deps.Config.TVDir)
-}
-func (a *api) libEbooks(r *http.Request) string {
-	return a.deps.Settings.Get(r.Context(), keyLibEbooks, a.deps.Config.EbooksDir)
-}
-func (a *api) libAudiobooks(r *http.Request) string {
-	return a.deps.Settings.Get(r.Context(), keyLibAudiobooks, a.deps.Config.AudiobooksDir)
-}
-func (a *api) libMusic(r *http.Request) string {
-	return a.deps.Settings.Get(r.Context(), keyLibMusic, a.deps.Config.MusicDir)
-}
-func (a *api) libDownloads(r *http.Request) string {
-	return a.deps.Settings.Get(r.Context(), keyLibDownloads, a.deps.Config.DownloadsDir)
-}
+func (a *api) libMovies(r *http.Request) string     { return a.roots().Movies(r.Context()) }
+func (a *api) libTV(r *http.Request) string         { return a.roots().TV(r.Context()) }
+func (a *api) libEbooks(r *http.Request) string     { return a.roots().Ebooks(r.Context()) }
+func (a *api) libAudiobooks(r *http.Request) string { return a.roots().Audiobooks(r.Context()) }
+func (a *api) libMusic(r *http.Request) string      { return a.roots().Music(r.Context()) }
+func (a *api) libDownloads(r *http.Request) string  { return a.roots().Downloads(r.Context()) }
 
 // handleGetLibraryPaths returns the configured folder for each library.
 func (a *api) handleGetLibraryPaths(w http.ResponseWriter, r *http.Request) {
@@ -58,16 +59,11 @@ func (a *api) handleGetLibraryPaths(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// pickedConfig is the running config with each library folder replaced by the one saved
-// in the app — the folders the user picked. The running config only learns a new pick at
-// the next start, so anything that judges the folders (health, the disk guard panel)
-// reads this instead.
+// pickedConfig is the environment's config with each folder replaced by the one in use
+// now (saved in the app, or the environment's), for code that judges folders through a
+// config.Config: the health panel and the disk guard panel.
 func (a *api) pickedConfig(ctx context.Context) config.Config {
-	c := a.deps.Config
-	if a.deps.Settings != nil {
-		ApplySavedLibraryDirs(ctx, a.deps.Settings.Get, &c, nil)
-	}
-	return c
+	return a.roots().Config(ctx)
 }
 
 // folderLabel is how the UI names each library folder, for messages.
@@ -203,8 +199,41 @@ func (a *api) handleSetLibraryPaths(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Tell whatever has to act on a moved folder (qBittorrent's default save path) —
+	// only for folders whose resolved path really changed, after every save landed. A
+	// blank save that falls back to the folder already in use isn't a change.
+	after := a.pickedConfig(ctx)
+	var changed []string
+	for _, f := range folders {
+		if f.value == nil {
+			continue
+		}
+		if now := resolvedFolder(after, f.name); now != f.current {
+			changed = append(changed, f.name)
+			if a.deps.Log != nil {
+				a.deps.Log.Info("library folder changed — in use from now on, no restart needed", "library", f.name, "from", f.current, "to", now)
+			}
+		}
+	}
+	if len(changed) > 0 && a.deps.OnFoldersChanged != nil {
+		hook := a.deps.OnFoldersChanged
+		a.bg("apply changed folders", strings.Join(changed, ","), 5*time.Minute, func(ctx context.Context) error {
+			hook(ctx, changed)
+			return nil
+		})
+	}
 	a.recheckHealth("library", "recycle.drive")
 	a.handleGetLibraryPaths(w, r)
+}
+
+// resolvedFolder is one named folder out of a resolved config.
+func resolvedFolder(c config.Config, name string) string {
+	for _, d := range libraryDirSettings(&c) {
+		if d.name == name {
+			return *d.field
+		}
+	}
+	return ""
 }
 
 // handleBrowse lists the sub-directories of a path, for the in-app folder picker. Admin-only,

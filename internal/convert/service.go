@@ -7,6 +7,7 @@ package convert
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -107,7 +108,8 @@ type Service struct {
 
 	ffmpeg, ffprobe        string
 	scratchDir, recycleDir string
-	hdr10plusTool          string // HDR10+ metadata tool (empty if not bundled)
+	bin                    library.Bin // where originals go (SetBin); nil = the single bin at recycleDir
+	hdr10plusTool          string      // HDR10+ metadata tool (empty if not bundled)
 
 	// noNumaPools is set when x265's NUMA pool binding is blocked by the container's
 	// seccomp profile — see numaPoolsBlocked. Encodes then run unpooled.
@@ -812,14 +814,23 @@ func humanBytes(b int64) string {
 	}
 }
 
+// SetBin points retired originals at bin (the per-library bins in the app). Call it at
+// startup, before the runner starts.
+func (s *Service) SetBin(b library.Bin) { s.bin = b }
+
 // retire moves a library file out of the way before it's replaced: into the recycle bin, or
 // deleted outright if the admin switched the bin off. It never silently relocates a file.
 func (s *Service) retire(path string) error {
-	dst, err := library.RemoveToBin(library.SingleBin(s.recycleDir), path)
+	bin := s.bin
+	if bin == nil {
+		bin = library.SingleBin(s.recycleDir)
+	}
+	_, offErr := bin.For(path)
+	dst, err := library.RemoveToBin(bin, path)
 	switch {
 	case err != nil:
 		return err
-	case s.recycleDir == "":
+	case errors.Is(offErr, library.ErrRecycleDisabled):
 		s.log.Info("convert: original deleted (recycle bin is off)", "path", path)
 	case dst != "":
 		s.log.Info("convert: original recycled", "to", dst)
