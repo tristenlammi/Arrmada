@@ -76,7 +76,7 @@ export function Subtitles() {
 
   return (
     <>
-      <PageHeader title="Subtitles" crumb="Services / Subtitles" />
+      <PageHeader title="Subtitles" />
       <div className="mx-auto w-full max-w-[1240px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
           <p className="max-w-[64ch] text-[12.5px] text-ink-dim">One external <code>.srt</code> per language next to every video, made from the best source available: an embedded text track, an OpenSubtitles download, or local AI transcription when a model is installed. Pick languages in <b>Settings</b>.</p>

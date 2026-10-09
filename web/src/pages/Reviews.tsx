@@ -35,7 +35,7 @@ export function Reviews() {
 
   return (
     <>
-      <PageHeader title="Review" crumb="Overview / Review" />
+      <PageHeader title="Review" />
       <div className="mx-auto w-full max-w-[960px] px-4 py-6 sm:px-6">
         <p className="mb-5 max-w-[70ch] text-[12.5px] text-ink-dim">
           Downloads that finished but whose content didn't match what they were grabbed for are held here instead of

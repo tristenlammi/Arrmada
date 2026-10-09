@@ -100,7 +100,7 @@ export function Logs() {
 
   return (
     <>
-      <PageHeader title="Logs" crumb="System / Logs" />
+      <PageHeader title="Logs" />
       <div className="mx-auto flex max-w-[1100px] flex-col gap-3 px-4 py-5">
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex overflow-hidden rounded-lg" style={{ border: "1px solid var(--line)" }}>

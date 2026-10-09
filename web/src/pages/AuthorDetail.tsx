@@ -71,7 +71,7 @@ export function AuthorDetail() {
 
   return (
     <>
-      <PageHeader title={name} crumb="Library / Books / Author" />
+      <PageHeader title={name} tail="Author" />
       <div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6">
         <Link to="/books" className="mb-4 inline-flex items-center gap-1 text-[12px] text-ink-dim hover:text-[var(--ink)]">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M15 19l-7-7 7-7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>

@@ -93,3 +93,21 @@ export function visibleNav(viewer: NavViewer, nav: NavGroup[] = NAV): NavGroup[]
     .map((g) => ({ ...g, items: g.items.filter((i) => on(i.module) && (viewer.admin || !i.adminOnly)) }))
     .filter((g) => g.items.length > 0);
 }
+
+// crumbFor is the page breadcrumb for an address: "<group> / <page>" from the sidebar
+// entry the address belongs to, so a page's crumb always matches where it sits in the
+// sidebar. The longest matching entry wins ("/movies/12" belongs to Movies); "/" only
+// matches the Dashboard itself. Unknown addresses get no crumb.
+export function crumbFor(pathname: string): string | undefined {
+  if (pathname === "/") return "Home";
+  let best: { group: NavGroup; item: NavItem } | undefined;
+  for (const group of NAV) {
+    for (const item of group.items) {
+      if (item.to === "/") continue;
+      const hit = pathname === item.to || pathname.startsWith(item.to + "/");
+      if (hit && (!best || item.to.length > best.item.to.length)) best = { group, item };
+    }
+  }
+  if (!best) return undefined;
+  return `${best.group.crumb ?? best.group.group} / ${best.item.label}`;
+}

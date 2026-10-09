@@ -77,7 +77,7 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
 
   return (
     <>
-      {chrome && <PageHeader title="Discover" crumb="Services / Discover" />}
+      {chrome && <PageHeader title="Discover" />}
       <div className="mx-auto w-full max-w-[1600px] px-4 py-5 sm:px-6">
         {/* Tabs + search. On a phone they stack, search on top so the tabs still sit on the
             underline, and the tabs scroll sideways rather than widening the page. Search comes

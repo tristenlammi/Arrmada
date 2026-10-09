@@ -270,7 +270,7 @@ export function Quality() {
 
   return (
     <>
-      <PageHeader title="Quality profiles" crumb="System / Quality" />
+      <PageHeader title="Quality profiles" />
       <div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6">
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
           <Tabs value={media} onChange={setMedia} />
@@ -547,7 +547,7 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
 
   return (
     <>
-      <PageHeader title={sp.id > 0 ? "Edit profile" : "New profile"} crumb={`System / Quality / ${sp.media_type === "series" ? "Series" : "Movies"}`} />
+      <PageHeader title={sp.id > 0 ? "Edit profile" : "New profile"} tail={sp.media_type === "series" ? "Series" : "Movies"} />
       <div className="mx-auto grid w-full max-w-[1240px] grid-cols-1 gap-7 px-4 pb-4 pt-6 sm:px-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
         <section className="min-w-0">
           <div className="mb-4">
@@ -1234,7 +1234,7 @@ function MusicBuilder({ initial, ladder, presets, onCancel, onSaved }: { initial
 
   return (
     <>
-      <PageHeader title={sp.id > 0 ? "Edit music profile" : "New music profile"} crumb="System / Quality / Music" />
+      <PageHeader title={sp.id > 0 ? "Edit music profile" : "New music profile"} tail="Music" />
       <div className="mx-auto w-full max-w-[720px] px-4 pb-4 pt-6 sm:px-6">
         <div className="mb-4"><button onClick={leave} className="text-[12px] text-ink-dim hover:text-[var(--ink)]">← Back</button></div>
         <label htmlFor="mp-name" className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-wide text-accent">Name</label>
@@ -1329,7 +1329,7 @@ function BookBuilder({ initial, onCancel, onSaved }: { initial: StoredProfile; o
 
   return (
     <>
-      <PageHeader title={sp.id > 0 ? "Edit book profile" : "New book profile"} crumb="System / Quality / Books" />
+      <PageHeader title={sp.id > 0 ? "Edit book profile" : "New book profile"} tail="Books" />
       <div className="mx-auto w-full max-w-[720px] px-4 pb-4 pt-6 sm:px-6">
         <div className="mb-4"><button onClick={leave} className="text-[12px] text-ink-dim hover:text-[var(--ink)]">← Back</button></div>
         <label htmlFor="bp-name" className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-wide text-accent">Name</label>

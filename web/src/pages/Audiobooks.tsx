@@ -30,7 +30,7 @@ export function Audiobooks({ chrome = true }: { chrome?: boolean }) {
   ];
   return (
     <>
-      {chrome && <PageHeader title="Audiobooks" crumb="Services / Audiobooks" />}
+      {chrome && <PageHeader title="Audiobooks" />}
       <div className="mx-auto w-full max-w-[980px] px-4 py-6 sm:px-6">
         {!chrome && <h1 className="m-0 mb-1 text-[18px] font-bold">Audiobooks</h1>}
         <p className="m-0 mb-4 max-w-[70ch] text-[12.5px] text-ink-dim">

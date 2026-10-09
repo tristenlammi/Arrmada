@@ -45,7 +45,7 @@ export function Calendar({ chrome = true }: { chrome?: boolean }) {
 
   return (
     <>
-      {chrome && <PageHeader title="Calendar" crumb="Services / Calendar" />}
+      {chrome && <PageHeader title="Calendar" />}
       <div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">

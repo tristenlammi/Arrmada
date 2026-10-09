@@ -27,7 +27,7 @@ export function Insights() {
 
   return (
     <>
-      <PageHeader title="Insights" crumb="Services / Insights" />
+      <PageHeader title="Insights" />
       <div className="mx-auto w-full max-w-[1240px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
           <p className="max-w-[64ch] text-[12.5px] text-ink-dim">Watch monitoring for your Plex server — who's streaming what, right now and historically, with stream quality, transcode diagnostics and buffering reliability.

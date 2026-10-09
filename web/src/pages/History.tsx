@@ -31,7 +31,7 @@ export function History() {
 
   return (
     <>
-      <PageHeader title="History" crumb="Imported to library" />
+      <PageHeader title="History" />
       <div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6">
         {error && (
           <div className="mb-3 rounded-lg p-3 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>

@@ -55,7 +55,7 @@ export function Dashboard() {
 
   return (
     <>
-      <PageHeader title="Dashboard" crumb="Overview" />
+      <PageHeader title="Dashboard" />
       <div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6">
         {system && system.warnings.length > 0 && (
           <div className="mb-5 flex flex-col gap-2">

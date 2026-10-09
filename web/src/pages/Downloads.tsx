@@ -189,7 +189,7 @@ export function Downloads() {
 
   return (
     <>
-      <PageHeader title="Downloads" crumb="Transfers" />
+      <PageHeader title="Downloads" />
       <div className="mx-auto w-full max-w-[1360px] px-4 py-6 sm:px-6">
         {/* Header: live totals + free disk + controls */}
         <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl px-4 py-2.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>

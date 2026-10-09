@@ -47,7 +47,7 @@ export function DownloadClients() {
 
   return (
     <>
-      <PageHeader title="Download clients" crumb="System / Download clients" />
+      <PageHeader title="Download clients" />
       <div className="mx-auto w-full max-w-[1100px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex items-center justify-between">
           <p className="m-0 text-[12.5px] text-ink-dim">
