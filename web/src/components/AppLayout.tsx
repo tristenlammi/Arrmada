@@ -4,10 +4,12 @@ import { Sidebar } from "./Sidebar";
 import { FleetMark } from "./FleetMark";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { RestartBanner } from "./RestartBanner";
+import { useDocumentTitle } from "../lib/title";
 
 export function AppLayout() {
   const [navOpen, setNavOpen] = useState(false);
   const { pathname } = useLocation();
+  useDocumentTitle();
   return (
     <div className="flex h-full font-sans">
       <Sidebar open={navOpen} onClose={() => setNavOpen(false)} />

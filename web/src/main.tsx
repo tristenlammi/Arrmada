@@ -1,6 +1,5 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import { MeProvider } from "./lib/me";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -17,11 +16,9 @@ window.addEventListener("vite:preloadError", (e) => {
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <BrowserRouter>
-        <MeProvider>
-          <App />
-        </MeProvider>
-      </BrowserRouter>
+      <MeProvider>
+        <App />
+      </MeProvider>
     </ErrorBoundary>
   </React.StrictMode>,
 );

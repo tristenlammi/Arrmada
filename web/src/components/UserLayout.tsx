@@ -4,6 +4,7 @@ import { FleetMark } from "./FleetMark";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { useMe } from "../lib/me";
 import { api } from "../lib/api";
+import { useDocumentTitle } from "../lib/title";
 
 // UserLayout is the requester-facing shell: no nav menu, just a slim branded top bar
 // over Discover, Calendar, Books and Audiobooks. This is what installs as the PWA on phones.
@@ -11,6 +12,7 @@ export function UserLayout() {
   const { user, external, booksEnabled } = useMe();
   const [menu, setMenu] = useState(false);
   const { pathname } = useLocation();
+  useDocumentTitle();
   // Outside sessions get no Calendar (the /calendar route isn't mounted or
   // allowlisted for them) — don't show a link that silently bounces. "Your books"
   // is the exception: its two endpoints are allowlisted, so a requester can pick up

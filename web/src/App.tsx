@@ -1,41 +1,30 @@
-import { Routes, Route, Navigate } from "react-router-dom";
-import { AppLayout } from "./components/AppLayout";
-import { UserLayout } from "./components/UserLayout";
-import { MyBooks } from "./pages/MyBooks";
+import { useMemo } from "react";
+import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import { SetupGate } from "./components/SetupGate";
 import { Unreachable } from "./components/Unreachable";
-import { useMe, isStaff, isAdmin } from "./lib/me";
-import { Dashboard } from "./pages/Dashboard";
-import { Quality } from "./pages/Quality";
-import { Indexers } from "./pages/Indexers";
-import { DownloadClients } from "./pages/DownloadClients";
-import { Settings } from "./pages/Settings";
-import { Downloads } from "./pages/Downloads";
-import { History } from "./pages/History";
-import { Reviews } from "./pages/Reviews";
-import { Movies } from "./pages/Movies";
-import { MovieDetail } from "./pages/MovieDetail";
-import { Series } from "./pages/Series";
-import { SeriesDetail } from "./pages/SeriesDetail";
-import { Discover } from "./pages/Discover";
-import { Books } from "./pages/Books";
-import { Music } from "./pages/Music";
-import { ArtistDetail } from "./pages/ArtistDetail";
-import { AlbumDetail } from "./pages/AlbumDetail";
-import { BookDetail } from "./pages/BookDetail";
-import { AuthorDetail } from "./pages/AuthorDetail";
-import { Subtitles } from "./pages/Subtitles";
-import { Convert } from "./pages/Convert";
-import { Insights } from "./pages/Insights";
-import { Audiobooks } from "./pages/Audiobooks";
-import { Calendar } from "./pages/Calendar";
-import { Logs } from "./pages/Logs";
+import { useMe, isStaff } from "./lib/me";
+import { buildRoutes } from "./lib/routes";
+import type { UserRole } from "./lib/api";
 import { Login } from "./pages/Login";
-import { NotFound } from "./pages/NotFound";
+
+// One router per session shape. Signing out and back in as someone else rebuilds it;
+// the previous one is disposed so it stops listening to the browser's history.
+let current: { key: string; router: ReturnType<typeof createBrowserRouter> } | null = null;
+
+function routerFor(role: UserRole, external: boolean) {
+  const key = `${role}|${external}`;
+  if (current?.key !== key) {
+    current?.router.dispose();
+    current = { key, router: createBrowserRouter(buildRoutes({ role, external })) };
+  }
+  return current.router;
+}
 
 // Staff get the whole console; requesters and outside visitors get their own small shell.
 export default function App() {
-  const { user, loading, signedOut, unreachable, external, booksEnabled, musicEnabled } = useMe();
+  const { user, loading, signedOut, unreachable, external } = useMe();
+  const role = user?.role;
+  const router = useMemo(() => (role ? routerFor(role, external) : null), [role, external]);
 
   if (loading) {
     return <div className="grid h-full place-items-center text-[13px] text-ink-dim">Loading…</div>;
@@ -49,78 +38,17 @@ export default function App() {
 
   // Auth enabled + not signed in → login / first-run setup. signedOut: the session ended
   // while the app was open, so the screen says why.
-  if (!user) {
+  if (!user || !router) {
     return <Login signedOut={signedOut} />;
   }
 
-  // "external" is the server's verdict that this session gets the outside shell: from
-  // outside the LAN and not staff. Admins and managers get the whole app wherever they
-  // sign in from; the backend enforces the same rule.
-  if (external) {
+  // Admins see the first-run wizard before the console until setup is done or skipped.
+  if (isStaff(user)) {
     return (
-      <Routes>
-        <Route element={<UserLayout />}>
-          <Route path="/discover" element={<Discover chrome={false} />} />
-          {booksEnabled && <Route path="/books" element={<MyBooks />} />}
-          <Route path="/audiobooks" element={<Audiobooks chrome={false} />} />
-          <Route path="*" element={<Navigate to="/discover" replace />} />
-        </Route>
-      </Routes>
+      <SetupGate user={user}>
+        <RouterProvider router={router} />
+      </SetupGate>
     );
   }
-
-  // Non-staff (requesters/readonly) get their own shell — Discover, Calendar, Books, Audiobooks.
-  if (!isStaff(user)) {
-    return (
-      <Routes>
-        <Route element={<UserLayout />}>
-          <Route path="/discover" element={<Discover chrome={false} />} />
-          <Route path="/calendar" element={<Calendar chrome={false} />} />
-          {booksEnabled && <Route path="/books" element={<MyBooks />} />}
-          <Route path="/audiobooks" element={<Audiobooks chrome={false} />} />
-          <Route path="*" element={<Navigate to="/discover" replace />} />
-        </Route>
-      </Routes>
-    );
-  }
-
-  return (
-    <SetupGate user={user}>
-    <Routes>
-      <Route element={<AppLayout />}>
-        <Route index element={<Dashboard />} />
-        <Route path="/downloads" element={<Downloads />} />
-        <Route path="/activity" element={<Navigate to="/downloads" replace />} />
-        <Route path="/history" element={<History />} />
-        <Route path="/review" element={<Reviews />} />
-        <Route path="/movies" element={<Movies />} />
-        <Route path="/movies/:id" element={<MovieDetail />} />
-        <Route path="/series" element={<Series />} />
-        <Route path="/series/:id" element={<SeriesDetail />} />
-        <Route path="/discover" element={<Discover />} />
-        <Route path="/calendar" element={<Calendar />} />
-        {/* Music is a preview module; while it's off its pages fall through to Not found. */}
-        {musicEnabled && <Route path="/music" element={<Music />} />}
-        {musicEnabled && <Route path="/music/album/:id" element={<AlbumDetail />} />}
-        {musicEnabled && <Route path="/music/:id" element={<ArtistDetail />} />}
-        <Route path="/books" element={<Books />} />
-        <Route path="/books/author/:name" element={<AuthorDetail />} />
-        <Route path="/books/:id" element={<BookDetail />} />
-        <Route path="/subtitles" element={<Subtitles />} />
-        <Route path="/convert" element={<Convert />} />
-        <Route path="/insights" element={<Insights />} />
-        <Route path="/audiobooks" element={<Audiobooks />} />
-        <Route path="/indexers" element={<Indexers />} />
-        <Route path="/downloadclients" element={<DownloadClients />} />
-        <Route path="/notifications" element={<Navigate to="/insights" replace />} />
-        <Route path="/settings" element={<Settings />} />
-        <Route path="/quality" element={<Quality />} />
-        {/* The log is admin-only on the server; for a manager the page falls through to Not found. */}
-        {isAdmin(user) && <Route path="/logs" element={<Logs />} />}
-        <Route path="/library" element={<Navigate to="/settings" replace />} />
-        <Route path="*" element={<NotFound />} />
-      </Route>
-    </Routes>
-    </SetupGate>
-  );
+  return <RouterProvider router={router} />;
 }

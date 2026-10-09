@@ -1,4 +1,9 @@
+import { useTitle } from "../lib/title";
+
+// The header names the browser tab too, so a detail page's tab reads "Dune · Arrmada"
+// rather than the route's generic "Movie".
 export function PageHeader({ title, crumb }: { title: string; crumb?: string }) {
+  useTitle(title);
   return (
     <div
       className="sticky top-0 z-30 flex items-center gap-4 px-6 py-3.5"
