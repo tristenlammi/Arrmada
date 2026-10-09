@@ -101,7 +101,10 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 	}
 	// Flag blocklisted releases like the movie path does, so the UI can warn before the
 	// user re-grabs a release that just stalled or imported as junk.
-	blocked := c.blockedSetSeries(ctx, s.ID)
+	blocked, err := c.blockedSetSeries(ctx, s.ID)
+	if err != nil {
+		return ReleaseList{}, err
+	}
 	out := make([]RankedRelease, 0, len(cands))
 	appendEval := func(ev quality.Evaluation) {
 		rel := byName[ev.Candidate.Name]

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // ErrNotFound is returned when a movie id doesn't exist.
@@ -168,25 +170,20 @@ func (r *Repo) Create(ctx context.Context, m Movie) (Movie, error) {
 // Those tables have no foreign keys, so without this a deleted movie left its timeline
 // and version rows behind, waiting to attach to whatever reused the id.
 func (r *Repo) Delete(ctx context.Context, id int64) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
+	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `DELETE FROM movies WHERE id = ?`, id)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM movie_versions WHERE movie_id = ?`, id); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `DELETE FROM movie_events WHERE movie_id = ?`, id)
 		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, `DELETE FROM movies WHERE id = ?`, id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM movie_versions WHERE movie_id = ?`, id); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM movie_events WHERE movie_id = ?`, id); err != nil {
-		return err
-	}
-	return tx.Commit()
+	})
 }
 
 // SetMonitored toggles monitoring.

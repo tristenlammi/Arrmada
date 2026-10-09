@@ -191,13 +191,18 @@ func (s *Store) prunePreMigrate(log *slog.Logger) {
 	}
 }
 
-// openDB opens the pool every Store uses: WAL, foreign keys on, busy timeout.
+// openDB opens the pool every Store uses: WAL, foreign keys on, busy timeout, and
+// transactions that BEGIN IMMEDIATE. A deferred transaction asks for the write lock only
+// at its first write, and if another connection committed since it first read, SQLite
+// refuses with BUSY_SNAPSHOT, which busy_timeout can't wait out. Taking the lock at BEGIN
+// makes a read-then-write transaction wait its turn instead.
 func openDB(dbPath string) (*sql.DB, error) {
 	dsn := "file:" + dbPath +
 		"?_pragma=busy_timeout(5000)" +
 		"&_pragma=journal_mode(WAL)" +
 		"&_pragma=foreign_keys(ON)" +
-		"&_pragma=synchronous(NORMAL)"
+		"&_pragma=synchronous(NORMAL)" +
+		"&_txlock=immediate"
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

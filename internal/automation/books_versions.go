@@ -111,8 +111,11 @@ func (c *Coordinator) grabAudioVersionExcluding(ctx context.Context, b books.Boo
 		c.log.Info("book: no release matched this audiobook version", "title", b.Title, "version", v.Label, "terms", strings.Join(v.Terms, ", "))
 		return "", nil
 	}
-	rels = c.dropBlockedBook(ctx, b.ID, rels)
-	rels = dropPendingBook(rels, c.pendingBookGrabTitles(ctx, b.ID))
+	rels, err = c.dropUngrabbableBook(ctx, b.ID, rels)
+	if err != nil {
+		c.skipUnreadable(b.Title, err)
+		return "", err
+	}
 	rels = dropPendingBook(rels, exclude) // same normalized-title filter
 	best := pickBestBookForKind(versionProfile(sp, v), rels, books.KindAudiobook)
 	if best == nil {

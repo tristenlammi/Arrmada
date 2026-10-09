@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Repo persists artists, albums and tracks in SQLite.
@@ -152,23 +154,18 @@ func (r *Repo) UpdateArtistMeta(ctx context.Context, id int64, overview, imageUR
 // SetArtistMonitored toggles an artist and cascades to its albums and tracks, so an
 // unmonitored artist can't leave monitored albums behind that the searcher keeps chasing.
 func (r *Repo) SetArtistMonitored(ctx context.Context, id int64, monitored bool) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
+	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE artists SET monitored = ? WHERE id = ?`, b2i(monitored), id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE albums SET monitored = ? WHERE artist_id = ?`, b2i(monitored), id); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx,
+			`UPDATE tracks SET monitored = ? WHERE album_id IN (SELECT id FROM albums WHERE artist_id = ?)`,
+			b2i(monitored), id)
 		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `UPDATE artists SET monitored = ? WHERE id = ?`, b2i(monitored), id); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE albums SET monitored = ? WHERE artist_id = ?`, b2i(monitored), id); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE tracks SET monitored = ? WHERE album_id IN (SELECT id FROM albums WHERE artist_id = ?)`,
-		b2i(monitored), id); err != nil {
-		return err
-	}
-	return tx.Commit()
+	})
 }
 
 // SetArtistQualityProfile changes an artist's profile.
@@ -413,22 +410,19 @@ func (r *Repo) TracksFor(ctx context.Context, albumID int64) ([]Track, error) {
 // state and monitoring already recorded against each (disc, track) slot. A refresh that
 // re-listed the album must not forget which tracks are on disk.
 func (r *Repo) UpsertTracks(ctx context.Context, albumID int64, tracks []Track) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	for _, t := range tracks {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO tracks (album_id, mbid, disc_number, track_number, title, duration_sec, monitored)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)
-			 ON CONFLICT(album_id, disc_number, track_number) DO UPDATE SET
-			   mbid = excluded.mbid, title = excluded.title, duration_sec = excluded.duration_sec`,
-			albumID, t.MBID, t.DiscNumber, t.TrackNumber, t.Title, t.DurationSec, b2i(true)); err != nil {
-			return err
+	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		for _, t := range tracks {
+			if _, err := tx.ExecContext(ctx,
+				`INSERT INTO tracks (album_id, mbid, disc_number, track_number, title, duration_sec, monitored)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(album_id, disc_number, track_number) DO UPDATE SET
+				   mbid = excluded.mbid, title = excluded.title, duration_sec = excluded.duration_sec`,
+				albumID, t.MBID, t.DiscNumber, t.TrackNumber, t.Title, t.DurationSec, b2i(true)); err != nil {
+				return err
+			}
 		}
-	}
-	return tx.Commit()
+		return nil
+	})
 }
 
 // SetTrackFile records a track's file on disk.

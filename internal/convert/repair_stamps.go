@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/parser"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // codecStampRepairKey marks the one-time codec stamp repair as done (settings table).
@@ -72,23 +73,19 @@ func RepairCodecStamps(ctx context.Context, db *sql.DB, log *slog.Logger) (int, 
 		}
 	}
 
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	for _, f := range fixes {
-		if _, err := tx.ExecContext(ctx, `UPDATE `+f.table+` SET source_release = ? WHERE id = ?`, f.after, f.id); err != nil {
-			return 0, err
+	err = store.WithTx(ctx, db, func(tx *sql.Tx) error {
+		for _, f := range fixes {
+			if _, err := tx.ExecContext(ctx, `UPDATE `+f.table+` SET source_release = ? WHERE id = ?`, f.after, f.id); err != nil {
+				return err
+			}
 		}
-	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO settings (key, value) VALUES (?, '1')
-		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
-		codecStampRepairKey); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
+		_, err := tx.ExecContext(ctx,
+			`INSERT INTO settings (key, value) VALUES (?, '1')
+			 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
+			codecStampRepairKey)
+		return err
+	})
+	if err != nil {
 		return 0, err
 	}
 

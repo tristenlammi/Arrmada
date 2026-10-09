@@ -3,6 +3,7 @@ package automation
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"unicode"
 
@@ -95,16 +96,19 @@ func (c *Coordinator) removeBlock(ctx context.Context, id int64) error {
 }
 
 // blockedSet returns the normalized titles blocklisted for a movie.
-func (c *Coordinator) blockedSet(ctx context.Context, movieID int64) map[string]bool {
+func (c *Coordinator) blockedSet(ctx context.Context, movieID int64) (map[string]bool, error) {
 	return c.blockedSetOf(ctx, movieID, "movie")
 }
 
 // blockedSetSeries returns the normalized titles blocklisted for a series.
-func (c *Coordinator) blockedSetSeries(ctx context.Context, seriesID int64) map[string]bool {
+func (c *Coordinator) blockedSetSeries(ctx context.Context, seriesID int64) (map[string]bool, error) {
 	return c.blockedSetOf(ctx, seriesID, "series")
 }
 
-func (c *Coordinator) blockedSetOf(ctx context.Context, id int64, mediaType string) map[string]bool {
+// blockedSetOf reads the blocklist for one library item. It fails closed: an unreadable
+// blocklist is an error, never an empty set, because an empty set would make every known
+// fake grabbable again. Callers skip the grab for this round instead.
+func (c *Coordinator) blockedSetOf(ctx context.Context, id int64, mediaType string) (map[string]bool, error) {
 	set := map[string]bool{}
 	// Global rows (media_type='global') apply to every library item: a fake/malware
 	// release detected on one show must not stay grabbable for everything else it
@@ -113,16 +117,51 @@ func (c *Coordinator) blockedSetOf(ctx context.Context, id int64, mediaType stri
 		`SELECT norm_title FROM blocklist WHERE (movie_id = ? AND media_type = ?) OR media_type = 'global'`,
 		id, mediaType)
 	if err != nil {
-		return set
+		return nil, fmt.Errorf("blocklist unreadable: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var t string
-		if rows.Scan(&t) == nil {
-			set[t] = true
+		if err := rows.Scan(&t); err != nil {
+			return nil, fmt.Errorf("blocklist unreadable: %w", err)
 		}
+		set[t] = true
 	}
-	return set
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("blocklist unreadable: %w", err)
+	}
+	return set, nil
+}
+
+// pendingTitlesOf reads the normalized titles of an item's grabs still in flight (see
+// pendingTitleWhere). Like the blocklist it fails closed: without it the next sweep could
+// grab the same release a second time.
+func (c *Coordinator) pendingTitlesOf(ctx context.Context, id int64, mediaType string) (map[string]bool, error) {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT title FROM grabs
+		 WHERE movie_id = ? AND media_type = ? AND `+pendingTitleWhere, id, mediaType)
+	if err != nil {
+		return nil, fmt.Errorf("pending grabs unreadable: %w", err)
+	}
+	defer rows.Close()
+	set := map[string]bool{}
+	for rows.Next() {
+		var title string
+		if err := rows.Scan(&title); err != nil {
+			return nil, fmt.Errorf("pending grabs unreadable: %w", err)
+		}
+		set[normTitle(title)] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pending grabs unreadable: %w", err)
+	}
+	return set, nil
+}
+
+// skipUnreadable logs that title isn't being grabbed this round because the blocklist or
+// the pending-grab list couldn't be read. The next sweep tries again.
+func (c *Coordinator) skipUnreadable(title string, err error) {
+	c.log.Warn("automation: blocklist unreadable — not grabbing "+title+" this round", "title", title, "err", err)
 }
 
 // addBlockSeries blocklists a release for a series (stall fail-over), so a re-search
@@ -149,7 +188,7 @@ func (c *Coordinator) addBlockBook(ctx context.Context, bookID int64, title, ind
 }
 
 // blockedSetBook returns the normalized titles blocklisted for a book.
-func (c *Coordinator) blockedSetBook(ctx context.Context, bookID int64) map[string]bool {
+func (c *Coordinator) blockedSetBook(ctx context.Context, bookID int64) (map[string]bool, error) {
 	return c.blockedSetOf(ctx, bookID, "book")
 }
 
@@ -285,25 +324,11 @@ func (c *Coordinator) pendingGrabs(ctx context.Context) ([]grab, error) {
 // in-flight but not yet imported or failed). Used to stop the same release being grabbed again on
 // the next sweep — a belt-and-suspenders guard against re-grab loops when the in-client name-match
 // (inQueue) can't recognize a download.
-func (c *Coordinator) pendingGrabTitles(ctx context.Context, movieID int64) map[string]bool {
+func (c *Coordinator) pendingGrabTitles(ctx context.Context, movieID int64) (map[string]bool, error) {
 	// Bounded to a day, matching pendingSeriesGrabTitles: a grab stuck 'grabbed' forever
 	// (torrent removed by hand, stall timeout unset) must not block re-grabbing that
 	// release permanently.
-	rows, err := c.db.QueryContext(ctx,
-		`SELECT title FROM grabs
-		 WHERE movie_id = ? AND media_type = 'movie' AND `+pendingTitleWhere, movieID)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	set := map[string]bool{}
-	for rows.Next() {
-		var title string
-		if rows.Scan(&title) == nil {
-			set[normTitle(title)] = true
-		}
-	}
-	return set
+	return c.pendingTitlesOf(ctx, movieID, "movie")
 }
 
 // pendingSeriesGrabTitles returns the normalized titles of a series' still-pending grabs
@@ -315,26 +340,12 @@ func (c *Coordinator) pendingGrabTitles(ctx context.Context, movieID int64) map[
 // doesn't parse back to the show — and the next sweep then grabs the identical release
 // again. Observed with Taskmaster: S16, S17 and S21 each grabbed twice, twelve minutes
 // apart. Movies have had this DB-backed guard for exactly this reason.
-func (c *Coordinator) pendingSeriesGrabTitles(ctx context.Context, seriesID int64) map[string]bool {
+func (c *Coordinator) pendingSeriesGrabTitles(ctx context.Context, seriesID int64) (map[string]bool, error) {
 	// Bounded to a day. Stall fail-over normally clears a dead grab, but it only runs
 	// when the profile sets a stall timeout — with none set, an unbounded guard would
 	// blocklist the release by accident and permanently, which is worse than the
 	// duplicate it prevents. After 24h, re-grabbing is the right call.
-	rows, err := c.db.QueryContext(ctx,
-		`SELECT title FROM grabs
-		 WHERE movie_id = ? AND media_type = 'series' AND `+pendingTitleWhere, seriesID)
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-	set := map[string]bool{}
-	for rows.Next() {
-		var title string
-		if rows.Scan(&title) == nil {
-			set[normTitle(title)] = true
-		}
-	}
-	return set
+	return c.pendingTitlesOf(ctx, seriesID, "series")
 }
 
 // setGrabStatus marks a grab imported or failed.
@@ -534,7 +545,7 @@ func (c *Coordinator) addBlockMusic(ctx context.Context, albumID int64, title, i
 }
 
 // blockedSetMusic returns the normalized titles blocklisted for an album.
-func (c *Coordinator) blockedSetMusic(ctx context.Context, albumID int64) map[string]bool {
+func (c *Coordinator) blockedSetMusic(ctx context.Context, albumID int64) (map[string]bool, error) {
 	return c.blockedSetOf(ctx, albumID, "music")
 }
 

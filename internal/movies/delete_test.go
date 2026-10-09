@@ -240,3 +240,27 @@ func TestUpgradeKeepsOldFileWhenBinRefuses(t *testing.T) {
 		t.Errorf("no file.kept event in %+v", evs)
 	}
 }
+
+// The movie's rows go together or not at all: a failure on the second statement of the
+// delete leaves the movie and its versions in place, rather than version rows orphaned
+// from a movie that no longer exists.
+func TestDeleteRowsAreAtomic(t *testing.T) {
+	f := newDeleteFixture(t, filepath.Join(t.TempDir(), "bin"))
+	ctx := context.Background()
+	if _, err := f.svc.repo.db.Exec(`CREATE TRIGGER fail_version_delete BEFORE DELETE ON movie_versions
+		BEGIN SELECT RAISE(ABORT, 'injected failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.Delete(ctx, f.id, false); err == nil {
+		t.Fatal("delete reported success although the version rows couldn't go")
+	}
+	if m, err := f.svc.repo.Get(ctx, f.id); err != nil || m.MovieFilePath != f.main {
+		t.Fatalf("the movie row didn't survive the failed delete: %+v, %v", m, err)
+	}
+	if vs, _ := f.svc.repo.ListVersions(ctx, f.id); len(vs) != 1 {
+		t.Errorf("versions = %+v, want the extra version intact", vs)
+	}
+	if !exists(f.main) || !exists(f.extra) {
+		t.Error("a file was touched by a delete that kept its files")
+	}
+}

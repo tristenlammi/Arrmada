@@ -386,10 +386,18 @@ func (c *Coordinator) grabSeriesScoped(ctx context.Context, s series.Series, rel
 	if len(wanted) == 0 {
 		return
 	}
-	blocked := c.blockedSetSeries(ctx, s.ID)
+	blocked, err := c.blockedSetSeries(ctx, s.ID)
+	if err != nil {
+		c.skipUnreadable(s.Title, err)
+		return 0, wanted, nil
+	}
 	// Releases already grabbed for this show and not yet imported. seriesDownloading()
 	// alone couldn't be trusted to catch these — see pendingSeriesGrabTitles.
-	pending := c.pendingSeriesGrabTitles(ctx, s.ID)
+	pending, err := c.pendingSeriesGrabTitles(ctx, s.ID)
+	if err != nil {
+		c.skipUnreadable(s.Title, err)
+		return 0, wanted, nil
+	}
 
 	// Score all candidates with the series' quality profile; keep the eligible set
 	// ranked best-first, each paired with its parsed release + indexer info.
@@ -863,8 +871,17 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 		// (it downloaded but couldn't import — junk, a fake, or unresolvable numbering),
 		// don't re-scan it. The auto-searcher skips blocklisted releases too, so together
 		// this breaks the grab→fail→re-grab loop.
-		if matchOK && c.blockedSetSeries(ctx, s.ID)[normTitle(it.Name)] {
-			continue
+		if matchOK {
+			blocked, err := c.blockedSetSeries(ctx, s.ID)
+			if err != nil {
+				// Can't tell whether it was given up on: leave it for the next pass rather
+				// than import something we may have blocklisted.
+				c.log.Warn("series: blocklist unreadable — not importing this round", "release", it.Name, "err", err)
+				continue
+			}
+			if blocked[normTitle(it.Name)] {
+				continue
+			}
 		}
 
 		// Already-imported guard. Normally skip a torrent we've handled — but if the

@@ -221,8 +221,16 @@ func (c *Coordinator) GrabForScope(ctx context.Context, seriesID int64, sc Serie
 		return out, serr
 	}
 
-	blocked := c.blockedSetSeries(ctx, s.ID)
-	pending := c.pendingSeriesGrabTitles(ctx, s.ID)
+	blocked, err := c.blockedSetSeries(ctx, s.ID)
+	if err != nil {
+		c.skipUnreadable(s.Title, err)
+		return out, err
+	}
+	pending, err := c.pendingSeriesGrabTitles(ctx, s.ID)
+	if err != nil {
+		c.skipUnreadable(s.Title, err)
+		return out, err
+	}
 	byName := make(map[string]indexer.Release, len(releases))
 	cands := make([]quality.Candidate, 0, len(releases))
 	for _, rel := range bestByTitle(grabbable(releases)) {
