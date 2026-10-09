@@ -100,12 +100,18 @@ type Version struct {
 	ConvertedFromSize    int64  `json:"converted_from_size,omitempty"`
 }
 
-// MovieFile describes the on-disk file for a movie: size plus media info parsed
-// from its filename. Computed at read-time by stat-ing the path.
+// MovieFile describes the on-disk file for one track: size plus media info, read from the
+// file (ffprobe) or parsed from its name. It's cached per track (movies.media_json,
+// movie_versions.media_json) when the file is imported or changes; the detail page only
+// stats the file and re-reads it in the background when its size or mtime moved.
 type MovieFile struct {
-	Path        string   `json:"path"`
-	Filename    string   `json:"filename"`
-	SizeBytes   int64    `json:"size_bytes"`
+	Path      string `json:"path"`
+	Filename  string `json:"filename"`
+	SizeBytes int64  `json:"size_bytes"`
+	// MtimeUnix is the file's modification time when the entry was read (0 = an entry cached
+	// before it was recorded). With the size it says whether the entry still describes the
+	// file on disk, the same contract as Convert's probe cache.
+	MtimeUnix   int64    `json:"mtime,omitempty"`
 	Quality     string   `json:"quality,omitempty"` // "2160p BluRay"
 	Codec       string   `json:"codec,omitempty"`
 	Audio       []string `json:"audio,omitempty"`

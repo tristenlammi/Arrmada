@@ -162,12 +162,12 @@ func TestRouteVersion(t *testing.T) {
 
 	// 2160p file with 1080p-default + 4K-secondary → routes to the 4K track,
 	// never to a track whose profile forbids the resolution.
-	if got := svc.routeVersion(ctx, []Version{defHD, v4k}, "/lib/Dune.2021.2160p.BluRay.mkv"); got.Label != "4K" {
+	if got := svc.routeVersion(ctx, []Version{defHD, v4k}, trackResolution(nil, "/lib/Dune.2021.2160p.BluRay.mkv")); got.Label != "4K" {
 		t.Errorf("2160p file routed to %q, want 4K", got.Label)
 	}
 
 	// 1080p file stays on the default track.
-	if got := svc.routeVersion(ctx, []Version{defHD, v4k}, "/lib/Dune.2021.1080p.WEB.mkv"); !got.IsDefault {
+	if got := svc.routeVersion(ctx, []Version{defHD, v4k}, trackResolution(nil, "/lib/Dune.2021.1080p.WEB.mkv")); !got.IsDefault {
 		t.Errorf("1080p file routed to %q, want Default", got.Label)
 	}
 
@@ -175,14 +175,14 @@ func TestRouteVersion(t *testing.T) {
 	// profile is specific (would score -1) and another track accepts anything
 	// (the old code sent it to the accept-any secondary).
 	vAny := Version{ID: 2, Label: "Anything", QualityProfile: "any"}
-	if got := svc.routeVersion(ctx, []Version{defHD, vAny}, "/lib/Dune.mkv"); !got.IsDefault {
+	if got := svc.routeVersion(ctx, []Version{defHD, vAny}, trackResolution(nil, "/lib/Dune.mkv")); !got.IsDefault {
 		t.Errorf("unknown-resolution file routed to %q, want Default", got.Label)
 	}
 
 	// A resolution every track forbids falls back to the default track.
 	def4K := Version{IsDefault: true, Label: "Default", QualityProfile: "uhd"}
 	vHD := Version{ID: 3, Label: "HD", QualityProfile: "hd1080"}
-	if got := svc.routeVersion(ctx, []Version{def4K, vHD}, "/lib/Dune.2021.480p.DVD.mkv"); !got.IsDefault {
+	if got := svc.routeVersion(ctx, []Version{def4K, vHD}, trackResolution(nil, "/lib/Dune.2021.480p.DVD.mkv")); !got.IsDefault {
 		t.Errorf("all-forbidden resolution routed to %q, want Default", got.Label)
 	}
 }

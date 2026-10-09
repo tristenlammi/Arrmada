@@ -85,6 +85,14 @@ func (r *Repo) SetMediaInfo(ctx context.Context, id int64, mediaJSON string) err
 	return err
 }
 
+// SetMediaInfoForPath is SetMediaInfo only while the movie still holds the file at path, for
+// background reads that may finish after an import replaced it.
+func (r *Repo) SetMediaInfoForPath(ctx context.Context, id int64, path, mediaJSON string) error {
+	_, err := r.q().ExecContext(ctx,
+		`UPDATE movies SET media_json = ? WHERE id = ? AND has_file = 1 AND movie_file_path = ?`, mediaJSON, id, path)
+	return err
+}
+
 // List returns all movies, newest first.
 func (r *Repo) List(ctx context.Context) ([]Movie, error) {
 	rows, err := r.q().QueryContext(ctx, `SELECT `+movieCols+` FROM movies ORDER BY added_at DESC, id DESC`)
@@ -344,22 +352,30 @@ func (r *Repo) UpdateMetadata(ctx context.Context, id int64, m Movie) error {
 // --- extra version tracks -------------------------------------------------
 
 const versionCols = `id, movie_id, label, quality_profile, edition, monitored, has_file, file_path, size_bytes, source_release, upgrade_hold,
-	converted_from_release, converted_from_size`
+	converted_from_release, converted_from_size, media_json`
 
 func scanVersion(row interface{ Scan(...any) error }) (Version, int64, error) {
 	var (
 		v             Version
 		movieID       int64
 		mon, hf, hold int
+		mediaJSON     string
 	)
 	err := row.Scan(&v.ID, &movieID, &v.Label, &v.QualityProfile, &v.Edition, &mon, &hf, &v.FilePath, &v.SizeBytes, &v.SourceRelease, &hold,
-		&v.ConvertedFromRelease, &v.ConvertedFromSize)
+		&v.ConvertedFromRelease, &v.ConvertedFromSize, &mediaJSON)
 	if err != nil {
 		return Version{}, 0, err
 	}
 	v.Monitored = mon != 0
 	v.HasFile = hf != 0
 	v.UpgradeHold = hold != 0
+	// The track's cached media info, as the default track's comes from movies.media_json.
+	if v.HasFile && mediaJSON != "" {
+		var f MovieFile
+		if json.Unmarshal([]byte(mediaJSON), &f) == nil {
+			v.File = &f
+		}
+	}
 	return v, movieID, err
 }
 
@@ -440,17 +456,27 @@ func (r *Repo) UpdateVersion(ctx context.Context, id int64, label, profile, edit
 	return nil
 }
 
-// SetVersionFile records a file for an extra version.
-func (r *Repo) SetVersionFile(ctx context.Context, id int64, path string, size int64) error {
+// SetVersionFile records a file for an extra version with its cached media info ("" = none
+// read yet; the detail page reads it in the background).
+func (r *Repo) SetVersionFile(ctx context.Context, id int64, path string, size int64, mediaJSON string) error {
 	_, err := r.q().ExecContext(ctx,
-		`UPDATE movie_versions SET has_file = 1, file_path = ?, size_bytes = ? WHERE id = ?`, path, size, id)
+		`UPDATE movie_versions SET has_file = 1, file_path = ?, size_bytes = ?, media_json = ? WHERE id = ?`, path, size, mediaJSON, id)
+	return err
+}
+
+// SetVersionMediaInfo caches an extra version's media info, but only while the track still
+// holds the file at path: a background read must not stamp a file the track has since
+// replaced with facts about the old one.
+func (r *Repo) SetVersionMediaInfo(ctx context.Context, id int64, path, mediaJSON string) error {
+	_, err := r.q().ExecContext(ctx,
+		`UPDATE movie_versions SET media_json = ? WHERE id = ? AND has_file = 1 AND file_path = ?`, mediaJSON, id, path)
 	return err
 }
 
 // ClearVersionFile marks an extra version as having no file.
 func (r *Repo) ClearVersionFile(ctx context.Context, id int64) error {
 	_, err := r.q().ExecContext(ctx, `UPDATE movie_versions SET has_file = 0, file_path = '', size_bytes = 0, source_release = '', upgrade_hold = 0,
-		converted_from_release = '', converted_from_size = 0 WHERE id = ?`, id)
+		converted_from_release = '', converted_from_size = 0, media_json = '' WHERE id = ?`, id)
 	return err
 }
 

@@ -3,7 +3,6 @@ package movies
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -63,9 +62,12 @@ type Service struct {
 	// tests can count them — periodic jobs must cause neither (see VersionRows).
 	probe func(path string) (mediainfo.Info, error)
 	stat  func(path string) (os.FileInfo, error)
+	// readDir lists a folder for the detail page's sidecar subtitles (nil = os.ReadDir).
+	readDir func(dir string) ([]os.DirEntry, error)
 
-	probing  sync.Map      // movie IDs with an in-flight media probe (dedup, so list polling can't storm ffprobe)
-	probeSem chan struct{} // bounds how many probes run at once
+	probing  sync.Map       // tracks ("movie:version") with an in-flight media read (dedup, so polling can't storm ffprobe)
+	probeSem chan struct{}  // bounds how many probes run at once
+	bg       sync.WaitGroup // background track reads in flight (tests wait on it)
 	// backfillTried is when each movie was last handed to BackfillStaleMedia, so a file
 	// that can't be probed isn't retried on every poll of the grid.
 	backfillTried sync.Map
@@ -506,7 +508,11 @@ func (s *Service) markImported(ctx context.Context, id int64, path, sourceReleas
 	if err != nil {
 		return err
 	}
-	target := s.routeVersion(ctx, versions, path)
+	// The one read of the new file: it routes the file to its track, and its facts and size
+	// are what the track caches. Probed before any transaction opens — a probe can take
+	// seconds and every other writer waits on an open transaction.
+	info := s.probeTrack(path)
+	target := s.routeVersion(ctx, versions, trackResolution(info, path))
 
 	// Upgrade is scoped to the target version: replacing the 1080p track's file
 	// never touches the 4K track's file.
@@ -543,13 +549,10 @@ func (s *Service) markImported(ctx context.Context, id int64, path, sourceReleas
 	}
 
 	var size int64
-	if fi, statErr := s.statFile(path); statErr == nil {
-		size = fi.Size()
+	if info != nil && !info.Missing {
+		size = info.SizeBytes
 	}
-	var media string
-	if target.IsDefault {
-		media = s.mediaJSON(path) // probed before the transaction opens
-	}
+	media := mediaJSONOf(info)
 
 	event, detail := "imported", "Imported "+filepath.Base(path)
 	if upgrade {
@@ -574,7 +577,7 @@ func (s *Service) markImported(ctx context.Context, id int64, path, sourceReleas
 				_ = r.SetSourceRelease(ctx, id, sourceRelease)
 			}
 		} else {
-			if err := r.SetVersionFile(ctx, target.ID, path, size); err != nil {
+			if err := r.SetVersionFile(ctx, target.ID, path, size, media); err != nil {
 				return err
 			}
 			if sourceRelease != "" {
@@ -829,18 +832,24 @@ func (s *Service) RepointMovieFile(ctx context.Context, movieID int64, oldPath, 
 			n++ // already repointed (retry after a partial failure)
 			continue
 		}
+		// The cached media info follows the file: carried over unread for a pure rename
+		// (same size and mtime), read once for a changed file. Left describing the original,
+		// the upgrade sweep costed a converted file at its old size, and Convert's analysis
+		// of it (trusted only for a matching size) was never used.
+		info := s.movedMedia(v.File, newPath)
 		if v.IsDefault {
-			// The cached media info follows the new file. Left describing the original, the
-			// upgrade sweep costed a converted file at its old size, and Convert's analysis
-			// of it (trusted only for a matching size) was never used.
-			if err := s.setDefaultFile(ctx, movieID, newPath); err != nil {
+			if err := s.setDefaultFileWith(ctx, movieID, newPath, info); err != nil {
 				return n, err
 			}
 			if upd := restamp(v.SourceRelease); upd != v.SourceRelease {
 				_ = s.repo.SetSourceRelease(ctx, movieID, upd)
 			}
 		} else {
-			if err := s.repo.SetVersionFile(ctx, v.ID, newPath, size); err != nil {
+			vsize := size
+			if vsize <= 0 && info != nil && !info.Missing {
+				vsize = info.SizeBytes
+			}
+			if err := s.repo.SetVersionFile(ctx, v.ID, newPath, vsize, mediaJSONOf(info)); err != nil {
 				return n, err
 			}
 			if upd := restamp(v.SourceRelease); upd != v.SourceRelease {
@@ -913,34 +922,6 @@ func defaultVersionRow(m Movie) Version {
 	return def
 }
 
-// VersionsLive returns all tracks for a movie, each enriched with on-disk file info: a
-// stat, a sidecar-subtitle listing and an ffprobe per file.
-//
-// Detail page only — periodic jobs must never call this; they use VersionRows.
-func (s *Service) VersionsLive(ctx context.Context, id int64) ([]Version, error) {
-	m, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	def := Version{
-		ID: 0, IsDefault: true, Label: "Default",
-		QualityProfile: m.QualityProfile, Monitored: m.Monitored,
-		HasFile: m.HasFile, FilePath: m.MovieFilePath, SourceRelease: m.SourceRelease, UpgradeHold: m.UpgradeHold,
-		ConvertedFromRelease: m.ConvertedFromRelease, ConvertedFromSize: m.ConvertedFromSize,
-		File: s.fileInfo(m.MovieFilePath, m.HasFile),
-	}
-	out := []Version{def}
-	extras, err := s.repo.ListVersions(ctx, id)
-	if err != nil {
-		return out, nil // degrade to default-only rather than failing the page
-	}
-	for _, v := range extras {
-		v.File = s.fileInfo(v.FilePath, v.HasFile)
-		out = append(out, v)
-	}
-	return out, nil
-}
-
 // HasExtraVersions reports whether a movie has any opt-in extra tracks.
 func (s *Service) HasExtraVersions(ctx context.Context, id int64) bool {
 	extras, err := s.repo.ListVersions(ctx, id)
@@ -948,15 +929,15 @@ func (s *Service) HasExtraVersions(ctx context.Context, id int64) bool {
 }
 
 // routeVersion picks which version an imported file belongs to, by matching the
-// file's resolution against each version's quality profile.
+// file's resolution (trackResolution: the probed one, else the filename's) against each
+// version's quality profile.
 //
 // A file whose resolution can't be determined routes to the DEFAULT track
 // explicitly — never to whichever extra track happens to score least badly. A
 // file with a KNOWN resolution never lands on a track whose profile forbids it
 // (-1) while another track accepts it; if every track forbids it, it falls back
 // to the default track (whose file the MarkImported quality gate still protects).
-func (s *Service) routeVersion(ctx context.Context, versions []Version, path string) Version {
-	res := s.resolutionOf(path)
+func (s *Service) routeVersion(ctx context.Context, versions []Version, res string) Version {
 	if res == "" {
 		return versions[0] // unknown resolution → default track
 	}
@@ -971,15 +952,6 @@ func (s *Service) routeVersion(ctx context.Context, versions []Version, path str
 		return versions[0] // every track forbids it → default track
 	}
 	return best
-}
-
-// resolutionOf returns a file's resolution, preferring real media info (ffprobe)
-// over the filename so a mislabeled release routes to the right track.
-func (s *Service) resolutionOf(path string) string {
-	if mi, err := s.probeFile(path); err == nil && mi.Resolution != "" {
-		return mi.Resolution
-	}
-	return string(parser.Parse(filepath.Base(path)).Resolution)
 }
 
 // matchScore rates how well a profile wants a resolution: higher = more specific.
@@ -1022,48 +994,19 @@ func (s *Service) UpdateVersion(ctx context.Context, versionID int64, label, pro
 	return s.repo.UpdateVersion(ctx, versionID, label, profile, edition, monitored)
 }
 
-// setDefaultFile records the default file path AND caches its media info, so the
-// table view can show attributes without re-probing on every list request.
+// setDefaultFile records the default file path AND caches its media info — the one read
+// of that file — so neither the table nor the detail page has to probe it again.
 func (s *Service) setDefaultFile(ctx context.Context, id int64, path string) error {
-	if err := s.repo.SetFile(ctx, id, path); err != nil {
-		return err
-	}
-	if info := s.fileInfo(path, true); info != nil {
-		if b, err := json.Marshal(info); err == nil {
-			_ = s.repo.SetMediaInfo(ctx, id, string(b))
-		}
-	}
-	return nil
+	return s.setDefaultFileWith(ctx, id, path, s.probeTrack(path))
 }
 
-// EnsureMedia caches a movie's media info if it isn't cached yet, or was cached by an
-// older probe (lazy backfill, from the list handler).
-func (s *Service) EnsureMedia(ctx context.Context, id int64) {
-	// Dedup: list polling fires one of these per uncached file on every request. Skip if this
-	// movie is already being probed, and bound total concurrent probes so a big library can't
-	// storm ffprobe. Once a probe finishes the info is cached, so it won't be re-spawned.
-	if _, busy := s.probing.LoadOrStore(id, struct{}{}); busy {
-		return
-	}
-	defer s.probing.Delete(id)
-	// Give up waiting for a probe slot when ctx ends (shutdown, or the caller's budget):
-	// a big library queues many of these, and none may outlive the run context.
-	select {
-	case s.probeSem <- struct{}{}:
-	case <-ctx.Done():
-		return
-	}
-	defer func() { <-s.probeSem }()
-
-	m, err := s.repo.Get(ctx, id)
-	if err != nil || !m.MediaStale() || m.MovieFilePath == "" {
-		return
-	}
-	if info := s.fileInfo(m.MovieFilePath, true); info != nil {
-		if b, mErr := json.Marshal(info); mErr == nil {
-			_ = s.repo.SetMediaInfo(ctx, id, string(b))
-		}
-	}
+// setDefaultFileWith records the default file with media info already read (or moved
+// along with the file by movedMedia).
+func (s *Service) setDefaultFileWith(ctx context.Context, id int64, path string, info *MovieFile) error {
+	media := mediaJSONOf(info)
+	return s.repo.inTx(ctx, func(_ *sql.Tx, r *Repo) error {
+		return setDefaultFileIn(ctx, r, id, path, media)
+	})
 }
 
 // backfillRetry is how long a movie whose probe was tried waits before the list asks for
@@ -1112,72 +1055,6 @@ func (s *Service) BackfillStaleMedia(ctx context.Context, ids []int64) int {
 	close(work)
 	wg.Wait()
 	return n
-}
-
-// fileInfo builds media-info for a file path (shared by the default file and
-// each version). Returns nil when there is no file.
-func (s *Service) fileInfo(path string, hasFile bool) *MovieFile {
-	if !hasFile || path == "" {
-		return nil
-	}
-	rel := parser.Parse(filepath.Base(path))
-	f := &MovieFile{
-		Path:         path,
-		Filename:     filepath.Base(path),
-		Quality:      qualityLabel(path),
-		Codec:        string(rel.Codec),
-		Audio:        rel.Audio,
-		HDR:          rel.HDR,
-		Group:        rel.Group,
-		MediaVersion: MediaVersion,
-	}
-	for _, a := range rel.Audio {
-		if strings.EqualFold(a, "Atmos") {
-			f.Atmos = true
-		}
-	}
-	if fi, statErr := s.statFile(path); statErr == nil {
-		f.SizeBytes = fi.Size()
-		f.Subtitles = sidecarSubtitles(path)
-		f.OrphanSubtitles = orphanSubtitles(path)
-		// Prefer real media info from the file over the (fallible) filename.
-		if mi, err := s.probeFile(path); err == nil {
-			f.Probed = true
-			if mi.VideoCodec != "" {
-				f.Codec = mi.VideoCodec
-			}
-			if mi.Resolution != "" {
-				f.Resolution = mi.Resolution
-				// Show the badge from the REAL resolution + the parsed source,
-				// so the detail page and table present the same true facts.
-				f.Quality = mi.Resolution
-				if rel.Source != "" {
-					f.Quality += " " + string(rel.Source)
-				}
-			}
-			if mi.DurationSec > 0 {
-				f.DurationMin = mi.DurationSec / 60
-			}
-			if len(mi.HDR) > 0 {
-				f.HDR = mi.HDR
-			}
-			if len(f.Audio) == 0 && mi.AudioCodec != "" {
-				label := mi.AudioCodec
-				if mi.Channels > 0 {
-					label += " " + audioChannels(mi.Channels)
-				}
-				f.Audio = []string{label}
-			}
-			// Atmos lives in the stream's profile, which most filenames don't
-			// mention; the file is the authority.
-			if mi.Atmos {
-				f.Atmos = true
-			}
-		}
-	} else {
-		f.Missing = true
-	}
-	return f
 }
 
 // audioChannels renders a channel count as a familiar layout label.
@@ -1301,17 +1178,19 @@ func (s *Service) Refresh(ctx context.Context, id int64) (Movie, error) {
 		}
 	}
 	// 2. Disk rescan: reconcile has_file/path with reality.
-	s.rescan(ctx, &m)
-	// 3. Re-probe the file so cached media info (codec/resolution/…) stays truthful.
-	if m.HasFile && m.MovieFilePath != "" {
+	adopted := s.rescan(ctx, &m)
+	// 3. Re-read the file once so cached media info (codec/resolution/…) stays truthful —
+	// unless the rescan just adopted it, which read it already.
+	if m.HasFile && m.MovieFilePath != "" && !adopted {
 		_ = s.setDefaultFile(ctx, id, m.MovieFilePath)
 	}
 	_ = s.repo.AddEvent(ctx, id, "refreshed", "Refreshed metadata and rescanned disk")
 	return s.repo.Get(ctx, id)
 }
 
-// rescan reconciles a movie's file record against its library folder in place.
-func (s *Service) rescan(ctx context.Context, m *Movie) {
+// rescan reconciles a movie's file record against its library folder in place, reporting
+// whether it adopted (and so read) a file.
+func (s *Service) rescan(ctx context.Context, m *Movie) (adopted bool) {
 	folder := s.movieFolder(*m)
 	found, _, err := library.FindVideo(folder)
 	switch {
@@ -1320,8 +1199,9 @@ func (s *Service) rescan(ctx context.Context, m *Movie) {
 			old := m.MovieFilePath
 			if err := s.setDefaultFile(ctx, m.ID, found); err != nil {
 				s.log.Warn("rescan: couldn't record the file on disk", "movie", m.Title, "path", found, "err", err)
-				return
+				return false
 			}
+			adopted = true
 			m.MovieFilePath, m.HasFile = found, true
 			s.log.Info("rescan: adopted file on disk", "movie", m.Title, "path", found)
 			_ = s.repo.AddEvent(ctx, m.ID, "detected", "Found file on disk: "+filepath.Base(found))
@@ -1338,7 +1218,7 @@ func (s *Service) rescan(ctx context.Context, m *Movie) {
 			old := m.MovieFilePath
 			if err := s.repo.ClearFile(ctx, m.ID); err != nil {
 				s.log.Warn("rescan: couldn't clear the missing file", "movie", m.Title, "err", err)
-				return
+				return false
 			}
 			m.HasFile, m.MovieFilePath = false, ""
 			s.log.Info("rescan: tracked file no longer on disk", "movie", m.Title)
@@ -1347,6 +1227,7 @@ func (s *Service) rescan(ctx context.Context, m *Movie) {
 			s.publish("movie.file_deleted", map[string]any{"id": m.ID, "version_id": int64(0), "path": old})
 		}
 	}
+	return adopted
 }
 
 // movieFolder is the library directory for a movie: the tracked file's folder if
@@ -1466,7 +1347,8 @@ func (s *Service) Rename(ctx context.Context, id int64) error {
 	if newDir := filepath.Dir(target); newDir != oldDir {
 		s.imp.RemoveDirIfEmpty(oldDir) // the movie moved to a renamed folder; drop the empty old one
 	}
-	media := s.mediaJSON(target)
+	// The same file under a new name: its cached facts follow it unread.
+	media := mediaJSONOf(s.movedMedia(m.File, target))
 	err = s.repo.inTx(ctx, func(tx *sql.Tx, r *Repo) error {
 		if err := setDefaultFileIn(ctx, r, id, target, media); err != nil {
 			return err
