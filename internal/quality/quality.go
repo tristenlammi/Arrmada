@@ -54,6 +54,22 @@ var sourceRank = map[parser.Source]int{
 	parser.SourceWebRip: 3, parser.SourceDVD: 2, parser.SourceHDTV: 1, parser.SourceCAM: 0,
 }
 
+// sourceTier is the coarser ladder the MinSource/MaxSource gates use. WEB-DL and WEBRip
+// share one WEB tier: scene TV tags untouched captures plain "WEB", groups mix the two
+// labels freely, and a "WEB-DL or better" minimum that refused WEBRip silently starved
+// whole shows. Ranking still prefers WEB-DL — sourceBonus and sourceRank keep them apart.
+func sourceTier(s parser.Source) int {
+	if s == parser.SourceWebRip {
+		return sourceRank[parser.SourceWebDL]
+	}
+	return sourceRank[s]
+}
+
+// webTier is the highest minimum an unstated source can be assumed to meet. A release that
+// names no source is almost always a web capture (scene TV, fansubs); it is never assumed
+// to be a disc.
+var webTier = sourceRank[parser.SourceWebDL]
+
 var resRank = map[parser.Resolution]int{
 	parser.Res2160p: 5, parser.Res1080p: 4, parser.Res720p: 3, parser.Res576p: 2, parser.Res480p: 1,
 }
@@ -360,16 +376,26 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 		ev.RejectReason = fmt.Sprintf("Not in profile — %s", resLabel(r.Resolution))
 		return ev
 	}
-	if p.MinSource != "" && sourceRank[r.Source] < sourceRank[p.MinSource] {
-		ev.RejectReason = fmt.Sprintf("Not %s — this is %s", p.MinSource, sourceLabel(r.Source))
-		return ev
+	if p.MinSource != "" {
+		// An unstated source isn't a cam: it passes any minimum up to WEB and is only
+		// refused where the profile insists on a disc, with a reason that says why.
+		if r.Source == parser.SourceUnknown {
+			if sourceTier(p.MinSource) > webTier {
+				ev.RejectReason = fmt.Sprintf("Source isn't stated in the name — this profile needs %s or better", minSourceLabel(p.MinSource))
+				return ev
+			}
+		} else if sourceTier(r.Source) < sourceTier(p.MinSource) {
+			ev.RejectReason = fmt.Sprintf("Not %s or better — this is %s", minSourceLabel(p.MinSource), sourceLabel(r.Source))
+			return ev
+		}
 	}
 	if p.RejectPreRelease && r.Source == parser.SourceCAM {
 		ev.RejectReason = "A cam, telesync or screener copy — this profile never grabs those"
 		return ev
 	}
-	if p.MaxSource != "" && sourceRank[r.Source] > sourceRank[p.MaxSource] {
-		ev.RejectReason = fmt.Sprintf("Above your %s ceiling — this is %s", sourceLabel(p.MaxSource), sourceLabel(r.Source))
+	// An unstated source can't be judged against a ceiling, so it passes one.
+	if p.MaxSource != "" && r.Source != parser.SourceUnknown && sourceTier(r.Source) > sourceTier(p.MaxSource) {
+		ev.RejectReason = fmt.Sprintf("Above your %s ceiling — this is %s", minSourceLabel(p.MaxSource), sourceLabel(r.Source))
 		return ev
 	}
 	// Bitrate ceiling (length-independent). Only applies when we know the runtime; without it
@@ -552,8 +578,7 @@ func (e *Engine) Decide(p Profile, cands []Candidate) Decision {
 			if ru.Avoided && !d.Winner.Avoided {
 				reason = "it has " + strings.Join(ru.AvoidedFormats, ", ") + ", which you avoid"
 			}
-			d.ChosenOver = fmt.Sprintf("Chosen over the %s %s — %s",
-				resLabel(ru.Candidate.Release.Resolution), sourceLabel(ru.Candidate.Release.Source), reason)
+			d.ChosenOver = fmt.Sprintf("Chosen over the %s — %s", releaseLabel(ru.Candidate.Release), reason)
 		}
 	}
 	return d
@@ -667,9 +692,27 @@ func resLabel(r parser.Resolution) string {
 	return string(r)
 }
 
+// sourceLabel names a source inside a sentence. An unstated one is said as such: "this is
+// unknown" read like a cam, and a release that simply doesn't name its source isn't one.
 func sourceLabel(s parser.Source) string {
 	if s == parser.SourceUnknown {
-		return "unknown"
+		return "an unstated source"
 	}
 	return string(s)
+}
+
+// minSourceLabel names a MinSource/MaxSource setting by its tier: either WEB label means WEB.
+func minSourceLabel(s parser.Source) string {
+	if s == parser.SourceWebDL || s == parser.SourceWebRip {
+		return "WEB"
+	}
+	return sourceLabel(s)
+}
+
+// releaseLabel is "1080p WEB-DL", or "1080p release" when the name states no source.
+func releaseLabel(r parser.Release) string {
+	if r.Source == parser.SourceUnknown {
+		return resLabel(r.Resolution) + " release"
+	}
+	return resLabel(r.Resolution) + " " + string(r.Source)
 }

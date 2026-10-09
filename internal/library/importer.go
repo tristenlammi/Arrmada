@@ -554,7 +554,7 @@ func (im *Importer) movieParts(title string, year int, rel parser.Release) (fold
 		"year":       yearToken(year),
 		"quality":    qualityTag(rel),
 		"resolution": tokenOrEmpty(string(rel.Resolution), string(parser.ResUnknown)),
-		"source":     tokenOrEmpty(string(rel.Source), string(parser.SourceUnknown)),
+		"source":     statedSource(rel),
 		"edition":    rel.Edition,
 		"codec":      string(rel.Codec),
 		"group":      rel.Group,
@@ -823,8 +823,9 @@ func (im *Importer) ImportEpisodeIntoWith(seriesFolder, seriesTitle string, year
 	if rel.Resolution == parser.ResUnknown {
 		rel.Resolution = hint.Resolution
 	}
-	if rel.Source == parser.SourceUnknown {
-		rel.Source = hint.Source
+	// A source the file only implied (fansub conventions) yields to one the pack states.
+	if rel.Source == parser.SourceUnknown || (rel.SourceInferred && hint.Source != parser.SourceUnknown && !hint.SourceInferred) {
+		rel.Source, rel.SourceInferred = hint.Source, hint.SourceInferred
 	}
 	if rel.Codec == parser.CodecUnknown {
 		rel.Codec = hint.Codec
@@ -1127,7 +1128,7 @@ func (im *Importer) episodeTargetIn(seriesFolder, title string, year, season, ep
 		"episodetitle": epTitle,
 		"quality":      qualityTag(rel),
 		"resolution":   tokenOrEmpty(string(rel.Resolution), string(parser.ResUnknown)),
-		"source":       tokenOrEmpty(string(rel.Source), string(parser.SourceUnknown)),
+		"source":       statedSource(rel),
 		"codec":        string(rel.Codec),
 		"group":        rel.Group,
 	})
@@ -1289,10 +1290,20 @@ func qualityTag(r parser.Release) string {
 	if r.Resolution != parser.ResUnknown {
 		parts = append(parts, string(r.Resolution))
 	}
-	if r.Source != parser.SourceUnknown {
-		parts = append(parts, string(r.Source))
+	if src := statedSource(r); src != "" {
+		parts = append(parts, src)
 	}
 	return strings.Join(parts, " ")
+}
+
+// statedSource is the source for a library file name: only one the release actually
+// states. A source the parser inferred from fansub conventions is good enough to rank on,
+// but writing "WEB-DL" into a file name would turn that guess into a claim.
+func statedSource(r parser.Release) string {
+	if r.SourceInferred {
+		return ""
+	}
+	return tokenOrEmpty(string(r.Source), string(parser.SourceUnknown))
 }
 
 func clean(s string) string {

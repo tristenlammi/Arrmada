@@ -97,6 +97,11 @@ type Release struct {
 	// "0x05"). Season 0 is otherwise also what a release with no season at all reads as,
 	// so this is what tells a real special from an absolute-numbered "[Grp] Show - 05".
 	SeasonExplicit bool `json:"season_explicit,omitempty"`
+
+	// SourceInferred is set when Source wasn't written in the name but read from its
+	// conventions: a fansub release ("[SubsPlease] Show - 01 (1080p) [CRC]") that names no
+	// source is a web capture, so it's filed as WEB-DL rather than left unknown.
+	SourceInferred bool `json:"source_inferred,omitempty"`
 }
 
 // Kind classifies a TV release by the breadth it covers.
@@ -270,6 +275,7 @@ func Parse(name string) Release {
 		}
 		titleStart = m[1]
 	}
+	fansubTag := titleStart > 0
 
 	// Underscore is a WORD character to Go's regex \b, so "Rafters_S01E01_Pilot" has no word
 	// boundary before the S and every \b-anchored pattern below — SxxExx, 1x01, "Season 3",
@@ -284,16 +290,18 @@ func Parse(name string) Release {
 	// Lowercased, space-separated copy for keyword matching.
 	lc := normalize(name)
 
-	r.Resolution = detectResolution(lc)
-	r.Source = detectSource(lc)
-	r.Codec = detectCodec(lc)
-	// Exclude the trailing release-group token from HDR detection: a group
-	// literally named "DV" ("...x265-DV") is a tag, not Dolby Vision.
-	hdrHay := lc
+	// The same copy without the trailing release-group token, for the short tags a group
+	// could be named after: a group literally called "DV" ("...x265-DV") is not Dolby
+	// Vision, and one called "BD" or "WEB" says nothing about the source.
+	tagHay := lc
 	if r.Group != "" && strings.HasSuffix(name, "-"+r.Group) {
-		hdrHay = normalize(strings.TrimSuffix(name, "-"+r.Group))
+		tagHay = normalize(strings.TrimSuffix(name, "-"+r.Group))
 	}
-	r.HDR = detectHDR(hdrHay)
+
+	r.Resolution = detectResolution(lc)
+	r.Source = detectSource(lc, tagHay)
+	r.Codec = detectCodec(lc)
+	r.HDR = detectHDR(tagHay)
 	r.Audio = detectAudio(lc)
 	r.Edition = detectEdition(lc)
 	r.Proper = contains(lc, "proper")
@@ -446,6 +454,15 @@ func Parse(name string) Release {
 			titleStart = 0
 		}
 		r.Title = cleanTitle(name[titleStart:cut], packCtx)
+	}
+
+	// Fansub releases almost never say where they came from: simulcast groups rip the
+	// streaming service and name only the resolution. Left unknown, a profile with any
+	// minimum source refused nearly every anime episode, so read the convention instead.
+	// Anything the name does state (BD, WEBRip, DVD…) was already found and wins.
+	if r.Source == SourceUnknown && (fansubTag || reAnimeCRC.MatchString(name)) {
+		r.Source = SourceWebDL
+		r.SourceInferred = true
 	}
 
 	return r
@@ -685,12 +702,17 @@ func isPreRelease(lc string) bool {
 	return false
 }
 
-func detectSource(lc string) Source {
+// detectSource reads the release's source. bare is lc without the trailing group token;
+// the short bare tags ("BD", "WEB") are only looked for there.
+func detectSource(lc, bare string) Source {
 	switch {
 	case strings.Contains(lc, "remux"):
 		return SourceRemux
 	case strings.Contains(lc, "bluray"), strings.Contains(lc, "blu ray"),
-		strings.Contains(lc, "bdrip"), strings.Contains(lc, "brrip"), strings.Contains(lc, "bdremux"):
+		strings.Contains(lc, "bdrip"), strings.Contains(lc, "brrip"), strings.Contains(lc, "bdremux"),
+		strings.Contains(lc, "bdmux"), bracketedWord(bare, "bd"):
+		// A bare "BD" is how fansub batches say Blu-ray ("[Group] Show (BD 1080p HEVC FLAC)").
+		// Bounded so "BDMV"/"BDISO"/"BD50" (whole discs, not encodes) don't count here.
 		return SourceBluray
 	case strings.Contains(lc, "web dl"), strings.Contains(lc, "webdl"):
 		return SourceWebDL
@@ -698,14 +720,17 @@ func detectSource(lc string) Source {
 		return SourceWebRip
 	case strings.Contains(lc, "hdtv"), strings.Contains(lc, "pdtv"):
 		return SourceHDTV
-	case strings.Contains(lc, "dvdrip"), strings.Contains(lc, " dvd "):
+	case strings.Contains(lc, "dvdrip"), bracketedWord(lc, "dvd"):
+		// Bracket-bounded too: fansub batches tag "[DVD]".
 		return SourceDVD
 	case isPreRelease(lc):
 		return SourceCAM
-	case strings.Contains(lc, " web "):
-		// The bare " web " token LAST: it's a word in real titles ("Charlottes
+	case bracketedWord(bare, "web"):
+		// The bare "WEB" token LAST: it's a word in real titles ("Charlottes
 		// Web", "Web of Lies"), so it only counts when nothing explicit matched.
-		return SourceWebRip
+		// Scene TV tags untouched streaming captures plain "WEB" (a WEB-DL in all but
+		// name); re-encodes say "WEBRip". Sonarr reads it the same way.
+		return SourceWebDL
 	}
 	return SourceUnknown
 }

@@ -55,3 +55,22 @@ func TestInheritQualityWithBareRelease(t *testing.T) {
 		t.Errorf("Resolution = %q, want the file's 1080p preserved", got.Resolution)
 	}
 }
+
+// A fansub file's source is only inferred from its conventions; the batch's stated "BD"
+// is the better claim, so the episodes of a BD batch are BluRay, not WEB-DL.
+func TestInferredSourceYieldsToTheRelease(t *testing.T) {
+	release := parser.Parse("[Group] Show (BD 1080p HEVC FLAC)")
+	file := parser.Parse("[Group] Show - 01 [ABCD1234].mkv")
+	if !file.SourceInferred {
+		t.Fatalf("premise: the file's source should be inferred, got %q", file.Source)
+	}
+	got := inheritQuality(file, release)
+	if got.Source != parser.SourceBluray || got.SourceInferred {
+		t.Errorf("Source = %q (inferred %v), want the batch's stated BluRay", got.Source, got.SourceInferred)
+	}
+	// A stated source on the file still wins over the release's.
+	file = parser.Parse("[Group] Show - 01 [WEBRip 1080p].mkv")
+	if got := inheritQuality(file, release); got.Source != parser.SourceWebRip {
+		t.Errorf("Source = %q, want the file's own WEBRip", got.Source)
+	}
+}

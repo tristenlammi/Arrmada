@@ -145,11 +145,11 @@ func (sp StoredProfile) Summary() string {
 	}
 	switch {
 	case sp.MinSource != "" && sp.MaxSource != "":
-		parts = append(parts, string(sp.MinSource)+"–"+string(sp.MaxSource))
+		parts = append(parts, minSourceLabel(parser.Source(sp.MinSource))+"–"+minSourceLabel(parser.Source(sp.MaxSource)))
 	case sp.MinSource != "":
-		parts = append(parts, string(sp.MinSource)+"+")
+		parts = append(parts, minSourceLabel(parser.Source(sp.MinSource))+"+")
 	case sp.MaxSource != "":
-		parts = append(parts, "up to "+string(sp.MaxSource))
+		parts = append(parts, "up to "+minSourceLabel(parser.Source(sp.MaxSource)))
 	}
 	if sp.Ideal != nil {
 		// The target says it all, in the order it's set up.

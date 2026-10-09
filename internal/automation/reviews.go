@@ -991,8 +991,10 @@ func inheritQuality(file, release parser.Release) parser.Release {
 	if file.Resolution == "" {
 		file.Resolution = release.Resolution
 	}
-	if file.Source == "" {
-		file.Source = release.Source
+	// A source the file only implied (a fansub name that says nothing) yields to one the
+	// release states: the episodes of a "[Group] Show (BD 1080p)" batch are BluRay.
+	if file.Source == "" || (file.SourceInferred && release.Source != "" && !release.SourceInferred) {
+		file.Source, file.SourceInferred = release.Source, release.SourceInferred
 	}
 	// Codec too: the bitrate-margin gate converts sizes to H.264-equivalent bitrates
 	// via codec efficiency, and an x265 pack that states the codec only on the folder

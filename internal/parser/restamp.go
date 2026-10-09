@@ -141,7 +141,9 @@ func insertCodec(name, stamp string) string {
 	if strings.Contains(name, " ") && !strings.Contains(name, ".") {
 		sep = " "
 	}
-	if m := reGroup.FindStringSubmatchIndex(name); m != nil {
+	// "-DL" is the tail of "WEB-DL", never a group. Splitting it used to change the parsed
+	// source and so tripped the check below, but a bare "WEB" now also reads as WEB-DL.
+	if m := reGroup.FindStringSubmatchIndex(name); m != nil && !strings.EqualFold(name[m[2]:m[3]], "DL") {
 		out := name[:m[0]] + sep + stamp + name[m[0]:]
 		before, after := Parse(name), Parse(out)
 		if after.Group == before.Group && after.Source == before.Source && after.Resolution == before.Resolution {
