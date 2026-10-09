@@ -221,12 +221,11 @@ func (q *QBittorrent) Add(ctx context.Context, dc Client, req AddRequest) error 
 			_ = w.WriteField("urls", req.URL)
 		}
 
-		cat := req.Category
-		if cat == "" {
-			cat = dc.Category
-		}
-		if cat != "" {
-			_ = w.WriteField("category", cat)
+		// The category comes from the caller only. The client's stored category used to
+		// fill in for a blank one, and any value other than the movie category meant
+		// movies downloaded and were never imported (see categories.go).
+		if req.Category != "" {
+			_ = w.WriteField("category", req.Category)
 		}
 		// Pin the save path to Arrmada's downloads dir so the client and Arrmada agree
 		// on where the file lands — otherwise a stale client default breaks import

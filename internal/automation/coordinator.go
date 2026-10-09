@@ -47,6 +47,7 @@ type Coordinator struct {
 	log          *slog.Logger
 	downloadsDir string          // the startup downloads folder; downloadsPath reads the live one
 	downloadsFn  func() string   // the live downloads folder (Settings → Library); nil = downloadsDir
+	movieCat     string          // the movie download category (SetMovieCategory); "" = download.DefaultMovieCategory
 	series       *series.Service // set post-construction via SetSeries
 	fileFacts    FileFactsSource // Convert's probed facts for library files; nil = release names only
 	books        *books.Service  // set post-construction via SetBooks
@@ -205,6 +206,20 @@ func (c *Coordinator) bin() library.Bin {
 // is used from the next grab. Call it at startup, before anything runs.
 func (c *Coordinator) SetDownloadsDirFunc(fn func() string) { c.downloadsFn = fn }
 
+// SetMovieCategory sets the download-client category movie grabs are filed under — the
+// one the movie import sweep reads (ARRMADA_DOWNLOAD_CATEGORY). Call it at startup.
+func (c *Coordinator) SetMovieCategory(cat string) { c.movieCat = strings.TrimSpace(cat) }
+
+// movieCategory is the category every movie grab and upload is added under. It's always
+// passed explicitly: a blank one used to let the client's own category setting decide,
+// and anything but this value meant the movie downloaded and never imported.
+func (c *Coordinator) movieCategory() string {
+	if c.movieCat != "" {
+		return c.movieCat
+	}
+	return download.DefaultMovieCategory
+}
+
 // downloadsPath is the downloads folder now.
 func (c *Coordinator) downloadsPath() string {
 	if c.downloadsFn != nil {
@@ -251,11 +266,11 @@ func (c *Coordinator) KnownProfile(ctx context.Context, ref string) bool {
 // Grab resolves a release's download link and hands it to a download client.
 // Shared by the manual grab endpoint and automatic search.
 func (c *Coordinator) Grab(ctx context.Context, indexerName, downloadURL, title string) (string, error) {
-	return c.grabTo(ctx, indexerName, downloadURL, title, "")
+	return c.grabTo(ctx, indexerName, downloadURL, title, c.movieCategory())
 }
 
 // grabTo is Grab with an explicit download-client category (series use a separate
-// one so the multi-file importer handles them). Empty category = client default.
+// one so the multi-file importer handles them).
 // grabTo hands a release to the download client and returns the torrent's info hash so
 // the caller can record it on the grab.
 //
@@ -350,10 +365,10 @@ func (c *Coordinator) addTorrentFile(ctx context.Context, file []byte, filename,
 	return hash, nil
 }
 
-// GrabMovieTorrent adds an uploaded .torrent file for a movie (default category) and
+// GrabMovieTorrent adds an uploaded .torrent file for a movie (movie category) and
 // tracks it like an auto grab so seed cleanup / stall detection manage it too.
 func (c *Coordinator) GrabMovieTorrent(ctx context.Context, movieID int64, file []byte, filename, title string) error {
-	hash, err := c.addTorrentFile(ctx, file, filename, title, "")
+	hash, err := c.addTorrentFile(ctx, file, filename, title, c.movieCategory())
 	if err != nil {
 		return err
 	}

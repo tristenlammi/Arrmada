@@ -122,3 +122,42 @@ func TestBundledClientURLLocked(t *testing.T) {
 		t.Errorf("bundled rename/disable: HTTP %d %s", rec.Code, rec.Body)
 	}
 }
+
+// The list carries Arrmada's fixed categories (the movie one from the config), and a
+// category sent on create is accepted but never stored or echoed back.
+func TestDownloadClientCategoriesAreArrmadas(t *testing.T) {
+	var dl *download.Service
+	s := newRouteServer(t, func(d *Deps) {
+		d.Config.DownloadCategory = "arrmada-films"
+		dl = download.NewService(d.Store.DB(), d.Log)
+		d.Downloads = dl
+	})
+	_, mgr := s.user(t, "mgr@example.com", auth.RoleManager)
+
+	rec := s.doBody("POST", "/api/v1/downloadclients", `{"name":"qb","kind":"qbittorrent","url":"http://qb:8080","category":"movies"}`, mgr)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: HTTP %d %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), "movies") {
+		t.Errorf("create echoed the free-text category: %s", rec.Body)
+	}
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	if stored, _ := dl.Get(context.Background(), created.ID); stored.Category != "" {
+		t.Errorf("stored category = %q, want none", stored.Category)
+	}
+
+	rec = s.do("GET", "/api/v1/downloadclients", mgr)
+	var list struct {
+		Categories download.Categories `json:"categories"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(err)
+	}
+	want := download.Categories{Movies: "arrmada-films", TV: "arrmada-tv", Books: "arrmada-books", Music: "arrmada-music"}
+	if list.Categories != want {
+		t.Errorf("categories = %+v, want %+v", list.Categories, want)
+	}
+}

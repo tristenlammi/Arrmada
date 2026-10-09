@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type DownloadClient } from "../lib/api";
+import { api, type DownloadCategories, type DownloadClient } from "../lib/api";
 import { useQuery } from "../lib/query";
 import { ErrorState, Skeleton, StaleBanner, useConfirm } from "../ui";
 
@@ -9,8 +9,9 @@ const NO_CLIENTS: DownloadClient[] = [];
 type TestState = { loading?: boolean; ok?: boolean; error?: string };
 
 export function DownloadClients() {
-  const q = useQuery("download-clients", () => api.downloadClients(), { staleMs: 0 });
-  const list = q.data ?? NO_CLIENTS;
+  const q = useQuery("download-clients", () => api.downloadClientList(), { staleMs: 0 });
+  const list = q.data?.clients ?? NO_CLIENTS;
+  const categories = q.data?.categories;
   const error = q.error?.message ?? null;
   const [tests, setTests] = useState<Record<number, TestState>>({});
   const [ports, setPorts] = useState<Record<number, number>>({});
@@ -27,7 +28,7 @@ export function DownloadClients() {
   // Fetch each torrent client's incoming port so we can tell the user what to forward.
   // A switched-off client may not be running at all, so it isn't asked.
   useEffect(() => {
-    for (const c of q.data ?? []) {
+    for (const c of q.data?.clients ?? []) {
       if (c.kind === "qbittorrent" && c.enabled) {
         api.downloadClientStatus(c.id).then((s) => setPorts((p) => ({ ...p, [c.id]: s.listen_port }))).catch(() => {});
       }
@@ -128,11 +129,6 @@ export function DownloadClients() {
                         <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>
                           {dc.kind}
                         </span>
-                        {dc.category && (
-                          <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px]" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
-                            {dc.category}
-                          </span>
-                        )}
                         {dc.bundled && (
                           <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px]" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>
                             bundled
@@ -140,6 +136,7 @@ export function DownloadClients() {
                         )}
                       </div>
                       <div className="mt-1 truncate font-mono text-[11px] text-ink-faint">{dc.url}</div>
+                      {categories && <CategoryLine c={categories} />}
                       {!dc.enabled && <div className="mt-1 text-[11px] text-ink-dim">Disabled: gets no new downloads.</div>}
                       {dc.enabled && ports[dc.id] > 0 && (
                         <div className="mt-1.5 flex items-center gap-1.5 text-[11px]">
@@ -200,7 +197,6 @@ function ClientForm({ editing, onSaved }: { editing?: DownloadClient; onSaved: (
   const [url, setUrl] = useState(editing?.url ?? "");
   const [username, setUsername] = useState(editing?.username ?? "");
   const [password, setPassword] = useState("");
-  const [category, setCategory] = useState("arrmada");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const urlLocked = Boolean(editing?.bundled);
@@ -212,7 +208,7 @@ function ClientForm({ editing, onSaved }: { editing?: DownloadClient; onSaved: (
     try {
       const c = editing
         ? await api.updateDownloadClient(editing.id, { name, kind: editing.kind, url, username, password, enabled: editing.enabled })
-        : await api.createDownloadClient({ name, kind: "qbittorrent", url, username, password, category });
+        : await api.createDownloadClient({ name, kind: "qbittorrent", url, username, password });
       onSaved(c);
     } catch (err) {
       setError((err as Error).message);
@@ -259,15 +255,10 @@ function ClientForm({ editing, onSaved }: { editing?: DownloadClient; onSaved: (
             autoComplete="new-password"
           />
         </Labeled>
-        {!editing && (
-          <Labeled label="Category" span2>
-            <input className={field} style={fieldStyle} value={category} onChange={(e) => setCategory(e.target.value)} placeholder="arrmada" />
-          </Labeled>
-        )}
       </div>
       {!urlLocked && (
         <p className="mt-3 text-[11px] text-ink-faint">
-          Points at your qBittorrent WebUI as the Arrmada container reaches it: its container name or your server’s IP. localhost here means the Arrmada container itself, not your server.{!editing && " The category keeps Arrmada’s downloads separate."} Credentials are stored on your server.
+          Points at your qBittorrent WebUI as the Arrmada container reaches it: its container name or your server’s IP. localhost here means the Arrmada container itself, not your server. Credentials are stored on your server.
         </p>
       )}
       {error && <div className="mt-3 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
@@ -283,9 +274,19 @@ function ClientForm({ editing, onSaved }: { editing?: DownloadClient; onSaved: (
   );
 }
 
-function Labeled({ label, hint, span2, children }: { label: string; hint?: string; span2?: boolean; children: React.ReactNode }) {
+// CategoryLine names the categories Arrmada files downloads under in this client. They're
+// fixed: each importer reads only its own, so they aren't a setting.
+function CategoryLine({ c }: { c: DownloadCategories }) {
   return (
-    <label className={`flex flex-col gap-1.5 ${span2 ? "sm:col-span-2" : ""}`}>
+    <div className="mt-1 text-[11px] text-ink-dim" title="Arrmada files every download under one of these, so each importer finds its own.">
+      Categories: <span className="font-mono">{c.movies}</span> (movies) · <span className="font-mono">{c.tv}</span> · <span className="font-mono">{c.books}</span> · <span className="font-mono">{c.music}</span>
+    </div>
+  );
+}
+
+function Labeled({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <label className="flex flex-col gap-1.5">
       <span className="font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-ink-faint">{label}</span>
       {children}
       {hint && <span className="text-[10.5px] text-ink-faint">{hint}</span>}

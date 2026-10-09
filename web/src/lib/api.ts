@@ -377,10 +377,22 @@ export interface DownloadClient {
   kind: string;
   url: string;
   username?: string;
-  category?: string;
   enabled: boolean;
   /** The packaged qBittorrent: startup re-adds it, so its URL is fixed and a delete won't stick. */
   bundled?: boolean;
+}
+
+/** The categories Arrmada files downloads under; not a per-client setting. */
+export interface DownloadCategories {
+  movies: string;
+  tv: string;
+  books: string;
+  music: string;
+}
+
+export interface DownloadClientList {
+  clients: DownloadClient[];
+  categories?: DownloadCategories;
 }
 
 export interface NewDownloadClient {
@@ -390,7 +402,6 @@ export interface NewDownloadClient {
   username?: string;
   /** On an edit, blank keeps the stored password (it is never sent back). */
   password?: string;
-  category?: string;
   enabled?: boolean;
 }
 
@@ -1710,7 +1721,8 @@ export const api = {
     req<{ resumed: number }>(`/api/v1/series/${id}/resume-upgrades${season != null ? `?season=${season}` : ""}`, { method: "POST" }),
 
   downloadClients: () =>
-    req<{ clients: DownloadClient[] }>("/api/v1/downloadclients").then((r) => r.clients),
+    req<DownloadClientList>("/api/v1/downloadclients").then((r) => r.clients),
+  downloadClientList: () => req<DownloadClientList>("/api/v1/downloadclients"),
   createDownloadClient: (body: NewDownloadClient) =>
     req<DownloadClient>("/api/v1/downloadclients", { method: "POST", body: JSON.stringify(body) }),
   updateDownloadClient: (id: number, body: NewDownloadClient) =>

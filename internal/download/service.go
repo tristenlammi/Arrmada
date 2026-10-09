@@ -59,11 +59,10 @@ func (s *Service) EnsureBundled(ctx context.Context, url string) error {
 		}
 	}
 	_, err = s.repo.Create(ctx, Client{
-		Name:     "qBittorrent (bundled)",
-		Kind:     KindQbittorrent,
-		URL:      url,
-		Category: "arrmada",
-		Enabled:  true,
+		Name:    "qBittorrent (bundled)",
+		Kind:    KindQbittorrent,
+		URL:     url,
+		Enabled: true,
 	})
 	if err == nil {
 		s.log.Info("registered bundled qBittorrent", "url", url)

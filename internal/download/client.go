@@ -21,7 +21,9 @@ type Client struct {
 	URL      string `json:"url"`
 	Username string `json:"username,omitempty"`
 	Password string `json:"-"` // secret
-	Category string `json:"category,omitempty"`
+	// Category is the retired per-client category, still stored but never read: Arrmada
+	// chooses the category for every download (categories.go).
+	Category string `json:"-"`
 	Enabled  bool   `json:"enabled"`
 }
 

@@ -1,5 +1,5 @@
 import type {
-  ActivityFeed, BlocklistRow, Book, BookSweepStatus, BookUpgradeStatus, CalendarItem, DashboardData, DownloadClient, FitCounts,
+  ActivityFeed, BlocklistRow, Book, BookSweepStatus, BookUpgradeStatus, CalendarItem, DashboardData, DownloadClientList, FitCounts,
   FormatInfo, ImportRecord, ImportReview, Indexer, Movie, MyBook, MyRequest, QualityProfileInfo, Series,
 } from "../../src/lib/api";
 import { NOW, day } from "./clock";
@@ -95,8 +95,9 @@ export const activity: ActivityFeed = {
   clients: 1,
 };
 
-export const downloadClients: { clients: DownloadClient[] } = {
+export const downloadClients: DownloadClientList = {
   clients: [{ id: 1, name: "qBittorrent", kind: "qbittorrent", url: "http://qbittorrent:8080", enabled: true, bundled: true }],
+  categories: { movies: "arrmada", tv: "arrmada-tv", books: "arrmada-books", music: "arrmada-music" },
 };
 
 export const indexers: { indexers: Indexer[] } = {

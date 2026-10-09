@@ -34,7 +34,12 @@ func (a *api) handleListDownloadClients(w http.ResponseWriter, r *http.Request) 
 	for _, c := range list {
 		out = append(out, a.clientView(c))
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"clients": out})
+	// The categories are Arrmada's, not the client's: the page lists them read-only so
+	// the owner can see what to expect in qBittorrent.
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"clients":    out,
+		"categories": download.FixedCategories(a.deps.Config.DownloadCategory),
+	})
 }
 
 type createClientRequest struct {
@@ -43,6 +48,8 @@ type createClientRequest struct {
 	URL      string `json:"url"`
 	Username string `json:"username"`
 	Password string `json:"password"`
+	// Category is accepted so an older page's request still parses, and ignored:
+	// Arrmada picks the category for every download (download/categories.go).
 	Category string `json:"category"`
 	Enabled  *bool  `json:"enabled"`
 }
@@ -71,7 +78,6 @@ func (a *api) handleCreateDownloadClient(w http.ResponseWriter, r *http.Request)
 		URL:      req.URL,
 		Username: req.Username,
 		Password: req.Password,
-		Category: req.Category,
 		Enabled:  enabled,
 	})
 	if err != nil {

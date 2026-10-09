@@ -17,11 +17,13 @@ afterEach(() => {
 });
 
 const client = (over: Partial<DownloadClient> = {}): DownloadClient => ({ id: 1, name: "qBittorrent", kind: "qbittorrent", url: "http://qb:8080", enabled: true, ...over });
+const CATS = { movies: "arrmada", tv: "arrmada-tv", books: "arrmada-books", music: "arrmada-music" };
+const listOf = (clients: DownloadClient[]) => ({ clients, categories: CATS });
 const page = () => render(<MemoryRouter><ConfirmProvider><DownloadClients /></ConfirmProvider></MemoryRouter>);
 
 describe("DownloadClients delete (INT-04)", () => {
   it("asks first, naming what it leaves alone, and does nothing on Cancel", async () => {
-    vi.spyOn(api, "downloadClients").mockResolvedValue([client()]);
+    vi.spyOn(api, "downloadClientList").mockResolvedValue(listOf([client()]));
     const del = vi.spyOn(api, "deleteDownloadClient").mockResolvedValue(undefined);
     page();
     fireEvent.click(await screen.findByText("Delete"));
@@ -33,7 +35,7 @@ describe("DownloadClients delete (INT-04)", () => {
   });
 
   it("shows the server's error when the delete fails", async () => {
-    vi.spyOn(api, "downloadClients").mockResolvedValue([client()]);
+    vi.spyOn(api, "downloadClientList").mockResolvedValue(listOf([client()]));
     vi.spyOn(api, "deleteDownloadClient").mockRejectedValue(new Error("database is locked"));
     page();
     fireEvent.click(await screen.findByText("Delete"));
@@ -44,7 +46,7 @@ describe("DownloadClients delete (INT-04)", () => {
 
 describe("DownloadClients edit and enable (INT-05)", () => {
   it("edits in place: prefilled, blank password kept, then tested", async () => {
-    vi.spyOn(api, "downloadClients").mockResolvedValue([client({ username: "admin" })]);
+    vi.spyOn(api, "downloadClientList").mockResolvedValue(listOf([client({ username: "admin" })]));
     const upd = vi.spyOn(api, "updateDownloadClient").mockResolvedValue(client({ name: "Home qB" }));
     const test = vi.spyOn(api, "testDownloadClient").mockResolvedValue({ ok: true });
     page();
@@ -61,7 +63,7 @@ describe("DownloadClients edit and enable (INT-05)", () => {
   });
 
   it("keeps the bundled client's URL read-only and warns its delete won't stick", async () => {
-    vi.spyOn(api, "downloadClients").mockResolvedValue([client({ bundled: true, url: "http://arrmada-qbittorrent:8080" })]);
+    vi.spyOn(api, "downloadClientList").mockResolvedValue(listOf([client({ bundled: true, url: "http://arrmada-qbittorrent:8080" })]));
     page();
     fireEvent.click(await screen.findByText("Edit"));
     expect((screen.getByDisplayValue("http://arrmada-qbittorrent:8080") as HTMLInputElement).readOnly).toBe(true);
@@ -70,12 +72,12 @@ describe("DownloadClients edit and enable (INT-05)", () => {
   });
 
   it("the switch saves enabled via PUT, and a disabled card says it gets no downloads", async () => {
-    const list = vi.spyOn(api, "downloadClients").mockResolvedValue([client()]);
+    const list = vi.spyOn(api, "downloadClientList").mockResolvedValue(listOf([client()]));
     const upd = vi.spyOn(api, "updateDownloadClient").mockResolvedValue(client({ enabled: false }));
     page();
     const sw = await screen.findByRole("switch", { name: "qBittorrent enabled" });
     expect(sw.getAttribute("aria-checked")).toBe("true");
-    list.mockResolvedValue([client({ enabled: false })]);
+    list.mockResolvedValue(listOf([client({ enabled: false })]));
     await act(async () => { fireEvent.click(sw); });
     expect(upd).toHaveBeenCalledWith(1, expect.objectContaining({ enabled: false, password: "" }));
     expect(await screen.findByText(/Disabled: gets no new downloads/)).toBeTruthy();
@@ -83,7 +85,7 @@ describe("DownloadClients edit and enable (INT-05)", () => {
   });
 
   it("shows a failed toggle on the card", async () => {
-    vi.spyOn(api, "downloadClients").mockResolvedValue([client()]);
+    vi.spyOn(api, "downloadClientList").mockResolvedValue(listOf([client()]));
     vi.spyOn(api, "updateDownloadClient").mockRejectedValue(new Error("download client not found"));
     page();
     const sw = await screen.findByRole("switch");
@@ -94,7 +96,7 @@ describe("DownloadClients edit and enable (INT-05)", () => {
 
 describe("DownloadClients add form (INT-04)", () => {
   it("starts with no URL, a container-relative placeholder, and one column on a phone", async () => {
-    vi.spyOn(api, "downloadClients").mockResolvedValue([]);
+    vi.spyOn(api, "downloadClientList").mockResolvedValue(listOf([]));
     page();
     await screen.findByText(/No download clients yet/);
     fireEvent.click(screen.getByText("+ Add client"));
@@ -104,5 +106,18 @@ describe("DownloadClients add form (INT-04)", () => {
     const grid = url.closest(".grid") as HTMLElement;
     expect(grid.className).toContain("grid-cols-1");
     expect(grid.className).toContain("sm:grid-cols-2");
+  });
+});
+
+describe("DownloadClients categories (INT-10)", () => {
+  it("lists Arrmada's fixed categories on the card and has no Category field", async () => {
+    vi.spyOn(api, "downloadClientList").mockResolvedValue(listOf([client()]));
+    page();
+    expect(await screen.findByText(/Categories:/)).toBeTruthy();
+    expect(screen.getByText("arrmada-tv")).toBeTruthy();
+    fireEvent.click(screen.getByText("+ Add client"));
+    expect(screen.queryByText("Category")).toBeNull();
+    fireEvent.click(screen.getByText("Edit"));
+    expect(screen.queryByText("Category")).toBeNull();
   });
 });

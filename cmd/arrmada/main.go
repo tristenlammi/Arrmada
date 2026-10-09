@@ -406,6 +406,9 @@ func main() {
 	coordinator.SetOutbox(box) // series and book imports queue their follow-up work
 	// Every grab's save path and the free-space check read the downloads folder live.
 	coordinator.SetDownloadsDirFunc(libroots.Func(roots.Downloads))
+	// Movie grabs are filed under the category the movie import sweep reads, whatever a
+	// download client's own settings say.
+	coordinator.SetMovieCategory(cfg.DownloadCategory)
 
 	// Deliver grab/import notifications to configured connections.
 	grp.Loop("notify", notifySvc.Run)
