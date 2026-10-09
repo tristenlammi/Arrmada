@@ -3,8 +3,10 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"net/http"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/libroots"
 	"github.com/tristenlammi/arrmada/internal/pathguard"
@@ -31,6 +33,34 @@ func (a *api) importRoots(ctx context.Context) []string {
 		}
 	}
 	return roots
+}
+
+// importListTimeout bounds one manual-import listing. The walks also stop at
+// library.ListMaxResults files and library.ListMaxVisited entries, and as soon as the
+// browser goes away (the request context).
+const importListTimeout = 30 * time.Second
+
+// importListContext is the context a listing walks under.
+func importListContext(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.Context(), importListTimeout)
+}
+
+// writeImportList answers a manual-import listing with what the bounded walk found.
+// truncated tells the UI to say "showing the first 500"; a walk that ran out of time
+// returns what it had, marked truncated with a note. A browser that has already gone
+// gets nothing.
+func (a *api) writeImportList(w http.ResponseWriter, r *http.Request, ctx context.Context, kind, dir string, cands any, truncated bool) {
+	resp := map[string]any{"path": dir, "candidates": cands, "truncated": truncated}
+	if err := ctx.Err(); err != nil {
+		if rerr := r.Context().Err(); rerr != nil {
+			// No path in the line: it can name a book, and this is about the walk.
+			a.deps.Log.Debug("manual import listing stopped: the request ended", "kind", kind, "err", rerr)
+			return
+		}
+		resp["truncated"] = true
+		resp["note"] = "This folder took too long to list, so these are the files found in the first 30 seconds — pick a narrower folder."
+	}
+	a.writeJSON(w, http.StatusOK, resp)
 }
 
 // checkImportPath vets a manual-import folder or file before anything touches the disk.

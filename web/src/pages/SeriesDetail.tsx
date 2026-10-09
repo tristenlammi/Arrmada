@@ -9,7 +9,7 @@ import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
 import { FitBadge } from "../components/FitBadge";
 import { RenameModal } from "./series/RenameModal";
-import { api, type FitItem, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile } from "../lib/api";
+import { api, importListNotice, type FitItem, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile } from "../lib/api";
 
 // Auto-grab is fire-and-forget: the API answers 202 and searches in the background, and a
 // search that turns up nothing leaves no trace at all — which is exactly when you most need
@@ -547,9 +547,10 @@ function ManualImportModal({ series, onClose, onImported }: { series: SeriesT; o
   const [cands, setCands] = useState<SeriesImportCandidate[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [importing, setImporting] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    api.seriesManualImportList(series.id).then((r) => setCands(r.candidates)).catch((e: Error) => setError(e.message));
+    api.seriesManualImportList(series.id).then((r) => { setCands(r.candidates); setNotice(importListNotice(r)); }).catch((e: Error) => setError(e.message));
   }, [series.id]);
 
   // Whole-folder imports. A season pack is dozens of files and clicking each one is not a
@@ -588,6 +589,7 @@ function ManualImportModal({ series, onClose, onImported }: { series: SeriesT; o
       // refresh the list so the imported file drops off
       const r = await api.seriesManualImportList(series.id);
       setCands(r.candidates);
+      setNotice(importListNotice(r));
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -634,6 +636,7 @@ function ManualImportModal({ series, onClose, onImported }: { series: SeriesT; o
             ))}
           </div>
         )}
+        {notice && <div className="mb-2 text-[11.5px] text-ink-faint">{notice}</div>}
         <div className="thin-scroll max-h-[52vh] overflow-y-auto">
           {cands === null ? (
             <div className="p-6 text-center text-[12.5px] text-ink-dim">Scanning…</div>

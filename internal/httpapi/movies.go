@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/movies"
 )
 
@@ -628,15 +629,17 @@ func (a *api) handleManualImportList(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	cands, err := a.deps.Movies.ManualImportCandidates(dir)
-	if err != nil {
+	ctx, cancel := importListContext(r)
+	defer cancel()
+	cands, truncated, err := a.deps.Movies.ManualImportCandidates(ctx, dir, library.ListMaxResults)
+	if err != nil && ctx.Err() == nil {
 		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if cands == nil {
 		cands = []movies.ImportCandidate{}
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"path": dir, "candidates": cands})
+	a.writeImportList(w, r, ctx, "movies", dir, cands, truncated)
 }
 
 func (a *api) handleManualImport(w http.ResponseWriter, r *http.Request) {

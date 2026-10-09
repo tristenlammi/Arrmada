@@ -142,6 +142,38 @@ func TestManualImportRefusesPathsOutsideTheRoots(t *testing.T) {
 	}
 }
 
+// A listing that ran out of time answers with what it found, marked cut short; one whose
+// browser has gone answers nothing.
+func TestWriteImportListTimeoutAndDisconnect(t *testing.T) {
+	a := &api{deps: Deps{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}}
+
+	r := httptest.NewRequest("GET", "/", nil)
+	ctx, cancel := context.WithTimeout(r.Context(), 0)
+	defer cancel()
+	<-ctx.Done()
+	rec := httptest.NewRecorder()
+	a.writeImportList(rec, r, ctx, "movies", "/dl", []string{"a"}, false)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"truncated":true`) || !strings.Contains(rec.Body.String(), `"note"`) {
+		t.Errorf("timed-out listing: %d %s", rec.Code, rec.Body.String())
+	}
+
+	gone, leave := context.WithCancel(context.Background())
+	leave()
+	r = httptest.NewRequest("GET", "/", nil).WithContext(gone)
+	rec = httptest.NewRecorder()
+	a.writeImportList(rec, r, gone, "movies", "/dl", []string{}, false)
+	if rec.Body.Len() != 0 {
+		t.Errorf("answered a browser that had gone: %s", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	ok := httptest.NewRequest("GET", "/", nil)
+	a.writeImportList(rec, ok, ok.Context(), "movies", "/dl", []string{"a"}, true)
+	if !strings.Contains(rec.Body.String(), `"truncated":true`) || strings.Contains(rec.Body.String(), `"note"`) {
+		t.Errorf("capped listing: %s", rec.Body.String())
+	}
+}
+
 func jsonString(s string) string {
 	return `"` + strings.ReplaceAll(strings.ReplaceAll(s, `\`, `\\`), `"`, `\"`) + `"`
 }

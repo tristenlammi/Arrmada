@@ -684,11 +684,13 @@ func (a *api) handleSeriesManualImportList(w http.ResponseWriter, r *http.Reques
 		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	cands := a.deps.Automation.SeriesImportCandidates(dir)
+	ctx, cancel := importListContext(r)
+	defer cancel()
+	cands, truncated := a.deps.Automation.SeriesImportCandidates(ctx, dir)
 	if cands == nil {
 		cands = []automation.SeriesImportCandidate{}
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"path": dir, "candidates": cands})
+	a.writeImportList(w, r, ctx, "series", dir, cands, truncated)
 }
 
 func (a *api) handleSeriesManualImport(w http.ResponseWriter, r *http.Request) {

@@ -5,6 +5,7 @@
 package library
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -52,20 +53,75 @@ func IsAudiobookFile(p string) bool { return isAudiobook(p) }
 // and audiobook discovery.
 type FoundFile = FoundVideo
 
+// Limits for a listing someone is browsing (manual import). Listing a library root used
+// to walk every file on the array, and kept walking after the browser had gone; nobody
+// reads past a few hundred rows, so stop there and say the list is cut short.
+const (
+	ListMaxResults = 500     // files returned
+	ListMaxVisited = 100_000 // directory entries looked at, files and folders alike
+)
+
+// walkLimits counts a bounded walk. Zero limits mean unbounded.
+type walkLimits struct {
+	ctx                    context.Context
+	maxResults, maxVisited int
+	visited, results       int
+	truncated              bool
+}
+
+// step is called for every entry. It returns ctx.Err() once the caller has gone, and
+// fs.SkipAll (with truncated set) once too many entries have been looked at.
+func (l *walkLimits) step() error {
+	if err := l.ctx.Err(); err != nil {
+		return err
+	}
+	l.visited++
+	if l.maxVisited > 0 && l.visited > l.maxVisited {
+		l.truncated = true
+		return fs.SkipAll
+	}
+	return nil
+}
+
+// full reports whether another result would go over the cap; it marks the walk cut
+// short, since that result exists.
+func (l *walkLimits) full() bool {
+	if l.maxResults > 0 && l.results >= l.maxResults {
+		l.truncated = true
+		return true
+	}
+	return false
+}
+
 // FindBookFiles returns every ebook + audiobook file at contentPath (no size floor).
 func FindBookFiles(contentPath string) []FoundFile {
+	out, _, _ := FindBookFilesCtx(context.Background(), contentPath, 0, 0)
+	return out
+}
+
+// FindBookFilesCtx is FindBookFiles bounded for a listing: it stops when ctx ends
+// (returning what it found and ctx.Err()), after maxResults files, or after maxVisited
+// entries, and reports truncated when there was more. Zero limits mean unbounded.
+func FindBookFilesCtx(ctx context.Context, contentPath string, maxResults, maxVisited int) ([]FoundFile, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	info, err := os.Stat(contentPath)
 	if err != nil {
-		return nil
+		return nil, false, nil
 	}
 	if !info.IsDir() {
 		if isBookFile(contentPath) {
-			return []FoundFile{{Path: contentPath, Size: info.Size()}}
+			return []FoundFile{{Path: contentPath, Size: info.Size()}}, false, nil
 		}
-		return nil
+		return nil, false, nil
 	}
+	lim := &walkLimits{ctx: ctx, maxResults: maxResults, maxVisited: maxVisited}
 	var out []FoundFile
-	_ = filepath.WalkDir(contentPath, func(p string, d os.DirEntry, err error) error {
+	werr := filepath.WalkDir(contentPath, func(p string, d os.DirEntry, err error) error {
+		if serr := lim.step(); serr != nil {
+			return serr
+		}
 		// Hidden folders inside a book are Arrmada's own (merge backups) or a system's
 		// (.AppleDouble, .recycle): never book files.
 		if err == nil && d.IsDir() && p != contentPath && strings.HasPrefix(d.Name(), ".") {
@@ -78,11 +134,24 @@ func FindBookFiles(contentPath string) []FoundFile {
 			return nil
 		}
 		if fi, e := d.Info(); e == nil {
+			if lim.full() {
+				return fs.SkipAll
+			}
 			out = append(out, FoundFile{Path: p, Size: fi.Size()})
+			lim.results++
 		}
 		return nil
 	})
-	return out
+	return out, lim.truncated, ctxErr(werr)
+}
+
+// ctxErr keeps a cancellation from a walk and drops everything else, which the walks
+// have always ignored (an unreadable sub-folder just isn't listed).
+func ctxErr(err error) error {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	return nil
 }
 
 // FindEbooks returns only the ebook files at contentPath.
@@ -685,18 +754,34 @@ type FoundVideo struct {
 // FindVideos returns every video file at contentPath larger than 50 MB (skipping
 // samples/extras). Used to import a season/multi-season pack — many files at once.
 func FindVideos(contentPath string) ([]FoundVideo, error) {
+	out, _, err := FindVideosCtx(context.Background(), contentPath, 0, 0)
+	return out, err
+}
+
+// FindVideosCtx is FindVideos bounded for a listing: it stops when ctx ends (returning
+// what it found and ctx.Err()), after maxResults files, or after maxVisited entries, and
+// reports truncated when there was more. Zero limits mean unbounded. A missing
+// contentPath is an error, as it always was.
+func FindVideosCtx(ctx context.Context, contentPath string, maxResults, maxVisited int) ([]FoundVideo, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	info, err := os.Stat(contentPath)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !info.IsDir() {
 		if isVideo(contentPath) {
-			return []FoundVideo{{Path: contentPath, Size: info.Size()}}, nil
+			return []FoundVideo{{Path: contentPath, Size: info.Size()}}, false, nil
 		}
-		return nil, nil
+		return nil, false, nil
 	}
+	lim := &walkLimits{ctx: ctx, maxResults: maxResults, maxVisited: maxVisited}
 	var out []FoundVideo
-	_ = filepath.WalkDir(contentPath, func(p string, d os.DirEntry, err error) error {
+	werr := filepath.WalkDir(contentPath, func(p string, d os.DirEntry, err error) error {
+		if serr := lim.step(); serr != nil {
+			return serr
+		}
 		if err != nil || d.IsDir() || !isVideo(p) {
 			return nil
 		}
@@ -707,10 +792,14 @@ func FindVideos(contentPath string) ([]FoundVideo, error) {
 		if isSampleName(p) {
 			return nil
 		}
+		if lim.full() {
+			return fs.SkipAll
+		}
 		out = append(out, FoundVideo{Path: p, Size: fi.Size()})
+		lim.results++
 		return nil
 	})
-	return out, nil
+	return out, lim.truncated, ctxErr(werr)
 }
 
 // EpisodeImport describes one imported episode file.

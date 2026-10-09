@@ -498,9 +498,11 @@ type SeriesImportCandidate struct {
 	Quality   string `json:"quality"`
 }
 
-// SeriesImportCandidates lists importable video files under dir (recursively).
-func (c *Coordinator) SeriesImportCandidates(dir string) []SeriesImportCandidate {
-	vids, _ := library.FindVideos(dir)
+// SeriesImportCandidates lists importable video files under dir (recursively), up to
+// library.ListMaxResults; truncated says there were more (or the walk was stopped).
+// It stops early when ctx ends — the caller checks ctx.Err().
+func (c *Coordinator) SeriesImportCandidates(ctx context.Context, dir string) ([]SeriesImportCandidate, bool) {
+	vids, truncated, _ := library.FindVideosCtx(ctx, dir, library.ListMaxResults, library.ListMaxVisited)
 	out := make([]SeriesImportCandidate, 0, len(vids))
 	for _, v := range vids {
 		p := parser.Parse(filepath.Base(v.Path))
@@ -513,7 +515,7 @@ func (c *Coordinator) SeriesImportCandidates(dir string) []SeriesImportCandidate
 			Season: p.Season, Episode: ep, SizeBytes: v.Size, Quality: string(p.Resolution),
 		})
 	}
-	return out
+	return out, truncated
 }
 
 // ManualImportSeries imports one on-disk file into a series as its parsed episode.

@@ -379,6 +379,17 @@ export interface SetupState {
 // path_disabled: the folder on screen holds (or is) Arrmada's data folder, so it can be
 // walked through but not selected.
 export interface BrowseResult { path: string; parent: string; dirs: { name: string; path: string }[]; path_disabled?: boolean }
+// ManualImportList is one manual-import listing. The server stops after 500 files (or 30
+// seconds) so a library root can't walk the whole array: truncated says the list is cut
+// short, and note says why when it ran out of time.
+export interface ManualImportList<T> { path: string; candidates: T[]; truncated?: boolean; note?: string }
+
+// importListNotice is the line a manual-import modal shows under a cut-short list.
+export function importListNotice(r: { truncated?: boolean; note?: string }): string | null {
+  if (r.note) return r.note;
+  return r.truncated ? "Showing the first 500 files — pick a narrower folder." : null;
+}
+
 // PendingRestart: folders saved in the app that the running app isn't using yet (they
 // apply at the next start), and what a restart would interrupt. Counts only, no titles.
 export interface PendingRestart {
@@ -1541,7 +1552,7 @@ export const api = {
     req<{ items: DiscoverCard[] }>(`/api/v1/discover/search?q=${encodeURIComponent(q)}`).then((r) => r.items),
 
   seriesManualImportList: (id: number) =>
-    req<{ candidates: SeriesImportCandidate[] }>(`/api/v1/series/${id}/manualimport`),
+    req<ManualImportList<SeriesImportCandidate>>(`/api/v1/series/${id}/manualimport`),
   seriesManualImport: (id: number, path: string) =>
     req<{ status: string; background?: boolean }>(`/api/v1/series/${id}/manualimport`, { method: "POST", body: JSON.stringify({ path }) }),
   seriesRenamePreview: (id: number) =>
@@ -1601,7 +1612,7 @@ export const api = {
   grabBook: (id: number, body: { indexer?: string; download_url: string; title: string; version_id?: number }) =>
     req<{ status: string }>(`/api/v1/books/${id}/grab`, { method: "POST", body: JSON.stringify(body) }),
   bookManualImportList: (id: number) =>
-    req<{ candidates: BookImportCandidate[] }>(`/api/v1/books/${id}/manualimport`),
+    req<ManualImportList<BookImportCandidate>>(`/api/v1/books/${id}/manualimport`),
   bookManualImport: (id: number, path: string, versionId?: number) =>
     req<{ status: string }>(`/api/v1/books/${id}/manualimport`, { method: "POST", body: JSON.stringify({ path, version_id: versionId || 0 }) }),
   addAudioVersion: (id: number, body: { label: string; terms: string[]; monitored: boolean }) =>
@@ -1838,7 +1849,7 @@ export const api = {
       body: JSON.stringify({ min_availability }),
     }),
   manualImportList: (id: number, path?: string) =>
-    req<{ path: string; candidates: ImportCandidate[] }>(
+    req<ManualImportList<ImportCandidate>>(
       `/api/v1/movies/${id}/manualimport${path ? `?path=${encodeURIComponent(path)}` : ""}`,
     ),
   manualImport: (id: number, path: string) =>
