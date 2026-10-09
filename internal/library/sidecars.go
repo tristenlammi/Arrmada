@@ -26,6 +26,16 @@ func PairedSidecars(video string) []string {
 	if err != nil {
 		return nil
 	}
+	// Another video whose name extends this one's ("Movie.Proper.mkv" beside "Movie.mkv")
+	// owns the sidecars named for it, even though they also start with "Movie.".
+	var longer []string
+	for _, e := range entries {
+		ext := filepath.Ext(e.Name())
+		if b := strings.ToLower(strings.TrimSuffix(e.Name(), ext)); !e.IsDir() && sameBaseVideoExts[strings.ToLower(ext)] &&
+			strings.HasPrefix(b, base+".") {
+			longer = append(longer, b)
+		}
+	}
 	var out []string
 	for _, e := range entries {
 		if e.IsDir() || !subtitleExts[strings.ToLower(filepath.Ext(e.Name()))] {
@@ -35,9 +45,22 @@ func PairedSidecars(video string) []string {
 		if stem != base && !strings.HasPrefix(stem, base+".") {
 			continue // not this video's sidecar
 		}
+		if pairsWithAny(stem, longer) {
+			continue // the longer-named video's sidecar
+		}
 		out = append(out, filepath.Join(dir, e.Name()))
 	}
 	return out
+}
+
+// pairsWithAny reports whether a subtitle stem pairs with any of the (lower-case) video bases.
+func pairsWithAny(stem string, bases []string) bool {
+	for _, b := range bases {
+		if stem == b || strings.HasPrefix(stem, b+".") {
+			return true
+		}
+	}
+	return false
 }
 
 // OrphanSidecars lists the subtitle files in dir that pair with no video there — left
@@ -64,15 +87,7 @@ func OrphanSidecars(dir string) []string {
 	}
 	var out []string
 	for _, name := range subs {
-		stem := strings.ToLower(strings.TrimSuffix(name, filepath.Ext(name)))
-		paired := false
-		for _, b := range bases {
-			if stem == b || strings.HasPrefix(stem, b+".") {
-				paired = true
-				break
-			}
-		}
-		if !paired {
+		if !pairsWithAny(strings.ToLower(strings.TrimSuffix(name, filepath.Ext(name))), bases) {
 			out = append(out, filepath.Join(dir, name))
 		}
 	}

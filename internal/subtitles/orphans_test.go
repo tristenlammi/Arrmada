@@ -30,6 +30,14 @@ func TestScanSidecarsPairsByBase(t *testing.T) {
 	}
 }
 
+// "Movie.Proper.en.srt" belongs to "Movie.Proper.mkv", not to "Movie.mkv" beside it.
+func TestScanSidecarsLongerNamedSibling(t *testing.T) {
+	_, video := mkFiles(t, "Movie.mkv", "Movie.Proper.mkv", "Movie.Proper.en.srt")
+	if sc := scanSidecars(video, []string{"en"}, "movie"); len(sc.Present) != 0 || len(sc.Orphans) != 0 {
+		t.Errorf("scan = %+v, want en missing and no orphans", sc)
+	}
+}
+
 func TestOrphanSidecars(t *testing.T) {
 	// The acceptance case: an Anchorman sidecar under an old name.
 	_, video := mkFiles(t, "Anchorman (2004) Bluray-2160p.mkv", "Anchorman.eng.srt")

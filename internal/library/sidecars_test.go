@@ -39,6 +39,21 @@ func TestPairedSidecars(t *testing.T) {
 	}
 }
 
+// A video whose name extends another's owns its own sidecars: deleting "Movie.mkv" must not
+// take "Movie.Proper.en.srt", which belongs to "Movie.Proper.mkv".
+func TestPairedSidecarsLeavesLongerNamedVideosSubs(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"Movie.mkv", "Movie.en.srt", "Movie.Proper.mkv", "Movie.Proper.en.srt"} {
+		writeTemp(t, filepath.Join(dir, n))
+	}
+	if got := baseNames(library.PairedSidecars(filepath.Join(dir, "Movie.mkv"))); len(got) != 1 || got[0] != "Movie.en.srt" {
+		t.Errorf("PairedSidecars(Movie.mkv) = %v, want only Movie.en.srt", got)
+	}
+	if got := library.OrphanSidecars(dir); len(got) != 0 {
+		t.Errorf("orphans = %v, want none", got)
+	}
+}
+
 func TestSharesBase(t *testing.T) {
 	dir := t.TempDir()
 	for _, n := range []string{"X.mp4", "X.mkv", "Y.mkv", "Y.en.srt", "Z.mkv", "Z.nfo"} {

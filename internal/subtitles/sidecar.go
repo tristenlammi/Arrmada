@@ -160,27 +160,32 @@ func scanSidecars(videoPath string, wanted []string, kind string) sidecarScan {
 	if err != nil {
 		return sc
 	}
-	var videoBases, unpaired []string
+	var videoBases, longer, subNames, unpaired []string
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
 		ext := strings.ToLower(filepath.Ext(e.Name()))
 		stem := strings.ToLower(strings.TrimSuffix(e.Name(), filepath.Ext(e.Name())))
-		if pairingVideoExts[ext] {
+		switch {
+		case pairingVideoExts[ext]:
 			videoBases = append(videoBases, stem)
-			continue
+			if strings.HasPrefix(stem, prefix) {
+				longer = append(longer, stem) // "Movie.Proper.mkv" beside "Movie.mkv"
+			}
+		case subExts[ext]:
+			subNames = append(subNames, e.Name())
 		}
-		if !subExts[ext] {
-			continue
-		}
+	}
+	for _, name := range subNames {
+		stem := strings.ToLower(strings.TrimSuffix(name, filepath.Ext(name)))
 		var lv LangVariant
 		switch {
 		case stem == baseLower: // bare "<base>.srt" for exactly this file: untagged, full
-		case strings.HasPrefix(stem, prefix): // "<base>.<lang>[.forced].srt"
+		case strings.HasPrefix(stem, prefix) && !pairsWith(stem, longer): // "<base>.<lang>[.forced].srt"
 			lv.Lang, lv.Variant = parseSidecarTag(strings.Split(stem[len(prefix):], "."), isKnownLang)
 		default:
-			unpaired = append(unpaired, e.Name())
+			unpaired = append(unpaired, name)
 			continue
 		}
 		sc.Variants = append(sc.Variants, lv)
@@ -191,21 +196,24 @@ func scanSidecars(videoPath string, wanted []string, kind string) sidecarScan {
 	}
 	for _, name := range unpaired {
 		stem := strings.ToLower(strings.TrimSuffix(name, filepath.Ext(name)))
-		paired := false
-		for _, b := range videoBases {
-			if stem == b || strings.HasPrefix(stem, b+".") {
-				paired = true // another video's (another version's) sidecar
-				break
-			}
-		}
-		if paired {
-			continue
+		if pairsWith(stem, videoBases) {
+			continue // another video's (another version's) sidecar
 		}
 		o := Orphan{Name: name}
 		o.Lang, o.Variant = parseSidecarTag(strings.Split(stem, "."), isKnownLang)
 		sc.Orphans = append(sc.Orphans, o)
 	}
 	return sc
+}
+
+// pairsWith reports whether a (lower-case) subtitle stem is named for one of the video bases.
+func pairsWith(stem string, bases []string) bool {
+	for _, b := range bases {
+		if stem == b || strings.HasPrefix(stem, b+".") {
+			return true
+		}
+	}
+	return false
 }
 
 // pairingVideoExts are the containers a sidecar can pair with when deciding what's an orphan.
