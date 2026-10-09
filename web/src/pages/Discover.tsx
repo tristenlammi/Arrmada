@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { NotificationBell } from "../components/NotificationBell";
+import { MetadataMissing } from "../components/MetadataMissing";
 import { BooksDiscover } from "./BooksDiscover";
 import { useMe, isStaff } from "../lib/me";
 import { api, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaDetail, type MediaRequest } from "../lib/api";
@@ -16,7 +17,7 @@ const BASE_TABS: { key: Tab; label: string }[] = [
 ];
 
 export function Discover({ chrome = true }: { chrome?: boolean }) {
-  const { user, booksEnabled } = useMe();
+  const { user, booksEnabled, metadataReady } = useMe();
   // Books get their own tab at the end — a completely separate Open Library experience.
   const TABS = booksEnabled ? [...BASE_TABS, { key: "books" as Tab, label: "Books" }] : BASE_TABS;
   const [tab, setTabState] = useState<Tab>("discover");
@@ -82,9 +83,11 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
         <div className="mb-5 flex flex-col gap-2 border-b sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-3" style={{ borderColor: "var(--line)" }}>
           <div className="flex w-full items-center justify-end gap-2 sm:order-last sm:w-auto sm:justify-start">
             {/* Books have their own search inside BooksDiscover — hide the movie/TV one there. */}
-            {tab !== "books" && (
+            {tab !== "books" && (metadataReady ? (
               <SearchBox value={searchInput} onChange={onSearchChange} onSeeAll={(q) => { setSearchInput(q); setSearch(q); }} ctx={ctx} />
-            )}
+            ) : (
+              <input disabled placeholder="Search isn't available yet" aria-label="Search movies and TV (not available yet)" className="min-w-0 flex-1 rounded-lg px-3 py-2 text-[12.5px] opacity-60 sm:w-[210px] sm:flex-initial" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+            ))}
             <NotificationBell />
           </div>
           <div className="thin-scroll -mb-px flex min-w-0 gap-1 overflow-x-auto sm:mb-0 sm:overflow-visible">
@@ -107,6 +110,14 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
 
         {tab === "books" ? (
           <BooksDiscover flash={flash} canRequest={canRequest} initialQuery={bookSeed} />
+        ) : !metadataReady ? (
+          // No TMDB key: every movie/TV feed would fail on its own and repeat the same error
+          // row after row. Show the viewer's requests (they don't need TMDB) and one message
+          // worded for their role instead. Books use Open Library and are unaffected.
+          <div className="flex flex-col gap-7">
+            <MyRequestsRow flash={flash} />
+            <MetadataMissing variant="empty" />
+          </div>
         ) : search ? (
           <SearchResults query={search} ctx={ctx} />
         ) : (
@@ -135,7 +146,8 @@ interface RowCtx {
 }
 
 // Compact inline error line for a failed fetch — distinct from a genuine empty result.
-// The backend's message is surfaced verbatim (e.g. "TMDB not configured — set …").
+// The backend's message is surfaced verbatim. A missing TMDB key never gets here: the page
+// shows one MetadataMissing message instead of an error per row.
 function LoadError({ message }: { message: string }) {
   return (
     <div className="rounded-lg px-3 py-2 text-[12px] font-medium" style={{ border: "1px solid var(--line)", color: "var(--reject)", background: "var(--panel)" }}>

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { MetadataMissing } from "../components/MetadataMissing";
 import { DeleteSeriesDialog } from "../components/DeleteSeriesDialog";
 import { api, type Series as SeriesT, type SeriesFitSummary, type SeriesLookup } from "../lib/api";
 import { FIT_COLOR } from "../components/FitBadge";
@@ -238,11 +239,7 @@ export function Series() {
           </div>
         )}
 
-        {!metaOK && (
-          <div className="mb-4 rounded-lg p-3.5 text-[12.5px]" style={{ border: "1px solid var(--avoid)", background: "var(--avoid-soft)", color: "var(--avoid)" }}>
-            <b>Metadata not configured.</b> To add series, set <span className="font-mono">ARRMADA_TMDB_API_KEY</span> (a free key from themoviedb.org) and restart.
-          </div>
-        )}
+        {!metaOK && <MetadataMissing variant="banner" />}
         {error && <div className="mb-3 rounded-lg p-3 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
 
         {list.length === 0 ? (

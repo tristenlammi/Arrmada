@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { MetadataMissing } from "../components/MetadataMissing";
 import { api, type FitItem, type Movie, type MovieLookup } from "../lib/api";
 import { FitBadge, FIT_COLOR, bitrateColor, fitRank, hasIssue } from "../components/FitBadge";
 import { posterThumb } from "../lib/img";
@@ -238,11 +239,7 @@ export function Movies() {
           </div>
         )}
 
-        {!metaOK && (
-          <div className="mb-4 rounded-lg p-3.5 text-[12.5px]" style={{ border: "1px solid var(--avoid)", background: "var(--avoid-soft)", color: "var(--avoid)" }}>
-            <b>Metadata not configured.</b> To add movies, set <span className="font-mono">ARRMADA_TMDB_API_KEY</span> (a free key from themoviedb.org) and restart.
-          </div>
-        )}
+        {!metaOK && <MetadataMissing variant="banner" />}
         {error && (
           <div className="mb-3 rounded-lg p-3 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>
             {error}

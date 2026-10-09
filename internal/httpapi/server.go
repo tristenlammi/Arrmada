@@ -602,7 +602,7 @@ func (a *api) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	_, authed := userFrom(r)
 
-	a.writeJSON(w, http.StatusOK, map[string]any{
+	out := map[string]any{
 		"app":            "Arrmada",
 		"version":        buildinfo.Version,
 		"commit":         buildinfo.Commit,
@@ -617,7 +617,13 @@ func (a *api) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"modules":       a.modules(r.Context()),
 		"books_enabled": a.booksEnabled(r.Context()),
 		"music_enabled": a.musicEnabled(r.Context()),
-	})
+	}
+	// Whether a TMDB key is set is configuration, so only signed-in callers learn it. The UI
+	// uses it to show one role-aware "not set up" message instead of a failing row per feed.
+	if authed {
+		out["metadata_ready"] = a.metadataReady()
+	}
+	a.writeJSON(w, http.StatusOK, out)
 }
 
 func (a *api) writeJSON(w http.ResponseWriter, status int, v any) {

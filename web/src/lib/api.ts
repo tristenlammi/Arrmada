@@ -21,6 +21,8 @@ export interface Status {
   books_enabled: boolean;
   music_enabled: boolean;
   plex_login: boolean;
+  /** Whether TMDB browsing works (a key is set). Sent to signed-in callers only. */
+  metadata_ready?: boolean;
 }
 
 export interface Health {

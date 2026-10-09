@@ -605,6 +605,7 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
 
 
 function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => void }) {
+  const { setMetadataReady } = useMe();
   const [keys, setKeys] = useState<APIKeyStatus[] | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
@@ -649,6 +650,8 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
     try {
       const next = await api.setAPIKey(id, drafts[id] ?? "");
       setKeys(next);
+      // The key works the moment it's saved, so let Movies and Discover know without a reload.
+      if (id === "tmdb") setMetadataReady(!!next.find((k) => k.id === "tmdb")?.configured);
       setDrafts((d) => { const n = { ...d }; delete n[id]; return n; }); // clear the field on success
     } catch (e) {
       setErr((e as Error).message);

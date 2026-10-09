@@ -49,7 +49,7 @@ func (a *api) handleLookupMovies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.deps.Movies.MetadataAvailable() {
-		a.writeError(w, http.StatusBadRequest, "movie metadata isn't configured — add a TMDB key in Settings → API keys (free from themoviedb.org)")
+		a.writeError(w, http.StatusBadRequest, "movie metadata isn't configured — add a TMDB key in Settings → System → API keys (free from themoviedb.org)")
 		return
 	}
 	results, err := a.deps.Movies.Lookup(r.Context(), q)
