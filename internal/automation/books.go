@@ -36,6 +36,12 @@ func detectBookFormat(title string) string {
 
 // SearchBooksMissing sweeps every monitored book and grabs any wanted edition it lacks.
 func (c *Coordinator) SearchBooksMissing(ctx context.Context) {
+	c.searchBooksMissing(ctx, bookSweepCap)
+}
+
+// searchBooksMissing is the sweep with its per-run cap as a parameter, so a test can
+// exercise the cap without forty throttled searches.
+func (c *Coordinator) searchBooksMissing(ctx context.Context, maxSearches int) {
 	if c.books == nil {
 		return
 	}
@@ -53,29 +59,55 @@ func (c *Coordinator) SearchBooksMissing(ctx context.Context) {
 		c.log.Warn("book: couldn't read the download queue — skipping the missing-books sweep this cycle", "err", qerr)
 		return
 	}
-	var outage outageTally
-	defer outage.report(c.log, "book search sweep")
+	states, err := c.books.SearchStates(ctx)
+	if err != nil {
+		c.log.Warn("book: couldn't read search states — skipping the missing-books sweep this cycle", "err", err)
+		return
+	}
+	// Every monitored book that still lacks a wanted edition and whose wait on the ladder
+	// is over. Nothing is ever dropped for good; a book that keeps coming up empty is just
+	// asked about less often.
+	now := c.clock()
+	type dueBook struct {
+		b     books.Book
+		state books.SearchState
+	}
+	var due []dueBook
 	for _, b := range all {
-		if !b.Monitored {
+		if !b.Monitored || !c.bookLacksWanted(ctx, b) {
+			continue
+		}
+		st := states[b.ID]
+		if next := books.NextSearchAt(st.LastAt, st.Misses); !next.IsZero() && now.Before(next) {
 			continue
 		}
 		if c.bookDownloading(ctx, queue, b.ID) {
 			continue // already downloading for this book — let it finish
 		}
-		lastAt, misses := c.books.SearchState(ctx, b.ID)
-		wait, giveUp := bookSearchWait(misses)
-		if giveUp {
-			continue // twice was enough — it's a manual search from here
+		due = append(due, dueBook{b, st})
+	}
+	// Longest-waiting first, never-searched before all. With the cap, a backlog (every
+	// book that used to be given up on comes due at once after an upgrade) is spread over
+	// the next sweeps instead of hitting the trackers in one burst.
+	sort.SliceStable(due, func(i, j int) bool {
+		a, b := parseTime(due[i].state.LastAt), parseTime(due[j].state.LastAt)
+		if !a.Equal(b) {
+			return a.Before(b) // the zero time (never searched) sorts first
 		}
-		if wait > 0 {
-			if last := parseTime(lastAt); !last.IsZero() && time.Since(last) < wait {
-				continue
-			}
+		return due[i].b.ID < due[j].b.ID
+	})
+	var outage outageTally
+	defer outage.report(c.log, "book search sweep")
+	searched := 0
+	for _, d := range due {
+		if searched >= maxSearches {
+			break
 		}
+		searched++
+		b := d.b
 		n, err := c.searchBookOnce(ctx, b.ID)
-		// An error — above all an indexer outage — is not a miss. Books get only two
-		// automatic tries, so counting a search nobody could answer used to drop a book
-		// requested during an outage out of automatic search for good.
+		// An error — above all an indexer outage — is not a miss: a search nobody could
+		// answer says nothing about whether the book is out there.
 		if outage.note(err) {
 			if outage.stop() {
 				break // the indexers are down: the rest would only fail the same way
@@ -87,14 +119,47 @@ func (c *Coordinator) SearchBooksMissing(ctx context.Context) {
 		}
 		if _, miss := sweepOutcome(err, true, n); miss {
 			c.books.RecordSearchMiss(ctx, b.ID)
-			// Say so once, at the transition. A book that has quietly stopped being
-			// searched looks identical to one nobody has got to yet.
-			if misses+1 >= bookSearchAttempts {
-				c.log.Info("book: nothing found twice — no more automatic searches, use Search on the book page",
+			// Say so once, at the step down to monthly checks, so a book searched rarely
+			// doesn't look like one nobody has got to yet.
+			if d.state.Misses+1 == books.MonthlyAfter+1 {
+				c.log.Info("book: still nothing after many searches — checking monthly from now on",
 					"title", b.Title)
 			}
 		}
 	}
+	if len(due) > searched {
+		c.log.Debug(fmt.Sprintf("books: %d due, searched %d, rest next sweep", len(due), searched))
+	}
+}
+
+// bookSweepCap is the most books one automatic sweep searches. Book searches are the
+// expensive kind (one per wanted edition, across every indexer) and private trackers
+// rate-limit; the rest wait for the next sweep, oldest first.
+const bookSweepCap = 40
+
+// bookLacksWanted reports whether a book is missing an edition, or a monitored audio
+// version, that its profile wants — the same conditions searchBookOnce searches for. A
+// complete book has nothing to search, and counting it would only use up the cap.
+func (c *Coordinator) bookLacksWanted(ctx context.Context, b books.Book) bool {
+	sp := c.bookProfile(ctx, b.QualityProfile)
+	wantEbook, wantAudio := books.WantedEditions(sp.FormatScores)
+	if (wantEbook && b.Ebook == nil) || (wantAudio && b.Audiobook == nil) {
+		return true
+	}
+	for _, v := range b.AudioVersions {
+		if versionWanted(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// clock is the sweep's "now"; tests set c.now.
+func (c *Coordinator) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
 }
 
 // bookDownloading reports whether the queue already holds a book torrent for this book,
@@ -119,29 +184,6 @@ func (c *Coordinator) bookDownloading(ctx context.Context, queue []download.Item
 func (c *Coordinator) SearchBookNow(ctx context.Context, bookID int64) error {
 	_, err := c.searchBookOnce(ctx, bookID)
 	return err
-}
-
-// bookSearchAttempts is how many times the sweep tries a book before leaving it alone.
-//
-// Books aren't films: a title that no tracker carries today usually isn't carried next
-// week either, and a book search is the expensive kind — one per wanted edition, across
-// every indexer. So rather than the ever-lengthening ladder movies and series use, books
-// get two goes: once when they're added, and once a day later in case an upload was on
-// its way. After that the sweep leaves it, and the Search button on the book page is how
-// you ask again.
-const bookSearchAttempts = 2
-
-// bookSearchWait reports how long the sweep must leave this book alone, and whether it has
-// stopped searching it automatically altogether.
-func bookSearchWait(misses int) (wait time.Duration, giveUp bool) {
-	switch {
-	case misses <= 0:
-		return 0, false // never searched — go
-	case misses < bookSearchAttempts:
-		return 24 * time.Hour, false // one more try, a day later
-	default:
-		return 0, true
-	}
 }
 
 // searchBookOnce is SearchBookNow that also reports how many editions it grabbed, so the

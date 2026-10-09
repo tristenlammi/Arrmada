@@ -97,6 +97,10 @@ type Coordinator struct {
 	stallMu       sync.Mutex
 	stallProgress map[int64]stallSample
 
+	// now is the books sweep's clock; nil means time.Now. Tests set it to step through
+	// the search ladder.
+	now func() time.Time
+
 	// The manual missing-editions sweep for books (books_sweep.go).
 	bookSweepMu sync.Mutex
 	bookSweep   BookSweepStatus

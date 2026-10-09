@@ -95,8 +95,8 @@ func TestBookSweepDuringOutageRecordsNoMiss(t *testing.T) {
 	if _, misses := bk.SearchState(ctx, id); misses != 0 {
 		t.Errorf("outage searches counted %d miss(es); want 0", misses)
 	}
-	if _, giveUp := bookSearchWait(0); giveUp {
-		t.Error("a book with no misses must still be searched automatically")
+	if books.SearchWait(0) != 0 {
+		t.Error("a book with no misses must be searched straight away")
 	}
 }
 
