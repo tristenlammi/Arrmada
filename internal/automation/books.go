@@ -201,12 +201,20 @@ func (c *Coordinator) searchBookOnce(ctx context.Context, bookID int64) (int, er
 // the search's error when it couldn't run at all (every indexer failed, or none serves
 // books) — swallowing that made an outage look like "nothing found".
 func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind string, sp quality.StoredProfile) (bool, error) {
+	title, err := c.grabBookEditionExcluding(ctx, b, kind, sp, nil)
+	return title != "", err
+}
+
+// grabBookEditionExcluding is grabBookEdition that also skips the normalized titles in
+// exclude and returns the title it grabbed ("" for none). A stall fail-over excludes the
+// stalled release, which stays un-blocklisted until something replaces it.
+func (c *Coordinator) grabBookEditionExcluding(ctx context.Context, b books.Book, kind string, sp quality.StoredProfile, exclude map[string]bool) (string, error) {
 	res, err := c.searchBook(ctx, b, kind)
 	if err != nil {
-		return false, err
+		return "", err
 	}
 	if len(res.Releases) == 0 {
-		return false, nil
+		return "", nil
 	}
 	// Only releases that actually name THIS book. Book indexers fuzzy-match, so a query of
 	// "Frank Herbert Dune" routinely returns Dune Messiah and Children of Dune; nothing
@@ -220,28 +228,29 @@ func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind st
 	}
 	if len(res.Releases) == 0 {
 		c.log.Info("book: no release matched this title", "title", b.Title, "edition", kind)
-		return false, nil
+		return "", nil
 	}
 	res.Releases = c.dropBlockedBook(ctx, b.ID, res.Releases) // don't re-grab a blocklisted (e.g. stalled) release
 	// DB pending-grab guard, mirroring the movie path's pendingGrabTitles: a release
 	// already grabbed for this book (and not yet imported/failed) must not be grabbed
 	// again, even when the queue-based bookDownloading check couldn't see it.
 	res.Releases = dropPendingBook(res.Releases, c.pendingBookGrabTitles(ctx, b.ID))
+	res.Releases = dropPendingBook(res.Releases, exclude) // same normalized-title filter
 	best := pickBestBookForKind(sp, res.Releases, kind)
 	if best == nil {
 		c.log.Info("book: no matching-format release", "title", b.Title, "edition", kind)
-		return false, nil
+		return "", nil
 	}
 	hash, err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, bookCategory)
 	if err != nil {
 		c.log.Warn("book: grab failed", "title", b.Title, "err", err)
-		return false, nil
+		return "", nil
 	}
 	c.recordBookGrab(ctx, b.ID, 0, best.Title, best.Indexer, b.QualityProfile, hash)
 	c.learnBookSeries(ctx, b, *best)
 	c.books.AddEvent(ctx, b.ID, "grabbed", fmt.Sprintf("Grabbed the %s edition from %s: %s", kind, best.Indexer, best.Title))
 	c.log.Info("book: grabbing", "title", b.Title, "edition", kind, "release", best.Title, "format", detectBookFormat(best.Title))
-	return true, nil
+	return best.Title, nil
 }
 
 // releasesForThisBook keeps only the releases whose name resolves to b when matched against
@@ -1736,59 +1745,6 @@ func bookEditionLanded(b books.Book, releaseTitle string) bool {
 	default:
 		return b.HasFile
 	}
-}
-
-// detectStalledBook fails over a stalled book grab: blocklist the release, remove it, re-search.
-func (c *Coordinator) detectStalledBook(ctx context.Context, g grab, queue []download.Item) {
-	if c.books == nil {
-		c.setGrabStatus(ctx, g.ID, "failed")
-		return
-	}
-	b, err := c.books.Get(ctx, g.MovieID) // book id is stored in movie_id on the shared grabs table
-	if err != nil {
-		c.setGrabStatus(ctx, g.ID, "failed")
-		return
-	}
-	// Only the edition THIS grab was for counts as landed. Checking b.HasFile (ebook OR
-	// audiobook) meant a landed ebook flipped a still-downloading AUDIOBOOK grab to
-	// "imported" — after which ManageSeeding removed that torrent WITH its data the moment
-	// it completed, before the import sweep could run, and the book was re-grabbed on the
-	// next pass: a grab/delete/re-grab loop that also destroyed the download.
-	landed := bookEditionLanded(b, g.Title)
-	if g.VersionID > 0 {
-		// A version grab has landed when THAT version has its file — the standard
-		// audiobook being present says nothing about it. A version since removed has
-		// nothing left to wait for.
-		landed = true
-		for _, v := range b.AudioVersions {
-			if v.ID == g.VersionID {
-				landed = v.File != nil
-			}
-		}
-	}
-	if landed {
-		c.setGrabStatus(ctx, g.ID, "imported")
-		return
-	}
-	if g.StallMinutes <= 0 {
-		return
-	}
-	window := time.Duration(g.StallMinutes) * time.Minute
-	if time.Since(parseTime(g.GrabbedAt)) < window {
-		return
-	}
-	item, found := findQueued(queue, g)
-	if !c.stalledInQueue(g, item, found, window) {
-		return
-	}
-	c.log.Info("automation: book download stalled, failing over", "book", g.MovieID, "release", g.Title)
-	c.books.AddEvent(ctx, g.MovieID, "failed", fmt.Sprintf("Stalled after %d min — blocklisted and re-searching: %s", g.StallMinutes, g.Title))
-	c.addBlockBook(ctx, g.MovieID, g.Title, g.Indexer, fmt.Sprintf("stalled after %d min", g.StallMinutes))
-	if found {
-		_ = c.downloads.Remove(ctx, item.Hash, true)
-	}
-	c.setGrabStatus(ctx, g.ID, "failed")
-	_ = c.SearchBookNow(ctx, g.MovieID)
 }
 
 // RSSSyncBooks polls indexer RSS feeds for freshly-uploaded releases matching a wanted book

@@ -3,8 +3,6 @@ package automation
 import (
 	"context"
 	"errors"
-	"fmt"
-	"time"
 
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/indexer"
@@ -12,32 +10,6 @@ import (
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
-
-// detectStalledSeries fails a stalled series download over to an alternate: past the
-// profile's stall timeout with no progress, it blocklists the release, removes the
-// torrent, and re-searches (which now skips the blocklisted release). Mirrors the movie
-// stall path; called from DetectStalled for media_type='series' grabs.
-func (c *Coordinator) detectStalledSeries(ctx context.Context, g grab, queue []download.Item) {
-	if c.series == nil || g.StallMinutes <= 0 {
-		return
-	}
-	window := time.Duration(g.StallMinutes) * time.Minute
-	age := time.Since(parseTime(g.GrabbedAt))
-	if age < window {
-		return
-	}
-	item, found := findQueued(queue, g)
-	if !c.stalledInQueue(g, item, found, window) {
-		return
-	}
-	c.log.Info("series: download stalled, failing over", "series", g.MovieID, "release", g.Title, "age_min", int(age.Minutes()))
-	c.addBlockSeries(ctx, g.MovieID, g.Title, g.Indexer, fmt.Sprintf("stalled after %d min", g.StallMinutes))
-	if found {
-		_ = c.downloads.Remove(ctx, item.Hash, true)
-	}
-	c.setGrabStatus(ctx, g.ID, "failed")
-	_ = c.SearchSeriesNow(ctx, g.MovieID) // re-search; blocklisted release is now skipped
-}
 
 // RSSSyncSeries polls indexer RSS feeds for freshly-uploaded releases matching a
 // monitored series and grabs anything that fills a wanted episode — the series
