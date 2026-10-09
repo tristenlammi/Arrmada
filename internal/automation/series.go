@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/parser"
@@ -151,12 +152,8 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 		if !s.Monitored {
 			continue
 		}
-		if busy := seriesInFlight(queue, s.Title); busy != "" {
-			// Said out loud: this used to skip in total silence, so a show frozen out of
-			// the sweep looked identical to one with nothing to find.
-			c.log.Info("series: skipping sweep — a grab is still downloading", "series", s.Title, "release", busy)
-			continue
-		}
+		// A torrent still downloading for the show no longer skips it here: one for a
+		// single season holds back just that season (searchSeriesOnceScoped).
 		// Cheap local check before spending an indexer search: a series with nothing
 		// grabbable shouldn't cost N queries every sweep, forever.
 		if !c.series.HasWantedEpisodes(ctx, s.ID) {
@@ -170,7 +167,7 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 				continue
 			}
 		}
-		out, err := c.searchSeriesOnce(ctx, s.ID)
+		out, err := c.searchSeriesOnceScoped(ctx, s.ID, queue)
 		n := out.Grabbed
 		if errors.Is(err, ErrAlreadySearching) {
 			c.log.Debug("series: skipping a show that is already being searched", "series", s.Title)
@@ -185,7 +182,7 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 		if err != nil {
 			c.log.Warn("series: search failed", "series", s.Title, "err", err)
 		}
-		reset, miss := sweepOutcome(err, true, n)
+		reset, miss := sweepOutcome(err, out.Searched, n)
 		if reset {
 			c.series.ResetSearchMisses(ctx, s.ID)
 		}
@@ -211,6 +208,19 @@ func (c *Coordinator) SearchSeriesNow(ctx context.Context, seriesID int64) (Sear
 // searchSeriesOnce is SearchSeriesNow; the missing-sweep reads the outcome's grab count to
 // back off a series that keeps coming up empty.
 func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (SearchOutcome, error) {
+	return c.searchSeriesOnceScoped(ctx, seriesID, nil)
+}
+
+// searchSeriesOnceScoped is searchSeriesOnce that leaves out what queue still has
+// downloading for the show (seriesInFlightScope). A pack for one season holds back just
+// that season: its per-season query isn't sent and its episodes aren't grabbed. A pack
+// covering the whole show holds back the whole show, as does one for every season that's
+// missing something; then nothing is searched and the outcome says so without counting a
+// miss. A nil queue (a manual search, or a queue that couldn't be read) holds nothing back.
+//
+// Said out loud in the log: a show held back used to be skipped in total silence, so one
+// frozen out of the sweep looked identical to one with nothing to find.
+func (c *Coordinator) searchSeriesOnceScoped(ctx context.Context, seriesID int64, queue []download.Item) (SearchOutcome, error) {
 	if c.series == nil {
 		return SearchOutcome{Reason: ReasonNothingWanted}, nil
 	}
@@ -234,8 +244,17 @@ func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (Sea
 		c.skipUnreadable(s.Title, err)
 		return SearchOutcome{}, err
 	}
+	inSeasons, whole, busy := seriesInFlightScope(queue, s)
+	if whole {
+		c.log.Info("series: skipping sweep — a pack covering the whole show is still downloading", "series", s.Title, "release", busy[0])
+		return SearchOutcome{Reason: ReasonNothingWanted}, nil
+	}
+	only, ok := c.notInFlight(s, inSeasons, busy, "series")
+	if !ok {
+		return SearchOutcome{Reason: ReasonNothingWanted}, nil
+	}
 	out := SearchOutcome{Searched: true}
-	releases, err := c.searchSeriesReleases(ctx, s)
+	releases, err := c.searchSeriesReleasesExcept(ctx, s, inSeasons)
 	if err != nil {
 		return out, err
 	}
@@ -244,7 +263,9 @@ func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (Sea
 	out.Returned, out.Matching = len(releases), len(releases)
 	grabbed, remaining := 0, []epKey(nil)
 	if len(releases) > 0 {
-		grabbed, remaining = c.grabSeriesFrom(ctx, s, releases)
+		grabbed, remaining = c.grabSeriesLimited(ctx, s, releases, only)
+	} else if only != nil {
+		remaining = sortedKeys(setOf(only))
 	} else if wanted, _ := wantedEpisodes(s); len(wanted) > 0 {
 		remaining = sortedKeys(setOf(wanted))
 	}
@@ -587,6 +608,12 @@ const maxSeasonQueries = 12
 // and those seasons stay empty forever. Torznab's tvsearch takes a season number directly,
 // which asks the indexer for that season instead of hoping it turns up in a general match.
 func (c *Coordinator) searchSeriesReleases(ctx context.Context, s series.Series) ([]indexer.Release, error) {
+	return c.searchSeriesReleasesExcept(ctx, s, nil)
+}
+
+// searchSeriesReleasesExcept is searchSeriesReleases without the per-season queries for
+// the seasons in skip (ones still downloading), which would only cost indexer calls.
+func (c *Coordinator) searchSeriesReleasesExcept(ctx context.Context, s series.Series, skip map[int]bool) ([]indexer.Release, error) {
 	title := indexerQuery(s.Title)
 
 	// The broad query first: it catches multi-season and complete-show packs, which no
@@ -620,7 +647,11 @@ func (c *Coordinator) searchSeriesReleases(ctx context.Context, s series.Series)
 	}
 
 	wanted, _ := wantedEpisodes(s)
-	seasons := sortedSeasons(seasonsOf(setOf(wanted)))
+	need := seasonsOf(setOf(wanted))
+	for sn := range skip {
+		delete(need, sn)
+	}
+	seasons := sortedSeasons(need)
 	if len(seasons) == 0 {
 		return all, nil
 	}
