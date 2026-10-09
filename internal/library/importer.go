@@ -5,6 +5,7 @@
 package library
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -1434,9 +1435,10 @@ func (im *Importer) importPackSubs(videoPath, targetVideo string) {
 
 // placeSub links a subtitle to "<targetBase>[.<lang>]<ext>". The already-imported
 // check runs BEFORE any uniqueness suffixing: if the natural target (or one of its
-// numbered variants) already holds this subtitle — same inode or same size — the
+// numbered variants) already holds this subtitle — same inode or same bytes — the
 // import is skipped, so re-imports don't stack "movie.en.2.srt" duplicates. A
-// genuinely different subtitle at the natural path still gets a numeric suffix.
+// genuinely different subtitle at the natural path still gets a numeric suffix, even
+// when it happens to be the same size.
 func (im *Importer) placeSub(src, targetBase, lang string) {
 	si, err := os.Stat(src)
 	if err != nil {
@@ -1454,8 +1456,14 @@ func (im *Importer) placeSub(src, targetBase, lang string) {
 		if os.IsNotExist(err) {
 			break // free slot — import here
 		}
-		if err == nil && (os.SameFile(si, di) || di.Size() == si.Size()) {
-			return // already imported — skip, don't stack a duplicate
+		if err == nil {
+			same, cerr := sameContent(src, target, si, di)
+			if cerr != nil {
+				im.log.Warn("couldn't compare subtitles — treating them as different", "src", src, "target", target, "err", cerr)
+			}
+			if same {
+				return // already imported — skip, don't stack a duplicate
+			}
 		}
 		target = fmt.Sprintf("%s.%d%s", base, i, ext)
 	}
@@ -1514,13 +1522,22 @@ var ErrReplacementRefused = errors.New("replacement refused: couldn't move the o
 func (im *Importer) linkOrCopy(src, dst string) (string, error) {
 	if si, err := os.Stat(src); err == nil {
 		if di, err := os.Stat(dst); err == nil {
+			// Only the same bytes count as already imported. Matching size alone used to,
+			// so a different release of identical size was never placed while its name
+			// and quality were stamped onto the old file. A failed comparison counts as
+			// different: the old file goes to the bin first, so nothing is lost.
+			same, cerr := sameContent(src, dst, si, di)
+			if cerr != nil {
+				im.log.Warn("couldn't compare the import with the library file — treating them as different", "src", src, "target", dst, "err", cerr)
+			}
+			if same {
+				return "already", nil
+			}
 			binDir, binErr := "", ErrRecycleDisabled
 			if im.bin != nil {
 				binDir, binErr = im.bin.For(dst)
 			}
 			switch {
-			case os.SameFile(si, di), si.Size() > 0 && di.Size() == si.Size():
-				// linkOrCopy will report "already" — nothing to recycle.
 			case errors.Is(binErr, ErrRecycleDisabled):
 				im.log.Warn("replacing existing library file (recycle bin is off)", "target", dst)
 			default:
@@ -1546,23 +1563,103 @@ func linkOrCopy(src, dst string) (string, error) {
 	// If the destination already holds this exact file (a prior hardlinked import),
 	// do NOTHING. Re-copying would truncate dst — and since dst shares the source's
 	// inode, that truncation zeroes the source torrent too (the 0-byte-both bug).
+	// A prior copy with the same bytes is left alone too. An unreadable comparison
+	// counts as different; copyFile replaces dst by rename, never in place.
 	if si, err := os.Stat(src); err == nil {
 		if di, err := os.Stat(dst); err == nil {
-			if os.SameFile(si, di) {
-				return "already", nil // same inode — already imported, leave it alone
-			}
-			if si.Size() > 0 && di.Size() == si.Size() {
-				return "already", nil // same content already present (prior copy)
+			if same, _ := sameContent(src, dst, si, di); same {
+				return "already", nil
 			}
 		}
 	}
-	if err := os.Link(src, dst); err == nil {
+	if err := linkFn(src, dst); err == nil {
 		return "hardlink", nil
 	}
 	if err := copyFile(src, dst); err != nil {
 		return "", err
 	}
 	return "copy", nil
+}
+
+// linkFn is os.Link, swappable so tests can force the cross-device (EXDEV) failure that
+// sends an import down the copy branch.
+var linkFn = os.Link
+
+// Content comparison. Files up to fullCompareMax are compared byte for byte; larger
+// ones by three sampleSize slices (start, middle, end), which tells two releases apart
+// at the cost of 3 MiB of reads, and only ever when the sizes already match.
+const (
+	fullCompareMax = 3 << 20
+	sampleSize     = 1 << 20
+)
+
+// sameContent reports whether src and dst hold the same file: the same inode, or the
+// same non-empty size and the same bytes. A read error is returned with false.
+func sameContent(src, dst string, si, di os.FileInfo) (bool, error) {
+	if os.SameFile(si, di) {
+		return true, nil
+	}
+	size := si.Size()
+	if size == 0 || di.Size() != size || !si.Mode().IsRegular() || !di.Mode().IsRegular() {
+		return false, nil
+	}
+	a, err := os.Open(src)
+	if err != nil {
+		return false, err
+	}
+	defer a.Close()
+	b, err := os.Open(dst)
+	if err != nil {
+		return false, err
+	}
+	defer b.Close()
+	if size <= fullCompareMax {
+		return sameRange(a, b, 0, size)
+	}
+	for _, off := range []int64{0, size/2 - sampleSize/2, size - sampleSize} {
+		same, err := sameRange(a, b, off, sampleSize)
+		if err != nil || !same {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+// sameRange compares n bytes of a and b starting at off.
+func sameRange(a, b io.ReaderAt, off, n int64) (bool, error) {
+	const chunk = 64 << 10
+	bufA, bufB := make([]byte, chunk), make([]byte, chunk)
+	for n > 0 {
+		k := int64(chunk)
+		if n < k {
+			k = n
+		}
+		if err := readFull(a, bufA[:k], off); err != nil {
+			return false, err
+		}
+		if err := readFull(b, bufB[:k], off); err != nil {
+			return false, err
+		}
+		if !bytes.Equal(bufA[:k], bufB[:k]) {
+			return false, nil
+		}
+		off += k
+		n -= k
+	}
+	return true, nil
+}
+
+// readFull fills buf from r at off. A reader may report io.EOF alongside the last bytes
+// of the file; only a short read is an error.
+func readFull(r io.ReaderAt, buf []byte, off int64) error {
+	n, err := r.ReadAt(buf, off)
+	if n == len(buf) {
+		return nil
+	}
+	if err == nil || errors.Is(err, io.EOF) {
+		err = io.ErrUnexpectedEOF
+	}
+	return err
 }
 
 // copyFile copies src → dst atomically: it writes to a uniquely-named temp file
