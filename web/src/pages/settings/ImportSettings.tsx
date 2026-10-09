@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { Field, Section, input, inputStyle } from "../../components/settings/ui";
 import { api } from "../../lib/api";
 
@@ -26,7 +27,7 @@ function OverseerrImport() {
     setMsg(null);
     try {
       const r = await api.importOverseerr(url.trim(), key.trim());
-      setMsg({ ok: true, text: `Found ${r.found} request${r.found === 1 ? "" : "s"} — importing in the background. Approved titles are added to your library and searched; they'll show in the requests row on Discover as they process.` });
+      setMsg({ ok: true, text: `Found ${r.found} request${r.found === 1 ? "" : "s"} — importing in the background, quietly: nobody is notified about their old requests. Approved titles are added to your library and the regular searches pick them up. They appear on the Requests page as they process.` });
     } catch (e) {
       setMsg({ ok: false, text: (e as Error).message });
     } finally {
@@ -35,7 +36,7 @@ function OverseerrImport() {
   };
 
   return (
-    <Section id="overseerr-import" title="Import from Overseerr / Jellyseerr" subtitle="Migrating in? Pull your existing request history into Arrmada's Requests, then retire the old container. Approved/available titles are added to the library and searched; pending ones become pending requests here. Each request is attributed to its Plex requester — a Plex-linked account is created for them, so when they Sign in with Plex they see their own history. Safe to run more than once — anything already requested is skipped.">
+    <Section id="overseerr-import" title="Import from Overseerr / Jellyseerr" subtitle="Migrating in? Pull your existing request history into Arrmada's Requests, then retire the old container. Approved/available titles are added to the library for the regular searches to pick up; pending ones become pending requests here. It's quiet: nobody gets a notification for an old request. Each request is attributed to its Plex requester — a Plex-linked account is created for them, so when they Sign in with Plex they see their own history. Safe to run more than once — anything already requested is skipped.">
       <Field label="Overseerr / Jellyseerr URL">
         <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.168.50.247:5055" className={input} style={inputStyle} autoComplete="off" />
       </Field>
@@ -47,6 +48,7 @@ function OverseerrImport() {
           {busy ? "Connecting…" : "Import requests"}
         </button>
         {msg && <span className="text-[11.5px]" style={{ color: msg.ok ? "var(--good)" : "var(--reject)" }}>{msg.text}</span>}
+        {msg?.ok && <Link to="/requests" className="flex-none text-[11.5px] font-semibold" style={{ color: "var(--accent)" }}>Open Requests →</Link>}
       </div>
     </Section>
   );

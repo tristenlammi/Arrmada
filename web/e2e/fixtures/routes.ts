@@ -38,6 +38,8 @@ export function routes(p: PersonaInfo): MockRoute[] {
     // Answered (not left unmocked) so a spec can assert on it: the tap spec checks
     // this is never called.
     { method: "POST", path: "/api/v1/requests", respond: ({ body }) => discover.created(p, body) },
+    { method: "POST", path: "/api/v1/requests/bulk", respond: ({ body }) => discover.bulk(body) },
+    { method: "GET", path: /^\/api\/v1\/requests\/(\d+)$/, respond: ({ params }) => discover.requestDetail(Number(params[0])) },
     get("/api/v1/discover/trending", discover.items),
     get("/api/v1/discover/popular", discover.items),
     get("/api/v1/discover/upcoming", discover.items),

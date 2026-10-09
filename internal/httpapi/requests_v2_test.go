@@ -165,3 +165,38 @@ func TestRequestsAPIRequesterScope(t *testing.T) {
 		t.Errorf("alice's own requests changed: %d", len(b.Requests))
 	}
 }
+
+// Bulk decisions are staff-only, validated, and reported per request.
+func TestRequestsAPIBulk(t *testing.T) {
+	s := requestsServer(t)
+	_, requester := s.user(t, "alice@example.com", auth.RoleRequester)
+	_, manager := s.user(t, "boss@example.com", auth.RoleManager)
+	p1 := addRequest(t, s, 1, "One", "pending", 7, "alice")
+	p2 := addRequest(t, s, 2, "Two", "pending", 7, "alice")
+	body := fmt.Sprintf(`{"action":"decline","ids":[%d,999,%d]}`, p1, p2)
+	if rec := s.doJSON("POST", "/api/v1/requests/bulk", requester, body); rec.Code != http.StatusForbidden {
+		t.Fatalf("a requester's bulk action: HTTP %d, want 403", rec.Code)
+	}
+	if rec := s.doJSON("POST", "/api/v1/requests/bulk", manager, `{"action":"delete","ids":[1]}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("an unknown action: HTTP %d, want 400", rec.Code)
+	}
+	if rec := s.doJSON("POST", "/api/v1/requests/bulk", manager, `{"action":"approve","ids":[]}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("no ids: HTTP %d, want 400", rec.Code)
+	}
+	rec := s.doJSON("POST", "/api/v1/requests/bulk", manager, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("bulk decline: HTTP %d %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		Results []requests.BulkResult `json:"results"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Results) != 3 || !got.Results[0].OK || got.Results[1].OK || !got.Results[2].OK {
+		t.Fatalf("results = %+v", got.Results)
+	}
+	if b := getList(t, s, "/api/v1/requests?section=declined", manager); b.Total != 2 {
+		t.Errorf("declined = %d, want 2", b.Total)
+	}
+}

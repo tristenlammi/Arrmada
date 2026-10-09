@@ -6,7 +6,7 @@ import { requestableCard } from "./fixtures/discover";
 // shipped broken here before and nothing caught them: the page growing wider than the
 // screen, and a poster tap filing a request through an invisible hover button.
 
-const PAGES = ["/discover", "/calendar", "/books", "/audiobooks"];
+const PAGES = ["/discover", "/requests", "/calendar", "/books", "/audiobooks"];
 const VIEWPORTS = [
   { width: 375, height: 812 },
   { width: 320, height: 640 },

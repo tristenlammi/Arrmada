@@ -610,6 +610,53 @@ func (s *Service) Decline(ctx context.Context, id int64, o DeclineOptions) error
 	return nil
 }
 
+// Bulk actions.
+const (
+	BulkApprove = "approve"
+	BulkDecline = "decline"
+	// BulkMax is the most requests one bulk action takes.
+	BulkMax = 100
+)
+
+// BulkResult is how one request in a bulk action went.
+type BulkResult struct {
+	ID    int64  `json:"id"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
+// ErrNotPending is a bulk decision on a request that isn't waiting for one.
+var ErrNotPending = errors.New("not waiting for approval")
+
+// Bulk approves or declines several pending requests, one after another, each on its own:
+// a failure is reported for that request and the rest still go ahead. Approvals queue
+// their searches like any other approval (the job runner's indexer-search class), so a
+// bulk approve never fans out more than a couple of searches at a time. by is who
+// decided; profile, when set, is used for every approval.
+func (s *Service) Bulk(ctx context.Context, action string, ids []int64, profile string, by int64, byName string) []BulkResult {
+	out := make([]BulkResult, 0, len(ids))
+	for _, id := range ids {
+		res := BulkResult{ID: id}
+		req, err := s.repo.Get(ctx, id)
+		switch {
+		case err != nil:
+		case req.Status != StatusPending:
+			err = ErrNotPending
+		case action == BulkApprove:
+			_, err = s.Approve(ctx, id, ApproveOptions{Profile: profile, DecidedBy: by, DecidedByName: byName})
+		default:
+			err = s.Decline(ctx, id, DeclineOptions{DecidedBy: by, DecidedByName: byName})
+		}
+		if err != nil {
+			res.Error = err.Error()
+		} else {
+			res.OK = true
+		}
+		out = append(out, res)
+	}
+	return out
+}
+
 // Delete removes a request record (and its subscribers).
 func (s *Service) Delete(ctx context.Context, id int64) error {
 	// Who to tell is read first: the subscribers go with the row.

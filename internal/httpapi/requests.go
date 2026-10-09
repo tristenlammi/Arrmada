@@ -147,6 +147,50 @@ func (a *api) handleUnsubscribeRequest(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// handleBulkRequests approves or declines up to 100 pending requests at once. Each is
+// decided on its own, so the answer says how each one went: {results: [{id, ok, error}]}.
+//
+//	POST /api/v1/requests/bulk {action: approve|decline, ids, quality_profile?}
+func (a *api) handleBulkRequests(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Action         string  `json:"action"`
+		IDs            []int64 `json:"ids"`
+		QualityProfile string  `json:"quality_profile"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Action != requests.BulkApprove && req.Action != requests.BulkDecline {
+		a.writeError(w, http.StatusBadRequest, "action must be approve or decline")
+		return
+	}
+	// Each id once, in the order given.
+	seen := map[int64]bool{}
+	var ids []int64
+	for _, id := range req.IDs {
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		a.writeError(w, http.StatusBadRequest, "ids is required")
+		return
+	}
+	if len(ids) > requests.BulkMax {
+		a.writeError(w, http.StatusBadRequest, "at most 100 requests at once")
+		return
+	}
+	u, _ := userFrom(r)
+	var by int64
+	var byName string
+	if u != nil {
+		by, byName = u.ID, u.Username
+	}
+	results := a.deps.Requests.Bulk(r.Context(), req.Action, ids, req.QualityProfile, by, byName)
+	a.writeJSON(w, http.StatusOK, map[string]any{"results": results})
+}
+
 // trackRequests works out where each request has got to — searching, downloading (with
 // progress), importing, ready — from the acquisition record, reading the download queue
 // only when something on the page could be in flight. It reports whether the queue was

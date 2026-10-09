@@ -287,6 +287,7 @@ POST /api/v1/recycle/delete admin -
 POST /api/v1/recycle/empty admin -
 POST /api/v1/recycle/restore staff -
 POST /api/v1/requests requester ext
+POST /api/v1/requests/bulk staff ext
 POST /api/v1/requests/import/overseerr admin ext
 POST /api/v1/requests/{id}/approve staff ext
 POST /api/v1/requests/{id}/decline staff ext

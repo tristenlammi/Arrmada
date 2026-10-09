@@ -1,268 +1,333 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { api, type MediaRequest } from "../lib/api";
-import { useMe, isStaff } from "../lib/me";
+import { RequestSheet } from "../components/RequestSheet";
+import { api, type MediaRequest, type RequestCounts, type RequestSection } from "../lib/api";
+import { isStaff, useMe } from "../lib/me";
+import { posterThumb } from "../lib/img";
+import { usePoll } from "../lib/usePoll";
+import { pickTab } from "../lib/useTabParam";
+import { mediaLabel, MOVING_STAGES, requestAge, requestStage } from "../lib/requestStage";
+import { TabPanel, Tabs } from "../ui/Tabs";
+import { Button, EmptyState, ErrorState, StatusChip, useConfirm, useToast } from "../ui";
 
-const FILTERS = [
-  { key: "all", label: "All" },
-  { key: "pending", label: "Pending" },
-  { key: "approved", label: "Approved" },
-  { key: "declined", label: "Declined" },
-] as const;
-type FilterKey = (typeof FILTERS)[number]["key"];
+// The Requests page: every request in sections, for staff to decide and for requesters to
+// follow their own (and the ones they joined). Everything that shapes the view lives in the
+// address so a reload, Back or a link lands on the same thing:
+//
+//   ?tab=needs|active|ready|declined   the section (needs = waiting for approval)
+//   ?type=movie|series|book            a media filter
+//   ?q=                                a title search
+//   ?id=<request id>                   the RequestSheet open on one request
+//
+// Links from elsewhere (the Needs-you feed, notifications) use /requests?tab=needs for
+// what's waiting, or /requests?id=<id> for one request. ?section=pending (or the API's own
+// section names) is accepted as a synonym for the tab.
 
-function matches(r: MediaRequest, f: FilterKey): boolean {
-  return f === "all" ? true : r.status === f;
-}
-
-const STATUS_STYLE: Record<string, { label: string; tone: string; soft: string }> = {
-  pending: { label: "Pending", tone: "var(--avoid)", soft: "var(--avoid-soft)" },
-  approved: { label: "Approved", tone: "var(--accent)", soft: "var(--accent-soft)" },
-  declined: { label: "Declined", tone: "var(--reject)", soft: "var(--reject-soft)" },
+type Tab = "needs" | "active" | "ready" | "declined";
+const TAB_SECTION: Record<Tab, RequestSection> = { needs: "needs_approval", active: "in_progress", ready: "ready", declined: "declined" };
+const SECTION_TAB: Record<string, Tab> = {
+  needs_approval: "needs", pending: "needs", needs: "needs",
+  in_progress: "active", active: "active", approved: "active",
+  ready: "ready", available: "ready", declined: "declined",
 };
+const TABS: Tab[] = ["needs", "active", "ready", "declined"];
+const PAGE = 50;
+const TYPES = [
+  { key: "", label: "All" },
+  { key: "movie", label: "Movies" },
+  { key: "series", label: "TV" },
+  { key: "book", label: "Books" },
+] as const;
 
-export function Requests() {
-  return (
-    <>
-      <PageHeader title="Requests" crumb="Services / Requests" />
-      <div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6">
-        <RequestsPanel />
-      </div>
-    </>
-  );
-}
+export function Requests({ chrome = true }: { chrome?: boolean }) {
+  const { user, booksEnabled } = useMe();
+  const staff = isStaff(user);
+  const flash = useToast();
+  const confirm = useConfirm();
+  const [params, setParams] = useSearchParams();
 
-export function RequestsPanel() {
-  const { user } = useMe();
-  const canManage = isStaff(user);
-  const [list, setList] = useState<MediaRequest[]>([]);
+  const [counts, setCounts] = useState<RequestCounts | null>(null);
+  const [items, setItems] = useState<MediaRequest[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [queueKnown, setQueueKnown] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<FilterKey>("all");
-  const [requesting, setRequesting] = useState(false);
-  const [autoApprove, setAutoApprove] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
-  const [busy, setBusy] = useState<number | null>(null);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [rowErrors, setRowErrors] = useState<Record<number, string>>({});
+  const [busy, setBusy] = useState<string | null>(null);
 
-  const flash = (msg: string) => { setToast(msg); window.setTimeout(() => setToast(null), 3500); };
+  // The tab: ?tab=, or a ?section= synonym; without either, staff land on what's waiting
+  // when anything is (once the counts are in), everyone else on what's in progress.
+  const asked = params.get("tab") ?? params.get("section");
+  const fallback: Tab = staff && (counts?.needs_approval ?? 0) > 0 ? "needs" : "active";
+  const tab = pickTab(asked ? (SECTION_TAB[asked] ?? asked) : null, TABS, fallback);
+  const type = params.get("type") ?? "";
+  const q = params.get("q") ?? "";
+  const openID = Number(params.get("id")) || 0;
+  const [qInput, setQInput] = useState(q);
+  useEffect(() => { setQInput(q); }, [q]);
 
-  const refresh = () =>
-    api.requests().then((r) => { setList(r.requests); setAutoApprove(r.auto_approve); setError(null); }).catch((e: Error) => setError(e.message));
+  const setParam = (key: string, value: string, replace = false) =>
+    setParams((p) => {
+      const next = new URLSearchParams(p);
+      if (value) next.set(key, value); else next.delete(key);
+      if (key === "tab") next.delete("section");
+      return next;
+    }, { replace });
 
-  useEffect(() => { refresh(); }, []);
+  // How many rows are showing: grows with Load more, back to one page on a new view.
+  const view = `${tab}|${type}|${q}`;
+  const [more, setMore] = useState({ view, n: PAGE });
+  const limit = more.view === view ? more.n : PAGE;
+  const loadMore = () => setMore({ view, n: limit + PAGE });
+  useEffect(() => { setSelected(new Set()); setRowErrors({}); }, [view]);
 
-  const filtered = useMemo(() => list.filter((r) => matches(r, filter)), [list, filter]);
+  const load = useCallback(async () => {
+    try {
+      const r = await api.requests({ section: TAB_SECTION[tab], limit, media_type: type || undefined, q: q || undefined });
+      setItems(r.requests);
+      setTotal(r.total ?? r.requests.length);
+      setCounts(r.counts ?? null);
+      setQueueKnown(r.client_health?.ok ?? true);
+      setError(null);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  }, [tab, limit, type, q]);
+  // Something in flight moves on its own; otherwise a quarter-minute is fresh enough.
+  const moving = (items ?? []).some((rq) => MOVING_STAGES.has(rq.tracking?.stage ?? ""));
+  // The effect loads each new view at once; the poll only repeats (paused in a hidden tab).
+  usePoll(load, moving ? 8000 : 15000, { immediate: false });
+  useEffect(() => { void load(); }, [load]);
 
-  const act = async (id: number, fn: () => Promise<unknown>, msg: string) => {
-    setBusy(id);
-    try { await fn(); flash(msg); refresh(); }
-    catch (e) { flash((e as Error).message); }
-    finally { setBusy(null); }
+  const pendingIDs = useMemo(() => (items ?? []).filter((rq) => rq.status === "pending").map((rq) => rq.id), [items]);
+  const selectable = staff && tab === "needs";
+  const allSelected = selectable && pendingIDs.length > 0 && pendingIDs.every((id) => selected.has(id));
+  const toggle = (id: number) => setSelected((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const toggleAll = () => setSelected(allSelected ? new Set() : new Set(pendingIDs));
+
+  // One approve or decline, from a row: a decline always asks first.
+  const decide = async (rq: MediaRequest, action: "approve" | "decline") => {
+    if (action === "decline") {
+      const yes = await confirm({ title: `Decline “${rq.title}”${rq.requested_by_name ? ` requested by ${rq.requested_by_name}` : ""}?`, body: "They’ll be told.", confirmLabel: "Decline", tone: "danger" });
+      if (!yes) return;
+    }
+    setBusy(`${action}:${rq.id}`);
+    setRowErrors((e) => { const n = { ...e }; delete n[rq.id]; return n; });
+    try {
+      if (action === "approve") await api.approveRequest(rq.id);
+      else await api.declineRequest(rq.id);
+      flash(action === "approve" ? `Approved “${rq.title}” — searching now` : `Declined “${rq.title}”`);
+      await load();
+    } catch (e) {
+      setRowErrors((errs) => ({ ...errs, [rq.id]: (e as Error).message }));
+    } finally {
+      setBusy(null);
+    }
   };
 
+  // Bulk: each request is decided on its own server-side; a failure stays on its row.
+  const bulk = async (action: "approve" | "decline") => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    if (action === "decline") {
+      const yes = await confirm({ title: `Decline ${ids.length} request${ids.length === 1 ? "" : "s"}?`, body: "Each requester is told.", confirmLabel: `Decline ${ids.length}`, tone: "danger" });
+      if (!yes) return;
+    }
+    setBusy(`bulk:${action}`);
+    try {
+      const r = await api.bulkRequests({ action, ids });
+      const failed: Record<number, string> = {};
+      for (const res of r.results) if (!res.ok) failed[res.id] = res.error || "Didn’t go through";
+      const ok = r.results.length - Object.keys(failed).length;
+      setRowErrors(failed);
+      setSelected(new Set(Object.keys(failed).map(Number)));
+      flash(`${action === "approve" ? "Approved" : "Declined"} ${ok} of ${ids.length}`, Object.keys(failed).length ? { tone: "error" } : undefined);
+      await load();
+    } catch (e) {
+      flash((e as Error).message, { tone: "error" });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // The middle tab names a request section, not a library status (lib/status).
+  const active = "In progress"; // copy-ok: a request section, not a library status
+  const tabLabel: Record<Tab, string> = staff
+    ? { needs: "Needs approval", active, ready: "Ready", declined: "Declined" }
+    : { needs: "Waiting", active, ready: "Ready", declined: "Declined" };
+  const countOf: Record<Tab, number | undefined> = {
+    needs: counts?.needs_approval, active: counts?.in_progress, ready: counts?.ready, declined: counts?.declined,
+  };
+  const types = booksEnabled ? TYPES : TYPES.filter((t) => t.key !== "book");
+  const open = openID ? (items ?? []).find((rq) => rq.id === openID) : undefined;
+
   return (
     <>
-      <div>
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <span className="font-mono text-[11px] text-ink-faint">{list.length} request{list.length === 1 ? "" : "s"}{autoApprove ? " · auto-approve on" : ""}</span>
-          <button
-            onClick={() => setRequesting(true)}
-            className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold"
-            style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}
-          >
-            + Request media
-          </button>
-        </div>
+      {chrome && <PageHeader title="Requests" />}
+      <div className="mx-auto w-full max-w-[1200px] px-4 py-5 sm:px-6">
+        {!chrome && <h1 className="m-0 mb-3 text-[17px] font-bold">{staff ? "Requests" : "Your requests"}</h1>}
+        <Tabs
+          tabs={TABS.map((t) => ({ key: t, label: tabLabel[t], count: countOf[t] }))}
+          value={tab}
+          onChange={(t) => setParam("tab", t)}
+          idPrefix="requests"
+          label="Request sections"
+          className="mb-4 border-b"
+        />
 
-        <div className="mb-4 flex flex-wrap gap-2">
-          {FILTERS.map((f) => {
-            const active = filter === f.key;
-            const count = f.key === "all" ? list.length : list.filter((r) => matches(r, f.key)).length;
-            return (
+        <div className="mb-4 flex flex-wrap items-center gap-2">
+          <div className="inline-flex rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }} role="group" aria-label="Media type">
+            {types.map((t) => (
               <button
-                key={f.key}
-                onClick={() => setFilter(f.key)}
-                className="rounded-full px-3 py-1 text-[12px] font-semibold"
-                style={{ border: `1px solid ${active ? "var(--accent)" : "var(--line)"}`, background: active ? "var(--accent-soft)" : "var(--panel)", color: active ? "var(--accent)" : "var(--ink-faint)" }}
+                key={t.key}
+                onClick={() => setParam("type", t.key)}
+                aria-pressed={type === t.key}
+                className="min-h-[32px] rounded-md px-3 text-[11.5px] font-semibold"
+                style={{ background: type === t.key ? "var(--accent)" : "transparent", color: type === t.key ? "var(--accent-ink)" : "var(--ink-faint)" }}
               >
-                {f.label} <span className="font-mono text-[10.5px] opacity-70">{count}</span>
+                {t.label}
               </button>
-            );
-          })}
-        </div>
-
-        {error && <div className="mb-3 rounded-lg p-3 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
-
-        {list.length === 0 ? (
-          <div className="rounded-xl p-12 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>
-            No requests yet. Click <b>Request media</b> to search for a movie or show and add it to the queue.
-          </div>
-        ) : filtered.length === 0 ? (
-          <div className="rounded-xl p-12 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>
-            No <b>{FILTERS.find((f) => f.key === filter)?.label}</b> requests.
-          </div>
-        ) : (
-          <div className="flex flex-col gap-2.5">
-            {filtered.map((r) => (
-              <RequestRow
-                key={r.id}
-                r={r}
-                busy={busy === r.id}
-                canManage={canManage}
-                onApprove={() => act(r.id, () => api.approveRequest(r.id), `Approved “${r.title}” — searching now.`)}
-                onDecline={() => {
-                  // The requester gets told, and there's no undo, so it always asks first.
-                  if (!window.confirm(`Decline “${r.title}”${r.requested_by_name ? ` requested by ${r.requested_by_name}` : ""}? They’ll be told.`)) return;
-                  act(r.id, () => api.declineRequest(r.id), `Declined “${r.title}”.`);
-                }}
-                onDelete={() => act(r.id, () => api.deleteRequest(r.id), `Removed request.`)}
-              />
             ))}
           </div>
-        )}
-
-        {toast && (
-          <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>
-            {toast}
-          </div>
-        )}
-      </div>
-      {requesting && <RequestModal onClose={() => setRequesting(false)} onDone={() => refresh()} flash={flash} />}
-    </>
-  );
-}
-
-function RequestRow({ r, busy, canManage, onApprove, onDecline, onDelete }: { r: MediaRequest; busy: boolean; canManage: boolean; onApprove: () => void; onDecline: () => void; onDelete: () => void }) {
-  const st = STATUS_STYLE[r.status] ?? STATUS_STYLE.pending;
-  return (
-    <div className="flex items-center gap-3 rounded-xl p-3" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
-      <div className="h-[72px] w-[48px] flex-none overflow-hidden rounded-lg" style={{ background: "var(--panel-2)" }}>
-        {r.poster_url && <img src={r.poster_url} alt="" className="h-full w-full object-cover" loading="lazy" />}
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>{r.media_type === "series" ? "TV" : r.media_type === "book" ? "Book" : "Movie"}</span>
-          <span className="text-[13.5px] font-semibold">{r.title}</span>
-          {r.media_type === "book" && r.author && <span className="text-[11.5px] text-ink-dim">{r.author}</span>}
-          <span className="font-mono text-[10.5px] text-ink-faint">{r.year || ""}</span>
-          <span className="rounded-full px-2 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: st.soft, color: st.tone }}>{st.label}</span>
-          {r.available && <span className="rounded-full px-2 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: "var(--good-soft, rgba(90,140,90,.14))", color: "var(--good)" }}>Available</span>}
+          <form className="min-w-0 flex-1 sm:max-w-[280px]" onSubmit={(e) => { e.preventDefault(); setParam("q", qInput.trim()); }}>
+            <input
+              type="search"
+              value={qInput}
+              onChange={(e) => { setQInput(e.target.value); if (!e.target.value) setParam("q", "", true); }}
+              placeholder="Search titles"
+              aria-label="Search requests by title"
+              className="min-h-[34px] w-full rounded-lg px-3 text-[12.5px]"
+              style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+            />
+          </form>
         </div>
-        {r.overview && <div className="mt-1 line-clamp-1 text-[11.5px] text-ink-dim">{r.overview}</div>}
-        <div className="mt-1 font-mono text-[10px] text-ink-faint">{r.requested_by_name ? `by ${r.requested_by_name}` : ""}{r.requested_by_name ? " · " : ""}{fmtTime(r.created_at)}</div>
-      </div>
-      {canManage && (
-        <div className="flex flex-none items-center gap-1.5">
-          {r.status === "pending" && (
+
+        <TabPanel idPrefix="requests" value={tab}>
+          {error && !items ? (
+            <ErrorState what="requests" message={error} onRetry={() => { void load(); }} />
+          ) : !items ? (
+            <div className="py-10 text-center text-[12.5px] text-ink-dim">Loading…</div>
+          ) : items.length === 0 ? (
+            <EmptyState title={emptyTitle(tab, staff, !!(q || type))} body={emptyBody(tab, staff, !!(q || type))} />
+          ) : (
             <>
-              <button onClick={onApprove} disabled={busy} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{busy ? "…" : "Approve"}</button>
-              <button onClick={onDecline} disabled={busy} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Decline</button>
+              {selectable && (
+                <label className="mb-2 flex min-h-[36px] w-fit items-center gap-2 text-[12px] text-ink-dim">
+                  <input type="checkbox" checked={allSelected} onChange={toggleAll} className="h-4 w-4" />
+                  Select all on this page
+                </label>
+              )}
+              <ul className="m-0 flex list-none flex-col gap-2 p-0">
+                {items.map((rq) => (
+                  <RequestRow
+                    key={rq.id}
+                    rq={rq}
+                    staff={staff}
+                    own={!!user && rq.requested_by === user.id}
+                    queueKnown={queueKnown}
+                    selectable={selectable && rq.status === "pending"}
+                    selected={selected.has(rq.id)}
+                    onSelect={() => toggle(rq.id)}
+                    busy={busy}
+                    error={rowErrors[rq.id]}
+                    onOpen={() => setParam("id", String(rq.id))}
+                    onDecide={(a) => decide(rq, a)}
+                  />
+                ))}
+              </ul>
+              {items.length < total && (
+                <div className="mt-4 flex justify-center">
+                  <Button onClick={loadMore}>Load more ({total - items.length} more)</Button>
+                </div>
+              )}
             </>
           )}
-          <button onClick={onDelete} disabled={busy} title="Remove request" className="grid h-8 w-8 place-items-center rounded-lg" style={{ border: "1px solid var(--line)", color: "var(--ink-faint)" }}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M5 5l14 14M19 5L5 19" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" /></svg>
-          </button>
+        </TabPanel>
+      </div>
+
+      {/* The bulk bar sits at the bottom of the screen while anything is ticked. */}
+      {selectable && selected.size > 0 && (
+        <div className="sticky bottom-0 z-20 flex flex-wrap items-center justify-center gap-2 px-4 py-3" style={{ background: "var(--panel)", borderTop: "1px solid var(--line)", boxShadow: "var(--shadow)" }}>
+          <span className="text-[12px] text-ink-dim">{selected.size} selected</span>
+          <Button variant="primary" className="min-h-[40px]" onClick={() => bulk("approve")} busy={busy === "bulk:approve"} busyLabel="Approving…" disabled={!!busy}>Approve {selected.size}</Button>
+          <Button className="min-h-[40px]" onClick={() => bulk("decline")} busy={busy === "bulk:decline"} busyLabel="Declining…" disabled={!!busy}>Decline {selected.size}</Button>
+          <Button variant="ghost" className="min-h-[40px]" onClick={() => setSelected(new Set())} disabled={!!busy}>Clear</Button>
         </div>
       )}
-    </div>
+
+      {openID > 0 && (
+        <RequestSheet
+          key={openID}
+          requestId={openID}
+          initial={open}
+          onChanged={() => { void load(); }}
+          onClose={() => setParam("id", "")}
+        />
+      )}
+    </>
   );
 }
 
-type SearchHit = { media_type: "movie" | "series"; tmdb_id: number; title: string; year: number; poster_url?: string; overview?: string };
-
-function RequestModal({ onClose, onDone, flash }: { onClose: () => void; onDone: () => void; flash: (m: string) => void }) {
-  const [q, setQ] = useState("");
-  const [type, setType] = useState<"all" | "movie" | "series">("all");
-  const [results, setResults] = useState<SearchHit[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [requestedIds, setRequestedIds] = useState<Set<string>>(new Set());
-  const [busyKey, setBusyKey] = useState<string | null>(null);
-
-  const search = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!q.trim()) return;
-    setLoading(true); setError(null);
-    try {
-      const [movies, series] = await Promise.all([
-        type === "series" ? Promise.resolve([]) : api.lookupMovies(q.trim()).catch(() => []),
-        type === "movie" ? Promise.resolve([]) : api.lookupSeries(q.trim()).catch(() => []),
-      ]);
-      const hits: SearchHit[] = [
-        ...movies.map((m) => ({ media_type: "movie" as const, tmdb_id: m.tmdb_id, title: m.title, year: m.year, poster_url: m.poster_url, overview: m.overview })),
-        ...series.map((s) => ({ media_type: "series" as const, tmdb_id: s.tmdb_id, title: s.title, year: s.year, poster_url: s.poster_url, overview: s.overview })),
-      ].sort((a, b) => (b.year || 0) - (a.year || 0));
-      setResults(hits);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const request = async (h: SearchHit) => {
-    const key = `${h.media_type}:${h.tmdb_id}`;
-    setBusyKey(key);
-    try {
-      await api.createRequest({ media_type: h.media_type, tmdb_id: h.tmdb_id, title: h.title, year: h.year, poster_url: h.poster_url, overview: h.overview });
-      setRequestedIds((s) => new Set(s).add(key));
-      onDone();
-      flash(`Requested “${h.title}”.`);
-    } catch (e) {
-      const msg = (e as Error).message;
-      if (/already/i.test(msg)) { setRequestedIds((s) => new Set(s).add(key)); flash("Already requested."); onDone(); }
-      else setError(msg);
-    } finally {
-      setBusyKey(null);
-    }
-  };
-
+function RequestRow({ rq, staff, own, queueKnown, selectable, selected, onSelect, busy, error, onOpen, onDecide }: {
+  rq: MediaRequest; staff: boolean; own: boolean; queueKnown: boolean;
+  selectable: boolean; selected: boolean; onSelect: () => void;
+  busy: string | null; error?: string;
+  onOpen: () => void; onDecide: (a: "approve" | "decline") => void;
+}) {
+  const stage = requestStage(rq, queueKnown);
+  const pending = rq.status === "pending";
   return (
-    <div className="fixed inset-0 z-50 grid place-items-start justify-center overflow-y-auto p-6" style={{ background: "rgba(0,0,0,.55)" }} onClick={onClose}>
-      <div className="mt-12 w-full max-w-[640px] rounded-2xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }} onClick={(e) => e.stopPropagation()}>
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <h2 className="m-0 text-[15px] font-bold">Request media</h2>
-          <div className="inline-flex rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
-            {(["all", "movie", "series"] as const).map((t) => (
-              <button key={t} onClick={() => setType(t)} className="rounded-md px-2.5 py-1 text-[11px] font-semibold capitalize" style={{ background: type === t ? "var(--accent)" : "transparent", color: type === t ? "var(--accent-ink)" : "var(--ink-faint)" }}>{t === "all" ? "All" : t === "movie" ? "Movies" : "TV"}</button>
-            ))}
+    <li className="rounded-xl p-3" style={{ background: "var(--panel)", border: `1px solid ${error ? "var(--reject)" : "var(--line)"}` }}>
+      <div className="flex items-start gap-3">
+        {selectable && (
+          <input type="checkbox" checked={selected} onChange={onSelect} aria-label={`Select ${rq.title}`} className="mt-1 h-4 w-4 flex-none" />
+        )}
+        <button onClick={onOpen} className="flex min-w-0 flex-1 items-start gap-3 text-left" aria-label={`Open the request for ${rq.title}`}>
+          <div className="h-[72px] w-[48px] flex-none overflow-hidden rounded-lg" style={{ background: "var(--panel-2)" }}>
+            {rq.poster_url && <img src={posterThumb(rq.poster_url)} alt="" className="h-full w-full object-cover" loading="lazy" decoding="async" />}
           </div>
-        </div>
-        <form onSubmit={search} className="mb-3 flex gap-2">
-          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search movies & TV — e.g. Andor" className="flex-1 rounded-lg px-3 py-2 text-[13px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
-          <button type="submit" disabled={loading} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{loading ? "…" : "Search"}</button>
-        </form>
-        {error && <div className="mb-3 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
-        <div className="thin-scroll max-h-[56vh] overflow-y-auto">
-          {results.map((h) => {
-            const key = `${h.media_type}:${h.tmdb_id}`;
-            const done = requestedIds.has(key);
-            return (
-              <div key={key} className="flex items-center gap-3 rounded-lg p-2">
-                <div className="h-[68px] w-[46px] flex-none overflow-hidden rounded" style={{ background: "var(--panel-2)" }}>
-                  {h.poster_url && <img src={h.poster_url} alt="" className="h-full w-full object-cover" loading="lazy" />}
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="rounded px-1.5 py-0.5 font-mono text-[8.5px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>{h.media_type === "series" ? "TV" : "Movie"}</span>
-                    <span className="text-[13px] font-semibold">{h.title}</span>
-                    <span className="font-mono text-[10.5px] text-ink-faint">{h.year ? `(${h.year})` : ""}</span>
-                  </div>
-                  <div className="mt-0.5 line-clamp-2 text-[11.5px] text-ink-dim">{h.overview || "No overview."}</div>
-                </div>
-                <button onClick={() => request(h)} disabled={busyKey === key || done} className="flex-none rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: done ? "var(--panel-2)" : "var(--accent-soft)", color: done ? "var(--ink-dim)" : "var(--accent)" }}>
-                  {done ? "Requested ✓" : busyKey === key ? "…" : "Request"}
-                </button>
-              </div>
-            );
-          })}
-        </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>{mediaLabel(rq.media_type)}</span>
+              <span className="min-w-0 truncate text-[13.5px] font-semibold" style={{ color: "var(--ink)" }}>{rq.title}</span>
+              <span className="font-mono text-[10.5px] text-ink-faint">{rq.year || ""}</span>
+              {rq.relation === "subscriber" && <StatusChip tone="faint">Following</StatusChip>}
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px]">
+              <StatusChip tone={stage.tone}>{stage.badge}</StatusChip>
+              <span style={{ color: stage.detailTone ?? "var(--ink-dim)" }}>{stage.detail}</span>
+            </div>
+            <div className="mt-1 truncate font-mono text-[10px] text-ink-faint">
+              {staff && rq.requested_by_name ? `${rq.requested_by_name} · ` : own && !staff ? "" : ""}{requestAge(rq.created_at)}
+            </div>
+            {rq.note && (staff || own) && <div className="mt-1 line-clamp-1 text-[11.5px] italic text-ink-dim">“{rq.note}”</div>}
+          </div>
+        </button>
+        {staff && pending && (
+          <div className="flex flex-none flex-col gap-1.5 sm:flex-row">
+            <Button variant="primary" size="sm" className="min-h-[36px]" onClick={() => onDecide("approve")} busy={busy === `approve:${rq.id}`} disabled={!!busy}>Approve</Button>
+            <Button size="sm" className="min-h-[36px]" onClick={() => onDecide("decline")} busy={busy === `decline:${rq.id}`} disabled={!!busy}>Decline</Button>
+          </div>
+        )}
       </div>
-    </div>
+      {error && <div className="mt-2 text-[11.5px] font-medium" style={{ color: "var(--reject)" }} role="alert">{error}</div>}
+    </li>
   );
 }
 
-function fmtTime(s: string): string {
-  const d = new Date(s.includes("T") ? s : s.replace(" ", "T") + "Z");
-  if (isNaN(d.getTime())) return s;
-  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+function emptyTitle(tab: Tab, staff: boolean, filtered: boolean): string {
+  if (filtered) return "Nothing matches";
+  switch (tab) {
+    case "needs": return staff ? "Nothing waiting for approval" : "Nothing waiting";
+    case "active": return "Nothing in progress";
+    case "ready": return "Nothing ready yet";
+    case "declined": return "Nothing declined";
+  }
+}
+
+function emptyBody(tab: Tab, staff: boolean, filtered: boolean): string {
+  if (filtered) return "Try another type or search.";
+  if (staff) return tab === "needs" ? "New requests show up here for you to approve or decline." : "";
+  return tab === "needs" || tab === "active" ? "Find something on Discover and request it — it shows up here." : "";
 }
