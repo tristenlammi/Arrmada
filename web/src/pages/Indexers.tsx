@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
-import { api, type Indexer } from "../lib/api";
+import { api, type Indexer, type IndexerStatus } from "../lib/api";
+import { INDEXER_DOT, indexerStatusLine } from "../lib/indexerStatus";
 import { useQuery } from "../lib/query";
+import { useLive } from "../lib/useLive";
 import { ErrorState, Skeleton, StaleBanner } from "../ui";
 
 const NO_INDEXERS: Indexer[] = [];
@@ -18,6 +20,17 @@ export function Indexers() {
 
   const refresh = q.refetch;
 
+  // An indexer starting to fail, backing off or recovering is announced; re-read the list
+  // a second after the last such event so a burst of them (three sweeps at once) is one read.
+  const { last } = useLive();
+  useEffect(() => {
+    if (last?.topic !== "integration.status" || (last.data as { kind?: string } | null)?.kind !== "indexer") return;
+    const t = window.setTimeout(() => refresh(), 1000);
+    return () => window.clearTimeout(t);
+    // Keyed on the event alone: refresh changes identity as the list loads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [last]);
+
   const runTest = async (id: number) => {
     setTests((t) => ({ ...t, [id]: { loading: true } }));
     try {
@@ -26,6 +39,8 @@ export function Indexers() {
     } catch (e) {
       setTests((t) => ({ ...t, [id]: { ok: false, error: (e as Error).message } }));
     }
+    // A Test is recorded like a search: re-read so the dot shows its answer.
+    refresh();
   };
 
   const remove = async (id: number) => {
@@ -76,8 +91,9 @@ export function Indexers() {
               return (
                 <div key={idx.id} className="rounded-xl p-4" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
                   <div className="flex items-center gap-3">
-                    <div className="flex-1">
+                    <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
+                        {idx.status && <StatusDot status={idx.status} />}
                         <span className="text-[13.5px] font-semibold">{idx.name}</span>
                         <span
                           className="rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase"
@@ -94,6 +110,7 @@ export function Indexers() {
                       <div className="mt-1 truncate font-mono text-[11px] text-ink-faint">
                         {idx.url || (idx.username ? `@${idx.username}` : "")}
                       </div>
+                      {idx.status && <StatusLine status={idx.status} />}
                     </div>
                     <span className="font-mono text-[11px] text-ink-faint">prio {idx.priority}</span>
                     <button onClick={() => setEditingId(editingId === idx.id ? null : idx.id)} className="rounded-lg px-3 py-1.5 text-[12px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
@@ -128,6 +145,29 @@ export function Indexers() {
         )}
       </div>
     </>
+  );
+}
+
+function StatusDot({ status }: { status: IndexerStatus }) {
+  const d = INDEXER_DOT[status.state] ?? INDEXER_DOT.unknown;
+  return (
+    <span
+      role="img"
+      aria-label={d.label}
+      title={d.label}
+      className="inline-block h-2 w-2 flex-none rounded-full"
+      style={{ background: d.color }}
+    />
+  );
+}
+
+function StatusLine({ status }: { status: IndexerStatus }) {
+  const line = indexerStatusLine(status);
+  if (!line) return null;
+  return (
+    <div className="mt-1 break-words text-[11.5px]" style={{ color: line.color }}>
+      {line.text}
+    </div>
   );
 }
 
