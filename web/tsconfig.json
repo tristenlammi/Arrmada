@@ -13,7 +13,10 @@
     "noEmit": true,
     "useDefineForClassFields": true,
     "noUnusedLocals": true,
-    "noUnusedParameters": true
+    "noUnusedParameters": true,
+    // @types/node is installed for the e2e suite (e2e/tsconfig.json); keep Node's
+    // globals (process, Buffer, a setTimeout returning an object) out of browser code.
+    "types": []
   },
   "include": ["src"]
 }

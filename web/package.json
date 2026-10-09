@@ -9,9 +9,10 @@
     "prebuild": "node scripts/check-tokens.mjs",
     "build": "tsc --noEmit && vite build && node scripts/compress.mjs",
     "preview": "vite preview",
-    "lint": "eslint src",
-    "lint:fix": "eslint src --fix",
-    "test": "vitest run"
+    "lint": "eslint src e2e playwright.config.ts",
+    "lint:fix": "eslint src e2e playwright.config.ts --fix",
+    "test": "vitest run",
+    "e2e": "tsc --noEmit -p e2e && playwright test"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -20,6 +21,8 @@
   },
   "devDependencies": {
     "@eslint/js": "9.39.5",
+    "@playwright/test": "1.64.0",
+    "@types/node": "24.19.1",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
