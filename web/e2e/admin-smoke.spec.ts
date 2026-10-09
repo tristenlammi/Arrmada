@@ -31,7 +31,8 @@ for (const persona of ["admin", "manager"] as const) {
       for (const href of pages) {
         await test.step(href, async () => {
           await sidebar.locator(`a[href="${href}"]`).first().click();
-          await expect(page).toHaveURL(new RegExp(`${href === "/" ? "/" : href}$`));
+          // A hub entry may settle on its first section (Settings → /settings/library).
+          await expect(page).toHaveURL(new RegExp(href === "/" ? "/$" : `${href}(/[a-z-]+)?$`));
           await expect.soft(page.getByRole("heading", { level: 1 }).first(), `${href} renders an h1`).toBeVisible();
           // Let the page's first round of requests answer and render before judging it.
           await api.quiet();
