@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
 
@@ -117,7 +118,21 @@ func TestUnreadableBlocklistGrabsNoEpisodes(t *testing.T) {
 	if _, err := h.c.GrabForScope(h.ctx, sr.ID, SeriesScope{Season: 1, Episode: 1}); err == nil {
 		t.Error("episode search with an unreadable blocklist reported success")
 	}
-	_ = h.c.SearchSeriesNow(h.ctx, sr.ID)
+	if err := h.c.SearchSeriesNow(h.ctx, sr.ID); err == nil {
+		t.Error("series search with an unreadable blocklist reported success")
+	}
+	// The grab step itself refuses too (RSS and stall fail-over reach it directly).
+	full, err := h.c.series.Get(h.ctx, sr.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w, _ := wantedEpisodes(full); len(w) == 0 {
+		t.Fatal("setup: the episode must be wanted, or the grab step proves nothing")
+	}
+	logs.Reset()
+	if n, _ := h.c.grabSeriesFrom(h.ctx, full,[]indexer.Release{{Title: "Show.S01E01.1080p.WEB-DL.x264-GRP", Indexer: "Fake", DownloadURL: magnetFor("Show.S01E01.1080p.WEB-DL.x264-GRP")}}); n != 0 {
+		t.Errorf("grab step grabbed %d with the blocklist unreadable", n)
+	}
 	if n := h.adds(); n != 0 {
 		t.Fatalf("%d release(s) handed to the client with the blocklist unreadable", n)
 	}

@@ -211,6 +211,17 @@ func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (int
 	if err != nil {
 		return 0, err
 	}
+	// The grab step refuses to grab with an unreadable blocklist or pending-grab list.
+	// Checked up front as well, so that case is an error for the sweep (no backoff miss,
+	// and Search now says so) and costs no indexer queries that couldn't be acted on.
+	if _, err := c.blockedSetSeries(ctx, s.ID); err != nil {
+		c.skipUnreadable(s.Title, err)
+		return 0, err
+	}
+	if _, err := c.pendingSeriesGrabTitles(ctx, s.ID); err != nil {
+		c.skipUnreadable(s.Title, err)
+		return 0, err
+	}
 	releases, err := c.searchSeriesReleases(ctx, s)
 	if err != nil {
 		return 0, err
