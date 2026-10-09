@@ -553,7 +553,7 @@ func (im *Importer) movieParts(title string, year int, rel parser.Release) (fold
 		"title":      t,
 		"year":       yearToken(year),
 		"quality":    qualityTag(rel),
-		"resolution": tokenOrEmpty(string(rel.Resolution), string(parser.ResUnknown)),
+		"resolution": string(rel.StatedResolution()),
 		"source":     statedSource(rel),
 		"edition":    rel.Edition,
 		"codec":      string(rel.Codec),
@@ -820,8 +820,9 @@ func (im *Importer) ImportEpisodeInto(seriesFolder, seriesTitle string, year int
 // can hold mixed encodes and the file is the more specific claim.
 func (im *Importer) ImportEpisodeIntoWith(seriesFolder, seriesTitle string, year int, videoPath string, hint parser.Release) (*EpisodeImport, bool, error) {
 	rel := parser.Parse(filepath.Base(videoPath))
-	if rel.Resolution == parser.ResUnknown {
-		rel.Resolution = hint.Resolution
+	// Likewise an inferred resolution (an HDTV file read as SD) yields to a stated one.
+	if rel.Resolution == parser.ResUnknown || (rel.ResolutionInferred && hint.StatedResolution() != parser.ResUnknown) {
+		rel.Resolution, rel.ResolutionInferred = hint.Resolution, hint.ResolutionInferred
 	}
 	// A source the file only implied (fansub conventions) yields to one the pack states.
 	if rel.Source == parser.SourceUnknown || (rel.SourceInferred && hint.Source != parser.SourceUnknown && !hint.SourceInferred) {
@@ -1127,7 +1128,7 @@ func (im *Importer) episodeTargetIn(seriesFolder, title string, year, season, ep
 		"episode":      epPart,
 		"episodetitle": epTitle,
 		"quality":      qualityTag(rel),
-		"resolution":   tokenOrEmpty(string(rel.Resolution), string(parser.ResUnknown)),
+		"resolution":   string(rel.StatedResolution()),
 		"source":       statedSource(rel),
 		"codec":        string(rel.Codec),
 		"group":        rel.Group,
@@ -1287,8 +1288,10 @@ func episodeTag(r parser.Release) string {
 
 func qualityTag(r parser.Release) string {
 	var parts []string
-	if r.Resolution != parser.ResUnknown {
-		parts = append(parts, string(r.Resolution))
+	// Stated only, like the source: an inferred 480p written into a name would read back
+	// as though the release had said it.
+	if res := r.StatedResolution(); res != parser.ResUnknown {
+		parts = append(parts, string(res))
 	}
 	if src := statedSource(r); src != "" {
 		parts = append(parts, src)

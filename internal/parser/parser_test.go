@@ -151,7 +151,7 @@ func TestParseTV(t *testing.T) {
 			// A number in the MIDDLE of a title is not an episode. Placing this as episode
 			// 13 is exactly the silent mislabel the dash-less form has to avoid.
 			"[Lunar]_Bleach_Jump_Festa_2004_Anime_Tour_+_13_Squad_Omake_[DVD][AF803142].avi",
-			Release{Title: "Bleach Jump Festa", Year: 2004, Source: SourceDVD, Group: "Lunar"},
+			Release{Title: "Bleach Jump Festa", Year: 2004, Resolution: Res480p, ResolutionInferred: true, Source: SourceDVD, Group: "Lunar"},
 		},
 	}
 	for _, tc := range cases {
@@ -190,6 +190,9 @@ func assertRelease(t *testing.T, got, want Release) {
 	}
 	if got.Source != want.Source {
 		t.Errorf("Source = %q, want %q", got.Source, want.Source)
+	}
+	if got.ResolutionInferred != want.ResolutionInferred {
+		t.Errorf("ResolutionInferred = %v, want %v", got.ResolutionInferred, want.ResolutionInferred)
 	}
 	if got.SourceInferred != want.SourceInferred {
 		t.Errorf("SourceInferred = %v, want %v", got.SourceInferred, want.SourceInferred)

@@ -102,6 +102,23 @@ type Release struct {
 	// conventions: a fansub release ("[SubsPlease] Show - 01 (1080p) [CRC]") that names no
 	// source is a web capture, so it's filed as WEB-DL rather than left unknown.
 	SourceInferred bool `json:"source_inferred,omitempty"`
+	// ResolutionInferred is set when Resolution wasn't written in the name but read from
+	// an SD-era signal (a DVD or HDTV source, XviD, an SDTV/DSR/PDTV/DVB tag): such a
+	// release is standard definition, filed as 480p, rather than of unknown resolution.
+	ResolutionInferred bool `json:"resolution_inferred,omitempty"`
+	// AudioLossless reports a lossless audio track: TrueHD, FLAC, LPCM, DTS-HD MA or
+	// DTS:X. Not DTS-HD High Resolution, which is lossy despite the "HD".
+	AudioLossless bool `json:"audio_lossless,omitempty"`
+}
+
+// StatedResolution is the resolution the name actually states: unknown when it was only
+// inferred. What a pack folder or a recorded release states beats an inference, so the
+// "does this name say its resolution?" fallbacks ask this rather than Resolution.
+func (r Release) StatedResolution() Resolution {
+	if r.ResolutionInferred {
+		return ResUnknown
+	}
+	return r.Resolution
 }
 
 // Kind classifies a TV release by the breadth it covers.
@@ -303,6 +320,7 @@ func Parse(name string) Release {
 	r.Codec = detectCodec(lc)
 	r.HDR = detectHDR(tagHay)
 	r.Audio = detectAudio(lc)
+	r.AudioLossless = losslessAudio(lc, r.Audio)
 	r.Edition = detectEdition(lc)
 	r.Proper = contains(lc, "proper")
 	r.Repack = contains(lc, "repack")
@@ -456,6 +474,24 @@ func Parse(name string) Release {
 		r.Title = cleanTitle(name[titleStart:cut], packCtx)
 	}
 
+	// A pre-release word in the TITLE isn't a pre-release copy: "Cam.2018.1080p.WEB" is the
+	// film Cam on WEB. When a year or season marker ends the title, only the tags after it
+	// decide. A name with no marker keeps the whole-name reading — there's no telling its
+	// title from its tags, so "Movie.HDCAM.x264" stays a cam.
+	if r.Source == SourceCAM && cut < len(name) {
+		tail := name[cut:]
+		if loc := reYear.FindStringIndex(tail); loc != nil && loc[0] == 0 {
+			tail = tail[loc[1]:]
+		}
+		if tailLC := normalize(tail); !isPreRelease(tailLC) {
+			tailBare := tailLC
+			if r.Group != "" && strings.HasSuffix(tail, "-"+r.Group) {
+				tailBare = normalize(strings.TrimSuffix(tail, "-"+r.Group))
+			}
+			r.Source = detectSource(tailLC, tailBare)
+		}
+	}
+
 	// Fansub releases almost never say where they came from: simulcast groups rip the
 	// streaming service and name only the resolution. Left unknown, a profile with any
 	// minimum source refused nearly every anime episode, so read the convention instead.
@@ -463,6 +499,16 @@ func Parse(name string) Release {
 	if r.Source == SourceUnknown && (fansubTag || reAnimeCRC.MatchString(name)) {
 		r.Source = SourceWebDL
 		r.SourceInferred = true
+	}
+
+	// SD releases rarely say so: "Show.S01E01.HDTV.x264" and "DVDRip.XviD" name no
+	// resolution because there was only one. Left unknown, they failed every profile that
+	// lists resolutions — even one allowing 480p. Only explicit SD-era signals count, so
+	// an untagged HD release isn't passed off as SD.
+	if r.Resolution == ResUnknown && (r.Source == SourceDVD || r.Source == SourceHDTV || r.Codec == CodecXvid ||
+		contains(lc, "sdtv") || contains(lc, "dsr") || contains(lc, "pdtv") || contains(lc, "dvb")) {
+		r.Resolution = Res480p
+		r.ResolutionInferred = true
 	}
 
 	return r
@@ -816,6 +862,24 @@ var audioTags = []struct {
 	{"DD", []string{" dd ", "ac3", "dd5 1", "dd2 0"}, false},
 	{"AAC", []string{"aac"}, true},
 	{"FLAC", []string{"flac"}, true},
+	{"LPCM", []string{"lpcm", "pcm"}, true},
+}
+
+// losslessAudio reports a lossless track. The "DTS-HD" label covers both DTS-HD Master
+// Audio (lossless) and DTS-HD High Resolution (lossy), so DTS counts only when the name
+// says MA or DTS:X, and never when it says HRA.
+func losslessAudio(lc string, tags []string) bool {
+	for _, t := range tags {
+		if t == "TrueHD" || t == "FLAC" || t == "LPCM" {
+			return true
+		}
+	}
+	if contains(lc, "hra") || strings.Contains(lc, "hi res") {
+		return false
+	}
+	dtsX := contains(lc, "dts x") || contains(lc, "dtsx") || strings.Contains(lc, "dts:x")
+	masterAudio := contains(lc, "hd ma") || contains(lc, "hdma") || contains(lc, "dtshd ma") || contains(lc, "dts ma")
+	return dtsX || masterAudio
 }
 
 func detectAudio(lc string) []string {

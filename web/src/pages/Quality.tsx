@@ -125,7 +125,7 @@ const TARGET_ROWS: { row: Row; label: string; hint: string; options: { k: string
   {
     row: "audio", label: "Audio",
     hint: "Features a file has or doesn't.",
-    options: [{ k: "atmos", l: "Dolby Atmos" }, { k: "lossless", l: "Lossless (TrueHD, DTS-HD MA, FLAC)" }],
+    options: [{ k: "atmos", l: "Dolby Atmos" }, { k: "lossless", l: "Lossless (TrueHD, DTS-HD MA, DTS:X, FLAC, LPCM)" }],
   },
 ];
 

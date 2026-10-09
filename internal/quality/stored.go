@@ -231,7 +231,7 @@ var formatMeta = map[string]struct{ desc, group string }{
 	"HLG":          {"Broadcast HDR", "hdr"},
 	"SDR":          {"No HDR", "hdr"},
 	"Atmos":        {"Object-based surround audio", "audio"},
-	"Lossless":     {"TrueHD, DTS-HD MA or FLAC", "audio"},
+	"Lossless":     {"TrueHD, DTS-HD MA, DTS:X, FLAC or LPCM", "audio"},
 	"TrueHD":       {"Lossless surround audio", "audio"},
 	"DTS-HD":       {"Lossless DTS audio", "audio"},
 	"HEVC":         {"x265 — smaller files, same quality", "codec"},

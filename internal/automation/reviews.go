@@ -780,7 +780,7 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		// carry none, so fall back to the release folder. Computed here rather than after
 		// the gate because SCORING the candidate needs the same name that gets recorded.
 		sourceName := filepath.Base(v.Path)
-		if parser.Parse(sourceName).Resolution == "" && release.Resolution != "" {
+		if parser.Parse(sourceName).StatedResolution() == "" && release.StatedResolution() != "" {
 			sourceName = filepath.Base(contentPath)
 		}
 		wanted, forced := refsToPlace(refs, force, func(ref series.EpisodeRef) bool {
@@ -927,8 +927,8 @@ func (c *Coordinator) importAbsoluteEpisode(ctx context.Context, s series.Series
 		// resolution of its own — recording it verbatim left the episode with unknown
 		// quality forever, so every future release outranked it.
 		sourceName := filepath.Base(ei.SourcePath)
-		if parser.Parse(sourceName).Resolution == "" {
-			if parent := filepath.Base(filepath.Dir(path)); parser.Parse(parent).Resolution != "" {
+		if parser.Parse(sourceName).StatedResolution() == "" {
+			if parent := filepath.Base(filepath.Dir(path)); parser.Parse(parent).StatedResolution() != "" {
 				sourceName = parent
 			}
 		}
@@ -988,8 +988,10 @@ func titleYear(title string, year int) string {
 // A file that names its own resolution always wins — a pack can hold mixed quality, and
 // the file is the more specific claim. Only genuinely-absent fields are borrowed.
 func inheritQuality(file, release parser.Release) parser.Release {
-	if file.Resolution == "" {
-		file.Resolution = release.Resolution
+	// An inferred resolution (an HDTV file read as SD) yields to one the release states:
+	// the files of a "Show S01 720p HDTV" pack are 720p.
+	if file.Resolution == "" || (file.ResolutionInferred && release.StatedResolution() != "") {
+		file.Resolution, file.ResolutionInferred = release.Resolution, release.ResolutionInferred
 	}
 	// A source the file only implied (a fansub name that says nothing) yields to one the
 	// release states: the episodes of a "[Group] Show (BD 1080p)" batch are BluRay.
@@ -1052,7 +1054,7 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	curParsed := parser.Parse(filepath.Base(cur.Path))
 	if cur.SourceRelease != "" {
 		src := parser.Parse(cur.SourceRelease)
-		if curParsed.Resolution == "" {
+		if curParsed.Resolution == "" || (curParsed.ResolutionInferred && src.StatedResolution() != "") {
 			curParsed.Resolution = src.Resolution
 		}
 		if curParsed.Codec == "" {
@@ -1102,8 +1104,8 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 // alone, since it's the faithful record of what the file actually came from.
 func (c *Coordinator) repairSourceRelease(ctx context.Context, s series.Series, ei *library.EpisodeImport, contentPath string, release parser.Release) {
 	better := filepath.Base(ei.SourcePath)
-	if parser.Parse(better).Resolution == "" {
-		if release.Resolution == "" {
+	if parser.Parse(better).StatedResolution() == "" {
+		if release.StatedResolution() == "" {
 			return // nothing better to record
 		}
 		better = filepath.Base(contentPath)
@@ -1111,7 +1113,7 @@ func (c *Coordinator) repairSourceRelease(ctx context.Context, s series.Series, 
 	for _, ep := range episodesOf(ei) {
 		rs, re := c.series.ResolveEpisode(ctx, s.ID, ei.Season, ep)
 		cur := c.series.CurrentEpisodeFile(ctx, s.ID, rs, re)
-		if parser.Parse(cur.SourceRelease).Resolution != "" {
+		if parser.Parse(cur.SourceRelease).StatedResolution() != "" {
 			continue // already records a resolution — leave the faithful record alone
 		}
 		if err := c.series.SetEpisodeSourceRelease(ctx, s.ID, rs, re, better); err != nil {

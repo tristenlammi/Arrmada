@@ -74,3 +74,20 @@ func TestInferredSourceYieldsToTheRelease(t *testing.T) {
 		t.Errorf("Source = %q, want the file's own WEBRip", got.Source)
 	}
 }
+
+// An HDTV file that names no resolution reads as SD on its own, but the pack it came in
+// states 720p — and that's the better claim.
+func TestInferredResolutionYieldsToTheRelease(t *testing.T) {
+	release := parser.Parse("Show.S01.720p.HDTV.x264-GRP")
+	file := parser.Parse("Show.S01E05.HDTV.x264-GRP.mkv")
+	if !file.ResolutionInferred {
+		t.Fatalf("premise: the file's resolution should be inferred, got %q", file.Resolution)
+	}
+	if got := inheritQuality(file, release); got.Resolution != parser.Res720p || got.ResolutionInferred {
+		t.Errorf("Resolution = %q (inferred %v), want the pack's stated 720p", got.Resolution, got.ResolutionInferred)
+	}
+	// With nothing better stated, the inference stands.
+	if got := inheritQuality(file, parser.Parse("some folder")); got.Resolution != parser.Res480p {
+		t.Errorf("Resolution = %q, want the inferred 480p kept", got.Resolution)
+	}
+}

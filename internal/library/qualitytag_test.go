@@ -60,4 +60,8 @@ func TestInferredSourceStaysOutOfTheName(t *testing.T) {
 	if got, want := qualityTag(file), "1080p"; got != want {
 		t.Errorf("qualityTag = %q, want %q", got, want)
 	}
+	// Same for an SD resolution inferred from an HDTV tag.
+	if got, want := qualityTag(parser.Parse("Show.S01E01.HDTV.x264-GRP.mkv")), "HDTV"; got != want {
+		t.Errorf("qualityTag = %q, want %q", got, want)
+	}
 }

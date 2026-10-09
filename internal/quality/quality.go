@@ -117,6 +117,7 @@ const (
 	CondResolution   ConditionType = "resolution"
 	CondEdition      ConditionType = "edition"
 	CondReleaseGroup ConditionType = "release_group"
+	CondLossless     ConditionType = "lossless" // no value: the release has a lossless audio track
 )
 
 // Condition is one predicate over a parsed release.
@@ -159,8 +160,17 @@ func (c Condition) matchOne(r parser.Release, v string) bool {
 		hit = strings.EqualFold(r.Edition, v)
 	case CondReleaseGroup:
 		hit = strings.EqualFold(r.Group, v)
+	case CondLossless:
+		hit = losslessAudio(r)
 	}
 	return hit
+}
+
+// losslessAudio reports a lossless track. The parser decides it from the name (DTS-HD
+// MA yes, DTS-HD HRA no); the labels are read too, so a Release built from probed facts
+// rather than parsed still counts.
+func losslessAudio(r parser.Release) bool {
+	return r.AudioLossless || containsStr(r.Audio, "TrueHD") || containsStr(r.Audio, "FLAC") || containsStr(r.Audio, "LPCM")
 }
 
 // CustomFormat is a named set of conditions (all must match — AND).
