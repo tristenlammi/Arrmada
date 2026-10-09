@@ -159,6 +159,20 @@ func TestReportedHoldAdoptedByContinuousLiveSession(t *testing.T) {
 	if d.Reason != "held" || d.Progress.PendingSession != "t" || *d.Progress.PendingPosition != 2000 {
 		t.Fatalf("an unrelated session: %s %+v", d.Reason, d.Progress)
 	}
+	// A PATCH near a hold a session is already proving leaves it alone, so an app that
+	// PATCHes as it plays can't keep restarting the proof.
+	proving := Progress{Position: 40000, Duration: 40000, Finished: true, UpdatedAt: 1000}
+	d = Decide(&proving, Report{Kind: Live, Position: 0, At: 2000, SessionID: "s"})
+	d = Decide(&d.Progress, Report{Kind: Live, Position: 15, Listened: 15, At: 3000, SessionID: "s"})
+	d = Decide(&d.Progress, Report{Kind: Reported, Position: 20, At: 3500})
+	if d.Dirty || d.Progress.PendingSession != "s" || d.Progress.PendingListened != 15 {
+		t.Fatalf("a PATCH reset a hold being proven: %s %+v", d.Reason, d.Progress)
+	}
+	d = Decide(&d.Progress, Report{Kind: Live, Position: 30, Listened: 15, At: 4000, SessionID: "s"})
+	if d.Reason != "rewind" || d.Progress.Position != 30 || d.Progress.Finished {
+		t.Fatalf("restart not saved after 30 s: %s %+v", d.Reason, d.Progress)
+	}
+
 	// Carrying on from the saved place drops the hold.
 	d = Decide(&held, Report{Kind: Live, Position: 5010, Listened: 10, At: 3000, SessionID: "u"})
 	if d.Progress.Position != 5010 || d.Progress.PendingPosition != nil {

@@ -179,6 +179,12 @@ func Decide(cur *Progress, r Report) Decision {
 		// Otherwise the flag says nothing new; the position alone decides.
 		r.Finished = nil
 		if cur.Position-pos > rewindThreshold {
+			if cur.PendingPosition != nil && math.Abs(pos-*cur.PendingPosition) <= rewindThreshold {
+				// A jump to about here is already held, perhaps with a play session proving
+				// it right now (an app that also PATCHes as it plays, or "Listen again").
+				// Leave that hold alone rather than restart its proof.
+				return Decision{Progress: *cur, Reason: "held"}
+			}
 			// Held with no session: the first play session that carries on from here
 			// takes it over and proves it, or the person confirms it in Arrmada.
 			np := pos
