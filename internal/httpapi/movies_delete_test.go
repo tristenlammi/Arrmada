@@ -41,6 +41,48 @@ func movieDeleteServer(t *testing.T, bin string) (*routeServer, *http.Cookie, in
 	return s, mgr, id, video
 }
 
+// The preview names each file with its size, counts the subtitles that go with them, and
+// says where they'd go — the bin's path, or that the bin is off.
+func TestMovieDeletePreview(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	s, mgr, id, video := movieDeleteServer(t, bin)
+	if err := os.WriteFile(video[:len(video)-len(".mkv")]+".en.srt", []byte("subs"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := s.do("GET", fmt.Sprintf("/api/v1/movies/%d/delete-preview", id), mgr)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HTTP %d: %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		Versions []struct {
+			ID        int64  `json:"id"`
+			Label     string `json:"label"`
+			FileName  string `json:"file_name"`
+			SizeBytes int64  `json:"size_bytes"`
+		} `json:"versions"`
+		Sidecars int   `json:"sidecars"`
+		Bytes    int64 `json:"bytes"`
+		Recycle  struct {
+			Enabled bool `json:"enabled"`
+		} `json:"recycle"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Versions) != 1 || got.Versions[0].FileName != "Heat (1995).mkv" || got.Versions[0].SizeBytes != 10 {
+		t.Errorf("versions = %+v", got.Versions)
+	}
+	if got.Sidecars != 1 || got.Bytes != 14 {
+		t.Errorf("sidecars = %d, bytes = %d; want 1 and 14", got.Sidecars, got.Bytes)
+	}
+	if !got.Recycle.Enabled {
+		t.Error("the route server's bin is on; the preview should say so")
+	}
+	if rec := s.do("GET", "/api/v1/movies/999/delete-preview", mgr); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown movie: HTTP %d, want 404", rec.Code)
+	}
+}
+
 // A movie delete the recycle bin refuses answers 409 with a message saying why, and the
 // movie and its file are still there.
 func TestDeleteMovieReturns409OnRecycleFailure(t *testing.T) {

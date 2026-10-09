@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { api, type AudioVersion, type Book } from "../lib/api";
+import { disposalLine, useRecycleMode } from "../lib/disposal";
 import { BookReleaseModal } from "./BookReleaseModal";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 // Extra audiobook versions of a book: a full-cast GraphicAudio production beside the
 // standard narration, a second narrator, anything the user names. Each version has
@@ -126,11 +128,13 @@ export function AudioVersionPanel({ book, v, onChange, flash }: { book: Book; v:
   const [editing, setEditing] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   const [confirm, setConfirm] = useState<null | "file" | "remove">(null);
+  const [delErr, setDelErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const mode = useRecycleMode();
 
   const run = async (key: string, fn: () => Promise<void>) => {
     setBusy(key);
-    try { await fn(); } catch (e) { flash((e as Error).message); } finally { setBusy(null); setConfirm(null); }
+    try { await fn(); } catch (e) { flash((e as Error).message); } finally { setBusy(null); }
   };
   const search = () => run("search", async () => {
     const r = await api.searchAudioVersion(book.id, v.id);
@@ -174,35 +178,46 @@ export function AudioVersionPanel({ book, v, onChange, flash }: { book: Book; v:
           )}
         </div>
         <div className="flex flex-none flex-wrap items-center justify-end gap-1.5">
-          {confirm ? (
-            <>
-              <span className="text-[11.5px] text-ink-dim">{confirm === "file" ? "Delete this version's files?" : has ? "Remove the version and its files?" : "Remove this version?"}</span>
-              <button
-                disabled={busy !== null}
-                onClick={() => run("delete", async () => {
-                  if (confirm === "file") await api.deleteAudioVersionFile(book.id, v.id);
-                  else await api.deleteAudioVersion(book.id, v.id, true);
-                  onChange();
-                })}
-                className={small}
-                style={{ background: "var(--reject)", color: "#fff" }}
-              >
-                {busy === "delete" ? "Deleting…" : confirm === "file" ? "Delete files" : "Remove"}
-              </button>
-              <button onClick={() => setConfirm(null)} className={small} style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Cancel</button>
-            </>
-          ) : (
-            <>
-              <button disabled={busy !== null} onClick={() => setBrowsing(true)} className={small} style={ghost} title="Browse audiobook releases on your indexers and pick one for this version">Search indexers</button>
-              {!has && v.terms.length > 0 && <button disabled={busy !== null} onClick={search} className={small} style={ghost} title="Let Arrmada pick and grab the best release matching this version's words">{busy === "search" ? "Searching…" : "Auto search"}</button>}
-              <button disabled={busy !== null} onClick={toggleMonitor} className={small} style={ghost} title="Whether the automatic searches look for this version">{v.monitored ? "Monitored" : "Unmonitored"}</button>
-              <button disabled={busy !== null} onClick={() => setEditing(true)} className={small} style={ghost}>Edit</button>
-              {has && <button disabled={busy !== null} onClick={() => setConfirm("file")} className={small} style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Delete files</button>}
-              <button disabled={busy !== null} onClick={() => setConfirm("remove")} className={small} style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Remove</button>
-            </>
-          )}
+          <button disabled={busy !== null} onClick={() => setBrowsing(true)} className={small} style={ghost} title="Browse audiobook releases on your indexers and pick one for this version">Search indexers</button>
+          {!has && v.terms.length > 0 && <button disabled={busy !== null} onClick={search} className={small} style={ghost} title="Let Arrmada pick and grab the best release matching this version's words">{busy === "search" ? "Searching…" : "Auto search"}</button>}
+          <button disabled={busy !== null} onClick={toggleMonitor} className={small} style={ghost} title="Whether the automatic searches look for this version">{v.monitored ? "Monitored" : "Unmonitored"}</button>
+          <button disabled={busy !== null} onClick={() => setEditing(true)} className={small} style={ghost}>Edit</button>
+          {has && <button disabled={busy !== null} onClick={() => { setDelErr(null); setConfirm("file"); }} className={small} style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Delete files</button>}
+          <button disabled={busy !== null} onClick={() => { setDelErr(null); setConfirm("remove"); }} className={small} style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Remove</button>
         </div>
       </div>
+      {confirm && (
+        <ConfirmDialog
+          title={confirm === "file" ? <>Delete the “{v.label}” files?</> : <>Remove the “{v.label}” version?</>}
+          body={
+            <>
+              {has && v.file && <div className="mt-1 break-all font-mono text-[11.5px]" style={{ color: "var(--ink)" }}>{v.file.path}</div>}
+              <p className="mb-0 mt-1.5">
+                {has && v.file ? `${disposalLine(v.file.size_bytes, mode)}. ` : ""}
+                {confirm === "file" ? "The version stays, so Arrmada looks for it again while it's monitored." : "Arrmada stops looking for this version."}
+              </p>
+            </>
+          }
+          confirmLabel={confirm === "file" ? "Delete files" : has ? "Remove + delete files" : "Remove"}
+          busyLabel="Deleting…"
+          busy={busy === "delete"}
+          error={delErr}
+          onConfirm={async () => {
+            setBusy("delete"); setDelErr(null);
+            try {
+              if (confirm === "file") await api.deleteAudioVersionFile(book.id, v.id);
+              else await api.deleteAudioVersion(book.id, v.id, true);
+              setConfirm(null);
+              onChange();
+            } catch (e) {
+              setDelErr((e as Error).message); // a recycle-bin refusal stays on screen
+            } finally {
+              setBusy(null);
+            }
+          }}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
       {browsing && (
         <BookReleaseModal
           title={`Search indexers — ${book.title} (${v.label})`}

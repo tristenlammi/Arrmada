@@ -723,6 +723,28 @@ func (a *api) handleRename(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "renamed"})
 }
 
+// handleMovieDeletePreview says what deleting a movie with its files would move and where
+// it would go, so the dialog can state it before anything happens.
+func (a *api) handleMovieDeletePreview(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	plan, err := a.deps.Movies.DeletePlan(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, movies.ErrNotFound) {
+			a.writeError(w, http.StatusNotFound, "movie not found")
+			return
+		}
+		a.writeError(w, http.StatusInternalServerError, "could not list the movie's files")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"versions": plan.Versions, "sidecars": plan.Sidecars, "bytes": plan.Bytes,
+		"recycle": a.recycleMode(r.Context()),
+	})
+}
+
 func (a *api) handleDeleteMovie(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)
 	if !ok {

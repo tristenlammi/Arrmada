@@ -121,6 +121,7 @@ GET /api/v1/movies/unmatched staff -
 GET /api/v1/movies/{id} staff -
 GET /api/v1/movies/{id}/blocklist staff -
 GET /api/v1/movies/{id}/collection staff -
+GET /api/v1/movies/{id}/delete-preview staff -
 GET /api/v1/movies/{id}/history staff -
 GET /api/v1/movies/{id}/manualimport staff -
 GET /api/v1/movies/{id}/releases staff -

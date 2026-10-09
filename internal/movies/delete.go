@@ -241,3 +241,57 @@ func sidecarsOf(video string, keep []string) []string {
 	}
 	return out
 }
+
+// PlanFile is one file a movie delete would move: the default track (ID 0) or an extra.
+type PlanFile struct {
+	ID        int64  `json:"id"`
+	Label     string `json:"label"`
+	FileName  string `json:"file_name"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+// DeletePlan is what deleting a movie with its files would touch, for the dialog to state
+// before anything happens.
+type DeletePlan struct {
+	Versions []PlanFile `json:"versions"` // only files actually on disk
+	Sidecars int        `json:"sidecars"` // subtitles that travel with them
+	Bytes    int64      `json:"bytes"`    // videos plus subtitles
+}
+
+// DeletePlan lists a movie's files and their subtitles without changing anything.
+func (s *Service) DeletePlan(ctx context.Context, id int64) (DeletePlan, error) {
+	plan := DeletePlan{Versions: []PlanFile{}}
+	m, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return plan, err
+	}
+	extras, err := s.repo.ListVersions(ctx, id)
+	if err != nil {
+		return plan, err
+	}
+	all := append([]Version{{ID: 0, Label: "Default", FilePath: m.MovieFilePath}}, extras...)
+	seen := map[string]bool{}
+	for _, v := range all {
+		if v.FilePath == "" || seen[v.FilePath] {
+			continue
+		}
+		seen[v.FilePath] = true
+		fi, err := os.Stat(v.FilePath)
+		if err != nil {
+			continue // already gone from disk: nothing to move
+		}
+		plan.Versions = append(plan.Versions, PlanFile{ID: v.ID, Label: v.Label, FileName: filepath.Base(v.FilePath), SizeBytes: fi.Size()})
+		plan.Bytes += fi.Size()
+		for _, sub := range sidecarsOf(v.FilePath, nil) {
+			if seen[sub] {
+				continue // a prefix-named version's subtitle, already counted
+			}
+			seen[sub] = true
+			plan.Sidecars++
+			if si, err := os.Stat(sub); err == nil {
+				plan.Bytes += si.Size()
+			}
+		}
+	}
+	return plan, nil
+}

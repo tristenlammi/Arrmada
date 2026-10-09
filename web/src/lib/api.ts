@@ -528,6 +528,13 @@ export interface DeletePreview {
   confirm_over_bytes: number; // above this, the title must be typed
   recycle: RecycleMode;
 }
+// What deleting a movie with its files would move (each file still on disk), and where.
+export interface MovieDeletePreview {
+  versions: { id: number; label: string; file_name: string; size_bytes: number }[];
+  sidecars: number;
+  bytes: number;
+  recycle: RecycleMode;
+}
 export interface RecycleItem {
   id: string;
   name: string;
@@ -1373,6 +1380,7 @@ export const api = {
     req<{ status: string }>(`/api/v1/books/${id}/grabtorrent`, { method: "POST", body: JSON.stringify({ torrent, filename, title, version_id: versionId || 0 }) }),
   deleteMovie: (id: number, deleteFiles?: boolean) =>
     req<void>(`/api/v1/movies/${id}${deleteFiles ? "?delete_files=true" : ""}`, { method: "DELETE" }),
+  movieDeletePreview: (id: number) => req<MovieDeletePreview>(`/api/v1/movies/${id}/delete-preview`),
   searchMovie: (id: number) =>
     req<{ status: string }>(`/api/v1/movies/${id}/search`, { method: "POST" }),
   movie: (id: number) => req<Movie>(`/api/v1/movies/${id}`),

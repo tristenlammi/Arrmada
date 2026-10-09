@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
+import { ConfirmDialog } from "../components/ConfirmDialog";
+import { DeleteMovieDialog } from "../components/DeleteMovieDialog";
+import { disposalLine, useRecycleMode } from "../lib/disposal";
 import {
   api,
   type BlockEntry,
@@ -232,7 +235,7 @@ function VersionsArea({ movie, onChange, flash }: { movie: Movie; onChange: () =
   if (extras.length === 0) {
     return (
       <>
-        {movie.file && <FilePanel file={movie.file} movieId={movie.id} onChange={onChange} flash={flash} />}
+        {movie.file && <FilePanel file={movie.file} movieId={movie.id} onChange={onChange} />}
         <button onClick={() => setAdding(true)} className="mt-4 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold" style={{ border: "1px dashed var(--line)", color: "var(--ink-dim)" }}>
           ＋ Keep another version <span className="text-ink-faint">(e.g. 1080p + 4K, or a Director's Cut)</span>
         </button>
@@ -272,26 +275,8 @@ function VersionCard({ movieId, version, onChange, flash, profileName }: { movie
     }
   };
 
-  const removeVersion = async () => {
-    setBusy(true);
-    try {
-      await api.deleteVersion(movieId, version.id);
-      onChange();
-      flash(`Removed "${version.label}" version.`);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const deleteFile = async () => {
-    setBusy(true);
-    try {
-      await api.deleteVersionFile(movieId, version.id);
-      onChange();
-    } finally {
-      setBusy(false);
-    }
-  };
+  // Both destructive buttons ask first, naming the file, its size and where it goes.
+  const [confirm, setConfirm] = useState<"file" | "version" | null>(null);
 
   const status = f ? { label: "Downloaded", tone: "var(--good)" } : version.monitored ? { label: "Wanted", tone: "var(--avoid)" } : { label: "Unmonitored", tone: "var(--ink-faint)" };
   const chips: string[] = [];
@@ -325,11 +310,79 @@ function VersionCard({ movieId, version, onChange, flash, profileName }: { movie
         </div>
         <div className="flex flex-none flex-col items-end gap-1.5">
           <button onClick={toggleMonitor} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{version.monitored ? "Monitored" : "Unmonitored"}</button>
-          {f && <button onClick={deleteFile} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Delete file</button>}
-          {!version.is_default && <button onClick={removeVersion} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px]" style={{ color: "var(--ink-faint)" }}>Remove version</button>}
+          {f && <button onClick={() => setConfirm("file")} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Delete file</button>}
+          {!version.is_default && <button onClick={() => setConfirm("version")} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px]" style={{ color: "var(--ink-faint)" }}>Remove version</button>}
         </div>
       </div>
+      {confirm === "file" && f && (
+        <FileDeleteDialog
+          title={<>Delete the “{version.label}” file?</>}
+          file={f}
+          note="The version stays, so Arrmada looks for it again while it's monitored."
+          confirmLabel="Delete file"
+          run={() => api.deleteVersionFile(movieId, version.id)}
+          onDone={() => { setConfirm(null); onChange(); }}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
+      {confirm === "version" && (
+        <FileDeleteDialog
+          title={<>Remove the “{version.label}” version?</>}
+          file={f}
+          note="Arrmada stops looking for this version."
+          confirmLabel="Remove version"
+          run={() => api.deleteVersion(movieId, version.id)}
+          onDone={() => { setConfirm(null); onChange(); flash(`Removed "${version.label}" version.`); }}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
     </div>
+  );
+}
+
+// FileDeleteDialog asks before one of a movie's files goes. It names the file and its size,
+// says honestly where it goes (the recycle bin, or gone for good when the bin is off), and
+// keeps the server's refusal on screen instead of closing as if it had worked.
+function FileDeleteDialog({ title, file, note, confirmLabel, run, onDone, onCancel }: {
+  title: ReactNode;
+  file?: MovieFile | null;
+  note: string;
+  confirmLabel: string;
+  run: () => Promise<unknown>;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const mode = useRecycleMode();
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const confirm = async () => {
+    setBusy(true); setErr(null);
+    try {
+      await run();
+      onDone();
+    } catch (e) {
+      setErr((e as Error).message);
+      setBusy(false);
+    }
+  };
+  let where = "";
+  if (file) where = file.missing ? "The file is already gone from disk — this only clears the record." : `${disposalLine(file.size_bytes, mode)}. Its subtitles go with it.`;
+  return (
+    <ConfirmDialog
+      title={title}
+      body={
+        <>
+          {file && <div className="mt-1 break-all font-mono text-[11.5px]" style={{ color: "var(--ink)" }}>{file.filename || file.path}</div>}
+          <p className="mb-0 mt-1.5">{where} {note}</p>
+        </>
+      }
+      confirmLabel={confirmLabel}
+      busyLabel="Deleting…"
+      busy={busy}
+      error={err}
+      onConfirm={confirm}
+      onCancel={onCancel}
+    />
   );
 }
 
@@ -641,6 +694,8 @@ function Toolbar({ movie, onChange, flash }: { movie: Movie; onChange: () => voi
   const [showImport, setShowImport] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showPaste, setShowPaste] = useState(false);
+  const [showDelete, setShowDelete] = useState(false);
+  const navigate = useNavigate();
 
   const run = async (key: string, fn: () => Promise<void>) => {
     setBusy(key);
@@ -699,7 +754,10 @@ function Toolbar({ movie, onChange, flash }: { movie: Movie; onChange: () => voi
             {busy === "rename" ? "Renaming…" : "Rename"}
           </button>
         )}
+        {/* Reachable on touch, unlike the grid's hover-only X. */}
+        <button className={btn} style={{ border: "1px solid var(--reject)", color: "var(--reject)" }} disabled={busy !== null} onClick={() => setShowDelete(true)}>Delete movie</button>
       </div>
+      {showDelete && <DeleteMovieDialog movie={movie} onClose={() => setShowDelete(false)} onDeleted={() => navigate("/movies")} />}
       {showPaste && (
         <UploadTorrentModal
           what={movie.title}
@@ -723,21 +781,9 @@ function Toolbar({ movie, onChange, flash }: { movie: Movie; onChange: () => voi
   );
 }
 
-function FilePanel({ file, movieId, onChange, flash }: { file: MovieFile; movieId: number; onChange: () => void; flash: (m: string) => void }) {
+function FilePanel({ file, movieId, onChange }: { file: MovieFile; movieId: number; onChange: () => void }) {
   const [confirming, setConfirming] = useState(false);
   const [showFile, setShowFile] = useState(false);
-  const [deleting, setDeleting] = useState(false);
-
-  const del = async () => {
-    setDeleting(true);
-    try {
-      await api.deleteMovieFile(movieId);
-      onChange();
-    } catch (e) {
-      flash((e as Error).message);
-      setDeleting(false);
-    }
-  };
 
   const tone = file.missing ? "var(--avoid)" : "var(--good)";
   const chips: string[] = [];
@@ -778,16 +824,20 @@ function FilePanel({ file, movieId, onChange, flash }: { file: MovieFile; movieI
           {file.missing && <div className="mt-1.5 text-[11.5px]" style={{ color: "var(--avoid)" }}>Tracked but not on disk. Refresh & rescan, or clear the record to search again.</div>}
         </div>
         <div className="flex-none">
-          {confirming ? (
-            <div className="flex items-center gap-2">
-              <button onClick={del} disabled={deleting} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--reject)", color: "#fff" }}>{deleting ? "Deleting…" : "Delete file"}</button>
-              <button onClick={() => setConfirming(false)} disabled={deleting} className="rounded-lg px-3 py-1.5 text-[11.5px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Cancel</button>
-            </div>
-          ) : (
-            <button onClick={() => setConfirming(true)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{file.missing ? "Clear record" : "Delete file"}</button>
-          )}
+          <button onClick={() => setConfirming(true)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{file.missing ? "Clear record" : "Delete file"}</button>
         </div>
       </div>
+      {confirming && (
+        <FileDeleteDialog
+          title={file.missing ? "Clear the missing file's record?" : "Delete this file?"}
+          file={file}
+          note="The movie stays, so Arrmada looks for it again while it's monitored."
+          confirmLabel={file.missing ? "Clear record" : "Delete file"}
+          run={() => api.deleteMovieFile(movieId)}
+          onDone={() => { setConfirming(false); onChange(); }}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
       {showFile && (
         <FileDetailsModal
           path={file.path}
