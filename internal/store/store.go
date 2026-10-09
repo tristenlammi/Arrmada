@@ -191,6 +191,32 @@ func (s *Store) prunePreMigrate(log *slog.Logger) {
 	}
 }
 
+// OpenNoMigrate opens an existing database with the same settings Open uses, but
+// never creates, migrates or snapshots it. It is for the command-line tools, which
+// run beside a live server: they must neither upgrade the schema under it nor make
+// an empty database where the real one was expected.
+func OpenNoMigrate(dataDir string) (*Store, error) {
+	dbPath := filepath.Join(dataDir, "arrmada.db")
+	fi, err := os.Stat(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("no database at %s: %w", dbPath, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s isn't a database file", dbPath)
+	}
+	db, err := openDB(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping sqlite: %w", err)
+	}
+	return &Store{db: db, dataDir: dataDir, dbPath: dbPath}, nil
+}
+
 // openDB opens the pool every Store uses: WAL, foreign keys on, busy timeout.
 func openDB(dbPath string) (*sql.DB, error) {
 	dsn := "file:" + dbPath +

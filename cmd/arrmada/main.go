@@ -98,6 +98,12 @@ func (r movieTitleResolver) ResolveMovie(ctx context.Context, name string) (stri
 }
 
 func main() {
+	// `arrmada <command>` runs one maintenance command and exits (cli.go). Checked before
+	// the logger and everything else, so arguments can never start a second server.
+	if len(os.Args) > 1 {
+		os.Exit(runCLI(os.Args[1:]))
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		slog.Error("failed to load config", "err", err)
