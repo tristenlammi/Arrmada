@@ -25,6 +25,7 @@ DELETE /api/v1/series/{id}/blocklist/{bid} staff -
 DELETE /api/v1/series/{id}/duplicates staff -
 DELETE /api/v1/series/{id}/scene-map/{season} staff -
 DELETE /api/v1/series/{id}/seasons/{season}/episodes/{episode}/file staff -
+DELETE /api/v1/system/backups/{name} admin -
 DELETE /api/v1/users/{id} admin -
 GET /api/health public ext
 GET /api/v1/apikeys staff -
@@ -170,6 +171,8 @@ GET /api/v1/subtitles/models staff -
 GET /api/v1/subtitles/movies staff -
 GET /api/v1/subtitles/series staff -
 GET /api/v1/subtitles/settings staff -
+GET /api/v1/system/backups admin -
+GET /api/v1/system/backups/{name}/download admin -
 GET /api/v1/system/browse staff -
 GET /api/v1/system/library staff -
 GET /api/v1/users admin -
@@ -319,5 +322,6 @@ PUT /api/v1/series/{id}/seasons/{season}/monitor staff -
 PUT /api/v1/series/{id}/type staff -
 PUT /api/v1/settings staff -
 PUT /api/v1/subtitles/settings staff -
+PUT /api/v1/system/backups/settings admin -
 PUT /api/v1/system/library staff -
 PUT /api/v1/users/{id} admin -

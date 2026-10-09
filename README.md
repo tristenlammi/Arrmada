@@ -78,6 +78,25 @@ time (newest 7 kept). If the data disk is too full for the pre-upgrade copy,
 Arrmada refuses to upgrade and says so; free some space, or set
 `ARRMADA_SKIP_MIGRATION_SNAPSHOT=1` in `.env` to upgrade without one.
 
+## Backups
+
+Arrmada copies its database into `<data>/backups` (on Unraid,
+`/mnt/user/appdata/arrmada/backups` when the data dir is in appdata):
+
+| Kind | When | Kept |
+|---|---|---|
+| Nightly | once a day after 04:00 server time (changeable), or at once after a long downtime | newest 7 (changeable) |
+| Before update | before any schema change | newest 5 |
+| Manual | **Back up now** | newest 10 |
+| Before restore, Before user delete, Uploaded | automatically | newest 3 each |
+
+Admins manage them in **Settings → System → Backups**: see every copy with its size and
+schema version, take one now, change the nightly schedule, delete one, or **Download** it as a
+`.db.gz` (decompress it with `gunzip` to get a plain SQLite file). The copies sit on the same
+disk as the database, so they cover a bad update, corruption or a mistake, not a failed disk;
+download one now and then to keep a copy somewhere else. Backups contain your API keys, the
+Plex token and password hashes, so keep downloaded copies somewhere private.
+
 ## Ports
 
 The installer picks free ports so nothing clashes with apps you already run. It prints them

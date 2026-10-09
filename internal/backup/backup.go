@@ -114,7 +114,7 @@ func (s *Service) Create(ctx context.Context, kind store.BackupKind) (Backup, er
 
 func (s *Service) keepFor(ctx context.Context, kind store.BackupKind) int {
 	if kind == store.BackupNightly {
-		return s.intSetting(ctx, KeyKeepNightly, defaultKeepNightly, 1, 365)
+		return s.intSetting(ctx, KeyKeepNightly, defaultKeepNightly, 1, MaxKeepNightly)
 	}
 	if n, ok := keep[kind]; ok {
 		return n
@@ -205,13 +205,19 @@ func (s *Service) forget(names []string) {
 	s.mu.Unlock()
 }
 
+// validName accepts exactly one of our backup file names: no path, no "..", no other file.
+func validName(name string) bool {
+	if name == "" || filepath.Base(name) != name {
+		return false
+	}
+	_, _, ok := store.ParseBackupName(name)
+	return ok
+}
+
 // Delete removes one backup. Only exact backup names are accepted, so this can never
 // reach the live database or anything outside the backups folder.
 func (s *Service) Delete(name string) error {
-	if filepath.Base(name) != name {
-		return ErrBadName
-	}
-	if _, _, ok := store.ParseBackupName(name); !ok {
+	if !validName(name) {
 		return ErrBadName
 	}
 	if err := os.Remove(filepath.Join(s.dir, name)); err != nil {
@@ -220,6 +226,49 @@ func (s *Service) Delete(name string) error {
 	s.forget([]string{name})
 	return nil
 }
+
+// Open opens one backup for reading (a download). The same exact-name rule as Delete
+// applies; the caller closes the file.
+func (s *Service) Open(name string) (*os.File, Backup, error) {
+	if !validName(name) {
+		return nil, Backup{}, ErrBadName
+	}
+	f, err := os.Open(filepath.Join(s.dir, name))
+	if err != nil {
+		return nil, Backup{}, err
+	}
+	kind, at, _ := store.ParseBackupName(name)
+	b := Backup{Name: name, Kind: kind, CreatedAt: at}
+	if fi, err := f.Stat(); err == nil {
+		b.SizeBytes = fi.Size()
+	}
+	return f, b, nil
+}
+
+// Schedule is the nightly backup's settings as the Backups card edits them.
+type Schedule struct {
+	Enabled     bool `json:"enabled"`
+	Hour        int  `json:"hour"`         // local hour the nightly is due from, 0-23
+	KeepNightly int  `json:"keep_nightly"` // nightlies kept, 1-365
+}
+
+// Bounds for the schedule's numbers; out-of-range stored values fall back to the defaults.
+const (
+	MaxHour        = 23
+	MaxKeepNightly = 365
+)
+
+// Schedule returns the current nightly settings, defaults filled in.
+func (s *Service) Schedule(ctx context.Context) Schedule {
+	return Schedule{
+		Enabled:     s.Enabled(ctx),
+		Hour:        s.intSetting(ctx, KeyHour, defaultHour, 0, MaxHour),
+		KeepNightly: s.intSetting(ctx, KeyKeepNightly, defaultKeepNightly, 1, MaxKeepNightly),
+	}
+}
+
+// LastNightly is when the newest nightly backup was taken (zero when there is none).
+func (s *Service) LastNightly() time.Time { return s.newest(store.BackupNightly) }
 
 // newest returns when the newest backup of kind was taken (zero when there is none).
 func (s *Service) newest(kind store.BackupKind) time.Time {
@@ -261,7 +310,7 @@ func (s *Service) RunNightly(ctx context.Context) error {
 	if !s.Enabled(ctx) {
 		return nil
 	}
-	hour := s.intSetting(ctx, KeyHour, defaultHour, 0, 23)
+	hour := s.intSetting(ctx, KeyHour, defaultHour, 0, MaxHour)
 	if !dueNightly(s.newest(store.BackupNightly), s.now(), hour) {
 		return nil
 	}

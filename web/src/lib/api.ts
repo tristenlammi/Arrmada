@@ -525,6 +525,36 @@ export interface LogEntry {
   msg: string;
   attrs?: string;
 }
+// Why a database backup was taken; part of its file name.
+export type BackupKind = "pre-migrate" | "nightly" | "manual" | "pre-restore" | "pre-delete-user" | "pre-delete-empty-user" | "uploaded";
+
+// One database backup file. Nothing from inside it is ever sent, beyond its schema version.
+export interface BackupFile {
+  name: string;
+  kind: BackupKind;
+  size_bytes: number;
+  created_at: string;
+  schema_version: string;
+}
+
+export interface BackupSchedule {
+  enabled: boolean;
+  hour: number; // local hour the nightly is due from, 0-23
+  keep_nightly: number;
+}
+
+export interface BackupsState {
+  backups: BackupFile[];
+  total_bytes: number;
+  free_bytes: number | null; // null where free space can't be measured
+  dir: string;
+  settings: BackupSchedule;
+  last_nightly_at: string | null;
+}
+
+// The download link for a backup (a .db.gz streamed by the server, admin only).
+export const backupDownloadURL = (name: string) => `/api/v1/system/backups/${encodeURIComponent(name)}/download`;
+
 export interface RecycleStats {
   enabled: boolean;
   dir: string;
@@ -1367,9 +1397,14 @@ export const api = {
   },
   recycleStats: () => req<RecycleStats>("/api/v1/recycle"),
   recycleMode: () => req<RecycleMode>("/api/v1/recycle/mode"),
-  // Admin only: a manual database backup, taken synchronously.
-  backupNow: () =>
-    req<{ name: string; kind: string; size_bytes: number; created_at: string; schema_version: string }>("/api/v1/system/backups", { method: "POST" }),
+  // Database backups — admin only (a backup holds every secret the app has).
+  backups: () => req<BackupsState>("/api/v1/system/backups"),
+  // A manual database backup, taken synchronously.
+  backupNow: () => req<BackupFile>("/api/v1/system/backups", { method: "POST" }),
+  saveBackupSchedule: (p: Partial<BackupSchedule>) =>
+    req<BackupSchedule>("/api/v1/system/backups/settings", { method: "PUT", body: JSON.stringify(p) }),
+  deleteBackup: (name: string) =>
+    req<{ status: string }>(`/api/v1/system/backups/${encodeURIComponent(name)}`, { method: "DELETE" }),
   recycleItems: () => req<{ items: RecycleItem[] }>("/api/v1/recycle/items").then((r) => r.items),
   emptyRecycle: () => req<{ freed_bytes: number }>("/api/v1/recycle/empty", { method: "POST" }),
   restoreRecycle: (id: string) => req<{ status: string }>("/api/v1/recycle/restore", { method: "POST", body: JSON.stringify({ id }) }),

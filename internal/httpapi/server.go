@@ -352,7 +352,11 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/restore", a.requireRole(auth.RoleManager, a.handleRecycleRestore))
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/delete", a.requireRole(auth.RoleManager, a.handleRecycleDeleteItem))
 	// Admin only: a backup holds API keys, the Plex token and password hashes.
+	mux.HandleFunc("GET "+base+"/api/v1/system/backups", a.requireRole(auth.RoleAdmin, a.handleBackupsList))
 	mux.HandleFunc("POST "+base+"/api/v1/system/backups", a.requireRole(auth.RoleAdmin, a.handleBackupNow))
+	mux.HandleFunc("PUT "+base+"/api/v1/system/backups/settings", a.requireRole(auth.RoleAdmin, a.handleBackupSettings))
+	mux.HandleFunc("GET "+base+"/api/v1/system/backups/{name}/download", a.requireRole(auth.RoleAdmin, a.handleBackupDownload))
+	mux.HandleFunc("DELETE "+base+"/api/v1/system/backups/{name}", a.requireRole(auth.RoleAdmin, a.handleBackupDelete))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/hardware", a.requireRole(auth.RoleManager, a.handleConvertHardware))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/status", a.requireRole(auth.RoleManager, a.handleConvertStatus))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/settings", a.requireRole(auth.RoleManager, a.handleConvertSettings))
