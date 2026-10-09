@@ -534,6 +534,8 @@ export interface MovieDeletePreview {
   sidecars: number;
   bytes: number;
   recycle: RecycleMode;
+  // Downloads still in flight for it; progress 0..1 (0 when the client doesn't list it).
+  pending_downloads: { hash: string; title: string; progress: number }[];
 }
 export interface RecycleItem {
   id: string;
@@ -1378,8 +1380,13 @@ export const api = {
     req<{ status: string }>("/api/v1/books/series-backfill", { method: "POST" }),
   grabBookTorrent: (id: number, torrent: string, filename: string, title: string, versionId?: number) =>
     req<{ status: string }>(`/api/v1/books/${id}/grabtorrent`, { method: "POST", body: JSON.stringify({ torrent, filename, title, version_id: versionId || 0 }) }),
-  deleteMovie: (id: number, deleteFiles?: boolean) =>
-    req<void>(`/api/v1/movies/${id}${deleteFiles ? "?delete_files=true" : ""}`, { method: "DELETE" }),
+  deleteMovie: (id: number, deleteFiles?: boolean, cancelDownloads?: boolean) => {
+    const q = new URLSearchParams();
+    if (deleteFiles) q.set("delete_files", "true");
+    if (cancelDownloads) q.set("cancel_downloads", "true");
+    const qs = q.toString();
+    return req<void>(`/api/v1/movies/${id}${qs ? `?${qs}` : ""}`, { method: "DELETE" });
+  },
   movieDeletePreview: (id: number) => req<MovieDeletePreview>(`/api/v1/movies/${id}/delete-preview`),
   searchMovie: (id: number) =>
     req<{ status: string }>(`/api/v1/movies/${id}/search`, { method: "POST" }),

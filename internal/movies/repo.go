@@ -150,16 +150,29 @@ func (r *Repo) Create(ctx context.Context, m Movie) (Movie, error) {
 	return r.Get(ctx, id)
 }
 
-// Delete removes a movie by id.
+// Delete removes a movie by id, with its history and extra versions, in one transaction.
+// Those tables have no foreign keys, so without this a deleted movie left its timeline
+// and version rows behind, waiting to attach to whatever reused the id.
 func (r *Repo) Delete(ctx context.Context, id int64) error {
-	res, err := r.db.ExecContext(ctx, `DELETE FROM movies WHERE id = ?`, id)
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	res, err := tx.ExecContext(ctx, `DELETE FROM movies WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	return nil
+	if _, err := tx.ExecContext(ctx, `DELETE FROM movie_versions WHERE movie_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM movie_events WHERE movie_id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // SetMonitored toggles monitoring.

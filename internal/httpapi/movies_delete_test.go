@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
+	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/eventbus"
 	"github.com/tristenlammi/arrmada/internal/movies"
 )
@@ -21,6 +22,7 @@ func movieDeleteServer(t *testing.T, bin string) (*routeServer, *http.Cookie, in
 	s := newRouteServer(t, func(d *Deps) {
 		d.Bus = eventbus.New(d.Log)
 		d.Movies = movies.NewService(d.Store.DB(), nil, nil, root, bin, d.Bus, d.Log)
+		d.Automation = automation.New(d.Movies, nil, nil, nil, d.Store.DB(), d.Bus, d.Log, "")
 	})
 	_, mgr := s.user(t, "mgr@example.com", auth.RoleManager)
 	res, err := s.st.DB().Exec(`INSERT INTO movies (tmdb_id, title, year, monitored) VALUES (11, 'Heat', 1995, 1)`)
@@ -49,6 +51,9 @@ func TestMovieDeletePreview(t *testing.T) {
 	if err := os.WriteFile(video[:len(video)-len(".mkv")]+".en.srt", []byte("subs"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.st.DB().Exec(`INSERT INTO grabs (movie_id, title, media_type, info_hash) VALUES (?, 'Heat.1995.2160p', 'movie', '0123456789abcdef0123456789abcdef01234567')`, id); err != nil {
+		t.Fatal(err)
+	}
 	rec := s.do("GET", fmt.Sprintf("/api/v1/movies/%d/delete-preview", id), mgr)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("HTTP %d: %s", rec.Code, rec.Body)
@@ -65,6 +70,10 @@ func TestMovieDeletePreview(t *testing.T) {
 		Recycle  struct {
 			Enabled bool `json:"enabled"`
 		} `json:"recycle"`
+		Pending []struct {
+			Hash  string `json:"hash"`
+			Title string `json:"title"`
+		} `json:"pending_downloads"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
@@ -77,6 +86,9 @@ func TestMovieDeletePreview(t *testing.T) {
 	}
 	if !got.Recycle.Enabled {
 		t.Error("the route server's bin is on; the preview should say so")
+	}
+	if len(got.Pending) != 1 || got.Pending[0].Title != "Heat.1995.2160p" {
+		t.Errorf("pending_downloads = %+v, want the in-flight grab", got.Pending)
 	}
 	if rec := s.do("GET", "/api/v1/movies/999/delete-preview", mgr); rec.Code != http.StatusNotFound {
 		t.Errorf("unknown movie: HTTP %d, want 404", rec.Code)

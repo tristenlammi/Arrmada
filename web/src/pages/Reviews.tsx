@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { api, type ImportReview, type ReviewKind, type ReviewTarget } from "../lib/api";
 
 // What the user calls a library item of each review kind.
@@ -12,6 +13,7 @@ export function Reviews() {
   const [list, setList] = useState<ImportReview[] | null>(null);
   const [busy, setBusy] = useState<number | null>(null);
   const [reassign, setReassign] = useState<ImportReview | null>(null);
+  const [removing, setRemoving] = useState<ImportReview | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); };
 
@@ -67,7 +69,12 @@ export function Reviews() {
                   {r.expected_id > 0 && (
                     <button onClick={() => act(r.id, () => api.importReview(r.id), `Imported into ${r.expected_title}.`)} disabled={busy === r.id} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink)" }}>Import anyway</button>
                   )}
-                  <button onClick={() => setReassign(r)} disabled={busy === r.id} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>Import into a different {kindLabel(r.media_type)}…</button>
+                  <button onClick={() => setReassign(r)} disabled={busy === r.id} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{r.expected_id > 0 ? `Import into a different ${kindLabel(r.media_type)}…` : `Import into…`}</button>
+                  {/* Not tied to a title (e.g. grabbed for a movie since deleted): take it out of
+                      the client without blocklisting the release everywhere, as Reject would. */}
+                  {r.expected_id === 0 && r.hash && (
+                    <button onClick={() => setRemoving(r)} disabled={busy === r.id} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Remove download</button>
+                  )}
                   <button onClick={() => act(r.id, () => api.dismissReview(r.id), "Dismissed.")} disabled={busy === r.id} className="ml-auto rounded-lg px-3 py-1.5 text-[11.5px] text-ink-dim hover:text-[var(--ink)]">Dismiss</button>
                 </div>
               </div>
@@ -87,8 +94,51 @@ export function Reviews() {
           }}
         />
       )}
+      {removing && (
+        <RemoveHeldDialog
+          review={removing}
+          onClose={() => setRemoving(null)}
+          onRemoved={(msg) => { const id = removing.id; setRemoving(null); setList((xs) => (xs ?? []).filter((x) => x.id !== id)); flash(msg); }}
+        />
+      )}
       {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
     </>
+  );
+}
+
+// RemoveHeldDialog takes a held download out of the client, keeping its files by default
+// (they may be the only copy). The server settles the review once the torrent is gone.
+function RemoveHeldDialog({ review, onClose, onRemoved }: { review: ImportReview; onClose: () => void; onRemoved: (msg: string) => void }) {
+  const [mode, setMode] = useState<"keep_files" | "delete_files">("keep_files");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const confirm = async () => {
+    setBusy(true); setErr(null);
+    try {
+      await api.deleteDownload(review.hash, { mode, name: review.name });
+      onRemoved(mode === "delete_files" ? "Removed and its files deleted." : "Removed — the files are kept.");
+    } catch (e) {
+      setErr((e as Error).message);
+      setBusy(false);
+    }
+  };
+  return (
+    <ConfirmDialog
+      title="Remove this download from the client?"
+      body={<span className="break-all font-mono">{review.name}</span>}
+      choices={[
+        { value: "keep_files", label: "Remove from the client, keep the files" },
+        { value: "delete_files", label: "Remove and delete the files", hint: review.size_bytes > 0 ? `Deletes ${gb(review.size_bytes)} from the downloads folder.` : undefined, danger: true },
+      ]}
+      choice={mode}
+      onChoice={setMode}
+      confirmLabel={mode === "delete_files" ? "Remove and delete files" : "Remove, keep files"}
+      busyLabel="Removing…"
+      busy={busy}
+      error={err}
+      onConfirm={confirm}
+      onCancel={onClose}
+    />
   );
 }
 

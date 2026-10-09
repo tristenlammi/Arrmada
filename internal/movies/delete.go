@@ -48,10 +48,7 @@ func (s *Service) Delete(ctx context.Context, id int64, deleteFiles bool) error 
 			return err
 		}
 	}
-	if err := s.repo.DeleteVersionsForMovie(ctx, id); err != nil {
-		return err
-	}
-	return s.repo.Delete(ctx, id)
+	return s.repo.Delete(ctx, id) // the movie, its versions and its history together
 }
 
 // movieFile is one file a movie holds: the default track (versionID 0) or an extra.
