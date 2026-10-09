@@ -805,7 +805,10 @@ func (s *Service) RepointMovieFile(ctx context.Context, movieID int64, oldPath, 
 			continue
 		}
 		if v.IsDefault {
-			if err := s.repo.SetFile(ctx, movieID, newPath); err != nil {
+			// The cached media info follows the new file. Left describing the original, the
+			// upgrade sweep costed a converted file at its old size, and Convert's analysis
+			// of it (trusted only for a matching size) was never used.
+			if err := s.setDefaultFile(ctx, movieID, newPath); err != nil {
 				return n, err
 			}
 			if upd := restamp(v.SourceRelease); upd != v.SourceRelease {

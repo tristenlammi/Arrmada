@@ -84,3 +84,31 @@ func TestConvertedFromBaseline(t *testing.T) {
 		t.Errorf("an import must clear the baseline: %q / %d", got.ConvertedFromRelease, got.ConvertedFromSize)
 	}
 }
+
+// After Convert's repoint the default file's cached media info describes the converted
+// file, not the original: the upgrade sweep reads its size from there. Temp files only.
+func TestRepointRefreshesCachedMedia(t *testing.T) {
+	svc, ctx := testService(t)
+	dir := t.TempDir()
+	orig, conv := filepath.Join(dir, "Film.m2ts"), filepath.Join(dir, "Film.mkv")
+	if err := os.WriteFile(orig, make([]byte, 4000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := svc.repo.Create(ctx, Movie{TMDBID: 8, Title: "Film", Year: 2021, Monitored: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.MarkImported(ctx, m.ID, orig, "Film.2021.1080p.BluRay.REMUX.AVC-FGT"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(conv, make([]byte, 1500), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.RepointMovieFile(ctx, m.ID, orig, conv, 1500, "AV1"); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := svc.repo.Get(ctx, m.ID)
+	if got.File == nil || got.File.Path != conv || got.File.SizeBytes != 1500 {
+		t.Errorf("cached media after repoint = %+v, want the converted file's", got.File)
+	}
+}
