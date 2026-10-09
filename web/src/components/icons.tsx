@@ -31,6 +31,12 @@ const PATHS = {
       <path d="M9 4V2.5h6V4M9 13l2 2 4-4" />
     </>
   ),
+  blocklist: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M6 6l12 12" />
+    </>
+  ),
   movies: (
     <>
       <rect x="3" y="4" width="18" height="16" rx="2" />

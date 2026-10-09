@@ -1,6 +1,7 @@
 ANY / public ext
 DELETE /api/v1/apikeys/{id} admin -
 DELETE /api/v1/audioserver/devices/{family} admin -
+DELETE /api/v1/blocklist/{id} staff -
 DELETE /api/v1/books/{id} staff -
 DELETE /api/v1/books/{id}/audio-versions/{vid} staff -
 DELETE /api/v1/books/{id}/audio-versions/{vid}/file staff -
@@ -36,6 +37,7 @@ GET /api/v1/audioserver admin -
 GET /api/v1/audioserver/listening admin -
 GET /api/v1/auth/me user ext
 GET /api/v1/auth/plex/pin/{id} public ext
+GET /api/v1/blocklist staff -
 GET /api/v1/books staff -
 GET /api/v1/books/authors/images staff -
 GET /api/v1/books/discover/authors user ext

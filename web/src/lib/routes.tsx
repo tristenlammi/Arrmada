@@ -19,6 +19,7 @@ const Settings = lazyPage(() => import("../pages/Settings"), "Settings");
 const Downloads = lazyPage(() => import("../pages/Downloads"), "Downloads");
 const History = lazyPage(() => import("../pages/History"), "History");
 const Reviews = lazyPage(() => import("../pages/Reviews"), "Reviews");
+const Blocklist = lazyPage(() => import("../pages/Blocklist"), "Blocklist");
 const Movies = lazyPage(() => import("../pages/Movies"), "Movies");
 const MovieDetail = lazyPage(() => import("../pages/MovieDetail"), "MovieDetail");
 const Series = lazyPage(() => import("../pages/Series"), "Series");
@@ -82,6 +83,7 @@ function staffRoutes(admin: boolean): RouteObject[] {
     redirect("/activity", "/downloads"),
     page("/history", "History", <History />),
     page("/review", "Review", <Reviews />),
+    page("/blocklist", "Blocklist", <Blocklist />),
     page("/movies", "Movies", <Movies />),
     page("/movies/:id", "Movie", <MovieDetail />),
     page("/series", "Series", <Series />),

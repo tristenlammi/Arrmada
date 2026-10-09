@@ -62,6 +62,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/indexers/prowlarr", { url: "", has_key: false }),
     get("/api/v1/history", media.history),
     get("/api/v1/reviews", media.reviews),
+    get("/api/v1/blocklist", media.blocklist),
     get("/api/v1/movies", media.movies),
     get("/api/v1/series", media.series),
     get("/api/v1/movies/unmatched", { unmatched: [] }),

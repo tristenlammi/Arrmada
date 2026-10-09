@@ -187,6 +187,21 @@ export interface DiskGuardHold {
 
 export type RemoveDownloadMode = "keep_files" | "delete_files" | "block";
 // What a removed download was for, and what "stop wanting" switched off.
+export type BlockType = "movie" | "series" | "book" | "music" | "global";
+
+// One blocklist entry of any kind (the Blocklist page).
+export interface BlocklistRow {
+  id: number;
+  type: BlockType;
+  item_id: number; // 0 for global; the artist for a music discography
+  item_title: string; // "" when the item has since been deleted
+  discography?: boolean;
+  title: string; // the release
+  indexer?: string;
+  reason?: string;
+  created_at: string;
+}
+
 // The library item a Block blocklisted a release for.
 export interface BlockTarget {
   kind: "movie" | "series" | "book" | "music";
@@ -1626,6 +1641,16 @@ export const api = {
     }),
 
   history: () => req<{ imports: ImportRecord[] }>("/api/v1/history").then((r) => r.imports),
+  // The blocklist across every media type, global entries included, newest first.
+  blocklistAll: (opts: { type?: BlockType | ""; q?: string; limit?: number; offset?: number }) => {
+    const p = new URLSearchParams();
+    if (opts.type) p.set("type", opts.type);
+    if (opts.q) p.set("q", opts.q);
+    if (opts.limit) p.set("limit", String(opts.limit));
+    if (opts.offset) p.set("offset", String(opts.offset));
+    return req<{ items: BlocklistRow[]; total: number }>(`/api/v1/blocklist?${p}`);
+  },
+  unblockAny: (id: number) => req<void>(`/api/v1/blocklist/${id}`, { method: "DELETE" }),
   reviews: () => req<{ reviews: ImportReview[] }>("/api/v1/reviews").then((r) => r.reviews),
   rejectReview: (id: number) => req<{ status: string }>(`/api/v1/reviews/${id}/reject`, { method: "POST" }),
   dismissReview: (id: number) => req<{ status: string }>(`/api/v1/reviews/${id}/dismiss`, { method: "POST" }),

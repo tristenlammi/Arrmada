@@ -1,5 +1,5 @@
 import type {
-  ActivityFeed, Book, BookSweepStatus, BookUpgradeStatus, CalendarItem, DashboardData, DownloadClient, FitCounts,
+  ActivityFeed, BlocklistRow, Book, BookSweepStatus, BookUpgradeStatus, CalendarItem, DashboardData, DownloadClient, FitCounts,
   FormatInfo, ImportRecord, ImportReview, Indexer, Movie, MyBook, MyRequest, QualityProfileInfo, Series,
 } from "../../src/lib/api";
 import { NOW, day } from "./clock";
@@ -100,3 +100,10 @@ export const indexers: { indexers: Indexer[] } = {
 
 export const history: { imports: ImportRecord[] } = { imports: [] };
 export const reviews: { reviews: ImportReview[] } = { reviews: [] };
+export const blocklist: { items: BlocklistRow[]; total: number } = {
+  items: [
+    { id: 2, type: "global", item_id: 0, item_title: "", title: "Totally.Legit.2024.1080p.exe", reason: "rejected in review", created_at: "2026-10-01 12:00:00" },
+    { id: 1, type: "movie", item_id: 1, item_title: "Fixture Movie", title: "Fixture.Movie.2020.1080p.WEB-DL-GRP", indexer: "Fixture Indexer", reason: "manually blocklisted", created_at: "2026-09-30 08:00:00" },
+  ],
+  total: 2,
+};
