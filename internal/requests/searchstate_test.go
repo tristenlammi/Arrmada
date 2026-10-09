@@ -50,4 +50,19 @@ func TestTrackBookNotFoundYet(t *testing.T) {
 	if e := byTitle["Emma"]; e == nil || e.Stage != StageSearching || e.Note != "" || e.NextCheckAt != "" {
 		t.Errorf("Emma tracking = %+v, want plain searching", e)
 	}
+
+	// Unmonitored, the sweep never looks again: still "not found", but no next check.
+	if _, err := db.Exec(`UPDATE books SET monitored = 0 WHERE id = ?`, lost.ID); err != nil {
+		t.Fatal(err)
+	}
+	reqs, err = s.List(ctx, "", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Track(ctx, reqs, nil)
+	for _, rq := range reqs {
+		if rq.Title == "Dune" && (rq.Tracking.Note != "Not found yet" || rq.Tracking.NextCheckAt != "") {
+			t.Errorf("unmonitored Dune tracking = %+v, want Not found yet and no next check", rq.Tracking)
+		}
+	}
 }

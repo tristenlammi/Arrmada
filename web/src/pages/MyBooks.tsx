@@ -211,7 +211,7 @@ function RequestCard({ r }: { r: MyRequest }) {
       <div className="p-2">
         <div className="truncate text-[11.5px] font-semibold" title={r.title}>{r.title}</div>
         {r.author && <div className="truncate text-[10.5px] text-ink-dim" title={r.author}>{r.author}</div>}
-        {notFound && <div className="mt-0.5 truncate text-[10.5px]" style={{ color: "var(--avoid)" }} title={notFoundYet(r.next_check_at)}>Next check {formatCheckDay(r.next_check_at)}</div>}
+        {notFound && r.next_check_at && <div className="mt-0.5 truncate text-[10.5px]" style={{ color: "var(--avoid)" }} title={notFoundYet(r.next_check_at)}>Next check {formatCheckDay(r.next_check_at)}</div>}
       </div>
     </div>
   );

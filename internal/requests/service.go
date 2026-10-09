@@ -426,7 +426,8 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 	if bs, err := s.books.List(ctx); err == nil {
 		for _, b := range bs {
 			l := lib{id: b.ID, have: b.HasFile, released: true, misses: b.SearchMisses}
-			if next := books.NextSearchAt(b.LastSearchAt, b.SearchMisses); !next.IsZero() {
+			// Only a monitored book has a next check: the sweep never looks at the others.
+			if next := books.NextSearchAt(b.LastSearchAt, b.SearchMisses); b.Monitored && !next.IsZero() {
 				l.nextCheck = next.UTC().Format(time.RFC3339)
 			}
 			bookHave[b.OLKey] = l
