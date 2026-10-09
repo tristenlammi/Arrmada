@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -38,6 +39,19 @@ func TestSessionSlidesPastHalfLife(t *testing.T) {
 	if _, err := s.st.DB().Exec(`UPDATE sessions SET expires_at = ?`, soon); err != nil {
 		t.Fatal(err)
 	}
+	// A WebSocket upgrade can't carry the new cookie, so it doesn't slide the session.
+	up := httptest.NewRequest("GET", "http://arrmada.local/api/v1/auth/me", nil)
+	up.RemoteAddr = "192.168.1.20:5000"
+	up.Header.Set("Upgrade", "websocket")
+	up.AddCookie(cookie)
+	upRec := httptest.NewRecorder()
+	s.h.ServeHTTP(upRec, up)
+	var afterUpgrade string
+	_ = s.st.DB().QueryRow(`SELECT strftime('%Y-%m-%d %H:%M:%S', expires_at) FROM sessions`).Scan(&afterUpgrade)
+	if sessionCookieOn(upRec) != nil || afterUpgrade != soon {
+		t.Errorf("an upgrade request slid the session (stored %q, want %q)", afterUpgrade, soon)
+	}
+
 	rec = s.do("GET", "/api/v1/auth/me", cookie)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("HTTP %d", rec.Code)

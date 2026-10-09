@@ -66,6 +66,12 @@ func (a *api) maybeExtendSession(w http.ResponseWriter, r *http.Request, token s
 	if exp.IsZero() || time.Until(exp) >= ttl/2 {
 		return
 	}
+	// A WebSocket upgrade hijacks the connection and never sends these headers, so the
+	// database would slide while the browser's cookie kept its old expiry. Leave it to the
+	// next ordinary request.
+	if r.Header.Get("Upgrade") != "" {
+		return
+	}
 	newExp, err := a.deps.Auth.ExtendSession(r.Context(), token)
 	if err != nil {
 		return // the session still works until its old expiry; try again next request
