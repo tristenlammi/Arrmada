@@ -17,6 +17,7 @@ import {
   type Series,
   type StoredProfile,
   type TargetPref,
+  type UpgradeTrigger,
 } from "../lib/api";
 import { useQuery } from "../lib/query";
 import { ErrorState, Skeleton, StaleBanner } from "../ui";
@@ -95,10 +96,19 @@ const BOOK_FORMATS: { group: string; formats: string[] }[] = [
 // is noise on a 2160p one. 20% is the server's floor (quality.MinUpgradePercent), so the
 // options start above it and the UI never promises something the server overrides.
 const UPGRADE_STEPS = [
-  { percent: 0, label: "Off", detail: "Size is ignored. A file is only replaced by a better resolution or a format you want." },
+  { percent: 0, label: "Off", detail: "Size is ignored. A file is replaced by a higher resolution, a better source (WEB → BluRay → Remux), a PROPER fix, or a format you prefer — as limited by Replace for." },
   { percent: 25, label: "Noticeably better", detail: "A 2.0 GB episode is replaced at about 2.5 GB. Swaps a thin, heavily-compressed encode for a normal one." },
   { percent: 50, label: "Clearly better", detail: "A 2.0 GB episode is replaced at about 3.0 GB. The new file has to be visibly heavier." },
   { percent: 100, label: "Much better", detail: "A 2.0 GB episode is replaced at about 4.0 GB. Only a dramatic jump, like a compact web rip giving way to a near-source encode." },
+];
+
+// Which kind of gain is worth re-downloading for (StoredProfile.upgrade_trigger). Each one
+// also takes everything below it in the list; a PROPER of the same release always counts.
+const UPGRADE_TRIGGERS: { v: UpgradeTrigger; l: string; short: string; detail: string }[] = [
+  { v: "any", l: "Any improvement", short: "any improvement", detail: "A higher resolution, a format you prefer, a better source or a PROPER — anything that scores higher." },
+  { v: "source", l: "A better source or a format you prefer", short: "better source or format", detail: "Also a higher resolution. A PROPER only when it fixes the release you have." },
+  { v: "format", l: "A format you prefer or a higher resolution", short: "format or resolution", detail: "A better source alone (WEB-DL → BluRay) isn't worth a re-download. A PROPER only when it fixes the release you have." },
+  { v: "resolution", l: "Higher resolution only", short: "resolution only", detail: "Only a resolution gain, or a PROPER that fixes the release you have." },
 ];
 
 // How strongly smaller files win among equals (StoredProfile.small_bias).
@@ -181,6 +191,7 @@ function emptyProfile(media: string): StoredProfile {
     stall_minutes: 0,
     upgrades_enabled: true,
     upgrade_min_percent: 0,
+    upgrade_trigger: "any",
     ideal: media === "movie" || media === "series" ? {} : undefined,
   };
 }
@@ -666,6 +677,8 @@ function rulesSummary(sp: StoredProfile): string {
 function upgradesSummary(sp: StoredProfile): string {
   if (!sp.upgrades_enabled) return "Off";
   const parts = ["On"];
+  const trigger = UPGRADE_TRIGGERS.find((t) => t.v === (sp.upgrade_trigger || "any"));
+  if (trigger) parts.push(`for ${trigger.short}`);
   // Upgrading only stops at the target where a resolution's window has a floor.
   if (Object.values(sp.ideal?.bitrate ?? {}).some((w) => w.min > 0)) parts.push("stops at the target");
   const step = UPGRADE_STEPS.find((s) => s.percent === sp.upgrade_min_percent);
@@ -823,6 +836,7 @@ function Collapsible({ n, title, summary, children }: { n?: number; title: strin
 }
 
 function UpgradesEditor({ sp, patch }: { sp: StoredProfile; patch: (p: Partial<StoredProfile>) => void }) {
+  const trigger = UPGRADE_TRIGGERS.find((t) => t.v === (sp.upgrade_trigger || "any")) ?? UPGRADE_TRIGGERS[0];
   return (
     <div>
       <div className="flex items-center justify-between gap-3">
@@ -835,6 +849,17 @@ function UpgradesEditor({ sp, patch }: { sp: StoredProfile; patch: (p: Partial<S
         </div>
         <Switch on={sp.upgrades_enabled} onChange={(v) => patch({ upgrades_enabled: v })} label="Automatically upgrade" />
       </div>
+      {sp.upgrades_enabled && (
+        <div className="mt-3.5 border-t pt-3" style={{ borderColor: "var(--line)" }}>
+          <label htmlFor="qp-trigger" className="block text-[12px] font-semibold">Replace for</label>
+          <div className="mt-0.5 text-[10.5px] text-ink-faint">Which kind of improvement is worth re-downloading a file you already have.</div>
+          <select id="qp-trigger" value={trigger.v} onChange={(e) => patch({ upgrade_trigger: e.target.value as UpgradeTrigger })}
+            className="mt-2 w-full rounded-lg px-3 py-2 text-[12.5px]" style={fieldStyle}>
+            {UPGRADE_TRIGGERS.map((t) => <option key={t.v} value={t.v}>{t.l}</option>)}
+          </select>
+          <div className="mt-1.5 text-[10.5px] leading-[1.45] text-ink-faint">{trigger.detail}</div>
+        </div>
+      )}
       {sp.upgrades_enabled && (
         <div className="mt-3.5 border-t pt-3" style={{ borderColor: "var(--line)" }}>
           <div className="text-[12px] font-semibold">Also replace a same-quality file when it's bigger</div>

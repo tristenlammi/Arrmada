@@ -160,7 +160,8 @@ func (s *Service) Decide(ctx context.Context, ref string, cands []Candidate) Dec
 //   - we must know what the current file is (empty currentRelease → skip, so we
 //     never churn on a guess);
 //   - a candidate never drops resolution (that's a downgrade, handled elsewhere);
-//   - it wins if it scores strictly higher (better resolution/formats), OR — when
+//   - it wins if it scores strictly higher (better resolution/formats) in a way the
+//     profile's upgrade trigger counts (rank.go — a same-group PROPER always counts), OR — when
 //     upgrade_min_percent > 0 — it's at least that much better on bitrate and no worse
 //     on quality.
 //
@@ -201,7 +202,8 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 			// Convert stamped in. Grabbing it would undo the conversion and loop forever.
 			continue
 		}
-		qualityBetter := ev.Total > cur.Total
+		// A higher score, of a kind the profile's "Replace for" counts (rank.go).
+		qualityBetter := qualityGain(sp.UpgradeTrigger, ev, cur)
 		// Same helper the import gate uses, so the two can't drift apart again — the
 		// searcher deciding a release is worth grabbing and the importer then refusing to
 		// place it is exactly the bug this shares its logic to prevent. It also brings the
@@ -236,7 +238,8 @@ func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string,
 	// Same gate as IsBitrateUpgrade and UpgradeCandidate. With upgrades off the searcher
 	// would never have chosen this release, so the importer replacing a file on its own
 	// initiative would break the one promise that setting makes: the library stops churning.
-	if sp, err := s.GetStored(ctx, ref); err != nil || !sp.UpgradesEnabled {
+	sp, err := s.GetStored(ctx, ref)
+	if err != nil || !sp.UpgradesEnabled {
 		return false
 	}
 	// The release a converted file came from is never an upgrade of it, whatever the
@@ -252,7 +255,9 @@ func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string,
 	if cand.Avoided && !cur.Avoided {
 		return false
 	}
-	return cand.Total > cur.Total
+	// The same "Replace for" rule the searcher applied, so a release it wouldn't have
+	// grabbed as an upgrade isn't placed as one either.
+	return qualityGain(sp.UpgradeTrigger, cand, cur)
 }
 
 // convertedFrom reports whether cand looks like the release the current file was

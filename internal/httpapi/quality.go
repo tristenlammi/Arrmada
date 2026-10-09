@@ -72,6 +72,9 @@ func (a *api) handleGetQualityProfile(w http.ResponseWriter, r *http.Request) {
 // stallMinutesError explains a rejected stall timeout in the profile editor's own terms.
 const stallMinutesError = "stall timeout must be -1 (off), 0 (use the default) or up to 10080 minutes (a week)"
 
+// upgradeTriggerError explains a rejected "Replace for" choice.
+const upgradeTriggerError = "upgrade_trigger must be any, source, format or resolution"
+
 func (a *api) handleCreateQualityProfile(w http.ResponseWriter, r *http.Request) {
 	var sp quality.StoredProfile
 	if !a.decodeJSON(w, r, &sp) {
@@ -83,6 +86,10 @@ func (a *api) handleCreateQualityProfile(w http.ResponseWriter, r *http.Request)
 	}
 	if !quality.ValidStallMinutes(sp.StallMinutes) {
 		a.writeError(w, http.StatusBadRequest, stallMinutesError)
+		return
+	}
+	if !quality.ValidTrigger(sp.UpgradeTrigger) {
+		a.writeError(w, http.StatusBadRequest, upgradeTriggerError)
 		return
 	}
 	created, err := a.deps.Quality.Create(r.Context(), sp)
@@ -104,6 +111,10 @@ func (a *api) handleUpdateQualityProfile(w http.ResponseWriter, r *http.Request)
 	}
 	if !quality.ValidStallMinutes(sp.StallMinutes) {
 		a.writeError(w, http.StatusBadRequest, stallMinutesError)
+		return
+	}
+	if !quality.ValidTrigger(sp.UpgradeTrigger) {
+		a.writeError(w, http.StatusBadRequest, upgradeTriggerError)
 		return
 	}
 	if err := a.deps.Quality.Update(r.Context(), id, sp); err != nil {

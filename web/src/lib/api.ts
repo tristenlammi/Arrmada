@@ -283,9 +283,14 @@ export interface StoredProfile {
   stall_minutes: number;
   upgrades_enabled: boolean;
   upgrade_min_percent: number;
+  // Which gains replace a file ("Replace for"): any | source | format | resolution. The
+  // server reads a missing one as "any".
+  upgrade_trigger?: UpgradeTrigger;
   allow_prerelease?: boolean; // grab cams/telesyncs/screeners (movie & series; off = refused)
   ideal?: IdealFile; // the target file: drives grabbing, ranking and the library fit check
 }
+
+export type UpgradeTrigger = "any" | "source" | "format" | "resolution";
 
 // TargetPref is one option's state in the target file. "" = no opinion; "want" is shown as
 // Prefer (ranks releases, doesn't decide what fits). "ok" is retired — the server drops it.

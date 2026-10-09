@@ -1,0 +1,11 @@
+-- 0140_quality_upgrade_trigger: what kind of improvement is worth replacing a file for.
+--
+-- Until now any score gain at all replaced a file: a +1 PROPER, a WEBRip to WEB-DL source
+-- step, a small keyword nudge. upgrade_trigger lets each profile say which gains count:
+--   any        — every gain (what every profile did before; the default keeps it so)
+--   source     — a higher resolution, a format you prefer, or a better source
+--   format     — a higher resolution or a format you prefer
+--   resolution — a higher resolution only
+-- A same-group PROPER/REPACK of the file you have is always allowed, and the separate
+-- bitrate step (upgrade_min_percent) is unaffected.
+ALTER TABLE quality_profiles ADD COLUMN upgrade_trigger TEXT NOT NULL DEFAULT 'any';
