@@ -8,7 +8,12 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/apikeys"
+	"github.com/tristenlammi/arrmada/internal/health"
 )
+
+// recheckTMDB re-runs the health panel's TMDB key check after the key changed or was
+// tested, so a fixed key clears the warning now instead of at the next six-hourly check.
+func (a *api) recheckTMDB() { a.recheckHealth("tmdb.key") }
 
 // handleGetAPIKeys returns the state of every credential — configured or not, from where,
 // and a short hint — but never a secret itself.
@@ -30,6 +35,21 @@ func (a *api) handleTestAPIKey(w http.ResponseWriter, r *http.Request) {
 	switch r.PathValue("id") {
 	case "hardcover":
 		detail, err = a.deps.Books.VerifyHardcover(ctx)
+	case "tmdb":
+		v, ok := a.deps.Discovery.(tmdbValidator)
+		if !ok {
+			a.writeError(w, http.StatusBadRequest, "no test is available for that key")
+			return
+		}
+		switch err = tmdbValidate(ctx, v); {
+		case err == nil:
+			detail = "TMDB accepted the key."
+		case errors.Is(err, health.ErrKeyRejected):
+			err = errors.New("TMDB rejected the key — check it's the v3 API key, copied in full")
+		case errors.Is(err, health.ErrKeyMissing):
+			err = errors.New("no TMDB key is set")
+		}
+		a.recheckTMDB()
 	default:
 		a.writeError(w, http.StatusBadRequest, "no test is available for that key")
 		return
@@ -70,6 +90,9 @@ func (a *api) handleSetAPIKey(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, "could not save the key")
 		return
 	}
+	if id == "tmdb" {
+		a.recheckTMDB()
+	}
 	// A Hardcover key makes Hardcover the books catalogue; bring the library across now.
 	if id == "hardcover" && strings.TrimSpace(req.Value) != "" && a.deps.Books != nil {
 		a.deps.Books.MaybeStartUpgrade(a.runCtx())
@@ -93,6 +116,9 @@ func (a *api) handleClearAPIKey(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		a.writeError(w, http.StatusInternalServerError, "could not clear the key")
 		return
+	}
+	if r.PathValue("id") == "tmdb" {
+		a.recheckTMDB()
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"keys": a.deps.APIKeys.Status(r.Context())})
 }

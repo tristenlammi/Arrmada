@@ -154,6 +154,21 @@ func (q *QBittorrent) getAuthed(ctx context.Context, dc Client, path string) (*h
 	})
 }
 
+// Ping reads the app version over the cached session. It's Test for something that runs
+// every minute: Test logs in afresh each time, and a health check shouldn't add a login
+// to qBittorrent's log every minute.
+func (q *QBittorrent) Ping(ctx context.Context, dc Client) error {
+	resp, err := q.getAuthed(ctx, dc, "/api/v2/app/version")
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("qbittorrent: version check HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
 // Test logs in and reads the app version.
 func (q *QBittorrent) Test(ctx context.Context, dc Client) error {
 	client, err := q.login(ctx, dc)

@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -10,183 +12,176 @@ import (
 	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/health"
-	"github.com/tristenlammi/arrmada/internal/libroots"
+	"github.com/tristenlammi/arrmada/internal/metadata"
 )
 
-// healthWarning is one operational problem surfaced to the user.
-type healthWarning struct {
-	Level   string `json:"level"` // "error" (nothing works) | "warning" (degraded)
-	Message string `json:"message"`
-}
+// refreshGap is how often "Check now" may re-run every check; a refresh asked for sooner
+// is answered from the results already held.
+const refreshGap = 10 * time.Second
 
-// handleSystemHealth reports operational health: whether the pieces needed to
-// actually acquire movies are present and working, plus free disk space. This is
-// the "why isn't anything downloading?" panel.
+// handleSystemHealth reports operational health — whether the pieces needed to acquire
+// and import media are present and working — plus free disk space. It's the "why isn't
+// anything downloading?" panel. Every answer comes from the health registry's cache: the
+// checks run in the background, so a hung qBittorrent or Plex can't slow this down.
+// ?refresh=1 re-runs them first (at most once per refreshGap).
 func (a *api) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	var warns []healthWarning
-	add := func(level, msg string) { warns = append(warns, healthWarning{Level: level, Message: msg}) }
-
-	// Indexers — without one, there's nothing to search.
-	if ix, err := a.deps.Indexers.List(ctx); err == nil {
-		enabled := 0
-		for _, i := range ix {
-			if i.Enabled {
-				enabled++
-			}
+	rep := health.Report{Status: "ok", Warnings: []health.Warning{}, Checks: []health.CheckResult{}}
+	if reg := a.deps.Health; reg != nil {
+		if r.URL.Query().Get("refresh") == "1" {
+			// Detached from the request: a closed tab mustn't cut the checks short and
+			// leave them half-recorded.
+			ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), time.Minute)
+			reg.Refresh(ctx, refreshGap)
+			cancel()
 		}
-		if enabled == 0 {
-			add("error", "No indexers are enabled — Arrmada can't search for releases.")
-		}
+		rep = reg.Results()
 	}
-
-	// Download client — configured and reachable.
-	var queue []download.Item
-	queueRead := false
-	if clients, err := a.deps.Downloads.List(ctx); err != nil || len(clients) == 0 {
-		add("error", "No download client is configured — grabbed releases have nowhere to download.")
-	} else if q, err := a.deps.Downloads.Queue(ctx); err != nil {
-		add("error", "The download client is unreachable: "+err.Error())
-	} else {
-		queue, queueRead = q, true
-	}
-
-	// Media in or above the data folder mixes it with the database, backups and logs.
-	// Saving such a folder is refused now, but an older save or the environment can
-	// still carry one, and the app keeps running on it — so say it in red.
-	picked := a.pickedConfig(ctx)
-	underData := map[string]bool{}
-	for _, d := range libraryDirSettings(&picked) {
-		if *d.field != "" && libroots.UnderDataDir(*d.field, a.deps.Config.DataDir) {
-			underData[*d.field] = true
-			add("error", fmt.Sprintf("The %s folder (%s) is inside (or contains) Arrmada's data folder — move it to its own mount.",
-				folderLabel[d.name], *d.field))
-		}
-	}
-
-	// Each folder the user picked must be there and writable, or imports (and
-	// downloads) fail. Only modules that are on are checked.
-	folders := health.LibraryFolders(picked, a.booksEnabled(ctx), a.musicEnabled(ctx))
-	for _, f := range folders {
-		if underData[f.Path] {
-			continue // already reported, and nothing is probed inside the data folder
-		}
-		if level, msg := folderProblem(f, folderProbes.ProbeFolder(f.Path)); msg != "" {
-			add(level, msg)
-		}
-	}
-
-	// TODO(SAFE): drop this once the recycle bin keeps one bin per filesystem.
-	// Deletes move files into the recycle bin; a bin on another drive turns every
-	// delete into a full copy.
-	if a.deps.Recycle != nil {
-		if bin := a.deps.Recycle.Dir(); bin != "" {
-			for _, f := range folders {
-				if f.Role != "movies" && f.Role != "tv" {
-					continue
-				}
-				if same, ok := health.SameFilesystem(bin, f.Path); ok && !same {
-					add("warning", fmt.Sprintf("Deleted files are copied to %s on a different drive, which is slow and fills that drive.", bin))
-					break
-				}
-			}
-		}
-	}
-
-	// The disk guard actively holding the queue is the single most confusing reason
-	// for "nothing is downloading" — everything else looks healthy — so say it plainly
-	// and before the raw free-space line.
-	if a.deps.DiskGuard != nil {
-		g := a.deps.DiskGuard.Status(ctx)
-		// Count only held torrents the client still has: one deleted while held would
-		// otherwise keep promising a resume that can never happen.
-		holding := g.Holding
-		if queueRead {
-			holding = heldInQueue(a.deps.DiskGuard.Held(ctx), queue)
-		}
-		if g.Enabled && holding > 0 {
-			add("warning", fmt.Sprintf(
-				"Downloads are paused: the downloads volume is %.1f%% full (pause at %d%%). "+
-					"%d torrent%s will resume automatically once it drops below %d%%.",
-				g.UsedPct, g.PausePct, holding, plural(holding), g.ResumePct))
-		}
-	}
-
-	// Free disk space on the downloads volume.
+	// Free space is a statfs on one folder — cheap and local, so it's read live.
 	var disk map[string]any
 	if free, ok := diskspace.FreeGB(a.deps.Config.DownloadsDir); ok {
 		disk = map[string]any{"free_gb": fmt.Sprintf("%.1f", free), "path": a.deps.Config.DownloadsDir}
-		switch {
-		case free < 2:
-			add("error", fmt.Sprintf("Very low free disk space (%.1f GB) on the downloads volume.", free))
-		case free < 10:
-			add("warning", fmt.Sprintf("Low free disk space (%.1f GB) on the downloads volume.", free))
-		}
 	}
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"status": rep.Status, "warnings": rep.Warnings, "checks": rep.Checks, "disk": disk,
+	})
+}
 
-	// The audiobook server is switched on but couldn't start (usually its port is taken).
-	if a.deps.AudioManager != nil && a.deps.Settings.GetBool(ctx, audioserver.KeyEnabled, false) {
-		if running, lastErr := a.deps.AudioManager.Running(); !running {
-			msg := "The audiobook server is switched on but isn't running, so listening apps can't connect."
-			if lastErr != "" {
-				msg += " " + lastErr
+// registerHealthChecks adds the checks built from the API's own dependencies. Each reads
+// what it needs when it runs, so a setting changed since boot (a folder picked, a module
+// switched off) is what's judged.
+func (a *api) registerHealthChecks(reg *health.Registry) {
+	if a.deps.Indexers != nil {
+		reg.Register(health.IndexersCheck(func(ctx context.Context) (int, error) {
+			ix, err := a.deps.Indexers.List(ctx)
+			n := 0
+			for _, i := range ix {
+				if i.Enabled {
+					n++
+				}
 			}
-			add("error", msg)
-		}
+			return n, err
+		}))
 	}
 
-	// Nightly database backups have stopped (usually a full disk on the data volume).
+	if a.deps.Downloads != nil {
+		reg.Register(health.DownloadClientsCheck(func(ctx context.Context) (int, []download.ClientState, error) {
+			all, err := a.deps.Downloads.List(ctx)
+			if err != nil {
+				return 0, nil, err
+			}
+			st, err := a.deps.Downloads.ClientStates(ctx)
+			return len(all), st, err
+		}))
+	}
+
+	if a.deps.Insights != nil {
+		reg.Register(health.PlexCheck(
+			func(ctx context.Context) health.PlexState {
+				h := a.deps.Insights.PollHealth(ctx)
+				return health.PlexState{
+					Configured: h.Configured, Monitoring: h.Monitoring, LastOKAt: h.LastOKAt,
+					FailingSince: h.FailingSince, LastErr: h.LastErr, Unauthorized: h.Unauthorized, Consecutive: h.Consecutive,
+				}
+			},
+			func(ctx context.Context) error { return a.deps.Insights.ProbeIdentity(ctx) }))
+	}
+
+	if v, ok := a.deps.Discovery.(tmdbValidator); ok && a.deps.APIKeys != nil {
+		reg.Register(health.TMDBCheck(a.deps.APIKeys.Func("tmdb"), func(ctx context.Context) error {
+			return tmdbValidate(ctx, v)
+		}))
+	}
+
+	// The probe cache keeps the check from writing a probe file into every library folder
+	// each time it runs — on Unraid that can wake sleeping array disks. A folder that
+	// passed is trusted for an hour; one that failed is re-checked each run.
+	if a.deps.Settings != nil {
+		reg.Register(health.LibraryFoldersCheck(a.libraryState, health.NewProbeCache(time.Hour)))
+	}
+
+	if a.deps.Recycle != nil && a.deps.Settings != nil {
+		reg.Register(health.RecycleDriveCheck(a.deps.Recycle.Dir, func(ctx context.Context) []health.Folder {
+			return a.libraryState(ctx).Folders
+		}))
+	}
+
+	if a.deps.DiskGuard != nil {
+		reg.Register(health.DiskGuardCheck(a.diskGuardState))
+	}
+
+	reg.Register(health.DiskFreeCheck(func() string { return a.deps.Config.DownloadsDir }))
+
+	if a.deps.AudioManager != nil && a.deps.Settings != nil {
+		reg.Register(health.AudiobookServerCheck(func(ctx context.Context) (bool, bool, string) {
+			if !a.deps.Settings.GetBool(ctx, audioserver.KeyEnabled, false) {
+				return false, false, ""
+			}
+			running, lastErr := a.deps.AudioManager.Running()
+			return true, running, lastErr
+		}))
+	}
+
 	if a.deps.Backups != nil {
-		if msg := a.deps.Backups.HealthWarning(ctx, time.Since(a.start)); msg != "" {
-			add("warning", msg)
-		}
+		reg.Register(health.BackupsCheck(func(ctx context.Context) string {
+			return a.deps.Backups.HealthWarning(ctx, time.Since(a.start))
+		}))
 	}
-
-	status := "ok"
-	for _, wrn := range warns {
-		if wrn.Level == "error" {
-			status = "error"
-			break
-		}
-		status = "warning"
-	}
-	if warns == nil {
-		warns = []healthWarning{}
-	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"status": status, "warnings": warns, "disk": disk})
 }
 
-// folderProbes keeps the polled health panel from writing a probe file into every
-// library folder on every poll — on Unraid that can wake sleeping array disks. A folder
-// that passed is trusted for an hour; one that failed is re-checked each time.
-var folderProbes = health.NewProbeCache(time.Hour)
+// recheckHealth re-runs the named checks in the background after something they judge was
+// just changed (a key saved, a folder picked), so the panel catches up now rather than at
+// the check's next turn.
+func (a *api) recheckHealth(keys ...string) {
+	if a.deps.Health == nil {
+		return
+	}
+	a.bg("health check", strings.Join(keys, ","), time.Minute, func(ctx context.Context) error {
+		for _, k := range keys {
+			a.deps.Health.RunNow(ctx, k)
+		}
+		return nil
+	})
+}
 
-// folderProblem turns a folder probe into a health line, or "" when the folder is fine.
-// A missing folder whose parent can be written is only a warning — imports create it —
-// but a missing parent means the share isn't mounted at all.
-func folderProblem(f health.Folder, st health.FolderState) (level, msg string) {
+// tmdbValidator is the TMDB provider's key check (metadata.TMDB.Validate).
+type tmdbValidator interface {
+	Validate(ctx context.Context) error
+}
+
+// tmdbValidate maps TMDB's answer onto the health check's terms.
+func tmdbValidate(ctx context.Context, v tmdbValidator) error {
+	err := v.Validate(ctx)
 	switch {
-	case !st.Exists && st.Err != nil:
-		return "error", fmt.Sprintf("Arrmada can't look at the %s folder %s: %v.", f.Label, f.Path, st.Err)
-	case !st.Exists && st.ParentExists && st.ParentWritable:
-		return "warning", fmt.Sprintf("The %s folder %s doesn't exist yet. Arrmada will create it when it's first needed; if it should be an existing share, check the container's volume mapping.", f.Label, f.Path)
-	case !st.Exists && st.ParentExists:
-		return "error", fmt.Sprintf("The %s folder %s doesn't exist, and Arrmada can't create it (check the container's volume mapping and the share's permissions).", f.Label, f.Path)
-	case !st.Exists:
-		return "error", fmt.Sprintf("The %s folder %s isn't there — the share isn't mounted.", f.Label, f.Path)
-	case !st.IsDir:
-		return "error", fmt.Sprintf("The %s folder %s is a file, not a folder.", f.Label, f.Path)
-	case !st.Writable:
-		return "error", fmt.Sprintf("Arrmada can't write to the %s folder %s (check PUID/PGID and the share's permissions).", f.Label, f.Path)
+	case errors.Is(err, metadata.ErrInvalidKey):
+		return health.ErrKeyRejected
+	case errors.Is(err, metadata.ErrNotConfigured):
+		return health.ErrKeyMissing
 	}
-	return "", ""
+	return err
 }
 
-func plural(n int) string {
-	if n == 1 {
-		return ""
+// libraryState is the folders the user picked (saved in the app, not just the ones the
+// app started with), for the library-folders check.
+func (a *api) libraryState(ctx context.Context) health.LibraryState {
+	picked := a.pickedConfig(ctx)
+	return health.LibraryState{
+		Folders: health.LibraryFolders(picked, a.booksEnabled(ctx), a.musicEnabled(ctx)),
+		All:     health.LibraryFolders(picked, true, true),
+		DataDir: a.deps.Config.DataDir,
 	}
-	return "s"
+}
+
+// diskGuardState is the disk guard's view for the health check. While it's holding
+// torrents the queue is read once, to count only the held ones the client still has.
+func (a *api) diskGuardState(ctx context.Context) (health.DiskGuardState, bool) {
+	g := a.deps.DiskGuard.Status(ctx)
+	st := health.DiskGuardState{Enabled: g.Enabled, UsedPct: g.UsedPct, PausePct: g.PausePct, ResumePct: g.ResumePct, Holding: g.Holding}
+	if g.Enabled && g.Holding > 0 && a.deps.Downloads != nil {
+		if queue, err := a.deps.Downloads.Queue(ctx); err == nil {
+			st.Holding = heldInQueue(a.deps.DiskGuard.Held(ctx), queue)
+		}
+	}
+	return st, true
 }
 
 // heldInQueue counts the guard's held torrents that the client still has.

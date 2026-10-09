@@ -46,7 +46,7 @@ func (k Key) settingKey() string { return "apikey:" + k.ID }
 var Catalog = []Key{
 	{
 		ID: "tmdb", Label: "TMDB", Purpose: "Movie and TV metadata, artwork, and discovery. Required.",
-		HelpURL: "https://www.themoviedb.org/settings/api", EnvVar: "ARRMADA_TMDB_API_KEY", Secret: true,
+		HelpURL: "https://www.themoviedb.org/settings/api", EnvVar: "ARRMADA_TMDB_API_KEY", Secret: true, Testable: true,
 		Steps: "Create a free account, then request an API key under Settings → API. Use the v3 key.",
 	},
 	{

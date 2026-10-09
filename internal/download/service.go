@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
+	"time"
+
+	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 // Service manages download clients and dispatches downloads to them.
@@ -319,6 +323,67 @@ func (s *Service) onHash(ctx context.Context, fn func(Downloader, Client) error)
 		return nil
 	}
 	return lastErr
+}
+
+// ClientState is whether one enabled download client answered just now.
+type ClientState struct {
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	Kind      Kind   `json:"kind"`
+	OK        bool   `json:"ok"`
+	Err       string `json:"error,omitempty"`
+	LatencyMS int64  `json:"latency_ms"`
+}
+
+// pinger is a client that can be checked without logging in again.
+type pinger interface {
+	Ping(ctx context.Context, dc Client) error
+}
+
+// clientStateTimeout bounds each client's answer, so one dead client can't hold up the rest.
+const clientStateTimeout = 5 * time.Second
+
+// ClientStates asks each enabled client, on its own and in parallel, whether it answers.
+// It's for the health panel only: Queue can't say which client is down (it only fails
+// when every one is), so a dead second client stayed invisible. Stall detection must
+// never use this — it reads the queue fresh with QueueComplete.
+func (s *Service) ClientStates(ctx context.Context) ([]ClientState, error) {
+	clients, err := s.repo.ListEnabled(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ClientState, len(clients))
+	var wg sync.WaitGroup
+	for i, c := range clients {
+		out[i] = ClientState{ID: c.ID, Name: c.Name, Kind: c.Kind}
+		impl, ok := s.registry.For(c.Kind)
+		if !ok {
+			out[i].Err = fmt.Sprintf("no downloader for kind %q", c.Kind)
+			continue
+		}
+		wg.Add(1)
+		go func(st *ClientState, c Client) {
+			defer wg.Done()
+			cctx, cancel := context.WithTimeout(ctx, clientStateTimeout)
+			defer cancel()
+			start := time.Now()
+			// A panicking client counts as down rather than taking the app with it.
+			err := safego.Call(s.log, "download client check "+c.Name, func() error {
+				if p, ok := impl.(pinger); ok {
+					return p.Ping(cctx, c)
+				}
+				return impl.Test(cctx, c)
+			})
+			st.LatencyMS = time.Since(start).Milliseconds()
+			if err != nil {
+				st.Err = err.Error()
+				return
+			}
+			st.OK = true
+		}(&out[i], c)
+	}
+	wg.Wait()
+	return out, nil
 }
 
 // CompletedInCategory returns finished (100%) downloads in the given category

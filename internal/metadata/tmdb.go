@@ -105,6 +105,18 @@ func sanitizeErr(rawURL string, err error) error {
 // Available reports whether an API key is configured.
 func (t *TMDB) Available() bool { return t.key() != "" }
 
+// ErrInvalidKey is TMDB refusing the API key (HTTP 401).
+var ErrInvalidKey = errors.New("tmdb: invalid API key")
+
+// Validate makes the cheapest real request (GET /configuration) with the current key:
+// nil when TMDB accepts it, ErrInvalidKey when it refuses it, ErrNotConfigured when there
+// is no key, and any other error when TMDB couldn't be asked — which says nothing about
+// the key. Never cached: it's for the key test button and the health check.
+func (t *TMDB) Validate(ctx context.Context) error {
+	_, err := t.get(ctx, "/configuration", url.Values{})
+	return err
+}
+
 func (t *TMDB) get(ctx context.Context, path string, q url.Values) ([]byte, error) {
 	if !t.Available() {
 		return nil, ErrNotConfigured
@@ -122,7 +134,7 @@ func (t *TMDB) get(ctx context.Context, path string, q url.Values) ([]byte, erro
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, fmt.Errorf("tmdb: invalid API key")
+		return nil, ErrInvalidKey
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("tmdb: HTTP %d", resp.StatusCode)

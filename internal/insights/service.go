@@ -46,6 +46,9 @@ type Service struct {
 	// when that was — read from other goroutines (Convert pauses while someone watches).
 	playing   atomic.Int32
 	playingAt atomic.Int64
+
+	// health is how polls (or identity probes) have been going, for the health panel.
+	health pollHealth
 }
 
 // Watching reports whether anyone is playing something on Plex right now. A paused stream

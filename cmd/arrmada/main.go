@@ -36,6 +36,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/eventbus"
 	"github.com/tristenlammi/arrmada/internal/geoip"
+	"github.com/tristenlammi/arrmada/internal/health"
 	"github.com/tristenlammi/arrmada/internal/httpapi"
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/insights"
@@ -709,6 +710,11 @@ func main() {
 		return nil
 	})
 
+	// Health checks run in the background on their own intervals (the health-check task
+	// below drives them); the health endpoint serves their cached results. httpapi.New
+	// registers the checks built from its deps.
+	healthReg := health.NewRegistry(bus, log)
+
 	restartCh := make(chan struct{}, 1)
 	srv := httpapi.New(httpapi.Deps{
 		Config:       cfg,
@@ -759,7 +765,17 @@ func main() {
 		},
 		RunGroup: grp,
 		Backups:  backupSvc,
+		Health:   healthReg,
 	})
+	// A task that keeps failing is a health problem too (it warns at three in a row).
+	healthReg.Register(health.TasksFailingCheck(func() []health.TaskState {
+		var out []health.TaskState
+		for _, t := range sched.Tasks() {
+			out = append(out, health.TaskState{Name: t.Name, LastError: t.LastErr, ConsecutiveFailures: int(t.ConsecutiveFailures)})
+		}
+		return out
+	}))
+	sched.Register("health-check", 30*time.Second, true, healthReg.RunDue)
 
 	errCh := make(chan error, 1)
 	grp.Go("http server", func(context.Context) {

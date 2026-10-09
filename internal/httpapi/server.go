@@ -23,6 +23,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/convert"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/eventbus"
+	"github.com/tristenlammi/arrmada/internal/health"
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/insights"
 	"github.com/tristenlammi/arrmada/internal/library"
@@ -93,6 +94,9 @@ type Deps struct {
 	// Backups makes the nightly and manual database copies. nil = no backups wired: the
 	// manual action answers 503 and the health panel says nothing about them.
 	Backups *backup.Service
+	// Health holds the background health checks; New registers the ones built from these
+	// deps, and /health/system serves its cached results. nil = an empty, healthy report.
+	Health *health.Registry
 }
 
 type api struct {
@@ -117,6 +121,9 @@ func New(d Deps) *http.Server {
 
 	rt := newRouter(a)
 	a.registerRoutes(rt)
+	if d.Health != nil {
+		a.registerHealthChecks(d.Health)
+	}
 
 	// Chain: recover → authenticate (resolves the user) → external gate (LAN vs
 	// outside) → log → routes.

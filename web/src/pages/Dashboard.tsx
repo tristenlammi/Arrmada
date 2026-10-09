@@ -12,7 +12,7 @@ import {
   type InsightsStream,
   type NowListening,
 } from "../lib/api";
-import { LINKS } from "../lib/links";
+import { fixLink, LINKS } from "../lib/links";
 import { useLive } from "../lib/useLive";
 import { usePoll } from "../lib/usePoll";
 
@@ -64,21 +64,31 @@ export function Dashboard() {
       <div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6">
         {system && system.warnings.length > 0 && (
           <div className="mb-5 flex flex-col gap-2">
-            {system.warnings.map((wrn, i) => (
-              <div
-                key={i}
-                className="flex items-center gap-2.5 rounded-lg px-3.5 py-2.5 text-[12.5px]"
-                style={{
-                  background:
-                    wrn.level === "error" ? "var(--reject-soft)" : "var(--avoid-soft)",
-                  border: `1px solid ${wrn.level === "error" ? "var(--reject)" : "var(--avoid)"}`,
-                  color: wrn.level === "error" ? "var(--reject)" : "var(--ink-dim)",
-                }}
-              >
-                <span>{wrn.level === "error" ? "⛔" : "⚠️"}</span>
-                <span>{wrn.message}</span>
-              </div>
-            ))}
+            {system.warnings.map((wrn, i) => {
+              const style = {
+                background: wrn.level === "error" ? "var(--reject-soft)" : "var(--avoid-soft)",
+                border: `1px solid ${wrn.level === "error" ? "var(--reject)" : "var(--avoid)"}`,
+                color: wrn.level === "error" ? "var(--reject)" : "var(--ink-dim)",
+              };
+              const row = "flex items-center gap-2.5 rounded-lg px-3.5 py-2.5 text-[12.5px]";
+              const body = (
+                <>
+                  <span className="flex-none">{wrn.level === "error" ? "⛔" : "⚠️"}</span>
+                  <span className="min-w-0 flex-1 break-words">{wrn.message}</span>
+                </>
+              );
+              // A warning that names where it's fixed is one link, so the whole row is the
+              // target; it ends in "Fix →" in the accent colour.
+              const to = fixLink(wrn);
+              return to ? (
+                <Link key={wrn.key ?? i} to={to} title={wrn.link_label} className={`${row} no-underline`} style={style}>
+                  {body}
+                  <span className="flex-none whitespace-nowrap font-semibold" style={{ color: "var(--accent)" }}>Fix →</span>
+                </Link>
+              ) : (
+                <div key={wrn.key ?? i} className={row} style={style}>{body}</div>
+              );
+            })}
           </div>
         )}
 

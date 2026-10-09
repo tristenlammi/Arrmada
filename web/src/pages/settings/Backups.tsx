@@ -156,7 +156,7 @@ export function Backups() {
   const dirty = !!schedule && !!state && (schedule.enabled !== state.settings.enabled || schedule.hour !== state.settings.hour || schedule.keep_nightly !== state.settings.keep_nightly);
 
   return (
-    <div className="rounded-xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+    <div id="backups" className="scroll-mt-20 rounded-xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
       <h2 className="m-0 text-[14px] font-bold">Backups</h2>
       <p className="mb-4 mt-0.5 text-[11.5px] text-ink-faint">
         Copies of Arrmada's database: one every night, one before every update, and any you take yourself. Backups contain your API keys and password hashes. They're stored next to the database (on Unraid: /mnt/user/appdata/arrmada/backups when the data dir is in appdata), so download one now and then to keep a copy off this server.

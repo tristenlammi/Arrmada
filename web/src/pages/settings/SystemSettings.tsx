@@ -21,9 +21,7 @@ export function SystemSettings() {
       <SaveBar />
       <APIKeysSection onRegionSaved={syncRegion} />
       <RestartSection />
-      <div id="backups" className="scroll-mt-20">
-        <Backups />
-      </div>
+      <Backups />
     </div>
   );
 }

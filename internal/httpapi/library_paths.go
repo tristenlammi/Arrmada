@@ -203,6 +203,7 @@ func (a *api) handleSetLibraryPaths(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	a.recheckHealth("library", "recycle.drive")
 	a.handleGetLibraryPaths(w, r)
 }
 
