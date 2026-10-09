@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ConfirmDialog } from "../components/ConfirmDialog";
@@ -12,6 +12,8 @@ import { RenameModal } from "./series/RenameModal";
 import { NumberingBanner } from "./series/NumberingReviewModal";
 import { MONITOR_PRESETS } from "./series/presets";
 import { usePoll } from "../lib/usePoll";
+import { useLive } from "../lib/useLive";
+import { downloadingCount, mergeDownloads } from "./series/downloads";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { Button, StatusChip } from "../ui";
 import { api, importListNotice, type FitItem, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile } from "../lib/api";
@@ -93,9 +95,39 @@ export function SeriesDetail() {
     api.libraryFitEpisodes(sid).then((r) => setFits(new Map((r.items ?? []).map((it) => [`${it.season}:${it.episode}`, it])))).catch(() => {});
   }, [sid]);
 
-  // While any episode is downloading, refresh so the progress ticks up.
-  const anyDownloading = !!s?.seasons?.some((sn) => sn.episodes?.some((e) => e.download));
-  usePoll(load, anyDownloading ? 3000 : null, { immediate: false });
+  // While any episode is downloading, poll the light downloads endpoint so the progress
+  // ticks up — not the whole show every three seconds. The full detail reloads when the
+  // server announces an import or a search for this show.
+  const live = useLive();
+  const downloading = s ? downloadingCount(s) : 0;
+  const lastCount = useRef(0);
+  const pollDownloads = useCallback(() => {
+    return api.seriesDownloads(sid).then((dls) => {
+      // Without the websocket nothing announces the import, so a download leaving the
+      // list (finished, failed or removed) is the cue to reload instead.
+      if (!live.connected && dls.length < lastCount.current) load();
+      lastCount.current = dls.length;
+      setS((cur) => (cur ? mergeDownloads(cur, dls) : cur));
+    }).catch(() => { /* the next tick tries again */ });
+  }, [sid, load, live.connected]);
+  useEffect(() => { lastCount.current = downloading; }, [downloading]);
+  usePoll(pollDownloads, downloading > 0 ? 3000 : null, { immediate: false });
+  useEffect(() => {
+    const ev = live.last;
+    if (!ev) return;
+    const evID = (ev.data as { id?: number } | null)?.id;
+    if ((ev.topic === "series.imported" || ev.topic === "series.searched") && evID === sid) {
+      load();
+    } else if (ev.topic === "release.grabbed") {
+      // The grab names no show, and the client takes a moment to list the torrent: look
+      // twice, cheaply, rather than reload the whole page for every grab anywhere.
+      pollDownloads();
+      const t = window.setTimeout(pollDownloads, 5000);
+      return () => window.clearTimeout(t);
+    }
+    // Only a new event should act; load and pollDownloads change with the page's state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live.last]);
 
   if (notFound) return <Shell><div className="py-10 text-center text-[13px] text-ink-dim">That series isn't in your library. <Link to="/series" className="underline" style={{ color: "var(--accent)" }}>Back to Series</Link></div></Shell>;
   if (!s) return <Shell><p className="text-[12.5px] text-ink-dim">{error ?? "Loading…"}</p></Shell>;
@@ -193,7 +225,9 @@ export function SeriesDetail() {
           {seasons.map((sn) => <SeasonBlock key={sn.id} series={s} season={sn} onChange={load} flash={flash} defaultOpen={false} fits={fits} />)}
         </div>
 
-        <SeriesBlocklistPanel seriesId={s.id} refreshKey={s.seasons} />
+        {/* A block isn't always a history event (a junk download is blocklisted as it
+            leaves the queue), so the panel also reloads when a download goes away. */}
+        <SeriesBlocklistPanel seriesId={s.id} refreshKey={`${s.last_event_id ?? 0}:${downloading}`} />
 
         {ex?.cast && ex.cast.length > 0 && (
           <div className="mt-8">
@@ -212,9 +246,9 @@ export function SeriesDetail() {
           </div>
         )}
 
-        <DuplicatesPanel seriesId={s.id} refreshKey={s.stats?.have_files} flash={flash} />
+        <DuplicatesPanel seriesId={s.id} refreshKey={s.last_event_id} flash={flash} />
 
-        <HistoryPanel seriesId={s.id} refreshKey={s.stats?.have_files} />
+        <HistoryPanel seriesId={s.id} refreshKey={s.last_event_id} />
       </div>
 
       {toast && (

@@ -37,9 +37,18 @@ func (c *Coordinator) RSSSyncSeries(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	// Match against the library snapshot first — List already carries each show's
+	// aliases, year and extra — and load a show in full only when the feed has something
+	// for it. It used to Get() every monitored show every cycle, almost always to find
+	// nothing.
+	matches := rssMatches(all, res.Releases)
+	if len(matches) == 0 {
+		return
+	}
 	queue, _ := c.downloads.Queue(ctx)
 	for _, meta := range all {
-		if !meta.Monitored {
+		matched := matches[meta.ID]
+		if len(matched) == 0 {
 			continue
 		}
 		s, err := c.series.Get(ctx, meta.ID)
@@ -58,21 +67,31 @@ func (c *Coordinator) RSSSyncSeries(ctx context.Context) {
 		if !ok {
 			continue
 		}
-		var matched []indexer.Release
-		for _, rel := range res.Releases {
-			// seriesTitleMatches, not releaseIsForSeries: anime is mostly uploaded under
-			// its romaji title, and matching English-only made the RSS fast path — the
-			// mechanism that catches new episodes promptly — dead for those shows.
-			if seriesTitleMatches(rel.Title, s) {
-				matched = append(matched, rel)
-			}
-		}
-		if len(matched) == 0 {
-			continue
-		}
 		c.log.Info("rss: series match", "series", s.Title, "candidates", len(matched))
 		c.grabSeriesLimited(ctx, s, matched, only)
 	}
+}
+
+// rssMatches maps each monitored show to the feed releases that are it, by the same
+// identity rule as every other series match (seriesIdentity) — an anime's romaji-named
+// uploads included, which is the RSS fast path's main catch. Each release is parsed once.
+func rssMatches(all []series.Series, releases []indexer.Release) map[int64][]indexer.Release {
+	parsed := make([]parser.Release, len(releases))
+	for i, rel := range releases {
+		parsed[i] = parser.Parse(rel.Title)
+	}
+	out := map[int64][]indexer.Release{}
+	for _, s := range all {
+		if !s.Monitored {
+			continue
+		}
+		for i, rel := range releases {
+			if ok, _ := seriesIdentity(parsed[i], s); ok {
+				out[s.ID] = append(out[s.ID], rel)
+			}
+		}
+	}
+	return out
 }
 
 // UpgradeSeries sweeps every monitored series and grabs a better release for any

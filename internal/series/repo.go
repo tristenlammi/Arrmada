@@ -1314,6 +1314,13 @@ func (r *Repo) AddEvent(ctx context.Context, seriesID int64, event, detail strin
 		`INSERT INTO series_events (series_id, event, detail) VALUES (?, ?, ?)`, seriesID, event, detail)
 }
 
+// LastEventID is the id of the newest event in a series' timeline, 0 when it has none.
+func (r *Repo) LastEventID(ctx context.Context, seriesID int64) int64 {
+	var id int64
+	_ = r.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM series_events WHERE series_id = ?`, seriesID).Scan(&id)
+	return id
+}
+
 // Events returns a series' timeline, newest first.
 func (r *Repo) Events(ctx context.Context, seriesID int64, limit int) ([]Event, error) {
 	rows, err := r.db.QueryContext(ctx,

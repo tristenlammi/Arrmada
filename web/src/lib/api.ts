@@ -1124,7 +1124,14 @@ export interface Series {
   extra?: SeriesExtra;
   seasons?: Season[];
   stats?: SeriesStats;
+  // Detail endpoint only: the newest history event's id. Panels that show the show's
+  // history reload when it moves.
+  last_event_id?: number;
 }
+
+// One episode's in-flight download, from the light poll the series page runs while
+// something downloads (GET /series/{id}/downloads).
+export interface SeriesEpisodeDownload { season: number; episode: number; state: string; progress: number }
 // --- Books ---
 export type BookSource = "openlibrary" | "hardcover";
 export interface BookUpgradeStatus {
@@ -1931,6 +1938,7 @@ export const api = {
   addSeries: (body: { tmdb_id: number; quality_profile?: string; monitored?: boolean; search_on_add?: boolean; monitor?: string; monitor_new_seasons?: boolean }) =>
     req<Series>("/api/v1/series", { method: "POST", body: JSON.stringify(body) }),
   seriesDetail: (id: number) => req<Series>(`/api/v1/series/${id}`),
+  seriesDownloads: (id: number) => req<SeriesEpisodeDownload[]>(`/api/v1/series/${id}/downloads`),
   searchSeries: (id: number) =>
     req<{ status: string } & JobRef>(`/api/v1/series/${id}/search`, { method: "POST" }),
   seriesReleases: (id: number, season?: number, episode?: number) => {

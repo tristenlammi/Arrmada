@@ -1776,6 +1776,12 @@ func (s *Service) WantsFile(ctx context.Context, seriesID int64, season, episode
 	return parser.ResolutionRank(res) > parser.ResolutionRank(cur)
 }
 
+// LastEventID is the id of the series' newest history event (0 when none), so a page can
+// tell when there is something new to show without re-reading the history.
+func (s *Service) LastEventID(ctx context.Context, seriesID int64) int64 {
+	return s.repo.LastEventID(ctx, seriesID)
+}
+
 // AcquisitionSummary returns per-monitored-series wanted/upcoming episode counts for
 // the downloads feed (Searching + Upcoming tabs).
 func (s *Service) AcquisitionSummary(ctx context.Context) []SeriesAcquisition {

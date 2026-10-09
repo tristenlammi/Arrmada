@@ -137,12 +137,58 @@ func (a *api) handleGetSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.attachEpisodeDownloads(r.Context(), &s)
+	// What the History, Duplicates and Blocklist panels key their reloads on: it moves
+	// whenever something is recorded against the show (an import, a grab, a search).
+	s.LastEventID = a.deps.Series.LastEventID(r.Context(), id)
 	a.writeJSON(w, http.StatusOK, s)
 }
 
-// attachEpisodeDownloads tags each not-yet-downloaded episode with any in-flight
-// download from the live queue, matched by series title + season + episode (a
-// season pack — no episode markers — covers every episode in its season).
+// seriesEpisodeDownload is one episode's in-flight download, for the light poll.
+type seriesEpisodeDownload struct {
+	Season   int     `json:"season"`
+	Episode  int     `json:"episode"`
+	State    string  `json:"state"`
+	Progress float64 `json:"progress"`
+}
+
+// handleSeriesDownloads is what the series page polls while something downloads: only the
+// episodes with a download in flight, instead of the whole show (seasons, stats, every
+// episode) every three seconds. The page reloads the full detail when an import or search
+// for the show is announced.
+func (a *api) handleSeriesDownloads(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	s, err := a.deps.Series.Get(r.Context(), id)
+	if errors.Is(err, series.ErrNotFound) {
+		a.writeError(w, http.StatusNotFound, "series not found")
+		return
+	}
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not load series")
+		return
+	}
+	a.attachEpisodeDownloads(r.Context(), &s)
+	out := []seriesEpisodeDownload{}
+	for _, sn := range s.Seasons {
+		for _, e := range sn.Episodes {
+			if e.Download != nil {
+				out = append(out, seriesEpisodeDownload{Season: e.SeasonNumber, Episode: e.EpisodeNumber,
+					State: e.Download.State, Progress: e.Download.Progress})
+			}
+		}
+	}
+	a.writeJSON(w, http.StatusOK, out)
+}
+
+// attachEpisodeDownloads tags each not-yet-downloaded episode with any in-flight download
+// from the live queue (a season pack — no episode markers — covers every episode in its
+// season).
+//
+// The queue is read once per request through download.Service's public Queue and each item
+// parsed once: this used to parse every queue item again for every file-less episode.
+// When the shared queue snapshot (ACQ-22) lands, the Queue call is what switches to it.
 func (a *api) attachEpisodeDownloads(ctx context.Context, s *series.Series) {
 	if a.deps.Downloads == nil || len(s.Seasons) == 0 {
 		return
@@ -151,39 +197,92 @@ func (a *api) attachEpisodeDownloads(ctx context.Context, s *series.Series) {
 	if err != nil || len(queue) == 0 {
 		return
 	}
-	want := parser.TitleKey(s.Title)
+	idx := indexEpisodeDownloads(queue, *s, parser.Parse)
 	for si := range s.Seasons {
 		for ei := range s.Seasons[si].Episodes {
 			e := &s.Seasons[si].Episodes[ei]
 			if e.HasFile {
 				continue
 			}
-			if d := episodeDownload(queue, want, e.SeasonNumber, e.EpisodeNumber); d != nil {
+			if d := idx.lookup(e.SeasonNumber, e.EpisodeNumber); d != nil {
 				e.Download = d
 			}
 		}
 	}
 }
 
-// episodeDownload finds an unfinished queue item for the given series episode.
-func episodeDownload(queue []download.Item, wantTitle string, season, episode int) *series.EpisodeDownload {
-	for i := range queue {
-		it := queue[i]
-		if it.Progress >= 1 {
-			continue // finished — import handles it; not "downloading"
+// episodeDownloads indexes a show's in-flight downloads by what they cover.
+type episodeDownloads struct {
+	whole   *series.EpisodeDownload // a complete-series pack
+	seasons map[int]*seasonDownloads
+}
+
+type seasonDownloads struct {
+	pack *series.EpisodeDownload         // a pack of the whole season (or several)
+	eps  map[int]*series.EpisodeDownload // single- or multi-episode releases
+}
+
+// indexEpisodeDownloads makes one pass over the queue: incomplete TV downloads whose name
+// is this show (series.FitRelease — the same identity rule as the sweeps, so an alias or
+// romaji-named download counts and another show's never does), each parsed once. parse is
+// injectable so a test can count the parses.
+func indexEpisodeDownloads(queue []download.Item, s series.Series, parse func(string) parser.Release) episodeDownloads {
+	idx := episodeDownloads{seasons: map[int]*seasonDownloads{}}
+	season := func(n int) *seasonDownloads {
+		sd := idx.seasons[n]
+		if sd == nil {
+			sd = &seasonDownloads{eps: map[int]*series.EpisodeDownload{}}
+			idx.seasons[n] = sd
 		}
-		r := parser.Parse(it.Name)
-		// CoversSeason handles multi-season ("S01-07") and complete-series packs, not
-		// just a single-season one — otherwise a box set only lit up its first season.
-		if parser.TitleKey(r.Title) != wantTitle || !r.CoversSeason(season) {
+		return sd
+	}
+	for _, it := range queue {
+		if it.Progress >= 1 || it.Category != seriesDownloadCategory {
+			continue // finished (import handles it, or it's seeding), or not a TV grab
+		}
+		p := parse(it.Name)
+		if !series.FitRelease(p, s).OK {
 			continue
 		}
-		if len(r.Episodes) > 0 && !containsInt(r.Episodes, episode) {
-			continue // a specific-episode release that isn't this one
+		d := &series.EpisodeDownload{State: it.State, Progress: it.Progress}
+		if p.Complete {
+			if idx.whole == nil {
+				idx.whole = d
+			}
+			continue
 		}
-		return &series.EpisodeDownload{State: it.State, Progress: it.Progress}
+		covered := append([]int{}, p.Seasons...)
+		if p.Season > 0 || p.SeasonExplicit {
+			covered = append(covered, p.Season)
+		}
+		for _, sn := range covered {
+			sd := season(sn)
+			if len(p.Episodes) > 0 && sn == p.Season {
+				for _, ep := range p.Episodes {
+					if sd.eps[ep] == nil {
+						sd.eps[ep] = d
+					}
+				}
+			} else if len(p.Episodes) == 0 && sd.pack == nil {
+				sd.pack = d
+			}
+		}
 	}
-	return nil
+	return idx
+}
+
+// lookup is the download covering one episode: its own release first, then a pack of its
+// season, then a complete-series pack.
+func (x episodeDownloads) lookup(season, episode int) *series.EpisodeDownload {
+	if sd := x.seasons[season]; sd != nil {
+		if d := sd.eps[episode]; d != nil {
+			return d
+		}
+		if sd.pack != nil {
+			return sd.pack
+		}
+	}
+	return x.whole
 }
 
 func containsInt(xs []int, v int) bool {

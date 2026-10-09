@@ -44,6 +44,9 @@ type Series struct {
 	Aliases []Alias  `json:"aliases,omitempty"`
 	Seasons []Season `json:"seasons,omitempty"` // detail endpoint only
 	Stats   *Stats   `json:"stats,omitempty"`   // aggregate counts for the grid
+	// LastEventID is the newest history event's id (detail endpoint only): the series page
+	// reloads its History, Duplicates and Blocklist panels when it moves.
+	LastEventID int64 `json:"last_event_id,omitempty"`
 }
 
 // Stats are a series' roll-up numbers, for the library grid and the detail page. Specials
