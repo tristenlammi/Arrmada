@@ -127,10 +127,12 @@ func (s *Service) NotifyMovieReady(ctx context.Context, movieID int64) error {
 	return s.notifyRequester(ctx, "movie", m.TMDBID, "")
 }
 
-// NotifySeriesReady tells whoever asked for a show that it's ready — but only once no
-// monitored, aired episode is still wanted: a series isn't "ready to watch" on its first
-// imported episode. Later imports run this again (and the ready sweep backstops), so
-// skipping just defers the message.
+// NotifySeriesReady tells whoever asked for a show that what they asked for is ready. A
+// whole-show request waits until no monitored, aired episode is still wanted: a series
+// isn't "ready to watch" on its first imported episode. A request for some seasons is
+// ready when its own seasons are complete, whatever gaps older seasons have, and one for
+// several seasons also hears as each of them completes. Later imports run this again (and
+// the ready sweep backstops), so skipping just defers the message.
 func (s *Service) NotifySeriesReady(ctx context.Context, seriesID int64) error {
 	sr, err := s.series.Get(ctx, seriesID)
 	if errors.Is(err, series.ErrNotFound) {
@@ -139,10 +141,65 @@ func (s *Service) NotifySeriesReady(ctx context.Context, seriesID int64) error {
 	if err != nil {
 		return err
 	}
-	if s.series.HasWantedEpisodes(ctx, sr.ID) {
+	reqs, err := s.repo.ListByMedia(ctx, "series", sr.TMDBID)
+	if err != nil {
+		return fmt.Errorf("list requests for series %d: %w", sr.TMDBID, err)
+	}
+	var (
+		errs   []error
+		wanted *bool
+		prog   map[int]series.SeasonProgress
+	)
+	for _, req := range reqs {
+		if len(req.Seasons) == 0 {
+			// Whole-show requests keep the rule (and the reference) they always had, so
+			// nobody is told twice.
+			if wanted == nil {
+				w := s.series.HasWantedEpisodes(ctx, sr.ID)
+				wanted = &w
+			}
+			if !*wanted {
+				errs = append(errs, s.notifyReady(ctx, req))
+			}
+			continue
+		}
+		if req.Status == StatusDeclined {
+			continue
+		}
+		if prog == nil {
+			if prog, err = s.series.SeasonProgress(ctx, sr.ID); err != nil {
+				return fmt.Errorf("season progress for series %d: %w", sr.ID, err)
+			}
+		}
+		errs = append(errs, s.notifySeasonsReady(ctx, req, prog))
+	}
+	return errors.Join(errs...)
+}
+
+// notifySeasonsReady sends a season-scoped request's notices: "ready" once all of its
+// seasons are complete, and — for a request of two or more seasons — "Season N is ready"
+// as each one completes before that. When the whole request completes in one go, only
+// the final notice goes out. Each is idempotent (its own inbox reference).
+func (s *Service) notifySeasonsReady(ctx context.Context, req Request, prog map[int]series.SeasonProgress) error {
+	if _, _, ready := seasonsProgress(prog, req.Seasons); ready {
+		return s.notifyReady(ctx, req)
+	}
+	if len(req.Seasons) < 2 {
 		return nil
 	}
-	return s.notifyRequester(ctx, "series", sr.TMDBID, "")
+	var errs []error
+	for _, n := range req.Seasons {
+		if p, ok := prog[n]; !ok || !seasonReady(p) {
+			continue
+		}
+		body := fmt.Sprintf("Season %d of “%s” is ready to watch.", n, req.Title)
+		told, err := s.notifyPartiesCount(ctx, req, "Season ready", body, fmt.Sprintf("%s:s%d", requestRef(req), n), "request-season-ready")
+		if told > 0 {
+			s.publishUpdated(req, req.Status, s.parties(ctx, req))
+		}
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 // NotifyBookReady tells everyone behind the requests for a book that it has arrived.
@@ -160,11 +217,31 @@ func (s *Service) NotifyBookReady(ctx context.Context, bookID int64) error {
 // requestRef is the stable de-dupe key for a request's media ("movie:123",
 // "series:456", "book:OL123W"). Suffixes distinguish notification kinds so an
 // "approved" note doesn't block the later "ready" one.
+//
+// A season-scoped series request is keyed by its own id ("series:456:r12"): a show can
+// have several, and each must be told apart. Whole-show requests keep "series:456", so
+// nobody who already heard is told again.
 func requestRef(req Request) string {
 	if req.MediaType == "book" {
 		return "book:" + req.OLKey
 	}
+	if req.MediaType == "series" && len(req.Seasons) > 0 {
+		return fmt.Sprintf("series:%d:r%d", req.TMDBID, req.ID)
+	}
 	return fmt.Sprintf("%s:%d", req.MediaType, req.TMDBID)
+}
+
+// requestedWhat names what a request asked for, for its notices: "“Show”", or
+// "Season 4 of “Show”" / "S1–2 of “Show”" for a season-scoped series request.
+func requestedWhat(req Request) string {
+	switch {
+	case req.MediaType != "series" || len(req.Seasons) == 0:
+		return fmt.Sprintf("“%s”", req.Title)
+	case len(req.Seasons) == 1:
+		return fmt.Sprintf("Season %d of “%s”", req.Seasons[0], req.Title)
+	default:
+		return fmt.Sprintf("%s of “%s”", series.SeasonsLabel(req.Seasons), req.Title)
+	}
 }
 
 // notifyRequester finds the request behind a just-imported item and alerts its
@@ -208,7 +285,7 @@ func (s *Service) notifyBookRequesters(ctx context.Context, bookID int64, olKey 
 // notifyReady sends the "your request is ready" notification for one request.
 // Idempotent per user (unique inbox ref), so callers may fire it repeatedly.
 func (s *Service) notifyReady(ctx context.Context, req Request) error {
-	body := fmt.Sprintf("“%s” is ready to watch.", req.Title)
+	body := fmt.Sprintf("%s is ready to watch.", requestedWhat(req))
 	if req.MediaType == "book" {
 		body = fmt.Sprintf("“%s” is ready to read.", req.Title)
 	}
@@ -224,11 +301,14 @@ func (s *Service) notifyReady(ctx context.Context, req Request) error {
 // notifyDecision tells the requester and subscribers a request was approved or declined.
 func (s *Service) notifyDecision(ctx context.Context, req Request, approved bool) {
 	if approved {
-		body := fmt.Sprintf("Your request for “%s” was approved — we're on it.", req.Title)
+		body := fmt.Sprintf("Your request for %s was approved — we're on it.", requestedWhat(req))
+		if req.notApproved != "" {
+			body += " " + req.notApproved
+		}
 		_ = s.notifyParties(ctx, req, "Request approved", body, requestRef(req)+":approved", "request-approved")
 		return
 	}
-	body := fmt.Sprintf("Your request for “%s” was declined.", req.Title)
+	body := fmt.Sprintf("Your request for %s was declined.", requestedWhat(req))
 	_ = s.notifyParties(ctx, req, "Request declined", body, requestRef(req)+":declined", "request-declined")
 }
 
@@ -334,15 +414,34 @@ func (s *Service) SweepReadyRequests(ctx context.Context) error {
 			bookByID[b.ID] = b.HasFile
 		}
 	}
+	progBySeries := map[int64]map[int]series.SeasonProgress{}
 	for i := range reqs {
 		ready := false
 		switch reqs[i].MediaType {
 		case "movie":
 			ready = movHave[reqs[i].TMDBID]
 		case "series":
+			info, ok := serByTMDB[reqs[i].TMDBID]
+			if !ok {
+				break
+			}
+			if len(reqs[i].Seasons) > 0 {
+				// Over its own seasons, with per-season notices (the import path's rule).
+				prog, seen := progBySeries[info.id]
+				if !seen {
+					prog, err = s.series.SeasonProgress(ctx, info.id)
+					if err != nil {
+						s.log.Warn("ready sweep: couldn't read season progress", "series", info.id, "err", err)
+						continue
+					}
+					progBySeries[info.id] = prog
+				}
+				_ = s.notifySeasonsReady(ctx, reqs[i], prog) // logged inside; the next sweep tries again
+				continue
+			}
 			// Ready = some files on disk AND nothing still wanted (monitored, aired,
 			// missing) — the same completeness rule the import-event path applies.
-			if info, ok := serByTMDB[reqs[i].TMDBID]; ok && info.hasFiles {
+			if info.hasFiles {
 				ready = !s.series.HasWantedEpisodes(ctx, info.id)
 			}
 		case "book":

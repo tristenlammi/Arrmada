@@ -124,8 +124,14 @@ func (a *api) buildDiscoverSnapshot(ctx context.Context) (snap *discoverEnrichSn
 		complete = false
 	}
 	if rs, err := a.deps.Requests.List(ctx, "", 0); err == nil {
+		// A show can have several requests (one per ask for more seasons): the card shows
+		// the furthest along, approved over pending over declined.
+		rank := map[string]int{"declined": 1, "pending": 2, "approved": 3}
 		for _, req := range rs {
-			snap.reqStatus[req.MediaType+":"+strconv.Itoa(req.TMDBID)] = req.Status
+			key := req.MediaType + ":" + strconv.Itoa(req.TMDBID)
+			if cur, ok := snap.reqStatus[key]; !ok || rank[req.Status] > rank[cur] {
+				snap.reqStatus[key] = req.Status
+			}
 		}
 	} else {
 		complete = false

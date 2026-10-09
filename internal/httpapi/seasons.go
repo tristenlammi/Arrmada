@@ -7,14 +7,17 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
 
-// Per-season states, as a requester sees them. Monitoring flags and who asked are never
-// shown: only what the state means for asking.
+// Per-season states, as a requester sees them. Monitoring flags are never shown, and who
+// asked only to staff: only what the state means for asking.
 const (
 	seasonInLibrary   = "in_library"  // every aired episode is on disk
+	seasonRequested   = "requested"   // a pending or approved request already asks for it
 	seasonPartial     = "partial"     // some aired episodes are on disk, nothing is fetching the rest
 	seasonOnTheWay    = "on_the_way"  // the server is already set to grab what's missing
 	seasonUnaired     = "unaired"     // nothing has aired yet
@@ -33,6 +36,15 @@ type seasonState struct {
 	// Requestable is whether a request may ask for the season: a requestable season, or
 	// a partial one whose missing episodes nobody is fetching.
 	Requestable bool `json:"requestable"`
+	// Request is the request standing for a requested season: its id, status and whether
+	// it's the viewer's own (the requester's name for staff only).
+	Request *requests.SeasonRequest `json:"request,omitempty"`
+}
+
+// seasonAsks are a show's active requests, by season, and a whole-show one if any.
+type seasonAsks struct {
+	bySeason map[int]requests.SeasonRequest
+	whole    *requests.SeasonRequest
 }
 
 // libraryShow is what the library knows about a show, for the season states. A zero
@@ -45,8 +57,9 @@ type libraryShow struct {
 
 // buildSeasonStates folds TMDB's season list and the library's per-season counts into
 // one row per regular season. Seasons only the library knows (a TVDB-numbered show's
-// extra season) are listed too. today is YYYY-MM-DD.
-func buildSeasonStates(summaries []metadata.SeasonSummary, lib libraryShow, today string) []seasonState {
+// extra season) are listed too. A season not complete on disk that a request already
+// covers reads "requested". today is YYYY-MM-DD.
+func buildSeasonStates(summaries []metadata.SeasonSummary, lib libraryShow, asks seasonAsks, today string) []seasonState {
 	rows := map[int]*seasonState{}
 	for _, s := range summaries {
 		if s.Number <= 0 {
@@ -74,9 +87,16 @@ func buildSeasonStates(summaries []metadata.SeasonSummary, lib libraryShow, toda
 			// first episode is out counts as aired in full.
 			row.Aired = row.EpisodeCount
 		}
+		ask, asked := asks.bySeason[n]
+		if !asked && asks.whole != nil {
+			ask, asked = *asks.whole, true
+		}
 		switch {
 		case row.Have > 0 && row.Have >= row.Aired:
 			row.State = seasonInLibrary
+		case asked:
+			row.State = seasonRequested
+			row.Request = &ask
 		case lib.in && lib.monitored && known && p.Monitored && (p.Wanted > 0 || p.Upcoming > 0):
 			row.State = seasonOnTheWay
 		case row.Aired == 0:
@@ -142,7 +162,20 @@ func (a *api) handleSeriesSeasons(w http.ResponseWriter, r *http.Request) {
 		a.discoveryReady(w, r) // writes the role-appropriate "not set up" message
 		return
 	}
+	var asks seasonAsks
+	if a.deps.Requests != nil {
+		var viewer int64
+		staff := false
+		if u, ok := userFrom(r); ok && u != nil {
+			viewer, staff = u.ID, u.Role.AtLeast(auth.RoleManager)
+		}
+		asks.bySeason, asks.whole, err = a.deps.Requests.SeasonRequests(r.Context(), id, viewer, staff)
+		if err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not read requests")
+			return
+		}
+	}
 	a.writeJSON(w, http.StatusOK, map[string]any{
-		"seasons": buildSeasonStates(summaries, lib, time.Now().Format("2006-01-02")),
+		"seasons": buildSeasonStates(summaries, lib, asks, time.Now().Format("2006-01-02")),
 	})
 }

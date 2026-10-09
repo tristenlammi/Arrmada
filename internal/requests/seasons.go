@@ -17,15 +17,18 @@ func requesterName(req Request) string {
 }
 
 // monitorExistingSeries makes a show that is already in the library fetch what an
-// approved request asked for (the whole show). wants is false when every aired episode
-// asked for is already on disk: nothing is changed then, and the ready path stamps the
-// request.
+// approved request asked for: its seasons, or the whole show. wants is false when every
+// aired episode asked for is already on disk: nothing is changed then, and the ready
+// path stamps the request.
 func (s *Service) monitorExistingSeries(ctx context.Context, req Request) (sr series.Series, wants bool, err error) {
 	sr, err = s.series.GetByTMDB(ctx, req.TMDBID)
 	if err != nil {
 		return series.Series{}, false, fmt.Errorf("find the show in the library: %w", err)
 	}
 	var seasons []int // nil: the whole show
+	if len(req.Seasons) > 0 {
+		seasons = req.Seasons
+	}
 	prog, err := s.series.SeasonProgress(ctx, sr.ID)
 	if err != nil {
 		return sr, false, err

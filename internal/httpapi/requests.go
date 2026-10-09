@@ -53,6 +53,9 @@ func (a *api) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 		Overview       string `json:"overview"`
 		Note           string `json:"note"`
 		QualityProfile string `json:"quality_profile"`
+		// Seasons a series request asks for; empty or absent is the whole show. Ignored
+		// for movies and books.
+		Seasons []int `json:"seasons"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -62,6 +65,9 @@ func (a *api) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 		MediaType: req.MediaType, TMDBID: req.TMDBID, OLKey: req.OLKey, Title: req.Title, Author: req.Author, Year: req.Year,
 		PosterURL: req.PosterURL, Overview: req.Overview, Note: req.Note, QualityProfile: req.QualityProfile,
 		RequestedBy: u.ID, RequestedByName: u.Username,
+	}
+	if in.MediaType == "series" {
+		in.Seasons = req.Seasons
 	}
 	// Canonicalize display metadata from the TMDB id. Title/poster/overview came
 	// straight from the client, so a requester could submit movie X's id dressed in
@@ -82,6 +88,14 @@ func (a *api) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 			if d.Overview != "" {
 				in.Overview = d.Overview
 			}
+			// The show's season list, so the request can be split against what's already
+			// covered. Without it (TMDB unreachable) a whole-show ask stays whole.
+			if in.MediaType == "series" && len(d.Seasons) > 0 {
+				in.KnownSeasons = make([]int, 0, len(d.Seasons))
+				for _, sn := range d.Seasons {
+					in.KnownSeasons = append(in.KnownSeasons, sn.Number)
+				}
+			}
 		}
 	}
 	// Auto-approve is a per-user property: this requester's request skips the queue
@@ -91,6 +105,10 @@ func (a *api) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 		// Only reachable when the duplicate row vanished between detection and
 		// re-fetch — vanishingly rare; the normal duplicate path subscribes instead.
 		a.writeError(w, http.StatusConflict, "that title has already been requested")
+		return
+	}
+	if errors.Is(err, requests.ErrAlreadyAvailable) {
+		a.writeError(w, http.StatusConflict, "those seasons are already in the library")
 		return
 	}
 	if err != nil {
@@ -109,17 +127,24 @@ func (a *api) handleApproveRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	var req struct {
 		QualityProfile string `json:"quality_profile"`
+		// Seasons trims a series request on approve: only these (a subset of what it
+		// asked for) are monitored. Empty or absent approves it as asked.
+		Seasons []int `json:"seasons"`
 	}
 	if r.Body != nil {
-		_ = json.NewDecoder(r.Body).Decode(&req) // body is optional (profile override)
+		_ = json.NewDecoder(r.Body).Decode(&req) // body is optional (profile override, season trim)
 	}
-	updated, err := a.deps.Requests.Approve(r.Context(), id, req.QualityProfile)
+	updated, err := a.deps.Requests.ApproveWith(r.Context(), id, requests.ApproveOptions{Profile: req.QualityProfile, Seasons: req.Seasons})
 	if errors.Is(err, requests.ErrNotFound) {
 		a.writeError(w, http.StatusNotFound, "request not found")
 		return
 	}
 	if errors.Is(err, requests.ErrUnknownProfile) {
 		a.writeError(w, http.StatusBadRequest, "unknown quality profile")
+		return
+	}
+	if errors.Is(err, requests.ErrSeasonsNotRequested) {
+		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	if err != nil {

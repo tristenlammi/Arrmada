@@ -1082,6 +1082,7 @@ export interface MediaRequest {
   requested_by: number;
   requested_by_name?: string;
   note?: string;
+  seasons?: number[]; // series: the seasons asked for, ascending; absent = the whole show
   available: boolean;
   download_progress?: number; // 0..1 while the requested item is downloading
   tracking?: RequestTracking;
@@ -1236,7 +1237,9 @@ export interface SeasonSummary { number: number; name?: string; episode_count: n
  * A season's state for the requester: on disk, partly there, already being fetched,
  * not out yet, or free to ask for. Never carries monitoring flags or anyone's name.
  */
-export type SeasonState = "in_library" | "partial" | "on_the_way" | "unaired" | "requestable";
+export type SeasonState = "in_library" | "requested" | "partial" | "on_the_way" | "unaired" | "requestable";
+/** The request standing for a requested season. `requested_by_name` is sent to staff only. */
+export interface SeasonRequest { request_id: number; status: "pending" | "approved"; mine: boolean; requested_by_name?: string }
 export interface SeriesSeason {
   number: number;
   name?: string;
@@ -1246,6 +1249,7 @@ export interface SeriesSeason {
   aired: number; // episodes out so far
   state: SeasonState;
   requestable: boolean; // a request may ask for it (requestable, or partial with nothing fetching the rest)
+  request?: SeasonRequest; // state "requested"
 }
 
 // --- Series (TV) ---
@@ -2222,12 +2226,15 @@ export const api = {
     req<{ requests: MediaRequest[]; auto_approve: boolean; client_health?: QueueHealth }>(`/api/v1/requests${status ? `?status=${status}` : ""}`),
   // Returns 200 even for already-requested titles: subscribed=true means "you were
   // attached to an existing request and will be notified too". Requesting a declined
-  // title resurrects it as pending.
-  createRequest: (body: { media_type: "movie" | "series" | "book"; tmdb_id?: number; ol_key?: string; author?: string; title: string; year: number; poster_url?: string; overview?: string; quality_profile?: string; note?: string }) =>
+  // title resurrects it as pending. A series request may name `seasons` (empty or absent:
+  // the whole show); seasons already covered by another request are followed instead,
+  // and asking only for seasons already on disk answers 409.
+  createRequest: (body: { media_type: "movie" | "series" | "book"; tmdb_id?: number; ol_key?: string; author?: string; title: string; year: number; poster_url?: string; overview?: string; quality_profile?: string; note?: string; seasons?: number[] }) =>
     req<{ request: MediaRequest; subscribed: boolean } | MediaRequest>("/api/v1/requests", { method: "POST", body: JSON.stringify(body) })
       .then((r): { request: MediaRequest; subscribed: boolean } => ("request" in r ? r : { request: r, subscribed: false })),
-  approveRequest: (id: number, quality_profile?: string) =>
-    req<MediaRequest>(`/api/v1/requests/${id}/approve`, { method: "POST", body: JSON.stringify({ quality_profile: quality_profile ?? "" }) }),
+  /** `seasons` trims a series request to a subset of what it asked for (the rest is declined). */
+  approveRequest: (id: number, quality_profile?: string, seasons?: number[]) =>
+    req<MediaRequest>(`/api/v1/requests/${id}/approve`, { method: "POST", body: JSON.stringify({ quality_profile: quality_profile ?? "", ...(seasons?.length ? { seasons } : {}) }) }),
   declineRequest: (id: number) =>
     req<{ status: string }>(`/api/v1/requests/${id}/decline`, { method: "POST" }),
   deleteRequest: (id: number) =>
