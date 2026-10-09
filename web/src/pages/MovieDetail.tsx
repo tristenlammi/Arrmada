@@ -801,8 +801,8 @@ function Toolbar({ movie, onChange, flash, live }: { movie: Movie; onChange: () 
           title={`Search indexers — ${movie.title}`}
           subtitle="Pick a release to grab, or blocklist one to search for an alternate."
           fetchReleases={() => api.movieReleases(movie.id)}
-          onGrab={async (rel) => { await api.grab({ indexer: rel.indexer, download_url: rel.download_url, title: rel.title, movie_id: movie.id }); onChange(); }}
-          onBlock={async (rel) => { await api.blockRelease(movie.id, { title: rel.title, indexer: rel.indexer, download_url: rel.download_url, search_again: true }); flash(`Blocklisted "${rel.summary}" — searching for an alternate.`); onChange(); }}
+          onGrab={async (rel) => { await api.grab({ token: rel.token ?? "", movie_id: movie.id }); onChange(); }}
+          onBlock={async (rel) => { await api.blockRelease(movie.id, { token: rel.token ?? "", search_again: true }); flash(`Blocklisted "${rel.summary}" — searching for an alternate.`); onChange(); }}
           onClose={() => setShowSearch(false)}
         />
       )}

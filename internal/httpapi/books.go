@@ -231,6 +231,7 @@ func (a *api) handleBookReleases(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	a.tokenize(r, &list, automation.ReleaseRef{MediaKind: automation.ReleaseKindBook, MediaID: id})
 	a.writeJSON(w, http.StatusOK, list)
 }
 
@@ -241,23 +242,23 @@ func (a *api) handleGrabBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Indexer     string `json:"indexer"`
-		DownloadURL string `json:"download_url"`
-		Title       string `json:"title"`
-		VersionID   int64  `json:"version_id"` // 0 = standard; >0 = file as this audiobook version
+		Token string `json:"token"` // from this book's interactive search
+		// 0 = standard; >0 = file as this audiobook version. The person picks it in the
+		// modal ("grab as"), so it comes from the body; GrabForBook checks it's this book's.
+		VersionID int64 `json:"version_id"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
-	if req.DownloadURL == "" {
-		a.writeError(w, http.StatusBadRequest, "download_url is required")
+	ref, ok := a.resolveRelease(w, r, req.Token, automation.ReleaseKindBook, id)
+	if !ok {
 		return
 	}
-	if err := a.deps.Automation.GrabForBook(r.Context(), id, req.VersionID, req.Indexer, req.DownloadURL, req.Title); err != nil {
-		a.writeError(w, http.StatusBadGateway, err.Error())
+	if err := a.deps.Automation.GrabForBook(r.Context(), id, req.VersionID, ref.Indexer, ref.DownloadURL, ref.Title); err != nil {
+		a.writeGrabError(w, err, ref)
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"status": "grabbed", "title": req.Title})
+	a.writeJSON(w, http.StatusOK, map[string]any{"status": "grabbed", "title": ref.Title})
 }
 
 // handleBookManualImportList / handleBookManualImport handle picking an on-disk file.

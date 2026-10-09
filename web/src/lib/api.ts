@@ -1449,6 +1449,14 @@ async function send(path: string, init?: RequestInit): Promise<Response> {
   return res;
 }
 
+// releaseErrorMessage is what a search modal shows when a grab or block fails. A 410 means
+// the result's token has expired (two hours, or the server restarted), so the fix is to
+// search again rather than anything about the release.
+export function releaseErrorMessage(e: unknown): string {
+  if (e instanceof ApiError && e.status === 410) return "These results expired — search again.";
+  return (e as Error).message;
+}
+
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await send(path, {
     headers: { "Content-Type": "application/json", Accept: "application/json" },
@@ -1610,10 +1618,12 @@ export const api = {
 
   queue: () => req<{ items: QueueItem[] }>("/api/v1/queue").then((r) => r.items),
 
-  grab: (release: { indexer: string; download_url: string; title: string; movie_id?: number }) =>
+  // A grab names the release by the token its search handed out; the download link
+  // itself never leaves the server. movie_id must be the movie the search was for.
+  grab: (body: { token: string; movie_id: number }) =>
     req<{ status: string; title: string }>("/api/v1/grab", {
       method: "POST",
-      body: JSON.stringify(release),
+      body: JSON.stringify(body),
     }),
 
   history: () => req<{ imports: ImportRecord[] }>("/api/v1/history").then((r) => r.imports),
@@ -1763,9 +1773,9 @@ export const api = {
     const qs = q.toString();
     return req<ReleaseList>(`/api/v1/series/${id}/releases${qs ? `?${qs}` : ""}`);
   },
-  // season/episode name the modal the release was picked from. The server skips the import
-  // quality gate only for episodes inside it; leave both out for the whole-show search.
-  grabSeries: (id: number, body: { indexer?: string; download_url: string; title: string; season?: number; episode?: number }) =>
+  // The token carries the search it came from (whole show, season or episode); the server
+  // skips the import quality gate only for episodes inside that scope.
+  grabSeries: (id: number, body: { token: string }) =>
     req<{ status: string }>(`/api/v1/series/${id}/grab`, { method: "POST", body: JSON.stringify(body) }),
   autoGrabSeries: (id: number, season: number, episode: number) =>
     req<{ status: string } & JobRef>(`/api/v1/series/${id}/autograb`, { method: "POST", body: JSON.stringify({ season, episode }) }),
@@ -1878,7 +1888,7 @@ export const api = {
   searchBook: (id: number) => req<{ status: string } & JobRef>(`/api/v1/books/${id}/search`, { method: "POST" }),
   refreshBook: (id: number) => req<Book>(`/api/v1/books/${id}/refresh`, { method: "POST" }),
   bookReleases: (id: number) => req<ReleaseList>(`/api/v1/books/${id}/releases`),
-  grabBook: (id: number, body: { indexer?: string; download_url: string; title: string; version_id?: number }) =>
+  grabBook: (id: number, body: { token: string; version_id?: number }) =>
     req<{ status: string }>(`/api/v1/books/${id}/grab`, { method: "POST", body: JSON.stringify(body) }),
   bookManualImportList: (id: number) =>
     req<ManualImportList<BookImportCandidate>>(`/api/v1/books/${id}/manualimport`),
@@ -2084,7 +2094,8 @@ export const api = {
     req<{ events: MovieEvent[] }>(`/api/v1/series/${id}/history`).then((r) => r.events),
   movieReleases: (id: number) => req<ReleaseList>(`/api/v1/movies/${id}/releases`),
   blocklist: (id: number) => req<{ blocklist: BlockEntry[] }>(`/api/v1/movies/${id}/blocklist`).then((r) => r.blocklist),
-  blockRelease: (id: number, body: { title: string; indexer?: string; download_url?: string; search_again?: boolean }) =>
+  // Block a search result by its token, or any release by title alone.
+  blockRelease: (id: number, body: { token: string; search_again?: boolean } | { title: string; indexer?: string; search_again?: boolean }) =>
     req<{ status: string }>(`/api/v1/movies/${id}/blocklist`, { method: "POST", body: JSON.stringify(body) }),
   unblock: (id: number, bid: number) => req<void>(`/api/v1/movies/${id}/blocklist/${bid}`, { method: "DELETE" }),
   setMonitored: (id: number, monitored: boolean) =>
@@ -2275,7 +2286,9 @@ export interface MovieFile {
 export interface RankedRelease {
   title: string;
   indexer: string;
-  download_url: string;
+  /** Opaque, short-lived handle the grab endpoints take instead of a download link. Absent
+   * on the quality test's results (it never grabs) and on a release with nothing to fetch. */
+  token?: string;
   info_url?: string;
   size_gb: number;
   bitrate_mbps?: number;

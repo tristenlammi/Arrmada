@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { RankedRelease, ReleaseList } from "../lib/api";
+import { releaseErrorMessage, type RankedRelease, type ReleaseList } from "../lib/api";
 
 // --- release metadata parsing (resolution + notable features live in summary/title) ---
 type SortKey = "best" | "size" | "bitrate" | "seeders" | "smallest";
@@ -117,7 +117,7 @@ export function ReleaseSearchModal({
       await onGrab(rel);
       setGrabbed((s) => new Set(s).add(rel.title));
     } catch (e) {
-      setError((e as Error).message);
+      setError(releaseErrorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -130,7 +130,7 @@ export function ReleaseSearchModal({
           await onBlock(rel);
           await run();
         } catch (e) {
-          setError((e as Error).message);
+          setError(releaseErrorMessage(e));
         } finally {
           setBusy(null);
         }
@@ -284,10 +284,10 @@ function ReleaseRow({ rel, why, busy, grabbed, disabled, onGrab, onBlock }: { re
           )}
         </div>
         <div className="flex flex-none flex-col items-end gap-1.5">
-          <button onClick={onGrab} disabled={disabled || grabbed || blocked} className="rounded-lg px-3.5 py-2 text-[12px] font-semibold" style={{ background: grabbed ? "var(--panel-2)" : "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: grabbed ? "var(--ink-dim)" : "var(--accent-ink)", opacity: blocked ? 0.5 : 1 }}>
+          <button onClick={onGrab} disabled={disabled || grabbed || blocked || !rel.token} className="rounded-lg px-3.5 py-2 text-[12px] font-semibold" style={{ background: grabbed ? "var(--panel-2)" : "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: grabbed ? "var(--ink-dim)" : "var(--accent-ink)", opacity: blocked ? 0.5 : 1 }}>
             {grabbed ? "Grabbed ✓" : busy ? "…" : "Grab"}
           </button>
-          {onBlock && !blocked && !grabbed && (
+          {onBlock && !blocked && !grabbed && rel.token && (
             <button onClick={onBlock} disabled={disabled} title="Blocklist and search for an alternate" className="rounded-lg px-2.5 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-faint)" }}>⊘ Block</button>
           )}
         </div>

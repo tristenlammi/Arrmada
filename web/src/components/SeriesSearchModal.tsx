@@ -33,7 +33,7 @@ export function SeriesSearchModal({ id, title, onClose, onGrabbed }: { id: numbe
       tab={tab}
       onTab={setTab}
       fetchReleases={() => api.seriesReleases(id, season)}
-      onGrab={async (rel) => { await api.grabSeries(id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title, season }); onGrabbed?.(); }}
+      onGrab={async (rel) => { await api.grabSeries(id, { token: rel.token ?? "" }); onGrabbed?.(); }}
       onClose={onClose}
     />
   );

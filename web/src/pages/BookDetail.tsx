@@ -424,7 +424,7 @@ function Toolbar({ book, onChange, flash }: { book: Book; onChange: () => void; 
           title={`Search indexers — ${book.title}`}
           fetchReleases={() => api.bookReleases(book.id)}
           targets={(book.audio_versions ?? []).map((v) => ({ id: v.id, label: v.label }))}
-          onGrab={async (rel, versionId) => { await api.grabBook(book.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title, version_id: versionId }); onChange(); }}
+          onGrab={async (rel, versionId) => { await api.grabBook(book.id, { token: rel.token ?? "", version_id: versionId }); onChange(); }}
           onClose={() => setShowSearch(false)}
         />
       )}

@@ -303,7 +303,7 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
           title={`Search indexers — ${series.title}`}
           subtitle="Whole-series search. Pick any pack or episode to grab."
           fetchReleases={() => api.seriesReleases(series.id)}
-          onGrab={async (rel) => { await api.grabSeries(series.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title }); onChange(); }}
+          onGrab={async (rel) => { await api.grabSeries(series.id, { token: rel.token ?? "" }); onChange(); }}
           onClose={() => setShowSearch(false)}
         />
       )}
@@ -407,7 +407,7 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
           title={`${series.title} — ${name}`}
           subtitle={season.season_number === 0 ? "Releases tagged S00 for this show." : "Season packs and episodes for this season."}
           fetchReleases={() => api.seriesReleases(series.id, season.season_number)}
-          onGrab={async (rel) => { await api.grabSeries(series.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title, season: season.season_number }); onChange(); }}
+          onGrab={async (rel) => { await api.grabSeries(series.id, { token: rel.token ?? "" }); onChange(); }}
           onClose={() => setSearching(false)}
         />
       )}
@@ -543,7 +543,7 @@ function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep:
           title={`${series.title} — ${sxe(ep)}`}
           subtitle={ep.title || undefined}
           fetchReleases={() => api.seriesReleases(series.id, ep.season_number, ep.episode_number)}
-          onGrab={async (rel) => { await api.grabSeries(series.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title, season: ep.season_number, episode: ep.episode_number }); onChange(); }}
+          onGrab={async (rel) => { await api.grabSeries(series.id, { token: rel.token ?? "" }); onChange(); }}
           onClose={() => setSearching(false)}
         />
       )}
