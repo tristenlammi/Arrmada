@@ -130,7 +130,7 @@ func TestUnreadableBlocklistGrabsNoEpisodes(t *testing.T) {
 		t.Fatal("setup: the episode must be wanted, or the grab step proves nothing")
 	}
 	logs.Reset()
-	if n, _ := h.c.grabSeriesFrom(h.ctx, full,[]indexer.Release{{Title: "Show.S01E01.1080p.WEB-DL.x264-GRP", Indexer: "Fake", DownloadURL: magnetFor("Show.S01E01.1080p.WEB-DL.x264-GRP")}}); n != 0 {
+	if n, _ := h.c.grabSeriesFrom(h.ctx, full, []indexer.Release{{Title: "Show.S01E01.1080p.WEB-DL.x264-GRP", Indexer: "Fake", DownloadURL: magnetFor("Show.S01E01.1080p.WEB-DL.x264-GRP")}}); n != 0 {
 		t.Errorf("grab step grabbed %d with the blocklist unreadable", n)
 	}
 	if n := h.adds(); n != 0 {
