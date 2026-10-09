@@ -700,7 +700,6 @@ func (a *api) handleManualImport(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	a.deps.Bus.Publish("movie.downloaded", map[string]any{"id": id})
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "imported"})
 }
 

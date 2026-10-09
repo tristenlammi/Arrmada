@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/books"
+	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/notify"
+	"github.com/tristenlammi/arrmada/internal/series"
 )
 
 // UserNotification is one in-app inbox entry for a requester.
@@ -106,48 +109,52 @@ func (s *Service) SetApprise(ctx context.Context, userID int64, url string) erro
 
 // --- the notifier: match imports back to requesters ---
 
-// RunNotifier watches import events and notifies the requester (in-app inbox + optional Apprise
-// push) when their request lands. Start once at boot.
-func (s *Service) RunNotifier(ctx context.Context) {
-	if s.bus == nil {
-		return
+// The import side tells the requester (in-app inbox, personal Apprise, Web Push) through
+// these, run as outbox consumers: a row is written when the import is recorded and
+// retried until it goes through, so a busy moment or a restart can't lose the message.
+// Each is idempotent — the inbox's unique (user, ref) index means a repeat run notifies
+// nobody twice — and a library item deleted meanwhile is simply nothing to do.
+
+// NotifyMovieReady tells whoever asked for a movie that it has arrived.
+func (s *Service) NotifyMovieReady(ctx context.Context, movieID int64) error {
+	m, err := s.movies.Get(ctx, movieID)
+	if errors.Is(err, movies.ErrNotFound) {
+		return nil
 	}
-	movieCh, cancelM := s.bus.Subscribe("movie.downloaded")
-	seriesCh, cancelS := s.bus.Subscribe("series.imported")
-	bookCh, cancelB := s.bus.Subscribe("book.imported")
-	defer cancelM()
-	defer cancelS()
-	defer cancelB()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case ev := <-movieCh:
-			if id, ok := evID(ev.Data); ok {
-				if m, err := s.movies.Get(ctx, id); err == nil {
-					s.notifyRequester(ctx, "movie", m.TMDBID, "")
-				}
-			}
-		case ev := <-seriesCh:
-			if id, ok := evID(ev.Data); ok {
-				if sr, err := s.series.Get(ctx, id); err == nil {
-					// A series isn't "ready to watch" on its first imported episode:
-					// only notify once no monitored, aired episode is still wanted.
-					// Later imports re-fire this event (and the ready-sweep backstops),
-					// so skipping here just defers the notification.
-					if !s.series.HasWantedEpisodes(ctx, sr.ID) {
-						s.notifyRequester(ctx, "series", sr.TMDBID, "")
-					}
-				}
-			}
-		case ev := <-bookCh:
-			if id, ok := evID(ev.Data); ok {
-				if b, err := s.books.Get(ctx, id); err == nil {
-					s.notifyBookRequesters(ctx, b.ID, b.OLKey)
-				}
-			}
-		}
+	if err != nil {
+		return err
 	}
+	return s.notifyRequester(ctx, "movie", m.TMDBID, "")
+}
+
+// NotifySeriesReady tells whoever asked for a show that it's ready — but only once no
+// monitored, aired episode is still wanted: a series isn't "ready to watch" on its first
+// imported episode. Later imports run this again (and the ready sweep backstops), so
+// skipping just defers the message.
+func (s *Service) NotifySeriesReady(ctx context.Context, seriesID int64) error {
+	sr, err := s.series.Get(ctx, seriesID)
+	if errors.Is(err, series.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if s.series.HasWantedEpisodes(ctx, sr.ID) {
+		return nil
+	}
+	return s.notifyRequester(ctx, "series", sr.TMDBID, "")
+}
+
+// NotifyBookReady tells everyone behind the requests for a book that it has arrived.
+func (s *Service) NotifyBookReady(ctx context.Context, bookID int64) error {
+	b, err := s.books.Get(ctx, bookID)
+	if errors.Is(err, books.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return s.notifyBookRequesters(ctx, b.ID, b.OLKey)
 }
 
 // requestRef is the stable de-dupe key for a request's media ("movie:123",
@@ -162,7 +169,7 @@ func requestRef(req Request) string {
 
 // notifyRequester finds the request behind a just-imported item and alerts its
 // requester plus everyone subscribed to it.
-func (s *Service) notifyRequester(ctx context.Context, mediaType string, tmdbID int, olKey string) {
+func (s *Service) notifyRequester(ctx context.Context, mediaType string, tmdbID int, olKey string) error {
 	var (
 		req Request
 		ok  bool
@@ -173,55 +180,64 @@ func (s *Service) notifyRequester(ctx context.Context, mediaType string, tmdbID 
 		req, ok = s.repo.GetByMedia(ctx, mediaType, tmdbID)
 	}
 	if !ok {
-		return
+		return nil
 	}
-	s.notifyReady(ctx, req)
+	return s.notifyReady(ctx, req)
 }
 
 // notifyBookRequesters alerts everyone behind the requests linked to a just-imported
 // book. The link survives the book's catalogue key changing; a request not linked yet
 // is still found by the key it was made under.
-func (s *Service) notifyBookRequesters(ctx context.Context, bookID int64, olKey string) {
+func (s *Service) notifyBookRequesters(ctx context.Context, bookID int64, olKey string) error {
 	linked, err := s.repo.ListByBookID(ctx, bookID)
 	if err != nil {
-		s.log.Warn("request-ready: could not list book requests", "book", bookID, "err", err)
+		// Without the list the linked requesters would be skipped for good; fail so a
+		// retrying caller (an outbox row) tries again.
+		return fmt.Errorf("list requests for book %d: %w", bookID, err)
 	}
 	if len(linked) == 0 {
-		s.notifyRequester(ctx, "book", 0, olKey)
-		return
+		return s.notifyRequester(ctx, "book", 0, olKey)
 	}
+	var errs []error
 	for _, req := range linked {
-		s.notifyReady(ctx, req)
+		errs = append(errs, s.notifyReady(ctx, req))
 	}
+	return errors.Join(errs...)
 }
 
 // notifyReady sends the "your request is ready" notification for one request.
 // Idempotent per user (unique inbox ref), so callers may fire it repeatedly.
-func (s *Service) notifyReady(ctx context.Context, req Request) {
+func (s *Service) notifyReady(ctx context.Context, req Request) error {
 	body := fmt.Sprintf("“%s” is ready to watch.", req.Title)
 	if req.MediaType == "book" {
 		body = fmt.Sprintf("“%s” is ready to read.", req.Title)
 	}
-	s.notifyParties(ctx, req, "Your request is ready", body, requestRef(req), "request-ready")
+	return s.notifyParties(ctx, req, "Your request is ready", body, requestRef(req), "request-ready")
 }
 
 // notifyDecision tells the requester and subscribers a request was approved or declined.
 func (s *Service) notifyDecision(ctx context.Context, req Request, approved bool) {
 	if approved {
 		body := fmt.Sprintf("Your request for “%s” was approved — we're on it.", req.Title)
-		s.notifyParties(ctx, req, "Request approved", body, requestRef(req)+":approved", "request-approved")
+		_ = s.notifyParties(ctx, req, "Request approved", body, requestRef(req)+":approved", "request-approved")
 		return
 	}
 	body := fmt.Sprintf("Your request for “%s” was declined.", req.Title)
-	s.notifyParties(ctx, req, "Request declined", body, requestRef(req)+":declined", "request-declined")
+	_ = s.notifyParties(ctx, req, "Request declined", body, requestRef(req)+":declined", "request-declined")
 }
 
 // notifyParties fans one notification out to the requester and every subscriber:
 // in-app inbox always, personal Apprise push when set. The unique (user_id, ref)
 // inbox index de-dupes; the Apprise push only fires when the inbox row was new.
-func (s *Service) notifyParties(ctx context.Context, req Request, title, body, ref, kind string) {
+//
+// It returns an error when someone may have been missed (the subscriber list or an inbox
+// row couldn't be read or written), so a retrying caller runs it again; everyone already
+// told is skipped by the inbox index. A failed Apprise push isn't one: the inbox row is
+// the notification, and a retry would never re-push it anyway.
+func (s *Service) notifyParties(ctx context.Context, req Request, title, body, ref, kind string) error {
 	seen := map[int64]bool{}
 	var userIDs []int64
+	var errs []error
 	if req.RequestedBy > 0 {
 		seen[req.RequestedBy] = true
 		userIDs = append(userIDs, req.RequestedBy)
@@ -235,12 +251,14 @@ func (s *Service) notifyParties(ctx context.Context, req Request, title, body, r
 		}
 	} else {
 		s.log.Warn(kind+": could not list subscribers", "request", req.ID, "err", err)
+		errs = append(errs, fmt.Errorf("list subscribers of request %d: %w", req.ID, err))
 	}
 	now := time.Now().Unix()
 	for _, uid := range userIDs {
 		inserted, err := s.repo.addUserNotification(ctx, uid, title, body, req.MediaType, ref, now)
 		if err != nil {
 			s.log.Warn(kind+": could not add inbox notification", "user", uid, "err", err)
+			errs = append(errs, fmt.Errorf("inbox notification for request %d: %w", req.ID, err))
 			continue
 		}
 		if !inserted {
@@ -261,6 +279,7 @@ func (s *Service) notifyParties(ctx context.Context, req Request, title, body, r
 		}
 		s.log.Info(kind+" notified", "title", req.Title, "user", uid)
 	}
+	return errors.Join(errs...)
 }
 
 // SweepReadyRequests is the notification backstop: every approved request whose
@@ -320,25 +339,8 @@ func (s *Service) SweepReadyRequests(ctx context.Context) error {
 			}
 		}
 		if ready {
-			s.notifyReady(ctx, reqs[i])
+			_ = s.notifyReady(ctx, reqs[i]) // logged inside; the next sweep tries again
 		}
 	}
 	return nil
-}
-
-// evID pulls the "id" field (int64) out of an event payload.
-func evID(data any) (int64, bool) {
-	m, ok := data.(map[string]any)
-	if !ok {
-		return 0, false
-	}
-	switch v := m["id"].(type) {
-	case int64:
-		return v, true
-	case int:
-		return int64(v), true
-	case float64:
-		return int64(v), true
-	}
-	return 0, false
 }

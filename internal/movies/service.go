@@ -22,6 +22,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/mediainfo"
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/outbox"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/safego"
 )
@@ -50,7 +51,8 @@ type Service struct {
 	imp      *library.Importer // reused for naming + import
 	resolver ProfileResolver
 	bus      *eventbus.Bus
-	prefs    LibraryPrefs // nil → lean import (no .nfo / artwork)
+	outbox   outbox.Enqueuer // durable side effects of file changes (events.go); nil = none
+	prefs    LibraryPrefs    // nil → lean import (no .nfo / artwork)
 	http     *http.Client
 	// onFileRemoved runs synchronously whenever a library file is deleted, so the import
 	// pipeline forgets it before anything can import it back (nil = nothing to tell).
@@ -492,20 +494,9 @@ func (s *Service) markImported(ctx context.Context, id int64, path, sourceReleas
 	if fi, statErr := s.statFile(path); statErr == nil {
 		size = fi.Size()
 	}
+	var media string
 	if target.IsDefault {
-		if err := s.setDefaultFile(ctx, id, path); err != nil {
-			return err
-		}
-		if sourceRelease != "" {
-			_ = s.repo.SetSourceRelease(ctx, id, sourceRelease)
-		}
-	} else {
-		if err := s.repo.SetVersionFile(ctx, target.ID, path, size); err != nil {
-			return err
-		}
-		if sourceRelease != "" {
-			_ = s.repo.SetVersionSourceRelease(ctx, target.ID, sourceRelease)
-		}
+		media = s.mediaJSON(path) // probed before the transaction opens
 	}
 
 	event, detail := "imported", "Imported "+filepath.Base(path)
@@ -515,7 +506,48 @@ func (s *Service) markImported(ctx context.Context, id int64, path, sourceReleas
 	if !target.IsDefault {
 		detail += " (" + target.Label + ")"
 	}
-	_ = s.repo.AddEvent(ctx, id, event, detail)
+	// Attaching the same file again (a retried attach, the same file imported by hand) is
+	// not news for the timeline; the side effects below still run, and they're idempotent.
+	again := target.HasFile && target.FilePath == path
+
+	// The file record and the outbox row land together: once the movie reads as
+	// downloaded, Convert, Subtitles and the requester are certain to hear about it. If
+	// anything fails nothing is written, and the import's attach is retried.
+	err = s.repo.inTx(ctx, func(tx *sql.Tx, r *Repo) error {
+		if target.IsDefault {
+			if err := setDefaultFileIn(ctx, r, id, path, media); err != nil {
+				return err
+			}
+			if sourceRelease != "" {
+				_ = r.SetSourceRelease(ctx, id, sourceRelease)
+			}
+		} else {
+			if err := r.SetVersionFile(ctx, target.ID, path, size); err != nil {
+				return err
+			}
+			if sourceRelease != "" {
+				_ = r.SetVersionSourceRelease(ctx, target.ID, sourceRelease)
+			}
+		}
+		if !again {
+			_ = r.AddEvent(ctx, id, event, detail)
+		}
+		return s.enqueue(ctx, tx, outbox.TopicMovieImported,
+			outbox.MovieImported{MovieID: id, VersionID: target.ID, Path: path, Upgrade: upgrade}, movieKey(id))
+	})
+	if err != nil {
+		return err
+	}
+
+	m, getErr := s.repo.Get(ctx, id)
+	ev := map[string]any{"id": id, "version_id": target.ID, "path": path, "upgrade": upgrade}
+	if upgrade {
+		ev["old_path"] = target.FilePath
+	}
+	if getErr == nil {
+		ev["title"] = m.Title
+	}
+	s.publish("movie.downloaded", ev)
 
 	// Write Plex/Jellyfin-readable metadata into the movie folder — off the
 	// caller's goroutine, because artwork downloads can take seconds and the
@@ -523,7 +555,7 @@ func (s *Service) markImported(ctx context.Context, id int64, path, sourceReleas
 	// write sidecar files and do independent HTTP fetches (no shared mutable
 	// state), and the movie snapshot is captured before the goroutine starts.
 	// The DB updates above already happened synchronously.
-	if m, err := s.repo.Get(ctx, id); err == nil {
+	if getErr == nil {
 		dir := filepath.Dir(path)
 		safego.Go(s.log, "movies: write library metadata", func() {
 			// The caller's ctx may be cancelled as soon as it returns; the sidecar

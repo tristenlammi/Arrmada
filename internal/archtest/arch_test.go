@@ -169,3 +169,68 @@ func TestNoNakedGoroutines(t *testing.T) {
 		}
 	}
 }
+
+// busReceiver matches the expression a Subscribe is called on when it is the event bus:
+// bus, s.bus, c.bus, a.deps.Bus and the like. Other Subscribe methods (Web Push's) hang
+// off differently named receivers.
+var busReceiver = regexp.MustCompile(`(?i)(^|\.)bus$`)
+
+// TestBusSubscribeOnlyInUIAndAlerts: the event bus drops events when a subscriber is busy
+// and forgets them on a restart, so it may only feed the UI (internal/realtime) and admin
+// alerts (internal/notify). Work that has to happen after an event — reindexing, a
+// requester's "ready" message, cache refreshes — goes through a direct call or an
+// internal/outbox row instead.
+func TestBusSubscribeOnlyInUIAndAlerts(t *testing.T) {
+	root := repoRoot(t)
+	allowed := map[string]bool{
+		filepath.Join(root, "internal", "realtime"): true,
+		filepath.Join(root, "internal", "notify"):   true,
+		filepath.Join(root, "internal", "eventbus"): true,
+	}
+	for _, dir := range sourceDirs(t, root) {
+		if allowed[dir] {
+			continue
+		}
+		fset, files := parseDir(t, dir)
+		for _, f := range files {
+			ast.Inspect(f, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != "Subscribe" {
+					return true
+				}
+				// The bus by name, or by its call shape: topics are passed as string
+				// literals, which no other Subscribe in the tree takes first.
+				topicArg := false
+				if len(call.Args) > 0 {
+					lit, isLit := call.Args[0].(*ast.BasicLit)
+					topicArg = isLit && lit.Kind == token.STRING
+				}
+				if !busReceiver.MatchString(exprString(sel.X)) && !topicArg {
+					return true
+				}
+				pos := fset.Position(call.Pos())
+				t.Errorf("%s:%d: event bus Subscribe outside internal/realtime and internal/notify — the bus drops events; use an internal/outbox consumer or a direct call for work that must happen",
+					filepath.ToSlash(strings.TrimPrefix(pos.Filename, root+string(filepath.Separator))), pos.Line)
+				return true
+			})
+		}
+	}
+}
+
+// exprString renders an identifier or selector chain ("a.deps.Bus"); anything else is "".
+func exprString(e ast.Expr) string {
+	switch v := e.(type) {
+	case *ast.Ident:
+		return v.Name
+	case *ast.SelectorExpr:
+		if x := exprString(v.X); x != "" {
+			return x + "." + v.Sel.Name
+		}
+		return v.Sel.Name
+	}
+	return ""
+}
