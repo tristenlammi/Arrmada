@@ -14,8 +14,8 @@ import { Button, EmptyState, ErrorState, Skeleton, StaleBanner, StatusChip, useC
 import { TabPanel, Tabs } from "../ui/Tabs";
 
 // Movies → Wanted: what Arrmada is still looking for among the films, why it hasn't found
-// it, and when it tries next. Missing lists the films badged Wanted (the library's Wanted
-// filter, same count); Cutoff unmet lists files that don't meet their profile's target and
+// it, and when it tries next. The Wanted tab lists the films badged Wanted (the library's
+// Wanted filter, same count); Cutoff unmet lists files that don't meet their profile's target and
 // says whether the upgrade sweep will do anything about them. Every search here goes
 // through the movie search queue, two at a time.
 
@@ -66,7 +66,7 @@ export function MoviesWanted() {
           value={tab}
           onChange={setTab}
           tabs={[
-            { key: "missing", label: "Missing", count: missing.data ? missingCount : undefined },
+            { key: "missing", label: "Wanted", count: missing.data ? missingCount : undefined },
             { key: "cutoff", label: "Cutoff unmet", count: cutoff.data ? cutoffCount : undefined },
           ]}
         />
