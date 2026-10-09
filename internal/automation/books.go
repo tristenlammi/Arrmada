@@ -1001,6 +1001,7 @@ func (c *Coordinator) importBookEdition(ctx context.Context, b books.Book, kind 
 	c.log.Info("book: imported", "title", b.Title, "edition", kind, "format", bi.Format, "files", bi.FileCount)
 	c.books.AddEvent(ctx, b.ID, "imported", bookImportDetail(kind, bi.Format, bi.FileCount, downloadName))
 	c.markBookGrabImported(ctx, b.ID, infoHash, downloadName) // flip THIS grab (not siblings) for seed cleanup
+	c.bookImported(ctx, b.ID, kind)
 	c.bus.Publish("book.imported", map[string]any{"title": b.Title, "id": b.ID, "edition": kind})
 	return true
 }
@@ -1272,6 +1273,9 @@ func (c *Coordinator) ManualImportBook(ctx context.Context, bookID, versionID in
 		return err
 	}
 	c.books.AddEvent(ctx, bookID, "imported", "Imported the "+kind+" edition by hand ("+bi.Format+") from "+filepath.Base(path))
+	// The same follow-up as an automatic import: its requester hears, and a new
+	// audiobook shows up in listening apps straight away.
+	c.bookImported(ctx, bookID, kind)
 	return nil
 }
 

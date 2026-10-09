@@ -4,9 +4,6 @@ import (
 	"context"
 	"sync"
 	"time"
-
-	"github.com/tristenlammi/arrmada/internal/eventbus"
-	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 // A listening app asks for the library, a shelf, an author and a search in quick
@@ -104,24 +101,14 @@ func (s *Server) Invalidate() {
 	s.probe.cache.clear()
 }
 
-// WatchImports keeps the catalogue fresh: when a book is imported the cache is dropped
-// and, if the server is on, the new audiobook is probed straight away so an app gets its
-// length and chapters on first open. Runs until ctx ends.
-func (s *Server) WatchImports(ctx context.Context, bus *eventbus.Bus) {
-	events, cancel := bus.Subscribe("book.imported")
-	defer cancel()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case _, ok := <-events:
-			if !ok {
-				return
-			}
-			s.Invalidate()
-			if s.settings != nil && s.settings.GetBool(ctx, KeyEnabled, false) {
-				safego.Go(s.log, "audiobook server warm-up", func() { s.Warm(ctx) })
-			}
-		}
+// OnBookImported keeps the catalogue fresh after an import (an outbox consumer): the
+// cache is dropped and, when the server is on, warm is called so the new audiobook is
+// probed straight away and an app gets its length and chapters on first open. warm runs
+// the probing in the background (main hands it to the run group); the handler itself
+// returns at once. Idempotent: dropping a cache twice costs a re-read.
+func (s *Server) OnBookImported(ctx context.Context, warm func(fn func(ctx context.Context))) {
+	s.Invalidate()
+	if warm != nil && s.settings != nil && s.settings.GetBool(ctx, KeyEnabled, false) {
+		warm(func(ctx context.Context) { s.Warm(ctx) })
 	}
 }

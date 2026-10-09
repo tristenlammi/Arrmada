@@ -22,6 +22,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/mediainfo"
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/outbox"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/safego"
 )
@@ -50,7 +51,8 @@ type Service struct {
 	imp      *library.Importer // reused for naming + import
 	resolver ProfileResolver
 	bus      *eventbus.Bus
-	prefs    LibraryPrefs // nil → lean import (no .nfo / artwork)
+	outbox   outbox.Enqueuer // durable side effects of file changes (events.go); nil = none
+	prefs    LibraryPrefs    // nil → lean import (no .nfo / artwork)
 	http     *http.Client
 	// onFileRemoved runs synchronously whenever a library file is deleted, so the import
 	// pipeline forgets it before anything can import it back (nil = nothing to tell).
@@ -334,6 +336,11 @@ func (s *Service) importMovieFile(ctx context.Context, video string, tmdbID int)
 	_ = s.setDefaultFile(ctx, created.ID, video)
 	_ = s.repo.AddEvent(ctx, created.ID, "imported", "Found during library scan: "+filepath.Base(video))
 	s.log.Info("library scan: imported", "title", details.Title, "year", details.Year)
+	// For the UI only, and without a title: a scan adopting a thousand existing files is
+	// not a thousand "Imported" alerts. No outbox row either — Convert's nightly sweep
+	// indexes new paths, and queueing Subtitles for a whole adopted library is the
+	// 6-hourly sweep's call, not a scan's.
+	s.publish("movie.downloaded", map[string]any{"id": created.ID, "version_id": int64(0), "path": video, "source": "scan"})
 	return nil
 }
 
@@ -492,20 +499,9 @@ func (s *Service) markImported(ctx context.Context, id int64, path, sourceReleas
 	if fi, statErr := s.statFile(path); statErr == nil {
 		size = fi.Size()
 	}
+	var media string
 	if target.IsDefault {
-		if err := s.setDefaultFile(ctx, id, path); err != nil {
-			return err
-		}
-		if sourceRelease != "" {
-			_ = s.repo.SetSourceRelease(ctx, id, sourceRelease)
-		}
-	} else {
-		if err := s.repo.SetVersionFile(ctx, target.ID, path, size); err != nil {
-			return err
-		}
-		if sourceRelease != "" {
-			_ = s.repo.SetVersionSourceRelease(ctx, target.ID, sourceRelease)
-		}
+		media = s.mediaJSON(path) // probed before the transaction opens
 	}
 
 	event, detail := "imported", "Imported "+filepath.Base(path)
@@ -515,7 +511,48 @@ func (s *Service) markImported(ctx context.Context, id int64, path, sourceReleas
 	if !target.IsDefault {
 		detail += " (" + target.Label + ")"
 	}
-	_ = s.repo.AddEvent(ctx, id, event, detail)
+	// Attaching the same file again (a retried attach, the same file imported by hand) is
+	// not news for the timeline; the side effects below still run, and they're idempotent.
+	again := target.HasFile && target.FilePath == path
+
+	// The file record and the outbox row land together: once the movie reads as
+	// downloaded, Convert, Subtitles and the requester are certain to hear about it. If
+	// anything fails nothing is written, and the import's attach is retried.
+	err = s.repo.inTx(ctx, func(tx *sql.Tx, r *Repo) error {
+		if target.IsDefault {
+			if err := setDefaultFileIn(ctx, r, id, path, media); err != nil {
+				return err
+			}
+			if sourceRelease != "" {
+				_ = r.SetSourceRelease(ctx, id, sourceRelease)
+			}
+		} else {
+			if err := r.SetVersionFile(ctx, target.ID, path, size); err != nil {
+				return err
+			}
+			if sourceRelease != "" {
+				_ = r.SetVersionSourceRelease(ctx, target.ID, sourceRelease)
+			}
+		}
+		if !again {
+			_ = r.AddEvent(ctx, id, event, detail)
+		}
+		return s.enqueue(ctx, tx, outbox.TopicMovieImported,
+			outbox.MovieImported{MovieID: id, VersionID: target.ID, Path: path, Upgrade: upgrade}, movieKey(id))
+	})
+	if err != nil {
+		return err
+	}
+
+	m, getErr := s.repo.Get(ctx, id)
+	ev := map[string]any{"id": id, "version_id": target.ID, "path": path, "upgrade": upgrade}
+	if upgrade {
+		ev["old_path"] = target.FilePath
+	}
+	if getErr == nil {
+		ev["title"] = m.Title
+	}
+	s.publish("movie.downloaded", ev)
 
 	// Write Plex/Jellyfin-readable metadata into the movie folder — off the
 	// caller's goroutine, because artwork downloads can take seconds and the
@@ -523,7 +560,7 @@ func (s *Service) markImported(ctx context.Context, id int64, path, sourceReleas
 	// write sidecar files and do independent HTTP fetches (no shared mutable
 	// state), and the movie snapshot is captured before the goroutine starts.
 	// The DB updates above already happened synchronously.
-	if m, err := s.repo.Get(ctx, id); err == nil {
+	if getErr == nil {
 		dir := filepath.Dir(path)
 		safego.Go(s.log, "movies: write library metadata", func() {
 			// The caller's ctx may be cancelled as soon as it returns; the sidecar
@@ -705,6 +742,18 @@ func (s *Service) RepointMovieFile(ctx context.Context, movieID int64, oldPath, 
 		return parser.RestampCodec(rel, codec)
 	}
 	n := 0
+	var moved []int64 // version ids whose record changed path just now
+	defer func() {
+		// Convert reindexes this movie itself after a swap; the change still goes out so
+		// Subtitles and anything watching paths (the UI, a Plex scan) follow the new name.
+		if len(moved) == 0 || oldPath == newPath {
+			return
+		}
+		s.enqueueChange(ctx, outbox.MovieChanged{MovieID: movieID, VersionID: moved[0], Change: outbox.ChangeRenamed, OldPath: oldPath, Path: newPath})
+		for _, vid := range moved {
+			s.publish("movie.renamed", map[string]any{"id": movieID, "version_id": vid, "old_path": oldPath, "new_path": newPath})
+		}
+	}()
 	for _, v := range versions {
 		if !v.HasFile || v.FilePath != newPath && v.FilePath != oldPath {
 			continue
@@ -728,6 +777,7 @@ func (s *Service) RepointMovieFile(ctx context.Context, movieID int64, oldPath, 
 				_ = s.repo.SetVersionSourceRelease(ctx, v.ID, upd)
 			}
 		}
+		moved = append(moved, v.ID)
 		n++
 	}
 	if n > 0 {
@@ -1122,18 +1172,34 @@ func (s *Service) rescan(ctx context.Context, m *Movie) {
 	switch {
 	case err == nil && found != "":
 		if found != m.MovieFilePath {
-			_ = s.setDefaultFile(ctx, m.ID, found)
+			old := m.MovieFilePath
+			if err := s.setDefaultFile(ctx, m.ID, found); err != nil {
+				s.log.Warn("rescan: couldn't record the file on disk", "movie", m.Title, "path", found, "err", err)
+				return
+			}
 			m.MovieFilePath, m.HasFile = found, true
 			s.log.Info("rescan: adopted file on disk", "movie", m.Title, "path", found)
 			_ = s.repo.AddEvent(ctx, m.ID, "detected", "Found file on disk: "+filepath.Base(found))
+			s.enqueueChange(ctx, outbox.MovieChanged{MovieID: m.ID, Change: outbox.ChangeDetected, OldPath: old, Path: found})
+			if old != "" {
+				s.publish("movie.renamed", map[string]any{"id": m.ID, "version_id": int64(0), "old_path": old, "new_path": found})
+			} else {
+				s.publish("movie.downloaded", map[string]any{"id": m.ID, "version_id": int64(0), "path": found, "source": "scan"})
+			}
 		}
 	default:
 		// No video in the folder. If we thought we had one, clear it.
 		if m.HasFile {
-			_ = s.repo.ClearFile(ctx, m.ID)
+			old := m.MovieFilePath
+			if err := s.repo.ClearFile(ctx, m.ID); err != nil {
+				s.log.Warn("rescan: couldn't clear the missing file", "movie", m.Title, "err", err)
+				return
+			}
 			m.HasFile, m.MovieFilePath = false, ""
 			s.log.Info("rescan: tracked file no longer on disk", "movie", m.Title)
 			_ = s.repo.AddEvent(ctx, m.ID, "missing", "Tracked file no longer on disk")
+			s.enqueueChange(ctx, outbox.MovieChanged{MovieID: m.ID, Change: outbox.ChangeFileDeleted, Path: old})
+			s.publish("movie.file_deleted", map[string]any{"id": m.ID, "version_id": int64(0), "path": old})
 		}
 	}
 }
@@ -1255,10 +1321,19 @@ func (s *Service) Rename(ctx context.Context, id int64) error {
 	if newDir := filepath.Dir(target); newDir != oldDir {
 		s.imp.RemoveDirIfEmpty(oldDir) // the movie moved to a renamed folder; drop the empty old one
 	}
-	if err := s.setDefaultFile(ctx, id, target); err != nil {
+	media := s.mediaJSON(target)
+	err = s.repo.inTx(ctx, func(tx *sql.Tx, r *Repo) error {
+		if err := setDefaultFileIn(ctx, r, id, target, media); err != nil {
+			return err
+		}
+		_ = r.AddEvent(ctx, id, "renamed", filepath.Base(m.MovieFilePath)+" → "+filepath.Base(target))
+		return s.enqueue(ctx, tx, outbox.TopicMovieChanged,
+			outbox.MovieChanged{MovieID: id, Change: outbox.ChangeRenamed, OldPath: m.MovieFilePath, Path: target}, movieKey(id))
+	})
+	if err != nil {
 		return err
 	}
-	_ = s.repo.AddEvent(ctx, id, "renamed", filepath.Base(m.MovieFilePath)+" → "+filepath.Base(target))
+	s.publish("movie.renamed", map[string]any{"id": id, "version_id": int64(0), "old_path": m.MovieFilePath, "new_path": target})
 	return nil
 }
 

@@ -68,3 +68,21 @@ func TestCancelStopsDelivery(t *testing.T) {
 		t.Fatal("expected channel to be closed after cancel")
 	}
 }
+
+// A subscriber whose buffer is full loses events, and each loss is counted per topic.
+func TestDropCounterCountsFullBuffer(t *testing.T) {
+	b := New(nil)
+	ch, cancel := b.Subscribe("x")
+	defer cancel()
+	for i := 0; i < cap(ch); i++ {
+		b.Publish("x", i)
+	}
+	if d := b.Drops(); len(d) != 0 {
+		t.Fatalf("drops before the buffer was full: %v", d)
+	}
+	b.Publish("x", "lost")
+	b.Publish("x", "lost too")
+	if d := b.Drops(); d["x"] != 2 {
+		t.Fatalf("drops = %v, want x:2", d)
+	}
+}

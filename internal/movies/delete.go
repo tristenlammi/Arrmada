@@ -2,6 +2,7 @@ package movies
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/library"
+	"github.com/tristenlammi/arrmada/internal/outbox"
 )
 
 // ErrFilesNotRemoved means a movie delete stopped because the recycle bin refused a file.
@@ -48,7 +50,24 @@ func (s *Service) Delete(ctx context.Context, id int64, deleteFiles bool) error 
 			return err
 		}
 	}
-	return s.repo.Delete(ctx, id) // the movie, its versions and its history together
+	folder := ""
+	if m.MovieFilePath != "" {
+		folder = filepath.Dir(m.MovieFilePath)
+	}
+	// The movie, its versions and its history go together, with the row that makes
+	// Convert and Subtitles forget it.
+	err = s.repo.inTx(ctx, func(tx *sql.Tx, r *Repo) error {
+		if err := r.Delete(ctx, id); err != nil {
+			return err
+		}
+		return s.enqueue(ctx, tx, outbox.TopicMovieChanged,
+			outbox.MovieChanged{MovieID: id, Change: outbox.ChangeDeleted, Path: m.MovieFilePath}, movieKey(id))
+	})
+	if err != nil {
+		return err
+	}
+	s.publish("movie.deleted", map[string]any{"id": id, "tmdb_id": m.TMDBID, "folder": folder})
+	return nil
 }
 
 // movieFile is one file a movie holds: the default track (versionID 0) or an extra.
@@ -97,6 +116,10 @@ func (s *Service) removeAllFiles(ctx context.Context, m Movie) error {
 				} else {
 					_ = s.repo.ClearVersionFile(ctx, mf.versionID)
 				}
+				s.publish("movie.file_deleted", map[string]any{"id": m.ID, "version_id": mf.versionID, "path": mf.path})
+			}
+			if len(moved) > 0 {
+				s.enqueueChange(ctx, outbox.MovieChanged{MovieID: m.ID, VersionID: moved[0].versionID, Change: outbox.ChangeFileDeleted, Path: moved[0].path})
 			}
 			_ = s.repo.AddEvent(ctx, m.ID, "delete.failed",
 				fmt.Sprintf("Stopped deleting after %d file(s): %v", len(moved), err))
@@ -121,9 +144,36 @@ func (s *Service) DeleteFile(ctx context.Context, id int64) error {
 			return err
 		}
 		s.log.Info("deleted movie file", "movie", m.Title, "path", m.MovieFilePath)
-		_ = s.repo.AddEvent(ctx, id, "deleted", "Deleted "+filepath.Base(m.MovieFilePath))
 	}
-	return s.repo.ClearFile(ctx, id)
+	return s.clearTrack(ctx, id, 0, m.MovieFilePath, func(r *Repo) error {
+		if m.MovieFilePath != "" {
+			_ = r.AddEvent(ctx, id, "deleted", "Deleted "+filepath.Base(m.MovieFilePath))
+		}
+		return r.ClearFile(ctx, id)
+	})
+}
+
+// clearTrack runs a track's record change (clear) in one transaction with the
+// movie.changed row that makes Convert and Subtitles drop the removed file, then announces
+// it on the bus. path is the file that went ("" when the track had none: nothing to tell).
+func (s *Service) clearTrack(ctx context.Context, movieID, versionID int64, path string, clear func(r *Repo) error) error {
+	err := s.repo.inTx(ctx, func(tx *sql.Tx, r *Repo) error {
+		if err := clear(r); err != nil {
+			return err
+		}
+		if path == "" {
+			return nil
+		}
+		return s.enqueue(ctx, tx, outbox.TopicMovieChanged,
+			outbox.MovieChanged{MovieID: movieID, VersionID: versionID, Change: outbox.ChangeFileDeleted, Path: path}, movieKey(movieID))
+	})
+	if err != nil {
+		return err
+	}
+	if path != "" {
+		s.publish("movie.file_deleted", map[string]any{"id": movieID, "version_id": versionID, "path": path})
+	}
+	return nil
 }
 
 // DeleteVersion removes an extra version track and its file. If the bin refuses the
@@ -139,11 +189,13 @@ func (s *Service) DeleteVersion(ctx context.Context, versionID int64) error {
 			return err
 		}
 	}
-	if err := s.repo.DeleteVersion(ctx, versionID); err != nil {
-		return err
-	}
-	_ = s.repo.AddEvent(ctx, movieID, "version_removed", "Removed version: "+v.Label)
-	return nil
+	return s.clearTrack(ctx, movieID, versionID, v.FilePath, func(r *Repo) error {
+		if err := r.DeleteVersion(ctx, versionID); err != nil {
+			return err
+		}
+		_ = r.AddEvent(ctx, movieID, "version_removed", "Removed version: "+v.Label)
+		return nil
+	})
 }
 
 // DeleteVersionFile deletes a version's file (vid 0 = the default version). If the bin
@@ -161,9 +213,13 @@ func (s *Service) DeleteVersionFile(ctx context.Context, movieID, versionID int6
 		if err := s.removeFile(v.FilePath, otherFiles(versions, v.FilePath)); err != nil {
 			return err
 		}
-		_ = s.repo.AddEvent(ctx, movieID, "deleted", "Deleted "+filepath.Base(v.FilePath)+" ("+v.Label+")")
 	}
-	return s.repo.ClearVersionFile(ctx, versionID)
+	return s.clearTrack(ctx, movieID, versionID, v.FilePath, func(r *Repo) error {
+		if v.FilePath != "" {
+			_ = r.AddEvent(ctx, movieID, "deleted", "Deleted "+filepath.Base(v.FilePath)+" ("+v.Label+")")
+		}
+		return r.ClearVersionFile(ctx, versionID)
+	})
 }
 
 // removeFile moves a library file and its subtitles to the recycle bin (or deletes them

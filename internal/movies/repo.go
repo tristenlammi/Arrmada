@@ -16,10 +16,34 @@ var ErrNotFound = errors.New("movie not found")
 var ErrExists = errors.New("movie already in library")
 
 // Repo persists movies in SQLite.
-type Repo struct{ db *sql.DB }
+type Repo struct {
+	db *sql.DB
+	// tx, when set, is the transaction every statement runs in instead of the pool (see
+	// inTx). A Repo bound to one is only used inside that transaction's function.
+	tx *sql.Tx
+}
 
 // NewRepo builds a repository over the given pool.
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
+
+// q is where statements run: the bound transaction, or the pool.
+func (r *Repo) q() store.Execer {
+	if r.tx != nil {
+		return r.tx
+	}
+	return r.db
+}
+
+// inTx runs fn with a copy of the repo whose statements all go through one transaction,
+// committed when fn returns nil and rolled back otherwise.
+func (r *Repo) inTx(ctx context.Context, fn func(tx *sql.Tx, r *Repo) error) error {
+	if r.tx != nil {
+		return fn(r.tx, r) // already inside one
+	}
+	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		return fn(tx, &Repo{db: r.db, tx: tx})
+	})
+}
 
 const movieCols = `id, tmdb_id, imdb_id, title, year, overview, poster_url, runtime, status,
 	monitored, quality_profile, min_availability, has_file, movie_file_path, added_at, extra_json, media_json,
@@ -56,13 +80,13 @@ func (r *Repo) scan(row interface{ Scan(...any) error }) (Movie, error) {
 
 // SetMediaInfo caches the default file's media info as JSON.
 func (r *Repo) SetMediaInfo(ctx context.Context, id int64, mediaJSON string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE movies SET media_json = ? WHERE id = ?`, mediaJSON, id)
+	_, err := r.q().ExecContext(ctx, `UPDATE movies SET media_json = ? WHERE id = ?`, mediaJSON, id)
 	return err
 }
 
 // List returns all movies, newest first.
 func (r *Repo) List(ctx context.Context) ([]Movie, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT `+movieCols+` FROM movies ORDER BY added_at DESC, id DESC`)
+	rows, err := r.q().QueryContext(ctx, `SELECT `+movieCols+` FROM movies ORDER BY added_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +105,7 @@ func (r *Repo) List(ctx context.Context) ([]Movie, error) {
 // ExistingTMDBIDs returns the set of TMDB ids already in the library, for
 // dedup (e.g. marking which collection members are already added).
 func (r *Repo) ExistingTMDBIDs(ctx context.Context) (map[int]bool, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT tmdb_id FROM movies`)
+	rows, err := r.q().QueryContext(ctx, `SELECT tmdb_id FROM movies`)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +137,7 @@ func (r *Repo) UpgradeTargets(ctx context.Context) ([]Movie, error) {
 
 // listWhere lists the movies matching a fixed WHERE clause (never user input), newest first.
 func (r *Repo) listWhere(ctx context.Context, where string) ([]Movie, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT `+movieCols+` FROM movies WHERE `+where+` ORDER BY added_at DESC, id DESC`)
+	rows, err := r.q().QueryContext(ctx, `SELECT `+movieCols+` FROM movies WHERE `+where+` ORDER BY added_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +155,7 @@ func (r *Repo) listWhere(ctx context.Context, where string) ([]Movie, error) {
 
 // Get returns one movie by id.
 func (r *Repo) Get(ctx context.Context, id int64) (Movie, error) {
-	row := r.db.QueryRowContext(ctx, `SELECT `+movieCols+` FROM movies WHERE id = ?`, id)
+	row := r.q().QueryRowContext(ctx, `SELECT `+movieCols+` FROM movies WHERE id = ?`, id)
 	m, err := r.scan(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Movie{}, ErrNotFound
@@ -150,7 +174,7 @@ func (r *Repo) Create(ctx context.Context, m Movie) (Movie, error) {
 			extraJSON = string(b)
 		}
 	}
-	res, err := r.db.ExecContext(ctx,
+	res, err := r.q().ExecContext(ctx,
 		`INSERT INTO movies (tmdb_id, imdb_id, title, year, overview, poster_url, runtime, status,
 			monitored, quality_profile, min_availability, extra_json)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -170,7 +194,7 @@ func (r *Repo) Create(ctx context.Context, m Movie) (Movie, error) {
 // Those tables have no foreign keys, so without this a deleted movie left its timeline
 // and version rows behind, waiting to attach to whatever reused the id.
 func (r *Repo) Delete(ctx context.Context, id int64) error {
-	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	return r.inTx(ctx, func(tx *sql.Tx, _ *Repo) error {
 		res, err := tx.ExecContext(ctx, `DELETE FROM movies WHERE id = ?`, id)
 		if err != nil {
 			return err
@@ -188,58 +212,58 @@ func (r *Repo) Delete(ctx context.Context, id int64) error {
 
 // SetMonitored toggles monitoring.
 func (r *Repo) SetMonitored(ctx context.Context, id int64, monitored bool) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE movies SET monitored = ? WHERE id = ?`, boolToInt(monitored), id)
+	_, err := r.q().ExecContext(ctx, `UPDATE movies SET monitored = ? WHERE id = ?`, boolToInt(monitored), id)
 	return err
 }
 
 // SearchState returns when the movie was last swept and how many consecutive sweeps
 // grabbed nothing (drives the search backoff).
 func (r *Repo) SearchState(ctx context.Context, movieID int64) (lastSearchAt string, misses int) {
-	_ = r.db.QueryRowContext(ctx,
+	_ = r.q().QueryRowContext(ctx,
 		`SELECT last_search_at, search_misses FROM movies WHERE id = ?`, movieID).Scan(&lastSearchAt, &misses)
 	return lastSearchAt, misses
 }
 
 // RecordSearchMiss stamps the sweep time and increments the miss counter.
 func (r *Repo) RecordSearchMiss(ctx context.Context, movieID int64) {
-	_, _ = r.db.ExecContext(ctx,
+	_, _ = r.q().ExecContext(ctx,
 		`UPDATE movies SET last_search_at = datetime('now'), search_misses = search_misses + 1 WHERE id = ?`, movieID)
 }
 
 // ResetSearchMisses clears the backoff after a successful grab.
 func (r *Repo) ResetSearchMisses(ctx context.Context, movieID int64) {
-	_, _ = r.db.ExecContext(ctx,
+	_, _ = r.q().ExecContext(ctx,
 		`UPDATE movies SET last_search_at = datetime('now'), search_misses = 0 WHERE id = ?`, movieID)
 }
 
 // SetFile marks a movie as having a file at path.
 func (r *Repo) SetFile(ctx context.Context, id int64, path string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE movies SET has_file = 1, movie_file_path = ? WHERE id = ?`, path, id)
+	_, err := r.q().ExecContext(ctx, `UPDATE movies SET has_file = 1, movie_file_path = ? WHERE id = ?`, path, id)
 	return err
 }
 
 // ClearFile marks a movie as having no file (after its file is deleted).
 func (r *Repo) ClearFile(ctx context.Context, id int64) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE movies SET has_file = 0, movie_file_path = '', media_json = '', source_release = '' WHERE id = ?`, id)
+	_, err := r.q().ExecContext(ctx, `UPDATE movies SET has_file = 0, movie_file_path = '', media_json = '', source_release = '' WHERE id = ?`, id)
 	return err
 }
 
 // SetSourceRelease records the release name the default file was imported from
 // (used to score the current file when deciding upgrades).
 func (r *Repo) SetSourceRelease(ctx context.Context, id int64, release string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE movies SET source_release = ? WHERE id = ?`, release, id)
+	_, err := r.q().ExecContext(ctx, `UPDATE movies SET source_release = ? WHERE id = ?`, release, id)
 	return err
 }
 
 // SetVersionSourceRelease records the release name an extra version's file came from.
 func (r *Repo) SetVersionSourceRelease(ctx context.Context, id int64, release string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE movie_versions SET source_release = ? WHERE id = ?`, release, id)
+	_, err := r.q().ExecContext(ctx, `UPDATE movie_versions SET source_release = ? WHERE id = ?`, release, id)
 	return err
 }
 
 // SetQualityProfile changes a movie's quality profile.
 func (r *Repo) SetQualityProfile(ctx context.Context, id int64, profile string) error {
-	res, err := r.db.ExecContext(ctx, `UPDATE movies SET quality_profile = ? WHERE id = ?`, profile, id)
+	res, err := r.q().ExecContext(ctx, `UPDATE movies SET quality_profile = ? WHERE id = ?`, profile, id)
 	if err != nil {
 		return err
 	}
@@ -251,7 +275,7 @@ func (r *Repo) SetQualityProfile(ctx context.Context, id int64, profile string) 
 
 // SetMinAvailability changes when a movie becomes eligible for searching.
 func (r *Repo) SetMinAvailability(ctx context.Context, id int64, avail string) error {
-	res, err := r.db.ExecContext(ctx, `UPDATE movies SET min_availability = ? WHERE id = ?`, avail, id)
+	res, err := r.q().ExecContext(ctx, `UPDATE movies SET min_availability = ? WHERE id = ?`, avail, id)
 	if err != nil {
 		return err
 	}
@@ -270,7 +294,7 @@ func (r *Repo) UpdateMetadata(ctx context.Context, id int64, m Movie) error {
 			extraJSON = string(b)
 		}
 	}
-	_, err := r.db.ExecContext(ctx,
+	_, err := r.q().ExecContext(ctx,
 		`UPDATE movies SET imdb_id = ?, title = ?, year = ?, overview = ?, poster_url = ?,
 			runtime = ?, status = ?, extra_json = ? WHERE id = ?`,
 		m.IMDBID, m.Title, m.Year, m.Overview, m.PosterURL, m.Runtime, m.Status, extraJSON, id)
@@ -298,7 +322,7 @@ func scanVersion(row interface{ Scan(...any) error }) (Version, int64, error) {
 
 // ListVersions returns the extra version tracks for a movie.
 func (r *Repo) ListVersions(ctx context.Context, movieID int64) ([]Version, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT `+versionCols+` FROM movie_versions WHERE movie_id = ? ORDER BY id`, movieID)
+	rows, err := r.q().QueryContext(ctx, `SELECT `+versionCols+` FROM movie_versions WHERE movie_id = ? ORDER BY id`, movieID)
 	if err != nil {
 		return nil, err
 	}
@@ -316,7 +340,7 @@ func (r *Repo) ListVersions(ctx context.Context, movieID int64) ([]Version, erro
 
 // GetVersion returns one extra version plus its movie id.
 func (r *Repo) GetVersion(ctx context.Context, id int64) (Version, int64, error) {
-	row := r.db.QueryRowContext(ctx, `SELECT `+versionCols+` FROM movie_versions WHERE id = ?`, id)
+	row := r.q().QueryRowContext(ctx, `SELECT `+versionCols+` FROM movie_versions WHERE id = ?`, id)
 	v, movieID, err := scanVersion(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Version{}, 0, ErrNotFound
@@ -326,7 +350,7 @@ func (r *Repo) GetVersion(ctx context.Context, id int64) (Version, int64, error)
 
 // CreateVersion adds an extra version track.
 func (r *Repo) CreateVersion(ctx context.Context, movieID int64, v Version) (Version, error) {
-	res, err := r.db.ExecContext(ctx,
+	res, err := r.q().ExecContext(ctx,
 		`INSERT INTO movie_versions (movie_id, label, quality_profile, edition, monitored)
 		 VALUES (?, ?, ?, ?, ?)`,
 		movieID, v.Label, v.QualityProfile, v.Edition, boolToInt(v.Monitored))
@@ -340,7 +364,7 @@ func (r *Repo) CreateVersion(ctx context.Context, movieID int64, v Version) (Ver
 
 // UpdateVersion writes a version's mutable fields.
 func (r *Repo) UpdateVersion(ctx context.Context, id int64, label, profile, edition string, monitored bool) error {
-	res, err := r.db.ExecContext(ctx,
+	res, err := r.q().ExecContext(ctx,
 		`UPDATE movie_versions SET label = ?, quality_profile = ?, edition = ?, monitored = ? WHERE id = ?`,
 		label, profile, edition, boolToInt(monitored), id)
 	if err != nil {
@@ -354,27 +378,27 @@ func (r *Repo) UpdateVersion(ctx context.Context, id int64, label, profile, edit
 
 // SetVersionFile records a file for an extra version.
 func (r *Repo) SetVersionFile(ctx context.Context, id int64, path string, size int64) error {
-	_, err := r.db.ExecContext(ctx,
+	_, err := r.q().ExecContext(ctx,
 		`UPDATE movie_versions SET has_file = 1, file_path = ?, size_bytes = ? WHERE id = ?`, path, size, id)
 	return err
 }
 
 // ClearVersionFile marks an extra version as having no file.
 func (r *Repo) ClearVersionFile(ctx context.Context, id int64) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE movie_versions SET has_file = 0, file_path = '', size_bytes = 0, source_release = '' WHERE id = ?`, id)
+	_, err := r.q().ExecContext(ctx, `UPDATE movie_versions SET has_file = 0, file_path = '', size_bytes = 0, source_release = '' WHERE id = ?`, id)
 	return err
 }
 
 // DeleteVersionsForMovie removes all extra version tracks for a movie (used when
 // deleting the movie).
 func (r *Repo) DeleteVersionsForMovie(ctx context.Context, movieID int64) error {
-	_, err := r.db.ExecContext(ctx, `DELETE FROM movie_versions WHERE movie_id = ?`, movieID)
+	_, err := r.q().ExecContext(ctx, `DELETE FROM movie_versions WHERE movie_id = ?`, movieID)
 	return err
 }
 
 // DeleteVersion removes an extra version track.
 func (r *Repo) DeleteVersion(ctx context.Context, id int64) error {
-	res, err := r.db.ExecContext(ctx, `DELETE FROM movie_versions WHERE id = ?`, id)
+	res, err := r.q().ExecContext(ctx, `DELETE FROM movie_versions WHERE id = ?`, id)
 	if err != nil {
 		return err
 	}
@@ -393,14 +417,14 @@ type Event struct {
 
 // AddEvent appends a timeline event for a movie.
 func (r *Repo) AddEvent(ctx context.Context, movieID int64, event, detail string) error {
-	_, err := r.db.ExecContext(ctx,
+	_, err := r.q().ExecContext(ctx,
 		`INSERT INTO movie_events (movie_id, event, detail) VALUES (?, ?, ?)`, movieID, event, detail)
 	return err
 }
 
 // Events returns a movie's timeline, newest first.
 func (r *Repo) Events(ctx context.Context, movieID int64, limit int) ([]Event, error) {
-	rows, err := r.db.QueryContext(ctx,
+	rows, err := r.q().QueryContext(ctx,
 		`SELECT event, detail, created_at FROM movie_events WHERE movie_id = ? ORDER BY id DESC LIMIT ?`,
 		movieID, limit)
 	if err != nil {

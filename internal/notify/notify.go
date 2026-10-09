@@ -178,6 +178,11 @@ func (s *Service) Run(ctx context.Context) {
 			}
 		case ev := <-imported:
 			title, _ := asString(ev.Data, "title")
+			// A library scan adopting files already on disk isn't an import worth a ping
+			// per film; those events carry source "scan" (and no title).
+			if source, _ := asString(ev.Data, "source"); source == "scan" {
+				continue
+			}
 			if title != "" {
 				s.fan(ctx, "import", "Imported", "📥 "+title)
 			}

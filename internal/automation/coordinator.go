@@ -27,6 +27,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/music"
+	"github.com/tristenlammi/arrmada/internal/outbox"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
@@ -120,23 +121,50 @@ type Coordinator struct {
 	// process instead of on every sweep.
 	danglingLogged sync.Map
 
-	// onSeriesImported fires after episodes land, so the Convert library index can
-	// refresh just that show rather than waiting for the nightly sweep, and Subtitles
-	// can fetch for exactly the episodes that arrived. Optional.
-	onSeriesImported func(ctx context.Context, seriesID int64, episodes []series.EpisodeRef)
+	// outbox receives the durable side effects of series and book imports (Convert and
+	// Subtitles for the episodes that landed, the requester's "ready", the audiobook
+	// catalogue). nil means nothing is wired (tests).
+	outbox outbox.Enqueuer
 }
 
-// SetSeriesImportedHook registers a callback run after a series import writes episodes.
-// episodes is what the import placed — just those, not the whole show.
-func (c *Coordinator) SetSeriesImportedHook(fn func(ctx context.Context, seriesID int64, episodes []series.EpisodeRef)) {
-	c.onSeriesImported = fn
-}
+// SetOutbox installs where series and book imports queue their side effects.
+func (c *Coordinator) SetOutbox(o outbox.Enqueuer) { c.outbox = o }
 
-// seriesImported notifies the hook, if one is registered.
-func (c *Coordinator) seriesImported(ctx context.Context, seriesID int64, episodes []series.EpisodeRef) {
-	if c.onSeriesImported != nil {
-		c.onSeriesImported(ctx, seriesID, episodes)
+// enqueue writes an outbox row on its own (series and book imports aren't one
+// transaction). A failure is logged, not fatal: the files are in place either way, and
+// the nightly Convert sweep, the 6-hourly Subtitles pass and the request-ready sweep
+// still catch up.
+func (c *Coordinator) enqueue(ctx context.Context, topic string, payload any, key string) {
+	if c.outbox == nil {
+		return
 	}
+	if err := c.outbox.Enqueue(ctx, c.db, topic, payload, key); err != nil {
+		c.log.Warn("couldn't queue an import's follow-up work — the periodic sweeps will catch up", "topic", topic, "err", err)
+	}
+}
+
+// seriesImported queues the follow-up work for episodes an import just placed: Convert
+// reindexes the show, Subtitles fetches for exactly those episodes, and the requester
+// hears once nothing is still wanted. episodes is what the import placed — just those,
+// not the whole show.
+func (c *Coordinator) seriesImported(ctx context.Context, seriesID int64, episodes []series.EpisodeRef) {
+	p := outbox.SeriesImported{SeriesID: seriesID}
+	for _, e := range episodes {
+		p.Episodes = append(p.Episodes, outbox.Episode{Season: e.Season, Episode: e.Episode})
+	}
+	// Rows naming episodes each carry their own list and must all run; a bare "the show
+	// changed" row is the same work however many times it's queued.
+	key := ""
+	if len(p.Episodes) == 0 {
+		key = fmt.Sprintf("series:%d", seriesID)
+	}
+	c.enqueue(ctx, outbox.TopicSeriesImported, p, key)
+}
+
+// bookImported queues the follow-up work for a book edition or audiobook version that
+// just landed: the requester's "ready" and the audiobook catalogue refresh.
+func (c *Coordinator) bookImported(ctx context.Context, bookID int64, edition string) {
+	c.enqueue(ctx, outbox.TopicBookImported, outbox.BookImported{BookID: bookID, Edition: edition}, fmt.Sprintf("book:%d", bookID))
 }
 
 // SetRecycleDir points book file deletion at the recycle bin (matching movies). Empty
@@ -1712,11 +1740,10 @@ func (c *Coordinator) AttachMovieImport(ctx context.Context, rec library.ImportR
 		}
 		return library.AttachRetry, fmt.Errorf("attach to %q: %w", m.Title, err)
 	}
+	// MarkImported wrote the movie.imported outbox row with the file record and announced
+	// movie.downloaded itself.
 	c.markGrabImportedForMovie(ctx, m.ID, rec.ReleaseName)
 	c.log.Info("automation: import attached to movie", "movie", m.Title)
-	if c.bus != nil {
-		c.bus.Publish("movie.downloaded", map[string]any{"title": m.Title, "id": m.ID})
-	}
 	return library.Attached, nil
 }
 

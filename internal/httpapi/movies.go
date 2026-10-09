@@ -442,7 +442,6 @@ func (a *api) handleDeleteVersionFile(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, "could not delete file")
 		return
 	}
-	a.deps.Bus.Publish("movie.file_deleted", map[string]any{"id": id})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -535,7 +534,6 @@ func (a *api) handleDeleteMovieFile(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, "could not delete file")
 		return
 	}
-	a.deps.Bus.Publish("movie.file_deleted", map[string]any{"id": id})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -700,7 +698,6 @@ func (a *api) handleManualImport(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	a.deps.Bus.Publish("movie.downloaded", map[string]any{"id": id})
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "imported"})
 }
 
@@ -735,7 +732,6 @@ func (a *api) handleRename(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	a.deps.Bus.Publish("movie.renamed", map[string]any{"id": id})
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "renamed"})
 }
 

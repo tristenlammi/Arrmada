@@ -3,7 +3,6 @@ package automation
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/download"
@@ -85,8 +84,7 @@ func (c *Coordinator) DeleteMovie(ctx context.Context, id int64, opts DeleteMovi
 	if c.movies == nil {
 		return errors.New("the movies module isn't ready")
 	}
-	m, err := c.movies.Get(ctx, id)
-	if err != nil {
+	if _, err := c.movies.Get(ctx, id); err != nil {
 		return err
 	}
 	grabs, err := c.pendingMovieGrabs(ctx, id)
@@ -125,13 +123,7 @@ func (c *Coordinator) DeleteMovie(ctx context.Context, id int64, opts DeleteMovi
 	if _, err := c.db.ExecContext(ctx, `DELETE FROM blocklist WHERE movie_id = ? AND media_type = 'movie'`, id); err != nil {
 		c.log.Warn("movie delete: couldn't clear its blocklist", "movie_id", id, "err", err)
 	}
-	folder := ""
-	if m.MovieFilePath != "" {
-		folder = filepath.Dir(m.MovieFilePath)
-	}
-	if c.bus != nil {
-		c.bus.Publish("movie.deleted", map[string]any{"id": id, "tmdb_id": m.TMDBID, "folder": folder})
-	}
+	// movies.Delete announced movie.deleted and queued the index clean-up.
 	c.log.Info("movie deleted", "movie_id", id, "files", opts.DeleteFiles, "downloads_pending", len(grabs), "cancel", opts.CancelDownloads)
 	return nil
 }

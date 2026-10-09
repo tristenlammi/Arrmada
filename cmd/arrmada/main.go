@@ -46,6 +46,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/music"
 	"github.com/tristenlammi/arrmada/internal/notify"
+	"github.com/tristenlammi/arrmada/internal/outbox"
 	"github.com/tristenlammi/arrmada/internal/push"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/realtime"
@@ -176,6 +177,11 @@ func main() {
 	}
 
 	bus := eventbus.New(log)
+	// What must happen after an import (Convert and Subtitles reindexing, the requester's
+	// "ready", the audiobook catalogue) is written here with the import and run until it
+	// succeeds. The bus above is only for the UI and admin alerts. Consumers are
+	// registered further down, before the scheduler starts.
+	box := outbox.New(st.DB(), log)
 
 	// Background work stops when runCtx is cancelled during shutdown. Every long-running
 	// loop and one-off goroutine below runs in grp: a panic in one is logged with its stack
@@ -280,6 +286,7 @@ func main() {
 	prefs := libPrefs{s: settingsSvc}
 	movieSvc.SetNaming(prefs)
 	movieSvc.SetPrefs(prefs)
+	movieSvc.SetOutbox(box) // an import's file record and its follow-up work land together
 	if cfg.QbittorrentURL != "" {
 		if err := downloads.EnsureBundled(context.Background(), cfg.QbittorrentURL); err != nil {
 			log.Warn("could not register bundled qBittorrent", "err", err)
@@ -330,6 +337,7 @@ func main() {
 	// indexers for monitored-but-missing movies, ranks releases, grabs the best,
 	// and attaches finished imports back to the movie.
 	coordinator := automation.New(movieSvc, indexers, downloads, qualitySvc, st.DB(), bus, log, cfg.DownloadsDir)
+	coordinator.SetOutbox(box) // series and book imports queue their follow-up work
 
 	// Deliver grab/import notifications to configured connections.
 	grp.Loop("notify", notifySvc.Run)
@@ -525,8 +533,6 @@ func main() {
 	requestsSvc := requests.NewService(st.DB(), movieSvc, seriesSvc, booksSvc, coordinator, qualitySvc, bus, notifySvc.AppriseBin(), log)
 	requestsSvc.SetPushSender(pushSvc) // Web Push alongside inbox + Apprise
 	requestsSvc.SetRunner(grp)         // approval searches stop at shutdown
-	// Alert requesters when their request is imported.
-	grp.Loop("requests: ready notifier", requestsSvc.RunNotifier)
 	// Book requests made before they remembered their library row are linked to it by
 	// title and author, so the ones whose book was re-matched to a new catalogue key
 	// stop showing "Searching" and get their "ready".
@@ -536,12 +542,11 @@ func main() {
 		}
 	})
 	// Backstop for request-ready notifications: catches availability that arrived
-	// without an import event (library scan) or whose event was dropped under load.
-	// Idempotent (unique inbox ref), so re-running never double-notifies.
+	// without an import (a library scan). Idempotent (unique inbox ref), so re-running
+	// never double-notifies.
 	sched.Register("request-ready-sweep", 10*time.Minute, false, func(ctx context.Context) error {
 		return requestsSvc.SweepReadyRequests(ctx)
 	})
-	sched.Start(runCtx)
 
 	// Subtitles module (Bazarr replacement): grabs external SRT sidecars over the
 	// Movies/Series catalogs via OpenSubtitles.
@@ -615,37 +620,6 @@ func main() {
 		convertSvc.MaybeIndexSweep(ctx)
 		return nil
 	})
-	// A finished import reindexes only that show, so a new episode is convertible
-	// immediately without re-walking the whole library.
-	coordinator.SetSeriesImportedHook(func(ctx context.Context, seriesID int64, episodes []series.EpisodeRef) {
-		if err := convertSvc.IndexSeries(ctx, seriesID); err != nil {
-			log.Warn("convert: reindex after import failed", "series_id", seriesID, "err", err)
-		}
-		// Subtitles for what just landed, now — not at the next 6-hourly sweep.
-		subtitlesSvc.OnSeriesImported(ctx, seriesID, episodes)
-	})
-	// Movie imports need the same treatment: without it a new or upgraded movie was
-	// invisible to Convert until the daily 03:00 index sweep — and permanently, if the
-	// replacement landed at the same path (the sweep skips known paths).
-	grp.Loop("convert+subtitles: index movie imports", func(ctx context.Context) {
-		events, cancelSub := bus.Subscribe("movie.downloaded")
-		defer cancelSub()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case ev := <-events:
-				if data, ok := ev.Data.(map[string]any); ok {
-					if id, ok := data["id"].(int64); ok && id > 0 {
-						if err := convertSvc.IndexMovie(ctx, id); err != nil {
-							log.Warn("convert: reindex after movie import failed", "movie_id", id, "err", err)
-						}
-						subtitlesSvc.OnMovieImported(ctx, id)
-					}
-				}
-			}
-		}
-	})
 
 	// Insights (Plex watch monitoring — Tautulli replacement).
 	geoDB := cfg.GeoIPDB
@@ -697,7 +671,6 @@ func main() {
 	}
 	audioMgr := audioserver.NewManager(audioSrv, ":"+audioPort, log)
 	audioMgr.Apply(settingsSvc.GetBool(context.Background(), audioserver.KeyEnabled, false))
-	grp.Loop("audiobook server: watch imports", func(ctx context.Context) { audioSrv.WatchImports(ctx, bus) })
 	sched.Register("audioserver-prune", 24*time.Hour, false, func(ctx context.Context) error {
 		return listenStore.Prune(ctx)
 	})
@@ -714,6 +687,28 @@ func main() {
 	// below drives them); the health endpoint serves their cached results. httpapi.New
 	// registers the checks built from its deps.
 	healthReg := health.NewRegistry(bus, log)
+
+	// Everything that acts on an import is an outbox consumer. Registered here, once every
+	// consumer exists and before the scheduler starts the import sweeps (and before the
+	// HTTP server takes manual imports): Enqueue writes rows only for the consumers
+	// registered at that moment. Rows a previous run left unfinished run as soon as the
+	// dispatcher starts.
+	importConsumers{
+		convert: convertSvc, subtitles: subtitlesSvc, requests: requestsSvc, audio: audioSrv, grp: grp,
+	}.register(box)
+	grp.Loop("outbox: dispatcher", box.Run)
+	// Finished rows are kept a week for anyone tracing what happened to an import; failed
+	// ones stay until someone retries them.
+	sched.Register("outbox-prune", 24*time.Hour, true, func(ctx context.Context) error {
+		n, err := box.Prune(ctx, 7*24*time.Hour)
+		if err == nil && n > 0 {
+			log.Info("outbox: pruned finished rows", "rows", n)
+		}
+		return err
+	})
+	// The scheduler starts last: every task above, and the import sweeps in particular,
+	// must only run once the outbox has its consumers.
+	sched.Start(runCtx)
 
 	restartCh := make(chan struct{}, 1)
 	srv := httpapi.New(httpapi.Deps{

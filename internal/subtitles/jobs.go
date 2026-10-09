@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/safego"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
@@ -343,6 +344,53 @@ func (s *Service) OnMovieImported(ctx context.Context, movieID int64) {
 	}
 	if _, err := s.QueueMovie(ctx, movieID, false, PrioImport); err != nil {
 		s.log.Debug("subtitles: import hook skipped movie", "movie_id", movieID, "err", err)
+	}
+}
+
+// OnMovieChanged keeps Subtitles in step with a movie whose files changed without an
+// import — renamed, a file deleted, the movie removed. A movie that still has a file gets
+// its Library entry recomputed at the new path (a rename carries its sidecars along, so
+// nothing is queued; a missing language is the 6-hourly sweep's job, as before); one left
+// with no file is forgotten (OnMovieRemoved). Safe to run again for the same state. An
+// error means the movie couldn't be read, and the caller should try again.
+func (s *Service) OnMovieChanged(ctx context.Context, movieID int64) error {
+	m, err := s.movies.Get(ctx, movieID)
+	if err != nil && !errors.Is(err, movies.ErrNotFound) {
+		return err
+	}
+	if err != nil || !m.HasFile || m.MovieFilePath == "" {
+		s.OnMovieRemoved(ctx, movieID)
+		return nil
+	}
+	s.snap.mu.Lock()
+	seen := !s.snap.at.IsZero()
+	s.snap.mu.Unlock()
+	if seen { // before the first pass there's nothing to patch; the pass will see it
+		s.patchMovie(ctx, m, s.languages(ctx))
+	}
+	return nil
+}
+
+// OnMovieRemoved forgets a movie whose file (or the movie itself) is gone: its Library
+// entry goes now rather than at the next pass, and an ensure job still waiting for it is
+// dropped from the queue — there's no file left to subtitle. A job already running is
+// left to finish (it fails on the missing file on its own).
+func (s *Service) OnMovieRemoved(_ context.Context, movieID int64) {
+	s.dropMovie(movieID)
+	s.mu.Lock()
+	n := 0
+	for _, j := range s.jobs {
+		if j.Kind == "movie" && j.MovieID == movieID && j.State == StateQueued {
+			s.dropPendingLocked(j)
+			j.State = StateCancelled
+			j.Note = "the movie's file was removed"
+			s.retireLocked(j)
+			n++
+		}
+	}
+	s.mu.Unlock()
+	if n > 0 {
+		s.log.Info("subtitles: dropped queued jobs for a removed movie file", "movie_id", movieID, "jobs", n)
 	}
 }
 

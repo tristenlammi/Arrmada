@@ -543,18 +543,11 @@ func (c *Coordinator) ImportReview(ctx context.Context, id, targetID int64, targ
 		if c.movies == nil {
 			return moduleOffError{reviewModuleLabel[r.MediaType]}
 		}
+		// ManualImport goes through MarkImported, which queues the same durable side
+		// effects as an automatic import (Convert, Subtitles, the requester's "ready") and
+		// announces movie.downloaded.
 		if err := c.movies.ManualImport(ctx, dest, r.ContentPath); err != nil {
 			return err
-		}
-		// Same announcement as an automatic import: without it a movie imported from
-		// review was never indexed by Convert or Subtitles until their next full sweep,
-		// and its requester only heard at the backstop sweep.
-		if c.bus != nil {
-			ev := map[string]any{"id": dest}
-			if m, err := c.movies.Get(ctx, dest); err == nil {
-				ev["title"] = m.Title
-			}
-			c.bus.Publish("movie.downloaded", ev)
 		}
 	case "music":
 		// Books shipped with reviews their own ImportReview couldn't handle, so every
