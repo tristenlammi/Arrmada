@@ -139,6 +139,9 @@ type Coordinator struct {
 
 	// attentionKick asks the Needs-you feed to refresh (attentionkick.go); nil = nothing.
 	attentionKick atomic.Pointer[func()]
+	// importNotes is what the series import sweep found that the feed reports: packs
+	// whose files keep failing to place, and misfiled TV downloads (importattention.go).
+	importNotes importNotes
 }
 
 // SetOutbox installs where series and book imports queue their side effects.

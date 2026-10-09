@@ -14,7 +14,7 @@ func TestImportFailureBackoff(t *testing.T) {
 		t.Fatal("a never-failed hash must be due")
 	}
 	perm := errors.New("create library dir: permission denied")
-	attempts, warn := m.noteFailure("h", perm)
+	attempts, warn := m.noteFailure("h", "Film.2020.1080p", perm)
 	if attempts != 1 || !warn {
 		t.Errorf("first failure: attempts=%d warn=%v, want 1 and a warning", attempts, warn)
 	}
@@ -26,16 +26,16 @@ func TestImportFailureBackoff(t *testing.T) {
 	if !m.retryDue("h") {
 		t.Error("past its retry time it must be due")
 	}
-	if attempts, warn := m.noteFailure("h", perm); attempts != 2 || warn {
+	if attempts, warn := m.noteFailure("h", "Film.2020.1080p", perm); attempts != 2 || warn {
 		t.Errorf("same error again: attempts=%d warn=%v, want 2 and no warning", attempts, warn)
 	}
 	// A different error is news.
-	if _, warn := m.noteFailure("h", errors.New("no space left on device")); !warn {
+	if _, warn := m.noteFailure("h", "Film.2020.1080p", errors.New("no space left on device")); !warn {
 		t.Error("a changed error must be warned about")
 	}
 	// The wait grows and is capped.
 	for i := 0; i < 10; i++ {
-		m.noteFailure("h", perm)
+		m.noteFailure("h", "Film.2020.1080p", perm)
 	}
 	if wait := time.Until(m.failures["h"].next); wait > importRetryMax+time.Second || wait < importRetryMax-time.Minute {
 		t.Errorf("wait after many failures = %v, want about the %v cap", wait, importRetryMax)
@@ -50,7 +50,7 @@ func TestImportFailureBackoff(t *testing.T) {
 func TestRetryNowDropsTheBackoff(t *testing.T) {
 	m := &Manager{}
 	for i := 0; i < 5; i++ {
-		m.noteFailure("h", errors.New("permission denied"))
+		m.noteFailure("h", "Film.2020.1080p", errors.New("permission denied"))
 	}
 	if m.retryDue("h") {
 		t.Fatal("backed off: must not be due")
@@ -59,7 +59,40 @@ func TestRetryNowDropsTheBackoff(t *testing.T) {
 	if !m.retryDue("h") {
 		t.Error("after RetryNow it must be due")
 	}
-	if attempts, _ := m.noteFailure("h", errors.New("permission denied")); attempts != 1 {
+	if attempts, _ := m.noteFailure("h", "Film.2020.1080p", errors.New("permission denied")); attempts != 1 {
 		t.Errorf("attempts after RetryNow = %d, want a fresh count of 1", attempts)
+	}
+}
+
+// OBS-09: what keeps failing is readable outside the manager — the Needs-you feed lists
+// it — with the release name, the tries so far, the last error and the next retry; a
+// success (or Retry import) takes it off the list.
+func TestFailuresReportsWhatKeepsFailing(t *testing.T) {
+	m := &Manager{}
+	if got := m.Failures(); len(got) != 0 {
+		t.Fatalf("no failures yet, got %+v", got)
+	}
+	before := time.Now()
+	m.noteFailure("h", "Film.2020.1080p", errors.New("permission denied"))
+	m.noteFailure("h", "Film.2020.1080p", errors.New("no space left on device"))
+	got := m.Failures()
+	if len(got) != 1 {
+		t.Fatalf("failures = %+v, want one", got)
+	}
+	f := got[0]
+	if f.Hash != "h" || f.Name != "Film.2020.1080p" || f.Attempts != 2 || f.LastErr != "no space left on device" {
+		t.Errorf("failure = %+v", f)
+	}
+	if f.Since.Before(before) || !f.NextRetry.After(f.Since) {
+		t.Errorf("since %v / next retry %v out of order", f.Since, f.NextRetry)
+	}
+	// The copy is the caller's: changing it doesn't touch the manager's record.
+	got[0].Attempts = 99
+	if m.Failures()[0].Attempts != 2 {
+		t.Error("Failures handed out the manager's own record")
+	}
+	m.clearFailure("h")
+	if got := m.Failures(); len(got) != 0 {
+		t.Errorf("after a success: %+v", got)
 	}
 }

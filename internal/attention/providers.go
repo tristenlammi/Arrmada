@@ -11,6 +11,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/health"
+	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/requests"
 )
 
@@ -256,6 +257,111 @@ func clientStateWords(raw string) string {
 		return "The client stopped it with an error"
 	}
 	return ""
+}
+
+// --- imports that keep failing ------------------------------------------------------
+
+// Import failure thresholds: a second failed try is worth a look; five tries over at
+// least a quarter of an hour (the movie importer backs off 1, 2, 4, 8 minutes; the series
+// sweep tries every 30 seconds) is broken.
+const (
+	importWarnAfter  = 2
+	importErrorAfter = 5
+	importErrorFor   = 15 * time.Minute
+)
+
+type importsProvider struct {
+	failures func() []library.FailureInfo
+	reviews  HeldReviews
+}
+
+// Imports reports finished downloads whose import keeps failing — a folder it can't
+// write, a full disk — from the importers' own retry records. One already held in Review
+// is left to its review, so a movie stuck after five tries shows once, as the review.
+func Imports(failures func() []library.FailureInfo, reviews HeldReviews) Provider {
+	return importsProvider{failures, reviews}
+}
+
+func (importsProvider) Name() string { return "imports" }
+
+func (p importsProvider) Collect(ctx context.Context, f *Frame) ([]Item, error) {
+	if p.failures == nil {
+		return nil, nil
+	}
+	list := p.failures()
+	if len(list) == 0 {
+		return nil, nil
+	}
+	held := map[string]bool{}
+	if p.reviews != nil {
+		rvs, err := p.reviews.ListReviews(ctx)
+		if err != nil {
+			return nil, err // without it a held download would show twice; keep the last answer
+		}
+		for _, rv := range rvs {
+			held[strings.ToLower(rv.Hash)] = true
+		}
+	}
+	var out []Item
+	for _, fl := range list {
+		h := strings.ToLower(fl.Hash)
+		if h == "" || fl.Attempts < importWarnAfter || held[h] || !f.InQueue(h) {
+			continue
+		}
+		level := LevelWarning
+		if fl.Attempts >= importErrorAfter && !fl.Since.IsZero() && f.Now.Sub(fl.Since) >= importErrorFor {
+			level = LevelError
+		}
+		name := fl.Name
+		if a, ok := f.Acq[h]; ok && a.Title != "" {
+			name = a.Title
+		}
+		it := Item{Key: KindImport + ":" + h, Kind: KindImport, Level: level,
+			Title:  "Importing " + name + " keeps failing (" + strconv.Itoa(fl.Attempts) + " tries)",
+			Detail: clip(fl.LastErr, 200)}
+		if !fl.Since.IsZero() {
+			it.Since = fl.Since.UnixMilli()
+		}
+		linkTo(&it, health.FixDownloadProblems)
+		out = append(out, it)
+	}
+	return out, nil
+}
+
+// --- finished TV downloads in the wrong category ------------------------------------
+
+type wrongCatProvider struct{ src func() []download.Item }
+
+// WrongCategory reports finished TV downloads the series import sweep found in a category
+// it never imports from, matching a show in the library: they'd wait forever otherwise.
+func WrongCategory(src func() []download.Item) Provider { return wrongCatProvider{src} }
+
+func (wrongCatProvider) Name() string { return "wrongcat" }
+
+func (p wrongCatProvider) Collect(_ context.Context, f *Frame) ([]Item, error) {
+	if p.src == nil {
+		return nil, nil
+	}
+	var out []Item
+	for _, it := range p.src() {
+		h := strings.ToLower(it.Hash)
+		if h == "" || !f.InQueue(h) {
+			continue
+		}
+		cat := it.Category
+		if cat == "" {
+			cat = "no category"
+		} else {
+			cat = "“" + cat + "”"
+		}
+		x := Item{Key: KindWrongCat + ":" + h, Kind: KindWrongCat, Level: LevelWarning,
+			Title: it.Name + " finished in " + cat,
+			Detail: "Arrmada only imports TV from “" + download.CategoryTV + "”: set the category in qBittorrent, " +
+				"or grab it again through Arrmada"}
+		linkTo(&x, health.FixDownloadProblems)
+		out = append(out, x)
+	}
+	return out, nil
 }
 
 // --- health --------------------------------------------------------------------------

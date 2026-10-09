@@ -813,6 +813,10 @@ func main() {
 		attention.Requests(requestsSvc),
 		attention.Reviews(coordinator),
 		attention.Downloads(),
+		attention.Imports(func() []library.FailureInfo {
+			return append(imports.Failures(), coordinator.SeriesImportFailures()...)
+		}, coordinator),
+		attention.WrongCategory(coordinator.WrongCategoryDownloads),
 		attention.Health(healthReg),
 		attention.Searches(
 			func(ctx context.Context) (int, error) {
