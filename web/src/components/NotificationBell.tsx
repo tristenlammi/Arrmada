@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, type UserNotification } from "../lib/api";
+import { usePoll } from "../lib/usePoll";
 
 // Pull the media title out of a notification: bodies read like “Dune” is ready to
 // watch — the quoted part is the title. Falls back to the whole body if nothing is
@@ -23,7 +24,7 @@ export function NotificationBell() {
   const navigate = useNavigate();
 
   const load = () => api.myNotifications().then((r) => { setItems(r.notifications ?? []); setUnread(r.unread); }).catch(() => {});
-  useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t); }, []);
+  usePoll(load, 30000);
 
   // Close on outside click.
   useEffect(() => {

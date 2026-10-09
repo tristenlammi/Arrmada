@@ -113,6 +113,13 @@ body,
   height: 100%;
 }
 
+/* Height of any bar pinned to the bottom of the screen (the requester tab bar).
+   Toasts sit this far up so they never land on top of it; a shell with such a bar
+   sets the real value on <html>, which wins over this default. */
+html {
+  --bottom-chrome: 0px;
+}
+
 body {
   margin: 0;
   background: var(--bg);

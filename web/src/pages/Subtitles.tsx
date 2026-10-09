@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { PageHeader } from "../components/PageHeader";
 import { Link } from "react-router-dom";
 import { useTabParam } from "../lib/useTabParam";
+import { usePoll } from "../lib/usePoll";
 import { TabPanel, Tabs, type TabItem } from "../ui/Tabs";
 import { LINKS } from "../lib/links";
 import { RescanButton, scanTitle } from "../components/RescanButton";
@@ -38,13 +39,7 @@ export function Subtitles() {
   useEffect(() => { loadSettings(); }, [loadSettings]);
 
   const anyActive = jobs.some((j) => ACTIVE.has(j.state));
-  useEffect(() => {
-    let alive = true;
-    const tick = () => api.subtitleJobs().then((j) => { if (alive) setJobs(j); }).catch(() => {});
-    tick();
-    const t = setInterval(tick, anyActive ? 1500 : 4000);
-    return () => { alive = false; clearInterval(t); };
-  }, [anyActive]);
+  usePoll(() => api.subtitleJobs().then(setJobs).catch(() => {}), anyActive ? 1500 : 4000);
 
   const patchSettings = async (body: { movies_auto?: boolean; series_auto?: boolean; languages?: string[] }) => {
     try { setSettings(await api.updateSubtitleSettings(body)); } catch (e) { flash((e as Error).message); }
@@ -117,11 +112,7 @@ function Overview({ jobs, settings, flash, onSettings }: { jobs: SubtitleJob[]; 
   const load = useCallback(() => api.subtitleCoverage().then(setCov).catch(() => {}), []);
   useEffect(() => { load(); }, [load]);
   // While a pass is running, keep asking until it lands.
-  useEffect(() => {
-    if (!cov?.scanning) return;
-    const t = setInterval(load, 3000);
-    return () => clearInterval(t);
-  }, [cov?.scanning, load]);
+  usePoll(load, cov?.scanning ? 3000 : null, { immediate: false });
   const rescan = async () => {
     setBusy(true);
     try { const r = await api.subtitleRescan(); flash(r.started ? "Rescanning the library…" : "A scan is already running."); await load(); }
@@ -732,20 +723,13 @@ function LogsConsole() {
   const [lines, setLines] = useState<{ at: number; level: string; msg: string }[]>([]);
   const [follow, setFollow] = useState(true);
   const boxRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    let alive = true;
-    const tick = () => api.subtitleLogs().then((l) => {
-      if (!alive) return;
-      setLines((prev) => {
-        const a = prev[prev.length - 1], b = l[l.length - 1];
-        if (prev.length === l.length && a?.at === b?.at && a?.msg === b?.msg) return prev;
-        return l;
-      });
-    }).catch(() => {});
-    tick();
-    const t = setInterval(tick, 1500);
-    return () => { alive = false; clearInterval(t); };
-  }, []);
+  usePoll(() => api.subtitleLogs().then((l) => {
+    setLines((prev) => {
+      const a = prev[prev.length - 1], b = l[l.length - 1];
+      if (prev.length === l.length && a?.at === b?.at && a?.msg === b?.msg) return prev;
+      return l;
+    });
+  }).catch(() => {}), 1500);
   useEffect(() => { if (follow && boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight; }, [lines, follow]);
   const tone = (lvl: string) => (lvl === "error" ? "var(--reject)" : lvl === "warn" ? "var(--avoid)" : "var(--ink-dim)");
   const clock = (at: number) => new Date(at * 1000).toLocaleTimeString();
@@ -824,11 +808,7 @@ function SettingsTab({ settings, onPatch, flash }: { settings: SubtitleSettings;
 function LocalAI({ flash, backend, note }: { flash: (m: string) => void; backend?: string; note?: string }) {
   const [status, setStatus] = useState<WhisperStatus | null>(null);
   const load = useCallback(() => api.subtitleModels().then(setStatus).catch(() => setStatus(null)), []);
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 3000); // reflect download progress
-    return () => clearInterval(t);
-  }, [load]);
+  usePoll(load, 3000); // reflect download progress
   const download = async (name: string) => {
     try { await api.subtitleDownloadModel(name); flash("Downloading — watch the Logs tab for progress."); load(); }
     catch (e) { flash((e as Error).message); }

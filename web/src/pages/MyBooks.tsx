@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { api, type MyBook, type MyRequest } from "../lib/api";
+import { usePoll } from "../lib/usePoll";
 import { posterThumb } from "../lib/img";
 import { Link } from "react-router-dom";
 
@@ -28,15 +29,10 @@ export function MyBooks() {
   const [sort, setSort] = useState<Sort>("newest");
   const [onlyEbooks, setOnlyEbooks] = useState(false);
 
-  useEffect(() => {
-    let alive = true;
-    const load = () => api.myBooks()
-      .then((r) => { if (alive) { setBooks(r.books); setRequests(r.requests); setError(null); } })
-      .catch((e) => { if (alive) setError((e as Error).message); });
-    load();
-    const t = setInterval(load, 15000); // a book that arrives while the page is open shows up
-    return () => { alive = false; clearInterval(t); };
-  }, []);
+  // A book that arrives while the page is open shows up.
+  usePoll(() => api.myBooks()
+    .then((r) => { setBooks(r.books); setRequests(r.requests); setError(null); })
+    .catch((e) => { setError((e as Error).message); }), 15000);
 
   const shown = useMemo(() => {
     if (!books) return [];

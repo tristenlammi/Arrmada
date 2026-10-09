@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { useTabParam } from "../lib/useTabParam";
 import { TabPanel, Tabs, type TabItem } from "../ui/Tabs";
 import { LINKS } from "../lib/links";
 import { RemoveDownloadDialog, removedMessage } from "../components/RemoveDownloadDialog";
+import { usePoll } from "../lib/usePoll";
 import { api, type ActivityDownload, type ClientSettings, type DiskGuardHold, type SearchingItem } from "../lib/api";
 import { useMe } from "../lib/me";
 
@@ -106,32 +107,25 @@ export function Downloads() {
     }).catch(() => {});
   }, []);
 
-  useEffect(() => {
-    let alive = true;
-    let fails = 0;
-    const load = () =>
-      api.activity().then((a) => {
-        if (!alive) return;
-        fails = 0;
-        setSearching(a.searching ?? []);
-        setUpcoming(a.upcoming ?? []);
-        setDownloads(a.downloads ?? []);
-        if (a.totals) setTotals(a.totals);
-        setFreeGb(typeof a.free_gb === "number" ? a.free_gb : null); // absent = couldn't be measured
-        if (typeof a.clients === "number") setClients(a.clients);
-        setGuard(a.disk_guard ?? null);
-        setReconnecting(false);
-        setLoaded(true);
-      }).catch(() => {
-        if (!alive) return;
-        fails += 1;
-        setLoaded(true);
-        if (fails >= 2) setReconnecting(true);
-      });
-    load();
-    const t = setInterval(load, 3000);
-    return () => { alive = false; clearInterval(t); };
-  }, []);
+  // Consecutive failed polls; one blip isn't worth a "reconnecting" banner.
+  const fails = useRef(0);
+  usePoll(() =>
+    api.activity().then((a) => {
+      fails.current = 0;
+      setSearching(a.searching ?? []);
+      setUpcoming(a.upcoming ?? []);
+      setDownloads(a.downloads ?? []);
+      if (a.totals) setTotals(a.totals);
+      setFreeGb(typeof a.free_gb === "number" ? a.free_gb : null); // absent = couldn't be measured
+      if (typeof a.clients === "number") setClients(a.clients);
+      setGuard(a.disk_guard ?? null);
+      setReconnecting(false);
+      setLoaded(true);
+    }).catch(() => {
+      fails.current += 1;
+      setLoaded(true);
+      if (fails.current >= 2) setReconnecting(true);
+    }), 3000);
 
   // The next poll reflects what happened; a refusal (e.g. the disk guard holding a
   // torrent) is shown, since the poll alone can't say why nothing changed.

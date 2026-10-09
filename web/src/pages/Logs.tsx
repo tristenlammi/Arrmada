@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { api, type LogEntry } from "../lib/api";
+import { usePoll } from "../lib/usePoll";
 
 const LEVELS = ["debug", "info", "warn", "error"] as const;
 const LEVEL_STYLE: Record<string, { color: string; label: string }> = {
@@ -51,18 +52,13 @@ export function Logs() {
     return () => window.clearTimeout(t);
   }, [q, hide]);
 
-  const load = useCallback(() => {
+  const load = useCallback(() =>
     api.logs({ limit: 2000, level, q: dq, hide: dhide })
       .then((e) => { setEntries(e); setErr(null); })
-      .catch((e: Error) => setErr(e.message));
-  }, [level, dq, dhide]);
+      .catch((e: Error) => setErr(e.message)), [level, dq, dhide]);
 
   useEffect(() => { load(); }, [load]);
-  useEffect(() => {
-    if (!auto) return;
-    const id = window.setInterval(load, 3000);
-    return () => window.clearInterval(id);
-  }, [auto, load]);
+  usePoll(load, auto ? 3000 : null, { immediate: false });
 
   // Keep the view pinned to the bottom (newest) unless the user scrolls up.
   useEffect(() => {

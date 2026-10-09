@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type BookSource, type BookAuthor, type BookDiscoverCard, type BookMeta, type BookRecommendedRow } from "../lib/api";
+import { usePoll } from "../lib/usePoll";
 import { useCanHover } from "../lib/useCanHover";
 
 // BooksDiscover is the Books area of Discover — deliberately separate from the movie/TV
@@ -156,11 +157,7 @@ function BookHero({ ctx }: { ctx: BookCtx }) {
     return () => { alive = false; };
   }, []);
   const count = items?.length ?? 0;
-  useEffect(() => {
-    if (paused || count <= 1 || open) return;
-    const t = setInterval(() => setIdx((i) => (i + 1) % count), 8000);
-    return () => clearInterval(t);
-  }, [paused, count, open]);
+  usePoll(() => setIdx((i) => (i + 1) % count), paused || count <= 1 || open ? null : 8000, { immediate: false });
   useEffect(() => { if (count > 0 && idx >= count) setIdx(0); }, [idx, count]);
   const cur = items && count > 0 ? items[Math.min(idx, count - 1)] : null;
   useEffect(() => {

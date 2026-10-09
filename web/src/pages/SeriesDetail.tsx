@@ -9,6 +9,7 @@ import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
 import { FitBadge } from "../components/FitBadge";
 import { RenameModal } from "./series/RenameModal";
+import { usePoll } from "../lib/usePoll";
 import { api, importListNotice, type FitItem, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile } from "../lib/api";
 
 // Auto-grab is fire-and-forget: the API answers 202 and searches in the background, and a
@@ -72,7 +73,7 @@ export function SeriesDetail() {
   const flash = (msg: string) => { setToast(msg); window.setTimeout(() => setToast(null), 3500); };
 
   const load = useCallback(() => {
-    api.seriesDetail(sid).then(setS).catch((e: Error) => {
+    return api.seriesDetail(sid).then(setS).catch((e: Error) => {
       if (e.message.toLowerCase().includes("not found")) setNotFound(true);
       else setError(e.message);
     });
@@ -88,11 +89,7 @@ export function SeriesDetail() {
 
   // While any episode is downloading, refresh so the progress ticks up.
   const anyDownloading = !!s?.seasons?.some((sn) => sn.episodes?.some((e) => e.download));
-  useEffect(() => {
-    if (!anyDownloading) return;
-    const t = setInterval(load, 3000);
-    return () => clearInterval(t);
-  }, [anyDownloading, load]);
+  usePoll(load, anyDownloading ? 3000 : null, { immediate: false });
 
   if (notFound) return <Shell><div className="py-10 text-center text-[13px] text-ink-dim">That series isn't in your library. <Link to="/series" className="underline" style={{ color: "var(--accent)" }}>Back to Series</Link></div></Shell>;
   if (!s) return <Shell><p className="text-[12.5px] text-ink-dim">{error ?? "Loading…"}</p></Shell>;

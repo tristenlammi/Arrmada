@@ -9,6 +9,11 @@ import { posterThumb } from "../lib/img";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { DeleteMovieDialog } from "../components/DeleteMovieDialog";
 import { usePersisted } from "../lib/persist";
+import { usePoll, usePollBurst } from "../lib/usePoll";
+import { useQuery } from "../lib/query";
+import { ErrorState, Skeleton, StaleBanner } from "../ui";
+
+const NO_MOVIES: Movie[] = [];
 
 
 type FilterKey = "all" | "monitored" | "unmonitored" | "missing" | "available";
@@ -37,9 +42,12 @@ function matchesFilter(m: Movie, f: FilterKey): boolean {
 }
 
 export function Movies() {
-  const [movies, setMovies] = useState<Movie[]>([]);
-  const [metaOK, setMetaOK] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Cached across visits, so Back from a movie shows the grid at once; it always
+  // revalidates on arrival (staleMs 0) because the detail page may have changed it.
+  const list = useQuery("movies", () => api.movies(), { staleMs: 0 });
+  const movies = list.data?.movies ?? NO_MOVIES;
+  const metaOK = list.data?.metadata_available ?? true;
+  const error = list.error?.message ?? null;
   const [showAdd, setShowAdd] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Movie | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -53,20 +61,14 @@ export function Movies() {
   const [view, setView] = usePersisted("movies.view", "grid", ["grid", "table"] as const);
   const [searchFor, setSearchFor] = useState<Movie | null>(null); // the table's per-row "Search indexers"
 
+  // The scan runs in the background; poll the grid for a while as entries land.
+  const watchScan = usePollBurst(() => refresh(), 2500, 12, () => setScanning(false));
   const scanLibrary = async () => {
     setScanning(true);
     try {
       await api.scanLibrary();
       flash("Scanning your library — existing movies will appear shortly.");
-      // The scan runs in the background; poll the grid for a while as entries land.
-      let ticks = 0;
-      const t = setInterval(() => {
-        refresh();
-        if (++ticks >= 12) {
-          clearInterval(t);
-          setScanning(false);
-        }
-      }, 2500);
+      watchScan();
     } catch (e) {
       flash((e as Error).message);
       setScanning(false);
@@ -78,18 +80,9 @@ export function Movies() {
     window.setTimeout(() => setToast(null), 3500);
   };
 
-  const refresh = () =>
-    api
-      .movies()
-      .then((r) => {
-        setMovies(r.movies);
-        setMetaOK(r.metadata_available);
-        setError(null);
-      })
-      .catch((e: Error) => setError(e.message));
+  const refresh = list.refetch;
 
   useEffect(() => {
-    refresh();
     api.qualityProfiles("movie").then((r) => setProfiles(r.profiles.map((p) => ({ key: p.key, name: p.name })))).catch(() => {});
   }, []);
 
@@ -136,11 +129,7 @@ export function Movies() {
 
   // Poll while any movie is downloading so the grid indicators advance.
   const anyDownloading = movies.some((m) => m.download);
-  useEffect(() => {
-    if (!anyDownloading) return;
-    const t = setInterval(refresh, 4000);
-    return () => clearInterval(t);
-  }, [anyDownloading]);
+  usePoll(() => refresh(), anyDownloading ? 4000 : null, { immediate: false });
 
   const search = async (m: Movie) => {
     try {
@@ -156,7 +145,7 @@ export function Movies() {
       <PageHeader title="Movies" />
       <div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex items-center justify-between gap-3">
-          <span className="font-mono text-[11px] text-ink-faint">{movies.length} in library</span>
+          <span className="font-mono text-[11px] text-ink-faint">{list.data ? `${movies.length} in library` : ""}</span>
           <div className="flex items-center gap-2">
             <div className="inline-flex rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
               {(["grid", "table"] as const).map((v) => (
@@ -241,13 +230,13 @@ export function Movies() {
         )}
 
         {!metaOK && <MetadataMissing variant="banner" />}
-        {error && (
-          <div className="mb-3 rounded-lg p-3 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>
-            {error}
-          </div>
-        )}
+        {/* Honest states: a skeleton until the first answer, an error (not "No movies
+            yet") if it failed, and the last good grid with a notice if a refresh failed. */}
+        {list.data && error && <StaleBanner message={error} onRetry={refresh} />}
 
-        {movies.length === 0 ? (
+        {!list.data ? (
+          error ? <ErrorState what="your movies" message={error} onRetry={refresh} busy={list.loading} /> : <Skeleton variant={view === "table" ? "table" : "grid"} />
+        ) : movies.length === 0 ? (
           <div className="rounded-xl p-12 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>
             No movies yet. Click <b>Add movie</b>, search for a film, and Arrmada will monitor and grab it.
           </div>

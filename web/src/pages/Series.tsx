@@ -8,6 +8,11 @@ import { FIT_COLOR } from "../components/FitBadge";
 import { posterThumb } from "../lib/img";
 import { SeriesSearchModal } from "../components/SeriesSearchModal";
 import { usePersisted } from "../lib/persist";
+import { usePollBurst } from "../lib/usePoll";
+import { useQuery } from "../lib/query";
+import { ErrorState, Skeleton, StaleBanner } from "../ui";
+
+const NO_SERIES: SeriesT[] = [];
 
 const FILTERS = [
   { key: "all", label: "All" },
@@ -35,9 +40,11 @@ function matches(s: SeriesT, f: FilterKey): boolean {
 }
 
 export function Series() {
-  const [list, setList] = useState<SeriesT[]>([]);
-  const [metaOK, setMetaOK] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Cached across visits, so Back from a show renders at once, then revalidates.
+  const seriesQ = useQuery("series", () => api.series(), { staleMs: 0 });
+  const list = seriesQ.data?.series ?? NO_SERIES;
+  const metaOK = seriesQ.data?.metadata_available ?? true;
+  const error = seriesQ.error?.message ?? null;
   const [filter, setFilter] = useState<FilterKey>("all");
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
@@ -54,11 +61,9 @@ export function Series() {
 
   const flash = (msg: string) => { setToast(msg); window.setTimeout(() => setToast(null), 3500); };
 
-  const refresh = () =>
-    api.series().then((r) => { setList(r.series); setMetaOK(r.metadata_available); setError(null); }).catch((e: Error) => setError(e.message));
+  const refresh = seriesQ.refetch;
 
   useEffect(() => {
-    refresh();
     api.qualityProfiles("series").then((r) => setProfiles(r.profiles.map((p) => ({ key: p.key, name: p.name })))).catch(() => {});
   }, []);
 
@@ -96,6 +101,9 @@ export function Series() {
     } finally { setBulkBusy(false); }
   };
 
+  // While a refresh-all works, poll so the user sees episode counts settle rather than
+  // having to guess whether anything happened.
+  const watchRefreshAll = usePollBurst(() => refresh(), 3000, 40, () => setRefreshingAll(false));
   // Refresh + rescan every series. This is the bulk form of the per-show "Refresh"
   // button: it reconciles episodes whose file is already on disk but whose row still
   // reads as missing, which is what makes the searcher re-grab things you already have.
@@ -105,29 +113,20 @@ export function Series() {
     try {
       const r = await api.refreshAllSeries();
       flash(`Refreshing ${r.queued} series in the background — counts will update as it goes.`);
-      // Poll while it works so the user sees episode counts settle rather than having
-      // to guess whether anything happened.
-      let ticks = 0;
-      const t = setInterval(() => {
-        refresh();
-        if (++ticks >= 40) { clearInterval(t); setRefreshingAll(false); }
-      }, 3000);
+      watchRefreshAll();
     } catch (e) {
       flash((e as Error).message);
       setRefreshingAll(false);
     }
   };
 
+  const watchScan = usePollBurst(() => refresh(), 2500, 12, () => setScanning(false));
   const scanLibrary = async () => {
     setScanning(true);
     try {
       await api.scanSeries();
       flash("Scanning your library — existing series will appear shortly.");
-      let ticks = 0;
-      const t = setInterval(() => {
-        refresh();
-        if (++ticks >= 12) { clearInterval(t); setScanning(false); }
-      }, 2500);
+      watchScan();
     } catch (e) {
       flash((e as Error).message);
       setScanning(false);
@@ -149,7 +148,7 @@ export function Series() {
       <PageHeader title="Series" />
       <div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex items-center justify-between gap-3">
-          <span className="font-mono text-[11px] text-ink-faint">{list.length} in library</span>
+          <span className="font-mono text-[11px] text-ink-faint">{seriesQ.data ? `${list.length} in library` : ""}</span>
           <div className="flex items-center gap-2">
             <div className="inline-flex rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
               {(["grid", "table"] as const).map((v) => (
@@ -240,9 +239,11 @@ export function Series() {
         )}
 
         {!metaOK && <MetadataMissing variant="banner" />}
-        {error && <div className="mb-3 rounded-lg p-3 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
+        {seriesQ.data && error && <StaleBanner message={error} onRetry={refresh} />}
 
-        {list.length === 0 ? (
+        {!seriesQ.data ? (
+          error ? <ErrorState what="your series" message={error} onRetry={refresh} busy={seriesQ.loading} /> : <Skeleton variant={view === "table" ? "table" : "grid"} />
+        ) : list.length === 0 ? (
           <div className="rounded-xl p-12 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>
             No series yet. Click <b>Add series</b>, search for a show, and Arrmada will monitor and grab it.
           </div>

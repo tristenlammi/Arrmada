@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { api, type ImportRecord } from "../lib/api";
+import { usePoll } from "../lib/usePoll";
 
 function bytes(n: number): string {
   if (n <= 0) return "—";
@@ -14,20 +15,11 @@ export function History() {
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
 
-  useEffect(() => {
-    let alive = true;
-    const load = () =>
-      api
-        .history()
-        .then((h) => alive && (setItems(h), setError(null), setLoaded(true)))
-        .catch((e: Error) => alive && (setError(e.message), setLoaded(true)));
-    load();
-    const t = setInterval(load, 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
+  usePoll(() =>
+    api
+      .history()
+      .then((h) => { setItems(h); setError(null); setLoaded(true); })
+      .catch((e: Error) => { setError(e.message); setLoaded(true); }), 5000);
 
   return (
     <>
