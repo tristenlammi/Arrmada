@@ -115,6 +115,7 @@ func (a *api) handleUpdateInsightsConfig(w http.ResponseWriter, r *http.Request)
 		a.writeError(w, http.StatusInternalServerError, "could not save Plex settings")
 		return
 	}
+	a.recheckHealth("plex.connection") // a reconnected Plex clears its warning now
 	a.writeJSON(w, http.StatusOK, a.deps.Insights.Config(r.Context()))
 }
 

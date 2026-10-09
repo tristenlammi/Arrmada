@@ -92,9 +92,9 @@ func (a *api) registerHealthChecks(reg *health.Registry) {
 		}))
 	}
 
-	// The probe cache keeps the once-a-minute check from writing a probe file into every
-	// library folder every minute — on Unraid that can wake sleeping array disks. A
-	// folder that passed is trusted for an hour; one that failed is re-checked each run.
+	// The probe cache keeps the check from writing a probe file into every library folder
+	// each time it runs — on Unraid that can wake sleeping array disks. A folder that
+	// passed is trusted for an hour; one that failed is re-checked each run.
 	if a.deps.Settings != nil {
 		reg.Register(health.LibraryFoldersCheck(a.libraryState, health.NewProbeCache(time.Hour)))
 	}
@@ -126,6 +126,21 @@ func (a *api) registerHealthChecks(reg *health.Registry) {
 			return a.deps.Backups.HealthWarning(ctx, time.Since(a.start))
 		}))
 	}
+}
+
+// recheckHealth re-runs the named checks in the background after something they judge was
+// just changed (a key saved, a folder picked), so the panel catches up now rather than at
+// the check's next turn.
+func (a *api) recheckHealth(keys ...string) {
+	if a.deps.Health == nil {
+		return
+	}
+	a.bg("health check", strings.Join(keys, ","), time.Minute, func(ctx context.Context) error {
+		for _, k := range keys {
+			a.deps.Health.RunNow(ctx, k)
+		}
+		return nil
+	})
 }
 
 // tmdbValidator is the TMDB provider's key check (metadata.TMDB.Validate).

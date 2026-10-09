@@ -13,15 +13,7 @@ import (
 
 // recheckTMDB re-runs the health panel's TMDB key check after the key changed or was
 // tested, so a fixed key clears the warning now instead of at the next six-hourly check.
-func (a *api) recheckTMDB() {
-	if a.deps.Health == nil {
-		return
-	}
-	a.bg("health check", "tmdb.key", 30*time.Second, func(ctx context.Context) error {
-		a.deps.Health.RunNow(ctx, "tmdb.key")
-		return nil
-	})
-}
+func (a *api) recheckTMDB() { a.recheckHealth("tmdb.key") }
 
 // handleGetAPIKeys returns the state of every credential — configured or not, from where,
 // and a short hint — but never a secret itself.

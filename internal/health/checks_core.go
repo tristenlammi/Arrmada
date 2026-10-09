@@ -40,14 +40,18 @@ type LibraryState struct {
 	DataDir string
 }
 
+// folderCheckEvery paces the checks that touch the library shares. They run whether or
+// not anyone is looking, and on Unraid a look at a share can spin up a sleeping array
+// disk; a share going missing is still noticed within minutes.
+const folderCheckEvery = 5 * time.Minute
+
 // LibraryFoldersCheck checks each folder the user picked is there and writable, and that
 // none sits inside the data folder. Write probes go through probes, which trusts a pass
-// for a while: on Unraid each probe can spin up a sleeping array disk, and this check
-// runs every minute. The timeout is generous for the same reason — a disk spinning up
-// takes several seconds to answer.
+// for a while, for the same sleeping-disk reason. The timeout is generous because a disk
+// spinning up takes several seconds to answer.
 func LibraryFoldersCheck(src func(ctx context.Context) LibraryState, probes *ProbeCache) Check {
 	return Check{
-		Key: "library", Name: "Library folders", Category: CategoryStorage, Timeout: 20 * time.Second,
+		Key: "library", Name: "Library folders", Category: CategoryStorage, Interval: folderCheckEvery, Timeout: 20 * time.Second,
 		Run: func(ctx context.Context) []Finding {
 			st := src(ctx)
 			var out []Finding
@@ -106,7 +110,7 @@ func FolderProblem(f Folder, st FolderState) (level, msg string) {
 // TODO(SAFE): drop this once the recycle bin keeps one bin per filesystem.
 func RecycleDriveCheck(bin func() string, folders func(ctx context.Context) []Folder) Check {
 	return Check{
-		Key: "recycle.drive", Name: "Recycle bin drive", Category: CategoryStorage, Timeout: 10 * time.Second,
+		Key: "recycle.drive", Name: "Recycle bin drive", Category: CategoryStorage, Interval: folderCheckEvery, Timeout: 10 * time.Second,
 		Run: func(ctx context.Context) []Finding {
 			dir := bin()
 			if dir == "" {

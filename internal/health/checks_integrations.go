@@ -86,7 +86,8 @@ const (
 
 // PlexCheck reports a refused token at once and an unreachable Plex once it has been
 // down for ten minutes. It's quiet when Plex isn't set up. probe asks Plex directly and
-// records the answer in what state returns; it's used only when monitoring is off.
+// records the answer in what state returns; it's used when monitoring is off, at most
+// every five minutes, or when a person asked.
 func PlexCheck(state func(ctx context.Context) PlexState, probe func(ctx context.Context) error) Check {
 	return plexCheck(state, probe, time.Now)
 }
@@ -101,7 +102,9 @@ func plexCheck(state func(ctx context.Context) PlexState, probe func(ctx context
 			if !st.Configured {
 				return nil
 			}
-			if !st.Monitoring {
+			// The poller already talks to Plex every few seconds while monitoring is on; a
+			// person asking (Check now, Plex settings saved) gets a fresh answer either way.
+			if !st.Monitoring || Forced(ctx) {
 				mu.Lock()
 				due := probedAt.IsZero() || now().Sub(probedAt) >= plexProbeEvery || Forced(ctx)
 				if due {

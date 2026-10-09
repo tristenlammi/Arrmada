@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 // Service manages download clients and dispatches downloads to them.
@@ -365,12 +367,13 @@ func (s *Service) ClientStates(ctx context.Context) ([]ClientState, error) {
 			cctx, cancel := context.WithTimeout(ctx, clientStateTimeout)
 			defer cancel()
 			start := time.Now()
-			var err error
-			if p, ok := impl.(pinger); ok {
-				err = p.Ping(cctx, c)
-			} else {
-				err = impl.Test(cctx, c)
-			}
+			// A panicking client counts as down rather than taking the app with it.
+			err := safego.Call(s.log, "download client check "+c.Name, func() error {
+				if p, ok := impl.(pinger); ok {
+					return p.Ping(cctx, c)
+				}
+				return impl.Test(cctx, c)
+			})
 			st.LatencyMS = time.Since(start).Milliseconds()
 			if err != nil {
 				st.Err = err.Error()
