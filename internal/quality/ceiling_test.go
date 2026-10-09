@@ -150,3 +150,47 @@ func TestIsQualityUpgradeMatchesTheSearcher(t *testing.T) {
 		t.Error("upgrades disabled must stop the import gate replacing files too")
 	}
 }
+
+// A season pack carries the runtime summed over its episodes, so the ceiling judges its
+// average bitrate, not its size: ten 45-minute episodes in 40 GB are ~12.7 Mb/s.
+func TestPackJudgedAgainstTheCeiling(t *testing.T) {
+	e := NewDefaultEngine()
+	p := Profile{Windows: map[string]BitrateWindow{"1080p": {Min: 5, Max: 15}}}
+	if ev := e.Evaluate(p, NewCandidate("Show.S01.1080p.BluRay.x265-GRP", 40, 10).WithRuntime(450)); !ev.Eligible {
+		t.Errorf("40 GB pack over 450 minutes: %s", ev.RejectReason)
+	}
+	ev := e.Evaluate(p, NewCandidate("Show.S01.1080p.BluRay.x265-GRP", 80, 10).WithRuntime(450))
+	if ev.Eligible || ev.RejectReason != "Over your 15 Mbps ceiling (25.5 Mbps)" {
+		t.Errorf("80 GB pack over 450 minutes: eligible=%v reason %q", ev.Eligible, ev.RejectReason)
+	}
+	// Without a runtime nothing changes: the ceiling can't apply.
+	if ev := e.Evaluate(p, NewCandidate("Show.S01.1080p.BluRay.x265-GRP", 80, 10)); !ev.Eligible {
+		t.Errorf("80 GB pack with no runtime: %s", ev.RejectReason)
+	}
+}
+
+// The upgrade sweep weighs a multi-episode release by its share of the episode it would
+// replace: a 4 GB double is a 2 GB episode, not a 2x bitrate jump over a 2 GB file.
+func TestUpgradeWeighsAMultiEpisodeShare(t *testing.T) {
+	s, ctx := testService(t)
+	sp, err := s.Create(ctx, StoredProfile{
+		MediaType: MediaSeries, Name: "TV", AllowedResolutions: []string{"1080p"},
+		UpgradesEnabled: true, UpgradeMinPercent: 25,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := "custom:" + strconv.FormatInt(sp.ID, 10)
+	cur := "Show.S01E01.1080p.WEB-DL.H.264-GRP"
+	double := NewCandidate("Show.S01E01E02.1080p.WEB-DL.H.264-DBL", 4, 10).WithRuntime(90)
+	if pick, ok := s.UpgradeCandidate(ctx, ref, cur, 2, 45, []Candidate{double}); ok {
+		t.Errorf("picked %s: the same bitrate spread over two episodes is no upgrade", pick.Name)
+	}
+	if got := sizeOver(double, 45); got != 2 {
+		t.Errorf("sizeOver = %v, want the 2 GB share", got)
+	}
+	// Movies: candidate and file share one runtime, so the size is untouched.
+	if got := sizeOver(NewCandidate("Movie.2020.1080p.WEB-DL", 8, 1).WithRuntime(120), 120); got != 8 {
+		t.Errorf("sizeOver for a movie = %v, want 8", got)
+	}
+}

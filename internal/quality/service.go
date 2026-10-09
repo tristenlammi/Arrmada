@@ -208,7 +208,7 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 		// margin floors and codec normalization to the grab side, which compared raw
 		// bitrates and so over-valued a bloated older-codec encode.
 		bitrateBetter := ev.Total >= cur.Total && s.IsBitrateUpgrade(ctx, ref,
-			Encode{SizeGB: ev.Candidate.SizeGB, Codec: ev.Candidate.Release.Codec},
+			Encode{SizeGB: sizeOver(ev.Candidate, runtimeMin), Codec: ev.Candidate.Release.Codec},
 			Encode{SizeGB: currentSizeGB, Codec: curCand.Release.Codec}, runtimeMin)
 		if qualityBetter || bitrateBetter {
 			return ev.Candidate, true

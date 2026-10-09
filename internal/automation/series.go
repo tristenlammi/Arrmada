@@ -460,6 +460,7 @@ func (c *Coordinator) grabSeriesScoped(ctx context.Context, s series.Series, rel
 	// single most common question this code has to answer.
 	var nBlocked, nWrongTitle int
 	var exampleWrongTitle string
+	rts := newRuntimeIndex(s)
 	for _, rel := range bestByTitle(grabbable(releases)) {
 		if blocked[normTitle(rel.Title)] || exclude[normTitle(rel.Title)] {
 			nBlocked++
@@ -476,7 +477,7 @@ func (c *Coordinator) grabSeriesScoped(ctx context.Context, s series.Series, rel
 			continue
 		}
 		byName[rel.Title] = rel
-		cands = append(cands, newSeriesCandidate(rel))
+		cands = append(cands, c.newSeriesCandidate(ctx, s, rts, rel))
 	}
 	// Resolved once: the decision and every grab this pass records run under the same
 	// profile, the default when the series' own was deleted.
@@ -498,6 +499,16 @@ func (c *Coordinator) grabSeriesScoped(ctx context.Context, s series.Series, rel
 		}
 		if exampleWrongTitle != "" {
 			attrs = append(attrs, "example_title_mismatch", exampleWrongTitle)
+		}
+		// The ceiling now judges packs by the runtime summed from TMDB. When TMDB's
+		// lengths or episode list are off, a pack is wrongly "over the ceiling" — name one,
+		// with the runtime it was costed against, so that's diagnosable from the log.
+		for _, ev := range decision.Rejected {
+			if strings.HasPrefix(ev.RejectReason, "Over your") && ev.Candidate.RuntimeMin > 0 {
+				attrs = append(attrs, "example_over_ceiling", fmt.Sprintf("%s (%d min, %.1f Mb/s)",
+					ev.Candidate.Name, ev.Candidate.RuntimeMin, bitrateMbps(ev.Candidate.SizeGB, ev.Candidate.RuntimeMin)))
+				break
+			}
 		}
 		// Anime released under a romaji name, or numbered absolutely, only matches once
 		// the series is flagged as anime — and that flag has to be set by hand on a

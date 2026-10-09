@@ -138,7 +138,7 @@ func TestSourceOrderBareWebLast(t *testing.T) {
 	}{
 		{"Charlottes.Web.2006.DVDRip.XviD-DoNE", SourceDVD},
 		{"Web.of.Lies.S01E01.HDTV.x264-GRP", SourceHDTV},
-		{"Show.2020.WEB.h264-GRP", SourceWebRip}, // bare web with nothing else: unchanged
+		{"Show.2020.WEB.h264-GRP", SourceWebDL}, // bare scene "WEB" is an untouched capture (QUAL-04)
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

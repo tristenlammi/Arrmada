@@ -53,8 +53,9 @@ const SOURCES = [
   { v: "", l: "Any source" },
   { v: "HDTV", l: "HDTV+" },
   { v: "DVD", l: "DVD+" },
-  { v: "WEBRip", l: "WEBRip+" },
-  { v: "WEB-DL", l: "WEB-DL+" },
+  // One WEB tier: the server treats WEB-DL and WEBRip alike for these gates (ranking still
+  // prefers WEB-DL), so a stored "WEBRip" shows as this option too — see sourceValue.
+  { v: "WEB-DL", l: "WEB+ (WEB-DL or WEBRip)" },
   { v: "BluRay", l: "BluRay+" },
   { v: "Remux", l: "Remux only" },
 ];
@@ -63,8 +64,7 @@ const MAX_SOURCES = [
   { v: "", l: "No upper limit" },
   { v: "Remux", l: "up to Remux" },
   { v: "BluRay", l: "up to BluRay (no Remux)" },
-  { v: "WEB-DL", l: "up to WEB-DL" },
-  { v: "WEBRip", l: "up to WEBRip" },
+  { v: "WEB-DL", l: "up to WEB" },
   { v: "DVD", l: "up to DVD" },
 ];
 
@@ -125,7 +125,7 @@ const TARGET_ROWS: { row: Row; label: string; hint: string; options: { k: string
   {
     row: "audio", label: "Audio",
     hint: "Features a file has or doesn't.",
-    options: [{ k: "atmos", l: "Dolby Atmos" }, { k: "lossless", l: "Lossless (TrueHD, DTS-HD MA, FLAC)" }],
+    options: [{ k: "atmos", l: "Dolby Atmos" }, { k: "lossless", l: "Lossless (TrueHD, DTS-HD MA, DTS:X, FLAC, LPCM)" }],
   },
 ];
 
@@ -186,29 +186,39 @@ function emptyProfile(media: string): StoredProfile {
 }
 
 // Templates for a new video profile. Windows follow the bitrates that look like the source
-// on a big screen in HEVC: 4K 15–35 Mb/s, 1080p 5–15, 720p 3–8.
+// on a big screen in HEVC: 4K 15–35 Mb/s, 1080p 5–15, 720p 3–8. TV is encoded leaner than
+// film, and series grabs are held to these windows too, so a series profile starts lower —
+// otherwise a good x265 WEB episode sits under the floor and only wins when nothing else does.
+const TV_WINDOWS = { "2160p": { min: 10, max: 30 }, "1080p": { min: 3, max: 12 }, "720p": { min: 2, max: 6 } };
 const VIDEO_TEMPLATES: { key: string; name: string; desc: string; make: (media: string) => StoredProfile }[] = [
   {
     key: "4k", name: "4K HDR collection", desc: "4K first, 1080p if that's all there is. HEVC or AV1, HDR10+ preferred, Atmos wanted.",
     make: (m) => ({
-      ...emptyProfile(m), allowed_resolutions: ["2160p", "1080p"], min_source: "WEB-DL",
+      ...emptyProfile(m), allowed_resolutions: ["2160p", "1080p"], min_seeders: 1,
       ideal: {
         codec: { hevc: "want", av1: "want" }, hdr: { "HDR10+": "want" }, audio: { atmos: "want" },
-        bitrate: { "2160p": { min: 15, max: 35 }, "1080p": { min: 5, max: 15 } },
+        bitrate: m === "series"
+          ? { "2160p": TV_WINDOWS["2160p"], "1080p": TV_WINDOWS["1080p"] }
+          : { "2160p": { min: 15, max: 35 }, "1080p": { min: 5, max: 15 } },
       },
     }),
   },
   {
     key: "1080", name: "1080p efficient", desc: "1080p in HEVC or AV1, 720p as a fallback. Good quality without remux-sized files.",
     make: (m) => ({
-      ...emptyProfile(m), allowed_resolutions: ["1080p", "720p"], min_source: "WEB-DL",
-      ideal: { codec: { hevc: "want", av1: "want" }, bitrate: { "1080p": { min: 5, max: 15 }, "720p": { min: 3, max: 8 } } },
+      ...emptyProfile(m), allowed_resolutions: ["1080p", "720p"], min_seeders: 1,
+      ideal: {
+        codec: { hevc: "want", av1: "want" },
+        bitrate: m === "series"
+          ? { "1080p": TV_WINDOWS["1080p"], "720p": TV_WINDOWS["720p"] }
+          : { "1080p": { min: 5, max: 15 }, "720p": { min: 3, max: 8 } },
+      },
     }),
   },
   {
     key: "compact", name: "Compact", desc: "The smallest watchable files — for big TV libraries or limited space.",
     make: (m) => ({
-      ...emptyProfile(m), allowed_resolutions: ["1080p", "720p"], small_bias: 4,
+      ...emptyProfile(m), allowed_resolutions: ["1080p", "720p"], small_bias: 4, min_seeders: 1,
       ideal: { codec: { hevc: "want", av1: "want" }, bitrate: { "1080p": { min: 3, max: 8 }, "720p": { min: 2, max: 5 } } },
     }),
   },
@@ -587,13 +597,13 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <label className="block">
                   <span className="mb-1 block text-[10.5px] text-ink-faint">Minimum</span>
-                  <select value={sp.min_source} onChange={(e) => patch({ min_source: e.target.value })} className="w-full rounded-lg px-3 py-2 text-[12.5px]" style={fieldStyle}>
+                  <select value={sourceValue(sp.min_source)} onChange={(e) => patch({ min_source: e.target.value })} className="w-full rounded-lg px-3 py-2 text-[12.5px]" style={fieldStyle}>
                     {SOURCES.map((s) => <option key={s.v} value={s.v}>{s.l}</option>)}
                   </select>
                 </label>
                 <label className="block">
                   <span className="mb-1 block text-[10.5px] text-ink-faint">Maximum</span>
-                  <select value={sp.max_source} onChange={(e) => patch({ max_source: e.target.value })} className="w-full rounded-lg px-3 py-2 text-[12.5px]" style={fieldStyle}>
+                  <select value={sourceValue(sp.max_source)} onChange={(e) => patch({ max_source: e.target.value })} className="w-full rounded-lg px-3 py-2 text-[12.5px]" style={fieldStyle}>
                     {MAX_SOURCES.map((s) => <option key={s.v} value={s.v}>{s.l}</option>)}
                   </select>
                 </label>
@@ -606,7 +616,7 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
               <PreReleaseRule allowed={!!sp.allow_prerelease} onChange={(allowed) => patch({ allow_prerelease: allowed })} />
               <RejectEditor rejected={sp.rejected ?? []} onChange={(r) => patch({ rejected: r })} />
               <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                <NumberField label="Minimum seeders" hint="Skip releases with fewer" value={sp.min_seeders} onChange={(v) => patch({ min_seeders: v })} />
+                <NumberField label="Minimum seeders" hint="Skip releases with fewer. Some indexers don't report seeders — leave 0 if releases vanish" value={sp.min_seeders} onChange={(v) => patch({ min_seeders: v })} />
                 <StallField value={sp.stall_minutes} onChange={(v) => patch({ stall_minutes: v })} />
               </div>
             </Collapsible>
@@ -646,10 +656,21 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
   );
 }
 
+// sourceValue maps a stored source onto the option that shows it: WEB-DL and WEBRip are
+// one WEB tier, so an older profile saved with "WEBRip" reads as WEB+ / up to WEB.
+function sourceValue(v: string): string {
+  return v === "WEBRip" ? "WEB-DL" : v;
+}
+
+// sourceName is a source as the summary says it, with the two WEB labels as one.
+function sourceName(v: string): string {
+  return sourceValue(v) === "WEB-DL" ? "WEB" : v;
+}
+
 function sourceSummary(sp: StoredProfile): string {
-  const min = SOURCES.find((s) => s.v === sp.min_source)?.l ?? "Any source";
+  const min = SOURCES.find((s) => s.v === sourceValue(sp.min_source))?.l ?? "Any source";
   if (!sp.max_source) return sp.min_source ? min : "Any source";
-  return `${sp.min_source ? sp.min_source : "Any"} to ${sp.max_source}`;
+  return `${sp.min_source ? sourceName(sp.min_source) : "Any"} to ${sourceName(sp.max_source)}`;
 }
 
 function rulesSummary(sp: StoredProfile): string {

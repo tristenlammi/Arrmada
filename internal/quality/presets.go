@@ -10,7 +10,7 @@ func DefaultFormats() []CustomFormat {
 		{Name: "HLG", Conditions: []Condition{{Type: CondDynamicRange, Value: "HLG"}}},
 		{Name: "SDR", Conditions: []Condition{{Type: CondDynamicRange, Value: "SDR"}}},
 		{Name: "Atmos", Conditions: []Condition{{Type: CondAudio, Value: "Atmos"}}},
-		{Name: "Lossless", Conditions: []Condition{{Type: CondAudio, Value: "TrueHD|DTS-HD|FLAC"}}},
+		{Name: "Lossless", Conditions: []Condition{{Type: CondLossless}}},
 		{Name: "TrueHD", Conditions: []Condition{{Type: CondAudio, Value: "TrueHD"}}},
 		{Name: "DTS-HD", Conditions: []Condition{{Type: CondAudio, Value: "DTS-HD"}}},
 		{Name: "HEVC", Conditions: []Condition{{Type: CondCodec, Value: "x265"}}},

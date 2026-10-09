@@ -54,6 +54,22 @@ var sourceRank = map[parser.Source]int{
 	parser.SourceWebRip: 3, parser.SourceDVD: 2, parser.SourceHDTV: 1, parser.SourceCAM: 0,
 }
 
+// sourceTier is the coarser ladder the MinSource/MaxSource gates use. WEB-DL and WEBRip
+// share one WEB tier: scene TV tags untouched captures plain "WEB", groups mix the two
+// labels freely, and a "WEB-DL or better" minimum that refused WEBRip silently starved
+// whole shows. Ranking still prefers WEB-DL — sourceBonus and sourceRank keep them apart.
+func sourceTier(s parser.Source) int {
+	if s == parser.SourceWebRip {
+		return sourceRank[parser.SourceWebDL]
+	}
+	return sourceRank[s]
+}
+
+// webTier is the highest minimum an unstated source can be assumed to meet. A release that
+// names no source is almost always a web capture (scene TV, fansubs); it is never assumed
+// to be a disc.
+var webTier = sourceRank[parser.SourceWebDL]
+
 var resRank = map[parser.Resolution]int{
 	parser.Res2160p: 5, parser.Res1080p: 4, parser.Res720p: 3, parser.Res576p: 2, parser.Res480p: 1,
 }
@@ -101,6 +117,7 @@ const (
 	CondResolution   ConditionType = "resolution"
 	CondEdition      ConditionType = "edition"
 	CondReleaseGroup ConditionType = "release_group"
+	CondLossless     ConditionType = "lossless" // no value: the release has a lossless audio track
 )
 
 // Condition is one predicate over a parsed release.
@@ -143,8 +160,17 @@ func (c Condition) matchOne(r parser.Release, v string) bool {
 		hit = strings.EqualFold(r.Edition, v)
 	case CondReleaseGroup:
 		hit = strings.EqualFold(r.Group, v)
+	case CondLossless:
+		hit = losslessAudio(r)
 	}
 	return hit
+}
+
+// losslessAudio reports a lossless track. The parser decides it from the name (DTS-HD
+// MA yes, DTS-HD HRA no); the labels are read too, so a Release built from probed facts
+// rather than parsed still counts.
+func losslessAudio(r parser.Release) bool {
+	return r.AudioLossless || containsStr(r.Audio, "TrueHD") || containsStr(r.Audio, "FLAC") || containsStr(r.Audio, "LPCM")
 }
 
 // CustomFormat is a named set of conditions (all must match — AND).
@@ -265,6 +291,16 @@ const gibToMegabit = 1024.0 * 1024.0 * 1024.0 * 8.0 / 1e6 // ≈ 8589.93
 // bitrateMbps is the release's average bitrate in Mbps, or 0 when the runtime is unknown.
 func (c Candidate) bitrateMbps() float64 { return BitrateMbps(c.SizeGB, c.RuntimeMin) }
 
+// sizeOver is the candidate's size scaled to runtimeMin minutes of content: its share when
+// it covers more than that (an S01E01E02 double weighed against one episode's file). The
+// raw size when either runtime is unknown or the two agree, which is every movie.
+func sizeOver(c Candidate, runtimeMin int) float64 {
+	if c.RuntimeMin <= 0 || runtimeMin <= 0 || c.RuntimeMin == runtimeMin {
+		return c.SizeGB
+	}
+	return c.SizeGB * float64(runtimeMin) / float64(c.RuntimeMin)
+}
+
 // codecEfficiency scales a bitrate into H.264-equivalent terms.
 //
 // Raw bitrate is a poor quality measure across codecs: a 60 Mbps H.264 encode looks WORSE
@@ -360,16 +396,26 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 		ev.RejectReason = fmt.Sprintf("Not in profile — %s", resLabel(r.Resolution))
 		return ev
 	}
-	if p.MinSource != "" && sourceRank[r.Source] < sourceRank[p.MinSource] {
-		ev.RejectReason = fmt.Sprintf("Not %s — this is %s", p.MinSource, sourceLabel(r.Source))
-		return ev
+	if p.MinSource != "" {
+		// An unstated source isn't a cam: it passes any minimum up to WEB and is only
+		// refused where the profile insists on a disc, with a reason that says why.
+		if r.Source == parser.SourceUnknown {
+			if sourceTier(p.MinSource) > webTier {
+				ev.RejectReason = fmt.Sprintf("Source isn't stated in the name — this profile needs %s or better", minSourceLabel(p.MinSource))
+				return ev
+			}
+		} else if sourceTier(r.Source) < sourceTier(p.MinSource) {
+			ev.RejectReason = fmt.Sprintf("Not %s or better — this is %s", minSourceLabel(p.MinSource), sourceLabel(r.Source))
+			return ev
+		}
 	}
 	if p.RejectPreRelease && r.Source == parser.SourceCAM {
 		ev.RejectReason = "A cam, telesync or screener copy — this profile never grabs those"
 		return ev
 	}
-	if p.MaxSource != "" && sourceRank[r.Source] > sourceRank[p.MaxSource] {
-		ev.RejectReason = fmt.Sprintf("Above your %s ceiling — this is %s", sourceLabel(p.MaxSource), sourceLabel(r.Source))
+	// An unstated source can't be judged against a ceiling, so it passes one.
+	if p.MaxSource != "" && r.Source != parser.SourceUnknown && sourceTier(r.Source) > sourceTier(p.MaxSource) {
+		ev.RejectReason = fmt.Sprintf("Above your %s ceiling — this is %s", minSourceLabel(p.MaxSource), sourceLabel(r.Source))
 		return ev
 	}
 	// Bitrate ceiling (length-independent). Only applies when we know the runtime; without it
@@ -522,14 +568,26 @@ func (e *Engine) Decide(p Profile, cands []Candidate) Decision {
 		if a.Avoided != b.Avoided {
 			return !a.Avoided // non-avoided first
 		}
+		// A dead torrent (no seeders, or an indexer that doesn't say) never downloads, so
+		// within a tier it goes after every seeded release however well it scores. Ranks
+		// only: it's still the pick when nothing seeded is eligible.
+		if (a.Candidate.Seeders > 0) != (b.Candidate.Seeders > 0) {
+			return a.Candidate.Seeders > 0
+		}
 		if a.Total != b.Total {
 			return a.Total > b.Total
 		}
-		if a.Candidate.SizeGB != b.Candidate.SizeGB {
-			if preferSmaller {
-				return a.Candidate.SizeGB < b.Candidate.SizeGB
+		if am, bm := magnitudes(a.Candidate, b.Candidate); am != bm {
+			// Releases within 10% of each other are the same encode for every practical
+			// purpose, so health decides: a 10 GB release with 2 seeders losing to a 9.5 GB
+			// one with 150 is the right call. Outside the band, size (bitrate) still rules.
+			if nearEqual(am, bm) && a.Candidate.Seeders != b.Candidate.Seeders {
+				return a.Candidate.Seeders > b.Candidate.Seeders
 			}
-			return a.Candidate.SizeGB > b.Candidate.SizeGB // higher bitrate
+			if preferSmaller {
+				return am < bm
+			}
+			return am > bm // higher bitrate
 		}
 		// Same bitrate → prefer the better source, then more seeders.
 		if sourceRank[a.Candidate.Release.Source] != sourceRank[b.Candidate.Release.Source] {
@@ -549,14 +607,42 @@ func (e *Engine) Decide(p Profile, cands []Candidate) Decision {
 		if len(d.Eligible) > 1 {
 			ru := d.Eligible[1]
 			reason := loseReason(d.Winner.Candidate.Release, ru.Candidate.Release)
-			if ru.Avoided && !d.Winner.Avoided {
+			switch w := d.Winner; {
+			case ru.Avoided && !w.Avoided:
 				reason = "it has " + strings.Join(ru.AvoidedFormats, ", ") + ", which you avoid"
+			case ru.Candidate.Seeders == 0 && w.Candidate.Seeders > 0:
+				reason = "it has no seeders"
+			case ru.Total == w.Total && ru.Candidate.Seeders < w.Candidate.Seeders && nearEqual(magnitudes(w.Candidate, ru.Candidate)):
+				reason = "fewer seeders"
 			}
-			d.ChosenOver = fmt.Sprintf("Chosen over the %s %s — %s",
-				resLabel(ru.Candidate.Release.Resolution), sourceLabel(ru.Candidate.Release.Source), reason)
+			d.ChosenOver = fmt.Sprintf("Chosen over the %s — %s", releaseLabel(ru.Candidate.Release), reason)
 		}
 	}
 	return d
+}
+
+// nearEqualBand is how close two magnitudes must be for seeders to decide between them.
+const nearEqualBand = 0.10
+
+// nearEqual reports whether a and b are within nearEqualBand of the larger.
+func nearEqual(a, b float64) bool {
+	hi, lo := a, b
+	if lo > hi {
+		hi, lo = lo, hi
+	}
+	return hi > 0 && hi-lo <= hi*nearEqualBand
+}
+
+// magnitudes is what an equal-score tie compares: the two bitrates when both runtimes are
+// known, else the two sizes. For one movie every candidate has the same runtime, so the
+// order is the size order it always was. Series candidates cover different lengths — an
+// episode, a season, the whole show — and comparing raw size there let a huge pack beat a
+// better-encoded episode just by holding more of them.
+func magnitudes(a, b Candidate) (float64, float64) {
+	if a.RuntimeMin > 0 && b.RuntimeMin > 0 {
+		return a.bitrateMbps(), b.bitrateMbps()
+	}
+	return a.SizeGB, b.SizeGB
 }
 
 // bonusCollapseRatio: a release keeps its preference bonuses only while its bitrate
@@ -667,9 +753,27 @@ func resLabel(r parser.Resolution) string {
 	return string(r)
 }
 
+// sourceLabel names a source inside a sentence. An unstated one is said as such: "this is
+// unknown" read like a cam, and a release that simply doesn't name its source isn't one.
 func sourceLabel(s parser.Source) string {
 	if s == parser.SourceUnknown {
-		return "unknown"
+		return "an unstated source"
 	}
 	return string(s)
+}
+
+// minSourceLabel names a MinSource/MaxSource setting by its tier: either WEB label means WEB.
+func minSourceLabel(s parser.Source) string {
+	if s == parser.SourceWebDL || s == parser.SourceWebRip {
+		return "WEB"
+	}
+	return sourceLabel(s)
+}
+
+// releaseLabel is "1080p WEB-DL", or "1080p release" when the name states no source.
+func releaseLabel(r parser.Release) string {
+	if r.Source == parser.SourceUnknown {
+		return resLabel(r.Resolution) + " release"
+	}
+	return resLabel(r.Resolution) + " " + string(r.Source)
 }

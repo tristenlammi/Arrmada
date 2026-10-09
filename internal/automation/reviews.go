@@ -780,11 +780,11 @@ func (c *Coordinator) importSeriesInto(ctx context.Context, s series.Series, con
 		// carry none, so fall back to the release folder. Computed here rather than after
 		// the gate because SCORING the candidate needs the same name that gets recorded.
 		sourceName := filepath.Base(v.Path)
-		if parser.Parse(sourceName).Resolution == "" && release.Resolution != "" {
+		if parser.Parse(sourceName).StatedResolution() == "" && release.StatedResolution() != "" {
 			sourceName = filepath.Base(contentPath)
 		}
 		wanted, forced := refsToPlace(refs, force, func(ref series.EpisodeRef) bool {
-			return c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rel, sourceName, v.Size)
+			return c.wantsEpisodeFile(ctx, s, ref.Season, ref.Episode, rel, sourceName, v.Size, len(refs))
 		})
 		if len(forced) > 0 {
 			c.log.Info("series import: replacing on the user's say-so — quality gate skipped",
@@ -927,8 +927,8 @@ func (c *Coordinator) importAbsoluteEpisode(ctx context.Context, s series.Series
 		// resolution of its own — recording it verbatim left the episode with unknown
 		// quality forever, so every future release outranked it.
 		sourceName := filepath.Base(ei.SourcePath)
-		if parser.Parse(sourceName).Resolution == "" {
-			if parent := filepath.Base(filepath.Dir(path)); parser.Parse(parent).Resolution != "" {
+		if parser.Parse(sourceName).StatedResolution() == "" {
+			if parent := filepath.Base(filepath.Dir(path)); parser.Parse(parent).StatedResolution() != "" {
 				sourceName = parent
 			}
 		}
@@ -988,11 +988,15 @@ func titleYear(title string, year int) string {
 // A file that names its own resolution always wins — a pack can hold mixed quality, and
 // the file is the more specific claim. Only genuinely-absent fields are borrowed.
 func inheritQuality(file, release parser.Release) parser.Release {
-	if file.Resolution == "" {
-		file.Resolution = release.Resolution
+	// An inferred resolution (an HDTV file read as SD) yields to one the release states:
+	// the files of a "Show S01 720p HDTV" pack are 720p.
+	if file.Resolution == "" || (file.ResolutionInferred && release.StatedResolution() != "") {
+		file.Resolution, file.ResolutionInferred = release.Resolution, release.ResolutionInferred
 	}
-	if file.Source == "" {
-		file.Source = release.Source
+	// A source the file only implied (a fansub name that says nothing) yields to one the
+	// release states: the episodes of a "[Group] Show (BD 1080p)" batch are BluRay.
+	if file.Source == "" || (file.SourceInferred && release.Source != "" && !release.SourceInferred) {
+		file.Source, file.SourceInferred = release.Source, release.SourceInferred
 	}
 	// Codec too: the bitrate-margin gate converts sizes to H.264-equivalent bitrates
 	// via codec efficiency, and an x265 pack that states the codec only on the folder
@@ -1014,9 +1018,13 @@ func inheritQuality(file, release parser.Release) parser.Release {
 // file discarded, episode unchanged, and free to happen again on the next sweep.
 //
 // Resolution still governs first — it must never DROP, and a genuine resolution increase
-// is always taken. The bitrate margin only decides the equal-resolution case, which is
-// exactly where the old rule said "no" to everything.
-func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, season, episode int, cand parser.Release, candName string, candBytes int64) bool {
+// is always taken unless it's over the profile's bitrate ceiling. The bitrate margin only
+// decides the equal-resolution case, which is exactly where the old rule said "no" to
+// everything.
+//
+// fileEpisodes is how many episodes the file holds. Its bytes are shared between them: an
+// E01E02 file costed against one episode's runtime read at twice its real bitrate.
+func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, season, episode int, cand parser.Release, candName string, candBytes int64, fileEpisodes int) bool {
 	res := cand.Resolution
 	cur := c.series.CurrentEpisodeFile(ctx, s.ID, season, episode)
 	if cur.Path == "" {
@@ -1026,13 +1034,27 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 		return true // recorded file is gone from disk — re-import it
 	}
 
+	const bytesPerGB = 1 << 30
+	candShareGB := float64(candBytes) / bytesPerGB / float64(max(1, fileEpisodes))
+	profile := c.effectiveProfile(ctx, s.QualityProfile, "series")
+	epLabel := fmt.Sprintf("S%02dE%02d", season, episode)
+	// Never replace a file with one over the profile's ceiling — not even for a higher
+	// resolution. The searcher already refuses those, so this only catches grabs from
+	// before series candidates carried a runtime, or from outside the planner. A first
+	// import (nothing there yet) is never refused: something beats nothing.
+	if over, why := c.quality.ExceedsCeiling(ctx, profile, candName, candShareGB, cur.RuntimeMin); over {
+		c.log.Info("series import: refusing an over-ceiling replacement",
+			"series", s.Title, "episode", epLabel, "candidate", candName, "reason", why)
+		return false
+	}
+
 	// The library file is renamed on import, so its name often carries neither the
 	// resolution nor the codec. The release it came from does, so prefer that and fall
 	// back to the filename.
 	curParsed := parser.Parse(filepath.Base(cur.Path))
 	if cur.SourceRelease != "" {
 		src := parser.Parse(cur.SourceRelease)
-		if curParsed.Resolution == "" {
+		if curParsed.Resolution == "" || (curParsed.ResolutionInferred && src.StatedResolution() != "") {
 			curParsed.Resolution = src.Resolution
 		}
 		if curParsed.Codec == "" {
@@ -1051,16 +1073,13 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	// UpgradeCandidate — the profile resolved identically, so a release it chose can't be
 	// turned away on arrival. That mismatch cost a full download and then left the torrent
 	// seeding in the client, which froze the show's sweeps for as long as it sat there.
-	const bytesPerGB = 1 << 30
-	profile := c.effectiveProfile(ctx, s.QualityProfile, "series")
-	epLabel := fmt.Sprintf("S%02dE%02d", season, episode)
 	if c.quality.IsBitrateUpgrade(ctx, profile,
-		quality.Encode{SizeGB: float64(candBytes) / bytesPerGB, Codec: cand.Codec},
+		quality.Encode{SizeGB: candShareGB, Codec: cand.Codec},
 		quality.Encode{SizeGB: float64(cur.SizeBytes) / bytesPerGB, Codec: curParsed.Codec},
 		cur.RuntimeMin) {
 		c.log.Info("series import: replacing an equal-resolution file — the profile's bitrate margin is met",
 			"series", s.Title, "episode", epLabel,
-			"current_gb", float64(cur.SizeBytes)/bytesPerGB, "candidate_gb", float64(candBytes)/bytesPerGB)
+			"current_gb", float64(cur.SizeBytes)/bytesPerGB, "candidate_gb", candShareGB)
 		return true
 	}
 	// Scoring needs the release the current file came FROM. The library file is renamed to
@@ -1068,7 +1087,7 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	// re-import the same episode forever — the loop upgradeSeries guards against the same
 	// way. Without it, fall through to the resolution/bitrate answer above.
 	if cur.SourceRelease != "" && c.quality.IsQualityUpgrade(ctx, profile,
-		candName, float64(candBytes)/bytesPerGB,
+		candName, candShareGB,
 		cur.SourceRelease, float64(cur.SizeBytes)/bytesPerGB) {
 		c.log.Info("series import: replacing an equal-resolution file — it scores higher on this profile",
 			"series", s.Title, "episode", epLabel,
@@ -1085,8 +1104,8 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 // alone, since it's the faithful record of what the file actually came from.
 func (c *Coordinator) repairSourceRelease(ctx context.Context, s series.Series, ei *library.EpisodeImport, contentPath string, release parser.Release) {
 	better := filepath.Base(ei.SourcePath)
-	if parser.Parse(better).Resolution == "" {
-		if release.Resolution == "" {
+	if parser.Parse(better).StatedResolution() == "" {
+		if release.StatedResolution() == "" {
 			return // nothing better to record
 		}
 		better = filepath.Base(contentPath)
@@ -1094,7 +1113,7 @@ func (c *Coordinator) repairSourceRelease(ctx context.Context, s series.Series, 
 	for _, ep := range episodesOf(ei) {
 		rs, re := c.series.ResolveEpisode(ctx, s.ID, ei.Season, ep)
 		cur := c.series.CurrentEpisodeFile(ctx, s.ID, rs, re)
-		if parser.Parse(cur.SourceRelease).Resolution != "" {
+		if parser.Parse(cur.SourceRelease).StatedResolution() != "" {
 			continue // already records a resolution — leave the faithful record alone
 		}
 		if err := c.series.SetEpisodeSourceRelease(ctx, s.ID, rs, re, better); err != nil {

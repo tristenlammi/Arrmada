@@ -264,10 +264,3 @@ func (g *seriesGrabber) try(ctx context.Context, name, label string) bool {
 	c.log.Info("series: grabbing", "series", s.Title, "release", rel.Title, "tier", label)
 	return true
 }
-
-// newSeriesCandidate turns an indexer release into a scoring candidate. Every TV path —
-// the sweep, the quick buttons and the interactive list — builds candidates here, so a
-// release scores the same whichever one looks at it.
-func newSeriesCandidate(rel indexer.Release) quality.Candidate {
-	return quality.NewCandidate(rel.Title, rel.SizeGB(), rel.Seeders)
-}

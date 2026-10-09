@@ -145,11 +145,11 @@ func (sp StoredProfile) Summary() string {
 	}
 	switch {
 	case sp.MinSource != "" && sp.MaxSource != "":
-		parts = append(parts, string(sp.MinSource)+"–"+string(sp.MaxSource))
+		parts = append(parts, minSourceLabel(parser.Source(sp.MinSource))+"–"+minSourceLabel(parser.Source(sp.MaxSource)))
 	case sp.MinSource != "":
-		parts = append(parts, string(sp.MinSource)+"+")
+		parts = append(parts, minSourceLabel(parser.Source(sp.MinSource))+"+")
 	case sp.MaxSource != "":
-		parts = append(parts, "up to "+string(sp.MaxSource))
+		parts = append(parts, "up to "+minSourceLabel(parser.Source(sp.MaxSource)))
 	}
 	if sp.Ideal != nil {
 		// The target says it all, in the order it's set up.
@@ -231,7 +231,7 @@ var formatMeta = map[string]struct{ desc, group string }{
 	"HLG":          {"Broadcast HDR", "hdr"},
 	"SDR":          {"No HDR", "hdr"},
 	"Atmos":        {"Object-based surround audio", "audio"},
-	"Lossless":     {"TrueHD, DTS-HD MA or FLAC", "audio"},
+	"Lossless":     {"TrueHD, DTS-HD MA, DTS:X, FLAC or LPCM", "audio"},
 	"TrueHD":       {"Lossless surround audio", "audio"},
 	"DTS-HD":       {"Lossless DTS audio", "audio"},
 	"HEVC":         {"x265 — smaller files, same quality", "codec"},

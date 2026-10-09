@@ -55,3 +55,39 @@ func TestInheritQualityWithBareRelease(t *testing.T) {
 		t.Errorf("Resolution = %q, want the file's 1080p preserved", got.Resolution)
 	}
 }
+
+// A fansub file's source is only inferred from its conventions; the batch's stated "BD"
+// is the better claim, so the episodes of a BD batch are BluRay, not WEB-DL.
+func TestInferredSourceYieldsToTheRelease(t *testing.T) {
+	release := parser.Parse("[Group] Show (BD 1080p HEVC FLAC)")
+	file := parser.Parse("[Group] Show - 01 [ABCD1234].mkv")
+	if !file.SourceInferred {
+		t.Fatalf("premise: the file's source should be inferred, got %q", file.Source)
+	}
+	got := inheritQuality(file, release)
+	if got.Source != parser.SourceBluray || got.SourceInferred {
+		t.Errorf("Source = %q (inferred %v), want the batch's stated BluRay", got.Source, got.SourceInferred)
+	}
+	// A stated source on the file still wins over the release's.
+	file = parser.Parse("[Group] Show - 01 [WEBRip 1080p].mkv")
+	if got := inheritQuality(file, release); got.Source != parser.SourceWebRip {
+		t.Errorf("Source = %q, want the file's own WEBRip", got.Source)
+	}
+}
+
+// An HDTV file that names no resolution reads as SD on its own, but the pack it came in
+// states 720p — and that's the better claim.
+func TestInferredResolutionYieldsToTheRelease(t *testing.T) {
+	release := parser.Parse("Show.S01.720p.HDTV.x264-GRP")
+	file := parser.Parse("Show.S01E05.HDTV.x264-GRP.mkv")
+	if !file.ResolutionInferred {
+		t.Fatalf("premise: the file's resolution should be inferred, got %q", file.Resolution)
+	}
+	if got := inheritQuality(file, release); got.Resolution != parser.Res720p || got.ResolutionInferred {
+		t.Errorf("Resolution = %q (inferred %v), want the pack's stated 720p", got.Resolution, got.ResolutionInferred)
+	}
+	// With nothing better stated, the inference stands.
+	if got := inheritQuality(file, parser.Parse("some folder")); got.Resolution != parser.Res480p {
+		t.Errorf("Resolution = %q, want the inferred 480p kept", got.Resolution)
+	}
+}

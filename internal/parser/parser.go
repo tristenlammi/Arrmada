@@ -97,6 +97,28 @@ type Release struct {
 	// "0x05"). Season 0 is otherwise also what a release with no season at all reads as,
 	// so this is what tells a real special from an absolute-numbered "[Grp] Show - 05".
 	SeasonExplicit bool `json:"season_explicit,omitempty"`
+
+	// SourceInferred is set when Source wasn't written in the name but read from its
+	// conventions: a fansub release ("[SubsPlease] Show - 01 (1080p) [CRC]") that names no
+	// source is a web capture, so it's filed as WEB-DL rather than left unknown.
+	SourceInferred bool `json:"source_inferred,omitempty"`
+	// ResolutionInferred is set when Resolution wasn't written in the name but read from
+	// an SD-era signal (a DVD or HDTV source, XviD, an SDTV/DSR/PDTV/DVB tag): such a
+	// release is standard definition, filed as 480p, rather than of unknown resolution.
+	ResolutionInferred bool `json:"resolution_inferred,omitempty"`
+	// AudioLossless reports a lossless audio track: TrueHD, FLAC, LPCM, DTS-HD MA or
+	// DTS:X. Not DTS-HD High Resolution, which is lossy despite the "HD".
+	AudioLossless bool `json:"audio_lossless,omitempty"`
+}
+
+// StatedResolution is the resolution the name actually states: unknown when it was only
+// inferred. What a pack folder or a recorded release states beats an inference, so the
+// "does this name say its resolution?" fallbacks ask this rather than Resolution.
+func (r Release) StatedResolution() Resolution {
+	if r.ResolutionInferred {
+		return ResUnknown
+	}
+	return r.Resolution
 }
 
 // Kind classifies a TV release by the breadth it covers.
@@ -270,6 +292,7 @@ func Parse(name string) Release {
 		}
 		titleStart = m[1]
 	}
+	fansubTag := titleStart > 0
 
 	// Underscore is a WORD character to Go's regex \b, so "Rafters_S01E01_Pilot" has no word
 	// boundary before the S and every \b-anchored pattern below — SxxExx, 1x01, "Season 3",
@@ -284,17 +307,20 @@ func Parse(name string) Release {
 	// Lowercased, space-separated copy for keyword matching.
 	lc := normalize(name)
 
-	r.Resolution = detectResolution(lc)
-	r.Source = detectSource(lc)
-	r.Codec = detectCodec(lc)
-	// Exclude the trailing release-group token from HDR detection: a group
-	// literally named "DV" ("...x265-DV") is a tag, not Dolby Vision.
-	hdrHay := lc
+	// The same copy without the trailing release-group token, for the short tags a group
+	// could be named after: a group literally called "DV" ("...x265-DV") is not Dolby
+	// Vision, and one called "BD" or "WEB" says nothing about the source.
+	tagHay := lc
 	if r.Group != "" && strings.HasSuffix(name, "-"+r.Group) {
-		hdrHay = normalize(strings.TrimSuffix(name, "-"+r.Group))
+		tagHay = normalize(strings.TrimSuffix(name, "-"+r.Group))
 	}
-	r.HDR = detectHDR(hdrHay)
+
+	r.Resolution = detectResolution(lc)
+	r.Source = detectSource(lc, tagHay)
+	r.Codec = detectCodec(lc)
+	r.HDR = detectHDR(tagHay)
 	r.Audio = detectAudio(lc)
+	r.AudioLossless = losslessAudio(lc, r.Audio)
 	r.Edition = detectEdition(lc)
 	r.Proper = contains(lc, "proper")
 	r.Repack = contains(lc, "repack")
@@ -446,6 +472,43 @@ func Parse(name string) Release {
 			titleStart = 0
 		}
 		r.Title = cleanTitle(name[titleStart:cut], packCtx)
+	}
+
+	// A pre-release word in the TITLE isn't a pre-release copy: "Cam.2018.1080p.WEB" is the
+	// film Cam on WEB. When a year or season marker ends the title, only the tags after it
+	// decide. A name with no marker keeps the whole-name reading — there's no telling its
+	// title from its tags, so "Movie.HDCAM.x264" stays a cam.
+	if r.Source == SourceCAM && cut < len(name) {
+		tail := name[cut:]
+		if loc := reYear.FindStringIndex(tail); loc != nil && loc[0] == 0 {
+			tail = tail[loc[1]:]
+		}
+		if tailLC := normalize(tail); !isPreRelease(tailLC) {
+			tailBare := tailLC
+			if r.Group != "" && strings.HasSuffix(tail, "-"+r.Group) {
+				tailBare = normalize(strings.TrimSuffix(tail, "-"+r.Group))
+			}
+			r.Source = detectSource(tailLC, tailBare)
+		}
+	}
+
+	// Fansub releases almost never say where they came from: simulcast groups rip the
+	// streaming service and name only the resolution. Left unknown, a profile with any
+	// minimum source refused nearly every anime episode, so read the convention instead.
+	// Anything the name does state (BD, WEBRip, DVD…) was already found and wins.
+	if r.Source == SourceUnknown && (fansubTag || reAnimeCRC.MatchString(name)) {
+		r.Source = SourceWebDL
+		r.SourceInferred = true
+	}
+
+	// SD releases rarely say so: "Show.S01E01.HDTV.x264" and "DVDRip.XviD" name no
+	// resolution because there was only one. Left unknown, they failed every profile that
+	// lists resolutions — even one allowing 480p. Only explicit SD-era signals count, so
+	// an untagged HD release isn't passed off as SD.
+	if r.Resolution == ResUnknown && (r.Source == SourceDVD || r.Source == SourceHDTV || r.Codec == CodecXvid ||
+		contains(lc, "sdtv") || contains(lc, "dsr") || contains(lc, "pdtv") || contains(lc, "dvb")) {
+		r.Resolution = Res480p
+		r.ResolutionInferred = true
 	}
 
 	return r
@@ -685,12 +748,17 @@ func isPreRelease(lc string) bool {
 	return false
 }
 
-func detectSource(lc string) Source {
+// detectSource reads the release's source. bare is lc without the trailing group token;
+// the short bare tags ("BD", "WEB") are only looked for there.
+func detectSource(lc, bare string) Source {
 	switch {
 	case strings.Contains(lc, "remux"):
 		return SourceRemux
 	case strings.Contains(lc, "bluray"), strings.Contains(lc, "blu ray"),
-		strings.Contains(lc, "bdrip"), strings.Contains(lc, "brrip"), strings.Contains(lc, "bdremux"):
+		strings.Contains(lc, "bdrip"), strings.Contains(lc, "brrip"), strings.Contains(lc, "bdremux"),
+		strings.Contains(lc, "bdmux"), bracketedWord(bare, "bd"):
+		// A bare "BD" is how fansub batches say Blu-ray ("[Group] Show (BD 1080p HEVC FLAC)").
+		// Bounded so "BDMV"/"BDISO"/"BD50" (whole discs, not encodes) don't count here.
 		return SourceBluray
 	case strings.Contains(lc, "web dl"), strings.Contains(lc, "webdl"):
 		return SourceWebDL
@@ -698,14 +766,17 @@ func detectSource(lc string) Source {
 		return SourceWebRip
 	case strings.Contains(lc, "hdtv"), strings.Contains(lc, "pdtv"):
 		return SourceHDTV
-	case strings.Contains(lc, "dvdrip"), strings.Contains(lc, " dvd "):
+	case strings.Contains(lc, "dvdrip"), bracketedWord(lc, "dvd"):
+		// Bracket-bounded too: fansub batches tag "[DVD]".
 		return SourceDVD
 	case isPreRelease(lc):
 		return SourceCAM
-	case strings.Contains(lc, " web "):
-		// The bare " web " token LAST: it's a word in real titles ("Charlottes
+	case bracketedWord(bare, "web"):
+		// The bare "WEB" token LAST: it's a word in real titles ("Charlottes
 		// Web", "Web of Lies"), so it only counts when nothing explicit matched.
-		return SourceWebRip
+		// Scene TV tags untouched streaming captures plain "WEB" (a WEB-DL in all but
+		// name); re-encodes say "WEBRip". Sonarr reads it the same way.
+		return SourceWebDL
 	}
 	return SourceUnknown
 }
@@ -791,6 +862,24 @@ var audioTags = []struct {
 	{"DD", []string{" dd ", "ac3", "dd5 1", "dd2 0"}, false},
 	{"AAC", []string{"aac"}, true},
 	{"FLAC", []string{"flac"}, true},
+	{"LPCM", []string{"lpcm", "pcm"}, true},
+}
+
+// losslessAudio reports a lossless track. The "DTS-HD" label covers both DTS-HD Master
+// Audio (lossless) and DTS-HD High Resolution (lossy), so DTS counts only when the name
+// says MA or DTS:X, and never when it says HRA.
+func losslessAudio(lc string, tags []string) bool {
+	for _, t := range tags {
+		if t == "TrueHD" || t == "FLAC" || t == "LPCM" {
+			return true
+		}
+	}
+	if contains(lc, "hra") || strings.Contains(lc, "hi res") {
+		return false
+	}
+	dtsX := contains(lc, "dts x") || contains(lc, "dtsx") || strings.Contains(lc, "dts:x")
+	masterAudio := contains(lc, "hd ma") || contains(lc, "hdma") || contains(lc, "dtshd ma") || contains(lc, "dts ma")
+	return dtsX || masterAudio
 }
 
 func detectAudio(lc string) []string {

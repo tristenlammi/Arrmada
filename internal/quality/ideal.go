@@ -315,7 +315,7 @@ func ReleaseFacts(r parser.Release, bitrateMbps float64) FileFacts {
 	}
 	f.DolbyVision = containsStr(r.HDR, "DV")
 	f.Atmos = containsStr(r.Audio, "Atmos")
-	f.Lossless = containsStr(r.Audio, "TrueHD") || containsStr(r.Audio, "DTS-HD") || containsStr(r.Audio, "FLAC")
+	f.Lossless = losslessAudio(r)
 	return f
 }
 

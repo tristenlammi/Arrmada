@@ -529,9 +529,8 @@ type ReleaseList struct {
 // scores every release against its quality profile, and returns them ranked
 // (best first) with a plain-language summary — WITHOUT grabbing anything.
 // tagRuntime stamps the movie's runtime (minutes) onto each candidate so the profile's bitrate
-// ceiling can turn a release's size into a bitrate. 0 leaves the ceiling inert. (Series flows
-// don't tag runtime yet — a season pack's runtime is its episode count × episode length, which
-// needs pack-scope parsing; the ceiling simply doesn't apply there for now.)
+// ceiling can turn a release's size into a bitrate. 0 leaves the ceiling inert. Series
+// candidates get theirs per release from newSeriesCandidate (a pack sums its episodes).
 func tagRuntime(cands []quality.Candidate, runtimeMin int) []quality.Candidate {
 	if runtimeMin <= 0 {
 		return cands

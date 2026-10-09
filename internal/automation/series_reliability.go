@@ -9,7 +9,6 @@ import (
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/parser"
-	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
 
@@ -225,13 +224,9 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 		c.skipUnreadable(s.Title, err)
 		return err
 	}
+	rts := newRuntimeIndex(s)
 	for _, ep := range haveEps {
-		var cands []quality.Candidate
-		for name, rel := range byName {
-			if episodeRelease(parser.Parse(name), ep.season, ep.episode) {
-				cands = append(cands, quality.NewCandidate(name, rel.SizeGB(), rel.Seeders))
-			}
-		}
+		cands := c.episodeUpgradeCandidates(ctx, s, rts, byName, ep.season, ep.episode)
 		if len(cands) == 0 {
 			continue
 		}

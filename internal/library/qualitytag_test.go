@@ -49,3 +49,19 @@ func TestFileQualityBeatsThePack(t *testing.T) {
 		t.Errorf("qualityTag = %q, want %q — the file's own quality is more specific", got, want)
 	}
 }
+
+// A source inferred from fansub conventions ranks the release but is never written into a
+// library file name as though the release had said it.
+func TestInferredSourceStaysOutOfTheName(t *testing.T) {
+	file := parser.Parse("[SubsPlease] Frieren - 01 (1080p) [ABCD1234].mkv")
+	if !file.SourceInferred {
+		t.Fatalf("premise: the source should be inferred, got %q", file.Source)
+	}
+	if got, want := qualityTag(file), "1080p"; got != want {
+		t.Errorf("qualityTag = %q, want %q", got, want)
+	}
+	// Same for an SD resolution inferred from an HDTV tag.
+	if got, want := qualityTag(parser.Parse("Show.S01E01.HDTV.x264-GRP.mkv")), "HDTV"; got != want {
+		t.Errorf("qualityTag = %q, want %q", got, want)
+	}
+}

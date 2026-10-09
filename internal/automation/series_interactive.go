@@ -46,6 +46,7 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 	cands := make([]quality.Candidate, 0, len(releases))
 	var droppedTitle, droppedScope int
 	var sampleDropped, sampleScope []string
+	rts := newRuntimeIndex(s)
 	for _, rel := range bestByTitle(releases) {
 		if !seriesTitleMatches(rel.Title, s) {
 			droppedTitle++
@@ -65,7 +66,7 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 			continue // not relevant to the requested season/episode scope
 		}
 		byName[rel.Title] = rel
-		cands = append(cands, newSeriesCandidate(rel))
+		cands = append(cands, c.newSeriesCandidate(ctx, s, rts, rel))
 	}
 	c.log.Info("series: search filtered", "series", s.Title, "kept", len(cands), "dropped_wrong_title", droppedTitle, "dropped_out_of_scope", droppedScope)
 	if len(sampleDropped) > 0 {
@@ -79,22 +80,6 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 	profile := c.effectiveProfile(ctx, s.QualityProfile, quality.MediaSeries)
 	decision := c.decideWith(ctx, profile, spec, cands)
 
-	// For a single-episode search we can show a bitrate (size ÷ episode runtime). Season/series
-	// packs cover many episodes, so leave bitrate off there rather than mislead.
-	epRuntime := 0
-	if season >= 0 && episode > 0 {
-		for _, sn := range s.Seasons {
-			if sn.SeasonNumber != season {
-				continue
-			}
-			for _, e := range sn.Episodes {
-				if e.EpisodeNumber == episode {
-					epRuntime = e.Runtime
-				}
-			}
-		}
-	}
-
 	winnerName := ""
 	if decision.Winner != nil {
 		winnerName = decision.Winner.Candidate.Name
@@ -106,6 +91,8 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 		return ReleaseList{}, err
 	}
 	out := make([]RankedRelease, 0, len(cands))
+	// Each candidate carries the runtime it covers — summed across a pack's episodes — so
+	// packs and multi-episode files show a real bitrate too, not only single episodes.
 	appendEval := func(ev quality.Evaluation) {
 		rel := byName[ev.Candidate.Name]
 		out = append(out, RankedRelease{
@@ -115,7 +102,7 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 			InfoHash:     rel.InfoHash,
 			InfoURL:      safeInfoURL(rel.InfoURL, rel.DownloadURL),
 			SizeGB:       ev.Candidate.SizeGB,
-			Bitrate:      bitrateMbps(ev.Candidate.SizeGB, epRuntime),
+			Bitrate:      bitrateMbps(ev.Candidate.SizeGB, ev.Candidate.RuntimeMin),
 			Seeders:      ev.Candidate.Seeders,
 			Summary:      summarizeSeries(ev.Candidate.Release),
 			Eligible:     ev.Eligible,
