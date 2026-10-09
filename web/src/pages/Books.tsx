@@ -94,7 +94,7 @@ export function Books() {
       }).catch(() => {});
     }, 2000);
     return () => clearInterval(t);
-  }, [upgrade?.running]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [upgrade?.running]);
   // Poll the missing-editions sweep while it runs, then reload once it lands.
   useEffect(() => {
     if (!sweep?.running) return;
@@ -108,7 +108,7 @@ export function Books() {
       }).catch(() => {});
     }, 2000);
     return () => clearInterval(t);
-  }, [sweep?.running]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [sweep?.running]);
   const startSweep = async () => {
     try {
       const r = await api.startBookSweep();
