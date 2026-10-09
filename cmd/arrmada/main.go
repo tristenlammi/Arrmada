@@ -729,7 +729,7 @@ func main() {
 			return filepath.Join(backupSvc.Dir(), b.Name), nil
 		},
 		RunGroup: grp,
-		Backups: backupSvc,
+		Backups:  backupSvc,
 	})
 
 	errCh := make(chan error, 1)
