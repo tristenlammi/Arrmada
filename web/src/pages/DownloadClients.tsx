@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { api, type DownloadClient } from "../lib/api";
 import { useQuery } from "../lib/query";
-import { ErrorState, Skeleton, StaleBanner } from "../ui";
+import { ErrorState, Skeleton, StaleBanner, useConfirm } from "../ui";
 
 const NO_CLIENTS: DownloadClient[] = [];
 
@@ -15,6 +15,8 @@ export function DownloadClients() {
   const [tests, setTests] = useState<Record<number, TestState>>({});
   const [ports, setPorts] = useState<Record<number, number>>({});
   const [showForm, setShowForm] = useState(false);
+  const [deleteErr, setDeleteErr] = useState<Record<number, string>>({});
+  const confirm = useConfirm();
 
   const refresh = q.refetch;
 
@@ -37,9 +39,23 @@ export function DownloadClients() {
     }
   };
 
-  const remove = async (id: number) => {
-    await api.deleteDownloadClient(id);
-    refresh();
+  // Removing asks first and says what it does and doesn't touch; a refusal from the
+  // server shows on the card instead of vanishing.
+  const remove = async (dc: DownloadClient) => {
+    const ok = await confirm({
+      title: `Remove ${dc.name}?`,
+      body: "Arrmada stops sending downloads to it. Torrents already there are untouched.",
+      confirmLabel: "Remove",
+      tone: "danger",
+    });
+    if (!ok) return;
+    setDeleteErr((d) => { const n = { ...d }; delete n[dc.id]; return n; });
+    try {
+      await api.deleteDownloadClient(dc.id);
+      refresh();
+    } catch (e) {
+      setDeleteErr((d) => ({ ...d, [dc.id]: (e as Error).message }));
+    }
   };
 
   return (
@@ -82,8 +98,8 @@ export function DownloadClients() {
               const t = tests[dc.id];
               return (
                 <div key={dc.id} className="rounded-xl p-4" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
-                  <div className="flex items-center gap-3">
-                    <div className="flex-1">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="min-w-0 flex-1 basis-[180px]">
                       <div className="flex items-center gap-2">
                         <span className="text-[13.5px] font-semibold">{dc.name}</span>
                         <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>
@@ -108,10 +124,13 @@ export function DownloadClients() {
                     <button onClick={() => runTest(dc.id)} className="rounded-lg px-3 py-1.5 text-[12px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
                       {t?.loading ? "Testing…" : "Test"}
                     </button>
-                    <button onClick={() => remove(dc.id)} className="rounded-lg px-3 py-1.5 text-[12px]" style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>
+                    <button onClick={() => remove(dc)} className="rounded-lg px-3 py-1.5 text-[12px]" style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>
                       Delete
                     </button>
                   </div>
+                  {deleteErr[dc.id] && (
+                    <div className="mt-2.5 text-[12px]" style={{ color: "var(--reject)" }}>Couldn't remove: {deleteErr[dc.id]}</div>
+                  )}
                   {t && !t.loading && (
                     <div className="mt-2.5 font-mono text-[11px]" style={{ color: t.ok ? "var(--good)" : "var(--reject)" }}>
                       {t.ok ? "✓ Connected" : `✕ ${t.error ?? "failed"}`}
@@ -129,7 +148,8 @@ export function DownloadClients() {
 
 function AddForm({ onAdded }: { onAdded: () => void }) {
   const [name, setName] = useState("qBittorrent");
-  const [url, setUrl] = useState("http://localhost:8080");
+  // No default URL: localhost:8080 inside the Arrmada container is Arrmada itself.
+  const [url, setUrl] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [category, setCategory] = useState("arrmada");
@@ -155,12 +175,12 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
 
   return (
     <form onSubmit={submit} className="mb-4 rounded-xl p-4" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Labeled label="Name">
           <input className={field} style={fieldStyle} value={name} onChange={(e) => setName(e.target.value)} required />
         </Labeled>
         <Labeled label="WebUI URL">
-          <input className={field} style={fieldStyle} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://localhost:8080" required />
+          <input className={field} style={fieldStyle} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://qbittorrent:8080 (as reached from the Arrmada container)" required />
         </Labeled>
         <Labeled label="Username">
           <input className={field} style={fieldStyle} value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off" />
@@ -173,7 +193,7 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
         </Labeled>
       </div>
       <p className="mt-3 text-[11px] text-ink-faint">
-        Points at your qBittorrent WebUI. The category keeps Arrmada’s downloads separate. Credentials are stored on your server.
+        Points at your qBittorrent WebUI as the Arrmada container reaches it: its container name or your server’s IP. localhost here means the Arrmada container itself, not your server. The category keeps Arrmada’s downloads separate. Credentials are stored on your server.
       </p>
       {error && <div className="mt-3 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
       <button
@@ -190,7 +210,7 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
 
 function Labeled({ label, span2, children }: { label: string; span2?: boolean; children: React.ReactNode }) {
   return (
-    <label className={`flex flex-col gap-1.5 ${span2 ? "col-span-2" : ""}`}>
+    <label className={`flex flex-col gap-1.5 ${span2 ? "sm:col-span-2" : ""}`}>
       <span className="font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-ink-faint">{label}</span>
       {children}
     </label>

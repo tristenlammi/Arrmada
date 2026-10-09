@@ -2,11 +2,14 @@ import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { api, type Indexer } from "../lib/api";
 import { useQuery } from "../lib/query";
-import { ErrorState, Skeleton, StaleBanner } from "../ui";
+import { ErrorState, Skeleton, StaleBanner, useConfirm } from "../ui";
 
 const NO_INDEXERS: Indexer[] = [];
 
 type TestState = { loading?: boolean; ok?: boolean; error?: string };
+
+// Priority only orders results that are otherwise level, so say so wherever it shows.
+const TIE_BREAK_HELP = "Only breaks ties between equally seeded results, such as the same release from two indexers. 1 = preferred.";
 
 export function Indexers() {
   const q = useQuery("indexers", () => api.indexers(), { staleMs: 0 });
@@ -15,6 +18,8 @@ export function Indexers() {
   const [tests, setTests] = useState<Record<number, TestState>>({});
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
+  const [deleteErr, setDeleteErr] = useState<Record<number, string>>({});
+  const confirm = useConfirm();
 
   const refresh = q.refetch;
 
@@ -28,9 +33,23 @@ export function Indexers() {
     }
   };
 
-  const remove = async (id: number) => {
-    await api.deleteIndexer(id);
-    refresh();
+  // Deleting asks first and names what happens to downloads already grabbed through it;
+  // a refusal from the server shows on the row instead of vanishing.
+  const remove = async (idx: Indexer) => {
+    const ok = await confirm({
+      title: `Delete ${idx.name}?`,
+      body: "Searches stop using it. Seed rules on downloads already grabbed through it fall back to the 14-day default.",
+      confirmLabel: "Delete",
+      tone: "danger",
+    });
+    if (!ok) return;
+    setDeleteErr((d) => { const n = { ...d }; delete n[idx.id]; return n; });
+    try {
+      await api.deleteIndexer(idx.id);
+      refresh();
+    } catch (e) {
+      setDeleteErr((d) => ({ ...d, [idx.id]: (e as Error).message }));
+    }
   };
 
   return (
@@ -75,8 +94,8 @@ export function Indexers() {
               const t = tests[idx.id];
               return (
                 <div key={idx.id} className="rounded-xl p-4" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
-                  <div className="flex items-center gap-3">
-                    <div className="flex-1">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="min-w-0 flex-1 basis-[180px]">
                       <div className="flex items-center gap-2">
                         <span className="text-[13.5px] font-semibold">{idx.name}</span>
                         <span
@@ -95,17 +114,20 @@ export function Indexers() {
                         {idx.url || (idx.username ? `@${idx.username}` : "")}
                       </div>
                     </div>
-                    <span className="font-mono text-[11px] text-ink-faint">prio {idx.priority}</span>
+                    <span className="font-mono text-[11px] text-ink-faint" title={TIE_BREAK_HELP}>tie-break {idx.priority}</span>
                     <button onClick={() => setEditingId(editingId === idx.id ? null : idx.id)} className="rounded-lg px-3 py-1.5 text-[12px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
                       {editingId === idx.id ? "Close" : "Edit"}
                     </button>
                     <button onClick={() => runTest(idx.id)} className="rounded-lg px-3 py-1.5 text-[12px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
                       {t?.loading ? "Testing…" : "Test"}
                     </button>
-                    <button onClick={() => remove(idx.id)} className="rounded-lg px-3 py-1.5 text-[12px]" style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>
+                    <button onClick={() => remove(idx)} className="rounded-lg px-3 py-1.5 text-[12px]" style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>
                       Delete
                     </button>
                   </div>
+                  {deleteErr[idx.id] && (
+                    <div className="mt-2.5 text-[12px]" style={{ color: "var(--reject)" }}>Couldn't delete: {deleteErr[idx.id]}</div>
+                  )}
                   <MediaPills idx={idx} onChange={refresh} />
                   {t && !t.loading && (
                     <div className="mt-2.5 font-mono text-[11px]" style={{ color: t.ok ? "var(--good)" : "var(--reject)" }}>
@@ -177,7 +199,7 @@ function ProwlarrSync({ onSynced }: { onSynced: () => void }) {
       </button>
       {open && (
         <div className="mt-3.5 border-t pt-3.5" style={{ borderColor: "var(--line)" }}>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <label className="flex flex-col gap-1.5">
               <span className="font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-ink-faint">Prowlarr URL</span>
               <input className={field} style={fieldStyle} value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://arrmada-prowlarr:9696" />
@@ -217,9 +239,23 @@ function ProwlarrSync({ onSynced }: { onSynced: () => void }) {
   );
 }
 
+// The name a new indexer gets from its kind, until the user types their own.
+const KIND_NAMES: Record<string, string> = {
+  "1337x": "1337x",
+  torrentleech: "TorrentLeech",
+  myanonamouse: "MyAnonaMouse",
+  torznab: "Torznab",
+  newznab: "Newznab",
+};
+
 function AddForm({ onAdded }: { onAdded: () => void }) {
-  const [name, setName] = useState("1337x");
+  const [name, setName] = useState(KIND_NAMES["1337x"]);
+  const [nameTouched, setNameTouched] = useState(false);
   const [kind, setKind] = useState("1337x");
+  const changeKind = (k: string) => {
+    setKind(k);
+    if (!nameTouched) setName(KIND_NAMES[k] ?? k);
+  };
   const [url, setUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [username, setUsername] = useState("");
@@ -259,12 +295,12 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
 
   return (
     <form onSubmit={submit} className="mb-4 rounded-xl p-4" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Labeled label="Name">
-          <input className={field} style={fieldStyle} value={name} onChange={(e) => setName(e.target.value)} required />
+          <input className={field} style={fieldStyle} value={name} onChange={(e) => { setName(e.target.value); setNameTouched(true); }} required />
         </Labeled>
         <Labeled label="Kind">
-          <select className={field} style={fieldStyle} value={kind} onChange={(e) => setKind(e.target.value)}>
+          <select className={field} style={fieldStyle} value={kind} onChange={(e) => changeKind(e.target.value)}>
             <option value="1337x">1337x (public torrents)</option>
             <option value="torrentleech">TorrentLeech (native)</option>
             <option value="myanonamouse">MyAnonaMouse (native, books)</option>
@@ -304,7 +340,7 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
           </>
         )}
 
-        <Labeled label="Priority (1–50)">
+        <Labeled label="Tie-break priority (1–50)" hint={TIE_BREAK_HELP}>
           <input type="number" min={1} max={50} className={field} style={fieldStyle} value={priority} onChange={(e) => setPriority(Number(e.target.value))} />
         </Labeled>
         <Labeled label="Min seeders (0 = off)">
@@ -395,11 +431,11 @@ function EditForm({ idx, onSaved }: { idx: Indexer; onSaved: () => void }) {
 
   return (
     <form onSubmit={submit} className="mt-3 rounded-lg p-3.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <Labeled label="Name">
           <input className={field} style={fieldStyle} value={name} onChange={(e) => setName(e.target.value)} required />
         </Labeled>
-        <Labeled label="Priority (1–50)">
+        <Labeled label="Tie-break priority (1–50)" hint={TIE_BREAK_HELP}>
           <input type="number" min={1} max={50} className={field} style={fieldStyle} value={priority} onChange={(e) => setPriority(Number(e.target.value))} />
         </Labeled>
         <Labeled label="Min seeders (0 = off)">
@@ -493,7 +529,7 @@ function SeedingRules({ enabled, ratio, time, unit, onEnabled, onRatio, onTime, 
       </div>
       {enabled && (
         <>
-          <div className="mt-3 grid grid-cols-2 gap-3">
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Labeled label="Seed ratio (0 = none)">
               <input type="number" min={0} step={0.1} className={field} style={fieldStyle} value={ratio} onChange={(e) => onRatio(Math.max(0, Number(e.target.value)))} placeholder="e.g. 2.5" />
             </Labeled>
@@ -511,11 +547,12 @@ function SeedingRules({ enabled, ratio, time, unit, onEnabled, onRatio, onTime, 
   );
 }
 
-function Labeled({ label, span2, children }: { label: string; span2?: boolean; children: React.ReactNode }) {
+function Labeled({ label, hint, span2, children }: { label: string; hint?: string; span2?: boolean; children: React.ReactNode }) {
   return (
-    <label className={`flex flex-col gap-1.5 ${span2 ? "col-span-2" : ""}`}>
+    <label className={`flex flex-col gap-1.5 ${span2 ? "sm:col-span-2" : ""}`}>
       <span className="font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-ink-faint">{label}</span>
       {children}
+      {hint && <span className="text-[10.5px] text-ink-faint">{hint}</span>}
     </label>
   );
 }
@@ -528,19 +565,31 @@ const MEDIA_TYPES = [
 ] as const;
 const ALL_MEDIA = MEDIA_TYPES.map((m) => m.key as string);
 
-// MediaPills scopes an indexer to specific areas. Empty media_types = used for
-// everything, shown as no pills lit ("all areas"). Clicking a pill on an
-// unscoped indexer restricts it to just that area; click more to add areas, or
-// click a lit pill to remove it. Clearing every area returns to "all areas".
-function MediaPills({ idx, onChange }: { idx: Indexer; onChange: () => void }) {
+// MediaPills scopes an indexer to specific areas. A lit pill means "searched for
+// this area": an unscoped indexer (empty media_types) is used for everything, so
+// every pill is lit. Clicking a lit pill excludes that area; lighting them all
+// again stores [] ("all areas"). The last lit pill can't be turned off — that
+// would be an indexer used for nothing, which is what disabling it is for.
+function MediaPills({ idx, onChange }: { idx: Indexer; onChange: () => void | Promise<void> }) {
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // The optimistic choice while a save is out; null = show what the server has.
+  const [pending, setPending] = useState<string[] | null>(null);
   const scoped = Boolean(idx.media_types && idx.media_types.length > 0);
-  const selected = scoped ? (idx.media_types as string[]) : [];
+  const saved = scoped ? ALL_MEDIA.filter((k) => (idx.media_types as string[]).includes(k)) : ALL_MEDIA;
+  const lit = pending ?? saved;
+  const allLit = lit.length === ALL_MEDIA.length;
 
   const toggle = async (key: string) => {
-    const next = selected.includes(key) ? selected.filter((k) => k !== key) : [...selected, key];
+    if (lit.includes(key) && lit.length === 1) {
+      setError("An indexer has to search for something. Disable the indexer instead.");
+      return;
+    }
+    const next = lit.includes(key) ? lit.filter((k) => k !== key) : [...lit, key];
     const ordered = ALL_MEDIA.filter((k) => next.includes(k));
-    const media_types = ordered.length === ALL_MEDIA.length ? [] : ordered; // none or all = "all areas"
+    const media_types = ordered.length === ALL_MEDIA.length ? [] : ordered; // every area = unscoped
+    setPending(ordered);
+    setError(null);
     setSaving(true);
     try {
       await api.updateIndexer(idx.id, {
@@ -557,8 +606,12 @@ function MediaPills({ idx, onChange }: { idx: Indexer; onChange: () => void }) {
         seed_hours: idx.seed_hours,
         enabled: idx.enabled,
       });
-      onChange();
+      await onChange();
+    } catch (e) {
+      setError(`Couldn't save: ${(e as Error).message}`);
     } finally {
+      // Back to the server's answer: the refreshed row after a save, the old one after a failure.
+      setPending(null);
       setSaving(false);
     }
   };
@@ -567,12 +620,14 @@ function MediaPills({ idx, onChange }: { idx: Indexer; onChange: () => void }) {
     <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
       <span className="font-mono text-[9px] font-bold uppercase tracking-[0.1em] text-ink-faint">Used for</span>
       {MEDIA_TYPES.map((m) => {
-        const active = selected.includes(m.key);
+        const active = lit.includes(m.key);
         return (
           <button
             key={m.key}
             type="button"
             disabled={saving}
+            aria-pressed={active}
+            title={active ? `Stop using it for ${m.label}` : `Use it for ${m.label} too`}
             onClick={() => toggle(m.key)}
             className="rounded-full px-2.5 py-0.5 text-[10.5px] font-semibold transition-colors disabled:opacity-50"
             style={{
@@ -585,7 +640,8 @@ function MediaPills({ idx, onChange }: { idx: Indexer; onChange: () => void }) {
           </button>
         );
       })}
-      {!scoped && <span className="text-[10px] text-ink-faint">· all areas</span>}
+      {allLit && <span className="text-[10px] text-ink-faint">· all areas</span>}
+      {error && <span role="alert" className="basis-full text-[11px]" style={{ color: "var(--reject)" }}>{error}</span>}
     </div>
   );
 }
