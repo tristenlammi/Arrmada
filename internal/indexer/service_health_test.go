@@ -287,7 +287,7 @@ func TestProwlarrResyncWithNewKeyClearsStatus(t *testing.T) {
 	t.Cleanup(prowlarr.Close)
 	s, tr, _ := healthService(t)
 	ctx := context.Background()
-	if _, err := s.SyncProwlarr(ctx, prowlarr.URL, "key-one", ""); err != nil {
+	if _, err := s.SyncProwlarr(ctx, ProwlarrSync{URL: prowlarr.URL, APIKey: "key-one"}); err != nil {
 		t.Fatal(err)
 	}
 	list, _ := s.List(ctx)
@@ -301,13 +301,13 @@ func TestProwlarrResyncWithNewKeyClearsStatus(t *testing.T) {
 		}
 	}
 	pause()
-	if _, err := s.SyncProwlarr(ctx, prowlarr.URL, "key-one", ""); err != nil {
+	if _, err := s.SyncProwlarr(ctx, ProwlarrSync{URL: prowlarr.URL, APIKey: "key-one"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := tr.Get(connstatus.KindIndexer, r); !ok {
 		t.Fatal("a re-sync that changed nothing cleared the status")
 	}
-	if _, err := s.SyncProwlarr(ctx, prowlarr.URL, "key-two", ""); err != nil {
+	if _, err := s.SyncProwlarr(ctx, ProwlarrSync{URL: prowlarr.URL, APIKey: "key-two"}); err != nil {
 		t.Fatal(err)
 	}
 	if st, ok := tr.Get(connstatus.KindIndexer, r); ok {

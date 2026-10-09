@@ -237,6 +237,12 @@ func main() {
 		bus.Publish("integration.status", map[string]any{"kind": s.Kind, "ref": s.Ref, "state": s.Phase(time.Now())})
 	})
 	indexers.SetStatus(connStatus)
+	// Rows synced from Prowlarr before rows remembered their Prowlarr id get it from their
+	// feed address, so they're treated as Prowlarr's (name and address owned by the sync)
+	// before the next sync runs.
+	if _, err := indexers.BackfillProwlarrIDs(context.Background(), settingsSvc.Get(context.Background(), "prowlarr_url", cfg.ProwlarrURL)); err != nil {
+		log.Warn("couldn't link synced indexers to their Prowlarr ids", "err", err)
+	}
 	downloads.SetStatus(connStatus)
 	// FlareSolverr answering or not is recorded like any integration (no backoff: the
 	// searches that need it are already paced by their indexers' own status).

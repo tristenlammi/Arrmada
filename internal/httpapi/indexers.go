@@ -187,6 +187,21 @@ func (a *api) handleUpdateIndexer(w http.ResponseWriter, r *http.Request) {
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
+	old, err := a.deps.Indexers.Get(r.Context(), id)
+	if errors.Is(err, indexer.ErrNotFound) {
+		a.writeError(w, http.StatusNotFound, "indexer not found")
+		return
+	}
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not update indexer")
+		return
+	}
+	// A row synced from Prowlarr takes its name, address and key from Prowlarr: an edit
+	// here would only be undone by the next sync, and its address is how the sync finds it.
+	// Everything else on it is the owner's to change.
+	if old.ProwlarrID > 0 {
+		req.Name, req.Kind, req.URL, req.APIKey = old.Name, string(old.Kind), old.URL, ""
+	}
 	if req.Name == "" {
 		a.writeError(w, http.StatusBadRequest, "name is required")
 		return
@@ -207,7 +222,7 @@ func (a *api) handleUpdateIndexer(w http.ResponseWriter, r *http.Request) {
 		seedEnabled = *req.SeedEnabled
 	}
 
-	err := a.deps.Indexers.Update(r.Context(), indexer.Indexer{
+	err = a.deps.Indexers.Update(r.Context(), indexer.Indexer{
 		ID:          id,
 		Name:        req.Name,
 		Kind:        kind,

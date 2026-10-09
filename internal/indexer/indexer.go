@@ -60,7 +60,22 @@ type Indexer struct {
 	SeedRatio   float64  `json:"seed_ratio"`   // remove after this ratio (0 = no target)
 	SeedHours   int      `json:"seed_hours"`   // remove after this many hours (0 = no limit)
 	Enabled     bool     `json:"enabled"`
+
+	// ProwlarrID is the Prowlarr indexer this row mirrors (0 = not synced from Prowlarr).
+	// A sync owns such a row's name, address and key; everything else stays the owner's.
+	ProwlarrID int `json:"prowlarr_id,omitempty"`
+	// DisabledBy says who switched the row off: DisabledByUser or DisabledByProwlarr. A
+	// sync only turns back on what a sync turned off.
+	DisabledBy string `json:"disabled_by,omitempty"`
+	// ManagedNote is the line a sync leaves on the row, e.g. "Removed from Prowlarr".
+	ManagedNote string `json:"managed_note,omitempty"`
 }
+
+// Who switched an indexer off (Indexer.DisabledBy).
+const (
+	DisabledByUser     = "user"
+	DisabledByProwlarr = "prowlarr"
+)
 
 // Media types an indexer can be scoped to.
 const (

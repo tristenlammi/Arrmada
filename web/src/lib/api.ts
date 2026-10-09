@@ -46,8 +46,26 @@ export interface Indexer {
   seed_ratio?: number;
   seed_hours?: number;
   enabled: boolean;
+  /** The Prowlarr indexer this row mirrors; its name, URL and key come from Prowlarr. */
+  prowlarr_id?: number;
+  /** Who switched it off: "user" or "prowlarr" (a sync only turns back on its own). */
+  disabled_by?: string;
+  /** The line a Prowlarr sync left on it, e.g. "Removed from Prowlarr". */
+  managed_note?: string;
   /** How it has been answering; sent to managers and admins only. */
   status?: IndexerStatus;
+}
+
+/** What a Prowlarr sync changed. flaresolverr_ready is Prowlarr's own answer afterwards. */
+export interface ProwlarrSyncResult {
+  added: number;
+  updated: number;
+  unchanged: number;
+  disabled: number;
+  reenabled: number;
+  skipped_usenet: number;
+  flaresolverr_ready: boolean;
+  notes?: string[];
 }
 
 /**
@@ -1638,8 +1656,8 @@ export const api = {
     req<{ ok: boolean; error?: string }>(`/api/v1/indexers/${id}/test`, { method: "POST" }),
   flareSolverrStatus: () => req<FlareSolverrStatus>("/api/v1/flaresolverr/status"),
   prowlarrInfo: () => req<{ url: string; has_key: boolean }>("/api/v1/indexers/prowlarr"),
-  syncProwlarr: (body: { url: string; api_key: string }) =>
-    req<{ synced: number; flaresolverr_ready: boolean }>("/api/v1/indexers/prowlarr/sync", { method: "POST", body: JSON.stringify(body) }),
+  syncProwlarr: (body: { url: string; api_key: string; add_flaresolverr_proxy?: boolean }) =>
+    req<ProwlarrSyncResult>("/api/v1/indexers/prowlarr/sync", { method: "POST", body: JSON.stringify(body) }),
 
   activity: () => req<ActivityFeed>("/api/v1/downloads"),
   pauseDownload: (hash: string) => req<{ status: string }>(`/api/v1/queue/${hash}/pause`, { method: "POST" }),

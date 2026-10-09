@@ -1,5 +1,5 @@
 // Words and colours for an indexer's health on the Indexers page (see IndexerStatus).
-import type { IndexerStatus } from "./api";
+import type { IndexerStatus, ProwlarrSyncResult } from "./api";
 import { ago, toMs } from "./taskTime";
 
 // The row's dot: green working, amber failing (sweeps still ask it), red paused after
@@ -49,4 +49,24 @@ export function indexerStatusLine(s: IndexerStatus, now = Date.now()): StatusLin
   if (s.last_error) text += `: ${s.last_error}`;
   if (s.state === "backing_off" && s.backoff_until) text += ` · next try ${hhmm(s.backoff_until)}`;
   return { text, color: s.state === "backing_off" ? "var(--reject-text)" : "var(--avoid-text)" };
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+// prowlarrSyncMessage says what a Prowlarr sync changed: "Added 2, updated 1, turned off
+// 1 (disabled or removed in Prowlarr). Skipped 1 usenet indexer: Arrmada has no usenet
+// download client." It claims FlareSolverr only when Prowlarr itself lists the proxy.
+export function prowlarrSyncMessage(r: ProwlarrSyncResult): string {
+  const parts: string[] = [];
+  if (r.added) parts.push(`added ${r.added}`);
+  if (r.updated) parts.push(`updated ${r.updated}`);
+  if (r.reenabled) parts.push(`turned ${r.reenabled} back on`);
+  if (r.disabled) parts.push(`turned off ${r.disabled} (disabled or removed in Prowlarr)`);
+  let msg = parts.length > 0 ? `${parts.join(", ")}.` : "Nothing changed.";
+  msg = msg.charAt(0).toUpperCase() + msg.slice(1);
+  if (r.unchanged && parts.length > 0) msg += ` ${plural(r.unchanged, "indexer")} unchanged.`;
+  if (r.skipped_usenet) msg += ` Skipped ${plural(r.skipped_usenet, "usenet indexer")}: Arrmada has no usenet download client.`;
+  if (r.flaresolverr_ready) msg += " Prowlarr has a FlareSolverr proxy for Cloudflare trackers.";
+  for (const n of r.notes ?? []) msg += ` ${n}`;
+  return msg;
 }

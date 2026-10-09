@@ -1,6 +1,10 @@
 package httpapi
 
-import "net/http"
+import (
+	"net/http"
+
+	"github.com/tristenlammi/arrmada/internal/indexer"
+)
 
 const (
 	keyProwlarrURL = "prowlarr_url"
@@ -22,10 +26,13 @@ func (a *api) handleProwlarrInfo(w http.ResponseWriter, r *http.Request) {
 // handleProwlarrSync pulls indexers from Prowlarr and mirrors them into Arrmada.
 // Body {url, api_key} are optional — a blank URL falls back to the configured
 // default, and a blank key reuses the stored one. Successful values are saved.
+// add_flaresolverr_proxy adds Arrmada's FlareSolverr to a Prowlarr that isn't the
+// bundled one (the bundled one always gets it).
 func (a *api) handleProwlarrSync(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		URL    string `json:"url"`
-		APIKey string `json:"api_key"`
+		URL                  string `json:"url"`
+		APIKey               string `json:"api_key"`
+		AddFlareSolverrProxy bool   `json:"add_flaresolverr_proxy"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -44,7 +51,9 @@ func (a *api) handleProwlarrSync(w http.ResponseWriter, r *http.Request) {
 	if a.deps.APIKeys != nil {
 		flare = a.deps.APIKeys.Value(ctx, "flaresolverr")
 	}
-	res, err := a.deps.Indexers.SyncProwlarr(ctx, url, key, flare)
+	res, err := a.deps.Indexers.SyncProwlarr(ctx, indexer.ProwlarrSync{
+		URL: url, APIKey: key, FlareSolverrURL: flare, AddFlareSolverrProxy: req.AddFlareSolverrProxy,
+	})
 	if err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -52,5 +61,5 @@ func (a *api) handleProwlarrSync(w http.ResponseWriter, r *http.Request) {
 	// Remember what worked for next time.
 	_ = a.deps.Settings.Set(ctx, keyProwlarrURL, url)
 	_ = a.deps.Settings.Set(ctx, keyProwlarrKey, key)
-	a.writeJSON(w, http.StatusOK, map[string]any{"synced": res.Synced, "flaresolverr_ready": res.FlareSolverrReady})
+	a.writeJSON(w, http.StatusOK, res)
 }

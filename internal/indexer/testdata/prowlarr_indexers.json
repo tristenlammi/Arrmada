@@ -1,0 +1,130 @@
+[
+  {
+    "indexerUrls": ["https://www.torrentleech.org/"],
+    "legacyUrls": [],
+    "definitionName": "torrentleech",
+    "description": "TorrentLeech (TL) is a Private Torrent Tracker for 0DAY / GENERAL.",
+    "language": "en-US",
+    "encoding": "Unicode (UTF-8)",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "supportsRedirect": false,
+    "supportsPagination": false,
+    "appProfileId": 1,
+    "protocol": "torrent",
+    "privacy": "private",
+    "capabilities": {
+      "limitsMax": 100,
+      "limitsDefault": 100,
+      "categories": [
+        {"id": 2000, "name": "Movies", "subCategories": [{"id": 2040, "name": "Movies/HD", "subCategories": []}, {"id": 2045, "name": "Movies/UHD", "subCategories": []}]},
+        {"id": 5000, "name": "TV", "subCategories": [{"id": 5040, "name": "TV/HD", "subCategories": []}]}
+      ],
+      "supportsRawSearch": false,
+      "searchParams": ["q"],
+      "tvSearchParams": ["q", "season", "ep", "imdbId"],
+      "movieSearchParams": ["q", "imdbId"],
+      "musicSearchParams": [],
+      "bookSearchParams": []
+    },
+    "priority": 10,
+    "downloadClientId": 0,
+    "added": "2026-01-04T10:12:44Z",
+    "sortName": "torrentleech",
+    "name": "TorrentLeech",
+    "fields": [],
+    "implementationName": "Cardigann",
+    "implementation": "Cardigann",
+    "configContract": "CardigannSettings",
+    "infoLink": "https://wiki.servarr.com/prowlarr/supported-indexers#torrentleech",
+    "tags": [1],
+    "id": 1
+  },
+  {
+    "definitionName": "myanonamouse",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "appProfileId": 1,
+    "protocol": "torrent",
+    "privacy": "private",
+    "capabilities": {
+      "limitsMax": 100,
+      "limitsDefault": 100,
+      "categories": [
+        {"id": 3000, "name": "Audio", "subCategories": [{"id": 3030, "name": "Audio/Audiobook", "subCategories": []}]},
+        {"id": 7000, "name": "Books", "subCategories": [{"id": 7020, "name": "Books/EBook", "subCategories": []}]}
+      ],
+      "searchParams": ["q"],
+      "bookSearchParams": ["q", "title", "author"]
+    },
+    "priority": 25,
+    "name": "MyAnonamouse",
+    "implementation": "MyAnonamouse",
+    "tags": [],
+    "id": 2
+  },
+  {
+    "definitionName": "nzbgeek",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "appProfileId": 1,
+    "protocol": "usenet",
+    "privacy": "private",
+    "capabilities": {
+      "limitsMax": 100,
+      "limitsDefault": 100,
+      "categories": [{"id": 2000, "name": "Movies", "subCategories": []}]
+    },
+    "priority": 25,
+    "name": "NZBgeek",
+    "implementation": "Newznab",
+    "tags": [],
+    "id": 3
+  },
+  {
+    "definitionName": "1337x",
+    "enable": true,
+    "redirect": false,
+    "supportsRss": true,
+    "supportsSearch": true,
+    "appProfileId": 1,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {
+      "limitsMax": 100,
+      "limitsDefault": 100,
+      "categories": [
+        {"id": 2000, "name": "Movies", "subCategories": []},
+        {"id": 3000, "name": "Audio", "subCategories": [{"id": 3010, "name": "Audio/MP3", "subCategories": []}]},
+        {"id": 5000, "name": "TV", "subCategories": []},
+        {"id": 7000, "name": "Books", "subCategories": []},
+        {"id": 100004, "name": "Other", "subCategories": []}
+      ]
+    },
+    "priority": 70,
+    "name": "1337x",
+    "implementation": "Cardigann",
+    "tags": [1],
+    "id": 4
+  },
+  {
+    "definitionName": "oldtracker",
+    "enable": false,
+    "redirect": false,
+    "appProfileId": 1,
+    "protocol": "torrent",
+    "privacy": "public",
+    "capabilities": {"categories": []},
+    "priority": 25,
+    "name": "OldTracker",
+    "implementation": "Cardigann",
+    "tags": [],
+    "id": 5
+  }
+]
