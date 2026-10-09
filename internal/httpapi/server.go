@@ -287,6 +287,7 @@ func (a *api) registerRoutes(mux *router) {
 	// admin's, since a connection decides where the server posts.
 	mux.HandleFunc("GET /api/v1/notifications", a.requireRole(auth.RoleManager, a.handleListNotifications))
 	mux.HandleFunc("GET /api/v1/notifications/catalog", a.requireRole(auth.RoleManager, a.handleNotificationCatalog))
+	mux.HandleFunc("GET /api/v1/notifications/{id}/deliveries", a.requireRole(auth.RoleManager, a.handleNotificationDeliveries))
 	mux.HandleFunc("POST /api/v1/notifications", a.requireRole(auth.RoleAdmin, a.handleCreateNotification))
 	mux.HandleFunc("PUT /api/v1/notifications/{id}", a.requireRole(auth.RoleAdmin, a.handleUpdateNotification))
 	mux.HandleFunc("DELETE /api/v1/notifications/{id}", a.requireRole(auth.RoleAdmin, a.handleDeleteNotification))

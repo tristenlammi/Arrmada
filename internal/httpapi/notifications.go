@@ -3,6 +3,7 @@ package httpapi
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/notify"
@@ -21,6 +22,8 @@ type notificationView struct {
 	// InvalidReason says why a URL saved before validation existed no longer passes it.
 	// The connection still sends; editing it needs a valid URL.
 	InvalidReason string `json:"invalid_reason,omitempty"`
+	// The latest delivery outcome, for the card's status dot.
+	notify.DeliveryState
 }
 
 func viewOf(c notify.Connection) notificationView {
@@ -83,11 +86,33 @@ func (a *api) handleListNotifications(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, "could not list notifications")
 		return
 	}
+	states, err := a.deps.Notify.DeliveryStates(r.Context())
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not list notifications")
+		return
+	}
 	out := make([]notificationView, 0, len(list))
 	for _, c := range list {
-		out = append(out, viewOf(c))
+		v := viewOf(c)
+		v.DeliveryState = states[c.ID]
+		out = append(out, v)
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"notifications": out})
+}
+
+// handleNotificationDeliveries is a connection's recent delivery log (newest first).
+func (a *api) handleNotificationDeliveries(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	list, err := a.deps.Notify.Deliveries(r.Context(), id, limit)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not load deliveries")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"deliveries": list})
 }
 
 func (a *api) handleCreateNotification(w http.ResponseWriter, r *http.Request) {

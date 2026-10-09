@@ -56,6 +56,12 @@ type Service struct {
 	// transport sends one message to one Apprise URL. It's the apprise CLI; tests swap
 	// it for a recorder (SetTransport).
 	transport Transport
+
+	// The delivery queue (queue.go): wake nudges the worker, now and poll are the clock
+	// and the idle interval (tests shorten them).
+	wake chan struct{}
+	now  func() time.Time
+	poll time.Duration
 }
 
 // Transport sends one message to one Apprise URL. An error's text must not quote the
@@ -64,7 +70,7 @@ type Transport func(ctx context.Context, url, title, body string) error
 
 // NewService wires the notification service.
 func NewService(db *sql.DB, bus *eventbus.Bus, log *slog.Logger) *Service {
-	s := &Service{db: db, bus: bus, log: log}
+	s := &Service{db: db, bus: bus, log: log, wake: make(chan struct{}, 1), now: time.Now, poll: defaultQueuePoll}
 	if p, err := exec.LookPath("apprise"); err == nil {
 		s.apprise = p
 	} else {
@@ -209,6 +215,12 @@ func (s *Service) Update(ctx context.Context, id int64, c Connection) error {
 		if n, _ := res.RowsAffected(); n == 0 {
 			return ErrNotFound
 		}
+		if !c.Enabled {
+			// Switched off: what's still waiting would never go, so say so in its log.
+			if err := failQueued(ctx, tx, id); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM notification_subscriptions WHERE connection_id = ?`, id); err != nil {
 			return err
 		}
@@ -238,9 +250,16 @@ func (s *Service) Delete(ctx context.Context, id int64) error {
 	return nil
 }
 
-// Test sends a sample message to a connection to verify it works.
+// Test sends a sample message to a connection to verify it works. It sends straight
+// away rather than through the queue, so the answer is the real outcome; a saved
+// connection's Test is also recorded in its delivery log.
 func (s *Service) Test(ctx context.Context, c Connection) error {
-	return s.deliver(ctx, c, Message{Title: "Arrmada", Body: "✅ Test notification — this connection works."})
+	m := Message{Title: "Arrmada", Body: "✅ Test notification — this connection works.", Link: "/settings/alerts"}
+	err := s.deliver(ctx, c, m)
+	if c.ID > 0 {
+		s.recordTest(context.WithoutCancel(ctx), c, m, err)
+	}
+	return err
 }
 
 // Run subscribes to every bus topic the catalog names and dispatches each event until
@@ -273,10 +292,15 @@ func (s *Service) Run(ctx context.Context) {
 	}
 }
 
-// Emit formats a catalog event from its payload and dispatches it — for producers that
+// Emit formats a catalog event from its payload and queues it — for producers that
 // call the alerts directly instead of publishing a bus topic. Unknown keys and payloads
 // Format turns down send nothing.
 func (s *Service) Emit(ctx context.Context, key string, data map[string]any) (int, error) {
+	return s.EmitOnce(ctx, key, "", data)
+}
+
+// EmitOnce is Emit with a dedupe key (see DispatchOnce).
+func (s *Service) EmitOnce(ctx context.Context, key, dedupe string, data map[string]any) (int, error) {
 	def, ok := Lookup(key)
 	if !ok {
 		return 0, fmt.Errorf("unknown alert event %q", key)
@@ -285,28 +309,7 @@ func (s *Service) Emit(ctx context.Context, key string, data map[string]any) (in
 	if !ok {
 		return 0, nil
 	}
-	return s.Dispatch(ctx, key, m)
-}
-
-// Dispatch sends a message for one event to every enabled connection subscribed to it,
-// and says how many that was. It's the single way alerts go out: Run, Emit and later
-// producers all come through here.
-func (s *Service) Dispatch(ctx context.Context, key string, m Message) (int, error) {
-	conns, err := s.List(ctx)
-	if err != nil {
-		return 0, err
-	}
-	n := 0
-	for _, c := range conns {
-		if !c.Enabled || !c.Subscribes(key) {
-			continue
-		}
-		n++
-		if err := s.deliver(ctx, c, m); err != nil {
-			s.log.Warn("notify delivery failed", "connection", c.Name, "event", key, "err", err)
-		}
-	}
-	return n, nil
+	return s.DispatchOnce(ctx, key, dedupe, m)
 }
 
 func plural(n int) string {

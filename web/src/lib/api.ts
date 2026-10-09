@@ -540,10 +540,17 @@ export interface NotificationConn {
   url_set?: boolean;
   /** A URL saved before validation existed that no longer passes it (it still sends). */
   invalid_reason?: string;
+  /** The latest delivery: "" never sent, "retrying" = the last try failed and another is due. */
+  last_status?: "" | "sent" | "failed" | "retrying";
+  last_error?: string;
+  last_sent_at?: number;
 }
 
+// One row of a connection's delivery log.
+export interface AlertDelivery { id: number; event_key: string; title: string; body: string; status: "queued" | "sending" | "sent" | "failed"; attempts: number; last_error: string; created_at: number; next_attempt_at: number; sent_at: number }
+
 // What create, update and test take. On update, a missing or blank url keeps the saved one.
-export type NotificationInput = Omit<NotificationConn, "id" | "url_hint" | "url_set" | "invalid_reason"> & { url?: string };
+export type NotificationInput = Pick<NotificationConn, "name" | "kind" | "events" | "enabled"> & { url?: string };
 
 // The alert event catalog: what a connection can subscribe to, grouped for the page.
 export interface AlertEvent { key: string; group: string; label: string; hint: string; default_on: boolean; module?: "books" | "music" }
@@ -1961,6 +1968,8 @@ export const api = {
   notifications: () =>
     req<{ notifications: NotificationConn[] }>("/api/v1/notifications").then((r) => r.notifications),
   alertCatalog: () => req<AlertCatalog>("/api/v1/notifications/catalog"),
+  alertDeliveries: (id: number, limit = 20) =>
+    req<{ deliveries: AlertDelivery[] }>(`/api/v1/notifications/${id}/deliveries?limit=${limit}`).then((r) => r.deliveries),
   createNotification: (body: NotificationInput) =>
     req<NotificationConn>("/api/v1/notifications", { method: "POST", body: JSON.stringify(body) }),
   updateNotification: (id: number, body: NotificationInput) =>

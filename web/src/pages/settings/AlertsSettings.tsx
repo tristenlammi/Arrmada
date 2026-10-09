@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Section, input, inputStyle } from "../../components/settings/ui";
 import { api, type AlertCatalog, type AlertEvent, type NotificationConn, type NotificationInput } from "../../lib/api";
+import { ago, until } from "../../lib/taskTime";
 import { isAdmin, useMe } from "../../lib/me";
 import { useQuery, invalidate } from "../../lib/query";
 import { Button, useConfirm, useToast } from "../../ui";
@@ -19,7 +20,8 @@ export function AlertsSettings() {
   const { data: conns, error } = useQuery("notifications:list", api.notifications);
   const { data: catalog, error: catalogError } = useQuery("notifications:catalog", api.alertCatalog, { staleMs: 5 * 60_000 });
   const [adding, setAdding] = useState(false);
-  const reload = () => invalidate("notifications:list");
+  // The list and the delivery logs: a save, a Test or a delete changes both.
+  const reload = () => { invalidate("notifications:list"); invalidate("notifications:deliveries"); };
 
   // Events of a module that's switched off are hidden (a connection keeps them ticked).
   const shown = catalog && {
@@ -83,8 +85,10 @@ function ConnCard({ conn, catalog, isNew, readOnly, onChange, onCancel }: { conn
     if (!url.trim() && (isNew || !c.id)) { toast("Enter a link first", { tone: "error" }); return; }
     setBusy("test");
     try {
-      const r = url.trim() ? await api.testNotification(body()) : await api.testSavedNotification(c.id!);
+      const saved = !url.trim();
+      const r = saved ? await api.testSavedNotification(c.id!) : await api.testNotification(body());
       toast(r.ok ? "Test sent" : `Test failed — ${r.error || "no reason given"}`, { tone: r.ok ? "good" : "error" });
+      if (saved) onChange(); // the test is in the card's log and status now
     } catch (e) { toast((e as Error).message, { tone: "error" }); } finally { setBusy(null); }
   };
   const del = async () => {
@@ -99,6 +103,7 @@ function ConnCard({ conn, catalog, isNew, readOnly, onChange, onCancel }: { conn
   return (
     <div className="rounded-xl p-4" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
       <div className="flex flex-wrap items-center gap-2">
+        {!isNew && <StatusDot conn={conn} />}
         <input aria-label="Connection name" value={c.name} disabled={readOnly} onChange={(e) => set({ name: e.target.value })} placeholder="Name (e.g. My Discord)" className="min-w-[160px] flex-1 rounded-lg px-2.5 py-1.5 text-[12.5px]" style={inputStyle} />
         <label className="flex cursor-pointer items-center gap-1.5 text-[11.5px]">
           <input type="checkbox" checked={c.enabled} disabled={readOnly} onChange={(e) => set({ enabled: e.target.checked })} /> Enabled
@@ -118,12 +123,64 @@ function ConnCard({ conn, catalog, isNew, readOnly, onChange, onCancel }: { conn
         <p className="mt-1 text-[11px]" style={{ color: "var(--avoid)" }}>The saved link no longer passes the check ({conn.invalid_reason}). It still sends; enter a corrected link to edit this connection’s link.</p>
       )}
       <EventPicker catalog={catalog} value={c.events} readOnly={readOnly} onChange={(events) => set({ events })} />
+      {!isNew && c.id && <DeliveryLog id={c.id} catalog={catalog} />}
       {!readOnly && (
         <div className="mt-3 flex items-center gap-2">
           <Button variant="primary" size="sm" onClick={save} busy={busy === "save"} busyLabel="Saving…" disabled={busy !== null}>{isNew ? "Add" : "Save"}</Button>
           <Button size="sm" onClick={test} busy={busy === "test"} busyLabel="Testing…" disabled={busy !== null}>Test</Button>
           <span className="flex-1" />
           {isNew ? <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button> : <Button variant="ghost" size="sm" onClick={del} style={{ color: "var(--reject)" }}>Delete</Button>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// StatusDot is the card's last-delivery light: green when the last alert went through,
+// red when it failed (amber while a retry is still due), grey before anything was sent.
+// The reason is in the tooltip and spelled out beside it, so it works on a phone too.
+function StatusDot({ conn }: { conn: NotificationConn }) {
+  const s = conn.last_status ?? "";
+  const color = s === "sent" ? "var(--good)" : s === "failed" ? "var(--reject)" : s === "retrying" ? "var(--avoid)" : "var(--ink-faint)";
+  const text = s === "sent" ? `Last alert sent ${ago(conn.last_sent_at)}`
+    : s === "failed" ? `Last alert failed: ${conn.last_error || "no reason given"}`
+    : s === "retrying" ? `Last try failed, retrying: ${conn.last_error || "no reason given"}`
+    : "Nothing sent yet";
+  return (
+    <span className="flex w-full min-w-0 items-center gap-1.5 text-[10.5px] text-ink-faint" title={text}>
+      <span aria-hidden className="h-2 w-2 flex-none rounded-full" style={{ background: color }} />
+      <span className="truncate" style={s === "failed" ? { color: "var(--reject)" } : undefined}>{text}</span>
+    </span>
+  );
+}
+
+// DeliveryLog is the "Recent deliveries" expander: what was sent, when, and how it went.
+// It loads only when opened.
+function DeliveryLog({ id, catalog }: { id: number; catalog: AlertCatalog }) {
+  const [open, setOpen] = useState(false);
+  const { data, error } = useQuery(`notifications:deliveries:${id}`, () => api.alertDeliveries(id), { enabled: open, staleMs: 0 });
+  const label = (key: string) => key === "test" ? "Test" : catalog.events.find((e) => e.key === key)?.label ?? key;
+  return (
+    <div className="mt-3">
+      <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="text-[11px] font-semibold" style={{ color: "var(--accent)" }}>
+        {open ? "Hide recent deliveries" : "Recent deliveries"}
+      </button>
+      {open && (
+        <div className="mt-1.5 flex flex-col gap-1">
+          {error && !data ? <p className="text-[11px]" style={{ color: "var(--reject)" }}>Couldn’t load deliveries — {error.message}</p>
+            : !data ? <p className="text-[11px] text-ink-faint">Loading…</p>
+            : data.length === 0 ? <p className="text-[11px] text-ink-faint">Nothing sent yet.</p>
+            : data.map((d) => (
+              <div key={d.id} className="flex flex-wrap items-baseline gap-x-2 text-[11px]">
+                <span className="w-[72px] flex-none text-ink-faint">{ago(d.sent_at || d.created_at)}</span>
+                <span className="font-semibold">{label(d.event_key)}</span>
+                <span className="min-w-0 flex-1 truncate text-ink-dim">{d.body}</span>
+                <span style={{ color: d.status === "sent" ? "var(--good)" : d.status === "failed" ? "var(--reject)" : "var(--ink-faint)" }}>
+                  {d.status === "queued" && d.attempts > 0 ? `retry ${until(d.next_attempt_at)}` : d.status}
+                </span>
+                {d.last_error && d.status !== "sent" && <span className="w-full pl-[80px] text-[10.5px]" style={{ color: "var(--reject)" }}>{d.last_error}</span>}
+              </div>
+            ))}
         </div>
       )}
     </div>

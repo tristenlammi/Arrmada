@@ -152,14 +152,16 @@ func TestRunDispatchesByTopic(t *testing.T) {
 	if _, err := s.Create(ctx, Connection{Name: "off", URL: "ntfy://off", Events: []string{"book.imported"}, Enabled: false}); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan struct{})
-	go func() { s.Run(ctx); close(done) }()
+	done := make(chan struct{}, 2)
+	go func() { s.Run(ctx); done <- struct{}{} }()
+	go func() { s.RunWorker(ctx); done <- struct{}{} }()
 	// Run subscribes asynchronously; keep publishing until it's listening.
 	waitFor(t, "the book alert", func() bool {
 		bus.Publish("book.imported", map[string]any{"title": "Dune", "id": int64(1), "edition": "audiobook"})
 		return len(rec.got()) > 0
 	})
 	cancel()
+	<-done
 	<-done
 	for _, g := range rec.got() {
 		if g != "ntfy://books|Imported|📚 Dune (audiobook)" {
@@ -214,6 +216,7 @@ func TestEmitAndDispatch(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("Emit = %d, %v", n, err)
 	}
+	drainNow(t, s)
 	if g := rec.got(); len(g) != 1 || !strings.Contains(g[0], "Auto-approved: Dune (2021) for Sam") {
 		t.Fatalf("sent %v", g)
 	}
