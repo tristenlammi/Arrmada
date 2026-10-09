@@ -15,4 +15,13 @@ var (
 	FixPlexConnection  = &Fix{Key: "plexConnection", Path: "/insights?tab=settings", Label: "Plex connection"}
 	FixTasks           = &Fix{Key: "tasks", Path: "/settings/status#tasks", Label: "Tasks"}
 	FixBackups         = &Fix{Key: "backups", Path: "/settings/system#backups", Label: "Backups"}
+	FixStatus          = &Fix{Key: "status", Path: "/settings/status", Label: "Status"}
+
+	// Where the Needs-you feed (internal/attention) sends each kind of item. The requests
+	// page is /requests; until a build has it, the UI's LINKS.requests entry (which it
+	// resolves first) still points at Discover.
+	FixRequests           = &Fix{Key: "requests", Path: "/requests", Label: "Requests"}
+	FixReview             = &Fix{Key: "review", Path: "/review", Label: "Review"}
+	FixDownloadProblems   = &Fix{Key: "downloadProblems", Path: "/downloads?show=problems", Label: "Downloads"}
+	FixDownloadsSearching = &Fix{Key: "downloadsSearching", Path: "/downloads?tab=searching", Label: "What's searching"}
 )

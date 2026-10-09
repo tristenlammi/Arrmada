@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
@@ -38,6 +39,8 @@ type Service struct {
 	// searchBook starts a book search (the coordinator's SearchBookNow); a field so
 	// tests can see it called without a coordinator.
 	searchBook func(ctx context.Context, bookID int64) (automation.SearchOutcome, error)
+	// attentionKick asks the Needs-you feed to refresh after a request changes (pending.go).
+	attentionKick atomic.Pointer[func()]
 }
 
 // Runner starts named background work with the app's run context (cancelled at

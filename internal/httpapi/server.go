@@ -12,6 +12,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/apikeys"
 	"github.com/tristenlammi/arrmada/internal/applog"
+	"github.com/tristenlammi/arrmada/internal/attention"
 	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
@@ -115,6 +116,9 @@ type Deps struct {
 	// Jobs runs and records the work requests start (searches, scans, imports). nil
 	// (tests, tools) runs that work untracked on the run group instead.
 	Jobs JobRunner
+	// Attention is the Needs-you feed: GET /attention serves its snapshot, and the
+	// handlers that change what it reports kick a refresh. nil = an empty, stale answer.
+	Attention *attention.Service
 }
 
 type api struct {
@@ -159,6 +163,9 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/health/system", a.requireRole(auth.RoleManager, a.handleSystemHealth))
 	mux.HandleFunc("GET /api/v1/status", a.public(a.handleStatus).ext())
 	mux.HandleFunc("GET /api/v1/dashboard", a.requireRole(auth.RoleManager, a.handleDashboard))
+	// The Needs-you snapshot behind the sidebar badges and the Dashboard card: staff only
+	// (a requester's shell shows none of these counts), served from memory.
+	mux.HandleFunc("GET /api/v1/attention", a.requireRole(auth.RoleManager, a.handleAttention))
 
 	// App preferences. API keys are the owner's credentials for outside services, so
 	// only an admin sees or changes them. Managers keep the settings they need day to

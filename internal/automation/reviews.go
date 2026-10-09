@@ -194,6 +194,7 @@ func (c *Coordinator) addReview(ctx context.Context, r Review) {
 	// from being grabbed again while the review is pending, and keeps seed cleanup off it.
 	c.setGrabStatusByHash(ctx, r.Hash, r.Name, r.MediaType, grabStatusHeld)
 	c.log.Info("import held for review", "name", r.Name, "reason", r.Reason, "reason_code", r.ReasonCode)
+	c.reviewsChanged()
 	if c.bus != nil {
 		// Enough for an open Review page to refresh and for an alert to say what's held and
 		// why, without another read.
@@ -253,6 +254,9 @@ func (c *Coordinator) resolveReview(ctx context.Context, id int64, resolution st
 	_, err := c.db.ExecContext(ctx,
 		`UPDATE import_reviews SET status = 'resolved', resolution = ?, resolved_at = CURRENT_TIMESTAMP WHERE id = ?`,
 		resolution, id)
+	if err == nil {
+		c.reviewsChanged()
+	}
 	return err
 }
 

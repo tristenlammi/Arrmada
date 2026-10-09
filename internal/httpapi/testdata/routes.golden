@@ -34,6 +34,7 @@ DELETE /api/v1/users/plex-blocks/{plexID} admin -
 DELETE /api/v1/users/{id} admin -
 GET /api/health public ext
 GET /api/v1/apikeys admin -
+GET /api/v1/attention staff -
 GET /api/v1/audioserver admin -
 GET /api/v1/audioserver/listening admin -
 GET /api/v1/auth/me user ext
