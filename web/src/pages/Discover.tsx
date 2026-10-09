@@ -10,7 +10,7 @@ import { useMe, isStaff } from "../lib/me";
 import { api, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaDetail, type MediaRequest } from "../lib/api";
 import { posterThumb } from "../lib/img";
 import { useCanHover } from "../lib/useCanHover";
-import { formatEta, notFoundYet } from "../lib/format";
+import { requestStage, sortForRequester } from "../lib/requestStage";
 import { usePoll } from "../lib/usePoll";
 import { Button, IconButton, Modal, StatusChip, POSTER_CHIP_BG, TONE_HUE, useConfirm, useToast, type Tone, type ToastFn } from "../ui";
 
@@ -547,12 +547,6 @@ function Hero({ ctx }: { ctx: RowCtx }) {
   );
 }
 
-// Order in the requests row: what's moving first, then what's waiting, then what's done.
-const STAGE_ORDER: Record<string, number> = {
-  downloading: 0, importing: 1, queued: 2, paused: 3, failed: 4, searching: 5, pending: 6,
-  partial: 7, available: 8, declined: 9,
-};
-
 // MyRequestsRow is the strip of requests, first thing on Discover. Admins see every
 // request and approve or decline inline; everyone else sees their own (the server scopes
 // the list), each showing how far along it is — searching, downloading with progress,
@@ -570,11 +564,7 @@ function MyRequestsRow({ flash }: { flash: ToastFn }) {
   usePoll(load, 8000); // refresh so status/progress advance
 
   if (!items || items.length === 0) return null;
-  const sorted = [...items].sort(
-    (a, b) =>
-      (STAGE_ORDER[a.tracking?.stage ?? ""] ?? 6) - (STAGE_ORDER[b.tracking?.stage ?? ""] ?? 6) ||
-      b.updated_at.localeCompare(a.updated_at),
-  );
+  const sorted = sortForRequester(items);
   const moving = items.filter((rq) => ["downloading", "importing", "queued"].includes(rq.tracking?.stage ?? "")).length;
   const scroll = (dir: -1 | 1) => scroller.current?.scrollBy({ left: dir * Math.max(600, scroller.current.clientWidth * 0.8), behavior: "smooth" });
   return (
@@ -710,55 +700,6 @@ function RequestPoster({ rq, staff, own, onChanged, flash, queueKnown = true }: 
       </div>
     </div>
   );
-}
-
-// Stages read off the download queue: while downloads can't be checked, these can't be told.
-const QUEUE_STAGES = new Set(["searching", "queued", "downloading", "paused", "failed"]);
-
-// requestStage turns a request's tracking into its badge and a one-line detail. queueKnown
-// false (downloads can't be checked right now) makes a queue-read stage "Status unknown".
-function requestStage(rq: MediaRequest, queueKnown = true): { badge: string; tone: Tone; detail: string; detailTone?: string; unknown?: boolean } {
-  const tr = rq.tracking;
-  if (!queueKnown && QUEUE_STAGES.has(tr?.stage ?? "")) {
-    return { badge: "Status unknown", tone: "faint", detail: "Can't check downloads right now", unknown: true };
-  }
-  const ready = rq.media_type === "book" ? "Ready" : "Ready to watch";
-  const eps = tr?.total ? `${tr.have ?? 0} of ${tr.total} episodes` : "";
-  const pct = Math.round((tr?.progress ?? 0) * 100);
-  switch (tr?.stage) {
-    case "available":
-      return { badge: "Ready", tone: "good", detail: ready, detailTone: "var(--good-text)" };
-    case "partial":
-      return { badge: "Partly ready", tone: "good", detail: `${eps} ready`, detailTone: "var(--good-text)" };
-    case "downloading": {
-      const parts = [`${pct}%`];
-      if (tr.eta_seconds) parts.push(`${formatEta(tr.eta_seconds)} left`);
-      else if (tr.note) parts.push(tr.note.toLowerCase());
-      if (eps) parts.push(eps);
-      return { badge: "Downloading", tone: "accent", detail: parts.join(" · "), detailTone: "var(--accent-text)" };
-    }
-    case "importing":
-      return { badge: "Importing", tone: "accent", detail: "Adding to the library…", detailTone: "var(--accent-text)" };
-    case "queued":
-      return { badge: "Starting", tone: "accent", detail: tr.note || "Starting the download" };
-    case "paused":
-      return { badge: "Paused", tone: "faint", detail: `Paused at ${pct}%` };
-    case "failed":
-      return { badge: "Retrying", tone: "avoid", detail: tr.note || "The download failed" };
-    case "searching":
-      // A book the searches keep missing: "Not found yet · next check Tue 14 Oct".
-      if (tr.next_check_at) return { badge: "Searching", tone: "accent", detail: notFoundYet(tr.next_check_at) };
-      return { badge: "Searching", tone: "accent", detail: tr.note || (eps ? `${eps} · looking for more` : "Looking for a release") };
-    case "declined":
-      return { badge: "Declined", tone: "reject", detail: "Declined" };
-    case "pending":
-      return { badge: "Pending", tone: "avoid", detail: "Waiting for approval" };
-  }
-  // No tracking (an older server): fall back to the plain status.
-  return rq.available ? { badge: "Ready", tone: "good", detail: ready }
-    : rq.status === "declined" ? { badge: "Declined", tone: "reject", detail: "Declined" }
-    : rq.status === "approved" ? { badge: "Requested", tone: "accent", detail: "Looking for a release" }
-    : { badge: "Pending", tone: "avoid", detail: "Waiting for approval" };
 }
 
 // BecauseRows are the per-title strips ("Because you watched Silo"): the viewer's two
