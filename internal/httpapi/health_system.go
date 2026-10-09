@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/health"
+	"github.com/tristenlammi/arrmada/internal/metadata"
 )
 
 // refreshGap is how often "Check now" may re-run every check; a refresh asked for sooner
@@ -62,15 +64,32 @@ func (a *api) registerHealthChecks(reg *health.Registry) {
 	}
 
 	if a.deps.Downloads != nil {
-		reg.Register(health.DownloadsCheck(
-			func(ctx context.Context) (int, error) {
-				c, err := a.deps.Downloads.List(ctx)
-				return len(c), err
+		reg.Register(health.DownloadClientsCheck(func(ctx context.Context) (int, []download.ClientState, error) {
+			all, err := a.deps.Downloads.List(ctx)
+			if err != nil {
+				return 0, nil, err
+			}
+			st, err := a.deps.Downloads.ClientStates(ctx)
+			return len(all), st, err
+		}))
+	}
+
+	if a.deps.Insights != nil {
+		reg.Register(health.PlexCheck(
+			func(ctx context.Context) health.PlexState {
+				h := a.deps.Insights.PollHealth(ctx)
+				return health.PlexState{
+					Configured: h.Configured, Monitoring: h.Monitoring, LastOKAt: h.LastOKAt,
+					FailingSince: h.FailingSince, LastErr: h.LastErr, Unauthorized: h.Unauthorized, Consecutive: h.Consecutive,
+				}
 			},
-			func(ctx context.Context) error {
-				_, err := a.deps.Downloads.Queue(ctx)
-				return err
-			}))
+			func(ctx context.Context) error { return a.deps.Insights.ProbeIdentity(ctx) }))
+	}
+
+	if v, ok := a.deps.Discovery.(tmdbValidator); ok && a.deps.APIKeys != nil {
+		reg.Register(health.TMDBCheck(a.deps.APIKeys.Func("tmdb"), func(ctx context.Context) error {
+			return tmdbValidate(ctx, v)
+		}))
 	}
 
 	// The probe cache keeps the once-a-minute check from writing a probe file into every
@@ -107,6 +126,23 @@ func (a *api) registerHealthChecks(reg *health.Registry) {
 			return a.deps.Backups.HealthWarning(ctx, time.Since(a.start))
 		}))
 	}
+}
+
+// tmdbValidator is the TMDB provider's key check (metadata.TMDB.Validate).
+type tmdbValidator interface {
+	Validate(ctx context.Context) error
+}
+
+// tmdbValidate maps TMDB's answer onto the health check's terms.
+func tmdbValidate(ctx context.Context, v tmdbValidator) error {
+	err := v.Validate(ctx)
+	switch {
+	case errors.Is(err, metadata.ErrInvalidKey):
+		return health.ErrKeyRejected
+	case errors.Is(err, metadata.ErrNotConfigured):
+		return health.ErrKeyMissing
+	}
+	return err
 }
 
 // libraryState is the folders the user picked (saved in the app, not just the ones the

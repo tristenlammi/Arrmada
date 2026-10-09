@@ -77,11 +77,13 @@ func (s *Service) poll(ctx context.Context) {
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	sessions, err := s.client(cctx).Sessions(cctx)
 	cancel()
+	if err == nil || ctx.Err() == nil { // a poll cut short by shutdown isn't Plex failing
+		s.observePoll(err)
+	}
 	if err != nil {
 		// A failed poll (Plex unreachable) leaves live sessions untouched: they keep their prior
 		// lastSeen, so when they eventually vanish they're credited only up to the last poll that
 		// actually saw them — not through the outage.
-		s.log.Debug("insights: session poll failed", "err", err)
 		return
 	}
 	s.reconcile(ctx, sessions, time.Now())

@@ -31,29 +31,6 @@ func IndexersCheck(enabled func(ctx context.Context) (int, error)) Check {
 	}
 }
 
-// DownloadsCheck reports when no download client is configured, or when none answers.
-// configured returns how many clients exist; reachable reads the queue across them.
-func DownloadsCheck(configured func(ctx context.Context) (int, error), reachable func(ctx context.Context) error) Check {
-	return Check{
-		Key: "downloads", Name: "Download clients", Category: CategoryDownloads, Timeout: 10 * time.Second,
-		Run: func(ctx context.Context) []Finding {
-			if n, err := configured(ctx); err != nil || n == 0 {
-				return []Finding{{
-					Key: "downloads.client.none", Level: LevelError, Fix: FixDownloadClients,
-					Message: "No download client is configured — grabbed releases have nowhere to download.",
-				}}
-			}
-			if err := reachable(ctx); err != nil {
-				return []Finding{{
-					Key: "downloads.reachable", Level: LevelError, Fix: FixDownloadClients,
-					Message: "The download client is unreachable: " + err.Error(),
-				}}
-			}
-			return nil
-		},
-	}
-}
-
 // LibraryState is what the library-folders check judges: the folders in use (only the
 // modules that are on), every folder setting (for the data-folder test, which applies
 // whether or not the module is on), and Arrmada's data folder.

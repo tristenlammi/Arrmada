@@ -767,6 +767,14 @@ func main() {
 		Backups:  backupSvc,
 		Health:   healthReg,
 	})
+	// A task that keeps failing is a health problem too (it warns at three in a row).
+	healthReg.Register(health.TasksFailingCheck(func() []health.TaskState {
+		var out []health.TaskState
+		for _, t := range sched.Tasks() {
+			out = append(out, health.TaskState{Name: t.Name, LastError: t.LastErr, ConsecutiveFailures: int(t.ConsecutiveFailures)})
+		}
+		return out
+	}))
 	sched.Register("health-check", 30*time.Second, true, healthReg.RunDue)
 
 	errCh := make(chan error, 1)

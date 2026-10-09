@@ -6,6 +6,7 @@ package plex
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path"
@@ -13,6 +14,10 @@ import (
 	"strings"
 	"time"
 )
+
+// ErrUnauthorized is Plex refusing the token (HTTP 401): it was revoked or garbled, and
+// retrying won't help until someone reconnects Plex.
+var ErrUnauthorized = errors.New("plex rejected the token (401)")
 
 // Client talks to one Plex server (base URL + token).
 type Client struct {
@@ -47,7 +52,7 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
-		return fmt.Errorf("plex rejected the token (401)")
+		return ErrUnauthorized
 	}
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("plex returned HTTP %d", resp.StatusCode)

@@ -219,8 +219,23 @@ func (r *Registry) Refresh(ctx context.Context, minGap time.Duration) bool {
 	}
 	r.refreshAt = now
 	r.mu.Unlock()
-	r.RunAll(ctx)
+	r.RunAll(withForced(ctx))
 	return true
+}
+
+type forcedKey struct{}
+
+func withForced(ctx context.Context) context.Context {
+	return context.WithValue(ctx, forcedKey{}, true)
+}
+
+// Forced reports whether a person asked for this run ("Check now", or a setting the check
+// depends on was just saved). Checks that pace their own calls to an outside service —
+// TMDB every six hours, Plex every five minutes — ask it now instead of reusing their
+// last answer.
+func Forced(ctx context.Context) bool {
+	v, _ := ctx.Value(forcedKey{}).(bool)
+	return v
 }
 
 // RunNow runs one check straight away (after a setting it depends on was saved, say). An
@@ -233,7 +248,7 @@ func (r *Registry) RunNow(ctx context.Context, key string) {
 		return
 	}
 	r.mu.Unlock()
-	r.run(ctx, []*entry{e})
+	r.run(withForced(ctx), []*entry{e})
 }
 
 func (r *Registry) run(ctx context.Context, es []*entry) {

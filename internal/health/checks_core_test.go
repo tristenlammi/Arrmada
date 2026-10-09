@@ -25,17 +25,6 @@ func TestIndexersCheck(t *testing.T) {
 	}
 }
 
-func TestDownloadsCheck(t *testing.T) {
-	none := run(DownloadsCheck(func(context.Context) (int, error) { return 0, nil }, func(context.Context) error { return nil }))
-	if len(none) != 1 || none[0].Key != "downloads.client.none" || none[0].Fix != FixDownloadClients {
-		t.Errorf("no client: %+v", none)
-	}
-	down := run(DownloadsCheck(func(context.Context) (int, error) { return 1, nil }, func(context.Context) error { return errors.New("refused") }))
-	if len(down) != 1 || down[0].Key != "downloads.reachable" || !strings.Contains(down[0].Message, "refused") {
-		t.Errorf("unreachable: %+v", down)
-	}
-}
-
 // The disk guard holding torrents is a warning that links to its settings.
 func TestDiskGuardCheck(t *testing.T) {
 	got := run(DiskGuardCheck(func(context.Context) (DiskGuardState, bool) {

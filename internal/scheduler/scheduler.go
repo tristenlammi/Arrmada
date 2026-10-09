@@ -28,6 +28,7 @@ type task struct {
 	lastErr      string
 	runs         uint64
 	failures     uint64
+	consecutive  uint64 // failures since the last success
 	running      bool
 }
 
@@ -40,7 +41,9 @@ type TaskInfo struct {
 	LastErr      string        `json:"last_error"` // empty when the last run succeeded
 	Runs         uint64        `json:"runs"`
 	Failures     uint64        `json:"failures"` // errors and panics both count
-	Running      bool          `json:"running"`
+	// ConsecutiveFailures is failures since the last success; the health panel warns at 3.
+	ConsecutiveFailures uint64 `json:"consecutive_failures"`
+	Running             bool   `json:"running"`
 }
 
 // Scheduler owns a set of recurring tasks and their goroutines.
@@ -121,7 +124,7 @@ func (s *Scheduler) Tasks() []TaskInfo {
 	for _, t := range s.tasks {
 		out = append(out, TaskInfo{
 			Name: t.name, Every: t.every, LastStart: t.lastStart, LastDuration: t.lastDuration,
-			LastErr: t.lastErr, Runs: t.runs, Failures: t.failures, Running: t.running,
+			LastErr: t.lastErr, Runs: t.runs, Failures: t.failures, ConsecutiveFailures: t.consecutive, Running: t.running,
 		})
 	}
 	s.mu.Unlock()
@@ -166,7 +169,10 @@ func (s *Scheduler) exec(ctx context.Context, t *task) {
 	t.lastErr = ""
 	if err != nil {
 		t.failures++
+		t.consecutive++
 		t.lastErr = err.Error()
+	} else {
+		t.consecutive = 0
 	}
 	s.mu.Unlock()
 
