@@ -2,8 +2,10 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
+	"net/http/httptest"
 	"os"
 	"testing"
 
@@ -136,5 +138,34 @@ func TestSummarizeQueueSeparatesStalled(t *testing.T) {
 	want := queueSummary{Downloading: 3, Stalled: 1, Seeding: 2, Paused: 1, Errored: 1, DownSpeed: 100, UpSpeed: 7}
 	if q != want {
 		t.Errorf("summary = %+v\nwant      %+v", q, want)
+	}
+}
+
+// A download client that can't be listed is an outage, not an empty queue: the payload
+// carries queue_note and zero counts, so the tile can say "Client unreachable" instead of
+// "0 seeding".
+func TestDashboardQueueNoteWhenClientUnreachable(t *testing.T) {
+	a := dashAPI(t)
+	dl := download.NewService(a.deps.Store.DB(), a.deps.Log)
+	// Port 1 on loopback refuses the connection at once; nothing is ever contacted.
+	if _, err := dl.Create(context.Background(), download.Client{Name: "qb", Kind: download.KindQbittorrent, URL: "http://127.0.0.1:1", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	a.deps.Downloads = dl
+
+	rec := httptest.NewRecorder()
+	a.handleDashboard(rec, httptest.NewRequest("GET", "/api/v1/dashboard", nil))
+	var body struct {
+		Queue     queueSummary `json:"queue"`
+		QueueNote string       `json:"queue_note"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body)
+	}
+	if body.QueueNote == "" {
+		t.Fatal("an unreachable client left queue_note empty")
+	}
+	if body.Queue != (queueSummary{}) {
+		t.Errorf("queue = %+v, want zero counts alongside the note", body.Queue)
 	}
 }
