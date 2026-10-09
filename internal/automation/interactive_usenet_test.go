@@ -14,6 +14,9 @@ import (
 // the recommended release is the one a search would actually grab.
 func TestRankReleasesSkipsUsenetForRecommendation(t *testing.T) {
 	h := newStallHarness(t)
+	// INT-12 skips usenet indexers entirely while no usenet client is wired; say one is,
+	// so the release is fetched and this ranking guard is what keeps it from being grabbed.
+	h.c.indexers.SetUsenetAvailable(func() bool { return true })
 	nzb := &fakeTorznab{}
 	srv := httptest.NewServer(nzb.handler())
 	t.Cleanup(srv.Close)
