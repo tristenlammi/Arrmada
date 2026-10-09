@@ -2285,7 +2285,7 @@ export const api = {
     }),
   deleteMovieFile: (id: number) => req<void>(`/api/v1/movies/${id}/file`, { method: "DELETE" }),
   setQualityProfile: (id: number, quality_profile: string) =>
-    req<{ quality_profile: string; downgrade: boolean }>(`/api/v1/movies/${id}/profile`, {
+    req<{ quality_profile: string; downgrade: boolean; downgrade_reason?: string; downgrade_kind?: "smaller" | "different"; downgrade_ceiling?: string }>(`/api/v1/movies/${id}/profile`, {
       method: "PUT",
       body: JSON.stringify({ quality_profile }),
     }),

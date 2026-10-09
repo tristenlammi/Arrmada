@@ -670,7 +670,7 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
                   </select>
                 </label>
               </div>
-              <p className="mt-2 text-[10.5px] text-ink-faint">Within these sources and your target, Arrmada picks the highest-bitrate release.</p>
+              <p className="mt-2 text-[10.5px] text-ink-faint">Releases rank by resolution, then your preferences, then source; bitrate breaks ties.</p>
             </Collapsible>
 
             <Collapsible n={3} title="Rules" summary={rulesSummary(sp)}>

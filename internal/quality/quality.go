@@ -369,6 +369,10 @@ type Evaluation struct {
 	// there's an alternative" — not merely a score penalty a better source could overcome.
 	Avoided        bool     `json:"avoided,omitempty"`
 	AvoidedFormats []string `json:"avoided_formats,omitempty"`
+	// ceiling names the profile ceiling a rejected release is above ("40 Mb/s", "BluRay"),
+	// "" for every other outcome. It lets a downgrade prompt tell "too big for this
+	// profile" from "not what this profile wants" without parsing the reason text.
+	ceiling string
 }
 
 // Decision is the ranked outcome over a set of candidates.
@@ -426,6 +430,7 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 	// An unstated source can't be judged against a ceiling, so it passes one.
 	if p.MaxSource != "" && r.Source != parser.SourceUnknown && sourceTier(r.Source) > sourceTier(p.MaxSource) {
 		ev.RejectReason = fmt.Sprintf("Above your %s ceiling — this is %s", minSourceLabel(p.MaxSource), sourceLabel(r.Source))
+		ev.ceiling = minSourceLabel(p.MaxSource)
 		return ev
 	}
 	// Bitrate ceiling (length-independent). Only applies when we know the runtime; without it
@@ -437,6 +442,7 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 		// equivalence stays where it belongs, in deciding what counts as an upgrade.
 		if br := c.bitrateMbps(); br > limit {
 			ev.RejectReason = fmt.Sprintf("Over your %.0f Mbps ceiling (%.1f Mbps)", limit, br)
+			ev.ceiling = fmt.Sprintf("%.0f Mb/s", limit)
 			return ev
 		}
 	}
@@ -617,7 +623,7 @@ func (e *Engine) Decide(p Profile, cands []Candidate) Decision {
 	})
 	if len(d.Eligible) > 0 {
 		d.Winner = &d.Eligible[0]
-		d.Why = whyReasons(p, *d.Winner)
+		d.Why = whyReasons(p, *d.Winner, d.Eligible)
 		// Every eligible release carries a format you avoid — say so, so a Dolby Vision
 		// recommendation doesn't look like the avoid was ignored when it's simply all
 		// there was.
@@ -626,15 +632,7 @@ func (e *Engine) Decide(p Profile, cands []Candidate) Decision {
 		}
 		if len(d.Eligible) > 1 {
 			ru := d.Eligible[1]
-			reason := loseReason(d.Winner.Candidate.Release, ru.Candidate.Release)
-			switch w := d.Winner; {
-			case ru.Avoided && !w.Avoided:
-				reason = "it has " + strings.Join(ru.AvoidedFormats, ", ") + ", which you avoid"
-			case ru.Candidate.Seeders == 0 && w.Candidate.Seeders > 0:
-				reason = "it has no seeders"
-			case ru.Total == w.Total && ru.Candidate.Seeders < w.Candidate.Seeders && nearEqual(magnitudes(w.Candidate, ru.Candidate)):
-				reason = "fewer seeders"
-			}
+			_, reason := decidingFactor(p, *d.Winner, ru)
 			d.ChosenOver = fmt.Sprintf("Chosen over the %s — %s", releaseLabel(ru.Candidate.Release), reason)
 		}
 	}
@@ -699,7 +697,7 @@ func waiveCollapsedBonuses(evs []Evaluation) {
 	}
 }
 
-func whyReasons(p Profile, e Evaluation) []string {
+func whyReasons(p Profile, e Evaluation, eligible []Evaluation) []string {
 	r := e.Candidate.Release
 	var out []string
 
@@ -712,13 +710,18 @@ func whyReasons(p Profile, e Evaluation) []string {
 	for _, m := range e.Matched {
 		out = append(out, m+" — matched")
 	}
-	// Say what actually decided it: any small-size lean picks the smaller of equals,
-	// so "highest bitrate" would be untrue however the ceiling is set.
+	// Say what actually decided it: any small-size lean picks the smaller of equals, so
+	// "highest bitrate" would be untrue however the ceiling is set — and so it is whenever
+	// a preference picked a lighter file over a heavier one.
 	switch {
 	case p.SmallBias >= 4:
 		out = append(out, "Smallest watchable size")
 	case p.SmallBias > 0:
 		out = append(out, "Best quality for the size")
+	case !heaviest(e, eligible):
+		if out[0] != "Best available that fits your profile" {
+			out = append(out, "Best fit for your profile")
+		}
 	case p.capFor(r.Resolution) > 0:
 		out = append(out, fmt.Sprintf("Highest bitrate under your %.0f Mbps ceiling", p.capFor(r.Resolution)))
 	default:
@@ -727,15 +730,19 @@ func whyReasons(p Profile, e Evaluation) []string {
 	return out
 }
 
-func loseReason(win, other parser.Release) string {
-	switch {
-	case resRank[other.Resolution] < resRank[win.Resolution]:
-		return "lower resolution"
-	case sourceRank[other.Source] < sourceRank[win.Source]:
-		return fmt.Sprintf("%s, not %s", sourceLabel(other.Source), sourceLabel(win.Source))
-	default:
-		return "fewer preferred extras"
+// heaviest reports whether e's bitrate (its size, without runtimes) is the highest of the
+// eligible releases it competes with. Avoided releases don't compete with a clean winner:
+// they were never in the running.
+func heaviest(e Evaluation, eligible []Evaluation) bool {
+	for _, o := range eligible {
+		if o.Avoided && !e.Avoided {
+			continue
+		}
+		if me, them := magnitudes(e.Candidate, o.Candidate); them > me {
+			return false
+		}
 	}
+	return true
 }
 
 // --- helpers --------------------------------------------------------------

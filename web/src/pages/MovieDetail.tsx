@@ -589,18 +589,20 @@ function ProfileSelector({ movie, onChange }: { movie: Movie; onChange: () => vo
       .catch(() => {});
   }, []);
 
-  const [downgrade, setDowngrade] = useState(false);
+  // Set when the file on disk doesn't fit the newly chosen profile: why, and whether a
+  // smaller release fixes it (above a ceiling) or it needs a different one altogether.
+  const [downgrade, setDowngrade] = useState<{ kind: "smaller" | "different"; reason: string; ceiling: string } | null>(null);
   const [regrabbing, setRegrabbing] = useState(false);
 
   const change = async (profile: string) => {
     if (profile === movie.quality_profile) return;
     setSaving(true);
     setSaved(false);
-    setDowngrade(false);
+    setDowngrade(null);
     try {
       const res = await api.setQualityProfile(movie.id, profile);
       if (res.downgrade) {
-        setDowngrade(true);
+        setDowngrade({ kind: res.downgrade_kind ?? "different", reason: res.downgrade_reason ?? "", ceiling: res.downgrade_ceiling ?? "" });
       } else {
         setSaved(true);
         window.setTimeout(() => setSaved(false), 2000);
@@ -615,7 +617,7 @@ function ProfileSelector({ movie, onChange }: { movie: Movie; onChange: () => vo
     setRegrabbing(true);
     try {
       await api.regrabMovie(movie.id);
-      setDowngrade(false);
+      setDowngrade(null);
     } finally {
       setRegrabbing(false);
     }
@@ -640,12 +642,16 @@ function ProfileSelector({ movie, onChange }: { movie: Movie; onChange: () => vo
       </div>
       {downgrade && (
         <div className="rounded-lg p-3 text-[12px]" style={{ background: "var(--avoid-soft)", border: "1px solid var(--avoid)" }}>
-          <div className="mb-2 text-ink-dim">Your current file is higher quality than this profile targets. Download a smaller release to match it, or keep the file you have?</div>
+          <div className="mb-2 text-ink-dim">
+            {downgrade.kind === "smaller"
+              ? `Your file is above this profile's ${downgrade.ceiling || "size"} ceiling. Download a smaller release, or keep it?`
+              : `Your file doesn't meet this profile${downgrade.reason ? ` (${downgrade.reason})` : ""}. Find a release that does, or keep it?`}
+          </div>
           <div className="flex gap-2">
             <button onClick={doRegrab} disabled={regrabbing} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>
-              {regrabbing ? "Searching…" : "Download smaller version"}
+              {regrabbing ? "Searching…" : downgrade.kind === "smaller" ? "Download smaller version" : "Find a matching release"}
             </button>
-            <button onClick={() => setDowngrade(false)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Keep current file</button>
+            <button onClick={() => setDowngrade(null)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Keep current file</button>
           </div>
         </div>
       )}
