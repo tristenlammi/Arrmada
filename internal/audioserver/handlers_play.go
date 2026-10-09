@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -57,6 +58,13 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 	if prog.UpdatedAt > 0 {
 		pp = &prog
 	}
+	if sess.Restart {
+		// Listening again from the start. Some apps seek to the item's progress rather
+		// than the session's startTime, so that says 0:00, unfinished, too.
+		view := prog
+		view.Position, view.Finished, view.FinishedAt, view.PendingPosition = 0, false, 0, nil
+		pp = &view
+	}
 	item, files := s.itemExpanded(ctx, it, pp)
 	writeJSON(w, http.StatusOK, s.sessionJSON(it, sess, item, files, body.MediaPlayer, body.DeviceInfo))
 }
@@ -77,9 +85,47 @@ func (s *Server) sessionJSON(it Item, sess listening.Session, item obj, files []
 }
 
 type syncBody struct {
-	CurrentTime  float64 `json:"currentTime"`
-	TimeListened float64 `json:"timeListened"`
-	Duration     float64 `json:"duration"`
+	CurrentTime  optNum  `json:"currentTime"`
+	TimeListened flexNum `json:"timeListened"`
+	Duration     flexNum `json:"duration"`
+}
+
+// optNum is a number that may be missing. Only a JSON number or a numeric string counts
+// as present; a missing key, null, "" or anything unreadable is "not sent". A position
+// that wasn't sent must never be read as 0:00 — that's how a bare close reset people.
+type optNum struct {
+	V  float64
+	OK bool
+}
+
+func (o *optNum) UnmarshalJSON(b []byte) error {
+	var v any
+	if json.Unmarshal(b, &v) != nil {
+		return nil
+	}
+	n, ok := 0.0, false
+	switch t := v.(type) {
+	case float64:
+		n, ok = t, true
+	case string:
+		if f, err := strconv.ParseFloat(strings.TrimSpace(t), 64); err == nil {
+			n, ok = f, true
+		}
+	}
+	// "NaN" and "Inf" parse as numbers but aren't a place in a book.
+	if ok && !math.IsNaN(n) && !math.IsInf(n, 0) {
+		o.V, o.OK = n, true
+	}
+	return nil
+}
+
+// ptr is the value when it was sent, nil when it wasn't.
+func (o optNum) ptr() *float64 {
+	if !o.OK {
+		return nil
+	}
+	v := o.V
+	return &v
 }
 
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request)  { s.sync(w, r, false) }
@@ -91,16 +137,9 @@ func (s *Server) sync(w http.ResponseWriter, r *http.Request, closeIt bool) {
 		writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	ctx := r.Context()
-	u := userOf(r)
-	sid := r.PathValue("sid")
-	dur := body.Duration
-	if dur <= 0 {
-		if sess, err := s.listen.GetSession(ctx, u.ID, sid); err == nil {
-			dur = s.itemDuration(ctx, sess.ItemKey)
-		}
-	}
-	d, err := s.listen.Sync(ctx, u.ID, sid, body.CurrentTime, body.TimeListened, dur, closeIt)
+	pos := body.CurrentTime.ptr()
+	d, err := s.syncSession(r.Context(), userOf(r).ID, r.PathValue("sid"), pos,
+		float64(body.TimeListened), float64(body.Duration), closeIt)
 	if errors.Is(err, listening.ErrSessionNotFound) {
 		writeError(w, http.StatusNotFound, "Session not found")
 		return
@@ -113,9 +152,20 @@ func (s *Server) sync(w http.ResponseWriter, r *http.Request, closeIt bool) {
 		// Positions only: a username next to an item key would record who is listening to
 		// what.
 		s.log.Debug("audiobook server: holding a jump back until playback continues from it",
-			"saved", d.Progress.Position, "reported", body.CurrentTime)
+			"saved", d.Progress.Position, "reported", body.CurrentTime.V)
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// syncSession applies one live report (pos nil: none sent) to a session, filling in the
+// item's duration when the app didn't send one.
+func (s *Server) syncSession(ctx context.Context, userID int64, sid string, pos *float64, listened, dur float64, closeIt bool) (listening.Decision, error) {
+	if dur <= 0 {
+		if sess, err := s.listen.GetSession(ctx, userID, sid); err == nil {
+			dur = s.itemDuration(ctx, sess.ItemKey)
+		}
+	}
+	return s.listen.Sync(ctx, userID, sid, pos, listened, dur, closeIt)
 }
 
 // itemDuration returns an item's total duration from the probe cache (0 if unknown).
@@ -283,37 +333,55 @@ func (s *Server) handleGetProgress(w http.ResponseWriter, r *http.Request) {
 }
 
 type progressPatch struct {
-	LibraryItemID string   `json:"libraryItemId"`
-	CurrentTime   *float64 `json:"currentTime"`
-	Duration      float64  `json:"duration"`
-	Progress      *float64 `json:"progress"`
-	IsFinished    *bool    `json:"isFinished"`
-	Hide          *bool    `json:"hideFromContinueListening"`
+	LibraryItemID string  `json:"libraryItemId"`
+	CurrentTime   optNum  `json:"currentTime"`
+	Duration      flexNum `json:"duration"`
+	Progress      optNum  `json:"progress"`
+	IsFinished    *bool   `json:"isFinished"`
+	Hide          *bool   `json:"hideFromContinueListening"`
+	LastUpdate    flexNum `json:"lastUpdate"` // when the app set it (unix ms)
 }
 
+// patchProgress applies an app's progress PATCH and returns the place actually kept —
+// which, for a stale or held report, isn't the one the app sent.
 func (s *Server) patchProgress(ctx context.Context, userID int64, key string, b progressPatch) (listening.Progress, error) {
-	cur, _, _ := s.listen.Progress(ctx, userID, key)
-	dur := b.Duration
+	cur, _, err := s.listen.Progress(ctx, userID, key)
+	if err != nil {
+		return listening.Progress{}, err
+	}
+	dur := float64(b.Duration)
 	if dur <= 0 {
 		dur = cur.Duration
 	}
 	if dur <= 0 {
 		dur = s.itemDuration(ctx, key)
 	}
-	pos := cur.Position
+	pos, hasPos := cur.Position, false
 	switch {
-	case b.CurrentTime != nil:
-		pos = *b.CurrentTime
-	case b.Progress != nil && dur > 0:
-		pos = *b.Progress * dur
+	case b.CurrentTime.OK:
+		pos, hasPos = b.CurrentTime.V, true
+	case b.Progress.OK && dur > 0:
+		pos, hasPos = b.Progress.V*dur, true
 	}
-	if b.CurrentTime != nil || b.Progress != nil || b.IsFinished != nil {
-		d, err := s.listen.SetProgress(ctx, userID, key, pos, dur, b.IsFinished, "app")
-		if err != nil {
-			return listening.Progress{}, err
-		}
-		cur = d.Progress
+	unfinish := b.IsFinished != nil && !*b.IsFinished
+	var d listening.Decision
+	switch {
+	case b.IsFinished != nil && *b.IsFinished:
+		// Marking a book finished is the person's own action: applied at once.
+		d, err = s.listen.SetProgress(ctx, userID, key, pos, dur, b.IsFinished, "app")
+	case hasPos || (unfinish && cur.Finished):
+		// Anything else an app sets goes through the same guards as a play session: an
+		// older copy is ignored and a big jump back is held until playback carries on
+		// from it. Apps often send isFinished:false on every update, so it only counts as
+		// "mark not finished" when the book is finished.
+		d, err = s.listen.ReportPosition(ctx, userID, key, pos, dur, unfinish, int64(b.LastUpdate), "app")
+	default:
+		d.Progress = cur
 	}
+	if err != nil {
+		return listening.Progress{}, err
+	}
+	cur = d.Progress
 	if b.Hide != nil {
 		_ = s.listen.HideProgress(ctx, userID, key, *b.Hide)
 		cur.Hidden = *b.Hide

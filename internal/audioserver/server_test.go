@@ -237,6 +237,13 @@ func TestLissenConversation(t *testing.T) {
 	if prog["currentTime"].(float64) != 120 {
 		t.Fatalf("progress currentTime = %v", prog["currentTime"])
 	}
+	// Closing with no body says nothing about where the app is: the place stays put.
+	if code, out := h.do("POST", "/api/session/"+sid+"/close", nil, nil); code != 200 {
+		t.Fatalf("close: HTTP %d %s", code, out)
+	}
+	if got := h.json("GET", "/api/me/progress/"+key, nil)["currentTime"].(float64); got != 120 {
+		t.Fatalf("an empty close moved the place to %v", got)
+	}
 
 	// Streaming, with a Range request (seeking).
 	ino := f0["ino"].(string)
@@ -258,6 +265,13 @@ func TestLissenConversation(t *testing.T) {
 	r0 := obj1(t, list1(t, local["results"])[0])
 	if r0["id"] != "off-1" || r0["success"] != true {
 		t.Fatalf("local-all result: %v", r0)
+	}
+	if got := h.json("GET", "/api/me/progress/"+key, nil)["currentTime"].(float64); got != 900 {
+		t.Fatalf("place after the offline upload = %v, want 900", got)
+	}
+	// A progress PATCH back to the start is held like any big jump back, not saved.
+	if r := h.json("PATCH", "/api/me/progress/"+key, map[string]any{"currentTime": 0, "duration": 36000}); r["currentTime"] != 900.0 {
+		t.Fatalf("a PATCH back to 0:00 replaced the place: %v", r["currentTime"])
 	}
 
 	// Bookmarks and /api/me.

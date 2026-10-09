@@ -23,6 +23,9 @@ const (
 	// listenSlack is how much listening one live report may claim beyond the wall time
 	// since the previous one (report timing jitter).
 	listenSlack = 15.0
+	// reportSkew: an app's own time on a progress report counts only when it is at least
+	// this old, so ordinary clock drift can't make a fresh report look "older".
+	reportSkew = 2 * time.Minute
 	// SessionRetention is how long an idle session is kept before pruning.
 	SessionRetention = 30 * 24 * time.Hour
 )
@@ -54,19 +57,37 @@ type Session struct {
 	CurPos    float64 `json:"cur_pos"`
 	Listened  float64 `json:"listened"`
 	Closed    bool    `json:"closed"`
+	// Restart: the book was finished, so this session starts again from the beginning
+	// (not stored; it tells the caller to describe the place as 0:00, unfinished).
+	Restart bool `json:"-"`
 }
 
 // OpenSession starts a play session at the user's saved place (or 0).
+//
+// A finished book starts again from 0:00 — opening one from "Listen again" must not play
+// the last few seconds and stop. The restart is held like any jump back, tied to this
+// session: carrying on listening from the start for a moment saves it (and clears
+// Finished), while just opening and closing the book leaves it finished.
 func (s *Store) OpenSession(ctx context.Context, userID int64, itemKey, deviceID, device, client string) (Session, Progress, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := s.nowMs()
-	p, _, err := s.progress(ctx, userID, itemKey)
+	p, found, err := s.progress(ctx, userID, itemKey)
 	if err != nil {
 		return Session{}, Progress{}, err
 	}
 	sess := Session{ID: newID(), UserID: userID, ItemKey: itemKey, DeviceID: deviceID, Device: device, Client: client,
 		StartedAt: now, LastAt: now, StartPos: p.Position, CurPos: p.Position}
+	if found && p.Finished {
+		sess.StartPos, sess.CurPos, sess.Restart = 0, 0, true
+		zero := 0.0
+		p.PendingPosition, p.PendingSession, p.PendingListened, p.PendingAt = &zero, sess.ID, 0, now
+		// Only the pending state changes: the saved place, its time and its history stay
+		// as they were until the restart proves itself.
+		if err := s.writeProgress(ctx, p); err != nil {
+			return Session{}, Progress{}, err
+		}
+	}
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO listen_sessions (id, user_id, item_key, device_id, device, client, offline, started_at, last_at, start_pos, cur_pos)
 		 VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
@@ -98,7 +119,11 @@ func (s *Store) GetSession(ctx context.Context, userID int64, id string) (Sessio
 
 // Sync applies a live progress report to a session. A closed or long-idle session is
 // simply picked up again — it never becomes "not found" while it's kept.
-func (s *Store) Sync(ctx context.Context, userID int64, sessionID string, position, listened, duration float64, closeIt bool) (Decision, error) {
+//
+// position is nil when the app didn't say where it is (a close with no body, or a sync
+// carrying only listening time). That still counts the listening and closes the
+// session, but never moves the place: reading "nothing" as 0:00 would reset people.
+func (s *Store) Sync(ctx context.Context, userID int64, sessionID string, position *float64, listened, duration float64, closeIt bool) (Decision, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	sess, err := s.GetSession(ctx, userID, sessionID)
@@ -111,16 +136,25 @@ func (s *Store) Sync(ctx context.Context, userID int64, sessionID string, positi
 	maxListen := float64(now-sess.LastAt)/1000 + listenSlack
 	listened = math.Min(math.Max(0, sanitize(listened)), maxListen)
 
-	d, err := s.apply(ctx, userID, sess.ItemKey, Report{
-		Kind: Live, Position: position, Duration: duration, Listened: listened, At: now,
-		SessionID: sess.ID, Device: sess.Device,
-	})
-	if err != nil {
-		return Decision{}, err
+	var d Decision
+	if position == nil {
+		p, _, err := s.progress(ctx, userID, sess.ItemKey)
+		if err != nil {
+			return Decision{}, err
+		}
+		d = Decision{Progress: p, Reason: "no-position"}
+	} else {
+		d, err = s.apply(ctx, userID, sess.ItemKey, Report{
+			Kind: Live, Position: *position, Duration: duration, Listened: listened, At: now,
+			SessionID: sess.ID, Device: sess.Device,
+		})
+		if err != nil {
+			return Decision{}, err
+		}
+		sess.CurPos = clamp(sanitize(*position), duration)
 	}
 	sess.Listened += listened
 	sess.LastAt = now
-	sess.CurPos = clamp(sanitize(position), duration)
 	closed := 0
 	if closeIt {
 		closed = 1
@@ -204,6 +238,38 @@ func (s *Store) SetProgress(ctx context.Context, userID int64, itemKey string, p
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.apply(ctx, userID, itemKey, Report{Kind: Manual, Position: position, Duration: duration, Finished: finished, At: s.nowMs(), Device: device})
+}
+
+// ReportPosition applies a position an app set without playing (Audiobookshelf's
+// progress PATCH) under the same guards as everything else, rather than letting it
+// always win. unfinish is the app marking the book not finished. appAt is when the app
+// says the position was set (unix ms; 0 when it didn't say).
+func (s *Store) ReportPosition(ctx context.Context, userID int64, itemKey string, position, duration float64, unfinish bool, appAt int64, device string) (Decision, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := s.nowMs()
+	at := appAt
+	// The app's own time is only believed when it's clearly in the past (and in
+	// milliseconds — anything before 2001 is seconds or junk): a phone clock a little
+	// behind mustn't make a seek it has just made look older than the place it left.
+	if at < 1e12 || at > now-reportSkew.Milliseconds() {
+		at = now
+		// Heard just now, so it's newer than whatever is saved — even a place an offline
+		// upload stamped a few minutes ahead by a fast phone clock.
+		cur, found, err := s.progress(ctx, userID, itemKey)
+		if err != nil {
+			return Decision{}, err
+		}
+		if found && cur.UpdatedAt >= at {
+			at = cur.UpdatedAt + 1
+		}
+	}
+	r := Report{Kind: Reported, Position: position, Duration: duration, At: at, Device: device}
+	if unfinish {
+		f := false
+		r.Finished = &f
+	}
+	return s.apply(ctx, userID, itemKey, r)
 }
 
 // ImportProgress brings in a place from another server (the Audiobookshelf import). It
