@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/tristenlammi/arrmada/internal/eventbus"
@@ -331,6 +332,69 @@ func TestDeleteEpisodeFileRefusesOnRecycleFailure(t *testing.T) {
 	}
 	if got := binFiles(t, f.bin); len(got) != 2 {
 		t.Errorf("bin = %v, want the video and its subtitle", got)
+	}
+}
+
+// A single-episode delete with the bin on and with it off: the video and its subtitles
+// go (to the bin, or for good), each is announced so the import pipeline forgets it,
+// the episode reads as missing, and the show's other episodes and rows are untouched.
+func TestDeleteEpisodeFileRecycleOnAndOff(t *testing.T) {
+	for _, binOn := range []bool{true, false} {
+		t.Run(map[bool]string{true: "bin on", false: "bin off"}[binOn], func(t *testing.T) {
+			f := newDeleteFixture(t)
+			if !binOn {
+				f.svc.SetRecycleDir("")
+			}
+			bus := eventbus.New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+			f.svc.SetBus(bus)
+			events, cancel := bus.Subscribe("file.removed")
+			defer cancel()
+			ctx := context.Background()
+			v1 := f.episode(t, 1, ".en.srt", ".en.forced.srt")
+			v2 := f.episode(t, 2, ".en.srt")
+			subs1 := []string{
+				filepath.Join(filepath.Dir(v1), "The Bear - S01E01.en.srt"),
+				filepath.Join(filepath.Dir(v1), "The Bear - S01E01.en.forced.srt"),
+			}
+
+			if err := f.svc.DeleteEpisodeFile(ctx, f.id, 1, 1); err != nil {
+				t.Fatal(err)
+			}
+			for _, p := range append([]string{v1}, subs1...) {
+				if exists(p) {
+					t.Errorf("%s is still in the library", filepath.Base(p))
+				}
+			}
+			want := []string{}
+			if binOn {
+				want = []string{"The Bear - S01E01.en.forced.srt", "The Bear - S01E01.en.srt", "The Bear - S01E01.mkv"}
+			} else if exists(f.bin) {
+				t.Error("bin off, but a bin was created")
+			}
+			if got := binFiles(t, f.bin); len(got) != len(want) || (len(want) > 0 && strings.Join(got, "|") != strings.Join(want, "|")) {
+				t.Errorf("bin = %v, want %v", got, want)
+			}
+			got := map[string]bool{}
+			for len(events) > 0 {
+				if m, ok := (<-events).Data.(map[string]any); ok {
+					got[m["path"].(string)] = true
+				}
+			}
+			for _, p := range append([]string{v1}, subs1...) {
+				if !got[p] {
+					t.Errorf("no file.removed for %s (got %v)", filepath.Base(p), got)
+				}
+			}
+			if p, _ := f.svc.repo.EpisodeFilePath(ctx, f.id, 1, 1); p != "" {
+				t.Errorf("episode 1 still points at %q", p)
+			}
+			if p, _ := f.svc.repo.EpisodeFilePath(ctx, f.id, 1, 2); p != v2 || !exists(v2) {
+				t.Errorf("episode 2 was touched: %q", p)
+			}
+			if !f.seriesExists(t) {
+				t.Error("deleting one episode's file removed the show")
+			}
+		})
 	}
 }
 

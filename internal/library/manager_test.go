@@ -2,6 +2,7 @@ package library
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -89,5 +90,61 @@ func TestProcessEventCarriesHash(t *testing.T) {
 		}
 	default:
 		t.Fatal("no download.imported event received")
+	}
+}
+
+// When an imported file vanishes from the library (not deliberately deleted — that is
+// MarkRemovedByTarget), the next sweep forgets the stale record and imports the still-
+// seeding download again. The fresh record starts pending, so the movie is attached
+// again too, through the same retrying path as a first import.
+func TestVanishedTargetIsReimportedAndAttachedAgain(t *testing.T) {
+	ctx := context.Background()
+	fa := &fakeAttach{script: []attachAnswer{
+		{outcome: Attached},
+		{outcome: AttachRetry, err: errors.New("database is locked")},
+		{outcome: Attached},
+	}}
+	m, db := attachManager(t, t.TempDir(), fa)
+	cands := oneCandidate(t, "v1", "Dune.2021.1080p.WEB-DL")
+	if n := m.Process(ctx, cands); n != 1 {
+		t.Fatalf("first import: %d, want 1", n)
+	}
+	target, _, err := m.repo.targetFor(ctx, "v1")
+	if err != nil || target == "" {
+		t.Fatalf("no recorded target: %q %v", target, err)
+	}
+	if row := readAttach(t, db, "v1"); row.state != AttachStateAttached {
+		t.Fatalf("first attach: %+v", row)
+	}
+
+	// The library file disappears (a cleanup, a lost disk).
+	if err := os.Remove(target); err != nil {
+		t.Fatal(err)
+	}
+	if n := m.Process(ctx, cands); n != 1 {
+		t.Fatalf("re-import: %d, want 1", n)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("the file wasn't placed again: %v", err)
+	}
+	row := readAttach(t, db, "v1")
+	if row.state != AttachStatePending || row.attempts != 1 || row.release != "Dune.2021.1080p.WEB-DL" {
+		t.Fatalf("after re-import with a failed attach: %+v, want a fresh pending row", row)
+	}
+	if fa.count() != 2 || fa.calls[1].TargetPath != target {
+		t.Fatalf("attach calls = %+v, want a second call for %s", fa.calls, target)
+	}
+
+	makeDue(t, db, "v1")
+	m.RetryPendingAttach(ctx)
+	if row := readAttach(t, db, "v1"); row.state != AttachStateAttached {
+		t.Fatalf("after the retry: %+v", row)
+	}
+	if fa.count() != 3 {
+		t.Fatalf("attach calls = %d, want 3", fa.count())
+	}
+	// Settled: the next sweep finds the file in place and does nothing.
+	if n := m.Process(ctx, cands); n != 0 || fa.count() != 3 {
+		t.Fatalf("a settled re-import ran again: imported %d, attach calls %d", n, fa.count())
 	}
 }
