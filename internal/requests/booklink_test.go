@@ -244,3 +244,78 @@ func TestBackfillBookIDs(t *testing.T) {
 		t.Errorf("second run linked %d", linked)
 	}
 }
+
+// After the Hardcover upgrade a book has two keys. Requests from a card under either one
+// are one request: the second requester is subscribed to the first.
+func TestCreateWithAliasKeyAttachesToExistingRequest(t *testing.T) {
+	s, repo, _, ctx := bookLinkFixture(t, catalogue{byKey: map[string]metadata.BookResult{
+		"hc:42": {Key: "hc:42", Title: "Dune", Author: "Frank Herbert"},
+	}})
+	b, err := repo.Create(ctx, books.Book{OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.books.Rematch(ctx, b.ID, "hc:42", metadata.BookResult{}); err != nil {
+		t.Fatal(err)
+	}
+	first, sub, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert",
+		RequestedBy: 7, RequestedByName: "alice"}, false)
+	if err != nil || sub {
+		t.Fatalf("first request: %v subscribed=%v", err, sub)
+	}
+	if first.BookID != b.ID {
+		t.Errorf("first request book_id = %d, want %d (its key is the book's former key)", first.BookID, b.ID)
+	}
+	second, sub, err := s.Create(ctx, Request{MediaType: "book", OLKey: "hc:42", Title: "Dune", Author: "Frank Herbert",
+		RequestedBy: 8, RequestedByName: "bob"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sub || second.ID != first.ID {
+		t.Errorf("second request = id %d subscribed=%v, want subscribed to %d", second.ID, sub, first.ID)
+	}
+	subs, _ := s.repo.Subscribers(ctx, first.ID)
+	if len(subs) != 1 || subs[0].UserID != 8 {
+		t.Errorf("subscribers = %+v, want bob", subs)
+	}
+}
+
+// A book not in the library yet, requested from an Open Library card and a Hardcover
+// card, is one request too: same title and author.
+func TestCreateSameBookOtherCatalogueAttaches(t *testing.T) {
+	s, _, _, ctx := bookLinkFixture(t, catalogue{})
+	first, _, err := s.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", RequestedBy: 7}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, sub, err := s.Create(ctx, Request{MediaType: "book", OLKey: "hc:42", Title: "Dune", Author: "Herbert, Frank", RequestedBy: 8}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sub || second.ID != first.ID {
+		t.Errorf("second = %d subscribed=%v, want subscribed to %d", second.ID, sub, first.ID)
+	}
+	// A prefix sibling is another book.
+	third, sub, err := s.Create(ctx, Request{MediaType: "book", OLKey: "hc:43", Title: "Dune Messiah", Author: "Frank Herbert", RequestedBy: 8}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sub || third.ID == first.ID {
+		t.Error("Dune Messiah was folded into the Dune request")
+	}
+}
+
+// The backfill records the key a request was made under as one of its book's keys.
+func TestBackfillAddsRequestKey(t *testing.T) {
+	s, repo, _, ctx := bookLinkFixture(t, catalogue{})
+	b, _ := repo.Create(ctx, books.Book{OLKey: "hc:7", Title: "Mistborn: The Final Empire", Author: "Brandon Sanderson"})
+	if _, err := s.repo.Create(ctx, Request{MediaType: "book", OLKey: "OL2W", Title: "The Final Empire", Author: "Brandon Sanderson", Status: StatusApproved, RequestedBy: 7}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.BackfillBookIDs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok := s.books.BookIDForKey(ctx, "OL2W"); !ok || id != b.ID {
+		t.Errorf("OL2W resolves to %d %v, want %d", id, ok, b.ID)
+	}
+}

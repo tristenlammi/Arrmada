@@ -9,6 +9,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // ErrNotFound is returned when a book id doesn't exist.
@@ -69,6 +71,9 @@ type Book struct {
 	// by the HTTP layer for the detail page (not stored); nil when the key is from no
 	// catalogue Arrmada knows.
 	Catalogue *CatalogueRef `json:"catalogue,omitempty"`
+	// Aliases are the other catalogue keys the book has had (book_keys, without the
+	// current one), filled by the HTTP layer for the detail page.
+	Aliases []BookKey `json:"aliases,omitempty"`
 	// LastSearchAt / SearchMisses are where the book stands on the search ladder: when the
 	// sweep last searched it (RFC3339, UTC; "" = never) and how many searches in a row
 	// found nothing. Without them a book not found in a month looked exactly like one
@@ -259,17 +264,29 @@ func (r *Repo) Create(ctx context.Context, b Book) (Book, error) {
 			subjectsJSON = string(raw)
 		}
 	}
-	res, err := r.db.ExecContext(ctx,
-		`INSERT INTO books (ol_key, title, author, year, cover_url, description, subjects_json, monitored, quality_profile)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		b.OLKey, b.Title, b.Author, b.Year, b.CoverURL, b.Description, subjectsJSON, b2i(b.Monitored), b.QualityProfile)
+	// The row and its key land together, and a key that is another book's former key
+	// is that book: adding it again would make two rows of one book.
+	var id int64
+	err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		if _, taken := keyOwner(ctx, tx, b.OLKey); taken {
+			return ErrExists
+		}
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO books (ol_key, title, author, year, cover_url, description, subjects_json, monitored, quality_profile)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			b.OLKey, b.Title, b.Author, b.Year, b.CoverURL, b.Description, subjectsJSON, b2i(b.Monitored), b.QualityProfile)
+		if err != nil {
+			return err
+		}
+		id, _ = res.LastInsertId()
+		return addKey(ctx, tx, b.OLKey, id, "")
+	})
 	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+		if errors.Is(err, ErrExists) || strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return Book{}, ErrExists
 		}
 		return Book{}, err
 	}
-	id, _ := res.LastInsertId()
 	return r.Get(ctx, id)
 }
 
@@ -359,24 +376,51 @@ func (r *Repo) ClearEdition(ctx context.Context, id int64, kind string) error {
 // ol_key is UNIQUE, so re-matching onto a work already in the library returns ErrExists
 // rather than silently failing: the two rows would have to be merged, which is the user's
 // call, not ours.
-func (r *Repo) Rematch(ctx context.Context, id int64, b Book) error {
+//
+// The key the book was on stays one of its keys (book_keys), so whatever still carries
+// it finds the book — unless keepOld is false: a correction of a wrong identification,
+// where the old key named a different book. A key that is another book's, current or
+// former, is ErrExists.
+func (r *Repo) Rematch(ctx context.Context, id int64, b Book, keepOld bool) error {
 	subjectsJSON := ""
 	if len(b.Subjects) > 0 {
 		if raw, err := json.Marshal(b.Subjects); err == nil {
 			subjectsJSON = string(raw)
 		}
 	}
-	res, err := r.db.ExecContext(ctx,
-		`UPDATE books SET ol_key = ?, title = ?, author = ?, year = ?, cover_url = ?,
-		        description = ?, subjects_json = ? WHERE id = ?`,
-		b.OLKey, b.Title, b.Author, b.Year, b.CoverURL, b.Description, subjectsJSON, id)
-	if err != nil {
-		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+	err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		if owner, taken := keyOwner(ctx, tx, b.OLKey); taken && owner != id {
 			return ErrExists
 		}
-		return err
+		var old string
+		if err := tx.QueryRowContext(ctx, `SELECT ol_key FROM books WHERE id = ?`, id).Scan(&old); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
+			return err
+		}
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE books SET ol_key = ?, title = ?, author = ?, year = ?, cover_url = ?,
+			        description = ?, subjects_json = ? WHERE id = ?`,
+			b.OLKey, b.Title, b.Author, b.Year, b.CoverURL, b.Description, subjectsJSON, id); err != nil {
+			return err
+		}
+		if old != b.OLKey {
+			if keepOld {
+				if err := addKey(ctx, tx, old, id, ""); err != nil {
+					return err
+				}
+			} else if err := dropKey(ctx, tx, old, id); err != nil {
+				return err
+			}
+		}
+		return addKey(ctx, tx, b.OLKey, id, "")
+	})
+	if err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, ErrExists) &&
+		strings.Contains(strings.ToLower(err.Error()), "unique") {
+		return ErrExists
 	}
-	return affected(res, nil)
+	return err
 }
 
 // Delete removes a book.

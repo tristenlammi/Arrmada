@@ -1539,13 +1539,13 @@ func (c *Coordinator) ScanBookLibrary(ctx context.Context, ebookRoot, audiobookR
 	if c.books == nil || c.imp == nil || !c.books.MetadataAvailable() {
 		return res
 	}
+	// By every key a library book has had, so a folder the catalogue still answers with
+	// a book's old key backfills that book instead of trying to add it again.
 	existing := map[string]books.Book{}
 	var allBooks []books.Book
 	if list, err := c.books.List(ctx); err == nil {
 		allBooks = list
-		for _, b := range list {
-			existing[b.OLKey] = b
-		}
+		existing = c.books.KeyIndex(ctx, list)
 	}
 	var folders []library.BookFolder
 	if ebookRoot != "" || audiobookRoot != "" {

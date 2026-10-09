@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -90,5 +91,44 @@ func TestBookCardsKeepPrefixSiblingsRequestable(t *testing.T) {
 	}
 	if !cards[1].InLibrary {
 		t.Error("Thrawn under a Hardcover key should read as owned")
+	}
+}
+
+// A card still carrying a book's former key (the Open Library key from before the
+// Hardcover upgrade) reads In library even when its title differs from the library's.
+func TestBookCardsAliasKeyIsInLibrary(t *testing.T) {
+	s := bookCardServer(t)
+	ctx := context.Background()
+	repo := books.NewRepo(s.st.DB())
+	b, err := repo.Create(ctx, books.Book{OLKey: "hc:42", Title: "Mistborn", Author: "Brandon Sanderson"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.SetEdition(ctx, b.ID, books.KindEbook, "/library/m.epub", "EPUB", 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := repo.AddKey(ctx, "OL1W", b.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	a := &api{deps: s.deps}
+	cards := a.enrichBookCards(ctx, []metadata.BookResult{{Key: "OL1W", Title: "Mistborn (The Final Empire)", Author: "Sanderson"}})
+	if !cards[0].InLibrary || !cards[0].HasFile {
+		t.Errorf("card under the former key = %+v, want in library with a file", cards[0])
+	}
+
+	// The detail page lists the former key, not the current one.
+	_, cookie := s.user(t, "boss@example.com", auth.RoleManager)
+	rec := s.do("GET", fmt.Sprintf("/api/v1/books/%d", b.ID), cookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HTTP %d: %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		Aliases []books.BookKey `json:"aliases"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Aliases) != 1 || got.Aliases[0].Key != "OL1W" || got.Aliases[0].Source != books.KeySourceOpenLibrary {
+		t.Errorf("aliases = %+v, want just OL1W from openlibrary", got.Aliases)
 	}
 }

@@ -176,7 +176,22 @@ func (a *api) handleGetBook(w http.ResponseWriter, r *http.Request) {
 	}
 	a.enrichBookWants(r, &b)
 	setBookCatalogue(&b)
+	a.setBookAliases(r.Context(), &b)
 	a.writeJSON(w, http.StatusOK, b)
+}
+
+// setBookAliases lists the catalogue keys the book had before its current one, so the
+// detail page can say where else it is known.
+func (a *api) setBookAliases(ctx context.Context, b *books.Book) {
+	keys, err := a.deps.Books.KeysFor(ctx, b.ID)
+	if err != nil {
+		return
+	}
+	for _, k := range keys {
+		if k.Key != b.OLKey {
+			b.Aliases = append(b.Aliases, k)
+		}
+	}
 }
 
 // enrichBookWants fills want_ebook/want_audiobook from the book's quality profile so
@@ -214,6 +229,7 @@ func (a *api) handleRefreshBook(w http.ResponseWriter, r *http.Request) {
 	}
 	a.enrichBookWants(r, &b)
 	setBookCatalogue(&b)
+	a.setBookAliases(r.Context(), &b)
 	a.writeJSON(w, http.StatusOK, b)
 }
 
@@ -598,15 +614,10 @@ func (a *api) enrichBookCards(ctx context.Context, results []metadata.BookResult
 	// By catalogue key AND by what the book is (title + author): a library built on
 	// Open Library must show its books as owned when the results come from Hardcover,
 	// and a second Open Library "work" for the same novel must not look like a new book.
-	inLib := map[string]bool{}
-	hasFile := map[string]bool{}
-	byKey := map[string]int64{}
+	// Every key a book has had counts (book_keys): a card still carrying a book's old
+	// Open Library key after the Hardcover upgrade is that book.
 	list, _ := a.deps.Books.List(ctx)
-	for _, b := range list {
-		inLib[b.OLKey] = true
-		hasFile[b.OLKey] = b.HasFile
-		byKey[b.OLKey] = b.ID
-	}
+	byKey := a.deps.Books.KeyIndex(ctx, list)
 	same := books.NewIdentityIndex(list)
 	// Requests.List returns newest first; iterating in order and overwriting means the
 	// OLDEST request would win, so only set a key on first sight — the newest request
@@ -633,9 +644,10 @@ func (a *api) enrichBookCards(ctx context.Context, results []metadata.BookResult
 	for _, br := range results {
 		br.Tags = nil // filter-only; br is a copy, so the cached list keeps them
 		st := reqStatus[br.Key]
-		in, has := inLib[br.Key], hasFile[br.Key]
-		if st == "" {
-			st = reqByBook[byKey[br.Key]]
+		lb, in := byKey[br.Key]
+		has := in && lb.HasFile
+		if st == "" && in {
+			st = reqByBook[lb.ID]
 		}
 		if lb, ok := same.Find(br.Title, br.Author); ok {
 			in, has = true, has || lb.HasFile // Find prefers the row with files

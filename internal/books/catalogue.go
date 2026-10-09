@@ -73,13 +73,10 @@ func (s *Service) catalogueSeries(ctx context.Context, bookID int64) (*SeriesVie
 		}
 		return nil, nil, false
 	}
-	// Match the library onto the series by catalogue key first, then by title+author,
-	// so books still on Open Library keys count as owned.
+	// Match the library onto the series by catalogue key first — any key a book has had —
+	// then by title+author, so books still on Open Library keys count as owned.
 	list, _ := s.repo.List(ctx)
-	byKey := map[string]Book{}
-	for _, lb := range list {
-		byKey[lb.OLKey] = lb
-	}
+	byKey := keyIndex(ctx, s.repo, list)
 	same := NewIdentityIndex(list)
 	view := &SeriesView{Key: info.Key, Name: info.Name, Total: info.Count}
 	var missing []metadata.BookResult

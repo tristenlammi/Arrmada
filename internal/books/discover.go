@@ -53,11 +53,10 @@ func (s *Service) recommendedAt(ctx context.Context, now time.Time) ([]Recommend
 	if err != nil {
 		return nil, err
 	}
-	owned := map[string]bool{}
+	owned := keyIndex(ctx, s.repo, list) // every key a library book has had
 	same := NewIdentityIndex(list)
 	var seeds []Book
 	for _, b := range list {
-		owned[b.OLKey] = true
 		if metadata.IsHardcoverKey(b.OLKey) {
 			seeds = append(seeds, b)
 		}
@@ -85,7 +84,7 @@ func (s *Service) recommendedAt(ctx context.Context, now time.Time) ([]Recommend
 		}
 		var keep []metadata.BookResult
 		for _, r := range sim {
-			if owned[r.Key] {
+			if _, ok := owned[r.Key]; ok {
 				continue
 			}
 			if _, ok := same.Find(r.Title, r.Author); ok {

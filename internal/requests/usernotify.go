@@ -185,18 +185,22 @@ func (s *Service) notifyRequester(ctx context.Context, mediaType string, tmdbID 
 	return s.notifyReady(ctx, req)
 }
 
-// notifyBookRequesters alerts everyone behind the requests linked to a just-imported
-// book. The link survives the book's catalogue key changing; a request not linked yet
-// is still found by the key it was made under.
+// notifyBookRequesters alerts everyone behind the requests for a just-imported book. The
+// link survives the book's catalogue key changing; a request not linked yet is still
+// found by the key it was made under, current or former.
 func (s *Service) notifyBookRequesters(ctx context.Context, bookID int64, olKey string) error {
-	linked, err := s.repo.ListByBookID(ctx, bookID)
+	keys := []string{olKey}
+	if ks, err := s.books.KeysFor(ctx, bookID); err == nil {
+		keys = keys[:0]
+		for _, k := range ks {
+			keys = append(keys, k.Key)
+		}
+	}
+	linked, err := s.repo.ListForBook(ctx, bookID, keys)
 	if err != nil {
 		// Without the list the linked requesters would be skipped for good; fail so a
 		// retrying caller (an outbox row) tries again.
 		return fmt.Errorf("list requests for book %d: %w", bookID, err)
-	}
-	if len(linked) == 0 {
-		return s.notifyRequester(ctx, "book", 0, olKey)
 	}
 	var errs []error
 	for _, req := range linked {
@@ -330,8 +334,10 @@ func (s *Service) SweepReadyRequests(ctx context.Context) error {
 	bookByID := map[int64]bool{}
 	if bs, err := s.books.List(ctx); err == nil {
 		for _, b := range bs {
-			bookHave[b.OLKey] = b.HasFile
 			bookByID[b.ID] = b.HasFile
+		}
+		for k, b := range s.books.KeyIndex(ctx, bs) { // any key a book has had
+			bookHave[k] = b.HasFile
 		}
 	}
 	for i := range reqs {

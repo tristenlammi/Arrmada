@@ -74,7 +74,7 @@ func TestRematchKeepsFilesAndSettings(t *testing.T) {
 	if err := repo.Rematch(ctx, b.ID, Book{
 		OLKey: "OL_RIGHT", Title: "The Right Book", Author: "Real Author", Year: 1965,
 		Description: "correct", Subjects: []string{"sci-fi"},
-	}); err != nil {
+	}, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -101,7 +101,7 @@ func TestRematchOntoExistingWorkConflicts(t *testing.T) {
 	if _, err := repo.Create(ctx, Book{OLKey: "OL_B", Title: "Book B"}); err != nil {
 		t.Fatal(err)
 	}
-	err := repo.Rematch(ctx, a.ID, Book{OLKey: "OL_B", Title: "Book B"})
+	err := repo.Rematch(ctx, a.ID, Book{OLKey: "OL_B", Title: "Book B"}, true)
 	if err != ErrExists {
 		t.Errorf("want ErrExists when the target work is already in the library, got %v", err)
 	}

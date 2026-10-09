@@ -142,6 +142,26 @@ func (r *Repo) ListByBookID(ctx context.Context, bookID int64) ([]Request, error
 	return r.query(ctx, `SELECT `+cols+` FROM requests WHERE media_type = 'book' AND book_id = ? ORDER BY id`, bookID)
 }
 
+// ListForBook returns the book requests for one library row, oldest first: those linked
+// to it, and those not linked to any row yet that were made under one of its keys
+// (keys holds every catalogue key the book has had).
+func (r *Repo) ListForBook(ctx context.Context, bookID int64, keys []string) ([]Request, error) {
+	q := `SELECT ` + cols + ` FROM requests WHERE media_type = 'book' AND (book_id = ?`
+	args := []any{bookID}
+	if len(keys) > 0 {
+		q += ` OR (book_id IS NULL AND ol_key IN (?` + strings.Repeat(`, ?`, len(keys)-1) + `))`
+		for _, k := range keys {
+			args = append(args, k)
+		}
+	}
+	return r.query(ctx, q+`) ORDER BY id`, args...)
+}
+
+// bookRequests returns every book request, oldest first.
+func (r *Repo) bookRequests(ctx context.Context) ([]Request, error) {
+	return r.query(ctx, `SELECT `+cols+` FROM requests WHERE media_type = 'book' ORDER BY id`)
+}
+
 // unlinkedBookRequests returns the book requests not yet linked to a library row.
 func (r *Repo) unlinkedBookRequests(ctx context.Context) ([]Request, error) {
 	return r.query(ctx, `SELECT `+cols+` FROM requests WHERE media_type = 'book' AND book_id IS NULL ORDER BY id`)

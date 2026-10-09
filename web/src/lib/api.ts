@@ -1392,6 +1392,9 @@ export interface Book {
   /** Where the metadata came from, with a link to the book there. Detail endpoints only;
    *  absent when the key is from no known catalogue. */
   catalogue?: CatalogueRef;
+  /** Catalogue keys the book had before its current one (book_keys). Detail endpoints
+   *  only; a card carrying any of them is this book. */
+  aliases?: BookKeyAlias[];
   /** The search ladder: when the sweep last looked (RFC3339; absent = never), how many
    *  searches in a row found nothing, and when it looks next (absent when nothing is
    *  wanted, it isn't monitored, or it's due now). */
@@ -1402,6 +1405,12 @@ export interface Book {
 export interface CatalogueRef {
   name: "Hardcover" | "Open Library" | "Google Books";
   url: string;
+}
+export interface BookKeyAlias {
+  key: string;
+  /** The catalogue that issued it, or "request" for a key learned from a request. */
+  source: "openlibrary" | "hardcover" | "google" | "request";
+  added_at?: string;
 }
 // AudioVersion is one extra audiobook of a book. A release belongs to it when it
 // mentions one of its terms; with no terms it is filled by hand only.
