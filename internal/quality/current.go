@@ -29,6 +29,87 @@ type CurrentFile struct {
 	// Facts are what Convert's analysis read from the file itself, nil when no current
 	// analysis exists. When set they override the name's resolution, codec, HDR and audio.
 	Facts *FileFacts
+	// OrigRelease and OrigSizeGB are what a converted file was before Convert first shrank
+	// it ("" / 0 when never converted, or unknown). Whether the file is done (TargetMet) is
+	// judged on the file as it is, but an upgrade must also beat the original — its score,
+	// its resolution and its bitrate — and is never the original release itself. Without
+	// that, a remux the file was converted from (or another group's) looked like a large
+	// bitrate upgrade over the smaller converted file, and got grabbed and converted again.
+	OrigRelease string
+	OrigSizeGB  float64
+}
+
+// upgradeBar is what a candidate has to beat to be an upgrade of the file.
+type upgradeBar struct {
+	total    int    // the higher of the file's score and its original's
+	avoided  bool   // the file as it is carries a format the profile avoids
+	resRank  int    // the higher of the file's resolution and its original's
+	encode   Encode // the bitrate side: the original's size and codec when known
+	current  string // the file's release, with curCodec its (probed) codec
+	curCodec parser.Codec
+	orig     string // the release it was converted from, "" when none
+}
+
+func (c CurrentFile) upgradeBar(p Profile, e *Engine) upgradeBar {
+	// No runtime on the file's own candidate: scored as it always was, so a file over a
+	// lowered ceiling isn't treated as worthless and replaced by anything at all.
+	curCand := c.candidate()
+	cur := e.Evaluate(p, curCand)
+	b := upgradeBar{
+		total: cur.Total, avoided: cur.Avoided, resRank: resRank[curCand.Release.Resolution],
+		encode:  Encode{SizeGB: c.SizeGB, Codec: curCand.Release.Codec},
+		current: c.Release, curCodec: curCand.Release.Codec,
+	}
+	if orig := strings.TrimSpace(c.OrigRelease); orig != "" && !strings.EqualFold(orig, strings.TrimSpace(c.Release)) {
+		size := c.OrigSizeGB
+		if size <= 0 {
+			size = c.SizeGB
+		}
+		oc := NewCandidate(orig, size, 1_000_000)
+		if o := e.Evaluate(p, oc); o.Total > b.total {
+			b.total = o.Total
+		}
+		if r := resRank[oc.Release.Resolution]; r > b.resRank {
+			b.resRank = r
+		}
+		b.orig = orig
+	}
+	if enc, ok := c.OriginalEncode(); ok {
+		b.encode = enc
+	}
+	return b
+}
+
+// OriginalEncode is the bitrate side of a converted file's original — its size and the
+// codec its release names — for an import gate's IsBitrateUpgrade; false when the file
+// was never converted or its original size is unknown.
+func (c CurrentFile) OriginalEncode() (Encode, bool) {
+	if c.OrigSizeGB <= 0 {
+		return Encode{}, false
+	}
+	codec := parser.CodecUnknown
+	if strings.TrimSpace(c.OrigRelease) != "" {
+		codec = parser.Parse(c.OrigRelease).Codec
+	}
+	return Encode{SizeGB: c.OrigSizeGB, Codec: codec}, true
+}
+
+// excludes reports a candidate that is the file itself or what it was converted from:
+// the same release name, or the same name with only the codec changed.
+func (b upgradeBar) excludes(name string) bool {
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == strings.ToLower(strings.TrimSpace(b.current)) {
+		return true // the release we already have
+	}
+	if convertedFrom(name, b.current, b.curCodec) {
+		return true // the release the converted file came from, by its stamped name
+	}
+	if b.orig != "" {
+		if key == strings.ToLower(b.orig) || parser.WithoutCodec(name) == parser.WithoutCodec(b.orig) {
+			return true // the release the file was converted from, as recorded
+		}
+	}
+	return false
 }
 
 // release is the file read as a release: the parsed name, with probed facts laid over it.
@@ -220,6 +301,11 @@ func atCeiling(sp StoredProfile, p Profile, cur CurrentFile) bool {
 	curBr := cur.bitrateMbps()
 	if curBr <= 0 {
 		return false // can't express the file as a bitrate — don't guess
+	}
+	// A converted file's upgrade has to beat what it was before conversion (see
+	// upgradeBar), so its headroom is measured from there.
+	if origBr := BitrateMbps(cur.OrigSizeGB, cur.RuntimeMin); origBr > curBr {
+		curBr = origBr
 	}
 	// A resolution the profile allows and we don't have is still an upgrade, whatever the
 	// bitrate says.

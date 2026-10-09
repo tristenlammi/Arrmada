@@ -561,6 +561,11 @@ func (s *Service) markImported(ctx context.Context, id int64, path, sourceReleas
 				_ = r.SetVersionSourceRelease(ctx, target.ID, sourceRelease)
 			}
 		}
+		// A new file: whatever an earlier one was before Convert shrank it says nothing
+		// about this one. Convert's own path changes go through RepointMovieFile and keep it.
+		if err := r.ClearConvertedFrom(ctx, id, target.ID); err != nil {
+			return err
+		}
 		if !again {
 			_ = r.AddEvent(ctx, id, event, detail)
 		}
@@ -739,6 +744,14 @@ func (s *Service) fetchArt(ctx context.Context, dst, url string) {
 	_, _ = io.Copy(f, io.LimitReader(resp.Body, 25<<20))
 }
 
+// SetConvertedFrom records what the file at path was before Convert shrank it, on every
+// track of the movie holding that file: its recorded release and sizeBytes (0 = unknown).
+// Convert calls it just before RepointMovieFile, while the release still names the
+// original codec. A track that already has a baseline keeps its first one.
+func (s *Service) SetConvertedFrom(ctx context.Context, movieID int64, path string, sizeBytes int64) error {
+	return s.repo.SetConvertedFromForPath(ctx, movieID, path, sizeBytes)
+}
+
 // RepointMovieFile updates the movie's file records for a PATH-ONLY change (convert,
 // rename): every version whose file sits at oldPath follows to newPath, and the
 // recorded source_release is preserved — optionally gaining a codec token.
@@ -754,6 +767,8 @@ func (s *Service) fetchArt(ctx context.Context, dst, url string) {
 // replaces the old codec in place (parser.RestampCodec) rather than being appended, so
 // the name still reads as the new codec and its "-GROUP" still parses.
 func (s *Service) RepointMovieFile(ctx context.Context, movieID int64, oldPath, newPath string, size int64, codecToken string) (int, error) {
+	// The pre-conversion baseline is NOT touched here: a repoint is the same content under
+	// a new path or codec, and SetConvertedFrom recorded what it was before.
 	versions, err := s.VersionRows(ctx, movieID)
 	if err != nil {
 		return 0, err
@@ -830,6 +845,7 @@ func (s *Service) VersionRows(ctx context.Context, id int64) ([]Version, error) 
 		ID: 0, IsDefault: true, Label: "Default",
 		QualityProfile: m.QualityProfile, Monitored: m.Monitored,
 		HasFile: m.HasFile, FilePath: m.MovieFilePath, SourceRelease: m.SourceRelease,
+		ConvertedFromRelease: m.ConvertedFromRelease, ConvertedFromSize: m.ConvertedFromSize,
 	}
 	if m.HasFile && m.File != nil {
 		f := *m.File
@@ -857,6 +873,7 @@ func (s *Service) VersionsLive(ctx context.Context, id int64) ([]Version, error)
 		ID: 0, IsDefault: true, Label: "Default",
 		QualityProfile: m.QualityProfile, Monitored: m.Monitored,
 		HasFile: m.HasFile, FilePath: m.MovieFilePath, SourceRelease: m.SourceRelease,
+		ConvertedFromRelease: m.ConvertedFromRelease, ConvertedFromSize: m.ConvertedFromSize,
 		File: s.fileInfo(m.MovieFilePath, m.HasFile),
 	}
 	out := []Version{def}

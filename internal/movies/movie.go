@@ -23,6 +23,11 @@ type Movie struct {
 	// SourceRelease is the release name the default file was imported from — the
 	// signal used to score the current file when deciding upgrades.
 	SourceRelease string `json:"source_release,omitempty"`
+	// ConvertedFromRelease and ConvertedFromSize are what the default file was before
+	// Convert first shrank it (size in bytes, 0 = unknown). Upgrades must beat that, not
+	// the smaller converted file. Empty for a file never converted; cleared on import.
+	ConvertedFromRelease string `json:"converted_from_release,omitempty"`
+	ConvertedFromSize    int64  `json:"converted_from_size,omitempty"`
 
 	// Extra holds enriched metadata (genres, cast, collection, …), stored as
 	// JSON. Present on both list and detail responses.
@@ -85,6 +90,9 @@ type Version struct {
 	SizeBytes      int64      `json:"size_bytes,omitempty"`
 	SourceRelease  string     `json:"source_release,omitempty"`
 	File           *MovieFile `json:"file,omitempty"` // enriched on the detail endpoint
+	// The track's pre-conversion baseline (see Movie.ConvertedFromRelease).
+	ConvertedFromRelease string `json:"converted_from_release,omitempty"`
+	ConvertedFromSize    int64  `json:"converted_from_size,omitempty"`
 }
 
 // MovieFile describes the on-disk file for a movie: size plus media info parsed

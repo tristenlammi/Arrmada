@@ -177,6 +177,11 @@ func main() {
 	if _, err := convert.RepairCodecStamps(context.Background(), st.DB(), settingsSvc, log); err != nil {
 		log.Warn("convert: codec stamp repair failed", "err", err)
 	}
+	// One-time: files converted before their pre-conversion baseline was recorded get it
+	// from the Convert ledger, so upgrades can't undo those conversions either.
+	if _, err := convert.BackfillConvertedFrom(context.Background(), st.DB(), settingsSvc, log); err != nil {
+		log.Warn("convert: pre-conversion baseline backfill failed", "err", err)
+	}
 
 	bus := eventbus.New(log)
 	// What must happen after an import (Convert and Subtitles reindexing, the requester's

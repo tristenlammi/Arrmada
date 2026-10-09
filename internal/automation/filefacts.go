@@ -51,10 +51,12 @@ func versionSizeBytes(v movies.Version) int64 {
 func (c *Coordinator) currentMovieFile(ctx context.Context, m movies.Movie, v movies.Version) quality.CurrentFile {
 	size := versionSizeBytes(v)
 	return quality.CurrentFile{
-		Release:    upgradeBaseline(m, v),
-		SizeGB:     gbOf(size),
-		RuntimeMin: m.Runtime,
-		Facts:      c.factsFor(ctx, v.FilePath, size),
+		Release:     upgradeBaseline(m, v),
+		SizeGB:      gbOf(size),
+		RuntimeMin:  m.Runtime,
+		Facts:       c.factsFor(ctx, v.FilePath, size),
+		OrigRelease: v.ConvertedFromRelease,
+		OrigSizeGB:  gbOf(v.ConvertedFromSize),
 	}
 }
 
@@ -64,24 +66,32 @@ func (c *Coordinator) CurrentMovieFile(ctx context.Context, m movies.Movie) qual
 	v := movies.Version{
 		IsDefault: true, HasFile: m.HasFile, FilePath: m.MovieFilePath,
 		SourceRelease: m.SourceRelease, File: m.File,
+		ConvertedFromRelease: m.ConvertedFromRelease, ConvertedFromSize: m.ConvertedFromSize,
 	}
 	return c.currentMovieFile(ctx, m, v)
 }
 
-// currentEpisodeFile is an episode's file as the upgrade decisions judge it. release is
-// the release it was imported from — never the renamed library file (see upgradeSeries).
-func (c *Coordinator) currentEpisodeFile(ctx context.Context, path, release string, sizeBytes int64, runtimeMin int) quality.CurrentFile {
-	return quality.CurrentFile{
-		Release:    release,
-		SizeGB:     gbOf(sizeBytes),
-		RuntimeMin: runtimeMin,
-		Facts:      c.factsFor(ctx, path, sizeBytes),
-	}
+// currentEpisodeFile is an episode's file as the upgrade decisions judge it: the release
+// it was imported from — never the renamed library file (see upgradeSeries) — its size,
+// the episode length, Convert's probed facts when they still describe the file, and what
+// it was before a conversion.
+func (c *Coordinator) currentEpisodeFile(ctx context.Context, e series.Episode) quality.CurrentFile {
+	return c.episodeFileOf(ctx, series.EpisodeFile{
+		Path: e.FilePath, SizeBytes: e.SizeBytes, SourceRelease: e.SourceRelease, RuntimeMin: e.Runtime,
+		ConvertedFromRelease: e.ConvertedFromRelease, ConvertedFromSize: e.ConvertedFromSize,
+	})
 }
 
 // episodeFileOf is currentEpisodeFile for an EpisodeFile row.
 func (c *Coordinator) episodeFileOf(ctx context.Context, f series.EpisodeFile) quality.CurrentFile {
-	return c.currentEpisodeFile(ctx, f.Path, f.SourceRelease, f.SizeBytes, f.RuntimeMin)
+	return quality.CurrentFile{
+		Release:     f.SourceRelease,
+		SizeGB:      gbOf(f.SizeBytes),
+		RuntimeMin:  f.RuntimeMin,
+		Facts:       c.factsFor(ctx, f.Path, f.SizeBytes),
+		OrigRelease: f.ConvertedFromRelease,
+		OrigSizeGB:  gbOf(f.ConvertedFromSize),
+	}
 }
 
 // upgradeBaseline is the "what we already have" release string the upgrade comparison scores

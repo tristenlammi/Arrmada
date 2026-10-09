@@ -59,3 +59,57 @@ func TestSameGroupCodecUpgradeStillAllowed(t *testing.T) {
 		t.Error("the import gate refused x264 -> x265 of the same release")
 	}
 }
+
+// A remux converted to a 30 GB HEVC file is judged against what it was: another group's
+// remux of the same size is no upgrade (the converted file alone makes it look like a big
+// bitrate gain), the original itself is never taken, and a real step up still is.
+func TestUpgradeMustBeatThePreConversionOriginal(t *testing.T) {
+	s, ctx := testService(t)
+	sp, err := s.Create(ctx, StoredProfile{
+		MediaType: MediaMovie, Name: "Upgrades", UpgradesEnabled: true, UpgradeMinPercent: 20,
+		AllowedResolutions: []string{"1080p", "2160p"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := "custom:" + strconv.FormatInt(sp.ID, 10)
+	const runtime = 130
+	orig := "Film.2021.1080p.BluRay.REMUX.AVC.DTS-HD.MA.5.1-FGT"
+	converted := CurrentFile{Release: "Film.2021.1080p.BluRay.REMUX.x265.DTS-HD.MA.5.1-FGT", SizeGB: 30, RuntimeMin: runtime}
+	withOrig := converted
+	withOrig.OrigRelease, withOrig.OrigSizeGB = orig, 80
+
+	otherRemux := NewCandidate("Film.2021.1080p.BluRay.REMUX.AVC.DTS-HD.MA.5.1-OTHER", 80, 50).WithRuntime(runtime)
+	original := NewCandidate(orig, 80, 50).WithRuntime(runtime)
+
+	// The loop this guards against: judged as the 30 GB file, an 80 GB remux is an upgrade.
+	if _, ok := s.UpgradeCandidate(ctx, ref, converted, []Candidate{otherRemux}); !ok {
+		t.Fatal("precondition: without its baseline the converted file looks upgradeable by a remux")
+	}
+	if pick, ok := s.UpgradeCandidate(ctx, ref, withOrig, []Candidate{otherRemux, original}); ok {
+		t.Errorf("grabbed %q over a file converted from an equal remux", pick.Name)
+	}
+	if s.IsQualityUpgrade(ctx, ref, orig, 80, withOrig) || s.IsQualityUpgrade(ctx, ref, otherRemux.Name, 80, withOrig) {
+		t.Error("the import gate took a remux as an upgrade of the file converted from one")
+	}
+	uhd := NewCandidate("Film.2021.2160p.BluRay.x265-GRP", 40, 50).WithRuntime(runtime)
+	if pick, ok := s.UpgradeCandidate(ctx, ref, withOrig, []Candidate{otherRemux, uhd}); !ok || pick.Name != uhd.Name {
+		t.Errorf("a 2160p release over a 1080p original is still an upgrade: got %q %v", pick.Name, ok)
+	}
+
+	// Measured from the original, a file near the ceiling has no headroom left.
+	capped, err := s.Create(ctx, StoredProfile{
+		MediaType: MediaMovie, Name: "1080p ≤60", AllowedResolutions: []string{"1080p"},
+		BitrateCapMbps: 60, UpgradeMinPercent: 20, UpgradesEnabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cref := "custom:" + strconv.FormatInt(capped.ID, 10)
+	if s.AtCeiling(ctx, cref, converted) {
+		t.Fatal("precondition: the 30 GB file alone has headroom under 60 Mb/s")
+	}
+	if !s.AtCeiling(ctx, cref, withOrig) {
+		t.Error("an 80 GB original (~88 Mb/s) leaves no permitted release that beats it")
+	}
+}

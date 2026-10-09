@@ -168,7 +168,7 @@ func (s *Service) Decide(ctx context.Context, ref string, cands []Candidate) Dec
 // current.RuntimeMin is the content length (movie/episode minutes), needed to turn
 // sizes into bitrates; 0 disables the bitrate-based upgrade (quality-only still applies).
 func (s *Service) UpgradeCandidate(ctx context.Context, ref string, current CurrentFile, cands []Candidate) (Candidate, bool) {
-	currentRelease, currentSizeGB, runtimeMin := current.Release, current.SizeGB, current.RuntimeMin
+	currentRelease, runtimeMin := current.Release, current.RuntimeMin
 	sp, err := s.GetStored(ctx, ref)
 	if err != nil || !sp.UpgradesEnabled || strings.TrimSpace(currentRelease) == "" {
 		return Candidate{}, false
@@ -179,41 +179,35 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref string, current Curr
 		return Candidate{}, false
 	}
 	p, e := s.Resolve(ctx, ref)
-	// No runtime on the file's own candidate: scored as it always was, so a file over a
-	// lowered ceiling isn't treated as worthless and replaced by anything at all.
-	curCand := current.candidate()
-	cur := e.Evaluate(p, curCand)
-	curResRank := resRank[curCand.Release.Resolution]
-	curKey := strings.ToLower(strings.TrimSpace(currentRelease))
+	// What a candidate has to beat: the file as it is, and for a converted file also what
+	// it was before Convert shrank it (current.OrigRelease / OrigSizeGB).
+	bar := current.upgradeBar(p, e)
 
 	d := e.Decide(p, cands)
 	for _, ev := range d.Eligible { // sorted best-first
 		// Never auto-upgrade INTO a format you avoid. Keeping the current file is always the
 		// preferable alternative, so "Avoid Dolby Vision" also means the upgrader won't swap
 		// a clean file for a DV one — matching how the picker now treats avoided releases.
-		if ev.Avoided && !cur.Avoided {
+		if ev.Avoided && !bar.avoided {
 			continue
 		}
-		if resRank[ev.Candidate.Release.Resolution] < curResRank {
+		if resRank[ev.Candidate.Release.Resolution] < bar.resRank {
 			continue // never drop resolution — that's a downgrade, not an upgrade
 		}
-		if strings.ToLower(strings.TrimSpace(ev.Candidate.Name)) == curKey {
-			continue // the release we already have
-		}
-		if convertedFrom(ev.Candidate.Name, currentRelease, curCand.Release.Codec) {
-			// The release this file was converted from: the same name but for the codec
-			// Convert stamped in. Grabbing it would undo the conversion and loop forever.
+		if bar.excludes(ev.Candidate.Name) {
+			// The release we already have, or the one this file was converted from.
+			// Grabbing that would undo the conversion and loop forever.
 			continue
 		}
-		qualityBetter := ev.Total > cur.Total
+		qualityBetter := ev.Total > bar.total
 		// Same helper the import gate uses, so the two can't drift apart again — the
 		// searcher deciding a release is worth grabbing and the importer then refusing to
 		// place it is exactly the bug this shares its logic to prevent. It also brings the
 		// margin floors and codec normalization to the grab side, which compared raw
 		// bitrates and so over-valued a bloated older-codec encode.
-		bitrateBetter := ev.Total >= cur.Total && s.IsBitrateUpgrade(ctx, ref,
+		bitrateBetter := ev.Total >= bar.total && s.IsBitrateUpgrade(ctx, ref,
 			Encode{SizeGB: ev.Candidate.SizeGB, Codec: ev.Candidate.Release.Codec},
-			Encode{SizeGB: currentSizeGB, Codec: curCand.Release.Codec}, runtimeMin)
+			bar.encode, runtimeMin)
 		if qualityBetter || bitrateBetter {
 			return ev.Candidate, true
 		}
@@ -245,21 +239,20 @@ func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string,
 	if sp, err := s.GetStored(ctx, ref); err != nil || !sp.UpgradesEnabled {
 		return false
 	}
+	p, e := s.Resolve(ctx, ref)
+	bar := current.upgradeBar(p, e)
 	// The release a converted file came from is never an upgrade of it, whatever the
 	// codec stamp makes the two score.
-	curCand := current.candidate()
-	if convertedFrom(candRelease, currentRelease, curCand.Release.Codec) {
+	if bar.excludes(candRelease) {
 		return false
 	}
-	p, e := s.Resolve(ctx, ref)
 	// Seeders are irrelevant here and unknown for a file on disk, so both sides get the
 	// same large value rather than letting a seeder term skew the comparison.
 	cand := e.Evaluate(p, NewCandidate(candRelease, candSizeGB, 1_000_000))
-	cur := e.Evaluate(p, curCand)
-	if cand.Avoided && !cur.Avoided {
+	if cand.Avoided && !bar.avoided {
 		return false
 	}
-	return cand.Total > cur.Total
+	return cand.Total > bar.total
 }
 
 // convertedFrom reports whether cand looks like the release the current file was

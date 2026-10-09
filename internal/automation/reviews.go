@@ -1061,10 +1061,15 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	const bytesPerGB = 1 << 30
 	profile := c.effectiveProfile(ctx, s.QualityProfile, "series")
 	epLabel := fmt.Sprintf("S%02dE%02d", season, episode)
+	// A converted file is measured as what it was before Convert shrank it, or the release
+	// it came from (or another group's of the same size) passes as a big bitrate upgrade.
+	curEncode := quality.Encode{SizeGB: float64(cur.SizeBytes) / bytesPerGB, Codec: curParsed.Codec}
+	if orig, ok := curFile.OriginalEncode(); ok {
+		curEncode = orig
+	}
 	if c.quality.IsBitrateUpgrade(ctx, profile,
 		quality.Encode{SizeGB: float64(candBytes) / bytesPerGB, Codec: cand.Codec},
-		quality.Encode{SizeGB: float64(cur.SizeBytes) / bytesPerGB, Codec: curParsed.Codec},
-		cur.RuntimeMin) {
+		curEncode, cur.RuntimeMin) {
 		c.log.Info("series import: replacing an equal-resolution file — the profile's bitrate margin is met",
 			"series", s.Title, "episode", epLabel,
 			"current_gb", float64(cur.SizeBytes)/bytesPerGB, "candidate_gb", float64(candBytes)/bytesPerGB)
