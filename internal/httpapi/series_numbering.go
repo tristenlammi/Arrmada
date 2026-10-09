@@ -75,8 +75,9 @@ func (a *api) handleSeriesNumbering(w http.ResponseWriter, r *http.Request) {
 
 // numberingApplied is what an Apply did on disk.
 type numberingApplied struct {
-	Moved   int                     `json:"moved"`
-	Skipped []automation.RenameSkip `json:"skipped"`
+	Moved    int                     `json:"moved"`
+	Skipped  []automation.RenameSkip `json:"skipped"`
+	Unplaced int                     `json:"unplaced"` // files with no episode in the new numbering, left as they are
 }
 
 // handleApplySeriesNumbering applies the proposal the owner reviewed. A plan that isn't the
@@ -125,7 +126,8 @@ func (a *api) applySeriesNumbering(ctx context.Context, id int64, planHash strin
 	if err != nil {
 		return nil, err
 	}
-	out := numberingApplied{Skipped: []automation.RenameSkip{}}
+	out := numberingApplied{Skipped: []automation.RenameSkip{}, Unplaced: res.Unplaced}
+	clean := res.Unplaced == 0
 	if res.Renumbered {
 		p.SetMessage("Renaming files")
 		rr, rerr := a.deps.Automation.RenameRemapped(ctx, id, res.Remaps)
@@ -133,15 +135,29 @@ func (a *api) applySeriesNumbering(ctx context.Context, id int64, planHash strin
 			// The rows already follow the new numbering and point at the files where they
 			// are, so nothing is lost; the Rename button can finish the job.
 			a.deps.Log.Warn("series: rename after renumber failed", "series_id", id, "err", rerr)
+			clean = false
 		} else {
 			out.Moved, out.Skipped = rr.Moved, rr.Skipped
 			a.deps.Automation.LogRenameSkips(id, rr)
+			clean = len(rr.Skipped) == 0
 		}
 	}
-	a.deps.Automation.RescanSeries(ctx, id)
+	// The rebuild leaves every row pointing at its file, so the rescan only confirms it.
+	// It's skipped while a file still has an old name — one a rename skipped, or one the
+	// new numbering has no episode for: the rescan reads episodes from file names, and an
+	// old "S01E04" can mean a different episode in the new numbering.
+	if clean {
+		a.deps.Automation.RescanSeries(ctx, id)
+	}
 	msg := fmt.Sprintf("Numbering applied — %d renamed", out.Moved)
 	if len(out.Skipped) > 0 {
-		msg += fmt.Sprintf(", %d skipped (see History)", len(out.Skipped))
+		msg += fmt.Sprintf(", %d not renamed (see History)", len(out.Skipped))
+	}
+	if res.Unplaced > 0 {
+		msg += fmt.Sprintf(", %d with no episode left where they are", res.Unplaced)
+	}
+	if !clean {
+		msg += " — sort those out before a rescan"
 	}
 	p.SetMessage(msg)
 	return out, nil

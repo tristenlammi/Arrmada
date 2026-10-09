@@ -1218,6 +1218,7 @@ export interface SeriesNumbering {
 export interface NumberingApplied {
   moved: number;
   skipped: RenameSkip[];
+  unplaced?: number; // files with no episode in the new numbering, left where they are
 }
 
 export interface QueueItem {

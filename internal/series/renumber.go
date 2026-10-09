@@ -192,22 +192,29 @@ func (r *Repo) PlanRebuild(ctx context.Context, seriesID int64, seasons []Season
 // files whose (season, episode) moved, so the caller can rename them on disk; files the
 // listing has no slot for are left out (they move nowhere).
 func (r *Repo) RebuildEpisodes(ctx context.Context, seriesID int64, seasons []Season) ([]EpisodeRemap, error) {
+	moved, _, err := r.rebuildEpisodes(ctx, seriesID, seasons)
+	return moved, err
+}
+
+// rebuildEpisodes is RebuildEpisodes, also counting the files left with no episode.
+func (r *Repo) rebuildEpisodes(ctx context.Context, seriesID int64, seasons []Season) (moved []EpisodeRemap, unplaced int, err error) {
 	var remaps []EpisodeRemap
-	err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+	err = store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
 		var err error
 		remaps, err = rebuildEpisodesTx(ctx, tx, seriesID, seasons)
 		return err
 	})
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	moved := remaps[:0]
 	for _, rm := range remaps {
-		if !rm.Unplaced {
+		if rm.Unplaced {
+			unplaced++
+		} else {
 			moved = append(moved, rm)
 		}
 	}
-	return moved, nil
+	return moved, unplaced, nil
 }
 
 // rebuildEpisodesTx is RebuildEpisodes' body, inside the caller's transaction.

@@ -331,6 +331,9 @@ type RefreshResult struct {
 	ModelChanged bool
 	// Proposed: the change can be applied, and is stored as a proposal for review.
 	Proposed bool
+	// Unplaced counts files the rebuild found no episode for: their rows went, and the
+	// files stay on disk where they were.
+	Unplaced int
 }
 
 // Refresh re-pulls metadata for a series, adding any newly-announced seasons or episodes.
@@ -744,7 +747,7 @@ func filesInPlan(plan []EpisodeRemap) int {
 // rebuild applies a reviewed renumber: the listing is replaced, files are carried by
 // absolute number (the same planner the review showed), and the proposal is closed.
 func (s *Service) rebuild(ctx context.Context, sr Series, seasons []Season, fresh string, res RefreshResult) RefreshResult {
-	remaps, err := s.repo.RebuildEpisodes(ctx, sr.ID, seasons)
+	remaps, unplaced, err := s.repo.rebuildEpisodes(ctx, sr.ID, seasons)
 	if err != nil {
 		// A rebuild that can't complete changes nothing (one transaction); the additive
 		// path keeps the show as it was — better stale numbering than half a rebuild.
@@ -754,6 +757,7 @@ func (s *Service) rebuild(ctx context.Context, sr Series, seasons []Season, fres
 	}
 	res.Rebuilt = true
 	res.Remaps = remaps
+	res.Unplaced = unplaced
 	res.Renumbered = len(remaps) > 0
 	s.log.Info("series: rebuilt episode numbering to match the metadata source",
 		"series", sr.Title, "source", fresh, "files_remapped", len(remaps))

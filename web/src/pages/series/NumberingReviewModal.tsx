@@ -108,8 +108,11 @@ export function NumberingReviewModal({ seriesId, pending, onClose, onSettled }: 
       {result ? (
         <div>
           <div className="mb-3 rounded-lg p-3 text-[12px]" style={{ border: "1px solid var(--accent-line)", background: "var(--accent-soft)", color: "var(--accent)" }}>
-            Applied. Renamed {plural(result.moved, "file")}{result.skipped.length > 0 ? ` · skipped ${result.skipped.length}` : ""}.
+            Applied. Renamed {plural(result.moved, "file")}{result.skipped.length > 0 ? ` · skipped ${result.skipped.length}` : ""}{result.unplaced ? ` · ${plural(result.unplaced, "file")} with no episode left where they are` : ""}.
           </div>
+          {(result.skipped.length > 0 || !!result.unplaced) && (
+            <p className="mb-2 text-[11.5px] text-ink-dim">The rescan was held back: it reads episodes from file names, and those files still carry their old ones. Use Rename to finish them first.</p>
+          )}
           {result.skipped.length > 0 && (
             <div className="thin-scroll max-h-[40vh] overflow-y-auto">
               {result.skipped.map((sk) => (
