@@ -788,6 +788,14 @@ export interface SearchAttempt {
   error?: string;
 }
 
+// A title's searches in brief: the latest attempt, how many in a row since its last grab
+// found nothing usable, and the reason most often on top over those.
+export interface AttemptSummary {
+  latest: SearchAttempt;
+  empty_tries: number;
+  main_reason?: string;
+}
+
 // One recurring task as GET /api/v1/system/tasks reports it. Times are ISO strings, null
 // until they happen; last_error is empty once a run succeeds.
 export interface TaskStatus {
@@ -2590,6 +2598,12 @@ export interface Movie {
   upgrades_allowed?: boolean;
   /** The default file is kept out of profile-driven upgrades ("keep existing files"). */
   upgrade_hold?: boolean;
+  // Detail only (MOV-04): the missing-sweep's backoff, when it next searches (absent when
+  // no automatic search is coming) and how the stored searches went.
+  last_search_at?: string;
+  search_misses?: number;
+  next_search_at?: string;
+  last_search?: AttemptSummary;
 }
 
 export interface MovieLookup {

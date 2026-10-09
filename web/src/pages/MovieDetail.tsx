@@ -6,6 +6,7 @@ import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DeleteMovieDialog } from "../components/DeleteMovieDialog";
+import { LastSearchLine } from "../components/LastSearch";
 import { disposalLine, useRecycleMode } from "../lib/disposal";
 import { PAGE } from "../lib/links";
 import { usePoll } from "../lib/usePoll";
@@ -41,6 +42,9 @@ export function MovieDetail() {
   const [toastErr, setToastErr] = useState(false);
   const live = useLive();
   const { last } = live;
+  // Bumped by anything that changes this movie's History or Blocklist (a grab, an import,
+  // a block, a search), so those panels refresh without leaving the page.
+  const [activity, setActivity] = useState(0);
 
   // err shows the toast in the error colour: a search that failed says so plainly.
   const flash = (msg: string, err = false) => {
@@ -80,8 +84,13 @@ export function MovieDetail() {
       "movie.refreshed",
       "movie.renamed",
     ];
-    if (topics.includes(last.topic)) load();
-  }, [last, load]);
+    const d = last.data as { media_type?: string; media_id?: number } | null;
+    const searched = last.topic === "search.finished" && d?.media_type === "movie" && d.media_id === movieId;
+    if (topics.includes(last.topic) || searched) load();
+    if (searched || last.topic === "release.grabbed" || last.topic === "download.imported" || last.topic.startsWith("movie.")) {
+      setActivity((n) => n + 1);
+    }
+  }, [last, load, movieId]);
 
   if (notFound) {
     return (
@@ -165,6 +174,7 @@ export function MovieDetail() {
               </div>
 
               <WhyPanel movie={movie} />
+              <LastSearchLine summary={movie.last_search} nextSearchAt={movie.next_search_at} />
               <UpgradeHoldChip movie={movie} onChange={load} flash={flash} />
               <Toolbar movie={movie} onChange={load} flash={flash} live={live} />
             </div>
@@ -176,8 +186,8 @@ export function MovieDetail() {
         {movie.download && <DownloadBar dl={movie.download} />}
         <VersionsArea movie={movie} onChange={load} flash={flash} />
         <CastRow cast={movie.extra?.cast} />
-        <BlocklistPanel movieId={movie.id} refreshKey={movie.has_file} />
-        <HistoryPanel movieId={movie.id} refreshKey={movie.has_file} />
+        <BlocklistPanel movieId={movie.id} refreshKey={`${movie.has_file}:${activity}`} />
+        <HistoryPanel movieId={movie.id} refreshKey={`${movie.has_file}:${activity}`} />
       </div>
 
       {toast && (
@@ -1048,6 +1058,7 @@ const EVENT_TONES: Record<string, string> = {
   missing: "var(--avoid)",
   renamed: "var(--ink-dim)",
   refreshed: "var(--ink-faint)",
+  searched: "var(--ink-dim)",
 };
 
 function HistoryPanel({ movieId, refreshKey }: { movieId: number; refreshKey: unknown }) {

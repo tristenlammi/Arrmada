@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
@@ -114,6 +115,65 @@ func TestAllIndexersFailedRecordsAttemptNotMiss(t *testing.T) {
 	}
 	if _, misses := h.c.movies.SearchState(h.ctx, mid); misses != 0 {
 		t.Fatalf("misses = %d, an outage must not count", misses)
+	}
+}
+
+// A search someone started always lands in the movie's History; the sweep only when its
+// result changed (MOV-04), so five-minute sweeps don't bury the history.
+func TestSweepOutcomeEventOnlyOnChange(t *testing.T) {
+	h := newStallHarness(t)
+	mid := h.addMovie(t, 1, "Arrival", 2016)
+	h.ix.offer("Inception.2010.1080p.BluRay.x264-GRP")
+	sweep := WithSearchTrigger(h.ctx, TriggerSweep)
+	for i := 0; i < 3; i++ {
+		if _, err := h.c.searchAndGrab(sweep, mustMovie(t, h, mid)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := h.movieEvents(t, mid, "for other titles"); n != 1 {
+		t.Fatalf("%d searched events from three identical sweeps, want 1", n)
+	}
+	h.ix.offer("Inception.2010.1080p.BluRay.x264-GRP", "Tenet.2020.1080p.BluRay.x264-GRP")
+	if _, err := h.c.searchAndGrab(sweep, mustMovie(t, h, mid)); err != nil {
+		t.Fatal(err)
+	}
+	if n := h.movieEvents(t, mid, "2 releases"); n != 1 {
+		t.Fatalf("a changed sweep result wasn't written: %d", n)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := h.c.SearchMovie(WithSearchTrigger(h.ctx, TriggerManual), mid); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := h.movieEvents(t, mid, "2 releases"); n != 3 {
+		t.Fatalf("manual searches must always write: %d", n)
+	}
+}
+
+func mustMovie(t *testing.T, h *stallHarness, id int64) movies.Movie {
+	t.Helper()
+	m, err := h.c.movies.Get(h.ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func TestMovieSearchStateNextTry(t *testing.T) {
+	h := newStallHarness(t)
+	mid := h.addMovie(t, 1, "Arrival", 2016)
+	if _, err := h.c.db.Exec(`UPDATE movies SET min_availability = 'announced' WHERE id = ?`, mid); err != nil {
+		t.Fatal(err)
+	}
+	st := h.c.MovieSearchState(h.ctx, mustMovie(t, h, mid))
+	if st.NextSearchAt == "" || st.LastSearch != nil || st.SearchMisses != 0 {
+		t.Fatalf("never searched: %+v (want next search now)", st)
+	}
+	if _, err := h.c.db.Exec(`UPDATE movies SET monitored = 0 WHERE id = ?`, mid); err != nil {
+		t.Fatal(err)
+	}
+	if st := h.c.MovieSearchState(h.ctx, mustMovie(t, h, mid)); st.NextSearchAt != "" {
+		t.Fatalf("an unmonitored movie has a next search: %+v", st)
 	}
 }
 

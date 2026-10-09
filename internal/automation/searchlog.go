@@ -12,6 +12,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/connstatus"
 	"github.com/tristenlammi/arrmada/internal/indexer"
+	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/store"
 )
@@ -376,18 +377,21 @@ func (c *Coordinator) recordAttempt(ctx context.Context, n *searchNotes, mediaTy
 	titles, _ := json.Marshal(nonNilStrings(out.GrabbedTitles))
 	ixErrs, _ := json.Marshal(nonNilErrors(out.IndexerErrors))
 
+	// The title's previous attempt under this scope, to tell a repeat from news.
+	var prev struct {
+		outcome, example, topReason string
+		returned                    int
+	}
+	_ = c.db.QueryRowContext(ctx, `SELECT outcome, example, top_reason, returned FROM search_attempts
+		WHERE media_type = ? AND media_id = ? AND scope = ? ORDER BY id DESC LIMIT 1`,
+		mediaType, id, scope).Scan(&prev.outcome, &prev.example, &prev.topReason, &prev.returned)
 	// A sweep that keeps finding the title still downloading would otherwise fill its 20
 	// rows with the same skip every few minutes and push out the searches that said
 	// something. One row stands for the whole stretch.
-	if kind == OutcomeSkippedInFlight {
-		var last, lastExample string
-		_ = c.db.QueryRowContext(ctx, `SELECT outcome, example FROM search_attempts
-			WHERE media_type = ? AND media_id = ? AND scope = ? ORDER BY id DESC LIMIT 1`,
-			mediaType, id, scope).Scan(&last, &lastExample)
-		if last == OutcomeSkippedInFlight && lastExample == out.Example {
-			return
-		}
+	if kind == OutcomeSkippedInFlight && prev.outcome == OutcomeSkippedInFlight && prev.example == out.Example {
+		return
 	}
+	repeat := prev.outcome == kind && prev.topReason == out.TopReason && prev.returned == out.Returned
 
 	// Stored even when the job that ran the search is timing out: the search happened.
 	wctx := context.WithoutCancel(ctx)
@@ -417,6 +421,9 @@ func (c *Coordinator) recordAttempt(ctx context.Context, n *searchNotes, mediaTy
 		return
 	}
 	out.AttemptID = attemptID
+	if mediaType == AttemptMovie {
+		c.movieSearchedEvent(wctx, id, trigger, kind, *out, err, repeat)
+	}
 	if c.bus != nil {
 		// Ids and counts only: staff pages refetch what they show.
 		c.bus.Publish("search.finished", map[string]any{
@@ -424,6 +431,48 @@ func (c *Coordinator) recordAttempt(ctx context.Context, n *searchNotes, mediaTy
 			"outcome": kind, "grabbed": out.Grabbed,
 		})
 	}
+}
+
+// movieSearchedEvent puts a search on the movie's History, so "why hasn't this downloaded?"
+// is answered on the page. A search someone started always gets a line; a sweep only
+// when its result differs from the last one, or the 5-minute sweeps would bury the
+// history in identical rows. A grab already has its own "grabbed" line, and an upgrade
+// search that found nothing better is the normal case, not news.
+func (c *Coordinator) movieSearchedEvent(ctx context.Context, id int64, trigger, kind string, out SearchOutcome, err error, repeat bool) {
+	if c.movies == nil || kind == OutcomeGrabbed || trigger == TriggerUpgrade {
+		return
+	}
+	if trigger == TriggerSweep && repeat {
+		return
+	}
+	c.movies.AddEvent(ctx, id, "searched", out.OutcomeLine(kind, err))
+}
+
+// OutcomeLine is a stored-or-fresh outcome as one line for a history entry or a toast:
+// "41 releases · 29 for other titles, 12 over your bitrate ceiling · nothing grabbed",
+// "Every indexer failed: TorrentLeech, 1337x", "Already downloading <release>".
+func (o SearchOutcome) OutcomeLine(kind string, err error) string {
+	switch kind {
+	case OutcomeIndexersFailed:
+		names := make([]string, 0, len(o.IndexerErrors))
+		for name := range o.IndexerErrors {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		if len(names) == 0 {
+			return o.Message("title")
+		}
+		return "Every indexer failed: " + strings.Join(names, ", ")
+	case OutcomeSkippedInFlight:
+		return o.Message("title")
+	case OutcomeNothingFound:
+		return "No releases found"
+	case OutcomeError:
+		if err != nil {
+			return "Search failed: " + connstatus.Redact(err.Error())
+		}
+	}
+	return o.Summary()
 }
 
 func nonNilCounts(m map[string]int) map[string]int {
@@ -615,6 +664,45 @@ func (c *Coordinator) LatestAttempts(ctx context.Context, kind string, ids []int
 		}
 	}
 	return out, nil
+}
+
+// SearchState is what a movie's page says about searching for it: the sweep's own
+// backoff state, when it will next look, and how the stored attempts went.
+type SearchState struct {
+	LastSearchAt string `json:"last_search_at,omitempty"` // RFC 3339; the sweep stamps it on a miss or a grab
+	SearchMisses int    `json:"search_misses"`            // sweeps in a row that grabbed nothing
+	// NextSearchAt (RFC 3339) is when the missing-sweep will next search it; "now" means
+	// on its next run. Absent when no automatic search is coming: not monitored, nothing
+	// missing, or not yet at its minimum availability.
+	NextSearchAt string          `json:"next_search_at,omitempty"`
+	LastSearch   *AttemptSummary `json:"last_search,omitempty"`
+}
+
+// MovieSearchState reads a movie's search state for its detail page. Database reads only.
+func (c *Coordinator) MovieSearchState(ctx context.Context, m movies.Movie) SearchState {
+	var st SearchState
+	if c == nil || c.movies == nil || c.db == nil {
+		return st
+	}
+	lastAt, misses := c.movies.SearchState(ctx, m.ID)
+	last := parseTime(lastAt)
+	st.SearchMisses = misses
+	if !last.IsZero() {
+		st.LastSearchAt = last.Format(time.RFC3339)
+	}
+	if m.Monitored && c.movies.IsAvailable(m) && len(c.missingVersions(ctx, m.ID)) > 0 {
+		next := time.Now().UTC()
+		if t := NextSearchAt(last, misses); t.After(next) {
+			next = t
+		}
+		st.NextSearchAt = next.Format(time.RFC3339)
+	}
+	if sums, err := c.LatestAttempts(ctx, AttemptMovie, []int64{m.ID}); err == nil {
+		if s, ok := sums[m.ID]; ok {
+			st.LastSearch = &s
+		}
+	}
+	return st
 }
 
 // NextSearchAt is when the missing-sweep will next search a movie or series that has

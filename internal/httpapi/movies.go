@@ -304,7 +304,16 @@ func (a *api) handleGetMovie(w http.ResponseWriter, r *http.Request) {
 		m.Download = downloadFor(queue, m)
 	}
 	m.UpgradesAllowed = upgradeWatched(m.Monitored, m.HasFile, a.anyVersionUpgrades(r.Context(), &m))
-	a.writeJSON(w, http.StatusOK, m)
+	// What searching has come to: the last search's result, the sweep's backoff and when
+	// it will next look (search_attempts), beside the movie's own fields.
+	var search automation.SearchState
+	if a.deps.Automation != nil {
+		search = a.deps.Automation.MovieSearchState(r.Context(), m)
+	}
+	a.writeJSON(w, http.StatusOK, struct {
+		movies.Movie
+		automation.SearchState
+	}{m, search})
 }
 
 // upgradeWatched mirrors the upgrade sweep's own filter (UpgradeMovies skips a movie that
