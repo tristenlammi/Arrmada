@@ -62,7 +62,91 @@ func (a *api) handleBackupsList(w http.ResponseWriter, r *http.Request) {
 	if t := svc.LastNightly(); !t.IsZero() {
 		out["last_nightly_at"] = t
 	}
+	out["can_restart"] = a.canRestart()
+	out["pending_restore"] = nil
+	if m, err := svc.PendingRestore(); err == nil && m != nil {
+		out["pending_restore"] = map[string]any{"name": m.Name(), "requested_by": m.RequestedBy, "at": m.At}
+	}
+	out["last_restore"] = nil
+	if res, err := svc.LastRestore(); err == nil && res != nil {
+		out["last_restore"] = res
+	}
 	a.writeJSON(w, http.StatusOK, out)
+}
+
+// canRestart says whether the app can restart itself (inside Docker, whose restart
+// policy brings it back); otherwise the owner restarts it by hand.
+func (a *api) canRestart() bool { return a.deps.Restart != nil && inContainer() }
+
+// restoreConfirmPhrase must be typed to restore: a restore replaces every module's state,
+// audiobook places included.
+const restoreConfirmPhrase = "RESTORE"
+
+// manualRestartCommand is what the card shows when the app can't restart itself.
+const manualRestartCommand = "docker restart Arrmada-app"
+
+// handleBackupRestore — POST /api/v1/system/backups/{name}/restore {confirm:"RESTORE"}.
+// Validates the backup and stages it; the swap itself happens at the next start, never
+// while the app has the database open. When the app can restart itself it does so right
+// after answering.
+func (a *api) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
+	if !a.backupsReady(w) {
+		return
+	}
+	var req struct {
+		Confirm string `json:"confirm"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Confirm != restoreConfirmPhrase {
+		a.writeError(w, http.StatusBadRequest, `type RESTORE to confirm`)
+		return
+	}
+	by := ""
+	if u, ok := userFrom(r); ok && u != nil {
+		by = u.Username
+	}
+	name := r.PathValue("name")
+	info, err := a.deps.Backups.StageRestore(name, by)
+	if err != nil {
+		if errors.Is(err, backup.ErrBadName) || errors.Is(err, os.ErrNotExist) {
+			a.backupNameErr(w, err)
+			return
+		}
+		a.deps.Log.Warn("restore refused", "backup", name, "err", err)
+		a.writeError(w, http.StatusBadRequest, "can't restore this backup: "+err.Error())
+		return
+	}
+	restarting := a.canRestart()
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"staged":         true,
+		"restarting":     restarting,
+		"manual_command": manualRestartCommand,
+		"schema_version": info.SchemaVersion,
+	})
+	if !restarting {
+		return
+	}
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	a.deps.Log.Info("restarting to restore the database", "backup", name)
+	a.deps.Restart()
+}
+
+// handleBackupRestoreCancel — DELETE /api/v1/system/backups/restore-pending. Drops a
+// staged restore that hasn't run yet (one waiting for a manual restart).
+func (a *api) handleBackupRestoreCancel(w http.ResponseWriter, r *http.Request) {
+	if !a.backupsReady(w) {
+		return
+	}
+	ok, err := a.deps.Backups.CancelRestore()
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "couldn't cancel the restore: "+err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"cancelled": ok})
 }
 
 // handleBackupNow takes a manual database backup ("Back up now") and returns it. It runs
@@ -194,6 +278,8 @@ func (a *api) backupNameErr(w http.ResponseWriter, err error) bool {
 		a.writeError(w, http.StatusBadRequest, "not a backup name")
 	case errors.Is(err, os.ErrNotExist):
 		a.writeError(w, http.StatusNotFound, "no such backup")
+	case errors.Is(err, backup.ErrStaged):
+		a.writeError(w, http.StatusConflict, err.Error())
 	default:
 		a.writeError(w, http.StatusInternalServerError, err.Error())
 	}

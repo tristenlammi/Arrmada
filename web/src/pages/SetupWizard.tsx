@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type APIKeyStatus, type LibraryPaths, type SetupState } from "../lib/api";
+import { restartAndWait } from "../lib/restart";
 import { FolderPicker } from "./Library";
 import { FleetMark } from "../components/FleetMark";
 
@@ -64,12 +65,8 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
   // Restart and wait for the app to come back, then finish.
   const restart = () => run(async () => {
     setRestarting(true);
-    await api.restartApp();
-    const started = Date.now();
-    await new Promise((r) => setTimeout(r, 2500));
-    while (Date.now() - started < 120_000) {
-      try { await api.health(); break; } catch { await new Promise((r) => setTimeout(r, 1500)); }
-    }
+    // Finishes setup even if it times out: the reload then shows whatever state it's in.
+    await restartAndWait(() => api.restartApp());
     await api.completeSetup();
     window.location.reload();
   });

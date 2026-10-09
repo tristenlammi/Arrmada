@@ -34,11 +34,18 @@ func (s *Store) Snapshot(ctx context.Context, kind BackupKind) (string, error) {
 	s.snapMu.Lock()
 	defer s.snapMu.Unlock()
 
-	dir := BackupsDir(s.dataDir)
-	at := time.Now()
+	dst := freeBackupPath(BackupsDir(s.dataDir), kind, time.Now())
+	if err := snapshotTo(ctx, s.db, s.dbPath, dst); err != nil {
+		return "", err
+	}
+	return dst, nil
+}
+
+// freeBackupPath is the path for a new backup of kind taken at about at. Names have
+// one-second resolution; never replace an earlier copy taken in the same second, since
+// it may hold the only record of the state before it.
+func freeBackupPath(dir string, kind BackupKind, at time.Time) string {
 	dst := filepath.Join(dir, BackupName(kind, at))
-	// Names have one-second resolution; never replace an earlier copy taken in the
-	// same second, since it may hold the only record of the state before it.
 	for i := 0; i < 60; i++ {
 		if _, err := os.Stat(dst); errors.Is(err, os.ErrNotExist) {
 			break
@@ -46,10 +53,7 @@ func (s *Store) Snapshot(ctx context.Context, kind BackupKind) (string, error) {
 		at = at.Add(time.Second)
 		dst = filepath.Join(dir, BackupName(kind, at))
 	}
-	if err := snapshotTo(ctx, s.db, s.dbPath, dst); err != nil {
-		return "", err
-	}
-	return dst, nil
+	return dst
 }
 
 // snapshotTo copies the database behind db (living at dbPath) to dst with
@@ -158,8 +162,10 @@ func syncDir(dir string) {
 
 // PruneBackups keeps the newest keep backups of kind in dir and deletes the rest,
 // oldest first. Only files whose name ParseBackupName recognises as that kind are
-// ever considered, so other kinds and anything else in the folder are left alone.
+// ever considered, so other kinds and anything else in the folder are left alone. The
+// backup a staged restore points at is never pruned: it's the one about to be put back.
 func PruneBackups(dir string, kind BackupKind, keep int) (removed []string, err error) {
+	staged := pendingRestoreName(filepath.Dir(dir))
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -177,7 +183,7 @@ func PruneBackups(dir string, kind BackupKind, keep int) (removed []string, err 
 			continue
 		}
 		k, at, ok := ParseBackupName(e.Name())
-		if ok && k == kind {
+		if ok && k == kind && e.Name() != staged {
 			mine = append(mine, backup{e.Name(), at})
 		}
 	}
@@ -193,6 +199,8 @@ func PruneBackups(dir string, kind BackupKind, keep int) (removed []string, err 
 			err = errors.Join(err, rerr)
 			continue
 		}
+		// A byte-for-byte pre-restore copy keeps its WAL beside it.
+		_ = os.Remove(filepath.Join(dir, b.name) + "-wal")
 		removed = append(removed, b.name)
 	}
 	return removed, err

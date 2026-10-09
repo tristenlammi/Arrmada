@@ -92,6 +92,8 @@ func TestBackupRoutesAdminOnly(t *testing.T) {
 		{"POST", "/api/v1/system/backups", ""},
 		{"PUT", "/api/v1/system/backups/settings", `{"hour":3}`},
 		{"GET", "/api/v1/system/backups/" + name + "/download", ""},
+		{"POST", "/api/v1/system/backups/" + name + "/restore", `{"confirm":"RESTORE"}`},
+		{"DELETE", "/api/v1/system/backups/restore-pending", ""},
 		{"DELETE", "/api/v1/system/backups/" + name, ""},
 	}
 	for _, rt := range routes {
@@ -232,5 +234,97 @@ func TestBackupListSettingsDelete(t *testing.T) {
 	}
 	if rec := s.do("DELETE", "/api/v1/system/backups/"+name, admin); rec.Code != http.StatusNotFound {
 		t.Errorf("second delete: HTTP %d, want 404", rec.Code)
+	}
+}
+
+// Restore needs the typed phrase, stages the backup for the next start (shown in the
+// list), protects it from Delete, and can be cancelled. Without self-restart the answer
+// carries the manual command instead.
+func TestBackupRestoreStagesAndCancels(t *testing.T) {
+	s := newBackupServer(t) // Restart stays nil: the app can't restart itself
+	_, admin := s.user(t, "admin@example.com", auth.RoleAdmin)
+	name := manualBackup(t, s, admin)
+	path := "/api/v1/system/backups/" + name + "/restore"
+
+	for _, body := range []string{`{}`, `{"confirm":"restore"}`, `{"confirm":"yes"}`} {
+		if rec := s.doBody("POST", path, admin, body); rec.Code != http.StatusBadRequest {
+			t.Errorf("restore with %s: HTTP %d, want 400", body, rec.Code)
+		}
+	}
+	if m, _ := s.deps.Backups.PendingRestore(); m != nil {
+		t.Fatal("staged without the typed phrase")
+	}
+
+	rec := s.doBody("POST", path, admin, `{"confirm":"RESTORE"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("restore: HTTP %d: %s", rec.Code, rec.Body)
+	}
+	var out struct {
+		Staged        bool   `json:"staged"`
+		Restarting    bool   `json:"restarting"`
+		ManualCommand string `json:"manual_command"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if !out.Staged || out.Restarting || out.ManualCommand == "" {
+		t.Errorf("restore answer = %+v", out)
+	}
+
+	rec = s.do("GET", "/api/v1/system/backups", admin)
+	var list struct {
+		Pending *struct {
+			Name        string `json:"name"`
+			RequestedBy string `json:"requested_by"`
+		} `json:"pending_restore"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &list)
+	if list.Pending == nil || list.Pending.Name != name || list.Pending.RequestedBy != "admin@example.com" {
+		t.Errorf("pending_restore = %+v", list.Pending)
+	}
+
+	if rec := s.do("DELETE", "/api/v1/system/backups/"+name, admin); rec.Code != http.StatusConflict {
+		t.Errorf("deleting the staged backup: HTTP %d, want 409", rec.Code)
+	}
+	rec = s.do("DELETE", "/api/v1/system/backups/restore-pending", admin)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"cancelled":true`) {
+		t.Errorf("cancel: HTTP %d: %s", rec.Code, rec.Body)
+	}
+	if m, _ := s.deps.Backups.PendingRestore(); m != nil {
+		t.Error("still staged after cancel")
+	}
+}
+
+// Inside Docker the app restarts itself once the restore is staged.
+func TestBackupRestoreRestartsInContainer(t *testing.T) {
+	restarted := false
+	s := newRouteServer(t, func(d *Deps) {
+		d.Backups = backup.New(d.Store, d.Settings, d.Log)
+		d.Restart = func() { restarted = true }
+	})
+	t.Setenv("ARRMADA_IN_CONTAINER", "1")
+	_, admin := s.user(t, "admin@example.com", auth.RoleAdmin)
+	name := manualBackup(t, s, admin)
+	rec := s.doBody("POST", "/api/v1/system/backups/"+name+"/restore", admin, `{"confirm":"RESTORE"}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"restarting":true`) || !restarted {
+		t.Errorf("HTTP %d: %s (restarted %v)", rec.Code, rec.Body, restarted)
+	}
+}
+
+// A damaged backup is refused with a reason and nothing is staged.
+func TestBackupRestoreRefusesDamaged(t *testing.T) {
+	s := newBackupServer(t)
+	_, admin := s.user(t, "admin@example.com", auth.RoleAdmin)
+	name := manualBackup(t, s, admin)
+	if err := os.WriteFile(filepath.Join(s.deps.Backups.Dir(), name), []byte("garbage, not sqlite"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rec := s.doBody("POST", "/api/v1/system/backups/"+name+"/restore", admin, `{"confirm":"RESTORE"}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "not a SQLite database") {
+		t.Errorf("HTTP %d: %s", rec.Code, rec.Body)
+	}
+	if m, _ := s.deps.Backups.PendingRestore(); m != nil {
+		t.Error("a damaged backup was staged")
+	}
+	if rec := s.doBody("POST", "/api/v1/system/backups/..%2Farrmada.db/restore", admin, `{"confirm":"RESTORE"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("bad name: HTTP %d, want 400", rec.Code)
 	}
 }

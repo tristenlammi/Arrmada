@@ -550,6 +550,25 @@ export interface BackupsState {
   dir: string;
   settings: BackupSchedule;
   last_nightly_at: string | null;
+  can_restart: boolean; // the app can restart itself (inside Docker)
+  pending_restore: { name: string; requested_by: string; at: string } | null; // staged, runs at the next start
+  last_restore: RestoreResult | null;
+}
+
+// How the last restore at boot went.
+export interface RestoreResult {
+  at: string;
+  ok: boolean;
+  from?: string;
+  pre_restore?: string; // the copy of the database it replaced
+  error?: string;
+}
+
+export interface RestoreStaged {
+  staged: boolean;
+  restarting: boolean; // false: restart by hand (manual_command), or cancel
+  manual_command: string;
+  schema_version: string;
 }
 
 // The download link for a backup (a .db.gz streamed by the server, admin only).
@@ -1405,6 +1424,10 @@ export const api = {
     req<BackupSchedule>("/api/v1/system/backups/settings", { method: "PUT", body: JSON.stringify(p) }),
   deleteBackup: (name: string) =>
     req<{ status: string }>(`/api/v1/system/backups/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  // Stages a restore for the next start ("RESTORE" is the typed confirmation).
+  restoreBackup: (name: string) =>
+    req<RestoreStaged>(`/api/v1/system/backups/${encodeURIComponent(name)}/restore`, { method: "POST", body: JSON.stringify({ confirm: "RESTORE" }) }),
+  cancelRestore: () => req<{ cancelled: boolean }>("/api/v1/system/backups/restore-pending", { method: "DELETE" }),
   recycleItems: () => req<{ items: RecycleItem[] }>("/api/v1/recycle/items").then((r) => r.items),
   emptyRecycle: () => req<{ freed_bytes: number }>("/api/v1/recycle/empty", { method: "POST" }),
   restoreRecycle: (id: string) => req<{ status: string }>("/api/v1/recycle/restore", { method: "POST", body: JSON.stringify({ id }) }),

@@ -65,6 +65,7 @@ type Backup struct {
 type Service struct {
 	store    *store.Store
 	dir      string
+	dataDir  string
 	settings Settings
 	log      *slog.Logger
 	now      func() time.Time
@@ -75,14 +76,14 @@ type Service struct {
 
 // New wires the service for st; its backups live wherever st's snapshots go.
 func New(st *store.Store, set Settings, log *slog.Logger) *Service {
-	return &Service{store: st, dir: st.BackupsDir(), settings: set, log: log, now: time.Now, versions: map[string]string{}}
+	return &Service{store: st, dir: st.BackupsDir(), dataDir: st.DataDir(), settings: set, log: log, now: time.Now, versions: map[string]string{}}
 }
 
 // Dir is the backups folder.
 func (s *Service) Dir() string { return s.dir }
 
 // ErrBadName means a name that isn't one of our backup files (a path, "..", another file).
-var ErrBadName = errors.New("not a backup name")
+var ErrBadName = store.ErrBadBackupName
 
 // Create takes a backup of kind and prunes that kind to its retention. pre-migrate copies
 // belong to the store's upgrade path and can't be made here.
@@ -220,12 +221,47 @@ func (s *Service) Delete(name string) error {
 	if !validName(name) {
 		return ErrBadName
 	}
+	if m, _ := store.PendingRestore(s.dataDir); m != nil && m.Name() == name {
+		return ErrStaged
+	}
 	if err := os.Remove(filepath.Join(s.dir, name)); err != nil {
 		return err
 	}
 	s.forget([]string{name})
 	return nil
 }
+
+// ErrStaged means the backup is the one a staged restore will put back at the next start.
+var ErrStaged = errors.New("this backup is staged to be restored at the next start; cancel the restore first")
+
+// StageRestore validates the backup called name and stages it to replace the database at
+// the next start. Nothing is staged for a backup that fails validation (damaged, not an
+// Arrmada database, or from a newer Arrmada).
+func (s *Service) StageRestore(name, requestedBy string) (store.BackupInfo, error) {
+	if !validName(name) {
+		return store.BackupInfo{}, ErrBadName
+	}
+	info, err := store.StageRestore(s.dataDir, name, requestedBy)
+	if err == nil {
+		s.log.Warn("database restore staged; it runs at the next start", "backup", name, "requested_by", requestedBy)
+	}
+	return info, err
+}
+
+// CancelRestore drops a staged restore that hasn't run. It reports whether there was one.
+func (s *Service) CancelRestore() (bool, error) {
+	ok, err := store.CancelRestore(s.dataDir)
+	if ok {
+		s.log.Info("staged database restore cancelled")
+	}
+	return ok, err
+}
+
+// PendingRestore is the staged restore, or nil.
+func (s *Service) PendingRestore() (*store.RestoreMarker, error) { return store.PendingRestore(s.dataDir) }
+
+// LastRestore is how the last restore at boot went, or nil when none has run.
+func (s *Service) LastRestore() (*store.RestoreResult, error) { return store.LastRestore(s.dataDir) }
 
 // Open opens one backup for reading (a download). The same exact-name rule as Delete
 // applies; the caller closes the file.

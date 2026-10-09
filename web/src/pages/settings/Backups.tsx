@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { api, backupDownloadURL, type BackupFile, type BackupKind, type BackupSchedule, type BackupsState } from "../../lib/api";
+import { restartAndWait, startedAt, waitForRestart } from "../../lib/restart";
 
 // The Backups card (Settings → System, admin only): every database copy with why it was
 // taken, Back up now, Download, Delete and the nightly schedule. It shows file names,
@@ -40,6 +41,10 @@ function ago(iso: string): string {
 
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 const hourLabel = (h: number) => `${String(h).padStart(2, "0")}:00`;
+const kindLabel = (k: BackupKind) => (KIND[k]?.label ?? k).toLowerCase();
+
+// The last restore result this browser has dismissed (per-viewer convenience only).
+const SEEN_RESTORE_KEY = "arrmada.backups.seenRestore";
 
 export function Backups() {
   const [state, setState] = useState<BackupsState | null>(null);
@@ -49,6 +54,8 @@ export function Backups() {
   const [schedule, setSchedule] = useState<BackupSchedule | null>(null);
   const [savingSchedule, setSavingSchedule] = useState(false);
   const [toDelete, setToDelete] = useState<BackupFile | null>(null);
+  const [toRestore, setToRestore] = useState<BackupFile | null>(null);
+  const [restarting, setRestarting] = useState<"waiting" | "timeout" | null>(null);
   const [confirmBusy, setConfirmBusy] = useState(false);
   const [confirmErr, setConfirmErr] = useState<string | null>(null);
 
@@ -79,13 +86,52 @@ export function Backups() {
     finally { setSavingSchedule(false); }
   };
 
-  const closeConfirm = () => { setToDelete(null); setConfirmErr(null); };
+  const closeConfirm = () => { setToDelete(null); setToRestore(null); setConfirmErr(null); };
   const remove = async (b: BackupFile) => {
     setConfirmBusy(true); setConfirmErr(null);
     try { await api.deleteBackup(b.name); closeConfirm(); load(); }
     catch (e) { setConfirmErr((e as Error).message); }
     finally { setConfirmBusy(false); }
   };
+
+  // Wait for the restarted app, then reload onto it (the restore ran during its start).
+  const awaitRestart = async (wait: () => Promise<boolean>) => {
+    setRestarting("waiting");
+    if (await wait()) window.location.reload();
+    else setRestarting("timeout");
+  };
+
+  // Restore stages the backup; the server swaps it in at its next start and, inside
+  // Docker, restarts itself straight away. Otherwise the card shows how to restart.
+  const restore = async (b: BackupFile) => {
+    setConfirmBusy(true); setConfirmErr(null);
+    try {
+      const before = await startedAt();
+      const r = await api.restoreBackup(b.name);
+      closeConfirm();
+      if (r.restarting) await awaitRestart(() => waitForRestart(before));
+      else load();
+    } catch (e) { setConfirmErr((e as Error).message); }
+    finally { setConfirmBusy(false); }
+  };
+
+  const restartNow = () => awaitRestart(() => restartAndWait(() => api.restartApp())).catch((e: Error) => { setRestarting(null); setMsg({ ok: false, text: e.message }); });
+
+  const cancelRestore = async () => {
+    setBusy(true); setMsg(null);
+    try { await api.cancelRestore(); setMsg({ ok: true, text: "Restore cancelled. Nothing was changed." }); load(); }
+    catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
+    finally { setBusy(false); }
+  };
+
+  const [seenRestore, setSeenRestore] = useState<string>(() => { try { return localStorage.getItem(SEEN_RESTORE_KEY) ?? ""; } catch { return ""; } });
+  const dismissRestore = (at: string) => {
+    setSeenRestore(at);
+    try { localStorage.setItem(SEEN_RESTORE_KEY, at); } catch { /* storage blocked */ }
+  };
+  const last = state?.last_restore && state.last_restore.at !== seenRestore ? state.last_restore : null;
+  const pending = state?.pending_restore ?? null;
+  const pendingFile = pending ? state?.backups.find((b) => b.name === pending.name) : undefined;
 
   const dirty = !!schedule && !!state && (schedule.enabled !== state.settings.enabled || schedule.hour !== state.settings.hour || schedule.keep_nightly !== state.settings.keep_nightly);
 
@@ -98,6 +144,34 @@ export function Backups() {
 
       <div className="flex flex-col gap-4">
         {loadErr && <p className="m-0 text-[12px]" style={{ color: "var(--reject)" }}>{loadErr}</p>}
+
+        {last && (
+          <div role="status" className="flex items-start gap-3 rounded-lg p-3 text-[12px]" style={{ color: last.ok ? "var(--good)" : "var(--reject)", background: last.ok ? "var(--good-soft)" : "var(--reject-soft)" }}>
+            <div className="min-w-0 flex-1 break-words">
+              {last.ok
+                ? <>Restored {last.from} on {when(last.at)}. The database it replaced is kept as a “Before restore” backup.</>
+                : <>The restore on {when(last.at)} didn't happen: {last.error}. Arrmada started on the database as it was.</>}
+            </div>
+            <button onClick={() => dismissRestore(last.at)} className="flex-none text-[11px] font-semibold text-ink-dim">Dismiss</button>
+          </div>
+        )}
+
+        {pending && (
+          <div className="flex flex-col gap-2 rounded-lg p-3 text-[12px]" style={{ border: "1px solid var(--avoid)", background: "var(--panel-2)" }}>
+            <div>
+              <b>Restore staged.</b> {pendingFile ? <>The {kindLabel(pendingFile.kind)} backup from {when(pendingFile.created_at)}</> : <>{pending.name}</>} replaces the database the next time Arrmada starts{pending.requested_by ? ` (asked for by ${pending.requested_by})` : ""}. Anything changed until then will be lost.
+            </div>
+            {!state?.can_restart && (
+              <div className="text-ink-dim">
+                Restart the Arrmada container to run it, for example <code className="select-all rounded px-1.5 py-0.5 font-mono text-[11px]" style={{ background: "var(--panel)" }}>docker restart Arrmada-app</code>.
+              </div>
+            )}
+            <div className="flex flex-wrap gap-2">
+              {state?.can_restart && <button onClick={restartNow} disabled={busy} className={btn} style={{ background: "var(--reject)", color: "#fff" }}>Restart and restore now</button>}
+              <button onClick={cancelRestore} disabled={busy} className={btn} style={btnStyle}>Cancel restore</button>
+            </div>
+          </div>
+        )}
 
         <div className="flex flex-wrap items-center gap-3">
           <button onClick={backUpNow} disabled={busy} className={btn} style={btnStyle}>{busy ? "Backing up…" : "Back up now"}</button>
@@ -130,7 +204,8 @@ export function Backups() {
                     </div>
                     <span className="flex-none font-mono text-[10.5px] text-ink-faint">{fmtBytes(b.size_bytes)}</span>
                     <a href={backupDownloadURL(b.name)} download className={rowBtn} style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>Download</a>
-                    <button onClick={() => setToDelete(b)} className={rowBtn} style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>Delete</button>
+                    <button onClick={() => setToRestore(b)} className={rowBtn} style={{ border: "1px solid var(--line)", color: "var(--ink)" }}>Restore</button>
+                    <button onClick={() => setToDelete(b)} disabled={pending?.name === b.name} title={pending?.name === b.name ? "Staged to be restored — cancel the restore first" : undefined} className={rowBtn} style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>Delete</button>
                   </div>
                 );
               })}
@@ -196,6 +271,43 @@ export function Backups() {
           onConfirm={() => remove(toDelete)}
           onCancel={closeConfirm}
         />
+      )}
+      {toRestore && (
+        <ConfirmDialog
+          title="Restore this backup?"
+          body={
+            <div className="flex flex-col gap-2">
+              <span>Puts back the {kindLabel(toRestore.kind)} backup from <b>{when(toRestore.created_at)}</b>.</span>
+              <span>Everything since {when(toRestore.created_at)} will be lost: requests, watch history, listening places, users and settings. Downloads grabbed since then keep going in qBittorrent but Arrmada won't know about them. You may need to sign in again. The current database is kept as Before restore.</span>
+              <span>{state?.can_restart ? "Arrmada restarts to do this; it takes a few seconds." : "It runs the next time Arrmada starts; you'll restart the container yourself."}</span>
+            </div>
+          }
+          confirmLabel="Restore"
+          busyLabel="Checking the backup…"
+          typedPhrase="RESTORE"
+          busy={confirmBusy}
+          error={confirmErr}
+          onConfirm={() => restore(toRestore)}
+          onCancel={closeConfirm}
+        />
+      )}
+      {restarting && (
+        <div role="alertdialog" aria-modal="true" aria-label="Restarting" className="fixed inset-0 z-50 grid place-items-center p-4" style={{ background: "var(--bg)" }}>
+          <div className="max-w-[420px] rounded-2xl p-6 text-center" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }}>
+            {restarting === "waiting" ? (
+              <>
+                <h2 className="m-0 text-[15px] font-bold">Restarting…</h2>
+                <p className="mb-0 mt-2 text-[12px] text-ink-dim">Arrmada is restoring the backup and starting again. This page reloads when it's back.</p>
+              </>
+            ) : (
+              <>
+                <h2 className="m-0 text-[15px] font-bold">Still not back</h2>
+                <p className="mt-2 text-[12px] text-ink-dim">Arrmada hasn't answered for two minutes. Check the container is running and look at its log; the card shows how the restore went once it's up.</p>
+                <button onClick={() => window.location.reload()} className={btn} style={btnStyle}>Reload</button>
+              </>
+            )}
+          </div>
+        </div>
       )}
     </div>
   );

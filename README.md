@@ -97,6 +97,15 @@ disk as the database, so they cover a bad update, corruption or a mistake, not a
 download one now and then to keep a copy somewhere else. Backups contain your API keys, the
 Plex token and password hashes, so keep downloaded copies somewhere private.
 
+**Restore** on a row puts that backup back (type `RESTORE` to confirm). The backup is checked
+first (a damaged file, or one from a newer Arrmada, is refused), then staged, and swapped in
+the next time Arrmada starts — never while it's running. Inside Docker the app restarts itself
+straight away; otherwise restart the container (`docker restart Arrmada-app`), or cancel the
+staged restore on the card. The database it replaces is kept as a "Before restore" backup, and
+if the swap fails at start-up Arrmada starts on the database as it was and the card says why.
+Everything since the backup was taken is lost: requests, watch history, listening places,
+users and settings.
+
 ## Ports
 
 The installer picks free ports so nothing clashes with apps you already run. It prints them
