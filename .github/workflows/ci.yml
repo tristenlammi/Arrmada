@@ -16,9 +16,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Keep in step with the Dockerfile's web stage (FROM node:20-alpine), so CI checks
+  # Keep in step with the Dockerfile's web stage (FROM node:24-alpine), so CI checks
   # the UI with the same Node major that builds the shipped image.
-  NODE_VERSION: "20"
+  NODE_VERSION: "24"
 
 jobs:
   go:
