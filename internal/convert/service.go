@@ -7,7 +7,6 @@ package convert
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -780,18 +779,15 @@ func humanBytes(b int64) string {
 // retire moves a library file out of the way before it's replaced: into the recycle bin, or
 // deleted outright if the admin switched the bin off. It never silently relocates a file.
 func (s *Service) retire(path string) error {
-	dst, err := library.RecycleFile(s.recycleDir, path)
+	dst, err := library.RemoveToBin(library.SingleBin(s.recycleDir), path)
 	switch {
-	case errors.Is(err, library.ErrRecycleDisabled):
-		if rerr := os.Remove(path); rerr != nil && !os.IsNotExist(rerr) {
-			return rerr
-		}
-		s.log.Info("convert: original deleted (recycle bin is off)", "path", path)
-		return nil
 	case err != nil:
 		return err
+	case s.recycleDir == "":
+		s.log.Info("convert: original deleted (recycle bin is off)", "path", path)
+	case dst != "":
+		s.log.Info("convert: original recycled", "to", dst)
 	}
-	s.log.Info("convert: original recycled", "to", dst)
 	return nil
 }
 

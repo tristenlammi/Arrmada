@@ -891,6 +891,9 @@ func (a *api) handleDeleteSeriesDuplicate(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err := a.deps.Automation.DeleteSeriesDuplicate(r.Context(), id, req.Path); err != nil {
+		if a.writeBinRefusal(w, err) {
+			return
+		}
 		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

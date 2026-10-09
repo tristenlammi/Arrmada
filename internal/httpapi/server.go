@@ -16,6 +16,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/backup"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/buildinfo"
 	"github.com/tristenlammi/arrmada/internal/config"
@@ -89,6 +90,9 @@ type Deps struct {
 	// context that shutdown cancels and names whatever is still going at exit. nil (tests)
 	// runs that work panic-safe but untracked.
 	RunGroup *safego.Group
+	// Backups makes the nightly and manual database copies. nil = no backups wired: the
+	// manual action answers 503 and the health panel says nothing about them.
+	Backups *backup.Service
 }
 
 type api struct {
@@ -347,6 +351,8 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/empty", a.requireRole(auth.RoleManager, a.handleRecycleEmpty))
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/restore", a.requireRole(auth.RoleManager, a.handleRecycleRestore))
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/delete", a.requireRole(auth.RoleManager, a.handleRecycleDeleteItem))
+	// Admin only: a backup holds API keys, the Plex token and password hashes.
+	mux.HandleFunc("POST "+base+"/api/v1/system/backups", a.requireRole(auth.RoleAdmin, a.handleBackupNow))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/hardware", a.requireRole(auth.RoleManager, a.handleConvertHardware))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/status", a.requireRole(auth.RoleManager, a.handleConvertStatus))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/settings", a.requireRole(auth.RoleManager, a.handleConvertSettings))
@@ -509,6 +515,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("DELETE "+base+"/api/v1/movies/{id}/versions/{vid}/file", a.requireRole(auth.RoleManager, a.handleDeleteVersionFile))
 	mux.HandleFunc("DELETE "+base+"/api/v1/movies/{id}/versions/{vid}", a.requireRole(auth.RoleManager, a.handleDeleteVersion))
 	mux.HandleFunc("DELETE "+base+"/api/v1/movies/{id}/file", a.requireRole(auth.RoleManager, a.handleDeleteMovieFile))
+	mux.HandleFunc("GET "+base+"/api/v1/movies/{id}/delete-preview", a.requireRole(auth.RoleManager, a.handleMovieDeletePreview))
 	mux.HandleFunc("DELETE "+base+"/api/v1/movies/{id}", a.requireRole(auth.RoleManager, a.handleDeleteMovie))
 
 	ui := webui.Handler()

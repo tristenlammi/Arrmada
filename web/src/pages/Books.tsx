@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { DeleteBookDialog } from "../components/DeleteBookDialog";
 import { api, type BookSource, type BookUpgradeStatus, type BookSweepStatus, type Book, type BookLookup, type BookAuthor, type BookDiscoverCard } from "../lib/api";
 import { usePersisted } from "../lib/persist";
 import { posterThumb } from "../lib/img";
@@ -201,7 +202,6 @@ export function Books() {
       .sort((a, b) => a.name.localeCompare(b.name)); // authors A→Z, books A→Z within each
   }, [filtered]);
 
-  const doDelete = async (id: number, deleteFiles: boolean) => { await api.deleteBook(id, deleteFiles); setConfirmDelete(null); refresh(); };
   const search = async (b: Book) => {
     try { await api.searchBook(b.id); flash(`Searching for “${b.title}”…`); } catch (e) { flash((e as Error).message); }
   };
@@ -381,7 +381,7 @@ export function Books() {
       </div>
       {adding && <AddBookModal onClose={() => setAdding(false)} onAdded={() => { setAdding(false); refresh(); }} />}
       {addingAuthor && <AddAuthorModal onClose={() => setAddingAuthor(false)} onAdded={(msg) => { setAddingAuthor(false); refresh(); flash(msg); }} />}
-      {confirmDelete && <DeleteBookModal book={confirmDelete} onClose={() => setConfirmDelete(null)} onConfirm={(deleteFiles) => doDelete(confirmDelete.id, deleteFiles)} />}
+      {confirmDelete && <DeleteBookDialog book={confirmDelete} onClose={() => setConfirmDelete(null)} onDeleted={() => { setConfirmDelete(null); refresh(); }} />}
     </>
   );
 }
@@ -500,32 +500,6 @@ function Card({ b, onDelete, onSearch, selectable, selected, onToggleSelect }: {
       ) : (
         <Link to={`/books/${b.id}`} className="block p-2.5">{meta}</Link>
       )}
-    </div>
-  );
-}
-
-function DeleteBookModal({ book, onClose, onConfirm }: { book: Book; onClose: () => void; onConfirm: (deleteFiles: boolean) => void }) {
-  const [deleteFiles, setDeleteFiles] = useState(true);
-  const [busy, setBusy] = useState(false);
-  return (
-    <div className="fixed inset-0 z-50 grid place-items-center p-6" style={{ background: "rgba(0,0,0,.6)" }} onClick={onClose}>
-      <div className="w-full max-w-[440px] rounded-2xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }} onClick={(e) => e.stopPropagation()}>
-        <h2 className="m-0 text-[15px] font-bold">Remove “{book.title}”?</h2>
-        <p className="mt-1 text-[12px] text-ink-dim">It'll be removed from your library and Arrmada will stop monitoring it.</p>
-
-        <label className="mt-4 flex items-start gap-2.5 rounded-lg p-3 text-[12.5px]" style={{ border: `1px solid ${deleteFiles ? "var(--reject)" : "var(--line)"}`, background: deleteFiles ? "var(--reject-soft)" : "var(--panel-2)", cursor: book.has_file ? "pointer" : "default", opacity: book.has_file ? 1 : 0.6 }}>
-          <input type="checkbox" checked={deleteFiles} disabled={!book.has_file} onChange={(e) => setDeleteFiles(e.target.checked)} className="mt-0.5" />
-          <span>
-            <span className="font-semibold" style={{ color: deleteFiles ? "var(--reject)" : "var(--ink)" }}>Also delete files from disk</span>
-            <span className="mt-0.5 block text-[11px] text-ink-faint">{book.has_file ? "Moves the ebook and/or audiobook file(s) to the recycle bin." : "This book has no files on disk."}</span>
-          </span>
-        </label>
-
-        <div className="mt-4 flex justify-end gap-2.5">
-          <button onClick={onClose} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Cancel</button>
-          <button onClick={async () => { setBusy(true); try { await onConfirm(deleteFiles); } finally { setBusy(false); } }} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "var(--reject)", color: "#fff" }}>{busy ? "Removing…" : deleteFiles ? "Remove + delete files" : "Remove"}</button>
-        </div>
-      </div>
     </div>
   );
 }

@@ -12,6 +12,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/extract"
 	"github.com/tristenlammi/arrmada/internal/library"
+	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/series"
@@ -235,8 +236,22 @@ func (c *Coordinator) HoldMovieImport(ctx context.Context, hash, name, contentPa
 		return "", false // not something we grabbed for a specific movie — import as usual
 	}
 	expected, err := c.movies.Get(ctx, mid)
+	if errors.Is(err, movies.ErrNotFound) {
+		// The movie was deleted while this was downloading. Importing by name would put
+		// the film the user just removed straight back into the library (and Plex) as an
+		// untracked folder, so it waits in Review for them to decide.
+		reason := "Grabbed for a movie you deleted"
+		parsed := parser.Parse(name)
+		c.addReview(ctx, Review{
+			Hash: hash, Name: name, ContentPath: contentPath, MediaType: "movie",
+			ExpectedID: 0, ParsedTitle: parsed.Title, Reason: reason, Indexer: indexer,
+		})
+		return reason, true
+	}
 	if err != nil {
-		return "", false
+		// Can't tell which movie it was for right now: hold it this sweep rather than fall
+		// through to importing by name, and look again on the next one.
+		return "couldn't check the movie it was grabbed for", true
 	}
 	parsed := parser.Parse(name)
 	if m, matched := c.movies.Match(ctx, parsed.Title, parsed.Year); matched && m.ID == expected.ID {

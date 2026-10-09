@@ -20,7 +20,7 @@ type Config struct {
 	// BaseURL is an optional reverse-proxy sub-path (e.g. "/arrmada"). Empty = root.
 	BaseURL string
 	// DataDir holds the database, config and logs, plus backups/, where a snapshot
-	// of the database is taken automatically before any schema change.
+	// of the database is taken automatically before any schema change and every night.
 	DataDir string
 	// LogLevel is one of: debug, info, warn, error.
 	LogLevel string

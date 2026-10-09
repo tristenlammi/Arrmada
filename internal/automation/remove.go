@@ -78,6 +78,13 @@ func (c *Coordinator) RemoveDownload(ctx context.Context, hash, name string, mod
 	if g != nil && status == grabStatusGrabbed {
 		c.setGrabStatus(ctx, g.ID, grabStatusRemoved)
 	}
+	// A download held in Review (one grabbed for a movie since deleted, say) is settled
+	// once it's out of the client; left pending, the review would offer an import of
+	// files that may be gone.
+	if _, err := c.db.ExecContext(ctx,
+		`UPDATE import_reviews SET status = 'resolved' WHERE lower(hash) = lower(?) AND status = 'pending'`, hash); err != nil {
+		c.log.Warn("downloads: couldn't settle the review for a removed download", "hash", hash, "err", err)
+	}
 	what := "files kept"
 	if deleteFiles {
 		what = "files deleted"

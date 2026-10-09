@@ -1237,35 +1237,61 @@ func (c *Coordinator) DeleteBookEdition(ctx context.Context, bookID int64, kind 
 		if fi, err := os.Stat(bf.Path); err == nil && fi.IsDir() {
 			// Multi-file edition in a (possibly shared) folder — remove only this
 			// edition's files, never the sibling edition's.
+			var paths []string
 			for _, f := range library.FindBookFiles(bf.Path) {
 				if library.IsAudiobookFile(f.Path) == (kind == books.KindAudiobook) {
-					c.removeBookFile(f.Path)
+					paths = append(paths, f.Path)
 				}
+			}
+			if err := c.removeBookFiles(ctx, bookID, paths); err != nil {
+				return err
 			}
 			_ = os.Remove(bf.Path) // succeeds only if now empty
 		} else {
-			c.removeBookFile(bf.Path)
+			if err := c.removeBookFile(bf.Path); err != nil {
+				return err
+			}
 			_ = os.Remove(filepath.Dir(bf.Path)) // prune if empty
 		}
 	}
 	return c.books.ClearEdition(ctx, bookID, kind)
 }
 
-// removeBookFile deletes one book file, moving it to the recycle bin when one is
-// configured (like movies) and hard-deleting otherwise.
-func (c *Coordinator) removeBookFile(path string) {
-	if c.recycle != "" {
-		if dst, err := library.RecycleFile(c.recycle, path); err != nil {
-			c.log.Warn("book: recycle failed, hard-deleting", "path", path, "err", err)
-			_ = os.Remove(path)
-		} else if dst != "" {
-			c.log.Info("book: moved to recycle bin", "from", path, "to", dst)
+// removeBookFiles moves several of a book's files to the bin, checking the bin first so
+// a broken one fails before anything moves. It stops at the first file the bin refuses,
+// leaving the edition recorded, and notes on the book how far it got.
+func (c *Coordinator) removeBookFiles(ctx context.Context, bookID int64, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	if err := library.CheckBin(c.bin(), paths[0]); err != nil {
+		return err
+	}
+	for i, p := range paths {
+		if err := c.removeBookFile(p); err != nil {
+			if i > 0 {
+				c.books.AddEvent(ctx, bookID, "delete.failed",
+					fmt.Sprintf("Stopped deleting after %d of %d file(s) went to the recycle bin: %v", i, len(paths), err))
+			}
+			return err
 		}
-		return
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		c.log.Warn("book: could not delete file", "path", path, "err", err)
+	return nil
+}
+
+// removeBookFile moves one book file to the recycle bin, or deletes it when the bin is
+// deliberately off. If the bin refuses it, the file stays and the error says why — it
+// never falls back to a permanent delete.
+func (c *Coordinator) removeBookFile(path string) error {
+	dst, err := library.RemoveToBin(c.bin(), path)
+	if err != nil {
+		c.log.Warn("book: the recycle bin refused a file — kept it", "path", path, "err", err)
+		return err
 	}
+	if dst != "" {
+		c.log.Info("book: moved to recycle bin", "from", path, "to", dst)
+	}
+	return nil
 }
 
 // BookRename renames single-file editions to their canonical library path, returning

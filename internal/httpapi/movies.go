@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/movies"
 )
 
@@ -384,6 +385,9 @@ func (a *api) handleDeleteVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.deps.Movies.DeleteVersion(r.Context(), vid); err != nil {
+		if a.writeBinRefusal(w, err) {
+			return
+		}
 		a.writeError(w, http.StatusInternalServerError, "could not delete version")
 		return
 	}
@@ -401,6 +405,9 @@ func (a *api) handleDeleteVersionFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.deps.Movies.DeleteVersionFile(r.Context(), id, vid); err != nil {
+		if a.writeBinRefusal(w, err) {
+			return
+		}
 		a.writeError(w, http.StatusInternalServerError, "could not delete file")
 		return
 	}
@@ -489,6 +496,9 @@ func (a *api) handleDeleteMovieFile(w http.ResponseWriter, r *http.Request) {
 	if err := a.deps.Movies.DeleteFile(r.Context(), id); err != nil {
 		if errors.Is(err, movies.ErrNotFound) {
 			a.writeError(w, http.StatusNotFound, "movie not found")
+			return
+		}
+		if a.writeBinRefusal(w, err) {
 			return
 		}
 		a.writeError(w, http.StatusInternalServerError, "could not delete file")
@@ -696,15 +706,60 @@ func (a *api) handleRename(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "renamed"})
 }
 
+// handleMovieDeletePreview says what deleting a movie with its files would move and where
+// it would go, so the dialog can state it before anything happens.
+func (a *api) handleMovieDeletePreview(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	plan, err := a.deps.Movies.DeletePlan(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, movies.ErrNotFound) {
+			a.writeError(w, http.StatusNotFound, "movie not found")
+			return
+		}
+		a.writeError(w, http.StatusInternalServerError, "could not list the movie's files")
+		return
+	}
+	pending := []automation.PendingMovieDownload{}
+	if a.deps.Automation != nil {
+		if p, err := a.deps.Automation.PendingMovieDownloads(r.Context(), id); err == nil {
+			pending = p
+		}
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"versions": plan.Versions, "sidecars": plan.Sidecars, "bytes": plan.Bytes,
+		"recycle":           a.recycleMode(r.Context()),
+		"pending_downloads": pending,
+	})
+}
+
 func (a *api) handleDeleteMovie(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)
 	if !ok {
 		return
 	}
-	deleteFiles := r.URL.Query().Get("delete_files") == "true"
-	if err := a.deps.Movies.Delete(r.Context(), id, deleteFiles); err != nil {
+	opts := automation.DeleteMovieOpts{
+		DeleteFiles:     r.URL.Query().Get("delete_files") == "true",
+		CancelDownloads: r.URL.Query().Get("cancel_downloads") == "true",
+	}
+	// Detached from the request: moving files to a bin on another disk is a copy, and a
+	// browser giving up part-way must not leave the files binned while the movie stays.
+	ctx := context.WithoutCancel(r.Context())
+	var err error
+	if a.deps.Automation != nil {
+		// Settles the movie's downloads too, so a finished one can't re-import it.
+		err = a.deps.Automation.DeleteMovie(ctx, id, opts)
+	} else {
+		err = a.deps.Movies.Delete(ctx, id, opts.DeleteFiles)
+	}
+	if err != nil {
 		if errors.Is(err, movies.ErrNotFound) {
 			a.writeError(w, http.StatusNotFound, "movie not found")
+			return
+		}
+		if a.writeBinRefusal(w, err) {
 			return
 		}
 		a.writeError(w, http.StatusInternalServerError, "could not delete movie")

@@ -45,7 +45,7 @@ type Service struct {
 	meta     metadata.MovieProvider
 	log      *slog.Logger
 	root     string            // library root, for rescan/rename/manual-import
-	recycle  string            // recycle-bin dir ("" = hard delete)
+	bin      library.Bin       // where deleted/replaced files go (off = permanent delete)
 	imp      *library.Importer // reused for naming + import
 	resolver ProfileResolver
 	bus      *eventbus.Bus
@@ -79,13 +79,16 @@ type UnmatchedFolder struct {
 // NewService wires the module. recycleDir is where deleted files are moved
 // ("" = hard delete).
 func NewService(db *sql.DB, meta metadata.MovieProvider, resolver ProfileResolver, root, recycleDir string, bus *eventbus.Bus, log *slog.Logger) *Service {
+	imp := library.NewImporter(root, log)
+	// Manual imports and renames that replace a file go through the same bin as deletes.
+	imp.SetRecycleDir(recycleDir)
 	return &Service{
 		repo:     NewRepo(db),
 		meta:     meta,
 		log:      log,
 		root:     root,
-		recycle:  recycleDir,
-		imp:      library.NewImporter(root, log),
+		bin:      library.SingleBin(recycleDir),
+		imp:      imp,
 		resolver: resolver,
 		bus:      bus,
 		http:     &http.Client{Timeout: 30 * time.Second},
@@ -411,21 +414,6 @@ func extraFrom(d *metadata.MovieDetails) *MovieExtra {
 	return ex
 }
 
-// Delete removes a movie.
-func (s *Service) Delete(ctx context.Context, id int64, deleteFiles bool) error {
-	if deleteFiles {
-		// Recycle the default file and every extra version's file first.
-		versions, _ := s.VersionRows(ctx, id)
-		for _, v := range versions {
-			if v.FilePath != "" {
-				s.removeFile(ctx, v.FilePath)
-			}
-		}
-	}
-	_ = s.repo.DeleteVersionsForMovie(ctx, id)
-	return s.repo.Delete(ctx, id)
-}
-
 // SetMonitored toggles monitoring.
 func (s *Service) SetMonitored(ctx context.Context, id int64, monitored bool) error {
 	return s.repo.SetMonitored(ctx, id, monitored)
@@ -485,8 +473,17 @@ func (s *Service) markImported(ctx context.Context, id int64, path, sourceReleas
 				return fmt.Errorf("%w (%s < %s)", ErrWorseQuality, newRes, oldRes)
 			}
 		}
-		s.removeFile(ctx, target.FilePath)
-		s.log.Info("replaced older file on upgrade", "movie_id", id, "version", target.Label, "old", target.FilePath, "new", path)
+		// The new file and the other versions' files keep their subtitles.
+		keep := append(otherFiles(versions, target.FilePath), path)
+		if err := s.removeFile(target.FilePath, keep); err != nil {
+			// The new file is already in place, so failing the import would only strand
+			// it. Keep the old file where it is instead of deleting it for good, and say so.
+			s.log.Warn("upgrade: the recycle bin refused the old file — kept it on disk",
+				"movie_id", id, "old", target.FilePath, "err", err)
+			_ = s.repo.AddEvent(ctx, id, "file.kept", "Old file kept: the recycle bin refused it ("+err.Error()+")")
+		} else {
+			s.log.Info("replaced older file on upgrade", "movie_id", id, "version", target.Label, "old", target.FilePath, "new", path)
+		}
 		upgrade = true
 	}
 
@@ -877,38 +874,6 @@ func (s *Service) UpdateVersion(ctx context.Context, versionID int64, label, pro
 	return s.repo.UpdateVersion(ctx, versionID, label, profile, edition, monitored)
 }
 
-// DeleteVersion removes an extra version track and its file.
-func (s *Service) DeleteVersion(ctx context.Context, versionID int64) error {
-	v, movieID, err := s.repo.GetVersion(ctx, versionID)
-	if err != nil {
-		return err
-	}
-	if v.FilePath != "" {
-		s.removeFile(ctx, v.FilePath)
-	}
-	if err := s.repo.DeleteVersion(ctx, versionID); err != nil {
-		return err
-	}
-	_ = s.repo.AddEvent(ctx, movieID, "version_removed", "Removed version: "+v.Label)
-	return nil
-}
-
-// DeleteVersionFile deletes a version's file (vid 0 = the default version).
-func (s *Service) DeleteVersionFile(ctx context.Context, movieID, versionID int64) error {
-	if versionID == 0 {
-		return s.DeleteFile(ctx, movieID)
-	}
-	v, _, err := s.repo.GetVersion(ctx, versionID)
-	if err != nil {
-		return err
-	}
-	if v.FilePath != "" {
-		s.removeFile(ctx, v.FilePath)
-		_ = s.repo.AddEvent(ctx, movieID, "deleted", "Deleted "+filepath.Base(v.FilePath)+" ("+v.Label+")")
-	}
-	return s.repo.ClearVersionFile(ctx, versionID)
-}
-
 // setDefaultFile records the default file path AND caches its media info, so the
 // table view can show attributes without re-probing on every list request.
 func (s *Service) setDefaultFile(ctx context.Context, id int64, path string) error {
@@ -1053,60 +1018,6 @@ func sidecarSubtitles(moviePath string) []string {
 		}
 	}
 	return subs
-}
-
-// DeleteFile removes a movie's file from disk and clears its file record,
-// flipping the movie back to Wanted (if monitored).
-func (s *Service) DeleteFile(ctx context.Context, id int64) error {
-	m, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return err
-	}
-	if m.MovieFilePath != "" {
-		s.removeFile(ctx, m.MovieFilePath)
-		s.log.Info("deleted movie file", "movie", m.Title, "path", m.MovieFilePath)
-		_ = s.repo.AddEvent(ctx, id, "deleted", "Deleted "+filepath.Base(m.MovieFilePath))
-	}
-	return s.repo.ClearFile(ctx, id)
-}
-
-// removeFile deletes a file (moving it to the recycle bin if configured) and
-// prunes its now-empty parent directory.
-func (s *Service) removeFile(ctx context.Context, path string) {
-	if s.recycle != "" {
-		if err := s.recycleFile(path); err != nil {
-			s.log.Warn("recycle failed, hard-deleting", "path", path, "err", err)
-			_ = os.Remove(path)
-		}
-	} else if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		s.log.Warn("could not delete file", "path", path, "err", err)
-		return
-	}
-	// Best-effort: remove the movie folder if nothing else is left in it.
-	_ = os.Remove(filepath.Dir(path))
-	// Let the import pipeline forget this file — directly, so it can't be missed — so the
-	// still-seeding torrent isn't imported straight back, while re-grabbing the same
-	// release (e.g. after deleting a version) imports again.
-	if s.onFileRemoved != nil {
-		s.onFileRemoved(ctx, path)
-	}
-	// The event stays for the UI.
-	if s.bus != nil {
-		s.bus.Publish("file.removed", map[string]any{"path": path})
-	}
-}
-
-// recycleFile moves a file into the recycle bin, keeping its folder name so it's
-// identifiable, and de-duplicating on collision.
-func (s *Service) recycleFile(path string) error {
-	dst, err := library.RecycleFile(s.recycle, path)
-	if err != nil {
-		return err
-	}
-	if dst != "" {
-		s.log.Info("moved to recycle bin", "from", path, "to", dst)
-	}
-	return nil
 }
 
 // qualityLabel renders the resolution + source parsed from a filename, e.g.

@@ -287,7 +287,9 @@ func (c *Coordinator) DeleteAudioVersionFile(ctx context.Context, bookID, versio
 	if err != nil {
 		return err
 	}
-	c.removeAudioFiles(v.File)
+	if err := c.removeAudioFiles(ctx, bookID, v.File); err != nil {
+		return err
+	}
 	if err := c.books.ClearAudioVersionFile(ctx, v.ID); err != nil {
 		return err
 	}
@@ -305,27 +307,37 @@ func (c *Coordinator) RemoveAudioVersion(ctx context.Context, bookID, versionID 
 		return err
 	}
 	if deleteFiles {
-		c.removeAudioFiles(v.File)
+		if err := c.removeAudioFiles(ctx, bookID, v.File); err != nil {
+			return err
+		}
 	}
 	return c.books.DeleteAudioVersion(ctx, bookID, versionID)
 }
 
-// removeAudioFiles deletes (or recycles) a version's audio and prunes its folder.
-func (c *Coordinator) removeAudioFiles(f *books.BookFile) {
+// removeAudioFiles recycles (or, with the bin off, deletes) a version's audio and prunes
+// its folder. A bin that refuses a file stops it with the error.
+func (c *Coordinator) removeAudioFiles(ctx context.Context, bookID int64, f *books.BookFile) error {
 	if f == nil || f.Path == "" {
-		return
+		return nil
 	}
 	if fi, err := os.Stat(f.Path); err == nil && fi.IsDir() {
+		var paths []string
 		for _, af := range library.FindBookFiles(f.Path) {
 			if library.IsAudiobookFile(af.Path) {
-				c.removeBookFile(af.Path)
+				paths = append(paths, af.Path)
 			}
 		}
+		if err := c.removeBookFiles(ctx, bookID, paths); err != nil {
+			return err
+		}
 		_ = os.Remove(f.Path) // only succeeds once empty
-		return
+		return nil
 	}
-	c.removeBookFile(f.Path)
+	if err := c.removeBookFile(f.Path); err != nil {
+		return err
+	}
 	_ = os.Remove(filepath.Dir(f.Path))
+	return nil
 }
 
 // versionForScanFolder reports whether a library folder is one of an existing book's

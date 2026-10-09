@@ -29,6 +29,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/backup"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/buildinfo"
 	"github.com/tristenlammi/arrmada/internal/config"
@@ -621,6 +622,11 @@ func main() {
 	// Originals of merged audiobooks kept while the bin is off go after 14 days.
 	sched.Register("book-merge-backup-prune", 24*time.Hour, true, coordinator.PruneMergeBackups)
 
+	// Database backups: checked hourly, taken once a night after the configured hour (and
+	// at once after a long downtime), newest 7 kept in <data>/backups.
+	backupSvc := backup.New(st, settingsSvc, log)
+	sched.Register("db-backup", time.Hour, true, backupSvc.RunNightly)
+
 	// Audiobook server: listening apps (Lissen and other Audiobookshelf clients) connect to
 	// its own port. Off until an admin switches it on in Books → Audiobook server.
 	listenStore := listening.NewStore(st.DB())
@@ -689,9 +695,14 @@ func main() {
 		// kind are kept in <data>/backups; deleting an account with no listening data is a
 		// kind of its own, so it can't push out a copy that holds someone's places.
 		Snapshot: func(ctx context.Context, kind string) (string, error) {
-			return st.SafetyCopy(ctx, cfg.DataDir, kind, 3)
+			b, err := backupSvc.Create(ctx, store.BackupKind(kind))
+			if err != nil {
+				return "", err
+			}
+			return filepath.Join(backupSvc.Dir(), b.Name), nil
 		},
 		RunGroup: grp,
+		Backups: backupSvc,
 	})
 
 	errCh := make(chan error, 1)

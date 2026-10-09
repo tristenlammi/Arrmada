@@ -21,6 +21,9 @@ type audioVersionBody struct {
 }
 
 func (a *api) writeVersionError(w http.ResponseWriter, err error) {
+	if a.writeBinRefusal(w, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, books.ErrVersionInvalid):
 		a.writeError(w, http.StatusBadRequest, err.Error())

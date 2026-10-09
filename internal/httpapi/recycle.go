@@ -2,8 +2,11 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
+	"github.com/tristenlammi/arrmada/internal/library"
+	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
 )
 
@@ -25,6 +28,24 @@ func (a *api) recycleMode(ctx context.Context) recyclebin.Mode {
 		return recyclebin.Mode{Dirs: []string{}}
 	}
 	return a.deps.Recycle.Mode(ctx)
+}
+
+// writeBinRefusal answers a delete the recycle bin refused with 409 and the bin's own
+// message, which says nothing was deleted and what went wrong. A movie delete that stopped
+// part-way also lists what moved and what didn't. It reports whether it wrote a response.
+func (a *api) writeBinRefusal(w http.ResponseWriter, err error) bool {
+	var fe *movies.FilesNotRemovedError
+	if errors.As(err, &fe) {
+		a.writeJSON(w, http.StatusConflict, map[string]any{
+			"status": "error", "message": err.Error(), "moved": fe.Moved, "failed": fe.Failed,
+		})
+		return true
+	}
+	if errors.Is(err, library.ErrBinRefused) || errors.Is(err, library.ErrReplacementRefused) {
+		a.writeError(w, http.StatusConflict, err.Error())
+		return true
+	}
+	return false
 }
 
 // handleRecycleItems lists the individual files in the bin (for the management UI).

@@ -362,7 +362,7 @@ type Importer struct {
 	musicRootFn   func() string
 	audiobookRoot string
 	bookRoots     []string // ebook + audiobook scan roots (falls back to root)
-	recycleDir    string   // when set, a replaced library file is recycled instead of overwritten
+	bin           Bin      // when on, a replaced library file is recycled instead of overwritten
 	log           *slog.Logger
 	naming        NamingProvider       // nil → built-in defaults
 	seriesNaming  SeriesNamingProvider // nil → built-in defaults
@@ -454,9 +454,9 @@ func NewImporter(root string, log *slog.Logger) *Importer {
 
 // SetRecycleDir points the importer at the recycle bin: when an import replaces an
 // existing library file with different content, the old file is recycled first (so
-// the replacement can hardlink) instead of being overwritten in place. Empty keeps
-// the previous overwrite behavior.
-func (im *Importer) SetRecycleDir(dir string) { im.recycleDir = dir }
+// the replacement can hardlink) instead of being overwritten in place. Empty means the
+// bin is switched off, and a replacement overwrites as before.
+func (im *Importer) SetRecycleDir(dir string) { im.bin = SingleBin(dir) }
 
 // SetNaming installs a naming provider (user-configurable folder/file formats).
 func (im *Importer) SetNaming(np NamingProvider) { im.naming = np }
@@ -1517,25 +1517,39 @@ func detectLang(stem string) string {
 	return ""
 }
 
+// ErrReplacementRefused means an import would have replaced a library file whose old copy
+// the recycle bin couldn't take. The old file is left exactly as it was; the import fails
+// and is retried on the normal backoff, so it lands once the bin is fixed.
+var ErrReplacementRefused = errors.New("replacement refused: couldn't move the old file to the recycle bin")
+
 // linkOrCopy is the Importer-aware wrapper around the package-level linkOrCopy:
-// when dst already exists with different content it recycles the old file first
-// (if a recycle dir is configured) so the new file can hardlink into place —
-// otherwise the replacement silently degraded to a full copy over dst. Without
-// recycling the old overwrite behavior stands, but is at least logged.
+// when dst already exists with different content it recycles the old file first so
+// the new file can hardlink into place — otherwise the replacement silently degraded
+// to a full copy over dst. If the bin is on but refuses the old file, the import is
+// refused instead: overwriting it there was a permanent delete in disguise. Only a bin
+// that is deliberately off still overwrites, and that is logged.
 func (im *Importer) linkOrCopy(src, dst string) (string, error) {
 	if si, err := os.Stat(src); err == nil {
 		if di, err := os.Stat(dst); err == nil {
+			binDir, binErr := "", ErrRecycleDisabled
+			if im.bin != nil {
+				binDir, binErr = im.bin.For(dst)
+			}
 			switch {
 			case os.SameFile(si, di), si.Size() > 0 && di.Size() == si.Size():
 				// linkOrCopy will report "already" — nothing to recycle.
-			case im.recycleDir != "":
-				if binDst, rerr := RecycleFile(im.recycleDir, dst); rerr != nil {
-					im.log.Warn("recycling replaced file failed — falling back to overwrite", "target", dst, "err", rerr)
-				} else {
-					im.log.Info("recycled replaced file", "target", dst, "recycled_to", binDst)
-				}
+			case errors.Is(binErr, ErrRecycleDisabled):
+				im.log.Warn("replacing existing library file (recycle bin is off)", "target", dst)
 			default:
-				im.log.Warn("replacing existing library file (recycle bin not configured)", "target", dst)
+				binDst := ""
+				if binErr == nil {
+					binDst, binErr = RecycleFile(binDir, dst)
+				}
+				if binErr != nil {
+					im.log.Warn("import refused: the recycle bin couldn't take the file it would replace", "target", dst, "err", binErr)
+					return "", fmt.Errorf("%w (%v)", ErrReplacementRefused, binErr)
+				}
+				im.log.Info("recycled replaced file", "target", dst, "recycled_to", binDst)
 			}
 		}
 	}

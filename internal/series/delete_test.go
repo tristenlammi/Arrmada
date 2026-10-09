@@ -333,3 +333,34 @@ func TestDeleteEpisodeFileRefusesOnRecycleFailure(t *testing.T) {
 		t.Errorf("bin = %v, want the video and its subtitle", got)
 	}
 }
+
+// An upgrade whose old file the bin refuses keeps the old file on disk instead of deleting
+// it for good, still records the new file, and says so in the show's history.
+func TestSupersedeKeepsOldOnRecycleFailure(t *testing.T) {
+	f := newDeleteFixture(t)
+	old := f.episode(t, 1)
+	if err := os.WriteFile(f.bin, []byte("not a folder"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	newer := f.file(t, filepath.Join("Season 1", "The Bear - S01E01 Bluray-2160p.mkv"), "better video")
+	ctx := context.Background()
+	if err := f.svc.SupersedeEpisodeFile(ctx, f.id, 1, 1, newer, 12, "The.Bear.S01E01.2160p"); err != nil {
+		t.Fatalf("the import must not fail: %v", err)
+	}
+	if !exists(old) {
+		t.Fatal("the old file was deleted although the bin refused it")
+	}
+	if p, _ := f.svc.repo.EpisodeFilePath(ctx, f.id, 1, 1); p != newer {
+		t.Errorf("episode file = %q, want the new file", p)
+	}
+	evs, _ := f.svc.repo.Events(ctx, f.id, 10)
+	found := false
+	for _, e := range evs {
+		if e.Event == "file.kept" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no file.kept event in %+v", evs)
+	}
+}

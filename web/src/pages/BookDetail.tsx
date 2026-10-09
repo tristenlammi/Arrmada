@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ConfirmDialog } from "../components/ConfirmDialog";
+import { DeleteBookDialog } from "../components/DeleteBookDialog";
+import { disposalLine, useRecycleMode } from "../lib/disposal";
 import { BookReleaseModal } from "../components/BookReleaseModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
@@ -193,6 +195,8 @@ function EditionPanel({ label, file, wanted, bookId, kind, onChange, flash }: { 
   const [showFile, setShowFile] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const mode = useRecycleMode();
   if (!file && !wanted) {
     return (
       <div className="flex items-center gap-3 rounded-xl px-4 py-3 opacity-60" style={{ border: "1px dashed var(--line)" }}>
@@ -209,9 +213,10 @@ function EditionPanel({ label, file, wanted, bookId, kind, onChange, flash }: { 
       </div>
     );
   }
+  // A refusal (the recycle bin couldn't take a file) stays in the dialog rather than closing it.
   const del = async () => {
-    setBusy(true);
-    try { await api.deleteBookFile(bookId, kind); onChange(); } catch (e) { flash((e as Error).message); } finally { setBusy(false); setConfirming(false); }
+    setBusy(true); setErr(null);
+    try { await api.deleteBookFile(bookId, kind); setConfirming(false); onChange(); } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   };
   const multi = file.file_count > 1;
   return (
@@ -235,16 +240,26 @@ function EditionPanel({ label, file, wanted, bookId, kind, onChange, flash }: { 
         </div>
         <div className="flex flex-none flex-col items-end gap-1.5">
           {multi && kind === "audiobook" && <MergeButton bookId={bookId} fileCount={file.file_count} onDone={onChange} flash={flash} />}
-          {confirming ? (
-            <div className="flex items-center gap-2">
-              <button onClick={del} disabled={busy} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--reject)", color: "#fff" }}>{busy ? "Deleting…" : "Delete"}</button>
-              <button onClick={() => setConfirming(false)} className="rounded-lg px-3 py-1.5 text-[11.5px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Cancel</button>
-            </div>
-          ) : (
-            <button onClick={() => setConfirming(true)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{multi ? "Delete all" : "Delete file"}</button>
-          )}
+          <button onClick={() => { setErr(null); setConfirming(true); }} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{multi ? "Delete all" : "Delete file"}</button>
         </div>
       </div>
+      {confirming && (
+        <ConfirmDialog
+          title={`Delete the ${label.toLowerCase()}${multi ? `'s ${file.file_count} files` : " file"}?`}
+          body={
+            <>
+              <div className="mt-1 break-all font-mono text-[11.5px]" style={{ color: "var(--ink)" }}>{file.path}</div>
+              <p className="mb-0 mt-1.5">{disposalLine(file.size_bytes, mode)}. The book stays, so Arrmada looks for the {label.toLowerCase()} again while it's monitored.</p>
+            </>
+          }
+          confirmLabel={multi ? "Delete all" : "Delete file"}
+          busyLabel="Deleting…"
+          busy={busy}
+          error={err}
+          onConfirm={del}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
       {showFile && (
         <FileDetailsModal
           path={file.path}
@@ -501,34 +516,10 @@ function ProfileSelector({ book, onChange }: { book: Book; onChange: () => void 
 
 function DeleteButton({ book }: { book: Book }) {
   const [open, setOpen] = useState(false);
-  const [deleteFiles, setDeleteFiles] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const remove = async () => {
-    setBusy(true);
-    try { await api.deleteBook(book.id, deleteFiles); window.location.href = "/books"; } finally { setBusy(false); }
-  };
   return (
     <>
       <button onClick={() => setOpen(true)} className="rounded-lg px-3 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Delete</button>
-      {open && (
-        <div className="fixed inset-0 z-50 grid place-items-center p-6" style={{ background: "rgba(0,0,0,.6)" }} onClick={() => setOpen(false)}>
-          <div className="w-full max-w-[440px] rounded-2xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }} onClick={(e) => e.stopPropagation()}>
-            <h2 className="m-0 text-[15px] font-bold">Remove “{book.title}”?</h2>
-            <p className="mt-1 text-[12px] text-ink-dim">It'll be removed from your library and Arrmada will stop monitoring it.</p>
-            <label className="mt-4 flex items-start gap-2.5 rounded-lg p-3 text-[12.5px]" style={{ border: `1px solid ${deleteFiles ? "var(--reject)" : "var(--line)"}`, background: deleteFiles ? "var(--reject-soft)" : "var(--panel-2)", cursor: book.has_file ? "pointer" : "default", opacity: book.has_file ? 1 : 0.6 }}>
-              <input type="checkbox" checked={deleteFiles} disabled={!book.has_file} onChange={(e) => setDeleteFiles(e.target.checked)} className="mt-0.5" />
-              <span>
-                <span className="font-semibold" style={{ color: deleteFiles ? "var(--reject)" : "var(--ink)" }}>Also delete files from disk</span>
-                <span className="mt-0.5 block text-[11px] text-ink-faint">{book.has_file ? "Moves the ebook and/or audiobook file(s) to the recycle bin." : "This book has no files on disk."}</span>
-              </span>
-            </label>
-            <div className="mt-4 flex justify-end gap-2.5">
-              <button onClick={() => setOpen(false)} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Cancel</button>
-              <button onClick={remove} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "var(--reject)", color: "#fff" }}>{busy ? "Removing…" : deleteFiles ? "Remove + delete files" : "Remove"}</button>
-            </div>
-          </div>
-        </div>
-      )}
+      {open && <DeleteBookDialog book={book} onClose={() => setOpen(false)} onDeleted={() => { window.location.href = "/books"; }} />}
     </>
   );
 }
