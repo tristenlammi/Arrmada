@@ -24,6 +24,10 @@ func TestPolicyAllowed(t *testing.T) {
 		{"plex.stream.started", staff, true},
 		{"release.grabbed", user7, false},
 		{"file.removed", user7, false},
+		{"queue.progress", user7, false}, // download hashes and progress: staff only
+		{"queue.progress", staff, true},
+		{"request.updated", user7, false}, // everyone's requests: staff only
+		{"request.updated", staff, true},
 		{"something.new", user7, false}, // unknown topics are staff-only
 		{"something.new", staff, true},
 		{"user.7.request.updated", user7, true},

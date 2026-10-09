@@ -413,6 +413,11 @@ func main() {
 	// Realtime hub bridges the event bus to connected websocket clients.
 	hub := realtime.NewHub(log)
 	grp.Loop("realtime hub", func(ctx context.Context) { hub.Run(ctx, bus) })
+	// Live download progress for the bars, read from the shared queue snapshot and only
+	// while a browser is connected (queue.progress, staff-only).
+	grp.Loop("queue progress", func(ctx context.Context) {
+		download.RunProgress(ctx, downloads, bus, func() bool { return hub.Count() > 0 })
+	})
 
 	appStart := time.Now()
 	sched := scheduler.New(log)

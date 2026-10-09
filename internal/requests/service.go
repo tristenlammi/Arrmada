@@ -157,7 +157,7 @@ func (s *Service) Create(ctx context.Context, in Request, autoApprove bool) (cre
 		return Request{}, false, ErrUnknownProfile
 	}
 	if existing, ok := s.lookupExisting(ctx, in); ok {
-		return s.attachToExisting(ctx, existing, in)
+		return s.attachAndPublish(ctx, existing, in)
 	}
 	in.Status = StatusPending
 	created, err = s.repo.Create(ctx, in)
@@ -165,7 +165,7 @@ func (s *Service) Create(ctx context.Context, in Request, autoApprove bool) (cre
 		// Lost a create race: someone inserted the same media between our existence
 		// check and the INSERT. Re-fetch and attach instead of failing.
 		if existing, ok := s.lookupExisting(ctx, in); ok {
-			return s.attachToExisting(ctx, existing, in)
+			return s.attachAndPublish(ctx, existing, in)
 		}
 		return Request{}, false, err
 	}
@@ -174,10 +174,21 @@ func (s *Service) Create(ctx context.Context, in Request, autoApprove bool) (cre
 	}
 	s.log.Info("request created", "media", in.MediaType, "title", in.Title, "by", in.RequestedByName, "auto_approve", autoApprove)
 	if autoApprove {
-		created, err = s.Approve(ctx, created.ID, in.QualityProfile)
+		created, err = s.Approve(ctx, created.ID, in.QualityProfile) // publishes approved
 		return created, false, err
 	}
+	s.publishUpdated(created, StatusPending, s.parties(ctx, created))
 	return created, false, nil
+}
+
+// attachAndPublish is attachToExisting that tells open pages about it: the request is
+// re-opened, or has a new subscriber.
+func (s *Service) attachAndPublish(ctx context.Context, existing, in Request) (Request, bool, error) {
+	req, subscribed, err := s.attachToExisting(ctx, existing, in)
+	if err == nil {
+		s.publishUpdated(req, req.Status, s.parties(ctx, req))
+	}
+	return req, subscribed, err
 }
 
 // lookupExisting finds a prior request for the same media, if any.
@@ -311,6 +322,7 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 	}
 	s.log.Info("request approved", "media", req.MediaType, "title", req.Title, "profile", profile)
 	s.notifyDecision(ctx, req, true)
+	s.publishUpdated(req, StatusApproved, s.parties(ctx, req))
 	return s.repo.Get(ctx, id)
 }
 
@@ -384,12 +396,25 @@ func (s *Service) Decline(ctx context.Context, id int64) error {
 	}
 	s.log.Info("request declined", "media", req.MediaType, "title", req.Title)
 	s.notifyDecision(ctx, req, false)
+	s.publishUpdated(req, StatusDeclined, s.parties(ctx, req))
 	return nil
 }
 
 // Delete removes a request record (and its subscribers).
 func (s *Service) Delete(ctx context.Context, id int64) error {
-	return s.repo.Delete(ctx, id)
+	// Who to tell is read first: the subscribers go with the row.
+	req, getErr := s.repo.Get(ctx, id)
+	var users []int64
+	if getErr == nil {
+		users = s.parties(ctx, req)
+	}
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	if getErr == nil {
+		s.publishUpdated(req, eventDeleted, users)
+	}
+	return nil
 }
 
 // enrichAvailability marks each request available if its media is (partly) on disk.
