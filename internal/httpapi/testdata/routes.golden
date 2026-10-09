@@ -226,6 +226,7 @@ POST /api/v1/convert/requests staff -
 POST /api/v1/convert/series/{series} staff -
 POST /api/v1/convert/skips/clear staff -
 POST /api/v1/downloadclients staff -
+POST /api/v1/downloadclients/restore-bundled staff -
 POST /api/v1/downloadclients/{id}/test staff -
 POST /api/v1/grab staff -
 POST /api/v1/grab/preview staff -

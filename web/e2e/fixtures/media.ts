@@ -96,7 +96,7 @@ export const activity: ActivityFeed = {
 };
 
 export const downloadClients: DownloadClientList = {
-  clients: [{ id: 1, name: "qBittorrent", kind: "qbittorrent", url: "http://qbittorrent:8080", enabled: true, bundled: true }],
+  clients: [{ id: 1, name: "qBittorrent", kind: "qbittorrent", url: "http://qbittorrent:8080", enabled: true, priority: 25, bundled: true }],
   categories: { movies: "arrmada", tv: "arrmada-tv", books: "arrmada-books", music: "arrmada-music" },
 };
 

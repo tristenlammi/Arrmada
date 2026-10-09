@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { api, type DownloadCategories, type DownloadClient } from "../lib/api";
+import { hhmm } from "../lib/indexerStatus";
 import { useQuery } from "../lib/query";
 import { ErrorState, Skeleton, StaleBanner, useConfirm } from "../ui";
 
@@ -19,6 +20,8 @@ export function DownloadClients() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [rowErr, setRowErr] = useState<Record<number, string>>({});
   const [toggling, setToggling] = useState<number | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const [restoreErr, setRestoreErr] = useState<string | null>(null);
   const confirm = useConfirm();
 
   const refresh = q.refetch;
@@ -51,7 +54,7 @@ export function DownloadClients() {
     const ok = await confirm({
       title: `Remove ${dc.name}?`,
       body: dc.bundled
-        ? "Arrmada stops sending downloads to it. Torrents already there are untouched. It will be re-added on the next restart; disable it instead to keep it off."
+        ? "Arrmada stops sending downloads to it. Torrents already there are untouched. It stays removed after a restart; you can restore it from this page."
         : "Arrmada stops sending downloads to it. Torrents already there are untouched.",
       confirmLabel: "Remove",
       tone: "danger",
@@ -77,6 +80,20 @@ export function DownloadClients() {
       setErr(dc.id, `Couldn't ${dc.enabled ? "disable" : "enable"} it: ${(e as Error).message}`);
     } finally {
       setToggling(null);
+    }
+  };
+
+  // The bundled qBittorrent stays removed once deleted; this is the way back.
+  const restoreBundled = async () => {
+    setRestoring(true);
+    setRestoreErr(null);
+    try {
+      await api.restoreBundledClient();
+      await refresh();
+    } catch (e) {
+      setRestoreErr(`Couldn't restore it: ${(e as Error).message}`);
+    } finally {
+      setRestoring(false);
     }
   };
 
@@ -108,6 +125,23 @@ export function DownloadClients() {
 
         {showForm && <ClientForm onSaved={saved} />}
 
+        {q.data?.can_restore_bundled && (
+          <div className="mb-4 flex flex-wrap items-center gap-3 rounded-xl p-3.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+            <p className="m-0 min-w-0 flex-1 basis-[220px] text-[12px] text-ink-dim">
+              The qBittorrent that comes with Arrmada was removed, so it gets no downloads.
+            </p>
+            <button
+              onClick={restoreBundled}
+              disabled={restoring}
+              className="flex-none rounded-lg px-3 py-1.5 text-[12px] font-semibold disabled:opacity-50"
+              style={{ border: "1px solid var(--line)", color: "var(--accent)" }}
+            >
+              {restoring ? "Restoring…" : "Restore bundled qBittorrent"}
+            </button>
+            {restoreErr && <div className="basis-full text-[12px]" style={{ color: "var(--reject)" }}>{restoreErr}</div>}
+          </div>
+        )}
+
         {q.data && error && <StaleBanner message={error} onRetry={refresh} />}
 
         {!q.data ? (
@@ -134,10 +168,20 @@ export function DownloadClients() {
                             bundled
                           </span>
                         )}
+                        {list.length > 1 && (
+                          <span className="font-mono text-[10.5px] text-ink-faint" title="New downloads go to the lowest number; the next is used only when it can't be reached.">
+                            order {dc.priority}
+                          </span>
+                        )}
                       </div>
                       <div className="mt-1 truncate font-mono text-[11px] text-ink-faint">{dc.url}</div>
                       {categories && <CategoryLine c={categories} />}
                       {!dc.enabled && <div className="mt-1 text-[11px] text-ink-dim">Disabled: gets no new downloads.</div>}
+                      {dc.enabled && dc.status?.failing_since && (
+                        <div className="mt-1 text-[11px]" style={{ color: "var(--reject)" }} title={dc.status.last_error}>
+                          Unreachable since {hhmm(dc.status.failing_since)}. While it’s down, stalled-download fail-over is paused for all clients; disable it if it’s gone.
+                        </div>
+                      )}
                       {dc.enabled && ports[dc.id] > 0 && (
                         <div className="mt-1.5 flex items-center gap-1.5 text-[11px]">
                           <span className="rounded px-1.5 py-0.5 font-mono text-[10px]" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>
@@ -197,18 +241,23 @@ function ClientForm({ editing, onSaved }: { editing?: DownloadClient; onSaved: (
   const [url, setUrl] = useState(editing?.url ?? "");
   const [username, setUsername] = useState(editing?.username ?? "");
   const [password, setPassword] = useState("");
+  const [priority, setPriority] = useState(String(editing?.priority ?? 25));
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const urlLocked = Boolean(editing?.bundled);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const order = Number(priority);
+    if (!Number.isInteger(order) || order < 1 || order > 99) {
+      setError("Order must be a whole number from 1 to 99.");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
       const c = editing
-        ? await api.updateDownloadClient(editing.id, { name, kind: editing.kind, url, username, password, enabled: editing.enabled })
-        : await api.createDownloadClient({ name, kind: "qbittorrent", url, username, password });
+        ? await api.updateDownloadClient(editing.id, { name, kind: editing.kind, url, username, password, enabled: editing.enabled, priority: order })
+        : await api.createDownloadClient({ name, kind: "qbittorrent", url, username, password, priority: order });
       onSaved(c);
     } catch (err) {
       setError((err as Error).message);
@@ -230,13 +279,12 @@ function ClientForm({ editing, onSaved }: { editing?: DownloadClient; onSaved: (
         <Labeled label="Name">
           <input className={field} style={fieldStyle} value={name} onChange={(e) => setName(e.target.value)} required />
         </Labeled>
-        <Labeled label="WebUI URL" hint={urlLocked ? "The bundled client's URL is set at install and can't be changed here." : undefined}>
+        <Labeled label="WebUI URL">
           <input
             className={field}
-            style={{ ...fieldStyle, opacity: urlLocked ? 0.6 : 1 }}
+            style={fieldStyle}
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            readOnly={urlLocked}
             placeholder="http://qbittorrent:8080 (as reached from the Arrmada container)"
             required
           />
@@ -255,12 +303,13 @@ function ClientForm({ editing, onSaved }: { editing?: DownloadClient; onSaved: (
             autoComplete="new-password"
           />
         </Labeled>
+        <Labeled label="Order (1 = first)" hint="New downloads go to the lowest number. The next client is used only when this one can't be reached at all.">
+          <input type="number" min={1} max={99} className={field} style={fieldStyle} value={priority} onChange={(e) => setPriority(e.target.value)} required />
+        </Labeled>
       </div>
-      {!urlLocked && (
-        <p className="mt-3 text-[11px] text-ink-faint">
-          Points at your qBittorrent WebUI as the Arrmada container reaches it: its container name or your server’s IP. localhost here means the Arrmada container itself, not your server. Credentials are stored on your server.
-        </p>
-      )}
+      <p className="mt-3 text-[11px] text-ink-faint">
+        Points at your qBittorrent WebUI as the Arrmada container reaches it: its container name or your server’s IP. localhost here means the Arrmada container itself, not your server. Credentials are stored on your server.
+      </p>
       {error && <div className="mt-3 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
       <button
         type="submit"

@@ -238,6 +238,7 @@ func main() {
 	})
 	indexers.SetStatus(connStatus)
 	downloads.SetStatus(connStatus)
+	downloads.SetFlags(settingsSvc) // remembers that the owner removed the bundled qBittorrent
 	// FlareSolverr answering or not is recorded like any integration (no backoff: the
 	// searches that need it are already paced by their indexers' own status).
 	flare.OnResult(func(err error) {
@@ -361,14 +362,9 @@ func main() {
 		// still be starting, so retry in the background rather than block boot.
 		if cfg.QbittorrentPort > 0 {
 			grp.Go("qbittorrent: set incoming port", func(ctx context.Context) {
-				switch retryBoot(ctx, func(ctx context.Context) error {
-					return downloads.SetBundledPort(ctx, cfg.QbittorrentURL, cfg.QbittorrentPort)
-				}) {
-				case nil:
-					log.Info("qBittorrent incoming port set", "port", cfg.QbittorrentPort)
-				case errRetriesExhausted:
-					log.Warn("could not set qBittorrent incoming port", "port", cfg.QbittorrentPort)
-				}
+				tuneBundled(ctx, log, "incoming port", func(ctx context.Context) error {
+					return downloads.SetBundledPort(ctx, cfg.QbittorrentPort)
+				}, "port", cfg.QbittorrentPort)
 			})
 		}
 		// Point qBittorrent's default save + incomplete paths at the downloads dir so
@@ -376,27 +372,15 @@ func main() {
 		// shared volume. Retry in the background; qBittorrent may still be booting.
 		if dl := roots.Downloads(context.Background()); dl != "" {
 			grp.Go("qbittorrent: set save path", func(ctx context.Context) {
-				switch retryBoot(ctx, func(ctx context.Context) error {
-					return downloads.SetBundledSavePath(ctx, cfg.QbittorrentURL, dl)
-				}) {
-				case nil:
-					log.Info("qBittorrent save path set", "path", dl)
-				case errRetriesExhausted:
-					log.Warn("could not set qBittorrent save path", "path", dl)
-				}
+				tuneBundled(ctx, log, "save path", func(ctx context.Context) error {
+					return downloads.SetBundledSavePath(ctx, dl)
+				}, "path", dl)
 			})
 		}
 		// Size qBittorrent's total-active cap to the per-kind limits so nothing sits
 		// "Queued" behind its default cap of 5. Retry; the client may still be booting.
 		grp.Go("qbittorrent: reconcile queue limits", func(ctx context.Context) {
-			switch retryBoot(ctx, func(ctx context.Context) error {
-				return downloads.EnsureBundledQueue(ctx, cfg.QbittorrentURL)
-			}) {
-			case nil:
-				log.Info("qBittorrent queue limits reconciled")
-			case errRetriesExhausted:
-				log.Warn("could not reconcile qBittorrent queue limits")
-			}
+			tuneBundled(ctx, log, "queue limits", downloads.EnsureBundledQueue)
 		})
 	}
 	// The coordinator is the "add a movie and walk away" brain: it searches
@@ -891,15 +875,23 @@ func main() {
 					continue
 				}
 				var dl string
+				inactive := false
 				switch retryBoot(ctx, func(ctx context.Context) error {
 					dl = roots.Downloads(ctx)
 					if dl == "" {
 						return nil // nothing to point it at; grabs pass no save path either
 					}
-					return downloads.SetBundledSavePath(ctx, cfg.QbittorrentURL, dl)
+					err := downloads.SetBundledSavePath(ctx, dl)
+					if errors.Is(err, download.ErrBundledInactive) {
+						inactive = true // switched off or removed: nothing to move
+						return nil
+					}
+					return err
 				}) {
 				case nil:
-					log.Info("qBittorrent save path moved to the new Downloads folder", "path", dl)
+					if !inactive {
+						log.Info("qBittorrent save path moved to the new Downloads folder", "path", dl)
+					}
 				case errRetriesExhausted:
 					log.Warn("could not move qBittorrent's save path to the new Downloads folder — grabs still pass it with each torrent", "path", dl)
 				}
@@ -994,6 +986,30 @@ var errRetriesExhausted = errors.New("retries exhausted")
 // retryBoot retries a boot-time call to the bundled qBittorrent, which may still be
 // starting: up to 20 tries three seconds apart. It returns nil on success,
 // errRetriesExhausted when every try failed, or ctx's error when shutdown cut it short.
+// tuneBundled applies one setting to the bundled qBittorrent at boot, retrying while it
+// starts, and logs the result. A bundled client that's switched off or removed is left
+// alone: it may not be running, and retrying it would only fill the log.
+func tuneBundled(ctx context.Context, log *slog.Logger, what string, fn func(ctx context.Context) error, attrs ...any) {
+	inactive := false
+	switch retryBoot(ctx, func(ctx context.Context) error {
+		err := fn(ctx)
+		if errors.Is(err, download.ErrBundledInactive) {
+			inactive = true
+			return nil
+		}
+		return err
+	}) {
+	case nil:
+		if inactive {
+			log.Info("bundled qBittorrent is switched off or removed; not setting its "+what, attrs...)
+			return
+		}
+		log.Info("qBittorrent "+what+" set", attrs...)
+	case errRetriesExhausted:
+		log.Warn("could not set qBittorrent "+what, attrs...)
+	}
+}
+
 func retryBoot(ctx context.Context, fn func(ctx context.Context) error) error {
 	for i := 0; i < 20; i++ {
 		if fn(ctx) == nil {

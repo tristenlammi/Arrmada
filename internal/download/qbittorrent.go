@@ -51,7 +51,9 @@ func (q *QBittorrent) login(ctx context.Context, dc Client) (*http.Client, error
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("qbittorrent: connect failed: %w", err)
+		// Whatever went wrong, it went wrong at the login: the request this session was
+		// for hasn't been sent, so another client may safely be given it.
+		return nil, notSent(fmt.Errorf("qbittorrent: connect failed: %w", err))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
@@ -134,7 +136,11 @@ func (q *QBittorrent) doAuthed(ctx context.Context, dc Client, newReq func() (*h
 		}
 		resp, err := client.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("qbittorrent: %w", err)
+			err = fmt.Errorf("qbittorrent: %w", err)
+			if dialFailed(err) {
+				err = notSent(err) // couldn't connect: nothing was sent
+			}
+			return nil, err
 		}
 		if resp.StatusCode == http.StatusForbidden {
 			q.drop(dc.ID) // session expired (or auth revoked)

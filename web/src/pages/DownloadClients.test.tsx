@@ -16,7 +16,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const client = (over: Partial<DownloadClient> = {}): DownloadClient => ({ id: 1, name: "qBittorrent", kind: "qbittorrent", url: "http://qb:8080", enabled: true, ...over });
+const client = (over: Partial<DownloadClient> = {}): DownloadClient => ({ id: 1, name: "qBittorrent", kind: "qbittorrent", url: "http://qb:8080", enabled: true, priority: 25, ...over });
 const CATS = { movies: "arrmada", tv: "arrmada-tv", books: "arrmada-books", music: "arrmada-music" };
 const listOf = (clients: DownloadClient[]) => ({ clients, categories: CATS });
 const page = () => render(<MemoryRouter><ConfirmProvider><DownloadClients /></ConfirmProvider></MemoryRouter>);
@@ -62,13 +62,13 @@ describe("DownloadClients edit and enable (INT-05)", () => {
     expect(await screen.findByText("✓ Connected")).toBeTruthy();
   });
 
-  it("keeps the bundled client's URL read-only and warns its delete won't stick", async () => {
+  it("lets the bundled client's URL be edited and says a delete stays", async () => {
     vi.spyOn(api, "downloadClientList").mockResolvedValue(listOf([client({ bundled: true, url: "http://arrmada-qbittorrent:8080" })]));
     page();
     fireEvent.click(await screen.findByText("Edit"));
-    expect((screen.getByDisplayValue("http://arrmada-qbittorrent:8080") as HTMLInputElement).readOnly).toBe(true);
+    expect((screen.getByDisplayValue("http://arrmada-qbittorrent:8080") as HTMLInputElement).readOnly).toBe(false);
     fireEvent.click(screen.getByText("Delete"));
-    expect(within(screen.getByRole("dialog")).getByText(/re-added on the next restart; disable it instead/)).toBeTruthy();
+    expect(within(screen.getByRole("dialog")).getByText(/stays removed after a restart; you can restore it/)).toBeTruthy();
   });
 
   it("the switch saves enabled via PUT, and a disabled card says it gets no downloads", async () => {
@@ -119,5 +119,46 @@ describe("DownloadClients categories (INT-10)", () => {
     expect(screen.queryByText("Category")).toBeNull();
     fireEvent.click(screen.getByText("Edit"));
     expect(screen.queryByText("Category")).toBeNull();
+  });
+});
+
+describe("DownloadClients order, fail-over and the bundled client (INT-11)", () => {
+  it("saves the order from the form and refuses one out of range", async () => {
+    vi.spyOn(api, "downloadClientList").mockResolvedValue(listOf([client(), client({ id: 2, name: "Seedbox", priority: 30 })]));
+    const upd = vi.spyOn(api, "updateDownloadClient").mockResolvedValue(client({ priority: 5 }));
+    vi.spyOn(api, "testDownloadClient").mockResolvedValue({ ok: true });
+    page();
+    expect(await screen.findByText("order 30")).toBeTruthy();
+    fireEvent.click(screen.getAllByText("Edit")[0]);
+    const order = screen.getByLabelText(/Order \(1 = first\)/) as HTMLInputElement;
+    expect(order.value).toBe("25");
+    fireEvent.change(order, { target: { value: "0" } });
+    // The browser's own min/max check stops this first; the form's check backs it up.
+    await act(async () => { fireEvent.submit(order.closest("form")!); });
+    expect(upd).not.toHaveBeenCalled();
+    expect(screen.getByText(/Order must be a whole number from 1 to 99/)).toBeTruthy();
+    fireEvent.change(order, { target: { value: "5" } });
+    await act(async () => { fireEvent.click(screen.getByText("Save changes")); });
+    expect(upd).toHaveBeenCalledWith(1, expect.objectContaining({ priority: 5 }));
+  });
+
+  it("explains an unreachable enabled client, and offers the bundled one back", async () => {
+    const restore = vi.spyOn(api, "restoreBundledClient").mockResolvedValue({ restored: true });
+    vi.spyOn(api, "downloadClientList").mockResolvedValue({
+      ...listOf([client({ status: { state: "failing", failing_since: "2026-10-09T14:02:00", last_error: "connection refused" } })]),
+      can_restore_bundled: true,
+    });
+    page();
+    expect(await screen.findByText(/Unreachable since 14:02\. While it’s down, stalled-download fail-over is paused for all clients/)).toBeTruthy();
+    await act(async () => { fireEvent.click(screen.getByText("Restore bundled qBittorrent")); });
+    expect(restore).toHaveBeenCalled();
+  });
+
+  it("says nothing about a disabled client being unreachable", async () => {
+    vi.spyOn(api, "downloadClientList").mockResolvedValue(listOf([client({ enabled: false, status: { state: "failing", failing_since: "2026-10-09T14:02:00" } })]));
+    page();
+    await screen.findByText(/Disabled: gets no new downloads/);
+    expect(screen.queryByText(/Unreachable since/)).toBeNull();
+    expect(screen.queryByText("Restore bundled qBittorrent")).toBeNull();
   });
 });

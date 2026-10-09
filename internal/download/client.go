@@ -25,7 +25,16 @@ type Client struct {
 	// chooses the category for every download (categories.go).
 	Category string `json:"-"`
 	Enabled  bool   `json:"enabled"`
+	// Priority orders the clients for new downloads: the lowest number is tried first,
+	// and the next only when the first can't be reached at all (Service.Add).
+	Priority int `json:"priority"`
+	// Bundled marks the packaged qBittorrent. Startup re-adds it only while no row is
+	// marked and the owner hasn't removed it (Service.EnsureBundled).
+	Bundled bool `json:"bundled"`
 }
+
+// DefaultPriority is a new client's place in the order, the same default indexers use.
+const DefaultPriority = 25
 
 // AddRequest asks a client to start a download. Provide either URL (the client
 // fetches it) or File bytes (Arrmada already fetched an auth-gated .torrent).
