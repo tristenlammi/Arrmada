@@ -794,6 +794,28 @@ export interface JobRef {
   existing?: boolean;
 }
 
+// A movie search goes through the movie search queue (two at a time): the answer says
+// it was queued and its place among the searches waiting (1 = next; 0 = running now).
+export interface MovieQueuedRef extends JobRef {
+  queued?: boolean;
+  position?: number;
+}
+
+// The movie search queue right now, oldest first (GET /api/v1/movies/search-queue).
+export interface MovieSearchQueue {
+  running: { id: number; title: string; kind: string }[];
+  queued: { id: number; title: string; kind: string }[];
+}
+
+// The counts every movie.search.queued / .started / .done event carries.
+export interface MovieSearchQueueEvent {
+  id: number;
+  kind: string;
+  running: number;
+  depth: number;
+  position?: number;
+}
+
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "panicked" | "interrupted";
 
 // A background job (staff only): a search, scan, import or Run now, with how it ended.
@@ -2069,7 +2091,8 @@ export const api = {
   },
   movieDeletePreview: (id: number) => req<MovieDeletePreview>(`/api/v1/movies/${id}/delete-preview`),
   searchMovie: (id: number) =>
-    req<{ status: string; started_at_ms?: number } & JobRef>(`/api/v1/movies/${id}/search`, { method: "POST" }),
+    req<{ status: string; started_at_ms?: number } & MovieQueuedRef>(`/api/v1/movies/${id}/search`, { method: "POST" }),
+  movieSearchQueue: () => req<MovieSearchQueue>("/api/v1/movies/search-queue"),
   movie: (id: number) => req<Movie>(`/api/v1/movies/${id}`),
   movieCollection: (id: number) =>
     req<{ name: string; members: CollectionMember[] }>(`/api/v1/movies/${id}/collection`),
@@ -2429,7 +2452,7 @@ export const api = {
   blocklist: (id: number) => req<{ blocklist: BlockEntry[] }>(`/api/v1/movies/${id}/blocklist`).then((r) => r.blocklist),
   // Block a search result by its token, or any release by title alone.
   blockRelease: (id: number, body: { token: string; search_again?: boolean } | { title: string; indexer?: string; search_again?: boolean }) =>
-    req<{ status: string }>(`/api/v1/movies/${id}/blocklist`, { method: "POST", body: JSON.stringify(body) }),
+    req<{ status: string; search_error?: string } & MovieQueuedRef>(`/api/v1/movies/${id}/blocklist`, { method: "POST", body: JSON.stringify(body) }),
   unblock: (id: number, bid: number) => req<void>(`/api/v1/movies/${id}/blocklist/${bid}`, { method: "DELETE" }),
   setMonitored: (id: number, monitored: boolean) =>
     req<{ monitored: boolean }>(`/api/v1/movies/${id}/monitor`, {
@@ -2442,11 +2465,11 @@ export const api = {
   forgetMissingFile: (id: number, versionId = 0) =>
     req<{ status: string }>(`/api/v1/movies/${id}/file/forget`, { method: "POST", body: JSON.stringify({ version_id: versionId }) }),
   setQualityProfile: (id: number, quality_profile: string) =>
-    req<{ quality_profile: string; downgrade: boolean; downgrade_reason?: string; downgrade_kind?: "smaller" | "different"; downgrade_ceiling?: string }>(`/api/v1/movies/${id}/profile`, {
+    req<{ quality_profile: string; downgrade: boolean; downgrade_reason?: string; downgrade_kind?: "smaller" | "different"; downgrade_ceiling?: string; queued?: boolean; position?: number }>(`/api/v1/movies/${id}/profile`, {
       method: "PUT",
       body: JSON.stringify({ quality_profile }),
     }),
-  regrabMovie: (id: number) => req<{ status: string } & JobRef>(`/api/v1/movies/${id}/regrab`, { method: "POST" }),
+  regrabMovie: (id: number) => req<{ status: string } & MovieQueuedRef>(`/api/v1/movies/${id}/regrab`, { method: "POST" }),
   refreshMovie: (id: number) => req<Movie>(`/api/v1/movies/${id}/refresh`, { method: "POST" }),
   movieHistory: (id: number) =>
     req<{ events: MovieEvent[] }>(`/api/v1/movies/${id}/history`).then((r) => r.events),

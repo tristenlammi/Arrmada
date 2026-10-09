@@ -55,7 +55,16 @@ func (a *api) handleRejectReview(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusOK, map[string]any{"status": "rejected"})
 		return
 	}
-	jobID, existing, err := a.submit(r, spec)
+	var jobID int64
+	var existing bool
+	if rv.MediaType == "movie" {
+		// Movie searches wait their turn in the movie search queue.
+		var q automation.MovieQueued
+		q, err = a.enqueueMovie(r, rv.ExpectedID, spec)
+		jobID, existing = q.JobID, q.Existing
+	} else {
+		jobID, existing, err = a.submit(r, spec)
+	}
 	if err != nil {
 		// The reject itself happened; only the search didn't start.
 		a.writeJSON(w, http.StatusOK, map[string]any{"status": "rejected", "search_error": "couldn't start the search just now — search the title by hand"})

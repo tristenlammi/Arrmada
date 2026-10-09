@@ -333,6 +333,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/movies/lookup", a.requireRole(auth.RoleManager, a.handleLookupMovies))
 	mux.HandleFunc("POST /api/v1/movies/scan", a.requireRole(auth.RoleManager, a.handleScanLibrary))
 	mux.HandleFunc("GET /api/v1/movies/unmatched", a.requireRole(auth.RoleManager, a.handleMovieUnmatched))
+	mux.HandleFunc("GET /api/v1/movies/search-queue", a.requireRole(auth.RoleManager, a.handleMovieSearchQueue))
 	mux.HandleFunc("POST /api/v1/movies/import", a.requireRole(auth.RoleManager, a.handleMovieImportFolder))
 	mux.HandleFunc("GET /api/v1/movies/{id}", a.requireRole(auth.RoleManager, a.handleGetMovie))
 	mux.HandleFunc("POST /api/v1/movies", a.requireRole(auth.RoleManager, a.handleAddMovie))

@@ -26,6 +26,7 @@ import {
 import { useLive, type LiveEvent } from "../lib/useLive";
 import { jobFailed, useJob } from "../lib/useJob";
 import { searchJobLine } from "../lib/searchOutcome";
+import { queuedNote } from "../lib/movieQueue";
 import { Button, StatusChip } from "../ui";
 import { movieStatus, trackStatus } from "../lib/movieStatus";
 
@@ -288,8 +289,9 @@ function ClearedNotice({ movie, flash, onDismiss }: { movie: Movie; flash: (m: s
   const search = async () => {
     setBusy(true);
     try {
-      await api.searchMovie(movie.id);
-      flash(`Searching — follow it in ${PAGE.downloads} → Searching.`);
+      const r = await api.searchMovie(movie.id);
+      const note = queuedNote(r);
+      flash(note ? `${note} — it searches when its turn comes.` : `Searching — follow it in ${PAGE.downloads} → Searching.`);
       onDismiss();
     } catch (e) {
       flash((e as Error).message, true);
@@ -848,8 +850,8 @@ function AcquisitionStatus({ movie, onChange, flash, searchInfo }: {
           <Button size="sm" variant="primary" disabled={busy !== null} busy={busy === "search"} busyLabel="Searching…"
             onClick={() => run("search", async () => {
               await api.forgetMissingFile(movie.id, 0);
-              await api.searchMovie(movie.id);
-              flash(`Cleared the missing file's record — searching. Follow it in ${PAGE.downloads} → Searching.`);
+              const note = queuedNote(await api.searchMovie(movie.id));
+              flash(note ? `Cleared the missing file's record. ${note} — it searches when its turn comes.` : `Cleared the missing file's record — searching. Follow it in ${PAGE.downloads} → Searching.`);
               onChange();
             })}>Search</Button>
         )}
@@ -1041,7 +1043,9 @@ function Toolbar({ movie, onChange, flash, live }: { movie: Movie; onChange: () 
     if (missing) await api.forgetMissingFile(movie.id, 0);
     const r = await api.searchMovie(movie.id);
     if (r.job_id) setSearchJob(r.job_id);
-    flash(missing ? `Cleared the missing file's record — searching. Follow it in ${PAGE.downloads} → Searching.` : `Searching — follow it in ${PAGE.downloads} → Searching.`);
+    const note = queuedNote(r);
+    const what = note ? `${note} — it searches when its turn comes.` : `Searching — follow it in ${PAGE.downloads} → Searching.`;
+    flash(missing ? `Cleared the missing file's record. ${what}` : what);
     onChange();
   };
 

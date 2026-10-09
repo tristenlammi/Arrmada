@@ -60,9 +60,13 @@ func (s *Service) SetJobs(sub jobs.Submitter) { s.jobs = sub }
 // failure. Detached from the request: an approval returns as soon as the title is added.
 // With a job runner it is a job of kind on target; finding the title already being
 // searched is fine — that search covers it.
-func (s *Service) background(kind, target, trigger, title, noun string, timeout time.Duration, fn func(ctx context.Context) (automation.SearchOutcome, error)) {
+//
+// movieID > 0 marks a movie search: it goes through the movie search queue
+// (automation.EnqueueMovieSearch) like every other movie search, so the sweeps leave the
+// movie alone while it waits.
+func (s *Service) background(kind, target, trigger, title, noun string, movieID int64, timeout time.Duration, fn func(ctx context.Context) (automation.SearchOutcome, error)) {
 	if s.jobs != nil {
-		_, _, err := s.jobs.Submit(context.Background(), jobs.Spec{
+		spec := jobs.Spec{
 			Kind: kind, Target: target, Trigger: trigger, Class: jobs.ClassIndexerSearch, Timeout: timeout,
 			Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
 				out, err := fn(automation.WithSearchTrigger(ctx, automation.TriggerRequest))
@@ -75,7 +79,13 @@ func (s *Service) background(kind, target, trigger, title, noun string, timeout 
 				p.SetMessage(out.Message(noun))
 				return out, nil
 			},
-		})
+		}
+		var err error
+		if movieID > 0 && s.coord != nil {
+			_, err = s.coord.EnqueueMovieSearch(context.Background(), s.jobs, movieID, spec)
+		} else {
+			_, _, err = s.jobs.Submit(context.Background(), spec)
+		}
 		if err != nil {
 			s.log.Warn("request: couldn't start the search", "title", title, "err", err)
 		}
@@ -266,7 +276,7 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		}
 		if addErr == nil {
 			mid := m.ID
-			s.background("movie.search", fmt.Sprintf("movie:%d", mid), trigger, req.Title, "movie", 3*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
+			s.background("movie.search", fmt.Sprintf("movie:%d", mid), trigger, req.Title, "movie", mid, 3*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
 				return s.coord.SearchMovie(c, mid)
 			})
 		}
@@ -279,7 +289,7 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		}
 		if addErr == nil {
 			sid := sr.ID
-			s.background("series.search", fmt.Sprintf("series:%d", sid), trigger, req.Title, "show", 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
+			s.background("series.search", fmt.Sprintf("series:%d", sid), trigger, req.Title, "show", 0, 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
 				return s.coord.SearchSeriesNow(c, sid)
 			})
 		}
@@ -303,7 +313,7 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		existingWants := addErr != nil && s.lacksWantedEdition(ctx, b) && len(s.activeGrabs(ctx, "book", b.ID)) == 0
 		if b.ID > 0 && (addErr == nil || existingWants) && s.searchBook != nil {
 			bid := b.ID
-			s.background("book.search", fmt.Sprintf("book:%d", bid), trigger, req.Title, "book", 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
+			s.background("book.search", fmt.Sprintf("book:%d", bid), trigger, req.Title, "book", 0, 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
 				return s.searchBook(c, bid)
 			})
 		}

@@ -68,6 +68,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/movies", media.movies),
     get("/api/v1/series", media.series),
     get("/api/v1/movies/unmatched", { unmatched: [] }),
+    get("/api/v1/movies/search-queue", { running: [], queued: [] }),
     get("/api/v1/series/unmatched", { unmatched: [] }),
     get("/api/v1/books", media.books),
     get("/api/v1/books/upgrade", media.bookUpgrade),

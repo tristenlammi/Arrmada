@@ -13,7 +13,9 @@ import { usePoll, usePollBurst } from "../lib/usePoll";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { useQuery } from "../lib/query";
 import { isMovieDownloaded, isMovieWanted, movieStatus } from "../lib/movieStatus";
-import { Button, ErrorState, Modal, Skeleton, StaleBanner } from "../ui";
+import { useLive } from "../lib/useLive";
+import { queueLine, queuedNote, useMovieSearchQueue } from "../lib/movieQueue";
+import { Button, ErrorState, Modal, Skeleton, StaleBanner, StatusChip } from "../ui";
 
 const NO_MOVIES: Movie[] = [];
 
@@ -65,6 +67,11 @@ export function Movies() {
   const [scanning, setScanning] = useState(false);
   const [view, setView] = usePersisted("movies.view", "grid", ["grid", "table"] as const);
   const [searchFor, setSearchFor] = useState<Movie | null>(null); // the table's per-row "Search indexers"
+  // Every movie search waits its turn in one throttled queue; the header says how many
+  // are running and waiting, kept live by the queue's events.
+  const { last } = useLive();
+  const searchQueue = useMovieSearchQueue(last);
+  const queueText = queueLine(searchQueue.running, searchQueue.queued);
 
   // The scan runs in the background; poll the grid for a while as entries land.
   const watchScan = usePollBurst(() => refresh(), 2500, 12, () => setScanning(false));
@@ -133,8 +140,9 @@ export function Movies() {
   const bulkProfile = async (profile: string) => {
     setBulkBusy(true);
     try {
-      await Promise.all([...selected].map((id) => api.setQualityProfile(id, profile)));
-      flash(`Quality profile set on ${selected.size} movies.`);
+      const res = await Promise.all([...selected].map((id) => api.setQualityProfile(id, profile)));
+      const queued = res.filter((r) => r.queued).length;
+      flash(`Quality profile set on ${selected.size} movies.${queued ? ` ${queued} ${queued === 1 ? "search" : "searches"} queued — they run two at a time.` : ""}`);
       clearSelect();
       refresh();
     } finally {
@@ -148,8 +156,9 @@ export function Movies() {
 
   const search = async (m: Movie) => {
     try {
-      await api.searchMovie(m.id);
-      flash(`Searching for “${m.title}” — follow it in ${PAGE.downloads} → Searching.`);
+      const r = await api.searchMovie(m.id);
+      const note = queuedNote(r);
+      flash(note ? `“${m.title}”: ${note}.` : `Searching for “${m.title}” — follow it in ${PAGE.downloads} → Searching.`);
     } catch (e) {
       flash((e as Error).message);
     }
@@ -160,7 +169,10 @@ export function Movies() {
       <PageHeader title="Movies" />
       <div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex items-center justify-between gap-3">
-          <span className="font-mono text-[11px] text-ink-faint">{list.data ? `${movies.length} in library` : ""}</span>
+          <span className="flex items-center gap-2.5">
+            <span className="font-mono text-[11px] text-ink-faint">{list.data ? `${movies.length} in library` : ""}</span>
+            {queueText && <StatusChip tone="accent" title="Movie searches run two at a time; the rest wait their turn.">{queueText}</StatusChip>}
+          </span>
           <div className="flex items-center gap-2">
             <div className="inline-flex rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
               {(["grid", "table"] as const).map((v) => (

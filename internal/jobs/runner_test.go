@@ -186,6 +186,28 @@ func TestTimeoutFails(t *testing.T) {
 	}
 }
 
+// A job's timeout runs from when it starts, not while it waits for its class: a search
+// queued behind slower ones still gets its whole budget.
+func TestTimeoutStartsWhenRunning(t *testing.T) {
+	r, _, _ := newRunner(t)
+	r.SetLimit(ClassIndexerSearch, 1)
+	started := make(chan struct{})
+	_, _, _ = r.Submit(context.Background(), Spec{Kind: "hold", Class: ClassIndexerSearch, Fn: func(context.Context, *Progress) (any, error) {
+		close(started)
+		time.Sleep(120 * time.Millisecond)
+		return nil, nil
+	}})
+	<-started
+	id, _, _ := r.Submit(context.Background(), Spec{Kind: "waiting", Class: ClassIndexerSearch, Timeout: 60 * time.Millisecond,
+		Fn: func(ctx context.Context, _ *Progress) (any, error) {
+			time.Sleep(10 * time.Millisecond)
+			return nil, ctx.Err()
+		}})
+	if j := waitJob(t, r, id); j.Status != StatusSucceeded {
+		t.Fatalf("job = %+v: its timeout ran out while it waited", j)
+	}
+}
+
 func TestCancelAndShutdown(t *testing.T) {
 	r, _, db := newRunner(t)
 	running := make(chan struct{})

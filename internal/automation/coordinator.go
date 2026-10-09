@@ -113,6 +113,10 @@ type Coordinator struct {
 	// claims keeps two searches of one title from running at once (claims.go).
 	claims claims
 
+	// mq is the movie search queue's view of the movie searches waiting and running
+	// (moviequeue.go); the sweeps leave those movies alone.
+	mq movieQueue
+
 	// tokens holds the download links behind the opaque release tokens interactive
 	// search hands the browser (releasetokens.go). Made on first use.
 	tokensOnce sync.Once
@@ -469,6 +473,9 @@ func (c *Coordinator) SearchMissing(ctx context.Context) {
 		}
 		if untrackedMovie(untracked, m) {
 			continue // a torrent nobody grabbed through Arrmada is already fetching it
+		}
+		if c.MovieSearchBusy(m.ID) {
+			continue // a search someone started is queued or running; it covers this one
 		}
 		// Versions already downloading are left out by searchAndGrab (wantedVersions),
 		// by the acquisition record — whatever the torrent is called.
@@ -1190,6 +1197,9 @@ func (c *Coordinator) UpgradeMovies(ctx context.Context) {
 		}
 		if !m.Monitored || !m.HasFile {
 			continue
+		}
+		if c.MovieSearchBusy(m.ID) {
+			continue // a search someone started is queued or running for it
 		}
 		if busy, err := c.movieBusy(ctx, m, untracked); err != nil || busy {
 			continue // already grabbing something for this movie (or that can't be told)
