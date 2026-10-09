@@ -1,5 +1,5 @@
 import type {
-  AppSettings, AudioListening, Health, LibraryPaths, LogEntry, MyAudio, PendingRestart, RecycleStats, SetupState, Status, SystemHealth,
+  AppSettings, AudioListening, FolderCheck, Health, LibraryPaths, LogEntry, MyAudio, PendingRestart, RecycleStats, SetupState, Status, SystemHealth,
 } from "../../src/lib/api";
 import type { PersonaInfo } from "./users";
 import { NOW } from "./clock";
@@ -7,7 +7,7 @@ import { NOW } from "./clock";
 export function status(p: PersonaInfo): Status {
   return {
     app: "arrmada", version: "e2e", commit: "e2e0000", started_at: "2026-10-09T08:00:00Z", uptime_seconds: 14400,
-    auth_enabled: true, needs_setup: false, authenticated: true, external: p.external,
+    needs_setup: false, authenticated: true, external: p.external,
     modules: [
       { id: "movies", name: "Movies", enabled: true, status: "ok" },
       { id: "series", name: "Series", enabled: true, status: "ok" },
@@ -21,6 +21,17 @@ export const health: Health = { status: "ok", version: "e2e", commit: "e2e0000",
 export const systemHealth: SystemHealth = { status: "ok", warnings: [], disk: { free_gb: "812.4", path: "/media" } };
 
 const paths: LibraryPaths = { movies: "/media/movies", tv: "/media/tv", ebooks: "/media/ebooks", audiobooks: "/media/audiobooks", music: "/media/music", downloads: "/media/downloads" };
+
+// The Library section of the Settings hub reads the same folders.
+export const libraryPaths: LibraryPaths = paths;
+
+// Every folder checks out: there, writable, and hardlink-able with downloads.
+export function folderCheck(path: string): FolderCheck {
+  return {
+    path, exists: true, is_dir: true, writable: true, hardlink_with_downloads: true, under_data_dir: false,
+    free_bytes: 2.4e12, total_bytes: 8e12, entries: 12, entries_capped: false,
+  };
+}
 
 // Setup is finished, so the staff console opens straight onto its pages.
 export const setup: SetupState = {

@@ -1,5 +1,5 @@
 import type {
-  Artist, ConvertEncoder, ConvertJob, ConvertLibraryStats, ConvertMediaStats, ConvertSettings, ConvertStatus, PlexConfig,
+  Artist, ConvertEncoder, ConvertJob, ConvertLibraryStats, ConvertMediaStats, ConvertSettings, ConvertStatus, InsightsStats, PlexConfig,
   SubtitleCoverage, SubtitleJob, SubtitleSettings,
 } from "../../src/lib/api";
 
@@ -44,5 +44,10 @@ export const subtitleSettings: SubtitleSettings = {
 export const subtitleJobs: { jobs: SubtitleJob[] } = { jobs: [] };
 
 export const plexConfig: PlexConfig = { url: "", token_set: false, enabled: false, poll_seconds: 30 };
+
+// No imported watch history either, so Insights shows its Connect state and nothing else.
+export const insightsStats: InsightsStats = {
+  most_watched_movies: [], most_watched_shows: [], most_active_users: [], most_active_platforms: [], recently_watched: [],
+};
 
 export const artists: { artists: Artist[] } = { artists: [] };

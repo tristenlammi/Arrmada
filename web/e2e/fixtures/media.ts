@@ -17,6 +17,7 @@ export const dashboard: DashboardData = {
     { kind: "series", id: 1, title: "Harbour Lights", event: "grabbed", detail: "S02E04", at_ms: NOW - 7_200_000 },
   ],
   listening: [],
+  plex_configured: false,
 };
 
 export const calendar: { items: CalendarItem[]; start: string; end: string } = {

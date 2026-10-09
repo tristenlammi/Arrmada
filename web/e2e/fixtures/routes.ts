@@ -64,6 +64,8 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/reviews", media.reviews),
     get("/api/v1/movies", media.movies),
     get("/api/v1/series", media.series),
+    get("/api/v1/movies/unmatched", { unmatched: [] }),
+    get("/api/v1/series/unmatched", { unmatched: [] }),
     get("/api/v1/books", media.books),
     get("/api/v1/books/upgrade", media.bookUpgrade),
     get("/api/v1/books/search-missing", media.bookSweep),
@@ -81,7 +83,10 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/subtitles/settings", mod.subtitleSettings),
     get("/api/v1/subtitles/jobs", mod.subtitleJobs),
     get("/api/v1/insights/plex", mod.plexConfig),
+    get("/api/v1/insights/stats", mod.insightsStats),
     get("/api/v1/settings", sys.settings),
+    get("/api/v1/system/library", sys.libraryPaths),
+    { method: "GET", path: "/api/v1/system/library/check", respond: ({ url }) => sys.folderCheck(url.searchParams.get("path") ?? "") },
     get("/api/v1/logs", sys.logs),
   ];
 }
