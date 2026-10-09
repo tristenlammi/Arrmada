@@ -148,6 +148,12 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 	if !ok {
 		return
 	}
+	untracked, err := c.untrackedQueue(ctx, queue)
+	if err != nil {
+		c.log.Warn("series: search sweep skipped — can't read what's already downloading", "err", err)
+		return
+	}
+	held := &inFlightView{untracked: untracked}
 	var outage outageTally
 	defer outage.report(c.log, "series search sweep")
 	for _, s := range all {
@@ -169,7 +175,7 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 				continue
 			}
 		}
-		out, err := c.searchSeriesOnceScoped(ctx, s.ID, queue)
+		out, err := c.searchSeriesOnceScoped(ctx, s.ID, held)
 		n := out.Grabbed
 		if errors.Is(err, ErrAlreadySearching) {
 			c.log.Debug("series: skipping a show that is already being searched", "series", s.Title)
@@ -213,16 +219,22 @@ func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (Sea
 	return c.searchSeriesOnceScoped(ctx, seriesID, nil)
 }
 
-// searchSeriesOnceScoped is searchSeriesOnce that leaves out what queue still has
-// downloading for the show (seriesInFlightScope). A pack for one season holds back just
-// that season: its per-season query isn't sent and its episodes aren't grabbed. A pack
-// covering the whole show holds back the whole show, as does one for every season that's
-// missing something; then nothing is searched and the outcome says so without counting a
-// miss. A nil queue (a manual search, or a queue that couldn't be read) holds nothing back.
+// inFlightView is what a sweep knows is already downloading beyond the acquisition record:
+// the torrents in the client that no grab knows by hash (untrackedQueue).
+type inFlightView struct {
+	untracked []download.Item
+}
+
+// searchSeriesOnceScoped is searchSeriesOnce that leaves out what is still downloading for
+// the show (seriesInFlightScope). A pack for one season holds back just that season: its
+// per-season query isn't sent and its episodes aren't grabbed. A pack covering the whole
+// show holds back the whole show, as does one for every season that's missing something;
+// then nothing is searched and the outcome says so without counting a miss. A nil held (a
+// manual search) holds nothing back.
 //
 // Said out loud in the log: a show held back used to be skipped in total silence, so one
 // frozen out of the sweep looked identical to one with nothing to find.
-func (c *Coordinator) searchSeriesOnceScoped(ctx context.Context, seriesID int64, queue []download.Item) (SearchOutcome, error) {
+func (c *Coordinator) searchSeriesOnceScoped(ctx context.Context, seriesID int64, held *inFlightView) (SearchOutcome, error) {
 	if c.series == nil {
 		return SearchOutcome{Reason: ReasonNothingWanted}, nil
 	}
@@ -246,7 +258,16 @@ func (c *Coordinator) searchSeriesOnceScoped(ctx context.Context, seriesID int64
 		c.skipUnreadable(s.Title, err)
 		return SearchOutcome{}, err
 	}
-	inSeasons, whole, busy := seriesInFlightScope(queue, s)
+	var inSeasons map[int]bool
+	var whole bool
+	var busy []string
+	if held != nil {
+		inSeasons, whole, busy, err = c.seriesInFlightFor(ctx, s, held.untracked)
+		if err != nil {
+			c.skipUnreadable(s.Title, err)
+			return SearchOutcome{}, err
+		}
+	}
 	if whole {
 		c.log.Info("series: skipping sweep — a pack covering the whole show is still downloading", "series", s.Title, "release", busy[0])
 		return SearchOutcome{Reason: ReasonNothingWanted}, nil

@@ -346,20 +346,21 @@ func (c *Coordinator) detectStalledMovie(ctx context.Context, g grab, queue []do
 			},
 			event: func(ctx context.Context, detail string) { c.movies.AddEvent(ctx, m.ID, "failed", detail) },
 			replace: func(ctx context.Context, exclude map[string]bool) (string, error) {
-				titles, err := c.searchAndGrabExcluding(ctx, m, g.VersionID, exclude)
+				titles, err := c.searchAndGrabExcluding(ctx, m, g, exclude)
 				return strings.Join(titles, ", "), err
 			},
 		}, true
 	})
 }
 
-// searchAndGrabExcluding is the movie replacement search: the version the stalled grab
+// searchAndGrabExcluding is the movie replacement search: the version the stalled grab g
 // was for, never a release in exclude. It ignores the sweep backoff — a fail-over is a
-// single deliberate search, already limited to one per window.
-func (c *Coordinator) searchAndGrabExcluding(ctx context.Context, m movies.Movie, versionID int64, exclude map[string]bool) ([]string, error) {
+// single deliberate search, already limited to one per window. g itself doesn't count as
+// in flight for its version (it's what is being replaced); any other grab does.
+func (c *Coordinator) searchAndGrabExcluding(ctx context.Context, m movies.Movie, g grab, exclude map[string]bool) ([]string, error) {
 	var want []movies.Version
 	for _, v := range c.missingVersions(ctx, m.ID) {
-		if v.ID == versionID {
+		if v.ID == g.VersionID {
 			want = append(want, v)
 		}
 	}
@@ -375,7 +376,7 @@ func (c *Coordinator) searchAndGrabExcluding(ctx context.Context, m movies.Movie
 		c.skipUnreadable(m.Title, err)
 		return nil, err
 	}
-	return c.grabMissingTitles(ctx, m, want, byName, cands), nil
+	return c.grabMissingTitlesExcept(ctx, m, want, byName, cands, g.ID), nil
 }
 
 // detectStalledSeries is the series kind's stall check. Series grabs have no "landed"

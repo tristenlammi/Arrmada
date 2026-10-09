@@ -29,10 +29,17 @@ func (a *api) handleListMovies(w http.ResponseWriter, r *http.Request) {
 	// can't be read, the grid says the status is unknown rather than "Wanted".
 	snap, queueKnown, _ := a.queueSnapshot(r.Context())
 	queue := snap.Items
+	// Joined through the acquisition record by info hash: one query and one pass, and a
+	// torrent named nothing like the film still shows on its poster.
+	var acqs map[int64][]automation.Acquisition
+	if a.deps.Automation != nil && len(queue) > 0 {
+		acqs, _ = a.deps.Automation.ActiveByItem(r.Context(), "movie")
+	}
+	byHash := queueByHash(queue)
 	var stale []int64
 	for i := range list {
-		if len(queue) > 0 {
-			list[i].Download = downloadFor(queue, list[i])
+		if len(acqs[list[i].ID]) > 0 {
+			list[i].Download = movieDownload(list[i], acqs[list[i].ID], byHash, queue)
 		}
 		if list[i].MediaStale() {
 			stale = append(stale, list[i].ID)
@@ -303,8 +310,10 @@ func (a *api) handleGetMovie(w http.ResponseWriter, r *http.Request) {
 		m.Versions = versions
 		m.File = versions[0].File
 	}
-	if queue, qerr := a.deps.Downloads.Queue(r.Context()); qerr == nil {
-		m.Download = downloadFor(queue, m)
+	if queue, qerr := a.deps.Downloads.Queue(r.Context()); qerr == nil && a.deps.Automation != nil {
+		if acqs, err := a.deps.Automation.Active(r.Context(), "movie", m.ID); err == nil {
+			m.Download = movieDownload(m, acqs, queueByHash(queue), queue)
+		}
 	}
 	m.UpgradesAllowed = upgradeWatched(m.Monitored, m.HasFile, a.anyVersionUpgrades(r.Context(), &m))
 	a.writeJSON(w, http.StatusOK, m)

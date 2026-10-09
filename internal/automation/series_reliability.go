@@ -42,6 +42,11 @@ func (c *Coordinator) RSSSyncSeries(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	untracked, err := c.untrackedQueue(ctx, queue)
+	if err != nil {
+		c.log.Warn("rss: series sync skipped — can't read what's already downloading", "err", err)
+		return
+	}
 	for _, meta := range all {
 		if !meta.Monitored {
 			continue
@@ -50,7 +55,11 @@ func (c *Coordinator) RSSSyncSeries(ctx context.Context) {
 		if err != nil {
 			continue
 		}
-		inSeasons, whole, busy := seriesInFlightScope(queue, s)
+		inSeasons, whole, busy, err := c.seriesInFlightFor(ctx, s, untracked)
+		if err != nil {
+			c.skipUnreadable(s.Title, err)
+			continue
+		}
 		if whole {
 			c.log.Info("rss: skipping series — a pack covering the whole show is still downloading", "series", s.Title, "release", busy[0])
 			continue
@@ -102,6 +111,11 @@ func (c *Coordinator) UpgradeSeries(ctx context.Context) {
 	budget := c.newSweepBudget(ctx)
 	titlesLeft := 0
 	defer func() { c.logBudget("series", budget, titlesLeft) }()
+	untracked, err := c.untrackedQueue(ctx, queue)
+	if err != nil {
+		c.log.Warn("series: upgrade sweep skipped — can't read what's already downloading", "err", err)
+		return
+	}
 	for i, meta := range all {
 		if budget.spent() {
 			// Stop before the next indexer search: nothing found now could be grabbed.
@@ -111,11 +125,16 @@ func (c *Coordinator) UpgradeSeries(ctx context.Context) {
 		if !meta.Monitored {
 			continue
 		}
-		if busy := seriesInFlight(queue, meta.Title); busy != "" {
+		acqs, err := c.Active(ctx, "series", meta.ID)
+		if err != nil {
+			c.skipUnreadable(meta.Title, err)
+			continue
+		}
+		if busy := seriesBusy(acqs, untracked, meta); busy != "" {
 			c.log.Info("series: skipping upgrade sweep — a grab is still downloading", "series", meta.Title, "release", busy)
 			continue
 		}
-		err := c.upgradeSeries(ctx, meta.ID, budget)
+		err = c.upgradeSeries(ctx, meta.ID, budget)
 		if outage.note(err) {
 			if outage.stop() {
 				break
@@ -293,34 +312,72 @@ type episodeUpgrade struct {
 	pick            quality.Candidate
 }
 
-// seriesDownloading reports whether the queue already has a TV torrent for this series
-// (so upgrade/RSS sweeps don't stack a second grab on top of an in-flight one).
-func seriesDownloading(queue []download.Item, seriesTitle string) bool {
-	return seriesInFlight(queue, seriesTitle) != ""
+// SeriesInFlight says which of a show's seasons have a download still being fetched (see
+// seriesInFlightScope), for the views that explain why a season isn't being searched. It
+// fails closed: on an error nothing should be searched.
+func (c *Coordinator) SeriesInFlight(ctx context.Context, s series.Series, queue []download.Item) (seasons map[int]bool, whole bool, names []string, err error) {
+	untracked, err := c.untrackedQueue(ctx, queue)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	return c.seriesInFlightFor(ctx, s, untracked)
 }
 
-// SeriesInFlight says which of a show's seasons have a torrent still being fetched (see
-// seriesInFlightScope), for the views that explain why a season isn't being searched.
-func SeriesInFlight(queue []download.Item, s series.Series) (seasons map[int]bool, whole bool, names []string) {
-	return seriesInFlightScope(queue, s)
+// seriesInFlightFor reads a show's acquisitions and folds them, with the torrents nobody
+// grabbed (untracked, see untrackedQueue), into seriesInFlightScope.
+func (c *Coordinator) seriesInFlightFor(ctx context.Context, s series.Series, untracked []download.Item) (seasons map[int]bool, whole bool, names []string, err error) {
+	acqs, err := c.Active(ctx, "series", s.ID)
+	if err != nil {
+		return nil, false, nil, err
+	}
+	seasons, whole, names = seriesInFlightScope(acqs, untracked, s)
+	return seasons, whole, names, nil
 }
 
-// seriesInFlightScope reports what a show's still-downloading torrents cover: the seasons
+// seriesInFlightScope reports what a show's still-downloading grabs cover: the seasons
 // they hold, or whole=true when one covers more than a season can say (a multi-season or
 // complete-series pack, an anime absolute-numbered release, or a name with no numbering at
-// all). names lists those torrents, for the log line that says why a season was skipped.
+// all). names lists those releases, for the log line that says why a season was skipped.
 //
 // The sweeps used to skip the whole show while ANY of its torrents was incomplete, so one
-// dead S03 pack kept S04's new episodes from ever being searched. Now only what a torrent
-// actually covers is held back. Duplicates inside a season are still stopped by the
-// pending-grab guard (pendingSeriesGrabTitles).
+// dead S03 pack kept S04's new episodes from ever being searched. Now only what a grab
+// actually covers is held back — read from its acquisition record by info hash (its scope
+// was worked out when it was grabbed), not by re-parsing torrent names, which missed
+// prettified names and let the same season be grabbed again. Duplicates inside a season
+// are still stopped by the pending-grab guard (pendingSeriesGrabTitles).
 //
-// Matching goes through seriesTitleMatches, so a pack named under the romaji title or a
-// user alias counts. A torrent in an error state doesn't: stall fail-over deals with it,
-// and holding the season for a download that will never finish is the bug this replaces.
-func seriesInFlightScope(queue []download.Item, s series.Series) (seasons map[int]bool, whole bool, names []string) {
+// A download the client reports finished (importing or seeding), in an error state, or
+// waiting in Review doesn't hold anything: stall fail-over deals with an errored one, and
+// holding the season for a download that will never finish is the bug this replaces.
+//
+// untracked are torrents in the client that no grab knows by hash — added by hand, or by
+// another tool. Those can only be told apart by name: a TV-category torrent whose title
+// matches the show (its romaji title or an alias too) holds what its name says, so a
+// sweep doesn't stack Arrmada's own copy on top of one the user is already fetching.
+func seriesInFlightScope(acqs []Acquisition, untracked []download.Item, s series.Series) (seasons map[int]bool, whole bool, names []string) {
 	seasons = map[int]bool{}
-	for _, it := range queue {
+	hold := func(scope, name string) {
+		names = append(names, name)
+		if sn, all := scopeSeason(scope); all {
+			whole = true
+		} else {
+			seasons[sn] = true
+		}
+	}
+	for _, a := range acqs {
+		if a.MediaType != "series" || a.Status == grabStatusHeld {
+			continue
+		}
+		if a.Phase == phaseComplete || a.Phase == "seeding" || a.Phase == "error" {
+			continue
+		}
+		scope := a.Scope
+		if scope == "" {
+			scope = seriesAcqScope(a.Title, s) // recorded before scopes were
+		}
+		hold(scope, a.Title)
+	}
+	for _, it := range untracked {
 		if it.Complete() || it.Category != seriesCategory {
 			continue // finished (importing or seeding), or not a TV grab
 		}
@@ -330,31 +387,7 @@ func seriesInFlightScope(queue []download.Item, s series.Series) (seasons map[in
 		if !seriesTitleMatches(it.Name, s) {
 			continue
 		}
-		names = append(names, it.Name)
-		if sn, ok := aliasSeasonOf(it.Name, s); ok {
-			// The alias' numbers are read inside one season of the series, whatever
-			// season the release itself claims.
-			seasons[sn] = true
-			continue
-		}
-		p := parser.Parse(it.Name)
-		switch {
-		case p.Complete || len(p.Seasons) > 1:
-			whole = true
-		case p.Season > 0 && s.IsAnime() && len(s.Seasons) > 0 && !hasSeason(s, p.Season):
-			// An anime cour numbered as its own season ("Frieren S02") that the series'
-			// listing doesn't have: its episodes live in some other season.
-			whole = true
-		case p.Season > 0:
-			seasons[p.Season] = true
-		case p.SeasonExplicit:
-			seasons[0] = true // an explicit S00 special
-		default:
-			// Absolute-numbered ("[Group] Show - 137") or unnumbered: which season it
-			// lands in takes the series' numbering to work out, so hold the whole show
-			// rather than risk stacking a second copy.
-			whole = true
-		}
+		hold(seriesAcqScope(it.Name, s), it.Name)
 	}
 	return seasons, whole, names
 }
@@ -424,22 +457,19 @@ func seasonList(seasons []int) string {
 	return strings.Join(parts, ", ")
 }
 
-// seriesInFlight returns the name of a torrent still being FETCHED for this series, or ""
-// when nothing is. It's what stops a sweep stacking a second copy on top of an in-progress
-// grab — and the reason it names the release is that every caller skips the series in
-// silence, which made this impossible to diagnose from a log.
+// seriesBusy returns the name of a download still being FETCHED for this series, or ""
+// when nothing is. It's what stops the upgrade sweep stacking a second copy on top of an
+// in-progress grab — and the reason it names the release is that the caller skips the
+// series in silence otherwise, which made this impossible to diagnose from a log.
 //
-// Progress < 1 is the whole test, and it matters: the queue is the download client's full
-// torrent list, seeding torrents included. Treating those as "downloading" froze a show out
-// of the missing sweep, RSS sync AND the upgrade sweep for the entire seeding period — 22
-// hours in the case that surfaced this — so a mid-season episode that aired inside that
-// window was never picked up at all. Once the bytes are on disk there's nothing left to
-// stack: seeding is bookkeeping, not a download.
+// Finished downloads don't count: seeding is bookkeeping, not a download. Treating a
+// seeding torrent as "downloading" froze a show out of every sweep for the entire seeding
+// period — 22 hours in the case that surfaced this.
 //
-// It is the show-level form of seriesInFlightScope, kept for the upgrade sweep, which
-// still holds the whole show while anything for it downloads (no stacking upgrades).
-func seriesInFlight(queue []download.Item, seriesTitle string) string {
-	if _, _, names := seriesInFlightScope(queue, series.Series{Title: seriesTitle}); len(names) > 0 {
+// It is the show-level form of seriesInFlightScope: the upgrade sweep still holds the
+// whole show while anything for it downloads (no stacking upgrades).
+func seriesBusy(acqs []Acquisition, untracked []download.Item, s series.Series) string {
+	if _, _, names := seriesInFlightScope(acqs, untracked, s); len(names) > 0 {
 		return names[0]
 	}
 	return ""

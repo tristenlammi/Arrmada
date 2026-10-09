@@ -140,10 +140,11 @@ func TestMovieUpgradeSweepStopsSearchingWhenSpent(t *testing.T) {
 	if one == 0 {
 		t.Fatal("the first title was never searched")
 	}
-	// Unlimited, every title is searched (the first one's upgrade is already in flight).
+	// Unlimited, every other title is searched. The first one's upgrade is already in
+	// flight, and the acquisition record keeps it out of the sweep until it lands.
 	h.c.SetUpgradeBudget(func(context.Context) int { return 0 })
 	h.c.UpgradeMovies(h.ctx)
-	if all := h.ix.searchCount() - one; all != 3*one {
+	if all := h.ix.searchCount() - one; all != 2*one {
 		t.Errorf("a budget of 1 searched %d times and no budget %d: the spent sweep didn't stop early", one, all)
 	}
 }

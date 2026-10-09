@@ -4,14 +4,11 @@ import (
 	"context"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/movies"
-	"github.com/tristenlammi/arrmada/internal/parser"
-	"github.com/tristenlammi/arrmada/internal/series"
 )
 
 // seriesDownloadCategory is the qBittorrent category TV downloads use (kept in sync
@@ -31,24 +28,16 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	snap, queueKnown, qerr := a.queueSnapshot(ctx)
 	queue := snap.Items
 
-	// Parse every torrent name ONCE. parser.Parse is regex-heavy; the old code re-parsed
-	// the whole queue for every monitored-missing movie (O(movies × torrents) parses),
-	// which was the bulk of this endpoint's multi-second load. Reuse the parse below too.
-	qParsed := make([]parser.Release, len(queue))
-	queuedMovieYears := map[string][]int{} // normalized title → years present in the queue
-	for i, it := range queue {
-		qParsed[i] = parser.Parse(it.Name)
-		k := parser.TitleKey(qParsed[i].Title)
-		queuedMovieYears[k] = append(queuedMovieYears[k], qParsed[i].Year)
-	}
-	// inQueue is the O(1) form of the old movieInQueue: a title match with the year within ±1.
-	inQueue := func(m movies.Movie) bool {
-		for _, y := range queuedMovieYears[parser.TitleKey(m.Title)] {
-			if y == 0 || m.Year == 0 || absInt(y-m.Year) <= 1 {
-				return true
-			}
-		}
-		return false
+	// The acquisition record, joined to the queue by info hash: which library item each
+	// torrent was grabbed for and under which profile, whatever the torrent is called.
+	// Matching torrent names against titles mislabelled prettified names and called
+	// Arrmada's own downloads "Not managed by Arrmada".
+	var live map[string]automation.Acquisition
+	var legacy []automation.Acquisition
+	var activeMovies map[int64][]automation.Acquisition
+	if a.deps.Automation != nil {
+		live, legacy, _ = a.deps.Automation.LiveByHash(ctx)
+		activeMovies, _ = a.deps.Automation.ActiveByItem(ctx, "movie")
 	}
 	// Resolve each quality-profile reference to a name at most once per request.
 	profileCache := map[string]string{}
@@ -71,7 +60,7 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		if !m.Monitored || m.HasFile {
 			continue
 		}
-		if inQueue(m) {
+		if len(activeMovies[m.ID]) > 0 {
 			continue // a download for it is already in flight
 		}
 		entry := map[string]any{
@@ -141,16 +130,6 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		stallInfo = a.deps.Automation.StallInfo(ctx)
 	}
 
-	// One-pass matchers over already-loaded snapshots, so labelling each torrent is a map
-	// lookup — not a full-table reload of the movies/series table per torrent as before.
-	matchMovie := a.deps.Movies.Matcher(list)
-	var matchSeries func(string) (series.Series, bool)
-	if a.deps.Series != nil {
-		if seriesList, err := a.deps.Series.List(ctx); err == nil {
-			matchSeries = a.deps.Series.TitleMatcher(seriesList)
-		}
-	}
-
 	// What the disk guard is holding, so a guard pause reads differently from one the
 	// user made — and the page doesn't offer a Resume that the server will refuse.
 	guardHeld, guardSt := a.guardHolding(ctx)
@@ -158,24 +137,26 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 
 	downloads := make([]map[string]any, 0, len(queue))
 	var totalDown, totalUp int64
-	var unmatched []string
 	active, stalled := 0, 0
-	for i, it := range queue {
+	for _, it := range queue {
+		// By hash; a legacy grab recorded without one is the only thing still paired by
+		// name. A torrent no grab knows keeps its category's media type and no profile.
+		acq, managed := live[strings.ToLower(it.Hash)]
+		if !managed {
+			acq, managed = automation.LegacyMatchByName(legacy, it)
+		}
 		profile := "n/a"
 		mediaType := "movie"
 		switch it.Category {
 		case seriesDownloadCategory:
 			mediaType = "series"
-			if matchSeries != nil {
-				if sr, ok := matchSeries(series.NormTitle(qParsed[i].Title)); ok {
-					profile = pname(sr.QualityProfile)
-				}
-			}
 		case bookDownloadCategory:
 			mediaType = "book"
-		default:
-			if mv, ok := matchMovie(qParsed[i].Title, qParsed[i].Year); ok {
-				profile = pname(mv.QualityProfile)
+		}
+		if managed {
+			mediaType = acq.MediaType
+			if acq.Profile != "" {
+				profile = pname(acq.Profile)
 			}
 		}
 		totalDown += it.DownSpeed
@@ -222,9 +203,10 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 			entry["held_by_guard"] = true
 			heldCount++
 		}
-		// Info hash first: the indexer's listing title is often a prettified rendering of
-		// the actual torrent, so matching on the name alone missed entire trackers and
-		// labelled genuinely-managed torrents "Not managed by Arrmada".
+		// By info hash: the indexer's listing title is often a prettified rendering of the
+		// actual torrent, so matching on the name missed entire trackers and labelled
+		// genuinely-managed torrents "Not managed by Arrmada". Only a legacy grab without a
+		// hash is still keyed by its release name.
 		p, ok := seedPolicies[strings.ToLower(it.Hash)]
 		if !ok {
 			p, ok = seedPolicies[automation.NormReleaseKey(it.Name)]
@@ -234,12 +216,9 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 			entry["seed_ratio"] = p.Ratio
 			entry["seed_hours"] = p.Hours
 			entry["seed_known"] = true
-		} else {
-			unmatched = append(unmatched, it.Name)
 		}
 		downloads = append(downloads, entry)
 	}
-	a.logUnmatchedSeeds(ctx, unmatched, seedPolicies)
 
 	out := map[string]any{
 		"searching": searching,
@@ -278,95 +257,39 @@ func (a *api) profileName(ctx context.Context, ref string) string {
 	return ref
 }
 
-// downloadFor returns the in-progress download for a movie that doesn't yet have
-// a file. Only actively-downloading items (progress < 100%) are reported — a
-// completed torrent is left to the import pipeline, so the UI never shows a
-// stuck "importing 100%" for a seed that isn't really being imported.
-func downloadFor(queue []download.Item, m movies.Movie) *movies.DownloadStatus {
+// movieDownload returns the in-progress download for a movie that doesn't yet have a file,
+// through its acquisitions: the torrent each was grabbed as, found by info hash, so a
+// torrent named nothing like the film still shows its progress. Only actively-downloading
+// items (progress < 100%) are reported — a completed torrent is left to the import
+// pipeline, so the UI never shows a stuck "importing 100%" for a seed that isn't really
+// being imported.
+func movieDownload(m movies.Movie, acqs []automation.Acquisition, byHash map[string]download.Item, queue []download.Item) *movies.DownloadStatus {
 	if m.HasFile {
 		return nil
 	}
-	want := parser.TitleKey(m.Title)
-	for i := range queue {
-		it := queue[i]
-		if it.Progress >= 1 {
-			continue // finished — not "downloading"; import handles it
-		}
-		r := parser.Parse(it.Name)
-		if parser.TitleKey(r.Title) != want || (r.Year != 0 && m.Year != 0 && absInt(r.Year-m.Year) > 1) {
-			continue
-		}
+	if it, ok := inProgress(acqs, byHash, queue); ok {
 		return &movies.DownloadStatus{State: it.State, Progress: it.Progress}
 	}
 	return nil
 }
 
-func absInt(n int) int {
-	if n < 0 {
-		return -n
+// inProgress is the first of acqs whose torrent is in the queue and not finished.
+func inProgress(acqs []automation.Acquisition, byHash map[string]download.Item, queue []download.Item) (download.Item, bool) {
+	for _, a := range acqs {
+		if it, ok := automation.QueueItemFor(a, byHash, queue); ok && it.Progress < 1 {
+			return it, true
+		}
 	}
-	return n
+	return download.Item{}, false
 }
 
-// logUnmatchedSeeds explains torrents the Seeding tab is labelling "Not managed by
-// Arrmada — no seed rule".
-//
-// That message covers two very different situations and gives no way to tell them apart:
-// the torrent genuinely wasn't grabbed by Arrmada (added by hand, or left over from
-// another tool), or it WAS grabbed and its seed rule simply isn't being found — a stale
-// grab row, or a torrent whose name in the client no longer normalizes to the release
-// title we recorded. The second is a bug wearing the first one's label, and reading the
-// UI can't distinguish them.
-//
-// So log the normalized key we looked up, how many rules we hold, and — decisively — the
-// status of any grab row that DOES match the name across all statuses. rules_held proved
-// the policy set is healthy, which rules out missing rows wholesale; grab_status then
-// separates "never grabbed" ("") from a row parked in a status the seeding view skips
-// ('seeded' after ManageSeeding removes a torrent, 'failed' after stall fail-over).
-func (a *api) logUnmatchedSeeds(ctx context.Context, names []string, policies map[string]automation.SeedPolicy) {
-	if len(names) == 0 || a.deps.Log == nil {
-		return
+// queueByHash indexes a queue read by lowercased info hash.
+func queueByHash(queue []download.Item) map[string]download.Item {
+	out := make(map[string]download.Item, len(queue))
+	for _, it := range queue {
+		out[strings.ToLower(it.Hash)] = it
 	}
-	// The Downloads page polls continuously; without a throttle this would bury the log
-	// it's meant to help you read.
-	// seedDiagAt holds when the next report is allowed (Unix seconds); the swap makes
-	// sure only one of several concurrent polls claims it.
-	now := time.Now()
-	next := a.seedDiagAt.Load()
-	if now.Unix() < next || !a.seedDiagAt.CompareAndSwap(next, now.Add(10*time.Minute).Unix()) {
-		return
-	}
-
-	sample := names
-	if len(sample) > 5 {
-		sample = sample[:5]
-	}
-	// Report the near misses, not an exact-match verdict. An exact lookup uses the very
-	// comparison under suspicion, so "not found" can't distinguish "never grabbed" from
-	// "grabbed, recorded under a title that no longer matches" — printing both strings is
-	// the only way to see how they diverge.
-	for _, n := range sample {
-		key := automation.NormReleaseKey(n)
-		a.deps.Log.Warn("seeding: no seed rule matched this torrent",
-			"torrent", n, "lookup_key", key, "rules_held", len(policies))
-		if a.deps.Automation == nil {
-			continue
-		}
-		near := a.deps.Automation.NearestGrabs(ctx, n, 3)
-		if len(near) == 0 {
-			a.deps.Log.Warn("seeding:   no grab row even resembles it", "torrent", n)
-			continue
-		}
-		for _, g := range near {
-			a.deps.Log.Warn("seeding:   closest recorded grab",
-				"recorded_title", g.Title, "recorded_key", g.Key, "status", g.Status,
-				"shared_prefix", automation.SharedPrefixLen(g.Key, key))
-		}
-	}
-	if len(names) > len(sample) {
-		a.deps.Log.Warn("seeding: more torrents without a seed rule",
-			"shown", len(sample), "total", len(names))
-	}
+	return out
 }
 
 // ratioOrZero renders an unknowable ratio as 0 rather than the -1 sentinel, which would

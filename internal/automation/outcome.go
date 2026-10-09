@@ -68,6 +68,8 @@ func (o SearchOutcome) Message(noun string) string {
 		return "Already being searched — that search covers it"
 	case ReasonNothingWanted:
 		return "Nothing to search for — everything monitored is already here"
+	case ReasonAlreadyDownloading:
+		return "Already downloading — nothing else to search for"
 	case ReasonIndexersPaused:
 		return "Not searched — every indexer is paused after repeated failures (see Indexers)"
 	case ReasonGrabbed:

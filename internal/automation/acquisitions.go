@@ -11,6 +11,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/download"
+	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/series"
 	"github.com/tristenlammi/arrmada/internal/store"
@@ -31,6 +32,10 @@ const (
 	phaseMissing  = "missing"  // gone from a complete read of the client
 )
 
+// ReasonAlreadyDownloading is a search outcome: everything wanted already has a download
+// on its way (by the acquisition record), so no search ran.
+const ReasonAlreadyDownloading = "already-downloading"
+
 // missingGrace is how long a torrent gone from the client still counts as in flight. A
 // torrent the user removed by hand shouldn't hold its title forever, but a client that
 // briefly lists without it (a restart, a re-add) mustn't let a sweep grab it again.
@@ -41,12 +46,14 @@ type Acquisition struct {
 	GrabID    int64  `json:"grab_id"`
 	MediaType string `json:"media_type"` // movie | series | book | music
 	// ItemID is the movie, series, book or album the grab is for (grabs.movie_id).
-	ItemID    int64   `json:"item_id"`
-	VersionID int64   `json:"version_id,omitempty"` // movie version / audiobook version; 0 = none named
-	Title     string  `json:"title"`                // the release grabbed, as listed
-	InfoHash  string  `json:"info_hash,omitempty"`  // "" for a legacy row (see legacyMatchByName)
-	Status    string  `json:"status"`               // a grabStatus* word
-	Phase     string  `json:"phase"`                // the client's view; "" until first seen
+	ItemID int64 `json:"item_id"`
+	// VersionID is the movie version (0 is the default track, which interactive and
+	// uploaded grabs are recorded against) or the audiobook version (0: the standard edition).
+	VersionID int64   `json:"version_id,omitempty"`
+	Title     string  `json:"title"`               // the release grabbed, as listed
+	InfoHash  string  `json:"info_hash,omitempty"` // "" for a legacy row (see legacyMatchByName)
+	Status    string  `json:"status"`              // a grabStatus* word
+	Phase     string  `json:"phase"`               // the client's view; "" until first seen
 	Progress  float64 `json:"progress"`
 	// Scope is what the grab was for: v<version> (movie), S03 / S03E05 / S01-S04 /
 	// complete / abs (series), ebook / audiobook / v<id> (book), album (music).
@@ -128,8 +135,11 @@ func (c *Coordinator) acquisitionsWhere(ctx context.Context, where string, args 
 }
 
 // activeWhere is the in-flight set (grabbed or held in Review), less torrents that have
-// been gone from the client for longer than missingGrace. args: the cutoff (unix ms).
-const activeWhere = inFlightWhere + ` AND NOT (phase = '` + phaseMissing + `' AND updated_at < ?)`
+// been gone from the client for longer than missingGrace, and less hashless 'grabbed' rows
+// older than a day: those can't be reconciled with the client, so their claim runs out
+// the way the pending-title guard's does (pendingTitleWhere). args: the cutoff (unix ms).
+const activeWhere = inFlightWhere + ` AND NOT (phase = '` + phaseMissing + `' AND updated_at < ?)` +
+	` AND NOT (info_hash = '' AND status = '` + grabStatusGrabbed + `' AND grabbed_at <= datetime('now', '-1 day'))`
 
 func (c *Coordinator) missingCutoff() int64 { return c.clock().Add(-missingGrace).UnixMilli() }
 
@@ -141,9 +151,7 @@ func (c *Coordinator) Active(ctx context.Context, mediaType string, itemID int64
 		c.missingCutoff(), mediaType, itemID)
 }
 
-// ActiveForVersion is what's in flight for one version of a movie. A grab that named no
-// version (an interactive pick, an uploaded torrent) counts for every version: it's
-// unknown which it will fill, and grabbing on top of it is the duplicate this guards.
+// ActiveForVersion is what's in flight for one version of a movie (0: the default track).
 func (c *Coordinator) ActiveForVersion(ctx context.Context, movieID, versionID int64) ([]Acquisition, error) {
 	all, err := c.Active(ctx, "movie", movieID)
 	if err != nil {
@@ -151,7 +159,7 @@ func (c *Coordinator) ActiveForVersion(ctx context.Context, movieID, versionID i
 	}
 	var out []Acquisition
 	for _, a := range all {
-		if a.VersionID == versionID || a.VersionID == 0 {
+		if a.VersionID == versionID {
 			out = append(out, a)
 		}
 	}
@@ -222,6 +230,112 @@ func legacyMatchByName(legacy []Acquisition, it download.Item) (Acquisition, boo
 		}
 	}
 	return Acquisition{}, false
+}
+
+// LegacyMatchByName is legacyMatchByName for the pages that join the queue to the
+// record (LiveByHash hands them the legacy rows).
+func LegacyMatchByName(legacy []Acquisition, it download.Item) (Acquisition, bool) {
+	return legacyMatchByName(legacy, it)
+}
+
+// QueueItemFor finds an acquisition's torrent in a queue read: by info hash, or for a
+// legacy hashless row by its release name. byHash is the queue keyed by lowercased hash.
+func QueueItemFor(a Acquisition, byHash map[string]download.Item, queue []download.Item) (download.Item, bool) {
+	if a.InfoHash != "" {
+		it, ok := byHash[strings.ToLower(a.InfoHash)]
+		return it, ok
+	}
+	for _, it := range queue {
+		if _, ok := legacyMatchByName([]Acquisition{a}, it); ok {
+			return it, true
+		}
+	}
+	return download.Item{}, false
+}
+
+// untrackedQueue is the unfinished torrents in queue that no grab knows by info hash:
+// added by hand in the client, or by another tool. Arrmada's own downloads are matched
+// through the acquisition record; these are the only ones the sweeps still recognise by
+// name (untrackedMovie, seriesInFlightScope), so a title the user is already fetching
+// isn't grabbed a second time on top. An unreadable grabs table is an error — the callers
+// skip their cycle rather than treat everything as untracked or nothing as in flight.
+func (c *Coordinator) untrackedQueue(ctx context.Context, queue []download.Item) ([]download.Item, error) {
+	if len(queue) == 0 {
+		return nil, nil
+	}
+	rows, err := c.db.QueryContext(ctx, `SELECT DISTINCT lower(info_hash) FROM grabs WHERE info_hash != ''`)
+	if err != nil {
+		return nil, fmt.Errorf("grabs unreadable: %w", err)
+	}
+	defer rows.Close()
+	known := map[string]bool{}
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			return nil, fmt.Errorf("grabs unreadable: %w", err)
+		}
+		known[h] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("grabs unreadable: %w", err)
+	}
+	var out []download.Item
+	for _, it := range queue {
+		if it.Complete() || known[strings.ToLower(it.Hash)] {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out, nil
+}
+
+// busyVersions is which of a movie's versions (0: the default track) have a download in
+// flight, by the record. exceptGrab is left out — the stalled grab a fail-over is
+// replacing.
+func (c *Coordinator) busyVersions(ctx context.Context, movieID, exceptGrab int64) (map[int64]bool, error) {
+	acqs, err := c.Active(ctx, "movie", movieID)
+	if err != nil {
+		return nil, err
+	}
+	busy := map[int64]bool{}
+	for _, a := range acqs {
+		if a.GrabID != exceptGrab {
+			busy[a.VersionID] = true
+		}
+	}
+	return busy, nil
+}
+
+// wantedVersions is missingVersions less the versions already downloading, so a
+// differently named release of a version in flight is never grabbed on top of it.
+// inFlight reports whether any were left out for that reason.
+func (c *Coordinator) wantedVersions(ctx context.Context, movieID int64) (want []movies.Version, inFlight bool, err error) {
+	missing := c.missingVersions(ctx, movieID)
+	if len(missing) == 0 {
+		return nil, false, nil
+	}
+	busy, err := c.busyVersions(ctx, movieID, 0)
+	if err != nil {
+		return nil, false, err
+	}
+	for _, v := range missing {
+		if busy[v.ID] {
+			inFlight = true
+			continue
+		}
+		want = append(want, v)
+	}
+	return want, inFlight, nil
+}
+
+// movieBusy reports whether anything is downloading for the movie at all: an acquisition
+// in flight for any version, or a torrent nobody grabbed that is named for it.
+func (c *Coordinator) movieBusy(ctx context.Context, m movies.Movie, untracked []download.Item) (bool, error) {
+	acqs, err := c.Active(ctx, "movie", m.ID)
+	if err != nil {
+		return false, err
+	}
+	return len(acqs) > 0 || untrackedMovie(untracked, m), nil
 }
 
 // acqPhase is the phase the record keeps for a torrent the client listed.

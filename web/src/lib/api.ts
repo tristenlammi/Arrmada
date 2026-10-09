@@ -763,7 +763,7 @@ export interface SearchOutcome {
   usable: number;
   grabbed: number;
   grabbed_titles?: string[];
-  reason: "nothing-wanted" | "no-releases" | "none-for-this-title" | "all-blocklisted-or-below-profile" | "grabbed" | "already-searching";
+  reason: "nothing-wanted" | "no-releases" | "none-for-this-title" | "all-blocklisted-or-below-profile" | "grabbed" | "already-searching" | "already-downloading";
 }
 
 // One recurring task as GET /api/v1/system/tasks reports it. Times are ISO strings, null

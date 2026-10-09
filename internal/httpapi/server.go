@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"sync/atomic"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/apikeys"
@@ -122,9 +121,6 @@ type api struct {
 	deps         Deps
 	start        time.Time
 	loginLimiter *loginLimiter // throttles auth attempts (login/setup/plex-pin)
-	// seedDiagAt throttles the unmatched-seed-rule diagnostic. The Downloads page polls
-	// continuously, so an unthrottled line would bury the log it's meant to help read.
-	seedDiagAt atomic.Int64
 }
 
 // New builds the HTTP server: JSON API routes, the embedded UI (with SPA
