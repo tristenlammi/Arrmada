@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -107,6 +108,37 @@ func TestTransactionsGoThroughWithTx(t *testing.T) {
 					t.Errorf("%s:%d: %s outside internal/store — use store.WithTx so the transaction is retried when busy and always rolled back",
 						filepath.ToSlash(strings.TrimPrefix(pos.Filename, root+string(filepath.Separator))), pos.Line, sel.Sel.Name)
 				}
+				return true
+			})
+		}
+	}
+}
+
+// settingsSQL matches a statement that reads or writes the settings table.
+var settingsSQL = regexp.MustCompile(`(?i)\b(FROM|INTO|UPDATE|JOIN)\s+settings\b`)
+
+// TestSettingsOnlyThroughService: settings are served from memory by settings.Service,
+// which writes them through to the table. SQL that reads the table elsewhere can see a
+// different value from everyone else, and SQL that writes it changes the database
+// without changing what the app runs on. Only internal/settings may touch the table
+// (migrations are .sql files, not Go, so they aren't walked).
+func TestSettingsOnlyThroughService(t *testing.T) {
+	root := repoRoot(t)
+	allowed := filepath.Join(root, "internal", "settings")
+	for _, dir := range sourceDirs(t, root) {
+		if dir == allowed {
+			continue
+		}
+		fset, files := parseDir(t, dir)
+		for _, f := range files {
+			ast.Inspect(f, func(n ast.Node) bool {
+				lit, ok := n.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING || !settingsSQL.MatchString(lit.Value) {
+					return true
+				}
+				pos := fset.Position(lit.Pos())
+				t.Errorf("%s:%d: SQL on the settings table outside internal/settings — use settings.Service (Get/Set/Lookup) so the in-memory copy stays the one truth",
+					filepath.ToSlash(strings.TrimPrefix(pos.Filename, root+string(filepath.Separator))), pos.Line)
 				return true
 			})
 		}

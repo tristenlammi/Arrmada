@@ -222,13 +222,7 @@ func deleteAndReassignTx(ctx context.Context, tx *sql.Tx, id, toID int64, from, 
 		n, _ := res.RowsAffected()
 		*m.n = int(n)
 	}
-	// Deleting the default hands the role to the target, so new titles land where the
-	// old ones went rather than on whichever profile happens to sort first.
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ? AND value = ?`,
-		to, "default_profile:"+fromMedia, from); err != nil {
-		return err
-	}
+	// The default role moves in Service.Delete, through the settings service.
 	_, err := tx.ExecContext(ctx, `DELETE FROM quality_profiles WHERE id = ?`, id)
 	return err
 }
@@ -251,25 +245,6 @@ func (r *Repo) repointDangling(ctx context.Context, table, where, to string, arg
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
-}
-
-// getSetting reads a key/value setting ("" if absent).
-func (r *Repo) getSetting(ctx context.Context, key string) (string, error) {
-	var v string
-	err := r.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&v)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	return v, err
-}
-
-// setSetting upserts a key/value setting.
-func (r *Repo) setSetting(ctx context.Context, key, value string) error {
-	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO settings (key, value) VALUES (?, ?)
-		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
-		key, value)
-	return err
 }
 
 func boolToInt(b bool) int {

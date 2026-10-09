@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tristenlammi/arrmada/internal/settings"
 	"github.com/tristenlammi/arrmada/internal/store"
 )
 
@@ -39,7 +40,7 @@ func TestRepairCodecStamps(t *testing.T) {
 	mustExec(`INSERT INTO episodes (id, series_id, season_number, episode_number, source_release) VALUES (1, 1, 1, 1, 'Show.S01E01.1080p.WEB.h264-GRP x265')`)
 	mustExec(`INSERT INTO episodes (id, series_id, season_number, episode_number, source_release) VALUES (2, 1, 1, 2, 'Show.S01E02.1080p.WEB.h264-GRP')`)
 
-	n, err := RepairCodecStamps(ctx, db, log)
+	n, err := RepairCodecStamps(ctx, db, settings.NewService(db), log)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +80,8 @@ func TestRepairCodecStamps(t *testing.T) {
 
 	// A second boot does nothing, even if an old-style stamp somehow reappears.
 	mustExec(`UPDATE movies SET source_release = 'Film.2021.1080p.BluRay.H.264-GRP AV1' WHERE id = 1`)
-	if n, err := RepairCodecStamps(ctx, db, log); err != nil || n != 0 {
+	// The next boot loads the guard key with the rest of the settings.
+	if n, err := RepairCodecStamps(ctx, db, settings.NewService(db), log); err != nil || n != 0 {
 		t.Errorf("second run repaired %d (err %v), want 0 — the guard key must stop it", n, err)
 	}
 	if got := read("movies", 1); !strings.HasSuffix(got, " AV1") {
