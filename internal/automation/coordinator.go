@@ -101,6 +101,11 @@ type Coordinator struct {
 	// search — and a fresh "still waiting" history line — more than once per window.
 	// Guarded by stallMu and pruned with stallProgress.
 	stillWaitingAt map[int64]time.Time
+	// stallDefaultFn reads the global stall timeout (Settings → Downloads) that a grab and
+	// profile left at 0 fall back to; guardHeldFn reads the hashes the disk guard has
+	// paused. Both are set once at startup; nil means DefaultStallMinutes / none held.
+	stallDefaultFn func(ctx context.Context) int
+	guardHeldFn    func(ctx context.Context) map[string]bool
 
 	// The manual missing-editions sweep for books (books_sweep.go).
 	bookSweepMu sync.Mutex
@@ -1278,7 +1283,15 @@ func (c *Coordinator) stalledInQueue(g grab, item download.Item, found bool, win
 	//
 	// "checking" gets the same treatment: after a disk-full crash qBittorrent rechecks its
 	// torrents, which on a large pack takes a long while and moves no progress meanwhile.
+	// So do the phases where the client itself is holding the torrent back — waiting for
+	// a slot under its max-active limit, moving or allocating files. Fetching metadata is
+	// NOT held: a magnet nobody will send a file list for is as dead as one with no seeds.
 	if item.State == "paused" || item.State == "checking" {
+		c.holdStallClock(g.ID, item.Progress)
+		return false
+	}
+	switch item.Phase() {
+	case "queued", "checking", "moving", "allocating":
 		c.holdStallClock(g.ID, item.Progress)
 		return false
 	}
@@ -1320,7 +1333,7 @@ func (c *Coordinator) DetectStalled(ctx context.Context) {
 	}
 	// One budget across every kind: each fail-over costs a search, and once the timeout is
 	// on for every existing grab a backlog of dead torrents mustn't all go in one tick.
-	tick := &stallTick{left: maxStallFailoversPerCheck}
+	tick := &stallTick{left: maxStallFailoversPerCheck, held: c.guardHeld(ctx)}
 	for _, g := range pending {
 		switch g.MediaType {
 		case "series":

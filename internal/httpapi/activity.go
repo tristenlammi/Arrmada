@@ -124,8 +124,12 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	// Seed goals recorded at grab time, so the Seeding tab can show each torrent's
 	// target ratio / time and whether it's set to seed at all.
 	var seedPolicies map[string]automation.SeedPolicy
+	// How each in-flight grab stands against its stall window, so the page can say how
+	// long a download has made no progress and when another release will be tried.
+	var stallInfo map[string]automation.StallState
 	if a.deps.Automation != nil {
 		seedPolicies = a.deps.Automation.SeedPolicies(ctx)
+		stallInfo = a.deps.Automation.StallInfo(ctx)
 	}
 
 	// One-pass matchers over already-loaded snapshots, so labelling each torrent is a map
@@ -201,6 +205,9 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 			"quality_profile": profile,
 			"media_type":      mediaType,
 			"imported":        imported[it.Hash],
+		}
+		if st, ok := stallInfo[strings.ToLower(it.Hash)]; ok && !it.Complete() {
+			entry["stall"] = st
 		}
 		if it.State == "paused" && guardHeld[strings.ToLower(it.Hash)] {
 			entry["held_by_guard"] = true

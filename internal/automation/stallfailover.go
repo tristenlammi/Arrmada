@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,10 +22,125 @@ import (
 // rest are picked up two minutes later.
 const maxStallFailoversPerCheck = 3
 
-// stallTick is one DetectStalled pass's fail-over budget.
+// KeyStallMinutes is the global stall timeout (Settings → Downloads): how long a download
+// may go without progress before another release is tried. It applies to every grab whose
+// profile leaves the timeout at 0 ("use the default"); 0 here turns fail-over off.
+const KeyStallMinutes = "downloads_stall_minutes"
+
+// DefaultStallMinutes is six hours. Long enough that a slow-but-alive swarm, or a seeder
+// who is only online in the evenings, is never condemned; short enough that a dead torrent
+// doesn't sit at 0% for days. It is safe to have on by default only because a fail-over
+// never removes a torrent it couldn't replace.
+const DefaultStallMinutes = 360
+
+// ParseStallMinutes reads a stored global stall timeout, falling back to the default for
+// anything unreadable or negative.
+func ParseStallMinutes(raw string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n < 0 {
+		return DefaultStallMinutes
+	}
+	return n
+}
+
+// SetStallDefault wires the global stall timeout. Asked on every check, so a change in
+// Settings applies on the next pass.
+func (c *Coordinator) SetStallDefault(fn func(ctx context.Context) int) { c.stallDefaultFn = fn }
+
+// SetGuardHeld wires the disk guard's held set, so a torrent the guard paused never runs
+// down its stall window while it waits for space.
+func (c *Coordinator) SetGuardHeld(fn func(ctx context.Context) map[string]bool) { c.guardHeldFn = fn }
+
+func (c *Coordinator) stallDefault(ctx context.Context) int {
+	if c.stallDefaultFn == nil {
+		return DefaultStallMinutes
+	}
+	return c.stallDefaultFn(ctx)
+}
+
+func (c *Coordinator) guardHeld(ctx context.Context) map[string]bool {
+	if c.guardHeldFn == nil {
+		return nil
+	}
+	return c.guardHeldFn(ctx)
+}
+
+// stallWindow resolves how long grab g may go without progress, and whether fail-over is
+// on for it at all.
+//
+// The grab's own value is a snapshot of its profile's at grab time: >0 is a custom window
+// and <0 is off. 0 — what every grab made before fail-over was on by default carries —
+// is resolved now, through the profile (>0 custom, <0 off) and then the global default.
+// Resolving at check time is what covers grabs already in flight, which a migration of the
+// profiles alone would not.
+func (c *Coordinator) stallWindow(ctx context.Context, g grab) (time.Duration, bool) {
+	m := g.StallMinutes
+	if m == 0 && c.quality != nil {
+		m = c.quality.StallMinutes(ctx, g.Profile)
+	}
+	if m == 0 {
+		m = c.stallDefault(ctx)
+	}
+	if m <= 0 {
+		return 0, false
+	}
+	return time.Duration(m) * time.Minute, true
+}
+
+// StallState is how a pending download stands against its stall window, for the
+// Downloads page.
+type StallState struct {
+	IdleMinutes       int  `json:"idle_minutes"`        // minutes the stall clock has run (0 while held)
+	FailoverInMinutes int  `json:"failover_in_minutes"` // until another release is tried, if still no progress
+	Off               bool `json:"off"`                 // fail-over is off for this download
+}
+
+// StallInfo reports each pending grab's stall state, keyed by lowercased info hash. Grabs
+// with no recorded hash are left out; the page can't pair them with a torrent reliably.
+func (c *Coordinator) StallInfo(ctx context.Context) map[string]StallState {
+	out := map[string]StallState{}
+	pending, err := c.pendingGrabs(ctx)
+	if err != nil {
+		return out
+	}
+	for _, g := range pending {
+		if g.InfoHash == "" {
+			continue
+		}
+		window, on := c.stallWindow(ctx, g)
+		st := StallState{Off: !on}
+		c.stallMu.Lock()
+		s, seen := c.stallProgress[g.ID]
+		c.stallMu.Unlock()
+		if seen {
+			st.IdleMinutes = int(time.Since(s.at) / time.Minute)
+		}
+		if on {
+			// Whichever comes later: the window running out on the clock, or the grab
+			// being old enough to judge at all. Unobserved grabs wait a full window.
+			left := window
+			if seen {
+				left = window - time.Since(s.at)
+			}
+			if age := window - time.Since(parseTime(g.GrabbedAt)); age > left {
+				left = age
+			}
+			if left < 0 {
+				left = 0
+			}
+			st.FailoverInMinutes = int((left + time.Minute - 1) / time.Minute)
+		}
+		out[strings.ToLower(g.InfoHash)] = st
+	}
+	return out
+}
+
+// stallTick is one DetectStalled pass's fail-over budget, and the disk guard's held set
+// read once for the pass.
 type stallTick struct {
-	left     int // fail-overs this pass may still perform
-	deferred int // stalled grabs left for the next pass because the budget ran out
+	left     int             // fail-overs this pass may still perform
+	deferred int             // stalled grabs left for the next pass because the budget ran out
+	held     map[string]bool // lowercased hashes the disk guard is holding
 }
 
 // take spends one fail-over from the budget, or counts the grab as deferred when there's
@@ -67,14 +183,21 @@ var errSearchUnavailable = errors.New("search unavailable")
 // torrent gone or stuck? target is only built when the answer is yes, so a healthy queue
 // costs no extra lookups.
 func (c *Coordinator) judgeStall(ctx context.Context, g grab, queue []download.Item, tick *stallTick, target func(ctx context.Context) (stallTarget, bool)) {
-	if g.StallMinutes <= 0 {
-		return // fail-over off for this grab's profile
+	window, on := c.stallWindow(ctx, g)
+	if !on {
+		return // fail-over off for this grab
 	}
-	window := time.Duration(g.StallMinutes) * time.Minute
 	if time.Since(parseTime(g.GrabbedAt)) < window {
 		return
 	}
 	item, found := findQueued(queue, g)
+	if found && tick != nil && tick.held[strings.ToLower(item.Hash)] {
+		// The disk guard paused it and will resume it once there's room. Usually that
+		// already reads as "paused" below; checked by hash too so a torrent the guard
+		// owns never runs its clock down whatever state the client reports mid-pass.
+		c.holdStallClock(g.ID, item.Progress)
+		return
+	}
 	if !c.stalledInQueue(g, item, found, window) {
 		return
 	}

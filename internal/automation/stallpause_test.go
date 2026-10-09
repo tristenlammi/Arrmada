@@ -62,6 +62,36 @@ func TestRecheckingTorrentHoldsTheStallClock(t *testing.T) {
 	}
 }
 
+// With fail-over on by default, a torrent waiting for a slot under qBittorrent's
+// max-active limit would be condemned for the client's own queueing. It holds the clock;
+// a magnet nobody will send metadata for does not.
+func TestQueuedTorrentHoldsMetadataDoesNot(t *testing.T) {
+	c := &Coordinator{}
+	const window = time.Minute
+	expire := func(id int64) {
+		c.holdStallClock(id, 0)
+		c.stallProgress[id] = stallSample{progress: 0, at: time.Now().Add(-2 * window)}
+	}
+
+	queued := grab{ID: 1}
+	expire(queued.ID)
+	if c.stalledInQueue(queued, download.Item{RawState: "queuedDL", State: "downloading", RemainingBytes: 1}, true, window) {
+		t.Error("a torrent queued by the client past its window must not be stalled")
+	}
+	for _, raw := range []string{"moving", "allocating"} {
+		expire(queued.ID)
+		if c.stalledInQueue(queued, download.Item{RawState: raw, State: "downloading", RemainingBytes: 1}, true, window) {
+			t.Errorf("a %s torrent must not be stalled", raw)
+		}
+	}
+
+	meta := grab{ID: 2}
+	expire(meta.ID)
+	if !c.stalledInQueue(meta, download.Item{RawState: "metaDL", State: "downloading", RemainingBytes: 1}, true, window) {
+		t.Error("a magnet stuck fetching metadata past its window must be stalled")
+	}
+}
+
 // The two sides carry the container differently — the torrent as a filename extension, the
 // indexer's listing as a trailing word — so their keys differed by "mp4" and no seed rule
 // could ever be found for the download.

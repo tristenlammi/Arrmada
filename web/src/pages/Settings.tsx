@@ -218,6 +218,7 @@ export function Settings() {
               </Section>
               <APIKeysSection onRegionSaved={syncRegion} />
               <DiskGuardSection s={s} patch={patch} />
+              <StallSection s={s} patch={patch} />
               <RecycleBin s={s} patch={patch} />
               <SaveBar />
               <OverseerrImport />
@@ -872,6 +873,37 @@ function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<App
           )}
         </>
       )}
+    </Section>
+  );
+}
+
+// The global stall timeout, shown in hours and stored in minutes. Profiles left on "Use
+// default" follow it. Safe to have on: a stalled download is only removed once another
+// release has been grabbed in its place.
+function StallSection({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettings>) => void }) {
+  const minutes = s.downloads_stall_minutes ?? 360;
+  const hours = Math.round((minutes / 60) * 10) / 10;
+  return (
+    <Section
+      title="Stalled downloads"
+      subtitle="When a download makes no progress for this long, Arrmada looks for another release. The stalled one is only removed once a replacement has been grabbed — with nothing else available it's left to keep trying. Time spent paused, queued by the client, rechecking or held by the disk guard doesn't count."
+    >
+      <Field label="Give up on a download with no progress after (hours)">
+        <input
+          type="number"
+          min={0}
+          max={168}
+          step={0.5}
+          value={hours}
+          onChange={(e) => {
+            const h = Math.min(168, Math.max(0, Number(e.target.value) || 0));
+            patch({ downloads_stall_minutes: Math.round(h * 60) });
+          }}
+          className={input}
+          style={inputStyle}
+        />
+        <span className="text-[10.5px] text-ink-faint">0 = never. Quality profiles can set their own time, or turn it off.</span>
+      </Field>
     </Section>
   );
 }

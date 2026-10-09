@@ -36,7 +36,7 @@ type StoredProfile struct {
 	Keywords           []Keyword      `json:"keywords,omitempty"` // scored terms matched in the release name
 	Rejected           []string       `json:"rejected,omitempty"` // hard-reject terms (incl. file types)
 	MinSeeders         int            `json:"min_seeders"`        // reject releases below this seeder count
-	StallMinutes       int            `json:"stall_minutes"`      // 0 = off; else fail-over after this long
+	StallMinutes       int            `json:"stall_minutes"`      // 0 = the global default, -1 = off, else fail-over after this long
 	UpgradesEnabled    bool           `json:"upgrades_enabled"`   // keep seeking a better release after import
 	// UpgradeMinPercent also upgrades when a release is at least this much better in
 	// bitrate, as a percentage (0 = only upgrade on a real quality gain).

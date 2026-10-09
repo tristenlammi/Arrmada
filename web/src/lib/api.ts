@@ -160,6 +160,9 @@ export interface ActivityDownload {
   quality_profile: string;
   media_type?: string;
   held_by_guard?: boolean; // paused by the disk guard, which won't let it resume yet
+  // How an in-flight grab stands against its stall window; absent for torrents Arrmada
+  // didn't grab. idle_minutes stays 0 while the clock is held (paused, queued, checking).
+  stall?: { idle_minutes: number; failover_in_minutes: number; off: boolean };
 }
 
 // What the disk guard is holding; present only while it holds something.
@@ -496,6 +499,8 @@ export interface AppSettings {
   downloads_disk_guard: boolean;
   downloads_disk_guard_pause_pct: string;
   downloads_disk_guard_resume_pct: string;
+  /** Minutes with no progress before another release is tried; 0 = never. Default 360. */
+  downloads_stall_minutes: number;
 }
 
 export interface TorrentPreview {

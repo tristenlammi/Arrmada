@@ -6,8 +6,10 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/library"
+	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
 	"github.com/tristenlammi/arrmada/internal/settings"
 )
@@ -71,6 +73,9 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"downloads_disk_guard":            a.deps.Settings.GetBool(ctx, keyDiskGuard, download.DefaultDiskGuard),
 		"downloads_disk_guard_pause_pct":  a.deps.Settings.Get(ctx, keyDiskGuardPause, strconv.Itoa(download.DefaultDiskGuardPause)),
 		"downloads_disk_guard_resume_pct": a.deps.Settings.Get(ctx, keyDiskGuardResume, strconv.Itoa(download.DefaultDiskGuardResum)),
+		// Stall fail-over, in minutes with no progress (0 = never). On by default: a
+		// stalled download is only removed once another release has been grabbed.
+		"downloads_stall_minutes": automation.ParseStallMinutes(a.deps.Settings.Get(ctx, automation.KeyStallMinutes, "")),
 	})
 }
 
@@ -95,6 +100,7 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		DiskGuard            *bool   `json:"downloads_disk_guard"`
 		DiskGuardPausePct    *string `json:"downloads_disk_guard_pause_pct"`
 		DiskGuardResumePct   *string `json:"downloads_disk_guard_resume_pct"`
+		StallMinutes         *int    `json:"downloads_stall_minutes"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -123,6 +129,11 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			a.writeError(w, http.StatusBadRequest, "resume percentage must be below the pause percentage")
 			return
 		}
+	}
+
+	if req.StallMinutes != nil && (*req.StallMinutes < 0 || *req.StallMinutes > quality.StallMaxMinutes) {
+		a.writeError(w, http.StatusBadRequest, "the stall timeout must be between 0 (never) and 10080 minutes (a week)")
+		return
 	}
 
 	if req.SearchOnAdd != nil && !save(a.deps.Settings.SetBool(ctx, keySearchOnAdd, *req.SearchOnAdd)) {
@@ -195,6 +206,9 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.DiskGuardResumePct != nil && !save(a.deps.Settings.Set(ctx, keyDiskGuardResume, strings.TrimSpace(*req.DiskGuardResumePct))) {
+		return
+	}
+	if req.StallMinutes != nil && !save(a.deps.Settings.Set(ctx, automation.KeyStallMinutes, strconv.Itoa(*req.StallMinutes))) {
 		return
 	}
 	a.handleGetSettings(w, r)
