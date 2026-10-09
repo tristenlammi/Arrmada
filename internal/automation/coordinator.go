@@ -443,7 +443,10 @@ func (c *Coordinator) SearchMissing(ctx context.Context) {
 		c.log.Warn("automation: list movies failed", "err", err)
 		return
 	}
-	queue, _ := c.downloads.Queue(ctx)
+	queue, ok := c.sweepQueue(ctx, "movie search sweep")
+	if !ok {
+		return
+	}
 	var outage outageTally
 	defer outage.report(c.log, "movie search sweep")
 	for _, m := range all {
@@ -933,6 +936,11 @@ func (c *Coordinator) RSSSync(ctx context.Context) {
 		c.log.Warn("rss: list movies failed", "err", err)
 		return
 	}
+	// Read before the feeds, so a down client costs no indexer queries.
+	queue, ok := c.sweepQueue(ctx, "movie rss sync")
+	if !ok {
+		return
+	}
 	res, err := c.indexers.Recent(ctx, 100)
 	if errors.Is(err, indexer.ErrNoIndexers) {
 		return // no indexer has a feed — nothing to sync, and nothing to warn about every cycle
@@ -945,7 +953,6 @@ func (c *Coordinator) RSSSync(ctx context.Context) {
 	if len(res.Releases) == 0 {
 		return
 	}
-	queue, _ := c.downloads.Queue(ctx)
 	for _, m := range all {
 		if !c.movies.IsAvailable(m) || inQueue(queue, m) {
 			continue

@@ -94,8 +94,13 @@ func (a *api) registerHealthChecks(reg *health.Registry) {
 			if err != nil {
 				return 0, nil, err
 			}
-			st, err := a.deps.Downloads.ClientStates(ctx)
-			return len(all), st, err
+			// The shared queue read's per-client health, not a poll of its own: the
+			// Downloads page, the sweeps and this check all see the same answer.
+			snap, err := a.deps.Downloads.Snapshot(ctx)
+			if err != nil && len(snap.Health) == 0 {
+				return 0, nil, err // the client list itself couldn't be read
+			}
+			return len(all), download.EnabledStates(snap.Health), nil
 		}))
 	}
 

@@ -15,6 +15,7 @@ import (
 // files at contentPath.
 func (h *lifecycleHarness) completedTorrent(name, category, contentPath string) string {
 	hash := hashFor(name)
+	defer h.c.downloads.InvalidateSnapshot() // the queue read is cached; show the new torrent
 	h.qbit.mu.Lock()
 	defer h.qbit.mu.Unlock()
 	h.qbit.torrents = append(h.qbit.torrents, map[string]any{

@@ -21,6 +21,11 @@ func (c *Coordinator) RSSSyncSeries(ctx context.Context) {
 	if c.series == nil {
 		return
 	}
+	// Read before the feeds, so a down client costs no indexer queries.
+	queue, ok := c.sweepQueue(ctx, "series rss sync")
+	if !ok {
+		return
+	}
 	res, err := c.indexers.Recent(ctx, 100)
 	if errors.Is(err, indexer.ErrNoIndexers) {
 		return // no indexer has a feed — nothing to sync, and nothing to warn about every cycle
@@ -37,7 +42,6 @@ func (c *Coordinator) RSSSyncSeries(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	queue, _ := c.downloads.Queue(ctx)
 	for _, meta := range all {
 		if !meta.Monitored {
 			continue

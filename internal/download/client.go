@@ -81,6 +81,8 @@ type Item struct {
 	// Availability is distributed copies of the torrent among connected peers; below 1
 	// means no connected peer has every piece. qBittorrent reports -1 when unknown.
 	Availability float64 `json:"availability"`
+	// ClientID is the download client this torrent was read from (set by the queue read).
+	ClientID int64 `json:"client_id,omitempty"`
 }
 
 // Phase is a finer reading of the torrent's state than State, for the places that need to

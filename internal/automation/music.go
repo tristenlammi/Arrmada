@@ -52,9 +52,10 @@ func (c *Coordinator) SearchMusicMissing(ctx context.Context) {
 	}
 	queue, qerr := c.musicQueue(ctx)
 	if qerr != nil {
-		// An unreadable queue looks exactly like an empty one, so every in-flight album
-		// would read as "not downloading" and the sweep would stack duplicate grabs.
-		c.log.Warn("music: couldn't read the download queue — skipping this sweep", "err", qerr)
+		// An unreadable (or partial) queue looks exactly like an empty one, so every
+		// in-flight album would read as "not downloading" and the sweep would stack
+		// duplicate grabs.
+		c.log.Info(clientDownSkip, "sweep", "music search sweep", "err", qerr)
 		return
 	}
 
@@ -360,7 +361,11 @@ func (c *Coordinator) musicQueue(ctx context.Context) ([]download.Item, error) {
 	if c.musicQueueFn != nil {
 		return c.musicQueueFn(ctx)
 	}
-	return c.downloads.Queue(ctx)
+	items, whole, err := c.downloads.QueueComplete(ctx)
+	if err == nil && !whole {
+		err = errClientPartial
+	}
+	return items, err
 }
 
 func (c *Coordinator) grabMusic(ctx context.Context, indexerName, url, title, category string) (string, error) {

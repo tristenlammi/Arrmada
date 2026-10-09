@@ -142,9 +142,11 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 	// One queue read for the whole sweep: a series with a download already in flight is
 	// skipped, so we don't re-grab the same winner every tick while a pack downloads.
 	// (RSSSyncSeries and UpgradeSeries already do this; the missing sweep didn't.)
-	queue, qerr := c.downloads.Queue(ctx)
-	if qerr != nil {
-		queue = nil
+	// A queue that can't be read used to mean "nothing in flight" here, which switched the
+	// in-flight check off exactly when it couldn't be trusted. Sit the cycle out instead.
+	queue, ok := c.sweepQueue(ctx, "series search sweep")
+	if !ok {
+		return
 	}
 	var outage outageTally
 	defer outage.report(c.log, "series search sweep")
