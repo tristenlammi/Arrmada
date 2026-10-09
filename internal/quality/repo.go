@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // ErrNotFound is returned when a profile id doesn't exist.
@@ -169,27 +171,32 @@ func (r *Repo) DeleteAndReassign(ctx context.Context, id int64, to string) (Reas
 	if !ok {
 		return out, ErrTargetNotFound
 	}
-	tx, err := r.db.BeginTx(ctx, nil)
+	err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		return deleteAndReassignTx(ctx, tx, id, toID, from, to, &out)
+	})
 	if err != nil {
-		return out, err
+		return Reassigned{}, err
 	}
-	defer func() { _ = tx.Rollback() }() // a no-op once committed
+	return out, nil
+}
 
+// deleteAndReassignTx is DeleteAndReassign's body, inside the caller's transaction.
+func deleteAndReassignTx(ctx context.Context, tx *sql.Tx, id, toID int64, from, to string, out *Reassigned) error {
 	var fromMedia, toMedia string
 	if err := tx.QueryRowContext(ctx, `SELECT media_type FROM quality_profiles WHERE id = ?`, id).Scan(&fromMedia); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return out, ErrNotFound
+			return ErrNotFound
 		}
-		return out, err
+		return err
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT media_type FROM quality_profiles WHERE id = ?`, toID).Scan(&toMedia); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return out, ErrTargetNotFound
+			return ErrTargetNotFound
 		}
-		return out, err
+		return err
 	}
 	if fromMedia != toMedia {
-		return out, ErrMediaMismatch
+		return ErrMediaMismatch
 	}
 
 	moves := []struct {
@@ -210,25 +217,14 @@ func (r *Repo) DeleteAndReassign(ctx context.Context, id int64, to string) (Reas
 	for _, m := range moves {
 		res, err := tx.ExecContext(ctx, m.query, to, from)
 		if err != nil {
-			return Reassigned{}, err
+			return err
 		}
 		n, _ := res.RowsAffected()
 		*m.n = int(n)
 	}
-	// Deleting the default hands the role to the target, so new titles land where the
-	// old ones went rather than on whichever profile happens to sort first.
-	if _, err := tx.ExecContext(ctx,
-		`UPDATE settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ? AND value = ?`,
-		to, "default_profile:"+fromMedia, from); err != nil {
-		return Reassigned{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM quality_profiles WHERE id = ?`, id); err != nil {
-		return Reassigned{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return Reassigned{}, err
-	}
-	return out, nil
+	// The default role moves in Service.Delete, through the settings service.
+	_, err := tx.ExecContext(ctx, `DELETE FROM quality_profiles WHERE id = ?`, id)
+	return err
 }
 
 // danglingRef matches a "custom:N" ref whose profile no longer exists. "n/a" and ""
@@ -249,25 +245,6 @@ func (r *Repo) repointDangling(ctx context.Context, table, where, to string, arg
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
-}
-
-// getSetting reads a key/value setting ("" if absent).
-func (r *Repo) getSetting(ctx context.Context, key string) (string, error) {
-	var v string
-	err := r.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&v)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	return v, err
-}
-
-// setSetting upserts a key/value setting.
-func (r *Repo) setSetting(ctx context.Context, key, value string) error {
-	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO settings (key, value) VALUES (?, ?)
-		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
-		key, value)
-	return err
 }
 
 func boolToInt(b bool) int {

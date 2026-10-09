@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/tristenlammi/arrmada/internal/eventbus"
@@ -238,5 +239,177 @@ func TestUpgradeKeepsOldFileWhenBinRefuses(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no file.kept event in %+v", evs)
+	}
+}
+
+// recordRemoved installs the import pipeline's forget hook and collects what it's told.
+func (f *deleteFixture) recordRemoved() *[]string {
+	var mu sync.Mutex
+	got := &[]string{}
+	f.svc.SetOnFileRemoved(func(_ context.Context, path string) {
+		mu.Lock()
+		defer mu.Unlock()
+		*got = append(*got, path)
+	})
+	return got
+}
+
+func sameSet(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	seen := map[string]int{}
+	for _, p := range got {
+		seen[p]++
+	}
+	for _, p := range want {
+		if seen[p] == 0 {
+			return false
+		}
+		seen[p]--
+	}
+	return true
+}
+
+func (f *deleteFixture) inBin(bin, path string) bool {
+	return bin != "" && exists(filepath.Join(bin, "Heat (1995)", filepath.Base(path)))
+}
+
+// With the bin on, deleting the movie with its files moves every file and subtitle to
+// the bin, removes the movie, its versions and its history, and tells the import
+// pipeline about each file directly (so a still-seeding torrent isn't imported back).
+func TestDeleteRecycleOnForgetsEveryFileAndRow(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	f := newDeleteFixture(t, bin)
+	removed := f.recordRemoved()
+	ctx := context.Background()
+	if err := f.svc.Delete(ctx, f.id, true); err != nil {
+		t.Fatal(err)
+	}
+	all := append([]string{f.main, f.extra, f.extraSub}, f.subs...)
+	for _, p := range all {
+		if exists(p) || !f.inBin(bin, p) {
+			t.Errorf("%s should have moved to the bin", filepath.Base(p))
+		}
+	}
+	if !sameSet(*removed, all) {
+		t.Errorf("forget hook got %q, want every file and subtitle once: %q", *removed, all)
+	}
+	if _, err := f.svc.repo.Get(ctx, f.id); !errors.Is(err, ErrNotFound) {
+		t.Errorf("movie row should be gone, got %v", err)
+	}
+	var versions, events int
+	_ = f.svc.repo.db.QueryRow(`SELECT COUNT(*) FROM movie_versions WHERE movie_id = ?`, f.id).Scan(&versions)
+	_ = f.svc.repo.db.QueryRow(`SELECT COUNT(*) FROM movie_events WHERE movie_id = ?`, f.id).Scan(&events)
+	if versions != 0 || events != 0 {
+		t.Errorf("left behind %d version and %d history row(s)", versions, events)
+	}
+}
+
+// Deleting just the default file, bin on and bin off: the file and its subtitles go, the
+// movie reads as missing, the other version is untouched.
+func TestDeleteFileRecycleOnAndOff(t *testing.T) {
+	for _, binOn := range []bool{true, false} {
+		t.Run(map[bool]string{true: "bin on", false: "bin off"}[binOn], func(t *testing.T) {
+			bin := ""
+			if binOn {
+				bin = filepath.Join(t.TempDir(), "bin")
+			}
+			f := newDeleteFixture(t, bin)
+			removed := f.recordRemoved()
+			ctx := context.Background()
+			if err := f.svc.DeleteFile(ctx, f.id); err != nil {
+				t.Fatal(err)
+			}
+			gone := append([]string{f.main}, f.subs...)
+			for _, p := range gone {
+				if exists(p) {
+					t.Errorf("%s is still in the library", filepath.Base(p))
+				}
+				if binOn != f.inBin(bin, p) {
+					t.Errorf("%s in bin = %v, want %v", filepath.Base(p), !binOn, binOn)
+				}
+			}
+			if !exists(f.extra) || !exists(f.extraSub) {
+				t.Error("the other version's file or subtitle was touched")
+			}
+			if !sameSet(*removed, gone) {
+				t.Errorf("forget hook got %q, want %q", *removed, gone)
+			}
+			m, err := f.svc.repo.Get(ctx, f.id)
+			if err != nil || m.HasFile || m.MovieFilePath != "" {
+				t.Errorf("movie after DeleteFile = %+v, %v; want it missing", m, err)
+			}
+			if v, _, err := f.svc.repo.GetVersion(ctx, f.vid); err != nil || v.FilePath != f.extra {
+				t.Errorf("the extra version changed: %+v, %v", v, err)
+			}
+		})
+	}
+}
+
+// Deleting one extra version's file, bin on and bin off: that file and its subtitle go,
+// the version track stays (now missing), and the default file is untouched.
+func TestDeleteVersionFileRecycleOnAndOff(t *testing.T) {
+	for _, binOn := range []bool{true, false} {
+		t.Run(map[bool]string{true: "bin on", false: "bin off"}[binOn], func(t *testing.T) {
+			bin := ""
+			if binOn {
+				bin = filepath.Join(t.TempDir(), "bin")
+			}
+			f := newDeleteFixture(t, bin)
+			removed := f.recordRemoved()
+			ctx := context.Background()
+			if err := f.svc.DeleteVersionFile(ctx, f.id, f.vid); err != nil {
+				t.Fatal(err)
+			}
+			gone := []string{f.extra, f.extraSub}
+			for _, p := range gone {
+				if exists(p) {
+					t.Errorf("%s is still in the library", filepath.Base(p))
+				}
+				if binOn != f.inBin(bin, p) {
+					t.Errorf("%s in bin = %v, want %v", filepath.Base(p), !binOn, binOn)
+				}
+			}
+			for _, p := range append([]string{f.main}, f.subs...) {
+				if !exists(p) {
+					t.Errorf("%s belongs to the default file and was removed", filepath.Base(p))
+				}
+			}
+			if !sameSet(*removed, gone) {
+				t.Errorf("forget hook got %q, want %q", *removed, gone)
+			}
+			v, _, err := f.svc.repo.GetVersion(ctx, f.vid)
+			if err != nil || v.FilePath != "" {
+				t.Errorf("version after DeleteVersionFile = %+v, %v; want the track kept without a file", v, err)
+			}
+			if m, _ := f.svc.repo.Get(ctx, f.id); m.MovieFilePath != f.main {
+				t.Errorf("the default file record changed to %q", m.MovieFilePath)
+			}
+		})
+	}
+}
+
+// The movie's rows go together or not at all: a failure on the second statement of the
+// delete leaves the movie and its versions in place, rather than version rows orphaned
+// from a movie that no longer exists.
+func TestDeleteRowsAreAtomic(t *testing.T) {
+	f := newDeleteFixture(t, filepath.Join(t.TempDir(), "bin"))
+	ctx := context.Background()
+	if _, err := f.svc.repo.db.Exec(`CREATE TRIGGER fail_version_delete BEFORE DELETE ON movie_versions
+		BEGIN SELECT RAISE(ABORT, 'injected failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.svc.Delete(ctx, f.id, false); err == nil {
+		t.Fatal("delete reported success although the version rows couldn't go")
+	}
+	if m, err := f.svc.repo.Get(ctx, f.id); err != nil || m.MovieFilePath != f.main {
+		t.Fatalf("the movie row didn't survive the failed delete: %+v, %v", m, err)
+	}
+	if vs, _ := f.svc.repo.ListVersions(ctx, f.id); len(vs) != 1 {
+		t.Errorf("versions = %+v, want the extra version intact", vs)
+	}
+	if !exists(f.main) || !exists(f.extra) {
+		t.Error("a file was touched by a delete that kept its files")
 	}
 }

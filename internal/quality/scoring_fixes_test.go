@@ -192,6 +192,10 @@ func testService(t *testing.T) (*Service, context.Context) {
 		created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)`); err != nil {
 		t.Fatal(err)
 	}
+	// Default profiles are saved through the settings service, which loads this table.
+	if _, err := db.Exec(`CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT)`); err != nil {
+		t.Fatal(err)
+	}
 	return NewService(db), context.Background()
 }
 

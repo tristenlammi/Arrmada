@@ -51,10 +51,6 @@ func TestEffectiveResolvesToDefault(t *testing.T) {
 // passed over, so Effective always hands back a real profile.
 func TestDefaultProfileIsNeverNA(t *testing.T) {
 	s, ctx := testService(t)
-	// The shared fixture has no settings table; the saved default lives there.
-	if _, err := s.repo.db.ExecContext(ctx, `CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT)`); err != nil {
-		t.Fatal(err)
-	}
 	sp, err := s.Create(ctx, StoredProfile{MediaType: MediaMovie, Name: "1080p"})
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +59,7 @@ func TestDefaultProfileIsNeverNA(t *testing.T) {
 	if err := s.SetDefaultProfile(ctx, MediaMovie, "n/a"); err == nil {
 		t.Error(`SetDefaultProfile accepted "n/a"`)
 	}
-	if err := s.repo.setSetting(ctx, "default_profile:"+MediaMovie, "n/a"); err != nil {
+	if err := s.settings.Set(ctx, defaultKey(MediaMovie), "n/a"); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.DefaultProfile(ctx, MediaMovie); got != def {

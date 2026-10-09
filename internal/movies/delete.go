@@ -226,7 +226,11 @@ func otherFiles(versions []Version, path string) []string {
 }
 
 // sidecarsOf is library.Sidecars minus any subtitle that belongs to one of the keep files.
+// A subtitle that pairs with both belongs to the longer, more specific name: deleting
+// "Movie.Directors.Cut.mkv" takes "Movie.Directors.Cut.en.srt" with it even though the
+// kept "Movie.mkv" is a prefix of that name.
 func sidecarsOf(video string, keep []string) []string {
+	vb := strings.TrimSuffix(video, filepath.Ext(video))
 	var out []string
 	for _, sub := range library.Sidecars(video) {
 		stem := strings.TrimSuffix(sub, filepath.Ext(sub))
@@ -236,6 +240,9 @@ func sidecarsOf(video string, keep []string) []string {
 				continue
 			}
 			kb := strings.TrimSuffix(k, filepath.Ext(k))
+			if len(kb) <= len(vb) {
+				continue // a shorter name only reaches this subtitle through the video's own
+			}
 			if stem == kb || strings.HasPrefix(stem, kb+".") {
 				owned = true
 				break

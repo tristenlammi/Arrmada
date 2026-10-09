@@ -540,7 +540,10 @@ func (c *Coordinator) RankReleasesWith(ctx context.Context, id int64, spec *qual
 	}
 	profile := c.effectiveProfile(ctx, m.QualityProfile, "movie")
 	decision := c.decideWith(ctx, profile, spec, tagRuntime(cands, m.Runtime))
-	blocked := c.blockedSet(ctx, m.ID)
+	blocked, err := c.blockedSet(ctx, m.ID)
+	if err != nil {
+		return ReleaseList{}, err
+	}
 
 	winnerName := ""
 	if decision.Winner != nil {
@@ -632,7 +635,11 @@ func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (int, b
 	// short/common name (e.g. "Hope") returns unrelated films ("Romance at Hope
 	// Ranch"), and the scorer would otherwise happily grab the wrong one.
 	matching := matchingMovieReleases(m, result.Releases)
-	byName, cands := c.candidatesFrom(ctx, m.ID, matching)
+	byName, cands, err := c.candidatesFrom(ctx, m.ID, matching)
+	if err != nil {
+		c.skipUnreadable(m.Title, err)
+		return 0, true, err
+	}
 	// Say where the results went. A search that returns releases and grabs none looked
 	// identical in the log to one that found nothing useful — the same movie re-searched
 	// every cycle forever with no hint whether the releases were for a different film,
@@ -720,15 +727,19 @@ func grabbable(releases []indexer.Release) []indexer.Release {
 // candidatesFrom builds the scoring candidates from a set of releases, dropping
 // any that are blocklisted for this movie, ungrabbable (usenet), or duplicate
 // copies of a title already kept.
-func (c *Coordinator) candidatesFrom(ctx context.Context, movieID int64, releases []indexer.Release) (map[string]indexer.Release, []quality.Candidate) {
+func (c *Coordinator) candidatesFrom(ctx context.Context, movieID int64, releases []indexer.Release) (map[string]indexer.Release, []quality.Candidate, error) {
 	return c.candidatesExcluding(ctx, movieID, releases, nil)
 }
 
 // candidatesExcluding is candidatesFrom that also drops the normalized titles in exclude —
 // the stalled release a fail-over is replacing, which isn't blocklisted yet because it
-// stays put until something else is found.
-func (c *Coordinator) candidatesExcluding(ctx context.Context, movieID int64, releases []indexer.Release, exclude map[string]bool) (map[string]indexer.Release, []quality.Candidate) {
-	blocked := c.blockedSet(ctx, movieID)
+// stays put until something else is found. An unreadable blocklist is an error, so
+// nothing is grabbed rather than everything looking clean.
+func (c *Coordinator) candidatesExcluding(ctx context.Context, movieID int64, releases []indexer.Release, exclude map[string]bool) (map[string]indexer.Release, []quality.Candidate, error) {
+	blocked, err := c.blockedSet(ctx, movieID)
+	if err != nil {
+		return nil, nil, err
+	}
 	releases = bestByTitle(grabbable(releases))
 	byName := make(map[string]indexer.Release, len(releases))
 	cands := make([]quality.Candidate, 0, len(releases))
@@ -739,7 +750,7 @@ func (c *Coordinator) candidatesExcluding(ctx context.Context, movieID int64, re
 		byName[rel.Title] = rel
 		cands = append(cands, quality.NewCandidate(rel.Title, rel.SizeGB(), rel.Seeders))
 	}
-	return byName, cands
+	return byName, cands, nil
 }
 
 // grabMissing grabs the best candidate for each still-missing version track.
@@ -754,7 +765,11 @@ func (c *Coordinator) grabMissing(ctx context.Context, m movies.Movie, want []mo
 func (c *Coordinator) grabMissingTitles(ctx context.Context, m movies.Movie, want []movies.Version, byName map[string]indexer.Release, cands []quality.Candidate) []string {
 	var titles []string
 	grabbed := map[string]bool{}
-	pending := c.pendingGrabTitles(ctx, m.ID) // releases already grabbed for this movie, not yet imported
+	pending, err := c.pendingGrabTitles(ctx, m.ID) // releases already grabbed for this movie, not yet imported
+	if err != nil {
+		c.skipUnreadable(m.Title, err)
+		return nil
+	}
 	// grabbedGB accumulates what this pass has already committed, so two version tracks
 	// can't jointly overcommit the same free-space reading (the series path has done this).
 	grabbedGB := 0.0
@@ -857,7 +872,11 @@ func (c *Coordinator) RSSSync(ctx context.Context) {
 			continue
 		}
 		c.log.Info("rss: match", "movie", m.Title, "candidates", len(matched))
-		byName, cands := c.candidatesFrom(ctx, m.ID, matched)
+		byName, cands, err := c.candidatesFrom(ctx, m.ID, matched)
+		if err != nil {
+			c.skipUnreadable(m.Title, err)
+			continue
+		}
 		c.grabMissing(ctx, m, want, byName, cands)
 	}
 }
@@ -958,7 +977,11 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 		return nil
 	}
 
-	blocked := c.blockedSet(ctx, m.ID)
+	blocked, err := c.blockedSet(ctx, m.ID)
+	if err != nil {
+		c.skipUnreadable(m.Title, err)
+		return err
+	}
 	byName := make(map[string]indexer.Release, len(result.Releases))
 	cands := make([]quality.Candidate, 0, len(result.Releases))
 	for _, rel := range bestByTitle(grabbable(result.Releases)) {
@@ -974,7 +997,11 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 
 	grabbed := map[string]bool{}
 	grabbedGB := 0.0
-	pending := c.pendingGrabTitles(ctx, m.ID)
+	pending, err := c.pendingGrabTitles(ctx, m.ID)
+	if err != nil {
+		c.skipUnreadable(m.Title, err)
+		return err
+	}
 	for _, v := range want {
 		curSizeGB := gbOf(v.SizeBytes)
 		if v.File != nil && v.File.SizeBytes > 0 {
@@ -1066,7 +1093,11 @@ func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
 	if len(result.Releases) == 0 {
 		return nil
 	}
-	blocked := c.blockedSet(ctx, m.ID)
+	blocked, err := c.blockedSet(ctx, m.ID)
+	if err != nil {
+		c.skipUnreadable(m.Title, err)
+		return err
+	}
 	byName := make(map[string]indexer.Release, len(result.Releases))
 	cands := make([]quality.Candidate, 0, len(result.Releases))
 	for _, rel := range bestByTitle(grabbable(result.Releases)) {

@@ -388,7 +388,11 @@ func (c *Coordinator) searchAndGrabExcluding(ctx context.Context, m movies.Movie
 	if err != nil {
 		return nil, err
 	}
-	byName, cands := c.candidatesExcluding(ctx, m.ID, matchingMovieReleases(m, result.Releases), exclude)
+	byName, cands, err := c.candidatesExcluding(ctx, m.ID, matchingMovieReleases(m, result.Releases), exclude)
+	if err != nil {
+		c.skipUnreadable(m.Title, err)
+		return nil, err
+	}
 	return c.grabMissingTitles(ctx, m, want, byName, cands), nil
 }
 
@@ -550,6 +554,8 @@ func (c *Coordinator) detectStalledMusic(ctx context.Context, g grab, queue []do
 					return out.Release, nil
 				case outcomeIndexerError:
 					return "", fmt.Errorf("%w: %s", errSearchUnavailable, out.Detail)
+				case outcomeUnreadable:
+					return "", errors.New(out.Detail)
 				}
 				return "", nil
 			},

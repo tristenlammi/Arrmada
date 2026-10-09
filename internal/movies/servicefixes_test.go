@@ -186,3 +186,42 @@ func TestRouteVersion(t *testing.T) {
 		t.Errorf("all-forbidden resolution routed to %q, want Default", got.Label)
 	}
 }
+
+// An upgrade with the bin on moves the old file and its subtitles to the bin, records the
+// new file, tells the import pipeline the old one is gone, and leaves the other version
+// alone. A lower resolution after it is still refused and touches nothing.
+func TestMarkImportedReplacementRecyclesOld(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	f := newDeleteFixture(t, bin)
+	removed := f.recordRemoved()
+	ctx := context.Background()
+	newer := writeFixture(t, filepath.Join(f.root, "Heat (1995)", "Heat (1995) Bluray-2160p.mkv"))
+	if err := f.svc.MarkImported(ctx, f.id, newer, "Heat.1995.2160p.BluRay.x265-GRP"); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range append([]string{f.main}, f.subs...) {
+		if exists(p) || !f.inBin(bin, p) {
+			t.Errorf("%s should have moved to the bin", filepath.Base(p))
+		}
+	}
+	if !sameSet(*removed, append([]string{f.main}, f.subs...)) {
+		t.Errorf("forget hook got %q, want the old file and its subtitles", *removed)
+	}
+	if m, _ := f.svc.repo.Get(ctx, f.id); m.MovieFilePath != newer || !m.HasFile {
+		t.Errorf("movie = %+v, want the new file recorded", m)
+	}
+	if !exists(newer) || !exists(f.extra) || !exists(f.extraSub) {
+		t.Error("the new file or the other version's files were touched")
+	}
+
+	lower := writeFixture(t, filepath.Join(f.root, "Heat (1995)", "Heat (1995) WEBDL-720p.mkv"))
+	if err := f.svc.MarkImported(ctx, f.id, lower, "Heat.1995.720p.WEB-DL.x264-GRP"); !errors.Is(err, ErrWorseQuality) {
+		t.Fatalf("lower-resolution import: err = %v, want ErrWorseQuality", err)
+	}
+	if !exists(newer) || f.inBin(bin, newer) {
+		t.Error("the 2160p file was replaced by a 720p one")
+	}
+	if m, _ := f.svc.repo.Get(ctx, f.id); m.MovieFilePath != newer {
+		t.Errorf("default file = %q after a refused import, want the 2160p file", m.MovieFilePath)
+	}
+}

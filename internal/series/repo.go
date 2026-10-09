@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // ErrNotFound is returned when a series id doesn't exist.
@@ -235,23 +237,20 @@ func (r *Repo) InsertNewEpisodes(ctx context.Context, seriesID int64, seasons []
 // alone. Only for a listing numbered the same way as the stored rows: otherwise one
 // episode's title and date would land on another.
 func (r *Repo) RefreshEpisodeMetadata(ctx context.Context, seriesID int64, seasons []Season) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	for _, sn := range seasons {
-		for _, ep := range sn.Episodes {
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE episodes SET title = ?, overview = ?, air_date = ?, runtime = ?, still_url = ?
-				 WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
-				ep.Title, ep.Overview, ep.AirDate, ep.Runtime, ep.StillURL,
-				seriesID, sn.SeasonNumber, ep.EpisodeNumber); err != nil {
-				return err
+	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		for _, sn := range seasons {
+			for _, ep := range sn.Episodes {
+				if _, err := tx.ExecContext(ctx,
+					`UPDATE episodes SET title = ?, overview = ?, air_date = ?, runtime = ?, still_url = ?
+					 WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
+					ep.Title, ep.Overview, ep.AirDate, ep.Runtime, ep.StillURL,
+					seriesID, sn.SeasonNumber, ep.EpisodeNumber); err != nil {
+					return err
+				}
 			}
 		}
-	}
-	return tx.Commit()
+		return nil
+	})
 }
 
 // ReassignAbsolutes writes the listing's absolute numbers onto the episodes by (season,
@@ -260,21 +259,18 @@ func (r *Repo) RefreshEpisodeMetadata(ctx context.Context, seriesID int64, seaso
 // shifts but nothing else does: each file stays on the (season, episode) it was on. It
 // never reads or touches a file.
 func (r *Repo) ReassignAbsolutes(ctx context.Context, seriesID int64, seasons []Season) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	for _, sn := range seasons {
-		for _, ep := range sn.Episodes {
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE episodes SET absolute_number = ? WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
-				ep.AbsoluteNumber, seriesID, sn.SeasonNumber, ep.EpisodeNumber); err != nil {
-				return err
+	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		for _, sn := range seasons {
+			for _, ep := range sn.Episodes {
+				if _, err := tx.ExecContext(ctx,
+					`UPDATE episodes SET absolute_number = ? WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
+					ep.AbsoluteNumber, seriesID, sn.SeasonNumber, ep.EpisodeNumber); err != nil {
+					return err
+				}
 			}
 		}
-	}
-	return tx.Commit()
+		return nil
+	})
 }
 
 // StoredNumbering returns the series' current absolute → (season, episode) mapping, for
@@ -319,12 +315,20 @@ type EpisodeRemap struct {
 // existing episode. Runs in one transaction; on any error nothing changes. Returns the
 // files whose (season, episode) moved, so the caller can rename them on disk.
 func (r *Repo) RebuildEpisodes(ctx context.Context, seriesID int64, seasons []Season) ([]EpisodeRemap, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
+	var remaps []EpisodeRemap
+	err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		var err error
+		remaps, err = rebuildEpisodesTx(ctx, tx, seriesID, seasons)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = tx.Rollback() }()
+	return remaps, nil
+}
 
+// rebuildEpisodesTx is RebuildEpisodes' body, inside the caller's transaction.
+func rebuildEpisodesTx(ctx context.Context, tx *sql.Tx, seriesID int64, seasons []Season) ([]EpisodeRemap, error) {
 	// Snapshot everything that must survive the rebuild, keyed by its stable identity.
 	type placement struct {
 		season, episode int
@@ -460,9 +464,6 @@ func (r *Repo) RebuildEpisodes(ctx context.Context, seriesID int64, seasons []Se
 			return nil, err
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
 	return remaps, nil
 }
 
@@ -561,28 +562,22 @@ func (r *Repo) SeasonsFor(ctx context.Context, seriesID int64) ([]Season, error)
 // (seasonsFromDetails monitors `monitored && !special`). Disabling covers everything —
 // nothing should be grabbed for a show you've switched off.
 func (r *Repo) SetMonitored(ctx context.Context, id int64, monitored bool) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }() // no-op once committed
-
-	if _, err := tx.ExecContext(ctx, `UPDATE series SET monitored = ? WHERE id = ?`, b2i(monitored), id); err != nil {
-		return err
-	}
 	// season_number > 0 leaves specials alone when enabling; when disabling we want
 	// everything off, so the filter is dropped.
 	scope := ` AND season_number > 0`
 	if !monitored {
 		scope = ``
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE seasons SET monitored = ? WHERE series_id = ?`+scope, b2i(monitored), id); err != nil {
+	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `UPDATE series SET monitored = ? WHERE id = ?`, b2i(monitored), id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE seasons SET monitored = ? WHERE series_id = ?`+scope, b2i(monitored), id); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE episodes SET monitored = ? WHERE series_id = ?`+scope, b2i(monitored), id)
 		return err
-	}
-	if _, err := tx.ExecContext(ctx, `UPDATE episodes SET monitored = ? WHERE series_id = ?`+scope, b2i(monitored), id); err != nil {
-		return err
-	}
-	return tx.Commit()
+	})
 }
 
 // SetTVDBID records a series' TVDB id (the TheXEM lookup key).

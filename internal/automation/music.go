@@ -170,6 +170,7 @@ const (
 	outcomeListingError = "listing_error" // couldn't reach MusicBrainz for the listing
 	outcomeGrabFailed   = "grab_failed"   // the download client refused the release
 	outcomeNoSpace      = "no_space"      // not enough free disk for the release
+	outcomeUnreadable   = "unreadable"    // the blocklist or pending grabs couldn't be read
 )
 
 // albumOutcome is what one album search came to, so the sweep can decide its backoff.
@@ -268,8 +269,16 @@ func (c *Coordinator) grabAlbumExcluding(ctx context.Context, a music.Artist, al
 		return albumOutcome{Code: outcomeNoMatch, Detail: fmt.Sprintf("%d torrent release(s), none named this album", len(usable))}
 	}
 	matched := len(cands)
-	cands = c.dropBlockedMusic(ctx, al.ID, cands)
-	cands = dropPendingMusic(cands, c.pendingMusicGrabTitles(ctx, al.ID))
+	cands, err = c.dropBlockedMusic(ctx, al.ID, cands)
+	var pending map[string]bool
+	if err == nil {
+		pending, err = c.pendingMusicGrabTitles(ctx, al.ID)
+	}
+	if err != nil {
+		c.skipUnreadable(a.Name+" — "+al.Title, err)
+		return albumOutcome{Code: outcomeUnreadable, Detail: err.Error()}
+	}
+	cands = dropPendingMusic(cands, pending)
 	cands = dropPendingMusic(cands, exclude) // same normalized-title filter
 	if len(cands) == 0 {
 		return albumOutcome{Code: outcomeBlocked, Detail: fmt.Sprintf("%d match(es), all blocklisted or already grabbed", matched)}
@@ -617,21 +626,8 @@ func (c *Coordinator) recordMusicGrab(ctx context.Context, albumID int64, title,
 
 // pendingMusicGrabTitles returns releases already grabbed for this album and not yet
 // imported or failed, so a sweep can't grab the same one twice.
-func (c *Coordinator) pendingMusicGrabTitles(ctx context.Context, albumID int64) map[string]bool {
-	out := map[string]bool{}
-	rows, err := c.db.QueryContext(ctx,
-		`SELECT title FROM grabs WHERE movie_id = ? AND media_type = 'music' AND `+pendingTitleWhere, albumID)
-	if err != nil {
-		return out
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var t string
-		if rows.Scan(&t) == nil {
-			out[normTitle(t)] = true
-		}
-	}
-	return out
+func (c *Coordinator) pendingMusicGrabTitles(ctx context.Context, albumID int64) (map[string]bool, error) {
+	return c.pendingTitlesOf(ctx, albumID, "music")
 }
 
 func dropPendingMusic(releases []indexer.Release, pending map[string]bool) []indexer.Release {
@@ -648,10 +644,13 @@ func dropPendingMusic(releases []indexer.Release, pending map[string]bool) []ind
 }
 
 // dropBlockedMusic removes releases blocklisted for this album.
-func (c *Coordinator) dropBlockedMusic(ctx context.Context, albumID int64, releases []indexer.Release) []indexer.Release {
-	blocked := c.blockedSetMusic(ctx, albumID)
+func (c *Coordinator) dropBlockedMusic(ctx context.Context, albumID int64, releases []indexer.Release) ([]indexer.Release, error) {
+	blocked, err := c.blockedSetMusic(ctx, albumID)
+	if err != nil {
+		return nil, err
+	}
 	if len(blocked) == 0 {
-		return releases
+		return releases, nil
 	}
 	out := make([]indexer.Release, 0, len(releases))
 	for _, rel := range releases {
@@ -659,7 +658,7 @@ func (c *Coordinator) dropBlockedMusic(ctx context.Context, albumID int64, relea
 			out = append(out, rel)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // ensure the library importer is referenced even if the album helpers move.
@@ -699,7 +698,11 @@ func (c *Coordinator) GrabDiscography(ctx context.Context, artistID int64) error
 	if len(cands) == 0 {
 		return fmt.Errorf("no discography release found for %q", a.Name)
 	}
-	cands = c.dropBlockedMusic(ctx, artistID, cands)
+	cands, err = c.dropBlockedMusic(ctx, artistID, cands)
+	if err != nil {
+		c.skipUnreadable(a.Name+" discography", err)
+		return err
+	}
 	best := pickBestAlbum(sp, cands)
 	if best == nil {
 		return fmt.Errorf("found discography releases for %q, but none met the quality profile", a.Name)

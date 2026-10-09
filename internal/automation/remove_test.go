@@ -186,13 +186,20 @@ func TestRemovedGrabHoldsEveryKind(t *testing.T) {
 		c.setGrabStatus(ctx, gid, grabStatusRemoved)
 	}
 	key := normTitle("Some.Release-GRP")
-	if !c.pendingSeriesGrabTitles(ctx, 7)[key] {
+	has := func(set map[string]bool, err error) bool {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return set[key]
+	}
+	if !has(c.pendingSeriesGrabTitles(ctx, 7)) {
 		t.Error("series guard ignores a removed grab")
 	}
-	if !c.pendingBookGrabTitles(ctx, 7)[key] {
+	if !has(c.pendingBookGrabTitles(ctx, 7)) {
 		t.Error("book guard ignores a removed grab")
 	}
-	if !c.pendingMusicGrabTitles(ctx, 7)[key] {
+	if !has(c.pendingMusicGrabTitles(ctx, 7)) {
 		t.Error("music guard ignores a removed grab")
 	}
 }

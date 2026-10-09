@@ -144,9 +144,18 @@ func main() {
 	}
 	defer func() { _ = st.Close() }()
 	log.Info("database ready", "data_dir", cfg.DataDir)
+	// Settings are read once, here, and served from memory from now on. Starting without
+	// them would mean running on defaults the owner never chose (the music library going
+	// to the env folder, a module switching itself back on), so an unreadable settings
+	// table stops the boot.
+	settingsSvc, err := settings.Open(context.Background(), st.DB())
+	if err != nil {
+		log.Error("failed to load settings", "err", err)
+		os.Exit(1)
+	}
 	// One-time: converted files used to have " AV1" / " x265" appended to their recorded
 	// release, which read back as the old codec and hid the group. Rewrite those in place.
-	if _, err := convert.RepairCodecStamps(context.Background(), st.DB(), log); err != nil {
+	if _, err := convert.RepairCodecStamps(context.Background(), st.DB(), settingsSvc, log); err != nil {
 		log.Warn("convert: codec stamp repair failed", "err", err)
 	}
 
@@ -167,7 +176,6 @@ func main() {
 	authSvc := auth.NewService(st.DB())
 	indexers := indexer.NewService(st.DB(), log, cfg.FlaresolverrURL)
 	downloads := download.NewService(st.DB(), log)
-	settingsSvc := settings.NewService(st.DB())
 	// Library folders chosen in the app (first-run setup, Settings → Library) win over the
 	// environment's, for everything — importer, qBittorrent save path, disk guard.
 	httpapi.ApplySavedLibraryDirs(context.Background(), settingsSvc.Get, &cfg, log)
@@ -190,7 +198,7 @@ func main() {
 	hardcover := metadata.NewHardcoverFunc(keyStore.Func("hardcover"), olProvider)
 	hardcover.SetDiskCache(diskCache)
 	openlib := metadata.NewBookSources(hardcover, metadata.NewBooksWithFallback(olProvider, metadata.NewGoogleBooks()))
-	qualitySvc := quality.NewService(st.DB())
+	qualitySvc := quality.NewServiceWith(st.DB(), settingsSvc)
 	// Titles left on a profile deleted before deletes reassigned them already run on the
 	// default; point their stored ref there too, so the UI and the database agree. Only
 	// refs naming a missing profile are touched.

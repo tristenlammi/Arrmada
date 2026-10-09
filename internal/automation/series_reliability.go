@@ -180,7 +180,11 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 	if err != nil || len(res.Releases) == 0 {
 		return err
 	}
-	blocked := c.blockedSetSeries(ctx, s.ID)
+	blocked, err := c.blockedSetSeries(ctx, s.ID)
+	if err != nil {
+		c.skipUnreadable(s.Title, err)
+		return err
+	}
 	byName := make(map[string]indexer.Release, len(res.Releases))
 	droppedTitle := 0
 	for _, rel := range bestByTitle(grabbable(res.Releases)) {
@@ -206,7 +210,11 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 
 	grabbed := map[string]bool{}
 	grabbedGB := 0.0
-	pending := c.pendingSeriesGrabTitles(ctx, s.ID)
+	pending, err := c.pendingSeriesGrabTitles(ctx, s.ID)
+	if err != nil {
+		c.skipUnreadable(s.Title, err)
+		return err
+	}
 	for _, ep := range haveEps {
 		var cands []quality.Candidate
 		for name, rel := range byName {

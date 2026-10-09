@@ -3,21 +3,34 @@ package quality
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/parser"
+	"github.com/tristenlammi/arrmada/internal/settings"
 )
 
 // Service is the quality subsystem's application logic: it resolves a profile
 // reference (a preset key like "4k-hdr" or a custom ref like "custom:12") into a
 // runnable engine+profile, and manages user-defined profiles for the builder.
 type Service struct {
-	repo *Repo
+	repo     *Repo
+	settings *settings.Service // holds each media type's default profile
 }
 
-// NewService wires the quality service over the database.
-func NewService(db *sql.DB) *Service { return &Service{repo: NewRepo(db)} }
+// NewService wires the quality service over the database with a settings service of its
+// own. The app passes its shared one through NewServiceWith, so a default saved here is
+// what every other reader sees; this form is for tests and tools that only need quality.
+func NewService(db *sql.DB) *Service { return NewServiceWith(db, settings.NewService(db)) }
+
+// NewServiceWith wires the quality service over the database and the app's settings.
+func NewServiceWith(db *sql.DB, set *settings.Service) *Service {
+	return &Service{repo: NewRepo(db), settings: set}
+}
+
+// defaultKey is the settings key holding a media type's default profile.
+func defaultKey(mediaType string) string { return "default_profile:" + mediaType }
 
 // ProfileInfo is a lightweight listing entry (presets + custom profiles).
 type ProfileInfo struct {
@@ -35,8 +48,7 @@ type ProfileInfo struct {
 // It is always a real profile: "n/a" is a marker on scanned titles, not a default, and
 // one saved before SetDefaultProfile refused it is passed over.
 func (s *Service) DefaultProfile(ctx context.Context, mediaType string) string {
-	v, err := s.repo.getSetting(ctx, "default_profile:"+mediaType)
-	if err == nil && v != "" && v != "n/a" && s.Known(ctx, v) {
+	if v := s.settings.Get(ctx, defaultKey(mediaType), ""); v != "" && v != "n/a" && s.Known(ctx, v) {
 		return v
 	}
 	if custom, err := s.repo.List(ctx, mediaType); err == nil && len(custom) > 0 {
@@ -50,7 +62,7 @@ func (s *Service) SetDefaultProfile(ctx context.Context, mediaType, ref string) 
 	if ref == "n/a" || !s.Known(ctx, ref) {
 		return errNotKnown
 	}
-	return s.repo.setSetting(ctx, "default_profile:"+mediaType, ref)
+	return s.settings.Set(ctx, defaultKey(mediaType), ref)
 }
 
 var errNotKnown = errorString("unknown quality profile")
@@ -484,6 +496,15 @@ func (s *Service) Delete(ctx context.Context, id int64, moveTo string) (Reassign
 	moved, err := s.repo.DeleteAndReassign(ctx, id, moveTo)
 	if err != nil {
 		return Reassigned{}, "", err
+	}
+	// Deleting the default hands the role to the target, so new titles land where the
+	// old ones went rather than on whichever profile happens to sort first. If this save
+	// fails the profile is gone all the same and DefaultProfile already falls back to a
+	// real one; the error says the default didn't move.
+	if s.settings.Get(ctx, defaultKey(sp.MediaType), "") == "custom:"+strconv.FormatInt(id, 10) {
+		if err := s.settings.Set(ctx, defaultKey(sp.MediaType), moveTo); err != nil {
+			return moved, moveTo, fmt.Errorf("the profile was deleted, but %s couldn't be made the default: %w", moveTo, err)
+		}
 	}
 	return moved, moveTo, nil
 }

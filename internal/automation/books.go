@@ -272,11 +272,15 @@ func (c *Coordinator) grabBookEditionExcluding(ctx context.Context, b books.Book
 		c.log.Info("book: no release matched this title", "title", b.Title, "edition", kind)
 		return "", nil
 	}
-	res.Releases = c.dropBlockedBook(ctx, b.ID, res.Releases) // don't re-grab a blocklisted (e.g. stalled) release
-	// DB pending-grab guard, mirroring the movie path's pendingGrabTitles: a release
-	// already grabbed for this book (and not yet imported/failed) must not be grabbed
-	// again, even when the queue-based bookDownloading check couldn't see it.
-	res.Releases = dropPendingBook(res.Releases, c.pendingBookGrabTitles(ctx, b.ID))
+	// Don't re-grab a blocklisted (e.g. stalled) release. The DB pending-grab guard,
+	// mirroring the movie path's pendingGrabTitles, drops a release already grabbed for
+	// this book (and not yet imported/failed), even when the queue-based bookDownloading
+	// check couldn't see it.
+	res.Releases, err = c.dropUngrabbableBook(ctx, b.ID, res.Releases)
+	if err != nil {
+		c.skipUnreadable(b.Title, err)
+		return "", err
+	}
 	res.Releases = dropPendingBook(res.Releases, exclude) // same normalized-title filter
 	best := pickBestBookForKind(sp, res.Releases, kind)
 	if best == nil {
@@ -1679,22 +1683,23 @@ func sanitizeName(s string) string {
 // this still stops the same release being grabbed again. Bounded to a day so a grab
 // stuck 'grabbed' forever (torrent removed by hand, stall timeout unset) can't block
 // re-grabbing that release permanently.
-func (c *Coordinator) pendingBookGrabTitles(ctx context.Context, bookID int64) map[string]bool {
-	rows, err := c.db.QueryContext(ctx,
-		`SELECT title FROM grabs
-		 WHERE movie_id = ? AND media_type = 'book' AND `+pendingTitleWhere, bookID)
+func (c *Coordinator) pendingBookGrabTitles(ctx context.Context, bookID int64) (map[string]bool, error) {
+	return c.pendingTitlesOf(ctx, bookID, "book")
+}
+
+// dropUngrabbableBook takes out of releases everything blocklisted for the book and
+// everything already grabbed for it and still in flight. An error means one of those
+// lists couldn't be read; the caller grabs nothing for the book this round.
+func (c *Coordinator) dropUngrabbableBook(ctx context.Context, bookID int64, releases []indexer.Release) ([]indexer.Release, error) {
+	releases, err := c.dropBlockedBook(ctx, bookID, releases)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	defer rows.Close()
-	set := map[string]bool{}
-	for rows.Next() {
-		var title string
-		if rows.Scan(&title) == nil {
-			set[normTitle(title)] = true
-		}
+	pending, err := c.pendingBookGrabTitles(ctx, bookID)
+	if err != nil {
+		return nil, err
 	}
-	return set
+	return dropPendingBook(releases, pending), nil
 }
 
 // dropPendingBook removes releases whose normalized title is already pending as a grab.
@@ -1784,10 +1789,13 @@ func (e errString) Error() string { return string(e) }
 
 // dropBlockedBook removes releases blocklisted for this book (so a stalled/rejected one isn't
 // re-grabbed).
-func (c *Coordinator) dropBlockedBook(ctx context.Context, bookID int64, releases []indexer.Release) []indexer.Release {
-	blocked := c.blockedSetBook(ctx, bookID)
+func (c *Coordinator) dropBlockedBook(ctx context.Context, bookID int64, releases []indexer.Release) ([]indexer.Release, error) {
+	blocked, err := c.blockedSetBook(ctx, bookID)
+	if err != nil {
+		return nil, err
+	}
 	if len(blocked) == 0 {
-		return releases
+		return releases, nil
 	}
 	out := releases[:0]
 	for _, rel := range releases {
@@ -1795,7 +1803,7 @@ func (c *Coordinator) dropBlockedBook(ctx context.Context, bookID int64, release
 			out = append(out, rel)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // bookEditionLanded reports whether the edition a grab was for is now on disk. The edition
@@ -1844,13 +1852,17 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 			continue // already downloading for this book — don't stack another grab
 		}
 		sp := c.bookProfile(ctx, b.QualityProfile)
-		matched := c.dropBlockedBook(ctx, b.ID, releasesForBook(res.Releases, b))
+		matched := releasesForBook(res.Releases, b)
 		if len(matched) == 0 {
 			continue
 		}
-		// DB pending-grab guard (belt to bookDownloading's braces): never re-grab a
-		// release that's already been grabbed for this book and is still pending.
-		matched = dropPendingBook(matched, c.pendingBookGrabTitles(ctx, b.ID))
+		// Blocklisted releases go, and so does anything already grabbed for this book
+		// and still pending (the DB belt to bookDownloading's braces).
+		matched, err := c.dropUngrabbableBook(ctx, b.ID, matched)
+		if err != nil {
+			c.skipUnreadable(b.Title, err)
+			continue
+		}
 		if len(matched) == 0 {
 			continue
 		}

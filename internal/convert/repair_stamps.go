@@ -3,14 +3,16 @@ package convert
 import (
 	"context"
 	"database/sql"
-	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/parser"
+	"github.com/tristenlammi/arrmada/internal/settings"
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
-// codecStampRepairKey marks the one-time codec stamp repair as done (settings table).
+// codecStampRepairKey marks the one-time codec stamp repair as done (a setting).
 const codecStampRepairKey = "repair:codec_stamp_v1"
 
 // legacyStamps are the tokens Convert used to append to a converted file's recorded
@@ -30,15 +32,12 @@ var legacyStamps = []struct {
 // upgrade sweep costed the converted file at H.264 efficiency and re-grabbed the release
 // it was converted from. Each such row gets the suffix taken off and the codec swapped in
 // place instead: "...H.264-GRP AV1" becomes "...AV1-GRP". Only rows that actually change
-// are written; a settings key stops it running again.
-func RepairCodecStamps(ctx context.Context, db *sql.DB, log *slog.Logger) (int, error) {
-	var done string
-	err := db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, codecStampRepairKey).Scan(&done)
-	if err == nil {
+// are written; a settings key stops it running again. The key is saved after the rows,
+// so a failure in between only means the next boot looks again, and finds nothing left
+// to change.
+func RepairCodecStamps(ctx context.Context, db *sql.DB, set *settings.Service, log *slog.Logger) (int, error) {
+	if _, done := set.Lookup(codecStampRepairKey); done {
 		return 0, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, err
 	}
 
 	type fix struct {
@@ -72,24 +71,19 @@ func RepairCodecStamps(ctx context.Context, db *sql.DB, log *slog.Logger) (int, 
 		}
 	}
 
-	tx, err := db.BeginTx(ctx, nil)
+	err := store.WithTx(ctx, db, func(tx *sql.Tx) error {
+		for _, f := range fixes {
+			if _, err := tx.ExecContext(ctx, `UPDATE `+f.table+` SET source_release = ? WHERE id = ?`, f.after, f.id); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 	if err != nil {
 		return 0, err
 	}
-	defer func() { _ = tx.Rollback() }()
-	for _, f := range fixes {
-		if _, err := tx.ExecContext(ctx, `UPDATE `+f.table+` SET source_release = ? WHERE id = ?`, f.after, f.id); err != nil {
-			return 0, err
-		}
-	}
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO settings (key, value) VALUES (?, '1')
-		 ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`,
-		codecStampRepairKey); err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, err
+	if err := set.Set(ctx, codecStampRepairKey, "1"); err != nil {
+		return len(fixes), fmt.Errorf("record the repair as done: %w", err)
 	}
 
 	if len(fixes) > 0 && log != nil {

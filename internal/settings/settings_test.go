@@ -3,6 +3,7 @@ package settings
 import (
 	"context"
 	"errors"
+	"strconv"
 	"testing"
 
 	"github.com/tristenlammi/arrmada/internal/store"
@@ -83,5 +84,141 @@ func TestEnsureModuleDefaultWritesNothingOnError(t *testing.T) {
 	}
 	if got := s.Get(ctx, KeyModuleMusic, "unset"); got != "unset" {
 		t.Errorf("value = %q, want it left unset", got)
+	}
+}
+
+// A saved value is what every reader sees next, and a second service over the same
+// database (the next boot) loads it.
+func TestSetThenGet(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	ctx := context.Background()
+	s, err := Open(ctx, st.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Get(ctx, "music_root", "/default"); got != "/default" {
+		t.Errorf("unset = %q, want the default", got)
+	}
+	if err := s.Set(ctx, "music_root", "/music"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Get(ctx, "music_root", "/default"); got != "/music" {
+		t.Errorf("after Set = %q, want /music", got)
+	}
+	if v, ok := s.Lookup("music_root"); !ok || v != "/music" {
+		t.Errorf("Lookup = %q, %v", v, ok)
+	}
+	// An empty value is a saved value, not an absent one.
+	if err := s.Set(ctx, "tmdb_region", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Get(ctx, "tmdb_region", "US"); got != "" {
+		t.Errorf("saved empty value read as %q", got)
+	}
+	again, err := Open(ctx, st.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := again.Get(ctx, "music_root", ""); got != "/music" {
+		t.Errorf("next boot reads %q, want /music", got)
+	}
+	all := again.All()
+	all["music_root"] = "changed"
+	if got := again.Get(ctx, "music_root", ""); got != "/music" {
+		t.Error("All must return a copy")
+	}
+}
+
+// Once loaded, reads come from memory: a database that has stopped answering can't turn
+// a saved setting back into its default. A save against it fails and changes nothing.
+func TestBrokenDatabaseKeepsSettings(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	s, err := Open(ctx, st.DB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Set(ctx, "music_root", "/music"); err != nil {
+		t.Fatal(err)
+	}
+	_ = st.Close()
+
+	if got := s.Get(ctx, "music_root", "/env-default"); got != "/music" {
+		t.Errorf("with the database gone Get = %q, want the saved /music", got)
+	}
+	if err := s.Set(ctx, "music_root", "/elsewhere"); err == nil {
+		t.Fatal("Set against a closed database reported success")
+	}
+	if got := s.Get(ctx, "music_root", ""); got != "/music" {
+		t.Errorf("after a failed Set = %q, want the old value", got)
+	}
+	if err := s.Reload(ctx); err == nil {
+		t.Error("Reload against a closed database reported success")
+	}
+	if got := s.Get(ctx, "music_root", ""); got != "/music" {
+		t.Errorf("after a failed Reload = %q, want the old value", got)
+	}
+}
+
+// The app refuses to start on settings it couldn't read, rather than on defaults.
+func TestOpenFailsWhenTableUnreadable(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if _, err := st.DB().Exec(`DROP TABLE settings`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Open(context.Background(), st.DB()); err == nil {
+		t.Fatal("Open succeeded without a settings table")
+	}
+}
+
+// Reload picks up what is in the table now (a restored database, say).
+func TestReload(t *testing.T) {
+	s, ctx := testService(t), context.Background()
+	if err := s.Set(ctx, "a", "1"); err != nil {
+		t.Fatal(err)
+	}
+	other := NewService(s.db) // writes behind the first service's back
+	if err := other.Set(ctx, "a", "2"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Get(ctx, "a", ""); got != "1" {
+		t.Fatalf("before Reload = %q, want the cached 1", got)
+	}
+	if err := s.Reload(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.Get(ctx, "a", ""); got != "2" {
+		t.Errorf("after Reload = %q, want 2", got)
+	}
+}
+
+// Readers and writers can run at once.
+func TestConcurrentAccess(t *testing.T) {
+	s, ctx := testService(t), context.Background()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			_ = s.Set(ctx, "k", strconv.Itoa(i))
+		}
+	}()
+	for i := 0; i < 200; i++ {
+		_ = s.Get(ctx, "k", "")
+		_ = s.All()
+	}
+	<-done
+	if got := s.Get(ctx, "k", ""); got != "49" {
+		t.Errorf("final value = %q, want 49", got)
 	}
 }
