@@ -574,6 +574,14 @@ func (p *Progress) SetMessage(msg string) {
 	p.Set(pct, msg)
 }
 
+// JobID is the id of the job this Progress reports for (0 for a nil Progress).
+func (p *Progress) JobID() int64 {
+	if p == nil || p.e == nil {
+		return 0
+	}
+	return p.e.id
+}
+
 func (p *Progress) snapshot() (float64, string) {
 	if p == nil {
 		return 0, ""

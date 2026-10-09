@@ -351,6 +351,9 @@ func main() {
 	// Each task's last run, result and failure streak survive a restart, so the Tasks
 	// table can still say what failed overnight after a deploy.
 	sched.SetStore(scheduler.NewSQLStore(st.DB()))
+	// Run now is a job: it leaves a jobs row with its outcome, and shutdown handles it
+	// like any other job. Scheduled ticks stay out of the jobs table.
+	sched.SetJobs(scheduler.ViaJobs(runCtx, jobRunner))
 	// Announce finished runs to staff pages — but only the ones worth a refresh (hourly-ish
 	// tasks, a result that flipped, a Run now), not every 30-second import sweep. Names
 	// and outcome only: the bus reaches every staff client.
