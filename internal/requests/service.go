@@ -274,7 +274,25 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		if addErr != nil && !errors.Is(addErr, movies.ErrExists) {
 			return Request{}, addErr
 		}
-		if addErr == nil {
+		if errors.Is(addErr, movies.ErrExists) {
+			// Already in the library. Without a file it may never have been wanted (a
+			// scan adds what it finds unmonitored), so approving it is what monitors it;
+			// one that has its file is simply approved and the ready path stamps it.
+			existing, err := s.movies.GetByTMDB(ctx, req.TMDBID)
+			if err != nil {
+				return Request{}, fmt.Errorf("find the movie in the library: %w", err)
+			}
+			m, addErr = existing, nil
+			if m.HasFile {
+				m.ID = 0
+			} else if !m.Monitored {
+				if err := s.movies.SetMonitored(ctx, m.ID, true); err != nil {
+					return Request{}, err
+				}
+				s.movies.AddEvent(ctx, m.ID, "monitored", "Monitored by request from "+requesterName(req))
+			}
+		}
+		if addErr == nil && m.ID > 0 {
 			mid := m.ID
 			s.background("movie.search", fmt.Sprintf("movie:%d", mid), trigger, req.Title, "movie", mid, 3*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
 				return s.coord.SearchMovie(c, mid)
@@ -287,7 +305,19 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		if addErr != nil && !errors.Is(addErr, series.ErrExists) {
 			return Request{}, addErr
 		}
-		if addErr == nil {
+		if errors.Is(addErr, series.ErrExists) {
+			// Already in the library: make it fetch what was asked for, unless it's all
+			// on disk already.
+			existing, wants, err := s.monitorExistingSeries(ctx, req)
+			if err != nil {
+				return Request{}, err
+			}
+			sr, addErr = existing, nil
+			if !wants {
+				sr.ID = 0
+			}
+		}
+		if addErr == nil && sr.ID > 0 {
 			sid := sr.ID
 			s.background("series.search", fmt.Sprintf("series:%d", sid), trigger, req.Title, "show", 0, 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
 				return s.coord.SearchSeriesNow(c, sid)
@@ -311,6 +341,14 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		// edition its profile wants (an audiobook request for a book we have as an ebook)
 		// and nothing is already downloading for it, which a second grab would duplicate.
 		existingWants := addErr != nil && s.lacksWantedEdition(ctx, b) && len(s.activeGrabs(ctx, "book", b.ID)) == 0
+		if existingWants && b.ID > 0 && !b.Monitored {
+			// A book the library holds unmonitored is never looked for again by the sweep;
+			// approving a request for it is what wants it.
+			if err := s.books.SetMonitored(ctx, b.ID, true); err != nil {
+				return Request{}, err
+			}
+			s.books.AddEvent(ctx, b.ID, "monitored", "Monitored by request from "+requesterName(req))
+		}
 		if b.ID > 0 && (addErr == nil || existingWants) && s.searchBook != nil {
 			bid := b.ID
 			s.background("book.search", fmt.Sprintf("book:%d", bid), trigger, req.Title, "book", 0, 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {

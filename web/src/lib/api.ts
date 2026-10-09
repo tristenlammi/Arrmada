@@ -1151,6 +1151,7 @@ export interface DiscoverCard {
   genres?: string[]; // up to three
   in_library: boolean;
   has_file: boolean;
+  wanted?: boolean; // in the library, monitored and missing files: the server is already after it
   request_status?: "pending" | "approved" | "declined";
   download_progress?: number; // 0..1 while downloading
 }

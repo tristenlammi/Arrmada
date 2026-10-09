@@ -188,6 +188,11 @@ type AddOptions struct {
 	Preset string
 	// MonitorNewSeasons overrides the preset's own choice when set.
 	MonitorNewSeasons *bool
+	// Seasons, when not nil, replaces the preset: exactly these regular seasons are
+	// monitored (with all their episodes), nothing else, never specials. "Monitor new
+	// seasons" is then off unless MonitorNewSeasons says otherwise, so a show added for
+	// some seasons doesn't start grabbing the next one on its own.
+	Seasons map[int]bool
 }
 
 // Add adds a show monitored with every regular episode, or — monitored=false, as the
@@ -243,8 +248,18 @@ func (s *Service) AddWith(ctx context.Context, tmdbID int, qualityProfile string
 		s.refreshSceneMap(ctx, created.ID, d.TVDBID) // TheXEM scene mapping for split-season anime
 	}
 	s.syncTMDBAliases(ctx, created.ID, d)
-	if err := s.repo.ApplyMonitorPreset(ctx, created.ID, preset, opts.MonitorNewSeasons); err != nil {
-		s.log.Warn("series: couldn't apply the monitoring preset", "series", created.Title, "preset", preset, "err", err)
+	var monErr error
+	if opts.Seasons != nil {
+		mns := false
+		if opts.MonitorNewSeasons != nil {
+			mns = *opts.MonitorNewSeasons
+		}
+		monErr = s.repo.MonitorOnlySeasons(ctx, created.ID, opts.Seasons, mns)
+	} else {
+		monErr = s.repo.ApplyMonitorPreset(ctx, created.ID, preset, opts.MonitorNewSeasons)
+	}
+	if monErr != nil {
+		s.log.Warn("series: couldn't apply the monitoring choice", "series", created.Title, "preset", preset, "err", monErr)
 	} else if got, err := s.repo.Get(ctx, created.ID); err == nil {
 		created = got
 	}

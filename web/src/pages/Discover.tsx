@@ -1092,8 +1092,10 @@ function badgeFor(c: DiscoverCard, requested: boolean): { label: string; tone: T
   // `requested` (this session) beats a stale "declined" — a re-request goes pending.
   if (requested || c.request_status === "pending") return { label: "Pending", tone: "avoid" };
   if (c.request_status === "declined") return { label: "Declined", tone: "faint" };
-  // In the library but no file yet and no request in flight → it's wanted, not "requested".
-  if (c.in_library) return { label: "Wanted", tone: "faint" };
+  // In the library, being fetched, no file yet and no request in flight → it's wanted, not
+  // "requested". One nobody monitors (a library scan found it) gets no badge, so it keeps
+  // its Request button.
+  if (c.wanted) return { label: "Wanted", tone: "faint" };
   return null;
 }
 
