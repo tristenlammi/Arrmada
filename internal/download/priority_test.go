@@ -144,9 +144,6 @@ func TestEnsureBundled(t *testing.T) {
 	if all, _ = svc.List(ctx); len(all) != 0 {
 		t.Fatalf("a deleted bundled client came back: %+v", all)
 	}
-	if ok, _ := svc.HasBundled(ctx); ok {
-		t.Error("HasBundled after delete")
-	}
 
 	// Restore brings it back, flagged and on.
 	if err := svc.RestoreBundled(ctx, url); err != nil {

@@ -114,12 +114,6 @@ func (s *Service) RestoreBundled(ctx context.Context, url string) error {
 	return s.EnsureBundled(ctx, url)
 }
 
-// HasBundled reports whether a bundled row exists, switched off or not.
-func (s *Service) HasBundled(ctx context.Context) (bool, error) {
-	_, ok, err := s.repo.Bundled(ctx)
-	return ok, err
-}
-
 // ErrBundledInactive means there's no bundled qBittorrent to tune: it was removed, or it
 // is switched off and so may not be running at all.
 var ErrBundledInactive = errors.New("the bundled qBittorrent is switched off or removed")
