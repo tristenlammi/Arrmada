@@ -172,6 +172,16 @@ func (r *Repo) Get(ctx context.Context, id int64) (Movie, error) {
 	return m, err
 }
 
+// GetByTMDB returns the library movie with a TMDB id (ErrNotFound when there is none).
+func (r *Repo) GetByTMDB(ctx context.Context, tmdbID int) (Movie, error) {
+	row := r.q().QueryRowContext(ctx, `SELECT `+movieCols+` FROM movies WHERE tmdb_id = ?`, tmdbID)
+	m, err := r.scan(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Movie{}, ErrNotFound
+	}
+	return m, err
+}
+
 // Create inserts a movie.
 func (r *Repo) Create(ctx context.Context, m Movie) (Movie, error) {
 	if m.MinAvailability == "" {

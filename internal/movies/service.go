@@ -277,16 +277,41 @@ func (s *Service) Add(ctx context.Context, tmdbID int, qualityProfile string, mo
 
 // ScanResult summarizes a library scan.
 type ScanResult struct {
-	Imported  int               `json:"imported"`
-	Skipped   int               `json:"skipped"`   // already in the library
-	Unmatched []UnmatchedFolder `json:"unmatched"` // folders TMDB couldn't confidently identify
+	Imported int `json:"imported"`
+	Skipped  int `json:"skipped"` // already in the library with this file
+	// Attached counts films already in the library without a file that the scan gave the
+	// file it found — the files the sweeps would otherwise have downloaded again.
+	Attached int `json:"attached"`
+	// Duplicates are folders for a film that already has a different file: maybe another
+	// cut, maybe a stray copy — the owner decides, nothing is changed.
+	Duplicates []ScanDuplicate   `json:"duplicates"`
+	Unmatched  []UnmatchedFolder `json:"unmatched"` // folders TMDB couldn't confidently identify
 }
 
-// ScanLibrary walks the library root, matches each movie folder/file to TMDB,
-// and creates entries for anything not already tracked — marked UNMONITORED with
-// an "n/a" quality profile (they already exist on disk; Arrmada just catalogs them).
-func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanResult, error) {
-	var res ScanResult
+// ScanDuplicate is a scanned folder whose film already has a different file.
+type ScanDuplicate struct {
+	MovieID int64  `json:"movie_id"`
+	Title   string `json:"title"`
+	Folder  string `json:"folder"`
+	Path    string `json:"path"`
+}
+
+// ScanOptions says how a scan catalogs the films it adds. The zero value is the old
+// behaviour: unmonitored, with no profile ("n/a"), so Arrmada only catalogs them.
+type ScanOptions struct {
+	// Monitor adds the films monitored, so the upgrade sweep can replace their files.
+	Monitor bool `json:"monitor"`
+	// QualityProfile is the profile they get ("" = "n/a").
+	QualityProfile string `json:"quality_profile"`
+}
+
+// ScanLibrary walks the library root and matches each movie folder/file to TMDB. A film
+// not in the library is created (as opts says; by default UNMONITORED with an "n/a"
+// profile — Arrmada just catalogs it). A film already in the library without a file gets
+// the file attached, so the sweeps stop looking for something the owner already has. A
+// film that already has a different file is reported as a duplicate and left alone.
+func (s *Service) ScanLibrary(ctx context.Context, rootOverride string, opts ScanOptions) (ScanResult, error) {
+	res := ScanResult{Duplicates: []ScanDuplicate{}, Unmatched: []UnmatchedFolder{}}
 	if !s.meta.Available() {
 		return res, fmt.Errorf("movie metadata isn't configured — add a TMDB key in Settings → System → API keys")
 	}
@@ -294,13 +319,23 @@ func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanRes
 	if root == "" {
 		root = s.libRoot()
 	}
-	existing, err := s.repo.List(ctx)
+	tracks, existing, err := s.LibraryVersionRows(ctx)
 	if err != nil {
 		return res, err
 	}
-	have := make(map[int]bool, len(existing))
+	byTMDB := make(map[int]Movie, len(existing))
 	for _, m := range existing {
-		have[m.TMDBID] = true
+		byTMDB[m.TMDBID] = m
+	}
+	// Every path any track holds: a file already recorded is never attached twice or
+	// reported as a duplicate of itself.
+	owned := map[string]bool{}
+	for _, vs := range tracks {
+		for _, v := range vs {
+			if v.HasFile && v.FilePath != "" {
+				owned[filepath.Clean(v.FilePath)] = true
+			}
+		}
 	}
 
 	entries, err := os.ReadDir(root)
@@ -308,6 +343,9 @@ func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanRes
 		return res, err
 	}
 	for _, e := range entries {
+		if ctx.Err() != nil {
+			break
+		}
 		name := e.Name()
 		if library.SkipScanDir(name) {
 			continue // the recycle bins and other hidden folders
@@ -332,35 +370,57 @@ func (s *Service) ScanLibrary(ctx context.Context, rootOverride string) (ScanRes
 			res.Unmatched = append(res.Unmatched, UnmatchedFolder{Folder: name, Title: rel.Title, Year: rel.Year, Candidates: topMovies(results, 6)})
 			continue
 		}
-		if have[match.TMDBID] {
-			res.Skipped++
+		if m, inLibrary := byTMDB[match.TMDBID]; inLibrary {
+			switch {
+			case owned[filepath.Clean(video)]:
+				res.Skipped++
+			case !m.HasFile:
+				if err := s.attachExisting(ctx, m, video, "Attached during library scan: "); err != nil {
+					s.log.Warn("library scan: couldn't attach the file to the film already in the library",
+						"title", m.Title, "path", video, "err", err)
+					res.Unmatched = append(res.Unmatched, UnmatchedFolder{Folder: name, Title: rel.Title, Year: rel.Year})
+					continue
+				}
+				m.HasFile, m.MovieFilePath = true, video
+				byTMDB[match.TMDBID] = m
+				owned[filepath.Clean(video)] = true
+				res.Attached++
+			default:
+				res.Duplicates = append(res.Duplicates, ScanDuplicate{MovieID: m.ID, Title: m.Title, Folder: name, Path: video})
+			}
 			continue
 		}
-		if err := s.importMovieFile(ctx, video, match.TMDBID); err != nil {
+		created, err := s.importMovieFile(ctx, video, match.TMDBID, opts)
+		if err != nil {
 			res.Unmatched = append(res.Unmatched, UnmatchedFolder{Folder: name, Title: rel.Title, Year: rel.Year})
 			continue
 		}
-		have[match.TMDBID] = true
+		byTMDB[match.TMDBID] = created
+		owned[filepath.Clean(video)] = true
 		res.Imported++
 	}
 	s.setLastUnmatched(res.Unmatched)
 	return res, nil
 }
 
-// importMovieFile catalogs one on-disk video as the given TMDB movie (unmonitored,
-// no quality profile — Arrmada is only adopting an existing file).
-func (s *Service) importMovieFile(ctx context.Context, video string, tmdbID int) error {
+// importMovieFile catalogs one on-disk video as the given TMDB movie — by default
+// unmonitored with no quality profile, since Arrmada is only adopting an existing file.
+func (s *Service) importMovieFile(ctx context.Context, video string, tmdbID int, opts ScanOptions) (Movie, error) {
 	details, err := s.meta.GetMovie(ctx, tmdbID)
 	if err != nil {
-		return err
+		return Movie{}, err
+	}
+	profile := strings.TrimSpace(opts.QualityProfile)
+	if profile == "" {
+		profile = "n/a"
 	}
 	created, err := s.repo.Create(ctx, Movie{
 		TMDBID: details.TMDBID, IMDBID: details.IMDBID, Title: details.Title, Year: details.Year,
 		Overview: details.Overview, PosterURL: details.PosterURL, Runtime: details.Runtime, Status: details.Status,
-		Monitored: false, QualityProfile: "n/a", Extra: extraFrom(details),
+		Monitored: opts.Monitor, QualityProfile: profile, Extra: extraFrom(details),
 	})
 	if err != nil {
-		return err
+		return Movie{}, err
 	}
 	_ = s.setDefaultFile(ctx, created.ID, video)
 	_ = s.repo.AddEvent(ctx, created.ID, "imported", "Found during library scan: "+filepath.Base(video))
@@ -370,11 +430,46 @@ func (s *Service) importMovieFile(ctx context.Context, video string, tmdbID int)
 	// indexes new paths, and queueing Subtitles for a whole adopted library is the
 	// 6-hourly sweep's call, not a scan's.
 	s.publish("movie.downloaded", map[string]any{"id": created.ID, "version_id": int64(0), "path": video, "source": "scan"})
+	created.HasFile, created.MovieFilePath = true, video
+	return created, nil
+}
+
+// attachExisting gives a film already in the library, with no file, the file found on
+// disk: read once, recorded as its default file with a 'detected' event, and announced
+// like an import (the outbox row lets Convert and Subtitles index it, and tells whoever
+// requested the film that it's ready — it was wanted, so that's news).
+func (s *Service) attachExisting(ctx context.Context, m Movie, video, eventPrefix string) error {
+	media := mediaJSONOf(s.probeTrack(video))
+	err := s.repo.inTx(ctx, func(tx *sql.Tx, r *Repo) error {
+		// Re-check inside the transaction: an import may have landed since the scan read it.
+		cur, err := r.Get(ctx, m.ID)
+		if err != nil {
+			return err
+		}
+		if cur.HasFile {
+			return fmt.Errorf("%s already has a file (%s)", cur.Title, filepath.Base(cur.MovieFilePath))
+		}
+		if err := setDefaultFileIn(ctx, r, m.ID, video, media); err != nil {
+			return err
+		}
+		if err := r.ClearConvertedFrom(ctx, m.ID, 0); err != nil {
+			return err
+		}
+		_ = r.AddEvent(ctx, m.ID, "detected", eventPrefix+filepath.Base(video))
+		return s.enqueue(ctx, tx, outbox.TopicMovieImported,
+			outbox.MovieImported{MovieID: m.ID, VersionID: 0, Path: video}, movieKey(m.ID))
+	})
+	if err != nil {
+		return err
+	}
+	s.log.Info("library scan: attached file to film in library", "title", m.Title, "path", video)
+	s.publish("movie.downloaded", map[string]any{"id": m.ID, "version_id": int64(0), "path": video, "title": m.Title})
 	return nil
 }
 
 // ImportFolderAs catalogs a specific library folder as the chosen TMDB movie —
-// the manual pick for a folder the scan couldn't confidently identify.
+// the manual pick for a folder the scan couldn't confidently identify. A film already in
+// the library without a file gets this one attached; one that has a file says which.
 func (s *Service) ImportFolderAs(ctx context.Context, rootOverride, folder string, tmdbID int) error {
 	root := rootOverride
 	if root == "" {
@@ -384,7 +479,21 @@ func (s *Service) ImportFolderAs(ctx context.Context, rootOverride, folder strin
 	if err != nil || video == "" {
 		return fmt.Errorf("no video file found in %q", folder)
 	}
-	if err := s.importMovieFile(ctx, video, tmdbID); err != nil {
+	m, err := s.repo.GetByTMDB(ctx, tmdbID)
+	switch {
+	case err == nil && m.HasFile && filepath.Clean(m.MovieFilePath) == filepath.Clean(video):
+		// Already this film's file: nothing to do.
+	case err == nil && m.HasFile:
+		return fmt.Errorf("%w with %s", ErrExists, filepath.Base(m.MovieFilePath))
+	case err == nil:
+		if err := s.attachExisting(ctx, m, video, "Attached from the library folder: "); err != nil {
+			return err
+		}
+	case errors.Is(err, ErrNotFound):
+		if _, err := s.importMovieFile(ctx, video, tmdbID, ScanOptions{}); err != nil {
+			return err
+		}
+	default:
 		return err
 	}
 	s.dropUnmatched(folder)

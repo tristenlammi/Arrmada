@@ -223,21 +223,64 @@ func (a *api) handleUnblock(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleScanLibrary scans the library folder for existing movie files and
-// catalogs them (unmonitored, n/a profile). Runs in the background because TMDB
-// lookups over a large library take a while.
+// movieScanSummary is a movie scan's job result: the shared counts plus the files it
+// attached to films already in the library and the folders it left alone as duplicates.
+type movieScanSummary struct {
+	scanSummary
+	Attached   int `json:"attached"`
+	Duplicates int `json:"duplicates"`
+}
+
+// movieScanMessage words a finished movie scan for the toast.
+func movieScanMessage(res movies.ScanResult) string {
+	msg := scanMessage("movie", res.Imported, len(res.Unmatched))
+	if res.Attached > 0 {
+		if res.Imported == 0 && len(res.Unmatched) == 0 {
+			msg = "Attached " + countOf(res.Attached, "file") + " to movies already in the library"
+		} else {
+			msg += "; attached " + countOf(res.Attached, "file") + " to movies already in the library"
+		}
+	}
+	if n := len(res.Duplicates); n > 0 {
+		msg += "; " + countOf(n, "folder") + " left alone (the movie already has a different file)"
+	}
+	return msg
+}
+
+// handleScanLibrary scans the library folder for existing movie files and catalogs them
+// — unmonitored on profile n/a, unless the body asks to monitor them on a profile — and
+// attaches files to films already in the library without one. Runs in the background
+// because TMDB lookups over a large library take a while.
 func (a *api) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
+	var opts movies.ScanOptions
+	if r.ContentLength > 0 && !a.decodeJSON(w, r, &opts) {
+		return
+	}
+	opts.QualityProfile = strings.TrimSpace(opts.QualityProfile)
+	if opts.Monitor && opts.QualityProfile == "" && a.deps.Quality != nil {
+		opts.QualityProfile = a.deps.Quality.DefaultProfile(r.Context(), "movie")
+	}
+	// The same check as Automation.KnownProfile, which is the quality service's.
+	if opts.QualityProfile != "" && (a.deps.Quality == nil || !a.deps.Quality.Known(r.Context(), opts.QualityProfile)) {
+		a.writeError(w, http.StatusBadRequest, "unknown quality profile")
+		return
+	}
 	root := a.libMovies(r) // resolve the configured folder before we detach
 	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "movie.scan", Target: "all", Class: jobs.ClassLibraryScan, Timeout: 15 * time.Minute,
 		Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
-			res, err := a.deps.Movies.ScanLibrary(ctx, root)
+			res, err := a.deps.Movies.ScanLibrary(ctx, root, opts)
 			if err != nil {
 				return nil, err
 			}
-			a.deps.Log.Info("library scan complete", "imported", res.Imported, "skipped", res.Skipped, "unmatched", len(res.Unmatched))
-			a.deps.Bus.Publish("library.scanned", map[string]any{"media": "movie", "imported": res.Imported, "unmatched": len(res.Unmatched)})
-			p.SetMessage(scanMessage("movie", res.Imported, len(res.Unmatched)))
-			return scanSummary{Imported: res.Imported, Skipped: res.Skipped, Unmatched: len(res.Unmatched)}, nil
+			a.deps.Log.Info("library scan complete", "imported", res.Imported, "attached", res.Attached, "duplicates", len(res.Duplicates),
+				"skipped", res.Skipped, "unmatched", len(res.Unmatched))
+			a.deps.Bus.Publish("library.scanned", map[string]any{"media": "movie", "imported": res.Imported, "unmatched": len(res.Unmatched),
+				"attached": res.Attached, "duplicates": len(res.Duplicates)})
+			p.SetMessage(movieScanMessage(res))
+			return movieScanSummary{
+				scanSummary: scanSummary{Imported: res.Imported, Skipped: res.Skipped, Unmatched: len(res.Unmatched)},
+				Attached:    res.Attached, Duplicates: len(res.Duplicates),
+			}, nil
 		}})
 	if !ok {
 		return
@@ -268,6 +311,10 @@ func (a *api) handleMovieImportFolder(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	if err := a.deps.Movies.ImportFolderAs(ctx, a.libMovies(r), req.Folder, req.TMDBID); err != nil {
+		if errors.Is(err, movies.ErrExists) {
+			a.writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		a.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

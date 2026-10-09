@@ -1854,7 +1854,11 @@ export const api = {
   emptyRecycle: (bin?: string) => req<{ freed_bytes: number }>("/api/v1/recycle/empty", { method: "POST", body: JSON.stringify(bin ? { bin } : {}) }),
   restoreRecycle: (id: string) => req<{ status: string }>("/api/v1/recycle/restore", { method: "POST", body: JSON.stringify({ id }) }),
   deleteRecycleItem: (id: string) => req<{ status: string }>("/api/v1/recycle/delete", { method: "POST", body: JSON.stringify({ id }) }),
-  scanLibrary: () => req<{ status: string } & JobRef>("/api/v1/movies/scan", { method: "POST" }),
+  // Catalog the movies folder: new films are added unmonitored on "n/a" unless monitor is
+  // set (with a profile; "" = the default), and films already in the library without a
+  // file get the one found.
+  scanLibrary: (opts?: { monitor: boolean; quality_profile?: string }) =>
+    req<{ status: string } & JobRef>("/api/v1/movies/scan", { method: "POST", ...(opts ? { body: JSON.stringify(opts) } : {}) }),
   moviesUnmatched: () => req<{ unmatched: UnmatchedFolder[] }>("/api/v1/movies/unmatched").then((r) => r.unmatched),
   importMovieFolder: (folder: string, tmdb_id: number) =>
     req<{ status: string }>("/api/v1/movies/import", { method: "POST", body: JSON.stringify({ folder, tmdb_id }) }),
