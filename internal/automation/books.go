@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -1871,6 +1872,10 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 	if err != nil || len(res.Releases) == 0 {
 		return
 	}
+	if c.log.Enabled(ctx, slog.LevelDebug) {
+		c.log.Debug(fmt.Sprintf("rss: %d recent releases (%d from MyAnonaMouse)",
+			len(res.Releases), c.countFromKind(ctx, res.Releases, indexer.KindMAM)))
+	}
 	queue, qerr := c.downloads.Queue(ctx)
 	if qerr != nil {
 		// Same reasoning as SearchBooksMissing: an unreadable queue reads as empty,
@@ -1949,6 +1954,42 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 			c.log.Info("rss: grabbing audiobook version", "title", b.Title, "version", v.Label, "release", best.Title)
 		}
 	}
+}
+
+// countFromKind counts the releases that came from indexers of one kind, for the RSS
+// debug line that confirms MyAnonaMouse's feed is being read.
+func (c *Coordinator) countFromKind(ctx context.Context, releases []indexer.Release, kind indexer.Kind) int {
+	idxs, err := c.indexers.List(ctx)
+	if err != nil {
+		return 0
+	}
+	names := map[string]bool{}
+	for _, ix := range idxs {
+		if ix.Kind == kind {
+			names[ix.Name] = true
+		}
+	}
+	n := 0
+	for _, rel := range releases {
+		if names[rel.Indexer] {
+			n++
+		}
+	}
+	return n
+}
+
+// withoutBookUploads drops book uploads (releases carrying an ebook/audiobook file type,
+// which MyAnonaMouse's feed is made of) from a shared RSS feed before a movie or series
+// sweep matches against it. A book titled like a film, with no year to tell them apart,
+// must never be grabbed as the film.
+func withoutBookUploads(releases []indexer.Release) []indexer.Release {
+	out := make([]indexer.Release, 0, len(releases))
+	for _, rel := range releases {
+		if rel.Format == "" {
+			out = append(out, rel)
+		}
+	}
+	return out
 }
 
 // rssReleasesForBook is releasesForBookWith plus the author, for the RSS feed.

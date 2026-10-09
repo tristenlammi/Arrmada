@@ -177,3 +177,16 @@ func TestBooksDownloadingMatchesEachItemOnce(t *testing.T) {
 		t.Errorf("downloading = %v, want Dune and It only", got)
 	}
 }
+
+// BOOK-07: MyAnonaMouse's uploads now share the RSS feed, so the movie and series sweeps
+// drop book uploads before matching — a book titled like a film is never grabbed as it.
+func TestWithoutBookUploads(t *testing.T) {
+	feed := []indexer.Release{
+		{Title: "Dune [M4B]", Format: "M4B", Indexer: "MyAnonaMouse"},
+		{Title: "Dune.2021.2160p.WEB-DL.DDP5.1.HEVC-GRP", Indexer: "Fake"},
+	}
+	got := withoutBookUploads(feed)
+	if len(got) != 1 || got[0].Indexer != "Fake" {
+		t.Errorf("kept %q, want only the video release", titles(got))
+	}
+}

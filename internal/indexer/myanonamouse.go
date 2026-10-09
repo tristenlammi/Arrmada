@@ -35,6 +35,18 @@ type MAMSearcher struct {
 
 	rateMu  sync.Mutex
 	lastReq time.Time
+
+	// base is the site the search API and session cookie go to; "" is the real
+	// MyAnonaMouse. Tests point it at a fake.
+	base string
+}
+
+// baseURL is where the search API lives.
+func (m *MAMSearcher) baseURL() string {
+	if m.base != "" {
+		return m.base
+	}
+	return mamBaseURL
 }
 
 // NewMAMSearcher builds the searcher. persist may be nil.
@@ -186,7 +198,7 @@ func (m *MAMSearcher) Search(ctx context.Context, idx Indexer, q SearchQuery) ([
 	body := mamSearchBody{
 		Tor: mamTor{
 			Text:        mamSearchText(q.Text),
-			SrchIn:      map[string]bool{"title": true, "author": true, "narrator": true, "series": true},
+			SrchIn:      mamSrchIn(),
 			SearchType:  "all",
 			SearchIn:    "torrents",
 			MainCat:     mainCats,
@@ -196,9 +208,54 @@ func (m *MAMSearcher) Search(ctx context.Context, idx Indexer, q SearchQuery) ([
 		},
 		Thumbnails: "false",
 	}
+	return m.query(ctx, idx, session, body)
+}
+
+// mamSrchIn is the fields a search text is matched against.
+func mamSrchIn() map[string]bool {
+	return map[string]bool{"title": true, "author": true, "narrator": true, "series": true}
+}
+
+// Recent lists MyAnonaMouse's newest book and audiobook uploads — the feed the book RSS
+// sweep reads every 15 minutes, so a book uploaded between two scheduled searches is
+// grabbed within one cycle instead of waiting days for its next turn on the ladder.
+//
+// It is the search API with no text, newest first: one request per cycle (the indexer
+// service shares a feed pull across the RSS sweeps), through the same throttle.
+func (m *MAMSearcher) Recent(ctx context.Context, idx Indexer, limit int) ([]Release, error) {
+	session := strings.TrimSpace(idx.APIKey)
+	if session == "" {
+		return nil, fmt.Errorf("myanonamouse: mam_id session is required")
+	}
+	mainCats := mamBookMainCats
+	if len(idx.Categories) > 0 {
+		mainCats = idx.Categories
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 100 // MAM's page size tops out at 100
+	}
+	body := mamSearchBody{
+		Tor: mamTor{
+			Text:        "",
+			SrchIn:      mamSrchIn(),
+			SearchType:  "all",
+			SearchIn:    "torrents",
+			MainCat:     mainCats,
+			SortType:    "dateDesc",
+			StartNumber: "0",
+			PerPage:     limit,
+		},
+		Thumbnails: "false",
+	}
+	return m.query(ctx, idx, session, body)
+}
+
+// query POSTs one search body and maps the reply onto releases. MAM's "nothing found"
+// reply is an empty list, not an error.
+func (m *MAMSearcher) query(ctx context.Context, idx Indexer, session string, body mamSearchBody) ([]Release, error) {
 	payload, _ := json.Marshal(body)
 
-	respBody, err := m.do(ctx, idx, http.MethodPost, mamBaseURL+mamSearchPath, session, bytes.NewReader(payload))
+	respBody, err := m.do(ctx, idx, http.MethodPost, m.baseURL()+mamSearchPath, session, bytes.NewReader(payload))
 	if err != nil {
 		return nil, err
 	}
@@ -330,7 +387,7 @@ func (m *MAMSearcher) Test(ctx context.Context, idx Indexer) error {
 // rotated mam_id if MAM re-issues one via Set-Cookie.
 func (m *MAMSearcher) do(ctx context.Context, idx Indexer, method, rawurl, session string, body io.Reader) ([]byte, error) {
 	jar, _ := cookiejar.New(nil)
-	u, _ := url.Parse(mamBaseURL)
+	u, _ := url.Parse(m.baseURL())
 	jar.SetCookies(u, []*http.Cookie{{Name: "mam_id", Value: session}})
 	client := &http.Client{Jar: jar, Timeout: m.http.Timeout}
 
