@@ -79,9 +79,17 @@ func (a *api) handleMyBooks(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, "could not list requests")
 		return
 	}
+	// By the library row a request is linked to, else by the catalogue key it was made
+	// under: a re-match changes the book's key, and the request must still find it.
 	mine := map[string]bool{}
+	mineID := map[int64]bool{}
 	for _, rq := range reqs {
-		if rq.MediaType == "book" && rq.OLKey != "" {
+		if rq.MediaType != "book" {
+			continue
+		}
+		if rq.BookID > 0 {
+			mineID[rq.BookID] = true
+		} else if rq.OLKey != "" {
 			mine[rq.OLKey] = true
 		}
 	}
@@ -91,6 +99,7 @@ func (a *api) handleMyBooks(w http.ResponseWriter, r *http.Request) {
 	}
 	shelf := []MyBook{}
 	have := map[string]bool{}
+	haveID := map[int64]bool{}
 	for _, b := range all {
 		ebook := b.Ebook != nil && b.Ebook.Path != ""
 		audio := b.Audiobook != nil && b.Audiobook.Path != ""
@@ -108,9 +117,9 @@ func (a *api) handleMyBooks(w http.ResponseWriter, r *http.Request) {
 		if !ebook && !audio {
 			continue
 		}
-		have[b.OLKey] = true
+		have[b.OLKey], haveID[b.ID] = true, true
 		mb := MyBook{BookID: b.ID, Title: b.Title, Author: b.Author, Year: b.Year, CoverURL: b.CoverURL,
-			AddedAt: b.AddedAt, Audiobook: audio, Audiobooks: audiobooks, Mine: mine[b.OLKey]}
+			AddedAt: b.AddedAt, Audiobook: audio, Audiobooks: audiobooks, Mine: mineID[b.ID] || mine[b.OLKey]}
 		if ebook {
 			mb.Ebook = &MyEbook{Format: b.Ebook.Format, SizeBytes: b.Ebook.SizeBytes}
 		}
@@ -124,7 +133,7 @@ func (a *api) handleMyBooks(w http.ResponseWriter, r *http.Request) {
 	}
 	pending := []MyRequest{}
 	for _, rq := range reqs {
-		if rq.MediaType != "book" || have[rq.OLKey] {
+		if rq.MediaType != "book" || haveID[rq.BookID] || (rq.BookID == 0 && have[rq.OLKey]) {
 			continue
 		}
 		pending = append(pending, MyRequest{Title: rq.Title, Author: rq.Author, Year: rq.Year,

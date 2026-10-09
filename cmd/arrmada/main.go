@@ -467,6 +467,14 @@ func main() {
 	requestsSvc := requests.NewService(st.DB(), movieSvc, seriesSvc, booksSvc, coordinator, qualitySvc, bus, notifySvc.AppriseBin(), log)
 	requestsSvc.SetPushSender(pushSvc) // Web Push alongside inbox + Apprise
 	go requestsSvc.RunNotifier(runCtx) // alert requesters when their request is imported
+	// Book requests made before they remembered their library row are linked to it by
+	// title and author, so the ones whose book was re-matched to a new catalogue key
+	// stop showing "Searching" and get their "ready".
+	go func() {
+		if _, _, err := requestsSvc.BackfillBookIDs(runCtx); err != nil {
+			log.Warn("requests: book link backfill failed", "err", err)
+		}
+	}()
 	// Backstop for request-ready notifications: catches availability that arrived
 	// without an import event (library scan) or whose event was dropped under load.
 	// Idempotent (unique inbox ref), so re-running never double-notifies.

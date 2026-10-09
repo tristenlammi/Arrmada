@@ -564,23 +564,32 @@ func (a *api) enrichBookCards(ctx context.Context, results []metadata.BookResult
 	// and a second Open Library "work" for the same novel must not look like a new book.
 	inLib := map[string]bool{}
 	hasFile := map[string]bool{}
+	byKey := map[string]int64{}
 	list, _ := a.deps.Books.List(ctx)
 	for _, b := range list {
 		inLib[b.OLKey] = true
 		hasFile[b.OLKey] = b.HasFile
+		byKey[b.OLKey] = b.ID
 	}
 	same := books.NewIdentityIndex(list)
 	// Requests.List returns newest first; iterating in order and overwriting means the
 	// OLDEST request would win, so only set a key on first sight — the newest request
 	// for a book determines its badge (matching the movie/series discover behavior of
 	// one-status-per-title, but declined stays distinguishable from never-requested).
+	// A request linked to a library row also badges that row, so the card under the
+	// book's new catalogue key still reads Requested after a re-match.
 	reqStatus := map[string]string{}
+	reqByBook := map[int64]string{}
 	if reqs, err := a.deps.Requests.List(ctx, "", 0); err == nil {
 		for _, rq := range reqs {
-			if rq.MediaType == "book" && rq.OLKey != "" {
-				if _, seen := reqStatus[rq.OLKey]; !seen {
-					reqStatus[rq.OLKey] = rq.Status
-				}
+			if rq.MediaType != "book" {
+				continue
+			}
+			if _, seen := reqStatus[rq.OLKey]; !seen && rq.OLKey != "" {
+				reqStatus[rq.OLKey] = rq.Status
+			}
+			if _, seen := reqByBook[rq.BookID]; !seen && rq.BookID > 0 {
+				reqByBook[rq.BookID] = rq.Status
 			}
 		}
 	}
@@ -588,8 +597,14 @@ func (a *api) enrichBookCards(ctx context.Context, results []metadata.BookResult
 	for _, br := range results {
 		st := reqStatus[br.Key]
 		in, has := inLib[br.Key], hasFile[br.Key]
+		if st == "" {
+			st = reqByBook[byKey[br.Key]]
+		}
 		if lb, ok := same.Find(br.Title, br.Author); ok {
 			in, has = true, has || lb.HasFile // Find prefers the row with files
+			if st == "" {
+				st = reqByBook[lb.ID]
+			}
 		}
 		cards = append(cards, bookCard{
 			BookResult:    br,
