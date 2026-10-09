@@ -44,9 +44,13 @@ var cliCommands = []cliCommand{
 	{name: "schema", summary: "compare the database's schema with this build's (exit 3: a newer build upgraded it)", dataDir: true, run: cmdSchema},
 	{name: "reset-password", args: "<email> [--password-stdin]", summary: "give a locked-out account a new password and sign it out everywhere", dataDir: true, run: cmdResetPassword},
 	{name: "restore", args: "<backup name | path to .db or .db.gz> | --cancel", summary: "check a backup and put it in place the next time Arrmada starts", dataDir: true,
-		run: func(_ context.Context, c *cli, args []string) int { return restoreCommand(c.cfg.DataDir, args, c.stdout, c.stderr) }},
+		run: func(_ context.Context, c *cli, args []string) int {
+			return restoreCommand(c.cfg.DataDir, args, c.stdout, c.stderr)
+		}},
 	{name: "backups", summary: "list the backups in the data folder", dataDir: true,
-		run: func(_ context.Context, c *cli, args []string) int { return backupsCommand(c.cfg.DataDir, args, c.stdout, c.stderr) }},
+		run: func(_ context.Context, c *cli, args []string) int {
+			return backupsCommand(c.cfg.DataDir, args, c.stdout, c.stderr)
+		}},
 }
 
 // cli is what a command runs with: its streams and, for dataDir commands, the config.

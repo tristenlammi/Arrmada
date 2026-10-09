@@ -49,7 +49,7 @@ func keyStatus(t *testing.T, rec *httptest.ResponseRecorder, id string) apikeys.
 // An empty Save used to wipe a working key. Now it's a 400 and the key stays.
 func TestSetAPIKeyEmptyRejected(t *testing.T) {
 	s := newKeyServer(t)
-	_, mgr := s.user(t, "mgr@example.com", auth.RoleManager)
+	_, mgr := s.user(t, "admin@example.com", auth.RoleAdmin) // API keys are admin-only (SEC-09)
 	if rec := s.doBody("PUT", "/api/v1/apikeys/tmdb", `{"value":"abcd1234"}`, mgr); rec.Code != http.StatusOK {
 		t.Fatalf("save: HTTP %d %s", rec.Code, rec.Body)
 	}
@@ -71,7 +71,7 @@ func TestSetAPIKeyEmptyRejected(t *testing.T) {
 func TestDeleteAPIKeyFallsBackToEnv(t *testing.T) {
 	t.Setenv("ARRMADA_TMDB_API_KEY", "fromenv1a2b")
 	s := newKeyServer(t)
-	_, mgr := s.user(t, "mgr@example.com", auth.RoleManager)
+	_, mgr := s.user(t, "admin@example.com", auth.RoleAdmin) // API keys are admin-only (SEC-09)
 	_, kid := s.user(t, "kid@example.com", auth.RoleRequester)
 	if rec := s.doBody("PUT", "/api/v1/apikeys/tmdb", `{"value":"saved9z9z"}`, mgr); rec.Code != http.StatusOK {
 		t.Fatalf("save: HTTP %d %s", rec.Code, rec.Body)

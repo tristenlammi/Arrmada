@@ -16,7 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/crypto/bcrypt"
+
+	"github.com/tristenlammi/arrmada/internal/store"
 )
 
 // Sentinel errors callers can branch on.
@@ -397,27 +399,24 @@ func (s *Service) SetPassword(ctx context.Context, id int64, password string) er
 // transaction. Nothing else is touched — requests, listening places and history stay,
 // so re-enabling gives back exactly what they had (the apps just sign in again).
 func (s *Service) SetDisabled(ctx context.Context, id int64, disabled bool) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	res, err := tx.ExecContext(ctx, `UPDATE users SET disabled = ? WHERE id = ?`, boolToInt(disabled), id)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	if disabled {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
+	return store.WithTx(ctx, s.db, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `UPDATE users SET disabled = ? WHERE id = ?`, boolToInt(disabled), id)
+		if err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE audio_tokens SET revoked = 1 WHERE user_id = ?`, id); err != nil {
-			return err
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrNotFound
 		}
-	}
-	return tx.Commit()
+		if disabled {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, id); err != nil {
+				return err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE audio_tokens SET revoked = 1 WHERE user_id = ?`, id); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // RevokeUserSessions logs a user out of every device (also used on disable).

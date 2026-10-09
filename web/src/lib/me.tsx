@@ -27,7 +27,7 @@ interface MeState {
 const MeContext = createContext<MeState>({ user: null, loading: true, signedOut: false, external: false, booksEnabled: true, setBooksEnabled: () => {}, musicEnabled: false, setMusicEnabled: () => {}, unreachable: false, retry: async () => false, metadataReady: true, setMetadataReady: () => {} });
 
 // MeProvider fetches the current user and module toggles once at boot so the whole app can
-// branch on role (staff get the full console; requesters get the Discover-only shell) and
+// branch on role (staff get the full console; requesters get the requester shell) and
 // hide modules an admin has turned off.
 export function MeProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
