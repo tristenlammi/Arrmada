@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { RankedRelease, ReleaseList } from "../lib/api";
+import { releaseErrorMessage, type RankedRelease, type ReleaseList } from "../lib/api";
 
 // BookReleaseModal is the book-specific interactive search: results split into
 // Audiobooks / Ebooks tabs, each showing the raw release title (so the narrator
@@ -60,13 +60,16 @@ export function BookReleaseModal({
   const rows = tab === "ebook" ? ebooks : audiobooks;
 
   const grab = async (rel: RankedRelease, versionId: number) => {
-    setBusy(rel.download_url);
+    // Releases are keyed by their token: two editions can share a display title, and the
+    // token is unique per result.
+    const key = rel.token ?? rel.title;
+    setBusy(key);
     setError(null);
     try {
       await onGrab(rel, versionId);
-      setGrabbed((s) => new Set(s).add(rel.download_url));
+      setGrabbed((s) => new Set(s).add(key));
     } catch (e) {
-      setError((e as Error).message);
+      setError(releaseErrorMessage(e));
     } finally {
       setBusy(null);
     }
@@ -109,8 +112,8 @@ export function BookReleaseModal({
             <div className="p-8 text-center text-[12.5px] text-ink-dim">No {tab === "ebook" ? "ebook" : "audiobook"} releases found on your indexers.</div>
           ) : (
             <div className="flex flex-col gap-2">
-              {rows.map((rel) => (
-                <BookReleaseRow key={rel.download_url} rel={rel} busy={busy === rel.download_url} grabbed={grabbed.has(rel.download_url)} targets={rel.edition === "audiobook" ? targets : undefined} defaultTarget={defaultTarget} onGrab={(vid) => grab(rel, vid)} />
+              {rows.map((rel, i) => (
+                <BookReleaseRow key={rel.token ?? `${rel.title}#${i}`} rel={rel} busy={busy === (rel.token ?? rel.title)} grabbed={grabbed.has(rel.token ?? rel.title)} targets={rel.edition === "audiobook" ? targets : undefined} defaultTarget={defaultTarget} onGrab={(vid) => grab(rel, vid)} />
               ))}
             </div>
           )}
@@ -173,7 +176,7 @@ function BookReleaseRow({ rel, busy, grabbed, targets, defaultTarget, onGrab }: 
         )}
         <button
           onClick={() => onGrab(target)}
-          disabled={busy || grabbed}
+          disabled={busy || grabbed || !rel.token}
           className="flex-none rounded-lg px-3.5 py-2 text-[12px] font-semibold disabled:opacity-60"
           style={{ background: grabbed ? "var(--good)" : "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}
         >

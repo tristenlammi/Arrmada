@@ -117,6 +117,11 @@ type Coordinator struct {
 	// claims keeps two searches of one title from running at once (claims.go).
 	claims claims
 
+	// tokens holds the download links behind the opaque release tokens interactive
+	// search hands the browser (releasetokens.go). Made on first use.
+	tokensOnce sync.Once
+	tokens     *releaseTokens
+
 	// The manual missing-editions sweep for books (books_sweep.go).
 	bookSweepMu sync.Mutex
 	bookSweep   BookSweepStatus
@@ -479,10 +484,14 @@ func (c *Coordinator) SearchMissing(ctx context.Context) {
 // RankedRelease is one interactive-search result, ranked and explained in
 // plain language (no scores — that's the Simple-view mandate).
 type RankedRelease struct {
-	Title        string  `json:"title"`
-	Indexer      string  `json:"indexer"`
-	DownloadURL  string  `json:"download_url"`
-	InfoURL      string  `json:"info_url,omitempty"` // the release's details page on the tracker
+	Title   string `json:"title"`
+	Indexer string `json:"indexer"`
+	// DownloadURL never leaves the server: it can carry an indexer apikey or a tracker's
+	// personal download token. The browser gets Token instead, and grabs by it.
+	DownloadURL  string  `json:"-"`
+	InfoHash     string  `json:"-"`
+	Token        string  `json:"token,omitempty"`
+	InfoURL      string  `json:"info_url,omitempty"` // the release's details page on the tracker, credentials stripped
 	SizeGB       float64 `json:"size_gb"`
 	Bitrate      float64 `json:"bitrate_mbps,omitempty"` // size ÷ runtime; 0 when runtime unknown
 	Seeders      int     `json:"seeders"`
@@ -616,7 +625,8 @@ func (c *Coordinator) RankReleasesWith(ctx context.Context, id int64, spec *qual
 			Title:        ev.Candidate.Name,
 			Indexer:      rel.Indexer,
 			DownloadURL:  rel.DownloadURL,
-			InfoURL:      rel.InfoURL,
+			InfoHash:     rel.InfoHash,
+			InfoURL:      safeInfoURL(rel.InfoURL, rel.DownloadURL),
 			SizeGB:       ev.Candidate.SizeGB,
 			Bitrate:      bitrateMbps(ev.Candidate.SizeGB, m.Runtime),
 			Seeders:      ev.Candidate.Seeders,

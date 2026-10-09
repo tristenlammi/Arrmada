@@ -154,10 +154,13 @@ func (a *api) handleListBlocklist(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"blocklist": entries})
 }
 
+// blocklistRequest names the release to block by its token from this movie's
+// interactive search, or by title (and optionally indexer) alone: blocklist entries are
+// keyed by title, so a title-only block needs nothing from the indexer.
 type blocklistRequest struct {
+	Token       string `json:"token"`
 	Title       string `json:"title"`
 	Indexer     string `json:"indexer"`
-	DownloadURL string `json:"download_url"`
 	SearchAgain bool   `json:"search_again"`
 }
 
@@ -171,6 +174,16 @@ func (a *api) handleBlocklist(w http.ResponseWriter, r *http.Request) {
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
+	// The release link is kept on the block row (it's what the release was), but only
+	// ever one this server handed out under a token — never one the browser supplies.
+	downloadURL := ""
+	if req.Token != "" {
+		ref, ok := a.resolveRelease(w, r, req.Token, automation.ReleaseKindMovie, id)
+		if !ok {
+			return
+		}
+		req.Title, req.Indexer, downloadURL = ref.Title, ref.Indexer, ref.DownloadURL
+	}
 	if req.Title == "" {
 		a.writeError(w, http.StatusBadRequest, "title is required")
 		return
@@ -180,7 +193,7 @@ func (a *api) handleBlocklist(w http.ResponseWriter, r *http.Request) {
 		// of this movie runs would only race it.
 		spec := a.movieSearchJob(id)
 		spec.Fn = outcomeFn("movie", func(ctx context.Context) (automation.SearchOutcome, error) {
-			return a.deps.Automation.BlocklistAndSearch(ctx, id, req.Title, req.Indexer, req.DownloadURL)
+			return a.deps.Automation.BlocklistAndSearch(ctx, id, req.Title, req.Indexer, downloadURL)
 		})
 		jobID, existing, ok := a.submitOr503(w, r, spec)
 		if !ok {
@@ -189,7 +202,7 @@ func (a *api) handleBlocklist(w http.ResponseWriter, r *http.Request) {
 		a.accepted(w, jobID, existing, map[string]any{"status": "blocklisted, searching"})
 		return
 	}
-	if err := a.deps.Automation.Blocklist(r.Context(), id, req.Title, req.Indexer, req.DownloadURL, "manually blocklisted"); err != nil {
+	if err := a.deps.Automation.Blocklist(r.Context(), id, req.Title, req.Indexer, downloadURL, "manually blocklisted"); err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not blocklist")
 		return
 	}
@@ -572,6 +585,7 @@ func (a *api) handleMovieReleases(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	a.tokenize(r, &list, automation.ReleaseRef{MediaKind: automation.ReleaseKindMovie, MediaID: id})
 	a.writeJSON(w, http.StatusOK, list)
 }
 

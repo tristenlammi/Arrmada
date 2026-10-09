@@ -3,6 +3,8 @@ package automation
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/indexer"
@@ -39,12 +41,20 @@ func (c *Coordinator) RSSSyncSeries(ctx context.Context) {
 		if !meta.Monitored {
 			continue
 		}
-		if busy := seriesInFlight(queue, meta.Title); busy != "" {
-			c.log.Info("rss: skipping series — a grab is still downloading", "series", meta.Title, "release", busy)
-			continue
-		}
 		s, err := c.series.Get(ctx, meta.ID)
 		if err != nil {
+			continue
+		}
+		inSeasons, whole, busy := seriesInFlightScope(queue, s)
+		if whole {
+			c.log.Info("rss: skipping series — a pack covering the whole show is still downloading", "series", s.Title, "release", busy[0])
+			continue
+		}
+		// A pack still downloading for one season holds back only that season: the rest
+		// of the show is fair game, so a new season's episodes aren't stuck behind a slow
+		// pack for an old one.
+		only, ok := c.notInFlight(s, inSeasons, busy, "rss")
+		if !ok {
 			continue
 		}
 		var matched []indexer.Release
@@ -60,7 +70,7 @@ func (c *Coordinator) RSSSyncSeries(ctx context.Context) {
 			continue
 		}
 		c.log.Info("rss: series match", "series", s.Title, "candidates", len(matched))
-		c.grabSeriesFrom(ctx, s, matched)
+		c.grabSeriesLimited(ctx, s, matched, only)
 	}
 }
 
@@ -257,6 +267,131 @@ func seriesDownloading(queue []download.Item, seriesTitle string) bool {
 	return seriesInFlight(queue, seriesTitle) != ""
 }
 
+// SeriesInFlight says which of a show's seasons have a torrent still being fetched (see
+// seriesInFlightScope), for the views that explain why a season isn't being searched.
+func SeriesInFlight(queue []download.Item, s series.Series) (seasons map[int]bool, whole bool, names []string) {
+	return seriesInFlightScope(queue, s)
+}
+
+// seriesInFlightScope reports what a show's still-downloading torrents cover: the seasons
+// they hold, or whole=true when one covers more than a season can say (a multi-season or
+// complete-series pack, an anime absolute-numbered release, or a name with no numbering at
+// all). names lists those torrents, for the log line that says why a season was skipped.
+//
+// The sweeps used to skip the whole show while ANY of its torrents was incomplete, so one
+// dead S03 pack kept S04's new episodes from ever being searched. Now only what a torrent
+// actually covers is held back. Duplicates inside a season are still stopped by the
+// pending-grab guard (pendingSeriesGrabTitles).
+//
+// Matching goes through seriesTitleMatches, so a pack named under the romaji title or a
+// user alias counts. A torrent in an error state doesn't: stall fail-over deals with it,
+// and holding the season for a download that will never finish is the bug this replaces.
+func seriesInFlightScope(queue []download.Item, s series.Series) (seasons map[int]bool, whole bool, names []string) {
+	seasons = map[int]bool{}
+	for _, it := range queue {
+		if it.Complete() || it.Category != seriesCategory {
+			continue // finished (importing or seeding), or not a TV grab
+		}
+		if it.Phase() == "error" || it.State == "error" {
+			continue
+		}
+		if !seriesTitleMatches(it.Name, s) {
+			continue
+		}
+		names = append(names, it.Name)
+		if sn, ok := aliasSeasonOf(it.Name, s); ok {
+			// The alias' numbers are read inside one season of the series, whatever
+			// season the release itself claims.
+			seasons[sn] = true
+			continue
+		}
+		p := parser.Parse(it.Name)
+		switch {
+		case p.Complete || len(p.Seasons) > 1:
+			whole = true
+		case p.Season > 0 && s.IsAnime() && len(s.Seasons) > 0 && !hasSeason(s, p.Season):
+			// An anime cour numbered as its own season ("Frieren S02") that the series'
+			// listing doesn't have: its episodes live in some other season.
+			whole = true
+		case p.Season > 0:
+			seasons[p.Season] = true
+		case p.SeasonExplicit:
+			seasons[0] = true // an explicit S00 special
+		default:
+			// Absolute-numbered ("[Group] Show - 137") or unnumbered: which season it
+			// lands in takes the series' numbering to work out, so hold the whole show
+			// rather than risk stacking a second copy.
+			whole = true
+		}
+	}
+	return seasons, whole, names
+}
+
+func hasSeason(s series.Series, season int) bool {
+	for _, sn := range s.Seasons {
+		if sn.SeasonNumber == season {
+			return true
+		}
+	}
+	return false
+}
+
+// aliasSeasonOf is the series season a release lands in when it matched only through an
+// alias pinned to one season (Alias.TMDBSeason > 0); ok is false otherwise.
+func aliasSeasonOf(name string, s series.Series) (int, bool) {
+	if releaseIsForSeries(name, s.Title) {
+		return 0, false
+	}
+	if s.IsAnime() && s.Extra != nil && s.Extra.OriginalTitle != "" && releaseIsForSeries(name, s.Extra.OriginalTitle) {
+		return 0, false
+	}
+	title := parser.Parse(name).Title
+	for _, a := range s.Aliases {
+		if a.TMDBSeason > 0 && parser.TitleHasPrefix(title, a.Title) {
+			return a.TMDBSeason, true
+		}
+	}
+	return 0, false
+}
+
+// notInFlight is the wanted episodes of s outside the seasons still downloading, for a
+// sweep to search instead of the whole show. With nothing in flight it returns nil, which
+// grabSeriesLimited reads as "everything missing". ok is false when every wanted episode
+// is in a season still downloading — nothing to search. sweep names the caller in the
+// log line, which is said once per show per sweep.
+func (c *Coordinator) notInFlight(s series.Series, inSeasons map[int]bool, busy []string, sweep string) (only []epKey, ok bool) {
+	if len(inSeasons) == 0 {
+		return nil, true
+	}
+	wanted, _ := wantedEpisodes(s)
+	only = []epKey{}
+	for _, k := range wanted {
+		if !inSeasons[k.season] {
+			only = append(only, k)
+		}
+	}
+	held := sortedSeasons(inSeasons)
+	if len(only) == 0 {
+		if len(wanted) > 0 {
+			c.log.Info(sweep+": skipping series — what's missing is in seasons still downloading",
+				"series", s.Title, "seasons", seasonList(held), "release", busy[0])
+		}
+		return nil, false
+	}
+	c.log.Info(sweep+": searching "+seasonList(sortedSeasons(seasonsOf(setOf(only))))+" only — "+
+		seasonList(held)+" still downloading", "series", s.Title, "release", busy[0])
+	return only, true
+}
+
+// seasonList renders season numbers for a log line: "S03", "S03, S04".
+func seasonList(seasons []int) string {
+	parts := make([]string, len(seasons))
+	for i, sn := range seasons {
+		parts[i] = fmt.Sprintf("S%02d", sn)
+	}
+	return strings.Join(parts, ", ")
+}
+
 // seriesInFlight returns the name of a torrent still being FETCHED for this series, or ""
 // when nothing is. It's what stops a sweep stacking a second copy on top of an in-progress
 // grab — and the reason it names the release is that every caller skips the series in
@@ -268,14 +403,12 @@ func seriesDownloading(queue []download.Item, seriesTitle string) bool {
 // hours in the case that surfaced this — so a mid-season episode that aired inside that
 // window was never picked up at all. Once the bytes are on disk there's nothing left to
 // stack: seeding is bookkeeping, not a download.
+//
+// It is the show-level form of seriesInFlightScope, kept for the upgrade sweep, which
+// still holds the whole show while anything for it downloads (no stacking upgrades).
 func seriesInFlight(queue []download.Item, seriesTitle string) string {
-	for _, it := range queue {
-		if it.Complete() {
-			continue // finished — importing or seeding, either way not in flight
-		}
-		if it.Category == seriesCategory && titleKey(parser.Parse(it.Name).Title) == titleKey(seriesTitle) {
-			return it.Name
-		}
+	if _, _, names := seriesInFlightScope(queue, series.Series{Title: seriesTitle}); len(names) > 0 {
+		return names[0]
 	}
 	return ""
 }

@@ -276,8 +276,8 @@ export function Movies() {
             title={`Search indexers — ${searchFor.title}`}
             subtitle="Pick a release to grab, or blocklist one to search for an alternate."
             fetchReleases={() => api.movieReleases(searchFor.id)}
-            onGrab={async (rel) => { await api.grab({ indexer: rel.indexer, download_url: rel.download_url, title: rel.title, movie_id: searchFor.id }); flash(`Grabbed "${rel.summary}" for ${searchFor.title}.`); refresh(); }}
-            onBlock={async (rel) => { await api.blockRelease(searchFor.id, { title: rel.title, indexer: rel.indexer, download_url: rel.download_url, search_again: true }); flash(`Blocklisted "${rel.summary}" — searching for an alternate.`); refresh(); }}
+            onGrab={async (rel) => { await api.grab({ token: rel.token ?? "", movie_id: searchFor.id }); flash(`Grabbed "${rel.summary}" for ${searchFor.title}.`); refresh(); }}
+            onBlock={async (rel) => { await api.blockRelease(searchFor.id, { token: rel.token ?? "", search_again: true }); flash(`Blocklisted "${rel.summary}" — searching for an alternate.`); refresh(); }}
             onClose={() => setSearchFor(null)}
           />
         )}

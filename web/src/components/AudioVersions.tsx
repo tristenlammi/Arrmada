@@ -227,7 +227,7 @@ export function AudioVersionPanel({ book, v, onChange, flash }: { book: Book; v:
           targets={(book.audio_versions ?? []).map((x) => ({ id: x.id, label: x.label }))}
           defaultTarget={v.id}
           audioOnly
-          onGrab={async (rel, versionId) => { await api.grabBook(book.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title, version_id: versionId }); onChange(); }}
+          onGrab={async (rel, versionId) => { await api.grabBook(book.id, { token: rel.token ?? "", version_id: versionId }); onChange(); }}
           onClose={() => setBrowsing(false)}
         />
       )}

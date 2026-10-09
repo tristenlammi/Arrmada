@@ -1134,8 +1134,9 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 		}
 		items = append(items, ranked{
 			rr: RankedRelease{
-				Title: rel.Title, Indexer: rel.Indexer, DownloadURL: rel.DownloadURL, InfoURL: rel.InfoURL,
-				SizeGB: rel.SizeGB(), Seeders: rel.Seeders, Summary: summarizeBook(f),
+				Title: rel.Title, Indexer: rel.Indexer, DownloadURL: rel.DownloadURL, InfoHash: rel.InfoHash,
+				InfoURL: safeInfoURL(rel.InfoURL, rel.DownloadURL), SizeGB: rel.SizeGB(),
+				Seeders: rel.Seeders, Summary: summarizeBook(f),
 				Eligible: eligible, Edition: edition, Format: f, Narrator: narrator,
 				Author: rel.Author, Series: rel.Series, Language: rel.Language,
 			},

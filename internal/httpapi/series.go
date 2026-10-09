@@ -472,6 +472,9 @@ func (a *api) handleSeriesReleases(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	// The search's own scope rides on the token: it becomes the grab's scope, which
+	// decides which episodes skip the import gate.
+	a.tokenize(r, &list, automation.ReleaseRef{MediaKind: automation.ReleaseKindSeries, MediaID: id, Season: season, Episode: episode})
 	a.writeJSON(w, http.StatusOK, list)
 }
 
@@ -494,57 +497,33 @@ func releasesScope(seasonParam, episodeParam string) (season, episode int) {
 }
 
 // handleGrabSeries grabs a chosen release for a series (into the TV category).
+//
+//	POST /api/v1/series/{id}/grab  {token}
+//
+// The token comes from this show's interactive search and carries that search's scope —
+// the whole show, a season or an episode — which limits the episodes that skip the import
+// gate. Taking it from the token rather than the body means the browser can't widen it.
 func (a *api) handleGrabSeries(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)
 	if !ok {
 		return
 	}
 	var req struct {
-		Indexer     string `json:"indexer"`
-		DownloadURL string `json:"download_url"`
-		Title       string `json:"title"`
-		// The modal it was picked from. Absent season = the whole-show search; season 0
-		// is Specials, a real season — so these are pointers, not zero-means-unset.
-		Season  *int `json:"season"`
-		Episode *int `json:"episode"`
+		Token string `json:"token"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
-	if req.DownloadURL == "" {
-		a.writeError(w, http.StatusBadRequest, "download_url is required")
-		return
-	}
-	scope, ok := grabScopeOf(req.Season, req.Episode)
+	ref, ok := a.resolveRelease(w, r, req.Token, automation.ReleaseKindSeries, id)
 	if !ok {
-		a.writeError(w, http.StatusBadRequest, "episode needs a season, and neither can be negative")
 		return
 	}
-	if err := a.deps.Automation.GrabForSeries(r.Context(), id, req.Indexer, req.DownloadURL, req.Title, scope); err != nil {
-		a.writeError(w, http.StatusBadGateway, err.Error())
+	scope := automation.ScopeFor(ref.Season, ref.Episode)
+	if err := a.deps.Automation.GrabForSeries(r.Context(), id, ref.Indexer, ref.DownloadURL, ref.Title, scope); err != nil {
+		a.writeGrabError(w, err, ref)
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"status": "grabbed", "title": req.Title})
-}
-
-// grabScopeOf turns the optional season/episode of a grab request into its scope. The
-// scope decides which episodes skip the import gate, so anything ambiguous is refused
-// rather than guessed at — guessing wide would re-open the overwrite it exists to stop.
-func grabScopeOf(season, episode *int) (automation.GrabScope, bool) {
-	if season == nil {
-		if episode != nil {
-			return automation.GrabScope{}, false
-		}
-		return automation.WholeShow, true
-	}
-	ep := 0
-	if episode != nil {
-		ep = *episode
-	}
-	if *season < 0 || ep < 0 {
-		return automation.GrabScope{}, false
-	}
-	return automation.ScopeFor(*season, ep), true
+	a.writeJSON(w, http.StatusOK, map[string]any{"status": "grabbed", "title": ref.Title})
 }
 
 // handleAutoGrabSeries is the quick Grab missing (season) / Grab (episode) action. The
