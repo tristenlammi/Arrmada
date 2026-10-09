@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/download"
+	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/series"
@@ -89,10 +91,7 @@ func (a *api) handleAddSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.Monitored && searchOnAdd {
-		sid := s.ID
-		a.bg("series auto-search on add", idTarget("series", sid), 5*time.Minute, func(ctx context.Context) error {
-			return a.deps.Automation.SearchSeriesNow(ctx, sid)
-		})
+		_, _, _ = a.submit(r, a.seriesSearchJob(s.ID))
 	}
 	a.writeJSON(w, http.StatusCreated, s)
 }
@@ -103,10 +102,11 @@ func (a *api) handleSearchSeries(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.bg("series manual search", idTarget("series", id), 5*time.Minute, func(ctx context.Context) error {
-		return a.deps.Automation.SearchSeriesNow(ctx, id)
-	})
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
+	jobID, existing, ok := a.submitOr503(w, r, a.seriesSearchJob(id))
+	if !ok {
+		return
+	}
+	a.accepted(w, jobID, existing, map[string]any{"status": "searching"})
 }
 
 func (a *api) handleGetSeries(w http.ResponseWriter, r *http.Request) {
@@ -411,16 +411,21 @@ func (a *api) handleSeriesHistory(w http.ResponseWriter, r *http.Request) {
 // handleScanSeriesLibrary catalogs series already present in the library folder.
 func (a *api) handleScanSeriesLibrary(w http.ResponseWriter, r *http.Request) {
 	root := a.libTV(r)
-	a.bg("series library scan", "series", 10*time.Minute, func(ctx context.Context) error {
-		res, err := a.deps.Series.ScanLibrary(ctx, root)
-		if err != nil {
-			return err
-		}
-		a.deps.Log.Info("series library scan complete", "imported", res.Imported, "skipped", res.Skipped, "unmatched", len(res.Unmatched))
-		a.deps.Bus.Publish("library.scanned", map[string]any{"media": "series", "imported": res.Imported, "unmatched": len(res.Unmatched)})
-		return nil
-	})
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "scanning"})
+	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "series.scan", Target: "all", Class: jobs.ClassLibraryScan, Timeout: 10 * time.Minute,
+		Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
+			res, err := a.deps.Series.ScanLibrary(ctx, root)
+			if err != nil {
+				return nil, err
+			}
+			a.deps.Log.Info("series library scan complete", "imported", res.Imported, "skipped", res.Skipped, "unmatched", len(res.Unmatched))
+			a.deps.Bus.Publish("library.scanned", map[string]any{"media": "series", "imported": res.Imported, "unmatched": len(res.Unmatched)})
+			p.SetMessage(scanMessage("series", res.Imported, len(res.Unmatched)))
+			return scanSummary{Imported: res.Imported, Skipped: res.Skipped, Unmatched: len(res.Unmatched)}, nil
+		}})
+	if !ok {
+		return
+	}
+	a.accepted(w, jobID, existing, map[string]any{"status": "scanning"})
 }
 
 // handleSeriesUnmatched returns the folders the last scan couldn't identify, each
@@ -563,11 +568,17 @@ func (a *api) handleAutoGrabSeries(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	a.bg("series scope auto-grab", idTarget("series", id), 5*time.Minute, func(ctx context.Context) error {
-		_, err := a.deps.Automation.GrabForScope(ctx, id, sc)
-		return err
-	})
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
+	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{
+		Kind: "series.grab-scope", Target: fmt.Sprintf("series:%d:s%de%d", id, req.Season, req.Episode),
+		Class: jobs.ClassIndexerSearch, Timeout: 5 * time.Minute,
+		Fn: errFn(func(ctx context.Context) error {
+			_, err := a.deps.Automation.GrabForScope(ctx, id, sc)
+			return err
+		})})
+	if !ok {
+		return
+	}
+	a.accepted(w, jobID, existing, map[string]any{"status": "searching"})
 }
 
 // handleRefreshSeries re-pulls metadata and rescans the disk for a series.
@@ -624,31 +635,34 @@ func (a *api) handleRefreshAllSeries(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, "could not list series")
 		return
 	}
-	// One sweep at a time. Two overlapping runs would double every metadata pull and
-	// race each other's episode writes for no benefit.
-	if !a.refreshAll.CompareAndSwap(false, true) {
-		a.writeError(w, http.StatusConflict, "a refresh of all series is already running")
-		return
-	}
 	ids := make([]int64, 0, len(all))
 	for _, s := range all {
 		ids = append(ids, s.ID)
 	}
-	a.bg("refresh all series", "", 2*time.Hour, func(ctx context.Context) error {
-		a.refreshSeriesSweep(ctx, ids)
-		return nil
-	})
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"queued": len(ids)})
+	// One sweep at a time (the job runner's single-flight). Two overlapping runs would
+	// double every metadata pull and race each other's episode writes for no benefit.
+	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "series.refresh-all", Target: "all", Class: "series.refresh-all", Timeout: 2 * time.Hour,
+		Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
+			refreshed, failed := a.refreshSeriesSweep(ctx, ids, p)
+			p.SetMessage(fmt.Sprintf("Refreshed %d of %d series", refreshed, len(ids)))
+			return map[string]int{"refreshed": refreshed, "failed": failed}, nil
+		}})
+	if !ok {
+		return
+	}
+	if existing {
+		a.alreadyRunning(w, jobID, "a refresh of all series is already running")
+		return
+	}
+	a.accepted(w, jobID, false, map[string]any{"queued": len(ids)})
 }
 
 // refreshSeriesSweep walks every series, refreshing metadata and rescanning the disk.
-// Detached from the request: ctx is bg's, the run context with a two-hour budget.
-func (a *api) refreshSeriesSweep(ctx context.Context, ids []int64) {
-	defer a.refreshAll.Store(false)
-
+// Detached from the request: ctx is the job's, the run context with a two-hour budget.
+func (a *api) refreshSeriesSweep(ctx context.Context, ids []int64, p *jobs.Progress) (refreshed, failed int) {
 	a.deps.Log.Info("series: refreshing all", "count", len(ids))
-	var refreshed, failed int
-	for _, id := range ids {
+	for i, id := range ids {
+		p.Set(float64(i)/float64(len(ids)), fmt.Sprintf("Refreshing %d of %d", i+1, len(ids)))
 		// Per-series budget, so one hung metadata call can't stall the whole sweep.
 		each, cancelEach := context.WithTimeout(ctx, 60*time.Second)
 		// Never a rebuild: refresh-all runs unattended across the whole library, so a
@@ -671,6 +685,7 @@ func (a *api) refreshSeriesSweep(ctx context.Context, ids []int64) {
 		}
 	}
 	a.deps.Log.Info("series: refreshed all", "refreshed", refreshed, "failed", failed)
+	return refreshed, failed
 }
 
 // handleSeriesManualImportList lists importable video files under the downloads dir
@@ -715,10 +730,18 @@ func (a *api) handleSeriesManualImport(w http.ResponseWriter, r *http.Request) {
 	// leaves the user staring at a spinner, unsure whether navigating away cancels it.
 	// Single files stay synchronous: they're quick, and immediate feedback is better.
 	if fi, statErr := os.Stat(src); statErr == nil && fi.IsDir() {
-		a.bg("series: folder import", idTarget("series", id)+" from "+src, 2*time.Hour, func(ctx context.Context) error {
-			return a.deps.Automation.ManualImportSeries(ctx, id, src)
-		})
-		a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "importing", "background": true})
+		jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "series.import-folder", Target: jobTarget("series", id), Class: jobs.ClassImport, Timeout: 2 * time.Hour,
+			Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
+				if err := a.deps.Automation.ManualImportSeries(ctx, id, src); err != nil {
+					return nil, err
+				}
+				p.SetMessage("Imported the folder")
+				return nil, nil
+			}})
+		if !ok {
+			return
+		}
+		a.accepted(w, jobID, existing, map[string]any{"status": "importing", "background": true})
 		return
 	}
 
@@ -845,10 +868,14 @@ func (a *api) handleRegrabEpisode(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	a.bg("regrab-episode", idTarget("series", id), 5*time.Minute, func(ctx context.Context) error {
-		return a.deps.Automation.RegrabEpisode(ctx, id, season, episode)
-	})
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
+	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{
+		Kind: "series.regrab-episode", Target: fmt.Sprintf("series:%d:s%de%d", id, season, episode),
+		Class: jobs.ClassIndexerSearch, Timeout: 5 * time.Minute,
+		Fn: errFn(func(ctx context.Context) error { return a.deps.Automation.RegrabEpisode(ctx, id, season, episode) })})
+	if !ok {
+		return
+	}
+	a.accepted(w, jobID, existing, map[string]any{"status": "searching"})
 }
 
 // handleDeleteEpisodeFile deletes one episode's file (to recycle) and flips it back to wanted.

@@ -169,3 +169,37 @@ func TestNoNakedGoroutines(t *testing.T) {
 		}
 	}
 }
+
+// TestNoBackgroundContextInHandlers: HTTP handlers hand work to the job runner (a.submit),
+// which runs it on the app's run context, so shutdown cancels it. A context.Background()
+// in a handler is work nothing can stop or see. The allowlist is the one fallback that
+// must remain: runCtx, for when no run group is wired (tests, tools).
+func TestNoBackgroundContextInHandlers(t *testing.T) {
+	root := repoRoot(t)
+	allowed := map[string]int{"background.go": 1}
+	fset, files := parseDir(t, filepath.Join(root, "internal", "httpapi"))
+	seen := map[string]int{}
+	for path, f := range files {
+		base := filepath.Base(path)
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Background" {
+				return true
+			}
+			if id, ok := sel.X.(*ast.Ident); !ok || id.Name != "context" {
+				return true
+			}
+			seen[base]++
+			if seen[base] > allowed[base] {
+				pos := fset.Position(call.Pos())
+				t.Errorf("%s:%d: context.Background() in a handler — use a.submit (or a.runCtx for work that must outlive the request) so shutdown can stop it",
+					filepath.ToSlash(strings.TrimPrefix(pos.Filename, root+string(filepath.Separator))), pos.Line)
+			}
+			return true
+		})
+	}
+}

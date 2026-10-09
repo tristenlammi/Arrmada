@@ -214,20 +214,3 @@ func TestPruneBandwidth(t *testing.T) {
 		t.Errorf("remaining = %d, want 1", remaining)
 	}
 }
-
-// TestImportSerializationGuard verifies the process-wide guard blocks a second concurrent import.
-func TestImportSerializationGuard(t *testing.T) {
-	s := newDataTestService(t)
-	if !s.TryStartImport() {
-		t.Fatal("first TryStartImport should succeed")
-	}
-	if s.TryStartImport() {
-		s.StopImport()
-		t.Fatal("second TryStartImport should fail while one is running")
-	}
-	s.StopImport()
-	if !s.TryStartImport() {
-		t.Fatal("TryStartImport should succeed after StopImport")
-	}
-	s.StopImport()
-}

@@ -63,6 +63,9 @@ type Service struct {
 
 	probing  sync.Map      // movie IDs with an in-flight media probe (dedup, so list polling can't storm ffprobe)
 	probeSem chan struct{} // bounds how many probes run at once
+	// backfillTried is when each movie was last handed to BackfillStaleMedia, so a file
+	// that can't be probed isn't retried on every poll of the grid.
+	backfillTried sync.Map
 
 	muUnmatched   sync.Mutex
 	lastUnmatched []UnmatchedFolder // folders the last scan couldn't identify, for manual pick
@@ -917,6 +920,54 @@ func (s *Service) EnsureMedia(ctx context.Context, id int64) {
 			_ = s.repo.SetMediaInfo(ctx, id, string(b))
 		}
 	}
+}
+
+// backfillRetry is how long a movie whose probe was tried waits before the list asks for
+// it again. A file ffprobe can't read stays "stale"; without the wait every poll of the
+// Movies grid would start another backfill for it.
+const backfillRetry = time.Hour
+
+// StaleMediaPending filters ids down to the ones no backfill has tried recently.
+func (s *Service) StaleMediaPending(ids []int64) []int64 {
+	now := time.Now()
+	var out []int64
+	for _, id := range ids {
+		if at, ok := s.backfillTried.Load(id); ok && now.Sub(at.(time.Time)) < backfillRetry {
+			continue
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+// BackfillStaleMedia probes the given movies' files and caches their media info — the
+// Movies grid's lazy backfill, run as one job rather than a goroutine per movie per poll.
+// At most cap(probeSem) probes run at once (EnsureMedia takes the slot). It returns how
+// many movies it looked at.
+func (s *Service) BackfillStaleMedia(ctx context.Context, ids []int64) int {
+	work := make(chan int64)
+	var wg sync.WaitGroup
+	for i := 0; i < cap(s.probeSem); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for id := range work {
+				s.EnsureMedia(ctx, id)
+			}
+		}()
+	}
+	n := 0
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			break
+		}
+		s.backfillTried.Store(id, time.Now())
+		work <- id
+		n++
+	}
+	close(work)
+	wg.Wait()
+	return n
 }
 
 // fileInfo builds media-info for a file path (shared by the default file and

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
@@ -26,7 +27,7 @@ func TestBgUsesRunContext(t *testing.T) {
 	a, g := bgTestAPI(ctx)
 
 	got := make(chan error, 1)
-	a.bg("manual movie search", idTarget("movie", 1), time.Hour, func(ctx context.Context) error {
+	_, _, _ = a.submit(nil, jobs.Spec{Kind: "movie.search", Target: jobTarget("movie", 1), Timeout: time.Hour, Fn: errFn(func(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			got <- ctx.Err()
@@ -34,7 +35,7 @@ func TestBgUsesRunContext(t *testing.T) {
 			got <- errors.New("ctx never ended")
 		}
 		return nil
-	})
+	})})
 	if err := <-got; !errors.Is(err, context.Canceled) {
 		t.Fatalf("fn ctx err = %v, want canceled", err)
 	}
@@ -56,14 +57,14 @@ func TestBgContainsPanics(t *testing.T) {
 	})
 	t.Cleanup(func() { safego.SetPanicHook(nil) })
 
-	a.bg("manual movie search", idTarget("movie", 7), time.Minute, func(context.Context) error {
+	_, _, _ = a.submit(nil, jobs.Spec{Kind: "movie.search", Target: jobTarget("movie", 7), Timeout: time.Minute, Fn: errFn(func(context.Context) error {
 		var m map[string]int
 		m["x"] = 1
 		return nil
-	})
+	})})
 	select {
 	case name := <-hooked:
-		if !strings.Contains(name, "manual movie search") || !strings.Contains(name, "movie 7") {
+		if !strings.Contains(name, "movie.search") || !strings.Contains(name, "movie:7") {
 			t.Fatalf("panic hook name = %q", name)
 		}
 	case <-time.After(2 * time.Second):
@@ -71,7 +72,7 @@ func TestBgContainsPanics(t *testing.T) {
 	}
 
 	ran := make(chan struct{})
-	a.bg("next", "", time.Minute, func(context.Context) error { close(ran); return nil })
+	_, _, _ = a.submit(nil, jobs.Spec{Kind: "next", Timeout: time.Minute, Fn: errFn(func(context.Context) error { close(ran); return nil })})
 	select {
 	case <-ran:
 	case <-time.After(2 * time.Second):
@@ -86,11 +87,11 @@ func TestBgContainsPanics(t *testing.T) {
 func TestBgAppliesTimeout(t *testing.T) {
 	a, _ := bgTestAPI(context.Background())
 	got := make(chan error, 1)
-	a.bg("slow", "", 10*time.Millisecond, func(ctx context.Context) error {
+	_, _, _ = a.submit(nil, jobs.Spec{Kind: "slow", Timeout: 10 * time.Millisecond, Fn: errFn(func(ctx context.Context) error {
 		<-ctx.Done()
 		got <- ctx.Err()
 		return ctx.Err()
-	})
+	})})
 	select {
 	case err := <-got:
 		if !errors.Is(err, context.DeadlineExceeded) {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/indexer"
+	"github.com/tristenlammi/arrmada/internal/jobs"
 )
 
 // Extra audiobook versions of a book (a full-cast production beside the standard
@@ -55,10 +56,11 @@ func (a *api) handleAddAudioVersion(w http.ResponseWriter, r *http.Request) {
 		// never look for the new version; give it a fresh start and search now.
 		a.deps.Books.ResetSearchMisses(r.Context(), id)
 		vid := v.ID
-		a.bg("book: first search for a new audiobook version", fmt.Sprintf("book %d version %d", id, vid), 5*time.Minute, func(ctx context.Context) error {
-			_, err := a.deps.Automation.SearchAudioVersionNow(ctx, id, vid)
-			return err
-		})
+		_, _, _ = a.submit(r, jobs.Spec{Kind: "book.search-version", Target: fmt.Sprintf("book:%d:v%d", id, vid), Class: jobs.ClassIndexerSearch, Timeout: 5 * time.Minute,
+			Fn: searchFn(func(ctx context.Context) error {
+				_, err := a.deps.Automation.SearchAudioVersionNow(ctx, id, vid)
+				return err
+			})})
 	}
 	a.writeJSON(w, http.StatusCreated, v)
 }

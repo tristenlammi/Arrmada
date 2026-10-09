@@ -1,11 +1,13 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/tristenlammi/arrmada/internal/convert"
+	"github.com/tristenlammi/arrmada/internal/jobs"
 )
 
 // handleConvertHardware reports the verified encoders, what conversions run on, the space
@@ -361,11 +363,25 @@ func (a *api) handleConvertJobs(w http.ResponseWriter, r *http.Request) {
 // handleConvertReindex rescans the library so files added or changed since the last sweep
 // show up without waiting for the nightly one.
 func (a *api) handleConvertReindex(w http.ResponseWriter, r *http.Request) {
-	if !a.deps.Convert.RefreshIndex(r.Context()) {
+	if !a.deps.Convert.BeginRefreshIndex() {
 		a.writeJSON(w, http.StatusOK, map[string]any{"started": false, "reason": "a library scan is already running"})
 		return
 	}
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"started": true})
+	jobID, existing, err := a.submit(r, jobs.Spec{Kind: "convert.reindex", Target: "all", Class: "convert.reindex",
+		Fn: errFn(func(ctx context.Context) error {
+			a.deps.Convert.RunRefreshIndex(ctx)
+			return nil
+		})})
+	if err != nil || existing {
+		a.deps.Convert.AbandonRefreshIndex()
+		if err != nil {
+			a.writeError(w, http.StatusServiceUnavailable, "couldn't start the rescan just now — try again in a moment")
+			return
+		}
+		a.writeJSON(w, http.StatusOK, map[string]any{"started": false, "reason": "a library scan is already running", "job_id": jobID})
+		return
+	}
+	a.accepted(w, jobID, false, map[string]any{"started": true})
 }
 
 // handleConvertReindexStatus reports whether a rescan is still running.

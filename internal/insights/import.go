@@ -4,7 +4,6 @@ import (
 	"context"
 	"strconv"
 	"strings"
-	"sync"
 )
 
 // ImportedSession is a historical play session (e.g. from Tautulli) used to backfill Insights so
@@ -34,17 +33,9 @@ type ImportedSession struct {
 	PausedMS         int64
 }
 
-// importMu serializes imports process-wide so a double-clicked import returns "already running"
-// instead of interleaving duplicate inserts (the sessionExists dedupe check is only reliable when
-// one import runs at a time). Callers use TryStartImport/StopImport around a whole import run.
-var importMu sync.Mutex
-
-// TryStartImport reports whether an import may begin. It returns false if one is already running;
-// on success the caller MUST pair it with StopImport (typically via defer) when the run finishes.
-func (s *Service) TryStartImport() bool { return importMu.TryLock() }
-
-// StopImport releases the import guard acquired by a successful TryStartImport.
-func (s *Service) StopImport() { importMu.Unlock() }
+// Imports must run one at a time: the sessionExists dedupe check is only reliable then. The
+// import is an insights.import-tautulli job, and the job runner's single-flight on it is what
+// turns a double-clicked import into "already running".
 
 // normalizeDecision maps a Tautulli transcode_decision to the vocabulary the live recorder uses
 // ("direct_play"/"direct_stream"/"transcode", see plex.Session.Decision) so imported and live rows

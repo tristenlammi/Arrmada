@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/subtitles"
 )
 
@@ -252,14 +253,20 @@ func (a *api) handleSubtitleSearchMovie(w http.ResponseWriter, r *http.Request) 
 		a.writeError(w, http.StatusBadRequest, "OpenSubtitles isn't configured — add an API key, username and password to grab subtitles")
 		return
 	}
-	a.bg("subtitle movie grab", idTarget("movie", id), 5*time.Minute, func(ctx context.Context) error {
-		n, err := a.deps.Subtitles.GrabMovie(ctx, id)
-		if err == nil {
+	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "subtitles.search", Target: jobTarget("movie", id), Timeout: 5 * time.Minute,
+		Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
+			n, err := a.deps.Subtitles.GrabMovie(ctx, id)
+			if err != nil {
+				return nil, err
+			}
 			a.deps.Log.Info("subtitle movie grab done", "movie_id", id, "grabbed", n)
-		}
-		return err
-	})
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
+			p.SetMessage("Downloaded " + countOf(n, "subtitle"))
+			return map[string]int{"grabbed": n}, nil
+		}})
+	if !ok {
+		return
+	}
+	a.accepted(w, jobID, existing, map[string]any{"status": "searching"})
 }
 
 // handleSubtitleSearchSeries grabs missing subtitles for a whole series (background).
@@ -272,12 +279,18 @@ func (a *api) handleSubtitleSearchSeries(w http.ResponseWriter, r *http.Request)
 		a.writeError(w, http.StatusBadRequest, "OpenSubtitles isn't configured — add an API key, username and password to grab subtitles")
 		return
 	}
-	a.bg("subtitle series grab", idTarget("series", id), 20*time.Minute, func(ctx context.Context) error {
-		n, err := a.deps.Subtitles.GrabSeries(ctx, id)
-		if err == nil {
+	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "subtitles.search", Target: jobTarget("series", id), Timeout: 20 * time.Minute,
+		Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
+			n, err := a.deps.Subtitles.GrabSeries(ctx, id)
+			if err != nil {
+				return nil, err
+			}
 			a.deps.Log.Info("subtitle series grab done", "series_id", id, "grabbed", n)
-		}
-		return err
-	})
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
+			p.SetMessage("Downloaded " + countOf(n, "subtitle"))
+			return map[string]int{"grabbed": n}, nil
+		}})
+	if !ok {
+		return
+	}
+	a.accepted(w, jobID, existing, map[string]any{"status": "searching"})
 }

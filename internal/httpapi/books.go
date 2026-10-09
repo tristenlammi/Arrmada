@@ -16,6 +16,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/indexer"
+	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 )
 
@@ -55,12 +56,17 @@ func (a *api) handleListBooks(w http.ResponseWriter, r *http.Request) {
 
 // handleStartBookUpgrade re-matches every non-Hardcover book to Hardcover, in the background.
 func (a *api) handleStartBookUpgrade(w http.ResponseWriter, r *http.Request) {
-	// The job outlives the request that started it.
-	if !a.deps.Books.StartUpgrade(a.runCtx()) {
+	// A books.upgrade job; the claim is taken here so the status below already says running.
+	jobID, started, err := a.deps.Books.SubmitUpgrade(a.runCtx(), a.jobSubmitter(), triggerFor(r))
+	if err != nil {
+		a.writeError(w, http.StatusServiceUnavailable, "couldn't start the re-match just now — try again in a moment")
+		return
+	}
+	if !started {
 		a.writeJSON(w, http.StatusOK, map[string]any{"started": false, "status": a.deps.Books.UpgradeStatus()})
 		return
 	}
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"started": true, "status": a.deps.Books.UpgradeStatus()})
+	a.accepted(w, jobID, false, map[string]any{"started": true, "status": a.deps.Books.UpgradeStatus()})
 }
 
 func (a *api) handleBookUpgradeStatus(w http.ResponseWriter, r *http.Request) {
@@ -70,12 +76,16 @@ func (a *api) handleBookUpgradeStatus(w http.ResponseWriter, r *http.Request) {
 // handleStartBookSweep searches for every monitored book's missing editions — the
 // manual, back-off-free sweep. It fills gaps only; nothing on disk is replaced.
 func (a *api) handleStartBookSweep(w http.ResponseWriter, r *http.Request) {
-	started := a.deps.Automation.StartBookSweep(a.runCtx())
-	code := http.StatusOK
-	if started {
-		code = http.StatusAccepted
+	jobID, started, err := a.deps.Automation.SubmitBookSweep(a.runCtx(), a.jobSubmitter(), triggerFor(r))
+	if err != nil {
+		a.writeError(w, http.StatusServiceUnavailable, "couldn't start the sweep just now — try again in a moment")
+		return
 	}
-	a.writeJSON(w, code, map[string]any{"started": started, "status": a.deps.Automation.BookSweepStatus()})
+	if !started {
+		a.writeJSON(w, http.StatusOK, map[string]any{"started": false, "status": a.deps.Automation.BookSweepStatus()})
+		return
+	}
+	a.accepted(w, jobID, false, map[string]any{"started": true, "status": a.deps.Automation.BookSweepStatus()})
 }
 
 func (a *api) handleBookSweepStatus(w http.ResponseWriter, r *http.Request) {
@@ -144,10 +154,7 @@ func (a *api) handleAddBook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if b.Monitored && searchOnAdd {
-		bid := b.ID
-		a.bg("book auto-search on add", idTarget("book", bid), 5*time.Minute, func(ctx context.Context) error {
-			return a.deps.Automation.SearchBookNow(ctx, bid)
-		})
+		_, _, _ = a.submit(r, a.bookSearchJob(b.ID))
 	}
 	a.writeJSON(w, http.StatusCreated, b)
 }
@@ -303,29 +310,39 @@ func (a *api) handleBookRename(w http.ResponseWriter, r *http.Request) {
 // handleScanBookLibrary catalogs books already present in the library folder.
 func (a *api) handleScanBookLibrary(w http.ResponseWriter, r *http.Request) {
 	ebooks, audiobooks := a.libEbooks(r), a.libAudiobooks(r)
-	a.bg("book library scan", "books", 15*time.Minute, func(ctx context.Context) error {
-		res := a.deps.Automation.ScanBookLibrary(ctx, ebooks, audiobooks)
-		a.deps.Log.Info("book library scan done", "imported", res.Imported, "skipped", res.Skipped)
-		return nil
-	})
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "scanning"})
+	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "books.scan", Target: "all", Class: jobs.ClassLibraryScan, Timeout: 15 * time.Minute,
+		Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
+			res := a.deps.Automation.ScanBookLibrary(ctx, ebooks, audiobooks)
+			a.deps.Log.Info("book library scan done", "imported", res.Imported, "skipped", res.Skipped)
+			p.SetMessage(scanMessage("book", res.Imported, len(res.Unmatched)))
+			return scanSummary{Imported: res.Imported, Skipped: res.Skipped, Unmatched: len(res.Unmatched)}, nil
+		}})
+	if !ok {
+		return
+	}
+	a.accepted(w, jobID, existing, map[string]any{"status": "scanning"})
 }
 
 // handleBackfillBookSeries fills in the series for books already in the library — a
 // one-off for a library assembled before Arrmada started recording it. Runs in the
 // background: one indexer search per unlabelled book takes minutes, not a request.
 func (a *api) handleBackfillBookSeries(w http.ResponseWriter, r *http.Request) {
-	a.bg("book series backfill", "", 30*time.Minute, func(ctx context.Context) error {
-		res, err := a.deps.Automation.BackfillBookSeries(ctx)
-		if err != nil {
-			a.deps.Log.Warn("book series backfill failed", "err", err,
-				"scanned", res.Scanned, "learned", res.Learned)
-			return nil
-		}
-		a.deps.Log.Info("book series backfill finished", "scanned", res.Scanned, "learned", res.Learned)
-		return nil
-	})
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "backfilling"})
+	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "books.backfill-series", Target: "all", Class: jobs.ClassIndexerSearch, Timeout: 30 * time.Minute,
+		Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
+			res, err := a.deps.Automation.BackfillBookSeries(ctx)
+			if err != nil {
+				a.deps.Log.Warn("book series backfill failed", "err", err,
+					"scanned", res.Scanned, "learned", res.Learned)
+				return res, err
+			}
+			a.deps.Log.Info("book series backfill finished", "scanned", res.Scanned, "learned", res.Learned)
+			p.SetMessage(fmt.Sprintf("Found the series for %d of %d books", res.Learned, res.Scanned))
+			return res, nil
+		}})
+	if !ok {
+		return
+	}
+	a.accepted(w, jobID, existing, map[string]any{"status": "backfilling"})
 }
 
 // handleBookSeries returns the series a book belongs to, its siblings in reading order,
@@ -386,10 +403,12 @@ func (a *api) handleMergeAudiobook(w http.ResponseWriter, r *http.Request) {
 	}
 	// The outcome lands on the book as a 'merged' or 'merge-failed' event, which the page
 	// watches for; the log line is for the server's side.
-	a.bg("audiobook merge", idTarget("book", id), 30*time.Minute, func(ctx context.Context) error {
-		return a.deps.Automation.MergeAudiobook(ctx, id)
-	})
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "merging"})
+	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "book.merge-audiobook", Target: jobTarget("book", id), Timeout: 30 * time.Minute,
+		Fn: errFn(func(ctx context.Context) error { return a.deps.Automation.MergeAudiobook(ctx, id) })})
+	if !ok {
+		return
+	}
+	a.accepted(w, jobID, existing, map[string]any{"status": "merging"})
 }
 
 // handleDeleteBookFile removes one edition's file(s) (?edition=ebook|audiobook).
@@ -771,25 +790,28 @@ func (a *api) handleAddAuthor(w http.ResponseWriter, r *http.Request) {
 		for i, b := range added {
 			ids[i] = b.ID
 		}
-		a.bg("add author: search", "", 20*time.Minute, func(ctx context.Context) error {
-			for i, id := range ids {
-				err := a.deps.Automation.SearchBookNow(ctx, id)
-				if indexer.IsOutage(err) {
-					// The indexers can't answer: the rest would only fail the same way. No miss
-					// is recorded, so the scheduled sweep picks these books up once they're back.
-					a.deps.Log.Warn("add author: no indexer could answer — leaving the rest to the scheduled sweep",
-						"searched", i+1, "of", len(ids), "err", err)
-					return nil
+		// One job for the batch, in the indexer-search class: a big catalogue waits its
+		// turn behind searches already running rather than hammering the indexers.
+		_, _, _ = a.submit(r, jobs.Spec{Kind: "books.add-author-search", Target: "author:" + req.AuthorKey, Class: jobs.ClassIndexerSearch, Timeout: 20 * time.Minute,
+			Fn: errFn(func(ctx context.Context) error {
+				for i, id := range ids {
+					err := a.deps.Automation.SearchBookNow(ctx, id)
+					if indexer.IsOutage(err) {
+						// The indexers can't answer: the rest would only fail the same way. No miss
+						// is recorded, so the scheduled sweep picks these books up once they're back.
+						a.deps.Log.Warn("add author: no indexer could answer — leaving the rest to the scheduled sweep",
+							"searched", i+1, "of", len(ids), "err", err)
+						return nil
+					}
+					if err != nil {
+						a.deps.Log.Warn("add author: search failed", "book_id", id, "err", err)
+					}
+					if ctx.Err() != nil {
+						return ctx.Err() // shutting down, or out of time: the sweep finishes the rest
+					}
 				}
-				if err != nil {
-					a.deps.Log.Warn("add author: search failed", "book_id", id, "err", err)
-				}
-				if ctx.Err() != nil {
-					return ctx.Err() // shutting down, or out of time: the sweep finishes the rest
-				}
-			}
-			return nil
-		})
+				return nil
+			})})
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"added": len(added), "skipped": skipped, "total": len(works)})
 }
@@ -1042,10 +1064,11 @@ func (a *api) handleSearchBook(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.bg("book manual search", idTarget("book", id), 5*time.Minute, func(ctx context.Context) error {
-		return a.deps.Automation.SearchBookNow(ctx, id)
-	})
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
+	jobID, existing, ok := a.submitOr503(w, r, a.bookSearchJob(id))
+	if !ok {
+		return
+	}
+	a.accepted(w, jobID, existing, map[string]any{"status": "searching"})
 }
 
 func (a *api) handleDeleteBook(w http.ResponseWriter, r *http.Request) {

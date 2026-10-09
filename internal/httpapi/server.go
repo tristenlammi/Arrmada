@@ -106,12 +106,6 @@ type api struct {
 	deps         Deps
 	start        time.Time
 	loginLimiter *loginLimiter // throttles auth attempts (login/setup/plex-pin)
-	// refreshAll guards the bulk series refresh so two overlapping sweeps can't
-	// double every metadata pull and race each other's episode writes.
-	refreshAll atomic.Bool
-	// musicScan guards the background music library scan: two overlapping runs would
-	// double every MusicBrainz lookup and race each other's writes.
-	musicScan atomic.Bool
 	// seedDiagAt throttles the unmatched-seed-rule diagnostic. The Downloads page polls
 	// continuously, so an unthrottled line would bury the log it's meant to help read.
 	seedDiagAt atomic.Int64

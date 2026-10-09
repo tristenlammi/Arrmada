@@ -106,6 +106,10 @@ func (c *Coordinator) searchBooksMissing(ctx context.Context, maxSearches int) {
 		searched++
 		b := d.b
 		n, err := c.searchBookOnce(ctx, b.ID)
+		if errors.Is(err, ErrAlreadySearching) {
+			c.log.Debug("book: skipping a book that is already being searched", "title", b.Title)
+			continue
+		}
 		// An error — above all an indexer outage — is not a miss: a search nobody could
 		// answer says nothing about whether the book is out there.
 		if outage.note(err) {
@@ -192,6 +196,11 @@ func (c *Coordinator) searchBookOnce(ctx context.Context, bookID int64) (int, er
 	if c.books == nil {
 		return 0, nil
 	}
+	release, ok := c.claims.claim(bookKey(bookID))
+	if !ok {
+		return 0, ErrAlreadySearching
+	}
+	defer release()
 	b, err := c.books.Get(ctx, bookID)
 	if err != nil {
 		return 0, err

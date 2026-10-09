@@ -8,7 +8,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/indexer"
-	"github.com/tristenlammi/arrmada/internal/safego"
+	"github.com/tristenlammi/arrmada/internal/jobs"
 )
 
 // The scheduled missing-books sweep gives a book two tries and then leaves it to the
@@ -54,17 +54,54 @@ func (c *Coordinator) BookSweepStatus() BookSweepStatus {
 	return st
 }
 
-// StartBookSweep begins the manual sweep in the background; false when one is running.
-func (c *Coordinator) StartBookSweep(ctx context.Context) bool {
+// BeginBookSweep claims the manual sweep; false when one is running. The caller runs it
+// with RunBookSweep, or gives the claim back with AbandonBookSweep. Claimed before the job
+// starts so the Books page's first status read already says it is running.
+func (c *Coordinator) BeginBookSweep() bool {
 	c.bookSweepMu.Lock()
+	defer c.bookSweepMu.Unlock()
 	if c.bookSweep.Running {
-		c.bookSweepMu.Unlock()
 		return false
 	}
 	c.bookSweep = BookSweepStatus{Running: true, StartedAt: time.Now().Unix()}
-	c.bookSweepMu.Unlock()
-	safego.Go(c.log, "book sweep", func() { c.runBookSweep(ctx) })
 	return true
+}
+
+// AbandonBookSweep releases a claim that never ran.
+func (c *Coordinator) AbandonBookSweep() {
+	c.bookSweepMu.Lock()
+	c.bookSweep.Running, c.bookSweep.EndedAt = false, time.Now().Unix()
+	c.bookSweepMu.Unlock()
+}
+
+// RunBookSweep runs a claimed sweep to the end and returns its final status.
+func (c *Coordinator) RunBookSweep(ctx context.Context) BookSweepStatus {
+	c.runBookSweep(ctx)
+	return c.BookSweepStatus()
+}
+
+// SubmitBookSweep claims the sweep and starts it as a books.search-missing job. started is
+// false when one is already running.
+func (c *Coordinator) SubmitBookSweep(ctx context.Context, sub jobs.Submitter, trigger string) (jobID int64, started bool, err error) {
+	if !c.BeginBookSweep() {
+		return 0, false, nil
+	}
+	id, existing, err := jobs.Start(ctx, sub, c.log, jobs.Spec{
+		// Its own class: the sweep paces itself (one book every few seconds), and queued
+		// behind two long searches its status would read "not running" to the page.
+		Kind: "books.search-missing", Target: "all", Trigger: trigger, Class: "books.search-missing",
+		Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
+			st := c.RunBookSweep(ctx)
+			p.SetMessage(fmt.Sprintf("Searched %d books: %d editions grabbed", st.Done, st.Grabbed))
+			st.Notes = nil // the page reads these from the status endpoint
+			return st, nil
+		},
+	})
+	if err != nil || existing {
+		c.AbandonBookSweep()
+		return id, false, err
+	}
+	return id, true, nil
 }
 
 // MissingBookEditions counts the books the sweep would search: every book lacking an
@@ -121,6 +158,10 @@ func (c *Coordinator) runBookSweep(ctx context.Context) {
 			continue
 		}
 		n, err := c.searchBookOnce(ctx, b.ID)
+		if errors.Is(err, ErrAlreadySearching) {
+			set(func(st *BookSweepStatus) { st.Skipped++; st.Done++ })
+			continue
+		}
 		if outage.note(err) && outage.stop() {
 			set(func(st *BookSweepStatus) {
 				st.Done++

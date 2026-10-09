@@ -111,6 +111,9 @@ type Coordinator struct {
 	// the search ladder.
 	now func() time.Time
 
+	// claims keeps two searches of one title from running at once (claims.go).
+	claims claims
+
 	// The manual missing-editions sweep for books (books_sweep.go).
 	bookSweepMu sync.Mutex
 	bookSweep   BookSweepStatus
@@ -397,6 +400,10 @@ func (c *Coordinator) SearchMissing(ctx context.Context) {
 			}
 		}
 		n, searched, err := c.searchAndGrab(ctx, m)
+		if errors.Is(err, ErrAlreadySearching) {
+			c.log.Debug("automation: skipping a movie that is already being searched", "movie", m.Title)
+			continue
+		}
 		if outage.note(err) {
 			if outage.stop() {
 				break // the indexers are down: the rest would only fail the same way
@@ -619,6 +626,11 @@ func (c *Coordinator) SearchMovie(ctx context.Context, id int64) error {
 // fully-downloaded movie to the 12h backoff cap, delaying the first real search when
 // a file was later deleted or a new version track added).
 func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (int, bool, error) {
+	release, ok := c.claims.claim(movieKey(m.ID))
+	if !ok {
+		return 0, false, ErrAlreadySearching
+	}
+	defer release()
 	want := c.missingVersions(ctx, m.ID)
 	if len(want) == 0 {
 		return 0, false, nil
@@ -918,6 +930,10 @@ func (c *Coordinator) UpgradeMovies(ctx context.Context) {
 			continue // already grabbing something for this movie
 		}
 		err := c.upgradeMovie(ctx, m)
+		if errors.Is(err, ErrAlreadySearching) {
+			c.log.Debug("automation: skipping an upgrade search for a movie already being searched", "movie", m.Title)
+			continue
+		}
 		if outage.note(err) {
 			if outage.stop() {
 				break
@@ -946,6 +962,11 @@ func (c *Coordinator) UpgradeMovie(ctx context.Context, id int64) error {
 // upgradeMovie searches and grabs an upgrade for any monitored version that
 // already has a file. Versions without a file are handled by SearchMissing.
 func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
+	release, ok := c.claims.claim(movieKey(m.ID))
+	if !ok {
+		return ErrAlreadySearching
+	}
+	defer release()
 	// Database rows only: the current size and quality come from the cached media info
 	// (or the recorded release name), never from probing the file on every sweep.
 	versions, err := c.movies.VersionRows(ctx, m.ID)

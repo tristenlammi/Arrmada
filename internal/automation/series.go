@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -170,6 +171,10 @@ func (c *Coordinator) SearchSeriesMissing(ctx context.Context) {
 			}
 		}
 		n, err := c.searchSeriesOnce(ctx, s.ID)
+		if errors.Is(err, ErrAlreadySearching) {
+			c.log.Debug("series: skipping a show that is already being searched", "series", s.Title)
+			continue
+		}
 		if outage.note(err) {
 			if outage.stop() {
 				break // the indexers are down: the rest would only fail the same way
@@ -207,6 +212,11 @@ func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (int
 	if c.series == nil {
 		return 0, nil
 	}
+	release, ok := c.claims.claim(seriesKey(seriesID))
+	if !ok {
+		return 0, ErrAlreadySearching
+	}
+	defer release()
 	s, err := c.series.Get(ctx, seriesID)
 	if err != nil {
 		return 0, err

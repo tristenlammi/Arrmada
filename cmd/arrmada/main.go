@@ -263,7 +263,7 @@ func main() {
 	// boot-time fold deleted prefix siblings ('Mistborn: The Final Empire' / 'Mistborn:
 	// Secret History') along with their audio versions and everyone's listening place.
 	// Possible duplicates are flagged on the book's timeline for a person to review.
-	grp.Go("books: catalogue upgrade check", func(ctx context.Context) { booksSvc.MaybeStartUpgrade(ctx) })
+	grp.Go("books: catalogue upgrade check", func(ctx context.Context) { booksSvc.MaybeSubmitUpgrade(ctx, jobRunner, "system") })
 	// MusicBrainz needs no key, the way Open Library needs none for books.
 	musicSvc := music.NewService(st.DB(), metadata.NewMusicBrainz(), log)
 	// Music is off by default now (it's a preview), but an install already using it must
@@ -547,6 +547,7 @@ func main() {
 	requestsSvc := requests.NewService(st.DB(), movieSvc, seriesSvc, booksSvc, coordinator, qualitySvc, bus, notifySvc.AppriseBin(), log)
 	requestsSvc.SetPushSender(pushSvc) // Web Push alongside inbox + Apprise
 	requestsSvc.SetRunner(grp)         // approval searches stop at shutdown
+	requestsSvc.SetJobs(jobRunner)     // and are jobs, single-flight with a Search click
 	// Alert requesters when their request is imported.
 	grp.Loop("requests: ready notifier", requestsSvc.RunNotifier)
 	// Book requests made before they remembered their library row are linked to it by

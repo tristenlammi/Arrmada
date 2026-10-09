@@ -669,14 +669,37 @@ func (s *Service) RefreshIndex(ctx context.Context) bool {
 	}
 	s.indexScanning.Store(true)
 	safego.Go(s.log, "convert: index refresh", func() {
-		defer s.indexMu.Unlock()
-		defer s.indexScanning.Store(false)
 		// Deliberately NOT the request's context: a full pass outlives the HTTP call
 		// that asked for it, and cancelling on response would leave it half done.
-		s.IndexAll(context.WithoutCancel(ctx))
-		s.lastSweep = time.Now()
+		s.RunRefreshIndex(context.WithoutCancel(ctx))
 	})
 	return true
+}
+
+// BeginRefreshIndex claims a full rescan for a caller that runs it itself (the Rescan
+// button, as a job): false when one is already running. Follow with RunRefreshIndex, or
+// AbandonRefreshIndex if it can't be started. Claimed up front so the status endpoint
+// says "running" from the first poll.
+func (s *Service) BeginRefreshIndex() bool {
+	if s.index == nil || !s.indexMu.TryLock() {
+		return false
+	}
+	s.indexScanning.Store(true)
+	return true
+}
+
+// AbandonRefreshIndex releases a claim that never ran.
+func (s *Service) AbandonRefreshIndex() {
+	s.indexScanning.Store(false)
+	s.indexMu.Unlock()
+}
+
+// RunRefreshIndex runs a claimed rescan and releases the claim.
+func (s *Service) RunRefreshIndex(ctx context.Context) {
+	defer s.indexMu.Unlock()
+	defer s.indexScanning.Store(false)
+	s.IndexAll(ctx)
+	s.lastSweep = time.Now()
 }
 
 // IndexScanning reports whether a rescan is in progress, so the UI can reload the list

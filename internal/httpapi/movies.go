@@ -3,11 +3,13 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/quality"
@@ -24,19 +26,26 @@ func (a *api) handleListMovies(w http.ResponseWriter, r *http.Request) {
 	}
 	// Attach live download progress so the grid can show an indicator.
 	queue, _ := a.deps.Downloads.Queue(r.Context())
+	var stale []int64
 	for i := range list {
 		if len(queue) > 0 {
 			list[i].Download = downloadFor(queue, list[i])
 		}
-		// Backfill media info cached before it existed or by an older probe (fire-and-forget,
-		// bounded and deduplicated inside EnsureMedia).
 		if list[i].MediaStale() {
-			id := list[i].ID
-			a.bg("media backfill", idTarget("movie", id), 10*time.Minute, func(ctx context.Context) error {
-				a.deps.Movies.EnsureMedia(ctx, id)
-				return nil
-			})
+			stale = append(stale, list[i].ID)
 		}
+	}
+	// Backfill media info cached before it existed or by an older probe: one job for the
+	// lot, not a goroutine per movie on every 4-second poll. Single-flight makes repeat
+	// polls free while it runs, and a movie it already tried waits an hour before the
+	// next attempt (a file ffprobe can't read stays stale).
+	if pending := a.deps.Movies.StaleMediaPending(stale); len(pending) > 0 {
+		_, _, _ = a.submit(r, jobs.Spec{Kind: "movie.media-backfill", Target: "all", Class: "movie.media-backfill", Timeout: 10 * time.Minute,
+			Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
+				n := a.deps.Movies.BackfillStaleMedia(ctx, pending)
+				p.SetMessage(fmt.Sprintf("Read media info for %d movies", n))
+				return map[string]int{"movies": n}, nil
+			}})
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"movies":             list,
@@ -110,10 +119,7 @@ func (a *api) handleAddMovie(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if m.Monitored && searchOnAdd {
-		id := m.ID
-		a.bg("auto-search on add", idTarget("movie", id), 3*time.Minute, func(ctx context.Context) error {
-			return a.deps.Automation.SearchMovie(ctx, id)
-		})
+		_, _, _ = a.submit(r, a.movieSearchJob(m.ID))
 	}
 
 	a.writeJSON(w, http.StatusCreated, m)
@@ -125,11 +131,13 @@ func (a *api) handleSearchMovie(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Run in the background; searching indexers (via FlareSolverr) is slow.
-	a.bg("manual movie search", idTarget("movie", id), 3*time.Minute, func(ctx context.Context) error {
-		return a.deps.Automation.SearchMovie(ctx, id)
-	})
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
+	// Run in the background; searching indexers (via FlareSolverr) is slow. A second
+	// click while it runs gets the same job back.
+	jobID, existing, ok := a.submitOr503(w, r, a.movieSearchJob(id))
+	if !ok {
+		return
+	}
+	a.accepted(w, jobID, existing, map[string]any{"status": "searching"})
 }
 
 // handleListBlocklist returns a movie's blocklisted releases.
@@ -168,10 +176,17 @@ func (a *api) handleBlocklist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.SearchAgain {
-		a.bg("blocklist & search", idTarget("movie", id), 3*time.Minute, func(ctx context.Context) error {
+		// The same job kind as a plain search: blocklisting and searching while a search
+		// of this movie runs would only race it.
+		spec := a.movieSearchJob(id)
+		spec.Fn = searchFn(func(ctx context.Context) error {
 			return a.deps.Automation.BlocklistAndSearch(ctx, id, req.Title, req.Indexer, req.DownloadURL)
 		})
-		a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "blocklisted, searching"})
+		jobID, existing, ok := a.submitOr503(w, r, spec)
+		if !ok {
+			return
+		}
+		a.accepted(w, jobID, existing, map[string]any{"status": "blocklisted, searching"})
 		return
 	}
 	if err := a.deps.Automation.Blocklist(r.Context(), id, req.Title, req.Indexer, req.DownloadURL, "manually blocklisted"); err != nil {
@@ -199,16 +214,21 @@ func (a *api) handleUnblock(w http.ResponseWriter, r *http.Request) {
 // lookups over a large library take a while.
 func (a *api) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
 	root := a.libMovies(r) // resolve the configured folder before we detach
-	a.bg("library scan", "movies", 15*time.Minute, func(ctx context.Context) error {
-		res, err := a.deps.Movies.ScanLibrary(ctx, root)
-		if err != nil {
-			return err
-		}
-		a.deps.Log.Info("library scan complete", "imported", res.Imported, "skipped", res.Skipped, "unmatched", len(res.Unmatched))
-		a.deps.Bus.Publish("library.scanned", map[string]any{"media": "movie", "imported": res.Imported, "unmatched": len(res.Unmatched)})
-		return nil
-	})
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "scanning"})
+	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "movie.scan", Target: "all", Class: jobs.ClassLibraryScan, Timeout: 15 * time.Minute,
+		Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
+			res, err := a.deps.Movies.ScanLibrary(ctx, root)
+			if err != nil {
+				return nil, err
+			}
+			a.deps.Log.Info("library scan complete", "imported", res.Imported, "skipped", res.Skipped, "unmatched", len(res.Unmatched))
+			a.deps.Bus.Publish("library.scanned", map[string]any{"media": "movie", "imported": res.Imported, "unmatched": len(res.Unmatched)})
+			p.SetMessage(scanMessage("movie", res.Imported, len(res.Unmatched)))
+			return scanSummary{Imported: res.Imported, Skipped: res.Skipped, Unmatched: len(res.Unmatched)}, nil
+		}})
+	if !ok {
+		return
+	}
+	a.accepted(w, jobID, existing, map[string]any{"status": "scanning"})
 }
 
 // handleMovieUnmatched returns the folders the last scan couldn't identify, each
@@ -381,9 +401,7 @@ func (a *api) handleAddVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if monitored {
-		a.bg("search for new version", idTarget("movie", id), 3*time.Minute, func(ctx context.Context) error {
-			return a.deps.Automation.SearchMovie(ctx, id)
-		})
+		_, _, _ = a.submit(r, a.movieSearchJob(id))
 	}
 	a.writeJSON(w, http.StatusCreated, v)
 }
@@ -478,18 +496,15 @@ func (a *api) handleSetProfile(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case !m.HasFile:
 			// Missing → search under the new criteria.
-			a.bg("re-search after profile change", idTarget("movie", id), 3*time.Minute, func(ctx context.Context) error {
-				return a.deps.Automation.SearchMovie(ctx, id)
-			})
+			_, _, _ = a.submit(r, a.movieSearchJob(id))
 		case a.deps.Quality.WouldReject(r.Context(), req.QualityProfile, m.SourceRelease, sizeGB(m), m.Runtime):
 			// The existing file no longer fits the new (lower) profile → this is a
 			// downgrade. Don't act automatically; let the UI ask the user.
 			downgrade = true
 		default:
 			// The file still fits → look for a better release under the new profile.
-			a.bg("upgrade after profile change", idTarget("movie", id), 3*time.Minute, func(ctx context.Context) error {
-				return a.deps.Automation.UpgradeMovie(ctx, id)
-			})
+			_, _, _ = a.submit(r, jobs.Spec{Kind: "movie.upgrade", Target: jobTarget("movie", id), Class: jobs.ClassIndexerSearch, Timeout: 3 * time.Minute,
+				Fn: searchFn(func(ctx context.Context) error { return a.deps.Automation.UpgradeMovie(ctx, id) })})
 		}
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"quality_profile": req.QualityProfile, "downgrade": downgrade})
@@ -503,10 +518,12 @@ func (a *api) handleRegrab(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.bg("regrab", idTarget("movie", id), 3*time.Minute, func(ctx context.Context) error {
-		return a.deps.Automation.RegrabMovie(ctx, id)
-	})
-	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
+	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "movie.regrab", Target: jobTarget("movie", id), Class: jobs.ClassIndexerSearch, Timeout: 3 * time.Minute,
+		Fn: errFn(func(ctx context.Context) error { return a.deps.Automation.RegrabMovie(ctx, id) })})
+	if !ok {
+		return
+	}
+	a.accepted(w, jobID, existing, map[string]any{"status": "searching"})
 }
 
 // sizeGB returns a movie's on-disk file size in GB (0 if unknown).
