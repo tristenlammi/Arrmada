@@ -74,3 +74,33 @@ func TestTrackStages(t *testing.T) {
 		t.Errorf("unreleased note = %q", reqs[9].Tracking.Note)
 	}
 }
+
+// A download held in Review still reads as "Importing" — it is here, waiting on a person —
+// but once the review is resolved, whichever way, the grab is closed out and the requester
+// stops seeing "Importing" for it.
+func TestTrackStopsImportingOnceTheReviewIsResolved(t *testing.T) {
+	s := newTestService(t)
+	ctx := context.Background()
+	db := s.repo.db
+	at := time.Now().Add(-3 * time.Hour).UTC().Format("2006-01-02 15:04:05")
+	if _, err := db.Exec(`INSERT INTO grabs (movie_id, title, status, media_type, info_hash, grabbed_at) VALUES (2, 'Alien.1979.1080p', 'held', 'movie', 'BBB', ?)`, at); err != nil {
+		t.Fatal(err)
+	}
+	queue := []download.Item{{Hash: "bbb", Name: "Alien", State: "seeding", Progress: 1, SizeBytes: 500, DownloadedBytes: 500}}
+	stage := func() string {
+		reqs := []Request{{Title: "alien", Status: StatusApproved, MediaType: "movie", libID: 2, released: true}}
+		s.Track(ctx, reqs, queue)
+		return reqs[0].Tracking.Stage
+	}
+	if got := stage(); got != StageImporting {
+		t.Fatalf("held: stage %q, want importing", got)
+	}
+	for _, closed := range []string{"failed", "dismissed", "imported"} {
+		if _, err := db.Exec(`UPDATE grabs SET status = ?`, closed); err != nil {
+			t.Fatal(err)
+		}
+		if got := stage(); got == StageImporting {
+			t.Errorf("grab %s: requester still sees importing", closed)
+		}
+	}
+}

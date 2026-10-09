@@ -983,7 +983,7 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			if expected, err := c.series.Get(ctx, gid); err == nil && (!matchOK || s.ID != expected.ID) {
 				reason := fmt.Sprintf("Grabbed for %q but the download looks like %q", expected.Title, parsed.Title)
 				c.addReview(ctx, Review{
-					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "series",
+					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "series", ReasonCode: ReasonMismatch,
 					ExpectedID: expected.ID, ExpectedTitle: expected.Title, ParsedTitle: parsed.Title,
 					Reason: reason, SizeBytes: it.SizeBytes, Indexer: indexer,
 				})
@@ -1006,7 +1006,7 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 				c.log.Warn("series import: download still matches no series — sending to review",
 					"release", it.Name, "parsed_title", parsed.Title, "attempts", n)
 				c.addReview(ctx, Review{
-					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "series",
+					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "series", ReasonCode: ReasonUnmatched,
 					ParsedTitle: parsed.Title, SizeBytes: it.SizeBytes,
 					Reason: fmt.Sprintf("Parsed as %q, which matches no series in your library", parsed.Title),
 				})
@@ -1064,7 +1064,7 @@ func (c *Coordinator) ImportSeriesDownloads(ctx context.Context) {
 			// Hold it for review instead. The user can see what arrived, import it into
 			// the right show, and nothing is thrown away over a naming convention.
 			c.addReview(ctx, Review{
-				Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "series",
+				Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "series", ReasonCode: ReasonNumbering,
 				ExpectedID: s.ID, ExpectedTitle: s.Title, ParsedTitle: parsed.Title,
 				SizeBytes: it.SizeBytes, Indexer: c.grabIndexer(ctx, it.Name, "series"),
 				Reason: fmt.Sprintf("Downloaded, but none of its %d video file%s could be matched to an episode — the episode numbering isn't in a form Arrmada recognises",

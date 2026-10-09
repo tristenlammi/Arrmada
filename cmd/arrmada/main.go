@@ -451,6 +451,8 @@ func main() {
 	// so the 30s import sweep stops retrying it forever.
 	imports.SetFailureHook(coordinator.HandleMovieImportFailure)
 	imports.SetStuckHook(coordinator.HandleMovieImportStuck)
+	// Review's "Retry import" drops the importer's back-off for that download.
+	coordinator.SetImportRetry(imports.RetryNow)
 	// Attach each finished import to its movie (Wanted → Downloaded) in the same sweep
 	// that records it, retrying from the database until it settles — not off a bus event
 	// that a busy moment or a restart can lose.

@@ -1,6 +1,7 @@
 ANY / public ext
 DELETE /api/v1/apikeys/{id} admin -
 DELETE /api/v1/audioserver/devices/{family} admin -
+DELETE /api/v1/blocklist/{id} staff -
 DELETE /api/v1/books/{id} staff -
 DELETE /api/v1/books/{id}/audio-versions/{vid} staff -
 DELETE /api/v1/books/{id}/audio-versions/{vid}/file staff -
@@ -36,6 +37,7 @@ GET /api/v1/audioserver admin -
 GET /api/v1/audioserver/listening admin -
 GET /api/v1/auth/me user ext
 GET /api/v1/auth/plex/pin/{id} public ext
+GET /api/v1/blocklist staff -
 GET /api/v1/books staff -
 GET /api/v1/books/authors/images staff -
 GET /api/v1/books/discover/authors user ext
@@ -152,6 +154,7 @@ GET /api/v1/recycle/items staff -
 GET /api/v1/recycle/mode staff -
 GET /api/v1/requests user ext
 GET /api/v1/reviews staff -
+GET /api/v1/reviews/{id}/files staff -
 GET /api/v1/reviews/{id}/targets staff -
 GET /api/v1/series staff -
 GET /api/v1/series/lookup staff -
@@ -273,9 +276,12 @@ POST /api/v1/requests requester ext
 POST /api/v1/requests/import/overseerr admin ext
 POST /api/v1/requests/{id}/approve staff ext
 POST /api/v1/requests/{id}/decline staff ext
+POST /api/v1/reviews/bulk staff -
 POST /api/v1/reviews/{id}/dismiss staff -
 POST /api/v1/reviews/{id}/import staff -
+POST /api/v1/reviews/{id}/map staff -
 POST /api/v1/reviews/{id}/reject staff -
+POST /api/v1/reviews/{id}/retry staff -
 POST /api/v1/series staff -
 POST /api/v1/series/import staff -
 POST /api/v1/series/refresh staff -

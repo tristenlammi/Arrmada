@@ -725,7 +725,7 @@ func (c *Coordinator) ImportBookDownloads(ctx context.Context) {
 				c.log.Warn("book import: download doesn't look like the book it was grabbed for — sending to review",
 					"expected", expected.Title, "release", it.Name, "parsed_title", parsed)
 				c.addReview(ctx, Review{
-					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "book",
+					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "book", ReasonCode: ReasonMismatch,
 					ExpectedID: expected.ID, ExpectedTitle: expected.Title, ParsedTitle: parsed,
 					Reason:    fmt.Sprintf("Grabbed for %q but the download looks like %q", expected.Title, parsed),
 					SizeBytes: it.SizeBytes, Indexer: idx,
@@ -746,7 +746,7 @@ func (c *Coordinator) ImportBookDownloads(ctx context.Context) {
 				c.log.Warn("book import: download still matches no book — sending to review",
 					"release", it.Name, "parsed_title", parsed, "attempts", n)
 				c.addReview(ctx, Review{
-					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "book",
+					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "book", ReasonCode: ReasonUnmatched,
 					ParsedTitle: parsed, SizeBytes: it.SizeBytes,
 					Reason: fmt.Sprintf("Parsed as %q, which matches no book in your library", parsed),
 				})
@@ -783,7 +783,7 @@ func (c *Coordinator) ImportBookDownloads(ctx context.Context) {
 				c.log.Warn("book import: still nothing importable — sending to review",
 					"book", b.Title, "release", it.Name, "attempts", n)
 				c.addReview(ctx, Review{
-					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "book",
+					Hash: it.Hash, Name: it.Name, ContentPath: it.ContentPath, MediaType: "book", ReasonCode: ReasonNoMedia,
 					ExpectedID: b.ID, ExpectedTitle: b.Title, ParsedTitle: bookParsedTitle(it.Name),
 					SizeBytes: it.SizeBytes,
 					Reason:    "Downloaded but holds no ebook or audiobook files — still archived, or unreadable",
@@ -1789,7 +1789,7 @@ func (c *Coordinator) recordBookGrab(ctx context.Context, bookID, versionID int6
 // detectStalledBook resolves it once its own edition lands.
 func (c *Coordinator) markBookGrabImported(ctx context.Context, bookID int64, infoHash, downloadName string) {
 	rows, err := c.db.QueryContext(ctx,
-		`SELECT id, title, info_hash FROM grabs WHERE movie_id = ? AND status = 'grabbed' AND media_type = 'book'`, bookID)
+		`SELECT id, title, info_hash FROM grabs WHERE movie_id = ? AND media_type = 'book' AND `+inFlightWhere, bookID)
 	if err != nil {
 		return
 	}
@@ -1814,7 +1814,7 @@ func (c *Coordinator) markBookGrabImported(ctx context.Context, bookID int64, in
 	}
 	rows.Close() // close before writing — SQLite won't take a write while a read is open
 	for _, id := range ids {
-		if _, err := c.db.ExecContext(ctx, `UPDATE grabs SET status = 'imported' WHERE id = ?`, id); err != nil {
+		if _, err := c.db.ExecContext(ctx, `UPDATE grabs SET status = ? WHERE id = ?`, grabStatusImported, id); err != nil {
 			c.log.Warn("book: mark grab imported failed", "err", err)
 		}
 	}

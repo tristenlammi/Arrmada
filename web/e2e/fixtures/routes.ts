@@ -64,6 +64,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/flaresolverr/status", { configured: true, ok: true, url: "http://arrmada-flaresolverr:8191", version: "3.3.21", checked_at: new Date(NOW).toISOString() }),
     get("/api/v1/history", media.history),
     get("/api/v1/reviews", media.reviews),
+    get("/api/v1/blocklist", media.blocklist),
     get("/api/v1/movies", media.movies),
     get("/api/v1/series", media.series),
     get("/api/v1/movies/unmatched", { unmatched: [] }),
