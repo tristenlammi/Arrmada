@@ -147,11 +147,7 @@ func (a *api) handleSearchMovie(w http.ResponseWriter, r *http.Request) {
 	// click while it waits or runs gets the same job back. The button's search leaves a
 	// movie that is already downloading alone (SearchMovieManual).
 	started := time.Now().UnixMilli()
-	spec := a.movieSearchJob(id)
-	spec.Fn = outcomeFn("movie", func(ctx context.Context) (automation.SearchOutcome, error) {
-		return a.deps.Automation.SearchMovieManual(ctx, id)
-	})
-	q, err := a.enqueueMovie(r, id, spec)
+	q, err := a.enqueueMovie(r, id, a.movieManualSearchJob(id))
 	if err != nil {
 		a.writeError(w, http.StatusServiceUnavailable, "couldn't start that just now — try again in a moment")
 		return

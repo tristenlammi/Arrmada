@@ -50,6 +50,12 @@ func (s *Service) GetArtist(ctx context.Context, id int64) (Artist, error) {
 	return a, nil
 }
 
+// AlbumRecord is one album as stored, with its track counts: no MusicBrainz call and no
+// track list, for a caller that only needs to know it exists.
+func (s *Service) AlbumRecord(ctx context.Context, id int64) (Album, error) {
+	return s.repo.GetAlbum(ctx, id)
+}
+
 // GetAlbum returns one album with its track listing, fetching the listing from MusicBrainz
 // the first time it's asked for (see EnsureTracks).
 func (s *Service) GetAlbum(ctx context.Context, id int64) (Album, error) {

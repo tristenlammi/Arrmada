@@ -216,6 +216,35 @@ func (a *api) bookSearchJob(id int64) jobs.Spec {
 		})}
 }
 
+func (a *api) albumSearchJob(id int64) jobs.Spec {
+	return jobs.Spec{Kind: "album.search", Target: jobTarget("album", id), Class: jobs.ClassIndexerSearch, Timeout: 5 * time.Minute,
+		Fn: outcomeFn("album", func(ctx context.Context) (automation.SearchOutcome, error) {
+			return a.deps.Automation.SearchAlbumNow(ctx, id)
+		})}
+}
+
+// movieManualSearchJob is a person's Search of one movie (the movie page, the Wanted
+// view): the movie search job, but a movie already downloading is left alone
+// (SearchMovieManual) rather than grabbed twice. Same kind and target as movieSearchJob,
+// so a click on either page while the other's search runs gets that job back.
+func (a *api) movieManualSearchJob(id int64) jobs.Spec {
+	spec := a.movieSearchJob(id)
+	spec.Fn = outcomeFn("movie", func(ctx context.Context) (automation.SearchOutcome, error) {
+		return a.deps.Automation.SearchMovieManual(ctx, id)
+	})
+	return spec
+}
+
+// seriesManualSearchJob is a person's Search of one show: it holds back the seasons the
+// client is still downloading (SearchSeriesManual), as the sweep does.
+func (a *api) seriesManualSearchJob(id int64) jobs.Spec {
+	spec := a.seriesSearchJob(id)
+	spec.Fn = outcomeFn("show", func(ctx context.Context) (automation.SearchOutcome, error) {
+		return a.deps.Automation.SearchSeriesManual(ctx, id)
+	})
+	return spec
+}
+
 // scanSummary is a library scan's job result: the counts. The folders it couldn't match
 // (with their candidates) stay on each library's Unmatched list, not in the jobs table.
 type scanSummary struct {

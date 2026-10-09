@@ -1,6 +1,6 @@
 import type {
   ActivityFeed, BlocklistRow, Book, BookSweepStatus, BookUpgradeStatus, CalendarItem, DashboardData, DownloadClientList, FitCounts,
-  FormatInfo, ImportRecord, ImportReview, Indexer, Movie, MyBook, MyRequest, QualityProfileInfo, Series,
+  FormatInfo, ImportRecord, ImportReview, Indexer, Job, Movie, MyBook, MyRequest, QualityProfileInfo, Series, WantedLists,
 } from "../../src/lib/api";
 import { NOW, day } from "./clock";
 
@@ -77,8 +77,43 @@ export const fitProfiles: { profiles: Record<string, FitCounts> } = {
   profiles: { "hd-1080p": { titles: 40, files: 40, fits: 36, over: 2, under: 1, mismatch: 1 } },
 };
 
+// The Wanted view (Downloads → Searching / Upcoming): one film searched without luck, and
+// a book waiting for its first search.
+export const wanted: WantedLists = {
+  queue_known: true,
+  searching: [
+    {
+      media_type: "movie", id: 2, movie_id: 2, title: "Anchor Point", year: 2022, poster_url: poster(4), quality_profile: "HD 1080p",
+      state: "searching", search_misses: 3, last_search_at: new Date(NOW - 3600_000).toISOString(),
+      next_search_at: new Date(NOW + 3600_000).toISOString(),
+      last_search: {
+        latest: {
+          id: 1, media_type: "movie", media_id: 2, scope: "", trigger: "sweep", started_at: NOW - 3600_000, duration_ms: 900,
+          returned: 12, wrong_title: 9, blocklisted: 0, pending: 0, out_of_scope: 0, rejected: 3, eligible: 0, grabbed: 0,
+          reasons: { wrong_title: 9, bitrate_ceiling: 3 }, top_reason: "wrong_title", example: "", grabbed_titles: [], indexer_errors: {},
+          outcome: "none_suitable", reason: "none-for-this-title",
+        },
+        empty_tries: 3, main_reason: "wrong_title",
+      },
+    },
+    {
+      media_type: "book", id: 3, book_id: 3, title: "Charts of the Lesser Sounds", year: 2024, quality_profile: "Ebook", byline: "Ada Fenwick",
+      missing: ["Ebook"], state: "searching", search_misses: 0, due: true, next_search_at: new Date(NOW).toISOString(),
+    },
+  ],
+  upcoming: [],
+};
+
+// Search now from a Wanted row: the job it starts, and that job finished with nothing usable.
+export const wantedSearchStarted = { status: "searching", job_id: 900, existing: false, started_at_ms: NOW };
+export const wantedSearchJob: Job = {
+  id: 900, kind: "movie.search", target: "movie:2", trigger: "user:1", status: "succeeded", progress: 1,
+  message: "12 releases found, none for this movie", error: "",
+  result: { searched: true, returned: 12, matching: 0, usable: 0, grabbed: 0, reason: "none-for-this-title", reasons: { wrong_title: 12 } },
+  created_at: new Date(NOW).toISOString(), started_at: new Date(NOW).toISOString(), finished_at: new Date(NOW).toISOString(),
+};
+
 export const activity: ActivityFeed = {
-  searching: [{ movie_id: 2, media_type: "movie", title: "Anchor Point", year: 2022, poster_url: poster(4), quality_profile: "hd-1080p" }],
   downloads: [
     {
       hash: "e2e0000000000000000000000000000000000001", name: "Driftwood.2025.2160p.WEB-DL.DV.HDR.H265-FIXTURE", state: "downloading",

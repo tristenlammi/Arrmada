@@ -81,9 +81,20 @@ function body(kind: SearchAttempt["outcome"], o: Outcomeish): string {
 }
 
 // A stored attempt as the detail page's line: "Last search 2 h ago — Found 15 releases —
-// 12 over your bitrate ceiling · 2 indexers failed: X, Y".
+// 12 over your bitrate ceiling · 2 indexers failed: X, Y". A search no indexer answered
+// says it didn't count against the title: the sweep's backoff only counts real misses.
 export function attemptLine(a: SearchAttempt, now = Date.now()): string {
-  return `Last search ${ago(a.started_at, now)} — ${body(a.outcome, a)}`;
+  const tail = a.outcome === "indexers_failed" ? " — not counted as a miss" : "";
+  return `Last search ${ago(a.started_at, now)} — ${body(a.outcome, a)}${tail}`;
+}
+
+// searchFinishedFor reports whether a live event is a search of this title finishing
+// (search.finished, sent to staff for every stored attempt: the sweep's, RSS's, or a
+// Search pressed on another device).
+export function searchFinishedFor(ev: { topic: string; data: unknown } | null | undefined, kind: SearchAttempt["media_type"], id: number): boolean {
+  if (!ev || ev.topic !== "search.finished") return false;
+  const d = ev.data as { media_type?: string; media_id?: number } | null;
+  return d?.media_type === kind && d.media_id === id;
 }
 
 // The kind a fresh outcome (a finished Search now job) comes to, the way the server

@@ -243,6 +243,31 @@ func (r *Repo) SearchState(ctx context.Context, movieID int64) (lastSearchAt str
 	return lastSearchAt, misses
 }
 
+// SearchStamp is where one movie stands on the missing-sweep's backoff.
+type SearchStamp struct {
+	LastAt string // when the sweep last searched it, as stored ("" = never)
+	Misses int    // sweeps in a row that grabbed nothing
+}
+
+// SearchStates is every movie's search state in one query, for a list page.
+func (r *Repo) SearchStates(ctx context.Context) (map[int64]SearchStamp, error) {
+	rows, err := r.q().QueryContext(ctx, `SELECT id, last_search_at, search_misses FROM movies`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]SearchStamp{}
+	for rows.Next() {
+		var id int64
+		var st SearchStamp
+		if err := rows.Scan(&id, &st.LastAt, &st.Misses); err != nil {
+			return nil, err
+		}
+		out[id] = st
+	}
+	return out, rows.Err()
+}
+
 // RecordSearchMiss stamps the sweep time and increments the miss counter.
 func (r *Repo) RecordSearchMiss(ctx context.Context, movieID int64) {
 	_, _ = r.q().ExecContext(ctx,

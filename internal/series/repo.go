@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/parser"
@@ -855,6 +857,13 @@ type SeriesAcquisition struct {
 	SearchingCount int    // aired, monitored, missing episodes
 	NextAir        string // soonest future monitored+missing episode air date (YYYY-MM-DD), "" if none
 	NextLabel      string // "S02E13" for the upcoming episode, "" if none
+	// WantedSeasons are the seasons those searching episodes are in, ascending: what the
+	// Wanted view checks against the seasons still downloading.
+	WantedSeasons []int
+	// LastSearchAt / SearchMisses are the missing-sweep's backoff state (as stored), so
+	// the Wanted view can say when it last looked and when it will next.
+	LastSearchAt string
+	SearchMisses int
 }
 
 // AcquisitionSummary returns per-monitored-series counts of wanted (aired, missing)
@@ -862,11 +871,13 @@ type SeriesAcquisition struct {
 // outstanding in either bucket are worth returning; the caller filters.
 func (r *Repo) AcquisitionSummary(ctx context.Context) ([]SeriesAcquisition, error) {
 	rows, err := r.db.QueryContext(ctx, `
-		SELECT s.id, s.title, s.year, s.poster_url, s.quality_profile,
+		SELECT s.id, s.title, s.year, s.poster_url, s.quality_profile, s.last_search_at, s.search_misses,
 		  SUM(CASE WHEN e.monitored = 1 AND e.has_file = 0 AND e.season_number > 0
 		           AND e.air_date != '' AND e.air_date <= date('now') THEN 1 ELSE 0 END) AS searching,
 		  MIN(CASE WHEN e.monitored = 1 AND e.has_file = 0 AND e.air_date > date('now')
-		           THEN e.air_date END) AS next_air
+		           THEN e.air_date END) AS next_air,
+		  GROUP_CONCAT(DISTINCT CASE WHEN e.monitored = 1 AND e.has_file = 0 AND e.season_number > 0
+		           AND e.air_date != '' AND e.air_date <= date('now') THEN e.season_number END) AS wanted_seasons
 		FROM series s
 		JOIN episodes e ON e.series_id = s.id
 		WHERE s.monitored = 1
@@ -878,10 +889,12 @@ func (r *Repo) AcquisitionSummary(ctx context.Context) ([]SeriesAcquisition, err
 	var out []SeriesAcquisition
 	for rows.Next() {
 		var a SeriesAcquisition
-		var nextAir sql.NullString
-		if err := rows.Scan(&a.ID, &a.Title, &a.Year, &a.PosterURL, &a.QualityProfile, &a.SearchingCount, &nextAir); err != nil {
+		var nextAir, seasons sql.NullString
+		if err := rows.Scan(&a.ID, &a.Title, &a.Year, &a.PosterURL, &a.QualityProfile, &a.LastSearchAt, &a.SearchMisses,
+			&a.SearchingCount, &nextAir, &seasons); err != nil {
 			return nil, err
 		}
+		a.WantedSeasons = seasonList(seasons.String)
 		if nextAir.Valid {
 			a.NextAir = nextAir.String
 			if s, e, ok := r.episodeAtAir(ctx, a.ID, nextAir.String); ok {
@@ -904,6 +917,18 @@ func (r *Repo) episodeAtAir(ctx context.Context, seriesID int64, air string) (se
 }
 
 func fmtSxxExx(s, e int) string { return fmt.Sprintf("S%02dE%02d", s, e) }
+
+// seasonList reads a GROUP_CONCAT of season numbers ("3,1") into ascending order.
+func seasonList(csv string) []int {
+	var out []int
+	for _, part := range strings.Split(csv, ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(part)); err == nil {
+			out = append(out, n)
+		}
+	}
+	sort.Ints(out)
+	return out
+}
 
 // epAir is one episode's (season, episode) with its air date, for scene-season inference.
 type epAir struct {

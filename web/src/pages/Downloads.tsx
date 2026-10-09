@@ -6,9 +6,14 @@ import { TabPanel, Tabs, type TabItem } from "../ui/Tabs";
 import { LINKS } from "../lib/links";
 import { RemoveDownloadDialog, removedMessage } from "../components/RemoveDownloadDialog";
 import { usePoll } from "../lib/usePoll";
-import { api, type ActivityDownload, type ClientSettings, type DiskGuardHold, type DownloadClientsState, type SearchingItem } from "../lib/api";
+import { api, type ActivityDownload, type ClientSettings, type DiskGuardHold, type DownloadClientsState, type WantedLists, type WantedRow } from "../lib/api";
 import { useMe } from "../lib/me";
-import { Menu } from "../ui";
+import { useQuery } from "../lib/query";
+import { useLive } from "../lib/useLive";
+import { jobFailed, useJob } from "../lib/useJob";
+import { searchJobLine } from "../lib/searchOutcome";
+import { wantedChip, wantedHref, wantedKey, wantedLine } from "../lib/wanted";
+import { ErrorState, Menu, Skeleton } from "../ui";
 
 type MediaFilter = "all" | "movie" | "series" | "book" | "music";
 const TYPE_PILLS: { key: MediaFilter; label: string }[] = [
@@ -118,9 +123,13 @@ function ProfileChip({ profile }: { profile: string }) {
   return <span className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: na ? "var(--panel-2)" : "var(--accent-soft)", color: na ? "var(--ink-faint)" : "var(--accent)" }}>{profile}</span>;
 }
 
+// How often the Wanted half refreshes on its own. It reads the search history, so it
+// isn't polled with the queue every three seconds; a finished search, a grab or an import
+// announced over the socket refreshes it sooner.
+const WANTED_POLL_MS = 30_000;
+const WANTED_TOPICS = ["search.finished", "release.grabbed", "download.imported", "series.imported", "series.searched"];
+
 export function Downloads() {
-  const [searching, setSearching] = useState<SearchingItem[]>([]);
-  const [upcoming, setUpcoming] = useState<SearchingItem[]>([]);
   const [downloads, setDownloads] = useState<ActivityDownload[]>([]);
   const [totals, setTotals] = useState<{ down_speed: number; up_speed: number; active: number }>({ down_speed: 0, up_speed: 0, active: 0 });
   const [freeGb, setFreeGb] = useState<number | null>(null);
@@ -155,8 +164,6 @@ export function Downloads() {
   usePoll(() =>
     api.activity().then((a) => {
       fails.current = 0;
-      setSearching(a.searching ?? []);
-      setUpcoming(a.upcoming ?? []);
       setDownloads(a.downloads ?? []);
       if (a.totals) setTotals(a.totals);
       setFreeGb(typeof a.free_gb === "number" ? a.free_gb : null); // null/absent = couldn't be measured
@@ -170,6 +177,21 @@ export function Downloads() {
       setLoaded(true);
       if (fails.current >= 2) setReconnecting(true);
     }), 3000);
+
+  // The Wanted view (Searching and Upcoming): its own, slower read.
+  const wanted = useQuery<WantedLists>("wanted", api.wanted, { staleMs: 10_000 });
+  const refetchWanted = wanted.refetch;
+  usePoll(refetchWanted, WANTED_POLL_MS, { immediate: false });
+  const live = useLive();
+  // A sweep finishes searches in bursts: one refresh for the lot, a moment after.
+  const wantedTimer = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!live.last || !WANTED_TOPICS.includes(live.last.topic) || wantedTimer.current !== undefined) return;
+    wantedTimer.current = window.setTimeout(() => { wantedTimer.current = undefined; void refetchWanted(); }, 1500);
+  }, [live.last, refetchWanted]);
+  useEffect(() => () => window.clearTimeout(wantedTimer.current), []);
+  const searching = useMemo(() => wanted.data?.searching ?? [], [wanted.data]);
+  const upcoming = useMemo(() => wanted.data?.upcoming ?? [], [wanted.data]);
 
   // The next poll reflects what happened; a refusal (e.g. the disk guard holding a
   // torrent) is shown, since the poll alone can't say why nothing changed.
@@ -207,11 +229,11 @@ export function Downloads() {
 
   const shownSearching = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return q ? searching.filter((s) => s.title.toLowerCase().includes(q)) : searching;
+    return q ? searching.filter((s) => wantedMatches(s, q)) : searching;
   }, [searching, query]);
   const shownUpcoming = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const list = q ? upcoming.filter((s) => s.title.toLowerCase().includes(q)) : upcoming;
+    const list = q ? upcoming.filter((s) => wantedMatches(s, q)) : upcoming;
     return [...list].sort((a, b) => (a.available_at ?? "").localeCompare(b.available_at ?? ""));
   }, [upcoming, query]);
 
@@ -327,16 +349,18 @@ export function Downloads() {
                 {shownSeeding.map((it) => <SeedingCard key={it.hash} it={it} guard={guard} busy={!!busy[it.hash]} act={act} onRemoved={flash} />)}
               </div>
             )
+          ) : !wanted.data ? (
+            wanted.error ? <ErrorState what="what's wanted" message={wanted.error.message} onRetry={() => void wanted.refetch()} busy={wanted.loading} /> : <Skeleton variant="list" count={4} />
           ) : tab === "searching" ? (
             shownSearching.length === 0 ? <Empty>Nothing is being searched. Monitored, available titles that are missing a file show up here.</Empty> : (
               <div className="overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)" }}>
-                {shownSearching.map((s) => <AcqRow key={acqKey(s)} item={s} kind="searching" />)}
+                {shownSearching.map((s) => <WantedItem key={wantedKey(s)} item={s} kind="searching" onSearched={() => void wanted.refetch()} flash={flash} />)}
               </div>
             )
           ) : (
-            shownUpcoming.length === 0 ? <Empty>Nothing upcoming. Unreleased films and unaired episodes you monitor land here.</Empty> : (
+            shownUpcoming.length === 0 ? <Empty>Nothing upcoming. Unreleased films and albums, and unaired episodes you monitor, land here.</Empty> : (
               <div className="overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)" }}>
-                {shownUpcoming.map((s) => <AcqRow key={acqKey(s)} item={s} kind="upcoming" />)}
+                {shownUpcoming.map((s) => <WantedItem key={wantedKey(s)} item={s} kind="upcoming" onSearched={() => void wanted.refetch()} flash={flash} />)}
               </div>
             )
           )}
@@ -396,7 +420,8 @@ function Empty({ children }: { children: React.ReactNode }) {
   return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>{children}</div>;
 }
 
-const acqKey = (s: SearchingItem) => (s.media_type === "series" ? `s${s.series_id}` : `m${s.movie_id}`);
+// wantedMatches is the page's search box over a Wanted row: its title, author or artist.
+const wantedMatches = (s: WantedRow, q: string) => s.title.toLowerCase().includes(q) || (s.byline ?? "").toLowerCase().includes(q);
 
 function TypeChip({ mediaType }: { mediaType?: string }) {
   const label = mediaType === "series" ? "TV" : mediaType === "book" ? "Book" : mediaType === "music" ? "Music" : "Movie";
@@ -526,27 +551,76 @@ function SeedingCard({ it, guard, busy, act, onRemoved }: { it: ActivityDownload
   );
 }
 
-// AcqRow is one Searching/Upcoming entry — a movie or a series, linking to its page.
-function AcqRow({ item, kind }: { item: SearchingItem; kind: "searching" | "upcoming" }) {
-  const isSeries = item.media_type === "series";
-  const to = isSeries ? `/series/${item.series_id}` : `/movies/${item.movie_id}`;
-  // While the client can't be read, a wanted title may already be downloading.
-  const unknown = kind === "searching" && item.state === "unknown";
-  const right = unknown
-    ? "Status unknown"
-    : kind === "searching"
-    ? (isSeries ? `${item.episode_count ?? 0} episode${item.episode_count === 1 ? "" : "s"}` : "Searching…")
-    : (item.available_at ? `${item.next_label ? item.next_label + " · " : ""}${fmtReleaseDate(item.available_at)}` : "Awaiting release");
-  const live = kind === "searching" && !unknown;
-  const dotColor = live ? "var(--avoid)" : "var(--ink-faint)";
+// WantedItem is one Searching/Upcoming row: a movie, show, book or album, linking to its
+// page, saying what is really happening to it (wantedChip) and why it isn't downloading
+// (wantedLine), with Search now. The button sits beside the link, not inside it.
+function WantedItem({ item, kind, onSearched, flash }: { item: WantedRow; kind: "searching" | "upcoming"; onSearched: () => void; flash: (m: string) => void }) {
+  const [job, setJob] = useState<number | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [result, setResult] = useState<{ text: string; failed: boolean } | null>(null);
+  // Once a refresh brings a newer stored attempt, it says the same with its time.
+  const latestID = item.last_search?.latest.id;
+  useEffect(() => { setResult(null); }, [latestID]);
+  const search = useJob(job, {
+    onDone: (j) => {
+      setJob(null);
+      setResult({ text: searchJobLine(j), failed: jobFailed(j) });
+      onSearched();
+    },
+  });
+  const searchNow = async () => {
+    setStarting(true);
+    setResult(null);
+    try {
+      const r = await api.wantedSearch(item.media_type, item.id);
+      if (r.job_id) setJob(r.job_id);
+      else onSearched();
+    } catch (e) {
+      flash((e as Error).message);
+    } finally {
+      setStarting(false);
+    }
+  };
+  const running = starting || search.running;
+  const upcoming = kind === "upcoming";
+  const chip = upcoming
+    ? { text: item.available_at ? `${item.next_label ? item.next_label + " · " : ""}${fmtReleaseDate(item.available_at)}` : "Awaiting release", tone: "var(--ink-faint)", pulse: false }
+    : running ? { text: "Searching now", tone: "var(--accent)", pulse: true } : wantedChip(item);
+  // The result of this page's Search now stays until the next refresh brings the stored
+  // attempt, which then says the same thing with its time.
+  const line = upcoming ? "" : running ? "Searching your indexers now…" : result ? result.text : wantedLine(item);
+  const lineTone = !upcoming && !running && result?.failed ? "var(--reject)" : "var(--ink-faint)";
+  // Nothing to search while the client is down (it may be downloading) or a download
+  // waits in Review; Review is where that one is settled.
+  const canSearch = !upcoming && item.state !== "unknown" && item.state !== "held_for_review";
   return (
-    <Link to={to} className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-[var(--panel-2)]" style={{ background: "var(--panel)", borderBottom: "1px solid var(--line-soft)" }}>
-      <span className={`inline-block h-2 w-2 flex-none rounded-full ${live ? "animate-pulse" : ""}`} style={{ background: dotColor }} />
-      <div className="min-w-0 flex-1"><div className="truncate text-[12.5px] font-medium">{item.title} <span className="font-mono text-[10.5px] text-ink-faint">{item.year || ""}</span></div></div>
-      <TypeChip mediaType={isSeries ? "series" : "movie"} />
-      <ProfileChip profile={item.quality_profile} />
-      <span className="w-[150px] text-right font-mono text-[10px] uppercase" style={{ color: live ? "var(--avoid)" : "var(--ink-faint)" }}>{right}</span>
-    </Link>
+    <div className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-[var(--panel-2)]" style={{ background: "var(--panel)", borderBottom: "1px solid var(--line-soft)" }}>
+      <Link to={wantedHref(item)} className="flex min-w-0 flex-1 items-center gap-3">
+        <span className={`inline-block h-2 w-2 flex-none rounded-full ${chip.pulse ? "animate-pulse" : ""}`} style={{ background: chip.pulse ? chip.tone : "var(--ink-faint)" }} />
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[12.5px] font-medium">
+            {item.title} <span className="font-mono text-[10.5px] text-ink-faint">{item.year || ""}</span>
+            {item.byline && <span className="text-[11px] text-ink-faint"> · {item.byline}</span>}
+          </div>
+          {line && <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug" style={{ color: lineTone }} data-testid="wanted-line">{line}</div>}
+        </div>
+        <span className="hidden flex-none items-center gap-1.5 sm:flex">
+          <TypeChip mediaType={item.media_type} />
+          {item.missing?.map((m) => <span key={m} className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>{m}</span>)}
+          <ProfileChip profile={item.quality_profile} />
+        </span>
+      </Link>
+      {item.state === "held_for_review" && !upcoming ? (
+        <Link to={LINKS.review} className="w-[120px] flex-none text-right font-mono text-[10px] uppercase underline sm:w-[150px]" style={{ color: chip.tone }}>{chip.text}</Link>
+      ) : (
+        <span className="w-[120px] flex-none text-right font-mono text-[10px] uppercase sm:w-[150px]" style={{ color: chip.tone }}>{chip.text}</span>
+      )}
+      {!upcoming && (
+        <span className="flex w-[84px] flex-none justify-end">
+          {canSearch && <IconBtn label={running ? "Searching…" : "Search now"} title="Search your indexers for it now; the automatic searches start again from the shortest wait" disabled={running} onClick={() => void searchNow()} />}
+        </span>
+      )}
+    </div>
   );
 }
 

@@ -11,16 +11,16 @@ import (
 	"github.com/tristenlammi/arrmada/internal/movies"
 )
 
-// handleDownloadsFeed returns the live acquisition feed: movies that are searching
-// (monitored, missing, not yet downloading) plus the download queue — each with
-// its resolved quality profile. (Served at /downloads, not /activity — the latter
-// is blocked by common ad-blocker filter lists.)
+// handleDownloadsFeed returns the live download queue, each torrent with the library
+// item it was grabbed for and its resolved quality profile. (Served at /downloads, not
+// /activity — the latter is blocked by common ad-blocker filter lists.) The titles still
+// being searched for are the Wanted view's (GET /api/v1/wanted): it reads the search
+// history too, which this three-second poll shouldn't.
 func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	list, _ := a.deps.Movies.List(ctx)
 	// One shared read of the clients. When it failed or missed a client, what's
 	// downloading isn't known, and the page must say so rather than show an empty queue.
-	snap, queueKnown, qerr := a.queueSnapshot(ctx)
+	snap, _, qerr := a.queueSnapshot(ctx)
 	queue := snap.Items
 
 	// The acquisition record, joined to the queue by info hash: which library item each
@@ -29,10 +29,8 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	// Arrmada's own downloads "Not managed by Arrmada".
 	var live map[string]automation.Acquisition
 	var legacy []automation.Acquisition
-	var activeMovies map[int64][]automation.Acquisition
 	if a.deps.Automation != nil {
 		live, legacy, _ = a.deps.Automation.LiveByHash(ctx)
-		activeMovies, _ = a.deps.Automation.ActiveByItem(ctx, "movie")
 	}
 	// Resolve each quality-profile reference to a name at most once per request.
 	profileCache := map[string]string{}
@@ -43,65 +41,6 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		v := a.profileName(ctx, ref)
 		profileCache[ref] = v
 		return v
-	}
-
-	// Monitored, missing movies split into two buckets: those actually being
-	// searched (past their minimum-availability threshold — same gate the
-	// automation uses) and those still awaiting release. An unreleased film must
-	// not claim to be "Searching" — nothing is looking for it yet.
-	searching := []map[string]any{}
-	upcoming := []map[string]any{}
-	for _, m := range list {
-		if !m.Monitored || m.HasFile {
-			continue
-		}
-		if len(activeMovies[m.ID]) > 0 {
-			continue // a download for it is already in flight
-		}
-		entry := map[string]any{
-			"movie_id":        m.ID,
-			"title":           m.Title,
-			"year":            m.Year,
-			"poster_url":      m.PosterURL,
-			"quality_profile": pname(m.QualityProfile),
-		}
-		if a.deps.Movies.IsAvailable(m) {
-			if !queueKnown {
-				entry["state"] = "unknown" // it may well be downloading; the client can't say
-			}
-			searching = append(searching, entry)
-			continue
-		}
-		if m.Extra != nil && m.Extra.ReleaseDate != "" {
-			entry["available_at"] = m.Extra.ReleaseDate
-		}
-		upcoming = append(upcoming, entry)
-	}
-
-	// Series contribute to the same two buckets, grouped per show: a series with aired,
-	// monitored, missing episodes is "searching" (labeled with the count); its soonest
-	// unaired monitored episode is "upcoming".
-	if a.deps.Series != nil {
-		for _, sa := range a.deps.Series.AcquisitionSummary(ctx) {
-			if sa.SearchingCount > 0 {
-				entry := map[string]any{
-					"series_id": sa.ID, "title": sa.Title, "year": sa.Year,
-					"poster_url": sa.PosterURL, "quality_profile": pname(sa.QualityProfile),
-					"media_type": "series", "episode_count": sa.SearchingCount,
-				}
-				if !queueKnown {
-					entry["state"] = "unknown"
-				}
-				searching = append(searching, entry)
-			}
-			if sa.NextAir != "" {
-				upcoming = append(upcoming, map[string]any{
-					"series_id": sa.ID, "title": sa.Title, "year": sa.Year,
-					"poster_url": sa.PosterURL, "quality_profile": pname(sa.QualityProfile),
-					"media_type": "series", "available_at": sa.NextAir, "next_label": sa.NextLabel,
-				})
-			}
-		}
 	}
 
 	// Imported hashes are flagged (not hidden) so the Seeding tab can show every seeding
@@ -210,8 +149,6 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out := map[string]any{
-		"searching": searching,
-		"upcoming":  upcoming,
 		"downloads": downloads,
 		"totals":    map[string]any{"down_speed": totalDown, "up_speed": totalUp, "active": active, "stalled": stalled},
 	}
