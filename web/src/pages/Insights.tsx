@@ -22,7 +22,13 @@ export function Insights() {
   const [toast, setToast] = useState<string | null>(null);
   const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); };
 
-  useEffect(() => { api.insightsConfig().then(setCfg).catch(() => flash("Could not load Plex settings")); }, []);
+  // cfgDone: the connection settings have answered (or failed). Until then the data tabs
+  // wait, so a connected server doesn't flash the "imported history" notice or the
+  // Connect state while its settings load.
+  const [cfgDone, setCfgDone] = useState(false);
+  useEffect(() => {
+    api.insightsConfig().then(setCfg).catch(() => flash("Could not load Plex settings")).finally(() => setCfgDone(true));
+  }, []);
   const connected = cfg?.token_set && !!cfg?.url;
 
   return (
@@ -54,6 +60,10 @@ export function Insights() {
 
         {tab === "settings" ? (
           <PlexSettings cfg={cfg} onSaved={setCfg} flash={flash} />
+        ) : tab === "notifications" ? (
+          <NotificationsView flash={flash} />
+        ) : !cfgDone ? (
+          <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading…</div>
         ) : tab === "activity" ? (
           <ActivityView connected={!!connected} onConfigure={() => setTab("settings")} />
         ) : tab === "history" ? (
@@ -64,8 +74,6 @@ export function Insights() {
           <GraphsView connected={!!connected} onConfigure={() => setTab("settings")} />
         ) : tab === "reliability" ? (
           <ReliabilityView connected={!!connected} onConfigure={() => setTab("settings")} />
-        ) : tab === "notifications" ? (
-          <NotificationsView flash={flash} />
         ) : (
           <ConnectPlex tab={tab} connected={!!connected} onConfigure={() => setTab("settings")} />
         )}
@@ -517,7 +525,7 @@ function HistoryView({ connected, onConfigure }: { connected: boolean; onConfigu
 
   return (
     <div className="flex flex-col gap-3">
-      {!connected && <ImportedNotice onConfigure={onConfigure} />}
+      {!connected && (total > 0 || !unfiltered) && <ImportedNotice onConfigure={onConfigure} />}
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <FilterGroup label="Type">{TYPE_FILTERS.map((f) => <Chip key={f.key} active={type === f.key} onClick={() => setType(f.key)}>{f.label}</Chip>)}</FilterGroup>
         <FilterGroup label="Stream">{DEC_FILTERS.map((f) => <Chip key={f.key} active={decision === f.key} onClick={() => setDecision(f.key)}>{f.label}</Chip>)}</FilterGroup>
