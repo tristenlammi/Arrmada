@@ -29,11 +29,11 @@ type dashboardPayload struct {
 	StreamsNote string             `json:"streams_note,omitempty"`
 	// PlexConfigured: a server URL and token are set. Without one there's nothing to be
 	// unreachable, so StreamsNote stays empty and the page offers to connect instead.
-	PlexConfigured bool `json:"plex_configured"`
-	Queue       queueSummary       `json:"queue"`
-	QueueNote   string             `json:"queue_note,omitempty"`
-	Library     libraryCounts      `json:"library"`
-	Activity    []activityEvent    `json:"activity"`
+	PlexConfigured bool            `json:"plex_configured"`
+	Queue          queueSummary    `json:"queue"`
+	QueueNote      string          `json:"queue_note,omitempty"`
+	Library        libraryCounts   `json:"library"`
+	Activity       []activityEvent `json:"activity"`
 	// Listening is who's listening to audiobooks right now. AudioOff: the audiobook
 	// server isn't running, so there's nothing to show.
 	Listening []nowListening `json:"listening"`
