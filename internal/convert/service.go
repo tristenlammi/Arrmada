@@ -90,6 +90,7 @@ type Job struct {
 	cancel    context.CancelFunc // set while running, so the encode can be stopped mid-flight
 	cancelled bool
 	procs     map[int]bool // process groups currently running for this job (for pausing)
+	rec       *jobRecord   // what the ledger keeps about it (see history.go)
 }
 
 // Service runs the conversion engine: workers that pick the next file worth converting,
@@ -117,6 +118,7 @@ type Service struct {
 	requests *requestStore // hand-picked files, persisted
 	choices  *choiceStore  // per-file HEVC-vs-AV1 test outcomes
 	measured *measureStore // what test encodes measured, per file and format
+	history  *historyStore // the durable ledger of conversion outcomes
 
 	// watching reports whether someone is watching Plex right now (from Insights).
 	watching atomic.Pointer[func() bool]
@@ -202,7 +204,7 @@ func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, set *setting
 		encoders: detectEncoders(context.Background(), ffmpeg),
 		failures: &failureStore{db: db}, cache: &probeCache{db: db}, logs: &logStore{db: db},
 		index: &libraryIndex{db: db}, skips: &skipStore{db: db}, requests: &requestStore{db: db},
-		choices: &choiceStore{db: db}, measured: &measureStore{db: db},
+		choices: &choiceStore{db: db}, measured: &measureStore{db: db}, history: &historyStore{db: db},
 		pending: map[string]*Job{},
 		wake:    make(chan struct{}, 1),
 	}
@@ -530,7 +532,7 @@ func (s *Service) Jobs() []Job {
 	out := make([]Job, len(s.jobs))
 	for i, j := range s.jobs {
 		out[i] = *j
-		out[i].procs = nil
+		out[i].procs, out[i].rec = nil, nil
 	}
 	return out
 }
@@ -638,6 +640,7 @@ func (s *Service) finishSkip(job *Job, kind, note string) {
 		return
 	}
 	s.skips.record(context.Background(), job.Key, kind, note)
+	s.record(job).skipKind = kind
 	s.finish(job, StateSkipped, note)
 }
 
@@ -678,6 +681,7 @@ func (s *Service) finish(job *Job, state JobState, note string) {
 			j.Progress = 1
 		}
 	})
+	s.recordOutcome(job, state, note)
 	ctx := context.Background()
 	switch state {
 	case StateDone:

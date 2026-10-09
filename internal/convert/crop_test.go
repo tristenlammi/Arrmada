@@ -6,7 +6,7 @@ import (
 )
 
 // Only what's black in every sampled frame is removed: dark frames report a smaller
-// picture and must not shrink the crop; one full-frame (IMAX) shot keeps that edge.
+// picture and must not shrink the crop; one full-frame (IMAX) shot means no crop at all.
 func TestUnionCrop(t *testing.T) {
 	scope := Crop{W: 3840, H: 1608, X: 0, Y: 276}
 	many := func(cs ...Crop) []Crop {
@@ -41,6 +41,55 @@ func TestUnionCrop(t *testing.T) {
 	// Too few usable frames to judge: leave it.
 	if got := unionCrop([]Crop{scope, scope}, 3840, 2160); got != nil {
 		t.Errorf("two frames is no evidence, got %+v", got)
+	}
+}
+
+// A film whose picture changes shape is never cropped, whichever shape most samples show;
+// jitter and dark scenes inside the usual frame are not a change of shape.
+func TestCropNeverCutsAShapeChange(t *testing.T) {
+	scope := Crop{W: 3840, H: 1608, X: 0, Y: 276}  // 2.39:1 in a 16:9 frame
+	flat := Crop{W: 3840, H: 2160, X: 0, Y: 0}     // 1.78:1 — the full frame
+	open := Crop{W: 3840, H: 2020, X: 0, Y: 70}    // a 1.90:1 IMAX shot
+	dark := Crop{W: 3000, H: 1300, X: 420, Y: 430} // a night scene inside the scope frame
+	n := func(c Crop, k int) []Crop {
+		out := make([]Crop, k)
+		for i := range out {
+			out[i] = c
+		}
+		return out
+	}
+	join := func(parts ...[]Crop) []Crop {
+		var out []Crop
+		for _, p := range parts {
+			out = append(out, p...)
+		}
+		return out
+	}
+	for name, frames := range map[string][]Crop{
+		"mostly scope, some flat":        join(n(scope, 200), n(flat, 20)),
+		"mostly flat, some scope":        join(n(flat, 200), n(scope, 20)),
+		"one IMAX shot among 288":        join(n(scope, 287), n(open, 1)),
+		"no shape most samples agree on": join(n(scope, 20), n(dark, 30)),
+	} {
+		if got := unionCrop(frames, 3840, 2160); got != nil {
+			t.Errorf("%s: cropped to %+v, want the full frame", name, got)
+		}
+	}
+	// Uniform scope with the detector's jitter of a few rows, plus dark scenes: cropped to
+	// the union of the samples.
+	jitter := Crop{W: 3840, H: 1612, X: 0, Y: 274}
+	got := unionCrop(join(n(scope, 200), n(jitter, 40), n(dark, 40)), 3840, 2160)
+	if want := (Crop{W: 3840, H: 1612, X: 0, Y: 274}); got == nil || *got != want {
+		t.Errorf("uniform scope: got %+v, want %+v", got, want)
+	}
+}
+
+// About one sample every 25 seconds, never fewer than 40 or more than 400.
+func TestCropSampleCount(t *testing.T) {
+	for dur, want := range map[float64]int{7200: 288, 1800: 72, 60: 40, 6 * 3600: 400} {
+		if got := cropSampleCount(dur); got != want {
+			t.Errorf("%.0fs: %d samples, want %d", dur, got, want)
+		}
 	}
 }
 

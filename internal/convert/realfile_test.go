@@ -131,7 +131,8 @@ func TestRealFile(t *testing.T) {
 		took := time.Since(t0)
 		cmi, err := probe(ctx, s.ffprobe, conv)
 		must(t, err)
-		sc, _ := s.computeSSIM(ctx, conv, orig, plan.Crop.filter())
+		res, _ := s.computeSSIM(ctx, conv, orig, plan.Crop.filter())
+		sc := res.Mean
 		fps := smi.FrameRate * smi.DurationSec / took.Seconds()
 		t.Logf("sample %d @ %s: %s → %s (%d%% smaller) · SSIM %.4f · %.2f fps (%s for %s of film) · out: %s",
 			i+1, clock(at), humanBytes(fileSize(orig)), humanBytes(fileSize(conv)), savedPct(fileSize(orig), fileSize(conv)),
