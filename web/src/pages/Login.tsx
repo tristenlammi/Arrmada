@@ -1,10 +1,19 @@
 import { useEffect, useState } from "react";
 import { FleetMark } from "../components/FleetMark";
-import { api } from "../lib/api";
+import { api, resetSignedOut } from "../lib/api";
+import { nextAfterSignIn } from "../lib/session";
+
+// After any successful sign-in: back to the page they were on (or ?next=), else Discover.
+// A full load, so MeProvider and /status start fresh for the new session.
+function continueAfterSignIn() {
+  resetSignedOut();
+  window.location.replace(nextAfterSignIn());
+}
 
 // Login is shown when auth is enabled and no session is active. It doubles as the
 // first-run setup screen (create the first admin) when the instance has no users yet.
-export function Login() {
+// signedOut: the session ended while the app was open (expired, revoked, password changed).
+export function Login({ signedOut = false }: { signedOut?: boolean }) {
   const [mode, setMode] = useState<"loading" | "login" | "setup">("loading");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -29,7 +38,7 @@ export function Login() {
         if (++tries > 90) { setError("Plex sign-in timed out — try again."); setPlexBusy(false); return; } // ~3 min
         try {
           const r = await api.plexLoginPoll(id);
-          if (r.user) { popup?.close(); window.location.href = "/discover"; return; }
+          if (r.user) { popup?.close(); continueAfterSignIn(); return; }
           setTimeout(poll, 2000);
         } catch (e) { setError((e as Error).message); setPlexBusy(false); popup?.close(); }
       };
@@ -43,7 +52,7 @@ export function Login() {
     try {
       if (mode === "setup") await api.setupAdmin(email.trim(), password);
       else await api.login(email.trim(), password);
-      window.location.href = "/discover";
+      continueAfterSignIn();
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);
@@ -65,6 +74,11 @@ export function Login() {
 
         {mode !== "loading" && (
           <form onSubmit={submit} className="flex flex-col gap-3 rounded-2xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }}>
+            {signedOut && !setup && !error && (
+              <div role="status" className="rounded-lg px-3 py-2.5 text-[12px] text-ink-dim" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+                You were signed out. Sign in again to carry on.
+              </div>
+            )}
             <label className="flex flex-col gap-1.5">
               <span className="font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-ink-faint">Email</span>
               <input type="email" required autoFocus value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" className="rounded-lg px-3 py-2.5 text-[13px]" style={fieldStyle} />

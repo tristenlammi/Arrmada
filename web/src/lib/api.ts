@@ -1182,21 +1182,42 @@ export interface Reliability { summary: ReliabilitySummary; causes: CauseCount[]
 // which files a delete moved to the recycle bin and which it couldn't.
 export class ApiError extends Error {
   status: number;
+  path: string;
   body?: Record<string, unknown>;
-  constructor(message: string, status: number, body?: Record<string, unknown>) {
+  constructor(message: string, status: number, body?: Record<string, unknown>, path = "") {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.body = body;
+    this.path = path;
   }
 }
 
-async function req<T>(path: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    ...opts,
-  });
+// A 401 from anything but the auth endpoints means this browser's session has ended
+// (expired, revoked, password changed, account turned off). The app is told once, through
+// this window event, and swaps to the sign-in screen instead of every panel and poll
+// showing its own "authentication required". The auth endpoints are left out because a
+// wrong password, a pending Plex PIN or a signed-out /me legitimately answer 401.
+export const SIGNED_OUT_EVENT = "arrmada:signed-out";
+let signedOut = false;
+
+export function signalSignedOut(): void {
+  if (signedOut) return;
+  signedOut = true;
+  window.dispatchEvent(new CustomEvent(SIGNED_OUT_EVENT));
+}
+
+// resetSignedOut re-arms the signal after a sign-in.
+export function resetSignedOut(): void {
+  signedOut = false;
+}
+
+// send is the one place every API call goes through, JSON or upload: it turns a non-OK
+// response into an ApiError carrying the server's message, and spots a lost session.
+async function send(path: string, init?: RequestInit): Promise<Response> {
+  const res = await fetch(path, init);
   if (!res.ok) {
+    if (res.status === 401 && !path.startsWith("/api/v1/auth/")) signalSignedOut();
     let msg = `HTTP ${res.status}`;
     let body: Record<string, unknown> | undefined;
     try {
@@ -1205,8 +1226,16 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
     } catch {
       /* non-JSON error */
     }
-    throw new ApiError(msg, res.status, body);
+    throw new ApiError(msg, res.status, body, path);
   }
+  return res;
+}
+
+async function req<T>(path: string, opts?: RequestInit): Promise<T> {
+  const res = await send(path, {
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    ...opts,
+  });
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
@@ -1216,7 +1245,12 @@ export const api = {
   health: () => req<Health>("/api/health"),
 
   me: () => req<{ user: AuthUser }>("/api/v1/auth/me").then((r) => r.user),
-  logout: () => req<unknown>("/api/v1/auth/logout", { method: "POST" }),
+  // A deliberate sign-out mutes the signed-out signal: a poll that 401s before the page
+  // reloads must not flash "You were signed out" or remember the page to come back to.
+  logout: () => {
+    signedOut = true;
+    return req<unknown>("/api/v1/auth/logout", { method: "POST" });
+  },
   login: (username: string, password: string) =>
     req<{ user: AuthUser }>("/api/v1/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
   setupAdmin: (username: string, password: string) =>
@@ -1413,12 +1447,8 @@ export const api = {
   audioImportUpload: async (file: File): Promise<AudioImportPreview> => {
     const fd = new FormData();
     fd.append("file", file);
-    const res = await fetch("/api/v1/audioserver/import", { method: "POST", body: fd });
-    if (!res.ok) {
-      let msg = `HTTP ${res.status}`;
-      try { const b = await res.json(); if (b.message) msg = b.message; } catch { /* not JSON */ }
-      throw new Error(msg);
-    }
+    // Through send, not req: the browser sets the multipart Content-Type itself.
+    const res = await send("/api/v1/audioserver/import", { method: "POST", body: fd });
     return res.json();
   },
   audioImportApply: (userMap: Record<string, number>) => req<AudioImportResult>("/api/v1/audioserver/import/apply", { method: "POST", body: JSON.stringify({ user_map: userMap }) }),
@@ -1652,17 +1682,7 @@ export const api = {
   uploadBookCover: async (id: number, file: File): Promise<string> => {
     const fd = new FormData();
     fd.append("file", file);
-    const res = await fetch(`/api/v1/books/${id}/cover`, { method: "POST", body: fd });
-    if (!res.ok) {
-      let msg = `HTTP ${res.status}`;
-      try {
-        const b = (await res.json()) as { message?: string };
-        if (b.message) msg = b.message;
-      } catch {
-        /* non-JSON error */
-      }
-      throw new Error(msg);
-    }
+    const res = await send(`/api/v1/books/${id}/cover`, { method: "POST", body: fd });
     return ((await res.json()) as { cover_url: string }).cover_url;
   },
   // Tell the Hardcover re-match to leave a book on its current entry (or to try again).

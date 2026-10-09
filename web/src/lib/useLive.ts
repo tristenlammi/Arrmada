@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { SIGNED_OUT_EVENT } from "./api";
 
 export interface LiveEvent {
   topic: string;
@@ -35,11 +36,18 @@ export function useLive() {
       };
     };
 
-    connect();
-    return () => {
+    // Once the session is gone the upgrade would 401 forever; stop rather than retry.
+    const stop = () => {
       closed = true;
       if (retry) clearTimeout(retry);
       ws?.close();
+    };
+    window.addEventListener(SIGNED_OUT_EVENT, stop);
+
+    connect();
+    return () => {
+      window.removeEventListener(SIGNED_OUT_EVENT, stop);
+      stop();
     };
   }, []);
 
