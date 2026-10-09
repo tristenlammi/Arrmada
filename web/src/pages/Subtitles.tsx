@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
+import { Link } from "react-router-dom";
 import { useTabParam } from "../lib/useTabParam";
+import { LINKS } from "../lib/links";
 import { RescanButton, scanTitle } from "../components/RescanButton";
 import { api, type SubtitleSettings, type SubFileEntry, type SubSeriesGroup, type SubtitleJob, type SubtitleCoverage, type SubLangStatus, type WhisperStatus } from "../lib/api";
 
@@ -57,8 +59,13 @@ export function Subtitles() {
   };
 
   const activeCount = jobs.filter((j) => ACTIVE.has(j.state)).length;
-  const provider = settings?.provider_ready ? (settings.can_download ? "OpenSubtitles ready" : "OpenSubtitles: search only") : "AI + embedded only";
-  const providerOK = !!settings?.can_download;
+  // The pill lists the sources that work right now, read from real state: embedded tracks
+  // always do; OpenSubtitles and AI only once they're set up.
+  const sources = ["embedded"];
+  if (settings?.provider_ready) sources.push(settings.can_download ? "OpenSubtitles" : "OpenSubtitles (search only)");
+  if (settings?.ai_ready) sources.push("AI");
+  const provider = `Sources: ${sources.join(" · ")}`;
+  const providerOK = !!settings?.can_download || !!settings?.ai_ready;
   const TABS: { key: Tab; label: string; n?: string }[] = [
     { key: "overview", label: "Overview" },
     { key: "queue", label: "Queue", n: activeCount ? `${activeCount} active` : undefined },
@@ -72,7 +79,7 @@ export function Subtitles() {
       <PageHeader title="Subtitles" crumb="Library / Subtitles" />
       <div className="mx-auto w-full max-w-[1240px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-          <p className="max-w-[64ch] text-[12.5px] text-ink-dim">One external <code>.srt</code> per language, next to every video. Arrmada uses the best source it can — an embedded track, a download, or (soon) AI transcription — and keeps your kept languages while stripping the rest. Pick languages in <b>Settings</b>.</p>
+          <p className="max-w-[64ch] text-[12.5px] text-ink-dim">One external <code>.srt</code> per language next to every video, made from the best source available: an embedded text track, an OpenSubtitles download, or local AI transcription when a model is installed. Pick languages in <b>Settings</b>.</p>
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[12px] font-semibold" style={{ border: `1px solid ${providerOK ? "var(--good)" : "var(--line)"}`, background: providerOK ? "var(--good-soft, rgba(127,176,105,.16))" : "var(--panel-2)" }}>
               <span className="h-2 w-2 rounded-full" style={{ background: providerOK ? "var(--good)" : "var(--ink-faint)" }} />
@@ -95,7 +102,7 @@ export function Subtitles() {
           })}
         </div>
 
-        {tab === "overview" && <Overview jobs={jobs} settings={settings} flash={flash} />}
+        {tab === "overview" && <Overview jobs={jobs} settings={settings} flash={flash} onSettings={() => setTab("settings")} />}
         {tab === "queue" && <Queue jobs={jobs} onChange={() => api.subtitleJobs().then(setJobs).catch(() => {})} flash={flash} />}
         {tab === "library" && <Library flash={flash} onQueued={() => api.subtitleJobs().then(setJobs)} />}
         {tab === "logs" && <LogsConsole />}
@@ -107,7 +114,7 @@ export function Subtitles() {
 }
 
 /* ============================= OVERVIEW ============================= */
-function Overview({ jobs, settings, flash }: { jobs: SubtitleJob[]; settings: SubtitleSettings | null; flash: (m: string) => void }) {
+function Overview({ jobs, settings, flash, onSettings }: { jobs: SubtitleJob[]; settings: SubtitleSettings | null; flash: (m: string) => void; onSettings: () => void }) {
   // The totals come from the server's last library pass. This used to fetch the flat
   // list of every file — a directory listing per file, 25,000 of them — every time the
   // tab opened.
@@ -151,15 +158,15 @@ function Overview({ jobs, settings, flash }: { jobs: SubtitleJob[]; settings: Su
           <div className="mt-2.5 flex flex-wrap gap-1.5">
             {(settings?.languages ?? []).map((c) => <span key={c} className="rounded-full px-2.5 py-1 text-[11.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{langName(c)}</span>)}
           </div>
-          <div className="mt-3 text-[11.5px] text-ink-faint">These languages are kept as external <code>.srt</code>; everything else is stripped from the video (once stripping ships).</div>
+          <div className="mt-3 text-[11.5px] text-ink-faint">Each of these gets an external <code>.srt</code>. <KeptTracksNote /></div>
         </div>
         <div className={card} style={cardStyle}>
           <div className={lbl}>Sources &amp; automation</div>
           <div className="mt-2 flex flex-col gap-1.5 text-[12px] text-ink-dim">
-            <Row2 label="Embedded extract" on />
-            <Row2 label="OpenSubtitles download" on={!!settings?.can_download} />
-            <Row2 label="Image-sub OCR" on={false} soon />
-            <Row2 label="AI transcription" on={!!settings?.ai_ready} soon={!settings?.ai_ready} />
+            <Row2 label="Embedded extract" state="on" />
+            <Row2 label="OpenSubtitles download" state={settings?.can_download ? "on" : "setup"} onClick={onSettings} />
+            <Row2 label="AI transcription" state={settings?.ai_ready ? "on" : "model"} onClick={onSettings} />
+            <Row2 label="Image-sub OCR" state="unsupported" />
           </div>
           <div className="mt-2.5 border-t pt-2.5 text-[11.5px] text-ink-faint" style={{ borderColor: "var(--line-soft)" }}>
             Auto: movies {settings?.movies_auto ? "on" : "off"} · series {settings?.series_auto ? "on" : "off"}
@@ -176,12 +183,28 @@ function Overview({ jobs, settings, flash }: { jobs: SubtitleJob[]; settings: Su
     </div>
   );
 }
-function Row2({ label, on, soon }: { label: string; on: boolean; soon?: boolean }) {
+// Row2 is one source's real state. Something that needs setting up is a button to the
+// Settings tab; image-sub OCR isn't something Arrmada does, so it says so rather than "soon".
+const ROW_LABEL = { on: "on", setup: "set up", model: "needs a model", unsupported: "not supported" } as const;
+function Row2({ label, state, onClick }: { label: string; state: keyof typeof ROW_LABEL; onClick?: () => void }) {
+  const on = state === "on";
+  const chip = "rounded-full px-2 py-0.5 font-mono text-[9px] font-bold uppercase";
+  const style = { background: on ? "var(--good-soft, rgba(127,176,105,.16))" : "var(--panel-2)", color: on ? "var(--good)" : "var(--ink-faint)" };
   return (
     <div className="flex items-center justify-between">
       <span>{label}</span>
-      <span className="rounded-full px-2 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: on ? "var(--good-soft, rgba(127,176,105,.16))" : "var(--panel-2)", color: on ? "var(--good)" : "var(--ink-faint)" }}>{soon ? "soon" : on ? "on" : "off"}</span>
+      {!on && onClick
+        ? <button onClick={onClick} className={chip} style={{ ...style, color: "var(--accent)", border: "1px solid var(--accent-line)" }}>{ROW_LABEL[state]}</button>
+        : <span className={chip} style={style}>{ROW_LABEL[state]}</span>}
     </div>
+  );
+}
+
+// KeptTracksNote says where embedded tracks stand. Subtitles never edits the video; dropping
+// the languages you don't keep happens in Convert, under its own setting, when it re-encodes.
+function KeptTracksNote() {
+  return (
+    <>Embedded subtitle tracks stay inside the video. Convert can remove the languages you don't keep when it re-encodes a file — set that in <Link to={LINKS.convertSettings} style={{ color: "var(--accent)" }}>Convert → Settings</Link>.</>
   );
 }
 
@@ -402,7 +425,7 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
   const filtering = filters.size > 0;
   const HEADERS: { label: string; key?: SortKey }[] = [
     { label: "Title", key: "title" }, { label: "Audio" }, { label: "Embedded", key: "embedded" },
-    { label: "Coverage" }, { label: "Health" }, { label: "" },
+    { label: "Coverage" }, { label: "" },
   ];
 
   return (
@@ -436,7 +459,7 @@ function Library({ flash, onQueued }: { flash: (m: string) => void; onQueued: ()
           </div>
           <p className="text-[11px] text-ink-faint">
             {filtering ? <><b style={{ color: "var(--ink)" }}>{view.length.toLocaleString()}</b> of {items.length.toLocaleString()} · </> : null}
-            <b>Ensure subs</b> makes any missing kept-language <code>.srt</code> using the best source available (image subs + AI are coming). Health scoring lands with the sync phase.
+            <b>Ensure subs</b> makes any missing kept-language <code>.srt</code> from the best available source.
           </p>
           <div className="overflow-x-auto rounded-xl" style={{ border: "1px solid var(--line)" }}>
             <table className="w-full border-collapse text-[12.5px]" style={{ minWidth: 900 }}>
@@ -632,7 +655,7 @@ function SeriesGroupRow({ g, first, open, onToggle, flash, onQueued }: {
             <div className="overflow-x-auto rounded-lg" style={{ border: "1px solid var(--line)" }}>
               <table className="w-full border-collapse text-[12.5px]" style={{ minWidth: 900 }}>
                 <thead><tr style={{ background: "var(--panel-2)" }}>
-                  {["Episode", "Audio", "Embedded", "Coverage", "Health", ""].map((h, i) => (
+                  {["Episode", "Audio", "Embedded", "Coverage", ""].map((h, i) => (
                     <th key={i} className="px-3 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-wide text-ink-faint">{h}</th>
                   ))}
                 </tr></thead>
@@ -676,7 +699,6 @@ function SubRow({ f, first, busy, queued, onEnsure, onRedo }: { f: SubFileEntry;
       <td className="px-3 py-2">
         <div className="flex flex-wrap items-center gap-1">{(f.languages ?? []).map((l) => <CoverChip key={l.lang} l={l} />)}</div>
       </td>
-      <td className="px-3 py-2 font-mono text-[10.5px] text-ink-faint">{f.health ? `${f.health.score}%` : "—"}</td>
       <td className="px-3 py-2">
         <div className="flex items-center justify-end gap-2">
           {queued ? (
@@ -762,7 +784,7 @@ function SettingsTab({ settings, onPatch, flash }: { settings: SubtitleSettings;
     <div className="flex flex-col gap-4">
       <div className={card} style={cardStyle}>
         <div className="text-[14px] font-bold">Kept languages</div>
-        <div className="mt-0.5 text-[11.5px] text-ink-faint">Arrmada keeps an external <code>.srt</code> for each of these; other languages are stripped from the video (once stripping ships). Click to toggle.</div>
+        <div className="mt-0.5 text-[11.5px] text-ink-faint">Arrmada keeps an external <code>.srt</code> for each of these. Click to toggle. <KeptTracksNote /></div>
         <div className="mt-3 flex flex-wrap gap-1.5">
           {LANGS.map((l) => {
             const on = settings.languages.includes(l.code);
@@ -784,7 +806,7 @@ function SettingsTab({ settings, onPatch, flash }: { settings: SubtitleSettings;
 
       <div className={card} style={cardStyle}>
         <div className="text-[14px] font-bold">OpenSubtitles (optional download source)</div>
-        <div className="mt-0.5 text-[11.5px] text-ink-faint">A download source Arrmada tries before AI. Optional — embedded extraction and (soon) AI work without it.</div>
+        <div className="mt-0.5 text-[11.5px] text-ink-faint">A download source Arrmada tries before AI. Optional — embedded extraction and local AI work without it.</div>
         <div className="mt-3 flex items-center gap-2 text-[12px]">
           <span className="rounded-full px-2 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: settings.can_download ? "var(--good-soft, rgba(127,176,105,.16))" : settings.provider_ready ? "var(--avoid-soft)" : "var(--panel-2)", color: settings.can_download ? "var(--good)" : settings.provider_ready ? "var(--avoid)" : "var(--ink-faint)" }}>
             {settings.can_download ? "ready" : settings.provider_ready ? "search only" : "not configured"}
@@ -797,8 +819,8 @@ function SettingsTab({ settings, onPatch, flash }: { settings: SubtitleSettings;
                   ? `Downloading enabled · ${settings.quota_remaining} downloads left today.`
                   : "Downloading enabled."
               : settings.provider_ready
-                ? "Searching works; add your OpenSubtitles username and password under Settings → API keys to download."
-                : "Add an OpenSubtitles API key (free) under Settings → API keys, plus your account username and password to download."}
+                ? "Searching works; add your OpenSubtitles username and password under Settings → System → API keys to download."
+                : "Add an OpenSubtitles API key (free) under Settings → System → API keys, plus your account username and password to download."}
           </span>
         </div>
       </div>
