@@ -533,10 +533,8 @@ export interface NotificationConn {
   id?: number;
   name: string;
   kind: string; // free-form label / service hint
-  on_grab: boolean;
-  on_import: boolean;
-  on_stream?: boolean;
-  on_buffering?: boolean;
+  /** Catalog keys this connection subscribes to (GET /notifications/catalog). */
+  events: string[];
   enabled: boolean;
   url_hint?: string;
   url_set?: boolean;
@@ -546,6 +544,10 @@ export interface NotificationConn {
 
 // What create, update and test take. On update, a missing or blank url keeps the saved one.
 export type NotificationInput = Omit<NotificationConn, "id" | "url_hint" | "url_set" | "invalid_reason"> & { url?: string };
+
+// The alert event catalog: what a connection can subscribe to, grouped for the page.
+export interface AlertEvent { key: string; group: string; label: string; hint: string; default_on: boolean; module?: "books" | "music" }
+export interface AlertCatalog { groups: { key: string; label: string }[]; events: AlertEvent[] }
 
 export interface MyApprise { set: boolean; hint: string; blocked_reason?: string }
 
@@ -1958,6 +1960,7 @@ export const api = {
 
   notifications: () =>
     req<{ notifications: NotificationConn[] }>("/api/v1/notifications").then((r) => r.notifications),
+  alertCatalog: () => req<AlertCatalog>("/api/v1/notifications/catalog"),
   createNotification: (body: NotificationInput) =>
     req<NotificationConn>("/api/v1/notifications", { method: "POST", body: JSON.stringify(body) }),
   updateNotification: (id: number, body: NotificationInput) =>

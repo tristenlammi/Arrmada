@@ -187,6 +187,9 @@ func (s *Service) Create(ctx context.Context, in Request, autoApprove bool) (cre
 	s.log.Info("request created", "media", in.MediaType, "title", in.Title, "by", in.RequestedByName, "auto_approve", autoApprove)
 	if autoApprove {
 		created, err = s.Approve(ctx, created.ID, in.QualityProfile) // publishes approved
+		if err == nil {
+			s.publishAutoApproved(created)
+		}
 		return created, false, err
 	}
 	s.publishUpdated(created, StatusPending, s.parties(ctx, created))

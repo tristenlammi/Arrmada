@@ -34,16 +34,14 @@ func viewOf(c notify.Connection) notificationView {
 }
 
 // notificationInput is what create and update accept. URL is a pointer so an update can
-// leave it out (or send "") to keep the stored one.
+// leave it out (or send "") to keep the stored one; Events likewise (a new connection
+// left without them starts on the catalog's defaults).
 type notificationInput struct {
-	Name        string  `json:"name"`
-	Kind        string  `json:"kind"`
-	URL         *string `json:"url"`
-	OnGrab      bool    `json:"on_grab"`
-	OnImport    bool    `json:"on_import"`
-	OnStream    bool    `json:"on_stream"`
-	OnBuffering bool    `json:"on_buffering"`
-	Enabled     bool    `json:"enabled"`
+	Name    string    `json:"name"`
+	Kind    string    `json:"kind"`
+	URL     *string   `json:"url"`
+	Events  *[]string `json:"events"`
+	Enabled bool      `json:"enabled"`
 }
 
 func (in notificationInput) url() string {
@@ -54,8 +52,28 @@ func (in notificationInput) url() string {
 }
 
 func (in notificationInput) apply(c *notify.Connection) {
-	c.Name, c.Kind = strings.TrimSpace(in.Name), in.Kind
-	c.OnGrab, c.OnImport, c.OnStream, c.OnBuffering, c.Enabled = in.OnGrab, in.OnImport, in.OnStream, in.OnBuffering, in.Enabled
+	c.Name, c.Kind, c.Enabled = strings.TrimSpace(in.Name), in.Kind, in.Enabled
+	if in.Events != nil {
+		c.Events = append([]string{}, *in.Events...)
+	}
+}
+
+// checkEvents refuses event keys the catalog doesn't know.
+func (a *api) checkEvents(w http.ResponseWriter, in notificationInput) bool {
+	if in.Events == nil {
+		return true
+	}
+	if err := notify.ValidEvents(*in.Events); err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return false
+	}
+	return true
+}
+
+// handleNotificationCatalog lists the events a connection can subscribe to, grouped
+// for the Alerts page.
+func (a *api) handleNotificationCatalog(w http.ResponseWriter, r *http.Request) {
+	a.writeJSON(w, http.StatusOK, map[string]any{"groups": notify.Groups(), "events": notify.Catalog()})
 }
 
 // handleListNotifications returns all notification connections, URLs redacted.
@@ -77,7 +95,10 @@ func (a *api) handleCreateNotification(w http.ResponseWriter, r *http.Request) {
 	if !a.decodeJSON(w, r, &in) {
 		return
 	}
-	var c notify.Connection
+	if !a.checkEvents(w, in) {
+		return
+	}
+	c := notify.Connection{Events: notify.DefaultEvents()}
 	in.apply(&c)
 	c.URL = in.url()
 	if c.Name == "" || c.URL == "" {
@@ -114,6 +135,9 @@ func (a *api) handleUpdateNotification(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not load notification")
+		return
+	}
+	if !a.checkEvents(w, in) {
 		return
 	}
 	in.apply(&c)

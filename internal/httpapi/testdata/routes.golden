@@ -148,6 +148,7 @@ GET /api/v1/music/artists/{id} staff -
 GET /api/v1/music/artists/{id}/history staff -
 GET /api/v1/music/lookup staff -
 GET /api/v1/notifications staff -
+GET /api/v1/notifications/catalog staff -
 GET /api/v1/parse staff -
 GET /api/v1/quality/preview staff -
 GET /api/v1/quality/profiles staff -

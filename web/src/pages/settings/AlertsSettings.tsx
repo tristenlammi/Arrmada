@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Section, input, inputStyle } from "../../components/settings/ui";
-import { api, type NotificationConn, type NotificationInput } from "../../lib/api";
+import { api, type AlertCatalog, type AlertEvent, type NotificationConn, type NotificationInput } from "../../lib/api";
 import { isAdmin, useMe } from "../../lib/me";
 import { useQuery, invalidate } from "../../lib/query";
 import { Button, useConfirm, useToast } from "../../ui";
@@ -13,35 +13,36 @@ import { Button, useConfirm, useToast } from "../../ui";
 // password): the field shows a hint, and leaving it blank keeps what's saved, like the
 // Plex token. Managers see the list; only admins change it.
 
-const EVENTS: { key: "on_grab" | "on_import" | "on_stream" | "on_buffering"; label: string }[] = [
-  { key: "on_grab", label: "Grabbed" },
-  { key: "on_import", label: "Imported" },
-  { key: "on_stream", label: "Stream started" },
-  { key: "on_buffering", label: "Buffering" },
-];
-const BLANK_CONN: NotificationConn = { name: "", kind: "", on_grab: false, on_import: true, on_stream: false, on_buffering: false, enabled: true };
-
 export function AlertsSettings() {
-  const { user } = useMe();
+  const { user, booksEnabled, musicEnabled } = useMe();
   const admin = isAdmin(user);
-  const { data: conns, error } = useQuery("notifications", api.notifications);
+  const { data: conns, error } = useQuery("notifications:list", api.notifications);
+  const { data: catalog, error: catalogError } = useQuery("notifications:catalog", api.alertCatalog, { staleMs: 5 * 60_000 });
   const [adding, setAdding] = useState(false);
-  const reload = () => invalidate("notifications");
+  const reload = () => invalidate("notifications:list");
+
+  // Events of a module that's switched off are hidden (a connection keeps them ticked).
+  const shown = catalog && {
+    ...catalog,
+    events: catalog.events.filter((e) => (e.module !== "music" || musicEnabled) && (e.module !== "books" || booksEnabled)),
+  };
+  const blank = (): NotificationConn => ({ name: "", kind: "", enabled: true, events: (catalog?.events ?? []).filter((e) => e.default_on).map((e) => e.key) });
+  const failed = error ?? catalogError;
 
   return (
     <div className="flex flex-col gap-6">
       <Section id="alerts" title="Alerts" subtitle="Get a message when something needs you or when new things arrive. Each connection is one place a message goes, with its own choice of events.">
         {!admin && <p className="text-[11.5px] text-ink-faint">Only an admin can add or change alert connections.</p>}
-        {error && !conns ? (
-          <p className="text-[12px]" style={{ color: "var(--reject)" }}>Couldn’t load alert connections — {error.message}</p>
-        ) : !conns ? (
+        {failed && !(conns && shown) ? (
+          <p className="text-[12px]" style={{ color: "var(--reject)" }}>Couldn’t load alert connections — {failed.message}</p>
+        ) : !conns || !shown ? (
           <p className="text-[12px] text-ink-dim">Loading…</p>
         ) : (
           <>
             {conns.length === 0 && !adding && <p className="text-[12px] text-ink-dim">No alert connections yet.</p>}
-            {conns.map((c) => <ConnCard key={c.id} conn={c} readOnly={!admin} onChange={reload} />)}
+            {conns.map((c) => <ConnCard key={c.id} conn={c} catalog={shown} readOnly={!admin} onChange={reload} />)}
             {admin && (adding ? (
-              <ConnCard conn={BLANK_CONN} isNew onChange={() => { setAdding(false); reload(); }} onCancel={() => setAdding(false)} />
+              <ConnCard conn={blank()} catalog={shown} isNew onChange={() => { setAdding(false); reload(); }} onCancel={() => setAdding(false)} />
             ) : (
               <Button className="self-start" onClick={() => setAdding(true)}>+ Add connection</Button>
             ))}
@@ -52,7 +53,7 @@ export function AlertsSettings() {
   );
 }
 
-function ConnCard({ conn, isNew, readOnly, onChange, onCancel }: { conn: NotificationConn; isNew?: boolean; readOnly?: boolean; onChange: () => void; onCancel?: () => void }) {
+function ConnCard({ conn, catalog, isNew, readOnly, onChange, onCancel }: { conn: NotificationConn; catalog: AlertCatalog; isNew?: boolean; readOnly?: boolean; onChange: () => void; onCancel?: () => void }) {
   const [c, setC] = useState<NotificationConn>(conn);
   // Only what's typed here; blank on a saved card means "keep the saved link".
   const [url, setUrl] = useState("");
@@ -61,8 +62,7 @@ function ConnCard({ conn, isNew, readOnly, onChange, onCancel }: { conn: Notific
   const confirm = useConfirm();
   const set = (patch: Partial<NotificationConn>) => setC((p) => ({ ...p, ...patch }));
   const body = (): NotificationInput => ({
-    name: c.name, kind: c.kind, enabled: c.enabled,
-    on_grab: c.on_grab, on_import: c.on_import, on_stream: c.on_stream, on_buffering: c.on_buffering,
+    name: c.name, kind: c.kind, enabled: c.enabled, events: c.events,
     ...(url.trim() ? { url: url.trim() } : {}),
   });
 
@@ -94,7 +94,7 @@ function ConnCard({ conn, isNew, readOnly, onChange, onCancel }: { conn: Notific
     try { await api.deleteNotification(c.id); onChange(); } catch (e) { toast((e as Error).message, { tone: "error" }); }
   };
 
-  const placeholder = isNew ? "discord://webhook_id/token" : conn.url_set ? `${conn.url_hint ?? "saved"} — saved, leave blank to keep` : "discord://webhook_id/token";
+  const placeholder = !isNew && conn.url_set ? `${conn.url_hint ?? "saved"} — saved, leave blank to keep` : "discord://webhook_id/token";
 
   return (
     <div className="rounded-xl p-4" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
@@ -117,13 +117,7 @@ function ConnCard({ conn, isNew, readOnly, onChange, onCancel }: { conn: Notific
       {conn.invalid_reason && (
         <p className="mt-1 text-[11px]" style={{ color: "var(--avoid)" }}>The saved link no longer passes the check ({conn.invalid_reason}). It still sends; enter a corrected link to edit this connection’s link.</p>
       )}
-      <div className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1.5">
-        {EVENTS.map((ev) => (
-          <label key={ev.key} className="flex cursor-pointer items-center gap-1.5 text-[11.5px] text-ink-dim">
-            <input type="checkbox" checked={!!c[ev.key]} disabled={readOnly} onChange={(e) => set({ [ev.key]: e.target.checked })} /> {ev.label}
-          </label>
-        ))}
-      </div>
+      <EventPicker catalog={catalog} value={c.events} readOnly={readOnly} onChange={(events) => set({ events })} />
       {!readOnly && (
         <div className="mt-3 flex items-center gap-2">
           <Button variant="primary" size="sm" onClick={save} busy={busy === "save"} busyLabel="Saving…" disabled={busy !== null}>{isNew ? "Add" : "Save"}</Button>
@@ -132,6 +126,50 @@ function ConnCard({ conn, isNew, readOnly, onChange, onCancel }: { conn: Notific
           {isNew ? <Button variant="ghost" size="sm" onClick={onCancel}>Cancel</Button> : <Button variant="ghost" size="sm" onClick={del} style={{ color: "var(--reject)" }}>Delete</Button>}
         </div>
       )}
+    </div>
+  );
+}
+
+// EventPicker is the grouped checklist of catalog events, with a tick-all per group.
+// Groups with no events (yet) aren't shown.
+function EventPicker({ catalog, value, readOnly, onChange }: { catalog: AlertCatalog; value: string[]; readOnly?: boolean; onChange: (events: string[]) => void }) {
+  const on = new Set(value);
+  const toggle = (keys: string[], tick: boolean) => {
+    const next = new Set(on);
+    for (const k of keys) { if (tick) next.add(k); else next.delete(k); }
+    onChange([...next].sort());
+  };
+  const byGroup = catalog.groups
+    .map((g) => ({ ...g, events: catalog.events.filter((e) => e.group === g.key) }))
+    .filter((g) => g.events.length > 0);
+
+  return (
+    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+      {byGroup.map((g) => {
+        const keys = g.events.map((e) => e.key);
+        const all = keys.every((k) => on.has(k));
+        return (
+          <fieldset key={g.key} className="min-w-0">
+            <legend className="mb-1 flex w-full items-center justify-between gap-2">
+              <span className="font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-ink-faint">{g.label}</span>
+              {!readOnly && keys.length > 1 && (
+                <button type="button" onClick={() => toggle(keys, !all)} className="text-[10.5px]" style={{ color: "var(--accent)" }}>{all ? "None" : "All"}</button>
+              )}
+            </legend>
+            <div className="flex flex-col gap-1">
+              {g.events.map((ev: AlertEvent) => (
+                <label key={ev.key} className="flex cursor-pointer items-start gap-1.5 text-[11.5px]" title={ev.hint}>
+                  <input type="checkbox" aria-label={ev.label} className="mt-0.5" checked={on.has(ev.key)} disabled={readOnly} onChange={(e) => toggle([ev.key], e.target.checked)} />
+                  <span className="min-w-0">
+                    <span className="block">{ev.label}</span>
+                    <span className="block text-[10.5px] text-ink-faint">{ev.hint}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+        );
+      })}
     </div>
   );
 }
