@@ -1,56 +1,95 @@
+import type { IconName } from "../components/icons";
+
 export interface NavItem {
   to: string;
   label: string;
+  icon: IconName;
   end?: boolean;
   /** A short tag shown beside the label, e.g. "Preview" for a module still being hardened. */
-  badge?: string;
+  tag?: string;
   /** Shown to admins only (the server refuses everyone else anyway). */
   adminOnly?: boolean;
+  /** Belongs to a module an admin can switch off; hidden while it's off. */
+  module?: "books" | "music";
+  /** A live count shown beside the label (FE-28 fills these in). */
+  badge?: "requests" | "activity" | "review" | "issues";
+  /** A status dot beside the label: the audiobook server's running state. */
+  status?: "audiobook-server";
 }
 
 export interface NavGroup {
+  /** The heading shown in the sidebar; the first group has none. */
   group: string;
+  /** What the page breadcrumb calls the group, when that differs from the heading. */
+  crumb?: string;
   items: NavItem[];
 }
 
+// The sidebar, grouped by how the app works: what's happening now (Activity), what you
+// have (Library), things that work on files (Tools), Plex monitoring, and setup (System).
+// Routes don't follow this grouping; only the sidebar and the page breadcrumbs do.
 export const NAV: NavGroup[] = [
   {
     group: "",
+    crumb: "Home",
     items: [
-      { to: "/", label: "Dashboard", end: true },
-      { to: "/downloads", label: "Downloads" },
-      { to: "/history", label: "History" },
-      { to: "/review", label: "Review" },
+      { to: "/", label: "Dashboard", icon: "dashboard", end: true },
+      { to: "/discover", label: "Discover", icon: "discover" },
+    ],
+  },
+  {
+    group: "Activity",
+    items: [
+      { to: "/downloads", label: "Downloads", icon: "downloads" },
+      { to: "/history", label: "History", icon: "history" },
+      { to: "/review", label: "Review", icon: "review" },
     ],
   },
   {
     group: "Library",
     items: [
-      { to: "/movies", label: "Movies" },
-      { to: "/series", label: "Series" },
-      { to: "/books", label: "Books" },
-      { to: "/music", label: "Music", badge: "Preview" },
+      { to: "/movies", label: "Movies", icon: "movies" },
+      { to: "/series", label: "Series", icon: "series" },
+      { to: "/books", label: "Books", icon: "books", module: "books" },
+      { to: "/audiobooks", label: "Audiobooks", icon: "audiobooks", status: "audiobook-server" },
+      { to: "/music", label: "Music", icon: "music", module: "music", tag: "Preview" },
+      { to: "/calendar", label: "Calendar", icon: "calendar" },
     ],
   },
   {
-    group: "Services",
+    group: "Tools",
     items: [
-      { to: "/discover", label: "Discover" },
-      { to: "/calendar", label: "Calendar" },
-      { to: "/subtitles", label: "Subtitles" },
-      { to: "/convert", label: "Convert" },
-      { to: "/insights", label: "Insights" },
-      { to: "/audiobooks", label: "Audiobooks" },
+      { to: "/subtitles", label: "Subtitles", icon: "subtitles" },
+      { to: "/convert", label: "Convert", icon: "convert" },
     ],
+  },
+  {
+    group: "Plex",
+    items: [{ to: "/insights", label: "Insights", icon: "insights" }],
   },
   {
     group: "System",
     items: [
-      { to: "/indexers", label: "Indexers" },
-      { to: "/downloadclients", label: "Download clients" },
-      { to: "/quality", label: "Quality profiles" },
-      { to: "/logs", label: "Logs", adminOnly: true },
-      { to: "/settings", label: "Settings" },
+      { to: "/indexers", label: "Indexers", icon: "indexers" },
+      { to: "/downloadclients", label: "Download clients", icon: "downloadClients" },
+      { to: "/quality", label: "Quality profiles", icon: "quality" },
+      { to: "/logs", label: "Logs", icon: "logs", adminOnly: true },
+      { to: "/settings", label: "Settings", icon: "settings" },
     ],
   },
 ];
+
+export interface NavViewer {
+  admin: boolean;
+  booksEnabled: boolean;
+  musicEnabled: boolean;
+}
+
+// visibleNav drops what this viewer shouldn't see: pages of modules an admin switched
+// off, and admin-only pages (Logs) for managers. Groups left empty disappear.
+export function visibleNav(viewer: NavViewer, nav: NavGroup[] = NAV): NavGroup[] {
+  const on = (m: NavItem["module"]) => !m || (m === "books" ? viewer.booksEnabled : viewer.musicEnabled);
+  return nav
+    .map((g) => ({ ...g, items: g.items.filter((i) => on(i.module) && (viewer.admin || !i.adminOnly)) }))
+    .filter((g) => g.items.length > 0);
+}
