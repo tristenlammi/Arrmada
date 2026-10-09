@@ -13,10 +13,10 @@ import (
 	"github.com/tristenlammi/arrmada/internal/series"
 )
 
-// ErrSpecialsScope refuses a quick grab on Specials. A Specials "season" has no packs and
-// the season-level search can't yet tell an S00 release from any other, so a click there
-// would be a whole-show grab.
-var ErrSpecialsScope = errors.New("Specials can't be grabbed from here yet — use Search on the episode")
+// ErrSpecialsScope refuses a season-level grab on Specials. Specials aren't released as
+// packs, and anything that "covers season 0" is really a pack of the whole show — so the
+// only safe Specials grab is one special at a time.
+var ErrSpecialsScope = errors.New("Specials have no packs — grab a single special")
 
 // SeriesScope is one user click on a show: Grab missing on a season, Grab on an episode,
 // or Replace on an episode that already has a file.
@@ -35,7 +35,7 @@ func (sc SeriesScope) Validate() error {
 	switch {
 	case sc.Season < 0 || sc.Episode < 0:
 		return errors.New("season and episode can't be negative")
-	case sc.Season < 1:
+	case sc.Season == 0 && sc.Episode == 0:
 		return ErrSpecialsScope
 	case sc.Replace && sc.Episode == 0:
 		return errors.New("Replace needs an episode")
@@ -248,6 +248,19 @@ func (c *Coordinator) GrabForScope(ctx context.Context, seriesID int64, sc Serie
 
 	episodeOnly := sc.Episode > 0
 	_, seriesSeasons := wantedEpisodes(s)
+	cover := func(r parser.Release, needed map[epKey]bool) []epKey {
+		return c.coveredByFor(ctx, s, r, needed)
+	}
+	if sc.Season == 0 {
+		// A special is filled only by a release tagged S00 — never through an alias,
+		// absolute or scene mapping, which know nothing of season 0.
+		cover = func(r parser.Release, needed map[epKey]bool) []epKey {
+			if !isSpecialRelease(r, 0) {
+				return nil
+			}
+			return coveredBy(r, needed)
+		}
+	}
 	g := c.newSeriesGrabber(s, profile, byName, pending, sc.Replace, scope)
 	left := planSeriesGrabs(planInput{
 		eligible:      decision.Eligible,
@@ -260,9 +273,7 @@ func (c *Coordinator) GrabForScope(ctx context.Context, seriesID int64, sc Serie
 			EpisodesOnly:      episodeOnly,
 			AllowPackFallback: !episodeOnly && !sc.Replace,
 		},
-		cover: func(r parser.Release, needed map[epKey]bool) []epKey {
-			return c.coveredByFor(ctx, s, r, needed)
-		},
+		cover: cover,
 		try:   func(name, label string) bool { return g.try(ctx, name, label) },
 		log:   c.log,
 		title: s.Title,

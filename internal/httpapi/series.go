@@ -468,8 +468,7 @@ func (a *api) handleSeriesReleases(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	season, _ := strconv.Atoi(r.URL.Query().Get("season"))
-	episode, _ := strconv.Atoi(r.URL.Query().Get("episode"))
+	season, episode := releasesScope(r.URL.Query().Get("season"), r.URL.Query().Get("episode"))
 	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
 	defer cancel()
 	list, err := a.deps.Automation.RankSeriesReleases(ctx, id, season, episode)
@@ -478,6 +477,24 @@ func (a *api) handleSeriesReleases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.writeJSON(w, http.StatusOK, list)
+}
+
+// releasesScope reads the releases search's season/episode params. No season means the
+// whole show (-1); season=0 is Specials, so it can't double as "absent" the way a bare
+// Atoi would make it.
+func releasesScope(seasonParam, episodeParam string) (season, episode int) {
+	season = -1
+	if seasonParam != "" {
+		if n, err := strconv.Atoi(seasonParam); err == nil && n >= 0 {
+			season = n
+		}
+	}
+	if season >= 0 && episodeParam != "" {
+		if n, err := strconv.Atoi(episodeParam); err == nil && n > 0 {
+			episode = n
+		}
+	}
+	return season, episode
 }
 
 // handleGrabSeries grabs a chosen release for a series (into the TV category).

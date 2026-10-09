@@ -17,9 +17,12 @@ import (
 )
 
 // RankSeriesReleases runs an interactive search for a series, optionally scoped to a
-// season (>0) and episode (>0), scoring every relevant release against the series'
-// quality profile and returning them ranked best-first — WITHOUT grabbing. This is
-// the manual "search indexers" backend, shared by the season- and episode-level UI.
+// season and episode (>0), scoring every relevant release against the series' quality
+// profile and returning them ranked best-first — WITHOUT grabbing. This is the manual
+// "search indexers" backend, shared by the season- and episode-level UI.
+//
+// A negative season is the whole show; season 0 is Specials, which lists only releases
+// tagged S00.
 func (c *Coordinator) RankSeriesReleases(ctx context.Context, seriesID int64, season, episode int) (ReleaseList, error) {
 	return c.RankSeriesReleasesWith(ctx, seriesID, season, episode, nil)
 }
@@ -79,7 +82,7 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 	// For a single-episode search we can show a bitrate (size ÷ episode runtime). Season/series
 	// packs cover many episodes, so leave bitrate off there rather than mislead.
 	epRuntime := 0
-	if season > 0 && episode > 0 {
+	if season >= 0 && episode > 0 {
 		for _, sn := range s.Seasons {
 			if sn.SeasonNumber != season {
 				continue
@@ -127,9 +130,9 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 	return ReleaseList{Profile: profile, Why: decision.Why, Releases: out}, nil
 }
 
-// searchSeriesScope runs the indexer queries for a season/episode scope (season <= 0 is
-// the whole show) and returns everything they found, unfiltered, plus the per-indexer
-// errors of the main query. Shared by the interactive list and the quick Grab buttons, so
+// searchSeriesScope runs the indexer queries for a season/episode scope (a negative season
+// is the whole show, season 0 is Specials) and returns everything they found, unfiltered,
+// plus the per-indexer errors of the main query. Shared by the interactive list and the quick Grab buttons, so
 // a button searches exactly where the list the user would see does.
 func (c *Coordinator) searchSeriesScope(ctx context.Context, s series.Series, season, episode int) ([]indexer.Release, map[string]string, error) {
 	// Clean the title before it reaches an indexer: releases carry no punctuation, so
@@ -142,7 +145,9 @@ func (c *Coordinator) searchSeriesScope(ctx context.Context, s series.Series, se
 	// Anime is released under many numbering conventions (absolute "- 137", per-cour
 	// SxxExx, or a split-season S02) — a narrow query would miss most. Search broad by
 	// title and let the resolver-backed scope filter pick releases covering the episode.
-	if !s.IsAnime() {
+	//
+	// Specials can't go in the parameters at all: to tvsearch, season 0 is no season.
+	if !s.IsAnime() && season > 0 {
 		q.Season, q.Episode = season, episode
 	}
 
@@ -152,8 +157,21 @@ func (c *Coordinator) searchSeriesScope(ctx context.Context, s series.Series, se
 	}
 	// Browsing the whole show: fan out per season as well, for the same reason the
 	// automatic search does. One title query can't surface nine seasons' worth of packs.
-	if q.Season == 0 && !s.IsAnime() {
+	if season < 0 && !s.IsAnime() {
 		result.Releases = c.addSeasonSearches(ctx, s, title, result.Releases)
+	}
+	// Specials: name each one, since the broad title query is one capped page of mostly
+	// regular episodes and there's no parameter that asks for season 0.
+	if season == 0 {
+		for _, n := range specialsToQuery(s, episode) {
+			sq := fmt.Sprintf("%s S00E%02d", title, n)
+			sres, serr := c.indexers.Search(ctx, indexer.SearchQuery{Text: sq, MediaType: indexer.MediaSeries, Limit: 100})
+			if serr != nil {
+				c.log.Warn("series: specials search failed", "series", s.Title, "query", sq, "err", serr)
+				continue
+			}
+			result.Releases = append(result.Releases, sres.Releases...)
+		}
 	}
 	// Ask for the specific episode by the arc's own numbering. The broad queries above
 	// are capped by the indexer — TorrentLeech answers a bare q= with 35 rows, newest
@@ -203,17 +221,62 @@ func (c *Coordinator) searchSeriesScope(ctx context.Context, s series.Series, se
 	return result.Releases, result.Errors, nil
 }
 
-// seriesReleaseMatches reports whether a release is relevant to a season/episode
-// scope. season<=0 → any TV release; season set / episode<=0 → covers that season;
-// both set → the exact episode, or a pack that covers it.
+// maxSpecialQueries bounds the per-special searches of one Specials browse, so a show
+// with dozens of missing specials can't flood an indexer.
+const maxSpecialQueries = 5
+
+// specialsToQuery lists the specials a season-0 search names: the one asked for, or the
+// aired specials still missing a file, at most maxSpecialQueries.
+func specialsToQuery(s series.Series, episode int) []int {
+	if episode > 0 {
+		return []int{episode}
+	}
+	var out []int
+	for _, sn := range s.Seasons {
+		if sn.SeasonNumber != 0 {
+			continue
+		}
+		for _, e := range sn.Episodes {
+			if len(out) < maxSpecialQueries && !e.HasFile && aired(e.AirDate) {
+				out = append(out, e.EpisodeNumber)
+			}
+		}
+	}
+	return out
+}
+
+// isSpecialRelease reports whether a release is a Specials episode: an episode release
+// that spelled out season 0 ("S00E05", "0x05"), carrying the wanted episode (any, when
+// episode is 0). Nothing else may stand in for a special — a pack "covers" season 0 only
+// because it covers the whole run, an absolute-numbered "[Grp] Show - 05" is a regular
+// episode, and an alias' numbering has no specials.
+func isSpecialRelease(p parser.Release, episode int) bool {
+	if p.Kind() != parser.KindEpisode || !p.SeasonExplicit || p.Season != 0 {
+		return false
+	}
+	if episode <= 0 {
+		return true
+	}
+	for _, e := range p.Episodes {
+		if e == episode {
+			return true
+		}
+	}
+	return false
+}
+
 // releaseMatchesScope is seriesReleaseMatches with anime awareness: an episode-scope
 // anime release is resolved through absolute/positional numbering before checking it
 // covers the requested (season, episode).
 func (c *Coordinator) releaseMatchesScope(ctx context.Context, s series.Series, p parser.Release, season, episode int) bool {
+	// Specials first: no numbering rule — alias, absolute or scene — maps onto season 0.
+	if season == 0 {
+		return isSpecialRelease(p, episode)
+	}
 	// An alias-titled release carries the alias' numbering, so resolve it that way
 	// before any of the series' own numbering rules get a look.
 	if refs, ok := c.series.AliasEpisodes(ctx, s.ID, p); ok {
-		if season <= 0 {
+		if season < 0 {
 			return true
 		}
 		for _, ref := range refs {
@@ -226,7 +289,7 @@ func (c *Coordinator) releaseMatchesScope(ctx context.Context, s series.Series, 
 	if !s.IsAnime() {
 		return seriesReleaseMatches(p, season, episode)
 	}
-	if season <= 0 {
+	if season < 0 {
 		return p.IsTV()
 	}
 	if p.Kind() != parser.KindEpisode {
@@ -251,9 +314,16 @@ func (c *Coordinator) releaseMatchesScope(ctx context.Context, s series.Series, 
 	return false
 }
 
+// seriesReleaseMatches reports whether a release is relevant to a season/episode scope.
+// season < 0 (the whole show) → any TV release; season 0 → an S00-tagged special; a season
+// with episode <= 0 → covers that season; both set → the exact episode, or a pack that
+// covers it.
 func seriesReleaseMatches(p parser.Release, season, episode int) bool {
-	if season <= 0 {
+	if season < 0 {
 		return p.IsTV()
+	}
+	if season == 0 {
+		return isSpecialRelease(p, episode)
 	}
 	if !p.CoversSeason(season) {
 		return false

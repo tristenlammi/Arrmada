@@ -64,7 +64,8 @@ func TestScopeWantedSeasonIgnoresSeasonFlag(t *testing.T) {
 }
 
 func TestSeriesScopeValidate(t *testing.T) {
-	ok := []SeriesScope{{Season: 3}, {Season: 3, Episode: 4}, {Season: 3, Episode: 4, Replace: true}}
+	ok := []SeriesScope{{Season: 3}, {Season: 3, Episode: 4}, {Season: 3, Episode: 4, Replace: true},
+		{Season: 0, Episode: 5}, {Season: 0, Episode: 5, Replace: true}}
 	for _, sc := range ok {
 		if err := sc.Validate(); err != nil {
 			t.Errorf("%+v: %v", sc, err)

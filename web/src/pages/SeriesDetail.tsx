@@ -314,8 +314,8 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
   const pct = counted ? Math.round((have / counted) * 100) : 0;
   // Grab missing only fills gaps, so it's offered only while there is one: an aired,
   // monitored episode with no file. On a full season it could only fetch a pack that the
-  // import gate then throws away. Not on Specials yet: they have no packs, and a season-0
-  // search can't yet tell a special from the rest of the show.
+  // import gate then throws away. Never on Specials: they have no packs, so they're grabbed
+  // one special at a time from their own rows.
   const anyMissing = season.season_number > 0 && eps.some((e) => !e.has_file && e.monitored && aired(e));
 
   // A season pack request is settled once the pack is actually coming down or the season is
@@ -388,7 +388,7 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
       {searching && (
         <ReleaseSearchModal
           title={`${series.title} — ${name}`}
-          subtitle="Season packs and episodes for this season."
+          subtitle={season.season_number === 0 ? "Releases tagged S00 for this show." : "Season packs and episodes for this season."}
           fetchReleases={() => api.seriesReleases(series.id, season.season_number)}
           onGrab={async (rel) => { await api.grabSeries(series.id, { indexer: rel.indexer, download_url: rel.download_url, title: rel.title, season: season.season_number }); onChange(); }}
           onClose={() => setSearching(false)}
