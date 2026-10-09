@@ -6,7 +6,6 @@ import (
 	"net/http"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
-	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/requests"
 )
 
@@ -31,14 +30,14 @@ func (a *api) handleListRequests(w http.ResponseWriter, r *http.Request) {
 	// Where each request has got to — searching, downloading (with progress), importing,
 	// ready — from its own downloads, so the Discover requests row can show it. Without
 	// the download client the stages that don't need it still show.
-	var queue []download.Item
-	if a.deps.Downloads != nil {
-		queue, _ = a.deps.Downloads.Queue(r.Context())
-	}
-	a.deps.Requests.Track(r.Context(), list, queue)
+	// When the client can't be read, the cards say the status is unknown rather than
+	// "Searching" — and a requester is told only that, never which client or why.
+	snap, queueKnown, _ := a.queueSnapshot(r.Context())
+	a.deps.Requests.Track(r.Context(), list, snap.Items)
 	a.writeJSON(w, http.StatusOK, map[string]any{
-		"requests":     list,
-		"auto_approve": autoApprove, // this viewer's own auto-approve status
+		"requests":      list,
+		"auto_approve":  autoApprove, // this viewer's own auto-approve status
+		"client_health": queueHealth{OK: queueKnown},
 	})
 }
 

@@ -25,8 +25,10 @@ func (a *api) handleListMovies(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []movies.Movie{}
 	}
-	// Attach live download progress so the grid can show an indicator.
-	queue, _ := a.deps.Downloads.Queue(r.Context())
+	// Attach live download progress so the grid can show an indicator. When the client
+	// can't be read, the grid says the status is unknown rather than "Wanted".
+	snap, queueKnown, _ := a.queueSnapshot(r.Context())
+	queue := snap.Items
 	var stale []int64
 	for i := range list {
 		if len(queue) > 0 {
@@ -51,6 +53,7 @@ func (a *api) handleListMovies(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"movies":             list,
 		"metadata_available": a.deps.Movies.MetadataAvailable(),
+		"client_health":      queueHealth{OK: queueKnown},
 	})
 }
 

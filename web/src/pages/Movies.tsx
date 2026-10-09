@@ -48,6 +48,8 @@ export function Movies() {
   const list = useQuery("movies", () => api.movies(), { staleMs: 0 });
   const movies = list.data?.movies ?? NO_MOVIES;
   const metaOK = list.data?.metadata_available ?? true;
+  // false while the download client can't be read: a wanted movie may already be downloading.
+  const queueKnown = list.data?.client_health?.ok ?? true;
   const error = list.error?.message ?? null;
   const [showAdd, setShowAdd] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<Movie | null>(null);
@@ -255,13 +257,14 @@ export function Movies() {
             {q ? <>No movies match “<b>{query.trim()}</b>”.</> : <>No movies match the <b>{FILTERS.find((f) => f.key === filter)?.label}</b> filter.</>}
           </div>
         ) : view === "table" ? (
-          <MovieTable movies={filtered} multiSelect={multiSelect} selected={selected} onToggleSelect={toggleSelect} onSearch={setSearchFor} />
+          <MovieTable movies={filtered} multiSelect={multiSelect} selected={selected} onToggleSelect={toggleSelect} onSearch={setSearchFor} queueKnown={queueKnown} />
         ) : (
           <div className="grid gap-4" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" }}>
             {filtered.map((m) => (
               <MovieCard
                 key={m.id}
                 m={m}
+                queueKnown={queueKnown}
                 onDelete={() => setConfirmDelete(m)}
                 onSearch={() => search(m)}
                 selectable={multiSelect}
@@ -294,8 +297,11 @@ export function Movies() {
   );
 }
 
-function statusOf(m: Movie): { label: string; tone: string } {
+// statusOf is a movie's status chip. queueKnown false (the download client can't be read)
+// makes a wanted movie "Status unknown": it may already be downloading.
+function statusOf(m: Movie, queueKnown = true): { label: string; tone: string } {
   if (m.has_file) return { label: "Downloaded", tone: "var(--good)" };
+  if (m.monitored && !queueKnown) return { label: "Status unknown", tone: "var(--ink-faint)" };
   if (m.monitored) return { label: "Wanted", tone: "var(--avoid)" };
   return { label: "Unmonitored", tone: "var(--ink-faint)" };
 }
@@ -374,7 +380,7 @@ function sortValue(m: Movie, key: SortKey, fit?: FitItem): number | string | und
   }
 }
 
-function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }: { movies: Movie[]; multiSelect: boolean; selected: Set<number>; onToggleSelect: (id: number) => void; onSearch: (m: Movie) => void }) {
+function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch, queueKnown = true }: { movies: Movie[]; multiSelect: boolean; selected: Set<number>; onToggleSelect: (id: number) => void; onSearch: (m: Movie) => void; queueKnown?: boolean }) {
   const th = "px-2.5 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-[0.06em] text-ink-faint";
   const td = "px-2.5 py-2 align-middle";
   // Remembered across visits, like the grid/table choice ("size:desc").
@@ -462,7 +468,7 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }:
         <tbody>
           {sorted.map((m) => {
             const f = m.file;
-            const st = statusOf(m);
+            const st = statusOf(m, queueKnown);
             const fi = fits.get(m.id);
             const bad = (kind: string) => (hasIssue(fi?.fit, kind) ? { color: FIT_COLOR.over, fontWeight: 600 } : undefined);
             return (
@@ -505,8 +511,8 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }:
   );
 }
 
-function MovieCard({ m, onDelete, onSearch, selectable, selected, onToggleSelect }: { m: Movie; onDelete: () => void; onSearch: () => void; selectable?: boolean; selected?: boolean; onToggleSelect?: () => void }) {
-  const st = statusOf(m);
+function MovieCard({ m, onDelete, onSearch, selectable, selected, onToggleSelect, queueKnown = true }: { m: Movie; onDelete: () => void; onSearch: () => void; selectable?: boolean; selected?: boolean; onToggleSelect?: () => void; queueKnown?: boolean }) {
+  const st = statusOf(m, queueKnown);
   const [searching, setSearching] = useState(false);
   const doSearch = async () => {
     setSearching(true);

@@ -26,7 +26,10 @@ const bookDownloadCategory = "arrmada-books"
 func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	list, _ := a.deps.Movies.List(ctx)
-	queue, _ := a.deps.Downloads.Queue(ctx)
+	// One shared read of the clients. When it failed or missed a client, what's
+	// downloading isn't known, and the page must say so rather than show an empty queue.
+	snap, queueKnown, qerr := a.queueSnapshot(ctx)
+	queue := snap.Items
 
 	// Parse every torrent name ONCE. parser.Parse is regex-heavy; the old code re-parsed
 	// the whole queue for every monitored-missing movie (O(movies × torrents) parses),
@@ -79,6 +82,9 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 			"quality_profile": pname(m.QualityProfile),
 		}
 		if a.deps.Movies.IsAvailable(m) {
+			if !queueKnown {
+				entry["state"] = "unknown" // it may well be downloading; the client can't say
+			}
 			searching = append(searching, entry)
 			continue
 		}
@@ -94,11 +100,15 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	if a.deps.Series != nil {
 		for _, sa := range a.deps.Series.AcquisitionSummary(ctx) {
 			if sa.SearchingCount > 0 {
-				searching = append(searching, map[string]any{
+				entry := map[string]any{
 					"series_id": sa.ID, "title": sa.Title, "year": sa.Year,
 					"poster_url": sa.PosterURL, "quality_profile": pname(sa.QualityProfile),
 					"media_type": "series", "episode_count": sa.SearchingCount,
-				})
+				}
+				if !queueKnown {
+					entry["state"] = "unknown"
+				}
+				searching = append(searching, entry)
 			}
 			if sa.NextAir != "" {
 				upcoming = append(upcoming, map[string]any{
@@ -238,21 +248,18 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		"totals":    map[string]any{"down_speed": totalDown, "up_speed": totalUp, "active": active, "stalled": stalled},
 	}
 	// Only a real reading: a folder that can't be measured used to show as "free 0 GB",
-	// which reads as a full disk.
-	if freeGB, ok := freeGBField(a.roots().Downloads(ctx)); ok {
+	// which reads as a full disk. null says "no figure".
+	dlDir := a.roots().Downloads(ctx)
+	out["free_gb"], out["disk_path"] = nil, dlDir
+	if freeGB, ok := freeGBField(dlDir); ok {
 		out["free_gb"] = freeGB
 	}
-	// How many download clients can take a download, so an empty page can say why nothing
-	// is being grabbed. A switched-off client can't, so it isn't counted. Left out when the
-	// list can't be read rather than guessing zero.
+	// Whether there is a download client at all and whether it answered, so the page can
+	// say "no download client yet" or "qBittorrent unreachable since 14:02" instead of
+	// looking like an empty queue. Left out when the list can't be read rather than
+	// guessing.
 	if clients, err := a.deps.Downloads.List(ctx); err == nil {
-		n := 0
-		for _, c := range clients {
-			if c.Enabled {
-				n++
-			}
-		}
-		out["clients"] = n
+		out["clients"] = clientsStateOf(clients, snap, qerr)
 	}
 	if heldCount > 0 {
 		out["disk_guard"] = map[string]any{

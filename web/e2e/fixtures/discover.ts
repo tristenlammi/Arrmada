@@ -79,7 +79,8 @@ export function mediaDetail(media: string, tmdbID: number): MediaDetail {
 
 const at = "2026-10-01T09:00:00Z";
 
-export const requests: { requests: MediaRequest[]; auto_approve: boolean } = {
+export const requests: { requests: MediaRequest[]; auto_approve: boolean; client_health?: { ok: boolean } } = {
+  client_health: { ok: true },
   auto_approve: false,
   requests: [
     { id: 1, media_type: "movie", tmdb_id: 1003, title: "Saltwind", year: 2023, poster_url: poster(3), status: "pending", requested_by: 3, requested_by_name: "deckhand", available: false, tracking: { stage: "pending" }, created_at: at, updated_at: at },
