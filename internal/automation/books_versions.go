@@ -105,23 +105,30 @@ func (c *Coordinator) grabAudioVersionCounted(ctx context.Context, b books.Book,
 	if err != nil {
 		return "", st, err
 	}
+	notes := notesFrom(ctx) // the version's search attempt, when it is recorded
+	notes.consider(res.Releases)
 	st.returned = len(res.Releases)
 	if len(res.Releases) == 0 {
 		return "", st, nil
 	}
-	rels := releasesForVersion(v, releasesForBookWith(c.books.Matcher(ctx), b, res.Releases))
+	before := append([]indexer.Release(nil), res.Releases...)
+	forBook := releasesForBookWith(c.books.Matcher(ctx), b, res.Releases)
+	notes.dropped(before, forBook, DropWrongTitle)
+	mine := append([]indexer.Release(nil), forBook...)
+	rels := releasesForVersion(v, forBook)
+	notes.dropped(mine, rels, DropOutOfScope) // this book, but not this version
 	st.matching = len(rels)
 	if len(rels) == 0 {
 		c.log.Info("book: no release matched this audiobook version", "title", b.Title, "version", v.Label, "terms", strings.Join(v.Terms, ", "))
 		return "", st, nil
 	}
-	rels, err = c.dropUngrabbableBook(ctx, b.ID, rels)
+	rels, err = c.dropUngrabbableNoted(ctx, b.ID, rels, exclude)
 	if err != nil {
 		c.skipUnreadable(b.Title, err)
 		return "", st, err
 	}
-	rels = dropPendingBook(rels, exclude) // same normalized-title filter
 	st.usable = len(rels)
+	noteBookVerdicts(notes, versionProfile(sp, v), rels, books.KindAudiobook)
 	best := pickBestBookForKind(versionProfile(sp, v), rels, books.KindAudiobook)
 	if best == nil {
 		c.log.Info("book: no acceptable release for this audiobook version", "title", b.Title, "version", v.Label)
@@ -140,15 +147,9 @@ func (c *Coordinator) grabAudioVersionCounted(ctx context.Context, b books.Book,
 
 // searchVersion searches one audio version and adds what it found to out.
 func (c *Coordinator) searchVersion(ctx context.Context, b books.Book, v books.AudioVersion, sp quality.StoredProfile, out *SearchOutcome) error {
+	ctx, notes := newSearchNotes(ctx)
 	title, st, err := c.grabAudioVersionCounted(ctx, b, v, sp, nil)
-	out.Searched = true
-	out.Returned += st.returned
-	out.Matching += st.matching
-	out.Usable += st.usable
-	if title != "" {
-		out.Grabbed++
-		out.GrabbedTitles = append(out.GrabbedTitles, title)
-	}
+	c.recordEditionAttempt(ctx, notes, b.ID, fmt.Sprintf("v%d", v.ID), title, st, err, out)
 	return err
 }
 

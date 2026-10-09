@@ -342,11 +342,15 @@ type Evaluation struct {
 	Candidate    Candidate `json:"candidate"`
 	Eligible     bool      `json:"eligible"`
 	RejectReason string    `json:"reject_reason,omitempty"`
-	QualityScore int       `json:"quality_score"`
-	FormatScore  int       `json:"format_score"`
-	SizeScore    int       `json:"size_score"`
-	Total        int       `json:"total"`
-	Matched      []string  `json:"matched,omitempty"` // preferred formats that matched
+	// RejectCode is RejectReason as a stable code (Reject* below), set at the same place.
+	// The reason is a sentence for a person; the code is what a stored search outcome
+	// counts by, so "22 over the bitrate ceiling" survives rewording the sentence.
+	RejectCode   string   `json:"reject_code,omitempty"`
+	QualityScore int      `json:"quality_score"`
+	FormatScore  int      `json:"format_score"`
+	SizeScore    int      `json:"size_score"`
+	Total        int      `json:"total"`
+	Matched      []string `json:"matched,omitempty"` // preferred formats that matched
 	// PreferBonus is the part of FormatScore that came from preferences (positive
 	// format and keyword scores). Decide takes it back when the release's bitrate has
 	// collapsed against the best alternative: preferring HEVC must not pick a 1 Mbps
@@ -384,6 +388,31 @@ type Decision struct {
 	Rejected   []Evaluation `json:"rejected"`
 }
 
+// Why a profile turned a release down: the stable codes behind Evaluation.RejectReason.
+// Stored with search outcomes, so never rename one.
+const (
+	RejectResolution      = "resolution"       // not one of the profile's resolutions
+	RejectSourceFloor     = "source_floor"     // below the minimum source, or source not stated where a disc is needed
+	RejectPrerelease      = "prerelease"       // a cam, telesync or screener
+	RejectSourceCeiling   = "source_ceiling"   // above the maximum source
+	RejectBitrateCeiling  = "bitrate_ceiling"  // over the resolution's bitrate ceiling
+	RejectSeeders         = "seeders"          // fewer seeders than the profile needs
+	RejectTerm            = "rejected_term"    // carries a rejected term
+	RejectMissingRequired = "missing_required" // lacks a required format
+	RejectMinFormatScore  = "min_format_score" // below the minimum format score
+)
+
+// RejectCodes lists every code, for tests and for anything that labels them.
+var RejectCodes = []string{
+	RejectResolution, RejectSourceFloor, RejectPrerelease, RejectSourceCeiling, RejectBitrateCeiling,
+	RejectSeeders, RejectTerm, RejectMissingRequired, RejectMinFormatScore,
+}
+
+// reject sets both halves of a rejection: the sentence and its code.
+func (ev *Evaluation) reject(code, reason string) {
+	ev.RejectCode, ev.RejectReason = code, reason
+}
+
 // Engine scores releases using a catalog of custom formats.
 type Engine struct {
 	formats map[string]CustomFormat
@@ -407,7 +436,7 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 	ev := Evaluation{Candidate: c}
 
 	if len(p.AllowedResolutions) > 0 && !containsRes(p.AllowedResolutions, r.Resolution) {
-		ev.RejectReason = fmt.Sprintf("Not in profile — %s", resLabel(r.Resolution))
+		ev.reject(RejectResolution, fmt.Sprintf("Not in profile — %s", resLabel(r.Resolution)))
 		return ev
 	}
 	if p.MinSource != "" {
@@ -415,21 +444,21 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 		// refused where the profile insists on a disc, with a reason that says why.
 		if r.Source == parser.SourceUnknown {
 			if sourceTier(p.MinSource) > webTier {
-				ev.RejectReason = fmt.Sprintf("Source isn't stated in the name — this profile needs %s or better", minSourceLabel(p.MinSource))
+				ev.reject(RejectSourceFloor, fmt.Sprintf("Source isn't stated in the name — this profile needs %s or better", minSourceLabel(p.MinSource)))
 				return ev
 			}
 		} else if sourceTier(r.Source) < sourceTier(p.MinSource) {
-			ev.RejectReason = fmt.Sprintf("Not %s or better — this is %s", minSourceLabel(p.MinSource), sourceLabel(r.Source))
+			ev.reject(RejectSourceFloor, fmt.Sprintf("Not %s or better — this is %s", minSourceLabel(p.MinSource), sourceLabel(r.Source)))
 			return ev
 		}
 	}
 	if p.RejectPreRelease && r.Source == parser.SourceCAM {
-		ev.RejectReason = "A cam, telesync or screener copy — this profile never grabs those"
+		ev.reject(RejectPrerelease, "A cam, telesync or screener copy — this profile never grabs those")
 		return ev
 	}
 	// An unstated source can't be judged against a ceiling, so it passes one.
 	if p.MaxSource != "" && r.Source != parser.SourceUnknown && sourceTier(r.Source) > sourceTier(p.MaxSource) {
-		ev.RejectReason = fmt.Sprintf("Above your %s ceiling — this is %s", minSourceLabel(p.MaxSource), sourceLabel(r.Source))
+		ev.reject(RejectSourceCeiling, fmt.Sprintf("Above your %s ceiling — this is %s", minSourceLabel(p.MaxSource), sourceLabel(r.Source)))
 		ev.ceiling = minSourceLabel(p.MaxSource)
 		return ev
 	}
@@ -441,25 +470,25 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 		// H.264-equivalent terms threw out 25 Mbps HEVC releases as "over 40". The codec
 		// equivalence stays where it belongs, in deciding what counts as an upgrade.
 		if br := c.bitrateMbps(); br > limit {
-			ev.RejectReason = fmt.Sprintf("Over your %.0f Mbps ceiling (%.1f Mbps)", limit, br)
+			ev.reject(RejectBitrateCeiling, fmt.Sprintf("Over your %.0f Mbps ceiling (%.1f Mbps)", limit, br))
 			ev.ceiling = fmt.Sprintf("%.0f Mb/s", limit)
 			return ev
 		}
 	}
 	if p.MinSeeders > 0 && c.Seeders < p.MinSeeders {
-		ev.RejectReason = fmt.Sprintf("Only %d seeders (needs %d)", c.Seeders, p.MinSeeders)
+		ev.reject(RejectSeeders, fmt.Sprintf("Only %d seeders (needs %d)", c.Seeders, p.MinSeeders))
 		return ev
 	}
 	lcName := strings.ToLower(c.Name)
 	for _, term := range p.Rejected {
 		if containsTerm(lcName, strings.ToLower(strings.TrimSpace(term))) {
-			ev.RejectReason = "Contains rejected term: " + term
+			ev.reject(RejectTerm, "Contains rejected term: "+term)
 			return ev
 		}
 	}
 
 	if missing := e.missingRequired(p.Required, r); missing != "" {
-		ev.RejectReason = "No " + missing + " — your profile requires it"
+		ev.reject(RejectMissingRequired, "No "+missing+" — your profile requires it")
 		return ev
 	}
 
@@ -528,7 +557,7 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 	}
 
 	if ev.FormatScore < p.MinFormatScore {
-		ev.RejectReason = "Below the profile's minimum format score"
+		ev.reject(RejectMinFormatScore, "Below the profile's minimum format score")
 		return ev
 	}
 

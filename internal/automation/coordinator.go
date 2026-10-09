@@ -458,6 +458,7 @@ func (c *Coordinator) RecordManualGrab(ctx context.Context, movieID int64, title
 // read below is a database read: a library whose movies all have their files costs this
 // sweep no searches, no ffprobe and no stat.
 func (c *Coordinator) SearchMissing(ctx context.Context) {
+	ctx = WithDefaultSearchTrigger(ctx, TriggerSweep)
 	all, err := c.movies.SearchTargets(ctx)
 	if err != nil {
 		c.log.Warn("automation: list movies failed", "err", err)
@@ -557,6 +558,11 @@ type ReleaseList struct {
 	Profile  string          `json:"profile"`
 	Why      []string        `json:"why,omitempty"` // why the recommended release won
 	Releases []RankedRelease `json:"releases"`
+	// IndexerIssues names the indexers that couldn't answer, so an empty list can say
+	// "every indexer failed" rather than "nothing found". Searched is how many indexers
+	// were asked.
+	IndexerIssues []IndexerIssue `json:"indexer_issues,omitempty"`
+	Searched      int            `json:"searched"`
 }
 
 // RankReleases runs an interactive search: it queries indexers for the movie,
@@ -626,7 +632,13 @@ func (c *Coordinator) RankReleasesWith(ctx context.Context, id int64, spec *qual
 	if m.Year > 0 {
 		query += " " + strconv.Itoa(m.Year)
 	}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
+	ctx, notes := withSearchNotes(ctx)
+	result, err := c.search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
+	if allIndexersFailed(err) {
+		// Nobody could answer: an empty list naming each failure, not an error that
+		// reads like the search itself broke.
+		return ReleaseList{Profile: c.effectiveProfile(ctx, m.QualityProfile, "movie")}.withIssues(notes), nil
+	}
 	if err != nil {
 		return ReleaseList{}, err
 	}
@@ -682,7 +694,7 @@ func (c *Coordinator) RankReleasesWith(ctx context.Context, id int64, spec *qual
 			appendEval(ev)
 		}
 	}
-	return ReleaseList{Profile: profile, Why: decision.Why, Releases: out}, nil
+	return ReleaseList{Profile: profile, Why: decision.Why, Releases: out}.withIssues(notes), nil
 }
 
 // usenetReject is why an interactive list can't grab a usenet release: the only download
@@ -748,6 +760,32 @@ func summarize(r parser.Release) string {
 	return strings.Join(parts, " · ")
 }
 
+// SearchMovieManual is the movie page's Search button. It is SearchMovie, except that a
+// movie with a download already in the client isn't searched at all — the way the sweep
+// leaves it alone — so a click while it downloads can't grab a second copy. It says so
+// ("Already downloading <release>") and records that as the attempt.
+//
+// Only the button: a re-search after a Block or a review runs while the old torrent may
+// still be listed, and must not be stopped by it.
+func (c *Coordinator) SearchMovieManual(ctx context.Context, id int64) (SearchOutcome, error) {
+	m, err := c.movies.Get(ctx, id)
+	if err != nil {
+		return SearchOutcome{}, err
+	}
+	if c.downloads != nil && len(c.missingVersions(ctx, m.ID)) > 0 {
+		// An unreadable queue doesn't stop the search: the pending-grab guard still keeps
+		// the same release from being grabbed twice.
+		if queue, qerr := c.downloads.Queue(ctx); qerr == nil {
+			if name := queueItemFor(queue, m); name != "" {
+				out := SearchOutcome{Reason: ReasonAlreadyDownloading, Example: name}
+				c.recordAttempt(ctx, nil, AttemptMovie, m.ID, "", &out, nil)
+				return out, nil
+			}
+		}
+	}
+	return c.searchAndGrab(ctx, m)
+}
+
 // SearchMovie searches for and grabs a single movie (manual trigger) and says what it
 // found. A movie already being searched answers ErrAlreadySearching with that reason.
 func (c *Coordinator) SearchMovie(ctx context.Context, id int64) (SearchOutcome, error) {
@@ -765,7 +803,10 @@ func (c *Coordinator) SearchMovie(ctx context.Context, id int64) (SearchOutcome,
 // fully-downloaded movie to the 12h backoff cap, delaying the first real search when
 // a file was later deleted or a new version track added). Its counts and reason are
 // what the Search button reports.
-func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (SearchOutcome, error) {
+func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (out SearchOutcome, err error) {
+	// Every search that runs leaves a search_attempts row (searchlog.go).
+	ctx, notes := newSearchNotes(ctx)
+	defer func() { c.recordAttempt(ctx, notes, AttemptMovie, m.ID, "", &out, err) }()
 	release, ok := c.claims.claim(movieKey(m.ID))
 	if !ok {
 		return SearchOutcome{Reason: ReasonAlreadySearching}, ErrAlreadySearching
@@ -775,13 +816,14 @@ func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (Search
 	if len(want) == 0 {
 		return SearchOutcome{Reason: ReasonNothingWanted}, nil
 	}
-	out := SearchOutcome{Searched: true}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: movieQuery(m), MediaType: indexer.MediaMovie, Limit: 100})
+	out = SearchOutcome{Searched: true}
+	result, err := c.search(ctx, indexer.SearchQuery{Text: movieQuery(m), MediaType: indexer.MediaMovie, Limit: 100})
 	if err != nil {
 		out.noteSearchErr(err)
 		return out, err
 	}
 	out.Returned = len(result.Releases)
+	notes.consider(result.Releases)
 	if len(result.Releases) == 0 {
 		c.log.Info("automation: no releases found", "movie", m.Title)
 		out.settle()
@@ -791,6 +833,7 @@ func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (Search
 	// short/common name (e.g. "Hope") returns unrelated films ("Romance at Hope
 	// Ranch"), and the scorer would otherwise happily grab the wrong one.
 	matching := matchingMovieReleases(m, result.Releases)
+	notes.dropped(result.Releases, matching, DropWrongTitle)
 	out.Matching = len(matching)
 	byName, cands, err := c.candidatesFrom(ctx, m.ID, matching)
 	if err != nil {
@@ -901,11 +944,17 @@ func (c *Coordinator) candidatesExcluding(ctx context.Context, movieID int64, re
 	if err != nil {
 		return nil, nil, err
 	}
-	releases = bestByTitle(grabbable(releases))
+	notes := notesFrom(ctx)
+	torrents := grabbable(releases)
+	notes.dropped(releases, torrents, DropNotTorrent)
+	releases = bestByTitle(torrents)
 	byName := make(map[string]indexer.Release, len(releases))
 	cands := make([]quality.Candidate, 0, len(releases))
 	for _, rel := range releases {
 		if blocked[normTitle(rel.Title)] || exclude[normTitle(rel.Title)] {
+			// The stalled release a fail-over is replacing counts as blocklisted: it is
+			// on its way to the blocklist once something replaces it.
+			notes.mark(rel.Title, DropBlocklisted)
 			continue
 		}
 		byName[rel.Title] = rel
@@ -939,6 +988,7 @@ func (c *Coordinator) grabMissingTitles(ctx context.Context, m movies.Movie, wan
 		// so a deleted profile means the default here rather than the permissive fallback.
 		profile := c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)
 		decision := c.quality.Decide(ctx, profile, tagRuntime(cands, m.Runtime))
+		notesFrom(ctx).decided(decision)
 		if decision.Winner == nil {
 			// The profile rejected everything on offer. Silent before, which made a
 			// too-strict profile look identical to an indexer returning nothing — and
@@ -955,6 +1005,7 @@ func (c *Coordinator) grabMissingTitles(ctx context.Context, m movies.Movie, wan
 			continue
 		}
 		if pending[normTitle(winner.Title)] {
+			notesFrom(ctx).mark(winner.Title, DropPending)
 			continue // already grabbed this exact release and it's still in flight — don't loop
 		}
 		if !c.diskOKFor(grabbedGB + decision.Winner.Candidate.SizeGB) {
@@ -1034,12 +1085,19 @@ func (c *Coordinator) RSSSync(ctx context.Context) {
 			continue
 		}
 		c.log.Info("rss: match", "movie", m.Title, "candidates", len(matched))
-		byName, cands, err := c.candidatesFrom(ctx, m.ID, matched)
+		mctx, notes := newSearchNotes(WithDefaultSearchTrigger(ctx, TriggerRSS))
+		notes.consider(matched)
+		byName, cands, err := c.candidatesFrom(mctx, m.ID, matched)
 		if err != nil {
 			c.skipUnreadable(m.Title, err)
 			continue
 		}
-		c.grabMissing(ctx, m, want, byName, cands)
+		// Recorded only when it grabs: the feed repeats the same uploads for hours, and a
+		// row every 15 minutes saying they still don't fit would bury the real searches.
+		if c.grabMissing(mctx, m, want, byName, cands) > 0 {
+			out := SearchOutcome{Searched: true}
+			c.recordAttempt(mctx, notes, AttemptMovie, m.ID, "", &out, nil)
+		}
 	}
 }
 
@@ -1129,7 +1187,13 @@ type movieUpgrade struct {
 // upgradeMovie searches and grabs an upgrade for any monitored version that
 // already has a file. Versions without a file are handled by SearchMissing. b is the
 // sweep's upgrade budget (nil = unlimited).
-func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie, b *upgradeBudget) error {
+func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie, b *upgradeBudget) (err error) {
+	// Recorded under scope "upgrade", so the Wanted view's summaries can leave it out.
+	ctx, notes := newSearchNotes(WithDefaultSearchTrigger(ctx, TriggerUpgrade))
+	defer func() {
+		var out SearchOutcome
+		c.recordAttempt(ctx, notes, AttemptMovie, m.ID, ScopeUpgrade, &out, err)
+	}()
 	release, ok := c.claims.claim(movieKey(m.ID))
 	if !ok {
 		return ErrAlreadySearching
@@ -1171,10 +1235,11 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie, b *upgra
 	if m.Year > 0 {
 		query += " " + strconv.Itoa(m.Year)
 	}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
+	result, err := c.search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
 	if err != nil {
 		return err
 	}
+	notes.consider(result.Releases)
 	if len(result.Releases) == 0 {
 		return nil
 	}
@@ -1187,7 +1252,12 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie, b *upgra
 	byName := make(map[string]indexer.Release, len(result.Releases))
 	cands := make([]quality.Candidate, 0, len(result.Releases))
 	for _, rel := range bestByTitle(grabbable(result.Releases)) {
-		if blocked[normTitle(rel.Title)] || !releaseIsForMovie(rel.Title, m) {
+		if blocked[normTitle(rel.Title)] {
+			notes.mark(rel.Title, DropBlocklisted)
+			continue
+		}
+		if !releaseIsForMovie(rel.Title, m) {
+			notes.mark(rel.Title, DropWrongTitle)
 			continue
 		}
 		byName[rel.Title] = rel
@@ -1268,7 +1338,12 @@ func gbOf(bytes int64) float64 { return float64(bytes) / (1024 * 1024 * 1024) }
 // profile even when a file already exists — a deliberate re-grab, used when the
 // user switches to a different (e.g. lower) profile and chooses to replace their
 // file. On import the new file replaces the old one.
-func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
+func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) (err error) {
+	ctx, notes := newSearchNotes(WithSearchTrigger(ctx, TriggerReplace)) // a re-grab is a replace, whoever asked
+	defer func() {
+		var out SearchOutcome
+		c.recordAttempt(ctx, notes, AttemptMovie, id, "", &out, err)
+	}()
 	m, err := c.movies.Get(ctx, id)
 	if err != nil {
 		return err
@@ -1281,10 +1356,11 @@ func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
 	if m.Year > 0 {
 		query += " " + strconv.Itoa(m.Year)
 	}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
+	result, err := c.search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
 	if err != nil {
 		return err
 	}
+	notes.consider(result.Releases)
 	if len(result.Releases) == 0 {
 		return nil
 	}
@@ -1296,7 +1372,12 @@ func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
 	byName := make(map[string]indexer.Release, len(result.Releases))
 	cands := make([]quality.Candidate, 0, len(result.Releases))
 	for _, rel := range bestByTitle(grabbable(result.Releases)) {
-		if blocked[normTitle(rel.Title)] || !releaseIsForMovie(rel.Title, m) {
+		if blocked[normTitle(rel.Title)] {
+			notes.mark(rel.Title, DropBlocklisted)
+			continue
+		}
+		if !releaseIsForMovie(rel.Title, m) {
+			notes.mark(rel.Title, DropWrongTitle)
 			continue
 		}
 		byName[rel.Title] = rel
@@ -1310,6 +1391,7 @@ func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
 		}
 		profile := c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)
 		decision := c.quality.Decide(ctx, profile, tagRuntime(cands, m.Runtime))
+		notesFrom(ctx).decided(decision)
 		if decision.Winner == nil {
 			continue
 		}
@@ -2155,13 +2237,18 @@ func (c *Coordinator) AttachMovieImport(ctx context.Context, rec library.ImportR
 
 // inQueue reports whether the movie is already downloading (title+year match).
 func inQueue(queue []download.Item, m movies.Movie) bool {
+	return queueItemFor(queue, m) != ""
+}
+
+// queueItemFor is the name of the queue item inQueue matched for m, "" for none.
+func queueItemFor(queue []download.Item, m movies.Movie) string {
 	for _, it := range queue {
 		r := parser.Parse(it.Name)
 		if titleKey(r.Title) == titleKey(m.Title) && (r.Year == 0 || m.Year == 0 || abs(r.Year-m.Year) <= 1) {
-			return true
+			return it.Name
 		}
 	}
-	return false
+	return ""
 }
 
 // titleKey is parser.TitleKey, the one title normalizer every download, queue and library

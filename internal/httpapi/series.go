@@ -104,7 +104,7 @@ func (a *api) handleAddSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.Monitored && searchOnAdd {
-		_, _, _ = a.submit(r, a.seriesSearchJob(s.ID))
+		_, _, _ = a.submit(r, triggered(automation.TriggerAdd, a.seriesSearchJob(s.ID)))
 	}
 	a.writeJSON(w, http.StatusCreated, s)
 }
@@ -115,11 +115,18 @@ func (a *api) handleSearchSeries(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	jobID, existing, ok := a.submitOr503(w, r, a.seriesSearchJob(id))
+	// The button's search holds back seasons the client is still downloading
+	// (SearchSeriesManual), as the sweep does.
+	started := time.Now().UnixMilli()
+	spec := a.seriesSearchJob(id)
+	spec.Fn = outcomeFn("show", func(ctx context.Context) (automation.SearchOutcome, error) {
+		return a.deps.Automation.SearchSeriesManual(ctx, id)
+	})
+	jobID, existing, ok := a.submitOr503(w, r, spec)
 	if !ok {
 		return
 	}
-	a.accepted(w, jobID, existing, map[string]any{"status": "searching"})
+	a.accepted(w, jobID, existing, map[string]any{"status": "searching", "started_at_ms": started})
 }
 
 func (a *api) handleGetSeries(w http.ResponseWriter, r *http.Request) {

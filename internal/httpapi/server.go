@@ -193,6 +193,8 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/jobs", a.requireRole(auth.RoleManager, a.handleListJobs))
 	mux.HandleFunc("GET /api/v1/jobs/{id}", a.requireRole(auth.RoleManager, a.handleGetJob))
 	mux.HandleFunc("POST /api/v1/jobs/{id}/cancel", a.requireRole(auth.RoleManager, a.handleCancelJob))
+	// What each title search found and why nothing was taken (search_attempts).
+	mux.HandleFunc("GET /api/v1/searches", a.requireRole(auth.RoleManager, a.handleListSearches))
 
 	// Audiobook server (listening apps): admin panel + each user's own connection card.
 	mux.HandleFunc("GET /api/v1/audioserver", a.requireRole(auth.RoleAdmin, a.handleAudioServer))

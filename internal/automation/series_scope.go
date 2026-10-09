@@ -195,12 +195,26 @@ func (c *Coordinator) GrabForScope(ctx context.Context, seriesID int64, sc Serie
 	}
 	scope := ScopeFor(sc.Season, sc.Episode)
 	out.Scope = scope.String()
-	// Every click leaves a trace in the history, a failed search included.
+	if sc.Replace {
+		ctx = WithSearchTrigger(ctx, TriggerReplace)
+	} else {
+		ctx = WithDefaultSearchTrigger(ctx, TriggerManual)
+	}
+	ctx, notes := newSearchNotes(ctx)
+	// Every click leaves a trace in the history, a failed search included, and a
+	// search_attempts row under its season or episode.
 	defer func() {
 		if err != nil {
 			out.Note = "search failed: " + err.Error()
 		}
 		c.reportSearched(ctx, s, sc, out)
+		so, serr := SearchOutcome{Searched: out.Searched}, err
+		if out.IndexersFailed {
+			// The click answers with its own outcome and no error; the attempt still
+			// says nobody could answer.
+			serr = &indexer.AllFailedError{Errors: notes.errorMap()}
+		}
+		c.recordAttempt(ctx, notes, AttemptSeries, seriesID, out.Scope, &so, serr)
 	}()
 
 	wanted := scopeWanted(s, sc)
@@ -234,15 +248,20 @@ func (c *Coordinator) GrabForScope(ctx context.Context, seriesID int64, sc Serie
 	byName := make(map[string]indexer.Release, len(releases))
 	cands := make([]quality.Candidate, 0, len(releases))
 	rts := newRuntimeIndex(s)
-	for _, rel := range bestByTitle(grabbable(releases)) {
+	torrents := grabbable(releases)
+	notes.dropped(releases, torrents, DropNotTorrent)
+	for _, rel := range bestByTitle(torrents) {
 		out.Found++
 		switch {
 		case blocked[normTitle(rel.Title)]:
 			out.Blocklisted++
+			notes.mark(rel.Title, DropBlocklisted)
 		case !seriesTitleMatches(rel.Title, s):
 			out.WrongShow++
+			notes.mark(rel.Title, DropWrongTitle)
 		case !c.releaseMatchesScope(ctx, s, parser.Parse(rel.Title), sc.Season, sc.Episode):
 			out.OutOfScope++
+			notes.mark(rel.Title, DropOutOfScope)
 		default:
 			byName[rel.Title] = rel
 			cands = append(cands, c.newSeriesCandidate(ctx, s, rts, rel))
@@ -250,6 +269,7 @@ func (c *Coordinator) GrabForScope(ctx context.Context, seriesID int64, sc Serie
 	}
 	profile := c.effectiveProfile(ctx, s.QualityProfile, quality.MediaSeries)
 	decision := c.quality.Decide(ctx, profile, cands)
+	notes.decided(decision)
 	out.Eligible = len(decision.Eligible)
 	for _, ev := range decision.Rejected {
 		out.reject(ev.RejectReason, ev.Candidate.Name)

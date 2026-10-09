@@ -11,7 +11,9 @@ import { AddAudioVersion, AudioVersionPanel } from "../components/AudioVersions"
 import { api, importListNotice, type BookSeriesEntry, type BookSource, type Book, type BookFile, type BookFileEntry, type BookImportCandidate, type BookLookup, type BookSeries, type MovieEvent } from "../lib/api";
 import { useCanHover } from "../lib/useCanHover";
 import { usePoll } from "../lib/usePoll";
-import { jobToast, useJob } from "../lib/useJob";
+import { jobFailed, useJob } from "../lib/useJob";
+import { searchJobLine } from "../lib/searchOutcome";
+import { LastSearches, refreshSearches } from "../components/LastSearch";
 import { wantedCopy } from "../lib/bookSearch";
 import { libraryStatus } from "../lib/status";
 
@@ -37,11 +39,19 @@ export function BookDetail() {
     });
   }, [bid]);
   useEffect(() => { load(); }, [load]);
-  // "Search now" beside a wanted edition runs a books.search job; when it ends the toast
-  // says what it found and the page reloads its search state.
+  // "Search now" beside a wanted edition runs a books.search job; when it ends the page
+  // says what it found (a toast, and a line under the toolbar) and reloads its search state.
   const [searchJob, setSearchJob] = useState<number | null>(null);
+  const [searchResult, setSearchResult] = useState<{ text: string; failed: boolean } | null>(null);
   useJob(searchJob, {
-    onDone: (j) => { setSearchJob(null); flash(jobToast(j, "Search finished.")); load(); },
+    onDone: (j) => {
+      setSearchJob(null);
+      const text = searchJobLine(j);
+      setSearchResult({ text, failed: jobFailed(j) });
+      flash(text);
+      refreshSearches("book", bid);
+      load();
+    },
   });
 
   if (notFound) return <Shell><div className="py-10 text-center text-[13px] text-ink-dim">That book isn't in your library. <Link to="/books" className="underline" style={{ color: "var(--accent)" }}>Back to Books</Link></div></Shell>;
@@ -49,6 +59,7 @@ export function BookDetail() {
 
   const searchNow = async () => {
     try {
+      setSearchResult(null);
       const r = await api.searchBook(b.id);
       if (r.job_id) setSearchJob(r.job_id);
       flash(`Searching for “${b.title}”…`);
@@ -96,6 +107,12 @@ export function BookDetail() {
                 <ProfileSelector book={b} onChange={load} />
               </div>
               <Toolbar book={b} onChange={load} flash={flash} />
+              {(searchJob !== null || searchResult) && (
+                <div className="mt-2 text-[12px]" role="status" style={{ color: searchJob !== null ? "var(--ink-dim)" : searchResult?.failed ? "var(--reject)" : "var(--ink)" }}>
+                  {searchJob !== null ? "Searching…" : searchResult?.text}
+                </div>
+              )}
+              <LastSearches kind="book" id={b.id} />
             </div>
           </div>
         </div>

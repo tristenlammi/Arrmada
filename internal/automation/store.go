@@ -225,6 +225,7 @@ func (c *Coordinator) recordGrab(ctx context.Context, movieID, versionID int64, 
 // The stall check then waits for that track to hold a different file before calling the
 // grab imported, instead of taking the old file for the new one.
 func (c *Coordinator) recordGrabReplacing(ctx context.Context, movieID, versionID int64, title, indexer, profile string, stallMinutes int, infoHash, replacesPath string) {
+	notesFrom(ctx).grabbed(title) // the search attempt this grab came from, if any
 	seedEnabled, seedRatio, seedHours := c.seedRules(ctx, indexer)
 	_, err := c.db.ExecContext(ctx,
 		`INSERT INTO grabs (movie_id, version_id, title, indexer, quality_profile, stall_minutes, seed_enabled, seed_ratio, seed_hours, info_hash, replaces_path)

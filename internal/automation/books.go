@@ -37,7 +37,7 @@ func detectBookFormat(title string) string {
 
 // SearchBooksMissing sweeps every monitored book and grabs any wanted edition it lacks.
 func (c *Coordinator) SearchBooksMissing(ctx context.Context) {
-	c.searchBooksMissing(ctx, bookSweepCap)
+	c.searchBooksMissing(WithDefaultSearchTrigger(ctx, TriggerSweep), bookSweepCap)
 }
 
 // searchBooksMissing is the sweep with its per-run cap as a parameter, so a test can
@@ -248,9 +248,28 @@ func (c *Coordinator) searchBookOnce(ctx context.Context, bookID int64) (SearchO
 	return out, searchErr
 }
 
-// searchEdition searches one edition and adds what it found to out.
+// searchEdition searches one edition and adds what it found to out. Each edition is its
+// own search attempt (scope "ebook" or "audiobook").
 func (c *Coordinator) searchEdition(ctx context.Context, b books.Book, kind string, sp quality.StoredProfile, out *SearchOutcome) error {
+	ctx, notes := newSearchNotes(ctx)
 	title, st, err := c.grabBookEditionCounted(ctx, b, kind, sp, nil)
+	c.recordEditionAttempt(ctx, notes, b.ID, kind, title, st, err, out)
+	return err
+}
+
+// recordEditionAttempt stores one edition's (or audio version's) search as an attempt under
+// scope, and adds its counts to the book's whole outcome.
+func (c *Coordinator) recordEditionAttempt(ctx context.Context, notes *searchNotes, bookID int64, scope, title string, st editionStats, err error, out *SearchOutcome) {
+	eo := SearchOutcome{Searched: true, Returned: st.returned, Matching: st.matching, Usable: st.usable}
+	if title != "" {
+		eo.Grabbed, eo.GrabbedTitles = 1, []string{title}
+	}
+	if err != nil {
+		eo.noteSearchErr(err)
+	} else {
+		eo.settle()
+	}
+	c.recordAttempt(ctx, notes, AttemptBook, bookID, scope, &eo, err)
 	out.Searched = true
 	out.Returned += st.returned
 	out.Matching += st.matching
@@ -259,7 +278,27 @@ func (c *Coordinator) searchEdition(ctx context.Context, b books.Book, kind stri
 		out.Grabbed++
 		out.GrabbedTitles = append(out.GrabbedTitles, title)
 	}
-	return err
+	out.WrongTitle += eo.WrongTitle
+	out.Blocklisted += eo.Blocklisted
+	out.Pending += eo.Pending
+	out.OutOfScope += eo.OutOfScope
+	out.Rejected += eo.Rejected
+	out.Eligible += eo.Eligible
+	for code, n := range eo.Reasons {
+		if out.Reasons == nil {
+			out.Reasons = map[string]int{}
+		}
+		out.Reasons[code] += n
+	}
+	for name, msg := range eo.IndexerErrors {
+		if out.IndexerErrors == nil {
+			out.IndexerErrors = map[string]string{}
+		}
+		out.IndexerErrors[name] = msg
+	}
+	if out.Example == "" {
+		out.Example = eo.Example
+	}
 }
 
 // grabBookEditionExcluding searches for one edition and grabs the best release, skipping
@@ -283,10 +322,13 @@ func (c *Coordinator) grabBookEditionCounted(ctx context.Context, b books.Book, 
 	if err != nil {
 		return "", st, err
 	}
+	notes := notesFrom(ctx) // the edition's search attempt, when it is recorded
+	notes.consider(res.Releases)
 	st.returned = len(res.Releases)
 	if len(res.Releases) == 0 {
 		return "", st, nil
 	}
+	before := append([]indexer.Release(nil), res.Releases...)
 	// Only releases that actually name THIS book. Book indexers fuzzy-match, so a query of
 	// "Frank Herbert Dune" routinely returns Dune Messiah and Children of Dune; nothing
 	// downstream checked the title, so a sequel could out-score the book we asked for, be
@@ -294,8 +336,11 @@ func (c *Coordinator) grabBookEditionCounted(ctx context.Context, b books.Book, 
 	// upgrade pass to correct it later). Movies and series both gate their search results
 	// this way, and the books RSS path runs the same gate (releasesForBookWith).
 	res.Releases = releasesForBookWith(c.books.Matcher(ctx), b, res.Releases)
+	notes.dropped(before, res.Releases, DropWrongTitle)
 	if kind == books.KindAudiobook {
+		mine := append([]indexer.Release(nil), res.Releases...)
 		res.Releases = dropVersionReleases(b, res.Releases) // those belong to a version
+		notes.dropped(mine, res.Releases, DropOutOfScope)
 	}
 	st.matching = len(res.Releases)
 	if len(res.Releases) == 0 {
@@ -306,13 +351,13 @@ func (c *Coordinator) grabBookEditionCounted(ctx context.Context, b books.Book, 
 	// mirroring the movie path's pendingGrabTitles, drops a release already grabbed for
 	// this book (and not yet imported/failed), even when the queue-based bookDownloading
 	// check couldn't see it.
-	res.Releases, err = c.dropUngrabbableBook(ctx, b.ID, res.Releases)
+	res.Releases, err = c.dropUngrabbableNoted(ctx, b.ID, res.Releases, exclude)
 	if err != nil {
 		c.skipUnreadable(b.Title, err)
 		return "", st, err
 	}
-	res.Releases = dropPendingBook(res.Releases, exclude) // same normalized-title filter
 	st.usable = len(res.Releases)
+	noteBookVerdicts(notes, sp, res.Releases, kind)
 	best := pickBestBookForKind(sp, res.Releases, kind)
 	if best == nil {
 		c.log.Info("book: no matching-format release", "title", b.Title, "edition", kind)
@@ -585,7 +630,7 @@ func bookQuery(b books.Book) string {
 // tracker matches every query word, so one bad word hides a release that is there.
 // The title check downstream still keeps only this book's releases.
 func (c *Coordinator) searchBook(ctx context.Context, b books.Book, edition string) (indexer.SearchResult, error) {
-	res, err := c.indexers.Search(ctx, indexer.SearchQuery{
+	res, err := c.search(ctx, indexer.SearchQuery{
 		Text: bookQuery(b), MediaType: indexer.MediaBook, BookEdition: edition, Limit: 60})
 	// A search that couldn't run (every indexer down, none serving books) says nothing
 	// about the author: retrying with the title alone would only fail the same way.
@@ -593,7 +638,7 @@ func (c *Coordinator) searchBook(ctx context.Context, b books.Book, edition stri
 		return res, err
 	}
 	c.log.Info("book: nothing for author + title — trying the title alone", "title", b.Title, "author", b.Author)
-	return c.indexers.Search(ctx, indexer.SearchQuery{
+	return c.search(ctx, indexer.SearchQuery{
 		Text: b.Title, MediaType: indexer.MediaBook, BookEdition: edition, Limit: 60})
 }
 
@@ -662,19 +707,46 @@ func bookScoreText(rel indexer.Release) string {
 // preference), seeders as the low-order tiebreak. ok=false when the format isn't
 // wanted (score ≤ 0 or unknown) or a hard-reject term is present.
 func bookRelScore(sp quality.StoredProfile, rel indexer.Release) (int, bool) {
+	score, code := bookRelVerdict(sp, rel)
+	return score, code == ""
+}
+
+// bookRelVerdict is bookRelScore saying why a release was turned down: DropNotWanted for
+// a format the profile doesn't want (or can't tell), quality.RejectTerm for a reject term,
+// "" when it's acceptable. A search attempt counts by the code.
+func bookRelVerdict(sp quality.StoredProfile, rel indexer.Release) (int, string) {
 	f := releaseBookFormat(rel)
 	if f == "" {
-		return 0, false
+		return 0, DropNotWanted
 	}
 	fs, ok := sp.FormatScores[f]
 	if !ok || fs <= 0 {
-		return 0, false
+		return 0, DropNotWanted
 	}
 	text := bookScoreText(rel)
 	if quality.Rejects(sp.Rejected, text) {
-		return 0, false
+		return 0, quality.RejectTerm
 	}
-	return (fs+quality.KeywordScore(sp.Keywords, text))*1_000_000 + rel.Seeders, true
+	return (fs+quality.KeywordScore(sp.Keywords, text))*1_000_000 + rel.Seeders, ""
+}
+
+// noteBookVerdicts tells the search attempt what pickBestBookForKind makes of each
+// release: the other edition, turned down by the profile (and why), or acceptable.
+func noteBookVerdicts(n *searchNotes, sp quality.StoredProfile, releases []indexer.Release, kind string) {
+	if n == nil {
+		return
+	}
+	for _, rel := range releases {
+		if books.EditionOf(releaseBookFormat(rel)) != kind {
+			n.mark(rel.Title, DropOutOfScope)
+			continue
+		}
+		if _, code := bookRelVerdict(sp, rel); code != "" {
+			n.mark(rel.Title, code)
+		} else {
+			n.mark(rel.Title, classEligible)
+		}
+	}
 }
 
 // bookProfile resolves the book's quality profile the way every other path does — its
@@ -1075,6 +1147,8 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 		return ReleaseList{}, err
 	}
 	sp := c.bookProfile(ctx, b.QualityProfile)
+	// Both passes (and each pass's title-only retry) report into one collector.
+	ctx, notes := withSearchNotes(ctx)
 	// Dedup by download URL — the unique per-torrent link. Deduping by title
 	// wrongly collapsed distinct editions that render the same display name (e.g. a
 	// GraphicAudio M4B and a standard-narration M4B both "<Author> - <Title> [M4B]"),
@@ -1109,6 +1183,9 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 	// Neither pass could run: say why rather than show an empty list that reads as
 	// "this book doesn't exist anywhere".
 	if !answered && searchErr != nil {
+		if allIndexersFailed(searchErr) {
+			return ReleaseList{Profile: b.QualityProfile}.withIssues(notes), nil
+		}
 		return ReleaseList{}, searchErr
 	}
 
@@ -1188,7 +1265,7 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 		}
 		out = append(out, rr)
 	}
-	return ReleaseList{Profile: b.QualityProfile, Releases: out}, nil
+	return ReleaseList{Profile: b.QualityProfile, Releases: out}.withIssues(notes), nil
 }
 
 // reNarrator pulls a narrator name from an audiobook release title or description
@@ -1744,6 +1821,31 @@ func (c *Coordinator) dropUngrabbableBook(ctx context.Context, bookID int64, rel
 	return dropPendingBook(releases, pending), nil
 }
 
+// dropUngrabbableNoted is dropUngrabbableBook followed by the exclude filter (a stall
+// fail-over's stalled release), telling the context's search attempt which releases went
+// for being blocklisted and which for already downloading. The filters reuse their input's
+// array, so each step compares against a copy.
+func (c *Coordinator) dropUngrabbableNoted(ctx context.Context, bookID int64, releases []indexer.Release, exclude map[string]bool) ([]indexer.Release, error) {
+	notes := notesFrom(ctx)
+	before := append([]indexer.Release(nil), releases...)
+	kept, err := c.dropBlockedBook(ctx, bookID, releases)
+	if err != nil {
+		return nil, err
+	}
+	notes.dropped(before, kept, DropBlocklisted)
+	pending, err := c.pendingBookGrabTitles(ctx, bookID)
+	if err != nil {
+		return nil, err
+	}
+	before = append(before[:0], kept...)
+	kept = dropPendingBook(kept, pending)
+	notes.dropped(before, kept, DropPending)
+	before = append(before[:0], kept...)
+	kept = dropPendingBook(kept, exclude) // same normalized-title filter
+	notes.dropped(before, kept, DropBlocklisted)
+	return kept, nil
+}
+
 // dropPendingBook removes releases whose normalized title is already pending as a grab.
 func dropPendingBook(releases []indexer.Release, pending map[string]bool) []indexer.Release {
 	if len(pending) == 0 {
@@ -1760,6 +1862,7 @@ func dropPendingBook(releases []indexer.Release, pending map[string]bool) []inde
 
 // recordBookGrab tracks a book grab for seed cleanup (media_type=book, movie_id=bookID).
 func (c *Coordinator) recordBookGrab(ctx context.Context, bookID, versionID int64, title, indexer, profile, infoHash string) {
+	notesFrom(ctx).grabbed(title) // the search attempt this grab came from, if any
 	// Recorded under the profile the book actually runs under, so a deleted one still
 	// gets the default's stall window.
 	profile = c.effectiveProfile(ctx, profile, quality.MediaBook)
@@ -1942,6 +2045,7 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 			c.learnBookSeries(ctx, b, *best)
 			c.books.AddEvent(ctx, b.ID, "grabbed", fmt.Sprintf("Grabbed the %s edition from %s: %s", kind, best.Indexer, best.Title))
 			c.log.Info("rss: grabbing book", "title", b.Title, "edition", kind, "release", best.Title)
+			c.recordRSSGrab(ctx, AttemptBook, b.ID, kind, best.Title)
 		}
 		for _, v := range b.AudioVersions {
 			if !versionWanted(v) {
@@ -1959,6 +2063,7 @@ func (c *Coordinator) RSSSyncBooks(ctx context.Context) {
 			c.recordBookGrab(ctx, b.ID, v.ID, best.Title, best.Indexer, b.QualityProfile, hash)
 			c.books.AddEvent(ctx, b.ID, "grabbed", fmt.Sprintf("Grabbed the %q audiobook from %s: %s", v.Label, best.Indexer, best.Title))
 			c.log.Info("rss: grabbing audiobook version", "title", b.Title, "version", v.Label, "release", best.Title)
+			c.recordRSSGrab(ctx, AttemptBook, b.ID, fmt.Sprintf("v%d", v.ID), best.Title)
 		}
 	}
 }

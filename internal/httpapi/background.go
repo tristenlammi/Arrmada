@@ -112,8 +112,18 @@ func errFn(fn func(ctx context.Context) error) func(context.Context, *jobs.Progr
 // for work about one title — a job that searches a whole author or library is a sweep.
 func interactive(fn func(context.Context, *jobs.Progress) (any, error)) func(context.Context, *jobs.Progress) (any, error) {
 	return func(ctx context.Context, p *jobs.Progress) (any, error) {
-		return fn(indexer.WithInteractive(ctx), p)
+		return fn(automation.WithDefaultSearchTrigger(indexer.WithInteractive(ctx), automation.TriggerManual), p)
 	}
+}
+
+// triggered says what started a search job, for its recorded attempt ("add" when a title
+// was just added). Without it a person's search records "manual".
+func triggered(trigger string, spec jobs.Spec) jobs.Spec {
+	fn := spec.Fn
+	spec.Fn = func(ctx context.Context, p *jobs.Progress) (any, error) {
+		return fn(automation.WithSearchTrigger(ctx, trigger), p)
+	}
+	return spec
 }
 
 // searchFn adapts a title search: finding the title already being searched (by the sweep
@@ -136,7 +146,7 @@ func searchFn(fn func(ctx context.Context) error) func(context.Context, *jobs.Pr
 // interactive).
 func outcomeFn(noun string, fn func(ctx context.Context) (automation.SearchOutcome, error)) func(context.Context, *jobs.Progress) (any, error) {
 	return func(ctx context.Context, p *jobs.Progress) (any, error) {
-		out, err := fn(indexer.WithInteractive(ctx))
+		out, err := fn(automation.WithDefaultSearchTrigger(indexer.WithInteractive(ctx), automation.TriggerManual))
 		if errors.Is(err, automation.ErrAlreadySearching) {
 			out.Reason, err = automation.ReasonAlreadySearching, nil
 		}

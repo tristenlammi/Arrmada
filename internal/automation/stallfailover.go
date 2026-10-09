@@ -250,7 +250,7 @@ func (c *Coordinator) failOver(ctx context.Context, g grab, item download.Item, 
 		}
 		c.setGrabStatus(ctx, g.ID, grabStatusFailed)
 		t.event(ctx, g.Title+" disappeared from the download client — searching for another")
-		repl, err := t.replace(ctx, exclude)
+		repl, err := c.replaceRecorded(ctx, t, exclude)
 		if err != nil {
 			c.log.Warn("automation: replacement search failed", "kind", t.kind, "title", t.name, "err", err)
 		}
@@ -263,7 +263,7 @@ func (c *Coordinator) failOver(ctx context.Context, g grab, item download.Item, 
 	if item.Phase() == "error" {
 		why, reason = "The download client reported an error", "client error"
 	}
-	repl, err := t.replace(ctx, exclude)
+	repl, err := c.replaceRecorded(ctx, t, exclude)
 	outage := indexer.IsOutage(err) || errors.Is(err, errSearchUnavailable)
 	if err != nil && !outage {
 		c.log.Warn("automation: replacement search failed", "kind", t.kind, "title", t.name, "err", err)
@@ -384,11 +384,15 @@ func (c *Coordinator) searchAndGrabExcluding(ctx context.Context, m movies.Movie
 	if len(want) == 0 {
 		return nil, nil // the version is no longer wanted — nothing to replace it with
 	}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: movieQuery(m), MediaType: indexer.MediaMovie, Limit: 100})
+	result, err := c.search(ctx, indexer.SearchQuery{Text: movieQuery(m), MediaType: indexer.MediaMovie, Limit: 100})
 	if err != nil {
 		return nil, err
 	}
-	byName, cands, err := c.candidatesExcluding(ctx, m.ID, matchingMovieReleases(m, result.Releases), exclude)
+	notes := notesFrom(ctx) // the fail-over's search attempt (replaceRecorded)
+	notes.consider(result.Releases)
+	matching := matchingMovieReleases(m, result.Releases)
+	notes.dropped(result.Releases, matching, DropWrongTitle)
+	byName, cands, err := c.candidatesExcluding(ctx, m.ID, matching, exclude)
 	if err != nil {
 		c.skipUnreadable(m.Title, err)
 		return nil, err

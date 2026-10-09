@@ -14,47 +14,26 @@ import { MONITOR_PRESETS } from "./series/presets";
 import { usePoll } from "../lib/usePoll";
 import { libraryStatus } from "../lib/status";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
+import { attemptLine, outcomeTone, searchJobLine } from "../lib/searchOutcome";
+import { LastSearches, refreshSearches, useSearchAttempts } from "../components/LastSearch";
 import { Button, StatusChip } from "../ui";
-import { api, importListNotice, type FitItem, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile } from "../lib/api";
+import { api, importListNotice, type FitItem, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile, type SearchAttempt } from "../lib/api";
 
-// Auto-grab is fire-and-forget: the API answers 202 and searches in the background, and a
-// search that turns up nothing leaves no trace at all — which is exactly when you most need
-// to remember you already tried. Nothing server-side records the REQUEST, so the mark lives
-// here, in localStorage so it survives a reload while you work down a long list of missing
-// episodes. Keyed by "ep:<id>" / "s:<series>:<season>" — episode ids are unique across
-// series, but a season number only means something alongside its show.
-const GRAB_KEY = "arrmada.grabRequested";
-const GRAB_TTL_MS = 24 * 60 * 60 * 1000;
+// Grab missing / Grab run as background jobs, and every search leaves a stored attempt
+// (search_attempts) under its scope: "S03" for a season, "S03E04" for an episode. The
+// buttons read the latest one back from the server — what was found and why nothing was
+// taken — rather than a "Requested" mark kept in this browser.
+const seasonScope = (n: number) => `S${String(n).padStart(2, "0")}`;
+// The old marks are dead weight in this browser now; drop them once.
+try { localStorage.removeItem("arrmada.grabRequested"); } catch { /* storage unavailable */ }
 
-function loadGrabMarks(): Record<string, number> {
-  try {
-    const v = JSON.parse(localStorage.getItem(GRAB_KEY) || "{}");
-    if (!v || typeof v !== "object") return {};
-    // Expire on read, so the map can't grow without bound and a click from last week
-    // doesn't masquerade as one from this session.
-    const cutoff = Date.now() - GRAB_TTL_MS;
-    return Object.fromEntries(Object.entries(v as Record<string, number>).filter(([, t]) => typeof t === "number" && t > cutoff));
-  } catch { return {}; }
-}
-function saveGrabMarks(m: Record<string, number>) {
-  try { localStorage.setItem(GRAB_KEY, JSON.stringify(m)); } catch { /* ignore quota */ }
-}
-const epKey = (epID: number) => `ep:${epID}`;
-const seasonKey = (seriesID: number, seasonNo: number) => `s:${seriesID}:${seasonNo}`;
-
-function grabRequested(key: string): boolean {
-  return loadGrabMarks()[key] !== undefined;
-}
-function markGrabRequested(key: string) {
-  const m = loadGrabMarks();
-  m[key] = Date.now();
-  saveGrabMarks(m);
-}
-function clearGrabRequested(key: string) {
-  const m = loadGrabMarks();
-  if (m[key] === undefined) return;
-  delete m[key];
-  saveGrabMarks(m);
+// latestFor is the newest stored attempt under scope, if any.
+function latestFor(attempts: SearchAttempt[], scope: string): SearchAttempt | undefined {
+  let best: SearchAttempt | undefined;
+  for (const a of attempts) {
+    if (a.scope === scope && (!best || a.started_at > best.started_at || (a.started_at === best.started_at && a.id > best.id))) best = a;
+  }
+  return best;
 }
 
 const today = new Date().toISOString().slice(0, 10);
@@ -259,8 +238,16 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
   // actually happened.
   const [searchJob, setSearchJob] = useState<number | null>(null);
   const [importJob, setImportJob] = useState<number | null>(null);
+  const [searchResult, setSearchResult] = useState<{ text: string; failed: boolean } | null>(null);
   const search = useJob(searchJob, {
-    onDone: (j) => { setSearchJob(null); flash(jobToast(j, "Search finished."), jobFailed(j)); onChange(); },
+    onDone: (j) => {
+      setSearchJob(null);
+      const text = searchJobLine(j);
+      setSearchResult({ text, failed: jobFailed(j) });
+      flash(text, jobFailed(j));
+      refreshSearches("series", series.id);
+      onChange();
+    },
   });
   useJob(importJob, {
     onDone: (j) => { setImportJob(null); flash(jobToast(j, "Import finished."), jobFailed(j)); onChange(); },
@@ -339,7 +326,7 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
         >
           {busy === "type" ? "Saving…" : series.series_type === "anime" ? "Anime ✓" : "Anime"}
         </button>
-        <button className={btn} style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }} disabled={busy !== null || search.running} onClick={() => run("search", async () => { const r = await api.searchSeries(series.id); if (r.job_id) setSearchJob(r.job_id); flash("Searching — packs and episodes will show in Downloads once grabbed."); })}>
+        <button className={btn} style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }} disabled={busy !== null || search.running} onClick={() => run("search", async () => { setSearchResult(null); const r = await api.searchSeries(series.id); if (r.job_id) setSearchJob(r.job_id); flash("Searching — packs and episodes will show in Downloads once grabbed."); })}>
           {busy === "search" || search.running ? "Searching…" : "Auto-grab missing"}
         </button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowSearch(true)}>Search indexers</button>
@@ -348,6 +335,12 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowRename(true)}>Rename</button>
         <DeleteButton series={series} />
       </div>
+      {(search.running || searchResult) && (
+        <div className="mt-2 text-[12px]" role="status" style={{ color: search.running ? "var(--ink-dim)" : searchResult?.failed ? "var(--reject)" : "var(--ink)" }}>
+          {search.running ? "Searching…" : searchResult?.text}
+        </div>
+      )}
+      <LastSearches kind="series" id={series.id} />
       {series.series_type === "anime" && <AliasPanel series={series} />}
       {series.series_type === "anime" && <SceneMapPanel series={series} />}
       {showPaste && (
@@ -384,7 +377,12 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
   const [open, setOpen] = useState(defaultOpen);
   const [searching, setSearching] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [requested, setRequested] = useState(() => grabRequested(seasonKey(series.id, season.season_number)));
+  // The season's Grab missing runs as a job; its stored attempt says how it went.
+  const [grabJob, setGrabJob] = useState<number | null>(null);
+  const grabbing = useJob(grabJob, {
+    onDone: (j) => { setGrabJob(null); if (jobFailed(j)) flash(jobToast(j)); refreshSearches("series", series.id); onChange(); },
+  });
+  const last = latestFor(useSearchAttempts("series", series.id), seasonScope(season.season_number));
   const eps = season.episodes ?? [];
   const have = eps.filter((e) => e.has_file).length;
   const total = eps.length;
@@ -418,27 +416,17 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
     finally { setBusy(false); }
   };
 
-  // A season pack request is settled once the pack is actually coming down or the season is
-  // full — same rule as an episode, just read off the season as a whole.
-  const settled = (counted > 0 && have >= counted) || eps.some((e) => !e.has_file && e.download);
-  useEffect(() => {
-    if (settled) {
-      clearGrabRequested(seasonKey(series.id, season.season_number));
-      setRequested(false);
-    }
-  }, [settled, series.id, season.season_number]);
-
   const grabSeason = async () => {
     setBusy(true);
     try {
-      await api.autoGrabSeries(series.id, season.season_number, 0);
-      markGrabRequested(seasonKey(series.id, season.season_number));
-      setRequested(true);
+      const r = await api.autoGrabSeries(series.id, season.season_number, 0);
+      if (r.job_id) setGrabJob(r.job_id);
       flash(`Searching for ${name}'s missing episodes…`);
     }
     catch (e) { flash((e as Error).message); }
     finally { setBusy(false); }
   };
+  const searchingNow = busy || grabbing.running;
 
   return (
     <div className="overflow-hidden rounded-xl" style={{ background: "var(--panel)", border: "1px solid var(--line)", opacity: state === "unreleased" ? 0.7 : 1 }}>
@@ -473,14 +461,12 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
           <>
             {anyMissing && <button
               onClick={grabSeason}
-              disabled={busy}
-              title={requested ? `Already requested — the search runs in the background. Click to try again.` : `Grabs ${name}'s missing episodes — a season pack when most of the season is missing or no single episodes exist`}
+              disabled={searchingNow}
+              title={last ? `${attemptLine(last)}. Click to search again.` : `Grabs ${name}'s missing episodes — a season pack when most of the season is missing or no single episodes exist`}
               className="rounded-lg px-2.5 py-1 text-[11px] font-semibold"
-              style={requested
-                ? { border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink-faint)" }
-                : { border: "1px solid var(--accent-line)", color: "var(--accent)" }}
+              style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}
             >
-              {busy ? "…" : requested ? "✓ Requested" : "Grab missing"}
+              {searchingNow ? "Searching…" : last ? "Grab again" : "Grab missing"}
             </button>}
             <button onClick={() => setSearching(true)} title={`Search indexers for ${name}`} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Search</button>
           </>
@@ -489,6 +475,9 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
           {season.monitored ? "Monitored" : "Monitor"}
         </button>
       </div>
+      {anyMissing && last && !searchingNow && (
+        <div className="px-4 pb-2 text-[11px]" style={{ color: outcomeTone(last.outcome) }}>{attemptLine(last)}</div>
+      )}
       {open && total > 0 && (
         <div style={{ borderTop: "1px solid var(--line)" }}>
           {eps.map((e) => <EpisodeRow key={e.id} series={series} ep={e} onChange={onChange} flash={flash} fit={fits.get(`${e.season_number}:${e.episode_number}`)} />)}
@@ -511,19 +500,13 @@ function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep:
   const [searching, setSearching] = useState(false);
   const [showFile, setShowFile] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [requested, setRequested] = useState(() => grabRequested(epKey(ep.id)));
+  const [grabJob, setGrabJob] = useState<number | null>(null);
+  const grabbing = useJob(grabJob, {
+    onDone: (j) => { setGrabJob(null); if (jobFailed(j)) flash(jobToast(j)); refreshSearches("series", series.id); onChange(); },
+  });
+  const last = latestFor(useSearchAttempts("series", series.id), sxe(ep));
   const dl = !ep.has_file && ep.download ? ep.download : null;
   const dlPct = dl ? Math.round(dl.progress * 100) : 0;
-
-  // Real state supersedes the reminder: once a download or a file exists, the mark has done
-  // its job and would only go stale.
-  const settled = ep.has_file || !!dl;
-  useEffect(() => {
-    if (settled) {
-      clearGrabRequested(epKey(ep.id));
-      setRequested(false);
-    }
-  }, [settled, ep.id]);
   // A paused series searches nothing, so its episodes aren't Wanted either.
   const status: { label: string; color: string } = ep.has_file || (!dl && aired(ep))
     ? libraryStatus({ hasFile: ep.has_file, monitored: ep.monitored && series.monitored })
@@ -534,9 +517,8 @@ function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep:
   const grabEp = async () => {
     setBusy(true);
     try {
-      await api.autoGrabSeries(series.id, ep.season_number, ep.episode_number);
-      markGrabRequested(epKey(ep.id));
-      setRequested(true);
+      const r = await api.autoGrabSeries(series.id, ep.season_number, ep.episode_number);
+      if (r.job_id) setGrabJob(r.job_id);
       flash(`Searching for ${sxe(ep)}…`);
     }
     catch (e) { flash((e as Error).message); }
@@ -596,20 +578,20 @@ function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep:
           <button onClick={replaceEp} disabled={busy} title="Blocklist this release and grab a different one" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}>{busy ? "…" : "Replace"}</button>
           <button onClick={() => setConfirmDel(true)} disabled={busy} title="Delete this episode's file" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--reject)" }}>Delete</button>
         </>) : !dl && aired(ep) && (
-          // "Requested", not "Grabbed" — the search runs in the background and may find
-          // nothing, so the mark says what actually happened: you asked. Still clickable,
-          // since asking again after a release shows up is the normal next move. Unaired
-          // episodes get none: there's nothing to grab yet, and Search still reaches them.
+          // The last search of this episode (stored server-side) says what it found, so a
+          // grab that turned up nothing isn't forgotten. Still clickable: asking again after a
+          // release shows up is the normal next move. Unaired episodes get none: there's
+          // nothing to grab yet, and Search still reaches them.
           <button
             onClick={grabEp}
-            disabled={busy}
-            title={requested ? "Already requested — the search runs in the background. Click to try again." : "Auto-grab the best release for this episode"}
+            disabled={busy || grabbing.running}
+            title={last ? `${attemptLine(last)}. Click to search again.` : "Auto-grab the best release for this episode"}
             className="rounded-md px-2 py-1 text-[10.5px] font-semibold"
-            style={requested
-              ? { border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink-faint)" }
+            style={last
+              ? { border: "1px solid var(--line)", background: "var(--panel-2)", color: outcomeTone(last.outcome) }
               : { border: "1px solid var(--accent-line)", color: "var(--accent)" }}
           >
-            {busy ? "…" : requested ? "✓ Requested" : "Grab"}
+            {busy || grabbing.running ? "…" : last ? "Grab again" : "Grab"}
           </button>
         )}
         <button onClick={() => setSearching(true)} title="Search indexers for this episode" className="rounded-md px-2 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Search</button>

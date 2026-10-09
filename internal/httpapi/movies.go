@@ -120,7 +120,7 @@ func (a *api) handleAddMovie(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if m.Monitored && searchOnAdd {
-		_, _, _ = a.submit(r, a.movieSearchJob(m.ID))
+		_, _, _ = a.submit(r, triggered(automation.TriggerAdd, a.movieSearchJob(m.ID)))
 	}
 
 	a.writeJSON(w, http.StatusCreated, m)
@@ -133,12 +133,20 @@ func (a *api) handleSearchMovie(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Run in the background; searching indexers (via FlareSolverr) is slow. A second
-	// click while it runs gets the same job back.
-	jobID, existing, ok := a.submitOr503(w, r, a.movieSearchJob(id))
+	// click while it runs gets the same job back. The button's search leaves a movie
+	// that is already downloading alone (SearchMovieManual).
+	started := time.Now().UnixMilli()
+	spec := a.movieSearchJob(id)
+	spec.Fn = outcomeFn("movie", func(ctx context.Context) (automation.SearchOutcome, error) {
+		return a.deps.Automation.SearchMovieManual(ctx, id)
+	})
+	jobID, existing, ok := a.submitOr503(w, r, spec)
 	if !ok {
 		return
 	}
-	a.accepted(w, jobID, existing, map[string]any{"status": "searching"})
+	// started_at_ms lets a page without the job (or the socket) find this search's
+	// stored attempt: GET /api/v1/searches?since=.
+	a.accepted(w, jobID, existing, map[string]any{"status": "searching", "started_at_ms": started})
 }
 
 // handleListBlocklist returns a movie's blocklisted releases.
@@ -354,11 +362,18 @@ func (a *api) handleGetMovie(w http.ResponseWriter, r *http.Request) {
 	}
 	m.UpgradesAllowed = upgradeWatched(m.Monitored, m.HasFile, a.anyVersionUpgrades(r.Context(), &m))
 	var pending []automation.PendingMovieDownload
+	// What searching has come to: the last search's result, the sweep's backoff and when
+	// it will next look (search_attempts), beside the movie's own fields.
+	var search automation.SearchState
 	if a.deps.Automation != nil {
 		pending, _ = a.deps.Automation.PendingMovieDownloads(r.Context(), id)
+		search = a.deps.Automation.MovieSearchState(r.Context(), m)
 	}
 	m.Acquisition = a.movieAcquisition(r.Context(), &m, pending)
-	a.writeJSON(w, http.StatusOK, m)
+	a.writeJSON(w, http.StatusOK, struct {
+		movies.Movie
+		automation.SearchState
+	}{m, search})
 }
 
 // movieAcquisition gathers what the Acquisition card states, from the facts the sweeps
@@ -494,7 +509,7 @@ func (a *api) handleAddVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if monitored {
-		_, _, _ = a.submit(r, a.movieSearchJob(id))
+		_, _, _ = a.submit(r, triggered(automation.TriggerAdd, a.movieSearchJob(id)))
 	}
 	a.writeJSON(w, http.StatusCreated, v)
 }

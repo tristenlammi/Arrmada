@@ -37,7 +37,13 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 	if err != nil {
 		return ReleaseList{}, err
 	}
+	// One collector across the broad, per-season, specials and alias queries, so the
+	// banner lists each failing indexer once whichever query it failed.
+	ctx, notes := withSearchNotes(ctx)
 	releases, _, err := c.searchSeriesScope(ctx, s, season, episode)
+	if allIndexersFailed(err) {
+		return ReleaseList{Profile: c.effectiveProfile(ctx, s.QualityProfile, quality.MediaSeries)}.withIssues(notes), nil
+	}
 	if err != nil {
 		return ReleaseList{}, err
 	}
@@ -124,7 +130,7 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 			appendEval(ev)
 		}
 	}
-	return ReleaseList{Profile: profile, Why: decision.Why, Releases: out}, nil
+	return ReleaseList{Profile: profile, Why: decision.Why, Releases: out}.withIssues(notes), nil
 }
 
 // searchSeriesScope runs the indexer queries for a season/episode scope (a negative season
@@ -148,7 +154,7 @@ func (c *Coordinator) searchSeriesScope(ctx context.Context, s series.Series, se
 		q.Season, q.Episode = season, episode
 	}
 
-	result, err := c.indexers.Search(ctx, q)
+	result, err := c.search(ctx, q)
 	if err != nil {
 		return nil, result.Errors, err
 	}
@@ -162,7 +168,7 @@ func (c *Coordinator) searchSeriesScope(ctx context.Context, s series.Series, se
 	if season == 0 {
 		for _, n := range specialsToQuery(s, episode) {
 			sq := fmt.Sprintf("%s S00E%02d", title, n)
-			sres, serr := c.indexers.Search(ctx, indexer.SearchQuery{Text: sq, MediaType: indexer.MediaSeries, Limit: 100})
+			sres, serr := c.search(ctx, indexer.SearchQuery{Text: sq, MediaType: indexer.MediaSeries, Limit: 100})
 			if serr != nil {
 				c.log.Warn("series: specials search failed", "series", s.Title, "query", sq, "err", serr)
 				continue
@@ -176,7 +182,7 @@ func (c *Coordinator) searchSeriesScope(ctx context.Context, s series.Series, se
 	// Anime can't use tvsearch's season/ep parameters either, since the arc isn't
 	// numbered like the season. Naming the episode is the only way to reach it.
 	for _, term := range c.series.AliasSearchTerms(ctx, s.ID, season, episode) {
-		tres, terr := c.indexers.Search(ctx, indexer.SearchQuery{
+		tres, terr := c.search(ctx, indexer.SearchQuery{
 			Text: indexerQuery(term), MediaType: indexer.MediaSeries, Limit: 400,
 		})
 		if terr != nil {
@@ -194,7 +200,7 @@ func (c *Coordinator) searchSeriesScope(ctx context.Context, s series.Series, se
 		if aq == "" || aq == title {
 			continue
 		}
-		ares, aerr := c.indexers.Search(ctx, indexer.SearchQuery{
+		ares, aerr := c.search(ctx, indexer.SearchQuery{
 			Text: aq, MediaType: indexer.MediaSeries, Limit: 400,
 		})
 		if aerr != nil {

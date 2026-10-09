@@ -6,6 +6,7 @@ import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DeleteMovieDialog } from "../components/DeleteMovieDialog";
+import { LastSearchLine } from "../components/LastSearch";
 import { disposalLine, useRecycleMode } from "../lib/disposal";
 import { PAGE } from "../lib/links";
 import { usePoll } from "../lib/usePoll";
@@ -13,6 +14,7 @@ import { invalidate } from "../lib/query";
 import {
   api,
   importListNotice,
+  type AttemptSummary,
   type BlockEntry,
   type CollectionMember,
   type ImportCandidate,
@@ -22,7 +24,8 @@ import {
   type MovieVersion,
 } from "../lib/api";
 import { useLive, type LiveEvent } from "../lib/useLive";
-import { jobFailed, jobToast, useJob } from "../lib/useJob";
+import { jobFailed, useJob } from "../lib/useJob";
+import { searchJobLine } from "../lib/searchOutcome";
 import { Button, StatusChip } from "../ui";
 import { movieStatus, trackStatus } from "../lib/movieStatus";
 
@@ -42,6 +45,9 @@ export function MovieDetail() {
   const [toastErr, setToastErr] = useState(false);
   const live = useLive();
   const { last } = live;
+  // Bumped by anything that changes this movie's History or Blocklist (a grab, an import,
+  // a block, a search), so those panels refresh without leaving the page.
+  const [activity, setActivity] = useState(0);
 
   // err shows the toast in the error colour: a search that failed says so plainly.
   const flash = (msg: string, err = false) => {
@@ -81,8 +87,13 @@ export function MovieDetail() {
       "movie.refreshed",
       "movie.renamed",
     ];
-    if (topics.includes(last.topic)) load();
-  }, [last, load]);
+    const d = last.data as { media_type?: string; media_id?: number } | null;
+    const searched = last.topic === "search.finished" && d?.media_type === "movie" && d.media_id === movieId;
+    if (topics.includes(last.topic) || searched) load();
+    if (searched || last.topic === "release.grabbed" || last.topic === "download.imported" || last.topic.startsWith("movie.")) {
+      setActivity((n) => n + 1);
+    }
+  }, [last, load, movieId]);
 
   if (notFound) {
     return (
@@ -165,8 +176,7 @@ export function MovieDetail() {
                 <AvailabilitySelector movie={movie} onChange={load} />
               </div>
 
-              {/* searchInfo: the last search and next automatic try, wired by MOV-04. */}
-              <AcquisitionStatus movie={movie} onChange={load} flash={flash} />
+              <AcquisitionStatus movie={movie} onChange={load} flash={flash} searchInfo={{ summary: movie.last_search, nextAt: movie.next_search_at }} />
               <UpgradeHoldChip movie={movie} onChange={load} flash={flash} />
               <Toolbar movie={movie} onChange={load} flash={flash} live={live} />
             </div>
@@ -178,8 +188,8 @@ export function MovieDetail() {
         {movie.download && <DownloadBar dl={movie.download} />}
         <VersionsArea movie={movie} onChange={load} flash={flash} />
         <CastRow cast={movie.extra?.cast} />
-        <BlocklistPanel movieId={movie.id} refreshKey={movie.has_file} />
-        <HistoryPanel movieId={movie.id} refreshKey={movie.has_file} />
+        <BlocklistPanel movieId={movie.id} refreshKey={`${movie.has_file}:${activity}`} />
+        <HistoryPanel movieId={movie.id} refreshKey={`${movie.has_file}:${activity}`} />
       </div>
 
       {toast && (
@@ -785,15 +795,12 @@ function AvailabilitySelector({ movie, onChange }: { movie: Movie; onChange: () 
   );
 }
 
-/** The last search and the next automatic try. MOV-04 (search outcomes) records them and
- * passes them in as AcquisitionStatus's searchInfo; until then those lines are left out
- * rather than guessed. */
+/** The last search and the next automatic try (MOV-04, from search_attempts: the movie's
+ * last_search and next_search_at). */
 interface AcquisitionSearchInfo {
-  /** When Arrmada last searched for this movie. */
-  lastAt?: string;
-  /** What that search found, in one line ("41 releases · 29 rejected · nothing grabbed"). */
-  summary?: string;
-  /** When the next automatic search runs. */
+  /** How the stored searches went: the latest, the empty tries behind it, the main reason. */
+  summary?: AttemptSummary;
+  /** When the missing-sweep searches next; absent when no automatic search is coming. */
   nextAt?: string;
 }
 
@@ -823,14 +830,12 @@ function AcquisitionStatus({ movie, onChange, flash, searchInfo }: {
       setBusy(null);
     }
   };
-  const lastChecked = searchInfo?.lastAt ? ` (last checked ${fmtTime(searchInfo.lastAt)})` : "";
   const noProfile = acq.profile_known ? "" : " It has no quality profile of its own, so your default profile applies.";
   const avail = AVAILABILITY_LABELS[movie.min_availability] ?? movie.min_availability;
 
   let tone = "var(--ink-dim)";
   let msg: ReactNode;
   let actions: ReactNode = null;
-  let searchLines = false;
 
   if (acq.file_missing) {
     tone = "var(--reject)";
@@ -869,7 +874,7 @@ function AcquisitionStatus({ movie, onChange, flash, searchInfo }: {
     msg = "You have this movie. Its file was kept as it is when its profile changed, so upgrades won't replace it until you resume them.";
   } else if (movie.has_file) {
     tone = "var(--good)";
-    msg = `You have this movie. Arrmada looks for a clearly better release every 6 hours${lastChecked} and grabs it automatically.${noProfile}`;
+    msg = `You have this movie. Arrmada looks for a clearly better release every 6 hours and grabs it automatically.${noProfile}`;
   } else if (!acq.monitored) {
     tone = "var(--avoid)";
     msg = "Not monitored, so Arrmada won't search for it.";
@@ -884,18 +889,14 @@ function AcquisitionStatus({ movie, onChange, flash, searchInfo }: {
   } else {
     tone = "var(--accent)";
     msg = `Monitored and missing — Arrmada searches automatically and grabs the best release for your quality profile.${noProfile}`;
-    searchLines = true;
   }
 
   return (
     <div className="mt-4 rounded-lg p-3 text-[12px] leading-relaxed" style={{ border: "1px solid var(--line)" }}>
       <div style={{ color: tone }}>{msg}</div>
-      {searchLines && searchInfo && (searchInfo.lastAt || searchInfo.nextAt) && (
-        <div className="mt-1.5 flex flex-col gap-0.5 text-[11.5px] text-ink-dim">
-          {searchInfo.lastAt && <span>Last search {fmtTime(searchInfo.lastAt)}{searchInfo.summary ? ` — ${searchInfo.summary}` : ""}</span>}
-          {searchInfo.nextAt && <span>Next automatic search {fmtTime(searchInfo.nextAt)}</span>}
-        </div>
-      )}
+      {/* The searches only answer "why isn't it downloading?": the summary leaves upgrade
+          searches out, so a film with its file on disk doesn't show them. */}
+      {(!movie.has_file || acq.file_missing) && <LastSearchLine summary={searchInfo?.summary} nextSearchAt={searchInfo?.nextAt} className="mt-1.5" />}
       {actions && <div className="mt-2.5 flex flex-wrap items-center gap-2">{actions}</div>}
       {downgrade && <div className="mt-2.5"><DowngradePrompt movieId={movie.id} downgrade={downgrade} onClose={() => setDowngrade(null)} /></div>}
       {clearing && movie.file && (
@@ -998,13 +999,17 @@ function UpgradeHoldChip({ movie, onChange, flash }: { movie: Movie; onChange: (
 
 function Toolbar({ movie, onChange, flash, live }: { movie: Movie; onChange: () => void; flash: (m: string, err?: boolean) => void; live: { connected: boolean; last: LiveEvent | null } }) {
   const [busy, setBusy] = useState<string | null>(null);
-  // The search runs as a job; when it ends the toast says what it actually found.
+  // The search runs as a job; when it ends the page says what it actually found — in a
+  // toast, and on a line under the buttons that stays until the next search.
   const [searchJob, setSearchJob] = useState<number | null>(null);
+  const [searchResult, setSearchResult] = useState<{ text: string; failed: boolean } | null>(null);
   const search = useJob(searchJob, {
     live,
     onDone: (j) => {
       setSearchJob(null);
-      flash(jobToast(j, "Search finished."), jobFailed(j));
+      const text = searchJobLine(j);
+      setSearchResult({ text, failed: jobFailed(j) });
+      flash(text, jobFailed(j));
       onChange();
     },
   });
@@ -1032,6 +1037,7 @@ function Toolbar({ movie, onChange, flash, live }: { movie: Movie; onChange: () 
   // file), so Auto-grab clears that record first. The server refuses if the file is back.
   const missing = movie.has_file && !!movie.file?.missing;
   const autoGrab = async () => {
+    setSearchResult(null);
     if (missing) await api.forgetMissingFile(movie.id, 0);
     const r = await api.searchMovie(movie.id);
     if (r.job_id) setSearchJob(r.job_id);
@@ -1091,6 +1097,11 @@ function Toolbar({ movie, onChange, flash, live }: { movie: Movie; onChange: () 
         {/* Reachable on touch, unlike the grid's hover-only X. */}
         <button className={btn} style={{ border: "1px solid var(--reject)", color: "var(--reject)" }} disabled={busy !== null} onClick={() => setShowDelete(true)}>Delete movie</button>
       </div>
+      {(search.running || searchResult) && (
+        <div className="mt-2 text-[12px]" role="status" style={{ color: search.running ? "var(--ink-dim)" : searchResult?.failed ? "var(--reject)" : "var(--ink)" }}>
+          {search.running ? "Searching…" : searchResult?.text}
+        </div>
+      )}
       {showDelete && <DeleteMovieDialog movie={movie} onClose={() => setShowDelete(false)} onDeleted={() => { invalidate("movies"); navigate("/movies"); }} />}
       {showPaste && (
         <UploadTorrentModal
@@ -1328,6 +1339,7 @@ const EVENT_TONES: Record<string, string> = {
   missing_cleared: "var(--ink-dim)",
   renamed: "var(--ink-dim)",
   refreshed: "var(--ink-faint)",
+  searched: "var(--ink-dim)",
 };
 
 function HistoryPanel({ movieId, refreshKey }: { movieId: number; refreshKey: unknown }) {

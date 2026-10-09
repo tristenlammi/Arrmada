@@ -153,7 +153,8 @@ func TestPausedSearchOutcome(t *testing.T) {
 	}
 	plain := SearchOutcome{Searched: true}
 	plain.noteSearchErr(&indexer.AllFailedError{Errors: map[string]string{"A": "down"}})
-	if plain.Reason != "" || !plain.Searched {
+	// It has its own reason (ACQ-15): the indexers were asked and every one failed.
+	if plain.Reason != ReasonIndexersFailed || !plain.Searched {
 		t.Errorf("an ordinary outage shouldn't be called paused: %+v", plain)
 	}
 }
