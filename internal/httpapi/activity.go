@@ -148,8 +148,9 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if a.deps.Automation != nil {
+		matchAlbum := a.deps.Automation.AlbumMatcher(ctx)
 		match.album = func(name string) (string, bool) {
-			_, artist, ok := a.deps.Automation.AlbumForRelease(ctx, name)
+			_, artist, ok := matchAlbum(name)
 			return artist.QualityProfile, ok
 		}
 	}
