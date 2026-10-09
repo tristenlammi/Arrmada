@@ -49,8 +49,10 @@ type Request struct {
 	epHave   int
 	epTotal  int
 	released bool
-	// Books: searches in a row that found nothing, and when the next one is due (RFC3339).
+	// Searches in a row that found nothing and when the sweep last looked (as stored);
+	// books also say when the next one is due (RFC3339).
 	searchMisses int
+	lastSearchAt string
 	nextCheckAt  string
 }
 

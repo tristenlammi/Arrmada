@@ -1147,6 +1147,11 @@ export interface RequestTracking {
   note?: string;
   /** Books not found yet: when the next search is due (RFC3339; format in the viewer's locale). */
   next_check_at?: string;
+  /** While searching: when it was last looked for (RFC3339), and how many looks in a row found nothing. */
+  last_search_at?: string;
+  misses?: number;
+  /** A book the searches have slowed to a monthly check. */
+  search_stopped?: boolean;
 }
 
 // MyBook is one library book as a requester sees it: an ebook to download, an

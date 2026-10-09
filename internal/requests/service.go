@@ -440,19 +440,25 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 		have            bool
 		epHave, epTotal int
 		released        bool
-		misses          int    // books: searches in a row that found nothing
+		misses          int    // searches in a row that found nothing
+		lastSearch      string // when the sweep last looked, as stored
 		nextCheck       string // books: when the ladder looks again (RFC3339)
 	}
 	movHave := map[int]lib{}
 	if ms, err := s.movies.List(ctx); err == nil {
+		stamps, _ := s.movies.SearchStates(ctx) // one query; a failure only loses "last checked"
 		for _, m := range ms {
-			movHave[m.TMDBID] = lib{id: m.ID, have: m.HasFile, released: m.Status == "" || m.Status == "Released"}
+			st := stamps[m.ID]
+			movHave[m.TMDBID] = lib{id: m.ID, have: m.HasFile, released: m.Status == "" || m.Status == "Released",
+				misses: st.Misses, lastSearch: st.LastAt}
 		}
 	}
 	serHave := map[int]lib{}
 	if ss, err := s.series.List(ctx); err == nil {
+		stamps, _ := s.series.SearchStates(ctx)
 		for _, sr := range ss {
-			l := lib{id: sr.ID, released: true}
+			st := stamps[sr.ID]
+			l := lib{id: sr.ID, released: true, misses: st.Misses, lastSearch: st.LastAt}
 			if sr.Stats != nil {
 				l.have, l.epHave, l.epTotal = sr.Stats.HaveFiles > 0, sr.Stats.HaveFiles, sr.Stats.Episodes
 			}
@@ -465,7 +471,7 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 	bookByID := map[int64]lib{}
 	if bs, err := s.books.List(ctx); err == nil {
 		for _, b := range bs {
-			l := lib{id: b.ID, have: b.HasFile, released: true, misses: b.SearchMisses}
+			l := lib{id: b.ID, have: b.HasFile, released: true, misses: b.SearchMisses, lastSearch: b.LastSearchAt}
 			// Only a monitored book has a next check: the sweep never looks at the others.
 			if next := books.NextSearchAt(b.LastSearchAt, b.SearchMisses); b.Monitored && !next.IsZero() {
 				l.nextCheck = next.UTC().Format(time.RFC3339)
@@ -489,6 +495,6 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 		}
 		reqs[i].Available = l.have
 		reqs[i].libID, reqs[i].epHave, reqs[i].epTotal, reqs[i].released = l.id, l.epHave, l.epTotal, l.released
-		reqs[i].searchMisses, reqs[i].nextCheckAt = l.misses, l.nextCheck
+		reqs[i].searchMisses, reqs[i].lastSearchAt, reqs[i].nextCheckAt = l.misses, l.lastSearch, l.nextCheck
 	}
 }
