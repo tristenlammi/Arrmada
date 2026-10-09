@@ -547,6 +547,8 @@ export interface NotificationConn {
 // What create, update and test take. On update, a missing or blank url keeps the saved one.
 export type NotificationInput = Omit<NotificationConn, "id" | "url_hint" | "url_set" | "invalid_reason"> & { url?: string };
 
+export interface MyApprise { set: boolean; hint: string; blocked_reason?: string }
+
 export interface UserNotification { id: number; title: string; body: string; media_type: string; ref: string; read: boolean; created_at: number }
 
 export interface CalendarItem { date: string; type: "episode" | "movie"; title: string; subtitle: string; poster_url?: string; ref_id: number; has_file: boolean; monitored: boolean }
@@ -1978,8 +1980,11 @@ export const api = {
     req<{ subscribed: boolean }>("/api/v1/me/push/unsubscribe", { method: "POST", body: JSON.stringify({ endpoint }) }),
   markAllNotificationsRead: () => req<void>("/api/v1/me/notifications/read-all", { method: "POST" }),
   calendar: (start: string, end: string) => req<{ items: CalendarItem[]; start: string; end: string }>(`/api/v1/calendar?start=${start}&end=${end}`),
-  myApprise: () => req<{ url: string; set: boolean }>("/api/v1/me/apprise"),
-  setMyApprise: (url: string) => req<{ url: string; set: boolean }>("/api/v1/me/apprise", { method: "PUT", body: JSON.stringify({ url }) }),
+  // The saved URL never comes back: a hint stands in, and blocked_reason says why pushes
+  // to it are being skipped (e.g. it points at the local network).
+  myApprise: () => req<MyApprise>("/api/v1/me/apprise"),
+  /** "" removes the saved URL. */
+  setMyApprise: (url: string) => req<MyApprise>("/api/v1/me/apprise", { method: "PUT", body: JSON.stringify({ url }) }),
 
   // refresh re-runs every check first (the server allows that once per 10 s).
   systemHealth: (refresh = false) =>

@@ -291,10 +291,10 @@ func appriseArgs(title, body string, urls []string) []string {
 }
 
 // appriseSchemes is the allowlist of Apprise notification URL schemes accepted by
-// ValidateAppriseURL. Note: the generic delivery schemes (json/form/xml/webhook and
-// their TLS variants) let a user point Arrmada's server at ANY host — including
-// internal ones — so storing them is an accepted SSRF surface; the allowlist guards
-// against option injection and nonsense input, not against where those schemes post.
+// ValidateAppriseURL. The generic delivery schemes (json/form/xml/webhook and their TLS
+// variants) can point the server at any host, internal ones included. That's fine for
+// the admin's own connections; requesters' personal URLs go through the stricter
+// ValidateUserAppriseURL (ssrf.go), which refuses them.
 var appriseSchemes = map[string]bool{
 	"discord": true, "telegram": true, "tgram": true, "slack": true,
 	"mailto": true, "mailtos": true,

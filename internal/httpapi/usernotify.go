@@ -1,9 +1,11 @@
 package httpapi
 
 import (
+	"net"
 	"net/http"
 	"strings"
 
+	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/notify"
 	"github.com/tristenlammi/arrmada/internal/requests"
 )
@@ -64,19 +66,29 @@ func (a *api) handleMarkAllNotificationsRead(w http.ResponseWriter, r *http.Requ
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleGetMyApprise returns whether the current user has a personal Apprise URL set.
+// handleGetMyApprise says whether the current user has a personal Apprise URL set — a
+// hint of it, never the URL — and why it's being skipped if it no longer passes the
+// check for their account.
 func (a *api) handleGetMyApprise(w http.ResponseWriter, r *http.Request) {
 	u, ok := userFrom(r)
 	if !ok || u == nil {
 		a.writeError(w, http.StatusUnauthorized, "not signed in")
 		return
 	}
-	url, err := a.deps.Requests.GetApprise(r.Context(), u.ID)
+	a.writeMyApprise(w, r, u)
+}
+
+func (a *api) writeMyApprise(w http.ResponseWriter, r *http.Request, u *auth.User) {
+	set, hint, blocked, err := a.deps.Requests.AppriseStatus(r.Context(), u.ID, u.Role.AtLeast(auth.RoleManager))
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not load setting")
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"url": url, "set": url != ""})
+	out := map[string]any{"set": set, "hint": hint}
+	if blocked != "" {
+		out["blocked_reason"] = blocked
+	}
+	a.writeJSON(w, http.StatusOK, out)
 }
 
 // handleSetMyApprise sets the current user's personal Apprise URL (empty clears it).
@@ -92,11 +104,14 @@ func (a *api) handleSetMyApprise(w http.ResponseWriter, r *http.Request) {
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
-	// Validate before storing: the URL becomes an apprise CLI argument on the
-	// server, so an unvalidated one is an SSRF / argument-injection vector for any
-	// requester-level account. ("" clears the setting and is always allowed.)
-	if strings.TrimSpace(req.URL) != "" {
-		if verr := notify.ValidateAppriseURL(req.URL); verr != nil {
+	// Validate before storing: the URL becomes an apprise CLI argument on the server
+	// and the server posts to it, so for a requester it must be a push service that
+	// can't be aimed at the local network (notify/ssrf.go). Staff keep the ordinary
+	// rules. ("" clears the setting and is always allowed.)
+	req.URL = strings.TrimSpace(req.URL)
+	if req.URL != "" {
+		staff := u.Role.AtLeast(auth.RoleManager)
+		if verr := notify.ValidateUserAppriseURL(r.Context(), req.URL, staff, a.resolver()); verr != nil {
 			a.writeError(w, http.StatusBadRequest, verr.Error())
 			return
 		}
@@ -105,5 +120,14 @@ func (a *api) handleSetMyApprise(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, "could not save setting")
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"url": req.URL, "set": req.URL != ""})
+	a.writeMyApprise(w, r, u)
+}
+
+// resolver is what personal Apprise URLs are checked against: the system resolver, or
+// a stub a test put in Deps.
+func (a *api) resolver() notify.Resolver {
+	if a.deps.Resolver != nil {
+		return a.deps.Resolver
+	}
+	return net.DefaultResolver
 }

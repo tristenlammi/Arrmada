@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, type UserNotification } from "../lib/api";
+import { api, type MyApprise, type UserNotification } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 
 // Pull the media title out of a notification: bodies read like “Dune” is ready to
@@ -211,31 +211,36 @@ function PushSetting() {
   );
 }
 
+// AppriseSetting is the personal push link. Once saved it isn't shown again (it usually
+// holds a token): the field's placeholder hints at it, typing replaces it, Remove clears it.
 function AppriseSetting() {
   const [url, setUrl] = useState("");
-  const [set, setSet] = useState(false);
+  const [status, setStatus] = useState<MyApprise | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { api.myApprise().then((r) => { setSet(r.set); setUrl(r.url); }).catch(() => {}); }, []);
-  const save = async () => {
+  useEffect(() => { api.myApprise().then(setStatus).catch(() => {}); }, []);
+  const write = async (next: string) => {
     setError(null);
     try {
-      const r = await api.setMyApprise(url.trim());
-      setSet(r.set);
+      setStatus(await api.setMyApprise(next));
+      setUrl("");
       setSaved(true);
       window.setTimeout(() => setSaved(false), 2000);
     } catch (e) {
       setError((e as Error).message);
     }
   };
+  const set = !!status?.set;
   return (
     <div className="px-3.5 py-3" style={{ background: "var(--panel-2)", borderBottom: "1px solid var(--line)" }}>
       <div className="text-[11.5px] font-semibold">Push notifications (optional)</div>
-      <div className="mb-1.5 text-[10.5px] text-ink-faint">Paste your own Apprise URL to also get pushed (Discord, ntfy, email…). Leave blank for in-app only.{set ? " Currently set." : ""}</div>
+      <div className="mb-1.5 text-[10.5px] text-ink-faint">Paste your own Apprise URL to also get pushed (Discord, ntfy, email…). Leave it unset for in-app only.{set ? " Currently set — paste a new one to replace it." : ""}</div>
       <div className="flex gap-1.5">
-        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="ntfy://topic or discord://id/token" className="flex-1 rounded-lg px-2 py-1 font-mono text-[11px]" style={{ background: "var(--panel)", border: "1px solid var(--line)", color: "var(--ink)" }} />
-        <button onClick={save} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>{saved ? "✓" : "Save"}</button>
+        <input type="password" autoComplete="off" aria-label="Your Apprise URL" value={url} onChange={(e) => setUrl(e.target.value)} placeholder={set ? `${status?.hint || "saved"} (saved)` : "ntfy://topic or discord://id/token"} className="min-w-0 flex-1 rounded-lg px-2 py-1 font-mono text-[11px]" style={{ background: "var(--panel)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+        <button onClick={() => write(url.trim())} disabled={!url.trim()} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold disabled:opacity-50" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>{saved ? "✓" : "Save"}</button>
+        {set && <button onClick={() => write("")} className="rounded-lg px-2 py-1 text-[11px] text-ink-faint">Remove</button>}
       </div>
+      {status?.blocked_reason && <div className="mt-1.5 text-[10.5px] font-medium" style={{ color: "var(--avoid)" }}>Not sending to this link: {status.blocked_reason}</div>}
       {error && <div className="mt-1.5 text-[10.5px] font-medium" style={{ color: "var(--reject)" }}>Couldn’t save — {error}</div>}
     </div>
   );

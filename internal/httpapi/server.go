@@ -78,6 +78,8 @@ type Deps struct {
 	Recycle    *recyclebin.Service
 	Logs       *applog.Ring
 	APIKeys    *apikeys.Store
+	// Resolver checks the hosts in requesters' Apprise URLs (nil: the system resolver).
+	Resolver notify.Resolver
 	// FlareSolverr, whose URL is the "flaresolverr" API key (read on every use).
 	FlareSolverr *flaresolverr.Client
 	// KeyVerifiers back the API key Test button, by key id: each makes one real request

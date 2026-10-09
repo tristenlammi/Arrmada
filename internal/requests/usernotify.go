@@ -100,11 +100,55 @@ func (s *Service) MarkRead(ctx context.Context, id, userID int64) error {
 func (s *Service) MarkAllRead(ctx context.Context, userID int64) error {
 	return s.repo.markAllRead(ctx, userID)
 }
-func (s *Service) GetApprise(ctx context.Context, userID int64) (string, error) {
-	return s.repo.getUserApprise(ctx, userID)
-}
 func (s *Service) SetApprise(ctx context.Context, userID int64, url string) error {
 	return s.repo.setUserApprise(ctx, userID, url)
+}
+
+// --- personal Apprise: kept off internal hosts ---
+
+// userApprise is what personal pushes need beyond the apprise binary: who counts as
+// staff (their URLs keep the ordinary rules), a resolver for the host check, and the
+// transport. Tests set resolver and send.
+type userApprise struct {
+	isStaff  func(ctx context.Context, userID int64) bool
+	resolver notify.Resolver
+	send     func(ctx context.Context, url, title, body string) error
+}
+
+// SetStaffLookup says which users are staff, whose personal Apprise URLs keep the
+// ordinary rules. Unset, everyone gets the requester rules — the safe side.
+func (s *Service) SetStaffLookup(fn func(ctx context.Context, userID int64) bool) {
+	s.userApprise.isStaff = fn
+}
+
+// checkUserApprise is ValidateUserAppriseURL for the URL's owner.
+func (s *Service) checkUserApprise(ctx context.Context, userID int64, url string) error {
+	staff := s.userApprise.isStaff != nil && s.userApprise.isStaff(ctx, userID)
+	return notify.ValidateUserAppriseURL(ctx, url, staff, s.userApprise.resolver)
+}
+
+func (s *Service) sendUserApprise(ctx context.Context, url, body string) error {
+	if s.userApprise.send != nil {
+		return s.userApprise.send(ctx, url, "Arrmada", body)
+	}
+	if s.appriseBin == "" {
+		return nil // no apprise in this build: the inbox and Web Push still went out
+	}
+	return notify.Send(ctx, s.appriseBin, "Arrmada", body, url)
+}
+
+// AppriseStatus is the owner's view of their personal URL: whether one is saved, a
+// harmless hint of it, and why it's being skipped if it no longer passes the check.
+// The URL itself never goes back out.
+func (s *Service) AppriseStatus(ctx context.Context, userID int64, staff bool) (set bool, hint, blocked string, err error) {
+	url, err := s.repo.getUserApprise(ctx, userID)
+	if err != nil || url == "" {
+		return false, "", "", err
+	}
+	if verr := notify.ValidateUserAppriseURL(ctx, url, staff, s.userApprise.resolver); verr != nil {
+		blocked = verr.Error()
+	}
+	return true, notify.URLHint(url), blocked, nil
 }
 
 // --- the notifier: match imports back to requesters ---
@@ -279,11 +323,14 @@ func (s *Service) notifyPartiesCount(ctx context.Context, req Request, title, bo
 			continue // already notified — don't re-push
 		}
 		told++
-		if s.appriseBin != "" {
-			if url, err := s.repo.getUserApprise(ctx, uid); err == nil && url != "" {
-				if err := notify.Send(ctx, s.appriseBin, "Arrmada", body, url); err != nil {
-					s.log.Warn(kind+": apprise push failed", "user", uid, "err", err)
-				}
+		if url, err := s.repo.getUserApprise(ctx, uid); err == nil && url != "" {
+			// Checked again at send time: DNS can change, and a URL saved before the
+			// check existed gets it too. A refusal skips only this push — the inbox row
+			// above (and Web Push below) still tell them.
+			if verr := s.checkUserApprise(ctx, uid, url); verr != nil {
+				s.log.Warn(kind+": personal Apprise push skipped — the saved link isn't allowed", "user", uid, "reason", verr.Error())
+			} else if err := s.sendUserApprise(ctx, url, body); err != nil {
+				s.log.Warn(kind+": apprise push failed", "user", uid, "err", err)
 			}
 		}
 		if s.push != nil {

@@ -641,6 +641,12 @@ func main() {
 	requestsSvc.SetPushSender(pushSvc) // Web Push alongside inbox + Apprise
 	requestsSvc.SetRunner(grp)         // approval searches stop at shutdown
 	requestsSvc.SetJobs(jobRunner)     // and are jobs, single-flight with a Search click
+	// Staff's personal Apprise URLs keep the ordinary rules; everyone else's are held off
+	// internal hosts, re-checked before each send. A lookup failure counts as not staff.
+	requestsSvc.SetStaffLookup(func(ctx context.Context, uid int64) bool {
+		u, err := authSvc.UserByID(ctx, uid)
+		return err == nil && !u.Disabled && u.Role.AtLeast(auth.RoleManager)
+	})
 	// Book requests made before they remembered their library row are linked to it by
 	// title and author, so the ones whose book was re-matched to a new catalogue key
 	// stop showing "Searching" and get their "ready".

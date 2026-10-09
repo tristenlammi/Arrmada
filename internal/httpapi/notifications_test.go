@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -14,6 +15,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/eventbus"
 	"github.com/tristenlammi/arrmada/internal/notify"
+	"github.com/tristenlammi/arrmada/internal/requests"
 )
 
 // sentRecorder stands in for apprise: it records every URL a message went to, and fails
@@ -176,6 +178,53 @@ func TestTestNotificationByIDUsesStoredURL(t *testing.T) {
 	}
 	if rec := s.doJSON("POST", "/api/v1/notifications/99/test", admin, ``); rec.Code != http.StatusNotFound {
 		t.Errorf("unknown id: HTTP %d, want 404", rec.Code)
+	}
+}
+
+type mapResolver map[string]string
+
+func (r mapResolver) LookupIPAddr(_ context.Context, host string) ([]net.IPAddr, error) {
+	ip, ok := r[host]
+	if !ok {
+		return nil, errors.New("no such host")
+	}
+	return []net.IPAddr{{IP: net.ParseIP(ip)}}, nil
+}
+
+// A requester can't aim their personal Apprise URL at the local network; staff keep the
+// ordinary rules; and neither ever gets the saved URL back.
+func TestMyAppriseKeepsRequestersOffInternalHosts(t *testing.T) {
+	s := newRouteServer(t, func(d *Deps) {
+		d.Requests = requests.NewService(d.Store.DB(), nil, nil, nil, nil, nil, nil, "", d.Log)
+		d.Resolver = mapResolver{"internal.lan": "192.168.1.5", "push.example.com": "93.184.216.34", "qbittorrent": "172.18.0.4"}
+	})
+	_, kid := s.user(t, "kid@example.com", auth.RoleRequester)
+	_, mgr := s.user(t, "mgr@example.com", auth.RoleManager)
+
+	for _, url := range []string{"json://10.0.0.5/hook", "gotify://192.168.1.10/token", "ntfys://qbittorrent/topic", "gotify://internal.lan/tok", "mailtos://a:b@push.example.com?smtp=10.0.0.5"} {
+		if rec := s.doJSON("PUT", "/api/v1/me/apprise", kid, `{"url":"`+url+`"}`); rec.Code != http.StatusBadRequest {
+			t.Errorf("requester %q: HTTP %d, want 400: %s", url, rec.Code, rec.Body)
+		}
+	}
+	var bodies []string
+	for _, tc := range []struct {
+		c   *http.Cookie
+		url string
+	}{{kid, "discord://123456/SECRETWEBHOOKTOKEN"}, {kid, "ntfy://mytopic"}, {mgr, "json://internal.lan/SECRETHOOK"}} {
+		rec := s.doJSON("PUT", "/api/v1/me/apprise", tc.c, `{"url":"`+tc.url+`"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%q: HTTP %d %s", tc.url, rec.Code, rec.Body)
+		}
+		bodies = append(bodies, rec.Body.String(), s.do("GET", "/api/v1/me/apprise", tc.c).Body.String())
+	}
+	all := strings.Join(bodies, "\n")
+	for _, secret := range []string{"SECRETWEBHOOKTOKEN", "mytopic", "SECRETHOOK", `"url":`} {
+		if strings.Contains(all, secret) {
+			t.Errorf("a /me/apprise answer contains %q:\n%s", secret, all)
+		}
+	}
+	if !strings.Contains(all, `"set":true`) {
+		t.Errorf("answers should say a URL is set:\n%s", all)
 	}
 }
 

@@ -31,10 +31,12 @@ type Service struct {
 	quality    *quality.Service
 	bus        *eventbus.Bus
 	appriseBin string
-	push       PushSender // optional: Web Push fan-out alongside inbox + Apprise
-	runner     Runner     // where approval searches run without a job runner; nil = untracked, panic-safe goroutines
-	jobs       jobs.Submitter
-	log        *slog.Logger
+	// userApprise guards and sends personal Apprise pushes (usernotify.go).
+	userApprise userApprise
+	push        PushSender // optional: Web Push fan-out alongside inbox + Apprise
+	runner      Runner     // where approval searches run without a job runner; nil = untracked, panic-safe goroutines
+	jobs        jobs.Submitter
+	log         *slog.Logger
 	// searchBook starts a book search (the coordinator's SearchBookNow); a field so
 	// tests can see it called without a coordinator.
 	searchBook func(ctx context.Context, bookID int64) (automation.SearchOutcome, error)
