@@ -39,8 +39,13 @@ func TestValidateAppriseURL(t *testing.T) {
 		{"tgram://bottoken/ChatID", true},
 		{"mailto://user:pass@gmail.com", true},
 		{"ntfys://ntfy.example.com/topic", true},
-		{"json://internal-host/path", true}, // allowed, documented SSRF surface
-		{"  discord://id/token  ", true},    // surrounding whitespace is trimmed
+		{"json://internal-host/path", true},                                     // allowed, documented SSRF surface
+		{"  discord://id/token  ", true},                                        // surrounding whitespace is trimmed
+		{"tgram://123456789:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw/12315544", true}, // a real bot token reads as host:port
+		{"ntfy://topic ntfy://other", false},                                    // apprise would split it into two targets
+		{"ntfy://topic,json://10.0.0.5/hook", false},
+		{"discord://id/token\njson://x", false},
+		{"discord://", false},
 		{"", false},
 		{"   ", false},
 		{"-discord://id/token", false}, // leading dash could read as a CLI option

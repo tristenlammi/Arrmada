@@ -527,17 +527,25 @@ export interface NewDownloadClient {
   priority?: number;
 }
 
+// An alert connection as the server shows it. The saved Apprise URL never comes back:
+// url_hint stands in for it ("discord://••••OKEN", "ntfys://ntfy.example.com/••••").
 export interface NotificationConn {
   id?: number;
   name: string;
   kind: string; // free-form label / service hint
-  url: string; // an Apprise URL
   on_grab: boolean;
   on_import: boolean;
   on_stream?: boolean;
   on_buffering?: boolean;
   enabled: boolean;
+  url_hint?: string;
+  url_set?: boolean;
+  /** A URL saved before validation existed that no longer passes it (it still sends). */
+  invalid_reason?: string;
 }
+
+// What create, update and test take. On update, a missing or blank url keeps the saved one.
+export type NotificationInput = Omit<NotificationConn, "id" | "url_hint" | "url_set" | "invalid_reason"> & { url?: string };
 
 export interface UserNotification { id: number; title: string; body: string; media_type: string; ref: string; read: boolean; created_at: number }
 
@@ -1948,14 +1956,17 @@ export const api = {
 
   notifications: () =>
     req<{ notifications: NotificationConn[] }>("/api/v1/notifications").then((r) => r.notifications),
-  createNotification: (body: NotificationConn) =>
+  createNotification: (body: NotificationInput) =>
     req<NotificationConn>("/api/v1/notifications", { method: "POST", body: JSON.stringify(body) }),
-  updateNotification: (id: number, body: NotificationConn) =>
+  updateNotification: (id: number, body: NotificationInput) =>
     req<{ status: string }>(`/api/v1/notifications/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteNotification: (id: number) =>
     req<void>(`/api/v1/notifications/${id}`, { method: "DELETE" }),
-  testNotification: (body: NotificationConn) =>
+  testNotification: (body: NotificationInput) =>
     req<{ ok: boolean; error?: string }>("/api/v1/notifications/test", { method: "POST", body: JSON.stringify(body) }),
+  /** Test a saved connection through its stored URL. */
+  testSavedNotification: (id: number) =>
+    req<{ ok: boolean; error?: string }>(`/api/v1/notifications/${id}/test`, { method: "POST" }),
 
   // Per-user notifications (in-app inbox + personal Apprise URL)
   myNotifications: () => req<{ notifications: UserNotification[]; unread: number }>("/api/v1/me/notifications"),

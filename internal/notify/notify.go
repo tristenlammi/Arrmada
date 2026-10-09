@@ -10,10 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os/exec"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/tristenlammi/arrmada/internal/eventbus"
 )
@@ -23,10 +23,12 @@ var ErrNotFound = errors.New("notification connection not found")
 
 // Connection is one configured notification target — an Apprise URL plus event subscriptions.
 type Connection struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	Kind        string `json:"kind"` // free-form label / service hint (informational)
-	URL         string `json:"url"`  // an Apprise URL (discord://, tgram://, mailto://, ntfy://, …)
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"` // free-form label / service hint (informational)
+	// URL is an Apprise URL (discord://, tgram://, mailto://, ntfy://, …). It often holds a
+	// token or password, so it never goes out in JSON: the API answers with URLHint.
+	URL         string `json:"-"`
 	OnGrab      bool   `json:"on_grab"`
 	OnImport    bool   `json:"on_import"`
 	OnStream    bool   `json:"on_stream"`    // Plex: a stream started
@@ -40,7 +42,14 @@ type Service struct {
 	bus     *eventbus.Bus
 	log     *slog.Logger
 	apprise string // path to the apprise binary ("" if not found)
+	// transport sends one message to one Apprise URL. It's the apprise CLI; tests swap
+	// it for a recorder (SetTransport).
+	transport Transport
 }
+
+// Transport sends one message to one Apprise URL. An error's text must not quote the
+// URL (Send scrubs its own).
+type Transport func(ctx context.Context, url, title, body string) error
 
 // NewService wires the notification service.
 func NewService(db *sql.DB, bus *eventbus.Bus, log *slog.Logger) *Service {
@@ -50,8 +59,17 @@ func NewService(db *sql.DB, bus *eventbus.Bus, log *slog.Logger) *Service {
 	} else {
 		log.Warn("notify: apprise binary not found — notifications will not send")
 	}
+	s.transport = func(ctx context.Context, url, title, body string) error {
+		if s.apprise == "" {
+			return fmt.Errorf("apprise is not installed")
+		}
+		return Send(ctx, s.apprise, title, body, url)
+	}
 	return s
 }
+
+// SetTransport replaces how messages leave the server. For tests.
+func (s *Service) SetTransport(t Transport) { s.transport = t }
 
 // AppriseBin returns the path to the apprise binary ("" if not installed) — used by other
 // modules (e.g. per-user request-ready pushes) to send directly.
@@ -237,15 +255,15 @@ func (s *Service) fan(ctx context.Context, event, title, body string) {
 	}
 }
 
-// deliver sends a notification to one connection via the bundled apprise CLI.
+// deliver sends a notification to one connection. The error never quotes the URL.
 func (s *Service) deliver(ctx context.Context, c Connection, title, body string) error {
 	if c.URL == "" {
 		return fmt.Errorf("no Apprise URL configured")
 	}
-	if s.apprise == "" {
-		return fmt.Errorf("apprise is not installed")
+	if err := s.transport(ctx, c.URL, title, body); err != nil {
+		return errors.New(Redact(err.Error(), c.URL))
 	}
-	return Send(ctx, s.apprise, title, body, c.URL)
+	return nil
 }
 
 // Send delivers one notification through the apprise CLI to one or more Apprise URLs.
@@ -258,7 +276,8 @@ func Send(ctx context.Context, appriseBin, title, body string, urls ...string) e
 	cmd := exec.CommandContext(cctx, appriseBin, appriseArgs(title, body, urls)...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("apprise: %v (%s)", err, trim(string(out)))
+		// apprise -v can echo the URL it failed on; the reason is wanted, the token isn't.
+		return fmt.Errorf("apprise: %v (%s)", err, trim(Redact(string(out), urls...)))
 	}
 	return nil
 }
@@ -295,9 +314,12 @@ var appriseSchemes = map[string]bool{
 }
 
 // ValidateAppriseURL rejects strings that are not a plausible Apprise notification URL:
-// anything starting with "-" (could read as a CLI option), anything unparseable, and any
-// scheme outside the allowlist above. Intended for storage-time validation of
-// user-supplied URLs (e.g. per-user notification endpoints).
+// anything starting with "-" (could read as a CLI option), anything with whitespace or a
+// second "scheme://" in it (apprise splits those into several URLs, which would smuggle a
+// second target past these checks), and any scheme outside the allowlist above.
+//
+// The scheme is split off by hand rather than with url.Parse: real Apprise URLs aren't
+// all RFC 3986 — a Telegram bot token ("tgram://123456:ABC…/chat") reads as a bad port.
 func ValidateAppriseURL(raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -306,16 +328,22 @@ func ValidateAppriseURL(raw string) error {
 	if strings.HasPrefix(raw, "-") {
 		return errors.New("notification URL must not start with '-'")
 	}
-	u, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("not a valid URL: %v", err)
+	if strings.IndexFunc(raw, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+		return errors.New("notification URL must not contain spaces")
 	}
-	scheme := strings.ToLower(u.Scheme)
-	if scheme == "" {
+	scheme, rest, ok := strings.Cut(raw, "://")
+	if !ok || scheme == "" {
 		return errors.New("notification URL must include a scheme (e.g. discord://…)")
 	}
+	scheme = strings.ToLower(scheme)
 	if !appriseSchemes[scheme] {
 		return fmt.Errorf("unsupported notification scheme %q", scheme)
+	}
+	if rest == "" {
+		return errors.New("notification URL has nothing after " + scheme + "://")
+	}
+	if strings.Contains(rest, "://") {
+		return errors.New("one connection takes one URL — add another connection for a second one")
 	}
 	return nil
 }
