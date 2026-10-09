@@ -11,6 +11,8 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/config"
 	"github.com/tristenlammi/arrmada/internal/download"
+	"github.com/tristenlammi/arrmada/internal/insights"
+	"github.com/tristenlammi/arrmada/internal/settings"
 	"github.com/tristenlammi/arrmada/internal/store"
 )
 
@@ -167,5 +169,55 @@ func TestDashboardQueueNoteWhenClientUnreachable(t *testing.T) {
 	}
 	if body.Queue != (queueSummary{}) {
 		t.Errorf("queue = %+v, want zero counts alongside the note", body.Queue)
+	}
+}
+
+// dashPlex runs the dashboard with an Insights service over the test store's settings and
+// returns the Plex half of the payload.
+func dashPlex(t *testing.T, url, token string) (configured bool, note string) {
+	t.Helper()
+	a := dashAPI(t)
+	ctx := context.Background()
+	ins := insights.NewService(a.deps.Store.DB(), settings.NewService(a.deps.Store.DB()), nil, nil, a.deps.Log)
+	if url != "" || token != "" {
+		if err := ins.SetConfig(ctx, url, &token, nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a.deps.Insights = ins
+
+	rec := httptest.NewRecorder()
+	a.handleDashboard(rec, httptest.NewRequest("GET", "/api/v1/dashboard", nil))
+	var body struct {
+		PlexConfigured bool   `json:"plex_configured"`
+		StreamsNote    string `json:"streams_note"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body)
+	}
+	return body.PlexConfigured, body.StreamsNote
+}
+
+// With no Plex server set up there is nothing to be unreachable: the page should say
+// "not connected yet", not print "plex is not configured" as an outage.
+func TestDashboardPlexNotConfigured(t *testing.T) {
+	configured, note := dashPlex(t, "", "")
+	if configured {
+		t.Error("plex_configured = true with no URL or token")
+	}
+	if note != "" {
+		t.Errorf("streams_note = %q, want empty when Plex isn't set up", note)
+	}
+}
+
+// A configured server that can't be reached is still reported, with the real error.
+func TestDashboardPlexUnreachable(t *testing.T) {
+	// Port 1 on loopback refuses the connection at once; nothing is ever contacted.
+	configured, note := dashPlex(t, "http://127.0.0.1:1", "test-token")
+	if !configured {
+		t.Error("plex_configured = false with a URL and token set")
+	}
+	if note == "" {
+		t.Error("an unreachable Plex left streams_note empty")
 	}
 }

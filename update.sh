@@ -406,9 +406,15 @@ else
 fi
 
 # Stamp the build with what it was built from, so the Dashboard and /api/health say
-# which code is running (docker-compose.yml passes these as build args).
-ARRMADA_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev-docker)
+# which code is running (docker-compose.yml passes these as build args). A tagged
+# release reads as its tag; anything else as the date of its commit, with the short
+# commit beside it — a bare hash says nothing about how old the build is. Every git
+# call is guarded so a copy that isn't a git checkout still builds.
 ARRMADA_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
+ARRMADA_VERSION=$(git describe --tags --exact-match 2>/dev/null || git log -1 --format=%cd --date=format:%Y.%m.%d 2>/dev/null || echo dev)
+if [ "$ARRMADA_COMMIT" != unknown ] && ! git diff --quiet HEAD -- 2>/dev/null; then
+  ARRMADA_VERSION="$ARRMADA_VERSION-dirty"
+fi
 export ARRMADA_VERSION ARRMADA_COMMIT
 
 # Keep the build that's running as arrmada:previous, for --rollback. It has to be
@@ -476,7 +482,7 @@ docker image prune -f >/dev/null 2>&1 || true
 WEBPORT=$(grep -E '^ARRMADA_PORT=' .env | cut -d= -f2)
 HOSTIP=$(hostname -I 2>/dev/null | awk '{print $1}')
 say ""
-say "✓ Arrmada updated to ${ARRMADA_VERSION}.  Open http://${HOSTIP:-localhost}:${WEBPORT:-7878}"
+say "✓ Arrmada updated to ${ARRMADA_VERSION} (${ARRMADA_COMMIT}).  Open http://${HOSTIP:-localhost}:${WEBPORT:-7878}"
 say "  A database snapshot is taken automatically before any schema change (<data>/backups, newest 5 kept)."
 if docker image inspect arrmada:previous >/dev/null 2>&1; then
   say "  The build that ran before is kept as arrmada:previous: ./update.sh --rollback goes back to it."

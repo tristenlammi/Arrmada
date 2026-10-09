@@ -13,7 +13,6 @@ export interface Status {
   commit: string;
   started_at: string;
   uptime_seconds: number;
-  auth_enabled: boolean;
   needs_setup: boolean;
   authenticated: boolean;
   external: boolean;
@@ -453,6 +452,8 @@ export interface DashboardData {
   storage: StorageVolume[];
   streams?: InsightsActivity;
   streams_note?: string;
+  /** A Plex URL and token are set; without them streams_note stays empty. */
+  plex_configured: boolean;
   queue: QueueSummary;
   queue_note?: string;
   library: LibraryCounts;

@@ -58,6 +58,13 @@ var bannedCopy = []bannedPhrase{
 	phrase(`Discover-only`, "requesters get Discover, Calendar, Books and Audiobooks — list the real pages"),
 	phrase(`only the Discover page`, "requesters get Discover, Calendar, Books and Audiobooks — list the real pages"),
 	webPhrase(`update\.sh`, "the UI never sends people to the install scripts; name the setting or the container"),
+	// COPY-08: the Insights intro only asks to connect while Plex isn't connected.
+	webPhrase(`Connect your server in`, "the intro's call to action is the 'Connect your Plex server in the Settings tab' button, shown only while not connected"),
+	// COPY-10: system strings that described an older build.
+	webPhrase(`auth_enabled`, "sign-in is always enforced, so a constant Auth stat says nothing — leave it off the Dashboard"),
+	phrase(`kept in memory, up to`, "the viewer loads up to LOG_LIMIT lines; Arrmada keeps 50,000 in memory and writes rotating log files"),
+	webPhrase(`ARRMADA_BASE_URL`, "sub-path hosting isn't supported — Arrmada is served at the root of its own port or hostname"),
+	webPhrase(`dev-docker`, "builds are stamped with a dated version and the short commit (update.sh)"),
 	// COPY-04: no music upgrade sweep exists.
 	phrase(`keeps upgrading until`, "music albums aren't upgraded after the first grab"),
 	phrase(`upgrades later if`, "music albums aren't upgraded after the first grab"),
@@ -202,6 +209,11 @@ func TestCopyGuardMatcher(t *testing.T) {
 		`a Requester account (Discover-only)`,
 		`Requesters see only the Discover page.`,
 		`re-run ./update.sh`,
+		`Connect your server in <b>Settings</b> to begin.`,
+		`<Stat k="Auth" v={status?.auth_enabled ? "enabled" : "disabled"} />`,
+		`lines — kept in memory, up to 5000.`,
+		`set ARRMADA_BASE_URL to serve under a path`,
+		`version dev-docker`,
 		`keeps upgrading until it reaches the top`,
 		`and upgrades later if one appears`,
 		`Replace an album when a higher tier turns up`,
