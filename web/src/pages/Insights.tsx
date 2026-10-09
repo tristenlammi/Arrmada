@@ -3,9 +3,8 @@ import { PageHeader } from "../components/PageHeader";
 import { useTabParam } from "../lib/useTabParam";
 import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs, type Reliability, type BufferGroup, type NotificationConn } from "../lib/api";
 
-// Insights — Arrmada's Plex watch-monitoring module (Tautulli replacement). Built in slices.
-// I0 (this): the Plex connection — configure + test. Activity, History,
-// Users, Graphs and the Reliability/buffering view land in later slices and show as "coming soon".
+// Insights — Arrmada's Plex watch monitoring (a Tautulli replacement): live Activity, History,
+// Users, Graphs, Reliability (buffering), admin Notifications, and the Plex connection in Settings.
 type Tab = "activity" | "history" | "users" | "graphs" | "reliability" | "notifications" | "settings";
 const TABS: { key: Tab; label: string }[] = [
   { key: "activity", label: "Activity" },
@@ -31,7 +30,9 @@ export function Insights() {
       <PageHeader title="Insights" crumb="Services / Insights" />
       <div className="mx-auto w-full max-w-[1240px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-          <p className="max-w-[64ch] text-[12.5px] text-ink-dim">Watch monitoring for your Plex server — who's streaming what, right now and historically, with stream quality, transcode diagnostics and buffering reliability. Connect your server in <b>Settings</b> to begin.</p>
+          <p className="max-w-[64ch] text-[12.5px] text-ink-dim">Watch monitoring for your Plex server — who's streaming what, right now and historically, with stream quality, transcode diagnostics and buffering reliability.
+            {cfg && !connected && <> <button onClick={() => setTab("settings")} className="font-semibold" style={{ color: "var(--accent)" }}>Connect your Plex server in the Settings tab</button> to begin.</>}
+          </p>
           <span className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[12px] font-semibold" style={{ border: `1px solid ${connected ? "var(--good)" : "var(--avoid)"}`, background: connected ? "var(--good-soft, rgba(127,176,105,.16))" : "var(--avoid-soft)" }}>
             <span className="h-2 w-2 rounded-full" style={{ background: connected ? "var(--good)" : "var(--avoid)" }} />
             {connected ? "Plex connected" : "Not connected"}
@@ -66,7 +67,7 @@ export function Insights() {
         ) : tab === "notifications" ? (
           <NotificationsView flash={flash} />
         ) : (
-          <ComingSoon tab={tab} connected={!!connected} onConfigure={() => setTab("settings")} />
+          <ConnectPlex tab={tab} connected={!!connected} onConfigure={() => setTab("settings")} />
         )}
       </div>
       {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
@@ -151,7 +152,7 @@ function ActivityView({ connected, onConfigure }: { connected: boolean; onConfig
     clock.current = next; // ended sessions drop out
   }, [act]);
 
-  if (!connected) return <ComingSoon tab="activity" connected={false} onConfigure={onConfigure} />;
+  if (!connected) return <ConnectPlex tab="activity" connected={false} onConfigure={onConfigure} />;
   if (err) return <div className="rounded-xl p-6 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Couldn’t reach Plex: {err}</div>;
   if (!act) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading activity…</div>;
 
@@ -297,7 +298,7 @@ function StatCard({ title, rows, metric }: { title: string; rows: { label: strin
 function UsersView({ connected, onConfigure }: { connected: boolean; onConfigure: () => void }) {
   const [users, setUsers] = useState<UserEntry[] | null>(null);
   useEffect(() => { if (connected) api.insightsUsers().then(setUsers).catch(() => setUsers([])); }, [connected]);
-  if (!connected) return <ComingSoon tab="users" connected={false} onConfigure={onConfigure} />;
+  if (!connected) return <ConnectPlex tab="users" connected={false} onConfigure={onConfigure} />;
   if (!users) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading users…</div>;
   if (users.length === 0) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-faint" style={{ border: "1px solid var(--line)" }}>No users seen yet.</div>;
   return (
@@ -475,7 +476,7 @@ function HistoryView({ connected, onConfigure }: { connected: boolean; onConfigu
     return () => { alive = false; clearTimeout(t); };
   }, [connected, type, decision, q, page]);
 
-  if (!connected) return <ComingSoon tab="history" connected={false} onConfigure={onConfigure} />;
+  if (!connected) return <ConnectPlex tab="history" connected={false} onConfigure={onConfigure} />;
 
   const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const to = Math.min(page * pageSize, total);
@@ -570,7 +571,7 @@ function GraphsView({ connected, onConfigure }: { connected: boolean; onConfigur
   const [g, setG] = useState<InsightsGraphs | null>(null);
   const [win, setWin] = useState(30);
   useEffect(() => { if (connected) api.insightsGraphs(win).then(setG).catch(() => setG(null)); }, [connected, win]);
-  if (!connected) return <ComingSoon tab="graphs" connected={false} onConfigure={onConfigure} />;
+  if (!connected) return <ConnectPlex tab="graphs" connected={false} onConfigure={onConfigure} />;
   if (!g) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading graphs…</div>;
 
   const anyPlays = g.daily_tv.some(Boolean) || g.daily_movies.some(Boolean) || g.daily_music.some(Boolean);
@@ -692,7 +693,7 @@ function ReliabilityView({ connected, onConfigure }: { connected: boolean; onCon
   const [r, setR] = useState<Reliability | null>(null);
   const [win, setWin] = useState(30);
   useEffect(() => { if (connected) api.insightsReliability(win).then(setR).catch(() => setR(null)); }, [connected, win]);
-  if (!connected) return <ComingSoon tab="reliability" connected={false} onConfigure={onConfigure} />;
+  if (!connected) return <ConnectPlex tab="reliability" connected={false} onConfigure={onConfigure} />;
   if (!r) return <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading reliability…</div>;
 
   const s = r.summary;
@@ -899,7 +900,7 @@ function ConnCard({ conn, isNew, onChange, onCancel, flash }: { conn: Notificati
   );
 }
 
-const NEXT: Record<string, string> = {
+const ABOUT: Record<string, string> = {
   activity: "Live now-playing — who's streaming what, on which device, with progress, transcode decision, bandwidth and geolocation.",
   history: "Every play recorded — a filterable table with stream-type, geolocated IP and a click-through deep-dive.",
   users: "Per-user activity — last seen, platform, total plays and watch time.",
@@ -907,12 +908,13 @@ const NEXT: Record<string, string> = {
   reliability: "The buffering view — see historically when and where streams choked, by user, platform and title.",
 };
 
-function ComingSoon({ tab, connected, onConfigure }: { tab: string; connected: boolean; onConfigure: () => void }) {
+// ConnectPlex stands in for a tab while no Plex server is connected. Every tab is built; it
+// only needs a server to read from, so this says what the tab shows and how to connect.
+function ConnectPlex({ tab, connected, onConfigure }: { tab: string; connected: boolean; onConfigure: () => void }) {
   return (
     <div className="rounded-xl p-10 text-center" style={{ border: "1px dashed var(--line)", background: "var(--panel)" }}>
       <div className="text-[13.5px] font-bold capitalize">{tab}</div>
-      <p className="mx-auto mt-1.5 max-w-[52ch] text-[12px] text-ink-dim">{NEXT[tab]}</p>
-      <div className="mt-3 inline-flex items-center gap-2 rounded-full px-3 py-1 font-mono text-[10px] font-bold uppercase tracking-wide" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>Coming soon</div>
+      <p className="mx-auto mt-1.5 max-w-[52ch] text-[12px] text-ink-dim">{ABOUT[tab]}</p>
       {!connected && <div className="mt-4"><button onClick={onConfigure} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>Connect your Plex server →</button></div>}
     </div>
   );

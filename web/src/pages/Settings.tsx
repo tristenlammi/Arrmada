@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { useLocation } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { api, type APIKeyStatus, type AppSettings, type AuthUser, type DiskGuardStatus, type RecycleStats, type RecycleItem, type UserImpact } from "../lib/api";
 import { useMe, isAdmin } from "../lib/me";
 import { LibraryFolders } from "./Library";
 import { useTabParam } from "../lib/useTabParam";
+import { LINKS } from "../lib/links";
 
 // Sample release used for the live naming preview.
 const SAMPLE = {
@@ -53,7 +54,7 @@ const renderSeries = (format: string) => renderWith(format, SERIES_SAMPLE);
 type Tab = "media" | "library" | "system" | "users";
 
 export function Settings() {
-  const { user, setBooksEnabled, setMusicEnabled } = useMe();
+  const { user, booksEnabled, setBooksEnabled, setMusicEnabled } = useMe();
   const admin = isAdmin(user);
   const tabs: { key: Tab; label: string }[] = [
     { key: "media", label: "Media" },
@@ -202,7 +203,7 @@ export function Settings() {
           </div>
         ) : tab === "library" ? (
           <div className="flex flex-col gap-6">
-            <Section id="media-folders" title="Media folders" subtitle="Point each library at a folder in your mounted media, then scan it for existing titles. (Has its own Save folders button below the list.)">
+            <Section id="media-folders" title="Media folders" subtitle="Where each library lives on disk.">
               <LibraryFolders />
             </Section>
             <Section title="Adding titles" subtitle="Defaults when adding movies and series.">
@@ -217,7 +218,7 @@ export function Settings() {
                 <Toggle label="Books" hint="Ebook and audiobook library, and the Books tab in Discover. Metadata comes from Hardcover when a key is set, otherwise Open Library." checked={s.books_enabled} onChange={(v) => patch({ books_enabled: v })} />
                 <Toggle label="Music (preview)" hint="Artists and albums from MusicBrainz with automatic album downloads. Still being hardened. Turning it off hides Music and stops its searches and imports; finished downloads wait until it's back on. Nothing is deleted." checked={s.music_enabled} onChange={(v) => patch({ music_enabled: v })} />
               </Section>
-              <Section title="Plex sign-in" subtitle="Let your Plex Home members and shared users sign in with Plex — no accounts to hand out. They get a Requester account (Discover-only), and only people who actually have access to your Plex server are allowed in. Requires your Plex server to be connected in Insights.">
+              <Section title="Plex sign-in" subtitle={<>Let your Plex Home members and shared users sign in with Plex — no accounts to hand out. They get a Requester account ({requesterPages(booksEnabled)}), and only people with access to your Plex server get in. Needs your Plex server connected in <Link to={LINKS.plexConnection} style={{ color: "var(--accent)" }}>Insights → Settings</Link>.</>}>
                 <Toggle label="Allow Sign in with Plex" hint="Adds a 'Sign in with Plex' button to the login page." checked={s.plex_login_enabled} onChange={(v) => patch({ plex_login_enabled: v })} />
                 <Toggle label="Auto-approve their requests" hint="Plex sign-ins' requests download immediately instead of waiting for your approval." checked={s.plex_login_auto_approve} onChange={(v) => patch({ plex_login_auto_approve: v })} />
               </Section>
@@ -292,7 +293,8 @@ function UsersManager({ meId }: { meId?: number }) {
   const [removing, setRemoving] = useState<AuthUser | null>(null);
 
   return (
-    <Section id="users" title="Users" subtitle="Add people who can request media. Requesters see only the Discover page. Auto-approve lets a user's requests skip the queue and download immediately.">
+    <Section id="users" title="Users" subtitle="Add people who can use Arrmada. Auto-approve lets a user's requests download without waiting for you.">
+      <RoleLegend />
       <div className="flex flex-col gap-1.5">
         {users === null ? (
           <p className="text-[12px] text-ink-dim">Loading…</p>
@@ -325,6 +327,7 @@ function UsersManager({ meId }: { meId?: number }) {
           <input type="password" required minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="password (8+ chars)" className="min-w-[160px] flex-1 rounded-lg px-3 py-2 text-[12.5px]" style={inputStyle} />
           <select value={role} onChange={(e) => setRole(e.target.value)} className="rounded-lg px-2.5 py-2 text-[12.5px]" style={inputStyle}>
             <option value="requester">Requester</option>
+            <option value="readonly">Read-only</option>
             <option value="manager">Manager</option>
             <option value="admin">Admin</option>
           </select>
@@ -342,6 +345,30 @@ function UsersManager({ meId }: { meId?: number }) {
       {editing && <EditUserModal user={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
       {removing && <DeleteUserDialog user={removing} onClose={() => setRemoving(null)} onDeleted={() => { setRemoving(null); load(); }} />}
     </Section>
+  );
+}
+
+// requesterPages is what a non-staff account's top bar shows (see App.tsx's requester and
+// outside route trees): Calendar only at home, Books only while the module is on.
+function requesterPages(booksEnabled: boolean): string {
+  return ["Discover", "Calendar (at home only)", ...(booksEnabled ? ["Books"] : []), "Audiobooks"].join(", ");
+}
+
+// RoleLegend says what each role can do, from today's gates: admin-only routes are the
+// System and Users tabs, the audiobook server settings and the Overseerr/Tautulli imports.
+function RoleLegend() {
+  const { booksEnabled } = useMe();
+  const pages = requesterPages(booksEnabled);
+  const rows: [string, string][] = [
+    ["Requester", `${pages}, and can request.`],
+    ["Read-only", `the same pages, but can't request.`],
+    ["Manager", "the whole console except Settings → System and Users, the audiobook server settings and the Overseerr/Tautulli imports."],
+    ["Admin", "everything."],
+  ];
+  return (
+    <div className="-mt-2 flex flex-col gap-0.5 text-[11px] text-ink-faint">
+      {rows.map(([role, what]) => <div key={role}><b className="text-ink-dim">{role}</b> — {what}</div>)}
+    </div>
   );
 }
 
@@ -817,7 +844,8 @@ function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<App
   // alternate passes forever, so the server rejects them — say so before saving.
   const bad = !Number.isNaN(pause) && !Number.isNaN(resume) && resume >= pause;
 
-  // The guard measures ARRMADA_DOWNLOADS_DIR and nothing else. Whether that path is
+  // The guard measures the downloads folder (lib_downloads_dir, picked in Settings → Library;
+  // ARRMADA_DOWNLOADS_DIR is only the fallback) and nothing else. Whether that path is
   // the torrent drive is not knowable from in here, so show the resolved path and the
   // reading taken from it and let the user confirm it against their own setup.
   const [status, setStatus] = useState<DiskGuardStatus | null>(null);
@@ -833,11 +861,13 @@ function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<App
     >
       <Note tone="warn">
         <b>This only works if your torrents live on their own drive.</b> The guard measures
-        one folder — <code>ARRMADA_DOWNLOADS_DIR</code> in your <code>.env</code> — and nothing
-        else. If that points at a folder on your main array rather than at the cache/torrent
-        drive, the percentage here is measuring the array, and it will either never trigger or
-        pause your queue for a reason that has nothing to do with downloads. Set it in
-        <code>.env</code> and re-run <code>./update.sh</code> before relying on this.
+        one folder: your Downloads folder, set in{" "}
+        <Link to={LINKS.libraryFolders} style={{ color: "var(--accent)" }}>Settings → Library</Link>
+        {status?.path ? <> (currently <code>{status.path}</code>)</> : null}. If that folder is on
+        your main array rather than the torrent or cache drive, the percentage measures the
+        array, and it will either never trigger or pause your queue for a reason that has
+        nothing to do with downloads — choose the right folder there. A changed folder is
+        used after Arrmada restarts.
       </Note>
 
       {status && (

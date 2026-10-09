@@ -201,7 +201,10 @@ export interface ActivityFeed {
   upcoming?: SearchingItem[];
   downloads: ActivityDownload[];
   totals?: { down_speed: number; up_speed: number; active: number; stalled?: number };
+  /** Absent when the downloads folder can't be measured. */
   free_gb?: number;
+  /** How many download clients are configured; absent when it couldn't be read. */
+  clients?: number;
   disk_guard?: DiskGuardHold;
 }
 

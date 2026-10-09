@@ -232,13 +232,21 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	}
 	a.logUnmatchedSeeds(ctx, unmatched, seedPolicies)
 
-	freeGB, _ := diskspace.FreeGB(a.deps.Config.DownloadsDir)
 	out := map[string]any{
 		"searching": searching,
 		"upcoming":  upcoming,
 		"downloads": downloads,
 		"totals":    map[string]any{"down_speed": totalDown, "up_speed": totalUp, "active": active, "stalled": stalled},
-		"free_gb":   freeGB,
+	}
+	// Only a real reading: a folder that can't be measured used to show as "free 0 GB",
+	// which reads as a full disk.
+	if freeGB, ok := freeGBField(a.deps.Config.DownloadsDir); ok {
+		out["free_gb"] = freeGB
+	}
+	// How many download clients are configured, so an empty page can say why nothing is
+	// being grabbed. Left out when the list can't be read rather than guessing zero.
+	if clients, err := a.deps.Downloads.List(ctx); err == nil {
+		out["clients"] = len(clients)
 	}
 	if heldCount > 0 {
 		out["disk_guard"] = map[string]any{
@@ -369,4 +377,12 @@ func ratioOrZero(r float64) float64 {
 		return 0
 	}
 	return r
+}
+
+// freeGBField is the downloads feed's free-space figure and whether there is one to show.
+func freeGBField(path string) (float64, bool) {
+	if path == "" {
+		return 0, false
+	}
+	return diskspace.FreeGB(path)
 }
