@@ -96,7 +96,10 @@ type SubStream struct {
 	Codec    string `json:"codec"`
 	Lang     string `json:"lang"`
 	Text     bool   `json:"text"`
-	Forced   bool   `json:"forced,omitempty"`
+	// Forced is a foreign-dialogue-only track (a few lines, never the full subtitle),
+	// from the disposition flag or a title saying so.
+	Forced bool   `json:"forced,omitempty"`
+	Title  string `json:"title,omitempty"`
 }
 
 // EncodeHDR is the HDR format a conversion carries forward. For everything but Dolby Vision
@@ -379,7 +382,10 @@ func probe(ctx context.Context, ffprobe, path string) (*MediaInfo, error) {
 		case "subtitle":
 			mi.Subs = append(mi.Subs, SubStream{
 				SubIndex: mi.SubTracks, Codec: s.CodecName, Lang: s.Tags.Language, Text: textSubCodecs[s.CodecName],
-				Forced: s.Disposition.Forced == 1,
+				// Many releases mark forced tracks only in the title. Older cache rows lack
+				// the title and keep the flag alone; a new probe picks it up.
+				Forced: s.Disposition.Forced == 1 || strings.Contains(strings.ToLower(s.Tags.Title), "forced"),
+				Title:  s.Tags.Title,
 			})
 			mi.SubTracks++
 		}
