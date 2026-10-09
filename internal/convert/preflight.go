@@ -13,8 +13,10 @@ import (
 // re-encoded whole at a tighter setting, and one that didn't shrink enough was thrown away
 // after all that work.
 //
-// So a re-encode is rehearsed first: the exact encoder and settings, run on the stretches
-// the final quality check measures, each scored against the original.
+// So a re-encode is rehearsed first: the exact encoder and settings, run on a few clips
+// across the film, each scored against the original and held to the same bar as the final
+// check (average and worst scene). The final check then measures OTHER scenes
+// (verifyWindows): a target tuned to pass these clips is judged on scenes it wasn't tuned on.
 //
 //   - Short of the quality bar → the target is tightened now, on clips, not on the film.
 //   - The clips' size, scaled to the runtime, is a measured prediction of the output. A
@@ -28,9 +30,9 @@ import (
 // real-encode test can rehearse a short film.)
 var preflightMinDuration = 20 * 60.0
 
-// preflightMargin is how far over the quality bar the clips must score. The full check
-// samples the same stretches, but a clip is encoded without the frames around it, so its
-// score can differ from the film's by a hair.
+// preflightMargin is how far over the quality bar (both the average and the worst clip) the
+// clips must score. The full check samples different scenes, and a clip is encoded without
+// the frames around it, so the film's scores can differ from the clips' by a little.
 const preflightMargin = 0.002
 
 // hdr10plusStreamCost is how much bigger the HDR10+ pipeline's encode is than the clips:
@@ -69,6 +71,7 @@ func (s *Service) preflight(ctx context.Context, job *Job, src string, mi *Media
 		cp.Quality = v.quality
 		var bytes int64
 		var secs, sum float64
+		worst := 1.0
 		for i, w := range wins {
 			out := filepath.Join(dir, fmt.Sprintf("clip-%d.mkv", i+1))
 			if err := s.encodeClip(ctx, job, src, out, mi, enc, cp, trialClip{w.start, w.dur}, cores); err != nil {
@@ -85,6 +88,7 @@ func (s *Service) preflight(ctx context.Context, job *Job, src string, mi *Media
 			bytes += fileSize(out)
 			secs += w.dur
 			sum += sc
+			worst = min(worst, sc)
 			_ = os.Remove(out)
 			p := float64(i+1) / float64(len(wins))
 			s.update(job, func(j *Job) { j.Progress = p })
@@ -105,16 +109,17 @@ func (s *Service) preflight(ctx context.Context, job *Job, src string, mi *Media
 				savedPct(mi.SizeBytes, v.projected), humanBytes(mi.SizeBytes), humanBytes(v.projected))
 			return v, nil
 		}
-		if v.ssim >= minSSIM+preflightMargin {
+		if v.ssim >= minSSIMMean+preflightMargin && worst >= minSSIMWindow+preflightMargin {
 			return v, nil
 		}
 		next, ok := higherQuality(plan.VideoCodec, v.quality)
 		if !ok || round >= qualityRetries {
 			v.skipKind = SkipQualityGate
-			v.reason = fmt.Sprintf("test encodes couldn't reach the quality bar (SSIM %.4f at CRF %d) — kept the original", v.ssim, v.quality)
+			v.reason = fmt.Sprintf("test encodes couldn't reach the quality bar (SSIM %.4f average, %.4f lowest at CRF %d) — kept the original",
+				v.ssim, worst, v.quality)
 			return v, nil
 		}
-		s.event("info", fmt.Sprintf("%s: test clips scored SSIM %.4f at CRF %d — trying CRF %d", job.Title, v.ssim, v.quality, next))
+		s.event("info", fmt.Sprintf("%s: test clips scored SSIM %.4f average, %.4f lowest at CRF %d — trying CRF %d", job.Title, v.ssim, worst, v.quality, next))
 		v.quality = next
 	}
 }

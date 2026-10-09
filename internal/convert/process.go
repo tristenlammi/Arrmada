@@ -223,9 +223,9 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		s.update(job, func(j *Job) { j.State = StateVerifying })
 		s.event("info", fmt.Sprintf("Checking %s against the original…", job.Title))
 		sctx, cancel := context.WithTimeout(ctx, 25*time.Minute)
-		score, windows, err := s.computeSSIM(sctx, dst, src, plan.Crop.filter())
+		res, err := s.computeSSIM(sctx, dst, src, plan.Crop.filter())
 		cancel()
-		rec.ssimMean, rec.ssimWindows = score, windows
+		rec.ssimMean, rec.ssimWindows = res.Mean, res.Scores
 		if ctx.Err() != nil {
 			return
 		}
@@ -233,17 +233,19 @@ func (s *Service) process(ctx context.Context, job *Job) {
 			// FAIL CLOSED: an unmeasurable result is not a pass. Keep the original, and count
 			// it toward the failure limit (the outcome is the same every time for this file).
 			s.log.Warn("convert: quality check could not measure SSIM — keeping the original", "err", err)
+			s.event("warn", fmt.Sprintf("%s: quality check couldn't finish (%v)", job.Title, err))
 			s.finishAfterEncode(job, SkipQualityGate, "couldn't verify the encode matched the original — kept the original")
 			return
 		}
-		s.update(job, func(j *Job) { j.SSIM = score })
-		if score >= minSSIM {
-			s.event("info", fmt.Sprintf("%s: quality check passed (SSIM %.4f)", job.Title, score))
+		s.update(job, func(j *Job) { j.SSIM = res.Mean })
+		if res.passes() {
+			s.event("info", fmt.Sprintf("%s: quality check passed — %s", job.Title, res.summary()))
 			break
 		}
 		next, ok := higherQuality(plan.VideoCodec, plan.Quality)
 		if !ok || attempt >= qualityRetries {
-			s.finishAfterEncode(job, SkipQualityGate, fmt.Sprintf("couldn't reach the quality bar (SSIM %.4f after %d tries) — kept the original", score, attempt+1))
+			s.event("warn", fmt.Sprintf("%s: quality check failed — %s", job.Title, res.summary()))
+			s.finishAfterEncode(job, SkipQualityGate, fmt.Sprintf("couldn't reach the quality bar after %d tries: %s — kept the original", attempt+1, res.shortfall()))
 			return
 		}
 		plan.Quality = next
@@ -251,7 +253,7 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		if !s.waitAllowed(ctx, job) {
 			return
 		}
-		s.event("warn", fmt.Sprintf("%s: SSIM %.4f is below %.2f — encoding again at higher quality (try %d)", job.Title, score, minSSIM, attempt+2))
+		s.event("warn", fmt.Sprintf("%s: %s — encoding again at higher quality (try %d; %s)", job.Title, res.shortfall(), attempt+2, res.summary()))
 		s.update(job, func(j *Job) { j.State = StateEncoding; j.Progress = 0 })
 	}
 	rec.encodeEnd = time.Now()

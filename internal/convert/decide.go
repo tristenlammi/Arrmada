@@ -40,8 +40,12 @@ const (
 
 // The quality bar and the rules around it are fixed, not settings: they ARE the promise.
 const (
-	minSSIM      = 0.97 // an encode must score at least this against its source
-	minSavingPct = 20   // a re-encode must save at least this much, or the original stays
+	// An encode must average at least minSSIMMean against its source over the ten checked
+	// scenes, AND no single scene may score below minSSIMWindow — a mean alone let one
+	// visibly worse scene through behind nine good ones.
+	minSSIMMean   = 0.97
+	minSSIMWindow = 0.96
+	minSavingPct  = 20 // a re-encode must save at least this much, or the original stays
 	// expectedSavingPct is what the ESTIMATE must promise before a re-encode is attempted at
 	// all — above minSavingPct, so a file the estimate puts on the borderline isn't given
 	// hours of encoding only to be thrown away by the 20% rule at the end.
