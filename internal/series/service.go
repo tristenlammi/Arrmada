@@ -242,6 +242,7 @@ func (s *Service) AddWith(ctx context.Context, tmdbID int, qualityProfile string
 	if created.IsAnime() {
 		s.refreshSceneMap(ctx, created.ID, d.TVDBID) // TheXEM scene mapping for split-season anime
 	}
+	s.syncTMDBAliases(ctx, created.ID, d)
 	if err := s.repo.ApplyMonitorPreset(ctx, created.ID, preset, opts.MonitorNewSeasons); err != nil {
 		s.log.Warn("series: couldn't apply the monitoring preset", "series", created.Title, "preset", preset, "err", err)
 	} else if got, err := s.repo.Get(ctx, created.ID); err == nil {
@@ -376,6 +377,7 @@ func (s *Service) refresh(ctx context.Context, id int64, opts RefreshOptions) (S
 		// The show row doesn't depend on numbering, so it follows the provider whatever
 		// applyNumbering decided about the episodes.
 		s.refreshShow(ctx, sr, d)
+		s.syncTMDBAliases(ctx, id, d)
 		if err := s.repo.MarkRefreshed(ctx, id); err != nil {
 			s.log.Warn("series: could not record the refresh time", "series", sr.Title, "err", err)
 		}
@@ -425,12 +427,12 @@ func (s *Service) refreshShow(ctx context.Context, sr Series, d *metadata.Series
 		return
 	}
 	if got.Title != sr.Title && parser.TitleKey(got.Title) != parser.TitleKey(sr.Title) {
-		// Unless the owner already has an alias for it: re-adding would reset the season
-		// they pinned it to.
-		if !s.hasAliasKey(ctx, sr.ID, parser.TitleKey(sr.Title)) {
-			if _, err := s.AddAlias(ctx, sr.ID, sr.Title, 0); err != nil {
-				s.log.Warn("series: could not keep the old title as an alias", "series", got.Title, "old", sr.Title, "err", err)
-			}
+		// An automatic alias: matched exactly, like the title it was (a prefix match on an
+		// old title would swallow spin-offs named after it). It never replaces a row the
+		// owner already has for that key — that would reset a season they pinned — or one
+		// they removed.
+		if _, err := s.repo.AddAutoAlias(ctx, sr.ID, sr.Title, parser.TitleKey(sr.Title)); err != nil {
+			s.log.Warn("series: could not keep the old title as an alias", "series", got.Title, "old", sr.Title, "err", err)
 		}
 		s.AddEvent(ctx, sr.ID, "title", fmt.Sprintf("Title changed: %s → %s", sr.Title, got.Title))
 		s.log.Info("series: title changed", "old", sr.Title, "new", got.Title)
@@ -439,15 +441,6 @@ func (s *Service) refreshShow(ctx context.Context, sr Series, d *metadata.Series
 		s.AddEvent(ctx, sr.ID, "status", fmt.Sprintf("Status: %s → %s", sr.Status, got.Status))
 		s.log.Info("series: status changed", "series", got.Title, "old", sr.Status, "new", got.Status)
 	}
-}
-
-func (s *Service) hasAliasKey(ctx context.Context, id int64, key string) bool {
-	for _, a := range s.repo.Aliases(ctx, id) {
-		if a.Key() == key {
-			return true
-		}
-	}
-	return false
 }
 
 // applyNumbering brings the stored episode listing in line with a fresh one, without ever
@@ -1910,7 +1903,7 @@ func NormTitle(s string) string { return parser.TitleKey(s) }
 // extraFrom projects metadata into the stored extra blob.
 func extraFrom(d *metadata.SeriesDetails) *SeriesExtra {
 	ex := &SeriesExtra{Genres: d.Genres, BackdropURL: d.BackdropURL, OriginalLanguage: d.OriginalLang, OriginCountry: d.OriginCountry}
-	// Keep the romaji/original title only when it differs from the display title, so
+	// Keep the original-language title only when it differs from the display title, so
 	// anime searches can also query the name releases are actually tagged with.
 	if d.OriginalName != "" && !strings.EqualFold(d.OriginalName, d.Title) {
 		ex.OriginalTitle = d.OriginalName

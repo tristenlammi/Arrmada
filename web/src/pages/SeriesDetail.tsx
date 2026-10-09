@@ -353,7 +353,7 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowRename(true)}>Rename</button>
         <DeleteButton series={series} />
       </div>
-      {series.series_type === "anime" && <AliasPanel series={series} />}
+      <AliasPanel series={series} />
       {series.series_type === "anime" && <SceneMapPanel series={series} />}
       {showPaste && (
         <UploadTorrentModal
@@ -889,13 +889,16 @@ function SeriesBlocklistPanel({ seriesId, refreshKey }: { seriesId: number; refr
   );
 }
 
-// AliasPanel manages the other titles a show is released under.
+// AliasPanel manages the other titles a show is released under. Every show has it,
+// collapsed: refresh seeds it from TMDB's alternative titles (the romaji name fansub groups
+// use, US/UK variant titles), so most shows never need it opened.
 //
 // An arc released as its own show ("BLEACH Thousand-Year Blood War" for Bleach) is a
 // title no amount of normalising will ever match, so those releases are discarded
 // before they're scored. Pinning the alias to a TMDB season also fixes the numbering:
 // the arc's own S01/S02 are cours inside that season, not the series' own seasons.
 function AliasPanel({ series }: { series: SeriesT }) {
+  const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<SeriesAlias[] | null>(null);
   const [title, setTitle] = useState("");
   const [season, setSeason] = useState("");
@@ -921,18 +924,27 @@ function AliasPanel({ series }: { series: SeriesT }) {
     }
   };
 
-  // Nothing configured and nothing being typed: stay out of the way. This is a fix for
-  // a specific problem, not something most shows ever need.
   const empty = rows !== null && rows.length === 0;
+  const count = rows?.length ?? 0;
 
   return (
     <div className="mt-3 rounded-xl p-3.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
-      <div className="text-[12.5px] font-semibold">Alternate titles</div>
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 text-left"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className="text-[12.5px] font-semibold">Alternate titles</span>
+        {count > 0 && <span className="font-mono text-[11px] text-ink-faint">{count}</span>}
+        <span className="ml-auto font-mono text-[11px] text-ink-faint">{open ? "Hide" : "Show"}</span>
+      </button>
+      {open && (<>
       <p className="mb-2.5 mt-0.5 text-[11px] text-ink-faint">
-        Other names this show is released under, for when an arc ships as its own show. Set
-        &ldquo;maps to season&rdquo; so the alias&apos; <code className="mx-1 font-mono">S02E02</code> reads as
-        &ldquo;second cour, episode 2&rdquo; of that season — without it the title matches but the numbering
-        is still wrong.
+        Other names this show is released under. Titles from TMDB are added on refresh and only match
+        exactly. Add your own for an arc that ships as its own show, and set &ldquo;maps to season&rdquo; so
+        the alias&apos; <code className="mx-1 font-mono">S02E02</code> reads as &ldquo;second cour, episode 2&rdquo; of
+        that season — without it the title matches but the numbering is still wrong.
       </p>
 
       {rows && rows.length > 0 && (
@@ -943,9 +955,16 @@ function AliasPanel({ series }: { series: SeriesT }) {
               <span className="shrink-0 font-mono text-[11px] text-ink-faint">
                 {a.tmdb_season > 0 ? `→ season ${a.tmdb_season}` : "title only"}
               </span>
+              <span
+                className="shrink-0 rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase"
+                style={{ background: "var(--panel)", color: "var(--ink-faint)", border: "1px solid var(--line)" }}
+              >
+                {a.source === "tmdb" ? "from TMDB" : "added by you"}
+              </span>
               <button
                 className="ml-auto shrink-0 text-[11px] font-semibold"
                 style={{ color: "var(--reject)" }}
+                title={a.source === "tmdb" ? "Stops matching this title; a refresh won't add it back" : undefined}
                 onClick={async () => { await api.deleteSeriesAlias(series.id, a.id); load(); }}
               >
                 Remove
@@ -990,6 +1009,7 @@ function AliasPanel({ series }: { series: SeriesT }) {
       {empty && !err && (
         <p className="mb-0 mt-2 text-[11px] text-ink-faint">No alternate titles — most shows never need one.</p>
       )}
+      </>)}
     </div>
   );
 }

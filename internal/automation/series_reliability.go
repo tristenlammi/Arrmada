@@ -457,11 +457,12 @@ func seriesTitleMatches(relTitle string, s series.Series) bool {
 // (empty when the title doesn't name the show at all). It is series.FitRelease — one rule
 // for the sweeps, RSS, interactive search, upgrades, the in-flight check and import:
 //
-//   - the title key matches the show's title, an anime's original (romaji) title, or a
-//     user-declared alias. Aliases match as a whole-word prefix: anime arcs are released
-//     as if they were their own show ("BLEACH Thousand-Year Blood War"), and groups suffix
-//     an arc's name with a per-cour subtitle. The show's own title is still compared for
-//     equality, so "Below Deck" can't swallow "Below Deck Mediterranean".
+//   - the title key matches the show's title, an anime's Latin-script original title or
+//     an automatic alias (TMDB's romaji and US/UK variant titles) exactly, or one of the
+//     owner's aliases as a whole-word prefix: anime arcs are released as if they were
+//     their own show ("BLEACH Thousand-Year Blood War"), and groups suffix an arc's name
+//     with a per-cour subtitle. Everything else is compared for equality, so "Below Deck"
+//     can't swallow "Below Deck Mediterranean".
 //   - a year before the season marker is within a year of the show's ("Doctor.Who.2005"
 //     is never the 1963 show). An air year after the marker doesn't count.
 //   - a country tag is the show's origin country ("The.Office.US" is never the UK show).

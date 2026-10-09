@@ -68,8 +68,11 @@ type SeriesExtra struct {
 	Genres      []string     `json:"genres,omitempty"`
 	BackdropURL string       `json:"backdrop_url,omitempty"`
 	Cast        []CastMember `json:"cast,omitempty"`
-	// OriginalTitle is TMDB's original_name (e.g. romaji for anime). Used as an
-	// alternate search title, since anime is often released under its romaji name.
+	// OriginalTitle is TMDB's original_name: the title in the show's own language and
+	// script. For a Japanese show that is kana or kanji (葬送のフリーレン), not the romaji
+	// releases use, so it only counts as a release title when it is Latin script
+	// (parser.IsLatin). The romaji name arrives as an automatic alias from TMDB's
+	// alternative titles.
 	OriginalTitle string `json:"original_title,omitempty"`
 	// OriginalLanguage is TMDB's original_language ("ja", "en"…), so Convert can keep a
 	// show's original-language audio when it trims audio tracks to your languages.

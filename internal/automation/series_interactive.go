@@ -188,7 +188,7 @@ func (c *Coordinator) searchSeriesScope(ctx context.Context, s series.Series, se
 
 	// The arc's own name is a different search entirely — the indexer doesn't know the
 	// two titles are one show, so the series' title never returns the arc's releases.
-	for _, a := range s.Aliases {
+	for _, a := range searchAliases(s) {
 		aq := indexerQuery(a.Title)
 		if aq == "" || aq == title {
 			continue

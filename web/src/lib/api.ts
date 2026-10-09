@@ -588,7 +588,9 @@ export interface DiskGuardStatus {
   shared_with_library: boolean;
 }
 
-export interface SeriesAlias { id: number; title: string; tmdb_season: number }
+// source: "tmdb" for an alias seeded from TMDB's alternative titles (or a renamed show's old title),
+// "user" for one the owner typed. Removing a TMDB one switches it off rather than deleting it.
+export interface SeriesAlias { id: number; title: string; tmdb_season: number; source?: "user" | "tmdb" }
 
 export interface AudioStreamInfo { aud_index: number; codec: string; lang: string; channels: number }
 export interface SubStreamInfo { sub_index: number; codec: string; lang: string; text: boolean }

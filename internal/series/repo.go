@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/store"
 )
 
@@ -1340,10 +1341,24 @@ func b2i(b bool) int {
 	return 0
 }
 
-// Aliases returns a series' alternate release titles, oldest first.
+// Aliases returns a series' alternate release titles, oldest first — the enabled ones,
+// which are all that matching and search ever see.
 func (r *Repo) Aliases(ctx context.Context, seriesID int64) []Alias {
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT id, title, tmdb_season FROM series_aliases WHERE series_id = ? ORDER BY id`, seriesID)
+	return r.aliases(ctx, seriesID, false)
+}
+
+// AllAliases is Aliases including automatic aliases the owner switched off, for the sync
+// that must not re-add them.
+func (r *Repo) AllAliases(ctx context.Context, seriesID int64) []Alias {
+	return r.aliases(ctx, seriesID, true)
+}
+
+func (r *Repo) aliases(ctx context.Context, seriesID int64, withDisabled bool) []Alias {
+	q := `SELECT id, title, tmdb_season, source, disabled FROM series_aliases WHERE series_id = ?`
+	if !withDisabled {
+		q += ` AND disabled = 0`
+	}
+	rows, err := r.db.QueryContext(ctx, q+` ORDER BY id`, seriesID)
 	if err != nil {
 		return nil
 	}
@@ -1351,7 +1366,7 @@ func (r *Repo) Aliases(ctx context.Context, seriesID int64) []Alias {
 	var out []Alias
 	for rows.Next() {
 		var a Alias
-		if err := rows.Scan(&a.ID, &a.Title, &a.TMDBSeason); err != nil {
+		if err := rows.Scan(&a.ID, &a.Title, &a.TMDBSeason, &a.Source, &a.Disabled); err != nil {
 			continue
 		}
 		out = append(out, a)
@@ -1359,24 +1374,52 @@ func (r *Repo) Aliases(ctx context.Context, seriesID int64) []Alias {
 	return out
 }
 
-// AddAlias records an alternate title. Re-adding one that already exists updates its
-// season rather than failing — the user is correcting it, not making a mistake.
+// AddAlias records an alternate title the owner typed. Re-adding one that already exists
+// updates its season rather than failing — the user is correcting it, not making a
+// mistake — and makes it theirs: an automatic alias they had switched off comes back as
+// one of their own.
 func (r *Repo) AddAlias(ctx context.Context, seriesID int64, title, key string, season int) (Alias, error) {
-	res, err := r.db.ExecContext(ctx,
-		`INSERT INTO series_aliases (series_id, title, title_key, tmdb_season) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(series_id, title_key) DO UPDATE SET title = excluded.title, tmdb_season = excluded.tmdb_season`,
-		seriesID, title, key, season)
+	var a Alias
+	err := r.db.QueryRowContext(ctx,
+		`INSERT INTO series_aliases (series_id, title, title_key, tmdb_season, source, disabled) VALUES (?, ?, ?, ?, 'user', 0)
+		 ON CONFLICT(series_id, title_key) DO UPDATE SET title = excluded.title, tmdb_season = excluded.tmdb_season,
+		   source = 'user', disabled = 0
+		 RETURNING id, title, tmdb_season, source`,
+		seriesID, title, key, season).Scan(&a.ID, &a.Title, &a.TMDBSeason, &a.Source)
 	if err != nil {
 		return Alias{}, err
 	}
-	id, _ := res.LastInsertId()
-	return Alias{ID: id, Title: title, TMDBSeason: season}, nil
+	return a, nil
 }
 
-// DeleteAlias removes one alternate title. Scoped by series so an id from another
-// series can't be deleted through it.
+// AddAutoAlias records an automatic (title-only) alias unless the series already has a
+// row for that key — the owner's, or one they switched off. It never changes an existing
+// row. added reports whether a row was inserted.
+func (r *Repo) AddAutoAlias(ctx context.Context, seriesID int64, title, key string) (added bool, err error) {
+	res, err := r.db.ExecContext(ctx,
+		`INSERT INTO series_aliases (series_id, title, title_key, tmdb_season, source) VALUES (?, ?, ?, 0, 'tmdb')
+		 ON CONFLICT(series_id, title_key) DO NOTHING`,
+		seriesID, title, key)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
+// DeleteAlias removes one alternate title the owner added, or switches off an automatic
+// one (kept so a refresh doesn't re-add it). Scoped by series so an id from another
+// series can't be touched through it.
 func (r *Repo) DeleteAlias(ctx context.Context, seriesID, aliasID int64) error {
 	res, err := r.db.ExecContext(ctx,
+		`UPDATE series_aliases SET disabled = 1 WHERE series_id = ? AND id = ? AND source = 'tmdb'`, seriesID, aliasID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+	res, err = r.db.ExecContext(ctx,
 		`DELETE FROM series_aliases WHERE series_id = ? AND id = ?`, seriesID, aliasID)
 	if err != nil {
 		return err
@@ -1385,6 +1428,39 @@ func (r *Repo) DeleteAlias(ctx context.Context, seriesID, aliasID int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// TakenTitleKeys is every other series' title key and alias key (switched-off ones
+// included), so an automatic alias never claims a name another show in the library goes
+// by.
+func (r *Repo) TakenTitleKeys(ctx context.Context, exceptSeriesID int64) (map[string]bool, error) {
+	out := map[string]bool{}
+	rows, err := r.db.QueryContext(ctx, `SELECT title FROM series WHERE id != ?`, exceptSeriesID)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var t string
+		if rows.Scan(&t) == nil {
+			out[parser.TitleKey(t)] = true
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows, err = r.db.QueryContext(ctx, `SELECT title_key FROM series_aliases WHERE series_id != ?`, exceptSeriesID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		if rows.Scan(&k) == nil {
+			out[k] = true
+		}
+	}
+	return out, rows.Err()
 }
 
 // SeasonEpisodeNumbers returns one season's episode numbers in order. Used to read an
@@ -1412,7 +1488,7 @@ func (r *Repo) SeasonEpisodeNumbers(ctx context.Context, seriesID int64, season 
 // AliasTitlesFor returns every series' alias keys in one query, so listing series
 // doesn't cost a lookup per row.
 func (r *Repo) AliasTitlesFor(ctx context.Context) map[int64][]Alias {
-	rows, err := r.db.QueryContext(ctx, `SELECT series_id, id, title, tmdb_season FROM series_aliases ORDER BY series_id, id`)
+	rows, err := r.db.QueryContext(ctx, `SELECT series_id, id, title, tmdb_season, source FROM series_aliases WHERE disabled = 0 ORDER BY series_id, id`)
 	if err != nil {
 		return nil
 	}
@@ -1421,7 +1497,7 @@ func (r *Repo) AliasTitlesFor(ctx context.Context) map[int64][]Alias {
 	for rows.Next() {
 		var sid int64
 		var a Alias
-		if err := rows.Scan(&sid, &a.ID, &a.Title, &a.TMDBSeason); err != nil {
+		if err := rows.Scan(&sid, &a.ID, &a.Title, &a.TMDBSeason, &a.Source); err != nil {
 			continue
 		}
 		out[sid] = append(out[sid], a)

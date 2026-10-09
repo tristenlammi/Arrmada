@@ -193,3 +193,22 @@ func SplitCountry(title string) (base, cc string) {
 	}
 	return strings.Join(words[:len(words)-1], " "), code
 }
+
+// IsLatin reports whether a title is written in the Latin alphabet — what release names
+// use. TMDB's original_name for a Japanese show is kana or kanji (葬送のフリーレン), which
+// no release carries, so it is no use as a release title; its romaji form ("Sousou no
+// Frieren") is. Digits and punctuation don't count either way; a title with no letters
+// at all is not Latin.
+func IsLatin(title string) bool {
+	letters := 0
+	for _, r := range title {
+		if !unicode.IsLetter(r) {
+			continue
+		}
+		if !unicode.Is(unicode.Latin, r) {
+			return false
+		}
+		letters++
+	}
+	return letters > 0
+}

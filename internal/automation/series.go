@@ -597,6 +597,28 @@ func indexerQuery(title string) string {
 	return strings.Join(strings.Fields(b.String()), " ")
 }
 
+// maxTMDBAliasQueries caps how many automatic (TMDB) aliases a search also queries. A show
+// can carry five; each is a full indexer query, and the first — romaji first — are the
+// ones releases are actually named after.
+const maxTMDBAliasQueries = 2
+
+// searchAliases are the aliases a search queries by name: every alias the owner added,
+// plus the first maxTMDBAliasQueries automatic ones.
+func searchAliases(s series.Series) []series.Alias {
+	var out []series.Alias
+	auto := 0
+	for _, a := range s.Aliases {
+		if a.Auto() {
+			if auto >= maxTMDBAliasQueries {
+				continue
+			}
+			auto++
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
 // sortedSeasons orders seasons so the fan-out is deterministic and the earliest missing
 // seasons are queried first when the cap bites.
 func sortedSeasons(m map[int]bool) []int {
@@ -640,9 +662,9 @@ func (c *Coordinator) searchSeriesReleasesExcept(ctx context.Context, s series.S
 
 	// Alias queries. An arc released under its own name ("BLEACH Thousand-Year Blood
 	// War") simply isn't in the results for the series' real title — the indexer has no
-	// idea the two are the same show — so each alias gets its own broad query. Only
-	// runs for a series that has aliases, which is almost none of them.
-	for _, a := range s.Aliases {
+	// idea the two are the same show — so each alias gets its own broad query: every one
+	// the owner added, and the first two from TMDB (see searchAliases).
+	for _, a := range searchAliases(s) {
 		aq := indexerQuery(a.Title)
 		if aq == "" || aq == title {
 			continue

@@ -20,8 +20,9 @@ type ReleaseFit struct {
 	// Title: the release's title names this show — its own title, its original title
 	// (anime), its title with the release's country tag taken off, or one of its aliases.
 	Title bool
-	// Alias: the title matched only through an alias. Aliases are deliberate alternate
-	// names, so the year and country checks don't apply to them.
+	// Alias: the title matched only through an alias. The owner's aliases are deliberate
+	// names for this one show, so the year and country checks don't apply to them; an
+	// automatic alias gets the same checks as the show's own title.
 	Alias bool
 	// OK: Title, and the year and country agree (or the release doesn't name them).
 	OK bool
@@ -40,13 +41,17 @@ var reTitleYear = regexp.MustCompile(`\b(?:19|20)\d{2}\b`)
 // and import routing — so they can't disagree about which show a release is.
 //
 // Three things must hold:
-//   - the title key matches the show's title or original title, or an alias matches;
+//   - the title key matches the show's title, its Latin-script original title (anime) or
+//     an automatic alias exactly, or one of the owner's aliases as a whole-word prefix;
 //   - the release's title year (parser.Release.TitleYear) is absent, or the show's year is
 //     unknown, or the two are within a year of each other, or the show's title itself has a
 //     year in it;
 //   - the release's country tag is absent, or it is one of the show's origin countries. A
 //     title that only matches once the tag is taken off ("The Office US" for "The Office")
 //     needs the country to be known and to agree.
+//
+// The year and country checks apply to the show's own titles and its automatic aliases;
+// the owner's aliases are deliberate names for one show and skip them.
 func FitRelease(p parser.Release, s Series) ReleaseFit {
 	key := parser.TitleKey(p.Title)
 	if key == "" {
@@ -57,69 +62,101 @@ func FitRelease(p parser.Release, s Series) ReleaseFit {
 	if cc != "" {
 		baseKey = parser.TitleKey(base)
 	}
-	exact, stripped := false, false
-	for _, t := range s.ownTitles() {
-		k := parser.TitleKey(t)
-		if k == "" {
-			continue
-		}
-		if k == key {
-			exact = true
-		} else if baseKey != "" && k == baseKey {
-			stripped = true
-		}
-	}
-	if exact || stripped {
-		f := ReleaseFit{Title: true}
-		if cc != "" {
-			fits, known := s.countryFits(cc)
-			switch {
-			case fits:
-				f.Country = known
-			case !known && exact:
-				// Origin not stored yet (not refreshed since it was): the title matched as
-				// written, which is how it always matched, so don't start refusing it.
-			default:
-				if known {
-					f.Why = fmt.Sprintf("tagged %s, but the show is from %s", cc, strings.Join(s.Extra.OriginCountry, ", "))
-				} else {
-					f.Why = fmt.Sprintf("tagged %s, and the show's country isn't known yet", cc)
-				}
-				return f
-			}
-		}
-		if p.TitleYear > 0 && s.Year > 0 && !reTitleYear.MatchString(s.Title) {
-			if d := p.TitleYear - s.Year; d < -1 || d > 1 {
-				f.Why = fmt.Sprintf("the release is the %d show, this one is from %d", p.TitleYear, s.Year)
-				return f
-			}
-			f.Year = true
-		}
-		f.OK = true
+	// The show's own titles first, then its automatic aliases — both exact, both with the
+	// year and country checks — and only then the owner's aliases.
+	if f, ok := s.fitTitles(p, key, baseKey, cc, s.ownTitles()); ok {
 		return f
 	}
-	if s.aliasMatches(p.Title) {
+	if f, ok := s.fitTitles(p, key, baseKey, cc, s.autoAliasTitles()); ok {
+		f.Alias = true
+		return f
+	}
+	if s.userAliasMatches(p.Title) {
 		return ReleaseFit{Title: true, Alias: true, OK: true}
 	}
 	return ReleaseFit{}
 }
 
-// ownTitles are the titles a release is checked against with year and country: the show's
-// title, and for anime its original title, since anime is often released under it.
+// fitTitles judges a release against titles that must match exactly (or once the
+// release's country tag is taken off), with the year and country checks. ok is false when
+// none of the titles is the release's.
+func (s Series) fitTitles(p parser.Release, key, baseKey, cc string, titles []string) (ReleaseFit, bool) {
+	matched, exact := "", false
+	for _, t := range titles {
+		k := parser.TitleKey(t)
+		if k == "" {
+			continue
+		}
+		if k == key {
+			matched, exact = t, true
+			break
+		}
+		if baseKey != "" && k == baseKey && matched == "" {
+			matched = t
+		}
+	}
+	if matched == "" {
+		return ReleaseFit{}, false
+	}
+	f := ReleaseFit{Title: true}
+	if cc != "" {
+		fits, known := s.countryFits(cc, matched)
+		switch {
+		case fits:
+			f.Country = known
+		case !known && exact:
+			// Origin not stored yet (not refreshed since it was): the title matched as
+			// written, which is how it always matched, so don't start refusing it.
+		default:
+			if known {
+				f.Why = fmt.Sprintf("tagged %s, but the show is from %s", cc, strings.Join(s.Extra.OriginCountry, ", "))
+			} else {
+				f.Why = fmt.Sprintf("tagged %s, and the show's country isn't known yet", cc)
+			}
+			return f, true
+		}
+	}
+	if p.TitleYear > 0 && s.Year > 0 && !reTitleYear.MatchString(s.Title) {
+		if d := p.TitleYear - s.Year; d < -1 || d > 1 {
+			f.Why = fmt.Sprintf("the release is the %d show, this one is from %d", p.TitleYear, s.Year)
+			return f, true
+		}
+		f.Year = true
+	}
+	f.OK = true
+	return f, true
+}
+
+// ownTitles are the show's own names: its title, and for anime its original title, since
+// anime is often released under it — but only a Latin-script one. TMDB's original_name for
+// a Japanese show is kana or kanji, which no release carries; the romaji name comes from
+// the automatic aliases instead.
 func (s Series) ownTitles() []string {
 	out := []string{s.Title}
-	if s.IsAnime() && s.Extra != nil && s.Extra.OriginalTitle != "" {
+	if s.IsAnime() && s.Extra != nil && s.Extra.OriginalTitle != "" && parser.IsLatin(s.Extra.OriginalTitle) {
 		out = append(out, s.Extra.OriginalTitle)
 	}
 	return out
 }
 
+// autoAliasTitles are the aliases added automatically (TMDB's alternative titles, a
+// renamed show's old title).
+func (s Series) autoAliasTitles() []string {
+	var out []string
+	for _, a := range s.Aliases {
+		if a.Auto() {
+			out = append(out, a.Title)
+		}
+	}
+	return out
+}
+
 // countryFits reports whether a release's country tag agrees with the show. known is
-// false when the show's origin isn't stored, in which case fits is false too. A show whose
-// own title ends in the same tag ("This Is Us", "Shameless US") always fits: the tag is
-// part of its name.
-func (s Series) countryFits(cc string) (fits, known bool) {
-	if _, own := parser.SplitCountry(s.Title); own == cc {
+// false when the show's origin isn't stored, in which case fits is false too. A title that
+// itself ends in the same tag ("This Is Us", "Shameless US") always fits: the tag is part
+// of the name.
+func (s Series) countryFits(cc, matched string) (fits, known bool) {
+	if _, own := parser.SplitCountry(matched); own == cc {
 		return true, false
 	}
 	if s.Extra == nil || len(s.Extra.OriginCountry) == 0 {
@@ -133,13 +170,13 @@ func (s Series) countryFits(cc string) (fits, known bool) {
 	return false, true
 }
 
-// aliasMatches reports whether a release title matches one of the show's aliases: a
+// userAliasMatches reports whether a release title matches one of the owner's aliases: a
 // whole-word prefix, so an arc's alias survives a per-cour subtitle or junk the parser left
 // ("Thousand-Year Blood War The Calamity"). The word boundary keeps "Bleach" off
-// "Bleachers".
-func (s Series) aliasMatches(title string) bool {
+// "Bleachers". Only the owner's aliases get this; automatic ones match exactly.
+func (s Series) userAliasMatches(title string) bool {
 	for _, a := range s.Aliases {
-		if parser.TitleHasPrefix(title, a.Title) {
+		if !a.Auto() && parser.TitleHasPrefix(title, a.Title) {
 			return true
 		}
 	}
