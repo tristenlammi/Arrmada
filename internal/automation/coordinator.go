@@ -50,7 +50,7 @@ type Coordinator struct {
 	books        *books.Service  // set post-construction via SetBooks
 	music        *music.Service  // set post-construction via SetMusic
 	imp          *library.Importer
-	recycle      string // recycle-bin dir for book deletes ("" = hard delete); set via SetRecycleDir
+	recycle      string // recycle-bin dir for book deletes ("" = bin off); set via SetRecycleDir
 
 	// removeTorrent overrides downloads.Remove in tests; nil uses the real client.
 	removeTorrent func(ctx context.Context, hash string, deleteData bool) error
@@ -126,8 +126,11 @@ func (c *Coordinator) seriesImported(ctx context.Context, seriesID int64, episod
 }
 
 // SetRecycleDir points book file deletion at the recycle bin (matching movies). Empty
-// keeps the hard-delete behavior.
+// means the bin is switched off and deletes are permanent.
 func (c *Coordinator) SetRecycleDir(dir string) { c.recycle = dir }
+
+// bin is where book files and series duplicates go when deleted (off = permanent).
+func (c *Coordinator) bin() library.Bin { return library.SingleBin(c.recycle) }
 
 // SetSeries wires the series module + its importer for TV acquisition.
 func (c *Coordinator) SetSeries(s *series.Service, imp *library.Importer) {

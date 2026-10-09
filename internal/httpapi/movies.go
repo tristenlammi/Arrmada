@@ -395,6 +395,9 @@ func (a *api) handleDeleteVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.deps.Movies.DeleteVersion(r.Context(), vid); err != nil {
+		if a.writeBinRefusal(w, err) {
+			return
+		}
 		a.writeError(w, http.StatusInternalServerError, "could not delete version")
 		return
 	}
@@ -412,6 +415,9 @@ func (a *api) handleDeleteVersionFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.deps.Movies.DeleteVersionFile(r.Context(), id, vid); err != nil {
+		if a.writeBinRefusal(w, err) {
+			return
+		}
 		a.writeError(w, http.StatusInternalServerError, "could not delete file")
 		return
 	}
@@ -508,6 +514,9 @@ func (a *api) handleDeleteMovieFile(w http.ResponseWriter, r *http.Request) {
 	if err := a.deps.Movies.DeleteFile(r.Context(), id); err != nil {
 		if errors.Is(err, movies.ErrNotFound) {
 			a.writeError(w, http.StatusNotFound, "movie not found")
+			return
+		}
+		if a.writeBinRefusal(w, err) {
 			return
 		}
 		a.writeError(w, http.StatusInternalServerError, "could not delete file")
@@ -720,9 +729,14 @@ func (a *api) handleDeleteMovie(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	deleteFiles := r.URL.Query().Get("delete_files") == "true"
-	if err := a.deps.Movies.Delete(r.Context(), id, deleteFiles); err != nil {
+	// Detached from the request: moving files to a bin on another disk is a copy, and a
+	// browser giving up part-way must not leave the files binned while the movie stays.
+	if err := a.deps.Movies.Delete(context.WithoutCancel(r.Context()), id, deleteFiles); err != nil {
 		if errors.Is(err, movies.ErrNotFound) {
 			a.writeError(w, http.StatusNotFound, "movie not found")
+			return
+		}
+		if a.writeBinRefusal(w, err) {
 			return
 		}
 		a.writeError(w, http.StatusInternalServerError, "could not delete movie")

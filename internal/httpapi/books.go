@@ -407,6 +407,9 @@ func (a *api) handleDeleteBookFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.deps.Automation.DeleteBookEdition(r.Context(), id, kind); err != nil {
+		if a.writeBinRefusal(w, err) {
+			return
+		}
 		a.writeError(w, http.StatusInternalServerError, "could not delete file")
 		return
 	}
@@ -1001,19 +1004,41 @@ func (a *api) handleDeleteBook(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Detached from the request so a browser giving up part-way can't strand the files in
+	// the bin while the book stays.
+	ctx := context.WithoutCancel(r.Context())
 	if r.URL.Query().Get("delete_files") == "true" {
-		// Remove both editions' file(s) from disk before forgetting the book. Each is a
-		// no-op if the edition has nothing on disk; they share a folder so DeleteBookEdition
-		// only removes its own kind's files.
-		_ = a.deps.Automation.DeleteBookEdition(r.Context(), id, books.KindEbook)
-		_ = a.deps.Automation.DeleteBookEdition(r.Context(), id, books.KindAudiobook)
-		if b, err := a.deps.Books.Get(r.Context(), id); err == nil {
-			for _, v := range b.AudioVersions {
-				_ = a.deps.Automation.DeleteAudioVersionFile(r.Context(), id, v.ID)
+		// Remove both editions' file(s) and every audio version's from disk before
+		// forgetting the book. Each is a no-op if it has nothing on disk; they share a
+		// folder so DeleteBookEdition only removes its own kind's files. The first file
+		// the recycle bin refuses stops the delete with the book kept.
+		b, err := a.deps.Books.Get(ctx, id)
+		if err != nil {
+			if errors.Is(err, books.ErrNotFound) {
+				a.writeError(w, http.StatusNotFound, "book not found")
+				return
+			}
+			a.writeError(w, http.StatusInternalServerError, "could not delete book")
+			return
+		}
+		steps := []func() error{
+			func() error { return a.deps.Automation.DeleteBookEdition(ctx, id, books.KindEbook) },
+			func() error { return a.deps.Automation.DeleteBookEdition(ctx, id, books.KindAudiobook) },
+		}
+		for _, v := range b.AudioVersions {
+			steps = append(steps, func() error { return a.deps.Automation.DeleteAudioVersionFile(ctx, id, v.ID) })
+		}
+		for _, step := range steps {
+			if err := step(); err != nil {
+				if a.writeBinRefusal(w, err) {
+					return
+				}
+				a.writeError(w, http.StatusInternalServerError, "could not delete the book's files — the book was kept")
+				return
 			}
 		}
 	}
-	if err := a.deps.Books.Delete(r.Context(), id); err != nil {
+	if err := a.deps.Books.Delete(ctx, id); err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not delete book")
 		return
 	}

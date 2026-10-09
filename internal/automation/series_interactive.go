@@ -677,15 +677,10 @@ func (c *Coordinator) DeleteSeriesDuplicate(ctx context.Context, seriesID int64,
 			if e.Path != path {
 				continue
 			}
-			if c.recycle != "" {
-				if _, rerr := library.RecycleFile(c.recycle, path); rerr != nil {
-					c.log.Warn("series: recycling a duplicate failed, hard-deleting", "path", path, "err", rerr)
-					if derr := os.Remove(path); derr != nil {
-						return derr
-					}
-				}
-			} else if derr := os.Remove(path); derr != nil {
-				return derr
+			// Into the bin, or for good only when the bin is deliberately off. A bin that
+			// refuses the file leaves it in place and says why.
+			if _, err := library.RemoveToBin(c.bin(), path); err != nil {
+				return err
 			}
 			c.log.Info("series: deleted a duplicate episode file", "series", seriesID,
 				"episode", fmt.Sprintf("S%02dE%02d", d.Season, d.Episode), "path", path)

@@ -739,6 +739,19 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst string,
 		s.finishSkip(job, SkipBinFull, reason+" — the encode was discarded and the original kept")
 		return
 	}
+	// A different file already at the .mkv name goes to the bin before the original does:
+	// the rename below would otherwise overwrite it, and if the bin refuses it the
+	// original must still be in place to keep.
+	if finalPath != src {
+		if _, e := os.Stat(finalPath); e == nil {
+			if err := s.retire(finalPath); err != nil {
+				s.binMu.Unlock()
+				_ = os.Remove(part)
+				s.finish(job, StateFailed, "could not move the file already at "+filepath.Base(finalPath)+" to the recycle bin: "+err.Error()+" — kept the original")
+				return
+			}
+		}
+	}
 	s.recordSwap(job, part, finalPath, src)
 	err = s.retire(src)
 	s.binMu.Unlock()
@@ -747,13 +760,6 @@ func (s *Service) finalizeOutput(ctx context.Context, job *Job, src, dst string,
 		s.clearSwap(part)
 		s.finish(job, StateFailed, "could not move the original to the recycle bin: "+err.Error()+" — kept the original")
 		return
-	}
-	if finalPath != src {
-		if _, e := os.Stat(finalPath); e == nil {
-			if err := s.retire(finalPath); err != nil {
-				s.log.Warn("convert: could not retire the file being replaced", "path", finalPath, "err", err)
-			}
-		}
 	}
 	if err := os.Rename(part, finalPath); err != nil {
 		s.log.Error("convert: converted file is staged but could not be swapped in", "part", part, "final", finalPath, "err", err)

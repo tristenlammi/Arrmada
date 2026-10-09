@@ -1395,12 +1395,15 @@ func (s *Service) SupersedeEpisodeFile(ctx context.Context, seriesID int64, seas
 			s.log.Info("series: old file still serves other episodes — keeping it",
 				"old", old, "shared_by", n, "new", path)
 		} else if _, err := os.Stat(old); err == nil {
-			// As before, an upgrade whose old file the bin refuses still deletes it;
-			// keeping the old file in that case is a separate, later change.
+			// The new file is already in place, so an old file the bin refuses is kept
+			// on disk (and said so) rather than deleted for good.
 			if _, rerr := library.RemoveToBin(s.bin, old); rerr != nil {
-				_ = os.Remove(old)
+				s.log.Warn("series: the recycle bin refused the superseded file — kept it on disk", "old", old, "err", rerr)
+				s.repo.AddEvent(ctx, seriesID, "file.kept",
+					fmt.Sprintf("S%02dE%02d old file kept: the recycle bin refused it (%v)", season, episode, rerr))
+			} else {
+				s.log.Info("series: superseded old episode file", "old", old, "new", path)
 			}
-			s.log.Info("series: superseded old episode file", "old", old, "new", path)
 		}
 	}
 	return s.MarkEpisodeImported(ctx, seriesID, season, episode, path, size)

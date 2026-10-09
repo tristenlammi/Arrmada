@@ -133,6 +133,27 @@ func RemoveToBin(bin Bin, path string) (string, error) {
 	return "", &binError{name: filepath.Base(path), err: err}
 }
 
+// CheckBin is the pre-flight for a delete that moves several files: it makes sure the bin
+// path would take is usable before the first file moves, so a broken bin fails with
+// nothing touched rather than half-way through. A bin that is deliberately off passes.
+// The error matches ErrBinRefused, like RemoveToBin's.
+func CheckBin(bin Bin, path string) error {
+	if bin == nil {
+		return nil
+	}
+	dir, err := bin.For(path)
+	if errors.Is(err, ErrRecycleDisabled) {
+		return nil
+	}
+	if err == nil {
+		err = os.MkdirAll(dir, 0o755)
+	}
+	if err != nil {
+		return &binError{name: filepath.Base(path), err: err}
+	}
+	return nil
+}
+
 // ErrBinRefused matches (errors.Is) any RemoveToBin failure, so a handler can answer
 // "the bin said no" (409) apart from other failures.
 var ErrBinRefused = errors.New("the recycle bin couldn't take the file")
