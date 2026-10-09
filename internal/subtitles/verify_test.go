@@ -48,6 +48,24 @@ func fakeOpenSubtitles(t *testing.T) (*httptest.Server, *atomic.Value) {
 	return srv, &last
 }
 
+// Credentials changed in Settings are used at once: the token signed in with the old
+// ones isn't reused.
+func TestOpenSubtitlesLoginFollowsNewCredentials(t *testing.T) {
+	srv, _ := fakeOpenSubtitles(t)
+	var pass atomic.Value
+	pass.Store("secret")
+	o := NewOpenSubtitlesFunc(func() string { return "good" }, func() string { return "me" }, func() string { return pass.Load().(string) })
+	o.baseURL = srv.URL
+	ctx := context.Background()
+	if tok, err := o.login(ctx); err != nil || tok != "tok" {
+		t.Fatalf("login: %q %v", tok, err)
+	}
+	pass.Store("changed")
+	if _, err := o.login(ctx); err == nil {
+		t.Error("login reused the token from the old password instead of signing in again")
+	}
+}
+
 func TestOpenSubtitlesVerify(t *testing.T) {
 	srv, last := fakeOpenSubtitles(t)
 	ctx := context.Background()

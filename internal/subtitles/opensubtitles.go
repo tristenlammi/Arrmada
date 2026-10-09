@@ -3,6 +3,8 @@ package subtitles
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,8 +31,9 @@ type OpenSubtitles struct {
 	ua         string
 	baseURL    string // osBaseURL when empty; tests point it at a local server
 
-	mu    sync.Mutex
-	token string // cached bearer token from /login
+	mu       sync.Mutex
+	token    string // cached bearer token from /login
+	tokenFor string // accountFingerprint of the credentials it was signed in with
 
 	// Download quota, as the API reports it. Free accounts get a handful of downloads
 	// a day; once spent, every /download answers 406 until the reset. Tracking it means
@@ -157,9 +160,13 @@ func (o *OpenSubtitles) reqKey(ctx context.Context, apiKey, method, path string,
 func (o *OpenSubtitles) login(ctx context.Context) (string, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.token != "" {
+	// A token signed in with credentials since changed in Settings is dropped, so the
+	// new account is the one in use straight away.
+	acct := o.accountFingerprint()
+	if o.token != "" && o.tokenFor == acct {
 		return o.token, nil
 	}
+	o.token = ""
 	if !o.CanDownload() {
 		return "", fmt.Errorf("%w: OpenSubtitles username/password required to download", ErrNotConfigured)
 	}
@@ -180,8 +187,15 @@ func (o *OpenSubtitles) login(ctx context.Context) (string, error) {
 	if err := json.Unmarshal(raw, &out); err != nil || out.Token == "" {
 		return "", fmt.Errorf("opensubtitles login: no token in response")
 	}
-	o.token = out.Token
+	o.token, o.tokenFor = out.Token, acct
 	return o.token, nil
+}
+
+// accountFingerprint identifies the credentials a token was signed in with, without
+// keeping another copy of the password.
+func (o *OpenSubtitles) accountFingerprint() string {
+	sum := sha256.Sum256([]byte(o.apiKey() + "\x00" + o.username() + "\x00" + o.password()))
+	return hex.EncodeToString(sum[:])
 }
 
 // Verify is the credentials Test, run on demand only. candidateKey is an API key typed
