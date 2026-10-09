@@ -41,10 +41,12 @@ func TestPresentLanguages(t *testing.T) {
 			[]string{"Movie (2004) Bluray-2160p.mkv", "Movie (2004) Bluray-2160p.english.srt"}, want, []string{"en"}},
 		{"bare .srt → first wanted (en)", true,
 			[]string{"Movie (2004) Bluray-2160p.mkv", "Movie (2004) Bluray-2160p.srt"}, want, []string{"en"}},
-		{"movie: differently-named .srt still counts (renamed video)", true,
-			[]string{"Anchorman (2004) Bluray-2160p.mkv", "Anchorman The Legend of Ron Burgundy.srt"}, want, []string{"en"}},
-		{"movie: differently-named .eng.srt → en", true,
-			[]string{"Anchorman (2004) Bluray-2160p.mkv", "Anchorman.eng.srt"}, want, []string{"en"}},
+		// Plex pairs by base name only: a differently-named subtitle is an orphan, not
+		// coverage (TestOrphanSidecars covers how it is reported).
+		{"movie: differently-named .srt is not coverage (renamed video)", true,
+			[]string{"Anchorman (2004) Bluray-2160p.mkv", "Anchorman The Legend of Ron Burgundy.srt"}, want, nil},
+		{"movie: differently-named .eng.srt is not coverage", true,
+			[]string{"Anchorman (2004) Bluray-2160p.mkv", "Anchorman.eng.srt"}, want, nil},
 		{"both en + es sidecars", true,
 			[]string{"Movie.mkv", "Movie.en.srt", "Movie.es.srt"}, want, []string{"en", "es"}},
 		// A forced sidecar is the foreign-dialogue lines only — Plex would show a handful
@@ -73,7 +75,11 @@ func TestPresentLanguages(t *testing.T) {
 	}
 	for _, c := range cases {
 		_, video := mkFiles(t, c.files...)
-		got := presentLanguages(video, c.wanted, c.single)
+		kind := "episode"
+		if c.single {
+			kind = "movie"
+		}
+		got := scanSidecars(video, c.wanted, kind).Present
 		if !reflect.DeepEqual(nonNil(got), nonNil(c.present)) {
 			t.Errorf("%s: present = %v, want %v", c.name, got, c.present)
 		}

@@ -198,7 +198,7 @@ func (s *Service) MovieStatuses(ctx context.Context) ([]MovieStatus, error) {
 		if !m.HasFile || m.MovieFilePath == "" {
 			continue
 		}
-		present := presentLanguages(m.MovieFilePath, langs, true)
+		present := scanSidecars(m.MovieFilePath, langs, "movie").Present
 		out = append(out, MovieStatus{
 			ID: m.ID, Title: m.Title, Year: m.Year, PosterURL: m.PosterURL,
 			Present: nonNil(present), Missing: nonNil(missingOf(langs, present)),
@@ -238,7 +238,7 @@ func (s *Service) SeriesStatuses(ctx context.Context) ([]SeriesStatus, error) {
 					continue
 				}
 				st.Episodes++
-				if len(missingOf(langs, presentLanguages(ep.FilePath, langs, false))) == 0 {
+				if len(missingOf(langs, scanSidecars(ep.FilePath, langs, "episode").Present)) == 0 {
 					st.Complete++
 				} else {
 					st.MissingSubs++
@@ -263,7 +263,7 @@ func (s *Service) GrabMovie(ctx context.Context, id int64) (int, error) {
 		return 0, nil
 	}
 	langs := s.languages(ctx)
-	missing := missingOf(langs, presentLanguages(m.MovieFilePath, langs, true))
+	missing := missingOf(langs, scanSidecars(m.MovieFilePath, langs, "movie").Present)
 	grabbed := 0
 	hash, _ := osHash(m.MovieFilePath) // "" on error: the search still works, just unranked by sync
 	for _, lang := range missing {
@@ -292,7 +292,7 @@ func (s *Service) GrabSeries(ctx context.Context, id int64) (int, error) {
 			if !ep.HasFile || ep.FilePath == "" {
 				continue
 			}
-			missing := missingOf(langs, presentLanguages(ep.FilePath, langs, false))
+			missing := missingOf(langs, scanSidecars(ep.FilePath, langs, "episode").Present)
 			if len(missing) == 0 {
 				continue
 			}

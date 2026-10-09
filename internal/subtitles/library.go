@@ -16,6 +16,9 @@ type LangStatus struct {
 	// Fallback is "ai" when the first source is extract or download and the local AI
 	// could still make this language if that source comes up empty.
 	Fallback string `json:"fallback,omitempty"`
+	// Orphan is set when the language is missing but a subtitle in the folder that pairs
+	// with no video (an old name, most likely) covers it. Plex won't show it for this file.
+	Orphan bool `json:"orphan,omitempty"`
 }
 
 // SubHealth is the Tier-1 sync/health score for a file's subtitle (0-100). Nil until the scoring
@@ -38,11 +41,12 @@ type FileSubs struct {
 	Path        string       `json:"path"`
 	DurationSec float64      `json:"duration_sec,omitempty"`
 	AudioLangs  []string     `json:"audio_langs,omitempty"`
-	Embedded    []SubTrack   `json:"embedded"`         // embedded subtitle tracks (for badges/filters)
-	External    []string     `json:"external"`         // kept languages that already have a sidecar
-	Languages   []LangStatus `json:"languages"`        // per-kept-language coverage + best source
-	Health      *SubHealth   `json:"health,omitempty"` // Tier-1 sync/health score (nil until scored)
-	Missing     int          `json:"missing"`          // count of kept languages still without an SRT
+	Embedded    []SubTrack   `json:"embedded"`          // embedded subtitle tracks (for badges/filters)
+	External    []string     `json:"external"`          // kept languages that already have a sidecar
+	Languages   []LangStatus `json:"languages"`         // per-kept-language coverage + best source
+	Health      *SubHealth   `json:"health,omitempty"`  // Tier-1 sync/health score (nil until scored)
+	Missing     int          `json:"missing"`           // count of kept languages still without an SRT
+	Orphans     []Orphan     `json:"orphans,omitempty"` // movies: subtitles in the folder paired with no video
 }
 
 // Library probes every downloaded movie (media="movies") or episode (media="tv") and returns its
@@ -109,7 +113,10 @@ func (s *Service) fillCoverage(ctx context.Context, fs *FileSubs, langs []string
 	if fs.Embedded == nil {
 		fs.Embedded = []SubTrack{} // never nil → JSON emits [] not null (frontend iterates it)
 	}
-	present := presentLanguages(fs.Path, langs, fs.Kind != "episode") // kept languages with a sidecar already
+	sc := scanSidecars(fs.Path, langs, kindOf(fs.Kind))
+	present := sc.Present // kept languages with a paired sidecar already
+	fs.Orphans = sc.Orphans
+	orphaned := orphanCovered(langs, present, sc.Orphans)
 	have := make(map[string]bool, len(present))
 	for _, p := range present {
 		have[strings.ToLower(p)] = true
@@ -122,7 +129,7 @@ func (s *Service) fillCoverage(ctx context.Context, fs *FileSubs, langs []string
 			continue
 		}
 		fs.Missing++
-		ls := LangStatus{Lang: l, Have: false, Source: bestSource(fs.Embedded, l, canDownload)}
+		ls := LangStatus{Lang: l, Have: false, Source: bestSource(fs.Embedded, l, canDownload), Orphan: orphaned[strings.ToLower(l)]}
 		if (ls.Source == "extract" || ls.Source == "download") && s.aiCanMake(fs.AudioLangs, l) {
 			ls.Fallback = "ai"
 		}

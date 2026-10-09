@@ -99,12 +99,22 @@ func (s *Service) process(ctx context.Context, job *Job) {
 	mi, _ := s.probeFile(ctx, ref.Path) // best-effort; nil → no embedded tracks known
 	langs := s.languages(ctx)
 	present := map[string]bool{}
+	orphaned := 0
 	if job.Redo {
 		// Make every kept language again; the sidecars there now get written over.
 		s.event("info", fmt.Sprintf("Redoing %s: replacing its existing subtitles", ref.Title))
 	} else {
-		for _, l := range presentLanguages(ref.Path, langs, job.Kind != "episode") {
+		sc := scanSidecars(ref.Path, langs, kindOf(job.Kind))
+		for _, l := range sc.Present {
 			present[strings.ToLower(l)] = true
+		}
+		// The sweep leaves languages an orphaned subtitle covers alone (see SweepMissing);
+		// an import or a button press makes a real paired one.
+		if job.Priority == PrioSweep {
+			for l := range orphanCovered(langs, sc.Present, sc.Orphans) {
+				present[l] = true
+				orphaned++
+			}
 		}
 	}
 	var remaining []string
@@ -114,7 +124,11 @@ func (s *Service) process(ctx context.Context, job *Job) {
 		}
 	}
 	if len(remaining) == 0 {
-		s.finish(job, StateSkipped, "all kept languages already have subtitles")
+		note := "all kept languages already have subtitles"
+		if orphaned > 0 {
+			note = fmt.Sprintf("%d language(s) covered only by orphaned subtitles — Ensure replaces them", orphaned)
+		}
+		s.finish(job, StateSkipped, note)
 		return
 	}
 

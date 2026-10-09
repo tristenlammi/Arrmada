@@ -81,6 +81,21 @@ func TestRemoveFileDeletesSidecarsAndPrunesFolder(t *testing.T) {
 	}
 }
 
+// MovieDetail lists only the file's own subtitles; the folder's unpaired ones come apart,
+// and another version's sidecars are neither.
+func TestSidecarSubtitlesPairedOnly(t *testing.T) {
+	lib := t.TempDir()
+	writeFiles(t, lib, "Dune - Bluray-1080p.mkv", "Dune - Bluray-1080p.en.srt", "Dune - Bluray-2160p.mkv",
+		"Dune - Bluray-2160p.es.srt", "Dune.eng.srt", "notes.txt")
+	video := filepath.Join(lib, "Dune - Bluray-1080p.mkv")
+	if got := sidecarSubtitles(video); len(got) != 1 || got[0] != "Dune - Bluray-1080p.en.srt" {
+		t.Errorf("paired = %v, want only the 1080p file's own subtitle", got)
+	}
+	if got := orphanSubtitles(video); len(got) != 1 || got[0] != "Dune.eng.srt" {
+		t.Errorf("orphans = %v, want Dune.eng.srt", got)
+	}
+}
+
 // A same-name container swap (X.mp4 replaced by X.mkv) keeps X.en.srt in place.
 func TestRemoveFileKeepsSidecarsOnSameBaseSwap(t *testing.T) {
 	svc, _ := testService(t)

@@ -195,7 +195,7 @@ func (s *Service) groupFor(ctx context.Context, seriesID int64, langs []string) 
 			seasonHasFile = true
 			g.Episodes++
 			have := map[string]bool{}
-			for _, p := range presentLanguages(e.FilePath, langs, false) {
+			for _, p := range scanSidecars(e.FilePath, langs, "episode").Present {
 				have[strings.ToLower(p)] = true
 			}
 			complete := true

@@ -136,7 +136,7 @@ func TestExtractSDHOnlyWritesSDHSidecar(t *testing.T) {
 	if _, err := os.Stat(sidecarPathV(video, "en", VariantSDH)); err != nil {
 		t.Fatalf("no .en.sdh.srt: %v", err)
 	}
-	if got := presentLanguages(video, []string{"en"}, true); len(got) != 1 {
+	if got := scanSidecars(video, []string{"en"}, "movie").Present; len(got) != 1 {
 		t.Errorf("present = %v, want en covered by the SDH sidecar", got)
 	}
 }

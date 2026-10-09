@@ -40,6 +40,45 @@ func PairedSidecars(video string) []string {
 	return out
 }
 
+// OrphanSidecars lists the subtitle files in dir that pair with no video there — left
+// behind by a rename or an upgrade, or named for a different cut. Plex shows them for
+// nothing, so they are neither a video's coverage nor safe to treat as one.
+func OrphanSidecars(dir string) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var bases, subs []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		stem := strings.ToLower(strings.TrimSuffix(e.Name(), filepath.Ext(e.Name())))
+		switch {
+		case sameBaseVideoExts[ext]:
+			bases = append(bases, stem)
+		case subtitleExts[ext]:
+			subs = append(subs, e.Name())
+		}
+	}
+	var out []string
+	for _, name := range subs {
+		stem := strings.ToLower(strings.TrimSuffix(name, filepath.Ext(name)))
+		paired := false
+		for _, b := range bases {
+			if stem == b || strings.HasPrefix(stem, b+".") {
+				paired = true
+				break
+			}
+		}
+		if !paired {
+			out = append(out, filepath.Join(dir, name))
+		}
+	}
+	return out
+}
+
 // SharesBase reports whether another video in the same folder has this video's base name —
 // a container swap such as X.mp4 replaced by X.mkv. Its sidecars then belong to the
 // surviving video too, so deleting this one must leave them where they are.

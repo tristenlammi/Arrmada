@@ -400,7 +400,7 @@ func (s *Service) SweepMissing(ctx context.Context, media string) (int, error) {
 		if !m.HasFile || m.MovieFilePath == "" {
 			continue
 		}
-		if len(missingOf(langs, presentLanguages(m.MovieFilePath, langs, true))) == 0 {
+		if !movieNeedsSweep(m.MovieFilePath, langs) {
 			continue
 		}
 		if _, err := s.QueueMovie(ctx, m.ID, false, PrioSweep); err == nil {
@@ -408,6 +408,16 @@ func (s *Service) SweepMissing(ctx context.Context, media string) (int, error) {
 		}
 	}
 	return n, nil
+}
+
+// movieNeedsSweep reports whether the sweep should queue a movie: some kept language has
+// no paired sidecar. A language covered only by an orphaned subtitle (one named for no
+// video — the owner's file under an old name, most likely) doesn't count: regenerating
+// those every six hours would bury what the owner chose. Ensure still replaces it.
+func movieNeedsSweep(path string, langs []string) bool {
+	sc := scanSidecars(path, langs, "movie")
+	missing := missingOf(langs, sc.Present)
+	return len(without(missing, orphanCovered(langs, sc.Present, sc.Orphans))) > 0
 }
 
 type epRef struct{ season, episode int }
@@ -425,7 +435,7 @@ func (s *Service) missingEpisodes(ctx context.Context, seriesID int64) []epRef {
 			if !e.HasFile || e.FilePath == "" {
 				continue
 			}
-			if len(missingOf(langs, presentLanguages(e.FilePath, langs, false))) == 0 {
+			if len(missingOf(langs, scanSidecars(e.FilePath, langs, "episode").Present)) == 0 {
 				continue
 			}
 			out = append(out, epRef{e.SeasonNumber, e.EpisodeNumber})

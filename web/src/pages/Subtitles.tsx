@@ -701,6 +701,8 @@ function EmbBadge({ kind }: { kind: "txt" | "pgs" | "vob" }) {
 }
 function CoverChip({ l }: { l: SubLangStatus }) {
   if (l.have) return <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: "var(--good-soft, rgba(127,176,105,.16))", color: "var(--good)" }} title="External SRT present">✓ {l.lang}</span>;
+  // A subtitle under another name covers it, but Plex won't pair it with this file.
+  if (l.orphan) return <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: "var(--panel-2)", color: "var(--avoid)", border: "1px dashed var(--avoid)" }} title="A subtitle in the folder is named for no video, so Plex won't show it with this file. The sweep leaves it alone; Ensure subs makes a properly named one.">{l.lang} · orphaned</span>;
   // The ladder tries the first source, then falls back to AI when that comes up empty.
   const first = SOURCE_LABEL[l.source ?? "ai"] ?? l.source;
   const plan = l.fallback ? `${first} → ${SOURCE_LABEL[l.fallback] ?? l.fallback}` : first;

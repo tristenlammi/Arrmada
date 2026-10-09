@@ -121,24 +121,105 @@ func parseSidecarTag(segs []string, isLang func(string) bool) (lang, variant str
 // coversFull reports whether a sidecar of this variant counts as the language's full subtitle.
 func coversFull(variant string) bool { return variant != VariantForced }
 
-// presentLanguages returns which of the wanted languages already have a subtitle sidecar next to
-// the media file. Only full and SDH sidecars count: a forced one is a few lines, not coverage.
+// Orphan is a subtitle file in a movie's folder that pairs with no video there (its name
+// isn't "<video base>[.anything]"). Plex shows it for nothing, so it isn't coverage — but
+// it is probably what the owner meant to keep, so the sweep leaves its language alone.
+type Orphan struct {
+	Name    string `json:"name"`
+	Lang    string `json:"lang,omitempty"`    // "" = no recognisable language tag
+	Variant string `json:"variant,omitempty"` // "" (full) | forced | sdh
+}
+
+// sidecarScan is what one directory listing says about a video's subtitles.
+type sidecarScan struct {
+	Present  []string      // wanted languages with a full (or SDH) sidecar paired with the video
+	Variants []LangVariant // every paired sidecar's language and variant
+	Orphans  []Orphan      // movies only: subtitles in the folder that pair with no video
+}
+
+// scanSidecars reads a video's subtitle picture in a single ReadDir. A sidecar belongs to the
+// video only when it is named for it ("<base>.srt", "<base>.en.srt", "<base>.en.forced.srt"),
+// which is how Plex pairs them — for movies and TV alike. Present counts only full and SDH
+// sidecars: a forced one is a few lines, not coverage. An untagged paired sidecar is credited
+// to the first wanted language.
 //
-//   - singleFolder=true (movies live one-per-folder): ANY subtitle file in the folder counts. Its
-//     language is read from a "<name>.<lang>.srt" tag when present, otherwise it's credited to the
-//     first wanted language. This tolerates a sidecar left under a different/older name than the
-//     (Arrmada-renamed) video.
-//   - singleFolder=false (TV episodes share a season folder): the sidecar must be named for this
-//     episode ("<base>[.lang].srt") so a season's subtitles aren't cross-counted.
+// For movies (kind "movie"), subtitles that pair with no video in the folder at all are
+// reported as Orphans; in a multi-version folder one version's sidecars pair with that
+// version, so they are neither the other's coverage nor orphans.
 //
 // Language matching tolerates 2- vs 3-letter codes and full names (en ≡ eng ≡ english).
-func presentLanguages(mediaPath string, wanted []string, singleFolder bool) []string {
-	if mediaPath == "" || len(wanted) == 0 {
-		return nil
+func scanSidecars(videoPath string, wanted []string, kind string) sidecarScan {
+	var sc sidecarScan
+	if videoPath == "" {
+		return sc
 	}
-	tags := map[string]bool{} // recognised language tokens found on relevant full sidecars
-	untagged := false         // a relevant full sidecar with no recognisable language tag
-	for _, lv := range sidecarTags(mediaPath, singleFolder) {
+	dir := filepath.Dir(videoPath)
+	baseLower := strings.ToLower(strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath)))
+	prefix := baseLower + "."
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return sc
+	}
+	var videoBases, unpaired []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		stem := strings.ToLower(strings.TrimSuffix(e.Name(), filepath.Ext(e.Name())))
+		if pairingVideoExts[ext] {
+			videoBases = append(videoBases, stem)
+			continue
+		}
+		if !subExts[ext] {
+			continue
+		}
+		var lv LangVariant
+		switch {
+		case stem == baseLower: // bare "<base>.srt" for exactly this file: untagged, full
+		case strings.HasPrefix(stem, prefix): // "<base>.<lang>[.forced].srt"
+			lv.Lang, lv.Variant = parseSidecarTag(strings.Split(stem[len(prefix):], "."), isKnownLang)
+		default:
+			unpaired = append(unpaired, e.Name())
+			continue
+		}
+		sc.Variants = append(sc.Variants, lv)
+	}
+	sc.Present = coveredLangs(wanted, sc.Variants)
+	if kind != "movie" {
+		return sc
+	}
+	for _, name := range unpaired {
+		stem := strings.ToLower(strings.TrimSuffix(name, filepath.Ext(name)))
+		paired := false
+		for _, b := range videoBases {
+			if stem == b || strings.HasPrefix(stem, b+".") {
+				paired = true // another video's (another version's) sidecar
+				break
+			}
+		}
+		if paired {
+			continue
+		}
+		o := Orphan{Name: name}
+		o.Lang, o.Variant = parseSidecarTag(strings.Split(stem, "."), isKnownLang)
+		sc.Orphans = append(sc.Orphans, o)
+	}
+	return sc
+}
+
+// pairingVideoExts are the containers a sidecar can pair with when deciding what's an orphan.
+var pairingVideoExts = map[string]bool{
+	".mkv": true, ".mp4": true, ".m4v": true, ".avi": true, ".ts": true, ".m2ts": true,
+	".mov": true, ".wmv": true, ".webm": true,
+}
+
+// coveredLangs returns the wanted languages that the given sidecars cover in full: a
+// tagged full or SDH sidecar in that language, and an untagged one for the first wanted.
+func coveredLangs(wanted []string, lvs []LangVariant) []string {
+	tags := map[string]bool{}
+	untagged := false
+	for _, lv := range lvs {
 		if !coversFull(lv.Variant) {
 			continue
 		}
@@ -148,7 +229,7 @@ func presentLanguages(mediaPath string, wanted []string, singleFolder bool) []st
 			untagged = true
 		}
 	}
-	var present []string
+	var out []string
 	for i, w := range wanted {
 		matched := i == 0 && untagged
 		for tok := range tags {
@@ -158,48 +239,45 @@ func presentLanguages(mediaPath string, wanted []string, singleFolder bool) []st
 			}
 		}
 		if matched {
-			present = append(present, w)
+			out = append(out, w)
 		}
 	}
-	return present
+	return out
+}
+
+// orphanCovered returns which wanted languages (lower-case) are missing as paired sidecars
+// but covered by an orphan — the owner's subtitle under an old name, most likely.
+func orphanCovered(wanted, present []string, orphans []Orphan) map[string]bool {
+	if len(orphans) == 0 {
+		return nil
+	}
+	lvs := make([]LangVariant, 0, len(orphans))
+	for _, o := range orphans {
+		lvs = append(lvs, LangVariant{Lang: o.Lang, Variant: o.Variant})
+	}
+	have := map[string]bool{}
+	for _, p := range present {
+		have[strings.ToLower(p)] = true
+	}
+	out := map[string]bool{}
+	for _, l := range coveredLangs(wanted, lvs) {
+		if !have[strings.ToLower(l)] {
+			out[strings.ToLower(l)] = true
+		}
+	}
+	return out
 }
 
 // presentVariants lists the language and variant of every sidecar named for this file
 // ("<base>[.lang][.qualifier].ext").
 func presentVariants(mediaPath string) []LangVariant {
-	return sidecarTags(mediaPath, false)
+	return scanSidecars(mediaPath, nil, "episode").Variants
 }
 
-// sidecarTags reads the language/variant of the subtitle files that belong to a media file:
-// those named for it, plus (singleFolder) any other subtitle in a movie's folder.
-func sidecarTags(mediaPath string, singleFolder bool) []LangVariant {
-	if mediaPath == "" {
-		return nil
+// kindOf maps a job or file kind to scanSidecars' kind.
+func kindOf(kind string) string {
+	if kind == "episode" {
+		return "episode"
 	}
-	dir := filepath.Dir(mediaPath)
-	baseLower := strings.ToLower(strings.TrimSuffix(filepath.Base(mediaPath), filepath.Ext(mediaPath)))
-	prefix := baseLower + "."
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	var out []LangVariant
-	for _, e := range entries {
-		if e.IsDir() || !subExts[strings.ToLower(filepath.Ext(e.Name()))] {
-			continue
-		}
-		stem := strings.ToLower(strings.TrimSuffix(e.Name(), filepath.Ext(e.Name())))
-		var lv LangVariant
-		switch {
-		case stem == baseLower: // bare "<base>.srt" for exactly this file: untagged, full
-		case strings.HasPrefix(stem, prefix): // "<base>.<lang>[.forced].srt"
-			lv.Lang, lv.Variant = parseSidecarTag(strings.Split(stem[len(prefix):], "."), isKnownLang)
-		case singleFolder: // movie folder — any sidecar belongs to this film
-			lv.Lang, lv.Variant = parseSidecarTag(strings.Split(stem, "."), isKnownLang)
-		default:
-			continue // TV: unrelated file in the season folder
-		}
-		out = append(out, lv)
-	}
-	return out
+	return "movie"
 }

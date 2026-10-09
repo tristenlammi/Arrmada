@@ -881,6 +881,7 @@ func (s *Service) fileInfo(path string, hasFile bool) *MovieFile {
 	if fi, statErr := os.Stat(path); statErr == nil {
 		f.SizeBytes = fi.Size()
 		f.Subtitles = sidecarSubtitles(path)
+		f.OrphanSubtitles = orphanSubtitles(path)
 		// Prefer real media info from the file over the (fallible) filename.
 		if mediainfo.Available() {
 			if mi, err := mediainfo.Probe(path); err == nil {
@@ -939,25 +940,24 @@ func audioChannels(n int) string {
 	}
 }
 
-var subtitleExts = map[string]bool{".srt": true, ".ass": true, ".ssa": true, ".sub": true, ".vtt": true}
-
-// sidecarSubtitles lists subtitle files sitting next to the movie file.
+// sidecarSubtitles lists the subtitle files paired with the movie file — named for it
+// ("<base>.srt", "<base>.en.srt"), which is what Plex shows with it.
 func sidecarSubtitles(moviePath string) []string {
-	dir := filepath.Dir(moviePath)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
+	return baseNames(library.PairedSidecars(moviePath))
+}
+
+// orphanSubtitles lists the subtitles in the movie's folder that pair with no video there:
+// left over from an old name or release, and shown by Plex for nothing.
+func orphanSubtitles(moviePath string) []string {
+	return baseNames(library.OrphanSidecars(filepath.Dir(moviePath)))
+}
+
+func baseNames(paths []string) []string {
+	var out []string
+	for _, p := range paths {
+		out = append(out, filepath.Base(p))
 	}
-	var subs []string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		if subtitleExts[strings.ToLower(filepath.Ext(e.Name()))] {
-			subs = append(subs, e.Name())
-		}
-	}
-	return subs
+	return out
 }
 
 // DeleteFile removes a movie's file from disk and clears its file record,

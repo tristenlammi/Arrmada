@@ -98,8 +98,11 @@ type MovieFile struct {
 	Resolution  string   `json:"resolution,omitempty"`   // real resolution (ffprobe)
 	DurationMin int      `json:"duration_min,omitempty"` // runtime from the file
 	Probed      bool     `json:"probed,omitempty"`       // media info read from the file, not the name
-	Subtitles   []string `json:"subtitles,omitempty"`    // sidecar subtitle filenames
-	Missing     bool     `json:"missing"`                // tracked in DB but gone from disk
+	Subtitles   []string `json:"subtitles,omitempty"`    // subtitle filenames paired with this file
+	// OrphanSubtitles are subtitles in the folder that pair with no video (an old name):
+	// listed apart because Plex won't show them for this file.
+	OrphanSubtitles []string `json:"orphan_subtitles,omitempty"`
+	Missing         bool     `json:"missing"` // tracked in DB but gone from disk
 	// MediaVersion is the probe's format version the entry was built with; older
 	// entries are probed again in the background (see MediaVersion).
 	MediaVersion int `json:"v,omitempty"`
