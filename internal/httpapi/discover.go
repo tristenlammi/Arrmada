@@ -12,6 +12,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/parser"
+	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 // discoverCard is a DiscoverItem enriched with the viewer's library/request status so
@@ -290,13 +291,51 @@ func (a *api) handleMediaDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if a.deps.Ratings != nil && a.deps.Ratings.Available() && d.IMDBID != "" {
-		if rt, err := a.deps.Ratings.Ratings(r.Context(), d.IMDBID); err == nil {
+		if rt, ok := a.ratingsWithin(r.Context(), d.IMDBID, ratingsWait); ok {
 			d.Ratings.IMDB = rt.IMDB
 			d.Ratings.RottenTomatoes = rt.RottenTomatoes
 			d.Ratings.Metacritic = rt.Metacritic
 		}
 	}
 	a.writeJSON(w, http.StatusOK, d)
+}
+
+// ratingsWait is how long a detail sheet waits for OMDb, and ratingsBudget how long the
+// fetch itself may take. OMDb is optional garnish: a slow or spent key must not hold the
+// sheet up, so a late answer is left to finish in the background, where it fills the
+// cache for the next open.
+const (
+	ratingsWait   = 2 * time.Second
+	ratingsBudget = 12 * time.Second
+)
+
+// ratingsWithin fetches a title's OMDb ratings, giving up on waiting after wait (or when
+// the request ends). The fetch runs detached from the request on the run group, so it
+// isn't cancelled when the sheet stops waiting. ok is false when there's nothing to show:
+// late, failed (the provider records why for Settings), or not found.
+func (a *api) ratingsWithin(ctx context.Context, imdbID string, wait time.Duration) (metadata.Ratings, bool) {
+	ch := make(chan metadata.Ratings, 1) // buffered: a late answer never blocks the fetch
+	fetch := func(parent context.Context) {
+		fctx, cancel := context.WithTimeout(parent, ratingsBudget)
+		defer cancel()
+		if rt, err := a.deps.Ratings.Ratings(fctx, imdbID); err == nil {
+			ch <- rt
+		}
+	}
+	if g := a.deps.RunGroup; g != nil {
+		g.Go("omdb ratings", fetch)
+	} else {
+		safego.Go(a.deps.Log, "omdb ratings", func() { fetch(a.runCtx()) })
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case rt := <-ch:
+		return rt, true
+	case <-t.C:
+	case <-ctx.Done():
+	}
+	return metadata.Ratings{}, false
 }
 
 func (a *api) handleDiscoverGenres(w http.ResponseWriter, r *http.Request) {

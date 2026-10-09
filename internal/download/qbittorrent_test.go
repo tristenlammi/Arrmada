@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 )
@@ -176,8 +177,8 @@ func TestAddReloginRebuildsMultipartBody(t *testing.T) {
 	})
 
 	q := NewQBittorrent()
-	dc := Client{ID: 1, URL: srv.URL, Username: "u", Password: "p", Category: "arrmada"}
-	err := q.Add(context.Background(), dc, AddRequest{Name: "x", URL: "magnet:?xt=urn:btih:abc"})
+	dc := Client{ID: 1, URL: srv.URL, Username: "u", Password: "p"}
+	err := q.Add(context.Background(), dc, AddRequest{Name: "x", URL: "magnet:?xt=urn:btih:abc", Category: "arrmada"})
 	if err != nil {
 		t.Fatalf("Add after expiry: %v", err)
 	}
@@ -345,5 +346,39 @@ func TestNormalizeState(t *testing.T) {
 		if got := normalizeState(in); got != want {
 			t.Errorf("normalizeState(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// The category sent to qBittorrent is the one Arrmada asked for, never the client's stored
+// one: a stored "movies" used to fill in for a blank category, and the movie importer only
+// reads Arrmada's own, so those movies downloaded and never imported.
+func TestAddCategoryComesFromTheRequestOnly(t *testing.T) {
+	var logins int32
+	var mu sync.Mutex
+	var got []string
+	srv := qbitTestServer(t, &logins, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Errorf("add body: %v", err)
+		}
+		cat := "<none>"
+		if vs, ok := r.MultipartForm.Value["category"]; ok {
+			cat = strings.Join(vs, ",")
+		}
+		mu.Lock()
+		got = append(got, cat)
+		mu.Unlock()
+		fmt.Fprint(w, "Ok.")
+	})
+	q := NewQBittorrent()
+	dc := Client{ID: 1, URL: srv.URL, Category: "movies"}
+	for _, cat := range []string{"arrmada", "arrmada-tv", ""} {
+		if err := q.Add(context.Background(), dc, AddRequest{Name: "x", URL: "magnet:?xt=urn:btih:abc", Category: cat}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{"arrmada", "arrmada-tv", "<none>"}; strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("categories sent = %q, want %q", got, want)
 	}
 }

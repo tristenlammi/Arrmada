@@ -3,6 +3,7 @@ package download
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -22,6 +23,7 @@ type Service struct {
 	// status records each client's last queue read and Test (see connstatus). Clients
 	// are never paused — a dead one is only shown — so outcomes carry no backoff.
 	status *connstatus.Tracker
+	flags  flagStore // the shared settings service (SetFlags); nil = no bundled-removed flag
 }
 
 // SetStatus wires the integration status tracker; nil records nothing.
@@ -45,30 +47,96 @@ func NewService(db *sql.DB, log *slog.Logger) *Service {
 // List returns all configured clients.
 func (s *Service) List(ctx context.Context) ([]Client, error) { return s.repo.List(ctx) }
 
-// EnsureBundled registers the packaged qBittorrent companion as a download
-// client on first startup (idempotent). Auth is bypassed on the private Docker
-// network, so no credentials are needed.
+// KeyBundledRemoved is the setting that says the owner deleted the bundled qBittorrent,
+// so startup must not add it back. Restore clears it.
+const KeyBundledRemoved = "download_bundled_removed"
+
+// flagStore is the slice of the shared settings service this package uses.
+type flagStore interface {
+	Get(ctx context.Context, key, def string) string
+	Set(ctx context.Context, key, value string) error
+}
+
+// SetFlags wires the shared settings service, where the bundled-removed flag lives. nil
+// (tests) means the bundled client is never treated as removed.
+func (s *Service) SetFlags(f flagStore) { s.flags = f }
+
+func (s *Service) bundledRemoved(ctx context.Context) bool {
+	return s.flags != nil && s.flags.Get(ctx, KeyBundledRemoved, "") == "1"
+}
+
+// EnsureBundled registers the packaged qBittorrent companion as a download client
+// (idempotent; run at startup). Auth is bypassed on the private Docker network, so no
+// credentials are needed.
+//
+// It used to re-create a row whenever none had the bundled URL, so the bundled client
+// couldn't be removed and an edit of its URL spawned a duplicate. Now the row is found by
+// its bundled flag: once one is marked — enabled or not, whatever its URL — this does
+// nothing, and nothing is added while the owner has deleted it (KeyBundledRemoved). An
+// install from before the flag has its row recognised by URL and marked here.
 func (s *Service) EnsureBundled(ctx context.Context, url string) error {
+	if _, ok, err := s.repo.Bundled(ctx); err != nil || ok {
+		return err
+	}
+	if s.bundledRemoved(ctx) {
+		return nil
+	}
 	clients, err := s.repo.List(ctx)
 	if err != nil {
 		return err
 	}
 	for _, c := range clients {
 		if c.URL == url {
-			return nil // already registered
+			return s.repo.MarkBundled(ctx, c.ID)
 		}
 	}
 	_, err = s.repo.Create(ctx, Client{
-		Name:     "qBittorrent (bundled)",
-		Kind:     KindQbittorrent,
-		URL:      url,
-		Category: CategoryMovies,
-		Enabled:  true,
+		Name:    "qBittorrent (bundled)",
+		Kind:    KindQbittorrent,
+		URL:     url,
+		Enabled: true,
+		Bundled: true,
 	})
 	if err == nil {
 		s.log.Info("registered bundled qBittorrent", "url", url)
 	}
 	return err
+}
+
+// RestoreBundled brings back a deleted bundled qBittorrent: it clears the removed flag
+// and registers it again (or marks an existing row with its URL).
+func (s *Service) RestoreBundled(ctx context.Context, url string) error {
+	if s.flags != nil {
+		if err := s.flags.Set(ctx, KeyBundledRemoved, ""); err != nil {
+			return err
+		}
+	}
+	return s.EnsureBundled(ctx, url)
+}
+
+// ErrBundledInactive means there's no bundled qBittorrent to tune: it was removed, or it
+// is switched off and so may not be running at all.
+var ErrBundledInactive = errors.New("the bundled qBittorrent is switched off or removed")
+
+// activeBundled is the bundled client when it exists and is switched on.
+func (s *Service) activeBundled(ctx context.Context) (Client, Downloader, error) {
+	c, ok, err := s.repo.Bundled(ctx)
+	if err != nil {
+		return Client{}, nil, err
+	}
+	if !ok || !c.Enabled {
+		return Client{}, nil, ErrBundledInactive
+	}
+	impl, found := s.registry.For(c.Kind)
+	if !found {
+		return Client{}, nil, fmt.Errorf("no downloader for kind %q", c.Kind)
+	}
+	return c, impl, nil
+}
+
+// Status is a client's recorded health (see connstatus), false when nothing is known.
+func (s *Service) Status(id int64) (connstatus.State, bool) {
+	return s.status.Get(connstatus.KindDownloadClient, strconv.FormatInt(id, 10))
 }
 
 // Create stores a new client.
@@ -112,7 +180,20 @@ func (s *Service) Update(ctx context.Context, c Client) (Client, error) {
 // Delete removes a client and its recorded status. Its cached login goes with it: SQLite
 // can hand the id to the next client added, which must not inherit a session for somebody
 // else's WebUI.
+//
+// Deleting the bundled client records that, so startup doesn't add it back. The flag is
+// written first: if it can't be, the delete is refused rather than left to undo itself at
+// the next restart.
 func (s *Service) Delete(ctx context.Context, id int64) error {
+	c, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if c.Bundled && s.flags != nil {
+		if err := s.flags.Set(ctx, KeyBundledRemoved, "1"); err != nil {
+			return fmt.Errorf("couldn't record that the bundled client was removed: %w", err)
+		}
+	}
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return err
 	}
@@ -148,8 +229,11 @@ func (s *Service) Test(ctx context.Context, id int64) error {
 	return err
 }
 
-// Add dispatches a download to the first enabled client (later: route by
-// protocol / user choice).
+// Add hands a download to the enabled clients in priority order (ListEnabled), moving on
+// to the next only when a client certainly never received the request (NeverReached: it
+// couldn't be connected to). A client that answered — even with a rejection or an HTTP
+// error — ends it there: it may have taken the torrent, and adding it to a second client
+// as well would download it twice.
 func (s *Service) Add(ctx context.Context, req AddRequest) error {
 	clients, err := s.repo.ListEnabled(ctx)
 	if err != nil {
@@ -158,16 +242,33 @@ func (s *Service) Add(ctx context.Context, req AddRequest) error {
 	if len(clients) == 0 {
 		return fmt.Errorf("no enabled download client configured")
 	}
-	c := clients[0]
-	impl, ok := s.registry.For(c.Kind)
-	if !ok {
-		return fmt.Errorf("no downloader for kind %q", c.Kind)
+	var unreachable []error
+	for _, c := range clients {
+		impl, ok := s.registry.For(c.Kind)
+		if !ok {
+			unreachable = append(unreachable, fmt.Errorf("%s: no downloader for kind %q", c.Name, c.Kind))
+			continue
+		}
+		start := time.Now()
+		err := impl.Add(ctx, c, req)
+		if err == nil {
+			s.record(ctx, c, nil, time.Since(start))
+			if len(unreachable) > 0 {
+				s.log.Warn("download added to a later client because earlier ones couldn't be reached",
+					"client", c.Name, "release", req.Name, "skipped", len(unreachable))
+			} else {
+				s.log.Info("download added", "client", c.Name, "release", req.Name)
+			}
+			return nil
+		}
+		if !NeverReached(err) || ctx.Err() != nil {
+			return err
+		}
+		s.record(ctx, c, err, time.Since(start))
+		s.log.Warn("download client unreachable; trying the next one", "client", c.Name, "release", req.Name, "err", err)
+		unreachable = append(unreachable, fmt.Errorf("%s: %w", c.Name, err))
 	}
-	if err := impl.Add(ctx, c, req); err != nil {
-		return err
-	}
-	s.log.Info("download added", "client", c.Name, "release", req.Name)
-	return nil
+	return fmt.Errorf("no download client could be reached: %w", errors.Join(unreachable...))
 }
 
 // Remove deletes a torrent (and optionally its data) from whichever client
@@ -203,26 +304,17 @@ type portManager interface {
 	ListenPort(ctx context.Context, dc Client) (int, error)
 }
 
-// SetBundledPort pins the incoming-connection port on the client at url.
-func (s *Service) SetBundledPort(ctx context.Context, url string, port int) error {
-	clients, err := s.repo.List(ctx)
+// SetBundledPort pins the bundled client's incoming-connection port. ErrBundledInactive
+// when it's switched off or removed: a client that may not be running is left alone.
+func (s *Service) SetBundledPort(ctx context.Context, port int) error {
+	c, impl, err := s.activeBundled(ctx)
 	if err != nil {
 		return err
 	}
-	for _, c := range clients {
-		if c.URL != url {
-			continue
-		}
-		impl, ok := s.registry.For(c.Kind)
-		if !ok {
-			return fmt.Errorf("no downloader for kind %q", c.Kind)
-		}
-		if pm, ok := impl.(portManager); ok {
-			return pm.SetListenPort(ctx, c, port)
-		}
-		return nil // client kind has no managed port
+	if pm, ok := impl.(portManager); ok {
+		return pm.SetListenPort(ctx, c, port)
 	}
-	return fmt.Errorf("client %q not found", url)
+	return nil // client kind has no managed port
 }
 
 // savePathManager is implemented by clients whose default save path Arrmada manages.
@@ -230,28 +322,19 @@ type savePathManager interface {
 	SetSavePath(ctx context.Context, dc Client, savePath string) error
 }
 
-// SetBundledSavePath points the client at url at the given downloads dir, so the
-// client and Arrmada agree on where files land (and stay on the shared volume for
-// hardlinking). No-op for client kinds without a managed save path.
-func (s *Service) SetBundledSavePath(ctx context.Context, url, savePath string) error {
-	clients, err := s.repo.List(ctx)
+// SetBundledSavePath points the bundled client at the given downloads dir, so the client
+// and Arrmada agree on where files land (and stay on the shared volume for hardlinking).
+// No-op for client kinds without a managed save path; ErrBundledInactive when it's
+// switched off or removed.
+func (s *Service) SetBundledSavePath(ctx context.Context, savePath string) error {
+	c, impl, err := s.activeBundled(ctx)
 	if err != nil {
 		return err
 	}
-	for _, c := range clients {
-		if c.URL != url {
-			continue
-		}
-		impl, ok := s.registry.For(c.Kind)
-		if !ok {
-			return fmt.Errorf("no downloader for kind %q", c.Kind)
-		}
-		if sp, ok := impl.(savePathManager); ok {
-			return sp.SetSavePath(ctx, c, savePath)
-		}
-		return nil // client kind has no managed save path
+	if sp, ok := impl.(savePathManager); ok {
+		return sp.SetSavePath(ctx, c, savePath)
 	}
-	return fmt.Errorf("client %q not found", url)
+	return nil // client kind has no managed save path
 }
 
 // ListenPort reports a client's incoming-connection port (0 if not applicable).
@@ -334,34 +417,24 @@ func (s *Service) GetSettings(ctx context.Context, id int64) (ClientSettings, er
 	return ClientSettings{}, fmt.Errorf("%q has no tunable settings", c.Kind)
 }
 
-// EnsureBundledQueue re-applies the client at url's current queue settings, which
+// EnsureBundledQueue re-applies the bundled client's current queue settings, which
 // re-derives max_active_torrents from the per-kind limits — fixing torrents stuck
 // "Queued" behind qBittorrent's default total-active cap of 5, without the user
-// having to re-save anything.
-func (s *Service) EnsureBundledQueue(ctx context.Context, url string) error {
-	clients, err := s.repo.List(ctx)
+// having to re-save anything. ErrBundledInactive when it's switched off or removed.
+func (s *Service) EnsureBundledQueue(ctx context.Context) error {
+	c, impl, err := s.activeBundled(ctx)
 	if err != nil {
 		return err
 	}
-	for _, c := range clients {
-		if c.URL != url {
-			continue
-		}
-		impl, ok := s.registry.For(c.Kind)
-		if !ok {
-			return nil
-		}
-		sm, ok := impl.(settingsManager)
-		if !ok {
-			return nil // client kind has no tunable queue settings
-		}
-		cur, err := sm.GetSettings(ctx, c)
-		if err != nil {
-			return err
-		}
-		return sm.SetSettings(ctx, c, cur)
+	sm, ok := impl.(settingsManager)
+	if !ok {
+		return nil // client kind has no tunable queue settings
 	}
-	return fmt.Errorf("client %q not found", url)
+	cur, err := sm.GetSettings(ctx, c)
+	if err != nil {
+		return err
+	}
+	return sm.SetSettings(ctx, c, cur)
 }
 
 // SetSettings writes the tunable settings of a client.

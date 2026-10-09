@@ -2,26 +2,40 @@ package httpapi
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/download"
 )
 
-// clientView is a download client as the settings page sees it. Bundled marks the
-// packaged qBittorrent: its row is re-created at startup whenever no client has its URL,
-// so the page keeps that URL read-only and says a delete won't stick.
+// clientView is a download client as the settings page sees it: its settings (the
+// password is never marshalled) and, when it has failed, since when and why.
 type clientView struct {
 	download.Client
-	Bundled bool `json:"bundled"`
+	Status *clientStatus `json:"status,omitempty"`
+}
+
+// clientStatus is what the card says about a client that isn't answering. state is ok,
+// failing or unknown (not asked since it was added or edited); last_error is redacted
+// before it's stored.
+type clientStatus struct {
+	State        string     `json:"state"`
+	FailingSince *time.Time `json:"failing_since,omitempty"`
+	LastError    string     `json:"last_error,omitempty"`
+	LastErrorAt  *time.Time `json:"last_error_at,omitempty"`
 }
 
 func (a *api) clientView(c download.Client) clientView {
-	return clientView{Client: c, Bundled: a.isBundledClient(c)}
-}
-
-func (a *api) isBundledClient(c download.Client) bool {
-	return a.deps.Config.QbittorrentURL != "" && c.URL == a.deps.Config.QbittorrentURL
+	v := clientView{Client: c}
+	if st, ok := a.deps.Downloads.Status(c.ID); ok {
+		v.Status = &clientStatus{State: st.Phase(time.Now()), FailingSince: timePtr(st.FailingSince)}
+		if st.ConsecutiveFailures > 0 {
+			v.Status.LastError, v.Status.LastErrorAt = st.LastError, timePtr(st.LastErrorAt)
+		}
+	}
+	return v
 }
 
 func (a *api) handleListDownloadClients(w http.ResponseWriter, r *http.Request) {
@@ -31,10 +45,34 @@ func (a *api) handleListDownloadClients(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	out := make([]clientView, 0, len(list))
+	hasBundled := false
 	for _, c := range list {
 		out = append(out, a.clientView(c))
+		hasBundled = hasBundled || c.Bundled
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"clients": out})
+	// The categories are Arrmada's, not the client's: the page lists them read-only so
+	// the owner can see what to expect in qBittorrent. can_restore_bundled offers the
+	// bundled qBittorrent back when this install has one and its row is gone.
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"clients":             out,
+		"categories":          download.FixedCategories(a.deps.Config.DownloadCategory),
+		"can_restore_bundled": a.deps.Config.QbittorrentURL != "" && !hasBundled,
+	})
+}
+
+// maxClientPriority bounds the order field; anything past it is a typo.
+const maxClientPriority = 99
+
+// clientPriority checks an optional priority from a request: nil means keep (0 to the
+// store), otherwise 1..maxClientPriority.
+func clientPriority(p *int) (int, error) {
+	if p == nil {
+		return 0, nil
+	}
+	if *p < 1 || *p > maxClientPriority {
+		return 0, fmt.Errorf("order must be between 1 and %d", maxClientPriority)
+	}
+	return *p, nil
 }
 
 type createClientRequest struct {
@@ -43,8 +81,13 @@ type createClientRequest struct {
 	URL      string `json:"url"`
 	Username string `json:"username"`
 	Password string `json:"password"`
+	// Category is accepted so an older page's request still parses, and ignored:
+	// Arrmada picks the category for every download (download/categories.go).
 	Category string `json:"category"`
 	Enabled  *bool  `json:"enabled"`
+	// Priority is the client's place in the order new downloads try (1 = first); left
+	// out, a new client gets the default and an edited one keeps its own.
+	Priority *int `json:"priority"`
 }
 
 func (a *api) handleCreateDownloadClient(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +107,11 @@ func (a *api) handleCreateDownloadClient(w http.ResponseWriter, r *http.Request)
 	if req.Enabled != nil {
 		enabled = *req.Enabled
 	}
+	priority, err := clientPriority(req.Priority)
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	created, err := a.deps.Downloads.Create(r.Context(), download.Client{
 		Name:     req.Name,
@@ -71,8 +119,8 @@ func (a *api) handleCreateDownloadClient(w http.ResponseWriter, r *http.Request)
 		URL:      req.URL,
 		Username: req.Username,
 		Password: req.Password,
-		Category: req.Category,
 		Enabled:  enabled,
+		Priority: priority,
 	})
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not create download client")
@@ -84,8 +132,8 @@ func (a *api) handleCreateDownloadClient(w http.ResponseWriter, r *http.Request)
 
 // handleUpdateDownloadClient edits a client in place — a changed password or URL no longer
 // means delete and re-add. A blank password keeps the stored one; the stored one is never
-// sent back. The bundled client's URL can't be changed: startup re-creates a row for that
-// URL whenever none has it, so an edited bundled client would come back as a duplicate.
+// sent back. The bundled client's URL can be edited too: startup finds it by its bundled
+// flag now, not its URL, so an edit no longer brings a duplicate back.
 func (a *api) handleUpdateDownloadClient(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)
 	if !ok {
@@ -113,13 +161,14 @@ func (a *api) handleUpdateDownloadClient(w http.ResponseWriter, r *http.Request)
 		a.writeError(w, http.StatusInternalServerError, "could not read download client")
 		return
 	}
-	if a.isBundledClient(cur) && req.URL != cur.URL {
-		a.writeError(w, http.StatusBadRequest, "the bundled qBittorrent's URL can't be changed; add another client instead")
-		return
-	}
 	enabled := cur.Enabled
 	if req.Enabled != nil {
 		enabled = *req.Enabled
+	}
+	priority, err := clientPriority(req.Priority)
+	if err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 	updated, err := a.deps.Downloads.Update(r.Context(), download.Client{
 		ID:       id,
@@ -128,6 +177,7 @@ func (a *api) handleUpdateDownloadClient(w http.ResponseWriter, r *http.Request)
 		Username: req.Username,
 		Password: req.Password,
 		Enabled:  enabled,
+		Priority: priority,
 	})
 	if errors.Is(err, download.ErrNotFound) {
 		a.writeError(w, http.StatusNotFound, "download client not found")
@@ -158,6 +208,22 @@ func (a *api) handleDeleteDownloadClient(w http.ResponseWriter, r *http.Request)
 	}
 	a.recheckHealth(r, "downloads")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRestoreBundledClient brings back the packaged qBittorrent after it was deleted:
+// a deleted bundled client now stays deleted across restarts, so this is the way back.
+func (a *api) handleRestoreBundledClient(w http.ResponseWriter, r *http.Request) {
+	url := a.deps.Config.QbittorrentURL
+	if url == "" {
+		a.writeError(w, http.StatusBadRequest, "this install has no bundled qBittorrent")
+		return
+	}
+	if err := a.deps.Downloads.RestoreBundled(r.Context(), url); err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not restore the bundled qBittorrent")
+		return
+	}
+	a.recheckHealth(r, "downloads")
+	a.writeJSON(w, http.StatusOK, map[string]any{"restored": true})
 }
 
 func (a *api) handleTestDownloadClient(w http.ResponseWriter, r *http.Request) {

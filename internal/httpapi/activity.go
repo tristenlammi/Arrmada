@@ -281,7 +281,7 @@ func labelQueueItem(it download.Item, rel parser.Release, m queueMatchers) (medi
 	var ref string
 	var ok bool
 	switch it.Category {
-	case download.CategorySeries:
+	case download.CategoryTV:
 		mediaType = "series"
 		if m.series != nil {
 			ref, ok = m.series(rel.Title)
@@ -308,7 +308,7 @@ func labelQueueItem(it download.Item, rel parser.Release, m queueMatchers) (medi
 // movieCategory reports whether a torrent's category is a movie one: anything but the
 // series, book and music categories (the movie category is configurable).
 func movieCategory(c string) bool {
-	return c != download.CategorySeries && c != download.CategoryBooks && c != download.CategoryMusic
+	return c != download.CategoryTV && c != download.CategoryBooks && c != download.CategoryMusic
 }
 
 // profileName resolves a profile reference to a friendly name.

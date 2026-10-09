@@ -1,13 +1,35 @@
 package download
 
-// The download-client categories Arrmada files each kind of download under. Each importer
-// reads only its own category, so a torrent in the wrong one is never imported — and the
-// Downloads feed labels a torrent by its category. One definition here, so automation
-// (which grabs) and httpapi (which labels) can't drift apart.
+// Arrmada owns the download-client categories. Each importer only looks at its own
+// category, so a torrent filed anywhere else downloads and is never imported — which is
+// why there is no per-client category setting: a free-text one silently stranded every
+// movie on installs that typed something other than the movie category into it.
 const (
-	// CategoryMovies is the default movie category; ARRMADA_DOWNLOAD_CATEGORY can change it.
-	CategoryMovies = "arrmada"
-	CategorySeries = "arrmada-tv"
-	CategoryBooks  = "arrmada-books"
-	CategoryMusic  = "arrmada-music"
+	// DefaultMovieCategory is the movie category when ARRMADA_DOWNLOAD_CATEGORY isn't set.
+	// The movie one is the only configurable category (the env var predates the others).
+	DefaultMovieCategory = "arrmada"
+	// CategoryTV keeps TV downloads apart so the multi-file series importer takes them,
+	// not the single-file movie importer.
+	CategoryTV = "arrmada-tv"
+	// CategoryBooks routes ebook and audiobook downloads through the book importer.
+	CategoryBooks = "arrmada-books"
+	// CategoryMusic routes album downloads through the music importer.
+	CategoryMusic = "arrmada-music"
 )
+
+// Categories is the fixed set Arrmada files downloads under, for showing to the owner.
+type Categories struct {
+	Movies string `json:"movies"`
+	TV     string `json:"tv"`
+	Books  string `json:"books"`
+	Music  string `json:"music"`
+}
+
+// FixedCategories is Arrmada's categories with the configured movie one ("" means the
+// default).
+func FixedCategories(movie string) Categories {
+	if movie == "" {
+		movie = DefaultMovieCategory
+	}
+	return Categories{Movies: movie, TV: CategoryTV, Books: CategoryBooks, Music: CategoryMusic}
+}

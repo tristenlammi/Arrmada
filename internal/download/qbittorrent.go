@@ -51,7 +51,9 @@ func (q *QBittorrent) login(ctx context.Context, dc Client) (*http.Client, error
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("qbittorrent: connect failed: %w", err)
+		// Whatever went wrong, it went wrong at the login: the request this session was
+		// for hasn't been sent, so another client may safely be given it.
+		return nil, notSent(fmt.Errorf("qbittorrent: connect failed: %w", err))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
@@ -134,7 +136,11 @@ func (q *QBittorrent) doAuthed(ctx context.Context, dc Client, newReq func() (*h
 		}
 		resp, err := client.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("qbittorrent: %w", err)
+			err = fmt.Errorf("qbittorrent: %w", err)
+			if dialFailed(err) {
+				err = notSent(err) // couldn't connect: nothing was sent
+			}
+			return nil, err
 		}
 		if resp.StatusCode == http.StatusForbidden {
 			q.drop(dc.ID) // session expired (or auth revoked)
@@ -221,12 +227,11 @@ func (q *QBittorrent) Add(ctx context.Context, dc Client, req AddRequest) error 
 			_ = w.WriteField("urls", req.URL)
 		}
 
-		cat := req.Category
-		if cat == "" {
-			cat = dc.Category
-		}
-		if cat != "" {
-			_ = w.WriteField("category", cat)
+		// The category comes from the caller only. The client's stored category used to
+		// fill in for a blank one, and any value other than the movie category meant
+		// movies downloaded and were never imported (see categories.go).
+		if req.Category != "" {
+			_ = w.WriteField("category", req.Category)
 		}
 		// Pin the save path to Arrmada's downloads dir so the client and Arrmada agree
 		// on where the file lands — otherwise a stale client default breaks import

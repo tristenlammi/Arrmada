@@ -27,9 +27,9 @@ func TestLabelQueueItemByCategory(t *testing.T) {
 		wantMovieCall  bool
 	}{
 		{download.CategoryMusic, "Hans Zimmer - Inception (2010) [FLAC]", "music", "custom:3", false},
-		{download.CategorySeries, "Show.S01E01.1080p.WEB-DL.x264-GRP", "series", "custom:2", false},
+		{download.CategoryTV, "Show.S01E01.1080p.WEB-DL.x264-GRP", "series", "custom:2", false},
 		{download.CategoryBooks, "Author - Book (2020) EPUB", "book", "", false},
-		{download.CategoryMovies, "Inception.2010.1080p.BluRay.x264-GRP", "movie", "custom:1", true},
+		{download.DefaultMovieCategory, "Inception.2010.1080p.BluRay.x264-GRP", "movie", "custom:1", true},
 		{"movies-custom", "Inception.2010.1080p.BluRay.x264-GRP", "movie", "custom:1", true},
 	}
 	for _, tc := range cases {

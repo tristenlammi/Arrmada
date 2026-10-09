@@ -311,6 +311,9 @@ export interface APIKeyStatus {
   // The install-time value, reported even when a saved one wins: what Clear falls back to.
   env_set: boolean;
   env_hint?: string;
+  /** The provider's last complaint about the key in use (OMDb's "Request limit reached!") and when. */
+  last_error?: string;
+  last_error_at?: string;
 }
 
 export interface ClientSettings {
@@ -404,10 +407,35 @@ export interface DownloadClient {
   kind: string;
   url: string;
   username?: string;
-  category?: string;
   enabled: boolean;
-  /** The packaged qBittorrent: startup re-adds it, so its URL is fixed and a delete won't stick. */
+  /** Place in the order new downloads try (1 = first); the next is tried only when this one can't be reached. */
+  priority: number;
+  /** The packaged qBittorrent. Deleted, it stays deleted until restored. */
   bundled?: boolean;
+  /** How it has been answering; absent when nothing is known yet. */
+  status?: DownloadClientStatus;
+}
+
+export interface DownloadClientStatus {
+  state: "ok" | "failing" | "backing_off" | "unknown";
+  failing_since?: string;
+  last_error?: string;
+  last_error_at?: string;
+}
+
+/** The categories Arrmada files downloads under; not a per-client setting. */
+export interface DownloadCategories {
+  movies: string;
+  tv: string;
+  books: string;
+  music: string;
+}
+
+export interface DownloadClientList {
+  clients: DownloadClient[];
+  categories?: DownloadCategories;
+  /** This install has a bundled qBittorrent and its row was deleted. */
+  can_restore_bundled?: boolean;
 }
 
 export interface NewDownloadClient {
@@ -417,8 +445,9 @@ export interface NewDownloadClient {
   username?: string;
   /** On an edit, blank keeps the stored password (it is never sent back). */
   password?: string;
-  category?: string;
   enabled?: boolean;
+  /** 1..99; left out, a new client gets 25 and an edited one keeps its own. */
+  priority?: number;
 }
 
 export interface NotificationConn {
@@ -1740,11 +1769,14 @@ export const api = {
     req<{ resumed: number }>(`/api/v1/series/${id}/resume-upgrades${season != null ? `?season=${season}` : ""}`, { method: "POST" }),
 
   downloadClients: () =>
-    req<{ clients: DownloadClient[] }>("/api/v1/downloadclients").then((r) => r.clients),
+    req<DownloadClientList>("/api/v1/downloadclients").then((r) => r.clients),
+  downloadClientList: () => req<DownloadClientList>("/api/v1/downloadclients"),
   createDownloadClient: (body: NewDownloadClient) =>
     req<DownloadClient>("/api/v1/downloadclients", { method: "POST", body: JSON.stringify(body) }),
   updateDownloadClient: (id: number, body: NewDownloadClient) =>
     req<DownloadClient>(`/api/v1/downloadclients/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  restoreBundledClient: () =>
+    req<{ restored: boolean }>("/api/v1/downloadclients/restore-bundled", { method: "POST" }),
   deleteDownloadClient: (id: number) =>
     req<void>(`/api/v1/downloadclients/${id}`, { method: "DELETE" }),
   testDownloadClient: (id: number) =>

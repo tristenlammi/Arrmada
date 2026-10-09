@@ -90,6 +90,12 @@ func (c *DiskCache) release(key string) {
 // the request's context, so it completes after the response); nothing at all means
 // fetch now. Errors are never stored. A nil cache just calls fetch.
 func swr[T any](ctx context.Context, c *DiskCache, key string, ttl time.Duration, fetch func(ctx context.Context) (T, error)) (T, error) {
+	return swrTTL(ctx, c, key, func(T) time.Duration { return ttl }, fetch)
+}
+
+// swrTTL is swr where the answer decides how long it is kept (OMDb keeps "no such title"
+// for a shorter time than real scores).
+func swrTTL[T any](ctx context.Context, c *DiskCache, key string, ttl func(T) time.Duration, fetch func(ctx context.Context) (T, error)) (T, error) {
 	if c == nil {
 		return fetch(ctx)
 	}
@@ -103,7 +109,7 @@ func swr[T any](ctx context.Context, c *DiskCache, key string, ttl time.Duration
 					defer cancel()
 					if nv, err := fetch(bg); err == nil {
 						if b, err := json.Marshal(nv); err == nil {
-							c.put(key, b, ttl)
+							c.put(key, b, ttl(nv))
 						}
 					}
 				})
@@ -116,7 +122,7 @@ func swr[T any](ctx context.Context, c *DiskCache, key string, ttl time.Duration
 		return v, err
 	}
 	if b, err := json.Marshal(v); err == nil {
-		c.put(key, b, ttl)
+		c.put(key, b, ttl(v))
 	}
 	return v, nil
 }
