@@ -37,6 +37,16 @@ test.describe("admin", () => {
     await expect(page).toHaveURL(/\/requests\?tab=active&type=movie$/);
   });
 
+  // REQ-06: the strip puts what's waiting first, says how many, and links to them.
+  test("the Discover strip leads with what's waiting and links to it", async ({ page, api }) => {
+    await page.goto("/discover");
+    await expect(page.getByText("1 waiting")).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Open the request for / }).first()).toHaveAccessibleName("Open the request for Saltwind");
+    expect(api.callsTo("GET", "/api/v1/requests?section=strip").length).toBeGreaterThan(0);
+    await page.getByRole("link", { name: "See all →" }).click();
+    await expect(page).toHaveURL(/\/requests\?tab=needs$/);
+  });
+
   test("the Needs-you deep link opens what's waiting", async ({ page }) => {
     await page.goto("/requests?section=pending");
     await expect(page.getByRole("tab", { name: /Needs approval/ })).toHaveAttribute("aria-selected", "true");

@@ -166,6 +166,30 @@ func TestRequestsAPIRequesterScope(t *testing.T) {
 	}
 }
 
+// A note is trimmed and kept to 500 characters; a longer one is refused, not cut.
+func TestRequestsAPICreateRejectsLongNote(t *testing.T) {
+	s := requestsServer(t)
+	_, cookie := s.user(t, "alice@example.com", auth.RoleRequester)
+	long := strings.Repeat("é", 501)
+	rec := s.doJSON("POST", "/api/v1/requests", cookie, `{"media_type":"movie","tmdb_id":5,"title":"Up","note":"`+long+`"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("a 501-character note: HTTP %d, want 400", rec.Code)
+	}
+	rec = s.doJSON("POST", "/api/v1/requests", cookie, `{"media_type":"movie","tmdb_id":5,"title":"Up","note":"  `+strings.Repeat("é", 500)+`  "}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a 500-character note: HTTP %d %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		Request requests.Request `json:"request"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Request.Note != strings.Repeat("é", 500) {
+		t.Errorf("note = %q…, want it trimmed and whole", got.Request.Note[:10])
+	}
+}
+
 // Bulk decisions are staff-only, validated, and reported per request.
 func TestRequestsAPIBulk(t *testing.T) {
 	s := requestsServer(t)

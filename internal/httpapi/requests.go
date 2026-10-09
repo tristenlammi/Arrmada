@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/download"
@@ -15,6 +17,8 @@ import (
 const (
 	requestsPageDefault = 50
 	requestsPageMax     = 200
+	// requestNoteMax is the longest note a requester can attach, in characters.
+	requestNoteMax = 500
 )
 
 // handleListRequests lists requests. Staff see everyone's; anyone else sees their own and
@@ -238,6 +242,12 @@ func (a *api) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 		QualityProfile string `json:"quality_profile"`
 	}
 	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	// The note is the requester's word to whoever decides; keep it to a short message.
+	req.Note = strings.TrimSpace(req.Note)
+	if utf8.RuneCountInString(req.Note) > requestNoteMax {
+		a.writeError(w, http.StatusBadRequest, "the note can be at most 500 characters")
 		return
 	}
 	u, _ := userFrom(r)

@@ -1,5 +1,5 @@
 import { createContext, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { NotificationBell } from "../components/NotificationBell";
 import { MetadataMissing } from "../components/MetadataMissing";
@@ -10,12 +10,14 @@ import { useMe, isStaff } from "../lib/me";
 import { api, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaDetail, type MediaRequest } from "../lib/api";
 import { posterThumb } from "../lib/img";
 import { useCanHover } from "../lib/useCanHover";
-import { requestStage, sortForRequester } from "../lib/requestStage";
+import { MOVING_STAGES, requestStage, sortForRequester } from "../lib/requestStage";
 import { usePoll } from "../lib/usePoll";
-import { Button, IconButton, Modal, StatusChip, POSTER_CHIP_BG, TONE_HUE, useConfirm, useToast, type Tone, type ToastFn } from "../ui";
+import { Button, IconButton, Modal, StatusChip, POSTER_CHIP_BG, TONE_HUE, useToast, type Tone, type ToastFn } from "../ui";
 
 // The Books tab is a separate Open Library experience; its code loads only when chosen.
 const BooksDiscover = lazyPage(() => import("./BooksDiscover"), "BooksDiscover");
+// The request sheet loads when a request is first opened, not with Discover.
+const RequestSheet = lazyPage(() => import("../components/RequestSheet"), "RequestSheet");
 
 type Tab = "discover" | "movies" | "series" | "books";
 const BASE_TABS: { key: Tab; label: string }[] = [
@@ -67,13 +69,13 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
 
   // Rethrows on failure so callers (modal, quick-request) only flip to their success
   // state on an actual success. subscribed=true → you joined an existing request.
-  const doRequest = useCallback(async (c: DiscoverCard): Promise<{ subscribed: boolean; status: ReqStatus }> => {
+  const doRequest = useCallback(async (c: DiscoverCard, note?: string): Promise<{ subscribed: boolean; status: ReqStatus }> => {
     const key = `${c.media_type}:${c.tmdb_id}`;
     try {
-      const res = await api.createRequest({ media_type: c.media_type, tmdb_id: c.tmdb_id, title: c.title, year: c.year, poster_url: c.poster_url, overview: c.overview });
+      const res = await api.createRequest({ media_type: c.media_type, tmdb_id: c.tmdb_id, title: c.title, year: c.year, poster_url: c.poster_url, overview: c.overview, note: note?.trim() || undefined });
       const status = res.request.status;
       setRequested((m) => new Map(m).set(key, status));
-      flash(res.subscribed ? "You’re on the list — we’ll notify you when it’s ready" : requestedMessage(c.title, status));
+      flash(res.subscribed ? FOLLOWING : requestedMessage(c.title, status));
       return { subscribed: res.subscribed, status };
     } catch (e) {
       flash((e as Error).message, { tone: "error" });
@@ -116,7 +118,7 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
             // row after row. Show the viewer's requests (they don't need TMDB) and one message
             // worded for their role instead. Books use Open Library and are unaffected.
             <div className="flex flex-col gap-7">
-              <MyRequestsRow flash={flash} />
+              <MyRequestsRow />
               <MetadataMissing variant="empty" />
             </div>
           ) : search ? (
@@ -142,8 +144,14 @@ function requestedMessage(title: string, status: ReqStatus): string {
   return status === "approved" ? `Requested “${title}” — searching now` : `Requested “${title}” — waiting for approval`;
 }
 
+// What asking for a title someone already asked for says: you joined their request.
+const FOLLOWING = "You’re following this request — it’s in your requests now.";
+
+// The longest note a requester can leave for the admin (the server refuses longer).
+const NOTE_MAX = 500;
+
 interface RowCtx {
-  doRequest: (c: DiscoverCard) => Promise<{ subscribed: boolean; status: ReqStatus }>;
+  doRequest: (c: DiscoverCard, note?: string) => Promise<{ subscribed: boolean; status: ReqStatus }>;
   /** What this session asked for the card, if anything: the status the server answered. */
   isRequested: (c: DiscoverCard) => ReqStatus | undefined;
   canRequest: boolean;
@@ -416,7 +424,7 @@ function DiscoverTab({ ctx }: { ctx: RowCtx }) {
       <div className="flex flex-col gap-7">
         {/* Requests first, above everything: admins see everyone's (to act on), everyone
             else their own, each with how far along it is. */}
-        <MyRequestsRow flash={ctx.flash} />
+        <MyRequestsRow />
         <Hero ctx={ctx} />
         {/* Personalized to the viewer's watch history/requests. Hidden entirely (no header,
             no skeleton) when the backend returns nothing to recommend, or on error. At
@@ -547,89 +555,87 @@ function Hero({ ctx }: { ctx: RowCtx }) {
   );
 }
 
-// MyRequestsRow is the strip of requests, first thing on Discover. Admins see every
-// request and approve or decline inline; everyone else sees their own (the server scopes
-// the list), each showing how far along it is — searching, downloading with progress,
-// importing, ready.
-function MyRequestsRow({ flash }: { flash: ToastFn }) {
+// MyRequestsRow is the strip of requests, first thing on Discover: a capped view of the
+// Requests page. Staff see what's waiting for them first (oldest first), then what's on its
+// way; everyone else their own and followed requests, what's moving first. Each poster is
+// one button that opens the RequestSheet — no action happens from a tap on the strip.
+function MyRequestsRow() {
   const { user } = useMe();
   const staff = isStaff(user);
-  const admin = !!user && user.role === "admin";
   const [items, setItems] = useState<MediaRequest[] | null>(null);
+  const [waiting, setWaiting] = useState(0);
+  const [openID, setOpenID] = useState<number | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
 
   // false while downloads can't be checked: a request's progress is then unknown.
   const [queueKnown, setQueueKnown] = useState(true);
-  const load = useCallback(() => api.requests().then((r) => { setItems(r.requests); setQueueKnown(r.client_health?.ok ?? true); }).catch(() => setItems([])), []);
-  usePoll(load, 8000); // refresh so status/progress advance
+  const load = useCallback(() => api.requests({ section: "strip" }).then((r) => {
+    setItems(r.requests);
+    setWaiting(r.counts?.needs_approval ?? 0);
+    setQueueKnown(r.client_health?.ok ?? true);
+  }).catch(() => setItems([])), []);
+  // Every 8 s while something is downloading or importing, else once a minute; a hidden
+  // tab makes no calls (usePoll).
+  const moving = (items ?? []).filter((rq) => MOVING_STAGES.has(rq.tracking?.stage ?? "")).length;
+  usePoll(load, moving > 0 ? 8000 : 60000);
 
   if (!items || items.length === 0) return null;
-  const sorted = sortForRequester(items);
-  const moving = items.filter((rq) => ["downloading", "importing", "queued"].includes(rq.tracking?.stage ?? "")).length;
+  // Staff keep the server's order: waiting (oldest first), then in progress.
+  const sorted = staff ? items : sortForRequester(items);
   const scroll = (dir: -1 | 1) => scroller.current?.scrollBy({ left: dir * Math.max(600, scroller.current.clientWidth * 0.8), behavior: "smooth" });
+  const seeAll = staff && waiting > 0 ? "/requests?tab=needs" : "/requests";
+  const open = openID ? items.find((rq) => rq.id === openID) : undefined;
   return (
     <div>
-      <div className="mb-2.5 flex items-center justify-between">
-        <h2 className="m-0 text-[15px] font-bold">
-          {admin ? "Requests" : "Your requests"}
+      <div className="mb-2.5 flex items-center justify-between gap-2">
+        <h2 className="m-0 min-w-0 text-[15px] font-bold">
+          {staff ? "Requests" : "Your requests"}
+          {staff && waiting > 0 && <span className="ml-2 text-[11.5px] font-medium" style={{ color: "var(--avoid-text)" }}>{waiting} waiting</span>}
           {moving > 0 && <span className="ml-2 text-[11.5px] font-medium" style={{ color: "var(--accent)" }}>{moving} on the way</span>}
         </h2>
-        <div className="flex gap-1"><ArrowBtn dir={-1} onClick={() => scroll(-1)} /><ArrowBtn dir={1} onClick={() => scroll(1)} /></div>
+        <div className="flex flex-none items-center gap-2">
+          <Link to={seeAll} className="text-[12px] font-semibold" style={{ color: "var(--accent)" }}>See all →</Link>
+          <div className="hidden gap-1 sm:flex"><ArrowBtn dir={-1} onClick={() => scroll(-1)} /><ArrowBtn dir={1} onClick={() => scroll(1)} /></div>
+        </div>
       </div>
       <div ref={scroller} className="thin-scroll flex gap-3 overflow-x-auto pb-2" style={{ scrollSnapType: "x proximity" }}>
-        {sorted.map((rq) => <RequestPoster key={rq.id} rq={rq} staff={staff} own={!!user && rq.requested_by === user.id} onChanged={load} flash={flash} queueKnown={queueKnown} />)}
+        {sorted.map((rq) => <RequestPoster key={rq.id} rq={rq} staff={staff} queueKnown={queueKnown} onOpen={() => setOpenID(rq.id)} />)}
       </div>
+      {openID !== null && (
+        <Suspense fallback={null}>
+          <RequestSheet key={openID} requestId={openID} initial={open} onChanged={() => { void load(); }} onClose={() => setOpenID(null)} />
+        </Suspense>
+      )}
     </div>
   );
 }
 
-function RequestPoster({ rq, staff, own, onChanged, flash, queueKnown = true }: { rq: MediaRequest; staff: boolean; own: boolean; onChanged: () => void; flash: ToastFn; queueKnown?: boolean }) {
-  const [busy, setBusy] = useState(false);
-  const confirm = useConfirm();
-  const canHover = useCanHover();
+function RequestPoster({ rq, staff, queueKnown = true, onOpen }: { rq: MediaRequest; staff: boolean; queueKnown?: boolean; onOpen: () => void }) {
   const tr = rq.tracking;
   const stage = requestStage(rq, queueKnown);
   const pct = tr && (tr.stage === "downloading" || tr.stage === "paused") && tr.progress != null ? Math.round(tr.progress * 100) : 0;
   const showBar = !stage.unknown && (tr?.stage === "downloading" || tr?.stage === "paused" || tr?.stage === "importing");
-  // Staff/owner actions get honest feedback: a success toast on success, the server's
-  // message on failure — never a silent no-op.
-  const act = async (fn: () => Promise<unknown>, okMsg: string) => {
-    setBusy(true);
-    try { await fn(); flash(okMsg); onChanged(); }
-    catch (e) { flash((e as Error).message, { tone: "error" }); }
-    finally { setBusy(false); }
-  };
-  const withdraw = async () => {
-    if (!(await confirm({ title: `Withdraw your request for “${rq.title}”?`, confirmLabel: "Withdraw", tone: "danger" }))) return;
-    act(() => api.deleteRequest(rq.id), `Withdrew “${rq.title}”`);
-  };
-  const approve = () => act(() => api.approveRequest(rq.id), "Approved — searching now");
-  // Declining notifies the requester and can't be undone from here, so it always asks first.
-  const decline = async () => {
-    const ok = await confirm({
-      title: `Decline “${rq.title}”${rq.requested_by_name ? ` requested by ${rq.requested_by_name}` : ""}?`,
-      body: "They’ll be told.",
-      confirmLabel: "Decline",
-      tone: "danger",
-    });
-    if (ok) act(() => api.declineRequest(rq.id), "Declined");
-  };
-  const pending = rq.status === "pending";
+  const following = rq.relation === "subscriber";
   return (
     <div className="w-[150px] flex-none" style={{ scrollSnapAlign: "start" }}>
-      <div className="group relative overflow-hidden rounded-xl" style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}>
+      {/* The whole poster is one button: a tap anywhere opens the sheet, where every
+          action is a visible, labelled button. Nothing on the strip acts by itself. */}
+      <button
+        onClick={onOpen}
+        aria-label={`Open the request for ${rq.title}`}
+        className="relative block w-full overflow-hidden rounded-xl text-left"
+        style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}
+      >
         {rq.poster_url ? (
-          <img src={posterThumb(rq.poster_url)} alt={rq.title} className="h-full w-full object-cover" loading="lazy" decoding="async" />
+          <img src={posterThumb(rq.poster_url)} alt="" className="h-full w-full object-cover" loading="lazy" decoding="async" />
         ) : (
           <PosterPlaceholder title={rq.title} year={rq.year} />
         )}
-        {/* One flex row, not two independent absolutes: the requester chip and the status
-            badge used to be positioned left and right on a 150px card, so a long username
-            painted straight over the badge ("AVAILABLE" read as "ABLE"). Now the name
-            shrinks and truncates while the badge always keeps its full width. */}
-        <div className="absolute inset-x-1.5 top-1.5 z-10 flex items-start justify-between gap-1">
-          {/* Who asked for it — staff only, and always visible (not hover-gated), since staff
-              see everyone's requests and "whose is this?" is the first question. */}
+        {/* One flex row, not two independent absolutes: a long username shrinks and
+            truncates while the status badge always keeps its full width. */}
+        <span className="absolute inset-x-1.5 top-1.5 z-10 flex items-start justify-between gap-1">
+          {/* Who asked for it — staff only, since staff see everyone's requests and
+              "whose is this?" is the first question. */}
           {staff && rq.requested_by_name ? (
             <span
               className="flex min-w-0 items-center gap-1 rounded-full py-[2px] pl-[2px] pr-1.5"
@@ -641,62 +647,29 @@ function RequestPoster({ rq, staff, own, onChanged, flash, queueKnown = true }: 
               </span>
               <span className="truncate text-[9px] font-semibold text-white">{rq.requested_by_name}</span>
             </span>
+          ) : following ? (
+            <StatusChip tone="faint" surface="poster" className="min-w-0">Following</StatusChip>
           ) : (
             <span />
           )}
           <StatusChip tone={stage.tone} surface="poster" className="flex-none">{stage.badge}</StatusChip>
-        </div>
+        </span>
         {/* Progress along the bottom while it's on its way; importing fills the bar. */}
         {showBar && (
-          <div className="absolute inset-x-0 bottom-0 z-10 h-1.5" style={{ background: "rgba(20,12,7,.55)" }}>
-            <div
-              className={`h-full ${tr?.stage === "importing" ? "animate-pulse" : ""}`}
+          <span className="absolute inset-x-0 bottom-0 z-10 block h-1.5" style={{ background: "rgba(20,12,7,.55)" }}>
+            <span
+              className={`block h-full ${tr?.stage === "importing" ? "animate-pulse" : ""}`}
               style={{ width: `${tr?.stage === "importing" ? 100 : Math.max(2, pct)}%`, background: tr?.stage === "paused" ? "var(--ink-faint)" : TONE_HUE[stage.tone] }}
             />
-          </div>
+          </span>
         )}
-        {/* Hover strip with the actions, mouse only. It ignores the pointer until hover or
-            keyboard focus reveals it: an invisible strip that still took taps let a phone
-            approve or decline by accident. Touch gets the visible row under the caption. */}
-        {canHover && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col gap-1.5 p-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100" style={{ background: "linear-gradient(to top, rgba(0,0,0,.92), transparent)" }}>
-            <div className="truncate text-[11.5px] font-semibold text-white">{rq.title}</div>
-            {staff && pending ? (
-              <div className="flex gap-1.5">
-                <button disabled={busy} onClick={approve} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Approve</button>
-                <button disabled={busy} onClick={decline} className="flex-1 rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>Decline</button>
-                {own && <button disabled={busy} onClick={withdraw} title="Withdraw your request" className="w-6 flex-none rounded px-0 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>✕</button>}
-              </div>
-            ) : own && pending ? (
-              <div className="flex items-center justify-between gap-1.5">
-                <span className="text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{rq.year || ""}</span>
-                <button disabled={busy} onClick={withdraw} className="rounded px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(255,255,255,.15)", color: "#fff" }}>✕ Withdraw</button>
-              </div>
-            ) : (
-              <div className="text-[10px]" style={{ color: "rgba(255,255,255,.7)" }}>{rq.year || ""}</div>
-            )}
-          </div>
-        )}
-      </div>
+      </button>
       {/* Always-visible caption: the title, and where it's got to in plain words. */}
       <div className="px-0.5 pt-2">
         <div className="truncate text-[12px] font-semibold" style={{ color: "var(--ink)" }} title={rq.title}>{rq.title}</div>
         <div className="mt-0.5 truncate text-[11px]" style={{ color: stage.detailTone ?? "var(--ink-faint)" }} title={stage.detail}>
           {stage.detail}
         </div>
-        {/* Touch has no hover, so the same actions sit here in plain sight. min-w-0 and the
-            tight padding keep Approve + Decline + ✕ inside the 150px card. */}
-        {!canHover && pending && (staff || own) && (
-          <div className="mt-1.5 flex gap-1">
-            {staff && <button disabled={busy} onClick={approve} className="min-h-[32px] min-w-0 flex-1 rounded-md px-1.5 text-[11px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>Approve</button>}
-            {staff && <button disabled={busy} onClick={decline} className="min-h-[32px] min-w-0 flex-1 rounded-md px-1.5 text-[11px] font-semibold" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Decline</button>}
-            {own && (
-              <button disabled={busy} onClick={withdraw} title="Withdraw your request" className={`min-h-[32px] rounded-md text-[11px] font-semibold ${staff ? "w-7 flex-none" : "flex-1 px-2"}`} style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
-                {staff ? "✕" : "Withdraw"}
-              </button>
-            )}
-          </div>
-        )}
       </div>
     </div>
   );
@@ -1154,6 +1127,8 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState<ReqStatus | undefined>(ctx.isRequested(card));
   const [subscribed, setSubscribed] = useState(false);
+  const [note, setNote] = useState("");
+  const [noteOpen, setNoteOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [d, setD] = useState<MediaDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(true);
@@ -1170,7 +1145,7 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
   useEffect(() => {
     let alive = true;
     setD(null); setDetailLoading(true); setError(null);
-    setDone(ctxRef.current.isRequested(current)); setSubscribed(false);
+    setDone(ctxRef.current.isRequested(current)); setSubscribed(false); setNote(""); setNoteOpen(false);
     scrollRef.current?.scrollTo({ top: 0 });
     api.mediaDetail(current.media_type, current.tmdb_id)
       .then((r) => { if (alive) { setD(r); setDetailLoading(false); } })
@@ -1183,7 +1158,7 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
   const request = async () => {
     setBusy(true); setError(null);
     try {
-      const r = await ctx.doRequest(c);
+      const r = await ctx.doRequest(c, note);
       setSubscribed(r.subscribed);
       setDone(r.status);
     } catch (e) {
@@ -1266,7 +1241,7 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
             )}
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {done && subscribed ? (
-                <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>You’re on the list — we’ll notify you when it’s ready</span>
+                <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{FOLLOWING}</span>
               ) : badge && !declined ? (
                 <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: POSTER_CHIP_BG, color: TONE_HUE[badge.tone], border: `1px solid ${TONE_HUE[badge.tone]}` }}>
                   {badge.label === "In library" ? "✓ In your library" : badge.label === "Pending" ? "Requested — waiting for approval" : badge.label === "Downloading" ? "Downloading…" : badge.label === "Wanted" ? "In library — waiting for a file" : done === "approved" ? "Requested — searching now" : "Requested"}
@@ -1290,6 +1265,28 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
                 </a>
               )}
             </div>
+            {/* An optional note for whoever approves it, folded away until asked for. */}
+            {ctx.canRequest && !(done && subscribed) && (!badge || declined) && (
+              noteOpen ? (
+                <label className="mt-2.5 flex max-w-[460px] flex-col gap-1 text-[11.5px] text-ink-dim">
+                  Note for the admin (optional)
+                  <textarea
+                    value={note}
+                    onChange={(e) => setNote(e.target.value.slice(0, NOTE_MAX))}
+                    maxLength={NOTE_MAX}
+                    rows={3}
+                    placeholder="Anything they should know — a particular version, why you'd like it…"
+                    className="rounded-lg px-3 py-2 text-[12.5px]"
+                    style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+                  />
+                  <span className="self-end font-mono text-[10px] text-ink-faint">{note.length}/{NOTE_MAX}</span>
+                </label>
+              ) : (
+                <button onClick={() => setNoteOpen(true)} className="mt-2 min-h-[32px] text-[11.5px] font-semibold" style={{ color: "var(--accent)" }}>
+                  ＋ Add a note for the admin (optional)
+                </button>
+              )
+            )}
             {error && <div className="mt-1.5 text-[11.5px] font-medium" style={{ color: "var(--reject)" }}>{error}</div>}
           </div>
         </div>
