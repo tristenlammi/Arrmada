@@ -271,6 +271,47 @@ func TestSyncWithoutPositionKeepsPlace(t *testing.T) {
 	}
 }
 
+// An app's own time on a progress report is only believed when it's clearly in the past:
+// a phone clock a little behind, a time in seconds, or a saved place stamped ahead by a
+// fast phone clock must not make a fresh report "older".
+func TestReportedWithinSkewIsNotOlder(t *testing.T) {
+	s, _, uid, clock := testStore(t)
+	ctx := context.Background()
+	if _, err := s.SetProgress(ctx, uid, "b1", 1000, 36000, nil, "web"); err != nil {
+		t.Fatal(err)
+	}
+	saved := clock.UnixMilli()
+	*clock = clock.Add(10 * time.Second)
+	for i, appAt := range []int64{saved - 5000, saved / 1000, 0} {
+		pos := float64(1100 + 100*i)
+		d, err := s.ReportPosition(ctx, uid, "b1", pos, 36000, false, appAt, "app")
+		if err != nil || d.Reason != "set" || d.Progress.Position != pos {
+			t.Fatalf("report with app time %d = %s %+v %v, want it saved", appAt, d.Reason, d.Progress, err)
+		}
+	}
+	// Clearly older than the saved place: a stale copy, ignored.
+	d, err := s.ReportPosition(ctx, uid, "b1", 5000, 36000, false, saved-10*60*1000, "app")
+	if err != nil || d.Reason != "older" || d.Progress.Position != 1300 {
+		t.Fatalf("stale report = %s %+v %v", d.Reason, d.Progress, err)
+	}
+	// Offline listening stamped 4 minutes ahead by a fast phone clock.
+	if _, err := s.SyncOffline(ctx, uid, OfflineSession{ID: "off-1", ItemKey: "b1", Position: 1400, Duration: 36000, Listened: 100,
+		StartedAt: clock.UnixMilli(), UpdatedAt: clock.Add(4 * time.Minute).UnixMilli()}); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := s.ReportPosition(ctx, uid, "b1", 1500, 36000, false, 0, "app"); err != nil || d.Reason != "set" {
+		t.Fatalf("report after a fast-clock upload = %s %v, want saved", d.Reason, err)
+	}
+	// A big jump back is held with no session, and the person can confirm it.
+	d, err = s.ReportPosition(ctx, uid, "b1", 0, 36000, false, 0, "app")
+	if err != nil || d.Reason != "held" || d.Progress.Position != 1500 || d.Progress.PendingSession != "" {
+		t.Fatalf("reported jump back = %s %+v %v, want held", d.Reason, d.Progress, err)
+	}
+	if d, err := s.AcceptPending(ctx, uid, "b1"); err != nil || d.Progress.Position != 0 {
+		t.Fatalf("accept = %+v %v", d.Progress, err)
+	}
+}
+
 // A finished book opened again ("Listen again") starts from 0:00. Listening on from
 // there saves the restart; just opening and closing it leaves the book finished.
 func TestFinishedBookReopensAtStart(t *testing.T) {

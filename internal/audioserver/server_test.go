@@ -266,6 +266,13 @@ func TestLissenConversation(t *testing.T) {
 	if r0["id"] != "off-1" || r0["success"] != true {
 		t.Fatalf("local-all result: %v", r0)
 	}
+	if got := h.json("GET", "/api/me/progress/"+key, nil)["currentTime"].(float64); got != 900 {
+		t.Fatalf("place after the offline upload = %v, want 900", got)
+	}
+	// A progress PATCH back to the start is held like any big jump back, not saved.
+	if r := h.json("PATCH", "/api/me/progress/"+key, map[string]any{"currentTime": 0, "duration": 36000}); r["currentTime"] != 900.0 {
+		t.Fatalf("a PATCH back to 0:00 replaced the place: %v", r["currentTime"])
+	}
 
 	// Bookmarks and /api/me.
 	bm := h.json("POST", "/api/me/item/"+key+"/bookmark", map[string]any{"time": 300, "title": "Good bit"})

@@ -333,37 +333,55 @@ func (s *Server) handleGetProgress(w http.ResponseWriter, r *http.Request) {
 }
 
 type progressPatch struct {
-	LibraryItemID string   `json:"libraryItemId"`
-	CurrentTime   *float64 `json:"currentTime"`
-	Duration      float64  `json:"duration"`
-	Progress      *float64 `json:"progress"`
-	IsFinished    *bool    `json:"isFinished"`
-	Hide          *bool    `json:"hideFromContinueListening"`
+	LibraryItemID string  `json:"libraryItemId"`
+	CurrentTime   optNum  `json:"currentTime"`
+	Duration      flexNum `json:"duration"`
+	Progress      optNum  `json:"progress"`
+	IsFinished    *bool   `json:"isFinished"`
+	Hide          *bool   `json:"hideFromContinueListening"`
+	LastUpdate    flexNum `json:"lastUpdate"` // when the app set it (unix ms)
 }
 
+// patchProgress applies an app's progress PATCH and returns the place actually kept —
+// which, for a stale or held report, isn't the one the app sent.
 func (s *Server) patchProgress(ctx context.Context, userID int64, key string, b progressPatch) (listening.Progress, error) {
-	cur, _, _ := s.listen.Progress(ctx, userID, key)
-	dur := b.Duration
+	cur, _, err := s.listen.Progress(ctx, userID, key)
+	if err != nil {
+		return listening.Progress{}, err
+	}
+	dur := float64(b.Duration)
 	if dur <= 0 {
 		dur = cur.Duration
 	}
 	if dur <= 0 {
 		dur = s.itemDuration(ctx, key)
 	}
-	pos := cur.Position
+	pos, hasPos := cur.Position, false
 	switch {
-	case b.CurrentTime != nil:
-		pos = *b.CurrentTime
-	case b.Progress != nil && dur > 0:
-		pos = *b.Progress * dur
+	case b.CurrentTime.OK:
+		pos, hasPos = b.CurrentTime.V, true
+	case b.Progress.OK && dur > 0:
+		pos, hasPos = b.Progress.V*dur, true
 	}
-	if b.CurrentTime != nil || b.Progress != nil || b.IsFinished != nil {
-		d, err := s.listen.SetProgress(ctx, userID, key, pos, dur, b.IsFinished, "app")
-		if err != nil {
-			return listening.Progress{}, err
-		}
-		cur = d.Progress
+	unfinish := b.IsFinished != nil && !*b.IsFinished
+	var d listening.Decision
+	switch {
+	case b.IsFinished != nil && *b.IsFinished:
+		// Marking a book finished is the person's own action: applied at once.
+		d, err = s.listen.SetProgress(ctx, userID, key, pos, dur, b.IsFinished, "app")
+	case hasPos || (unfinish && cur.Finished):
+		// Anything else an app sets goes through the same guards as a play session: an
+		// older copy is ignored and a big jump back is held until playback carries on
+		// from it. Apps often send isFinished:false on every update, so it only counts as
+		// "mark not finished" when the book is finished.
+		d, err = s.listen.ReportPosition(ctx, userID, key, pos, dur, unfinish, int64(b.LastUpdate), "app")
+	default:
+		d.Progress = cur
 	}
+	if err != nil {
+		return listening.Progress{}, err
+	}
+	cur = d.Progress
 	if b.Hide != nil {
 		_ = s.listen.HideProgress(ctx, userID, key, *b.Hide)
 		cur.Hidden = *b.Hide

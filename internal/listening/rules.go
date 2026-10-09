@@ -27,6 +27,11 @@ const (
 	// Manual is an explicit user action — mark finished, set a position, restore an
 	// earlier place. Always applied.
 	Manual
+	// Reported is an app setting a position outside a play session (Audiobookshelf's
+	// progress PATCH). Apps send these on their own schedule, sometimes from a stale
+	// copy, so they get the same guards as everything else: an older one is ignored and
+	// a big jump back is held until a play session carries on from it.
+	Reported
 )
 
 const (
@@ -89,7 +94,7 @@ type Report struct {
 	At        int64   // unix ms of the listening this report describes
 	SessionID string
 	Device    string
-	Finished  *bool // explicit finished flag (Manual only)
+	Finished  *bool // explicit finished flag (Manual; for Reported only "not finished" counts)
 }
 
 // Decision is what applying a report does to a saved place.
@@ -97,7 +102,7 @@ type Decision struct {
 	Progress Progress
 	Changed  bool   // the saved position (or finished flag) moved
 	Dirty    bool   // something needs writing (Changed, or the pending state moved)
-	Reason   string // why: start, forward, back, rewind, offline, manual, held, older, unproven
+	Reason   string // why: start, forward, back, rewind, offline, manual, set, held, older, unproven, no-position
 }
 
 // Decide applies a report to the current saved place (nil when there is none yet).
@@ -136,8 +141,7 @@ func Decide(cur *Progress, r Report) Decision {
 		return Decision{Progress: p, Changed: changed, Dirty: true, Reason: reason}
 	}
 
-	switch r.Kind {
-	case Manual:
+	manual := func() Decision {
 		p.Position = pos
 		p.UpdatedAt = maxInt64(r.At, cur.UpdatedAt)
 		p.Device, p.SessionID = r.Device, r.SessionID
@@ -145,6 +149,11 @@ func Decide(cur *Progress, r Report) Decision {
 		p.Finished, p.FinishedAt = false, 0
 		setFinished(&p, r, pos, dur)
 		return Decision{Progress: p, Changed: true, Dirty: true, Reason: "manual"}
+	}
+
+	switch r.Kind {
+	case Manual:
+		return manual()
 
 	case Offline:
 		if r.At <= cur.UpdatedAt {
@@ -157,6 +166,27 @@ func Decide(cur *Progress, r Report) Decision {
 		}
 		return accept("offline")
 
+	case Reported:
+		if r.At <= cur.UpdatedAt {
+			// Describes a moment before the saved place was set: a stale copy.
+			return Decision{Progress: *cur, Reason: "older"}
+		}
+		if r.Finished != nil && !*r.Finished && cur.Finished {
+			// The app marking a finished book not finished: the person's own action, applied
+			// at once (it keeps the saved place unless the app said where to pick up).
+			return manual()
+		}
+		// Otherwise the flag says nothing new; the position alone decides.
+		r.Finished = nil
+		if cur.Position-pos > rewindThreshold {
+			// Held with no session: the first play session that carries on from here
+			// takes it over and proves it, or the person confirms it in Arrmada.
+			np := pos
+			p.PendingPosition, p.PendingSession, p.PendingListened, p.PendingAt = &np, "", 0, r.At
+			return Decision{Progress: p, Dirty: true, Reason: "held"}
+		}
+		return accept("set")
+
 	default: // Live
 		back := cur.Position - pos
 		if back <= rewindThreshold {
@@ -166,10 +196,18 @@ func Decide(cur *Progress, r Report) Decision {
 			return accept("forward")
 		}
 		// A big jump backwards. Is this session already carrying on from a held jump?
-		if cur.PendingPosition != nil && cur.PendingSession == r.SessionID && r.SessionID != "" {
+		if cur.PendingPosition != nil && r.SessionID != "" {
 			last := *cur.PendingPosition
 			continuous := pos >= last-continuitySlack && pos <= last+r.Listened*speedAllowance+continuitySlack
-			if continuous {
+			if continuous && cur.PendingSession == "" {
+				// A jump an app set without playing (Reported). This session is playing on
+				// from it, so it takes the hold over; the proof counts from here, since its
+				// listening so far may have been somewhere else.
+				np := pos
+				p.PendingPosition, p.PendingSession, p.PendingListened = &np, r.SessionID, 0
+				return Decision{Progress: p, Dirty: true, Reason: "held"}
+			}
+			if continuous && cur.PendingSession == r.SessionID {
 				p.PendingListened = cur.PendingListened + math.Max(0, r.Listened)
 				np := pos
 				p.PendingPosition = &np

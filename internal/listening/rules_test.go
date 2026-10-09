@@ -101,3 +101,86 @@ func TestFirstReport(t *testing.T) {
 		t.Fatalf("first report: %+v", d)
 	}
 }
+
+// A position an app sets without playing (a progress PATCH) from a stale copy can't
+// replace a newer place.
+func TestReportedOlderIsIgnored(t *testing.T) {
+	p := Progress{Position: 9000, Duration: 40000, UpdatedAt: 5000}
+	for _, at := range []int64{4000, 5000} {
+		d := Decide(&p, Report{Kind: Reported, Position: 9500, At: at})
+		if d.Dirty || d.Reason != "older" || d.Progress.Position != 9000 {
+			t.Fatalf("older report at %d: %+v", at, d)
+		}
+	}
+	no := false
+	finished := Progress{Position: 40000, Duration: 40000, Finished: true, UpdatedAt: 5000}
+	if d := Decide(&finished, Report{Kind: Reported, Position: 3000, Finished: &no, At: 4000}); d.Dirty || !d.Progress.Finished {
+		t.Fatalf("a stale copy un-finished the book: %+v", d)
+	}
+}
+
+// A big jump back set without playing is held, with no session, never saved.
+func TestReportedBigBackIsHeld(t *testing.T) {
+	p := Progress{Position: 13629, Duration: 40000, UpdatedAt: 1000}
+	d := Decide(&p, Report{Kind: Reported, Position: 5, At: 2000})
+	if d.Changed || d.Reason != "held" || d.Progress.Position != 13629 {
+		t.Fatalf("reported reset moved the place: %s %+v", d.Reason, d.Progress)
+	}
+	if d.Progress.PendingPosition == nil || *d.Progress.PendingPosition != 5 || d.Progress.PendingSession != "" || d.Progress.PendingAt != 2000 {
+		t.Fatalf("hold = %+v, want 5 s held with no session", d.Progress)
+	}
+	// A small skip back is normal and saved.
+	if d := Decide(&p, Report{Kind: Reported, Position: 13529, At: 2000}); d.Reason != "set" || d.Progress.Position != 13529 {
+		t.Fatalf("a 100 s skip back: %s %v", d.Reason, d.Progress.Position)
+	}
+}
+
+// A play session that carries on from a held jump an app set takes the hold over, and
+// 30 s of listening from there saves it. A session elsewhere starts its own hold.
+func TestReportedHoldAdoptedByContinuousLiveSession(t *testing.T) {
+	p := Progress{Position: 5000, Duration: 40000, UpdatedAt: 1000}
+	held := Decide(&p, Report{Kind: Reported, Position: 100, At: 2000}).Progress
+
+	d := Decide(&held, Report{Kind: Live, Position: 110, Listened: 10, At: 3000, SessionID: "s"})
+	if d.Reason != "held" || d.Progress.PendingSession != "s" || d.Progress.PendingListened != 0 || d.Progress.Position != 5000 {
+		t.Fatalf("adoption: %s %+v", d.Reason, d.Progress)
+	}
+	d = Decide(&d.Progress, Report{Kind: Live, Position: 125, Listened: 15, At: 4000, SessionID: "s"})
+	if d.Reason != "held" || d.Progress.Position != 5000 {
+		t.Fatalf("15 s after adoption: %s %+v", d.Reason, d.Progress)
+	}
+	d = Decide(&d.Progress, Report{Kind: Live, Position: 140, Listened: 15, At: 5000, SessionID: "s"})
+	if d.Reason != "rewind" || d.Progress.Position != 140 || d.Progress.PendingPosition != nil {
+		t.Fatalf("30 s after adoption: %s %+v", d.Reason, d.Progress)
+	}
+
+	// Playing somewhere unrelated, far from the held spot, doesn't adopt it.
+	d = Decide(&held, Report{Kind: Live, Position: 2000, Listened: 10, At: 3000, SessionID: "t"})
+	if d.Reason != "held" || d.Progress.PendingSession != "t" || *d.Progress.PendingPosition != 2000 {
+		t.Fatalf("an unrelated session: %s %+v", d.Reason, d.Progress)
+	}
+	// Carrying on from the saved place drops the hold.
+	d = Decide(&held, Report{Kind: Live, Position: 5010, Listened: 10, At: 3000, SessionID: "u"})
+	if d.Progress.Position != 5010 || d.Progress.PendingPosition != nil {
+		t.Fatalf("playing on from the saved place: %s %+v", d.Reason, d.Progress)
+	}
+}
+
+// Forward, set without playing, is saved at once; so is marking a finished book not
+// finished — but a routine "not finished" on an unfinished book is just a position.
+func TestReportedForwardApplies(t *testing.T) {
+	p := Progress{Position: 100, Duration: 1000, UpdatedAt: 1}
+	if d := Decide(&p, Report{Kind: Reported, Position: 700, At: 2}); d.Reason != "set" || d.Progress.Position != 700 || d.Progress.UpdatedAt != 2 {
+		t.Fatalf("forward: %s %+v", d.Reason, d.Progress)
+	}
+	no := false
+	finished := Progress{Position: 1000, Duration: 1000, Finished: true, FinishedAt: 1, UpdatedAt: 1}
+	d := Decide(&finished, Report{Kind: Reported, Position: 1000, Finished: &no, At: 2})
+	if d.Progress.Finished || d.Progress.Position != 1000 || d.Reason != "manual" {
+		t.Fatalf("un-finish keeping the place: %s %+v", d.Reason, d.Progress)
+	}
+	// Reaching the end still marks it finished, whatever the routine flag says.
+	if d := Decide(&p, Report{Kind: Reported, Position: 998, Finished: &no, At: 2}); !d.Progress.Finished {
+		t.Fatalf("a report at the end with isFinished:false: %+v", d.Progress)
+	}
+}
