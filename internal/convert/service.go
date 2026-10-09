@@ -165,23 +165,47 @@ type LogLine struct {
 
 // event appends a human-readable line to the activity log (kept to the last maxLogLines,
 // persisted so history survives a restart) and mirrors it to the structured log.
+//
+// A line identical to the one before it (same level, same text) is folded into that line as
+// "msg (×N)" with the new time, instead of being appended: a retry loop used to fill the
+// 5,000-line log with copies and push out the history that matters. Only consecutive
+// repeats fold, so lines from two jobs that interleave stay separate. The structured log
+// still gets the first line and every 10th repeat.
 func (s *Service) event(level, msg string) {
 	ln := LogLine{At: time.Now().Unix(), Level: level, Msg: msg}
+	count := 1
 	s.logMu.Lock()
-	s.logBuf = append(s.logBuf, ln)
-	if len(s.logBuf) > maxLogLines {
-		s.logBuf = s.logBuf[len(s.logBuf)-maxLogLines:]
+	if n := len(s.logBuf); n > 0 {
+		if last := s.logBuf[n-1]; last.Level == level {
+			if base, c := splitRepeat(last.Msg); base == msg {
+				count = c + 1
+				ln.Msg = fmt.Sprintf("%s (×%d)", msg, count)
+				s.logBuf[n-1] = ln
+			}
+		}
+	}
+	if count == 1 {
+		s.logBuf = append(s.logBuf, ln)
+		if len(s.logBuf) > maxLogLines {
+			s.logBuf = s.logBuf[len(s.logBuf)-maxLogLines:]
+		}
+	}
+	// The database write stays under the lock so the durable mirror sees lines in the same
+	// order as the ring: a fold must rewrite the row it folded into, not a newer one.
+	if count == 1 {
+		s.logs.append(context.Background(), ln)
+	} else {
+		s.logs.updateLast(context.Background(), ln)
 	}
 	s.logMu.Unlock()
-	s.logs.append(context.Background(), ln)
-	if s.log == nil {
+	if s.log == nil || (count > 1 && count%10 != 0) {
 		return
 	}
 	switch level {
 	case "error", "warn":
-		s.log.Warn("convert: " + msg)
+		s.log.Warn("convert: " + ln.Msg)
 	default:
-		s.log.Info("convert: " + msg)
+		s.log.Info("convert: " + ln.Msg)
 	}
 }
 

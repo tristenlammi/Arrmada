@@ -1077,10 +1077,10 @@ function SettingsPanel({ flash, onSaved }: { flash: (m: string) => void; onSaved
   const [saved, setSaved] = useState<ConvertSettings | null>(null);
   const [d, setD] = useState<ConvertSettings | null>(null);
   const [busy, setBusy] = useState(false);
-  const [hw, setHw] = useState<{ dir: string; free: number; devices: { path: string; pci: string; vendor: string }[] } | null>(null);
+  const [hw, setHw] = useState<{ dir: string; free: number; need: number; needTitle: string; devices: { path: string; pci: string; vendor: string }[] } | null>(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { api.convertSettings().then((v) => { setSaved(v); setD(v); }).catch(() => flash("Could not load settings")); }, []);
-  useEffect(() => { api.convertHardware().then((h) => setHw({ dir: h.scratch_dir, free: h.scratch_free_bytes, devices: h.render_devices ?? [] })).catch(() => {}); }, []);
+  useEffect(() => { api.convertHardware().then((h) => setHw({ dir: h.scratch_dir, free: h.scratch_free_bytes, need: h.scratch_need_bytes ?? 0, needTitle: h.scratch_need_title ?? "", devices: h.render_devices ?? [] })).catch(() => {}); }, []);
   const set = (patch: Partial<ConvertSettings>) => setD((cur) => (cur ? { ...cur, ...patch } : cur));
   const dirty = useMemo(() => !!saved && !!d && SETTING_KEYS.some((k) => saved[k] !== d[k]), [saved, d]);
   const onSave = async () => {
@@ -1161,7 +1161,9 @@ function SettingsPanel({ flash, onSaved }: { flash: (m: string) => void; onSaved
           <Field label="Transcode folder" hint="Fast storage (an SSD/NVMe pool), never the array. Blank = the default.">
             <input type="text" value={d.scratch_dir} onChange={(e) => set({ scratch_dir: e.target.value })} placeholder="/transcode" className={`${inp} w-[240px]`} style={inpStyle} />
           </Field>
-          {hw && <div className="text-[11px] text-ink-faint">Using <span className="font-mono text-ink-dim">{hw.dir}</span> · <b style={{ color: hw.free > 20 * 1024 ** 3 ? "var(--good)" : "var(--avoid)" }}>{fmtSize(hw.free)}</b> free</div>}
+          {/* Green only when the biggest of the next files fits: one 4K remux can need ~90 GB,
+              so a fixed threshold said "fine" right before a file failed for space. */}
+          {hw && <div className="text-[11px] text-ink-faint">Using <span className="font-mono text-ink-dim">{hw.dir}</span> · <b style={{ color: hw.free >= hw.need ? "var(--good)" : "var(--avoid)" }}>{fmtSize(hw.free)}</b> free{hw.need > 0 && <> · largest of the next 20 files{hw.needTitle ? <> (“{hw.needTitle}”)</> : null} needs ~{fmtSize(hw.need)}</>}</div>}
           {hw && hw.devices.length > 1 && (
             <Field label="GPU device" hint="The discrete card is usually the higher renderD number">
               <select value={d.vaapi_device || ""} onChange={(e) => set({ vaapi_device: e.target.value })} className={`${inp} w-[280px]`} style={inpStyle}>

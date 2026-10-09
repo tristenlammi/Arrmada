@@ -193,6 +193,47 @@ type autoCand struct {
 	Reason  string `json:"reason"`  // "video", "video + tracks", "tracks"
 	Codec   string `json:"codec"`   // likely target
 	Current string `json:"current"` // current video codec
+
+	// needScratch is the scratch space this file will need, for the Settings indicator.
+	needScratch int64
+}
+
+// candScratch is the scratch space a candidate will need, worked out the way the job will
+// (scratchNeeded). Whether a file carries HDR10+ is only known once the whole stream is
+// read, so any HEVC HDR10 file is assumed to: that pipeline holds the stream twice, and
+// under-promising room is what makes a big remux fail hours in.
+func candScratch(mi MediaInfo, plan Plan, size int64) int64 {
+	if mi.SizeBytes <= 0 {
+		mi.SizeBytes = size
+	}
+	maybeHDR10Plus := mi.HDR == "HDR10+" || (codecClass(mi.VideoCodec) == "hevc" && mi.EncodeHDR() == "HDR10")
+	return scratchNeeded(&mi, plan, maybeHDR10Plus)
+}
+
+// scratchNeedWindow is how many upcoming files the scratch indicator looks ahead over.
+const scratchNeedWindow = 20
+
+// ScratchNeed is the most scratch space any of the next few files the runner would pick will
+// need, and that file's title — the figure the Settings indicator compares free space with.
+// Files waiting on a skip or blocked by failures are passed over, as the runner does.
+func (s *Service) ScratchNeed(ctx context.Context) (int64, string) {
+	waiting := s.skips.waitingKeys(ctx)
+	blocked := s.failures.blockedKeys(ctx, maxFailures)
+	var need int64
+	var title string
+	seen := 0
+	for _, c := range s.autoCandidates(ctx, s.prefs(ctx)) {
+		if waiting[c.Key] || blocked[c.Key] {
+			continue
+		}
+		if c.needScratch > need {
+			need, title = c.needScratch, c.Title
+		}
+		if seen++; seen == scratchNeedWindow {
+			break
+		}
+	}
+	return need, title
 }
 
 // autoCandidates is every file that needs work, best first: re-encodes by estimated saving,
@@ -243,7 +284,8 @@ func (s *Service) computeCandidates(ctx context.Context, p prefs) []autoCand {
 			continue
 		}
 		c := autoCand{Key: ItemKey(mediaType, movieID, seriesID, season, episode), Title: title, Kind: mediaType,
-			Video: n.Video, Size: size, Tracks: trackSummary(&mi, plan), Current: strings.ToUpper(mi.VideoCodec)}
+			Video: n.Video, Size: size, Tracks: trackSummary(&mi, plan), Current: strings.ToUpper(mi.VideoCodec),
+			needScratch: candScratch(mi, plan, size)}
 		if n.Video {
 			c.Codec = plan.VideoCodec
 		}

@@ -1713,7 +1713,7 @@ export const api = {
   searchSeriesSubs: (id: number) => req<{ status: string }>(`/api/v1/subtitles/series/${id}/search`, { method: "POST" }),
 
   // Convert
-  convertHardware: () => req<{ encoders: ConvertEncoder[]; using: string; reclaimed_bytes: number; scratch_dir: string; scratch_free_bytes: number; render_devices: { path: string; pci: string; vendor: string }[]; vaapi_device: string }>("/api/v1/convert/hardware"),
+  convertHardware: () => req<{ encoders: ConvertEncoder[]; using: string; reclaimed_bytes: number; scratch_dir: string; scratch_free_bytes: number; scratch_need_bytes?: number; scratch_need_title?: string; render_devices: { path: string; pci: string; vendor: string }[]; vaapi_device: string }>("/api/v1/convert/hardware"),
   convertStatus: () => req<ConvertStatus>("/api/v1/convert/status"),
   convertSettings: () => req<ConvertSettings>("/api/v1/convert/settings"),
   updateConvertSettings: (patch: Partial<ConvertSettings>) => req<ConvertSettings>("/api/v1/convert/settings", { method: "PUT", body: JSON.stringify(patch) }),
