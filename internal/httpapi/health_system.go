@@ -11,6 +11,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/download"
+	"github.com/tristenlammi/arrmada/internal/libroots"
 )
 
 // healthWarning is one operational problem surfaced to the user.
@@ -55,6 +56,17 @@ func (a *api) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 	lib := a.deps.Config.LibraryDir
 	if !writable(lib) {
 		add("error", "The library folder isn't writable: "+lib)
+	}
+
+	// Media in or above the data folder mixes it with the database, backups and logs.
+	// Saving such a folder is refused now, but an older save or the environment can
+	// still carry one, and the app keeps running on it — so say it in red.
+	picked := a.pickedConfig(ctx)
+	for _, d := range libraryDirSettings(&picked) {
+		if *d.field != "" && libroots.UnderDataDir(*d.field, a.deps.Config.DataDir) {
+			add("error", fmt.Sprintf("The %s folder (%s) is inside (or contains) Arrmada's data folder — move it to its own mount.",
+				folderLabel[d.name], *d.field))
+		}
 	}
 
 	// The disk guard actively holding the queue is the single most confusing reason

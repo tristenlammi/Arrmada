@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/config"
+	"github.com/tristenlammi/arrmada/internal/libroots"
 )
 
 // First-run setup. The installer used to ask for the TMDB key in a terminal and write
@@ -54,6 +55,16 @@ func ApplySavedLibraryDirs(ctx context.Context, get func(ctx context.Context, ke
 			log.Info("library folder: using the folder chosen in the app", "library", d.name, "folder", v, "environment_default", *d.field)
 		}
 		*d.field = v
+	}
+	// A folder in or above the data dir (an older save, or the environment) still runs —
+	// refusing to start would be worse — but it's said loudly, here and on the health panel.
+	if log != nil {
+		for _, d := range libraryDirSettings(cfg) {
+			if *d.field != "" && libroots.UnderDataDir(*d.field, cfg.DataDir) {
+				log.Error("library folder is inside or contains Arrmada's data folder; move it to its own mount",
+					"library", d.name, "folder", *d.field, "data_dir", cfg.DataDir)
+			}
+		}
 	}
 }
 

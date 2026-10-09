@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tristenlammi/arrmada/internal/libroots"
 	"github.com/tristenlammi/arrmada/internal/pathguard"
 )
 
@@ -47,7 +48,7 @@ func (a *api) checkImportPath(ctx context.Context, p string) (string, error) {
 	if err != nil {
 		return "", errImportPathOutside
 	}
-	if a.deps.Config.DataDir != "" && pathguard.Under(clean, a.deps.Config.DataDir) {
+	if libroots.InDataDir(clean, a.deps.Config.DataDir) {
 		return "", errImportPathDataDir
 	}
 	if !pathguard.Within(clean, a.importRoots(ctx)...) {
