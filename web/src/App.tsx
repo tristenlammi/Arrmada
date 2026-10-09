@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import { SetupGate } from "./components/SetupGate";
 import { Unreachable } from "./components/Unreachable";
@@ -25,6 +25,10 @@ export default function App() {
   const { user, loading, signedOut, unreachable, external } = useMe();
   const role = user?.role;
   const router = useMemo(() => (role ? routerFor(role, external) : null), [role, external]);
+  // Signed out mid-session: the sign-in screen shouldn't keep the last page's tab title.
+  useEffect(() => {
+    if (!user) document.title = "Arrmada";
+  }, [user]);
 
   if (loading) {
     return <div className="grid h-full place-items-center text-[13px] text-ink-dim">Loading…</div>;
