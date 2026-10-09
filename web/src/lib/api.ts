@@ -284,6 +284,9 @@ export interface APIKeyStatus {
   // The install-time value, reported even when a saved one wins: what Clear falls back to.
   env_set: boolean;
   env_hint?: string;
+  /** The provider's last complaint about the key in use (OMDb's "Request limit reached!") and when. */
+  last_error?: string;
+  last_error_at?: string;
 }
 
 export interface ClientSettings {

@@ -5,6 +5,7 @@ import { Section, Toggle } from "../../components/settings/ui";
 import { api, type APIKeyStatus, type PendingRestart } from "../../lib/api";
 import { useMe } from "../../lib/me";
 import { busyLines, restartAppAndWait } from "../../lib/restart";
+import { ago } from "../../lib/taskTime";
 import { SaveBar, useLoadedSettings } from "../../lib/useSettings";
 import { Backups } from "./Backups";
 
@@ -242,6 +243,11 @@ export function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: stri
                 </button>
               )}
             </div>
+            {k.last_error && (
+              <p className="text-[11px]" style={{ color: "var(--reject)" }} title={k.last_error_at ? new Date(k.last_error_at).toLocaleString() : undefined}>
+                Last failed {ago(k.last_error_at)}: {k.last_error}
+              </p>
+            )}
             {tests[k.id] && (
               <p className="text-[11px]" style={{ color: tests[k.id].ok ? "var(--good)" : "var(--reject)" }}>
                 {tests[k.id].ok ? "✓ " : "✗ "}{tests[k.id].detail}

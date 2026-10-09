@@ -101,12 +101,27 @@ type RatingProvider interface {
 // MediaDetails fetches the full detail record for the modal (no episode fetching for
 // series — this is metadata only). Crew: movies get director/writer/producer; series
 // get their creators.
+//
+// Kept for 12 hours (stale served while it refreshes), so reopening a sheet, hopping
+// through "More like this" and creating a request from it don't each ask TMDB again. A
+// day-old status or certification is fine for display; the key carries a version so a
+// later change to what's stored can retire the old entries.
 func (t *TMDB) MediaDetails(ctx context.Context, media string, tmdbID int) (*MediaDetail, error) {
+	kind := "movie"
 	if tvish(media) {
-		return t.seriesDetail(ctx, tmdbID)
+		kind = "tv"
 	}
-	return t.movieDetail(ctx, tmdbID)
+	key := "tmdb:detail:v1:" + kind + ":" + strconv.Itoa(tmdbID)
+	return swr(ctx, t.disk, key, mediaDetailTTL, func(ctx context.Context) (*MediaDetail, error) {
+		if kind == "tv" {
+			return t.seriesDetail(ctx, tmdbID)
+		}
+		return t.movieDetail(ctx, tmdbID)
+	})
 }
+
+// mediaDetailTTL is how long a title's detail record is kept before it's refreshed.
+const mediaDetailTTL = 12 * time.Hour
 
 func (t *TMDB) movieDetail(ctx context.Context, tmdbID int) (*MediaDetail, error) {
 	q := url.Values{}

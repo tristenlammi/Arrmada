@@ -269,6 +269,8 @@ func main() {
 	// lists. Read lazily like the key, so changing it needs no restart.
 	tmdb.SetRegionFunc(func() string { return settingsSvc.Get(context.Background(), "tmdb_region", "") })
 	omdb := metadata.NewOMDbFunc(keyStore.Func("omdb"))
+	omdb.SetDiskCache(diskCache) // ratings for a week, so the free key's daily quota lasts
+	omdb.SetLogger(log)
 	// Books: Open Library (with a Google Books fallback) out of the box; Hardcover takes
 	// over the moment a key is in Settings, with Open Library still reachable on request.
 	olProvider := metadata.NewOpenLibrary()

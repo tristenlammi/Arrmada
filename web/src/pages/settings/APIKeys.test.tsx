@@ -72,3 +72,15 @@ describe("API keys Test", () => {
     expect(await screen.findByText(/17 downloads left today/)).toBeTruthy();
   });
 });
+
+describe("API keys last error (INT-13)", () => {
+  it("shows OMDb's last complaint under its key", async () => {
+    vi.spyOn(api, "apiKeys").mockResolvedValue([
+      key("omdb", { last_error: "OMDb: Request limit reached!", last_error_at: new Date(Date.now() - 5 * 60_000).toISOString() }),
+      key("tmdb"),
+    ]);
+    page();
+    expect(await screen.findByText(/Last failed 5 min ago: OMDb: Request limit reached!/)).toBeTruthy();
+    expect(screen.getAllByText(/Last failed/)).toHaveLength(1);
+  });
+});

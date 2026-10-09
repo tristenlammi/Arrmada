@@ -15,6 +15,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"time"
 )
 
 // Errors the API layer turns into a 404 or a 400.
@@ -164,6 +165,10 @@ type KeyStatus struct {
 	// what clearing the saved one falls back to.
 	EnvSet  bool   `json:"env_set"`
 	EnvHint string `json:"env_hint,omitempty"`
+	// The provider's last complaint about the key in use and when (OMDb's "Request limit
+	// reached!"), filled in by the API for providers that keep one.
+	LastError   string     `json:"last_error,omitempty"`
+	LastErrorAt *time.Time `json:"last_error_at,omitempty"`
 }
 
 // Status reports every credential's state for the settings UI, without exposing secrets.

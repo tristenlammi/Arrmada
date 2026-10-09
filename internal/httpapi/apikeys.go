@@ -19,6 +19,28 @@ import (
 // tested, so a fixed key clears the warning now instead of at the next six-hourly check.
 func (a *api) recheckTMDB(r *http.Request) { a.recheckHealth(r, "tmdb.key") }
 
+// lastErrorer is a provider that keeps its last complaint about the key (OMDb).
+type lastErrorer interface {
+	LastError() (string, time.Time)
+}
+
+// keyStatuses is every credential's state, with the provider's last error added where it
+// keeps one: a spent OMDb quota otherwise only showed as ratings quietly missing.
+func (a *api) keyStatuses(ctx context.Context) []apikeys.KeyStatus {
+	keys := a.deps.APIKeys.Status(ctx)
+	if le, ok := a.deps.Ratings.(lastErrorer); ok {
+		for i := range keys {
+			if keys[i].ID != "omdb" {
+				continue
+			}
+			if msg, at := le.LastError(); msg != "" {
+				keys[i].LastError, keys[i].LastErrorAt = msg, &at
+			}
+		}
+	}
+	return keys
+}
+
 // handleGetAPIKeys returns the state of every credential — configured or not, from where,
 // and a short hint — but never a secret itself.
 func (a *api) handleGetAPIKeys(w http.ResponseWriter, r *http.Request) {
@@ -26,7 +48,7 @@ func (a *api) handleGetAPIKeys(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusOK, map[string]any{"keys": []any{}})
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"keys": a.deps.APIKeys.Status(r.Context())})
+	a.writeJSON(w, http.StatusOK, map[string]any{"keys": a.keyStatuses(r.Context())})
 }
 
 // handleTestAPIKey makes a real request with a key and reports the outcome. With no body
@@ -141,7 +163,7 @@ func (a *api) handleSetAPIKey(w http.ResponseWriter, r *http.Request) {
 		a.deps.Books.MaybeSubmitUpgrade(a.runCtx(), a.jobSubmitter(), triggerFor(r))
 	}
 	// Return the fresh status so the UI reflects the new state (masked) without a reload.
-	a.writeJSON(w, http.StatusOK, map[string]any{"keys": a.deps.APIKeys.Status(r.Context())})
+	a.writeJSON(w, http.StatusOK, map[string]any{"keys": a.keyStatuses(r.Context())})
 }
 
 // handleClearAPIKey removes a saved credential, so it falls back to the install-time env
@@ -163,5 +185,5 @@ func (a *api) handleClearAPIKey(w http.ResponseWriter, r *http.Request) {
 	if r.PathValue("id") == "tmdb" {
 		a.recheckTMDB(r)
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"keys": a.deps.APIKeys.Status(r.Context())})
+	a.writeJSON(w, http.StatusOK, map[string]any{"keys": a.keyStatuses(r.Context())})
 }
