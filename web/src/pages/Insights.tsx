@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { useTabParam } from "../lib/useTabParam";
+import { usePoll } from "../lib/usePoll";
 import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs, type Reliability, type BufferGroup, type NotificationConn } from "../lib/api";
 
 // Insights — Arrmada's Plex watch monitoring (a Tautulli replacement): live Activity, History,
@@ -117,20 +118,10 @@ function ActivityView({ connected, onConfigure }: { connected: boolean; onConfig
   const clock = useRef<Record<string, { base: number; at: number }>>({});
   const [, tickNow] = useState(0);
 
-  useEffect(() => {
-    if (!connected) return;
-    let alive = true;
-    const tick = () => api.insightsActivity().then((a) => { if (alive) { setAct(a); setErr(null); } }).catch((e) => { if (alive) setErr((e as Error).message); });
-    tick();
-    const t = setInterval(tick, 4000);
-    return () => { alive = false; clearInterval(t); };
-  }, [connected]);
+  usePoll(() => api.insightsActivity().then((a) => { setAct(a); setErr(null); }).catch((e) => { setErr((e as Error).message); }), connected ? 4000 : null);
 
   // Re-render once a second so playing streams' progress interpolates in real time.
-  useEffect(() => {
-    const t = setInterval(() => tickNow((n) => n + 1), 1000);
-    return () => clearInterval(t);
-  }, []);
+  usePoll(() => tickNow((n) => n + 1), 1000, { immediate: false });
 
   // Reconcile the smoothed clocks whenever a fresh snapshot arrives.
   useEffect(() => {

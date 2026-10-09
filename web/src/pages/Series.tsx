@@ -8,6 +8,7 @@ import { FIT_COLOR } from "../components/FitBadge";
 import { posterThumb } from "../lib/img";
 import { SeriesSearchModal } from "../components/SeriesSearchModal";
 import { usePersisted } from "../lib/persist";
+import { usePollBurst } from "../lib/usePoll";
 
 const FILTERS = [
   { key: "all", label: "All" },
@@ -96,6 +97,9 @@ export function Series() {
     } finally { setBulkBusy(false); }
   };
 
+  // While a refresh-all works, poll so the user sees episode counts settle rather than
+  // having to guess whether anything happened.
+  const watchRefreshAll = usePollBurst(() => refresh(), 3000, 40, () => setRefreshingAll(false));
   // Refresh + rescan every series. This is the bulk form of the per-show "Refresh"
   // button: it reconciles episodes whose file is already on disk but whose row still
   // reads as missing, which is what makes the searcher re-grab things you already have.
@@ -105,29 +109,20 @@ export function Series() {
     try {
       const r = await api.refreshAllSeries();
       flash(`Refreshing ${r.queued} series in the background — counts will update as it goes.`);
-      // Poll while it works so the user sees episode counts settle rather than having
-      // to guess whether anything happened.
-      let ticks = 0;
-      const t = setInterval(() => {
-        refresh();
-        if (++ticks >= 40) { clearInterval(t); setRefreshingAll(false); }
-      }, 3000);
+      watchRefreshAll();
     } catch (e) {
       flash((e as Error).message);
       setRefreshingAll(false);
     }
   };
 
+  const watchScan = usePollBurst(() => refresh(), 2500, 12, () => setScanning(false));
   const scanLibrary = async () => {
     setScanning(true);
     try {
       await api.scanSeries();
       flash("Scanning your library — existing series will appear shortly.");
-      let ticks = 0;
-      const t = setInterval(() => {
-        refresh();
-        if (++ticks >= 12) { clearInterval(t); setScanning(false); }
-      }, 2500);
+      watchScan();
     } catch (e) {
       flash((e as Error).message);
       setScanning(false);

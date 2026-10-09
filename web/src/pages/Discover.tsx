@@ -9,6 +9,7 @@ import { api, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genr
 import { posterThumb } from "../lib/img";
 import { useCanHover } from "../lib/useCanHover";
 import { formatEta } from "../lib/format";
+import { usePoll } from "../lib/usePoll";
 import { Button, IconButton, Modal, StatusChip, POSTER_CHIP_BG, TONE_HUE, useConfirm, useToast, type Tone, type ToastFn } from "../ui";
 
 type Tab = "discover" | "movies" | "series" | "books";
@@ -445,11 +446,7 @@ function Hero({ ctx }: { ctx: RowCtx }) {
   }, []);
 
   const count = items?.length ?? 0;
-  useEffect(() => {
-    if (paused || count <= 1) return;
-    const t = setInterval(() => setIdx((i) => (i + 1) % count), 7000);
-    return () => clearInterval(t);
-  }, [paused, count]);
+  usePoll(() => setIdx((i) => (i + 1) % count), paused || count <= 1 ? null : 7000, { immediate: false });
   useEffect(() => { if (count > 0 && idx >= count) setIdx(0); }, [idx, count]);
 
   if (items === null) return <div className="w-full animate-pulse rounded-2xl" style={{ height: "clamp(340px, 46vh, 560px)", background: "var(--panel-2)", border: "1px solid var(--line)" }} />;
@@ -559,11 +556,7 @@ function MyRequestsRow({ flash }: { flash: ToastFn }) {
   const scroller = useRef<HTMLDivElement>(null);
 
   const load = useCallback(() => api.requests().then((r) => setItems(r.requests)).catch(() => setItems([])), []);
-  useEffect(() => {
-    load();
-    const t = setInterval(load, 8000); // refresh so status/progress advance
-    return () => clearInterval(t);
-  }, [load]);
+  usePoll(load, 8000); // refresh so status/progress advance
 
   if (!items || items.length === 0) return null;
   const sorted = [...items].sort(
@@ -931,6 +924,7 @@ function PosterRow({ title, load, ctx, order, excludeOwned, hideOnError, hideUnt
   // Last raw server payload, kept so the row can re-filter without re-fetching.
   const raw = useRef<DiscoverCard[] | null>(null);
   const loadRef = useRef(load); loadRef.current = load;
+  const mounted = useRef(false);
 
   const recompute = useCallback(() => {
     const r = raw.current;
@@ -950,20 +944,19 @@ function PosterRow({ title, load, ctx, order, excludeOwned, hideOnError, hideUnt
     return () => { off(); registry.release(order); };
   }, [order, registry]);
 
+  // The mounted check matters: a late answer must not re-claim cards for a row that
+  // has already gone.
+  const pull = (first: boolean) => loadRef.current()
+    .then((r) => { if (!mounted.current) return; raw.current = r; setError(null); recomputeRef.current(); })
+    .catch((e) => { if (!mounted.current || !first) return; raw.current = []; setItems([]); setError((e as Error).message); });
   useEffect(() => {
-    let alive = true;
-    const pull = (first: boolean) => loadRef.current()
-      .then((r) => { if (!alive) return; raw.current = r; setError(null); recomputeRef.current(); })
-      .catch((e) => { if (!alive || !first) return; raw.current = []; setItems([]); setError((e as Error).message); });
+    mounted.current = true;
     pull(true);
-    // Re-pull enrichment (badges, download progress) every 30s while the tab is
-    // visible; refresh failures keep the last good data.
-    const t = setInterval(() => {
-      if (document.visibilityState !== "visible") return;
-      pull(false);
-    }, 30000);
-    return () => { alive = false; clearInterval(t); };
+    return () => { mounted.current = false; };
   }, []);
+  // Re-pull enrichment (badges, download progress) every 30s while the tab is
+  // visible; refresh failures keep the last good data.
+  usePoll(() => pull(false), 30000, { immediate: false });
 
   const scroll = (dir: -1 | 1) => scroller.current?.scrollBy({ left: dir * Math.max(600, scroller.current.clientWidth * 0.8), behavior: "smooth" });
 

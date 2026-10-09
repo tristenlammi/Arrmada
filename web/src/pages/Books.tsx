@@ -7,6 +7,7 @@ import { usePersisted } from "../lib/persist";
 import { posterThumb } from "../lib/img";
 import { LINKS } from "../lib/links";
 import { useMe, isAdmin } from "../lib/me";
+import { usePoll, usePollBurst } from "../lib/usePoll";
 
 const FILTERS = [
   { key: "all", label: "All" },
@@ -85,33 +86,21 @@ export function Books() {
   const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); };
   const refresh = () => api.books().then((r) => { setList(r.books); setMetaOK(r.metadata_available); setSource(r.metadata_source ?? "openlibrary"); setUpgradable(r.upgradable ?? 0); setError(null); }).catch((e: Error) => setError(e.message));
   // Poll the upgrade while it runs, then reload the library once it lands.
-  useEffect(() => {
-    if (!upgrade?.running) return;
-    const t = setInterval(() => {
-      api.bookUpgradeStatus().then((st) => {
-        setUpgrade(st);
-        if (!st.running) {
-          refresh();
-          flash(st.error ? `Upgrade stopped: ${st.error}` : `Upgraded ${st.upgraded}, flagged ${st.flagged} as possible duplicates, no match for ${st.unmatched}.${st.notes?.length ? ` E.g. ${st.notes[0]}` : ""}`);
-        }
-      }).catch(() => {});
-    }, 2000);
-    return () => clearInterval(t);
-  }, [upgrade?.running]);
+  usePoll(() => api.bookUpgradeStatus().then((st) => {
+    setUpgrade(st);
+    if (!st.running) {
+      refresh();
+      flash(st.error ? `Upgrade stopped: ${st.error}` : `Upgraded ${st.upgraded}, flagged ${st.flagged} as possible duplicates, no match for ${st.unmatched}.${st.notes?.length ? ` E.g. ${st.notes[0]}` : ""}`);
+    }
+  }).catch(() => {}), upgrade?.running ? 2000 : null, { immediate: false });
   // Poll the missing-editions sweep while it runs, then reload once it lands.
-  useEffect(() => {
-    if (!sweep?.running) return;
-    const t = setInterval(() => {
-      api.bookSweepStatus().then((st) => {
-        setSweep(st);
-        if (!st.running) {
-          refresh();
-          flash(`Searched ${st.done} book${st.done === 1 ? "" : "s"}: ${st.grabbed} edition${st.grabbed === 1 ? "" : "s"} grabbed${st.skipped ? `, ${st.skipped} already downloading` : ""}.`);
-        }
-      }).catch(() => {});
-    }, 2000);
-    return () => clearInterval(t);
-  }, [sweep?.running]);
+  usePoll(() => api.bookSweepStatus().then((st) => {
+    setSweep(st);
+    if (!st.running) {
+      refresh();
+      flash(`Searched ${st.done} book${st.done === 1 ? "" : "s"}: ${st.grabbed} edition${st.grabbed === 1 ? "" : "s"} grabbed${st.skipped ? `, ${st.skipped} already downloading` : ""}.`);
+    }
+  }).catch(() => {}), sweep?.running ? 2000 : null, { immediate: false });
   const startSweep = async () => {
     try {
       const r = await api.startBookSweep();
@@ -220,13 +209,14 @@ export function Books() {
     } catch (e) { flash((e as Error).message); }
     finally { setBackfilling(false); }
   };
+  // After a scan starts, refresh the grid a dozen times as books land.
+  const watchScan = usePollBurst(() => refresh(), 2500, 12, () => setScanning(false));
   const scanLibrary = async () => {
     setScanning(true);
     try {
       await api.scanBooks();
       flash("Scanning your library — books will appear shortly.");
-      let ticks = 0;
-      const t = setInterval(() => { refresh(); if (++ticks >= 12) { clearInterval(t); setScanning(false); } }, 2500);
+      watchScan();
     } catch (e) { flash((e as Error).message); setScanning(false); }
   };
 

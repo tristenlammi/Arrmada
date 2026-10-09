@@ -3,7 +3,7 @@ import { PageHeader } from "../components/PageHeader";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { api, type ImportReview, type ReviewKind, type ReviewTarget } from "../lib/api";
 import { useLive } from "../lib/useLive";
-import { useVisiblePoll } from "../lib/useVisiblePoll";
+import { usePoll } from "../lib/usePoll";
 
 // What the user calls a library item of each review kind.
 const KIND_LABEL: Record<ReviewKind, string> = { series: "show", movie: "movie", book: "book", music: "album" };
@@ -22,7 +22,7 @@ export function Reviews() {
   const refresh = () => api.reviews().then(setList).catch(() => setList((xs) => xs ?? []));
   // The page is left open while downloads finish: re-read it every 30 s while visible, and at
   // once when the server announces a newly held import.
-  useVisiblePoll(() => { refresh(); }, 30_000);
+  usePoll(refresh, 30_000);
   const { last } = useLive();
   useEffect(() => { if (last?.topic === "import.held") refresh(); }, [last]);
 

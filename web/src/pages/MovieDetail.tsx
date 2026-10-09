@@ -8,6 +8,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DeleteMovieDialog } from "../components/DeleteMovieDialog";
 import { disposalLine, useRecycleMode } from "../lib/disposal";
 import { PAGE } from "../lib/links";
+import { usePoll } from "../lib/usePoll";
 import {
   api,
   importListNotice,
@@ -42,7 +43,7 @@ export function MovieDetail() {
   };
 
   const load = useCallback(() => {
-    api
+    return api
       .movie(movieId)
       .then((m) => {
         setMovie(m);
@@ -60,11 +61,7 @@ export function MovieDetail() {
 
   // Poll while a download is in progress so the bar advances live.
   const downloading = !!movie?.download;
-  useEffect(() => {
-    if (!downloading) return;
-    const t = setInterval(load, 3000);
-    return () => clearInterval(t);
-  }, [downloading, load]);
+  usePoll(load, downloading ? 3000 : null, { immediate: false });
 
   useEffect(() => {
     if (!last) return;

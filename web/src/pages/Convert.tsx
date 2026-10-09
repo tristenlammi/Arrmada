@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { useTabParam } from "../lib/useTabParam";
+import { usePoll } from "../lib/usePoll";
 import { LINKS } from "../lib/links";
 import { RescanButton, ago } from "../components/RescanButton";
 import { useMe, isAdmin } from "../lib/me";
@@ -93,16 +94,10 @@ export function Convert() {
   const originals = originalsCopy(bin);
 
   const anyActive = jobs.some((j) => ACTIVE.has(j.state));
-  useEffect(() => {
-    let alive = true;
-    const tick = () => {
-      api.convertJobs().then((j) => { if (alive) setJobs(j); }).catch(() => {});
-      api.convertStatus().then((s) => { if (alive) setStatus(s); }).catch(() => {});
-    };
-    tick();
-    const t = setInterval(tick, anyActive ? 1500 : 5000);
-    return () => { alive = false; clearInterval(t); };
-  }, [anyActive]);
+  usePoll(() => Promise.all([
+    api.convertJobs().then(setJobs).catch(() => {}),
+    api.convertStatus().then(setStatus).catch(() => {}),
+  ]), anyActive ? 1500 : 5000);
   useEffect(() => { if (!anyActive) { loadHw(); loadStats(); } }, [anyActive, loadHw, loadStats]);
 
   const refresh = useCallback(() => {
@@ -710,10 +705,7 @@ function CompareModal({ itemKey, onClose, flash }: { itemKey: string; onClose: (
       setSt(cur);
     });
   }, [itemKey, flash]);
-  useEffect(() => {
-    const t = setInterval(() => api.convertCompareStatus().then(setSt).catch(() => {}), 2500);
-    return () => clearInterval(t);
-  }, []);
+  usePoll(() => api.convertCompareStatus().then(setSt).catch(() => {}), 2500, { immediate: false });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -1002,20 +994,13 @@ function LogsConsole() {
   const [lines, setLines] = useState<{ at: number; level: string; msg: string }[]>([]);
   const [follow, setFollow] = useState(true);
   const boxRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    let alive = true;
-    const tick = () => api.convertLogs().then((l) => {
-      if (!alive) return;
-      setLines((prev) => {
-        const a = prev[prev.length - 1], b = l[l.length - 1];
-        if (prev.length === l.length && a?.at === b?.at && a?.msg === b?.msg) return prev;
-        return l;
-      });
-    }).catch(() => {});
-    tick();
-    const t = setInterval(tick, 2000);
-    return () => { alive = false; clearInterval(t); };
-  }, []);
+  usePoll(() => api.convertLogs().then((l) => {
+    setLines((prev) => {
+      const a = prev[prev.length - 1], b = l[l.length - 1];
+      if (prev.length === l.length && a?.at === b?.at && a?.msg === b?.msg) return prev;
+      return l;
+    });
+  }).catch(() => {}), 2000);
   useEffect(() => { if (follow && boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight; }, [lines, follow]);
   const tone = (lvl: string) => (lvl === "error" ? "var(--reject)" : lvl === "warn" ? "var(--avoid)" : "var(--ink-dim)");
   return (

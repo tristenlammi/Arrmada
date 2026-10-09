@@ -10,6 +10,7 @@ import { FileDetailsModal } from "../components/FileDetailsModal";
 import { AddAudioVersion, AudioVersionPanel } from "../components/AudioVersions";
 import { api, importListNotice, type BookSeriesEntry, type BookSource, type Book, type BookFile, type BookFileEntry, type BookImportCandidate, type BookLookup, type BookSeries, type MovieEvent } from "../lib/api";
 import { useCanHover } from "../lib/useCanHover";
+import { usePoll } from "../lib/usePoll";
 
 function fmtSize(bytes?: number): string {
   if (!bytes || bytes <= 0) return "";
@@ -316,11 +317,31 @@ const eventKey = (e?: MovieEvent) => (e ? `${e.event}|${e.created_at}|${e.detail
 function MergeButton({ bookId, fileCount, onDone, flash }: { bookId: number; fileCount: number; onDone: () => void; flash: (m: string) => void }) {
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [running, setRunning] = useState(false);
+  // While a merge runs: the history entry it started from, and when to give up.
+  const [watch, setWatch] = useState<{ baseline: string; until: number } | null>(null);
+  const running = watch !== null;
   const [err, setErr] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
-  useEffect(() => () => { if (timer.current) clearInterval(timer.current); }, []);
+
+  // The server gives a merge 30 minutes; stop watching a little after that (by the
+  // clock, so the time a hidden tab spends paused still counts).
+  usePoll(async () => {
+    if (!watch) return;
+    const ev = lastMergeEvent(await api.bookHistory(bookId).catch(() => []));
+    const changed = !!ev && eventKey(ev) !== watch.baseline;
+    if (!changed && Date.now() < watch.until) return;
+    setWatch(null);
+    onDone();
+    if (changed && ev?.event === "merge-failed") {
+      setFailure(ev.detail ?? "unknown reason");
+      flash(`Merge failed: ${ev.detail ?? "unknown reason"} — the original files are untouched.`);
+    } else if (changed && ev?.event === "merged") {
+      flash("Combined into one .m4b.");
+    } else {
+      // Only a server restart mid-merge leaves no outcome; say so rather than nothing.
+      flash("The merge didn't report back — check the book's history before trying again.");
+    }
+  }, watch ? 5000 : null, { immediate: false });
 
   const merge = async () => {
     setBusy(true); setErr(null); setFailure(null);
@@ -328,29 +349,8 @@ function MergeButton({ bookId, fileCount, onDone, flash }: { bookId: number; fil
       const baseline = eventKey(lastMergeEvent(await api.bookHistory(bookId).catch(() => [])));
       await api.mergeAudiobook(bookId);
       setAsking(false);
-      setRunning(true);
+      setWatch({ baseline, until: Date.now() + 400 * 5000 });
       flash("Combining into a single chapterized .m4b — this runs in the background and may take a while.");
-      let ticks = 0;
-      timer.current = setInterval(async () => {
-        ticks++;
-        const ev = lastMergeEvent(await api.bookHistory(bookId).catch(() => []));
-        // The server gives a merge 30 minutes; stop watching a little after that.
-        if ((ev && eventKey(ev) !== baseline) || ticks >= 400) {
-          if (timer.current) clearInterval(timer.current);
-          timer.current = null;
-          setRunning(false);
-          onDone();
-          if (ev?.event === "merge-failed" && eventKey(ev) !== baseline) {
-            setFailure(ev.detail ?? "unknown reason");
-            flash(`Merge failed: ${ev.detail ?? "unknown reason"} — the original files are untouched.`);
-          } else if (ev?.event === "merged" && eventKey(ev) !== baseline) {
-            flash("Combined into one .m4b.");
-          } else {
-            // Only a server restart mid-merge leaves no outcome; say so rather than nothing.
-            flash("The merge didn't report back — check the book's history before trying again.");
-          }
-        }
-      }, 5000);
     } catch (e) { setErr((e as Error).message); } finally { setBusy(false); }
   };
 

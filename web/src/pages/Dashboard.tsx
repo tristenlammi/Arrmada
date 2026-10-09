@@ -13,7 +13,7 @@ import {
   type NowListening,
 } from "../lib/api";
 import { useLive } from "../lib/useLive";
-import { useVisiblePoll } from "../lib/useVisiblePoll";
+import { usePoll } from "../lib/usePoll";
 
 // The dashboard fans out over Plex, the download client and the disks, so it isn't
 // free — but it's the page people leave open. Ten seconds keeps the streams and the
@@ -43,9 +43,13 @@ export function Dashboard() {
   // poll, and coming back to it refreshes at once.
   const alive = useRef(true);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
-  useVisiblePoll((tick) => {
-    api.dashboard().then((d) => alive.current && setData(d)).catch(() => {});
-    if (tick % 3 === 0) api.systemHealth().then((s) => alive.current && setSystem(s)).catch(() => {});
+  const ticks = useRef(0);
+  usePoll(() => {
+    const tick = ticks.current++;
+    return Promise.all([
+      api.dashboard().then((d) => alive.current && setData(d)).catch(() => {}),
+      tick % 3 === 0 ? api.systemHealth().then((s) => alive.current && setSystem(s)).catch(() => {}) : null,
+    ]);
   }, REFRESH_MS);
 
   const dbOK = health?.checks?.database === "ok";

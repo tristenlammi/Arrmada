@@ -9,6 +9,7 @@ import { posterThumb } from "../lib/img";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { DeleteMovieDialog } from "../components/DeleteMovieDialog";
 import { usePersisted } from "../lib/persist";
+import { usePoll, usePollBurst } from "../lib/usePoll";
 
 
 type FilterKey = "all" | "monitored" | "unmonitored" | "missing" | "available";
@@ -53,20 +54,14 @@ export function Movies() {
   const [view, setView] = usePersisted("movies.view", "grid", ["grid", "table"] as const);
   const [searchFor, setSearchFor] = useState<Movie | null>(null); // the table's per-row "Search indexers"
 
+  // The scan runs in the background; poll the grid for a while as entries land.
+  const watchScan = usePollBurst(() => refresh(), 2500, 12, () => setScanning(false));
   const scanLibrary = async () => {
     setScanning(true);
     try {
       await api.scanLibrary();
       flash("Scanning your library — existing movies will appear shortly.");
-      // The scan runs in the background; poll the grid for a while as entries land.
-      let ticks = 0;
-      const t = setInterval(() => {
-        refresh();
-        if (++ticks >= 12) {
-          clearInterval(t);
-          setScanning(false);
-        }
-      }, 2500);
+      watchScan();
     } catch (e) {
       flash((e as Error).message);
       setScanning(false);
@@ -136,11 +131,7 @@ export function Movies() {
 
   // Poll while any movie is downloading so the grid indicators advance.
   const anyDownloading = movies.some((m) => m.download);
-  useEffect(() => {
-    if (!anyDownloading) return;
-    const t = setInterval(refresh, 4000);
-    return () => clearInterval(t);
-  }, [anyDownloading]);
+  usePoll(() => refresh(), anyDownloading ? 4000 : null, { immediate: false });
 
   const search = async (m: Movie) => {
     try {
