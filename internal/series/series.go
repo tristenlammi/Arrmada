@@ -6,18 +6,22 @@ package series
 
 // Series is a TV show in the library.
 type Series struct {
-	ID             int64  `json:"id"`
-	TMDBID         int    `json:"tmdb_id"`
-	TVDBID         int    `json:"tvdb_id,omitempty"`
-	IMDBID         string `json:"imdb_id,omitempty"`
-	Title          string `json:"title"`
-	Year           int    `json:"year"`
-	Overview       string `json:"overview,omitempty"`
-	PosterURL      string `json:"poster_url,omitempty"`
-	Status         string `json:"status,omitempty"` // Returning Series | Ended | Canceled
-	Network        string `json:"network,omitempty"`
-	Monitored      bool   `json:"monitored"`
-	QualityProfile string `json:"quality_profile"`
+	ID        int64  `json:"id"`
+	TMDBID    int    `json:"tmdb_id"`
+	TVDBID    int    `json:"tvdb_id,omitempty"`
+	IMDBID    string `json:"imdb_id,omitempty"`
+	Title     string `json:"title"`
+	Year      int    `json:"year"`
+	Overview  string `json:"overview,omitempty"`
+	PosterURL string `json:"poster_url,omitempty"`
+	Status    string `json:"status,omitempty"` // Returning Series | Ended | Canceled
+	Network   string `json:"network,omitempty"`
+	// Monitored is the series gate: off pauses the show without touching its season and
+	// episode choices.
+	Monitored bool `json:"monitored"`
+	// MonitorNewSeasons: a season new to the show is monitored when a refresh adds it.
+	MonitorNewSeasons bool   `json:"monitor_new_seasons"`
+	QualityProfile    string `json:"quality_profile"`
 	// SeriesType drives episode numbering. "standard" matches releases by SxxExx;
 	// "anime" also matches by absolute episode number (and falls back positionally),
 	// because anime releases number episodes 1..N across the whole run. Auto-set on
@@ -29,6 +33,9 @@ type Series struct {
 	// refresh compares it with the fresh listing's source to decide whether a numbering
 	// difference is a real renumber or a stand-in listing that must not move files.
 	NumberingSource string `json:"numbering_source"`
+	// LastRefreshedAt is when metadata was last pulled successfully (SQLite datetime, UTC),
+	// or "" when never. The weekly re-check of ended shows reads it.
+	LastRefreshedAt string `json:"last_refreshed_at,omitempty"`
 
 	Extra *SeriesExtra `json:"extra,omitempty"`
 	// Aliases are the other titles this show is released under. Populated on read so
@@ -39,12 +46,21 @@ type Series struct {
 	Stats   *Stats   `json:"stats,omitempty"`   // aggregate counts for the grid
 }
 
-// Stats are the roll-up numbers shown per series in the library grid.
+// Stats are a series' roll-up numbers, for the library grid and the detail page. Specials
+// are left out throughout.
 type Stats struct {
-	Episodes  int   `json:"episodes"`   // aired episodes in monitored seasons
+	// Episodes is what the progress counts against: episodes with a file, plus aired
+	// episodes that are monitored in a monitored season.
+	Episodes  int   `json:"episodes"`
 	HaveFiles int   `json:"have_files"` // episodes with a file on disk
 	SizeBytes int64 `json:"size_bytes"`
 	Seasons   int   `json:"seasons"`
+	// Missing: aired, monitored (episode and season), no file — what a search is for.
+	Missing int `json:"missing"`
+	// UnmonitoredMissing: aired, no file, and not monitored — shown as "+N not monitored".
+	UnmonitoredMissing int `json:"unmonitored_missing"`
+	// NextAirDate is the soonest monitored episode still to air ("" when none).
+	NextAirDate string `json:"next_air_date,omitempty"`
 }
 
 // SeriesExtra is enriched TMDB metadata stored as a JSON blob.

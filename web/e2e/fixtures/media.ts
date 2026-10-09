@@ -43,7 +43,8 @@ export const movies: { movies: Movie[]; metadata_available: boolean } = {
 export const series: { series: Series[]; metadata_available: boolean } = {
   metadata_available: true,
   series: [
-    { id: 1, tmdb_id: 2001, title: "Harbour Lights", year: 2024, poster_url: poster(1), network: "Fixture TV", monitored: true, quality_profile: "hd-1080p", added_at: "2026-08-01T10:00:00Z" },
+    { id: 1, tmdb_id: 2001, title: "Harbour Lights", year: 2024, poster_url: poster(1), network: "Fixture TV", monitored: true, monitor_new_seasons: true, quality_profile: "hd-1080p", added_at: "2026-08-01T10:00:00Z",
+      stats: { episodes: 16, have_files: 14, size_bytes: 21_000_000_000, seasons: 2, missing: 2, unmonitored_missing: 3, next_air_date: "2026-10-20" } },
   ],
 };
 

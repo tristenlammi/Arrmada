@@ -298,7 +298,15 @@ func (a *api) libraryCounts(ctx context.Context) libraryCounts {
 	count(&lc.MoviesMissing, `SELECT COUNT(*) FROM movies WHERE monitored = 1 AND has_file = 0`)
 	count(&lc.Series, `SELECT COUNT(*) FROM series`)
 	count(&lc.Episodes, `SELECT COUNT(*) FROM episodes`)
-	count(&lc.EpisodesMissing, `SELECT COUNT(*) FROM episodes WHERE monitored = 1 AND has_file = 0`)
+	// What the searcher is actually after: aired, file-less episodes that are monitored, in
+	// a monitored season of a show that isn't paused. Specials stay out, as in the series
+	// list's counts. Counting every monitored row included paused shows and episodes that
+	// haven't aired yet.
+	count(&lc.EpisodesMissing, `SELECT COUNT(*) FROM episodes e
+		JOIN series s ON s.id = e.series_id
+		JOIN seasons sn ON sn.series_id = e.series_id AND sn.season_number = e.season_number
+		WHERE s.monitored = 1 AND sn.monitored = 1 AND e.monitored = 1 AND e.has_file = 0
+		  AND e.season_number > 0 AND e.air_date <> '' AND date(e.air_date) <= date('now')`)
 	count(&lc.Books, `SELECT COUNT(*) FROM books`)
 	count(&lc.BooksMissing, `SELECT COUNT(*) FROM books WHERE monitored = 1 AND has_file = 0`)
 	count(&lc.Artists, `SELECT COUNT(*) FROM artists`)

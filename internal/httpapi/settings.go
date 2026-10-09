@@ -12,6 +12,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
+	"github.com/tristenlammi/arrmada/internal/series"
 	"github.com/tristenlammi/arrmada/internal/settings"
 )
 
@@ -47,10 +48,20 @@ func (a *api) musicEnabled(ctx context.Context) bool {
 // rejects fields it doesn't know. A read-only server_time/server_tz in this response
 // broke every Settings save for weeks, so read-only facts go on their own endpoint
 // (Convert reports the server clock from /convert/settings).
+// seriesMonitorDefault is the monitoring preset a new show gets when the add doesn't pick
+// one; a stored value that isn't a preset reads as the default.
+func (a *api) seriesMonitorDefault(ctx context.Context) string {
+	if p := a.deps.Settings.Get(ctx, series.KeyMonitorDefault, series.DefaultMonitorPreset); series.ValidPreset(p) {
+		return p
+	}
+	return series.DefaultMonitorPreset
+}
+
 func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"search_on_add":           a.deps.Settings.GetBool(ctx, keySearchOnAdd, true),
+		"series_monitor_default":  a.seriesMonitorDefault(ctx),
 		"naming_movie_folder":     a.deps.Settings.Get(ctx, keyNamingFolder, library.DefaultMovieFolder),
 		"naming_movie_file":       a.deps.Settings.Get(ctx, keyNamingFile, library.DefaultMovieFile),
 		"naming_series_folder":    a.deps.Settings.Get(ctx, keyNamingSeriesFolder, library.DefaultSeriesFolder),
@@ -90,6 +101,7 @@ const maxUpgradeBudget = 1000
 // settingsUpdate is a PUT /settings body: a nil field is left as it is.
 type settingsUpdate struct {
 	SearchOnAdd          *bool   `json:"search_on_add"`
+	SeriesMonitorDefault *string `json:"series_monitor_default"`
 	NamingMovieFolder    *string `json:"naming_movie_folder"`
 	NamingMovieFile      *string `json:"naming_movie_file"`
 	NamingSeriesFolder   *string `json:"naming_series_folder"`
@@ -211,6 +223,15 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 	if req.SearchOnAdd != nil && !save(a.deps.Settings.SetBool(ctx, keySearchOnAdd, *req.SearchOnAdd)) {
 		return
+	}
+	if req.SeriesMonitorDefault != nil {
+		if !series.ValidPreset(*req.SeriesMonitorDefault) {
+			a.writeError(w, http.StatusBadRequest, "unknown monitoring preset "+strconv.Quote(*req.SeriesMonitorDefault))
+			return
+		}
+		if !save(a.deps.Settings.Set(ctx, series.KeyMonitorDefault, *req.SeriesMonitorDefault)) {
+			return
+		}
 	}
 	if req.NamingMovieFolder != nil && !save(a.deps.Settings.Set(ctx, keyNamingFolder, *req.NamingMovieFolder)) {
 		return

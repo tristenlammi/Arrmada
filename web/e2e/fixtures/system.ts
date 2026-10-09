@@ -57,6 +57,7 @@ export const myListening: AudioListening = { days: 30, since: "2026-09-09", dail
 
 export const settings: AppSettings = {
   search_on_add: true,
+  series_monitor_default: "all",
   naming_movie_folder: "{Title} ({Year})",
   naming_movie_file: "{Title} ({Year}) {Quality}",
   naming_series_folder: "{Title} ({Year})",

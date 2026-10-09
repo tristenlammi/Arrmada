@@ -260,7 +260,9 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 			})
 		}
 	case "series":
-		sr, addErr := s.series.Add(ctx, req.TMDBID, profile, true)
+		// The configured monitoring preset (Settings → Library), as an owner's own add
+		// starts from.
+		sr, addErr := s.series.AddWith(ctx, req.TMDBID, profile, series.AddOptions{Monitored: true})
 		if addErr != nil && !errors.Is(addErr, series.ErrExists) {
 			return Request{}, addErr
 		}

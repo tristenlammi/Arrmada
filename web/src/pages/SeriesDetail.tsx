@@ -9,6 +9,8 @@ import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
 import { FitBadge } from "../components/FitBadge";
 import { RenameModal } from "./series/RenameModal";
+import { NumberingBanner } from "./series/NumberingReviewModal";
+import { MONITOR_PRESETS } from "./series/presets";
 import { usePoll } from "../lib/usePoll";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { Button, StatusChip } from "../ui";
@@ -106,12 +108,15 @@ export function SeriesDetail() {
     return a.season_number - b.season_number;
   });
   const continuing = /return|continu/i.test(s.status ?? "");
-  // Overall progress from the loaded episodes (aired-aware, specials excluded) — the detail
-  // endpoint doesn't carry the roll-up stats the way the list does.
+  // Every regular episode, for the show-wide upgrade-hold chip.
   const allEps = seasons.filter((sn) => sn.season_number > 0).flatMap((sn) => sn.episodes ?? []);
-  const haveAll = allEps.filter((e) => e.has_file).length;
-  const countedAll = allEps.filter((e) => e.has_file || aired(e)).length;
-  const st = statusOf(haveAll, countedAll, s.monitored);
+  // Overall progress from the server's roll-up — the same numbers as the list's card, so
+  // the two agree: only monitored episodes in monitored seasons count as missing.
+  const haveAll = s.stats?.have_files ?? 0;
+  const countedAll = s.stats?.episodes ?? 0;
+  const missingAll = s.stats?.missing ?? Math.max(0, countedAll - haveAll);
+  const notMonitoredAll = s.stats?.unmonitored_missing ?? 0;
+  const st = statusOf(countedAll, missingAll, s.monitored, haveAll);
 
   return (
     <>
@@ -146,6 +151,12 @@ export function SeriesDetail() {
               <div className="flex flex-wrap items-center gap-2.5">
                 <span className="rounded-full px-2.5 py-1 font-mono text-[10.5px] font-semibold uppercase" style={{ background: st.soft, color: st.tone }}>{st.label}</span>
                 <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase" style={{ background: continuing ? "var(--good-soft)" : "var(--panel-2)", color: continuing ? "var(--good)" : "var(--ink-faint)" }}>{continuing ? "Continuing" : "Ended"}</span>
+                {countedAll > 0 && (
+                  <span className="font-mono text-[11px] text-ink-dim">
+                    {haveAll}/{countedAll}
+                    {notMonitoredAll > 0 && <span className="text-ink-faint" title="Aired episodes without a file that aren't monitored — not counted as missing"> · {notMonitoredAll} not monitored</span>}
+                  </span>
+                )}
                 {s.year > 0 && <span className="font-mono text-[11px] text-ink-faint">{s.year}</span>}
                 {s.network && <span className="font-mono text-[11px] text-ink-faint">{s.network}</span>}
                 <span className="flex items-center gap-2">
@@ -166,12 +177,18 @@ export function SeriesDetail() {
               <UpgradeHoldChip series={s} episodes={allEps} onChange={load} flash={flash} />
 
               <Toolbar series={s} onChange={load} flash={flash} />
+              <NumberingBanner seriesId={s.id} refreshKey={`${s.last_refreshed_at ?? ""}|${s.numbering_source ?? ""}`} onApplied={load} />
             </div>
           </div>
         </div>
       </div>
 
       <div className="mx-auto w-full max-w-[1200px] px-4 pb-10 sm:px-6">
+        {!s.monitored && (
+          <div className="mt-2 rounded-lg px-3 py-2 text-[12px] text-ink-dim" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
+            Series paused — nothing is searched. Season and episode choices below are kept for when you resume.
+          </div>
+        )}
         <div className="mt-2 flex flex-col gap-3">
           {seasons.map((sn) => <SeasonBlock key={sn.id} series={s} season={sn} onChange={load} flash={flash} defaultOpen={false} fits={fits} />)}
         </div>
@@ -235,8 +252,8 @@ function UpgradeHoldChip({ series, episodes, onChange, flash }: { series: Series
   );
 }
 
-function statusOf(have: number, total: number, monitored: boolean): { label: string; tone: string; soft: string } {
-  if (total > 0 && have >= total) return { label: "Complete", tone: "var(--good-text)", soft: "var(--good-soft)" };
+function statusOf(total: number, missing: number, monitored: boolean, have: number): { label: string; tone: string; soft: string } {
+  if (total > 0 && missing === 0) return { label: "Complete", tone: "var(--good-text)", soft: "var(--good-soft)" };
   if (monitored) return { label: have > 0 ? "In progress" : "Wanted", tone: "var(--avoid-text)", soft: "var(--avoid-soft)" };
   return { label: "Unmonitored", tone: "var(--ink-faint)", soft: "var(--panel-2)" };
 }
@@ -274,15 +291,42 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
           role="switch"
           aria-checked={series.monitored}
           disabled={busy !== null}
-          onClick={() => run("monitor", async () => { await api.setSeriesMonitored(series.id, !series.monitored); onChange(); })}
+          onClick={() => run("monitor", async () => { await api.setSeriesMonitored(series.id, !series.monitored); onChange(); flash(series.monitored ? "Paused — nothing is searched until you resume." : "Resumed."); })}
           className="inline-flex items-center gap-2 text-[12.5px] font-semibold disabled:opacity-50"
-          title={series.monitored ? "Monitored — click to stop" : "Not monitored — click to monitor"}
+          title={series.monitored ? "Monitored — click to pause. Season and episode choices are kept." : "Paused — nothing is searched. Click to resume."}
         >
           <span className="relative inline-block h-[22px] w-[38px] rounded-full transition-colors" style={{ background: series.monitored ? "var(--accent)" : "var(--line)" }}>
             <span className="absolute top-[3px] h-[16px] w-[16px] rounded-full bg-white transition-all" style={{ left: series.monitored ? "19px" : "3px" }} />
           </span>
-          <span style={{ color: series.monitored ? "var(--ink)" : "var(--ink-dim)" }}>{series.monitored ? "Monitored" : "Monitor"}</span>
+          <span style={{ color: series.monitored ? "var(--ink)" : "var(--ink-dim)" }}>{series.monitored ? "Monitored" : "Paused"}</span>
         </button>
+        <label className="inline-flex items-center gap-1.5 text-[12px] text-ink-dim" title="When a refresh finds a season the show didn't have, monitor it.">
+          <input
+            type="checkbox"
+            checked={!!series.monitor_new_seasons}
+            disabled={busy !== null}
+            onChange={(e) => { const on = e.target.checked; void run("monitor-new", async () => { await api.setSeriesMonitorNewSeasons(series.id, on); onChange(); }); }}
+          />
+          Monitor new seasons
+        </label>
+        <select
+          value=""
+          disabled={busy !== null}
+          aria-label="Apply a monitoring preset"
+          title="Sets which episodes are monitored, in one go. The pause switch is left as it is."
+          onChange={(e) => {
+            const preset = e.target.value;
+            e.target.value = "";
+            if (!preset) return;
+            const label = MONITOR_PRESETS.find((p) => p.value === preset)?.label ?? preset;
+            void run("preset", async () => { await api.applySeriesMonitorPreset(series.id, preset); onChange(); flash(`Monitoring: ${label}.`); });
+          }}
+          className="rounded-lg px-2 py-1.5 text-[12px] disabled:opacity-50"
+          style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+        >
+          <option value="">Apply monitoring…</option>
+          {MONITOR_PRESETS.map((p) => <option key={p.value} value={p.value} title={p.help}>{p.label}</option>)}
+        </select>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("refresh", async () => { await api.refreshSeries(series.id); onChange(); flash("Refreshed metadata and rescanned disk."); })}>
           {busy === "refresh" ? "Refreshing…" : "Refresh & rescan"}
         </button>
@@ -350,9 +394,12 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
   const have = eps.filter((e) => e.has_file).length;
   const total = eps.length;
   const airedCount = eps.filter(aired).length;
-  // The progress denominator only counts episodes that have aired (or that we already have),
-  // so an in-progress season isn't shown as behind on episodes that haven't come out yet.
-  const counted = eps.filter((e) => e.has_file || aired(e)).length;
+  // The progress denominator counts what's wanted — aired episodes monitored in a monitored
+  // season — plus what's already here, so an in-progress season isn't behind on episodes
+  // that haven't come out yet, nor on ones nobody asked for (shown greyed instead).
+  const wanted = (e: Episode) => e.monitored && season.monitored && aired(e);
+  const counted = eps.filter((e) => e.has_file || wanted(e)).length;
+  const notMonitored = eps.filter((e) => !e.has_file && aired(e) && !wanted(e)).length;
   const nextAir = eps.map((e) => e.air_date).filter(Boolean).sort()[0];
   // The on-disk folder for this season = the directory of any episode file we have.
   const seasonDir = (eps.find((e) => e.file_path)?.file_path ?? "").replace(/[\\/][^\\/]*$/, "");
@@ -409,7 +456,10 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
           ) : state === "upcoming" ? (
             <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }} title={nextAir ? `First airs ${nextAir}` : undefined}>{nextAir ? `Airs ${nextAir}` : "Upcoming"}</span>
           ) : (
-            <span className="flex-none font-mono text-[10.5px] text-ink-faint">{have}/{counted}</span>
+            <span className="flex-none font-mono text-[10.5px] text-ink-faint">
+              {have}/{counted}
+              {notMonitored > 0 && <span style={{ opacity: 0.7 }} title="Aired episodes without a file that aren't monitored — not counted as missing"> · {notMonitored} not monitored</span>}
+            </span>
           )}
           {seasonDir && <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink-faint" title={seasonDir}>{seasonDir}</span>}
         </button>
@@ -440,7 +490,7 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
             <button onClick={() => setSearching(true)} title={`Search indexers for ${name}`} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Search</button>
           </>
         )}
-        <button onClick={async () => { await api.setSeasonMonitored(series.id, season.season_number, !season.monitored); onChange(); }} title="Monitor this whole season" className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: `1px solid ${season.monitored ? "var(--accent-line)" : "var(--line)"}`, color: season.monitored ? "var(--accent)" : "var(--ink-faint)" }}>
+        <button onClick={async () => { await api.setSeasonMonitored(series.id, season.season_number, !season.monitored); onChange(); }} title={series.monitored ? "Monitor this whole season" : "Series paused — nothing is searched. This choice applies when you resume."} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: `1px solid ${season.monitored ? "var(--accent-line)" : "var(--line)"}`, color: season.monitored ? "var(--accent)" : "var(--ink-faint)", opacity: series.monitored ? 1 : 0.5 }}>
           {season.monitored ? "Monitored" : "Unmonitored"}
         </button>
       </div>
@@ -518,7 +568,7 @@ function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep:
 
   return (
     <div className="relative flex items-center gap-3 px-4 py-2.5" style={{ borderBottom: "1px solid var(--line-soft)", opacity: ep.monitored ? 1 : 0.55 }}>
-      <button onClick={async () => { await api.setEpisodeMonitored(ep.id, !ep.monitored); onChange(); }} title={ep.monitored ? "Monitored — click to stop" : "Not monitored — click to monitor"} className="flex-none text-[13px]" style={{ color: ep.monitored ? "var(--accent)" : "var(--ink-faint)" }}>
+      <button onClick={async () => { await api.setEpisodeMonitored(ep.id, !ep.monitored); onChange(); }} title={!series.monitored ? "Series paused — nothing is searched. This choice applies when you resume." : ep.monitored ? "Monitored — click to stop" : "Not monitored — click to monitor"} className="flex-none text-[13px]" style={{ color: ep.monitored ? "var(--accent)" : "var(--ink-faint)", opacity: series.monitored ? 1 : 0.5 }}>
         {ep.monitored ? "◉" : "○"}
       </button>
       <span className="w-[64px] flex-none font-mono text-[11px] text-ink-faint">{sxe(ep)}</span>

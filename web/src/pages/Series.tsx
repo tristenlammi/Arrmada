@@ -12,6 +12,7 @@ import { usePollBurst } from "../lib/usePoll";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { useQuery } from "../lib/query";
 import { ErrorState, Skeleton, StaleBanner } from "../ui";
+import { DEFAULT_MONITOR_PRESET, MONITOR_PRESETS, isMonitorPreset, type MonitorPreset } from "./series/presets";
 
 const NO_SERIES: SeriesT[] = [];
 
@@ -26,7 +27,19 @@ const FILTERS = [
 type FilterKey = (typeof FILTERS)[number]["key"];
 
 function statsOf(s: SeriesT) {
-  return s.stats ?? { episodes: 0, have_files: 0, size_bytes: 0, seasons: 0 };
+  const st = s.stats ?? { episodes: 0, have_files: 0, size_bytes: 0, seasons: 0 };
+  // An older server sends no missing count; the gap is the next best thing.
+  return { ...st, missing: st.missing ?? Math.max(0, st.episodes - st.have_files), unmonitored_missing: st.unmonitored_missing ?? 0 };
+}
+
+// The greyed remainder beside a have/total count: aired episodes nobody asked for.
+function NotMonitored({ n }: { n: number }) {
+  if (n <= 0) return null;
+  return (
+    <span className="text-ink-faint" title={`${n} aired episode${n === 1 ? "" : "s"} without a file that ${n === 1 ? "isn't" : "aren't"} monitored — not counted as missing`}>
+      {" "}+{n} not monitored
+    </span>
+  );
 }
 
 function matches(s: SeriesT, f: FilterKey): boolean {
@@ -35,7 +48,7 @@ function matches(s: SeriesT, f: FilterKey): boolean {
     case "monitored": return s.monitored;
     case "continuing": return /return|continu/i.test(s.status ?? "");
     case "ended": return /end|cancel/i.test(s.status ?? "");
-    case "missing": return st.have_files < st.episodes;
+    case "missing": return s.monitored && st.missing > 0;
     default: return true;
   }
 }
@@ -89,9 +102,21 @@ export function Series() {
     setBulkBusy(true);
     try {
       await Promise.all([...selected].map((id) => api.setSeriesMonitored(id, mon)));
-      flash(`${selected.size} ${mon ? "monitored" : "unmonitored"}.`);
+      // The switch is a pause gate: season and episode choices are kept either way.
+      flash(`${selected.size} ${mon ? "resumed" : "paused"}.`);
       clearSelect();
       refresh();
+    } finally { setBulkBusy(false); }
+  };
+  const bulkPreset = async (preset: string) => {
+    setBulkBusy(true);
+    try {
+      await Promise.all([...selected].map((id) => api.applySeriesMonitorPreset(id, preset)));
+      flash(`Monitoring set to "${MONITOR_PRESETS.find((p) => p.value === preset)?.label ?? preset}" on ${selected.size} series.`);
+      clearSelect();
+      refresh();
+    } catch (e) {
+      flash((e as Error).message, true);
     } finally { setBulkBusy(false); }
   };
   const bulkProfile = async (profile: string) => {
@@ -231,8 +256,8 @@ export function Series() {
             <button onClick={() => setSelected(new Set(filtered.map((s) => s.id)))} className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink)" }}>Select all ({filtered.length})</button>
             <button onClick={clearSelect} disabled={selected.size === 0} className="rounded-lg px-2.5 py-1.5 text-[11.5px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Clear</button>
             <span className="mx-1 h-5 w-px" style={{ background: "var(--line)" }} />
-            <button onClick={() => bulkMonitor(true)} disabled={selected.size === 0 || bulkBusy} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>Monitor</button>
-            <button onClick={() => bulkMonitor(false)} disabled={selected.size === 0 || bulkBusy} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Unmonitor</button>
+            <button onClick={() => bulkMonitor(true)} disabled={selected.size === 0 || bulkBusy} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }} title="Resume searching. Season and episode choices are kept; a show with nothing monitored gets every regular season.">Monitor</button>
+            <button onClick={() => bulkMonitor(false)} disabled={selected.size === 0 || bulkBusy} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }} title="Pause: nothing is searched. Season and episode choices are kept for when you resume.">Unmonitor</button>
             <span className="mx-1 h-5 w-px" style={{ background: "var(--line)" }} />
             <select
               defaultValue=""
@@ -243,6 +268,17 @@ export function Series() {
             >
               <option value="">Set quality profile…</option>
               {profiles.map((p) => <option key={p.key} value={p.key}>{p.name}</option>)}
+            </select>
+            <select
+              defaultValue=""
+              disabled={selected.size === 0 || bulkBusy}
+              onChange={(e) => e.target.value && (bulkPreset(e.target.value), (e.target.value = ""))}
+              aria-label="Apply a monitoring preset to the selected series"
+              className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-medium"
+              style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+            >
+              <option value="">Monitoring preset…</option>
+              {MONITOR_PRESETS.map((p) => <option key={p.value} value={p.value} title={p.help}>{p.label}</option>)}
             </select>
           </div>
         )}
@@ -295,7 +331,7 @@ export function Series() {
 
 function statusOf(s: SeriesT): { label: string; tone: string } {
   const st = statsOf(s);
-  if (st.episodes > 0 && st.have_files >= st.episodes) return { label: "Complete", tone: "var(--good)" };
+  if (st.episodes > 0 && st.missing === 0) return { label: "Complete", tone: "var(--good)" };
   if (s.monitored) return { label: st.have_files > 0 ? "Partial" : "Wanted", tone: "var(--avoid)" };
   return { label: "Unmonitored", tone: "var(--ink-faint)" };
 }
@@ -313,8 +349,8 @@ function Card({ s, onDelete, onSearch, selectable, selected, onToggleSelect }: {
   const st = statsOf(s);
   const status = statusOf(s);
   const pct = st.episodes > 0 ? Math.round((st.have_files / st.episodes) * 100) : 0;
-  const complete = st.episodes > 0 && st.have_files >= st.episodes;
-  const missing = st.have_files < st.episodes;
+  const complete = st.episodes > 0 && st.missing === 0;
+  const missing = st.missing > 0;
   const [searching, setSearching] = useState(false);
   const doSearch = async () => {
     setSearching(true);
@@ -365,7 +401,7 @@ function Card({ s, onDelete, onSearch, selectable, selected, onToggleSelect }: {
           <div className="h-1.5 flex-1 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,.25)" }}>
             <div className="h-full rounded-full" style={{ width: `${pct}%`, background: complete ? "var(--good)" : "var(--accent)" }} />
           </div>
-          <span className="font-mono text-[9.5px] text-white">{st.have_files}/{st.episodes}</span>
+          <span className="font-mono text-[9.5px] text-white" title={st.unmonitored_missing > 0 ? `+${st.unmonitored_missing} aired episodes not monitored` : undefined}>{st.have_files}/{st.episodes}</span>
         </div>
       </div>
       {selectable ? (
@@ -505,7 +541,7 @@ function SeriesTable({ list, multiSelect, selected, onToggleSelect, onSearch }: 
                 <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: status.tone }}>{status.label}</span></td>
                 <td className={td}>{s.network || "—"}</td>
                 <td className={`${td} text-right font-mono text-[11px] text-ink-dim`}>{st.seasons}</td>
-                <td className={`${td} text-right font-mono text-[11px]`}><span style={{ color: st.have_files >= st.episodes && st.episodes > 0 ? "var(--good)" : "var(--ink-dim)" }}>{st.have_files}/{st.episodes}</span></td>
+                <td className={`${td} text-right font-mono text-[11px]`}><span style={{ color: st.missing === 0 && st.episodes > 0 ? "var(--good)" : "var(--ink-dim)" }}>{st.have_files}/{st.episodes}</span><NotMonitored n={st.unmonitored_missing} /></td>
                 <td className={`${td} text-right font-mono text-[11px] text-ink-dim`}>{gb(st.size_bytes)}</td>
                 <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: s.monitored ? "var(--accent)" : "var(--ink-faint)" }}>{s.monitored ? "Yes" : "No"}</span></td>
                 <td className={td}><SeriesFit f={fits.get(s.id)} /></td>
@@ -529,6 +565,7 @@ function AddSeriesModal({ onClose, onAdded }: { onClose: () => void; onAdded: ()
   const [profile, setProfile] = useState("");
   const [profiles, setProfiles] = useState<{ key: string; name: string }[]>([]);
   const [searchOnAdd, setSearchOnAdd] = useState(true);
+  const [monitor, setMonitor] = useState<MonitorPreset>(DEFAULT_MONITOR_PRESET);
   const [addingId, setAddingId] = useState<number | null>(null);
 
   useEffect(() => {
@@ -537,14 +574,15 @@ function AddSeriesModal({ onClose, onAdded }: { onClose: () => void; onAdded: ()
       const def = r.profiles.find((p) => p.is_default) ?? r.profiles[0];
       if (def) setProfile(def.key);
     }).catch(() => {});
-    api.settings().then((s) => setSearchOnAdd(s.search_on_add)).catch(() => {});
+    // The settings are this dialog's starting point; changing them here is for this add
+    // only (it used to rewrite the global "Search on add").
+    api.settings().then((s) => {
+      setSearchOnAdd(s.search_on_add);
+      if (isMonitorPreset(s.series_monitor_default)) setMonitor(s.series_monitor_default);
+    }).catch(() => {});
   }, []);
 
-  const toggleSearchOnAdd = () => {
-    const next = !searchOnAdd;
-    setSearchOnAdd(next);
-    api.updateSettings({ search_on_add: next }).catch(() => {});
-  };
+  const toggleSearchOnAdd = () => setSearchOnAdd((v) => !v);
 
   const search = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -555,7 +593,7 @@ function AddSeriesModal({ onClose, onAdded }: { onClose: () => void; onAdded: ()
 
   const add = async (r: SeriesLookup) => {
     setAddingId(r.tmdb_id); setError(null);
-    try { await api.addSeries({ tmdb_id: r.tmdb_id, quality_profile: profile, monitored: true, search_on_add: searchOnAdd }); onAdded(); }
+    try { await api.addSeries({ tmdb_id: r.tmdb_id, quality_profile: profile, monitored: true, search_on_add: searchOnAdd, monitor }); onAdded(); }
     catch (e) { setError((e as Error).message); setAddingId(null); }
   };
 
@@ -565,12 +603,25 @@ function AddSeriesModal({ onClose, onAdded }: { onClose: () => void; onAdded: ()
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <h2 className="m-0 text-[15px] font-bold">Add a series</h2>
           <div className="flex items-center gap-4">
-            <button type="button" onClick={toggleSearchOnAdd} title="On: monitor and search right away. Off: add unmonitored — nothing is searched until you monitor it." className="flex items-center gap-2">
+            <button type="button" onClick={toggleSearchOnAdd} title="On: search right away. Off: add it paused — nothing is searched until you resume it. For this add only." className="flex items-center gap-2">
               <span className="relative inline-block h-[20px] w-[34px] rounded-full transition-colors" style={{ background: searchOnAdd ? "var(--accent)" : "var(--line)" }}>
                 <span className="absolute top-[3px] h-[14px] w-[14px] rounded-full bg-white transition-all" style={{ left: searchOnAdd ? "17px" : "3px" }} />
               </span>
-              <span className="text-[11.5px] font-medium" style={{ color: searchOnAdd ? "var(--ink)" : "var(--ink-dim)" }}>{searchOnAdd ? "Search on add" : "Add unmonitored"}</span>
+              <span className="text-[11.5px] font-medium" style={{ color: searchOnAdd ? "var(--ink)" : "var(--ink-dim)" }}>{searchOnAdd ? "Search on add" : "Add paused"}</span>
             </button>
+            <div className="flex items-center gap-2">
+              <span className="font-mono text-[10px] uppercase text-ink-faint">Monitor</span>
+              <select
+                value={monitor}
+                onChange={(e) => setMonitor(e.target.value as MonitorPreset)}
+                title={MONITOR_PRESETS.find((p) => p.value === monitor)?.help}
+                aria-label="Which episodes to monitor"
+                className="rounded-lg px-2 py-1.5 text-[12px]"
+                style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
+              >
+                {MONITOR_PRESETS.map((p) => <option key={p.value} value={p.value}>{p.label}</option>)}
+              </select>
+            </div>
             <div className="flex items-center gap-2">
               <span className="font-mono text-[10px] uppercase text-ink-faint">Quality</span>
               <select value={profile} onChange={(e) => setProfile(e.target.value)} className="rounded-lg px-2 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>

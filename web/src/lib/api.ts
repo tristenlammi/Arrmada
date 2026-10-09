@@ -625,6 +625,8 @@ export interface SubSeriesGroup {
 
 export interface AppSettings {
   search_on_add: boolean;
+  /** The monitoring preset a new series gets: "all" | "future" | "missing" | "existing" | "first_season" | "latest_season" | "none". */
+  series_monitor_default: string;
   naming_movie_folder: string;
   naming_movie_file: string;
   naming_series_folder: string;
@@ -1045,11 +1047,17 @@ export interface SeriesLookup {
   poster_url: string;
   vote_average: number;
 }
+// A series' roll-up, specials left out. Only monitored episodes in monitored seasons count
+// as wanted: episodes = files + aired wanted episodes; missing = aired wanted episodes with
+// no file; unmonitored_missing = aired, no file, not monitored ("+N not monitored").
 export interface SeriesStats {
   episodes: number;
   have_files: number;
   size_bytes: number;
   seasons: number;
+  missing?: number;
+  unmonitored_missing?: number;
+  next_air_date?: string;
 }
 export interface SeriesExtra {
   genres?: string[];
@@ -1101,7 +1109,8 @@ export interface Series {
   poster_url?: string;
   status?: string;
   network?: string;
-  monitored: boolean;
+  monitored: boolean; // the pause gate: off means nothing is searched, choices kept
+  monitor_new_seasons?: boolean; // a season new on refresh is monitored
   quality_profile: string;
   series_type?: string; // "standard" | "anime"
   // Whose listing the stored episode numbering follows: "tvdb" | "tvmaze" | "tmdb", or ""
@@ -1109,6 +1118,7 @@ export interface Series {
   numbering_source?: string;
   scene_overrides?: SceneOverride[];
   added_at?: string;
+  last_refreshed_at?: string; // when metadata was last pulled ("" / absent = never)
   extra?: SeriesExtra;
   seasons?: Season[];
   stats?: SeriesStats;
@@ -1269,6 +1279,32 @@ export interface RenameSkip {
   season: number;
   episode: number;
   reason: string;
+}
+
+// A renumber a refresh found but didn't apply: every file it would move, for review.
+export interface NumberingRemap {
+  absolute: number;
+  old: string; // "S02E22"
+  new: string; // "S03E01", or "" when the new numbering has no place for the file
+  file: string; // base name
+}
+export interface NumberingPending {
+  from: string;
+  to: string;
+  created_at: string;
+  plan_hash: string;
+  files: number; // distinct files that would move
+  remaps: NumberingRemap[];
+}
+export interface SeriesNumbering {
+  source: string;
+  pending: NumberingPending | null;
+}
+// The Apply job's result.
+export interface NumberingApplied {
+  moved: number;
+  skipped: RenameSkip[];
+  unplaced?: number; // files with no episode in the new numbering, left where they are
 }
 
 export interface QueueItem {
@@ -1889,7 +1925,8 @@ export const api = {
   series: () => req<{ series: Series[]; metadata_available: boolean }>("/api/v1/series"),
   lookupSeries: (q: string) =>
     req<{ results: SeriesLookup[] }>(`/api/v1/series/lookup?q=${encodeURIComponent(q)}`).then((r) => r.results),
-  addSeries: (body: { tmdb_id: number; quality_profile?: string; monitored?: boolean; search_on_add?: boolean }) =>
+  // monitor is a monitoring preset; left out, the server uses Settings' default.
+  addSeries: (body: { tmdb_id: number; quality_profile?: string; monitored?: boolean; search_on_add?: boolean; monitor?: string; monitor_new_seasons?: boolean }) =>
     req<Series>("/api/v1/series", { method: "POST", body: JSON.stringify(body) }),
   seriesDetail: (id: number) => req<Series>(`/api/v1/series/${id}`),
   searchSeries: (id: number) =>
@@ -1969,8 +2006,22 @@ export const api = {
   // and reported, never moved blind.
   renameSeries: (id: number, items: SeriesRenameItem[]) =>
     req<{ renamed: number; skipped: RenameSkip[] }>(`/api/v1/series/${id}/rename`, { method: "POST", body: JSON.stringify({ items }) }),
+  // A numbering change waiting for review (pending: null when there's none).
+  seriesNumbering: (id: number) => req<SeriesNumbering>(`/api/v1/series/${id}/numbering`),
+  // Applies the reviewed plan as a job (its result is a NumberingApplied). A plan that
+  // changed since it was shown is refused with a 409 and nothing moves.
+  applySeriesNumbering: (id: number, plan_hash: string) =>
+    req<JobRef>(`/api/v1/series/${id}/numbering/apply`, { method: "POST", body: JSON.stringify({ plan_hash }) }),
+  dismissSeriesNumbering: (id: number) =>
+    req<void>(`/api/v1/series/${id}/numbering/pending`, { method: "DELETE" }),
+  // The series switch is a pause gate: season and episode choices are kept either way.
   setSeriesMonitored: (id: number, monitored: boolean) =>
-    req<{ monitored: boolean }>(`/api/v1/series/${id}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
+    req<{ monitored: boolean; monitor_new_seasons: boolean }>(`/api/v1/series/${id}/monitor`, { method: "PUT", body: JSON.stringify({ monitored }) }),
+  // Applies a monitoring preset to the show's episodes (the pause switch is untouched).
+  applySeriesMonitorPreset: (id: number, preset: string) =>
+    req<{ monitored: boolean; monitor_new_seasons: boolean }>(`/api/v1/series/${id}/monitor`, { method: "PUT", body: JSON.stringify({ preset }) }),
+  setSeriesMonitorNewSeasons: (id: number, monitor_new_seasons: boolean) =>
+    req<{ monitored: boolean; monitor_new_seasons: boolean }>(`/api/v1/series/${id}/monitor`, { method: "PUT", body: JSON.stringify({ monitor_new_seasons }) }),
   setSeriesProfile: (id: number, quality_profile: string) =>
     req<{ quality_profile: string }>(`/api/v1/series/${id}/profile`, { method: "PUT", body: JSON.stringify({ quality_profile }) }),
   setSeriesType: (id: number, series_type: string) =>

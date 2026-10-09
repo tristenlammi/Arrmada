@@ -24,20 +24,22 @@ type Repo struct{ db *sql.DB }
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const seriesCols = `id, tmdb_id, imdb_id, title, year, overview, poster_url, status, network,
-	monitored, quality_profile, extra_json, series_type, tvdb_id, added_at, numbering_source`
+	monitored, quality_profile, extra_json, series_type, tvdb_id, added_at, numbering_source,
+	last_refreshed_at, monitor_new_seasons`
 
 func scanSeries(row interface{ Scan(...any) error }) (Series, error) {
 	var (
 		s         Series
-		mon       int
+		mon, mns  int
 		extraJSON string
 	)
 	err := row.Scan(&s.ID, &s.TMDBID, &s.IMDBID, &s.Title, &s.Year, &s.Overview, &s.PosterURL,
-		&s.Status, &s.Network, &mon, &s.QualityProfile, &extraJSON, &s.SeriesType, &s.TVDBID, &s.AddedAt, &s.NumberingSource)
+		&s.Status, &s.Network, &mon, &s.QualityProfile, &extraJSON, &s.SeriesType, &s.TVDBID, &s.AddedAt, &s.NumberingSource,
+		&s.LastRefreshedAt, &mns)
 	if err != nil {
 		return Series{}, err
 	}
-	s.Monitored = mon != 0
+	s.Monitored, s.MonitorNewSeasons = mon != 0, mns != 0
 	if extraJSON != "" {
 		var ex SeriesExtra
 		if json.Unmarshal([]byte(extraJSON), &ex) == nil {
@@ -76,46 +78,92 @@ func (r *Repo) List(ctx context.Context) ([]Series, error) {
 	return out, nil
 }
 
-// allStats returns per-series episode/file roll-ups keyed by series id.
-func (r *Repo) allStats(ctx context.Context) (map[int64]*Stats, error) {
+// statsSQL is the per-series roll-up behind both the list and the detail page, so the two
+// can't disagree. It counts what's actually wanted: an episode is wanted when it and its
+// season are monitored and it has aired ("aired" as automation's aired(): a dated episode
+// on or before today). A show where only the latest season is wanted used to read
+// "12/180 · Partial" forever, counting every aired episode whatever its monitoring.
+//
+// Specials (season 0) are left out — an optional special isn't a gap. The total counts
+// files too, so an unmonitored episode you have still shows as had.
+const statsSQL = `
+	SELECT e.series_id,
+	  COALESCE(SUM(CASE WHEN e.has_file = 1 OR (` + wantedSQL + ` AND ` + statsAiredSQL + `) THEN 1 ELSE 0 END), 0),
+	  COALESCE(SUM(e.has_file), 0),
+	  COALESCE(SUM(e.size_bytes), 0),
+	  COALESCE(SUM(CASE WHEN e.has_file = 0 AND ` + wantedSQL + ` AND ` + statsAiredSQL + ` THEN 1 ELSE 0 END), 0),
+	  COALESCE(SUM(CASE WHEN e.has_file = 0 AND NOT ` + wantedSQL + ` AND ` + statsAiredSQL + ` THEN 1 ELSE 0 END), 0),
+	  MIN(CASE WHEN e.has_file = 0 AND ` + wantedSQL + ` AND e.air_date <> '' AND date(e.air_date) > date('now') THEN e.air_date END)
+	FROM episodes e
+	LEFT JOIN seasons sn ON sn.series_id = e.series_id AND sn.season_number = e.season_number
+	WHERE e.season_number > 0`
+
+const (
+	wantedSQL     = `(e.monitored = 1 AND COALESCE(sn.monitored, 0) = 1)`
+	statsAiredSQL = `(e.air_date <> '' AND date(e.air_date) <= date('now'))`
+)
+
+// queryStats runs statsSQL, for every series or (id > 0) just one.
+func (r *Repo) queryStats(ctx context.Context, id int64) (map[int64]*Stats, error) {
 	out := map[int64]*Stats{}
-	// Specials (season 0) are excluded from the have/total roll-up — a library isn't
-	// "incomplete" just because an optional special hasn't been grabbed. The total also
-	// only counts episodes that have already AIRED (or that we already have a file for),
-	// so an in-progress season isn't marked incomplete for episodes that don't exist yet.
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT series_id,
-		        COALESCE(SUM(CASE WHEN has_file = 1 OR (air_date <> '' AND date(air_date) <= date('now')) THEN 1 ELSE 0 END), 0),
-		        COALESCE(SUM(has_file),0),
-		        COALESCE(SUM(size_bytes),0)
-		 FROM episodes WHERE season_number > 0 GROUP BY series_id`)
+	q, args := statsSQL, []any{}
+	sq, sargs := `SELECT series_id, COUNT(*) FROM seasons WHERE season_number > 0`, []any{}
+	if id > 0 {
+		q += ` AND e.series_id = ?`
+		args = append(args, id)
+		sq += ` AND series_id = ?`
+		sargs = append(sargs, id)
+	}
+	rows, err := r.db.QueryContext(ctx, q+` GROUP BY e.series_id`, args...)
 	if err != nil {
 		return out, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id int64
+		var sid int64
+		var next sql.NullString
 		st := &Stats{}
-		if err := rows.Scan(&id, &st.Episodes, &st.HaveFiles, &st.SizeBytes); err != nil {
+		if err := rows.Scan(&sid, &st.Episodes, &st.HaveFiles, &st.SizeBytes, &st.Missing, &st.UnmonitoredMissing, &next); err != nil {
 			return out, err
 		}
-		out[id] = st
+		st.NextAirDate = next.String
+		out[sid] = st
 	}
-	sr, err := r.db.QueryContext(ctx, `SELECT series_id, COUNT(*) FROM seasons WHERE season_number > 0 GROUP BY series_id`)
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	sr, err := r.db.QueryContext(ctx, sq+` GROUP BY series_id`, sargs...)
 	if err == nil {
 		defer sr.Close()
 		for sr.Next() {
-			var id int64
+			var sid int64
 			var n int
-			if sr.Scan(&id, &n) == nil {
-				if out[id] == nil {
-					out[id] = &Stats{}
+			if sr.Scan(&sid, &n) == nil {
+				if out[sid] == nil {
+					out[sid] = &Stats{}
 				}
-				out[id].Seasons = n
+				out[sid].Seasons = n
 			}
 		}
 	}
 	return out, nil
+}
+
+// allStats returns per-series episode/file roll-ups keyed by series id.
+func (r *Repo) allStats(ctx context.Context) (map[int64]*Stats, error) {
+	return r.queryStats(ctx, 0)
+}
+
+// StatsFor is one series' roll-up — the same numbers the list shows for it.
+func (r *Repo) StatsFor(ctx context.Context, id int64) (*Stats, error) {
+	m, err := r.queryStats(ctx, id)
+	if err != nil {
+		return &Stats{}, err
+	}
+	if st, ok := m[id]; ok {
+		return st, nil
+	}
+	return &Stats{}, nil
 }
 
 // Get returns one series by id (no seasons/episodes attached).
@@ -142,10 +190,10 @@ func (r *Repo) Create(ctx context.Context, s Series) (Series, error) {
 	}
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO series (tmdb_id, imdb_id, title, year, overview, poster_url, status, network,
-			monitored, quality_profile, extra_json, series_type, tvdb_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			monitored, quality_profile, extra_json, series_type, tvdb_id, monitor_new_seasons)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.TMDBID, s.IMDBID, s.Title, s.Year, s.Overview, s.PosterURL, s.Status, s.Network,
-		b2i(s.Monitored), s.QualityProfile, extraJSON, stype, s.TVDBID)
+		b2i(s.Monitored), s.QualityProfile, extraJSON, stype, s.TVDBID, b2i(s.MonitorNewSeasons))
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return Series{}, ErrExists
@@ -296,184 +344,6 @@ func (r *Repo) StoredNumbering(ctx context.Context, seriesID int64) (map[int][2]
 	return out, rows.Err()
 }
 
-// EpisodeRemap records a file that moved to a new (season, episode) during a rebuild, so
-// the caller can rename it on disk.
-type EpisodeRemap struct {
-	Absolute              int
-	OldSeason, OldEpisode int
-	NewSeason, NewEpisode int
-	FilePath              string
-}
-
-// RebuildEpisodes replaces a series' entire season/episode listing with `seasons`, while
-// preserving what belongs to the user and the library — file placement, size, source
-// release, and monitoring. Files are carried across by ABSOLUTE number, which is
-// source-independent: episode 480 is the same content whether TMDB filed it as S20E480 or
-// TVDB as S22E5, so its file follows the absolute number to wherever the new model puts it.
-//
-// This is what INSERT-OR-IGNORE cannot do — it can add and re-title, but never renumber an
-// existing episode. Runs in one transaction; on any error nothing changes. Returns the
-// files whose (season, episode) moved, so the caller can rename them on disk.
-func (r *Repo) RebuildEpisodes(ctx context.Context, seriesID int64, seasons []Season) ([]EpisodeRemap, error) {
-	var remaps []EpisodeRemap
-	err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
-		var err error
-		remaps, err = rebuildEpisodesTx(ctx, tx, seriesID, seasons)
-		return err
-	})
-	if err != nil {
-		return nil, err
-	}
-	return remaps, nil
-}
-
-// rebuildEpisodesTx is RebuildEpisodes' body, inside the caller's transaction.
-func rebuildEpisodesTx(ctx context.Context, tx *sql.Tx, seriesID int64, seasons []Season) ([]EpisodeRemap, error) {
-	// Snapshot everything that must survive the rebuild, keyed by its stable identity.
-	type placement struct {
-		season, episode int
-		path            string
-		size            int64
-		release         string
-		hold            bool // upgrade_hold: a kept file stays kept wherever it moves
-		// The pre-conversion baseline follows its file, or a renumbered converted episode
-		// would look like a small file worth replacing.
-		convRelease string
-		convSize    int64
-	}
-	filesByAbs := map[int]placement{}   // absolute → file placement (absolute > 0)
-	filesBySE := map[[2]int]placement{} // (season, episode) → file (absolute == 0, e.g. specials)
-	monByAbs := map[int]bool{}
-	monBySE := map[[2]int]bool{}
-	rows, err := tx.QueryContext(ctx,
-		`SELECT absolute_number, season_number, episode_number, has_file, file_path, size_bytes, source_release, monitored, upgrade_hold,
-		        converted_from_release, converted_from_size
-		   FROM episodes WHERE series_id = ?`, seriesID)
-	if err != nil {
-		return nil, err
-	}
-	for rows.Next() {
-		var abs, s, e, hf, mon, hold int
-		var path, rel, convRel string
-		var size, convSize int64
-		if err := rows.Scan(&abs, &s, &e, &hf, &path, &size, &rel, &mon, &hold, &convRel, &convSize); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		p := placement{season: s, episode: e, path: path, size: size, release: rel, hold: hold != 0, convRelease: convRel, convSize: convSize}
-		if abs > 0 {
-			monByAbs[abs] = mon != 0
-			if hf != 0 && path != "" {
-				filesByAbs[abs] = p
-			}
-		} else {
-			key := [2]int{s, e}
-			monBySE[key] = mon != 0
-			if hf != 0 && path != "" {
-				filesBySE[key] = p
-			}
-		}
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, err
-	}
-	rows.Close()
-
-	// Rebuild from scratch. No foreign key points at episodes.id, so a clean replace is safe.
-	if _, err := tx.ExecContext(ctx, `DELETE FROM episodes WHERE series_id = ?`, seriesID); err != nil {
-		return nil, err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM seasons WHERE series_id = ?`, seriesID); err != nil {
-		return nil, err
-	}
-	for _, sn := range seasons {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO seasons (series_id, season_number, name, overview, poster_url, monitored)
-			 VALUES (?, ?, ?, ?, ?, ?)`,
-			seriesID, sn.SeasonNumber, sn.Name, sn.Overview, sn.PosterURL, b2i(sn.Monitored)); err != nil {
-			return nil, err
-		}
-		for _, ep := range sn.Episodes {
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO episodes (series_id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored, absolute_number)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				seriesID, ep.SeasonNumber, ep.EpisodeNumber, ep.Title, ep.Overview, ep.AirDate, ep.Runtime, ep.StillURL, b2i(ep.Monitored), ep.AbsoluteNumber); err != nil {
-				return nil, err
-			}
-		}
-	}
-
-	applyFile := func(ns, ne int, p placement) error {
-		_, err := tx.ExecContext(ctx,
-			`UPDATE episodes SET has_file = 1, file_path = ?, size_bytes = ?, source_release = ?, upgrade_hold = ?,
-			        converted_from_release = ?, converted_from_size = ?
-			   WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
-			p.path, p.size, p.release, b2i(p.hold), p.convRelease, p.convSize, seriesID, ns, ne)
-		return err
-	}
-	existsSE := func(season, episode int) bool {
-		var one int
-		return tx.QueryRowContext(ctx,
-			`SELECT 1 FROM episodes WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
-			seriesID, season, episode).Scan(&one) == nil
-	}
-
-	// Carry files by absolute — the whole point: the new model decides where each absolute
-	// episode lives now, and its file follows.
-	var remaps []EpisodeRemap
-	for abs, p := range filesByAbs {
-		var ns, ne int
-		err := tx.QueryRowContext(ctx,
-			`SELECT season_number, episode_number FROM episodes WHERE series_id = ? AND absolute_number = ?`,
-			seriesID, abs).Scan(&ns, &ne)
-		if err == sql.ErrNoRows {
-			// The new model doesn't carry this absolute. Fall back to the file's old slot if
-			// it still exists, so the file is never orphaned; a later rescan reconciles
-			// anything we genuinely couldn't place.
-			if !existsSE(p.season, p.episode) {
-				continue
-			}
-			ns, ne = p.season, p.episode
-		} else if err != nil {
-			return nil, err
-		}
-		if err := applyFile(ns, ne, p); err != nil {
-			return nil, err
-		}
-		if ns != p.season || ne != p.episode {
-			remaps = append(remaps, EpisodeRemap{
-				Absolute: abs, OldSeason: p.season, OldEpisode: p.episode,
-				NewSeason: ns, NewEpisode: ne, FilePath: p.path,
-			})
-		}
-	}
-	// Files with no absolute (specials) stay where they were, when that slot still exists.
-	for se, p := range filesBySE {
-		if existsSE(se[0], se[1]) {
-			if err := applyFile(se[0], se[1], p); err != nil {
-				return nil, err
-			}
-		}
-	}
-	// Preserve the user's monitoring choices, matched the same way files were.
-	for abs, mon := range monByAbs {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE episodes SET monitored = ? WHERE series_id = ? AND absolute_number = ?`,
-			b2i(mon), seriesID, abs); err != nil {
-			return nil, err
-		}
-	}
-	for se, mon := range monBySE {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE episodes SET monitored = ? WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
-			b2i(mon), seriesID, se[0], se[1]); err != nil {
-			return nil, err
-		}
-	}
-	return remaps, nil
-}
-
 // PruneSeasonsNotIn removes seasons the metadata no longer lists, and reports how many
 // went. Nothing holding a file is ever touched.
 //
@@ -559,47 +429,159 @@ func (r *Repo) SeasonsFor(ctx context.Context, seriesID int64) ([]Season, error)
 	return seasons, nil
 }
 
-// SetMonitored toggles a series' monitored flag AND cascades it to the show's seasons
-// and episodes.
+// SetMonitored sets a series' monitored flag, which is a gate: off pauses the show (the
+// sweep, RSS and upgrades skip it) and leaves every season and episode choice as it is,
+// so resuming picks up exactly where the owner left off. It used to cascade both ways,
+// and pausing then resuming re-monitored seasons the owner had switched off.
 //
-// Without the cascade, flipping a show to monitored only updated the series row while
-// every episode stayed unmonitored — and the search only ever grabs episodes where
-// monitored = 1. A show would read "Monitored" in the UI and silently never grab
-// anything, which is especially misleading when monitoring shows in bulk.
-//
-// Enabling deliberately skips specials (season 0), matching how a series is added
-// (seasonsFromDetails monitors `monitored && !special`). Disabling covers everything —
-// nothing should be grabbed for a show you've switched off.
+// One case still cascades: turning on a show with no monitored regular episode — a
+// library-scanned show, added unmonitored — monitors every regular season and episode
+// and new seasons, or it would read "Monitored" and never grab anything. Specials stay
+// out of it.
 func (r *Repo) SetMonitored(ctx context.Context, id int64, monitored bool) error {
-	// season_number > 0 leaves specials alone when enabling; when disabling we want
-	// everything off, so the filter is dropped.
-	scope := ` AND season_number > 0`
-	if !monitored {
-		scope = ``
-	}
 	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `UPDATE series SET monitored = ? WHERE id = ?`, b2i(monitored), id); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE seasons SET monitored = ? WHERE series_id = ?`+scope, b2i(monitored), id); err != nil {
+		if !monitored {
+			return nil
+		}
+		var one int
+		err := tx.QueryRowContext(ctx,
+			`SELECT 1 FROM episodes WHERE series_id = ? AND season_number > 0 AND monitored = 1 LIMIT 1`, id).Scan(&one)
+		if err == nil {
+			return nil // the owner's choices stand
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		_, err := tx.ExecContext(ctx, `UPDATE episodes SET monitored = ? WHERE series_id = ?`+scope, b2i(monitored), id)
+		if _, err := tx.ExecContext(ctx, `UPDATE seasons SET monitored = 1 WHERE series_id = ? AND season_number > 0`, id); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE episodes SET monitored = 1 WHERE series_id = ? AND season_number > 0`, id); err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE series SET monitor_new_seasons = 1 WHERE id = ?`, id)
 		return err
 	})
 }
 
-// SetTVDBID records a series' TVDB id (the TheXEM lookup key).
-// SetExtra replaces a series' stored extra-metadata blob.
-func (r *Repo) SetExtra(ctx context.Context, id int64, ex *SeriesExtra) error {
-	b, err := json.Marshal(ex)
+// SetMonitorNewSeasons sets whether a season new to the show is monitored when a refresh
+// adds it.
+func (r *Repo) SetMonitorNewSeasons(ctx context.Context, id int64, on bool) error {
+	res, err := r.db.ExecContext(ctx, `UPDATE series SET monitor_new_seasons = ? WHERE id = ?`, b2i(on), id)
 	if err != nil {
 		return err
 	}
-	_, err = r.db.ExecContext(ctx, `UPDATE series SET extra_json = ? WHERE id = ?`, string(b), id)
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SeasonMonitorFlags returns each stored season's monitored flag by season number.
+func (r *Repo) SeasonMonitorFlags(ctx context.Context, seriesID int64) (map[int]bool, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT season_number, monitored FROM seasons WHERE series_id = ?`, seriesID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int]bool{}
+	for rows.Next() {
+		var n, mon int
+		if err := rows.Scan(&n, &mon); err != nil {
+			return nil, err
+		}
+		out[n] = mon != 0
+	}
+	return out, rows.Err()
+}
+
+// SeriesMeta is the show-level metadata a refresh brings up to date. A zero value means
+// "the provider didn't say", never "clear it".
+type SeriesMeta struct {
+	Title, Overview, PosterURL, Status, Network string
+	Year                                        int
+	Extra                                       *SeriesExtra
+}
+
+// UpdateSeriesMetadata writes a refresh's show-level metadata, overwriting a column only
+// with a non-empty fresh value: a provider that answers with half a record (a timeout on
+// its credits call, a show it only partly knows) must not blank out what's stored. The
+// extra blob is merged field by field the same way. Returns the row as it now stands.
+func (r *Repo) UpdateSeriesMetadata(ctx context.Context, id int64, m SeriesMeta) (Series, error) {
+	cur, err := r.Get(ctx, id)
+	if err != nil {
+		return Series{}, err
+	}
+	next := cur
+	setStr := func(dst *string, v string) {
+		if v = strings.TrimSpace(v); v != "" {
+			*dst = v
+		}
+	}
+	setStr(&next.Title, m.Title)
+	setStr(&next.Overview, m.Overview)
+	setStr(&next.PosterURL, m.PosterURL)
+	setStr(&next.Status, m.Status)
+	setStr(&next.Network, m.Network)
+	if m.Year > 0 {
+		next.Year = m.Year
+	}
+	next.Extra = mergeExtra(cur.Extra, m.Extra)
+	extraJSON := ""
+	if next.Extra != nil {
+		b, err := json.Marshal(next.Extra)
+		if err != nil {
+			return Series{}, err
+		}
+		extraJSON = string(b)
+	}
+	if _, err := r.db.ExecContext(ctx,
+		`UPDATE series SET title = ?, overview = ?, poster_url = ?, status = ?, network = ?, year = ?, extra_json = ?
+		 WHERE id = ?`,
+		next.Title, next.Overview, next.PosterURL, next.Status, next.Network, next.Year, extraJSON, id); err != nil {
+		return Series{}, err
+	}
+	return next, nil
+}
+
+// mergeExtra lays a fresh extra blob over the stored one, keeping each stored field the
+// fresh one leaves empty.
+func mergeExtra(stored, fresh *SeriesExtra) *SeriesExtra {
+	if fresh == nil {
+		return stored
+	}
+	out := SeriesExtra{}
+	if stored != nil {
+		out = *stored
+	}
+	if len(fresh.Genres) > 0 {
+		out.Genres = fresh.Genres
+	}
+	if fresh.BackdropURL != "" {
+		out.BackdropURL = fresh.BackdropURL
+	}
+	if len(fresh.Cast) > 0 {
+		out.Cast = fresh.Cast
+	}
+	if fresh.OriginalTitle != "" {
+		out.OriginalTitle = fresh.OriginalTitle
+	}
+	if fresh.OriginalLanguage != "" {
+		out.OriginalLanguage = fresh.OriginalLanguage
+	}
+	return &out
+}
+
+// MarkRefreshed stamps a successful metadata pull, so the weekly re-check of ended shows
+// knows which are due.
+func (r *Repo) MarkRefreshed(ctx context.Context, id int64) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE series SET last_refreshed_at = datetime('now') WHERE id = ?`, id)
 	return err
 }
 
+// SetTVDBID records a series' TVDB id (the TheXEM lookup key).
 func (r *Repo) SetTVDBID(ctx context.Context, id int64, tvdbID int) error {
 	_, err := r.db.ExecContext(ctx, `UPDATE series SET tvdb_id = ? WHERE id = ?`, tvdbID, id)
 	return err
@@ -1000,16 +982,32 @@ func (r *Repo) SetSeasonMonitored(ctx context.Context, seriesID, seasonNumber in
 	return err
 }
 
-// SetEpisodeMonitored toggles a single episode.
+// SetEpisodeMonitored toggles a single episode, and re-derives its season's flag: a season
+// is monitored when any of its episodes is. The sweep needs both flags, so monitoring one
+// episode in an unmonitored season used to do nothing.
 func (r *Repo) SetEpisodeMonitored(ctx context.Context, episodeID int64, monitored bool) error {
-	res, err := r.db.ExecContext(ctx, `UPDATE episodes SET monitored = ? WHERE id = ?`, b2i(monitored), episodeID)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		var seriesID int64
+		var season int
+		err := tx.QueryRowContext(ctx, `SELECT series_id, season_number FROM episodes WHERE id = ?`, episodeID).Scan(&seriesID, &season)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE episodes SET monitored = ? WHERE id = ?`, b2i(monitored), episodeID); err != nil {
+			return err
+		}
+		return syncSeasonsTx(ctx, tx, seriesID, season, false)
+	})
+}
+
+// SetMonitoredFlag sets only the series gate, for a caller that has just applied a preset
+// and so has already decided every episode's flag.
+func (r *Repo) SetMonitoredFlag(ctx context.Context, id int64, monitored bool) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE series SET monitored = ? WHERE id = ?`, b2i(monitored), id)
+	return err
 }
 
 // SetEpisodeFile records that an episode now has a file on disk.

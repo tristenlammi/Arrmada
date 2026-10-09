@@ -58,6 +58,10 @@ func (a *api) handleAddSeries(w http.ResponseWriter, r *http.Request) {
 		QualityProfile string `json:"quality_profile"`
 		Monitored      *bool  `json:"monitored"`
 		SearchOnAdd    *bool  `json:"search_on_add"`
+		// Monitor is a monitoring preset ("all", "future", …); "" uses the configured
+		// default (Settings → series_monitor_default).
+		Monitor           string `json:"monitor"`
+		MonitorNewSeasons *bool  `json:"monitor_new_seasons"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -66,12 +70,18 @@ func (a *api) handleAddSeries(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "tmdb_id is required")
 		return
 	}
+	if req.Monitor != "" && !series.ValidPreset(req.Monitor) {
+		a.writeError(w, http.StatusBadRequest, "unknown monitoring preset "+strconv.Quote(req.Monitor))
+		return
+	}
 	monitored := true
 	if req.Monitored != nil {
 		monitored = *req.Monitored
 	}
-	// "Search on add" mirrors movies: off means "just add it, don't go get it," so
-	// add it unmonitored (the periodic sweep won't chase it until the user monitors).
+	// "Search on add" mirrors movies: off means "just add it, don't go get it," so the
+	// show is added paused (the sweep won't chase it until it's resumed). The episode
+	// flags still follow the preset, ready for then. It applies to this add only: the
+	// setting is just the dialog's starting point.
 	searchOnAdd := a.deps.Settings.GetBool(r.Context(), keySearchOnAdd, true)
 	if req.SearchOnAdd != nil {
 		searchOnAdd = *req.SearchOnAdd
@@ -82,7 +92,9 @@ func (a *api) handleAddSeries(w http.ResponseWriter, r *http.Request) {
 	if req.QualityProfile == "" {
 		req.QualityProfile = a.deps.Quality.DefaultProfile(r.Context(), "series")
 	}
-	s, err := a.deps.Series.Add(r.Context(), req.TMDBID, req.QualityProfile, monitored)
+	s, err := a.deps.Series.AddWith(r.Context(), req.TMDBID, req.QualityProfile, series.AddOptions{
+		Monitored: monitored, Preset: req.Monitor, MonitorNewSeasons: req.MonitorNewSeasons,
+	})
 	if errors.Is(err, series.ErrExists) {
 		a.writeError(w, http.StatusConflict, "that series is already in your library")
 		return
@@ -188,17 +200,38 @@ func (a *api) handleSetSeriesMonitored(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// All optional: the "monitor new seasons" checkbox and the preset menu mustn't pause
+	// the show by leaving monitored out. A preset applies first.
 	var req struct {
-		Monitored bool `json:"monitored"`
+		Monitored         *bool  `json:"monitored"`
+		Preset            string `json:"preset"`
+		MonitorNewSeasons *bool  `json:"monitor_new_seasons"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
-	if err := a.deps.Series.SetMonitored(r.Context(), id, req.Monitored); err != nil {
+	ctx := r.Context()
+	if _, err := a.deps.Series.Get(ctx, id); errors.Is(err, series.ErrNotFound) {
+		a.writeError(w, http.StatusNotFound, "series not found")
+		return
+	}
+	err := a.deps.Series.SetMonitoring(ctx, id, series.MonitorChange{
+		Monitored: req.Monitored, Preset: req.Preset, NewSeasons: req.MonitorNewSeasons,
+	})
+	if errors.Is(err, series.ErrUnknownPreset) {
+		a.writeError(w, http.StatusBadRequest, "unknown monitoring preset "+strconv.Quote(req.Preset))
+		return
+	}
+	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not update monitoring")
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"monitored": req.Monitored})
+	s, err := a.deps.Series.Get(ctx, id)
+	if err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not load series")
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"monitored": s.Monitored, "monitor_new_seasons": s.MonitorNewSeasons})
 }
 
 func (a *api) handleSetSeriesProfile(w http.ResponseWriter, r *http.Request) {
@@ -569,26 +602,15 @@ func (a *api) handleRefreshSeries(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
-	// The owner's own Refresh is the one place a renumber may move files.
-	_, rr, err := a.deps.Series.Refresh(ctx, id, series.RefreshOptions{AllowRebuild: true})
-	if err != nil {
+	// Even the owner's Refresh never renumbers: a numbering change becomes a proposal the
+	// page shows (GET .../numbering), and only its Apply moves files.
+	if _, _, err := a.deps.Series.Refresh(ctx, id, series.RefreshOptions{}); err != nil {
 		if errors.Is(err, series.ErrNotFound) {
 			a.writeError(w, http.StatusNotFound, "series not found")
 			return
 		}
 		a.writeError(w, http.StatusInternalServerError, "could not refresh series")
 		return
-	}
-	// A rebuild moved files to new (season, episode) rows but left them at their old on-disk
-	// names; rename brings the library into line before the rescan reads it — through the
-	// collision-safe rename, so no file is ever replaced.
-	if rr.Renumbered {
-		if res, rerr := a.deps.Automation.SeriesRename(ctx, id, nil); rerr != nil {
-			a.deps.Log.Warn("series: rename after renumber failed", "series_id", id, "err", rerr)
-		} else {
-			a.deps.Log.Info("series: renamed files after renumber", "series_id", id, "moved", res.Moved)
-			a.deps.Automation.LogRenameSkips(id, res)
-		}
 	}
 	a.deps.Automation.RescanSeries(ctx, id)
 	s, err := a.deps.Series.Get(ctx, id)

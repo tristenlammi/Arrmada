@@ -305,6 +305,10 @@ func main() {
 	seriesSvc := series.NewService(st.DB(), tvSeries, cfg.TVDir, log)
 	seriesSvc.SetRootFunc(rootFuncs.TV)                                   // scans and manual imports follow Settings → Library
 	seriesSvc.SetSceneMapper(xem.New(keyStore.Func("flaresolverr"), log)) // TheXEM scene mapping (via FlareSolverr past Cloudflare)
+	// The monitoring preset an add or a request uses when it doesn't pick one.
+	seriesSvc.SetMonitorDefaultFunc(func(ctx context.Context) string {
+		return settingsSvc.Get(ctx, series.KeyMonitorDefault, series.DefaultMonitorPreset)
+	})
 	booksSvc := books.NewService(st.DB(), openlib, log)
 	// Hardcover is the catalogue when a key is set; anything still on Open Library keys
 	// is re-matched without being asked. Nothing here merges book rows any more: the old
@@ -573,6 +577,12 @@ func main() {
 		coordinator.RefreshContinuingSeries(ctx)
 		return nil
 	}, scheduler.Label("Refresh running shows"), scheduler.Description("Updates the episode lists of shows that are still airing."))
+	// A show stored as ended can come back; re-check those once a week (checked daily, so
+	// each one is at most a day past its week) so a revived show gains its new season.
+	sched.Register("refresh-ended-series", 24*time.Hour, false, func(ctx context.Context) error {
+		coordinator.RefreshEndedSeries(ctx)
+		return nil
+	}, scheduler.Label("Re-check ended shows"), scheduler.Description("Once a week, checks whether shows that ended or were cancelled have come back with new episodes."))
 	// Sweep monitored, file-less books and grab the best-format release.
 	sched.Register("search-missing-books", 30*time.Minute, false, func(ctx context.Context) error {
 		coordinator.SearchBooksMissing(ctx)

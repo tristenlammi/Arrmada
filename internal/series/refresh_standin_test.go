@@ -119,13 +119,13 @@ func TestRefreshStandardWithUnlistedSeasonStillRefreshes(t *testing.T) {
 	// Season 2 is gone from the listing; season 1's S01E02 has a new air date.
 	fm.d.Seasons = listing(2)
 	fm.d.Seasons[0].Episodes[1].AirDate = "2026-10-02"
-	for _, allow := range []bool{false, true} {
-		_, res, err := svc.Refresh(ctx, sr.ID, RefreshOptions{AllowRebuild: allow})
+	for _, plan := range []string{"", "a-plan"} {
+		_, res, err := svc.Refresh(ctx, sr.ID, RefreshOptions{ApplyPlan: plan})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if res.ModelChanged || res.Renumbered || res.Fallback {
-			t.Errorf("allow=%v: result = %+v, want a plain refresh", allow, res)
+		if res.ModelChanged || res.Renumbered || res.Fallback || res.Proposed {
+			t.Errorf("plan=%q: result = %+v, want a plain refresh", plan, res)
 		}
 	}
 	if got := airDate(t, svc, ctx, sr.ID, 1, 2); got != "2026-10-02" {
@@ -146,8 +146,8 @@ func TestRefreshStandardWithUnlistedSeasonStillRefreshes(t *testing.T) {
 }
 
 // Anime added while TVmaze numbered it (no TVDB key yet, or TVDB down) gets a key later.
-// Moving onto TVDB is always an upgrade, so the owner's Refresh applies TVDB's model; the
-// unattended ones only say so.
+// Moving onto TVDB is always an upgrade, so it's proposed, and the owner's Apply of that
+// proposal moves the show onto TVDB's model.
 func TestRefreshAnimeFromTVmazeToTVDB(t *testing.T) {
 	a := animeDetails()
 	a.NumberingSource, a.Seasons = "tvmaze", listing(4)
@@ -160,13 +160,14 @@ func TestRefreshAnimeFromTVmazeToTVDB(t *testing.T) {
 	_ = svc.repo.SetEpisodeFile(ctx, sr.ID, 1, 4, file, 1)
 
 	fm.d.NumberingSource, fm.d.Seasons = "tvdb", withAbsolutes(listing(2, 2))
-	if _, res, _ := svc.Refresh(ctx, sr.ID, RefreshOptions{}); !res.ModelChanged || res.Renumbered {
-		t.Fatalf("scheduled: result = %+v, want the change noticed but not applied", res)
+	if _, res, _ := svc.Refresh(ctx, sr.ID, RefreshOptions{}); !res.ModelChanged || !res.Proposed || res.Renumbered {
+		t.Fatalf("scheduled: result = %+v, want the change proposed but not applied", res)
 	}
-	got, res, err := svc.Refresh(ctx, sr.ID, RefreshOptions{AllowRebuild: true})
+	res, err := svc.ApplyNumbering(ctx, sr.ID, pendingHash(t, svc, sr.ID))
 	if err != nil {
 		t.Fatal(err)
 	}
+	got, _ := svc.Get(ctx, sr.ID)
 	if !res.Renumbered || len(res.Remaps) != 1 {
 		t.Fatalf("manual: result = %+v, want one remap", res)
 	}
