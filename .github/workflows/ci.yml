@@ -55,7 +55,10 @@ jobs:
             echo "These files are not gofmt-clean:"; echo "$unformatted"; exit 1
           fi
       - name: Test (race)
-        run: go test -race ./...
+        # internal/automation alone runs close to go test's default 10-minute
+        # per-package limit under -race (most tests open a freshly migrated store), so a
+        # slow runner timed out a passing package. The limit is per package, not per test.
+        run: go test -race -timeout 30m ./...
 
   scripts:
     name: Shell scripts (shellcheck)
