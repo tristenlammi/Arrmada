@@ -64,12 +64,16 @@ type Service struct {
 	db         *sql.DB
 	sessionTTL time.Duration
 	log        *slog.Logger
+	now        func() time.Time // time.Now; a fake clock in tests
 }
 
 // NewService builds an auth service over the given database pool.
 func NewService(db *sql.DB) *Service {
-	return &Service{db: db, sessionTTL: 30 * 24 * time.Hour, log: slog.New(slog.DiscardHandler)}
+	return &Service{db: db, sessionTTL: 30 * 24 * time.Hour, log: slog.New(slog.DiscardHandler), now: time.Now}
 }
+
+// SessionTTL is how long a session lasts from its last extension.
+func (s *Service) SessionTTL() time.Duration { return s.sessionTTL }
 
 // SetLogger sets where the service reports things the owner should fix (e.g. two accounts
 // that differ only by case). Without one those warnings are dropped.
@@ -490,7 +494,7 @@ func (s *Service) CreateSession(ctx context.Context, userID int64) (string, time
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	expires := time.Now().Add(s.sessionTTL)
+	expires := s.now().Add(s.sessionTTL)
 	_, err = s.db.ExecContext(ctx,
 		`INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)`,
 		hashToken(raw), userID, sqlTime(expires))
@@ -502,24 +506,55 @@ func (s *Service) CreateSession(ctx context.Context, userID int64) (string, time
 
 // ValidateSession returns the user for a non-expired session token.
 func (s *Service) ValidateSession(ctx context.Context, raw string) (*User, error) {
+	u, _, err := s.ValidateSessionInfo(ctx, raw)
+	return u, err
+}
+
+// ValidateSessionInfo is ValidateSession plus the session's current expiry, so the caller
+// can decide whether to extend it.
+func (s *Service) ValidateSessionInfo(ctx context.Context, raw string) (*User, time.Time, error) {
 	var (
 		u           User
 		disabled    int
 		autoApprove int
+		expires     sql.NullString
 	)
+	// strftime hands the expiry back as plain text whatever the driver makes of a
+	// TIMESTAMP column, in the same layout sqlTime writes.
 	err := s.db.QueryRowContext(ctx, `
-		SELECT u.id, u.username, u.role, u.disabled, u.auto_approve
+		SELECT u.id, u.username, u.role, u.disabled, u.auto_approve, strftime('%Y-%m-%d %H:%M:%S', s.expires_at)
 		FROM sessions s JOIN users u ON u.id = s.user_id
-		WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP`,
-		hashToken(raw)).Scan(&u.ID, &u.Username, &u.Role, &disabled, &autoApprove)
+		WHERE s.token_hash = ? AND s.expires_at > ?`,
+		hashToken(raw), sqlTime(s.now())).Scan(&u.ID, &u.Username, &u.Role, &disabled, &autoApprove, &expires)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && disabled != 0) {
-		return nil, ErrNotFound
+		return nil, time.Time{}, ErrNotFound
 	}
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	u.AutoApprove = autoApprove != 0
-	return &u, nil
+	exp, err := time.ParseInLocation("2006-01-02 15:04:05", expires.String, time.UTC)
+	if err != nil {
+		// Still a valid session (the database said it hasn't expired); the zero time just
+		// tells the caller there's nothing to go on.
+		exp = time.Time{}
+	}
+	return &u, exp, nil
+}
+
+// ExtendSession pushes a session's expiry to a full TTL from now and returns the new
+// expiry. Sessions slide: one used at least every few weeks never runs out mid-use.
+func (s *Service) ExtendSession(ctx context.Context, raw string) (time.Time, error) {
+	expires := s.now().Add(s.sessionTTL)
+	res, err := s.db.ExecContext(ctx, `UPDATE sessions SET expires_at = ? WHERE token_hash = ?`,
+		sqlTime(expires), hashToken(raw))
+	if err != nil {
+		return time.Time{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return time.Time{}, ErrNotFound
+	}
+	return expires, nil
 }
 
 // DeleteSession revokes a session by its raw token (logout).
