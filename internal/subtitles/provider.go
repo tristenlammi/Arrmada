@@ -20,6 +20,10 @@ type SearchRequest struct {
 	// present, results uploaded against this exact release rank first — those are the
 	// ones that are genuinely in sync.
 	MovieHash string
+	// ForeignParts is "exclude" (the default when empty) or "only". Foreign-parts-only
+	// uploads are forced subtitles: a few lines, never the full track, so a search for
+	// the full subtitle must not return them.
+	ForeignParts string
 }
 
 // SubtitleResult is one candidate subtitle from a provider.

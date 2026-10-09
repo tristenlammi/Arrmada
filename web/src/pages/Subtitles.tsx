@@ -237,12 +237,15 @@ function Queue({ jobs, onChange, flash }: { jobs: SubtitleJob[]; onChange: () =>
   );
 }
 // sortActive lists the running job first, then the queue in the order the worker will
-// take it (oldest first). The API's newest-first order put the running job at the bottom.
+// take it: imports, then button presses, then the sweep, oldest first within each. The
+// API's newest-first order put the running job at the bottom.
 function sortActive(jobs: SubtitleJob[]): SubtitleJob[] {
   return jobs
     .filter((j) => ACTIVE.has(j.state))
-    .sort((a, b) => (a.state === b.state ? a.at - b.at || a.id - b.id : a.state === "running" ? -1 : 1));
+    .sort((a, b) => (a.state === b.state ? (a.priority ?? 1) - (b.priority ?? 1) || a.at - b.at || a.id - b.id : a.state === "running" ? -1 : 1));
 }
+const PRIO_LABEL = ["import", "manual", "sweep"];
+const PRIO_TITLE = ["Just imported — runs before anything else", "Queued from a button — runs before the sweep", "Queued by the periodic sweep — runs after imports and button presses"];
 
 function ActiveRow({ j, onCancel, busy }: { j: SubtitleJob; onCancel?: () => void; busy?: boolean }) {
   const running = j.state === "running";
@@ -256,7 +259,7 @@ function ActiveRow({ j, onCancel, busy }: { j: SubtitleJob; onCancel?: () => voi
     <div className="flex flex-col gap-1 text-[12px]">
       <div className="flex items-center gap-2.5">
         <StateBadge state={j.state} />
-        <span className="flex-1 truncate font-semibold">{j.title}{j.redo && <span className="ml-1.5 rounded px-1 py-0.5 font-mono text-[9px] font-bold uppercase text-ink-faint" style={{ border: "1px solid var(--line)" }} title="Replacing the subtitles already there">redo</span>}</span>
+        <span className="flex-1 truncate font-semibold">{j.title}{j.redo && <span className="ml-1.5 rounded px-1 py-0.5 font-mono text-[9px] font-bold uppercase text-ink-faint" style={{ border: "1px solid var(--line)" }} title="Replacing the subtitles already there">redo</span>}{!running && PRIO_LABEL[j.priority] && <span className="ml-1.5 rounded px-1 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ border: "1px solid var(--line)", color: j.priority === 0 ? "var(--accent)" : "var(--ink-faint)" }} title={PRIO_TITLE[j.priority]}>{PRIO_LABEL[j.priority]}</span>}</span>
         {stopping ? <span className="font-mono text-[10.5px] text-ink-faint">stopping…</span>
           : running && j.stage && <span className="truncate font-mono text-[10.5px] text-ink-faint">{j.stage}</span>}
         {running && elapsed > 0 && <span className="flex-none font-mono text-[10.5px] text-ink-faint">{fmtElapsed(elapsed)}{eta > 0 ? ` · ~${fmtElapsed(eta)} left` : ""}</span>}
@@ -698,7 +701,12 @@ function EmbBadge({ kind }: { kind: "txt" | "pgs" | "vob" }) {
 }
 function CoverChip({ l }: { l: SubLangStatus }) {
   if (l.have) return <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: "var(--good-soft, rgba(127,176,105,.16))", color: "var(--good)" }} title="External SRT present">✓ {l.lang}</span>;
-  return <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: "var(--avoid-soft)", color: "var(--avoid)" }} title={`Missing — will ${SOURCE_LABEL[l.source ?? "ai"] ?? l.source}`}>{l.lang} · {SOURCE_LABEL[l.source ?? "ai"] ?? l.source}</span>;
+  // A subtitle under another name covers it, but Plex won't pair it with this file.
+  if (l.orphan) return <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: "var(--panel-2)", color: "var(--avoid)", border: "1px dashed var(--avoid)" }} title="A subtitle in the folder is named for no video, so Plex won't show it with this file. The sweep leaves it alone; Ensure subs makes a properly named one.">{l.lang} · orphaned</span>;
+  // The ladder tries the first source, then falls back to AI when that comes up empty.
+  const first = SOURCE_LABEL[l.source ?? "ai"] ?? l.source;
+  const plan = l.fallback ? `${first} → ${SOURCE_LABEL[l.fallback] ?? l.fallback}` : first;
+  return <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: "var(--avoid-soft)", color: "var(--avoid)" }} title={`Missing — will try ${plan}`}>{l.lang} · {plan}</span>;
 }
 
 /* ============================= LOGS ============================= */

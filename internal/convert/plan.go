@@ -54,7 +54,11 @@ type SubPlan struct {
 	// those to most clients as-is: it burns them into the picture, transcoding the video
 	// every time that subtitle is on. A text subtitle for the same language direct-plays.
 	ImageSubs string
-	// TextSidecarLangs lists the languages with an external .srt beside THIS file (they
-	// count as a text version for ImageSubsWhenText). Per file, filled in by withSidecars.
+	// TextSidecarLangs lists the languages with a full (or SDH) external .srt beside THIS
+	// file (they count as a text version for ImageSubsWhenText). Per file, filled in by
+	// withSidecars.
 	TextSidecarLangs []string
+	// TextSidecarForcedLangs lists the languages with a forced ".<lang>.forced.srt" beside
+	// this file. Those cover only a forced image track, never a full one.
+	TextSidecarForcedLangs []string
 }

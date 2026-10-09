@@ -821,6 +821,15 @@ function FilePanel({ file, movieId, onChange }: { file: MovieFile; movieId: numb
               ))}
             </div>
           )}
+          {/* Subtitles named for no video in the folder: Plex won't show them with this file. */}
+          {file.orphan_subtitles && file.orphan_subtitles.length > 0 && (
+            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-faint" title="Named for no video in this folder, so Plex won't show them with this file">
+              <span className="font-mono uppercase">Not linked to this file</span>
+              {file.orphan_subtitles.map((s) => (
+                <span key={s} className="rounded px-1.5 py-0.5 opacity-60" style={{ border: "1px dashed var(--line)" }}>{s}</span>
+              ))}
+            </div>
+          )}
           {file.missing && <div className="mt-1.5 text-[11.5px]" style={{ color: "var(--avoid)" }}>Tracked but not on disk. Refresh & rescan, or clear the record to search again.</div>}
         </div>
         <div className="flex-none">

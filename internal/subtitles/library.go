@@ -8,11 +8,17 @@ import (
 )
 
 // LangStatus is one kept-language's coverage for a file: whether an external SRT exists, and if
-// not, the best available source to create one (the "best-source → AI" priority).
+// not, the first source the ladder will try and what it falls back to.
 type LangStatus struct {
 	Lang   string `json:"lang"`
 	Have   bool   `json:"have"`             // an external .srt for this language sits next to the file
 	Source string `json:"source,omitempty"` // when !Have: extract | ocr | download | ai
+	// Fallback is "ai" when the first source is extract or download and the local AI
+	// could still make this language if that source comes up empty.
+	Fallback string `json:"fallback,omitempty"`
+	// Orphan is set when the language is missing but a subtitle in the folder that pairs
+	// with no video (an old name, most likely) covers it. Plex won't show it for this file.
+	Orphan bool `json:"orphan,omitempty"`
 }
 
 // SubHealth is the Tier-1 sync/health score for a file's subtitle (0-100). Nil until the scoring
@@ -35,11 +41,12 @@ type FileSubs struct {
 	Path        string       `json:"path"`
 	DurationSec float64      `json:"duration_sec,omitempty"`
 	AudioLangs  []string     `json:"audio_langs,omitempty"`
-	Embedded    []SubTrack   `json:"embedded"`         // embedded subtitle tracks (for badges/filters)
-	External    []string     `json:"external"`         // kept languages that already have a sidecar
-	Languages   []LangStatus `json:"languages"`        // per-kept-language coverage + best source
-	Health      *SubHealth   `json:"health,omitempty"` // Tier-1 sync/health score (nil until scored)
-	Missing     int          `json:"missing"`          // count of kept languages still without an SRT
+	Embedded    []SubTrack   `json:"embedded"`          // embedded subtitle tracks (for badges/filters)
+	External    []string     `json:"external"`          // kept languages that already have a sidecar
+	Languages   []LangStatus `json:"languages"`         // per-kept-language coverage + best source
+	Health      *SubHealth   `json:"health,omitempty"`  // Tier-1 sync/health score (nil until scored)
+	Missing     int          `json:"missing"`           // count of kept languages still without an SRT
+	Orphans     []Orphan     `json:"orphans,omitempty"` // movies: subtitles in the folder paired with no video
 }
 
 // Library probes every downloaded movie (media="movies") or episode (media="tv") and returns its
@@ -98,7 +105,7 @@ func (s *Service) Library(ctx context.Context, media string) ([]FileSubs, error)
 // fillCoverage probes the file and computes its per-kept-language coverage. Best-effort: a file
 // that can't be probed still reports its sidecar coverage (embedded tracks just come back empty).
 func (s *Service) fillCoverage(ctx context.Context, fs *FileSubs, langs []string, canDownload bool) {
-	if mi, err := s.probeCached(ctx, fs.Path); err == nil {
+	if mi, err := s.probeFile(ctx, fs.Path); err == nil && mi != nil {
 		fs.DurationSec = mi.DurationSec
 		fs.AudioLangs = mi.AudioLangs
 		fs.Embedded = mi.Subs
@@ -106,7 +113,10 @@ func (s *Service) fillCoverage(ctx context.Context, fs *FileSubs, langs []string
 	if fs.Embedded == nil {
 		fs.Embedded = []SubTrack{} // never nil → JSON emits [] not null (frontend iterates it)
 	}
-	present := presentLanguages(fs.Path, langs, fs.Kind != "episode") // kept languages with a sidecar already
+	sc := scanSidecars(fs.Path, langs, kindOf(fs.Kind))
+	present := sc.Present // kept languages with a paired sidecar already
+	fs.Orphans = sc.Orphans
+	orphaned := orphanCovered(langs, present, sc.Orphans)
 	have := make(map[string]bool, len(present))
 	for _, p := range present {
 		have[strings.ToLower(p)] = true
@@ -119,18 +129,32 @@ func (s *Service) fillCoverage(ctx context.Context, fs *FileSubs, langs []string
 			continue
 		}
 		fs.Missing++
-		fs.Languages = append(fs.Languages, LangStatus{Lang: l, Have: false, Source: bestSource(fs.Embedded, l, canDownload)})
+		ls := LangStatus{Lang: l, Have: false, Source: bestSource(fs.Embedded, l, canDownload), Orphan: orphaned[strings.ToLower(l)]}
+		if (ls.Source == "extract" || ls.Source == "download") && s.aiCanMake(fs.AudioLangs, l) {
+			ls.Fallback = "ai"
+		}
+		fs.Languages = append(fs.Languages, ls)
 	}
 }
 
-// bestSource picks the highest-priority way to produce a missing-language SRT: an embedded text
-// track (extract) beats an embedded image track (OCR) beats a provider download beats AI generation
-// (the always-available fallback). Mirrors the module's "best-source → AI" pipeline.
+// aiCanMake reports whether the local AI could produce lang from audio in audioLangs:
+// a model is installed, whisper can go in that direction, and the model for it is there.
+func (s *Service) aiCanMake(audioLangs []string, lang string) bool {
+	ai := s.aiGen()
+	if !ai.available() {
+		return false
+	}
+	plan := aiPlan(audioLangs, lang)
+	return plan != "" && ai.canRun(plan == "translate")
+}
+
+// bestSource names the FIRST rung the ladder in process() will try for a missing language: an
+// embedded text track (extract), else a provider download when one is configured, else AI.
+// It is only the starting point — a rung that comes up empty falls through to the next one, so
+// "download" means "download, then AI" (LangStatus.Fallback says whether AI can actually act).
 func bestSource(embedded []SubTrack, lang string, canDownload bool) string {
-	for _, t := range embedded {
-		if t.Text && langMatches(t.Lang, lang) {
-			return "extract"
-		}
+	if _, ok := pickFullTrack(embedded, lang); ok {
+		return "extract"
 	}
 	// An embedded IMAGE track (PGS/VobSub) would be the next-best source — but OCR isn't
 	// implemented, and routing to it sent every PGS-only file to "pending" without ever
@@ -141,6 +165,44 @@ func bestSource(embedded []SubTrack, lang string, canDownload bool) string {
 		return "download"
 	}
 	return "ai"
+}
+
+// pickFullTrack chooses the embedded text track to extract as a language's full subtitle:
+// a plain track first, then an SDH one (full dialogue plus sound cues), with the track
+// flagged default winning a tie and stream order after that. A forced track is never
+// picked — it only carries the foreign-language lines — so a language whose only text
+// track is forced falls through to download or AI.
+func pickFullTrack(subs []SubTrack, lang string) (SubTrack, bool) {
+	best, found := SubTrack{}, false
+	rank := func(t SubTrack) int {
+		r := 0
+		if t.SDH {
+			r += 2
+		}
+		if !t.Default {
+			r++
+		}
+		return r
+	}
+	for _, t := range subs {
+		if !t.Text || t.Forced || !langMatches(t.Lang, lang) {
+			continue
+		}
+		if !found || rank(t) < rank(best) {
+			best, found = t, true
+		}
+	}
+	return best, found
+}
+
+// pickForcedTrack is the first forced text track in a language, if any.
+func pickForcedTrack(subs []SubTrack, lang string) (SubTrack, bool) {
+	for _, t := range subs {
+		if t.Text && t.Forced && langMatches(t.Lang, lang) {
+			return t, true
+		}
+	}
+	return SubTrack{}, false
 }
 
 // twoToThree maps common ISO 639-1 codes to 639-2/T so a wanted "en" matches an "eng" track.

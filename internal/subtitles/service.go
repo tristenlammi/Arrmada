@@ -45,11 +45,20 @@ type Service struct {
 	whisper  *whisperGen
 	log      *slog.Logger
 
+	// Test seams for process(). Nil means the real code path: resolveFile, probeCached,
+	// the ffmpeg extraction, and s.whisper.
+	resolve func(ctx context.Context, job *Job) (fileRef, bool)
+	probe   func(ctx context.Context, path string) (*mediaInfo, error)
+	extract func(ctx context.Context, path string, picks []extractPick) error
+	ai      aiRunner
+	// ffprobeRun is probeCached's ffprobe call (probeSubs when nil).
+	ffprobeRun func(ctx context.Context, ffprobe, path string) (*mediaInfo, error)
+
 	mu        sync.Mutex
-	jobs      []*Job          // recent subtitle-ensure jobs (newest first), for the Queue tab
-	pending   []*Job          // waiting for the worker, oldest first — unbounded, see Run
-	active    map[string]*Job // queued or running jobs by file key, for enqueue's dedupe
-	wake      chan struct{}   // nudges the worker when pending gains a job
+	jobs      []*Job           // recent subtitle-ensure jobs (newest first), for the Queue tab
+	pending   [numPrios][]*Job // waiting for the worker, one oldest-first line per priority — unbounded, see Run
+	active    map[string]*Job  // queued or running jobs by file key, for enqueue's dedupe
+	wake      chan struct{}    // nudges the worker when pending gains a job
 	nextID    int64
 	running   *Job               // the job the worker is on, if any
 	cancelRun context.CancelFunc // cancels the running job's context (Stop button)
@@ -189,7 +198,7 @@ func (s *Service) MovieStatuses(ctx context.Context) ([]MovieStatus, error) {
 		if !m.HasFile || m.MovieFilePath == "" {
 			continue
 		}
-		present := presentLanguages(m.MovieFilePath, langs, true)
+		present := scanSidecars(m.MovieFilePath, langs, "movie").Present
 		out = append(out, MovieStatus{
 			ID: m.ID, Title: m.Title, Year: m.Year, PosterURL: m.PosterURL,
 			Present: nonNil(present), Missing: nonNil(missingOf(langs, present)),
@@ -229,7 +238,7 @@ func (s *Service) SeriesStatuses(ctx context.Context) ([]SeriesStatus, error) {
 					continue
 				}
 				st.Episodes++
-				if len(missingOf(langs, presentLanguages(ep.FilePath, langs, false))) == 0 {
+				if len(missingOf(langs, scanSidecars(ep.FilePath, langs, "episode").Present)) == 0 {
 					st.Complete++
 				} else {
 					st.MissingSubs++
@@ -254,7 +263,7 @@ func (s *Service) GrabMovie(ctx context.Context, id int64) (int, error) {
 		return 0, nil
 	}
 	langs := s.languages(ctx)
-	missing := missingOf(langs, presentLanguages(m.MovieFilePath, langs, true))
+	missing := missingOf(langs, scanSidecars(m.MovieFilePath, langs, "movie").Present)
 	grabbed := 0
 	hash, _ := osHash(m.MovieFilePath) // "" on error: the search still works, just unranked by sync
 	for _, lang := range missing {
@@ -283,7 +292,7 @@ func (s *Service) GrabSeries(ctx context.Context, id int64) (int, error) {
 			if !ep.HasFile || ep.FilePath == "" {
 				continue
 			}
-			missing := missingOf(langs, presentLanguages(ep.FilePath, langs, false))
+			missing := missingOf(langs, scanSidecars(ep.FilePath, langs, "episode").Present)
 			if len(missing) == 0 {
 				continue
 			}
@@ -323,6 +332,11 @@ func (s *Service) AutoGrab(ctx context.Context) {
 // grabOne searches for and downloads the best subtitle for one media file + language,
 // writing it as a sidecar. Returns whether a file was written.
 func (s *Service) grabOne(ctx context.Context, imdb, title string, year, season, episode int, mediaPath, hash, lang string) (bool, error) {
+	// A paused quota means no requests at all: searching would spend the API's rate
+	// limit on results that can't be downloaded until the reset.
+	if s.providerPaused() {
+		return false, ErrQuotaExhausted
+	}
 	results, err := s.provider.Search(ctx, SearchRequest{
 		IMDBID: imdb, Title: title, Year: year, Season: season, Episode: episode, Language: lang,
 		MovieHash: hash,
@@ -337,7 +351,13 @@ func (s *Service) grabOne(ctx context.Context, imdb, title string, year, season,
 	if err != nil {
 		return false, err
 	}
-	dst := sidecarPath(mediaPath, lang)
+	// A hearing-impaired upload is still the full subtitle; the ".sdh" qualifier lets Plex
+	// label it as such.
+	variant := VariantFull
+	if results[0].HearingImpaired {
+		variant = VariantSDH
+	}
+	dst := sidecarPathV(mediaPath, lang, variant)
 	if err := os.WriteFile(dst, data, 0o644); err != nil {
 		return false, err
 	}

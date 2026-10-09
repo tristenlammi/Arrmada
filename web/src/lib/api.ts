@@ -982,8 +982,8 @@ export interface SubtitleSettings {
   quota_reset_at: number; // unix seconds; 0 = not paused
   pending: number;
 }
-export interface SubTrack { index: number; codec: string; lang: string; text: boolean; forced?: boolean }
-export interface SubLangStatus { lang: string; have: boolean; source?: "extract" | "ocr" | "download" | "ai" }
+export interface SubTrack { index: number; codec: string; lang: string; text: boolean; title?: string; forced?: boolean; sdh?: boolean; default?: boolean }
+export interface SubLangStatus { lang: string; have: boolean; source?: "extract" | "ocr" | "download" | "ai"; fallback?: "ai"; orphan?: boolean }
 export interface SubHealth { score: number; notes?: string[] }
 export interface SubFileEntry {
   kind: "movie" | "episode";
@@ -991,6 +991,7 @@ export interface SubFileEntry {
   title: string; year?: number; poster_url?: string; path: string; duration_sec?: number;
   audio_langs?: string[]; embedded: SubTrack[]; external: string[];
   languages: SubLangStatus[]; health?: SubHealth; missing: number;
+  orphans?: { name: string; lang?: string; variant?: string }[]; // movies: subtitles paired with no video
 }
 export interface SubtitleJob {
   id: number; kind: "movie" | "episode"; movie_id?: number; series_id?: number; season?: number; episode?: number;
@@ -999,6 +1000,7 @@ export interface SubtitleJob {
   stage?: string;    // what a running job is doing
   started_at?: number; // unix seconds the worker picked it up
   redo?: boolean; // replacing the sidecars already there
+  priority: number; // 0 import · 1 manual · 2 sweep — the worker takes the lowest first
 }
 // SubtitleCoverage is the Overview's totals, from the last library pass (not a live walk).
 export interface SubtitleCoverage {
@@ -1970,7 +1972,8 @@ export interface MovieFile {
   duration_min?: number;
   probed?: boolean;
   atmos?: boolean; // Dolby Atmos in any audio track (from the file's own stream profile)
-  subtitles?: string[];
+  subtitles?: string[]; // paired with this file (named for it)
+  orphan_subtitles?: string[]; // in the folder but named for no video — Plex won't show them
   missing: boolean;
 }
 

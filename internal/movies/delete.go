@@ -172,7 +172,12 @@ func (s *Service) DeleteVersionFile(ctx context.Context, movieID, versionID int6
 // in the same folder that stay, so their subtitles aren't swept up by a name prefix
 // ("Movie.mkv" vs "Movie.Directors.Cut.mkv").
 func (s *Service) removeFile(path string, keep []string) error {
-	subs := sidecarsOf(path, keep)
+	// A same-name container swap (X.mp4 replaced by X.mkv) keeps the subtitles: they pair
+	// with the new video too.
+	var subs []string
+	if !library.SharesBase(path) {
+		subs = sidecarsOf(path, keep)
+	}
 	dst, err := library.RemoveToBin(s.bin, path)
 	if err != nil {
 		return err

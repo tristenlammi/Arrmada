@@ -82,7 +82,10 @@ func (s *Service) DeleteEpisodeFile(ctx context.Context, seriesID int64, season,
 	}
 	var subFailed []string
 	if path != "" {
-		subs := library.Sidecars(path)
+		var subs []string
+		if !library.SharesBase(path) { // a same-name sibling video still pairs with them
+			subs = library.Sidecars(path)
+		}
 		if _, err := library.RemoveToBin(s.bin, path); err != nil {
 			return err
 		}
@@ -1395,14 +1398,26 @@ func (s *Service) SupersedeEpisodeFile(ctx context.Context, seriesID int64, seas
 			s.log.Info("series: old file still serves other episodes — keeping it",
 				"old", old, "shared_by", n, "new", path)
 		} else if _, err := os.Stat(old); err == nil {
-			// The new file is already in place, so an old file the bin refuses is kept
-			// on disk (and said so) rather than deleted for good.
+			// The old release's subtitles go with it: left behind they'd sit unpaired next to
+			// the new file. A same-name container swap keeps them (they pair with the new
+			// video too).
+			var subs []string
+			if !library.SharesBase(old) {
+				subs = library.PairedSidecars(old)
+			}
+			// The new file is already in place, so an old file the bin refuses is kept on
+			// disk (and said so) rather than deleted for good — and its subtitles stay with it.
 			if _, rerr := library.RemoveToBin(s.bin, old); rerr != nil {
 				s.log.Warn("series: the recycle bin refused the superseded file — kept it on disk", "old", old, "err", rerr)
 				s.repo.AddEvent(ctx, seriesID, "file.kept",
 					fmt.Sprintf("S%02dE%02d old file kept: the recycle bin refused it (%v)", season, episode, rerr))
 			} else {
-				s.log.Info("series: superseded old episode file", "old", old, "new", path)
+				for _, sub := range subs {
+					if _, serr := library.RemoveToBin(s.bin, sub); serr != nil {
+						s.log.Warn("series: subtitle left behind", "path", sub, "err", serr)
+					}
+				}
+				s.log.Info("series: superseded old episode file", "old", old, "new", path, "subtitles", len(subs))
 			}
 		}
 	}

@@ -213,6 +213,11 @@ func defaultAudio(kept []AudioStream, plan Plan) int {
 // keptSubs applies the plan's subtitle choices. With no filter and image subs kept, every
 // track is kept, so the untouched path stays byte-identical.
 func keptSubs(mi *MediaInfo, plan Plan) []SubStream {
+	return imageSubsStep(langFilteredSubs(mi, plan), plan)
+}
+
+// langFilteredSubs is the subtitle language filter on its own.
+func langFilteredSubs(mi *MediaInfo, plan Plan) []SubStream {
 	out := mi.Subs
 	if len(plan.Subs.KeepLangs) > 0 {
 		out = make([]SubStream, 0, len(mi.Subs))
@@ -228,6 +233,11 @@ func keptSubs(mi *MediaInfo, plan Plan) []SubStream {
 			out = mi.Subs
 		}
 	}
+	return out
+}
+
+// imageSubsStep applies the image-subtitle choice to the language-filtered tracks.
+func imageSubsStep(out []SubStream, plan Plan) []SubStream {
 	switch plan.Subs.ImageSubs {
 	case ImageSubsRemove:
 		// Asked for outright: every image track goes, even a language's only subtitle.
@@ -240,27 +250,38 @@ func keptSubs(mi *MediaInfo, plan Plan) []SubStream {
 		}
 		return kept
 	case ImageSubsWhenText:
-		return dropCoveredImageSubs(out, plan.Subs.TextSidecarLangs)
+		return dropCoveredImageSubs(out, plan.Subs.TextSidecarLangs, plan.Subs.TextSidecarForcedLangs)
 	}
 	return out
 }
 
-// dropCoveredImageSubs removes image tracks only where a text subtitle for that language
-// will remain: an embedded text track that survived the language filter, or a sidecar. An
-// untagged image track is dropped only if some text subtitle exists at all — we can't know
-// its language, but we do know the viewer isn't left with nothing.
-func dropCoveredImageSubs(out []SubStream, sidecarLangs []string) []SubStream {
-	textLangs := map[string]bool{}
-	anyText := false
+// dropCoveredImageSubs removes image tracks only where a text subtitle of the same KIND
+// for that language will remain: an embedded text track that survived the language filter,
+// or a sidecar. A forced image track (the foreign-dialogue lines) is covered only by a
+// forced text one, and a full image track only by a full one — otherwise a forced PGS went
+// whenever the Subtitles module had written the full en.srt, and a lone .en.forced.srt
+// cost the full English PGS. An untagged full image track is dropped only if some full
+// text subtitle exists at all; an untagged forced one is never dropped.
+func dropCoveredImageSubs(out []SubStream, sidecarFull, sidecarForced []string) []SubStream {
+	textFull, textForced := map[string]bool{}, map[string]bool{}
+	anyFull := false
 	for _, s := range out {
-		if s.Text {
-			textLangs[normLang(s.Lang)] = true
-			anyText = true
+		if !s.Text {
+			continue
+		}
+		if s.Forced {
+			textForced[normLang(s.Lang)] = true
+		} else {
+			textFull[normLang(s.Lang)] = true
+			anyFull = true
 		}
 	}
-	for _, l := range sidecarLangs {
-		textLangs[normLang(l)] = true
-		anyText = true
+	for _, l := range sidecarFull {
+		textFull[normLang(l)] = true
+		anyFull = true
+	}
+	for _, l := range sidecarForced {
+		textForced[normLang(l)] = true
 	}
 	kept := make([]SubStream, 0, len(out))
 	for _, s := range out {
@@ -269,12 +290,44 @@ func dropCoveredImageSubs(out []SubStream, sidecarLangs []string) []SubStream {
 			continue
 		}
 		l := strings.ToLower(strings.TrimSpace(s.Lang))
-		covered := anyText && (l == "" || l == "und" || textLangs[normLang(l)])
+		untagged := l == "" || l == "und"
+		var covered bool
+		if s.Forced {
+			covered = !untagged && textForced[normLang(l)]
+		} else {
+			covered = anyFull && (untagged || textFull[normLang(l)])
+		}
 		if !covered {
-			kept = append(kept, s) // the only subtitle in its language — stays
+			kept = append(kept, s) // the only subtitle of its kind in its language — stays
 		}
 	}
 	return kept
+}
+
+// forcedLost counts forced tracks the image-subtitle step removes with no forced text
+// subtitle left in their language to replace them — foreign-dialogue lines the viewer
+// will no longer see.
+func forcedLost(mi *MediaInfo, plan Plan) int {
+	before := langFilteredSubs(mi, plan)
+	after := imageSubsStep(before, plan)
+	kept := map[int]bool{}
+	forcedText := map[string]bool{}
+	for _, s := range after {
+		kept[s.SubIndex] = true
+		if s.Text && s.Forced {
+			forcedText[normLang(s.Lang)] = true
+		}
+	}
+	for _, l := range plan.Subs.TextSidecarForcedLangs {
+		forcedText[normLang(l)] = true
+	}
+	n := 0
+	for _, s := range before {
+		if s.Forced && !kept[s.SubIndex] && !forcedText[normLang(s.Lang)] {
+			n++
+		}
+	}
+	return n
 }
 
 // trackArgs maps the kept audio, subtitles and attachments of input `in` into the output.
@@ -482,6 +535,9 @@ func planWarnings(mi *MediaInfo, plan Plan) []string {
 	}
 	if plan.VideoCodec != "" && mi.HDR == "Dolby Vision" {
 		w = append(w, "Dolby Vision layer dropped — kept as "+mi.EncodeHDR())
+	}
+	if n := forcedLost(mi, plan); n > 0 {
+		w = append(w, fmt.Sprintf("forced subtitles (foreign dialogue) removed — %d track(s)", n))
 	}
 	return w
 }
@@ -719,12 +775,18 @@ func cpuVideoArgs(name, codec string, crf, cores int, hdrParams string, noNumaPo
 }
 
 // sidecarLangs lists the languages with an external .srt next to path, by the
-// "<name>.<lang>.srt" convention the Subtitles module writes. Cache is optional and keyed
-// by directory: a season folder holds many episodes, and the index pass would otherwise
-// ReadDir the same folder once per episode.
-func sidecarLangs(path string, cache map[string][]string) []string {
+// "<name>.<lang>[.qualifier].srt" convention the Subtitles module writes, split into full
+// coverage and forced-only. Cache is optional and keyed by directory: a season folder holds
+// many episodes, and the index pass would otherwise ReadDir the same folder once per
+// episode.
+//
+// This is the shared sidecar-naming rule (subtitles.parseSidecarTag in
+// internal/subtitles/sidecar.go applies the same one): "forced" marks a forced track,
+// which is never the full subtitle; "sdh", "cc" and "hi" (after a language) are still the
+// full subtitle; a bare "hi" is Hindi. Keep the two in step until they share one place.
+func sidecarLangs(path string, cache map[string][]string) (full, forced []string) {
 	if path == "" {
-		return nil
+		return nil, nil
 	}
 	dir := filepath.Dir(path)
 	base := strings.ToLower(strings.TrimSuffix(filepath.Base(path), filepath.Ext(path)))
@@ -737,7 +799,7 @@ func sidecarLangs(path string, cache map[string][]string) []string {
 	if names == nil {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			return nil
+			return nil, nil
 		}
 		names = make([]string, 0, len(entries))
 		for _, e := range entries {
@@ -749,24 +811,39 @@ func sidecarLangs(path string, cache map[string][]string) []string {
 			cache[dir] = names
 		}
 	}
-	var out []string
 	for _, n := range names {
 		ln := strings.ToLower(n)
 		if !strings.HasSuffix(ln, ".srt") || !strings.HasPrefix(ln, base+".") {
 			continue
 		}
-		// "<base>.<lang>.srt", possibly "<base>.<lang>.forced.srt": take the segment
-		// right after the base.
+		// Every dot-segment after the base: the first short one is the language, and a
+		// "forced" anywhere marks the track forced.
 		rest := strings.TrimSuffix(strings.TrimPrefix(ln, base+"."), ".srt")
-		if lang, _, _ := strings.Cut(rest, "."); lang != "" && len(lang) <= 3 {
-			out = append(out, lang)
+		lang, isForced := "", false
+		for _, seg := range strings.Split(rest, ".") {
+			switch {
+			case seg == "forced":
+				isForced = true
+			case seg == "sdh" || seg == "cc" || seg == "default":
+				// still the full subtitle
+			case lang == "" && seg != "" && len(seg) <= 3:
+				lang = seg // "hi" here, first, is Hindi; after a language it's ignored
+			}
+		}
+		if lang == "" {
+			continue
+		}
+		if isForced {
+			forced = append(forced, lang)
+		} else {
+			full = append(full, lang)
 		}
 	}
-	return out
+	return full, forced
 }
 
-// withSidecars returns the plan with TextSidecarLangs filled in for one file.
+// withSidecars returns the plan with the sidecar languages filled in for one file.
 func withSidecars(plan Plan, path string, cache map[string][]string) Plan {
-	plan.Subs.TextSidecarLangs = sidecarLangs(path, cache)
+	plan.Subs.TextSidecarLangs, plan.Subs.TextSidecarForcedLangs = sidecarLangs(path, cache)
 	return plan
 }

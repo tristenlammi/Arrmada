@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -143,14 +144,108 @@ func TestTrackArgs(t *testing.T) {
 
 func TestSidecarLangs(t *testing.T) {
 	dir := t.TempDir()
-	for _, n := range []string{"Film (2020).mkv", "Film (2020).en.srt", "Film (2020).fr.forced.srt", "Other.de.srt"} {
+	for _, n := range []string{"Film (2020).mkv", "Film (2020).en.srt", "Film (2020).fr.forced.srt", "Other.de.srt",
+		"Film (2020).es.sdh.srt", "Film (2020).eng.srt", "Film (2020).it.hi.srt", "Film (2020).hi.srt"} {
 		if err := os.WriteFile(filepath.Join(dir, n), nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	got := sidecarLangs(filepath.Join(dir, "Film (2020).mkv"), nil)
-	if strings.Join(got, ",") != "en,fr" {
-		t.Errorf("sidecars = %v, want en, fr", got)
+	full, forced := sidecarLangs(filepath.Join(dir, "Film (2020).mkv"), nil)
+	sort.Strings(full)
+	if strings.Join(full, ",") != "en,eng,es,hi,it" {
+		t.Errorf("full = %v, want en, eng, es (SDH), hi (bare = Hindi), it (.it.hi = Italian SDH)", full)
+	}
+	if strings.Join(forced, ",") != "fr" {
+		t.Errorf("forced = %v, want fr", forced)
+	}
+}
+
+// A file with only '<base>.en.forced.srt' beside it keeps its full English PGS track.
+func TestForcedOnlySidecarKeepsFullPGS(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{"Film.mkv", "Film.en.forced.srt"} {
+		if err := os.WriteFile(filepath.Join(dir, n), nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mi := withSubs(film("h264", 1920, 1080, 12000), pgs("eng"))
+	plan := withSidecars(Plan{Subs: SubPlan{ImageSubs: ImageSubsWhenText}}, filepath.Join(dir, "Film.mkv"), nil)
+	if got := keptSubs(mi, plan); len(got) != 1 {
+		t.Errorf("kept %d tracks; a forced-only sidecar must not cost the full English PGS", len(got))
+	}
+}
+
+func forcedPGS(lang string) SubStream {
+	s := pgs(lang)
+	s.Forced = true
+	return s
+}
+
+func TestForcedImageSubsNeedForcedText(t *testing.T) {
+	desc := func(subs []SubStream) string {
+		var out []string
+		for _, s := range subs {
+			k := "img"
+			if s.Text {
+				k = "txt"
+			}
+			if s.Forced {
+				k += "(f)"
+			}
+			out = append(out, s.Lang+":"+k)
+		}
+		return strings.Join(out, ",")
+	}
+	whenText := Plan{Subs: SubPlan{ImageSubs: ImageSubsWhenText}}
+
+	// A full en.srt (the Subtitles module's) + forced PGS + full PGS: the full PGS goes,
+	// the forced PGS stays — nothing else carries the foreign-dialogue lines.
+	sidecar := whenText
+	sidecar.Subs.TextSidecarLangs = []string{"en"}
+	mi := withSubs(film("h264", 1920, 1080, 12000), forcedPGS("eng"), pgs("eng"))
+	if got := desc(keptSubs(mi, sidecar)); got != "eng:img(f)" {
+		t.Errorf("full sidecar: kept %s, want the forced PGS only", got)
+	}
+	// The same with an embedded full text track.
+	mi = withSubs(film("h264", 1920, 1080, 12000), forcedPGS("eng"), pgs("eng"), srt("eng"))
+	if got := desc(keptSubs(mi, whenText)); got != "eng:img(f),eng:txt" {
+		t.Errorf("full text: kept %s", got)
+	}
+	// An embedded forced text track covers the forced PGS.
+	forcedSRT := srt("eng")
+	forcedSRT.Forced = true
+	mi = withSubs(film("h264", 1920, 1080, 12000), forcedPGS("eng"), forcedSRT)
+	if got := desc(keptSubs(mi, whenText)); got != "eng:txt(f)" {
+		t.Errorf("forced text: kept %s, want the forced PGS dropped", got)
+	}
+	// ...as does a .forced.srt sidecar.
+	fs := whenText
+	fs.Subs.TextSidecarForcedLangs = []string{"en"}
+	mi = withSubs(film("h264", 1920, 1080, 12000), forcedPGS("eng"))
+	if got := keptSubs(mi, fs); len(got) != 0 {
+		t.Errorf("forced sidecar: kept %s, want the forced PGS dropped", desc(got))
+	}
+	// An untagged forced image track is never dropped, even with text everywhere.
+	mi = withSubs(film("h264", 1920, 1080, 12000), forcedPGS(""), srt("eng"))
+	if got := desc(keptSubs(mi, whenText)); got != ":img(f),eng:txt" {
+		t.Errorf("untagged forced: kept %s", got)
+	}
+}
+
+// Removing a forced track under "remove" is never silent.
+func TestPlanWarnsWhenForcedRemoved(t *testing.T) {
+	mi := withSubs(film("h264", 1920, 1080, 12000), forcedPGS("eng"), srt("eng"))
+	got := strings.Join(planWarnings(mi, Plan{Subs: SubPlan{ImageSubs: ImageSubsRemove}}), " | ")
+	if !strings.Contains(got, "forced subtitles (foreign dialogue) removed") {
+		t.Errorf("warnings = %q, want the forced-removal warning", got)
+	}
+	// Not when a forced text subtitle still carries those lines.
+	plan := Plan{Subs: SubPlan{ImageSubs: ImageSubsRemove, TextSidecarForcedLangs: []string{"en"}}}
+	if w := planWarnings(mi, plan); len(w) != 0 {
+		t.Errorf("warned %v although a forced sidecar remains", w)
+	}
+	if w := planWarnings(mi, Plan{Subs: SubPlan{ImageSubs: ImageSubsWhenText}}); len(w) != 0 {
+		t.Errorf("when_text kept the forced track yet warned %v", w)
 	}
 }
 

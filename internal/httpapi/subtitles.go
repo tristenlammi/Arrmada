@@ -66,7 +66,7 @@ func (a *api) handleSubtitleQueueMovie(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	job, err := a.deps.Subtitles.QueueMovie(r.Context(), id, r.URL.Query().Get("redo") == "1")
+	job, err := a.deps.Subtitles.QueueMovie(r.Context(), id, r.URL.Query().Get("redo") == "1", subtitles.PrioManual)
 	if err != nil {
 		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -91,7 +91,7 @@ func (a *api) handleSubtitleQueueEpisode(w http.ResponseWriter, r *http.Request)
 		a.writeError(w, http.StatusBadRequest, "invalid episode")
 		return
 	}
-	job, err := a.deps.Subtitles.QueueEpisode(r.Context(), seriesID, season, episode, r.URL.Query().Get("redo") == "1")
+	job, err := a.deps.Subtitles.QueueEpisode(r.Context(), seriesID, season, episode, r.URL.Query().Get("redo") == "1", subtitles.PrioManual)
 	if err != nil {
 		a.writeError(w, http.StatusBadRequest, err.Error())
 		return

@@ -49,6 +49,29 @@ type Job struct {
 	// replacing them — for when what's there is wrong (the AI read the dub, a bad
 	// download) and deleting files by hand shouldn't be the only way back.
 	Redo bool `json:"redo,omitempty"`
+	// Priority is which line the job waits in: PrioImport, PrioManual or PrioSweep. The
+	// worker always takes the lowest non-empty line first, so tonight's import isn't stuck
+	// behind a sweep's worth of hour-long AI runs.
+	Priority int `json:"priority"`
+}
+
+// Queue priorities, most urgent first. Each has its own FIFO line in Service.pending.
+const (
+	PrioImport = 0 // a file that just landed: someone is about to watch it
+	PrioManual = 1 // a button press in the UI
+	PrioSweep  = 2 // the periodic catch-up sweep and "Ensure all"
+	numPrios   = 3
+)
+
+// clampPrio keeps an out-of-range priority from indexing past the pending lines.
+func clampPrio(p int) int {
+	if p < 0 {
+		return 0
+	}
+	if p >= numPrios {
+		return numPrios - 1
+	}
+	return p
 }
 
 // key identifies the file a job is for, so the same file can't be queued twice.
@@ -159,13 +182,16 @@ func (s *Service) Cancel(id int64) error {
 // Returns how many were dropped.
 func (s *Service) ClearQueue() int {
 	s.mu.Lock()
-	n := len(s.pending)
-	for _, j := range s.pending {
-		j.State = StateCancelled
-		j.Note = "queue cleared"
-		s.retireLocked(j)
+	n := 0
+	for p := range s.pending {
+		for _, j := range s.pending[p] {
+			j.State = StateCancelled
+			j.Note = "queue cleared"
+			s.retireLocked(j)
+			n++
+		}
+		s.pending[p] = nil
 	}
-	s.pending = nil
 	s.mu.Unlock()
 	if n > 0 {
 		s.event("info", fmt.Sprintf("Cleared %d queued job(s)", n))
@@ -173,26 +199,40 @@ func (s *Service) ClearQueue() int {
 	return n
 }
 
-// dropPendingLocked removes a job from the pending list; the mutex must be held.
+// dropPendingLocked removes a job from whichever pending line holds it; the mutex must be held.
 func (s *Service) dropPendingLocked(job *Job) {
-	for i, j := range s.pending {
-		if j == job {
-			s.pending = append(s.pending[:i], s.pending[i+1:]...)
-			return
+	for p := range s.pending {
+		for i, j := range s.pending[p] {
+			if j == job {
+				s.pending[p] = append(s.pending[p][:i], s.pending[p][i+1:]...)
+				return
+			}
 		}
 	}
 }
 
-// pop takes the oldest pending job, or nil.
+// pendingLocked is the total number of waiting jobs across every line; the mutex must be held.
+func (s *Service) pendingLocked() int {
+	n := 0
+	for p := range s.pending {
+		n += len(s.pending[p])
+	}
+	return n
+}
+
+// pop takes the oldest job from the most urgent non-empty line, or nil.
 func (s *Service) pop() *Job {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.pending) == 0 {
-		return nil
+	for p := range s.pending {
+		if len(s.pending[p]) == 0 {
+			continue
+		}
+		job := s.pending[p][0]
+		s.pending[p] = s.pending[p][1:]
+		return job
 	}
-	job := s.pending[0]
-	s.pending = s.pending[1:]
-	return job
+	return nil
 }
 
 // enqueue registers a job and wakes the worker. Returns the existing job instead when the
@@ -207,9 +247,19 @@ func (s *Service) enqueue(job *Job) *Job {
 	if s.active == nil {
 		s.active = map[string]*Job{}
 	}
+	job.Priority = clampPrio(job.Priority)
 	if j, ok := s.active[key]; ok {
-		if job.Redo && j.State == StateQueued {
-			j.Redo = true // the waiting job takes on the stronger intent
+		if j.State == StateQueued {
+			if job.Redo {
+				j.Redo = true // the waiting job takes on the stronger intent
+			}
+			// Pressing Ensure on a file the sweep already queued moves it up to the
+			// button's line rather than leaving it hours deep behind the sweep.
+			if job.Priority < j.Priority {
+				s.dropPendingLocked(j)
+				j.Priority = job.Priority
+				s.pending[j.Priority] = append(s.pending[j.Priority], j)
+			}
 		}
 		s.mu.Unlock()
 		return j
@@ -223,7 +273,7 @@ func (s *Service) enqueue(job *Job) *Job {
 	// Keep the visible history bounded, but never drop a job that hasn't run yet. The
 	// trim walks the whole list, so it runs once the finished tail has grown by a few
 	// hundred rather than on every enqueue.
-	if len(s.jobs) > 200+len(s.pending)+256 {
+	if len(s.jobs) > 200+s.pendingLocked()+256 {
 		kept := s.jobs[:0:0]
 		for i, j := range s.jobs {
 			if i < 200 || j.State == StateQueued || j.State == StateRunning {
@@ -232,7 +282,7 @@ func (s *Service) enqueue(job *Job) *Job {
 		}
 		s.jobs = kept
 	}
-	s.pending = append(s.pending, job)
+	s.pending[job.Priority] = append(s.pending[job.Priority], job)
 	s.mu.Unlock()
 	s.event("info", "Queued "+job.Title)
 	select {
@@ -243,8 +293,9 @@ func (s *Service) enqueue(job *Job) *Job {
 }
 
 // QueueMovie enqueues a subtitle-ensure job for one movie. redo replaces the sidecars
-// already there rather than filling in what's missing.
-func (s *Service) QueueMovie(ctx context.Context, movieID int64, redo bool) (*Job, error) {
+// already there rather than filling in what's missing; prio is the line it waits in
+// (PrioImport, PrioManual or PrioSweep).
+func (s *Service) QueueMovie(ctx context.Context, movieID int64, redo bool, prio int) (*Job, error) {
 	m, err := s.movies.Get(ctx, movieID)
 	if err != nil {
 		return nil, err
@@ -252,11 +303,11 @@ func (s *Service) QueueMovie(ctx context.Context, movieID int64, redo bool) (*Jo
 	if !m.HasFile || m.MovieFilePath == "" {
 		return nil, fmt.Errorf("movie has no file")
 	}
-	return s.enqueue(&Job{Kind: "movie", MovieID: movieID, Title: m.Title, Redo: redo}), nil
+	return s.enqueue(&Job{Kind: "movie", MovieID: movieID, Title: m.Title, Redo: redo, Priority: prio}), nil
 }
 
-// QueueEpisode enqueues a subtitle-ensure job for one TV episode (redo as for movies).
-func (s *Service) QueueEpisode(ctx context.Context, seriesID int64, season, episode int, redo bool) (*Job, error) {
+// QueueEpisode enqueues a subtitle-ensure job for one TV episode (redo and prio as for movies).
+func (s *Service) QueueEpisode(ctx context.Context, seriesID int64, season, episode int, redo bool, prio int) (*Job, error) {
 	path, _ := s.series.EpisodeFilePath(ctx, seriesID, season, episode)
 	if path == "" {
 		return nil, fmt.Errorf("episode has no file")
@@ -265,7 +316,7 @@ func (s *Service) QueueEpisode(ctx context.Context, seriesID int64, season, epis
 	if sm, err := s.series.Get(ctx, seriesID); err == nil {
 		title = fmt.Sprintf("%s - S%02dE%02d", sm.Title, season, episode)
 	}
-	return s.enqueue(&Job{Kind: "episode", SeriesID: seriesID, Season: season, Episode: episode, Title: title, Redo: redo}), nil
+	return s.enqueue(&Job{Kind: "episode", SeriesID: seriesID, Season: season, Episode: episode, Title: title, Redo: redo, Priority: prio}), nil
 }
 
 // QueueSeries enqueues an ensure job for every episode of one show that has a file but
@@ -277,7 +328,7 @@ func (s *Service) QueueSeries(ctx context.Context, seriesID int64) (int, error) 
 	}
 	n := 0
 	for _, e := range s.missingEpisodes(ctx, seriesID) {
-		if _, err := s.QueueEpisode(ctx, seriesID, e.season, e.episode, false); err == nil {
+		if _, err := s.QueueEpisode(ctx, seriesID, e.season, e.episode, false, PrioManual); err == nil {
 			n++
 		}
 	}
@@ -290,7 +341,7 @@ func (s *Service) OnMovieImported(ctx context.Context, movieID int64) {
 	if !s.settings.GetBool(ctx, keyMoviesAuto, defaultMoviesAuto) {
 		return
 	}
-	if _, err := s.QueueMovie(ctx, movieID, false); err != nil {
+	if _, err := s.QueueMovie(ctx, movieID, false, PrioImport); err != nil {
 		s.log.Debug("subtitles: import hook skipped movie", "movie_id", movieID, "err", err)
 	}
 }
@@ -306,7 +357,7 @@ func (s *Service) OnSeriesImported(ctx context.Context, seriesID int64, episodes
 	}
 	n := 0
 	for _, e := range episodes {
-		if _, err := s.QueueEpisode(ctx, seriesID, e.Season, e.Episode, false); err == nil {
+		if _, err := s.QueueEpisode(ctx, seriesID, e.Season, e.Episode, false, PrioImport); err == nil {
 			n++
 		} else {
 			s.log.Debug("subtitles: import hook skipped episode", "series_id", seriesID, "season", e.Season, "episode", e.Episode, "err", err)
@@ -335,7 +386,7 @@ func (s *Service) SweepMissing(ctx context.Context, media string) (int, error) {
 				return n, ctx.Err()
 			}
 			for _, e := range s.missingEpisodes(ctx, sm.ID) {
-				if _, err := s.QueueEpisode(ctx, sm.ID, e.season, e.episode, false); err == nil {
+				if _, err := s.QueueEpisode(ctx, sm.ID, e.season, e.episode, false, PrioSweep); err == nil {
 					n++
 				}
 			}
@@ -354,14 +405,24 @@ func (s *Service) SweepMissing(ctx context.Context, media string) (int, error) {
 		if !m.HasFile || m.MovieFilePath == "" {
 			continue
 		}
-		if len(missingOf(langs, presentLanguages(m.MovieFilePath, langs, true))) == 0 {
+		if !movieNeedsSweep(m.MovieFilePath, langs) {
 			continue
 		}
-		if _, err := s.QueueMovie(ctx, m.ID, false); err == nil {
+		if _, err := s.QueueMovie(ctx, m.ID, false, PrioSweep); err == nil {
 			n++
 		}
 	}
 	return n, nil
+}
+
+// movieNeedsSweep reports whether the sweep should queue a movie: some kept language has
+// no paired sidecar. A language covered only by an orphaned subtitle (one named for no
+// video — the owner's file under an old name, most likely) doesn't count: regenerating
+// those every six hours would bury what the owner chose. Ensure still replaces it.
+func movieNeedsSweep(path string, langs []string) bool {
+	sc := scanSidecars(path, langs, "movie")
+	missing := missingOf(langs, sc.Present)
+	return len(without(missing, orphanCovered(langs, sc.Present, sc.Orphans))) > 0
 }
 
 type epRef struct{ season, episode int }
@@ -379,7 +440,7 @@ func (s *Service) missingEpisodes(ctx context.Context, seriesID int64) []epRef {
 			if !e.HasFile || e.FilePath == "" {
 				continue
 			}
-			if len(missingOf(langs, presentLanguages(e.FilePath, langs, false))) == 0 {
+			if len(missingOf(langs, scanSidecars(e.FilePath, langs, "episode").Present)) == 0 {
 				continue
 			}
 			out = append(out, epRef{e.SeasonNumber, e.EpisodeNumber})
@@ -399,11 +460,11 @@ func (s *Service) Jobs() []Job {
 	return out
 }
 
-// Pending reports how many jobs are waiting, for the status line.
+// Pending reports how many jobs are waiting in every line, for the status line.
 func (s *Service) Pending() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.pending)
+	return s.pendingLocked()
 }
 
 // update mutates a job under lock.
