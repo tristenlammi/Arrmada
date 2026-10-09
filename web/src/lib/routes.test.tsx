@@ -51,6 +51,11 @@ describe("buildRoutes", () => {
     }
   });
 
+  it("opens Insights on the Notifications tab for the old address", () => {
+    const r = routes(buildRoutes({ role: "admin", external: false })).find((x) => x.path === "/notifications");
+    expect((r?.element as { props?: { to?: string } })?.props?.to).toBe("/insights?tab=notifications");
+  });
+
   it("titles every page and gives it an error card", () => {
     for (const role of ["admin", "requester"] as const) {
       const leaves = routes(buildRoutes({ role, external: false })).filter((r) => !r.children);

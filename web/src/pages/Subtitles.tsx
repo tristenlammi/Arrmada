@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { PageHeader } from "../components/PageHeader";
 import { Link } from "react-router-dom";
 import { useTabParam } from "../lib/useTabParam";
+import { TabPanel, Tabs, type TabItem } from "../ui/Tabs";
 import { LINKS } from "../lib/links";
 import { RescanButton, scanTitle } from "../components/RescanButton";
 import { api, type SubtitleSettings, type SubFileEntry, type SubSeriesGroup, type SubtitleJob, type SubtitleCoverage, type SubLangStatus, type WhisperStatus } from "../lib/api";
@@ -66,9 +67,10 @@ export function Subtitles() {
   if (settings?.ai_ready) sources.push("AI");
   const provider = `Sources: ${sources.join(" · ")}`;
   const providerOK = !!settings?.can_download || !!settings?.ai_ready;
-  const TABS: { key: Tab; label: string; n?: string }[] = [
+  // The Queue tab counts the jobs working right now; nothing shows while it's idle.
+  const TABS: TabItem<Tab>[] = [
     { key: "overview", label: "Overview" },
-    { key: "queue", label: "Queue", n: activeCount ? `${activeCount} active` : undefined },
+    { key: "queue", label: "Queue", count: activeCount || undefined },
     { key: "library", label: "Library" },
     { key: "logs", label: "Logs" },
     { key: "settings", label: "Settings" },
@@ -90,23 +92,15 @@ export function Subtitles() {
           </div>
         </div>
 
-        <div className="mb-5 flex gap-1 border-b" style={{ borderColor: "var(--line)" }}>
-          {TABS.map((t) => {
-            const active = tab === t.key;
-            return (
-              <button key={t.key} onClick={() => setTab(t.key)} className="relative px-4 py-2.5 text-[13.5px] font-semibold transition-colors" style={{ color: active ? "var(--ink)" : "var(--ink-faint)" }}>
-                {t.label}{t.n && <span className="ml-1.5 font-mono text-[10px] text-ink-faint">{t.n}</span>}
-                {active && <span className="absolute inset-x-2 -bottom-px h-[2px] rounded-full" style={{ background: "var(--accent)" }} />}
-              </button>
-            );
-          })}
-        </div>
+        <Tabs tabs={TABS} value={tab} onChange={setTab} idPrefix="subtitles" label="Subtitles sections" />
 
-        {tab === "overview" && <Overview jobs={jobs} settings={settings} flash={flash} onSettings={() => setTab("settings")} />}
-        {tab === "queue" && <Queue jobs={jobs} onChange={() => api.subtitleJobs().then(setJobs).catch(() => {})} flash={flash} />}
-        {tab === "library" && <Library flash={flash} onQueued={() => api.subtitleJobs().then(setJobs)} />}
-        {tab === "logs" && <LogsConsole />}
-        {tab === "settings" && settings && <SettingsTab settings={settings} onPatch={patchSettings} flash={flash} />}
+        <TabPanel idPrefix="subtitles" value={tab}>
+          {tab === "overview" && <Overview jobs={jobs} settings={settings} flash={flash} onSettings={() => setTab("settings")} />}
+          {tab === "queue" && <Queue jobs={jobs} onChange={() => api.subtitleJobs().then(setJobs).catch(() => {})} flash={flash} />}
+          {tab === "library" && <Library flash={flash} onQueued={() => api.subtitleJobs().then(setJobs)} />}
+          {tab === "logs" && <LogsConsole />}
+          {tab === "settings" && settings && <SettingsTab settings={settings} onPatch={patchSettings} flash={flash} />}
+        </TabPanel>
       </div>
       {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
     </>

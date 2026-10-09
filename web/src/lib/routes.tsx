@@ -100,7 +100,7 @@ function staffRoutes(admin: boolean): RouteObject[] {
     page("/audiobooks", "Audiobooks", <Audiobooks />),
     page("/indexers", "Indexers", <Indexers />),
     page("/downloadclients", "Download clients", <DownloadClients />),
-    redirect("/notifications", "/insights"),
+    redirect("/notifications", "/insights?tab=notifications"),
     // A splat (which also matches plain /settings), so Settings can give its sections
     // their own addresses.
     page("/settings/*", "Settings", <Settings />),

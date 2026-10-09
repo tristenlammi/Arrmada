@@ -4,6 +4,8 @@ import { PageHeader } from "../components/PageHeader";
 import { NotificationBell } from "../components/NotificationBell";
 import { MetadataMissing } from "../components/MetadataMissing";
 import { lazyPage } from "../lib/lazyPage";
+import { pickTab, withTab } from "../lib/useTabParam";
+import { TabPanel, Tabs } from "../ui/Tabs";
 import { useMe, isStaff } from "../lib/me";
 import { api, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaDetail, type MediaRequest } from "../lib/api";
 import { posterThumb } from "../lib/img";
@@ -23,39 +25,41 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
   const { user, booksEnabled, metadataReady } = useMe();
   // Books get their own tab at the end — a completely separate Open Library experience.
   const TABS = booksEnabled ? [...BASE_TABS, { key: "books" as Tab, label: "Books" }] : BASE_TABS;
-  const [tab, setTabState] = useState<Tab>("discover");
   const [requested, setRequested] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<string | null>(null);
-  // `searchInput` is what's typed in the omnibox; `search` is the committed query that
-  // swaps the page to the full results grid (only via "See all" / Enter, not per keystroke).
-  const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
-  // Search seeded into the Books tab (e.g. arriving from a notification click).
-  const [bookSeed, setBookSeed] = useState("");
+  // The tab and the committed search live in the address (?tab=, ?q=), so Back steps
+  // through them, a reload keeps the results, and a notification can link straight to a
+  // search. On the Books tab ?q= seeds the book search instead.
   const [params, setParams] = useSearchParams();
+  const tab = pickTab(params.get("tab"), TABS.map((t) => t.key), "discover");
+  const q = params.get("q") ?? "";
+  // `search` is the committed query that swaps the page to the full results grid (only via
+  // "See all" / Enter, not per keystroke); `searchInput` is what's typed in the omnibox.
+  const search = tab === "books" ? "" : q;
+  const bookSeed = tab === "books" ? q : "";
+  const [searchInput, setSearchInput] = useState(search);
+  // Back, Forward or a notification link changed the committed search: show it in the box.
+  useEffect(() => { setSearchInput(search); }, [search]);
   const flash = useCallback((m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3000); }, []);
   // Readonly users can browse but never request.
   const canRequest = !!user && user.role !== "readonly";
 
-  // ?q=…&tab=… (e.g. from a notification click) prefill the search, then the params
-  // are consumed so the URL stays clean.
-  useEffect(() => {
-    const q = params.get("q");
-    const t = params.get("tab");
-    if (q == null && t == null) return;
-    if (t === "books" && booksEnabled) {
-      setTabState("books");
-      if (q) setBookSeed(q);
-    } else if (q) {
-      setTabState("discover");
-      setSearchInput(q);
-      setSearch(q); // show the full grid straight away when arriving with a query
-    }
-    setParams({}, { replace: true });
-  }, [params, setParams, booksEnabled]);
-
-  const setTab = (t: Tab) => { setTabState(t); setSearchInput(""); setSearch(""); };
-  const onSearchChange = (v: string) => { setSearchInput(v); if (!v.trim()) setSearch(""); };
+  // Choosing a tab (even the current one, while results are showing) leaves the search.
+  const setTab = (t: Tab) => {
+    if (t === tab && !q) return;
+    setSearchInput("");
+    setParams((p) => { const next = withTab(p, "tab", t, "discover"); next.delete("q"); return next; });
+  };
+  // Committing a search is a new history entry; emptying the box just drops it.
+  const commitSearch = (query: string) => {
+    setSearchInput(query);
+    if (query === q) return;
+    setParams((p) => { const next = new URLSearchParams(p); next.set("q", query); return next; });
+  };
+  const onSearchChange = (v: string) => {
+    setSearchInput(v);
+    if (!v.trim() && q) setParams((p) => { const next = new URLSearchParams(p); next.delete("q"); return next; }, { replace: true });
+  };
 
   // Rethrows on failure so callers (modal, quick-request) only flip to their success
   // state on an actual success. subscribed=true → you joined an existing request.
@@ -87,51 +91,39 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
           <div className="flex w-full items-center justify-end gap-2 sm:order-last sm:w-auto sm:justify-start">
             {/* Books have their own search inside BooksDiscover — hide the movie/TV one there. */}
             {tab !== "books" && (metadataReady ? (
-              <SearchBox value={searchInput} onChange={onSearchChange} onSeeAll={(q) => { setSearchInput(q); setSearch(q); }} ctx={ctx} />
+              <SearchBox value={searchInput} onChange={onSearchChange} onSeeAll={commitSearch} ctx={ctx} />
             ) : (
               <input disabled placeholder="Search isn't available yet" aria-label="Search movies and TV (not available yet)" className="min-w-0 flex-1 rounded-lg px-3 py-2 text-[12.5px] opacity-60 sm:w-[210px] sm:flex-initial" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
             ))}
             <NotificationBell />
           </div>
-          <div className="thin-scroll -mb-px flex min-w-0 gap-1 overflow-x-auto sm:mb-0 sm:overflow-visible">
-            {TABS.map((t) => {
-              const active = tab === t.key && !search;
-              return (
-                <button
-                  key={t.key}
-                  onClick={() => setTab(t.key)}
-                  className="relative flex-none px-3 py-2.5 text-[13.5px] font-semibold transition-colors sm:px-4"
-                  style={{ color: active ? "var(--ink)" : "var(--ink-faint)" }}
-                >
-                  {t.label}
-                  {active && <span className="absolute inset-x-2 bottom-0 h-[2px] rounded-full sm:-bottom-px" style={{ background: "var(--accent)" }} />}
-                </button>
-              );
-            })}
-          </div>
+          {/* No tab is current while search results are showing. */}
+          <Tabs tabs={TABS} value={search ? null : tab} onChange={setTab} idPrefix="discover" label="Discover sections" className="-mb-px" />
         </div>
 
-        {tab === "books" ? (
-          <Suspense fallback={<div className="py-10 text-center text-[12.5px] text-ink-dim">Loading…</div>}>
-            <BooksDiscover flash={flash} canRequest={canRequest} initialQuery={bookSeed} />
-          </Suspense>
-        ) : !metadataReady ? (
-          // No TMDB key: every movie/TV feed would fail on its own and repeat the same error
-          // row after row. Show the viewer's requests (they don't need TMDB) and one message
-          // worded for their role instead. Books use Open Library and are unaffected.
-          <div className="flex flex-col gap-7">
-            <MyRequestsRow flash={flash} />
-            <MetadataMissing variant="empty" />
-          </div>
-        ) : search ? (
-          <SearchResults query={search} ctx={ctx} />
-        ) : (
-          <>
-            {tab === "discover" && <DiscoverTab ctx={ctx} />}
-            {tab === "movies" && <BrowseTab media="movie" ctx={ctx} />}
-            {tab === "series" && <BrowseTab media="series" ctx={ctx} />}
-          </>
-        )}
+        <TabPanel idPrefix="discover" value={tab}>
+          {tab === "books" ? (
+            <Suspense fallback={<div className="py-10 text-center text-[12.5px] text-ink-dim">Loading…</div>}>
+              <BooksDiscover flash={flash} canRequest={canRequest} initialQuery={bookSeed} />
+            </Suspense>
+          ) : !metadataReady ? (
+            // No TMDB key: every movie/TV feed would fail on its own and repeat the same error
+            // row after row. Show the viewer's requests (they don't need TMDB) and one message
+            // worded for their role instead. Books use Open Library and are unaffected.
+            <div className="flex flex-col gap-7">
+              <MyRequestsRow flash={flash} />
+              <MetadataMissing variant="empty" />
+            </div>
+          ) : search ? (
+            <SearchResults query={search} ctx={ctx} />
+          ) : (
+            <>
+              {tab === "discover" && <DiscoverTab ctx={ctx} />}
+              {tab === "movies" && <BrowseTab media="movie" ctx={ctx} />}
+              {tab === "series" && <BrowseTab media="series" ctx={ctx} />}
+            </>
+          )}
+        </TabPanel>
       </div>
 
       {toast && (

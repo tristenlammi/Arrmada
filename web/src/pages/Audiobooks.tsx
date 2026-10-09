@@ -3,6 +3,8 @@ import { api, type AudioHistoryEntry, type AudioListening, type AudioPlace, type
 import { useMe } from "../lib/me";
 import { posterThumb } from "../lib/img";
 import { lazyPage } from "../lib/lazyPage";
+import { useTabParam } from "../lib/useTabParam";
+import { TabPanel, Tabs, type TabItem } from "../ui/Tabs";
 import { PageHeader } from "../components/PageHeader";
 import { Card, DailyBars, DaysPicker, Field, Loading, Sessions, Totals, addresses, danger, fmtAgo, fmtClock, ghost, inputStyle, primary } from "./audiobooks/shared";
 
@@ -16,18 +18,21 @@ const AudiobooksAdmin = lazyPage(() => import("./AudiobooksAdmin"), "AudiobooksA
 // when — never what) and the Audiobookshelf import. Nobody sees anyone else's places.
 
 type Tab = "you" | "server" | "people" | "listening" | "import";
+const TABS: TabItem<Tab>[] = [
+  { key: "you", label: "You" },
+  { key: "server", label: "Server" },
+  { key: "people", label: "People" },
+  { key: "listening", label: "Listening" },
+  { key: "import", label: "Import" },
+];
+const ALL_TABS = TABS.map((t) => t.key);
+const YOU_ONLY: readonly Tab[] = ["you"];
 
 export function Audiobooks({ chrome = true }: { chrome?: boolean }) {
   const { user } = useMe();
   const admin = user?.role === "admin";
-  const [tab, setTab] = useState<Tab>("you");
-  const tabs: { key: Tab; label: string }[] = [
-    { key: "you", label: "You" },
-    { key: "server", label: "Server" },
-    { key: "people", label: "People" },
-    { key: "listening", label: "Listening" },
-    { key: "import", label: "Import" },
-  ];
+  // Only admins have tabs; anyone else following a link to ?tab=server lands on You.
+  const [tab, setTab] = useTabParam(admin ? ALL_TABS : YOU_ONLY, "you");
   return (
     <>
       {chrome && <PageHeader title="Audiobooks" />}
@@ -36,24 +41,21 @@ export function Audiobooks({ chrome = true }: { chrome?: boolean }) {
         <p className="m-0 mb-4 max-w-[70ch] text-[12.5px] text-ink-dim">
           Listen to the library's audiobooks in a listening app like Lissen. Your place is kept in Arrmada, so it follows you between devices and a glitch can't lose it.
         </p>
-        {admin && (
-          <div className="mb-5 flex gap-0.5 overflow-x-auto overflow-y-hidden border-b sm:gap-1" style={{ borderColor: "var(--line)" }}>
-            {tabs.map((t) => {
-              const active = tab === t.key;
-              return (
-                <button key={t.key} onClick={() => setTab(t.key)} className="relative flex-none px-3 py-2.5 text-[13.5px] font-semibold transition-colors sm:px-4" style={{ color: active ? "var(--ink)" : "var(--ink-faint)" }}>
-                  {t.label}
-                  {active && <span className="absolute inset-x-2 bottom-0 h-[2px] rounded-full" style={{ background: "var(--accent)" }} />}
-                </button>
-              );
-            })}
-          </div>
-        )}
-        {tab === "you" && <YouView />}
-        {admin && tab !== "you" && (
-          <Suspense fallback={<Loading />}>
-            <AudiobooksAdmin tab={tab} />
-          </Suspense>
+        {admin ? (
+          <>
+            <Tabs tabs={TABS} value={tab} onChange={setTab} idPrefix="audiobooks" label="Audiobooks sections" />
+            <TabPanel idPrefix="audiobooks" value={tab}>
+              {tab === "you" ? (
+                <YouView />
+              ) : (
+                <Suspense fallback={<Loading />}>
+                  <AudiobooksAdmin tab={tab} />
+                </Suspense>
+              )}
+            </TabPanel>
+          </>
+        ) : (
+          <YouView />
         )}
       </div>
     </>
