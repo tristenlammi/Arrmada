@@ -1,6 +1,23 @@
 import { api, type AttemptSummary, type SearchAttempt } from "../lib/api";
-import { useQuery } from "../lib/query";
+import { invalidate, useQuery } from "../lib/query";
 import { attemptLine, emptyTriesText, latestPerScope, nextTryText, outcomeTone, scopeLabel } from "../lib/searchOutcome";
+
+type Kind = SearchAttempt["media_type"];
+
+const searchesKey = (kind: Kind, id: number) => `searches:${kind}:${id}:`;
+
+// useSearchAttempts is a title's stored search attempts, newest first (GET
+// /api/v1/searches; staff only — anyone else gets an empty list). Pages sharing a title
+// share one request.
+export function useSearchAttempts(kind: Kind, id: number): SearchAttempt[] {
+  const { data } = useQuery(searchesKey(kind, id), () => api.searches(kind, id, { limit: 20 }), { staleMs: 15_000 });
+  return data ?? [];
+}
+
+// refreshSearches refetches a title's attempts, after a search of it finished.
+export function refreshSearches(kind: Kind, id: number) {
+  invalidate(searchesKey(kind, id));
+}
 
 // LastSearchLine is the "why isn't it downloading?" line for one title: how its last
 // search went, the run of empty searches behind it, and when the sweep looks next.
@@ -23,11 +40,9 @@ export function LastSearchLine({ summary, nextSearchAt, className = "mt-2" }: { 
 }
 
 // LastSearches lists the newest search under each scope for a series (whole show,
-// seasons, episodes) or a book (each edition), fetched from GET /api/v1/searches. Staff
-// only, like the endpoint: for anyone else it renders nothing. refreshKey refetches.
-export function LastSearches({ kind, id, refreshKey, className = "mt-2" }: { kind: SearchAttempt["media_type"]; id: number; refreshKey?: unknown; className?: string }) {
-  const { data } = useQuery(`searches:${kind}:${id}:${String(refreshKey ?? "")}`, () => api.searches(kind, id, { limit: 20 }), { staleMs: 15_000 });
-  const rows = latestPerScope(data ?? []);
+// seasons, episodes) or a book (each edition). Renders nothing until there is one.
+export function LastSearches({ kind, id, className = "mt-2", max = 4 }: { kind: Kind; id: number; className?: string; max?: number }) {
+  const rows = latestPerScope(useSearchAttempts(kind, id), max);
   if (rows.length === 0) return null;
   return (
     <div className={`${className} flex flex-col gap-0.5 text-[11.5px] leading-relaxed`} data-testid="last-searches">

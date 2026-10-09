@@ -206,6 +206,21 @@ func (c *Coordinator) SearchSeriesNow(ctx context.Context, seriesID int64) (Sear
 	return c.searchSeriesOnce(ctx, seriesID)
 }
 
+// SearchSeriesManual is the series page's Search button: SearchSeriesNow that holds back
+// what the client is still downloading for the show, as the sweep does (ACQ-08) — a
+// season pack in flight keeps its season out of the search, and a pack covering
+// everything missing means nothing is searched ("Already downloading <release>"). A queue
+// that can't be read holds nothing back.
+func (c *Coordinator) SearchSeriesManual(ctx context.Context, seriesID int64) (SearchOutcome, error) {
+	var queue []download.Item
+	if c.downloads != nil {
+		if q, err := c.downloads.Queue(ctx); err == nil {
+			queue = q
+		}
+	}
+	return c.searchSeriesOnceScoped(ctx, seriesID, queue)
+}
+
 // searchSeriesOnce is SearchSeriesNow; the missing-sweep reads the outcome's grab count to
 // back off a series that keeps coming up empty.
 func (c *Coordinator) searchSeriesOnce(ctx context.Context, seriesID int64) (SearchOutcome, error) {

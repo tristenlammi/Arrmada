@@ -690,6 +690,32 @@ func summarize(r parser.Release) string {
 	return strings.Join(parts, " · ")
 }
 
+// SearchMovieManual is the movie page's Search button. It is SearchMovie, except that a
+// movie with a download already in the client isn't searched at all — the way the sweep
+// leaves it alone — so a click while it downloads can't grab a second copy. It says so
+// ("Already downloading <release>") and records that as the attempt.
+//
+// Only the button: a re-search after a Block or a review runs while the old torrent may
+// still be listed, and must not be stopped by it.
+func (c *Coordinator) SearchMovieManual(ctx context.Context, id int64) (SearchOutcome, error) {
+	m, err := c.movies.Get(ctx, id)
+	if err != nil {
+		return SearchOutcome{}, err
+	}
+	if c.downloads != nil && len(c.missingVersions(ctx, m.ID)) > 0 {
+		// An unreadable queue doesn't stop the search: the pending-grab guard still keeps
+		// the same release from being grabbed twice.
+		if queue, qerr := c.downloads.Queue(ctx); qerr == nil {
+			if name := queueItemFor(queue, m); name != "" {
+				out := SearchOutcome{Reason: ReasonAlreadyDownloading, Example: name}
+				c.recordAttempt(ctx, nil, AttemptMovie, m.ID, "", &out, nil)
+				return out, nil
+			}
+		}
+	}
+	return c.searchAndGrab(ctx, m)
+}
+
 // SearchMovie searches for and grabs a single movie (manual trigger) and says what it
 // found. A movie already being searched answers ErrAlreadySearching with that reason.
 func (c *Coordinator) SearchMovie(ctx context.Context, id int64) (SearchOutcome, error) {
@@ -2117,13 +2143,18 @@ func (c *Coordinator) AttachMovieImport(ctx context.Context, rec library.ImportR
 
 // inQueue reports whether the movie is already downloading (title+year match).
 func inQueue(queue []download.Item, m movies.Movie) bool {
+	return queueItemFor(queue, m) != ""
+}
+
+// queueItemFor is the name of the queue item inQueue matched for m, "" for none.
+func queueItemFor(queue []download.Item, m movies.Movie) string {
 	for _, it := range queue {
 		r := parser.Parse(it.Name)
 		if titleKey(r.Title) == titleKey(m.Title) && (r.Year == 0 || m.Year == 0 || abs(r.Year-m.Year) <= 1) {
-			return true
+			return it.Name
 		}
 	}
-	return false
+	return ""
 }
 
 // titleKey is parser.TitleKey, the one title normalizer every download, queue and library

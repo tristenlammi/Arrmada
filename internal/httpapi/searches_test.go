@@ -10,6 +10,24 @@ import (
 	"github.com/tristenlammi/arrmada/internal/movies"
 )
 
+// Search now answers with when it started, so a page can find its stored attempt.
+func TestSearchNowSaysWhenItStarted(t *testing.T) {
+	fj := newFakeJobs(false)
+	s := newRouteServer(t, func(d *Deps) { d.Jobs = fj })
+	_, mgr := s.user(t, "mgr@example.com", auth.RoleManager)
+	for _, path := range []string{"/api/v1/movies/5/search", "/api/v1/series/6/search", "/api/v1/books/7/search"} {
+		rec := s.do("POST", path, mgr)
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("%s: HTTP %d: %s", path, rec.Code, rec.Body)
+		}
+		var body map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		if ms, _ := body["started_at_ms"].(float64); ms <= 0 {
+			t.Errorf("%s: body = %v, want started_at_ms", path, body)
+		}
+	}
+}
+
 // GET /api/v1/searches lists a title's search attempts, newest first, to staff only.
 func TestListSearches(t *testing.T) {
 	s := newRouteServer(t, func(d *Deps) {

@@ -133,12 +133,20 @@ func (a *api) handleSearchMovie(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Run in the background; searching indexers (via FlareSolverr) is slow. A second
-	// click while it runs gets the same job back.
-	jobID, existing, ok := a.submitOr503(w, r, a.movieSearchJob(id))
+	// click while it runs gets the same job back. The button's search leaves a movie
+	// that is already downloading alone (SearchMovieManual).
+	started := time.Now().UnixMilli()
+	spec := a.movieSearchJob(id)
+	spec.Fn = outcomeFn("movie", func(ctx context.Context) (automation.SearchOutcome, error) {
+		return a.deps.Automation.SearchMovieManual(ctx, id)
+	})
+	jobID, existing, ok := a.submitOr503(w, r, spec)
 	if !ok {
 		return
 	}
-	a.accepted(w, jobID, existing, map[string]any{"status": "searching"})
+	// started_at_ms lets a page without the job (or the socket) find this search's
+	// stored attempt: GET /api/v1/searches?since=.
+	a.accepted(w, jobID, existing, map[string]any{"status": "searching", "started_at_ms": started})
 }
 
 // handleListBlocklist returns a movie's blocklisted releases.

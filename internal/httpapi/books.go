@@ -1082,11 +1082,12 @@ func (a *api) handleSearchBook(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	started := time.Now().UnixMilli()
 	jobID, existing, ok := a.submitOr503(w, r, a.bookSearchJob(id))
 	if !ok {
 		return
 	}
-	a.accepted(w, jobID, existing, map[string]any{"status": "searching"})
+	a.accepted(w, jobID, existing, map[string]any{"status": "searching", "started_at_ms": started})
 }
 
 func (a *api) handleDeleteBook(w http.ResponseWriter, r *http.Request) {

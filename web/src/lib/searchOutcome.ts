@@ -1,8 +1,9 @@
 // Words for search outcomes (search_attempts, ACQ-15): the "why isn't it downloading?"
 // lines on the detail pages and the result of a Search now. The server sends codes and
 // counts; the sentences are ours, in one place.
-import type { AttemptSummary, SearchAttempt, SearchOutcome } from "./api";
+import type { AttemptSummary, Job, SearchAttempt, SearchOutcome } from "./api";
 import { ago, until } from "./taskTime";
+import { jobFailed, jobToast } from "./useJob";
 
 // A reject or drop code as the end of "12 …": "12 over your bitrate ceiling".
 export const REASON_LABELS: Record<string, string> = {
@@ -105,6 +106,17 @@ export function outcomeKind(o: SearchOutcome): SearchAttempt["outcome"] {
 export function outcomeLine(o: SearchOutcome): string | null {
   if (o.reason === "nothing-wanted" || o.reason === "already-searching") return null;
   return body(outcomeKind(o), { ...o, reasons: o.reasons ?? {}, example: o.example ?? "", indexer_errors: o.indexer_errors ?? {} });
+}
+
+// A finished search job as the line its page shows: the outcome in the job's result when
+// there is one ("Found 34 releases — 20 for other titles, 14 over your bitrate ceiling"),
+// else the job's own message or error ("all 2 indexers failed: …").
+export function searchJobLine(job: Job, fallback = "Search finished."): string {
+  if (!jobFailed(job) && job.status !== "cancelled" && job.result && typeof job.result === "object" && "reason" in job.result) {
+    const line = outcomeLine(job.result as SearchOutcome);
+    if (line) return line;
+  }
+  return jobToast(job, fallback);
 }
 
 // The run of empty searches: "3 empty searches in a row, mostly over your bitrate

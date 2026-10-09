@@ -1974,7 +1974,7 @@ export const api = {
   },
   movieDeletePreview: (id: number) => req<MovieDeletePreview>(`/api/v1/movies/${id}/delete-preview`),
   searchMovie: (id: number) =>
-    req<{ status: string } & JobRef>(`/api/v1/movies/${id}/search`, { method: "POST" }),
+    req<{ status: string; started_at_ms?: number } & JobRef>(`/api/v1/movies/${id}/search`, { method: "POST" }),
   movie: (id: number) => req<Movie>(`/api/v1/movies/${id}`),
   movieCollection: (id: number) =>
     req<{ name: string; members: CollectionMember[] }>(`/api/v1/movies/${id}/collection`),
@@ -1987,7 +1987,7 @@ export const api = {
     req<Series>("/api/v1/series", { method: "POST", body: JSON.stringify(body) }),
   seriesDetail: (id: number) => req<Series>(`/api/v1/series/${id}`),
   searchSeries: (id: number) =>
-    req<{ status: string } & JobRef>(`/api/v1/series/${id}/search`, { method: "POST" }),
+    req<{ status: string; started_at_ms?: number } & JobRef>(`/api/v1/series/${id}/search`, { method: "POST" }),
   seriesReleases: (id: number, season?: number, episode?: number) => {
     const q = new URLSearchParams();
     // Season 0 is Specials, not "no season" — send it whenever it's given.
@@ -2122,7 +2122,7 @@ export const api = {
   addBook: (body: { ol_key: string; quality_profile?: string; monitored?: boolean; search_on_add?: boolean; title?: string; author?: string; year?: number; cover_url?: string }) =>
     req<Book>("/api/v1/books", { method: "POST", body: JSON.stringify(body) }),
   bookDetail: (id: number) => req<Book>(`/api/v1/books/${id}`),
-  searchBook: (id: number) => req<{ status: string } & JobRef>(`/api/v1/books/${id}/search`, { method: "POST" }),
+  searchBook: (id: number) => req<{ status: string; started_at_ms?: number } & JobRef>(`/api/v1/books/${id}/search`, { method: "POST" }),
   refreshBook: (id: number) => req<Book>(`/api/v1/books/${id}/refresh`, { method: "POST" }),
   bookReleases: (id: number) => req<ReleaseList>(`/api/v1/books/${id}/releases`),
   grabBook: (id: number, body: { token: string; version_id?: number }) =>

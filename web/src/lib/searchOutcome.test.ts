@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { SearchAttempt, SearchOutcome } from "./api";
-import { attemptLine, emptyTriesText, latestPerScope, nextTryText, outcomeLine, reasonsText } from "./searchOutcome";
+import type { Job, SearchAttempt, SearchOutcome } from "./api";
+import { attemptLine, emptyTriesText, latestPerScope, nextTryText, outcomeLine, reasonsText, searchJobLine } from "./searchOutcome";
 
 const now = Date.parse("2026-10-09T12:00:00Z");
 const attempt = (over: Partial<SearchAttempt>): SearchAttempt => ({
@@ -36,6 +36,21 @@ describe("outcomeLine", () => {
   it("leaves searches that never ran to the job's message", () => {
     expect(outcomeLine({ ...base, reason: "nothing-wanted" })).toBeNull();
     expect(outcomeLine({ ...base, reason: "already-searching" })).toBeNull();
+  });
+});
+
+describe("searchJobLine", () => {
+  const job = (over: Partial<Job>): Job => ({
+    id: 1, kind: "movie.search", target: "movie:1", status: "succeeded", message: "12 releases found, none for this movie", error: "",
+    created_at: null, started_at: null, finished_at: null, ...over,
+  } as Job);
+  it("prefers the outcome's own breakdown", () => {
+    const result = { searched: true, returned: 12, matching: 0, usable: 0, grabbed: 0, reason: "none-for-this-title", reasons: { wrong_title: 12 } };
+    expect(searchJobLine(job({ result }))).toBe("Found 12 releases — 12 for other titles");
+  });
+  it("falls back to the job's message or error", () => {
+    expect(searchJobLine(job({ result: { reason: "nothing-wanted", returned: 0, grabbed: 0 }, message: "Nothing to search for" }))).toBe("Nothing to search for");
+    expect(searchJobLine(job({ status: "failed", error: "all 2 indexers failed: A: down; B: down" }))).toBe("all 2 indexers failed: A: down; B: down");
   });
 });
 

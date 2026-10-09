@@ -23,7 +23,8 @@ import {
   type MovieVersion,
 } from "../lib/api";
 import { useLive, type LiveEvent } from "../lib/useLive";
-import { jobFailed, jobToast, useJob } from "../lib/useJob";
+import { jobFailed, useJob } from "../lib/useJob";
+import { searchJobLine } from "../lib/searchOutcome";
 import { Button, StatusChip } from "../ui";
 
 const AVAILABILITY_LABELS: Record<string, string> = {
@@ -755,13 +756,17 @@ function UpgradeHoldChip({ movie, onChange, flash }: { movie: Movie; onChange: (
 
 function Toolbar({ movie, onChange, flash, live }: { movie: Movie; onChange: () => void; flash: (m: string, err?: boolean) => void; live: { connected: boolean; last: LiveEvent | null } }) {
   const [busy, setBusy] = useState<string | null>(null);
-  // The search runs as a job; when it ends the toast says what it actually found.
+  // The search runs as a job; when it ends the page says what it actually found — in a
+  // toast, and on a line under the buttons that stays until the next search.
   const [searchJob, setSearchJob] = useState<number | null>(null);
+  const [searchResult, setSearchResult] = useState<{ text: string; failed: boolean } | null>(null);
   const search = useJob(searchJob, {
     live,
     onDone: (j) => {
       setSearchJob(null);
-      flash(jobToast(j, "Search finished."), jobFailed(j));
+      const text = searchJobLine(j);
+      setSearchResult({ text, failed: jobFailed(j) });
+      flash(text, jobFailed(j));
       onChange();
     },
   });
@@ -816,7 +821,7 @@ function Toolbar({ movie, onChange, flash, live }: { movie: Movie; onChange: () 
           {busy === "refresh" ? "Refreshing…" : "Refresh & rescan"}
         </button>
         {!movie.has_file && (
-          <button className={btn} style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }} disabled={busy !== null || search.running} onClick={() => run("search", async () => { const r = await api.searchMovie(movie.id); if (r.job_id) setSearchJob(r.job_id); flash(`Searching — follow it in ${PAGE.downloads} → Searching.`); })}>
+          <button className={btn} style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }} disabled={busy !== null || search.running} onClick={() => run("search", async () => { setSearchResult(null); const r = await api.searchMovie(movie.id); if (r.job_id) setSearchJob(r.job_id); flash(`Searching — follow it in ${PAGE.downloads} → Searching.`); })}>
             {busy === "search" || search.running ? "Searching…" : "Auto-grab best"}
           </button>
         )}
@@ -831,6 +836,11 @@ function Toolbar({ movie, onChange, flash, live }: { movie: Movie; onChange: () 
         {/* Reachable on touch, unlike the grid's hover-only X. */}
         <button className={btn} style={{ border: "1px solid var(--reject)", color: "var(--reject)" }} disabled={busy !== null} onClick={() => setShowDelete(true)}>Delete movie</button>
       </div>
+      {(search.running || searchResult) && (
+        <div className="mt-2 text-[12px]" role="status" style={{ color: search.running ? "var(--ink-dim)" : searchResult?.failed ? "var(--reject)" : "var(--ink)" }}>
+          {search.running ? "Searching…" : searchResult?.text}
+        </div>
+      )}
       {showDelete && <DeleteMovieDialog movie={movie} onClose={() => setShowDelete(false)} onDeleted={() => { invalidate("movies"); navigate("/movies"); }} />}
       {showPaste && (
         <UploadTorrentModal
