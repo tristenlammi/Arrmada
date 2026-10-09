@@ -63,9 +63,9 @@ func (s scope) role() auth.Role {
 // requireRole.
 type guard struct {
 	scope scope
-	// external marks a route reachable from outside the LAN for non-staff. externalGate
-	// still decides that from its own prefix list for now; the flag is recorded so the
-	// golden table and TestExternalParity keep the two in step.
+	// external marks a route reachable from outside the LAN for non-staff (requesters,
+	// read-only accounts and anyone not signed in). Without it, such a request from
+	// outside gets 403 before the handler runs. Staff are never limited this way.
 	external bool
 	h        http.HandlerFunc
 }
@@ -137,6 +137,25 @@ func (rt *router) HandleFunc(pattern string, g guard) {
 }
 
 func (rt *router) wrap(g guard) http.HandlerFunc {
+	h := rt.scoped(g)
+	if g.external {
+		return h
+	}
+	a := rt.a
+	// Off-LAN reach comes from this same table: externalGate has stamped whether the
+	// request is from outside and not staff, and a route not marked ext() refuses it
+	// before the scope check, as the old prefix-list gate did.
+	return func(w http.ResponseWriter, r *http.Request) {
+		if isExternalRequest(r) {
+			a.writeError(w, http.StatusForbidden, "not available outside your network")
+			return
+		}
+		h(w, r)
+	}
+}
+
+// scoped wraps g's handler in its scope check.
+func (rt *router) scoped(g guard) http.HandlerFunc {
 	h := g.h
 	if rt.sentinel {
 		h = func(w http.ResponseWriter, r *http.Request) {

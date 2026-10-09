@@ -340,18 +340,6 @@ func TestUnknownAPIPathIsNotFound(t *testing.T) {
 	}
 }
 
-// Until externalGate reads the route table itself, the ext column must agree with its
-// prefix list for every route, or off-LAN behaviour would silently differ from what
-// the golden file says.
-func TestExternalParity(t *testing.T) {
-	for _, spec := range testRouter(t, "", true).specs {
-		path := samplePath(spec.Pattern)
-		if got := externalAllowed(path); got != spec.External {
-			t.Errorf("%s: the external gate says reachable=%v", spec, got)
-		}
-	}
-}
-
 // Routes are registered only through the scoped router: no bare ServeMux, and the old
 // any-signed-in helper is gone.
 func TestNoRawRouteRegistration(t *testing.T) {

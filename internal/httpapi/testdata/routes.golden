@@ -49,7 +49,7 @@ GET /api/v1/books/search-missing staff -
 GET /api/v1/books/upgrade staff -
 GET /api/v1/books/{id} staff -
 GET /api/v1/books/{id}/audiobook user ext
-GET /api/v1/books/{id}/cover-image user -
+GET /api/v1/books/{id}/cover-image user ext
 GET /api/v1/books/{id}/covers staff -
 GET /api/v1/books/{id}/ebook user ext
 GET /api/v1/books/{id}/edition-files staff -

@@ -480,7 +480,9 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET "+base+"/api/v1/books/discover/subjects/{name}", a.signedIn(a.handleBookDiscoverSubject).ext())
 	mux.HandleFunc("GET "+base+"/api/v1/books/discover/detail", a.signedIn(a.handleBookDiscoverDetail).ext())
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/covers", a.requireRole(auth.RoleManager, a.handleBookCovers))
-	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/cover-image", a.signedIn(a.handleBookCoverImage))
+	// Off-LAN too: My Books shows uploaded covers away from home, and the handler serves
+	// nothing but the cover file.
+	mux.HandleFunc("GET "+base+"/api/v1/books/{id}/cover-image", a.signedIn(a.handleBookCoverImage).ext())
 	mux.HandleFunc("PUT "+base+"/api/v1/books/{id}/cover", a.requireRole(auth.RoleManager, a.handleSetBookCover))
 	mux.HandleFunc("POST "+base+"/api/v1/books/{id}/cover", a.requireRole(auth.RoleManager, a.handleUploadBookCover))
 	mux.HandleFunc("GET "+base+"/api/v1/books/{id}", a.requireRole(auth.RoleManager, a.handleGetBook))
