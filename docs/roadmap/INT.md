@@ -339,7 +339,7 @@ _Indexer failures are persisted with escalating backoff, so sweeps stop hammerin
 _Prowlarr re-sync keeps the owner's scoping and disables indexers that are gone upstream. TorrentLeech recovers stale sessions and backs off failed logins. Torznab Test is honest and works on unsaved settings. Movie imports can't be broken by a category field. Clients have priority, fail-over, and a bundled client that stays removed. Usenet is no longer advertised or queried. Detail sheets open from cache._
 
 <a id="int-07"></a>
-- [ ] **INT-07 · Prowlarr re-sync keyed on Prowlarr id, non-destructive, and no usenet imports** — `P1` · `M` · Phase 5
+- [x] **INT-07 · Prowlarr re-sync keyed on Prowlarr id, non-destructive, and no usenet imports** — `P1` · `M` · Phase 5
   - **Problem:** SyncProwlarr overwrites the owner's settings and leaves stale rows behind:
 - It matches rows by the display name 'Prowlarr · <name>' (prowlarr.go:97-100).
 - On update it writes nil MediaTypes and Categories, Enabled:true and Prowlarr's priority through repo.Update (prowlarr.go:113-126, repo.go:99-102). That wipes per-indexer scoping and re-enables indexers the owner turned off.
@@ -384,7 +384,7 @@ _Prowlarr re-sync keeps the owner's scoping and disables indexers that are gone 
   - **Risk:** Prowlarr's API field names (capabilities, protocol, enable) must be checked against the real bundled instance before shipping. Disabling rows because of an API hiccup would be bad, hence the empty or failed-list guard. The rename rewrite of grabs and blocklist must be one transaction.
   - **Resolves:** integrations-2, integrations-4
 <a id="int-08"></a>
-- [ ] **INT-08 · TorrentLeech: recover stale sessions, single-flight logins and back off failed logins** — `P1` · `M` · Phase 5
+- [x] **INT-08 · TorrentLeech: recover stale sessions, single-flight logins and back off failed logins** — `P1` · `M` · Phase 5
   - **Problem:** TorrentLeech keeps broken sessions and keeps retrying failed logins:
 - The session, including FlareSolverr's cf_clearance cookie, is cached forever (torrentleech.go:157-172).
 - It is dropped only on 'not logged in' (187-194) or an HTML 200 in Fetch (281-287). A Cloudflare 403 or 503, or a non-JSON reply, keeps returning 'try again' until the container restarts.
@@ -418,7 +418,7 @@ _Prowlarr re-sync keeps the owner's scoping and disables indexers that are gone 
   - **Risk:** A TorrentLeech account ban is the worst outcome, so the backoff errs toward fewer attempts. Live verification is by the owner through the UI with their own credentials, never scripted. The detached login goroutine must respect shutdown (the 90s cap).
   - **Resolves:** integrations-8
 <a id="int-09"></a>
-- [ ] **INT-09 · Torznab Test parses caps and error documents; test unsaved indexer settings** — `P2` · `M` · Phase 5
+- [x] **INT-09 · Torznab Test parses caps and error documents; test unsaved indexer settings** — `P2` · `M` · Phase 5
   - **Problem:** The Torznab Test can't tell a working indexer from a broken one:
 - TorznabSearcher.Test requests t=caps and returns only get()'s error (torznab.go:286-294).
 - get() checks only for HTTP 200 (296-318), so Prowlarr's web page, served at the root URL, passes as '✓ Connected'.
@@ -452,7 +452,7 @@ _Prowlarr re-sync keeps the owner's scoping and disables indexers that are gone 
   - **Risk:** Some Jackett or Prowlarr builds vary in attribute casing, so parse case-insensitively. Old rows have no caps until they are tested or refreshed, and must keep working exactly as today without them.
   - **Resolves:** integrations-5, integrations-10, integrations-12
 <a id="int-10"></a>
-- [ ] **INT-10 · Arrmada owns download categories: retire the free-text Category field** — `P2` · `S` · Phase 5
+- [x] **INT-10 · Arrmada owns download categories: retire the free-text Category field** — `P2` · `S` · Phase 5
   - **Problem:** The Category field on the Add client form can silently stop every movie from importing:
 - The field is free text (DownloadClients.tsx:140, 176-181).
 - Movie grabs pass category "" (coordinator.go:125-126, and the movie upload path at ~228), so qBittorrent falls back to dc.Category (qbittorrent.go:203-209).
@@ -471,7 +471,7 @@ _Prowlarr re-sync keeps the owner's scoping and disables indexers that are gone 
   - **Risk:** Low. Movies already stuck in a custom category on non-bundled installs won't move by themselves; they need a re-grab, or their category changed in qBittorrent. Mention that in the commit message.
   - **Resolves:** integrations-6
 <a id="int-11"></a>
-- [ ] **INT-11 · Download client priority, add fail-over, and a bundled client that stays disabled or removed** — `P2` · `M` · Phase 5
+- [x] **INT-11 · Download client priority, add fail-over, and a bundled client that stays disabled or removed** — `P2` · `M` · Phase 5
   - **Problem:** With more than one client, the order is fixed, the bundled client keeps coming back, and one dead client stops stall checks:
 - Add always uses clients[0] (service.go:80).
 - EnsureBundled re-creates the bundled client on every start if its URL is missing (service.go:28-49, main.go:212-215), so it can be neither removed nor moved.
@@ -500,7 +500,7 @@ _Prowlarr re-sync keeps the owner's scoping and disables indexers that are gone 
   - **Risk:** Failing over after a timeout could double-add if the first client actually accepted the torrent, so only fail over when no HTTP response was received. The owner runs only the bundled client, so this mostly protects other setups. Test against a throwaway second qBittorrent container.
   - **Resolves:** integrations-3
 <a id="int-12"></a>
-- [ ] **INT-12 · Stop advertising usenet; don't query Newznab indexers without a usenet client** — `P3` · `S` · Phase 5
+- [x] **INT-12 · Stop advertising usenet; don't query Newznab indexers without a usenet client** — `P3` · `S` · Phase 5
   - **Problem:** Usenet is offered but can never work, and it still costs search time:
 - Indexers.tsx:45 says 'Torznab (torrent) and Newznab (usenet) search sources', and the Add form offers Newznab (277).
 - The only download client kind is qBittorrent (client.go:12-14), usenet grabs are refused (coordinator.go:140-148), and grabbable() drops usenet releases (628-637).
@@ -521,7 +521,7 @@ _Prowlarr re-sync keeps the owner's scoping and disables indexers that are gone 
   - **Risk:** Low. If usenet support is ever added, flip usenetAvailable and restore the option. SABnzbd and NZBGet stay out of scope.
   - **Resolves:** integrations-4
 <a id="int-13"></a>
-- [ ] **INT-13 · Cache title details and OMDb ratings; ratings never hold up the detail sheet** — `P2` · `S` · Phase 5
+- [x] **INT-13 · Cache title details and OMDb ratings; ratings never hold up the detail sheet** — `P2` · `S` · Phase 5
   - **Problem:** Detail sheets refetch everything and can wait on OMDb:
 - MediaDetails calls t.get directly, with no memory or disk cache (metadata/discover.go:104-186; tmdb.go:105-128).
 - OMDb.Ratings has no cache and a 12s timeout (omdb.go:27-84). It is wired with no DiskCache (main.go:159), unlike TMDB and Hardcover.

@@ -196,7 +196,7 @@ The result is one ffprobe fork per library file every 5 minutes across the Unrai
   - **Risk:** Low to medium. Until MOV-02 lands, extra tracks have no cached File inside automation. upgradeBaseline then falls back to SourceRelease and then the filename. Extra tracks are always grabbed by Arrmada, so SourceRelease is set. A file swapped outside Arrmada keeps stale cached facts until the next Refresh, as it already does for the table view.
   - **Resolves:** movies-1
 <a id="mov-02"></a>
-- [ ] **MOV-02 · Per-track media cache: probe once per import, read the cache everywhere else** — `P1` · `M` · Phase 5
+- [x] **MOV-02 · Per-track media cache: probe once per import, read the cache everywhere else** — `P1` · `M` · Phase 5
   - **Problem:** The cache has three gaps:
 - Only the default track has cached media info (movies.media_json). Extra version tracks are probed live on every detail view.
 - An import probes the incoming file twice: resolutionOf for routing, then setDefaultFile.
@@ -238,7 +238,7 @@ The cache has no size/mtime key, so it can't tell when a file changed.
 _A gone file shows as missing, and 'Clear record' can never delete anything. Every search records what it found and when it will retry, and that shows up as a toast and in History. The Acquisition card tells the truth about monitoring and upgrades. Library scans attach files to films already added instead of letting automation download them again._
 
 <a id="mov-03"></a>
-- [ ] **MOV-03 · Show a missing file as missing everywhere on the movie page, and make 'Clear record' never delete** — `P1` · `S` · Phase 5
+- [x] **MOV-03 · Show a missing file as missing everywhere on the movie page, and make 'Clear record' never delete** — `P1` · `S` · Phase 5
   - **Problem:** statusOf (MovieDetail.tsx:182) checks only has_file. A movie whose tracked file is gone therefore gets a green DOWNLOADED badge above the 'File missing from disk' FilePanel. The page contradicts itself in other places too:
 - WhyPanel says 'You have this movie'.
 - 'Auto-grab best' is hidden.
@@ -277,7 +277,7 @@ The missing-file 'Clear record' button calls DeleteFile (service.go:962), which 
   - **Risk:** Low. The list views still say 'Downloaded' until something notices the file is gone. MOV-21 covers that. Use a throwaway test folder only.
   - **Resolves:** walk-7, movies-6
 <a id="mov-04"></a>
-- [ ] **MOV-04 · Record and show what each movie search found: outcome, reasons and next retry** — `P1` · `M` · Phase 5
+- [x] **MOV-04 · Record and show what each movie search found: outcome, reasons and next retry** — `P1` · `M` · Phase 5
   - **Problem:** 'Search now', 'Auto-grab best', a profile change and a new version all start searches that return 202 and run in the background. searchAndGrab and grabMissing (coordinator.go:541-571, 660-710) only log 'no releases', 'no usable releases' or 'no release met the quality profile'. No movie event is written and nothing reaches the browser.
 
 last_search_at and search_misses exist but aren't in movieCols (repo.go:22). HistoryPanel and BlocklistPanel reload only when has_file flips (MovieDetail.tsx:169-170). Nothing in the app answers 'why hasn't this downloaded?'.
@@ -309,7 +309,7 @@ last_search_at and search_misses exist but aren't in movieCols (repo.go:22). His
   - **Risk:** Low to medium. Writing events only when the outcome changes keeps their volume bounded. RejectKind touches the quality engine, so keep the reason text byte-identical. The Movie JSON gains fields, which is additive.
   - **Resolves:** movies-5
 <a id="mov-05"></a>
-- [ ] **MOV-05 · Replace the static WhyPanel with a truthful Acquisition status card** — `P1` · `S` · Phase 5
+- [x] **MOV-05 · Replace the static WhyPanel with a truthful Acquisition status card** — `P1` · `S` · Phase 5
   - **Problem:** WhyPanel (MovieDetail.tsx:618-637) promises that for any has_file movie Arrmada 'keeps watching for a clearly-better release… (checked every 6 hours)'. In fact UpgradeMovies skips unmonitored movies (coordinator.go:790), and every library-scanned film is created Monitored:false with profile 'n/a' (service.go:256-260). The claim is false for the owner's whole existing library. A monitored film on a profile with upgrades turned off gets the same promise.
   - **Approach:** 1) handleGetMovie adds acquisition: {monitored, profile_known (false for 'n/a' or an unknown ref), upgrades_allowed (Quality.AllowsUpgrades on the effective profile), scanned_in (profile 'n/a'), available (IsAvailable), available_from (Extra.ReleaseDate), last_search, next_search_at ([MOV-04](#mov-04)), downloading (pending grab or queue item), file_missing (default track File.Missing), queued ([MOV-07](#mov-07), when present)}.
     2) Replace WhyPanel with an AcquisitionStatus card built only from those fields, keeping the current panel style:
@@ -332,7 +332,7 @@ last_search_at and search_misses exist but aren't in movieCols (repo.go:22). His
   - **Risk:** Low. The rest of movies-6 (the TMDB env-var banner, 'Activity' wording and recycle-bin delete copy) belongs to COPY.
   - **Resolves:** movies-6
 <a id="mov-06"></a>
-- [ ] **MOV-06 · Library scan attaches files to movies already in the library and lets the owner monitor what it adds** — `P1` · `S` · Phase 5
+- [x] **MOV-06 · Library scan attaches files to movies already in the library and lets the owner monitor what it adds** — `P1` · `S` · Phase 5
   - **Problem:** ScanLibrary counts a folder as Skipped whenever its TMDB id is already in the DB (service.go:234-237), even when that movie has no file. Films added earlier, for example by the Overseerr import or a request, stay Wanted, and automation downloads copies of files the owner already has.
 
 ImportFolderAs (the manual pick) fails with 'already in library' in the same case. Every scanned film is created Monitored:false with profile 'n/a' (service.go:256-260), and the scan offers no choice.
@@ -359,7 +359,7 @@ ImportFolderAs (the manual pick) fails with 'already in library' in the same cas
 _All manual and bulk movie searches run through one throttled queue with live progress. The Wanted view (Missing and Cutoff unmet) shows last and next search and the outcome of each. Upgrade grabs stay tracked until their file lands. The grid uses a slim DTO and websocket updates and shows upgrade and version progress. Interactive search never recommends usenet._
 
 <a id="mov-07"></a>
-- [ ] **MOV-07 · One throttled movie search queue for every manual and bulk search, with progress over the websocket** — `P1` · `M` · Phase 5
+- [x] **MOV-07 · One throttled movie search queue for every manual and bulk search, with progress over the websocket** — `P1` · `M` · Phase 5
   - **Problem:** Six handlers each start their own goroutine with a 3-minute timeout that begins at enqueue time: handleSearchMovie, handleSetProfile (both branches), handleAddMovie (search on add), handleAddVersion, handleRegrab and handleBlocklist(search_again), all in internal/httpapi/movies.go.
 
 Bulk 'Set quality profile' on 300 films queues 300 full searches behind the 1 request/s per-host Torznab throttle (torznab.go:109-170). Every Prowlarr indexer shares one host. Most searches exceed their 3-minute budget while waiting and fail silently, and nothing shows what is queued or running.
@@ -386,7 +386,7 @@ Bulk 'Set quality profile' on 300 films queues 300 full searches behind the 1 re
   - **Risk:** Medium. HTTP responses change to 202 with a position, so every frontend caller and toast must follow; grep api.ts for searchMovie, setQualityProfile, regrab, addVersion and blockRelease. Series and books are not touched.
   - **Resolves:** movies-4, movies-5
 <a id="mov-08"></a>
-- [ ] **MOV-08 · Movies Wanted view: Missing and Cutoff-unmet tabs with last and next search and a throttled Search all** — `P1` · `M` · Phase 5
+- [x] **MOV-08 · Movies Wanted view: Missing and Cutoff-unmet tabs with last and next search and a throttled Search all** — `P1` · `M` · Phase 5
   - **Problem:** There is no Wanted page and no nav entry. The library 'Missing' filter is !has_file (Movies.tsx:27), which includes unmonitored films. The fit data that would show films below the profile's target is already computed (httpapi/fit.go:116), but it only appears as a table checkbox. The owner has no single list of what Arrmada is still looking for, why it hasn't found it, or when it will try again.
   - **Approach:** 1) Backend: GET /api/v1/movies/wanted?tab=missing|cutoff (RoleManager). It returns a media-agnostic row shape {kind:'movie', id, title, year, poster_url, profile_name, detail, last_search_at, last_search_summary, search_misses, next_search_at, downloading, queued}, so ACQ's cross-media Activity → Wanted hub can embed it later.
     2) Missing tab: built from repo.SearchTargets ([MOV-01](#mov-01)). Each row adds the missing track labels, available and available_from (IsAvailable / release date), and the outcome fields from [MOV-04](#mov-04).
@@ -412,7 +412,7 @@ Bulk 'Set quality profile' on 300 films queues 300 full searches behind the 1 re
   - **Risk:** Low. Fit depends on Convert's index being current; MOV-15 keeps it current after renames and deletes.
   - **Resolves:** movies-5
 <a id="mov-09"></a>
-- [ ] **MOV-09 · Upgrade, re-grab and extra-track grabs stay pending until their own file lands** — `P1` · `S` · Phase 5
+- [x] **MOV-09 · Upgrade, re-grab and extra-track grabs stay pending until their own file lands** — `P1` · `S` · Phase 5
   - **Problem:** Found while planning the upgrade-progress part of movies-12; confirm it with the first test below before changing anything. DetectStalled (coordinator.go:1230) flips any pending movie grab to 'imported' as soon as movieHasFileFor reports that its target track has a file. For an upgrade, a re-grab, or a manual grab on a movie that already has a file, the track had a file before the grab, so the row is marked 'imported' within 2 minutes while the torrent is still downloading. As a result:
 (a) stall fail-over never applies to upgrades;
 (b) pendingGrabTitles' 24 h re-grab guard drops the release after 2 minutes;
@@ -437,7 +437,7 @@ Separately, WatchImports marks movie grabs imported by normalized release name o
   - **Risk:** Medium. This changes stall and seeding timing for upgrades. With stall timeouts on, a slow upgrade can now be failed over, which is the intended behaviour. Exercise it against a scratch qBittorrent category only.
   - **Resolves:** movies-12
 <a id="mov-10"></a>
-- [ ] **MOV-10 · Slim, live library list: summary DTO, O(n) download join, and progress for upgrades and extra versions** — `P1` · `M` · Phase 5
+- [x] **MOV-10 · Slim, live library list: summary DTO, O(n) download join, and progress for upgrades and extra versions** — `P1` · `M` · Phase 5
   - **Problem:** Three problems with the library list:
 - While any movie is downloading, the grid re-requests /movies every 4 s (Movies.tsx:134-141). The response holds every movie with Extra: genres, studios, and up to 15 cast members with image URLs.
 - Each request reads the qBittorrent queue and parses every queue item once per movie (httpapi/movies.go:22-27, activity.go:228-245), which is O(movies × queue). downloadFor returns nil whenever m.HasFile, so upgrades and extra-version downloads never show progress.
@@ -468,7 +468,7 @@ Separately, WatchImports marks movie grabs imported by normalized release name o
   - **Risk:** Low to medium. Check every consumer of the Movie list type (Movies grid and table, Quality, Reviews); the detail page keeps the full Movie.
   - **Resolves:** movies-12
 <a id="mov-11"></a>
-- [ ] **MOV-11 · Interactive search: never recommend an undownloadable usenet release, and show release age and peers** — `P2` · `S` · Phase 5
+- [x] **MOV-11 · Interactive search: never recommend an undownloadable usenet release, and show release age and peers** — `P2` · `S` · Phase 5
   - **Problem:** RankReleasesWith (coordinator.go:441-498) builds candidates from bestByTitle(result.Releases) without the grabbable() filter that automatic search, upgrade and regrab all use. Once Prowlarr sync adds usenet indexers as Newznab, the highlighted 'Recommended' release can be an NZB that grabTo refuses, and it can differ from what Auto-grab would pick. RankedRelease has no PublishedAt or Peers, so release age is never shown.
   - **Approach:** 1) RankReleasesWith decides over the same set candidatesFrom uses (grabbable, deduped), so Recommended equals the auto-grab pick. Usenet rows are still listed, with Eligible=false and RejectReason 'Usenet release — no usenet download client is set up', and are never Recommended. Add Transport to RankedRelease.
     2) RankedRelease gains published_at (RFC3339, omitempty) and peers, taken from indexer.Release.PublishedAt and Peers. Fill them in the movie, series (series_interactive.go:169) and book (books.go:1012) rank paths.

@@ -584,7 +584,7 @@ A show where only the latest season is wanted reads '12/180 · PARTIAL' forever.
 _Remakes and US/UK variants stop cross-grabbing. Releases grabbed through an alias or romaji title import automatically. Romaji anime is found without hand-typed aliases, and old anime episodes can be searched by absolute number._
 
 <a id="ser-11"></a>
-- [ ] **SER-11 · Release identity: compare year and country, match imports with MatchRelease, and route downloads to the show they were grabbed for** — `P1` · `M` · Phase 5
+- [x] **SER-11 · Release identity: compare year and country, match imports with MatchRelease, and route downloads to the show they were grabbed for** — `P1` · `M` · Phase 5
   - **Problem:** releaseIsForSeries (series_reliability.go:290-294) compares title keys only. The parser takes the year out of the title ('Doctor.Who.2005' → 'Doctor Who'), and the series path never compares it, although the movie path does (coordinator.go:770, 1580). MatchByTitle returns the first same-titled show in added_at DESC order (service.go:1096-1107). Country tags are not stripped, so 'The.Office.US.S01E01' (key 'theofficeus') never equals TMDB's 'The Office'. ImportSeriesDownloads routes on MatchByTitle(parsed.Title) only (series.go:988), so a release grabbed through an alias or romaji title matches no series and lands in review as 'Grabbed for X but the download looks like Y' (series.go:1020-1028).
   - **Approach:** 1. **Parser.**
        - Add `Release.TitleYear int`: the year token only when it sits before the season/episode marker. Today `Year` takes the last year token, so an air year after SxxExx counts; TitleYear does not.
@@ -618,7 +618,7 @@ _Remakes and US/UK variants stop cross-grabbing. Releases grabbed through an ali
   - **Risk:** Over-strict year matching could reject real releases, such as P2P names that include air years. Reading the year only before the marker, plus the ±1 tolerance, limits that. Two title normalizers exist (automation titleKey, series normKey); seriesIdentity must use one consistently, and BE may unify them later.
   - **Resolves:** series-7
 <a id="ser-12"></a>
-- [ ] **SER-12 · Seed aliases from TMDB alternative titles (romaji and US/UK variants) and show the alias panel for every series** — `P1` · `M` · Phase 5
+- [x] **SER-12 · Seed aliases from TMDB alternative titles (romaji and US/UK variants) and show the alias panel for every series** — `P1` · `M` · Phase 5
   - **Problem:** Extra.OriginalTitle is TMDB's original_name (tmdb.go:193, 271), which for Japanese shows is kana or kanji (葬送のフリーレン). seriesTitleMatches nonetheless treats it as romaji (series_reliability.go:302), and it is never searched. alternative_titles is never fetched (append_to_response is 'credits,external_ids', tmdb.go:180). So SubsPlease and Erai-raws releases ('Sousou no Frieren - 13') only match after the owner types an alias by hand, and US/UK variant titles never seed aliases. The Alternate titles panel only renders for anime (SeriesDetail.tsx:274).
   - **Approach:** 1. **TMDB GetSeries.** append_to_response becomes 'credits,external_ids,alternative_titles'. Add `SeriesDetails.AltTitles []AltTitle{Title, Country, Type}`.
     2. **Migration** `NNNN_series_alias_source.sql`: `ALTER TABLE series_aliases ADD COLUMN source TEXT NOT NULL DEFAULT 'user'; ALTER TABLE series_aliases ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0;`.
@@ -648,7 +648,7 @@ _Remakes and US/UK variants stop cross-grabbing. Releases grabbed through an ali
   - **Risk:** Alias queries add indexer load, which the 2-per-search cap bounds. Exact-match-only for automatic aliases avoids new false positives. alternative_titles quality varies by show, so the collision guard plus Disable keep a bad seed harmless.
   - **Resolves:** series-7, series-8
 <a id="ser-13"></a>
-- [ ] **SER-13 · Anime episode searches query the absolute number with a cleaned title and the romaji alias** — `P2` · `S` · Phase 5
+- [x] **SER-13 · Anime episode searches query the absolute number with a cleaned title and the romaji alias** — `P2` · `S` · Phase 5
   - **Problem:** searchByAbsolute builds its query with fmt.Sprintf("%s %d", s.Title, abs) from the raw title (automation/series.go:257). That bypasses indexerQuery, so punctuation narrows the results. The interactive anime episode search (series_interactive.go:43-75) sends no season or episode and no absolute-number query, only AliasSearchTerms, which return nothing without a season-pinned alias (alias.go:310-326). With a 400-result limit on a title search, an older episode is usually outside the results.
   - **Approach:** 1. **Pure helper** `absoluteQueries(s series.Series, abs int) []string`. It returns `indexerQuery(s.Title) + " " + pad(abs)`, where pad gives two digits below 100 to match the fansub '- 05' convention. It adds the same for the first romaji or TMDB alias from [SER-12](#ser-12), or for OriginalTitle when it is Latin script. Deduplicated.
     2. **searchByAbsolute** uses it, still bounded by maxAbsoluteQueries per sweep.
@@ -776,7 +776,7 @@ _The series page has a hero with the next episode, monitored progress and size, 
 _The detail page polls a light endpoint and History refreshes itself. Every Grab and Search shows 'Searching…', 'Grabbed' or 'Nothing found (why)' from the server, on any device. Files, Activity and Numbering tabs give every panel a home._
 
 <a id="ser-18"></a>
-- [ ] **SER-18 · Detail endpoint: parse the queue once, poll a light downloads endpoint, refresh panels on change, and match RSS before Get()** — `P2` · `S` · Phase 5
+- [x] **SER-18 · Detail endpoint: parse the queue once, poll a light downloads endpoint, refresh panels on change, and match RSS before Get()** — `P2` · `S` · Phase 5
   - **Problem:** attachEpisodeDownloads (httpapi/series.go:139-180) calls episodeDownload once per file-less episode, and each call runs parser.Parse over every incomplete queue item. Seeding items are skipped, so the audit's 300k-parses figure is overstated, but the work still scales with episodes × downloads.
 
 Other costs:
@@ -804,7 +804,7 @@ Other costs:
   - **Risk:** Low. If FE's useLiveQuery lands first, use it instead of a hand-rolled useLive subscription.
   - **Resolves:** series-13
 <a id="ser-19"></a>
-- [ ] **SER-19 · Server-side search state replaces the localStorage 'Requested' marks** — `P1` · `S` · Phase 5
+- [x] **SER-19 · Server-side search state replaces the localStorage 'Requested' marks** — `P1` · `S` · Phase 5
   - **Problem:** SeriesDetail.tsx:10-48 keeps a 24-hour 'Requested' mark in localStorage, because nothing on the server recorded the request (handleSearchSeries and handleAutoGrabSeries only log, httpapi/series.go:102-116, 456-478). A search that found nothing looks the same as one still running, and the mark exists in only one browser. After SER-02 every user-triggered search produces a GrabOutcome; OBS persists it per scope.
   - **Approach:** 1. **Remove the local marks.** Delete GRAB_KEY, loadGrabMarks, saveGrabMarks, markGrabRequested, clearGrabRequested and the `requested` state from the season header and episode cards/rows, whichever exist when this lands.
     2. **Read `last_search` from the detail response**, keyed by scope ('series', 'S03', 'S03E04'). OBS's persisted search attempts (draft series.t14) attach it in handleGetSeries:

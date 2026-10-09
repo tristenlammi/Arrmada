@@ -498,7 +498,7 @@ Library and disk guard:
 _Every status word means one thing on every page, and a vanished file says 'File missing'. Breadcrumbs match the sidebar. Empty Downloads and library pages say what to do next. Hardcover books link straight to their hardcover.app page._
 
 <a id="copy-12"></a>
-- [ ] **COPY-12 · One status vocabulary: Downloaded / Complete / Partial / Wanted / Unmonitored / File missing, everywhere** — `P2` · `M` · Phase 5
+- [x] **COPY-12 · One status vocabulary: Downloaded / Complete / Partial / Wanted / Unmonitored / File missing, everywhere** — `P2` · `M` · Phase 5
   - **Problem:** The same state has different names on different pages, and the same name means different things.
 
 Missing vs Wanted:

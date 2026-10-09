@@ -607,7 +607,7 @@ The 'Off' upgrade step says 'A file is only replaced by a better resolution or a
 _The Why text, 'Chosen over' and the movie profile-change prompt are true. Interactive search explains every row. Series profiles preview episode and pack samples. A release name can be tested against the unsaved profile. Contradictory settings are flagged._
 
 <a id="qual-14"></a>
-- [ ] **QUAL-14 · Make today's 'why' copy true: the deciding factor in 'Chosen over', honest winner reasons, the Sources line, and the movie profile-change prompt** — `P1` · `S` · Phase 5
+- [x] **QUAL-14 · Make today's 'why' copy true: the deciding factor in 'Chosen over', honest winner reasons, the Sources line, and the movie profile-change prompt** — `P1` · `S` · Phase 5
   - **Problem:** Several reasons the app shows are wrong in common cases:
 - whyReasons prints 'Highest bitrate under your N Mbps ceiling' whenever a ceiling exists and SmallBias is 0 (quality.go:614-615), even when a +50 Prefer picked a smaller file.
 - loseReason falls back to 'fewer preferred extras' (quality.go:629) when the runner-up actually lost on size or seeders.

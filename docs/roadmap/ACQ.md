@@ -618,7 +618,7 @@ Reject blocks but never searches (reviews.go:256-287). created_at and content_pa
 _Search modals name the indexers that failed. Every search records what it found and why nothing was taken. Wanted shows, for movies, series, books and albums, the last search, the number of empty tries, the main rejection reason and the next automatic try, with a Search now button. Detail pages and Search now report the outcome, and requesters see when their request was last checked._
 
 <a id="acq-14"></a>
-- [ ] **ACQ-14 · Name the failed indexers in every search modal** — `P1` · `S` · Phase 5
+- [x] **ACQ-14 · Name the failed indexers in every search modal** — `P1` · `S` · Phase 5
   - **Problem:** ReleaseList has no errors field (coordinator.go:378-383; api.ts ReleaseList). RankReleasesWith reads only result.Releases, and series_interactive.go:101-104 only logs the errors. Every modal says 'No releases found on your indexers' (ReleaseSearchModal.tsx:194), whether the trackers had nothing or were dead.
   - **Approach:** 1. automation.ReleaseList gains:
        - IndexerIssues []IndexerIssue `json:"indexer_issues,omitempty"`, where IndexerIssue is {indexer, error, skipped bool, retry_at}
@@ -647,7 +647,7 @@ _Search modals name the indexers that failed. Every search records what it found
   - **Risk:** Per-indexer error strings now reach the browser. They pass through sanitizeErr today, but check native searchers' messages for URLs that carry tokens.
   - **Resolves:** integrations-1
 <a id="acq-15"></a>
-- [ ] **ACQ-15 · Record every movie and series search outcome (what was found, why nothing was taken) with stable reject codes** — `P1` · `M` · Phase 5
+- [x] **ACQ-15 · Record every movie and series search outcome (what was found, why nothing was taken) with stable reject codes** — `P1` · `M` · Phase 5
   - **Problem:** Search, Auto-grab missing and the quick Grab buttons return 202 and run detached (httpapi/series.go:102-116, 456-478; movies handleSearchMovie). Failures, and the 'found releases but grabbed none' breakdown that grabSeriesLimited already computes (series.go:399-430), only reach the log. searchAndGrab logs its counts and throws them away (coordinator.go:563-571). The quality engine's RejectReason (quality.go:308-459) is a human sentence, discarded after ranking. The owner can't tell whether nothing was found, everything was for a different film, everything was blocklisted, or everything was over the bitrate ceiling.
   - **Approach:** 1. New migration (next free number) `search_attempts`, generic so books and music reuse it ([ACQ-16](#acq-16)):
        - Columns: id INTEGER PRIMARY KEY AUTOINCREMENT, media_type TEXT NOT NULL, media_id INTEGER NOT NULL, scope TEXT NOT NULL DEFAULT '' ('', 'S03', 'S03E04', 'v2'), trigger TEXT NOT NULL (sweep|rss|manual|request|add|upgrade|stall|replace), started_at INTEGER NOT NULL (unix ms), duration_ms INTEGER, returned, wrong_title, blocklisted, pending, out_of_scope, rejected, eligible, grabbed (INTEGER NOT NULL DEFAULT 0 each), reasons_json TEXT NOT NULL DEFAULT '{}' (code → count), top_reason TEXT NOT NULL DEFAULT '', example TEXT NOT NULL DEFAULT '', grabbed_titles TEXT NOT NULL DEFAULT '[]', indexer_errors TEXT NOT NULL DEFAULT '{}' (sanitized), outcome TEXT NOT NULL (grabbed|nothing_found|none_suitable|indexers_failed|skipped_in_flight|error), error TEXT NOT NULL DEFAULT ''.
@@ -681,7 +681,7 @@ _Search modals name the indexers that failed. Every search records what it found
   - **Risk:** Collecting reasons must not change ranking or grabbing, so it is purely observational and covered by the existing ranking tests. Adds one row per searched item per sweep, which is fine for SQLite with pruning. Signature changes to searchAndGrab ripple into the tests that call it.
   - **Resolves:** series-9, product-10, backend-9
 <a id="acq-16"></a>
-- [ ] **ACQ-16 · Book and music searches record their outcomes too** — `P2` · `S` · Phase 5
+- [x] **ACQ-16 · Book and music searches record their outcomes too** — `P2` · `S` · Phase 5
   - **Problem:** Wanted books are often family requests, and they stop being searched after 2 misses (books.go:113-134). Their search pipeline is separate (searchBookOnce → grabBookEdition / grabAudioVersion, author+title then title-only). Music searches every incomplete album through grabAlbum. Neither records why nothing was taken, so a book that 'gave up' has no explanation.
   - **Approach:** 1. Books:
        - grabBookEdition (books.go:175) and grabAudioVersion (books_versions.go:93) build a SearchOutcome across both query passes (returned, wrong title/author, blocklisted, pending, profile rejects by RejectCode).
@@ -700,7 +700,7 @@ _Search modals name the indexers that failed. Every search records what it found
   - **Risk:** Low. The books search code is large; keep the change to counting and recording only.
   - **Resolves:** product-10
 <a id="acq-17"></a>
-- [ ] **ACQ-17 · Label music transfers correctly and share the download category constants** — `P3` · `S` · Phase 5
+- [x] **ACQ-17 · Label music transfers correctly and share the download category constants** — `P3` · `S` · Phase 5
   - **Problem:** activity.go knows only 'arrmada-tv' and 'arrmada-books' (lines 20-21, 148-162). Music torrents ('arrmada-music', music.go:21) fall into the default branch, are labelled 'Movie', and are matched against movies for a profile. The Music filter pill always counts 0, and the Movies count is inflated. The category names are duplicated between automation and httpapi.
   - **Approach:** 1. Export the category constants from internal/automation: CategorySeries ('arrmada-tv', coordinator.go:35), CategoryBooks (books.go:28) and CategoryMusic (music.go:21). Keep the unexported aliases. Use them in activity.go instead of the duplicated seriesDownloadCategory and bookDownloadCategory.
     2. activity.go: add `case automation.CategoryMusic:` → media_type 'music'. The profile comes from the album's artist profile when a new exported wrapper Automation.AlbumForRelease (wrapping albumForRelease, music.go:293) matches, otherwise 'n/a'. The movie matcher is never consulted for music.
@@ -712,7 +712,7 @@ _Search modals name the indexers that failed. Every search records what it found
   - **Risk:** Minimal.
   - **Resolves:** ops-10
 <a id="acq-18"></a>
-- [ ] **ACQ-18 · Wanted view: last and next search, empty tries, main reason, honest states, Search now — including books and albums** — `P1` · `M` · Phase 5
+- [x] **ACQ-18 · Wanted view: last and next search, empty tries, main reason, honest states, Search now — including books and albums** — `P1` · `M` · Phase 5
   - **Problem:** AcqRow shows a pulsing 'Searching…' or an episode count forever (Downloads.tsx:376-386). The data to explain it exists but never reaches the UI:
 - last_search_at and search_misses for movies, series and books (migrations 0055/0061/0074)
 - the backoff, which runs from 30m to 12h (series.go:333-345)
@@ -749,7 +749,7 @@ SearchingItem (api.ts) and the feed entries (activity.go:62-112) omit all of it.
   - **Risk:** These times are estimates: RSS and manual searches ignore the backoff, so the copy says 'next automatic try'. The feed gets heavier until ACQ-32 caches the Wanted half.
   - **Resolves:** ops-15, product-10, ops-10, ops-3
 <a id="acq-19"></a>
-- [ ] **ACQ-19 · 'Search now' tells you what happened, and detail pages show the last search** — `P2` · `M` · Phase 5
+- [x] **ACQ-19 · 'Search now' tells you what happened, and detail pages show the last search** — `P2` · `M` · Phase 5
   - **Problem:** handleSearchMovie returns 202 'searching' and the result goes only to the log. SearchMovie also skips the in-flight check that SearchMissing applies (coordinator.go:526-533), so a manual search during a download can grab a second copy, and there is no guard against a double click. SeriesDetail fakes 'Requested' with localStorage (SeriesDetail.tsx:10-48) because nothing server-side records a search. Movie, series and book detail pages never say when or how the last search went.
   - **Approach:** 1. automation:
        - A per-item single-flight for manual searches, a map keyed 'kind:id' under a mutex. A second click while one runs returns ErrSearchRunning → 409 'already searching'.
@@ -816,7 +816,7 @@ The Downloads feed's in-flight check and downloadFor therefore miss 'Love & Deat
   - **Risk:** Stripping bracket contents in automation could merge two titles that differ only in a bracketed part. Check the grabmatch tests and add such a case.
   - **Resolves:** backend-15
 <a id="acq-22"></a>
-- [ ] **ACQ-22 · One shared download-queue snapshot with client health; sweeps pause while the client is down** — `P2` · `M` · Phase 5
+- [x] **ACQ-22 · One shared download-queue snapshot with client health; sweeps pause while the client is down** — `P2` · `M` · Phase 5
   - **Problem:** Six callers do `queue, _ := Downloads.Queue(ctx)`: coordinator.go:313 (SearchMissing) and :739 (RSSSync), series_reliability.go:61, activity.go:30, movies.go:23 and requests.go:36. SearchSeriesMissing (series.go:143-146) proceeds with a nil queue on error, which disables its in-flight check. During a qBittorrent or VPN outage the sweeps keep querying indexers. Every 3-10s poll in every open tab, plus the import sweeps, makes its own qBittorrent call.
   - **Approach:** 1. download.Service.Snapshot(ctx) returns Snapshot{Items []Item (each tagged ClientID); Complete bool; Health []ClientHealth{ID, Name, Reachable bool, LastOK, Since time.Time, LastErr string}; At time.Time}.
        - Cached for 2s with single-flight (mutex + in-flight channel, or golang.org/x/sync/singleflight).
@@ -842,7 +842,7 @@ The Downloads feed's in-flight check and downloadFor therefore miss 'Love & Deat
   - **Risk:** The 2s cache adds up to 2s of staleness to progress bars, which is acceptable. Stall detection must keep QueueComplete's semantics (Complete=false means don't conclude absence). Concurrency bugs here would be hard to reproduce, so use -race.
   - **Resolves:** backend-12
 <a id="acq-23"></a>
-- [ ] **ACQ-23 · Downloads says when there is no download client, or it isn't answering, instead of 'free 0 GB'** — `P2` · `S` · Phase 5
+- [x] **ACQ-23 · Downloads says when there is no download client, or it isn't answering, instead of 'free 0 GB'** — `P2` · `S` · Phase 5
   - **Problem:** handleDownloadsFeed (activity.go:30) ignores Queue errors, and QueueComplete returns (nil, true, nil) when no client is configured. The page shows a green 'Live' dot, 'Nothing downloading', and Pause all and Resume all buttons that look like they work. free_gb is `freeGB, _ := diskspace.FreeGB(...)` (activity.go:206), so an unmeasurable or missing downloads folder is sent as 0 and rendered 'free 0 GB' in red. A dead qBittorrent looks like an empty queue, and every wanted movie looks like it's 'Searching'.
   - **Approach:** Backend (activity.go, movies.go, requests.go):
     1. Read the queue via Snapshot ([ACQ-22](#acq-22)), or QueueComplete until it lands. Add `clients: {configured, enabled, ok, error, since}`:
@@ -870,7 +870,7 @@ The Downloads feed's in-flight check and downloadFor therefore miss 'Love & Deat
   - **Risk:** Low. Coordinate with ACQ-26 so the banner and empty state move into the Activity Queue panel. The Discover change is requester-facing: copy only, no admin detail.
   - **Resolves:** walk-6, backend-12
 <a id="acq-24"></a>
-- [ ] **ACQ-24 · Acquisition record on grabs: live phase, progress, scope and timestamps from the snapshot; a persisted stall clock** — `P1` · `M` · Phase 5
+- [x] **ACQ-24 · Acquisition record on grabs: live phase, progress, scope and timestamps from the snapshot; a persisted stall clock** — `P1` · `M` · Phase 5
   - **Problem:** Grab rows have stored info_hash since 0062, but there is no single stored record of where each acquisition is. The pieces live in different places:
 - 'already downloading' (inQueue), grid progress (downloadFor), feed buckets and the series in-flight checks re-derive state by parsing torrent names on every request
 - missingVersions ignores pending grabs (coordinator.go:589-601)
@@ -910,7 +910,7 @@ This is the 'durable acquisition record keyed by info hash' from the audit overh
   - **Risk:** The grabs table is shared by seeding, stall detection and request progress. Every new column is additive, and status stays authoritative. Reconciler writes every 30s must be throttled to changed rows only, to avoid SQLite write contention with the import sweeps.
   - **Resolves:** backend-15
 <a id="acq-25"></a>
-- [ ] **ACQ-25 · Switch 'already downloading', progress and the missing-version checks to the acquisition record; retire name matching** — `P1` · `M` · Phase 5
+- [x] **ACQ-25 · Switch 'already downloading', progress and the missing-version checks to the acquisition record; retire name matching** — `P1` · `M` · Phase 5
   - **Problem:** With the record in place, consumers still guess by name:
 - inQueue (coordinator.go:1577-1585)
 - seriesInFlight / seriesDownloading (series_reliability.go:263-288; ACQ-08's scope version)

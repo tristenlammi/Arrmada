@@ -664,6 +664,8 @@ Most of this phase is S tasks with no prerequisites, so it moves fast.
 
 ### Phase 5 — Why isn't it downloading?
 
+> **Status: shipped 2026-10-10** — all 35 tasks merged to main (full race suite, lint, frontend tests, typecheck, build within the size budget and Playwright e2e green; checked in a local instance, which caught and fixed a 500 on the movie list for scanned-in films). Built as 7 worktree lanes plus a second wave (Wanted views; movie search queue, Movies Wanted and the slim list) on top of the search-outcome and acquisition-record APIs. Check before release: the Prowlarr re-sync's field names against the bundled Prowlarr. CI's race step now has a 30-minute timeout (automation takes ~11 min under -race).
+
 **Theme:** Search outcomes and a Wanted view for every media type, identity by info hash, an honest Movies module, the right show under every name  
 **Goal:** Every search leaves a readable outcome: what was found, why nothing was taken, and the next try. ACQ-15 owns search_attempts and RejectCode, and MOV-04 and SER-19 read them. Wanted covers movies, series, books and albums with Search now. Downloads are tracked by info hash from grab to seed removal. The movie page tells the truth.  
 **Why now:** After Phase 4 the grabs are right, but the owner still can't see why something is missing. This phase answers the most common question, and it feeds three later things: the Needs-you feed (Phase 6), the Activity hub (Phase 9) and requesters' 'last checked' lines. The info-hash acquisition record has to replace name matching before the Activity queue and poster cards are built on top of it.  

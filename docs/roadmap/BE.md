@@ -552,7 +552,7 @@ handleListMovies spawns one EnsureMedia goroutine per stale movie on every 4 s p
 _Download progress and request status are pushed over the websocket, so the FE epic can retire the 3–8 s polling loops. qBittorrent is read at most once every 2 s however many tabs are open._
 
 <a id="be-13"></a>
-- [ ] **BE-13 · Shared download-queue snapshot; publish queue.progress and request.updated over the websocket** — `P3` · `M` · Phase 5
+- [x] **BE-13 · Shared download-queue snapshot; publish queue.progress and request.updated over the websocket** — `P3` · `M` · Phase 5
   - **Problem:** The bus has no download-progress or request-changed topic, so the frontend's progress bars and the Discover requests strip have to poll (3–8 s loops). Even with FE's useLiveQuery, they would still need to poll. Every poll also fans out to qBittorrent: download.Service.Queue has 23 call sites with no caching, including handleQueue (Downloads page), handleListMovies (every 4 s while anything downloads), requests, discover, dashboard, activity, fileinfo and series. The draft placed the publish in Coordinator.WatchImports, but that function never reads the queue, and BE-03 removes it.
   - **Approach:** 1) download.Service:
        - `Snapshot(ctx) (items []Item, complete bool, at time.Time, err error)`: a QueueComplete result cached for 2 s, with a small mutex-based single-flight (no new dependency).
