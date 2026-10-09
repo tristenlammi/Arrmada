@@ -106,7 +106,13 @@ func (a *api) handleImportOverseerr(w http.ResponseWriter, r *http.Request) {
 					RequestedBy:     uid,
 					RequestedByName: it.Requester,
 				}
-				_, subscribed, err := a.deps.Requests.Create(bg, in, it.Status == "approved")
+				// Silent: these are old requests, and their requesters mustn't get an inbox
+				// full of 'approved' (or, from the next ready sweep, 'ready') for them.
+				// DeferSearch: approved titles join the library monitored and the missing
+				// sweeps find them on their schedule, not hundreds of searches at once.
+				created, subscribed, err := a.deps.Requests.Create(bg, in, requests.CreateOptions{
+					AutoApprove: it.Status == "approved", Silent: true, DeferSearch: true,
+				})
 				switch {
 				case errors.Is(err, requests.ErrExists), subscribed:
 					skipped++ // already requested here — nothing new to import
@@ -115,6 +121,10 @@ func (a *api) handleImportOverseerr(w http.ResponseWriter, r *http.Request) {
 					a.deps.Log.Warn("overseerr import: request failed", "title", it.Title, "tmdb", it.TMDBID, "err", err)
 				default:
 					imported++
+					// Already on the shelf: it counts as told, so nobody hears 'ready' about it.
+					if err := a.deps.Requests.MarkReadyIfAvailable(bg, created.ID); err != nil {
+						a.deps.Log.Warn("overseerr import: couldn't check whether the request is ready", "title", it.Title, "err", err)
+					}
 				}
 			}
 			a.deps.Log.Info("overseerr import finished",

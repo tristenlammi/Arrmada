@@ -241,6 +241,42 @@ func (r *Repo) List(ctx context.Context) ([]Book, error) {
 	return out, rows.Err()
 }
 
+// ByKeysOrIDs returns the books under any of these catalogue keys or with any of these
+// ids, in one query — a page of book requests, which each name a key and maybe a row.
+func (r *Repo) ByKeysOrIDs(ctx context.Context, olKeys []string, ids []int64) ([]Book, error) {
+	var where []string
+	var args []any
+	if len(olKeys) > 0 {
+		where = append(where, `ol_key IN (`+strings.TrimSuffix(strings.Repeat("?,", len(olKeys)), ",")+`)`)
+		for _, k := range olKeys {
+			args = append(args, k)
+		}
+	}
+	if len(ids) > 0 {
+		where = append(where, `id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")+`)`)
+		for _, id := range ids {
+			args = append(args, id)
+		}
+	}
+	if len(where) == 0 {
+		return nil, nil
+	}
+	rows, err := r.db.QueryContext(ctx, `SELECT `+cols+` FROM books WHERE `+strings.Join(where, " OR "), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Book
+	for rows.Next() {
+		b, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, b)
+	}
+	return out, rows.Err()
+}
+
 // Get returns one book by id.
 func (r *Repo) Get(ctx context.Context, id int64) (Book, error) {
 	row := r.db.QueryRowContext(ctx, `SELECT `+cols+` FROM books WHERE id = ?`, id)

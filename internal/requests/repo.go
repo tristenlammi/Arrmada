@@ -39,9 +39,12 @@ type Request struct {
 	Available        bool    `json:"available"`                   // computed at read time, not stored
 	DownloadProgress float64 `json:"download_progress,omitempty"` // 0..1 while downloading; computed at read time
 	// Tracking is where the request has got to, from request to ready (see Track).
-	Tracking  *Tracking `json:"tracking,omitempty"`
-	CreatedAt string    `json:"created_at"`
-	UpdatedAt string    `json:"updated_at"`
+	Tracking *Tracking `json:"tracking,omitempty"`
+	// ReadyAt is when the requester (and followers) were told it's ready, unix seconds;
+	// 0 until then. It also sorts approved requests into in progress and ready.
+	ReadyAt   int64  `json:"ready_at"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 
 	// Filled by enrichAvailability for Track: the library item the request became, and
 	// for a series how much of it is on disk.
@@ -61,13 +64,13 @@ type Repo struct{ db *sql.DB }
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const cols = `id, media_type, tmdb_id, ol_key, title, author, year, poster_url, overview, status,
-	quality_profile, requested_by, requested_by_name, note, created_at, updated_at, book_id`
+	quality_profile, requested_by, requested_by_name, note, created_at, updated_at, book_id, ready_at`
 
 func scan(row interface{ Scan(...any) error }) (Request, error) {
 	var r Request
 	var bookID sql.NullInt64
 	err := row.Scan(&r.ID, &r.MediaType, &r.TMDBID, &r.OLKey, &r.Title, &r.Author, &r.Year, &r.PosterURL, &r.Overview,
-		&r.Status, &r.QualityProfile, &r.RequestedBy, &r.RequestedByName, &r.Note, &r.CreatedAt, &r.UpdatedAt, &bookID)
+		&r.Status, &r.QualityProfile, &r.RequestedBy, &r.RequestedByName, &r.Note, &r.CreatedAt, &r.UpdatedAt, &bookID, &r.ReadyAt)
 	r.BookID = bookID.Int64
 	return r, err
 }
@@ -183,6 +186,19 @@ func (r *Repo) List(ctx context.Context, status string, requestedBy int64) ([]Re
 	}
 	q += ` ORDER BY id DESC`
 	return r.query(ctx, q, args...)
+}
+
+// ListAwaitingReady returns the approved requests whose requester hasn't been told it's
+// ready yet: the ready sweep's work list.
+func (r *Repo) ListAwaitingReady(ctx context.Context) ([]Request, error) {
+	return r.query(ctx, `SELECT `+cols+` FROM requests WHERE status = ? AND ready_at = 0 ORDER BY id`, StatusApproved)
+}
+
+// MarkReady records when the requester was told a request is ready. Only the first time
+// counts: a request already stamped keeps its stamp.
+func (r *Repo) MarkReady(ctx context.Context, id, at int64) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE requests SET ready_at = ? WHERE id = ? AND ready_at = 0`, at, id)
+	return err
 }
 
 // SetStatus updates a request's status. A non-empty profile also updates the

@@ -24,10 +24,10 @@ import (
 // reusing the whole acquisition pipeline rather than duplicating it.
 type Service struct {
 	repo       *Repo
-	movies     *movies.Service
-	series     *series.Service
-	books      *books.Service
-	coord      *automation.Coordinator
+	movies     movieLib
+	series     seriesLib
+	books      bookLib
+	coord      searcher
 	quality    *quality.Service
 	bus        *eventbus.Bus
 	appriseBin string
@@ -118,8 +118,20 @@ func (s *Service) SetPushSender(p PushSender) { s.push = p }
 
 // NewService wires the module. bus + appriseBin drive request-ready notifications (both optional).
 func NewService(db *sql.DB, mv *movies.Service, sr *series.Service, bk *books.Service, coord *automation.Coordinator, q *quality.Service, bus *eventbus.Bus, appriseBin string, log *slog.Logger) *Service {
-	s := &Service{repo: NewRepo(db), movies: mv, series: sr, books: bk, coord: coord, quality: q, bus: bus, appriseBin: appriseBin, log: log}
+	s := &Service{repo: NewRepo(db), quality: q, bus: bus, appriseBin: appriseBin, log: log}
+	// Only non-nil pointers go into the interfaces: a nil *movies.Service in one would
+	// pass every "is it wired?" check and then panic.
+	if mv != nil {
+		s.movies = mv
+	}
+	if sr != nil {
+		s.series = sr
+	}
+	if bk != nil {
+		s.books = bk
+	}
 	if coord != nil {
+		s.coord = coord
 		s.searchBook = coord.SearchBookNow
 	}
 	return s
@@ -145,12 +157,29 @@ func (s *Service) Get(ctx context.Context, id int64) (Request, error) {
 	return s.repo.Get(ctx, id)
 }
 
-// Create records a new request. When autoApprove is set it's approved (and added)
-// immediately. When the same media has already been requested, the caller is
-// attached to the existing request instead: a pending/approved request gains them
-// as a subscriber (subscribed = true), and a declined request is re-opened under
-// their name with the previous requester kept as a subscriber.
-func (s *Service) Create(ctx context.Context, in Request, autoApprove bool) (created Request, subscribed bool, err error) {
+// CreateOptions says how a new request is handled.
+type CreateOptions struct {
+	// AutoApprove approves (and adds) it straight away: the requester's own auto-approve.
+	// They aren't told their own click was approved; anyone following it still is.
+	AutoApprove bool
+	// Silent tells nobody and publishes nothing: a bulk import of requests people made
+	// long ago elsewhere, which mustn't fill their inboxes.
+	Silent bool
+	// DeferSearch adds an approved title to the library but leaves the search to the
+	// scheduled sweeps, so an import of hundreds spreads its searches out instead of
+	// queuing them all at once.
+	DeferSearch bool
+}
+
+// Create records a new request. With AutoApprove it's approved (and added) immediately.
+// When the same media has already been requested, the caller is attached to the existing
+// request instead: a pending/approved request gains them as a subscriber (subscribed =
+// true), and a declined request is re-opened under their name with the previous
+// requester kept as a subscriber.
+//
+// Create is the one way a request comes into being — Discover, the Requests page and the
+// Overseerr import all call it — and every new ask is announced from announceCreated.
+func (s *Service) Create(ctx context.Context, in Request, opts CreateOptions) (created Request, subscribed bool, err error) {
 	switch in.MediaType {
 	case "movie", "series":
 		if in.TMDBID == 0 {
@@ -167,7 +196,7 @@ func (s *Service) Create(ctx context.Context, in Request, autoApprove bool) (cre
 		return Request{}, false, ErrUnknownProfile
 	}
 	if existing, ok := s.lookupExisting(ctx, in); ok {
-		return s.attachAndPublish(ctx, existing, in)
+		return s.attachAndPublish(ctx, existing, in, opts)
 	}
 	in.Status = StatusPending
 	created, err = s.repo.Create(ctx, in)
@@ -175,27 +204,50 @@ func (s *Service) Create(ctx context.Context, in Request, autoApprove bool) (cre
 		// Lost a create race: someone inserted the same media between our existence
 		// check and the INSERT. Re-fetch and attach instead of failing.
 		if existing, ok := s.lookupExisting(ctx, in); ok {
-			return s.attachAndPublish(ctx, existing, in)
+			return s.attachAndPublish(ctx, existing, in, opts)
 		}
 		return Request{}, false, err
 	}
 	if err != nil {
 		return Request{}, false, err
 	}
-	s.log.Info("request created", "media", in.MediaType, "title", in.Title, "by", in.RequestedByName, "auto_approve", autoApprove)
-	if autoApprove {
-		created, err = s.Approve(ctx, created.ID, in.QualityProfile) // publishes approved
-		return created, false, err
+	s.log.Info("request created", "media", in.MediaType, "title", in.Title, "by", in.RequestedByName, "auto_approve", opts.AutoApprove)
+	if opts.AutoApprove {
+		approved, err := s.Approve(ctx, created.ID, ApproveOptions{
+			Profile: in.QualityProfile, DecidedBy: in.RequestedBy, DecidedByName: in.RequestedByName,
+			Auto: true, Silent: opts.Silent, DeferSearch: opts.DeferSearch,
+		}) // announces it as approved
+		if err != nil {
+			// The request stands, pending, for staff to approve by hand.
+			s.announceCreated(ctx, created, opts)
+			return Request{}, false, err
+		}
+		created = approved
 	}
-	s.publishUpdated(created, StatusPending, s.parties(ctx, created))
+	s.announceCreated(ctx, created, opts)
 	return created, false, nil
 }
 
+// announceCreated is where every new ask passes once it's stored: a fresh request
+// (pending, or approved by the requester's own auto-approve) or a declined title asked for
+// again. Today it tells open pages about a pending one; an approved one was announced by
+// Approve. A staff alert for new requests belongs here and nowhere else.
+func (s *Service) announceCreated(ctx context.Context, req Request, opts CreateOptions) {
+	if opts.Silent || req.Status != StatusPending {
+		return
+	}
+	s.publishUpdated(req, StatusPending, s.parties(ctx, req))
+}
+
 // attachAndPublish is attachToExisting that tells open pages about it: the request is
-// re-opened, or has a new subscriber.
-func (s *Service) attachAndPublish(ctx context.Context, existing, in Request) (Request, bool, error) {
+// re-opened (a new ask, so it's announced like one), or has a new subscriber.
+func (s *Service) attachAndPublish(ctx context.Context, existing, in Request, opts CreateOptions) (Request, bool, error) {
 	req, subscribed, err := s.attachToExisting(ctx, existing, in)
-	if err == nil {
+	switch {
+	case err != nil:
+	case !subscribed:
+		s.announceCreated(ctx, req, opts)
+	case !opts.Silent:
 		s.publishUpdated(req, req.Status, s.parties(ctx, req))
 	}
 	return req, subscribed, err
@@ -243,14 +295,46 @@ func (s *Service) attachToExisting(ctx context.Context, existing, in Request) (R
 	return existing, true, nil
 }
 
+// ApproveOptions says how a request is approved.
+type ApproveOptions struct {
+	// Profile is the quality profile to add the title with; "" keeps the one the request
+	// was made with, or the default.
+	Profile string
+	// DecidedBy is who approved it (0: the system). They're never told about their own
+	// decision.
+	DecidedBy     int64
+	DecidedByName string
+	// Auto: the requester's own auto-approve did it, so the requester isn't told.
+	Auto bool
+	// Silent tells nobody and publishes nothing (an import).
+	Silent bool
+	// DeferSearch leaves the search to the scheduled sweeps.
+	DeferSearch bool
+	// Season-scoped approval (trimming a series request to some seasons) adds its field
+	// here and is honoured in the series case of Approve.
+}
+
+// DeclineOptions says how a request is declined.
+type DeclineOptions struct {
+	// DecidedBy is who declined it; they're never told about their own decision.
+	DecidedBy     int64
+	DecidedByName string
+}
+
 // Approve adds the requested media to the Movies/Series module (monitored) and starts
 // a search, then marks the request approved. If the media is already in the library,
 // it's still marked approved (no duplicate add).
-func (s *Service) Approve(ctx context.Context, id int64, profile string) (Request, error) {
+//
+// The search is a job in the runner's indexer-search class — movies through the movie
+// search queue — so however many requests are approved at once (a bulk approve, an
+// import), at most that class's limit of searches runs at a time and the rest wait their
+// turn. There is no second queue here.
+func (s *Service) Approve(ctx context.Context, id int64, o ApproveOptions) (Request, error) {
 	req, err := s.repo.Get(ctx, id)
 	if err != nil {
 		return Request{}, err
 	}
+	profile := o.Profile
 	if profile != "" && s.quality != nil && !s.quality.Known(ctx, profile) {
 		return Request{}, ErrUnknownProfile
 	}
@@ -274,7 +358,7 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		if addErr != nil && !errors.Is(addErr, movies.ErrExists) {
 			return Request{}, addErr
 		}
-		if addErr == nil {
+		if addErr == nil && !o.DeferSearch {
 			mid := m.ID
 			s.background("movie.search", fmt.Sprintf("movie:%d", mid), trigger, req.Title, "movie", mid, 3*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
 				return s.coord.SearchMovie(c, mid)
@@ -287,7 +371,7 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		if addErr != nil && !errors.Is(addErr, series.ErrExists) {
 			return Request{}, addErr
 		}
-		if addErr == nil {
+		if addErr == nil && !o.DeferSearch {
 			sid := sr.ID
 			s.background("series.search", fmt.Sprintf("series:%d", sid), trigger, req.Title, "show", 0, 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
 				return s.coord.SearchSeriesNow(c, sid)
@@ -311,7 +395,7 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		// edition its profile wants (an audiobook request for a book we have as an ebook)
 		// and nothing is already downloading for it, which a second grab would duplicate.
 		existingWants := addErr != nil && s.lacksWantedEdition(ctx, b) && len(s.activeGrabs(ctx, "book", b.ID)) == 0
-		if b.ID > 0 && (addErr == nil || existingWants) && s.searchBook != nil {
+		if b.ID > 0 && (addErr == nil || existingWants) && s.searchBook != nil && !o.DeferSearch {
 			bid := b.ID
 			s.background("book.search", fmt.Sprintf("book:%d", bid), trigger, req.Title, "book", 0, 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
 				return s.searchBook(c, bid)
@@ -330,9 +414,17 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		}
 		return Request{}, err
 	}
-	s.log.Info("request approved", "media", req.MediaType, "title", req.Title, "profile", profile)
-	s.notifyDecision(ctx, req, true)
-	s.publishUpdated(req, StatusApproved, s.parties(ctx, req))
+	s.log.Info("request approved", "media", req.MediaType, "title", req.Title, "profile", profile, "auto", o.Auto)
+	if !o.Silent {
+		// Nobody hears about their own decision, and a requester whose own auto-approve did
+		// it isn't told about their own click; followers still are.
+		skip := map[int64]bool{o.DecidedBy: true}
+		if o.Auto {
+			skip[req.RequestedBy] = true
+		}
+		s.notifyDecision(ctx, req, true, skip)
+		s.publishUpdated(req, StatusApproved, s.parties(ctx, req))
+	}
 	return s.repo.Get(ctx, id)
 }
 
@@ -396,7 +488,7 @@ func (s *Service) lacksWantedEdition(ctx context.Context, b books.Book) bool {
 
 // Decline rejects a request without adding anything. The stored quality profile
 // is preserved so a later re-request keeps the original choice.
-func (s *Service) Decline(ctx context.Context, id int64) error {
+func (s *Service) Decline(ctx context.Context, id int64, o DeclineOptions) error {
 	req, err := s.repo.Get(ctx, id)
 	if err != nil {
 		return err
@@ -405,7 +497,7 @@ func (s *Service) Decline(ctx context.Context, id int64) error {
 		return err
 	}
 	s.log.Info("request declined", "media", req.MediaType, "title", req.Title)
-	s.notifyDecision(ctx, req, false)
+	s.notifyDecision(ctx, req, false, map[int64]bool{o.DecidedBy: true})
 	s.publishUpdated(req, StatusDeclined, s.parties(ctx, req))
 	return nil
 }

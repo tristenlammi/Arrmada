@@ -40,7 +40,7 @@ func TestApproveSubmitsASearchJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Approve(ctx, req.ID, ""); err != nil {
+	if _, err := s.Approve(ctx, req.ID, ApproveOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if len(rec.specs) != 1 {

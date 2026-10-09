@@ -107,6 +107,12 @@ func (s *Service) List(ctx context.Context) ([]Book, error) {
 	return list, nil
 }
 
+// ByKeysOrIDs returns the books under any of these catalogue keys or with any of these
+// ids, without their extra audio versions (a request only asks whether a book has a file).
+func (s *Service) ByKeysOrIDs(ctx context.Context, olKeys []string, ids []int64) ([]Book, error) {
+	return s.repo.ByKeysOrIDs(ctx, olKeys, ids)
+}
+
 // Get returns one book with its extra audio versions.
 func (s *Service) Get(ctx context.Context, id int64) (Book, error) {
 	b, err := s.repo.Get(ctx, id)

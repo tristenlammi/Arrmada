@@ -225,6 +225,11 @@ func (s *Service) ListSummaries(ctx context.Context) ([]MovieSummary, error) {
 	return s.repo.ListSummaries(ctx)
 }
 
+// ByTMDBIDs returns the library movies with these TMDB ids (a page's worth), in one query.
+func (s *Service) ByTMDBIDs(ctx context.Context, tmdbIDs []int) ([]Movie, error) {
+	return s.repo.ByTMDBIDs(ctx, tmdbIDs)
+}
+
 // Get returns one movie.
 func (s *Service) Get(ctx context.Context, id int64) (Movie, error) { return s.repo.Get(ctx, id) }
 

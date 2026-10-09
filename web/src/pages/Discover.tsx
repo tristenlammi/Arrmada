@@ -28,7 +28,9 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
   const { user, booksEnabled, metadataReady } = useMe();
   // Books get their own tab at the end — a completely separate Open Library experience.
   const TABS = booksEnabled ? [...BASE_TABS, { key: "books" as Tab, label: "Books" }] : BASE_TABS;
-  const [requested, setRequested] = useState<Set<string>>(new Set());
+  // What this session asked for, by card key, with the status the server answered: an
+  // auto-approved request is already approved and searching, not waiting.
+  const [requested, setRequested] = useState<Map<string, ReqStatus>>(new Map());
   // The tab and the committed search live in the address (?tab=, ?q=), so Back steps
   // through them, a reload keeps the results, and a notification can link straight to a
   // search. On the Books tab ?q= seeds the book search instead.
@@ -65,19 +67,20 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
 
   // Rethrows on failure so callers (modal, quick-request) only flip to their success
   // state on an actual success. subscribed=true → you joined an existing request.
-  const doRequest = useCallback(async (c: DiscoverCard): Promise<{ subscribed: boolean }> => {
+  const doRequest = useCallback(async (c: DiscoverCard): Promise<{ subscribed: boolean; status: ReqStatus }> => {
     const key = `${c.media_type}:${c.tmdb_id}`;
     try {
       const res = await api.createRequest({ media_type: c.media_type, tmdb_id: c.tmdb_id, title: c.title, year: c.year, poster_url: c.poster_url, overview: c.overview });
-      setRequested((s) => new Set(s).add(key));
-      flash(res.subscribed ? "You’re on the list — we’ll notify you when it’s ready" : `Requested “${c.title}”`);
-      return { subscribed: res.subscribed };
+      const status = res.request.status;
+      setRequested((m) => new Map(m).set(key, status));
+      flash(res.subscribed ? "You’re on the list — we’ll notify you when it’s ready" : requestedMessage(c.title, status));
+      return { subscribed: res.subscribed, status };
     } catch (e) {
       flash((e as Error).message, { tone: "error" });
       throw e;
     }
   }, [flash]);
-  const isRequested = useCallback((c: DiscoverCard) => requested.has(`${c.media_type}:${c.tmdb_id}`), [requested]);
+  const isRequested = useCallback((c: DiscoverCard) => requested.get(`${c.media_type}:${c.tmdb_id}`), [requested]);
 
   const ctx: RowCtx = { doRequest, isRequested, canRequest, flash };
 
@@ -131,9 +134,18 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
   );
 }
 
+type ReqStatus = MediaRequest["status"];
+
+// requestedMessage is what asking for a title says: an auto-approved request is already
+// being searched for, anything else waits for someone to approve it.
+function requestedMessage(title: string, status: ReqStatus): string {
+  return status === "approved" ? `Requested “${title}” — searching now` : `Requested “${title}” — waiting for approval`;
+}
+
 interface RowCtx {
-  doRequest: (c: DiscoverCard) => Promise<{ subscribed: boolean }>;
-  isRequested: (c: DiscoverCard) => boolean;
+  doRequest: (c: DiscoverCard) => Promise<{ subscribed: boolean; status: ReqStatus }>;
+  /** What this session asked for the card, if anything: the status the server answered. */
+  isRequested: (c: DiscoverCard) => ReqStatus | undefined;
   canRequest: boolean;
   flash: ToastFn;
 }
@@ -326,7 +338,7 @@ function SearchGroup({ label, items, flatBase, highlight, onPick }: { label: str
       {items.map((c, i) => {
         const idx = flatBase + i;
         const on = highlight === idx;
-        const badge = badgeFor(c, false);
+        const badge = badgeFor(c);
         return (
           <button
             key={`${c.media_type}:${c.tmdb_id}`}
@@ -1085,10 +1097,11 @@ function GenreExplorer({ media, switchable, ctx }: { media: "movie" | "series"; 
   );
 }
 
-function badgeFor(c: DiscoverCard, requested: boolean): { label: string; tone: Tone } | null {
+function badgeFor(c: DiscoverCard, requested?: ReqStatus): { label: string; tone: Tone } | null {
   if (c.has_file) return { label: "In library", tone: "good" };
   if ((c.download_progress ?? 0) > 0) return { label: "Downloading", tone: "accent" };
-  if (c.request_status === "approved") return { label: "Requested", tone: "accent" };
+  // Asked for this session and auto-approved: it's on its way, not waiting.
+  if (requested === "approved" || c.request_status === "approved") return { label: "Requested", tone: "accent" };
   // `requested` (this session) beats a stale "declined" — a re-request goes pending.
   if (requested || c.request_status === "pending") return { label: "Pending", tone: "avoid" };
   if (c.request_status === "declined") return { label: "Declined", tone: "faint" };
@@ -1198,7 +1211,7 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
   // contents in place (one modal, no stacking) while keeping the honest request flow.
   const [current, setCurrent] = useState<DiscoverCard>(card);
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(ctx.isRequested(card));
+  const [done, setDone] = useState<ReqStatus | undefined>(ctx.isRequested(card));
   const [subscribed, setSubscribed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [d, setD] = useState<MediaDetail | null>(null);
@@ -1231,7 +1244,7 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
     try {
       const r = await ctx.doRequest(c);
       setSubscribed(r.subscribed);
-      setDone(true);
+      setDone(r.status);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -1315,7 +1328,7 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
                 <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>You’re on the list — we’ll notify you when it’s ready</span>
               ) : badge && !declined ? (
                 <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: POSTER_CHIP_BG, color: TONE_HUE[badge.tone], border: `1px solid ${TONE_HUE[badge.tone]}` }}>
-                  {badge.label === "In library" ? "✓ In your library" : badge.label === "Pending" ? "Requested — pending approval" : badge.label === "Downloading" ? "Downloading…" : badge.label === "Wanted" ? "In library — waiting for a file" : "Requested"}
+                  {badge.label === "In library" ? "✓ In your library" : badge.label === "Pending" ? "Requested — waiting for approval" : badge.label === "Downloading" ? "Downloading…" : badge.label === "Wanted" ? "In library — waiting for a file" : done === "approved" ? "Requested — searching now" : "Requested"}
                 </span>
               ) : !ctx.canRequest ? (
                 <span className="text-[12px] text-ink-faint">Ask your admin for request access.</span>

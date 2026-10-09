@@ -29,7 +29,7 @@ func TestCreateSubscribesDuplicates(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
 
-	first, subscribed, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 42, Title: "Heat", RequestedBy: 7, RequestedByName: "alice"}, false)
+	first, subscribed, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 42, Title: "Heat", RequestedBy: 7, RequestedByName: "alice"}, CreateOptions{})
 	if err != nil || subscribed {
 		t.Fatalf("first create: err=%v subscribed=%v", err, subscribed)
 	}
@@ -38,7 +38,7 @@ func TestCreateSubscribesDuplicates(t *testing.T) {
 	}
 
 	// A different user requests the same movie → subscribed, same request back.
-	got, subscribed, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 42, Title: "Heat", RequestedBy: 8, RequestedByName: "bob"}, false)
+	got, subscribed, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 42, Title: "Heat", RequestedBy: 8, RequestedByName: "bob"}, CreateOptions{})
 	if err != nil {
 		t.Fatalf("duplicate create: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestCreateSubscribesDuplicates(t *testing.T) {
 	}
 
 	// Repeat by the same user is idempotent.
-	if _, subscribed, err = s.Create(ctx, Request{MediaType: "movie", TMDBID: 42, Title: "Heat", RequestedBy: 8, RequestedByName: "bob"}, false); err != nil || !subscribed {
+	if _, subscribed, err = s.Create(ctx, Request{MediaType: "movie", TMDBID: 42, Title: "Heat", RequestedBy: 8, RequestedByName: "bob"}, CreateOptions{}); err != nil || !subscribed {
 		t.Fatalf("repeat duplicate: err=%v subscribed=%v", err, subscribed)
 	}
 	if subs, _ = s.repo.Subscribers(ctx, first.ID); len(subs) != 1 {
@@ -62,7 +62,7 @@ func TestCreateSubscribesDuplicates(t *testing.T) {
 	}
 
 	// The original requester re-requesting doesn't subscribe themselves.
-	if _, subscribed, err = s.Create(ctx, Request{MediaType: "movie", TMDBID: 42, Title: "Heat", RequestedBy: 7, RequestedByName: "alice"}, false); err != nil || !subscribed {
+	if _, subscribed, err = s.Create(ctx, Request{MediaType: "movie", TMDBID: 42, Title: "Heat", RequestedBy: 7, RequestedByName: "alice"}, CreateOptions{}); err != nil || !subscribed {
 		t.Fatalf("owner repeat: err=%v subscribed=%v", err, subscribed)
 	}
 	if subs, _ = s.repo.Subscribers(ctx, first.ID); len(subs) != 1 {
@@ -77,11 +77,11 @@ func TestCreateResurrectsDeclined(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
 
-	req, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 9, Title: "Dune", QualityProfile: "n/a", RequestedBy: 7, RequestedByName: "alice"}, false)
+	req, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 9, Title: "Dune", QualityProfile: "n/a", RequestedBy: 7, RequestedByName: "alice"}, CreateOptions{})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := s.Decline(ctx, req.ID); err != nil {
+	if err := s.Decline(ctx, req.ID, DeclineOptions{}); err != nil {
 		t.Fatalf("decline: %v", err)
 	}
 	// Decline must not erase the stored profile.
@@ -90,7 +90,7 @@ func TestCreateResurrectsDeclined(t *testing.T) {
 	}
 
 	// Bob re-requests → back to pending under bob, alice kept as subscriber.
-	got, subscribed, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 9, Title: "Dune", RequestedBy: 8, RequestedByName: "bob"}, false)
+	got, subscribed, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 9, Title: "Dune", RequestedBy: 8, RequestedByName: "bob"}, CreateOptions{})
 	if err != nil {
 		t.Fatalf("resurrect: %v", err)
 	}
@@ -114,11 +114,11 @@ func TestCreateValidatesProfile(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
 
-	if _, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 1, Title: "X", QualityProfile: "custom:999", RequestedBy: 7}, false); err != ErrUnknownProfile {
+	if _, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 1, Title: "X", QualityProfile: "custom:999", RequestedBy: 7}, CreateOptions{}); err != ErrUnknownProfile {
 		t.Fatalf("unknown profile: err = %v, want ErrUnknownProfile", err)
 	}
 	// "n/a" is the accepted no-profile marker; empty is always fine.
-	if _, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 1, Title: "X", QualityProfile: "n/a", RequestedBy: 7}, false); err != nil {
+	if _, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 1, Title: "X", QualityProfile: "n/a", RequestedBy: 7}, CreateOptions{}); err != nil {
 		t.Fatalf("n/a profile rejected: %v", err)
 	}
 }
@@ -129,14 +129,14 @@ func TestDeclineNotifiesAllParties(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
 
-	req, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 5, Title: "Tron", RequestedBy: 7, RequestedByName: "alice"}, false)
+	req, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 5, Title: "Tron", RequestedBy: 7, RequestedByName: "alice"}, CreateOptions{})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 5, Title: "Tron", RequestedBy: 8, RequestedByName: "bob"}, false); err != nil {
+	if _, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 5, Title: "Tron", RequestedBy: 8, RequestedByName: "bob"}, CreateOptions{}); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if err := s.Decline(ctx, req.ID); err != nil {
+	if err := s.Decline(ctx, req.ID, DeclineOptions{}); err != nil {
 		t.Fatalf("decline: %v", err)
 	}
 	for _, uid := range []int64{7, 8} {
@@ -159,11 +159,11 @@ func TestDeleteRemovesSubscribers(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
 
-	req, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 3, Title: "Up", RequestedBy: 7}, false)
+	req, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 3, Title: "Up", RequestedBy: 7}, CreateOptions{})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 3, Title: "Up", RequestedBy: 8, RequestedByName: "bob"}, false); err != nil {
+	if _, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 3, Title: "Up", RequestedBy: 8, RequestedByName: "bob"}, CreateOptions{}); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
 	if err := s.Delete(ctx, req.ID); err != nil {
@@ -180,7 +180,7 @@ func TestReadyNotificationFansOut(t *testing.T) {
 	s := newTestService(t)
 	ctx := context.Background()
 
-	req, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 11, Title: "Alien", RequestedBy: 7}, false)
+	req, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 11, Title: "Alien", RequestedBy: 7}, CreateOptions{})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

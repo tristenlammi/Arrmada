@@ -205,14 +205,27 @@ func (s *Service) notifyBookRequesters(ctx context.Context, bookID int64, olKey 
 	return errors.Join(errs...)
 }
 
-// notifyReady sends the "your request is ready" notification for one request.
-// Idempotent per user (unique inbox ref), so callers may fire it repeatedly.
+// notifyReady sends the "your request is ready" notification for one request, then
+// stamps its ready_at. A request already stamped has been told and is left alone, so an
+// upgrade of a title someone asked for long ago doesn't tell them again; within one
+// telling it is idempotent per user (unique inbox ref), so a retry after a partial failure
+// skips whoever already heard.
 func (s *Service) notifyReady(ctx context.Context, req Request) error {
+	if req.ReadyAt > 0 {
+		return nil
+	}
 	body := fmt.Sprintf("“%s” is ready to watch.", req.Title)
 	if req.MediaType == "book" {
 		body = fmt.Sprintf("“%s” is ready to read.", req.Title)
 	}
-	told, err := s.notifyPartiesCount(ctx, req, "Your request is ready", body, requestRef(req), "request-ready")
+	told, err := s.notifyPartiesCount(ctx, req, "Your request is ready", body, requestRef(req), "request-ready", nil)
+	if err == nil {
+		// Only once everyone has been told: a failure leaves it unstamped, and the retry
+		// (an outbox row, the ready sweep) finishes the job.
+		if merr := s.repo.MarkReady(ctx, req.ID, time.Now().Unix()); merr != nil {
+			s.log.Warn("request-ready: could not record that the requester was told", "request", req.ID, "err", merr)
+		}
+	}
 	// Only when someone heard it for the first time: the ready sweep calls this on a timer,
 	// and an open page needs telling once.
 	if told > 0 {
@@ -221,38 +234,36 @@ func (s *Service) notifyReady(ctx context.Context, req Request) error {
 	return err
 }
 
-// notifyDecision tells the requester and subscribers a request was approved or declined.
-func (s *Service) notifyDecision(ctx context.Context, req Request, approved bool) {
+// notifyDecision tells the requester and subscribers a request was approved or declined,
+// except the users in skip.
+func (s *Service) notifyDecision(ctx context.Context, req Request, approved bool, skip map[int64]bool) {
 	if approved {
 		body := fmt.Sprintf("Your request for “%s” was approved — we're on it.", req.Title)
-		_ = s.notifyParties(ctx, req, "Request approved", body, requestRef(req)+":approved", "request-approved")
+		_, _ = s.notifyPartiesCount(ctx, req, "Request approved", body, requestRef(req)+":approved", "request-approved", skip)
 		return
 	}
 	body := fmt.Sprintf("Your request for “%s” was declined.", req.Title)
-	_ = s.notifyParties(ctx, req, "Request declined", body, requestRef(req)+":declined", "request-declined")
+	_, _ = s.notifyPartiesCount(ctx, req, "Request declined", body, requestRef(req)+":declined", "request-declined", skip)
 }
 
-// notifyParties fans one notification out to the requester and every subscriber:
-// in-app inbox always, personal Apprise push when set. The unique (user_id, ref)
-// inbox index de-dupes; the Apprise push only fires when the inbox row was new.
+// notifyPartiesCount fans one notification out to the requester and every subscriber,
+// less the users in skip: in-app inbox always, personal Apprise push when set. The unique
+// (user_id, ref) inbox index de-dupes; the Apprise push only fires when the inbox row was
+// new. It says how many people were told for the first time.
 //
 // It returns an error when someone may have been missed (the subscriber list or an inbox
 // row couldn't be read or written), so a retrying caller runs it again; everyone already
 // told is skipped by the inbox index. A failed Apprise push isn't one: the inbox row is
 // the notification, and a retry would never re-push it anyway.
-func (s *Service) notifyParties(ctx context.Context, req Request, title, body, ref, kind string) error {
-	_, err := s.notifyPartiesCount(ctx, req, title, body, ref, kind)
-	return err
-}
-
-// notifyPartiesCount is notifyParties that also says how many people were told for the
-// first time.
-func (s *Service) notifyPartiesCount(ctx context.Context, req Request, title, body, ref, kind string) (int, error) {
+func (s *Service) notifyPartiesCount(ctx context.Context, req Request, title, body, ref, kind string, skip map[int64]bool) (int, error) {
 	told := 0
 	seen := map[int64]bool{}
+	for uid, ok := range skip {
+		seen[uid] = ok
+	}
 	var userIDs []int64
 	var errs []error
-	if req.RequestedBy > 0 {
+	if req.RequestedBy > 0 && !seen[req.RequestedBy] {
 		seen[req.RequestedBy] = true
 		userIDs = append(userIDs, req.RequestedBy)
 	}
@@ -297,65 +308,119 @@ func (s *Service) notifyPartiesCount(ctx context.Context, req Request, title, bo
 	return told, errors.Join(errs...)
 }
 
-// SweepReadyRequests is the notification backstop: every approved request whose
-// media is now available gets the ready notification. It catches availability
-// that arrived without an import event (library scans) and events dropped under
-// load. Idempotent by construction — the unique inbox ref means an
-// already-notified user is skipped — so it's safe on a short timer.
+// SweepReadyRequests is the notification backstop: every approved request not yet told
+// it's ready whose media now is gets the ready notification. It catches availability that
+// arrived without an import event (library scans) and events dropped under load. It reads
+// only the requests still waiting (ready_at = 0) and only their media, so a long request
+// history costs it nothing; the unique inbox ref keeps a retry from telling anyone twice.
 func (s *Service) SweepReadyRequests(ctx context.Context) error {
-	reqs, err := s.repo.List(ctx, StatusApproved, 0)
+	reqs, err := s.repo.ListAwaitingReady(ctx)
 	if err != nil {
 		return err
 	}
-	if len(reqs) == 0 {
-		return nil
+	// In batches, so the lookups' IN lists stay well inside SQLite's limits.
+	const batch = 500
+	for lo := 0; lo < len(reqs); lo += batch {
+		page := reqs[lo:min(lo+batch, len(reqs))]
+		ready, err := s.readyNow(ctx, page)
+		if err != nil {
+			return err
+		}
+		for i := range page {
+			if ready[page[i].ID] {
+				_ = s.notifyReady(ctx, page[i]) // logged inside; the next sweep tries again
+			}
+		}
+	}
+	return nil
+}
+
+// MarkReadyIfAvailable stamps a request ready, telling nobody, when its media is already
+// in the library. An import uses it so people whose old requests are long since on the
+// shelf aren't told about them all over again.
+func (s *Service) MarkReadyIfAvailable(ctx context.Context, id int64) error {
+	req, err := s.repo.Get(ctx, id)
+	if err != nil || req.ReadyAt > 0 {
+		return err
+	}
+	ready, err := s.readyNow(ctx, []Request{req})
+	if err != nil || !ready[req.ID] {
+		return err
+	}
+	return s.repo.MarkReady(ctx, req.ID, time.Now().Unix())
+}
+
+// readyNow reports which of reqs have their media ready in the library: a movie or book
+// with a file, or a series with files and nothing still wanted. It looks up only these
+// requests' media, a query per media type.
+func (s *Service) readyNow(ctx context.Context, reqs []Request) (map[int64]bool, error) {
+	var movieIDs, seriesIDs []int
+	var olKeys []string
+	var bookIDs []int64
+	for _, rq := range reqs {
+		switch rq.MediaType {
+		case "movie":
+			movieIDs = append(movieIDs, rq.TMDBID)
+		case "series":
+			seriesIDs = append(seriesIDs, rq.TMDBID)
+		case "book":
+			olKeys = append(olKeys, rq.OLKey)
+			if rq.BookID > 0 {
+				bookIDs = append(bookIDs, rq.BookID)
+			}
+		}
 	}
 	movHave := map[int]bool{}
-	if ms, err := s.movies.List(ctx); err == nil {
+	if len(movieIDs) > 0 && s.movies != nil {
+		ms, err := s.movies.ByTMDBIDs(ctx, movieIDs)
+		if err != nil {
+			return nil, err
+		}
 		for _, m := range ms {
 			movHave[m.TMDBID] = m.HasFile
 		}
 	}
-	type serInfo struct {
-		id       int64
-		hasFiles bool
-	}
-	serByTMDB := map[int]serInfo{}
-	if ss, err := s.series.List(ctx); err == nil {
+	serReady := map[int]bool{}
+	if len(seriesIDs) > 0 && s.series != nil {
+		ss, err := s.series.ByTMDBIDs(ctx, seriesIDs)
+		if err != nil {
+			return nil, err
+		}
 		for _, sr := range ss {
-			serByTMDB[sr.TMDBID] = serInfo{id: sr.ID, hasFiles: sr.Stats != nil && sr.Stats.HaveFiles > 0}
+			// Ready = some files on disk AND nothing still wanted (monitored, aired,
+			// missing) — the same completeness rule the import-event path applies.
+			if sr.Stats != nil && sr.Stats.HaveFiles > 0 {
+				serReady[sr.TMDBID] = !s.series.HasWantedEpisodes(ctx, sr.ID)
+			}
 		}
 	}
 	bookHave := map[string]bool{}
 	bookByID := map[int64]bool{}
-	if bs, err := s.books.List(ctx); err == nil {
+	if len(olKeys) > 0 && s.books != nil {
+		bs, err := s.books.ByKeysOrIDs(ctx, olKeys, bookIDs)
+		if err != nil {
+			return nil, err
+		}
 		for _, b := range bs {
 			bookHave[b.OLKey] = b.HasFile
 			bookByID[b.ID] = b.HasFile
 		}
 	}
-	for i := range reqs {
-		ready := false
-		switch reqs[i].MediaType {
+	out := make(map[int64]bool, len(reqs))
+	for _, rq := range reqs {
+		switch rq.MediaType {
 		case "movie":
-			ready = movHave[reqs[i].TMDBID]
+			out[rq.ID] = movHave[rq.TMDBID]
 		case "series":
-			// Ready = some files on disk AND nothing still wanted (monitored, aired,
-			// missing) — the same completeness rule the import-event path applies.
-			if info, ok := serByTMDB[reqs[i].TMDBID]; ok && info.hasFiles {
-				ready = !s.series.HasWantedEpisodes(ctx, info.id)
-			}
+			out[rq.ID] = serReady[rq.TMDBID]
 		case "book":
 			// By the linked row first: the catalogue key may have changed since.
-			if has, ok := bookByID[reqs[i].BookID]; ok {
-				ready = has
+			if has, ok := bookByID[rq.BookID]; ok {
+				out[rq.ID] = has
 			} else {
-				ready = bookHave[reqs[i].OLKey]
+				out[rq.ID] = bookHave[rq.OLKey]
 			}
 		}
-		if ready {
-			_ = s.notifyReady(ctx, reqs[i]) // logged inside; the next sweep tries again
-		}
 	}
-	return nil
+	return out, nil
 }

@@ -86,7 +86,7 @@ func (a *api) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	// Auto-approve is a per-user property: this requester's request skips the queue
 	// only if their account is set to auto-approve.
-	created, subscribed, err := a.deps.Requests.Create(r.Context(), in, u.AutoApprove)
+	created, subscribed, err := a.deps.Requests.Create(r.Context(), in, requests.CreateOptions{AutoApprove: u.AutoApprove})
 	if errors.Is(err, requests.ErrExists) {
 		// Only reachable when the duplicate row vanished between detection and
 		// re-fetch — vanishingly rare; the normal duplicate path subscribes instead.
@@ -113,7 +113,11 @@ func (a *api) handleApproveRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&req) // body is optional (profile override)
 	}
-	updated, err := a.deps.Requests.Approve(r.Context(), id, req.QualityProfile)
+	o := requests.ApproveOptions{Profile: req.QualityProfile}
+	if u, ok := userFrom(r); ok {
+		o.DecidedBy, o.DecidedByName = u.ID, u.Username
+	}
+	updated, err := a.deps.Requests.Approve(r.Context(), id, o)
 	if errors.Is(err, requests.ErrNotFound) {
 		a.writeError(w, http.StatusNotFound, "request not found")
 		return
@@ -134,7 +138,11 @@ func (a *api) handleDeclineRequest(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := a.deps.Requests.Decline(r.Context(), id); err != nil {
+	var o requests.DeclineOptions
+	if u, ok := userFrom(r); ok {
+		o.DecidedBy, o.DecidedByName = u.ID, u.Username
+	}
+	if err := a.deps.Requests.Decline(r.Context(), id, o); err != nil {
 		if errors.Is(err, requests.ErrNotFound) {
 			a.writeError(w, http.StatusNotFound, "request not found")
 			return

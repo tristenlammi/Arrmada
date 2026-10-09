@@ -76,7 +76,7 @@ func TestApproveLinksExistingBookAndSearches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Approve(ctx, req.ID, "")
+	got, err := s.Approve(ctx, req.ID, ApproveOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestApproveLinksExistingBookAndSearches(t *testing.T) {
 	s.books = books.NewService(s.repo.db, catalogue{byKey: map[string]metadata.BookResult{
 		"OL2W": {Key: "OL2W", Title: "Dune", Author: "Frank Herbert"},
 	}}, s.log)
-	if _, err := s.Approve(ctx, again.ID, ""); err != nil {
+	if _, err := s.Approve(ctx, again.ID, ApproveOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -133,7 +133,7 @@ func TestApproveSkipsSearchWhileDownloading(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.Approve(ctx, req.ID, "")
+	got, err := s.Approve(ctx, req.ID, ApproveOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestLinkedRequestSurvivesRematch(t *testing.T) {
 	if _, err := s.repo.db.ExecContext(ctx, `INSERT INTO request_subscribers (request_id, user_id, user_name) VALUES (?, 8, 'bob')`, req.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.books.Rematch(ctx, b.ID, "hc:42", metadata.BookResult{}); err != nil {
+	if _, err := s.books.(*books.Service).Rematch(ctx, b.ID, "hc:42", metadata.BookResult{}); err != nil {
 		t.Fatal(err)
 	}
 	giveEbook(t, repo, ctx, b.ID)

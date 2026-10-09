@@ -161,6 +161,11 @@ func (s *Service) List(ctx context.Context) ([]Series, error) {
 	return all, nil
 }
 
+// ByTMDBIDs returns the library shows with these TMDB ids, each with its Stats roll-up.
+func (s *Service) ByTMDBIDs(ctx context.Context, tmdbIDs []int) ([]Series, error) {
+	return s.repo.ByTMDBIDs(ctx, tmdbIDs)
+}
+
 // Get returns one series with its seasons and episodes.
 func (s *Service) Get(ctx context.Context, id int64) (Series, error) {
 	sr, err := s.repo.Get(ctx, id)
