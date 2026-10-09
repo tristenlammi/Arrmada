@@ -428,7 +428,12 @@ func (c *Coordinator) RecordManualGrab(ctx context.Context, movieID int64, title
 		return
 	}
 	profile := c.effectiveProfile(ctx, m.QualityProfile, quality.MediaMovie)
-	c.recordGrab(ctx, movieID, 0, title, indexerName, profile, c.quality.StallMinutes(ctx, profile), infoHash)
+	// A manual grab lands on the default track; when that has a file, this grab replaces it.
+	replaces := ""
+	if m.HasFile {
+		replaces = m.MovieFilePath
+	}
+	c.recordGrabReplacing(ctx, movieID, 0, title, indexerName, profile, c.quality.StallMinutes(ctx, profile), infoHash, replaces)
 }
 
 // SearchMissing searches for and grabs any monitored version that has no file
@@ -1155,7 +1160,7 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie, b *upgra
 		}
 		grabbed[winner.DownloadURL] = true
 		grabbedGB += u.pick.SizeGB
-		c.recordGrab(ctx, m.ID, u.v.ID, winner.Title, winner.Indexer, u.profile, c.quality.StallMinutes(ctx, u.profile), hash)
+		c.recordGrabReplacing(ctx, m.ID, u.v.ID, winner.Title, winner.Indexer, u.profile, c.quality.StallMinutes(ctx, u.profile), hash, u.v.FilePath)
 		detail := "Upgrade: " + winner.Title + " · " + winner.Indexer
 		if !u.v.IsDefault {
 			detail += " → " + u.v.Label
@@ -1258,7 +1263,11 @@ func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
 		}
 		grabbed[winner.DownloadURL] = true
 		grabbedGB += decision.Winner.Candidate.SizeGB
-		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, profile, c.quality.StallMinutes(ctx, profile), hash)
+		replaces := ""
+		if v.HasFile {
+			replaces = v.FilePath
+		}
+		c.recordGrabReplacing(ctx, m.ID, v.ID, winner.Title, winner.Indexer, profile, c.quality.StallMinutes(ctx, profile), hash, replaces)
 		c.movies.AddEvent(ctx, m.ID, "grabbed", "Re-grab: "+winner.Title+" · "+winner.Indexer)
 	}
 	return nil
@@ -1965,16 +1974,33 @@ func normRelease(s string) string {
 	return normTitle(s)
 }
 
-// movieHasFileFor reports whether the grab's target version now has a file.
+// movieHasFileFor reports whether the grab's own file has landed on its target track.
+//
+// A grab for a missing file has landed once the track has a file. A grab meant to replace
+// a file (g.ReplacesPath: an upgrade, a re-grab, a manual grab over a file) has landed only
+// once the track holds a different file — or the same path now recorded as this release,
+// for an upgrade that kept its name. Taking the old file for the new one marked an
+// upgrade imported while it was still downloading: stall fail-over skipped it, the re-grab
+// guard let go, and seed cleanup could remove the torrent with its data before the import.
 func (c *Coordinator) movieHasFileFor(ctx context.Context, g grab) bool {
 	versions, err := c.movies.VersionRows(ctx, g.MovieID) // runs every two minutes: rows only
 	if err != nil {
 		return false
 	}
 	for _, v := range versions {
-		if v.ID == g.VersionID {
-			return v.HasFile
+		if v.ID != g.VersionID {
+			continue
 		}
+		if !v.HasFile {
+			return false
+		}
+		if g.ReplacesPath == "" {
+			return true
+		}
+		if filepath.Clean(v.FilePath) != filepath.Clean(g.ReplacesPath) {
+			return true
+		}
+		return v.SourceRelease != "" && normRelease(v.SourceRelease) == normRelease(g.Title)
 	}
 	return false
 }
@@ -2053,8 +2079,11 @@ func (c *Coordinator) AttachMovieImport(ctx context.Context, rec library.ImportR
 		return library.AttachRetry, fmt.Errorf("attach to %q: %w", m.Title, err)
 	}
 	// MarkImported wrote the movie.imported outbox row with the file record and announced
-	// movie.downloaded itself.
-	c.markGrabImportedForMovie(ctx, m.ID, rec.ReleaseName)
+	// movie.downloaded itself. The grab this download came from is found by its info hash;
+	// the release name is only the fallback for rows without one.
+	if !c.markMovieGrabImportedByHash(ctx, m.ID, rec.Hash) {
+		c.markGrabImportedForMovie(ctx, m.ID, rec.ReleaseName)
+	}
 	c.log.Info("automation: import attached to movie", "movie", m.Title)
 	return library.Attached, nil
 }

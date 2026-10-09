@@ -1,0 +1,11 @@
+-- 0155_grab_replaces_path: which file a movie grab is meant to replace.
+--
+-- The stall check marked a movie grab 'imported' as soon as its track had a file. For an
+-- upgrade, a re-grab or a manual grab on a film that already had one, the track had a file
+-- before the grab, so the row flipped within minutes while the torrent was still
+-- downloading: stall fail-over never applied, the re-grab guard let go, and seed cleanup
+-- could remove the torrent with its data before the upgrade was imported. replaces_path
+-- is the track's file when the grab was made; the grab counts as landed only once the
+-- track holds a different file (or the same path now from this release). '' = a grab for
+-- a missing file, and rows from before this column, which keep the old rule.
+ALTER TABLE grabs ADD COLUMN replaces_path TEXT NOT NULL DEFAULT '';
