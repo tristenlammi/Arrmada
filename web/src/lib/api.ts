@@ -222,6 +222,8 @@ export interface APIKeyStatus {
   steps: string;
   secret: boolean;
   testable?: boolean;
+  /** Can be tested with a typed value before it's saved (sent once, never stored). */
+  tests_candidate?: boolean;
   configured: boolean;
   source: "settings" | "env" | "";
   hint?: string;
@@ -1533,7 +1535,9 @@ export const api = {
   // External service credentials, settable in-app (settings-first, env-fallback). The
   // server never returns the secret itself — only whether it's set, from where, and a hint.
   apiKeys: () => req<{ keys: APIKeyStatus[] }>(`/api/v1/apikeys`).then((r) => r.keys),
-  testAPIKey: (id: string) => req<{ ok: boolean; detail: string }>(`/api/v1/apikeys/${id}/test`, { method: "POST" }),
+  // With a candidate, tests that value instead of the saved key; it is never stored.
+  testAPIKey: (id: string, candidate?: string) =>
+    req<{ ok: boolean; detail: string }>(`/api/v1/apikeys/${id}/test`, candidate ? { method: "POST", body: JSON.stringify({ value: candidate }) } : { method: "POST" }),
   setAPIKey: (id: string, value: string) =>
     req<{ keys: APIKeyStatus[] }>(`/api/v1/apikeys/${id}`, { method: "PUT", body: JSON.stringify({ value }) }).then((r) => r.keys),
   // Clearing is its own DELETE (a blank PUT is refused), so an empty Save can't wipe a key.

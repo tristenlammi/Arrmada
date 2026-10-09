@@ -91,7 +91,11 @@ const KEY_CLEAR_EFFECT: Record<string, string> = {
   opensubtitles_password: "Subtitle downloads stop.",
 };
 
-function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => void }) {
+// The OpenSubtitles username and password are checked through the API key's Test, which
+// signs in with them; every other key tests itself.
+const testTarget = (id: string) => (id === "opensubtitles_username" || id === "opensubtitles_password" ? "opensubtitles_api" : id);
+
+export function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => void }) {
   const { setMetadataReady } = useMe();
   const [keys, setKeys] = useState<APIKeyStatus[] | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -100,13 +104,14 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
   // The key whose Clear is waiting on the confirm, and the server's answer if it said no.
   const [clearing, setClearing] = useState<APIKeyStatus | null>(null);
   const [clearErr, setClearErr] = useState<string | null>(null);
-  // Result of the last "Test" per key: a live request with the saved value.
-  const [tests, setTests] = useState<Record<string, { ok: boolean; detail: string }>>({});
-  const testKey = async (id: string) => {
+  // Result of the last "Test" per key: a live request with the saved value, or with the
+  // value typed in the field (a candidate, sent once and never stored).
+  const [tests, setTests] = useState<Record<string, { ok: boolean; detail: string; candidate?: boolean }>>({});
+  const testKey = async (id: string, candidate?: string) => {
     setBusy("test:" + id);
     setTests((t) => { const n = { ...t }; delete n[id]; return n; });
-    try { const r = await api.testAPIKey(id); setTests((t) => ({ ...t, [id]: r })); }
-    catch (e) { setTests((t) => ({ ...t, [id]: { ok: false, detail: (e as Error).message } })); }
+    try { const r = await api.testAPIKey(id, candidate); setTests((t) => ({ ...t, [id]: { ...r, candidate: !!candidate } })); }
+    catch (e) { setTests((t) => ({ ...t, [id]: { ok: false, detail: (e as Error).message, candidate: !!candidate } })); }
     finally { setBusy(null); }
   };
   // Discovery region rides along in this section: it tunes what the TMDB key returns.
@@ -146,6 +151,9 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
       // The key works the moment it's saved, so let Movies and Discover know without a reload.
       if (id === "tmdb") setMetadataReady(!!next.find((k) => k.id === "tmdb")?.configured);
       setDrafts((d) => { const n = { ...d }; delete n[id]; return n; }); // clear the field on success
+      // Test straight after saving, so a key that saved but doesn't work says so now.
+      const target = next.find((k) => k.id === testTarget(id));
+      if (target?.testable && target.configured) await testKey(target.id);
     } catch (e) {
       setErr((e as Error).message);
     } finally {
@@ -205,17 +213,23 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
               >
                 {busy === k.id ? "Saving…" : "Save"}
               </button>
-              {k.testable && k.configured && (
-                <button
-                  onClick={() => testKey(k.id)}
-                  disabled={busy !== null}
-                  className="flex-none rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold"
-                  style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}
-                  title="Make a real request with the saved key and show what came back"
-                >
-                  {busy === "test:" + k.id ? "Testing…" : "Test"}
-                </button>
-              )}
+              {(() => {
+                // A typed value is tested in place of the saved one where the provider
+                // allows it, so a wrong key shows before it replaces a working one.
+                const typed = k.tests_candidate ? drafts[k.id]?.trim() : "";
+                if (!k.testable || (!k.configured && !typed)) return null;
+                return (
+                  <button
+                    onClick={() => testKey(k.id, typed || undefined)}
+                    disabled={busy !== null}
+                    className="flex-none rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold"
+                    style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}
+                    title={typed ? "Make a real request with the value you typed, without saving it" : "Make a real request with the saved key and show what came back"}
+                  >
+                    {busy === "test:" + k.id ? "Testing…" : typed ? "Test typed" : "Test"}
+                  </button>
+                );
+              })()}
               {k.configured && k.source === "settings" && (
                 <button
                   onClick={() => { setClearErr(null); setClearing(k); }}
@@ -231,6 +245,7 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
             {tests[k.id] && (
               <p className="text-[11px]" style={{ color: tests[k.id].ok ? "var(--good)" : "var(--reject)" }}>
                 {tests[k.id].ok ? "✓ " : "✗ "}{tests[k.id].detail}
+                {tests[k.id].candidate && <span className="text-ink-faint"> (typed value, not saved)</span>}
               </p>
             )}
             <p className="text-[10px] text-ink-faint">

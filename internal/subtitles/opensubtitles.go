@@ -116,6 +116,11 @@ func (o *OpenSubtitles) CanDownload() bool {
 }
 
 func (o *OpenSubtitles) req(ctx context.Context, method, path string, q url.Values, body any, bearer string) (*http.Response, error) {
+	return o.reqKey(ctx, o.apiKey(), method, path, q, body, bearer)
+}
+
+// reqKey is req with an explicit API key, for testing one that isn't saved yet.
+func (o *OpenSubtitles) reqKey(ctx context.Context, apiKey, method, path string, q url.Values, body any, bearer string) (*http.Response, error) {
 	base := o.baseURL
 	if base == "" {
 		base = osBaseURL
@@ -136,7 +141,7 @@ func (o *OpenSubtitles) req(ctx context.Context, method, path string, q url.Valu
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Api-Key", o.apiKey())
+	req.Header.Set("Api-Key", apiKey)
 	req.Header.Set("User-Agent", o.ua)
 	req.Header.Set("Accept", "application/json")
 	if body != nil {
@@ -177,6 +182,83 @@ func (o *OpenSubtitles) login(ctx context.Context) (string, error) {
 	}
 	o.token = out.Token
 	return o.token, nil
+}
+
+// Verify is the credentials Test, run on demand only. candidateKey is an API key typed
+// and not yet saved (sent once, kept nowhere); empty means the saved one. The key is
+// checked with a cheap Api-Key request; then, if the saved username and password are both
+// set, it signs in and reads the account's download allowance. A missing username or
+// password is named, since search works without them but downloading doesn't. The cached
+// download token is left alone either way.
+func (o *OpenSubtitles) Verify(ctx context.Context, candidateKey string) (string, error) {
+	key := strings.TrimSpace(candidateKey)
+	if key == "" {
+		key = o.apiKey()
+	}
+	if key == "" {
+		return "", ErrNotConfigured
+	}
+	resp, err := o.reqKey(ctx, key, http.MethodGet, "/infos/formats", nil, nil, "")
+	if err != nil {
+		return "", fmt.Errorf("Couldn't reach OpenSubtitles: %w", err)
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+	resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return "", fmt.Errorf("OpenSubtitles rejected the API key (HTTP %d)", resp.StatusCode)
+	case resp.StatusCode != http.StatusOK:
+		return "", fmt.Errorf("OpenSubtitles answered HTTP %d", resp.StatusCode)
+	}
+
+	user, pass := o.username(), o.password()
+	var missing []string
+	if user == "" {
+		missing = append(missing, "username")
+	}
+	if pass == "" {
+		missing = append(missing, "password")
+	}
+	if len(missing) > 0 {
+		return "", fmt.Errorf("The API key works, so search does, but downloading also needs the OpenSubtitles %s, which isn't set", strings.Join(missing, " and "))
+	}
+
+	resp, err = o.reqKey(ctx, key, http.MethodPost, "/login", nil, map[string]string{"username": user, "password": pass}, "")
+	if err != nil {
+		return "", fmt.Errorf("Couldn't reach OpenSubtitles to sign in: %w", err)
+	}
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	resp.Body.Close()
+	var login struct {
+		Token   string `json:"token"`
+		Message string `json:"message"`
+	}
+	_ = json.Unmarshal(raw, &login)
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized:
+		return "", fmt.Errorf("The API key works, but OpenSubtitles rejected the username or password")
+	case resp.StatusCode != http.StatusOK || login.Token == "":
+		msg := login.Message
+		if msg == "" {
+			msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		}
+		return "", fmt.Errorf("The API key works, but signing in failed: %s", msg)
+	}
+
+	resp, err = o.reqKey(ctx, key, http.MethodGet, "/infos/user", nil, nil, login.Token)
+	if err != nil {
+		return "", fmt.Errorf("Signed in, but couldn't read the account: %w", err)
+	}
+	defer resp.Body.Close()
+	var info struct {
+		Data struct {
+			RemainingDownloads *int `json:"remaining_downloads"`
+		} `json:"data"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&info) != nil || info.Data.RemainingDownloads == nil {
+		return "OK: API key accepted and signed in as " + user + ".", nil
+	}
+	return fmt.Sprintf("OK: signed in as %s, %d downloads left today.", user, *info.Data.RemainingDownloads), nil
 }
 
 // Search finds candidate subtitles, best (most-downloaded) first.

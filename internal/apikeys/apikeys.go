@@ -36,6 +36,10 @@ type Key struct {
 	// and reports what came back — the only way to tell a working key from one the
 	// app is quietly falling back around.
 	Testable bool `json:"testable"`
+	// TestsCandidate keys can also be tested with a value typed but not yet saved, so a
+	// wrong key shows before it replaces a working one. The candidate is sent once and
+	// never stored.
+	TestsCandidate bool `json:"tests_candidate"`
 }
 
 // settingKey is where a credential is persisted. Namespaced so it can't collide with an
@@ -46,17 +50,17 @@ func (k Key) settingKey() string { return "apikey:" + k.ID }
 var Catalog = []Key{
 	{
 		ID: "tmdb", Label: "TMDB", Purpose: "Movie and TV metadata, artwork, and discovery. Required.",
-		HelpURL: "https://www.themoviedb.org/settings/api", EnvVar: "ARRMADA_TMDB_API_KEY", Secret: true, Testable: true,
+		HelpURL: "https://www.themoviedb.org/settings/api", EnvVar: "ARRMADA_TMDB_API_KEY", Secret: true, Testable: true, TestsCandidate: true,
 		Steps: "Create a free account, then request an API key under Settings → API. Use the v3 key.",
 	},
 	{
 		ID: "tvdb", Label: "TheTVDB", Purpose: "Anime episode numbering. Optional — anime falls back to TMDB without it.",
-		HelpURL: "https://www.thetvdb.com/dashboard/account/apikey", EnvVar: "ARRMADA_TVDB_API_KEY", Secret: true,
+		HelpURL: "https://www.thetvdb.com/dashboard/account/apikey", EnvVar: "ARRMADA_TVDB_API_KEY", Secret: true, Testable: true, TestsCandidate: true,
 		Steps: "Create an account, then generate a v4 API key. Personal/non-commercial use is free (requires attribution).",
 	},
 	{
 		ID: "omdb", Label: "OMDb", Purpose: "IMDb, Rotten Tomatoes and Metacritic scores. Optional.",
-		HelpURL: "https://www.omdbapi.com/apikey.aspx", EnvVar: "ARRMADA_OMDB_API_KEY", Secret: true,
+		HelpURL: "https://www.omdbapi.com/apikey.aspx", EnvVar: "ARRMADA_OMDB_API_KEY", Secret: true, Testable: true, TestsCandidate: true,
 		Steps: "Request a free key; it arrives by email and needs one click to activate.",
 	},
 	{
@@ -66,7 +70,7 @@ var Catalog = []Key{
 	},
 	{
 		ID: "opensubtitles_api", Label: "OpenSubtitles API key", Purpose: "Subtitle search. Optional.",
-		HelpURL: "https://www.opensubtitles.com/en/consumers", EnvVar: "ARRMADA_OPENSUBTITLES_API_KEY", Secret: true,
+		HelpURL: "https://www.opensubtitles.com/en/consumers", EnvVar: "ARRMADA_OPENSUBTITLES_API_KEY", Secret: true, Testable: true, TestsCandidate: true,
 		Steps: "Register a consumer under your account to get an API key. Downloading also needs the username and password below.",
 	},
 	{

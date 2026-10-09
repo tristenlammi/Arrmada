@@ -78,6 +78,10 @@ type Deps struct {
 	Recycle    *recyclebin.Service
 	Logs       *applog.Ring
 	APIKeys    *apikeys.Store
+	// KeyVerifiers back the API key Test button, by key id: each makes one real request
+	// with candidate (a value typed and not yet saved) or, when that's empty, the saved
+	// key, and answers in words. Built in main; Hardcover is tested through Books.
+	KeyVerifiers map[string]func(ctx context.Context, candidate string) (string, error)
 	// The audiobook server for listening apps, and its listener.
 	AudioServer  *audioserver.Server
 	AudioManager *audioserver.Manager

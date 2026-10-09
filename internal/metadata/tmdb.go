@@ -117,11 +117,58 @@ func (t *TMDB) Validate(ctx context.Context) error {
 	return err
 }
 
+// rejectedKey is a provider refusing a key, worded for the person who pasted it. It
+// still matches ErrInvalidKey, so callers that branch on that keep working.
+type rejectedKey string
+
+func (e rejectedKey) Error() string        { return string(e) }
+func (e rejectedKey) Is(target error) bool { return target == ErrInvalidKey }
+
+// VerifyKey is the key Test: the same GET /configuration as Validate, but with candidate
+// when one is given (a key typed and not yet saved — it's sent once and kept nowhere),
+// else with the saved key. It answers in words: where TMDB serves images from on success;
+// on a 401, an error wrapping ErrInvalidKey that says to use the v3 API key, and says so
+// louder when the key looks like a v4 read-access token (a JWT, which starts "eyJ").
+func (t *TMDB) VerifyKey(ctx context.Context, candidate string) (string, error) {
+	key := strings.TrimSpace(candidate)
+	if key == "" {
+		key = t.key()
+	}
+	if key == "" {
+		return "", ErrNotConfigured
+	}
+	body, err := t.getKey(ctx, key, "/configuration", url.Values{})
+	if errors.Is(err, ErrInvalidKey) {
+		msg := "TMDB rejected the key; use the v3 API key, not the v4 read access token"
+		if strings.HasPrefix(key, "eyJ") {
+			msg += " (this looks like a v4 token)"
+		}
+		return "", rejectedKey(msg)
+	}
+	if err != nil {
+		return "", err
+	}
+	var cfg struct {
+		Images struct {
+			SecureBaseURL string `json:"secure_base_url"`
+		} `json:"images"`
+	}
+	if json.Unmarshal(body, &cfg) != nil || cfg.Images.SecureBaseURL == "" {
+		return "OK: TMDB accepted the key.", nil
+	}
+	return "OK: images from " + cfg.Images.SecureBaseURL, nil
+}
+
 func (t *TMDB) get(ctx context.Context, path string, q url.Values) ([]byte, error) {
 	if !t.Available() {
 		return nil, ErrNotConfigured
 	}
-	q.Set("api_key", t.key())
+	return t.getKey(ctx, t.key(), path, q)
+}
+
+// getKey is get with an explicit key, for testing one that isn't saved yet.
+func (t *TMDB) getKey(ctx context.Context, key, path string, q url.Values) ([]byte, error) {
+	q.Set("api_key", key)
 	full := t.base + path + "?" + q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, full, nil)
 	if err != nil {

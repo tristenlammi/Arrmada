@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type APIKeyStatus, type LibraryPaths, type SetupState } from "../lib/api";
 import { FolderChips, FolderPicker } from "./Library";
 import { restartAndWait } from "../lib/restart";
 import { FleetMark } from "../components/FleetMark";
+import { useConfirm } from "../ui";
 
 // SetupWizard is the first thing an admin sees on a fresh install: the metadata key,
 // then each library folder (pre-filled from what's on the mount). Folders apply live, so
@@ -21,6 +22,9 @@ const FOLDERS: { key: keyof LibraryPaths; label: string; hint: string; optional?
 ];
 
 const OPTIONAL_KEYS = ["hardcover", "omdb", "tvdb"];
+
+// The answer to a pre-save key check, for the value it was asked about.
+interface KeyCheck { value: string; ok: boolean; detail: string; busy?: boolean }
 
 export function SetupWizard({ onDone }: { onDone: () => void }) {
   const [state, setState] = useState<SetupState | null>(null);
@@ -51,7 +55,34 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
 
   const finish = () => run(async () => { await api.completeSetup(); onDone(); });
 
+  // The TMDB key is checked before it's saved: on paste or when the field loses focus, the
+  // typed value goes to TMDB once (never stored) and the answer shows under the field.
+  const confirm = useConfirm();
+  const [tmdbCheck, setTmdbCheck] = useState<KeyCheck | null>(null);
+  const checkSeq = useRef(0);
+  const checkTmdb = async (value: string): Promise<KeyCheck | null> => {
+    const v = value.trim();
+    if (!v) { setTmdbCheck(null); return null; }
+    const my = ++checkSeq.current;
+    setTmdbCheck({ value: v, busy: true, ok: false, detail: "" });
+    let res: KeyCheck;
+    try { const r = await api.testAPIKey("tmdb", v); res = { value: v, ok: r.ok, detail: r.detail }; }
+    catch (e) { res = { value: v, ok: false, detail: (e as Error).message }; }
+    if (my === checkSeq.current) setTmdbCheck(res);
+    return res;
+  };
+
   const saveKeys = () => run(async () => {
+    // A TMDB key that failed its check is only saved if the admin says so.
+    const tmdbValue = keys.tmdb?.trim();
+    if (tmdbValue) {
+      const r = tmdbCheck && !tmdbCheck.busy && tmdbCheck.value === tmdbValue ? tmdbCheck : await checkTmdb(tmdbValue);
+      if (r && !r.ok && !(await confirm({
+        title: "Save this TMDB key anyway?",
+        body: <>TMDB didn't accept it: {r.detail}. Movies and TV won't find anything until it works.</>,
+        confirmLabel: "Save anyway",
+      }))) return;
+    }
     for (const [id, v] of Object.entries(keys)) {
       if (v.trim()) await api.setAPIKey(id, v.trim());
     }
@@ -105,8 +136,14 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
             label="TMDB API key"
             note="Needed for Movies and TV — titles, artwork and Discover. It's free."
             value={keys.tmdb ?? ""}
-            onChange={(v) => setKeys({ ...keys, tmdb: v })}
+            onChange={(v, pasted) => { setKeys({ ...keys, tmdb: v }); if (pasted) checkTmdb(v); }}
+            onBlur={(v) => { if (v.trim() && v.trim() !== tmdbCheck?.value) checkTmdb(v); }}
           />
+          {tmdbCheck && tmdbCheck.value === (keys.tmdb ?? "").trim() && (
+            <p className="mt-1 text-[11.5px]" style={{ color: tmdbCheck.busy ? "var(--ink-faint)" : tmdbCheck.ok ? "var(--good)" : "var(--reject)" }}>
+              {tmdbCheck.busy ? "Checking with TMDB…" : `${tmdbCheck.ok ? "✓" : "✗"} ${tmdbCheck.detail}`}
+            </p>
+          )}
           <details className="mt-3">
             <summary className="cursor-pointer text-[12px] font-semibold text-ink-dim">More keys (all optional)</summary>
             <div className="mt-2 flex flex-col gap-3">
@@ -226,7 +263,13 @@ function Frame({ children }: { children: React.ReactNode }) {
   );
 }
 
-function KeyField({ status, label, note, value, onChange }: { status?: APIKeyStatus; label: string; note: string; value: string; onChange: (v: string) => void }) {
+function KeyField({ status, label, note, value, onChange, onBlur }: {
+  status?: APIKeyStatus; label: string; note: string; value: string;
+  /** pasted: the change came from a paste, which is when a key is worth checking at once. */
+  onChange: (v: string, pasted: boolean) => void;
+  onBlur?: (v: string) => void;
+}) {
+  const pasting = useRef(false);
   return (
     <label className="block">
       <div className="mb-1 flex items-baseline justify-between gap-2">
@@ -236,7 +279,9 @@ function KeyField({ status, label, note, value, onChange }: { status?: APIKeySta
       <input
         type={status?.secret === false ? "text" : "password"}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onPaste={() => { pasting.current = true; }}
+        onChange={(e) => { const p = pasting.current; pasting.current = false; onChange(e.target.value, p); }}
+        onBlur={onBlur ? (e) => onBlur(e.target.value) : undefined}
         placeholder={status?.configured ? "Leave blank to keep the saved key" : "Paste the key"}
         autoComplete="off"
         className="block w-full rounded-lg px-3 py-2 font-mono text-[12px]"

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -29,6 +30,57 @@ func NewOMDbFunc(key func() string) *OMDb {
 
 // Available reports whether an OMDb API key is configured.
 func (o *OMDb) Available() bool { return o.key() != "" }
+
+// VerifyKey is the key Test: one real lookup (The Shawshank Redemption) with candidate —
+// a key typed and not yet saved, sent once and kept nowhere — or the saved key when
+// that's empty. OMDb's own complaint is passed through as it says it ("Invalid API key!",
+// "Request limit reached!"), since that's what tells an unactivated key from a spent one.
+func (o *OMDb) VerifyKey(ctx context.Context, candidate string) (string, error) {
+	key := strings.TrimSpace(candidate)
+	if key == "" {
+		key = o.key()
+	}
+	if key == "" {
+		return "", ErrNotConfigured
+	}
+	q := url.Values{}
+	q.Set("apikey", key)
+	q.Set("i", "tt0111161")
+	full := o.base + "?" + q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, full, nil)
+	if err != nil {
+		return "", sanitizeErr(full, err)
+	}
+	resp, err := o.http.Do(req)
+	if err != nil {
+		return "", sanitizeErr(full, fmt.Errorf("Couldn't reach OMDb: %w", err))
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var payload struct {
+		Response string `json:"Response"`
+		Error    string `json:"Error"`
+		Title    string `json:"Title"`
+	}
+	// OMDb answers a bad key with a 401 and the usual JSON, so read the body either way.
+	if json.Unmarshal(body, &payload) != nil {
+		return "", fmt.Errorf("OMDb answered HTTP %d with something that isn't JSON", resp.StatusCode)
+	}
+	if payload.Response != "True" {
+		msg := payload.Error
+		if msg == "" {
+			msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
+		}
+		if resp.StatusCode == http.StatusUnauthorized {
+			return "", rejectedKey("OMDb: " + msg)
+		}
+		return "", fmt.Errorf("OMDb: %s", msg)
+	}
+	if payload.Title == "" {
+		return "OK: OMDb accepted the key.", nil
+	}
+	return fmt.Sprintf("OK: OMDb answered with %s.", payload.Title), nil
+}
 
 // Ratings returns IMDB / Rotten Tomatoes / Metacritic scores for an IMDB id.
 func (o *OMDb) Ratings(ctx context.Context, imdbID string) (Ratings, error) {

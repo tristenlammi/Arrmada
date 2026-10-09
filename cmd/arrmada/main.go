@@ -269,8 +269,9 @@ func main() {
 	// Episode numbering: TVDB first (authoritative, matches releases and gives real
 	// absolute numbers — but needs a key), then TVmaze (free, handles the common
 	// two-parter), then TMDB itself. Each falls back cleanly when it can't help.
+	tvdb := metadata.NewTVDB(keyStore.Func("tvdb"))
 	tvSeries := metadata.NewSeriesWithEpisodes(tmdb, log,
-		metadata.NewTVDB(keyStore.Func("tvdb")),
+		tvdb,
 		metadata.NewTVmaze(),
 	)
 	seriesSvc := series.NewService(st.DB(), tvSeries, cfg.TVDir, log)
@@ -793,6 +794,13 @@ func main() {
 		Recycle:      recycleSvc,
 		Logs:         logRing,
 		APIKeys:      keyStore,
+		// The API key Test: one live request each, on demand only (never in health polling).
+		KeyVerifiers: map[string]func(context.Context, string) (string, error){
+			"tmdb":              tmdb.VerifyKey,
+			"tvdb":              tvdb.VerifyKey,
+			"omdb":              omdb.VerifyKey,
+			"opensubtitles_api": subsProvider.Verify,
+		},
 		AudioServer:  audioSrv,
 		AudioManager: audioMgr,
 		Restart: func() {
