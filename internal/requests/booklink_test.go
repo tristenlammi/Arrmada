@@ -107,6 +107,39 @@ func TestApproveLinksExistingBookAndSearches(t *testing.T) {
 	}
 }
 
+// An existing book that is already downloading isn't searched again on approve: a
+// second grab would only duplicate the one in flight.
+func TestApproveSkipsSearchWhileDownloading(t *testing.T) {
+	s, repo, db, ctx := bookLinkFixture(t, catalogue{byKey: map[string]metadata.BookResult{
+		"OL1W": {Key: "OL1W", Title: "Dune", Author: "Frank Herbert"},
+	}})
+	searched := make(chan int64, 1)
+	s.searchBook = func(_ context.Context, id int64) error { searched <- id; return nil }
+	held, err := repo.Create(ctx, books.Book{OLKey: "hc:9", Title: "Dune", Author: "Frank Herbert"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO grabs (movie_id, title, media_type, status) VALUES (?, 'Dune EPUB', 'book', 'grabbed')`, held.ID); err != nil {
+		t.Fatal(err)
+	}
+	req, err := s.repo.Create(ctx, Request{MediaType: "book", OLKey: "OL1W", Title: "Dune", Author: "Frank Herbert", Status: StatusPending, RequestedBy: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Approve(ctx, req.ID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BookID != held.ID {
+		t.Errorf("book_id = %d, want %d", got.BookID, held.ID)
+	}
+	select {
+	case id := <-searched:
+		t.Errorf("searched book %d while its download is in flight", id)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 // A request made under an Open Library key still resolves once its book is re-matched
 // to a Hardcover key: Available, and "ready" sent exactly once.
 func TestLinkedRequestSurvivesRematch(t *testing.T) {

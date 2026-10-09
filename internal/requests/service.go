@@ -230,8 +230,10 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 			}
 		}
 		// A new row always wants a search; one already there only when it lacks an
-		// edition its profile wants (an audiobook request for a book we have as an ebook).
-		if b.ID > 0 && (addErr == nil || s.lacksWantedEdition(ctx, b)) && s.searchBook != nil {
+		// edition its profile wants (an audiobook request for a book we have as an ebook)
+		// and nothing is already downloading for it, which a second grab would duplicate.
+		existingWants := addErr != nil && s.lacksWantedEdition(ctx, b) && len(s.activeGrabs(ctx, "book", b.ID)) == 0
+		if b.ID > 0 && (addErr == nil || existingWants) && s.searchBook != nil {
 			go func(bid int64) {
 				c, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 				defer cancel()
