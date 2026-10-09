@@ -35,6 +35,10 @@ type Movie struct {
 	// Download reflects an in-progress download for this movie (attached by the
 	// HTTP layer from the live queue; nil when nothing is downloading).
 	Download *DownloadStatus `json:"download,omitempty"`
+	// UpgradesAllowed is computed on the detail endpoint only: whether the 6-hourly upgrade
+	// sweep will look at this movie at all (monitored, has a file, profile upgrades on). The
+	// page says what really happens instead of hedging "if your profile allows".
+	UpgradesAllowed bool `json:"upgrades_allowed"`
 }
 
 // DownloadStatus is a lightweight view of a movie's in-flight download.

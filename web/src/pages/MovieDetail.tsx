@@ -184,6 +184,8 @@ export function MovieDetail() {
 }
 
 function statusOf(m: Movie): { label: string; tone: string; soft: string } {
+  // A recorded file that's gone from disk isn't "Downloaded" — the panel below says the same.
+  if (m.file?.missing) return { label: "File missing", tone: "var(--reject)", soft: "var(--reject-soft)" };
   if (m.has_file) return { label: "Downloaded", tone: "var(--good)", soft: "var(--good-soft, rgba(90,140,90,.12))" };
   if (m.monitored) return { label: "Wanted", tone: "var(--avoid)", soft: "var(--avoid-soft)" };
   return { label: "Unmonitored", tone: "var(--ink-faint)", soft: "var(--panel-2)" };
@@ -669,11 +671,23 @@ function AvailabilitySelector({ movie, onChange }: { movie: Movie; onChange: () 
   );
 }
 
+// WhyPanel says what Arrmada will do about this movie, from the same facts the sweeps use:
+// a scanned-in film is unmonitored, so the upgrade sweep skips it, and a profile with
+// upgrades off keeps the file as it is. upgrades_allowed comes from the server.
 function WhyPanel({ movie }: { movie: Movie }) {
   let msg: string;
   let tone = "var(--ink-dim)";
-  if (movie.has_file) {
-    msg = "You have this movie. If your quality profile allows upgrades, Arrmada keeps watching for a clearly-better release and grabs it automatically (checked every 6 hours); otherwise it stays put until you raise the profile or delete the file.";
+  if (movie.file?.missing) {
+    msg = "Arrmada recorded a file for this movie but it's no longer on disk. Refresh & rescan, or search again.";
+    tone = "var(--reject)";
+  } else if (movie.has_file && !movie.monitored) {
+    msg = "You have this movie. It isn't monitored, so Arrmada won't look for upgrades — turn on Monitor to allow them.";
+    tone = "var(--good)";
+  } else if (movie.has_file && !movie.upgrades_allowed) {
+    msg = "You have this movie. Its quality profile doesn't upgrade, so this file stays as it is.";
+    tone = "var(--good)";
+  } else if (movie.has_file) {
+    msg = "You have this movie. Arrmada checks for a clearly better release every 6 hours and grabs it automatically.";
     tone = "var(--good)";
   } else if (!movie.monitored) {
     msg = "Not monitored — Arrmada won't search for this. Turn on monitoring to start looking.";

@@ -9,6 +9,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/movies"
+	"github.com/tristenlammi/arrmada/internal/quality"
 )
 
 func (a *api) handleListMovies(w http.ResponseWriter, r *http.Request) {
@@ -267,7 +268,36 @@ func (a *api) handleGetMovie(w http.ResponseWriter, r *http.Request) {
 	if queue, qerr := a.deps.Downloads.Queue(r.Context()); qerr == nil {
 		m.Download = downloadFor(queue, m)
 	}
+	m.UpgradesAllowed = upgradeWatched(m.Monitored, m.HasFile, a.anyVersionUpgrades(r.Context(), &m))
 	a.writeJSON(w, http.StatusOK, m)
+}
+
+// upgradeWatched mirrors the upgrade sweep's own filter (UpgradeMovies skips a movie that
+// isn't monitored or has no file; upgradeMovie then needs a version whose profile has
+// upgrades on), so the detail page only promises upgrade watching when the sweep will look.
+func upgradeWatched(monitored, hasFile, profileAllows bool) bool {
+	return monitored && hasFile && profileAllows
+}
+
+// anyVersionUpgrades reports whether at least one of the movie's monitored versions with a
+// file sits on a profile that upgrades, resolved the way the sweep resolves it (a dangling
+// or "n/a" profile falls back to the default).
+func (a *api) anyVersionUpgrades(ctx context.Context, m *movies.Movie) bool {
+	if a.deps.Quality == nil {
+		return false
+	}
+	allows := func(profile string) bool {
+		return a.deps.Quality.AllowsUpgrades(ctx, a.deps.Quality.Effective(ctx, profile, quality.MediaMovie))
+	}
+	if len(m.Versions) == 0 {
+		return allows(m.QualityProfile)
+	}
+	for _, v := range m.Versions {
+		if v.Monitored && v.HasFile && allows(v.QualityProfile) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleMovieCollection returns the movie's TMDB collection members, each

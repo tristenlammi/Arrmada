@@ -2039,6 +2039,8 @@ export interface Movie {
   file?: MovieFile;
   versions?: MovieVersion[];
   download?: { state: string; progress: number };
+  /** Detail only: whether the upgrade sweep will look at this movie (monitored, has a file, profile upgrades). */
+  upgrades_allowed?: boolean;
 }
 
 export interface MovieLookup {
