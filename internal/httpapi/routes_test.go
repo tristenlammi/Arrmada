@@ -21,11 +21,10 @@ var updateGolden = flag.Bool("update", false, "rewrite testdata/routes.golden fr
 
 // testRouter builds the real route table. With sentinel set, every handler is a stub
 // that answers 299 once the scope check has let the caller through.
-func testRouter(t *testing.T, base string, sentinel bool) *router {
+func testRouter(t *testing.T, sentinel bool) *router {
 	t.Helper()
 	a := &api{deps: Deps{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}}
-	a.deps.Config.BaseURL = base
-	rt := newRouter(a, base)
+	rt := newRouter(a)
 	rt.sentinel = sentinel
 	a.registerRoutes(rt)
 	return rt
@@ -56,7 +55,7 @@ func routeTable(specs []routeSpec) string {
 // by requesters, or from outside the LAN, shows up as a diff here. Regenerate with
 // go test ./internal/httpapi -run TestRouteScopesGolden -update.
 func TestRouteScopesGolden(t *testing.T) {
-	got := routeTable(testRouter(t, "", true).specs)
+	got := routeTable(testRouter(t, true).specs)
 	golden := filepath.Join("testdata", "routes.golden")
 	if *updateGolden {
 		if err := os.MkdirAll("testdata", 0o755); err != nil {
@@ -75,10 +74,6 @@ func TestRouteScopesGolden(t *testing.T) {
 			lineDiff(strings.ReplaceAll(string(want), "\r\n", "\n"), got))
 	}
 
-	// The base path is stripped, so a reverse-proxy sub-path doesn't change the table.
-	if based := routeTable(testRouter(t, "/arr", true).specs); based != got {
-		t.Errorf("route table differs under a base path:\n%s", lineDiff(got, based))
-	}
 }
 
 func lineDiff(want, got string) string {
@@ -136,7 +131,7 @@ func asRole(r *http.Request, role auth.Role) *http.Request {
 // public, an account below the route's scope gets 403, and everyone else reaches the
 // handler the pattern names.
 func TestRouteAuthz(t *testing.T) {
-	rt := testRouter(t, "", true)
+	rt := testRouter(t, true)
 	for _, spec := range rt.specs {
 		method := spec.Method
 		if method == "" {
@@ -246,7 +241,7 @@ var requesterUICalls = []string{
 }
 
 func TestRequesterUIStillWorks(t *testing.T) {
-	rt := testRouter(t, "", true)
+	rt := testRouter(t, true)
 	for _, call := range requesterUICalls {
 		method, path, _ := strings.Cut(call, " ")
 		for _, role := range []auth.Role{auth.RoleRequester, auth.RoleReadonly} {
@@ -265,7 +260,7 @@ func TestRequesterUIStillWorks(t *testing.T) {
 
 // The staff APIs a requester could reach on the LAN before routes were scoped.
 func TestRequesterGetsForbiddenFromStaffAPIs(t *testing.T) {
-	rt := testRouter(t, "", true)
+	rt := testRouter(t, true)
 	for _, path := range []string{
 		"/api/v1/queue", "/api/v1/downloads", "/api/v1/history", "/api/v1/movies",
 		"/api/v1/movies/1/releases", "/api/v1/series/1/releases", "/api/v1/books/1/releases",
@@ -288,7 +283,7 @@ func TestRequesterGetsForbiddenFromStaffAPIs(t *testing.T) {
 // moving library folders, walking the host's folders, purging the recycle bin and the
 // log are the admin's alone.
 func TestManagerGetsForbiddenFromAdminAPIs(t *testing.T) {
-	rt := testRouter(t, "", true)
+	rt := testRouter(t, true)
 	for _, call := range []string{
 		"GET /api/v1/apikeys", "PUT /api/v1/apikeys/tmdb", "POST /api/v1/apikeys/tmdb/test",
 		"PUT /api/v1/system/library", "GET /api/v1/system/browse",
@@ -324,7 +319,7 @@ func TestManagerGetsForbiddenFromAdminAPIs(t *testing.T) {
 // (with indexer API keys in them). It's gone, and an unknown API path is a JSON 404
 // rather than the web app's index page.
 func TestUnknownAPIPathIsNotFound(t *testing.T) {
-	rt := testRouter(t, "", false)
+	rt := testRouter(t, false)
 	for _, path := range []string{"/api/v1/search?q=x", "/api/v1/nope", "/api/nope"} {
 		rec := httptest.NewRecorder()
 		rt.ServeHTTP(rec, asRole(httptest.NewRequest("GET", path, nil), auth.RoleAdmin))

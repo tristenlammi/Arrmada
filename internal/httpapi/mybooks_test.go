@@ -13,7 +13,7 @@ import (
 // My Books' downloads and uploaded covers are the book endpoints open from outside the
 // network; their neighbours (the book itself, its files) stay LAN-only.
 func TestExternalAllowsOnlyTheEbookDownload(t *testing.T) {
-	rt := testRouter(t, "", true)
+	rt := testRouter(t, true)
 	for path, want := range map[string]bool{
 		"/api/v1/books/12/ebook":         true,
 		"/api/v1/books/12/audiobook":     true,

@@ -26,7 +26,7 @@ func callFromOutside(rt *router, method, path string, user *auth.User) *httptest
 // signed-in admin or manager gets the whole app from wherever they are — the owner
 // opening the app through their own tunnel hostname was getting the requester's view.
 func TestExternalGateExemptsStaff(t *testing.T) {
-	rt := testRouter(t, "", true)
+	rt := testRouter(t, true)
 	call := func(user *auth.User) int { return callFromOutside(rt, "GET", "/api/v1/series", user).Code }
 	if code := call(nil); code != http.StatusForbidden {
 		t.Errorf("anonymous internet visitor reached a LAN-only endpoint (HTTP %d)", code)
@@ -67,7 +67,7 @@ func TestExternalGateExemptsStaff(t *testing.T) {
 // What a requester can reach from outside is the route table's ext column, nothing
 // else: the gate keeps no path list of its own.
 func TestExternalGateUsesRouteSpecs(t *testing.T) {
-	rt := testRouter(t, "", true)
+	rt := testRouter(t, true)
 	requester := &auth.User{ID: 7, Role: auth.RoleRequester}
 	for call, want := range map[string]int{
 		"GET /api/v1/discover/trending":          sentinelStatus,
@@ -99,7 +99,7 @@ func TestExternalGateUsesRouteSpecs(t *testing.T) {
 
 	// A path no route claims is the API's JSON 404 from outside too, not a 403 and not
 	// the app's index page.
-	live := testRouter(t, "", false)
+	live := testRouter(t, false)
 	for _, path := range []string{"/api/v1/books/12/ebook/extra", "/api/v1/nope"} {
 		if got := callFromOutside(live, "GET", path, requester).Code; got != http.StatusNotFound {
 			t.Errorf("GET %s from outside: HTTP %d, want 404", path, got)

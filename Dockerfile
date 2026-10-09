@@ -193,9 +193,9 @@ VOLUME ["/data", "/media"]
 
 # curl, not wget: the Ubuntu runtime has no wget, so the old check failed forever and
 # Docker/Unraid showed the container as unhealthy. The first boot runs migrations, hence
-# the minute's grace. ARRMADA_BASE_URL keeps it working behind a reverse-proxy path.
+# the minute's grace.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-    CMD curl -fsS -o /dev/null "http://127.0.0.1:7878${ARRMADA_BASE_URL%/}/api/health" || exit 1
+    CMD curl -fsS -o /dev/null "http://127.0.0.1:7878/api/health" || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
 

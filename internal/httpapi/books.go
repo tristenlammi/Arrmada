@@ -505,7 +505,7 @@ func (a *api) handleUploadBookCover(w http.ResponseWriter, r *http.Request) {
 	}
 	out.Close()
 	// Cache-busted, root-absolute path so the <img> reloads after a re-upload.
-	coverURL := fmt.Sprintf("%s/api/v1/books/%d/cover-image?v=%d", a.deps.Config.BaseURL, id, time.Now().Unix())
+	coverURL := fmt.Sprintf("/api/v1/books/%d/cover-image?v=%d", id, time.Now().Unix())
 	if err := a.deps.Books.SetCover(r.Context(), id, coverURL); err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not save cover")
 		return

@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/netutil"
@@ -79,17 +78,4 @@ func (a *api) externalGate(next http.Handler) http.Handler {
 		external := a.classifyExternal(r) && !isStaffRequest(r)
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), externalCtxKey, external)))
 	})
-}
-
-// pathAfterBase strips the configured reverse-proxy base path so allowlist checks
-// work regardless of BaseURL.
-func (a *api) pathAfterBase(p string) string {
-	b := a.deps.Config.BaseURL
-	if b != "" && b != "/" && strings.HasPrefix(p, b) {
-		p = strings.TrimPrefix(p, b)
-		if p == "" {
-			p = "/"
-		}
-	}
-	return p
 }

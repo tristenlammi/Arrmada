@@ -54,8 +54,6 @@ if [ -n "$WITH_DB" ] && [ -z "$ROLLBACK" ]; then
   say "✗ --with-db only goes with --rollback." >&2; usage >&2; exit 2
 fi
 
-BASE=$(grep -E '^ARRMADA_BASE_URL=' .env 2>/dev/null | cut -d= -f2)
-
 # The user the app runs as. Commands run inside the container use it too, so any file
 # they write in the data folder is the app's, not root's.
 RUN_UID=$(grep -E '^ARRMADA_PUID=' .env 2>/dev/null | cut -d= -f2 | tr -d '\r" ')
@@ -69,12 +67,12 @@ PREVIOUS_DB_FILE=.arrmada-previous-db
 # app_answers -> 0 if the app answers its health check right now. It asks from inside
 # the container, so it works whatever host port was picked and needs no curl on the host.
 app_answers() {
-  docker exec Arrmada-app curl -fsS -o /dev/null "http://127.0.0.1:7878${BASE%/}/api/health" >/dev/null 2>&1
+  docker exec Arrmada-app curl -fsS -o /dev/null "http://127.0.0.1:7878/api/health" >/dev/null 2>&1
 }
 
 # health_json prints the app's health answer (one line of JSON), or nothing.
 health_json() {
-  docker exec Arrmada-app curl -fsS "http://127.0.0.1:7878${BASE%/}/api/health" 2>/dev/null || true
+  docker exec Arrmada-app curl -fsS "http://127.0.0.1:7878/api/health" 2>/dev/null || true
 }
 
 # json_str KEY reads a string field from one line of JSON on stdin (no jq on Unraid).
@@ -425,6 +423,12 @@ if [ -n "$RUNNING_IMAGE" ]; then
     docker image tag "$OLD_PREVIOUS" arrmada:previous-old
   fi
   docker image tag "$RUNNING_IMAGE" arrmada:previous
+fi
+
+# Settings that were removed: the app never sees them now, so say so here.
+if grep -qE '^ARRMADA_BASE_URL=.*[^/[:space:]"'"'"']' .env; then
+  say "  ! ARRMADA_BASE_URL in .env is no longer supported and is ignored — Arrmada is served"
+  say "    at the root of its own hostname. Point your reverse proxy at the root, then delete the line."
 fi
 
 say "Rebuilding and restarting Arrmada…"

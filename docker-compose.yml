@@ -48,8 +48,6 @@ services:
       # window, the nightly sweeps, listening-per-day — run on this clock; without it the
       # app ran on UTC while its companions below were already on local time.
       TZ: "${TZ:-Etc/UTC}"
-      # Serve under a path behind a reverse proxy (e.g. /arrmada). Empty = the root.
-      ARRMADA_BASE_URL: "${ARRMADA_BASE_URL:-}"
       # Insights can also be pointed at Plex here instead of in its Settings tab.
       ARRMADA_PLEX_URL: "${ARRMADA_PLEX_URL:-}"
       ARRMADA_PLEX_TOKEN: "${ARRMADA_PLEX_TOKEN:-}"

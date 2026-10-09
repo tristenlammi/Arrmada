@@ -199,6 +199,12 @@ at the end and saves them in `.env`.
 
 Change a value in `.env`, then run `./update.sh`.
 
+Behind a reverse proxy or tunnel, give Arrmada its own hostname (for example
+`arrmada.example.com`) and proxy it from the root. Serving it under a path such as
+`example.com/arrmada` isn't supported: the old `ARRMADA_BASE_URL` setting never worked with the
+web app and has been removed. If your `.env` still sets it, it's ignored and the app runs at the
+root.
+
 ## Existing library
 
 Give the installer the folder that contains your media, and pick each library inside it

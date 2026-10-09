@@ -101,7 +101,7 @@ func (a *api) requireRole(min auth.Role, h http.HandlerFunc) guard {
 // routeSpec is one registered route, as the golden table records it.
 type routeSpec struct {
 	Method   string // "" for a method-less pattern (the SPA)
-	Pattern  string // without the reverse-proxy base path
+	Pattern  string
 	Scope    scope
 	External bool
 }
@@ -110,7 +110,6 @@ type routeSpec struct {
 type router struct {
 	a     *api
 	mux   *http.ServeMux
-	base  string
 	specs []routeSpec
 	// sentinel (tests only) swaps every handler for a stub that answers 299 after the
 	// scope check, so the route walk can tell "let through" from anything a real
@@ -120,18 +119,17 @@ type router struct {
 
 const sentinelStatus = 299
 
-func newRouter(a *api, base string) *router {
-	return &router{a: a, mux: http.NewServeMux(), base: base}
+func newRouter(a *api) *router {
+	return &router{a: a, mux: http.NewServeMux()}
 }
 
-// HandleFunc registers pattern ("METHOD /path", base path included) behind g's scope
-// check.
+// HandleFunc registers pattern ("METHOD /path") behind g's scope check.
 func (rt *router) HandleFunc(pattern string, g guard) {
 	method, path := "", pattern
 	if i := strings.IndexByte(pattern, ' '); i >= 0 {
 		method, path = pattern[:i], strings.TrimSpace(pattern[i+1:])
 	}
-	spec := routeSpec{Method: method, Pattern: rt.a.pathAfterBase(path), Scope: g.scope, External: g.external}
+	spec := routeSpec{Method: method, Pattern: path, Scope: g.scope, External: g.external}
 	rt.specs = append(rt.specs, spec)
 	rt.mux.HandleFunc(pattern, rt.wrap(g))
 }
@@ -192,7 +190,7 @@ func (rt *router) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // where an unknown path is a JSON 404 rather than the app's index page answering 200.
 func (a *api) spa(ui http.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if p := a.pathAfterBase(r.URL.Path); p == "/api" || strings.HasPrefix(p, "/api/") {
+		if p := r.URL.Path; p == "/api" || strings.HasPrefix(p, "/api/") {
 			a.writeError(w, http.StatusNotFound, "not found")
 			return
 		}

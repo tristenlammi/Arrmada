@@ -242,7 +242,7 @@ func (a *api) setSessionCookie(w http.ResponseWriter, r *http.Request, token str
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,
-		Path:     a.cookiePath(),
+		Path:     "/",
 		Expires:  expires,
 		HttpOnly: true,
 		Secure:   requestIsHTTPS(r),
@@ -254,7 +254,7 @@ func (a *api) clearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    "",
-		Path:     a.cookiePath(),
+		Path:     "/",
 		MaxAge:   -1,
 		HttpOnly: true,
 		Secure:   requestIsHTTPS(r),
@@ -278,13 +278,6 @@ func requestIsHTTPS(r *http.Request) bool {
 		return true
 	}
 	return false
-}
-
-func (a *api) cookiePath() string {
-	if a.deps.Config.BaseURL == "" {
-		return "/"
-	}
-	return a.deps.Config.BaseURL
 }
 
 // decodeJSON reads a small JSON body into dst, writing a 400 and returning false
