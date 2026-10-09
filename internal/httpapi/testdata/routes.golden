@@ -249,6 +249,7 @@ POST /api/v1/movies staff -
 POST /api/v1/movies/import staff -
 POST /api/v1/movies/scan staff -
 POST /api/v1/movies/{id}/blocklist staff -
+POST /api/v1/movies/{id}/file/forget staff -
 POST /api/v1/movies/{id}/grabtorrent staff -
 POST /api/v1/movies/{id}/manualimport staff -
 POST /api/v1/movies/{id}/refresh staff -

@@ -223,21 +223,64 @@ func (a *api) handleUnblock(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// handleScanLibrary scans the library folder for existing movie files and
-// catalogs them (unmonitored, n/a profile). Runs in the background because TMDB
-// lookups over a large library take a while.
+// movieScanSummary is a movie scan's job result: the shared counts plus the files it
+// attached to films already in the library and the folders it left alone as duplicates.
+type movieScanSummary struct {
+	scanSummary
+	Attached   int `json:"attached"`
+	Duplicates int `json:"duplicates"`
+}
+
+// movieScanMessage words a finished movie scan for the toast.
+func movieScanMessage(res movies.ScanResult) string {
+	msg := scanMessage("movie", res.Imported, len(res.Unmatched))
+	if res.Attached > 0 {
+		if res.Imported == 0 && len(res.Unmatched) == 0 {
+			msg = "Attached " + countOf(res.Attached, "file") + " to movies already in the library"
+		} else {
+			msg += "; attached " + countOf(res.Attached, "file") + " to movies already in the library"
+		}
+	}
+	if n := len(res.Duplicates); n > 0 {
+		msg += "; " + countOf(n, "folder") + " left alone (the movie already has a different file)"
+	}
+	return msg
+}
+
+// handleScanLibrary scans the library folder for existing movie files and catalogs them
+// — unmonitored on profile n/a, unless the body asks to monitor them on a profile — and
+// attaches files to films already in the library without one. Runs in the background
+// because TMDB lookups over a large library take a while.
 func (a *api) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
+	var opts movies.ScanOptions
+	if r.ContentLength > 0 && !a.decodeJSON(w, r, &opts) {
+		return
+	}
+	opts.QualityProfile = strings.TrimSpace(opts.QualityProfile)
+	if opts.Monitor && opts.QualityProfile == "" && a.deps.Quality != nil {
+		opts.QualityProfile = a.deps.Quality.DefaultProfile(r.Context(), "movie")
+	}
+	// The same check as Automation.KnownProfile, which is the quality service's.
+	if opts.QualityProfile != "" && (a.deps.Quality == nil || !a.deps.Quality.Known(r.Context(), opts.QualityProfile)) {
+		a.writeError(w, http.StatusBadRequest, "unknown quality profile")
+		return
+	}
 	root := a.libMovies(r) // resolve the configured folder before we detach
 	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "movie.scan", Target: "all", Class: jobs.ClassLibraryScan, Timeout: 15 * time.Minute,
 		Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
-			res, err := a.deps.Movies.ScanLibrary(ctx, root)
+			res, err := a.deps.Movies.ScanLibrary(ctx, root, opts)
 			if err != nil {
 				return nil, err
 			}
-			a.deps.Log.Info("library scan complete", "imported", res.Imported, "skipped", res.Skipped, "unmatched", len(res.Unmatched))
-			a.deps.Bus.Publish("library.scanned", map[string]any{"media": "movie", "imported": res.Imported, "unmatched": len(res.Unmatched)})
-			p.SetMessage(scanMessage("movie", res.Imported, len(res.Unmatched)))
-			return scanSummary{Imported: res.Imported, Skipped: res.Skipped, Unmatched: len(res.Unmatched)}, nil
+			a.deps.Log.Info("library scan complete", "imported", res.Imported, "attached", res.Attached, "duplicates", len(res.Duplicates),
+				"skipped", res.Skipped, "unmatched", len(res.Unmatched))
+			a.deps.Bus.Publish("library.scanned", map[string]any{"media": "movie", "imported": res.Imported, "unmatched": len(res.Unmatched),
+				"attached": res.Attached, "duplicates": len(res.Duplicates)})
+			p.SetMessage(movieScanMessage(res))
+			return movieScanSummary{
+				scanSummary: scanSummary{Imported: res.Imported, Skipped: res.Skipped, Unmatched: len(res.Unmatched)},
+				Attached:    res.Attached, Duplicates: len(res.Duplicates),
+			}, nil
 		}})
 	if !ok {
 		return
@@ -268,6 +311,10 @@ func (a *api) handleMovieImportFolder(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	if err := a.deps.Movies.ImportFolderAs(ctx, a.libMovies(r), req.Folder, req.TMDBID); err != nil {
+		if errors.Is(err, movies.ErrExists) {
+			a.writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		a.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -300,11 +347,43 @@ func (a *api) handleGetMovie(w http.ResponseWriter, r *http.Request) {
 		m.Versions = versions
 		m.File = versions[0].File
 	}
-	if queue, qerr := a.deps.Downloads.Queue(r.Context()); qerr == nil {
-		m.Download = downloadFor(queue, m)
+	if a.deps.Downloads != nil {
+		if queue, qerr := a.deps.Downloads.Queue(r.Context()); qerr == nil {
+			m.Download = downloadFor(queue, m)
+		}
 	}
 	m.UpgradesAllowed = upgradeWatched(m.Monitored, m.HasFile, a.anyVersionUpgrades(r.Context(), &m))
+	var pending []automation.PendingMovieDownload
+	if a.deps.Automation != nil {
+		pending, _ = a.deps.Automation.PendingMovieDownloads(r.Context(), id)
+	}
+	m.Acquisition = a.movieAcquisition(r.Context(), &m, pending)
 	a.writeJSON(w, http.StatusOK, m)
+}
+
+// movieAcquisition gathers what the Acquisition card states, from the facts the sweeps
+// act on: monitoring, the profile and whether it upgrades, availability, an in-flight
+// grab, and a recorded file that's gone. m carries its live tracks and UpgradesAllowed.
+func (a *api) movieAcquisition(ctx context.Context, m *movies.Movie, pending []automation.PendingMovieDownload) *movies.Acquisition {
+	acq := &movies.Acquisition{
+		Monitored:       m.Monitored,
+		UpgradesAllowed: m.UpgradesAllowed,
+		ScannedIn:       m.QualityProfile == "n/a",
+		Available:       a.deps.Movies.IsAvailable(*m),
+		FileMissing:     m.HasFile && m.File != nil && m.File.Missing,
+	}
+	acq.ProfileKnown = !acq.ScannedIn && m.QualityProfile != "" && a.deps.Quality != nil && a.deps.Quality.Known(ctx, m.QualityProfile)
+	if m.Extra != nil {
+		acq.AvailableFrom = m.Extra.ReleaseDate
+	}
+	if len(pending) > 0 {
+		acq.Downloading = true
+		acq.DownloadTitle, acq.DownloadProgress = pending[0].Title, pending[0].Progress
+	} else if m.Download != nil {
+		acq.Downloading = true
+		acq.DownloadProgress = m.Download.Progress
+	}
+	return acq
 }
 
 // upgradeWatched mirrors the upgrade sweep's own filter (UpgradeMovies skips a movie that
@@ -570,6 +649,33 @@ func (a *api) handleDeleteMovieFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleForgetMissingFile clears the record of a track whose file is gone from disk. It
+// never deletes anything: a file that's back on disk answers 409 and stays recorded.
+func (a *api) handleForgetMissingFile(w http.ResponseWriter, r *http.Request) {
+	id, ok := a.pathID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		VersionID int64 `json:"version_id"`
+	}
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	if err := a.deps.Movies.ForgetMissingFile(r.Context(), id, req.VersionID); err != nil {
+		switch {
+		case errors.Is(err, movies.ErrNotFound):
+			a.writeError(w, http.StatusNotFound, "movie not found")
+		case errors.Is(err, movies.ErrFileExists):
+			a.writeError(w, http.StatusConflict, "the file is back on disk — refresh instead")
+		default:
+			a.writeError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"status": "cleared"})
 }
 
 // handleMovieReleases runs an interactive search and returns ranked releases

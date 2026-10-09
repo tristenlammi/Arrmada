@@ -1916,7 +1916,11 @@ export const api = {
   emptyRecycle: (bin?: string) => req<{ freed_bytes: number }>("/api/v1/recycle/empty", { method: "POST", body: JSON.stringify(bin ? { bin } : {}) }),
   restoreRecycle: (id: string) => req<{ status: string }>("/api/v1/recycle/restore", { method: "POST", body: JSON.stringify({ id }) }),
   deleteRecycleItem: (id: string) => req<{ status: string }>("/api/v1/recycle/delete", { method: "POST", body: JSON.stringify({ id }) }),
-  scanLibrary: () => req<{ status: string } & JobRef>("/api/v1/movies/scan", { method: "POST" }),
+  // Catalog the movies folder: new films are added unmonitored on "n/a" unless monitor is
+  // set (with a profile; "" = the default), and films already in the library without a
+  // file get the one found.
+  scanLibrary: (opts?: { monitor: boolean; quality_profile?: string }) =>
+    req<{ status: string } & JobRef>("/api/v1/movies/scan", { method: "POST", ...(opts ? { body: JSON.stringify(opts) } : {}) }),
   moviesUnmatched: () => req<{ unmatched: UnmatchedFolder[] }>("/api/v1/movies/unmatched").then((r) => r.unmatched),
   importMovieFolder: (folder: string, tmdb_id: number) =>
     req<{ status: string }>("/api/v1/movies/import", { method: "POST", body: JSON.stringify({ folder, tmdb_id }) }),
@@ -2346,6 +2350,10 @@ export const api = {
       body: JSON.stringify({ monitored }),
     }),
   deleteMovieFile: (id: number) => req<void>(`/api/v1/movies/${id}/file`, { method: "DELETE" }),
+  // Clears the record of a track whose file is gone from disk (version 0 = the default
+  // track). Never deletes anything; answers 409 when the file is back on disk.
+  forgetMissingFile: (id: number, versionId = 0) =>
+    req<{ status: string }>(`/api/v1/movies/${id}/file/forget`, { method: "POST", body: JSON.stringify({ version_id: versionId }) }),
   setQualityProfile: (id: number, quality_profile: string) =>
     req<{ quality_profile: string; downgrade: boolean; downgrade_reason?: string; downgrade_kind?: "smaller" | "different"; downgrade_ceiling?: string }>(`/api/v1/movies/${id}/profile`, {
       method: "PUT",
@@ -2598,6 +2606,22 @@ export interface Movie {
   upgrades_allowed?: boolean;
   /** The default file is kept out of profile-driven upgrades ("keep existing files"). */
   upgrade_hold?: boolean;
+  /** Detail only: what Arrmada will do about this movie, from the facts the sweeps act on. */
+  acquisition?: MovieAcquisition;
+}
+
+export interface MovieAcquisition {
+  monitored: boolean;
+  /** False for "n/a" (scanned in) or a profile that no longer exists: the default applies. */
+  profile_known: boolean;
+  upgrades_allowed: boolean;
+  scanned_in: boolean;
+  available: boolean;
+  available_from?: string;
+  downloading: boolean;
+  download_title?: string;
+  download_progress?: number;
+  file_missing: boolean;
 }
 
 export interface MovieLookup {

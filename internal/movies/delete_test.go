@@ -64,7 +64,7 @@ func newDeleteFixture(t *testing.T, binDir string) *deleteFixture {
 		t.Fatal(err)
 	}
 	f.vid = v.ID
-	if err := f.svc.repo.SetVersionFile(ctx, f.vid, f.extra, 1); err != nil {
+	if err := f.svc.repo.SetVersionFile(ctx, f.vid, f.extra, 1, ""); err != nil {
 		t.Fatal(err)
 	}
 	return f

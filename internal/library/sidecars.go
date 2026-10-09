@@ -20,12 +20,18 @@ var sameBaseVideoExts = map[string]bool{
 // and should share whatever happens to it (a rename, a delete to the recycle bin).
 // Matching ignores case. 'Movie 2.srt' next to 'Movie.mkv' is a neighbour, not a sidecar.
 func PairedSidecars(video string) []string {
-	dir := filepath.Dir(video)
-	base := strings.ToLower(strings.TrimSuffix(filepath.Base(video), filepath.Ext(video)))
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(filepath.Dir(video))
 	if err != nil {
 		return nil
 	}
+	return PairedSidecarsIn(video, entries)
+}
+
+// PairedSidecarsIn is PairedSidecars over a listing of the video's folder the caller
+// already read, so a page showing several files in one folder lists it once.
+func PairedSidecarsIn(video string, entries []os.DirEntry) []string {
+	dir := filepath.Dir(video)
+	base := strings.ToLower(strings.TrimSuffix(filepath.Base(video), filepath.Ext(video)))
 	// Another video whose name extends this one's ("Movie.Proper.mkv" beside "Movie.mkv")
 	// owns the sidecars named for it, even though they also start with "Movie.".
 	var longer []string
@@ -71,6 +77,11 @@ func OrphanSidecars(dir string) []string {
 	if err != nil {
 		return nil
 	}
+	return OrphanSidecarsIn(dir, entries)
+}
+
+// OrphanSidecarsIn is OrphanSidecars over a listing of dir the caller already read.
+func OrphanSidecarsIn(dir string, entries []os.DirEntry) []string {
 	var bases, subs []string
 	for _, e := range entries {
 		if e.IsDir() {

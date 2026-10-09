@@ -14,7 +14,28 @@ import type { Tone } from "../ui";
 // file, or for a series/artist monitored and not complete; "Downloaded" (not "Available").
 // Monitor toggles read "Monitored" or "Monitor" everywhere.
 
-export type StatusLabel = "Downloaded" | "Complete" | "Partial" | "Wanted" | "Unmonitored" | "File missing";
+// STATUS_LABEL is the glossary: pages that need one of these words (lib/movieStatus) take
+// it from here rather than spelling it again.
+export const STATUS_LABEL = {
+  downloaded: "Downloaded",
+  complete: "Complete",
+  partial: "Partial",
+  wanted: "Wanted",
+  unmonitored: "Unmonitored",
+  fileMissing: "File missing",
+} as const;
+
+export type StatusLabel = (typeof STATUS_LABEL)[keyof typeof STATUS_LABEL];
+
+// The tone each word always wears.
+const TONE: Record<StatusLabel, Tone> = {
+  Downloaded: "good",
+  Complete: "good",
+  Partial: "avoid",
+  Wanted: "avoid",
+  Unmonitored: "faint",
+  "File missing": "reject",
+};
 
 export interface LibraryStatus {
   label: StatusLabel;
@@ -34,7 +55,14 @@ const LOOK: Record<Tone, { color: string; soft: string }> = {
   faint: { color: "var(--ink-faint)", soft: "var(--panel-2)" },
 };
 
-function status(label: StatusLabel, tone: Tone): LibraryStatus {
+// toneLook is a tone's text hue and soft fill, for a status word outside the glossary
+// (a movie's "Downloading").
+export function toneLook(tone: Tone): { color: string; soft: string } {
+  return LOOK[tone];
+}
+
+function status(label: StatusLabel): LibraryStatus {
+  const tone = TONE[label];
   return { label, tone, ...LOOK[tone] };
 }
 
@@ -56,12 +84,12 @@ export interface StatusInput {
 export function libraryStatus(x: StatusInput): LibraryStatus {
   const have = x.have ?? 0;
   const total = x.total ?? 0;
-  if (x.fileMissing) return status("File missing", "reject");
-  if (x.multi && total > 0 && have >= total) return status("Complete", "good");
-  if (!x.multi && x.hasFile) return status("Downloaded", "good");
-  if (!x.monitored) return status("Unmonitored", "faint");
-  if (have > 0) return status("Partial", "avoid");
-  return status("Wanted", "avoid");
+  if (x.fileMissing) return status(STATUS_LABEL.fileMissing);
+  if (x.multi && total > 0 && have >= total) return status(STATUS_LABEL.complete);
+  if (!x.multi && x.hasFile) return status(STATUS_LABEL.downloaded);
+  if (!x.monitored) return status(STATUS_LABEL.unmonitored);
+  if (have > 0) return status(STATUS_LABEL.partial);
+  return status(STATUS_LABEL.wanted);
 }
 
 // isWanted is the library "Wanted" filter: the items whose badge says Wanted or Partial.

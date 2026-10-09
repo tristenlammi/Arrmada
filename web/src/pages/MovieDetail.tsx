@@ -9,7 +9,6 @@ import { DeleteMovieDialog } from "../components/DeleteMovieDialog";
 import { disposalLine, useRecycleMode } from "../lib/disposal";
 import { PAGE } from "../lib/links";
 import { usePoll } from "../lib/usePoll";
-import { libraryStatus } from "../lib/status";
 import { invalidate } from "../lib/query";
 import {
   api,
@@ -25,6 +24,7 @@ import {
 import { useLive, type LiveEvent } from "../lib/useLive";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { Button, StatusChip } from "../ui";
+import { movieStatus, trackStatus } from "../lib/movieStatus";
 
 const AVAILABILITY_LABELS: Record<string, string> = {
   announced: "Announced",
@@ -107,7 +107,7 @@ export function MovieDetail() {
     );
   }
 
-  const st = statusOf(movie);
+  const st = movieStatus(movie);
   const ex = movie.extra;
 
   return (
@@ -165,7 +165,8 @@ export function MovieDetail() {
                 <AvailabilitySelector movie={movie} onChange={load} />
               </div>
 
-              <WhyPanel movie={movie} />
+              {/* searchInfo: the last search and next automatic try, wired by MOV-04. */}
+              <AcquisitionStatus movie={movie} onChange={load} flash={flash} />
               <UpgradeHoldChip movie={movie} onChange={load} flash={flash} />
               <Toolbar movie={movie} onChange={load} flash={flash} live={live} />
             </div>
@@ -188,11 +189,6 @@ export function MovieDetail() {
       )}
     </>
   );
-}
-
-function statusOf(m: Movie) {
-  // A recorded file that's gone from disk isn't "Downloaded" — the panel below says the same.
-  return libraryStatus({ hasFile: m.has_file, monitored: m.monitored, fileMissing: m.file?.missing });
 }
 
 function fmtRuntime(min: number): string {
@@ -238,11 +234,18 @@ function VersionsArea({ movie, onChange, flash }: { movie: Movie; onChange: () =
       .catch(() => {});
   }, []);
   const profileName = (ref: string) => (ref === "n/a" ? "Not set" : profileNames[ref] ?? ref);
+  // After a missing file's record is cleared, a monitored movie gets a one-click search.
+  const [cleared, setCleared] = useState(false);
+  const onCleared = () => { setCleared(true); onChange(); };
+  const clearedNotice = cleared && (
+    <ClearedNotice movie={movie} flash={flash} onDismiss={() => setCleared(false)} />
+  );
 
   if (extras.length === 0) {
     return (
       <>
-        {movie.file && <FilePanel file={movie.file} movieId={movie.id} onChange={onChange} />}
+        {clearedNotice}
+        {movie.file && <FilePanel file={movie.file} movieId={movie.id} onChange={onChange} onCleared={onCleared} />}
         <button onClick={() => setAdding(true)} className="mt-4 inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-semibold" style={{ border: "1px dashed var(--line)", color: "var(--ink-dim)" }}>
           ＋ Keep another version <span className="text-ink-faint">(e.g. 1080p + 4K, or a Director's Cut)</span>
         </button>
@@ -253,13 +256,14 @@ function VersionsArea({ movie, onChange, flash }: { movie: Movie; onChange: () =
 
   return (
     <div className="mt-6">
+      {clearedNotice}
       <div className="mb-3 flex items-center justify-between">
         <h2 className="m-0 text-[14px] font-bold">Versions <span className="font-normal text-ink-faint">· {versions.length} tracks</span></h2>
         <button onClick={() => setAdding(true)} className="rounded-lg px-3 py-1.5 text-[12px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>＋ Add version</button>
       </div>
       <div className="flex flex-col gap-2.5">
         {versions.map((v) => (
-          <VersionCard key={`${v.is_default ? "d" : v.id}`} movieId={movie.id} version={v} onChange={onChange} flash={flash} profileName={profileName} />
+          <VersionCard key={`${v.is_default ? "d" : v.id}`} movieId={movie.id} version={v} onChange={onChange} onCleared={onCleared} flash={flash} profileName={profileName} />
         ))}
       </div>
       {adding && <AddVersionModal movieId={movie.id} onClose={() => setAdding(false)} onAdded={() => { setAdding(false); onChange(); flash("Version added — searching for it."); }} />}
@@ -267,7 +271,35 @@ function VersionsArea({ movie, onChange, flash }: { movie: Movie; onChange: () =
   );
 }
 
-function VersionCard({ movieId, version, onChange, flash, profileName }: { movieId: number; version: MovieVersion; onChange: () => void; flash: (m: string) => void; profileName: (ref: string) => string }) {
+// ClearedNotice follows a cleared missing-file record: nothing on disk was touched, and a
+// monitored movie can be searched for right away instead of waiting for the next sweep.
+function ClearedNotice({ movie, flash, onDismiss }: { movie: Movie; flash: (m: string, err?: boolean) => void; onDismiss: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const search = async () => {
+    setBusy(true);
+    try {
+      await api.searchMovie(movie.id);
+      flash(`Searching — follow it in ${PAGE.downloads} → Searching.`);
+      onDismiss();
+    } catch (e) {
+      flash((e as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mt-6 flex flex-wrap items-center gap-3 rounded-xl p-3.5 text-[12px] text-ink-dim" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
+      <span className="min-w-0 flex-1">
+        Record cleared — nothing on disk was touched.
+        {movie.monitored ? " Arrmada will look for it on its next sweep, or search now." : " Turn on Monitor for Arrmada to look for it."}
+      </span>
+      {movie.monitored && <Button size="sm" variant="primary" onClick={search} busy={busy} busyLabel="Searching…">Search now</Button>}
+      <Button size="sm" variant="ghost" onClick={onDismiss}>Dismiss</Button>
+    </div>
+  );
+}
+
+function VersionCard({ movieId, version, onChange, onCleared, flash, profileName }: { movieId: number; version: MovieVersion; onChange: () => void; onCleared: () => void; flash: (m: string) => void; profileName: (ref: string) => string }) {
   const [busy, setBusy] = useState(false);
   const f = version.file;
 
@@ -285,7 +317,8 @@ function VersionCard({ movieId, version, onChange, flash, profileName }: { movie
   // Both destructive buttons ask first, naming the file, its size and where it goes.
   const [confirm, setConfirm] = useState<"file" | "version" | null>(null);
 
-  const status = libraryStatus({ hasFile: !!f, monitored: version.monitored, fileMissing: f?.missing });
+  const status = trackStatus(version);
+  const missing = status.key === "missing";
   const chips: string[] = [];
   if (f?.codec) chips.push(f.codec);
   if (f?.audio) chips.push(...f.audio);
@@ -310,6 +343,7 @@ function VersionCard({ movieId, version, onChange, flash, profileName }: { movie
                 <span className="font-mono text-ink-dim">{fmtSize(f.size_bytes)}</span>
               </div>
               <div className="mt-1 break-all font-mono text-[11px] text-ink-faint">{f.path}</div>
+              {missing && <div className="mt-1 text-[11.5px]" style={{ color: "var(--reject)" }}>Tracked but not on disk. Refresh & rescan to look again, or clear the record (nothing on disk is touched).</div>}
             </>
           ) : (
             <div className="mt-1.5 text-[12px] text-ink-dim">{version.monitored ? "No file yet — Arrmada is searching for this track." : "Not monitored."}</div>
@@ -317,11 +351,20 @@ function VersionCard({ movieId, version, onChange, flash, profileName }: { movie
         </div>
         <div className="flex flex-none flex-col items-end gap-1.5">
           <button onClick={toggleMonitor} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{version.monitored ? "Monitored" : "Monitor"}</button>
-          {f && <button onClick={() => setConfirm("file")} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Delete file</button>}
+          {f && <button onClick={() => setConfirm("file")} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{missing ? "Clear record" : "Delete file"}</button>}
           {!version.is_default && <button onClick={() => setConfirm("version")} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px]" style={{ color: "var(--ink-faint)" }}>Remove version</button>}
         </div>
       </div>
-      {confirm === "file" && f && (
+      {confirm === "file" && f && missing && (
+        <ClearRecordDialog
+          movieId={movieId}
+          versionId={version.id}
+          file={f}
+          onDone={() => { setConfirm(null); onCleared(); }}
+          onCancel={() => setConfirm(null)}
+        />
+      )}
+      {confirm === "file" && f && !missing && (
         <FileDeleteDialog
           title={<>Delete the “{version.label}” file?</>}
           file={f}
@@ -385,6 +428,47 @@ function FileDeleteDialog({ title, file, note, confirmLabel, run, onDone, onCanc
       }
       confirmLabel={confirmLabel}
       busyLabel="Deleting…"
+      busy={busy}
+      error={err}
+      onConfirm={confirm}
+      onCancel={onCancel}
+    />
+  );
+}
+
+// ClearRecordDialog forgets a track whose file is gone from disk. Unlike Delete file it
+// never touches the disk: the server checks the file is really gone and refuses (409) when
+// it's back, and that refusal stays on screen.
+function ClearRecordDialog({ movieId, versionId, file, onDone, onCancel }: {
+  movieId: number;
+  versionId: number;
+  file: MovieFile;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const confirm = async () => {
+    setBusy(true); setErr(null);
+    try {
+      await api.forgetMissingFile(movieId, versionId);
+      onDone();
+    } catch (e) {
+      setErr((e as Error).message);
+      setBusy(false);
+    }
+  };
+  return (
+    <ConfirmDialog
+      title="Clear the missing file's record?"
+      body={
+        <>
+          <div className="mt-1 break-all font-mono text-[11.5px]" style={{ color: "var(--ink)" }}>{file.filename || file.path}</div>
+          <p className="mb-0 mt-1.5">Nothing on disk is touched — the file is already gone. The movie stays, so Arrmada searches for it again while it's monitored.</p>
+        </>
+      }
+      confirmLabel="Clear record"
+      busyLabel="Clearing…"
       busy={busy}
       error={err}
       onConfirm={confirm}
@@ -587,10 +671,8 @@ function ProfileSelector({ movie, onChange }: { movie: Movie; onChange: () => vo
       .catch(() => {});
   }, []);
 
-  // Set when the file on disk doesn't fit the newly chosen profile: why, and whether a
-  // smaller release fixes it (above a ceiling) or it needs a different one altogether.
-  const [downgrade, setDowngrade] = useState<{ kind: "smaller" | "different"; reason: string; ceiling: string } | null>(null);
-  const [regrabbing, setRegrabbing] = useState(false);
+  // Set when the file on disk doesn't fit the newly chosen profile (see DowngradePrompt).
+  const [downgrade, setDowngrade] = useState<Downgrade | null>(null);
 
   const change = async (profile: string) => {
     if (profile === movie.quality_profile) return;
@@ -599,8 +681,9 @@ function ProfileSelector({ movie, onChange }: { movie: Movie; onChange: () => vo
     setDowngrade(null);
     try {
       const res = await api.setQualityProfile(movie.id, profile);
-      if (res.downgrade) {
-        setDowngrade({ kind: res.downgrade_kind ?? "different", reason: res.downgrade_reason ?? "", ceiling: res.downgrade_ceiling ?? "" });
+      const d = downgradeOf(res);
+      if (d) {
+        setDowngrade(d);
       } else {
         setSaved(true);
         window.setTimeout(() => setSaved(false), 2000);
@@ -608,16 +691,6 @@ function ProfileSelector({ movie, onChange }: { movie: Movie; onChange: () => vo
       onChange();
     } finally {
       setSaving(false);
-    }
-  };
-
-  const doRegrab = async () => {
-    setRegrabbing(true);
-    try {
-      await api.regrabMovie(movie.id);
-      setDowngrade(null);
-    } finally {
-      setRegrabbing(false);
     }
   };
 
@@ -638,21 +711,52 @@ function ProfileSelector({ movie, onChange }: { movie: Movie; onChange: () => vo
         </select>
         {saved && <span className="text-[11px]" style={{ color: "var(--good)" }}>Saved ✓</span>}
       </div>
-      {downgrade && (
-        <div className="rounded-lg p-3 text-[12px]" style={{ background: "var(--avoid-soft)", border: "1px solid var(--avoid)" }}>
-          <div className="mb-2 text-ink-dim">
-            {downgrade.kind === "smaller"
-              ? `Your file is above this profile's ${downgrade.ceiling || "size"} ceiling. Download a smaller release, or keep it?`
-              : `Your file doesn't meet this profile${downgrade.reason ? ` (${downgrade.reason})` : ""}. Find a release that does, or keep it?`}
-          </div>
-          <div className="flex gap-2">
-            <button onClick={doRegrab} disabled={regrabbing} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>
-              {regrabbing ? "Searching…" : downgrade.kind === "smaller" ? "Download smaller version" : "Find a matching release"}
-            </button>
-            <button onClick={() => setDowngrade(null)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Keep current file</button>
-          </div>
-        </div>
-      )}
+      {downgrade && <DowngradePrompt movieId={movie.id} downgrade={downgrade} onClose={() => setDowngrade(null)} />}
+    </div>
+  );
+}
+
+/** Why the file on disk doesn't fit a newly chosen profile: whether a smaller release fixes
+ * it (above the profile's ceiling) or it needs a different one altogether. */
+interface Downgrade {
+  kind: "smaller" | "different";
+  reason: string;
+  ceiling: string;
+}
+
+// downgradeOf reads a profile change's answer; null when the file still fits.
+function downgradeOf(res: { downgrade: boolean; downgrade_kind?: "smaller" | "different"; downgrade_reason?: string; downgrade_ceiling?: string }): Downgrade | null {
+  if (!res.downgrade) return null;
+  return { kind: res.downgrade_kind ?? "different", reason: res.downgrade_reason ?? "", ceiling: res.downgrade_ceiling ?? "" };
+}
+
+// DowngradePrompt asks what to do when a new profile doesn't fit the file on disk: download
+// a release that does (a smaller one, when the file is only over the ceiling), or keep the
+// file. Nothing happens on its own. ProfileSelector and AcquisitionStatus both show it.
+function DowngradePrompt({ movieId, downgrade, onClose }: { movieId: number; downgrade: Downgrade; onClose: () => void }) {
+  const [regrabbing, setRegrabbing] = useState(false);
+  const doRegrab = async () => {
+    setRegrabbing(true);
+    try {
+      await api.regrabMovie(movieId);
+      onClose();
+    } finally {
+      setRegrabbing(false);
+    }
+  };
+  return (
+    <div className="rounded-lg p-3 text-[12px]" style={{ background: "var(--avoid-soft)", border: "1px solid var(--avoid)" }}>
+      <div className="mb-2 text-ink-dim">
+        {downgrade.kind === "smaller"
+          ? `Your file is above this profile's ${downgrade.ceiling || "size"} ceiling. Download a smaller release, or keep it?`
+          : `Your file doesn't meet this profile${downgrade.reason ? ` (${downgrade.reason})` : ""}. Find a release that does, or keep it?`}
+      </div>
+      <div className="flex gap-2">
+        <button onClick={doRegrab} disabled={regrabbing} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>
+          {regrabbing ? "Searching…" : downgrade.kind === "smaller" ? "Download smaller version" : "Find a matching release"}
+        </button>
+        <button onClick={onClose} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Keep current file</button>
+      </div>
     </div>
   );
 }
@@ -681,40 +785,185 @@ function AvailabilitySelector({ movie, onChange }: { movie: Movie; onChange: () 
   );
 }
 
-// WhyPanel says what Arrmada will do about this movie, from the same facts the sweeps use:
-// a scanned-in film is unmonitored, so the upgrade sweep skips it, and a profile with
-// upgrades off keeps the file as it is. upgrades_allowed comes from the server.
-function WhyPanel({ movie }: { movie: Movie }) {
-  let msg: string;
+/** The last search and the next automatic try. MOV-04 (search outcomes) records them and
+ * passes them in as AcquisitionStatus's searchInfo; until then those lines are left out
+ * rather than guessed. */
+interface AcquisitionSearchInfo {
+  /** When Arrmada last searched for this movie. */
+  lastAt?: string;
+  /** What that search found, in one line ("41 releases · 29 rejected · nothing grabbed"). */
+  summary?: string;
+  /** When the next automatic search runs. */
+  nextAt?: string;
+}
+
+// AcquisitionStatus says what Arrmada will do about this movie, built only from the facts
+// the sweeps act on (movie.acquisition, from the server): a scanned-in or unmonitored film
+// is never upgraded, a profile with upgrades off keeps its file, a missing film is searched
+// for once it's available, and a recorded file that's gone is never "you have this movie".
+function AcquisitionStatus({ movie, onChange, flash, searchInfo }: {
+  movie: Movie;
+  onChange: () => void;
+  flash: (m: string, err?: boolean) => void;
+  searchInfo?: AcquisitionSearchInfo;
+}) {
+  const acq = movie.acquisition;
+  const [downgrade, setDowngrade] = useState<Downgrade | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
+  if (!acq) return null;
+
+  const run = async (key: string, fn: () => Promise<void>) => {
+    setBusy(key);
+    try {
+      await fn();
+    } catch (e) {
+      flash((e as Error).message, true);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const lastChecked = searchInfo?.lastAt ? ` (last checked ${fmtTime(searchInfo.lastAt)})` : "";
+  const noProfile = acq.profile_known ? "" : " It has no quality profile of its own, so your default profile applies.";
+  const avail = AVAILABILITY_LABELS[movie.min_availability] ?? movie.min_availability;
+
   let tone = "var(--ink-dim)";
-  if (movie.file?.missing) {
-    msg = "Arrmada recorded a file for this movie but it's no longer on disk. Refresh & rescan, or search again.";
+  let msg: ReactNode;
+  let actions: ReactNode = null;
+  let searchLines = false;
+
+  if (acq.file_missing) {
     tone = "var(--reject)";
-  } else if (movie.has_file && !movie.monitored) {
-    msg = "You have this movie. It isn't monitored, so Arrmada won't look for upgrades — turn on Monitor to allow them.";
-    tone = "var(--good)";
-  } else if (movie.has_file && !movie.upgrades_allowed) {
-    msg = "You have this movie. Its quality profile doesn't upgrade, so this file stays as it is.";
-    tone = "var(--good)";
-  } else if (movie.has_file && movie.upgrade_hold) {
-    msg = "You have this movie. Its file was kept as it is when its profile changed, so upgrades won't replace it until you resume them.";
-    tone = "var(--good)";
-  } else if (movie.has_file) {
-    msg = "You have this movie. Arrmada checks for a clearly better release every 6 hours and grabs it automatically.";
-    tone = "var(--good)";
-  } else if (!movie.monitored) {
-    msg = "Not monitored — Arrmada won't search for this. Turn on monitoring to start looking.";
-    tone = "var(--avoid)";
-  } else {
-    const avail = AVAILABILITY_LABELS[movie.min_availability] ?? movie.min_availability;
-    msg = `Monitored and missing — Arrmada searches automatically once the movie is "${avail}", and grabs the best release for your quality profile.`;
+    msg = "Arrmada has a record of this file but it isn't on disk. Refresh & rescan to look again; if it's really gone, clear the record and Arrmada will search for it (when monitored).";
+    actions = (
+      <>
+        <Button size="sm" onClick={() => run("rescan", async () => { await api.refreshMovie(movie.id); onChange(); flash("Refreshed metadata and rescanned disk."); })} busy={busy === "rescan"} busyLabel="Rescanning…" disabled={busy !== null}>Refresh & rescan</Button>
+        {movie.file && <Button size="sm" onClick={() => setClearing(true)} disabled={busy !== null}>Clear record</Button>}
+        {acq.monitored && (
+          <Button size="sm" variant="primary" disabled={busy !== null} busy={busy === "search"} busyLabel="Searching…"
+            onClick={() => run("search", async () => {
+              await api.forgetMissingFile(movie.id, 0);
+              await api.searchMovie(movie.id);
+              flash(`Cleared the missing file's record — searching. Follow it in ${PAGE.downloads} → Searching.`);
+              onChange();
+            })}>Search</Button>
+        )}
+      </>
+    );
+  } else if (acq.downloading) {
     tone = "var(--accent)";
+    const pct = Math.round((acq.download_progress ?? 0) * 100);
+    const what = acq.download_title ? <span className="break-all font-mono text-[11.5px]">{acq.download_title}</span> : "a release";
+    msg = <>{movie.has_file ? "Downloading an upgrade: " : "Downloading "}{what} — {pct}%.</>;
+  } else if (movie.has_file && !acq.monitored) {
+    tone = "var(--good)";
+    msg = acq.scanned_in
+      ? "Found in your library and not monitored, so it won't be upgraded. Monitor it with a profile to let Arrmada look for better releases."
+      : "You have this movie. It isn't monitored, so it won't be upgraded.";
+    actions = <MonitorWithProfile movie={movie} onDone={onChange} onDowngrade={setDowngrade} flash={flash} />;
+  } else if (movie.has_file && !acq.upgrades_allowed) {
+    tone = "var(--good)";
+    msg = `You have this movie. Your profile doesn't allow upgrades, so this file stays as it is.${noProfile}`;
+  } else if (movie.has_file && movie.upgrade_hold) {
+    tone = "var(--good)";
+    msg = "You have this movie. Its file was kept as it is when its profile changed, so upgrades won't replace it until you resume them.";
+  } else if (movie.has_file) {
+    tone = "var(--good)";
+    msg = `You have this movie. Arrmada looks for a clearly better release every 6 hours${lastChecked} and grabs it automatically.${noProfile}`;
+  } else if (!acq.monitored) {
+    tone = "var(--avoid)";
+    msg = "Not monitored, so Arrmada won't search for it.";
+    actions = (
+      <Button size="sm" variant="primary" disabled={busy !== null} busy={busy === "monitor"} busyLabel="Monitoring…"
+        onClick={() => run("monitor", async () => { await api.setMonitored(movie.id, true); onChange(); })}>Monitor</Button>
+    );
+  } else if (!acq.available) {
+    tone = "var(--accent)";
+    const from = acq.available_from ? ` (expected ${fmtDate(acq.available_from)})` : "";
+    msg = `Monitored and missing. Arrmada starts searching once it's "${avail}"${from}, and grabs the best release for your quality profile.${noProfile}`;
+  } else {
+    tone = "var(--accent)";
+    msg = `Monitored and missing — Arrmada searches automatically and grabs the best release for your quality profile.${noProfile}`;
+    searchLines = true;
   }
+
   return (
-    <div className="mt-4 rounded-lg p-3 text-[12px] leading-relaxed" style={{ border: "1px solid var(--line)", color: tone }}>
-      {msg}
+    <div className="mt-4 rounded-lg p-3 text-[12px] leading-relaxed" style={{ border: "1px solid var(--line)" }}>
+      <div style={{ color: tone }}>{msg}</div>
+      {searchLines && searchInfo && (searchInfo.lastAt || searchInfo.nextAt) && (
+        <div className="mt-1.5 flex flex-col gap-0.5 text-[11.5px] text-ink-dim">
+          {searchInfo.lastAt && <span>Last search {fmtTime(searchInfo.lastAt)}{searchInfo.summary ? ` — ${searchInfo.summary}` : ""}</span>}
+          {searchInfo.nextAt && <span>Next automatic search {fmtTime(searchInfo.nextAt)}</span>}
+        </div>
+      )}
+      {actions && <div className="mt-2.5 flex flex-wrap items-center gap-2">{actions}</div>}
+      {downgrade && <div className="mt-2.5"><DowngradePrompt movieId={movie.id} downgrade={downgrade} onClose={() => setDowngrade(null)} /></div>}
+      {clearing && movie.file && (
+        <ClearRecordDialog
+          movieId={movie.id}
+          versionId={0}
+          file={movie.file}
+          onDone={() => { setClearing(false); onChange(); flash("Record cleared — nothing on disk was touched."); }}
+          onCancel={() => setClearing(false)}
+        />
+      )}
     </div>
   );
+}
+
+// MonitorWithProfile monitors a film that has a file and puts it on a chosen profile in one
+// step. Monitoring comes first, so the profile change is judged like any other: a profile
+// that targets less than the file asks before downloading anything (onDowngrade).
+function MonitorWithProfile({ movie, onDone, onDowngrade, flash }: {
+  movie: Movie;
+  onDone: () => void;
+  onDowngrade: (d: Downgrade) => void;
+  flash: (m: string, err?: boolean) => void;
+}) {
+  const [profiles, setProfiles] = useState<{ key: string; name: string }[]>([]);
+  const [pick, setPick] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.qualityProfiles("movie").then((r) => {
+      setProfiles(r.profiles.map((p) => ({ key: p.key, name: p.name })));
+      const own = r.profiles.find((p) => p.key === movie.quality_profile);
+      const def = own ?? r.profiles.find((p) => p.is_default) ?? r.profiles[0];
+      if (def) setPick(def.key);
+    }).catch(() => {});
+  }, [movie.quality_profile]);
+
+  const monitor = async () => {
+    setBusy(true);
+    try {
+      await api.setMonitored(movie.id, true);
+      if (pick && pick !== movie.quality_profile) {
+        const res = await api.setQualityProfile(movie.id, pick);
+        const d = downgradeOf(res);
+        if (d) onDowngrade(d);
+      }
+      flash("Monitored — Arrmada now looks for better releases under this profile.");
+      onDone();
+    } catch (e) {
+      flash((e as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <select aria-label="Quality profile" value={pick} onChange={(e) => setPick(e.target.value)} disabled={busy || profiles.length === 0} className="rounded-lg px-2.5 py-1.5 text-[12px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
+        {profiles.map((p) => <option key={p.key} value={p.key}>{p.name}</option>)}
+      </select>
+      <Button size="sm" variant="primary" onClick={monitor} busy={busy} busyLabel="Monitoring…" disabled={!pick}>Monitor</Button>
+    </>
+  );
+}
+
+function fmtDate(s: string): string {
+  const d = new Date(s + "T00:00:00");
+  if (isNaN(d.getTime())) return s;
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
 // UpgradeHoldChip shows when a file of this movie was kept as it is when its profile
@@ -779,6 +1028,17 @@ function Toolbar({ movie, onChange, flash, live }: { movie: Movie; onChange: () 
   const btn = "rounded-lg px-3 py-2 text-[12.5px] font-semibold disabled:opacity-50";
   const ghost = { border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" } as const;
 
+  // A recorded file that's gone from disk blocks the search (the track reads as having a
+  // file), so Auto-grab clears that record first. The server refuses if the file is back.
+  const missing = movie.has_file && !!movie.file?.missing;
+  const autoGrab = async () => {
+    if (missing) await api.forgetMissingFile(movie.id, 0);
+    const r = await api.searchMovie(movie.id);
+    if (r.job_id) setSearchJob(r.job_id);
+    flash(missing ? `Cleared the missing file's record — searching. Follow it in ${PAGE.downloads} → Searching.` : `Searching — follow it in ${PAGE.downloads} → Searching.`);
+    onChange();
+  };
+
   const rename = async () => {
     const p = await api.renamePreview(movie.id);
     if (p.matches) {
@@ -809,15 +1069,21 @@ function Toolbar({ movie, onChange, flash, live }: { movie: Movie; onChange: () 
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("refresh", async () => { await api.refreshMovie(movie.id); onChange(); flash("Refreshed metadata and rescanned disk."); })}>
           {busy === "refresh" ? "Refreshing…" : "Refresh & rescan"}
         </button>
-        {!movie.has_file && (
-          <button className={btn} style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }} disabled={busy !== null || search.running} onClick={() => run("search", async () => { const r = await api.searchMovie(movie.id); if (r.job_id) setSearchJob(r.job_id); flash(`Searching — follow it in ${PAGE.downloads} → Searching.`); })}>
+        {(!movie.has_file || missing) && (
+          <button
+            className={btn}
+            style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}
+            disabled={busy !== null || search.running}
+            title={missing ? "Clears the missing file's record (nothing on disk is touched), then searches" : undefined}
+            onClick={() => run("search", autoGrab)}
+          >
             {busy === "search" || search.running ? "Searching…" : "Auto-grab best"}
           </button>
         )}
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowSearch(true)}>Search indexers</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowPaste(true)}>Upload torrent</button>
         <button className={btn} style={ghost} disabled={busy !== null} onClick={() => setShowImport(true)}>Manual import</button>
-        {movie.has_file && (
+        {movie.has_file && !missing && (
           <button className={btn} style={ghost} disabled={busy !== null} onClick={() => run("rename", rename)}>
             {busy === "rename" ? "Renaming…" : "Rename"}
           </button>
@@ -849,7 +1115,7 @@ function Toolbar({ movie, onChange, flash, live }: { movie: Movie; onChange: () 
   );
 }
 
-function FilePanel({ file, movieId, onChange }: { file: MovieFile; movieId: number; onChange: () => void }) {
+function FilePanel({ file, movieId, onChange, onCleared }: { file: MovieFile; movieId: number; onChange: () => void; onCleared: () => void }) {
   const [confirming, setConfirming] = useState(false);
   const [showFile, setShowFile] = useState(false);
 
@@ -898,18 +1164,27 @@ function FilePanel({ file, movieId, onChange }: { file: MovieFile; movieId: numb
               ))}
             </div>
           )}
-          {file.missing && <div className="mt-1.5 text-[11.5px]" style={{ color: "var(--avoid)" }}>Tracked but not on disk. Refresh & rescan, or clear the record to search again.</div>}
+          {file.missing && <div className="mt-1.5 text-[11.5px]" style={{ color: "var(--reject)" }}>Tracked but not on disk. Refresh & rescan to look again, or clear the record (nothing on disk is touched) to search again.</div>}
         </div>
         <div className="flex-none">
-          <button onClick={() => setConfirming(true)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{file.missing ? "Clear record" : "Delete file"}</button>
+          <button onClick={() => setConfirming(true)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={file.missing ? { border: "1px solid var(--line)", color: "var(--ink)" } : { border: "1px solid var(--reject)", color: "var(--reject)" }}>{file.missing ? "Clear record" : "Delete file"}</button>
         </div>
       </div>
-      {confirming && (
+      {confirming && file.missing && (
+        <ClearRecordDialog
+          movieId={movieId}
+          versionId={0}
+          file={file}
+          onDone={() => { setConfirming(false); onCleared(); }}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
+      {confirming && !file.missing && (
         <FileDeleteDialog
-          title={file.missing ? "Clear the missing file's record?" : "Delete this file?"}
+          title="Delete this file?"
           file={file}
           note="The movie stays, so Arrmada looks for it again while it's monitored."
-          confirmLabel={file.missing ? "Clear record" : "Delete file"}
+          confirmLabel="Delete file"
           run={() => api.deleteMovieFile(movieId)}
           onDone={() => { setConfirming(false); onChange(); }}
           onCancel={() => setConfirming(false)}
@@ -1050,6 +1325,7 @@ const EVENT_TONES: Record<string, string> = {
   detected: "var(--good)",
   deleted: "var(--reject)",
   missing: "var(--avoid)",
+  missing_cleared: "var(--ink-dim)",
   renamed: "var(--ink-dim)",
   refreshed: "var(--ink-faint)",
 };

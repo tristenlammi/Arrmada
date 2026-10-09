@@ -131,3 +131,31 @@ func TestDeleteMovieReturns409OnRecycleFailure(t *testing.T) {
 		t.Errorf("version file delete: HTTP %d, want 409", rec.Code)
 	}
 }
+
+// The missing-file Clear record answers 409 and deletes nothing while the file is on disk,
+// and clears the record (leaving the disk alone) once it's really gone.
+func TestForgetMissingFileHandler(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "bin")
+	s, mgr, id, video := movieDeleteServer(t, bin)
+	path := fmt.Sprintf("/api/v1/movies/%d/file/forget", id)
+
+	if rec := s.doJSON("POST", path, mgr, `{"version_id":0}`); rec.Code != http.StatusConflict {
+		t.Fatalf("file present: HTTP %d, want 409: %s", rec.Code, rec.Body)
+	}
+	if _, err := os.Stat(video); err != nil {
+		t.Fatalf("the file was touched: %v", err)
+	}
+	if m, _ := s.deps.Movies.Get(context.Background(), id); !m.HasFile {
+		t.Fatal("the record was cleared although the file is there")
+	}
+
+	if err := os.Remove(video); err != nil {
+		t.Fatal(err)
+	}
+	if rec := s.doJSON("POST", path, mgr, `{"version_id":0}`); rec.Code != http.StatusOK {
+		t.Fatalf("file gone: HTTP %d: %s", rec.Code, rec.Body)
+	}
+	if m, _ := s.deps.Movies.Get(context.Background(), id); m.HasFile {
+		t.Fatal("record not cleared")
+	}
+}

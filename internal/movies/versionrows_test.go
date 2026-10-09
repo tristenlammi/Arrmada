@@ -82,25 +82,6 @@ func TestVersionRowsNeverProbesOrStats(t *testing.T) {
 	}
 }
 
-// The detail page's live read probes each file once — and only there.
-func TestVersionsLiveProbesEachTrackOnce(t *testing.T) {
-	svc, ctx := testService(t)
-	var fc fileCounter
-	fc.install(svc)
-	seedMovieWithTracks(t, svc, ctx)
-
-	vs, err := svc.VersionsLive(ctx, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p := fc.probes.Load(); p != 3 {
-		t.Fatalf("probes = %d, want one per track (3)", p)
-	}
-	if vs[0].File == nil || vs[0].File.Resolution != "2160p" || !vs[0].File.Probed {
-		t.Fatalf("live default track = %+v", vs[0].File)
-	}
-}
-
 func TestSearchAndUpgradeTargets(t *testing.T) {
 	svc, ctx := testService(t)
 	db := svc.repo.db

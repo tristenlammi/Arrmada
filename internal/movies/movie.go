@@ -47,6 +47,33 @@ type Movie struct {
 	// sweep will look at this movie at all (monitored, has a file, profile upgrades on). The
 	// page says what really happens instead of hedging "if your profile allows".
 	UpgradesAllowed bool `json:"upgrades_allowed,omitempty"`
+	// Acquisition is computed on the detail endpoint only: the facts the page's Acquisition
+	// card states, so it never promises what the sweeps won't do.
+	Acquisition *Acquisition `json:"acquisition,omitempty"`
+}
+
+// Acquisition is what Arrmada will do about a movie, from the same facts the sweeps act on.
+// The last search and the next automatic try are added by the search-outcome work (MOV-04)
+// as fields on Movie, not here.
+type Acquisition struct {
+	Monitored bool `json:"monitored"`
+	// ProfileKnown is false for "n/a" (a scanned-in film) or a profile that no longer exists:
+	// the sweeps then fall back to the default profile.
+	ProfileKnown bool `json:"profile_known"`
+	// UpgradesAllowed: the upgrade sweep will look at this movie (monitored, has a file, a
+	// monitored track's effective profile upgrades).
+	UpgradesAllowed bool `json:"upgrades_allowed"`
+	// ScannedIn: catalogued by a library scan with no profile chosen ("n/a").
+	ScannedIn bool `json:"scanned_in"`
+	// Available: past the minimum-availability threshold, so a missing file is searched for.
+	Available     bool   `json:"available"`
+	AvailableFrom string `json:"available_from,omitempty"` // release date, when known
+	// Downloading: a grab is in flight (a pending grab row, or a matching queue item).
+	Downloading      bool    `json:"downloading"`
+	DownloadTitle    string  `json:"download_title,omitempty"`
+	DownloadProgress float64 `json:"download_progress,omitempty"` // 0..1
+	// FileMissing: the default track records a file that isn't on disk.
+	FileMissing bool `json:"file_missing"`
 }
 
 // DownloadStatus is a lightweight view of a movie's in-flight download.
@@ -100,12 +127,18 @@ type Version struct {
 	ConvertedFromSize    int64  `json:"converted_from_size,omitempty"`
 }
 
-// MovieFile describes the on-disk file for a movie: size plus media info parsed
-// from its filename. Computed at read-time by stat-ing the path.
+// MovieFile describes the on-disk file for one track: size plus media info, read from the
+// file (ffprobe) or parsed from its name. It's cached per track (movies.media_json,
+// movie_versions.media_json) when the file is imported or changes; the detail page only
+// stats the file and re-reads it in the background when its size or mtime moved.
 type MovieFile struct {
-	Path        string   `json:"path"`
-	Filename    string   `json:"filename"`
-	SizeBytes   int64    `json:"size_bytes"`
+	Path      string `json:"path"`
+	Filename  string `json:"filename"`
+	SizeBytes int64  `json:"size_bytes"`
+	// MtimeUnix is the file's modification time when the entry was read (0 = an entry cached
+	// before it was recorded). With the size it says whether the entry still describes the
+	// file on disk, the same contract as Convert's probe cache.
+	MtimeUnix   int64    `json:"mtime,omitempty"`
 	Quality     string   `json:"quality,omitempty"` // "2160p BluRay"
 	Codec       string   `json:"codec,omitempty"`
 	Audio       []string `json:"audio,omitempty"`

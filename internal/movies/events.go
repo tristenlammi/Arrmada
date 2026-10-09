@@ -2,7 +2,6 @@ package movies
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/tristenlammi/arrmada/internal/outbox"
@@ -53,29 +52,12 @@ func (s *Service) publish(topic string, data map[string]any) {
 	}
 }
 
-// mediaJSON probes a file for the cached media info stored on the movie row ("" when it
-// can't be read). Done before a transaction opens: a probe can take seconds and every
-// other writer waits on an open transaction.
-func (s *Service) mediaJSON(path string) string {
-	info := s.fileInfo(path, true)
-	if info == nil {
-		return ""
-	}
-	b, err := json.Marshal(info)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
-// setDefaultFileIn is setDefaultFile inside a transaction, with the media info probed
-// beforehand.
+// setDefaultFileIn is setDefaultFile inside a transaction, with the media info read
+// beforehand (mediaJSONOf; "" clears the cache, so an old file's facts never describe the
+// new one — the detail page reads it again in the background).
 func setDefaultFileIn(ctx context.Context, r *Repo, id int64, path, media string) error {
 	if err := r.SetFile(ctx, id, path); err != nil {
 		return err
 	}
-	if media != "" {
-		_ = r.SetMediaInfo(ctx, id, media)
-	}
-	return nil
+	return r.SetMediaInfo(ctx, id, media)
 }

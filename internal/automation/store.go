@@ -39,10 +39,14 @@ type grab struct {
 	MediaType    string // "movie" | "series" | "book" | "music"
 	InfoHash     string // the torrent's real identity; "" for rows predating migration 0062
 	Status       string // one of the grabStatus* words (grabstatus.go)
+	// ReplacesPath is the file the grab's movie track held when it was grabbed (an
+	// upgrade, a re-grab, a manual grab over a file); "" for a grab for a missing file and
+	// for rows predating migration 0155. See movieHasFileFor.
+	ReplacesPath string
 }
 
 // grabCols is the column list scanGrab reads, in its order.
-const grabCols = `id, movie_id, version_id, title, indexer, quality_profile, stall_minutes, grabbed_at, seed_enabled, seed_ratio, seed_hours, media_type, info_hash, status`
+const grabCols = `id, movie_id, version_id, title, indexer, quality_profile, stall_minutes, grabbed_at, seed_enabled, seed_ratio, seed_hours, media_type, info_hash, status, replaces_path`
 
 // addBlock blocklists a release for a movie.
 func (c *Coordinator) addBlock(ctx context.Context, movieID int64, title, indexer, downloadURL, reason string) error {
@@ -213,11 +217,19 @@ func (c *Coordinator) addBlockGlobal(ctx context.Context, title, indexer, reason
 // the originating indexer's seed policy so cleanup survives the indexer being
 // removed or renamed later.
 func (c *Coordinator) recordGrab(ctx context.Context, movieID, versionID int64, title, indexer, profile string, stallMinutes int, infoHash string) {
+	c.recordGrabReplacing(ctx, movieID, versionID, title, indexer, profile, stallMinutes, infoHash, "")
+}
+
+// recordGrabReplacing is recordGrab for a grab meant to replace the file its movie track
+// holds now (replacesPath): an upgrade, a re-grab, a manual grab over an existing file.
+// The stall check then waits for that track to hold a different file before calling the
+// grab imported, instead of taking the old file for the new one.
+func (c *Coordinator) recordGrabReplacing(ctx context.Context, movieID, versionID int64, title, indexer, profile string, stallMinutes int, infoHash, replacesPath string) {
 	seedEnabled, seedRatio, seedHours := c.seedRules(ctx, indexer)
 	_, err := c.db.ExecContext(ctx,
-		`INSERT INTO grabs (movie_id, version_id, title, indexer, quality_profile, stall_minutes, seed_enabled, seed_ratio, seed_hours, info_hash)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		movieID, versionID, title, indexer, profile, stallMinutes, boolToInt(seedEnabled), seedRatio, seedHours, infoHash)
+		`INSERT INTO grabs (movie_id, version_id, title, indexer, quality_profile, stall_minutes, seed_enabled, seed_ratio, seed_hours, info_hash, replaces_path)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		movieID, versionID, title, indexer, profile, stallMinutes, boolToInt(seedEnabled), seedRatio, seedHours, infoHash, replacesPath)
 	if err != nil {
 		c.log.Warn("automation: record grab failed", "err", err)
 	}
@@ -384,7 +396,7 @@ func scanGrab(row interface{ Scan(...any) error }) (grab, error) {
 	var g grab
 	var seedEnabled int
 	err := row.Scan(&g.ID, &g.MovieID, &g.VersionID, &g.Title, &g.Indexer, &g.Profile,
-		&g.StallMinutes, &g.GrabbedAt, &seedEnabled, &g.SeedRatio, &g.SeedHours, &g.MediaType, &g.InfoHash, &g.Status)
+		&g.StallMinutes, &g.GrabbedAt, &seedEnabled, &g.SeedRatio, &g.SeedHours, &g.MediaType, &g.InfoHash, &g.Status, &g.ReplacesPath)
 	g.SeedEnabled = seedEnabled != 0
 	return g, err
 }
@@ -469,6 +481,25 @@ func (c *Coordinator) markGrabImportedForMovie(ctx context.Context, movieID int6
 			c.log.Warn("automation: mark grab imported failed", "err", err)
 		}
 	}
+}
+
+// markMovieGrabImportedByHash flips the in-flight grab a movie download came from to
+// imported, found by its info hash — the identity that survives the trip through the
+// client. Reports whether a row matched; rows without a hash need the name fallback
+// (markGrabImportedForMovie), which misses prettified tracker titles.
+func (c *Coordinator) markMovieGrabImportedByHash(ctx context.Context, movieID int64, infoHash string) bool {
+	if infoHash == "" {
+		return false
+	}
+	res, err := c.db.ExecContext(ctx,
+		`UPDATE grabs SET status = ? WHERE movie_id = ? AND media_type = 'movie' AND info_hash != ''
+		   AND lower(info_hash) = lower(?) AND `+inFlightWhere, grabStatusImported, movieID, infoHash)
+	if err != nil {
+		c.log.Warn("automation: mark grab imported failed", "err", err)
+		return false
+	}
+	n, _ := res.RowsAffected()
+	return n > 0
 }
 
 // markSeriesGrabImported flips the ONE grab this download came from to imported.
