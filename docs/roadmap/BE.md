@@ -232,7 +232,7 @@ One nil dereference restarts the whole app mid-encode or mid-stream. Shutdown ca
 _Read-then-write transactions stop hitting SQLITE_BUSY. An unreadable blocklist means no grab that cycle instead of grabbing a known fake. Settings never silently revert to env defaults. A same-size but different upgrade is actually placed in the library._
 
 <a id="be-04"></a>
-- [ ] **BE-04 · SQLite: IMMEDIATE transactions, store.WithTx, and safety reads that fail closed** — `P2` · `S` · Phase 2
+- [x] **BE-04 · SQLite: IMMEDIATE transactions, store.WithTx, and safety reads that fail closed** — `P2` · `S` · Phase 2
   - **Problem:** The DSN has no _txlock (store.go:32-36), so BeginTx is DEFERRED. The read-then-write transactions in series/repo.go:234 (RebuildEpisodes) and 476, and music/repo.go:147 and 302, can fail with BUSY_SNAPSHOT when another connection commits in between; the Insights poller writes every 5 s. Multi-step writes aren't atomic: movies.Service.Delete runs DeleteVersionsForMovie then Delete, ignoring the first error. Safety reads fail open:
 - blockedSetOf returns an empty set on error (automation/store.go:107-125), so globally blocklisted fakes become grabbable.
 - pendingGrabTitles and pendingSeriesGrabTitles (store.go:267-310) and pendingBookGrabTitles (books.go:1618) return nil, which allows re-grabs.
@@ -259,7 +259,7 @@ _Read-then-write transactions stop hitting SQLITE_BUSY. An unreadable blocklist 
   - **Risk:** IMMEDIATE takes the write lock at BEGIN, so writers serialize sooner. Keep transactions short, never hold one across network I/O or ffprobe, and use busy_timeout(5000) for real contention. Migrations also become IMMEDIATE, which is harmless at boot.
   - **Resolves:** backend-10
 <a id="be-05"></a>
-- [ ] **BE-05 · Settings served from memory with write-through; no silent fallback to defaults** — `P2` · `S` · Phase 2
+- [x] **BE-05 · Settings served from memory with write-through; no silent fallback to defaults** — `P2` · `S` · Phase 2
   - **Problem:** settings.Get returns the default on any error (settings.go:19-26), so a transient DB error silently reverts a setting. The music import root resolver (main.go:315-317) can send albums to the env default folder mid-import, and module toggles, the disk guard and naming can flip for one call. There are about 80 Get/GetBool call sites. quality/repo.go:143-160 reads and writes the settings table directly (default_profile:<type>), bypassing the service.
   - **Approach:** 1) settings.go:
        - `NewService(db) (*Service, error)` loads every row into a map under RWMutex.
@@ -283,7 +283,7 @@ _Read-then-write transactions stop hitting SQLITE_BUSY. An unreadable blocklist 
   - **Risk:** Migrations that write settings run before the load, which is fine. Any future direct SQL write would bypass the cache; archtest guards that. SAFE's restore-on-next-boot works naturally because the cache loads at boot.
   - **Resolves:** backend-10
 <a id="be-11"></a>
-- [ ] **BE-11 · Fix the same-size import shortcut (content check) and cover importer replacement and cross-device paths** — `P2` · `S` · Phase 2
+- [x] **BE-11 · Fix the same-size import shortcut (content check) and cover importer replacement and cross-device paths** — `P2` · `S` · Phase 2
   - **Problem:** Importer.linkOrCopy (importer.go:1437) and the package-level linkOrCopy (importer.go:1466) treat any same-size destination as 'already imported'. A different release of identical byte size is never placed, yet the import is recorded and MarkImported stamps the new release's name and quality onto the old file. placeSub (importer.go:1382) has the same size-only check for subtitles. The cross-device copy branch and the replace-with-recycle path have no direct tests.
   - **Approach:** 1) importer.go: `sameContent(src, dst string, si, di os.FileInfo) (bool, error)`.
        - os.SameFile → true. Different sizes or size 0 → false.
@@ -366,7 +366,7 @@ A dropped event means Convert never sees a same-path upgrade, because the daily 
   - **Risk:** Handlers must be idempotent. Convert IndexMovie upserts. notifyParties dedupes via the unique inbox ref and only pushes when the row is new. Verify that Subtitles OnMovieImported dedupes its ensure-job. Registration must happen before producers run (main registers before sched.Start). PLEX's 'scan after import' and REQ's 'ready once Plex has it' should be added as consumers here, not as new bus subscribers.
   - **Resolves:** backend-6
 <a id="be-12"></a>
-- [ ] **BE-12 · Pin movie and series delete/replace behaviour with tests (recycle on, off and failing) plus the re-import path** — `P2` · `S` · Phase 2
+- [x] **BE-12 · Pin movie and series delete/replace behaviour with tests (recycle on, off and failing) plus the re-import path** — `P2` · `S` · Phase 2
   - **Problem:** movies has 1,892 source lines and 244 test lines. Nothing tests Service.Delete, DeleteFile, DeleteVersionFile, removeFile with recycling on, or MarkImported replacement with recycling on (TestMarkImportedQualityGate covers only the recycle-off case). series.DeleteEpisodeFile is untested with recycling on or failing. These paths destroy or replace files, so a regression costs the owner media.
   - **Approach:** Every test works on t.TempDir() libraries and bins, never real media.
     1) movies/delete_test.go:

@@ -484,7 +484,7 @@ _Nightly and manual snapshots with retention. An admin Backups card with downloa
   - **Risk:** Seven copies grow /data, so the Backups card shows the total. Backups sit on the DB's disk, so they protect against corruption, not disk loss. Download (SAFE-12) covers that.
   - **Resolves:** system-2, backend-5, product-6
 <a id="safe-12"></a>
-- [ ] **SAFE-12 · Backups card: list, back up now, download, delete, and schedule controls (admin only)** — `P1` · `M` · Phase 2
+- [x] **SAFE-12 · Backups card: list, back up now, download, delete, and schedule controls (admin only)** — `P1` · `M` · Phase 2
   - **Problem:** Even with snapshots on disk, the owner can't see, download or manage them in the app. Sonarr, Radarr and Tautulli users expect System → Backup. The DB lives in a Docker volume, so getting a copy off the server is hard today.
   - **Approach:** 1. Add internal/httpapi/backups.go. Every route is requireRole(RoleAdmin), or SEC's admin router when it lands, because backups contain API keys, the Plex token and password hashes:
        - GET /api/v1/system/backups returns {backups, total_bytes, free_bytes, settings:{enabled, hour, keep_nightly}, last_nightly_at}.
@@ -513,7 +513,7 @@ _Nightly and manual snapshots with retention. An admin Backups card with downloa
   - **Risk:** On-the-fly gzip of a large DB briefly uses CPU. Backup files hold secrets and per-user listening data keyed by book. Downloads are admin-only and contents are never listed or logged.
   - **Resolves:** system-2, backend-5, product-6
 <a id="safe-13"></a>
-- [ ] **SAFE-13 · Restore a backup from the list: validate, stage, swap at the next boot, keep the replaced DB** — `P1` · `M` · Phase 2
+- [x] **SAFE-13 · Restore a backup from the list: validate, stage, swap at the next boot, keep the replaced DB** — `P1` · `M` · Phase 2
   - **Problem:** A backup is only useful if it can be put back. Today a restore means stopping the container and hand-copying SQLite files inside a managed Docker volume, with the -wal and -shm files left to trip over. A live swap while the scheduler is writing would corrupt data.
   - **Approach:** 1. internal/store/restore.go:
        - ValidateBackup(path, embedded []string) (BackupInfo{SchemaVersion string; Unknown []string}, error): open 'file:<p>?mode=ro'. Require PRAGMA integrity_check = 'ok' and the presence of the users and schema_migrations tables. Refuse when any applied version isn't embedded in this binary (ErrNewerSchema, naming them).
@@ -567,7 +567,7 @@ _Nightly and manual snapshots with retention. An admin Backups card with downloa
   - **Risk:** Low. Only affects migrations that opt in. The pre-migrate snapshot from SAFE-01 is the backstop either way.
   - **Resolves:** backend-5
 <a id="safe-15"></a>
-- [ ] **SAFE-15 · Restore from an uploaded backup (.db or .db.gz) and an `arrmada restore` CLI for when the app won't boot** — `P2` · `M` · Phase 2
+- [x] **SAFE-15 · Restore from an uploaded backup (.db or .db.gz) and an `arrmada restore` CLI for when the app won't boot** — `P2` · `M` · Phase 2
   - **Problem:** A backup downloaded off the server, which SAFE-12 produces as .db.gz, can't be brought back through the UI. When a bad state stops the app from booting, there is no UI at all. Today that means hand-copying files inside a Docker volume.
   - **Approach:** 1. POST /api/v1/system/backups/upload (admin):
        - Stream the body with r.MultipartReader() under http.MaxBytesReader(4 GiB); return 413 when it's over.
@@ -655,7 +655,7 @@ _Each library root has its own .arrmada-recycle, so recycling is always a rename
 _update.sh keeps the previous image. `./update.sh --rollback` restores the matching pre-migrate snapshot and starts the old build. A binary refuses to run against a schema it doesn't know, instead of corrupting it._
 
 <a id="safe-18"></a>
-- [ ] **SAFE-18 · Updates can be rolled back: keep the previous image, `./update.sh --rollback`, and refuse to run against an unknown newer schema** — `P2` · `M` · Phase 2
+- [x] **SAFE-18 · Updates can be rolled back: keep the previous image, `./update.sh --rollback`, and refuse to run against an unknown newer schema** — `P2` · `M` · Phase 2
   - **Problem:** update.sh rebuilds the image tagged arrmada:dev and then runs `docker image prune -f` (update.sh:107), which deletes the now-dangling previous build. There is no way back to the last working version. If an older binary is ever started against a DB that a newer one migrated, runMigrations silently ignores the unknown versions and the old code runs against a schema it doesn't understand.
   - **Approach:** 1. store.OpenWith: after ensuring schema_migrations, compute the applied versions that aren't embedded. If there are any, refuse to start with: 'This database was upgraded by a newer Arrmada (<versions>). Update Arrmada again, or restore the snapshot taken before that upgrade: arrmada restore --for-schema <latest embedded>'. The override is ARRMADA_ALLOW_NEWER_SCHEMA=1, which logs a loud warning.
     2. CLI (from [SAFE-15](#safe-15)):

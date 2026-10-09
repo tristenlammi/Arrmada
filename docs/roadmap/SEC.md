@@ -302,7 +302,7 @@ These lines go into the applog ring and into the persisted arrmada.log.jsonl and
 _Books Discover runs through a tag-based adult filter on every surface. No library or import path can sit under /data, and the folder picker no longer offers /data._
 
 <a id="sec-05"></a>
-- [ ] **SEC-05 · Tag-based adult filter on every Books Discover surface** — `P1` · `S` · Phase 2
+- [x] **SEC-05 · Tag-based adult filter on every Books Discover surface** — `P1` · `S` · Phase 2
   - **Problem:** No book path calls the always-on adult filter. The browse rows, trending, Recommended, genre/subject rows, author works, similar books and Discover search all skip it, while every movie and TV Discover surface goes through it (metadata/discover.go). The adultfilter package matches video-porn studio and site tokens, so running it over book titles alone would catch almost nothing. Explicit titles can surface in the Romance, trending and search rows that children on shared accounts see.
   - **Approach:** 1. New internal/adultfilter/books.go, so the single-package policy holds:
        - BookIsAdult(title string, tags []string) bool is true when adultfilter.Matches(title), or when any tag matches on word boundaries, case-insensitive: erotica, erotic, erotic romance, erotic fiction, bdsm, pornography, porn, xxx.
@@ -325,7 +325,7 @@ _Books Discover runs through a tag-based adult filter on every surface. No libra
   - **Risk:** Tag coverage differs by catalogue. Open Library subjects are noisy, and Hardcover tags are community-assigned, so some explicit books will still get through. The filter blocks only on clear tags, so mainstream romance isn't hidden. Coordinate with BOOK if its Discover rework replaces enrichBookCards: the filter must stay in the single funnel.
   - **Resolves:** books-14
 <a id="sec-06"></a>
-- [ ] **SEC-06 · Never under /data: refuse library folders in or above the data dir, and drop /data from the folder picker** — `P1` · `S` · Phase 2
+- [x] **SEC-06 · Never under /data: refuse library folders in or above the data dir, and drop /data from the folder picker** — `P1` · `S` · Phase 2
   - **Problem:** Standing rule: media must never be mounted at /data (the DB directory). handleSetLibraryPaths (library_paths.go:59-91) stores any trimmed string with no check, including the paths saved by the setup wizard. ApplySavedLibraryDirs applies them at boot. The folder picker's start candidates include '/data' (library_paths.go:96), and nothing rejects a library under DataDir. An import or Convert write into /data would mix media with the database, and the hourly DB/log housekeeping and backups would then treat media as app state. This is the /data slice of system-10; CFG owns the rest (live per-folder checks).
   - **Approach:** 1. handleSetLibraryPaths: for each provided non-empty path p:
        - r := pathguard.Resolve(p);
@@ -417,7 +417,7 @@ Even manager-only, it ends up in devtools, HAR files and extensions. The grab an
   - **Risk:** Stored URLs with schemes outside the allowlist fail validation on their next edit. invalid_reason surfaces that instead of silently dropping them. INT: if the Alerts-page move (insights.t8) is in flight, put the UI half in whichever page is current. The backend half doesn't depend on it.
   - **Resolves:** insights-7
 <a id="sec-09"></a>
-- [ ] **SEC-09 · Admin means admin: API keys, system settings, folders, recycle purge and logs are admin-only** — `P1` · `S` · Phase 2
+- [x] **SEC-09 · Admin means admin: API keys, system settings, folders, recycle purge and logs are admin-only** — `P1` · `S` · Phase 2
   - **Problem:** The UI hides System and Users from managers (Settings.tsx:84), but the API lets managers do all of the following (server.go:113-121, 308-313):
 - PUT /apikeys (and read and test them);
 - PUT /settings for module toggles, Plex sign-in and auto-approve, the disk guard and recycle limits;
@@ -458,7 +458,7 @@ The Logs page also exposes everything any module logs.
 _The off-LAN gate reads the same route table, with no separate prefix list to drift. Login throttling keys on the real client IP, counts failures only, and can't lock the owner out from home. Import folder listings are bounded and cancellable. Requester Apprise links can't reach internal hosts._
 
 <a id="sec-10"></a>
-- [ ] **SEC-10 · Drive the off-LAN gate from the route table and delete the prefix allowlist** — `P1` · `S` · Phase 2
+- [x] **SEC-10 · Drive the off-LAN gate from the route table and delete the prefix allowlist** — `P1` · `S` · Phase 2
   - **Problem:** externalGate (external.go:129-139) decides off-LAN reachability from externalAllowedPrefixes and the externalAllowedExact regex, a second list maintained separately from the routes. The two drift: /books/{id}/cover-image is used by My Books but blocked off-LAN, so uploaded covers break outside the house. A future route under an allowed prefix (any new /api/v1/me/* or /api/v1/requests/* route) silently becomes internet-reachable for non-staff.
   - **Approach:** 1. externalGate keeps classifyExternal and the staff exemption. It only stamps externalCtxKey; it no longer blocks.
     2. The router guard (router.go, [SEC-02](#sec-02)): when isExternalRequest(r) && !spec.External → 403 'not available outside your network'. Unmatched /api paths fall through to the mux's 404/405, which is fine. Non-/api SPA paths are registered public+ext.
@@ -475,7 +475,7 @@ _The off-LAN gate reads the same route table, with no separate prefix list to dr
   - **Risk:** Low once SEC-02's golden is in. The behaviour change is limited to cover-image, which is now reachable off-LAN for requesters.
   - **Resolves:** backend-2
 <a id="sec-11"></a>
-- [ ] **SEC-11 · Trusted-proxy client IP, and login throttling that counts failures only and can't lock the owner out** — `P1` · `S` · Phase 2
+- [x] **SEC-11 · Trusted-proxy client IP, and login throttling that counts failures only and can't lock the owner out** — `P1` · `S` · Phase 2
   - **Problem:** httpapi.clientIP (ratelimit.go:71-83) takes the leftmost X-Forwarded-For from any peer and ignores Cf-Connecting-Ip, even though compose sets ARRMADA_EXTERNAL_HEADER=Cf-Connecting-Ip. Rotating the header dodges the per-IP limit. handleLogin calls loginAllowed before Authenticate (auth.go:135-138), so successful logins count too, and the limiter has no reset. With 10 attempts per 15 minutes on 'login-user:<name>' (server.go:102), any internet visitor can keep the owner's username unable to sign in, from the LAN as well. external.go forwardedClientIP has the same leftmost-hop trust. The audiobook server's own helper is better (trusts headers only from private peers, resets on success, audioserver/server.go:395-411), but it still takes the leftmost XFF.
   - **Approach:** 1. New internal/netutil/clientip.go:
        - ClientIP(r) string and ForwardedClientIP(r) net.IP.
@@ -504,7 +504,7 @@ _The off-LAN gate reads the same route table, with no separate prefix list to dr
   - **Risk:** Changing how forwarded IPs are read affects the external/LAN classification. The existing externalgate tests plus the new table pin the behaviour behind cloudflared and a local TLS proxy. Run a real check through the tunnel after deploying.
   - **Resolves:** backend-7
 <a id="sec-12"></a>
-- [ ] **SEC-12 · Bounded, cancellable manual-import walks with a 'showing the first 500' notice** — `P1` · `S` · Phase 2
+- [x] **SEC-12 · Bounded, cancellable manual-import walks with a 'showing the first 500' notice** — `P1` · `S` · Phase 2
   - **Problem:** Even confined to the roots (SEC-01), a manager listing a library root walks every file on the array. The walks keep running after the browser disconnects because no context is passed:
 - movies.Service.ManualImportCandidates(dir) (service.go:1146);
 - library.FindVideos (importer.go:672), via Coordinator.SeriesImportCandidates (series_interactive.go:461);
@@ -562,7 +562,7 @@ None has a result cap.
 _Family members stay signed in as long as they keep using the app. An expired or revoked session lands on the login page instead of error banners. Everyone can see their own devices and sign the others out, and an admin can sign a user out everywhere._
 
 <a id="sec-14"></a>
-- [ ] **SEC-14 · Sliding sessions, and a clean 'you were signed out' when a session ends** — `P2` · `S` · Phase 2
+- [x] **SEC-14 · Sliding sessions, and a clean 'you were signed out' when a session ends** — `P2` · `S` · Phase 2
   - **Problem:** auth.Service.sessionTTL is a fixed 30 days (service.go:67), and ValidateSession (service.go:361) never extends it, so every family member's session hard-expires mid-use once a month. PWA users get dropped silently. MeProvider loads the user once at boot, and req() (api.ts:1053-1069) just throws on 401, with no 401 handling anywhere in web/src. After expiry, a password reset or a revocation, the open app shows 'authentication required' banners until a manual reload.
   - **Approach:** 1. auth.Service:
        - add now func() time.Time (default time.Now, injectable).

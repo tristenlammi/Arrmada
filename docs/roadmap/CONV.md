@@ -183,7 +183,7 @@ _No hot retry loops and no wasted re-encodes on full disks. Convert never makes 
   - **Risk:** Large 4K remuxes stop converting until the owner raises the cap or CONV-08 ships. That is intended (safe over fast) and must be stated in Problems. Coordinate with SAFE's recycle-bin fix (never purge the newest item, per-filesystem bins) so Headroom matches SAFE's cap semantics and isn't duplicated. A file deleted by the user during the hour can still push a converted original out; that is acceptable for an interim guard.
   - **Resolves:** convert-2
 <a id="conv-03"></a>
-- [ ] **CONV-03 · Collapse repeated activity-log lines and colour the scratch indicator against the next file's need** — `P1` · `S` · Phase 2
+- [x] **CONV-03 · Collapse repeated activity-log lines and colour the scratch indicator against the next file's need** — `P1` · `S` · Phase 2
   - **Problem:** Identical lines from a retry loop fill the 5,000-line activity log (logstore.go:9) and push out the history that matters. The Settings scratch indicator turns green above a fixed 20 GB (Convert.tsx:993), while a single 4K remux can need ~90 GB. The owner gets no warning that the next file won't fit.
   - **Approach:** 1) event() (service.go:162): under logMu, if the last logBuf line has the same level and the same message (ignoring a trailing ' (×N)'), rewrite it as 'msg (×N+1)' with the new timestamp instead of appending. Mirror this with a new logStore.updateLast(ctx, ln): UPDATE convert_logs SET at = ?, msg = ? WHERE id = (SELECT MAX(id) FROM convert_logs). slog still receives the first occurrence and every 10th repeat.
     2) autoCand (runner.go:150) gains an unexported needScratch int64, filled in computeCandidates from scratchNeeded(&mi, plan, maybeHDR10Plus), where maybeHDR10Plus = mi.HDR=='HDR10+' || (codecClass(mi.VideoCodec)=='hevc' && mi.EncodeHDR()=='HDR10'), because the HDR10+ pipeline doubles the need.
@@ -213,7 +213,7 @@ _No hot retry loops and no wasted re-encodes on full disks. Convert never makes 
   - **Risk:** Low. It changes which files need subtitle work (Needs.Subs), so the cached candidate list and the reclaimable figure shift slightly. The cache key covers this after a deploy; call invalidateLibraryCache at startup if needed.
   - **Resolves:** convert-9
 <a id="conv-05"></a>
-- [ ] **CONV-05 · Truthful Convert copy and an archived plan doc** — `P1` · `S` · Phase 2
+- [x] **CONV-05 · Truthful Convert copy and an archived plan doc** — `P1` · `S` · Phase 2
   - **Problem:** Several statements on the Convert page are untrue:
 - The header (Convert.tsx:133-137) says 'every audio track [is] copied untouched' even when the language or commentary filters remove tracks.
 - It promises the result 'must look the same' (Convert.tsx:247), backed only by four 15 s SSIM windows at 0.97.

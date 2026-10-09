@@ -86,7 +86,7 @@ M1 fixes everything that actively misleads (P1) and adds the guard. M2 rewrites 
 _The TMDB key state is one truthful, role-aware message. Music, movie and subtitle copy no longer promise upgrades, AI or stripping that don't exist. Delete dialogs say whether files really go to the recycle bin. A bad URL shows 'Page not found'. No toast names a page that doesn't exist. CI fails if any of the retired phrases comes back._
 
 <a id="copy-01"></a>
-- [ ] **COPY-01 · Deep-link foundation: lib/links.ts plus URL-addressable tabs on Settings, Insights, Subtitles, Convert and Downloads** — `P1` · `S` · Phase 2
+- [x] **COPY-01 · Deep-link foundation: lib/links.ts plus URL-addressable tabs on Settings, Insights, Subtitles, Convert and Downloads** — `P1` · `S` · Phase 2
   - **Problem:** Copy across the app sends people to 'Settings → API keys', 'Insights → Settings', 'Settings → Library' and 'Downloads → Searching'. Every one of those pages keeps its tab in React state, so a link can only land on the first tab:
 - Settings.tsx:55
 - Insights.tsx:20
@@ -119,7 +119,7 @@ The link targets are also hard-coded in each string. When CFG (Settings hub), AC
   - **Risk:** Low. If FE's URL-state work ships a generic hook first, use that hook and keep only links.ts. Settings renders 'Loading…' until its settings load, so the hash scroll must wait for `s`, or it scrolls to nothing.
   - **Resolves:** 
 <a id="copy-02"></a>
-- [ ] **COPY-02 · One truthful, role-aware 'no TMDB key' state on Movies, Series and Discover** — `P1` · `M` · Phase 2
+- [x] **COPY-02 · One truthful, role-aware 'no TMDB key' state on Movies, Series and Discover** — `P1` · `M` · Phase 2
   - **Problem:** Movies.tsx:249 and Series.tsx:247 tell the user to set ARRMADA_TMDB_API_KEY and restart.
 - The key is a UI-managed credential (apikeys.go; the env var is only a fallback).
 - It takes effect without a restart (Settings.tsx:495).
@@ -163,7 +163,7 @@ On Discover, every TMDB row fetches on its own and renders LoadError with that a
   - **Risk:** Low. Changing discoveryReady's signature touches 8 handlers, but `go vet` catches any that are missed. Leave room in the role wording for CFG's decision on whether managers can see API keys, since the backend already allows them (server.go:113).
   - **Resolves:** walk-1, series-15, movies-6, frontend-13, product-13
 <a id="copy-03"></a>
-- [ ] **COPY-03 · Retire stale page names and roadmap copy: a real 404 page, 'Downloads' instead of 'Activity', Music and Books hints, Overseerr text** — `P1` · `S` · Phase 2
+- [x] **COPY-03 · Retire stale page names and roadmap copy: a real 404 page, 'Downloads' instead of 'Activity', Music and Books hints, Overseerr text** — `P1` · `S` · Phase 2
   - **Problem:** Several visible strings describe an older build:
 - The catch-all route renders Placeholder title='Not found', so a mistyped URL reads 'Not found isn't built yet' (App.tsx:111-114, Placeholder.tsx:28).
 - The search toasts say 'it'll appear in Activity' (Movies.tsx:152, MovieDetail.tsx:690). /activity only redirects to /downloads (App.tsx:85) and isn't in the nav.
@@ -195,7 +195,7 @@ On Discover, every TMDB row fetches on its own and renders LoadError with that a
   - **Risk:** None. These toasts change again when MOV's outcome toasts and REQ's /requests page land; both read from lib/links.ts.
   - **Resolves:** frontend-13, product-13, frontend-10, system-15, movies-6
 <a id="copy-04"></a>
-- [ ] **COPY-04 · Stop promising music upgrades until an upgrade sweep exists** — `P1` · `S` · Phase 2
+- [x] **COPY-04 · Stop promising music upgrades until an upgrade sweep exists** — `P1` · `S` · Phase 2
   - **Problem:** The Quality page and the presets promise music upgrades that no code performs.
 
 The promises:
@@ -226,7 +226,7 @@ Why none of it happens:
   - **Risk:** Minimal. If MUS ships the music upgrade sweep before this task, skip this task and let MUS keep the copy. Otherwise MUS's sweep task must restore the switch and the wording.
   - **Resolves:** music-7
 <a id="copy-05"></a>
-- [ ] **COPY-05 · Subtitles page and job notes describe what actually ships** — `P1` · `S` · Phase 2
+- [x] **COPY-05 · Subtitles page and job notes describe what actually ships** — `P1` · `S` · Phase 2
   - **Problem:** The Subtitles page treats shipped features as unreleased and claims work that belongs to Convert:
 - The intro promises '(soon) AI transcription' and 'stripping the rest' (Subtitles.tsx:73).
 - Kept languages are 'stripped from the video (once stripping ships)' (lines 152 and 755). Stripping is Convert's job, under the separate convert_keep_sub_langs setting (convert/decide.go:27,84; Convert.tsx:971).
@@ -276,7 +276,7 @@ The backend job note 'N language(s) need OCR/AI — coming soon' (process.go:83)
   - **Risk:** Low. If SUB derives Convert's keep list from the Subtitles languages, the kept-languages sentence changes again; coordinate with that task. The Health column comes back only with SUB's real scores.
   - **Resolves:** subtitles-9, walk-2
 <a id="copy-06"></a>
-- [ ] **COPY-06 · Movie detail and delete dialogs say what really happens: upgrade watching and the recycle bin** — `P1` · `S` · Phase 2
+- [x] **COPY-06 · Movie detail and delete dialogs say what really happens: upgrade watching and the recycle bin** — `P1` · `S` · Phase 2
   - **Problem:** The WhyPanel and the delete dialogs promise things that don't happen.
 
 WhyPanel (MovieDetail.tsx:621-623):
@@ -314,7 +314,7 @@ Delete dialogs always say files go to the recycle bin, even when ARRMADA_RECYCLE
   - **Risk:** Low. OBS/MOV's search-outcome work ('last searched 3h ago…') extends WhyPanel later and should keep these branches. If SAFE makes the recycle bin stop silently hard-deleting on failure, this copy becomes fully true.
   - **Resolves:** movies-6
 <a id="copy-07"></a>
-- [ ] **COPY-07 · Copy guard: a Go test that fails CI when retired phrases come back** — `P2` · `S` · Phase 2
+- [x] **COPY-07 · Copy guard: a Go test that fails CI when retired phrases come back** — `P2` · `S` · Phase 2
   - **Problem:** Every stale string the audit found had been true once and was never revisited. Nothing stops 'coming soon', an env-var instruction or a dead page name from being reintroduced. The frontend has no test runner, but CI already runs `go test -race ./...` on a full checkout.
   - **Approach:** 1. New internal/webui/copy_test.go (package webui).
        - Locate the repo root by walking up from the test's directory to go.mod, then walk web/src for *.ts and *.tsx. Call t.Skip if web/src is absent, so the Docker race run still works.

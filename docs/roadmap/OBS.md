@@ -126,7 +126,7 @@ Every task runs `go vet` and `go test -race` in Docker before pushing, and every
 _The health panel checks the Movies/TV/Books/Music/Downloads folders the owner actually picked, and never creates a missing mount. The Dashboard's warnings and Downloading tile update live and say when the client is down. The Review page refreshes itself._
 
 <a id="obs-01"></a>
-- [ ] **OBS-01 · Health and disk-guard checks probe the folders the user picked, not ARRMADA_LIBRARY_DIR** — `P1` · `S` · Phase 2
+- [x] **OBS-01 · Health and disk-guard checks probe the folders the user picked, not ARRMADA_LIBRARY_DIR** — `P1` · `S` · Phase 2
   - **Problem:** handleSystemHealth probes a.deps.Config.LibraryDir (health_system.go:48), which is the managed arrmada-media volume. The banner can therefore say the library is writable while the real Movies share is read-only. Its writable() (health_system.go:105-121) calls os.MkdirAll first, which silently creates a missing mount point. The disk guard's 'same drive as your library' comparison (downloads.go:131-137) and startup.go's same-filesystem warning both compare Downloads against LibraryDir, so they report the wrong disk. The recycle dir defaults to <LibraryDir>/.recycle (main.go:203), so deletes from the array are copied across filesystems without any warning.
   - **Approach:** 1. Create package internal/health with folders.go only (the registry joins it in [OBS-04](#obs-04)):
        - `type Folder struct{Role, Label, Path string}`.
@@ -164,7 +164,7 @@ _The health panel checks the Movies/TV/Books/Music/Downloads folders the owner a
   - **Risk:** Low. The probes run on every /health/system call until OBS-04 caches them, but CreateTemp plus Remove per folder is cheap. Permission tests must not rely on chmod when running as root.
   - **Resolves:** system-3, system-8
 <a id="obs-02"></a>
-- [ ] **OBS-02 · Dashboard stays live: re-polled warnings, an honest Downloading tile, and a Review page that refreshes** — `P1` · `S` · Phase 2
+- [x] **OBS-02 · Dashboard stays live: re-polled warnings, an honest Downloading tile, and a Review page that refreshes** — `P1` · `S` · Phase 2
   - **Problem:** Dashboard.tsx:30-39 fetches status, health and systemHealth once on mount, on a page its own comment says people leave open. dashboard.go:119 sets queue_note when the client can't be listed, and api.ts:386 types it, but nothing renders it. A down qBittorrent therefore shows '0 · 0 seeding'. The Downloading tile turns amber on errors but never says how many (Dashboard.tsx:191-203). Reviews.tsx:16 loads once and never refreshes.
   - **Approach:** 1. Dashboard.tsx:
        - Fold api.systemHealth() into the existing pull loop, re-fetched every third tick (30s).

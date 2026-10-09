@@ -198,7 +198,7 @@ Effects:
   - **Risk:** Low. Anyone adding a read-only field to GET /settings later must keep the round-trip test green, which is exactly what the test is for. CFG-14 later replaces this save path with per-key commits that use the same partial PUT.
   - **Resolves:** system-1
 <a id="cfg-02"></a>
-- [ ] **CFG-02 · API keys: Save never clears a key; Clear becomes an explicit, confirmed DELETE that names the fallback** — `P1` · `S` · Phase 2
+- [x] **CFG-02 · API keys: Save never clears a key; Clear becomes an explicit, confirmed DELETE that names the fallback** — `P1` · `S` · Phase 2
   - **Problem:** In APIKeysSection, saveKey sends `drafts[id] ?? ""` (Settings.tsx:484), and Save is disabled only while busy. apikeys.Store.Set treats an empty value as a clear (apikeys.go:117-124). So clicking Save on an empty field silently wipes the saved TMDB or OpenSubtitles key.
 
 The wizard does the opposite: blank means keep (SetupWizard.tsx:52, 232).
@@ -226,7 +226,7 @@ Clear calls setDrafts('') and saveKey in the same tick (Settings.tsx:543), so sa
   - **Risk:** Low. Any external script that clears keys with an empty PUT would break; none is known. CFG-15 later moves this section into Settings → Connections unchanged.
   - **Resolves:** system-13
 <a id="cfg-03"></a>
-- [ ] **CFG-03 · Saved folders that aren't in use yet: a persistent 'Restart to apply' banner with Restart-and-wait and a busy-aware confirm** — `P1` · `S` · Phase 2
+- [x] **CFG-03 · Saved folders that aren't in use yet: a persistent 'Restart to apply' banner with Restart-and-wait and a busy-aware confirm** — `P1` · `S` · Phase 2
   - **Problem:** Saved folders reach the importer, qBittorrent's save path, the coordinator's DownloadsDir and the disk guard only at startup:
 - ApplySavedLibraryDirs runs once (setup.go:42-58; main.go:146).
 - The roots are captured at construction (main.go:181, 207, 233-243, 261, 294, 318-319, 371).
@@ -272,7 +272,7 @@ Music is the exception: it resolves live (main.go:315-317), so a naive compare w
   - **Risk:** A restart interrupts running Convert encodes (convert-7) and in-flight imports, which is why the confirm lists them. Once CFG-19/20 make folders live, folderRestartState returns nothing for folders, but the banner, endpoint and restart.ts remain for any future startup-only setting.
   - **Resolves:** system-4, walk-5
 <a id="cfg-04"></a>
-- [ ] **CFG-04 · Validate library and download folders: exists, writable, hardlink-ready, free space, never under /data; picker never starts at /data** — `P1` · `M` · Phase 2
+- [x] **CFG-04 · Validate library and download folders: exists, writable, hardlink-ready, free space, never under /data; picker never starts at /data** — `P1` · `M` · Phase 2
   - **Problem:** handleSetLibraryPaths (library_paths.go:55-84) stores any trimmed string, with no check for existence, writability or filesystem. The wizard's hardlink advice (SetupWizard.tsx:129-131) is never verified, even though a same-filesystem test exists in downloads.go:133-138.
 
 handleBrowse lists '/data' among its start candidates (library_paths.go:93), and nothing stops a library from being placed under the DB directory. That breaks the standing rule that media must never be mounted at /data.
@@ -317,7 +317,7 @@ handleBrowse lists '/data' among its start candidates (library_paths.go:93), and
 _A bad pull fails loudly. Each update keeps the previous image and a pre-update DB snapshot, and `./update.sh --rollback` brings the old build back. The Dashboard shows the real version and commit. Updates warn before killing a long encode. The broken BASE_URL option is gone._
 
 <a id="cfg-05"></a>
-- [ ] **CFG-05 · update.sh: fail loudly on a bad pull, keep the old image as :previous, add --rollback, stamp version and commit, shellcheck in CI** — `P1` · `S` · Phase 2
+- [x] **CFG-05 · update.sh: fail loudly on a bad pull, keep the old image as :previous, add --rollback, stamp version and commit, shellcheck in CI** — `P1` · `S` · Phase 2
   - **Problem:** Three update.sh problems:
 - When `git pull --ff-only` fails, update.sh warns, rebuilds the old code anyway, and still prints '✓ Arrmada updated' (update.sh:73, 112).
 - It always tags arrmada:dev (compose line 10), then `docker image prune -f` (line 107) deletes the now-dangling previous build, so there is no way back.
@@ -350,7 +350,7 @@ _A bad pull fails loudly. Each update keeps the previous image and a pre-update 
   - **Risk:** Keeping :previous costs one extra image of disk, several GB with the whisper and oneAPI layers; say so in the README. Unattended runs must still work: no prompts are added here. If deploys actually go through Komodo, these protections apply only once mirrored there.
   - **Resolves:** system-7, system-2
 <a id="cfg-06"></a>
-- [ ] **CFG-06 · arrmada CLI scaffold with `version` and `backup`; update.sh takes a pre-update snapshot; `--rollback --with-db`** — `P1` · `S` · Phase 2
+- [x] **CFG-06 · arrmada CLI scaffold with `version` and `backup`; update.sh takes a pre-update snapshot; `--rollback --with-db`** — `P1` · `S` · Phase 2
   - **Problem:** main.go never reads os.Args, so scripts have no safe way to take a consistent DB snapshot from outside the app. update.sh rebuilds and migrates with no snapshot, and the whole household's history lives in one SQLite file.
 
 There is also a trap: running `docker exec Arrmada-app arrmada <anything>` against today's image starts a second full server inside the container. Background jobs, MergeDuplicates and qBittorrent calls all run until the port bind fails.
@@ -377,7 +377,7 @@ There is also a trap: running `docker exec Arrmada-app arrmada <anything>` again
   - **Risk:** Anyone with docker exec can read the DB, which was already true. The setuid drop must happen before any file is opened. Test it in Docker as root with PUID 99. The label check is what keeps old images safe, so never call the CLI without it.
   - **Resolves:** system-2
 <a id="cfg-07"></a>
-- [ ] **CFG-07 · update.sh warns before restarting during a long conversion (loopback-only busy info in /api/health)** — `P2` · `S` · Phase 2
+- [x] **CFG-07 · update.sh warns before restarting during a long conversion (loopback-only busy info in /api/health)** — `P2` · `S` · Phase 2
   - **Problem:** update.sh restarts the container unconditionally. The owner deploys often, and each restart during a 4K x265 encode (~24 h per film at 3.8 fps, preset.go:717) throws away all the work done so far. runner.go:21-24 and cleanScratch (service.go:237-265) abandon in-flight work. CONV's resumable encode would cut the loss to one segment, but even then the current segment is lost.
   - **Approach:** 1) internal/httpapi/server.go handleHealth: when `isLocalCaller(r)` is true, add `busy: {convert_running, convert_running_sec, convert_progress, subtitles_running}` from a.busySummary() ([CFG-03](#cfg-03)).
        - isLocalCaller: the host from net.SplitHostPort(r.RemoteAddr) parses to a loopback IP, the request has no Config.ExternalHeader, and it has no X-Forwarded-For.
@@ -399,7 +399,7 @@ There is also a trap: running `docker exec Arrmada-app arrmada <anything>` again
   - **Risk:** Low. The non-interactive default must stay 'proceed', or unattended updates hang. cloudflared on the host network would reach the app through the Docker bridge, not loopback; the external-header check covers the rest.
   - **Resolves:** convert-7
 <a id="cfg-08"></a>
-- [ ] **CFG-08 · Remove the half-built ARRMADA_BASE_URL option** — `P3` · `S` · Phase 2
+- [x] **CFG-08 · Remove the half-built ARRMADA_BASE_URL option** — `P3` · `S` · Phase 2
   - **Problem:** The backend honours BaseURL: routes (server.go:105, 477-481), the cookie path (auth.go:226), pathAfterBase (external.go:143) and the book cover URLs (books.go:500). The SPA doesn't:
 - About 124 hardcoded '/api/v1' paths.
 - Vite builds with base '/'.
@@ -435,7 +435,7 @@ docker-compose.yml:40-41 advertises the option, so setting it gives a blank app.
 _Emails are case-insensitive. Accounts can be disabled, Plex identities blocked, and Read-only chosen at creation. A locked-out owner can reset a password with docker exec. Everyone can change their own password and sign out other devices._
 
 <a id="cfg-09"></a>
-- [ ] **CFG-09 · Case-insensitive emails for sign-in and account creation** — `P1` · `S` · Phase 2
+- [x] **CFG-09 · Case-insensitive emails for sign-in and account creation** — `P1` · `S` · Phase 2
   - **Problem:** users.username is plain UNIQUE (0001_init.sql:14). Authenticate matches `WHERE username = ?` exactly (service.go:310-313), and handleCreateUser stores the email as typed. 'Mum@gmail.com' and 'mum@gmail.com' are therefore different accounts, and a family member whose email was entered with a capital letter can't sign in. Only UserByUsername (used by the audiobook server) falls back to lower().
   - **Approach:** 1) New migration, the next free number after 0089: `<NNNN>_users_username_lower.sql` with `CREATE INDEX IF NOT EXISTS idx_users_username_lower ON users(lower(username));`. It is not unique, so existing case-duplicates still boot.
     2) internal/auth/service.go:
@@ -454,7 +454,7 @@ _Emails are case-insensitive. Accounts can be disabled, Plex identities blocked,
   - **Risk:** The migration number may clash with other epics; take the next free one at implementation time. The audiobook server's UserByUsername stays consistent with this.
   - **Resolves:** system-6
 <a id="cfg-10"></a>
-- [ ] **CFG-10 · Disable accounts (revokes sessions and audio tokens), block a Plex identity, offer Read-only at creation** — `P1` · `S` · Phase 2
+- [x] **CFG-10 · Disable accounts (revokes sessions and audio tokens), block a Plex identity, offer Read-only at creation** — `P1` · `S` · Phase 2
   - **Problem:** users.disabled exists, and Authenticate, ValidateSession, ValidateAPIKey and Plex sign-in all honour it, but no route sets it. handleUpdateUser accepts only role, auto_approve and password, and RevokeUserSessions has no caller.
 
 Deleting a Plex user doesn't keep them out: FindOrCreatePlexUser just creates a new account on their next Plex sign-in. Delete cascades away their listen_progress and listen_history (0084).
@@ -488,7 +488,7 @@ Read-only can be chosen when editing a user but not when creating one (Settings.
   - **Risk:** Disable must never delete anything, so listening data stays for a re-enable. A blocked id is stored without other personal data beyond the Plex display name the owner already saw.
   - **Resolves:** system-5, system-6
 <a id="cfg-11"></a>
-- [ ] **CFG-11 · `arrmada reset-password` for a locked-out owner** — `P2` · `S` · Phase 2
+- [x] **CFG-11 · `arrmada reset-password` for a locked-out owner** — `P2` · `S` · Phase 2
   - **Problem:** There is no forgot-password flow and no CLI or env reset, because main.go never read os.Args. A forgotten sole-admin password can only be fixed by editing SQLite by hand.
   - **Approach:** 1) cmd/arrmada/cli.go (scaffold from [CFG-06](#cfg-06)) adds `reset-password <email> [--password-stdin]`.
        - It looks the user up with auth.Service.UserByUsername, which matches exactly and then case-insensitively.
@@ -937,7 +937,7 @@ _System → Status shows version, commit, DB size, last backup, disk per library
   - **Risk:** Low. Paths are shown to admins only.
   - **Resolves:** system-8, system-7, system-15
 <a id="cfg-27"></a>
-- [ ] **CFG-27 · CI builds the Docker image on every PR and push (no publish yet)** — `P2` · `S` · Phase 2
+- [x] **CFG-27 · CI builds the Docker image on every PR and push (no publish yet)** — `P2` · `S` · Phase 2
   - **Problem:** CI never runs `docker build` (.github/workflows/ci.yml), so a broken apt repo, whisper tag or oneAPI base first fails on the Unraid server during an update.
   - **Approach:** 1) New .github/workflows/image.yml, triggered on pull_request and push to main.
        - A free-disk step first (e.g. jlumbroso/free-disk-space).

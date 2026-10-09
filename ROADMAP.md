@@ -412,6 +412,8 @@ Phase 0 started the soak that the Music decision needs.
 
 ### Phase 2 — Safe to operate
 
+> **Status: shipped 2026-10-09** — 41 of 42 tasks merged to main (full race suite, lint, frontend tests and shellcheck green). MUS-25 not done: the owner chose to leave Music as a Preview.
+
 **Theme:** Backups, restore and rollback; admin-only boundaries; validated folders; fail-safe settings; nothing visibly broken; truthful copy  
 **Goal:** The owner can back up, restore and roll back without a terminal. Only admins can change keys, folders, logs and purges. Folders are validated and never under /data. Settings never quietly revert. The UI never blanks or lies. SAFE-18 builds on CFG-05/CFG-06's update.sh and CLI; it does not rewrite them.  
 **Why now:** Phases 0–1 stopped live loss. Before the large overhauls, which all ship migrations and new admin surfaces, the owner needs:

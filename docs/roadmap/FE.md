@@ -133,7 +133,7 @@ The CI web job runs npm run lint (eslint 9 with typescript-eslint, react-hooks a
 _Chips, banners and modals render with their fills and shadows, and secondary text passes contrast. A session that ends lands on sign-in with a 'signed out' note and returns to the same page. A render error or a server outage no longer blanks the app. The bundle travels about 4x smaller, and the service worker can't serve stale or HTML-as-JS chunks. The theme choice is remembered._
 
 <a id="fe-01"></a>
-- [ ] **FE-01 · Define the missing tokens, alias every token in Tailwind, fix text contrast, and fail the build on undefined tokens** — `P1` · `S` · Phase 2
+- [x] **FE-01 · Define the missing tokens, alias every token in Tailwind, fix text contrast, and fail the build on undefined tokens** — `P1` · `S` · Phase 2
   - **Problem:** index.css has four token blocks (:8-77), and none of them defines --shadow (53 uses) or --avoid-soft (22 uses).
 - The Wanted/Pending/Held chips, the Movies/Series 'Metadata not configured' banner and Insights' 'Not connected' pill render with no fill.
 - Modals, popovers and the Login card (Login.tsx:67) have no shadow.
@@ -180,7 +180,7 @@ Contrast:
   - **Risk:** Lighter secondary text slightly changes how dense pages read. The hues stay warm and unchanged; get the owner's OK on the screenshot pairs before pushing.
   - **Resolves:** frontend-1, frontend-11
 <a id="fe-02"></a>
-- [ ] **FE-02 · Global sign-out handling: a 401 shows sign-in with 'You were signed out' and returns you to the same page** — `P1` · `S` · Phase 2
+- [x] **FE-02 · Global sign-out handling: a 401 shows sign-in with 'You were signed out' and returns you to the same page** — `P1` · `S` · Phase 2
   - **Problem:** req() in api.ts (:1053-1068) throws on any non-OK response and has no 401 branch. Nothing else in web/src handles 401 either.
 
 After a session expires (the TTL is a fixed 30 days), an admin disables a user, or a password changes, an open tab or installed PWA shows red 'authentication required' banners on every panel and poll until someone reloads by hand. A reload does reach Login, but Login always sends you to /discover (Login.tsx:32/46), so the deep link is lost.
@@ -226,7 +226,7 @@ The two raw fetch() uploads (api.ts:1243 audioserver import, :1464 book cover) b
   - **Risk:** A misplaced 401 would sign people out unexpectedly. The server uses 403 for role failures (requireRole) and for externalGate, and 401 only from protected() and the auth handlers, so only real session loss triggers this. SEC's session work (sliding sessions, revoke on password change) will make this path fire more often by design; that is intended.
   - **Resolves:** backend-13, system-6, frontend-9
 <a id="fe-03"></a>
-- [ ] **FE-03 · Error boundaries, chunk-load recovery, and a 'Can't reach Arrmada' boot state** — `P1` · `S` · Phase 2
+- [x] **FE-03 · Error boundaries, chunk-load recovery, and a 'Can't reach Arrmada' boot state** — `P1` · `S` · Phase 2
   - **Problem:** There is no ErrorBoundary anywhere. One render exception, for example a field arriving as null, unmounts the whole app and leaves a blank page.
 
 MeProvider (me.tsx:27-35) treats every boot failure as 'signed out'. A transient network error, a restarting container or a 502 from the reverse proxy therefore shows the login form instead of 'server unreachable'. Once FE-06 splits the code, a deploy will also make old index.html files reference chunks that no longer exist.
@@ -265,7 +265,7 @@ MeProvider (me.tsx:27-35) treats every boot failure as 'signed out'. A transient
   - **Risk:** Low. The reload guard must use the timestamp so a permanently missing chunk cannot loop; FE-04's asset 404 makes that case fail fast.
   - **Resolves:** frontend-9
 <a id="fe-04"></a>
-- [ ] **FE-04 · Serve precompressed assets, 404 missing assets, and version the service-worker cache per build** — `P1` · `S` · Phase 2
+- [x] **FE-04 · Serve precompressed assets, 404 missing assets, and version the service-worker cache per build** — `P1` · `S` · Phase 2
   - **Problem:** internal/webui/dist/assets/index-*.js is 915,596 bytes. embed.go serves it through http.ServeFileFS, and the handler chain at server.go:485 has no compression anywhere; gzip would cut it to about 225 KB. Requesters on phones outside the LAN pay the full size after every deploy.
 
 Two latent bugs would bite as soon as the bundle is split (FE-06):
