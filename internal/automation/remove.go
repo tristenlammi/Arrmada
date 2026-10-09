@@ -63,8 +63,13 @@ func (c *Coordinator) RemoveDownload(ctx context.Context, hash, name string, mod
 
 	if mode == RemoveBlock {
 		// Blocking already removes with data, marks the grab failed and finds another —
-		// the only path here where something is grabbed again on the user's behalf.
-		return res, c.BlockRelease(ctx, hash, release)
+		// the only path here where something is grabbed again on the user's behalf. A
+		// download tied to nothing is left alone (ErrNothingToBlock).
+		t, err := c.BlockRelease(ctx, hash, release)
+		if t.Kind != "" {
+			res.Kind, res.ID, res.Title = t.Kind, t.ID, t.Title
+		}
+		return res, err
 	}
 
 	remove := c.removeTorrent

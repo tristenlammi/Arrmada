@@ -208,6 +208,46 @@ func (c *Coordinator) grabAlbum(ctx context.Context, a music.Artist, al music.Al
 	return c.grabAlbumExcluding(ctx, a, al, nil)
 }
 
+// SearchAlbumNow searches for one album now and grabs the best release, the way the
+// sweep would, and says what it found. Used after a Block, to find another release.
+func (c *Coordinator) SearchAlbumNow(ctx context.Context, albumID int64) (SearchOutcome, error) {
+	if c.music == nil {
+		return SearchOutcome{Reason: ReasonNothingWanted}, nil
+	}
+	release, ok := c.claims.claim(albumKey(albumID))
+	if !ok {
+		return SearchOutcome{Reason: ReasonAlreadySearching}, ErrAlreadySearching
+	}
+	defer release()
+	al, err := c.music.GetAlbum(ctx, albumID)
+	if err != nil {
+		return SearchOutcome{}, err
+	}
+	a, err := c.music.GetArtist(ctx, al.ArtistID)
+	if err != nil {
+		return SearchOutcome{}, err
+	}
+	out := c.grabAlbum(ctx, a, al)
+	res := SearchOutcome{Searched: true}
+	switch out.Code {
+	case outcomeGrabbed:
+		res.Grabbed, res.GrabbedTitles = 1, []string{out.Release}
+		res.Reason = ReasonGrabbed
+	case outcomeNoResults:
+		res.Reason = ReasonNoReleases
+	case outcomeNoMatch:
+		res.Reason = ReasonNoneForTitle
+	case outcomeBlocked, outcomeBelowProfile:
+		res.Reason = ReasonBlockedOrBelow
+	case outcomeNoListing:
+		res.Searched, res.Reason = false, ReasonNothingWanted
+	default:
+		// Failed on our side (indexers, the client, disk, MusicBrainz): an error, not a miss.
+		return res, fmt.Errorf("album search: %s %s", out.Code, out.Detail)
+	}
+	return res, nil
+}
+
 // grabAlbumExcluding is grabAlbum that also skips the normalized titles in exclude: a stall
 // fail-over keeps the stalled release out of the replacement search without blocklisting
 // it, because it stays in the client until something else is found.

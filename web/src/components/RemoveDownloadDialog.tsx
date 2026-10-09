@@ -35,7 +35,11 @@ function stopWantingLabel(it: ActivityDownload): { label: string; disabled: bool
 // removedMessage says what a removal actually did, including what "stop wanting" switched
 // off as the server reports it, or why it switched off nothing.
 export function removedMessage(r: RemoveDownloadResult): string {
-  if (r.mode === "block") return "Removed — the release is blocklisted and another copy is being searched for.";
+  if (r.mode === "block") {
+    return r.title
+      ? `Blocked for ${r.title} — searching for another release.`
+      : "Removed — the release is blocklisted and another copy is being searched for.";
+  }
   let msg = r.mode === "delete_files" ? "Removed and its files deleted." : "Removed — the files are kept.";
   const u = r.unmonitored;
   if (u) {

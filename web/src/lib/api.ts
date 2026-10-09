@@ -187,6 +187,13 @@ export interface DiskGuardHold {
 
 export type RemoveDownloadMode = "keep_files" | "delete_files" | "block";
 // What a removed download was for, and what "stop wanting" switched off.
+// The library item a Block blocklisted a release for.
+export interface BlockTarget {
+  kind: "movie" | "series" | "book" | "music";
+  id: number;
+  title: string;
+}
+
 export interface RemoveDownloadResult {
   kind?: string;
   id?: number;
@@ -1522,8 +1529,10 @@ export const api = {
     if (opts.name) q.set("name", opts.name);
     return req<RemoveDownloadResult>(`/api/v1/queue/${encodeURIComponent(hash)}?${q}`, { method: "DELETE" });
   },
+  // Answers with what the release was blocked for; the removal and the search for another
+  // run as a job. A download tied to nothing in the library is refused (422) and left alone.
   blockDownload: (hash: string, name: string) =>
-    req<{ status: string } & JobRef>(`/api/v1/queue/${hash}/block`, { method: "POST", body: JSON.stringify({ name }) }),
+    req<{ status: string; blocked_for: BlockTarget } & JobRef>(`/api/v1/queue/${hash}/block`, { method: "POST", body: JSON.stringify({ name }) }),
   torrentAction: (hash: string, action: "recheck" | "reannounce" | "prio_up" | "prio_down") =>
     req<{ status: string }>(`/api/v1/queue/${hash}/action`, { method: "POST", body: JSON.stringify({ action }) }),
   // External service credentials, settable in-app (settings-first, env-fallback). The

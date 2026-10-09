@@ -52,3 +52,4 @@ func (c *claims) claimed(key string) bool {
 func movieKey(id int64) string  { return "movie:" + strconv.FormatInt(id, 10) }
 func seriesKey(id int64) string { return "series:" + strconv.FormatInt(id, 10) }
 func bookKey(id int64) string   { return "book:" + strconv.FormatInt(id, 10) }
+func albumKey(id int64) string  { return "album:" + strconv.FormatInt(id, 10) }

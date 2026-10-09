@@ -1235,42 +1235,230 @@ func (c *Coordinator) Blocklisted(ctx context.Context, movieID int64) ([]BlockEn
 // Unblock removes a blocklist entry.
 func (c *Coordinator) Unblock(ctx context.Context, id int64) error { return c.removeBlock(ctx, id) }
 
-// BlockRelease is the "block from the downloads list" action: remove the torrent
-// (and its data), blocklist it for its media so it isn't grabbed again, and search
-// for an alternate release. name is the torrent/release name.
-//
-// It used to only know about movies: blocking a TV torrent removed it but blocklisted
-// nothing, so the very next sweep re-grabbed the identical release.
-func (c *Coordinator) BlockRelease(ctx context.Context, hash, name string) error {
-	_ = c.downloads.Remove(ctx, hash, true)
-	// Whatever it was, its grab row must not stay 'grabbed' — that would hold the
-	// pending-grab guard for a day and hide the block from stall detection.
-	c.setGrabStatusByHash(ctx, hash, name, "", grabStatusFailed)
-	if m, ok := c.movies.MatchRelease(ctx, name); ok {
-		_, err := c.BlocklistAndSearch(ctx, m.ID, name, "", "")
-		if errors.Is(err, ErrAlreadySearching) {
-			return nil // the search in flight runs without the blocked release
-		}
-		return err
+// ErrNothingToBlock means a download isn't tied to anything in the library, so there is
+// nothing to blocklist it against. Block leaves such a torrent alone; Remove is the way
+// to take it out of the client.
+var ErrNothingToBlock = errors.New("not linked to anything in your library — use Remove instead")
+
+// BlockTarget is what a Block resolved to: the library item the release is blocked for.
+// Kind is movie | series | book | music; for a music discography ID is the artist.
+type BlockTarget struct {
+	Kind  string `json:"kind"`
+	ID    int64  `json:"id"`
+	Title string `json:"title"`
+
+	release     string // the release name blocklisted
+	indexer     string // where it came from, when a grab recorded it
+	discography bool   // a music discography, recorded against the artist
+}
+
+// BlockRelease is the "block from the downloads list" action: resolve what the download
+// is for, blocklist the release for that item, remove the torrent and its data, and
+// search for another. name is the torrent/release name. See ResolveBlock and
+// BlockResolved, which the API calls separately so it can answer with the title at once.
+func (c *Coordinator) BlockRelease(ctx context.Context, hash, name string) (BlockTarget, error) {
+	t, err := c.ResolveBlock(ctx, hash, name)
+	if err != nil {
+		return t, err
 	}
-	if c.series != nil {
-		sid, ix, grabbed := c.grabbedMediaFor(ctx, name, "series")
-		if !grabbed {
-			if s, ok := c.series.MatchByTitle(ctx, series.NormTitle(parser.Parse(name).Title)); ok {
-				sid = s.ID
+	return t, c.BlockResolved(ctx, hash, t)
+}
+
+// ResolveBlock works out which library item a download should be blocked for — a DB read
+// and at most one queue read, quick enough to answer the click with.
+//
+// The grab recorded for the info hash decides it whenever there is one: it says exactly
+// what the release was grabbed for. Only without a grab does the release name decide,
+// and then within the torrent's own category, so a TV torrent is never matched to a movie.
+// That used to happen: "Fargo.S05E01…" carries no year, matched the Fargo movie first,
+// blocklisted and re-searched the movie, and left the show free to grab it again. Books and
+// music weren't handled at all, so blocking one deleted it and the next sweep grabbed it
+// straight back.
+func (c *Coordinator) ResolveBlock(ctx context.Context, hash, name string) (BlockTarget, error) {
+	if g, status := c.grabForDownload(ctx, hash, name); g != nil && status != "" {
+		release := g.Title
+		if name != "" {
+			release = name
+		}
+		if t, ok := c.blockTargetFor(ctx, g.MediaType, g.MovieID, release, g.Indexer); ok {
+			return t, nil
+		}
+	}
+	category := ""
+	if c.downloads != nil {
+		if queue, err := c.downloads.Queue(ctx); err == nil {
+			for _, it := range queue {
+				if strings.EqualFold(it.Hash, hash) {
+					category = it.Category
+					if name == "" {
+						name = it.Name
+					}
+					break
+				}
 			}
 		}
-		if sid != 0 {
-			c.addBlockSeries(ctx, sid, name, ix, "manually blocklisted")
-			c.series.AddEvent(ctx, sid, "blocklisted", name)
-			_, err := c.SearchSeriesNow(ctx, sid)
-			if errors.Is(err, ErrAlreadySearching) {
-				return nil // the search in flight runs without the blocked release
+	}
+	if name == "" {
+		return BlockTarget{}, ErrNothingToBlock
+	}
+	kind := "movie"
+	switch {
+	case category == seriesCategory:
+		kind = "series"
+	case category == bookCategory:
+		kind = "book"
+	case category == musicCategory:
+		kind = "music"
+	case category == "" && parser.Parse(name).IsTV():
+		// The torrent wasn't found in the queue (or carries no category): an episode or
+		// season name is still never a movie's.
+		kind = "series"
+	}
+	var id int64
+	switch kind {
+	case "series":
+		if c.series != nil {
+			if s, ok := c.series.MatchByTitle(ctx, series.NormTitle(parser.Parse(name).Title)); ok {
+				id = s.ID
 			}
+		}
+	case "book":
+		if c.books != nil {
+			if b, ok := c.books.MatchByRelease(ctx, name); ok {
+				id = b.ID
+			}
+		}
+	case "music":
+		if c.music != nil {
+			if al, _, ok := c.albumForRelease(ctx, name); ok {
+				id = al.ID
+			}
+		}
+	default:
+		if c.movies != nil {
+			if m, ok := c.movies.MatchRelease(ctx, name); ok {
+				id = m.ID
+			}
+		}
+	}
+	if id > 0 {
+		if t, ok := c.blockTargetFor(ctx, kind, id, name, ""); ok {
+			return t, nil
+		}
+	}
+	return BlockTarget{}, ErrNothingToBlock
+}
+
+// blockTargetFor names the library item a block applies to, checking it still exists.
+func (c *Coordinator) blockTargetFor(ctx context.Context, kind string, id int64, release, indexerName string) (BlockTarget, bool) {
+	t := BlockTarget{Kind: kind, ID: id, release: release, indexer: indexerName}
+	switch kind {
+	case "movie":
+		if c.movies == nil {
+			return t, false
+		}
+		m, err := c.movies.Get(ctx, id)
+		if err != nil {
+			return t, false
+		}
+		t.Title = titleYear(m.Title, m.Year)
+	case "series":
+		if c.series == nil {
+			return t, false
+		}
+		s, err := c.series.Get(ctx, id)
+		if err != nil {
+			return t, false
+		}
+		t.Title = s.Title
+	case "book":
+		if c.books == nil {
+			return t, false
+		}
+		b, err := c.books.Get(ctx, id)
+		if err != nil {
+			return t, false
+		}
+		t.Title = b.Title
+	case "music":
+		if c.music == nil {
+			return t, false
+		}
+		// A discography is grabbed against the artist (see grabDiscography), and its
+		// blocklist rows are read against the artist id too.
+		if music.ParseRelease(release).Discography {
+			a, err := c.music.GetArtist(ctx, id)
+			if err != nil {
+				return t, false
+			}
+			t.Title, t.discography = a.Name+" (discography)", true
+			return t, true
+		}
+		al, err := c.music.GetAlbum(ctx, id)
+		if err != nil {
+			return t, false
+		}
+		t.Title = al.Title
+	default:
+		return t, false
+	}
+	return t, true
+}
+
+// BlockResolved does the work of a Block once ResolveBlock has said what it's for:
+// blocklist the release for that item (first, so a failed removal can't leave it
+// grabbable), remove the torrent and its data, close out its grab and any review it was
+// held in, and search for another release.
+func (c *Coordinator) BlockResolved(ctx context.Context, hash string, t BlockTarget) error {
+	const reason = "manually blocklisted"
+	switch t.Kind {
+	case "movie":
+		if err := c.addBlock(ctx, t.ID, t.release, t.indexer, "", reason); err != nil {
 			return err
 		}
+	case "series":
+		c.addBlockSeries(ctx, t.ID, t.release, t.indexer, reason)
+	case "book":
+		c.addBlockBook(ctx, t.ID, t.release, t.indexer, reason)
+	case "music":
+		c.addBlockMusic(ctx, t.ID, t.release, t.indexer, reason)
+	default:
+		return ErrNothingToBlock
 	}
-	return nil // not tied to tracked media — the removal is enough
+	if err := c.dropTorrent(ctx, hash, true); err != nil {
+		c.log.Warn("downloads: block — couldn't remove the torrent", "release", t.release, "err", err)
+	}
+	// Whatever it was, its grab row must not stay in flight — that would hold the
+	// pending-grab guard and hide the block from stall detection.
+	c.setGrabStatusByHash(ctx, hash, t.release, t.Kind, grabStatusFailed)
+	if _, err := c.db.ExecContext(ctx,
+		`UPDATE import_reviews SET status = 'resolved', resolution = ?, resolved_at = CURRENT_TIMESTAMP
+		  WHERE lower(hash) = lower(?) AND status = 'pending'`, ResolutionRejected, hash); err != nil {
+		c.log.Warn("downloads: block — couldn't settle the review", "hash", hash, "err", err)
+	}
+	what := &grab{MediaType: t.Kind, MovieID: t.ID}
+	var err error
+	switch {
+	case t.Kind == "music" && t.discography:
+		// A discography is fetched only when asked for; the block is the whole answer.
+		c.music.AddEvent(ctx, t.ID, "blocklisted", t.release)
+	case t.Kind == "movie":
+		c.addMediaEvent(ctx, what, "blocklisted", t.release)
+		_, err = c.SearchMovie(ctx, t.ID)
+	case t.Kind == "series":
+		c.addMediaEvent(ctx, what, "blocklisted", t.release)
+		_, err = c.SearchSeriesNow(ctx, t.ID)
+	case t.Kind == "book":
+		c.addMediaEvent(ctx, what, "blocklisted", t.release)
+		_, err = c.SearchBookNow(ctx, t.ID)
+	case t.Kind == "music":
+		c.addMediaEvent(ctx, what, "blocklisted", t.release)
+		_, err = c.SearchAlbumNow(ctx, t.ID)
+	}
+	if errors.Is(err, ErrAlreadySearching) {
+		return nil // the search in flight runs without the blocked release
+	}
+	return err
 }
 
 // BlocklistAndSearch blocklists a release then re-searches for an alternate, and says

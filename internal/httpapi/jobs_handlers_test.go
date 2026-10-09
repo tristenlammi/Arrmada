@@ -26,7 +26,8 @@ func TestConvertedRoutesSubmitJobs(t *testing.T) {
 	if err := s.deps.Settings.Set(context.Background(), settings.KeyModuleMusic, "true"); err != nil {
 		t.Fatal(err)
 	}
-	hash := "0123456789abcdef0123456789abcdef01234567"
+	// Block isn't here: it works out what the download is for before submitting, so it
+	// needs a real coordinator — see TestBlockDownloadNamesWhatItBlocked.
 	cases := []struct {
 		method, path, body string
 		kind, target       string
@@ -43,7 +44,6 @@ func TestConvertedRoutesSubmitJobs(t *testing.T) {
 		{"POST", "/api/v1/books/scan", "", "books.scan", "all", jobs.ClassLibraryScan},
 		{"POST", "/api/v1/books/series-backfill", "", "books.backfill-series", "all", jobs.ClassIndexerSearch},
 		{"POST", "/api/v1/music/scan", "", "music.scan", "all", "music.scan"},
-		{"POST", "/api/v1/queue/" + hash + "/block", `{"name":"Some.Release"}`, "download.block", "hash:" + hash, jobs.ClassIndexerSearch},
 	}
 	for i, c := range cases {
 		rec := s.doJSON(c.method, c.path, mgr, c.body)

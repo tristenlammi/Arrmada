@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -160,16 +161,16 @@ func (a *api) handleDeleteDownload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Blocking searches for an alternate, which can take a while: run it like the
-		// Block button does and answer straight away.
-		if _, _, err := a.submit(r, jobs.Spec{Kind: "download.block", Target: "hash:" + hash, Class: jobs.ClassIndexerSearch, Timeout: 3 * time.Minute,
-			Fn: errFn(func(ctx context.Context) error {
-				_, err := a.deps.Automation.RemoveDownload(ctx, hash, name, mode, false)
-				return err
-			})}); err != nil {
+		// Block button does — say what it's blocked for, and answer straight away.
+		target, ok := a.resolveBlock(w, r, hash, name)
+		if !ok {
+			return
+		}
+		if _, _, err := a.submit(r, a.blockJob(hash, target)); err != nil {
 			a.writeError(w, http.StatusServiceUnavailable, "couldn't start that just now — try again in a moment")
 			return
 		}
-		a.writeJSON(w, http.StatusAccepted, automation.RemoveResult{Mode: mode})
+		a.writeJSON(w, http.StatusAccepted, automation.RemoveResult{Mode: mode, Kind: target.Kind, ID: target.ID, Title: target.Title})
 		return
 	}
 	res, err := a.deps.Automation.RemoveDownload(r.Context(), hash, name, mode, unmonitor)
@@ -235,8 +236,10 @@ func (a *api) handleSetClientSettings(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": "saved"})
 }
 
-// handleBlockDownload removes a torrent, blocklists the release for its movie, and
-// searches for an alternate — the "grab something else" action.
+// handleBlockDownload blocklists a torrent's release for the library item it belongs to,
+// removes it, and searches for an alternate — the "grab something else" action. What it
+// is blocked for is worked out before answering, so the page can name it; a torrent tied
+// to nothing in the library is left alone with a 422 pointing at Remove.
 func (a *api) handleBlockDownload(w http.ResponseWriter, r *http.Request) {
 	hash, ok := a.torrentHash(w, r)
 	if !ok {
@@ -248,12 +251,39 @@ func (a *api) handleBlockDownload(w http.ResponseWriter, r *http.Request) {
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
-	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "download.block", Target: "hash:" + hash, Class: jobs.ClassIndexerSearch, Timeout: 3 * time.Minute,
-		Fn: errFn(func(ctx context.Context) error { return a.deps.Automation.BlockRelease(ctx, hash, req.Name) })})
+	target, ok := a.resolveBlock(w, r, hash, req.Name)
 	if !ok {
 		return
 	}
-	a.accepted(w, jobID, existing, map[string]any{"status": "blocking"})
+	jobID, existing, ok := a.submitOr503(w, r, a.blockJob(hash, target))
+	if !ok {
+		return
+	}
+	a.accepted(w, jobID, existing, map[string]any{"status": "blocking", "blocked_for": target})
+}
+
+// resolveBlock answers a Block's "what is this for", writing the error response itself.
+func (a *api) resolveBlock(w http.ResponseWriter, r *http.Request, hash, name string) (automation.BlockTarget, bool) {
+	if a.deps.Automation == nil {
+		a.writeError(w, http.StatusServiceUnavailable, "automation isn't running")
+		return automation.BlockTarget{}, false
+	}
+	target, err := a.deps.Automation.ResolveBlock(r.Context(), hash, name)
+	switch {
+	case errors.Is(err, automation.ErrNothingToBlock):
+		a.writeError(w, http.StatusUnprocessableEntity, "Not linked to anything in your library — use Remove instead")
+		return target, false
+	case err != nil:
+		a.writeError(w, http.StatusInternalServerError, "couldn't work out what this download is for")
+		return target, false
+	}
+	return target, true
+}
+
+// blockJob is the slow half of a Block: the removal and the search for another release.
+func (a *api) blockJob(hash string, target automation.BlockTarget) jobs.Spec {
+	return jobs.Spec{Kind: "download.block", Target: "hash:" + hash, Class: jobs.ClassIndexerSearch, Timeout: 3 * time.Minute,
+		Fn: errFn(func(ctx context.Context) error { return a.deps.Automation.BlockResolved(ctx, hash, target) })}
 }
 
 // diskGuardStatus is the guard's live view, plus the two facts that decide whether
