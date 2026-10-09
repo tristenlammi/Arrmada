@@ -142,7 +142,7 @@ _Migrations can no longer cascade-delete child rows. A panic anywhere in backgro
   - **Risk:** Low. The new path runs only for opted-in files. Make sure the dedicated conn never goes back to the pool with FKs off: verify, and discard it with ErrBadConn on failure. Coordinate with SAFE so the snapshot hook lands with or after this split.
   - **Resolves:** backend-5
 <a id="be-02"></a>
-- [ ] **BE-02 · Panic safety net: internal/safego, a run group for every background loop, panic-safe scheduler, and HTTP goroutines tied to runCtx** — `P1` · `M` · Phase 1
+- [x] **BE-02 · Panic safety net: internal/safego, a run group for every background loop, panic-safe scheduler, and HTTP goroutines tied to runCtx** — `P1` · `M` · Phase 1
   - **Problem:** recover() exists only in httpapi/middleware.go:70 and audioserver/server.go:217. The following have no recovery:
 - scheduler.exec (scheduler.go:90-97)
 - every long-running loop launched in cmd/arrmada/main.go: WatchImports, notifySvc.Run, hub.Run, WatchDeletions, RunNotifier, subtitlesSvc.Run, convertSvc.Run, insightsSvc.Run, audioSrv.WatchImports, the movie.downloaded loop, the book merge/upgrade goroutine and three qBittorrent retry loops
@@ -185,7 +185,7 @@ One nil dereference restarts the whole app mid-encode or mid-stream. Shutdown ca
   - **Risk:** A loop that panics deterministically restarts at most once a minute and logs an Error each time. OBS can alert on the system.panic topic. The compose files set no stop_grace_period, so Docker's 10 s default caps shutdown. Keep the budgets above inside it.
   - **Resolves:** backend-9
 <a id="be-03"></a>
-- [ ] **BE-03 · Movie imports attach synchronously with a durable attach_state; file deletions forget their import synchronously** — `P1` · `M` · Phase 1
+- [x] **BE-03 · Movie imports attach synchronously with a durable attach_state; file deletions forget their import synchronously** — `P1` · `M` · Phase 1
   - **Problem:** library.Manager.Process records the import, then publishes 'download.imported' (manager.go:201-217). The only path to MarkImported is Coordinator.WatchImports, a bus subscriber (coordinator.go:1530-1574). Its events are dropped when the 64-slot buffer is full (eventbus.go:77-83), and nothing retries: a recorded import whose file exists is skipped (manager.go:166-170). A dropped event, or a restart between record and attach, leaves the movie Wanted forever with no movie.downloaded and no request-ready notification. Convert and Subtitles never index it, and it may be re-grabbed. A lower-resolution import refused by MarkImported is also silently lost today. 'file.removed' (movies.removeFile → WatchDeletions) has the same drop risk, so a deliberately deleted file whose torrent still seeds can be imported straight back.
   - **Approach:** 1) Migration (next free number, e.g. 00NN_import_attach_state.sql) adds these columns to imports:
        - attach_state TEXT NOT NULL DEFAULT 'attached' (legacy rows count as attached)

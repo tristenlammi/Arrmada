@@ -353,7 +353,7 @@ The copy always promises the recycle bin (Movies.tsx:628), even when ARRMADA_REC
 _No code path falls back to a hard delete. The size cap can't purge what was just deleted. Every movie and book delete dialog tells the truth about where the files go. Deleting a movie cancels or quarantines its download instead of letting it reappear in Plex._
 
 <a id="safe-07"></a>
-- [ ] **SAFE-07 · Never fall back to hard delete: every delete and replace path refuses when the bin fails, and Movies.Delete aborts before touching rows** — `P1` · `M` · Phase 1
+- [x] **SAFE-07 · Never fall back to hard delete: every delete and replace path refuses when the bin fails, and Movies.Delete aborts before touching rows** — `P1` · `M` · Phase 1
   - **Problem:** Several paths silently os.Remove a file when recycling fails:
 - movies.removeFile (movies/service.go:977-989)
 - series.SupersedeEpisodeFile (series/service.go:977-981)
@@ -412,7 +412,7 @@ Importer.linkOrCopy (library/importer.go:1439-1443) overwrites the replaced file
   - **Risk:** Protection can let the bin exceed its cap by a few large items for up to 3 days. The 5%-free valve stops that from filling the disk.
   - **Resolves:** backend-8
 <a id="safe-09"></a>
-- [ ] **SAFE-09 · Movie and book destructive actions: confirm version deletes, 'delete files' off by default, copy that says where files go** — `P1` · `S` · Phase 1
+- [x] **SAFE-09 · Movie and book destructive actions: confirm version deletes, 'delete files' off by default, copy that says where files go** — `P1` · `S` · Phase 1
   - **Problem:** VersionCard's 'Delete file' and 'Remove version' (which also recycles the file) run on one click (MovieDetail.tsx:274-294, 327-329), while FilePanel asks first. DeleteMovieModal defaults 'Also delete files from disk' to on (Movies.tsx:601) and always says 'Moves the movie's file(s) to the recycle bin' (628), even when the bin is off. The detail page has no Delete at all, so touch users can only reach the hover-only grid X. BookDetail's DeleteButton (BookDetail.tsx:435-437) also defaults deleteFiles to true.
   - **Approach:** 1. GET /api/v1/movies/{id}/delete-preview returns {versions:[{id, label, file_name, size_bytes}], sidecars, bytes, recycle: Mode}. [SAFE-10](#safe-10) adds pending_downloads.
     2. Move DeleteMovieModal to web/src/components/DeleteMovieDialog.tsx, built on ConfirmDialog, so the grid, table, detail and bulk delete share it.
@@ -433,7 +433,7 @@ Importer.linkOrCopy (library/importer.go:1439-1443) overwrites the replaced file
   - **Risk:** Low. With SAFE-07 in place the copy is literally true, so there is no 'deletes permanently if it can't be moved' caveat.
   - **Resolves:** movies-7, movies-6
 <a id="safe-10"></a>
-- [ ] **SAFE-10 · Deleting a movie cancels its downloads, and a download for a deleted movie is held for review, never imported by name** — `P1` · `M` · Phase 1
+- [x] **SAFE-10 · Deleting a movie cancels its downloads, and a download for a deleted movie is held for review, never imported by name** — `P1` · `M` · Phase 1
   - **Problem:** Service.Delete recycles files and deletes the version and movie rows (service.go:349-361). It never touches the download queue, pending grabs, blocklist or events, and those tables have no foreign keys (0012). When the torrent finishes, HoldMovieImport finds the grab, movies.Get fails, and it returns hold=false (reviews.go:166-173). Manager.importOne then falls back to imp.Import(name) (manager.go:225-232) and links the file into the movies root. WatchImports matches nothing and records nothing. The deleted film reappears in Plex as an untracked folder, and the torrent keeps seeding with no rule. handleDeleteMovie publishes no event.
   - **Approach:** 1. Coordinator.DeleteMovie(ctx, id, DeleteMovieOpts{DeleteFiles, CancelDownloads}):
        - Load pending grabs (status='grabbed' AND media_type='movie' AND movie_id=?).
@@ -463,7 +463,7 @@ Importer.linkOrCopy (library/importer.go:1439-1443) overwrites the replaced file
 _Nightly and manual snapshots with retention. An admin Backups card with download. One-click restore that is staged at boot and keeps the replaced DB. Table-rebuild migrations can no longer cascade-delete children. A backup can also be restored from an uploaded file or from the CLI when the app can't boot._
 
 <a id="safe-11"></a>
-- [ ] **SAFE-11 · Nightly and manual database backups with retention, and a health warning when they stop** — `P1` · `S` · Phase 1
+- [x] **SAFE-11 · Nightly and manual database backups with retention, and a health warning when they stop** — `P1` · `S` · Phase 1
   - **Problem:** Pre-migration snapshots don't cover corruption or accidental loss between updates. The scheduler comment still says 'backups later', and nothing makes a regular copy. With the default compose file, arrmada.db lives in a managed Docker volume, and an outside copy of a live WAL database can be inconsistent.
   - **Approach:** 1. New package internal/backup, with Service{store *store.Store, dir string, settings, log, now func() time.Time}:
        - Create(ctx, kind) (Backup, error) calls store.Snapshot and then prunes that kind.

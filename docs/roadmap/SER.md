@@ -250,7 +250,7 @@ Interactive picks have the same blanket force: a complete pack chosen from the S
   - **Risk:** A wrong Covers() either re-opens the overwrite (too permissive) or blocks imports the user chose (too strict), so test both directions. The importSeriesInto signature change touches three callers. Movie and book callers of markGrabManual must keep their behaviour; that is why the wrapper stays.
   - **Resolves:** series-1
 <a id="ser-02"></a>
-- [ ] **SER-02 · One scope-aware grab planner behind Grab missing, episode Grab and Replace (GrabForScope)** — `P0` · `M` · Phase 1
+- [x] **SER-02 · One scope-aware grab planner behind Grab missing, episode Grab and Replace (GrabForScope)** — `P0` · `M` · Phase 1
   - **Problem:** Even with SER-01's gate in place, GrabBestForScope (series_interactive.go:329-361) takes the first eligible release from the interactive ranking:
 - For a season it accepts any non-episode release. parser CoversSeason is true for every Complete pack, so a box set qualifies on an airing show.
 - It never applies isPackTier, packIsProportionate or packIsWorthIt.
@@ -297,7 +297,7 @@ The result is huge unwanted downloads. RegrabEpisode (coordinator.go:1076-1103) 
   - **Risk:** The planner extraction must keep the sweep's behaviour exactly, which is the purpose of the replay test. A tighter episode scope means some clicks that used to grab a pack now grab nothing; the outcome note must say so clearly. With SER-01 already in place, a wrong pick here wastes bandwidth but cannot overwrite files.
   - **Resolves:** series-1
 <a id="ser-03"></a>
-- [ ] **SER-03 · Specials (season 0) become a real scope: explicit whole-show sentinel, S00Exx-only matching, no season-level Grab** — `P0` · `S` · Phase 1
+- [x] **SER-03 · Specials (season 0) become a real scope: explicit whole-show sentinel, S00Exx-only matching, no season-level Grab** — `P0` · `S` · Phase 1
   - **Problem:** api.ts:1302 drops season 0 (`if (season)`). On the backend, season<=0 means the whole show: RankSeriesReleasesWith fans out over every season, and seriesReleaseMatches and releaseMatchesScope return p.IsTV() for everything (series_interactive.go:217-218, 242-245). The Specials block renders the same Grab and Search buttons as a normal season (SeriesDetail.tsx:359-373). Its Grab sent autoGrabSeries(id,0,0), a packs-first pick across the whole show. A special episode's Grab (0,N) can take any TV release of the show.
   - **Approach:** 1. **Whole-show sentinel.**
        - handleSeriesReleases reads season only when the param is present: `season := -1; if v := q.Get("season"); v != "" { season, _ = strconv.Atoi(v) }`.

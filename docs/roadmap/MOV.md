@@ -158,7 +158,7 @@ Each milestone is deployable on its own with `./update.sh`.
 _Search-missing, RSS, upgrade and stall sweeps run from database rows only: zero ffprobe and zero library stats per cycle. A movie page reads cached media info, with one stat per track and a re-probe only when a file actually changed._
 
 <a id="mov-01"></a>
-- [ ] **MOV-01 · Periodic movie jobs read only the database: DB-only track rows and SQL search targets** — `P0` · `M` · Phase 1
+- [x] **MOV-01 · Periodic movie jobs read only the database: DB-only track rows and SQL search targets** — `P0` · `M` · Phase 1
   - **Problem:** Every periodic movie job reads the library files on disk:
 - SearchMissing (every 5 min), RSSSync (15 min), UpgradeMovies (6 h) and DetectStalled (2 min, through movieHasFileFor) all call movies.Service.Versions (service.go:671).
 - Versions runs fileInfo (service.go:858) for the default track and every extra track. fileInfo does an os.Stat, a ReadDir for sidecar subtitles, and mediainfo.Probe, which forks ffprobe with no cache (mediainfo.go:38-49).

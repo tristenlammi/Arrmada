@@ -159,7 +159,7 @@ All of it keeps the dark warm palette, terracotta accent and current type scale,
 _With OpenSubtitles configured, files with no match, a provider error or a spent quota get an AI subtitle in the same job, and new imports still run ahead of the resulting backlog. Forced tracks are never extracted or counted as the full subtitle, and .en.hi.srt counts as English. Upgrades and deletes take their sidecars along, and a movie counts as covered only when Plex will actually pair the sidecar._
 
 <a id="sub-01"></a>
-- [ ] **SUB-01 · Per-language source ladder: fall through extract → OpenSubtitles → AI** — `P0` · `M` · Phase 1
+- [x] **SUB-01 · Per-language source ladder: fall through extract → OpenSubtitles → AI** — `P0` · `M` · Phase 1
   - **Problem:** Once OpenSubtitles credentials exist, bestSource() (internal/subtitles/library.go:129-144) routes every language without an embedded text track to 'download'. process() fills aiTasks only in the 'ai' case (process.go:62-76).
 - A search with no results (grabOne returns false,nil at service.go:333-335), a provider error (process.go:123-124), or ErrQuotaExhausted (goto afterDownloads, process.go:117-122) never moves the language on to whisper.
 - The job then ends 'skipped — nothing produced' or 'N pending (OCR/AI)', and the GPU sits idle.
@@ -214,7 +214,7 @@ _With OpenSubtitles configured, files with no match, a provider error or a spent
 The seams must not change production behaviour: every default func points at the existing code path.
   - **Resolves:** subtitles-1
 <a id="sub-02"></a>
-- [ ] **SUB-02 · Import and manual jobs jump ahead of the sweep (in-memory queue priority)** — `P0` · `S` · Phase 1
+- [x] **SUB-02 · Import and manual jobs jump ahead of the sweep (in-memory queue priority)** — `P0` · `S` · Phase 1
   - **Problem:** pop() takes pending[0] from a single FIFO (internal/subtitles/jobs.go:182-191), and import hooks, manual clicks and the 6-hourly sweep all share it. After SUB-01 the sweep queues hundreds of hour-long AI jobs, so tonight's imported episode would wait days behind them. This rollout guard is required to ship SUB-01 safely; persistence comes later in SUB-23.
   - **Approach:** 1) Job gains `Priority int` (JSON 'priority'): 0 import, 1 manual, 2 sweep.
     - Replace `pending []*Job` with `pending [3][]*Job`, one FIFO per priority.
@@ -239,7 +239,7 @@ The seams must not change production behaviour: every default func points at the
   - **Risk:** Low. A steady stream of imports could starve sweep jobs, which is acceptable because imports are bounded by downloads.
   - **Resolves:** subtitles-7
 <a id="sub-03"></a>
-- [ ] **SUB-03 · Forced and SDH are variants: detect them, extract the full track, count coverage correctly** — `P0` · `M` · Phase 1
+- [x] **SUB-03 · Forced and SDH are variants: detect them, extract the full track, count coverage correctly** — `P0` · `M` · Phase 1
   - **Problem:** Several places treat a forced (foreign-parts-only) subtitle as the full subtitle, so the module reports a file as covered while Plex shows a handful of lines.
 - extractForLangs takes the first text track whose language matches and ignores Forced (process.go:239-246). bestSource ignores Forced too (library.go:130-133).
 - probeSubs drops subtitle stream titles (probe.go:93-101), so title-only 'Forced' and 'Signs & Songs' tracks go undetected.
@@ -283,7 +283,7 @@ The seams must not change production behaviour: every default func points at the
   - **Risk:** The re-probe makes the first library pass after deploy slower (movies only). Title regexes could misfire on odd track names; keep them word-bounded and limited to subtitle streams. Check that Plex labels .sdh.srt using a test file in a test folder; if it doesn't, write SDH as plain .<lang>.srt and keep the variant only in subtitle_files (SUB-11).
   - **Resolves:** subtitles-2, subtitles-10
 <a id="sub-04"></a>
-- [ ] **SUB-04 · Sidecars travel with their video on movie/episode upgrade and delete** — `P0` · `S` · Phase 1
+- [x] **SUB-04 · Sidecars travel with their video on movie/episode upgrade and delete** — `P0` · `S` · Phase 1
   - **Problem:** On a movie upgrade, markImported calls removeFile(target.FilePath) (internal/movies/service.go:419). That moves only the video, so the old release's 'Old Name.en.srt' stays behind, and the os.Remove(dir) cleanup fails because the folder isn't empty.
 - Delete (355), DeleteVersion (784), DeleteVersionFile (803) and DeleteFile (968) behave the same way.
 - series DeleteEpisodeFile (series/service.go:61) and SupersedeEpisodeFile (961) also leave the old episode's sidecars behind.
@@ -313,7 +313,7 @@ The seams must not change production behaviour: every default func points at the
   - **Risk:** With the recycle bin off, sidecars are hard-deleted together with the video, which mirrors today's video behaviour until SAFE removes hard deletes. A wrong prefix match could recycle a neighbour's subtitle; the base+'.' rule and the tests guard this.
   - **Resolves:** subtitles-3
 <a id="sub-05"></a>
-- [ ] **SUB-05 · Movie coverage pairs sidecars by base name; unpaired ones are orphans, not coverage** — `P0` · `M` · Phase 1
+- [x] **SUB-05 · Movie coverage pairs sidecars by base name; unpaired ones are orphans, not coverage** — `P0` · `M` · Phase 1
   - **Problem:** presentLanguages(singleFolder=true) credits any subtitle in a movie folder to the movie (sidecar.go:101-102), and an untagged one goes to wanted[0] (sidecar.go:113-114). Plex only pairs sidecars that share the video's base name.
 - After an upgrade or rename, the module says 'covered' while Plex shows nothing.
 - Multi-version folders (1080p and 4K side by side) credit each other's sidecars.

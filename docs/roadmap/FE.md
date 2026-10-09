@@ -445,7 +445,7 @@ Each poll hits the DB and often qBittorrent, even from background tabs and phone
 _Lint, vitest and a mocked-API Playwright suite run in CI. Every modal, toast, confirm, button, status chip and form field comes from web/src/ui. Dialogs are accessible (role, name, Esc, focus trap, inner scroll), failed actions show an error toast, and there is no window.confirm left._
 
 <a id="fe-08"></a>
-- [ ] **FE-08 · Frontend lint and unit tests: eslint 9 (react-hooks, jsx-a11y) and vitest, running in CI** — `P1` · `S` · Phase 1
+- [x] **FE-08 · Frontend lint and unit tests: eslint 9 (react-hooks, jsx-a11y) and vitest, running in CI** — `P1` · `S` · Phase 1
   - **Problem:** There are 20 eslint-disable comments for a linter that isn't installed. The frontend has no unit tests, and CI's web job only runs tsc and vite build. That gap is how undefined tokens, unnamed icon buttons and silent failures shipped. The kit (FE-09) and the hooks in later tasks need a test runner.
   - **Approach:** 1) web/eslint.config.js (eslint 9 flat config)
     - typescript-eslint recommended.

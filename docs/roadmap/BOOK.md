@@ -170,7 +170,7 @@ Only a 'merged' timeline event and a log line record any of this.
   - **Risk:** Real duplicates (one novel under an Open Library key and a Hardcover key) stay as two rows until BOOK-11/BOOK-12 ship. The cost is cosmetic: two rows in the library. A flagged row is re-queried on the next boot's upgrade run like any other unmatched row, which costs 1-2 Hardcover requests each.
   - **Resolves:** books-2, backend-11
 <a id="book-02"></a>
-- [ ] **BOOK-02 · Full-title book identity: IdentityOf / SameBook / IdentityIndex replace the truncating titleKey everywhere** — `P0` · `M` · Phase 1
+- [x] **BOOK-02 · Full-title book identity: IdentityOf / SameBook / IdentityIndex replace the truncating titleKey everywhere** — `P0` · `M` · Phase 1
   - **Problem:** titleKey (internal/books/dedupe.go:30-39) cuts every title at the first ':', ' (', ' [', ' - ' or ' — '. Same-author books that share a prefix ('Thrawn' / 'Thrawn: Alliances', 'Mistborn: The Final Empire' / 'Mistborn: Secret History', every 'Star Wars: X' by one author) therefore get one DedupeKey. The effects:
 - Add returns ErrExists, a 409 'already in your library' (httpapi/books.go:148-151).
 - AddWorks skips them (service.go:205-208).
@@ -215,7 +215,7 @@ matchUpgrade's fallback titleKeys/keysOverlap also matches subtitle against subt
   - **Risk:** Comparing full titles lets some catalogue variants through as two rows when the subtitle is neither an edition note nor a series note. BOOK-12's review catches those. Discover may offer Request for a book the owner has under a variant title. Rows folded by earlier boots are not restored (BOOK-12 lists them).
   - **Resolves:** books-2
 <a id="book-03"></a>
-- [ ] **BOOK-03 · Link book requests to the library by book_id, and backfill existing requests** — `P0` · `M` · Phase 1
+- [x] **BOOK-03 · Link book requests to the library by book_id, and backfill existing requests** — `P0` · `M` · Phase 1
   - **Problem:** A book request stores the Discover card's key in requests.ol_key. Availability, the ready notifier, the ready sweep, request tracking and My shelf all join on that string (requests/service.go:286-300, usernotify.go:143-172 and 278-296, httpapi/mybooks.go:82-128). The library row's key keeps changing:
 - The automatic Hardcover upgrade rewrites books.ol_key (upgrade.go:409, run at boot).
 - Hardcover getBookLive swaps to the canonical id (hardcover.go:491-495).
@@ -249,7 +249,7 @@ Nothing ever updates requests.ol_key. Every pre-upgrade book request, fulfilled 
   - **Risk:** Backfill false positives when two library rows share a title and author: only unique matches are linked. Pending requests with no book_id yet still resolve by key until BOOK-09 adds aliases. Deleting a book reverts its request to Searching, which is acceptable.
   - **Resolves:** books-1
 <a id="book-04"></a>
-- [ ] **BOOK-04 · Never give up on a wanted book: a slow search ladder with a per-sweep cap** — `P0` · `S` · Phase 1
+- [x] **BOOK-04 · Never give up on a wanted book: a slow search ladder with a per-sweep cap** — `P0` · `S` · Phase 1
   - **Problem:** bookSearchAttempts = 2, and once misses reach 2, bookSearchWait returns giveUp (automation/books.go:113-134). After the add-time search and one search a day later, the 30-minute sweep skips the book forever. Misses only reset on a grab. Anything uploaded a week after the request never arrives unless the admin presses 'Search missing'.
   - **Approach:** 1. New internal/books/ladder.go:
     - SearchWait(misses int) time.Duration: 0 for 0 misses, 24h for 1, 72h for 2, 7d for 3-10, 30d for 11 and up.

@@ -298,7 +298,7 @@ A book requested during a Prowlarr, FlareSolverr or TorrentLeech outage can ther
 _Downloads labels stalled, metadata-less and queued torrents honestly and offers Reannounce and Recheck. On a default install, a torrent with no progress for 6h is replaced by another release, but never removed when nothing else exists, and no more than 3 per check. One dead pack no longer freezes a show's other seasons._
 
 <a id="acq-04"></a>
-- [ ] **ACQ-04 · Keep qBittorrent's raw state, swarm counts and last activity; add Item.Phase()** — `P0` · `S` · Phase 1
+- [x] **ACQ-04 · Keep qBittorrent's raw state, swarm counts and last activity; add Item.Phase()** — `P0` · `S` · Phase 1
   - **Problem:** normalizeState (internal/download/qbittorrent.go:511-526) folds metaDL, stalledDL, queuedDL, allocating and checkingDL into 'downloading'. parseTorrentsInfo (:480-508) also throws away the raw state, seed and peer counts, and last activity. Nothing downstream can tell a dead torrent from a live one. Stall fail-over (ACQ-06) can't hold its clock for torrents qBittorrent itself is queueing. checkingDL counts as downloading, so a recheck burns the stall window. The Dashboard's stalledDL and 'UP' branches (dashboard.go:125-133) are dead code. This is the backend half of ops.t4; the UI is ACQ-07.
   - **Approach:** 1. qbittorrent.go: add num_seeds, num_leechs, num_complete, num_incomplete, last_activity, added_on and availability to qbitTorrent. parseTorrentsInfo fills new Item fields RawState, Seeds, Peers, SwarmSeeds, SwarmPeers, LastActivity (unix s), AddedOn and Availability.
     2. client.go: add `func (i Item) Phase() string`:
@@ -326,7 +326,7 @@ _Downloads labels stalled, metadata-less and queued torrents honestly and offers
   - **Risk:** Moving checkingDL means the disk guard (which pauses only State 'downloading') leaves rechecking torrents alone. That's acceptable, since a recheck writes nothing new. Run the full download and automation suites with -race in Docker.
   - **Resolves:** ops-3
 <a id="acq-05"></a>
-- [ ] **ACQ-05 · Stall fail-over replaces before it removes: never delete the only copy, cap per tick, say what happened** — `P0` · `M` · Phase 1
+- [x] **ACQ-05 · Stall fail-over replaces before it removes: never delete the only copy, cap per tick, say what happened** — `P0` · `M` · Phase 1
   - **Problem:** When a grab passes its stall window, four separate copies of the fail-over each blocklist the release, Remove(hash, true), and only then search for another:
 - DetectStalled for movies (coordinator.go:1193-1263)
 - detectStalledSeries (series_reliability.go:19-39)
@@ -366,7 +366,7 @@ Rare content with one intermittent seeder loses its only release even when no al
   - **Risk:** Searching before removing means the client briefly holds both torrents. Disk use is bounded by diskOKFor and the disk guard. The in-memory 'still waiting' throttle and stall samples reset on restart (one extra event or window) until ACQ-24 persists the clock. The exclusion must use normTitle, so a re-listed copy of the same release on another indexer is excluded as well.
   - **Resolves:** quality-9, ops-3, ops-9
 <a id="acq-06"></a>
-- [ ] **ACQ-06 · Stall fail-over on by default: 6h global default, profile override, existing grabs covered, queue- and guard-aware clock** — `P0` · `M` · Phase 1
+- [x] **ACQ-06 · Stall fail-over on by default: 6h global default, profile override, existing grabs covered, queue- and guard-aware clock** — `P0` · `M` · Phase 1
   - **Problem:** stall_minutes defaults to 0 in migration 0010, in the starter profiles and in the Quality.tsx:169 template, and quality.StallMinutes returns 0 for unknown refs (quality/service.go:85-91). Every detector returns early on 0 (coordinator.go:1234, series_reliability.go:20, books.go:~1784, music.go:486). The value is frozen into each grab row at grab time, so dead torrents sit at 0% forever on a default install, and fixing the profile later doesn't help grabs already made. Torrents held by qBittorrent's max-active limit (queuedDL), or paused by the disk guard, would be condemned once a timeout is set.
   - **Approach:** 1. Semantics: profile stall_minutes 0 = use the default, -1 = off, >0 = custom minutes. A new settings key `downloads_stall_minutes`, default 360 (0 = off), appears in GET/PUT /api/v1/settings next to the disk-guard keys (httpapi/settings.go:86-112).
     2. Add Coordinator.SetStallDefault(func(ctx) int) and Coordinator.SetGuardHeld(func(ctx) map[string]bool), wired in cmd/arrmada/main.go from the settings service and DiskGuard.Held ([ACQ-03](#acq-03)).

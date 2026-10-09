@@ -341,6 +341,8 @@ flowchart LR
 
 ### Phase 1 — Finish the P0s and add the safety net
 
+> **Status: shipped 2026-10-09** — 29 of 30 tasks merged to main (full race suite, lint and frontend tests green). MUS-03 (the Music decision) waits for its 3-week usage soak.
+
 **Theme:** The remaining P0 correctness work, plus the P1 rails every later phase relies on  
 **Goal:** Close the rest of the P0s: series grab planner and numbering, book identity, subtitle source ladder and coverage, and safe stall fail-over. Add the P1 rails that protect files and listening places:
 - no hard-delete fallback anywhere

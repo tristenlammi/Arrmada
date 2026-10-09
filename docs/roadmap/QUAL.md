@@ -187,7 +187,7 @@ Two more gaps:
   - **Risk:** Library-scanned 'n/a' titles must keep routing to the default. The explicit 'n/a' check guards this, and the existing TestEffectiveProfileRoutesScannedToDefault must still pass. Grabs recorded from now on store the effective ref, not the dangling one, which changes what the Activity page shows for those rows. That is intended.
   - **Resolves:** quality-2
 <a id="qual-02"></a>
-- [ ] **QUAL-02 · Deleting a quality profile reassigns its titles in one transaction; dangling refs are repaired at boot; the delete UI picks the target** — `P0` · `M` · Phase 1
+- [x] **QUAL-02 · Deleting a quality profile reassigns its titles in one transaction; dangling refs are repaired at boot; the delete UI picks the target** — `P0` · `M` · Phase 1
   - **Problem:** The delete button promises 'Delete — N films move to your default' (Quality.tsx:354), but Repo.Delete (quality/repo.go:132-141) only runs `DELETE FROM quality_profiles`. Nothing is reassigned:
 - movies, movie_versions, series, books and artists rows
 - pending requests and in-flight grabs

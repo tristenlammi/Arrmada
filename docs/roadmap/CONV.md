@@ -198,7 +198,7 @@ _No hot retry loops and no wasted re-encodes on full disks. Convert never makes 
   - **Risk:** Low. With two workers, lines from different jobs interleave, so only identical consecutive lines collapse. That is intended.
   - **Resolves:** convert-1
 <a id="conv-04"></a>
-- [ ] **CONV-04 · Never drop forced subtitles; don't treat forced-only sidecars as full coverage** — `P1` · `S` · Phase 1
+- [x] **CONV-04 · Never drop forced subtitles; don't treat forced-only sidecars as full coverage** — `P1` · `S` · Phase 1
   - **Problem:** dropCoveredImageSubs (preset.go:252-279) ignores SubStream.Forced. Under the default image_subs=when_text (decide.go:90-97), a forced PGS track (foreign-dialogue translations) is removed whenever any full text track or .srt for that language exists, for example the en.srt the Subtitles module writes. sidecarLangs (preset.go:725-768) takes the segment right after the base name, so '<base>.en.forced.srt' counts as full English coverage, and the full English PGS can then be dropped. The original is gone within the hour (convert-2), so this loses subtitles the family relies on.
   - **Approach:** preset.go: sidecarLangs returns (full, forced []string). It parses every dot-segment after the base: the first segment of 3 characters or fewer is the language; 'forced' marks the track as forced; 'sdh', 'cc' and 'hi' count as full. SubPlan gains TextSidecarForcedLangs, and withSidecars fills both lists.
     dropCoveredImageSubs builds textFull and textForced sets from embedded text tracks (using s.Forced) and from the sidecars. A forced image track is covered only by textForced[lang]; a full image track only by textFull[lang]. An untagged forced image track is never dropped. ImageSubsRemove, an explicit choice, is unchanged, but planWarnings adds 'forced subtitles (foreign dialogue) removed' whenever a forced track goes.
@@ -248,7 +248,7 @@ _No hot retry loops and no wasted re-encodes on full disks. Convert never makes 
 _A durable ledger of every conversion. Originals sit in a same-disk hold outside the bin, with retention and a budget that pauses conversions instead of deleting. One-click Revert, a History tab, and crash-safe swaps with no orphan .arrpart files._
 
 <a id="conv-06"></a>
-- [ ] **CONV-06 · Persist a convert_history ledger of every conversion outcome** — `P1` · `M` · Phase 1
+- [x] **CONV-06 · Persist a convert_history ledger of every conversion outcome** — `P1` · `M` · Phase 1
   - **Problem:** Job history is in memory and capped at 200 (service.go:38 maxJobHistory), so the Overview 'Recent' card is empty after every restart. The activity log (logstore.go) does record source/output spec, SSIM and warnings, but it is unstructured, capped at 5,000 lines and floodable. Nothing stores the per-file before/after spec, per-window SSIM, crop, dropped tracks by name, the source release or where the original went. Revert, the History tab, the upgrade baseline and the time forecast all need this.
   - **Approach:** Migration NNNN_convert_history.sql creates convert_history with these columns:
     - id INTEGER PRIMARY KEY AUTOINCREMENT, item_key TEXT NOT NULL, kind TEXT NOT NULL.
@@ -499,7 +499,7 @@ _Each file shows its conversion plan before anything runs: tracks kept or remove
   - **Risk:** Low. The default must stay 'drop' for the existing install unless the owner chooses otherwise. The profile lookup is optional; skip the warning if QUAL's profile API isn't stable yet.
   - **Resolves:** convert-4
 <a id="conv-16"></a>
-- [ ] **CONV-16 · Black-bar crop: off by default, dense sampling, never crop films that change shape** — `P2` · `S` · Phase 1
+- [x] **CONV-16 · Black-bar crop: off by default, dense sampling, never crop films that change shape** — `P2` · `S` · Phase 1
   - **Problem:** crop defaults to true (decide.go:87) for about a 2% size gain, by the code's own measurement (crop.go:16-19). Detection takes 40 samples (crop.go:39), about one every 3 minutes on a 2 h film, and crops to their union. An IMAX or open-matte shot between samples is therefore permanently cropped, and the SSIM reference is cropped the same way, so the gate can't catch it. The UI promises 'films that change shape (IMAX scenes) keep their full frame'.
   - **Approach:** decide.go: prefs crop default becomes false (GetBool(keyCrop, false)). An explicitly saved value is respected. Log once at startup ('black-bar crop is now off unless you turned it on') for installs that never saved the setting.
     crop.go: samples = clamp(duration/25 s, 40, 400), still keyframe-only and per-seek. Measure the wall time on a synthetic 2 h lavfi file and keep it under ~2 min.
@@ -519,7 +519,7 @@ _Each file shows its conversion plan before anything runs: tracks kept or remove
 _Verification uses independent windows with a per-window floor and fails closed. A full-decode integrity check runs before any swap. Side steps run niced, with idle I/O and pausable. Quality upgrades judge converted files against what they originally were, so they never re-grab a shrunk remux._
 
 <a id="conv-17"></a>
-- [ ] **CONV-17 · Stricter SSIM gate: independent windows, per-window floor, fail closed** — `P1` · `S` · Phase 1
+- [x] **CONV-17 · Stricter SSIM gate: independent windows, per-window floor, fail closed** — `P1` · `S` · Phase 1
   - **Problem:** computeSSIM averages four 15 s windows (quality.go:59-77), 60 s of a 2 h film. It silently drops windows that error (42-44), so one readable window can pass a film. The mean hides a single bad scene. The bar is 0.97 (decide.go:43), while the code's own comment says 0.98+ is near-transparent. Preflight tunes the CRF on the same ssimWindows fractions (preflight.go:51, 81) with a 0.002 margin, so the final gate re-measures exactly the windows the CRF was tuned to pass.
   - **Approach:** quality.go: verifyWindows(dur) returns ~10 windows of 10 s at fractions at least 2% from preflight's {0.15, 0.38, 0.61, 0.84}, e.g. 0.07, 0.19, 0.28, 0.45, 0.52, 0.67, 0.73, 0.79, 0.90, 0.95. Short files keep one whole pass. computeSSIM(ctx, job, dst, src, crop) returns (mean, windows []float64, err) and errors if ANY window fails to measure (fail closed). Make ssimWindow a func var for tests.
     decide.go: replace minSSIM with minSSIMMean (proposed 0.98 for ≥720p, 0.975 below) and minSSIMWindow (proposed 0.96). These are proposals and need the owner's sign-off before merge. process.go: a pass requires mean ≥ bar AND worst window ≥ floor. A miss retries at higher quality as today, and the note names the failing window: 'the scene at 1:12:40 scored 0.951'.
