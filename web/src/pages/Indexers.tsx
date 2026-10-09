@@ -75,7 +75,7 @@ export function Indexers() {
       <div className="mx-auto w-full max-w-[1100px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex items-center justify-between">
           <p className="m-0 text-[12.5px] text-ink-dim">
-            Torznab (torrent) and Newznab (usenet) search sources. Every module searches through these.
+            Torrent search sources: trackers and Prowlarr. Every module searches through these.
           </p>
           <button
             onClick={() => setShowForm((s) => !s)}
@@ -115,7 +115,7 @@ export function Indexers() {
                 <div key={idx.id} className="rounded-xl p-4" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
                   <div className="flex flex-wrap items-center gap-3">
                     <div className="min-w-0 flex-1 basis-[180px]">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         {idx.status && <StatusDot status={idx.status} />}
                         <span className="text-[13.5px] font-semibold">{idx.name}</span>
                         <span
@@ -127,6 +127,12 @@ export function Indexers() {
                         {!idx.enabled && (
                           <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px]" style={{ background: "var(--reject-soft)", color: "var(--reject)" }}>
                             disabled
+                          </span>
+                        )}
+                        {idx.kind === "newznab" && (
+                          // Usenet: nothing could download what it finds, so searches skip it.
+                          <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: "var(--panel-2)", color: "var(--ink-dim)" }}>
+                            Not searched: needs a usenet download client
                           </span>
                         )}
                       </div>
@@ -378,7 +384,6 @@ const KIND_NAMES: Record<string, string> = {
   torrentleech: "TorrentLeech",
   myanonamouse: "MyAnonaMouse",
   torznab: "Torznab",
-  newznab: "Newznab",
 };
 
 function AddForm({ onAdded }: { onAdded: () => void }) {
@@ -440,7 +445,6 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
             <option value="torrentleech">TorrentLeech (native)</option>
             <option value="myanonamouse">MyAnonaMouse (native, books)</option>
             <option value="torznab">Torznab (torrent, via Prowlarr/Jackett)</option>
-            <option value="newznab">Newznab (usenet)</option>
           </select>
         </Labeled>
 

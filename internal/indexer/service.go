@@ -35,6 +35,28 @@ type Service struct {
 	// unknownKindLogged remembers which unknown searcher kinds have been warned
 	// about, so the RSS sweep doesn't repeat the warning every cycle.
 	unknownKindLogged sync.Map
+	// usenetAvailable says whether a usenet download client exists. Without one, usenet
+	// (Newznab) indexers aren't asked at all: whatever they find can't be downloaded, and
+	// asking them only took throttle slots from the indexers that can. nil = none.
+	usenetAvailable func() bool
+	// usenetSkipLogged remembers which usenet indexers have been logged as skipped.
+	usenetSkipLogged sync.Map
+}
+
+// SetUsenetAvailable wires whether a usenet download client exists. Arrmada has none
+// today; wire it from the download service if a usenet client kind is ever added.
+func (s *Service) SetUsenetAvailable(fn func() bool) { s.usenetAvailable = fn }
+
+// skipUsenet reports whether idx is a usenet indexer that can't be used, logging that
+// once per indexer.
+func (s *Service) skipUsenet(idx Indexer) bool {
+	if idx.Transport() != TransportUsenet || (s.usenetAvailable != nil && s.usenetAvailable()) {
+		return false
+	}
+	if _, logged := s.usenetSkipLogged.LoadOrStore(idx.ID, true); !logged {
+		s.log.Info("indexer: not searching a usenet indexer; Arrmada has no usenet download client", "indexer", idx.Name)
+	}
+	return true
 }
 
 // recentTTL is how long an RSS feed pull is reused. The movie, series and book RSS
@@ -520,6 +542,9 @@ func (s *Service) fetchRecent(ctx context.Context, limit int) (SearchResult, err
 		skipped  int
 	)
 	for _, idx := range indexers {
+		if s.skipUsenet(idx) {
+			continue
+		}
 		searcher, err := s.registry.For(idx.Kind)
 		if err != nil {
 			// Warn once per kind: silently skipping made a misconfigured indexer
@@ -639,6 +664,9 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 	for _, idx := range indexers {
 		if !idx.Serves(q.MediaType) {
 			continue // this indexer isn't scoped to the media type being searched
+		}
+		if s.skipUsenet(idx) {
+			continue
 		}
 		priority[idx.Name] = idx.Priority
 		eligible++

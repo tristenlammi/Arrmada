@@ -165,6 +165,23 @@ func TestTestIndexerSettings(t *testing.T) {
 	}
 }
 
+// A new Newznab indexer is refused with the reason; an existing one can still be edited.
+func TestCreateNewznabRefused(t *testing.T) {
+	a, svc := indexerAPI(t)
+	w := callIndexer(t, a.handleCreateIndexer, http.MethodPost, "/api/v1/indexers", "", `{"name":"NZB","kind":"newznab","url":"http://nzb/api"}`)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "no usenet download client") {
+		t.Fatalf("create newznab = %d %s", w.Code, w.Body.String())
+	}
+	if list, _ := svc.List(context.Background()); len(list) != 0 {
+		t.Fatalf("a newznab row was created: %+v", list)
+	}
+	old, _ := svc.Create(context.Background(), indexer.Indexer{Name: "Old NZB", Kind: indexer.KindNewznab, URL: "http://nzb/api", Enabled: true})
+	id := strconv.FormatInt(old.ID, 10)
+	if w := callIndexer(t, a.handleUpdateIndexer, http.MethodPut, "/api/v1/indexers/"+id, id, `{"name":"Old NZB","kind":"newznab","url":"http://nzb/api","enabled":false}`); w.Code != http.StatusNoContent {
+		t.Fatalf("update newznab = %d %s", w.Code, w.Body.String())
+	}
+}
+
 // A row synced from Prowlarr keeps the name, address and key Prowlarr gave it whatever an
 // edit sends; the owner's own settings on it still save.
 func TestUpdateIndexerIgnoresProwlarrOwnedFields(t *testing.T) {

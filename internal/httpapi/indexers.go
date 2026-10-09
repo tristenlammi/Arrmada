@@ -118,9 +118,14 @@ func (a *api) handleCreateIndexer(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := indexer.Kind(req.Kind)
 	switch kind {
-	case indexer.KindTorznab, indexer.KindNewznab:
+	case indexer.KindNewznab:
+		// Nothing could download what it finds. Existing Newznab rows can still be edited
+		// or deleted; they just aren't searched.
+		a.writeError(w, http.StatusBadRequest, "Usenet isn't supported yet; Arrmada has no usenet download client")
+		return
+	case indexer.KindTorznab:
 		if req.URL == "" {
-			a.writeError(w, http.StatusBadRequest, "url is required for torznab/newznab indexers")
+			a.writeError(w, http.StatusBadRequest, "url is required for torznab indexers")
 			return
 		}
 	case indexer.KindTorrentLeech:
