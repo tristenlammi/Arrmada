@@ -79,6 +79,11 @@ func (s *Service) track(ctx context.Context, rq *Request, byHash, byName map[str
 		t.Have, t.Total = rq.epHave, rq.epTotal
 	}
 	complete := rq.Available && (rq.MediaType != "series" || rq.epTotal == 0 || rq.epHave >= rq.epTotal)
+	if rq.MediaType == "series" && len(rq.Seasons) > 0 {
+		// A request for some seasons is complete over its own seasons, by the rule its
+		// ready notice uses (seasonsProgress).
+		complete = rq.Available && rq.seasonsDone
+	}
 	switch {
 	case rq.Status == StatusDeclined && !rq.Available:
 		t.Stage = StageDeclined

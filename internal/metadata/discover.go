@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/url"
+	"sort"
 	"strconv"
 	"time"
 
@@ -87,6 +88,20 @@ type MediaDetail struct {
 	// Similar is "more like this" — TMDB recommendations mapped to browse cards (same
 	// shape as the Trending/Popular rows), capped and posterless entries dropped.
 	Similar []DiscoverItem `json:"similar,omitempty"`
+	// Seasons lists a series' regular seasons (specials left out), from the same /tv
+	// payload as the rest: what the season picker and the per-season request states are
+	// built on. Empty for movies.
+	Seasons []SeasonSummary `json:"seasons,omitempty"`
+}
+
+// SeasonSummary is one season as TMDB lists it on the show: no episodes, just enough to
+// say which seasons exist and how big they are.
+type SeasonSummary struct {
+	Number       int    `json:"number"`
+	Name         string `json:"name,omitempty"`
+	EpisodeCount int    `json:"episode_count"`
+	AirDate      string `json:"air_date,omitempty"` // the season's first episode (YYYY-MM-DD); "" when not announced
+	PosterURL    string `json:"poster_url,omitempty"`
 }
 
 // maxSimilar caps the "more like this" row on the detail record.
@@ -105,13 +120,13 @@ type RatingProvider interface {
 // Kept for 12 hours (stale served while it refreshes), so reopening a sheet, hopping
 // through "More like this" and creating a request from it don't each ask TMDB again. A
 // day-old status or certification is fine for display; the key carries a version so a
-// later change to what's stored can retire the old entries.
+// later change to what's stored can retire the old entries (v2 added series seasons).
 func (t *TMDB) MediaDetails(ctx context.Context, media string, tmdbID int) (*MediaDetail, error) {
 	kind := "movie"
 	if tvish(media) {
 		kind = "tv"
 	}
-	key := "tmdb:detail:v1:" + kind + ":" + strconv.Itoa(tmdbID)
+	key := "tmdb:detail:v2:" + kind + ":" + strconv.Itoa(tmdbID)
 	return swr(ctx, t.disk, key, mediaDetailTTL, func(ctx context.Context) (*MediaDetail, error) {
 		if kind == "tv" {
 			return t.seriesDetail(ctx, tmdbID)
@@ -197,7 +212,26 @@ func (t *TMDB) seriesDetail(ctx context.Context, tmdbID int) (*MediaDetail, erro
 	}
 	d.TrailerURL = bestTrailerURL(s.Videos.Results)
 	d.Similar = recommendedItems(s.Recommendations.Results, "tv")
+	d.Seasons = seasonSummaries(s)
 	return d, nil
+}
+
+// seasonSummaries is a show's regular seasons from its /tv payload, in season order.
+// Specials (season 0) are left out: a request never asks for them.
+func seasonSummaries(s tmdbSeries) []SeasonSummary {
+	var out []SeasonSummary
+	for _, sn := range s.Seasons {
+		if sn.SeasonNumber <= 0 {
+			continue
+		}
+		ss := SeasonSummary{Number: sn.SeasonNumber, Name: sn.Name, EpisodeCount: sn.EpisodeCount, AirDate: sn.AirDate}
+		if sn.PosterPath != "" {
+			ss.PosterURL = tmdbImageBase + sn.PosterPath
+		}
+		out = append(out, ss)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Number < out[j].Number })
+	return out
 }
 
 // bestTrailerURL picks the best YouTube video from TMDB's videos list and returns its

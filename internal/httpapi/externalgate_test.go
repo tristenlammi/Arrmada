@@ -89,6 +89,7 @@ func TestExternalGateUsesRouteSpecs(t *testing.T) {
 		"GET /movies/12":                         sentinelStatus,       // the app shell itself
 		"GET /api/v1/discover/rows/top_rated":    sentinelStatus,
 		"GET /api/v1/media/movie/12":             sentinelStatus,
+		"GET /api/v1/media/series/12/seasons":    sentinelStatus,
 		"DELETE /api/v1/me/audio/devices/lissen": sentinelStatus,
 	} {
 		method, path, _ := strings.Cut(call, " ")

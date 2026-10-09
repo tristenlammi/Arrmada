@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
@@ -35,6 +36,9 @@ type Service struct {
 	runner     Runner     // where approval searches run without a job runner; nil = untracked, panic-safe goroutines
 	jobs       jobs.Submitter
 	log        *slog.Logger
+	// seriesMu serialises series request creation (and season trims): working out which
+	// seasons are already covered and inserting the rest must happen as one step.
+	seriesMu sync.Mutex
 	// searchBook starts a book search (the coordinator's SearchBookNow); a field so
 	// tests can see it called without a coordinator.
 	searchBook func(ctx context.Context, bookID int64) (automation.SearchOutcome, error)
@@ -178,6 +182,11 @@ func (s *Service) Create(ctx context.Context, in Request, autoApprove bool) (cre
 	if in.QualityProfile != "" && s.quality != nil && !s.quality.Known(ctx, in.QualityProfile) {
 		return Request{}, false, ErrUnknownProfile
 	}
+	if in.MediaType == "series" {
+		// A show can have several requests, one per ask for more seasons.
+		return s.createSeries(ctx, in, autoApprove)
+	}
+	in.Seasons = nil
 	if existing, ok := s.lookupExisting(ctx, in); ok {
 		return s.attachAndPublish(ctx, existing, in)
 	}
@@ -219,7 +228,8 @@ func (s *Service) attachAndPublish(ctx context.Context, existing, in Request) (R
 	return req, subscribed, err
 }
 
-// lookupExisting finds a prior request for the same media, if any.
+// lookupExisting finds a prior request for the same movie or book, if any (series go
+// through createSeries).
 func (s *Service) lookupExisting(ctx context.Context, in Request) (Request, bool) {
 	if in.MediaType == "book" {
 		return s.lookupExistingBook(ctx, in)
@@ -362,14 +372,41 @@ func (s *Service) searchRequestedBook(ctx context.Context, requestID, bookID int
 // a search, then marks the request approved. If the media is already in the library,
 // it's still marked approved (no duplicate add).
 func (s *Service) Approve(ctx context.Context, id int64, profile string) (Request, error) {
+	return s.ApproveWith(ctx, id, ApproveOptions{Profile: profile})
+}
+
+// ApproveOptions are the approver's choices.
+type ApproveOptions struct {
+	// Profile overrides the request's quality profile ("" keeps it).
+	Profile string
+	// Seasons trims a series request to these seasons, a subset of what it asked for
+	// (any regular seasons for a whole-show request). Empty approves it as asked.
+	Seasons []int
+}
+
+// ApproveWith is Approve with the approver's choices. A trimmed series request is
+// rewritten to the seasons approved, only those are monitored, and its notice says
+// which weren't.
+func (s *Service) ApproveWith(ctx context.Context, id int64, opts ApproveOptions) (Request, error) {
 	req, err := s.repo.Get(ctx, id)
 	if err != nil {
 		return Request{}, err
 	}
+	profile := opts.Profile
 	if profile != "" && s.quality != nil && !s.quality.Known(ctx, profile) {
 		return Request{}, ErrUnknownProfile
 	}
 	explicit := profile != ""
+	trimmed := false
+	if req.MediaType == "series" && len(opts.Seasons) > 0 {
+		keep, dropped, err := trimSeasons(req.Seasons, opts.Seasons)
+		if err != nil {
+			return Request{}, err
+		}
+		if !sameSeasons(keep, req.Seasons) {
+			req.Seasons, req.notApproved, trimmed = keep, dropped, true
+		}
+	}
 	if profile == "" {
 		profile = req.QualityProfile
 		// The profile stored on the request may have been deleted since it was made. The
@@ -390,20 +427,59 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		if addErr != nil && !errors.Is(addErr, movies.ErrExists) {
 			return Request{}, addErr
 		}
-		if addErr == nil {
+		if errors.Is(addErr, movies.ErrExists) {
+			// Already in the library. Without a file it may never have been wanted (a
+			// scan adds what it finds unmonitored), so approving it is what monitors it;
+			// one that has its file is simply approved and the ready path stamps it.
+			existing, err := s.movies.GetByTMDB(ctx, req.TMDBID)
+			if err != nil {
+				return Request{}, fmt.Errorf("find the movie in the library: %w", err)
+			}
+			m, addErr = existing, nil
+			if m.HasFile {
+				m.ID = 0
+			} else if !m.Monitored {
+				if err := s.movies.SetMonitored(ctx, m.ID, true); err != nil {
+					return Request{}, err
+				}
+				s.movies.AddEvent(ctx, m.ID, "monitored", "Monitored by request from "+requesterName(req))
+			}
+		}
+		if addErr == nil && m.ID > 0 {
 			mid := m.ID
 			s.background("movie.search", fmt.Sprintf("movie:%d", mid), trigger, req.Title, "movie", mid, 3*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
 				return s.coord.SearchMovie(c, mid)
 			})
 		}
 	case "series":
-		// The configured monitoring preset (Settings → Library), as an owner's own add
-		// starts from.
-		sr, addErr := s.series.AddWith(ctx, req.TMDBID, profile, series.AddOptions{Monitored: true})
+		// A whole-show request starts from the configured monitoring preset (Settings →
+		// Library), as an owner's own add does. One for some seasons monitors exactly
+		// those, with "monitor new seasons" off so later seasons aren't grabbed unasked.
+		addOpts := series.AddOptions{Monitored: true}
+		if len(req.Seasons) > 0 {
+			only, off := map[int]bool{}, false
+			for _, n := range req.Seasons {
+				only[n] = true
+			}
+			addOpts.Seasons, addOpts.MonitorNewSeasons = only, &off
+		}
+		sr, addErr := s.series.AddWith(ctx, req.TMDBID, profile, addOpts)
 		if addErr != nil && !errors.Is(addErr, series.ErrExists) {
 			return Request{}, addErr
 		}
-		if addErr == nil {
+		if errors.Is(addErr, series.ErrExists) {
+			// Already in the library: make it fetch what was asked for, unless it's all
+			// on disk already.
+			existing, wants, err := s.monitorExistingSeries(ctx, req)
+			if err != nil {
+				return Request{}, err
+			}
+			sr, addErr = existing, nil
+			if !wants {
+				sr.ID = 0
+			}
+		}
+		if addErr == nil && sr.ID > 0 {
 			sid := sr.ID
 			s.background("series.search", fmt.Sprintf("series:%d", sid), trigger, req.Title, "show", 0, 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
 				return s.coord.SearchSeriesNow(c, sid)
@@ -446,11 +522,30 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 			// as well as its own (an audiobook request for a book we have as an ebook),
 			// and is searched when one of those is missing.
 			if s.widenBook(ctx, b.ID, s.requestedFormatsFor(ctx, req, profile)) {
+				if !b.Monitored {
+					// A book the library holds unmonitored is never looked for again by the
+					// sweep; approving a request for it is what wants it.
+					if err := s.books.SetMonitored(ctx, b.ID, true); err != nil {
+						return Request{}, err
+					}
+					s.books.AddEvent(ctx, b.ID, "monitored", "Monitored by request from "+requesterName(req))
+				}
 				s.searchRequestedBook(ctx, id, b.ID, req.Title)
 			}
 		}
 	}
 
+	if trimmed {
+		// Under the create lock, so a request being planned against this row sees either
+		// the seasons it had or the ones it has now, never half of each.
+		s.seriesMu.Lock()
+		err := s.repo.SetSeasons(ctx, id, req.Seasons)
+		s.seriesMu.Unlock()
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return Request{}, err
+		}
+		s.log.Info("request trimmed on approve", "title", req.Title, "seasons", series.SeasonsLabel(req.Seasons), "not_approved", req.notApproved)
+	}
 	if err := s.repo.SetStatus(ctx, id, StatusApproved, profile); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			// The request was withdrawn while we were approving it. The library add
@@ -621,6 +716,7 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 		}
 		bookByKey = s.books.KeyIndex(ctx, bs) // any key a book has had, not only its current one
 	}
+	progBySeries := map[int64]map[int]series.SeasonProgress{}
 	for i := range reqs {
 		var l lib
 		switch reqs[i].MediaType {
@@ -645,5 +741,29 @@ func (s *Service) enrichAvailability(ctx context.Context, reqs []Request) {
 		reqs[i].Available = l.have
 		reqs[i].libID, reqs[i].epHave, reqs[i].epTotal, reqs[i].released = l.id, l.epHave, l.epTotal, l.released
 		reqs[i].searchMisses, reqs[i].nextCheckAt = l.misses, l.nextCheck
+		if reqs[i].MediaType == "series" && len(reqs[i].Seasons) > 0 && l.id > 0 {
+			s.enrichSeasons(ctx, &reqs[i], l.id, progBySeries)
+		}
 	}
+}
+
+// enrichSeasons fills a season-scoped series request's numbers from its own seasons:
+// available once any of them has a file, have/total over their monitored episodes, and
+// complete by seasonsProgress (the rule its ready notice uses). progBySeries caches each
+// show's counts for the rest of the list.
+func (s *Service) enrichSeasons(ctx context.Context, rq *Request, seriesID int64, progBySeries map[int64]map[int]series.SeasonProgress) {
+	prog, ok := progBySeries[seriesID]
+	if !ok {
+		var err error
+		if prog, err = s.series.SeasonProgress(ctx, seriesID); err != nil {
+			s.log.Warn("requests: couldn't read season progress", "series", seriesID, "err", err)
+		}
+		progBySeries[seriesID] = prog
+	}
+	files := 0
+	for _, n := range rq.Seasons {
+		files += prog[n].Have
+	}
+	rq.Available = files > 0
+	rq.epHave, rq.epTotal, rq.seasonsDone = seasonsProgress(prog, rq.Seasons)
 }

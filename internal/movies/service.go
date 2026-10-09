@@ -575,6 +575,11 @@ func (s *Service) SetMonitored(ctx context.Context, id int64, monitored bool) er
 	return s.repo.SetMonitored(ctx, id, monitored)
 }
 
+// GetByTMDB returns the library movie with a TMDB id (ErrNotFound when there is none).
+func (s *Service) GetByTMDB(ctx context.Context, tmdbID int) (Movie, error) {
+	return s.repo.GetByTMDB(ctx, tmdbID)
+}
+
 // SetQualityProfile changes a movie's quality profile. A real change ends the default
 // file's upgrade hold.
 func (s *Service) SetQualityProfile(ctx context.Context, id int64, profile string) error {

@@ -33,7 +33,7 @@ export const cards: DiscoverCard[] = [
   card(3, "Saltwind", { request_status: "pending" }),
   card(4, "Iron Tide", { request_status: "approved" }),
   card(5, "Driftwood", { request_status: "approved", download_progress: 0.42 }),
-  card(6, "Anchor Point", { in_library: true }),
+  card(6, "Anchor Point", { in_library: true, wanted: true }),
   card(7, "The Cartographer", { in_library: true, has_file: true }),
   card(8, "Gullwing", { poster_url: undefined }),
   card(9, "Undertow"),

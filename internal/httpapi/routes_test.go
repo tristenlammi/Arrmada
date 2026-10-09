@@ -202,6 +202,7 @@ var requesterUICalls = []string{
 	"GET /api/v1/discover",
 	"GET /api/v1/discover/search",
 	"GET /api/v1/media/movie/1",
+	"GET /api/v1/media/series/1/seasons",
 	"GET /api/v1/requests",
 	"POST /api/v1/requests",
 	"DELETE /api/v1/requests/1",

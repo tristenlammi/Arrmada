@@ -5,6 +5,7 @@ package requests
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"strings"
 )
@@ -44,12 +45,27 @@ type Request struct {
 	CreatedAt string    `json:"created_at"`
 	UpdatedAt string    `json:"updated_at"`
 
+	// Seasons are the regular seasons a series request asks for, ascending; empty means
+	// the whole show (every request made before seasons existed, and "All seasons").
+	// On create it is what the caller asked for.
+	Seasons []int `json:"seasons,omitempty"`
+	// KnownSeasons is, on create only, every season the catalogue lists for the show (the
+	// handler fills it from the TMDB detail it fetches anyway). nil means no catalogue:
+	// a whole-show ask is then stored whole. Never stored or sent.
+	KnownSeasons []int `json:"-"`
+
 	// Filled by enrichAvailability for Track: the library item the request became, and
 	// for a series how much of it is on disk.
 	libID    int64
 	epHave   int
 	epTotal  int
 	released bool
+	// seasonsDone: a season-scoped series request is complete over its own seasons
+	// (seasonsProgress). Unused for whole-show requests.
+	seasonsDone bool
+	// notApproved is the sentence naming the seasons staff trimmed off on approve
+	// ("Season 3 wasn't approved."), for the "approved" notice. Never stored.
+	notApproved string
 	// Books: searches in a row that found nothing, and when the next one is due (RFC3339).
 	searchMisses int
 	nextCheckAt  string
@@ -64,15 +80,45 @@ type Repo struct{ db *sql.DB }
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const cols = `id, media_type, tmdb_id, ol_key, title, author, year, poster_url, overview, status,
-	quality_profile, requested_by, requested_by_name, note, created_at, updated_at, book_id, formats`
+	quality_profile, requested_by, requested_by_name, note, created_at, updated_at, book_id, formats, seasons`
 
 func scan(row interface{ Scan(...any) error }) (Request, error) {
 	var r Request
 	var bookID sql.NullInt64
+	var seasons string
 	err := row.Scan(&r.ID, &r.MediaType, &r.TMDBID, &r.OLKey, &r.Title, &r.Author, &r.Year, &r.PosterURL, &r.Overview,
-		&r.Status, &r.QualityProfile, &r.RequestedBy, &r.RequestedByName, &r.Note, &r.CreatedAt, &r.UpdatedAt, &bookID, &r.Formats)
+		&r.Status, &r.QualityProfile, &r.RequestedBy, &r.RequestedByName, &r.Note, &r.CreatedAt, &r.UpdatedAt, &bookID, &r.Formats, &seasons)
 	r.BookID = bookID.Int64
+	r.Seasons = decodeSeasons(seasons)
 	return r, err
+}
+
+// encodeSeasons stores a season list as a JSON array; the whole show (none listed) is an
+// empty string.
+func encodeSeasons(seasons []int) string {
+	if len(seasons) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(seasons)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+// decodeSeasons reads a stored season list; an empty string (or anything unreadable) is
+// the whole show.
+// Reading an unreadable list as the whole show can only widen what a request covers, never
+// drop a season someone asked for.
+func decodeSeasons(s string) []int {
+	if s == "" {
+		return nil
+	}
+	var out []int
+	if json.Unmarshal([]byte(s), &out) != nil || len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // nullID stores 0 as NULL: the column references books(id), and there is no book 0.
@@ -87,10 +133,10 @@ func nullID(id int64) any {
 func (r *Repo) Create(ctx context.Context, req Request) (Request, error) {
 	res, err := r.db.ExecContext(ctx,
 		`INSERT INTO requests (media_type, tmdb_id, ol_key, title, author, year, poster_url, overview, status,
-			quality_profile, requested_by, requested_by_name, note, book_id, formats)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			quality_profile, requested_by, requested_by_name, note, book_id, formats, seasons)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		req.MediaType, req.TMDBID, req.OLKey, req.Title, req.Author, req.Year, req.PosterURL, req.Overview, req.Status,
-		req.QualityProfile, req.RequestedBy, req.RequestedByName, req.Note, nullID(req.BookID), req.Formats)
+		req.QualityProfile, req.RequestedBy, req.RequestedByName, req.Note, nullID(req.BookID), req.Formats, encodeSeasons(req.Seasons))
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
 			return Request{}, ErrExists
@@ -114,7 +160,27 @@ func (r *Repo) Get(ctx context.Context, id int64) (Request, error) {
 	return req, err
 }
 
-// GetByMedia returns an existing request for the given movie/series, if any.
+// ListByMedia returns every request for one movie or series, oldest first. A series can
+// have several (one per ask for more seasons).
+func (r *Repo) ListByMedia(ctx context.Context, mediaType string, tmdbID int) ([]Request, error) {
+	return r.query(ctx, `SELECT `+cols+` FROM requests WHERE media_type = ? AND tmdb_id = ? ORDER BY id`, mediaType, tmdbID)
+}
+
+// SetSeasons rewrites the seasons a series request stands for (staff trimming it on
+// approve).
+func (r *Repo) SetSeasons(ctx context.Context, id int64, seasons []int) error {
+	res, err := r.db.ExecContext(ctx, `UPDATE requests SET seasons = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, encodeSeasons(seasons), id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetByMedia returns an existing request for the given movie, if any. A series can have
+// several requests: use ListByMedia.
 func (r *Repo) GetByMedia(ctx context.Context, mediaType string, tmdbID int) (Request, bool) {
 	row := r.db.QueryRowContext(ctx, `SELECT `+cols+` FROM requests WHERE media_type = ? AND tmdb_id = ?`, mediaType, tmdbID)
 	req, err := scan(row)
