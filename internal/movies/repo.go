@@ -47,22 +47,23 @@ func (r *Repo) inTx(ctx context.Context, fn func(tx *sql.Tx, r *Repo) error) err
 
 const movieCols = `id, tmdb_id, imdb_id, title, year, overview, poster_url, runtime, status,
 	monitored, quality_profile, min_availability, has_file, movie_file_path, added_at, extra_json, media_json,
-	source_release`
+	source_release, upgrade_hold`
 
 func (r *Repo) scan(row interface{ Scan(...any) error }) (Movie, error) {
 	var (
 		m                    Movie
-		mon, hf              int
+		mon, hf, hold        int
 		extraJSON, mediaJSON string
 	)
 	err := row.Scan(&m.ID, &m.TMDBID, &m.IMDBID, &m.Title, &m.Year, &m.Overview, &m.PosterURL,
 		&m.Runtime, &m.Status, &mon, &m.QualityProfile, &m.MinAvailability, &hf, &m.MovieFilePath,
-		&m.AddedAt, &extraJSON, &mediaJSON, &m.SourceRelease)
+		&m.AddedAt, &extraJSON, &mediaJSON, &m.SourceRelease, &hold)
 	if err != nil {
 		return Movie{}, err
 	}
 	m.Monitored = mon != 0
 	m.HasFile = hf != 0
+	m.UpgradeHold = hold != 0
 	if extraJSON != "" {
 		var ex MovieExtra
 		if json.Unmarshal([]byte(extraJSON), &ex) == nil {
@@ -244,7 +245,7 @@ func (r *Repo) SetFile(ctx context.Context, id int64, path string) error {
 
 // ClearFile marks a movie as having no file (after its file is deleted).
 func (r *Repo) ClearFile(ctx context.Context, id int64) error {
-	_, err := r.q().ExecContext(ctx, `UPDATE movies SET has_file = 0, movie_file_path = '', media_json = '', source_release = '' WHERE id = ?`, id)
+	_, err := r.q().ExecContext(ctx, `UPDATE movies SET has_file = 0, movie_file_path = '', media_json = '', source_release = '', upgrade_hold = 0 WHERE id = ?`, id)
 	return err
 }
 
@@ -261,9 +262,13 @@ func (r *Repo) SetVersionSourceRelease(ctx context.Context, id int64, release st
 	return err
 }
 
-// SetQualityProfile changes a movie's quality profile.
+// SetQualityProfile changes a movie's quality profile. Moving to another profile ends an
+// upgrade hold: the hold was about the old profile's change (SQLite reads quality_profile
+// in the CASE before this statement changes it).
 func (r *Repo) SetQualityProfile(ctx context.Context, id int64, profile string) error {
-	res, err := r.q().ExecContext(ctx, `UPDATE movies SET quality_profile = ? WHERE id = ?`, profile, id)
+	res, err := r.q().ExecContext(ctx,
+		`UPDATE movies SET upgrade_hold = CASE WHEN quality_profile = ? THEN upgrade_hold ELSE 0 END,
+			quality_profile = ? WHERE id = ?`, profile, profile, id)
 	if err != nil {
 		return err
 	}
@@ -303,20 +308,21 @@ func (r *Repo) UpdateMetadata(ctx context.Context, id int64, m Movie) error {
 
 // --- extra version tracks -------------------------------------------------
 
-const versionCols = `id, movie_id, label, quality_profile, edition, monitored, has_file, file_path, size_bytes, source_release`
+const versionCols = `id, movie_id, label, quality_profile, edition, monitored, has_file, file_path, size_bytes, source_release, upgrade_hold`
 
 func scanVersion(row interface{ Scan(...any) error }) (Version, int64, error) {
 	var (
-		v       Version
-		movieID int64
-		mon, hf int
+		v             Version
+		movieID       int64
+		mon, hf, hold int
 	)
-	err := row.Scan(&v.ID, &movieID, &v.Label, &v.QualityProfile, &v.Edition, &mon, &hf, &v.FilePath, &v.SizeBytes, &v.SourceRelease)
+	err := row.Scan(&v.ID, &movieID, &v.Label, &v.QualityProfile, &v.Edition, &mon, &hf, &v.FilePath, &v.SizeBytes, &v.SourceRelease, &hold)
 	if err != nil {
 		return Version{}, 0, err
 	}
 	v.Monitored = mon != 0
 	v.HasFile = hf != 0
+	v.UpgradeHold = hold != 0
 	return v, movieID, err
 }
 
@@ -334,6 +340,25 @@ func (r *Repo) ListVersions(ctx context.Context, movieID int64) ([]Version, erro
 			return nil, err
 		}
 		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// ListAllVersions returns every movie's extra version tracks, keyed by movie id, in one
+// query — for whole-library passes that would otherwise ask once per movie.
+func (r *Repo) ListAllVersions(ctx context.Context) (map[int64][]Version, error) {
+	rows, err := r.q().QueryContext(ctx, `SELECT `+versionCols+` FROM movie_versions ORDER BY movie_id, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64][]Version{}
+	for rows.Next() {
+		v, movieID, err := scanVersion(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[movieID] = append(out[movieID], v)
 	}
 	return out, rows.Err()
 }
@@ -364,9 +389,11 @@ func (r *Repo) CreateVersion(ctx context.Context, movieID int64, v Version) (Ver
 
 // UpdateVersion writes a version's mutable fields.
 func (r *Repo) UpdateVersion(ctx context.Context, id int64, label, profile, edition string, monitored bool) error {
+	// A new profile ends the track's upgrade hold, as it does for the movie (SetQualityProfile).
 	res, err := r.q().ExecContext(ctx,
-		`UPDATE movie_versions SET label = ?, quality_profile = ?, edition = ?, monitored = ? WHERE id = ?`,
-		label, profile, edition, boolToInt(monitored), id)
+		`UPDATE movie_versions SET upgrade_hold = CASE WHEN quality_profile = ? THEN upgrade_hold ELSE 0 END,
+			label = ?, quality_profile = ?, edition = ?, monitored = ? WHERE id = ?`,
+		profile, label, profile, edition, boolToInt(monitored), id)
 	if err != nil {
 		return err
 	}
@@ -385,7 +412,97 @@ func (r *Repo) SetVersionFile(ctx context.Context, id int64, path string, size i
 
 // ClearVersionFile marks an extra version as having no file.
 func (r *Repo) ClearVersionFile(ctx context.Context, id int64) error {
-	_, err := r.q().ExecContext(ctx, `UPDATE movie_versions SET has_file = 0, file_path = '', size_bytes = 0, source_release = '' WHERE id = ?`, id)
+	_, err := r.q().ExecContext(ctx, `UPDATE movie_versions SET has_file = 0, file_path = '', size_bytes = 0, source_release = '', upgrade_hold = 0 WHERE id = ?`, id)
+	return err
+}
+
+// holdChunk bounds how many ids go in one IN (...) list, well under SQLite's variable limit.
+const holdChunk = 500
+
+// HoldUpgrades sets the upgrade hold on the given movies' default files and on the given
+// extra tracks, in one transaction, returning how many rows changed. Rows without a file are
+// left alone: there's nothing to keep, and a missing file must still be searched for.
+func (r *Repo) HoldUpgrades(ctx context.Context, movieIDs, versionIDs []int64) (heldMovies, heldVersions int, err error) {
+	err = r.inTx(ctx, func(tx *sql.Tx, _ *Repo) error {
+		var e error
+		if heldMovies, e = holdRows(ctx, tx, "movies", movieIDs); e != nil {
+			return e
+		}
+		heldVersions, e = holdRows(ctx, tx, "movie_versions", versionIDs)
+		return e
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return heldMovies, heldVersions, nil
+}
+
+// holdRows sets upgrade_hold on rows of a fixed table (never user input) that have a file.
+func holdRows(ctx context.Context, tx *sql.Tx, table string, ids []int64) (int, error) {
+	n := 0
+	for len(ids) > 0 {
+		chunk := ids
+		if len(chunk) > holdChunk {
+			chunk = ids[:holdChunk]
+		}
+		ids = ids[len(chunk):]
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE `+table+` SET upgrade_hold = 1
+			WHERE has_file = 1 AND upgrade_hold = 0 AND id IN (`+placeholders(len(chunk))+`)`, args...)
+		if err != nil {
+			return n, err
+		}
+		c, _ := res.RowsAffected()
+		n += int(c)
+	}
+	return n, nil
+}
+
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	b := make([]byte, 0, 2*n)
+	for i := 0; i < n; i++ {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, '?')
+	}
+	return string(b)
+}
+
+// ResumeUpgrades clears the upgrade hold on a movie and every one of its tracks, returning
+// how many were held.
+func (r *Repo) ResumeUpgrades(ctx context.Context, movieID int64) (int, error) {
+	n := 0
+	err := r.inTx(ctx, func(tx *sql.Tx, _ *Repo) error {
+		for _, q := range []string{
+			`UPDATE movies SET upgrade_hold = 0 WHERE id = ? AND upgrade_hold = 1`,
+			`UPDATE movie_versions SET upgrade_hold = 0 WHERE movie_id = ? AND upgrade_hold = 1`,
+		} {
+			res, err := tx.ExecContext(ctx, q, movieID)
+			if err != nil {
+				return err
+			}
+			c, _ := res.RowsAffected()
+			n += int(c)
+		}
+		return nil
+	})
+	return n, err
+}
+
+// clearHold ends one track's upgrade hold: versionID 0 is the movie's default file.
+func (r *Repo) clearHold(ctx context.Context, movieID, versionID int64) error {
+	if versionID == 0 {
+		_, err := r.q().ExecContext(ctx, `UPDATE movies SET upgrade_hold = 0 WHERE id = ?`, movieID)
+		return err
+	}
+	_, err := r.q().ExecContext(ctx, `UPDATE movie_versions SET upgrade_hold = 0 WHERE id = ?`, versionID)
 	return err
 }
 

@@ -23,6 +23,9 @@ type Movie struct {
 	// SourceRelease is the release name the default file was imported from — the
 	// signal used to score the current file when deciding upgrades.
 	SourceRelease string `json:"source_release,omitempty"`
+	// UpgradeHold keeps the default file out of profile-driven upgrades ("keep existing
+	// files" when its profile changed). Cleared by a new import, a profile change or Resume.
+	UpgradeHold bool `json:"upgrade_hold,omitempty"`
 
 	// Extra holds enriched metadata (genres, cast, collection, …), stored as
 	// JSON. Present on both list and detail responses.
@@ -85,6 +88,8 @@ type Version struct {
 	SizeBytes      int64      `json:"size_bytes,omitempty"`
 	SourceRelease  string     `json:"source_release,omitempty"`
 	File           *MovieFile `json:"file,omitempty"` // enriched on the detail endpoint
+	// UpgradeHold keeps this track's file out of profile-driven upgrades (see Movie).
+	UpgradeHold bool `json:"upgrade_hold,omitempty"`
 }
 
 // MovieFile describes the on-disk file for a movie: size plus media info parsed

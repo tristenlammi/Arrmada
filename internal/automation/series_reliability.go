@@ -140,13 +140,18 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 		runtimeMin      int // episode length, for the bitrate-based upgrade threshold
 	}
 	var haveEps []have
-	atCeiling := 0
+	atCeiling, held := 0, 0
 	for _, sn := range s.Seasons {
 		if sn.SeasonNumber == 0 {
 			continue // never upgrade specials
 		}
 		for _, e := range sn.Episodes {
 			if e.Monitored && e.HasFile && e.FilePath != "" {
+				// Kept as it is when the profile changed ("keep existing files").
+				if e.UpgradeHold {
+					held++
+					continue
+				}
 				// The baseline MUST be the release name, not the library filename. Library
 				// files are renamed to a scheme with no group/HDR/audio/codec tags, so they
 				// always score near zero — every candidate then looks like an upgrade, and
@@ -177,6 +182,10 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 		if atCeiling > 0 {
 			c.log.Info("series: nothing to upgrade — every episode already meets the profile",
 				"series", s.Title, "profile", profile, "episodes", atCeiling)
+		}
+		if held > 0 {
+			c.log.Info("series: nothing to upgrade — episodes are kept as they are (upgrades paused)",
+				"series", s.Title, "held", held)
 		}
 		return nil
 	}

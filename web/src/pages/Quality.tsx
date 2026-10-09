@@ -11,15 +11,18 @@ import {
   type IdealFile,
   type Movie,
   type MusicPreset,
+  type ProfileImpact,
   type ProfileMoveCounts,
   type QualityProfileInfo,
   type ReleaseList,
   type Series,
   type StoredProfile,
   type TargetPref,
+  type UpgradeTrigger,
 } from "../lib/api";
+import { formatBytes } from "../lib/format";
 import { useQuery } from "../lib/query";
-import { ErrorState, Skeleton, StaleBanner } from "../ui";
+import { Button, ErrorState, Modal, Skeleton, StaleBanner } from "../ui";
 
 const NO_PROFILES: QualityProfileInfo[] = [];
 const NO_FORMATS: FormatInfo[] = [];
@@ -95,10 +98,20 @@ const BOOK_FORMATS: { group: string; formats: string[] }[] = [
 // is noise on a 2160p one. 20% is the server's floor (quality.MinUpgradePercent), so the
 // options start above it and the UI never promises something the server overrides.
 const UPGRADE_STEPS = [
-  { percent: 0, label: "Off", detail: "Size is ignored. A file is only replaced by a better resolution or a format you want." },
+  { percent: 0, label: "Off", detail: "Size is ignored. A file is replaced by a higher resolution, a better source (WEB → BluRay → Remux), a PROPER fix, or a format you prefer — as limited by Replace for." },
   { percent: 25, label: "Noticeably better", detail: "A 2.0 GB episode is replaced at about 2.5 GB. Swaps a thin, heavily-compressed encode for a normal one." },
   { percent: 50, label: "Clearly better", detail: "A 2.0 GB episode is replaced at about 3.0 GB. The new file has to be visibly heavier." },
   { percent: 100, label: "Much better", detail: "A 2.0 GB episode is replaced at about 4.0 GB. Only a dramatic jump, like a compact web rip giving way to a near-source encode." },
+];
+
+// Which kind of gain is worth re-downloading for (StoredProfile.upgrade_trigger), broadest
+// first: each one also takes every gain the ones below it take. A PROPER of the same
+// release always counts.
+const UPGRADE_TRIGGERS: { v: UpgradeTrigger; l: string; short: string; detail: string }[] = [
+  { v: "any", l: "Any improvement", short: "any improvement", detail: "A higher resolution, a format you prefer, a better source or a PROPER — anything that scores higher." },
+  { v: "source", l: "A better source or a format you prefer", short: "better source or format", detail: "Also a higher resolution. A PROPER only when it fixes the release you have." },
+  { v: "format", l: "A format you prefer or a higher resolution", short: "format or resolution", detail: "A better source alone (WEB-DL → BluRay) isn't worth a re-download. A PROPER only when it fixes the release you have." },
+  { v: "resolution", l: "Higher resolution only", short: "resolution only", detail: "Only a resolution gain, or a PROPER that fixes the release you have." },
 ];
 
 // How strongly smaller files win among equals (StoredProfile.small_bias).
@@ -181,6 +194,7 @@ function emptyProfile(media: string): StoredProfile {
     stall_minutes: 0,
     upgrades_enabled: true,
     upgrade_min_percent: 0,
+    upgrade_trigger: "any",
     ideal: media === "movie" || media === "series" ? {} : undefined,
   };
 }
@@ -450,6 +464,12 @@ function ProfileCard({ info, media, counts, others, onEdit, onDuplicate, onChang
       {counts && (
         <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t pt-2.5" style={{ borderColor: "var(--line-soft)" }}>
           <span className="font-mono text-[10.5px] text-ink-faint">Used by {titles} {noun}</span>
+          {(info.kept ?? 0) > 0 && (
+            <span className="font-mono text-[10.5px]" style={{ color: "var(--accent-text)" }}
+              title="Kept as they were when this profile changed — each one's page has Resume to let upgrades replace it again">
+              {info.kept} file{info.kept === 1 ? "" : "s"} kept as is
+            </span>
+          )}
           {counts.files > 0 && <div className="min-w-[180px] flex-1"><FitBar counts={counts} /></div>}
         </div>
       )}
@@ -530,6 +550,8 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The Save dry run's answer, while its dialog is open.
+  const [impact, setImpact] = useState<{ impact?: ProfileImpact; failed?: string } | null>(null);
   const startJSON = useRef(JSON.stringify(start));
   const dirty = JSON.stringify(sp) !== startJSON.current;
   useUnsaved(dirty);
@@ -556,22 +578,62 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
     if (dirty && !window.confirm("Discard your changes to this profile?")) return;
     onCancel();
   };
-  const save = async () => {
-    if (!sp.name.trim()) { setError("Give your profile a name."); return; }
-    for (const [key, w] of Object.entries(ideal.bitrate ?? {})) {
-      if (w.min > 0 && w.max > 0 && w.min > w.max) { setError(`The ${key === "2160p" ? "4K" : key} bitrate floor is above its ceiling.`); return; }
-    }
+  // write saves body as is; save checks first what saving would set off.
+  const write = async (body: StoredProfile) => {
     setSaving(true);
     setError(null);
     try {
-      if (sp.id > 0) await api.updateQualityProfile(sp.id, sp);
-      else await api.createQualityProfile(sp);
-      startJSON.current = JSON.stringify(sp);
+      if (body.id > 0) await api.updateQualityProfile(body.id, body);
+      else await api.createQualityProfile(body);
+      startJSON.current = JSON.stringify(body);
       onSaved();
     } catch (e) {
       setError((e as Error).message);
       setSaving(false);
     }
+  };
+  // "Save — keep existing files": hold the files the edit would make eligible for
+  // replacement, then save. Holding first means no upgrade sweep can start on them in
+  // between; if the save then fails they stay held, which the profile card shows and
+  // Resume undoes.
+  const keepAndWrite = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      await api.holdExistingFiles(sp.id, sp);
+    } catch (e) {
+      setError(`Couldn't keep the existing files, so nothing was saved: ${(e as Error).message}`);
+      setSaving(false);
+      return;
+    }
+    await write(sp);
+  };
+  const save = async () => {
+    if (!sp.name.trim()) { setError("Give your profile a name."); return; }
+    for (const [key, w] of Object.entries(ideal.bitrate ?? {})) {
+      if (w.min > 0 && w.max > 0 && w.min > w.max) { setError(`The ${key === "2160p" ? "4K" : key} bitrate floor is above its ceiling.`); return; }
+    }
+    // An edit to a saved profile can quietly queue a library's worth of re-downloads (a new
+    // Must, a new Prefer, a lower ceiling), so the count comes first. A new profile has no
+    // files yet.
+    if (sp.id > 0) {
+      setSaving(true);
+      setError(null);
+      try {
+        const im = await api.qualityImpact(sp);
+        if (im.replace.files + im.search.files > 0) {
+          setImpact({ impact: im });
+          setSaving(false);
+          return;
+        }
+      } catch (e) {
+        // Say so and let the owner decide, rather than saving blind or not at all.
+        setImpact({ failed: (e as Error).message });
+        setSaving(false);
+        return;
+      }
+    }
+    await write(sp);
   };
 
   const winner = decision?.winner ?? null;
@@ -652,6 +714,13 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
       </div>
       <SaveBar dirty={dirty} saving={saving} error={error} onSave={save} onCancel={leave}
         mobileNote={winner ? `Would grab ${winner.candidate.release.resolution} ${winner.candidate.release.source}` : undefined} />
+      {impact && (
+        <ImpactDialog impact={impact.impact} failed={impact.failed} saving={saving}
+          onAllow={() => { setImpact(null); void write(sp); }}
+          onKeepFiles={() => { setImpact(null); void keepAndWrite(); }}
+          onUpgradesOff={() => { setImpact(null); const off = { ...sp, upgrades_enabled: false }; setSp(off); void write(off); }}
+          onKeepEditing={() => setImpact(null)} />
+      )}
     </>
   );
 }
@@ -665,6 +734,53 @@ function sourceValue(v: string): string {
 // sourceName is a source as the summary says it, with the two WEB labels as one.
 function sourceName(v: string): string {
   return sourceValue(v) === "WEB-DL" ? "WEB" : v;
+}
+
+// ImpactDialog is the Save dry run's answer: how many files (and how much) saving makes
+// eligible for replacement. "Eligible", never "will be replaced" — what's actually grabbed
+// depends on what the indexers offer.
+function ImpactDialog({ impact, failed, saving, onAllow, onKeepFiles, onUpgradesOff, onKeepEditing }: {
+  impact?: ProfileImpact; failed?: string; saving: boolean;
+  onAllow: () => void; onKeepFiles: () => void; onUpgradesOff: () => void; onKeepEditing: () => void;
+}) {
+  const files = impact ? impact.replace.files + impact.search.files : 0;
+  const bytes = impact ? impact.replace.bytes + impact.search.bytes : 0;
+  const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const parts: string[] = [];
+  if (impact?.replace.files) parts.push(`${impact.replace.files} no longer meet this profile`);
+  if (impact?.search.files) parts.push(`${impact.search.files} met it and will be searched again for something better`);
+  const examples = [...new Set([...(impact?.replace.examples ?? []), ...(impact?.search.examples ?? [])])].slice(0, 5);
+  return (
+    <Modal onClose={onKeepEditing} size="md" dismissible={!saving}
+      title={failed ? "Couldn't check what saving would change" : `Saving will make ${plural(files, "file", "files")} (~${formatBytes(bytes)}) eligible for replacement`}
+      footer={
+        <>
+          <Button variant="ghost" onClick={onKeepEditing} disabled={saving}>Keep editing</Button>
+          {/* Holding needs the same count that just failed, so the fallback is upgrades off. */}
+          {failed
+            ? <Button variant="secondary" onClick={onUpgradesOff} disabled={saving}>Save with upgrades off</Button>
+            : <Button variant="secondary" onClick={onKeepFiles} disabled={saving} title="Saves the profile for everything grabbed from now on; these files stay as they are until you resume upgrades on them">Save — keep existing files</Button>}
+          <Button variant="primary" onClick={onAllow} busy={saving} busyLabel="Saving…">Save and allow upgrades</Button>
+        </>
+      }>
+      {failed ? (
+        <p className="text-[12.5px] leading-[1.5] text-ink-dim">
+          The count of files this edit would make eligible for replacement couldn't be worked out ({failed}). Saving with upgrades on may start re-downloading files that no longer fit.
+        </p>
+      ) : (
+        <>
+          <p className="text-[12.5px] leading-[1.5] text-ink-dim">{parts.join(", ")}. The upgrade sweeps would look for replacements for them; what's actually grabbed depends on what turns up.</p>
+          {examples.length > 0 && (
+            <ul className="mt-3 flex flex-col gap-1 text-[12px]">
+              {examples.map((t) => <li key={t} className="truncate">{t}</li>)}
+              {files > examples.length && <li className="text-ink-faint">…and more</li>}
+            </ul>
+          )}
+          <p className="mt-3 text-[11.5px] leading-[1.5] text-ink-faint">Keep existing files applies the edit to what's grabbed from now on and leaves these files as they are. Each one shows "Upgrades paused" with Resume on its page.</p>
+        </>
+      )}
+    </Modal>
+  );
 }
 
 function sourceSummary(sp: StoredProfile): string {
@@ -687,6 +803,8 @@ function rulesSummary(sp: StoredProfile): string {
 function upgradesSummary(sp: StoredProfile): string {
   if (!sp.upgrades_enabled) return "Off";
   const parts = ["On"];
+  const trigger = UPGRADE_TRIGGERS.find((t) => t.v === (sp.upgrade_trigger || "any"));
+  if (trigger) parts.push(`for ${trigger.short}`);
   // Upgrading only stops at the target where a resolution's window has a floor.
   if (Object.values(sp.ideal?.bitrate ?? {}).some((w) => w.min > 0)) parts.push("stops at the target");
   const step = UPGRADE_STEPS.find((s) => s.percent === sp.upgrade_min_percent);
@@ -844,6 +962,7 @@ function Collapsible({ n, title, summary, children }: { n?: number; title: strin
 }
 
 function UpgradesEditor({ sp, patch }: { sp: StoredProfile; patch: (p: Partial<StoredProfile>) => void }) {
+  const trigger = UPGRADE_TRIGGERS.find((t) => t.v === (sp.upgrade_trigger || "any")) ?? UPGRADE_TRIGGERS[0];
   return (
     <div>
       <div className="flex items-center justify-between gap-3">
@@ -856,6 +975,17 @@ function UpgradesEditor({ sp, patch }: { sp: StoredProfile; patch: (p: Partial<S
         </div>
         <Switch on={sp.upgrades_enabled} onChange={(v) => patch({ upgrades_enabled: v })} label="Automatically upgrade" />
       </div>
+      {sp.upgrades_enabled && (
+        <div className="mt-3.5 border-t pt-3" style={{ borderColor: "var(--line)" }}>
+          <label htmlFor="qp-trigger" className="block text-[12px] font-semibold">Replace for</label>
+          <div className="mt-0.5 text-[10.5px] text-ink-faint">Which kind of improvement is worth re-downloading a file you already have.</div>
+          <select id="qp-trigger" value={trigger.v} onChange={(e) => patch({ upgrade_trigger: e.target.value as UpgradeTrigger })}
+            className="mt-2 w-full rounded-lg px-3 py-2 text-[12.5px]" style={fieldStyle}>
+            {UPGRADE_TRIGGERS.map((t) => <option key={t.v} value={t.v}>{t.l}</option>)}
+          </select>
+          <div className="mt-1.5 text-[10.5px] leading-[1.45] text-ink-faint">{trigger.detail}</div>
+        </div>
+      )}
       {sp.upgrades_enabled && (
         <div className="mt-3.5 border-t pt-3" style={{ borderColor: "var(--line)" }}>
           <div className="text-[12px] font-semibold">Also replace a same-quality file when it's bigger</div>

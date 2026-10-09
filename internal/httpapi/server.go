@@ -247,12 +247,16 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/quality/preview", a.requireRole(auth.RoleManager, a.handleQualityPreview))
 	mux.HandleFunc("POST /api/v1/quality/preview", a.requireRole(auth.RoleManager, a.handleQualityPreview))
 	mux.HandleFunc("POST /api/v1/quality/test", a.requireRole(auth.RoleManager, a.handleQualityTest))
+	mux.HandleFunc("POST /api/v1/quality/impact", a.requireRole(auth.RoleManager, a.handleQualityImpact))
 	mux.HandleFunc("GET /api/v1/quality/profiles", a.requireRole(auth.RoleManager, a.handleListQualityProfiles))
 	mux.HandleFunc("POST /api/v1/quality/profiles", a.requireRole(auth.RoleManager, a.handleCreateQualityProfile))
 	mux.HandleFunc("POST /api/v1/quality/default", a.requireRole(auth.RoleManager, a.handleSetDefaultProfile))
 	mux.HandleFunc("GET /api/v1/quality/profiles/{ref}", a.requireRole(auth.RoleManager, a.handleGetQualityProfile))
 	mux.HandleFunc("PUT /api/v1/quality/profiles/{id}", a.requireRole(auth.RoleManager, a.handleUpdateQualityProfile))
 	mux.HandleFunc("DELETE /api/v1/quality/profiles/{id}", a.requireRole(auth.RoleManager, a.handleDeleteQualityProfile))
+	mux.HandleFunc("POST /api/v1/quality/profiles/{id}/hold-existing", a.requireRole(auth.RoleManager, a.handleHoldExisting))
+	mux.HandleFunc("POST /api/v1/movies/{id}/resume-upgrades", a.requireRole(auth.RoleManager, a.handleResumeMovieUpgrades))
+	mux.HandleFunc("POST /api/v1/series/{id}/resume-upgrades", a.requireRole(auth.RoleManager, a.handleResumeSeriesUpgrades))
 
 	// Indexers + search
 	mux.HandleFunc("GET /api/v1/indexers", a.requireRole(auth.RoleManager, a.handleListIndexers))

@@ -1033,6 +1033,14 @@ func (c *Coordinator) wantsEpisodeFile(ctx context.Context, s series.Series, sea
 	if _, err := os.Stat(cur.Path); err != nil {
 		return true // recorded file is gone from disk — re-import it
 	}
+	// Kept as it is when its profile changed: nothing replaces it on the importer's own
+	// initiative. A release the user picked for this episode, an upload or an approved
+	// review still can (they skip this gate — see forceRule), and Resume lifts the hold.
+	if cur.Held {
+		c.log.Info("series import: keeping the episode's file — upgrades are paused for it",
+			"series", s.Title, "episode", fmt.Sprintf("S%02dE%02d", season, episode))
+		return false
+	}
 
 	const bytesPerGB = 1 << 30
 	candShareGB := float64(candBytes) / bytesPerGB / float64(max(1, fileEpisodes))

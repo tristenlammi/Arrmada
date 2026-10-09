@@ -17,6 +17,10 @@ import (
 type Service struct {
 	repo     *Repo
 	settings *settings.Service // holds each media type's default profile
+	// specs, when set, answer GetStored and Resolve for their ids instead of the database:
+	// how Impact runs the upgrade decisions against a profile as edited, before it's saved
+	// (see withSpecs). nil on the app's service.
+	specs map[int64]StoredProfile
 }
 
 // NewService wires the quality service over the database with a settings service of its
@@ -40,6 +44,9 @@ type ProfileInfo struct {
 	BuiltIn   bool   `json:"built_in"`
 	IsDefault bool   `json:"is_default"`
 	Summary   string `json:"summary"`
+	// Kept is how many files on the profile are held out of upgrades ("keep existing
+	// files"), so a forgotten hold stays visible on the profile's card. Video only.
+	Kept int `json:"kept,omitempty"`
 }
 
 // DefaultProfile returns the profile reference used when adding media of this
@@ -93,6 +100,9 @@ func (s *Service) Effective(ctx context.Context, ref, media string) string {
 // so in practice the fallback only runs when no profile of the media type exists.
 func (s *Service) Resolve(ctx context.Context, ref string) (Profile, *Engine) {
 	if id, ok := customID(ref); ok {
+		if sp, ok := s.specs[id]; ok {
+			return sp.ToProfile(), sp.Engine()
+		}
 		if sp, err := s.repo.Get(ctx, id); err == nil {
 			return sp.ToProfile(), sp.Engine()
 		}
@@ -160,7 +170,8 @@ func (s *Service) Decide(ctx context.Context, ref string, cands []Candidate) Dec
 //   - we must know what the current file is (empty currentRelease → skip, so we
 //     never churn on a guess);
 //   - a candidate never drops resolution (that's a downgrade, handled elsewhere);
-//   - it wins if it scores strictly higher (better resolution/formats), OR — when
+//   - it wins if it scores strictly higher (better resolution/formats) in a way the
+//     profile's upgrade trigger counts (rank.go — a same-group PROPER always counts), OR — when
 //     upgrade_min_percent > 0 — it's at least that much better on bitrate and no worse
 //     on quality.
 //
@@ -201,7 +212,8 @@ func (s *Service) UpgradeCandidate(ctx context.Context, ref, currentRelease stri
 			// Convert stamped in. Grabbing it would undo the conversion and loop forever.
 			continue
 		}
-		qualityBetter := ev.Total > cur.Total
+		// A higher score, of a kind the profile's "Replace for" counts (rank.go).
+		qualityBetter := qualityGain(sp.UpgradeTrigger, ev, cur)
 		// Same helper the import gate uses, so the two can't drift apart again — the
 		// searcher deciding a release is worth grabbing and the importer then refusing to
 		// place it is exactly the bug this shares its logic to prevent. It also brings the
@@ -236,7 +248,8 @@ func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string,
 	// Same gate as IsBitrateUpgrade and UpgradeCandidate. With upgrades off the searcher
 	// would never have chosen this release, so the importer replacing a file on its own
 	// initiative would break the one promise that setting makes: the library stops churning.
-	if sp, err := s.GetStored(ctx, ref); err != nil || !sp.UpgradesEnabled {
+	sp, err := s.GetStored(ctx, ref)
+	if err != nil || !sp.UpgradesEnabled {
 		return false
 	}
 	// The release a converted file came from is never an upgrade of it, whatever the
@@ -252,7 +265,9 @@ func (s *Service) IsQualityUpgrade(ctx context.Context, ref, candRelease string,
 	if cand.Avoided && !cur.Avoided {
 		return false
 	}
-	return cand.Total > cur.Total
+	// The same "Replace for" rule the searcher applied, so a release it wouldn't have
+	// grabbed as an upgrade isn't placed as one either.
+	return qualityGain(sp.UpgradeTrigger, cand, cur)
 }
 
 // convertedFrom reports whether cand looks like the release the current file was
@@ -339,12 +354,31 @@ func (s *Service) List(ctx context.Context, mediaType string) ([]ProfileInfo, er
 	if err != nil {
 		return nil, err
 	}
+	kept := s.keptByProfile(ctx, mediaType)
 	var out []ProfileInfo
 	for _, sp := range custom {
 		key := "custom:" + strconv.FormatInt(sp.ID, 10)
-		out = append(out, ProfileInfo{Key: key, Name: sp.Name, MediaType: sp.MediaType, BuiltIn: false, IsDefault: key == def, Summary: sp.Summary()})
+		out = append(out, ProfileInfo{Key: key, Name: sp.Name, MediaType: sp.MediaType, BuiltIn: false, IsDefault: key == def, Summary: sp.Summary(), Kept: kept[key]})
 	}
 	return out, nil
+}
+
+// keptByProfile counts held files per profile each title actually runs under (Effective),
+// so a title on "n/a" or a deleted profile counts toward the default. Best effort: a failed
+// count shows no number rather than failing the list.
+func (s *Service) keptByProfile(ctx context.Context, media string) map[string]int {
+	out := map[string]int{}
+	if media != MediaMovie && media != MediaSeries {
+		return out
+	}
+	byRef, err := s.repo.heldByRef(ctx, media)
+	if err != nil {
+		return out
+	}
+	for ref, n := range byRef {
+		out[s.Effective(ctx, ref, media)] += n
+	}
+	return out
 }
 
 // ListStored returns all custom profiles for a media type (with their format scores).
@@ -355,6 +389,9 @@ func (s *Service) ListStored(ctx context.Context, mediaType string) ([]StoredPro
 // GetStored returns an editable profile for a custom reference.
 func (s *Service) GetStored(ctx context.Context, ref string) (StoredProfile, error) {
 	if id, ok := customID(ref); ok {
+		if sp, ok := s.specs[id]; ok {
+			return sp, nil
+		}
 		return s.repo.Get(ctx, id)
 	}
 	return StoredProfile{}, ErrNotFound

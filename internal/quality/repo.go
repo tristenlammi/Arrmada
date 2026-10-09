@@ -21,7 +21,7 @@ func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
 const profileCols = `id, media_type, name, base, allowed_resolutions, min_source, bitrate_cap_mbps,
 	small_bias, min_format_score, format_scores, custom_formats, keywords, rejected, min_seeders, stall_minutes, max_source,
-	upgrades_enabled, upgrade_min_percent, required_formats, ideal, allow_prerelease`
+	upgrades_enabled, upgrade_min_percent, required_formats, ideal, allow_prerelease, upgrade_trigger`
 
 func (r *Repo) scan(row interface{ Scan(...any) error }) (StoredProfile, error) {
 	var (
@@ -33,10 +33,11 @@ func (r *Repo) scan(row interface{ Scan(...any) error }) (StoredProfile, error) 
 	err := row.Scan(&sp.ID, &sp.MediaType, &sp.Name, &sp.Base, &allowedJSON, &sp.MinSource,
 		&sp.BitrateCapMbps, &sp.SmallBias, &sp.MinFormatScore, &scoresJSON, &cfJSON,
 		&kwJSON, &rejectedJSON, &sp.MinSeeders, &sp.StallMinutes, &sp.MaxSource,
-		&upgradesEnabled, &sp.UpgradeMinPercent, &requiredJSON, &idealJSON, &allowPreRelease)
+		&upgradesEnabled, &sp.UpgradeMinPercent, &requiredJSON, &idealJSON, &allowPreRelease, &sp.UpgradeTrigger)
 	if err != nil {
 		return StoredProfile{}, err
 	}
+	sp.UpgradeTrigger = NormalizeTrigger(sp.UpgradeTrigger)
 	sp.UpgradesEnabled = upgradesEnabled != 0
 	sp.AllowPreRelease = allowPreRelease != 0
 	_ = json.Unmarshal([]byte(allowedJSON), &sp.AllowedResolutions)
@@ -97,11 +98,12 @@ func (r *Repo) Create(ctx context.Context, sp StoredProfile) (StoredProfile, err
 		`INSERT INTO quality_profiles (media_type, name, base, allowed_resolutions, min_source,
 			bitrate_cap_mbps, small_bias, min_format_score, format_scores, custom_formats,
 			keywords, rejected, min_seeders, stall_minutes, max_source, upgrades_enabled, upgrade_min_percent,
-			required_formats, ideal, allow_prerelease)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			required_formats, ideal, allow_prerelease, upgrade_trigger)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sp.MediaType, sp.Name, sp.Base, allowed, sp.MinSource, sp.BitrateCapMbps, sp.SmallBias,
 		sp.MinFormatScore, scores, cf, kw, rej, sp.MinSeeders, sp.StallMinutes, sp.MaxSource,
-		boolToInt(sp.UpgradesEnabled), sp.UpgradeMinPercent, required, ideal, boolToInt(sp.AllowPreRelease))
+		boolToInt(sp.UpgradesEnabled), sp.UpgradeMinPercent, required, ideal, boolToInt(sp.AllowPreRelease),
+		NormalizeTrigger(sp.UpgradeTrigger))
 	if err != nil {
 		return StoredProfile{}, err
 	}
@@ -117,11 +119,13 @@ func (r *Repo) Update(ctx context.Context, id int64, sp StoredProfile) error {
 		`UPDATE quality_profiles SET name = ?, base = ?, allowed_resolutions = ?, min_source = ?,
 			bitrate_cap_mbps = ?, small_bias = ?, min_format_score = ?, format_scores = ?, custom_formats = ?,
 			keywords = ?, rejected = ?, min_seeders = ?, stall_minutes = ?, max_source = ?,
-			upgrades_enabled = ?, upgrade_min_percent = ?, required_formats = ?, ideal = ?, allow_prerelease = ?
+			upgrades_enabled = ?, upgrade_min_percent = ?, required_formats = ?, ideal = ?, allow_prerelease = ?,
+			upgrade_trigger = ?
 		 WHERE id = ?`,
 		sp.Name, sp.Base, allowed, sp.MinSource, sp.BitrateCapMbps, sp.SmallBias, sp.MinFormatScore,
 		scores, cf, kw, rej, sp.MinSeeders, sp.StallMinutes, sp.MaxSource,
-		boolToInt(sp.UpgradesEnabled), sp.UpgradeMinPercent, required, ideal, boolToInt(sp.AllowPreRelease), id)
+		boolToInt(sp.UpgradesEnabled), sp.UpgradeMinPercent, required, ideal, boolToInt(sp.AllowPreRelease),
+		NormalizeTrigger(sp.UpgradeTrigger), id)
 	if err != nil {
 		return err
 	}
@@ -245,6 +249,45 @@ func (r *Repo) repointDangling(ctx context.Context, table, where, to string, arg
 	}
 	n, _ := res.RowsAffected()
 	return int(n), nil
+}
+
+// heldByRef counts the files kept out of upgrades (upgrade_hold) per stored profile ref, for
+// a video media type: movies' default files and extra tracks, or episodes by their show's
+// profile. Refs are as stored — the caller resolves "n/a" and dangling ones.
+func (r *Repo) heldByRef(ctx context.Context, media string) (map[string]int, error) {
+	var queries []string
+	switch media {
+	case MediaMovie:
+		queries = []string{
+			`SELECT quality_profile, COUNT(*) FROM movies WHERE upgrade_hold = 1 AND has_file = 1 GROUP BY quality_profile`,
+			`SELECT quality_profile, COUNT(*) FROM movie_versions WHERE upgrade_hold = 1 AND has_file = 1 GROUP BY quality_profile`,
+		}
+	case MediaSeries:
+		queries = []string{`SELECT s.quality_profile, COUNT(*) FROM episodes e JOIN series s ON s.id = e.series_id
+			WHERE e.upgrade_hold = 1 AND e.has_file = 1 GROUP BY s.quality_profile`}
+	}
+	out := map[string]int{}
+	for _, q := range queries {
+		if err := func() error {
+			rows, err := r.db.QueryContext(ctx, q)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+			for rows.Next() {
+				var ref string
+				var n int
+				if err := rows.Scan(&ref, &n); err != nil {
+					return err
+				}
+				out[ref] += n
+			}
+			return rows.Err()
+		}(); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 func boolToInt(b bool) int {

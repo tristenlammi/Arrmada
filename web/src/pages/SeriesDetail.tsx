@@ -11,6 +11,7 @@ import { FitBadge } from "../components/FitBadge";
 import { RenameModal } from "./series/RenameModal";
 import { usePoll } from "../lib/usePoll";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
+import { Button, StatusChip } from "../ui";
 import { api, importListNotice, type FitItem, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile } from "../lib/api";
 
 // Auto-grab is fire-and-forget: the API answers 202 and searches in the background, and a
@@ -162,6 +163,7 @@ export function SeriesDetail() {
               <div className="mt-4 flex flex-wrap items-center gap-4">
                 <ProfileSelector series={s} onChange={load} />
               </div>
+              <UpgradeHoldChip series={s} episodes={allEps} onChange={load} flash={flash} />
 
               <Toolbar series={s} onChange={load} flash={flash} />
             </div>
@@ -202,6 +204,34 @@ export function SeriesDetail() {
         <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: toastErr ? "var(--reject)" : "var(--ink)" }}>{toast}</div>
       )}
     </>
+  );
+}
+
+// UpgradeHoldChip shows when episodes of this show were kept as they are when its profile
+// changed ("keep existing files"), with Resume for all of them; each season has its own
+// Resume too. A hold nobody can see is a file that silently never upgrades.
+function UpgradeHoldChip({ series, episodes, onChange, flash }: { series: SeriesT; episodes: Episode[]; onChange: () => void; flash: (m: string, err?: boolean) => void }) {
+  const [busy, setBusy] = useState(false);
+  const held = episodes.filter((e) => e.has_file && e.upgrade_hold).length;
+  if (held === 0) return null;
+  const resume = async () => {
+    setBusy(true);
+    try {
+      await api.resumeSeriesUpgrades(series.id);
+      flash("Upgrades resumed — the next sweep can replace these episodes again.");
+      onChange();
+    } catch (e) {
+      flash((e as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 text-[11.5px] text-ink-dim">
+      <StatusChip tone="accent">Upgrades paused</StatusChip>
+      <span>{held} episode{held === 1 ? "" : "s"} kept when the profile changed</span>
+      <Button size="sm" variant="secondary" onClick={resume} busy={busy} busyLabel="Resuming…">Resume</Button>
+    </div>
   );
 }
 
@@ -334,6 +364,17 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
   // import gate then throws away. Never on Specials: they have no packs, so they're grabbed
   // one special at a time from their own rows.
   const anyMissing = season.season_number > 0 && eps.some((e) => !e.has_file && e.monitored && aired(e));
+  const held = eps.filter((e) => e.has_file && e.upgrade_hold).length;
+  const resumeSeason = async () => {
+    setBusy(true);
+    try {
+      await api.resumeSeriesUpgrades(series.id, season.season_number);
+      flash(`Upgrades resumed for ${name}.`);
+      onChange();
+    }
+    catch (e) { flash((e as Error).message); }
+    finally { setBusy(false); }
+  };
 
   // A season pack request is settled once the pack is actually coming down or the season is
   // full — same rule as an episode, just read off the season as a whole.
@@ -376,6 +417,12 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
           <div className="h-1.5 w-24 overflow-hidden rounded-full" style={{ background: "var(--line)" }}>
             <div className="h-full rounded-full" style={{ width: `${pct}%`, background: have >= counted && counted > 0 ? "var(--good)" : "var(--accent)" }} />
           </div>
+        )}
+        {held > 0 && (
+          <>
+            <StatusChip tone="accent" title={`${held} episode${held === 1 ? "" : "s"} kept as they were when the profile changed`}>Paused</StatusChip>
+            <Button size="sm" variant="secondary" onClick={resumeSeason} disabled={busy} title={`Let upgrades replace ${name}'s kept episodes again`}>Resume</Button>
+          </>
         )}
         {state !== "unreleased" && (
           <>

@@ -44,6 +44,10 @@ type StoredProfile struct {
 	// A percentage rather than Mbps because it means the same thing at every resolution:
 	// "2 Mbps better" more than doubles a 480p file and is noise on a 2160p one.
 	UpgradeMinPercent float64 `json:"upgrade_min_percent"`
+	// UpgradeTrigger is which kind of gain is worth replacing a file for (the builder's
+	// "Replace for"): TriggerAny, TriggerSource, TriggerFormat or TriggerResolution. ""
+	// reads as TriggerAny, which is what every profile did before it existed. See rank.go.
+	UpgradeTrigger string `json:"upgrade_trigger"`
 	// AllowPreRelease lets a movie/series profile grab cams, telesyncs, screeners and the
 	// like. Off — the default — refuses them.
 	AllowPreRelease bool `json:"allow_prerelease"`

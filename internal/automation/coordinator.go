@@ -1050,7 +1050,8 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 		// Include any monitored version with a file whose profile allows upgrades — regardless of
 		// whether Arrmada grabbed it or found it on a library scan. The AllowsUpgrades gate keeps
 		// us from indexer-searching movies on a non-upgrading profile.
-		if v.Monitored && v.HasFile && c.quality.AllowsUpgrades(ctx, c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)) {
+		// A held file ("keep existing files" when its profile changed) is left as it is.
+		if v.Monitored && v.HasFile && !v.UpgradeHold && c.quality.AllowsUpgrades(ctx, c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)) {
 			want = append(want, v)
 		}
 	}
@@ -1161,6 +1162,11 @@ func upgradeBaseline(m movies.Movie, v movies.Version) string {
 	}
 	return ""
 }
+
+// UpgradeBaseline is the release string the movie upgrade sweep scores a version's file
+// by, for callers outside the sweep that must judge the file the same way (a profile
+// edit's dry run).
+func UpgradeBaseline(m movies.Movie, v movies.Version) string { return upgradeBaseline(m, v) }
 
 // RegrabMovie grabs the best release under each monitored version's current
 // profile even when a file already exists — a deliberate re-grab, used when the

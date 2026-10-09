@@ -23,6 +23,7 @@ import {
 } from "../lib/api";
 import { useLive, type LiveEvent } from "../lib/useLive";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
+import { Button, StatusChip } from "../ui";
 
 const AVAILABILITY_LABELS: Record<string, string> = {
   announced: "Announced",
@@ -164,6 +165,7 @@ export function MovieDetail() {
               </div>
 
               <WhyPanel movie={movie} />
+              <UpgradeHoldChip movie={movie} onChange={load} flash={flash} />
               <Toolbar movie={movie} onChange={load} flash={flash} live={live} />
             </div>
           </div>
@@ -690,6 +692,9 @@ function WhyPanel({ movie }: { movie: Movie }) {
   } else if (movie.has_file && !movie.upgrades_allowed) {
     msg = "You have this movie. Its quality profile doesn't upgrade, so this file stays as it is.";
     tone = "var(--good)";
+  } else if (movie.has_file && movie.upgrade_hold) {
+    msg = "You have this movie. Its file was kept as it is when its profile changed, so upgrades won't replace it until you resume them.";
+    tone = "var(--good)";
   } else if (movie.has_file) {
     msg = "You have this movie. Arrmada checks for a clearly better release every 6 hours and grabs it automatically.";
     tone = "var(--good)";
@@ -704,6 +709,36 @@ function WhyPanel({ movie }: { movie: Movie }) {
   return (
     <div className="mt-4 rounded-lg p-3 text-[12px] leading-relaxed" style={{ border: "1px solid var(--line)", color: tone }}>
       {msg}
+    </div>
+  );
+}
+
+// UpgradeHoldChip shows when a file of this movie was kept as it is when its profile
+// changed ("keep existing files"), with Resume to let upgrades replace it again. A hold
+// nobody can see is a file that silently never upgrades, so it's always on the page.
+function UpgradeHoldChip({ movie, onChange, flash }: { movie: Movie; onChange: () => void; flash: (m: string, err?: boolean) => void }) {
+  const [busy, setBusy] = useState(false);
+  const held = (movie.versions ?? []).filter((v) => v.has_file && v.upgrade_hold);
+  if (held.length === 0 && !(movie.has_file && movie.upgrade_hold)) return null;
+  // Name the tracks when it's not simply the movie's one file.
+  const which = movie.versions && movie.versions.length > 1 && held.length > 0 ? ` (${held.map((v) => v.label).join(", ")})` : "";
+  const resume = async () => {
+    setBusy(true);
+    try {
+      await api.resumeMovieUpgrades(movie.id);
+      flash("Upgrades resumed — the next sweep can replace this file again.");
+      onChange();
+    } catch (e) {
+      flash((e as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-2 text-[11.5px] text-ink-dim">
+      <StatusChip tone="accent">Upgrades paused</StatusChip>
+      <span>Kept when the profile changed{which}</span>
+      <Button size="sm" variant="secondary" onClick={resume} busy={busy} busyLabel="Resuming…">Resume</Button>
     </div>
   );
 }

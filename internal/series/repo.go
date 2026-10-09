@@ -335,26 +335,27 @@ func rebuildEpisodesTx(ctx context.Context, tx *sql.Tx, seriesID int64, seasons 
 		path            string
 		size            int64
 		release         string
+		hold            bool // upgrade_hold: a kept file stays kept wherever it moves
 	}
 	filesByAbs := map[int]placement{}   // absolute → file placement (absolute > 0)
 	filesBySE := map[[2]int]placement{} // (season, episode) → file (absolute == 0, e.g. specials)
 	monByAbs := map[int]bool{}
 	monBySE := map[[2]int]bool{}
 	rows, err := tx.QueryContext(ctx,
-		`SELECT absolute_number, season_number, episode_number, has_file, file_path, size_bytes, source_release, monitored
+		`SELECT absolute_number, season_number, episode_number, has_file, file_path, size_bytes, source_release, monitored, upgrade_hold
 		   FROM episodes WHERE series_id = ?`, seriesID)
 	if err != nil {
 		return nil, err
 	}
 	for rows.Next() {
-		var abs, s, e, hf, mon int
+		var abs, s, e, hf, mon, hold int
 		var path, rel string
 		var size int64
-		if err := rows.Scan(&abs, &s, &e, &hf, &path, &size, &rel, &mon); err != nil {
+		if err := rows.Scan(&abs, &s, &e, &hf, &path, &size, &rel, &mon, &hold); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		p := placement{season: s, episode: e, path: path, size: size, release: rel}
+		p := placement{season: s, episode: e, path: path, size: size, release: rel, hold: hold != 0}
 		if abs > 0 {
 			monByAbs[abs] = mon != 0
 			if hf != 0 && path != "" {
@@ -400,9 +401,9 @@ func rebuildEpisodesTx(ctx context.Context, tx *sql.Tx, seriesID int64, seasons 
 
 	applyFile := func(ns, ne int, p placement) error {
 		_, err := tx.ExecContext(ctx,
-			`UPDATE episodes SET has_file = 1, file_path = ?, size_bytes = ?, source_release = ?
+			`UPDATE episodes SET has_file = 1, file_path = ?, size_bytes = ?, source_release = ?, upgrade_hold = ?
 			   WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
-			p.path, p.size, p.release, seriesID, ns, ne)
+			p.path, p.size, p.release, b2i(p.hold), seriesID, ns, ne)
 		return err
 	}
 	existsSE := func(season, episode int) bool {
@@ -530,7 +531,7 @@ func (r *Repo) SeasonsFor(ctx context.Context, seriesID int64) ([]Season, error)
 		return nil, err
 	}
 	eps, err := r.db.QueryContext(ctx,
-		`SELECT id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored, has_file, file_path, size_bytes, absolute_number, source_release
+		`SELECT id, season_number, episode_number, title, overview, air_date, runtime, still_url, monitored, has_file, file_path, size_bytes, absolute_number, source_release, upgrade_hold
 		 FROM episodes WHERE series_id = ? ORDER BY season_number, episode_number`, seriesID)
 	if err != nil {
 		return seasons, nil
@@ -538,11 +539,11 @@ func (r *Repo) SeasonsFor(ctx context.Context, seriesID int64) ([]Season, error)
 	defer eps.Close()
 	for eps.Next() {
 		var e Episode
-		var mon, hf int
-		if err := eps.Scan(&e.ID, &e.SeasonNumber, &e.EpisodeNumber, &e.Title, &e.Overview, &e.AirDate, &e.Runtime, &e.StillURL, &mon, &hf, &e.FilePath, &e.SizeBytes, &e.AbsoluteNumber, &e.SourceRelease); err != nil {
+		var mon, hf, hold int
+		if err := eps.Scan(&e.ID, &e.SeasonNumber, &e.EpisodeNumber, &e.Title, &e.Overview, &e.AirDate, &e.Runtime, &e.StillURL, &mon, &hf, &e.FilePath, &e.SizeBytes, &e.AbsoluteNumber, &e.SourceRelease, &hold); err != nil {
 			return seasons, nil
 		}
-		e.Monitored, e.HasFile = mon != 0, hf != 0
+		e.Monitored, e.HasFile, e.UpgradeHold = mon != 0, hf != 0, hold != 0
 		if i, ok := byNum[e.SeasonNumber]; ok {
 			seasons[i].Episodes = append(seasons[i].Episodes, e)
 		}
@@ -1041,7 +1042,7 @@ func (r *Repo) SetEpisodeSourceRelease(ctx context.Context, seriesID int64, seas
 // ClearEpisodeFile flips an episode back to wanted (no file), e.g. after deleting its file.
 func (r *Repo) ClearEpisodeFile(ctx context.Context, seriesID int64, season, episode int) error {
 	_, err := r.db.ExecContext(ctx,
-		`UPDATE episodes SET has_file = 0, file_path = '', size_bytes = 0 WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
+		`UPDATE episodes SET has_file = 0, file_path = '', size_bytes = 0, upgrade_hold = 0 WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
 		seriesID, season, episode)
 	return err
 }
@@ -1054,20 +1055,120 @@ type EpisodeFile struct {
 	SizeBytes     int64
 	SourceRelease string // the release it came from, not the renamed library file
 	RuntimeMin    int    // needed to turn size into a bitrate
+	Held          bool   // kept out of profile-driven upgrades (upgrade_hold)
+}
+
+// LibraryEpisodeFile is one episode with a file, with what the upgrade sweep needs to know
+// about it and its show.
+type LibraryEpisodeFile struct {
+	EpisodeID       int64
+	SeriesID        int64
+	SeriesTitle     string
+	SeriesProfile   string // the show's stored quality profile ref
+	SeriesMonitored bool
+	Season, Episode int
+	Monitored       bool
+	Path            string
+	SizeBytes       int64
+	SourceRelease   string
+	RuntimeMin      int
+	Held            bool // kept out of profile-driven upgrades (upgrade_hold)
+}
+
+// LibraryEpisodeFiles lists every episode that has a file, across all shows, in one query —
+// for whole-library passes (a profile edit's dry run) that can't afford one per show.
+func (r *Repo) LibraryEpisodeFiles(ctx context.Context) ([]LibraryEpisodeFile, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT e.id, e.series_id, s.title, s.quality_profile, s.monitored, e.season_number, e.episode_number,
+		        e.monitored, e.file_path, e.size_bytes, e.source_release, e.runtime, e.upgrade_hold
+		   FROM episodes e JOIN series s ON s.id = e.series_id
+		  WHERE e.has_file = 1
+		  ORDER BY s.title, e.season_number, e.episode_number`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []LibraryEpisodeFile
+	for rows.Next() {
+		var f LibraryEpisodeFile
+		var smon, emon, hold int
+		if err := rows.Scan(&f.EpisodeID, &f.SeriesID, &f.SeriesTitle, &f.SeriesProfile, &smon, &f.Season, &f.Episode,
+			&emon, &f.Path, &f.SizeBytes, &f.SourceRelease, &f.RuntimeMin, &hold); err != nil {
+			return nil, err
+		}
+		f.SeriesMonitored, f.Monitored, f.Held = smon != 0, emon != 0, hold != 0
+		out = append(out, f)
+	}
+	return out, rows.Err()
 }
 
 // CurrentEpisodeFile returns what an episode currently holds, so an import can be judged
 // against it on more than resolution alone.
 func (r *Repo) CurrentEpisodeFile(ctx context.Context, seriesID int64, season, episode int) EpisodeFile {
 	var f EpisodeFile
+	var hold int
 	err := r.db.QueryRowContext(ctx,
-		`SELECT file_path, size_bytes, source_release, runtime FROM episodes
+		`SELECT file_path, size_bytes, source_release, runtime, upgrade_hold FROM episodes
 		 WHERE series_id = ? AND season_number = ? AND episode_number = ? AND has_file = 1`,
-		seriesID, season, episode).Scan(&f.Path, &f.SizeBytes, &f.SourceRelease, &f.RuntimeMin)
+		seriesID, season, episode).Scan(&f.Path, &f.SizeBytes, &f.SourceRelease, &f.RuntimeMin, &hold)
 	if err != nil {
 		return EpisodeFile{}
 	}
+	f.Held = hold != 0
 	return f
+}
+
+// HoldUpgrades sets the upgrade hold on the given episodes (by id) that have a file, in one
+// transaction, returning how many changed.
+func (r *Repo) HoldUpgrades(ctx context.Context, episodeIDs []int64) (int, error) {
+	n := 0
+	err := store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		for ids := episodeIDs; len(ids) > 0; {
+			chunk := ids
+			if len(chunk) > 500 { // well under SQLite's variable limit
+				chunk = ids[:500]
+			}
+			ids = ids[len(chunk):]
+			args := make([]any, len(chunk))
+			for i, id := range chunk {
+				args[i] = id
+			}
+			res, err := tx.ExecContext(ctx, `UPDATE episodes SET upgrade_hold = 1
+				WHERE has_file = 1 AND upgrade_hold = 0
+				  AND id IN (`+strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")+`)`, args...)
+			if err != nil {
+				return err
+			}
+			c, _ := res.RowsAffected()
+			n += int(c)
+		}
+		return nil
+	})
+	return n, err
+}
+
+// ResumeUpgrades clears the upgrade hold on a show's episodes — one season's when season
+// >= 0, every season's otherwise — returning how many were held.
+func (r *Repo) ResumeUpgrades(ctx context.Context, seriesID int64, season int) (int, error) {
+	q, args := `UPDATE episodes SET upgrade_hold = 0 WHERE series_id = ? AND upgrade_hold = 1`, []any{seriesID}
+	if season >= 0 {
+		q += ` AND season_number = ?`
+		args = append(args, season)
+	}
+	res, err := r.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return int(n), nil
+}
+
+// ClearEpisodeHold ends one episode's upgrade hold (a new file was imported for it).
+func (r *Repo) ClearEpisodeHold(ctx context.Context, seriesID int64, season, episode int) error {
+	_, err := r.db.ExecContext(ctx,
+		`UPDATE episodes SET upgrade_hold = 0 WHERE series_id = ? AND season_number = ? AND episode_number = ?`,
+		seriesID, season, episode)
+	return err
 }
 
 func (r *Repo) EpisodeFilePath(ctx context.Context, seriesID int64, season, episode int) (string, error) {
@@ -1125,10 +1226,26 @@ func (r *Repo) AnyEpisodeFilePath(ctx context.Context, seriesID int64) (string, 
 	return path, err
 }
 
-// SetQualityProfile changes a series' quality profile.
+// SetQualityProfile changes a series' quality profile. Moving to another profile ends
+// every episode's upgrade hold: the holds were about the old profile's change.
 func (r *Repo) SetQualityProfile(ctx context.Context, id int64, profile string) error {
-	_, err := r.db.ExecContext(ctx, `UPDATE series SET quality_profile = ? WHERE id = ?`, profile, id)
-	return err
+	return store.WithTx(ctx, r.db, func(tx *sql.Tx) error {
+		var old string
+		if err := tx.QueryRowContext(ctx, `SELECT quality_profile FROM series WHERE id = ?`, id).Scan(&old); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil // nothing to change, as the plain UPDATE always answered
+			}
+			return err
+		}
+		if old == profile {
+			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE series SET quality_profile = ? WHERE id = ?`, profile, id); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE episodes SET upgrade_hold = 0 WHERE series_id = ? AND upgrade_hold = 1`, id)
+		return err
+	})
 }
 
 // Delete removes a series and (via cascade) its seasons/episodes.

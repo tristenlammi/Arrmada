@@ -353,6 +353,16 @@ type Evaluation struct {
 	// file over a 9 Mbps one. BonusWaived says that happened.
 	PreferBonus int  `json:"prefer_bonus,omitempty"`
 	BonusWaived bool `json:"bonus_waived,omitempty"`
+	// TargetScore and CustomScore split FormatScore by where a score came from: the
+	// target's own formats (codec, HDR, audio — targetFormats) versus everything else
+	// (custom formats, keywords and the other built-ins). They always add up to
+	// FormatScore; the split only exists so an upgrade can say which kind of gain it is
+	// (see improvementKey).
+	TargetScore int `json:"target_score,omitempty"`
+	CustomScore int `json:"custom_score,omitempty"`
+	// targetBonus is the part of PreferBonus that came from target formats, so a waived
+	// bonus comes off the right half of the split.
+	targetBonus int
 	// Avoided is set when the release carries a format the profile scores negatively (the
 	// "Avoid" toggle). Such a release drops to a lower tier: it's only ever the winner when
 	// no non-avoided release is eligible, so "Avoid Dolby Vision" means "never pick DV while
@@ -460,9 +470,18 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 			continue
 		}
 		ev.FormatScore += score
+		target := isTargetFormat(name)
+		if target {
+			ev.TargetScore += score
+		} else {
+			ev.CustomScore += score
+		}
 		if score > 0 {
 			ev.Matched = append(ev.Matched, name)
 			ev.PreferBonus += score
+			if target {
+				ev.targetBonus += score
+			}
 		} else if score < 0 {
 			ev.Avoided = true
 			ev.AvoidedFormats = append(ev.AvoidedFormats, name)
@@ -475,6 +494,7 @@ func (e *Engine) Evaluate(p Profile, c Candidate) Evaluation {
 			continue
 		}
 		ev.FormatScore += k.Score
+		ev.CustomScore += k.Score
 		if k.Score > 0 {
 			ev.Matched = append(ev.Matched, k.Term)
 			ev.PreferBonus += k.Score
@@ -672,6 +692,8 @@ func waiveCollapsedBonuses(evs []Evaluation) {
 		if br := ev.Candidate.effectiveBitrateMbps(); br > 0 && br < best*bonusCollapseRatio {
 			ev.Total -= ev.PreferBonus
 			ev.FormatScore -= ev.PreferBonus
+			ev.TargetScore -= ev.targetBonus
+			ev.CustomScore -= ev.PreferBonus - ev.targetBonus
 			ev.BonusWaived = true
 		}
 	}

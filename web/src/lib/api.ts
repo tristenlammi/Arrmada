@@ -138,6 +138,8 @@ export interface QualityProfileInfo {
   built_in: boolean;
   is_default: boolean;
   summary: string;
+  // Files on the profile kept out of upgrades ("keep existing files"). Video only.
+  kept?: number;
 }
 
 // What a profile delete moved onto its replacement.
@@ -313,9 +315,19 @@ export interface StoredProfile {
   stall_minutes: number;
   upgrades_enabled: boolean;
   upgrade_min_percent: number;
+  // Which gains replace a file ("Replace for"): any | source | format | resolution. The
+  // server reads a missing one as "any".
+  upgrade_trigger?: UpgradeTrigger;
   allow_prerelease?: boolean; // grab cams/telesyncs/screeners (movie & series; off = refused)
   ideal?: IdealFile; // the target file: drives grabbing, ranking and the library fit check
 }
+
+export type UpgradeTrigger = "any" | "source" | "format" | "resolution";
+
+// ProfileImpact mirrors quality.Impact: the files an edit would make eligible for
+// replacement — no longer meeting the profile (replace), or searched again (search).
+export interface ImpactBucket { files: number; bytes: number; examples: string[] }
+export interface ProfileImpact { replace: ImpactBucket; search: ImpactBucket; files: number }
 
 // TargetPref is one option's state in the target file. "" = no opinion; "want" is shown as
 // Prefer (ranks releases, doesn't decide what fits). "ok" is retired — the server drops it.
@@ -1022,6 +1034,8 @@ export interface Episode {
   has_file: boolean;
   file_path?: string;
   size_bytes?: number;
+  // Kept out of profile-driven upgrades ("keep existing files"); Resume lifts it.
+  upgrade_hold?: boolean;
   download?: { state: string; progress: number };
 }
 export interface Season {
@@ -1599,6 +1613,19 @@ export const api = {
       `/api/v1/quality/profiles/${id}?move_to=${encodeURIComponent(moveTo)}`, { method: "DELETE" }),
   qualityPreviewSpec: (sp: StoredProfile) =>
     req<QualityPreview>("/api/v1/quality/preview", { method: "POST", body: JSON.stringify(sp) }),
+  // The dry run before saving an edit to a saved profile: which files it would make eligible
+  // for replacement.
+  qualityImpact: (profile: StoredProfile) =>
+    req<ProfileImpact>("/api/v1/quality/impact", { method: "POST", body: JSON.stringify({ profile }) }),
+  // "Keep existing files": hold a profile's files out of upgrades — with onlyAffected, just the
+  // ones the edited profile would make eligible for replacement (call it before saving).
+  holdExistingFiles: (id: number, edited?: StoredProfile) =>
+    req<{ movies: number; versions: number; episodes: number; held: number }>(
+      `/api/v1/quality/profiles/${id}/hold-existing`, { method: "POST", body: JSON.stringify(edited ? { only_affected: true, profile: edited } : {}) }),
+  resumeMovieUpgrades: (id: number) =>
+    req<{ resumed: number }>(`/api/v1/movies/${id}/resume-upgrades`, { method: "POST" }),
+  resumeSeriesUpgrades: (id: number, season?: number) =>
+    req<{ resumed: number }>(`/api/v1/series/${id}/resume-upgrades${season != null ? `?season=${season}` : ""}`, { method: "POST" }),
 
   downloadClients: () =>
     req<{ clients: DownloadClient[] }>("/api/v1/downloadclients").then((r) => r.clients),
@@ -2182,6 +2209,7 @@ export interface MovieVersion {
   file_path?: string;
   size_bytes?: number;
   file?: MovieFile;
+  upgrade_hold?: boolean; // this track's file is kept out of profile-driven upgrades
 }
 
 export interface CastMember {
@@ -2378,6 +2406,8 @@ export interface Movie {
   download?: { state: string; progress: number };
   /** Detail only: whether the upgrade sweep will look at this movie (monitored, has a file, profile upgrades). */
   upgrades_allowed?: boolean;
+  /** The default file is kept out of profile-driven upgrades ("keep existing files"). */
+  upgrade_hold?: boolean;
 }
 
 export interface MovieLookup {

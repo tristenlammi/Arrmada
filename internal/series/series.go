@@ -126,6 +126,9 @@ type Episode struct {
 	// group/HDR/audio tags, so only this is a trustworthy baseline for upgrade scoring.
 	// Empty for files imported before it was recorded — those are skipped by upgrades.
 	SourceRelease string `json:"source_release,omitempty"`
+	// UpgradeHold keeps the episode's file out of profile-driven upgrades ("keep existing
+	// files" when its profile changed). Cleared by a new import, a profile change or Resume.
+	UpgradeHold bool `json:"upgrade_hold,omitempty"`
 	// Download reflects an in-flight download for this episode (attached by the HTTP
 	// layer from the live queue; nil when nothing is downloading).
 	Download *EpisodeDownload `json:"download,omitempty"`
