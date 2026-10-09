@@ -58,8 +58,8 @@ BASE=$(grep -E '^ARRMADA_BASE_URL=' .env 2>/dev/null | cut -d= -f2)
 
 # The user the app runs as. Commands run inside the container use it too, so any file
 # they write in the data folder is the app's, not root's.
-RUN_UID=$(grep -E '^ARRMADA_PUID=' .env 2>/dev/null | cut -d= -f2)
-RUN_GID=$(grep -E '^ARRMADA_PGID=' .env 2>/dev/null | cut -d= -f2)
+RUN_UID=$(grep -E '^ARRMADA_PUID=' .env 2>/dev/null | cut -d= -f2 | tr -d '\r" ')
+RUN_GID=$(grep -E '^ARRMADA_PGID=' .env 2>/dev/null | cut -d= -f2 | tr -d '\r" ')
 RUN_AS="${RUN_UID:-1000}:${RUN_GID:-1000}"
 
 # Where update.sh notes the name of the database backup it took before the last update,
@@ -245,25 +245,28 @@ rollback() {
   fi
 
   say "Rolling back to the build that ran before the last update…"
+  # Tagged first, so the build being left can never be deleted as untagged meanwhile.
   if [ -n "$_cur" ]; then
-    docker image tag arrmada:dev arrmada:rolled-back
+    docker image tag "$_cur" arrmada:rolled-back
   fi
 
   # Without --with-db, ask the previous build itself, before anything is stopped,
   # whether it can run on the database as it is now: if this update upgraded it, that
   # build refuses to start on it, so stop here instead. Only a build labelled with the
   # CLI is asked (an older one would start a server); one too old to know the command
-  # answers with a usage error, and then the start itself is the check.
+  # answers with a usage error, and then the start itself is the check. The one-off
+  # container runs whatever arrmada:dev names, hence the brief retag.
   _schema_ok=""
   if [ -z "$_backup" ] && [ "$(image_label arrmada:previous org.arrmada.cli)" = "1" ]; then
     docker image tag arrmada:previous arrmada:dev
     _rc=0
-    _check=$(docker compose run --rm --no-deps --entrypoint /usr/local/bin/arrmada arrmada-app schema 2>&1) || _rc=$?
+    _check=$(docker compose run --rm --no-deps -T --entrypoint /usr/local/bin/arrmada arrmada-app schema 2>&1) || _rc=$?
+    if [ -n "$_cur" ]; then
+      docker image tag "$_cur" arrmada:dev
+    fi
     [ "$_rc" = 0 ] && _schema_ok=1
     if [ "$_rc" = 3 ]; then
-      if [ -n "$_cur" ]; then
-        docker image tag arrmada:rolled-back arrmada:dev
-      fi
+      docker image rm arrmada:rolled-back >/dev/null 2>&1 || true
       say "" >&2
       say "$_check" | sed 's/^/  /' >&2
       say "" >&2
@@ -410,6 +413,20 @@ ARRMADA_VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev-d
 ARRMADA_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo unknown)
 export ARRMADA_VERSION ARRMADA_COMMIT
 
+# Keep the build that's running as arrmada:previous, for --rollback. It has to be
+# tagged before the build: once the new build takes arrmada:dev and the old container
+# is replaced, an untagged image can be deleted on the spot (Docker's containerd image
+# store does). The rollback target it replaces is held as arrmada:previous-old until
+# it's clear the build really replaced the running one; a failed or identical build
+# puts it back. Tagged images are never pruned.
+OLD_PREVIOUS=$(image_id arrmada:previous)
+if [ -n "$RUNNING_IMAGE" ]; then
+  if [ -n "$OLD_PREVIOUS" ] && [ "$OLD_PREVIOUS" != "$RUNNING_IMAGE" ]; then
+    docker image tag "$OLD_PREVIOUS" arrmada:previous-old
+  fi
+  docker image tag "$RUNNING_IMAGE" arrmada:previous
+fi
+
 say "Rebuilding and restarting Arrmada…"
 # Rebuild + recreate ONLY the app. --no-deps leaves the companions (qBittorrent,
 # Prowlarr, FlareSolverr) running and, crucially, does NOT re-run the one-shot media /
@@ -418,18 +435,22 @@ say "Rebuilding and restarting Arrmada…"
 UP_OK=1
 docker compose up -d --build --no-deps arrmada-app || UP_OK=""
 
-# Once arrmada:dev no longer names the build that was running, keep that build as
-# arrmada:previous (with the backup taken from it) for --rollback. Done whether or not
-# the new build starts: a new build that won't start is exactly when it's needed. A
-# failed build leaves arrmada:dev, and so this, alone. Tagged, the old build survives
-# the prune below; the one it replaces as previous is what gets pruned.
-if [ -n "$RUNNING_IMAGE" ] && [ "$(image_id arrmada:dev)" != "$RUNNING_IMAGE" ]; then
-  docker image tag "$RUNNING_IMAGE" arrmada:previous
-  if [ -n "$PRE_UPDATE_BACKUP" ]; then
-    printf '%s\n' "$PRE_UPDATE_BACKUP" > "$PREVIOUS_DB_FILE"
+if [ -n "$RUNNING_IMAGE" ]; then
+  if [ "$(image_id arrmada:dev)" != "$RUNNING_IMAGE" ]; then
+    # Replaced (whether or not the new build starts: one that won't is exactly when
+    # --rollback is needed). The backup just taken belongs with it.
+    if [ -n "$PRE_UPDATE_BACKUP" ]; then
+      printf '%s\n' "$PRE_UPDATE_BACKUP" > "$PREVIOUS_DB_FILE"
+    else
+      rm -f "$PREVIOUS_DB_FILE"
+    fi
+  elif [ -n "$OLD_PREVIOUS" ]; then
+    # Nothing was replaced: the older rollback target stays the rollback target.
+    docker image tag "$OLD_PREVIOUS" arrmada:previous
   else
-    rm -f "$PREVIOUS_DB_FILE"
+    docker image rm arrmada:previous >/dev/null 2>&1 || true
   fi
+  docker image rm arrmada:previous-old >/dev/null 2>&1 || true
 fi
 
 if [ -z "$UP_OK" ]; then
