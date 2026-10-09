@@ -107,6 +107,38 @@ func TestOMDbVerifyKey(t *testing.T) {
 	}
 }
 
+// A key replaced in Settings is used straight away: the token minted with the old key
+// isn't reused for its remaining weeks.
+func TestTVDBNewKeyDropsOldToken(t *testing.T) {
+	var logins atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login" {
+			logins.Add(1)
+			_, _ = io.WriteString(w, `{"data":{"token":"tok"}}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	var key atomic.Value
+	key.Store("first")
+	tv := NewTVDB(func() string { return key.Load().(string) })
+	tv.base = srv.URL
+	ctx := context.Background()
+	for range 2 {
+		if _, err := tv.ensureToken(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	key.Store("second")
+	if _, err := tv.ensureToken(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := logins.Load(); n != 2 {
+		t.Errorf("logins = %d, want 2 (one per key)", n)
+	}
+}
+
 // TheTVDB's Test logs in with the candidate without replacing the token episode lookups
 // use, and a saved key that passes leaves the rejected-key backoff.
 func TestTVDBVerifyKey(t *testing.T) {
