@@ -5,6 +5,7 @@ import App from "./App";
 import { MeProvider } from "./lib/me";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { reloadOnce } from "./lib/chunkReload";
+import { ConfirmProvider, ToastProvider } from "./ui";
 import "./index.css";
 
 // Vite fires this when a lazily imported chunk (or its preload) fails to load,
@@ -17,11 +18,17 @@ window.addEventListener("vite:preloadError", (e) => {
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <BrowserRouter>
-        <MeProvider>
-          <App />
-        </MeProvider>
-      </BrowserRouter>
+      {/* The kit's providers sit outside the router so they survive a router swap;
+          a toast or confirm body therefore can't use router hooks. */}
+      <ToastProvider>
+        <ConfirmProvider>
+          <BrowserRouter>
+            <MeProvider>
+              <App />
+            </MeProvider>
+          </BrowserRouter>
+        </ConfirmProvider>
+      </ToastProvider>
     </ErrorBoundary>
   </React.StrictMode>,
 );

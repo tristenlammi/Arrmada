@@ -42,13 +42,13 @@ export default defineConfig(
       // Native dialogs are being replaced by the UI kit's Confirm/Toast (FE-14 flips to error).
       "no-restricted-globals": [
         "warn",
-        { name: "confirm", message: "Use the UI kit's Confirm instead of a native dialog." },
-        { name: "alert", message: "Use a toast instead of a native alert." },
+        { name: "confirm", message: "Use useConfirm() from src/ui instead of a native dialog." },
+        { name: "alert", message: "Use useToast() from src/ui instead of a native alert." },
       ],
       "no-restricted-properties": [
         "warn",
-        { object: "window", property: "confirm", message: "Use the UI kit's Confirm instead of a native dialog." },
-        { object: "window", property: "alert", message: "Use a toast instead of a native alert." },
+        { object: "window", property: "confirm", message: "Use useConfirm() from src/ui instead of a native dialog." },
+        { object: "window", property: "alert", message: "Use useToast() from src/ui instead of a native alert." },
       ],
 
       // `set.has(k) ? set.delete(k) : set.add(k)` toggles are an established idiom here.
@@ -56,7 +56,7 @@ export default defineConfig(
     },
   },
   {
-    // Hand-built overlays: the UI kit's Modal/Sheet (src/ui, FE-09) should own these.
+    // Hand-built overlays: the UI kit's Modal (src/ui/Modal.tsx, FE-09) owns these now.
     files: ["src/**/*.{ts,tsx}"],
     ignores: ["src/ui/**"],
     rules: {
@@ -64,11 +64,11 @@ export default defineConfig(
         "warn",
         {
           selector: "Literal[value=/fixed inset-0/]",
-          message: "Hand-built overlay: use the UI kit's Modal/Sheet (src/ui).",
+          message: "Hand-built overlay: use <Modal> (variant dialog or sheet) or <ConfirmDialog> from src/ui.",
         },
         {
           selector: "TemplateElement[value.raw=/fixed inset-0/]",
-          message: "Hand-built overlay: use the UI kit's Modal/Sheet (src/ui).",
+          message: "Hand-built overlay: use <Modal> (variant dialog or sheet) or <ConfirmDialog> from src/ui.",
         },
       ],
     },

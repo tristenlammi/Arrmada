@@ -8,6 +8,8 @@ import { useMe, isStaff } from "../lib/me";
 import { api, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaDetail, type MediaRequest } from "../lib/api";
 import { posterThumb } from "../lib/img";
 import { useCanHover } from "../lib/useCanHover";
+import { formatEta } from "../lib/format";
+import { Button, IconButton, Modal, StatusChip, POSTER_CHIP_BG, TONE_HUE, useConfirm, useToast, type Tone, type ToastFn } from "../ui";
 
 type Tab = "discover" | "movies" | "series" | "books";
 const BASE_TABS: { key: Tab; label: string }[] = [
@@ -22,7 +24,6 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
   const TABS = booksEnabled ? [...BASE_TABS, { key: "books" as Tab, label: "Books" }] : BASE_TABS;
   const [tab, setTabState] = useState<Tab>("discover");
   const [requested, setRequested] = useState<Set<string>>(new Set());
-  const [toast, setToast] = useState<string | null>(null);
   // `searchInput` is what's typed in the omnibox; `search` is the committed query that
   // swaps the page to the full results grid (only via "See all" / Enter, not per keystroke).
   const [searchInput, setSearchInput] = useState("");
@@ -30,7 +31,7 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
   // Search seeded into the Books tab (e.g. arriving from a notification click).
   const [bookSeed, setBookSeed] = useState("");
   const [params, setParams] = useSearchParams();
-  const flash = useCallback((m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3000); }, []);
+  const flash = useToast();
   // Readonly users can browse but never request.
   const canRequest = !!user && user.role !== "readonly";
 
@@ -64,7 +65,7 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
       flash(res.subscribed ? "You’re on the list — we’ll notify you when it’s ready" : `Requested “${c.title}”`);
       return { subscribed: res.subscribed };
     } catch (e) {
-      flash((e as Error).message);
+      flash((e as Error).message, { tone: "error" });
       throw e;
     }
   }, [flash]);
@@ -128,12 +129,6 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
           </>
         )}
       </div>
-
-      {toast && (
-        <div className="fixed bottom-5 left-1/2 z-[60] -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>
-          {toast}
-        </div>
-      )}
     </>
   );
 }
@@ -142,7 +137,7 @@ interface RowCtx {
   doRequest: (c: DiscoverCard) => Promise<{ subscribed: boolean }>;
   isRequested: (c: DiscoverCard) => boolean;
   canRequest: boolean;
-  flash: (m: string) => void;
+  flash: ToastFn;
 }
 
 // Compact inline error line for a failed fetch — distinct from a genuine empty result.
@@ -358,7 +353,7 @@ function SearchGroup({ label, items, flatBase, highlight, onPick }: { label: str
                 {c.vote_average > 0 && <span style={{ color: "var(--accent)" }}>★ {c.vote_average.toFixed(1)}</span>}
               </div>
             </div>
-            {badge && <span className="flex-none rounded-full px-1.5 py-0.5 text-[8.5px] font-bold uppercase" style={{ background: BADGE_BG, color: badge.tone, border: `1px solid ${badge.tone}` }}>{badge.label}</span>}
+            {badge && <StatusChip tone={badge.tone} surface="poster" size="xs" className="flex-none">{badge.label}</StatusChip>}
           </button>
         );
       })}
@@ -497,7 +492,7 @@ function Hero({ ctx }: { ctx: RowCtx }) {
 
       <div className="relative z-10 flex h-full max-w-[640px] flex-col justify-end gap-2.5 p-5 sm:p-8">
         {badge && (
-          <span className="w-fit rounded-full px-2 py-0.5 text-[9.5px] font-bold uppercase tracking-wide" style={{ background: BADGE_BG, color: badge.tone, border: `1px solid ${badge.tone}` }}>{badge.label}</span>
+          <StatusChip tone={badge.tone} surface="poster" size="md" className="w-fit">{badge.label}</StatusChip>
         )}
         <h2 className="m-0 line-clamp-2 text-[26px] font-extrabold leading-[1.08] sm:text-[38px]" style={{ color: "#fff", textShadow: "0 2px 18px rgba(0,0,0,.55)" }}>{cur.title}</h2>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] font-medium" style={{ color: "rgba(255,255,255,.82)" }}>
@@ -556,7 +551,7 @@ const STAGE_ORDER: Record<string, number> = {
 // request and approve or decline inline; everyone else sees their own (the server scopes
 // the list), each showing how far along it is — searching, downloading with progress,
 // importing, ready.
-function MyRequestsRow({ flash }: { flash: (m: string) => void }) {
+function MyRequestsRow({ flash }: { flash: ToastFn }) {
   const { user } = useMe();
   const staff = isStaff(user);
   const admin = !!user && user.role === "admin";
@@ -594,12 +589,12 @@ function MyRequestsRow({ flash }: { flash: (m: string) => void }) {
   );
 }
 
-function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest; staff: boolean; own: boolean; onChanged: () => void; flash: (m: string) => void }) {
+function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest; staff: boolean; own: boolean; onChanged: () => void; flash: ToastFn }) {
   const [busy, setBusy] = useState(false);
+  const confirm = useConfirm();
   const canHover = useCanHover();
   const tr = rq.tracking;
   const stage = requestStage(rq);
-  const status = { label: stage.badge, tone: stage.tone };
   const pct = tr && (tr.stage === "downloading" || tr.stage === "paused") && tr.progress != null ? Math.round(tr.progress * 100) : 0;
   const showBar = tr?.stage === "downloading" || tr?.stage === "paused" || tr?.stage === "importing";
   // Staff/owner actions get honest feedback: a success toast on success, the server's
@@ -607,18 +602,23 @@ function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest;
   const act = async (fn: () => Promise<unknown>, okMsg: string) => {
     setBusy(true);
     try { await fn(); flash(okMsg); onChanged(); }
-    catch (e) { flash((e as Error).message); }
+    catch (e) { flash((e as Error).message, { tone: "error" }); }
     finally { setBusy(false); }
   };
-  const withdraw = () => {
-    if (!window.confirm(`Withdraw your request for “${rq.title}”?`)) return;
+  const withdraw = async () => {
+    if (!(await confirm({ title: `Withdraw your request for “${rq.title}”?`, confirmLabel: "Withdraw", tone: "danger" }))) return;
     act(() => api.deleteRequest(rq.id), `Withdrew “${rq.title}”`);
   };
   const approve = () => act(() => api.approveRequest(rq.id), "Approved — searching now");
   // Declining notifies the requester and can't be undone from here, so it always asks first.
-  const decline = () => {
-    if (!window.confirm(`Decline “${rq.title}”${rq.requested_by_name ? ` requested by ${rq.requested_by_name}` : ""}? They’ll be told.`)) return;
-    act(() => api.declineRequest(rq.id), "Declined");
+  const decline = async () => {
+    const ok = await confirm({
+      title: `Decline “${rq.title}”${rq.requested_by_name ? ` requested by ${rq.requested_by_name}` : ""}?`,
+      body: "They’ll be told.",
+      confirmLabel: "Decline",
+      tone: "danger",
+    });
+    if (ok) act(() => api.declineRequest(rq.id), "Declined");
   };
   const pending = rq.status === "pending";
   return (
@@ -639,7 +639,7 @@ function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest;
           {staff && rq.requested_by_name ? (
             <span
               className="flex min-w-0 items-center gap-1 rounded-full py-[2px] pl-[2px] pr-1.5"
-              style={{ background: BADGE_BG, border: "1px solid rgba(255,255,255,.18)" }}
+              style={{ background: POSTER_CHIP_BG, border: "1px solid rgba(255,255,255,.18)" }}
               title={`Requested by ${rq.requested_by_name}`}
             >
               <span className="grid h-[14px] w-[14px] flex-none place-items-center rounded-full text-[8px] font-bold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>
@@ -650,14 +650,14 @@ function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest;
           ) : (
             <span />
           )}
-          <span className="flex-none rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: BADGE_BG, color: status.tone, border: `1px solid ${status.tone}` }}>{status.label}</span>
+          <StatusChip tone={stage.tone} surface="poster" className="flex-none">{stage.badge}</StatusChip>
         </div>
         {/* Progress along the bottom while it's on its way; importing fills the bar. */}
         {showBar && (
           <div className="absolute inset-x-0 bottom-0 z-10 h-1.5" style={{ background: "rgba(20,12,7,.55)" }}>
             <div
               className={`h-full ${tr?.stage === "importing" ? "animate-pulse" : ""}`}
-              style={{ width: `${tr?.stage === "importing" ? 100 : Math.max(2, pct)}%`, background: tr?.stage === "paused" ? "var(--ink-faint)" : stage.tone }}
+              style={{ width: `${tr?.stage === "importing" ? 100 : Math.max(2, pct)}%`, background: tr?.stage === "paused" ? "var(--ink-faint)" : TONE_HUE[stage.tone] }}
             />
           </div>
         )}
@@ -709,51 +709,43 @@ function RequestPoster({ rq, staff, own, onChanged, flash }: { rq: MediaRequest;
 }
 
 // requestStage turns a request's tracking into its badge and a one-line detail.
-function requestStage(rq: MediaRequest): { badge: string; tone: string; detail: string; detailTone?: string } {
+function requestStage(rq: MediaRequest): { badge: string; tone: Tone; detail: string; detailTone?: string } {
   const tr = rq.tracking;
   const ready = rq.media_type === "book" ? "Ready" : "Ready to watch";
   const eps = tr?.total ? `${tr.have ?? 0} of ${tr.total} episodes` : "";
   const pct = Math.round((tr?.progress ?? 0) * 100);
   switch (tr?.stage) {
     case "available":
-      return { badge: "Ready", tone: "var(--good)", detail: ready, detailTone: "var(--good-text)" };
+      return { badge: "Ready", tone: "good", detail: ready, detailTone: "var(--good-text)" };
     case "partial":
-      return { badge: "Partly ready", tone: "var(--good)", detail: `${eps} ready`, detailTone: "var(--good-text)" };
+      return { badge: "Partly ready", tone: "good", detail: `${eps} ready`, detailTone: "var(--good-text)" };
     case "downloading": {
       const parts = [`${pct}%`];
-      if (tr.eta_seconds) parts.push(`${etaText(tr.eta_seconds)} left`);
+      if (tr.eta_seconds) parts.push(`${formatEta(tr.eta_seconds)} left`);
       else if (tr.note) parts.push(tr.note.toLowerCase());
       if (eps) parts.push(eps);
-      return { badge: "Downloading", tone: "var(--accent)", detail: parts.join(" · "), detailTone: "var(--accent-text)" };
+      return { badge: "Downloading", tone: "accent", detail: parts.join(" · "), detailTone: "var(--accent-text)" };
     }
     case "importing":
-      return { badge: "Importing", tone: "var(--accent)", detail: "Adding to the library…", detailTone: "var(--accent-text)" };
+      return { badge: "Importing", tone: "accent", detail: "Adding to the library…", detailTone: "var(--accent-text)" };
     case "queued":
-      return { badge: "Starting", tone: "var(--accent)", detail: tr.note || "Starting the download" };
+      return { badge: "Starting", tone: "accent", detail: tr.note || "Starting the download" };
     case "paused":
-      return { badge: "Paused", tone: "var(--ink-faint)", detail: `Paused at ${pct}%` };
+      return { badge: "Paused", tone: "faint", detail: `Paused at ${pct}%` };
     case "failed":
-      return { badge: "Retrying", tone: "var(--avoid)", detail: tr.note || "The download failed" };
+      return { badge: "Retrying", tone: "avoid", detail: tr.note || "The download failed" };
     case "searching":
-      return { badge: "Searching", tone: "var(--accent)", detail: tr.note || (eps ? `${eps} · looking for more` : "Looking for a release") };
+      return { badge: "Searching", tone: "accent", detail: tr.note || (eps ? `${eps} · looking for more` : "Looking for a release") };
     case "declined":
-      return { badge: "Declined", tone: "var(--reject)", detail: "Declined" };
+      return { badge: "Declined", tone: "reject", detail: "Declined" };
     case "pending":
-      return { badge: "Pending", tone: "var(--avoid)", detail: "Waiting for approval" };
+      return { badge: "Pending", tone: "avoid", detail: "Waiting for approval" };
   }
   // No tracking (an older server): fall back to the plain status.
-  return rq.available ? { badge: "Ready", tone: "var(--good)", detail: ready }
-    : rq.status === "declined" ? { badge: "Declined", tone: "var(--reject)", detail: "Declined" }
-    : rq.status === "approved" ? { badge: "Requested", tone: "var(--accent)", detail: "Looking for a release" }
-    : { badge: "Pending", tone: "var(--avoid)", detail: "Waiting for approval" };
-}
-
-function etaText(sec: number): string {
-  if (sec < 60) return "under a minute";
-  const m = Math.round(sec / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  return h < 24 ? `${h}h ${m % 60}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
+  return rq.available ? { badge: "Ready", tone: "good", detail: ready }
+    : rq.status === "declined" ? { badge: "Declined", tone: "reject", detail: "Declined" }
+    : rq.status === "approved" ? { badge: "Requested", tone: "accent", detail: "Looking for a release" }
+    : { badge: "Pending", tone: "avoid", detail: "Waiting for approval" };
 }
 
 // BecauseRows are the per-title strips ("Because you watched Silo"): the viewer's two
@@ -1004,9 +996,9 @@ function PosterRow({ title, load, ctx, order, excludeOwned, hideOnError, hideUnt
 
 function ArrowBtn({ dir, onClick }: { dir: -1 | 1; onClick: () => void }) {
   return (
-    <button onClick={onClick} className="grid h-7 w-7 place-items-center rounded-full" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink-dim)" }}>
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ transform: dir === -1 ? "rotate(180deg)" : "none" }}><path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
-    </button>
+    <IconButton label={dir === -1 ? "Scroll left" : "Scroll right"} onClick={onClick} className="h-7 w-7 rounded-full" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink-dim)" }}>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden style={{ transform: dir === -1 ? "rotate(180deg)" : "none" }}><path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
+    </IconButton>
   );
 }
 
@@ -1092,26 +1084,16 @@ function GenreExplorer({ media, switchable, ctx }: { media: "movie" | "series"; 
   );
 }
 
-// A near-opaque chip so status stays legible over any poster.
-const BADGE_BG = "rgba(14,10,7,.92)";
-
-function badgeFor(c: DiscoverCard, requested: boolean): { label: string; tone: string } | null {
-  if (c.has_file) return { label: "In library", tone: "var(--good)" };
-  if ((c.download_progress ?? 0) > 0) return { label: "Downloading", tone: "var(--accent)" };
-  if (c.request_status === "approved") return { label: "Requested", tone: "var(--accent)" };
+function badgeFor(c: DiscoverCard, requested: boolean): { label: string; tone: Tone } | null {
+  if (c.has_file) return { label: "In library", tone: "good" };
+  if ((c.download_progress ?? 0) > 0) return { label: "Downloading", tone: "accent" };
+  if (c.request_status === "approved") return { label: "Requested", tone: "accent" };
   // `requested` (this session) beats a stale "declined" — a re-request goes pending.
-  if (requested || c.request_status === "pending") return { label: "Pending", tone: "var(--avoid)" };
-  if (c.request_status === "declined") return { label: "Declined", tone: "var(--ink-faint)" };
+  if (requested || c.request_status === "pending") return { label: "Pending", tone: "avoid" };
+  if (c.request_status === "declined") return { label: "Declined", tone: "faint" };
   // In the library but no file yet and no request in flight → it's wanted, not "requested".
-  if (c.in_library) return { label: "Wanted", tone: "var(--ink-faint)" };
+  if (c.in_library) return { label: "Wanted", tone: "faint" };
   return null;
-}
-
-// A restyled status chip — semi-opaque background, rounded, tone-coloured border.
-function StatusChip({ badge, className }: { badge: { label: string; tone: string }; className?: string }) {
-  return (
-    <span className={`rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide ${className ?? ""}`} style={{ background: BADGE_BG, color: badge.tone, border: `1px solid ${badge.tone}` }}>{badge.label}</span>
-  );
 }
 
 function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: boolean }) {
@@ -1150,7 +1132,7 @@ function MediaCard({ c, ctx, full }: { c: DiscoverCard; ctx: RowCtx; full?: bool
           ) : (
             <PosterPlaceholder title={c.title} year={c.year} />
           )}
-          {badge && <StatusChip badge={badge} className="absolute right-1.5 top-1.5" />}
+          {badge && <StatusChip tone={badge.tone} surface="poster" className="absolute right-1.5 top-1.5">{badge.label}</StatusChip>}
           {/* Terracotta download bar along the bottom of the poster while it's grabbing. */}
           {c.download_progress != null && c.download_progress > 0 && c.download_progress < 1 && (
             <div className="absolute inset-x-0 bottom-0 z-10 h-1.5" style={{ background: "rgba(20,12,7,.55)" }}>
@@ -1220,12 +1202,10 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
   const [error, setError] = useState<string | null>(null);
   const [d, setD] = useState<MediaDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(true);
-  const dialogRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  // Stable refs so the mount/detail effects don't re-run when the parent re-renders
-  // (ctx and onClose are fresh object/arrow identities on every Discover render).
+  // A stable ref so the detail effect doesn't re-run when the parent re-renders
+  // (ctx is a fresh object on every Discover render).
   const ctxRef = useRef(ctx); ctxRef.current = ctx;
-  const closeRef = useRef(onClose); closeRef.current = onClose;
 
   const c = current;
   const badge = badgeFor(c, done);
@@ -1242,31 +1222,6 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
       .catch(() => { if (alive) setDetailLoading(false); });
     return () => { alive = false; };
   }, [current]);
-
-  // A11y: trap focus, move focus in, restore on close, Esc to close, lock body scroll.
-  useEffect(() => {
-    const prevFocus = document.activeElement as HTMLElement | null;
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    dialogRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.stopPropagation(); closeRef.current(); return; }
-      if (e.key === "Tab" && dialogRef.current) {
-        const nodes = dialogRef.current.querySelectorAll<HTMLElement>('a[href],button:not([disabled]),input,select,textarea,[tabindex]:not([tabindex="-1"])');
-        if (nodes.length === 0) return;
-        const first = nodes[0], last = nodes[nodes.length - 1];
-        const act = document.activeElement;
-        if (e.shiftKey && (act === first || act === dialogRef.current)) { e.preventDefault(); last.focus(); }
-        else if (!e.shiftKey && act === last) { e.preventDefault(); first.focus(); }
-      }
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("keydown", onKey, true);
-      document.body.style.overflow = prevOverflow;
-      prevFocus?.focus?.();
-    };
-  }, []);
 
   // Only flip to the success state when the request actually succeeded; on failure
   // the error shows inline (plus the toast) and the button stays.
@@ -1292,177 +1247,172 @@ function RequestDetailModal({ card, ctx, onClose }: { card: DiscoverCard; ctx: R
   const r = d?.ratings;
   const similar = (d?.similar ?? []).filter((s) => s.tmdb_id !== c.tmdb_id).slice(0, 12);
 
+  // The shared Modal owns the dialog plumbing (portal, focus trap and restore, Esc,
+  // scroll lock). The panel keeps its own layout: full screen on a phone, a centred
+  // card with an inner scroller above sm, and a slightly darker scrim than a plain
+  // dialog because it sits over artwork.
   return (
-    <div
-      className="fixed inset-0 z-50 flex justify-center overflow-hidden sm:items-center sm:p-6"
-      style={{ background: "rgba(0,0,0,.68)" }}
-      onClick={onClose}
+    <Modal
+      onClose={onClose}
+      ariaLabel={c.title}
+      variant="sheet"
+      scrim={0.68}
+      panelClassName="flex h-full w-full flex-col overflow-hidden sm:h-auto sm:max-h-[92vh] sm:max-w-[820px] sm:rounded-2xl sm:shadow-panel"
     >
-      <div
-        ref={dialogRef}
-        role="dialog"
-        aria-modal="true"
-        aria-label={c.title}
-        tabIndex={-1}
-        className="relative flex h-full w-full flex-col overflow-hidden outline-none sm:h-auto sm:max-h-[92vh] sm:max-w-[820px] sm:rounded-2xl sm:shadow-panel"
-        style={{ background: "var(--panel)", border: "1px solid var(--line)" }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Close sits on the dialog, not the backdrop, so it stays put while the body scrolls. */}
-        <button onClick={onClose} aria-label="Close" className="absolute right-3 top-3 z-20 grid h-8 w-8 place-items-center rounded-full" style={{ background: "rgba(20,12,7,.7)", color: "#fff" }}>✕</button>
+      {/* Close sits on the dialog, not the backdrop, so it stays put while the body scrolls. */}
+      <IconButton label="Close" onClick={onClose} className="absolute right-3 top-3 z-20 h-8 w-8 rounded-full" style={{ background: "rgba(20,12,7,.7)", color: "#fff" }}>✕</IconButton>
 
-        {/* The backdrop lives INSIDE the scroller: the poster below insets over it with a
-            negative margin, and an overflow container clips negative margins — with the
-            backdrop outside, the poster's overlap was sliced off and it butted against the
-            image edge instead of floating over it. */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto">
-          <div className="relative h-[190px] sm:h-[260px]" style={{ background: "var(--panel-2)" }}>
-            {(d?.backdrop_url || c.backdrop_url) && <img src={d?.backdrop_url || c.backdrop_url} alt="" className="h-full w-full object-cover opacity-60" />}
-            <div className="absolute inset-0" style={{ background: "linear-gradient(to top, var(--panel) 4%, transparent 78%)" }} />
+      {/* The backdrop lives INSIDE the scroller: the poster below insets over it with a
+          negative margin, and an overflow container clips negative margins — with the
+          backdrop outside, the poster's overlap was sliced off and it butted against the
+          image edge instead of floating over it. */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto">
+        <div className="relative h-[190px] sm:h-[260px]" style={{ background: "var(--panel-2)" }}>
+          {(d?.backdrop_url || c.backdrop_url) && <img src={d?.backdrop_url || c.backdrop_url} alt="" className="h-full w-full object-cover opacity-60" />}
+          <div className="absolute inset-0" style={{ background: "linear-gradient(to top, var(--panel) 4%, transparent 78%)" }} />
+        </div>
+
+        <div className="relative flex gap-4 px-5 pt-0 sm:px-6">
+          <div className="-mt-20 h-[186px] w-[124px] flex-none overflow-hidden rounded-xl sm:-mt-24 sm:h-[210px] sm:w-[140px]" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", boxShadow: "0 10px 26px rgba(0,0,0,.4)" }}>
+            {c.poster_url ? <img src={c.poster_url} alt="" className="h-full w-full object-cover" /> : <PosterPlaceholder title={c.title} year={c.year} />}
           </div>
-
-          <div className="relative flex gap-4 px-5 pt-0 sm:px-6">
-            <div className="-mt-20 h-[186px] w-[124px] flex-none overflow-hidden rounded-xl sm:-mt-24 sm:h-[210px] sm:w-[140px]" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", boxShadow: "0 10px 26px rgba(0,0,0,.4)" }}>
-              {c.poster_url ? <img src={c.poster_url} alt="" className="h-full w-full object-cover" /> : <PosterPlaceholder title={c.title} year={c.year} />}
+          <div className="min-w-0 flex-1 pt-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>{c.media_type === "series" ? "TV" : "Movie"}</span>
+              <h2 className="m-0 text-[18px] font-bold leading-tight sm:text-[21px]">{c.title}</h2>
+              <span className="font-mono text-[11.5px] text-ink-faint">{c.year || ""}</span>
             </div>
-            <div className="min-w-0 flex-1 pt-4">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="rounded px-1.5 py-0.5 font-mono text-[9px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>{c.media_type === "series" ? "TV" : "Movie"}</span>
-                <h2 className="m-0 text-[18px] font-bold leading-tight sm:text-[21px]">{c.title}</h2>
-                <span className="font-mono text-[11.5px] text-ink-faint">{c.year || ""}</span>
-              </div>
-              {/* Meta line */}
-              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-faint">
-                {d?.certification && <span className="rounded border px-1.5 py-px font-mono text-[10px]" style={{ borderColor: "var(--line)", color: "var(--ink-dim)" }}>{d.certification}</span>}
-                {runtime && <span>{runtime}</span>}
-                {d?.network && <span>{d.network}</span>}
-                {d?.status && <span>{d.status}</span>}
-              </div>
-              {/* Genre pills */}
-              {d?.genres && d.genres.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-1.5">
-                  {d.genres.slice(0, 4).map((g) => (
-                    <span key={g} className="rounded-full px-2 py-0.5 text-[10.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}>{g}</span>
-                  ))}
-                </div>
-              )}
-              {/* Ratings */}
-              {(r?.tmdb || r?.imdb || r?.rotten_tomatoes || r?.metacritic) && (
-                <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
-                  {r?.tmdb ? <RatingBadge label="TMDB" value={r.tmdb.toFixed(1)} bg="var(--accent-soft)" fg="var(--accent)" /> : null}
-                  {r?.imdb ? <RatingBadge label="IMDb" value={r.imdb} bg="#f5c518" fg="#000" /> : null}
-                  {r?.rotten_tomatoes ? <RatingBadge label="RT" value={r.rotten_tomatoes} bg="#fa320a" fg="#fff" /> : null}
-                  {r?.metacritic ? <RatingBadge label="MC" value={r.metacritic} bg="#00658f" fg="#fff" /> : null}
-                </div>
-              )}
-              {c.release_date && new Date(c.release_date) > new Date() && (
-                <div className="mt-2 font-mono text-[10.5px]" style={{ color: "var(--avoid-text)" }}>Releases {c.release_date} — request ahead</div>
-              )}
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                {done && subscribed ? (
-                  <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>You’re on the list — we’ll notify you when it’s ready</span>
-                ) : badge && !declined ? (
-                  <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: BADGE_BG, color: badge.tone, border: `1px solid ${badge.tone}` }}>
-                    {badge.label === "In library" ? "✓ In your library" : badge.label === "Pending" ? "Requested — pending approval" : badge.label === "Downloading" ? "Downloading…" : badge.label === "Wanted" ? "In library — waiting for a file" : "Requested"}
-                  </span>
-                ) : !ctx.canRequest ? (
-                  <span className="text-[12px] text-ink-faint">Ask your admin for request access.</span>
-                ) : (
-                  <>
-                    {declined && badge && (
-                      <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: BADGE_BG, color: badge.tone, border: `1px solid ${badge.tone}` }}>Declined</span>
-                    )}
-                    <button onClick={request} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>
-                      {busy ? "Requesting…" : declined ? "Request again" : "＋ Request"}
-                    </button>
-                  </>
-                )}
-                {d?.trailer_url && (
-                  <a href={d.trailer_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
-                    Trailer
-                  </a>
-                )}
-              </div>
-              {error && <div className="mt-1.5 text-[11.5px] font-medium" style={{ color: "var(--reject)" }}>{error}</div>}
+            {/* Meta line */}
+            <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-faint">
+              {d?.certification && <span className="rounded border px-1.5 py-px font-mono text-[10px]" style={{ borderColor: "var(--line)", color: "var(--ink-dim)" }}>{d.certification}</span>}
+              {runtime && <span>{runtime}</span>}
+              {d?.network && <span>{d.network}</span>}
+              {d?.status && <span>{d.status}</span>}
             </div>
-          </div>
-
-          <div className="px-5 pb-6 pt-4 sm:px-6">
-            {overview ? (
-              <p className="m-0 text-[13px] leading-relaxed text-ink-dim">{overview}</p>
-            ) : detailLoading ? (
-              <div className="space-y-2">
-                <div className="h-3 w-full rounded" style={{ background: "var(--panel-2)" }} />
-                <div className="h-3 w-11/12 rounded" style={{ background: "var(--panel-2)" }} />
-                <div className="h-3 w-3/4 rounded" style={{ background: "var(--panel-2)" }} />
-              </div>
-            ) : null}
-
-            {/* Crew */}
-            {(director || writer || producer || creator) && (
-              <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-[12px] sm:grid-cols-3">
-                {creator && <CrewFact label="Creator" value={creator} />}
-                {director && <CrewFact label="Director" value={director} />}
-                {writer && <CrewFact label="Writer" value={writer} />}
-                {producer && <CrewFact label="Producer" value={producer} />}
+            {/* Genre pills */}
+            {d?.genres && d.genres.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {d.genres.slice(0, 4).map((g) => (
+                  <span key={g} className="rounded-full px-2 py-0.5 text-[10.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}>{g}</span>
+                ))}
               </div>
             )}
-
-            {/* Cast */}
-            {d?.cast && d.cast.length > 0 && (
-              <div className="mt-5">
-                <h3 className="m-0 mb-2 text-[12px] font-bold uppercase tracking-wide text-ink-faint">Cast</h3>
-                <div className="thin-scroll flex gap-3 overflow-x-auto pb-1">
-                  {d.cast.slice(0, 10).map((p, i) => (
-                    <div key={i} className="w-[96px] flex-none text-center">
-                      <div className="mb-1 overflow-hidden rounded-lg" style={{ aspectRatio: "2/3", background: "var(--panel-2)" }}>
-                        {p.profile_url ? <img src={p.profile_url} alt={p.name} className="h-full w-full object-cover" loading="lazy" /> : (
-                          <div className="grid h-full w-full place-items-center" style={{ color: "var(--ink-faint)" }}>
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="1.5" /><path d="M4 20a8 8 0 0 1 16 0" stroke="currentColor" strokeWidth="1.5" /></svg>
-                          </div>
-                        )}
-                      </div>
-                      {/* Two lines instead of a hard truncate: "Arnold Schwa…" and
-                          "James Earl Jo…" cut mid-word at the old width. */}
-                      <div className="line-clamp-2 text-[10.5px] font-semibold leading-tight" title={p.name}>{p.name}</div>
-                      {p.character && <div className="mt-0.5 line-clamp-1 text-[9.5px] text-ink-faint" title={p.character}>{p.character}</div>}
-                    </div>
-                  ))}
-                </div>
+            {/* Ratings */}
+            {(r?.tmdb || r?.imdb || r?.rotten_tomatoes || r?.metacritic) && (
+              <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                {r?.tmdb ? <RatingBadge label="TMDB" value={r.tmdb.toFixed(1)} bg="var(--accent-soft)" fg="var(--accent)" /> : null}
+                {r?.imdb ? <RatingBadge label="IMDb" value={r.imdb} bg="#f5c518" fg="#000" /> : null}
+                {r?.rotten_tomatoes ? <RatingBadge label="RT" value={r.rotten_tomatoes} bg="#fa320a" fg="#fff" /> : null}
+                {r?.metacritic ? <RatingBadge label="MC" value={r.metacritic} bg="#00658f" fg="#fff" /> : null}
               </div>
             )}
-
-            {/* More like this */}
-            {similar.length > 0 && (
-              <div className="mt-6">
-                <h3 className="m-0 mb-2.5 text-[12px] font-bold uppercase tracking-wide text-ink-faint">More like this</h3>
-                <div className="thin-scroll flex gap-3 overflow-x-auto pb-2">
-                  {similar.map((s) => {
-                    const sBadge = badgeFor(s, ctx.isRequested(s));
-                    return (
-                      <button
-                        key={`${s.media_type}:${s.tmdb_id}`}
-                        onClick={() => setCurrent(s)}
-                        className="group w-[112px] flex-none text-left"
-                        aria-label={`View ${s.title}`}
-                      >
-                        <div className="relative overflow-hidden rounded-lg transition-transform duration-200 group-hover:scale-[1.04]" style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}>
-                          {s.poster_url ? <img src={posterThumb(s.poster_url)} alt={s.title} className="h-full w-full object-cover" loading="lazy" /> : <PosterPlaceholder title={s.title} year={s.year} />}
-                          {sBadge && <StatusChip badge={sBadge} className="absolute right-1 top-1" />}
-                        </div>
-                        <div className="mt-1.5 truncate text-[11px] font-semibold" style={{ color: "var(--ink)" }} title={s.title}>{s.title}</div>
-                        <div className="text-[10px]" style={{ color: "var(--ink-faint)" }}>{s.year || "—"}</div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
+            {c.release_date && new Date(c.release_date) > new Date() && (
+              <div className="mt-2 font-mono text-[10.5px]" style={{ color: "var(--avoid-text)" }}>Releases {c.release_date} — request ahead</div>
             )}
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {done && subscribed ? (
+                <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>You’re on the list — we’ll notify you when it’s ready</span>
+              ) : badge && !declined ? (
+                <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: POSTER_CHIP_BG, color: TONE_HUE[badge.tone], border: `1px solid ${TONE_HUE[badge.tone]}` }}>
+                  {badge.label === "In library" ? "✓ In your library" : badge.label === "Pending" ? "Requested — pending approval" : badge.label === "Downloading" ? "Downloading…" : badge.label === "Wanted" ? "In library — waiting for a file" : "Requested"}
+                </span>
+              ) : !ctx.canRequest ? (
+                <span className="text-[12px] text-ink-faint">Ask your admin for request access.</span>
+              ) : (
+                <>
+                  {declined && badge && (
+                    <span className="inline-block rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: POSTER_CHIP_BG, color: TONE_HUE[badge.tone], border: `1px solid ${TONE_HUE[badge.tone]}` }}>Declined</span>
+                  )}
+                  <Button variant="primary" onClick={request} busy={busy} busyLabel="Requesting…">
+                    {declined ? "Request again" : "＋ Request"}
+                  </Button>
+                </>
+              )}
+              {d?.trailer_url && (
+                <a href={d.trailer_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
+                  Trailer
+                </a>
+              )}
+            </div>
+            {error && <div className="mt-1.5 text-[11.5px] font-medium" style={{ color: "var(--reject)" }}>{error}</div>}
           </div>
         </div>
+
+        <div className="px-5 pb-6 pt-4 sm:px-6">
+          {overview ? (
+            <p className="m-0 text-[13px] leading-relaxed text-ink-dim">{overview}</p>
+          ) : detailLoading ? (
+            <div className="space-y-2">
+              <div className="h-3 w-full rounded" style={{ background: "var(--panel-2)" }} />
+              <div className="h-3 w-11/12 rounded" style={{ background: "var(--panel-2)" }} />
+              <div className="h-3 w-3/4 rounded" style={{ background: "var(--panel-2)" }} />
+            </div>
+          ) : null}
+
+          {/* Crew */}
+          {(director || writer || producer || creator) && (
+            <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-[12px] sm:grid-cols-3">
+              {creator && <CrewFact label="Creator" value={creator} />}
+              {director && <CrewFact label="Director" value={director} />}
+              {writer && <CrewFact label="Writer" value={writer} />}
+              {producer && <CrewFact label="Producer" value={producer} />}
+            </div>
+          )}
+
+          {/* Cast */}
+          {d?.cast && d.cast.length > 0 && (
+            <div className="mt-5">
+              <h3 className="m-0 mb-2 text-[12px] font-bold uppercase tracking-wide text-ink-faint">Cast</h3>
+              <div className="thin-scroll flex gap-3 overflow-x-auto pb-1">
+                {d.cast.slice(0, 10).map((p, i) => (
+                  <div key={i} className="w-[96px] flex-none text-center">
+                    <div className="mb-1 overflow-hidden rounded-lg" style={{ aspectRatio: "2/3", background: "var(--panel-2)" }}>
+                      {p.profile_url ? <img src={p.profile_url} alt={p.name} className="h-full w-full object-cover" loading="lazy" /> : (
+                        <div className="grid h-full w-full place-items-center" style={{ color: "var(--ink-faint)" }}>
+                          <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="4" stroke="currentColor" strokeWidth="1.5" /><path d="M4 20a8 8 0 0 1 16 0" stroke="currentColor" strokeWidth="1.5" /></svg>
+                        </div>
+                      )}
+                    </div>
+                    {/* Two lines instead of a hard truncate: "Arnold Schwa…" and
+                        "James Earl Jo…" cut mid-word at the old width. */}
+                    <div className="line-clamp-2 text-[10.5px] font-semibold leading-tight" title={p.name}>{p.name}</div>
+                    {p.character && <div className="mt-0.5 line-clamp-1 text-[9.5px] text-ink-faint" title={p.character}>{p.character}</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* More like this */}
+          {similar.length > 0 && (
+            <div className="mt-6">
+              <h3 className="m-0 mb-2.5 text-[12px] font-bold uppercase tracking-wide text-ink-faint">More like this</h3>
+              <div className="thin-scroll flex gap-3 overflow-x-auto pb-2">
+                {similar.map((s) => {
+                  const sBadge = badgeFor(s, ctx.isRequested(s));
+                  return (
+                    <button
+                      key={`${s.media_type}:${s.tmdb_id}`}
+                      onClick={() => setCurrent(s)}
+                      className="group w-[112px] flex-none text-left"
+                      aria-label={`View ${s.title}`}
+                    >
+                      <div className="relative overflow-hidden rounded-lg transition-transform duration-200 group-hover:scale-[1.04]" style={{ aspectRatio: "2/3", border: "1px solid var(--line)", background: "var(--panel-2)" }}>
+                        {s.poster_url ? <img src={posterThumb(s.poster_url)} alt={s.title} className="h-full w-full object-cover" loading="lazy" /> : <PosterPlaceholder title={s.title} year={s.year} />}
+                        {sBadge && <StatusChip tone={sBadge.tone} surface="poster" className="absolute right-1 top-1">{sBadge.label}</StatusChip>}
+                      </div>
+                      <div className="mt-1.5 truncate text-[11px] font-semibold" style={{ color: "var(--ink)" }} title={s.title}>{s.title}</div>
+                      <div className="text-[10px]" style={{ color: "var(--ink-faint)" }}>{s.year || "—"}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 
