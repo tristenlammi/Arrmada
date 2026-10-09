@@ -88,5 +88,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/system/library", sys.libraryPaths),
     { method: "GET", path: "/api/v1/system/library/check", respond: ({ url }) => sys.folderCheck(url.searchParams.get("path") ?? "") },
     get("/api/v1/logs", sys.logs),
+    get("/api/v1/system/tasks", sys.tasks),
+    get("/api/v1/jobs", sys.jobs),
   ];
 }

@@ -1,5 +1,6 @@
 import type {
-  AppSettings, AudioListening, FolderCheck, Health, LibraryPaths, LogEntry, MyAudio, PendingRestart, RecycleStats, SetupState, Status, SystemHealth,
+  AppSettings, AudioListening, FolderCheck, Health, Job, LibraryPaths, LogEntry, MyAudio, PendingRestart, RecycleStats, SetupState, Status, SystemHealth,
+  TaskStatus,
 } from "../../src/lib/api";
 import type { PersonaInfo } from "./users";
 import { NOW } from "./clock";
@@ -79,7 +80,34 @@ export const settings: AppSettings = {
 export const recycle: RecycleStats = {
   enabled: true, dir: "/media/.recycle", files: 3, bytes: 4_200_000_000, max_gb: 50, retention_days: 30,
   over_cap_bytes: 0, protected_bytes: 0, largest_item_bytes: 2_100_000_000,
+  bins: [
+    {
+      key: "movies", dir: "/media/movies/.arrmada-recycle", label: "Movies", legacy: false, files: 3, bytes: 4_200_000_000,
+      free_bytes: 900_000_000_000, free_known: true, other_drive: false,
+    },
+  ],
 };
+
+// Settings → Status's Tasks table (GET /api/v1/system/tasks): one task that ran fine and
+// one failing, so both result chips render.
+const iso = (ms: number) => new Date(ms).toISOString();
+export const tasks: TaskStatus[] = [
+  {
+    name: "rss-sync", label: "Check indexer feeds for new movies", description: "Reads each indexer's recent uploads and grabs any wanted movie.",
+    interval_seconds: 900, running: false, last_start: iso(NOW - 120_000), last_end: iso(NOW - 118_000), last_duration_ms: 2000,
+    last_status: "ok", last_ok: true, last_error: "", last_error_at: null, runs: 16, failures: 0, consecutive_failures: 0, skipped: 0,
+    next_run: iso(NOW + 780_000),
+  },
+  {
+    name: "db-backup", label: "Back up the database", description: "Takes the nightly database backup and keeps the newest seven.",
+    interval_seconds: 3600, running: false, last_start: iso(NOW - 600_000), last_end: iso(NOW - 599_000), last_duration_ms: 1000,
+    last_status: "failed", last_ok: false, last_error: "disk full", last_error_at: iso(NOW - 599_000), runs: 4, failures: 3,
+    consecutive_failures: 3, skipped: 0, next_run: iso(NOW + 3_000_000),
+  },
+];
+
+// The job runner (GET /api/v1/jobs): nothing recent.
+export const jobs: { jobs: Job[] } = { jobs: [] };
 
 export const logs: { entries: LogEntry[] } = {
   entries: [
