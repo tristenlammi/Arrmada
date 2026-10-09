@@ -118,11 +118,7 @@ func (a *api) handleSearchSeries(w http.ResponseWriter, r *http.Request) {
 	// The button's search holds back seasons the client is still downloading
 	// (SearchSeriesManual), as the sweep does.
 	started := time.Now().UnixMilli()
-	spec := a.seriesSearchJob(id)
-	spec.Fn = outcomeFn("show", func(ctx context.Context) (automation.SearchOutcome, error) {
-		return a.deps.Automation.SearchSeriesManual(ctx, id)
-	})
-	jobID, existing, ok := a.submitOr503(w, r, spec)
+	jobID, existing, ok := a.submitOr503(w, r, a.seriesManualSearchJob(id))
 	if !ok {
 		return
 	}

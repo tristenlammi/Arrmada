@@ -57,6 +57,9 @@ export function routes(p: PersonaInfo): MockRoute[] {
     // Staff console
     get("/api/v1/dashboard", media.dashboard),
     get("/api/v1/downloads", media.activity),
+    get("/api/v1/wanted", media.wanted),
+    { method: "POST", path: /^\/api\/v1\/wanted\/(movie|series|book|music)\/(\d+)\/search$/, status: 202, body: media.wantedSearchStarted },
+    get(`/api/v1/jobs/${media.wantedSearchStarted.job_id}`, media.wantedSearchJob),
     get("/api/v1/downloadclients", media.downloadClients),
     get(/^\/api\/v1\/downloadclients\/\d+\/status$/, { listen_port: 6881 }),
     get("/api/v1/indexers", media.indexers),

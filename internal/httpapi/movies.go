@@ -147,11 +147,7 @@ func (a *api) handleSearchMovie(w http.ResponseWriter, r *http.Request) {
 	// click while it runs gets the same job back. The button's search leaves a movie
 	// that is already downloading alone (SearchMovieManual).
 	started := time.Now().UnixMilli()
-	spec := a.movieSearchJob(id)
-	spec.Fn = outcomeFn("movie", func(ctx context.Context) (automation.SearchOutcome, error) {
-		return a.deps.Automation.SearchMovieManual(ctx, id)
-	})
-	jobID, existing, ok := a.submitOr503(w, r, spec)
+	jobID, existing, ok := a.submitOr503(w, r, a.movieManualSearchJob(id))
 	if !ok {
 		return
 	}

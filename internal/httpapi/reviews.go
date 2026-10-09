@@ -74,10 +74,7 @@ func (a *api) titleSearchJob(kind string, id int64) (jobs.Spec, bool) {
 	case "book":
 		return a.bookSearchJob(id), true
 	case "music":
-		return jobs.Spec{Kind: "album.search", Target: jobTarget("album", id), Class: jobs.ClassIndexerSearch, Timeout: 5 * time.Minute,
-			Fn: outcomeFn("album", func(ctx context.Context) (automation.SearchOutcome, error) {
-				return a.deps.Automation.SearchAlbumNow(ctx, id)
-			})}, true
+		return a.albumSearchJob(id), true
 	}
 	return jobs.Spec{}, false
 }

@@ -241,6 +241,11 @@ func (s *Service) SearchState(ctx context.Context, id int64) (string, int) {
 	return s.repo.SearchState(ctx, id)
 }
 
+// SearchStates is every movie's last sweep time and miss count, in one query.
+func (s *Service) SearchStates(ctx context.Context) (map[int64]SearchStamp, error) {
+	return s.repo.SearchStates(ctx)
+}
+
 // RecordSearchMiss notes that a sweep found nothing grabbable for this movie.
 func (s *Service) RecordSearchMiss(ctx context.Context, id int64) { s.repo.RecordSearchMiss(ctx, id) }
 
