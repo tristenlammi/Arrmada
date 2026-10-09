@@ -27,7 +27,19 @@ const FILTERS = [
 type FilterKey = (typeof FILTERS)[number]["key"];
 
 function statsOf(s: SeriesT) {
-  return s.stats ?? { episodes: 0, have_files: 0, size_bytes: 0, seasons: 0 };
+  const st = s.stats ?? { episodes: 0, have_files: 0, size_bytes: 0, seasons: 0 };
+  // An older server sends no missing count; the gap is the next best thing.
+  return { ...st, missing: st.missing ?? Math.max(0, st.episodes - st.have_files), unmonitored_missing: st.unmonitored_missing ?? 0 };
+}
+
+// The greyed remainder beside a have/total count: aired episodes nobody asked for.
+function NotMonitored({ n }: { n: number }) {
+  if (n <= 0) return null;
+  return (
+    <span className="text-ink-faint" title={`${n} aired episode${n === 1 ? "" : "s"} without a file that ${n === 1 ? "isn't" : "aren't"} monitored — not counted as missing`}>
+      {" "}+{n} not monitored
+    </span>
+  );
 }
 
 function matches(s: SeriesT, f: FilterKey): boolean {
@@ -36,7 +48,7 @@ function matches(s: SeriesT, f: FilterKey): boolean {
     case "monitored": return s.monitored;
     case "continuing": return /return|continu/i.test(s.status ?? "");
     case "ended": return /end|cancel/i.test(s.status ?? "");
-    case "missing": return st.have_files < st.episodes;
+    case "missing": return s.monitored && st.missing > 0;
     default: return true;
   }
 }
@@ -319,7 +331,7 @@ export function Series() {
 
 function statusOf(s: SeriesT): { label: string; tone: string } {
   const st = statsOf(s);
-  if (st.episodes > 0 && st.have_files >= st.episodes) return { label: "Complete", tone: "var(--good)" };
+  if (st.episodes > 0 && st.missing === 0) return { label: "Complete", tone: "var(--good)" };
   if (s.monitored) return { label: st.have_files > 0 ? "Partial" : "Wanted", tone: "var(--avoid)" };
   return { label: "Unmonitored", tone: "var(--ink-faint)" };
 }
@@ -337,8 +349,8 @@ function Card({ s, onDelete, onSearch, selectable, selected, onToggleSelect }: {
   const st = statsOf(s);
   const status = statusOf(s);
   const pct = st.episodes > 0 ? Math.round((st.have_files / st.episodes) * 100) : 0;
-  const complete = st.episodes > 0 && st.have_files >= st.episodes;
-  const missing = st.have_files < st.episodes;
+  const complete = st.episodes > 0 && st.missing === 0;
+  const missing = st.missing > 0;
   const [searching, setSearching] = useState(false);
   const doSearch = async () => {
     setSearching(true);
@@ -389,7 +401,7 @@ function Card({ s, onDelete, onSearch, selectable, selected, onToggleSelect }: {
           <div className="h-1.5 flex-1 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,.25)" }}>
             <div className="h-full rounded-full" style={{ width: `${pct}%`, background: complete ? "var(--good)" : "var(--accent)" }} />
           </div>
-          <span className="font-mono text-[9.5px] text-white">{st.have_files}/{st.episodes}</span>
+          <span className="font-mono text-[9.5px] text-white" title={st.unmonitored_missing > 0 ? `+${st.unmonitored_missing} aired episodes not monitored` : undefined}>{st.have_files}/{st.episodes}</span>
         </div>
       </div>
       {selectable ? (
@@ -529,7 +541,7 @@ function SeriesTable({ list, multiSelect, selected, onToggleSelect, onSearch }: 
                 <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: status.tone }}>{status.label}</span></td>
                 <td className={td}>{s.network || "—"}</td>
                 <td className={`${td} text-right font-mono text-[11px] text-ink-dim`}>{st.seasons}</td>
-                <td className={`${td} text-right font-mono text-[11px]`}><span style={{ color: st.have_files >= st.episodes && st.episodes > 0 ? "var(--good)" : "var(--ink-dim)" }}>{st.have_files}/{st.episodes}</span></td>
+                <td className={`${td} text-right font-mono text-[11px]`}><span style={{ color: st.missing === 0 && st.episodes > 0 ? "var(--good)" : "var(--ink-dim)" }}>{st.have_files}/{st.episodes}</span><NotMonitored n={st.unmonitored_missing} /></td>
                 <td className={`${td} text-right font-mono text-[11px] text-ink-dim`}>{gb(st.size_bytes)}</td>
                 <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: s.monitored ? "var(--accent)" : "var(--ink-faint)" }}>{s.monitored ? "Yes" : "No"}</span></td>
                 <td className={td}><SeriesFit f={fits.get(s.id)} /></td>

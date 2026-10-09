@@ -107,12 +107,13 @@ export function SeriesDetail() {
     return a.season_number - b.season_number;
   });
   const continuing = /return|continu/i.test(s.status ?? "");
-  // Overall progress from the loaded episodes (aired-aware, specials excluded) — the detail
-  // endpoint doesn't carry the roll-up stats the way the list does.
-  const allEps = seasons.filter((sn) => sn.season_number > 0).flatMap((sn) => sn.episodes ?? []);
-  const haveAll = allEps.filter((e) => e.has_file).length;
-  const countedAll = allEps.filter((e) => e.has_file || aired(e)).length;
-  const st = statusOf(haveAll, countedAll, s.monitored);
+  // Overall progress from the server's roll-up — the same numbers as the list's card, so
+  // the two agree: only monitored episodes in monitored seasons count as missing.
+  const haveAll = s.stats?.have_files ?? 0;
+  const countedAll = s.stats?.episodes ?? 0;
+  const missingAll = s.stats?.missing ?? Math.max(0, countedAll - haveAll);
+  const notMonitoredAll = s.stats?.unmonitored_missing ?? 0;
+  const st = statusOf(countedAll, missingAll, s.monitored, haveAll);
 
   return (
     <>
@@ -147,6 +148,12 @@ export function SeriesDetail() {
               <div className="flex flex-wrap items-center gap-2.5">
                 <span className="rounded-full px-2.5 py-1 font-mono text-[10.5px] font-semibold uppercase" style={{ background: st.soft, color: st.tone }}>{st.label}</span>
                 <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase" style={{ background: continuing ? "var(--good-soft)" : "var(--panel-2)", color: continuing ? "var(--good)" : "var(--ink-faint)" }}>{continuing ? "Continuing" : "Ended"}</span>
+                {countedAll > 0 && (
+                  <span className="font-mono text-[11px] text-ink-dim">
+                    {haveAll}/{countedAll}
+                    {notMonitoredAll > 0 && <span className="text-ink-faint" title="Aired episodes without a file that aren't monitored — not counted as missing"> · {notMonitoredAll} not monitored</span>}
+                  </span>
+                )}
                 {s.year > 0 && <span className="font-mono text-[11px] text-ink-faint">{s.year}</span>}
                 {s.network && <span className="font-mono text-[11px] text-ink-faint">{s.network}</span>}
                 <span className="flex items-center gap-2">
@@ -213,8 +220,8 @@ export function SeriesDetail() {
   );
 }
 
-function statusOf(have: number, total: number, monitored: boolean): { label: string; tone: string; soft: string } {
-  if (total > 0 && have >= total) return { label: "Complete", tone: "var(--good-text)", soft: "var(--good-soft)" };
+function statusOf(total: number, missing: number, monitored: boolean, have: number): { label: string; tone: string; soft: string } {
+  if (total > 0 && missing === 0) return { label: "Complete", tone: "var(--good-text)", soft: "var(--good-soft)" };
   if (monitored) return { label: have > 0 ? "In progress" : "Wanted", tone: "var(--avoid-text)", soft: "var(--avoid-soft)" };
   return { label: "Unmonitored", tone: "var(--ink-faint)", soft: "var(--panel-2)" };
 }
@@ -355,9 +362,12 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
   const have = eps.filter((e) => e.has_file).length;
   const total = eps.length;
   const airedCount = eps.filter(aired).length;
-  // The progress denominator only counts episodes that have aired (or that we already have),
-  // so an in-progress season isn't shown as behind on episodes that haven't come out yet.
-  const counted = eps.filter((e) => e.has_file || aired(e)).length;
+  // The progress denominator counts what's wanted — aired episodes monitored in a monitored
+  // season — plus what's already here, so an in-progress season isn't behind on episodes
+  // that haven't come out yet, nor on ones nobody asked for (shown greyed instead).
+  const wanted = (e: Episode) => e.monitored && season.monitored && aired(e);
+  const counted = eps.filter((e) => e.has_file || wanted(e)).length;
+  const notMonitored = eps.filter((e) => !e.has_file && aired(e) && !wanted(e)).length;
   const nextAir = eps.map((e) => e.air_date).filter(Boolean).sort()[0];
   // The on-disk folder for this season = the directory of any episode file we have.
   const seasonDir = (eps.find((e) => e.file_path)?.file_path ?? "").replace(/[\\/][^\\/]*$/, "");
@@ -403,7 +413,10 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
           ) : state === "upcoming" ? (
             <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }} title={nextAir ? `First airs ${nextAir}` : undefined}>{nextAir ? `Airs ${nextAir}` : "Upcoming"}</span>
           ) : (
-            <span className="flex-none font-mono text-[10.5px] text-ink-faint">{have}/{counted}</span>
+            <span className="flex-none font-mono text-[10.5px] text-ink-faint">
+              {have}/{counted}
+              {notMonitored > 0 && <span style={{ opacity: 0.7 }} title="Aired episodes without a file that aren't monitored — not counted as missing"> · {notMonitored} not monitored</span>}
+            </span>
           )}
           {seasonDir && <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-ink-faint" title={seasonDir}>{seasonDir}</span>}
         </button>

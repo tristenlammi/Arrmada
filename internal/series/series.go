@@ -46,12 +46,21 @@ type Series struct {
 	Stats   *Stats   `json:"stats,omitempty"`   // aggregate counts for the grid
 }
 
-// Stats are the roll-up numbers shown per series in the library grid.
+// Stats are a series' roll-up numbers, for the library grid and the detail page. Specials
+// are left out throughout.
 type Stats struct {
-	Episodes  int   `json:"episodes"`   // aired episodes in monitored seasons
+	// Episodes is what the progress counts against: episodes with a file, plus aired
+	// episodes that are monitored in a monitored season.
+	Episodes  int   `json:"episodes"`
 	HaveFiles int   `json:"have_files"` // episodes with a file on disk
 	SizeBytes int64 `json:"size_bytes"`
 	Seasons   int   `json:"seasons"`
+	// Missing: aired, monitored (episode and season), no file — what a search is for.
+	Missing int `json:"missing"`
+	// UnmonitoredMissing: aired, no file, and not monitored — shown as "+N not monitored".
+	UnmonitoredMissing int `json:"unmonitored_missing"`
+	// NextAirDate is the soonest monitored episode still to air ("" when none).
+	NextAirDate string `json:"next_air_date,omitempty"`
 }
 
 // SeriesExtra is enriched TMDB metadata stored as a JSON blob.

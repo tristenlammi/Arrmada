@@ -171,6 +171,10 @@ func (s *Service) Get(ctx context.Context, id int64) (Series, error) {
 		sr.Seasons = seasons
 	}
 	sr.Aliases = s.repo.Aliases(ctx, id)
+	// The same roll-up the list shows, so the detail page's progress matches its card.
+	if st, err := s.repo.StatsFor(ctx, id); err == nil {
+		sr.Stats = st
+	}
 	return sr, nil
 }
 

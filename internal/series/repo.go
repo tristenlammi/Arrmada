@@ -78,46 +78,92 @@ func (r *Repo) List(ctx context.Context) ([]Series, error) {
 	return out, nil
 }
 
-// allStats returns per-series episode/file roll-ups keyed by series id.
-func (r *Repo) allStats(ctx context.Context) (map[int64]*Stats, error) {
+// statsSQL is the per-series roll-up behind both the list and the detail page, so the two
+// can't disagree. It counts what's actually wanted: an episode is wanted when it and its
+// season are monitored and it has aired ("aired" as automation's aired(): a dated episode
+// on or before today). A show where only the latest season is wanted used to read
+// "12/180 · Partial" forever, counting every aired episode whatever its monitoring.
+//
+// Specials (season 0) are left out — an optional special isn't a gap. The total counts
+// files too, so an unmonitored episode you have still shows as had.
+const statsSQL = `
+	SELECT e.series_id,
+	  COALESCE(SUM(CASE WHEN e.has_file = 1 OR (` + wantedSQL + ` AND ` + statsAiredSQL + `) THEN 1 ELSE 0 END), 0),
+	  COALESCE(SUM(e.has_file), 0),
+	  COALESCE(SUM(e.size_bytes), 0),
+	  COALESCE(SUM(CASE WHEN e.has_file = 0 AND ` + wantedSQL + ` AND ` + statsAiredSQL + ` THEN 1 ELSE 0 END), 0),
+	  COALESCE(SUM(CASE WHEN e.has_file = 0 AND NOT ` + wantedSQL + ` AND ` + statsAiredSQL + ` THEN 1 ELSE 0 END), 0),
+	  MIN(CASE WHEN e.has_file = 0 AND ` + wantedSQL + ` AND e.air_date <> '' AND date(e.air_date) > date('now') THEN e.air_date END)
+	FROM episodes e
+	LEFT JOIN seasons sn ON sn.series_id = e.series_id AND sn.season_number = e.season_number
+	WHERE e.season_number > 0`
+
+const (
+	wantedSQL     = `(e.monitored = 1 AND COALESCE(sn.monitored, 0) = 1)`
+	statsAiredSQL = `(e.air_date <> '' AND date(e.air_date) <= date('now'))`
+)
+
+// queryStats runs statsSQL, for every series or (id > 0) just one.
+func (r *Repo) queryStats(ctx context.Context, id int64) (map[int64]*Stats, error) {
 	out := map[int64]*Stats{}
-	// Specials (season 0) are excluded from the have/total roll-up — a library isn't
-	// "incomplete" just because an optional special hasn't been grabbed. The total also
-	// only counts episodes that have already AIRED (or that we already have a file for),
-	// so an in-progress season isn't marked incomplete for episodes that don't exist yet.
-	rows, err := r.db.QueryContext(ctx,
-		`SELECT series_id,
-		        COALESCE(SUM(CASE WHEN has_file = 1 OR (air_date <> '' AND date(air_date) <= date('now')) THEN 1 ELSE 0 END), 0),
-		        COALESCE(SUM(has_file),0),
-		        COALESCE(SUM(size_bytes),0)
-		 FROM episodes WHERE season_number > 0 GROUP BY series_id`)
+	q, args := statsSQL, []any{}
+	sq, sargs := `SELECT series_id, COUNT(*) FROM seasons WHERE season_number > 0`, []any{}
+	if id > 0 {
+		q += ` AND e.series_id = ?`
+		args = append(args, id)
+		sq += ` AND series_id = ?`
+		sargs = append(sargs, id)
+	}
+	rows, err := r.db.QueryContext(ctx, q+` GROUP BY e.series_id`, args...)
 	if err != nil {
 		return out, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var id int64
+		var sid int64
+		var next sql.NullString
 		st := &Stats{}
-		if err := rows.Scan(&id, &st.Episodes, &st.HaveFiles, &st.SizeBytes); err != nil {
+		if err := rows.Scan(&sid, &st.Episodes, &st.HaveFiles, &st.SizeBytes, &st.Missing, &st.UnmonitoredMissing, &next); err != nil {
 			return out, err
 		}
-		out[id] = st
+		st.NextAirDate = next.String
+		out[sid] = st
 	}
-	sr, err := r.db.QueryContext(ctx, `SELECT series_id, COUNT(*) FROM seasons WHERE season_number > 0 GROUP BY series_id`)
+	if err := rows.Err(); err != nil {
+		return out, err
+	}
+	sr, err := r.db.QueryContext(ctx, sq+` GROUP BY series_id`, sargs...)
 	if err == nil {
 		defer sr.Close()
 		for sr.Next() {
-			var id int64
+			var sid int64
 			var n int
-			if sr.Scan(&id, &n) == nil {
-				if out[id] == nil {
-					out[id] = &Stats{}
+			if sr.Scan(&sid, &n) == nil {
+				if out[sid] == nil {
+					out[sid] = &Stats{}
 				}
-				out[id].Seasons = n
+				out[sid].Seasons = n
 			}
 		}
 	}
 	return out, nil
+}
+
+// allStats returns per-series episode/file roll-ups keyed by series id.
+func (r *Repo) allStats(ctx context.Context) (map[int64]*Stats, error) {
+	return r.queryStats(ctx, 0)
+}
+
+// StatsFor is one series' roll-up — the same numbers the list shows for it.
+func (r *Repo) StatsFor(ctx context.Context, id int64) (*Stats, error) {
+	m, err := r.queryStats(ctx, id)
+	if err != nil {
+		return &Stats{}, err
+	}
+	if st, ok := m[id]; ok {
+		return st, nil
+	}
+	return &Stats{}, nil
 }
 
 // Get returns one series by id (no seasons/episodes attached).

@@ -969,11 +969,17 @@ export interface SeriesLookup {
   poster_url: string;
   vote_average: number;
 }
+// A series' roll-up, specials left out. Only monitored episodes in monitored seasons count
+// as wanted: episodes = files + aired wanted episodes; missing = aired wanted episodes with
+// no file; unmonitored_missing = aired, no file, not monitored ("+N not monitored").
 export interface SeriesStats {
   episodes: number;
   have_files: number;
   size_bytes: number;
   seasons: number;
+  missing?: number;
+  unmonitored_missing?: number;
+  next_air_date?: string;
 }
 export interface SeriesExtra {
   genres?: string[];
