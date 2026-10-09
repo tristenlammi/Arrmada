@@ -374,10 +374,17 @@ func TestCancelWhileQueuedAbandons(t *testing.T) {
 	r.SetLimit(ClassLibraryScan, 1)
 	release := make(chan struct{})
 	defer close(release)
-	_, _, _ = r.Submit(context.Background(), Spec{Kind: "scan", Target: "a", Class: ClassLibraryScan, Fn: func(ctx context.Context, _ *Progress) (any, error) {
+	holding := make(chan struct{})
+	if _, _, err := r.Submit(context.Background(), Spec{Kind: "scan", Target: "a", Class: ClassLibraryScan, Fn: func(ctx context.Context, _ *Progress) (any, error) {
+		close(holding)
 		<-release
 		return nil, nil
-	}})
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	// The first job must hold the class's one slot before the second is submitted: both
+	// race for it otherwise, and the second can win and finish before it's cancelled.
+	<-holding
 	var ran atomic.Bool
 	abandoned := make(chan struct{})
 	id2, _, _ := r.Submit(context.Background(), Spec{Kind: "scan", Target: "b", Class: ClassLibraryScan,
