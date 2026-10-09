@@ -70,6 +70,14 @@ func OpenWith(dataDir string, opt Options) (*Store, error) {
 		return nil, fmt.Errorf("create data dir %q: %w", dataDir, err)
 	}
 
+	fsys := opt.migrations
+	if fsys == nil {
+		fsys = embeddedMigrations()
+	}
+	// A restore staged from the Backups card or the CLI is put in place now, before
+	// anything has the database open. It never stops the boot; see restore.go.
+	applyPendingRestore(dataDir, versionsIn(fsys), log)
+
 	st := &Store{dataDir: dataDir, dbPath: filepath.Join(dataDir, "arrmada.db")}
 	db, err := openDB(st.dbPath)
 	if err != nil {
@@ -214,6 +222,9 @@ func openDB(dbPath string) (*sql.DB, error) {
 	db.SetConnMaxLifetime(time.Hour)
 	return db, nil
 }
+
+// DataDir is the folder holding the database, its backups and the restore marker.
+func (s *Store) DataDir() string { return s.dataDir }
 
 // DB exposes the underlying pool for repositories built on top of the store.
 func (s *Store) DB() *sql.DB { return s.db }

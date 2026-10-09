@@ -13,6 +13,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -65,6 +66,7 @@ type Backup struct {
 type Service struct {
 	store    *store.Store
 	dir      string
+	dataDir  string
 	settings Settings
 	log      *slog.Logger
 	now      func() time.Time
@@ -75,20 +77,23 @@ type Service struct {
 
 // New wires the service for st; its backups live wherever st's snapshots go.
 func New(st *store.Store, set Settings, log *slog.Logger) *Service {
-	return &Service{store: st, dir: st.BackupsDir(), settings: set, log: log, now: time.Now, versions: map[string]string{}}
+	return &Service{store: st, dir: st.BackupsDir(), dataDir: st.DataDir(), settings: set, log: log, now: time.Now, versions: map[string]string{}}
 }
 
 // Dir is the backups folder.
 func (s *Service) Dir() string { return s.dir }
 
 // ErrBadName means a name that isn't one of our backup files (a path, "..", another file).
-var ErrBadName = errors.New("not a backup name")
+var ErrBadName = store.ErrBadBackupName
 
 // Create takes a backup of kind and prunes that kind to its retention. pre-migrate copies
 // belong to the store's upgrade path and can't be made here.
 func (s *Service) Create(ctx context.Context, kind store.BackupKind) (Backup, error) {
 	if kind == store.BackupPreMigrate {
 		return Backup{}, fmt.Errorf("pre-migrate backups are taken by the upgrade itself")
+	}
+	if s.store == nil {
+		return Backup{}, errors.New("no database open to back up")
 	}
 	if _, _, ok := store.ParseBackupName(store.BackupName(kind, time.Now())); !ok {
 		return Backup{}, fmt.Errorf("invalid backup kind %q", kind)
@@ -114,7 +119,7 @@ func (s *Service) Create(ctx context.Context, kind store.BackupKind) (Backup, er
 
 func (s *Service) keepFor(ctx context.Context, kind store.BackupKind) int {
 	if kind == store.BackupNightly {
-		return s.intSetting(ctx, KeyKeepNightly, defaultKeepNightly, 1, 365)
+		return s.intSetting(ctx, KeyKeepNightly, defaultKeepNightly, 1, MaxKeepNightly)
 	}
 	if n, ok := keep[kind]; ok {
 		return n
@@ -205,21 +210,185 @@ func (s *Service) forget(names []string) {
 	s.mu.Unlock()
 }
 
+// validName accepts exactly one of our backup file names: no path, no "..", no other file.
+func validName(name string) bool {
+	if name == "" || filepath.Base(name) != name {
+		return false
+	}
+	_, _, ok := store.ParseBackupName(name)
+	return ok
+}
+
 // Delete removes one backup. Only exact backup names are accepted, so this can never
 // reach the live database or anything outside the backups folder.
 func (s *Service) Delete(name string) error {
-	if filepath.Base(name) != name {
+	if !validName(name) {
 		return ErrBadName
 	}
-	if _, _, ok := store.ParseBackupName(name); !ok {
-		return ErrBadName
+	if m, _ := store.PendingRestore(s.dataDir); m != nil && m.Name() == name {
+		return ErrStaged
 	}
 	if err := os.Remove(filepath.Join(s.dir, name)); err != nil {
 		return err
 	}
+	// A byte-for-byte pre-restore copy may have its WAL beside it.
+	_ = os.Remove(filepath.Join(s.dir, name) + "-wal")
 	s.forget([]string{name})
 	return nil
 }
+
+// ErrStaged means the backup is the one a staged restore will put back at the next start.
+var ErrStaged = errors.New("this backup is staged to be restored at the next start; cancel the restore first")
+
+// StageRestore validates the backup called name and stages it to replace the database at
+// the next start. Nothing is staged for a backup that fails validation (damaged, not an
+// Arrmada database, or from a newer Arrmada).
+func (s *Service) StageRestore(name, requestedBy string) (store.BackupInfo, error) {
+	if !validName(name) {
+		return store.BackupInfo{}, ErrBadName
+	}
+	info, err := store.StageRestore(s.dataDir, name, requestedBy)
+	if err == nil {
+		s.log.Warn("database restore staged; it runs at the next start", "backup", name, "requested_by", requestedBy)
+	}
+	return info, err
+}
+
+// CancelRestore drops a staged restore that hasn't run. It reports whether there was one.
+func (s *Service) CancelRestore() (bool, error) {
+	ok, err := store.CancelRestore(s.dataDir)
+	if ok {
+		s.log.Info("staged database restore cancelled")
+	}
+	return ok, err
+}
+
+// PendingRestore is the staged restore, or nil.
+func (s *Service) PendingRestore() (*store.RestoreMarker, error) {
+	return store.PendingRestore(s.dataDir)
+}
+
+// LastRestore is how the last restore at boot went, or nil when none has run.
+func (s *Service) LastRestore() (*store.RestoreResult, error) { return store.LastRestore(s.dataDir) }
+
+// Size limits for a backup brought in from outside: MaxUploadBytes is what an upload may
+// send (a .db.gz, or a .db), MaxImportBytes what the database may be once decompressed.
+const (
+	MaxUploadBytes = 4 << 30
+	MaxImportBytes = 16 << 30
+)
+
+// Import brings in a backup from r — a .db, or a .db.gz from Download — as an uploaded
+// backup, once it has passed the same validation a restore does. It then shows up in the
+// list and is restored through the normal Restore flow.
+func (s *Service) Import(ctx context.Context, r io.Reader) (Backup, error) {
+	name, _, err := store.ImportBackup(s.dataDir, r, MaxImportBytes)
+	if err != nil {
+		return Backup{}, err
+	}
+	b, err := s.describe(ctx, name)
+	if err != nil {
+		return Backup{}, err
+	}
+	s.log.Info("database backup uploaded", "name", b.Name, "size_bytes", b.SizeBytes, "schema", b.SchemaVersion)
+	if removed, err := store.PruneBackups(s.dir, store.BackupUploaded, s.keepFor(ctx, store.BackupUploaded)); err != nil {
+		s.log.Warn("pruning old backups failed", "kind", store.BackupUploaded, "err", err)
+	} else {
+		s.forget(removed)
+	}
+	return b, nil
+}
+
+// ForDataDir is a Service over <dataDir>/backups with no database open: it lists, stages
+// and imports, but can't take a backup. The CLI uses it when the app isn't running.
+func ForDataDir(dataDir string, log *slog.Logger) *Service {
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	return &Service{dir: store.BackupsDir(dataDir), dataDir: dataDir, log: log, now: time.Now, versions: map[string]string{}}
+}
+
+// StageTarget stages a restore from the command line. target is a backup's name in the
+// backups folder, or a path to a .db or .db.gz anywhere, which is first copied in as an
+// uploaded backup (and validated). It returns the staged backup's name.
+func (s *Service) StageTarget(ctx context.Context, target, requestedBy string) (Backup, store.BackupInfo, error) {
+	name := target
+	// A path to one of the backups already in the folder is just that backup.
+	if abs, err := filepath.Abs(target); err == nil {
+		if dirAbs, err := filepath.Abs(s.dir); err == nil && filepath.Dir(abs) == dirAbs && validName(filepath.Base(abs)) {
+			name = filepath.Base(abs)
+		}
+	}
+	if !validName(name) || !fileExists(filepath.Join(s.dir, name)) {
+		f, err := os.Open(target)
+		if err != nil {
+			if validName(target) {
+				return Backup{}, store.BackupInfo{}, fmt.Errorf("no backup called %s in %s", target, s.dir)
+			}
+			return Backup{}, store.BackupInfo{}, err
+		}
+		b, err := s.Import(ctx, f)
+		_ = f.Close()
+		if err != nil {
+			return Backup{}, store.BackupInfo{}, err
+		}
+		name = b.Name
+	}
+	info, err := s.StageRestore(name, requestedBy)
+	if err != nil {
+		return Backup{}, info, err
+	}
+	b, err := s.describe(ctx, name)
+	return b, info, err
+}
+
+func fileExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.Mode().IsRegular()
+}
+
+// Open opens one backup for reading (a download). The same exact-name rule as Delete
+// applies; the caller closes the file.
+func (s *Service) Open(name string) (*os.File, Backup, error) {
+	if !validName(name) {
+		return nil, Backup{}, ErrBadName
+	}
+	f, err := os.Open(filepath.Join(s.dir, name))
+	if err != nil {
+		return nil, Backup{}, err
+	}
+	kind, at, _ := store.ParseBackupName(name)
+	b := Backup{Name: name, Kind: kind, CreatedAt: at}
+	if fi, err := f.Stat(); err == nil {
+		b.SizeBytes = fi.Size()
+	}
+	return f, b, nil
+}
+
+// Schedule is the nightly backup's settings as the Backups card edits them.
+type Schedule struct {
+	Enabled     bool `json:"enabled"`
+	Hour        int  `json:"hour"`         // local hour the nightly is due from, 0-23
+	KeepNightly int  `json:"keep_nightly"` // nightlies kept, 1-365
+}
+
+// Bounds for the schedule's numbers; out-of-range stored values fall back to the defaults.
+const (
+	MaxHour        = 23
+	MaxKeepNightly = 365
+)
+
+// Schedule returns the current nightly settings, defaults filled in.
+func (s *Service) Schedule(ctx context.Context) Schedule {
+	return Schedule{
+		Enabled:     s.Enabled(ctx),
+		Hour:        s.intSetting(ctx, KeyHour, defaultHour, 0, MaxHour),
+		KeepNightly: s.intSetting(ctx, KeyKeepNightly, defaultKeepNightly, 1, MaxKeepNightly),
+	}
+}
+
+// LastNightly is when the newest nightly backup was taken (zero when there is none).
+func (s *Service) LastNightly() time.Time { return s.newest(store.BackupNightly) }
 
 // newest returns when the newest backup of kind was taken (zero when there is none).
 func (s *Service) newest(kind store.BackupKind) time.Time {
@@ -261,7 +430,7 @@ func (s *Service) RunNightly(ctx context.Context) error {
 	if !s.Enabled(ctx) {
 		return nil
 	}
-	hour := s.intSetting(ctx, KeyHour, defaultHour, 0, 23)
+	hour := s.intSetting(ctx, KeyHour, defaultHour, 0, MaxHour)
 	if !dueNightly(s.newest(store.BackupNightly), s.now(), hour) {
 		return nil
 	}

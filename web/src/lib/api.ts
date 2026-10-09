@@ -528,6 +528,78 @@ export interface LogEntry {
   msg: string;
   attrs?: string;
 }
+// Why a database backup was taken; part of its file name.
+export type BackupKind = "pre-migrate" | "nightly" | "manual" | "pre-restore" | "pre-delete-user" | "pre-delete-empty-user" | "uploaded";
+
+// One database backup file. Nothing from inside it is ever sent, beyond its schema version.
+export interface BackupFile {
+  name: string;
+  kind: BackupKind;
+  size_bytes: number;
+  created_at: string;
+  schema_version: string;
+}
+
+export interface BackupSchedule {
+  enabled: boolean;
+  hour: number; // local hour the nightly is due from, 0-23
+  keep_nightly: number;
+}
+
+export interface BackupsState {
+  backups: BackupFile[];
+  total_bytes: number;
+  free_bytes: number | null; // null where free space can't be measured
+  dir: string;
+  settings: BackupSchedule;
+  last_nightly_at: string | null;
+  can_restart: boolean; // the app can restart itself (inside Docker)
+  pending_restore: { name: string; requested_by: string; at: string } | null; // staged, runs at the next start
+  last_restore: RestoreResult | null;
+}
+
+// How the last restore at boot went.
+export interface RestoreResult {
+  at: string;
+  ok: boolean;
+  from?: string;
+  pre_restore?: string; // the copy of the database it replaced
+  error?: string;
+}
+
+export interface RestoreStaged {
+  staged: boolean;
+  restarting: boolean; // false: restart by hand (manual_command), or cancel
+  manual_command: string;
+  schema_version: string;
+}
+
+// The download link for a backup (a .db.gz streamed by the server, admin only).
+export const backupDownloadURL = (name: string) => `/api/v1/system/backups/${encodeURIComponent(name)}/download`;
+
+// uploadBackup sends a .db or .db.gz to become an "Uploaded" backup. It uses XHR rather
+// than fetch for the upload progress (0..1) a multi-gigabyte file needs.
+export function uploadBackup(file: File, onProgress?: (fraction: number) => void): Promise<BackupFile> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/v1/system/backups/upload");
+    xhr.setRequestHeader("Accept", "application/json");
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); };
+    xhr.onload = () => {
+      let body: Record<string, unknown> | undefined;
+      try { body = JSON.parse(xhr.responseText) as Record<string, unknown>; } catch { /* non-JSON answer */ }
+      if (xhr.status >= 200 && xhr.status < 300 && body) { resolve(body as unknown as BackupFile); return; }
+      const msg = typeof body?.message === "string" && body.message ? body.message
+        : xhr.status === 413 ? "The file is too large to upload here." : `HTTP ${xhr.status}`;
+      reject(new ApiError(msg, xhr.status, body));
+    };
+    xhr.onerror = () => reject(new Error("The upload was cut off. Behind Cloudflare, uploads over 100 MB fail; use Arrmada's LAN address."));
+    const form = new FormData();
+    form.append("file", file);
+    xhr.send(form);
+  });
+}
+
 export interface RecycleStats {
   enabled: boolean;
   dir: string;
@@ -1427,9 +1499,18 @@ export const api = {
   },
   recycleStats: () => req<RecycleStats>("/api/v1/recycle"),
   recycleMode: () => req<RecycleMode>("/api/v1/recycle/mode"),
-  // Admin only: a manual database backup, taken synchronously.
-  backupNow: () =>
-    req<{ name: string; kind: string; size_bytes: number; created_at: string; schema_version: string }>("/api/v1/system/backups", { method: "POST" }),
+  // Database backups — admin only (a backup holds every secret the app has).
+  backups: () => req<BackupsState>("/api/v1/system/backups"),
+  // A manual database backup, taken synchronously.
+  backupNow: () => req<BackupFile>("/api/v1/system/backups", { method: "POST" }),
+  saveBackupSchedule: (p: Partial<BackupSchedule>) =>
+    req<BackupSchedule>("/api/v1/system/backups/settings", { method: "PUT", body: JSON.stringify(p) }),
+  deleteBackup: (name: string) =>
+    req<{ status: string }>(`/api/v1/system/backups/${encodeURIComponent(name)}`, { method: "DELETE" }),
+  // Stages a restore for the next start ("RESTORE" is the typed confirmation).
+  restoreBackup: (name: string) =>
+    req<RestoreStaged>(`/api/v1/system/backups/${encodeURIComponent(name)}/restore`, { method: "POST", body: JSON.stringify({ confirm: "RESTORE" }) }),
+  cancelRestore: () => req<{ cancelled: boolean }>("/api/v1/system/backups/restore-pending", { method: "DELETE" }),
   recycleItems: () => req<{ items: RecycleItem[] }>("/api/v1/recycle/items").then((r) => r.items),
   emptyRecycle: () => req<{ freed_bytes: number }>("/api/v1/recycle/empty", { method: "POST" }),
   restoreRecycle: (id: string) => req<{ status: string }>("/api/v1/recycle/restore", { method: "POST", body: JSON.stringify({ id }) }),

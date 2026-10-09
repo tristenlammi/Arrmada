@@ -78,6 +78,54 @@ time (newest 7 kept). If the data disk is too full for the pre-upgrade copy,
 Arrmada refuses to upgrade and says so; free some space, or set
 `ARRMADA_SKIP_MIGRATION_SNAPSHOT=1` in `.env` to upgrade without one.
 
+## Backups
+
+Arrmada copies its database into `<data>/backups` (on Unraid,
+`/mnt/user/appdata/arrmada/backups` when the data dir is in appdata):
+
+| Kind | When | Kept |
+|---|---|---|
+| Nightly | once a day after 04:00 server time (changeable), or at once after a long downtime | newest 7 (changeable) |
+| Before update | before any schema change | newest 5 |
+| Manual | **Back up now** | newest 10 |
+| Before restore, Before user delete, Uploaded | automatically | newest 3 each |
+
+Admins manage them in **Settings → System → Backups**: see every copy with its size and
+schema version, take one now, change the nightly schedule, delete one, or **Download** it as a
+`.db.gz` (decompress it with `gunzip` to get a plain SQLite file). The copies sit on the same
+disk as the database, so they cover a bad update, corruption or a mistake, not a failed disk;
+download one now and then to keep a copy somewhere else. Backups contain your API keys, the
+Plex token and password hashes, so keep downloaded copies somewhere private.
+
+**Restore** on a row puts that backup back (type `RESTORE` to confirm). The backup is checked
+first (a damaged file, or one from a newer Arrmada, is refused), then staged, and swapped in
+the next time Arrmada starts — never while it's running. Inside Docker the app restarts itself
+straight away; otherwise restart the container (`docker restart Arrmada-app`), or cancel the
+staged restore on the card. The database it replaces is kept as a "Before restore" backup, and
+if the swap fails at start-up Arrmada starts on the database as it was and the card says why.
+Everything since the backup was taken is lost: requests, watch history, listening places,
+users and settings.
+
+**Restore from file…** takes a `.db`, or a `.db.gz` from Download (up to 4 GB). It's checked
+the same way, listed as "Uploaded", and restored with that row's Restore. Behind Cloudflare,
+request bodies over 100 MB are refused, so upload big backups from your home network.
+
+### Restoring when Arrmada won't start
+
+The same restore works from the command line, without the web UI. It only stages the
+backup; the swap happens when Arrmada next starts:
+
+```sh
+docker compose run --rm --no-deps arrmada-app backups          # list them
+docker compose run --rm --no-deps arrmada-app restore arrmada-nightly-20261008T040012Z.db
+docker compose up -d arrmada-app
+```
+
+If the container is running, `docker exec Arrmada-app arrmada restore <name>` followed by
+`docker restart Arrmada-app` does the same. `restore` also takes a path to a `.db` or `.db.gz`
+the container can see (it's copied into the backups folder first), and
+`restore --cancel` drops a staged restore that hasn't run.
+
 ## Ports
 
 The installer picks free ports so nothing clashes with apps you already run. It prints them

@@ -4,6 +4,7 @@ import { ConfirmDialog } from "../components/ConfirmDialog";
 import { api, type APIKeyStatus, type AppSettings, type AuthUser, type DiskGuardStatus, type PlexBlock, type RecycleStats, type RecycleItem, type UserImpact } from "../lib/api";
 import { useMe, isAdmin } from "../lib/me";
 import { LibraryFolders } from "./Library";
+import { Backups } from "./settings/Backups";
 
 // Sample release used for the live naming preview.
 const SAMPLE = {
@@ -221,7 +222,7 @@ export function Settings() {
               <StallSection s={s} patch={patch} />
               <RecycleBin s={s} patch={patch} />
               <SaveBar />
-              <DatabaseBackup />
+              <Backups />
               <OverseerrImport />
               <TautulliImport />
             </div>
@@ -231,29 +232,6 @@ export function Settings() {
         )}
       </div>
     </>
-  );
-}
-
-// DatabaseBackup is the manual "Back up now". Nightly copies happen on their own; this is
-// for right before something risky. It reports the file's name and size, never its contents.
-function DatabaseBackup() {
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  const run = async () => {
-    setBusy(true); setMsg(null);
-    try {
-      const b = await api.backupNow();
-      setMsg({ ok: true, text: `Saved ${b.name} (${fmtBytes(b.size_bytes)}).` });
-    } catch (e) { setMsg({ ok: false, text: (e as Error).message }); }
-    finally { setBusy(false); }
-  };
-  return (
-    <Section title="Database backup" subtitle="Arrmada copies its database every night (newest 7 kept) and before every update, into the backups folder next to the database. Back up now before anything risky. Backups hold your API keys and password hashes.">
-      <div className="flex flex-wrap items-center gap-3">
-        <button onClick={run} disabled={busy} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{busy ? "Backing up…" : "Back up now"}</button>
-        {msg && <span className="break-all text-[12px]" style={{ color: msg.ok ? "var(--good)" : "var(--reject)" }}>{msg.text}</span>}
-      </div>
-    </Section>
   );
 }
 
