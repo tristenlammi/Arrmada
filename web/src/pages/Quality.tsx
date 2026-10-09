@@ -186,7 +186,10 @@ function emptyProfile(media: string): StoredProfile {
 }
 
 // Templates for a new video profile. Windows follow the bitrates that look like the source
-// on a big screen in HEVC: 4K 15–35 Mb/s, 1080p 5–15, 720p 3–8.
+// on a big screen in HEVC: 4K 15–35 Mb/s, 1080p 5–15, 720p 3–8. TV is encoded leaner than
+// film, and series grabs are held to these windows too, so a series profile starts lower —
+// otherwise a good x265 WEB episode sits under the floor and only wins when nothing else does.
+const TV_WINDOWS = { "2160p": { min: 10, max: 30 }, "1080p": { min: 3, max: 12 }, "720p": { min: 1.5, max: 6 } };
 const VIDEO_TEMPLATES: { key: string; name: string; desc: string; make: (media: string) => StoredProfile }[] = [
   {
     key: "4k", name: "4K HDR collection", desc: "4K first, 1080p if that's all there is. HEVC or AV1, HDR10+ preferred, Atmos wanted.",
@@ -194,7 +197,9 @@ const VIDEO_TEMPLATES: { key: string; name: string; desc: string; make: (media: 
       ...emptyProfile(m), allowed_resolutions: ["2160p", "1080p"],
       ideal: {
         codec: { hevc: "want", av1: "want" }, hdr: { "HDR10+": "want" }, audio: { atmos: "want" },
-        bitrate: { "2160p": { min: 15, max: 35 }, "1080p": { min: 5, max: 15 } },
+        bitrate: m === "series"
+          ? { "2160p": TV_WINDOWS["2160p"], "1080p": TV_WINDOWS["1080p"] }
+          : { "2160p": { min: 15, max: 35 }, "1080p": { min: 5, max: 15 } },
       },
     }),
   },
@@ -202,7 +207,12 @@ const VIDEO_TEMPLATES: { key: string; name: string; desc: string; make: (media: 
     key: "1080", name: "1080p efficient", desc: "1080p in HEVC or AV1, 720p as a fallback. Good quality without remux-sized files.",
     make: (m) => ({
       ...emptyProfile(m), allowed_resolutions: ["1080p", "720p"],
-      ideal: { codec: { hevc: "want", av1: "want" }, bitrate: { "1080p": { min: 5, max: 15 }, "720p": { min: 3, max: 8 } } },
+      ideal: {
+        codec: { hevc: "want", av1: "want" },
+        bitrate: m === "series"
+          ? { "1080p": TV_WINDOWS["1080p"], "720p": TV_WINDOWS["720p"] }
+          : { "1080p": { min: 5, max: 15 }, "720p": { min: 3, max: 8 } },
+      },
     }),
   },
   {
@@ -812,7 +822,7 @@ function PrefKey() {
 
 function NumIn({ value, onSet, label }: { value?: number; onSet: (v: number) => void; label: string }) {
   return (
-    <input type="number" min={0} step={1} aria-label={label} value={value || ""} placeholder="any" onChange={(e) => onSet(Number(e.target.value))}
+    <input type="number" min={0} step="any" aria-label={label} value={value || ""} placeholder="any" onChange={(e) => onSet(Number(e.target.value))}
       className="w-[64px] rounded-lg px-2 py-1 text-right font-mono text-[12.5px]" style={fieldStyle} />
   );
 }

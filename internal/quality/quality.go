@@ -281,6 +281,16 @@ const gibToMegabit = 1024.0 * 1024.0 * 1024.0 * 8.0 / 1e6 // ≈ 8589.93
 // bitrateMbps is the release's average bitrate in Mbps, or 0 when the runtime is unknown.
 func (c Candidate) bitrateMbps() float64 { return BitrateMbps(c.SizeGB, c.RuntimeMin) }
 
+// sizeOver is the candidate's size scaled to runtimeMin minutes of content: its share when
+// it covers more than that (an S01E01E02 double weighed against one episode's file). The
+// raw size when either runtime is unknown or the two agree, which is every movie.
+func sizeOver(c Candidate, runtimeMin int) float64 {
+	if c.RuntimeMin <= 0 || runtimeMin <= 0 || c.RuntimeMin == runtimeMin {
+		return c.SizeGB
+	}
+	return c.SizeGB * float64(runtimeMin) / float64(c.RuntimeMin)
+}
+
 // codecEfficiency scales a bitrate into H.264-equivalent terms.
 //
 // Raw bitrate is a poor quality measure across codecs: a 60 Mbps H.264 encode looks WORSE

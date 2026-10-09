@@ -233,6 +233,7 @@ func (c *Coordinator) GrabForScope(ctx context.Context, seriesID int64, sc Serie
 	}
 	byName := make(map[string]indexer.Release, len(releases))
 	cands := make([]quality.Candidate, 0, len(releases))
+	rts := newRuntimeIndex(s)
 	for _, rel := range bestByTitle(grabbable(releases)) {
 		out.Found++
 		switch {
@@ -244,7 +245,7 @@ func (c *Coordinator) GrabForScope(ctx context.Context, seriesID int64, sc Serie
 			out.OutOfScope++
 		default:
 			byName[rel.Title] = rel
-			cands = append(cands, newSeriesCandidate(rel))
+			cands = append(cands, c.newSeriesCandidate(ctx, s, rts, rel))
 		}
 	}
 	profile := c.effectiveProfile(ctx, s.QualityProfile, quality.MediaSeries)
