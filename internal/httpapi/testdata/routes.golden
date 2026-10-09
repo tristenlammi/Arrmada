@@ -1,4 +1,5 @@
 ANY / public ext
+DELETE /api/v1/apikeys/{id} staff -
 DELETE /api/v1/audioserver/devices/{family} admin -
 DELETE /api/v1/books/{id} staff -
 DELETE /api/v1/books/{id}/audio-versions/{vid} staff -

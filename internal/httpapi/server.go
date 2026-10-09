@@ -149,6 +149,7 @@ func (a *api) registerRoutes(mux *router) {
 	// App preferences
 	mux.HandleFunc("GET "+base+"/api/v1/apikeys", a.requireRole(auth.RoleManager, a.handleGetAPIKeys))
 	mux.HandleFunc("PUT "+base+"/api/v1/apikeys/{id}", a.requireRole(auth.RoleManager, a.handleSetAPIKey))
+	mux.HandleFunc("DELETE "+base+"/api/v1/apikeys/{id}", a.requireRole(auth.RoleManager, a.handleClearAPIKey))
 	mux.HandleFunc("POST "+base+"/api/v1/apikeys/{id}/test", a.requireRole(auth.RoleManager, a.handleTestAPIKey))
 	mux.HandleFunc("GET "+base+"/api/v1/settings", a.requireRole(auth.RoleManager, a.handleGetSettings))
 	mux.HandleFunc("PUT "+base+"/api/v1/settings", a.requireRole(auth.RoleManager, a.handleUpdateSettings))

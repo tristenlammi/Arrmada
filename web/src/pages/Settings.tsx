@@ -599,11 +599,25 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
 }
 
 
+// What stops working when a key is cleared and nothing takes its place, for the confirm.
+const KEY_CLEAR_EFFECT: Record<string, string> = {
+  tmdb: "Discover, Movies and TV stop finding anything.",
+  tvdb: "Anime episode numbering goes back to TMDB's.",
+  omdb: "IMDb, Rotten Tomatoes and Metacritic scores stop showing.",
+  hardcover: "New book lookups go back to Open Library. Books already matched keep what they have.",
+  opensubtitles_api: "Subtitle search stops.",
+  opensubtitles_username: "Subtitle downloads stop.",
+  opensubtitles_password: "Subtitle downloads stop.",
+};
+
 function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => void }) {
   const [keys, setKeys] = useState<APIKeyStatus[] | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // The key whose Clear is waiting on the confirm, and the server's answer if it said no.
+  const [clearing, setClearing] = useState<APIKeyStatus | null>(null);
+  const [clearErr, setClearErr] = useState<string | null>(null);
   // Result of the last "Test" per key: a live request with the saved value.
   const [tests, setTests] = useState<Record<string, { ok: boolean; detail: string }>>({});
   const testKey = async (id: string) => {
@@ -640,13 +654,32 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
   };
 
   const saveKey = async (id: string) => {
+    // A blank Save never reaches the server: clearing a key is Clear's job.
+    const value = drafts[id]?.trim();
+    if (!value) return;
     setBusy(id); setErr(null);
     try {
-      const next = await api.setAPIKey(id, drafts[id] ?? "");
+      const next = await api.setAPIKey(id, value);
       setKeys(next);
       setDrafts((d) => { const n = { ...d }; delete n[id]; return n; }); // clear the field on success
     } catch (e) {
       setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Clear goes straight to the DELETE, not through the draft, so a value typed in the
+  // field is never saved by pressing Clear.
+  const clearKey = async (k: APIKeyStatus) => {
+    setBusy("clear:" + k.id); setClearErr(null);
+    try {
+      setKeys(await api.clearAPIKey(k.id));
+      setDrafts((d) => { const n = { ...d }; delete n[k.id]; return n; });
+      setTests((t) => { const n = { ...t }; delete n[k.id]; return n; });
+      setClearing(null);
+    } catch (e) {
+      setClearErr((e as Error).message);
     } finally {
       setBusy(null);
     }
@@ -682,8 +715,8 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
               />
               <button
                 onClick={() => saveKey(k.id)}
-                disabled={busy !== null}
-                className="flex-none rounded-lg px-3 py-1.5 text-[11.5px] font-semibold"
+                disabled={busy !== null || !drafts[k.id]?.trim()}
+                className="flex-none rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50"
                 style={{ border: "1px solid var(--accent-line, var(--line))", color: "var(--accent)" }}
               >
                 {busy === k.id ? "Saving…" : "Save"}
@@ -701,7 +734,7 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
               )}
               {k.configured && k.source === "settings" && (
                 <button
-                  onClick={() => { setDrafts((d) => ({ ...d, [k.id]: "" })); saveKey(k.id); }}
+                  onClick={() => { setClearErr(null); setClearing(k); }}
                   disabled={busy !== null}
                   className="flex-none rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold"
                   style={{ border: "1px solid var(--line)", color: "var(--ink-faint)" }}
@@ -759,6 +792,24 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
           )}
         </div>
       </div>
+      {clearing && (
+        <ConfirmDialog
+          title={<>Clear the saved {clearing.label} key?</>}
+          body={
+            <p className="m-0">
+              {clearing.env_set
+                ? `The key from your install${clearing.env_hint ? ` (${clearing.env_hint})` : ""} will be used instead.`
+                : KEY_CLEAR_EFFECT[clearing.id] ?? clearing.purpose}
+            </p>
+          }
+          confirmLabel="Clear key"
+          busyLabel="Clearing…"
+          busy={busy === "clear:" + clearing.id}
+          error={clearErr}
+          onConfirm={() => clearKey(clearing)}
+          onCancel={() => setClearing(null)}
+        />
+      )}
     </Section>
   );
 }

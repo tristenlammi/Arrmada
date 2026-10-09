@@ -221,6 +221,9 @@ export interface APIKeyStatus {
   configured: boolean;
   source: "settings" | "env" | "";
   hint?: string;
+  // The install-time value, reported even when a saved one wins: what Clear falls back to.
+  env_set: boolean;
+  env_hint?: string;
 }
 
 export interface ClientSettings {
@@ -1256,6 +1259,8 @@ export const api = {
   testAPIKey: (id: string) => req<{ ok: boolean; detail: string }>(`/api/v1/apikeys/${id}/test`, { method: "POST" }),
   setAPIKey: (id: string, value: string) =>
     req<{ keys: APIKeyStatus[] }>(`/api/v1/apikeys/${id}`, { method: "PUT", body: JSON.stringify({ value }) }).then((r) => r.keys),
+  // Clearing is its own DELETE (a blank PUT is refused), so an empty Save can't wipe a key.
+  clearAPIKey: (id: string) => req<{ keys: APIKeyStatus[] }>(`/api/v1/apikeys/${id}`, { method: "DELETE" }).then((r) => r.keys),
   clientSettings: (id: number) => req<ClientSettings>(`/api/v1/downloadclients/${id}/settings`),
   setClientSettings: (id: number, body: ClientSettings) =>
     req<{ status: string }>(`/api/v1/downloadclients/${id}/settings`, { method: "PUT", body: JSON.stringify(body) }),
