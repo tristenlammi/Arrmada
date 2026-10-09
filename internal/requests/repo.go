@@ -49,6 +49,9 @@ type Request struct {
 	epHave   int
 	epTotal  int
 	released bool
+	// Books: searches in a row that found nothing, and when the next one is due (RFC3339).
+	searchMisses int
+	nextCheckAt  string
 }
 
 // Repo persists requests in SQLite.

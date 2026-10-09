@@ -45,6 +45,7 @@ func (a *api) handleListBooks(w http.ResponseWriter, r *http.Request) {
 			wants[ref] = w2
 		}
 		list[i].WantEbook, list[i].WantAudiobook = w2[0], w2[1]
+		list[i].FillNextSearch()
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"books":              list,
@@ -179,13 +180,14 @@ func (a *api) handleGetBook(w http.ResponseWriter, r *http.Request) {
 }
 
 // enrichBookWants fills want_ebook/want_audiobook from the book's quality profile so
-// the detail page can show wanted-but-missing editions.
+// the detail page can show wanted-but-missing editions, and next_search_at from them.
 func (a *api) enrichBookWants(r *http.Request, b *books.Book) {
 	if sp, err := a.deps.Quality.GetStored(r.Context(), b.QualityProfile); err == nil {
 		b.WantEbook, b.WantAudiobook = books.WantedEditions(sp.FormatScores)
 	} else {
 		b.WantEbook = true
 	}
+	b.FillNextSearch()
 }
 
 // setBookCatalogue names and links the catalogue the book's metadata came from, for the

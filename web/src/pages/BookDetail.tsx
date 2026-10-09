@@ -11,6 +11,8 @@ import { AddAudioVersion, AudioVersionPanel } from "../components/AudioVersions"
 import { api, importListNotice, type BookSeriesEntry, type BookSource, type Book, type BookFile, type BookFileEntry, type BookImportCandidate, type BookLookup, type BookSeries, type MovieEvent } from "../lib/api";
 import { useCanHover } from "../lib/useCanHover";
 import { usePoll } from "../lib/usePoll";
+import { jobToast, useJob } from "../lib/useJob";
+import { wantedCopy } from "../lib/bookSearch";
 
 function fmtSize(bytes?: number): string {
   if (!bytes || bytes <= 0) return "";
@@ -34,9 +36,24 @@ export function BookDetail() {
     });
   }, [bid]);
   useEffect(() => { load(); }, [load]);
+  // "Search now" beside a wanted edition runs a books.search job; when it ends the toast
+  // says what it found and the page reloads its search state.
+  const [searchJob, setSearchJob] = useState<number | null>(null);
+  useJob(searchJob, {
+    onDone: (j) => { setSearchJob(null); flash(jobToast(j, "Search finished.")); load(); },
+  });
 
   if (notFound) return <Shell><div className="py-10 text-center text-[13px] text-ink-dim">That book isn't in your library. <Link to="/books" className="underline" style={{ color: "var(--accent)" }}>Back to Books</Link></div></Shell>;
   if (!b) return <Shell><p className="text-[12.5px] text-ink-dim">{error ?? "Loading…"}</p></Shell>;
+
+  const searchNow = async () => {
+    try {
+      const r = await api.searchBook(b.id);
+      if (r.job_id) setSearchJob(r.job_id);
+      flash(`Searching for “${b.title}”…`);
+    } catch (e) { flash((e as Error).message); }
+  };
+  const wantedLine = { book: b, searching: searchJob !== null, onSearch: searchNow };
 
   const st = b.has_file ? { label: "Downloaded", tone: "var(--good-text)", soft: "var(--good-soft)" } : b.monitored ? { label: "Wanted", tone: "var(--avoid-text)", soft: "var(--avoid-soft)" } : { label: "Unmonitored", tone: "var(--ink-faint)", soft: "var(--panel-2)" };
 
@@ -86,8 +103,8 @@ export function BookDetail() {
       <div className="mx-auto w-full max-w-[1100px] px-4 pb-10 sm:px-6">
         <h2 className="m-0 mb-3 text-[14px] font-bold">Editions</h2>
         <div className="flex flex-col gap-2.5">
-          <EditionPanel label="Ebook" file={b.ebook} wanted={b.want_ebook} bookId={b.id} kind="ebook" onChange={load} flash={flash} />
-          <EditionPanel label={b.audio_versions && b.audio_versions.length > 0 ? "Audiobook · Standard" : "Audiobook"} file={b.audiobook} wanted={b.want_audiobook} bookId={b.id} kind="audiobook" onChange={load} flash={flash} />
+          <EditionPanel label="Ebook" file={b.ebook} wanted={b.want_ebook} bookId={b.id} kind="ebook" onChange={load} flash={flash} search={wantedLine} />
+          <EditionPanel label={b.audio_versions && b.audio_versions.length > 0 ? "Audiobook · Standard" : "Audiobook"} file={b.audiobook} wanted={b.want_audiobook} bookId={b.id} kind="audiobook" onChange={load} flash={flash} search={wantedLine} />
           {(b.audio_versions ?? []).map((v) => <AudioVersionPanel key={v.id} book={b} v={v} onChange={load} flash={flash} />)}
           <AddAudioVersion book={b} onAdded={load} flash={flash} />
         </div>
@@ -196,7 +213,9 @@ function CoverPickerModal({ book, onClose, onChange, flash }: { book: Book; onCl
   );
 }
 
-function EditionPanel({ label, file, wanted, bookId, kind, onChange, flash }: { label: string; file?: BookFile; wanted: boolean; bookId: number; kind: "ebook" | "audiobook"; onChange: () => void; flash: (m: string) => void }) {
+interface WantedSearch { book: Book; searching: boolean; onSearch: () => void }
+
+function EditionPanel({ label, file, wanted, bookId, kind, onChange, flash, search }: { label: string; file?: BookFile; wanted: boolean; bookId: number; kind: "ebook" | "audiobook"; onChange: () => void; flash: (m: string) => void; search: WantedSearch }) {
   const [showFile, setShowFile] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -212,9 +231,10 @@ function EditionPanel({ label, file, wanted, bookId, kind, onChange, flash }: { 
   }
   if (!file) {
     return (
-      <div className="flex items-center gap-3 rounded-xl px-4 py-3" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl px-4 py-3" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
         <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase" style={{ background: "var(--avoid-soft)", color: "var(--avoid)" }}>{label}</span>
-        <span className="text-[12px]" style={{ color: "var(--avoid)" }}>Wanted — no file yet. Arrmada is searching for the {label.toLowerCase()}.</span>
+        <span className="min-w-0 flex-1 text-[12px]" style={{ color: "var(--avoid)" }}>{wantedCopy(search.book, label)}</span>
+        <button onClick={search.onSearch} disabled={search.searching} title="Search your indexers for this book's missing editions now" className="flex-none whitespace-nowrap rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{search.searching ? "Searching…" : "Search now"}</button>
       </div>
     );
   }

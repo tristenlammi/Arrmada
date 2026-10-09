@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { api, type MyBook, type MyRequest } from "../lib/api";
 import { usePoll } from "../lib/usePoll";
 import { posterThumb } from "../lib/img";
+import { formatCheckDay, notFoundYet } from "../lib/format";
 import { Link } from "react-router-dom";
 
 // MyBooks is the requester's view of the book library: every book that has a file,
@@ -180,10 +181,28 @@ function BookCard({ b }: { b: MyBook }) {
   );
 }
 
+// requestBadge is where an approved request has got to, from the server's tracking. A
+// book the searches keep missing says so rather than "Searching" forever; with no
+// tracking (the download client couldn't be read) it only claims what's certain.
+function requestBadge(r: MyRequest): { label: string; tone: string } {
+  if (r.status === "declined") return { label: "Declined", tone: "var(--reject)" };
+  if (r.status === "pending") return { label: "Pending", tone: "var(--avoid)" };
+  switch (r.stage) {
+    case "searching": return r.note === "Not found yet" ? { label: "Not found yet", tone: "var(--avoid)" } : { label: "Searching", tone: "var(--accent)" };
+    case "queued": return { label: "Starting", tone: "var(--accent)" };
+    case "downloading": return { label: "Downloading", tone: "var(--accent)" };
+    case "paused": return { label: "Paused", tone: "var(--ink-dim)" };
+    case "importing": return { label: "Importing", tone: "var(--accent)" };
+    case "failed": return { label: "Retrying", tone: "var(--avoid)" };
+    case "available": case "partial": return { label: "Ready", tone: "var(--good)" };
+    case undefined: return { label: "Approved", tone: "var(--accent)" };
+    default: return { label: "Searching", tone: "var(--accent)" };
+  }
+}
+
 function RequestCard({ r }: { r: MyRequest }) {
-  const st = r.status === "declined" ? { label: "Declined", tone: "var(--reject)" }
-    : r.status === "pending" ? { label: "Pending", tone: "var(--avoid)" }
-    : { label: "Searching", tone: "var(--accent)" };
+  const st = requestBadge(r);
+  const notFound = r.status === "approved" && r.stage === "searching" && r.note === "Not found yet";
   return (
     <div className="w-[120px] flex-none overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
       <CoverBox url={r.cover_url} title={r.title}>
@@ -192,6 +211,7 @@ function RequestCard({ r }: { r: MyRequest }) {
       <div className="p-2">
         <div className="truncate text-[11.5px] font-semibold" title={r.title}>{r.title}</div>
         {r.author && <div className="truncate text-[10.5px] text-ink-dim" title={r.author}>{r.author}</div>}
+        {notFound && <div className="mt-0.5 truncate text-[10.5px]" style={{ color: "var(--avoid)" }} title={notFoundYet(r.next_check_at)}>Next check {formatCheckDay(r.next_check_at)}</div>}
       </div>
     </div>
   );

@@ -822,6 +822,8 @@ export interface RequestTracking {
   have?: number; // series: episodes on disk
   total?: number; // series: aired episodes wanted
   note?: string;
+  /** Books not found yet: when the next search is due (RFC3339; format in the viewer's locale). */
+  next_check_at?: string;
 }
 
 // MyBook is one library book as a requester sees it: an ebook to download, an
@@ -849,6 +851,10 @@ export interface MyRequest {
   cover_url?: string;
   status: "pending" | "approved" | "declined";
   requested_at: string;
+  /** Where it has got to; absent when the download client couldn't be read. */
+  stage?: RequestStage;
+  note?: string; // "Not found yet"
+  next_check_at?: string; // RFC3339
 }
 
 export interface DiscoverCard {
@@ -1088,6 +1094,12 @@ export interface Book {
   /** Where the metadata came from, with a link to the book there. Detail endpoints only;
    *  absent when the key is from no known catalogue. */
   catalogue?: CatalogueRef;
+  /** The search ladder: when the sweep last looked (RFC3339; absent = never), how many
+   *  searches in a row found nothing, and when it looks next (absent when nothing is
+   *  wanted, it isn't monitored, or it's due now). */
+  last_search_at?: string;
+  search_misses: number;
+  next_search_at?: string;
 }
 export interface CatalogueRef {
   name: "Hardcover" | "Open Library" | "Google Books";

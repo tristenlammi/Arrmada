@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"time"
 )
 
 // ErrNotFound is returned when a book id doesn't exist.
@@ -68,6 +69,43 @@ type Book struct {
 	// by the HTTP layer for the detail page (not stored); nil when the key is from no
 	// catalogue Arrmada knows.
 	Catalogue *CatalogueRef `json:"catalogue,omitempty"`
+	// LastSearchAt / SearchMisses are where the book stands on the search ladder: when the
+	// sweep last searched it (RFC3339, UTC; "" = never) and how many searches in a row
+	// found nothing. Without them a book not found in a month looked exactly like one
+	// added a minute ago.
+	LastSearchAt string `json:"last_search_at,omitempty"`
+	SearchMisses int    `json:"search_misses"`
+	// NextSearchAt is when the sweep will look again (RFC3339, UTC), computed by
+	// FillNextSearch once the wanted editions are known. Empty when nothing is being
+	// searched for (unmonitored, or every wanted edition is here) or the book is due now.
+	NextSearchAt string `json:"next_search_at,omitempty"`
+}
+
+// LacksWanted reports whether the book is missing an edition its profile wants (per
+// WantEbook/WantAudiobook, filled from the profile) or a monitored audio version — the
+// same things the sweep searches for.
+func (b Book) LacksWanted() bool {
+	if (b.WantEbook && b.Ebook == nil) || (b.WantAudiobook && b.Audiobook == nil) {
+		return true
+	}
+	for _, v := range b.AudioVersions {
+		if v.Monitored && v.File == nil && len(v.Terms) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// FillNextSearch sets NextSearchAt from the ladder. Call after the wanted-edition flags
+// are filled.
+func (b *Book) FillNextSearch() {
+	b.NextSearchAt = ""
+	if !b.Monitored || !b.LacksWanted() {
+		return
+	}
+	if next := NextSearchAt(b.LastSearchAt, b.SearchMisses); !next.IsZero() {
+		b.NextSearchAt = next.UTC().Format(time.RFC3339)
+	}
 }
 
 // SearchState returns when the missing-books sweep last searched for this book and how
@@ -137,7 +175,8 @@ func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 const cols = `id, ol_key, title, author, year, cover_url, description, subjects_json,
 	monitored, quality_profile, added_at, series_name, series_position, series_key, keep_catalogue,
 	ebook_path, ebook_format, ebook_size, ebook_files,
-	audiobook_path, audiobook_format, audiobook_size, audiobook_files`
+	audiobook_path, audiobook_format, audiobook_size, audiobook_files,
+	last_search_at, search_misses`
 
 func scan(row interface{ Scan(...any) error }) (Book, error) {
 	var (
@@ -150,12 +189,17 @@ func scan(row interface{ Scan(...any) error }) (Book, error) {
 		abPath, abFmt string
 		abSize        int64
 		abFiles       int
+		lastSearch    sql.NullString
 	)
 	err := row.Scan(&b.ID, &b.OLKey, &b.Title, &b.Author, &b.Year, &b.CoverURL, &b.Description,
 		&subjectsJSON, &mon, &b.QualityProfile, &b.AddedAt, &b.SeriesName, &b.SeriesPosition, &b.SeriesKey, &keep,
-		&ebPath, &ebFmt, &ebSize, &ebFiles, &abPath, &abFmt, &abSize, &abFiles)
+		&ebPath, &ebFmt, &ebSize, &ebFiles, &abPath, &abFmt, &abSize, &abFiles,
+		&lastSearch, &b.SearchMisses)
 	if err != nil {
 		return Book{}, err
+	}
+	if t := parseStamp(lastSearch.String); !t.IsZero() {
+		b.LastSearchAt = t.Format(time.RFC3339)
 	}
 	b.Monitored = mon != 0
 	b.KeepCatalogue = keep != 0

@@ -33,6 +33,10 @@ type Tracking struct {
 	Have       int     `json:"have,omitempty"`        // series: episodes on disk
 	Total      int     `json:"total,omitempty"`       // series: aired episodes wanted
 	Note       string  `json:"note,omitempty"`        // a short explanation ("Not out yet")
+	// NextCheckAt is when a book that hasn't been found yet will be searched for again
+	// (RFC3339, UTC). The page formats it in the viewer's own locale; the server never
+	// writes a date into the copy.
+	NextCheckAt string `json:"next_check_at,omitempty"`
 }
 
 // startingWindow is how long a grab with no download in the client yet still counts as
@@ -141,8 +145,14 @@ func (s *Service) track(ctx context.Context, rq *Request, byHash, byName map[str
 		return t
 	default:
 		t.Stage = StageSearching
-		if !rq.released {
+		switch {
+		case !rq.released:
 			t.Note = "Not out yet"
+		case rq.MediaType == "book" && rq.searchMisses > 0:
+			// Searched and not found, as opposed to just added: say so, and when the
+			// next look is, instead of an open-ended "Searching".
+			t.Note = "Not found yet"
+			t.NextCheckAt = rq.nextCheckAt
 		}
 		return t
 	}
