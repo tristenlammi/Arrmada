@@ -4,7 +4,7 @@ import { PageHeader } from "../components/PageHeader";
 import { api, type CalendarItem } from "../lib/api";
 
 // Calendar — upcoming episodes and movie releases as a month grid. Visible to everyone
-// (staff and requesters), under Services. Items link to their detail page only when the
+// (staff and requesters), under Library. Items link to their detail page only when the
 // viewer has access (chrome = full app); requesters see the schedule without links.
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -45,7 +45,7 @@ export function Calendar({ chrome = true }: { chrome?: boolean }) {
 
   return (
     <>
-      {chrome && <PageHeader title="Calendar" crumb="Services / Calendar" />}
+      {chrome && <PageHeader title="Calendar" />}
       <div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">

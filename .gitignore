@@ -16,6 +16,7 @@
 # Node / frontend
 /web/node_modules/
 /web/dist/
+/web/bundle-stats.html
 *.local
 
 # Runtime data (config, db, logs, backups)

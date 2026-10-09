@@ -114,7 +114,7 @@ export function SeriesDetail() {
 
   return (
     <>
-      <PageHeader title={s.title} crumb="Library / Series" />
+      <PageHeader title={s.title} />
 
       {/* Hero band with backdrop — mirrors the Movie detail layout */}
       <div className="relative">
@@ -743,7 +743,7 @@ function HistoryPanel({ seriesId, refreshKey }: { seriesId: number; refreshKey: 
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
-  return <><PageHeader title="Series" crumb="Library / Series" /><div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6">{children}</div></>;
+  return <><PageHeader title="Series" /><div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6">{children}</div></>;
 }
 
 // SeriesBlocklistPanel mirrors the movie blocklist: releases rejected via Replace/stall-failover,

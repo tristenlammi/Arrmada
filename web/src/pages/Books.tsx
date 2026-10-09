@@ -232,7 +232,7 @@ export function Books() {
 
   return (
     <>
-      <PageHeader title="Books" crumb="Library / Books" />
+      <PageHeader title="Books" />
       <div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex items-center justify-between gap-3">
           <span className="font-mono text-[11px] text-ink-faint">{list.length} in library</span>

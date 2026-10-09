@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
-import { NAV } from "../lib/nav";
+import { visibleNav } from "../lib/nav";
 import { useMe, isAdmin } from "../lib/me";
 import { api } from "../lib/api";
 import { FleetMark } from "./FleetMark";
+import { Icon } from "./icons";
 
 function toggleTheme() {
   const root = document.documentElement;
@@ -29,12 +30,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   };
   // Hide nav entries for modules an admin has turned off, and admin-only pages (Logs)
   // from managers.
-  const admin = isAdmin(user);
-  const nav = NAV.map((group) => ({
-    ...group,
-    items: group.items.filter((item) =>
-      (booksEnabled || item.to !== "/books") && (musicEnabled || item.to !== "/music") && (admin || !item.adminOnly)),
-  }));
+  const nav = visibleNav({ admin: isAdmin(user), booksEnabled, musicEnabled });
   return (
     <>
       {/* Dim + click-to-close backdrop, only while the drawer is open on narrow windows. */}
@@ -77,16 +73,17 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                       : { color: "var(--ink-dim)" }
                   }
                 >
+                  <Icon name={item.icon} className="flex-none" />
                   {item.label}
-                  {item.badge && (
+                  {item.tag && (
                     <span
                       className="ml-auto rounded-full px-1.5 py-px font-mono text-[10.5px] uppercase"
                       style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}
                     >
-                      {item.badge}
+                      {item.tag}
                     </span>
                   )}
-                  {item.to === "/audiobooks" && audioDot && (
+                  {item.status === "audiobook-server" && audioDot && (
                     <span className="ml-auto h-1.5 w-1.5 rounded-full" style={{ background: audioDot }} title={audioDot === "var(--good)" ? "Running" : "Switched on but not running"} />
                   )}
                 </NavLink>

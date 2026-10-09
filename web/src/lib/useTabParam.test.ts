@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { pickTab } from "./useTabParam";
+import { pickTab, withTab } from "./useTabParam";
 
 describe("pickTab", () => {
   const tabs = ["media", "library"] as const;
@@ -16,5 +16,29 @@ describe("pickTab", () => {
   it("falls back for a tab this viewer isn't offered", () => {
     // A manager's Settings offers only media and library, so a link to System lands on Media.
     expect(pickTab("system", tabs, "media")).toBe("media");
+  });
+});
+
+describe("withTab", () => {
+  it("writes a tab other than the default", () => {
+    expect(withTab(new URLSearchParams(""), "tab", "graphs", "activity").toString()).toBe("tab=graphs");
+  });
+
+  it("leaves the default out of the address", () => {
+    expect(withTab(new URLSearchParams("tab=graphs"), "tab", "activity", "activity").toString()).toBe("");
+  });
+
+  it("keeps the page's other params", () => {
+    expect(withTab(new URLSearchParams("q=dune&tab=movies"), "tab", "series", "discover").toString()).toBe("q=dune&tab=series");
+  });
+
+  it("uses the page's own key", () => {
+    expect(withTab(new URLSearchParams("tab=x"), "media", "music", "movie").toString()).toBe("tab=x&media=music");
+  });
+
+  it("doesn't change the params it was given", () => {
+    const p = new URLSearchParams("tab=graphs");
+    withTab(p, "tab", "users", "activity");
+    expect(p.toString()).toBe("tab=graphs");
   });
 });

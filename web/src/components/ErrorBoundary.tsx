@@ -45,7 +45,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 }
 
-function ErrorCard({ error }: { error: Error }) {
+export function ErrorCard({ error }: { error: Error }) {
   return (
     <div className="grid min-h-full place-items-center px-5 py-10">
       <div role="alert" className="w-full max-w-[520px] rounded-2xl border border-line bg-panel p-5 shadow-panel">

@@ -1,9 +1,11 @@
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { FleetMark } from "./FleetMark";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { PageSkeleton } from "./PageSkeleton";
 import { useMe } from "../lib/me";
 import { api } from "../lib/api";
+import { useDocumentTitle } from "../lib/title";
 
 // UserLayout is the requester-facing shell: no nav menu, just a slim branded top bar
 // over Discover, Calendar, Books and Audiobooks. This is what installs as the PWA on phones.
@@ -11,6 +13,7 @@ export function UserLayout() {
   const { user, external, booksEnabled } = useMe();
   const [menu, setMenu] = useState(false);
   const { pathname } = useLocation();
+  useDocumentTitle();
   // Outside sessions get no Calendar (the /calendar route isn't mounted or
   // allowlisted for them) — don't show a link that silently bounces. "Your books"
   // is the exception: its two endpoints are allowlisted, so a requester can pick up
@@ -61,7 +64,9 @@ export function UserLayout() {
       <main className="min-w-0 flex-1 overflow-y-auto">
         {/* Keyed by path so navigating away from a broken page recovers. */}
         <ErrorBoundary resetKey={pathname}>
-          <Outlet />
+          <Suspense fallback={<PageSkeleton />}>
+            <Outlet />
+          </Suspense>
         </ErrorBoundary>
       </main>
     </div>

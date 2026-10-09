@@ -41,7 +41,7 @@ export function BookDetail() {
 
   return (
     <>
-      <PageHeader title={b.title} crumb="Library / Books" />
+      <PageHeader title={b.title} />
       <div className="relative">
         {b.cover_url && (
           <>
@@ -527,7 +527,7 @@ function DeleteButton({ book }: { book: Book }) {
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
-  return <><PageHeader title="Books" crumb="Library / Books" /><div className="mx-auto w-full max-w-[1100px] px-4 py-6 sm:px-6">{children}</div></>;
+  return <><PageHeader title="Books" /><div className="mx-auto w-full max-w-[1100px] px-4 py-6 sm:px-6">{children}</div></>;
 }
 
 // EditMetadataModal lets a user manually correct a book's title/author/year/cover/overview when

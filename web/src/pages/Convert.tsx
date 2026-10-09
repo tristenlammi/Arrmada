@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { useTabParam } from "../lib/useTabParam";
+import { TabPanel, Tabs } from "../ui/Tabs";
 import { LINKS } from "../lib/links";
 import { RescanButton, ago } from "../components/RescanButton";
 import { useMe, isAdmin } from "../lib/me";
@@ -146,7 +147,7 @@ export function Convert() {
 
   return (
     <>
-      <PageHeader title="Convert" crumb="Services / Convert" />
+      <PageHeader title="Convert" />
       <div className="mx-auto w-full max-w-[1240px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
           <p className="max-w-[66ch] text-[12.5px] text-ink-dim">
@@ -163,28 +164,20 @@ export function Convert() {
           )}
         </div>
 
-        <div className="mb-5 flex gap-1 overflow-x-auto border-b" style={{ borderColor: "var(--line)" }}>
-          {TABS.map((t) => {
-            const active = tab === t.key;
-            return (
-              <button key={t.key} onClick={() => setTab(t.key)} className="relative flex-none px-4 py-2.5 text-[13.5px] font-semibold transition-colors" style={{ color: active ? "var(--ink)" : "var(--ink-faint)" }}>
-                {t.label}
-                {active && <span className="absolute inset-x-2 bottom-0 h-[2px] rounded-full" style={{ background: "var(--accent)" }} />}
-              </button>
-            );
-          })}
-        </div>
+        <Tabs tabs={TABS} value={tab} onChange={setTab} idPrefix="convert" label="Convert sections" />
 
-        {tab === "overview" && <Overview status={status} jobs={jobs} stats={stats} hw={hw} originals={originals} flash={flash} onChanged={refresh} onRescan={rescanLibrary} onShowProblems={() => setTab("problems")} />}
-        {tab === "library" && <Library flash={flash} onRequested={refresh} onRescan={rescanLibrary} onCompare={setCompareKey} running={jobs} reload={libReload} originals={originals} />}
-        {tab === "problems" && <Problems flash={flash} />}
-        {tab === "activity" && (
-          <div className="flex flex-col gap-3.5">
-            <HistoryLedger reload={jobs.filter((j) => !ACTIVE.has(j.state)).length} />
-            <LogsConsole />
-          </div>
-        )}
-        {tab === "settings" && <SettingsPanel flash={flash} onSaved={(s) => { setSettings(s); refresh(); loadHw(); }} />}
+        <TabPanel idPrefix="convert" value={tab}>
+          {tab === "overview" && <Overview status={status} jobs={jobs} stats={stats} hw={hw} originals={originals} flash={flash} onChanged={refresh} onRescan={rescanLibrary} onShowProblems={() => setTab("problems")} />}
+          {tab === "library" && <Library flash={flash} onRequested={refresh} onRescan={rescanLibrary} onCompare={setCompareKey} running={jobs} reload={libReload} originals={originals} />}
+          {tab === "problems" && <Problems flash={flash} />}
+          {tab === "activity" && (
+            <div className="flex flex-col gap-3.5">
+              <HistoryLedger reload={jobs.filter((j) => !ACTIVE.has(j.state)).length} />
+              <LogsConsole />
+            </div>
+          )}
+          {tab === "settings" && <SettingsPanel flash={flash} onSaved={(s) => { setSettings(s); refresh(); loadHw(); }} />}
+        </TabPanel>
       </div>
       {compareKey && <CompareModal itemKey={compareKey} onClose={() => { setCompareKey(null); setLibReload((n) => n + 1); }} flash={flash} />}
       {toast && <div role="status" aria-live="polite" className="fixed bottom-5 left-1/2 z-[60] -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}

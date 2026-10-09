@@ -82,7 +82,7 @@ export function MovieDetail() {
   if (notFound) {
     return (
       <>
-        <PageHeader title="Movie" crumb="Library / Movies" />
+        <PageHeader title="Movie" />
         <div className="mx-auto w-full max-w-[900px] px-6 py-10 text-center text-[13px] text-ink-dim">
           That movie isn't in your library.{" "}
           <Link to="/movies" className="underline" style={{ color: "var(--accent)" }}>Back to Movies</Link>
@@ -94,7 +94,7 @@ export function MovieDetail() {
   if (!movie) {
     return (
       <>
-        <PageHeader title="Movie" crumb="Library / Movies" />
+        <PageHeader title="Movie" />
         <div className="mx-auto w-full max-w-[900px] px-6 py-10 text-[13px] text-ink-dim">
           {error ? <span style={{ color: "var(--reject)" }}>{error}</span> : "Loading…"}
         </div>
@@ -107,7 +107,7 @@ export function MovieDetail() {
 
   return (
     <>
-      <PageHeader title={movie.title} crumb="Library / Movies" />
+      <PageHeader title={movie.title} />
 
       {/* Hero band with backdrop */}
       <div className="relative">

@@ -9,7 +9,7 @@ export function NotFound() {
   const btn = "rounded-lg px-3.5 py-2 text-[12.5px] font-semibold";
   return (
     <>
-      <PageHeader title="Page not found" />
+      <PageHeader title="Page not found" crumb={null} />
       <div className="mx-auto grid w-full max-w-[900px] place-items-center px-6 py-24">
         <div className="max-w-[380px] text-center">
           <div className="mx-auto mb-4 grid h-11 w-11 place-items-center rounded-xl" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>

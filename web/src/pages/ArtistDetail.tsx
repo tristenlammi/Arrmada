@@ -73,7 +73,7 @@ export function ArtistDetail() {
 
   return (
     <>
-      <PageHeader title={a.name} crumb="Library / Music" />
+      <PageHeader title={a.name} />
       <div className="mx-auto w-full max-w-[1100px] px-4 py-6 sm:px-6">
         <Link to="/music" className="mb-4 inline-flex items-center gap-1 text-[12px] text-ink-dim hover:text-[var(--ink)]">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
@@ -302,7 +302,7 @@ function HistoryPanel({ artistId, refreshKey }: { artistId: number; refreshKey: 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
     <>
-      <PageHeader title="Music" crumb="Library / Music" />
+      <PageHeader title="Music" />
       <div className="mx-auto w-full max-w-[1100px] px-4 py-6 sm:px-6">{children}</div>
     </>
   );

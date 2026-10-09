@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { useTabParam } from "../lib/useTabParam";
+import { rovingTarget } from "../ui/Tabs";
 import {
   api,
   type Evaluation,
@@ -27,7 +29,9 @@ const MEDIA_TABS = [
   { key: "series", label: "Series" },
   { key: "book", label: "Books" },
   { key: "music", label: "Music" },
-];
+] as const;
+type Media = (typeof MEDIA_TABS)[number]["key"];
+const MEDIA_KEYS: readonly Media[] = MEDIA_TABS.map((t) => t.key);
 
 const RESOLUTIONS = [
   { v: "2160p", l: "4K" },
@@ -217,7 +221,8 @@ const primaryStyle = { background: "linear-gradient(150deg, var(--accent), var(-
 // =====================================================================================
 
 export function Quality() {
-  const [media, setMedia] = useState("movie");
+  // ?media= keeps the media you were looking at across a reload, Back and a bookmark.
+  const [media, setMedia] = useTabParam(MEDIA_KEYS, "movie", "media");
   const [profiles, setProfiles] = useState<QualityProfileInfo[]>([]);
   const [formats, setFormats] = useState<FormatInfo[]>([]);
   const [ladder, setLadder] = useState<string[]>([]);
@@ -270,10 +275,10 @@ export function Quality() {
 
   return (
     <>
-      <PageHeader title="Quality profiles" crumb="System / Quality" />
+      <PageHeader title="Quality profiles" />
       <div className="mx-auto w-full max-w-[1200px] px-4 py-6 sm:px-6">
         <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
-          <Tabs value={media} onChange={setMedia} />
+          <MediaSwitch value={media} onChange={setMedia} />
           <button onClick={openNew} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold" style={primaryStyle}>+ New profile</button>
         </div>
 
@@ -315,13 +320,23 @@ export function Quality() {
   );
 }
 
-function Tabs({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+// MediaSwitch is a segmented control rather than the underline tab bar, but it behaves
+// like tabs for the keyboard and screen readers: arrows, Home and End move and select.
+function MediaSwitch({ value, onChange }: { value: Media; onChange: (v: Media) => void }) {
+  const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  const onKeyDown = (e: React.KeyboardEvent, i: number) => {
+    const to = rovingTarget(e.key, i, MEDIA_TABS.length);
+    if (to === null) return;
+    e.preventDefault();
+    refs.current[to]?.focus();
+    onChange(MEDIA_TABS[to].key);
+  };
   return (
-    <div className="inline-flex rounded-lg p-1" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
-      {MEDIA_TABS.map((t) => {
+    <div role="tablist" aria-label="Profiles for" className="inline-flex rounded-lg p-1" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+      {MEDIA_TABS.map((t, i) => {
         const active = t.key === value;
         return (
-          <button key={t.key} onClick={() => onChange(t.key)} className="rounded-md px-3 py-1.5 text-[12px] font-semibold transition-colors" style={{ background: active ? "var(--accent)" : "transparent", color: active ? "var(--accent-ink)" : "var(--ink-dim)" }}>
+          <button key={t.key} ref={(el) => { refs.current[i] = el; }} type="button" role="tab" aria-selected={active} tabIndex={active ? 0 : -1} onClick={() => onChange(t.key)} onKeyDown={(e) => onKeyDown(e, i)} className="rounded-md px-3 py-1.5 text-[12px] font-semibold transition-colors" style={{ background: active ? "var(--accent)" : "transparent", color: active ? "var(--accent-ink)" : "var(--ink-dim)" }}>
             {t.label}
           </button>
         );
@@ -547,7 +562,7 @@ function VideoBuilder({ formats, initial, onCancel, onSaved }: { formats: Format
 
   return (
     <>
-      <PageHeader title={sp.id > 0 ? "Edit profile" : "New profile"} crumb={`System / Quality / ${sp.media_type === "series" ? "Series" : "Movies"}`} />
+      <PageHeader title={sp.id > 0 ? "Edit profile" : "New profile"} tail={sp.media_type === "series" ? "Series" : "Movies"} />
       <div className="mx-auto grid w-full max-w-[1240px] grid-cols-1 gap-7 px-4 pb-4 pt-6 sm:px-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)]">
         <section className="min-w-0">
           <div className="mb-4">
@@ -1234,7 +1249,7 @@ function MusicBuilder({ initial, ladder, presets, onCancel, onSaved }: { initial
 
   return (
     <>
-      <PageHeader title={sp.id > 0 ? "Edit music profile" : "New music profile"} crumb="System / Quality / Music" />
+      <PageHeader title={sp.id > 0 ? "Edit music profile" : "New music profile"} tail="Music" />
       <div className="mx-auto w-full max-w-[720px] px-4 pb-4 pt-6 sm:px-6">
         <div className="mb-4"><button onClick={leave} className="text-[12px] text-ink-dim hover:text-[var(--ink)]">← Back</button></div>
         <label htmlFor="mp-name" className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-wide text-accent">Name</label>
@@ -1329,7 +1344,7 @@ function BookBuilder({ initial, onCancel, onSaved }: { initial: StoredProfile; o
 
   return (
     <>
-      <PageHeader title={sp.id > 0 ? "Edit book profile" : "New book profile"} crumb="System / Quality / Books" />
+      <PageHeader title={sp.id > 0 ? "Edit book profile" : "New book profile"} tail="Books" />
       <div className="mx-auto w-full max-w-[720px] px-4 pb-4 pt-6 sm:px-6">
         <div className="mb-4"><button onClick={leave} className="text-[12px] text-ink-dim hover:text-[var(--ink)]">← Back</button></div>
         <label htmlFor="bp-name" className="mb-1.5 block font-mono text-[10px] font-bold uppercase tracking-wide text-accent">Name</label>

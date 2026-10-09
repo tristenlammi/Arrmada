@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { useTabParam } from "../lib/useTabParam";
+import { TabPanel, Tabs, type TabItem } from "../ui/Tabs";
 import { LINKS } from "../lib/links";
 import { RemoveDownloadDialog, removedMessage } from "../components/RemoveDownloadDialog";
 import { api, type ActivityDownload, type ClientSettings, type DiskGuardHold, type SearchingItem } from "../lib/api";
@@ -179,7 +180,7 @@ export function Downloads() {
   const base = tab === "seeding" ? seedingDownloads : activeDownloads;
   const typeCount = (k: MediaFilter) => (k === "all" ? base.length : base.filter((d) => (d.media_type ?? "movie") === k).length);
 
-  const TABS: { key: Tab; label: string; count: number }[] = [
+  const TABS: TabItem<Tab>[] = [
     { key: "downloads", label: "Downloads", count: activeDownloads.length },
     { key: "seeding", label: "Seeding", count: seedingDownloads.length },
     { key: "searching", label: "Searching", count: searching.length },
@@ -189,7 +190,7 @@ export function Downloads() {
 
   return (
     <>
-      <PageHeader title="Downloads" crumb="Transfers" />
+      <PageHeader title="Downloads" />
       <div className="mx-auto w-full max-w-[1360px] px-4 py-6 sm:px-6">
         {/* Header: live totals + free disk + controls */}
         <div className="mb-4 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-xl px-4 py-2.5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
@@ -219,75 +220,67 @@ export function Downloads() {
           </div>
         )}
 
-        {/* Tabs */}
-        <div className="mb-4 flex flex-wrap gap-1 border-b" style={{ borderColor: "var(--line)" }}>
-          {TABS.map((t) => {
-            const on = tab === t.key;
-            return (
-              <button key={t.key} onClick={() => setTab(t.key)} className="relative -mb-px rounded-t-lg px-3.5 py-2 text-[12.5px] font-semibold transition-colors" style={{ color: on ? "var(--accent)" : "var(--ink-faint)", borderBottom: `2px solid ${on ? "var(--accent)" : "transparent"}` }}>
-                {t.label} <span className="ml-0.5 rounded px-1.5 py-0.5 font-mono text-[10px]" style={{ background: on ? "var(--accent-soft)" : "var(--panel-2)", color: on ? "var(--accent)" : "var(--ink-faint)" }}>{t.count}</span>
-              </button>
-            );
-          })}
-        </div>
+        <Tabs tabs={TABS} value={tab} onChange={setTab} idPrefix="downloads" label="Downloads lists" className="mb-4 border-b" />
 
-        {/* Filters: type pills (download tabs only) + search + sort */}
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          {isDownloadTab && TYPE_PILLS.filter((p) => p.key !== "music" || musicEnabled).map((p) => {
-            const on = typeFilter === p.key;
-            return (
-              <button key={p.key} onClick={() => setTypeFilter(p.key)} className="rounded-full px-3 py-1 text-[12px] font-semibold" style={{ border: `1px solid ${on ? "var(--accent)" : "var(--line)"}`, background: on ? "var(--accent-soft)" : "var(--panel)", color: on ? "var(--accent)" : "var(--ink-faint)" }}>
-                {p.label} <span className="font-mono text-[10.5px] opacity-70">{typeCount(p.key)}</span>
-              </button>
-            );
-          })}
-          <div className="ml-auto flex items-center gap-2">
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search…" className="w-[200px] rounded-lg px-3 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
-            {tab === "downloads" && (
-              <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} className="rounded-lg px-2.5 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
-                <option value="progress">Sort: Progress</option>
-                <option value="name">Sort: Name</option>
-                <option value="speed">Sort: Speed</option>
-                <option value="size">Sort: Size</option>
-              </select>
-            )}
-            {tab === "seeding" && (
-              <select value={seedSort} onChange={(e) => setSeedSort(e.target.value as SortKey)} className="rounded-lg px-2.5 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
-                <option value="ratio">Sort: Ratio</option>
-                <option value="seedtime">Sort: Seed time</option>
-                <option value="name">Sort: Name</option>
-                <option value="size">Sort: Size</option>
-              </select>
-            )}
+        <TabPanel idPrefix="downloads" value={tab}>
+          {/* Filters: type pills (download tabs only) + search + sort */}
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            {isDownloadTab && TYPE_PILLS.filter((p) => p.key !== "music" || musicEnabled).map((p) => {
+              const on = typeFilter === p.key;
+              return (
+                <button key={p.key} onClick={() => setTypeFilter(p.key)} className="rounded-full px-3 py-1 text-[12px] font-semibold" style={{ border: `1px solid ${on ? "var(--accent)" : "var(--line)"}`, background: on ? "var(--accent-soft)" : "var(--panel)", color: on ? "var(--accent)" : "var(--ink-faint)" }}>
+                  {p.label} <span className="font-mono text-[10.5px] opacity-70">{typeCount(p.key)}</span>
+                </button>
+              );
+            })}
+            <div className="ml-auto flex items-center gap-2">
+              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search…" className="w-[200px] rounded-lg px-3 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }} />
+              {tab === "downloads" && (
+                <select value={sort} onChange={(e) => setSort(e.target.value as SortKey)} className="rounded-lg px-2.5 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
+                  <option value="progress">Sort: Progress</option>
+                  <option value="name">Sort: Name</option>
+                  <option value="speed">Sort: Speed</option>
+                  <option value="size">Sort: Size</option>
+                </select>
+              )}
+              {tab === "seeding" && (
+                <select value={seedSort} onChange={(e) => setSeedSort(e.target.value as SortKey)} className="rounded-lg px-2.5 py-1.5 text-[12px]" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
+                  <option value="ratio">Sort: Ratio</option>
+                  <option value="seedtime">Sort: Seed time</option>
+                  <option value="name">Sort: Name</option>
+                  <option value="size">Sort: Size</option>
+                </select>
+              )}
+            </div>
           </div>
-        </div>
 
-        {!loaded ? null : tab === "downloads" ? (
-          shownDownloads.length === 0 ? <Empty>Nothing downloading. Grab a release and it'll appear here.</Empty> : (
-            <div className="flex flex-col gap-2">
-              {shownDownloads.map((it) => <DownloadCard key={it.hash} it={it} guard={guard} busy={!!busy[it.hash]} act={act} onRemoved={flash} />)}
-            </div>
-          )
-        ) : tab === "seeding" ? (
-          shownSeeding.length === 0 ? <Empty>Nothing seeding right now.</Empty> : (
-            <div className="flex flex-col gap-2">
-              <SeedingSummary items={shownSeeding} />
-              {shownSeeding.map((it) => <SeedingCard key={it.hash} it={it} guard={guard} busy={!!busy[it.hash]} act={act} onRemoved={flash} />)}
-            </div>
-          )
-        ) : tab === "searching" ? (
-          shownSearching.length === 0 ? <Empty>Nothing is being searched. Monitored, available titles that are missing a file show up here.</Empty> : (
-            <div className="overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)" }}>
-              {shownSearching.map((s) => <AcqRow key={acqKey(s)} item={s} kind="searching" />)}
-            </div>
-          )
-        ) : (
-          shownUpcoming.length === 0 ? <Empty>Nothing upcoming. Unreleased films and unaired episodes you monitor land here.</Empty> : (
-            <div className="overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)" }}>
-              {shownUpcoming.map((s) => <AcqRow key={acqKey(s)} item={s} kind="upcoming" />)}
-            </div>
-          )
-        )}
+          {!loaded ? null : tab === "downloads" ? (
+            shownDownloads.length === 0 ? <Empty>Nothing downloading. Grab a release and it'll appear here.</Empty> : (
+              <div className="flex flex-col gap-2">
+                {shownDownloads.map((it) => <DownloadCard key={it.hash} it={it} guard={guard} busy={!!busy[it.hash]} act={act} onRemoved={flash} />)}
+              </div>
+            )
+          ) : tab === "seeding" ? (
+            shownSeeding.length === 0 ? <Empty>Nothing seeding right now.</Empty> : (
+              <div className="flex flex-col gap-2">
+                <SeedingSummary items={shownSeeding} />
+                {shownSeeding.map((it) => <SeedingCard key={it.hash} it={it} guard={guard} busy={!!busy[it.hash]} act={act} onRemoved={flash} />)}
+              </div>
+            )
+          ) : tab === "searching" ? (
+            shownSearching.length === 0 ? <Empty>Nothing is being searched. Monitored, available titles that are missing a file show up here.</Empty> : (
+              <div className="overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)" }}>
+                {shownSearching.map((s) => <AcqRow key={acqKey(s)} item={s} kind="searching" />)}
+              </div>
+            )
+          ) : (
+            shownUpcoming.length === 0 ? <Empty>Nothing upcoming. Unreleased films and unaired episodes you monitor land here.</Empty> : (
+              <div className="overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)" }}>
+                {shownUpcoming.map((s) => <AcqRow key={acqKey(s)} item={s} kind="upcoming" />)}
+              </div>
+            )
+          )}
+        </TabPanel>
       </div>
       {toast && <div className="fixed bottom-5 left-1/2 max-w-[90vw] -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
     </>

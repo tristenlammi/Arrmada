@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { useTabParam } from "../lib/useTabParam";
+import { TabPanel, Tabs } from "../ui/Tabs";
 import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs, type Reliability, type BufferGroup, type NotificationConn } from "../lib/api";
 
 // Insights — Arrmada's Plex watch monitoring (a Tautulli replacement): live Activity, History,
@@ -27,7 +28,7 @@ export function Insights() {
 
   return (
     <>
-      <PageHeader title="Insights" crumb="Services / Insights" />
+      <PageHeader title="Insights" />
       <div className="mx-auto w-full max-w-[1240px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
           <p className="max-w-[64ch] text-[12.5px] text-ink-dim">Watch monitoring for your Plex server — who's streaming what, right now and historically, with stream quality, transcode diagnostics and buffering reliability.
@@ -39,36 +40,27 @@ export function Insights() {
           </span>
         </div>
 
-        {/* Tabs */}
-        <div className="mb-5 flex gap-1 border-b" style={{ borderColor: "var(--line)" }}>
-          {TABS.map((t) => {
-            const active = tab === t.key;
-            return (
-              <button key={t.key} onClick={() => setTab(t.key)} className="relative px-4 py-2.5 text-[13.5px] font-semibold transition-colors" style={{ color: active ? "var(--ink)" : "var(--ink-faint)" }}>
-                {t.label}
-                {active && <span className="absolute inset-x-2 -bottom-px h-[2px] rounded-full" style={{ background: "var(--accent)" }} />}
-              </button>
-            );
-          })}
-        </div>
+        <Tabs tabs={TABS} value={tab} onChange={setTab} idPrefix="insights" label="Insights sections" />
 
-        {tab === "settings" ? (
-          <PlexSettings cfg={cfg} onSaved={setCfg} flash={flash} />
-        ) : tab === "activity" ? (
-          <ActivityView connected={!!connected} onConfigure={() => setTab("settings")} />
-        ) : tab === "history" ? (
-          <HistoryView connected={!!connected} onConfigure={() => setTab("settings")} />
-        ) : tab === "users" ? (
-          <UsersView connected={!!connected} onConfigure={() => setTab("settings")} />
-        ) : tab === "graphs" ? (
-          <GraphsView connected={!!connected} onConfigure={() => setTab("settings")} />
-        ) : tab === "reliability" ? (
-          <ReliabilityView connected={!!connected} onConfigure={() => setTab("settings")} />
-        ) : tab === "notifications" ? (
-          <NotificationsView flash={flash} />
-        ) : (
-          <ConnectPlex tab={tab} connected={!!connected} onConfigure={() => setTab("settings")} />
-        )}
+        <TabPanel idPrefix="insights" value={tab}>
+          {tab === "settings" ? (
+            <PlexSettings cfg={cfg} onSaved={setCfg} flash={flash} />
+          ) : tab === "activity" ? (
+            <ActivityView connected={!!connected} onConfigure={() => setTab("settings")} />
+          ) : tab === "history" ? (
+            <HistoryView connected={!!connected} onConfigure={() => setTab("settings")} />
+          ) : tab === "users" ? (
+            <UsersView connected={!!connected} onConfigure={() => setTab("settings")} />
+          ) : tab === "graphs" ? (
+            <GraphsView connected={!!connected} onConfigure={() => setTab("settings")} />
+          ) : tab === "reliability" ? (
+            <ReliabilityView connected={!!connected} onConfigure={() => setTab("settings")} />
+          ) : tab === "notifications" ? (
+            <NotificationsView flash={flash} />
+          ) : (
+            <ConnectPlex tab={tab} connected={!!connected} onConfigure={() => setTab("settings")} />
+          )}
+        </TabPanel>
       </div>
       {toast && <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>{toast}</div>}
     </>
