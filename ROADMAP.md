@@ -581,6 +581,8 @@ Most of this phase is S tasks with no prerequisites, so it moves fast.
 
 ### Phase 4 — Acquisition you can trust
 
+> **Status: shipped 2026-10-09** — all 35 tasks merged to main (full race suite, lint, frontend tests, typecheck, build within the size budget and Playwright e2e green; checked in a local instance). Built as 9 worktree lanes: indexer health, clients & keys, grab lifecycle & review, downloads & release tokens, TV quality, upgrade facts, profile controls, series monitoring, books & title normaliser. Owner to confirm: the leaner series bitrate windows in the new-profile templates (2160p 10–30, 1080p 3–12, 720p 2–6 Mb/s).
+
 **Theme:** Integration health, the grab lifecycle, Review/Block/Blocklist, quality that honours the profile on TV, no surprise re-downloads, series metadata and monitoring, book RSS  
 **Goal:** Arrmada grabs what the profile promises, notices when an integration is broken, and every Review, Block and Blocklist action does what it says. Secrets stop reaching the browser: SEC-07's opaque release tokens land on top of ACQ-09's grab lifecycle. Converted files are never re-grabbed.  
 **Why now:** With the safety net and building blocks in place, acquisition correctness has the largest daily impact on the owner. QUAL's TV and upgrade fixes must come before any further upgrade or ranking work. ACQ-09 must exist before SEC-07 and ACQ-24 can carry release tokens. Requests 2.0's season-aware monitoring needs SER-08/SER-10. The integration status store (INT-01) feeds ACQ-14's failed-indexer banner in Phase 5.  

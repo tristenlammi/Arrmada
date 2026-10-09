@@ -393,7 +393,7 @@ Rare content with one intermittent seeder loses its only release even when no al
   - **Risk:** This turns on automated removal for every existing profile. It's acceptable only because ACQ-05 removes a torrent solely when it has a replacement, the clock holds while paused, queued, checking or guard-held, and fail-overs are capped at 3 per tick. Grabs whose torrents were deleted by hand long ago fail over after the upgrade: that's expected and capped. A restart resets the in-memory samples (one extra window) until ACQ-24.
   - **Resolves:** ops-3, quality-9
 <a id="acq-07"></a>
-- [ ] **ACQ-07 · Downloads shows Stalled / Fetching metadata / Queued with idle time, and exposes Reannounce and Recheck** — `P1` · `S` · Phase 4
+- [x] **ACQ-07 · Downloads shows Stalled / Fetching metadata / Queued with idle time, and exposes Reannounce and Recheck** — `P1` · `S` · Phase 4
   - **Problem:** A torrent with no peers shows a blue 'downloading' chip with '—' speed and 'ETA ∞'. Recheck and reannounce are allowed server-side (downloads.go:11) and typed in api.ts, but no UI uses them. The Dashboard Downloading tile only warns on errors and never shows stalled torrents. This is the UI half of ops.t4, plus ops.t5's stall line on the card.
   - **Approach:** 1. Downloads.tsx DownloadCard:
        - The chip follows the phase from [ACQ-04](#acq-04): 'Fetching metadata', 'Queued', 'Stalled · 0 seeds · no data for 3h' (from seeds and last_activity), 'Checking', 'Moving', 'Error'. Stalled and error use the avoid tone; plain 'Downloading' only for phase downloading.
@@ -412,7 +412,7 @@ Rare content with one intermittent seeder loses its only release even when no al
   - **Risk:** Low. The card already crowds on phones; the ⋯ menu reduces that, and ACQ-29 finishes the mobile layout.
   - **Resolves:** ops-3
 <a id="acq-08"></a>
-- [ ] **ACQ-08 · A dead or slow TV torrent only blocks its own seasons, not every search for the show** — `P1` · `M` · Phase 4
+- [x] **ACQ-08 · A dead or slow TV torrent only blocks its own seasons, not every search for the show** — `P1` · `M` · Phase 4
   - **Problem:** seriesInFlight (series_reliability.go:263-288) returns a name for any incomplete arrmada-tv torrent whose parsed title equals the show's, whatever its state or scope. The missing sweep (series.go:151-155), RSSSyncSeries (series_reliability.go:66) and UpgradeSeries (:113) then skip the whole show. One stalled S03 pack blocks S04 episodes airing weeks later, and only an Info log says so. It also only compares the series title, so alias- and romaji-named packs aren't recognised as in flight.
   - **Approach:** 1. series_reliability.go: add `seriesInFlightScope(queue []download.Item, s series.Series) (seasons map[int]bool, whole bool, names []string)`:
        - Only incomplete torrents in category seriesCategory matching via seriesTitleMatches count, so aliases and romaji are included.
@@ -443,7 +443,7 @@ Rare content with one intermittent seeder loses its only release even when no al
 _Resolving a review closes out its download, which then leaves the client at its seed goal, and requesters stop seeing 'Importing'. Block works for every media type and names what it blocked. Every blocklist row can be seen and undone. Review shows each item's reason with actions that fit it, its files, its age and a title link. Mis-numbered packs can be mapped to episodes by hand._
 
 <a id="acq-09"></a>
-- [ ] **ACQ-09 · Grab lifecycle: one status vocabulary; resolving a review closes out its grab; held and dismissed downloads are handled** — `P1` · `M` · Phase 4
+- [x] **ACQ-09 · Grab lifecycle: one status vocabulary; resolving a review closes out its grab; held and dismissed downloads are handled** — `P1` · `M` · Phase 4
   - **Problem:** For series, the only flip to 'imported' is the automatic sweep (series.go:1070). ImportReview's series branch (reviews.go:337-352) and DismissReview (:293-300) never touch the grab row. ManageSeeding only considers status='imported' (store.go:327-344; coordinator.go:1267), so those torrents seed forever. The Seeding tab shows a goal bar from liveGrabs that fills but never removes anything, and requesters can see Importing indefinitely (progress.go:76-136). A reassigned or dismissed movie review flips only if the original version gains a file. Status literals are hand-typed in about 12 queries across store.go, books.go, books_packs.go, music.go and requests/progress.go, so a new status (needed for held and dismissed downloads) would easily be missed. Seed removal writes an event only for movies (coordinator.go:1322-1324).
   - **Approach:** 1. store.go: define status constants (grabbed, held, imported, dismissed, failed, removed, seeded) and set helpers (stallWatch, inFlight, seedCleanup, live) that return SQL IN-fragments. Route every query through them:
        - pendingGrabs (store.go:247): stallWatch
@@ -486,7 +486,7 @@ _Resolving a review closes out its download, which then leaves the client at its
   - **Risk:** The grabs table drives removal decisions. A missed IN-list would either re-grab a held release or delete one at seed time, hence the central sets and the source-scanning test. Dismissed files left in the downloads folder are intentional.
   - **Resolves:** ops-6, ops-5, ops-9
 <a id="acq-10"></a>
-- [ ] **ACQ-10 · Block works for every media type, resolves by info hash, and says what it blocked** — `P1` · `S` · Phase 4
+- [x] **ACQ-10 · Block works for every media type, resolves by info hash, and says what it blocked** — `P1` · `S` · Phase 4
   - **Problem:** BlockRelease (coordinator.go:1015-1041) removes the torrent and its data, then tries movies.MatchRelease first whatever the category. A year-less TV torrent such as 'Fargo.S05E01…' therefore blocklists the Fargo movie and searches it, while the series stays unblocked and re-grabs. It then does a name-only series lookup even though the hash is known. There is no book or music branch: blocking an audiobook deletes it, blocklists nothing, and the next sweep grabs the same release again. The handler runs in the background and always returns 202 (downloads.go:107-118), so the UI can't say what happened.
   - **Approach:** 1. store.go: add `grabForHash(ctx, hash) (grab, bool)`, the latest row of any status.
     2. Rework BlockRelease into `BlockRelease(ctx, hash, name) (BlockResult{Kind, ID, Title}, error)`. Resolve via the grab first:
@@ -515,7 +515,7 @@ _Resolving a review closes out its download, which then leaves the client at its
   - **Risk:** Behaviour change: Block no longer silently removes unlinked torrents. The UI points to Remove instead.
   - **Resolves:** ops-7
 <a id="acq-11"></a>
-- [ ] **ACQ-11 · Blocklist page across every media type, including global entries, with Unblock** — `P2` · `S` · Phase 4
+- [x] **ACQ-11 · Blocklist page across every media type, including global entries, with Unblock** — `P2` · `S` · Phase 4
   - **Problem:** Blocklist endpoints exist only per movie and per series (server.go:289-291, 456-458), and listBlocks filters media_type='movie' (store.go:54-55). Several kinds of row can't be seen or undone:
 - 'global' rows written by Reject on unmatched reviews (reviews.go:272) and by the executable detector
 - every book row
@@ -537,7 +537,7 @@ One mis-click on Reject blocks a release name for every title, permanently.
   - **Risk:** Low.
   - **Resolves:** ops-12
 <a id="acq-12"></a>
-- [ ] **ACQ-12 · Review 2.0: typed reason codes, actions that fit each reason, context, bulk actions and live refresh** — `P1` · `M` · Phase 4
+- [x] **ACQ-12 · Review 2.0: typed reason codes, actions that fit each reason, context, bulk actions and live refresh** — `P1` · `M` · Phase 4
   - **Problem:** Every held item gets the same four buttons (Reject, Import anyway, Import into different, Dismiss), but the queue mixes five different problems:
 - content mismatch
 - unmatched, with ExpectedID 0 (series.go:1046-1050)
@@ -590,7 +590,7 @@ Reject blocks but never searches (reviews.go:256-287). created_at and content_pa
   - **Risk:** The text-pattern backfill can misclassify a few old rows. Those fall back to the mismatch actions, which is today's behaviour.
   - **Resolves:** ops-8, ops-4
 <a id="acq-13"></a>
-- [ ] **ACQ-13 · Map files to episodes for numbering reviews** — `P2` · `M` · Phase 4
+- [x] **ACQ-13 · Map files to episodes for numbering reviews** — `P2` · `M` · Phase 4
   - **Problem:** When a season pack's filenames can't be mapped to episodes (series.go:1103-1108), the only exits are Reject (which throws away a good release), Dismiss, or leaving the app. Import anyway re-runs the same parser with force=true. That only skips the quality gate, so it fails with 422 again.
   - **Approach:** 1. New route `POST /api/v1/reviews/{id}/map` (RoleManager), body {series_id, files:[{rel_path, season, episodes:[n,…]}]}.
     2. Coordinator.ImportReviewMapped(ctx, id, seriesID, mappings):
@@ -797,7 +797,7 @@ SearchingItem (api.ts) and the feed entries (activity.go:62-112) omit all of it.
 _One title normalizer. A single cached client snapshot with health: sweeps pause while qBittorrent is down, and Downloads says so. Each grab row carries its live phase, progress and scope, and the stall clock survives restarts. 'Already downloading', grid progress and the missing-version checks key on the hash, never on parsed names._
 
 <a id="acq-21"></a>
-- [ ] **ACQ-21 · One title normalizer for every download and queue match** — `P1` · `S` · Phase 4
+- [x] **ACQ-21 · One title normalizer for every download and queue match** — `P1` · `S` · Phase 4
   - **Problem:** Three normalizers drift:
 - automation.titleKey (coordinator.go:1587-1607) folds accents and maps & to 'and', but keeps bracket contents.
 - httpapi.normKey (activity.go:251-259) strips brackets but has no & to 'and'.

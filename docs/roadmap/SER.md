@@ -422,7 +422,7 @@ Result: a TVmaze timeout or 429, or a one-episode count change, relinks S06E22's
 _Ended and revived shows are recognised, and titles, posters and network follow TMDB. A numbering change becomes a proposal you review before anything moves. Pausing a show keeps per-season choices. Shows can be added with Sonarr-style presets. Progress, Missing and Partial count only what is monitored._
 
 <a id="ser-06"></a>
-- [ ] **SER-06 · Refresh updates the show itself (status, title, poster, network, year, extra); ended shows are re-checked weekly** — `P1` · `S` · Phase 4
+- [x] **SER-06 · Refresh updates the show itself (status, title, poster, network, year, extra); ended shows are re-checked weekly** — `P1` · `S` · Phase 4
   - **Problem:** Series.Refresh (service.go:213-284) fetches fresh details but only writes episodes, seasons, tvdb_id and the original language. series.status, title, poster_url, overview, network and year are only written by the INSERT on add (repo.go:142). The stored status matters in three places:
 - it gates complete and multi-season packs via showEnded(s.Status) (automation/series.go:494);
 - it makes RefreshContinuingSeries skip stored-ended shows forever (series_refresh.go:46);
@@ -449,7 +449,7 @@ A show that ends is never treated as ended. A revived show is never auto-refresh
   - **Risk:** A provider returning partial data must not blank stored fields; the merge rule and its test cover this. A weekly refresh of ended shows adds TMDB calls, so keep the existing pacing. A changed title does not rename the on-disk folder, on purpose.
   - **Resolves:** series-3
 <a id="ser-07"></a>
-- [ ] **SER-07 · Numbering changes become a reviewable proposal with a remap preview, Apply and Dismiss** — `P1` · `M` · Phase 4
+- [x] **SER-07 · Numbering changes become a reviewable proposal with a remap preview, Apply and Dismiss** — `P1` · `M` · Phase 4
   - **Problem:** After SER-05, a source change or an authoritative renumber that a scheduled refresh declines is only logged. The owner cannot see which files would move, or accept the change without pressing Refresh blind. RebuildEpisodes also resets season-level monitored flags, because it re-inserts seasons with flags computed from the series (repo.go:280-296).
   - **Approach:** 1. **Migration** `NNNN_series_numbering_pending.sql`: `series_numbering_pending(series_id INTEGER PRIMARY KEY REFERENCES series(id) ON DELETE CASCADE, from_source TEXT NOT NULL DEFAULT '', to_source TEXT NOT NULL DEFAULT '', plan_hash TEXT NOT NULL, remaps_json TEXT NOT NULL, dismissed_hash TEXT NOT NULL DEFAULT '', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)`.
     2. **One shared planner.** Factor the snapshot and absolute mapping out of RebuildEpisodes into a pure `planRemaps(current []placementRow, desired []Season) []EpisodeRemap`, used by both RebuildEpisodes and the new `Repo.PlanRebuild(ctx, seriesID, seasons) ([]EpisodeRemap, error)`, which writes nothing.
@@ -475,7 +475,7 @@ A show that ends is never treated as ended. A revived show is never auto-refresh
   - **Risk:** The plan hash must be deterministic (sorted remaps), or Apply returns spurious 409s. Apply re-fetches metadata; if the source is down at that moment, the hash differs, and the 409 message must say 'metadata changed or is unavailable — try again'.
   - **Resolves:** series-4
 <a id="ser-08"></a>
-- [ ] **SER-08 · The series monitor toggle becomes a gate that keeps season choices; new seasons follow 'monitor new seasons'** — `P1` · `S` · Phase 4
+- [x] **SER-08 · The series monitor toggle becomes a gate that keeps season choices; new seasons follow 'monitor new seasons'** — `P1` · `S` · Phase 4
   - **Problem:** Several monitoring behaviours override what the owner chose:
 - Repo.SetMonitored (repo.go:475-498) cascades to every season and episode. Pausing and resuming a show re-monitors seasons the owner excluded, and the next sweep grabs them. The list page's bulk Monitor does the same (Series.tsx:78-86).
 - Refresh gives new episodes and seasons the series flag (service.go:220, seasonsFromDetails(d, sr.Monitored)), whatever the season's own choice.
@@ -513,7 +513,7 @@ A show that ends is never treated as ended. A revived show is never auto-refresh
   - **Risk:** This changes behaviour for anyone who relied on the cascade to bulk re-monitor everything. The 'nothing monitored → all' rule keeps the common case working, and SER-09's presets give an explicit 'monitor all' action.
   - **Resolves:** series-6
 <a id="ser-09"></a>
-- [ ] **SER-09 · Monitor presets at add time and on the series page, with season flags derived from their episodes** — `P1` · `M` · Phase 4
+- [x] **SER-09 · Monitor presets at add time and on the series page, with season flags derived from their episodes** — `P1` · `M` · Phase 4
   - **Problem:** AddSeriesModal always sends monitored:true for every non-special season, with no Sonarr-style choice (All, Future, Missing, Existing, First season, Latest season, None). Its 'Search on add' toggle silently rewrites the global setting (Series.tsx:576-584). Season and episode flags can disagree: monitoring one episode in an unmonitored season does nothing, because wantedEpisodes requires both flags (automation/series.go:802-807). REQ's season picker needs a preset API to call.
   - **Approach:** 1. **`series.Service.ApplyMonitorPreset(ctx, id, preset string) error`.** One transaction, presets as in the design table (all, future, missing, existing, first_season, latest_season, none).
        - Episode flags are set by rule from has_file and air_date (today's date).
@@ -548,7 +548,7 @@ A show that ends is never treated as ended. A revived show is never auto-refresh
   - **Risk:** 'missing' and 'existing' change which episodes the upgrade sweep considers (it needs Monitored && HasFile). The preset help text must say 'episodes with files won't be upgraded' for 'missing'. Air-date edge cases (empty date counts as unaired) must match automation's aired().
   - **Resolves:** series-6
 <a id="ser-10"></a>
-- [ ] **SER-10 · Progress, Missing and Partial count only monitored episodes; GET /series/{id} returns stats** — `P1` · `S` · Phase 4
+- [x] **SER-10 · Progress, Missing and Partial count only monitored episodes; GET /series/{id} returns stats** — `P1` · `S` · Phase 4
   - **Problem:** allStats (series/repo.go:84-89) counts every aired, non-special episode regardless of monitoring, although the Stats comment says 'aired episodes in monitored seasons' (series.go:39). These totals drive:
 - the list's Missing filter (Series.tsx:30);
 - statusOf 'Partial' (Series.tsx:293-298);

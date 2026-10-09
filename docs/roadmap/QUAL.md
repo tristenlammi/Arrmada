@@ -280,7 +280,7 @@ This causes three problems:
 _Scene 'WEB' and fansub releases are eligible under the templates. Series grabs, RSS, interactive search and upgrades honour the bitrate window, packs show a bitrate, and the import gate refuses over-ceiling replacements. Near-equal releases go to the healthier torrent. SD, lossless and pre-release parsing is correct._
 
 <a id="qual-04"></a>
-- [ ] **QUAL-04 · One WEB source tier: scene WEB, fansub and BD parse correctly, and an unstated source is no longer treated like a cam** — `P1` · `S` · Phase 4
+- [x] **QUAL-04 · One WEB source tier: scene WEB, fansub and BD parse correctly, and an unstated source is no longer treated like a cam** — `P1` · `S` · Phase 4
   - **Problem:** Three parser and gate rules combine to block common releases:
 - A bare 'WEB' token parses as WEBRip (parser.go:699-702), and bugfix_test.go:115 locks that in.
 - Fansub names ('[SubsPlease] Frieren - 01 (1080p) [CRC]') and bare 'BD' batches parse as SourceUnknown.
@@ -320,7 +320,7 @@ The '4K HDR collection' and '1080p efficient' templates set min_source 'WEB-DL' 
   - **Risk:** Users who chose WEB-DL+ to exclude WEBRip lose that distinction. Ranking still prefers WEB-DL, and group tiers (QUAL-26) restore control. Several anime parser tests expect an empty Source and must be updated on purpose, not blindly. The import path parses too (matching, not quality), so run the full library and automation suites.
   - **Resolves:** quality-3
 <a id="qual-05"></a>
-- [ ] **QUAL-05 · Series candidates carry a runtime, so the bitrate window applies to TV grabs, RSS, interactive search and upgrades** — `P1` · `M` · Phase 4
+- [x] **QUAL-05 · Series candidates carry a runtime, so the bitrate window applies to TV grabs, RSS, interactive search and upgrades** — `P1` · `M` · Phase 4
   - **Problem:** The ceiling and floor in Engine.Evaluate (quality.go:377-386, 450-456) need Candidate.RuntimeMin, and only the movie paths set it (tagRuntime, called at coordinator.go:465, 667, 860, 971). Series candidates are built with bare quality.NewCandidate in three places:
 - grabSeriesLimited (series.go:401), which also serves RSS and the absolute follow-up
 - RankSeriesReleasesWith (series_interactive.go:129), which also serves GrabBestForScope and the builder's real-title test
@@ -369,7 +369,7 @@ Anime absolute and alias resolution use a temp-DB series.Service seeded as in se
   - **Risk:** Wrong or missing TMDB episode runtimes, anime arcs mapped through aliases, and packs that contain fewer episodes than TMDB lists all skew pack bitrate. That can cause false 'over ceiling' rejections or put packs under the floor. Mitigations: the median fallback, counting only aired episodes, logging the computed runtime with rejections, and media-aware template windows. SER's planned single grab planner must call seriesCandidate rather than NewCandidate; whichever lands second wires it in.
   - **Resolves:** quality-1, series-5
 <a id="qual-06"></a>
-- [ ] **QUAL-06 · Series import gate refuses over-ceiling replacements, and ties between different-length releases break on bitrate, not raw size** — `P1` · `S` · Phase 4
+- [x] **QUAL-06 · Series import gate refuses over-ceiling replacements, and ties between different-length releases break on bitrate, not raw size** — `P1` · `S` · Phase 4
   - **Problem:** Two problems remain after the search side is fixed:
 - **The import gate has no ceiling.** wantsEpisodeFile (reviews.go:778-855) never checks a ceiling, so an automatic over-ceiling replacement still lands. It also costs a multi-episode file's bytes against one episode's runtime (reviews.go:828-831), which doubles the apparent bitrate of an E01E02 file.
 - **Ties go to the biggest file.** Engine.Decide breaks equal-score ties toward the larger file (quality.go:528-533). That is right for one movie, but once series candidates carry different runtimes it makes a huge pack beat single episodes just by being bigger.
@@ -391,7 +391,7 @@ Anime absolute and alias resolution use a temp-DB series.Service seeded as in se
   - **Risk:** A higher-resolution upgrade that is over the ceiling is now refused at import, although the searcher would already have rejected it. Only grabs from before this change or from outside the planner hit this path. Logged.
   - **Resolves:** quality-1, series-5
 <a id="qual-07"></a>
-- [ ] **QUAL-07 · Prefer healthy torrents: near-equal releases tie on magnitude and seeders decide; dead torrents rank last** — `P2` · `S` · Phase 4
+- [x] **QUAL-07 · Prefer healthy torrents: near-equal releases tie on magnitude and seeders decide; dead torrents rank last** — `P2` · `S` · Phase 4
   - **Problem:** Seeders are the very last tie-breaker, after Total, exact size and source (quality.go:525-538), so the largest release wins even with 0–1 seeders. emptyProfile and every template set min_seeders 0 (Quality.tsx:168). The per-indexer min_seeders filter also defaults to 0 (indexer/service.go:320-323, migration 0011), so nothing steers away from dead torrents.
   - **Approach:** 1. **Decide comparator (v1).** Within the same avoided tier and equal Total:
        - Magnitude is bitrate when both runtimes are known ([QUAL-06](#qual-06)), else SizeGB.
@@ -411,7 +411,7 @@ Anime absolute and alias resolution use a temp-DB series.Service seeded as in se
   - **Risk:** Low. It slightly changes picks between near-identical releases. Indexers that never report seeders rank all their releases together, below seeded ones from other indexers, which is acceptable. The stall-timeout default (the other half of quality-9) is ACQ's quick win #4, not this task.
   - **Resolves:** quality-9
 <a id="qual-08"></a>
-- [ ] **QUAL-08 · Parser gaps: infer SD, make lossless correct (LPCM in, DTS-HD HRA out), and check pre-release tokens only after the title** — `P2` · `S` · Phase 4
+- [x] **QUAL-08 · Parser gaps: infer SD, make lossless correct (LPCM in, DTS-HD HRA out), and check pre-release tokens only after the title** — `P2` · `S` · Phase 4
   - **Problem:** Three parser gaps:
 - **SD is never inferred.** detectResolution (parser.go:638-657) never infers SD, and Evaluate rejects an unknown resolution whenever the profile lists resolutions (quality.go:359-361). 'Show.S01E01.HDTV.x264' and 'DVDRip.XviD' releases therefore fail even a profile that allows 480p.
 - **'Lossless' is wrong both ways.** It misses LPCM/PCM, and it counts lossy DTS-HD HRA as lossless because the 'dts hd' needle matches it (parser.go:752; presets.go:13; ideal.go:318).
@@ -444,7 +444,7 @@ Anime absolute and alias resolution use a temp-DB series.Service seeded as in se
 _The current file is judged from its probed facts. One sweep grabs at most N upgrades. Each profile chooses what is worth an upgrade. Saving a profile first shows how many files (and TB) become eligible for replacement, with a 'keep existing files' option._
 
 <a id="qual-09"></a>
-- [ ] **QUAL-09 · One set of facts: judge the file on disk from Convert's probed MediaInfo for target, upgrade, ceiling and downgrade decisions** — `P1` · `M` · Phase 4
+- [x] **QUAL-09 · One set of facts: judge the file on disk from Convert's probed MediaInfo for target, upgrade, ceiling and downgrade decisions** — `P1` · `M` · Phase 4
   - **Problem:** The upgrader and the library fit judge the same file from different facts:
 - **Two sources of truth.** TargetMet, UpgradeCandidate and AtCeiling judge ReleaseFacts(parser.Parse(currentRelease)) (service.go:133, 338-341). The Library fit bars judge convert.Facts(MediaInfo) (fit.go:84-93, fit_profiles.go:96).
 - **Scanned files lose their probed facts.** upgradeBaseline (coordinator.go:910-929) builds the baseline from resolution, source and codec only. It throws away the probed HDR, Atmos and Audio already on MovieFile (movies/movie.go:94-100). Those files never meet HDR or audio targets, so the upgrader keeps churning them.
@@ -484,7 +484,7 @@ _The current file is judged from its probed facts. One sweep grabs at most N upg
   - **Risk:** This changes upgrade verdicts for every analysed file, and in most cases it stops churn. A wrong probe (for example DV base unknown on old entries) could make a file look 'done'; the info_ver gate keeps those entries out. The nil-source path must be exercised by tests. CONV must keep convert_library's size_bytes and info_ver semantics.
   - **Resolves:** quality-10
 <a id="qual-10"></a>
-- [ ] **QUAL-10 · Per-sweep upgrade budget: one sweep grabs at most N upgrades and logs the rest** — `P1` · `S` · Phase 4
+- [x] **QUAL-10 · Per-sweep upgrade budget: one sweep grabs at most N upgrades and logs the rest** — `P1` · `S` · Phase 4
   - **Problem:** UpgradeMovies (coordinator.go:776-800) and UpgradeSeries (series_reliability.go ~95-120) grab every upgrade they find in one sweep, limited only by free disk (diskOKFor). After a profile edit that can mean hundreds of grabs at once.
   - **Approach:** 1. **Budget type.** New internal/automation/upgradebudget.go: `type upgradeBudget struct{ max, used, deferred int }` with `allow() bool` (max 0 = unlimited), `take()` and `defer1()`.
     2. **Read the setting.** Add `c.settingInt(ctx, key string, def int) int`, which reads the settings table. UpgradeMovies and UpgradeSeries each create a budget from settings key 'upgrade_max_grabs_per_sweep' (default 10).
@@ -503,7 +503,7 @@ _The current file is judged from its probed facts. One sweep grabs at most N upg
   - **Risk:** A low budget delays wanted upgrades after a deliberate profile change. That is acceptable and logged. The sweep order is the list order, so the same titles go first each sweep; an upgraded title drops out of the candidates, so progress is made.
   - **Resolves:** quality-5
 <a id="qual-11"></a>
-- [ ] **QUAL-11 · Per-profile upgrade trigger ('Replace for') and honest 'Off' copy** — `P1` · `M` · Phase 4
+- [x] **QUAL-11 · Per-profile upgrade trigger ('Replace for') and honest 'Off' copy** — `P1` · `M` · Phase 4
   - **Problem:** qualityBetter in UpgradeCandidate and IsQualityUpgrade (service.go:156, 202) is any Total gain at all: a +1 PROPER, a +2 WEBRip to WEB-DL source step, or a small keyword nudge. Radarr has a minimum score increment; Arrmada has none.
 
 The 'Off' upgrade step says 'A file is only replaced by a better resolution or a format you want' (Quality.tsx:86). In fact a source gain (WEB-DL to Remux), a PROPER and keywords also replace files.
@@ -533,7 +533,7 @@ The 'Off' upgrade step says 'A file is only replaced by a better resolution or a
   - **Risk:** Ranking v2 (QUAL-23) must map triggers to its keys. Storing an enum, not a score threshold, makes that a direct mapping. The TargetScore/CustomScore split must keep Total identical, and the existing scoring tests prove it.
   - **Resolves:** quality-5
 <a id="qual-12"></a>
-- [ ] **QUAL-12 · Dry-run a profile edit before saving: 'Saving will make N files (~X TB) eligible for replacement'** — `P1` · `M` · Phase 4
+- [x] **QUAL-12 · Dry-run a profile edit before saving: 'Saving will make N files (~X TB) eligible for replacement'** — `P1` · `M` · Phase 4
   - **Problem:** handleUpdateQualityProfile (httpapi/quality.go:86-100) saves with no impact check, and the builder's Save (Quality.tsx:472-488) has no preview. When the current file misses a newly added Must, Evaluate returns Total 0, so every eligible candidate counts as 'qualityBetter' (service.go:136-156). A new Prefer adds +50. Upgrades default to on (Quality.tsx:170), and UpgradeMovies sweeps the whole library (coordinator.go:776-800). Clicking Must on HEVC therefore quietly queues terabytes of re-downloads with no number shown first. Changing a single movie's profile does ask (movies.go:455-458).
   - **Approach:** 1. **internal/quality/impact.go (pure).**
        - `type ImpactFile struct{ Title string; Cur CurrentFile }`
@@ -573,7 +573,7 @@ The 'Off' upgrade step says 'A file is only replaced by a better resolution or a
   - **Risk:** This is an estimate: actual grabs depend on what indexers offer, so the copy says 'eligible'. Large TV libraries (tens of thousands of episodes) need one facts query and one episodes query; measure the endpoint on a fixture of about 20k episodes.
   - **Resolves:** quality-5
 <a id="qual-13"></a>
-- [ ] **QUAL-13 · 'Keep existing files': hold current files from profile-driven upgrades, with visible chips and Resume** — `P2` · `M` · Phase 4
+- [x] **QUAL-13 · 'Keep existing files': hold current files from profile-driven upgrades, with visible chips and Resume** — `P2` · `M` · Phase 4
   - **Problem:** The audit recommends offering 'apply to new grabs only' when a profile edit would churn the library. Today the only way to change a profile for future grabs while keeping today's files is to switch upgrades off for every title on the profile.
   - **Approach:** 1. **Migration** (next free number, e.g. 009x_upgrade_hold.sql): add `upgrade_hold INTEGER NOT NULL DEFAULT 0` to movies, movie_versions and episodes.
     2. **Endpoint.** `POST /api/v1/quality/profiles/{id}/hold-existing` (RoleManager) sets upgrade_hold=1 on every row with a file whose effective profile is this one. Use the impact sets from [QUAL-12](#qual-12) when the body passes {only_affected:true}. It returns counts.

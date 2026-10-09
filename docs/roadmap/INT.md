@@ -126,7 +126,7 @@ No migration is needed for:
 _Indexer failures are persisted with escalating backoff, so sweeps stop hammering dead trackers, and every Indexers row shows a status dot and its last error. FlareSolverr is configurable and testable in Settings. Deletes are confirmed. Download clients can be edited in place. Every metadata key, TMDB included, can be tested before and after saving._
 
 <a id="int-01"></a>
-- [ ] **INT-01 · Integration status store and indexer health with escalating backoff** — `P1` · `M` · Phase 4
+- [x] **INT-01 · Integration status store and indexer health with escalating backoff** — `P1` · `M` · Phase 4
   - **Problem:** Indexer failures are never stored, so there is nothing for the UI, the health panel or the search modals to show:
 - A failing indexer (expired TorrentLeech login, dead Prowlarr, 429s) only lands in SearchResult.Errors and a log line (indexer/service.go:313-318, 423-426).
 - The indexers table has no status columns (repo.go:22), and the Test result lives only in React state (Indexers.tsx:10).
@@ -178,7 +178,7 @@ _Indexer failures are persisted with escalating backoff, so sweeps stop hammerin
   - **Risk:** Writing on every search would hammer SQLite, so the tracker writes only on transitions plus the 60s flush. Backing off a flaky but useful public tracker hides it from sweeps; the ladder therefore starts at the 2nd failure, and interactive searches always probe. The per-host Torznab throttle stays as it is. ACQ will consume Skipped and Errors (the search-modal banner, and no search miss when every indexer failed or was skipped), so keep those field names stable.
   - **Resolves:** integrations-1, integrations-9, product-5
 <a id="int-02"></a>
-- [ ] **INT-02 · Indexer status in the API and a status dot on each Indexers row** — `P1` · `S` · Phase 4
+- [x] **INT-02 · Indexer status in the API and a status dot on each Indexers row** — `P1` · `S` · Phase 4
   - **Problem:** Even once health is recorded (INT-01), the owner can only find a dead indexer by reading Logs:
 - The Indexers page has only a manual Test button, and its result is gone on reload (Indexers.tsx:10, 24-30).
 - Requests just sit at 'Searching'.
@@ -202,7 +202,7 @@ _Indexer failures are persisted with escalating backoff, so sweeps stop hammerin
   - **Risk:** Low. Confirm --avoid exists in the CSS tokens; otherwise use the amber token the Quality page already uses for 'Want'.
   - **Resolves:** integrations-1, product-5
 <a id="int-03"></a>
-- [ ] **INT-03 · FlareSolverr as a configurable, testable connection** — `P1` · `S` · Phase 4
+- [x] **INT-03 · FlareSolverr as a configurable, testable connection** — `P1` · `S` · Phase 4
   - **Problem:** FlareSolverr is a dependency you can't see, set or test:
 - Its URL comes only from ARRMADA_FLARESOLVERR_URL and is fixed at startup (config.go:101, indexer/service.go:76-80, xem.New at main.go:182).
 - It isn't in the API-key catalogue or the health panel.
@@ -238,7 +238,7 @@ _Indexer failures are persisted with escalating backoff, so sweeps stop hammerin
   - **Risk:** A URL in the 'API keys' list is slightly odd, but it reuses the settings-first/env-fallback code, and it moves to its own card in the hub (INT-16). The NewService signature change touches tests that call NewService(db, log, ""), so update them to pass nil.
   - **Resolves:** integrations-13
 <a id="int-04"></a>
-- [ ] **INT-04 · Confirm deletes and remove the foot-guns on the Indexers and Download clients pages** — `P1` · `S` · Phase 4
+- [x] **INT-04 · Confirm deletes and remove the foot-guns on the Indexers and Download clients pages** — `P1` · `S` · Phase 4
   - **Problem:** Both pages have traps:
 - Delete fires on one click, with no confirmation and no error handling (Indexers.tsx:34-37, 110; DownloadClients.tsx:43-46, 116).
 - A new indexer's name starts as '1337x' and doesn't follow Kind (Indexers.tsx:226-227).
@@ -271,7 +271,7 @@ _Indexer failures are persisted with escalating backoff, so sweeps stop hammerin
   - **Risk:** The pill change flips the meaning of an existing control; verify that scoped indexers still render correctly before shipping. Keep the current palette and type scale.
   - **Resolves:** integrations-12, frontend-10
 <a id="int-05"></a>
-- [ ] **INT-05 · Edit download clients in place, with an enable toggle** — `P1` · `M` · Phase 4
+- [x] **INT-05 · Edit download clients in place, with an enable toggle** — `P1` · `M` · Phase 4
   - **Problem:** Download clients can't be changed or switched off:
 - There is no update route: server.go:196-202 has only POST, DELETE, test, status and settings. Changing a qBittorrent password or URL means deleting and re-adding the client.
 - There is no repo Update (download/repo.go).
@@ -304,7 +304,7 @@ _Indexer failures are persisted with escalating backoff, so sweeps stop hammerin
   - **Risk:** The password must never be returned or echoed into the form. Keep loginMu intact on Forget so concurrent callers don't trigger two logins, which qBittorrent bans after repeated attempts.
   - **Resolves:** integrations-3, frontend-10
 <a id="int-06"></a>
-- [ ] **INT-06 · A live Test for every metadata key, including before saving** — `P1` · `M` · Phase 4
+- [x] **INT-06 · A live Test for every metadata key, including before saving** — `P1` · `M` · Phase 4
   - **Problem:** Only Hardcover's key can be tested:
 - Only Hardcover is Testable (apikeys.go:57), and handleTestAPIKey handles only 'hardcover' (httpapi/apikeys.go:27-33).
 - TMDB, the one required key, has no test. A mistyped key, or a v4 token pasted where the v3 key belongs, looks saved, and Discover is simply empty.

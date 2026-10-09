@@ -282,7 +282,7 @@ Nothing ever updates requests.ol_key. Every pre-upgrade book request, fulfilled 
 _RSS no longer grabs 'The Institute' for 'It'. Accented and apostrophe titles match. MyAnonaMouse uploads are picked up within one 15-minute RSS cycle. BookDetail, My shelf and the requests row say 'Not found yet — next check <date>' instead of 'Arrmada is searching'._
 
 <a id="book-05"></a>
-- [ ] **BOOK-05 · Book RSS uses the word-boundary matcher the search path uses, and only grabs wanted editions** — `P1` · `S` · Phase 4
+- [x] **BOOK-05 · Book RSS uses the word-boundary matcher the search path uses, and only grabs wanted editions** — `P1` · `S` · Phase 4
   - **Problem:** RSSSyncBooks (automation/books.go:1807-1880) filters with releasesForBook (books.go:1884-1896): strings.Contains over normTitle, which keeps only letters and digits, plus a substring check on the author.
 - 'It' matches 'The Institute' and any title containing 'Edition'. That grab fails the import gate and lands in Review.
 - 'Dune' matches 'Dune Messiah' and 'Children of Dune'. If the sequel isn't in the library, word-boundary MatchByRelease resolves it to 'Dune' on import and the sequel is imported as Dune.
@@ -304,7 +304,7 @@ RSS also grabs any missing edition whether or not the profile wants it, skips th
   - **Risk:** Low. A release for a sequel that isn't in the library can still pass as the base title, which is the same known limit as the search path. The import identity gate remains the backstop.
   - **Resolves:** books-4
 <a id="book-06"></a>
-- [ ] **BOOK-06 · One shared title normaliser: fold accents, apostrophes and '&' before matching** — `P1` · `S` · Phase 4
+- [x] **BOOK-06 · One shared title normaliser: fold accents, apostrophes and '&' before matching** — `P1` · `S` · Phase 4
   - **Problem:** wordKey and NormKey keep only ASCII a-z0-9 (books/service.go:478-503), so:
 - 'Pokémon' becomes 'pok mon'.
 - 'Ender's Game' becomes 'ender s game'.
@@ -332,7 +332,7 @@ The search filter (releasesForThisBook), import routing (Matcher) and the file m
   - **Risk:** Matching becomes slightly looser, so rerun the word-boundary negative cases. Nothing persisted depends on NormKey output, since keys are computed at read time.
   - **Resolves:** books-5
 <a id="book-07"></a>
-- [ ] **BOOK-07 · MyAnonaMouse recent-uploads poll, so books have real RSS** — `P1` · `S` · Phase 4
+- [x] **BOOK-07 · MyAnonaMouse recent-uploads poll, so books have real RSS** — `P1` · `S` · Phase 4
   - **Problem:** RSSSyncBooks reads indexers.Recent(ctx, 100), but fetchRecent skips any searcher that isn't a Recenter (indexer/service.go:300-303). Only Torznab and 1337x implement Recent, so MAMSearcher, the owner's main book tracker, is never polled. A book uploaded to MAM between ladder checks waits days or weeks for its next scheduled search.
   - **Approach:** 1. internal/indexer/myanonamouse.go: factor the POST, parse and isMAMEmpty handling out of Search (lines 163-224) into m.query(ctx, idx, body mamSearchBody) ([]Release, error). The rotated mam_id still goes through persistRotatedSession, and do() keeps the throttle.
     2. Add (m *MAMSearcher) Recent(ctx, idx, limit) ([]Release, error) to satisfy indexer.Recenter. The body is mamTor{Text: "", SrchIn as in Search, SearchType: "all", SearchIn: "torrents", MainCat: idx.Categories or mamBookMainCats, SortType: "dateDesc", StartNumber: "0", PerPage: min(limit, 100)}, and results are mapped with releaseFrom.
@@ -349,7 +349,7 @@ The search filter (releasesForThisBook), import routing (Matcher) and the file m
   - **Risk:** MAM's behaviour with an empty search text and dateDesc is unverified live. Respect MAM's API etiquette: one call per cycle and the existing mamRequestDelay.
   - **Resolves:** books-3
 <a id="book-08"></a>
-- [ ] **BOOK-08 · Show the real search state: API fields, request tracking, BookDetail and My shelf copy** — `P1` · `M` · Phase 4
+- [x] **BOOK-08 · Show the real search state: API fields, request tracking, BookDetail and My shelf copy** — `P1` · `M` · Phase 4
   - **Problem:** books.cols has no search state (repo.go:133-136). The UI doesn't know whether a book was ever found:
 - BookDetail always says 'Wanted — no file yet. Arrmada is searching' (BookDetail.tsx:191-197).
 - My shelf labels every approved request 'Searching' (MyBooks.tsx:187-190).

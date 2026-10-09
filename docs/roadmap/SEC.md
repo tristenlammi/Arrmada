@@ -353,7 +353,7 @@ _Books Discover runs through a tag-based adult filter on every surface. No libra
 _No API response carries an indexer apikey, a MAM token or a webhook secret. Grabs use opaque tokens, which also closes the arbitrary-URL fetch. Managers can no longer change API keys, module toggles, Plex sign-in, recycle purges or library folders, and can't read logs._
 
 <a id="sec-07"></a>
-- [ ] **SEC-07 · Opaque release tokens: no download URL ever reaches the browser, and grabs can't fetch arbitrary URLs** — `P1` · `M` · Phase 4
+- [x] **SEC-07 · Opaque release tokens: no download URL ever reaches the browser, and grabs can't fetch arbitrary URLs** — `P1` · `M` · Phase 4
   - **Problem:** RankedRelease.DownloadURL (json download_url, coordinator.go:350) is the Torznab enclosure. torznab.go:78 copies it verbatim, so for Prowlarr/Jackett-synced indexers it embeds apikey=, and MAM links carry the owner's personal dl token (myanonamouse.go:296-301). It reaches the browser for:
 - movie, series, book and audio-version interactive searches;
 - /quality/test.
