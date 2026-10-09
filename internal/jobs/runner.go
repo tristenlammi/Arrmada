@@ -90,6 +90,10 @@ type Spec struct {
 	// Fn does the work. Its result is stored as JSON. Fn must watch ctx: shutdown,
 	// Cancel and Timeout all arrive through it.
 	Fn func(ctx context.Context, p *Progress) (any, error)
+	// Abandon, when set, is called if the job ends without Fn ever running (cancelled or
+	// shut down while queued). Work that claims something before submitting (the books
+	// sweep's "running" flag) gives the claim back here.
+	Abandon func()
 }
 
 // Job is one row of the jobs table.
@@ -296,6 +300,9 @@ func (r *Runner) run(e *entry) {
 	select {
 	case sem <- struct{}{}:
 	case <-e.ctx.Done():
+		if e.spec.Abandon != nil {
+			_ = safego.Call(r.log, "job abandon "+e.spec.Kind, func() error { e.spec.Abandon(); return nil })
+		}
 		r.finish(e, nil, e.ctx.Err())
 		return
 	}
@@ -354,6 +361,16 @@ func (r *Runner) finish(e *entry, result any, err error) {
 		pct = 1
 	}
 
+	// The work is over: new work on the same item may start now, rather than joining a
+	// job that is only writing its result (a request approved at that moment would
+	// otherwise have its search folded into one that already ran). Get and Wait still
+	// find this job until its result is written.
+	r.mu.Lock()
+	if r.active[key{e.spec.Kind, e.spec.Target}] == e {
+		delete(r.active, key{e.spec.Kind, e.spec.Target})
+	}
+	r.mu.Unlock()
+
 	wctx, cancelW := writeCtx(context.Background())
 	if werr := markFinished(wctx, r.db, e.id, status, pct, msg, errText, string(resJSON), r.now()); werr != nil {
 		r.log.Warn("jobs: couldn't record a result", "job", e.id, "kind", e.spec.Kind, "err", werr)
@@ -364,7 +381,6 @@ func (r *Runner) finish(e *entry, result any, err error) {
 	e.mu.Lock()
 	e.status = status
 	e.mu.Unlock()
-	delete(r.active, key{e.spec.Kind, e.spec.Target})
 	delete(r.byID, e.id)
 	r.mu.Unlock()
 	close(e.done)

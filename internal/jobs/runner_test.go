@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -363,5 +364,35 @@ func TestListFilters(t *testing.T) {
 	all, _ := r.List(context.Background(), Filter{Limit: 1})
 	if len(all) != 1 || all[0].Target != "movie:2" {
 		t.Fatalf("newest first with limit: %+v", all)
+	}
+}
+
+// A job cancelled while it waits for its class never runs Fn, and gives back whatever
+// was claimed for it through Abandon.
+func TestCancelWhileQueuedAbandons(t *testing.T) {
+	r, _, _ := newRunner(t)
+	r.SetLimit(ClassLibraryScan, 1)
+	release := make(chan struct{})
+	defer close(release)
+	_, _, _ = r.Submit(context.Background(), Spec{Kind: "scan", Target: "a", Class: ClassLibraryScan, Fn: func(ctx context.Context, _ *Progress) (any, error) {
+		<-release
+		return nil, nil
+	}})
+	var ran atomic.Bool
+	abandoned := make(chan struct{})
+	id2, _, _ := r.Submit(context.Background(), Spec{Kind: "scan", Target: "b", Class: ClassLibraryScan,
+		Fn:      func(context.Context, *Progress) (any, error) { ran.Store(true); return nil, nil },
+		Abandon: func() { close(abandoned) }})
+	time.Sleep(20 * time.Millisecond)
+	if err := r.Cancel(context.Background(), id2); err != nil {
+		t.Fatal(err)
+	}
+	if j := waitJob(t, r, id2); j.Status != StatusCancelled || ran.Load() {
+		t.Fatalf("queued job = %+v, ran = %v", j, ran.Load())
+	}
+	select {
+	case <-abandoned:
+	case <-time.After(time.Second):
+		t.Fatal("Abandon wasn't called")
 	}
 }
