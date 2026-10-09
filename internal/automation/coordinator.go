@@ -349,8 +349,12 @@ func (c *Coordinator) RecordManualGrab(ctx context.Context, movieID int64, title
 
 // SearchMissing searches for and grabs any monitored version that has no file
 // and isn't already downloading, across every movie.
+//
+// Only movies with a monitored, file-less track are visited (chosen in SQL), and every
+// read below is a database read: a library whose movies all have their files costs this
+// sweep no searches, no ffprobe and no stat.
 func (c *Coordinator) SearchMissing(ctx context.Context) {
-	all, err := c.movies.List(ctx)
+	all, err := c.movies.SearchTargets(ctx)
 	if err != nil {
 		c.log.Warn("automation: list movies failed", "err", err)
 		return
@@ -643,7 +647,7 @@ func matchingMovieReleases(m movies.Movie, releases []indexer.Release) []indexer
 
 // missingVersions returns the monitored version tracks that still need a file.
 func (c *Coordinator) missingVersions(ctx context.Context, movieID int64) []movies.Version {
-	versions, err := c.movies.Versions(ctx, movieID)
+	versions, err := c.movies.VersionRows(ctx, movieID)
 	if err != nil {
 		return nil
 	}
@@ -782,7 +786,7 @@ const diskBufferGB = 2.0
 // matches a monitored, still-missing movie — the promptly-and-gently way to
 // catch new releases (vs a title search per movie on a timer).
 func (c *Coordinator) RSSSync(ctx context.Context) {
-	all, err := c.movies.List(ctx)
+	all, err := c.movies.SearchTargets(ctx) // only movies still missing a monitored track
 	if err != nil {
 		c.log.Warn("rss: list movies failed", "err", err)
 		return
@@ -836,7 +840,7 @@ func releaseIsForMovie(relTitle string, m movies.Movie) bool {
 // better release when the profile allows upgrades and one clearly beats what's on
 // disk. Runs on a timer alongside SearchMissing.
 func (c *Coordinator) UpgradeMovies(ctx context.Context) {
-	all, err := c.movies.List(ctx)
+	all, err := c.movies.UpgradeTargets(ctx) // monitored, with a file
 	if err != nil {
 		c.log.Warn("automation: list movies failed", "err", err)
 		return
@@ -887,7 +891,9 @@ func (c *Coordinator) UpgradeMovie(ctx context.Context, id int64) error {
 // upgradeMovie searches and grabs an upgrade for any monitored version that
 // already has a file. Versions without a file are handled by SearchMissing.
 func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
-	versions, err := c.movies.Versions(ctx, m.ID)
+	// Database rows only: the current size and quality come from the cached media info
+	// (or the recorded release name), never from probing the file on every sweep.
+	versions, err := c.movies.VersionRows(ctx, m.ID)
 	if err != nil {
 		return err
 	}
@@ -1009,7 +1015,7 @@ func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	versions, err := c.movies.Versions(ctx, m.ID)
+	versions, err := c.movies.VersionRows(ctx, m.ID)
 	if err != nil {
 		return err
 	}
@@ -1556,7 +1562,7 @@ func normRelease(s string) string {
 
 // movieHasFileFor reports whether the grab's target version now has a file.
 func (c *Coordinator) movieHasFileFor(ctx context.Context, g grab) bool {
-	versions, err := c.movies.Versions(ctx, g.MovieID)
+	versions, err := c.movies.VersionRows(ctx, g.MovieID) // runs every two minutes: rows only
 	if err != nil {
 		return false
 	}

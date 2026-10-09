@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -54,6 +55,11 @@ type Service struct {
 	// pipeline forgets it before anything can import it back (nil = nothing to tell).
 	onFileRemoved func(ctx context.Context, path string)
 
+	// The only ways this service looks at a library file: ffprobe and stat. Swappable so
+	// tests can count them — periodic jobs must cause neither (see VersionRows).
+	probe func(path string) (mediainfo.Info, error)
+	stat  func(path string) (os.FileInfo, error)
+
 	probing  sync.Map      // movie IDs with an in-flight media probe (dedup, so list polling can't storm ffprobe)
 	probeSem chan struct{} // bounds how many probes run at once
 
@@ -84,7 +90,49 @@ func NewService(db *sql.DB, meta metadata.MovieProvider, resolver ProfileResolve
 		bus:      bus,
 		http:     &http.Client{Timeout: 30 * time.Second},
 		probeSem: make(chan struct{}, 3),
+		probe:    probeIfInstalled,
+		stat:     os.Stat,
 	}
+}
+
+// SetFileAccess replaces how the service probes and stats library files (nil keeps the
+// current one). It exists for tests, which count the calls to prove the periodic sweeps
+// make none.
+func (s *Service) SetFileAccess(probe func(path string) (mediainfo.Info, error), stat func(path string) (os.FileInfo, error)) {
+	if probe != nil {
+		s.probe = probe
+	}
+	if stat != nil {
+		s.stat = stat
+	}
+}
+
+// probeFile and statFile go through the swappable functions, falling back to the real
+// ones on a Service built without NewService.
+func (s *Service) probeFile(path string) (mediainfo.Info, error) {
+	if s.probe == nil {
+		return probeIfInstalled(path)
+	}
+	return s.probe(path)
+}
+
+func (s *Service) statFile(path string) (os.FileInfo, error) {
+	if s.stat == nil {
+		return os.Stat(path)
+	}
+	return s.stat(path)
+}
+
+// errNoFFprobe is what probeIfInstalled reports when ffprobe isn't installed.
+var errNoFFprobe = errors.New("ffprobe not installed")
+
+// probeIfInstalled is the default probe: ffprobe when it's installed, otherwise an error,
+// which every caller treats as "use the filename".
+func probeIfInstalled(path string) (mediainfo.Info, error) {
+	if !mediainfo.Available() {
+		return mediainfo.Info{}, errNoFFprobe
+	}
+	return mediainfo.Probe(path)
 }
 
 // SetNaming installs the user-configurable file naming scheme.
@@ -140,9 +188,17 @@ func (s *Service) List(ctx context.Context) ([]Movie, error) { return s.repo.Lis
 // Get returns one movie.
 func (s *Service) Get(ctx context.Context, id int64) (Movie, error) { return s.repo.Get(ctx, id) }
 
-// MonitoredMissing returns monitored movies without a file.
-func (s *Service) MonitoredMissing(ctx context.Context) ([]Movie, error) {
-	return s.repo.MonitoredMissing(ctx)
+// SearchTargets returns the movies with a monitored track that has no file — the
+// search-missing and RSS sweeps' work list, chosen in SQL so a complete library costs
+// those sweeps nothing.
+func (s *Service) SearchTargets(ctx context.Context) ([]Movie, error) {
+	return s.repo.SearchTargets(ctx)
+}
+
+// UpgradeTargets returns the monitored movies that have a file — the upgrade sweep's work
+// list.
+func (s *Service) UpgradeTargets(ctx context.Context) ([]Movie, error) {
+	return s.repo.UpgradeTargets(ctx)
 }
 
 // SearchState returns the movie's last sweep time and consecutive-miss count.
@@ -359,7 +415,7 @@ func extraFrom(d *metadata.MovieDetails) *MovieExtra {
 func (s *Service) Delete(ctx context.Context, id int64, deleteFiles bool) error {
 	if deleteFiles {
 		// Recycle the default file and every extra version's file first.
-		versions, _ := s.Versions(ctx, id)
+		versions, _ := s.VersionRows(ctx, id)
 		for _, v := range versions {
 			if v.FilePath != "" {
 				s.removeFile(ctx, v.FilePath)
@@ -400,7 +456,10 @@ func (s *Service) MarkImportedManual(ctx context.Context, id int64, path, source
 }
 
 func (s *Service) markImported(ctx context.Context, id int64, path, sourceRelease string, manual bool) error {
-	versions, err := s.Versions(ctx, id)
+	// The database rows (with the default track's cached media info) are all routing
+	// and the quality gate need; probing every track's file here cost one ffprobe per
+	// track on every import.
+	versions, err := s.VersionRows(ctx, id)
 	if err != nil {
 		return err
 	}
@@ -432,7 +491,7 @@ func (s *Service) markImported(ctx context.Context, id int64, path, sourceReleas
 	}
 
 	var size int64
-	if fi, statErr := os.Stat(path); statErr == nil {
+	if fi, statErr := s.statFile(path); statErr == nil {
 		size = fi.Size()
 	}
 	if target.IsDefault {
@@ -633,7 +692,7 @@ func (s *Service) fetchArt(ctx context.Context, dst, url string) {
 // replaces the old codec in place (parser.RestampCodec) rather than being appended, so
 // the name still reads as the new codec and its "-GROUP" still parses.
 func (s *Service) RepointMovieFile(ctx context.Context, movieID int64, oldPath, newPath string, size int64, codecToken string) (int, error) {
-	versions, err := s.Versions(ctx, movieID)
+	versions, err := s.VersionRows(ctx, movieID)
 	if err != nil {
 		return 0, err
 	}
@@ -679,9 +738,42 @@ func (s *Service) RepointMovieFile(ctx context.Context, movieID int64, oldPath, 
 	return n, nil
 }
 
-// Versions returns all tracks for a movie: the default (the movie row) followed
-// by any extra version tracks, each enriched with on-disk file info.
-func (s *Service) Versions(ctx context.Context, id int64) ([]Version, error) {
+// VersionRows returns all tracks for a movie — the default (the movie row) followed by
+// any extra version tracks — from the database alone: no stat, no directory listing, no
+// ffprobe. The default track's File is the media info cached on the movie row (nil when
+// none is cached yet); extra tracks carry no File, only their recorded SizeBytes.
+//
+// This is what everything except the movie detail page uses. The periodic sweeps
+// (search-missing, RSS, upgrades, stall detection) used to go through VersionsLive, which
+// forked ffprobe for every file in the library every five minutes.
+func (s *Service) VersionRows(ctx context.Context, id int64) ([]Version, error) {
+	m, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	def := Version{
+		ID: 0, IsDefault: true, Label: "Default",
+		QualityProfile: m.QualityProfile, Monitored: m.Monitored,
+		HasFile: m.HasFile, FilePath: m.MovieFilePath, SourceRelease: m.SourceRelease,
+	}
+	if m.HasFile && m.File != nil {
+		f := *m.File
+		def.File = &f
+		def.SizeBytes = f.SizeBytes
+	}
+	out := []Version{def}
+	extras, err := s.repo.ListVersions(ctx, id)
+	if err != nil {
+		return out, nil // degrade to default-only, as VersionsLive does
+	}
+	return append(out, extras...), nil
+}
+
+// VersionsLive returns all tracks for a movie, each enriched with on-disk file info: a
+// stat, a sidecar-subtitle listing and an ffprobe per file.
+//
+// Detail page only — periodic jobs must never call this; they use VersionRows.
+func (s *Service) VersionsLive(ctx context.Context, id int64) ([]Version, error) {
 	m, err := s.repo.Get(ctx, id)
 	if err != nil {
 		return nil, err
@@ -739,10 +831,8 @@ func (s *Service) routeVersion(ctx context.Context, versions []Version, path str
 // resolutionOf returns a file's resolution, preferring real media info (ffprobe)
 // over the filename so a mislabeled release routes to the right track.
 func (s *Service) resolutionOf(path string) string {
-	if mediainfo.Available() {
-		if mi, err := mediainfo.Probe(path); err == nil && mi.Resolution != "" {
-			return mi.Resolution
-		}
+	if mi, err := s.probeFile(path); err == nil && mi.Resolution != "" {
+		return mi.Resolution
 	}
 	return string(parser.Parse(filepath.Base(path)).Resolution)
 }
@@ -819,15 +909,6 @@ func (s *Service) DeleteVersionFile(ctx context.Context, movieID, versionID int6
 	return s.repo.ClearVersionFile(ctx, versionID)
 }
 
-// FileInfo returns on-disk details for a movie's (default) file, or nil if none.
-func (s *Service) FileInfo(ctx context.Context, id int64) (*MovieFile, error) {
-	m, err := s.repo.Get(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	return s.fileInfo(m.MovieFilePath, m.HasFile), nil
-}
-
 // setDefaultFile records the default file path AND caches its media info, so the
 // table view can show attributes without re-probing on every list request.
 func (s *Service) setDefaultFile(ctx context.Context, id int64, path string) error {
@@ -894,43 +975,41 @@ func (s *Service) fileInfo(path string, hasFile bool) *MovieFile {
 			f.Atmos = true
 		}
 	}
-	if fi, statErr := os.Stat(path); statErr == nil {
+	if fi, statErr := s.statFile(path); statErr == nil {
 		f.SizeBytes = fi.Size()
 		f.Subtitles = sidecarSubtitles(path)
 		// Prefer real media info from the file over the (fallible) filename.
-		if mediainfo.Available() {
-			if mi, err := mediainfo.Probe(path); err == nil {
-				f.Probed = true
-				if mi.VideoCodec != "" {
-					f.Codec = mi.VideoCodec
+		if mi, err := s.probeFile(path); err == nil {
+			f.Probed = true
+			if mi.VideoCodec != "" {
+				f.Codec = mi.VideoCodec
+			}
+			if mi.Resolution != "" {
+				f.Resolution = mi.Resolution
+				// Show the badge from the REAL resolution + the parsed source,
+				// so the detail page and table present the same true facts.
+				f.Quality = mi.Resolution
+				if rel.Source != "" {
+					f.Quality += " " + string(rel.Source)
 				}
-				if mi.Resolution != "" {
-					f.Resolution = mi.Resolution
-					// Show the badge from the REAL resolution + the parsed source,
-					// so the detail page and table present the same true facts.
-					f.Quality = mi.Resolution
-					if rel.Source != "" {
-						f.Quality += " " + string(rel.Source)
-					}
+			}
+			if mi.DurationSec > 0 {
+				f.DurationMin = mi.DurationSec / 60
+			}
+			if len(mi.HDR) > 0 {
+				f.HDR = mi.HDR
+			}
+			if len(f.Audio) == 0 && mi.AudioCodec != "" {
+				label := mi.AudioCodec
+				if mi.Channels > 0 {
+					label += " " + audioChannels(mi.Channels)
 				}
-				if mi.DurationSec > 0 {
-					f.DurationMin = mi.DurationSec / 60
-				}
-				if len(mi.HDR) > 0 {
-					f.HDR = mi.HDR
-				}
-				if len(f.Audio) == 0 && mi.AudioCodec != "" {
-					label := mi.AudioCodec
-					if mi.Channels > 0 {
-						label += " " + audioChannels(mi.Channels)
-					}
-					f.Audio = []string{label}
-				}
-				// Atmos lives in the stream's profile, which most filenames don't
-				// mention; the file is the authority.
-				if mi.Atmos {
-					f.Atmos = true
-				}
+				f.Audio = []string{label}
+			}
+			// Atmos lives in the stream's profile, which most filenames don't
+			// mention; the file is the authority.
+			if mi.Atmos {
+				f.Atmos = true
 			}
 		}
 	} else {

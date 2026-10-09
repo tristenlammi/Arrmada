@@ -257,11 +257,11 @@ func (a *api) handleGetMovie(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, "could not load movie")
 		return
 	}
-	if file, ferr := a.deps.Movies.FileInfo(r.Context(), id); ferr == nil {
-		m.File = file
-	}
-	if versions, verr := a.deps.Movies.Versions(r.Context(), id); verr == nil {
+	// One live read of the tracks: the default track's File is the movie's file. Asking
+	// for the file and the versions separately probed the default file twice per load.
+	if versions, verr := a.deps.Movies.VersionsLive(r.Context(), id); verr == nil {
 		m.Versions = versions
+		m.File = versions[0].File
 	}
 	if queue, qerr := a.deps.Downloads.Queue(r.Context()); qerr == nil {
 		m.Download = downloadFor(queue, m)
@@ -303,7 +303,7 @@ func (a *api) handleListVersions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	versions, err := a.deps.Movies.Versions(r.Context(), id)
+	versions, err := a.deps.Movies.VersionsLive(r.Context(), id)
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not load versions")
 		return
@@ -559,8 +559,9 @@ func (a *api) handleRefreshMovie(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, "could not refresh movie")
 		return
 	}
-	if file, ferr := a.deps.Movies.FileInfo(ctx, id); ferr == nil {
-		m.File = file
+	if versions, verr := a.deps.Movies.VersionsLive(ctx, id); verr == nil {
+		m.Versions = versions
+		m.File = versions[0].File
 	}
 	a.deps.Bus.Publish("movie.refreshed", map[string]any{"id": id})
 	a.writeJSON(w, http.StatusOK, m)
