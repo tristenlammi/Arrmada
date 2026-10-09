@@ -1216,8 +1216,11 @@ const minPrefixTitleLen = 12
 // This decides where a file is PLACED, so it errs toward saying no. An empty side means
 // no evidence, not a match — an episode whose title is punctuation only ("!!!") normalizes
 // to nothing, and treating that as alike made it match every file in the season.
+//
+// Episode titles keep their bracketed parts ("The Return (Part 1)" is not "(Part 2)"),
+// so this joins parser.TitleWords rather than using the bracket-dropping titleKey.
 func titlesAlike(a, b string) bool {
-	ka, kb := titleKey(a), titleKey(b)
+	ka, kb := strings.Join(parser.TitleWords(a), ""), strings.Join(parser.TitleWords(b), "")
 	if ka == "" || kb == "" {
 		return false // nothing to compare — not evidence of anything
 	}

@@ -105,3 +105,33 @@ func TestReleaseIsForSeriesAcceptsBothSpellings(t *testing.T) {
 		}
 	}
 }
+
+// ACQ-21: automation now drops trailing bracketed alternates like series and the Downloads
+// feed always did, so a library title carrying one still matches its plain-named releases.
+func TestTitleKeyDropsBracketedAlternates(t *testing.T) {
+	if !releaseIsForSeries("My.Hero.Academia.S07E01.1080p.WEB.H264-GRP", "My Hero Academia (Boku no Hero Academia)") {
+		t.Error("a bracketed alternate title must not stop the series matching its release")
+	}
+	if !releaseIsForMovie("(500).Days.of.Summer.2009.1080p.BluRay.x264-GRP", movies.Movie{Title: "(500) Days of Summer", Year: 2009}) {
+		t.Error("a leading bracketed group is part of the title and must still match")
+	}
+	if releaseIsForMovie("Days.of.Summer.2009.1080p.BluRay.x264-GRP", movies.Movie{Title: "(500) Days of Summer", Year: 2009}) {
+		t.Error("dropping a leading group would merge two different films")
+	}
+	// The risk the spec names: two titles differing only in a trailing bracket now share a
+	// key. For movies the year still separates them.
+	if releaseIsForMovie("Dune.1984.1080p.BluRay.x264-GRP", movies.Movie{Title: "Dune (Part One)", Year: 2021}) {
+		t.Error("same key, different year: must not match")
+	}
+}
+
+// Episode titles keep their brackets: "(Part 1)" and "(Part 2)" are different episodes,
+// and titlesAlike decides where a file is placed.
+func TestTitlesAlikeKeepsBracketedParts(t *testing.T) {
+	if titlesAlike("The Return (Part 1)", "The Return (Part 2)") {
+		t.Error("Part 1 and Part 2 must not be the same episode")
+	}
+	if !titlesAlike("The Return (Part 1)", "The Return Part 1") {
+		t.Error("the same episode title with and without brackets must match")
+	}
+}

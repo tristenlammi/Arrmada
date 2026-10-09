@@ -152,14 +152,14 @@ func seriesQueueProgress(queue []download.Item, title string) (float64, bool) {
 // queueProgressByTitle returns the progress (0..1) of the first not-yet-finished
 // download whose parsed title matches (and year, when both are known).
 func queueProgressByTitle(queue []download.Item, title string, year int) (float64, bool) {
-	want := normKey(title)
+	want := parser.TitleKey(title)
 	for i := range queue {
 		it := queue[i]
 		if it.Progress >= 1 {
 			continue
 		}
 		p := parser.Parse(it.Name)
-		if normKey(p.Title) != want {
+		if parser.TitleKey(p.Title) != want {
 			continue
 		}
 		if p.Year != 0 && year != 0 && absInt(p.Year-year) > 1 {
