@@ -41,12 +41,54 @@ func TestResolutionPrefersSettingsThenEnv(t *testing.T) {
 	}
 
 	// Clearing the settings value falls back to env, not to empty.
-	if err := s.Set(ctx, "tvdb", ""); err != nil {
+	if err := s.Clear(ctx, "tvdb"); err != nil {
 		t.Fatal(err)
 	}
 	if got := s.Value(ctx, "tvdb"); got != "from-env" {
 		t.Errorf("after clearing, should fall back to env, got %q", got)
 	}
+}
+
+// A blank Set is refused and leaves the saved key alone: an empty Save used to wipe it.
+func TestSetBlankIsRefused(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore(memStore{})
+	_ = s.Set(ctx, "tmdb", "keepme")
+	for _, v := range []string{"", "   ", "\n"} {
+		if err := s.Set(ctx, "tmdb", v); err != ErrEmptyValue {
+			t.Errorf("Set(%q) = %v, want ErrEmptyValue", v, err)
+		}
+	}
+	if got := s.Value(ctx, "tmdb"); got != "keepme" {
+		t.Errorf("a refused blank Set changed the key to %q", got)
+	}
+	if err := s.Set(ctx, "nope", "x"); err != ErrUnknownKey {
+		t.Errorf("unknown id: %v, want ErrUnknownKey", err)
+	}
+	if err := s.Clear(ctx, "nope"); err != ErrUnknownKey {
+		t.Errorf("unknown id clear: %v, want ErrUnknownKey", err)
+	}
+}
+
+// The env var is reported even while a saved value wins, so the UI can name the fallback.
+func TestStatusReportsEnvSetWhenSettingsWins(t *testing.T) {
+	ctx := context.Background()
+	t.Setenv("ARRMADA_TMDB_API_KEY", "envkey1a2b")
+	s := NewStore(memStore{})
+	_ = s.Set(ctx, "tmdb", "savedkey9z9z")
+	for _, k := range s.Status(ctx) {
+		if k.ID != "tmdb" {
+			continue
+		}
+		if k.Source != "settings" || k.Hint != "…9z9z" {
+			t.Errorf("saved key should win: %+v", k)
+		}
+		if !k.EnvSet || k.EnvHint != "…1a2b" {
+			t.Errorf("env fallback not reported: env_set=%v env_hint=%q", k.EnvSet, k.EnvHint)
+		}
+		return
+	}
+	t.Fatal("tmdb missing from status")
 }
 
 // Values are trimmed, so a newline pasted with a key doesn't silently break auth.

@@ -221,6 +221,9 @@ export interface APIKeyStatus {
   configured: boolean;
   source: "settings" | "env" | "";
   hint?: string;
+  // The install-time value, reported even when a saved one wins: what Clear falls back to.
+  env_set: boolean;
+  env_hint?: string;
 }
 
 export interface ClientSettings {
@@ -669,6 +672,16 @@ export interface AuthUser {
   disabled?: boolean;
   auto_approve: boolean;
   created_at?: string;
+  // Signs in with Plex; plex_blocked means that Plex account is on the block list.
+  plex_linked?: boolean;
+  plex_blocked?: boolean;
+}
+
+// A Plex account kept from signing in (it would otherwise make a new account each time).
+export interface PlexBlock {
+  plex_id: string;
+  name: string;
+  at: string;
 }
 
 // What deleting a user takes with them — counts only, never which books (privacy rule).
@@ -1169,21 +1182,42 @@ export interface Reliability { summary: ReliabilitySummary; causes: CauseCount[]
 // which files a delete moved to the recycle bin and which it couldn't.
 export class ApiError extends Error {
   status: number;
+  path: string;
   body?: Record<string, unknown>;
-  constructor(message: string, status: number, body?: Record<string, unknown>) {
+  constructor(message: string, status: number, body?: Record<string, unknown>, path = "") {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.body = body;
+    this.path = path;
   }
 }
 
-async function req<T>(path: string, opts?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    ...opts,
-  });
+// A 401 from anything but the auth endpoints means this browser's session has ended
+// (expired, revoked, password changed, account turned off). The app is told once, through
+// this window event, and swaps to the sign-in screen instead of every panel and poll
+// showing its own "authentication required". The auth endpoints are left out because a
+// wrong password, a pending Plex PIN or a signed-out /me legitimately answer 401.
+export const SIGNED_OUT_EVENT = "arrmada:signed-out";
+let signedOut = false;
+
+export function signalSignedOut(): void {
+  if (signedOut) return;
+  signedOut = true;
+  window.dispatchEvent(new CustomEvent(SIGNED_OUT_EVENT));
+}
+
+// resetSignedOut re-arms the signal after a sign-in.
+export function resetSignedOut(): void {
+  signedOut = false;
+}
+
+// send is the one place every API call goes through, JSON or upload: it turns a non-OK
+// response into an ApiError carrying the server's message, and spots a lost session.
+async function send(path: string, init?: RequestInit): Promise<Response> {
+  const res = await fetch(path, init);
   if (!res.ok) {
+    if (res.status === 401 && !path.startsWith("/api/v1/auth/")) signalSignedOut();
     let msg = `HTTP ${res.status}`;
     let body: Record<string, unknown> | undefined;
     try {
@@ -1192,8 +1226,16 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
     } catch {
       /* non-JSON error */
     }
-    throw new ApiError(msg, res.status, body);
+    throw new ApiError(msg, res.status, body, path);
   }
+  return res;
+}
+
+async function req<T>(path: string, opts?: RequestInit): Promise<T> {
+  const res = await send(path, {
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    ...opts,
+  });
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
@@ -1203,7 +1245,12 @@ export const api = {
   health: () => req<Health>("/api/health"),
 
   me: () => req<{ user: AuthUser }>("/api/v1/auth/me").then((r) => r.user),
-  logout: () => req<unknown>("/api/v1/auth/logout", { method: "POST" }),
+  // A deliberate sign-out mutes the signed-out signal: a poll that 401s before the page
+  // reloads must not flash "You were signed out" or remember the page to come back to.
+  logout: () => {
+    signedOut = true;
+    return req<unknown>("/api/v1/auth/logout", { method: "POST" });
+  },
   login: (username: string, password: string) =>
     req<{ user: AuthUser }>("/api/v1/auth/login", { method: "POST", body: JSON.stringify({ username, password }) }),
   setupAdmin: (username: string, password: string) =>
@@ -1211,12 +1258,23 @@ export const api = {
   users: () => req<{ users: AuthUser[] }>("/api/v1/users").then((r) => r.users),
   createUser: (body: { email: string; password: string; role: string; auto_approve: boolean }) =>
     req<AuthUser>("/api/v1/users", { method: "POST", body: JSON.stringify(body) }),
-  updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string }) =>
-    req<{ id: number; role: string; auto_approve: boolean }>(`/api/v1/users/${id}`, { method: "PUT", body: JSON.stringify(body) }),
+  // disabled: true turns off their sign-in and signs them out everywhere; nothing is deleted.
+  updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string; disabled?: boolean }) =>
+    req<{ id: number; role: string; auto_approve: boolean; disabled: boolean }>(`/api/v1/users/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   userImpact: (id: number) => req<UserImpact>(`/api/v1/users/${id}/impact`),
   // confirm is the username, required by the server when the user has listening data.
-  deleteUser: (id: number, confirm?: string) =>
-    req<void>(`/api/v1/users/${id}${confirm ? `?confirm=${encodeURIComponent(confirm)}` : ""}`, { method: "DELETE" }),
+  // blockPlex also blocks their Plex account, so they can't come straight back via Plex.
+  deleteUser: (id: number, confirm?: string, blockPlex?: boolean) => {
+    const q = new URLSearchParams();
+    if (confirm) q.set("confirm", confirm);
+    if (blockPlex) q.set("block_plex", "1");
+    const qs = q.toString();
+    return req<void>(`/api/v1/users/${id}${qs ? `?${qs}` : ""}`, { method: "DELETE" });
+  },
+  plexBlocks: () => req<{ blocks: PlexBlock[] }>("/api/v1/users/plex-blocks").then((r) => r.blocks),
+  blockUserPlex: (id: number) => req<{ blocks: PlexBlock[] }>(`/api/v1/users/${id}/block-plex`, { method: "POST" }).then((r) => r.blocks),
+  unblockPlex: (plexID: string) =>
+    req<{ blocks: PlexBlock[] }>(`/api/v1/users/plex-blocks/${encodeURIComponent(plexID)}`, { method: "DELETE" }).then((r) => r.blocks),
   importOverseerr: (url: string, api_key: string) =>
     req<{ status: string; found: number }>("/api/v1/requests/import/overseerr", { method: "POST", body: JSON.stringify({ url, api_key }) }),
   importTautulli: (url: string, api_key: string) =>
@@ -1256,6 +1314,8 @@ export const api = {
   testAPIKey: (id: string) => req<{ ok: boolean; detail: string }>(`/api/v1/apikeys/${id}/test`, { method: "POST" }),
   setAPIKey: (id: string, value: string) =>
     req<{ keys: APIKeyStatus[] }>(`/api/v1/apikeys/${id}`, { method: "PUT", body: JSON.stringify({ value }) }).then((r) => r.keys),
+  // Clearing is its own DELETE (a blank PUT is refused), so an empty Save can't wipe a key.
+  clearAPIKey: (id: string) => req<{ keys: APIKeyStatus[] }>(`/api/v1/apikeys/${id}`, { method: "DELETE" }).then((r) => r.keys),
   clientSettings: (id: number) => req<ClientSettings>(`/api/v1/downloadclients/${id}/settings`),
   setClientSettings: (id: number, body: ClientSettings) =>
     req<{ status: string }>(`/api/v1/downloadclients/${id}/settings`, { method: "PUT", body: JSON.stringify(body) }),
@@ -1387,12 +1447,8 @@ export const api = {
   audioImportUpload: async (file: File): Promise<AudioImportPreview> => {
     const fd = new FormData();
     fd.append("file", file);
-    const res = await fetch("/api/v1/audioserver/import", { method: "POST", body: fd });
-    if (!res.ok) {
-      let msg = `HTTP ${res.status}`;
-      try { const b = await res.json(); if (b.message) msg = b.message; } catch { /* not JSON */ }
-      throw new Error(msg);
-    }
+    // Through send, not req: the browser sets the multipart Content-Type itself.
+    const res = await send("/api/v1/audioserver/import", { method: "POST", body: fd });
     return res.json();
   },
   audioImportApply: (userMap: Record<string, number>) => req<AudioImportResult>("/api/v1/audioserver/import/apply", { method: "POST", body: JSON.stringify({ user_map: userMap }) }),
@@ -1626,17 +1682,7 @@ export const api = {
   uploadBookCover: async (id: number, file: File): Promise<string> => {
     const fd = new FormData();
     fd.append("file", file);
-    const res = await fetch(`/api/v1/books/${id}/cover`, { method: "POST", body: fd });
-    if (!res.ok) {
-      let msg = `HTTP ${res.status}`;
-      try {
-        const b = (await res.json()) as { message?: string };
-        if (b.message) msg = b.message;
-      } catch {
-        /* non-JSON error */
-      }
-      throw new Error(msg);
-    }
+    const res = await send(`/api/v1/books/${id}/cover`, { method: "POST", body: fd });
     return ((await res.json()) as { cover_url: string }).cover_url;
   },
   // Tell the Hardcover re-match to leave a book on its current entry (or to try again).

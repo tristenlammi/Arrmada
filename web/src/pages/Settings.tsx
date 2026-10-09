@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { ConfirmDialog } from "../components/ConfirmDialog";
-import { api, type APIKeyStatus, type AppSettings, type AuthUser, type DiskGuardStatus, type RecycleStats, type RecycleItem, type UserImpact } from "../lib/api";
+import { api, type APIKeyStatus, type AppSettings, type AuthUser, type DiskGuardStatus, type PlexBlock, type RecycleStats, type RecycleItem, type UserImpact } from "../lib/api";
 import { useMe, isAdmin } from "../lib/me";
 import { LibraryFolders } from "./Library";
 
@@ -268,9 +268,20 @@ function UsersManager({ meId }: { meId?: number }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [editing, setEditing] = useState<AuthUser | null>(null);
+  const [blocks, setBlocks] = useState<PlexBlock[]>([]);
+  const [blockErr, setBlockErr] = useState<string | null>(null);
 
-  const load = () => api.users().then(setUsers).catch((e: Error) => setErr(e.message));
+  const load = () => {
+    api.users().then(setUsers).catch((e: Error) => setErr(e.message));
+    api.plexBlocks().then(setBlocks).catch(() => {});
+  };
   useEffect(() => { load(); }, []);
+
+  const unblock = async (b: PlexBlock) => {
+    setBlockErr(null);
+    try { setBlocks(await api.unblockPlex(b.plex_id)); load(); }
+    catch (e) { setBlockErr((e as Error).message); }
+  };
 
   const add = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -297,8 +308,9 @@ function UsersManager({ meId }: { meId?: number }) {
           users.map((u) => (
             <div key={u.id} className="flex items-center gap-3 rounded-lg px-3 py-2" style={{ background: "var(--panel-2)" }}>
               <span className="grid h-7 w-7 flex-none place-items-center rounded-full text-[11px] font-bold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{u.username[0]?.toUpperCase()}</span>
-              <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium">{u.username}</span>
-              {u.auto_approve && <span className="rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: "var(--good-soft, rgba(90,140,90,.16))", color: "var(--good)" }}>Auto-approve</span>}
+              <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium" style={u.disabled ? { color: "var(--ink-faint)" } : undefined}>{u.username}</span>
+              {u.disabled && <span className="rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: "var(--reject-soft)", color: "var(--reject)" }} title="Can't sign in. Nothing of theirs was deleted.">Disabled</span>}
+              {u.auto_approve &&<span className="rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: "var(--good-soft, rgba(90,140,90,.16))", color: "var(--good)" }}>Auto-approve</span>}
               <span className="rounded-full px-2 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: "var(--panel)", color: ROLE_TONE[u.role] ?? "var(--ink-faint)", border: "1px solid var(--line)" }}>{u.role}</span>
               <button onClick={() => setEditing(u)} title="Edit user" className="grid h-7 w-7 flex-none place-items-center rounded-lg" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
                 <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M4 20h4L18 10l-4-4L4 16v4z M14 6l4 4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -313,6 +325,20 @@ function UsersManager({ meId }: { meId?: number }) {
         )}
       </div>
 
+      {blocks.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <div className="font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-ink-faint">Blocked Plex accounts</div>
+          {blocks.map((b) => (
+            <div key={b.plex_id} className="flex items-center gap-3 rounded-lg px-3 py-2" style={{ background: "var(--panel-2)" }}>
+              <span className="min-w-0 flex-1 truncate text-[12.5px]">{b.name || `Plex account ${b.plex_id}`}</span>
+              <span className="flex-none text-[10.5px] text-ink-faint">can't sign in with Plex</span>
+              <button onClick={() => unblock(b)} className="flex-none rounded-lg px-2.5 py-1 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Unblock</button>
+            </div>
+          ))}
+          {blockErr && <div className="text-[12px]" style={{ color: "var(--reject)" }}>{blockErr}</div>}
+        </div>
+      )}
+
       <form onSubmit={add} className="mt-2 flex flex-col gap-2.5 rounded-lg p-3" style={{ border: "1px dashed var(--line)" }}>
         <div className="font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-ink-faint">Add a user</div>
         <div className="flex flex-wrap gap-2">
@@ -322,6 +348,7 @@ function UsersManager({ meId }: { meId?: number }) {
             <option value="requester">Requester</option>
             <option value="manager">Manager</option>
             <option value="admin">Admin</option>
+            <option value="readonly">Read-only</option>
           </select>
         </div>
         <div className="flex items-center justify-between gap-3">
@@ -334,7 +361,7 @@ function UsersManager({ meId }: { meId?: number }) {
         {err && <div className="text-[12px]" style={{ color: "var(--reject)" }}>{err}</div>}
       </form>
 
-      {editing && <EditUserModal user={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
+      {editing && <EditUserModal user={editing} isMe={editing.id === meId} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
       {removing && <DeleteUserDialog user={removing} onClose={() => setRemoving(null)} onDeleted={() => { setRemoving(null); load(); }} />}
     </Section>
   );
@@ -349,6 +376,8 @@ function DeleteUserDialog({ user, onClose, onDeleted }: { user: AuthUser; onClos
   const [impact, setImpact] = useState<UserImpact | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Plex-linked users come straight back on their next Plex sign-in unless this is ticked.
+  const [blockPlex, setBlockPlex] = useState(false);
 
   useEffect(() => {
     api.userImpact(user.id).then(setImpact).catch((e: Error) => setErr(`Couldn't check what this would remove: ${e.message}`));
@@ -356,10 +385,11 @@ function DeleteUserDialog({ user, onClose, onDeleted }: { user: AuthUser; onClos
 
   const listening = !!impact && (impact.places > 0 || impact.listening_hours > 0);
   const hours = impact ? (impact.listening_hours >= 10 ? Math.round(impact.listening_hours) : Math.round(impact.listening_hours * 10) / 10) : 0;
+  const canBlock = !!user.plex_linked && !user.plex_blocked;
 
   const confirm = async () => {
     setBusy(true); setErr(null);
-    try { await api.deleteUser(user.id, listening ? user.username : undefined); onDeleted(); }
+    try { await api.deleteUser(user.id, listening ? user.username : undefined, canBlock && blockPlex); onDeleted(); }
     catch (e) { setErr((e as Error).message); setBusy(false); }
   };
 
@@ -373,9 +403,15 @@ function DeleteUserDialog({ user, onClose, onDeleted }: { user: AuthUser; onClos
             {" "}Their {plural(impact.requests, "request")} stay.
           </p>
           <p className="m-0 mt-2">A copy of the database from just before is kept under Backups.</p>
-          {impact.plex_linked && <p className="m-0 mt-2">They can sign in again with Plex unless you disable them or remove their access in Plex.</p>}
+          {canBlock && !blockPlex && <p className="m-0 mt-2">They can sign in again with Plex unless you block their Plex account below, or turn off their sign-in instead of deleting them.</p>}
         </>
       ) : !err ? "Checking what this would remove…" : null}
+      extra={canBlock ? (
+        <label className="flex items-center gap-2 text-[12px] text-ink-dim">
+          <input type="checkbox" checked={blockPlex} disabled={busy} onChange={(e) => setBlockPlex(e.target.checked)} />
+          Also block their Plex account from signing in here
+        </label>
+      ) : undefined}
       typedPhrase={listening ? user.username : undefined}
       confirmLabel="Delete user"
       busyLabel="Deleting…"
@@ -388,19 +424,28 @@ function DeleteUserDialog({ user, onClose, onDeleted }: { user: AuthUser; onClos
   );
 }
 
-function EditUserModal({ user, onClose, onSaved }: { user: AuthUser; onClose: () => void; onSaved: () => void }) {
+function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe: boolean; onClose: () => void; onSaved: () => void }) {
   const [role, setRole] = useState(user.role);
   const [autoApprove, setAutoApprove] = useState(user.auto_approve);
+  const [canSignIn, setCanSignIn] = useState(!user.disabled);
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [confirmBlock, setConfirmBlock] = useState(false);
 
   const save = async () => {
     setBusy(true); setErr(null);
     try {
-      await api.updateUser(user.id, { role, auto_approve: autoApprove, ...(password ? { password } : {}) });
+      const signIn = canSignIn === !user.disabled ? {} : { disabled: !canSignIn };
+      await api.updateUser(user.id, { role, auto_approve: autoApprove, ...signIn, ...(password ? { password } : {}) });
       onSaved();
     } catch (e) { setErr((e as Error).message); setBusy(false); }
+  };
+
+  const blockPlex = async () => {
+    setBusy(true); setErr(null);
+    try { await api.blockUserPlex(user.id); onSaved(); }
+    catch (e) { setErr((e as Error).message); setBusy(false); setConfirmBlock(false); }
   };
 
   return (
@@ -423,6 +468,32 @@ function EditUserModal({ user, onClose, onSaved }: { user: AuthUser; onClose: ()
           <Toggle label="Auto-approve requests" hint="This user's requests download immediately, skipping the approval queue." checked={autoApprove} onChange={setAutoApprove} />
         </div>
 
+        {!isMe && (
+          <div className="mb-3">
+            <Toggle
+              label="Can sign in"
+              hint={canSignIn
+                ? "Turn off to sign them out of the web app and their audiobook apps. Nothing of theirs is deleted, so turning it back on restores everything."
+                : "They're signed out everywhere and can't sign in. Their requests and listening places are kept."}
+              checked={canSignIn}
+              onChange={setCanSignIn}
+            />
+          </div>
+        )}
+
+        {user.plex_linked && !isMe && (
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-lg p-3" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+            <span className="text-[11.5px] text-ink-dim">
+              {user.plex_blocked
+                ? "Their Plex account is blocked from signing in here. Unblock it under Blocked Plex accounts."
+                : "Signs in with Plex. Blocking their Plex account stops them signing in with it (and stops a new account being made if you delete this one)."}
+            </span>
+            {!user.plex_blocked && (
+              <button onClick={() => setConfirmBlock(true)} disabled={busy} className="flex-none rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Block their Plex account</button>
+            )}
+          </div>
+        )}
+
         <label className="mb-4 flex flex-col gap-1.5">
           <span className="font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-ink-faint">New password <span className="text-ink-faint">(optional)</span></span>
           <input type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="leave blank to keep current" className="rounded-lg px-3 py-2 text-[12.5px]" style={inputStyle} />
@@ -433,6 +504,17 @@ function EditUserModal({ user, onClose, onSaved }: { user: AuthUser; onClose: ()
           <button onClick={onClose} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Cancel</button>
           <button onClick={save} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy ? "Saving…" : "Save changes"}</button>
         </div>
+        {confirmBlock && (
+          <ConfirmDialog
+            title={<>Block {user.username}'s Plex account?</>}
+            body={<p className="m-0">They won't be able to sign in here with Plex. Devices they're already signed in on stay signed in — turn off Can sign in to sign them out too.</p>}
+            confirmLabel="Block"
+            busyLabel="Blocking…"
+            busy={busy}
+            onConfirm={blockPlex}
+            onCancel={() => setConfirmBlock(false)}
+          />
+        )}
       </div>
     </div>
   );
@@ -599,11 +681,25 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
 }
 
 
+// What stops working when a key is cleared and nothing takes its place, for the confirm.
+const KEY_CLEAR_EFFECT: Record<string, string> = {
+  tmdb: "Discover, Movies and TV stop finding anything.",
+  tvdb: "Anime episode numbering goes back to TMDB's.",
+  omdb: "IMDb, Rotten Tomatoes and Metacritic scores stop showing.",
+  hardcover: "New book lookups go back to Open Library. Books already matched keep what they have.",
+  opensubtitles_api: "Subtitle search stops.",
+  opensubtitles_username: "Subtitle downloads stop.",
+  opensubtitles_password: "Subtitle downloads stop.",
+};
+
 function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => void }) {
   const [keys, setKeys] = useState<APIKeyStatus[] | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // The key whose Clear is waiting on the confirm, and the server's answer if it said no.
+  const [clearing, setClearing] = useState<APIKeyStatus | null>(null);
+  const [clearErr, setClearErr] = useState<string | null>(null);
   // Result of the last "Test" per key: a live request with the saved value.
   const [tests, setTests] = useState<Record<string, { ok: boolean; detail: string }>>({});
   const testKey = async (id: string) => {
@@ -640,13 +736,32 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
   };
 
   const saveKey = async (id: string) => {
+    // A blank Save never reaches the server: clearing a key is Clear's job.
+    const value = drafts[id]?.trim();
+    if (!value) return;
     setBusy(id); setErr(null);
     try {
-      const next = await api.setAPIKey(id, drafts[id] ?? "");
+      const next = await api.setAPIKey(id, value);
       setKeys(next);
       setDrafts((d) => { const n = { ...d }; delete n[id]; return n; }); // clear the field on success
     } catch (e) {
       setErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Clear goes straight to the DELETE, not through the draft, so a value typed in the
+  // field is never saved by pressing Clear.
+  const clearKey = async (k: APIKeyStatus) => {
+    setBusy("clear:" + k.id); setClearErr(null);
+    try {
+      setKeys(await api.clearAPIKey(k.id));
+      setDrafts((d) => { const n = { ...d }; delete n[k.id]; return n; });
+      setTests((t) => { const n = { ...t }; delete n[k.id]; return n; });
+      setClearing(null);
+    } catch (e) {
+      setClearErr((e as Error).message);
     } finally {
       setBusy(null);
     }
@@ -682,8 +797,8 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
               />
               <button
                 onClick={() => saveKey(k.id)}
-                disabled={busy !== null}
-                className="flex-none rounded-lg px-3 py-1.5 text-[11.5px] font-semibold"
+                disabled={busy !== null || !drafts[k.id]?.trim()}
+                className="flex-none rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50"
                 style={{ border: "1px solid var(--accent-line, var(--line))", color: "var(--accent)" }}
               >
                 {busy === k.id ? "Saving…" : "Save"}
@@ -701,7 +816,7 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
               )}
               {k.configured && k.source === "settings" && (
                 <button
-                  onClick={() => { setDrafts((d) => ({ ...d, [k.id]: "" })); saveKey(k.id); }}
+                  onClick={() => { setClearErr(null); setClearing(k); }}
                   disabled={busy !== null}
                   className="flex-none rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold"
                   style={{ border: "1px solid var(--line)", color: "var(--ink-faint)" }}
@@ -759,6 +874,24 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
           )}
         </div>
       </div>
+      {clearing && (
+        <ConfirmDialog
+          title={<>Clear the saved {clearing.label} key?</>}
+          body={
+            <p className="m-0">
+              {clearing.env_set
+                ? `The key from your install${clearing.env_hint ? ` (${clearing.env_hint})` : ""} will be used instead.`
+                : KEY_CLEAR_EFFECT[clearing.id] ?? clearing.purpose}
+            </p>
+          }
+          confirmLabel="Clear key"
+          busyLabel="Clearing…"
+          busy={busy === "clear:" + clearing.id}
+          error={clearErr}
+          onConfirm={() => clearKey(clearing)}
+          onCancel={() => setClearing(null)}
+        />
+      )}
     </Section>
   );
 }

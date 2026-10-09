@@ -1,4 +1,5 @@
 ANY / public ext
+DELETE /api/v1/apikeys/{id} staff -
 DELETE /api/v1/audioserver/devices/{family} admin -
 DELETE /api/v1/books/{id} staff -
 DELETE /api/v1/books/{id}/audio-versions/{vid} staff -
@@ -25,6 +26,7 @@ DELETE /api/v1/series/{id}/blocklist/{bid} staff -
 DELETE /api/v1/series/{id}/duplicates staff -
 DELETE /api/v1/series/{id}/scene-map/{season} staff -
 DELETE /api/v1/series/{id}/seasons/{season}/episodes/{episode}/file staff -
+DELETE /api/v1/users/plex-blocks/{plexID} admin -
 DELETE /api/v1/users/{id} admin -
 GET /api/health public ext
 GET /api/v1/apikeys staff -
@@ -173,6 +175,7 @@ GET /api/v1/subtitles/settings staff -
 GET /api/v1/system/browse staff -
 GET /api/v1/system/library staff -
 GET /api/v1/users admin -
+GET /api/v1/users/plex-blocks admin -
 GET /api/v1/users/{id}/impact admin -
 GET /api/v1/ws user -
 POST /api/v1/apikeys/{id}/test staff -
@@ -287,6 +290,7 @@ POST /api/v1/subtitles/sweep staff -
 POST /api/v1/system/backups admin -
 POST /api/v1/system/restart admin -
 POST /api/v1/users admin -
+POST /api/v1/users/{id}/block-plex admin -
 PUT /api/v1/apikeys/{id} staff -
 PUT /api/v1/audioserver admin -
 PUT /api/v1/audioserver/users/{id} admin -

@@ -81,6 +81,10 @@ func (a *api) handleImportOverseerr(w http.ResponseWriter, r *http.Request) {
 			case it.RequesterPlex > 0:
 				if id, ok := plexUsers[it.RequesterPlex]; ok {
 					uid = id
+				} else if a.plexBlocked(bg, strconv.Itoa(it.RequesterPlex)) {
+					// A blocked Plex account gets no account made for it; the request is
+					// kept under the admin, like one from an unknown requester.
+					plexUsers[it.RequesterPlex] = adminID
 				} else if u, e := a.deps.Auth.FindOrCreatePlexUser(bg, strconv.Itoa(it.RequesterPlex), it.Requester, auth.RoleRequester, autoApprove); e == nil {
 					plexUsers[it.RequesterPlex] = u.ID
 					uid = u.ID

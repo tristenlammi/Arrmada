@@ -34,15 +34,16 @@ import { Placeholder } from "./pages/Placeholder";
 
 // Module routes still awaiting their build → placeholders.
 export default function App() {
-  const { user, loading, external, booksEnabled, musicEnabled } = useMe();
+  const { user, loading, signedOut, external, booksEnabled, musicEnabled } = useMe();
 
   if (loading) {
     return <div className="grid h-full place-items-center text-[13px] text-ink-dim">Loading…</div>;
   }
 
-  // Auth enabled + not signed in → login / first-run setup.
+  // Auth enabled + not signed in → login / first-run setup. signedOut: the session ended
+  // while the app was open, so the screen says why.
   if (!user) {
-    return <Login />;
+    return <Login signedOut={signedOut} />;
   }
 
   // "external" is the server's verdict that this session is limited to Discover: from

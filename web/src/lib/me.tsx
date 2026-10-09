@@ -1,9 +1,12 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { api, type AuthUser } from "./api";
+import { api, SIGNED_OUT_EVENT, type AuthUser } from "./api";
+import { rememberNext } from "./session";
 
 interface MeState {
   user: AuthUser | null;
   loading: boolean;
+  // The session ended while the app was open; the sign-in screen says so.
+  signedOut: boolean;
   external: boolean; // request came from outside the LAN → Discover-only
   // Module toggles (from /status) so nav + Discover can hide disabled modules live.
   booksEnabled: boolean;
@@ -12,7 +15,7 @@ interface MeState {
   setMusicEnabled: (v: boolean) => void;
 }
 
-const MeContext = createContext<MeState>({ user: null, loading: true, external: false, booksEnabled: true, setBooksEnabled: () => {}, musicEnabled: false, setMusicEnabled: () => {} });
+const MeContext = createContext<MeState>({ user: null, loading: true, signedOut: false, external: false, booksEnabled: true, setBooksEnabled: () => {}, musicEnabled: false, setMusicEnabled: () => {} });
 
 // MeProvider fetches the current user and module toggles once at boot so the whole app can
 // branch on role (staff get the full console; requesters get the Discover-only shell) and
@@ -35,7 +38,20 @@ export function MeProvider({ children }: { children: ReactNode }) {
       setLoading(false);
     });
   }, []);
-  return <MeContext.Provider value={{ user, loading, external, booksEnabled, setBooksEnabled, musicEnabled, setMusicEnabled }}>{children}</MeContext.Provider>;
+  // A session that ends mid-use (expired, revoked, password changed, account turned off)
+  // swaps the whole app for the sign-in screen, remembering the page to come back to.
+  // The layouts unmount, so their polls and the live socket stop with them.
+  const [signedOut, setSignedOut] = useState(false);
+  useEffect(() => {
+    const onSignedOut = () => {
+      rememberNext();
+      setUser(null);
+      setSignedOut(true);
+    };
+    window.addEventListener(SIGNED_OUT_EVENT, onSignedOut);
+    return () => window.removeEventListener(SIGNED_OUT_EVENT, onSignedOut);
+  }, []);
+  return <MeContext.Provider value={{ user, loading, signedOut, external, booksEnabled, setBooksEnabled, musicEnabled, setMusicEnabled }}>{children}</MeContext.Provider>;
 }
 
 export function useMe(): MeState {

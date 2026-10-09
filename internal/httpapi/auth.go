@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
 )
@@ -36,8 +37,9 @@ func (a *api) authenticate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var user *auth.User
 		if c, err := r.Cookie(sessionCookieName); err == nil && c.Value != "" {
-			if u, err := a.deps.Auth.ValidateSession(r.Context(), c.Value); err == nil {
+			if u, exp, err := a.deps.Auth.ValidateSessionInfo(r.Context(), c.Value); err == nil {
 				user = u
+				a.maybeExtendSession(w, r, c.Value, exp)
 			}
 		}
 		if user == nil {
@@ -52,6 +54,29 @@ func (a *api) authenticate(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// maybeExtendSession slides a session that's past half its life: the expiry moves to a
+// full TTL from now and the cookie is re-sent with it. Sessions in active use never run
+// out mid-use, and it costs at most one write per session every couple of weeks.
+// Revocation is unchanged: a password change deletes the sessions, and a disabled user
+// fails validation before getting here.
+func (a *api) maybeExtendSession(w http.ResponseWriter, r *http.Request, token string, exp time.Time) {
+	ttl := a.deps.Auth.SessionTTL()
+	if exp.IsZero() || time.Until(exp) >= ttl/2 {
+		return
+	}
+	// A WebSocket upgrade hijacks the connection and never sends these headers, so the
+	// database would slide while the browser's cookie kept its old expiry. Leave it to the
+	// next ordinary request.
+	if r.Header.Get("Upgrade") != "" {
+		return
+	}
+	newExp, err := a.deps.Auth.ExtendSession(r.Context(), token)
+	if err != nil {
+		return // the session still works until its old expiry; try again next request
+	}
+	a.setSessionCookie(w, r, token, newExp)
 }
 
 func apiKeyFromRequest(r *http.Request) string {
@@ -159,6 +184,12 @@ func (a *api) startSession(w http.ResponseWriter, r *http.Request, u *auth.User,
 		a.writeError(w, http.StatusInternalServerError, "could not create session")
 		return
 	}
+	a.setSessionCookie(w, r, token, expires)
+	a.writeJSON(w, code, map[string]any{"user": u})
+}
+
+// setSessionCookie writes the session cookie, on sign-in and whenever the session slides.
+func (a *api) setSessionCookie(w http.ResponseWriter, r *http.Request, token string, expires time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookieName,
 		Value:    token,
@@ -168,7 +199,6 @@ func (a *api) startSession(w http.ResponseWriter, r *http.Request, u *auth.User,
 		Secure:   requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 	})
-	a.writeJSON(w, code, map[string]any{"user": u})
 }
 
 func (a *api) clearSessionCookie(w http.ResponseWriter, r *http.Request) {

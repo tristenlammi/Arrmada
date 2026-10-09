@@ -12,8 +12,15 @@ package apikeys
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
+)
+
+// Errors the API layer turns into a 404 or a 400.
+var (
+	ErrUnknownKey = errors.New("unknown key")
+	ErrEmptyValue = errors.New("value is required")
 )
 
 // Key describes one credential: what it's for, how to get it, and where it's read from.
@@ -114,13 +121,27 @@ func (s *Store) Func(id string) func() string {
 	return func() string { return s.Value(context.Background(), id) }
 }
 
-// Set saves a credential. An empty value clears it (falling back to the env var, if any).
+// Set saves a credential. A blank value is refused rather than treated as a clear: an
+// empty Save used to wipe a working key without anyone meaning to. Clearing is Clear's job.
 func (s *Store) Set(ctx context.Context, id, value string) error {
 	k, ok := keyByID(id)
 	if !ok {
-		return nil
+		return ErrUnknownKey
 	}
-	return s.s.Set(ctx, k.settingKey(), strings.TrimSpace(value))
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ErrEmptyValue
+	}
+	return s.s.Set(ctx, k.settingKey(), value)
+}
+
+// Clear removes the saved value, so the key falls back to the install-time env var, if any.
+func (s *Store) Clear(ctx context.Context, id string) error {
+	k, ok := keyByID(id)
+	if !ok {
+		return ErrUnknownKey
+	}
+	return s.s.Set(ctx, k.settingKey(), "")
 }
 
 // KeyStatus is the browser-safe view of a credential — never the value itself.
@@ -129,6 +150,10 @@ type KeyStatus struct {
 	Configured bool   `json:"configured"`
 	Source     string `json:"source"`         // "settings" | "env" | ""
 	Hint       string `json:"hint,omitempty"` // last 4 chars of a secret, or the whole username
+	// The install-time env var, reported even when a saved value wins, so the UI can say
+	// what clearing the saved one falls back to.
+	EnvSet  bool   `json:"env_set"`
+	EnvHint string `json:"env_hint,omitempty"`
 }
 
 // Status reports every credential's state for the settings UI, without exposing secrets.
@@ -136,10 +161,13 @@ func (s *Store) Status(ctx context.Context) []KeyStatus {
 	out := make([]KeyStatus, 0, len(Catalog))
 	for _, k := range Catalog {
 		st := KeyStatus{Key: k}
+		if env := strings.TrimSpace(os.Getenv(k.EnvVar)); env != "" {
+			st.EnvSet, st.EnvHint = true, hint(env, k.Secret)
+		}
 		if v := strings.TrimSpace(s.s.Get(ctx, k.settingKey(), "")); v != "" {
 			st.Configured, st.Source, st.Hint = true, "settings", hint(v, k.Secret)
-		} else if v := strings.TrimSpace(os.Getenv(k.EnvVar)); v != "" {
-			st.Configured, st.Source, st.Hint = true, "env", hint(v, k.Secret)
+		} else if st.EnvSet {
+			st.Configured, st.Source, st.Hint = true, "env", st.EnvHint
 		}
 		out = append(out, st)
 	}

@@ -107,14 +107,19 @@ func (a *api) handlePlexLoginPoll(w http.ResponseWriter, r *http.Request) {
 	if acct.ID == 0 && acct.UUID != "" {
 		plexID = acct.UUID
 	}
+	// A blocked Plex account is turned away before an account is found or made for it.
+	if ok, msg := a.plexSignInAllowed(ctx, plexID, nil); !ok {
+		a.writeError(w, http.StatusForbidden, msg)
+		return
+	}
 	autoApprove := a.deps.Settings.GetBool(ctx, "plex_login_auto_approve", true)
 	u, err := a.deps.Auth.FindOrCreatePlexUser(ctx, plexID, acct.Username, auth.RoleRequester, autoApprove)
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not create your account")
 		return
 	}
-	if u.Disabled {
-		a.writeError(w, http.StatusForbidden, "This account is disabled.")
+	if ok, msg := a.plexSignInAllowed(ctx, plexID, u); !ok {
+		a.writeError(w, http.StatusForbidden, msg)
 		return
 	}
 	a.startSession(w, r, u, http.StatusOK)
