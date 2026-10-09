@@ -36,6 +36,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
 	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/safego"
+	"github.com/tristenlammi/arrmada/internal/scheduler"
 	"github.com/tristenlammi/arrmada/internal/series"
 	"github.com/tristenlammi/arrmada/internal/settings"
 	"github.com/tristenlammi/arrmada/internal/store"
@@ -93,6 +94,9 @@ type Deps struct {
 	// Backups makes the nightly and manual database copies. nil = no backups wired: the
 	// manual action answers 503 and the health panel says nothing about them.
 	Backups *backup.Service
+	// Scheduler runs the recurring tasks; the Tasks API reads and triggers it. nil = the
+	// task list is empty and Run now answers 503.
+	Scheduler *scheduler.Scheduler
 }
 
 type api struct {
@@ -165,6 +169,10 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/setup", a.requireRole(auth.RoleAdmin, a.handleSetupState))
 	mux.HandleFunc("POST /api/v1/setup/complete", a.requireRole(auth.RoleAdmin, a.handleSetupComplete))
 	mux.HandleFunc("POST /api/v1/system/restart", a.requireRole(auth.RoleAdmin, a.handleRestart))
+	// Recurring tasks: staff can see how they're doing; starting one by hand (a backup, a
+	// whole-library sweep) is a system action, so Run now is admin-only.
+	mux.HandleFunc("GET /api/v1/system/tasks", a.requireRole(auth.RoleManager, a.handleListTasks))
+	mux.HandleFunc("POST /api/v1/system/tasks/{name}/run", a.requireRole(auth.RoleAdmin, a.handleRunTask))
 
 	// Audiobook server (listening apps): admin panel + each user's own connection card.
 	mux.HandleFunc("GET /api/v1/audioserver", a.requireRole(auth.RoleAdmin, a.handleAudioServer))

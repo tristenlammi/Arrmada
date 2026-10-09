@@ -611,6 +611,29 @@ export interface RestoreStaged {
   schema_version: string;
 }
 
+// One recurring task as GET /api/v1/system/tasks reports it. Times are ISO strings, null
+// until they happen; last_error is empty once a run succeeds.
+export interface TaskStatus {
+  name: string;
+  label: string;
+  description: string;
+  interval_seconds: number;
+  running: boolean;
+  last_start: string | null;
+  last_end: string | null;
+  last_duration_ms: number;
+  last_status: "" | "ok" | "failed" | "panicked";
+  last_ok: boolean;
+  last_error: string;
+  last_error_at: string | null;
+  runs: number;
+  failures: number;
+  consecutive_failures: number;
+  skipped: number;
+  next_run: string | null;
+  job_id?: number; // the Run now in progress
+}
+
 // The download link for a backup (a .db.gz streamed by the server, admin only).
 export const backupDownloadURL = (name: string) => `/api/v1/system/backups/${encodeURIComponent(name)}/download`;
 
@@ -1536,6 +1559,13 @@ export const api = {
   },
   recycleStats: () => req<RecycleStats>("/api/v1/recycle"),
   recycleMode: () => req<RecycleMode>("/api/v1/recycle/mode"),
+  // Recurring tasks (System → Status): staff can list them; Run now is admin-only and
+  // answers 409 when the task is already running.
+  tasks: () => req<TaskStatus[]>("/api/v1/system/tasks"),
+  runTask: (name: string) =>
+    req<{ status: string; job_id: number; existing: boolean }>(`/api/v1/system/tasks/${encodeURIComponent(name)}/run`, {
+      method: "POST",
+    }),
   // Database backups — admin only (a backup holds every secret the app has).
   backups: () => req<BackupsState>("/api/v1/system/backups"),
   // A manual database backup, taken synchronously.

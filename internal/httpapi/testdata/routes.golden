@@ -180,6 +180,7 @@ GET /api/v1/system/browse admin -
 GET /api/v1/system/library staff -
 GET /api/v1/system/library/check admin -
 GET /api/v1/system/pending-restart staff -
+GET /api/v1/system/tasks staff -
 GET /api/v1/users admin -
 GET /api/v1/users/plex-blocks admin -
 GET /api/v1/users/{id}/impact admin -
@@ -297,6 +298,7 @@ POST /api/v1/system/backups admin -
 POST /api/v1/system/backups/upload admin -
 POST /api/v1/system/backups/{name}/restore admin -
 POST /api/v1/system/restart admin -
+POST /api/v1/system/tasks/{name}/run admin -
 POST /api/v1/users admin -
 POST /api/v1/users/{id}/block-plex admin -
 PUT /api/v1/apikeys/{id} admin -

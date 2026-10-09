@@ -339,17 +339,28 @@ func main() {
 
 	appStart := time.Now()
 	sched := scheduler.New(log)
+	// Each task's last run, result and failure streak survive a restart, so the Tasks
+	// table can still say what failed overnight after a deploy.
+	sched.SetStore(scheduler.NewSQLStore(st.DB()))
+	// Announce finished runs to staff pages — but only the ones worth a refresh (hourly-ish
+	// tasks, a result that flipped, a Run now), not every 30-second import sweep. Names
+	// and outcome only: the bus reaches every staff client.
+	sched.OnFinish(func(ts scheduler.TaskStatus, notable bool) {
+		if notable {
+			bus.Publish("task.finished", map[string]any{"name": ts.Name, "ok": ts.LastOK, "dur_ms": ts.LastDurationMS})
+		}
+	})
 	sched.Register("prune-expired-sessions", 15*time.Minute, true, func(ctx context.Context) error {
 		_, err := st.DB().ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < CURRENT_TIMESTAMP`)
 		return err
-	})
+	}, scheduler.Label("Sign out expired sessions"), scheduler.Description("Removes login sessions that have passed their expiry."))
 	// Heartbeat so the realtime channel has something to emit until modules do.
 	sched.Register("heartbeat", 10*time.Second, false, func(context.Context) error {
 		bus.Publish("server.heartbeat", map[string]any{
 			"uptime_seconds": int(time.Since(appStart).Seconds()),
 		})
 		return nil
-	})
+	}, scheduler.Hidden())
 	// Import finished downloads into the library.
 	imports := library.NewManager(st.DB(), cfg.LibraryDir, bus, log)
 	imports.SetNaming(prefs)
@@ -431,34 +442,34 @@ func main() {
 		}
 		imports.Process(ctx, cands)
 		return nil
-	})
+	}, scheduler.Label("Import finished movie downloads"), scheduler.Description("Moves completed movie downloads into the library and attaches them to their movie."))
 	// Periodically sweep for monitored movies that still have no file and grab them.
 	sched.Register("search-missing-movies", 5*time.Minute, false, func(ctx context.Context) error {
 		coordinator.SearchMissing(ctx)
 		return nil
-	})
+	}, scheduler.Label("Search for missing movies"), scheduler.Description("Searches the indexers for monitored movies that don't have a file yet."))
 	// RSS sync: poll indexer feeds for new uploads matching wanted movies.
 	sched.Register("rss-sync", 15*time.Minute, false, func(ctx context.Context) error {
 		coordinator.RSSSync(ctx)
 		return nil
-	})
+	}, scheduler.Label("Check indexer feeds for new movies"), scheduler.Description("Reads each indexer's recent uploads and grabs any wanted movie."))
 	// Look for better releases for movies that already have a file (upgrades).
 	sched.Register("upgrade-movies", 6*time.Hour, false, func(ctx context.Context) error {
 		coordinator.UpgradeMovies(ctx)
 		return nil
-	})
+	}, scheduler.Label("Look for better movie releases"), scheduler.Description("Grabs a better release when a movie's quality profile allows upgrades."))
 	// Fail over stalled downloads: replace, then remove, after the profile's (or the global
 	// default) timeout with no progress.
 	sched.Register("detect-stalled", 2*time.Minute, false, func(ctx context.Context) error {
 		coordinator.DetectStalled(ctx)
 		return nil
-	})
+	}, scheduler.Label("Replace stalled downloads"), scheduler.Description("Swaps out downloads that have made no progress for too long."))
 
 	// Hold downloads while the downloads volume is too full. A minute is frequent
 	// enough to catch a big torrent filling a cache pool, and the check is a statfs
 	// plus one queue read, so it costs nothing to run often.
 	diskGuard := download.NewDiskGuard(downloads, settingsSvc, log, cfg.DownloadsDir)
-	sched.Register("downloads-disk-guard", time.Minute, true, diskGuard.Check)
+	sched.Register("downloads-disk-guard", time.Minute, true, diskGuard.Check, scheduler.Label("Watch download disk space"), scheduler.Description("Pauses downloads while the downloads drive is too full."))
 	// A torrent the guard paused is waiting for space, not stalled: its clock holds.
 	coordinator.SetGuardHeld(diskGuard.Held)
 	// Import finished TV downloads (arrmada-tv category): hardlink every episode file
@@ -466,58 +477,58 @@ func main() {
 	sched.Register("import-series", 30*time.Second, false, func(ctx context.Context) error {
 		coordinator.ImportSeriesDownloads(ctx)
 		return nil
-	})
+	}, scheduler.Label("Import finished TV downloads"), scheduler.Description("Moves completed episode and season downloads into the library."))
 	// Sweep monitored series for missing, aired episodes and grab packs/episodes.
 	sched.Register("search-missing-series", 15*time.Minute, false, func(ctx context.Context) error {
 		coordinator.SearchSeriesMissing(ctx)
 		return nil
-	})
+	}, scheduler.Label("Search for missing episodes"), scheduler.Description("Searches the indexers for monitored episodes that have aired but have no file."))
 	// Keep continuing shows' episode lists current, so an episode TMDB added after the
 	// show was last refreshed exists before its download arrives.
 	sched.Register("refresh-continuing-series", 6*time.Hour, false, func(ctx context.Context) error {
 		coordinator.RefreshContinuingSeries(ctx)
 		return nil
-	})
+	}, scheduler.Label("Refresh running shows"), scheduler.Description("Updates the episode lists of shows that are still airing."))
 	// Sweep monitored, file-less books and grab the best-format release.
 	sched.Register("search-missing-books", 30*time.Minute, false, func(ctx context.Context) error {
 		coordinator.SearchBooksMissing(ctx)
 		return nil
-	})
+	}, scheduler.Label("Search for missing books"), scheduler.Description("Searches the indexers for monitored books missing a wanted edition."))
 	// Sweep monitored albums missing tracks and grab the best release for each.
 	sched.Register("search-missing-music", 30*time.Minute, false, func(ctx context.Context) error {
 		coordinator.SearchMusicMissing(ctx)
 		return nil
-	})
+	}, scheduler.Label("Search for missing albums"), scheduler.Description("Searches the indexers for monitored albums that are missing tracks."))
 	// Import finished album downloads (arrmada-music category).
 	sched.Register("import-music", 30*time.Second, false, func(ctx context.Context) error {
 		coordinator.ImportMusicDownloads(ctx)
 		return nil
-	})
+	}, scheduler.Label("Import finished music downloads"), scheduler.Description("Moves completed album downloads into the library."))
 	// Import finished ebook downloads (arrmada-books category).
 	sched.Register("import-books", 30*time.Second, false, func(ctx context.Context) error {
 		coordinator.ImportBookDownloads(ctx)
 		return nil
-	})
+	}, scheduler.Label("Import finished book downloads"), scheduler.Description("Moves completed ebook and audiobook downloads into the library."))
 	// RSS sync for series: poll indexer feeds for new episodes of running shows.
 	sched.Register("rss-sync-series", 15*time.Minute, false, func(ctx context.Context) error {
 		coordinator.RSSSyncSeries(ctx)
 		return nil
-	})
+	}, scheduler.Label("Check indexer feeds for new episodes"), scheduler.Description("Reads each indexer's recent uploads and grabs any wanted episode."))
 	sched.Register("rss-sync-books", 15*time.Minute, false, func(ctx context.Context) error {
 		coordinator.RSSSyncBooks(ctx)
 		return nil
-	})
+	}, scheduler.Label("Check indexer feeds for new books"), scheduler.Description("Reads each indexer's recent uploads and grabs any wanted book."))
 	// Look for better releases for episodes that already have a file (upgrades).
 	sched.Register("upgrade-series", 6*time.Hour, false, func(ctx context.Context) error {
 		coordinator.UpgradeSeries(ctx)
 		return nil
-	})
+	}, scheduler.Label("Look for better episode releases"), scheduler.Description("Grabs a better release when a show's quality profile allows upgrades."))
 	// Remove imported torrents once they hit their indexer's seed goal (also on
 	// startup, so anything left over from a previous run is tidied promptly).
 	sched.Register("manage-seeding", 10*time.Minute, true, func(ctx context.Context) error {
 		coordinator.ManageSeeding(ctx)
 		return nil
-	})
+	}, scheduler.Label("Stop seeding finished torrents"), scheduler.Description("Removes imported torrents once they reach their indexer's seeding goal."))
 	// Requests module sits on top of Movies/Series: an approval adds the media and
 	// triggers a search through the existing acquisition pipeline. Created before
 	// sched.Start so its sweep is in the snapshot the scheduler launches.
@@ -539,7 +550,7 @@ func main() {
 	// Idempotent (unique inbox ref), so re-running never double-notifies.
 	sched.Register("request-ready-sweep", 10*time.Minute, false, func(ctx context.Context) error {
 		return requestsSvc.SweepReadyRequests(ctx)
-	})
+	}, scheduler.Label("Tell requesters their request is ready"), scheduler.Description("Catches requests that became available without an import, and lets the requester know."))
 	sched.Start(runCtx)
 
 	// Subtitles module (Bazarr replacement): grabs external SRT sidecars over the
@@ -552,11 +563,11 @@ func main() {
 	sched.Register("subtitles-library-scan", 6*time.Hour, false, func(ctx context.Context) error {
 		subtitlesSvc.Rescan(ctx)
 		return nil
-	})
+	}, scheduler.Label("Check the library for subtitles"), scheduler.Description("Refreshes which movies and episodes have the subtitles they need."))
 	sched.Register("subtitles-auto-grab", 6*time.Hour, false, func(ctx context.Context) error {
 		subtitlesSvc.AutoGrab(ctx)
 		return nil
-	})
+	}, scheduler.Label("Download missing subtitles"), scheduler.Description("Fetches subtitles for anything still missing a wanted language."))
 
 	// Convert module (Tdarr replacement): GPU/CPU transcoding over the Movies library.
 	convertScratch := cfg.ConvertScratchDir
@@ -609,11 +620,11 @@ func main() {
 		}
 		_, _ = booksSvc.Recommended(ctx)
 		return nil
-	})
+	}, scheduler.Label("Pre-load Discover rows"), scheduler.Description("Refreshes the Discover rows in the background so the page opens instantly."))
 	sched.Register("convert-index", time.Hour, false, func(ctx context.Context) error {
 		convertSvc.MaybeIndexSweep(ctx)
 		return nil
-	})
+	}, scheduler.Label("Index the library for Convert"), scheduler.Description("Keeps Convert's list of files current; the full sweep runs once a day at the set time."))
 	// A finished import reindexes only that show, so a new episode is convertible
 	// immediately without re-walking the whole library.
 	coordinator.SetSeriesImportedHook(func(ctx context.Context, seriesID int64, episodes []series.EpisodeRef) {
@@ -668,20 +679,20 @@ func main() {
 			log.Info("insights: pruned old bandwidth samples", "rows", n)
 		}
 		return err
-	})
+	}, scheduler.Label("Prune old bandwidth samples"), scheduler.Description("Removes Plex bandwidth samples older than 90 days."))
 
 	// Recycle bin: enforce the user's size/age guard rails on a schedule (and once at startup).
 	sched.Register("recycle-enforce", time.Hour, true, func(ctx context.Context) error {
 		recycleSvc.Enforce(ctx)
 		return nil
-	})
+	}, scheduler.Label("Tidy the recycle bin"), scheduler.Description("Keeps the recycle bin within its size and age limits."))
 	// Originals of merged audiobooks kept while the bin is off go after 14 days.
-	sched.Register("book-merge-backup-prune", 24*time.Hour, true, coordinator.PruneMergeBackups)
+	sched.Register("book-merge-backup-prune", 24*time.Hour, true, coordinator.PruneMergeBackups, scheduler.Label("Remove old audiobook merge backups"), scheduler.Description("Deletes originals kept from audiobook merges after 14 days."))
 
 	// Database backups: checked hourly, taken once a night after the configured hour (and
 	// at once after a long downtime), newest 7 kept in <data>/backups.
 	backupSvc := backup.New(st, settingsSvc, log)
-	sched.Register("db-backup", time.Hour, true, backupSvc.RunNightly)
+	sched.Register("db-backup", time.Hour, true, backupSvc.RunNightly, scheduler.Label("Back up the database"), scheduler.Description("Takes the nightly database backup and keeps the newest seven."))
 
 	// Audiobook server: listening apps (Lissen and other Audiobookshelf clients) connect to
 	// its own port. Off until an admin switches it on in Books → Audiobook server.
@@ -699,7 +710,7 @@ func main() {
 	grp.Loop("audiobook server: watch imports", func(ctx context.Context) { audioSrv.WatchImports(ctx, bus) })
 	sched.Register("audioserver-prune", 24*time.Hour, false, func(ctx context.Context) error {
 		return listenStore.Prune(ctx)
-	})
+	}, scheduler.Label("Tidy audiobook server records"), scheduler.Description("Removes old audiobook server records."))
 	sched.Register("audioserver-warm", 30*time.Minute, true, func(ctx context.Context) error {
 		if settingsSvc.GetBool(ctx, audioserver.KeyEnabled, false) {
 			if n := audioSrv.Warm(ctx); n > 0 {
@@ -707,7 +718,7 @@ func main() {
 			}
 		}
 		return nil
-	})
+	}, scheduler.Label("Read audiobook chapters"), scheduler.Description("Reads chapters and durations for new audiobooks so listening apps start quickly."))
 
 	restartCh := make(chan struct{}, 1)
 	srv := httpapi.New(httpapi.Deps{
@@ -757,8 +768,9 @@ func main() {
 			}
 			return filepath.Join(backupSvc.Dir(), b.Name), nil
 		},
-		RunGroup: grp,
-		Backups:  backupSvc,
+		RunGroup:  grp,
+		Backups:   backupSvc,
+		Scheduler: sched,
 	})
 
 	errCh := make(chan error, 1)

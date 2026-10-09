@@ -3,6 +3,8 @@ package httpapi
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/safego"
@@ -45,6 +47,15 @@ func (a *api) runCtx() context.Context {
 		return g.Context()
 	}
 	return context.Background()
+}
+
+// triggerFor says who started request-triggered work, for the job record and the task
+// history: "user:<id>" for a signed-in person, "api" otherwise.
+func triggerFor(r *http.Request) string {
+	if u, ok := userFrom(r); ok && u != nil {
+		return "user:" + strconv.FormatInt(u.ID, 10)
+	}
+	return "api"
 }
 
 // idTarget formats an item for bg's target, e.g. idTarget("movie", 12) = "movie 12".
