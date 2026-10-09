@@ -165,7 +165,8 @@ export function MovieDetail() {
                 <AvailabilitySelector movie={movie} onChange={load} />
               </div>
 
-              <WhyPanel movie={movie} />
+              {/* searchInfo: the last search and next automatic try, wired by MOV-04. */}
+              <AcquisitionStatus movie={movie} onChange={load} flash={flash} />
               <UpgradeHoldChip movie={movie} onChange={load} flash={flash} />
               <Toolbar movie={movie} onChange={load} flash={flash} live={live} />
             </div>
@@ -671,7 +672,6 @@ function ProfileSelector({ movie, onChange }: { movie: Movie; onChange: () => vo
   }, []);
 
   const [downgrade, setDowngrade] = useState(false);
-  const [regrabbing, setRegrabbing] = useState(false);
 
   const change = async (profile: string) => {
     if (profile === movie.quality_profile) return;
@@ -692,16 +692,6 @@ function ProfileSelector({ movie, onChange }: { movie: Movie; onChange: () => vo
     }
   };
 
-  const doRegrab = async () => {
-    setRegrabbing(true);
-    try {
-      await api.regrabMovie(movie.id);
-      setDowngrade(false);
-    } finally {
-      setRegrabbing(false);
-    }
-  };
-
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -719,17 +709,33 @@ function ProfileSelector({ movie, onChange }: { movie: Movie; onChange: () => vo
         </select>
         {saved && <span className="text-[11px]" style={{ color: "var(--good)" }}>Saved ✓</span>}
       </div>
-      {downgrade && (
-        <div className="rounded-lg p-3 text-[12px]" style={{ background: "var(--avoid-soft)", border: "1px solid var(--avoid)" }}>
-          <div className="mb-2 text-ink-dim">Your current file is higher quality than this profile targets. Download a smaller release to match it, or keep the file you have?</div>
-          <div className="flex gap-2">
-            <button onClick={doRegrab} disabled={regrabbing} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>
-              {regrabbing ? "Searching…" : "Download smaller version"}
-            </button>
-            <button onClick={() => setDowngrade(false)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Keep current file</button>
-          </div>
-        </div>
-      )}
+      {downgrade && <DowngradePrompt movieId={movie.id} onClose={() => setDowngrade(false)} />}
+    </div>
+  );
+}
+
+// DowngradePrompt asks what to do when a new profile targets less than the file on disk:
+// download a smaller release to match it, or keep the file. Nothing happens on its own.
+function DowngradePrompt({ movieId, onClose }: { movieId: number; onClose: () => void }) {
+  const [regrabbing, setRegrabbing] = useState(false);
+  const doRegrab = async () => {
+    setRegrabbing(true);
+    try {
+      await api.regrabMovie(movieId);
+      onClose();
+    } finally {
+      setRegrabbing(false);
+    }
+  };
+  return (
+    <div className="rounded-lg p-3 text-[12px]" style={{ background: "var(--avoid-soft)", border: "1px solid var(--avoid)" }}>
+      <div className="mb-2 text-ink-dim">Your current file is higher quality than this profile targets. Download a smaller release to match it, or keep the file you have?</div>
+      <div className="flex gap-2">
+        <button onClick={doRegrab} disabled={regrabbing} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>
+          {regrabbing ? "Searching…" : "Download smaller version"}
+        </button>
+        <button onClick={onClose} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Keep current file</button>
+      </div>
     </div>
   );
 }
@@ -758,40 +764,184 @@ function AvailabilitySelector({ movie, onChange }: { movie: Movie; onChange: () 
   );
 }
 
-// WhyPanel says what Arrmada will do about this movie, from the same facts the sweeps use:
-// a scanned-in film is unmonitored, so the upgrade sweep skips it, and a profile with
-// upgrades off keeps the file as it is. upgrades_allowed comes from the server.
-function WhyPanel({ movie }: { movie: Movie }) {
-  let msg: string;
+/** The last search and the next automatic try. MOV-04 (search outcomes) records them and
+ * passes them in as AcquisitionStatus's searchInfo; until then those lines are left out
+ * rather than guessed. */
+interface AcquisitionSearchInfo {
+  /** When Arrmada last searched for this movie. */
+  lastAt?: string;
+  /** What that search found, in one line ("41 releases · 29 rejected · nothing grabbed"). */
+  summary?: string;
+  /** When the next automatic search runs. */
+  nextAt?: string;
+}
+
+// AcquisitionStatus says what Arrmada will do about this movie, built only from the facts
+// the sweeps act on (movie.acquisition, from the server): a scanned-in or unmonitored film
+// is never upgraded, a profile with upgrades off keeps its file, a missing film is searched
+// for once it's available, and a recorded file that's gone is never "you have this movie".
+function AcquisitionStatus({ movie, onChange, flash, searchInfo }: {
+  movie: Movie;
+  onChange: () => void;
+  flash: (m: string, err?: boolean) => void;
+  searchInfo?: AcquisitionSearchInfo;
+}) {
+  const acq = movie.acquisition;
+  const [downgrade, setDowngrade] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
+  if (!acq) return null;
+
+  const run = async (key: string, fn: () => Promise<void>) => {
+    setBusy(key);
+    try {
+      await fn();
+    } catch (e) {
+      flash((e as Error).message, true);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const lastChecked = searchInfo?.lastAt ? ` (last checked ${fmtTime(searchInfo.lastAt)})` : "";
+  const noProfile = acq.profile_known ? "" : " It has no quality profile of its own, so your default profile applies.";
+  const avail = AVAILABILITY_LABELS[movie.min_availability] ?? movie.min_availability;
+
   let tone = "var(--ink-dim)";
-  if (movie.file?.missing) {
-    msg = "Arrmada has a record of this file but it isn't on disk. Refresh & rescan to look again; if it's really gone, clear the record and Arrmada will search for it (when monitored).";
-    tone = "var(--reject)";
-  } else if (movie.has_file && !movie.monitored) {
-    msg = "You have this movie. It isn't monitored, so Arrmada won't look for upgrades — turn on Monitor to allow them.";
-    tone = "var(--good)";
-  } else if (movie.has_file && !movie.upgrades_allowed) {
-    msg = "You have this movie. Its quality profile doesn't upgrade, so this file stays as it is.";
-    tone = "var(--good)";
-  } else if (movie.has_file && movie.upgrade_hold) {
-    msg = "You have this movie. Its file was kept as it is when its profile changed, so upgrades won't replace it until you resume them.";
-    tone = "var(--good)";
-  } else if (movie.has_file) {
-    msg = "You have this movie. Arrmada checks for a clearly better release every 6 hours and grabs it automatically.";
-    tone = "var(--good)";
-  } else if (!movie.monitored) {
-    msg = "Not monitored — Arrmada won't search for this. Turn on monitoring to start looking.";
+  let msg: ReactNode;
+  let actions: ReactNode = null;
+  let searchLines = false;
+
+  if (acq.file_missing) {
     tone = "var(--avoid)";
-  } else {
-    const avail = AVAILABILITY_LABELS[movie.min_availability] ?? movie.min_availability;
-    msg = `Monitored and missing — Arrmada searches automatically once the movie is "${avail}", and grabs the best release for your quality profile.`;
+    msg = "Arrmada has a record of this file but it isn't on disk. Refresh & rescan to look again; if it's really gone, clear the record and Arrmada will search for it (when monitored).";
+    actions = (
+      <>
+        <Button size="sm" onClick={() => run("rescan", async () => { await api.refreshMovie(movie.id); onChange(); flash("Refreshed metadata and rescanned disk."); })} busy={busy === "rescan"} busyLabel="Rescanning…" disabled={busy !== null}>Refresh & rescan</Button>
+        {movie.file && <Button size="sm" onClick={() => setClearing(true)} disabled={busy !== null}>Clear record</Button>}
+        {acq.monitored && (
+          <Button size="sm" variant="primary" disabled={busy !== null} busy={busy === "search"} busyLabel="Searching…"
+            onClick={() => run("search", async () => {
+              await api.forgetMissingFile(movie.id, 0);
+              await api.searchMovie(movie.id);
+              flash(`Cleared the missing file's record — searching. Follow it in ${PAGE.downloads} → Searching.`);
+              onChange();
+            })}>Search</Button>
+        )}
+      </>
+    );
+  } else if (acq.downloading) {
     tone = "var(--accent)";
+    const pct = Math.round((acq.download_progress ?? 0) * 100);
+    const what = acq.download_title ? <span className="break-all font-mono text-[11.5px]">{acq.download_title}</span> : "a release";
+    msg = <>{movie.has_file ? "Downloading an upgrade: " : "Downloading "}{what} — {pct}%.</>;
+  } else if (movie.has_file && !acq.monitored) {
+    tone = "var(--good)";
+    msg = acq.scanned_in
+      ? "Found in your library and not monitored, so it won't be upgraded. Monitor it with a profile to let Arrmada look for better releases."
+      : "You have this movie. It isn't monitored, so it won't be upgraded.";
+    actions = <MonitorWithProfile movie={movie} onDone={onChange} onDowngrade={() => setDowngrade(true)} flash={flash} />;
+  } else if (movie.has_file && !acq.upgrades_allowed) {
+    tone = "var(--good)";
+    msg = `You have this movie. Your profile doesn't allow upgrades, so this file stays as it is.${noProfile}`;
+  } else if (movie.has_file && movie.upgrade_hold) {
+    tone = "var(--good)";
+    msg = "You have this movie. Its file was kept as it is when its profile changed, so upgrades won't replace it until you resume them.";
+  } else if (movie.has_file) {
+    tone = "var(--good)";
+    msg = `You have this movie. Arrmada looks for a clearly better release every 6 hours${lastChecked} and grabs it automatically.${noProfile}`;
+  } else if (!acq.monitored) {
+    tone = "var(--avoid)";
+    msg = "Not monitored, so Arrmada won't search for it.";
+    actions = (
+      <Button size="sm" variant="primary" disabled={busy !== null} busy={busy === "monitor"} busyLabel="Monitoring…"
+        onClick={() => run("monitor", async () => { await api.setMonitored(movie.id, true); onChange(); })}>Monitor</Button>
+    );
+  } else if (!acq.available) {
+    tone = "var(--accent)";
+    const from = acq.available_from ? ` (expected ${fmtDate(acq.available_from)})` : "";
+    msg = `Monitored and missing. Arrmada starts searching once it's "${avail}"${from}, and grabs the best release for your quality profile.${noProfile}`;
+  } else {
+    tone = "var(--accent)";
+    msg = `Monitored and missing — Arrmada searches automatically and grabs the best release for your quality profile.${noProfile}`;
+    searchLines = true;
   }
+
   return (
-    <div className="mt-4 rounded-lg p-3 text-[12px] leading-relaxed" style={{ border: "1px solid var(--line)", color: tone }}>
-      {msg}
+    <div className="mt-4 rounded-lg p-3 text-[12px] leading-relaxed" style={{ border: "1px solid var(--line)" }}>
+      <div style={{ color: tone }}>{msg}</div>
+      {searchLines && searchInfo && (searchInfo.lastAt || searchInfo.nextAt) && (
+        <div className="mt-1.5 flex flex-col gap-0.5 text-[11.5px] text-ink-dim">
+          {searchInfo.lastAt && <span>Last search {fmtTime(searchInfo.lastAt)}{searchInfo.summary ? ` — ${searchInfo.summary}` : ""}</span>}
+          {searchInfo.nextAt && <span>Next automatic search {fmtTime(searchInfo.nextAt)}</span>}
+        </div>
+      )}
+      {actions && <div className="mt-2.5 flex flex-wrap items-center gap-2">{actions}</div>}
+      {downgrade && <div className="mt-2.5"><DowngradePrompt movieId={movie.id} onClose={() => setDowngrade(false)} /></div>}
+      {clearing && movie.file && (
+        <ClearRecordDialog
+          movieId={movie.id}
+          versionId={0}
+          file={movie.file}
+          onDone={() => { setClearing(false); onChange(); flash("Record cleared — nothing on disk was touched."); }}
+          onCancel={() => setClearing(false)}
+        />
+      )}
     </div>
   );
+}
+
+// MonitorWithProfile monitors a film that has a file and puts it on a chosen profile in one
+// step. Monitoring comes first, so the profile change is judged like any other: a profile
+// that targets less than the file asks before downloading anything (onDowngrade).
+function MonitorWithProfile({ movie, onDone, onDowngrade, flash }: {
+  movie: Movie;
+  onDone: () => void;
+  onDowngrade: () => void;
+  flash: (m: string, err?: boolean) => void;
+}) {
+  const [profiles, setProfiles] = useState<{ key: string; name: string }[]>([]);
+  const [pick, setPick] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    api.qualityProfiles("movie").then((r) => {
+      setProfiles(r.profiles.map((p) => ({ key: p.key, name: p.name })));
+      const own = r.profiles.find((p) => p.key === movie.quality_profile);
+      const def = own ?? r.profiles.find((p) => p.is_default) ?? r.profiles[0];
+      if (def) setPick(def.key);
+    }).catch(() => {});
+  }, [movie.quality_profile]);
+
+  const monitor = async () => {
+    setBusy(true);
+    try {
+      await api.setMonitored(movie.id, true);
+      if (pick && pick !== movie.quality_profile) {
+        const res = await api.setQualityProfile(movie.id, pick);
+        if (res.downgrade) onDowngrade();
+      }
+      flash("Monitored — Arrmada now looks for better releases under this profile.");
+      onDone();
+    } catch (e) {
+      flash((e as Error).message, true);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <select aria-label="Quality profile" value={pick} onChange={(e) => setPick(e.target.value)} disabled={busy || profiles.length === 0} className="rounded-lg px-2.5 py-1.5 text-[12px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>
+        {profiles.map((p) => <option key={p.key} value={p.key}>{p.name}</option>)}
+      </select>
+      <Button size="sm" variant="primary" onClick={monitor} busy={busy} busyLabel="Monitoring…" disabled={!pick}>Monitor</Button>
+    </>
+  );
+}
+
+function fmtDate(s: string): string {
+  const d = new Date(s + "T00:00:00");
+  if (isNaN(d.getTime())) return s;
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
 // UpgradeHoldChip shows when a file of this movie was kept as it is when its profile

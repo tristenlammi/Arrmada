@@ -300,11 +300,43 @@ func (a *api) handleGetMovie(w http.ResponseWriter, r *http.Request) {
 		m.Versions = versions
 		m.File = versions[0].File
 	}
-	if queue, qerr := a.deps.Downloads.Queue(r.Context()); qerr == nil {
-		m.Download = downloadFor(queue, m)
+	if a.deps.Downloads != nil {
+		if queue, qerr := a.deps.Downloads.Queue(r.Context()); qerr == nil {
+			m.Download = downloadFor(queue, m)
+		}
 	}
 	m.UpgradesAllowed = upgradeWatched(m.Monitored, m.HasFile, a.anyVersionUpgrades(r.Context(), &m))
+	var pending []automation.PendingMovieDownload
+	if a.deps.Automation != nil {
+		pending, _ = a.deps.Automation.PendingMovieDownloads(r.Context(), id)
+	}
+	m.Acquisition = a.movieAcquisition(r.Context(), &m, pending)
 	a.writeJSON(w, http.StatusOK, m)
+}
+
+// movieAcquisition gathers what the Acquisition card states, from the facts the sweeps
+// act on: monitoring, the profile and whether it upgrades, availability, an in-flight
+// grab, and a recorded file that's gone. m carries its live tracks and UpgradesAllowed.
+func (a *api) movieAcquisition(ctx context.Context, m *movies.Movie, pending []automation.PendingMovieDownload) *movies.Acquisition {
+	acq := &movies.Acquisition{
+		Monitored:       m.Monitored,
+		UpgradesAllowed: m.UpgradesAllowed,
+		ScannedIn:       m.QualityProfile == "n/a",
+		Available:       a.deps.Movies.IsAvailable(*m),
+		FileMissing:     m.HasFile && m.File != nil && m.File.Missing,
+	}
+	acq.ProfileKnown = !acq.ScannedIn && m.QualityProfile != "" && a.deps.Quality != nil && a.deps.Quality.Known(ctx, m.QualityProfile)
+	if m.Extra != nil {
+		acq.AvailableFrom = m.Extra.ReleaseDate
+	}
+	if len(pending) > 0 {
+		acq.Downloading = true
+		acq.DownloadTitle, acq.DownloadProgress = pending[0].Title, pending[0].Progress
+	} else if m.Download != nil {
+		acq.Downloading = true
+		acq.DownloadProgress = m.Download.Progress
+	}
+	return acq
 }
 
 // upgradeWatched mirrors the upgrade sweep's own filter (UpgradeMovies skips a movie that

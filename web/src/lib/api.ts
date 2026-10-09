@@ -2534,6 +2534,22 @@ export interface Movie {
   upgrades_allowed?: boolean;
   /** The default file is kept out of profile-driven upgrades ("keep existing files"). */
   upgrade_hold?: boolean;
+  /** Detail only: what Arrmada will do about this movie, from the facts the sweeps act on. */
+  acquisition?: MovieAcquisition;
+}
+
+export interface MovieAcquisition {
+  monitored: boolean;
+  /** False for "n/a" (scanned in) or a profile that no longer exists: the default applies. */
+  profile_known: boolean;
+  upgrades_allowed: boolean;
+  scanned_in: boolean;
+  available: boolean;
+  available_from?: string;
+  downloading: boolean;
+  download_title?: string;
+  download_progress?: number;
+  file_missing: boolean;
 }
 
 export interface MovieLookup {

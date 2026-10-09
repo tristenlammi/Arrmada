@@ -47,6 +47,33 @@ type Movie struct {
 	// sweep will look at this movie at all (monitored, has a file, profile upgrades on). The
 	// page says what really happens instead of hedging "if your profile allows".
 	UpgradesAllowed bool `json:"upgrades_allowed,omitempty"`
+	// Acquisition is computed on the detail endpoint only: the facts the page's Acquisition
+	// card states, so it never promises what the sweeps won't do.
+	Acquisition *Acquisition `json:"acquisition,omitempty"`
+}
+
+// Acquisition is what Arrmada will do about a movie, from the same facts the sweeps act on.
+// The last search and the next automatic try are added by the search-outcome work (MOV-04)
+// as fields on Movie, not here.
+type Acquisition struct {
+	Monitored bool `json:"monitored"`
+	// ProfileKnown is false for "n/a" (a scanned-in film) or a profile that no longer exists:
+	// the sweeps then fall back to the default profile.
+	ProfileKnown bool `json:"profile_known"`
+	// UpgradesAllowed: the upgrade sweep will look at this movie (monitored, has a file, a
+	// monitored track's effective profile upgrades).
+	UpgradesAllowed bool `json:"upgrades_allowed"`
+	// ScannedIn: catalogued by a library scan with no profile chosen ("n/a").
+	ScannedIn bool `json:"scanned_in"`
+	// Available: past the minimum-availability threshold, so a missing file is searched for.
+	Available     bool   `json:"available"`
+	AvailableFrom string `json:"available_from,omitempty"` // release date, when known
+	// Downloading: a grab is in flight (a pending grab row, or a matching queue item).
+	Downloading      bool    `json:"downloading"`
+	DownloadTitle    string  `json:"download_title,omitempty"`
+	DownloadProgress float64 `json:"download_progress,omitempty"` // 0..1
+	// FileMissing: the default track records a file that isn't on disk.
+	FileMissing bool `json:"file_missing"`
 }
 
 // DownloadStatus is a lightweight view of a movie's in-flight download.
