@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/indexer"
+	"github.com/tristenlammi/arrmada/internal/jobs"
 )
 
 const (
@@ -61,5 +64,14 @@ func (a *api) handleProwlarrSync(w http.ResponseWriter, r *http.Request) {
 	// Remember what worked for next time.
 	_ = a.deps.Settings.Set(ctx, keyProwlarrURL, url)
 	_ = a.deps.Settings.Set(ctx, keyProwlarrKey, key)
+	// Each new row's capabilities come from its own feed (one request per indexer through
+	// the per-host throttle), so they're read in the background rather than holding up
+	// the answer; the page shows them on its next read.
+	if ids := res.AddedIDs; len(ids) > 0 {
+		_, _, _ = a.submit(r, jobs.Spec{Kind: "indexer.caps", Target: "prowlarr", Class: jobs.ClassIndexerSearch, Timeout: 10 * time.Minute,
+			Fn: func(ctx context.Context, _ *jobs.Progress) (any, error) {
+				return nil, a.deps.Indexers.RefreshCaps(ctx, ids)
+			}})
+	}
 	a.writeJSON(w, http.StatusOK, res)
 }

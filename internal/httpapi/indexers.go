@@ -16,6 +16,9 @@ import (
 type indexerView struct {
 	indexer.Indexer
 	Status *indexerStatus `json:"status,omitempty"`
+	// CapsSummary is what the indexer last said it supports, e.g. "Movies (imdbid,
+	// tmdbid) · TV (tvdbid, season, ep) · 23 categories"; absent until read.
+	CapsSummary string `json:"caps_summary,omitempty"`
 }
 
 // indexerStatus is the row's dot and its one line of detail. State is ok, failing (it
@@ -77,7 +80,7 @@ func (a *api) handleListIndexers(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	out := make([]indexerView, 0, len(list))
 	for _, idx := range list {
-		v := indexerView{Indexer: idx}
+		v := indexerView{Indexer: idx, CapsSummary: idx.CapsSummary()}
 		if withStatus {
 			st, counts, _ := a.deps.Indexers.Status(idx.ID)
 			v.Status = statusFor(idx, st, counts, now)
@@ -281,7 +284,87 @@ func (a *api) handleTestIndexer(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	out := map[string]any{"ok": true}
+	if idx, err := a.deps.Indexers.Get(r.Context(), id); err == nil {
+		if s := idx.CapsSummary(); s != "" {
+			out["caps_summary"] = s
+		}
+	}
+	a.writeJSON(w, http.StatusOK, out)
+}
+
+// testIndexerRequest is a createIndexerRequest plus, optionally, the row being edited:
+// a blank key or password then means "the one already saved", as it does on Save.
+type testIndexerRequest struct {
+	createIndexerRequest
+	ID int64 `json:"id"`
+}
+
+// handleTestIndexerSettings tests settings that may not be saved yet (the Add form, or
+// an edit before Save) without creating or changing a row. A key or password typed for
+// the test is used for this one check and never stored or logged.
+func (a *api) handleTestIndexerSettings(w http.ResponseWriter, r *http.Request) {
+	var req testIndexerRequest
+	if !a.decodeJSON(w, r, &req) {
+		return
+	}
+	idx := indexer.Indexer{
+		Kind: indexer.Kind(req.Kind), Name: req.Name, URL: req.URL, APIKey: req.APIKey,
+		Username: req.Username, Password: req.Password, Categories: req.Categories,
+	}
+	if req.ID > 0 {
+		stored, err := a.deps.Indexers.Get(r.Context(), req.ID)
+		if errors.Is(err, indexer.ErrNotFound) {
+			a.writeError(w, http.StatusNotFound, "indexer not found")
+			return
+		}
+		if err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not read indexer")
+			return
+		}
+		// A secret saved for one kind means nothing to another, so it's only filled in
+		// for the same kind.
+		if stored.Kind == idx.Kind {
+			if idx.APIKey == "" {
+				idx.APIKey = stored.APIKey
+				// A MyAnonaMouse session can be rotated by the site on any request; keeping
+				// the id lets the rotated one be saved instead of lost.
+				if idx.Kind == indexer.KindMAM {
+					idx.ID = stored.ID
+				}
+			}
+			if idx.Password == "" {
+				idx.Password = stored.Password
+			}
+		}
+		if idx.Name == "" {
+			idx.Name = stored.Name
+		}
+	}
+	switch idx.Kind {
+	case indexer.KindTorznab, indexer.KindNewznab:
+		if idx.URL == "" {
+			a.writeError(w, http.StatusBadRequest, "url is required for torznab/newznab indexers")
+			return
+		}
+	case indexer.KindTorrentLeech, indexer.KindMAM, indexer.KindX1337:
+	default:
+		a.writeError(w, http.StatusBadRequest, "unknown indexer kind")
+		return
+	}
+	if idx.Name == "" {
+		idx.Name = string(idx.Kind)
+	}
+	summary, err := a.deps.Indexers.TestSettings(r.Context(), idx)
+	if err != nil {
+		a.writeJSON(w, http.StatusOK, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	out := map[string]any{"ok": true}
+	if summary != "" {
+		out["caps_summary"] = summary
+	}
+	a.writeJSON(w, http.StatusOK, out)
 }
 
 // pathID parses the {id} path segment, writing a 400 on failure.

@@ -21,17 +21,21 @@ type Repo struct {
 // NewRepo builds a repository over the given pool.
 func NewRepo(db *sql.DB) *Repo { return &Repo{db: db} }
 
-const indexerCols = `id, name, kind, url, api_key, username, password, categories, priority, min_seeders, seed_enabled, seed_ratio, seed_hours, enabled, media_types, prowlarr_id, disabled_by, managed_note`
+const indexerCols = `id, name, kind, url, api_key, username, password, categories, priority, min_seeders, seed_enabled, seed_ratio, seed_hours, enabled, media_types, prowlarr_id, disabled_by, managed_note, caps_json, caps_at`
 
 func (r *Repo) scan(row interface{ Scan(...any) error }) (Indexer, error) {
 	var (
 		idx        Indexer
 		cats, mt   string
 		seedEn, en int
+		capsAt     sql.NullTime
 	)
-	err := row.Scan(&idx.ID, &idx.Name, &idx.Kind, &idx.URL, &idx.APIKey, &idx.Username, &idx.Password, &cats, &idx.Priority, &idx.MinSeeders, &seedEn, &idx.SeedRatio, &idx.SeedHours, &en, &mt, &idx.ProwlarrID, &idx.DisabledBy, &idx.ManagedNote)
+	err := row.Scan(&idx.ID, &idx.Name, &idx.Kind, &idx.URL, &idx.APIKey, &idx.Username, &idx.Password, &cats, &idx.Priority, &idx.MinSeeders, &seedEn, &idx.SeedRatio, &idx.SeedHours, &en, &mt, &idx.ProwlarrID, &idx.DisabledBy, &idx.ManagedNote, &idx.CapsJSON, &capsAt)
 	if err != nil {
 		return Indexer{}, err
+	}
+	if capsAt.Valid {
+		idx.CapsAt = capsAt.Time
 	}
 	idx.Categories = decodeCats(cats)
 	idx.MediaTypes = decodeStrs(mt)
@@ -168,6 +172,12 @@ func renameRefs(ctx context.Context, ex store.Execer, oldName, newName string) e
 		}
 	}
 	return nil
+}
+
+// SetCaps stores what the indexer said it supports, and when.
+func (r *Repo) SetCaps(ctx context.Context, id int64, capsJSON string) error {
+	_, err := r.db.ExecContext(ctx, `UPDATE indexers SET caps_json=?, caps_at=CURRENT_TIMESTAMP WHERE id=?`, capsJSON, id)
+	return err
 }
 
 // SetSession overwrites just the stored secret (api_key) for an indexer — used

@@ -102,6 +102,7 @@ export const downloadClients: { clients: DownloadClient[] } = {
 export const indexers: { indexers: Indexer[] } = {
   indexers: [{
     id: 1, name: "Fixture Indexer", kind: "torznab", url: "http://indexer.invalid", priority: 25, enabled: true,
+    caps_summary: "Movies (imdbid, tmdbid) · TV (season, ep, tvdbid) · 12 categories",
     status: { state: "ok", last_ok_at: new Date(NOW - 3 * 60_000).toISOString(), consecutive_failures: 0, queries_24h: 214, failures_24h: 3 },
   }],
 };

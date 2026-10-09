@@ -268,6 +268,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("PUT /api/v1/indexers/{id}", a.requireRole(auth.RoleManager, a.handleUpdateIndexer))
 	mux.HandleFunc("DELETE /api/v1/indexers/{id}", a.requireRole(auth.RoleManager, a.handleDeleteIndexer))
 	mux.HandleFunc("POST /api/v1/indexers/{id}/test", a.requireRole(auth.RoleManager, a.handleTestIndexer))
+	mux.HandleFunc("POST /api/v1/indexers/test", a.requireRole(auth.RoleManager, a.handleTestIndexerSettings))
 	mux.HandleFunc("GET /api/v1/flaresolverr/status", a.requireRole(auth.RoleManager, a.handleFlareSolverrStatus))
 
 	// Download clients + queue

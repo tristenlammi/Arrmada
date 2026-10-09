@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
@@ -116,6 +117,52 @@ func callIndexer(t *testing.T, h http.HandlerFunc, method, path, id, body string
 	w := httptest.NewRecorder()
 	h(w, r)
 	return w
+}
+
+// POST /indexers/test checks settings without saving them: no row is created, a blank key
+// with an id uses the saved one, and a typed key is used as typed and never stored.
+func TestTestIndexerSettings(t *testing.T) {
+	var lastKey atomic.Value
+	tz := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		key := r.URL.Query().Get("apikey")
+		lastKey.Store(key)
+		if key != "saved-key" {
+			_, _ = w.Write([]byte(`<error code="100" description="Incorrect user credentials"/>`))
+			return
+		}
+		_, _ = w.Write([]byte(`<caps><searching><movie-search available="yes" supportedParams="q,imdbid"/></searching><categories><category id="2000"/></categories></caps>`))
+	}))
+	t.Cleanup(tz.Close)
+	a, svc := indexerAPI(t)
+	ctx := context.Background()
+	row, _ := svc.Create(ctx, indexer.Indexer{Name: "Saved", Kind: indexer.KindTorznab, URL: tz.URL, APIKey: "saved-key", Enabled: true})
+
+	decode := func(w *httptest.ResponseRecorder) map[string]any {
+		t.Helper()
+		if w.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", w.Code, w.Body.String())
+		}
+		var out map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return out
+	}
+	out := decode(callIndexer(t, a.handleTestIndexerSettings, http.MethodPost, "/api/v1/indexers/test", "",
+		`{"name":"New","kind":"torznab","url":"`+tz.URL+`","api_key":"typed-key"}`))
+	if out["ok"] != false || out["error"] != "Incorrect user credentials" || lastKey.Load() != "typed-key" {
+		t.Fatalf("typed key: %+v (sent %v)", out, lastKey.Load())
+	}
+	out = decode(callIndexer(t, a.handleTestIndexerSettings, http.MethodPost, "/api/v1/indexers/test", "",
+		`{"id":`+strconv.FormatInt(row.ID, 10)+`,"name":"Saved","kind":"torznab","url":"`+tz.URL+`","api_key":""}`))
+	if out["ok"] != true || out["caps_summary"] != "Movies (imdbid) · 1 category" {
+		t.Fatalf("saved key: %+v", out)
+	}
+	list, _ := svc.List(ctx)
+	if len(list) != 1 || list[0].APIKey != "saved-key" || list[0].CapsJSON != "" {
+		t.Fatalf("testing settings changed the rows: %+v", list)
+	}
+	if w := callIndexer(t, a.handleTestIndexerSettings, http.MethodPost, "/api/v1/indexers/test", "", `{"kind":"torznab"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("no url = %d", w.Code)
+	}
 }
 
 // A row synced from Prowlarr keeps the name, address and key Prowlarr gave it whatever an

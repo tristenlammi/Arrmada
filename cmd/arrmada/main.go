@@ -542,6 +542,11 @@ func main() {
 		return nil
 	}, scheduler.Label("Search for missing movies"), scheduler.Description("Searches the indexers for monitored movies that don't have a file yet."))
 	// RSS sync: poll indexer feeds for new uploads matching wanted movies.
+	// What each Torznab indexer supports (its t=caps), for the Indexers page: read when
+	// never read or over a week old. Paced by the per-host throttle; paused indexers wait.
+	sched.Register("indexer-caps-refresh", 24*time.Hour, false, indexers.RefreshStaleCaps,
+		scheduler.Label("Read indexer capabilities"),
+		scheduler.Description("Asks each Torznab indexer which searches and categories it supports, when that's unknown or over a week old."))
 	sched.Register("rss-sync", 15*time.Minute, false, func(ctx context.Context) error {
 		coordinator.RSSSync(ctx)
 		return nil

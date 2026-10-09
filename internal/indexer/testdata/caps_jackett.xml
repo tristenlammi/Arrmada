@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Caps>
+  <server version="1.3" title="Jackett" source="https://github.com/Jackett/Jackett" />
+  <Limits Max="1000" Default="1000" />
+  <searching>
+    <search available="yes" SupportedParams="q" />
+    <tv-search Available="Yes" supportedparams="q,season,ep" />
+    <movie-search available="no" supportedParams="q" />
+    <music-search available="no" supportedParams="q" />
+    <audio-search available="yes" supportedParams="q" />
+    <book-search available="yes" supportedParams="q,author,title" />
+  </searching>
+  <categories>
+    <Category ID="3000" name="Audio">
+      <SubCat ID="3030" name="Audio/Audiobook" />
+    </Category>
+    <category id="7000" name="Books">
+      <subcat id="7020" name="Books/EBook" />
+    </category>
+  </categories>
+</Caps>

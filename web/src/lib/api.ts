@@ -52,8 +52,17 @@ export interface Indexer {
   disabled_by?: string;
   /** The line a Prowlarr sync left on it, e.g. "Removed from Prowlarr". */
   managed_note?: string;
+  /** What it last said it supports: "Movies (imdbid, tmdbid) · TV (tvdbid, season, ep) · 23 categories". */
+  caps_summary?: string;
   /** How it has been answering; sent to managers and admins only. */
   status?: IndexerStatus;
+}
+
+/** A Test's answer; caps_summary is what a Torznab indexer said it supports. */
+export interface IndexerTestResult {
+  ok: boolean;
+  error?: string;
+  caps_summary?: string;
 }
 
 /** What a Prowlarr sync changed. flaresolverr_ready is Prowlarr's own answer afterwards. */
@@ -1653,7 +1662,10 @@ export const api = {
     req<void>(`/api/v1/indexers/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteIndexer: (id: number) => req<void>(`/api/v1/indexers/${id}`, { method: "DELETE" }),
   testIndexer: (id: number) =>
-    req<{ ok: boolean; error?: string }>(`/api/v1/indexers/${id}/test`, { method: "POST" }),
+    req<IndexerTestResult>(`/api/v1/indexers/${id}/test`, { method: "POST" }),
+  /** Tests settings without saving them; with id, a blank key or password means the saved one. */
+  testIndexerSettings: (body: NewIndexer & { id?: number }) =>
+    req<IndexerTestResult>("/api/v1/indexers/test", { method: "POST", body: JSON.stringify(body) }),
   flareSolverrStatus: () => req<FlareSolverrStatus>("/api/v1/flaresolverr/status"),
   prowlarrInfo: () => req<{ url: string; has_key: boolean }>("/api/v1/indexers/prowlarr"),
   syncProwlarr: (body: { url: string; api_key: string; add_flaresolverr_proxy?: boolean }) =>

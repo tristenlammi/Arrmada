@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { api, type Indexer, type IndexerStatus } from "../lib/api";
+import { api, type Indexer, type IndexerStatus, type NewIndexer } from "../lib/api";
 import { INDEXER_DOT, indexerStatusLine, prowlarrSyncMessage } from "../lib/indexerStatus";
 import { LINKS } from "../lib/links";
 import { useQuery } from "../lib/query";
@@ -10,7 +10,7 @@ import { ErrorState, Skeleton, StaleBanner, useConfirm } from "../ui";
 
 const NO_INDEXERS: Indexer[] = [];
 
-type TestState = { loading?: boolean; ok?: boolean; error?: string };
+type TestState = { loading?: boolean; ok?: boolean; error?: string; caps?: string };
 
 // Priority only orders results that are otherwise level, so say so wherever it shows.
 const TIE_BREAK_HELP = "Only breaks ties between equally seeded results, such as the same release from two indexers. 1 = preferred.";
@@ -42,7 +42,7 @@ export function Indexers() {
     setTests((t) => ({ ...t, [id]: { loading: true } }));
     try {
       const res = await api.testIndexer(id);
-      setTests((t) => ({ ...t, [id]: { ok: res.ok, error: res.error } }));
+      setTests((t) => ({ ...t, [id]: { ok: res.ok, error: res.error, caps: res.caps_summary } }));
     } catch (e) {
       setTests((t) => ({ ...t, [id]: { ok: false, error: (e as Error).message } }));
     }
@@ -136,6 +136,9 @@ export function Indexers() {
                       {idx.managed_note && (
                         <div className="mt-1 text-[11.5px] text-ink-dim">{idx.managed_note}</div>
                       )}
+                      {idx.caps_summary && (
+                        <div className="mt-1 break-words text-[11px] text-ink-faint" title="What this indexer says it supports">{idx.caps_summary}</div>
+                      )}
                       {idx.status && <StatusLine status={idx.status} />}
                     </div>
                     <span className="font-mono text-[11px] text-ink-faint" title={TIE_BREAK_HELP}>tie-break {idx.priority}</span>
@@ -154,9 +157,7 @@ export function Indexers() {
                   )}
                   <MediaPills idx={idx} onChange={refresh} />
                   {t && !t.loading && (
-                    <div className="mt-2.5 font-mono text-[11px]" style={{ color: t.ok ? "var(--good)" : "var(--reject)" }}>
-                      {t.ok ? "✓ Connected" : `✕ ${t.error ?? "failed"}`}
-                    </div>
+                    <TestLine state={t} />
                   )}
                   {editingId === idx.id && (
                     <EditForm
@@ -174,6 +175,38 @@ export function Indexers() {
         )}
       </div>
     </>
+  );
+}
+
+// TestLine is a Test's answer: connected (with what the indexer supports) or why not.
+function TestLine({ state }: { state: TestState }) {
+  return (
+    <div className="mt-2.5 break-words font-mono text-[11px]" style={{ color: state.ok ? "var(--good)" : "var(--reject)" }}>
+      {state.ok ? `✓ Connected${state.caps ? ` · ${state.caps}` : ""}` : `✕ ${state.error ?? "failed"}`}
+    </div>
+  );
+}
+
+// TestSettings checks what's in a form without saving it. A typed key or password goes
+// out for this one check only; with an id, blanks mean the saved ones.
+function TestSettings({ body }: { body: () => NewIndexer & { id?: number } }) {
+  const [state, setState] = useState<TestState>({});
+  const run = async () => {
+    setState({ loading: true });
+    try {
+      const r = await api.testIndexerSettings(body());
+      setState({ ok: r.ok, error: r.error, caps: r.caps_summary });
+    } catch (e) {
+      setState({ ok: false, error: (e as Error).message });
+    }
+  };
+  return (
+    <div className="mt-3">
+      <button type="button" onClick={run} disabled={state.loading} className="rounded-lg px-3 py-1.5 text-[12px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
+        {state.loading ? "Testing…" : "Test these settings"}
+      </button>
+      {!state.loading && state.ok !== undefined && <TestLine state={state} />}
+    </div>
   );
 }
 
@@ -369,19 +402,21 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
   const is1337 = kind === "1337x";
   const isMAM = kind === "myanonamouse";
 
+  const body = (): NewIndexer =>
+    isTL
+      ? { name, kind, username, password, api_key: apiKey, priority, min_seeders: minSeeders }
+      : isMAM
+        ? { name, kind, api_key: apiKey, media_types: ["book"], priority, min_seeders: minSeeders }
+        : is1337
+          ? { name, kind, url, priority, min_seeders: minSeeders }
+          : { name, kind, url, api_key: apiKey, priority, min_seeders: minSeeders };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError(null);
     try {
-      const body = isTL
-        ? { name, kind, username, password, api_key: apiKey, priority, min_seeders: minSeeders }
-        : isMAM
-          ? { name, kind, api_key: apiKey, media_types: ["book"], priority, min_seeders: minSeeders }
-          : is1337
-            ? { name, kind, url, priority, min_seeders: minSeeders }
-            : { name, kind, url, api_key: apiKey, priority, min_seeders: minSeeders };
-      await api.createIndexer(body);
+      await api.createIndexer(body());
       onAdded();
     } catch (err) {
       setError((err as Error).message);
@@ -463,6 +498,7 @@ function AddForm({ onAdded }: { onAdded: () => void }) {
           Native books/audiobooks integration. In MyAnonaMouse go to <b>Preferences → Security → Create session</b>, allow your server's IP (ASN-locked is fine), and paste the <span className="font-mono">mam_id</span> here. Pulls full metadata — narrator, author, series, language, format — straight from MAM's API. Scoped to Books automatically. If you already have MAM in Prowlarr, remove that entry to avoid duplicate results.
         </p>
       )}
+      <TestSettings body={body} />
       {error && <div className="mt-3 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
       <button
         type="submit"
@@ -498,27 +534,29 @@ function EditForm({ idx, onSaved }: { idx: Indexer; onSaved: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
+  const body = (): NewIndexer => ({
+    name,
+    kind: idx.kind,
+    url: isTL ? undefined : url,
+    username: isTL ? username : undefined,
+    password: isTL ? password : undefined,
+    api_key: apiKey, // blank = keep existing
+    categories: idx.categories,
+    media_types: idx.media_types, // scoping is edited via the row pills; preserve it here
+    priority,
+    min_seeders: minSeeders,
+    seed_enabled: seedEnabled,
+    seed_ratio: seedEnabled ? seedRatio : 0,
+    seed_hours: seedEnabled ? (seedUnit === "days" ? seedTime * 24 : seedTime) : 0,
+    enabled,
+  });
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
     setError(null);
     try {
-      await api.updateIndexer(idx.id, {
-        name,
-        kind: idx.kind,
-        url: isTL ? undefined : url,
-        username: isTL ? username : undefined,
-        password: isTL ? password : undefined,
-        api_key: apiKey, // blank = keep existing
-        categories: idx.categories,
-        media_types: idx.media_types, // scoping is edited via the row pills; preserve it here
-        priority,
-        min_seeders: minSeeders,
-        seed_enabled: seedEnabled,
-        seed_ratio: seedEnabled ? seedRatio : 0,
-        seed_hours: seedEnabled ? (seedUnit === "days" ? seedTime * 24 : seedTime) : 0,
-        enabled,
-      });
+      await api.updateIndexer(idx.id, body());
       onSaved();
     } catch (err) {
       setError((err as Error).message);
@@ -585,6 +623,7 @@ function EditForm({ idx, onSaved }: { idx: Indexer; onSaved: () => void }) {
         <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
         Enabled
       </label>
+      <TestSettings body={() => ({ ...body(), id: idx.id })} />
       {error && <div className="mt-2 text-[12px]" style={{ color: "var(--reject)" }}>{error}</div>}
       <button
         type="submit"

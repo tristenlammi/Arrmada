@@ -50,6 +50,8 @@ type SyncResult struct {
 	// FlareSolverr proxy — never just because adding one didn't error.
 	FlareSolverrReady bool     `json:"flaresolverr_ready"`
 	Notes             []string `json:"notes,omitempty"`
+	// AddedIDs are the rows this sync created, whose capabilities are read next.
+	AddedIDs []int64 `json:"-"`
 }
 
 // ProwlarrSync is what a sync needs.
@@ -332,10 +334,12 @@ func (s *Service) applyProwlarr(ctx context.Context, tx *sql.Tx, base, key strin
 				MediaTypes:  mediaTypesFor(pi.Capabilities.Categories),
 				SeedEnabled: true, SeedHours: DefaultSeedHours, Enabled: true, ProwlarrID: pi.ID,
 			}
-			if _, err := createIn(ctx, tx, idx); err != nil {
+			created, err := createIn(ctx, tx, idx)
+			if err != nil {
 				return err
 			}
 			res.Added++
+			res.AddedIDs = append(res.AddedIDs, created.ID)
 			continue
 		}
 
