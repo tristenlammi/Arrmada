@@ -116,8 +116,8 @@ type Deps struct {
 	// Jobs runs and records the work requests start (searches, scans, imports). nil
 	// (tests, tools) runs that work untracked on the run group instead.
 	Jobs JobRunner
-	// Attention is the Needs-you feed: GET /attention serves its snapshot, and the
-	// handlers that change what it reports kick a refresh. nil = an empty, stale answer.
+	// Attention is the Needs-you feed: GET /attention serves its snapshot (the services
+	// whose changes it reports kick its refresh themselves). nil = an empty, stale answer.
 	Attention *attention.Service
 }
 

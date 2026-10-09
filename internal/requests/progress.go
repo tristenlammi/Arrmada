@@ -104,7 +104,7 @@ func (s *Service) lastChecked(ctx context.Context, reqs []Request) {
 		return
 	}
 	for kind, list := range ids {
-		sums, err := s.coord.LatestAttempts(ctx, kind, list)
+		times, err := s.coord.LastSearchedAt(ctx, kind, list)
 		if err != nil {
 			continue // the sweep's stamp stands
 		}
@@ -114,11 +114,11 @@ func (s *Service) lastChecked(ctx context.Context, reqs []Request) {
 			if t == nil || t.Stage != StageSearching || rq.MediaType != kind {
 				continue
 			}
-			sum, ok := sums[rq.libID]
-			if !ok || sum.Latest.StartedAt <= 0 {
+			ms, ok := times[rq.libID]
+			if !ok || ms <= 0 {
 				continue
 			}
-			at := time.UnixMilli(sum.Latest.StartedAt)
+			at := time.UnixMilli(ms)
 			if last := parseSearchStamp(rq.lastSearchAt); at.After(last) {
 				t.LastSearchAt = rfc3339(at)
 			}

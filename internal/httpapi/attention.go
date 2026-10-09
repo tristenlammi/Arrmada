@@ -39,7 +39,3 @@ func (a *api) handleAttention(w http.ResponseWriter, r *http.Request) {
 	}
 	a.writeJSON(w, http.StatusOK, out)
 }
-
-// kickAttention asks the Needs-you feed to look again soon, after a change it reports on
-// (a request made or decided, a review resolved). Nil-safe.
-func (a *api) kickAttention() { a.deps.Attention.Kick() }
