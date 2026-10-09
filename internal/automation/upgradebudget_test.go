@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -146,5 +147,33 @@ func TestMovieUpgradeSweepStopsSearchingWhenSpent(t *testing.T) {
 	h.c.UpgradeMovies(h.ctx)
 	if all := h.ix.searchCount() - one; all != 2*one {
 		t.Errorf("a budget of 1 searched %d times and no budget %d: the spent sweep didn't stop early", one, all)
+	}
+}
+
+// Wanted's upgrade Search all shares one budget between the searches the queue runs two at
+// a time: however they interleave, no more upgrades are grabbed than the budget allows.
+func TestUpgradeBudgetSharedAcrossSearches(t *testing.T) {
+	b := &upgradeBudget{max: 5}
+	var mu sync.Mutex
+	grabbed := 0
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			got := takeUpgrades([]int{1, 2}, b, func(int) bool { return true })
+			mu.Lock()
+			grabbed += len(got)
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if grabbed != 5 || !b.spent() {
+		t.Fatalf("grabbed %d upgrades on a budget of 5", grabbed)
+	}
+	// A batch whose budget is spent searches nothing more.
+	c := &Coordinator{}
+	if err := c.UpgradeMovieIn(context.Background(), 1, &UpgradeBatch{b: b}); err != nil {
+		t.Fatalf("spent batch: %v", err)
 	}
 }

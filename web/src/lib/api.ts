@@ -227,6 +227,33 @@ export interface WantedLists {
   queue_known: boolean;
 }
 
+/** One row of Movies → Wanted: the shared Wanted row plus the movie-only fields. */
+export interface MovieWantedRow extends Omit<WantedRow, "state"> {
+  /** The shared states, and on the Cutoff tab: upgrading (the sweep will look) or not_upgrading. */
+  state: WantedState | "upgrading" | "not_upgrading";
+  /** A search of it is waiting or running in the movie search queue right now. */
+  queued: boolean;
+  /** Versions rows: the missing extra tracks. */
+  tracks?: string[];
+  /** Cutoff rows: the track judged (0 = the default; track names any other). */
+  version_id?: number;
+  track?: string;
+  /** Cutoff rows: what about the file misses its profile's target. */
+  detail?: string;
+  issues?: { kind: string; msg: string }[];
+  will_upgrade?: boolean;
+  /** Why the upgrade sweep won't act, when it won't. */
+  why_not?: string;
+}
+
+export interface MoviesMissing {
+  searching: MovieWantedRow[];
+  upcoming: MovieWantedRow[];
+  /** Films whose own file is in, but a monitored extra version isn't. */
+  versions: MovieWantedRow[];
+  queue_known: boolean;
+}
+
 export interface ActivityDownload {
   hash: string;
   name: string;
@@ -1835,7 +1862,7 @@ export const api = {
   wanted: () => req<WantedLists>("/api/v1/wanted"),
   /** Search now from a Wanted row: clears the title's backoff and runs its search as a job. */
   wantedSearch: (kind: WantedRow["media_type"], id: number) =>
-    req<{ status: string; started_at_ms?: number } & JobRef>(`/api/v1/wanted/${kind}/${id}/search`, { method: "POST" }),
+    req<{ status: string; started_at_ms?: number } & MovieQueuedRef>(`/api/v1/wanted/${kind}/${id}/search`, { method: "POST" }),
   pauseDownload: (hash: string) => req<{ status: string }>(`/api/v1/queue/${hash}/pause`, { method: "POST" }),
   resumeDownload: (hash: string) => req<ResumeResult>(`/api/v1/queue/${hash}/resume`, { method: "POST" }),
   // mode: keep_files keeps what was downloaded (the default), delete_files deletes it, block
@@ -2127,6 +2154,11 @@ export const api = {
   searchMovie: (id: number) =>
     req<{ status: string; started_at_ms?: number } & MovieQueuedRef>(`/api/v1/movies/${id}/search`, { method: "POST" }),
   movieSearchQueue: () => req<MovieSearchQueue>("/api/v1/movies/search-queue"),
+  moviesMissing: () => req<MoviesMissing>("/api/v1/movies/wanted?tab=missing"),
+  moviesCutoff: () => req<{ rows: MovieWantedRow[]; queue_known: boolean }>("/api/v1/movies/wanted?tab=cutoff"),
+  /** Queue searches for many movies at the throttled rate: missing searches, or upgrades under one shared upgrade budget. */
+  bulkMovieSearch: (ids: number[], kind: "missing" | "upgrade") =>
+    req<{ queued: number; duplicates: number }>("/api/v1/movies/search", { method: "POST", body: JSON.stringify({ ids, kind }) }),
   movie: (id: number) => req<Movie>(`/api/v1/movies/${id}`),
   movieCollection: (id: number) =>
     req<{ name: string; members: CollectionMember[] }>(`/api/v1/movies/${id}/collection`),

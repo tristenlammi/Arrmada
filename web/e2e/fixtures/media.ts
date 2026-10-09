@@ -1,6 +1,6 @@
 import type {
   ActivityFeed, BlocklistRow, Book, BookSweepStatus, BookUpgradeStatus, CalendarItem, DashboardData, DownloadClientList, FitCounts,
-  FormatInfo, ImportRecord, ImportReview, Indexer, Job, Movie, MyBook, MyRequest, QualityProfileInfo, Series, WantedLists,
+  FormatInfo, ImportRecord, ImportReview, Indexer, Job, Movie, MovieWantedRow, MoviesMissing, MyBook, MyRequest, QualityProfileInfo, Series, WantedLists,
 } from "../../src/lib/api";
 import { NOW, day } from "./clock";
 
@@ -102,6 +102,26 @@ export const wanted: WantedLists = {
     },
   ],
   upcoming: [],
+};
+
+// Movies → Wanted (MOV-08): Missing is the Wanted view's movie rows, plus films missing
+// only an extra version; Cutoff unmet lists files below their profile's target.
+export const moviesMissing: MoviesMissing = {
+  queue_known: true,
+  searching: wanted.searching.filter((r) => r.media_type === "movie").map((r) => ({ ...r, queued: false })),
+  upcoming: [],
+  versions: [
+    { media_type: "movie", id: 1, movie_id: 1, title: "The Cartographer", year: 2023, poster_url: poster(3), quality_profile: "HD 1080p",
+      missing: ["4K"], tracks: ["4K"], state: "searching", search_misses: 0, due: true, next_search_at: new Date(NOW).toISOString(), queued: false },
+  ],
+};
+export const moviesCutoff: { rows: MovieWantedRow[]; queue_known: boolean } = {
+  queue_known: true,
+  rows: [
+    { media_type: "movie", id: 1, movie_id: 1, title: "The Cartographer", year: 2023, poster_url: poster(3), quality_profile: "HD 1080p",
+      state: "upgrading", search_misses: 0, queued: false, detail: "x264 isn't a codec this target wants",
+      issues: [{ kind: "codec", msg: "x264 isn't a codec this target wants" }], will_upgrade: true },
+  ],
 };
 
 // Search now from a Wanted row: the job it starts, and that job finished with nothing usable.

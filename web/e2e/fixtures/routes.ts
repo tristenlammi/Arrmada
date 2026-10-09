@@ -72,6 +72,8 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/series", media.series),
     get("/api/v1/movies/unmatched", { unmatched: [] }),
     get("/api/v1/movies/search-queue", { running: [], queued: [] }),
+    { method: "GET", path: "/api/v1/movies/wanted", respond: ({ url }) => (url.searchParams.get("tab") === "cutoff" ? media.moviesCutoff : media.moviesMissing) },
+    { method: "POST", path: "/api/v1/movies/search", status: 202, respond: ({ body }) => ({ queued: ((body as { ids?: number[] })?.ids ?? []).length, duplicates: 0 }) },
     get("/api/v1/series/unmatched", { unmatched: [] }),
     get("/api/v1/books", media.books),
     get("/api/v1/books/upgrade", media.bookUpgrade),

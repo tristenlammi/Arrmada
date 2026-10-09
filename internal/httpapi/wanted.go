@@ -118,8 +118,8 @@ type wantedBuild struct {
 	// untracked is the unfinished torrents no grab knows by hash (added by hand or by
 	// another tool): the sweeps still hold a title back for one named like it.
 	untracked []download.Item
-	reviews    map[string]int64 // "<kind>:<id>" → a pending review's id
-	profiles   map[string]string
+	reviews   map[string]int64 // "<kind>:<id>" → a pending review's id
+	profiles  map[string]string
 }
 
 func (b *wantedBuild) profile(ref string) string {

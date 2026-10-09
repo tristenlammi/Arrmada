@@ -145,8 +145,22 @@ func searchFn(fn func(ctx context.Context) error) func(context.Context, *jobs.Pr
 // searched is a success with that reason. Every such search is a person's (see
 // interactive).
 func outcomeFn(noun string, fn func(ctx context.Context) (automation.SearchOutcome, error)) func(context.Context, *jobs.Progress) (any, error) {
+	return outcomeJobFn(noun, true, fn)
+}
+
+// bulkOutcomeFn is outcomeFn for one title of a bulk search (Wanted's Search all): still
+// a person's search, but not an interactive one — like a sweep it leaves alone the
+// indexers that are backing off after repeated failures.
+func bulkOutcomeFn(noun string, fn func(ctx context.Context) (automation.SearchOutcome, error)) func(context.Context, *jobs.Progress) (any, error) {
+	return outcomeJobFn(noun, false, fn)
+}
+
+func outcomeJobFn(noun string, interactiveSearch bool, fn func(ctx context.Context) (automation.SearchOutcome, error)) func(context.Context, *jobs.Progress) (any, error) {
 	return func(ctx context.Context, p *jobs.Progress) (any, error) {
-		out, err := fn(automation.WithDefaultSearchTrigger(indexer.WithInteractive(ctx), automation.TriggerManual))
+		if interactiveSearch {
+			ctx = indexer.WithInteractive(ctx)
+		}
+		out, err := fn(automation.WithDefaultSearchTrigger(ctx, automation.TriggerManual))
 		if errors.Is(err, automation.ErrAlreadySearching) {
 			out.Reason, err = automation.ReasonAlreadySearching, nil
 		}
@@ -170,6 +184,28 @@ func (a *api) movieSearchJob(id int64) jobs.Spec {
 func (a *api) movieUpgradeJob(id int64) jobs.Spec {
 	return jobs.Spec{Kind: "movie.upgrade", Target: jobTarget("movie", id), Class: jobs.ClassIndexerSearch, Timeout: 3 * time.Minute,
 		Fn: interactive(searchFn(func(ctx context.Context) error { return a.deps.Automation.UpgradeMovie(ctx, id) }))}
+}
+
+// movieBulkSearchJob is one title of Wanted → Missing's Search all (movieSearchJob, not
+// interactive). Its single-flight key is the plain search's, so a title already queued
+// by a click isn't queued twice.
+func (a *api) movieBulkSearchJob(id int64) jobs.Spec {
+	spec := a.movieSearchJob(id)
+	spec.Fn = bulkOutcomeFn("movie", func(ctx context.Context) (automation.SearchOutcome, error) {
+		return a.deps.Automation.SearchMovie(ctx, id)
+	})
+	return spec
+}
+
+// movieBulkUpgradeJob is one title of Wanted → Cutoff unmet's Search all: an upgrade
+// search under the batch's shared upgrade budget, not interactive. Recorded as an upgrade
+// search, like the sweep's, so one that finds nothing better adds no History line.
+func (a *api) movieBulkUpgradeJob(id int64, batch *automation.UpgradeBatch) jobs.Spec {
+	spec := a.movieUpgradeJob(id)
+	spec.Fn = searchFn(func(ctx context.Context) error {
+		return a.deps.Automation.UpgradeMovieIn(ctx, id, batch)
+	})
+	return spec
 }
 
 func (a *api) movieRegrabJob(id int64) jobs.Spec {

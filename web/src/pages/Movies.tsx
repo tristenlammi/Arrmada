@@ -14,19 +14,24 @@ import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { useQuery } from "../lib/query";
 import { isMovieDownloaded, isMovieWanted, movieStatus } from "../lib/movieStatus";
 import { useLive } from "../lib/useLive";
+import { MoviesSwitch } from "../components/MoviesSwitch";
 import { queueLine, queuedNote, useMovieSearchQueue } from "../lib/movieQueue";
 import { Button, ErrorState, Modal, Skeleton, StaleBanner, StatusChip } from "../ui";
 
 const NO_MOVIES: Movie[] = [];
 
 
-type FilterKey = "all" | "monitored" | "unmonitored" | "wanted" | "downloaded";
+type FilterKey = "all" | "monitored" | "unmonitored" | "wanted" | "nofile" | "downloaded";
 
+// Wanted is exactly what's badged Wanted (monitored, no file, nothing downloading) — the
+// same films as Wanted → Missing. A film with no file that isn't monitored is never
+// searched for; it has its own filter rather than hiding inside Wanted.
 const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "all", label: "All" },
   { key: "monitored", label: "Monitored" },
   { key: "unmonitored", label: "Unmonitored" },
   { key: "wanted", label: "Wanted" },
+  { key: "nofile", label: "No file (unmonitored)" },
   { key: "downloaded", label: "Downloaded" },
 ];
 
@@ -36,6 +41,8 @@ function matchesFilter(m: Movie, f: FilterKey, queueKnown = true): boolean {
       return m.monitored;
     case "unmonitored":
       return !m.monitored;
+    case "nofile":
+      return !m.monitored && !m.has_file;
     case "wanted":
       return isMovieWanted(m, queueKnown);
     case "downloaded":
@@ -169,7 +176,8 @@ export function Movies() {
       <PageHeader title="Movies" />
       <div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex items-center justify-between gap-3">
-          <span className="flex items-center gap-2.5">
+          <span className="flex flex-wrap items-center gap-2.5">
+            <MoviesSwitch active="library" />
             <span className="font-mono text-[11px] text-ink-faint">{list.data ? `${movies.length} in library` : ""}</span>
             {queueText && <StatusChip tone="accent" title="Movie searches run two at a time; the rest wait their turn.">{queueText}</StatusChip>}
           </span>
