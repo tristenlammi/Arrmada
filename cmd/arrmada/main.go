@@ -39,6 +39,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/httpapi"
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/insights"
+	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/listening"
 	"github.com/tristenlammi/arrmada/internal/metadata"
@@ -188,6 +189,14 @@ func main() {
 	safego.SetPanicHook(func(name string) {
 		bus.Publish("system.panic", map[string]any{"name": name})
 	})
+	// The job runner records the work people and events start (searches, scans, imports,
+	// Run now) with single-flight per item and class limits. Jobs a crash left unfinished
+	// are marked interrupted here.
+	jobRunner, err := jobs.New(runCtx, st.DB(), log, bus)
+	if err != nil {
+		log.Error("failed to start the job runner", "err", err)
+		os.Exit(1)
+	}
 	authSvc := auth.NewService(st.DB())
 	authSvc.SetLogger(log)
 	// Accounts that differ only by case predate case-insensitive names; say so once.
@@ -693,6 +702,9 @@ func main() {
 	// at once after a long downtime), newest 7 kept in <data>/backups.
 	backupSvc := backup.New(st, settingsSvc, log)
 	sched.Register("db-backup", time.Hour, true, backupSvc.RunNightly, scheduler.Label("Back up the database"), scheduler.Description("Takes the nightly database backup and keeps the newest seven."))
+	// The jobs table keeps two weeks of finished work, at most 5000 rows.
+	sched.Register("jobs-prune", 24*time.Hour, true, jobRunner.PruneDefault,
+		scheduler.Label("Tidy the job history"), scheduler.Description("Removes finished background jobs older than 14 days."))
 
 	// Audiobook server: listening apps (Lissen and other Audiobookshelf clients) connect to
 	// its own port. Off until an admin switches it on in Books → Audiobook server.
@@ -771,6 +783,7 @@ func main() {
 		RunGroup:  grp,
 		Backups:   backupSvc,
 		Scheduler: sched,
+		Jobs:      jobRunner,
 	})
 
 	errCh := make(chan error, 1)
@@ -812,12 +825,18 @@ func main() {
 
 	// Let in-flight jobs drain, then name whatever ignored the cancel: those are the
 	// ones Docker's kill will cut short.
+	// Everything was cancelled at the same moment, so these waits overlap: their sum is
+	// the worst case, and it stays inside Docker's window.
 	clean := true
-	if busy := sched.WaitFor(2 * time.Second); len(busy) > 0 {
+	if left := jobRunner.Shutdown(2 * time.Second); len(left) > 0 {
+		clean = false
+		log.Warn("shutdown: jobs still running were recorded as cancelled", "jobs", left)
+	}
+	if busy := sched.WaitFor(time.Second); len(busy) > 0 {
 		clean = false
 		log.Warn("shutdown: scheduled tasks still running", "tasks", busy)
 	}
-	if left := grp.Wait(2 * time.Second); len(left) > 0 {
+	if left := grp.Wait(time.Second); len(left) > 0 {
 		clean = false
 		log.Warn("shutdown: background work still running", "count", len(left), "names", summarizeNames(left, 20))
 	}

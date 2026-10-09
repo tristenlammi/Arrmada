@@ -97,6 +97,9 @@ type Deps struct {
 	// Scheduler runs the recurring tasks; the Tasks API reads and triggers it. nil = the
 	// task list is empty and Run now answers 503.
 	Scheduler *scheduler.Scheduler
+	// Jobs runs and records the work requests start (searches, scans, imports). nil
+	// (tests, tools) runs that work untracked on the run group instead.
+	Jobs JobRunner
 }
 
 type api struct {
@@ -173,6 +176,10 @@ func (a *api) registerRoutes(mux *router) {
 	// whole-library sweep) is a system action, so Run now is admin-only.
 	mux.HandleFunc("GET /api/v1/system/tasks", a.requireRole(auth.RoleManager, a.handleListTasks))
 	mux.HandleFunc("POST /api/v1/system/tasks/{name}/run", a.requireRole(auth.RoleAdmin, a.handleRunTask))
+	// Background jobs (searches, scans, imports, Run now): staff follow and cancel them.
+	mux.HandleFunc("GET /api/v1/jobs", a.requireRole(auth.RoleManager, a.handleListJobs))
+	mux.HandleFunc("GET /api/v1/jobs/{id}", a.requireRole(auth.RoleManager, a.handleGetJob))
+	mux.HandleFunc("POST /api/v1/jobs/{id}/cancel", a.requireRole(auth.RoleManager, a.handleCancelJob))
 
 	// Audiobook server (listening apps): admin panel + each user's own connection card.
 	mux.HandleFunc("GET /api/v1/audioserver", a.requireRole(auth.RoleAdmin, a.handleAudioServer))

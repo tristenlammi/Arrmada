@@ -110,6 +110,8 @@ GET /api/v1/insights/recently-added staff -
 GET /api/v1/insights/reliability staff -
 GET /api/v1/insights/stats staff -
 GET /api/v1/insights/users staff -
+GET /api/v1/jobs staff -
+GET /api/v1/jobs/{id} staff -
 GET /api/v1/library/fit staff -
 GET /api/v1/library/fit/profiles staff -
 GET /api/v1/logs admin -
@@ -227,6 +229,7 @@ POST /api/v1/indexers/{id}/test staff -
 POST /api/v1/insights/import/tautulli admin -
 POST /api/v1/insights/plex/auth staff -
 POST /api/v1/insights/plex/test staff -
+POST /api/v1/jobs/{id}/cancel staff -
 POST /api/v1/library/fit/preview staff -
 POST /api/v1/me/audio/accept user ext
 POST /api/v1/me/audio/restore user ext
