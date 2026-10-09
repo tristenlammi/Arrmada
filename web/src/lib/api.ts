@@ -234,6 +234,16 @@ export interface ResumeResult {
   held_by_guard?: number;
 }
 
+/** FlareSolverr as the Indexers page shows it; error is the exact failure. */
+export interface FlareSolverrStatus {
+  configured: boolean;
+  ok: boolean;
+  url?: string;
+  version?: string;
+  error?: string;
+  checked_at: string;
+}
+
 export interface APIKeyStatus {
   id: string;
   label: string;
@@ -1526,6 +1536,7 @@ export const api = {
   deleteIndexer: (id: number) => req<void>(`/api/v1/indexers/${id}`, { method: "DELETE" }),
   testIndexer: (id: number) =>
     req<{ ok: boolean; error?: string }>(`/api/v1/indexers/${id}/test`, { method: "POST" }),
+  flareSolverrStatus: () => req<FlareSolverrStatus>("/api/v1/flaresolverr/status"),
   prowlarrInfo: () => req<{ url: string; has_key: boolean }>("/api/v1/indexers/prowlarr"),
   syncProwlarr: (body: { url: string; api_key: string }) =>
     req<{ synced: number; flaresolverr_ready: boolean }>("/api/v1/indexers/prowlarr/sync", { method: "POST", body: JSON.stringify(body) }),

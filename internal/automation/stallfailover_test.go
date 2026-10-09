@@ -151,7 +151,7 @@ func newStallHarness(t *testing.T) *stallHarness {
 	tsrv := httptest.NewServer(tz.handler())
 	t.Cleanup(tsrv.Close)
 
-	ix := indexer.NewService(st.DB(), log, "")
+	ix := indexer.NewService(st.DB(), log, nil)
 	if _, err := ix.Create(ctx, indexer.Indexer{Name: "Fake", Kind: indexer.KindTorznab, URL: tsrv.URL, Priority: 10, Enabled: true}); err != nil {
 		t.Fatal(err)
 	}

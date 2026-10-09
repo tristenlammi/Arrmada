@@ -77,13 +77,9 @@ func copyErrors(m map[string]string) map[string]string {
 	return out
 }
 
-// NewService wires a Service over the database. flaresolverrURL may be empty
-// (no Cloudflare solving).
-func NewService(db *sql.DB, log *slog.Logger, flaresolverrURL string) *Service {
-	var fs *flaresolverr.Client
-	if flaresolverrURL != "" {
-		fs = flaresolverr.New(flaresolverrURL)
-	}
+// NewService wires a Service over the database. fs is the FlareSolverr client, whose URL
+// is read on every use; nil (or one with no URL set) means no Cloudflare solving.
+func NewService(db *sql.DB, log *slog.Logger, fs *flaresolverr.Client) *Service {
 	s := &Service{repo: NewRepo(db), registry: NewRegistry(fs), log: log}
 	s.registry.SetLogger(log) // per-page request tracing
 	// Persist a rotated MyAnonaMouse session so it doesn't silently expire.

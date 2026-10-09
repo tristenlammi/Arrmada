@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { api, type Indexer, type IndexerStatus } from "../lib/api";
 import { INDEXER_DOT, indexerStatusLine } from "../lib/indexerStatus";
+import { LINKS } from "../lib/links";
 import { useQuery } from "../lib/query";
 import { useLive } from "../lib/useLive";
 import { ErrorState, Skeleton, StaleBanner } from "../ui";
@@ -73,6 +75,8 @@ export function Indexers() {
             }}
           />
         )}
+
+        <FlareSolverrLine />
 
         <ProwlarrSync onSynced={refresh} />
 
@@ -171,6 +175,40 @@ function StatusLine({ status }: { status: IndexerStatus }) {
   );
 }
 
+// FlareSolverrLine says whether FlareSolverr — which TorrentLeech, 1337x and TheXEM need
+// to get past Cloudflare — is set up and answering. The page used to say it was wired up
+// whether or not the container was running.
+function FlareSolverrLine() {
+  const q = useQuery("flaresolverr-status", () => api.flareSolverrStatus(), { staleMs: 60_000 });
+  const s = q.data;
+  if (!s) return null;
+  let color: string;
+  let body: React.ReactNode;
+  if (!s.configured) {
+    color = "var(--ink-faint)";
+    body = (
+      <>
+        not set up — TorrentLeech and 1337x can't get past Cloudflare without it. Add its URL in{" "}
+        <Link to={LINKS.apiKeys} style={{ color: "var(--accent)" }}>Settings → System → API keys</Link>.
+      </>
+    );
+  } else if (s.ok) {
+    color = "var(--good)";
+    body = <>ready{s.version ? ` (${s.version})` : ""}</>;
+  } else {
+    color = "var(--reject)";
+    body = <>not answering — {s.error ?? "no reply"}</>;
+  }
+  return (
+    <div className="mb-4 flex items-start gap-2 text-[12px] text-ink-dim">
+      <span className="mt-[5px] inline-block h-2 w-2 flex-none rounded-full" style={{ background: color }} aria-hidden="true" />
+      <span className="min-w-0 break-words">
+        <span className="font-semibold text-ink">FlareSolverr:</span> {body}
+      </span>
+    </div>
+  );
+}
+
 function ProwlarrSync({ onSynced }: { onSynced: () => void }) {
   const [open, setOpen] = useState(false);
   const [url, setUrl] = useState("");
@@ -211,7 +249,7 @@ function ProwlarrSync({ onSynced }: { onSynced: () => void }) {
       <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center justify-between gap-3 text-left">
         <div>
           <div className="text-[13px] font-semibold">Sync from Prowlarr <span className="ml-1 rounded px-1.5 py-0.5 align-middle font-mono text-[9px] uppercase" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>fast</span></div>
-          <div className="mt-0.5 text-[11.5px] text-ink-faint">Pull your Prowlarr indexers in as Torznab feeds — API search, no scraping. FlareSolverr (bundled) is wired into Prowlarr automatically. Add trackers in Prowlarr first.</div>
+          <div className="mt-0.5 text-[11.5px] text-ink-faint">Pull your Prowlarr indexers in as Torznab feeds — API search, no scraping. Syncing also points Prowlarr at Arrmada's FlareSolverr. Add trackers in Prowlarr first.</div>
         </div>
         <span className="font-mono text-[16px] text-ink-faint">{open ? "−" : "+"}</span>
       </button>
@@ -237,9 +275,9 @@ function ProwlarrSync({ onSynced }: { onSynced: () => void }) {
               <a href={prowlarrUI} target="_blank" rel="noreferrer" className="font-mono font-semibold" style={{ color: "var(--accent)" }}>{prowlarrUI} ↗</a>
             </div>
             <div className="text-ink-dim">
-              For a Cloudflare-protected tracker, FlareSolverr is already wired up — just add the{" "}
+              For a Cloudflare-protected tracker, add the{" "}
               <code className="rounded px-1 py-0.5 font-mono text-[10.5px]" style={{ background: "var(--panel)", color: "var(--accent)" }}>flaresolverr</code>{" "}
-              tag to that tracker in Prowlarr. Public indexers don't need it.
+              tag to that tracker in Prowlarr; syncing sets up the FlareSolverr proxy it uses. Public indexers don't need it.
             </div>
           </div>
 

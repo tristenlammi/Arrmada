@@ -28,7 +28,7 @@ func healthService(t *testing.T, urls ...string) (*Service, *connstatus.Tracker,
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s := NewService(st.DB(), log, "")
+	s := NewService(st.DB(), log, nil)
 	tr := connstatus.New(st.DB(), log)
 	s.SetStatus(tr)
 	var created []Indexer

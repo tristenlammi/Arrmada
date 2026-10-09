@@ -58,7 +58,7 @@ func outageBookCoord(t *testing.T) (*Coordinator, *books.Service, context.Contex
 	t.Cleanup(srv.Close)
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	ix := indexer.NewService(st.DB(), log, "")
+	ix := indexer.NewService(st.DB(), log, nil)
 	if _, err := ix.Create(context.Background(), indexer.Indexer{
 		Name: "Books", Kind: indexer.KindTorznab, URL: srv.URL, Priority: 10, Enabled: true,
 	}); err != nil {
@@ -181,7 +181,7 @@ func TestMovieSweepStopsOnOutage(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	ix := indexer.NewService(st.DB(), log, "")
+	ix := indexer.NewService(st.DB(), log, nil)
 	if _, err := ix.Create(context.Background(), indexer.Indexer{
 		Name: "Movies", Kind: indexer.KindTorznab, URL: srv.URL, Priority: 10, Enabled: true,
 	}); err != nil {

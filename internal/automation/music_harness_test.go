@@ -86,7 +86,7 @@ func musicTestCoord(t *testing.T) *musicHarness {
 	c := &Coordinator{
 		music: svc, quality: quality.NewService(st.DB()), db: st.DB(), log: slog.Default(),
 		bus:      eventbus.New(slog.Default()),
-		indexers: indexer.NewService(st.DB(), slog.Default(), ""), // empty: seed rules fall back
+		indexers: indexer.NewService(st.DB(), slog.Default(), nil), // empty: seed rules fall back
 		imp:      library.NewImporter(t.TempDir(), slog.Default()),
 		// Real free space of a temp dir, so only an absurdly large release trips the guard.
 		downloadsDir: t.TempDir(),

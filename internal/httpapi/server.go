@@ -23,6 +23,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/convert"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/eventbus"
+	"github.com/tristenlammi/arrmada/internal/flaresolverr"
 	"github.com/tristenlammi/arrmada/internal/health"
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/insights"
@@ -78,6 +79,8 @@ type Deps struct {
 	Recycle    *recyclebin.Service
 	Logs       *applog.Ring
 	APIKeys    *apikeys.Store
+	// FlareSolverr, whose URL is the "flaresolverr" API key (read on every use).
+	FlareSolverr *flaresolverr.Client
 	// The audiobook server for listening apps, and its listener.
 	AudioServer  *audioserver.Server
 	AudioManager *audioserver.Manager
@@ -257,6 +260,7 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("PUT /api/v1/indexers/{id}", a.requireRole(auth.RoleManager, a.handleUpdateIndexer))
 	mux.HandleFunc("DELETE /api/v1/indexers/{id}", a.requireRole(auth.RoleManager, a.handleDeleteIndexer))
 	mux.HandleFunc("POST /api/v1/indexers/{id}/test", a.requireRole(auth.RoleManager, a.handleTestIndexer))
+	mux.HandleFunc("GET /api/v1/flaresolverr/status", a.requireRole(auth.RoleManager, a.handleFlareSolverrStatus))
 
 	// Download clients + queue
 	mux.HandleFunc("GET /api/v1/downloadclients", a.requireRole(auth.RoleManager, a.handleListDownloadClients))

@@ -45,7 +45,7 @@ func TestListIndexersStatus(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	svc := indexer.NewService(st.DB(), log, "")
+	svc := indexer.NewService(st.DB(), log, nil)
 	tr := connstatus.New(st.DB(), log)
 	svc.SetStatus(tr)
 	ctx := context.Background()

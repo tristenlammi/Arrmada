@@ -79,6 +79,12 @@ var Catalog = []Key{
 		HelpURL: "https://www.opensubtitles.com", EnvVar: "ARRMADA_OPENSUBTITLES_PASSWORD", Secret: true,
 		Steps: "Your opensubtitles.com account password.",
 	},
+	{
+		// A URL rather than a key, but it shares the saved-first, env-fallback handling.
+		ID: "flaresolverr", Label: "FlareSolverr URL", Purpose: "Gets TorrentLeech, 1337x and TheXEM past Cloudflare. Bundled by default.",
+		HelpURL: "https://github.com/FlareSolverr/FlareSolverr", EnvVar: "ARRMADA_FLARESOLVERR_URL", Secret: false, Testable: true,
+		Steps: "The bundled container answers at http://arrmada-flaresolverr:8191. Point this at your own FlareSolverr only if you run one elsewhere.",
+	},
 }
 
 func keyByID(id string) (Key, bool) {

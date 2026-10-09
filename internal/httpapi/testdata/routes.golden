@@ -95,6 +95,7 @@ GET /api/v1/downloadclients/{id}/status staff -
 GET /api/v1/downloads staff -
 GET /api/v1/downloads/disk-guard staff -
 GET /api/v1/files/info staff -
+GET /api/v1/flaresolverr/status staff -
 GET /api/v1/health/system staff -
 GET /api/v1/history staff -
 GET /api/v1/indexers staff -
