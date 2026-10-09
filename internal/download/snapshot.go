@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 // snapshotTTL is how long one read of the download clients answers for. Every open
@@ -132,7 +134,15 @@ func (s *Service) Snapshot(ctx context.Context) (Snapshot, error) {
 	c.mu.Unlock()
 
 	if leader {
-		s.runSnapshot(ctx, f)
+		// On its own goroutine, so the caller that started it can give up (a closed page,
+		// shutdown) like any other waiter while the read finishes for the rest. A panicking
+		// client is contained: the waiters get errSnapshotAborted.
+		go func() {
+			_ = safego.Call(s.log, "download queue read", func() error {
+				s.runSnapshot(ctx, f)
+				return nil
+			})
+		}()
 	}
 	select {
 	case <-f.done:
