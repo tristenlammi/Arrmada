@@ -3,15 +3,26 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import { MeProvider } from "./lib/me";
+import { ErrorBoundary } from "./components/ErrorBoundary";
+import { reloadOnce } from "./lib/chunkReload";
 import "./index.css";
+
+// Vite fires this when a lazily imported chunk (or its preload) fails to load,
+// typically a tab opened before a deploy asking for a chunk that's gone. Reload
+// once to pick up the new build; the guard stops a loop if that doesn't help.
+window.addEventListener("vite:preloadError", (e) => {
+  if (reloadOnce()) e.preventDefault();
+});
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <BrowserRouter>
-      <MeProvider>
-        <App />
-      </MeProvider>
-    </BrowserRouter>
+    <ErrorBoundary>
+      <BrowserRouter>
+        <MeProvider>
+          <App />
+        </MeProvider>
+      </BrowserRouter>
+    </ErrorBoundary>
   </React.StrictMode>,
 );
 

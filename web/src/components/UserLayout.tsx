@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { Link, NavLink, Outlet } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { FleetMark } from "./FleetMark";
+import { ErrorBoundary } from "./ErrorBoundary";
 import { useMe } from "../lib/me";
 import { api } from "../lib/api";
 
@@ -9,6 +10,7 @@ import { api } from "../lib/api";
 export function UserLayout() {
   const { user, external, booksEnabled } = useMe();
   const [menu, setMenu] = useState(false);
+  const { pathname } = useLocation();
   // External sessions are Discover-only (the /calendar route isn't mounted or
   // allowlisted for them) — don't show a link that silently bounces. "Your books"
   // is the exception: its two endpoints are allowlisted, so a requester can pick up
@@ -57,7 +59,10 @@ export function UserLayout() {
         </div>
       </header>
       <main className="min-w-0 flex-1 overflow-y-auto">
-        <Outlet />
+        {/* Keyed by path so navigating away from a broken page recovers. */}
+        <ErrorBoundary resetKey={pathname}>
+          <Outlet />
+        </ErrorBoundary>
       </main>
     </div>
   );

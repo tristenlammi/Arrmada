@@ -3,6 +3,7 @@ import { AppLayout } from "./components/AppLayout";
 import { UserLayout } from "./components/UserLayout";
 import { MyBooks } from "./pages/MyBooks";
 import { SetupGate } from "./components/SetupGate";
+import { Unreachable } from "./components/Unreachable";
 import { useMe, isStaff } from "./lib/me";
 import { Dashboard } from "./pages/Dashboard";
 import { Quality } from "./pages/Quality";
@@ -34,10 +35,16 @@ import { Placeholder } from "./pages/Placeholder";
 
 // Module routes still awaiting their build → placeholders.
 export default function App() {
-  const { user, loading, external, booksEnabled, musicEnabled } = useMe();
+  const { user, loading, unreachable, external, booksEnabled, musicEnabled } = useMe();
 
   if (loading) {
     return <div className="grid h-full place-items-center text-[13px] text-ink-dim">Loading…</div>;
+  }
+
+  // The server didn't answer at boot: say so (and keep retrying) rather than
+  // showing a login form that can't work either.
+  if (unreachable) {
+    return <Unreachable />;
   }
 
   // Auth enabled + not signed in → login / first-run setup.
