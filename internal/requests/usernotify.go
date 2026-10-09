@@ -127,10 +127,10 @@ func (s *Service) NotifyMovieReady(ctx context.Context, movieID int64) error {
 	return s.notifyRequester(ctx, "movie", m.TMDBID, "")
 }
 
-// NotifySeriesReady tells whoever asked for a show that it's ready — but only once no
-// monitored, aired episode is still wanted: a series isn't "ready to watch" on its first
-// imported episode. Later imports run this again (and the ready sweep backstops), so
-// skipping just defers the message.
+// NotifySeriesReady tells whoever asked for a show that it's ready — but only once it's
+// complete (seriesComplete): a series isn't "ready to watch" on its first imported
+// episode. Later imports run this again (and the ready sweep backstops), so skipping just
+// defers the message.
 func (s *Service) NotifySeriesReady(ctx context.Context, seriesID int64) error {
 	sr, err := s.series.Get(ctx, seriesID)
 	if errors.Is(err, series.ErrNotFound) {
@@ -139,7 +139,7 @@ func (s *Service) NotifySeriesReady(ctx context.Context, seriesID int64) error {
 	if err != nil {
 		return err
 	}
-	if s.series.HasWantedEpisodes(ctx, sr.ID) {
+	if !statsComplete(sr.Stats) {
 		return nil
 	}
 	return s.notifyRequester(ctx, "series", sr.TMDBID, "")
@@ -387,11 +387,8 @@ func (s *Service) readyNow(ctx context.Context, reqs []Request) (map[int64]bool,
 			return nil, err
 		}
 		for _, sr := range ss {
-			// Ready = some files on disk AND nothing still wanted (monitored, aired,
-			// missing) — the same completeness rule the import-event path applies.
-			if sr.Stats != nil && sr.Stats.HaveFiles > 0 {
-				serReady[sr.TMDBID] = !s.series.HasWantedEpisodes(ctx, sr.ID)
-			}
+			// The same rule the import-event path and the request card apply.
+			serReady[sr.TMDBID] = statsComplete(sr.Stats)
 		}
 	}
 	bookHave := map[string]bool{}

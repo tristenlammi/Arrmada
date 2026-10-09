@@ -7,6 +7,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/download"
+	"github.com/tristenlammi/arrmada/internal/series"
 )
 
 // Request stages, in the order a request moves through them.
@@ -38,6 +39,22 @@ type Tracking struct {
 	// (RFC3339, UTC). The page formats it in the viewer's own locale; the server never
 	// writes a date into the copy.
 	NextCheckAt string `json:"next_check_at,omitempty"`
+}
+
+// seriesComplete is the one rule for "this series request is done": something is on disk
+// and every episode it counts is. have and total are the series' Stats roll-up — files on
+// disk, against those plus the aired episodes still wanted (monitored, in a monitored
+// season, specials left out) — so a show whose older seasons nobody monitors is complete
+// once the seasons that are wanted are in. The request card (Track), the ready notice and
+// the ready sweep all ask this, so the card says Ready exactly when the message goes out.
+// A season-scoped request asks it of its own seasons' numbers.
+func seriesComplete(have, total int) bool {
+	return have > 0 && have >= total
+}
+
+// statsComplete is seriesComplete over a series' Stats roll-up.
+func statsComplete(st *series.Stats) bool {
+	return st != nil && seriesComplete(st.HaveFiles, st.Episodes)
 }
 
 // startingWindow is how long a grab with no download in the client yet still counts as
@@ -78,7 +95,7 @@ func (s *Service) track(ctx context.Context, rq *Request, byHash, byName map[str
 	if rq.MediaType == "series" {
 		t.Have, t.Total = rq.epHave, rq.epTotal
 	}
-	complete := rq.Available && (rq.MediaType != "series" || rq.epTotal == 0 || rq.epHave >= rq.epTotal)
+	complete := rq.Available && (rq.MediaType != "series" || seriesComplete(rq.epHave, rq.epTotal))
 	switch {
 	case rq.Status == StatusDeclined && !rq.Available:
 		t.Stage = StageDeclined

@@ -29,7 +29,6 @@ type seriesLib interface {
 	AddWith(ctx context.Context, tmdbID int, qualityProfile string, opts series.AddOptions) (series.Series, error)
 	Get(ctx context.Context, id int64) (series.Series, error)
 	List(ctx context.Context) ([]series.Series, error)
-	HasWantedEpisodes(ctx context.Context, seriesID int64) bool
 	// ByTMDBIDs is the library shows with these TMDB ids, each with its Stats roll-up.
 	ByTMDBIDs(ctx context.Context, tmdbIDs []int) ([]series.Series, error)
 }
