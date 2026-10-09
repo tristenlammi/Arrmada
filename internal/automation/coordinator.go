@@ -399,7 +399,8 @@ func (c *Coordinator) SearchMissing(ctx context.Context) {
 				continue
 			}
 		}
-		n, searched, err := c.searchAndGrab(ctx, m)
+		out, err := c.searchAndGrab(ctx, m)
+		n, searched := out.Grabbed, out.Searched
 		if errors.Is(err, ErrAlreadySearching) {
 			c.log.Debug("automation: skipping a movie that is already being searched", "movie", m.Title)
 			continue
@@ -609,49 +610,55 @@ func summarize(r parser.Release) string {
 	return strings.Join(parts, " · ")
 }
 
-// SearchMovie searches for and grabs a single movie (manual trigger).
-func (c *Coordinator) SearchMovie(ctx context.Context, id int64) error {
+// SearchMovie searches for and grabs a single movie (manual trigger) and says what it
+// found. A movie already being searched answers ErrAlreadySearching with that reason.
+func (c *Coordinator) SearchMovie(ctx context.Context, id int64) (SearchOutcome, error) {
 	m, err := c.movies.Get(ctx, id)
 	if err != nil {
-		return err
+		return SearchOutcome{}, err
 	}
-	_, _, err = c.searchAndGrab(ctx, m)
-	return err
+	return c.searchAndGrab(ctx, m)
 }
 
-// searchAndGrab searches for a movie and grabs what the quality profile picks. It
-// returns how many releases were grabbed so the sweep can back off a movie that keeps
-// coming up empty, and whether a search actually ran — a movie with nothing wanted
+// searchAndGrab searches for a movie and grabs what the quality profile picks. The
+// outcome says how many releases were grabbed, so the sweep can back off a movie that
+// keeps coming up empty, and whether a search actually ran — a movie with nothing wanted
 // costs no indexer query and must not count as a "miss" (that ratcheted every
 // fully-downloaded movie to the 12h backoff cap, delaying the first real search when
-// a file was later deleted or a new version track added).
-func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (int, bool, error) {
+// a file was later deleted or a new version track added). Its counts and reason are
+// what the Search button reports.
+func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (SearchOutcome, error) {
 	release, ok := c.claims.claim(movieKey(m.ID))
 	if !ok {
-		return 0, false, ErrAlreadySearching
+		return SearchOutcome{Reason: ReasonAlreadySearching}, ErrAlreadySearching
 	}
 	defer release()
 	want := c.missingVersions(ctx, m.ID)
 	if len(want) == 0 {
-		return 0, false, nil
+		return SearchOutcome{Reason: ReasonNothingWanted}, nil
 	}
+	out := SearchOutcome{Searched: true}
 	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: movieQuery(m), MediaType: indexer.MediaMovie, Limit: 100})
 	if err != nil {
-		return 0, true, err
+		return out, err
 	}
+	out.Returned = len(result.Releases)
 	if len(result.Releases) == 0 {
 		c.log.Info("automation: no releases found", "movie", m.Title)
-		return 0, true, nil
+		out.settle()
+		return out, nil
 	}
 	// Only consider releases that are actually for THIS movie — a title search for a
 	// short/common name (e.g. "Hope") returns unrelated films ("Romance at Hope
 	// Ranch"), and the scorer would otherwise happily grab the wrong one.
 	matching := matchingMovieReleases(m, result.Releases)
+	out.Matching = len(matching)
 	byName, cands, err := c.candidatesFrom(ctx, m.ID, matching)
 	if err != nil {
 		c.skipUnreadable(m.Title, err)
-		return 0, true, err
+		return out, err
 	}
+	out.Usable = len(cands)
 	// Say where the results went. A search that returns releases and grabs none looked
 	// identical in the log to one that found nothing useful — the same movie re-searched
 	// every cycle forever with no hint whether the releases were for a different film,
@@ -661,7 +668,10 @@ func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (int, b
 			"movie", m.Title, "returned", len(result.Releases),
 			"wrong_title", len(result.Releases)-len(matching), "blocklisted", len(matching))
 	}
-	return c.grabMissing(ctx, m, want, byName, cands), true, nil
+	out.GrabbedTitles = c.grabMissingTitles(ctx, m, want, byName, cands)
+	out.Grabbed = len(out.GrabbedTitles)
+	out.settle()
+	return out, nil
 }
 
 // movieQuery is the indexer search text for a movie: its title, and its year when known.
@@ -1189,7 +1199,11 @@ func (c *Coordinator) BlockRelease(ctx context.Context, hash, name string) error
 		}
 	}
 	if m, ok := c.movies.MatchRelease(ctx, name); ok {
-		return c.BlocklistAndSearch(ctx, m.ID, name, "", "")
+		_, err := c.BlocklistAndSearch(ctx, m.ID, name, "", "")
+		if errors.Is(err, ErrAlreadySearching) {
+			return nil // the search in flight runs without the blocked release
+		}
+		return err
 	}
 	if c.series != nil {
 		sid, ix, grabbed := c.grabbedMediaFor(ctx, name, "series")
@@ -1201,16 +1215,21 @@ func (c *Coordinator) BlockRelease(ctx context.Context, hash, name string) error
 		if sid != 0 {
 			c.addBlockSeries(ctx, sid, name, ix, "manually blocklisted")
 			c.series.AddEvent(ctx, sid, "blocklisted", name)
-			return c.SearchSeriesNow(ctx, sid)
+			_, err := c.SearchSeriesNow(ctx, sid)
+			if errors.Is(err, ErrAlreadySearching) {
+				return nil // the search in flight runs without the blocked release
+			}
+			return err
 		}
 	}
 	return nil // not tied to tracked media — the removal is enough
 }
 
-// BlocklistAndSearch blocklists a release then re-searches for an alternate.
-func (c *Coordinator) BlocklistAndSearch(ctx context.Context, movieID int64, title, indexerName, downloadURL string) error {
+// BlocklistAndSearch blocklists a release then re-searches for an alternate, and says
+// what that search found.
+func (c *Coordinator) BlocklistAndSearch(ctx context.Context, movieID int64, title, indexerName, downloadURL string) (SearchOutcome, error) {
 	if err := c.addBlock(ctx, movieID, title, indexerName, downloadURL, "manually blocklisted"); err != nil {
-		return err
+		return SearchOutcome{}, err
 	}
 	c.movies.AddEvent(ctx, movieID, "blocklisted", title)
 	return c.SearchMovie(ctx, movieID)

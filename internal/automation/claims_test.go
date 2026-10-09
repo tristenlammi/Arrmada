@@ -74,7 +74,7 @@ func TestSearchSkipsAClaimedMovie(t *testing.T) {
 	if !ok {
 		t.Fatal("claim failed")
 	}
-	if err := h.c.SearchMovie(h.ctx, mid); !errors.Is(err, ErrAlreadySearching) {
+	if _, err := h.c.SearchMovie(h.ctx, mid); !errors.Is(err, ErrAlreadySearching) {
 		t.Fatalf("manual search of a claimed movie = %v, want ErrAlreadySearching", err)
 	}
 	h.c.SearchMissing(h.ctx)
@@ -85,7 +85,7 @@ func TestSearchSkipsAClaimedMovie(t *testing.T) {
 		t.Fatalf("a skipped movie counted %d misses", misses)
 	}
 	release()
-	if err := h.c.SearchMovie(h.ctx, mid); err != nil {
+	if _, err := h.c.SearchMovie(h.ctx, mid); err != nil {
 		t.Fatal(err)
 	}
 	if n := h.adds(); n != 1 {

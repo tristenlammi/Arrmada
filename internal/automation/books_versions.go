@@ -89,70 +89,98 @@ func versionWanted(v books.AudioVersion) bool {
 	return v.Monitored && v.File == nil && len(v.Terms) > 0
 }
 
-// grabAudioVersion searches for one version and grabs the best release for it. The error
-// is the search's, when it couldn't run at all, so an outage isn't read as "not found".
-func (c *Coordinator) grabAudioVersion(ctx context.Context, b books.Book, v books.AudioVersion, sp quality.StoredProfile) (bool, error) {
-	title, err := c.grabAudioVersionExcluding(ctx, b, v, sp, nil)
-	return title != "", err
+// grabAudioVersionExcluding searches for one version and grabs the best release for it,
+// skipping the normalized titles in exclude (a stall fail-over's stalled release). It
+// returns the title it grabbed ("" for none); the error is the search's, when it couldn't
+// run at all, so an outage isn't read as "not found".
+func (c *Coordinator) grabAudioVersionExcluding(ctx context.Context, b books.Book, v books.AudioVersion, sp quality.StoredProfile, exclude map[string]bool) (string, error) {
+	title, _, err := c.grabAudioVersionCounted(ctx, b, v, sp, exclude)
+	return title, err
 }
 
-// grabAudioVersionExcluding is grabAudioVersion that also skips the normalized titles in
-// exclude and returns the title it grabbed ("" for none) — for a stall fail-over.
-func (c *Coordinator) grabAudioVersionExcluding(ctx context.Context, b books.Book, v books.AudioVersion, sp quality.StoredProfile, exclude map[string]bool) (string, error) {
+// grabAudioVersionCounted is grabAudioVersionExcluding that also counts what it saw.
+func (c *Coordinator) grabAudioVersionCounted(ctx context.Context, b books.Book, v books.AudioVersion, sp quality.StoredProfile, exclude map[string]bool) (string, editionStats, error) {
+	var st editionStats
 	res, err := c.searchBook(ctx, b, books.KindAudiobook)
 	if err != nil {
-		return "", err
+		return "", st, err
 	}
+	st.returned = len(res.Releases)
 	if len(res.Releases) == 0 {
-		return "", nil
+		return "", st, nil
 	}
 	rels := releasesForVersion(v, c.releasesForThisBook(ctx, b, res.Releases))
+	st.matching = len(rels)
 	if len(rels) == 0 {
 		c.log.Info("book: no release matched this audiobook version", "title", b.Title, "version", v.Label, "terms", strings.Join(v.Terms, ", "))
-		return "", nil
+		return "", st, nil
 	}
 	rels, err = c.dropUngrabbableBook(ctx, b.ID, rels)
 	if err != nil {
 		c.skipUnreadable(b.Title, err)
-		return "", err
+		return "", st, err
 	}
 	rels = dropPendingBook(rels, exclude) // same normalized-title filter
+	st.usable = len(rels)
 	best := pickBestBookForKind(versionProfile(sp, v), rels, books.KindAudiobook)
 	if best == nil {
 		c.log.Info("book: no acceptable release for this audiobook version", "title", b.Title, "version", v.Label)
-		return "", nil
+		return "", st, nil
 	}
 	hash, err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, bookCategory)
 	if err != nil {
 		c.log.Warn("book: grab failed", "title", b.Title, "version", v.Label, "err", err)
-		return "", nil
+		return "", st, nil
 	}
 	c.recordBookGrab(ctx, b.ID, v.ID, best.Title, best.Indexer, b.QualityProfile, hash)
 	c.books.AddEvent(ctx, b.ID, "grabbed", fmt.Sprintf("Grabbed the %q audiobook from %s: %s", v.Label, best.Indexer, best.Title))
 	c.log.Info("book: grabbing audiobook version", "title", b.Title, "version", v.Label, "release", best.Title)
-	return best.Title, nil
+	return best.Title, st, nil
+}
+
+// searchVersion searches one audio version and adds what it found to out.
+func (c *Coordinator) searchVersion(ctx context.Context, b books.Book, v books.AudioVersion, sp quality.StoredProfile, out *SearchOutcome) error {
+	title, st, err := c.grabAudioVersionCounted(ctx, b, v, sp, nil)
+	out.Searched = true
+	out.Returned += st.returned
+	out.Matching += st.matching
+	out.Usable += st.usable
+	if title != "" {
+		out.Grabbed++
+		out.GrabbedTitles = append(out.GrabbedTitles, title)
+	}
+	return err
 }
 
 // SearchAudioVersionNow searches for one version right away (the version's Search
-// button, and straight after a version is added). Reports whether it grabbed.
-func (c *Coordinator) SearchAudioVersionNow(ctx context.Context, bookID, versionID int64) (bool, error) {
+// button, and straight after a version is added) and says what it found. The book's
+// claim is taken, so it never overlaps a search of the whole book.
+func (c *Coordinator) SearchAudioVersionNow(ctx context.Context, bookID, versionID int64) (SearchOutcome, error) {
 	if c.books == nil {
-		return false, errBooksNotReady
+		return SearchOutcome{}, errBooksNotReady
 	}
 	b, err := c.books.Get(ctx, bookID)
 	if err != nil {
-		return false, err
+		return SearchOutcome{}, err
 	}
 	for _, v := range b.AudioVersions {
 		if v.ID != versionID {
 			continue
 		}
 		if len(v.Terms) == 0 {
-			return false, fmt.Errorf("the %q version has no search words — add some, or grab a release for it by hand", v.Label)
+			return SearchOutcome{}, fmt.Errorf("the %q version has no search words — add some, or grab a release for it by hand", v.Label)
 		}
-		return c.grabAudioVersion(ctx, b, v, c.bookProfile(ctx, b.QualityProfile))
+		release, ok := c.claims.claim(bookKey(bookID))
+		if !ok {
+			return SearchOutcome{Reason: ReasonAlreadySearching}, ErrAlreadySearching
+		}
+		defer release()
+		var out SearchOutcome
+		err := c.searchVersion(ctx, b, v, c.bookProfile(ctx, b.QualityProfile), &out)
+		out.settle()
+		return out, err
 	}
-	return false, books.ErrVersionNotFound
+	return SearchOutcome{}, books.ErrVersionNotFound
 }
 
 // audioVersionForDownload decides which version, if any, a finished download's audio

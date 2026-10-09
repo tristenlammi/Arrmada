@@ -37,7 +37,7 @@ type Service struct {
 	log        *slog.Logger
 	// searchBook starts a book search (the coordinator's SearchBookNow); a field so
 	// tests can see it called without a coordinator.
-	searchBook func(ctx context.Context, bookID int64) error
+	searchBook func(ctx context.Context, bookID int64) (automation.SearchOutcome, error)
 }
 
 // Runner starts named background work with the app's run context (cancelled at
@@ -60,17 +60,20 @@ func (s *Service) SetJobs(sub jobs.Submitter) { s.jobs = sub }
 // failure. Detached from the request: an approval returns as soon as the title is added.
 // With a job runner it is a job of kind on target; finding the title already being
 // searched is fine — that search covers it.
-func (s *Service) background(kind, target, trigger, title string, timeout time.Duration, fn func(ctx context.Context) error) {
+func (s *Service) background(kind, target, trigger, title, noun string, timeout time.Duration, fn func(ctx context.Context) (automation.SearchOutcome, error)) {
 	if s.jobs != nil {
 		_, _, err := s.jobs.Submit(context.Background(), jobs.Spec{
 			Kind: kind, Target: target, Trigger: trigger, Class: jobs.ClassIndexerSearch, Timeout: timeout,
 			Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
-				err := fn(ctx)
+				out, err := fn(ctx)
 				if errors.Is(err, automation.ErrAlreadySearching) {
-					p.SetMessage("Already being searched")
-					return nil, nil
+					out.Reason, err = automation.ReasonAlreadySearching, nil
 				}
-				return nil, err
+				if err != nil {
+					return out, err
+				}
+				p.SetMessage(out.Message(noun))
+				return out, nil
 			},
 		})
 		if err != nil {
@@ -82,7 +85,7 @@ func (s *Service) background(kind, target, trigger, title string, timeout time.D
 	run := func(parent context.Context) {
 		c, cancel := context.WithTimeout(parent, timeout)
 		defer cancel()
-		if err := fn(c); err != nil && !errors.Is(err, automation.ErrAlreadySearching) {
+		if _, err := fn(c); err != nil && !errors.Is(err, automation.ErrAlreadySearching) {
 			s.log.Warn("request: "+name+" failed", "title", title, "err", err)
 		}
 	}
@@ -252,7 +255,7 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		}
 		if addErr == nil {
 			mid := m.ID
-			s.background("movie.search", fmt.Sprintf("movie:%d", mid), trigger, req.Title, 3*time.Minute, func(c context.Context) error {
+			s.background("movie.search", fmt.Sprintf("movie:%d", mid), trigger, req.Title, "movie", 3*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
 				return s.coord.SearchMovie(c, mid)
 			})
 		}
@@ -263,7 +266,7 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		}
 		if addErr == nil {
 			sid := sr.ID
-			s.background("series.search", fmt.Sprintf("series:%d", sid), trigger, req.Title, 5*time.Minute, func(c context.Context) error {
+			s.background("series.search", fmt.Sprintf("series:%d", sid), trigger, req.Title, "show", 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
 				return s.coord.SearchSeriesNow(c, sid)
 			})
 		}
@@ -287,7 +290,7 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 		existingWants := addErr != nil && s.lacksWantedEdition(ctx, b) && len(s.activeGrabs(ctx, "book", b.ID)) == 0
 		if b.ID > 0 && (addErr == nil || existingWants) && s.searchBook != nil {
 			bid := b.ID
-			s.background("book.search", fmt.Sprintf("book:%d", bid), trigger, req.Title, 5*time.Minute, func(c context.Context) error {
+			s.background("book.search", fmt.Sprintf("book:%d", bid), trigger, req.Title, "book", 5*time.Minute, func(c context.Context) (automation.SearchOutcome, error) {
 				return s.searchBook(c, bid)
 			})
 		}

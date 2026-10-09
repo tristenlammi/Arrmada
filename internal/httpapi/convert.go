@@ -367,7 +367,7 @@ func (a *api) handleConvertReindex(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusOK, map[string]any{"started": false, "reason": "a library scan is already running"})
 		return
 	}
-	jobID, existing, err := a.submit(r, jobs.Spec{Kind: "convert.reindex", Target: "all", Class: "convert.reindex",
+	jobID, existing, err := a.submit(r, jobs.Spec{Kind: "convert.reindex", Target: "all", Class: "convert.reindex", Abandon: a.deps.Convert.AbandonRefreshIndex,
 		Fn: errFn(func(ctx context.Context) error {
 			a.deps.Convert.RunRefreshIndex(ctx)
 			return nil

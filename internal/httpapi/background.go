@@ -118,21 +118,45 @@ func searchFn(fn func(ctx context.Context) error) func(context.Context, *jobs.Pr
 	}
 }
 
+// outcomeFn adapts a title search that reports what it found: the outcome is the job's
+// result and its plain sentence the job's message ("Grabbed …", "No releases found"),
+// which the Search button shows when the job ends. Finding the title already being
+// searched is a success with that reason.
+func outcomeFn(noun string, fn func(ctx context.Context) (automation.SearchOutcome, error)) func(context.Context, *jobs.Progress) (any, error) {
+	return func(ctx context.Context, p *jobs.Progress) (any, error) {
+		out, err := fn(ctx)
+		if errors.Is(err, automation.ErrAlreadySearching) {
+			out.Reason, err = automation.ReasonAlreadySearching, nil
+		}
+		if err != nil {
+			return out, err
+		}
+		p.SetMessage(out.Message(noun))
+		return out, nil
+	}
+}
+
 // The job specs for the searches several handlers start.
 
 func (a *api) movieSearchJob(id int64) jobs.Spec {
 	return jobs.Spec{Kind: "movie.search", Target: jobTarget("movie", id), Class: jobs.ClassIndexerSearch, Timeout: 3 * time.Minute,
-		Fn: searchFn(func(ctx context.Context) error { return a.deps.Automation.SearchMovie(ctx, id) })}
+		Fn: outcomeFn("movie", func(ctx context.Context) (automation.SearchOutcome, error) {
+			return a.deps.Automation.SearchMovie(ctx, id)
+		})}
 }
 
 func (a *api) seriesSearchJob(id int64) jobs.Spec {
 	return jobs.Spec{Kind: "series.search", Target: jobTarget("series", id), Class: jobs.ClassIndexerSearch, Timeout: 5 * time.Minute,
-		Fn: searchFn(func(ctx context.Context) error { return a.deps.Automation.SearchSeriesNow(ctx, id) })}
+		Fn: outcomeFn("show", func(ctx context.Context) (automation.SearchOutcome, error) {
+			return a.deps.Automation.SearchSeriesNow(ctx, id)
+		})}
 }
 
 func (a *api) bookSearchJob(id int64) jobs.Spec {
 	return jobs.Spec{Kind: "book.search", Target: jobTarget("book", id), Class: jobs.ClassIndexerSearch, Timeout: 5 * time.Minute,
-		Fn: searchFn(func(ctx context.Context) error { return a.deps.Automation.SearchBookNow(ctx, id) })}
+		Fn: outcomeFn("book", func(ctx context.Context) (automation.SearchOutcome, error) {
+			return a.deps.Automation.SearchBookNow(ctx, id)
+		})}
 }
 
 // scanSummary is a library scan's job result: the counts. The folders it couldn't match

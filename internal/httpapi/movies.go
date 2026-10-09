@@ -179,7 +179,7 @@ func (a *api) handleBlocklist(w http.ResponseWriter, r *http.Request) {
 		// The same job kind as a plain search: blocklisting and searching while a search
 		// of this movie runs would only race it.
 		spec := a.movieSearchJob(id)
-		spec.Fn = searchFn(func(ctx context.Context) error {
+		spec.Fn = outcomeFn("movie", func(ctx context.Context) (automation.SearchOutcome, error) {
 			return a.deps.Automation.BlocklistAndSearch(ctx, id, req.Title, req.Indexer, req.DownloadURL)
 		})
 		jobID, existing, ok := a.submitOr503(w, r, spec)

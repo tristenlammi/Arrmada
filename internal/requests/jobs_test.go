@@ -28,9 +28,9 @@ func TestApproveSubmitsASearchJob(t *testing.T) {
 	rec := &recordJobs{}
 	s.SetJobs(rec)
 	var searched []int64
-	s.searchBook = func(_ context.Context, id int64) error {
+	s.searchBook = func(_ context.Context, id int64) (automation.SearchOutcome, error) {
 		searched = append(searched, id)
-		return automation.ErrAlreadySearching
+		return automation.SearchOutcome{Reason: automation.ReasonAlreadySearching}, automation.ErrAlreadySearching
 	}
 	held, err := repo.Create(ctx, books.Book{OLKey: "hc:9", Title: "Dune", Author: "Herbert, Frank"})
 	if err != nil {

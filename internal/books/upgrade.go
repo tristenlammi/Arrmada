@@ -129,7 +129,7 @@ func (s *Service) SubmitUpgrade(ctx context.Context, sub jobs.Submitter, trigger
 		return 0, false, nil
 	}
 	id, existing, err := jobs.Start(ctx, sub, s.log, jobs.Spec{
-		Kind: "books.upgrade", Target: "all", Trigger: trigger, Class: "books.upgrade",
+		Kind: "books.upgrade", Target: "all", Trigger: trigger, Class: "books.upgrade", Abandon: s.AbandonUpgrade,
 		Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
 			st := s.RunUpgrade(ctx)
 			p.SetMessage(fmt.Sprintf("Re-matched %d of %d books to Hardcover", st.Upgraded, st.Total))

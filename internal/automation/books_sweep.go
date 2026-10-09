@@ -89,7 +89,7 @@ func (c *Coordinator) SubmitBookSweep(ctx context.Context, sub jobs.Submitter, t
 	id, existing, err := jobs.Start(ctx, sub, c.log, jobs.Spec{
 		// Its own class: the sweep paces itself (one book every few seconds), and queued
 		// behind two long searches its status would read "not running" to the page.
-		Kind: "books.search-missing", Target: "all", Trigger: trigger, Class: "books.search-missing",
+		Kind: "books.search-missing", Target: "all", Trigger: trigger, Class: "books.search-missing", Abandon: c.AbandonBookSweep,
 		Fn: func(ctx context.Context, p *jobs.Progress) (any, error) {
 			st := c.RunBookSweep(ctx)
 			p.SetMessage(fmt.Sprintf("Searched %d books: %d editions grabbed", st.Done, st.Grabbed))
@@ -157,7 +157,8 @@ func (c *Coordinator) runBookSweep(ctx context.Context) {
 			set(func(st *BookSweepStatus) { st.Skipped++; st.Done++ })
 			continue
 		}
-		n, err := c.searchBookOnce(ctx, b.ID)
+		out, err := c.searchBookOnce(ctx, b.ID)
+		n := out.Grabbed
 		if errors.Is(err, ErrAlreadySearching) {
 			set(func(st *BookSweepStatus) { st.Skipped++; st.Done++ })
 			continue

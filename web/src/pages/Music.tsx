@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { api, type Artist, type ArtistLookup } from "../lib/api";
+import { jobFailed, jobToast, useJob } from "../lib/useJob";
 
 const FILTERS = [
   { key: "all", label: "All" },
@@ -46,10 +47,18 @@ export function Music() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [profiles, setProfiles] = useState<{ key: string; name: string }[]>([]);
 
-  const flash = (m: string) => {
+  const [toastErr, setToastErr] = useState(false);
+  // err shows the toast in the error colour: a scan that failed says so plainly.
+  const flash = (m: string, err = false) => {
     setToast(m);
+    setToastErr(err);
     window.setTimeout(() => setToast(null), 3500);
   };
+  // The scan runs as a job; when it ends the toast says what it found.
+  const [scanJob, setScanJob] = useState<number | null>(null);
+  const scan = useJob(scanJob, {
+    onDone: (j) => { setScanJob(null); load(); flash(jobToast(j, "Scan finished."), jobFailed(j)); },
+  });
   const load = () =>
     api
       .artists()
@@ -136,7 +145,8 @@ export function Music() {
             <button
               onClick={async () => {
                 try {
-                  await api.scanMusic();
+                  const r = await api.scanMusic();
+                  if (r.job_id) setScanJob(r.job_id);
                   // The scan runs in the background — one MusicBrainz lookup per unknown
                   // artist at a request per second — so say so rather than implying it's done.
                   flash("Scanning your music folder… this runs in the background.");
@@ -144,10 +154,11 @@ export function Music() {
                   setError((e as Error).message);
                 }
               }}
-              className="rounded-lg px-3 py-2 text-[12.5px] font-semibold"
+              disabled={scan.running}
+              className="rounded-lg px-3 py-2 text-[12.5px] font-semibold disabled:opacity-50"
               style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}
             >
-              Scan library
+              {scan.running ? "Scanning…" : "Scan library"}
             </button>
             <button
               onClick={() => (multiSelect ? exitSelect() : setMultiSelect(true))}
@@ -281,7 +292,7 @@ export function Music() {
       {toast && (
         <div
           className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium"
-          style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}
+          style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: toastErr ? "var(--reject)" : "var(--ink)" }}
         >
           {toast}
         </div>

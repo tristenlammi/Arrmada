@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/movies"
@@ -63,7 +64,10 @@ func TestApproveLinksExistingBookAndSearches(t *testing.T) {
 		"OL1W": {Key: "OL1W", Title: "Dune", Author: "Frank Herbert"},
 	}})
 	searched := make(chan int64, 1)
-	s.searchBook = func(_ context.Context, id int64) error { searched <- id; return nil }
+	s.searchBook = func(_ context.Context, id int64) (automation.SearchOutcome, error) {
+		searched <- id
+		return automation.SearchOutcome{}, nil
+	}
 	held, err := repo.Create(ctx, books.Book{OLKey: "hc:9", Title: "Dune", Author: "Herbert, Frank"})
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +118,10 @@ func TestApproveSkipsSearchWhileDownloading(t *testing.T) {
 		"OL1W": {Key: "OL1W", Title: "Dune", Author: "Frank Herbert"},
 	}})
 	searched := make(chan int64, 1)
-	s.searchBook = func(_ context.Context, id int64) error { searched <- id; return nil }
+	s.searchBook = func(_ context.Context, id int64) (automation.SearchOutcome, error) {
+		searched <- id
+		return automation.SearchOutcome{}, nil
+	}
 	held, err := repo.Create(ctx, books.Book{OLKey: "hc:9", Title: "Dune", Author: "Frank Herbert"})
 	if err != nil {
 		t.Fatal(err)

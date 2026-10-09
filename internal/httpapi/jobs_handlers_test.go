@@ -3,13 +3,15 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/auth"
+	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/settings"
 )
@@ -183,5 +185,45 @@ func TestBookSweepKeepsItsShape(t *testing.T) {
 	}
 	if rec := s.do("GET", "/api/v1/books/search-missing", mgr); rec.Code != http.StatusOK || !json.Valid(rec.Body.Bytes()) {
 		t.Fatalf("status: HTTP %d", rec.Code)
+	}
+}
+
+// A search job's result is the search outcome and its message the sentence the button
+// shows; a title already being searched ends succeeded with that reason.
+func TestSearchJobResultAndMessage(t *testing.T) {
+	st := newRouteServer(t, nil)
+	r, err := jobs.New(context.Background(), st.deps.Store.DB(), st.deps.Log, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.Shutdown(time.Second) })
+	run := func(fn func(context.Context) (automation.SearchOutcome, error)) jobs.Job {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		j, err := r.Run(ctx, jobs.Spec{Kind: "movie.search", Target: "movie:1", Fn: outcomeFn("movie", fn)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j
+	}
+	j := run(func(context.Context) (automation.SearchOutcome, error) {
+		return automation.SearchOutcome{Searched: true, Returned: 12, Reason: automation.ReasonNoneForTitle}, nil
+	})
+	var out automation.SearchOutcome
+	if j.Status != jobs.StatusSucceeded || j.Message != "12 releases found, none for this movie" || json.Unmarshal(j.Result, &out) != nil || out.Returned != 12 {
+		t.Fatalf("job = %+v", j)
+	}
+	j = run(func(context.Context) (automation.SearchOutcome, error) {
+		return automation.SearchOutcome{}, automation.ErrAlreadySearching
+	})
+	if j.Status != jobs.StatusSucceeded || !strings.HasPrefix(j.Message, "Already being searched") {
+		t.Fatalf("already-searching job = %+v", j)
+	}
+	j = run(func(context.Context) (automation.SearchOutcome, error) {
+		return automation.SearchOutcome{Searched: true}, errors.New("every indexer failed")
+	})
+	if j.Status != jobs.StatusFailed || j.Error != "every indexer failed" {
+		t.Fatalf("failed job = %+v", j)
 	}
 }

@@ -618,6 +618,36 @@ export interface JobRef {
   existing?: boolean;
 }
 
+export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "panicked" | "interrupted";
+
+// A background job (staff only): a search, scan, import or Run now, with how it ended.
+// message is a plain sentence for a toast ("Grabbed …", "Added 3 movies").
+export interface Job {
+  id: number;
+  kind: string;
+  target: string;
+  trigger: string;
+  status: JobStatus;
+  progress: number; // 0..1
+  message: string;
+  error: string;
+  result?: unknown;
+  created_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+// What a search job's result holds.
+export interface SearchOutcome {
+  searched: boolean;
+  returned: number;
+  matching: number;
+  usable: number;
+  grabbed: number;
+  grabbed_titles?: string[];
+  reason: "nothing-wanted" | "no-releases" | "none-for-this-title" | "all-blocklisted-or-below-profile" | "grabbed" | "already-searching";
+}
+
 // One recurring task as GET /api/v1/system/tasks reports it. Times are ISO strings, null
 // until they happen; last_error is empty once a run succeeds.
 export interface TaskStatus {
@@ -1566,6 +1596,15 @@ export const api = {
   },
   recycleStats: () => req<RecycleStats>("/api/v1/recycle"),
   recycleMode: () => req<RecycleMode>("/api/v1/recycle/mode"),
+  // Background jobs: follow the work a button started (useJob), list and cancel (staff).
+  job: (id: number) => req<Job>(`/api/v1/jobs/${id}`),
+  jobs: (q: { kind?: string; target?: string; status?: string; limit?: number } = {}) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== "") p.set(k, String(v));
+    const qs = p.toString();
+    return req<{ jobs: Job[] }>(`/api/v1/jobs${qs ? `?${qs}` : ""}`).then((r) => r.jobs);
+  },
+  cancelJob: (id: number) => req<{ status: string; job_id: number }>(`/api/v1/jobs/${id}/cancel`, { method: "POST" }),
   // Recurring tasks (System → Status): staff can list them; Run now is admin-only and
   // answers 409 when the task is already running.
   tasks: () => req<TaskStatus[]>("/api/v1/system/tasks"),
@@ -1803,7 +1842,7 @@ export const api = {
   deleteAudioVersionFile: (id: number, vid: number) =>
     req<{ status: string }>(`/api/v1/books/${id}/audio-versions/${vid}/file`, { method: "DELETE" }),
   searchAudioVersion: (id: number, vid: number) =>
-    req<{ grabbed: boolean }>(`/api/v1/books/${id}/audio-versions/${vid}/search`, { method: "POST" }),
+    req<{ grabbed: boolean; message?: string; outcome?: SearchOutcome }>(`/api/v1/books/${id}/audio-versions/${vid}/search`, { method: "POST" }),
   renameBook: (id: number) => req<{ renamed: number }>(`/api/v1/books/${id}/rename`, { method: "POST" }),
   deleteBookFile: (id: number, edition: "ebook" | "audiobook") =>
     req<{ status: string }>(`/api/v1/books/${id}/file?edition=${edition}`, { method: "DELETE" }),

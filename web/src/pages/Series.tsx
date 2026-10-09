@@ -8,6 +8,7 @@ import { FIT_COLOR } from "../components/FitBadge";
 import { posterThumb } from "../lib/img";
 import { SeriesSearchModal } from "../components/SeriesSearchModal";
 import { usePersisted } from "../lib/persist";
+import { jobFailed, jobToast, useJob } from "../lib/useJob";
 
 const FILTERS = [
   { key: "all", label: "All" },
@@ -52,7 +53,9 @@ export function Series() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [refreshingAll, setRefreshingAll] = useState(false);
 
-  const flash = (msg: string) => { setToast(msg); window.setTimeout(() => setToast(null), 3500); };
+  const [toastErr, setToastErr] = useState(false);
+  // err shows the toast in the error colour: a scan that failed says so plainly.
+  const flash = (msg: string, err = false) => { setToast(msg); setToastErr(err); window.setTimeout(() => setToast(null), 3500); };
 
   const refresh = () =>
     api.series().then((r) => { setList(r.series); setMetaOK(r.metadata_available); setError(null); }).catch((e: Error) => setError(e.message));
@@ -118,10 +121,16 @@ export function Series() {
     }
   };
 
+  // The scan runs as a job; when it ends the toast says what it added.
+  const [scanJob, setScanJob] = useState<number | null>(null);
+  const scan = useJob(scanJob, {
+    onDone: (j) => { setScanJob(null); refresh(); flash(jobToast(j, "Scan finished."), jobFailed(j)); },
+  });
   const scanLibrary = async () => {
     setScanning(true);
     try {
-      await api.scanSeries();
+      const r = await api.scanSeries();
+      if (r.job_id) setScanJob(r.job_id);
       flash("Scanning your library — existing series will appear shortly.");
       let ticks = 0;
       const t = setInterval(() => {
@@ -158,12 +167,12 @@ export function Series() {
             </div>
             <button
               onClick={scanLibrary}
-              disabled={scanning}
+              disabled={scanning || scan.running}
               title="Find series already in your library folder and catalog them"
               className="rounded-lg px-3 py-2 text-[12.5px] font-semibold"
               style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}
             >
-              {scanning ? "Scanning…" : "Scan library"}
+              {scanning || scan.running ? "Scanning…" : "Scan library"}
             </button>
             <button
               onClick={refreshAll}
@@ -272,7 +281,7 @@ export function Series() {
           <SeriesSearchModal id={searchFor.id} title={searchFor.title} onClose={() => setSearchFor(null)} onGrabbed={() => { flash(`Grabbed for ${searchFor.title} — it will show in Downloads.`); refresh(); }} />
         )}
         {toast && (
-          <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: "var(--ink)" }}>
+          <div className="fixed bottom-5 left-1/2 -translate-x-1/2 rounded-lg px-4 py-2.5 text-[12.5px] font-medium" style={{ background: "var(--panel-2)", border: "1px solid var(--line)", boxShadow: "var(--shadow)", color: toastErr ? "var(--reject)" : "var(--ink)" }}>
             {toast}
           </div>
         )}

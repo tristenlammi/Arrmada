@@ -795,7 +795,10 @@ func (a *api) handleAddAuthor(w http.ResponseWriter, r *http.Request) {
 		_, _, _ = a.submit(r, jobs.Spec{Kind: "books.add-author-search", Target: "author:" + req.AuthorKey, Class: jobs.ClassIndexerSearch, Timeout: 20 * time.Minute,
 			Fn: errFn(func(ctx context.Context) error {
 				for i, id := range ids {
-					err := a.deps.Automation.SearchBookNow(ctx, id)
+					_, err := a.deps.Automation.SearchBookNow(ctx, id)
+					if errors.Is(err, automation.ErrAlreadySearching) {
+						continue // already being searched: that search covers it
+					}
 					if indexer.IsOutage(err) {
 						// The indexers can't answer: the rest would only fail the same way. No miss
 						// is recorded, so the scheduled sweep picks these books up once they're back.

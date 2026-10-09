@@ -105,7 +105,8 @@ func (c *Coordinator) searchBooksMissing(ctx context.Context, maxSearches int) {
 		}
 		searched++
 		b := d.b
-		n, err := c.searchBookOnce(ctx, b.ID)
+		out, err := c.searchBookOnce(ctx, b.ID)
+		n := out.Grabbed
 		if errors.Is(err, ErrAlreadySearching) {
 			c.log.Debug("book: skipping a book that is already being searched", "title", b.Title)
 			continue
@@ -184,46 +185,38 @@ func (c *Coordinator) bookDownloading(ctx context.Context, queue []download.Item
 }
 
 // SearchBookNow searches for each wanted edition (ebook/audiobook, per the profile)
-// that the book doesn't yet have, and grabs the best-format release for it.
-func (c *Coordinator) SearchBookNow(ctx context.Context, bookID int64) error {
-	_, err := c.searchBookOnce(ctx, bookID)
-	return err
+// that the book doesn't yet have, grabs the best-format release for it, and says what it
+// found.
+func (c *Coordinator) SearchBookNow(ctx context.Context, bookID int64) (SearchOutcome, error) {
+	return c.searchBookOnce(ctx, bookID)
 }
 
-// searchBookOnce is SearchBookNow that also reports how many editions it grabbed, so the
-// missing-books sweep can leave alone a book that keeps coming up empty.
-func (c *Coordinator) searchBookOnce(ctx context.Context, bookID int64) (int, error) {
+// searchBookOnce is SearchBookNow; the missing-books sweep reads the outcome's grab count
+// to leave alone a book that keeps coming up empty.
+func (c *Coordinator) searchBookOnce(ctx context.Context, bookID int64) (SearchOutcome, error) {
 	if c.books == nil {
-		return 0, nil
+		return SearchOutcome{Reason: ReasonNothingWanted}, nil
 	}
 	release, ok := c.claims.claim(bookKey(bookID))
 	if !ok {
-		return 0, ErrAlreadySearching
+		return SearchOutcome{Reason: ReasonAlreadySearching}, ErrAlreadySearching
 	}
 	defer release()
 	b, err := c.books.Get(ctx, bookID)
 	if err != nil {
-		return 0, err
+		return SearchOutcome{}, err
 	}
 	sp := c.bookProfile(ctx, b.QualityProfile)
 	wantEbook, wantAudio := books.WantedEditions(sp.FormatScores)
 	// A search that couldn't run stops the pass: the next edition would only hit the same
 	// dead indexers, and returning the error is what keeps the sweep from counting a miss.
-	grabbed := 0
+	var out SearchOutcome
 	var searchErr error
 	if wantEbook && b.Ebook == nil {
-		ok, err := c.grabBookEdition(ctx, b, books.KindEbook, sp)
-		if ok {
-			grabbed++
-		}
-		searchErr = err
+		searchErr = c.searchEdition(ctx, b, books.KindEbook, sp, &out)
 	}
 	if searchErr == nil && wantAudio && b.Audiobook == nil {
-		ok, err := c.grabBookEdition(ctx, b, books.KindAudiobook, sp)
-		if ok {
-			grabbed++
-		}
-		searchErr = err
+		searchErr = c.searchEdition(ctx, b, books.KindAudiobook, sp, &out)
 	}
 	for _, v := range b.AudioVersions {
 		if searchErr != nil {
@@ -232,40 +225,60 @@ func (c *Coordinator) searchBookOnce(ctx context.Context, bookID int64) (int, er
 		if !versionWanted(v) {
 			continue
 		}
-		ok, err := c.grabAudioVersion(ctx, b, v, sp)
-		if ok {
-			grabbed++
-		}
-		searchErr = err
+		searchErr = c.searchVersion(ctx, b, v, sp, &out)
 	}
-	if grabbed > 0 {
+	if out.Grabbed > 0 {
 		// Something was findable after all. Clearing here rather than in the sweep covers
 		// the manual Search button too: a book you un-stuck by hand goes back to being
 		// swept normally, which matters when only one of its two editions landed.
 		c.books.ResetSearchMisses(ctx, bookID)
 	}
-	return grabbed, searchErr
+	if !out.Searched {
+		out.Reason = ReasonNothingWanted
+	} else {
+		out.settle()
+	}
+	return out, searchErr
 }
 
-// grabBookEdition searches for one edition and grabs the best release. Reports whether a
-// grab actually happened, which is what tells the sweep to clear this book's backoff, and
-// the search's error when it couldn't run at all (every indexer failed, or none serves
-// books) — swallowing that made an outage look like "nothing found".
-func (c *Coordinator) grabBookEdition(ctx context.Context, b books.Book, kind string, sp quality.StoredProfile) (bool, error) {
-	title, err := c.grabBookEditionExcluding(ctx, b, kind, sp, nil)
-	return title != "", err
+// searchEdition searches one edition and adds what it found to out.
+func (c *Coordinator) searchEdition(ctx context.Context, b books.Book, kind string, sp quality.StoredProfile, out *SearchOutcome) error {
+	title, st, err := c.grabBookEditionCounted(ctx, b, kind, sp, nil)
+	out.Searched = true
+	out.Returned += st.returned
+	out.Matching += st.matching
+	out.Usable += st.usable
+	if title != "" {
+		out.Grabbed++
+		out.GrabbedTitles = append(out.GrabbedTitles, title)
+	}
+	return err
 }
 
-// grabBookEditionExcluding is grabBookEdition that also skips the normalized titles in
-// exclude and returns the title it grabbed ("" for none). A stall fail-over excludes the
-// stalled release, which stays un-blocklisted until something replaces it.
+// grabBookEditionExcluding searches for one edition and grabs the best release, skipping
+// the normalized titles in exclude, and returns the title it grabbed ("" for none). A
+// stall fail-over excludes the stalled release, which stays un-blocklisted until
+// something replaces it. The error is the search's when it couldn't run at all (every
+// indexer failed, or none serves books) — swallowing that made an outage look like
+// "nothing found".
 func (c *Coordinator) grabBookEditionExcluding(ctx context.Context, b books.Book, kind string, sp quality.StoredProfile, exclude map[string]bool) (string, error) {
+	title, _, err := c.grabBookEditionCounted(ctx, b, kind, sp, exclude)
+	return title, err
+}
+
+// editionStats counts what one edition search saw, for the Search button's outcome.
+type editionStats struct{ returned, matching, usable int }
+
+// grabBookEditionCounted is grabBookEditionExcluding that also counts what it saw.
+func (c *Coordinator) grabBookEditionCounted(ctx context.Context, b books.Book, kind string, sp quality.StoredProfile, exclude map[string]bool) (string, editionStats, error) {
+	var st editionStats
 	res, err := c.searchBook(ctx, b, kind)
 	if err != nil {
-		return "", err
+		return "", st, err
 	}
+	st.returned = len(res.Releases)
 	if len(res.Releases) == 0 {
-		return "", nil
+		return "", st, nil
 	}
 	// Only releases that actually name THIS book. Book indexers fuzzy-match, so a query of
 	// "Frank Herbert Dune" routinely returns Dune Messiah and Children of Dune; nothing
@@ -277,9 +290,10 @@ func (c *Coordinator) grabBookEditionExcluding(ctx context.Context, b books.Book
 	if kind == books.KindAudiobook {
 		res.Releases = dropVersionReleases(b, res.Releases) // those belong to a version
 	}
+	st.matching = len(res.Releases)
 	if len(res.Releases) == 0 {
 		c.log.Info("book: no release matched this title", "title", b.Title, "edition", kind)
-		return "", nil
+		return "", st, nil
 	}
 	// Don't re-grab a blocklisted (e.g. stalled) release. The DB pending-grab guard,
 	// mirroring the movie path's pendingGrabTitles, drops a release already grabbed for
@@ -288,24 +302,25 @@ func (c *Coordinator) grabBookEditionExcluding(ctx context.Context, b books.Book
 	res.Releases, err = c.dropUngrabbableBook(ctx, b.ID, res.Releases)
 	if err != nil {
 		c.skipUnreadable(b.Title, err)
-		return "", err
+		return "", st, err
 	}
 	res.Releases = dropPendingBook(res.Releases, exclude) // same normalized-title filter
+	st.usable = len(res.Releases)
 	best := pickBestBookForKind(sp, res.Releases, kind)
 	if best == nil {
 		c.log.Info("book: no matching-format release", "title", b.Title, "edition", kind)
-		return "", nil
+		return "", st, nil
 	}
 	hash, err := c.grabTo(ctx, best.Indexer, best.DownloadURL, best.Title, bookCategory)
 	if err != nil {
 		c.log.Warn("book: grab failed", "title", b.Title, "err", err)
-		return "", nil
+		return "", st, nil
 	}
 	c.recordBookGrab(ctx, b.ID, 0, best.Title, best.Indexer, b.QualityProfile, hash)
 	c.learnBookSeries(ctx, b, *best)
 	c.books.AddEvent(ctx, b.ID, "grabbed", fmt.Sprintf("Grabbed the %s edition from %s: %s", kind, best.Indexer, best.Title))
 	c.log.Info("book: grabbing", "title", b.Title, "edition", kind, "release", best.Title, "format", detectBookFormat(best.Title))
-	return best.Title, nil
+	return best.Title, st, nil
 }
 
 // releasesForThisBook keeps only the releases whose name resolves to b when matched against
