@@ -25,6 +25,19 @@ export interface NavGroup {
   items: NavItem[];
 }
 
+// requesterNav is the requester shell's top bar (UserLayout), and also what Settings →
+// Users tells admins a requester gets, so the two can't drift apart. From outside the
+// network there's no Calendar (the server doesn't allow it there); Books only while the
+// module is on.
+export function requesterNav({ external, booksEnabled }: { external: boolean; booksEnabled: boolean }): Pick<NavItem, "to" | "label">[] {
+  return [
+    { to: "/discover", label: "Discover" },
+    ...(external ? [] : [{ to: "/calendar", label: "Calendar" }]),
+    ...(booksEnabled ? [{ to: "/books", label: "Books" }] : []),
+    { to: "/audiobooks", label: "Audiobooks" },
+  ];
+}
+
 // The sidebar, grouped by how the app works: what's happening now (Activity), what you
 // have (Library), things that work on files (Tools), Plex monitoring, and setup (System).
 // Routes don't follow this grouping; only the sidebar and the page breadcrumbs do.

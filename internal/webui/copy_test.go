@@ -58,6 +58,9 @@ var bannedCopy = []bannedPhrase{
 	phrase(`Discover-only`, "requesters get Discover, Calendar, Books and Audiobooks — list the real pages"),
 	phrase(`only the Discover page`, "requesters get Discover, Calendar, Books and Audiobooks — list the real pages"),
 	webPhrase(`update\.sh`, "the UI never sends people to the install scripts; name the setting or the container"),
+	// CFG-13: Settings is a hub of sections with their own URLs.
+	phrase(`Settings → System → (Recycle bin|Disk guard|Download disk guard)`, "the recycle bin and disk guard live in Settings → Downloads (LINKS.recycleBin, LINKS.diskGuard)"),
+	webPhrase(`/settings\?tab=`, "each Settings section has its own URL — link through LINKS (/settings/<section>#card)"),
 	// COPY-04: no music upgrade sweep exists.
 	phrase(`keeps upgrading until`, "music albums aren't upgraded after the first grab"),
 	phrase(`upgrades later if`, "music albums aren't upgraded after the first grab"),
@@ -202,6 +205,8 @@ func TestCopyGuardMatcher(t *testing.T) {
 		`a Requester account (Discover-only)`,
 		`Requesters see only the Discover page.`,
 		`re-run ./update.sh`,
+		`restorable from Settings → System → Recycle bin`,
+		`<Link to="/settings?tab=system#api-keys">`,
 		`keeps upgrading until it reaches the top`,
 		`and upgrades later if one appears`,
 		`Replace an album when a higher tier turns up`,
@@ -229,6 +234,8 @@ func TestCopyGuardMatcher(t *testing.T) {
 		`subtitles as soon as it imports`,
 		`Downloads → Searching`,
 		`Settings → System → API keys`,
+		`Settings → Downloads → Recycle bin`,
+		`/settings/system#api-keys`,
 	} {
 		if b := match(ok, true); b != nil {
 			t.Errorf("false positive on %q (%s)", ok, b.re)

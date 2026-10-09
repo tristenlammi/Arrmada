@@ -107,7 +107,7 @@ function staffRoutes(admin: boolean): RouteObject[] {
     page("/quality", "Quality profiles", <Quality />),
     // The log is admin-only on the server; for a manager the address falls through to Not found.
     ...(admin ? [page("/logs", "Logs", <Logs />)] : []),
-    redirect("/library", "/settings"),
+    redirect("/library", "/settings/library"),
     page("*", "Page not found", <NotFound />),
   ];
 }

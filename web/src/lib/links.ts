@@ -2,11 +2,11 @@
 // uses. When a page or a setting moves, change it here and every banner, toast and hint
 // follows — rather than hunting the old address down string by string.
 export const LINKS = {
-  apiKeys: "/settings?tab=system#api-keys",
-  diskGuard: "/settings?tab=system#disk-guard",
-  recycleBin: "/settings?tab=system#recycle-bin",
-  libraryFolders: "/settings?tab=library#media-folders",
-  users: "/settings?tab=users",
+  apiKeys: "/settings/system#api-keys",
+  diskGuard: "/settings/downloads#disk-guard",
+  recycleBin: "/settings/downloads#recycle-bin",
+  libraryFolders: "/settings/library#media-folders",
+  users: "/settings/users",
   plexConnection: "/insights?tab=settings",
   downloadsSearching: "/downloads?tab=searching",
   downloadClients: "/downloadclients",

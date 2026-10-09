@@ -46,5 +46,5 @@ export function disposalLine(bytes: number, mode: RecycleMode | null): string {
   const keep = mode.retention_days > 0
     ? `for ${mode.retention_days} day${mode.retention_days === 1 ? "" : "s"}`
     : "until you empty it";
-  return `Moves ${size} to the recycle bin — restorable from Settings → System → Recycle bin ${keep}`;
+  return `Moves ${size} to the recycle bin — restorable from Settings → Downloads → Recycle bin ${keep}`;
 }

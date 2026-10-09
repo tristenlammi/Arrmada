@@ -16,7 +16,7 @@ export function withTab(params: URLSearchParams, key: string, value: string, fal
 }
 
 // useTabParam keeps a page's tab in the address (?tab= by default), so copy elsewhere can
-// link straight to it ("Settings → System → API keys"), a reload stays put, and a tab can
+// link straight to it ("Insights → Settings"), a reload stays put, and a tab can
 // be bookmarked. Each switch is a new history entry, so Back steps back through the tabs
 // before it leaves the page. Pass only the tabs this viewer may see.
 export function useTabParam<T extends string>(allowed: readonly T[], fallback: T, key = "tab"): [T, (t: T) => void] {
