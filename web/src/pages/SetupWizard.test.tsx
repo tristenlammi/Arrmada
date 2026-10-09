@@ -56,7 +56,7 @@ describe("SetupWizard TMDB key check", () => {
   });
 
   it("saves a key that passed without asking", async () => {
-    vi.spyOn(api, "testAPIKey").mockResolvedValue({ ok: true, detail: "OK: images from https://image.tmdb.org/t/p/" });
+    const test = vi.spyOn(api, "testAPIKey").mockResolvedValue({ ok: true, detail: "OK: images from https://image.tmdb.org/t/p/" });
     const save = vi.spyOn(api, "setAPIKey").mockResolvedValue([tmdbKey]);
     page();
     const field = await screen.findByPlaceholderText("Paste the key");
@@ -66,5 +66,6 @@ describe("SetupWizard TMDB key check", () => {
     await act(async () => { fireEvent.click(screen.getByText("Save and continue")); });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(save).toHaveBeenCalledWith("tmdb", "good-key");
+    expect(test).toHaveBeenCalledTimes(1); // the blur and Next shared one check
   });
 });

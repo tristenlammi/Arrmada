@@ -59,24 +59,35 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
   // typed value goes to TMDB once (never stored) and the answer shows under the field.
   const confirm = useConfirm();
   const [tmdbCheck, setTmdbCheck] = useState<KeyCheck | null>(null);
-  const checkSeq = useRef(0);
-  const checkTmdb = async (value: string): Promise<KeyCheck | null> => {
+  // The latest check, kept as a promise so a blur and a click on Next for the same value
+  // (the click blurs the field first) share one request.
+  const lastCheck = useRef<{ value: string; result: Promise<KeyCheck> } | null>(null);
+  const checkTmdb = (value: string): Promise<KeyCheck | null> => {
     const v = value.trim();
-    if (!v) { setTmdbCheck(null); return null; }
-    const my = ++checkSeq.current;
+    if (!v) { lastCheck.current = null; setTmdbCheck(null); return Promise.resolve(null); }
+    if (lastCheck.current?.value === v) return lastCheck.current.result;
     setTmdbCheck({ value: v, busy: true, ok: false, detail: "" });
-    let res: KeyCheck;
-    try { const r = await api.testAPIKey("tmdb", v); res = { value: v, ok: r.ok, detail: r.detail }; }
-    catch (e) { res = { value: v, ok: false, detail: (e as Error).message }; }
-    if (my === checkSeq.current) setTmdbCheck(res);
-    return res;
+    const result = api.testAPIKey("tmdb", v).then(
+      (r): KeyCheck => ({ value: v, ok: r.ok, detail: r.detail }),
+      (e: Error): KeyCheck => {
+        // Couldn't ask (Arrmada unreachable, say): that says nothing about the key, so
+        // the next blur or Next asks again rather than reusing this answer.
+        if (lastCheck.current?.value === v) lastCheck.current = null;
+        return { value: v, ok: false, detail: e.message };
+      },
+    );
+    const mine = { value: v, result };
+    lastCheck.current = mine;
+    // null: this check failed to ask and cleared itself; still show why.
+    result.then((res) => { if (lastCheck.current === mine || lastCheck.current === null) setTmdbCheck(res); });
+    return result;
   };
 
   const saveKeys = () => run(async () => {
     // A TMDB key that failed its check is only saved if the admin says so.
     const tmdbValue = keys.tmdb?.trim();
     if (tmdbValue) {
-      const r = tmdbCheck && !tmdbCheck.busy && tmdbCheck.value === tmdbValue ? tmdbCheck : await checkTmdb(tmdbValue);
+      const r = await checkTmdb(tmdbValue);
       if (r && !r.ok && !(await confirm({
         title: "Save this TMDB key anyway?",
         body: <>TMDB didn't accept it: {r.detail}. Movies and TV won't find anything until it works.</>,
@@ -137,7 +148,7 @@ export function SetupWizard({ onDone }: { onDone: () => void }) {
             note="Needed for Movies and TV — titles, artwork and Discover. It's free."
             value={keys.tmdb ?? ""}
             onChange={(v, pasted) => { setKeys({ ...keys, tmdb: v }); if (pasted) checkTmdb(v); }}
-            onBlur={(v) => { if (v.trim() && v.trim() !== tmdbCheck?.value) checkTmdb(v); }}
+            onBlur={(v) => { if (v.trim()) checkTmdb(v); }}
           />
           {tmdbCheck && tmdbCheck.value === (keys.tmdb ?? "").trim() && (
             <p className="mt-1 text-[11.5px]" style={{ color: tmdbCheck.busy ? "var(--ink-faint)" : tmdbCheck.ok ? "var(--good)" : "var(--reject)" }}>
