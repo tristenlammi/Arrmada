@@ -98,7 +98,7 @@ func (r *Repo) SetMediaInfoForPath(ctx context.Context, id int64, path, mediaJSO
 // and the rest of it never leave the database) and the media facts from media_json.
 func (r *Repo) ListSummaries(ctx context.Context) ([]MovieSummary, error) {
 	rows, err := r.q().QueryContext(ctx, `SELECT id, title, year, poster_url, monitored, has_file, quality_profile,
-		min_availability, added_at, COALESCE(json_extract(extra_json, '$.vote_average'), 0), media_json
+		min_availability, added_at, COALESCE(CASE WHEN json_valid(extra_json) THEN json_extract(extra_json, '$.vote_average') END, 0), media_json
 		FROM movies ORDER BY added_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
