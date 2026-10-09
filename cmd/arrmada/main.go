@@ -288,9 +288,6 @@ func main() {
 	// and attaches finished imports back to the movie.
 	coordinator := automation.New(movieSvc, indexers, downloads, qualitySvc, st.DB(), bus, log, cfg.DownloadsDir)
 
-	// Attach finished imports to their movies (Wanted → Downloaded).
-	grp.Loop("automation: attach imports", coordinator.WatchImports)
-
 	// Deliver grab/import notifications to configured connections.
 	grp.Loop("notify", notifySvc.Run)
 
@@ -330,8 +327,17 @@ func main() {
 	// so the 30s import sweep stops retrying it forever.
 	imports.SetFailureHook(coordinator.HandleMovieImportFailure)
 	imports.SetStuckHook(coordinator.HandleMovieImportStuck)
-	// Forget import records when files are deleted, so a re-grab re-imports.
-	grp.Loop("library: forget deleted imports", imports.WatchDeletions)
+	// Attach each finished import to its movie (Wanted → Downloaded) in the same sweep
+	// that records it, retrying from the database until it settles — not off a bus event
+	// that a busy moment or a restart can lose.
+	imports.SetAttach(coordinator.AttachMovieImport)
+	// Forget the import behind a deleted movie file as it's deleted, so the torrent that's
+	// still seeding isn't imported straight back; a re-grab of the release imports again.
+	movieSvc.SetOnFileRemoved(func(ctx context.Context, path string) {
+		if err := imports.MarkRemovedByTarget(ctx, path); err != nil {
+			log.Warn("forget import failed", "path", path, "err", err)
+		}
+	})
 	// Wire the series module into the coordinator: TV downloads land in a separate
 	// category and are hardlinked file-by-file (a season pack yields many episodes).
 	bookImporter := library.NewImporter(cfg.LibraryDir, log)
@@ -366,6 +372,9 @@ func main() {
 	sched.Register("import-completed", 30*time.Second, false, func(ctx context.Context) error {
 		completed, err := downloads.CompletedInCategory(ctx, cfg.DownloadCategory)
 		if err != nil {
+			// The client being unreachable mustn't hold up imports already on disk that
+			// are still waiting to be attached to their movie.
+			imports.RetryPendingAttach(ctx)
 			return err
 		}
 		cands := make([]library.Candidate, 0, len(completed))

@@ -50,6 +50,9 @@ type Service struct {
 	bus      *eventbus.Bus
 	prefs    LibraryPrefs // nil → lean import (no .nfo / artwork)
 	http     *http.Client
+	// onFileRemoved runs synchronously whenever a library file is deleted, so the import
+	// pipeline forgets it before anything can import it back (nil = nothing to tell).
+	onFileRemoved func(ctx context.Context, path string)
 
 	probing  sync.Map      // movie IDs with an in-flight media probe (dedup, so list polling can't storm ffprobe)
 	probeSem chan struct{} // bounds how many probes run at once
@@ -86,6 +89,12 @@ func NewService(db *sql.DB, meta metadata.MovieProvider, resolver ProfileResolve
 
 // SetNaming installs the user-configurable file naming scheme.
 func (s *Service) SetNaming(np library.NamingProvider) { s.imp.SetNaming(np) }
+
+// SetOnFileRemoved installs the hook told about every library file this service deletes
+// (or recycles), synchronously, before the file.removed event goes out. The import
+// manager uses it to forget the import, so a deleted file whose torrent is still seeding
+// isn't imported straight back — even when a busy bus would have dropped the event.
+func (s *Service) SetOnFileRemoved(fn func(ctx context.Context, path string)) { s.onFileRemoved = fn }
 
 // SetPrefs installs library-write preferences (.nfo / artwork).
 func (s *Service) SetPrefs(p LibraryPrefs) { s.prefs = p }
@@ -353,7 +362,7 @@ func (s *Service) Delete(ctx context.Context, id int64, deleteFiles bool) error 
 		versions, _ := s.Versions(ctx, id)
 		for _, v := range versions {
 			if v.FilePath != "" {
-				s.removeFile(v.FilePath)
+				s.removeFile(ctx, v.FilePath)
 			}
 		}
 	}
@@ -417,7 +426,7 @@ func (s *Service) markImported(ctx context.Context, id int64, path, sourceReleas
 				return fmt.Errorf("%w (%s < %s)", ErrWorseQuality, newRes, oldRes)
 			}
 		}
-		s.removeFile(target.FilePath)
+		s.removeFile(ctx, target.FilePath)
 		s.log.Info("replaced older file on upgrade", "movie_id", id, "version", target.Label, "old", target.FilePath, "new", path)
 		upgrade = true
 	}
@@ -785,7 +794,7 @@ func (s *Service) DeleteVersion(ctx context.Context, versionID int64) error {
 		return err
 	}
 	if v.FilePath != "" {
-		s.removeFile(v.FilePath)
+		s.removeFile(ctx, v.FilePath)
 	}
 	if err := s.repo.DeleteVersion(ctx, versionID); err != nil {
 		return err
@@ -804,7 +813,7 @@ func (s *Service) DeleteVersionFile(ctx context.Context, movieID, versionID int6
 		return err
 	}
 	if v.FilePath != "" {
-		s.removeFile(v.FilePath)
+		s.removeFile(ctx, v.FilePath)
 		_ = s.repo.AddEvent(ctx, movieID, "deleted", "Deleted "+filepath.Base(v.FilePath)+" ("+v.Label+")")
 	}
 	return s.repo.ClearVersionFile(ctx, versionID)
@@ -975,7 +984,7 @@ func (s *Service) DeleteFile(ctx context.Context, id int64) error {
 		return err
 	}
 	if m.MovieFilePath != "" {
-		s.removeFile(m.MovieFilePath)
+		s.removeFile(ctx, m.MovieFilePath)
 		s.log.Info("deleted movie file", "movie", m.Title, "path", m.MovieFilePath)
 		_ = s.repo.AddEvent(ctx, id, "deleted", "Deleted "+filepath.Base(m.MovieFilePath))
 	}
@@ -984,7 +993,7 @@ func (s *Service) DeleteFile(ctx context.Context, id int64) error {
 
 // removeFile deletes a file (moving it to the recycle bin if configured) and
 // prunes its now-empty parent directory.
-func (s *Service) removeFile(path string) {
+func (s *Service) removeFile(ctx context.Context, path string) {
 	if s.recycle != "" {
 		if err := s.recycleFile(path); err != nil {
 			s.log.Warn("recycle failed, hard-deleting", "path", path, "err", err)
@@ -996,8 +1005,13 @@ func (s *Service) removeFile(path string) {
 	}
 	// Best-effort: remove the movie folder if nothing else is left in it.
 	_ = os.Remove(filepath.Dir(path))
-	// Let the import pipeline forget this file so re-grabbing the same release
-	// (e.g. after deleting a version) imports again instead of being deduped.
+	// Let the import pipeline forget this file — directly, so it can't be missed — so the
+	// still-seeding torrent isn't imported straight back, while re-grabbing the same
+	// release (e.g. after deleting a version) imports again.
+	if s.onFileRemoved != nil {
+		s.onFileRemoved(ctx, path)
+	}
+	// The event stays for the UI.
 	if s.bus != nil {
 		s.bus.Publish("file.removed", map[string]any{"path": path})
 	}

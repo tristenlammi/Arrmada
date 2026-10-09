@@ -3,12 +3,14 @@ package library
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"log/slog"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/eventbus"
+	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 // Candidate is a finished download to (maybe) import. Kept package-local so the
@@ -57,6 +59,50 @@ type importFailure struct {
 	lastErr  string
 }
 
+// AttachOutcome is how attaching a recorded import to its movie went.
+type AttachOutcome int
+
+const (
+	// AttachRetry: it didn't happen this time (the error says why); try again later.
+	AttachRetry AttachOutcome = iota
+	// Attached: the movie has the file now.
+	Attached
+	// Unmatched: no movie in the library fits. Final.
+	Unmatched
+	// Refused: the movie already has a better file and kept it. Final.
+	Refused
+	// Gone: the imported file disappeared before it could be attached. Final.
+	Gone
+)
+
+// AttachFunc attaches a recorded import to the library item it belongs to (for movies:
+// Wanted → Downloaded). For Unmatched and Refused the error, if any, is the reason kept on
+// the row; for AttachRetry it's why the attempt failed.
+type AttachFunc func(ctx context.Context, rec ImportRecord) (AttachOutcome, error)
+
+// Attach retries back off from two minutes up to half an hour, so a movie whose attach
+// keeps failing (a locked database, a full disk on replace) is retried for as long as it
+// takes without flooding the log.
+const (
+	attachRetryMin   = time.Minute
+	attachRetryMax   = 30 * time.Minute
+	attachRetryBatch = 20 // pending attaches retried per sweep
+)
+
+// attachBackoff is how long to wait after the given number of failed attempts.
+func attachBackoff(attempts int) time.Duration {
+	if attempts < 1 {
+		attempts = 1
+	}
+	if attempts > 10 {
+		return attachRetryMax
+	}
+	if d := attachRetryMin << uint(attempts); d < attachRetryMax {
+		return d
+	}
+	return attachRetryMax
+}
+
 // Manager orchestrates importing finished downloads: dedupe, import, record,
 // and announce.
 type Manager struct {
@@ -68,6 +114,7 @@ type Manager struct {
 	gate     ImportGate    // nil → no review gate
 	onFail   ImportFailure // nil → failures are only logged
 	onStuck  ImportStuck   // nil → a repeatedly failing import just keeps backing off
+	attach   AttachFunc    // nil → imports are recorded as attached and nothing attaches them
 
 	failMu   sync.Mutex
 	failures map[string]*importFailure // by download hash; cleared on success
@@ -116,6 +163,12 @@ func (m *Manager) clearFailure(hash string) {
 	m.failMu.Unlock()
 }
 
+// SetAttach installs the function that attaches a recorded import to its movie. With it,
+// every import is recorded as pending and attached in the same sweep — directly, not via
+// a bus event that can be dropped — and retried from the database until it settles, so a
+// restart between recording and attaching can't leave the movie Wanted.
+func (m *Manager) SetAttach(f AttachFunc) { m.attach = f }
+
 // SetGate installs the review gate that can hold a candidate back from import.
 func (m *Manager) SetGate(g ImportGate) { m.gate = g }
 
@@ -135,8 +188,10 @@ func NewManager(db *sql.DB, root string, bus *eventbus.Bus, log *slog.Logger) *M
 }
 
 // Process imports every not-yet-imported candidate and returns how many it
-// imported. Individual failures are logged, not fatal.
+// imported. Individual failures are logged, not fatal. It ends by retrying attaches
+// still pending from earlier sweeps (or from before a restart).
 func (m *Manager) Process(ctx context.Context, cands []Candidate) int {
+	defer m.RetryPendingAttach(ctx)
 	imported := 0
 	for _, c := range cands {
 		if c.Hash == "" || c.ContentPath == "" {
@@ -198,14 +253,25 @@ func (m *Manager) Process(ctx context.Context, cands []Candidate) int {
 			continue
 		}
 		m.clearFailure(c.Hash)
-		if err := m.repo.record(ctx, ImportRecord{
+		rec := ImportRecord{
 			Hash: c.Hash, SourcePath: res.SourcePath, TargetPath: res.TargetPath,
-			Title: res.Title, SizeBytes: res.SizeBytes,
-		}); err != nil {
+			Title: res.Title, SizeBytes: res.SizeBytes, ReleaseName: c.Name, Year: res.Year,
+		}
+		state := AttachStateAttached
+		if m.attach != nil {
+			state = AttachStatePending
+		}
+		if err := m.repo.record(ctx, rec, state); err != nil {
 			// The import itself succeeded; a lost record just means the next sweep
 			// re-checks (and skips via the on-disk file). Worth knowing about, though.
+			// The attach below still runs: the movie shouldn't wait on the bookkeeping.
 			m.log.Warn("recording import failed", "hash", c.Hash, "target", res.TargetPath, "err", err)
 		}
+		if m.attach != nil {
+			m.attachOne(ctx, rec)
+		}
+		// Announced for the UI and notifications only; nothing that has to happen
+		// depends on this event arriving.
 		if m.bus != nil {
 			m.bus.Publish("download.imported", map[string]any{
 				"title":  res.Title,
@@ -218,6 +284,99 @@ func (m *Manager) Process(ctx context.Context, cands []Candidate) int {
 		imported++
 	}
 	return imported
+}
+
+// RetryPendingAttach attaches imports recorded earlier whose attach is still pending and
+// due: a failed attempt from a past sweep, or one a restart cut off between recording
+// the import and attaching it. It works from the stored row alone, so it doesn't matter
+// whether the torrent is still in the download client.
+func (m *Manager) RetryPendingAttach(ctx context.Context) {
+	if m.attach == nil || ctx.Err() != nil {
+		return
+	}
+	recs, err := m.repo.pendingAttach(ctx, time.Now().Unix(), attachRetryBatch)
+	if err != nil {
+		m.log.Warn("import attach: couldn't read pending attaches", "err", err)
+		return
+	}
+	for _, rec := range recs {
+		if ctx.Err() != nil {
+			return
+		}
+		if _, statErr := os.Stat(rec.TargetPath); statErr != nil {
+			if rec.TargetPath == "" || os.IsNotExist(statErr) {
+				m.settle(ctx, rec, AttachStateGone, "the imported file is no longer there")
+				continue
+			}
+			// EIO, a dead mount: can't tell. Leave it pending for a later sweep rather
+			// than calling it gone.
+			continue
+		}
+		m.attachOne(ctx, rec)
+	}
+}
+
+// attachOne attaches one recorded import and stores how it went. rec.AttachAttempts is
+// the number of earlier failed tries.
+func (m *Manager) attachOne(ctx context.Context, rec ImportRecord) {
+	var outcome AttachOutcome
+	// A panic in the attach is that import's failure (retried), not the sweep's.
+	err := safego.Call(m.log, "import attach", func() error {
+		var e error
+		outcome, e = m.attach(ctx, rec)
+		return e
+	})
+	var pe *safego.PanicError
+	if errors.As(err, &pe) {
+		outcome = AttachRetry
+	}
+	reason := ""
+	if err != nil {
+		reason = err.Error()
+	}
+	switch outcome {
+	case Attached:
+		if err == nil {
+			m.settle(ctx, rec, AttachStateAttached, "")
+			return
+		}
+	case Unmatched:
+		m.settle(ctx, rec, AttachStateUnmatched, reason)
+		return
+	case Refused:
+		m.settle(ctx, rec, AttachStateRefused, reason)
+		return
+	case Gone:
+		m.settle(ctx, rec, AttachStateGone, reason)
+		return
+	}
+	if err == nil {
+		err = errors.New("attach reported no outcome")
+		reason = err.Error()
+	}
+	attempts := rec.AttachAttempts + 1
+	next := time.Now().Add(attachBackoff(attempts))
+	if dbErr := m.repo.setAttachRetry(ctx, rec.Hash, attempts, reason, next.Unix()); dbErr != nil {
+		m.log.Warn("import attach: couldn't record the failed attempt", "hash", rec.Hash, "err", dbErr)
+	}
+	// The first failure and any change of cause are news; the same error again isn't.
+	if attempts == 1 || reason != rec.AttachError {
+		m.log.Warn("import attach failed — will retry", "title", rec.Title, "target", rec.TargetPath,
+			"attempt", attempts, "next", next.Format(time.RFC3339), "err", err)
+	} else {
+		m.log.Debug("import attach failed again", "title", rec.Title, "attempt", attempts, "err", err)
+	}
+}
+
+// settle stores a final attach state (or 'attached').
+func (m *Manager) settle(ctx context.Context, rec ImportRecord, state, reason string) {
+	if err := m.repo.setAttachState(ctx, rec.Hash, state, reason); err != nil {
+		m.log.Warn("import attach: couldn't store the outcome", "hash", rec.Hash, "state", state, "err", err)
+	}
+	if state != AttachStateAttached {
+		m.log.Info("import not attached to a movie", "title", rec.Title, "target", rec.TargetPath,
+			"outcome", state, "reason", reason)
+	}
 }
 
 // importOne names by the matched library title when the resolver knows it (so the
@@ -258,29 +417,14 @@ func (m *Manager) ImportedHashes(ctx context.Context) (map[string]bool, error) {
 	return m.repo.importedHashes(ctx)
 }
 
-// WatchDeletions flags import records when their files are deleted in the app, so
-// the torrent behind them (usually still seeding) isn't imported straight back. The
-// same release imports again once it's grabbed again.
-func (m *Manager) WatchDeletions(ctx context.Context) {
-	if m.bus == nil {
-		return
+// MarkRemovedByTarget flags the import behind a library file deleted in the app, so the
+// torrent behind it (usually still seeding) isn't imported straight back. The same
+// release imports again once it's grabbed again. The movie service calls this directly
+// as it deletes the file — it used to hear about it over the bus, which drops messages
+// when busy, so a deleted file could come back.
+func (m *Manager) MarkRemovedByTarget(ctx context.Context, path string) error {
+	if path == "" {
+		return nil
 	}
-	events, cancel := m.bus.Subscribe("file.removed")
-	defer cancel()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case ev := <-events:
-			data, ok := ev.Data.(map[string]any)
-			if !ok {
-				continue
-			}
-			if path, _ := data["path"].(string); path != "" {
-				if err := m.repo.markRemovedByTarget(ctx, path); err != nil {
-					m.log.Warn("forget import failed", "path", path, "err", err)
-				}
-			}
-		}
-	}
+	return m.repo.markRemovedByTarget(ctx, path)
 }
