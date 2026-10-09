@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { Suspense, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import { FleetMark } from "./FleetMark";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { PageSkeleton } from "./PageSkeleton";
 import { useMe } from "../lib/me";
 import { api } from "../lib/api";
 import { useDocumentTitle } from "../lib/title";
@@ -63,7 +64,9 @@ export function UserLayout() {
       <main className="min-w-0 flex-1 overflow-y-auto">
         {/* Keyed by path so navigating away from a broken page recovers. */}
         <ErrorBoundary resetKey={pathname}>
-          <Outlet />
+          <Suspense fallback={<PageSkeleton />}>
+            <Outlet />
+          </Suspense>
         </ErrorBoundary>
       </main>
     </div>

@@ -1,15 +1,19 @@
-import { useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { FleetMark } from "./FleetMark";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { PageSkeleton } from "./PageSkeleton";
 import { RestartBanner } from "./RestartBanner";
 import { useDocumentTitle } from "../lib/title";
+import { prefetchStaffPages } from "../lib/prefetch";
 
 export function AppLayout() {
   const [navOpen, setNavOpen] = useState(false);
   const { pathname } = useLocation();
   useDocumentTitle();
+  // Only staff get this layout, so this is the "staff signed in" moment.
+  useEffect(() => prefetchStaffPages(), []);
   return (
     <div className="flex h-full font-sans">
       <Sidebar open={navOpen} onClose={() => setNavOpen(false)} />
@@ -29,7 +33,9 @@ export function AppLayout() {
           {/* Keyed by path: a broken page shows its error card inside the shell, and
               navigating elsewhere clears it. */}
           <ErrorBoundary resetKey={pathname}>
-            <Outlet />
+            <Suspense fallback={<PageSkeleton />}>
+              <Outlet />
+            </Suspense>
           </ErrorBoundary>
         </main>
       </div>

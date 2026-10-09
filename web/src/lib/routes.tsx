@@ -6,33 +6,37 @@ import { AppLayout } from "../components/AppLayout";
 import { UserLayout } from "../components/UserLayout";
 import { RouteError } from "../components/RouteError";
 import { ModuleGate } from "../components/ModuleGate";
-import { MyBooks } from "../pages/MyBooks";
-import { Dashboard } from "../pages/Dashboard";
-import { Quality } from "../pages/Quality";
-import { Indexers } from "../pages/Indexers";
-import { DownloadClients } from "../pages/DownloadClients";
-import { Settings } from "../pages/Settings";
-import { Downloads } from "../pages/Downloads";
-import { History } from "../pages/History";
-import { Reviews } from "../pages/Reviews";
-import { Movies } from "../pages/Movies";
-import { MovieDetail } from "../pages/MovieDetail";
-import { Series } from "../pages/Series";
-import { SeriesDetail } from "../pages/SeriesDetail";
-import { Discover } from "../pages/Discover";
-import { Books } from "../pages/Books";
-import { Music } from "../pages/Music";
-import { ArtistDetail } from "../pages/ArtistDetail";
-import { AlbumDetail } from "../pages/AlbumDetail";
-import { BookDetail } from "../pages/BookDetail";
-import { AuthorDetail } from "../pages/AuthorDetail";
-import { Subtitles } from "../pages/Subtitles";
-import { Convert } from "../pages/Convert";
-import { Insights } from "../pages/Insights";
-import { Audiobooks } from "../pages/Audiobooks";
-import { Calendar } from "../pages/Calendar";
-import { Logs } from "../pages/Logs";
-import { NotFound } from "../pages/NotFound";
+import { lazyPage } from "./lazyPage";
+
+// Every page is its own chunk (FE-06): a requester downloads Discover and their few
+// pages, never Quality, Convert, Settings or the rest of the console.
+const MyBooks = lazyPage(() => import("../pages/MyBooks"), "MyBooks");
+const Dashboard = lazyPage(() => import("../pages/Dashboard"), "Dashboard");
+const Quality = lazyPage(() => import("../pages/Quality"), "Quality");
+const Indexers = lazyPage(() => import("../pages/Indexers"), "Indexers");
+const DownloadClients = lazyPage(() => import("../pages/DownloadClients"), "DownloadClients");
+const Settings = lazyPage(() => import("../pages/Settings"), "Settings");
+const Downloads = lazyPage(() => import("../pages/Downloads"), "Downloads");
+const History = lazyPage(() => import("../pages/History"), "History");
+const Reviews = lazyPage(() => import("../pages/Reviews"), "Reviews");
+const Movies = lazyPage(() => import("../pages/Movies"), "Movies");
+const MovieDetail = lazyPage(() => import("../pages/MovieDetail"), "MovieDetail");
+const Series = lazyPage(() => import("../pages/Series"), "Series");
+const SeriesDetail = lazyPage(() => import("../pages/SeriesDetail"), "SeriesDetail");
+const Discover = lazyPage(() => import("../pages/Discover"), "Discover");
+const Books = lazyPage(() => import("../pages/Books"), "Books");
+const Music = lazyPage(() => import("../pages/Music"), "Music");
+const ArtistDetail = lazyPage(() => import("../pages/ArtistDetail"), "ArtistDetail");
+const AlbumDetail = lazyPage(() => import("../pages/AlbumDetail"), "AlbumDetail");
+const BookDetail = lazyPage(() => import("../pages/BookDetail"), "BookDetail");
+const AuthorDetail = lazyPage(() => import("../pages/AuthorDetail"), "AuthorDetail");
+const Subtitles = lazyPage(() => import("../pages/Subtitles"), "Subtitles");
+const Convert = lazyPage(() => import("../pages/Convert"), "Convert");
+const Insights = lazyPage(() => import("../pages/Insights"), "Insights");
+const Audiobooks = lazyPage(() => import("../pages/Audiobooks"), "Audiobooks");
+const Calendar = lazyPage(() => import("../pages/Calendar"), "Calendar");
+const Logs = lazyPage(() => import("../pages/Logs"), "Logs");
+const NotFound = lazyPage(() => import("../pages/NotFound"), "NotFound");
 
 // Three shells, one table each. Staff get the whole console; requesters and outside
 // visitors get the small requester shell. The server enforces the same split, so these

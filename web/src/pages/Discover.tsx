@@ -1,13 +1,16 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createContext, Suspense, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { NotificationBell } from "../components/NotificationBell";
 import { MetadataMissing } from "../components/MetadataMissing";
-import { BooksDiscover } from "./BooksDiscover";
+import { lazyPage } from "../lib/lazyPage";
 import { useMe, isStaff } from "../lib/me";
 import { api, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaDetail, type MediaRequest } from "../lib/api";
 import { posterThumb } from "../lib/img";
 import { useCanHover } from "../lib/useCanHover";
+
+// The Books tab is a separate Open Library experience; its code loads only when chosen.
+const BooksDiscover = lazyPage(() => import("./BooksDiscover"), "BooksDiscover");
 
 type Tab = "discover" | "movies" | "series" | "books";
 const BASE_TABS: { key: Tab; label: string }[] = [
@@ -109,7 +112,9 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
         </div>
 
         {tab === "books" ? (
-          <BooksDiscover flash={flash} canRequest={canRequest} initialQuery={bookSeed} />
+          <Suspense fallback={<div className="py-10 text-center text-[12.5px] text-ink-dim">Loading…</div>}>
+            <BooksDiscover flash={flash} canRequest={canRequest} initialQuery={bookSeed} />
+          </Suspense>
         ) : !metadataReady ? (
           // No TMDB key: every movie/TV feed would fail on its own and repeat the same error
           // row after row. Show the viewer's requests (they don't need TMDB) and one message
