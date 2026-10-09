@@ -504,23 +504,35 @@ func (a *api) handleSetProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// React to the profile change based on the movie's current state.
-	downgrade := false
+	resp := map[string]any{"quality_profile": req.QualityProfile, "downgrade": false}
 	if m, err := a.deps.Movies.Get(r.Context(), id); err == nil && m.Monitored {
+		rej, rejected := quality.Rejection{}, false
+		if m.HasFile {
+			rej, rejected = a.deps.Quality.WouldRejectReason(r.Context(), req.QualityProfile, a.deps.Automation.CurrentMovieFile(r.Context(), m))
+		}
 		switch {
 		case !m.HasFile:
 			// Missing → search under the new criteria.
 			_, _, _ = a.submit(r, a.movieSearchJob(id))
-		case a.deps.Quality.WouldReject(r.Context(), req.QualityProfile, a.deps.Automation.CurrentMovieFile(r.Context(), m)):
-			// The existing file no longer fits the new (lower) profile → this is a
-			// downgrade. Don't act automatically; let the UI ask the user.
-			downgrade = true
+		case rejected:
+			// The existing file no longer fits the new profile. Don't act automatically;
+			// let the UI ask, and say whether a smaller release fixes it (the file is above
+			// a ceiling) or it needs a different kind of release altogether.
+			kind := "different"
+			if rej.Ceiling != "" {
+				kind = "smaller"
+			}
+			resp["downgrade"] = true
+			resp["downgrade_reason"] = rej.Reason
+			resp["downgrade_kind"] = kind
+			resp["downgrade_ceiling"] = rej.Ceiling
 		default:
 			// The file still fits → look for a better release under the new profile.
 			_, _, _ = a.submit(r, jobs.Spec{Kind: "movie.upgrade", Target: jobTarget("movie", id), Class: jobs.ClassIndexerSearch, Timeout: 3 * time.Minute,
 				Fn: interactive(searchFn(func(ctx context.Context) error { return a.deps.Automation.UpgradeMovie(ctx, id) }))})
 		}
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"quality_profile": req.QualityProfile, "downgrade": downgrade})
+	a.writeJSON(w, http.StatusOK, resp)
 }
 
 // handleRegrab deliberately re-grabs a movie under its current profile even

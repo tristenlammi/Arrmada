@@ -2,6 +2,7 @@ package quality
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -196,5 +197,167 @@ func TestUpgradeTriggerRoundTrip(t *testing.T) {
 	plain, _ := s.Create(ctx, StoredProfile{MediaType: MediaMovie, Name: "plain"})
 	if plain.UpgradeTrigger != TriggerAny {
 		t.Errorf("default trigger %q, want any", plain.UpgradeTrigger)
+	}
+}
+
+// decidingFactor and Decide's comparator share these fixtures: each pair goes through
+// Decide, which must pick the expected winner, and the factor must name the step that
+// actually separated them. A comparator change that isn't mirrored fails here.
+func TestDecidingFactorTracksComparator(t *testing.T) {
+	hevc := Profile{FormatScores: map[string]int{"HEVC": 50}}
+	custom := Profile{FormatScores: map[string]int{"HEVC": 50}, Keywords: []Keyword{{Term: "IMAX", Score: 30}}}
+	avoidDV := Profile{FormatScores: map[string]int{"Dolby Vision": -50}, MinFormatScore: -100}
+	lean := Profile{SmallBias: 2}
+	cases := []struct {
+		name    string
+		p       Profile
+		winner  Candidate
+		loser   Candidate
+		wantKey RankKey
+		want    string
+	}{
+		{"avoid", avoidDV,
+			NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPA", 8, 10),
+			NewCandidate("Film.2021.2160p.BluRay.DV.x265-GRPB", 40, 10),
+			KeyAvoid, "it has Dolby Vision, which you avoid"},
+		{"resolution", Profile{},
+			NewCandidate("Film.2021.2160p.WEB-DL.x264-GRPA", 8, 10),
+			NewCandidate("Film.2021.1080p.BluRay.x264-GRPB", 20, 10),
+			KeyResolution, "lower resolution"},
+		{"low-quality group", Profile{},
+			NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPA", 8, 10),
+			NewCandidate("Film.2021.2160p.WEB-DL.x264-YTS", 8, 10),
+			KeyGroup, "its group is known for over-compressed encodes"},
+		{"source", Profile{},
+			NewCandidate("Film.2021.1080p.BluRay.x264-GRPA", 8, 10),
+			NewCandidate("Film.2021.1080p.WEBRip.x264-GRPB", 20, 10),
+			KeySource, "WEBRip, not BluRay"},
+		{"proper", Profile{},
+			NewCandidate("Film.2021.1080p.WEB-DL.x264.PROPER-GRPA", 8, 10),
+			NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPA", 20, 10),
+			KeyProper, "the PROPER fix replaces it"},
+		{"proper of another group", Profile{},
+			NewCandidate("Film.2021.1080p.WEB-DL.x264.REPACK-GRPA", 8, 10),
+			NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPB", 20, 10),
+			KeyProper, "it isn't a REPACK"},
+		{"prefer format", hevc,
+			NewCandidate("Film.2021.1080p.WEB-DL.x265-GRPA", 6, 10),
+			NewCandidate("Film.2021.1080p.BluRay.x264-GRPB", 20, 10),
+			KeyPreferences, "no HEVC, which you prefer"},
+		{"custom", custom,
+			NewCandidate("Film.2021.1080p.WEB-DL.IMAX.x264-GRPA", 6, 10),
+			NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPB", 8, 10),
+			KeyCustom, "scores lower on your custom formats"},
+		{"small bias", lean,
+			NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPA", 4, 10),
+			NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPB", 12, 10),
+			KeySize, "larger, and you prefer smaller files"},
+		{"health band", Profile{},
+			NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPA", 9.5, 150),
+			NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPB", 10, 2),
+			KeyHealth, "fewer seeders"},
+		{"zero seeders", Profile{},
+			NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPA", 8, 3),
+			NewCandidate("Film.2021.2160p.BluRay.x264-GRPB", 30, 0),
+			KeyHealth, "it has no seeders"},
+		{"magnitude by size", Profile{},
+			NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPA", 12, 2),
+			NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPB", 8, 150),
+			KeyBitrate, "smaller file"},
+		{"magnitude by bitrate", Profile{},
+			NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPA", 12, 2).WithRuntime(120),
+			NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPB", 8, 150).WithRuntime(120),
+			KeyBitrate, "lower bitrate"},
+		{"seeders tie", Profile{},
+			NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPA", 8, 20),
+			NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPB", 8, 10),
+			KeyHealth, "fewer seeders"},
+	}
+	e := NewDefaultEngine()
+	for _, tc := range cases {
+		// Both orders: the comparator, not the input order, decides.
+		for _, in := range [][]Candidate{{tc.winner, tc.loser}, {tc.loser, tc.winner}} {
+			d := e.Decide(tc.p, in)
+			if d.Winner == nil || d.Winner.Candidate.Name != tc.winner.Name || len(d.Eligible) != 2 {
+				t.Fatalf("%s: winner = %+v, eligible %d, want %s", tc.name, d.Winner, len(d.Eligible), tc.winner.Name)
+			}
+			k, why := decidingFactor(tc.p, d.Eligible[0], d.Eligible[1])
+			if k != tc.wantKey || why != tc.want {
+				t.Errorf("%s: decidingFactor = (%q, %q), want (%q, %q)", tc.name, k, why, tc.wantKey, tc.want)
+			}
+			if !strings.HasSuffix(d.ChosenOver, "— "+tc.want) {
+				t.Errorf("%s: ChosenOver = %q", tc.name, d.ChosenOver)
+			}
+		}
+	}
+	// The source tie-break after equal scores and sizes: sourceRank, which orders DVD
+	// above HDTV where the score's sourceBonus doesn't — so it is fed directly.
+	w := Evaluation{Candidate: NewCandidate("Film.2021.1080p.DVD.x264-GRPA", 8, 10)}
+	l := Evaluation{Candidate: NewCandidate("Film.2021.1080p.HDTV.x264-GRPB", 8, 10)}
+	if k, why := decidingFactor(Profile{}, w, l); k != KeySource || why != "HDTV, not DVD" {
+		t.Errorf("source tie: (%q, %q)", k, why)
+	}
+}
+
+// A smaller HEVC release that won on a Prefer is not the "highest bitrate"; the heaviest
+// winner is.
+func TestWhyReasonsClaimBitrateOnlyWhenTrue(t *testing.T) {
+	e := NewDefaultEngine()
+	p := Profile{BitrateCapMbps: 40, FormatScores: map[string]int{"HEVC": 50}}
+	small := NewCandidate("Film.2021.1080p.WEB-DL.x265-GRPA", 6, 10).WithRuntime(120)
+	big := NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPB", 12, 10).WithRuntime(120)
+	d := e.Decide(p, []Candidate{small, big})
+	if d.Winner == nil || d.Winner.Candidate.Name != small.Name {
+		t.Fatalf("winner = %s, want the HEVC release", winnerGroup(d))
+	}
+	joined := strings.Join(d.Why, " | ")
+	if strings.Contains(joined, "Highest bitrate") || !strings.Contains(joined, "HEVC — matched") || !strings.Contains(joined, "Best fit for your profile") {
+		t.Errorf("Prefer winner reasons = %q", joined)
+	}
+	// Both HEVC: the heavier one wins on bitrate and may say so.
+	heavy := NewCandidate("Film.2021.1080p.WEB-DL.x265-GRPC", 12, 10).WithRuntime(120)
+	d = e.Decide(p, []Candidate{small, heavy})
+	if joined := strings.Join(d.Why, " | "); !strings.Contains(joined, "Highest bitrate under your 40 Mbps ceiling") {
+		t.Errorf("heaviest winner reasons = %q", joined)
+	}
+	// An avoided heavier release doesn't take the claim away from the clean winner.
+	avoid := Profile{FormatScores: map[string]int{"Dolby Vision": -50}, MinFormatScore: -100}
+	d = e.Decide(avoid, []Candidate{NewCandidate("Film.2021.1080p.WEB-DL.x264-GRPA", 8, 10), NewCandidate("Film.2021.1080p.BluRay.DV.x265-GRPB", 30, 10)})
+	if joined := strings.Join(d.Why, " | "); !strings.Contains(joined, "Highest bitrate available") {
+		t.Errorf("clean winner over an avoided heavier one = %q", joined)
+	}
+}
+
+// The downgrade prompt's reason: a resolution or Must miss needs a different release, a
+// ceiling a smaller one.
+func TestWouldRejectReason(t *testing.T) {
+	s, ctx := testService(t)
+	mk := func(sp StoredProfile) string {
+		sp.MediaType = MediaMovie
+		got, err := s.Create(ctx, sp)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return "custom:" + strconv.FormatInt(got.ID, 10)
+	}
+	file := cf("Film.2021.1080p.BluRay.x264-GRP", 20, 60) // ≈48 Mb/s
+	cases := []struct {
+		name        string
+		sp          StoredProfile
+		wantReason  string
+		wantCeiling string
+	}{
+		{"4k only", StoredProfile{Name: "uhd", AllowedResolutions: []string{"2160p"}}, "Not in profile — 1080p", ""},
+		{"must hevc", StoredProfile{Name: "hevc", RequiredFormats: []string{"HEVC"}}, "No HEVC — your profile requires it", ""},
+		{"ceiling", StoredProfile{Name: "cap", BitrateCapMbps: 20}, "Over your 20 Mbps ceiling (47.7 Mbps)", "20 Mb/s"},
+	}
+	for _, tc := range cases {
+		rej, ok := s.WouldRejectReason(ctx, mk(tc.sp), file)
+		if !ok || rej.Reason != tc.wantReason || rej.Ceiling != tc.wantCeiling {
+			t.Errorf("%s: WouldRejectReason = (%+v, %v), want (%q, %q)", tc.name, rej, ok, tc.wantReason, tc.wantCeiling)
+		}
+	}
+	if _, ok := s.WouldRejectReason(ctx, mk(StoredProfile{Name: "open"}), file); ok {
+		t.Error("an open profile rejected the file")
 	}
 }

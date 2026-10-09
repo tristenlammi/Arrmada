@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { formatAgo, formatBytes, formatCheckDay, formatDuration, formatEta, notFoundYet } from "./format";
+import { formatAgo, formatBytes, formatCheckDay, formatDuration, formatEta, formatReleaseAge, notFoundYet } from "./format";
+
+describe("formatReleaseAge", () => {
+  const now = Date.parse("2026-10-09T12:00:00Z");
+  it("reads in the largest sensible unit", () => {
+    expect(formatReleaseAge("2026-10-09T11:50:00Z", now)).toBe("1 h");
+    expect(formatReleaseAge("2026-10-09T07:00:00Z", now)).toBe("5 h");
+    expect(formatReleaseAge("2026-10-06T12:00:00Z", now)).toBe("3 d");
+    expect(formatReleaseAge("2026-06-01T12:00:00Z", now)).toBe("4 mo");
+    expect(formatReleaseAge("2024-09-01T12:00:00Z", now)).toBe("2 y");
+  });
+  it("is blank when the indexer gave no date", () => {
+    expect(formatReleaseAge(undefined, now)).toBe("");
+    expect(formatReleaseAge("", now)).toBe("");
+    expect(formatReleaseAge("garbage", now)).toBe("");
+  });
+});
 
 describe("formatCheckDay", () => {
   const now = Date.parse("2026-10-09T12:00:00Z");

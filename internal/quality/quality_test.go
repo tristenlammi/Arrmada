@@ -250,12 +250,12 @@ func TestFormatBonusWaivedOnBitrateCollapse(t *testing.T) {
 func TestWhyReasonsNameTheSizeLean(t *testing.T) {
 	lean := Profile{Name: "lean", BitrateCapMbps: 40, SmallBias: 0.4}
 	ev := Evaluation{Candidate: NewCandidate("Movie.2024.1080p.WEB-DL.x264-GRP", 5, 100)}
-	joined := strings.Join(whyReasons(lean, ev), " | ")
+	joined := strings.Join(whyReasons(lean, ev, nil), " | ")
 	if !strings.Contains(joined, "Best quality for the size") || strings.Contains(joined, "Highest bitrate") {
 		t.Errorf("reasons = %q", joined)
 	}
 	capped := Profile{Name: "cap", BitrateCapMbps: 40}
-	if joined := strings.Join(whyReasons(capped, ev), " | "); !strings.Contains(joined, "Highest bitrate under your 40 Mbps ceiling") {
+	if joined := strings.Join(whyReasons(capped, ev, nil), " | "); !strings.Contains(joined, "Highest bitrate under your 40 Mbps ceiling") {
 		t.Errorf("reasons = %q", joined)
 	}
 }

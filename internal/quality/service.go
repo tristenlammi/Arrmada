@@ -341,10 +341,30 @@ func (s *Service) IsBitrateUpgrade(ctx context.Context, ref string, cand, curren
 // minutes, needed to turn the size into a bitrate so the profile's bitrate ceiling can
 // apply; 0 skips the ceiling check.
 func (s *Service) WouldReject(ctx context.Context, ref string, current CurrentFile) bool {
+	_, rejected := s.WouldRejectReason(ctx, ref, current)
+	return rejected
+}
+
+// Rejection is why a profile refuses the file on disk.
+type Rejection struct {
+	Reason string // the profile's reject reason ("Not in profile — 1080p")
+	// Ceiling is the profile ceiling the file is above ("40 Mb/s", "BluRay"), "" when it
+	// was refused for something else. Above a ceiling, a smaller release fixes it; for
+	// anything else the file is simply not what the profile asks for.
+	Ceiling string
+}
+
+// WouldRejectReason is WouldReject with the reason, so a profile change can say whether
+// the file is too big for the new profile or just a different kind of file.
+func (s *Service) WouldRejectReason(ctx context.Context, ref string, current CurrentFile) (Rejection, bool) {
 	if strings.TrimSpace(current.Release) == "" {
-		return false
+		return Rejection{}, false
 	}
-	return !s.JudgeFile(ctx, ref, current).Eligible
+	v := s.JudgeFile(ctx, ref, current)
+	if v.Eligible {
+		return Rejection{}, false
+	}
+	return Rejection{Reason: v.Current.RejectReason, Ceiling: v.Current.ceiling}, true
 }
 
 // List returns the user's quality profiles for a media type. Every profile is a

@@ -19,7 +19,7 @@ import (
 
 // musicCategory keeps album downloads in their own download-client category so the album
 // importer handles them, not the movie/series/book importers.
-const musicCategory = "arrmada-music"
+const musicCategory = download.CategoryMusic
 
 // SearchMusicMissing sweeps monitored albums that are missing tracks and grabs the best
 // release for each.
@@ -528,6 +528,43 @@ func (c *Coordinator) ImportMusicDownloads(ctx context.Context) {
 				})
 			}
 		}
+	}
+}
+
+// AlbumMatcher resolves release names (torrents in the music category) to the library
+// album and artist each was grabbed for; false when music is off or nothing matches. It
+// is albumForRelease for many names at once: the artists and their albums are read on the
+// first call and reused, so labelling a queue of music torrents costs one library read
+// rather than one per torrent.
+func (c *Coordinator) AlbumMatcher(ctx context.Context) func(name string) (music.Album, music.Artist, bool) {
+	type entry struct {
+		artist music.Artist
+		albums []music.Album
+	}
+	var lib []entry
+	loaded := false
+	return func(name string) (music.Album, music.Artist, bool) {
+		if c == nil || c.music == nil {
+			return music.Album{}, music.Artist{}, false
+		}
+		if !loaded {
+			loaded = true
+			if artists, err := c.music.ListArtists(ctx); err == nil {
+				for _, a := range artists {
+					if albums, err := c.music.Albums(ctx, a.ID); err == nil {
+						lib = append(lib, entry{a, albums})
+					}
+				}
+			}
+		}
+		for _, e := range lib {
+			for _, al := range e.albums {
+				if music.ReleaseIsForAlbum(name, e.artist.Name, al.Title) {
+					return al, e.artist, true
+				}
+			}
+		}
+		return music.Album{}, music.Artist{}, false
 	}
 }
 

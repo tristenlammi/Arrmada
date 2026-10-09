@@ -4,6 +4,7 @@ import { PageHeader } from "../components/PageHeader";
 import { DeleteBookDialog } from "../components/DeleteBookDialog";
 import { api, type BookSource, type BookUpgradeStatus, type BookSweepStatus, type Book, type BookLookup, type BookAuthor, type BookDiscoverCard } from "../lib/api";
 import { usePersisted } from "../lib/persist";
+import { isWanted, libraryStatus } from "../lib/status";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { posterThumb } from "../lib/img";
 import { wantedTitle } from "../lib/bookSearch";
@@ -16,7 +17,7 @@ import { ErrorState, Skeleton, StaleBanner } from "../ui";
 const FILTERS = [
   { key: "all", label: "All" },
   { key: "monitored", label: "Monitored" },
-  { key: "missing", label: "Missing" },
+  { key: "wanted", label: "Wanted" },
   { key: "downloaded", label: "Downloaded" },
   { key: "no_audiobook", label: "No audiobook" },
   { key: "no_ebook", label: "No ebook" },
@@ -26,7 +27,7 @@ type FilterKey = (typeof FILTERS)[number]["key"];
 function matches(b: Book, f: FilterKey): boolean {
   switch (f) {
     case "monitored": return b.monitored;
-    case "missing": return !b.has_file;
+    case "wanted": return isWanted({ hasFile: b.has_file, monitored: b.monitored });
     case "downloaded": return b.has_file;
     // "Missing an edition" means the profile WANTS it and it isn't there. Listing every
     // book without an audiobook would include the ones whose profile only ever asked for
@@ -39,15 +40,15 @@ function matches(b: Book, f: FilterKey): boolean {
 
 const NO_BOOKS: Book[] = [];
 
-function statusOf(b: Book): { label: string; tone: string; title?: string } {
-  if (b.has_file) {
+function statusOf(b: Book): { label: string; color: string; title?: string } {
+  const st = libraryStatus({ hasFile: b.has_file, monitored: b.monitored });
+  if (st.label === "Downloaded") {
     // Show which editions are present (E / A) so the grid conveys ebook vs audiobook.
     const tags = [b.ebook && "E", b.audiobook && "A"].filter(Boolean).join("+");
-    return { label: tags ? `${tags} ✓` : "Downloaded", tone: "var(--good)" };
+    return { label: tags ? `${tags} ✓` : st.label, color: st.color };
   }
   // The tooltip says whether it has been looked for and missed, and when it is looked for next.
-  if (b.monitored) return { label: "Wanted", tone: "var(--avoid)", title: wantedTitle(b) };
-  return { label: "Unmonitored", tone: "var(--ink-faint)" };
+  return { label: st.label, color: st.color, title: st.label === "Wanted" ? wantedTitle(b) : undefined };
 }
 
 export function Books() {
@@ -303,7 +304,7 @@ export function Books() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search title or author…"
+            placeholder="Search books or authors…"
             className="ml-auto w-[240px] rounded-lg px-3 py-1.5 text-[12px]"
             style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
           />
@@ -456,7 +457,7 @@ function BooksTable({ list, onSearch }: { list: Book[]; onSearch: (b: Book) => v
                 <td className={`${td} min-w-[200px]`}><Link to={`/books/${b.id}`} className="font-semibold hover:text-[var(--accent)]">{b.title}</Link></td>
                 <td className={td}>{b.author || "—"}</td>
                 <td className={`${td} text-right font-mono text-[11px] text-ink-dim`}>{b.year || "—"}</td>
-                <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: st.tone }} title={st.title}>{st.label}</span></td>
+                <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: st.color }} title={st.title}>{st.label}</span></td>
                 <td className={td}><span className="font-mono text-[11px] text-ink-dim">{editionTags(b)}</span></td>
                 <td className={`${td} text-right font-mono text-[11px] text-ink-dim`}>{size > 0 ? gb(size) : "—"}</td>
                 <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: b.monitored ? "var(--accent)" : "var(--ink-faint)" }}>{b.monitored ? "Yes" : "No"}</span></td>
@@ -492,7 +493,7 @@ function Card({ b, onDelete, onSearch, selectable, selected, onToggleSelect }: {
       <div className="truncate text-[12.5px] font-semibold" title={b.title}>{b.title}</div>
       <div className="mt-1 flex items-center justify-between gap-2">
         <span className="min-w-0 flex-1 truncate font-mono text-[10.5px] text-ink-faint" title={b.author}>{b.author || "—"}</span>
-        <span className="flex-none font-mono text-[9.5px] uppercase" style={{ color: st.tone }} title={st.title}>{st.label}</span>
+        <span className="flex-none font-mono text-[9.5px] uppercase" style={{ color: st.color }} title={st.title}>{st.label}</span>
       </div>
     </>
   );

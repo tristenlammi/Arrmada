@@ -34,7 +34,7 @@ import (
 
 // seriesCategory keeps TV downloads in a separate download-client category so the
 // multi-file series importer processes them, not the single-file movie importer.
-const seriesCategory = "arrmada-tv"
+const seriesCategory = download.CategorySeries
 
 // Coordinator orchestrates search → grab → import-attach.
 type Coordinator struct {
@@ -507,6 +507,13 @@ type RankedRelease struct {
 	RejectReason string  `json:"reject_reason,omitempty"`
 	Recommended  bool    `json:"recommended"`
 	Blocklisted  bool    `json:"blocklisted,omitempty"`
+
+	// Peers is what the indexer reports beside seeders (leechers, or the whole swarm on
+	// Torznab); PublishedAt is when the release was posted (RFC3339, "" when unknown).
+	Peers       int    `json:"peers"`
+	PublishedAt string `json:"published_at,omitempty"`
+	Transport   string `json:"transport,omitempty"` // torrent | usenet
+
 	// Resolves says which library episode(s) this release actually maps to, e.g.
 	// "S17E45". An anime arc is numbered in its own universe — "S04E06" is the arc's
 	// fourth cour, not the show's fourth season — so the release's own label looks like
@@ -604,30 +611,37 @@ func (c *Coordinator) RankReleasesWith(ctx context.Context, id int64, spec *qual
 		return ReleaseList{}, err
 	}
 
-	byName := make(map[string]indexer.Release, len(result.Releases))
-	cands := make([]quality.Candidate, 0, len(result.Releases))
-	for _, rel := range bestByTitle(result.Releases) {
-		if !releaseIsForMovie(rel.Title, m) {
-			continue // a different film that merely shares a word with the title
-		}
-		byName[rel.Title] = rel
-		cands = append(cands, quality.NewCandidate(rel.Title, rel.SizeGB(), rel.Seeders))
-	}
-	profile := c.effectiveProfile(ctx, m.QualityProfile, "movie")
-	decision := c.decideWith(ctx, profile, spec, tagRuntime(cands, m.Runtime))
 	blocked, err := c.blockedSet(ctx, m.ID)
 	if err != nil {
 		return ReleaseList{}, err
 	}
+	// The recommendation is decided over exactly what auto-grab decides over (candidatesFrom:
+	// grabbable, deduped, not blocklisted), so Recommended is the release a search would
+	// take. Blocklisted and usenet releases are still listed, ranked on their own.
+	torrents, usenet := splitTransport(matchingMovieReleases(m, result.Releases))
+	byName := make(map[string]indexer.Release, len(torrents)+len(usenet))
+	var pool, side []quality.Candidate
+	for _, rel := range append(torrents, usenet...) {
+		byName[rel.Title] = rel
+		cand := quality.NewCandidate(rel.Title, rel.SizeGB(), rel.Seeders)
+		if rel.Transport == indexer.TransportUsenet || blocked[normTitle(rel.Title)] {
+			side = append(side, cand)
+		} else {
+			pool = append(pool, cand)
+		}
+	}
+	profile := c.effectiveProfile(ctx, m.QualityProfile, "movie")
+	decision := c.decideWith(ctx, profile, spec, tagRuntime(pool, m.Runtime))
+	others := c.decideWith(ctx, profile, spec, tagRuntime(side, m.Runtime))
 
 	winnerName := ""
 	if decision.Winner != nil {
 		winnerName = decision.Winner.Candidate.Name
 	}
-	out := make([]RankedRelease, 0, len(cands))
+	out := make([]RankedRelease, 0, len(byName))
 	appendEval := func(ev quality.Evaluation) {
 		rel := byName[ev.Candidate.Name]
-		out = append(out, RankedRelease{
+		out = append(out, withIndexerFacts(RankedRelease{
 			Title:        ev.Candidate.Name,
 			Indexer:      rel.Indexer,
 			DownloadURL:  rel.DownloadURL,
@@ -641,15 +655,51 @@ func (c *Coordinator) RankReleasesWith(ctx context.Context, id int64, spec *qual
 			RejectReason: ev.RejectReason,
 			Recommended:  ev.Candidate.Name == winnerName,
 			Blocklisted:  blocked[normTitle(ev.Candidate.Name)],
-		})
+		}, rel))
 	}
-	for _, ev := range decision.Eligible {
-		appendEval(ev)
-	}
-	for _, ev := range decision.Rejected {
-		appendEval(ev)
+	for _, evs := range [][]quality.Evaluation{decision.Eligible, others.Eligible, decision.Rejected, others.Rejected} {
+		for _, ev := range evs {
+			appendEval(ev)
+		}
 	}
 	return ReleaseList{Profile: profile, Why: decision.Why, Releases: out}, nil
+}
+
+// usenetReject is why an interactive list can't grab a usenet release: the only download
+// client is a torrent client (see grabbable).
+const usenetReject = "Usenet release — no usenet download client is set up"
+
+// splitTransport dedupes releases (bestByTitle) into the torrents a client can take and
+// the usenet ones it can't. A title that also came as a torrent is kept only as that.
+func splitTransport(releases []indexer.Release) (torrents, usenet []indexer.Release) {
+	torrents = bestByTitle(grabbable(releases))
+	have := make(map[string]bool, len(torrents))
+	for _, rel := range torrents {
+		have[rel.Title] = true
+	}
+	var nzb []indexer.Release
+	for _, rel := range releases {
+		if rel.Transport == indexer.TransportUsenet && !have[rel.Title] {
+			nzb = append(nzb, rel)
+		}
+	}
+	return torrents, bestByTitle(nzb)
+}
+
+// withIndexerFacts adds what every interactive row shows from the indexer — its age,
+// peers and transport — and makes a usenet release ineligible, saying why, so it can
+// never be the recommended pick.
+func withIndexerFacts(rr RankedRelease, rel indexer.Release) RankedRelease {
+	rr.Peers = rel.Peers
+	rr.Transport = string(rel.Transport)
+	if !rel.PublishedAt.IsZero() {
+		rr.PublishedAt = rel.PublishedAt.UTC().Format(time.RFC3339)
+	}
+	if rel.Transport == indexer.TransportUsenet {
+		rr.Eligible, rr.Recommended = false, false
+		rr.RejectReason = usenetReject
+	}
+	return rr
 }
 
 // summarize renders a release's key attributes in plain language.

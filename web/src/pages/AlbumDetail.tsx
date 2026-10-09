@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { api, type MusicAlbum } from "../lib/api";
+import { libraryStatus } from "../lib/status";
 
 function fmtDuration(sec?: number): string {
   if (!sec || sec <= 0) return "";
@@ -57,7 +58,7 @@ export function AlbumDetail() {
       </Shell>
     );
 
-  const complete = al.track_count > 0 && al.have_tracks >= al.track_count;
+  const st = libraryStatus({ multi: true, hasFile: al.have_tracks > 0, monitored: al.monitored, have: al.have_tracks, total: al.track_count });
 
   return (
     <>
@@ -91,9 +92,9 @@ export function AlbumDetail() {
             <div className="flex flex-wrap items-center gap-2.5">
               <span
                 className="rounded-full px-2.5 py-1 font-mono text-[10.5px] font-semibold uppercase"
-                style={{ background: "var(--panel-2)", color: complete ? "var(--good)" : al.monitored ? "var(--avoid)" : "var(--ink-faint)" }}
+                style={{ background: "var(--panel-2)", color: st.color }}
               >
-                {complete ? "Complete" : al.monitored ? "Wanted" : "Unmonitored"}
+                {st.label}
               </span>
               {al.year ? <span className="font-mono text-[11px] text-ink-faint">{al.year}</span> : null}
               {al.album_type ? <span className="font-mono text-[11px] text-ink-faint">{al.album_type}</span> : null}
@@ -168,7 +169,7 @@ export function AlbumDetail() {
                   className="w-[74px] flex-none text-right font-mono text-[10px] font-semibold uppercase"
                   style={{ color: t.has_file ? "var(--good)" : "var(--avoid)" }}
                 >
-                  {t.has_file ? "have" : "missing"}
+                  {t.has_file ? "downloaded" : "wanted"}
                 </span>
               </div>
             ))}

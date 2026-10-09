@@ -8,6 +8,7 @@ import { FIT_COLOR } from "../components/FitBadge";
 import { posterThumb } from "../lib/img";
 import { SeriesSearchModal } from "../components/SeriesSearchModal";
 import { usePersisted } from "../lib/persist";
+import { isWanted, libraryStatus } from "../lib/status";
 import { usePollBurst } from "../lib/usePoll";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { useQuery } from "../lib/query";
@@ -21,7 +22,7 @@ const FILTERS = [
   { key: "monitored", label: "Monitored" },
   { key: "continuing", label: "Continuing" },
   { key: "ended", label: "Ended" },
-  { key: "missing", label: "Missing" },
+  { key: "wanted", label: "Wanted" },
 ] as const;
 
 type FilterKey = (typeof FILTERS)[number]["key"];
@@ -43,12 +44,11 @@ function NotMonitored({ n }: { n: number }) {
 }
 
 function matches(s: SeriesT, f: FilterKey): boolean {
-  const st = statsOf(s);
   switch (f) {
     case "monitored": return s.monitored;
     case "continuing": return /return|continu/i.test(s.status ?? "");
     case "ended": return /end|cancel/i.test(s.status ?? "");
-    case "missing": return s.monitored && st.missing > 0;
+    case "wanted": return isWanted(statusInput(s));
     default: return true;
   }
 }
@@ -244,7 +244,7 @@ export function Series() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search titles…"
+            placeholder="Search series…"
             className="ml-auto w-[220px] rounded-lg px-3 py-1.5 text-[12px]"
             style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
           />
@@ -329,11 +329,15 @@ export function Series() {
   );
 }
 
-function statusOf(s: SeriesT): { label: string; tone: string } {
+// Counted episodes are the files plus the monitored aired ones still missing, so the
+// downloaded share is the count less the missing.
+function statusInput(s: SeriesT) {
   const st = statsOf(s);
-  if (st.episodes > 0 && st.missing === 0) return { label: "Complete", tone: "var(--good)" };
-  if (s.monitored) return { label: st.have_files > 0 ? "Partial" : "Wanted", tone: "var(--avoid)" };
-  return { label: "Unmonitored", tone: "var(--ink-faint)" };
+  return { multi: true, hasFile: st.have_files > 0, monitored: s.monitored, have: st.episodes - st.missing, total: st.episodes };
+}
+
+function statusOf(s: SeriesT) {
+  return libraryStatus(statusInput(s));
 }
 
 function Poster({ url, title }: { url?: string; title: string }) {
@@ -409,7 +413,7 @@ function Card({ s, onDelete, onSearch, selectable, selected, onToggleSelect }: {
           <div className="truncate text-[12.5px] font-semibold" title={s.title}>{s.title}</div>
           <div className="mt-1 flex items-center justify-between">
             <span className="font-mono text-[10.5px] text-ink-faint">{s.year || "—"} · {st.seasons} {st.seasons === 1 ? "sn" : "sns"}</span>
-            <span className="font-mono text-[9.5px] uppercase" style={{ color: status.tone }}>{status.label}</span>
+            <span className="font-mono text-[9.5px] uppercase" style={{ color: status.color }}>{status.label}</span>
           </div>
         </button>
       ) : (
@@ -417,7 +421,7 @@ function Card({ s, onDelete, onSearch, selectable, selected, onToggleSelect }: {
           <div className="truncate text-[12.5px] font-semibold" title={s.title}>{s.title}</div>
           <div className="mt-1 flex items-center justify-between">
             <span className="font-mono text-[10.5px] text-ink-faint">{s.year || "—"} · {st.seasons} {st.seasons === 1 ? "sn" : "sns"}</span>
-            <span className="font-mono text-[9.5px] uppercase" style={{ color: status.tone }}>{status.label}</span>
+            <span className="font-mono text-[9.5px] uppercase" style={{ color: status.color }}>{status.label}</span>
           </div>
         </Link>
       )}
@@ -453,7 +457,7 @@ function seriesSortValue(s: SeriesT, key: SeriesSortKey, fit?: SeriesFitSummary)
   const st = statsOf(s);
   switch (key) {
     case "title": return s.title.toLowerCase();
-    case "status": return { Complete: 0, Partial: 1, Wanted: 2, Unmonitored: 3 }[statusOf(s).label] ?? 4;
+    case "status": return ({ Complete: 0, Partial: 1, Wanted: 2, Unmonitored: 3 } as Record<string, number>)[statusOf(s).label] ?? 4;
     case "network": return s.network ? s.network.toLowerCase() : undefined;
     case "seasons": return st.seasons;
     // How complete the show is, then how big: 151/163 sorts below 8/8.
@@ -538,7 +542,7 @@ function SeriesTable({ list, multiSelect, selected, onToggleSelect, onSearch }: 
                     <Link to={`/series/${s.id}`} className="font-semibold hover:text-[var(--accent)]">{s.title} <span className="font-normal text-ink-faint">{s.year || ""}</span></Link>
                   )}
                 </td>
-                <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: status.tone }}>{status.label}</span></td>
+                <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: status.color }}>{status.label}</span></td>
                 <td className={td}>{s.network || "—"}</td>
                 <td className={`${td} text-right font-mono text-[11px] text-ink-dim`}>{st.seasons}</td>
                 <td className={`${td} text-right font-mono text-[11px]`}><span style={{ color: st.missing === 0 && st.episodes > 0 ? "var(--good)" : "var(--ink-dim)" }}>{st.have_files}/{st.episodes}</span><NotMonitored n={st.unmonitored_missing} /></td>

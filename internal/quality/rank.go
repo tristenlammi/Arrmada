@@ -101,6 +101,113 @@ func sameGroupProper(cand, cur Evaluation) bool {
 
 func isProper(r parser.Release) bool { return r.Proper || r.Repack }
 
+// decidingFactor says why runnerUp ranked below winner in Decide, as the RankKey and the
+// text after "Chosen over the … —". It walks Decide's comparator in the same order —
+// avoided tier, dead torrents, score, magnitude (with the seeders band), source, seeders —
+// and names the first step that told the two apart, so the explanation is the actual
+// reason rather than a guess from the release names. Keep the two in step: the shared
+// fixtures in rank_test check that they agree.
+func decidingFactor(p Profile, winner, runnerUp Evaluation) (RankKey, string) {
+	wc, rc := winner.Candidate, runnerUp.Candidate
+	wr, rr := wc.Release, rc.Release
+	if runnerUp.Avoided && !winner.Avoided {
+		return KeyAvoid, "it has " + strings.Join(runnerUp.AvoidedFormats, ", ") + ", which you avoid"
+	}
+	if wc.Seeders > 0 && rc.Seeders <= 0 {
+		return KeyHealth, "it has no seeders"
+	}
+	if winner.Total != runnerUp.Total {
+		if k, why := scoreFactor(winner, runnerUp); k != "" {
+			return k, why
+		}
+	}
+	if wm, rm := magnitudes(wc, rc); wm != rm {
+		switch {
+		case nearEqual(wm, rm) && wc.Seeders != rc.Seeders:
+			return KeyHealth, "fewer seeders"
+		case p.SmallBias > 0:
+			return KeySize, "larger, and you prefer smaller files"
+		case wc.RuntimeMin > 0 && rc.RuntimeMin > 0:
+			return KeyBitrate, "lower bitrate"
+		default:
+			return KeyBitrate, "smaller file"
+		}
+	}
+	if sourceRank[wr.Source] != sourceRank[rr.Source] {
+		return KeySource, sourceLoss(wr, rr)
+	}
+	if wc.Seeders != rc.Seeders {
+		return KeyHealth, "fewer seeders"
+	}
+	return "", "an equal match, listed second"
+}
+
+// scoreFactor names the part of the score the winner gained on, most significant first:
+// the quality ladder (resolution, the low-quality-group penalty, source, PROPER), the
+// target's formats, custom formats, then the size lean. "" when none is higher, which
+// can't happen while the winner's total is.
+func scoreFactor(winner, runnerUp Evaluation) (RankKey, string) {
+	wr, rr := winner.Candidate.Release, runnerUp.Candidate.Release
+	if winner.QualityScore > runnerUp.QualityScore {
+		switch {
+		case resRank[wr.Resolution] > resRank[rr.Resolution]:
+			return KeyResolution, "lower resolution"
+		case lowQualityGroup(strings.ToLower(runnerUp.Candidate.Name)) && !lowQualityGroup(strings.ToLower(winner.Candidate.Name)):
+			return KeyGroup, "its group is known for over-compressed encodes"
+		case sourceBonus[wr.Source] > sourceBonus[rr.Source]:
+			return KeySource, sourceLoss(wr, rr)
+		case isProper(wr) && !isProper(rr):
+			if sameGroupProper(winner, runnerUp) {
+				return KeyProper, "the " + properWord(wr) + " fix replaces it"
+			}
+			return KeyProper, "it isn't a " + properWord(wr)
+		}
+	}
+	switch {
+	case winner.TargetScore > runnerUp.TargetScore:
+		return KeyPreferences, preferenceLoss(winner, runnerUp)
+	case winner.CustomScore > runnerUp.CustomScore:
+		return KeyCustom, "scores lower on your custom formats"
+	case winner.SizeScore > runnerUp.SizeScore:
+		return KeySize, "larger, and you prefer smaller files"
+	}
+	return "", ""
+}
+
+// preferenceLoss names the preferred target formats the winner has and the runner-up
+// lacks: "no HEVC, which you prefer".
+func preferenceLoss(winner, runnerUp Evaluation) string {
+	var missing []string
+	for _, m := range winner.Matched {
+		if isTargetFormat(m) && !containsStr(runnerUp.Matched, m) {
+			missing = append(missing, m)
+		}
+	}
+	switch {
+	case len(missing) > 0:
+		return "no " + strings.Join(missing, " or ") + ", which you prefer"
+	case runnerUp.BonusWaived && !winner.BonusWaived:
+		// It has the formats, but its bitrate collapsed against the best on offer, so they
+		// stopped counting (waiveCollapsedBonuses).
+		return "its bitrate is too low for its preferred formats to count"
+	case len(runnerUp.AvoidedFormats) > len(winner.AvoidedFormats):
+		return "it has more of the formats you avoid"
+	}
+	return "fewer of the formats you prefer"
+}
+
+// sourceLoss is "WEBRip, not BluRay": the runner-up's source against the winner's.
+func sourceLoss(win, other parser.Release) string {
+	return sourceLabel(other.Source) + ", not " + sourceLabel(win.Source)
+}
+
+func properWord(r parser.Release) string {
+	if r.Repack && !r.Proper {
+		return "REPACK"
+	}
+	return "PROPER"
+}
+
 // isTargetFormat reports whether a format is one the target file sets (codec, HDR, audio).
 func isTargetFormat(name string) bool {
 	for _, tf := range targetFormats {

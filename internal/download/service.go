@@ -62,7 +62,7 @@ func (s *Service) EnsureBundled(ctx context.Context, url string) error {
 		Name:     "qBittorrent (bundled)",
 		Kind:     KindQbittorrent,
 		URL:      url,
-		Category: "arrmada",
+		Category: CategoryMovies,
 		Enabled:  true,
 	})
 	if err == nil {

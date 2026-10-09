@@ -44,10 +44,12 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 
 	byName := make(map[string]indexer.Release, len(releases))
 	cands := make([]quality.Candidate, 0, len(releases))
+	var usenet []quality.Candidate // listed, but ranked apart: no client can take them
 	var droppedTitle, droppedScope int
 	var sampleDropped, sampleScope []string
 	rts := newRuntimeIndex(s)
-	for _, rel := range bestByTitle(releases) {
+	torrents, nzbs := splitTransport(releases)
+	for _, rel := range append(torrents, nzbs...) {
 		if !seriesTitleMatches(rel.Title, s) {
 			droppedTitle++
 			if len(sampleDropped) < 8 {
@@ -66,6 +68,10 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 			continue // not relevant to the requested season/episode scope
 		}
 		byName[rel.Title] = rel
+		if rel.Transport == indexer.TransportUsenet {
+			usenet = append(usenet, c.newSeriesCandidate(ctx, s, rts, rel))
+			continue
+		}
 		cands = append(cands, c.newSeriesCandidate(ctx, s, rts, rel))
 	}
 	c.log.Info("series: search filtered", "series", s.Title, "kept", len(cands), "dropped_wrong_title", droppedTitle, "dropped_out_of_scope", droppedScope)
@@ -79,6 +85,7 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 	}
 	profile := c.effectiveProfile(ctx, s.QualityProfile, quality.MediaSeries)
 	decision := c.decideWith(ctx, profile, spec, cands)
+	others := c.decideWith(ctx, profile, spec, usenet)
 
 	winnerName := ""
 	if decision.Winner != nil {
@@ -95,7 +102,7 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 	// packs and multi-episode files show a real bitrate too, not only single episodes.
 	appendEval := func(ev quality.Evaluation) {
 		rel := byName[ev.Candidate.Name]
-		out = append(out, RankedRelease{
+		out = append(out, withIndexerFacts(RankedRelease{
 			Title:        ev.Candidate.Name,
 			Indexer:      rel.Indexer,
 			DownloadURL:  rel.DownloadURL,
@@ -110,13 +117,12 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 			Recommended:  ev.Candidate.Name == winnerName,
 			Blocklisted:  blocked[normTitle(ev.Candidate.Name)],
 			Resolves:     c.resolvesLabel(ctx, s, ev.Candidate.Release),
-		})
+		}, rel))
 	}
-	for _, ev := range decision.Eligible {
-		appendEval(ev)
-	}
-	for _, ev := range decision.Rejected {
-		appendEval(ev)
+	for _, evs := range [][]quality.Evaluation{decision.Eligible, decision.Rejected, others.Eligible, others.Rejected} {
+		for _, ev := range evs {
+			appendEval(ev)
+		}
 	}
 	return ReleaseList{Profile: profile, Why: decision.Why, Releases: out}, nil
 }

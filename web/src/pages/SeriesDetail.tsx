@@ -12,6 +12,7 @@ import { RenameModal } from "./series/RenameModal";
 import { NumberingBanner } from "./series/NumberingReviewModal";
 import { MONITOR_PRESETS } from "./series/presets";
 import { usePoll } from "../lib/usePoll";
+import { libraryStatus } from "../lib/status";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { Button, StatusChip } from "../ui";
 import { api, importListNotice, type FitItem, type Series as SeriesT, type Season, type Episode, type SeriesImportCandidate, type MovieEvent, type BlockEntry, type SceneOverride, type SeriesAlias, type DuplicateEpisodeFile } from "../lib/api";
@@ -116,7 +117,7 @@ export function SeriesDetail() {
   const countedAll = s.stats?.episodes ?? 0;
   const missingAll = s.stats?.missing ?? Math.max(0, countedAll - haveAll);
   const notMonitoredAll = s.stats?.unmonitored_missing ?? 0;
-  const st = statusOf(countedAll, missingAll, s.monitored, haveAll);
+  const st = libraryStatus({ multi: true, hasFile: haveAll > 0, monitored: s.monitored, have: countedAll - missingAll, total: countedAll });
 
   return (
     <>
@@ -149,7 +150,7 @@ export function SeriesDetail() {
 
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2.5">
-                <span className="rounded-full px-2.5 py-1 font-mono text-[10.5px] font-semibold uppercase" style={{ background: st.soft, color: st.tone }}>{st.label}</span>
+                <span className="rounded-full px-2.5 py-1 font-mono text-[10.5px] font-semibold uppercase" style={{ background: st.soft, color: st.color }}>{st.label}</span>
                 <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase" style={{ background: continuing ? "var(--good-soft)" : "var(--panel-2)", color: continuing ? "var(--good)" : "var(--ink-faint)" }}>{continuing ? "Continuing" : "Ended"}</span>
                 {countedAll > 0 && (
                   <span className="font-mono text-[11px] text-ink-dim">
@@ -252,12 +253,6 @@ function UpgradeHoldChip({ series, episodes, onChange, flash }: { series: Series
   );
 }
 
-function statusOf(total: number, missing: number, monitored: boolean, have: number): { label: string; tone: string; soft: string } {
-  if (total > 0 && missing === 0) return { label: "Complete", tone: "var(--good-text)", soft: "var(--good-soft)" };
-  if (monitored) return { label: have > 0 ? "In progress" : "Wanted", tone: "var(--avoid-text)", soft: "var(--avoid-soft)" };
-  return { label: "Unmonitored", tone: "var(--ink-faint)", soft: "var(--panel-2)" };
-}
-
 function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () => void; flash: (m: string, err?: boolean) => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   // The search and a whole-folder import run as jobs; when one ends the toast says what
@@ -298,7 +293,7 @@ function Toolbar({ series, onChange, flash }: { series: SeriesT; onChange: () =>
           <span className="relative inline-block h-[22px] w-[38px] rounded-full transition-colors" style={{ background: series.monitored ? "var(--accent)" : "var(--line)" }}>
             <span className="absolute top-[3px] h-[16px] w-[16px] rounded-full bg-white transition-all" style={{ left: series.monitored ? "19px" : "3px" }} />
           </span>
-          <span style={{ color: series.monitored ? "var(--ink)" : "var(--ink-dim)" }}>{series.monitored ? "Monitored" : "Paused"}</span>
+          <span style={{ color: series.monitored ? "var(--ink)" : "var(--ink-dim)" }}>{series.monitored ? "Monitored" : "Monitor"}</span>
         </button>
         <label className="inline-flex items-center gap-1.5 text-[12px] text-ink-dim" title="When a refresh finds a season the show didn't have, monitor it.">
           <input
@@ -470,7 +465,7 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
         )}
         {held > 0 && (
           <>
-            <StatusChip tone="accent" title={`${held} episode${held === 1 ? "" : "s"} kept as they were when the profile changed`}>Paused</StatusChip>
+            <StatusChip tone="accent" title={`${held} episode${held === 1 ? "" : "s"} kept as they were when the profile changed`}>Upgrades paused</StatusChip>
             <Button size="sm" variant="secondary" onClick={resumeSeason} disabled={busy} title={`Let upgrades replace ${name}'s kept episodes again`}>Resume</Button>
           </>
         )}
@@ -491,7 +486,7 @@ function SeasonBlock({ series, season, onChange, flash, defaultOpen, fits }: { s
           </>
         )}
         <button onClick={async () => { await api.setSeasonMonitored(series.id, season.season_number, !season.monitored); onChange(); }} title={series.monitored ? "Monitor this whole season" : "Series paused — nothing is searched. This choice applies when you resume."} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: `1px solid ${season.monitored ? "var(--accent-line)" : "var(--line)"}`, color: season.monitored ? "var(--accent)" : "var(--ink-faint)", opacity: series.monitored ? 1 : 0.5 }}>
-          {season.monitored ? "Monitored" : "Unmonitored"}
+          {season.monitored ? "Monitored" : "Monitor"}
         </button>
       </div>
       {open && total > 0 && (
@@ -529,11 +524,12 @@ function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep:
       setRequested(false);
     }
   }, [settled, ep.id]);
-  const status = ep.has_file
-    ? { label: "Downloaded", tone: "var(--good-text)" }
+  // A paused series searches nothing, so its episodes aren't Wanted either.
+  const status: { label: string; color: string } = ep.has_file || (!dl && aired(ep))
+    ? libraryStatus({ hasFile: ep.has_file, monitored: ep.monitored && series.monitored })
     : dl
-      ? { label: `↓ ${dlPct}%`, tone: "var(--accent-text)" }
-      : aired(ep) ? (ep.monitored ? { label: "Missing", tone: "var(--avoid-text)" } : { label: "Not monitored", tone: "var(--ink-faint)" }) : { label: "Unaired", tone: "var(--ink-faint)" };
+      ? { label: `↓ ${dlPct}%`, color: "var(--accent-text)" }
+      : { label: "Unaired", color: "var(--ink-faint)" };
 
   const grabEp = async () => {
     setBusy(true);
@@ -588,7 +584,7 @@ function EpisodeRow({ series, ep, onChange, flash, fit }: { series: SeriesT; ep:
         <span className="min-w-0 flex-1 truncate text-[12.5px]">{ep.title || "TBA"}</span>
       )}
       <span className="hidden w-[92px] flex-none font-mono text-[10.5px] text-ink-faint sm:block">{ep.air_date || "—"}</span>
-      <span className="w-[80px] flex-none text-right font-mono text-[10px] uppercase" style={{ color: status.tone }}>{status.label}</span>
+      <span className="w-[80px] flex-none text-right font-mono text-[10px] uppercase" style={{ color: status.color }}>{status.label}</span>
       {ep.has_file && fit?.fit && (
         <span className="hidden w-[76px] flex-none text-right sm:block">
           <FitBadge item={fit} />

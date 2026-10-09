@@ -9,6 +9,7 @@ import { DeleteMovieDialog } from "../components/DeleteMovieDialog";
 import { disposalLine, useRecycleMode } from "../lib/disposal";
 import { PAGE } from "../lib/links";
 import { usePoll } from "../lib/usePoll";
+import { libraryStatus } from "../lib/status";
 import { invalidate } from "../lib/query";
 import {
   api,
@@ -143,7 +144,7 @@ export function MovieDetail() {
 
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2.5">
-                <span className="rounded-full px-2.5 py-1 font-mono text-[10.5px] font-semibold uppercase" style={{ background: st.soft, color: st.tone }}>{st.label}</span>
+                <span className="rounded-full px-2.5 py-1 font-mono text-[10.5px] font-semibold uppercase" style={{ background: st.soft, color: st.color }}>{st.label}</span>
                 {ex?.certification && (
                   <span className="rounded px-1.5 py-0.5 font-mono text-[10.5px] font-bold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>{ex.certification}</span>
                 )}
@@ -189,12 +190,9 @@ export function MovieDetail() {
   );
 }
 
-function statusOf(m: Movie): { label: string; tone: string; soft: string } {
+function statusOf(m: Movie) {
   // A recorded file that's gone from disk isn't "Downloaded" — the panel below says the same.
-  if (m.file?.missing) return { label: "File missing", tone: "var(--reject)", soft: "var(--reject-soft)" };
-  if (m.has_file) return { label: "Downloaded", tone: "var(--good-text)", soft: "var(--good-soft)" };
-  if (m.monitored) return { label: "Wanted", tone: "var(--avoid-text)", soft: "var(--avoid-soft)" };
-  return { label: "Unmonitored", tone: "var(--ink-faint)", soft: "var(--panel-2)" };
+  return libraryStatus({ hasFile: m.has_file, monitored: m.monitored, fileMissing: m.file?.missing });
 }
 
 function fmtRuntime(min: number): string {
@@ -287,7 +285,7 @@ function VersionCard({ movieId, version, onChange, flash, profileName }: { movie
   // Both destructive buttons ask first, naming the file, its size and where it goes.
   const [confirm, setConfirm] = useState<"file" | "version" | null>(null);
 
-  const status = f ? { label: "Downloaded", tone: "var(--good-text)" } : version.monitored ? { label: "Wanted", tone: "var(--avoid-text)" } : { label: "Unmonitored", tone: "var(--ink-faint)" };
+  const status = libraryStatus({ hasFile: !!f, monitored: version.monitored, fileMissing: f?.missing });
   const chips: string[] = [];
   if (f?.codec) chips.push(f.codec);
   if (f?.audio) chips.push(...f.audio);
@@ -302,7 +300,7 @@ function VersionCard({ movieId, version, onChange, flash, profileName }: { movie
             {version.is_default && <span className="rounded px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase" style={{ background: "var(--panel-2)", color: "var(--ink-faint)" }}>Default</span>}
             <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{profileName(version.quality_profile)}</span>
             {version.edition && <span className="rounded px-1.5 py-0.5 text-[10.5px]" style={{ background: "var(--panel-2)", color: "var(--ink-dim)" }}>{version.edition}</span>}
-            <span className="font-mono text-[9.5px] uppercase" style={{ color: status.tone }}>{status.label}</span>
+            <span className="font-mono text-[9.5px] uppercase" style={{ color: status.color }}>{status.label}</span>
           </div>
           {f ? (
             <>
@@ -318,7 +316,7 @@ function VersionCard({ movieId, version, onChange, flash, profileName }: { movie
           )}
         </div>
         <div className="flex flex-none flex-col items-end gap-1.5">
-          <button onClick={toggleMonitor} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{version.monitored ? "Monitored" : "Unmonitored"}</button>
+          <button onClick={toggleMonitor} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{version.monitored ? "Monitored" : "Monitor"}</button>
           {f && <button onClick={() => setConfirm("file")} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Delete file</button>}
           {!version.is_default && <button onClick={() => setConfirm("version")} disabled={busy} className="rounded-lg px-2.5 py-1 text-[11px]" style={{ color: "var(--ink-faint)" }}>Remove version</button>}
         </div>
@@ -589,18 +587,20 @@ function ProfileSelector({ movie, onChange }: { movie: Movie; onChange: () => vo
       .catch(() => {});
   }, []);
 
-  const [downgrade, setDowngrade] = useState(false);
+  // Set when the file on disk doesn't fit the newly chosen profile: why, and whether a
+  // smaller release fixes it (above a ceiling) or it needs a different one altogether.
+  const [downgrade, setDowngrade] = useState<{ kind: "smaller" | "different"; reason: string; ceiling: string } | null>(null);
   const [regrabbing, setRegrabbing] = useState(false);
 
   const change = async (profile: string) => {
     if (profile === movie.quality_profile) return;
     setSaving(true);
     setSaved(false);
-    setDowngrade(false);
+    setDowngrade(null);
     try {
       const res = await api.setQualityProfile(movie.id, profile);
       if (res.downgrade) {
-        setDowngrade(true);
+        setDowngrade({ kind: res.downgrade_kind ?? "different", reason: res.downgrade_reason ?? "", ceiling: res.downgrade_ceiling ?? "" });
       } else {
         setSaved(true);
         window.setTimeout(() => setSaved(false), 2000);
@@ -615,7 +615,7 @@ function ProfileSelector({ movie, onChange }: { movie: Movie; onChange: () => vo
     setRegrabbing(true);
     try {
       await api.regrabMovie(movie.id);
-      setDowngrade(false);
+      setDowngrade(null);
     } finally {
       setRegrabbing(false);
     }
@@ -640,12 +640,16 @@ function ProfileSelector({ movie, onChange }: { movie: Movie; onChange: () => vo
       </div>
       {downgrade && (
         <div className="rounded-lg p-3 text-[12px]" style={{ background: "var(--avoid-soft)", border: "1px solid var(--avoid)" }}>
-          <div className="mb-2 text-ink-dim">Your current file is higher quality than this profile targets. Download a smaller release to match it, or keep the file you have?</div>
+          <div className="mb-2 text-ink-dim">
+            {downgrade.kind === "smaller"
+              ? `Your file is above this profile's ${downgrade.ceiling || "size"} ceiling. Download a smaller release, or keep it?`
+              : `Your file doesn't meet this profile${downgrade.reason ? ` (${downgrade.reason})` : ""}. Find a release that does, or keep it?`}
+          </div>
           <div className="flex gap-2">
             <button onClick={doRegrab} disabled={regrabbing} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>
-              {regrabbing ? "Searching…" : "Download smaller version"}
+              {regrabbing ? "Searching…" : downgrade.kind === "smaller" ? "Download smaller version" : "Find a matching release"}
             </button>
-            <button onClick={() => setDowngrade(false)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Keep current file</button>
+            <button onClick={() => setDowngrade(null)} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Keep current file</button>
           </div>
         </div>
       )}

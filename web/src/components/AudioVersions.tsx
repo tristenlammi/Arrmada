@@ -182,7 +182,7 @@ export function AudioVersionPanel({ book, v, onChange, flash }: { book: Book; v:
         <div className="flex flex-none flex-wrap items-center justify-end gap-1.5">
           <button disabled={busy !== null} onClick={() => setBrowsing(true)} className={small} style={ghost} title="Browse audiobook releases on your indexers and pick one for this version">Search indexers</button>
           {!has && v.terms.length > 0 && <button disabled={busy !== null} onClick={search} className={small} style={ghost} title="Let Arrmada pick and grab the best release matching this version's words">{busy === "search" ? "Searching…" : "Auto search"}</button>}
-          <button disabled={busy !== null} onClick={toggleMonitor} className={small} style={ghost} title="Whether the automatic searches look for this version">{v.monitored ? "Monitored" : "Unmonitored"}</button>
+          <button disabled={busy !== null} onClick={toggleMonitor} className={small} style={ghost} title="Whether the automatic searches look for this version">{v.monitored ? "Monitored" : "Monitor"}</button>
           <button disabled={busy !== null} onClick={() => setEditing(true)} className={small} style={ghost}>Edit</button>
           {has && <button disabled={busy !== null} onClick={() => { setDelErr(null); setConfirm("file"); }} className={small} style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Delete files</button>}
           <button disabled={busy !== null} onClick={() => { setDelErr(null); setConfirm("remove"); }} className={small} style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Remove</button>

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { releaseErrorMessage, type RankedRelease, type ReleaseList } from "../lib/api";
+import { formatReleaseAge } from "../lib/format";
 
 // BookReleaseModal is the book-specific interactive search: results split into
 // Audiobooks / Ebooks tabs, each showing the raw release title (so the narrator
@@ -127,6 +128,9 @@ function BookReleaseRow({ rel, busy, grabbed, targets, defaultTarget, onGrab }: 
   // Default the target to the version being searched for, else the version the
   // release's own words point at.
   const [target, setTarget] = useState<number>(defaultTarget ?? rel.version_id ?? 0);
+  // A usenet release has no client to go to; its reject reason says so.
+  const usenet = rel.transport === "usenet";
+  const age = formatReleaseAge(rel.published_at);
   return (
     <div
       className="rounded-xl p-3"
@@ -142,7 +146,7 @@ function BookReleaseRow({ rel, busy, grabbed, targets, defaultTarget, onGrab }: 
             {rel.recommended && <span className="rounded px-1.5 py-0.5 text-[9.5px] font-bold uppercase" style={{ background: "var(--accent)", color: "var(--accent-ink)" }}>★ Recommended{rel.version ? ` · ${rel.version}` : targets && targets.length > 0 && rel.edition === "audiobook" ? " · Standard" : ""}</span>}
             {rel.version && !rel.recommended && <span className="rounded px-1.5 py-0.5 text-[9.5px] font-bold uppercase" style={{ background: "var(--panel)", color: "var(--accent)", border: "1px solid var(--accent-line)" }}>{rel.version}</span>}
             {rel.format && <span className="rounded px-1.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: "var(--panel)", color: "var(--ink-dim)" }}>{rel.format}</span>}
-            {!rel.eligible && <span className="rounded px-1.5 py-0.5 text-[9.5px] uppercase" style={{ background: "var(--panel)", color: "var(--ink-faint)" }}>not in profile</span>}
+            {!rel.eligible && <span className="rounded px-1.5 py-0.5 text-[9.5px] uppercase" style={{ background: "var(--panel)", color: "var(--ink-faint)" }}>{usenet ? "usenet — can't grab" : "not in profile"}</span>}
           </div>
           {/* The raw torrent name — narrator and edition detail live here. */}
           <div className="mt-1 break-words text-[12.5px] font-medium">{rel.title}</div>
@@ -156,7 +160,8 @@ function BookReleaseRow({ rel, busy, grabbed, targets, defaultTarget, onGrab }: 
           )}
           <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono text-[10.5px] text-ink-faint">
             <span>{rel.size_gb.toFixed(2)} GB</span>
-            <span>{rel.seeders} seeders</span>
+            {!usenet && <span title="Seeders / peers, as the indexer reports them">{rel.seeders}/{rel.peers ?? 0} seeders/peers</span>}
+            {age && <span>{age} old</span>}
             <span>{rel.indexer}</span>
             {rel.info_url && <a href={rel.info_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="font-semibold hover:underline" style={{ color: "var(--accent)" }}>view ↗</a>}
           </div>
@@ -176,7 +181,7 @@ function BookReleaseRow({ rel, busy, grabbed, targets, defaultTarget, onGrab }: 
         )}
         <button
           onClick={() => onGrab(target)}
-          disabled={busy || grabbed || !rel.token}
+          disabled={busy || grabbed || usenet || !rel.token}
           className="flex-none rounded-lg px-3.5 py-2 text-[12px] font-semibold disabled:opacity-60"
           style={{ background: grabbed ? "var(--good)" : "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}
         >
