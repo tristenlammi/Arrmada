@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
+import { useTabParam } from "../lib/useTabParam";
 import { RescanButton, scanTitle } from "../components/RescanButton";
 import { api, type SubtitleSettings, type SubFileEntry, type SubSeriesGroup, type SubtitleJob, type SubtitleCoverage, type SubLangStatus, type WhisperStatus } from "../lib/api";
 
 type Tab = "overview" | "queue" | "library" | "logs" | "settings";
+const TAB_KEYS: readonly Tab[] = ["overview", "queue", "library", "logs", "settings"];
 const ACTIVE = new Set(["queued", "running"]);
 
 // Common subtitle languages offered as toggle chips (ISO 639-1). The backend accepts any.
@@ -23,7 +25,7 @@ const cardStyle = { border: "1px solid var(--line)", background: "var(--panel)" 
 const lbl = "font-mono text-[9.5px] font-bold uppercase tracking-[0.11em] text-ink-faint";
 
 export function Subtitles() {
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useTabParam(TAB_KEYS, "overview");
   const [settings, setSettings] = useState<SubtitleSettings | null>(null);
   const [jobs, setJobs] = useState<SubtitleJob[]>([]);
   const [toast, setToast] = useState<string | null>(null);

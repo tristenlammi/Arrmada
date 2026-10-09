@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { PageHeader } from "../components/PageHeader";
+import { useTabParam } from "../lib/useTabParam";
 import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs, type Reliability, type BufferGroup, type NotificationConn } from "../lib/api";
 
 // Insights — Arrmada's Plex watch-monitoring module (Tautulli replacement). Built in slices.
@@ -17,7 +18,7 @@ const TABS: { key: Tab; label: string }[] = [
 ];
 
 export function Insights() {
-  const [tab, setTab] = useState<Tab>("activity");
+  const [tab, setTab] = useTabParam(TABS.map((t) => t.key), "activity");
   const [cfg, setCfg] = useState<PlexConfig | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); };

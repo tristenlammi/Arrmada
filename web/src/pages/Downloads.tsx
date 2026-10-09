@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { useTabParam } from "../lib/useTabParam";
 import { RemoveDownloadDialog, removedMessage } from "../components/RemoveDownloadDialog";
 import { api, type ActivityDownload, type ClientSettings, type DiskGuardHold, type SearchingItem } from "../lib/api";
 import { useMe } from "../lib/me";
@@ -67,6 +68,7 @@ function phaseLabel(it: ActivityDownload): { text: string; tone: string; tip?: s
 
 type SortKey = "name" | "progress" | "speed" | "size" | "ratio" | "seedtime";
 type Tab = "downloads" | "seeding" | "searching" | "upcoming";
+const TAB_KEYS: readonly Tab[] = ["downloads", "seeding", "searching", "upcoming"];
 
 function ProfileChip({ profile }: { profile: string }) {
   const na = profile === "n/a";
@@ -91,7 +93,7 @@ export function Downloads() {
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [clientId, setClientId] = useState<number | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [tab, setTab] = useState<Tab>("downloads");
+  const [tab, setTab] = useTabParam(TAB_KEYS, "downloads");
   const [seedSort, setSeedSort] = useState<SortKey>("ratio");
 
   useEffect(() => {

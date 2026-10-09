@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { api, type APIKeyStatus, type AppSettings, type AuthUser, type DiskGuardStatus, type RecycleStats, type RecycleItem, type UserImpact } from "../lib/api";
 import { useMe, isAdmin } from "../lib/me";
 import { LibraryFolders } from "./Library";
+import { useTabParam } from "../lib/useTabParam";
 
 // Sample release used for the live naming preview.
 const SAMPLE = {
@@ -53,14 +55,15 @@ type Tab = "media" | "library" | "system" | "users";
 export function Settings() {
   const { user, setBooksEnabled, setMusicEnabled } = useMe();
   const admin = isAdmin(user);
-  // ?tab=system opens straight onto a tab, so other pages (Convert's Problems) can link to a setting.
-  const [picked, setTab] = useState<Tab>(() => {
-    const t = new URLSearchParams(window.location.search).get("tab");
-    return t === "library" || t === "system" || t === "users" ? t : "media";
-  });
-  // The admin-only tabs fall back to Media for everyone else, so a link to one never opens
-  // onto an empty page.
-  const tab: Tab = !admin && (picked === "system" || picked === "users") ? "media" : picked;
+  const tabs: { key: Tab; label: string }[] = [
+    { key: "media", label: "Media" },
+    { key: "library", label: "Library" },
+    ...(admin ? [{ key: "system" as Tab, label: "System" }, { key: "users" as Tab, label: "Users" }] : []),
+  ];
+  // ?tab=system opens straight onto a tab, so copy elsewhere can link to a setting. Only the
+  // tabs this viewer can see are allowed, so a link to an admin-only tab opens Media instead
+  // of an empty page.
+  const [tab, setTab] = useTabParam(tabs.map((t) => t.key), "media");
   const [s, setS] = useState<AppSettings | null>(null);
   // What the server last told us. Save sends only the keys that differ from it, so a
   // value saved elsewhere on the page (the Discovery region) or by another tab isn't
@@ -72,6 +75,14 @@ export function Settings() {
   useEffect(() => {
     api.settings().then((x) => { setS(x); setLoaded(x); }).catch((e: Error) => setError(e.message));
   }, []);
+
+  // A link like /settings?tab=system#api-keys lands on that section. The sections only exist
+  // once the settings have loaded, so wait for them rather than scrolling to nothing.
+  const { hash } = useLocation();
+  const ready = !!s;
+  useEffect(() => {
+    if (ready && hash) document.getElementById(hash.slice(1))?.scrollIntoView({ block: "start" });
+  }, [ready, hash, tab]);
 
   const patch = (p: Partial<AppSettings>) => setS((x) => (x ? { ...x, ...p } : x));
 
@@ -124,12 +135,6 @@ export function Settings() {
     setS((x) => (x ? { ...x, tmdb_region: region } : x));
     setLoaded((x) => (x ? { ...x, tmdb_region: region } : x));
   };
-
-  const tabs: { key: Tab; label: string }[] = [
-    { key: "media", label: "Media" },
-    { key: "library", label: "Library" },
-    ...(admin ? [{ key: "system" as Tab, label: "System" }, { key: "users" as Tab, label: "Users" }] : []),
-  ];
 
   const SaveBar = () => (
     <div className="flex items-center gap-3">
@@ -197,7 +202,7 @@ export function Settings() {
           </div>
         ) : tab === "library" ? (
           <div className="flex flex-col gap-6">
-            <Section title="Media folders" subtitle="Point each library at a folder in your mounted media, then scan it for existing titles. (Has its own Save folders button below the list.)">
+            <Section id="media-folders" title="Media folders" subtitle="Point each library at a folder in your mounted media, then scan it for existing titles. (Has its own Save folders button below the list.)">
               <LibraryFolders />
             </Section>
             <Section title="Adding titles" subtitle="Defaults when adding movies and series.">
@@ -287,7 +292,7 @@ function UsersManager({ meId }: { meId?: number }) {
   const [removing, setRemoving] = useState<AuthUser | null>(null);
 
   return (
-    <Section title="Users" subtitle="Add people who can request media. Requesters see only the Discover page. Auto-approve lets a user's requests skip the queue and download immediately.">
+    <Section id="users" title="Users" subtitle="Add people who can request media. Requesters see only the Discover page. Auto-approve lets a user's requests skip the queue and download immediately.">
       <div className="flex flex-col gap-1.5">
         {users === null ? (
           <p className="text-[12px] text-ink-dim">Loading…</p>
@@ -505,7 +510,7 @@ function RecycleBin({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettin
   const digits = (v: string) => v.replace(/[^0-9]/g, "");
 
   return (
-    <Section title="Recycle bin" subtitle="Deleted & replaced files (movie/episode deletes and Convert originals) are moved here instead of being erased, so a mistake can be undone until the guard rails below purge it — the oldest files go first once the bin is over its size cap. Convert only starts a file whose original fits under the cap. To restore a converted film, delete the converted file first: the bin won't restore over it.">
+    <Section id="recycle-bin" title="Recycle bin" subtitle="Deleted & replaced files (movie/episode deletes and Convert originals) are moved here instead of being erased, so a mistake can be undone until the guard rails below purge it — the oldest files go first once the bin is over its size cap. Convert only starts a file whose original fits under the cap. To restore a converted film, delete the converted file first: the bin won't restore over it.">
       {stats && !stats.enabled ? (
         <p className="text-[12px] text-ink-dim">Recycling is turned off (<code>ARRMADA_RECYCLE_DIR=off</code>) — deleted files are erased immediately, and Convert deletes each original once its conversion is verified, with no undo.</p>
       ) : (
@@ -653,7 +658,7 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
   };
 
   return (
-    <Section title="API keys" subtitle="External services Arrmada can use. A key entered here takes effect immediately — no restart — and overrides any set at install. The saved value is never shown back to you; only whether it's set.">
+    <Section id="api-keys" title="API keys" subtitle="External services Arrmada can use. A key entered here takes effect immediately — no restart — and overrides any set at install. The saved value is never shown back to you; only whether it's set.">
       {err && <div className="rounded-lg p-2.5 text-[11.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{err}</div>}
       {keys === null ? (
         <p className="text-[11.5px] text-ink-dim">Loading…</p>
@@ -763,9 +768,11 @@ function APIKeysSection({ onRegionSaved }: { onRegionSaved: (region: string) => 
   );
 }
 
-function Section({ title, subtitle, children }: { title: string; subtitle: string; children: React.ReactNode }) {
+// id makes a section a deep-link target (LINKS.apiKeys and friends); scroll-mt keeps the
+// sticky page header from covering its title when a link scrolls to it.
+function Section({ id, title, subtitle, children }: { id?: string; title: string; subtitle: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="rounded-xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+    <div id={id} className="scroll-mt-20 rounded-xl p-5" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
       <h2 className="m-0 text-[14px] font-bold">{title}</h2>
       <p className="mb-4 mt-0.5 text-[11.5px] text-ink-faint">{subtitle}</p>
       <div className="flex flex-col gap-4">{children}</div>
@@ -817,6 +824,7 @@ function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<App
 
   return (
     <Section
+      id="disk-guard"
       title="Download disk guard"
       subtitle="Pause downloads before the downloads volume fills up. A full disk errors every torrent at once, and on a shared cache pool it takes everything else on that pool with it. Seeding torrents are never paused — they aren't writing anything, and pausing them would put your seed goals at risk."
     >

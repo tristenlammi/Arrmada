@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { useTabParam } from "../lib/useTabParam";
+import { LINKS } from "../lib/links";
 import { RescanButton, ago } from "../components/RescanButton";
 import { useMe, isAdmin } from "../lib/me";
 import {
@@ -14,6 +16,7 @@ import {
 // while someone watches Plex. There's no queue to manage — the Overview shows what it's
 // doing, what's next and what it did; the Library lets you pick a file to do right now.
 type Tab = "overview" | "library" | "problems" | "activity" | "settings";
+const TAB_KEYS: readonly Tab[] = ["overview", "library", "problems", "activity", "settings"];
 const ACTIVE = new Set(["preparing", "testing", "encoding", "verifying", "replacing"]);
 
 const card = "rounded-xl p-4";
@@ -64,7 +67,7 @@ const STATE_LABEL: Record<string, string> = {
 };
 
 export function Convert() {
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useTabParam(TAB_KEYS, "overview");
   const [status, setStatus] = useState<ConvertStatus | null>(null);
   const [jobs, setJobs] = useState<ConvertJob[]>([]);
   const [stats, setStats] = useState<ConvertLibraryStats | null>(null);
@@ -822,7 +825,7 @@ function Problems({ flash }: { flash: (m: string) => void }) {
               <div className="text-[14px] font-bold">{list.length.toLocaleString()} file{list.length === 1 ? "" : "s"}{list[0].permanent ? null : <span className="ml-2 font-mono text-[10px] font-normal text-ink-faint">TEMPORARY</span>}</div>
               <p className="mt-0.5 text-[12px] text-ink-dim">{SKIP_LABEL[kind] ?? list[0].reason}</p>
               {kind === "bin_full" && (admin
-                ? <Link to="/settings?tab=system" className="mt-1 inline-block text-[12px] font-semibold" style={{ color: "var(--accent)" }}>Raise the cap in Settings → Recycle bin</Link>
+                ? <Link to={LINKS.recycleBin} className="mt-1 inline-block text-[12px] font-semibold" style={{ color: "var(--accent)" }}>Raise the cap in Settings → Recycle bin</Link>
                 : <p className="mt-1 text-[12px] text-ink-faint">Ask an admin to raise the recycle bin's cap</p>)}
             </div>
             <button onClick={() => retrySkips(kind)} disabled={busy !== null} className="rounded-lg px-3 py-1.5 text-[11.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>{busy === kind ? "…" : "Try these again"}</button>
