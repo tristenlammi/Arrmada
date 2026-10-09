@@ -16,6 +16,13 @@ import {
   type StoredProfile,
   type TargetPref,
 } from "../lib/api";
+import { useQuery } from "../lib/query";
+import { ErrorState, Skeleton, StaleBanner } from "../ui";
+
+const NO_PROFILES: QualityProfileInfo[] = [];
+const NO_FORMATS: FormatInfo[] = [];
+const NO_LADDER: string[] = [];
+const NO_PRESETS: MusicPreset[] = [];
 
 // Quality profiles. A video profile is built around its TARGET FILE — the codec, HDR, audio
 // and bitrate window you want — which decides what's grabbed, how releases rank, and how the
@@ -218,40 +225,38 @@ const primaryStyle = { background: "linear-gradient(150deg, var(--accent), var(-
 
 export function Quality() {
   const [media, setMedia] = useState("movie");
-  const [profiles, setProfiles] = useState<QualityProfileInfo[]>([]);
-  const [formats, setFormats] = useState<FormatInfo[]>([]);
-  const [ladder, setLadder] = useState<string[]>([]);
-  const [musicPresets, setMusicPresets] = useState<MusicPreset[]>([]);
+  // One cache entry per media tab, so switching back to a tab (or Back from an
+  // editor) shows its profiles at once while they revalidate.
+  const listQ = useQuery(`quality:${media}`, () => api.qualityProfiles(media), { staleMs: 0 });
+  const profiles = listQ.data?.profiles ?? NO_PROFILES;
+  const formats = listQ.data?.formats ?? NO_FORMATS;
+  const ladder = listQ.data?.music_ladder ?? NO_LADDER;
+  const musicPresets = listQ.data?.music_presets ?? NO_PRESETS;
+  const loadError = listQ.error?.message ?? null;
   const [fits, setFits] = useState<Record<string, FitCounts>>({});
   const [editing, setEditing] = useState<StoredProfile | null>(null);
   const [picking, setPicking] = useState(false);
+  // A failed action on a card (the list's own load errors are loadError).
   const [error, setError] = useState<string | null>(null);
   // "Moved 12 films to …" after a delete. It lives here, not on the card, because the
   // card is gone once the list refreshes.
   const [notice, setNotice] = useState<string | null>(null);
   const isVideo = media === "movie" || media === "series";
 
-  const refresh = useCallback(() => {
-    api
-      .qualityProfiles(media)
-      .then((r) => {
-        setProfiles(r.profiles);
-        setFormats(r.formats);
-        setLadder(r.music_ladder ?? []);
-        setMusicPresets(r.music_presets ?? []);
-        setError(null);
-      })
-      .catch((e: Error) => setError(e.message));
+  const loadFits = useCallback(() => {
     if (media === "movie" || media === "series") {
       api.libraryFitProfiles(media).then((r) => setFits(r.profiles ?? {})).catch(() => setFits({}));
     } else {
       setFits({});
     }
   }, [media]);
+  useEffect(() => { loadFits(); }, [loadFits]);
 
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
+  const refetchList = listQ.refetch;
+  const refresh = useCallback(() => {
+    refetchList().then(() => setError(null));
+    loadFits();
+  }, [refetchList, loadFits]);
   useEffect(() => setNotice(null), [media]);
 
   const openNew = () => (isVideo ? setPicking(true) : setEditing(emptyProfile(media)));
@@ -286,6 +291,7 @@ export function Quality() {
         </p>
 
         {error && <div className="mb-3 rounded-lg p-3 text-[12px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
+        {listQ.data && loadError && <StaleBanner message={loadError} onRetry={refresh} />}
         {notice && (
           <div className="mb-3 flex items-center justify-between gap-3 rounded-lg p-3 text-[12px]" style={{ border: "1px solid var(--accent-line)", color: "var(--ink)" }}>
             <span>{notice}</span>
@@ -293,7 +299,9 @@ export function Quality() {
           </div>
         )}
 
-        {profiles.length === 0 ? (
+        {!listQ.data ? (
+          loadError ? <ErrorState what="quality profiles" message={loadError} onRetry={refresh} busy={listQ.loading} /> : <Skeleton variant="list" count={3} />
+        ) : profiles.length === 0 ? (
           <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>
             No quality profiles yet. Add one to tell Arrmada what to grab.
           </div>

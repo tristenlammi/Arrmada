@@ -1,34 +1,31 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { api, type DownloadClient } from "../lib/api";
+import { useQuery } from "../lib/query";
+import { ErrorState, Skeleton, StaleBanner } from "../ui";
+
+const NO_CLIENTS: DownloadClient[] = [];
 
 type TestState = { loading?: boolean; ok?: boolean; error?: string };
 
 export function DownloadClients() {
-  const [list, setList] = useState<DownloadClient[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const q = useQuery("download-clients", () => api.downloadClients(), { staleMs: 0 });
+  const list = q.data ?? NO_CLIENTS;
+  const error = q.error?.message ?? null;
   const [tests, setTests] = useState<Record<number, TestState>>({});
   const [ports, setPorts] = useState<Record<number, number>>({});
   const [showForm, setShowForm] = useState(false);
 
-  const refresh = () =>
-    api
-      .downloadClients()
-      .then((l) => {
-        setList(l);
-        setError(null);
-        // Fetch each torrent client's incoming port so we can tell the user what to forward.
-        for (const c of l) {
-          if (c.kind === "qbittorrent") {
-            api.downloadClientStatus(c.id).then((s) => setPorts((p) => ({ ...p, [c.id]: s.listen_port }))).catch(() => {});
-          }
-        }
-      })
-      .catch((e: Error) => setError(e.message));
+  const refresh = q.refetch;
 
+  // Fetch each torrent client's incoming port so we can tell the user what to forward.
   useEffect(() => {
-    refresh();
-  }, []);
+    for (const c of q.data ?? []) {
+      if (c.kind === "qbittorrent") {
+        api.downloadClientStatus(c.id).then((s) => setPorts((p) => ({ ...p, [c.id]: s.listen_port }))).catch(() => {});
+      }
+    }
+  }, [q.data]);
 
   const runTest = async (id: number) => {
     setTests((t) => ({ ...t, [id]: { loading: true } }));
@@ -71,13 +68,11 @@ export function DownloadClients() {
           />
         )}
 
-        {error && (
-          <div className="mb-3 rounded-lg p-3 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>
-            {error}
-          </div>
-        )}
+        {q.data && error && <StaleBanner message={error} onRetry={refresh} />}
 
-        {list.length === 0 ? (
+        {!q.data ? (
+          error ? <ErrorState what="download clients" message={error} onRetry={refresh} busy={q.loading} /> : <Skeleton variant="list" count={2} />
+        ) : list.length === 0 ? (
           <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>
             No download clients yet. Add qBittorrent to start downloading.
           </div>

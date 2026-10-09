@@ -9,6 +9,7 @@ import { DeleteMovieDialog } from "../components/DeleteMovieDialog";
 import { disposalLine, useRecycleMode } from "../lib/disposal";
 import { PAGE } from "../lib/links";
 import { usePoll } from "../lib/usePoll";
+import { invalidate } from "../lib/query";
 import {
   api,
   importListNotice,
@@ -770,7 +771,7 @@ function Toolbar({ movie, onChange, flash }: { movie: Movie; onChange: () => voi
         {/* Reachable on touch, unlike the grid's hover-only X. */}
         <button className={btn} style={{ border: "1px solid var(--reject)", color: "var(--reject)" }} disabled={busy !== null} onClick={() => setShowDelete(true)}>Delete movie</button>
       </div>
-      {showDelete && <DeleteMovieDialog movie={movie} onClose={() => setShowDelete(false)} onDeleted={() => navigate("/movies")} />}
+      {showDelete && <DeleteMovieDialog movie={movie} onClose={() => setShowDelete(false)} onDeleted={() => { invalidate("movies"); navigate("/movies"); }} />}
       {showPaste && (
         <UploadTorrentModal
           what={movie.title}

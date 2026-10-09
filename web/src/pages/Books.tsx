@@ -8,6 +8,8 @@ import { posterThumb } from "../lib/img";
 import { LINKS } from "../lib/links";
 import { useMe, isAdmin } from "../lib/me";
 import { usePoll, usePollBurst } from "../lib/usePoll";
+import { useQuery } from "../lib/query";
+import { ErrorState, Skeleton, StaleBanner } from "../ui";
 
 const FILTERS = [
   { key: "all", label: "All" },
@@ -33,6 +35,8 @@ function matches(b: Book, f: FilterKey): boolean {
   }
 }
 
+const NO_BOOKS: Book[] = [];
+
 function statusOf(b: Book): { label: string; tone: string } {
   if (b.has_file) {
     // Show which editions are present (E / A) so the grid conveys ebook vs audiobook.
@@ -45,9 +49,11 @@ function statusOf(b: Book): { label: string; tone: string } {
 
 export function Books() {
   const admin = isAdmin(useMe().user); // only admins can open Settings → System
-  const [list, setList] = useState<Book[]>([]);
-  const [metaOK, setMetaOK] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Cached across visits, so Back from a book renders at once, then revalidates.
+  const booksQ = useQuery("books", () => api.books(), { staleMs: 0 });
+  const list = booksQ.data?.books ?? NO_BOOKS;
+  const metaOK = booksQ.data?.metadata_available ?? true;
+  const error = booksQ.error?.message ?? null;
   const [filter, setFilter] = useState<FilterKey>("all");
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState(false);
@@ -65,8 +71,8 @@ export function Books() {
   const [profiles, setProfiles] = useState<{ key: string; name: string }[]>([]);
   // Which catalogue Books use, and how many rows still carry Open Library keys — the
   // "Upgrade to Hardcover" button shows while there are any.
-  const [source, setSource] = useState<BookSource>("openlibrary");
-  const [upgradable, setUpgradable] = useState(0);
+  const source: BookSource = booksQ.data?.metadata_source ?? "openlibrary";
+  const upgradable = booksQ.data?.upgradable ?? 0;
   const [upgrade, setUpgrade] = useState<BookUpgradeStatus | null>(null);
   // Author photos from the catalogue. The server resolves a few unknown authors per
   // call, so keep asking (spaced out) until none are pending.
@@ -84,7 +90,7 @@ export function Books() {
   }, [list.length]);
 
   const flash = (m: string) => { setToast(m); window.setTimeout(() => setToast(null), 3500); };
-  const refresh = () => api.books().then((r) => { setList(r.books); setMetaOK(r.metadata_available); setSource(r.metadata_source ?? "openlibrary"); setUpgradable(r.upgradable ?? 0); setError(null); }).catch((e: Error) => setError(e.message));
+  const refresh = booksQ.refetch;
   // Poll the upgrade while it runs, then reload the library once it lands.
   usePoll(() => api.bookUpgradeStatus().then((st) => {
     setUpgrade(st);
@@ -129,7 +135,8 @@ export function Books() {
     try {
       await api.keepBookCatalogue(id, true);
       setKept((s) => new Set(s).add(id));
-      setUpgradable((n) => Math.max(0, n - 1));
+      const cur = booksQ.data;
+      if (cur) booksQ.mutate((r) => ({ ...(r ?? cur), upgradable: Math.max(0, ((r ?? cur).upgradable ?? 0) - 1) }));
     } catch (e) { flash((e as Error).message); }
   };
   const keepAll = async () => {
@@ -145,7 +152,6 @@ export function Books() {
     } catch (e) { flash((e as Error).message); }
   };
   useEffect(() => {
-    refresh();
     api.qualityProfiles("book").then((r) => setProfiles(r.profiles.map((p) => ({ key: p.key, name: p.name })))).catch(() => {});
     api.bookUpgradeStatus().then((st) => { if (st.started_at) setUpgrade(st); }).catch(() => {});
     api.bookSweepStatus().then((st) => { if (st.running) setSweep(st); }).catch(() => {});
@@ -225,7 +231,7 @@ export function Books() {
       <PageHeader title="Books" crumb="Library / Books" />
       <div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex items-center justify-between gap-3">
-          <span className="font-mono text-[11px] text-ink-faint">{list.length} in library</span>
+          <span className="font-mono text-[11px] text-ink-faint">{booksQ.data ? `${list.length} in library` : ""}</span>
           <div className="flex items-center gap-2">
             {!multiSelect && (
               <>
@@ -300,7 +306,7 @@ export function Books() {
           </div>
         )}
 
-        {error && <div className="mb-3 rounded-lg p-3 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
+        {booksQ.data && error && <StaleBanner message={error} onRetry={refresh} />}
         {upgrade && !upgrade.running && !hideUpgrade && (upgrade.error || leftVisible.length > 0 || ((upgrade.left?.length ?? 0) === 0 && (upgrade.notes?.length ?? 0) > 0)) && (
           <div className="mb-4 rounded-lg px-3.5 py-2.5 text-[12px]" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink-dim)" }}>
             <div className="flex items-start justify-between gap-3">
@@ -343,7 +349,9 @@ export function Books() {
           </div>
         )}
 
-        {list.length === 0 ? (
+        {!booksQ.data ? (
+          error ? <ErrorState what="your books" message={error} onRetry={refresh} busy={booksQ.loading} /> : <Skeleton variant={view === "table" ? "table" : "grid"} />
+        ) : list.length === 0 ? (
           <div className="rounded-xl p-12 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>
             No books yet. Click <b>Add book</b>, search by title or author, and Arrmada will monitor and grab it.
           </div>

@@ -1,25 +1,22 @@
 import { useEffect, useState } from "react";
 import { PageHeader } from "../components/PageHeader";
 import { api, type Indexer } from "../lib/api";
+import { useQuery } from "../lib/query";
+import { ErrorState, Skeleton, StaleBanner } from "../ui";
+
+const NO_INDEXERS: Indexer[] = [];
 
 type TestState = { loading?: boolean; ok?: boolean; error?: string };
 
 export function Indexers() {
-  const [list, setList] = useState<Indexer[]>([]);
-  const [error, setError] = useState<string | null>(null);
+  const q = useQuery("indexers", () => api.indexers(), { staleMs: 0 });
+  const list = q.data ?? NO_INDEXERS;
+  const error = q.error?.message ?? null;
   const [tests, setTests] = useState<Record<number, TestState>>({});
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
 
-  const refresh = () =>
-    api
-      .indexers()
-      .then((l) => (setList(l), setError(null)))
-      .catch((e: Error) => setError(e.message));
-
-  useEffect(() => {
-    refresh();
-  }, []);
+  const refresh = q.refetch;
 
   const runTest = async (id: number) => {
     setTests((t) => ({ ...t, [id]: { loading: true } }));
@@ -64,13 +61,11 @@ export function Indexers() {
 
         <ProwlarrSync onSynced={refresh} />
 
-        {error && (
-          <div className="mb-3 rounded-lg p-3 text-[12.5px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>
-            {error}
-          </div>
-        )}
+        {q.data && error && <StaleBanner message={error} onRetry={refresh} />}
 
-        {list.length === 0 ? (
+        {!q.data ? (
+          error ? <ErrorState what="indexers" message={error} onRetry={refresh} busy={q.loading} /> : <Skeleton variant="list" count={3} />
+        ) : list.length === 0 ? (
           <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>
             No indexers yet. Add one to start searching.
           </div>
