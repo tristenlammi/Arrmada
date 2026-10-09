@@ -14,7 +14,7 @@ describe("pickTab", () => {
   });
 
   it("falls back for a tab this viewer isn't offered", () => {
-    // A manager's Settings offers only media and library, so a link to System lands on Media.
+    // A page offers only the tabs this viewer may see, so a link to another lands on the fallback.
     expect(pickTab("system", tabs, "media")).toBe("media");
   });
 });

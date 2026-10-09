@@ -113,11 +113,12 @@ export default function App() {
         <Route path="/indexers" element={<Indexers />} />
         <Route path="/downloadclients" element={<DownloadClients />} />
         <Route path="/notifications" element={<Navigate to="/insights" replace />} />
-        <Route path="/settings" element={<Settings />} />
+        {/* The hub reads its own section from the URL: /settings/library, /settings/system… */}
+        <Route path="/settings/*" element={<Settings />} />
         <Route path="/quality" element={<Quality />} />
         {/* The log is admin-only on the server; for a manager the page falls through to Not found. */}
         {isAdmin(user) && <Route path="/logs" element={<Logs />} />}
-        <Route path="/library" element={<Navigate to="/settings" replace />} />
+        <Route path="/library" element={<Navigate to="/settings/library" replace />} />
         <Route path="*" element={<NotFound />} />
       </Route>
     </Routes>

@@ -7,7 +7,7 @@ export function pickTab<T extends string>(value: string | null, allowed: readonl
 }
 
 // useTabParam keeps a page's tab in ?tab=, so copy elsewhere can link straight to it
-// ("Settings → System → API keys") and a reload stays put. Pass only the tabs this viewer
+// ("Insights → Settings") and a reload stays put. Pass only the tabs this viewer
 // may see. Switching tabs replaces the history entry, so Back still leaves the page, and
 // any other query params on the page are kept.
 export function useTabParam<T extends string>(allowed: readonly T[], fallback: T): [T, (t: T) => void] {
