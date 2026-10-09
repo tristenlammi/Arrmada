@@ -74,15 +74,62 @@ func (s *Service) EnsureBundled(ctx context.Context, url string) error {
 // Create stores a new client.
 func (s *Service) Create(ctx context.Context, c Client) (Client, error) { return s.repo.Create(ctx, c) }
 
-// Delete removes a client and its recorded status.
+// Get returns one stored client.
+func (s *Service) Get(ctx context.Context, id int64) (Client, error) { return s.repo.Get(ctx, id) }
+
+// sessionForgetter is a client implementation that caches a login per client id.
+type sessionForgetter interface {
+	Forget(id int64)
+}
+
+// forget drops any cached login for the client, so the next call logs in with what's
+// stored now rather than riding a session made with the old URL or password.
+func (s *Service) forget(id int64) {
+	for _, impl := range s.registry.impls {
+		if f, ok := impl.(sessionForgetter); ok {
+			f.Forget(id)
+		}
+	}
+}
+
+// Update changes a stored client in place (a blank password keeps the stored one) and
+// returns it as saved. A disabled client gets no new downloads (Add reads ListEnabled)
+// and drops out of the health check, but the torrents already in it are still read and
+// acted on — see existingClients.
+func (s *Service) Update(ctx context.Context, c Client) (Client, error) {
+	if err := s.repo.Update(ctx, c); err != nil {
+		return Client{}, err
+	}
+	s.forget(c.ID)
+	// A changed URL or login is a different connection: its old failures say nothing
+	// about the new one.
+	if err := s.status.Reset(ctx, connstatus.KindDownloadClient, strconv.FormatInt(c.ID, 10)); err != nil {
+		s.log.Warn("download client: couldn't clear its saved status", "id", c.ID, "err", err)
+	}
+	return s.repo.Get(ctx, c.ID)
+}
+
+// Delete removes a client and its recorded status. Its cached login goes with it: SQLite
+// can hand the id to the next client added, which must not inherit a session for somebody
+// else's WebUI.
 func (s *Service) Delete(ctx context.Context, id int64) error {
 	if err := s.repo.Delete(ctx, id); err != nil {
 		return err
 	}
+	s.forget(id)
 	if err := s.status.Forget(ctx, connstatus.KindDownloadClient, strconv.FormatInt(id, 10)); err != nil {
 		s.log.Warn("download client: couldn't clear its saved status", "id", id, "err", err)
 	}
 	return nil
+}
+
+// existingClients is every client, switched off or not, for work on torrents that are
+// already downloading: reading the queue, pausing, resuming, removing. "Disabled" means
+// "send it nothing new". Leaving a disabled client's torrents out of the queue made them
+// look vanished to stall detection, which blocklisted healthy downloads and grabbed them
+// again elsewhere; their imports and seed goals stalled too.
+func (s *Service) existingClients(ctx context.Context) ([]Client, error) {
+	return s.repo.List(ctx)
 }
 
 // Test checks connectivity + auth for a stored client.
@@ -123,15 +170,15 @@ func (s *Service) Add(ctx context.Context, req AddRequest) error {
 	return nil
 }
 
-// Remove deletes a torrent (and optionally its data) from whichever enabled
-// client holds it.
+// Remove deletes a torrent (and optionally its data) from whichever client
+// holds it, switched off or not.
 func (s *Service) Remove(ctx context.Context, hash string, deleteData bool) error {
 	// Checked here as well as at the HTTP edge: every caller that removes a torrent goes
 	// through this, and a bad value here can empty the whole client.
 	if !ValidHash(hash) {
 		return ErrInvalidHash
 	}
-	clients, err := s.repo.ListEnabled(ctx)
+	clients, err := s.existingClients(ctx)
 	if err != nil {
 		return err
 	}
@@ -233,7 +280,7 @@ func (s *Service) Resume(ctx context.Context, hash string) error {
 	return s.onHash(ctx, func(impl Downloader, c Client) error { return impl.Resume(ctx, c, hash) })
 }
 
-// ResumeMany restarts several torrents with one request per enabled client, hashes joined
+// ResumeMany restarts several torrents with one request per client, hashes joined
 // the way qBittorrent's start/resume endpoint takes them. Every client gets the whole
 // list: qBittorrent ignores hashes it doesn't have, so stopping at the first client
 // that answers (as onHash does) would never reach a second client's torrents. Fails
@@ -242,7 +289,7 @@ func (s *Service) ResumeMany(ctx context.Context, hashes []string) error {
 	if len(hashes) == 0 {
 		return nil
 	}
-	clients, err := s.repo.ListEnabled(ctx)
+	clients, err := s.existingClients(ctx)
 	if err != nil {
 		return err
 	}
@@ -333,9 +380,10 @@ func (s *Service) SetSettings(ctx context.Context, id int64, cs ClientSettings) 
 	return fmt.Errorf("%q has no tunable settings", c.Kind)
 }
 
-// onHash runs fn against each enabled client, returning on the first success.
+// onHash runs fn against each client holding torrents (see existingClients), returning on
+// the first success.
 func (s *Service) onHash(ctx context.Context, fn func(Downloader, Client) error) error {
-	clients, err := s.repo.ListEnabled(ctx)
+	clients, err := s.existingClients(ctx)
 	if err != nil {
 		return err
 	}
@@ -431,22 +479,22 @@ func (s *Service) CompletedInCategory(ctx context.Context, category string) ([]I
 	return out, nil
 }
 
-// Queue aggregates live download items across all enabled clients. A partial result — some
-// clients answered, some didn't — is returned without error; callers that draw conclusions
-// from a torrent's ABSENCE must use QueueComplete instead.
+// Queue aggregates live download items across every client (see existingClients). A
+// partial result — some clients answered, some didn't — is returned without error;
+// callers that draw conclusions from a torrent's ABSENCE must use QueueComplete instead.
 func (s *Service) Queue(ctx context.Context) ([]Item, error) {
 	items, _, err := s.QueueComplete(ctx)
 	return items, err
 }
 
-// QueueComplete is Queue that also reports whether EVERY enabled client answered.
+// QueueComplete is Queue that also reports whether every enabled client answered.
 //
 // It matters because "this torrent isn't in the queue" is treated as a stall, and that
 // blocklists the release and grabs an alternate. With more than one client, a single
 // unreachable one makes all of its torrents vanish from the list while Queue still returns
 // nil error — so healthy downloads would be condemned for their client being down.
 func (s *Service) QueueComplete(ctx context.Context) ([]Item, bool, error) {
-	clients, err := s.repo.ListEnabled(ctx)
+	clients, err := s.existingClients(ctx)
 	if err != nil {
 		return nil, false, err
 	}
@@ -463,8 +511,15 @@ func (s *Service) QueueComplete(ctx context.Context) ([]Item, bool, error) {
 		part, err := impl.List(ctx, c)
 		s.record(ctx, c, err, time.Since(start))
 		if err != nil {
-			s.log.Warn("download client list failed", "client", c.Name, "err", err)
 			lastErr = err
+			if !c.Enabled {
+				// Switched off and not answering: most likely stopped on purpose. Its
+				// torrents can't be read, but counting it as down would pause stall
+				// fail-over for every other client for as long as it stays off.
+				s.log.Debug("disabled download client didn't answer", "client", c.Name, "err", err)
+				continue
+			}
+			s.log.Warn("download client list failed", "client", c.Name, "err", err)
 			failed++
 			continue
 		}

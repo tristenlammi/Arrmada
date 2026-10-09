@@ -79,6 +79,27 @@ func (r *Repo) Create(ctx context.Context, c Client) (Client, error) {
 	return c, nil
 }
 
+// Update changes a client's name, URL, username and enabled flag in place. The password
+// is replaced only when one is given — the browser never holds the stored one, so a
+// blank field means "keep it". Kind and category are left alone. ErrNotFound when the
+// id doesn't exist.
+func (r *Repo) Update(ctx context.Context, c Client) error {
+	q := `UPDATE download_clients SET name = ?, url = ?, username = ?, enabled = ? WHERE id = ?`
+	args := []any{c.Name, c.URL, c.Username, boolToInt(c.Enabled), c.ID}
+	if c.Password != "" {
+		q = `UPDATE download_clients SET name = ?, url = ?, username = ?, enabled = ?, password = ? WHERE id = ?`
+		args = []any{c.Name, c.URL, c.Username, boolToInt(c.Enabled), c.Password, c.ID}
+	}
+	res, err := r.db.ExecContext(ctx, q, args...)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // Delete removes a client by id.
 func (r *Repo) Delete(ctx context.Context, id int64) error {
 	res, err := r.db.ExecContext(ctx, `DELETE FROM download_clients WHERE id = ?`, id)

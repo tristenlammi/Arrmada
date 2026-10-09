@@ -292,8 +292,9 @@ func main() {
 	// Episode numbering: TVDB first (authoritative, matches releases and gives real
 	// absolute numbers — but needs a key), then TVmaze (free, handles the common
 	// two-parter), then TMDB itself. Each falls back cleanly when it can't help.
+	tvdb := metadata.NewTVDB(keyStore.Func("tvdb"))
 	tvSeries := metadata.NewSeriesWithEpisodes(tmdb, log,
-		metadata.NewTVDB(keyStore.Func("tvdb")),
+		tvdb,
 		metadata.NewTVmaze(),
 	)
 	seriesSvc := series.NewService(st.DB(), tvSeries, cfg.TVDir, log)
@@ -791,6 +792,13 @@ func main() {
 	// must only run once the outbox has its consumers.
 	sched.Start(runCtx)
 
+	// The API key Test: one live request each, on demand only (never in health polling).
+	keyVerifiers := map[string]func(context.Context, string) (string, error){
+		"tmdb":              tmdb.VerifyKey,
+		"tvdb":              tvdb.VerifyKey,
+		"omdb":              omdb.VerifyKey,
+		"opensubtitles_api": subsProvider.Verify,
+	}
 	restartCh := make(chan struct{}, 1)
 	srv := httpapi.New(httpapi.Deps{
 		Config:       cfg,
@@ -822,6 +830,7 @@ func main() {
 		Logs:         logRing,
 		APIKeys:      keyStore,
 		FlareSolverr: flare,
+		KeyVerifiers: keyVerifiers,
 		AudioServer:  audioSrv,
 		AudioManager: audioMgr,
 		Restart: func() {

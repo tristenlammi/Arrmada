@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -9,6 +11,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/apikeys"
 	"github.com/tristenlammi/arrmada/internal/auth"
+	"github.com/tristenlammi/arrmada/internal/metadata"
 )
 
 // doBody is do with a JSON body.
@@ -64,6 +67,75 @@ func TestSetAPIKeyEmptyRejected(t *testing.T) {
 	}
 	if rec := s.doBody("PUT", "/api/v1/apikeys/nope", `{"value":"x"}`, mgr); rec.Code != http.StatusNotFound {
 		t.Errorf("unknown id: HTTP %d, want 404", rec.Code)
+	}
+}
+
+// Test dispatches to the wired verifier, passing a typed-but-unsaved value through as the
+// candidate without storing it; unknown ids and a Hardcover candidate are 400s.
+func TestTestAPIKeyDispatchesAndNeverStoresCandidate(t *testing.T) {
+	var gotCandidate []string
+	s := newRouteServer(t, func(d *Deps) {
+		d.APIKeys = apikeys.NewStore(d.Settings)
+		d.KeyVerifiers = map[string]func(context.Context, string) (string, error){
+			"omdb": func(_ context.Context, candidate string) (string, error) {
+				gotCandidate = append(gotCandidate, candidate)
+				if candidate == "bad" {
+					return "", errors.New("OMDb: Invalid API key!")
+				}
+				return "OK: OMDb answered.", nil
+			},
+			"tvdb": func(context.Context, string) (string, error) { return "", metadata.ErrNotConfigured },
+		}
+	})
+	_, admin := s.user(t, "admin@example.com", auth.RoleAdmin)
+	_, mgr := s.user(t, "mgr@example.com", auth.RoleManager)
+	if rec := s.doBody("PUT", "/api/v1/apikeys/omdb", `{"value":"saved-omdb"}`, admin); rec.Code != http.StatusOK {
+		t.Fatalf("save: HTTP %d %s", rec.Code, rec.Body)
+	}
+
+	result := func(rec *httptest.ResponseRecorder) (bool, string) {
+		t.Helper()
+		var out struct {
+			OK     bool   `json:"ok"`
+			Detail string `json:"detail"`
+		}
+		if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &out) != nil {
+			t.Fatalf("test: HTTP %d %s", rec.Code, rec.Body)
+		}
+		return out.OK, out.Detail
+	}
+
+	// No body: the saved key.
+	if ok, detail := result(s.do("POST", "/api/v1/apikeys/omdb/test", admin)); !ok || detail != "OK: OMDb answered." {
+		t.Errorf("saved: %v %q", ok, detail)
+	}
+	// A candidate is tested and reported, and the saved key is unchanged afterwards.
+	if ok, detail := result(s.doBody("POST", "/api/v1/apikeys/omdb/test", `{"value":"  bad "}`, admin)); ok || detail != "OMDb: Invalid API key!" {
+		t.Errorf("candidate: %v %q", ok, detail)
+	}
+	if strings.Join(gotCandidate, ",") != ",bad" {
+		t.Errorf("verifier saw candidates %q, want the saved run then the trimmed candidate", gotCandidate)
+	}
+	if got := s.deps.APIKeys.Value(t.Context(), "omdb"); got != "saved-omdb" {
+		t.Errorf("stored key after a candidate test = %q, want it unchanged", got)
+	}
+	if ok, detail := result(s.do("POST", "/api/v1/apikeys/tvdb/test", admin)); ok || !strings.Contains(detail, "no key is set") {
+		t.Errorf("unconfigured: %v %q", ok, detail)
+	}
+
+	for _, path := range []string{"/api/v1/apikeys/nope/test", "/api/v1/apikeys/opensubtitles_password/test"} {
+		if rec := s.do("POST", path, admin); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: HTTP %d, want 400", path, rec.Code)
+		}
+	}
+	if rec := s.doBody("POST", "/api/v1/apikeys/hardcover/test", `{"value":"x"}`, admin); rec.Code != http.StatusBadRequest {
+		t.Errorf("hardcover candidate: HTTP %d, want 400", rec.Code)
+	}
+	if rec := s.doBody("POST", "/api/v1/apikeys/omdb/test", `{"value":"x","extra":1}`, admin); rec.Code != http.StatusBadRequest {
+		t.Errorf("unknown field: HTTP %d, want 400", rec.Code)
+	}
+	if rec := s.doBody("POST", "/api/v1/apikeys/omdb/test", `{"value":"x"}`, mgr); rec.Code != http.StatusForbidden {
+		t.Errorf("manager: HTTP %d, want 403 (API keys are admin-only)", rec.Code)
 	}
 }
 

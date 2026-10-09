@@ -81,6 +81,10 @@ type Deps struct {
 	APIKeys    *apikeys.Store
 	// FlareSolverr, whose URL is the "flaresolverr" API key (read on every use).
 	FlareSolverr *flaresolverr.Client
+	// KeyVerifiers back the API key Test button, by key id: each makes one real request
+	// with candidate (a value typed and not yet saved) or, when that's empty, the saved
+	// key, and answers in words. Built in main; Hardcover is tested through Books.
+	KeyVerifiers map[string]func(ctx context.Context, candidate string) (string, error)
 	// The audiobook server for listening apps, and its listener.
 	AudioServer  *audioserver.Server
 	AudioManager *audioserver.Manager
@@ -269,6 +273,7 @@ func (a *api) registerRoutes(mux *router) {
 	// Download clients + queue
 	mux.HandleFunc("GET /api/v1/downloadclients", a.requireRole(auth.RoleManager, a.handleListDownloadClients))
 	mux.HandleFunc("POST /api/v1/downloadclients", a.requireRole(auth.RoleManager, a.handleCreateDownloadClient))
+	mux.HandleFunc("PUT /api/v1/downloadclients/{id}", a.requireRole(auth.RoleManager, a.handleUpdateDownloadClient))
 	mux.HandleFunc("DELETE /api/v1/downloadclients/{id}", a.requireRole(auth.RoleManager, a.handleDeleteDownloadClient))
 	mux.HandleFunc("POST /api/v1/downloadclients/{id}/test", a.requireRole(auth.RoleManager, a.handleTestDownloadClient))
 	mux.HandleFunc("GET /api/v1/downloadclients/{id}/status", a.requireRole(auth.RoleManager, a.handleDownloadClientStatus))

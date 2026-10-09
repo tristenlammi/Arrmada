@@ -110,6 +110,12 @@ func (q *QBittorrent) drop(id int64) {
 	q.mu.Unlock()
 }
 
+// Forget drops the cached session after the client's URL or credentials changed, so the
+// next call logs in with the new ones. loginMu[id] is kept on purpose: a login already in
+// flight still holds it, and a fresh mutex would let a second caller start another login
+// alongside it — qBittorrent bans an IP after repeated logins.
+func (q *QBittorrent) Forget(id int64) { q.drop(id) }
+
 // doAuthed executes an authenticated request against qBittorrent. If the cached
 // session has expired (HTTP 403), it drops the session, re-logs-in, and retries
 // exactly once — a second 403 after a fresh login is a real error and the 403

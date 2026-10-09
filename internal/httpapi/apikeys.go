@@ -2,13 +2,17 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/apikeys"
 	"github.com/tristenlammi/arrmada/internal/health"
+	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/subtitles"
 )
 
 // recheckTMDB re-runs the health panel's TMDB key check after the key changed or was
@@ -25,19 +29,52 @@ func (a *api) handleGetAPIKeys(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"keys": a.deps.APIKeys.Status(r.Context())})
 }
 
-// handleTestAPIKey makes a real request with a saved key and reports the outcome. Only
-// keys the catalogue marks testable have a check wired up.
+// handleTestAPIKey makes a real request with a key and reports the outcome. With no body
+// it tests the saved key; with {"value": "..."} it tests that candidate instead — a key
+// typed and not yet saved — which is sent to the provider once and never stored or
+// logged. Only keys with a verifier wired up can be tested; anything else is a 400.
 func (a *api) handleTestAPIKey(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Value string `json:"value"`
+	}
+	// The body is optional: the Test button on a saved key sends none.
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		a.writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	candidate := strings.TrimSpace(body.Value)
+
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	var detail string
 	var err error
-	switch r.PathValue("id") {
-	case "hardcover":
+	switch verify, ok := a.deps.KeyVerifiers[id]; {
+	case id == "hardcover":
+		if candidate != "" {
+			a.writeError(w, http.StatusBadRequest, "Hardcover can only test the saved key; save it, then Test")
+			return
+		}
+		if a.deps.Books == nil {
+			a.writeError(w, http.StatusBadRequest, "no test is available for that key")
+			return
+		}
 		detail, err = a.deps.Books.VerifyHardcover(ctx)
-	case "flaresolverr":
+	case id == "flaresolverr":
+		if candidate != "" {
+			a.writeError(w, http.StatusBadRequest, "FlareSolverr can only test the saved URL; save it, then Test")
+			return
+		}
 		detail, err = testFlareSolverr(ctx, a.deps.FlareSolverr)
-	case "tmdb":
+	case ok:
+		detail, err = verify(ctx, candidate)
+		if errors.Is(err, metadata.ErrNotConfigured) || errors.Is(err, subtitles.ErrNotConfigured) {
+			err = errors.New("no key is set to test")
+		}
+	case id == "tmdb" && candidate == "":
+		// No verifier wired: fall back to the health check's own TMDB validation.
 		v, ok := a.deps.Discovery.(tmdbValidator)
 		if !ok {
 			a.writeError(w, http.StatusBadRequest, "no test is available for that key")
@@ -51,10 +88,14 @@ func (a *api) handleTestAPIKey(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, health.ErrKeyMissing):
 			err = errors.New("no TMDB key is set")
 		}
-		a.recheckTMDB(r)
 	default:
 		a.writeError(w, http.StatusBadRequest, "no test is available for that key")
 		return
+	}
+	// A test of the saved TMDB key settles the health panel's TMDB warning either way.
+	// A candidate says nothing about the key in use, so it leaves the panel alone.
+	if id == "tmdb" && candidate == "" {
+		a.recheckTMDB(r)
 	}
 	if err != nil {
 		a.writeJSON(w, http.StatusOK, map[string]any{"ok": false, "detail": err.Error()})

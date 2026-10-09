@@ -254,6 +254,8 @@ export interface APIKeyStatus {
   steps: string;
   secret: boolean;
   testable?: boolean;
+  /** Can be tested with a typed value before it's saved (sent once, never stored). */
+  tests_candidate?: boolean;
   configured: boolean;
   source: "settings" | "env" | "";
   hint?: string;
@@ -355,6 +357,8 @@ export interface DownloadClient {
   username?: string;
   category?: string;
   enabled: boolean;
+  /** The packaged qBittorrent: startup re-adds it, so its URL is fixed and a delete won't stick. */
+  bundled?: boolean;
 }
 
 export interface NewDownloadClient {
@@ -362,8 +366,10 @@ export interface NewDownloadClient {
   kind: string;
   url: string;
   username?: string;
+  /** On an edit, blank keeps the stored password (it is never sent back). */
   password?: string;
   category?: string;
+  enabled?: boolean;
 }
 
 export interface NotificationConn {
@@ -1594,7 +1600,9 @@ export const api = {
   // External service credentials, settable in-app (settings-first, env-fallback). The
   // server never returns the secret itself — only whether it's set, from where, and a hint.
   apiKeys: () => req<{ keys: APIKeyStatus[] }>(`/api/v1/apikeys`).then((r) => r.keys),
-  testAPIKey: (id: string) => req<{ ok: boolean; detail: string }>(`/api/v1/apikeys/${id}/test`, { method: "POST" }),
+  // With a candidate, tests that value instead of the saved key; it is never stored.
+  testAPIKey: (id: string, candidate?: string) =>
+    req<{ ok: boolean; detail: string }>(`/api/v1/apikeys/${id}/test`, candidate ? { method: "POST", body: JSON.stringify({ value: candidate }) } : { method: "POST" }),
   setAPIKey: (id: string, value: string) =>
     req<{ keys: APIKeyStatus[] }>(`/api/v1/apikeys/${id}`, { method: "PUT", body: JSON.stringify({ value }) }).then((r) => r.keys),
   // Clearing is its own DELETE (a blank PUT is refused), so an empty Save can't wipe a key.
@@ -1643,6 +1651,8 @@ export const api = {
     req<{ clients: DownloadClient[] }>("/api/v1/downloadclients").then((r) => r.clients),
   createDownloadClient: (body: NewDownloadClient) =>
     req<DownloadClient>("/api/v1/downloadclients", { method: "POST", body: JSON.stringify(body) }),
+  updateDownloadClient: (id: number, body: NewDownloadClient) =>
+    req<DownloadClient>(`/api/v1/downloadclients/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   deleteDownloadClient: (id: number) =>
     req<void>(`/api/v1/downloadclients/${id}`, { method: "DELETE" }),
   testDownloadClient: (id: number) =>

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -38,10 +39,11 @@ type TVDB struct {
 	base string
 	key  func() string // read lazily so a key added in settings takes effect live
 
-	mu    sync.Mutex
-	token string    // cached bearer token
-	tokAt time.Time // when it was minted (re-login well before the ~1 month expiry)
-	last  time.Time // request pacing
+	mu     sync.Mutex
+	token  string    // cached bearer token
+	tokAt  time.Time // when it was minted (re-login well before the ~1 month expiry)
+	tokKey string    // the key it was minted with
+	last   time.Time // request pacing
 
 	// badKey is a key /login rejected, and badAt when. While the configured key is still
 	// that one, TVDB is unavailable rather than failing — see Available.
@@ -209,17 +211,19 @@ func (t *TVDB) do(ctx context.Context, path, token string, out any) (int, error)
 }
 
 // ensureToken returns a valid bearer token, logging in when there isn't one. TVDB tokens
-// last about a month; re-login after three weeks keeps well clear of the edge.
+// last about a month; re-login after three weeks keeps well clear of the edge. A token
+// minted with a key that has since been replaced in Settings is dropped, so the new key
+// is the one in use straight away.
 func (t *TVDB) ensureToken(ctx context.Context) (string, error) {
+	key := t.key()
 	t.mu.Lock()
-	if t.token != "" && time.Since(t.tokAt) < 21*24*time.Hour {
+	if t.token != "" && t.tokKey == key && time.Since(t.tokAt) < 21*24*time.Hour {
 		tok := t.token
 		t.mu.Unlock()
 		return tok, nil
 	}
 	t.mu.Unlock()
 
-	key := t.key()
 	if key == "" {
 		return "", ErrNotConfigured
 	}
@@ -256,9 +260,57 @@ func (t *TVDB) ensureToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("tvdb login returned no token")
 	}
 	t.mu.Lock()
-	t.token, t.tokAt = body.Data.Token, time.Now()
+	t.token, t.tokAt, t.tokKey = body.Data.Token, time.Now(), key
 	t.mu.Unlock()
 	return body.Data.Token, nil
+}
+
+// VerifyKey is the key Test: a real POST /login with candidate (a key typed and not yet
+// saved, sent once and kept nowhere) or, when that's empty, the saved key. It never
+// touches the cached token, so testing a candidate can't swap the key episode lookups
+// use. A saved key that passes is cleared from the rejected-key backoff at once.
+func (t *TVDB) VerifyKey(ctx context.Context, candidate string) (string, error) {
+	stored := t.key()
+	key := strings.TrimSpace(candidate)
+	if key == "" {
+		key = stored
+	}
+	if key == "" {
+		return "", ErrNotConfigured
+	}
+	reqBody, _ := json.Marshal(map[string]string{"apikey": key})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.base+"/login", bytes.NewReader(reqBody))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := t.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("Couldn't reach TheTVDB: %w", err)
+	}
+	defer resp.Body.Close()
+	switch {
+	case resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden:
+		return "", rejectedKey("TheTVDB rejected the key; use a v4 API key from your TheTVDB dashboard")
+	case resp.StatusCode != http.StatusOK:
+		return "", fmt.Errorf("TheTVDB login failed: %s", resp.Status)
+	}
+	var body struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || body.Data.Token == "" {
+		return "", fmt.Errorf("TheTVDB accepted the login but sent no token")
+	}
+	if key == stored {
+		t.mu.Lock()
+		if t.badKey == key {
+			t.badKey, t.badAt = "", time.Time{}
+		}
+		t.mu.Unlock()
+	}
+	return "OK: TheTVDB accepted the key.", nil
 }
 
 func (t *TVDB) pace() {

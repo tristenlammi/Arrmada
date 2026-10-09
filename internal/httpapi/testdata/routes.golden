@@ -319,6 +319,7 @@ PUT /api/v1/books/{id}/metadata staff -
 PUT /api/v1/books/{id}/monitor staff -
 PUT /api/v1/books/{id}/profile staff -
 PUT /api/v1/convert/settings staff -
+PUT /api/v1/downloadclients/{id} staff -
 PUT /api/v1/downloadclients/{id}/settings staff -
 PUT /api/v1/indexers/{id} staff -
 PUT /api/v1/insights/plex staff -

@@ -95,7 +95,7 @@ export const activity: ActivityFeed = {
 };
 
 export const downloadClients: { clients: DownloadClient[] } = {
-  clients: [{ id: 1, name: "qBittorrent", kind: "qbittorrent", url: "http://qbittorrent:8080", enabled: true }],
+  clients: [{ id: 1, name: "qBittorrent", kind: "qbittorrent", url: "http://qbittorrent:8080", enabled: true, bundled: true }],
 };
 
 export const indexers: { indexers: Indexer[] } = {
