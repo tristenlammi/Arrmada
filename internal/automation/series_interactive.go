@@ -34,6 +34,104 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 	if err != nil {
 		return ReleaseList{}, err
 	}
+	releases, _, err := c.searchSeriesScope(ctx, s, season, episode)
+	if err != nil {
+		return ReleaseList{}, err
+	}
+
+	byName := make(map[string]indexer.Release, len(releases))
+	cands := make([]quality.Candidate, 0, len(releases))
+	var droppedTitle, droppedScope int
+	var sampleDropped, sampleScope []string
+	for _, rel := range bestByTitle(releases) {
+		if !seriesTitleMatches(rel.Title, s) {
+			droppedTitle++
+			if len(sampleDropped) < 8 {
+				sampleDropped = append(sampleDropped, rel.Title+" → "+parser.Parse(rel.Title).Title)
+			}
+			continue // a different show that merely shares a title prefix (e.g. "Below Deck Mediterranean" for "Below Deck")
+		}
+		if p := parser.Parse(rel.Title); !c.releaseMatchesScope(ctx, s, p, season, episode) {
+			droppedScope++
+			// What a right-show release DID resolve to is the answer to "there are
+			// torrents for this episode, why won't it take them?" — usually that they
+			// are other episodes entirely, which no amount of title matching fixes.
+			if len(sampleScope) < 8 {
+				sampleScope = append(sampleScope, rel.Title+" → "+c.resolvedLabel(ctx, s, p))
+			}
+			continue // not relevant to the requested season/episode scope
+		}
+		byName[rel.Title] = rel
+		cands = append(cands, newSeriesCandidate(rel))
+	}
+	c.log.Info("series: search filtered", "series", s.Title, "kept", len(cands), "dropped_wrong_title", droppedTitle, "dropped_out_of_scope", droppedScope)
+	if len(sampleDropped) > 0 {
+		c.log.Info("series: sample of dropped titles (parsed → title)", "series", s.Title, "samples", strings.Join(sampleDropped, " | "))
+	}
+	if len(sampleScope) > 0 {
+		c.log.Info("series: sample of right-show releases that were other episodes (release → resolved)",
+			"series", s.Title, "want_season", season, "want_episode", episode,
+			"samples", strings.Join(sampleScope, " | "))
+	}
+	profile := c.effectiveProfile(ctx, s.QualityProfile, quality.MediaSeries)
+	decision := c.decideWith(ctx, profile, spec, cands)
+
+	// For a single-episode search we can show a bitrate (size ÷ episode runtime). Season/series
+	// packs cover many episodes, so leave bitrate off there rather than mislead.
+	epRuntime := 0
+	if season > 0 && episode > 0 {
+		for _, sn := range s.Seasons {
+			if sn.SeasonNumber != season {
+				continue
+			}
+			for _, e := range sn.Episodes {
+				if e.EpisodeNumber == episode {
+					epRuntime = e.Runtime
+				}
+			}
+		}
+	}
+
+	winnerName := ""
+	if decision.Winner != nil {
+		winnerName = decision.Winner.Candidate.Name
+	}
+	// Flag blocklisted releases like the movie path does, so the UI can warn before the
+	// user re-grabs a release that just stalled or imported as junk.
+	blocked := c.blockedSetSeries(ctx, s.ID)
+	out := make([]RankedRelease, 0, len(cands))
+	appendEval := func(ev quality.Evaluation) {
+		rel := byName[ev.Candidate.Name]
+		out = append(out, RankedRelease{
+			Title:        ev.Candidate.Name,
+			Indexer:      rel.Indexer,
+			DownloadURL:  rel.DownloadURL,
+			InfoURL:      rel.InfoURL,
+			SizeGB:       ev.Candidate.SizeGB,
+			Bitrate:      bitrateMbps(ev.Candidate.SizeGB, epRuntime),
+			Seeders:      ev.Candidate.Seeders,
+			Summary:      summarizeSeries(ev.Candidate.Release),
+			Eligible:     ev.Eligible,
+			RejectReason: ev.RejectReason,
+			Recommended:  ev.Candidate.Name == winnerName,
+			Blocklisted:  blocked[normTitle(ev.Candidate.Name)],
+			Resolves:     c.resolvesLabel(ctx, s, ev.Candidate.Release),
+		})
+	}
+	for _, ev := range decision.Eligible {
+		appendEval(ev)
+	}
+	for _, ev := range decision.Rejected {
+		appendEval(ev)
+	}
+	return ReleaseList{Profile: profile, Why: decision.Why, Releases: out}, nil
+}
+
+// searchSeriesScope runs the indexer queries for a season/episode scope (season <= 0 is
+// the whole show) and returns everything they found, unfiltered, plus the per-indexer
+// errors of the main query. Shared by the interactive list and the quick Grab buttons, so
+// a button searches exactly where the list the user would see does.
+func (c *Coordinator) searchSeriesScope(ctx context.Context, s series.Series, season, episode int) ([]indexer.Release, map[string]string, error) {
 	// Clean the title before it reaches an indexer: releases carry no punctuation, so
 	// "Teen Titans Go!" must be searched as "Teen Titans Go" or its packs never appear.
 	title := indexerQuery(s.Title)
@@ -50,7 +148,7 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 
 	result, err := c.indexers.Search(ctx, q)
 	if err != nil {
-		return ReleaseList{}, err
+		return nil, result.Errors, err
 	}
 	// Browsing the whole show: fan out per season as well, for the same reason the
 	// automatic search does. One title query can't surface nine seasons' worth of packs.
@@ -102,94 +200,7 @@ func (c *Coordinator) RankSeriesReleasesWith(ctx context.Context, seriesID int64
 	for name, e := range result.Errors {
 		c.log.Warn("series: indexer error", "indexer", name, "err", e)
 	}
-
-	byName := make(map[string]indexer.Release, len(result.Releases))
-	cands := make([]quality.Candidate, 0, len(result.Releases))
-	var droppedTitle, droppedScope int
-	var sampleDropped, sampleScope []string
-	for _, rel := range bestByTitle(result.Releases) {
-		if !seriesTitleMatches(rel.Title, s) {
-			droppedTitle++
-			if len(sampleDropped) < 8 {
-				sampleDropped = append(sampleDropped, rel.Title+" → "+parser.Parse(rel.Title).Title)
-			}
-			continue // a different show that merely shares a title prefix (e.g. "Below Deck Mediterranean" for "Below Deck")
-		}
-		if p := parser.Parse(rel.Title); !c.releaseMatchesScope(ctx, s, p, season, episode) {
-			droppedScope++
-			// What a right-show release DID resolve to is the answer to "there are
-			// torrents for this episode, why won't it take them?" — usually that they
-			// are other episodes entirely, which no amount of title matching fixes.
-			if len(sampleScope) < 8 {
-				sampleScope = append(sampleScope, rel.Title+" → "+c.resolvedLabel(ctx, s, p))
-			}
-			continue // not relevant to the requested season/episode scope
-		}
-		byName[rel.Title] = rel
-		cands = append(cands, quality.NewCandidate(rel.Title, rel.SizeGB(), rel.Seeders))
-	}
-	c.log.Info("series: search filtered", "series", s.Title, "kept", len(cands), "dropped_wrong_title", droppedTitle, "dropped_out_of_scope", droppedScope)
-	if len(sampleDropped) > 0 {
-		c.log.Info("series: sample of dropped titles (parsed → title)", "series", s.Title, "samples", strings.Join(sampleDropped, " | "))
-	}
-	if len(sampleScope) > 0 {
-		c.log.Info("series: sample of right-show releases that were other episodes (release → resolved)",
-			"series", s.Title, "want_season", season, "want_episode", episode,
-			"samples", strings.Join(sampleScope, " | "))
-	}
-	profile := c.effectiveProfile(ctx, s.QualityProfile, quality.MediaSeries)
-	decision := c.decideWith(ctx, profile, spec, cands)
-
-	// For a single-episode search we can show a bitrate (size ÷ episode runtime). Season/series
-	// packs cover many episodes, so leave bitrate off there rather than mislead.
-	epRuntime := 0
-	if season > 0 && episode > 0 {
-		for _, sn := range s.Seasons {
-			if sn.SeasonNumber != season {
-				continue
-			}
-			for _, e := range sn.Episodes {
-				if e.EpisodeNumber == episode {
-					epRuntime = e.Runtime
-				}
-			}
-		}
-	}
-
-	winnerName := ""
-	if decision.Winner != nil {
-		winnerName = decision.Winner.Candidate.Name
-	}
-	// Flag blocklisted releases like the movie path does, so the UI can warn — and so
-	// GrabBestForScope (the per-episode quick "grab" action) doesn't silently re-grab
-	// a release that just stalled or imported as junk.
-	blocked := c.blockedSetSeries(ctx, s.ID)
-	out := make([]RankedRelease, 0, len(cands))
-	appendEval := func(ev quality.Evaluation) {
-		rel := byName[ev.Candidate.Name]
-		out = append(out, RankedRelease{
-			Title:        ev.Candidate.Name,
-			Indexer:      rel.Indexer,
-			DownloadURL:  rel.DownloadURL,
-			InfoURL:      rel.InfoURL,
-			SizeGB:       ev.Candidate.SizeGB,
-			Bitrate:      bitrateMbps(ev.Candidate.SizeGB, epRuntime),
-			Seeders:      ev.Candidate.Seeders,
-			Summary:      summarizeSeries(ev.Candidate.Release),
-			Eligible:     ev.Eligible,
-			RejectReason: ev.RejectReason,
-			Recommended:  ev.Candidate.Name == winnerName,
-			Blocklisted:  blocked[normTitle(ev.Candidate.Name)],
-			Resolves:     c.resolvesLabel(ctx, s, ev.Candidate.Release),
-		})
-	}
-	for _, ev := range decision.Eligible {
-		appendEval(ev)
-	}
-	for _, ev := range decision.Rejected {
-		appendEval(ev)
-	}
-	return ReleaseList{Profile: profile, Why: decision.Why, Releases: out}, nil
+	return result.Releases, result.Errors, nil
 }
 
 // seriesReleaseMatches reports whether a release is relevant to a season/episode
@@ -327,58 +338,6 @@ func (c *Coordinator) grabForSeries(ctx context.Context, seriesID int64, indexer
 	}
 	c.series.AddEvent(ctx, seriesID, "grabbed", title+" · "+indexerName)
 	return nil
-}
-
-// GrabBestForScope auto-grabs the best eligible release for a season/episode scope —
-// the per-episode / per-season "grab" quick action.
-//
-// manual is false for the quick buttons: the app picked the release, not the user, so the
-// import gate applies to every file — a season Grab that lands a complete-series pack can
-// fill gaps but never downgrade what's there. Replace passes true, scoped to its episode.
-func (c *Coordinator) GrabBestForScope(ctx context.Context, seriesID int64, season, episode int, manual bool) error {
-	scope := ScopeFor(season, episode)
-	list, err := c.RankSeriesReleases(ctx, seriesID, season, episode)
-	if err != nil {
-		return err
-	}
-	pick := func(packsOnly bool) *RankedRelease {
-		for i := range list.Releases {
-			rel := &list.Releases[i]
-			if !rel.Eligible || rel.Blocklisted {
-				continue
-			}
-			if packsOnly && parser.Parse(rel.Title).Kind() == parser.KindEpisode {
-				continue
-			}
-			return rel
-		}
-		return nil
-	}
-	// A season (or whole-series) grab wants the pack, not one episode out of it. The scope
-	// filter admits single episodes on purpose — they do cover part of the season — and the
-	// quality ranking has no notion of tier at all, so a well-scored single episode can
-	// out-rank the pack and the button quietly fetches one file. Packs first; fall back to
-	// singles only when no pack is eligible, which is the normal state of an airing season.
-	if episode <= 0 {
-		if rel := pick(true); rel != nil {
-			return c.grabForSeries(ctx, seriesID, rel.Indexer, rel.DownloadURL, rel.Title, manual, scope)
-		}
-	}
-	if rel := pick(false); rel != nil {
-		return c.grabForSeries(ctx, seriesID, rel.Indexer, rel.DownloadURL, rel.Title, manual, scope)
-	}
-	return fmt.Errorf("no eligible release found for that %s", scopeLabel(season, episode))
-}
-
-func scopeLabel(season, episode int) string {
-	switch {
-	case season > 0 && episode > 0:
-		return fmt.Sprintf("S%02dE%02d", season, episode)
-	case season > 0:
-		return fmt.Sprintf("season %d", season)
-	default:
-		return "series"
-	}
 }
 
 // RescanSeries reconciles a series' episode records with what's actually on disk —

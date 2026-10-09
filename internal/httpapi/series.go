@@ -534,8 +534,10 @@ func grabScopeOf(season, episode *int) (automation.GrabScope, bool) {
 	return automation.ScopeFor(*season, ep), true
 }
 
-// handleAutoGrabSeries auto-grabs the best eligible release for a season/episode
-// scope — the per-episode / per-season quick "grab" action.
+// handleAutoGrabSeries is the quick Grab missing (season) / Grab (episode) action. The
+// scope is checked here so a bad click gets a 400 rather than a silent background failure;
+// the search itself runs in the background and reports its outcome as a 'searched' series
+// event and a series.searched bus message.
 func (a *api) handleAutoGrabSeries(w http.ResponseWriter, r *http.Request) {
 	id, ok := a.pathID(w, r)
 	if !ok {
@@ -548,14 +550,15 @@ func (a *api) handleAutoGrabSeries(w http.ResponseWriter, r *http.Request) {
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
-	go func(sid, season, episode int64) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		// Not manual: the app picks the release, so the import gate still guards every file.
-		if err := a.deps.Automation.GrabBestForScope(ctx, sid, int(season), int(episode), false); err != nil {
-			a.deps.Log.Warn("series scope auto-grab failed", "series_id", sid, "err", err)
-		}
-	}(id, int64(req.Season), int64(req.Episode))
+	sc := automation.SeriesScope{Season: req.Season, Episode: req.Episode, Trigger: "grab"}
+	if err := sc.Validate(); err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	go a.bgFor(5*time.Minute, func(ctx context.Context) error {
+		_, err := a.deps.Automation.GrabForScope(ctx, id, sc)
+		return err
+	}, "series scope auto-grab", id)
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
 }
 
@@ -832,7 +835,11 @@ func (a *api) handleRegrabEpisode(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	go a.bg(func(ctx context.Context) error { return a.deps.Automation.RegrabEpisode(ctx, id, season, episode) }, "regrab-episode", id)
+	if err := (automation.SeriesScope{Season: season, Episode: episode, Replace: true}).Validate(); err != nil {
+		a.writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	go a.bgFor(5*time.Minute, func(ctx context.Context) error { return a.deps.Automation.RegrabEpisode(ctx, id, season, episode) }, "regrab-episode", id)
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
 }
 
