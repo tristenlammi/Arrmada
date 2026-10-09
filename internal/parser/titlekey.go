@@ -28,8 +28,19 @@ import (
 // its diacritic and never matches a release named "Pokemon" — releases are named in
 // ASCII. The searcher already folds the outbound query, so the search finds the
 // releases; the match side has to fold the same way or it throws every one away.
+//
+// Bracketed groups after the title text are dropped, because they are alternate titles
+// or disambiguators the other side rarely carries: "My Hero Academia (Boku no Hero
+// Academia)" and "Show [2019]" key the same as "My Hero Academia" and "Show". A group
+// at the very START is part of the title and only loses its brackets: "(500) Days of
+// Summer" keys as "500 Days of Summer", not "Days of Summer", and "(Un)Well" as "Unwell".
+//
+// This is the one title key for every download, queue and library match (movies,
+// series, the Downloads feed, books' folder fallback). The cases above are pinned in
+// titlekey_test.go; separate copies of this rule drifting apart is how 'Love & Death'
+// stopped showing its download when the torrent was named 'Love.and.Death'.
 func TitleKey(s string) string {
-	lower := strings.ReplaceAll(strings.ToLower(FoldAccents(s)), "&", " and ")
+	lower := FoldTitle(stripAltTitles(s))
 	// Split on everything that isn't a letter or digit, so "and" is only recognised as a
 	// whole word. Doing this after the "&" expansion means the symbol and the spelled-out
 	// word take the same path.
@@ -47,14 +58,63 @@ func TitleKey(s string) string {
 	return b.String()
 }
 
+// FoldTitle is the fold every title matcher starts from — TitleKey and TitleWords here,
+// and the books matcher's word keys — so they agree on what counts as the same spelling:
+//
+//   - accents fold to ASCII ("Pokémon" → "pokemon", "García Márquez" → "garcia marquez");
+//   - everything is lower-case;
+//   - typographic apostrophes (’ ‘ ʼ ` ´) become the ASCII "'", so a caller that cares
+//     about apostrophes ("Ender’s" vs "Enders" vs "Ender s") has one character to handle;
+//   - "&" becomes " and ", so the symbol and the spelled-out word take the same path
+//     (callers then drop the standalone word "and"; see TitleKey for why).
+//
+// Everything else — punctuation, brackets, non-Latin scripts — is left for the caller's
+// own word split.
+func FoldTitle(s string) string {
+	return strings.ReplaceAll(apostrophes.Replace(strings.ToLower(FoldAccents(s))), "&", " and ")
+}
+
+var apostrophes = strings.NewReplacer("’", "'", "‘", "'", "ʼ", "'", "`", "'", "´", "'")
+
+// stripAltTitles drops bracketed groups that follow the title text and unwraps a group
+// at the very start (see TitleKey). A stray closer is dropped, as in StripBracketed.
+func stripAltTitles(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	depth := 0
+	leading := true // nothing but space so far: a group here is part of the title
+	for _, r := range s {
+		switch r {
+		case '(', '[', '{':
+			if leading && depth == 0 {
+				continue // keep the group's words, lose the bracket
+			}
+			depth++
+		case ')', ']', '}':
+			if depth > 0 {
+				depth--
+			}
+		default:
+			if depth == 0 {
+				b.WriteRune(r)
+				if !unicode.IsSpace(r) {
+					leading = false
+				}
+			}
+		}
+	}
+	return b.String()
+}
+
 // TitleWords is TitleKey's word list rather than its concatenation, for callers that
-// need to compare titles a word at a time.
+// need to compare titles a word at a time. Unlike TitleKey it keeps bracketed groups:
+// alias matching reads the number that follows an arc's name, wherever groups sit.
 //
 // TitleKey glues the words together, which loses the boundaries — "bleach" is a prefix
 // of "bleachers" once the gaps are gone, but ["bleach"] is not a prefix of
 // ["bleachers"]. Anything doing prefix work has to use this.
 func TitleWords(s string) []string {
-	lower := strings.ReplaceAll(strings.ToLower(FoldAccents(s)), "&", " and ")
+	lower := FoldTitle(s)
 	words := strings.FieldsFunc(lower, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})

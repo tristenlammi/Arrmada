@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/parser"
 )
 
 // Service is the Books module's application logic.
@@ -358,26 +359,53 @@ func (s *Service) Matcher(ctx context.Context) func(releaseName string) (Book, b
 		// than silently matching everything.
 		return func(string) (Book, bool) { return Book{}, false }
 	}
-	return func(name string) (Book, bool) { return matchRelease(all, name) }
+	return MatcherOver(all)
+}
+
+// MatcherOver is Matcher over a library snapshot the caller already holds, so a sweep that
+// has just listed the books doesn't read the table a second time to match against it.
+func MatcherOver(all []Book) func(releaseName string) (Book, bool) {
+	lib := foldLibrary(all)
+	return func(name string) (Book, bool) { return lib.match(name) }
+}
+
+// foldedBook is a library book with its title and author folded once, so matching a
+// page of releases doesn't refold the whole library per release.
+type foldedBook struct {
+	book          Book
+	title, author titleForms
+}
+
+type foldedLibrary []foldedBook
+
+func foldLibrary(all []Book) foldedLibrary {
+	out := make(foldedLibrary, 0, len(all))
+	for _, b := range all {
+		out = append(out, foldedBook{book: b, title: titleFormsOf(b.Title), author: titleFormsOf(b.Author)})
+	}
+	return out
 }
 
 // matchRelease is MatchByRelease's pure core (separated so it's table-testable).
 func matchRelease(all []Book, releaseName string) (Book, bool) {
-	rel := wordKey(releaseName)
-	if rel == "" {
+	return foldLibrary(all).match(releaseName)
+}
+
+func (lib foldedLibrary) match(releaseName string) (Book, bool) {
+	rel := formsOf(releaseName)
+	if rel.empty() {
 		return Book{}, false
 	}
 	var best Book
 	found, bestAuthor, bestLen := false, false, 0
-	for _, b := range all {
-		bt := wordKey(b.Title)
-		if bt == "" || !containsWords(rel, bt) {
+	for _, fb := range lib {
+		if !fb.title.in(rel) {
 			continue
 		}
-		a := wordKey(b.Author)
-		authorOK := a != "" && containsWords(rel, a)
-		if !found || betterMatch(authorOK, len(bt), bestAuthor, bestLen) {
-			best, found, bestAuthor, bestLen = b, true, authorOK, len(bt)
+		authorOK := fb.author.anyIn(rel)
+		n := len(fb.title.key())
+		if !found || betterMatch(authorOK, n, bestAuthor, bestLen) {
+			best, found, bestAuthor, bestLen = fb.book, true, authorOK, n
 		}
 	}
 	return best, found
@@ -457,43 +485,15 @@ func orStr(a, b string) string {
 	return b
 }
 
-// NormKey lowercases and keeps only alphanumerics — for tolerant title matching.
+// NormKey folds the title (parser.FoldTitle: accents, case, "&" as "and") and keeps only
+// ASCII letters and digits — for tolerant title identity, so "García Márquez" and
+// "Garcia Marquez" agree.
 func NormKey(str string) string {
-	var b []rune
-	for _, r := range str {
-		switch {
-		case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
-			b = append(b, r)
-		case r >= 'A' && r <= 'Z':
-			b = append(b, r+32)
+	var b []byte
+	for _, r := range parser.FoldTitle(str) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			b = append(b, byte(r))
 		}
 	}
 	return string(b)
-}
-
-// wordKey lowercases and reduces every run of non-alphanumerics to a single
-// space — like NormKey, but PRESERVING word boundaries so release matching can
-// require whole-word hits ("dune" must not match inside "dunemessiah").
-func wordKey(str string) string {
-	var b strings.Builder
-	space := false
-	for _, r := range str {
-		switch {
-		case r >= 'a' && r <= 'z' || r >= '0' && r <= '9':
-			if space && b.Len() > 0 {
-				b.WriteByte(' ')
-			}
-			space = false
-			b.WriteRune(r)
-		case r >= 'A' && r <= 'Z':
-			if space && b.Len() > 0 {
-				b.WriteByte(' ')
-			}
-			space = false
-			b.WriteRune(r + 32)
-		default:
-			space = true
-		}
-	}
-	return b.String()
 }

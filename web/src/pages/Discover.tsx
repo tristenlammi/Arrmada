@@ -10,7 +10,7 @@ import { useMe, isStaff } from "../lib/me";
 import { api, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaDetail, type MediaRequest } from "../lib/api";
 import { posterThumb } from "../lib/img";
 import { useCanHover } from "../lib/useCanHover";
-import { formatEta } from "../lib/format";
+import { formatEta, notFoundYet } from "../lib/format";
 import { usePoll } from "../lib/usePoll";
 import { Button, IconButton, Modal, StatusChip, POSTER_CHIP_BG, TONE_HUE, useConfirm, useToast, type Tone, type ToastFn } from "../ui";
 
@@ -725,6 +725,8 @@ function requestStage(rq: MediaRequest): { badge: string; tone: Tone; detail: st
     case "failed":
       return { badge: "Retrying", tone: "avoid", detail: tr.note || "The download failed" };
     case "searching":
+      // A book the searches keep missing: "Not found yet · next check Tue 14 Oct".
+      if (tr.next_check_at) return { badge: "Searching", tone: "accent", detail: notFoundYet(tr.next_check_at) };
       return { badge: "Searching", tone: "accent", detail: tr.note || (eps ? `${eps} · looking for more` : "Looking for a release") };
     case "declined":
       return { badge: "Declined", tone: "reject", detail: "Declined" };

@@ -16,7 +16,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/tristenlammi/arrmada/internal/audiobook"
 	"github.com/tristenlammi/arrmada/internal/books"
@@ -934,6 +933,7 @@ func (c *Coordinator) RSSSync(ctx context.Context) {
 		c.log.Warn("rss: fetch feeds failed", "err", err)
 		return
 	}
+	res.Releases = withoutBookUploads(res.Releases) // the feed is shared with the book sweep
 	if len(res.Releases) == 0 {
 		return
 	}
@@ -1838,27 +1838,10 @@ func inQueue(queue []download.Item, m movies.Movie) bool {
 	return false
 }
 
-func titleKey(s string) string {
-	// "&" and "and" are the same word, and releases pick either freely: a library title of
-	// "Love & Death" has to match "Love.and.Death.S01..." as well as "Love.&.Death.S01...".
-	// Stripping the ampersand as punctuation made those two spellings different keys
-	// (lovedeath vs loveanddeath), so an entire show's releases were rejected as belonging
-	// to a different programme. Normalize to one form before dropping the rest.
-	//
-	// Accents fold too. unicode.IsLetter accepts 'é', so "Pokémon" kept its diacritic and
-	// never matched a release named "Pokemon" — releases are named in ASCII. The searcher
-	// already folds the outbound query (indexer.Service.Search), so the search found the
-	// releases and then this check threw every one of them away. series.normKey has always
-	// folded; this is the same normalization, now agreed on by both.
-	lower := strings.ReplaceAll(strings.ToLower(parser.FoldAccents(s)), "&", " and ")
-	var b strings.Builder
-	for _, r := range lower {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
-}
+// titleKey is parser.TitleKey, the one title normalizer every download, queue and library
+// match shares (accents, "&"/"and", trailing bracketed alternates). A local copy of the
+// rules drifted from the Downloads feed's and series', and each drift was a missed match.
+func titleKey(s string) string { return parser.TitleKey(s) }
 
 func abs(n int) int {
 	if n < 0 {

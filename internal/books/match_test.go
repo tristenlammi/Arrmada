@@ -68,11 +68,80 @@ func TestWordKey(t *testing.T) {
 		"  The   Stand  ":           "the stand",
 		"IT":                        "it",
 		"!!!":                       "",
-		"L'Étranger":                "l tranger", // non-ASCII dropped, boundary kept
+		// BOOK-06: accents fold through the shared parser.FoldTitle, the apostrophe is a
+		// word break here (joinedKey drops it instead), and "&"/"and" vanish alike.
+		"L'Étranger":          "l etranger",
+		"Pokémon":             "pokemon",
+		"Ender’s Game":        "ender s game",
+		"Pride & Prejudice":   "pride prejudice",
+		"Pride and Prejudice": "pride prejudice",
 	}
 	for in, want := range cases {
 		if got := wordKey(in); got != want {
 			t.Errorf("wordKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+	joined := map[string]string{
+		"L'Étranger":   "letranger",
+		"Ender’s Game": "enders game",
+		"Ender's Game": "enders game",
+		"Dune":         "dune",
+	}
+	for in, want := range joined {
+		if got := joinedKey(in); got != want {
+			t.Errorf("joinedKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// BOOK-06: accented, apostrophe and ampersand titles match their ASCII release names,
+// while the word-boundary negatives still hold.
+func TestMatchReleaseFolds(t *testing.T) {
+	lib := []Book{
+		{ID: 1, Title: "Pokémon Adventures, Vol. 1", Author: "Hidenori Kusaka"},
+		{ID: 2, Title: "Ender's Game", Author: "Orson Scott Card"},
+		{ID: 3, Title: "Pride & Prejudice", Author: "Jane Austen"},
+		{ID: 4, Title: "Love in the Time of Cholera", Author: "Gabriel García Márquez"},
+		{ID: 5, Title: "It", Author: "Stephen King"},
+		{ID: 6, Title: "Dune", Author: "Frank Herbert"},
+		{ID: 7, Title: "Dune Messiah", Author: "Frank Herbert"},
+		{ID: 8, Title: "Sense and Sensibility", Author: "Jane Austen"},
+		{ID: 9, Title: "L’Étranger", Author: "Albert Camus"},
+	}
+	cases := []struct {
+		release string
+		wantID  int64
+	}{
+		{"Pokemon Adventures Vol 1 EPUB", 1},
+		{"Orson.Scott.Card-Enders.Game.epub", 2},
+		{"Ender s Game [M4B]", 2},
+		{"Orson Scott Card - Ender’s Game (1985) EPUB", 2},
+		{"Jane Austen - Pride and Prejudice EPUB", 3},
+		{"Jane Austen - Pride & Prejudice EPUB", 3},
+		{"Pride.Prejudice.1813.EPUB", 3},
+		{"Gabriel Garcia Marquez - Love in the Time of Cholera EPUB", 4},
+		{"Jane Austen - Sense & Sensibility (1811) EPUB", 8},
+		{"Albert Camus - L'Etranger EPUB", 9},
+		{"Albert Camus - LEtranger EPUB", 9},
+		// The negatives the word-boundary matcher exists for.
+		{"Stephen King - The Institute (2019) EPUB", 0},
+		{"Stephen King - It (1986) EPUB", 5},
+		{"Frank Herbert - Dune Messiah EPUB", 7},
+		{"Frank Herbert - Dune (1965) EPUB", 6},
+		{"Some Author - Special Edition EPUB", 0},
+		// A title with no apostrophe isn't found in the split form of one that has it.
+		{"Jane Doe - It's Not Summer EPUB", 0},
+	}
+	for _, tc := range cases {
+		got, ok := matchRelease(lib, tc.release)
+		if tc.wantID == 0 {
+			if ok {
+				t.Errorf("%q matched %q (id %d), want no match", tc.release, got.Title, got.ID)
+			}
+			continue
+		}
+		if !ok || got.ID != tc.wantID {
+			t.Errorf("%q → %q (id %d, ok=%v), want id %d", tc.release, got.Title, got.ID, ok, tc.wantID)
 		}
 	}
 }

@@ -1632,31 +1632,13 @@ func (s *Service) EpisodeTitleByName(ctx context.Context, seriesTitle string, ye
 	return s.repo.EpisodeTitle(ctx, sr.ID, season, episode)
 }
 
-// normKey folds accents, lowercases, and keeps only alphanumerics — for tolerant title
-// matching, so "Pokémon" and "Pokemon" resolve to the same key.
-func normKey(str string) string {
-	// Drop parenthesised alternate titles first, so "My Hero Academia (Boku no Hero
-	// Academia)" matches the library's "My Hero Academia" instead of looking like a
-	// longer, different show. Applied to both sides, so it never causes a false match.
-	str = parser.StripBracketed(str)
-	// Same "&" / "and" equivalence as automation's titleKey: a release named
-	// "Love.and.Death" must resolve to the library's "Love & Death" and not look like a
-	// different show.
-	str = strings.ReplaceAll(str, "&", " and ")
-	var b []rune
-	for _, r := range parser.FoldAccents(str) {
-		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			if r >= 'A' && r <= 'Z' {
-				r += 32
-			}
-			b = append(b, r)
-		}
-	}
-	return string(b)
-}
+// normKey is parser.TitleKey, the one title normalizer shared with automation and the
+// Downloads feed: accents fold, "&" and "and" agree, and alternate titles in trailing
+// brackets ("My Hero Academia (Boku no Hero Academia)") drop out.
+func normKey(str string) string { return parser.TitleKey(str) }
 
 // NormTitle exposes the title-normalization used for matching.
-func NormTitle(s string) string { return normKey(s) }
+func NormTitle(s string) string { return parser.TitleKey(s) }
 
 // extraFrom projects metadata into the stored extra blob.
 func extraFrom(d *metadata.SeriesDetails) *SeriesExtra {

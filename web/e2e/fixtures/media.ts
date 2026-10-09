@@ -56,7 +56,11 @@ export const myBooks: { books: MyBook[]; requests: MyRequest[] } = {
     { book_id: 1, title: "A Field Guide to Tides", author: "Marina Coves", year: 2019, series: "Coastlines", ebook: { format: "epub", size_bytes: 2_400_000 }, audiobook: false, mine: true, added_at: "2026-09-12T10:00:00Z" },
     { book_id: 2, title: "The Lighthouse Keeper's Very Long and Winding Account of Thirty Winters", author: "Elias Rook", audiobook: true, mine: false, audiobooks: [{ version_id: 7, format: "m4b", size_bytes: 310_000_000, files: 1 }] },
   ],
-  requests: [{ title: "Knots and Splices", author: "Hal Yard", status: "pending", requested_at: "2026-10-02T10:00:00Z" }],
+  requests: [
+    { title: "Knots and Splices", author: "Hal Yard", status: "pending", requested_at: "2026-10-02T10:00:00Z", stage: "pending" },
+    // Searched three times and missed: the card says "Not found yet" and the next check.
+    { title: "Charts of the Lesser Sounds", author: "Ada Fenwick", status: "approved", requested_at: "2026-09-20T10:00:00Z", stage: "searching", note: "Not found yet", next_check_at: "2026-10-14T09:00:00Z" },
+  ],
 };
 
 export const qualityProfiles: { profiles: QualityProfileInfo[]; formats: FormatInfo[] } = {

@@ -28,6 +28,7 @@ func (c *Coordinator) RSSSyncSeries(ctx context.Context) {
 		c.log.Warn("rss: fetch feeds failed", "err", err)
 		return
 	}
+	res.Releases = withoutBookUploads(res.Releases) // the feed is shared with the book sweep
 	if len(res.Releases) == 0 {
 		return
 	}

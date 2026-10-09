@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/diskspace"
@@ -36,12 +35,12 @@ func (a *api) handleDownloadsFeed(w http.ResponseWriter, r *http.Request) {
 	queuedMovieYears := map[string][]int{} // normalized title → years present in the queue
 	for i, it := range queue {
 		qParsed[i] = parser.Parse(it.Name)
-		k := normKey(qParsed[i].Title)
+		k := parser.TitleKey(qParsed[i].Title)
 		queuedMovieYears[k] = append(queuedMovieYears[k], qParsed[i].Year)
 	}
 	// inQueue is the O(1) form of the old movieInQueue: a title match with the year within ±1.
 	inQueue := func(m movies.Movie) bool {
-		for _, y := range queuedMovieYears[normKey(m.Title)] {
+		for _, y := range queuedMovieYears[parser.TitleKey(m.Title)] {
 			if y == 0 || m.Year == 0 || absInt(y-m.Year) <= 1 {
 				return true
 			}
@@ -273,33 +272,19 @@ func downloadFor(queue []download.Item, m movies.Movie) *movies.DownloadStatus {
 	if m.HasFile {
 		return nil
 	}
-	want := normKey(m.Title)
+	want := parser.TitleKey(m.Title)
 	for i := range queue {
 		it := queue[i]
 		if it.Progress >= 1 {
 			continue // finished — not "downloading"; import handles it
 		}
 		r := parser.Parse(it.Name)
-		if normKey(r.Title) != want || (r.Year != 0 && m.Year != 0 && absInt(r.Year-m.Year) > 1) {
+		if parser.TitleKey(r.Title) != want || (r.Year != 0 && m.Year != 0 && absInt(r.Year-m.Year) > 1) {
 			continue
 		}
 		return &movies.DownloadStatus{State: it.State, Progress: it.Progress}
 	}
 	return nil
-}
-
-// normKey folds accents and keeps alphanumerics, so "Pokémon" matches "Pokemon". It also
-// drops parenthesised alternate titles first — "My Hero Academia (Boku no Hero Academia)"
-// keys the same as the library's "My Hero Academia", so the download shows its progress on
-// the show's page instead of looking like an unrelated release.
-func normKey(s string) string {
-	var b strings.Builder
-	for _, r := range strings.ToLower(parser.FoldAccents(parser.StripBracketed(s))) {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }
 
 func absInt(n int) int {

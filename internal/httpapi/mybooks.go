@@ -11,6 +11,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/books"
+	"github.com/tristenlammi/arrmada/internal/requests"
 )
 
 // A book arrives in the library and then… nothing: the ebook sits on the server
@@ -56,6 +57,12 @@ type MyRequest struct {
 	CoverURL    string `json:"cover_url,omitempty"`
 	Status      string `json:"status"` // pending | approved | declined
 	RequestedAt string `json:"requested_at"`
+	// Stage, Note and NextCheckAt are where the request has got to (requests.Tracking):
+	// "searching" with "Not found yet" and the next check's time (RFC3339) for a book the
+	// searches keep missing. Stage is left out when the download client couldn't be read.
+	Stage       string `json:"stage,omitempty"`
+	Note        string `json:"note,omitempty"`
+	NextCheckAt string `json:"next_check_at,omitempty"`
 }
 
 // MyEbook is what the download button needs to know.
@@ -131,13 +138,31 @@ func (a *api) handleMyBooks(w http.ResponseWriter, r *http.Request) {
 		}
 		shelf = append(shelf, mb)
 	}
-	pending := []MyRequest{}
+	var open []requests.Request
 	for _, rq := range reqs {
 		if rq.MediaType != "book" || haveID[rq.BookID] || (rq.BookID == 0 && have[rq.OLKey]) {
 			continue
 		}
-		pending = append(pending, MyRequest{Title: rq.Title, Author: rq.Author, Year: rq.Year,
-			CoverURL: rq.PosterURL, Status: rq.Status, RequestedAt: rq.CreatedAt})
+		open = append(open, rq)
+	}
+	// Where each one has got to, from its grabs and the download queue — read once. A
+	// queue that can't be read leaves the stage out rather than calling a downloading
+	// book "searching".
+	tracked := false
+	if len(open) > 0 && a.deps.Downloads != nil {
+		if queue, qerr := a.deps.Downloads.Queue(r.Context()); qerr == nil {
+			a.deps.Requests.Track(r.Context(), open, queue)
+			tracked = true
+		}
+	}
+	pending := []MyRequest{}
+	for _, rq := range open {
+		mr := MyRequest{Title: rq.Title, Author: rq.Author, Year: rq.Year,
+			CoverURL: rq.PosterURL, Status: rq.Status, RequestedAt: rq.CreatedAt}
+		if t := rq.Tracking; tracked && t != nil {
+			mr.Stage, mr.Note, mr.NextCheckAt = t.Stage, t.Note, t.NextCheckAt
+		}
+		pending = append(pending, mr)
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"books": shelf, "requests": pending})
 }

@@ -48,3 +48,22 @@ export function formatEta(sec: number): string {
   const h = Math.floor(m / 60);
   return h < 24 ? `${h}h ${m % 60}m` : `${Math.floor(h / 24)}d ${h % 24}h`;
 }
+
+// formatCheckDay is the day a book's next search falls on, in the viewer's own locale
+// ("Tue 14 Oct" in en-GB). The server only ever sends the time; the words are ours.
+// A time already passed — the book is due and waiting for the sweep — or no time at
+// all reads "soon".
+export function formatCheckDay(iso: string | null | undefined, now = Date.now(), locale?: string): string {
+  const ms = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(ms) || ms <= now) return "soon";
+  return new Date(ms).toLocaleDateString(locale, { weekday: "short", day: "numeric", month: "short" }).replace(/,/g, "");
+}
+
+// notFoundYet is the line for a wanted book the searches keep missing: "Not found yet ·
+// next check Tue 14 Oct", or "Not found yet — last checked 3d ago, next check Tue 14 Oct"
+// when the last check is passed in.
+export function notFoundYet(next: string | null | undefined, last?: string | null, now = Date.now()): string {
+  const lastMs = last ? Date.parse(last) : NaN;
+  const lead = Number.isFinite(lastMs) ? ` — last checked ${formatAgo(lastMs, now)}, ` : " · ";
+  return `Not found yet${lead}next check ${formatCheckDay(next, now)}`;
+}

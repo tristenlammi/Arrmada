@@ -26,7 +26,7 @@ func bookTestCoord(t *testing.T) (*Coordinator, *books.Service, context.Context)
 // indexers fuzzy-match, so "Frank Herbert Dune" returns Dune Messiah — which could out-score
 // Dune, be grabbed for it, and satisfy that edition forever.
 func TestReleasesForThisBookRejectsSequel(t *testing.T) {
-	c, svc, ctx := bookTestCoord(t)
+	_, svc, ctx := bookTestCoord(t)
 	// AddWorks creates rows straight from metadata (no network fetch), which is what the
 	// author-catalogue bulk add uses.
 	added, _ := svc.AddWorks(ctx, []metadata.BookResult{
@@ -44,12 +44,12 @@ func TestReleasesForThisBookRejectsSequel(t *testing.T) {
 		{Title: "Brandon Sanderson - Mistborn [EPUB]"}, // not in the library at all
 	}
 
-	kept := c.releasesForThisBook(ctx, dune, releases)
+	kept := releasesForBookWith(svc.Matcher(ctx), dune, releases)
 	if len(kept) != 1 || kept[0].Title != "Frank Herbert - Dune [EPUB]" {
 		t.Errorf("Dune should keep only its own release, got %+v", titles(kept))
 	}
 
-	kept = c.releasesForThisBook(ctx, messiah, releases)
+	kept = releasesForBookWith(svc.Matcher(ctx), messiah, releases)
 	if len(kept) != 1 || kept[0].Title != "Frank Herbert - Dune Messiah [EPUB]" {
 		t.Errorf("Dune Messiah should keep only its own release, got %+v", titles(kept))
 	}
@@ -80,6 +80,31 @@ func TestBookEditionLandedIsPerEdition(t *testing.T) {
 	}
 	if bookEditionLanded(books.Book{}, "Some Book [EPUB]") {
 		t.Error("a book with nothing on disk has landed nothing")
+	}
+}
+
+// BOOK-06: a library title with an accent or an apostrophe keeps its ASCII-named releases.
+// They used to be thrown away as "no release matched this title".
+func TestReleasesForBookWithFoldedTitles(t *testing.T) {
+	_, svc, ctx := bookTestCoord(t)
+	added, _ := svc.AddWorks(ctx, []metadata.BookResult{
+		{Key: "OL1W", Title: "Pokémon Adventures, Vol. 1", Author: "Hidenori Kusaka"},
+		{Key: "OL2W", Title: "Ender’s Game", Author: "Orson Scott Card"},
+	}, "", true)
+	if len(added) != 2 {
+		t.Fatalf("expected 2 books added, got %d", len(added))
+	}
+	releases := []indexer.Release{
+		{Title: "Pokemon Adventures Vol 1 EPUB"},
+		{Title: "Orson.Scott.Card-Enders.Game.epub"},
+		{Title: "Ender s Game [M4B]"},
+	}
+	match := svc.Matcher(ctx)
+	if kept := releasesForBookWith(match, added[0], releases); len(kept) != 1 || kept[0].Title != "Pokemon Adventures Vol 1 EPUB" {
+		t.Errorf("Pokémon kept %q", titles(kept))
+	}
+	if kept := releasesForBookWith(match, added[1], releases); len(kept) != 2 {
+		t.Errorf("Ender's Game kept %q, want both spellings", titles(kept))
 	}
 }
 

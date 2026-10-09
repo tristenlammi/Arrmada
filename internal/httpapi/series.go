@@ -139,7 +139,7 @@ func (a *api) attachEpisodeDownloads(ctx context.Context, s *series.Series) {
 	if err != nil || len(queue) == 0 {
 		return
 	}
-	want := normKey(s.Title)
+	want := parser.TitleKey(s.Title)
 	for si := range s.Seasons {
 		for ei := range s.Seasons[si].Episodes {
 			e := &s.Seasons[si].Episodes[ei]
@@ -163,7 +163,7 @@ func episodeDownload(queue []download.Item, wantTitle string, season, episode in
 		r := parser.Parse(it.Name)
 		// CoversSeason handles multi-season ("S01-07") and complete-series packs, not
 		// just a single-season one — otherwise a box set only lit up its first season.
-		if normKey(r.Title) != wantTitle || !r.CoversSeason(season) {
+		if parser.TitleKey(r.Title) != wantTitle || !r.CoversSeason(season) {
 			continue
 		}
 		if len(r.Episodes) > 0 && !containsInt(r.Episodes, episode) {
