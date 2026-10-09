@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { releaseErrorMessage, type RankedRelease, type ReleaseList } from "../lib/api";
+import { IndexerIssues, emptyReleasesMessage } from "./IndexerIssues";
 
 // BookReleaseModal is the book-specific interactive search: results split into
 // Audiobooks / Ebooks tabs, each showing the raw release title (so the narrator
@@ -99,6 +100,7 @@ export function BookReleaseModal({
           </div>
         </div>
         {error && <div className="mb-3 rounded-lg p-2.5 text-[12px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
+        {!loading && <IndexerIssues list={list} />}
         {!loading && (
           <div className="mb-3 flex items-center gap-2 border-b pb-3" style={{ borderColor: "var(--line)" }}>
             <TabBtn k="audiobook" label="Audiobooks" count={audiobooks.length} />
@@ -109,7 +111,7 @@ export function BookReleaseModal({
           {loading ? (
             <div className="p-8 text-center text-[12.5px] text-ink-dim">Searching your indexers…</div>
           ) : rows.length === 0 ? (
-            <div className="p-8 text-center text-[12.5px] text-ink-dim">No {tab === "ebook" ? "ebook" : "audiobook"} releases found on your indexers.</div>
+            <div className="p-8 text-center text-[12.5px] text-ink-dim">{emptyReleasesMessage(list, tab === "ebook" ? "ebook releases" : "audiobook releases")}</div>
           ) : (
             <div className="flex flex-col gap-2">
               {rows.map((rel, i) => (

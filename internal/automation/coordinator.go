@@ -530,6 +530,11 @@ type ReleaseList struct {
 	Profile  string          `json:"profile"`
 	Why      []string        `json:"why,omitempty"` // why the recommended release won
 	Releases []RankedRelease `json:"releases"`
+	// IndexerIssues names the indexers that couldn't answer, so an empty list can say
+	// "every indexer failed" rather than "nothing found". Searched is how many indexers
+	// were asked.
+	IndexerIssues []IndexerIssue `json:"indexer_issues,omitempty"`
+	Searched      int            `json:"searched"`
 }
 
 // RankReleases runs an interactive search: it queries indexers for the movie,
@@ -599,7 +604,13 @@ func (c *Coordinator) RankReleasesWith(ctx context.Context, id int64, spec *qual
 	if m.Year > 0 {
 		query += " " + strconv.Itoa(m.Year)
 	}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
+	ctx, notes := withSearchNotes(ctx)
+	result, err := c.search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
+	if allIndexersFailed(err) {
+		// Nobody could answer: an empty list naming each failure, not an error that
+		// reads like the search itself broke.
+		return ReleaseList{Profile: c.effectiveProfile(ctx, m.QualityProfile, "movie")}.withIssues(notes), nil
+	}
 	if err != nil {
 		return ReleaseList{}, err
 	}
@@ -649,7 +660,7 @@ func (c *Coordinator) RankReleasesWith(ctx context.Context, id int64, spec *qual
 	for _, ev := range decision.Rejected {
 		appendEval(ev)
 	}
-	return ReleaseList{Profile: profile, Why: decision.Why, Releases: out}, nil
+	return ReleaseList{Profile: profile, Why: decision.Why, Releases: out}.withIssues(notes), nil
 }
 
 // summarize renders a release's key attributes in plain language.
@@ -706,7 +717,7 @@ func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (Search
 		return SearchOutcome{Reason: ReasonNothingWanted}, nil
 	}
 	out := SearchOutcome{Searched: true}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: movieQuery(m), MediaType: indexer.MediaMovie, Limit: 100})
+	result, err := c.search(ctx, indexer.SearchQuery{Text: movieQuery(m), MediaType: indexer.MediaMovie, Limit: 100})
 	if err != nil {
 		out.noteSearchErr(err)
 		return out, err
@@ -1101,7 +1112,7 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie, b *upgra
 	if m.Year > 0 {
 		query += " " + strconv.Itoa(m.Year)
 	}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
+	result, err := c.search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
 	if err != nil {
 		return err
 	}
@@ -1211,7 +1222,7 @@ func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
 	if m.Year > 0 {
 		query += " " + strconv.Itoa(m.Year)
 	}
-	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
+	result, err := c.search(ctx, indexer.SearchQuery{Text: query, MediaType: indexer.MediaMovie, Limit: 100})
 	if err != nil {
 		return err
 	}

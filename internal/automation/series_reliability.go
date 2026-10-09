@@ -208,7 +208,7 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64, b *upgr
 			"series", s.Title, "at_ceiling", atCeiling, "searching", len(haveEps))
 	}
 
-	res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: indexerQuery(s.Title), MediaType: indexer.MediaSeries, Limit: 100})
+	res, err := c.search(ctx, indexer.SearchQuery{Text: indexerQuery(s.Title), MediaType: indexer.MediaSeries, Limit: 100})
 	if err != nil || len(res.Releases) == 0 {
 		return err
 	}

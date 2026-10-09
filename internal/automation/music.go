@@ -351,9 +351,11 @@ func (c *Coordinator) grabAlbumExcluding(ctx context.Context, a music.Artist, al
 // the download client, each overridable by a test seam (nil means the real service).
 func (c *Coordinator) searchMusic(ctx context.Context, q indexer.SearchQuery) (indexer.SearchResult, error) {
 	if c.musicSearchFn != nil {
-		return c.musicSearchFn(ctx, q)
+		res, err := c.musicSearchFn(ctx, q)
+		notesFrom(ctx).note(res, err)
+		return res, err
 	}
-	return c.indexers.Search(ctx, q)
+	return c.search(ctx, q)
 }
 
 func (c *Coordinator) musicQueue(ctx context.Context) ([]download.Item, error) {

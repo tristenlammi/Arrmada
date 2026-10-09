@@ -2500,10 +2500,21 @@ export interface BlockEntry {
   created_at: string;
 }
 
+// One indexer that couldn't answer a search: it errored, or (background searches only) it
+// was paused after repeated failures and not asked.
+export interface IndexerIssue {
+  indexer: string;
+  error: string;
+  skipped?: boolean;
+}
+
 export interface ReleaseList {
   profile: string;
   why?: string[];
   releases: RankedRelease[];
+  indexer_issues?: IndexerIssue[];
+  /** How many indexers were asked. */
+  searched?: number;
 }
 
 export interface Movie {

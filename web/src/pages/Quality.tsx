@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { IndexerIssues, emptyReleasesMessage } from "../components/IndexerIssues";
 import { useTabParam } from "../lib/useTabParam";
 import { rovingTarget } from "../ui/Tabs";
 import {
@@ -1233,6 +1234,7 @@ function TestPanel({ sp }: { sp: StoredProfile }) {
       {err && <div className="mt-2.5 text-[11.5px]" style={{ color: "var(--reject)" }}>{err}</div>}
       {result && (
         <div className="mt-3">
+          <IndexerIssues list={result} className="mb-2" />
           {winner ? (
             <div className="rounded-lg p-3" style={{ background: "var(--accent-soft)", border: "1px solid var(--accent-line)" }}>
               <div className="font-mono text-[9.5px] font-bold uppercase tracking-[0.1em] text-accent">Would grab</div>
@@ -1244,7 +1246,7 @@ function TestPanel({ sp }: { sp: StoredProfile }) {
             </div>
           ) : (
             <div className="rounded-lg p-3 text-[12px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>
-              {releases.length === 0 ? "Your indexers found no releases for this." : "Nothing found fits this profile."}
+              {releases.length === 0 ? emptyReleasesMessage(result) : "Nothing found fits this profile."}
             </div>
           )}
           {(result.why ?? []).length > 0 && winner && (

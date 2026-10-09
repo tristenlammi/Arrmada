@@ -323,7 +323,7 @@ func (c *Coordinator) searchByAbsolute(ctx context.Context, s series.Series, rem
 		}
 		queries++
 		for _, q := range terms {
-			res, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: q, MediaType: indexer.MediaSeries, Limit: 100})
+			res, err := c.search(ctx, indexer.SearchQuery{Text: q, MediaType: indexer.MediaSeries, Limit: 100})
 			if err != nil || len(res.Releases) == 0 {
 				continue
 			}
@@ -630,7 +630,7 @@ func (c *Coordinator) searchSeriesReleasesExcept(ctx context.Context, s series.S
 
 	// The broad query first: it catches multi-season and complete-show packs, which no
 	// single season number would find.
-	res, err := c.indexers.Search(ctx, indexer.SearchQuery{
+	res, err := c.search(ctx, indexer.SearchQuery{
 		Text: title, MediaType: indexer.MediaSeries, Limit: 100,
 	})
 	if err != nil {
@@ -647,7 +647,7 @@ func (c *Coordinator) searchSeriesReleasesExcept(ctx context.Context, s series.S
 		if aq == "" || aq == title {
 			continue
 		}
-		ares, aerr := c.indexers.Search(ctx, indexer.SearchQuery{
+		ares, aerr := c.search(ctx, indexer.SearchQuery{
 			Text: aq, MediaType: indexer.MediaSeries, Limit: 100,
 		})
 		if aerr != nil {
@@ -718,7 +718,7 @@ func (c *Coordinator) searchSeasons(ctx context.Context, s series.Series, title 
 			break
 		}
 		queried++
-		sr, err := c.indexers.Search(ctx, indexer.SearchQuery{
+		sr, err := c.search(ctx, indexer.SearchQuery{
 			Text: title, MediaType: indexer.MediaSeries, Season: season, Limit: 100,
 		})
 		if err != nil {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { releaseErrorMessage, type RankedRelease, type ReleaseList } from "../lib/api";
+import { IndexerIssues, emptyReleasesMessage } from "./IndexerIssues";
 
 // --- release metadata parsing (resolution + notable features live in summary/title) ---
 type SortKey = "best" | "size" | "bitrate" | "seeders" | "smallest";
@@ -163,6 +164,7 @@ export function ReleaseSearchModal({
           </div>
         )}
         {error && <div className="mb-3 rounded-lg p-2.5 text-[12px]" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>{error}</div>}
+        {!loading && <IndexerIssues list={list} />}
         {!loading && list && list.releases.length > 0 && (
           <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-2 border-b pb-3" style={{ borderColor: "var(--line)" }}>
             {resAvailable.length > 1 && (
@@ -191,7 +193,7 @@ export function ReleaseSearchModal({
           {loading ? (
             <div className="p-8 text-center text-[12.5px] text-ink-dim">Searching your indexers…</div>
           ) : !list || list.releases.length === 0 ? (
-            <div className="p-8 text-center text-[12.5px] text-ink-dim">No releases found on your indexers.</div>
+            <div className="p-8 text-center text-[12.5px] text-ink-dim">{emptyReleasesMessage(list)}</div>
           ) : view.length === 0 ? (
             <div className="p-8 text-center text-[12.5px] text-ink-dim">
               No releases match these filters.

@@ -585,7 +585,7 @@ func bookQuery(b books.Book) string {
 // tracker matches every query word, so one bad word hides a release that is there.
 // The title check downstream still keeps only this book's releases.
 func (c *Coordinator) searchBook(ctx context.Context, b books.Book, edition string) (indexer.SearchResult, error) {
-	res, err := c.indexers.Search(ctx, indexer.SearchQuery{
+	res, err := c.search(ctx, indexer.SearchQuery{
 		Text: bookQuery(b), MediaType: indexer.MediaBook, BookEdition: edition, Limit: 60})
 	// A search that couldn't run (every indexer down, none serving books) says nothing
 	// about the author: retrying with the title alone would only fail the same way.
@@ -593,7 +593,7 @@ func (c *Coordinator) searchBook(ctx context.Context, b books.Book, edition stri
 		return res, err
 	}
 	c.log.Info("book: nothing for author + title — trying the title alone", "title", b.Title, "author", b.Author)
-	return c.indexers.Search(ctx, indexer.SearchQuery{
+	return c.search(ctx, indexer.SearchQuery{
 		Text: b.Title, MediaType: indexer.MediaBook, BookEdition: edition, Limit: 60})
 }
 
@@ -1075,6 +1075,8 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 		return ReleaseList{}, err
 	}
 	sp := c.bookProfile(ctx, b.QualityProfile)
+	// Both passes (and each pass's title-only retry) report into one collector.
+	ctx, notes := withSearchNotes(ctx)
 	// Dedup by download URL — the unique per-torrent link. Deduping by title
 	// wrongly collapsed distinct editions that render the same display name (e.g. a
 	// GraphicAudio M4B and a standard-narration M4B both "<Author> - <Title> [M4B]"),
@@ -1109,6 +1111,9 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 	// Neither pass could run: say why rather than show an empty list that reads as
 	// "this book doesn't exist anywhere".
 	if !answered && searchErr != nil {
+		if allIndexersFailed(searchErr) {
+			return ReleaseList{Profile: b.QualityProfile}.withIssues(notes), nil
+		}
 		return ReleaseList{}, searchErr
 	}
 
@@ -1185,7 +1190,7 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 		}
 		out = append(out, rr)
 	}
-	return ReleaseList{Profile: b.QualityProfile, Releases: out}, nil
+	return ReleaseList{Profile: b.QualityProfile, Releases: out}.withIssues(notes), nil
 }
 
 // reNarrator pulls a narrator name from an audiobook release title or description
