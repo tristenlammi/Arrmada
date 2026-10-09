@@ -189,7 +189,7 @@ function emptyProfile(media: string): StoredProfile {
 // on a big screen in HEVC: 4K 15–35 Mb/s, 1080p 5–15, 720p 3–8. TV is encoded leaner than
 // film, and series grabs are held to these windows too, so a series profile starts lower —
 // otherwise a good x265 WEB episode sits under the floor and only wins when nothing else does.
-const TV_WINDOWS = { "2160p": { min: 10, max: 30 }, "1080p": { min: 3, max: 12 }, "720p": { min: 1.5, max: 6 } };
+const TV_WINDOWS = { "2160p": { min: 10, max: 30 }, "1080p": { min: 3, max: 12 }, "720p": { min: 2, max: 6 } };
 const VIDEO_TEMPLATES: { key: string; name: string; desc: string; make: (media: string) => StoredProfile }[] = [
   {
     key: "4k", name: "4K HDR collection", desc: "4K first, 1080p if that's all there is. HEVC or AV1, HDR10+ preferred, Atmos wanted.",
@@ -822,7 +822,7 @@ function PrefKey() {
 
 function NumIn({ value, onSet, label }: { value?: number; onSet: (v: number) => void; label: string }) {
   return (
-    <input type="number" min={0} step="any" aria-label={label} value={value || ""} placeholder="any" onChange={(e) => onSet(Number(e.target.value))}
+    <input type="number" min={0} step={1} aria-label={label} value={value || ""} placeholder="any" onChange={(e) => onSet(Number(e.target.value))}
       className="w-[64px] rounded-lg px-2 py-1 text-right font-mono text-[12.5px]" style={fieldStyle} />
   );
 }
