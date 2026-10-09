@@ -666,7 +666,9 @@ func (c *Coordinator) recordMusicGrab(ctx context.Context, albumID int64, title,
 		boolToInt(seedEnabled), seedRatio, seedHours, infoHash)
 	if err != nil {
 		c.log.Warn("music: recording the grab failed", "album", albumID, "err", err)
+		return
 	}
+	c.noteHashless("music", title, infoHash)
 }
 
 // pendingMusicGrabTitles returns releases already grabbed for this album and not yet

@@ -93,20 +93,9 @@ type Coordinator struct {
 	// Also guarded by unmatchedMu, and pruned the same way.
 	metaRetry map[string]int
 
-	// stallProgress remembers each pending grab's last observed download progress and
-	// when it last increased, keyed by grab ID. Stall detection compares against this:
-	// "stalled" must mean NO PROGRESS for the profile's stall window, not "old and its
-	// instantaneous speed read zero once" — a big pack legitimately downloading for
-	// hours was being condemned on a single sample. Guarded by stallMu; entries are
-	// pruned when their grab leaves the pending set. In-memory on purpose: a restart
-	// just restarts the observation window.
-	stallMu       sync.Mutex
-	stallProgress map[int64]stallSample
-	// stillWaitingAt is when a stalled grab last came up with no replacement, keyed by
-	// grab ID. The torrent is left in place, and this keeps it from costing a fresh
-	// search — and a fresh "still waiting" history line — more than once per window.
-	// Guarded by stallMu and pruned with stallProgress.
-	stillWaitingAt map[int64]time.Time
+	// The stall clock — when each pending grab's download last moved forward — and when a
+	// stalled one last found no replacement are kept on its grab row (acquisitions.go), so
+	// a restart doesn't reset them.
 	// stallDefaultFn reads the global stall timeout (Settings → Downloads) that a grab and
 	// profile left at 0 fall back to; guardHeldFn reads the hashes the disk guard has
 	// paused. Both are set once at startup; nil means DefaultStallMinutes / none held.
@@ -1590,71 +1579,13 @@ func (c *Coordinator) RegrabEpisode(ctx context.Context, seriesID int64, season,
 	return err
 }
 
-// stallSample is one observation of a grab's download progress: how far along it was
-// and when that value last increased.
-type stallSample struct {
-	progress float64
-	at       time.Time
-}
-
-// noProgressFor reports whether grab id's download has made no progress for at least
-// window. Each call updates the sample: any forward progress restarts the clock.
-// The first observation of a grab always returns false — a genuinely dead download
-// simply waits one extra window, which is far cheaper than condemning a live one.
-func (c *Coordinator) noProgressFor(id int64, progress float64, window time.Duration) bool {
-	c.stallMu.Lock()
-	defer c.stallMu.Unlock()
-	if c.stallProgress == nil {
-		c.stallProgress = map[int64]stallSample{}
-	}
-	s, seen := c.stallProgress[id]
-	if !seen || progress > s.progress {
-		c.stallProgress[id] = stallSample{progress: progress, at: time.Now()}
-		return false
-	}
-	return time.Since(s.at) >= window
-}
-
-// holdStallClock refreshes a grab's stall sample WITHOUT counting it as progress, so time
-// spent in a state that cannot progress doesn't accumulate toward the stall window. The
-// grab resumes being judged the moment the torrent is running again.
-func (c *Coordinator) holdStallClock(id int64, progress float64) {
-	c.stallMu.Lock()
-	defer c.stallMu.Unlock()
-	if c.stallProgress == nil {
-		c.stallProgress = map[int64]stallSample{}
-	}
-	c.stallProgress[id] = stallSample{progress: progress, at: time.Now()}
-}
-
-// pruneStallSamples drops progress samples for grabs no longer pending, so the map
-// tracks only live downloads.
-func (c *Coordinator) pruneStallSamples(pending []grab) {
-	c.stallMu.Lock()
-	defer c.stallMu.Unlock()
-	live := make(map[int64]bool, len(pending))
-	for _, g := range pending {
-		live[g.ID] = true
-	}
-	for id := range c.stallProgress {
-		if !live[id] {
-			delete(c.stallProgress, id)
-		}
-	}
-	for id := range c.stillWaitingAt {
-		if !live[id] {
-			delete(c.stillWaitingAt, id)
-		}
-	}
-}
-
 // stalledInQueue is the shared verdict for a pending grab found (or not found) in the
 // client queue: gone from a *successfully read* queue, in a hard-error state, or
 // incomplete with no progress for the grab's stall window. "stalledDL" (no peers right
 // now) and a momentary zero speed are NOT stalls on their own — only sustained lack of
 // progress is; a single instantaneous sample condemned big packs that were downloading
 // fine.
-func (c *Coordinator) stalledInQueue(g grab, item download.Item, found bool, window time.Duration) bool {
+func (c *Coordinator) stalledInQueue(ctx context.Context, g grab, item download.Item, found bool, window time.Duration) bool {
 	if !found {
 		return true
 	}
@@ -1671,12 +1602,12 @@ func (c *Coordinator) stalledInQueue(g grab, item download.Item, found bool, win
 	// a slot under its max-active limit, moving or allocating files. Fetching metadata is
 	// NOT held: a magnet nobody will send a file list for is as dead as one with no seeds.
 	if item.State == "paused" || item.State == "checking" {
-		c.holdStallClock(g.ID, item.Progress)
+		c.holdStallClock(ctx, g.ID, item.Progress)
 		return false
 	}
 	switch item.Phase() {
 	case "queued", "checking", "moving", "allocating":
-		c.holdStallClock(g.ID, item.Progress)
+		c.holdStallClock(ctx, g.ID, item.Progress)
 		return false
 	}
 	// "missingFiles" isn't tested here: normalizeState already folds it into "error", so a
@@ -1690,7 +1621,7 @@ func (c *Coordinator) stalledInQueue(g grab, item download.Item, found bool, win
 	if item.State == "error" {
 		return !item.Complete()
 	}
-	return !item.Complete() && c.noProgressFor(g.ID, item.Progress, window)
+	return !item.Complete() && c.noProgressFor(ctx, g.ID, item.Progress, window)
 }
 
 // DetectStalled fails over grabs that haven't progressed within their profile's stall
@@ -1701,7 +1632,6 @@ func (c *Coordinator) DetectStalled(ctx context.Context) {
 	if err != nil || len(pending) == 0 {
 		return
 	}
-	c.pruneStallSamples(pending)
 	queue, whole, err := c.downloads.QueueComplete(ctx)
 	if err != nil {
 		// Without the queue every pending grab reads as "not found", and not-found means

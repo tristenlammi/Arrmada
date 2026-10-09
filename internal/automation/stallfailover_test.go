@@ -201,11 +201,9 @@ func (h *stallHarness) addStalledGrab(t *testing.T, mediaType string, id int64, 
 // tick runs one stall check after making every pending grab's last progress look older
 // than its window — what the two-minute ticker sees once the window has really passed.
 func (h *stallHarness) tick() {
-	h.c.stallMu.Lock()
-	for id, s := range h.c.stallProgress {
-		h.c.stallProgress[id] = stallSample{progress: s.progress, at: time.Now().Add(-2 * time.Hour)}
+	if _, err := h.c.db.Exec(`UPDATE grabs SET progress_at = ? WHERE progress_at > 0`, time.Now().Add(-2*time.Hour).UnixMilli()); err != nil {
+		panic(err)
 	}
-	h.c.stallMu.Unlock()
 	h.c.DetectStalled(h.ctx)
 }
 
@@ -333,9 +331,9 @@ func TestStallFailoverKeepsTheOnlyCopy(t *testing.T) {
 	}
 
 	// A window later it tries again, and says so again.
-	h.c.stallMu.Lock()
-	h.c.stillWaitingAt[gid] = time.Now().Add(-2 * time.Hour)
-	h.c.stallMu.Unlock()
+	if _, err := h.c.db.Exec(`UPDATE grabs SET still_waiting_at = ? WHERE id = ?`, time.Now().Add(-2*time.Hour).UnixMilli(), gid); err != nil {
+		t.Fatal(err)
+	}
 	h.tick()
 	if n := h.movieEvents(t, mid, "still waiting on "+stalled); n != 2 {
 		t.Errorf("after a second window, still-waiting lines = %d, want 2", n)

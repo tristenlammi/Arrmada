@@ -1773,7 +1773,9 @@ func (c *Coordinator) recordBookGrab(ctx context.Context, bookID, versionID int6
 		boolToInt(seedEnabled), seedRatio, seedHours, infoHash)
 	if err != nil {
 		c.log.Warn("book: record grab failed", "err", err)
+		return
 	}
+	c.noteHashless("book", title, infoHash)
 }
 
 // markBookGrabImported flips the ONE grab this download came from to imported —

@@ -1159,5 +1159,16 @@ func (c *Coordinator) recordSeriesGrab(ctx context.Context, seriesID int64, titl
 		boolToInt(seedEnabled), seedRatio, seedHours, infoHash)
 	if err != nil {
 		c.log.Warn("series: record grab failed", "err", err)
+		return
 	}
+	c.noteHashless("series", title, infoHash)
+	// What the release covers, worked out now while the show (its aliases, its anime
+	// numbering) is at hand: the in-flight checks hold back by it.
+	s := series.Series{ID: seriesID}
+	if c.series != nil {
+		if got, err := c.series.Get(ctx, seriesID); err == nil {
+			s = got
+		}
+	}
+	c.recordAcqScope(ctx, "series", seriesID, title, infoHash, seriesAcqScope(title, s))
 }

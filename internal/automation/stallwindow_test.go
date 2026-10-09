@@ -64,16 +64,13 @@ func TestParseStallMinutes(t *testing.T) {
 // A grab the disk guard is holding never runs its clock down, whatever state the client
 // reports for it; the same torrent un-held is judged as usual.
 func TestGuardHeldTorrentIsNotStalled(t *testing.T) {
-	c := &Coordinator{log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	c := stallCoord(t, 3)
+	c.log = slog.New(slog.NewTextHandler(io.Discard, nil))
 	const hash = "ABCDEF0123456789ABCDEF0123456789ABCDEF01"
 	g := grab{ID: 3, StallMinutes: 60, GrabbedAt: "2020-01-01 00:00:00", InfoHash: hash}
 	queue := []download.Item{{Hash: hash, RawState: "stalledDL", State: "downloading", Progress: 0.2, RemainingBytes: 1}}
-	c.holdStallClock(g.ID, 0.2)
-	expire := func() {
-		c.stallMu.Lock()
-		c.stallProgress[g.ID] = stallSample{progress: 0.2, at: time.Now().Add(-2 * time.Hour)}
-		c.stallMu.Unlock()
-	}
+	c.holdStallClock(context.Background(), g.ID, 0.2)
+	expire := func() { expireStall(t, c, g.ID, 0.2, 2*time.Hour) }
 
 	acted := false
 	target := func(context.Context) (stallTarget, bool) { acted = true; return stallTarget{}, false }
@@ -82,7 +79,7 @@ func TestGuardHeldTorrentIsNotStalled(t *testing.T) {
 	if acted {
 		t.Fatal("a guard-held torrent was judged stalled")
 	}
-	if s := c.stallProgress[g.ID]; time.Since(s.at) > time.Second {
+	if s := stallClockAt(t, c, g.ID); time.Since(s) > time.Second {
 		t.Error("the stall clock must be held while the guard holds the torrent")
 	}
 
@@ -108,7 +105,7 @@ func TestStallInfo(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO grabs (movie_id, title, stall_minutes, media_type, info_hash) VALUES (2, 'Off.Film', -1, 'movie', 'DEF456')`); err != nil {
 		t.Fatal(err)
 	}
-	c.stallProgress = map[int64]stallSample{id: {progress: 0.1, at: time.Now().Add(-2 * time.Hour)}}
+	expireStall(t, c, id, 0.1, 2*time.Hour)
 
 	info := c.StallInfo(ctx)
 	st, ok := info["abc123"]
