@@ -17,8 +17,22 @@ import (
 	"github.com/tristenlammi/arrmada/internal/quality"
 )
 
+// handleListMovies is the library list: every movie as a slim summary (movies.MovieSummary
+// — no cast, overview or file paths) with its live download, joined in one pass.
+// ?full=1 answers full Movie rows instead, for a caller that needs them.
 func (a *api) handleListMovies(w http.ResponseWriter, r *http.Request) {
-	list, err := a.deps.Movies.List(r.Context())
+	ctx := r.Context()
+	full := r.URL.Query().Get("full") == "1"
+	var (
+		summaries []movies.MovieSummary
+		list      []movies.Movie
+		err       error
+	)
+	if full {
+		list, err = a.deps.Movies.List(ctx)
+	} else {
+		summaries, err = a.deps.Movies.ListSummaries(ctx)
+	}
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not list movies")
 		return
@@ -26,21 +40,30 @@ func (a *api) handleListMovies(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []movies.Movie{}
 	}
-	// Attach live download progress so the grid can show an indicator. When the client
-	// can't be read, the grid says the status is unknown rather than "Wanted".
-	snap, queueKnown, _ := a.queueSnapshot(r.Context())
-	queue := snap.Items
+	// Attach live download progress so the grid can show an indicator — an upgrade's or an
+	// extra version's too. When the client can't be read, the grid says the status is
+	// unknown rather than "Wanted".
+	snap, queueKnown, _ := a.queueSnapshot(ctx)
 	// Joined through the acquisition record by info hash: one query and one pass, and a
 	// torrent named nothing like the film still shows on its poster.
 	var acqs map[int64][]automation.Acquisition
-	if a.deps.Automation != nil && len(queue) > 0 {
-		acqs, _ = a.deps.Automation.ActiveByItem(r.Context(), "movie")
+	if a.deps.Automation != nil && len(snap.Items) > 0 {
+		acqs, _ = a.deps.Automation.ActiveByItem(ctx, automation.AttemptMovie)
 	}
-	byHash := queueByHash(queue)
+	qi := newQueueIndex(snap.Items)
 	var stale []int64
+	for i := range summaries {
+		s := &summaries[i]
+		if len(acqs[s.ID]) > 0 {
+			s.Download = movieDownloadOf(acqs[s.ID], qi, a.versionLabeler(ctx, s.ID))
+		}
+		if s.MediaStale() {
+			stale = append(stale, s.ID)
+		}
+	}
 	for i := range list {
 		if len(acqs[list[i].ID]) > 0 {
-			list[i].Download = movieDownload(list[i], acqs[list[i].ID], byHash, queue)
+			list[i].Download = movieDownloadOf(acqs[list[i].ID], qi, a.versionLabeler(ctx, list[i].ID))
 		}
 		if list[i].MediaStale() {
 			stale = append(stale, list[i].ID)
@@ -58,8 +81,12 @@ func (a *api) handleListMovies(w http.ResponseWriter, r *http.Request) {
 				return map[string]int{"movies": n}, nil
 			}})
 	}
+	var out any = summaries
+	if full {
+		out = list
+	}
 	a.writeJSON(w, http.StatusOK, map[string]any{
-		"movies":             list,
+		"movies":             out,
 		"metadata_available": a.deps.Movies.MetadataAvailable(),
 		"client_health":      queueHealth{OK: queueKnown},
 	})
@@ -131,7 +158,7 @@ func (a *api) handleAddMovie(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if m.Monitored && searchOnAdd {
-		_, _, _ = a.submit(r, triggered(automation.TriggerAdd, a.movieSearchJob(m.ID)))
+		_, _ = a.enqueueMovie(r, m.ID, triggered(automation.TriggerAdd, a.movieSearchJob(m.ID)))
 	}
 
 	a.writeJSON(w, http.StatusCreated, m)
@@ -143,17 +170,25 @@ func (a *api) handleSearchMovie(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Run in the background; searching indexers (via FlareSolverr) is slow. A second
-	// click while it runs gets the same job back. The button's search leaves a movie
-	// that is already downloading alone (SearchMovieManual).
+	// Queued in the background; searching indexers (via FlareSolverr) is slow. A second
+	// click while it waits or runs gets the same job back. The button's search leaves a
+	// movie that is already downloading alone (SearchMovieManual).
 	started := time.Now().UnixMilli()
-	jobID, existing, ok := a.submitOr503(w, r, a.movieManualSearchJob(id))
-	if !ok {
+	q, err := a.enqueueMovie(r, id, a.movieManualSearchJob(id))
+	if err != nil {
+		a.writeError(w, http.StatusServiceUnavailable, "couldn't start that just now — try again in a moment")
 		return
 	}
 	// started_at_ms lets a page without the job (or the socket) find this search's
 	// stored attempt: GET /api/v1/searches?since=.
-	a.accepted(w, jobID, existing, map[string]any{"status": "searching", "started_at_ms": started})
+	a.acceptedQueued(w, q, map[string]any{"status": "searching", "started_at_ms": started})
+}
+
+// handleMovieSearchQueue is the movie search queue right now: what is running and what
+// is waiting, by title, oldest first. Seeds the Movies header's "Searching 2 · 40 queued";
+// the movie.search.* events keep it live.
+func (a *api) handleMovieSearchQueue(w http.ResponseWriter, r *http.Request) {
+	a.writeJSON(w, http.StatusOK, a.deps.Automation.MovieSearchQueue())
 }
 
 // handleListBlocklist returns a movie's blocklisted releases.
@@ -205,17 +240,20 @@ func (a *api) handleBlocklist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.SearchAgain {
-		// The same job kind as a plain search: blocklisting and searching while a search
-		// of this movie runs would only race it.
-		spec := a.movieSearchJob(id)
-		spec.Fn = outcomeFn("movie", func(ctx context.Context) (automation.SearchOutcome, error) {
-			return a.deps.Automation.BlocklistAndSearch(ctx, id, req.Title, req.Indexer, downloadURL)
-		})
-		jobID, existing, ok := a.submitOr503(w, r, spec)
-		if !ok {
+		// The block takes effect now; the search for an alternate waits its turn in the
+		// movie search queue, as a plain search (a search of this movie already queued or
+		// running is joined — it reads the blocklist when it ranks).
+		if err := a.deps.Automation.Blocklist(r.Context(), id, req.Title, req.Indexer, downloadURL, "manually blocklisted"); err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not blocklist")
 			return
 		}
-		a.accepted(w, jobID, existing, map[string]any{"status": "blocklisted, searching"})
+		a.deps.Movies.AddEvent(r.Context(), id, "blocklisted", req.Title)
+		q, err := a.enqueueMovie(r, id, a.movieSearchJob(id))
+		if err != nil {
+			a.writeJSON(w, http.StatusOK, map[string]any{"status": "blocklisted", "search_error": "couldn't start the search just now — search again by hand"})
+			return
+		}
+		a.acceptedQueued(w, q, map[string]any{"status": "blocklisted, searching"})
 		return
 	}
 	if err := a.deps.Automation.Blocklist(r.Context(), id, req.Title, req.Indexer, downloadURL, "manually blocklisted"); err != nil {
@@ -374,7 +412,12 @@ func (a *api) handleGetMovie(w http.ResponseWriter, r *http.Request) {
 		queue, _ = a.deps.Downloads.Queue(r.Context())
 	}
 	byHash := queueByHash(queue)
-	m.Download = movieDownload(m, acqs, byHash, queue)
+	// Upgrades and extra versions show their progress too, labelled by what they're for.
+	labels := map[int64]string{}
+	for _, v := range m.Versions {
+		labels[v.ID] = v.Label
+	}
+	m.Download = movieDownloadOf(acqs, newQueueIndex(queue), func(vid int64) string { return labels[vid] })
 	m.UpgradesAllowed = upgradeWatched(m.Monitored, m.HasFile, a.anyVersionUpgrades(r.Context(), &m))
 	// What searching has come to: the last search's result, the sweep's backoff and when
 	// it will next look (search_attempts), beside the movie's own fields.
@@ -524,7 +567,7 @@ func (a *api) handleAddVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if monitored {
-		_, _, _ = a.submit(r, triggered(automation.TriggerAdd, a.movieSearchJob(id)))
+		_, _ = a.enqueueMovie(r, id, triggered(automation.TriggerAdd, a.movieSearchJob(id)))
 	}
 	a.writeJSON(w, http.StatusCreated, v)
 }
@@ -612,8 +655,15 @@ func (a *api) handleSetProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// React to the profile change based on the movie's current state.
+	// React to the profile change based on the movie's current state. A search it starts
+	// joins the movie search queue, so a bulk change over hundreds of films runs them at
+	// the throttled rate instead of all at once.
 	resp := map[string]any{"quality_profile": req.QualityProfile, "downgrade": false}
+	queue := func(spec jobs.Spec) {
+		if q, err := a.enqueueMovie(r, id, spec); err == nil {
+			resp["queued"], resp["position"] = true, q.Position
+		}
+	}
 	if m, err := a.deps.Movies.Get(r.Context(), id); err == nil && m.Monitored {
 		rej, rejected := quality.Rejection{}, false
 		if m.HasFile {
@@ -622,7 +672,7 @@ func (a *api) handleSetProfile(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case !m.HasFile:
 			// Missing → search under the new criteria.
-			_, _, _ = a.submit(r, a.movieSearchJob(id))
+			queue(a.movieSearchJob(id))
 		case rejected:
 			// The existing file no longer fits the new profile. Don't act automatically;
 			// let the UI ask, and say whether a smaller release fixes it (the file is above
@@ -637,8 +687,7 @@ func (a *api) handleSetProfile(w http.ResponseWriter, r *http.Request) {
 			resp["downgrade_ceiling"] = rej.Ceiling
 		default:
 			// The file still fits → look for a better release under the new profile.
-			_, _, _ = a.submit(r, jobs.Spec{Kind: "movie.upgrade", Target: jobTarget("movie", id), Class: jobs.ClassIndexerSearch, Timeout: 3 * time.Minute,
-				Fn: interactive(searchFn(func(ctx context.Context) error { return a.deps.Automation.UpgradeMovie(ctx, id) }))})
+			queue(a.movieUpgradeJob(id))
 		}
 	}
 	a.writeJSON(w, http.StatusOK, resp)
@@ -652,12 +701,12 @@ func (a *api) handleRegrab(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{Kind: "movie.regrab", Target: jobTarget("movie", id), Class: jobs.ClassIndexerSearch, Timeout: 3 * time.Minute,
-		Fn: interactive(errFn(func(ctx context.Context) error { return a.deps.Automation.RegrabMovie(ctx, id) }))})
-	if !ok {
+	q, err := a.enqueueMovie(r, id, a.movieRegrabJob(id))
+	if err != nil {
+		a.writeError(w, http.StatusServiceUnavailable, "couldn't start that just now — try again in a moment")
 		return
 	}
-	a.accepted(w, jobID, existing, map[string]any{"status": "searching"})
+	a.acceptedQueued(w, q, map[string]any{"status": "searching"})
 }
 
 // handleDeleteMovieFile deletes a movie's file from disk (flipping it back to

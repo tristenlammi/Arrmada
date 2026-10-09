@@ -86,6 +86,9 @@ type Spec struct {
 	Target  string // what it's for, e.g. "movie:12"; "" or "all" for everything
 	Trigger string // who or what started it, e.g. "user:3", "request:9", "system"
 	Class   string // concurrency class; "" is ClassOther
+	// Timeout bounds the work itself: its clock starts when the job leaves the queue and
+	// begins running, not at Submit. A search that waited ten minutes behind 300 others
+	// still gets its whole budget (it used to time out while it waited).
 	Timeout time.Duration
 	// Fn does the work. Its result is stored as JSON. Fn must watch ctx: shutdown,
 	// Cancel and Timeout all arrive through it.
@@ -245,12 +248,6 @@ func (r *Runner) Submit(ctx context.Context, spec Spec) (int64, bool, error) {
 		return 0, false, fmt.Errorf("jobs: record %s: %w", spec.Kind, err)
 	}
 	jctx, cancel := context.WithCancel(r.root)
-	if spec.Timeout > 0 {
-		var cancelT context.CancelFunc
-		jctx, cancelT = context.WithTimeout(jctx, spec.Timeout)
-		inner := cancel
-		cancel = func() { cancelT(); inner() }
-	}
 	e := &entry{id: id, spec: spec, ctx: jctx, cancel: cancel, done: make(chan struct{}), status: StatusQueued}
 	e.prog = &Progress{r: r, e: e}
 	r.active[k] = e
@@ -297,16 +294,33 @@ func (r *Runner) run(e *entry) {
 	defer e.cancel()
 
 	sem := r.sem(e.spec.Class)
-	select {
-	case sem <- struct{}{}:
-	case <-e.ctx.Done():
+	abandon := func() {
 		if e.spec.Abandon != nil {
 			_ = safego.Call(r.log, "job abandon "+e.spec.Kind, func() error { e.spec.Abandon(); return nil })
 		}
-		r.finish(e, nil, e.ctx.Err())
+		r.finish(e, e.ctx, nil, e.ctx.Err())
+	}
+	select {
+	case sem <- struct{}{}:
+	case <-e.ctx.Done():
+		abandon()
 		return
 	}
 	defer func() { <-sem }()
+	// A slot that freed up at the moment the job was cancelled (a shutdown stops the
+	// running job and wakes this one) is not a reason to start it.
+	if e.ctx.Err() != nil {
+		abandon()
+		return
+	}
+
+	// The timeout starts now, with the work, not at Submit.
+	workCtx := e.ctx
+	if e.spec.Timeout > 0 {
+		var cancelT context.CancelFunc
+		workCtx, cancelT = context.WithTimeout(e.ctx, e.spec.Timeout)
+		defer cancelT()
+	}
 
 	started := r.now()
 	e.mu.Lock()
@@ -322,14 +336,15 @@ func (r *Runner) run(e *entry) {
 	var result any
 	err := safego.Call(r.log, "job "+e.spec.Kind+" "+e.spec.Target, func() error {
 		var err error
-		result, err = e.spec.Fn(e.ctx, e.prog)
+		result, err = e.spec.Fn(workCtx, e.prog)
 		return err
 	})
-	r.finish(e, result, err)
+	r.finish(e, workCtx, result, err)
 }
 
-// finish records a job's outcome and lets go of it.
-func (r *Runner) finish(e *entry, result any, err error) {
+// finish records a job's outcome and lets go of it. ctx is what the work ran under, its
+// timeout included.
+func (r *Runner) finish(e *entry, ctx context.Context, result any, err error) {
 	e.mu.Lock()
 	userCancel := e.userCancel
 	e.mu.Unlock()
@@ -340,9 +355,9 @@ func (r *Runner) finish(e *entry, result any, err error) {
 	case err == nil:
 	case errors.As(err, &pe):
 		status, errText = StatusPanicked, fmt.Sprintf("panic: %v", pe.Value)
-	case errors.Is(err, context.DeadlineExceeded) || errors.Is(e.ctx.Err(), context.DeadlineExceeded):
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
 		status, errText = StatusFailed, err.Error()
-	case errors.Is(err, context.Canceled) || (e.ctx.Err() != nil && (userCancel || r.root.Err() != nil)):
+	case errors.Is(err, context.Canceled) || (ctx.Err() != nil && (userCancel || r.root.Err() != nil)):
 		status, errText = StatusCancelled, err.Error()
 	default:
 		status, errText = StatusFailed, err.Error()

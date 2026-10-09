@@ -22,6 +22,7 @@ const Reviews = lazyPage(() => import("../pages/Reviews"), "Reviews");
 const Blocklist = lazyPage(() => import("../pages/Blocklist"), "Blocklist");
 const Movies = lazyPage(() => import("../pages/Movies"), "Movies");
 const MovieDetail = lazyPage(() => import("../pages/MovieDetail"), "MovieDetail");
+const MoviesWanted = lazyPage(() => import("../pages/MoviesWanted"), "MoviesWanted");
 const Series = lazyPage(() => import("../pages/Series"), "Series");
 const SeriesDetail = lazyPage(() => import("../pages/SeriesDetail"), "SeriesDetail");
 const Discover = lazyPage(() => import("../pages/Discover"), "Discover");
@@ -85,6 +86,7 @@ function staffRoutes(admin: boolean): RouteObject[] {
     page("/review", "Review", <Reviews />),
     page("/blocklist", "Blocklist", <Blocklist />),
     page("/movies", "Movies", <Movies />),
+    page("/movies/wanted", "Wanted movies", <MoviesWanted />),
     page("/movies/:id", "Movie", <MovieDetail />),
     page("/series", "Series", <Series />),
     page("/series/:id", "Series", <SeriesDetail />),

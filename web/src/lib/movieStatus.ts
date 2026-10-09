@@ -1,4 +1,4 @@
-import type { Movie, MovieVersion } from "./api";
+import type { MovieDownload, MovieVersion } from "./api";
 import type { Tone } from "../ui";
 import { STATUS_LABEL, libraryStatus, toneLook, type StatusLabel } from "./status";
 
@@ -45,17 +45,34 @@ export interface MovieStatus {
 const DOWNLOADING_TONE: Tone = "accent";
 const UNKNOWN_TONE: Tone = "faint";
 
-// movieStatus is the movie's state, or one track's when track is given. A download in
-// flight wins (it's what's happening now); everything else is libraryStatus's answer, so
-// a recorded file that's gone from disk comes before "Downloaded". queueKnown false (the
-// list's client_health: the download client can't be read) makes a movie that would read
-// Wanted "Status unknown" instead.
-export function movieStatus(m: Pick<Movie, "has_file" | "monitored" | "file" | "download">, track?: Pick<MovieVersion, "has_file" | "monitored" | "file">, queueKnown = true): MovieStatus {
-  if (!track && m.download) {
+// What movieStatus reads: a full Movie, a list MovieSummary (file_missing instead of a
+// file) or a track.
+export interface MovieStatusInput {
+  has_file: boolean;
+  monitored: boolean;
+  file?: { missing?: boolean } | null;
+  file_missing?: boolean;
+  download?: MovieDownload | null;
+}
+
+// isOwnDownload: the download fills the film's own missing file. An upgrade or an extra
+// version downloading leaves the film as it is (Downloaded, or Wanted); its card shows the
+// progress with its own label.
+export function isOwnDownload(d: MovieDownload | null | undefined): boolean {
+  return !!d && (d.kind ?? "missing") === "missing";
+}
+
+// movieStatus is the movie's state, or one track's when track is given. A download of the
+// film's own file wins (it's what's happening now); everything else is libraryStatus's
+// answer, so a recorded file that's gone from disk comes before "Downloaded". queueKnown
+// false (the list's client_health: the download client can't be read) makes a movie that
+// would read Wanted "Status unknown" instead.
+export function movieStatus(m: MovieStatusInput, track?: Pick<MovieVersion, "has_file" | "monitored" | "file">, queueKnown = true): MovieStatus {
+  if (!track && isOwnDownload(m.download)) {
     return { key: "downloading", label: MOVIE_STATUS_LABELS.downloading, tone: DOWNLOADING_TONE, ...toneLook(DOWNLOADING_TONE) };
   }
-  const t = track ?? m;
-  const s = libraryStatus({ hasFile: t.has_file, monitored: t.monitored, fileMissing: t.has_file && !!t.file?.missing });
+  const t: MovieStatusInput = track ?? m;
+  const s = libraryStatus({ hasFile: t.has_file, monitored: t.monitored, fileMissing: t.has_file && (!!t.file?.missing || !!t.file_missing) });
   const key = KEY_OF[s.label] ?? "wanted";
   if (key === "wanted" && !track && !queueKnown) {
     return { key: "unknown", label: MOVIE_STATUS_LABELS.unknown, tone: UNKNOWN_TONE, ...toneLook(UNKNOWN_TONE) };
@@ -72,10 +89,10 @@ export function trackStatus(t: Pick<MovieVersion, "has_file" | "monitored" | "fi
 // Wanted and "Downloaded" exactly those badged Downloaded (COPY-12's invariant). A film
 // with a download in flight is badged Downloading, and one whose state the download client
 // can't confirm "Status unknown"; each sits in neither until it's known.
-export function isMovieWanted(m: Pick<Movie, "has_file" | "monitored" | "file" | "download">, queueKnown = true): boolean {
+export function isMovieWanted(m: MovieStatusInput, queueKnown = true): boolean {
   return movieStatus(m, undefined, queueKnown).key === "wanted";
 }
 
-export function isMovieDownloaded(m: Pick<Movie, "has_file" | "monitored" | "file" | "download">, queueKnown = true): boolean {
+export function isMovieDownloaded(m: MovieStatusInput, queueKnown = true): boolean {
   return movieStatus(m, undefined, queueKnown).key === "downloaded";
 }

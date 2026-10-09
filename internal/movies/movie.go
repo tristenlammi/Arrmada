@@ -3,6 +3,12 @@
 // acquisition platform — automatic searching, grabbing, and import.
 package movies
 
+import (
+	"strings"
+
+	"github.com/tristenlammi/arrmada/internal/parser"
+)
+
 // Movie is a film in the library.
 type Movie struct {
 	ID              int64  `json:"id"`
@@ -80,6 +86,92 @@ type Acquisition struct {
 type DownloadStatus struct {
 	State    string  `json:"state"`
 	Progress float64 `json:"progress"` // 0..1
+	// Kind is what the download is for: "missing" (a track with no file — the film
+	// itself, unless VersionLabel says otherwise), "upgrade" (it replaces a file the track
+	// has) or "version" (an extra version's first file). "" reads as missing.
+	Kind         string `json:"kind,omitempty"`
+	VersionID    int64  `json:"version_id,omitempty"`
+	VersionLabel string `json:"version_label,omitempty"`
+}
+
+// Download kinds (DownloadStatus.Kind).
+const (
+	DownloadMissing = "missing"
+	DownloadUpgrade = "upgrade"
+	DownloadVersion = "version"
+)
+
+// MovieSummary is a movie as the library list shows it: what the grid, the table and its
+// filters read, and nothing else — no cast, overview, genres or file paths. The list used
+// to send every movie in full, including up to 15 cast members with image links, on
+// every 4-second poll while anything downloaded.
+type MovieSummary struct {
+	ID              int64   `json:"id"`
+	Title           string  `json:"title"`
+	SortTitle       string  `json:"sort_title"` // lowercased, accent-folded, leading The/A/An dropped
+	Year            int     `json:"year"`
+	PosterURL       string  `json:"poster_url,omitempty"`
+	Monitored       bool    `json:"monitored"`
+	HasFile         bool    `json:"has_file"`
+	FileMissing     bool    `json:"file_missing,omitempty"` // a recorded file that's gone from disk
+	QualityProfile  string  `json:"quality_profile"`
+	MinAvailability string  `json:"min_availability"`
+	AddedAt         string  `json:"added_at,omitempty"`
+	VoteAverage     float64 `json:"vote_average,omitempty"`
+	SizeBytes       int64   `json:"size_bytes,omitempty"`
+	// Media is the default file's cached media facts (nil without a file or before it was
+	// read).
+	Media *SummaryMedia `json:"media,omitempty"`
+	// Download is attached by the HTTP layer from the acquisition record and the queue.
+	Download *DownloadStatus `json:"download,omitempty"`
+
+	// mediaStale: the cached media facts predate the current probe (see MediaStale).
+	mediaStale bool
+}
+
+// SummaryMedia is what the library table shows about a file.
+type SummaryMedia struct {
+	Resolution  string   `json:"resolution,omitempty"`
+	Quality     string   `json:"quality,omitempty"` // "2160p BluRay", from the name when not probed
+	Codec       string   `json:"codec,omitempty"`
+	Audio       []string `json:"audio,omitempty"`
+	Atmos       bool     `json:"atmos,omitempty"`
+	HDR         []string `json:"hdr,omitempty"`
+	BitrateMbps float64  `json:"bitrate_mbps,omitempty"`
+	DurationMin int      `json:"duration_min,omitempty"`
+	Container   string   `json:"container,omitempty"` // the file's extension: "mkv", "mp4"
+}
+
+// MediaStale reports whether a summary's cached media info predates the current probe,
+// like Movie.MediaStale.
+func (s *MovieSummary) MediaStale() bool { return s.mediaStale }
+
+// SortTitle is how the library sorts a title: lowercased and accent-folded, with a
+// leading "The", "A" or "An" dropped ("The Matrix" → "matrix", "Amélie" → "amelie").
+func SortTitle(title string) string {
+	s := strings.ToLower(strings.TrimSpace(parser.FoldAccents(title)))
+	for _, article := range []string{"the ", "a ", "an "} {
+		if rest, ok := strings.CutPrefix(s, article); ok && strings.TrimSpace(rest) != "" {
+			return strings.TrimSpace(rest)
+		}
+	}
+	return s
+}
+
+// summaryMedia projects a movie's cached file facts into the list's summary media.
+func summaryMedia(f *MovieFile) *SummaryMedia {
+	if f == nil {
+		return nil
+	}
+	m := &SummaryMedia{Resolution: f.Resolution, Quality: f.Quality, Codec: f.Codec, Audio: f.Audio, Atmos: f.Atmos,
+		HDR: f.HDR, DurationMin: f.DurationMin}
+	if f.SizeBytes > 0 && f.DurationMin > 0 {
+		m.BitrateMbps = float64(f.SizeBytes) * 8 / float64(f.DurationMin*60) / 1e6
+	}
+	if i := strings.LastIndexByte(f.Filename, '.'); i >= 0 && i < len(f.Filename)-1 {
+		m.Container = strings.ToLower(f.Filename[i+1:])
+	}
+	return m
 }
 
 // MovieExtra is the enriched TMDB metadata beyond the core fields, persisted as

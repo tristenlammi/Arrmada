@@ -227,6 +227,33 @@ export interface WantedLists {
   queue_known: boolean;
 }
 
+/** One row of Movies → Wanted: the shared Wanted row plus the movie-only fields. */
+export interface MovieWantedRow extends Omit<WantedRow, "state"> {
+  /** The shared states, and on the Cutoff tab: upgrading (the sweep will look) or not_upgrading. */
+  state: WantedState | "upgrading" | "not_upgrading";
+  /** A search of it is waiting or running in the movie search queue right now. */
+  queued: boolean;
+  /** Versions rows: the missing extra tracks. */
+  tracks?: string[];
+  /** Cutoff rows: the track judged (0 = the default; track names any other). */
+  version_id?: number;
+  track?: string;
+  /** Cutoff rows: what about the file misses its profile's target. */
+  detail?: string;
+  issues?: { kind: string; msg: string }[];
+  will_upgrade?: boolean;
+  /** Why the upgrade sweep won't act, when it won't. */
+  why_not?: string;
+}
+
+export interface MoviesMissing {
+  searching: MovieWantedRow[];
+  upcoming: MovieWantedRow[];
+  /** Films whose own file is in, but a monitored extra version isn't. */
+  versions: MovieWantedRow[];
+  queue_known: boolean;
+}
+
 export interface ActivityDownload {
   hash: string;
   name: string;
@@ -822,6 +849,28 @@ export interface RestoreStaged {
 export interface JobRef {
   job_id?: number;
   existing?: boolean;
+}
+
+// A movie search goes through the movie search queue (two at a time): the answer says
+// it was queued and its place among the searches waiting (1 = next; 0 = running now).
+export interface MovieQueuedRef extends JobRef {
+  queued?: boolean;
+  position?: number;
+}
+
+// The movie search queue right now, oldest first (GET /api/v1/movies/search-queue).
+export interface MovieSearchQueue {
+  running: { id: number; title: string; kind: string }[];
+  queued: { id: number; title: string; kind: string }[];
+}
+
+// The counts every movie.search.queued / .started / .done event carries.
+export interface MovieSearchQueueEvent {
+  id: number;
+  kind: string;
+  running: number;
+  depth: number;
+  position?: number;
 }
 
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "panicked" | "interrupted";
@@ -1813,7 +1862,7 @@ export const api = {
   wanted: () => req<WantedLists>("/api/v1/wanted"),
   /** Search now from a Wanted row: clears the title's backoff and runs its search as a job. */
   wantedSearch: (kind: WantedRow["media_type"], id: number) =>
-    req<{ status: string; started_at_ms?: number } & JobRef>(`/api/v1/wanted/${kind}/${id}/search`, { method: "POST" }),
+    req<{ status: string; started_at_ms?: number } & MovieQueuedRef>(`/api/v1/wanted/${kind}/${id}/search`, { method: "POST" }),
   pauseDownload: (hash: string) => req<{ status: string }>(`/api/v1/queue/${hash}/pause`, { method: "POST" }),
   resumeDownload: (hash: string) => req<ResumeResult>(`/api/v1/queue/${hash}/resume`, { method: "POST" }),
   // mode: keep_files keeps what was downloaded (the default), delete_files deletes it, block
@@ -1977,7 +2026,10 @@ export const api = {
   reviewTargets: (id: number, q: string) =>
     req<{ targets: ReviewTarget[]; truncated?: boolean }>(`/api/v1/reviews/${id}/targets?q=${encodeURIComponent(q)}`),
 
-  movies: () => req<{ movies: Movie[]; metadata_available: boolean; client_health?: QueueHealth }>("/api/v1/movies"),
+  movies: () => req<{ movies: MovieSummary[]; metadata_available: boolean; client_health?: QueueHealth }>("/api/v1/movies"),
+  /** Only the films downloading right now (id: just that one) — what the grid and the movie page poll. */
+  movieDownloads: (id?: number) =>
+    req<{ downloads: MovieDownloadRow[]; client_health?: QueueHealth }>(`/api/v1/movies/downloads${id ? `?id=${id}` : ""}`),
   lookupMovies: (q: string) =>
     req<{ results: MovieLookup[] }>(`/api/v1/movies/lookup?q=${encodeURIComponent(q)}`).then((r) => r.results),
   settings: () => req<AppSettings>("/api/v1/settings"),
@@ -2103,7 +2155,13 @@ export const api = {
   },
   movieDeletePreview: (id: number) => req<MovieDeletePreview>(`/api/v1/movies/${id}/delete-preview`),
   searchMovie: (id: number) =>
-    req<{ status: string; started_at_ms?: number } & JobRef>(`/api/v1/movies/${id}/search`, { method: "POST" }),
+    req<{ status: string; started_at_ms?: number } & MovieQueuedRef>(`/api/v1/movies/${id}/search`, { method: "POST" }),
+  movieSearchQueue: () => req<MovieSearchQueue>("/api/v1/movies/search-queue"),
+  moviesMissing: () => req<MoviesMissing>("/api/v1/movies/wanted?tab=missing"),
+  moviesCutoff: () => req<{ rows: MovieWantedRow[]; queue_known: boolean }>("/api/v1/movies/wanted?tab=cutoff"),
+  /** Queue searches for many movies at the throttled rate: missing searches, or upgrades under one shared upgrade budget. */
+  bulkMovieSearch: (ids: number[], kind: "missing" | "upgrade") =>
+    req<{ queued: number; duplicates: number }>("/api/v1/movies/search", { method: "POST", body: JSON.stringify({ ids, kind }) }),
   movie: (id: number) => req<Movie>(`/api/v1/movies/${id}`),
   movieCollection: (id: number) =>
     req<{ name: string; members: CollectionMember[] }>(`/api/v1/movies/${id}/collection`),
@@ -2463,7 +2521,7 @@ export const api = {
   blocklist: (id: number) => req<{ blocklist: BlockEntry[] }>(`/api/v1/movies/${id}/blocklist`).then((r) => r.blocklist),
   // Block a search result by its token, or any release by title alone.
   blockRelease: (id: number, body: { token: string; search_again?: boolean } | { title: string; indexer?: string; search_again?: boolean }) =>
-    req<{ status: string }>(`/api/v1/movies/${id}/blocklist`, { method: "POST", body: JSON.stringify(body) }),
+    req<{ status: string; search_error?: string } & MovieQueuedRef>(`/api/v1/movies/${id}/blocklist`, { method: "POST", body: JSON.stringify(body) }),
   unblock: (id: number, bid: number) => req<void>(`/api/v1/movies/${id}/blocklist/${bid}`, { method: "DELETE" }),
   setMonitored: (id: number, monitored: boolean) =>
     req<{ monitored: boolean }>(`/api/v1/movies/${id}/monitor`, {
@@ -2476,11 +2534,11 @@ export const api = {
   forgetMissingFile: (id: number, versionId = 0) =>
     req<{ status: string }>(`/api/v1/movies/${id}/file/forget`, { method: "POST", body: JSON.stringify({ version_id: versionId }) }),
   setQualityProfile: (id: number, quality_profile: string) =>
-    req<{ quality_profile: string; downgrade: boolean; downgrade_reason?: string; downgrade_kind?: "smaller" | "different"; downgrade_ceiling?: string }>(`/api/v1/movies/${id}/profile`, {
+    req<{ quality_profile: string; downgrade: boolean; downgrade_reason?: string; downgrade_kind?: "smaller" | "different"; downgrade_ceiling?: string; queued?: boolean; position?: number }>(`/api/v1/movies/${id}/profile`, {
       method: "PUT",
       body: JSON.stringify({ quality_profile }),
     }),
-  regrabMovie: (id: number) => req<{ status: string } & JobRef>(`/api/v1/movies/${id}/regrab`, { method: "POST" }),
+  regrabMovie: (id: number) => req<{ status: string } & MovieQueuedRef>(`/api/v1/movies/${id}/regrab`, { method: "POST" }),
   refreshMovie: (id: number) => req<Movie>(`/api/v1/movies/${id}/refresh`, { method: "POST" }),
   movieHistory: (id: number) =>
     req<{ events: MovieEvent[] }>(`/api/v1/movies/${id}/history`).then((r) => r.events),
@@ -2733,7 +2791,7 @@ export interface Movie {
   extra?: MovieExtra;
   file?: MovieFile;
   versions?: MovieVersion[];
-  download?: { state: string; progress: number };
+  download?: MovieDownload;
   /** Detail only: whether the upgrade sweep will look at this movie (monitored, has a file, profile upgrades). */
   upgrades_allowed?: boolean;
   /** The default file is kept out of profile-driven upgrades ("keep existing files"). */
@@ -2746,6 +2804,59 @@ export interface Movie {
   search_misses?: number;
   next_search_at?: string;
   last_search?: AttemptSummary;
+}
+
+/**
+ * A film's download in flight: what it is for — its own missing file, an upgrade that
+ * replaces the file it has, or an extra version's first file (version_label names it).
+ */
+export interface MovieDownload {
+  state: string;
+  progress: number;
+  kind?: "missing" | "upgrade" | "version";
+  version_id?: number;
+  version_label?: string;
+}
+
+/** One film's download, as GET /api/v1/movies/downloads lists it. */
+export interface MovieDownloadRow extends MovieDownload {
+  movie_id: number;
+}
+
+/** The media facts the library table shows about a film's file. */
+export interface SummaryMedia {
+  resolution?: string;
+  quality?: string; // "2160p BluRay", from the name when not probed
+  codec?: string;
+  audio?: string[];
+  atmos?: boolean;
+  hdr?: string[];
+  bitrate_mbps?: number;
+  duration_min?: number;
+  container?: string; // "mkv"
+}
+
+/**
+ * A film as the library list sends it (GET /api/v1/movies): what the grid, the table and
+ * the filters read, and nothing more — no cast, overview or file paths. The detail page
+ * keeps the full Movie.
+ */
+export interface MovieSummary {
+  id: number;
+  title: string;
+  sort_title: string;
+  year: number;
+  poster_url?: string;
+  monitored: boolean;
+  has_file: boolean;
+  file_missing?: boolean;
+  quality_profile: string;
+  min_availability: string;
+  added_at?: string;
+  vote_average?: number;
+  size_bytes?: number;
+  media?: SummaryMedia;
+  download?: MovieDownload;
 }
 
 export interface MovieAcquisition {

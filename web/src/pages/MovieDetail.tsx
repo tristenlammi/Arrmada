@@ -20,12 +20,14 @@ import {
   type ImportCandidate,
   type Movie,
   type MovieEvent,
+  type MovieDownload,
   type MovieFile,
   type MovieVersion,
 } from "../lib/api";
 import { useLive, type LiveEvent } from "../lib/useLive";
 import { jobFailed, useJob } from "../lib/useJob";
 import { searchJobLine } from "../lib/searchOutcome";
+import { queuedNote } from "../lib/movieQueue";
 import { Button, StatusChip } from "../ui";
 import { movieStatus, trackStatus } from "../lib/movieStatus";
 
@@ -73,9 +75,23 @@ export function MovieDetail() {
     load();
   }, [load]);
 
-  // Poll while a download is in progress so the bar advances live.
+  // While a download is in progress, poll only its progress (not the whole movie) so the
+  // bar advances live; when it ends the movie is read again — the file may have landed.
   const downloading = !!movie?.download;
-  usePoll(load, downloading ? 3000 : null, { immediate: false });
+  const pollDownload = async () => {
+    try {
+      const r = await api.movieDownloads(movieId);
+      const d = r.downloads.find((x) => x.movie_id === movieId);
+      if (!d) {
+        void load();
+        return;
+      }
+      setMovie((m) => (m ? { ...m, download: { state: d.state, progress: d.progress, kind: d.kind, version_id: d.version_id, version_label: d.version_label } } : m));
+    } catch {
+      /* the next tick tries again */
+    }
+  };
+  usePoll(pollDownload, downloading ? 3000 : null, { immediate: false });
 
   useEffect(() => {
     if (!last) return;
@@ -214,12 +230,14 @@ function fmtSize(bytes: number): string {
   return `${(bytes / 1024 ** 2).toFixed(0)} MB`;
 }
 
-function DownloadBar({ dl }: { dl: { state: string; progress: number } }) {
+function DownloadBar({ dl }: { dl: MovieDownload }) {
   const pct = Math.round(dl.progress * 100);
+  // An upgrade or an extra version says what it is; the film's own file just downloads.
+  const what = dl.kind === "upgrade" ? "Downloading an upgrade" : dl.kind === "version" ? `Downloading ${dl.version_label || "an extra version"}` : "Downloading";
   return (
     <div className="mt-6 rounded-xl p-3.5" style={{ border: "1px solid var(--accent)", background: "var(--accent-soft)" }}>
       <div className="mb-2 flex items-center justify-between text-[12px]">
-        <span className="font-semibold" style={{ color: "var(--accent)" }}>Downloading — {dl.state}</span>
+        <span className="font-semibold" style={{ color: "var(--accent)" }}>{what} — {dl.state}</span>
         <span className="font-mono text-ink-dim">{pct}%</span>
       </div>
       <div className="h-2 overflow-hidden rounded-full" style={{ background: "var(--line)" }}>
@@ -288,8 +306,9 @@ function ClearedNotice({ movie, flash, onDismiss }: { movie: Movie; flash: (m: s
   const search = async () => {
     setBusy(true);
     try {
-      await api.searchMovie(movie.id);
-      flash(`Searching — follow it in ${PAGE.downloads} → Searching.`);
+      const r = await api.searchMovie(movie.id);
+      const note = queuedNote(r);
+      flash(note ? `${note} — it searches when its turn comes.` : `Searching — follow it in ${PAGE.downloads} → Searching.`);
       onDismiss();
     } catch (e) {
       flash((e as Error).message, true);
@@ -848,8 +867,8 @@ function AcquisitionStatus({ movie, onChange, flash, searchInfo }: {
           <Button size="sm" variant="primary" disabled={busy !== null} busy={busy === "search"} busyLabel="Searching…"
             onClick={() => run("search", async () => {
               await api.forgetMissingFile(movie.id, 0);
-              await api.searchMovie(movie.id);
-              flash(`Cleared the missing file's record — searching. Follow it in ${PAGE.downloads} → Searching.`);
+              const note = queuedNote(await api.searchMovie(movie.id));
+              flash(note ? `Cleared the missing file's record. ${note} — it searches when its turn comes.` : `Cleared the missing file's record — searching. Follow it in ${PAGE.downloads} → Searching.`);
               onChange();
             })}>Search</Button>
         )}
@@ -1041,7 +1060,9 @@ function Toolbar({ movie, onChange, flash, live }: { movie: Movie; onChange: () 
     if (missing) await api.forgetMissingFile(movie.id, 0);
     const r = await api.searchMovie(movie.id);
     if (r.job_id) setSearchJob(r.job_id);
-    flash(missing ? `Cleared the missing file's record — searching. Follow it in ${PAGE.downloads} → Searching.` : `Searching — follow it in ${PAGE.downloads} → Searching.`);
+    const note = queuedNote(r);
+    const what = note ? `${note} — it searches when its turn comes.` : `Searching — follow it in ${PAGE.downloads} → Searching.`;
+    flash(missing ? `Cleared the missing file's record. ${what}` : what);
     onChange();
   };
 

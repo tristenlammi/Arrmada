@@ -128,8 +128,11 @@ GET /api/v1/me/notifications user ext
 GET /api/v1/me/push/key user ext
 GET /api/v1/media/{media}/{id} user ext
 GET /api/v1/movies staff -
+GET /api/v1/movies/downloads staff -
 GET /api/v1/movies/lookup staff -
+GET /api/v1/movies/search-queue staff -
 GET /api/v1/movies/unmatched staff -
+GET /api/v1/movies/wanted staff -
 GET /api/v1/movies/{id} staff -
 GET /api/v1/movies/{id}/blocklist staff -
 GET /api/v1/movies/{id}/collection staff -
@@ -251,6 +254,7 @@ POST /api/v1/me/push/unsubscribe user ext
 POST /api/v1/movies staff -
 POST /api/v1/movies/import staff -
 POST /api/v1/movies/scan staff -
+POST /api/v1/movies/search staff -
 POST /api/v1/movies/{id}/blocklist staff -
 POST /api/v1/movies/{id}/file/forget staff -
 POST /api/v1/movies/{id}/grabtorrent staff -

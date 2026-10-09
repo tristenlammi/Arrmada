@@ -4,6 +4,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // The per-sweep upgrade budget. Each upgrade sweep used to grab every upgrade it found,
@@ -44,27 +45,72 @@ func (c *Coordinator) newSweepBudget(ctx context.Context) *upgradeBudget {
 
 // upgradeBudget counts one sweep's upgrade grabs. A nil budget is unlimited: the manual
 // single-title upgrades (right after a profile change) are never held back by it.
+//
+// It is safe to share between goroutines: Wanted's "Search all" spreads one budget over
+// the queued upgrade searches, two of which run at once (UpgradeBatch).
 type upgradeBudget struct {
+	mu       sync.Mutex
 	max      int // 0 = no limit
-	used     int // upgrades grabbed
+	used     int // upgrades grabbed (or being grabbed)
 	deferred int // upgrades found but left for the next sweep
 }
 
 // allow reports whether another upgrade may be grabbed.
-func (b *upgradeBudget) allow() bool { return b == nil || b.max <= 0 || b.used < b.max }
+func (b *upgradeBudget) allow() bool {
+	if b == nil {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.max <= 0 || b.used < b.max
+}
 
 // spent reports a limited budget with nothing left, so the sweep can stop searching.
-func (b *upgradeBudget) spent() bool { return b != nil && b.max > 0 && b.used >= b.max }
+func (b *upgradeBudget) spent() bool {
+	if b == nil {
+		return false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.max > 0 && b.used >= b.max
+}
 
 func (b *upgradeBudget) take() {
 	if b != nil {
+		b.mu.Lock()
 		b.used++
+		b.mu.Unlock()
+	}
+}
+
+// reserve takes one upgrade from the budget if there is one left, so two searches sharing
+// it can't both take the last one; give it back with unreserve when the grab fails.
+func (b *upgradeBudget) reserve() bool {
+	if b == nil {
+		return true
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.max > 0 && b.used >= b.max {
+		return false
+	}
+	b.used++
+	return true
+}
+
+func (b *upgradeBudget) unreserve() {
+	if b != nil {
+		b.mu.Lock()
+		b.used--
+		b.mu.Unlock()
 	}
 }
 
 func (b *upgradeBudget) defer1() {
 	if b != nil {
+		b.mu.Lock()
 		b.deferred++
+		b.mu.Unlock()
 	}
 }
 
@@ -75,16 +121,48 @@ func (b *upgradeBudget) defer1() {
 func takeUpgrades[T any](picks []T, b *upgradeBudget, grab func(T) bool) []T {
 	var grabbed []T
 	for _, p := range picks {
-		if !b.allow() {
+		if !b.reserve() {
 			b.defer1()
 			continue
 		}
 		if grab(p) {
-			b.take()
 			grabbed = append(grabbed, p)
+		} else {
+			b.unreserve()
 		}
 	}
 	return grabbed
+}
+
+// UpgradeBatch is one upgrade budget (Settings → Downloads, per sweep) shared by a bulk
+// upgrade search — Wanted → Cutoff unmet's "Search all" — so asking for hundreds of
+// upgrades at once grabs no more than one sweep would. The rest wait for the 6-hourly
+// sweep, exactly as a sweep's leftovers do.
+type UpgradeBatch struct{ b *upgradeBudget }
+
+// NewUpgradeBatch starts a shared budget for one bulk upgrade search.
+func (c *Coordinator) NewUpgradeBatch(ctx context.Context) *UpgradeBatch {
+	return &UpgradeBatch{b: c.newSweepBudget(ctx)}
+}
+
+// UpgradeMovieIn is UpgradeMovie under a bulk search's shared budget: once the batch has
+// grabbed its limit, the remaining titles aren't searched at all.
+func (c *Coordinator) UpgradeMovieIn(ctx context.Context, id int64, batch *UpgradeBatch) error {
+	var b *upgradeBudget
+	if batch != nil {
+		b = batch.b
+	}
+	if b.spent() {
+		return nil
+	}
+	m, err := c.movies.Get(ctx, id)
+	if err != nil {
+		return err
+	}
+	if !m.Monitored || !m.HasFile {
+		return nil
+	}
+	return c.upgradeMovie(ctx, m, b)
 }
 
 // logBudget says, at the end of a sweep, when the budget held upgrades back.

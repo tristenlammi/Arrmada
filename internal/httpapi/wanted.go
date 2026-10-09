@@ -118,8 +118,8 @@ type wantedBuild struct {
 	// untracked is the unfinished torrents no grab knows by hash (added by hand or by
 	// another tool): the sweeps still hold a title back for one named like it.
 	untracked []download.Item
-	reviews    map[string]int64 // "<kind>:<id>" → a pending review's id
-	profiles   map[string]string
+	reviews   map[string]int64 // "<kind>:<id>" → a pending review's id
+	profiles  map[string]string
 }
 
 func (b *wantedBuild) profile(ref string) string {
@@ -593,6 +593,16 @@ func (a *api) handleWantedSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	started := time.Now().UnixMilli()
 	reset()
+	if r.PathValue("kind") == automation.AttemptMovie {
+		// Movie searches wait their turn in the movie search queue (MOV-07).
+		q, err := a.enqueueMovie(r, id, spec)
+		if err != nil {
+			a.writeError(w, http.StatusServiceUnavailable, "couldn't start that just now — try again in a moment")
+			return
+		}
+		a.acceptedQueued(w, q, map[string]any{"status": "searching", "started_at_ms": started})
+		return
+	}
 	jobID, existing, ok := a.submitOr503(w, r, spec)
 	if !ok {
 		return

@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { Movies } from "./Movies";
-import { api, type Movie } from "../lib/api";
+import { api, type MovieSummary } from "../lib/api";
 import { clearQueryCache } from "../lib/query";
 
 // The honest states FE-21 is about: before the first answer and after a failed one,
@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 const page = () => render(<MemoryRouter><Movies /></MemoryRouter>);
-const movie = (id: number, title: string) => ({ id, title, monitored: true, has_file: false } as unknown as Movie);
+const movie = (id: number, title: string): MovieSummary => ({ id, title, sort_title: title.toLowerCase(), year: 2021, monitored: true, has_file: false, quality_profile: "", min_availability: "released" });
 
 describe("Movies list states", () => {
   it("shows a skeleton, not 'No movies yet', while the first load is out", async () => {

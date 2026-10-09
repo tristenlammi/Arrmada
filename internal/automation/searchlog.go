@@ -605,6 +605,18 @@ type AttemptSummary struct {
 // (scope "upgrade") are left out: a summary answers why something missing hasn't been
 // fetched. Titles never searched are absent from the map.
 func (c *Coordinator) LatestAttempts(ctx context.Context, kind string, ids []int64) (map[int64]AttemptSummary, error) {
+	return c.latestAttempts(ctx, kind, ids, `scope != '`+ScopeUpgrade+`'`)
+}
+
+// LatestUpgradeAttempts is LatestAttempts over the upgrade searches only (scope "upgrade"):
+// the Cutoff-unmet view's "last looked for a better release".
+func (c *Coordinator) LatestUpgradeAttempts(ctx context.Context, kind string, ids []int64) (map[int64]AttemptSummary, error) {
+	return c.latestAttempts(ctx, kind, ids, `scope = '`+ScopeUpgrade+`'`)
+}
+
+// latestAttempts summarises attempts matching scopeCond, a fixed SQL condition (never
+// user input).
+func (c *Coordinator) latestAttempts(ctx context.Context, kind string, ids []int64, scopeCond string) (map[int64]AttemptSummary, error) {
 	out := map[int64]AttemptSummary{}
 	if len(ids) == 0 {
 		return out, nil
@@ -619,7 +631,7 @@ func (c *Coordinator) LatestAttempts(ctx context.Context, kind string, ids []int
 			args = append(args, id)
 		}
 		rows, err := c.db.QueryContext(ctx, `SELECT `+attemptCols+` FROM search_attempts
-			WHERE media_type = ? AND scope != '`+ScopeUpgrade+`' AND media_id IN (?`+strings.Repeat(",?", len(part)-1)+`)
+			WHERE media_type = ? AND `+scopeCond+` AND media_id IN (?`+strings.Repeat(",?", len(part)-1)+`)
 			ORDER BY media_id, id DESC`, args...)
 		if err != nil {
 			return nil, err

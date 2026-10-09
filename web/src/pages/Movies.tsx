@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { MetadataMissing } from "../components/MetadataMissing";
 import { PAGE } from "../lib/links";
-import { api, type FitItem, type Movie, type MovieLookup } from "../lib/api";
+import { api, type FitItem, type MovieDownload, type MovieDownloadRow, type MovieLookup, type MovieSummary, type SummaryMedia } from "../lib/api";
 import { FitBadge, FIT_COLOR, bitrateColor, fitRank, hasIssue } from "../components/FitBadge";
 import { posterThumb } from "../lib/img";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
@@ -13,27 +13,39 @@ import { usePoll, usePollBurst } from "../lib/usePoll";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { useQuery } from "../lib/query";
 import { isMovieDownloaded, isMovieWanted, movieStatus } from "../lib/movieStatus";
-import { Button, ErrorState, Modal, Skeleton, StaleBanner } from "../ui";
+import { useLive } from "../lib/useLive";
+import { MoviesSwitch } from "../components/MoviesSwitch";
+import { queueLine, queuedNote, useMovieSearchQueue } from "../lib/movieQueue";
+import { Button, ErrorState, Modal, Skeleton, StaleBanner, StatusChip } from "../ui";
 
-const NO_MOVIES: Movie[] = [];
+const NO_MOVIES: MovieSummary[] = [];
+
+// Events after which the library list may have changed.
+const LIST_TOPICS = ["release.grabbed", "movie.downloaded", "movie.file_deleted", "movie.renamed", "movie.deleted", "search.finished", "library.scanned", "movie.refreshed"];
 
 
-type FilterKey = "all" | "monitored" | "unmonitored" | "wanted" | "downloaded";
+type FilterKey = "all" | "monitored" | "unmonitored" | "wanted" | "nofile" | "downloaded";
 
+// Wanted is exactly what's badged Wanted (monitored, no file, nothing downloading) — the
+// same films as Wanted → Missing. A film with no file that isn't monitored is never
+// searched for; it has its own filter rather than hiding inside Wanted.
 const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "all", label: "All" },
   { key: "monitored", label: "Monitored" },
   { key: "unmonitored", label: "Unmonitored" },
   { key: "wanted", label: "Wanted" },
+  { key: "nofile", label: "No file (unmonitored)" },
   { key: "downloaded", label: "Downloaded" },
 ];
 
-function matchesFilter(m: Movie, f: FilterKey, queueKnown = true): boolean {
+function matchesFilter(m: MovieSummary, f: FilterKey, queueKnown = true): boolean {
   switch (f) {
     case "monitored":
       return m.monitored;
     case "unmonitored":
       return !m.monitored;
+    case "nofile":
+      return !m.monitored && !m.has_file;
     case "wanted":
       return isMovieWanted(m, queueKnown);
     case "downloaded":
@@ -53,7 +65,7 @@ export function Movies() {
   const queueKnown = list.data?.client_health?.ok ?? true;
   const error = list.error?.message ?? null;
   const [showAdd, setShowAdd] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<Movie | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<MovieSummary | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [toastErr, setToastErr] = useState(false);
   const [filter, setFilter] = useState<FilterKey>("all");
@@ -64,7 +76,12 @@ export function Movies() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [scanning, setScanning] = useState(false);
   const [view, setView] = usePersisted("movies.view", "grid", ["grid", "table"] as const);
-  const [searchFor, setSearchFor] = useState<Movie | null>(null); // the table's per-row "Search indexers"
+  const [searchFor, setSearchFor] = useState<MovieSummary | null>(null); // the table's per-row "Search indexers"
+  // Every movie search waits its turn in one throttled queue; the header says how many
+  // are running and waiting, kept live by the queue's events.
+  const { last } = useLive();
+  const searchQueue = useMovieSearchQueue(last);
+  const queueText = queueLine(searchQueue.running, searchQueue.queued);
 
   // The scan runs in the background; poll the grid for a while as entries land.
   const watchScan = usePollBurst(() => refresh(), 2500, 12, () => setScanning(false));
@@ -101,11 +118,6 @@ export function Movies() {
     api.qualityProfiles("movie").then((r) => setProfiles(r.profiles.map((p) => ({ key: p.key, name: p.name })))).catch(() => {});
   }, []);
 
-  const q = query.trim().toLowerCase();
-  const filtered = movies
-    .filter((m) => matchesFilter(m, filter, queueKnown))
-    .filter((m) => !q || m.title.toLowerCase().includes(q))
-    .sort((a, b) => a.title.localeCompare(b.title)); // default: alphabetical by title
 
   const toggleSelect = (id: number) =>
     setSelected((s) => {
@@ -133,8 +145,9 @@ export function Movies() {
   const bulkProfile = async (profile: string) => {
     setBulkBusy(true);
     try {
-      await Promise.all([...selected].map((id) => api.setQualityProfile(id, profile)));
-      flash(`Quality profile set on ${selected.size} movies.`);
+      const res = await Promise.all([...selected].map((id) => api.setQualityProfile(id, profile)));
+      const queued = res.filter((r) => r.queued).length;
+      flash(`Quality profile set on ${selected.size} movies.${queued ? ` ${queued} ${queued === 1 ? "search" : "searches"} queued — they run two at a time.` : ""}`);
       clearSelect();
       refresh();
     } finally {
@@ -142,14 +155,54 @@ export function Movies() {
     }
   };
 
-  // Poll while any movie is downloading so the grid indicators advance.
-  const anyDownloading = movies.some((m) => m.download);
-  usePoll(() => refresh(), anyDownloading ? 4000 : null, { immediate: false });
+  // A grab, an import, a search or a scan can change the list: refetch it, at most once a
+  // second, so a grab started in the background (search on add, the queue) shows up
+  // without a reload.
+  const liveTimer = useRef<number | undefined>(undefined);
+  useEffect(() => {
+    if (!last || !LIST_TOPICS.includes(last.topic)) return;
+    if (liveTimer.current !== undefined) return;
+    liveTimer.current = window.setTimeout(() => {
+      liveTimer.current = undefined;
+      void refresh();
+    }, 1000);
+  }, [last, refresh]);
+  useEffect(() => () => window.clearTimeout(liveTimer.current), []);
 
-  const search = async (m: Movie) => {
+  // While anything downloads, poll only the small downloads endpoint and merge its
+  // progress into the grid; a download that starts or ends refetches the list.
+  const [downloads, setDownloads] = useState<Map<number, MovieDownloadRow> | null>(null);
+  useEffect(() => { setDownloads(null); }, [list.data]); // a fresh list carries its own progress
+  const shown = useMemo(
+    () => (downloads ? movies.map((m) => ({ ...m, download: downloads.get(m.id) })) : movies),
+    [movies, downloads],
+  );
+  const anyDownloading = shown.some((m) => m.download);
+  const pollDownloads = async () => {
     try {
-      await api.searchMovie(m.id);
-      flash(`Searching for “${m.title}” — follow it in ${PAGE.downloads} → Searching.`);
+      const r = await api.movieDownloads();
+      const next = new Map(r.downloads.map((d) => [d.movie_id, d]));
+      const before = new Set(shown.filter((m) => m.download).map((m) => m.id));
+      const changed = before.size !== next.size || [...next.keys()].some((id) => !before.has(id));
+      if (changed) void refresh(); // finished or new: the list's own state moves too
+      else setDownloads(next);
+    } catch {
+      /* the next tick tries again */
+    }
+  };
+  usePoll(pollDownloads, anyDownloading ? 4000 : null, { immediate: false });
+
+  const q = query.trim().toLowerCase();
+  const filtered = shown
+    .filter((m) => matchesFilter(m, filter, queueKnown))
+    .filter((m) => !q || m.title.toLowerCase().includes(q))
+    .sort((a, b) => (a.sort_title || a.title).localeCompare(b.sort_title || b.title)); // default: alphabetical, "The" ignored
+
+  const search = async (m: MovieSummary) => {
+    try {
+      const r = await api.searchMovie(m.id);
+      const note = queuedNote(r);
+      flash(note ? `“${m.title}”: ${note}.` : `Searching for “${m.title}” — follow it in ${PAGE.downloads} → Searching.`);
     } catch (e) {
       flash((e as Error).message);
     }
@@ -160,7 +213,11 @@ export function Movies() {
       <PageHeader title="Movies" />
       <div className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex items-center justify-between gap-3">
-          <span className="font-mono text-[11px] text-ink-faint">{list.data ? `${movies.length} in library` : ""}</span>
+          <span className="flex flex-wrap items-center gap-2.5">
+            <MoviesSwitch active="library" />
+            <span className="font-mono text-[11px] text-ink-faint">{list.data ? `${movies.length} in library` : ""}</span>
+            {queueText && <StatusChip tone="accent" title="Movie searches run two at a time; the rest wait their turn.">{queueText}</StatusChip>}
+          </span>
           <div className="flex items-center gap-2">
             <div className="inline-flex rounded-lg p-0.5" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
               {(["grid", "table"] as const).map((v) => (
@@ -198,7 +255,7 @@ export function Movies() {
         <div className="mb-4 flex flex-wrap items-center gap-2">
           {FILTERS.map((f) => {
             const active = filter === f.key;
-            const count = f.key === "all" ? movies.length : movies.filter((m) => matchesFilter(m, f.key, queueKnown)).length;
+            const count = f.key === "all" ? shown.length : shown.filter((m) => matchesFilter(m, f.key, queueKnown)).length;
             return (
               <button
                 key={f.key}
@@ -358,19 +415,26 @@ function Poster({ url, title }: { url?: string; title: string }) {
   );
 }
 
+// downloadLabel names a download that isn't the film's own missing file: "Upgrade", or the
+// extra version's label.
+function downloadLabel(d?: MovieDownload): string {
+  if (d?.kind === "upgrade") return "Upgrade";
+  if (d?.kind === "version") return d.version_label || "Version";
+  return "";
+}
+
 function gb(bytes?: number): string {
   if (!bytes) return "—";
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
 }
-function bitrateNum(f?: Movie["file"]): number | undefined {
-  if (!f?.size_bytes || !f.duration_min) return undefined;
-  return (f.size_bytes * 8) / (f.duration_min * 60) / 1e6;
+function bitrateNum(f?: SummaryMedia): number | undefined {
+  return f?.bitrate_mbps || undefined;
 }
-function bitrateMbps(f?: Movie["file"]): string {
+function bitrateMbps(f?: SummaryMedia): string {
   const n = bitrateNum(f);
   return n === undefined ? "—" : `${n.toFixed(1)} Mbps`;
 }
-function resValue(f?: Movie["file"]): number | undefined {
+function resValue(f?: SummaryMedia): number | undefined {
   const r = f?.resolution || (f?.quality ? f.quality.split(" ")[0] : "");
   if (!r) return undefined;
   const s = r.toLowerCase();
@@ -382,12 +446,10 @@ function resValue(f?: Movie["file"]): number | undefined {
   const n = parseInt(s.replace(/\D/g, ""), 10);
   return isNaN(n) ? undefined : n;
 }
-function fileExt(f?: Movie["file"]): string {
-  if (!f?.filename) return "—";
-  const i = f.filename.lastIndexOf(".");
-  return i >= 0 ? f.filename.slice(i + 1).toLowerCase() : "—";
+function fileExt(f?: SummaryMedia): string {
+  return f?.container || "—";
 }
-function hasAtmos(f?: Movie["file"]): boolean {
+function hasAtmos(f?: SummaryMedia): boolean {
   return !!f?.atmos || !!f?.audio?.some((a) => /atmos/i.test(a));
 }
 
@@ -404,10 +466,10 @@ type SortKey = "title" | "status" | "resolution" | "codec" | "audio" | "atmos" |
 const MOVIE_SORT_KEYS: SortKey[] = ["title", "status", "resolution", "codec", "audio", "atmos", "hdr", "type", "size", "bitrate", "fit"];
 
 // sortValue returns a comparable value per column (undefined = empty → sorted last regardless of dir).
-function sortValue(m: Movie, key: SortKey, fit?: FitItem): number | string | undefined {
-  const f = m.file;
+function sortValue(m: MovieSummary, key: SortKey, fit?: FitItem): number | string | undefined {
+  const f = m.media;
   switch (key) {
-    case "title": return m.title.toLowerCase();
+    case "title": return m.sort_title || m.title.toLowerCase();
     case "status": return m.has_file ? 0 : m.monitored ? 1 : 2;
     case "resolution": return resValue(f);
     case "codec": return f?.codec || undefined;
@@ -415,13 +477,13 @@ function sortValue(m: Movie, key: SortKey, fit?: FitItem): number | string | und
     case "atmos": return hasAtmos(f) ? 1 : 0;
     case "hdr": return f?.hdr?.length ? 1 : 0;
     case "type": { const e = fileExt(f); return e === "—" ? undefined : e; }
-    case "size": return f?.size_bytes || undefined;
+    case "size": return m.size_bytes || undefined;
     case "bitrate": return bitrateNum(f);
     case "fit": return fitRank(fit);
   }
 }
 
-function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch, queueKnown = true }: { movies: Movie[]; multiSelect: boolean; selected: Set<number>; onToggleSelect: (id: number) => void; onSearch: (m: Movie) => void; queueKnown?: boolean }) {
+function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch, queueKnown = true }: { movies: MovieSummary[]; multiSelect: boolean; selected: Set<number>; onToggleSelect: (id: number) => void; onSearch: (m: MovieSummary) => void; queueKnown?: boolean }) {
   const th = "px-2.5 py-2 text-left font-mono text-[9.5px] font-bold uppercase tracking-[0.06em] text-ink-faint";
   const td = "px-2.5 py-2 align-middle";
   // Remembered across visits, like the grid/table choice ("size:desc").
@@ -508,7 +570,7 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch, q
         </thead>
         <tbody>
           {sorted.map((m) => {
-            const f = m.file;
+            const f = m.media;
             const st = movieStatus(m, undefined, queueKnown);
             const fi = fits.get(m.id);
             const bad = (kind: string) => (hasIssue(fi?.fit, kind) ? { color: FIT_COLOR.over, fontWeight: 600 } : undefined);
@@ -535,7 +597,7 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch, q
                   ? <span className="text-[11px] font-semibold" style={{ color: FIT_COLOR.over }}>{f?.hdr?.length ? f.hdr.join("/") : "SDR"}</span>
                   : f?.hdr?.length ? <YesNo on label={f.hdr.join("/")} /> : <YesNo on={false} />}</td>
                 <td className={td}><span className="font-mono text-[11px] text-ink-dim">{fileExt(f)}</span></td>
-                <td className={`${td} text-right font-mono text-[11px] text-ink-dim`}>{gb(f?.size_bytes)}</td>
+                <td className={`${td} text-right font-mono text-[11px] text-ink-dim`}>{gb(m.size_bytes)}</td>
                 <td className={`${td} text-right font-mono text-[11px] text-ink-dim`} style={bitrateColor(fi?.fit) ? { color: bitrateColor(fi?.fit), fontWeight: 600 } : undefined}
                   title={fi?.fit?.window ? `Window ${fi.fit.window.min || 0}–${fi.fit.window.max || "∞"} Mb/s` : undefined}>{bitrateMbps(f)}</td>
                 <td className={td}><FitBadge item={fi} /></td>
@@ -552,7 +614,7 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch, q
   );
 }
 
-function MovieCard({ m, onDelete, onSearch, selectable, selected, onToggleSelect, queueKnown = true }: { m: Movie; onDelete: () => void; onSearch: () => void; selectable?: boolean; selected?: boolean; onToggleSelect?: () => void; queueKnown?: boolean }) {
+function MovieCard({ m, onDelete, onSearch, selectable, selected, onToggleSelect, queueKnown = true }: { m: MovieSummary; onDelete: () => void; onSearch: () => void; selectable?: boolean; selected?: boolean; onToggleSelect?: () => void; queueKnown?: boolean }) {
   const st = movieStatus(m, undefined, queueKnown);
   const [searching, setSearching] = useState(false);
   const doSearch = async () => {
@@ -605,7 +667,8 @@ function MovieCard({ m, onDelete, onSearch, selectable, selected, onToggleSelect
         )}
         {m.download && (
           <div className="absolute inset-x-0 bottom-0 p-1.5">
-            <div className="flex items-center gap-1.5 rounded-md px-1.5 py-1" style={{ background: "rgba(20,12,7,.82)" }}>
+            <div className="flex items-center gap-1.5 rounded-md px-1.5 py-1" style={{ background: "rgba(20,12,7,.82)" }} title={downloadLabel(m.download) ? `Downloading: ${downloadLabel(m.download)}` : "Downloading"}>
+              {downloadLabel(m.download) && <span className="max-w-[60px] truncate font-mono text-[8.5px] font-bold uppercase" style={{ color: "var(--accent)" }}>{downloadLabel(m.download)}</span>}
               <div className="h-1 flex-1 overflow-hidden rounded-full" style={{ background: "rgba(255,255,255,.25)" }}>
                 <div className="h-full rounded-full" style={{ width: `${Math.round(m.download.progress * 100)}%`, background: "var(--accent)" }} />
               </div>
