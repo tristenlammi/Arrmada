@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/diskspace"
@@ -159,10 +160,10 @@ func (a *api) handleDeleteDownload(w http.ResponseWriter, r *http.Request) {
 		}
 		// Blocking searches for an alternate, which can take a while: run it like the
 		// Block button does and answer straight away.
-		go a.bg(func(ctx context.Context) error {
+		a.bg("block download", name, 3*time.Minute, func(ctx context.Context) error {
 			_, err := a.deps.Automation.RemoveDownload(ctx, hash, name, mode, false)
 			return err
-		}, "block download", 0)
+		})
 		a.writeJSON(w, http.StatusAccepted, automation.RemoveResult{Mode: mode})
 		return
 	}
@@ -242,7 +243,9 @@ func (a *api) handleBlockDownload(w http.ResponseWriter, r *http.Request) {
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
-	go a.bg(func(ctx context.Context) error { return a.deps.Automation.BlockRelease(ctx, hash, req.Name) }, "block download", 0)
+	a.bg("block download", req.Name, 3*time.Minute, func(ctx context.Context) error {
+		return a.deps.Automation.BlockRelease(ctx, hash, req.Name)
+	})
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "blocking"})
 }
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/eventbus"
+	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 // A listening app asks for the library, a shelf, an author and a search in quick
@@ -119,7 +120,7 @@ func (s *Server) WatchImports(ctx context.Context, bus *eventbus.Bus) {
 			}
 			s.Invalidate()
 			if s.settings != nil && s.settings.GetBool(ctx, KeyEnabled, false) {
-				go s.Warm(ctx)
+				safego.Go(s.log, "audiobook server warm-up", func() { s.Warm(ctx) })
 			}
 		}
 	}

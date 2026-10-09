@@ -95,9 +95,23 @@ func (r *Repo) ExistingTMDBIDs(ctx context.Context) (map[int]bool, error) {
 	return out, rows.Err()
 }
 
-// MonitoredMissing returns monitored movies with no file (the search targets).
-func (r *Repo) MonitoredMissing(ctx context.Context) ([]Movie, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT `+movieCols+` FROM movies WHERE monitored = 1 AND has_file = 0`)
+// SearchTargets returns the movies that have a monitored track without a file: a
+// monitored movie still missing its main file, or any movie with a monitored extra
+// version still missing its file (an extra track is searched even when the movie row
+// itself is unmonitored, as the sweeps always did). Ordered like List.
+func (r *Repo) SearchTargets(ctx context.Context) ([]Movie, error) {
+	return r.listWhere(ctx, `(monitored = 1 AND has_file = 0)
+		OR EXISTS (SELECT 1 FROM movie_versions v WHERE v.movie_id = movies.id AND v.monitored = 1 AND v.has_file = 0)`)
+}
+
+// UpgradeTargets returns the monitored movies that have a file. Ordered like List.
+func (r *Repo) UpgradeTargets(ctx context.Context) ([]Movie, error) {
+	return r.listWhere(ctx, `monitored = 1 AND has_file = 1`)
+}
+
+// listWhere lists the movies matching a fixed WHERE clause (never user input), newest first.
+func (r *Repo) listWhere(ctx context.Context, where string) ([]Movie, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT `+movieCols+` FROM movies WHERE `+where+` ORDER BY added_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}

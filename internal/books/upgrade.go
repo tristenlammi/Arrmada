@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 // Upgrading the library to Hardcover.
@@ -96,7 +97,7 @@ func (s *Service) StartUpgrade(ctx context.Context) bool {
 	}
 	s.upgrade.status = UpgradeStatus{Running: true, StartedAt: time.Now().Unix()}
 	s.upgrade.mu.Unlock()
-	go s.runUpgrade(ctx)
+	safego.Go(s.log, "books: catalogue upgrade", func() { s.runUpgrade(ctx) })
 	return true
 }
 

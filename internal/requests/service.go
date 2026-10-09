@@ -14,6 +14,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/quality"
+	"github.com/tristenlammi/arrmada/internal/safego"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
 
@@ -30,7 +31,35 @@ type Service struct {
 	bus        *eventbus.Bus
 	appriseBin string
 	push       PushSender // optional: Web Push fan-out alongside inbox + Apprise
+	runner     Runner     // where approval searches run; nil = untracked, panic-safe goroutines
 	log        *slog.Logger
+}
+
+// Runner starts named background work with the app's run context (cancelled at
+// shutdown). Satisfied by *safego.Group.
+type Runner interface {
+	Go(name string, fn func(ctx context.Context))
+}
+
+// SetRunner sets where the searches an approval starts run, so shutdown cancels them
+// and a panic in one is contained (optional; without it they still can't crash the app).
+func (s *Service) SetRunner(r Runner) { s.runner = r }
+
+// background runs fn after the approval has answered, bounded by timeout and logged on
+// failure. Detached from the request: an approval returns as soon as the title is added.
+func (s *Service) background(name, title string, timeout time.Duration, fn func(ctx context.Context) error) {
+	run := func(parent context.Context) {
+		c, cancel := context.WithTimeout(parent, timeout)
+		defer cancel()
+		if err := fn(c); err != nil {
+			s.log.Warn("request: "+name+" failed", "title", title, "err", err)
+		}
+	}
+	if s.runner != nil {
+		s.runner.Go("request: "+name, run)
+		return
+	}
+	safego.Go(s.log, "request: "+name, func() { run(context.Background()) })
 }
 
 // PushSender delivers a Web Push notification to every device a user registered.
@@ -186,13 +215,10 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 			return Request{}, addErr
 		}
 		if addErr == nil {
-			go func(mid int64) {
-				c, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-				defer cancel()
-				if err := s.coord.SearchMovie(c, mid); err != nil {
-					s.log.Warn("request: movie search failed", "title", req.Title, "err", err)
-				}
-			}(m.ID)
+			mid := m.ID
+			s.background("movie search", req.Title, 3*time.Minute, func(c context.Context) error {
+				return s.coord.SearchMovie(c, mid)
+			})
 		}
 	case "series":
 		sr, addErr := s.series.Add(ctx, req.TMDBID, profile, true)
@@ -200,13 +226,10 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 			return Request{}, addErr
 		}
 		if addErr == nil {
-			go func(sid int64) {
-				c, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-				defer cancel()
-				if err := s.coord.SearchSeriesNow(c, sid); err != nil {
-					s.log.Warn("request: series search failed", "title", req.Title, "err", err)
-				}
-			}(sr.ID)
+			sid := sr.ID
+			s.background("series search", req.Title, 5*time.Minute, func(c context.Context) error {
+				return s.coord.SearchSeriesNow(c, sid)
+			})
 		}
 	case "book":
 		b, addErr := s.books.Add(ctx, req.OLKey, profile, true, metadata.BookResult{
@@ -216,13 +239,10 @@ func (s *Service) Approve(ctx context.Context, id int64, profile string) (Reques
 			return Request{}, addErr
 		}
 		if addErr == nil {
-			go func(bid int64) {
-				c, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-				defer cancel()
-				if err := s.coord.SearchBookNow(c, bid); err != nil {
-					s.log.Warn("request: book search failed", "title", req.Title, "err", err)
-				}
-			}(b.ID)
+			bid := b.ID
+			s.background("book search", req.Title, 5*time.Minute, func(c context.Context) error {
+				return s.coord.SearchBookNow(c, bid)
+			})
 		}
 	}
 

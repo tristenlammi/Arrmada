@@ -34,6 +34,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/realtime"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
 	"github.com/tristenlammi/arrmada/internal/requests"
+	"github.com/tristenlammi/arrmada/internal/safego"
 	"github.com/tristenlammi/arrmada/internal/series"
 	"github.com/tristenlammi/arrmada/internal/settings"
 	"github.com/tristenlammi/arrmada/internal/store"
@@ -84,6 +85,10 @@ type Deps struct {
 	// action that erases data a backup is the only way back from (deleting a user takes
 	// their audiobook places with it). nil = no copy possible, so those actions refuse.
 	Snapshot func(ctx context.Context, kind string) (string, error)
+	// RunGroup holds the work requests start in the background: it carries the run
+	// context that shutdown cancels and names whatever is still going at exit. nil (tests)
+	// runs that work panic-safe but untracked.
+	RunGroup *safego.Group
 }
 
 type api struct {
@@ -98,7 +103,7 @@ type api struct {
 	musicScan atomic.Bool
 	// seedDiagAt throttles the unmatched-seed-rule diagnostic. The Downloads page polls
 	// continuously, so an unthrottled line would bury the log it's meant to help read.
-	seedDiagAt atomic.Int32
+	seedDiagAt atomic.Int64
 }
 
 // New builds the HTTP server: JSON API routes, the embedded UI (with SPA

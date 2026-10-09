@@ -349,8 +349,12 @@ func (c *Coordinator) RecordManualGrab(ctx context.Context, movieID int64, title
 
 // SearchMissing searches for and grabs any monitored version that has no file
 // and isn't already downloading, across every movie.
+//
+// Only movies with a monitored, file-less track are visited (chosen in SQL), and every
+// read below is a database read: a library whose movies all have their files costs this
+// sweep no searches, no ffprobe and no stat.
 func (c *Coordinator) SearchMissing(ctx context.Context) {
-	all, err := c.movies.List(ctx)
+	all, err := c.movies.SearchTargets(ctx)
 	if err != nil {
 		c.log.Warn("automation: list movies failed", "err", err)
 		return
@@ -643,7 +647,7 @@ func matchingMovieReleases(m movies.Movie, releases []indexer.Release) []indexer
 
 // missingVersions returns the monitored version tracks that still need a file.
 func (c *Coordinator) missingVersions(ctx context.Context, movieID int64) []movies.Version {
-	versions, err := c.movies.Versions(ctx, movieID)
+	versions, err := c.movies.VersionRows(ctx, movieID)
 	if err != nil {
 		return nil
 	}
@@ -782,7 +786,7 @@ const diskBufferGB = 2.0
 // matches a monitored, still-missing movie — the promptly-and-gently way to
 // catch new releases (vs a title search per movie on a timer).
 func (c *Coordinator) RSSSync(ctx context.Context) {
-	all, err := c.movies.List(ctx)
+	all, err := c.movies.SearchTargets(ctx) // only movies still missing a monitored track
 	if err != nil {
 		c.log.Warn("rss: list movies failed", "err", err)
 		return
@@ -836,7 +840,7 @@ func releaseIsForMovie(relTitle string, m movies.Movie) bool {
 // better release when the profile allows upgrades and one clearly beats what's on
 // disk. Runs on a timer alongside SearchMissing.
 func (c *Coordinator) UpgradeMovies(ctx context.Context) {
-	all, err := c.movies.List(ctx)
+	all, err := c.movies.UpgradeTargets(ctx) // monitored, with a file
 	if err != nil {
 		c.log.Warn("automation: list movies failed", "err", err)
 		return
@@ -887,7 +891,9 @@ func (c *Coordinator) UpgradeMovie(ctx context.Context, id int64) error {
 // upgradeMovie searches and grabs an upgrade for any monitored version that
 // already has a file. Versions without a file are handled by SearchMissing.
 func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
-	versions, err := c.movies.Versions(ctx, m.ID)
+	// Database rows only: the current size and quality come from the cached media info
+	// (or the recorded release name), never from probing the file on every sweep.
+	versions, err := c.movies.VersionRows(ctx, m.ID)
 	if err != nil {
 		return err
 	}
@@ -1009,7 +1015,7 @@ func (c *Coordinator) RegrabMovie(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	versions, err := c.movies.Versions(ctx, m.ID)
+	versions, err := c.movies.VersionRows(ctx, m.ID)
 	if err != nil {
 		return err
 	}
@@ -1556,7 +1562,7 @@ func normRelease(s string) string {
 
 // movieHasFileFor reports whether the grab's target version now has a file.
 func (c *Coordinator) movieHasFileFor(ctx context.Context, g grab) bool {
-	versions, err := c.movies.Versions(ctx, g.MovieID)
+	versions, err := c.movies.VersionRows(ctx, g.MovieID) // runs every two minutes: rows only
 	if err != nil {
 		return false
 	}
@@ -1600,52 +1606,53 @@ func parseTime(s string) time.Time {
 	return time.Time{}
 }
 
-// WatchImports listens for finished imports and attaches each to its movie,
-// flipping it from Wanted to Downloaded. Returns when ctx is cancelled.
-func (c *Coordinator) WatchImports(ctx context.Context) {
-	events, cancel := c.bus.Subscribe("download.imported")
-	defer cancel()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case ev := <-events:
-			data, ok := ev.Data.(map[string]any)
-			if !ok {
-				continue
-			}
-			title, _ := data["title"].(string)
-			target, _ := data["target"].(string)
-			release, _ := data["name"].(string)
-			hash, _ := data["hash"].(string)
-			year := toInt(data["year"])
-			if title == "" {
-				continue
-			}
-			// Identity first: the download's grab row knows exactly which movie it was
-			// for. Re-deriving it from a (differently normalized) title match orphaned
-			// imports for accented/&-titled movies and could attach a year-less release
-			// to the wrong same-titled film.
-			m, matched := movies.Movie{}, false
-			if mid, ok := c.movieIDForGrabHash(ctx, hash); ok {
-				if got, err := c.movies.Get(ctx, mid); err == nil {
-					m, matched = got, true
-				}
-			}
-			if !matched {
-				m, matched = c.movies.Match(ctx, title, year)
-			}
-			if matched {
-				if err := c.movies.MarkImported(ctx, m.ID, target, release); err != nil {
-					c.log.Warn("automation: mark imported failed", "movie", m.Title, "err", err)
-					continue
-				}
-				c.markGrabImportedForMovie(ctx, m.ID, release)
-				c.log.Info("automation: import attached to movie", "movie", m.Title)
-				c.bus.Publish("movie.downloaded", map[string]any{"title": m.Title, "id": m.ID})
-			}
+// AttachMovieImport attaches a recorded movie import to its movie, flipping it from
+// Wanted to Downloaded. The import manager calls it directly, right after recording the
+// import and again from the stored row until it settles — it used to run off the
+// download.imported bus event, and a dropped event (or a restart at the wrong moment)
+// left the movie Wanted for good.
+//
+// It returns Unmatched when no movie fits, Refused when the quality gate keeps the
+// better file already there, and AttachRetry with the error for anything transient.
+func (c *Coordinator) AttachMovieImport(ctx context.Context, rec library.ImportRecord) (library.AttachOutcome, error) {
+	if c.movies == nil {
+		return library.AttachRetry, errors.New("the movies module isn't wired up")
+	}
+	// Identity first: the download's grab row knows exactly which movie it was for.
+	// Re-deriving it from a (differently normalized) title match orphaned imports for
+	// accented/&-titled movies and could attach a year-less release to the wrong
+	// same-titled film.
+	m, matched := movies.Movie{}, false
+	if mid, ok := c.movieIDForGrabHash(ctx, rec.Hash); ok {
+		got, err := c.movies.Get(ctx, mid)
+		switch {
+		case err == nil:
+			m, matched = got, true
+		case !errors.Is(err, movies.ErrNotFound):
+			return library.AttachRetry, fmt.Errorf("load movie %d: %w", mid, err)
 		}
 	}
+	if !matched && rec.Title != "" {
+		m, matched = c.movies.Match(ctx, rec.Title, rec.Year)
+	}
+	if !matched {
+		if ctx.Err() != nil {
+			return library.AttachRetry, ctx.Err() // cut short, not a verdict
+		}
+		return library.Unmatched, fmt.Errorf("no movie in the library matches %q", titleYear(rec.Title, rec.Year))
+	}
+	if err := c.movies.MarkImported(ctx, m.ID, rec.TargetPath, rec.ReleaseName); err != nil {
+		if errors.Is(err, movies.ErrWorseQuality) {
+			return library.Refused, err
+		}
+		return library.AttachRetry, fmt.Errorf("attach to %q: %w", m.Title, err)
+	}
+	c.markGrabImportedForMovie(ctx, m.ID, rec.ReleaseName)
+	c.log.Info("automation: import attached to movie", "movie", m.Title)
+	if c.bus != nil {
+		c.bus.Publish("movie.downloaded", map[string]any{"title": m.Title, "id": m.ID})
+	}
+	return library.Attached, nil
 }
 
 // inQueue reports whether the movie is already downloading (title+year match).
@@ -1686,18 +1693,6 @@ func abs(n int) int {
 		return -n
 	}
 	return n
-}
-
-func toInt(v any) int {
-	switch n := v.(type) {
-	case int:
-		return n
-	case int64:
-		return int(n)
-	case float64:
-		return int(n)
-	}
-	return 0
 }
 
 // unmatchedReviewAfter is how many failed match attempts before a download is escalated

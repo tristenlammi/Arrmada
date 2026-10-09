@@ -50,6 +50,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/realtime"
 	"github.com/tristenlammi/arrmada/internal/recyclebin"
 	"github.com/tristenlammi/arrmada/internal/requests"
+	"github.com/tristenlammi/arrmada/internal/safego"
 	"github.com/tristenlammi/arrmada/internal/scheduler"
 	"github.com/tristenlammi/arrmada/internal/series"
 	"github.com/tristenlammi/arrmada/internal/settings"
@@ -149,6 +150,19 @@ func main() {
 	}
 
 	bus := eventbus.New(log)
+
+	// Background work stops when runCtx is cancelled during shutdown. Every long-running
+	// loop and one-off goroutine below runs in grp: a panic in one is logged with its stack
+	// and contained (a loop restarts, backing off), and shutdown names anything that
+	// didn't stop. Created before the first background launch so nothing escapes it.
+	runCtx, cancelRun := context.WithCancel(context.Background())
+	defer cancelRun()
+	grp := safego.NewGroup(runCtx, log)
+	// Every contained panic is also announced, so the UI and admin alerts can see that
+	// something broke even though the app stayed up.
+	safego.SetPanicHook(func(name string) {
+		bus.Publish("system.panic", map[string]any{"name": name})
+	})
 	authSvc := auth.NewService(st.DB())
 	indexers := indexer.NewService(st.DB(), log, cfg.FlaresolverrURL)
 	downloads := download.NewService(st.DB(), log)
@@ -198,7 +212,7 @@ func main() {
 	// boot-time fold deleted prefix siblings ('Mistborn: The Final Empire' / 'Mistborn:
 	// Secret History') along with their audio versions and everyone's listening place.
 	// Possible duplicates are flagged on the book's timeline for a person to review.
-	go booksSvc.MaybeStartUpgrade(context.Background())
+	grp.Go("books: catalogue upgrade check", func(ctx context.Context) { booksSvc.MaybeStartUpgrade(ctx) })
 	// MusicBrainz needs no key, the way Open Library needs none for books.
 	musicSvc := music.NewService(st.DB(), metadata.NewMusicBrainz(), log)
 	// Music is off by default now (it's a preview), but an install already using it must
@@ -230,62 +244,56 @@ func main() {
 		// Pin the incoming port to match the Docker-published one. qBittorrent may
 		// still be starting, so retry in the background rather than block boot.
 		if cfg.QbittorrentPort > 0 {
-			go func() {
-				for i := 0; i < 20; i++ {
-					if err := downloads.SetBundledPort(context.Background(), cfg.QbittorrentURL, cfg.QbittorrentPort); err == nil {
-						log.Info("qBittorrent incoming port set", "port", cfg.QbittorrentPort)
-						return
-					}
-					time.Sleep(3 * time.Second)
+			grp.Go("qbittorrent: set incoming port", func(ctx context.Context) {
+				switch retryBoot(ctx, func(ctx context.Context) error {
+					return downloads.SetBundledPort(ctx, cfg.QbittorrentURL, cfg.QbittorrentPort)
+				}) {
+				case nil:
+					log.Info("qBittorrent incoming port set", "port", cfg.QbittorrentPort)
+				case errRetriesExhausted:
+					log.Warn("could not set qBittorrent incoming port", "port", cfg.QbittorrentPort)
 				}
-				log.Warn("could not set qBittorrent incoming port", "port", cfg.QbittorrentPort)
-			}()
+			})
 		}
 		// Point qBittorrent's default save + incomplete paths at the downloads dir so
 		// an existing client (seeded before the dir changed) still lands files on the
 		// shared volume. Retry in the background; qBittorrent may still be booting.
 		if cfg.DownloadsDir != "" {
-			go func() {
-				for i := 0; i < 20; i++ {
-					if err := downloads.SetBundledSavePath(context.Background(), cfg.QbittorrentURL, cfg.DownloadsDir); err == nil {
-						log.Info("qBittorrent save path set", "path", cfg.DownloadsDir)
-						return
-					}
-					time.Sleep(3 * time.Second)
+			grp.Go("qbittorrent: set save path", func(ctx context.Context) {
+				switch retryBoot(ctx, func(ctx context.Context) error {
+					return downloads.SetBundledSavePath(ctx, cfg.QbittorrentURL, cfg.DownloadsDir)
+				}) {
+				case nil:
+					log.Info("qBittorrent save path set", "path", cfg.DownloadsDir)
+				case errRetriesExhausted:
+					log.Warn("could not set qBittorrent save path", "path", cfg.DownloadsDir)
 				}
-				log.Warn("could not set qBittorrent save path", "path", cfg.DownloadsDir)
-			}()
+			})
 		}
 		// Size qBittorrent's total-active cap to the per-kind limits so nothing sits
 		// "Queued" behind its default cap of 5. Retry; the client may still be booting.
-		go func() {
-			for i := 0; i < 20; i++ {
-				if err := downloads.EnsureBundledQueue(context.Background(), cfg.QbittorrentURL); err == nil {
-					log.Info("qBittorrent queue limits reconciled")
-					return
-				}
-				time.Sleep(3 * time.Second)
+		grp.Go("qbittorrent: reconcile queue limits", func(ctx context.Context) {
+			switch retryBoot(ctx, func(ctx context.Context) error {
+				return downloads.EnsureBundledQueue(ctx, cfg.QbittorrentURL)
+			}) {
+			case nil:
+				log.Info("qBittorrent queue limits reconciled")
+			case errRetriesExhausted:
+				log.Warn("could not reconcile qBittorrent queue limits")
 			}
-			log.Warn("could not reconcile qBittorrent queue limits")
-		}()
+		})
 	}
 	// The coordinator is the "add a movie and walk away" brain: it searches
 	// indexers for monitored-but-missing movies, ranks releases, grabs the best,
 	// and attaches finished imports back to the movie.
 	coordinator := automation.New(movieSvc, indexers, downloads, qualitySvc, st.DB(), bus, log, cfg.DownloadsDir)
 
-	// Background jobs stop when runCtx is cancelled during shutdown.
-	runCtx, cancelRun := context.WithCancel(context.Background())
-
-	// Attach finished imports to their movies (Wanted → Downloaded).
-	go coordinator.WatchImports(runCtx)
-
 	// Deliver grab/import notifications to configured connections.
-	go notifySvc.Run(runCtx)
+	grp.Loop("notify", notifySvc.Run)
 
 	// Realtime hub bridges the event bus to connected websocket clients.
 	hub := realtime.NewHub(log)
-	go hub.Run(runCtx, bus)
+	grp.Loop("realtime hub", func(ctx context.Context) { hub.Run(ctx, bus) })
 
 	appStart := time.Now()
 	sched := scheduler.New(log)
@@ -319,8 +327,17 @@ func main() {
 	// so the 30s import sweep stops retrying it forever.
 	imports.SetFailureHook(coordinator.HandleMovieImportFailure)
 	imports.SetStuckHook(coordinator.HandleMovieImportStuck)
-	// Forget import records when files are deleted, so a re-grab re-imports.
-	go imports.WatchDeletions(runCtx)
+	// Attach each finished import to its movie (Wanted → Downloaded) in the same sweep
+	// that records it, retrying from the database until it settles — not off a bus event
+	// that a busy moment or a restart can lose.
+	imports.SetAttach(coordinator.AttachMovieImport)
+	// Forget the import behind a deleted movie file as it's deleted, so the torrent that's
+	// still seeding isn't imported straight back; a re-grab of the release imports again.
+	movieSvc.SetOnFileRemoved(func(ctx context.Context, path string) {
+		if err := imports.MarkRemovedByTarget(ctx, path); err != nil {
+			log.Warn("forget import failed", "path", path, "err", err)
+		}
+	})
 	// Wire the series module into the coordinator: TV downloads land in a separate
 	// category and are hardlinked file-by-file (a season pack yields many episodes).
 	bookImporter := library.NewImporter(cfg.LibraryDir, log)
@@ -355,6 +372,9 @@ func main() {
 	sched.Register("import-completed", 30*time.Second, false, func(ctx context.Context) error {
 		completed, err := downloads.CompletedInCategory(ctx, cfg.DownloadCategory)
 		if err != nil {
+			// The client being unreachable mustn't hold up imports already on disk that
+			// are still waiting to be attached to their movie.
+			imports.RetryPendingAttach(ctx)
 			return err
 		}
 		cands := make([]library.Candidate, 0, len(completed))
@@ -454,7 +474,9 @@ func main() {
 	// sched.Start so its sweep is in the snapshot the scheduler launches.
 	requestsSvc := requests.NewService(st.DB(), movieSvc, seriesSvc, booksSvc, coordinator, qualitySvc, bus, notifySvc.AppriseBin(), log)
 	requestsSvc.SetPushSender(pushSvc) // Web Push alongside inbox + Apprise
-	go requestsSvc.RunNotifier(runCtx) // alert requesters when their request is imported
+	requestsSvc.SetRunner(grp)         // approval searches stop at shutdown
+	// Alert requesters when their request is imported.
+	grp.Loop("requests: ready notifier", requestsSvc.RunNotifier)
 	// Backstop for request-ready notifications: catches availability that arrived
 	// without an import event (library scan) or whose event was dropped under load.
 	// Idempotent (unique inbox ref), so re-running never double-notifies.
@@ -467,7 +489,7 @@ func main() {
 	// Movies/Series catalogs via OpenSubtitles.
 	subsProvider := subtitles.NewOpenSubtitlesFunc(keyStore.Func("opensubtitles_api"), keyStore.Func("opensubtitles_username"), keyStore.Func("opensubtitles_password"))
 	subtitlesSvc := subtitles.NewService(st.DB(), movieSvc, seriesSvc, settingsSvc, subsProvider, "ffmpeg", "ffprobe", filepath.Join(cfg.DataDir, "whisper"), log)
-	go subtitlesSvc.Run(runCtx) // subtitle-ensure job worker
+	grp.Loop("subtitles: worker", subtitlesSvc.Run) // subtitle-ensure job worker
 	// The library pass behind the Subtitles Overview/Library pages. The worker runs the
 	// first one at startup; this keeps it from going stale.
 	sched.Register("subtitles-library-scan", 6*time.Hour, false, func(ctx context.Context) error {
@@ -497,14 +519,14 @@ func main() {
 	// everything older) within the hour.
 	recycleSvc := recyclebin.New(recycleDir, settingsSvc, log)
 	convertSvc.SetBinHeadroom(recycleSvc.Headroom)
-	go convertSvc.Run(runCtx)
+	grp.Loop("convert: runner", convertSvc.Run)
 	// Warm the probe cache off the request path so the first Convert page load after
 	// a restart is instant instead of re-analyzing the whole library, then build the
 	// library index the Convert list reads (both are incremental — see migration 0058).
-	go func() {
-		convertSvc.WarmCache(runCtx)
-		convertSvc.IndexAll(runCtx)
-	}()
+	grp.Go("convert: warm cache and index", func(ctx context.Context) {
+		convertSvc.WarmCache(ctx)
+		convertSvc.IndexAll(ctx)
+	})
 	// Keep the Convert library index current. Imports reindex just their own series, so
 	// this only catches changes made outside Arrmada; it ticks hourly but sweeps once a
 	// day at the admin-configured time (Settings → Convert).
@@ -547,25 +569,25 @@ func main() {
 	// Movie imports need the same treatment: without it a new or upgraded movie was
 	// invisible to Convert until the daily 03:00 index sweep — and permanently, if the
 	// replacement landed at the same path (the sweep skips known paths).
-	go func() {
+	grp.Loop("convert+subtitles: index movie imports", func(ctx context.Context) {
 		events, cancelSub := bus.Subscribe("movie.downloaded")
 		defer cancelSub()
 		for {
 			select {
-			case <-runCtx.Done():
+			case <-ctx.Done():
 				return
 			case ev := <-events:
 				if data, ok := ev.Data.(map[string]any); ok {
 					if id, ok := data["id"].(int64); ok && id > 0 {
-						if err := convertSvc.IndexMovie(runCtx, id); err != nil {
+						if err := convertSvc.IndexMovie(ctx, id); err != nil {
 							log.Warn("convert: reindex after movie import failed", "movie_id", id, "err", err)
 						}
-						subtitlesSvc.OnMovieImported(runCtx, id)
+						subtitlesSvc.OnMovieImported(ctx, id)
 					}
 				}
 			}
 		}
-	}()
+	})
 
 	// Insights (Plex watch monitoring — Tautulli replacement).
 	geoDB := cfg.GeoIPDB
@@ -577,7 +599,7 @@ func main() {
 	geoResolver := geoip.New(geoDB)
 	insightsSvc := insights.NewService(st.DB(), settingsSvc, geoResolver, bus, log)
 	insightsSvc.SeedFromEnv(runCtx, cfg.PlexURL, cfg.PlexToken)
-	go insightsSvc.Run(runCtx) // Plex watch-monitoring poller (records when enabled + configured)
+	grp.Loop("insights: poller", insightsSvc.Run) // Plex watch-monitoring poller (records when enabled + configured)
 	// Convert pauses its encodes while someone is watching.
 	convertSvc.SetWatching(insightsSvc.Watching)
 	// Prune raw bandwidth samples older than 90 days: the poller writes one row per
@@ -612,7 +634,7 @@ func main() {
 	}
 	audioMgr := audioserver.NewManager(audioSrv, ":"+audioPort, log)
 	audioMgr.Apply(settingsSvc.GetBool(context.Background(), audioserver.KeyEnabled, false))
-	go audioSrv.WatchImports(runCtx, bus)
+	grp.Loop("audiobook server: watch imports", func(ctx context.Context) { audioSrv.WatchImports(ctx, bus) })
 	sched.Register("audioserver-prune", 24*time.Hour, false, func(ctx context.Context) error {
 		return listenStore.Prune(ctx)
 	})
@@ -669,14 +691,15 @@ func main() {
 		Snapshot: func(ctx context.Context, kind string) (string, error) {
 			return st.SafetyCopy(ctx, cfg.DataDir, kind, 3)
 		},
+		RunGroup: grp,
 	})
 
 	errCh := make(chan error, 1)
-	go func() {
+	grp.Go("http server", func(context.Context) {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
-	}()
+	})
 
 	log.Info("Arrmada is online", "url", displayURL(cfg))
 
@@ -696,18 +719,81 @@ func main() {
 		log.Info("restarting to apply new settings")
 	}
 
-	cancelRun() // signal background jobs to stop
+	// Docker kills the container ten seconds after asking it to stop (the compose files
+	// set no stop_grace_period), so the steps below share a budget that fits inside it.
+	cancelRun() // signal background jobs (and request-started work) to stop
 	audioMgr.Stop()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(ctx); err != nil {
 		log.Error("graceful shutdown failed", "err", err)
 		os.Exit(1)
 	}
 
-	sched.Wait() // let in-flight jobs drain
-	log.Info("stopped cleanly")
+	// Let in-flight jobs drain, then name whatever ignored the cancel: those are the
+	// ones Docker's kill will cut short.
+	clean := true
+	if busy := sched.WaitFor(2 * time.Second); len(busy) > 0 {
+		clean = false
+		log.Warn("shutdown: scheduled tasks still running", "tasks", busy)
+	}
+	if left := grp.Wait(2 * time.Second); len(left) > 0 {
+		clean = false
+		log.Warn("shutdown: background work still running", "count", len(left), "names", summarizeNames(left, 20))
+	}
+	if clean {
+		log.Info("stopped cleanly")
+	} else {
+		log.Info("stopped")
+	}
+}
+
+// errRetriesExhausted is retryBoot giving up after every attempt failed.
+var errRetriesExhausted = errors.New("retries exhausted")
+
+// retryBoot retries a boot-time call to the bundled qBittorrent, which may still be
+// starting: up to 20 tries three seconds apart. It returns nil on success,
+// errRetriesExhausted when every try failed, or ctx's error when shutdown cut it short.
+func retryBoot(ctx context.Context, fn func(ctx context.Context) error) error {
+	for i := 0; i < 20; i++ {
+		if fn(ctx) == nil {
+			return nil
+		}
+		t := time.NewTimer(3 * time.Second)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return ctx.Err()
+		case <-t.C:
+		}
+	}
+	return errRetriesExhausted
+}
+
+// summarizeNames collapses repeated names ("media backfill ×12") and keeps the first max,
+// so a shutdown with hundreds of stragglers still logs one readable line.
+func summarizeNames(names []string, max int) []string {
+	counts := map[string]int{}
+	var order []string
+	for _, n := range names {
+		if counts[n] == 0 {
+			order = append(order, n)
+		}
+		counts[n]++
+	}
+	out := make([]string, 0, len(order))
+	for _, n := range order {
+		if len(out) == max {
+			out = append(out, fmt.Sprintf("…and %d more", len(order)-max))
+			break
+		}
+		if c := counts[n]; c > 1 {
+			n = fmt.Sprintf("%s ×%d", n, c)
+		}
+		out = append(out, n)
+	}
+	return out
 }
 
 // logRing captures recent logs for the in-app Logs viewer (also written to stdout and,

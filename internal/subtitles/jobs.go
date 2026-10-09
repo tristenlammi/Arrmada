@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/safego"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
 
@@ -86,7 +87,11 @@ func (s *Service) Run(ctx context.Context) {
 			continue
 		}
 		jctx, done := s.startJob(ctx, job)
-		s.process(jctx, job)
+		// A panic in one job fails that job and the worker moves on to the next, instead
+		// of the whole app going down with it.
+		if err := safego.Call(s.log, "subtitles job", func() error { s.process(jctx, job); return nil }); err != nil {
+			s.finish(job, StateFailed, "internal error: "+err.Error())
+		}
 		done()
 	}
 }

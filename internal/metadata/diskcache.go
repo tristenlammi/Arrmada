@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"sync"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 // DiskCache keeps catalogue answers in SQLite so they survive a restart, and serves a
@@ -95,7 +97,7 @@ func swr[T any](ctx context.Context, c *DiskCache, key string, ttl time.Duration
 		var v T
 		if json.Unmarshal(raw, &v) == nil {
 			if expired && c.claim(key) {
-				go func() {
+				safego.Go(nil, "metadata cache refresh", func() {
 					defer c.release(key)
 					bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 					defer cancel()
@@ -104,7 +106,7 @@ func swr[T any](ctx context.Context, c *DiskCache, key string, ttl time.Duration
 							c.put(key, b, ttl)
 						}
 					}
-				}()
+				})
 			}
 			return v, nil
 		}

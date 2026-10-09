@@ -94,3 +94,59 @@ func TestRegisterAfterStartRuns(t *testing.T) {
 	cancel()
 	s.Wait()
 }
+
+// A task that panics must not take the app down with it: the panic is caught, counted
+// as a failure, and the next tick runs as normal.
+func TestPanickingTaskRunsAgainNextTick(t *testing.T) {
+	s := New(quietLogger())
+	var runs int32
+	s.Register("crashy", 5*time.Millisecond, true, func(context.Context) error {
+		if atomic.AddInt32(&runs, 1) == 1 {
+			var m map[string]int
+			m["boom"] = 1 // nil map write: a real runtime panic
+		}
+		return nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	s.Start(ctx)
+	deadline := time.Now().Add(2 * time.Second)
+	for atomic.LoadInt32(&runs) < 3 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	cancel()
+	s.Wait()
+
+	if got := atomic.LoadInt32(&runs); got < 3 {
+		t.Fatalf("task stopped after panicking: %d runs", got)
+	}
+	infos := s.Tasks()
+	if len(infos) != 1 {
+		t.Fatalf("tasks = %+v", infos)
+	}
+	ti := infos[0]
+	if ti.Failures != 1 || ti.Runs < 3 || ti.LastErr != "" || ti.Running {
+		t.Fatalf("task info = %+v, want 1 failure, >=3 runs, last run clean", ti)
+	}
+}
+
+func TestWaitForNamesTasksStillRunning(t *testing.T) {
+	s := New(quietLogger())
+	release := make(chan struct{})
+	started := make(chan struct{})
+	s.Register("stuck", time.Hour, true, func(context.Context) error {
+		close(started)
+		<-release // ignores ctx on purpose
+		return nil
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	s.Start(ctx)
+	<-started
+	cancel()
+	if left := s.WaitFor(20 * time.Millisecond); len(left) != 1 || left[0] != "stuck" {
+		t.Fatalf("WaitFor = %v, want [stuck]", left)
+	}
+	close(release)
+	if left := s.WaitFor(2 * time.Second); left != nil {
+		t.Fatalf("WaitFor after release = %v", left)
+	}
+}

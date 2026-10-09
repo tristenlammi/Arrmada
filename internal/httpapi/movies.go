@@ -28,7 +28,11 @@ func (a *api) handleListMovies(w http.ResponseWriter, r *http.Request) {
 		// Backfill media info cached before it existed or by an older probe (fire-and-forget,
 		// bounded and deduplicated inside EnsureMedia).
 		if list[i].MediaStale() {
-			go a.deps.Movies.EnsureMedia(context.Background(), list[i].ID)
+			id := list[i].ID
+			a.bg("media backfill", idTarget("movie", id), 10*time.Minute, func(ctx context.Context) error {
+				a.deps.Movies.EnsureMedia(ctx, id)
+				return nil
+			})
 		}
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{
@@ -103,13 +107,10 @@ func (a *api) handleAddMovie(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if m.Monitored && searchOnAdd {
-		go func(id int64) {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-			defer cancel()
-			if err := a.deps.Automation.SearchMovie(ctx, id); err != nil {
-				a.deps.Log.Warn("auto-search on add failed", "movie", m.Title, "err", err)
-			}
-		}(m.ID)
+		id := m.ID
+		a.bg("auto-search on add", idTarget("movie", id), 3*time.Minute, func(ctx context.Context) error {
+			return a.deps.Automation.SearchMovie(ctx, id)
+		})
 	}
 
 	a.writeJSON(w, http.StatusCreated, m)
@@ -122,13 +123,9 @@ func (a *api) handleSearchMovie(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Run in the background; searching indexers (via FlareSolverr) is slow.
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-		defer cancel()
-		if err := a.deps.Automation.SearchMovie(ctx, id); err != nil {
-			a.deps.Log.Warn("manual movie search failed", "id", id, "err", err)
-		}
-	}()
+	a.bg("manual movie search", idTarget("movie", id), 3*time.Minute, func(ctx context.Context) error {
+		return a.deps.Automation.SearchMovie(ctx, id)
+	})
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
 }
 
@@ -168,13 +165,9 @@ func (a *api) handleBlocklist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.SearchAgain {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-			defer cancel()
-			if err := a.deps.Automation.BlocklistAndSearch(ctx, id, req.Title, req.Indexer, req.DownloadURL); err != nil {
-				a.deps.Log.Warn("blocklist & search failed", "id", id, "err", err)
-			}
-		}()
+		a.bg("blocklist & search", idTarget("movie", id), 3*time.Minute, func(ctx context.Context) error {
+			return a.deps.Automation.BlocklistAndSearch(ctx, id, req.Title, req.Indexer, req.DownloadURL)
+		})
 		a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "blocklisted, searching"})
 		return
 	}
@@ -203,17 +196,15 @@ func (a *api) handleUnblock(w http.ResponseWriter, r *http.Request) {
 // lookups over a large library take a while.
 func (a *api) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
 	root := a.libMovies(r) // resolve the configured folder before we detach
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
-		defer cancel()
+	a.bg("library scan", "movies", 15*time.Minute, func(ctx context.Context) error {
 		res, err := a.deps.Movies.ScanLibrary(ctx, root)
 		if err != nil {
-			a.deps.Log.Warn("library scan failed", "err", err)
-			return
+			return err
 		}
 		a.deps.Log.Info("library scan complete", "imported", res.Imported, "skipped", res.Skipped, "unmatched", len(res.Unmatched))
 		a.deps.Bus.Publish("library.scanned", map[string]any{"media": "movie", "imported": res.Imported, "unmatched": len(res.Unmatched)})
-	}()
+		return nil
+	})
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "scanning"})
 }
 
@@ -266,11 +257,11 @@ func (a *api) handleGetMovie(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, "could not load movie")
 		return
 	}
-	if file, ferr := a.deps.Movies.FileInfo(r.Context(), id); ferr == nil {
-		m.File = file
-	}
-	if versions, verr := a.deps.Movies.Versions(r.Context(), id); verr == nil {
+	// One live read of the tracks: the default track's File is the movie's file. Asking
+	// for the file and the versions separately probed the default file twice per load.
+	if versions, verr := a.deps.Movies.VersionsLive(r.Context(), id); verr == nil {
 		m.Versions = versions
+		m.File = versions[0].File
 	}
 	if queue, qerr := a.deps.Downloads.Queue(r.Context()); qerr == nil {
 		m.Download = downloadFor(queue, m)
@@ -312,7 +303,7 @@ func (a *api) handleListVersions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	versions, err := a.deps.Movies.Versions(r.Context(), id)
+	versions, err := a.deps.Movies.VersionsLive(r.Context(), id)
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not load versions")
 		return
@@ -358,11 +349,9 @@ func (a *api) handleAddVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if monitored {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-			defer cancel()
-			_ = a.deps.Automation.SearchMovie(ctx, id)
-		}()
+		a.bg("search for new version", idTarget("movie", id), 3*time.Minute, func(ctx context.Context) error {
+			return a.deps.Automation.SearchMovie(ctx, id)
+		})
 	}
 	a.writeJSON(w, http.StatusCreated, v)
 }
@@ -451,14 +440,18 @@ func (a *api) handleSetProfile(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case !m.HasFile:
 			// Missing → search under the new criteria.
-			go a.bg(func(ctx context.Context) error { return a.deps.Automation.SearchMovie(ctx, id) }, "re-search after profile change", id)
+			a.bg("re-search after profile change", idTarget("movie", id), 3*time.Minute, func(ctx context.Context) error {
+				return a.deps.Automation.SearchMovie(ctx, id)
+			})
 		case a.deps.Quality.WouldReject(r.Context(), req.QualityProfile, m.SourceRelease, sizeGB(m), m.Runtime):
 			// The existing file no longer fits the new (lower) profile → this is a
 			// downgrade. Don't act automatically; let the UI ask the user.
 			downgrade = true
 		default:
 			// The file still fits → look for a better release under the new profile.
-			go a.bg(func(ctx context.Context) error { return a.deps.Automation.UpgradeMovie(ctx, id) }, "upgrade after profile change", id)
+			a.bg("upgrade after profile change", idTarget("movie", id), 3*time.Minute, func(ctx context.Context) error {
+				return a.deps.Automation.UpgradeMovie(ctx, id)
+			})
 		}
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"quality_profile": req.QualityProfile, "downgrade": downgrade})
@@ -472,22 +465,10 @@ func (a *api) handleRegrab(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	go a.bg(func(ctx context.Context) error { return a.deps.Automation.RegrabMovie(ctx, id) }, "regrab", id)
+	a.bg("regrab", idTarget("movie", id), 3*time.Minute, func(ctx context.Context) error {
+		return a.deps.Automation.RegrabMovie(ctx, id)
+	})
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
-}
-
-// bg runs fn in the background with a bounded timeout, logging failures.
-func (a *api) bg(fn func(context.Context) error, what string, id int64) {
-	a.bgFor(3*time.Minute, fn, what, id)
-}
-
-// bgFor is bg with its own time budget, for work that legitimately runs long.
-func (a *api) bgFor(budget time.Duration, fn func(context.Context) error, what string, id int64) {
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
-	defer cancel()
-	if err := fn(ctx); err != nil {
-		a.deps.Log.Warn(what+" failed", "id", id, "err", err)
-	}
 }
 
 // sizeGB returns a movie's on-disk file size in GB (0 if unknown).
@@ -578,8 +559,9 @@ func (a *api) handleRefreshMovie(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, "could not refresh movie")
 		return
 	}
-	if file, ferr := a.deps.Movies.FileInfo(ctx, id); ferr == nil {
-		m.File = file
+	if versions, verr := a.deps.Movies.VersionsLive(ctx, id); verr == nil {
+		m.Versions = versions
+		m.File = versions[0].File
 	}
 	a.deps.Bus.Publish("movie.refreshed", map[string]any{"id": id})
 	a.writeJSON(w, http.StatusOK, m)

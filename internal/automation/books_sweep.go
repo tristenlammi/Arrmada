@@ -8,6 +8,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/indexer"
+	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 // The scheduled missing-books sweep gives a book two tries and then leaves it to the
@@ -62,7 +63,7 @@ func (c *Coordinator) StartBookSweep(ctx context.Context) bool {
 	}
 	c.bookSweep = BookSweepStatus{Running: true, StartedAt: time.Now().Unix()}
 	c.bookSweepMu.Unlock()
-	go c.runBookSweep(ctx)
+	safego.Go(c.log, "book sweep", func() { c.runBookSweep(ctx) })
 	return true
 }
 

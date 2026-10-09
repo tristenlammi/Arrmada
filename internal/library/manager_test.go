@@ -35,7 +35,7 @@ func TestProcessSkipsWhenTargetUnverifiable(t *testing.T) {
 		t.Fatal(err)
 	}
 	weird := filepath.Join(blocker, "Movie (2024)", "movie.mkv")
-	if err := m.repo.record(ctx, ImportRecord{Hash: "h1", TargetPath: weird, Title: "Movie"}); err != nil {
+	if err := m.repo.record(ctx, ImportRecord{Hash: "h1", TargetPath: weird, Title: "Movie"}, AttachStateAttached); err != nil {
 		t.Fatal(err)
 	}
 
@@ -52,7 +52,7 @@ func TestProcessSkipsWhenTargetUnverifiable(t *testing.T) {
 	}
 
 	// Control: a target that is definitively gone (ENOENT) IS forgotten and re-imported.
-	if err := m.repo.record(ctx, ImportRecord{Hash: "h2", TargetPath: filepath.Join(lib, "gone.mkv"), Title: "Movie"}); err != nil {
+	if err := m.repo.record(ctx, ImportRecord{Hash: "h2", TargetPath: filepath.Join(lib, "gone.mkv"), Title: "Movie"}, AttachStateAttached); err != nil {
 		t.Fatal(err)
 	}
 	n = m.Process(ctx, []Candidate{{Hash: "h2", Name: "Movie.2024.1080p.WEB-DL", ContentPath: video}})

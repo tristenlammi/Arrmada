@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 const (
@@ -229,7 +231,13 @@ func (t *TMDB) GetSeries(ctx context.Context, tmdbID int) (*SeriesDetails, error
 		wg.Add(1)
 		go func(i, seasonNum int) {
 			defer wg.Done()
-			eps, err := t.seasonEpisodes(ctx, tmdbID, seasonNum)
+			// A panic decoding one season counts as that season failing to load.
+			var eps []EpisodeDetails
+			err := safego.Call(nil, "tmdb season episodes", func() error {
+				var e error
+				eps, e = t.seasonEpisodes(ctx, tmdbID, seasonNum)
+				return e
+			})
 			if err == nil {
 				d.Seasons[i].Episodes = eps
 			} else {
