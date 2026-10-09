@@ -150,11 +150,11 @@ func TestWantsEpisodeFileRefusesHeld(t *testing.T) {
 		t.Fatal(err)
 	}
 	name := "Show.S01E01.1080p.WEB-DL.x264-GRP"
-	if h.c.wantsEpisodeFile(ctx, s, 1, 1, parser.Parse(name), name, 2000000) {
+	if h.c.wantsEpisodeFile(ctx, s, 1, 1, parser.Parse(name), name, 2000000, 1) {
 		t.Error("a held episode was replaced by the import gate")
 	}
 	h.exec(`UPDATE episodes SET upgrade_hold = 0`)
-	if !h.c.wantsEpisodeFile(ctx, s, 1, 1, parser.Parse(name), name, 2000000) {
+	if !h.c.wantsEpisodeFile(ctx, s, 1, 1, parser.Parse(name), name, 2000000, 1) {
 		t.Error("after Resume, a 1080p over a 720p file was refused")
 	}
 }
