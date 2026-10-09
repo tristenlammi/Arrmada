@@ -104,8 +104,9 @@ const UPGRADE_STEPS = [
   { percent: 100, label: "Much better", detail: "A 2.0 GB episode is replaced at about 4.0 GB. Only a dramatic jump, like a compact web rip giving way to a near-source encode." },
 ];
 
-// Which kind of gain is worth re-downloading for (StoredProfile.upgrade_trigger). Each one
-// also takes everything below it in the list; a PROPER of the same release always counts.
+// Which kind of gain is worth re-downloading for (StoredProfile.upgrade_trigger), broadest
+// first: each one also takes every gain the ones below it take. A PROPER of the same
+// release always counts.
 const UPGRADE_TRIGGERS: { v: UpgradeTrigger; l: string; short: string; detail: string }[] = [
   { v: "any", l: "Any improvement", short: "any improvement", detail: "A higher resolution, a format you prefer, a better source or a PROPER — anything that scores higher." },
   { v: "source", l: "A better source or a format you prefer", short: "better source or format", detail: "Also a higher resolution. A PROPER only when it fixes the release you have." },
