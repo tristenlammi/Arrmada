@@ -1136,18 +1136,21 @@ func (c *Coordinator) RankBookReleases(ctx context.Context, bookID int64) (Relea
 				score, eligible = bookRelScore(versionProfile(sp, *v), rel)
 			}
 		}
+		if rel.Transport == indexer.TransportUsenet {
+			eligible = false // no client can take it, so it is never the recommended pick
+		}
 		narrator := rel.Narrator
 		if narrator == "" && edition == books.KindAudiobook {
 			narrator = parseNarrator(rel.Title + " " + rel.Description)
 		}
 		items = append(items, ranked{
-			rr: RankedRelease{
+			rr: withIndexerFacts(RankedRelease{
 				Title: rel.Title, Indexer: rel.Indexer, DownloadURL: rel.DownloadURL, InfoHash: rel.InfoHash,
 				InfoURL: safeInfoURL(rel.InfoURL, rel.DownloadURL), SizeGB: rel.SizeGB(),
 				Seeders: rel.Seeders, Summary: summarizeBook(f),
 				Eligible: eligible, Edition: edition, Format: f, Narrator: narrator,
 				Author: rel.Author, Series: rel.Series, Language: rel.Language,
-			},
+			}, rel),
 			version: func() *books.AudioVersion {
 				if edition != books.KindAudiobook {
 					return nil

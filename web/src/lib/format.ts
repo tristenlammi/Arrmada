@@ -39,6 +39,19 @@ export function formatAgo(ms: number | null | undefined, now = Date.now()): stri
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+// formatReleaseAge is how old an indexer release is, for a search row: "5 h", "3 d",
+// "4 mo", "2 y". "" when the indexer didn't say (or the date is unreadable).
+export function formatReleaseAge(iso: string | null | undefined, now = Date.now()): string {
+  const t = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t)) return "";
+  const h = Math.max(0, Math.floor((now - t) / 3_600_000));
+  if (h < 24) return `${Math.max(1, h)} h`;
+  const d = Math.floor(h / 24);
+  if (d < 60) return `${d} d`;
+  if (d < 365) return `${Math.floor(d / 30)} mo`;
+  return `${Math.floor(d / 365)} y`;
+}
+
 // formatEta is how long a download has left, for a sentence like "12m left":
 // "under a minute", "12m", "3h 5m", "2d 4h".
 export function formatEta(sec: number): string {

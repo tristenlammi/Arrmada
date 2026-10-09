@@ -2474,6 +2474,12 @@ export interface RankedRelease {
   size_gb: number;
   bitrate_mbps?: number;
   seeders: number;
+  /** Beside seeders, as the indexer reports it (leechers, or the swarm on Torznab). */
+  peers?: number;
+  /** When the release was posted (RFC3339); absent when the indexer didn't say. */
+  published_at?: string;
+  /** A usenet release is listed but never grabbable: there is no usenet client. */
+  transport?: "torrent" | "usenet";
   summary: string;
   eligible: boolean;
   reject_reason?: string;

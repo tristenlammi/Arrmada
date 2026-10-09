@@ -1,15 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import { releaseErrorMessage, type RankedRelease, type ReleaseList } from "../lib/api";
+import { formatReleaseAge } from "../lib/format";
 
 // --- release metadata parsing (resolution + notable features live in summary/title) ---
-type SortKey = "best" | "size" | "bitrate" | "seeders" | "smallest";
+type SortKey = "best" | "size" | "bitrate" | "seeders" | "smallest" | "newest";
 const SORTS: { key: SortKey; label: string }[] = [
   { key: "best", label: "Best match" },
   { key: "bitrate", label: "Highest bitrate" },
   { key: "size", label: "Largest" },
   { key: "smallest", label: "Smallest" },
   { key: "seeders", label: "Most seeders" },
+  { key: "newest", label: "Newest" },
 ];
+// published is a release's posting time for sorting; an undated one sorts last.
+function published(r: RankedRelease): number {
+  const t = r.published_at ? Date.parse(r.published_at) : NaN;
+  return Number.isFinite(t) ? t : -Infinity;
+}
 const RES_ORDER = ["4K", "1080p", "720p", "SD"];
 function resOf(rel: RankedRelease): string {
   const s = `${rel.summary} ${rel.title}`;
@@ -88,6 +95,7 @@ export function ReleaseSearchModal({
       smallest: (a, b) => a.rel.size_gb - b.rel.size_gb,
       bitrate: (a, b) => sortBitrate(b.rel) - sortBitrate(a.rel),
       seeders: (a, b) => b.rel.seeders - a.rel.seeders,
+      newest: (a, b) => (published(b.rel) === published(a.rel) ? a.i - b.i : published(b.rel) > published(a.rel) ? 1 : -1),
     };
     return [...rows].sort(cmp[sort]);
   }, [decorated, resFilter, featFilter, sort]);
@@ -246,6 +254,9 @@ function Chip({ active, onClick, children }: { active: boolean; onClick: () => v
 
 function ReleaseRow({ rel, why, busy, grabbed, disabled, onGrab, onBlock }: { rel: RankedRelease; why?: string[]; busy: boolean; grabbed: boolean; disabled: boolean; onGrab: () => void; onBlock?: () => void }) {
   const blocked = rel.blocklisted;
+  // A usenet release has no client to go to; its reject reason says so.
+  const usenet = rel.transport === "usenet";
+  const age = formatReleaseAge(rel.published_at);
   const highlight = rel.recommended && !blocked;
   return (
     <div className="rounded-xl p-3.5" style={{ border: highlight ? "1px solid var(--accent)" : "1px solid var(--line)", background: highlight ? "var(--accent-soft)" : "var(--panel)", opacity: blocked ? 0.55 : 1 }}>
@@ -272,7 +283,8 @@ function ReleaseRow({ rel, why, busy, grabbed, disabled, onGrab, onBlock }: { re
           <div className="mt-1.5 flex flex-wrap items-center gap-3 font-mono text-[10.5px] text-ink-dim">
             <span>{rel.size_gb.toFixed(1)} GB</span>
             {rel.bitrate_mbps ? <span title="Average bitrate (size ÷ runtime)" style={{ color: "var(--accent)" }}>{rel.bitrate_mbps.toFixed(1)} Mb/s</span> : null}
-            <span>{rel.seeders} seeders</span>
+            {!usenet && <span title="Seeders / peers, as the indexer reports them">{rel.seeders}/{rel.peers ?? 0} seeders/peers</span>}
+            {age && <span title={rel.published_at ? `Posted ${new Date(rel.published_at).toLocaleString()}` : undefined}>{age} old</span>}
             <span>{rel.indexer}</span>
             {rel.info_url && <a href={rel.info_url} target="_blank" rel="noreferrer" className="font-semibold hover:underline" style={{ color: "var(--accent)" }}>view ↗</a>}
           </div>
@@ -284,10 +296,10 @@ function ReleaseRow({ rel, why, busy, grabbed, disabled, onGrab, onBlock }: { re
           )}
         </div>
         <div className="flex flex-none flex-col items-end gap-1.5">
-          <button onClick={onGrab} disabled={disabled || grabbed || blocked || !rel.token} className="rounded-lg px-3.5 py-2 text-[12px] font-semibold" style={{ background: grabbed ? "var(--panel-2)" : "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: grabbed ? "var(--ink-dim)" : "var(--accent-ink)", opacity: blocked ? 0.5 : 1 }}>
+          <button onClick={onGrab} disabled={disabled || grabbed || blocked || usenet || !rel.token} className="rounded-lg px-3.5 py-2 text-[12px] font-semibold" style={{ background: grabbed ? "var(--panel-2)" : "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: grabbed ? "var(--ink-dim)" : "var(--accent-ink)", opacity: blocked || usenet ? 0.5 : 1 }}>
             {grabbed ? "Grabbed ✓" : busy ? "…" : "Grab"}
           </button>
-          {onBlock && !blocked && !grabbed && rel.token && (
+          {onBlock && !blocked && !grabbed && !usenet && rel.token && (
             <button onClick={onBlock} disabled={disabled} title="Blocklist and search for an alternate" className="rounded-lg px-2.5 py-1 text-[10.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-faint)" }}>⊘ Block</button>
           )}
         </div>
