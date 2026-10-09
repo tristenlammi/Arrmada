@@ -17,6 +17,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/config"
 	"github.com/tristenlammi/arrmada/internal/diskspace"
 	"github.com/tristenlammi/arrmada/internal/download"
+	"github.com/tristenlammi/arrmada/internal/health"
 	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/settings"
 	"github.com/tristenlammi/arrmada/internal/store"
@@ -202,12 +203,18 @@ func healthAPI(t *testing.T, a *api) {
 	a.deps.Downloads = download.NewService(st.DB(), a.deps.Log)
 }
 
-func healthWarnings(t *testing.T, a *api) []healthWarning {
+// healthWarnings runs every check the API registers, then reads the panel.
+func healthWarnings(t *testing.T, a *api) []health.Warning {
 	t.Helper()
+	if a.deps.Health == nil {
+		a.deps.Health = health.NewRegistry(nil, nil)
+		a.registerHealthChecks(a.deps.Health)
+	}
+	a.deps.Health.RunAll(context.Background())
 	w := httptest.NewRecorder()
 	a.handleSystemHealth(w, httptest.NewRequest(http.MethodGet, "/", nil))
 	var got struct {
-		Warnings []healthWarning `json:"warnings"`
+		Warnings []health.Warning `json:"warnings"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decoding %q: %v", w.Body.String(), err)
@@ -386,7 +393,7 @@ func TestSystemHealthChecksEachLibraryFolder(t *testing.T) {
 	// ARRMADA_LIBRARY_DIR is gone; it must not be what's judged (or created).
 	a.deps.Config.LibraryDir = filepath.Join(base, "managed-volume")
 
-	var tvWarn, moviesErr *healthWarning
+	var tvWarn, moviesErr *health.Warning
 	warns := healthWarnings(t, a)
 	for i, w := range warns {
 		switch {

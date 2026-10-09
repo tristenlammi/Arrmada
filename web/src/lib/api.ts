@@ -416,14 +416,37 @@ export interface FolderCheck {
   error?: string;
 }
 
+// One problem a health check found. key is stable across runs; link_key names the LINKS
+// entry (lib/links.ts) where it's fixed, and link is the same address from the server for
+// keys this build doesn't know.
 export interface HealthWarning {
+  key?: string;
+  check?: string;
   level: string; // "error" | "warning"
   message: string;
+  link?: string;
+  link_key?: string;
+  link_label?: string;
+  since?: string; // when it was first seen
+}
+
+// One background health check's latest outcome. level is "pending" before its first run;
+// stale means its last run timed out and the findings are from before.
+export interface HealthCheck {
+  key: string;
+  name: string;
+  category: string; // "Storage" | "Downloads" | "Indexers" | "Integrations" | "Tasks"
+  level: "ok" | "warning" | "error" | "pending";
+  checked_at: string;
+  duration_ms: number;
+  stale: boolean;
+  findings: HealthWarning[];
 }
 
 export interface SystemHealth {
   status: string; // "ok" | "warning" | "error"
   warnings: HealthWarning[];
+  checks?: HealthCheck[];
   disk?: { free_gb: string; path: string };
 }
 
@@ -1487,8 +1510,9 @@ export const api = {
   myApprise: () => req<{ url: string; set: boolean }>("/api/v1/me/apprise"),
   setMyApprise: (url: string) => req<{ url: string; set: boolean }>("/api/v1/me/apprise", { method: "PUT", body: JSON.stringify({ url }) }),
 
-  systemHealth: () =>
-    req<SystemHealth>("/api/v1/health/system"),
+  // refresh re-runs every check first (the server allows that once per 10 s).
+  systemHealth: (refresh = false) =>
+    req<SystemHealth>(`/api/v1/health/system${refresh ? "?refresh=1" : ""}`),
   dashboard: () => req<DashboardData>("/api/v1/dashboard"),
   diskGuard: () => req<DiskGuardStatus>("/api/v1/downloads/disk-guard"),
   fileInfo: (path: string) => req<FileDetails>(`/api/v1/files/info?path=${encodeURIComponent(path)}`),
