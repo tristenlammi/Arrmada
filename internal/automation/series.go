@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -314,10 +315,13 @@ func (c *Coordinator) searchByAbsolute(ctx context.Context, s series.Series, rem
 		// The series' own absolute number, and the arc's number for any alias covering
 		// this episode. An arc released as its own show is numbered from 1 within that
 		// arc, not from 1 across the series, so the series-absolute query can't reach it.
-		terms := c.series.AliasSearchTerms(ctx, s.ID, k.season, k.episode)
-		if abs := c.series.AbsoluteNumber(ctx, s.ID, k.season, k.episode); abs > 0 {
-			terms = append(terms, fmt.Sprintf("%s %d", s.Title, abs))
+		var terms []string
+		for _, t := range c.series.AliasSearchTerms(ctx, s.ID, k.season, k.episode) {
+			if q := indexerQuery(t); q != "" {
+				terms = append(terms, q)
+			}
 		}
+		terms = append(terms, absoluteQueries(s, c.series.AbsoluteNumber(ctx, s.ID, k.season, k.episode))...)
 		if len(terms) == 0 {
 			continue // nothing to query by
 		}
@@ -342,6 +346,51 @@ func (c *Coordinator) searchByAbsolute(ctx context.Context, s series.Series, rem
 		c.series.SetAbsoluteCursor(ctx, s.ID, epCursor(ordered[(last+1)%len(ordered)]))
 	}
 	return grabbed
+}
+
+// absoluteQueries are the searches for one anime episode by its absolute number, written
+// the way fansub releases name it ("[SubsPlease] Dr. Stone - 13"): the cleaned title
+// (indexerQuery, so punctuation can't narrow the match) and the number, padded to two
+// digits below 100 like the release's "- 05". The same again under the show's romaji name
+// — its first automatic (TMDB) alias, or else a Latin-script original title — since the
+// groups that number absolutely mostly release under it. Empty when abs is unknown.
+func absoluteQueries(s series.Series, abs int) []string {
+	if abs <= 0 {
+		return nil
+	}
+	num := strconv.Itoa(abs)
+	if abs < 100 {
+		num = fmt.Sprintf("%02d", abs)
+	}
+	var out []string
+	add := func(title string) {
+		q := indexerQuery(title)
+		if q == "" {
+			return
+		}
+		q += " " + num
+		for _, have := range out {
+			if have == q {
+				return
+			}
+		}
+		out = append(out, q)
+	}
+	add(s.Title)
+	romaji := ""
+	for _, a := range s.Aliases {
+		if a.Auto() {
+			romaji = a.Title
+			break
+		}
+	}
+	if romaji == "" && s.Extra != nil && parser.IsLatin(s.Extra.OriginalTitle) {
+		romaji = s.Extra.OriginalTitle
+	}
+	if romaji != "" {
+		add(romaji)
+	}
+	return out
 }
 
 // epCursor packs an episode key into one sortable integer, so a resume point fits in a
