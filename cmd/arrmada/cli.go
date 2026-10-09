@@ -40,9 +40,9 @@ type cliCommand struct {
 
 var cliCommands = []cliCommand{
 	{name: "version", args: "[--schema]", summary: "print the version and commit this binary was built from", run: cmdVersion},
+	{name: "backup", args: "[--kind manual|pre-update]", summary: "copy the database to <data>/backups while the app keeps running", dataDir: true, run: cmdBackup},
 	{name: "schema", summary: "compare the database's schema with this build's (exit 3: a newer build upgraded it)", dataDir: true, run: cmdSchema},
 	{name: "reset-password", args: "<email> [--password-stdin]", summary: "give a locked-out account a new password and sign it out everywhere", dataDir: true, run: cmdResetPassword},
-	{name: "backup", args: "[--kind manual|pre-update]", summary: "copy the database to <data>/backups while the app keeps running", dataDir: true, run: cmdBackup},
 }
 
 // cli is what a command runs with: its streams and, for dataDir commands, the config.

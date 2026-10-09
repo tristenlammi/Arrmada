@@ -19,6 +19,9 @@ import (
 // zero-padded numeric prefix, e.g. 0001_init.sql, 0002_add_indexers.sql. Each one
 // runs inside its own transaction, so never put BEGIN or COMMIT in the file.
 //
+// Never rename or delete a migration once it has shipped: a database that recorded
+// it would then look upgraded by a newer build, and Open refuses those (schema.go).
+//
 // Rebuilding a table (changing a column's type or constraints, which ALTER TABLE
 // can't do) follows SQLite's 12-step recipe (https://sqlite.org/lang_altertable.html):
 //
