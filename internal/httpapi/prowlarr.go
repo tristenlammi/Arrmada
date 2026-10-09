@@ -39,7 +39,12 @@ func (a *api) handleProwlarrSync(w http.ResponseWriter, r *http.Request) {
 	if key == "" {
 		key = a.deps.Settings.Get(ctx, keyProwlarrKey, "")
 	}
-	res, err := a.deps.Indexers.SyncProwlarr(ctx, url, key, a.deps.Config.FlaresolverrURL)
+	// The FlareSolverr URL Prowlarr is pointed at is the one in Settings (env as fallback).
+	flare := ""
+	if a.deps.APIKeys != nil {
+		flare = a.deps.APIKeys.Value(ctx, "flaresolverr")
+	}
+	res, err := a.deps.Indexers.SyncProwlarr(ctx, url, key, flare)
 	if err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return

@@ -256,6 +256,7 @@ func (c *Coordinator) searchSeriesOnceScoped(ctx context.Context, seriesID int64
 	out := SearchOutcome{Searched: true}
 	releases, err := c.searchSeriesReleasesExcept(ctx, s, inSeasons)
 	if err != nil {
+		out.noteSearchErr(err)
 		return out, err
 	}
 	// The series search already narrows releases to this show, so what came back is

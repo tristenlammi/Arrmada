@@ -27,18 +27,27 @@ const userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 
 type Client struct {
 	http     *http.Client
 	base     string
-	flareURL string // optional FlareSolverr endpoint, used when Cloudflare blocks a direct fetch
+	flare    func() string // optional FlareSolverr endpoint, used when Cloudflare blocks a direct fetch
 	log      *slog.Logger
 }
 
-// New builds a client. flareURL (Arrmada's bundled FlareSolverr, e.g.
-// http://arrmada-flaresolverr:8191) is used to get past a Cloudflare challenge when the
-// direct request is blocked; pass "" to disable that fallback.
-func New(flareURL string, log *slog.Logger) *Client {
+// New builds a client. flareURL returns Arrmada's FlareSolverr address (e.g.
+// http://arrmada-flaresolverr:8191), read on every fetch so a URL changed in Settings
+// applies at once; it's used to get past a Cloudflare challenge when the direct request
+// is blocked. A nil func, or one returning "", disables that fallback.
+func New(flareURL func() string, log *slog.Logger) *Client {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Client{http: &http.Client{Timeout: 25 * time.Second}, base: "https://thexem.info", flareURL: strings.TrimRight(flareURL, "/"), log: log}
+	return &Client{http: &http.Client{Timeout: 25 * time.Second}, base: "https://thexem.info", flare: flareURL, log: log}
+}
+
+// flareURL is the FlareSolverr address in use right now, or "".
+func (c *Client) flareURL() string {
+	if c.flare == nil {
+		return ""
+	}
+	return strings.TrimRight(strings.TrimSpace(c.flare()), "/")
 }
 
 // Fetch returns a scene/tvdb→absolute map for a TVDB id, keyed "season-episode" (e.g.
@@ -55,10 +64,11 @@ func (c *Client) Fetch(ctx context.Context, tvdbID int) (map[string]int, error) 
 		c.log.Info("thexem: direct fetch ok", "tvdb", tvdbID, "bytes", len(body))
 		return c.parse(tvdbID, body)
 	}
-	c.log.Info("thexem: direct fetch blocked", "tvdb", tvdbID, "status", status, "err", err, "flaresolverr", c.flareURL != "")
+	flare := c.flareURL()
+	c.log.Info("thexem: direct fetch blocked", "tvdb", tvdbID, "status", status, "err", err, "flaresolverr", flare != "")
 	// Blocked by Cloudflare (403/503/429) → route through FlareSolverr if configured.
-	if c.flareURL != "" && (status == http.StatusForbidden || status == http.StatusServiceUnavailable || status == http.StatusTooManyRequests) {
-		fb, ferr := c.getViaFlare(ctx, u)
+	if flare != "" && (status == http.StatusForbidden || status == http.StatusServiceUnavailable || status == http.StatusTooManyRequests) {
+		fb, ferr := c.getViaFlare(ctx, flare, u)
 		if ferr != nil {
 			return nil, fmt.Errorf("thexem: HTTP %d, flaresolverr: %w", status, ferr)
 		}
@@ -90,9 +100,9 @@ func (c *Client) getDirect(ctx context.Context, u string) ([]byte, int, error) {
 
 // getViaFlare fetches u through FlareSolverr, which drives a real browser to solve the
 // Cloudflare challenge and returns the final page — from which we extract the JSON body.
-func (c *Client) getViaFlare(ctx context.Context, u string) ([]byte, error) {
+func (c *Client) getViaFlare(ctx context.Context, flare, u string) ([]byte, error) {
 	reqBody, _ := json.Marshal(map[string]any{"cmd": "request.get", "url": u, "maxTimeout": 60000})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.flareURL+"/v1", bytes.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, flare+"/v1", bytes.NewReader(reqBody))
 	if err != nil {
 		return nil, err
 	}

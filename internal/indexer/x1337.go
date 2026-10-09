@@ -73,7 +73,7 @@ func (s *X1337Searcher) getHTML(ctx context.Context, pageURL string) (string, er
 	if err := s.throttle(ctx); err != nil {
 		return "", err
 	}
-	if s.fs != nil {
+	if s.fs.Configured() {
 		sol, err := s.fs.Get(ctx, pageURL)
 		if err != nil {
 			return "", err

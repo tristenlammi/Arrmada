@@ -199,7 +199,7 @@ func healthAPI(t *testing.T, a *api) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	a.deps.Indexers = indexer.NewService(st.DB(), a.deps.Log, "")
+	a.deps.Indexers = indexer.NewService(st.DB(), a.deps.Log, nil)
 	a.deps.Downloads = download.NewService(st.DB(), a.deps.Log)
 }
 

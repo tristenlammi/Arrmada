@@ -3,6 +3,8 @@ package automation
 import (
 	"fmt"
 	"strings"
+
+	"github.com/tristenlammi/arrmada/internal/indexer"
 )
 
 // SearchOutcome is what one title search found, for the person who pressed Search.
@@ -26,6 +28,7 @@ const (
 	ReasonBlockedOrBelow    = "all-blocklisted-or-below-profile" // matching releases, none grabbable under the profile
 	ReasonGrabbed           = "grabbed"
 	ReasonAlreadySearching  = "already-searching" // another search of the same title was running
+	ReasonIndexersPaused    = "indexers-paused"   // every indexer is backing off after repeated failures; none was asked
 	defaultOutcomeMediaNoun = "title"
 )
 
@@ -43,6 +46,16 @@ func (o *SearchOutcome) settle() {
 	}
 }
 
+// noteSearchErr records why a search that couldn't run ended: when every indexer was
+// skipped for backing off, that is the reason — not "no releases" — and nothing was
+// actually searched. Other errors leave the outcome alone.
+func (o *SearchOutcome) noteSearchErr(err error) {
+	if indexer.IsPaused(err) {
+		o.Searched = false
+		o.Reason = ReasonIndexersPaused
+	}
+}
+
 // Message is the outcome as one plain sentence for a toast: "Grabbed Dune.Part.Two.2024.
 // 2160p.WEB-DL", "No releases found", "12 releases found, none for this movie". noun is
 // what was searched ("movie", "show", "book").
@@ -55,6 +68,8 @@ func (o SearchOutcome) Message(noun string) string {
 		return "Already being searched — that search covers it"
 	case ReasonNothingWanted:
 		return "Nothing to search for — everything monitored is already here"
+	case ReasonIndexersPaused:
+		return "Not searched — every indexer is paused after repeated failures (see Indexers)"
 	case ReasonGrabbed:
 		if len(o.GrabbedTitles) == 0 {
 			return fmt.Sprintf("Grabbed %d %s", o.Grabbed, pluralize(o.Grabbed, "release"))

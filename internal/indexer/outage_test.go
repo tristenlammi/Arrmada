@@ -23,7 +23,7 @@ func outageService(t *testing.T, mediaTypes []string, urls ...string) *Service {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	s := NewService(st.DB(), slog.New(slog.NewTextHandler(io.Discard, nil)), "")
+	s := NewService(st.DB(), slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 	for i, u := range urls {
 		if _, err := s.Create(context.Background(), Indexer{
 			Name: fmt.Sprintf("Tracker%d", i+1), Kind: KindTorznab, URL: u,

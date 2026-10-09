@@ -3,6 +3,7 @@ package indexer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -115,7 +116,7 @@ func (t *TorrentLeechSearcher) newSession(ctx context.Context, idx Indexer) (*tl
 	jar, _ := cookiejar.New(nil)
 	ua := tlUserAgent
 
-	if t.fs != nil {
+	if t.fs.Configured() {
 		sol, err := t.fs.Get(ctx, tlBaseURL+"/")
 		if err != nil {
 			return nil, fmt.Errorf("torrentleech: %w", err)
@@ -147,8 +148,8 @@ func (t *TorrentLeechSearcher) newSession(ctx context.Context, idx Indexer) (*tl
 		return nil, fmt.Errorf("torrentleech: account has 2FA enabled — not supported yet")
 	case strings.Contains(html, "text-danger"), strings.Contains(html, "login-form"):
 		return nil, fmt.Errorf("torrentleech: login failed — check username/password")
-	case t.fs == nil:
-		return nil, fmt.Errorf("torrentleech: login blocked (likely Cloudflare) — configure FlareSolverr")
+	case !t.fs.Configured():
+		return nil, errNoFlareSolverr
 	default:
 		return nil, fmt.Errorf("torrentleech: login failed (Cloudflare challenge persisted)")
 	}
@@ -176,6 +177,14 @@ func (t *TorrentLeechSearcher) dropSession(id int64) {
 	delete(t.sessions, id)
 	t.sessMu.Unlock()
 }
+
+// errNoFlareSolverr is a TorrentLeech login or download that Cloudflare stopped while no
+// FlareSolverr URL is set — saying where to set it. (With a URL set but the container
+// down, the error is FlareSolverr's own: "FlareSolverr at … isn't answering".)
+var errNoFlareSolverr = errors.New("torrentleech: Cloudflare blocked TorrentLeech and FlareSolverr isn't set up; add its URL in Settings → System → API keys")
+
+// Reset drops the indexer's cached session (it was edited or deleted).
+func (t *TorrentLeechSearcher) Reset(id int64) { t.dropSession(id) }
 
 // Test verifies credentials (and Cloudflare/FlareSolverr) with a fresh login.
 func (t *TorrentLeechSearcher) Test(ctx context.Context, idx Indexer) error {
@@ -280,8 +289,8 @@ func (t *TorrentLeechSearcher) Fetch(ctx context.Context, idx Indexer, downloadU
 	// A .torrent is bencoded (starts with 'd'); HTML means a challenge/login page.
 	if len(data) == 0 || data[0] == '<' {
 		t.dropSession(idx.ID)
-		if t.fs == nil {
-			return FetchResult{}, fmt.Errorf("torrentleech: download blocked (likely Cloudflare) — configure FlareSolverr")
+		if !t.fs.Configured() {
+			return FetchResult{}, errNoFlareSolverr
 		}
 		return FetchResult{}, fmt.Errorf("torrentleech: didn't get a torrent (Cloudflare/session) — retry")
 	}

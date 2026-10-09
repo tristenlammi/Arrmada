@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/quality"
 )
 
@@ -202,7 +203,7 @@ func (a *api) handleQualityTest(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusServiceUnavailable, "searching isn't available")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(indexer.WithInteractive(r.Context()), 90*time.Second)
 	defer cancel()
 	var (
 		list automation.ReleaseList

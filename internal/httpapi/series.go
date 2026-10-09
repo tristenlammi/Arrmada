@@ -12,6 +12,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/download"
+	"github.com/tristenlammi/arrmada/internal/indexer"
 	"github.com/tristenlammi/arrmada/internal/jobs"
 	"github.com/tristenlammi/arrmada/internal/library"
 	"github.com/tristenlammi/arrmada/internal/parser"
@@ -465,7 +466,7 @@ func (a *api) handleSeriesReleases(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	season, episode := releasesScope(r.URL.Query().Get("season"), r.URL.Query().Get("episode"))
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(indexer.WithInteractive(r.Context()), 90*time.Second)
 	defer cancel()
 	list, err := a.deps.Automation.RankSeriesReleases(ctx, id, season, episode)
 	if err != nil {
@@ -550,10 +551,10 @@ func (a *api) handleAutoGrabSeries(w http.ResponseWriter, r *http.Request) {
 	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{
 		Kind: "series.grab-scope", Target: fmt.Sprintf("series:%d:s%de%d", id, req.Season, req.Episode),
 		Class: jobs.ClassIndexerSearch, Timeout: 5 * time.Minute,
-		Fn: errFn(func(ctx context.Context) error {
+		Fn: interactive(errFn(func(ctx context.Context) error {
 			_, err := a.deps.Automation.GrabForScope(ctx, id, sc)
 			return err
-		})})
+		}))})
 	if !ok {
 		return
 	}
@@ -850,7 +851,7 @@ func (a *api) handleRegrabEpisode(w http.ResponseWriter, r *http.Request) {
 	jobID, existing, ok := a.submitOr503(w, r, jobs.Spec{
 		Kind: "series.regrab-episode", Target: fmt.Sprintf("series:%d:s%de%d", id, season, episode),
 		Class: jobs.ClassIndexerSearch, Timeout: 5 * time.Minute,
-		Fn: errFn(func(ctx context.Context) error { return a.deps.Automation.RegrabEpisode(ctx, id, season, episode) })})
+		Fn: interactive(errFn(func(ctx context.Context) error { return a.deps.Automation.RegrabEpisode(ctx, id, season, episode) }))})
 	if !ok {
 		return
 	}

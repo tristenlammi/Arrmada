@@ -312,9 +312,39 @@ func (c *TorznabSearcher) get(ctx context.Context, endpoint string) ([]byte, err
 		return nil, sanitizeErr(endpoint, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return nil, &HTTPStatusError{Code: resp.StatusCode, RetryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
 	}
 	return body, nil
+}
+
+// HTTPStatusError is an indexer's non-200 answer. Its text is still the bare "HTTP 429"
+// people already see; RetryAfter carries the server's Retry-After so the integration
+// status tracker can pause the indexer for at least that long instead of asking again on
+// the next search.
+type HTTPStatusError struct {
+	Code       int
+	RetryAfter time.Duration
+}
+
+func (e *HTTPStatusError) Error() string { return fmt.Sprintf("HTTP %d", e.Code) }
+
+// parseRetryAfter reads a Retry-After header: whole seconds or an HTTP date. Anything
+// else, or a time already past, is zero.
+func parseRetryAfter(v string, now time.Time) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		if n <= 0 {
+			return 0
+		}
+		return time.Duration(n) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil && t.After(now) {
+		return t.Sub(now)
+	}
+	return 0
 }
 
 // torznabText applies a book edition the only way a general tracker can express it: as a

@@ -124,6 +124,11 @@ func (s *Service) SyncProwlarr(ctx context.Context, baseURL, apiKey, flareURL st
 			if err := s.repo.Update(ctx, idx); err != nil {
 				return res, err
 			}
+			// A re-sync with a new Prowlarr key or address is an edit like any other:
+			// failures recorded against the old one mustn't keep the indexer paused.
+			if connectionChanged(ex, idx) {
+				s.resetStatus(ctx, ex.ID, false)
+			}
 		} else {
 			// A new synced indexer must not inherit Go's zero values: SeedEnabled=false
 			// means "remove as soon as it's imported", i.e. never seed at all — a

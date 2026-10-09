@@ -31,6 +31,51 @@ func IndexersCheck(enabled func(ctx context.Context) (int, error)) Check {
 	}
 }
 
+// PausedIndexer is an enabled indexer that background searches are leaving alone after
+// repeated failures (see internal/connstatus).
+type PausedIndexer struct {
+	ID        int64
+	Name      string
+	Failures  int
+	Until     time.Time
+	LastError string // already redacted
+}
+
+// IndexerStatusCheck names each enabled indexer that is backing off after repeated
+// failures, with its error and when it is next tried. One paused among working ones is a
+// warning; every enabled one paused is an error, because then nothing is searched
+// automatically at all. A single failure isn't reported: a public tracker that times out
+// now and then is still working. states returns how many indexers are enabled and which
+// of them are paused; an error says nothing.
+func IndexerStatusCheck(states func(ctx context.Context) (enabled int, paused []PausedIndexer, err error)) Check {
+	return indexerStatusCheck(states, time.Now)
+}
+
+func indexerStatusCheck(states func(ctx context.Context) (int, []PausedIndexer, error), now func() time.Time) Check {
+	return Check{
+		Key: "indexers.status", Name: "Indexer status", Category: CategoryIndexers,
+		Run: func(ctx context.Context) []Finding {
+			enabled, paused, err := states(ctx)
+			if err != nil || len(paused) == 0 {
+				return nil
+			}
+			level, tail := LevelWarning, "automatic searches skip it until then"
+			if len(paused) >= enabled {
+				level, tail = LevelError, "every indexer is paused, so nothing is being searched automatically"
+			}
+			out := make([]Finding, 0, len(paused))
+			for _, p := range paused {
+				msg := fmt.Sprintf("%s has failed %d times in a row and is paused until %s — %s", p.Name, p.Failures, clock(p.Until, now()), tail)
+				if p.LastError != "" {
+					msg += ". Last error: " + p.LastError
+				}
+				out = append(out, Finding{Key: fmt.Sprintf("indexers.paused.%d", p.ID), Level: level, Fix: FixIndexerStatus, Message: msg})
+			}
+			return out
+		},
+	}
+}
+
 // LibraryState is what the library-folders check judges: the folders in use (only the
 // modules that are on), every folder setting (for the data-folder test, which applies
 // whether or not the module is on), and Arrmada's data folder.

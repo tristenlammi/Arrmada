@@ -3,6 +3,7 @@ import * as discover from "./discover";
 import * as media from "./media";
 import * as mod from "./modules";
 import * as sys from "./system";
+import { NOW } from "./clock";
 
 export interface MockRoute {
   method: string;
@@ -60,6 +61,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get(/^\/api\/v1\/downloadclients\/\d+\/status$/, { listen_port: 6881 }),
     get("/api/v1/indexers", media.indexers),
     get("/api/v1/indexers/prowlarr", { url: "", has_key: false }),
+    get("/api/v1/flaresolverr/status", { configured: true, ok: true, url: "http://arrmada-flaresolverr:8191", version: "3.3.21", checked_at: new Date(NOW).toISOString() }),
     get("/api/v1/history", media.history),
     get("/api/v1/reviews", media.reviews),
     get("/api/v1/movies", media.movies),

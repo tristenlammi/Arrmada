@@ -151,7 +151,7 @@ func (a *api) handleSearchAudioVersion(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	out, err := a.deps.Automation.SearchAudioVersionNow(r.Context(), id, vid)
+	out, err := a.deps.Automation.SearchAudioVersionNow(indexer.WithInteractive(r.Context()), id, vid)
 	if errors.Is(err, automation.ErrAlreadySearching) {
 		out.Reason, err = automation.ReasonAlreadySearching, nil
 	}

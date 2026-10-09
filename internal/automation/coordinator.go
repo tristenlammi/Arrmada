@@ -701,6 +701,7 @@ func (c *Coordinator) searchAndGrab(ctx context.Context, m movies.Movie) (Search
 	out := SearchOutcome{Searched: true}
 	result, err := c.indexers.Search(ctx, indexer.SearchQuery{Text: movieQuery(m), MediaType: indexer.MediaMovie, Limit: 100})
 	if err != nil {
+		out.noteSearchErr(err)
 		return out, err
 	}
 	out.Returned = len(result.Releases)

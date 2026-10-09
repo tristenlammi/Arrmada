@@ -46,6 +46,26 @@ export interface Indexer {
   seed_ratio?: number;
   seed_hours?: number;
   enabled: boolean;
+  /** How it has been answering; sent to managers and admins only. */
+  status?: IndexerStatus;
+}
+
+/**
+ * IndexerStatus is one indexer's health from the integration status tracker. "failing"
+ * failed last time but sweeps still ask it; "backing_off" is left alone by sweeps until
+ * backoff_until (a person's own search still asks it); "unknown" hasn't been asked since
+ * it was added or edited. Times are RFC 3339, absent when they never happened.
+ */
+export interface IndexerStatus {
+  state: "ok" | "failing" | "backing_off" | "disabled" | "unknown";
+  last_ok_at?: string;
+  last_error?: string;
+  last_error_at?: string;
+  failing_since?: string;
+  backoff_until?: string;
+  consecutive_failures: number;
+  queries_24h: number;
+  failures_24h: number;
 }
 
 export interface NewIndexer {
@@ -212,6 +232,16 @@ export interface ResumeResult {
   status: string;
   resumed?: number;
   held_by_guard?: number;
+}
+
+/** FlareSolverr as the Indexers page shows it; error is the exact failure. */
+export interface FlareSolverrStatus {
+  configured: boolean;
+  ok: boolean;
+  url?: string;
+  version?: string;
+  error?: string;
+  checked_at: string;
 }
 
 export interface APIKeyStatus {
@@ -1514,6 +1544,7 @@ export const api = {
   deleteIndexer: (id: number) => req<void>(`/api/v1/indexers/${id}`, { method: "DELETE" }),
   testIndexer: (id: number) =>
     req<{ ok: boolean; error?: string }>(`/api/v1/indexers/${id}/test`, { method: "POST" }),
+  flareSolverrStatus: () => req<FlareSolverrStatus>("/api/v1/flaresolverr/status"),
   prowlarrInfo: () => req<{ url: string; has_key: boolean }>("/api/v1/indexers/prowlarr"),
   syncProwlarr: (body: { url: string; api_key: string }) =>
     req<{ synced: number; flaresolverr_ready: boolean }>("/api/v1/indexers/prowlarr/sync", { method: "POST", body: JSON.stringify(body) }),

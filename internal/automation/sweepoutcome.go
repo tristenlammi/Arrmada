@@ -47,6 +47,7 @@ type outageTally struct {
 	titles     int  // searches that hit an outage this sweep
 	streak     int  // of those, how many in a row just now
 	noIndexers bool // nothing serves this media type at all
+	paused     bool // every indexer is backing off after repeated failures
 	first      error
 }
 
@@ -65,13 +66,17 @@ func (o *outageTally) note(err error) bool {
 	if errors.Is(err, indexer.ErrNoIndexers) {
 		o.noIndexers = true
 	}
+	if indexer.IsPaused(err) {
+		o.paused = true
+	}
 	return true
 }
 
 // stop reports whether the sweep should end now. "No indexer serves this" is true of
-// every title of the media type, so that stops at once.
+// every title of the media type, so that stops at once; so is "every indexer is paused",
+// which holds until the first pause runs out.
 func (o *outageTally) stop() bool {
-	return o.noIndexers || o.streak >= outageStopAfter
+	return o.noIndexers || o.paused || o.streak >= outageStopAfter
 }
 
 // report logs the sweep's outage once, if it had one.
@@ -87,6 +92,10 @@ func (o *outageTally) report(log *slog.Logger, sweep string) {
 			return
 		}
 		log.Info(sweep + ": no enabled indexer serves this media type; skipping")
+	case o.paused:
+		// Each indexer said so when it began backing off; this is the sweep visibly
+		// standing down rather than going quiet.
+		log.Info(sweep+": every indexer is paused after repeated failures; skipping this run", "err", o.first)
 	default:
 		log.Warn(sweep+": every indexer failed; not counting misses", "titles", o.titles, "stopped", o.stop(), "err", o.first)
 	}

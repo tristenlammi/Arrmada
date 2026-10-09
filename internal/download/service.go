@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/connstatus"
 	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
@@ -17,6 +19,22 @@ type Service struct {
 	repo     *Repo
 	registry *Registry
 	log      *slog.Logger
+	// status records each client's last queue read and Test (see connstatus). Clients
+	// are never paused — a dead one is only shown — so outcomes carry no backoff.
+	status *connstatus.Tracker
+}
+
+// SetStatus wires the integration status tracker; nil records nothing.
+func (s *Service) SetStatus(t *connstatus.Tracker) { s.status = t }
+
+// record notes one client's outcome. A failure while ctx is done (shutdown, a closed
+// page) says nothing about the client and is dropped.
+func (s *Service) record(ctx context.Context, c Client, err error, dur time.Duration) {
+	if s.status == nil || (err != nil && ctx.Err() != nil) {
+		return
+	}
+	s.status.Record(connstatus.KindDownloadClient, strconv.FormatInt(c.ID, 10),
+		connstatus.Outcome{Err: err, Dur: dur, Name: c.Name})
 }
 
 // NewService wires a Service over the database.
@@ -56,8 +74,16 @@ func (s *Service) EnsureBundled(ctx context.Context, url string) error {
 // Create stores a new client.
 func (s *Service) Create(ctx context.Context, c Client) (Client, error) { return s.repo.Create(ctx, c) }
 
-// Delete removes a client.
-func (s *Service) Delete(ctx context.Context, id int64) error { return s.repo.Delete(ctx, id) }
+// Delete removes a client and its recorded status.
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	if err := s.status.Forget(ctx, connstatus.KindDownloadClient, strconv.FormatInt(id, 10)); err != nil {
+		s.log.Warn("download client: couldn't clear its saved status", "id", id, "err", err)
+	}
+	return nil
+}
 
 // Test checks connectivity + auth for a stored client.
 func (s *Service) Test(ctx context.Context, id int64) error {
@@ -69,7 +95,10 @@ func (s *Service) Test(ctx context.Context, id int64) error {
 	if !ok {
 		return fmt.Errorf("no downloader for kind %q", c.Kind)
 	}
-	return impl.Test(ctx, c)
+	start := time.Now()
+	err = impl.Test(ctx, c)
+	s.record(ctx, c, err, time.Since(start))
+	return err
 }
 
 // Add dispatches a download to the first enabled client (later: route by
@@ -430,7 +459,9 @@ func (s *Service) QueueComplete(ctx context.Context) ([]Item, bool, error) {
 		if !ok {
 			continue
 		}
+		start := time.Now()
 		part, err := impl.List(ctx, c)
+		s.record(ctx, c, err, time.Since(start))
 		if err != nil {
 			s.log.Warn("download client list failed", "client", c.Name, "err", err)
 			lastErr = err

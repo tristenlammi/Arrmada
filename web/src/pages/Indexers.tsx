@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
-import { api, type Indexer } from "../lib/api";
+import { api, type Indexer, type IndexerStatus } from "../lib/api";
+import { INDEXER_DOT, indexerStatusLine } from "../lib/indexerStatus";
+import { LINKS } from "../lib/links";
 import { useQuery } from "../lib/query";
+import { useLive } from "../lib/useLive";
 import { ErrorState, Skeleton, StaleBanner } from "../ui";
 
 const NO_INDEXERS: Indexer[] = [];
@@ -18,6 +22,17 @@ export function Indexers() {
 
   const refresh = q.refetch;
 
+  // An indexer starting to fail, backing off or recovering is announced; re-read the list
+  // a second after the last such event so a burst of them (three sweeps at once) is one read.
+  const { last } = useLive();
+  useEffect(() => {
+    if (last?.topic !== "integration.status" || (last.data as { kind?: string } | null)?.kind !== "indexer") return;
+    const t = window.setTimeout(() => refresh(), 1000);
+    return () => window.clearTimeout(t);
+    // Keyed on the event alone: refresh changes identity as the list loads.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [last]);
+
   const runTest = async (id: number) => {
     setTests((t) => ({ ...t, [id]: { loading: true } }));
     try {
@@ -26,6 +41,8 @@ export function Indexers() {
     } catch (e) {
       setTests((t) => ({ ...t, [id]: { ok: false, error: (e as Error).message } }));
     }
+    // A Test is recorded like a search: re-read so the dot shows its answer.
+    refresh();
   };
 
   const remove = async (id: number) => {
@@ -59,6 +76,8 @@ export function Indexers() {
           />
         )}
 
+        <FlareSolverrLine />
+
         <ProwlarrSync onSynced={refresh} />
 
         {q.data && error && <StaleBanner message={error} onRetry={refresh} />}
@@ -76,8 +95,9 @@ export function Indexers() {
               return (
                 <div key={idx.id} className="rounded-xl p-4" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
                   <div className="flex items-center gap-3">
-                    <div className="flex-1">
+                    <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
+                        {idx.status && <StatusDot status={idx.status} />}
                         <span className="text-[13.5px] font-semibold">{idx.name}</span>
                         <span
                           className="rounded px-1.5 py-0.5 font-mono text-[9.5px] uppercase"
@@ -94,6 +114,7 @@ export function Indexers() {
                       <div className="mt-1 truncate font-mono text-[11px] text-ink-faint">
                         {idx.url || (idx.username ? `@${idx.username}` : "")}
                       </div>
+                      {idx.status && <StatusLine status={idx.status} />}
                     </div>
                     <span className="font-mono text-[11px] text-ink-faint">prio {idx.priority}</span>
                     <button onClick={() => setEditingId(editingId === idx.id ? null : idx.id)} className="rounded-lg px-3 py-1.5 text-[12px]" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
@@ -128,6 +149,63 @@ export function Indexers() {
         )}
       </div>
     </>
+  );
+}
+
+function StatusDot({ status }: { status: IndexerStatus }) {
+  const d = INDEXER_DOT[status.state] ?? INDEXER_DOT.unknown;
+  return (
+    <span
+      role="img"
+      aria-label={d.label}
+      title={d.label}
+      className="inline-block h-2 w-2 flex-none rounded-full"
+      style={{ background: d.color }}
+    />
+  );
+}
+
+function StatusLine({ status }: { status: IndexerStatus }) {
+  const line = indexerStatusLine(status);
+  if (!line) return null;
+  return (
+    <div className="mt-1 break-words text-[11.5px]" style={{ color: line.color }}>
+      {line.text}
+    </div>
+  );
+}
+
+// FlareSolverrLine says whether FlareSolverr — which TorrentLeech, 1337x and TheXEM need
+// to get past Cloudflare — is set up and answering. The page used to say it was wired up
+// whether or not the container was running.
+function FlareSolverrLine() {
+  const q = useQuery("flaresolverr-status", () => api.flareSolverrStatus(), { staleMs: 60_000 });
+  const s = q.data;
+  if (!s) return null;
+  let color: string;
+  let body: React.ReactNode;
+  if (!s.configured) {
+    color = "var(--ink-faint)";
+    body = (
+      <>
+        not set up — TorrentLeech and 1337x can't get past Cloudflare without it. Add its URL in{" "}
+        <Link to={LINKS.apiKeys} style={{ color: "var(--accent)" }}>Settings → System → API keys</Link>.
+      </>
+    );
+  } else if (s.ok) {
+    color = "var(--good)";
+    body = <>ready{s.version ? ` (${s.version})` : ""}</>;
+  } else {
+    color = "var(--reject)";
+    body = <>not answering — {s.error ?? "no reply"}</>;
+  }
+  return (
+    <div className="mb-4 flex items-start gap-2 text-[12px] text-ink-dim">
+      <span className="mt-[5px] inline-block h-2 w-2 flex-none rounded-full" style={{ background: color }} aria-hidden="true" />
+      <span className="min-w-0 break-words">
+        <span className="font-semibold text-ink">FlareSolverr:</span> {body}
+      </span>
+    </div>
   );
 }
 
@@ -171,7 +249,7 @@ function ProwlarrSync({ onSynced }: { onSynced: () => void }) {
       <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center justify-between gap-3 text-left">
         <div>
           <div className="text-[13px] font-semibold">Sync from Prowlarr <span className="ml-1 rounded px-1.5 py-0.5 align-middle font-mono text-[9px] uppercase" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>fast</span></div>
-          <div className="mt-0.5 text-[11.5px] text-ink-faint">Pull your Prowlarr indexers in as Torznab feeds — API search, no scraping. FlareSolverr (bundled) is wired into Prowlarr automatically. Add trackers in Prowlarr first.</div>
+          <div className="mt-0.5 text-[11.5px] text-ink-faint">Pull your Prowlarr indexers in as Torznab feeds — API search, no scraping. Syncing also points Prowlarr at Arrmada's FlareSolverr. Add trackers in Prowlarr first.</div>
         </div>
         <span className="font-mono text-[16px] text-ink-faint">{open ? "−" : "+"}</span>
       </button>
@@ -197,9 +275,9 @@ function ProwlarrSync({ onSynced }: { onSynced: () => void }) {
               <a href={prowlarrUI} target="_blank" rel="noreferrer" className="font-mono font-semibold" style={{ color: "var(--accent)" }}>{prowlarrUI} ↗</a>
             </div>
             <div className="text-ink-dim">
-              For a Cloudflare-protected tracker, FlareSolverr is already wired up — just add the{" "}
+              For a Cloudflare-protected tracker, add the{" "}
               <code className="rounded px-1 py-0.5 font-mono text-[10.5px]" style={{ background: "var(--panel)", color: "var(--accent)" }}>flaresolverr</code>{" "}
-              tag to that tracker in Prowlarr. Public indexers don't need it.
+              tag to that tracker in Prowlarr; syncing sets up the FlareSolverr proxy it uses. Public indexers don't need it.
             </div>
           </div>
 

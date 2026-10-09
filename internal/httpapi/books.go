@@ -224,7 +224,7 @@ func (a *api) handleBookReleases(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(indexer.WithInteractive(r.Context()), 90*time.Second)
 	defer cancel()
 	list, err := a.deps.Automation.RankBookReleases(ctx, id)
 	if err != nil {

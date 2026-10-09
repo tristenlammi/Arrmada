@@ -11,10 +11,12 @@ import (
 	"net/url"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/connstatus"
 	"github.com/tristenlammi/arrmada/internal/flaresolverr"
 	"github.com/tristenlammi/arrmada/internal/parser"
 	"github.com/tristenlammi/arrmada/internal/safego"
@@ -26,6 +28,9 @@ type Service struct {
 	registry *Registry
 	log      *slog.Logger
 	recent   recentCache
+	// status remembers how each indexer has been answering and pauses a failing one for
+	// background work (see connstatus). nil records nothing and pauses nothing.
+	status *connstatus.Tracker
 	// unknownKindLogged remembers which unknown searcher kinds have been warned
 	// about, so the RSS sweep doesn't repeat the warning every cycle.
 	unknownKindLogged sync.Map
@@ -57,7 +62,7 @@ func (c *recentCache) fresh(limit int) (SearchResult, bool) {
 	if c.at.IsZero() || c.limit != limit || time.Since(c.at) >= recentTTL {
 		return SearchResult{}, false
 	}
-	return SearchResult{Releases: append([]Release(nil), c.res.Releases...), Errors: copyErrors(c.res.Errors)}, true
+	return SearchResult{Releases: append([]Release(nil), c.res.Releases...), Errors: copyErrors(c.res.Errors), Skipped: copyErrors(c.res.Skipped)}, true
 }
 
 // copyErrors clones a per-indexer error map so callers can't mutate the cached one.
@@ -72,13 +77,9 @@ func copyErrors(m map[string]string) map[string]string {
 	return out
 }
 
-// NewService wires a Service over the database. flaresolverrURL may be empty
-// (no Cloudflare solving).
-func NewService(db *sql.DB, log *slog.Logger, flaresolverrURL string) *Service {
-	var fs *flaresolverr.Client
-	if flaresolverrURL != "" {
-		fs = flaresolverr.New(flaresolverrURL)
-	}
+// NewService wires a Service over the database. fs is the FlareSolverr client, whose URL
+// is read on every use; nil (or one with no URL set) means no Cloudflare solving.
+func NewService(db *sql.DB, log *slog.Logger, fs *flaresolverr.Client) *Service {
 	s := &Service{repo: NewRepo(db), registry: NewRegistry(fs), log: log}
 	s.registry.SetLogger(log) // per-page request tracing
 	// Persist a rotated MyAnonaMouse session so it doesn't silently expire.
@@ -92,6 +93,79 @@ func NewService(db *sql.DB, log *slog.Logger, flaresolverrURL string) *Service {
 	return s
 }
 
+// SetStatus wires the integration status tracker. Without one (nil) no indexer is ever
+// skipped and nothing is recorded, as before.
+func (s *Service) SetStatus(t *connstatus.Tracker) { s.status = t }
+
+// Status returns what the tracker knows about one indexer, and its last 24 hours of use.
+// ok is false when the indexer hasn't been asked since it was added or last edited.
+func (s *Service) Status(id int64) (st connstatus.State, counts connstatus.Counts, ok bool) {
+	st, ok = s.status.Get(connstatus.KindIndexer, statusRef(id))
+	return st, s.status.Counts24h(connstatus.KindIndexer, statusRef(id)), ok
+}
+
+// statusRef is an indexer's id in the status tracker.
+func statusRef(id int64) string { return strconv.FormatInt(id, 10) }
+
+// allow says whether this search may ask idx. When not — background work, and the
+// indexer is backing off after repeated failures — reason is what SearchResult.Skipped
+// says about it: "paused until 15:00 after 3 failures: login failed".
+func (s *Service) allow(ctx context.Context, idx Indexer) (ok bool, reason string) {
+	ok, st := s.status.Allow(connstatus.KindIndexer, statusRef(idx.ID), IsInteractive(ctx))
+	if ok {
+		return true, ""
+	}
+	reason = fmt.Sprintf("paused until %s after %d failures", st.BackoffUntil.Local().Format("15:04"), st.ConsecutiveFailures)
+	if st.LastError != "" {
+		reason += ": " + st.LastError
+	}
+	return false, reason
+}
+
+// record notes how one indexer's part of a search went. caller is the context the search
+// was called with: when it is done (the person closed the release modal, Arrmada is
+// shutting down), a failure says nothing about the indexer and is dropped. The
+// per-indexer deadline is not the caller's, so an indexer that hangs past it does count.
+// backoff is false for a Test: its failure shows on the row but pauses nothing.
+func (s *Service) record(caller context.Context, idx Indexer, err error, dur time.Duration, backoff bool) {
+	if s.status == nil || (err != nil && caller.Err() != nil) {
+		return
+	}
+	o := connstatus.Outcome{Err: err, Dur: dur, Backoff: backoff, Name: idx.Name}
+	var he *HTTPStatusError
+	if errors.As(err, &he) {
+		o.RetryAfter = he.RetryAfter
+	}
+	s.status.Record(connstatus.KindIndexer, statusRef(idx.ID), o)
+}
+
+// resetStatus forgets an indexer's failures and drops any session a native searcher
+// holds for it, after its settings changed (forget=false) or it was deleted (forget=true).
+func (s *Service) resetStatus(ctx context.Context, id int64, forget bool) {
+	s.registry.Reset(id)
+	var err error
+	if forget {
+		err = s.status.Forget(ctx, connstatus.KindIndexer, statusRef(id))
+	} else {
+		err = s.status.Reset(ctx, connstatus.KindIndexer, statusRef(id))
+	}
+	if err != nil {
+		s.log.Warn("indexer: couldn't clear its saved status", "id", id, "err", err)
+	}
+}
+
+// connectionChanged reports whether an edit touched how Arrmada reaches the indexer — its
+// kind, address, login or key, or whether it's on at all. Only then are its old failures
+// beside the point; scoping it to other media (the row's pills) or changing its seed
+// rules leaves its health alone. A blank key or password means "keep", so only a new one
+// counts.
+func connectionChanged(old, upd Indexer) bool {
+	return old.Kind != upd.Kind || old.URL != upd.URL || old.Username != upd.Username ||
+		(upd.APIKey != "" && upd.APIKey != old.APIKey) ||
+		(upd.Password != "" && upd.Password != old.Password) ||
+		old.Enabled != upd.Enabled
+}
+
 // List returns all configured indexers.
 func (s *Service) List(ctx context.Context) ([]Indexer, error) { return s.repo.List(ctx) }
 
@@ -103,11 +177,27 @@ func (s *Service) Create(ctx context.Context, idx Indexer) (Indexer, error) {
 	return s.repo.Create(ctx, idx)
 }
 
-// Update changes an indexer's settings.
-func (s *Service) Update(ctx context.Context, idx Indexer) error { return s.repo.Update(ctx, idx) }
+// Update changes an indexer's settings. A change to how it's reached clears its recorded
+// failures and any cached login, so the new settings get a fair first try.
+func (s *Service) Update(ctx context.Context, idx Indexer) error {
+	old, oldErr := s.repo.Get(ctx, idx.ID)
+	if err := s.repo.Update(ctx, idx); err != nil {
+		return err
+	}
+	if oldErr != nil || connectionChanged(old, idx) {
+		s.resetStatus(ctx, idx.ID, false)
+	}
+	return nil
+}
 
-// Delete removes an indexer.
-func (s *Service) Delete(ctx context.Context, id int64) error { return s.repo.Delete(ctx, id) }
+// Delete removes an indexer, its recorded status and any cached login.
+func (s *Service) Delete(ctx context.Context, id int64) error {
+	if err := s.repo.Delete(ctx, id); err != nil {
+		return err
+	}
+	s.resetStatus(ctx, id, true)
+	return nil
+}
 
 // Fetch resolves a search result's download link via the named indexer into a
 // FetchResult (file bytes or a magnet/URL) ready for the download client.
@@ -240,7 +330,12 @@ func (s *Service) Test(ctx context.Context, id int64) error {
 	if err != nil {
 		return err
 	}
-	return searcher.Test(ctx, idx)
+	// A Test shows on the row like any search: a pass clears a backoff, and a failure is
+	// recorded without moving the backoff ladder — pressing Test shouldn't pause anything.
+	start := time.Now()
+	err = searcher.Test(ctx, idx)
+	s.record(ctx, idx, err, time.Since(start), false)
+	return err
 }
 
 // SearchResult bundles aggregated releases with per-indexer errors so a single
@@ -248,6 +343,10 @@ func (s *Service) Test(ctx context.Context, id int64) error {
 type SearchResult struct {
 	Releases []Release         `json:"releases"`
 	Errors   map[string]string `json:"errors,omitempty"` // indexer name -> error
+	// Skipped names the indexers this background search left alone because they are
+	// backing off after repeated failures, with why: "paused until 15:00 after 3
+	// failures: login failed". A person's own search never skips one.
+	Skipped map[string]string `json:"skipped,omitempty"`
 	// Asked is how many indexers the search went to, so a caller can tell "every indexer
 	// failed" from "one failed and the rest found nothing". Set by Search only.
 	Asked int `json:"-"`
@@ -272,7 +371,7 @@ func (s *Service) Recent(ctx context.Context, limit int) (SearchResult, error) {
 	// Cache a private copy (slice header AND errors map) so a caller mutating its
 	// result can't clobber the cached run for whoever reads it next.
 	s.recent.at, s.recent.limit = time.Now(), limit
-	s.recent.res = SearchResult{Releases: append([]Release(nil), res.Releases...), Errors: copyErrors(res.Errors)}
+	s.recent.res = SearchResult{Releases: append([]Release(nil), res.Releases...), Errors: copyErrors(res.Errors), Skipped: copyErrors(res.Skipped)}
 	return res, nil
 }
 
@@ -281,16 +380,18 @@ func (s *Service) fetchRecent(ctx context.Context, limit int) (SearchResult, err
 	if err != nil {
 		return SearchResult{}, err
 	}
+	caller := ctx
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
 	var (
 		mu       sync.Mutex
 		wg       sync.WaitGroup
-		result   = SearchResult{Errors: map[string]string{}}
+		result   = SearchResult{Errors: map[string]string{}, Skipped: map[string]string{}}
 		priority = map[string]int{}
 		eligible int
 		failed   int
+		skipped  int
 	)
 	for _, idx := range indexers {
 		searcher, err := s.registry.For(idx.Kind)
@@ -309,6 +410,11 @@ func (s *Service) fetchRecent(ctx context.Context, limit int) (SearchResult, err
 		}
 		priority[idx.Name] = idx.Priority
 		eligible++
+		if ok, why := s.allow(ctx, idx); !ok {
+			result.Skipped[idx.Name] = why
+			skipped++
+			continue
+		}
 		wg.Add(1)
 		go func(idx Indexer, rec Recenter) {
 			defer wg.Done()
@@ -319,11 +425,13 @@ func (s *Service) fetchRecent(ctx context.Context, limit int) (SearchResult, err
 			// A panic in one indexer's parser becomes that indexer's error; the others'
 			// results still come back.
 			var releases []Release
+			start := time.Now()
 			err := safego.Call(s.log, "indexer recent "+idx.Name, func() error {
 				var e error
 				releases, e = rec.Recent(ictx, idx, limit)
 				return e
 			})
+			s.record(caller, idx, err, time.Since(start), true)
 			if err != nil {
 				mu.Lock()
 				result.Errors[idx.Name] = err.Error()
@@ -357,11 +465,14 @@ func (s *Service) fetchRecent(ctx context.Context, limit int) (SearchResult, err
 		}
 		return priority[a.Indexer] < priority[b.Indexer]
 	})
-	// Every feed failing is an outage, not a quiet hour. Returned as an error so Recent
-	// doesn't cache it and the next sweep asks again.
-	err = outcome(eligible, failed, result.Errors)
+	// Every feed failing (or paused) is an outage, not a quiet hour. Returned as an error
+	// so Recent doesn't cache it and the next sweep asks again.
+	err = outcome(eligible, failed, skipped, result.Errors, result.Skipped)
 	if len(result.Errors) == 0 {
 		result.Errors = nil
+	}
+	if len(result.Skipped) == 0 {
+		result.Skipped = nil
 	}
 	return result, err
 }
@@ -385,16 +496,18 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 		return SearchResult{}, err
 	}
 
+	caller := ctx
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 
 	var (
 		mu       sync.Mutex
 		wg       sync.WaitGroup
-		result   = SearchResult{Errors: map[string]string{}}
+		result   = SearchResult{Errors: map[string]string{}, Skipped: map[string]string{}}
 		priority = map[string]int{}
 		eligible int
 		failed   int
+		skipped  int
 	)
 
 	for _, idx := range indexers {
@@ -402,8 +515,15 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 			continue // this indexer isn't scoped to the media type being searched
 		}
 		priority[idx.Name] = idx.Priority
-		result.Asked++
 		eligible++
+		// A background search leaves an indexer that keeps failing alone until its pause
+		// runs out, instead of retrying a dead login on every title of every sweep.
+		if ok, why := s.allow(ctx, idx); !ok {
+			result.Skipped[idx.Name] = why
+			skipped++
+			continue
+		}
+		result.Asked++
 		wg.Add(1)
 		go func(idx Indexer) {
 			defer wg.Done()
@@ -417,11 +537,13 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 				// A panic in one indexer's parser becomes that indexer's error; the others'
 				// results still come back.
 				var releases []Release
+				start := time.Now()
 				err = safego.Call(s.log, "indexer search "+idx.Name, func() error {
 					var e error
 					releases, e = searcher.Search(ictx, idx, q)
 					return e
 				})
+				s.record(caller, idx, err, time.Since(start), true)
 				if err == nil {
 					returned := len(releases)
 					// Drop torrents below this indexer's seeder floor.
@@ -474,10 +596,14 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 
 	// An empty result only means "nothing found" when someone was asked and answered.
 	// One indexer failing while another answers with nothing is still a real miss; only
-	// a search where nobody could answer is reported as an error.
-	err = outcome(eligible, failed, result.Errors)
+	// a search where nobody could answer — every indexer failed or is paused — is
+	// reported as an error.
+	err = outcome(eligible, failed, skipped, result.Errors, result.Skipped)
 	if len(result.Errors) == 0 {
 		result.Errors = nil
+	}
+	if len(result.Skipped) == 0 {
+		result.Skipped = nil
 	}
 	return result, err
 }

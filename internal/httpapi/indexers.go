@@ -4,9 +4,65 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
+	"github.com/tristenlammi/arrmada/internal/auth"
+	"github.com/tristenlammi/arrmada/internal/connstatus"
 	"github.com/tristenlammi/arrmada/internal/indexer"
 )
+
+// indexerView is an indexer as the Indexers page reads it: its settings (secrets are
+// never marshalled) and how it has been answering.
+type indexerView struct {
+	indexer.Indexer
+	Status *indexerStatus `json:"status,omitempty"`
+}
+
+// indexerStatus is the row's dot and its one line of detail. State is ok, failing (it
+// failed last time; sweeps still ask it), backing_off (sweeps leave it alone until
+// backoff_until), disabled, or unknown (not asked since it was added or edited). Times
+// are omitted when they never happened. last_error is redacted before it's stored.
+type indexerStatus struct {
+	State               string     `json:"state"`
+	LastOKAt            *time.Time `json:"last_ok_at,omitempty"`
+	LastError           string     `json:"last_error,omitempty"`
+	LastErrorAt         *time.Time `json:"last_error_at,omitempty"`
+	FailingSince        *time.Time `json:"failing_since,omitempty"`
+	BackoffUntil        *time.Time `json:"backoff_until,omitempty"`
+	ConsecutiveFailures int        `json:"consecutive_failures"`
+	Queries24h          int        `json:"queries_24h"`
+	Failures24h         int        `json:"failures_24h"`
+}
+
+// statusFor builds an indexer's status for the page.
+func statusFor(idx indexer.Indexer, st connstatus.State, counts connstatus.Counts, now time.Time) *indexerStatus {
+	out := &indexerStatus{
+		State:               st.Phase(now),
+		LastOKAt:            timePtr(st.LastOKAt),
+		LastError:           st.LastError,
+		LastErrorAt:         timePtr(st.LastErrorAt),
+		FailingSince:        timePtr(st.FailingSince),
+		ConsecutiveFailures: st.ConsecutiveFailures,
+		Queries24h:          counts.Queries,
+		Failures24h:         counts.Failures,
+	}
+	if now.Before(st.BackoffUntil) {
+		out.BackoffUntil = timePtr(st.BackoffUntil)
+	}
+	if !idx.Enabled {
+		// Nothing asks a disabled indexer, so its last state is history, not health.
+		out.State = "disabled"
+		out.BackoffUntil = nil
+	}
+	return out
+}
+
+func timePtr(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
+}
 
 func (a *api) handleListIndexers(w http.ResponseWriter, r *http.Request) {
 	list, err := a.deps.Indexers.List(r.Context())
@@ -14,10 +70,21 @@ func (a *api) handleListIndexers(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusInternalServerError, "could not list indexers")
 		return
 	}
-	if list == nil {
-		list = []indexer.Indexer{}
+	// The route is staff-only already; the status (error text included) is kept to
+	// managers here too, so a looser route later can't leak it.
+	u, _ := userFrom(r)
+	withStatus := u != nil && u.Role.AtLeast(auth.RoleManager)
+	now := time.Now()
+	out := make([]indexerView, 0, len(list))
+	for _, idx := range list {
+		v := indexerView{Indexer: idx}
+		if withStatus {
+			st, counts, _ := a.deps.Indexers.Status(idx.ID)
+			v.Status = statusFor(idx, st, counts, now)
+		}
+		out = append(out, v)
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"indexers": list})
+	a.writeJSON(w, http.StatusOK, map[string]any{"indexers": out})
 }
 
 type createIndexerRequest struct {

@@ -35,6 +35,8 @@ func (a *api) handleTestAPIKey(w http.ResponseWriter, r *http.Request) {
 	switch r.PathValue("id") {
 	case "hardcover":
 		detail, err = a.deps.Books.VerifyHardcover(ctx)
+	case "flaresolverr":
+		detail, err = testFlareSolverr(ctx, a.deps.FlareSolverr)
 	case "tmdb":
 		v, ok := a.deps.Discovery.(tmdbValidator)
 		if !ok {
