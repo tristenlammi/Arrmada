@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/config"
 )
@@ -64,6 +65,34 @@ func TestFolderNotWritable(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 	if st := ProbeFolder(dir); !st.Exists || st.Writable || st.Err == nil {
 		t.Errorf("read-only folder: %+v", st)
+	}
+}
+
+// A folder that passed is trusted until the cache expires; then it's probed again.
+func TestProbeCacheRemembersSuccess(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("mode bits don't stop this user from writing")
+	}
+	dir := filepath.Join(t.TempDir(), "movies")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_000_000, 0)
+	c := NewProbeCache(time.Hour)
+	c.now = func() time.Time { return now }
+	if st := c.ProbeFolder(dir); !st.Writable {
+		t.Fatalf("first probe: %+v", st)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	if st := c.ProbeFolder(dir); !st.Writable {
+		t.Error("a recent success should be reused without writing again")
+	}
+	now = now.Add(2 * time.Hour)
+	if st := c.ProbeFolder(dir); st.Writable {
+		t.Error("an expired success must be probed again")
 	}
 }
 

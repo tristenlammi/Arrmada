@@ -71,7 +71,7 @@ func (a *api) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 		if underData[f.Path] {
 			continue // already reported, and nothing is probed inside the data folder
 		}
-		if level, msg := folderProblem(f, health.ProbeFolder(f.Path)); msg != "" {
+		if level, msg := folderProblem(f, folderProbes.ProbeFolder(f.Path)); msg != "" {
 			add(level, msg)
 		}
 	}
@@ -155,6 +155,11 @@ func (a *api) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"status": status, "warnings": warns, "disk": disk})
 }
+
+// folderProbes keeps the polled health panel from writing a probe file into every
+// library folder on every poll — on Unraid that can wake sleeping array disks. A folder
+// that passed is trusted for an hour; one that failed is re-checked each time.
+var folderProbes = health.NewProbeCache(time.Hour)
 
 // folderProblem turns a folder probe into a health line, or "" when the folder is fine.
 // A missing folder whose parent can be written is only a warning — imports create it —

@@ -12,6 +12,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
+	"time"
 
 	"github.com/tristenlammi/arrmada/internal/config"
 	"github.com/tristenlammi/arrmada/internal/diskspace"
@@ -41,6 +43,29 @@ type FolderState struct {
 // ProbeFolder looks at path without changing anything that matters: it never creates the
 // folder (or its parent), and the write probe is a temp file removed straight away.
 func ProbeFolder(path string) FolderState {
+	return (*ProbeCache)(nil).ProbeFolder(path)
+}
+
+// ProbeCache remembers which folders passed a write probe recently, so a health panel
+// that's polled doesn't write to the array on every poll. On Unraid each probe in a
+// /mnt/user share can spin up a sleeping disk and touch parity; once an hour is plenty
+// to notice a share gone read-only. Only successes are remembered: a folder that failed
+// is probed again next time (a failed create writes nothing), so a fix shows at once.
+// Existence is always checked fresh. A nil *ProbeCache probes every time.
+type ProbeCache struct {
+	ttl time.Duration
+	now func() time.Time
+	mu  sync.Mutex
+	ok  map[string]time.Time // folder → when a write last succeeded
+}
+
+// NewProbeCache remembers successful write probes for ttl.
+func NewProbeCache(ttl time.Duration) *ProbeCache {
+	return &ProbeCache{ttl: ttl, now: time.Now, ok: map[string]time.Time{}}
+}
+
+// ProbeFolder is the package ProbeFolder, reusing a recent successful write probe.
+func (c *ProbeCache) ProbeFolder(path string) FolderState {
 	var st FolderState
 	fi, err := os.Stat(path)
 	switch {
@@ -48,7 +73,7 @@ func ProbeFolder(path string) FolderState {
 		parent := filepath.Dir(filepath.Clean(path))
 		if pi, perr := os.Stat(parent); perr == nil && pi.IsDir() {
 			st.ParentExists = true
-			st.ParentWritable = libroots.ProbeWritable(parent) == nil
+			st.ParentWritable = c.writable(parent) == nil
 		}
 		return st
 	case err != nil:
@@ -60,7 +85,7 @@ func ProbeFolder(path string) FolderState {
 	if !st.IsDir {
 		return st
 	}
-	if werr := libroots.ProbeWritable(path); werr != nil {
+	if werr := c.writable(path); werr != nil {
 		st.Err = werr
 	} else {
 		st.Writable = true
@@ -68,24 +93,57 @@ func ProbeFolder(path string) FolderState {
 	return st
 }
 
+func (c *ProbeCache) writable(dir string) error {
+	if c == nil {
+		return libroots.ProbeWritable(dir)
+	}
+	c.mu.Lock()
+	at, seen := c.ok[dir]
+	c.mu.Unlock()
+	if seen && c.now().Sub(at) < c.ttl {
+		return nil
+	}
+	err := libroots.ProbeWritable(dir)
+	c.mu.Lock()
+	if err == nil {
+		c.ok[dir] = c.now()
+	} else {
+		delete(c.ok, dir)
+	}
+	c.mu.Unlock()
+	return err
+}
+
 // SameFilesystem reports whether a and b live on one filesystem, and whether that could
-// be told at all (ok is false off Linux, or when a path has no existing parent). It
-// compares filesystem ids. The dashboard's older trick — identical totals and free space
-// — gives a false "different" whenever a download writes between the two readings,
-// which on a busy torrent drive is most of the time. A folder that doesn't exist yet is
-// judged at its nearest existing parent, which is where it would be created.
+// be told at all (ok is false off Linux, or when a path has no existing parent). A folder
+// that doesn't exist yet is judged at its nearest existing parent, which is where it
+// would be created.
+//
+// Two signals, either of which means "same": one filesystem id, or byte-identical totals
+// and free space (the dashboard's test). The id is stable while a download writes between
+// two readings, which makes free space differ; the free-space test catches what the disk
+// guard actually measures, which is what matters when it's asking "am I watching the
+// library's disk?". Saying "same" when in doubt errs towards the warning.
 func SameFilesystem(a, b string) (same, ok bool) {
 	pa, okA := existing(a)
 	pb, okB := existing(b)
 	if !okA || !okB {
 		return false, false
 	}
-	da, okA := diskspace.Device(pa)
-	db, okB := diskspace.Device(pb)
-	if !okA || !okB {
-		return false, false
+	if da, okA := diskspace.Device(pa); okA {
+		if db, okB := diskspace.Device(pb); okB {
+			ok = true
+			if da == db {
+				return true, true
+			}
+		}
 	}
-	return da == db, true
+	if ua, okA := diskspace.Of(pa); okA {
+		if ub, okB := diskspace.Of(pb); okB {
+			return ua.TotalBytes == ub.TotalBytes && ua.FreeBytes == ub.FreeBytes, true
+		}
+	}
+	return false, ok
 }
 
 // existing returns path, or its nearest parent that exists.
