@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/settings"
 	"github.com/tristenlammi/arrmada/internal/store"
 )
@@ -39,9 +40,93 @@ func getSettings(t *testing.T, a *api) (string, map[string]any) {
 
 func putSettings(t *testing.T, a *api, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return putSettingsAs(t, a, auth.RoleAdmin, body)
+}
+
+func putSettingsAs(t *testing.T, a *api, role auth.Role, body string) *httptest.ResponseRecorder {
+	t.Helper()
 	w := httptest.NewRecorder()
-	a.handleUpdateSettings(w, httptest.NewRequest(http.MethodPut, "/", strings.NewReader(body)))
+	r := withUser(httptest.NewRequest(http.MethodPut, "/", strings.NewReader(body)), &auth.User{ID: 2, Username: "someone", Role: role})
+	a.handleUpdateSettings(w, r)
 	return w
+}
+
+// A manager runs the media day to day but the module switches, Plex sign-in, the
+// Discovery region and the bin and disk guard limits are the admin's. The Settings page
+// can send the whole object back, so an admin field resent unchanged must still save.
+func TestManagerCannotChangeAdminSettings(t *testing.T) {
+	a := settingsAPI(t)
+
+	w := putSettingsAs(t, a, auth.RoleManager, `{"plex_login_enabled":true}`)
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "Plex sign-in") {
+		t.Fatalf("manager turning Plex sign-in on: HTTP %d %s, want a 403 naming the field", w.Code, w.Body.String())
+	}
+	if _, got := getSettings(t, a); got["plex_login_enabled"] != false {
+		t.Fatal("the refused change was saved")
+	}
+
+	// The same value sent back, alongside a manager field, saves.
+	if w := putSettingsAs(t, a, auth.RoleManager, `{"plex_login_enabled":false,"search_on_add":false}`); w.Code != http.StatusOK {
+		t.Fatalf("unchanged resend: HTTP %d %s", w.Code, w.Body.String())
+	}
+	if _, got := getSettings(t, a); got["search_on_add"] != false {
+		t.Error("search_on_add did not save for a manager")
+	}
+
+	// The whole GET body echoed back (defaults included) is not a change.
+	raw, _ := getSettings(t, a)
+	if w := putSettingsAs(t, a, auth.RoleManager, raw); w.Code != http.StatusOK {
+		t.Fatalf("full resend: HTTP %d %s", w.Code, w.Body.String())
+	}
+	// A lower-case region equal to the stored one isn't a change either.
+	if w := putSettings(t, a, `{"tmdb_region":"AU"}`); w.Code != http.StatusOK {
+		t.Fatalf("admin setting the region: HTTP %d", w.Code)
+	}
+	if w := putSettingsAs(t, a, auth.RoleManager, `{"tmdb_region":" au "}`); w.Code != http.StatusOK {
+		t.Errorf("same region in another case: HTTP %d %s", w.Code, w.Body.String())
+	}
+
+	// A mixed body with one forbidden change saves nothing, the allowed keys included.
+	w = putSettingsAs(t, a, auth.RoleManager, `{"write_nfo":true,"search_on_add":true,"recycle_max_gb":"1"}`)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("mixed body: HTTP %d, want 403", w.Code)
+	}
+	if _, got := getSettings(t, a); got["write_nfo"] != false || got["search_on_add"] != false {
+		t.Errorf("a refused body saved its other keys: %v", got)
+	}
+
+	for _, body := range []string{
+		`{"books_enabled":false}`, `{"music_enabled":true}`, `{"plex_login_auto_approve":false}`,
+		`{"tmdb_region":"US"}`, `{"recycle_retention_days":"1"}`, `{"downloads_disk_guard":false}`,
+		`{"downloads_disk_guard_pause_pct":"80"}`, `{"downloads_disk_guard_resume_pct":"5"}`,
+	} {
+		for _, role := range []auth.Role{auth.RoleManager, auth.RoleRequester, ""} {
+			if w := putSettingsAs(t, a, role, body); w.Code != http.StatusForbidden {
+				t.Errorf("%s as %q: HTTP %d, want 403", body, role, w.Code)
+			}
+		}
+	}
+
+	// Managers keep their own fields, and an admin can change anything.
+	for _, body := range []string{`{"write_nfo":true}`, `{"naming_movie_file":"{title}"}`, `{"downloads_stall_minutes":30}`} {
+		if w := putSettingsAs(t, a, auth.RoleManager, body); w.Code != http.StatusOK {
+			t.Errorf("manager %s: HTTP %d %s", body, w.Code, w.Body.String())
+		}
+	}
+	if w := putSettings(t, a, `{"plex_login_enabled":true,"music_enabled":true}`); w.Code != http.StatusOK {
+		t.Errorf("admin: HTTP %d %s", w.Code, w.Body.String())
+	}
+}
+
+// A bad region is refused before any other key in the body is written.
+func TestSettingsValidatesBeforeWriting(t *testing.T) {
+	a := settingsAPI(t)
+	if w := putSettings(t, a, `{"write_nfo":true,"tmdb_region":"Australia"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("HTTP %d, want 400", w.Code)
+	}
+	if _, got := getSettings(t, a); got["write_nfo"] != false {
+		t.Error("write_nfo saved though the body was refused")
+	}
 }
 
 // Whatever GET /settings returns must be accepted by PUT /settings unchanged. The page

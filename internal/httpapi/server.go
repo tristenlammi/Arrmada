@@ -146,16 +146,20 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET "+base+"/api/v1/status", a.public(a.handleStatus).ext())
 	mux.HandleFunc("GET "+base+"/api/v1/dashboard", a.requireRole(auth.RoleManager, a.handleDashboard))
 
-	// App preferences
-	mux.HandleFunc("GET "+base+"/api/v1/apikeys", a.requireRole(auth.RoleManager, a.handleGetAPIKeys))
-	mux.HandleFunc("PUT "+base+"/api/v1/apikeys/{id}", a.requireRole(auth.RoleManager, a.handleSetAPIKey))
-	mux.HandleFunc("POST "+base+"/api/v1/apikeys/{id}/test", a.requireRole(auth.RoleManager, a.handleTestAPIKey))
+	// App preferences. API keys are the owner's credentials for outside services, so
+	// only an admin sees or changes them. Managers keep the settings they need day to
+	// day; handleUpdateSettings refuses them the admin-only fields.
+	mux.HandleFunc("GET "+base+"/api/v1/apikeys", a.requireRole(auth.RoleAdmin, a.handleGetAPIKeys))
+	mux.HandleFunc("PUT "+base+"/api/v1/apikeys/{id}", a.requireRole(auth.RoleAdmin, a.handleSetAPIKey))
+	mux.HandleFunc("POST "+base+"/api/v1/apikeys/{id}/test", a.requireRole(auth.RoleAdmin, a.handleTestAPIKey))
 	mux.HandleFunc("GET "+base+"/api/v1/settings", a.requireRole(auth.RoleManager, a.handleGetSettings))
 	mux.HandleFunc("PUT "+base+"/api/v1/settings", a.requireRole(auth.RoleManager, a.handleUpdateSettings))
-	// Library folders + filesystem browser (in-app folder picker).
+	// Library folders + filesystem browser (in-app folder picker). Managers can read the
+	// folders (Settings → Library shows them, and they scan from there) but only an admin
+	// may move a library or walk the host's filesystem.
 	mux.HandleFunc("GET "+base+"/api/v1/system/library", a.requireRole(auth.RoleManager, a.handleGetLibraryPaths))
-	mux.HandleFunc("PUT "+base+"/api/v1/system/library", a.requireRole(auth.RoleManager, a.handleSetLibraryPaths))
-	mux.HandleFunc("GET "+base+"/api/v1/system/browse", a.requireRole(auth.RoleManager, a.handleBrowse))
+	mux.HandleFunc("PUT "+base+"/api/v1/system/library", a.requireRole(auth.RoleAdmin, a.handleSetLibraryPaths))
+	mux.HandleFunc("GET "+base+"/api/v1/system/browse", a.requireRole(auth.RoleAdmin, a.handleBrowse))
 	// First-run setup wizard + restart to apply new folders.
 	mux.HandleFunc("GET "+base+"/api/v1/setup", a.requireRole(auth.RoleAdmin, a.handleSetupState))
 	mux.HandleFunc("POST "+base+"/api/v1/setup/complete", a.requireRole(auth.RoleAdmin, a.handleSetupComplete))
@@ -344,13 +348,17 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST "+base+"/api/v1/insights/import/tautulli", a.requireRole(auth.RoleAdmin, a.handleImportTautulli))
 
 	// Convert (Tdarr replacement — GPU transcoding/cleanup over the Movies/Series catalogs).
-	mux.HandleFunc("GET "+base+"/api/v1/logs", a.requireRole(auth.RoleManager, a.handleLogs))
+	// The log carries whatever any module writes (paths, client names, sign-in lines), so
+	// it's the admin's to read.
+	mux.HandleFunc("GET "+base+"/api/v1/logs", a.requireRole(auth.RoleAdmin, a.handleLogs))
 	mux.HandleFunc("GET "+base+"/api/v1/recycle", a.requireRole(auth.RoleManager, a.handleRecycleStats))
 	mux.HandleFunc("GET "+base+"/api/v1/recycle/mode", a.requireRole(auth.RoleManager, a.handleRecycleMode))
 	mux.HandleFunc("GET "+base+"/api/v1/recycle/items", a.requireRole(auth.RoleManager, a.handleRecycleItems))
-	mux.HandleFunc("POST "+base+"/api/v1/recycle/empty", a.requireRole(auth.RoleManager, a.handleRecycleEmpty))
+	// Emptying the bin, or purging one item from it, is the last step before a file is
+	// gone for good: admin only. Restoring stays with managers.
+	mux.HandleFunc("POST "+base+"/api/v1/recycle/empty", a.requireRole(auth.RoleAdmin, a.handleRecycleEmpty))
 	mux.HandleFunc("POST "+base+"/api/v1/recycle/restore", a.requireRole(auth.RoleManager, a.handleRecycleRestore))
-	mux.HandleFunc("POST "+base+"/api/v1/recycle/delete", a.requireRole(auth.RoleManager, a.handleRecycleDeleteItem))
+	mux.HandleFunc("POST "+base+"/api/v1/recycle/delete", a.requireRole(auth.RoleAdmin, a.handleRecycleDeleteItem))
 	// Admin only: a backup holds API keys, the Plex token and password hashes.
 	mux.HandleFunc("POST "+base+"/api/v1/system/backups", a.requireRole(auth.RoleAdmin, a.handleBackupNow))
 	mux.HandleFunc("GET "+base+"/api/v1/convert/hardware", a.requireRole(auth.RoleManager, a.handleConvertHardware))
