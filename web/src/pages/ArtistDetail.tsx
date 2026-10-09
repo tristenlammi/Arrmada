@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { api, type Artist, type MusicAlbum, type MovieEvent } from "../lib/api";
+import { libraryStatus } from "../lib/status";
 
 function fmtBytes(n?: number): string {
   if (!n || n <= 0) return "";
@@ -66,6 +67,8 @@ export function ArtistDetail() {
 
   const done = a.stats?.have_tracks ?? 0;
   const all = a.stats?.tracks ?? 0;
+  // The chip is the artist's library status; the Monitored toggle below says whether it's searched.
+  const st = libraryStatus({ multi: true, hasFile: done > 0, monitored: a.monitored, have: done, total: all });
   // A discography is one torrent spanning every album, which fights per-album upgrades and
   // seeding. Only offer it where it's genuinely the better tool: you own little or nothing
   // by this artist. Topping up is what the per-album sweep is for.
@@ -85,9 +88,9 @@ export function ArtistDetail() {
         <div className="flex flex-wrap items-center gap-2.5">
           <span
             className="rounded-full px-2.5 py-1 font-mono text-[10.5px] font-semibold uppercase"
-            style={{ background: "var(--panel-2)", color: a.monitored ? "var(--accent)" : "var(--ink-faint)" }}
+            style={{ background: "var(--panel-2)", color: st.color }}
           >
-            {a.monitored ? "Monitored" : "Paused"}
+            {st.label}
           </span>
           <span className="font-mono text-[11px] text-ink-faint">
             {a.stats?.albums ?? 0} albums · {done}/{all} tracks

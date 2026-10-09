@@ -3,11 +3,13 @@ import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { api, type Artist, type ArtistLookup } from "../lib/api";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
+import { isWanted, libraryStatus } from "../lib/status";
+import { TONE_HUE } from "../ui";
 
 const FILTERS = [
   { key: "all", label: "All" },
   { key: "monitored", label: "Monitored" },
-  { key: "incomplete", label: "Incomplete" },
+  { key: "wanted", label: "Wanted" },
   { key: "complete", label: "Complete" },
 ] as const;
 type FilterKey = (typeof FILTERS)[number]["key"];
@@ -21,13 +23,16 @@ function total(a: Artist): number {
 function isComplete(a: Artist): boolean {
   return total(a) > 0 && have(a) >= total(a);
 }
+function statusInput(a: Artist) {
+  return { multi: true, hasFile: have(a) > 0, monitored: a.monitored, have: have(a), total: total(a) };
+}
 
 function matches(a: Artist, f: FilterKey): boolean {
   switch (f) {
     case "monitored":
       return a.monitored;
-    case "incomplete":
-      return !isComplete(a);
+    case "wanted":
+      return isWanted(statusInput(a));
     case "complete":
       return isComplete(a);
     default:
@@ -138,7 +143,7 @@ export function Music() {
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              placeholder="Filter artists…"
+              placeholder="Search artists…"
               className="w-[200px] rounded-lg px-3 py-1.5 text-[12px]"
               style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
             />
@@ -315,7 +320,8 @@ function ArtistCard({
   const done = have(a);
   const all = total(a);
   const pct = all > 0 ? Math.round((done / all) * 100) : 0;
-  const tone = all === 0 ? "var(--ink-faint)" : done >= all ? "var(--good)" : a.monitored ? "var(--avoid)" : "var(--ink-faint)";
+  const st = libraryStatus(statusInput(a));
+  const tone = TONE_HUE[st.tone];
 
   const body = (
     <>
@@ -341,8 +347,8 @@ function ArtistCard({
             </div>
           </div>
         </div>
-        <span className="flex-none rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold uppercase" style={{ background: "var(--panel-2)", color: tone }}>
-          {a.monitored ? "monitored" : "paused"}
+        <span className="flex-none rounded-full px-2 py-0.5 font-mono text-[10px] font-semibold uppercase" style={{ background: "var(--panel-2)", color: st.color }}>
+          {st.label}
         </span>
       </div>
       <div className="flex items-center gap-2">

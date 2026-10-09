@@ -82,6 +82,13 @@ var bannedCopy = []bannedPhrase{
 	phrase(`and it plays everywhere`, "HEVC plays on most devices made since about 2016 (H.264 is the one that plays everywhere)"),
 	phrase(`whatever the hours`, "a request starts when a conversion slot is free"),
 	phrase(`every audio track (is|are) copied`, "tracks filtered out in Convert → Settings are removed"),
+	// COPY-12: one status vocabulary (web/src/lib/status.ts) — Downloaded / Complete /
+	// Partial / Wanted / Unmonitored / File missing, from libraryStatus().
+	webPhrase(`(?-i:label: "(Missing|Available|Incomplete|In progress)")`, "library statuses and filters say Wanted / Downloaded / Partial — use libraryStatus() and isWanted() from lib/status"),
+	webPhrase(`(?-i:"In progress")`, "a partly downloaded series or album is 'Partial' (lib/status)"),
+	webPhrase(`(?-i:"Monitored" : "(Unmonitored|Paused)")`, "monitor toggles read 'Monitored' / 'Monitor'; the status chip says Unmonitored"),
+	webPhrase(`"have" : "missing"|"on disk" : "wanted"`, "row labels read 'downloaded' / 'wanted'"),
+	webPhrase(`placeholder="(Search titles|Filter artists|Search title or author)…"`, "library search boxes read 'Search movies…', 'Search series…', 'Search books or authors…', 'Search artists…'"),
 }
 
 // match returns the first banned phrase on a line, or nil. web says whether the line is
@@ -233,6 +240,11 @@ func TestCopyGuardMatcher(t *testing.T) {
 		`the best quality and it plays everywhere`,
 		`it starts right away, whatever the hours`,
 		`Atmos and every audio track are copied untouched`,
+		`  { key: "missing", label: "Missing" },`,
+		`return { label: have > 0 ? "In progress" : "Wanted" };`,
+		`{version.monitored ? "Monitored" : "Unmonitored"}</button>`,
+		`{t.has_file ? "have" : "missing"}`,
+		`placeholder="Search titles…"`,
 	}
 	caught := map[*bannedPhrase]bool{}
 	for _, s := range samples {
@@ -255,6 +267,8 @@ func TestCopyGuardMatcher(t *testing.T) {
 		`Settings → System → API keys`,
 		`Settings → Downloads → Recycle bin`,
 		`/settings/system#api-keys`,
+		"flash(`${selected.size} ${mon ? \"monitored\" : \"unmonitored\"}.`);",
+		`{ key: "wanted", label: "Wanted" },`,
 	} {
 		if b := match(ok, true); b != nil {
 			t.Errorf("false positive on %q (%s)", ok, b.re)

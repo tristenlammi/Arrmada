@@ -3,6 +3,8 @@ import { Link, useParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { api, type Book, type BookAuthor, type BookDiscoverCard } from "../lib/api";
 import { useCanHover } from "../lib/useCanHover";
+import { libraryStatus } from "../lib/status";
+import { TONE_HUE } from "../ui";
 
 // AuthorDetail unifies an author's shelf: the books you already own (link through to the
 // full book detail page for grab / auto-grab / etc.) plus the rest of their official
@@ -138,13 +140,11 @@ export function AuthorDetail() {
   );
 }
 
+// The chip sits over the cover, so it takes the plain hue (TONE_HUE), as poster chips do.
 function statusOf(b: Book): { label: string; tone: string } {
-  if (b.has_file) {
-    const tags = [b.ebook && "E", b.audiobook && "A"].filter(Boolean).join("+");
-    return { label: tags ? `${tags} ✓` : "Downloaded", tone: "var(--good)" };
-  }
-  if (b.monitored) return { label: "Wanted", tone: "var(--avoid)" };
-  return { label: "Unmonitored", tone: "var(--ink-faint)" };
+  const st = libraryStatus({ hasFile: b.has_file, monitored: b.monitored });
+  const tags = st.label === "Downloaded" ? [b.ebook && "E", b.audiobook && "A"].filter(Boolean).join("+") : "";
+  return { label: tags ? `${tags} ✓` : st.label, tone: TONE_HUE[st.tone] };
 }
 
 // BookCover renders a cover, falling back to a clean title placeholder when the

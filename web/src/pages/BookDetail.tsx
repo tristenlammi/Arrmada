@@ -13,6 +13,7 @@ import { useCanHover } from "../lib/useCanHover";
 import { usePoll } from "../lib/usePoll";
 import { jobToast, useJob } from "../lib/useJob";
 import { wantedCopy } from "../lib/bookSearch";
+import { libraryStatus } from "../lib/status";
 
 function fmtSize(bytes?: number): string {
   if (!bytes || bytes <= 0) return "";
@@ -55,7 +56,7 @@ export function BookDetail() {
   };
   const wantedLine = { book: b, searching: searchJob !== null, onSearch: searchNow };
 
-  const st = b.has_file ? { label: "Downloaded", tone: "var(--good-text)", soft: "var(--good-soft)" } : b.monitored ? { label: "Wanted", tone: "var(--avoid-text)", soft: "var(--avoid-soft)" } : { label: "Unmonitored", tone: "var(--ink-faint)", soft: "var(--panel-2)" };
+  const st = libraryStatus({ hasFile: b.has_file, monitored: b.monitored });
 
   return (
     <>
@@ -78,7 +79,7 @@ export function BookDetail() {
             <Poster book={b} onChange={load} flash={flash} />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2.5">
-                <span className="rounded-full px-2.5 py-1 font-mono text-[10.5px] font-semibold uppercase" style={{ background: st.soft, color: st.tone }}>{st.label}</span>
+                <span className="rounded-full px-2.5 py-1 font-mono text-[10.5px] font-semibold uppercase" style={{ background: st.soft, color: st.color }}>{st.label}</span>
                 {b.year > 0 && <span className="font-mono text-[11px] text-ink-faint">{b.year}</span>}
                 {/* The catalogue the book actually came from. Open Library keeps its navy
                     chip; the others use the panel style so the palette doesn't grow. */}
@@ -824,7 +825,7 @@ function SeriesPanel({ bookID }: { bookID: number }) {
                   {e.title}
                 </Link>
                 <span className="font-mono text-[10px]" style={{ color: e.has_file ? "var(--good)" : "var(--ink-faint)" }}>
-                  {e.has_file ? "on disk" : "wanted"}
+                  {e.has_file ? "downloaded" : "wanted"}
                 </span>
               </>
             )}

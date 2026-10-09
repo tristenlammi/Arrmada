@@ -9,6 +9,7 @@ import { posterThumb } from "../lib/img";
 import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { DeleteMovieDialog } from "../components/DeleteMovieDialog";
 import { usePersisted } from "../lib/persist";
+import { isWanted, libraryStatus } from "../lib/status";
 import { usePoll, usePollBurst } from "../lib/usePoll";
 import { jobFailed, jobToast, useJob } from "../lib/useJob";
 import { useQuery } from "../lib/query";
@@ -17,14 +18,14 @@ import { ErrorState, Skeleton, StaleBanner } from "../ui";
 const NO_MOVIES: Movie[] = [];
 
 
-type FilterKey = "all" | "monitored" | "unmonitored" | "missing" | "available";
+type FilterKey = "all" | "monitored" | "unmonitored" | "wanted" | "downloaded";
 
 const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "all", label: "All" },
   { key: "monitored", label: "Monitored" },
   { key: "unmonitored", label: "Unmonitored" },
-  { key: "missing", label: "Missing" },
-  { key: "available", label: "Available" },
+  { key: "wanted", label: "Wanted" },
+  { key: "downloaded", label: "Downloaded" },
 ];
 
 function matchesFilter(m: Movie, f: FilterKey): boolean {
@@ -33,10 +34,10 @@ function matchesFilter(m: Movie, f: FilterKey): boolean {
       return m.monitored;
     case "unmonitored":
       return !m.monitored;
-    case "missing":
-      return !m.has_file;
-    case "available":
-      return m.has_file;
+    case "wanted":
+      return isWanted(statusInput(m));
+    case "downloaded":
+      return libraryStatus(statusInput(m)).label === "Downloaded";
     default:
       return true;
   }
@@ -208,7 +209,7 @@ export function Movies() {
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search titles…"
+            placeholder="Search movies…"
             className="ml-auto w-[220px] rounded-lg px-3 py-1.5 text-[12px]"
             style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}
           />
@@ -294,10 +295,12 @@ export function Movies() {
   );
 }
 
-function statusOf(m: Movie): { label: string; tone: string } {
-  if (m.has_file) return { label: "Downloaded", tone: "var(--good)" };
-  if (m.monitored) return { label: "Wanted", tone: "var(--avoid)" };
-  return { label: "Unmonitored", tone: "var(--ink-faint)" };
+function statusInput(m: Movie) {
+  return { hasFile: m.has_file, monitored: m.monitored, fileMissing: m.file?.missing };
+}
+
+function statusOf(m: Movie) {
+  return libraryStatus(statusInput(m));
 }
 
 function Poster({ url, title }: { url?: string; title: string }) {
@@ -479,7 +482,7 @@ function MovieTable({ movies, multiSelect, selected, onToggleSelect, onSearch }:
                     <Link to={`/movies/${m.id}`} className="font-semibold hover:text-[var(--accent)]">{m.title} <span className="font-normal text-ink-faint">{m.year || ""}</span></Link>
                   )}
                 </td>
-                <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: st.tone }}>{st.label}</span></td>
+                <td className={td}><span className="font-mono text-[10px] uppercase" style={{ color: st.color }}>{st.label}</span></td>
                 <td className={td}>{f?.resolution || (f?.quality ? f.quality.split(" ")[0] : "—")}</td>
                 <td className={td} style={bad("codec")}>{f?.codec || "—"}</td>
                 <td className={td} style={bad("lossless")}>{f?.audio?.length ? f.audio.join(", ") : "—"}</td>
@@ -572,7 +575,7 @@ function MovieCard({ m, onDelete, onSearch, selectable, selected, onToggleSelect
           <div className="truncate text-[12.5px] font-semibold" title={m.title}>{m.title}</div>
           <div className="mt-1 flex items-center justify-between">
             <span className="font-mono text-[10.5px] text-ink-faint">{m.year || "—"}</span>
-            <span className="font-mono text-[9.5px] uppercase" style={{ color: st.tone }}>{st.label}</span>
+            <span className="font-mono text-[9.5px] uppercase" style={{ color: st.color }}>{st.label}</span>
           </div>
         </button>
       ) : (
@@ -580,7 +583,7 @@ function MovieCard({ m, onDelete, onSearch, selectable, selected, onToggleSelect
         <div className="truncate text-[12.5px] font-semibold" title={m.title}>{m.title}</div>
         <div className="mt-1 flex items-center justify-between">
           <span className="font-mono text-[10.5px] text-ink-faint">{m.year || "—"}</span>
-          <span className="font-mono text-[9.5px] uppercase" style={{ color: st.tone }}>{st.label}</span>
+          <span className="font-mono text-[9.5px] uppercase" style={{ color: st.color }}>{st.label}</span>
         </div>
       </Link>
       )}
