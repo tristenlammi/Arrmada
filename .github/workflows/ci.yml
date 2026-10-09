@@ -2,7 +2,8 @@ name: CI
 
 # Guards every push and PR to main: the Go module must build, vet clean, and pass
 # its full test suite; the embedded web UI must lint (errors only), pass its unit
-# tests, type-check and build; the install and update scripts must pass shellcheck.
+# tests, type-check, build and pass its browser smoke tests; the install and update
+# scripts must pass shellcheck.
 # This is the net under all future changes — nothing merges red.
 on:
   push:
@@ -91,3 +92,35 @@ jobs:
         run: npx tsc --noEmit -p .
       - name: Build (tsc --noEmit + vite)
         run: npm run build
+      # Browser smoke tests (FE-10): the build above, served by vite preview, against a
+      # mocked API. Chromium only, keyed on the pinned Playwright version so a cache hit
+      # skips the ~150 MB download; its system libraries still come from apt.
+      - name: Playwright version
+        id: pw
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-chromium
+      - name: Install Chromium
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps chromium
+      - name: Install Chromium system libraries
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: npx playwright install-deps chromium
+      - name: E2E smoke (Playwright)
+        run: npm run e2e
+        env:
+          # The build step just ran; don't build a second time.
+          E2E_NO_BUILD: "1"
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report/
+            web/test-results/
+          retention-days: 7

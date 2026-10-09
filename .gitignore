@@ -43,3 +43,8 @@ docker-compose.override.yml
 .arrmada-previous
 # update.sh: the database backup taken before the last update (for --rollback --with-db)
 .arrmada-previous-db
+
+# Playwright (web/e2e) run output
+/web/test-results/
+/web/playwright-report/
+/web/blob-report/

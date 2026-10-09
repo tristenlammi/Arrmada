@@ -12,6 +12,8 @@
 # Frontend — deps and build output are regenerated inside the image.
 web/node_modules/
 web/dist/
+web/test-results/
+web/playwright-report/
 internal/webui/dist/*
 !internal/webui/dist/.gitkeep
 
