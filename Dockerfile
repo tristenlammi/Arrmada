@@ -198,3 +198,15 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
     CMD curl -fsS -o /dev/null "http://127.0.0.1:7878${ARRMADA_BASE_URL%/}/api/health" || exit 1
 
 ENTRYPOINT ["/entrypoint.sh"]
+
+# What update.sh reads before it calls into an image. org.arrmada.cli says the binary
+# understands `arrmada <command>`: an older one ignores its arguments and starts a whole
+# second server, so scripts never pass arguments to an image without this label.
+LABEL org.arrmada.cli="1"
+# This build can stage a restore itself (`arrmada restore`), which update.sh --rollback --with-db uses.
+LABEL org.arrmada.restore="1"
+# Declared last so a new commit only changes the image's metadata, never the cached
+# layers above.
+ARG VERSION=docker
+ARG COMMIT=unknown
+LABEL org.arrmada.version="${VERSION}" org.arrmada.commit="${COMMIT}"

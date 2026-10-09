@@ -49,9 +49,6 @@ var (
 	ErrCorrupt = errors.New("the database is damaged")
 	// ErrNotArrmada means a sound SQLite file that isn't an Arrmada database.
 	ErrNotArrmada = errors.New("not an Arrmada database")
-	// ErrNewerSchema means the backup was written by a newer Arrmada than this one;
-	// restoring it would run this build against tables it doesn't understand.
-	ErrNewerSchema = errors.New("this backup is from a newer version of Arrmada")
 	// ErrTooLarge means an imported backup is over the size it may grow to.
 	ErrTooLarge = errors.New("the backup is too large")
 )
@@ -151,7 +148,7 @@ func ValidateBackup(path string, embedded []string) (BackupInfo, error) {
 	}
 	if len(info.Unknown) > 0 {
 		sort.Strings(info.Unknown)
-		return info, fmt.Errorf("%w (it has %s); update Arrmada first", ErrNewerSchema, strings.Join(info.Unknown, ", "))
+		return info, backupNewerError{unknown: info.Unknown}
 	}
 	return info, nil
 }
@@ -501,3 +498,14 @@ func readJSONFile(path string, v any) (ok bool, err error) {
 	}
 	return true, nil
 }
+
+// backupNewerError means the backup was written by a newer Arrmada than this one;
+// restoring it would run this build against tables it doesn't understand. It is an
+// ErrNewerSchema (schema.go), the same refusal the boot gives a newer database.
+type backupNewerError struct{ unknown []string }
+
+func (e backupNewerError) Error() string {
+	return fmt.Sprintf("this backup is from a newer version of Arrmada (it has %s); update Arrmada first", strings.Join(e.unknown, ", "))
+}
+
+func (e backupNewerError) Unwrap() error { return ErrNewerSchema }

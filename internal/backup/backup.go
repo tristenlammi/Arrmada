@@ -45,6 +45,7 @@ var keep = map[store.BackupKind]int{
 	store.BackupPreDeleteUser:      3,
 	store.BackupPreDeleteEmptyUser: 3,
 	store.BackupUploaded:           3,
+	store.BackupPreUpdate:          3,
 }
 
 // Settings is the slice of the settings service backups read.

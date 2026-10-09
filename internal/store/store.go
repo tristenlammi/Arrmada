@@ -40,6 +40,11 @@ type Options struct {
 	// the copy, nothing more (ARRMADA_SKIP_MIGRATION_SNAPSHOT).
 	SkipMigrationSnapshot bool
 
+	// AllowNewerSchema starts on a database a newer build has upgraded, which is
+	// otherwise refused (ARRMADA_ALLOW_NEWER_SCHEMA). The old code then runs against
+	// tables and columns it doesn't know about; it is a last resort, logged loudly.
+	AllowNewerSchema bool
+
 	// BeforeMigrate, when set, runs once with the pending migration file names
 	// before any of them is applied, and only when there is at least one. An error
 	// aborts Open with nothing applied.
@@ -113,6 +118,11 @@ func (s *Store) migrate(ctx context.Context, opt Options, log *slog.Logger) erro
 	pend, last, err := pendingMigrations(ctx, s.db, fsys)
 	if err != nil {
 		return fmt.Errorf("run migrations: %w", err)
+	}
+	// Before anything else changes: an older build must not snapshot, migrate or run on
+	// a database a newer one has already upgraded.
+	if err := s.refuseNewerSchema(ctx, fsys, opt, log); err != nil {
+		return err
 	}
 	if len(pend) == 0 {
 		return nil
@@ -197,6 +207,32 @@ func (s *Store) prunePreMigrate(log *slog.Logger) {
 	} else if len(removed) > 0 {
 		log.Info("pruned old pre-migrate snapshots", "removed", removed)
 	}
+}
+
+// OpenNoMigrate opens an existing database with the same settings Open uses, but
+// never creates, migrates or snapshots it. It is for the command-line tools, which
+// run beside a live server: they must neither upgrade the schema under it nor make
+// an empty database where the real one was expected.
+func OpenNoMigrate(dataDir string) (*Store, error) {
+	dbPath := filepath.Join(dataDir, "arrmada.db")
+	fi, err := os.Stat(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("no database at %s: %w", dbPath, err)
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s isn't a database file", dbPath)
+	}
+	db, err := openDB(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping sqlite: %w", err)
+	}
+	return &Store{db: db, dataDir: dataDir, dbPath: dbPath}, nil
 }
 
 // openDB opens the pool every Store uses: WAL, foreign keys on, busy timeout, and

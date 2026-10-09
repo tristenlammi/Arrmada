@@ -98,10 +98,10 @@ func (r movieTitleResolver) ResolveMovie(ctx context.Context, name string) (stri
 }
 
 func main() {
-	// Maintenance commands (arrmada restore, arrmada backups) run and exit before anything
-	// else starts, so they work while the server is stopped or crash-looping.
-	if code, ok := runSubcommand(os.Args[1:], os.Stdout, os.Stderr); ok {
-		os.Exit(code)
+	// `arrmada <command>` runs one maintenance command and exits (cli.go). Checked before
+	// the logger and everything else, so arguments can never start a second server.
+	if len(os.Args) > 1 {
+		os.Exit(runCLI(os.Args[1:]))
 	}
 
 	cfg, err := config.Load()
@@ -143,7 +143,11 @@ func main() {
 	}
 	logEnvironment(log, cfg)
 
-	st, err := store.OpenWith(cfg.DataDir, store.Options{Log: log, SkipMigrationSnapshot: cfg.SkipMigrationSnapshot})
+	st, err := store.OpenWith(cfg.DataDir, store.Options{
+		Log:                   log,
+		SkipMigrationSnapshot: cfg.SkipMigrationSnapshot,
+		AllowNewerSchema:      cfg.AllowNewerSchema,
+	})
 	if err != nil {
 		log.Error("failed to open database", "err", err)
 		os.Exit(1)

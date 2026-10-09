@@ -87,6 +87,9 @@ type Config struct {
 	// snapshot. Only for a data disk too full to hold the copy; the app refuses to
 	// upgrade otherwise rather than risk the only copy.
 	SkipMigrationSnapshot bool
+	// AllowNewerSchema starts the app on a database a newer Arrmada has upgraded, which
+	// it otherwise refuses (old code on a newer schema can damage it). A last resort.
+	AllowNewerSchema bool
 }
 
 // Load builds a Config from environment variables, falling back to defaults.
@@ -141,6 +144,7 @@ func Load() (Config, error) {
 	// Anything that isn't clearly "yes" keeps the snapshot: skipping it is the risky
 	// choice, so a typo shouldn't make it.
 	c.SkipMigrationSnapshot, _ = strconv.ParseBool(env("ARRMADA_SKIP_MIGRATION_SNAPSHOT", "false"))
+	c.AllowNewerSchema, _ = strconv.ParseBool(env("ARRMADA_ALLOW_NEWER_SCHEMA", "false"))
 
 	switch c.LogLevel {
 	case "debug", "info", "warn", "error":

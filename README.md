@@ -72,11 +72,69 @@ You can skip it and do both later in Settings.
 ```
 
 This pulls the latest code, rebuilds only the app, and waits until it's running again. Your
-settings, downloads and media are untouched. A database snapshot is taken automatically before
-any schema change (`<data>/backups`, newest 5 kept), and another every night after 04:00 local
-time (newest 7 kept). If the data disk is too full for the pre-upgrade copy,
-Arrmada refuses to upgrade and says so; free some space, or set
+`.env`, downloads and media files aren't touched, and the companions keep running. The
+database is kept too, but a new version may upgrade its tables when it starts, so a
+snapshot is taken automatically before any schema change (`<data>/backups`, newest 5 kept),
+and another every night after 04:00 local time (newest 7 kept). If the data disk is too full
+for the pre-upgrade copy, Arrmada refuses to upgrade and says so; free some space, or set
 `ARRMADA_SKIP_MIGRATION_SNAPSHOT=1` in `.env` to upgrade without one.
+
+Before it rebuilds, the script also backs the database up with the running app's own
+`arrmada backup --kind pre-update` (`<data>/backups/arrmada-pre-update-*.db`, newest 3 kept),
+and stops if that fails; `./update.sh --no-backup` updates without it. Builds older than
+this feature can't take one, so the first update after it says so and carries on.
+
+Restarting abandons a conversion in progress, so if one has been running for over two
+hours the script says so and asks before it changes anything. `./update.sh -y` (or
+`ARRMADA_UPDATE_FORCE=1`) goes ahead without asking, and so does a run with no terminal,
+such as a scheduled one: it prints the warning and updates.
+
+If the pull fails (local edits, or a branch that has diverged), the script stops without
+rebuilding anything; `git status` shows what's in the way. `./update.sh --force-local` skips
+the pull and rebuilds the code that's in the folder.
+
+The Dashboard and `/api/health` show the version and commit that's running.
+
+If you deploy with Komodo or another tool instead of `update.sh`, mirror these steps there:
+pass `ARRMADA_VERSION` (`git describe --tags --always --dirty`) and `ARRMADA_COMMIT`
+(`git rev-parse --short HEAD`) as build environment, run
+`docker exec -u <PUID>:<PGID> Arrmada-app arrmada backup --kind pre-update` and tag the
+running image `arrmada:previous` before each build. Otherwise none of this protection applies.
+
+`docker exec Arrmada-app arrmada help` lists the maintenance commands built into the app
+(`version`, `backup`, …). With no command, `arrmada` is the server.
+
+### Rolling back an update
+
+The build that was running before an update is kept as the Docker image `arrmada:previous`,
+so `./update.sh --rollback` can start it again in a few seconds (the build you leave is kept
+as `arrmada:rolled-back`, and the next `./update.sh` goes forward again). If the previous
+build doesn't come up, the script starts the newer one again rather than leave Arrmada down.
+Keeping the old image costs one extra image of disk, several GB with the subtitle and GPU
+tooling.
+
+An older build won't start on a database a newer one has upgraded: it stops with a message
+saying so, because running old code on tables it doesn't know can damage them. So before it
+stops anything, `--rollback` asks the previous build whether it can run on the database as
+it is, and if the update changed the database it stops and says to use
+`./update.sh --rollback --with-db`. That also puts back the pre-update backup, which means
+everything Arrmada recorded since the update is lost, so it asks first (`-y` skips the
+question). If the previous build can't restore a backup itself, the script changes nothing
+and prints the steps to do it by hand. `ARRMADA_ALLOW_NEWER_SCHEMA=1` in `.env` starts an
+older build on a newer database anyway; it's a last resort.
+
+## Locked out?
+
+If you've forgotten the admin password, set a new one from the server:
+
+```sh
+docker exec -it Arrmada-app arrmada reset-password you@example.com
+```
+
+It prints a new password once, in your terminal only (never in a log), and signs that
+account out everywhere. To choose the password yourself, pipe it in with
+`--password-stdin`. A name that matches no account lists the admin accounts. Anyone with
+shell access to the server can do this, the same as they could edit the database.
 
 ## Backups
 
@@ -87,6 +145,7 @@ Arrmada copies its database into `<data>/backups` (on Unraid,
 |---|---|---|
 | Nightly | once a day after 04:00 server time (changeable), or at once after a long downtime | newest 7 (changeable) |
 | Before update | before any schema change | newest 5 |
+| Pre-update | when `update.sh` runs | newest 3 |
 | Manual | **Back up now** | newest 10 |
 | Before restore, Before user delete, Uploaded | automatically | newest 3 each |
 

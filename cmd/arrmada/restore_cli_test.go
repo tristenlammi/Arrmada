@@ -115,10 +115,3 @@ func TestCLIRestoreFromPath(t *testing.T) {
 	}
 }
 
-func TestRunSubcommandLeavesServerArgsAlone(t *testing.T) {
-	for _, args := range [][]string{nil, {}, {"serve"}, {"--debug"}} {
-		if _, ok := runSubcommand(args, &bytes.Buffer{}, &bytes.Buffer{}); ok {
-			t.Errorf("%q was taken as a maintenance command", args)
-		}
-	}
-}

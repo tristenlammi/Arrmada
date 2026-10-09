@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/backup"
-	"github.com/tristenlammi/arrmada/internal/config"
 	"github.com/tristenlammi/arrmada/internal/store"
 )
 
@@ -21,28 +20,6 @@ import (
 //	docker exec Arrmada-app arrmada restore <name>                 (then restart it)
 //
 // The restore itself runs at the next start, exactly like one staged from the Backups card.
-
-// runSubcommand runs a maintenance command named by args[0]. handled is false when args
-// isn't one, and the server starts as usual.
-func runSubcommand(args []string, stdout, stderr io.Writer) (code int, handled bool) {
-	if len(args) == 0 {
-		return 0, false
-	}
-	switch args[0] {
-	case "restore", "backups":
-	default:
-		return 0, false
-	}
-	cfg, err := config.Load()
-	if err != nil {
-		fmt.Fprintln(stderr, "arrmada:", err)
-		return 1, true
-	}
-	if args[0] == "restore" {
-		return restoreCommand(cfg.DataDir, args[1:], stdout, stderr), true
-	}
-	return backupsCommand(cfg.DataDir, args[1:], stdout, stderr), true
-}
 
 const restoreUsage = `usage:
   arrmada restore <backup name | path to .db or .db.gz>

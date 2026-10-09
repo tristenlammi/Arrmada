@@ -1,0 +1,54 @@
+name: Image
+
+# Builds the Docker image the way update.sh does on the owner's server, without
+# publishing it. A broken apt repository, whisper.cpp tag or oneAPI base image then
+# fails here, on the PR, instead of half-way through an update on the server.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# One in-flight run per ref; a newer push cancels the older run.
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Docker build
+    runs-on: ubuntu-latest
+    # A cold build compiles whisper.cpp twice (Vulkan, and SYCL with Intel's compiler).
+    timeout-minutes: 180
+    steps:
+      # The oneAPI build stage pulls a very large Intel base image; the runner's ~14 GB of
+      # free disk isn't enough for it plus the rest. This clears the preinstalled SDKs
+      # the build doesn't use.
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          swap-storage: true
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      # push: false and no load: the image stays in the build cache, which is all a check
+      # needs. Layers are cached in GitHub's cache, so a run that changes only Go or web
+      # code skips the whisper and oneAPI stages.
+      - name: Build (not pushed)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ github.head_ref || github.ref_name }}-${{ github.sha }}
+            COMMIT=${{ github.sha }}

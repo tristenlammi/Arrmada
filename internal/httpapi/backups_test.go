@@ -24,8 +24,8 @@ func newBackupServer(t *testing.T) *routeServer {
 	})
 }
 
-// doBody is do with a JSON body.
-func (s *routeServer) doBody(method, path string, c *http.Cookie, body string) *httptest.ResponseRecorder {
+// doJSON is do with a JSON body (cookie before body).
+func (s *routeServer) doJSON(method, path string, c *http.Cookie, body string) *httptest.ResponseRecorder {
 	r := httptest.NewRequest(method, "http://arrmada.local"+path, strings.NewReader(body))
 	r.RemoteAddr = "192.168.1.20:5000"
 	r.Header.Set("Content-Type", "application/json")
@@ -99,13 +99,13 @@ func TestBackupRoutesAdminOnly(t *testing.T) {
 	}
 	for _, rt := range routes {
 		for who, c := range map[string]*http.Cookie{"manager": mgr, "requester": req} {
-			if rec := s.doBody(rt.method, rt.path, c, rt.body); rec.Code != http.StatusForbidden {
+			if rec := s.doJSON(rt.method, rt.path, c, rt.body); rec.Code != http.StatusForbidden {
 				t.Errorf("%s %s as %s: HTTP %d, want 403", rt.method, rt.path, who, rec.Code)
 			}
 		}
 	}
 	for _, rt := range routes {
-		if rec := s.doBody(rt.method, rt.path, admin, rt.body); rec.Code != http.StatusOK {
+		if rec := s.doJSON(rt.method, rt.path, admin, rt.body); rec.Code != http.StatusOK {
 			t.Errorf("%s %s as admin: HTTP %d: %s", rt.method, rt.path, rec.Code, rec.Body)
 		}
 	}
@@ -214,7 +214,7 @@ func TestBackupListSettingsDelete(t *testing.T) {
 		t.Errorf("default schedule = %+v, want %+v", list.Settings, want)
 	}
 
-	rec = s.doBody("PUT", "/api/v1/system/backups/settings", admin, `{"enabled":false,"hour":2,"keep_nightly":14}`)
+	rec = s.doJSON("PUT", "/api/v1/system/backups/settings", admin, `{"enabled":false,"hour":2,"keep_nightly":14}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("settings: HTTP %d: %s", rec.Code, rec.Body)
 	}
@@ -222,7 +222,7 @@ func TestBackupListSettingsDelete(t *testing.T) {
 		t.Errorf("saved schedule = %+v", got)
 	}
 	for _, body := range []string{`{"hour":24}`, `{"hour":-1}`, `{"keep_nightly":0}`, `{"keep_nightly":366}`, `{"other":1}`} {
-		if rec := s.doBody("PUT", "/api/v1/system/backups/settings", admin, body); rec.Code != http.StatusBadRequest {
+		if rec := s.doJSON("PUT", "/api/v1/system/backups/settings", admin, body); rec.Code != http.StatusBadRequest {
 			t.Errorf("settings %s: HTTP %d, want 400", body, rec.Code)
 		}
 	}
@@ -248,7 +248,7 @@ func TestBackupRestoreStagesAndCancels(t *testing.T) {
 	path := "/api/v1/system/backups/" + name + "/restore"
 
 	for _, body := range []string{`{}`, `{"confirm":"restore"}`, `{"confirm":"yes"}`} {
-		if rec := s.doBody("POST", path, admin, body); rec.Code != http.StatusBadRequest {
+		if rec := s.doJSON("POST", path, admin, body); rec.Code != http.StatusBadRequest {
 			t.Errorf("restore with %s: HTTP %d, want 400", body, rec.Code)
 		}
 	}
@@ -256,7 +256,7 @@ func TestBackupRestoreStagesAndCancels(t *testing.T) {
 		t.Fatal("staged without the typed phrase")
 	}
 
-	rec := s.doBody("POST", path, admin, `{"confirm":"RESTORE"}`)
+	rec := s.doJSON("POST", path, admin, `{"confirm":"RESTORE"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("restore: HTTP %d: %s", rec.Code, rec.Body)
 	}
@@ -304,7 +304,7 @@ func TestBackupRestoreRestartsInContainer(t *testing.T) {
 	t.Setenv("ARRMADA_IN_CONTAINER", "1")
 	_, admin := s.user(t, "admin@example.com", auth.RoleAdmin)
 	name := manualBackup(t, s, admin)
-	rec := s.doBody("POST", "/api/v1/system/backups/"+name+"/restore", admin, `{"confirm":"RESTORE"}`)
+	rec := s.doJSON("POST", "/api/v1/system/backups/"+name+"/restore", admin, `{"confirm":"RESTORE"}`)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"restarting":true`) || !restarted {
 		t.Errorf("HTTP %d: %s (restarted %v)", rec.Code, rec.Body, restarted)
 	}
@@ -318,14 +318,14 @@ func TestBackupRestoreRefusesDamaged(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(s.deps.Backups.Dir(), name), []byte("garbage, not sqlite"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	rec := s.doBody("POST", "/api/v1/system/backups/"+name+"/restore", admin, `{"confirm":"RESTORE"}`)
+	rec := s.doJSON("POST", "/api/v1/system/backups/"+name+"/restore", admin, `{"confirm":"RESTORE"}`)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "not a SQLite database") {
 		t.Errorf("HTTP %d: %s", rec.Code, rec.Body)
 	}
 	if m, _ := s.deps.Backups.PendingRestore(); m != nil {
 		t.Error("a damaged backup was staged")
 	}
-	if rec := s.doBody("POST", "/api/v1/system/backups/..%2Farrmada.db/restore", admin, `{"confirm":"RESTORE"}`); rec.Code != http.StatusBadRequest {
+	if rec := s.doJSON("POST", "/api/v1/system/backups/..%2Farrmada.db/restore", admin, `{"confirm":"RESTORE"}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("bad name: HTTP %d, want 400", rec.Code)
 	}
 }
@@ -409,7 +409,7 @@ func TestUploadAcceptsGzipAndPlain(t *testing.T) {
 	if names[0] == names[1] {
 		t.Errorf("two uploads in the same second share a name: %v", names)
 	}
-	if rec := s.doBody("POST", "/api/v1/system/backups/"+names[1]+"/restore", admin, `{"confirm":"RESTORE"}`); rec.Code != http.StatusOK {
+	if rec := s.doJSON("POST", "/api/v1/system/backups/"+names[1]+"/restore", admin, `{"confirm":"RESTORE"}`); rec.Code != http.StatusOK {
 		t.Errorf("restoring the upload: HTTP %d: %s", rec.Code, rec.Body)
 	}
 	if l := leftovers(t, s.deps.Backups.Dir()); len(l) > 0 {

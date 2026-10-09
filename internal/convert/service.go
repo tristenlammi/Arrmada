@@ -61,6 +61,9 @@ func activeState(st JobState) bool {
 	return false
 }
 
+// Active reports whether a job in this state is still running.
+func (st JobState) Active() bool { return activeState(st) }
+
 // Job is one conversion of one library file — a movie or a TV episode.
 type Job struct {
 	ID          int64    `json:"id"`
