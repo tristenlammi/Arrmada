@@ -59,4 +59,17 @@ describe("movieStatus", () => {
     expect(movieStatus({ has_file: false, monitored: false }, undefined, false).label).toBe("Unmonitored");
     expect(isMovieDownloaded({ has_file: true, monitored: true }, false)).toBe(true);
   });
+
+  it("keeps a film Downloaded while an upgrade or extra version downloads (MOV-10)", () => {
+    const upgrade = { has_file: true, monitored: true, download: { state: "downloading", progress: 0.3, kind: "upgrade" as const } };
+    expect(movieStatus(upgrade).key).toBe("downloaded");
+    expect(isMovieDownloaded(upgrade)).toBe(true);
+    const version = { has_file: false, monitored: true, download: { state: "downloading", progress: 0.3, kind: "version" as const, version_label: "4K" } };
+    expect(movieStatus(version).key).toBe("wanted");
+    expect(movieStatus({ has_file: false, monitored: true, download: { state: "downloading", progress: 0.3, kind: "missing" } }).key).toBe("downloading");
+  });
+
+  it("reads a list summary's file_missing", () => {
+    expect(movieStatus({ has_file: true, monitored: true, file_missing: true }).key).toBe("missing");
+  });
 });

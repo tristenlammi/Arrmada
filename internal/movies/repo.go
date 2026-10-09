@@ -93,6 +93,51 @@ func (r *Repo) SetMediaInfoForPath(ctx context.Context, id int64, path, mediaJSO
 	return err
 }
 
+// ListSummaries returns every movie as the library list shows it, newest first: only the
+// columns the list needs, the rating pulled out of extra_json in SQL (the cast, overview
+// and the rest of it never leave the database) and the media facts from media_json.
+func (r *Repo) ListSummaries(ctx context.Context) ([]MovieSummary, error) {
+	rows, err := r.q().QueryContext(ctx, `SELECT id, title, year, poster_url, monitored, has_file, quality_profile,
+		min_availability, added_at, COALESCE(json_extract(extra_json, '$.vote_average'), 0), media_json
+		FROM movies ORDER BY added_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []MovieSummary{}
+	for rows.Next() {
+		var (
+			s         MovieSummary
+			mon, hf   int
+			vote      float64
+			mediaJSON string
+		)
+		if err := rows.Scan(&s.ID, &s.Title, &s.Year, &s.PosterURL, &mon, &hf, &s.QualityProfile,
+			&s.MinAvailability, &s.AddedAt, &vote, &mediaJSON); err != nil {
+			return nil, err
+		}
+		s.Monitored, s.HasFile, s.VoteAverage = mon != 0, hf != 0, vote
+		s.SortTitle = SortTitle(s.Title)
+		if s.HasFile {
+			var f *MovieFile
+			if mediaJSON != "" {
+				var mf MovieFile
+				if json.Unmarshal([]byte(mediaJSON), &mf) == nil {
+					f = &mf
+				}
+			}
+			s.Media = summaryMedia(f)
+			if f != nil {
+				s.SizeBytes, s.FileMissing = f.SizeBytes, f.Missing
+			}
+			// The same test as Movie.MediaStale.
+			s.mediaStale = f == nil || (!f.Missing && f.MediaVersion < MediaVersion)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
 // List returns all movies, newest first.
 func (r *Repo) List(ctx context.Context) ([]Movie, error) {
 	rows, err := r.q().QueryContext(ctx, `SELECT `+movieCols+` FROM movies ORDER BY added_at DESC, id DESC`)

@@ -2026,7 +2026,10 @@ export const api = {
   reviewTargets: (id: number, q: string) =>
     req<{ targets: ReviewTarget[]; truncated?: boolean }>(`/api/v1/reviews/${id}/targets?q=${encodeURIComponent(q)}`),
 
-  movies: () => req<{ movies: Movie[]; metadata_available: boolean; client_health?: QueueHealth }>("/api/v1/movies"),
+  movies: () => req<{ movies: MovieSummary[]; metadata_available: boolean; client_health?: QueueHealth }>("/api/v1/movies"),
+  /** Only the films downloading right now (id: just that one) — what the grid and the movie page poll. */
+  movieDownloads: (id?: number) =>
+    req<{ downloads: MovieDownloadRow[]; client_health?: QueueHealth }>(`/api/v1/movies/downloads${id ? `?id=${id}` : ""}`),
   lookupMovies: (q: string) =>
     req<{ results: MovieLookup[] }>(`/api/v1/movies/lookup?q=${encodeURIComponent(q)}`).then((r) => r.results),
   settings: () => req<AppSettings>("/api/v1/settings"),
@@ -2788,7 +2791,7 @@ export interface Movie {
   extra?: MovieExtra;
   file?: MovieFile;
   versions?: MovieVersion[];
-  download?: { state: string; progress: number };
+  download?: MovieDownload;
   /** Detail only: whether the upgrade sweep will look at this movie (monitored, has a file, profile upgrades). */
   upgrades_allowed?: boolean;
   /** The default file is kept out of profile-driven upgrades ("keep existing files"). */
@@ -2801,6 +2804,59 @@ export interface Movie {
   search_misses?: number;
   next_search_at?: string;
   last_search?: AttemptSummary;
+}
+
+/**
+ * A film's download in flight: what it is for — its own missing file, an upgrade that
+ * replaces the file it has, or an extra version's first file (version_label names it).
+ */
+export interface MovieDownload {
+  state: string;
+  progress: number;
+  kind?: "missing" | "upgrade" | "version";
+  version_id?: number;
+  version_label?: string;
+}
+
+/** One film's download, as GET /api/v1/movies/downloads lists it. */
+export interface MovieDownloadRow extends MovieDownload {
+  movie_id: number;
+}
+
+/** The media facts the library table shows about a film's file. */
+export interface SummaryMedia {
+  resolution?: string;
+  quality?: string; // "2160p BluRay", from the name when not probed
+  codec?: string;
+  audio?: string[];
+  atmos?: boolean;
+  hdr?: string[];
+  bitrate_mbps?: number;
+  duration_min?: number;
+  container?: string; // "mkv"
+}
+
+/**
+ * A film as the library list sends it (GET /api/v1/movies): what the grid, the table and
+ * the filters read, and nothing more — no cast, overview or file paths. The detail page
+ * keeps the full Movie.
+ */
+export interface MovieSummary {
+  id: number;
+  title: string;
+  sort_title: string;
+  year: number;
+  poster_url?: string;
+  monitored: boolean;
+  has_file: boolean;
+  file_missing?: boolean;
+  quality_profile: string;
+  min_availability: string;
+  added_at?: string;
+  vote_average?: number;
+  size_bytes?: number;
+  media?: SummaryMedia;
+  download?: MovieDownload;
 }
 
 export interface MovieAcquisition {

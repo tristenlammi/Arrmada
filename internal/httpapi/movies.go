@@ -17,8 +17,22 @@ import (
 	"github.com/tristenlammi/arrmada/internal/quality"
 )
 
+// handleListMovies is the library list: every movie as a slim summary (movies.MovieSummary
+// — no cast, overview or file paths) with its live download, joined in one pass.
+// ?full=1 answers full Movie rows instead, for a caller that needs them.
 func (a *api) handleListMovies(w http.ResponseWriter, r *http.Request) {
-	list, err := a.deps.Movies.List(r.Context())
+	ctx := r.Context()
+	full := r.URL.Query().Get("full") == "1"
+	var (
+		summaries []movies.MovieSummary
+		list      []movies.Movie
+		err       error
+	)
+	if full {
+		list, err = a.deps.Movies.List(ctx)
+	} else {
+		summaries, err = a.deps.Movies.ListSummaries(ctx)
+	}
 	if err != nil {
 		a.writeError(w, http.StatusInternalServerError, "could not list movies")
 		return
@@ -26,21 +40,30 @@ func (a *api) handleListMovies(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []movies.Movie{}
 	}
-	// Attach live download progress so the grid can show an indicator. When the client
-	// can't be read, the grid says the status is unknown rather than "Wanted".
-	snap, queueKnown, _ := a.queueSnapshot(r.Context())
-	queue := snap.Items
+	// Attach live download progress so the grid can show an indicator — an upgrade's or an
+	// extra version's too. When the client can't be read, the grid says the status is
+	// unknown rather than "Wanted".
+	snap, queueKnown, _ := a.queueSnapshot(ctx)
 	// Joined through the acquisition record by info hash: one query and one pass, and a
 	// torrent named nothing like the film still shows on its poster.
 	var acqs map[int64][]automation.Acquisition
-	if a.deps.Automation != nil && len(queue) > 0 {
-		acqs, _ = a.deps.Automation.ActiveByItem(r.Context(), "movie")
+	if a.deps.Automation != nil && len(snap.Items) > 0 {
+		acqs, _ = a.deps.Automation.ActiveByItem(ctx, automation.AttemptMovie)
 	}
-	byHash := queueByHash(queue)
+	qi := newQueueIndex(snap.Items)
 	var stale []int64
+	for i := range summaries {
+		s := &summaries[i]
+		if len(acqs[s.ID]) > 0 {
+			s.Download = movieDownloadOf(acqs[s.ID], qi, a.versionLabeler(ctx, s.ID))
+		}
+		if s.MediaStale() {
+			stale = append(stale, s.ID)
+		}
+	}
 	for i := range list {
 		if len(acqs[list[i].ID]) > 0 {
-			list[i].Download = movieDownload(list[i], acqs[list[i].ID], byHash, queue)
+			list[i].Download = movieDownloadOf(acqs[list[i].ID], qi, a.versionLabeler(ctx, list[i].ID))
 		}
 		if list[i].MediaStale() {
 			stale = append(stale, list[i].ID)
@@ -58,8 +81,12 @@ func (a *api) handleListMovies(w http.ResponseWriter, r *http.Request) {
 				return map[string]int{"movies": n}, nil
 			}})
 	}
+	var out any = summaries
+	if full {
+		out = list
+	}
 	a.writeJSON(w, http.StatusOK, map[string]any{
-		"movies":             list,
+		"movies":             out,
 		"metadata_available": a.deps.Movies.MetadataAvailable(),
 		"client_health":      queueHealth{OK: queueKnown},
 	})
@@ -385,7 +412,12 @@ func (a *api) handleGetMovie(w http.ResponseWriter, r *http.Request) {
 		queue, _ = a.deps.Downloads.Queue(r.Context())
 	}
 	byHash := queueByHash(queue)
-	m.Download = movieDownload(m, acqs, byHash, queue)
+	// Upgrades and extra versions show their progress too, labelled by what they're for.
+	labels := map[int64]string{}
+	for _, v := range m.Versions {
+		labels[v.ID] = v.Label
+	}
+	m.Download = movieDownloadOf(acqs, newQueueIndex(queue), func(vid int64) string { return labels[vid] })
 	m.UpgradesAllowed = upgradeWatched(m.Monitored, m.HasFile, a.anyVersionUpgrades(r.Context(), &m))
 	// What searching has come to: the last search's result, the sweep's backoff and when
 	// it will next look (search_attempts), beside the movie's own fields.

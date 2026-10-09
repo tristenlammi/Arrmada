@@ -136,6 +136,7 @@ func (a *api) missingVersionRows(ctx context.Context, queueKnown bool) ([]movieW
 				PosterURL: m.PosterURL, QualityProfile: names(m.QualityProfile), Missing: tracks, State: wantedSearching},
 			Tracks: tracks, Queued: a.deps.Automation.MovieSearchBusy(m.ID),
 		}
+		downloading, held := heldOnly(active[m.ID])
 		switch {
 		case !a.deps.Movies.IsAvailable(m):
 			row.State = wantedNotReleased
@@ -144,9 +145,17 @@ func (a *api) missingVersionRows(ctx context.Context, queueKnown bool) ([]movieW
 			}
 		case !queueKnown:
 			row.State = wantedUnknown
-		case len(active[m.ID]) > 0:
+		case downloading:
 			// The sweep leaves a track alone while a grab for it is in flight.
-			row.State, row.WaitingOn = wantedWaiting, active[m.ID][0].Title
+			row.State = wantedWaiting
+			for _, acq := range active[m.ID] {
+				if !automation.AcqHeld(acq) {
+					row.WaitingOn = acq.Title
+					break
+				}
+			}
+		case held:
+			row.State = wantedHeld
 		default:
 			st := states[m.ID]
 			slot := automation.SweepSchedule(automation.AttemptMovie, st.LastAt, st.Misses)

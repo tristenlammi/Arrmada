@@ -1,6 +1,6 @@
 import type {
   ActivityFeed, BlocklistRow, Book, BookSweepStatus, BookUpgradeStatus, CalendarItem, DashboardData, DownloadClientList, FitCounts,
-  FormatInfo, ImportRecord, ImportReview, Indexer, Job, Movie, MovieWantedRow, MoviesMissing, MyBook, MyRequest, QualityProfileInfo, Series, WantedLists,
+  FormatInfo, ImportRecord, ImportReview, Indexer, Job, MovieDownloadRow, MovieSummary, MovieWantedRow, MoviesMissing, MyBook, MyRequest, QualityProfileInfo, Series, WantedLists,
 } from "../../src/lib/api";
 import { NOW, day } from "./clock";
 
@@ -31,13 +31,25 @@ export const calendar: { items: CalendarItem[]; start: string; end: string } = {
   ],
 };
 
-export const movies: { movies: Movie[]; metadata_available: boolean; client_health?: { ok: boolean } } = {
+// The library list is slim summaries (MOV-10): no cast, overview or file paths.
+export const movies: { movies: MovieSummary[]; metadata_available: boolean; client_health?: { ok: boolean } } = {
   client_health: { ok: true },
   metadata_available: true,
   movies: [
-    { id: 1, tmdb_id: 1007, title: "The Cartographer", year: 2023, poster_url: poster(3), monitored: true, quality_profile: "hd-1080p", min_availability: "released", has_file: true, added_at: "2026-09-01T10:00:00Z" },
-    { id: 2, tmdb_id: 1006, title: "Anchor Point", year: 2022, poster_url: poster(4), monitored: true, quality_profile: "hd-1080p", min_availability: "released", has_file: false, added_at: "2026-09-20T10:00:00Z" },
-    { id: 3, tmdb_id: 1005, title: "Driftwood", year: 2025, poster_url: poster(5), monitored: true, quality_profile: "uhd-2160p", min_availability: "released", has_file: false, download: { state: "downloading", progress: 0.42 } },
+    { id: 1, title: "The Cartographer", sort_title: "cartographer", year: 2023, poster_url: poster(3), monitored: true, quality_profile: "hd-1080p", min_availability: "released", has_file: true, added_at: "2026-09-01T10:00:00Z",
+      size_bytes: 9_000_000_000, media: { resolution: "1080p", codec: "x264", audio: ["DTS"], bitrate_mbps: 6.1, duration_min: 197, container: "mkv" },
+      download: { state: "downloading", progress: 0.2, kind: "upgrade" } },
+    { id: 2, title: "Anchor Point", sort_title: "anchor point", year: 2022, poster_url: poster(4), monitored: true, quality_profile: "hd-1080p", min_availability: "released", has_file: false, added_at: "2026-09-20T10:00:00Z" },
+    { id: 3, title: "Driftwood", sort_title: "driftwood", year: 2025, poster_url: poster(5), monitored: true, quality_profile: "uhd-2160p", min_availability: "released", has_file: false, download: { state: "downloading", progress: 0.42, kind: "missing" } },
+  ],
+};
+
+// GET /api/v1/movies/downloads: what the grid polls while those two download.
+export const movieDownloads: { downloads: MovieDownloadRow[]; client_health: { ok: boolean } } = {
+  client_health: { ok: true },
+  downloads: [
+    { movie_id: 1, state: "downloading", progress: 0.25, kind: "upgrade" },
+    { movie_id: 3, state: "downloading", progress: 0.5, kind: "missing" },
   ],
 };
 

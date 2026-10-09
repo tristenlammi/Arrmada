@@ -10,7 +10,7 @@ import {
   type FitCounts,
   type FormatInfo,
   type IdealFile,
-  type Movie,
+  type MovieSummary,
   type MusicPreset,
   type ProfileImpact,
   type ProfileMoveCounts,
@@ -1164,7 +1164,7 @@ function LibraryFitPanel({ sp }: { sp: StoredProfile }) {
 // TestPanel runs the profile, as edited, against a real title's indexer results.
 function TestPanel({ sp }: { sp: StoredProfile }) {
   const series = sp.media_type === "series";
-  const [movies, setMovies] = useState<Movie[] | null>(null);
+  const [movies, setMovies] = useState<MovieSummary[] | null>(null);
   const [shows, setShows] = useState<Series[] | null>(null);
   const [q, setQ] = useState("");
   const [pick, setPick] = useState<{ id: number; title: string } | null>(null);
