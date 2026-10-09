@@ -85,6 +85,12 @@ func TestQueuedTorrentHoldsMetadataDoesNot(t *testing.T) {
 		}
 	}
 
+	// A finished download in a client error state is not a stall — its data is on disk,
+	// often waiting in Review, and failing it over would delete it.
+	if c.stalledInQueue(grab{ID: 3}, download.Item{RawState: "error", State: "error", Progress: 1}, true, window) {
+		t.Error("a complete torrent in an error state must not be stalled")
+	}
+
 	meta := grab{ID: 2}
 	expire(meta.ID)
 	if !c.stalledInQueue(meta, download.Item{RawState: "metaDL", State: "downloading", RemainingBytes: 1}, true, window) {

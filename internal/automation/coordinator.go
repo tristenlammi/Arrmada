@@ -1299,8 +1299,12 @@ func (c *Coordinator) stalledInQueue(g grab, item download.Item, found bool, win
 	// second check for it could never fire. A hard client error stays an immediate stall —
 	// that's a deliberate call from the stall rewrite, pinned by TestStalledNeedsSustained-
 	// NoProgress, and a full cache drive reaches this code as "paused" above.
+	//
+	// A COMPLETE torrent is never a stall, errored or not: the bytes are on disk (often
+	// waiting in Review), and with fail-over on by default a client I/O error on a finished
+	// download would otherwise get it replaced and its data deleted.
 	if item.State == "error" {
-		return true
+		return !item.Complete()
 	}
 	return !item.Complete() && c.noProgressFor(g.ID, item.Progress, window)
 }
