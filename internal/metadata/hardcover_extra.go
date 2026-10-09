@@ -150,7 +150,7 @@ func (h *Hardcover) SimilarBooks(ctx context.Context, key string) ([]BookResult,
 	if !ok {
 		return nil, ErrNotSupported
 	}
-	return cached(ctx, h.cache, "similar:"+key, hcTTLSimilar, func(ctx context.Context) ([]BookResult, error) {
+	return cached(ctx, h.cache, "similar:v2:"+key, hcTTLSimilar, func(ctx context.Context) ([]BookResult, error) {
 		var data struct {
 			Books []struct {
 				IDs json.RawMessage `json:"cached_similar_book_ids"`

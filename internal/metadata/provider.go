@@ -231,6 +231,31 @@ type BookResult struct {
 	Ratings int      `json:"ratings,omitempty"`
 	Readers int      `json:"readers,omitempty"`
 	Genres  []string `json:"genres,omitempty"`
+	// Tags is every label the catalogue gave the book (Open Library subjects, Hardcover
+	// genres and tags, Google Books categories), for the adult-content filter only. It
+	// is serialised so the Hardcover disk cache keeps it; the Discover responses leave it
+	// out (bookCard), and nothing in the UI reads it.
+	Tags []string `json:"tags,omitempty"`
+}
+
+// maxBookTags bounds what one book carries in Tags; Open Library subject lists can run
+// to hundreds of entries.
+const maxBookTags = 200
+
+// capTags returns tags without empties, at most maxBookTags of them.
+func capTags(tags ...[]string) []string {
+	var out []string
+	for _, list := range tags {
+		for _, t := range list {
+			if t = strings.TrimSpace(t); t != "" {
+				out = append(out, t)
+				if len(out) == maxBookTags {
+					return out
+				}
+			}
+		}
+	}
+	return out
 }
 
 // BookDetails is a full book record.

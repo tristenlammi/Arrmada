@@ -254,7 +254,33 @@ func (b hcBook) result() BookResult {
 		}
 		r.Genres = g
 	}
+	r.Tags = hcFilterTags(b.CachedTags)
 	return r
+}
+
+// hcFilterTags is every Genre and Tag label in cached_tags, untrimmed, for the adult
+// filter: the card shows three genres, but an "Erotica" fifth on the list still counts.
+// Moods and content warnings are left out — "sexual content" warnings sit on plenty of
+// mainstream books.
+func hcFilterTags(raw json.RawMessage) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	var tags map[string][]struct {
+		Tag string `json:"tag"`
+	}
+	if json.Unmarshal(raw, &tags) != nil {
+		return nil
+	}
+	var lists [][]string
+	for _, key := range []string{"Genre", "genre", "Tag", "tag"} {
+		var l []string
+		for _, t := range tags[key] {
+			l = append(l, t.Tag)
+		}
+		lists = append(lists, l)
+	}
+	return capTags(lists...)
 }
 
 // --- search (Typesense-backed) ---
@@ -273,6 +299,9 @@ type hcSearchDoc struct {
 	RatingsCnt  json.RawMessage `json:"ratings_count"`
 	UsersCount  json.RawMessage `json:"users_count"`
 	Genres      []string        `json:"genres"`
+	// Tags, when the index carries them. Raw because its shape isn't pinned down: a
+	// surprise there must not fail the whole search.
+	Tags json.RawMessage `json:"tags"`
 	// Contributions, when the search index carries them, name each contributor's
 	// role; author_names is the flat list in index order, illustrator included.
 	Contributions json.RawMessage `json:"contributions"`
@@ -405,6 +434,10 @@ func (d hcSearchDoc) bookResult() (BookResult, bool) {
 	} else if len(d.Genres) > 0 {
 		r.Genres = d.Genres
 	}
+	// Every genre (not just the three shown) plus any tags, for the adult filter.
+	var tags []string
+	_ = json.Unmarshal(d.Tags, &tags) // anything but a list of strings is ignored
+	r.Tags = capTags(d.Genres, tags)
 	return r, true
 }
 
@@ -449,7 +482,10 @@ func (h *Hardcover) Verify(ctx context.Context) (string, error) {
 // SearchBooks finds books by title/author/ISBN. Hardcover's index already folds
 // editions into their book, so one novel is one result.
 func (h *Hardcover) SearchBooks(ctx context.Context, query string) ([]BookResult, error) {
-	return cached(ctx, h.cache, "search:v2:"+strings.ToLower(strings.TrimSpace(query)), hcTTLSearch, func(ctx context.Context) ([]BookResult, error) {
+	// "v3" here, and the bumped keys on the other book lists (works, trending, subject,
+	// browse, similar): results carry Tags for the adult filter now, and lists cached
+	// before that would reach Discover without them.
+	return cached(ctx, h.cache, "search:v3:"+strings.ToLower(strings.TrimSpace(query)), hcTTLSearch, func(ctx context.Context) ([]BookResult, error) {
 		return h.searchBooksLive(ctx, query)
 	})
 }
@@ -640,7 +676,7 @@ func (h *Hardcover) AuthorWorks(ctx context.Context, authorKey string, limit int
 	}
 	// "v2": the filtered listing. Entries cached under the old key (on disk, across
 	// restarts) would otherwise serve the raw join for hours after an update.
-	return cached(ctx, h.cache, fmt.Sprintf("works:v2:%d:%d", id, limit), hcTTLList, func(ctx context.Context) ([]BookResult, error) {
+	return cached(ctx, h.cache, fmt.Sprintf("works:v3:%d:%d", id, limit), hcTTLList, func(ctx context.Context) ([]BookResult, error) {
 		return h.authorWorksLive(ctx, id, limit)
 	})
 }
@@ -673,7 +709,7 @@ func (h *Hardcover) authorWorksLive(ctx context.Context, id, limit int) ([]BookR
 // TrendingBooks approximates "trending" as the most-shelved books released in the last
 // two years — Hardcover's own trending feed isn't part of the public schema.
 func (h *Hardcover) TrendingBooks(ctx context.Context) ([]BookResult, error) {
-	return cached(ctx, h.cache, "trending", hcTTLList, func(ctx context.Context) ([]BookResult, error) { return h.trendingLive(ctx) })
+	return cached(ctx, h.cache, "trending:v2", hcTTLList, func(ctx context.Context) ([]BookResult, error) { return h.trendingLive(ctx) })
 }
 
 func (h *Hardcover) trendingLive(ctx context.Context) ([]BookResult, error) {
@@ -704,7 +740,7 @@ func (h *Hardcover) BooksBySubject(ctx context.Context, subject string, limit in
 	if limit <= 0 {
 		limit = hardcoverSearchMax
 	}
-	return cached(ctx, h.cache, fmt.Sprintf("subject:%s:%d", strings.ToLower(subject), limit), hcTTLList, func(ctx context.Context) ([]BookResult, error) {
+	return cached(ctx, h.cache, fmt.Sprintf("subject:v2:%s:%d", strings.ToLower(subject), limit), hcTTLList, func(ctx context.Context) ([]BookResult, error) {
 		return h.subjectLive(ctx, subject, limit)
 	})
 }

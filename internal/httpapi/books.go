@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/adultfilter"
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/indexer"
@@ -94,10 +95,9 @@ func (a *api) handleLookupBooks(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	if results == nil {
-		results = []metadata.BookResult{}
-	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"results": results, "source": a.deps.Books.MetadataSource()})
+	// Deliberately unfiltered: this is the staff Add-book search, where an exact search
+	// can still find a rare legitimate title the adult filter would hide from Discover.
+	a.writeJSON(w, http.StatusOK, map[string]any{"results": withoutTags(results), "source": a.deps.Books.MetadataSource()})
 }
 
 func (a *api) handleAddBook(w http.ResponseWriter, r *http.Request) {
@@ -556,7 +556,12 @@ type bookCard struct {
 }
 
 // enrichBookCards annotates search/browse results with library + request status.
+//
+// It is also the one funnel every Books Discover list passes through (browse, trending,
+// Recommended, search, author works, subjects, similar), so the always-on adult filter
+// runs here, for every role. A new Discover surface must come through here too.
 func (a *api) enrichBookCards(ctx context.Context, results []metadata.BookResult) []bookCard {
+	results = adultfilter.FilterBooks(results, bookFilterFields)
 	// By catalogue key AND by what the book is (title + author): a library built on
 	// Open Library must show its books as owned when the results come from Hardcover,
 	// and a second Open Library "work" for the same novel must not look like a new book.
@@ -593,6 +598,7 @@ func (a *api) enrichBookCards(ctx context.Context, results []metadata.BookResult
 	}
 	cards := make([]bookCard, 0, len(results))
 	for _, br := range results {
+		br.Tags = nil // filter-only; br is a copy, so the cached list keeps them
 		st := reqStatus[br.Key]
 		in, has := inLib[br.Key], hasFile[br.Key]
 		if st == "" {
@@ -649,7 +655,11 @@ func (a *api) handleBookDiscoverRecommended(w http.ResponseWriter, r *http.Reque
 	}
 	out := make([]row, 0, len(rows))
 	for _, rw := range rows {
-		out = append(out, row{Title: rw.Title, Seed: rw.Seed, SeedID: rw.SeedID, Books: a.enrichBookCards(ctx, rw.Books)})
+		cards := a.enrichBookCards(ctx, rw.Books)
+		if len(cards) == 0 && len(rw.Books) > 0 {
+			continue // everything in it was filtered out: no empty strip
+		}
+		out = append(out, row{Title: rw.Title, Seed: rw.Seed, SeedID: rw.SeedID, Books: cards})
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"rows": out})
 }
@@ -909,7 +919,37 @@ func (a *api) handleBookDiscoverDetail(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadGateway, "could not load book")
 		return
 	}
-	a.writeJSON(w, http.StatusOK, d)
+	// A flagged book is simply not there, however its key was found.
+	if adultfilter.BookIsAdult(d.Title, bookDetailTags(d)) {
+		a.writeError(w, http.StatusNotFound, "not available")
+		return
+	}
+	out := *d // d may be the catalogue cache's own copy: don't touch it
+	out.Tags = nil
+	a.writeJSON(w, http.StatusOK, out)
+}
+
+// bookFilterFields is what the adult filter reads from a catalogue result: its title,
+// and its shown genres plus every other label the catalogue gave it.
+func bookFilterFields(b metadata.BookResult) (string, []string) {
+	return b.Title, append(append([]string{}, b.Genres...), b.Tags...)
+}
+
+// bookDetailTags is every label on a full record: subjects, genres and tags.
+func bookDetailTags(d *metadata.BookDetails) []string {
+	_, tags := bookFilterFields(d.BookResult)
+	return append(tags, d.Subjects...)
+}
+
+// withoutTags copies results with the filter-only Tags dropped, leaving the (possibly
+// cached) originals alone.
+func withoutTags(results []metadata.BookResult) []metadata.BookResult {
+	out := make([]metadata.BookResult, len(results))
+	for i, r := range results {
+		r.Tags = nil
+		out[i] = r
+	}
+	return out
 }
 
 // handleSetBookKeepCatalogue marks a book as one the Hardcover re-match leaves alone
