@@ -414,6 +414,7 @@ func preRestoreCopy(dataDir, dbPath string, log *slog.Logger) (string, error) {
 			_ = os.Remove(dst + "-wal")
 			return "", err
 		}
+		foldWAL(dst)
 		syncDir(dir)
 	}
 	if removed, err := PruneBackups(dir, BackupPreRestore, preRestoreKeep); err != nil {
@@ -422,6 +423,23 @@ func preRestoreCopy(dataDir, dbPath string, log *slog.Logger) (string, error) {
 		log.Info("pruned old pre-restore copies", "removed", len(removed))
 	}
 	return filepath.Base(dst), nil
+}
+
+// foldWAL tries to checkpoint a byte copy's WAL into the copy itself, so the copy is one
+// self-contained file again (downloads and restores take only the .db). Best effort: on
+// a damaged database it may not work, and the -wal then stays beside the copy.
+func foldWAL(path string) {
+	if _, err := os.Stat(path + "-wal"); err != nil {
+		return
+	}
+	db, err := openDB(path)
+	if err != nil {
+		return
+	}
+	db.SetMaxOpenConns(1)
+	_, _ = db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	_ = db.Close() // the last close removes an empty -wal and the -shm
+	_ = os.Remove(path + "-shm")
 }
 
 // copyFileSync copies src to dst (replacing it) and flushes dst to disk.

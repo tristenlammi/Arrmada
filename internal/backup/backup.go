@@ -231,6 +231,8 @@ func (s *Service) Delete(name string) error {
 	if err := os.Remove(filepath.Join(s.dir, name)); err != nil {
 		return err
 	}
+	// A byte-for-byte pre-restore copy may have its WAL beside it.
+	_ = os.Remove(filepath.Join(s.dir, name) + "-wal")
 	s.forget([]string{name})
 	return nil
 }

@@ -115,7 +115,11 @@ func (a *api) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.deps.Log.Warn("restore refused", "backup", name, "err", err)
-		a.writeError(w, http.StatusBadRequest, "can't restore this backup: "+err.Error())
+		status := http.StatusInternalServerError // couldn't write the marker
+		if invalidBackup(err) {
+			status = http.StatusBadRequest
+		}
+		a.writeError(w, status, "can't restore this backup: "+err.Error())
 		return
 	}
 	restarting := a.canRestart()
@@ -133,6 +137,13 @@ func (a *api) handleBackupRestore(w http.ResponseWriter, r *http.Request) {
 	}
 	a.deps.Log.Info("restarting to restore the database", "backup", name)
 	a.deps.Restart()
+}
+
+// invalidBackup reports whether err says the file itself can't be restored (as opposed
+// to the server failing).
+func invalidBackup(err error) bool {
+	return errors.Is(err, store.ErrNotSQLite) || errors.Is(err, store.ErrCorrupt) ||
+		errors.Is(err, store.ErrNotArrmada) || errors.Is(err, store.ErrNewerSchema)
 }
 
 // maxBackupUpload caps an upload's body; a variable so tests can lower it.
@@ -186,7 +197,7 @@ func (a *api) handleBackupUpload(w http.ResponseWriter, r *http.Request) {
 		tooLarge()
 	case errors.Is(err, store.ErrNoSpace):
 		a.writeError(w, http.StatusInsufficientStorage, err.Error())
-	case errors.Is(err, store.ErrNotSQLite), errors.Is(err, store.ErrCorrupt), errors.Is(err, store.ErrNotArrmada), errors.Is(err, store.ErrNewerSchema):
+	case invalidBackup(err):
 		a.deps.Log.Warn("uploaded backup refused", "err", err)
 		a.writeError(w, http.StatusBadRequest, "can't use this file: "+err.Error())
 	default:
