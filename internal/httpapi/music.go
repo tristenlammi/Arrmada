@@ -223,14 +223,11 @@ func (a *api) handleScanMusicLibrary(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusConflict, "a music scan is already running")
 		return
 	}
-	go func() {
+	a.bg("music scan", "music", 2*time.Hour, func(ctx context.Context) error {
 		defer a.musicScan.Store(false)
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
-		defer cancel()
 		res, err := a.deps.Automation.ScanMusicLibrary(ctx)
 		if err != nil {
-			a.deps.Log.Warn("music scan failed", "err", err)
-			return
+			return err
 		}
 		a.deps.Log.Info("music scan complete", "artists", res.Artists, "albums", res.Albums,
 			"tracks", res.Tracks, "unmatched", len(res.Unmatched))
@@ -238,7 +235,8 @@ func (a *api) handleScanMusicLibrary(w http.ResponseWriter, r *http.Request) {
 			"media": "music", "artists": res.Artists, "albums": res.Albums,
 			"tracks": res.Tracks, "unmatched": len(res.Unmatched),
 		})
-	}()
+		return nil
+	})
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "scanning"})
 }
 

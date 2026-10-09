@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -50,13 +51,11 @@ func (a *api) handleAddAudioVersion(w http.ResponseWriter, r *http.Request) {
 		// A book that already gave up on automatic searches (two empty tries) would
 		// never look for the new version; give it a fresh start and search now.
 		a.deps.Books.ResetSearchMisses(r.Context(), id)
-		go func(bookID, vid int64) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
-			if _, err := a.deps.Automation.SearchAudioVersionNow(ctx, bookID, vid); err != nil {
-				a.deps.Log.Warn("book: first search for a new audiobook version failed", "book", bookID, "version", vid, "err", err)
-			}
-		}(id, v.ID)
+		vid := v.ID
+		a.bg("book: first search for a new audiobook version", fmt.Sprintf("book %d version %d", id, vid), 5*time.Minute, func(ctx context.Context) error {
+			_, err := a.deps.Automation.SearchAudioVersionNow(ctx, id, vid)
+			return err
+		})
 	}
 	a.writeJSON(w, http.StatusCreated, v)
 }

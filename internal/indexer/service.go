@@ -17,6 +17,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/flaresolverr"
 	"github.com/tristenlammi/arrmada/internal/parser"
+	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 // Service manages configured indexers and runs aggregated searches across them.
@@ -315,7 +316,14 @@ func (s *Service) fetchRecent(ctx context.Context, limit int) (SearchResult, err
 			// whole sweep's budget while every other result waits on wg.Wait.
 			ictx, cancel := context.WithTimeout(ctx, perIndexerTimeout)
 			defer cancel()
-			releases, err := rec.Recent(ictx, idx, limit)
+			// A panic in one indexer's parser becomes that indexer's error; the others'
+			// results still come back.
+			var releases []Release
+			err := safego.Call(s.log, "indexer recent "+idx.Name, func() error {
+				var e error
+				releases, e = rec.Recent(ictx, idx, limit)
+				return e
+			})
 			if err != nil {
 				mu.Lock()
 				result.Errors[idx.Name] = err.Error()
@@ -406,8 +414,14 @@ func (s *Service) Search(ctx context.Context, q SearchQuery) (SearchResult, erro
 
 			searcher, err := s.registry.For(idx.Kind)
 			if err == nil {
+				// A panic in one indexer's parser becomes that indexer's error; the others'
+				// results still come back.
 				var releases []Release
-				releases, err = searcher.Search(ictx, idx, q)
+				err = safego.Call(s.log, "indexer search "+idx.Name, func() error {
+					var e error
+					releases, e = searcher.Search(ictx, idx, q)
+					return e
+				})
 				if err == nil {
 					returned := len(releases)
 					// Drop torrents below this indexer's seeder floor.

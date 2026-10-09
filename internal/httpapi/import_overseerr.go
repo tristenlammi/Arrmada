@@ -60,9 +60,7 @@ func (a *api) handleImportOverseerr(w http.ResponseWriter, r *http.Request) {
 
 	// Import in the background so a large history (and the tunnel's request timeout)
 	// can't cut it short; results land on the Requests page as they process.
-	go func(items []overseerr.Item) {
-		bg, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
+	a.bg("overseerr import", "", 30*time.Minute, func(bg context.Context) error {
 		client := overseerr.New(req.URL, req.APIKey)
 		plexUsers := map[int]int64{} // requester's Plex account id → Arrmada user id (cached)
 		var imported, skipped, declined, failed int
@@ -114,7 +112,8 @@ func (a *api) handleImportOverseerr(w http.ResponseWriter, r *http.Request) {
 		}
 		a.deps.Log.Info("overseerr import finished",
 			"imported", imported, "skipped", skipped, "declined", declined, "failed", failed, "total", len(items))
-	}(items)
+		return nil
+	})
 
 	a.writeJSON(w, http.StatusAccepted, map[string]any{
 		"status": "started",

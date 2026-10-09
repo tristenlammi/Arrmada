@@ -21,6 +21,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/mediainfo"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/parser"
+	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 // ProfileResolver reports the resolutions a quality-profile reference allows,
@@ -458,13 +459,13 @@ func (s *Service) markImported(ctx context.Context, id int64, path, sourceReleas
 	// The DB updates above already happened synchronously.
 	if m, err := s.repo.Get(ctx, id); err == nil {
 		dir := filepath.Dir(path)
-		go func() {
+		safego.Go(s.log, "movies: write library metadata", func() {
 			// The caller's ctx may be cancelled as soon as it returns; the sidecar
 			// work should still finish, just not run forever.
 			bctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 			s.writeLibraryMetadata(bctx, dir, m)
-		}()
+		})
 	}
 	return nil
 }
@@ -842,7 +843,13 @@ func (s *Service) EnsureMedia(ctx context.Context, id int64) {
 		return
 	}
 	defer s.probing.Delete(id)
-	s.probeSem <- struct{}{}
+	// Give up waiting for a probe slot when ctx ends (shutdown, or the caller's budget):
+	// a big library queues many of these, and none may outlive the run context.
+	select {
+	case s.probeSem <- struct{}{}:
+	case <-ctx.Done():
+		return
+	}
 	defer func() { <-s.probeSem }()
 
 	m, err := s.repo.Get(ctx, id)

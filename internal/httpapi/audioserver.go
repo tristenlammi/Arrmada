@@ -93,7 +93,10 @@ func (a *api) handleSetAudioServer(w http.ResponseWriter, r *http.Request) {
 		if *req.Enabled && a.deps.AudioServer != nil {
 			// Read the audiobooks' lengths and chapters now rather than on the first
 			// app's first request.
-			go a.deps.AudioServer.Warm(context.Background())
+			a.bg("audiobook server warm-up", "", 30*time.Minute, func(ctx context.Context) error {
+				a.deps.AudioServer.Warm(ctx)
+				return nil
+			})
 		}
 	}
 	a.handleAudioServer(w, r)

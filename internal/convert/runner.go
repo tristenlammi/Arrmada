@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 // The runner replaces the old queue. There's nothing to fill, drain or lose on a restart:
@@ -148,7 +150,9 @@ func (s *Service) runJob(ctx context.Context, job *Job) {
 	jobCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	s.update(job, func(j *Job) { j.cancel = cancel })
-	s.process(jobCtx, job)
+	// A panic in one file's conversion fails that job (below, through finish, like any
+	// other failure) instead of killing the worker — or, before, the whole app mid-encode.
+	panicErr := safego.Call(s.log, "convert: "+job.Title, func() error { s.process(jobCtx, job); return nil })
 	s.update(job, func(j *Job) { j.cancel = nil })
 	// process() can return with the job still marked active if ctx was cancelled under it;
 	// make sure it always ends up finished, or its claim would never be released.
@@ -156,6 +160,10 @@ func (s *Service) runJob(ctx context.Context, job *Job) {
 	stillActive := activeState(job.State)
 	s.mu.Unlock()
 	if stillActive {
+		if panicErr != nil {
+			s.finish(job, StateFailed, "internal error: "+panicErr.Error())
+			return
+		}
 		if ctx.Err() != nil {
 			// Shutting down: not the user's cancel, so don't record a skip for it.
 			s.update(job, func(j *Job) { j.State, j.Note = StateCancelled, "stopped by a restart" })

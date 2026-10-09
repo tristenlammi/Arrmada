@@ -302,13 +302,13 @@ func (a *api) logUnmatchedSeeds(ctx context.Context, names []string, policies ma
 	}
 	// The Downloads page polls continuously; without a throttle this would bury the log
 	// it's meant to help you read.
-	if !a.seedDiagAt.CompareAndSwap(0, 1) {
+	// seedDiagAt holds when the next report is allowed (Unix seconds); the swap makes
+	// sure only one of several concurrent polls claims it.
+	now := time.Now()
+	next := a.seedDiagAt.Load()
+	if now.Unix() < next || !a.seedDiagAt.CompareAndSwap(next, now.Add(10*time.Minute).Unix()) {
 		return
 	}
-	go func() {
-		time.Sleep(10 * time.Minute)
-		a.seedDiagAt.Store(0)
-	}()
 
 	sample := names
 	if len(sample) > 5 {

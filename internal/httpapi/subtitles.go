@@ -252,15 +252,13 @@ func (a *api) handleSubtitleSearchMovie(w http.ResponseWriter, r *http.Request) 
 		a.writeError(w, http.StatusBadRequest, "OpenSubtitles isn't configured — add an API key, username and password to grab subtitles")
 		return
 	}
-	go func(mid int64) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		if n, err := a.deps.Subtitles.GrabMovie(ctx, mid); err != nil {
-			a.deps.Log.Warn("subtitle movie grab failed", "movie_id", mid, "err", err)
-		} else {
-			a.deps.Log.Info("subtitle movie grab done", "movie_id", mid, "grabbed", n)
+	a.bg("subtitle movie grab", idTarget("movie", id), 5*time.Minute, func(ctx context.Context) error {
+		n, err := a.deps.Subtitles.GrabMovie(ctx, id)
+		if err == nil {
+			a.deps.Log.Info("subtitle movie grab done", "movie_id", id, "grabbed", n)
 		}
-	}(id)
+		return err
+	})
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
 }
 
@@ -274,14 +272,12 @@ func (a *api) handleSubtitleSearchSeries(w http.ResponseWriter, r *http.Request)
 		a.writeError(w, http.StatusBadRequest, "OpenSubtitles isn't configured — add an API key, username and password to grab subtitles")
 		return
 	}
-	go func(sid int64) {
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-		defer cancel()
-		if n, err := a.deps.Subtitles.GrabSeries(ctx, sid); err != nil {
-			a.deps.Log.Warn("subtitle series grab failed", "series_id", sid, "err", err)
-		} else {
-			a.deps.Log.Info("subtitle series grab done", "series_id", sid, "grabbed", n)
+	a.bg("subtitle series grab", idTarget("series", id), 20*time.Minute, func(ctx context.Context) error {
+		n, err := a.deps.Subtitles.GrabSeries(ctx, id)
+		if err == nil {
+			a.deps.Log.Info("subtitle series grab done", "series_id", id, "grabbed", n)
 		}
-	}(id)
+		return err
+	})
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
 }

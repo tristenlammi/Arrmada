@@ -39,10 +39,8 @@ func (a *api) handleImportTautulli(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go func() {
+	a.bg("tautulli import", "", 30*time.Minute, func(bg context.Context) error {
 		defer a.deps.Insights.StopImport()
-		bg, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-		defer cancel()
 		client := tautulli.New(req.URL, req.APIKey)
 		var imported, skipped int
 		err := client.History(bg, func(rows []tautulli.Row) error {
@@ -67,10 +65,11 @@ func (a *api) handleImportTautulli(w http.ResponseWriter, r *http.Request) {
 		})
 		if err != nil {
 			a.deps.Log.Warn("tautulli import failed", "imported", imported, "err", err)
-			return
+			return nil
 		}
 		a.deps.Log.Info("tautulli import finished", "imported", imported, "skipped", skipped)
-	}()
+		return nil
+	})
 
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "started"})
 }

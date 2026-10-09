@@ -89,13 +89,10 @@ func (a *api) handleAddSeries(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.Monitored && searchOnAdd {
-		go func(id int64, title string) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
-			if err := a.deps.Automation.SearchSeriesNow(ctx, id); err != nil {
-				a.deps.Log.Warn("series auto-search on add failed", "series", title, "err", err)
-			}
-		}(s.ID, s.Title)
+		sid := s.ID
+		a.bg("series auto-search on add", idTarget("series", sid), 5*time.Minute, func(ctx context.Context) error {
+			return a.deps.Automation.SearchSeriesNow(ctx, sid)
+		})
 	}
 	a.writeJSON(w, http.StatusCreated, s)
 }
@@ -106,13 +103,9 @@ func (a *api) handleSearchSeries(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	go func(sid int64) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		if err := a.deps.Automation.SearchSeriesNow(ctx, sid); err != nil {
-			a.deps.Log.Warn("series manual search failed", "series_id", sid, "err", err)
-		}
-	}(id)
+	a.bg("series manual search", idTarget("series", id), 5*time.Minute, func(ctx context.Context) error {
+		return a.deps.Automation.SearchSeriesNow(ctx, id)
+	})
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
 }
 
@@ -418,17 +411,15 @@ func (a *api) handleSeriesHistory(w http.ResponseWriter, r *http.Request) {
 // handleScanSeriesLibrary catalogs series already present in the library folder.
 func (a *api) handleScanSeriesLibrary(w http.ResponseWriter, r *http.Request) {
 	root := a.libTV(r)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	go func() {
-		defer cancel()
+	a.bg("series library scan", "series", 10*time.Minute, func(ctx context.Context) error {
 		res, err := a.deps.Series.ScanLibrary(ctx, root)
 		if err != nil {
-			a.deps.Log.Warn("series library scan failed", "err", err)
-			return
+			return err
 		}
 		a.deps.Log.Info("series library scan complete", "imported", res.Imported, "skipped", res.Skipped, "unmatched", len(res.Unmatched))
 		a.deps.Bus.Publish("library.scanned", map[string]any{"media": "series", "imported": res.Imported, "unmatched": len(res.Unmatched)})
-	}()
+		return nil
+	})
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "scanning"})
 }
 
@@ -548,14 +539,11 @@ func (a *api) handleAutoGrabSeries(w http.ResponseWriter, r *http.Request) {
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
-	go func(sid, season, episode int64) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
+	season, episode := req.Season, req.Episode
+	a.bg("series scope auto-grab", idTarget("series", id), 5*time.Minute, func(ctx context.Context) error {
 		// Not manual: the app picks the release, so the import gate still guards every file.
-		if err := a.deps.Automation.GrabBestForScope(ctx, sid, int(season), int(episode), false); err != nil {
-			a.deps.Log.Warn("series scope auto-grab failed", "series_id", sid, "err", err)
-		}
-	}(id, int64(req.Season), int64(req.Episode))
+		return a.deps.Automation.GrabBestForScope(ctx, id, season, episode, false)
+	})
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
 }
 
@@ -623,17 +611,17 @@ func (a *api) handleRefreshAllSeries(w http.ResponseWriter, r *http.Request) {
 	for _, s := range all {
 		ids = append(ids, s.ID)
 	}
-	go a.refreshSeriesSweep(ids)
+	a.bg("refresh all series", "", 2*time.Hour, func(ctx context.Context) error {
+		a.refreshSeriesSweep(ctx, ids)
+		return nil
+	})
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"queued": len(ids)})
 }
 
 // refreshSeriesSweep walks every series, refreshing metadata and rescanning the disk.
-// Detached from the request, so it uses its own context and budget.
-func (a *api) refreshSeriesSweep(ids []int64) {
+// Detached from the request: ctx is bg's, the run context with a two-hour budget.
+func (a *api) refreshSeriesSweep(ctx context.Context, ids []int64) {
 	defer a.refreshAll.Store(false)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
-	defer cancel()
 
 	a.deps.Log.Info("series: refreshing all", "count", len(ids))
 	var refreshed, failed int
@@ -702,13 +690,9 @@ func (a *api) handleSeriesManualImport(w http.ResponseWriter, r *http.Request) {
 	// leaves the user staring at a spinner, unsure whether navigating away cancels it.
 	// Single files stay synchronous: they're quick, and immediate feedback is better.
 	if fi, statErr := os.Stat(src); statErr == nil && fi.IsDir() {
-		go func(seriesID int64, path string) {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
-			defer cancel()
-			if err := a.deps.Automation.ManualImportSeries(ctx, seriesID, path); err != nil {
-				a.deps.Log.Warn("series: folder import failed", "series_id", seriesID, "path", path, "err", err)
-			}
-		}(id, src)
+		a.bg("series: folder import", idTarget("series", id)+" from "+src, 2*time.Hour, func(ctx context.Context) error {
+			return a.deps.Automation.ManualImportSeries(ctx, id, src)
+		})
 		a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "importing", "background": true})
 		return
 	}
@@ -832,7 +816,9 @@ func (a *api) handleRegrabEpisode(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	go a.bg(func(ctx context.Context) error { return a.deps.Automation.RegrabEpisode(ctx, id, season, episode) }, "regrab-episode", id)
+	a.bg("regrab-episode", idTarget("series", id), 3*time.Minute, func(ctx context.Context) error {
+		return a.deps.Automation.RegrabEpisode(ctx, id, season, episode)
+	})
 	a.writeJSON(w, http.StatusAccepted, map[string]any{"status": "searching"})
 }
 

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 // libraryIndex is the persisted answer to "what's in the library and what codec is it".
@@ -665,14 +667,14 @@ func (s *Service) RefreshIndex(ctx context.Context) bool {
 		return false
 	}
 	s.indexScanning.Store(true)
-	go func() {
+	safego.Go(s.log, "convert: index refresh", func() {
 		defer s.indexMu.Unlock()
 		defer s.indexScanning.Store(false)
 		// Deliberately NOT the request's context: a full pass outlives the HTTP call
 		// that asked for it, and cancelling on response would leave it half done.
 		s.IndexAll(context.WithoutCancel(ctx))
 		s.lastSweep = time.Now()
-	}()
+	})
 	return true
 }
 

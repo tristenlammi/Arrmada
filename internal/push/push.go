@@ -16,6 +16,8 @@ import (
 	"time"
 
 	webpush "github.com/SherClockHolmes/webpush-go"
+
+	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
 const (
@@ -159,9 +161,9 @@ func timeoutCtx() (context.Context, context.CancelFunc) {
 // SendToUserAsync fires the sends on a goroutine with its own deadline — event
 // handlers (import fan-out) must never block on push services.
 func (s *Service) SendToUserAsync(userID int64, title, body, url string) {
-	go func() {
+	safego.Go(s.log, "push: send", func() {
 		ctx, cancel := timeoutCtx()
 		defer cancel()
 		s.SendToUser(ctx, userID, title, body, url)
-	}()
+	})
 }
