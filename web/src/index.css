@@ -4,7 +4,15 @@
 
 /* Arrmada design tokens — warm terracotta. Single source of truth for both
    themes. prefers-color-scheme is the default; the header toggle stamps
-   data-theme on <html> and must win in both directions. */
+   data-theme on <html> and must win in both directions.
+
+   All four blocks declare the same names: scripts/check-tokens.mjs fails the
+   build if one is missing a name or if any file uses a var(--x) that no block
+   defines (an undefined var silently computes to nothing — no fill, no shadow).
+
+   Contrast ratios (WCAG 2.x, text on bg / panel / panel-2) are noted beside the
+   text colours. Body text needs 4.5:1. The *-text tokens are the status hues
+   tuned for text; the plain status tokens stay for fills, borders and bars. */
 :root {
   --bg: #181310;
   --sidebar: #1f1812;
@@ -14,6 +22,8 @@
   --line-soft: #2a2018;
   --ink: #f0e7dc;
   --ink-dim: #beac98;
+  /* 4.47 / 4.07 / 4.34 — just under 4.5; the lift to #9a8774 (5.35 / 4.87 /
+     5.19) waits for the owner's sign-off because it changes every dark page. */
   --ink-faint: #8c7a67;
   --accent: #db7a54;
   --accent-deep: #c4633c;
@@ -27,7 +37,14 @@
   --reject: #cf5442;
   --reject-soft: rgba(207, 84, 66, 0.15);
   --under: #e8863a; /* ideal-file check: under the bitrate floor */
+  --under-soft: rgba(232, 134, 58, 0.15);
   --mismatch: #d9c24a; /* ideal-file check: bitrate fine, spec isn't */
+  --mismatch-soft: rgba(217, 194, 74, 0.15);
+  --accent-text: #db7a54; /* 6.08 / 5.53 / 5.90; 4.42 on accent-soft over panel */
+  --good-text: #7fb069; /* 7.30 / 6.64 / 7.08; 5.05 on good-soft */
+  --avoid-text: #e0a93b; /* 8.70 / 7.91 / 8.44; 5.91 on avoid-soft */
+  --reject-text: #e27a69; /* 6.34 / 5.77 / 6.15; 4.89 on reject-soft (plain --reject is 3.99 on panel) */
+  --shadow: 0 18px 48px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
 @media (prefers-color-scheme: light) {
@@ -40,7 +57,7 @@
     --line-soft: #ede5d7;
     --ink: #2b2016;
     --ink-dim: #6c5d4e;
-    --ink-faint: #9c8b78;
+    --ink-faint: #776654; /* 4.77 / 5.51 / 4.60 (was #9c8b78: 2.85 / 3.29 / 2.75) */
     --accent: #c15e39;
     --accent-deep: #a94e2d;
     --accent-ink: #ffffff;
@@ -53,7 +70,14 @@
     --reject: #b23f30;
     --reject-soft: rgba(178, 63, 48, 0.11);
     --under: #c0601a;
+    --under-soft: rgba(192, 96, 26, 0.12);
     --mismatch: #9a8410;
+    --mismatch-soft: rgba(154, 132, 16, 0.12);
+    --accent-text: #a94e2d; /* 4.77 / 5.51 / 4.60; 4.86 on accent-soft over panel */
+    --good-text: #4a7539; /* 4.67 / 5.39 / 4.51; 4.65 on good-soft */
+    --avoid-text: #8a6112; /* 4.79 / 5.53 / 4.62; 4.85 on avoid-soft */
+    --reject-text: #b23f30; /* 4.99 / 5.76 / 4.81; 4.90 on reject-soft */
+    --shadow: 0 14px 36px rgba(60, 40, 20, 0.14), 0 2px 6px rgba(60, 40, 20, 0.08);
   }
 }
 
@@ -64,17 +88,23 @@
   --accent-soft: rgba(219,122,84,.15); --accent-line: rgba(219,122,84,.42);
   --good: #7fb069; --good-soft: rgba(127,176,105,.16); --avoid: #e0a93b;
   --avoid-soft: rgba(224,169,59,.15); --reject: #cf5442; --reject-soft: rgba(207,84,66,.15);
-  --under: #e8863a; --mismatch: #d9c24a;
+  --under: #e8863a; --under-soft: rgba(232,134,58,.15);
+  --mismatch: #d9c24a; --mismatch-soft: rgba(217,194,74,.15);
+  --accent-text: #db7a54; --good-text: #7fb069; --avoid-text: #e0a93b; --reject-text: #e27a69;
+  --shadow: 0 18px 48px rgba(0,0,0,.45), 0 2px 8px rgba(0,0,0,.3);
 }
 
 :root[data-theme="light"] {
   --bg: #f4eee4; --sidebar: #fbf8f1; --panel: #ffffff; --panel-2: #f1eadd;
   --line: #e4daca; --line-soft: #ede5d7; --ink: #2b2016; --ink-dim: #6c5d4e;
-  --ink-faint: #9c8b78; --accent: #c15e39; --accent-deep: #a94e2d; --accent-ink: #ffffff;
+  --ink-faint: #776654; --accent: #c15e39; --accent-deep: #a94e2d; --accent-ink: #ffffff;
   --accent-soft: rgba(193,94,57,.1); --accent-line: rgba(193,94,57,.35);
   --good: #5b8c46; --good-soft: rgba(91,140,70,.13); --avoid: #b07d1e;
   --avoid-soft: rgba(176,125,30,.12); --reject: #b23f30; --reject-soft: rgba(178,63,48,.11);
-  --under: #c0601a; --mismatch: #9a8410;
+  --under: #c0601a; --under-soft: rgba(192,96,26,.12);
+  --mismatch: #9a8410; --mismatch-soft: rgba(154,132,16,.12);
+  --accent-text: #a94e2d; --good-text: #4a7539; --avoid-text: #8a6112; --reject-text: #b23f30;
+  --shadow: 0 14px 36px rgba(60,40,20,.14), 0 2px 6px rgba(60,40,20,.08);
 }
 
 html,

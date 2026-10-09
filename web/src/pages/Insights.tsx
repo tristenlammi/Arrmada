@@ -31,7 +31,7 @@ export function Insights() {
       <div className="mx-auto w-full max-w-[1240px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
           <p className="max-w-[64ch] text-[12.5px] text-ink-dim">Watch monitoring for your Plex server — who's streaming what, right now and historically, with stream quality, transcode diagnostics and buffering reliability. Connect your server in <b>Settings</b> to begin.</p>
-          <span className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[12px] font-semibold" style={{ border: `1px solid ${connected ? "var(--good)" : "var(--avoid)"}`, background: connected ? "var(--good-soft, rgba(127,176,105,.16))" : "var(--avoid-soft)" }}>
+          <span className="inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-[12px] font-semibold" style={{ border: `1px solid ${connected ? "var(--good)" : "var(--avoid)"}`, background: connected ? "var(--good-soft)" : "var(--avoid-soft)" }}>
             <span className="h-2 w-2 rounded-full" style={{ background: connected ? "var(--good)" : "var(--avoid)" }} />
             {connected ? "Plex connected" : "Not connected"}
           </span>
@@ -345,7 +345,7 @@ function StreamCard({ s, offsetMs, onOpen }: { s: InsightsStream; offsetMs: numb
             <div className="truncate text-[13px] font-semibold">{s.title}</div>
             <div className="truncate text-[11px] text-ink-dim">{s.subtitle}</div>
           </div>
-          <span className="flex-none rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink, #fff)" }}>{d.label}</span>
+          <span className="flex-none rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink)" }}>{d.label}</span>
         </div>
         <div className="mt-1 truncate text-[11px] text-ink-dim">{s.user} · {s.player || s.platform}</div>
         <div className="truncate font-mono text-[10px] text-ink-faint">{geoLabel(s.geo)} · {fmtMbps(s.bandwidth_kbps)} Mb/s{s.hw_transcode ? " · HW" : ""}</div>
@@ -378,7 +378,7 @@ function DeepDive({ s, onClose }: { s: InsightsStream; onClose: () => void }) {
         </div>
 
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          <span className="rounded-full px-2.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink, #fff)" }}>{d.label}</span>
+          <span className="rounded-full px-2.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink)" }}>{d.label}</span>
           {s.hw_transcode && <span className="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>HW transcode</span>}
           {s.throttled && <span className="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Throttled</span>}
         </div>
@@ -505,7 +505,7 @@ function HistoryView({ connected, onConfigure }: { connected: boolean; onConfigu
                   <td className="px-3 py-2"><div className="font-semibold">{r.title}</div>{r.subtitle && <div className="text-[10.5px] text-ink-faint">{r.subtitle}</div>}</td>
                   <td className="px-3 py-2 text-ink-dim">{r.player || r.platform}</td>
                   <td className="px-3 py-2 font-mono text-[10.5px] text-ink-dim">{geoLabel(r.geo)}</td>
-                  <td className="px-3 py-2"><span className="rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink, #fff)" }}>{d.label}</span></td>
+                  <td className="px-3 py-2"><span className="rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink)" }}>{d.label}</span></td>
                   <td className="whitespace-nowrap px-3 py-2 font-mono tabular-nums text-ink-dim">{fmtDur(r.watched_secs)}{r.buffer_count > 0 && <span title={`${r.buffer_count} buffer event(s)`} style={{ color: "var(--avoid)" }}> · ⚠{r.buffer_count}</span>}</td>
                   <td className="px-3 py-2 text-right text-ink-faint">›</td>
                 </tr>
@@ -542,7 +542,7 @@ function HistoryDetail({ r, onClose }: { r: HistoryEntry; onClose: () => void })
           <button onClick={onClose} className="text-ink-faint hover:text-[var(--ink)]">✕</button>
         </div>
         <div className="mb-3 flex flex-wrap items-center gap-2">
-          <span className="rounded-full px-2.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink, #fff)" }}>{d.label}</span>
+          <span className="rounded-full px-2.5 py-0.5 font-mono text-[9.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink)" }}>{d.label}</span>
           {r.hw_transcode && <span className="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>HW transcode</span>}
           {r.buffer_count > 0 && <span className="rounded-full px-2.5 py-0.5 text-[10px] font-semibold" style={{ background: "var(--avoid-soft)", color: "var(--avoid)" }}>{r.buffer_count} buffer event{r.buffer_count === 1 ? "" : "s"}</span>}
         </div>
@@ -759,7 +759,7 @@ function ReliabilityView({ connected, onConfigure }: { connected: boolean; onCon
                       <span className="min-w-0 flex-1 truncate"><b className="font-semibold">{e.user}</b> · {e.title}</span>
                       <span className="flex-none font-mono text-[10px] text-ink-faint">@ {fmtClock(e.offset_ms)}</span>
                       {e.duration_ms > 0 && <span className="flex-none font-mono text-[10px] font-semibold" style={{ color: "var(--avoid)" }}>{fmtStall(e.duration_ms)}</span>}
-                      <span className="flex-none rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink, #fff)" }}>{d.label}</span>
+                      <span className="flex-none rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: d.color, color: "var(--accent-ink)" }}>{d.label}</span>
                     </div>
                     {e.detail && <div className="pl-[112px] text-[11px]" style={{ color: cc.color }}>{e.detail}</div>}
                   </div>
@@ -1022,7 +1022,7 @@ function PlexSettings({ cfg, onSaved, flash }: { cfg: PlexConfig | null; onSaved
         </div>
 
         {test && (
-          <div className="mt-4 rounded-lg p-3 text-[12px]" style={{ border: `1px solid ${test.ok ? "var(--good)" : "var(--reject)"}`, background: test.ok ? "var(--good-soft, rgba(127,176,105,.12))" : "var(--reject-soft)", color: test.ok ? "var(--good)" : "var(--reject)" }}>
+          <div className="mt-4 rounded-lg p-3 text-[12px]" style={{ border: `1px solid ${test.ok ? "var(--good)" : "var(--reject)"}`, background: test.ok ? "var(--good-soft)" : "var(--reject-soft)", color: test.ok ? "var(--good)" : "var(--reject)" }}>
             {test.ok ? (
               <div>
                 <div className="font-semibold">✓ Connected{test.version ? ` · Plex ${test.version}` : ""}</div>

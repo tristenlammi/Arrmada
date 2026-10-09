@@ -837,7 +837,7 @@ function DiskGuardSection({ s, patch }: { s: AppSettings; patch: (p: Partial<App
             <div className="mt-1 text-[11.5px] text-ink-dim">
               {status.used_pct.toFixed(1)}% full
               {status.holding > 0 && (
-                <span style={{ color: "var(--avoid, var(--ink-dim))" }}>
+                <span style={{ color: "var(--avoid)" }}>
                   {" "}· holding {status.holding} torrent{status.holding === 1 ? "" : "s"} paused
                 </span>
               )}
@@ -933,7 +933,7 @@ function StallSection({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSett
 }
 
 function Note({ tone, children }: { tone: "warn" | "info"; children: React.ReactNode }) {
-  const color = tone === "warn" ? "var(--avoid, #d08b3c)" : "var(--line)";
+  const color = tone === "warn" ? "var(--avoid)" : "var(--line)";
   return (
     <div
       className="rounded-lg p-3 text-[11.5px] leading-relaxed"
