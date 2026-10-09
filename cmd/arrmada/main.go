@@ -474,6 +474,10 @@ func main() {
 	coordinator.SetStallDefault(func(ctx context.Context) int {
 		return automation.ParseStallMinutes(settingsSvc.Get(ctx, automation.KeyStallMinutes, ""))
 	})
+	// How many upgrades one sweep may grab (Settings → Downloads), read at each sweep.
+	coordinator.SetUpgradeBudget(func(ctx context.Context) int {
+		return automation.ParseUpgradeBudget(settingsSvc.Get(ctx, automation.KeyUpgradeBudget, ""))
+	})
 	sched.Register("import-completed", 30*time.Second, false, func(ctx context.Context) error {
 		completed, err := downloads.CompletedInCategory(ctx, cfg.DownloadCategory)
 		if err != nil {
@@ -505,7 +509,7 @@ func main() {
 	sched.Register("upgrade-movies", 6*time.Hour, false, func(ctx context.Context) error {
 		coordinator.UpgradeMovies(ctx)
 		return nil
-	}, scheduler.Label("Look for better movie releases"), scheduler.Description("Grabs a better release when a movie's quality profile allows upgrades."))
+	}, scheduler.Label("Look for better movie releases"), scheduler.Description("Grabs a better release when a movie's quality profile allows upgrades, up to the per-sweep limit (Settings → Downloads)."))
 	// Fail over stalled downloads: replace, then remove, after the profile's (or the global
 	// default) timeout with no progress.
 	sched.Register("detect-stalled", 2*time.Minute, false, func(ctx context.Context) error {
@@ -571,7 +575,7 @@ func main() {
 	sched.Register("upgrade-series", 6*time.Hour, false, func(ctx context.Context) error {
 		coordinator.UpgradeSeries(ctx)
 		return nil
-	}, scheduler.Label("Look for better episode releases"), scheduler.Description("Grabs a better release when a show's quality profile allows upgrades."))
+	}, scheduler.Label("Look for better episode releases"), scheduler.Description("Grabs a better release when a show's quality profile allows upgrades, up to the per-sweep limit (Settings → Downloads)."))
 	// Remove imported torrents once they hit their indexer's seed goal (also on
 	// startup, so anything left over from a previous run is tidied promptly).
 	sched.Register("manage-seeding", 10*time.Minute, true, func(ctx context.Context) error {

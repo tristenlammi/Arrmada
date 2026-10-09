@@ -77,8 +77,15 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		// Stall fail-over, in minutes with no progress (0 = never). On by default: a
 		// stalled download is only removed once another release has been grabbed.
 		"downloads_stall_minutes": automation.ParseStallMinutes(a.deps.Settings.Get(ctx, automation.KeyStallMinutes, "")),
+		// How many upgrades one upgrade sweep may grab (0 = no limit); the rest wait for
+		// the next sweep, so a profile edit can't queue the whole library at once.
+		"upgrade_max_grabs_per_sweep": automation.ParseUpgradeBudget(a.deps.Settings.Get(ctx, automation.KeyUpgradeBudget, "")),
 	})
 }
+
+// maxUpgradeBudget bounds the per-sweep upgrade limit. Anything near it is effectively
+// "no limit", which 0 already says.
+const maxUpgradeBudget = 1000
 
 // settingsUpdate is a PUT /settings body: a nil field is left as it is.
 type settingsUpdate struct {
@@ -101,6 +108,7 @@ type settingsUpdate struct {
 	DiskGuardPausePct    *string `json:"downloads_disk_guard_pause_pct"`
 	DiskGuardResumePct   *string `json:"downloads_disk_guard_resume_pct"`
 	StallMinutes         *int    `json:"downloads_stall_minutes"`
+	UpgradeBudget        *int    `json:"upgrade_max_grabs_per_sweep"`
 }
 
 // adminSettingChange names the first admin-only setting req would change, or "" if it
@@ -186,6 +194,10 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "the stall timeout must be between 0 (never) and 10080 minutes (a week)")
 		return
 	}
+	if req.UpgradeBudget != nil && (*req.UpgradeBudget < 0 || *req.UpgradeBudget > maxUpgradeBudget) {
+		a.writeError(w, http.StatusBadRequest, "upgrades per sweep must be between 0 (no limit) and "+strconv.Itoa(maxUpgradeBudget))
+		return
+	}
 	// ISO 3166-1 alpha-2 ("AU"), or empty to go back to TMDB's global lists. Checked up
 	// here with the rest, so a bad region doesn't leave the keys before it saved.
 	var region string
@@ -262,6 +274,9 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.StallMinutes != nil && !save(a.deps.Settings.Set(ctx, automation.KeyStallMinutes, strconv.Itoa(*req.StallMinutes))) {
+		return
+	}
+	if req.UpgradeBudget != nil && !save(a.deps.Settings.Set(ctx, automation.KeyUpgradeBudget, strconv.Itoa(*req.UpgradeBudget))) {
 		return
 	}
 	a.handleGetSettings(w, r)

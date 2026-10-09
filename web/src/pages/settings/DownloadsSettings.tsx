@@ -21,6 +21,7 @@ export function DownloadsSettings() {
       </Section>
       <DiskGuardSection s={s} patch={patch} />
       <StallSection s={s} patch={patch} />
+      <UpgradeBudgetSection s={s} patch={patch} />
       <RecycleBin s={s} patch={patch} />
       <SaveBar />
     </div>
@@ -348,6 +349,35 @@ function StallSection({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSett
           style={inputStyle}
         />
         <span className="text-[10.5px] text-ink-faint">0 = never. Quality profiles can set their own time, or turn it off.</span>
+      </Field>
+    </Section>
+  );
+}
+
+// How many upgrades one upgrade sweep (movies and TV each, every six hours) may grab. A
+// profile edit can make hundreds of files eligible at once; this spreads them out.
+function UpgradeBudgetSection({ s, patch }: { s: AppSettings; patch: (p: Partial<AppSettings>) => void }) {
+  return (
+    <Section
+      id="upgrade-limit"
+      title="Upgrades per sweep"
+      subtitle="Each upgrade sweep — movies and TV separately — grabs at most this many better releases. The rest wait for the next sweep, so changing a quality profile can't start hundreds of downloads at once. Upgrading a single title by hand is never held back."
+    >
+      <Field label="Upgrades per sweep">
+        <input
+          type="number"
+          min={0}
+          max={1000}
+          step={1}
+          value={s.upgrade_max_grabs_per_sweep ?? 10}
+          onChange={(e) => {
+            const n = Math.min(1000, Math.max(0, Math.round(Number(e.target.value) || 0)));
+            patch({ upgrade_max_grabs_per_sweep: n });
+          }}
+          className={input}
+          style={inputStyle}
+        />
+        <span className="text-[10.5px] text-ink-faint">0 = no limit. Each episode counts as one.</span>
       </Field>
     </Section>
   );

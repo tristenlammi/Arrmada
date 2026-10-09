@@ -84,7 +84,15 @@ func (c *Coordinator) UpgradeSeries(ctx context.Context) {
 	}
 	var outage outageTally
 	defer outage.report(c.log, "series upgrade sweep")
-	for _, meta := range all {
+	budget := c.newSweepBudget(ctx)
+	titlesLeft := 0
+	defer func() { c.logBudget("series", budget, titlesLeft) }()
+	for i, meta := range all {
+		if budget.spent() {
+			// Stop before the next indexer search: nothing found now could be grabbed.
+			titlesLeft = len(all) - i
+			break
+		}
 		if !meta.Monitored {
 			continue
 		}
@@ -92,7 +100,7 @@ func (c *Coordinator) UpgradeSeries(ctx context.Context) {
 			c.log.Info("series: skipping upgrade sweep — a grab is still downloading", "series", meta.Title, "release", busy)
 			continue
 		}
-		err := c.upgradeSeries(ctx, meta.ID)
+		err := c.upgradeSeries(ctx, meta.ID, budget)
 		if outage.note(err) {
 			if outage.stop() {
 				break
@@ -107,8 +115,9 @@ func (c *Coordinator) UpgradeSeries(ctx context.Context) {
 
 // upgradeSeries looks for a better release for each monitored episode that already has
 // a file. Upgrades are surgical — only individual-episode releases are considered (not
-// whole-season packs), so a single better episode doesn't re-download the season.
-func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
+// whole-season packs), so a single better episode doesn't re-download the season. b is
+// the sweep's upgrade budget (nil = unlimited); each episode grabbed counts as one.
+func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64, b *upgradeBudget) error {
 	s, err := c.series.Get(ctx, seriesID)
 	if err != nil {
 		return err
@@ -218,6 +227,7 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 		c.skipUnreadable(s.Title, err)
 		return err
 	}
+	var picks []episodeUpgrade
 	for _, ep := range haveEps {
 		var cands []quality.Candidate
 		for name, rel := range byName {
@@ -228,30 +238,39 @@ func (c *Coordinator) upgradeSeries(ctx context.Context, seriesID int64) error {
 		if len(cands) == 0 {
 			continue
 		}
-		pick, ok := c.quality.UpgradeCandidate(ctx, profile, ep.cur, cands)
-		if !ok {
-			continue
+		if pick, ok := c.quality.UpgradeCandidate(ctx, profile, ep.cur, cands); ok {
+			picks = append(picks, episodeUpgrade{season: ep.season, episode: ep.episode, pick: pick})
 		}
-		winner := byName[pick.Name]
+	}
+	// Each episode is one grab against the sweep's budget; the rest wait for the next sweep.
+	takeUpgrades(picks, b, func(u episodeUpgrade) bool {
+		winner := byName[u.pick.Name]
 		if grabbed[winner.DownloadURL] {
-			continue
+			return false
 		}
 		if pending[normTitle(winner.Title)] {
-			continue // this exact upgrade is already in flight
+			return false // this exact upgrade is already in flight
 		}
-		if !c.diskOKFor(grabbedGB + pick.SizeGB) {
-			c.log.Warn("series: low disk, skipping upgrade", "series", s.Title, "need_gb", pick.SizeGB)
-			continue
+		if !c.diskOKFor(grabbedGB + u.pick.SizeGB) {
+			c.log.Warn("series: low disk, skipping upgrade", "series", s.Title, "need_gb", u.pick.SizeGB)
+			return false
 		}
-		c.log.Info("series: upgrading episode", "series", s.Title, "s", ep.season, "e", ep.episode, "to", winner.Title)
+		c.log.Info("series: upgrading episode", "series", s.Title, "s", u.season, "e", u.episode, "to", winner.Title)
 		if err := c.GrabForSeriesAuto(ctx, s.ID, winner.Indexer, winner.DownloadURL, winner.Title); err != nil {
 			c.log.Warn("series: upgrade grab failed", "series", s.Title, "err", err)
-			continue
+			return false
 		}
 		grabbed[winner.DownloadURL] = true
-		grabbedGB += pick.SizeGB
-	}
+		grabbedGB += u.pick.SizeGB
+		return true
+	})
 	return nil
+}
+
+// episodeUpgrade is one episode's chosen upgrade, before it's grabbed.
+type episodeUpgrade struct {
+	season, episode int
+	pick            quality.Candidate
 }
 
 // seriesDownloading reports whether the queue already has a TV torrent for this series

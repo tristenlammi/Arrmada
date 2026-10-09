@@ -111,6 +111,10 @@ type Coordinator struct {
 	stallDefaultFn func(ctx context.Context) int
 	guardHeldFn    func(ctx context.Context) map[string]bool
 
+	// upgradeBudgetFn reads how many upgrades one sweep may grab (Settings → Downloads),
+	// set once at startup; nil means DefaultUpgradeBudget. See upgradebudget.go.
+	upgradeBudgetFn func(ctx context.Context) int
+
 	// now is the books sweep's clock; nil means time.Now. Tests set it to step through
 	// the search ladder.
 	now func() time.Time
@@ -985,14 +989,22 @@ func (c *Coordinator) UpgradeMovies(ctx context.Context) {
 	}
 	var outage outageTally
 	defer outage.report(c.log, "movie upgrade sweep")
-	for _, m := range all {
+	budget := c.newSweepBudget(ctx)
+	titlesLeft := 0
+	defer func() { c.logBudget("movies", budget, titlesLeft) }()
+	for i, m := range all {
+		if budget.spent() {
+			// Stop before the next indexer search: nothing found now could be grabbed.
+			titlesLeft = len(all) - i
+			break
+		}
 		if !m.Monitored || !m.HasFile {
 			continue
 		}
 		if inQueue(queue, m) {
 			continue // already grabbing something for this movie
 		}
-		err := c.upgradeMovie(ctx, m)
+		err := c.upgradeMovie(ctx, m, budget)
 		if errors.Is(err, ErrAlreadySearching) {
 			c.log.Debug("automation: skipping an upgrade search for a movie already being searched", "movie", m.Title)
 			continue
@@ -1010,7 +1022,8 @@ func (c *Coordinator) UpgradeMovies(ctx context.Context) {
 }
 
 // UpgradeMovie runs an upgrade search for a single movie (e.g. right after its
-// quality profile is raised).
+// quality profile is raised). A deliberate one-title action, so the sweep's upgrade
+// budget doesn't apply.
 func (c *Coordinator) UpgradeMovie(ctx context.Context, id int64) error {
 	m, err := c.movies.Get(ctx, id)
 	if err != nil {
@@ -1019,12 +1032,21 @@ func (c *Coordinator) UpgradeMovie(ctx context.Context, id int64) error {
 	if !m.Monitored || !m.HasFile {
 		return nil
 	}
-	return c.upgradeMovie(ctx, m)
+	return c.upgradeMovie(ctx, m, nil)
+}
+
+// movieUpgrade is one version's chosen upgrade, before it's grabbed.
+type movieUpgrade struct {
+	v       movies.Version
+	profile string
+	from    string // the release the version holds now, for the log
+	pick    quality.Candidate
 }
 
 // upgradeMovie searches and grabs an upgrade for any monitored version that
-// already has a file. Versions without a file are handled by SearchMissing.
-func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
+// already has a file. Versions without a file are handled by SearchMissing. b is the
+// sweep's upgrade budget (nil = unlimited).
+func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie, b *upgradeBudget) error {
 	release, ok := c.claims.claim(movieKey(m.ID))
 	if !ok {
 		return ErrAlreadySearching
@@ -1086,41 +1108,51 @@ func (c *Coordinator) upgradeMovie(ctx context.Context, m movies.Movie) error {
 		c.skipUnreadable(m.Title, err)
 		return err
 	}
-	for _, v := range want {
-		cur := c.currentMovieFile(ctx, m, v)
-		baseline := cur.Release
-		profile := c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)
-		pick, ok := c.quality.UpgradeCandidate(ctx, profile, cur, cands)
-		if !ok {
-			continue
-		}
-		winner := byName[pick.Name]
+	picks := c.movieUpgradePicks(ctx, m, want, cands)
+	takeUpgrades(picks, b, func(u movieUpgrade) bool {
+		winner := byName[u.pick.Name]
 		if grabbed[winner.DownloadURL] {
-			continue
+			return false
 		}
 		if pending[normTitle(winner.Title)] {
-			continue // this exact upgrade is already in flight — don't stack a second copy
+			return false // this exact upgrade is already in flight — don't stack a second copy
 		}
-		if !c.diskOKFor(grabbedGB + pick.SizeGB) {
-			c.log.Warn("automation: low disk, skipping upgrade", "movie", m.Title, "need_gb", pick.SizeGB)
-			continue
+		if !c.diskOKFor(grabbedGB + u.pick.SizeGB) {
+			c.log.Warn("automation: low disk, skipping upgrade", "movie", m.Title, "need_gb", u.pick.SizeGB)
+			return false
 		}
-		c.log.Info("automation: upgrading", "movie", m.Title, "version", v.Label, "from", baseline, "to", winner.Title)
+		c.log.Info("automation: upgrading", "movie", m.Title, "version", u.v.Label, "from", u.from, "to", winner.Title)
 		hash, err := c.Grab(ctx, winner.Indexer, winner.DownloadURL, winner.Title)
 		if err != nil {
 			c.log.Warn("automation: upgrade grab failed", "movie", m.Title, "err", err)
-			continue
+			return false
 		}
 		grabbed[winner.DownloadURL] = true
-		grabbedGB += pick.SizeGB
-		c.recordGrab(ctx, m.ID, v.ID, winner.Title, winner.Indexer, profile, c.quality.StallMinutes(ctx, profile), hash)
+		grabbedGB += u.pick.SizeGB
+		c.recordGrab(ctx, m.ID, u.v.ID, winner.Title, winner.Indexer, u.profile, c.quality.StallMinutes(ctx, u.profile), hash)
 		detail := "Upgrade: " + winner.Title + " · " + winner.Indexer
-		if !v.IsDefault {
-			detail += " → " + v.Label
+		if !u.v.IsDefault {
+			detail += " → " + u.v.Label
 		}
 		c.movies.AddEvent(ctx, m.ID, "grabbed", detail)
-	}
+		return true
+	})
 	return nil
+}
+
+// movieUpgradePicks decides, for each version, the release that would upgrade its file —
+// the decision half of upgradeMovie, apart from the grabbing so it can be tested without
+// an indexer or a download client.
+func (c *Coordinator) movieUpgradePicks(ctx context.Context, m movies.Movie, want []movies.Version, cands []quality.Candidate) []movieUpgrade {
+	var picks []movieUpgrade
+	for _, v := range want {
+		cur := c.currentMovieFile(ctx, m, v)
+		profile := c.effectiveProfile(ctx, v.QualityProfile, quality.MediaMovie)
+		if pick, ok := c.quality.UpgradeCandidate(ctx, profile, cur, cands); ok {
+			picks = append(picks, movieUpgrade{v: v, profile: profile, from: cur.Release, pick: pick})
+		}
+	}
+	return picks
 }
 
 func gbOf(bytes int64) float64 { return float64(bytes) / (1024 * 1024 * 1024) }
