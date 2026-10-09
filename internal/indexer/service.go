@@ -47,10 +47,19 @@ type Service struct {
 // today; wire it from the download service if a usenet client kind is ever added.
 func (s *Service) SetUsenetAvailable(fn func() bool) { s.usenetAvailable = fn }
 
+// usenetUnusable reports whether idx is a usenet indexer with no usenet client to use it.
+func (s *Service) usenetUnusable(idx Indexer) bool {
+	return idx.Transport() == TransportUsenet && (s.usenetAvailable == nil || !s.usenetAvailable())
+}
+
+// Searched reports whether searches ask idx at all: it's enabled, and not a usenet
+// indexer without a usenet client. The health panel counts these.
+func (s *Service) Searched(idx Indexer) bool { return idx.Enabled && !s.usenetUnusable(idx) }
+
 // skipUsenet reports whether idx is a usenet indexer that can't be used, logging that
 // once per indexer.
 func (s *Service) skipUsenet(idx Indexer) bool {
-	if idx.Transport() != TransportUsenet || (s.usenetAvailable != nil && s.usenetAvailable()) {
+	if !s.usenetUnusable(idx) {
 		return false
 	}
 	if _, logged := s.usenetSkipLogged.LoadOrStore(idx.ID, true); !logged {
