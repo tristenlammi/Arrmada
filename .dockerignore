@@ -17,6 +17,8 @@ internal/webui/dist/*
 
 # Dev tooling & docs not needed for the build.
 .git/
+.github/
+.claude/
 .gitignore
 .idea/
 .vscode/
