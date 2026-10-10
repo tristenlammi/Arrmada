@@ -224,3 +224,22 @@ func TestRequestsAPIBulk(t *testing.T) {
 		t.Errorf("declined = %d, want 2", b.Total)
 	}
 }
+
+// The adult filter is always on, including for a request posted straight to the API: a
+// title the filter matches is refused and nothing is stored.
+func TestRequestsAPICreateRefusesAdultTitles(t *testing.T) {
+	s := requestsServer(t)
+	_, cookie := s.user(t, "alice@example.com", auth.RoleRequester)
+	rec := s.doJSON("POST", "/api/v1/requests", cookie, `{"media_type":"movie","tmdb_id":77,"title":"A Gangbang Story"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("adult title: HTTP %d %s, want 404", rec.Code, rec.Body)
+	}
+	rec = s.doJSON("GET", "/api/v1/requests", cookie, "")
+	if strings.Contains(rec.Body.String(), "Gangbang") {
+		t.Errorf("the refused request was stored: %s", rec.Body)
+	}
+	rec = s.doJSON("POST", "/api/v1/requests", cookie, `{"media_type":"movie","tmdb_id":78,"title":"Sex Education"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mainstream title: HTTP %d %s", rec.Code, rec.Body)
+	}
+}

@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/tristenlammi/arrmada/internal/adultfilter"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/download"
 	"github.com/tristenlammi/arrmada/internal/requests"
@@ -281,6 +282,12 @@ func (a *api) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 	// (the approval flow re-fetches by id anyway, so the LIBRARY was never spoofable).
 	if (in.MediaType == "movie" || in.MediaType == "series") && in.TMDBID > 0 && a.deps.Discovery != nil {
 		if d, derr := a.deps.Discovery.MediaDetails(r.Context(), in.MediaType, in.TMDBID); derr == nil && d != nil {
+			// The adult filter is always on: a title TMDB flags adult can't be asked for,
+			// even by calling the API directly with its id.
+			if d.Adult {
+				a.writeError(w, http.StatusNotFound, "That title isn't available.")
+				return
+			}
 			if d.Title != "" {
 				in.Title = d.Title
 			}
@@ -302,6 +309,12 @@ func (a *api) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+	}
+	// The same filter Discover applies, on whatever title the request ended up with (the
+	// client's own, if the lookup above failed).
+	if adultfilter.Matches(in.Title) {
+		a.writeError(w, http.StatusNotFound, "That title isn't available.")
+		return
 	}
 	// Auto-approve is a per-user property: this requester's request skips the queue
 	// only if their account is set to auto-approve.
