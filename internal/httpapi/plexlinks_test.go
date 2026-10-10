@@ -4,15 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/insights"
+	"github.com/tristenlammi/arrmada/internal/requests"
 )
 
-// fakeLinker knows a fixed set of titles ("movie:603") and records what it was asked.
+// fakeLinker knows a fixed set of titles by TMDB id ("movie:603") or IMDb id
+// ("movie:tt0133093") and records what it was asked.
 type fakeLinker struct {
 	mu    sync.Mutex
 	known map[string]string
@@ -23,8 +27,13 @@ func (f *fakeLinker) WatchURL(_ context.Context, media string, ids insights.Exte
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.asked = append(f.asked, ids)
-	key := media + ":" + strconv.Itoa(ids.TMDB)
-	return f.known[key]
+	if u := f.known[media+":"+strconv.Itoa(ids.TMDB)]; u != "" {
+		return u
+	}
+	if ids.IMDB != "" {
+		return f.known[media+":"+ids.IMDB]
+	}
+	return ""
 }
 
 func TestPlexLinkRoute(t *testing.T) {
@@ -55,5 +64,61 @@ func TestPlexLinkRoute(t *testing.T) {
 	_, kid2 := bare.user(t, "kid2@example.com", auth.RoleRequester)
 	if rec := bare.do("GET", "/api/v1/plex/link?media_type=movie&tmdb_id=603", kid2); rec.Code != http.StatusNoContent {
 		t.Errorf("no linker: %d, want 204", rec.Code)
+	}
+}
+
+func mediaDetailJSON(t *testing.T, a *api) map[string]any {
+	t.Helper()
+	r := httptest.NewRequest("GET", "/api/v1/media/movie/603", nil)
+	r.SetPathValue("media", "movie")
+	r.SetPathValue("id", "603")
+	rec := httptest.NewRecorder()
+	a.handleMediaDetail(rec, r)
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("HTTP %d %s", rec.Code, rec.Body)
+	}
+	return body
+}
+
+func TestMediaDetailIncludesPlexURLWhenLinked(t *testing.T) {
+	// A legacy-agent library knows the film only by IMDb: the detail's own IMDb id finds it.
+	link := &fakeLinker{known: map[string]string{"movie:tt0133093": "https://app.plex.tv/desktop/#!/server/m/details?key=%2Flibrary%2Fmetadata%2F9"}}
+	a := &api{deps: Deps{Discovery: detailStub{stubDiscovery{ok: true}}, PlexLinks: link}}
+	body := mediaDetailJSON(t, a)
+	if body["plex_url"] != link.known["movie:tt0133093"] || body["title"] != "The Matrix" || body["imdb_id"] != "tt0133093" {
+		t.Fatalf("detail = %v", body)
+	}
+}
+
+func TestMediaDetailOmitsWhenUnconfigured(t *testing.T) {
+	a := &api{deps: Deps{Discovery: detailStub{stubDiscovery{ok: true}}}}
+	if body := mediaDetailJSON(t, a); body["plex_url"] != nil || body["title"] != "The Matrix" {
+		t.Fatalf("detail without Plex = %v", body)
+	}
+	a.deps.PlexLinks = &fakeLinker{known: map[string]string{}}
+	if body := mediaDetailJSON(t, a); body["plex_url"] != nil {
+		t.Fatalf("detail for a title Plex doesn't have = %v", body)
+	}
+}
+
+func TestListRequestsPlexURLOnlyWhenAvailable(t *testing.T) {
+	link := &fakeLinker{known: map[string]string{"movie:1": "u1", "movie:2": "u2", "series:3": "u3"}}
+	a := &api{deps: Deps{PlexLinks: link}}
+	list := []requests.Request{
+		{MediaType: "movie", TMDBID: 1, Tracking: &requests.Tracking{Stage: requests.StageAvailable}},
+		{MediaType: "movie", TMDBID: 2, Tracking: &requests.Tracking{Stage: requests.StageDownloading}},
+		{MediaType: "series", TMDBID: 3, Tracking: &requests.Tracking{Stage: requests.StagePartial}},
+		{MediaType: "movie", TMDBID: 4, Tracking: &requests.Tracking{Stage: requests.StageAvailable}}, // not in Plex yet
+		{MediaType: "book", TMDBID: 1, Tracking: &requests.Tracking{Stage: requests.StageAvailable}},
+		{MediaType: "movie", TMDBID: 1}, // never tracked
+	}
+	a.setRequestPlexURLs(context.Background(), list)
+	got := []string{}
+	for _, rq := range list {
+		got = append(got, rq.PlexURL)
+	}
+	if want := []string{"u1", "", "u3", "", "", ""}; strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("plex urls = %q, want %q", got, want)
 	}
 }

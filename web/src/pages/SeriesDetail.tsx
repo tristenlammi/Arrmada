@@ -8,6 +8,7 @@ import { ReleaseSearchModal } from "../components/ReleaseSearchModal";
 import { UploadTorrentModal } from "../components/UploadTorrentModal";
 import { FileDetailsModal } from "../components/FileDetailsModal";
 import { FitBadge } from "../components/FitBadge";
+import { PlexPill } from "../components/PlexBits";
 import { RenameModal } from "./series/RenameModal";
 import { NumberingBanner } from "./series/NumberingReviewModal";
 import { MONITOR_PRESETS } from "./series/presets";
@@ -179,6 +180,7 @@ export function SeriesDetail() {
                 <span className="flex items-center gap-2">
                   {s.imdb_id && <a href={`https://www.imdb.com/title/${s.imdb_id}`} target="_blank" rel="noreferrer" className="rounded px-1.5 py-0.5 font-mono text-[10px] font-bold" style={{ background: "#f5c518", color: "#000" }}>IMDb</a>}
                   <a href={`https://www.themoviedb.org/tv/${s.tmdb_id}`} target="_blank" rel="noreferrer" className="rounded px-1.5 py-0.5 font-mono text-[10px] font-bold" style={{ background: "#01b4e4", color: "#fff" }}>TMDB</a>
+                  <PlexPill media="series" tmdbId={s.tmdb_id} />
                 </span>
               </div>
 

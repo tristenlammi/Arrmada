@@ -1328,6 +1328,9 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
                   )}
                 </>
               )}
+              {d?.plex_url && (
+                <a href={d.plex_url} target="_blank" rel="noopener noreferrer" className="inline-block rounded-lg bg-accent-grad px-3.5 py-2 text-[12.5px] font-semibold text-accent-ink">▶ Watch on Plex</a>
+              )}
               {/* Already here, coming or asked for, but some seasons aren't: ask for those. */}
               {moreSeasons && ((done && subscribed) || (badge && !declined)) && !picking && (
                 <Button variant="primary" onClick={() => setPicking(true)}>Request more seasons</Button>

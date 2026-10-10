@@ -109,6 +109,8 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/subtitles/jobs", mod.subtitleJobs),
     get("/api/v1/insights/plex", mod.plexConfig),
     get("/api/v1/insights/plex/scan", mod.plexScan),
+    // Watch on Plex: no Plex connected, so no title is in it.
+    { method: "GET", path: "/api/v1/plex/link", status: 204 },
     get("/api/v1/insights/stats", mod.insightsStats),
     get("/api/v1/settings", sys.settings),
     // Settings → Users: two accounts, one a Plex sign-in that still auto-approves shows.

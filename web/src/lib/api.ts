@@ -1178,6 +1178,8 @@ export interface MediaRequest {
   decided_at?: number;
   /** How often it was asked for again after a decline; > 0 flags a re-request. */
   rerequest?: number;
+  /** Delivered and in the owner's Plex: the title's app.plex.tv page. */
+  plex_url?: string;
 }
 
 /** A section of the request list (GET /api/v1/requests?section=). */
@@ -1368,6 +1370,7 @@ export interface MediaDetail {
   trailer_url?: string; // YouTube (or similar) trailer link
   similar?: DiscoverCard[]; // "more like this" — same shape as a Discover card
   seasons?: SeasonSummary[]; // series: regular seasons, specials left out
+  plex_url?: string; // app.plex.tv page for the title, when the owner's Plex has it
 }
 
 export interface SeasonSummary { number: number; name?: string; episode_count: number; air_date?: string; poster_url?: string }

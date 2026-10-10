@@ -212,6 +212,7 @@ export function RequestSheet({ requestId, initial, startDeclining = false, onCha
               {!declining && <Button className={big} onClick={() => setDeclining(true)} disabled={!!busy}>Decline…</Button>}
             </>
           )}
+          {rq.plex_url && <a href={rq.plex_url} target="_blank" rel="noopener noreferrer" className={`${big} inline-flex items-center rounded-lg bg-accent-grad px-4 text-[12.5px] font-semibold text-accent-ink`}>▶ Watch on Plex</a>}
           {lib && <Link to={lib} className={`${big} inline-flex items-center rounded-lg px-4 text-[12.5px] font-semibold`} style={{ background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" }}>Open in library</Link>}
           {!staff && own && pending && <Button className={big} onClick={withdraw} busy={busy === "withdraw"} disabled={!!busy}>Withdraw</Button>}
           {following && <Button className={big} onClick={unfollow} busy={busy === "unfollow"} disabled={!!busy}>Stop following</Button>}

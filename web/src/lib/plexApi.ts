@@ -37,6 +37,9 @@ export interface PlexScanView {
 }
 
 export const plexApi = {
+  // The title's app.plex.tv page, or null when Plex doesn't have it (the server answers 204).
+  link: (media: "movie" | "series", tmdbId: number) =>
+    req<{ url: string } | undefined>(`/api/v1/plex/link?media_type=${media}&tmdb_id=${tmdbId}`).then((r) => r?.url ?? null),
   scanView: () => req<PlexScanView>("/api/v1/insights/plex/scan"),
   saveScan: (body: { enabled: boolean; path_map: PlexPathMap[] }) =>
     req<PlexScanView>("/api/v1/insights/plex/scan", { method: "PUT", body: JSON.stringify(body) }),

@@ -7,6 +7,7 @@ import { FileDetailsModal } from "../components/FileDetailsModal";
 import { ConfirmDialog } from "../components/ConfirmDialog";
 import { DeleteMovieDialog } from "../components/DeleteMovieDialog";
 import { LastSearchLine } from "../components/LastSearch";
+import { PlexPill } from "../components/PlexBits";
 import { disposalLine, useRecycleMode } from "../lib/disposal";
 import { PAGE } from "../lib/links";
 import { usePoll } from "../lib/usePoll";
@@ -572,6 +573,7 @@ function ExternalLinks({ movie }: { movie: Movie }) {
         <a href={`https://www.imdb.com/title/${movie.imdb_id}`} target="_blank" rel="noreferrer" className="rounded px-1.5 py-0.5 font-mono text-[10px] font-bold" style={{ background: "#f5c518", color: "#000" }}>IMDb</a>
       )}
       <a href={`https://www.themoviedb.org/movie/${movie.tmdb_id}`} target="_blank" rel="noreferrer" className="rounded px-1.5 py-0.5 font-mono text-[10px] font-bold" style={{ background: "#01b4e4", color: "#fff" }}>TMDB</a>
+      <PlexPill media="movie" tmdbId={movie.tmdb_id} />
     </span>
   );
 }

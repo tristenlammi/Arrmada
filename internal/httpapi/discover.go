@@ -292,7 +292,15 @@ func (a *api) handleMediaDetail(w http.ResponseWriter, r *http.Request) {
 			d.Ratings.Metacritic = rt.Metacritic
 		}
 	}
-	a.writeJSON(w, http.StatusOK, d)
+	// Watch on Plex, when the owner's Plex has it (from memory; never waits on Plex).
+	ids := a.plexIDs(r.Context(), d.MediaType, id)
+	if ids.IMDB == "" {
+		ids.IMDB = d.IMDBID
+	}
+	a.writeJSON(w, http.StatusOK, struct {
+		*metadata.MediaDetail
+		PlexURL string `json:"plex_url,omitempty"`
+	}{d, a.watchURL(r.Context(), d.MediaType, ids)})
 }
 
 // ratingsWait is how long a detail sheet waits for OMDb, and ratingsBudget how long the
