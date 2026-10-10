@@ -85,6 +85,19 @@ func (c *Client) Identity(ctx context.Context) (Identity, error) {
 	return Identity{MachineIdentifier: r.MediaContainer.MachineIdentifier, Version: r.MediaContainer.Version}, nil
 }
 
+// ServerName is the server's own name (what Plex apps show it as), from its root endpoint.
+func (c *Client) ServerName(ctx context.Context) (string, error) {
+	var r struct {
+		MediaContainer struct {
+			FriendlyName string `json:"friendlyName"`
+		} `json:"MediaContainer"`
+	}
+	if err := c.get(ctx, "/", &r); err != nil {
+		return "", err
+	}
+	return r.MediaContainer.FriendlyName, nil
+}
+
 // Library is one Plex library section.
 type Library struct {
 	Key   string `json:"key"`

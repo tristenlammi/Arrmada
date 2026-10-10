@@ -1873,8 +1873,14 @@ export interface ConvertCompareStatus { running: boolean; key?: string; title?: 
 
 // Insights (Plex watch monitoring).
 export interface PlexLibrary { key: string; title: string; type: string }
-export interface PlexConfig { url: string; token_set: boolean; enabled: boolean; poll_seconds: number }
-export interface PlexTestResult { ok: boolean; error?: string; machine_id?: string; version?: string; libraries?: PlexLibrary[] }
+export interface PlexConfig {
+  url: string; token_set: boolean; enabled: boolean; poll_seconds: number;
+  /** Someone has switched monitoring on or off (until then the form starts with it on). */
+  enabled_set?: boolean;
+  /** The connected server, from its own identity: set on sign-in, save and Test. */
+  server_name?: string; machine_id?: string;
+}
+export interface PlexTestResult { ok: boolean; error?: string; machine_id?: string; server_name?: string; version?: string; libraries?: PlexLibrary[] }
 export interface GeoLocation { ip: string; local: boolean; city?: string; country?: string; country_code?: string; lat?: number; lon?: number }
 export interface StreamDetail { src: string; stream?: string }
 export interface InsightsStream {

@@ -181,15 +181,16 @@ func (a *api) handleInsightsPlexAuthPoll(w http.ResponseWriter, r *http.Request)
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	authorized, err := a.deps.Insights.PollPlexAuth(ctx, int(id))
+	res, err := a.deps.Insights.PollPlexAuth(ctx, int(id))
 	if err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	if authorized {
+	if res.Authorized {
 		a.plexPins.forget(int(id))
+		a.recheckHealth(r, "plex.connection") // a fresh connection clears its warning now
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"authorized": authorized})
+	a.writeJSON(w, http.StatusOK, res)
 }
 
 // handleInsightsActivity returns the current live Plex streams (the Activity view).

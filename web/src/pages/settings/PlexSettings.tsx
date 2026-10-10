@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { Section, Toggle, inputStyle } from "../../components/settings/ui";
 import { api, type PlexConfig, type PlexTestResult } from "../../lib/api";
 import { isAdmin, useMe } from "../../lib/me";
-import { plexApi } from "../../lib/plexApi";
+import { plexApi, type PlexConnectResult } from "../../lib/plexApi";
 import { usePlexPinSignIn, type PlexFlow } from "../../lib/plexSignIn";
 import { SaveBar, useLoadedSettings } from "../../lib/useSettings";
 import { useToast } from "../../ui";
@@ -41,27 +41,35 @@ function PlexConnection() {
 
   const load = useCallback(() => api.insightsConfig().then(setCfg).catch(() => toast("Could not load Plex settings", { tone: "error" })), [toast]);
   useEffect(() => { void load(); }, [load]);
+  const [choices, setChoices] = useState<NonNullable<PlexConnectResult["choices"]>>([]);
+  // The connected server's name: from the saved config, refreshed by a passing Test of it.
+  const [serverName, setServerName] = useState("");
   useEffect(() => {
     if (!cfg) return;
     setUrl(cfg.url);
+    setServerName(cfg.server_name ?? "");
     setPoll(String(cfg.poll_seconds || 5));
-    setEnabled(cfg.enabled);
+    // Until someone chooses, monitoring starts ticked: connecting Plex is for recording.
+    setEnabled(cfg.enabled_set ? cfg.enabled : true);
   }, [cfg]);
 
   // Sign in with Plex: a popup on a computer, the whole page on a phone (plex.tv sends it
   // back here with ?plexpin=). Once approved the server stores the token and finds the
-  // server URL if none is set.
-  const flow = useMemo<PlexFlow<true>>(() => ({
+  // owner's server: one that answers is saved; several that answer are offered here.
+  const flow = useMemo<PlexFlow<PlexConnectResult>>(() => ({
     kind: "connect",
     start: plexApi.connectStart,
-    poll: async (id) => ((await plexApi.connectPoll(id)).authorized ? true : null),
+    poll: async (id) => { const r = await plexApi.connectPoll(id); return r.authorized ? r : null; },
   }), []);
   const plex = usePlexPinSignIn({
     flow,
-    onDone: () => {
+    onDone: (r) => {
       setTest(null);
+      setChoices(r.choices ?? []);
       void load();
-      toast("Signed in with Plex", { tone: "good" });
+      if (r.server_name) toast(`Signed in with Plex — connected to ${r.server_name}`, { tone: "good" });
+      else if (r.choices?.length) toast("Signed in with Plex — pick your server below", { tone: "good" });
+      else toast("Signed in with Plex, but none of your servers answered — enter its URL below.", { tone: "error" });
     },
     onError: (m) => toast(m, { tone: "error" }),
     resumeParam: "plexpin",
@@ -69,20 +77,35 @@ function PlexConnection() {
   });
   const signingIn = plex.phase !== "idle";
 
-  const body = () => ({ url: url.trim(), token: token.trim() || undefined, enabled, poll_seconds: Number(poll) || 5 });
-  const save = async () => {
+  const body = (u = url) => ({ url: u.trim(), token: token.trim() || undefined, enabled, poll_seconds: Number(poll) || 5 });
+  const save = async (u?: string) => {
     setBusy("save");
-    try { setCfg(await api.updateInsightsConfig(body())); setToken(""); toast("Plex settings saved", { tone: "good" }); }
+    try { setCfg(await api.updateInsightsConfig(body(u))); setToken(""); setChoices([]); toast("Plex settings saved", { tone: "good" }); }
     catch (e) { toast((e as Error).message, { tone: "error" }); } finally { setBusy(null); }
   };
   const runTest = async () => {
     setBusy("test"); setTest(null);
-    try { setTest(await api.testInsights({ url: url.trim() || undefined, token: token.trim() || undefined })); }
+    // A passing test of the saved connection refreshes the server name shown above.
+    try { const t = await api.testInsights({ url: url.trim() || undefined, token: token.trim() || undefined }); setTest(t); if (t.ok && url.trim() === cfg?.url && !token.trim()) setServerName(t.server_name ?? ""); }
     catch (e) { setTest({ ok: false, error: (e as Error).message }); } finally { setBusy(null); }
   };
 
   return (
     <Section id="plex-connection" title="Plex connection" subtitle="Point Arrmada at your Plex Media Server. Insights records what's watched from it, and Plex sign-in checks people against it. Your token stays on this server and is never shown back in full.">
+      {serverName && cfg?.url && (
+        <div className="text-[12.5px]">Connected to <b className="font-semibold">{serverName}</b> <span className="font-mono text-[11px] text-ink-faint">{cfg.url}</span></div>
+      )}
+      {choices.length > 1 && (
+        <div role="group" aria-label="Choose your Plex server" className="flex flex-col gap-2 rounded-lg p-3" style={{ border: "1px solid var(--accent-line)", background: "var(--accent-soft)" }}>
+          <div className="text-[12.5px] font-semibold">More than one of your servers answered. Which one should Arrmada use?</div>
+          {choices.map((c) => (
+            <button key={c.machine_id} onClick={() => { setUrl(c.url); void save(c.url); }} disabled={busy !== null} className="flex flex-wrap items-baseline justify-between gap-2 rounded-lg px-3 py-2 text-left text-[12.5px]" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
+              <span className="font-semibold">{c.name}</span>
+              <span className="font-mono text-[11px] text-ink-faint">{c.url}</span>
+            </button>
+          ))}
+        </div>
+      )}
       <div className="flex flex-col gap-2">
         <button onClick={() => { setTest(null); plex.begin(); }} disabled={signingIn} className="flex w-full items-center justify-center gap-2 rounded-lg py-2.5 text-[13px] font-semibold disabled:opacity-60" style={{ background: "#e5a00d", color: "#1f1200" }}>
           {plex.phase === "finishing" ? "Finishing Plex sign-in…" : signingIn ? "Waiting for Plex…" : (cfg?.token_set ? "Re-sign in with Plex" : "Sign in with Plex")}
@@ -121,7 +144,7 @@ function PlexConnection() {
 
       <div className="flex items-center gap-2">
         <button onClick={runTest} disabled={busy !== null || !url.trim()} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{busy === "test" ? "Testing…" : "Test connection"}</button>
-        <button onClick={save} disabled={busy !== null || !url.trim()} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy === "save" ? "Saving…" : "Save"}</button>
+        <button onClick={() => void save()} disabled={busy !== null || !url.trim()} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy === "save" ? "Saving…" : "Save"}</button>
       </div>
 
       {test && (

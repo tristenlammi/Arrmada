@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/tristenlammi/arrmada/internal/auth"
+	"github.com/tristenlammi/arrmada/internal/insights"
 	"github.com/tristenlammi/arrmada/internal/netutil"
 	"github.com/tristenlammi/arrmada/internal/plex"
 )
@@ -25,6 +26,16 @@ func (a *api) plexClientID(ctx context.Context) string {
 		_ = a.deps.Settings.Set(ctx, "insights_plex_client_id", id)
 	}
 	return id
+}
+
+// plexServerID is the machine id of the server Plex sign-ins are checked against: the
+// connected server's own id when Settings → Plex has stored it, else the first server the
+// owner's token owns (an owner with two servers is then gated on the right one).
+func (a *api) plexServerID(ctx context.Context, clientID, adminToken string) (string, error) {
+	if id := a.deps.Settings.Get(ctx, insights.KeyMachineID, ""); id != "" {
+		return id, nil
+	}
+	return plex.OwnedServerID(ctx, clientID, adminToken)
 }
 
 // handlePlexLoginStart begins a Plex sign-in: returns a PIN id + the plex.tv URL to authorize it.
@@ -104,7 +115,7 @@ func (a *api) handlePlexLoginPoll(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusServiceUnavailable, "Plex sign-in isn't configured — connect your Plex server in Insights first")
 		return
 	}
-	serverID, err := plex.OwnedServerID(ctx, clientID, adminToken)
+	serverID, err := a.plexServerID(ctx, clientID, adminToken)
 	if err != nil {
 		a.writeError(w, http.StatusBadGateway, "could not identify your Plex server: "+err.Error())
 		return

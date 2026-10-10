@@ -12,5 +12,13 @@ export const plexApi = {
   loginPoll: (id: number) => req<{ pending?: boolean; user?: AuthUser }>(`/api/v1/auth/plex/pin/${id}`),
   // Settings → Plex: connect the server (stores the token, finds the server).
   connectStart: (m: PlexMode) => req<PlexPin>(`/api/v1/insights/plex/auth${mode(m)}`, { method: "POST" }),
-  connectPoll: (id: number) => req<{ authorized: boolean }>(`/api/v1/insights/plex/auth/${id}`),
+  connectPoll: (id: number) => req<PlexConnectResult>(`/api/v1/insights/plex/auth/${id}`),
 };
+
+// PlexConnectResult: authorized with server_name means connected; with choices, several of
+// the owner's servers answered and they pick one; with neither, no server could be reached.
+export interface PlexConnectResult {
+  authorized: boolean;
+  server_name?: string;
+  choices?: { name: string; machine_id: string; url: string }[];
+}
