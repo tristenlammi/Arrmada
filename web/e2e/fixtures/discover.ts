@@ -101,8 +101,13 @@ export function mediaDetail(media: string, tmdbID: number): MediaDetail {
     crew: [{ name: "Rowan Helm", job: "Director" }, { name: "Isla Bow", job: "Writer" }],
     ratings: { tmdb: c.vote_average, imdb: "7.4", rotten_tomatoes: "88%" },
     similar: cards.slice(2, 6),
+    // The title's card with its badge state, which a title opened cold from its address uses.
+    card: { ...c, media_type: media === "series" ? "series" : "movie" },
   };
 }
+
+// A title the server refuses (TMDB's adult flag or the adult filter): 404.
+export const hiddenTitleID = 9999;
 
 const at = "2026-10-01T09:00:00Z";
 

@@ -32,6 +32,15 @@ describe("buildRoutes", () => {
     expect(p).not.toContain("/calendar");
   });
 
+  // APP-07: a title's own address exists in every shell, under /discover so the page
+  // stays mounted beneath the sheet.
+  it("gives every shell the Discover title addresses", () => {
+    for (const [role, external] of [["admin", false], ["requester", false], ["requester", true]] as const) {
+      const d = routes(buildRoutes({ role, external })).find((x) => x.path === "/discover");
+      expect(d?.children?.map((c) => c.path), `${role} ${external}`).toEqual(["movie/:tmdbId", "series/:tmdbId", "tv/:tmdbId"]);
+    }
+  });
+
   // The shelf's old address keeps working for requesters; staff /books is the library.
   it("sends a requester's /books to /shelf and leaves staff /books alone", () => {
     for (const external of [false, true]) {

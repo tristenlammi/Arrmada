@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/adultfilter"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
 	"github.com/tristenlammi/arrmada/internal/metadata"
@@ -269,8 +270,30 @@ func (a *api) handleDiscoverByGenre(w http.ResponseWriter, r *http.Request) {
 	a.enrichDiscover(w, r, items)
 }
 
-// handleMediaDetail returns the full record behind the discover detail modal: TMDB
-// metadata + cast/crew, plus external ratings (IMDB/RT/Metacritic) when OMDb is set.
+// mediaDetailResponse is a title's detail record plus its card: the same library,
+// request and download state the Discover rows carry, so a title opened cold from a
+// link (/discover/movie/<id>) shows the right badge without a row to come from.
+type mediaDetailResponse struct {
+	*metadata.MediaDetail
+	Card discoverCard `json:"card"`
+}
+
+// itemFromDetail is a detail record as the browse card it would be in a row.
+func itemFromDetail(d *metadata.MediaDetail) metadata.DiscoverItem {
+	it := metadata.DiscoverItem{
+		MediaType: d.MediaType, TMDBID: d.TMDBID, Title: d.Title, Year: d.Year, Overview: d.Overview,
+		PosterURL: d.PosterURL, BackdropURL: d.BackdropURL, VoteAverage: d.Ratings.TMDB,
+	}
+	if len(d.Genres) > 0 {
+		it.Genres = d.Genres[:min(3, len(d.Genres))]
+	}
+	return it
+}
+
+// handleMediaDetail returns the full record behind the discover detail sheet: TMDB
+// metadata + cast/crew, plus external ratings (IMDB/RT/Metacritic) when OMDb is set, and
+// the title's card. A title the always-on adult filter would keep out of every row is
+// "not found" here too, so a typed or shared link can't surface it either.
 func (a *api) handleMediaDetail(w http.ResponseWriter, r *http.Request) {
 	if !a.discoveryReady(w, r) {
 		return
@@ -285,6 +308,10 @@ func (a *api) handleMediaDetail(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	if d == nil || d.Adult || adultfilter.Matches(d.Title) {
+		a.writeError(w, http.StatusNotFound, "That title isn't available.")
+		return
+	}
 	if a.deps.Ratings != nil && a.deps.Ratings.Available() && d.IMDBID != "" {
 		if rt, ok := a.ratingsWithin(r.Context(), d.IMDBID, ratingsWait); ok {
 			d.Ratings.IMDB = rt.IMDB
@@ -292,7 +319,8 @@ func (a *api) handleMediaDetail(w http.ResponseWriter, r *http.Request) {
 			d.Ratings.Metacritic = rt.Metacritic
 		}
 	}
-	a.writeJSON(w, http.StatusOK, d)
+	card := a.enrichCards(r.Context(), []metadata.DiscoverItem{itemFromDetail(d)})[0]
+	a.writeJSON(w, http.StatusOK, mediaDetailResponse{MediaDetail: d, Card: card})
 }
 
 // ratingsWait is how long a detail sheet waits for OMDb, and ratingsBudget how long the

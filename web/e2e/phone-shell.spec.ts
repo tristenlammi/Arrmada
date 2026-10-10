@@ -171,3 +171,58 @@ test.describe("sheets on a phone", () => {
     await expect(page).not.toHaveURL(/\/discover/);
   });
 });
+
+// APP-07: a title's own address. Tapping a poster goes there, Back closes it where the
+// list was, and the address opens cold (a reload, a shared link, a notification).
+test.describe("title addresses on a phone", () => {
+  test.use({ persona: "requester" });
+
+  test("a poster opens its address and Back returns to the same spot", async ({ page, api }) => {
+    await open(page, "/discover", api);
+    const poster = page.getByRole("button", { name: "View details for Iron Tide" }).first();
+    await poster.scrollIntoViewIfNeeded();
+    const before = await page.evaluate(() => document.querySelector("main")!.scrollTop);
+    expect(before).toBeGreaterThan(0);
+    await poster.tap();
+    await expect(page).toHaveURL(/\/discover\/movie\/1004$/);
+    await expect(page.getByRole("dialog", { name: "Iron Tide" })).toBeVisible();
+    await expect(page).toHaveTitle("Iron Tide · Arrmada");
+
+    await page.goBack();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page).toHaveURL(/\/discover$/);
+    expect(await page.evaluate(() => document.querySelector("main")!.scrollTop)).toBe(before);
+  });
+
+  test("opens cold with the right badge, and the old tv address redirects", async ({ page, api }) => {
+    await open(page, "/discover/tv/1003", api);
+    await expect(page).toHaveURL(/\/discover\/series\/1003$/);
+    const sheet = page.getByRole("dialog", { name: "Saltwind" });
+    await expect(sheet).toBeVisible();
+    await expect(sheet.getByText("Requested — waiting for approval")).toBeVisible();
+
+    // Nothing underneath to step back to: Close lands on Discover itself.
+    await sheet.getByRole("button", { name: "Close", exact: true }).tap();
+    await expect(page).toHaveURL(/\/discover$/);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  });
+
+  test("a hidden title says it isn't available", async ({ page, api }) => {
+    await open(page, "/discover/movie/9999", api);
+    const sheet = page.getByRole("dialog", { name: "Not available" });
+    await expect(sheet).toBeVisible();
+    await sheet.getByRole("button", { name: "Back to Discover" }).tap();
+    await expect(page).toHaveURL(/\/discover$/);
+  });
+});
+
+test.describe("title addresses from outside", () => {
+  test.use({ persona: "external" });
+
+  test("an outside session opens a title cold", async ({ page, api }) => {
+    await open(page, "/discover/movie/1007", api);
+    const sheet = page.getByRole("dialog", { name: "The Cartographer" });
+    await expect(sheet).toBeVisible();
+    await expect(sheet.getByText("✓ In your library")).toBeVisible();
+  });
+});

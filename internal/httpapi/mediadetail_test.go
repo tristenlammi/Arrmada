@@ -37,6 +37,12 @@ func (s slowRatings) Ratings(ctx context.Context, _ string) (metadata.Ratings, e
 
 func getDetail(t *testing.T, a *api) (metadata.MediaDetail, time.Duration) {
 	t.Helper()
+	// The response carries the title's card; give it an empty library to read instead of
+	// real services.
+	if _, ok := enrichSnaps.Load(a); !ok {
+		enrichSnaps.Store(a, &enrichSnapEntry{at: time.Now().Add(time.Hour), snap: emptySnap()})
+		t.Cleanup(func() { enrichSnaps.Delete(a) })
+	}
 	r := httptest.NewRequest("GET", "/api/v1/discover/movie/603", nil)
 	r.SetPathValue("media", "movie")
 	r.SetPathValue("id", "603")

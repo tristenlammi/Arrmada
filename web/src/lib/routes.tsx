@@ -1,5 +1,5 @@
 import { Suspense, type ReactNode } from "react";
-import { Navigate, type RouteObject } from "react-router-dom";
+import { Navigate, useLocation, useParams, type RouteObject } from "react-router-dom";
 import type { UserRole } from "./api";
 import type { RouteHandle } from "./title";
 import { UserLayout } from "../components/UserLayout";
@@ -69,10 +69,35 @@ function redirect(path: string, to: string): RouteObject {
   return { path, element: <Navigate to={to} replace />, errorElement: <RouteError /> };
 }
 
+// discover is Discover plus its titles' own addresses (/discover/movie/603,
+// /discover/series/1399), in every shell. A title is a child of /discover so the page
+// stays mounted under the title's sheet (Discover reads the match and opens it), keeping
+// its rows and scroll position. TMDB's own "tv" spelling redirects to "series".
+function discover(element: ReactNode): RouteObject {
+  const title: RouteHandle = { title: "Discover" };
+  return {
+    path: "/discover",
+    element,
+    handle: title,
+    errorElement: <RouteError />,
+    children: [
+      { path: "movie/:tmdbId", element: null, handle: title, errorElement: <RouteError /> },
+      { path: "series/:tmdbId", element: null, handle: title, errorElement: <RouteError /> },
+      { path: "tv/:tmdbId", element: <TvRedirect />, handle: title, errorElement: <RouteError /> },
+    ],
+  };
+}
+
+function TvRedirect() {
+  const { tmdbId } = useParams();
+  const { search } = useLocation();
+  return <Navigate to={`/discover/series/${tmdbId ?? ""}${search}`} replace />;
+}
+
 function requesterRoutes(shell: "external" | "requester"): RouteObject[] {
   const home = "/discover";
   return [
-    page("/discover", "Discover", <Discover chrome={false} />),
+    discover(<Discover chrome={false} />),
     // Their own requests and the ones they follow (/api/v1/requests is allowed from outside).
     page("/requests", "Requests", <Requests chrome={false} />),
     // Outside sessions get no Calendar: the API isn't allowlisted for them.
@@ -103,7 +128,7 @@ function staffRoutes(admin: boolean): RouteObject[] {
     page("/movies/:id", "Movie", <MovieDetail />),
     page("/series", "Series", <Series />),
     page("/series/:id", "Series", <SeriesDetail />),
-    page("/discover", "Discover", <Discover />),
+    discover(<Discover />),
     page("/requests", "Requests", <Requests />),
     page("/calendar", "Calendar", <Calendar />),
     page("/music", "Music", music(<Music />)),

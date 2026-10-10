@@ -1368,6 +1368,8 @@ export interface MediaDetail {
   trailer_url?: string; // YouTube (or similar) trailer link
   similar?: DiscoverCard[]; // "more like this" — same shape as a Discover card
   seasons?: SeasonSummary[]; // series: regular seasons, specials left out
+  /** The title as a Discover card with this viewer's badge state, for a sheet opened cold from its address. */
+  card?: DiscoverCard;
 }
 
 export interface SeasonSummary { number: number; name?: string; episode_count: number; air_date?: string; poster_url?: string }

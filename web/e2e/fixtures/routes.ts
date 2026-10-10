@@ -60,6 +60,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/discover/genres", discover.genres),
     get("/api/v1/discover/providers", discover.providers),
     get("/api/v1/discover/search", discover.items),
+    { method: "GET", path: `/api/v1/media/movie/${discover.hiddenTitleID}`, status: 404, body: { message: "That title isn't available." } },
     { method: "GET", path: /^\/api\/v1\/media\/(movie|series)\/(\d+)$/, respond: ({ params }) => discover.mediaDetail(params[0], Number(params[1])) },
     { method: "GET", path: /^\/api\/v1\/media\/series\/(\d+)\/seasons$/, respond: ({ params }) => discover.seriesSeasons(Number(params[0])) },
     get("/api/v1/calendar", media.calendar),
