@@ -20,7 +20,6 @@ import (
 // or down Plex can't hold up a page.
 
 const (
-	keyMachineID      = "insights_plex_machine_id" // saved by the sign-in setup when it knows it
 	plexIndexTTL      = 30 * time.Minute
 	plexIndexRetry    = 5 * time.Minute // after a failed build
 	plexIndexMaxDelay = 5 * time.Minute // a steady stream of changes can't put a rebuild off longer
@@ -230,14 +229,14 @@ func (s *Service) logIndexResult(err error, took time.Duration) {
 // buildPlexIndex reads every movie and show section in full.
 func (s *Service) buildPlexIndex(ctx context.Context) (*plexIndex, error) {
 	c := s.client(ctx)
-	machine := s.settings.Get(ctx, keyMachineID, "")
-	if machine == "" {
-		id, err := c.Identity(ctx)
-		if err != nil {
-			return nil, err
-		}
-		machine = id.MachineIdentifier
+	// The machine id comes from the server being listed, every time, rather than from a
+	// saved setting: the rating keys belong to this server, so its own id is the one the
+	// links must name, even right after the URL was changed by hand.
+	id, err := c.Identity(ctx)
+	if err != nil {
+		return nil, err
 	}
+	machine := id.MachineIdentifier
 	libs, err := c.Libraries(ctx)
 	if err != nil {
 		return nil, err
@@ -339,6 +338,13 @@ func (s *Service) Locate(ctx context.Context, media string, ids ExternalIDs) (pl
 		return it, true
 	}
 	return plex.Item{}, false
+}
+
+// PlexIndexReady reports whether lookups can find anything right now: Plex is set up and
+// the index has been built. Callers use it to skip work (reading library records for
+// fallback ids) that could only lead to "not found".
+func (s *Service) PlexIndexReady(ctx context.Context) bool {
+	return s.Configured(ctx) && s.links.current() != nil
 }
 
 // WatchURL is the app.plex.tv page that plays the title on the owner's server, or "" when

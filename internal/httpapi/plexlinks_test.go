@@ -18,10 +18,13 @@ import (
 // fakeLinker knows a fixed set of titles by TMDB id ("movie:603") or IMDb id
 // ("movie:tt0133093") and records what it was asked.
 type fakeLinker struct {
-	mu    sync.Mutex
-	known map[string]string
-	asked []insights.ExternalIDs
+	mu       sync.Mutex
+	known    map[string]string
+	asked    []insights.ExternalIDs
+	notReady bool // Plex not set up, or the index not built yet
 }
+
+func (f *fakeLinker) PlexIndexReady(context.Context) bool { return !f.notReady }
 
 func (f *fakeLinker) WatchURL(_ context.Context, media string, ids insights.ExternalIDs) string {
 	f.mu.Lock()
@@ -120,5 +123,14 @@ func TestListRequestsPlexURLOnlyWhenAvailable(t *testing.T) {
 	}
 	if want := []string{"u1", "", "u3", "", "", ""}; strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("plex urls = %q, want %q", got, want)
+	}
+
+	// While the index isn't ready nothing is looked up at all.
+	idle := &fakeLinker{known: link.known, notReady: true}
+	a.deps.PlexLinks = idle
+	list[0].PlexURL = ""
+	a.setRequestPlexURLs(context.Background(), list)
+	if list[0].PlexURL != "" || len(idle.asked) != 0 {
+		t.Fatalf("not ready: url %q after %d lookups", list[0].PlexURL, len(idle.asked))
 	}
 }

@@ -115,6 +115,15 @@ func TestPlexScanViewResolvesRootsWithoutLeakingTheToken(t *testing.T) {
 	if r := v.Roots[1]; r.How != plexscan.HowMapped || r.PlexPath != "/srv/shows" {
 		t.Errorf("tv root after mapping = %+v", r)
 	}
+	// A save that names one field leaves the other as it was.
+	rec = put(`{"enabled":false}`)
+	if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil || v.Enabled || len(v.PathMap) != 1 {
+		t.Fatalf("toggle-only save: %s", rec.Body)
+	}
+	rec = put(`{"enabled":true}`)
+	if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil || !v.Enabled || len(v.PathMap) != 1 {
+		t.Fatalf("toggle back on: %s", rec.Body)
+	}
 
 	// Scan now sends one partial scan of the Plex-side folder.
 	rec = httptest.NewRecorder()

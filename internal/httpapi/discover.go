@@ -10,6 +10,7 @@ import (
 
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/automation"
+	"github.com/tristenlammi/arrmada/internal/insights"
 	"github.com/tristenlammi/arrmada/internal/metadata"
 	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/safego"
@@ -292,15 +293,12 @@ func (a *api) handleMediaDetail(w http.ResponseWriter, r *http.Request) {
 			d.Ratings.Metacritic = rt.Metacritic
 		}
 	}
-	// Watch on Plex, when the owner's Plex has it (from memory; never waits on Plex).
-	ids := a.plexIDs(r.Context(), d.MediaType, id)
-	if ids.IMDB == "" {
-		ids.IMDB = d.IMDBID
-	}
+	// Watch on Plex, when the owner's Plex has it (from memory; never waits on Plex). The
+	// detail's IMDb id finds it in a legacy-agent library too.
 	a.writeJSON(w, http.StatusOK, struct {
 		*metadata.MediaDetail
 		PlexURL string `json:"plex_url,omitempty"`
-	}{d, a.watchURL(r.Context(), d.MediaType, ids)})
+	}{d, a.plexURLWith(r.Context(), d.MediaType, insights.ExternalIDs{TMDB: id, IMDB: d.IMDBID})})
 }
 
 // ratingsWait is how long a detail sheet waits for OMDb, and ratingsBudget how long the

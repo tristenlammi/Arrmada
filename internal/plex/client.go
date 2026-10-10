@@ -312,7 +312,9 @@ func (c *Client) SectionItems(ctx context.Context, sectionKey string, typ int) (
 		}
 		n := len(r.MediaContainer.Metadata)
 		start += n
-		if n == 0 || n < sectionPageSize || (r.MediaContainer.TotalSize > 0 && start >= int(r.MediaContainer.TotalSize)) {
+		// totalSize says when it's done; without it, a short page is the last one. (A
+		// server that caps the page below 500 still answers with totalSize.)
+		if total := int(r.MediaContainer.TotalSize); n == 0 || (total > 0 && start >= total) || (total == 0 && n < sectionPageSize) {
 			break
 		}
 	}

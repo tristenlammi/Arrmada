@@ -37,17 +37,25 @@ func (a *api) handlePlexScanSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Enabled bool               `json:"enabled"`
-		PathMap []plexscan.PathMap `json:"path_map"`
+		Enabled *bool               `json:"enabled"`  // absent = unchanged
+		PathMap *[]plexscan.PathMap `json:"path_map"` // absent = unchanged
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
-	if len(req.PathMap) > plexscan.MaxPathMaps*2 {
+	enabled := a.deps.PlexScan.Enabled(r.Context())
+	if req.Enabled != nil {
+		enabled = *req.Enabled
+	}
+	maps := a.deps.PlexScan.PathMaps(r.Context())
+	if req.PathMap != nil {
+		maps = *req.PathMap
+	}
+	if len(maps) > plexscan.MaxPathMaps*2 {
 		a.writeError(w, http.StatusBadRequest, "too many path mappings")
 		return
 	}
-	if err := a.deps.PlexScan.Save(r.Context(), req.Enabled, req.PathMap); err != nil {
+	if err := a.deps.PlexScan.Save(r.Context(), enabled, maps); err != nil {
 		a.writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
