@@ -697,7 +697,8 @@ function RequestPoster({ rq, staff, queueKnown = true, onOpen }: { rq: MediaRequ
   const tr = rq.tracking;
   const stage = requestStage(rq, queueKnown);
   const pct = tr && (tr.stage === "downloading" || tr.stage === "paused") && tr.progress != null ? Math.round(tr.progress * 100) : 0;
-  const showBar = !stage.unknown && (tr?.stage === "downloading" || tr?.stage === "paused" || tr?.stage === "importing");
+  const settling = tr?.stage === "importing" || tr?.stage === "adding"; // on disk, nearly there: a full, pulsing bar
+  const showBar = !stage.unknown && (tr?.stage === "downloading" || tr?.stage === "paused" || settling);
   const following = rq.relation === "subscriber";
   return (
     <div className="w-[150px] flex-none" style={{ scrollSnapAlign: "start" }}>
@@ -741,8 +742,8 @@ function RequestPoster({ rq, staff, queueKnown = true, onOpen }: { rq: MediaRequ
         {showBar && (
           <span className="absolute inset-x-0 bottom-0 z-10 block h-1.5" style={{ background: "rgba(20,12,7,.55)" }}>
             <span
-              className={`block h-full ${tr?.stage === "importing" ? "animate-pulse" : ""}`}
-              style={{ width: `${tr?.stage === "importing" ? 100 : Math.max(2, pct)}%`, background: tr?.stage === "paused" ? "var(--ink-faint)" : TONE_HUE[stage.tone] }}
+              className={`block h-full ${settling ? "animate-pulse" : ""}`}
+              style={{ width: `${settling ? 100 : Math.max(2, pct)}%`, background: tr?.stage === "paused" ? "var(--ink-faint)" : TONE_HUE[stage.tone] }}
             />
           </span>
         )}

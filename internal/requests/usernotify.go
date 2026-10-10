@@ -223,6 +223,9 @@ func (s *Service) NotifySeriesReady(ctx context.Context, seriesID int64) error {
 // or more seasons — "Season N is ready" as each one completes before that. When the whole
 // request completes in one go, only the final notice goes out. Each is idempotent (its own
 // inbox reference).
+//
+// With Plex set up, each season's notice waits for Plex like the request's own 'ready'
+// does (seasonGate), its wait kept per season in season_disk_at.
 func (s *Service) notifySeasonsReady(ctx context.Context, req Request, prog map[int]series.SeasonProgress) error {
 	if req.ReadyAt > 0 {
 		return nil
@@ -233,13 +236,22 @@ func (s *Service) notifySeasonsReady(ctx context.Context, req Request, prog map[
 	if len(req.Seasons) < 2 {
 		return nil
 	}
+	sg := s.newSeasonGate(ctx, req)
 	var errs []error
 	for _, n := range req.Seasons {
 		if p, ok := prog[n]; !ok || !seasonReady(p) {
 			continue
 		}
-		body := fmt.Sprintf("Season %d of “%s” is ready to watch.", n, req.Title)
+		v, _, err := sg.judge(ctx, n)
+		if err != nil || v == plexWait {
+			errs = append(errs, err)
+			continue
+		}
+		body := readyWords(fmt.Sprintf("Season %d of “%s”", n, req.Title), v)
 		told, err := s.notifyPartiesCount(ctx, req, "Season ready", body, fmt.Sprintf("%s:s%d", requestRef(req), n), "request-season-ready", nil)
+		if err == nil {
+			sg.told(ctx, n)
+		}
 		if told > 0 {
 			s.publishUpdated(req, req.Status, s.parties(ctx, req))
 		}
@@ -390,14 +402,18 @@ func (s *Service) notifyBookReady(ctx context.Context, req Request, b books.Book
 // upgrade of a title someone asked for long ago doesn't tell them again; within one
 // telling it is idempotent per user (unique inbox ref), so a retry after a partial failure
 // skips whoever already heard.
+//
+// With Plex set up, a movie or series waits for Plex first (plexGate): nothing is sent
+// until Plex shows the title or the grace period runs out, and the wording says which.
 func (s *Service) notifyReady(ctx context.Context, req Request) error {
 	if req.ReadyAt > 0 {
 		return nil
 	}
-	body := fmt.Sprintf("%s is ready to watch.", requestedWhat(req))
-	if req.MediaType == "book" {
-		body = fmt.Sprintf("“%s” is ready to read.", req.Title)
+	v, _, err := s.plexGate(ctx, req)
+	if err != nil || v == plexWait {
+		return err
 	}
+	body := readyBody(req, v)
 	told, err := s.notifyPartiesCount(ctx, req, "Your request is ready", body, requestRef(req), "request-ready", nil)
 	if err == nil {
 		// Only once everyone has been told: a failure leaves it unstamped, and the retry
@@ -521,6 +537,12 @@ func (s *Service) SweepReadyRequests(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return s.readyPass(ctx, reqs, false)
+}
+
+// readyPass judges each of reqs ready by the path an import takes (through the Plex gate).
+// plexCheck also resets the wait of any whose files went again before anyone was told.
+func (s *Service) readyPass(ctx context.Context, reqs []Request, plexCheck bool) error {
 	// In batches, so the lookups' IN lists stay well inside SQLite's limits.
 	const batch = 500
 	for lo := 0; lo < len(reqs); lo += batch {
@@ -542,6 +564,9 @@ func (s *Service) SweepReadyRequests(ctx context.Context) error {
 				}
 			case lk.ready(ctx, s, rq):
 				_ = s.notifyReady(ctx, rq)
+			}
+			if plexCheck {
+				s.clearGone(ctx, lk, rq)
 			}
 		}
 	}

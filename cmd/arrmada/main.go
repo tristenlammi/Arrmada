@@ -811,6 +811,15 @@ func main() {
 	// every 30 minutes and about 90 seconds after each scan, once Plex has added the files.
 	grp.Loop("plex: library index", insightsSvc.RunPlexIndex)
 	plexScanner.OnRefreshed(func(string, string, string) { insightsSvc.PlexIndexStale(90 * time.Second) })
+	// 'Ready' means watchable in Plex: with Plex set up, a request's notice waits until the
+	// index shows the title (looked at again after every rebuild, and every two minutes so
+	// the 30-minute fallback fires even if the index never builds).
+	requestsSvc.SetPlexLocator(plexReadyLocator{insightsSvc})
+	insightsSvc.OnPlexIndexRebuilt(requestsSvc.KickPlexCheck)
+	grp.Loop("requests: plex check", requestsSvc.RunPlexChecks)
+	sched.Register("request-plex-check", 2*time.Minute, false, requestsSvc.CheckPlexWaiting,
+		scheduler.Label("Tell requesters once Plex has their title"),
+		scheduler.Description("Sends the 'ready' notice for requests waiting for Plex to add the title, or after 30 minutes if Plex never shows it."))
 	// Imports, upgrades and movie renames/deletes reach it through the outbox (registered
 	// below); the changes that don't go through the outbox call it directly.
 	seriesSvc.SetLibraryChanged(plexScanner.Request)   // episode and show deletes

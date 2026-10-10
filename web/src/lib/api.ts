@@ -1246,7 +1246,7 @@ export interface RequestList {
 // RequestTracking is where a request has got to, from its own downloads.
 export type RequestStage =
   | "pending" | "declined" | "searching" | "queued" | "downloading" | "paused"
-  | "failed" | "importing" | "partial" | "available";
+  | "failed" | "importing" | "partial" | "adding" | "available"; // adding: on disk, waiting for Plex
 export interface RequestTracking {
   stage: RequestStage;
   progress?: number; // 0..1 across its active downloads

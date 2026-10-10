@@ -56,6 +56,10 @@ type Service struct {
 	// recording a limited requester's ask one step. Taken before seriesMu, never after.
 	quotaLimits func(ctx context.Context, userID int64) (Limits, error)
 	quotaMu     sync.Mutex
+	// plex makes 'ready' wait for the owner's Plex to show the title (plexready.go); nil =
+	// no Plex, ready on import. plexWaiter runs the check that announces them.
+	plex       PlexLocator
+	plexWaiter plexWaiter
 }
 
 func (s *Service) clock() time.Time {
