@@ -1323,8 +1323,21 @@ export interface DiscoverCard {
 }
 export interface WatchProvider { id: number; name: string; logo_url?: string }
 export interface DiscoverRow { title: string; seed: string; items: DiscoverCard[] }
-/** One page of a paged Discover grid (browse, search). */
-export interface DiscoverPage { items: DiscoverCard[]; page: number; total_pages: number }
+/** One page of a paged Discover grid (browse, search). Search pages carry the people on them. */
+export interface DiscoverPage { items: DiscoverCard[]; page: number; total_pages: number; people?: PersonResult[] }
+/** A person in Discover search. */
+export interface PersonResult { id: number; name: string; profile_url?: string; known_for_department?: string; known_for?: string[] }
+/** A person's page: who they are and their credits as cards. */
+export interface PersonDetail {
+  id: number;
+  name: string;
+  biography?: string;
+  profile_url?: string;
+  birthday?: string;
+  place_of_birth?: string;
+  known_for_department?: string;
+  credits: DiscoverCard[];
+}
 
 export interface Genre {
   id: number;
@@ -1388,6 +1401,7 @@ export interface UserImpact {
 }
 
 export interface CrewMember {
+  id?: number; // TMDB person id: opens their page on Discover (absent on old records)
   name: string;
   job: string;
   profile_url?: string;
@@ -1413,7 +1427,7 @@ export interface MediaDetail {
   genres?: string[];
   certification?: string;
   studios?: string[];
-  cast?: { name: string; character?: string; profile_url?: string }[];
+  cast?: { id?: number; name: string; character?: string; profile_url?: string }[];
   crew?: CrewMember[];
   ratings: DetailRatings;
   // Enrichment added by the metadata worker — render defensively (only when present).
@@ -2561,8 +2575,10 @@ export const api = {
   /** Which seasons of a show exist and, for each, what asking for it would mean. */
   seriesSeasons: (tmdbId: number) =>
     req<{ seasons: SeriesSeason[] }>(`/api/v1/media/series/${tmdbId}/seasons`).then((r) => r.seasons),
+  // The search dropdown: the first page's titles and people.
   discoverSearch: (q: string) =>
-    req<{ items: DiscoverCard[] }>(`/api/v1/discover/search?q=${encodeURIComponent(q)}`).then((r) => r.items),
+    req<{ items: DiscoverCard[]; people?: PersonResult[] }>(`/api/v1/discover/search?q=${encodeURIComponent(q)}`),
+  discoverPerson: (id: number) => req<PersonDetail>(`/api/v1/discover/person/${id}`),
   // One page of a search, for the results grid that keeps loading as it scrolls.
   discoverSearchPage: (q: string, page: number) =>
     req<DiscoverPage>(`/api/v1/discover/search?q=${encodeURIComponent(q)}&page=${page}`),
@@ -2911,6 +2927,7 @@ export interface MovieVersion {
 }
 
 export interface CastMember {
+  id?: number;
   name: string;
   character?: string;
   profile_url?: string;

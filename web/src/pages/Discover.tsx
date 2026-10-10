@@ -6,13 +6,13 @@ import { lazyPage } from "../lib/lazyPage";
 import { pickTab, withTab } from "../lib/useTabParam";
 import { TabPanel, Tabs } from "../ui/Tabs";
 import { useMe, isStaff } from "../lib/me";
-import { api, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaRequest } from "../lib/api";
+import { api, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaRequest, type PersonResult } from "../lib/api";
 import { posterThumb } from "../lib/img";
 import { formatSeasons, MOVING_STAGES, requestStage, sortForRequester } from "../lib/requestStage";
 import { usePoll } from "../lib/usePoll";
 import { announceRequested } from "../lib/pushPrompt";
 import { IconButton, StatusChip, POSTER_CHIP_BG, TONE_HUE, useToast } from "../ui";
-import { badgeFor, CardSkeleton, discoverPlace, FOLLOWING, GRID, LoadError, MediaCard, PosterPlaceholder, useOpenTitle, type ReqStatus, type RowCtx } from "./discover/shared";
+import { badgeFor, CardSkeleton, discoverPlace, FOLLOWING, GRID, LoadError, MediaCard, PosterPlaceholder, useOpenOverlay, useOpenTitle, type ReqStatus, type RowCtx } from "./discover/shared";
 
 // The Books tab is a separate Open Library experience; its code loads only when chosen.
 const BooksDiscover = lazyPage(() => import("./BooksDiscover"), "BooksDiscover");
@@ -24,6 +24,8 @@ const TitleSheet = lazyPage(() => import("./discover/TitleSheet"), "TitleSheet")
 // either first shows.
 const DiscoverBrowse = lazyPage(() => import("./DiscoverBrowse"), "DiscoverBrowse");
 const SearchResults = lazyPage(() => import("./DiscoverBrowse"), "SearchResults");
+// A person's page (a cast tile, a director, a name in search): its own chunk.
+const PersonSheet = lazyPage(() => import("./DiscoverPerson"), "PersonSheet");
 
 type Tab = "discover" | "movies" | "series" | "books";
 const BASE_TABS: { key: Tab; label: string }[] = [
@@ -162,6 +164,7 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
       {(overlay?.kind === "movie" || overlay?.kind === "series") && (
         <Suspense fallback={null}><TitleSheet media={overlay.kind} tmdbId={overlay.id} ctx={ctx} /></Suspense>
       )}
+      {overlay?.kind === "person" && <Suspense fallback={null}><PersonSheet id={overlay.id} ctx={ctx} /></Suspense>}
       {/* The old /discover/tv/<id> address redirects from here (lib/routes). */}
       <Outlet />
     </>
@@ -193,11 +196,12 @@ function pushRecent(q: string): string[] {
 
 function SearchBox({ value, onChange, onSeeAll }: { value: string; onChange: (v: string) => void; onSeeAll: (q: string) => void }) {
   const [focused, setFocused] = useState(false);
-  const [results, setResults] = useState<DiscoverCard[] | null>(null);
+  const [results, setResults] = useState<{ items: DiscoverCard[]; people?: PersonResult[] } | null>(null);
   const [loading, setLoading] = useState(false);
   const [highlight, setHighlight] = useState(-1);
   const [recent, setRecent] = useState<string[]>(loadRecent);
   const openTitle = useOpenTitle();
+  const openOverlay = useOpenOverlay();
   const wrap = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const q = value.trim();
@@ -210,7 +214,7 @@ function SearchBox({ value, onChange, onSeeAll }: { value: string; onChange: (v:
     const t = setTimeout(() => {
       api.discoverSearch(q)
         .then((r) => { if (alive) { setResults(r); setLoading(false); setHighlight(-1); } })
-        .catch(() => { if (alive) { setResults([]); setLoading(false); } });
+        .catch(() => { if (alive) { setResults({ items: [] }); setLoading(false); } });
     }, 250);
     return () => { alive = false; clearTimeout(t); };
   }, [q]);
@@ -222,10 +226,12 @@ function SearchBox({ value, onChange, onSeeAll }: { value: string; onChange: (v:
     return () => document.removeEventListener("mousedown", onDown);
   }, []);
 
-  const movies = useMemo(() => (results ?? []).filter((c) => c.media_type === "movie").slice(0, 6), [results]);
-  const series = useMemo(() => (results ?? []).filter((c) => c.media_type === "series").slice(0, 6), [results]);
-  // Flat, keyboard-navigable order: movies, then series. Index === flat.length is "See all".
+  const movies = useMemo(() => (results?.items ?? []).filter((c) => c.media_type === "movie").slice(0, 6), [results]);
+  const series = useMemo(() => (results?.items ?? []).filter((c) => c.media_type === "series").slice(0, 6), [results]);
+  const people = useMemo(() => (results?.people ?? []).slice(0, 4), [results]);
+  // Flat, keyboard-navigable order: movies, then series, then people. Index === total is "See all".
   const flat = useMemo(() => [...movies, ...series], [movies, series]);
+  const total = flat.length + people.length;
   const showResults = q.length >= 2;
   const open = focused && (showResults || recent.length > 0);
 
@@ -242,19 +248,25 @@ function SearchBox({ value, onChange, onSeeAll }: { value: string; onChange: (v:
     setFocused(false);
     openTitle(c);
   };
+  const pickPerson = (person: PersonResult) => {
+    if (q) setRecent(pushRecent(q));
+    setFocused(false);
+    openOverlay("person", person.id);
+  };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Escape") { setFocused(false); inputRef.current?.blur(); return; }
     if (!open) return;
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setHighlight((h) => (showResults ? Math.min(flat.length, h + 1) : h)); // flat.length == See all
+      setHighlight((h) => (showResults ? Math.min(total, h + 1) : h)); // total == See all
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setHighlight((h) => Math.max(-1, h - 1));
     } else if (e.key === "Enter") {
       e.preventDefault();
       if (showResults && highlight >= 0 && highlight < flat.length) pick(flat[highlight]);
+      else if (showResults && highlight >= flat.length && highlight < total) pickPerson(people[highlight - flat.length]);
       else commit(q);
     }
   };
@@ -306,7 +318,7 @@ function SearchBox({ value, onChange, onSeeAll }: { value: string; onChange: (v:
             </div>
           ) : loading && !results ? (
             <div className="px-3 py-6 text-center text-[12px]" style={{ color: "var(--ink-faint)" }}>Searching…</div>
-          ) : flat.length === 0 ? (
+          ) : total === 0 ? (
             <button onMouseDown={(e) => e.preventDefault()} onClick={() => commit(q)} className="block w-full px-3 py-6 text-center text-[12px]" style={{ color: "var(--ink-faint)" }}>
               No quick matches — see all results for “{q}”
             </button>
@@ -314,11 +326,12 @@ function SearchBox({ value, onChange, onSeeAll }: { value: string; onChange: (v:
             <>
               {movies.length > 0 && <SearchGroup label="Movies" items={movies} flatBase={0} highlight={highlight} onPick={pick} />}
               {series.length > 0 && <SearchGroup label="Series" items={series} flatBase={movies.length} highlight={highlight} onPick={pick} />}
+              {people.length > 0 && <PeopleGroup people={people} flatBase={flat.length} highlight={highlight} onPick={pickPerson} />}
               <button
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => commit(q)}
                 className="mt-1 flex w-full items-center gap-2 border-t px-3 py-2.5 text-left text-[12px] font-semibold"
-                style={{ borderColor: "var(--line)", background: highlight === flat.length ? "var(--accent-soft)" : "transparent", color: "var(--accent)" }}
+                style={{ borderColor: "var(--line)", background: highlight === total ? "var(--accent-soft)" : "transparent", color: "var(--accent)" }}
               >
                 See all results for “{q}”
                 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" className="ml-auto"><path d="M9 6l6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -367,6 +380,32 @@ function SearchGroup({ label, items, flatBase, highlight, onPick }: { label: str
           </button>
         );
       })}
+    </div>
+  );
+}
+
+// PeopleGroup is the dropdown's people: photo, name, and what they're known for.
+function PeopleGroup({ people, flatBase, highlight, onPick }: { people: PersonResult[]; flatBase: number; highlight: number; onPick: (p: PersonResult) => void }) {
+  return (
+    <div className="py-1">
+      <div className="px-3 py-1 font-mono text-[9.5px] uppercase tracking-wide" style={{ color: "var(--ink-faint)" }}>People</div>
+      {people.map((p, i) => (
+        <button
+          key={p.id}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => onPick(p)}
+          className="flex w-full items-center gap-2.5 px-2.5 py-1.5 text-left"
+          style={{ background: highlight === flatBase + i ? "var(--accent-soft)" : "transparent" }}
+        >
+          <span className="h-[40px] w-[40px] flex-none overflow-hidden rounded-full" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+            {p.profile_url ? <img src={p.profile_url} alt="" className="h-full w-full object-cover" loading="lazy" /> : null}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[12.5px] font-semibold" style={{ color: "var(--ink)" }}>{p.name}</span>
+            <span className="block truncate text-[10.5px]" style={{ color: "var(--ink-faint)" }}>{[p.known_for_department, ...(p.known_for ?? [])].filter(Boolean).join(" · ")}</span>
+          </span>
+        </button>
+      ))}
     </div>
   );
 }

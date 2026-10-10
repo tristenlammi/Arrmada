@@ -47,8 +47,10 @@ type DiscoveryProvider interface {
 	Recommendations(ctx context.Context, media string, tmdbID int) ([]DiscoverItem, error)
 }
 
-// CrewMember is a billed crew member (director/writer/producer/creator).
+// CrewMember is a billed crew member (director/writer/producer/creator). ID is their TMDB
+// person id.
 type CrewMember struct {
+	ID         int    `json:"id,omitempty"`
 	Name       string `json:"name"`
 	Job        string `json:"job"`
 	ProfileURL string `json:"profile_url,omitempty"`
@@ -131,7 +133,8 @@ func (t *TMDB) MediaDetails(ctx context.Context, media string, tmdbID int) (*Med
 		kind = "tv"
 	}
 	// v3: records carry Adult; a v2 copy would read as "not adult" until it expired.
-	key := "tmdb:detail:v3:" + kind + ":" + strconv.Itoa(tmdbID)
+	// v4: cast and crew carry their person ids (the links to their pages).
+	key := "tmdb:detail:v4:" + kind + ":" + strconv.Itoa(tmdbID)
 	return swr(ctx, t.disk, key, mediaDetailTTL, func(ctx context.Context) (*MediaDetail, error) {
 		if kind == "tv" {
 			return t.seriesDetail(ctx, tmdbID)
@@ -209,7 +212,7 @@ func (t *TMDB) seriesDetail(ctx context.Context, tmdbID int) (*MediaDetail, erro
 	}
 	d.Cast = castOf(s.Credits.Cast)
 	for _, c := range s.CreatedBy {
-		cm := CrewMember{Name: c.Name, Job: "Creator"}
+		cm := CrewMember{ID: c.ID, Name: c.Name, Job: "Creator"}
 		if c.ProfilePath != "" {
 			cm.ProfileURL = tmdbProfileBase + c.ProfilePath
 		}
@@ -294,7 +297,7 @@ func castOf(cast []tmdbCast) []CastMember {
 		if len(out) >= maxCast {
 			break
 		}
-		cm := CastMember{Name: c.Name, Character: c.Character}
+		cm := CastMember{ID: c.ID, Name: c.Name, Character: c.Character}
 		if c.ProfilePath != "" {
 			cm.ProfileURL = tmdbProfileBase + c.ProfilePath
 		}
@@ -323,7 +326,7 @@ func movieCrew(crew []tmdbCrew) []CrewMember {
 			continue
 		}
 		seen[key] = true
-		cm := CrewMember{Name: c.Name, Job: role}
+		cm := CrewMember{ID: c.ID, Name: c.Name, Job: role}
 		if c.ProfilePath != "" {
 			cm.ProfileURL = tmdbProfileBase + c.ProfilePath
 		}
@@ -361,6 +364,7 @@ type tmdbDiscoverItem struct {
 	BackdropPath string  `json:"backdrop_path"`
 	VoteAverage  float64 `json:"vote_average"`
 	VoteCount    int     `json:"vote_count"`
+	Popularity   float64 `json:"popularity"`
 	Adult        bool    `json:"adult"`
 	GenreIDs     []int   `json:"genre_ids"`
 }

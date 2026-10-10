@@ -326,7 +326,6 @@ func (t *TMDB) discoverPage(ctx context.Context, path string, q url.Values, defa
 			tmdbDiscoverItem
 			Name               string             `json:"name"`
 			ProfilePath        string             `json:"profile_path"`
-			Popularity         float64            `json:"popularity"`
 			KnownForDepartment string             `json:"known_for_department"`
 			KnownFor           []tmdbDiscoverItem `json:"known_for"`
 		} `json:"results"`

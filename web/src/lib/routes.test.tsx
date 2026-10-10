@@ -37,9 +37,9 @@ describe("buildRoutes", () => {
   it("gives every shell the Discover title addresses", () => {
     for (const [role, external] of [["admin", false], ["requester", false], ["requester", true]] as const) {
       const d = routes(buildRoutes({ role, external })).find((x) => x.path === "/discover");
-      expect(d?.children?.map((c) => c.path), `${role} ${external}`).toEqual(["movie/:tmdbId", "series/:tmdbId", "browse", "tv/:tmdbId"]);
+      expect(d?.children?.map((c) => c.path), `${role} ${external}`).toEqual(["movie/:tmdbId", "series/:tmdbId", "person/:personId", "browse", "tv/:tmdbId"]);
       const browse = d?.children?.find((c) => c.path === "browse");
-      expect(browse?.children?.map((c) => c.path), `${role} ${external} browse`).toEqual(["movie/:tmdbId", "series/:tmdbId"]);
+      expect(browse?.children?.map((c) => c.path), `${role} ${external} browse`).toEqual(["movie/:tmdbId", "series/:tmdbId", "person/:personId"]);
     }
   });
 

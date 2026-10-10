@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { api, type DiscoverCard, type DiscoverPage, type Genre, type WatchProvider } from "../lib/api";
-import { CardSkeleton, GRID, LoadError, MediaCard, type RowCtx } from "./discover/shared";
+import { api, type DiscoverCard, type DiscoverPage, type Genre, type PersonResult, type WatchProvider } from "../lib/api";
+import { CardSkeleton, GRID, LoadError, MediaCard, useOpenOverlay, type RowCtx } from "./discover/shared";
 
 // The deeper Discover grids (REQ-19): a filterable browse grid behind every row's
 // "See all" (/discover/browse?list=popular&media=movie), and search results past the first
@@ -128,12 +128,32 @@ function Grid({ state, ctx, empty }: { state: ReturnType<typeof useInfinite>; ct
 }
 
 // SearchResults is a committed search (?q=), every page of it.
+// The people on its first page come first, as a strip.
 export function SearchResults({ query, ctx }: { query: string; ctx: RowCtx }) {
-  const state = useInfinite(query, (page) => api.discoverSearchPage(query, page));
+  const [people, setPeople] = useState<PersonResult[]>([]);
+  const openOverlay = useOpenOverlay();
+  useEffect(() => { setPeople([]); }, [query]);
+  const state = useInfinite(query, (page) => api.discoverSearchPage(query, page), (p) => setPeople(p.people ?? []));
   return (
     <div>
       <h2 className="m-0 mb-3 text-[15px] font-bold">Results for “{query}”</h2>
-      <Grid state={state} ctx={ctx} empty={`No movies or shows match “${query}”.`} />
+      {people.length > 0 && (
+        <div className="mb-5">
+          <h3 className="m-0 mb-2 text-[12px] font-bold uppercase tracking-wide text-ink-faint">People</h3>
+          <div className="thin-scroll flex gap-3 overflow-x-auto pb-1">
+            {people.map((p) => (
+              <button key={p.id} onClick={() => openOverlay("person", p.id)} aria-label={`Open ${p.name}`} className="w-[96px] flex-none text-center">
+                <span className="mx-auto mb-1 block h-[84px] w-[84px] overflow-hidden rounded-full" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+                  {p.profile_url ? <img src={p.profile_url} alt="" className="h-full w-full object-cover" loading="lazy" /> : null}
+                </span>
+                <span className="line-clamp-2 block text-[11px] font-semibold leading-tight">{p.name}</span>
+                {p.known_for_department && <span className="mt-0.5 block text-[9.5px] text-ink-faint">{p.known_for_department}</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      <Grid state={state} ctx={ctx} empty={people.length > 0 ? `No movies or shows match “${query}”.` : `No movies, shows or people match “${query}”.`} />
     </div>
   );
 }

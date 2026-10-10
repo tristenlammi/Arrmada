@@ -1,12 +1,12 @@
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
-import { api, type ApiError, type DiscoverCard, type MediaDetail, type SeriesSeason } from "../../lib/api";
+import { api, type ApiError, type CrewMember, type DiscoverCard, type MediaDetail, type SeriesSeason } from "../../lib/api";
 import { lazyPage } from "../../lib/lazyPage";
 import { posterThumb } from "../../lib/img";
 import { titlePath } from "../../lib/refLink";
 import { useTitle } from "../../lib/title";
 import { Button, IconButton, Sheet, StatusChip, POSTER_CHIP_BG, TONE_HUE, type ToastFn } from "../../ui";
-import { badgeFor, FOLLOWING, PosterPlaceholder, useCloseOverlay, useOpenTitle, type OverlayState, type ReqStatus, type RowCtx } from "./shared";
+import { badgeFor, FOLLOWING, PosterPlaceholder, useCloseOverlay, useOpenOverlay, useOpenTitle, type OverlayState, type ReqStatus, type RowCtx } from "./shared";
 
 // "Which seasons?" loads when someone first asks for a show.
 const SeasonPicker = lazyPage(() => import("../../components/SeasonPicker"), "SeasonPicker");
@@ -56,8 +56,8 @@ function RatingBadge({ label, value, bg, fg }: { label: string; value: string; b
   );
 }
 
-function crewByJob(crew: MediaDetail["crew"], job: string): string {
-  return (crew ?? []).filter((c) => c.job === job).map((c) => c.name).join(", ");
+function crewByJob(crew: MediaDetail["crew"], job: string): CrewMember[] {
+  return (crew ?? []).filter((c) => c.job === job);
 }
 
 // ---- Detail sheet -----------------------------------------------------------
@@ -70,6 +70,9 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
   const current = card;
   const titleKey = `${card.media_type}:${card.tmdb_id}`;
   const openTitle = useOpenTitle();
+  // A cast or crew member opens their page over this one; Back returns here.
+  const openOverlay = useOpenOverlay();
+  const openPerson = (id: number) => openOverlay("person", id);
   // A show's seasons and what asking for each would mean; "error" when they couldn't be
   // read, which falls back to asking for the whole show.
   const [seasons, setSeasons] = useState<SeriesSeason[] | "error" | null>(null);
@@ -348,12 +351,12 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
           ) : null}
 
           {/* Crew */}
-          {(director || writer || producer || creator) && (
+          {(director.length > 0 || writer.length > 0 || producer.length > 0 || creator.length > 0) && (
             <div className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 text-[12px] sm:grid-cols-3">
-              {creator && <CrewFact label="Creator" value={creator} />}
-              {director && <CrewFact label="Director" value={director} />}
-              {writer && <CrewFact label="Writer" value={writer} />}
-              {producer && <CrewFact label="Producer" value={producer} />}
+              {creator.length > 0 && <CrewFact label="Creator" people={creator} onOpen={openPerson} />}
+              {director.length > 0 && <CrewFact label="Director" people={director} onOpen={openPerson} />}
+              {writer.length > 0 && <CrewFact label="Writer" people={writer} />}
+              {producer.length > 0 && <CrewFact label="Producer" people={producer} />}
             </div>
           )}
 
@@ -363,7 +366,8 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
               <h3 className="m-0 mb-2 text-[12px] font-bold uppercase tracking-wide text-ink-faint">Cast</h3>
               <div className="thin-scroll flex gap-3 overflow-x-auto pb-1">
                 {d.cast.slice(0, 10).map((p, i) => (
-                  <div key={i} className="w-[96px] flex-none text-center">
+                  // A tile with a person id opens their page; an old record without one stays a tile.
+                  <CastTile key={i} id={p.id} name={p.name} onOpen={openPerson}>
                     <div className="mb-1 overflow-hidden rounded-lg" style={{ aspectRatio: "2/3", background: "var(--panel-2)" }}>
                       {p.profile_url ? <img src={p.profile_url} alt={p.name} className="h-full w-full object-cover" loading="lazy" /> : (
                         <div className="grid h-full w-full place-items-center" style={{ color: "var(--ink-faint)" }}>
@@ -375,7 +379,7 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
                         "James Earl Jo…" cut mid-word at the old width. */}
                     <div className="line-clamp-2 text-[10.5px] font-semibold leading-tight" title={p.name}>{p.name}</div>
                     {p.character && <div className="mt-0.5 line-clamp-1 text-[9.5px] text-ink-faint" title={p.character}>{p.character}</div>}
-                  </div>
+                  </CastTile>
                 ))}
               </div>
             </div>
@@ -413,11 +417,29 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
   );
 }
 
-function CrewFact({ label, value }: { label: string; value: string }) {
+// CrewFact is one crew role and who held it; with onOpen, each name that has a person id
+// opens their page.
+function CrewFact({ label, people, onOpen }: { label: string; people: CrewMember[]; onOpen?: (id: number) => void }) {
+  const names = people.map((p) => p.name).join(", ");
   return (
     <div className="min-w-0">
       <div className="font-mono text-[9.5px] uppercase text-ink-faint">{label}</div>
-      <div className="truncate text-ink-dim" title={value}>{value}</div>
+      <div className="truncate text-ink-dim" title={names}>
+        {people.map((p, i) => (
+          <span key={`${p.id ?? p.name}`}>
+            {i > 0 && ", "}
+            {onOpen && p.id ? (
+              <button onClick={() => onOpen(p.id as number)} className="font-semibold underline-offset-2 hover:underline" style={{ color: "var(--accent)" }}>{p.name}</button>
+            ) : p.name}
+          </span>
+        ))}
+      </div>
     </div>
   );
+}
+
+// CastTile is one cast member: a button to their page when TMDB gave an id.
+function CastTile({ id, name, onOpen, children }: { id?: number; name: string; onOpen: (id: number) => void; children: React.ReactNode }) {
+  const cls = "w-[96px] flex-none text-center";
+  return id ? <button onClick={() => onOpen(id)} aria-label={`Open ${name}`} className={cls}>{children}</button> : <div className={cls}>{children}</div>;
 }

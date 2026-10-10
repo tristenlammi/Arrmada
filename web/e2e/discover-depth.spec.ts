@@ -1,5 +1,5 @@
 import { test, expect } from "./mockApi";
-import { readyRequests, requestableCard } from "./fixtures/discover";
+import { cards, person, readyRequests, requestableCard } from "./fixtures/discover";
 
 // Phase 8's deeper Discover on a desktop: the payoff rows, 'See all' grids, paged search,
 // person pages and collection pages, with Back retracing each step.
@@ -68,5 +68,50 @@ test.describe("browse grids on a desktop", () => {
     await page.getByRole("button", { name: /View details for/ }).last().scrollIntoViewIfNeeded();
     await expect(page.getByRole("button", { name: "View details for Page 2 title 1", exact: true })).toBeVisible();
     expect(api.calls.some((c) => c.path === "/api/v1/discover/search?q=star&page=2")).toBe(true);
+  });
+});
+
+test.describe("people on a desktop", () => {
+  test.use({ persona: "requester" });
+
+  // REQ-20: cast tile → person → title → Back → Back.
+  test("a cast tile opens the person, their credits open titles, Back retraces", async ({ page, api }) => {
+    await page.goto("/discover?tab=movies");
+    await api.quiet();
+    await page.getByRole("button", { name: `View details for ${requestableCard.title}` }).first().click();
+    const sheet = page.getByRole("dialog", { name: requestableCard.title });
+    await expect(sheet).toBeVisible();
+    // An old record's cast member without an id stays a plain tile.
+    await expect(sheet.getByRole("button", { name: "Open Theo Keel" })).toHaveCount(0);
+    await sheet.getByRole("button", { name: `Open ${person.name}` }).click();
+    await expect(page).toHaveURL(new RegExp(`/discover/person/${person.id}\\?tab=movies$`));
+    const personSheet = page.getByRole("dialog", { name: person.name });
+    await expect(personSheet.getByRole("heading", { name: person.name })).toBeVisible();
+    await expect(personSheet.getByRole("heading", { name: /Filmography/ })).toBeVisible();
+
+    await personSheet.getByRole("button", { name: `View details for ${cards[3].title}` }).last().click();
+    await expect(page.getByRole("dialog", { name: cards[3].title })).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(new RegExp(`/discover/person/${person.id}`));
+    await expect(page.getByRole("dialog", { name: person.name })).toBeVisible();
+    await page.goBack();
+    await expect(page.getByRole("dialog", { name: requestableCard.title })).toBeVisible();
+    await page.getByRole("dialog", { name: requestableCard.title }).getByRole("button", { name: "Close", exact: true }).click();
+    await expect(page).toHaveURL(/\/discover\?tab=movies$/);
+  });
+
+  test("the director links to their page, and search finds people", async ({ page, api }) => {
+    await page.goto(`/discover/movie/${requestableCard.tmdb_id}`);
+    await api.quiet();
+    await page.getByRole("button", { name: "Rowan Helm" }).click();
+    await expect(page).toHaveURL(/\/discover\/person\/5002/);
+    // Not in the fixtures (a 404): the page says so instead of failing.
+    await expect(page.getByText("This person can’t be shown here.")).toBeVisible();
+    await page.goto("/discover");
+    await api.quiet();
+    await page.getByRole("textbox", { name: "Search movies and TV" }).fill("ada");
+    await page.getByRole("button", { name: new RegExp(person.name) }).click();
+    await expect(page).toHaveURL(new RegExp(`/discover/person/${person.id}$`));
+    await expect(page.getByRole("dialog", { name: person.name })).toBeVisible();
   });
 });

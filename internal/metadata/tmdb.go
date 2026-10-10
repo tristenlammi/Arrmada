@@ -105,6 +105,9 @@ func sanitizeErr(rawURL string, err error) error {
 // Available reports whether an API key is configured.
 func (t *TMDB) Available() bool { return t.key() != "" }
 
+// ErrNotFound is TMDB answering 404: no such title, person or collection.
+var ErrNotFound = errors.New("tmdb: HTTP 404")
+
 // ErrInvalidKey is TMDB refusing the API key (HTTP 401).
 var ErrInvalidKey = errors.New("tmdb: invalid API key")
 
@@ -182,6 +185,9 @@ func (t *TMDB) getKey(ctx context.Context, key, path string, q url.Values) ([]by
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil, ErrInvalidKey
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, ErrNotFound
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("tmdb: HTTP %d", resp.StatusCode)
@@ -275,7 +281,7 @@ func (t *TMDB) GetSeries(ctx context.Context, tmdbID int) (*SeriesDetails, error
 		if len(d.Cast) >= maxCast {
 			break
 		}
-		cm := CastMember{Name: c.Name, Character: c.Character}
+		cm := CastMember{ID: c.ID, Name: c.Name, Character: c.Character}
 		if c.ProfilePath != "" {
 			cm.ProfileURL = tmdbProfileBase + c.ProfilePath
 		}
@@ -486,6 +492,7 @@ type tmdbMovie struct {
 }
 
 type tmdbCrew struct {
+	ID          int    `json:"id"`
 	Name        string `json:"name"`
 	Job         string `json:"job"`
 	ProfilePath string `json:"profile_path"`
@@ -497,6 +504,7 @@ type tmdbNamed struct {
 }
 
 type tmdbCast struct {
+	ID          int    `json:"id"`
 	Name        string `json:"name"`
 	Character   string `json:"character"`
 	ProfilePath string `json:"profile_path"`
@@ -570,7 +578,7 @@ func parseTMDBMovie(body []byte) (*MovieDetails, error) {
 		if len(d.Cast) >= maxCast {
 			break
 		}
-		cm := CastMember{Name: c.Name, Character: c.Character}
+		cm := CastMember{ID: c.ID, Name: c.Name, Character: c.Character}
 		if c.ProfilePath != "" {
 			cm.ProfileURL = tmdbProfileBase + c.ProfilePath
 		}

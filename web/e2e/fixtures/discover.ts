@@ -1,4 +1,4 @@
-import type { DiscoverCard, DiscoverRow, Genre, MediaDetail, MediaRequest, RequestList, SeriesSeason, UserNotification, WatchProvider } from "../../src/lib/api";
+import type { DiscoverCard, DiscoverRow, Genre, MediaDetail, MediaRequest, PersonDetail, PersonResult, RequestList, SeriesSeason, UserNotification, WatchProvider } from "../../src/lib/api";
 import type { PersonaInfo } from "./users";
 
 // Discover's poster rows. The mix covers every badge a card can wear (none, Pending,
@@ -97,8 +97,9 @@ export function mediaDetail(media: string, tmdbID: number): MediaDetail {
     genres: c.genres,
     certification: "PG-13",
     studios: ["Fixture Pictures"],
-    cast: [{ name: "Ada Mariner", character: "Captain" }, { name: "Theo Keel", character: "First mate" }],
-    crew: [{ name: "Rowan Helm", job: "Director" }, { name: "Isla Bow", job: "Writer" }],
+    // Ada has a person page (REQ-20); Theo's record predates ids, so his tile stays a tile.
+    cast: [{ id: person.id, name: person.name, character: "Captain" }, { name: "Theo Keel", character: "First mate" }],
+    crew: [{ id: 5002, name: "Rowan Helm", job: "Director" }, { id: 5003, name: "Isla Bow", job: "Writer" }],
     ratings: { tmdb: c.vote_average, imdb: "7.4", rotten_tomatoes: "88%" },
     similar: cards.slice(2, 6),
     // The title's card with its badge state, which a title opened cold from its address uses.
@@ -146,14 +147,29 @@ export function requestList(url: URL): RequestList {
   return url.searchParams.get("section") === "ready" ? readyRequests : requests;
 }
 
+// person is GET /api/v1/discover/person/{id} (REQ-20): a cast member with a filmography.
+export const person: PersonDetail = {
+  id: 5001,
+  name: "Ada Mariner",
+  biography: "Ada Mariner is a fixture actor. ".repeat(20).trim(),
+  profile_url: "https://image.tmdb.org/t/p/w185/e2e-ada.jpg",
+  birthday: "1990-04-02",
+  place_of_birth: "Portsmouth",
+  known_for_department: "Acting",
+  credits: cards.slice(0, 7),
+};
+export const searchPerson: PersonResult = { id: person.id, name: person.name, profile_url: person.profile_url, known_for_department: "Acting", known_for: [cards[0].title] };
+
 // gridPage is one page of a paged grid (GET /api/v1/discover/browse and
 // /api/v1/discover/search): three pages of fresh titles (page 1 is the row cards, later
 // pages new ids), so a spec can watch the grid grow as it scrolls.
 export const gridPages = 3;
-export function gridPage(url: URL): { items: DiscoverCard[]; people: []; page: number; total_pages: number } {
+// A search's first page also names a person.
+export function gridPage(url: URL): { items: DiscoverCard[]; people: PersonResult[]; page: number; total_pages: number } {
   const page = Math.max(1, Number(url.searchParams.get("page") ?? 1));
   const items = page === 1 ? cards : Array.from({ length: 20 }, (_, i) => card(100 * page + i, `Page ${page} title ${i + 1}`));
-  return { items, people: [], page, total_pages: gridPages };
+  const people = page === 1 && url.pathname.endsWith("/search") ? [searchPerson] : [];
+  return { items, people, page, total_pages: gridPages };
 }
 
 // recentlyAdded is GET /api/v1/discover/recently-added: what's in the library.

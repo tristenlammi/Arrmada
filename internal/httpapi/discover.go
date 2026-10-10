@@ -442,3 +442,39 @@ func browseQueryFrom(v url.Values) metadata.BrowseQuery {
 	}
 	return q
 }
+
+// personResponse is a person's page with their credits as cards (library and request
+// badges included).
+type personResponse struct {
+	*metadata.Person
+	Credits []discoverCard `json:"credits"`
+}
+
+// handleDiscoverPerson is a person's page: GET /api/v1/discover/person/{id}. A person
+// TMDB doesn't know, or flags adult, is a 404: the always-on filter keeps them out of
+// search, and a typed or shared link can't reach them either.
+func (a *api) handleDiscoverPerson(w http.ResponseWriter, r *http.Request) {
+	if !a.discoveryReady(w, r) {
+		return
+	}
+	people, ok := a.deps.Discovery.(metadata.DiscoverPeople)
+	if !ok {
+		a.writeError(w, http.StatusNotFound, "not available")
+		return
+	}
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		a.writeError(w, http.StatusBadRequest, "invalid person id")
+		return
+	}
+	p, err := people.Person(r.Context(), id)
+	if errors.Is(err, metadata.ErrNotFound) || (err == nil && (p == nil || p.Adult)) {
+		a.writeError(w, http.StatusNotFound, "That person isn't available.")
+		return
+	}
+	if err != nil {
+		a.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	a.writeJSON(w, http.StatusOK, personResponse{Person: p, Credits: a.enrichCards(r.Context(), p.Credits)})
+}

@@ -74,6 +74,9 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/discover/providers", discover.providers),
     { method: "GET", path: "/api/v1/discover/search", respond: ({ url }) => discover.gridPage(url) },
     { method: "GET", path: "/api/v1/discover/browse", respond: ({ url }) => discover.gridPage(url) },
+    get(`/api/v1/discover/person/${discover.person.id}`, discover.person),
+    // Anyone else: not found (TMDB doesn't know them, or the adult filter keeps them out).
+    { method: "GET", path: /^\/api\/v1\/discover\/person\/\d+$/, status: 404, body: { message: "That person isn't available." } },
     { method: "GET", path: `/api/v1/media/movie/${discover.hiddenTitleID}`, status: 404, body: { message: "That title isn't available." } },
     { method: "GET", path: /^\/api\/v1\/media\/(movie|series)\/(\d+)$/, respond: ({ params }) => discover.mediaDetail(params[0], Number(params[1])) },
     { method: "GET", path: /^\/api\/v1\/media\/series\/(\d+)\/seasons$/, respond: ({ params }) => discover.seriesSeasons(Number(params[0])) },

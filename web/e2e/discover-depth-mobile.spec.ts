@@ -1,6 +1,6 @@
 import type { Page } from "@playwright/test";
 import { test, expect } from "./mockApi";
-import { readyRequests } from "./fixtures/discover";
+import { person, readyRequests } from "./fixtures/discover";
 
 // Phase 8's deeper Discover on a phone (375px, touch): the payoff rows, and the browse,
 // person and collection pages, none of them wider than the screen.
@@ -39,6 +39,18 @@ test.describe("requester on a phone", () => {
     await fits(page);
     await page.getByRole("button", { name: /View details for/ }).last().scrollIntoViewIfNeeded();
     await expect(page.getByRole("button", { name: "View details for Page 2 title 1", exact: true })).toBeVisible();
+    await fits(page);
+  });
+
+  // REQ-20: a person's page from a search at 375px.
+  test("a person's page fits the screen", async ({ page, api }) => {
+    await page.goto("/discover?q=ada");
+    await api.quiet();
+    await page.getByRole("button", { name: `Open ${person.name}` }).tap();
+    const sheet = page.getByRole("dialog", { name: person.name });
+    await expect(sheet.getByRole("heading", { name: /Filmography/ })).toBeVisible();
+    await sheet.getByRole("button", { name: "More" }).tap();
+    await api.quiet();
     await fits(page);
   });
 });
