@@ -35,11 +35,28 @@ describe("runPlexFlow", () => {
     const f = flow([null]);
     const run = runPlexFlow(f, w as unknown as Window);
     const settled = run.outcome.catch((e: Error) => e.message);
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(2100);
     w.closed = true;
     await vi.advanceTimersByTimeAsync(2100);
     await expect(settled).resolves.toMatch(/closed before you finished/);
-    expect(f.poll).toHaveBeenCalledTimes(1);
+    expect(f.poll).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps waiting when the window reads closed from the start (its handle was cut, not closed)", async () => {
+    const w = fakePopup();
+    w.closed = true;
+    const run = runPlexFlow(flow([null, null, "user"]), w as unknown as Window);
+    await vi.advanceTimersByTimeAsync(6100);
+    await expect(run.outcome).resolves.toEqual({ done: "user" });
+  });
+
+  it("waits out a network blip while polling", async () => {
+    const w = fakePopup();
+    let n = 0;
+    const f = flow([null], { poll: async () => { if (n++ === 0) throw new TypeError("Failed to fetch"); return "user"; } });
+    const run = runPlexFlow(f, w as unknown as Window);
+    await vi.advanceTimersByTimeAsync(4100);
+    await expect(run.outcome).resolves.toEqual({ done: "user" });
   });
 
   it("goes by redirect when there is no window, remembering the PIN for this tab", async () => {

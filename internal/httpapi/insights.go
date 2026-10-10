@@ -179,7 +179,8 @@ func (a *api) handleInsightsPlexAuthPoll(w http.ResponseWriter, r *http.Request)
 		a.writeError(w, http.StatusForbidden, errPlexPinElsewhere)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	// Long enough to try each of the owner's server addresses in turn (3 s each) once approved.
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
 	defer cancel()
 	res, err := a.deps.Insights.PollPlexAuth(ctx, int(id))
 	if err != nil {

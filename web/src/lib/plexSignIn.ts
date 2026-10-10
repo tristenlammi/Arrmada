@@ -75,6 +75,11 @@ export interface PlexRun<T> {
 // runPlexFlow starts a PIN and sees it through: in the popup when there is one, else by
 // sending this page to plex.tv. A closed popup ends it within one poll (about 2 s) — after
 // one last look, in case they approved and then closed it.
+//
+// A window that reads as closed at the very first look wasn't closed by a person: the
+// browser cut this page's handle to it (a Cross-Origin-Opener-Policy somewhere on the way,
+// say a proxy's). Then closing can't be seen, so it just keeps waiting, with Cancel and
+// "Continue in this tab" on offer. A network blip while polling is waited out too.
 export function runPlexFlow<T>(flow: PlexFlow<T>, popup: Window | null, onSlow?: () => void): PlexRun<T> {
   let cancelled = false;
   let slow: ReturnType<typeof setTimeout> | undefined;
@@ -93,14 +98,23 @@ export function runPlexFlow<T>(flow: PlexFlow<T>, popup: Window | null, onSlow?:
       }
       popup.location.href = pin.auth_url;
       slow = setTimeout(() => { if (!cancelled) onSlow?.(); }, SLOW_MS);
+      let watchClosed = true;
       for (let i = 0; i < POPUP_TRIES; i++) {
         await sleep(POLL_MS);
         if (cancelled) return "cancelled";
-        const closed = popup.closed;
-        const r = await flow.poll(pin.id);
+        let closed = false;
+        try { closed = popup.closed; } catch { watchClosed = false; }
+        if (closed && i === 0) watchClosed = false; // severed, not closed (see above)
+        let r: T | null = null;
+        try {
+          r = await flow.poll(pin.id);
+        } catch (e) {
+          if (e instanceof TypeError) continue; // fetch failed: the network, not an answer
+          throw e;
+        }
         if (cancelled) return "cancelled";
         if (r !== null) return { done: r };
-        if (closed) throw new Error("The Plex window closed before you finished — try again.");
+        if (closed && watchClosed) throw new Error("The Plex window closed before you finished — try again.");
       }
       throw new Error("Plex sign-in timed out — try again.");
     } finally {

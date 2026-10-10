@@ -17,7 +17,7 @@ import { useConfirm, useToast } from "../ui";
 
 const PlexMergeDialog = lazy(() => import("./PlexMergeDialog"));
 
-type LinkResult ={ linked: true; plex_username?: string } | { conflict: PlexLinkConflict };
+type LinkResult = { linked: true; plex_username?: string } | { conflict: PlexLinkConflict };
 
 export default function PlexAccountLink({ variant }: { variant: "sidebar" | "menu" }) {
   const toast = useToast();

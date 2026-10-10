@@ -138,7 +138,7 @@ function PlexConnection() {
         </label>
         <label className="flex cursor-pointer items-center gap-2 pt-4 text-[12px]">
           <input type="checkbox" aria-label="Enable monitoring" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-          <span><b className="font-semibold">Enable monitoring</b><span className="block text-[10.5px] text-ink-faint">record activity in the background</span></span>
+          <span><b className="font-semibold">Enable monitoring</b><span className="block text-[10.5px] text-ink-faint">{cfg && !cfg.enabled_set && cfg.token_set && cfg.url && enabled ? "not recording yet — Save to start" : "record activity in the background"}</span></span>
         </label>
       </div>
 
