@@ -6,8 +6,8 @@ const admin = visibleSections(true).map((s) => s.id);
 const manager = visibleSections(false).map((s) => s.id);
 
 describe("visibleSections", () => {
-  it("gives a manager what the old Media and Library tabs showed, plus Alerts (read-only)", () => {
-    expect(manager).toEqual(["library", "media", "alerts"]);
+  it("gives a manager what the old Media and Library tabs showed, plus Alerts (read-only) and the Plex connection", () => {
+    expect(manager).toEqual(["library", "media", "alerts", "plex"]);
   });
 
   it("gives an admin every section, Status included", () => {
@@ -55,7 +55,7 @@ describe("settingsRedirect", () => {
 
 describe("LINKS into Settings", () => {
   // Every deep link copy uses must name a section and a card that exist.
-  it.each([LINKS.apiKeys, LINKS.diskGuard, LINKS.recycleBin, LINKS.libraryFolders, LINKS.users, LINKS.alerts])("%s resolves", (link) => {
+  it.each([LINKS.apiKeys, LINKS.diskGuard, LINKS.recycleBin, LINKS.libraryFolders, LINKS.users, LINKS.alerts, LINKS.plexConnection, LINKS.plexSignIn])("%s resolves", (link) => {
     const [path, anchor] = link.split("#");
     const section = sectionFromPath(path);
     expect(admin).toContain(section);
@@ -65,7 +65,7 @@ describe("LINKS into Settings", () => {
 });
 
 describe("searchSettings", () => {
-  const labels = (q: string, visible: readonly string[] = admin) => searchSettings(q, visible).map((e) => e.label);
+  const labels = (q: string, visible: readonly string[] = admin) => searchSettings(q, visible, visible === admin).map((e) => e.label);
 
   it("finds the recycle bin, Plex sign-in and the naming cards", () => {
     expect(labels("recycle")).toEqual(["Recycle bin"]);
@@ -82,7 +82,7 @@ describe("searchSettings", () => {
 
   it("hides admin-only cards from a manager", () => {
     expect(labels("recycle", manager)).toEqual([]);
-    expect(labels("plex", manager)).toEqual(["Metadata"]);
+    expect(labels("plex", manager)).toEqual(["Metadata", "Plex connection"]);
   });
 
   it("has a unique anchor per card", () => {

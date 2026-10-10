@@ -141,7 +141,7 @@ func (a *api) handleInsightsPlexAuthStart(w http.ResponseWriter, r *http.Request
 		a.writeError(w, http.StatusUnauthorized, "sign in first")
 		return
 	}
-	// ?mode=redirect comes back to the Plex connection settings, which finish the connection.
+	// ?mode=redirect comes back to Settings → Plex, which finishes the connection.
 	var forward func(int) string
 	if plexRedirectMode(r) {
 		if _, ok := plexReturnBase(r); !ok {
@@ -149,7 +149,7 @@ func (a *api) handleInsightsPlexAuthStart(w http.ResponseWriter, r *http.Request
 			return
 		}
 		forward = func(pin int) string {
-			u, _ := plexForwardURL(r, "/insights?tab=settings&plexpin="+strconv.Itoa(pin))
+			u, _ := plexForwardURL(r, "/settings/plex?plexpin="+strconv.Itoa(pin))
 			return u
 		}
 	}

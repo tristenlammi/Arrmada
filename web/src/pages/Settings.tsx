@@ -13,6 +13,7 @@ import { ImportSettings } from "./settings/ImportSettings";
 import { SystemSettings } from "./settings/SystemSettings";
 import { StatusSection } from "./settings/Status";
 import { AlertsSettings } from "./settings/AlertsSettings";
+import { PlexSettings } from "./settings/PlexSettings";
 
 // What each section renders; sections.ts says who sees it and where its cards are.
 const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
@@ -20,6 +21,7 @@ const SECTION_COMPONENTS: Record<SectionId, React.ComponentType> = {
   media: NamingSettings,
   downloads: DownloadsSettings,
   alerts: AlertsSettings,
+  plex: PlexSettings,
   users: UsersSettings,
   import: ImportSettings,
   system: SystemSettings,
@@ -62,7 +64,7 @@ function SettingsHub() {
 
   if (redirect) return <Navigate to={redirect} replace />;
 
-  const results = searchSettings(query, ids);
+  const results = searchSettings(query, ids, isAdmin(user));
   const open = (r: SearchEntry) => {
     setQuery("");
     navigate(`/settings/${r.section}#${r.anchor}`);

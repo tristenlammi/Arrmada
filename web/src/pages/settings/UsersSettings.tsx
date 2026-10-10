@@ -8,26 +8,17 @@ import { useMe } from "../../lib/me";
 import { SaveBar, useLoadedSettings } from "../../lib/useSettings";
 import { managerExceptions, requesterPages } from "./roles";
 
-// Settings → Users (admin only): the accounts, and who may sign in with Plex.
+// Settings → Users (admin only): the accounts and their request limits. Who may sign in
+// with Plex lives in Settings → Plex.
 export function UsersSettings() {
   const { user, booksEnabled } = useMe();
   const { s, patch } = useLoadedSettings();
   return (
     <div className="flex flex-col gap-6">
       <UsersManager meId={user?.id} />
-      <Section id="plex-sign-in" title="Plex sign-in" subtitle={<>Let your Plex Home members and shared users sign in with Plex — no accounts to hand out. They get a Requester account ({requesterPages(booksEnabled)}), and only people with access to your Plex server get in. Needs your Plex server connected in <Link to={LINKS.plexConnection} style={{ color: "var(--accent)" }}>Insights → Settings</Link>.</>}>
-        <Toggle label="Allow Sign in with Plex" hint="Adds a 'Sign in with Plex' button to the login page." checked={s.plex_login_enabled} onChange={(v) => patch({ plex_login_enabled: v })} />
-        <div className="flex flex-col gap-1.5">
-          <div className="text-[12.5px] font-semibold">Auto-approve new Plex sign-ins' requests</div>
-          <AutoApproveChecks
-            value={typesFromCSV(s.plex_login_auto_approve_types ?? "movie")}
-            onChange={(v) => patch({ plex_login_auto_approve_types: typesToCSV(v) })}
-            books={booksEnabled}
-            label="New Plex sign-ins auto-approve"
-          />
-          <p className="m-0 text-[11px] text-ink-faint">Ticked types download straight away for someone who signs in with Plex for the first time; the rest wait for you. A series request can pull every season of a long show, so it starts with movies only. Existing accounts keep their own settings — change them under Users above.</p>
-        </div>
-      </Section>
+      <p className="m-0 text-[11.5px] text-ink-faint">
+        Who may sign in with Plex, and what new Plex sign-ins auto-approve, is in <Link to={LINKS.plexSignIn} style={{ color: "var(--accent)" }}>Settings → Plex</Link>.
+      </p>
       <Section id="request-limits" title="Request limits" subtitle="Optional: how much one person can ask for in a stretch of days. Following someone else's request is free, a withdrawn or declined request gives its share back, and admins and managers are never limited. 0 means no limit.">
         <div className="flex flex-wrap items-end gap-3">
           <QuotaField label="Movies" value={s.request_quota_movies ?? 0} onChange={(v) => patch({ request_quota_movies: v })} />
@@ -69,20 +60,20 @@ function QuotaField({ label, value, onChange, min = 0, max = 1000 }: { label: st
 }
 
 // Auto-approve is per media type: { movie, series, book }.
-type AutoTypes = { movie: boolean; series: boolean; book: boolean };
+export type AutoTypes = { movie: boolean; series: boolean; book: boolean };
 const NO_TYPES: AutoTypes = { movie: false, series: false, book: false };
 const TYPE_LABEL: [keyof AutoTypes, string][] = [["movie", "Movies"], ["series", "Series"], ["book", "Books"]];
-const typesFromCSV = (csv: string): AutoTypes => {
+export const typesFromCSV = (csv: string): AutoTypes => {
   const on = csv.split(",").map((t) => t.trim());
   return { movie: on.includes("movie"), series: on.includes("series"), book: on.includes("book") };
 };
-const typesToCSV = (t: AutoTypes) => TYPE_LABEL.filter(([k]) => t[k]).map(([k]) => k).join(",");
+export const typesToCSV = (t: AutoTypes) => TYPE_LABEL.filter(([k]) => t[k]).map(([k]) => k).join(",");
 const typesOf = (u: AuthUser): AutoTypes => ({ movie: !!u.auto_approve_movie, series: !!u.auto_approve_series, book: !!u.auto_approve_book });
 const typeFlags = (t: AutoTypes) => ({ auto_approve_movie: t.movie, auto_approve_series: t.series, auto_approve_book: t.book });
 
 // AutoApproveChecks is "Auto-approve: ☐ Movies ☐ Series ☐ Books" (Books only while the
 // module is on; a hidden type keeps its value).
-function AutoApproveChecks({ value, onChange, books, label }: { value: AutoTypes; onChange: (v: AutoTypes) => void; books: boolean; label: string }) {
+export function AutoApproveChecks({ value, onChange, books, label }: { value: AutoTypes; onChange: (v: AutoTypes) => void; books: boolean; label: string }) {
   return (
     <div role="group" aria-label={label} className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[12px] text-ink-dim">
       {TYPE_LABEL.filter(([k]) => k !== "book" || books).map(([k, name]) => (

@@ -20,7 +20,9 @@ test.describe("admin", () => {
       auto_approve_movie: true, auto_approve_series: false, auto_approve_book: false,
     });
 
-    // The Plex sign-in default starts at movies only.
+    // The Plex sign-in default (in Settings → Plex now) starts at movies only.
+    await page.getByRole("link", { name: "Settings → Plex" }).click();
+    await expect(page).toHaveURL(/\/settings\/plex#plex-sign-in$/);
     const plex = page.getByRole("group", { name: "New Plex sign-ins auto-approve" });
     await expect(plex.getByRole("checkbox", { name: "Movies" })).toBeChecked();
     await expect(plex.getByRole("checkbox", { name: "Series" })).not.toBeChecked();

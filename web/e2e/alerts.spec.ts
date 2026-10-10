@@ -11,10 +11,14 @@ test.describe("admin", () => {
     await expect(page).toHaveURL(/\/settings\/alerts$/);
     await page.goto("/insights?tab=notifications");
     await expect(page).toHaveURL(/\/settings\/alerts$/);
+    // The Plex connection left Insights too: its old tab lands on Settings → Plex.
     await page.goto("/insights?tab=settings");
-    await expect(page.getByRole("tab", { name: "Settings" })).toBeVisible();
+    await expect(page).toHaveURL(/\/settings\/plex#plex-connection$/);
+    await expect(page.getByRole("heading", { name: "Plex connection" })).toBeVisible();
+    await page.goto("/insights");
+    await expect(page.getByRole("tab", { name: "Activity" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Settings" })).toHaveCount(0);
     await expect(page.getByRole("tab", { name: "Notifications" })).toHaveCount(0);
-    await expect(page.getByRole("link", { name: /Alert settings moved/ })).toHaveAttribute("href", "/settings/alerts");
   });
 
   test("connections show a hint, grouped events, delivery status and the log", async ({ page, api }) => {
