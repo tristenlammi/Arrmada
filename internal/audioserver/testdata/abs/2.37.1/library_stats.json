@@ -1,0 +1,35 @@
+{
+  "largestItems": [
+    {
+      "id": "55555555-5555-4555-8555-555555555555",
+      "title": "The Time Machine",
+      "size": 56293438
+    }
+  ],
+  "totalAuthors": 1,
+  "authorsWithCount": [
+    {
+      "id": "77777777-7777-4777-8777-777777777777",
+      "name": "H. G. Wells",
+      "count": 1
+    }
+  ],
+  "totalGenres": 1,
+  "genresWithCount": [
+    {
+      "genre": "Science Fiction",
+      "count": 1
+    }
+  ],
+  "totalItems": 1,
+  "longestItems": [
+    {
+      "id": "55555555-5555-4555-8555-555555555555",
+      "title": "The Time Machine",
+      "duration": 3500.75
+    }
+  ],
+  "totalSize": 56293438,
+  "totalDuration": 3500.75,
+  "numAudioTracks": 2
+}

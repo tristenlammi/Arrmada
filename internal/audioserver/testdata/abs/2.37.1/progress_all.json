@@ -1,0 +1,22 @@
+{
+  "mediaProgress": [
+    {
+      "id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "userId": "22222222-2222-4222-8222-222222222222",
+      "libraryItemId": "55555555-5555-4555-8555-555555555555",
+      "episodeId": null,
+      "mediaItemId": "66666666-6666-4666-8666-666666666666",
+      "mediaItemType": "book",
+      "duration": 3500.75,
+      "progress": 0.03427836892094551,
+      "currentTime": 150,
+      "isFinished": false,
+      "hideFromContinueListening": false,
+      "ebookLocation": null,
+      "ebookProgress": 0,
+      "lastUpdate": 1791720090000,
+      "startedAt": 1791720075100,
+      "finishedAt": null
+    }
+  ]
+}

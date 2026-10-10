@@ -1,0 +1,216 @@
+[
+  {
+    "id": "continue-listening",
+    "label": "Continue Listening",
+    "labelStringKey": "LabelContinueListening",
+    "type": "book",
+    "entities": [
+      {
+        "id": "55555555-5555-4555-8555-555555555555",
+        "ino": "2000001",
+        "oldLibraryItemId": null,
+        "libraryId": "33333333-3333-4333-8333-333333333333",
+        "folderId": "44444444-4444-4444-8444-444444444444",
+        "path": "/audiobooks/H. G. Wells/The Time Machine",
+        "relPath": "H. G. Wells/The Time Machine",
+        "isFile": false,
+        "mtimeMs": 1767225630000,
+        "ctimeMs": 1767225631000,
+        "birthtimeMs": 1767225500000,
+        "addedAt": 1790849100000,
+        "updatedAt": 1790849102500,
+        "isMissing": false,
+        "isInvalid": false,
+        "mediaType": "book",
+        "media": {
+          "id": "66666666-6666-4666-8666-666666666666",
+          "metadata": {
+            "title": "The Time Machine",
+            "titleIgnorePrefix": "Time Machine, The",
+            "subtitle": null,
+            "authorName": "H. G. Wells",
+            "authorNameLF": "Wells, H. G.",
+            "narratorName": "Example Narrator",
+            "seriesName": "Example Series #1",
+            "genres": [
+              "Science Fiction"
+            ],
+            "publishedYear": "1895",
+            "publishedDate": null,
+            "publisher": null,
+            "description": "A Victorian scientist builds a machine that carries him into the far future.",
+            "isbn": null,
+            "asin": null,
+            "language": "en",
+            "explicit": false,
+            "abridged": false
+          },
+          "coverPath": "/audiobooks/H. G. Wells/The Time Machine/cover.jpg",
+          "tags": [],
+          "numTracks": 2,
+          "numAudioFiles": 2,
+          "numChapters": 4,
+          "duration": 3500.75,
+          "size": 56199067,
+          "ebookFormat": "epub"
+        },
+        "numFiles": 4,
+        "size": 56293438
+      }
+    ],
+    "total": 1
+  },
+  {
+    "id": "recently-added",
+    "label": "Recently Added",
+    "labelStringKey": "LabelRecentlyAdded",
+    "type": "book",
+    "entities": [
+      {
+        "id": "55555555-5555-4555-8555-555555555555",
+        "ino": "2000001",
+        "oldLibraryItemId": null,
+        "libraryId": "33333333-3333-4333-8333-333333333333",
+        "folderId": "44444444-4444-4444-8444-444444444444",
+        "path": "/audiobooks/H. G. Wells/The Time Machine",
+        "relPath": "H. G. Wells/The Time Machine",
+        "isFile": false,
+        "mtimeMs": 1767225630000,
+        "ctimeMs": 1767225631000,
+        "birthtimeMs": 1767225500000,
+        "addedAt": 1790849100000,
+        "updatedAt": 1790849102500,
+        "isMissing": false,
+        "isInvalid": false,
+        "mediaType": "book",
+        "media": {
+          "id": "66666666-6666-4666-8666-666666666666",
+          "metadata": {
+            "title": "The Time Machine",
+            "titleIgnorePrefix": "Time Machine, The",
+            "subtitle": null,
+            "authorName": "H. G. Wells",
+            "authorNameLF": "Wells, H. G.",
+            "narratorName": "Example Narrator",
+            "seriesName": "Example Series #1",
+            "genres": [
+              "Science Fiction"
+            ],
+            "publishedYear": "1895",
+            "publishedDate": null,
+            "publisher": null,
+            "description": "A Victorian scientist builds a machine that carries him into the far future.",
+            "isbn": null,
+            "asin": null,
+            "language": "en",
+            "explicit": false,
+            "abridged": false
+          },
+          "coverPath": "/audiobooks/H. G. Wells/The Time Machine/cover.jpg",
+          "tags": [],
+          "numTracks": 2,
+          "numAudioFiles": 2,
+          "numChapters": 4,
+          "duration": 3500.75,
+          "size": 56199067,
+          "ebookFormat": "epub"
+        },
+        "numFiles": 4,
+        "size": 56293438
+      }
+    ],
+    "total": 1
+  },
+  {
+    "id": "recent-series",
+    "label": "Recent Series",
+    "labelStringKey": "LabelRecentSeries",
+    "type": "series",
+    "entities": [
+      {
+        "id": "88888888-8888-4888-8888-888888888888",
+        "name": "Example Series",
+        "nameIgnorePrefix": "Example Series",
+        "description": null,
+        "addedAt": 1790849101000,
+        "updatedAt": 1790849101000,
+        "libraryId": "33333333-3333-4333-8333-333333333333",
+        "books": [
+          {
+            "id": "55555555-5555-4555-8555-555555555555",
+            "ino": "2000001",
+            "oldLibraryItemId": null,
+            "libraryId": "33333333-3333-4333-8333-333333333333",
+            "folderId": "44444444-4444-4444-8444-444444444444",
+            "path": "/audiobooks/H. G. Wells/The Time Machine",
+            "relPath": "H. G. Wells/The Time Machine",
+            "isFile": false,
+            "mtimeMs": 1767225630000,
+            "ctimeMs": 1767225631000,
+            "birthtimeMs": 1767225500000,
+            "addedAt": 1790849100000,
+            "updatedAt": 1790849102500,
+            "isMissing": false,
+            "isInvalid": false,
+            "mediaType": "book",
+            "media": {
+              "id": "66666666-6666-4666-8666-666666666666",
+              "metadata": {
+                "title": "The Time Machine",
+                "titleIgnorePrefix": "Time Machine, The",
+                "subtitle": null,
+                "authorName": "",
+                "authorNameLF": "",
+                "narratorName": "Example Narrator",
+                "seriesName": "",
+                "genres": [
+                  "Science Fiction"
+                ],
+                "publishedYear": "1895",
+                "publishedDate": null,
+                "publisher": null,
+                "description": "A Victorian scientist builds a machine that carries him into the far future.",
+                "isbn": null,
+                "asin": null,
+                "language": "en",
+                "explicit": false,
+                "abridged": false
+              },
+              "coverPath": "/audiobooks/H. G. Wells/The Time Machine/cover.jpg",
+              "tags": [],
+              "numTracks": 2,
+              "numAudioFiles": 2,
+              "numChapters": 4,
+              "duration": 3500.75,
+              "size": 56199067,
+              "ebookFormat": "epub"
+            },
+            "numFiles": 4,
+            "size": 56293438
+          }
+        ]
+      }
+    ],
+    "total": 1
+  },
+  {
+    "id": "newest-authors",
+    "label": "Newest Authors",
+    "labelStringKey": "LabelNewestAuthors",
+    "type": "authors",
+    "entities": [
+      {
+        "id": "77777777-7777-4777-8777-777777777777",
+        "asin": null,
+        "name": "H. G. Wells",
+        "description": null,
+        "imagePath": null,
+        "libraryId": "33333333-3333-4333-8333-333333333333",
+        "addedAt": 1790849101000,
+        "updatedAt": 1790849101000,
+        "numBooks": 1
+      }
+    ],
+    "total": 1
+  }
+]

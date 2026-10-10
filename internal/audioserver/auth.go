@@ -242,6 +242,25 @@ func (a *Accounts) Validate(ctx context.Context, token string) (*auth.User, stri
 	return u, family, nil
 }
 
+// IsLegacy reports whether token is a device's long-lived (non-expiring) token rather
+// than a 30-day access token.
+func (a *Accounts) IsLegacy(ctx context.Context, token string) bool {
+	return a.tokenKind(ctx, token) == "legacy"
+}
+
+// tokenKind is "legacy", "access" or "refresh" for a token this server issued, "" for
+// anything else. It names the kind of token only, never whose it is.
+func (a *Accounts) tokenKind(ctx context.Context, token string) string {
+	if token == "" {
+		return ""
+	}
+	var kind string
+	if err := a.db.QueryRowContext(ctx, `SELECT kind FROM audio_tokens WHERE hash = ?`, hashToken(token)).Scan(&kind); err != nil {
+		return ""
+	}
+	return kind
+}
+
 // touch records a token's use at most once a minute, not on every request.
 func (a *Accounts) touch(ctx context.Context, h string) {
 	now := a.now()
