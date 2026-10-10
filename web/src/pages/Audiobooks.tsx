@@ -231,7 +231,9 @@ function PlaceRow({ p, onChange }: { p: AudioPlace; onChange: () => void }) {
       )}
       {pending !== null && !p.finished && (
         <div className="mt-2 flex flex-wrap items-center justify-between gap-2 rounded-lg px-3 py-2 text-[12px]" style={{ background: "var(--avoid-soft)", border: "1px solid var(--avoid)" }}>
-          <span>An app jumped back to <b>{fmtClock(pending)}</b>. It's kept once you listen on from there for a bit — or use it now if that was you.</span>
+          {pending > p.position
+            ? <span>An app jumped ahead to <b>{fmtClock(pending)}</b>, near the end. It's kept once you listen on from there — or use it now.</span>
+            : <span>An app jumped back to <b>{fmtClock(pending)}</b>. It's kept once you listen on from there for a bit — or use it now if that was you.</span>}
           <button onClick={() => act(() => api.acceptAudioJump(p.item_key))} disabled={busy} className="flex-none rounded-lg px-2.5 py-1 text-[11.5px] font-semibold disabled:opacity-60" style={primary}>Use this spot</button>
         </div>
       )}

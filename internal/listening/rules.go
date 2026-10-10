@@ -52,6 +52,9 @@ const (
 	// continuitySlack absorbs report timing jitter when checking a held jump is being
 	// listened through continuously.
 	continuitySlack = 30.0
+	// endZone: the last this-many seconds of a book. A big jump forward into it has to
+	// prove itself like a big jump back, because landing there finishes the book.
+	endZone = 600.0
 )
 
 // Progress is a user's place in one item.
@@ -97,7 +100,8 @@ type Report struct {
 	At        int64   // unix ms of the listening this report describes
 	SessionID string
 	Device    string
-	Finished  *bool // explicit finished flag (Manual; for Reported only "not finished" counts)
+	Finished  *bool   // explicit finished flag (Manual; for Reported only "not finished" counts)
+	From      float64 // Offline: where the session started playing (0 when the app didn't say)
 }
 
 // Decision is what applying a report does to a saved place.
@@ -105,7 +109,7 @@ type Decision struct {
 	Progress Progress
 	Changed  bool   // the saved position (or finished flag) moved
 	Dirty    bool   // something needs writing (Changed, or the pending state moved)
-	Reason   string // why: start, forward, back, rewind, offline, manual, set, held, older, unproven, no-position
+	Reason   string // why: start, forward, back, rewind, forward-proven, offline, manual, set, held, held-forward, older, unproven, no-position
 }
 
 // Decide applies a report to the current saved place (nil when there is none yet).
@@ -167,6 +171,15 @@ func Decide(cur *Progress, r Report) Decision {
 		if cur.Position-pos > rewindThreshold && r.Listened < rewindProof {
 			return Decision{Progress: *cur, Reason: "unproven"}
 		}
+		// A session claiming the very end has to have listened its way there from where
+		// it started (or, when the app didn't say, from the saved place).
+		from := r.From
+		if from <= 0 {
+			from = cur.Position
+		}
+		if dur > 0 && pos >= dur-endZone && pos-from > r.Listened*speedAllowance+continuitySlack {
+			return Decision{Progress: *cur, Reason: "unproven"}
+		}
 		return accept("offline")
 
 	case Reported:
@@ -181,30 +194,35 @@ func Decide(cur *Progress, r Report) Decision {
 		}
 		// Otherwise the flag says nothing new; the position alone decides.
 		r.Finished = nil
-		if cur.Position-pos > rewindThreshold {
+		ahead := intoEnd(cur, pos, dur, 0)
+		if cur.Position-pos > rewindThreshold || ahead {
 			if cur.PendingPosition != nil && math.Abs(pos-*cur.PendingPosition) <= rewindThreshold {
 				// A jump to about here is already held, perhaps with a play session proving
 				// it right now (an app that also PATCHes as it plays, or "Listen again").
 				// Leave that hold alone rather than restart its proof.
-				return Decision{Progress: *cur, Reason: "held"}
+				return Decision{Progress: *cur, Reason: heldReason(cur, *cur.PendingPosition)}
 			}
 			// Held with no session: the first play session that carries on from here
 			// takes it over and proves it, or the person confirms it in Arrmada.
 			np := pos
 			p.PendingPosition, p.PendingSession, p.PendingListened, p.PendingAt = &np, "", 0, r.At
-			return Decision{Progress: p, Dirty: true, Reason: "held"}
+			return Decision{Progress: p, Dirty: true, Reason: heldReason(cur, pos)}
 		}
 		return accept("set")
 
 	default: // Live
 		back := cur.Position - pos
-		if back <= rewindThreshold {
+		// Forward is saved at once — except a big jump into the last few minutes that
+		// this report's own listening can't explain. One bad report (a player sending the
+		// full duration on a stream error) would otherwise finish the book and drop it
+		// off Continue Listening.
+		if back <= rewindThreshold && !intoEnd(cur, pos, dur, r.Listened) {
 			if back > 0 {
 				return accept("back")
 			}
 			return accept("forward")
 		}
-		// A big jump backwards. Is this session already carrying on from a held jump?
+		// A big jump. Is this session already carrying on from a held one?
 		if cur.PendingPosition != nil && r.SessionID != "" {
 			last := *cur.PendingPosition
 			continuous := pos >= last-continuitySlack && pos <= last+r.Listened*speedAllowance+continuitySlack
@@ -214,24 +232,52 @@ func Decide(cur *Progress, r Report) Decision {
 				// listening so far may have been somewhere else.
 				np := pos
 				p.PendingPosition, p.PendingSession, p.PendingListened = &np, r.SessionID, 0
-				return Decision{Progress: p, Dirty: true, Reason: "held"}
+				return Decision{Progress: p, Dirty: true, Reason: heldReason(cur, pos)}
 			}
 			if continuous && cur.PendingSession == r.SessionID {
-				p.PendingListened = cur.PendingListened + math.Max(0, r.Listened)
+				forward := last > cur.Position
+				heard := math.Max(0, r.Listened)
+				if forward && pos <= last+0.5 {
+					// Ahead of the place, the position has to actually move: a player stuck
+					// re-reporting the full duration never proves itself.
+					heard = 0
+				}
+				p.PendingListened = cur.PendingListened + heard
 				np := pos
 				p.PendingPosition = &np
-				if p.PendingListened >= rewindProof {
+				// A forward jump is also proven by playing on to the end from it.
+				playedToEnd := forward && dur > 0 && pos >= dur-finishedTail && pos > last+0.5 && cur.PendingListened+r.Listened > 0
+				if p.PendingListened >= rewindProof || playedToEnd {
+					if forward {
+						return accept("forward-proven")
+					}
 					return accept("rewind")
 				}
-				return Decision{Progress: p, Dirty: true, Reason: "held"}
+				return Decision{Progress: p, Dirty: true, Reason: heldReason(cur, pos)}
 			}
 		}
 		// Start holding it. The listening in this report happened before the jump, so it
 		// doesn't count towards the proof.
 		np := pos
 		p.PendingPosition, p.PendingSession, p.PendingListened, p.PendingAt = &np, r.SessionID, 0, r.At
-		return Decision{Progress: p, Dirty: true, Reason: "held"}
+		return Decision{Progress: p, Dirty: true, Reason: heldReason(cur, pos)}
 	}
+}
+
+// intoEnd reports a jump forward into the last endZone seconds that's too big for the
+// listening behind it: more than a skip, and more than `listened` seconds could cover
+// even at a fast speed.
+func intoEnd(cur *Progress, pos, dur, listened float64) bool {
+	fwd := pos - cur.Position
+	return dur > 0 && pos >= dur-endZone && fwd > rewindThreshold && fwd > listened*speedAllowance+continuitySlack
+}
+
+// heldReason names a hold by its direction from the saved place.
+func heldReason(cur *Progress, pending float64) string {
+	if pending > cur.Position {
+		return "held-forward"
+	}
+	return "held"
 }
 
 func setFinished(p *Progress, r Report, pos, dur float64) {

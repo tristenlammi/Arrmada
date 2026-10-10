@@ -57,7 +57,7 @@ function ServerView() {
       </Card>
       <Card title="How places are kept">
         <p className="m-0 text-[12px] text-ink-dim">
-          Play sessions are saved as they happen and survive restarts. Moving forward is saved straight away. A big jump backwards is held until playback carries on from there for 30 seconds, so a glitch can't reset anyone to the start — and the person can confirm it sooner on their Audiobooks page. Older offline listening never replaces a newer place, and everyone can put back an earlier place. A place an app sets without playing follows the same rules.
+          Play sessions are saved as they happen and survive restarts. Moving forward is saved straight away. A big jump backwards is held until playback carries on from there for 30 seconds, so a glitch can't reset anyone to the start — and the person can confirm it sooner on their Audiobooks page. A jump to the very end of a book needs the same proof, so one bad report can't mark it finished. Older offline listening never replaces a newer place, and everyone can put back an earlier place. A place an app sets without playing follows the same rules.
         </p>
       </Card>
     </div>

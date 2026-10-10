@@ -254,7 +254,7 @@ func (s *Store) SyncOffline(ctx context.Context, userID int64, o OfflineSession)
 	}
 	d, err := s.apply(ctx, userID, o.ItemKey, Report{
 		Kind: Offline, Position: o.Position, Duration: o.Duration, Listened: listened, At: o.UpdatedAt,
-		SessionID: o.ID, Device: o.Device,
+		SessionID: o.ID, Device: o.Device, From: o.StartTime,
 	})
 	if err != nil {
 		return Decision{}, err
@@ -388,7 +388,7 @@ func (s *Store) apply(ctx context.Context, userID int64, itemKey string, r Repor
 // recorded (and may be offered back), a hold is recorded when it starts, and before any
 // non-routine change the place it replaces is kept, so every move can be undone.
 func (s *Store) applyAs(ctx context.Context, userID int64, itemKey string, r Report, as string) (Decision, error) {
-	r.Position, r.Duration, r.Listened = sanitize(r.Position), sanitize(r.Duration), sanitize(r.Listened)
+	r.Position, r.Duration, r.Listened, r.From = sanitize(r.Position), sanitize(r.Duration), sanitize(r.Listened), sanitize(r.From)
 	stored, exists, err := s.progressAny(ctx, userID, itemKey)
 	if err != nil {
 		return Decision{}, err
@@ -784,8 +784,9 @@ func (s *Store) Dismiss(ctx context.Context, userID int64, itemKey string, histo
 // ErrNoPending is returned when there's no held jump to confirm.
 var ErrNoPending = errors.New("there's no jump waiting to be confirmed")
 
-// AcceptPending makes a held jump back the saved place now — the person confirming, in
-// Arrmada, that going back really was them.
+// AcceptPending makes a held jump the saved place now — the person confirming, in
+// Arrmada, that the jump really was them. A jump back un-finishes the book; a jump ahead
+// to the very end finishes it.
 func (s *Store) AcceptPending(ctx context.Context, userID int64, itemKey string) (Decision, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -796,8 +797,12 @@ func (s *Store) AcceptPending(ctx context.Context, userID int64, itemKey string)
 	if !found || cur.PendingPosition == nil {
 		return Decision{}, ErrNoPending
 	}
-	f := false
-	return s.apply(ctx, userID, itemKey, Report{Kind: Manual, Position: *cur.PendingPosition, Finished: &f, At: s.nowMs(), Device: "Arrmada"})
+	r := Report{Kind: Manual, Position: *cur.PendingPosition, At: s.nowMs(), Device: "Arrmada"}
+	if *cur.PendingPosition <= cur.Position {
+		f := false
+		r.Finished = &f
+	}
+	return s.apply(ctx, userID, itemKey, r)
 }
 
 // Restore puts a user's place back to one on its timeline. Using a spot an app sent
@@ -816,8 +821,9 @@ func (s *Store) Restore(ctx context.Context, userID int64, itemKey string, histo
 	if err != nil {
 		return Decision{}, err
 	}
-	f := false
-	d, err := s.applyAs(ctx, userID, itemKey, Report{Kind: Manual, Position: pos, Finished: &f, At: s.nowMs(), Device: "Arrmada"}, "restore")
+	// Not finished — unless the spot put back is the very end (a used "later spot" that
+	// reached it), which reads as finished.
+	d, err := s.applyAs(ctx, userID, itemKey, Report{Kind: Manual, Position: pos, At: s.nowMs(), Device: "Arrmada"}, "restore")
 	if err != nil {
 		return Decision{}, err
 	}
