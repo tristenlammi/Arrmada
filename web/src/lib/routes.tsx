@@ -70,8 +70,8 @@ function redirect(path: string, to: string): RouteObject {
 }
 
 // discover is Discover plus the addresses of what opens over it, in every shell: a title
-// (/discover/movie/603, /discover/series/1399), a person (/discover/person/287), and the
-// browse grid behind a row's "See all"
+// (/discover/movie/603, /discover/series/1399), a person (/discover/person/287), a movie
+// collection (/discover/collection/8091), and the browse grid behind a row's "See all"
 // (/discover/browse?list=popular&media=movie), which has the same overlays under it
 // (/discover/browse/movie/603). They are children of /discover so the page stays mounted
 // under the sheet (Discover reads the address and opens it), keeping its rows, its grid
@@ -79,7 +79,7 @@ function redirect(path: string, to: string): RouteObject {
 function discover(element: ReactNode): RouteObject {
   const title: RouteHandle = { title: "Discover" };
   const child = (path: string, children?: RouteObject[]): RouteObject => ({ path, element: null, handle: title, errorElement: <RouteError />, children });
-  const overlays = () => ["movie/:tmdbId", "series/:tmdbId", "person/:personId"].map((p) => child(p));
+  const overlays = () => ["movie/:tmdbId", "series/:tmdbId", "person/:personId", "collection/:collectionId"].map((p) => child(p));
   return {
     path: "/discover",
     element,

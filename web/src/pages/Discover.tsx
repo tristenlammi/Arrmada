@@ -6,7 +6,7 @@ import { lazyPage } from "../lib/lazyPage";
 import { pickTab, withTab } from "../lib/useTabParam";
 import { TabPanel, Tabs } from "../ui/Tabs";
 import { useMe, isStaff } from "../lib/me";
-import { api, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaRequest, type PersonResult } from "../lib/api";
+import { api, type CollectionRow, type DiscoverRow, type WatchProvider, type DiscoverCard, type Genre, type MediaRequest, type PersonResult } from "../lib/api";
 import { posterThumb } from "../lib/img";
 import { formatSeasons, MOVING_STAGES, requestStage, sortForRequester } from "../lib/requestStage";
 import { usePoll } from "../lib/usePoll";
@@ -26,6 +26,8 @@ const DiscoverBrowse = lazyPage(() => import("./DiscoverBrowse"), "DiscoverBrows
 const SearchResults = lazyPage(() => import("./DiscoverBrowse"), "SearchResults");
 // A person's page (a cast tile, a director, a name in search): its own chunk.
 const PersonSheet = lazyPage(() => import("./DiscoverPerson"), "PersonSheet");
+// A collection's page ("See all" on a "Complete the …" row, or a movie's sheet).
+const CollectionSheet = lazyPage(() => import("./DiscoverCollection"), "CollectionSheet");
 
 type Tab = "discover" | "movies" | "series" | "books";
 const BASE_TABS: { key: Tab; label: string }[] = [
@@ -89,17 +91,17 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
   // Rethrows on failure so callers (modal, quick-request) only flip to their success
   // state on an actual success. subscribed=true → you joined an existing request.
   // seasons (a show): the season numbers asked for; absent or null is the whole show.
-  const doRequest = useCallback(async (c: DiscoverCard, note?: string, seasons?: number[] | null): Promise<{ subscribed: boolean; status: ReqStatus }> => {
+  const doRequest = useCallback(async (c: DiscoverCard, note?: string, seasons?: number[] | null, quiet = false): Promise<{ subscribed: boolean; status: ReqStatus }> => {
     const key = `${c.media_type}:${c.tmdb_id}`;
     try {
       const res = await api.createRequest({ media_type: c.media_type, tmdb_id: c.tmdb_id, title: c.title, year: c.year, poster_url: c.poster_url, overview: c.overview, note: note?.trim() || undefined, seasons: seasons?.length ? seasons : undefined });
       const status = res.request.status;
       setRequested((m) => new Map(m).set(key, status));
-      flash(res.subscribed ? FOLLOWING : requestedMessage(c.title, status, res.request.seasons));
+      if (!quiet) flash(res.subscribed ? FOLLOWING : requestedMessage(c.title, status, res.request.seasons));
       announceRequested();
       return { subscribed: res.subscribed, status };
     } catch (e) {
-      flash((e as Error).message, { tone: "error" });
+      if (!quiet) flash((e as Error).message, { tone: "error" });
       throw e;
     }
   }, [flash]);
@@ -165,6 +167,7 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
         <Suspense fallback={null}><TitleSheet media={overlay.kind} tmdbId={overlay.id} ctx={ctx} /></Suspense>
       )}
       {overlay?.kind === "person" && <Suspense fallback={null}><PersonSheet id={overlay.id} ctx={ctx} /></Suspense>}
+      {overlay?.kind === "collection" && <Suspense fallback={null}><CollectionSheet id={overlay.id} ctx={ctx} /></Suspense>}
       {/* The old /discover/tv/<id> address redirects from here (lib/routes). */}
       <Outlet />
     </>
@@ -436,7 +439,7 @@ function DiscoverTab({ ctx }: { ctx: RowCtx }) {
         <PosterRow order={5} title="Popular series" seeAll={browseLink("popular", "series")} load={() => api.discoverPopular("series")} ctx={ctx} />
         <PosterRow order={6} hideOnError title="In cinemas now" seeAll={browseLink("now_playing", "movie")} load={() => api.discoverRow("now_playing")} ctx={ctx} />
         <StreamingRow media="movie" switchable ctx={ctx} />
-        <PosterRow order={7} hideUntilLoaded hideOnError excludeOwned title="Finish your collections" load={() => api.discoverCollections()} ctx={ctx} />
+        <CollectionRows ctx={ctx} />
         <PosterRow order={8} hideOnError title="Hidden gems" seeAll={browseLink("hidden_gems", "movie")} load={() => api.discoverRow("hidden_gems", "movie")} ctx={ctx} />
         <PosterRow order={9} excludeOwned title="Upcoming — request ahead" seeAll={browseLink("upcoming", "movie")} load={() => api.discoverUpcoming()} ctx={ctx} />
         <GenreExplorer media="movie" switchable ctx={ctx} />
@@ -729,6 +732,28 @@ function BecauseRows({ ctx, firstOrder }: { ctx: RowCtx; firstOrder: number }) {
     <>
       {rows.map((r, i) => (
         <PosterRow key={r.seed} order={firstOrder + i} title={r.title} load={() => Promise.resolve(r.items)} ctx={ctx} />
+      ))}
+    </>
+  );
+}
+
+// CollectionRows are "Complete the Alien Collection" and the like: one row per movie
+// collection the library has started, each the released films it lacks, with "See all"
+// opening the collection's page. Nothing renders until they arrive, and none when there
+// are none. They sit below the deduped rows and don't claim cards from them.
+function CollectionRows({ ctx }: { ctx: RowCtx }) {
+  const [rows, setRows] = useState<CollectionRow[] | null>(null);
+  const openOverlay = useOpenOverlay();
+  useEffect(() => {
+    let alive = true;
+    api.discoverCollections().then((r) => { if (alive) setRows(r); }).catch(() => { if (alive) setRows([]); });
+    return () => { alive = false; };
+  }, []);
+  if (!rows || rows.length === 0) return null;
+  return (
+    <>
+      {rows.map((r) => (
+        <PosterRow key={r.collection_id} excludeOwned title={r.title} seeAll={() => openOverlay("collection", r.collection_id)} load={() => Promise.resolve(r.items)} ctx={ctx} />
       ))}
     </>
   );

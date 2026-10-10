@@ -1,4 +1,4 @@
-import type { DiscoverCard, DiscoverRow, Genre, MediaDetail, MediaRequest, PersonDetail, PersonResult, RequestList, SeriesSeason, UserNotification, WatchProvider } from "../../src/lib/api";
+import type { CollectionDetail, CollectionRow, DiscoverCard, DiscoverRow, Genre, MediaDetail, MediaRequest, PersonDetail, PersonResult, RequestList, SeriesSeason, UserNotification, WatchProvider } from "../../src/lib/api";
 import type { PersonaInfo } from "./users";
 
 // Discover's poster rows. The mix covers every badge a card can wear (none, Pending,
@@ -104,6 +104,8 @@ export function mediaDetail(media: string, tmdbID: number): MediaDetail {
     similar: cards.slice(2, 6),
     // The title's card with its badge state, which a title opened cold from its address uses.
     card: { ...c, media_type: media === "series" ? "series" : "movie" },
+    // The first card's film is part of a collection (REQ-21).
+    ...(c.tmdb_id === requestableCard.tmdb_id && media !== "series" ? { collection: { id: collection.id, name: collection.name } } : {}),
   };
 }
 
@@ -159,6 +161,22 @@ export const person: PersonDetail = {
   credits: cards.slice(0, 7),
 };
 export const searchPerson: PersonResult = { id: person.id, name: person.name, profile_url: person.profile_url, known_for_department: "Acting", known_for: [cards[0].title] };
+
+// collection is GET /api/v1/discover/collection/{id} (REQ-21): one owned film, two to get.
+export const collection: CollectionDetail = {
+  id: 8091,
+  name: "Harbour Collection",
+  overview: "Three films about one harbour.",
+  backdrop_url: "https://image.tmdb.org/t/p/w1280/e2e-coll.jpg",
+  items: [cards[6], cards[0], cards[8]].map((c) => ({ ...c, media_type: "movie" as const })),
+  owned: 1,
+  total: 3,
+};
+
+// GET /api/v1/discover/collections: one "Complete the …" row.
+export const collectionRows: { rows: CollectionRow[] } = {
+  rows: [{ collection_id: collection.id, title: `Complete the ${collection.name}`, items: [cards[0], cards[8], cards[9], cards[1]] }],
+};
 
 // gridPage is one page of a paged grid (GET /api/v1/discover/browse and
 // /api/v1/discover/search): three pages of fresh titles (page 1 is the row cards, later

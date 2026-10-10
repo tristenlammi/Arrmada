@@ -94,10 +94,19 @@ type MediaDetail struct {
 	// payload as the rest: what the season picker and the per-season request states are
 	// built on. Empty for movies.
 	Seasons []SeasonSummary `json:"seasons,omitempty"`
+	// Collection is the franchise a movie belongs to (TMDB's belongs_to_collection), for
+	// the sheet's "Part of the … collection" link. Nil for series and standalone films.
+	Collection *CollectionRef `json:"collection,omitempty"`
 	// Adult is TMDB's own adult flag. The detail endpoint refuses such a title outright
 	// (the always-on adult filter), so it never reaches a browser as true; it is
 	// serialised only so the disk cache keeps it.
 	Adult bool `json:"adult,omitempty"`
+}
+
+// CollectionRef names a movie's collection.
+type CollectionRef struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
 }
 
 // SeasonSummary is one season as TMDB lists it on the show: no episodes, just enough to
@@ -134,7 +143,8 @@ func (t *TMDB) MediaDetails(ctx context.Context, media string, tmdbID int) (*Med
 	}
 	// v3: records carry Adult; a v2 copy would read as "not adult" until it expired.
 	// v4: cast and crew carry their person ids (the links to their pages).
-	key := "tmdb:detail:v4:" + kind + ":" + strconv.Itoa(tmdbID)
+	// v5: movies carry their collection.
+	key := "tmdb:detail:v5:" + kind + ":" + strconv.Itoa(tmdbID)
 	return swr(ctx, t.disk, key, mediaDetailTTL, func(ctx context.Context) (*MediaDetail, error) {
 		if kind == "tv" {
 			return t.seriesDetail(ctx, tmdbID)
@@ -177,6 +187,9 @@ func (t *TMDB) movieDetail(ctx context.Context, tmdbID int) (*MediaDetail, error
 	}
 	d.Cast = castOf(m.Credits.Cast)
 	d.Crew = movieCrew(m.Credits.Crew)
+	if c := m.BelongsToCollection; c != nil && c.ID > 0 && c.Name != "" {
+		d.Collection = &CollectionRef{ID: c.ID, Name: c.Name}
+	}
 	d.TrailerURL = bestTrailerURL(m.Videos.Results)
 	d.Similar = recommendedItems(m.Recommendations.Results, "movie")
 	return d, nil

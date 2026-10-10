@@ -167,6 +167,7 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
   const producer = crewByJob(d?.crew, "Producer");
   const creator = crewByJob(d?.crew, "Creator");
   const r = d?.ratings;
+  const collection = d?.collection;
   const similar = (d?.similar ?? []).filter((s) => s.tmdb_id !== c.tmdb_id).slice(0, 12);
 
   // Opened cold from an address that leads nowhere: a title TMDB doesn't know, or one the
@@ -349,6 +350,13 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
               <div className="h-3 w-3/4 rounded" style={{ background: "var(--panel-2)" }} />
             </div>
           ) : null}
+
+          {/* The franchise it belongs to opens over this sheet; Back returns here. */}
+          {collection && (
+            <button onClick={() => openOverlay("collection", collection.id)} className="mt-3 min-h-[32px] text-[12.5px] font-semibold" style={{ color: "var(--accent)" }}>
+              Part of the {collection.name} →
+            </button>
+          )}
 
           {/* Crew */}
           {(director.length > 0 || writer.length > 0 || producer.length > 0 || creator.length > 0) && (

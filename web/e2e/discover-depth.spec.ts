@@ -1,5 +1,5 @@
 import { test, expect } from "./mockApi";
-import { cards, person, readyRequests, requestableCard } from "./fixtures/discover";
+import { cards, collection, person, readyRequests, requestableCard } from "./fixtures/discover";
 
 // Phase 8's deeper Discover on a desktop: the payoff rows, 'See all' grids, paged search,
 // person pages and collection pages, with Back retracing each step.
@@ -113,5 +113,52 @@ test.describe("people on a desktop", () => {
     await page.getByRole("button", { name: new RegExp(person.name) }).click();
     await expect(page).toHaveURL(new RegExp(`/discover/person/${person.id}$`));
     await expect(page.getByRole("dialog", { name: person.name })).toBeVisible();
+  });
+});
+
+test.describe("collections on a desktop", () => {
+  test.use({ persona: "requester" });
+
+  // REQ-21: row → collection page → title → Back → collection → Close.
+  test("a 'Complete the' row opens its collection", async ({ page, api }) => {
+    await page.goto("/discover");
+    await api.quiet();
+    await expect(page.getByRole("heading", { name: `Complete the ${collection.name}` })).toBeVisible();
+    await page.getByRole("button", { name: `See all: Complete the ${collection.name}` }).click();
+    await expect(page).toHaveURL(new RegExp(`/discover/collection/${collection.id}$`));
+    const sheet = page.getByRole("dialog", { name: collection.name });
+    await expect(sheet.getByText("1 of 3 in the library")).toBeVisible();
+    // A requester asks one title at a time: no "Request the rest".
+    await expect(sheet.getByRole("button", { name: /Request the rest/ })).toHaveCount(0);
+    await sheet.getByRole("button", { name: `View details for ${cards[0].title}` }).click();
+    await expect(page.getByRole("dialog", { name: cards[0].title })).toBeVisible();
+    await page.goBack();
+    await expect(page.getByRole("dialog", { name: collection.name })).toBeVisible();
+    await page.getByRole("dialog", { name: collection.name }).getByRole("button", { name: "Close", exact: true }).click();
+    await expect(page).toHaveURL(/\/discover$/);
+  });
+
+  test("a movie's sheet links to its collection", async ({ page, api }) => {
+    await page.goto(`/discover/movie/${requestableCard.tmdb_id}`);
+    await api.quiet();
+    await page.getByRole("button", { name: `Part of the ${collection.name} →` }).click();
+    await expect(page).toHaveURL(new RegExp(`/discover/collection/${collection.id}$`));
+    await expect(page.getByRole("dialog", { name: collection.name })).toBeVisible();
+    await page.goBack();
+    await expect(page.getByRole("dialog", { name: requestableCard.title })).toBeVisible();
+  });
+});
+
+test.describe("collections for staff", () => {
+  test.use({ persona: "admin" });
+
+  // Staff ask for every missing released film; each goes through the normal request.
+  test("Request the rest asks for each missing film", async ({ page, api }) => {
+    await page.goto(`/discover/collection/${collection.id}`);
+    await api.quiet();
+    await page.getByRole("button", { name: "Request the rest (2)" }).click();
+    await expect(page.getByText("Requested 2 films")).toBeVisible();
+    const asked = api.callsTo("POST", "/api/v1/requests").map((c) => (c.body as { tmdb_id: number }).tmdb_id).sort();
+    expect(asked).toEqual([cards[0].tmdb_id, cards[8].tmdb_id].sort());
   });
 });

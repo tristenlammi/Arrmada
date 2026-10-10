@@ -1437,6 +1437,20 @@ export interface MediaDetail {
   /** The title as a Discover card with this viewer's badge state, for a sheet opened cold from its address. */
   card?: DiscoverCard;
   plex_url?: string; // app.plex.tv page for the title, when the owner's Plex has it
+  collection?: { id: number; name: string }; // a movie's franchise, for "Part of the … collection"
+}
+/** One "Complete the <name>" row on Discover. */
+export interface CollectionRow { collection_id: number; title: string; items: DiscoverCard[] }
+/** A movie collection's page: every member as a card, and how much of what's out is here. */
+export interface CollectionDetail {
+  id: number;
+  name: string;
+  overview?: string;
+  poster_url?: string;
+  backdrop_url?: string;
+  items: DiscoverCard[];
+  owned: number;
+  total: number;
 }
 
 export interface SeasonSummary { number: number; name?: string; episode_count: number; air_date?: string; poster_url?: string }
@@ -2563,7 +2577,9 @@ export const api = {
   discoverProviderNew: (media: string, id: number) =>
     req<{ items: DiscoverCard[] }>(`/api/v1/discover/provider?media=${media}&id=${id}`).then((r) => r.items),
   discoverBecause: () => req<{ rows: DiscoverRow[] }>(`/api/v1/discover/because`).then((r) => r.rows),
-  discoverCollections: () => req<{ items: DiscoverCard[] }>(`/api/v1/discover/collections`).then((r) => r.items),
+  // "Complete the <name>" rows: one per collection the library has started.
+  discoverCollections: () => req<{ rows: CollectionRow[] }>(`/api/v1/discover/collections`).then((r) => r.rows),
+  discoverCollection: (id: number) => req<CollectionDetail>(`/api/v1/discover/collection/${id}`),
   // What just arrived in the library (Arrmada's imports, plus Plex's when it's set up).
   discoverRecentlyAdded: () => req<{ items: DiscoverCard[] }>(`/api/v1/discover/recently-added`).then((r) => r.items),
   discoverByGenre: (media: string, genre: number) =>

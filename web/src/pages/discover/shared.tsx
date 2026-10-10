@@ -85,7 +85,8 @@ export type ReqStatus = MediaRequest["status"];
 export const FOLLOWING = "You’re following this request — it’s in your requests now.";
 
 export interface RowCtx {
-  doRequest: (c: DiscoverCard, note?: string, seasons?: number[] | null) => Promise<{ subscribed: boolean; status: ReqStatus }>;
+  /** quiet: no toast for this one (a batch says how it went once, at the end). */
+  doRequest: (c: DiscoverCard, note?: string, seasons?: number[] | null, quiet?: boolean) => Promise<{ subscribed: boolean; status: ReqStatus }>;
   /** What this session asked for the card, if anything: the status the server answered. */
   isRequested: (c: DiscoverCard) => ReqStatus | undefined;
   canRequest: boolean;

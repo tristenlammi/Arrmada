@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/tristenlammi/arrmada/internal/adultfilter"
 	"github.com/tristenlammi/arrmada/internal/safego"
 )
 
@@ -426,26 +427,47 @@ func (s tmdbSeries) toResult() SeriesResult {
 }
 
 // GetCollection fetches a TMDB collection's member movies, sorted by release
-// year (earliest first) so a franchise reads in order.
+// year (earliest first) so a franchise reads in order. Kept for 6 hours (stale served
+// while it refreshes): Discover's collection rows and pages read the same few often.
 func (t *TMDB) GetCollection(ctx context.Context, collectionID int) (*Collection, error) {
-	body, err := t.get(ctx, "/collection/"+strconv.Itoa(collectionID), url.Values{})
-	if err != nil {
-		return nil, err
-	}
-	return parseTMDBCollection(body)
+	return swr(ctx, t.disk, "tmdb:collection:v1:"+strconv.Itoa(collectionID), collectionTTL, func(ctx context.Context) (*Collection, error) {
+		body, err := t.get(ctx, "/collection/"+strconv.Itoa(collectionID), url.Values{})
+		if err != nil {
+			return nil, err
+		}
+		return parseTMDBCollection(body)
+	})
 }
 
+// collectionTTL is how long a collection's member list is kept.
+const collectionTTL = 6 * time.Hour
+
+// parseTMDBCollection maps /collection/{id}. A member TMDB flags adult, or whose title
+// trips the shared adult filter, is left out: the always-on filter holds here as on
+// every Discover card, and for "add the whole collection" too.
 func parseTMDBCollection(body []byte) (*Collection, error) {
 	var payload struct {
-		ID    int         `json:"id"`
-		Name  string      `json:"name"`
-		Parts []tmdbMovie `json:"parts"`
+		ID           int         `json:"id"`
+		Name         string      `json:"name"`
+		Overview     string      `json:"overview"`
+		PosterPath   string      `json:"poster_path"`
+		BackdropPath string      `json:"backdrop_path"`
+		Parts        []tmdbMovie `json:"parts"`
 	}
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("tmdb: parse collection: %w", err)
 	}
-	c := &Collection{ID: payload.ID, Name: payload.Name}
+	c := &Collection{ID: payload.ID, Name: payload.Name, Overview: payload.Overview}
+	if payload.PosterPath != "" {
+		c.PosterURL = tmdbImageBase + payload.PosterPath
+	}
+	if payload.BackdropPath != "" {
+		c.BackdropURL = tmdbBackdropBase + payload.BackdropPath
+	}
 	for _, m := range payload.Parts {
+		if m.Adult || adultfilter.Matches(m.Title) {
+			continue
+		}
 		c.Members = append(c.Members, m.toResult())
 	}
 	sort.Slice(c.Members, func(i, j int) bool {
@@ -530,6 +552,7 @@ func (m tmdbMovie) toResult() MovieResult {
 		Overview:    m.Overview,
 		PosterURL:   poster,
 		VoteAverage: m.VoteAverage,
+		ReleaseDate: m.ReleaseDate,
 	}
 }
 
