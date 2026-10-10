@@ -72,7 +72,7 @@ export function Me({ chrome = false }: { chrome?: boolean }) {
           {/* Calendar has no phone tab while Requests does; from outside the network the
               server doesn't serve it at all. */}
           {!external && <MeRow to="/calendar">Calendar</MeRow>}
-          <MeRow to="/audiobooks">Audiobook apps &amp; password</MeRow>
+          <MeRow to="/audiobooks?tab=apps">Audiobook apps &amp; password</MeRow>
         </MeSection>
 
         <MeSection id="session">

@@ -2,6 +2,8 @@ import type { Page } from "@playwright/test";
 import { test, expect, type MockedApi } from "./mockApi";
 import { mockAudio } from "./fixtures/audio";
 import { NOW } from "./fixtures/clock";
+import { myAudio } from "./fixtures/system";
+import { personas } from "./fixtures/users";
 
 // The built-in audiobook player at 375px (APP-09): Listen on the shelf starts the book in
 // the mini-player through the listening API, playback carries on across pages and across
@@ -182,6 +184,46 @@ test.describe("audiobook player at 375px", () => {
     await expect(full.getByText(/Jumped back to/)).toHaveCount(0);
   });
 
+  test("Apps & devices: Android setup ticks green when the phone signs in (APP-12)", async ({ page, api }) => {
+    let mine = myAudio(personas.requester);
+    await page.route((u) => u.pathname === "/api/v1/me/audio" || u.pathname === "/api/v1/me/audio/password", async (route) => {
+      const req = route.request();
+      const path = new URL(req.url()).pathname;
+      let body: unknown;
+      try { body = req.postDataJSON(); } catch { body = req.postData(); }
+      api.calls.push({ method: req.method(), path, body });
+      if (path.endsWith("/password")) mine = { ...mine, has_password: true };
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(mine) });
+    });
+    await page.clock.install({ time: NOW });
+    // The Me page's link (the account menu's too) opens the tab directly.
+    await page.goto("/me");
+    await page.getByRole("link", { name: "Audiobook apps & password" }).tap();
+    await expect(page).toHaveURL(/\/audiobooks\?tab=apps/);
+
+    const how = page.getByRole("radiogroup", { name: "How you'll listen" });
+    const options = how.getByRole("radio");
+    await expect(options.first()).toContainText("Lissen");
+    await expect(options.first()).toContainText("Works");
+    await how.getByRole("radio", { name: /Lissen/ }).tap();
+    // No password yet: step 2 is the form.
+    await page.getByPlaceholder("Password", { exact: true }).fill("listening-time");
+    await page.getByPlaceholder("Type it again").fill("listening-time");
+    // Enter submits (a tap here races the tab bar coming back as the keyboard closes).
+    await page.getByPlaceholder("Type it again").press("Enter");
+    await expect.poll(() => api.callsTo("PUT", "/api/v1/me/audio/password").length).toBe(1);
+    await expect(page.getByText("Enter these in Lissen")).toBeVisible();
+    await expect(page.getByText("Server type")).toBeVisible();
+    await expect(page.getByText("Waiting for your phone…")).toBeVisible();
+
+    // The phone signs in; the next check (4 s) ticks the step and names it.
+    mine = { ...mine, devices: [{ id: "d1", user_id: 3, username: "deckhand", client: "Lissen", device: "Pixel 8", created_at: NOW, last_used_at: NOW }] };
+    await page.clock.runFor(4_500);
+    await expect(page.getByText("Pixel 8 · Lissen signed in ✓")).toBeVisible();
+    const w = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth, vp: document.documentElement.clientWidth }));
+    expect(w.doc).toBeLessThanOrEqual(w.vp);
+  });
+
   test("a held jump back says so", async ({ page, api }) => {
     const m = await mockAudio(page, api, { startAt: 400 });
     const mini = await startFromShelf(page, api);
@@ -191,5 +233,27 @@ test.describe("audiobook player at 375px", () => {
     m.reply = {};
     await page.clock.runFor(15_500);
     await expect(mini.getByText("Jumped back — kept once you listen on")).toHaveCount(0);
+  });
+});
+
+// An iPhone: no iPhone app has been listened with against Arrmada yet, so the setup
+// recommends listening right here (from the Home Screen) and marks every app untested.
+test.describe("Apps & devices on an iPhone", () => {
+  test.use({ persona: "requester", userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1" });
+
+  test("recommends the web player and never calls an untested app working", async ({ page }) => {
+    await page.goto("/audiobooks?tab=apps");
+    const how = page.getByRole("radiogroup", { name: "How you'll listen" });
+    const options = how.getByRole("radio");
+    await expect(options.first()).toContainText("Listen here");
+    await expect(options.first()).toContainText("recommended");
+    await expect(how).not.toContainText("Lissen");
+    const rest = (await options.allTextContents()).slice(1);
+    expect(rest.length).toBeGreaterThan(0);
+    for (const t of rest) expect(t).toContain("Not tested yet");
+    await options.first().tap();
+    await expect(page.getByText(/Add to Home Screen/)).toBeVisible();
+    await how.getByRole("radio", { name: /ShelfPlayer/ }).tap();
+    await expect(page.getByText(/hasn't been tried with Arrmada on a phone yet/)).toBeVisible();
   });
 });

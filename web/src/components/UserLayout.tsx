@@ -69,7 +69,7 @@ export function UserLayout() {
                   <div className="my-1 h-px" style={{ background: "var(--line)" }} />
                   <MenuLink to="/me" onClick={() => setMenu(false)}>Me &amp; notifications</MenuLink>
                   <MenuLink to="/me#account" onClick={() => setMenu(false)}>Password &amp; devices</MenuLink>
-                  <MenuLink to="/audiobooks" onClick={() => setMenu(false)}>Audiobook apps &amp; password</MenuLink>
+                  <MenuLink to="/audiobooks?tab=apps" onClick={() => setMenu(false)}>Audiobook apps &amp; password</MenuLink>
                   <button onClick={signOut} className="flex min-h-[44px] w-full items-center rounded-lg px-2.5 text-left text-[12.5px] font-medium hover:bg-[var(--panel-2)]" style={{ color: "var(--reject)" }}>Sign out</button>
                 </div>
               </>

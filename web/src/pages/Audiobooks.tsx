@@ -1,5 +1,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
-import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { appsFor, devicePlatform, newDevice, type AudioApp, type DevicePlatform } from "../lib/audioApps";
+import { usePoll } from "../lib/usePoll";
 import { ApiError, api, type AudioListening, type AudioPlace, type AudioRemoved, type AudioShelf, type MyAudio } from "../lib/api";
 import { useMe } from "../lib/me";
 import { posterThumb } from "../lib/img";
@@ -161,23 +163,140 @@ function AppsView() {
   }
   return (
     <div className="flex flex-col gap-4">
+      <AppSetup data={data} external={external} onData={setData} />
+      {data.devices.length > 0 && <DevicesCard data={data} onChange={load} />}
       <div className="rounded-xl px-4 py-2.5 text-[12px] text-ink-dim" style={{ background: "var(--panel-2)", border: "1px solid var(--line-soft)" }}>
         Your places moved to Listen: open a book there to see where you're up to and put back an earlier place.
       </div>
-      <Card title="Connect an app" note={data.enabled ? undefined : "The audiobook server is switched off at the moment, so apps can't connect yet."}>
-        <p className="m-0 mb-3 text-[12px] text-ink-dim">
-          Use <a href="https://github.com/GrakovNe/lissen-android" target="_blank" rel="noreferrer" className="underline" style={{ color: "var(--accent)" }}>Lissen</a> (Android) or another Audiobookshelf app. Choose <b>Audiobookshelf</b> as the server type and enter:
-        </p>
-        {addresses(data, external).map((a, i) => <Field key={i} label={a.label} value={a.value} note={a.note} />)}
-        {external && !data.public_url && <div className="mb-2 text-[12px] text-ink-dim">The server address works on the home network. Open this page at home to see it.</div>}
-        <Field label="Username" value={data.username} />
-        <div className="text-[11.5px] text-ink-faint">Password: your audiobook password below — not your Arrmada password.</div>
-        {data.enabled && !data.running && <div className="mt-2 text-[12px]" style={{ color: "var(--avoid)" }}>The server is switched on but not running{data.error ? `: ${data.error}` : ""}.</div>}
-      </Card>
-
-      <PasswordCard data={data} onSaved={setData} />
-      {data.devices.length > 0 && <DevicesCard data={data} onChange={load} />}
     </div>
+  );
+}
+
+// AppSetup walks someone through listening: pick how (this page, or an app for their
+// phone — only apps actually tried with Arrmada are called working), then for an app set
+// the audiobook password, type in the exact fields, and wait for the phone to sign in,
+// which ticks green on its own.
+function AppSetup({ data, external, onData }: { data: MyAudio; external: boolean; onData: (d: MyAudio) => void }) {
+  const [platform, setPlatform] = useState<DevicePlatform>(() => {
+    try { return devicePlatform(navigator.userAgent, navigator.maxTouchPoints > 1); } catch { return "other"; }
+  });
+  const apps = appsFor(platform);
+  const [pick, setPick] = useState<AudioApp["id"] | null>(null);
+  const chosen = apps.find((a) => a.id === pick) ?? null;
+  const servers = addresses(data, external);
+  return (
+    <Card title="Set up listening" note="Your place is kept in Arrmada, so you can switch between this page and an app any time.">
+      <div role="radiogroup" aria-label="Your device" className="mb-3 flex flex-wrap gap-1.5">
+        {([["ios", "iPhone or iPad"], ["android", "Android"], ["other", "Computer"]] as const).map(([k, label]) => (
+          <button key={k} role="radio" aria-checked={platform === k} onClick={() => { setPlatform(k); setPick(null); }}
+            className="rounded-full px-3 py-1 text-[12px] font-semibold"
+            style={platform === k ? { background: "var(--accent-soft)", color: "var(--accent-text)", border: "1px solid var(--accent-line)" } : ghost}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <ol className="m-0 flex list-none flex-col gap-4 p-0">
+        <Step n={1} title="Pick how you'll listen" done={!!chosen}>
+          <div role="radiogroup" aria-label="How you'll listen" className="flex flex-col gap-1.5">
+            {apps.map((a, i) => (
+              <button key={a.id} role="radio" aria-checked={pick === a.id} onClick={() => setPick(a.id)}
+                className="flex items-start justify-between gap-3 rounded-lg px-3 py-2 text-left"
+                style={pick === a.id ? { background: "var(--accent-soft)", border: "1px solid var(--accent-line)" } : { background: "var(--panel-2)", border: "1px solid var(--line-soft)" }}>
+                <span className="min-w-0">
+                  <span className="block text-[13px] font-semibold">{a.name}{i === 0 && a.status === "verified" ? <span className="font-normal text-ink-faint"> · recommended</span> : null}</span>
+                  <span className="block text-[11.5px] text-ink-dim">{a.blurb}</span>
+                </span>
+                <span className="flex-none rounded-full px-2 py-0.5 text-[10.5px] font-bold"
+                  style={a.status === "verified" ? { background: "var(--good-soft)", color: "var(--good-text)" } : { background: "var(--avoid-soft)", color: "var(--avoid-text)" }}>
+                  {a.status === "verified" ? "Works" : "Not tested yet"}
+                </span>
+              </button>
+            ))}
+          </div>
+        </Step>
+
+        {chosen?.id === "web" && (
+          <Step n={2} title="Open Listen and press play" done={false}>
+            <p className="m-0 text-[12px] text-ink-dim">
+              Nothing to install and no password: pick a book on the <Link to="/audiobooks" className="font-semibold" style={{ color: "var(--accent)" }}>Listen</Link> tab.
+              {platform === "ios" && <> On an iPhone, add Arrmada to your Home Screen first (Share → Add to Home Screen) and listen from there: it keeps playing with the screen locked, with the controls on the lock screen.</>}
+              {platform === "android" && <> On Android, Add to Home screen from the browser's menu gives you an app icon and lock-screen controls.</>}
+            </p>
+          </Step>
+        )}
+
+        {chosen && chosen.id !== "web" && (
+          <>
+            {chosen.status === "untested" && (
+              <li className="rounded-lg px-3 py-2 text-[12px]" style={{ background: "var(--avoid-soft)", border: "1px solid var(--avoid)" }}>
+                {chosen.name} hasn't been tried with Arrmada on a phone yet. It speaks the same language as the apps that work, so it may well — if it does (or doesn't), tell your admin.
+                {platform === "ios" && <> Listening right here works on an iPhone today.</>}
+              </li>
+            )}
+            <Step n={2} title="Set your audiobook password" done={data.has_password}>
+              <PasswordCard data={data} onSaved={onData} />
+            </Step>
+            <Step n={3} title={`Enter these in ${chosen.name}`} done={false}>
+              {!data.enabled && <div className="mb-2 text-[12px]" style={{ color: "var(--avoid-text)" }}>The audiobook server is switched off at the moment, so apps can't connect yet.</div>}
+              {data.enabled && !data.running && <div className="mb-2 text-[12px]" style={{ color: "var(--avoid-text)" }}>The server is switched on but not running{data.error ? `: ${data.error}` : ""}.</div>}
+              {chosen.url && <p className="m-0 mb-2 text-[12px] text-ink-dim">Get it from <a href={chosen.url} target="_blank" rel="noreferrer" className="underline" style={{ color: "var(--accent)" }}>{chosen.url.replace(/^https?:\/\//, "")}</a>, then sign in with:</p>}
+              <Field label="Server type" value="Audiobookshelf" />
+              {servers.map((s, i) => <Field key={i} label={s.label} value={s.value} note={s.note} />)}
+              {external && !data.public_url && <div className="mb-2 text-[12px] text-ink-dim">The server address works on the home network. Open this page at home to see it.</div>}
+              <Field label="Username" value={data.username} />
+              <div className="text-[11.5px] text-ink-faint">Password: your audiobook password from step 2 — not your Arrmada password.</div>
+            </Step>
+            {data.has_password && <WaitForDevice data={data} onData={onData} />}
+          </>
+        )}
+      </ol>
+    </Card>
+  );
+}
+
+function Step({ n, title, done, children }: { n: number; title: string; done: boolean; children: React.ReactNode }) {
+  return (
+    <li className="flex gap-3">
+      <span aria-hidden className="mt-0.5 grid h-6 w-6 flex-none place-items-center rounded-full text-[11.5px] font-bold"
+        style={done ? { background: "var(--good)", color: "var(--accent-ink)" } : { background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink-dim)" }}>
+        {done ? "✓" : n}
+      </span>
+      <div className="min-w-0 flex-1">
+        <h3 className="m-0 mb-1.5 text-[13px] font-bold">{title}{done && <span className="sr-only"> (done)</span>}</h3>
+        {children}
+      </div>
+    </li>
+  );
+}
+
+// WaitForDevice is "Waiting for your phone…": it checks every few seconds while the page
+// is visible, for up to ten minutes, and ticks green naming the device that signed in.
+const WAIT_MS = 4000;
+const WAIT_FOR = 10 * 60_000;
+function WaitForDevice({ data, onData }: { data: MyAudio; onData: (d: MyAudio) => void }) {
+  const [known] = useState(() => new Set(data.devices.map((d) => d.id)));
+  const [since, setSince] = useState(() => performance.now());
+  const [now, setNow] = useState(since);
+  const found = newDevice(data.devices, known);
+  const waiting = !found && now - since < WAIT_FOR;
+  usePoll(async () => {
+    setNow(performance.now());
+    onData(await api.myAudio());
+  }, waiting ? WAIT_MS : null, { immediate: false });
+  return (
+    <Step n={4} title={found ? "Signed in" : "Waiting for your phone…"} done={!!found}>
+      {found ? (
+        <div role="status" className="text-[12.5px] font-semibold" style={{ color: "var(--good-text)" }}>
+          {[found.device, found.client].filter(Boolean).join(" · ") || "An app"} signed in ✓
+        </div>
+      ) : waiting ? (
+        <div role="status" className="text-[12px] text-ink-dim">Sign in from the app; this ticks green as soon as it connects.</div>
+      ) : (
+        <div className="text-[12px] text-ink-dim">
+          Nothing signed in yet. <button onClick={() => { const t = performance.now(); setSince(t); setNow(t); }} className="font-semibold" style={{ color: "var(--accent)" }}>Keep waiting</button>
+        </div>
+      )}
+    </Step>
   );
 }
 

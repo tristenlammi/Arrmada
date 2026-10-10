@@ -11,7 +11,8 @@ import { playAudiobook } from "../lib/playerStub";
 // a download for each ebook, and their own requests still on the way. Deliberately
 // small — no editing, no indexer search, no library management — because its readers
 // aren't running the library, they're looking for something to read. Audiobooks are
-// downloadable here too, and playable in listening apps through the audiobook server.
+// downloadable here too, playable right here (Listen), and in listening apps through the
+// audiobook server.
 
 function fmtSize(b: number): string {
   if (!b) return "";
@@ -62,7 +63,7 @@ export function MyBooks() {
           {/* "My shelf", not "Books": Discover's Books tab is the catalogue to ask from. */}
           <h1 className="m-0 text-[20px] font-bold">My shelf</h1>
           <p className="m-0 mt-1 text-[12.5px] text-ink-dim">
-            Download any ebook or audiobook in the library, or listen with an app on your phone.
+            Download any ebook or audiobook in the library, or listen to an audiobook right here.
             {books && <span className="text-ink-faint"> · {books.length} book{books.length === 1 ? "" : "s"}, {ebooks} ebook{ebooks === 1 ? "" : "s"}</span>}
           </p>
         </div>
@@ -89,7 +90,7 @@ export function MyBooks() {
       {error && <div className="mb-3 text-[12.5px]" style={{ color: "var(--reject)" }}>{error}</div>}
 
       <Link to="/audiobooks" className="mb-5 flex items-center justify-between gap-3 rounded-xl px-4 py-3 text-[12.5px]" style={{ background: "var(--panel)", border: "1px solid var(--line)" }}>
-        <span><b>Listen in an app</b> <span className="text-ink-dim">— audiobooks in Lissen, with your place kept in sync.</span></span>
+        <span><b>Listen</b> <span className="text-ink-dim">— in your browser or a listening app, with your place kept in sync.</span></span>
         <span className="flex-none font-semibold" style={{ color: "var(--accent)" }}>Audiobooks →</span>
       </Link>
 
