@@ -24,16 +24,21 @@ func TestSubscriptionsBackfill(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := fstest.MapFS{}
+	// Up to 0160 only: later migrations (0173's Needs-you backfill) add subscriptions of
+	// their own and have their own tests.
+	before, through := fstest.MapFS{}, fstest.MapFS{}
 	for _, n := range names {
-		if n >= "0160" {
+		if n >= "0161" {
 			continue
 		}
 		b, err := fs.ReadFile(all, n)
 		if err != nil {
 			t.Fatal(err)
 		}
-		before[n] = &fstest.MapFile{Data: b}
+		through[n] = &fstest.MapFile{Data: b}
+		if n < "0160" {
+			before[n] = &fstest.MapFile{Data: b}
+		}
 	}
 	if err := runMigrations(ctx, db, before); err != nil {
 		t.Fatal(err)
@@ -48,7 +53,7 @@ func TestSubscriptionsBackfill(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := runMigrations(ctx, db, all); err != nil {
+	if err := runMigrations(ctx, db, through); err != nil {
 		t.Fatal(err)
 	}
 

@@ -24,6 +24,46 @@ var samples = map[string]map[string]any{
 	"music.imported":        {"artist_id": int64(1), "album_id": int64(5), "placed": 10, "artist": "Björk", "album": "Homogenic"},
 	"plex.stream.started":   {"user": "sam", "title": "Dune", "player": "TV"},
 	"plex.buffering":        {"user": "sam", "title": "Dune"},
+	EventImportHeld:         {"count": 1, "title": "Dune is held: it looks like a different title", "link": "/review"},
+	EventImportStuck:        {"count": 1, "title": "Importing Dune keeps failing (5 tries)", "detail": "permission denied", "link": "/downloads?show=problems"},
+	EventDownloadFailed:     {"count": 6, "names": []string{"A", "B", "C", "D", "E", "F"}, "link": "/downloads?show=problems"},
+	EventDownloadStalled:    {"count": 1, "title": "Dune has stalled", "link": "/downloads?show=problems"},
+	EventHealthProblem:      {"count": 1, "title": "qBittorrent is unreachable", "level": "error", "link": "/settings/status"},
+	EventHealthResolved:     {"count": 1, "title": "qBittorrent is unreachable", "link": "/settings/status"},
+}
+
+// The Needs-you events write one item as its sentence and several as a summary, the
+// same after a JSON round trip.
+func TestNeedsYouFormat(t *testing.T) {
+	for _, c := range []struct {
+		key  string
+		data map[string]any
+		body string
+	}{
+		{EventImportStuck, samples[EventImportStuck], "⚠️ Importing Dune keeps failing (5 tries)\npermission denied"},
+		{EventDownloadFailed, samples[EventDownloadFailed], "❌ 6 downloads failed: A, B, C and 3 more"},
+		{EventDownloadFailed, map[string]any{"count": float64(2), "names": []any{"A", "B"}}, "❌ 2 downloads failed: A, B"},
+		{EventHealthProblem, samples[EventHealthProblem], "🔴 qBittorrent is unreachable"},
+		{EventHealthProblem, map[string]any{"count": 1, "title": "Update available", "level": "warning"}, "🟠 Update available"},
+		{EventHealthResolved, samples[EventHealthResolved], "✅ Resolved: qBittorrent is unreachable"},
+		{EventHealthResolved, map[string]any{"count": 7, "names": []string{"A", "B", "C", "D"}}, "✅ 7 health problems resolved: A, B, C and 4 more"},
+	} {
+		m, ok := mustLookup(t, c.key).Format(c.data)
+		if !ok || m.Body != c.body {
+			t.Errorf("%s(%v) = %q, %v; want %q", c.key, c.data, m.Body, ok, c.body)
+		}
+	}
+	if _, ok := mustLookup(t, EventDownloadFailed).Format(map[string]any{"count": 3}); ok {
+		t.Error("a summary with no names should send nothing")
+	}
+	for _, k := range []string{EventImportHeld, EventImportStuck, EventDownloadFailed, EventHealthProblem, EventHealthResolved} {
+		if d := mustLookup(t, k); !d.DefaultOn || d.Topic != "" || d.Group != GroupNeedsYou {
+			t.Errorf("%s: %+v", k, d)
+		}
+	}
+	if mustLookup(t, EventDownloadStalled).DefaultOn {
+		t.Error("download.stalled should be off by default")
+	}
 }
 
 // Every event formats its sample into a message with a title and a body, and says
