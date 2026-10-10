@@ -70,6 +70,7 @@ describe("searchSettings", () => {
   it("finds the recycle bin, Plex sign-in and the naming cards", () => {
     expect(labels("recycle")).toEqual(["Recycle bin"]);
     expect(labels("plex")).toContain("Plex sign-in");
+    expect(labels("plex path mapping")).toEqual(["Plex library updates"]);
     // The section name counts too, so "naming" also lists the rest of Naming & metadata.
     expect(labels("naming")).toEqual(["Movie naming", "Series naming", "Metadata"]);
   });
@@ -82,7 +83,8 @@ describe("searchSettings", () => {
 
   it("hides admin-only cards from a manager", () => {
     expect(labels("recycle", manager)).toEqual([]);
-    expect(labels("plex", manager)).toEqual(["Metadata"]);
+    // Managers keep the Plex library updates card (scans and mappings are day-to-day).
+    expect(labels("plex", manager)).toEqual(["Plex library updates", "Metadata"]);
   });
 
   it("has a unique anchor per card", () => {

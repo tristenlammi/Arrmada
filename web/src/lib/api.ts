@@ -1975,7 +1975,9 @@ export function releaseErrorMessage(e: unknown): string {
   return (e as Error).message;
 }
 
-async function req<T>(path: string, opts?: RequestInit): Promise<T> {
+// req is exported for the small per-feature API modules (lib/plexApi.ts) that staff-only,
+// lazily loaded pages import, so their calls stay out of the requester's first load.
+export async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await send(path, {
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     ...opts,

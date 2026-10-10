@@ -52,6 +52,7 @@ import (
 	"github.com/tristenlammi/arrmada/internal/music"
 	"github.com/tristenlammi/arrmada/internal/notify"
 	"github.com/tristenlammi/arrmada/internal/outbox"
+	"github.com/tristenlammi/arrmada/internal/plexscan"
 	"github.com/tristenlammi/arrmada/internal/push"
 	"github.com/tristenlammi/arrmada/internal/quality"
 	"github.com/tristenlammi/arrmada/internal/realtime"
@@ -784,6 +785,20 @@ func main() {
 	grp.Loop("insights: poller", insightsSvc.Run) // Plex watch-monitoring poller (records when enabled + configured)
 	// Convert pauses its encodes while someone is watching.
 	convertSvc.SetWatching(insightsSvc.Watching)
+	// Tell Plex which folder changed after an import, upgrade, rename, delete or Convert
+	// swap: one debounced partial scan per folder, translated to Plex's own paths. Plex
+	// being down or unset never holds anything up — requests are queued in memory and
+	// the worker logs what it couldn't send.
+	plexScanner := plexscan.New(plexscan.Options{
+		Client:     func(ctx context.Context) plexscan.Client { return insightsSvc.PlexClient(ctx) },
+		Configured: insightsSvc.Configured,
+		Settings:   settingsSvc,
+		Roots: func(ctx context.Context) map[string]string {
+			return map[string]string{plexscan.KindMovie: roots.Movies(ctx), plexscan.KindShow: roots.TV(ctx)}
+		},
+		Log: log,
+	})
+	grp.Loop("plex: library scans", plexScanner.Run)
 	// Prune raw bandwidth samples older than 90 days: the poller writes one row per
 	// cycle, so at the 5s default that's ~17k/day and every graph query scans them all.
 	// Watch history itself is kept — only the high-frequency bandwidth series is rolled off.
@@ -972,6 +987,7 @@ func main() {
 		Scheduler: sched,
 		Jobs:      jobRunner,
 		Attention: needsYou,
+		PlexScan:  plexScanner,
 		// Everything else reads the folders live; the bundled qBittorrent's default save
 		// path is the one thing that has to be told. Same retries as at boot — the client
 		// may be restarting — and each try reads the folder afresh, so of two quick saves

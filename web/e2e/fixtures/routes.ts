@@ -108,6 +108,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/subtitles/settings", mod.subtitleSettings),
     get("/api/v1/subtitles/jobs", mod.subtitleJobs),
     get("/api/v1/insights/plex", mod.plexConfig),
+    get("/api/v1/insights/plex/scan", mod.plexScan),
     get("/api/v1/insights/stats", mod.insightsStats),
     get("/api/v1/settings", sys.settings),
     // Settings → Users: two accounts, one a Plex sign-in that still auto-approves shows.

@@ -2,6 +2,7 @@ import { Link } from "react-router-dom";
 import { Field, Section, Toggle, inputStyle } from "../../components/settings/ui";
 import { SaveBar, useLoadedSettings } from "../../lib/useSettings";
 import { LibraryFolders } from "../Library";
+import { PlexLibraryUpdates } from "./PlexLibraryUpdates";
 import { DEFAULT_MONITOR_PRESET, MONITOR_PRESETS, isMonitorPreset } from "../series/presets";
 
 // Settings → Library: where each library lives on disk, and what happens when a title is
@@ -33,6 +34,9 @@ export function LibrarySettings() {
         <SeriesMonitorDefault value={s.series_monitor_default} onChange={(v) => patch({ series_monitor_default: v })} />
       </Section>
       <SaveBar />
+      {/* Has its own Save (it isn't part of the settings draft above). Moves to the Plex
+          settings page when that lands. */}
+      <PlexLibraryUpdates />
     </div>
   );
 }

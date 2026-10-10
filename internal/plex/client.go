@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"path"
 	"strconv"
 	"strings"
@@ -91,19 +93,93 @@ type Library struct {
 	Title string `json:"title"`
 	Type  string `json:"type"` // movie | show | artist | photo
 	Count int64  `json:"-"`    // filled by SectionTotal on demand
+	// Locations are the section's folders as the Plex server sees them (its own paths,
+	// which usually differ from Arrmada's container paths). Partial scans name a folder
+	// under one of these.
+	Locations []string `json:"locations,omitempty"`
 }
 
 // Libraries lists the server's library sections.
 func (c *Client) Libraries(ctx context.Context) ([]Library, error) {
 	var r struct {
 		MediaContainer struct {
-			Directory []Library `json:"Directory"`
+			Directory []struct {
+				Key      string `json:"key"`
+				Title    string `json:"title"`
+				Type     string `json:"type"`
+				Location []struct {
+					Path string `json:"path"`
+				} `json:"Location"`
+			} `json:"Directory"`
 		} `json:"MediaContainer"`
 	}
 	if err := c.get(ctx, "/library/sections", &r); err != nil {
 		return nil, err
 	}
-	return r.MediaContainer.Directory, nil
+	out := make([]Library, 0, len(r.MediaContainer.Directory))
+	for _, d := range r.MediaContainer.Directory {
+		lib := Library{Key: d.Key, Title: d.Title, Type: d.Type}
+		for _, l := range d.Location {
+			if l.Path != "" {
+				lib.Locations = append(lib.Locations, l.Path)
+			}
+		}
+		out = append(out, lib)
+	}
+	return out, nil
+}
+
+// do sends a request whose answer has nothing worth reading (a scan trigger), checking
+// only the status.
+func (c *Client) do(ctx context.Context, method, path string) error {
+	if c.base == "" || c.token == "" {
+		return ErrNotConfigured
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.base+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-Plex-Token", c.token)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10)) // so the connection is reused
+	if resp.StatusCode == http.StatusUnauthorized {
+		return ErrUnauthorized
+	}
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("plex returned HTTP %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// RefreshPath asks Plex to scan one folder of a library section (a partial scan): new,
+// changed and removed files under dir are picked up without walking the whole library.
+// dir is the folder as the Plex server sees it. Plex answers at once and scans in the
+// background. GET is what Plex Web and the other *arr apps send.
+func (c *Client) RefreshPath(ctx context.Context, sectionKey, dir string) error {
+	if sectionKey == "" {
+		return errors.New("no library section")
+	}
+	return c.do(ctx, http.MethodGet, "/library/sections/"+url.PathEscape(sectionKey)+"/refresh?path="+queryEscape(dir))
+}
+
+// RefreshSection asks Plex to scan a whole library section.
+func (c *Client) RefreshSection(ctx context.Context, sectionKey string) error {
+	if sectionKey == "" {
+		return errors.New("no library section")
+	}
+	return c.do(ctx, http.MethodGet, "/library/sections/"+url.PathEscape(sectionKey)+"/refresh")
+}
+
+// queryEscape escapes a query value with %20 for a space rather than '+': '+' only means a
+// space in form encoding, and a server reading it literally would scan a folder that
+// doesn't exist. A real '+' in a folder name is sent as %2B either way.
+func queryEscape(s string) string {
+	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 }
 
 // SectionTotal returns the item count of one library section (totalSize with a 0-size page).

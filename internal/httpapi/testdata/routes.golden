@@ -112,6 +112,7 @@ GET /api/v1/insights/image staff -
 GET /api/v1/insights/libraries staff -
 GET /api/v1/insights/plex staff -
 GET /api/v1/insights/plex/auth/{id} staff -
+GET /api/v1/insights/plex/scan staff -
 GET /api/v1/insights/recently-added staff -
 GET /api/v1/insights/reliability staff -
 GET /api/v1/insights/stats staff -
@@ -249,6 +250,7 @@ POST /api/v1/indexers/test staff -
 POST /api/v1/indexers/{id}/test staff -
 POST /api/v1/insights/import/tautulli admin -
 POST /api/v1/insights/plex/auth staff -
+POST /api/v1/insights/plex/scan/test staff -
 POST /api/v1/insights/plex/test staff -
 POST /api/v1/jobs/{id}/cancel staff -
 POST /api/v1/library/fit/preview staff -
@@ -353,6 +355,7 @@ PUT /api/v1/downloadclients/{id} staff -
 PUT /api/v1/downloadclients/{id}/settings staff -
 PUT /api/v1/indexers/{id} staff -
 PUT /api/v1/insights/plex staff -
+PUT /api/v1/insights/plex/scan staff -
 PUT /api/v1/me/apprise user ext
 PUT /api/v1/me/audio/password user ext
 PUT /api/v1/movies/{id}/availability staff -
