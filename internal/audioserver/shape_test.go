@@ -302,7 +302,8 @@ func shapeHarness(t *testing.T) (*harness, map[string]string) {
 	if err := h.srv.books.SetSeries(ctx, h.book.ID, "The Crawl", 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.srv.books.SetCover(ctx, h.book.ID, "https://covers.example/dcc.jpg"); err != nil {
+	if err := h.srv.books.OverrideMetadata(ctx, h.book.ID, h.book.Title, h.book.Author, 2020, "A man and his ex-girlfriend's cat.",
+		"https://covers.example/dcc.jpg"); err != nil {
 		t.Fatal(err)
 	}
 	vars := map[string]string{

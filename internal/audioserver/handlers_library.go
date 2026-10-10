@@ -356,8 +356,8 @@ func (s *Server) handleAuthors(w http.ResponseWriter, r *http.Request) {
 		if images[a.name] != "" {
 			img = "/api/authors/" + id + "/image"
 		}
-		list = append(list, obj{"id": id, "asin": nil, "name": a.name, "description": nil, "imagePath": img,
-			"libraryId": libraryID, "addedAt": a.added, "updatedAt": a.added, "numBooks": a.count})
+		list = append(list, obj{"id": id, "asin": nil, "name": a.name, "lastFirst": authorNameLF(a.name), "description": nil,
+			"imagePath": img, "libraryId": libraryID, "addedAt": a.added, "updatedAt": a.added, "numBooks": a.count})
 	}
 	q := r.URL.Query()
 	desc := q.Get("desc") == "1"
@@ -379,7 +379,8 @@ func (s *Server) handleAuthors(w http.ResponseWriter, r *http.Request) {
 		list = list[start:min(start+limit, total)]
 	}
 	// "results" is the paged shape newer clients (Lissen) read; "authors" the older one.
-	writeJSON(w, http.StatusOK, obj{"results": list, "authors": list, "total": total, "limit": limit, "page": page})
+	writeJSON(w, http.StatusOK, obj{"results": list, "authors": list, "total": total, "limit": limit, "page": page,
+		"sortDesc": desc, "minified": false})
 }
 
 func (s *Server) handleSeriesList(w http.ResponseWriter, r *http.Request) {
@@ -406,8 +407,8 @@ func (s *Server) handleSeriesList(w http.ResponseWriter, r *http.Request) {
 		for _, it := range g {
 			books = append(books, s.itemMinified(ctx, it, prog))
 		}
-		list = append(list, obj{"id": seriesID(name), "name": name, "nameIgnorePrefix": ignorePrefix(name),
-			"libraryId": libraryID, "books": books, "addedAt": g[0].AddedAt, "totalDuration": 0})
+		list = append(list, obj{"id": seriesID(name), "name": name, "nameIgnorePrefix": ignorePrefix(name), "description": nil,
+			"libraryId": libraryID, "books": books, "addedAt": g[0].AddedAt, "updatedAt": g[0].AddedAt, "totalDuration": 0})
 	}
 	sort.SliceStable(list, func(i, j int) bool { return sortTitle(list[i]["name"].(string)) < sortTitle(list[j]["name"].(string)) })
 	q := r.URL.Query()
@@ -418,7 +419,8 @@ func (s *Server) handleSeriesList(w http.ResponseWriter, r *http.Request) {
 		start := min(page*limit, total)
 		list = list[start:min(start+limit, total)]
 	}
-	writeJSON(w, http.StatusOK, obj{"results": list, "total": total, "limit": limit, "page": page})
+	writeJSON(w, http.StatusOK, obj{"results": list, "total": total, "limit": limit, "page": page,
+		"sortDesc": q.Get("desc") == "1", "minified": false, "include": ""})
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -500,6 +502,9 @@ func (s *Server) handleItem(w http.ResponseWriter, r *http.Request) {
 		pp = &p
 	}
 	o, _ := s.itemExpanded(ctx, it, pp)
+	if pp == nil && strings.Contains(r.URL.Query().Get("include"), "progress") {
+		o["userMediaProgress"] = nil // asked for, and there isn't one yet
+	}
 	writeJSON(w, http.StatusOK, o)
 }
 
@@ -513,9 +518,19 @@ func (s *Server) handleBatchGet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	prog := s.progressMap(ctx, userOf(r).ID)
 	out := []obj{}
-	for _, id := range body.LibraryItemIDs {
+	// Audiobookshelf answers with full items. At most 100 at a time: a full item reads
+	// its files' chapters, which costs more than a list entry.
+	for i, id := range body.LibraryItemIDs {
+		if i >= 100 {
+			break
+		}
 		if it, err := s.item(ctx, id); err == nil {
-			out = append(out, s.itemMinified(ctx, it, prog))
+			var pp *listening.Progress
+			if p, ok := prog[it.Key]; ok {
+				pp = &p
+			}
+			o, _ := s.itemExpanded(ctx, it, pp)
+			out = append(out, o)
 		}
 	}
 	writeJSON(w, http.StatusOK, obj{"libraryItems": out})

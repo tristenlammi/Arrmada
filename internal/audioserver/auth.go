@@ -242,6 +242,14 @@ func (a *Accounts) Validate(ctx context.Context, token string) (*auth.User, stri
 	return u, family, nil
 }
 
+// IsLegacy reports whether token is a device's long-lived (non-expiring) token rather
+// than a 30-day access token.
+func (a *Accounts) IsLegacy(ctx context.Context, token string) bool {
+	var kind string
+	err := a.db.QueryRowContext(ctx, `SELECT kind FROM audio_tokens WHERE hash = ?`, hashToken(token)).Scan(&kind)
+	return err == nil && kind == "legacy"
+}
+
 // touch records a token's use at most once a minute, not on every request.
 func (a *Accounts) touch(ctx context.Context, h string) {
 	now := a.now()

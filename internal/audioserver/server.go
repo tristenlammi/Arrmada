@@ -269,7 +269,8 @@ func bearer(r *http.Request) string {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, obj{
 		"app": "audiobookshelf", "serverVersion": ServerVersion, "isInit": true, "language": "en-us",
-		"authMethods": []string{"local"}, "authFormData": obj{"authOpenIDButtonText": nil, "authOpenIDAutoLaunch": false},
+		"authMethods":  []string{"local"},
+		"authFormData": obj{"authOpenIDButtonText": nil, "authOpenIDAutoLaunch": false, "authLoginCustomMessage": ""},
 	})
 }
 
@@ -352,15 +353,27 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
-	u := userOf(r)
 	writeJSON(w, http.StatusOK, obj{
-		"user": s.userJSON(r.Context(), u, nil), "userDefaultLibraryId": libraryID,
+		"user": s.meJSON(r), "userDefaultLibraryId": libraryID,
 		"serverSettings": s.serverSettings(), "ereaderDevices": []obj{}, "Source": "docker",
 	})
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.userJSON(r.Context(), userOf(r), nil))
+	writeJSON(w, http.StatusOK, s.meJSON(r))
+}
+
+// meJSON is the signed-in user, for /api/me, /api/authorize and the replies that echo
+// the user. Audiobookshelf's user carries the long-lived "token"; this server keeps only
+// a hash of it, so it can only hand it back to a device that signed in with it (ShelfPlayer
+// does, and can't read the user without it). Anyone else gets no token key at all — the
+// official app signs itself out if "token" equals the access token it sent.
+func (s *Server) meJSON(r *http.Request) obj {
+	o := s.userJSON(r.Context(), userOf(r), nil)
+	if tok, _ := r.Context().Value(tokenKey).(string); tok != "" && s.Accounts.IsLegacy(r.Context(), tok) {
+		o["token"] = tok
+	}
+	return o
 }
 
 func (s *Server) handleNoPodcasts(w http.ResponseWriter, _ *http.Request) {
@@ -374,6 +387,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeOK is Audiobookshelf's bare success (res.sendStatus(200)): the text "OK".
+func writeOK(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("OK"))
 }
 
 // writeError answers the way Audiobookshelf does: a plain-text message.

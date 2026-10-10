@@ -12,14 +12,16 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/listening"
+	"github.com/tristenlammi/arrmada/internal/netutil"
 )
 
 type deviceInfo struct {
-	ClientName string `json:"clientName"`
-	DeviceID   string `json:"deviceId"`
-	DeviceName string `json:"deviceName"`
-	Model      string `json:"model"`
-	Manufact   string `json:"manufacturer"`
+	ClientName    string `json:"clientName"`
+	ClientVersion string `json:"clientVersion"`
+	DeviceID      string `json:"deviceId"`
+	DeviceName    string `json:"deviceName"`
+	Model         string `json:"model"`
+	Manufact      string `json:"manufacturer"`
 }
 
 func (d deviceInfo) name() string {
@@ -66,10 +68,21 @@ func (s *Server) handlePlay(w http.ResponseWriter, r *http.Request) {
 		pp = &view
 	}
 	item, files := s.itemExpanded(ctx, it, pp)
-	writeJSON(w, http.StatusOK, s.sessionJSON(it, sess, item, files, body.MediaPlayer, body.DeviceInfo))
+	// The device as Audiobookshelf describes it back: its id here is the sign-in's
+	// (one per device), and the address is the one the request came from.
+	dev := obj{"id": familyOf(r), "userId": "u" + itoa(u.ID), "deviceId": body.DeviceInfo.DeviceID,
+		"clientName": body.DeviceInfo.ClientName, "clientVersion": body.DeviceInfo.ClientVersion,
+		"deviceName": body.DeviceInfo.DeviceName, "ipAddress": netutil.ClientIP(r)}
+	if body.DeviceInfo.Manufact != "" {
+		dev["manufacturer"] = body.DeviceInfo.Manufact
+	}
+	if body.DeviceInfo.Model != "" {
+		dev["model"] = body.DeviceInfo.Model
+	}
+	writeJSON(w, http.StatusOK, s.sessionJSON(it, sess, item, files, body.MediaPlayer, dev))
 }
 
-func (s *Server) sessionJSON(it Item, sess listening.Session, item obj, files []AudioFile, player string, di deviceInfo) obj {
+func (s *Server) sessionJSON(it Item, sess listening.Session, item obj, files []AudioFile, player string, dev obj) obj {
 	media := item["media"].(obj)
 	started := time.UnixMilli(sess.StartedAt)
 	return obj{
@@ -77,7 +90,7 @@ func (s *Server) sessionJSON(it Item, sess listening.Session, item obj, files []
 		"bookId": "m" + it.Key, "episodeId": nil, "mediaType": "book", "mediaMetadata": media["metadata"],
 		"chapters": media["chapters"], "displayTitle": it.Title, "displayAuthor": it.Book.Author,
 		"coverPath": media["coverPath"], "duration": media["duration"], "playMethod": 0, "mediaPlayer": player,
-		"deviceInfo":    obj{"clientName": di.ClientName, "deviceId": di.DeviceID, "deviceName": di.DeviceName},
+		"deviceInfo":    dev,
 		"serverVersion": ServerVersion, "date": started.Format("2006-01-02"), "dayOfWeek": started.Weekday().String(),
 		"timeListening": 0, "startTime": sess.StartPos, "currentTime": sess.StartPos,
 		"startedAt": sess.StartedAt, "updatedAt": sess.LastAt, "audioTracks": media["tracks"], "libraryItem": item,
@@ -154,7 +167,7 @@ func (s *Server) sync(w http.ResponseWriter, r *http.Request, closeIt bool) {
 		s.log.Debug("audiobook server: holding a jump back until playback continues from it",
 			"saved", d.Progress.Position, "reported", body.CurrentTime.V)
 	}
-	w.WriteHeader(http.StatusOK)
+	writeOK(w)
 }
 
 // syncSession applies one live report (pos nil: none sent) to a session, filling in the
@@ -250,29 +263,30 @@ func (d *deviceInfo) UnmarshalJSON(b []byte) error {
 	if json.Unmarshal(b, &raw) != nil {
 		return nil
 	}
-	*d = deviceInfo{ClientName: string(raw["clientName"]), DeviceID: string(raw["deviceId"]),
+	*d = deviceInfo{ClientName: string(raw["clientName"]), ClientVersion: string(raw["clientVersion"]), DeviceID: string(raw["deviceId"]),
 		DeviceName: string(raw["deviceName"]), Model: string(raw["model"]), Manufact: string(raw["manufacturer"])}
 	return nil
 }
 
-func (s *Server) applyLocal(ctx context.Context, r *http.Request, ls localSession, fallback deviceInfo) error {
+// applyLocal records one offline session; synced says whether it moved the saved place.
+func (s *Server) applyLocal(ctx context.Context, r *http.Request, ls localSession, fallback deviceInfo) (synced bool, err error) {
 	if ls.EpisodeID != "" {
-		return errors.New("podcast episodes aren't served here")
+		return false, errors.New("podcast episodes aren't served here")
 	}
 	if _, err := s.item(ctx, string(ls.LibraryItemID)); err != nil {
-		return errors.New("item not found")
+		return false, errors.New("item not found")
 	}
 	di := ls.DeviceInfo
 	if di.name() == "" {
 		di = fallback
 	}
 	client := firstNonEmpty(di.ClientName, fallback.ClientName, clientName(r))
-	_, err := s.listen.SyncOffline(ctx, userOf(r).ID, listening.OfflineSession{
+	d, err := s.listen.SyncOffline(ctx, userOf(r).ID, listening.OfflineSession{
 		ID: string(ls.ID), ItemKey: string(ls.LibraryItemID), DeviceID: di.DeviceID, Device: firstNonEmpty(di.name(), client),
 		Client: client, StartTime: float64(ls.StartTime), Position: float64(ls.CurrentTime), Duration: float64(ls.Duration),
 		Listened: float64(ls.TimeListening), StartedAt: int64(ls.StartedAt), UpdatedAt: int64(ls.UpdatedAt),
 	})
-	return err
+	return d.Changed, err
 }
 
 func (s *Server) handleLocalSession(w http.ResponseWriter, r *http.Request) {
@@ -281,11 +295,11 @@ func (s *Server) handleLocalSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Invalid request body")
 		return
 	}
-	if err := s.applyLocal(r.Context(), r, ls, ls.DeviceInfo); err != nil {
+	if _, err := s.applyLocal(r.Context(), r, ls, ls.DeviceInfo); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	writeOK(w)
 }
 
 // handleLocalAll takes a batch of offline sessions and answers each one by id, so the
@@ -314,11 +328,12 @@ func (s *Server) handleLocalAll(w http.ResponseWriter, r *http.Request) {
 			results = append(results, obj{"id": ls.ID, "success": false, "error": "unreadable session"})
 			continue
 		}
-		if err := s.applyLocal(r.Context(), r, ls, body.DeviceInfo); err != nil {
+		synced, err := s.applyLocal(r.Context(), r, ls, body.DeviceInfo)
+		if err != nil {
 			results = append(results, obj{"id": ls.ID, "success": false, "error": err.Error()})
 			continue
 		}
-		results = append(results, obj{"id": ls.ID, "success": true})
+		results = append(results, obj{"id": ls.ID, "success": true, "progressSynced": synced})
 	}
 	writeJSON(w, http.StatusOK, obj{"results": results})
 }
@@ -420,7 +435,7 @@ func (s *Server) handleBatchProgress(w http.ResponseWriter, r *http.Request) {
 			_, _ = s.patchProgress(r.Context(), userOf(r).ID, b.LibraryItemID, b)
 		}
 	}
-	w.WriteHeader(http.StatusOK)
+	writeOK(w)
 }
 
 func (s *Server) handleDeleteProgress(w http.ResponseWriter, r *http.Request) {
@@ -428,12 +443,12 @@ func (s *Server) handleDeleteProgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Couldn't remove progress")
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	writeOK(w)
 }
 
 func (s *Server) handleHideProgress(w http.ResponseWriter, r *http.Request) {
 	_ = s.listen.HideProgress(r.Context(), userOf(r).ID, r.PathValue("id"), true)
-	writeJSON(w, http.StatusOK, s.userJSON(r.Context(), userOf(r), nil))
+	writeJSON(w, http.StatusOK, s.meJSON(r))
 }
 
 func (s *Server) handleItemsInProgress(w http.ResponseWriter, r *http.Request) {
@@ -480,7 +495,7 @@ func (s *Server) handleDeleteBookmark(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "Couldn't remove the bookmark")
 		return
 	}
-	w.WriteHeader(http.StatusOK)
+	writeOK(w)
 }
 
 // handleMyStats gives an app the user's own listening totals (no titles; the app knows
