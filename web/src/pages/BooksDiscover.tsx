@@ -5,6 +5,7 @@ import { useCanHover } from "../lib/useCanHover";
 import { coversFormat, editionState, initialBookFormats, lastBookFormats, rememberBookFormats, type BookFormats } from "../lib/bookFormats";
 import { FormatChoice } from "../components/BookFormats";
 import { QuotaHint } from "../components/QuotaHint";
+import { announceRequested } from "../lib/pushPrompt";
 
 // BooksDiscover is the Books area of Discover — deliberately separate from the movie/TV
 // experience: its own search (titles + authors), Open Library browse rows, author
@@ -88,6 +89,7 @@ export function BooksDiscover({ flash, canRequest, initialQuery, initialWork, on
       setRequested((s) => new Map(s).set(b.key, formats ?? ""));
       flash(res.subscribed ? "You’re on the list — we’ll notify you when it’s ready"
         : res.request.status === "approved" ? `Added “${b.title}” to your library` : `Requested “${b.title}”`);
+      announceRequested();
       return { subscribed: res.subscribed };
     } catch (e) {
       flash((e as Error).message);

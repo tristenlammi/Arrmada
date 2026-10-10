@@ -5,6 +5,7 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { PageSkeleton } from "./PageSkeleton";
 import { NotificationBell } from "./NotificationBell";
 import { BottomTabs } from "./BottomTabs";
+import { PushPromptHost } from "./PushPromptHost";
 import { useMe } from "../lib/me";
 import { signOut } from "../lib/session";
 import { useDocumentTitle } from "../lib/title";
@@ -84,6 +85,8 @@ export function UserLayout() {
         </ErrorBoundary>
       </main>
       <BottomTabs items={nav.filter((n) => n.tab)} />
+      {/* "Get notified when it's ready?" once, right after a first request. */}
+      <PushPromptHost />
     </div>
   );
 }

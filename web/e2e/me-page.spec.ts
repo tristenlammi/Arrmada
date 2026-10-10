@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import { test, expect, type MockedApi } from "./mockApi";
 import type { MockRoute } from "./fixtures/routes";
+import { ebookOnlyBook, requestableBook } from "./fixtures/books";
 
 // The Me page as the home of everything about you (APP-13/14/15, CFG-12, SEC-15): one
 // "Get notified" switch with a plain answer when push can't be on, per-event choices,
@@ -38,26 +39,23 @@ const pushRoutes: MockRoute[] = [
 // fakePush stands in for the browser's push machinery (the e2e run blocks service workers):
 // a registration whose push manager subscribes, and a Notification permission that a tap
 // can grant. secure:false pretends the page came over plain http.
-async function fakePush(page: Page, opts: { permission?: NotificationPermission; secure?: boolean } = {}) {
-  await page.addInitScript(({ permission, secure }) => {
+async function fakePush(page: Page, opts: { permission?: NotificationPermission; secure?: boolean; subscribed?: boolean } = {}) {
+  await page.addInitScript(({ permission, secure, subscribed }) => {
     let state: NotificationPermission = permission;
-    let sub: { endpoint: string; toJSON: () => unknown; unsubscribe: () => Promise<boolean> } | null = null;
+    type Sub = { endpoint: string; toJSON: () => unknown; unsubscribe: () => Promise<boolean> };
+    const make = (): Sub => ({
+      endpoint: "https://push.example/device-1",
+      toJSON: () => ({ keys: { p256dh: "p256", auth: "auth" } }),
+      unsubscribe: async () => { sub = null; return true; },
+    });
+    let sub: Sub | null = subscribed ? make() : null;
     Object.defineProperty(Notification, "permission", { configurable: true, get: () => state });
     Notification.requestPermission = async () => { if (state === "default") state = "granted"; return state; };
-    const reg = {
-      pushManager: {
-        getSubscription: async () => sub,
-        subscribe: async () => (sub = {
-          endpoint: "https://push.example/device-1",
-          toJSON: () => ({ keys: { p256dh: "p256", auth: "auth" } }),
-          unsubscribe: async () => { sub = null; return true; },
-        }),
-      },
-    };
+    const reg = { pushManager: { getSubscription: async () => sub, subscribe: async () => (sub = make()) } };
     const sw = { ready: Promise.resolve(reg), getRegistration: async () => reg, register: async () => reg, addEventListener() {}, removeEventListener() {} };
     Object.defineProperty(navigator, "serviceWorker", { configurable: true, get: () => sw });
     if (!secure) Object.defineProperty(window, "isSecureContext", { configurable: true, get: () => false });
-  }, { permission: opts.permission ?? "default", secure: opts.secure ?? true });
+  }, { permission: opts.permission ?? "default", secure: opts.secure ?? true, subscribed: opts.subscribed ?? false });
 }
 
 const notified = (page: Page) => page.getByRole("region", { name: "Get notified" });
@@ -154,5 +152,97 @@ test.describe("Get notified on a desktop", () => {
     await sw.click();
     await expect(sw).toHaveAttribute("aria-checked", "true");
     expect(api.callsTo("POST", "/api/v1/me/push/subscribe")).toHaveLength(1);
+  });
+});
+
+// APP-14: after a request, "Get notified when it's ready?" — once per device, and only
+// when the answer can be yes here.
+async function requestBook(page: Page, api: MockedApi, title: string, button: string) {
+  const poster = page.getByRole("button", { name: `View details for ${title}` }).first();
+  await poster.scrollIntoViewIfNeeded();
+  await poster.tap();
+  await page.getByRole("button", { name: button }).last().tap();
+  await api.quiet();
+}
+const prompt = (page: Page) => page.getByRole("dialog", { name: "Get notified when it’s ready?" });
+
+async function openBooks(page: Page, api: MockedApi) {
+  await page.goto("/discover?tab=books");
+  await expect(page.getByRole("main")).toBeVisible();
+  await api.quiet();
+}
+
+test.describe("the push prompt after a request", () => {
+  test.use({ persona: "requester" });
+
+  test("shows once after the first request, and Turn on registers this device", async ({ page, api }) => {
+    await fakePush(page);
+    await override(page, api, pushRoutes);
+    await openBooks(page, api);
+    await expect(prompt(page)).toHaveCount(0); // never on page load
+    await requestBook(page, api, requestableBook.title, "＋ Request");
+    expect(api.callsTo("POST", "/api/v1/requests")).toHaveLength(1);
+    await expect(prompt(page)).toBeVisible();
+    await prompt(page).getByRole("button", { name: "Turn on" }).tap();
+    await expect(prompt(page)).toHaveCount(0);
+    expect(api.callsTo("POST", "/api/v1/me/push/subscribe")).toHaveLength(1);
+  });
+
+  test("Not now stops it coming back on this device", async ({ page, api }) => {
+    await fakePush(page);
+    await override(page, api, pushRoutes);
+    await openBooks(page, api);
+    await requestBook(page, api, requestableBook.title, "＋ Request");
+    await prompt(page).getByRole("button", { name: "Not now" }).tap();
+    await expect(prompt(page)).toHaveCount(0);
+
+    // A later request, even after a reload, asks nothing.
+    await openBooks(page, api);
+    await requestBook(page, api, ebookOnlyBook.title, "＋ Request audiobook");
+    expect(api.callsTo("POST", "/api/v1/requests")).toHaveLength(2);
+    await expect(prompt(page)).toHaveCount(0);
+    expect(api.callsTo("POST", "/api/v1/me/push/subscribe")).toHaveLength(0);
+  });
+
+  test("no prompt when push is unavailable on the server", async ({ page, api }) => {
+    await openBooks(page, api);
+    await requestBook(page, api, requestableBook.title, "＋ Request");
+    expect(api.callsTo("POST", "/api/v1/requests")).toHaveLength(1);
+    await expect(prompt(page)).toHaveCount(0);
+  });
+
+  test("no prompt when push is already on", async ({ page, api }) => {
+    await fakePush(page, { permission: "granted", subscribed: true });
+    await override(page, api, pushRoutes);
+    await openBooks(page, api);
+    await requestBook(page, api, requestableBook.title, "＋ Request");
+    expect(api.callsTo("POST", "/api/v1/requests")).toHaveLength(1);
+    await expect(prompt(page)).toHaveCount(0);
+  });
+
+  test("no prompt when notifications are blocked", async ({ page, api }) => {
+    await fakePush(page, { permission: "denied" });
+    await override(page, api, pushRoutes);
+    await openBooks(page, api);
+    await requestBook(page, api, requestableBook.title, "＋ Request");
+    await expect(prompt(page)).toHaveCount(0);
+  });
+});
+
+test.describe("the push prompt on an iPhone outside the Home Screen app", () => {
+  test.use({
+    persona: "requester",
+    userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+  });
+
+  test("explains Add to Home Screen instead, and Got it counts as an answer", async ({ page, api }) => {
+    await fakePush(page);
+    await override(page, api, pushRoutes);
+    await openBooks(page, api);
+    await requestBook(page, api, requestableBook.title, "＋ Request");
+    await expect(prompt(page).getByText("Add to Home Screen")).toBeVisible();
+    await prompt(page).getByRole("button", { name: "Got it" }).tap();
+    await expect(prompt(page)).toHaveCount(0);
+    expect(await page.evaluate(() => localStorage.getItem("arrmada.pushPrompt"))).toBe("dismissed");
   });
 });
