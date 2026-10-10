@@ -92,7 +92,7 @@ test.describe("admin", () => {
     await serveInsights(page, ins.config("unconfigured"));
     await page.goto("/insights?tab=history");
     await expect(page.getByRole("cell", { name: /The Cartographer/ })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Connect your Plex server →" })).toHaveAttribute("href", "/insights?tab=settings");
+    await expect(page.getByRole("link", { name: "Connect your Plex server →" })).toHaveAttribute("href", "/settings/plex#plex-connection");
     await page.getByRole("tab", { name: "People" }).click();
     await expect(page.getByRole("cell", { name: "Jesse" })).toBeVisible();
     await page.getByRole("tab", { name: "Graphs" }).click();

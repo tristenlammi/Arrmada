@@ -7,19 +7,18 @@ import { usePoll } from "../lib/usePoll";
 import { hwBadge } from "../lib/plexHw";
 import { TabPanel, Tabs } from "../ui/Tabs";
 import { EmptyState } from "../ui/EmptyState";
-import { api, type PlexConfig, type PlexStatus, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs, type Reliability, type BufferGroup } from "../lib/api";
+import { api, type PlexConfig, type PlexStatus, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs, type Reliability, type BufferGroup } from "../lib/api";
 
 // Insights — Arrmada's Plex watch monitoring (a Tautulli replacement): live Activity, History,
-// People, Graphs, Reliability (buffering), and the Plex connection in Settings. Alerts used to
-// be a tab here; they live in Settings → Alerts now.
-type Tab = "activity" | "history" | "people" | "graphs" | "reliability" | "settings";
+// People, Graphs and Reliability (buffering). The Plex connection and the alerts used to be
+// tabs here; they live in Settings → Plex and Settings → Alerts now.
+type Tab = "activity" | "history" | "people" | "graphs" | "reliability";
 const TABS: { key: Tab; label: string }[] = [
   { key: "activity", label: "Activity" },
   { key: "history", label: "History" },
   { key: "people", label: "People" },
   { key: "graphs", label: "Graphs" },
   { key: "reliability", label: "Reliability" },
-  { key: "settings", label: "Settings" },
 ];
 // The tabs that read recorded plays: they only grow while monitoring is on, so they carry
 // the "monitoring is off" banner when it isn't.
@@ -70,6 +69,8 @@ export function Insights() {
   if (params.get("tab") === "notifications") return <Navigate to={LINKS.alerts} replace />;
   // Users was renamed People; old links keep working.
   if (params.get("tab") === "users") return <Navigate to="/insights?tab=people" replace />;
+  // The Plex connection moved from the old Settings tab to Settings → Plex.
+  if (params.get("tab") === "settings") return <Navigate to={LINKS.plexConnection} replace />;
   return <InsightsPage />;
 }
 
@@ -83,26 +84,23 @@ function InsightsPage() {
   // wait, so a connected server doesn't flash the "imported history" notice or the
   // setup state while its settings load.
   const [cfgDone, setCfgDone] = useState(false);
-  // live is the same settings, re-read every 15 s for the monitoring status, so the badge
-  // turns "unreachable" (and back) on its own. It is kept apart from cfg, which feeds the
-  // settings form: a poll must not overwrite what someone is typing.
-  const [live, setLive] = useState<PlexConfig | null>(null);
+  // Re-read every 15 s for the monitoring status, so the badge turns "unreachable" (and
+  // back) on its own. The form that edits these settings lives in Settings → Plex now, so
+  // nothing here is being typed into for a poll to overwrite.
   usePoll(() => api.insightsConfig()
-    .then((c) => { setLive(c); setCfg((prev) => prev ?? c); })
+    .then(setCfg)
     .catch(() => { if (!cfgDone) flash("Could not load Plex settings"); })
     .finally(() => setCfgDone(true)), 15000);
-  const saved = (c: PlexConfig) => { setCfg(c); setLive(c); };
-  const status = (live ?? cfg)?.status;
+  const status = cfg?.status;
   const connected = !!status && status !== "unconfigured";
 
   // Turn on is the banner's one-click fix; it saves only the switch (the URL goes back
   // unchanged because the endpoint always writes it).
   const [turningOn, setTurningOn] = useState(false);
   const turnOn = async () => {
-    const c = live ?? cfg;
-    if (!c) return;
+    if (!cfg) return;
     setTurningOn(true);
-    try { saved(await api.updateInsightsConfig({ url: c.url, enabled: true })); flash("Monitoring is on"); }
+    try { setCfg(await api.updateInsightsConfig({ url: cfg.url, enabled: true })); flash("Monitoring is on"); }
     catch (e) { flash((e as Error).message); } finally { setTurningOn(false); }
   };
 
@@ -112,26 +110,18 @@ function InsightsPage() {
       <div className="mx-auto w-full max-w-[1240px] px-4 py-6 sm:px-6">
         <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
           <p className="max-w-[64ch] text-[12.5px] text-ink-dim">Watch monitoring for your Plex server — who's streaming what, right now and historically, with stream quality, transcode diagnostics and buffering reliability.
-            {status === "unconfigured" && <> <Link to={LINKS.plexConnection} className="font-semibold" style={{ color: "var(--accent)" }}>Connect your server</Link> to begin.</>}
+            {status === "unconfigured" && <> <Link to={LINKS.plexConnection} className="font-semibold" style={{ color: "var(--accent)" }}>Connect your Plex server in Settings → Plex</Link> to begin.</>}
           </p>
-          {status && <MonitoringBadge c={(live ?? cfg)!} />}
+          {cfg && <MonitoringBadge c={cfg} />}
         </div>
 
         <Tabs tabs={TABS} value={tab} onChange={setTab} idPrefix="insights" label="Insights sections" />
 
         {status === "off" && RECORDED_TABS.includes(tab) && <MonitoringOff busy={turningOn} onTurnOn={turnOn} />}
 
-        <InsightsCfg.Provider value={live ?? cfg}>
+        <InsightsCfg.Provider value={cfg}>
         <TabPanel idPrefix="insights" value={tab}>
-          {tab === "settings" ? (
-            <>
-              {/* Kept for one release so muscle memory finds the new home. */}
-              <Link to={LINKS.alerts} className="mb-3 block max-w-[640px] rounded-xl px-4 py-3 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", background: "var(--panel)", color: "var(--accent)" }}>
-                Alert settings moved to Settings → Alerts →
-              </Link>
-              <PlexSettings cfg={cfg} onSaved={saved} flash={flash} />
-            </>
-          ) : !cfgDone ? (
+          {!cfgDone ? (
             <div className="rounded-xl p-10 text-center text-[12.5px] text-ink-dim" style={{ border: "1px solid var(--line)" }}>Loading…</div>
           ) : tab === "activity" ? (
             <ActivityView connected={!!connected} />
@@ -993,129 +983,6 @@ function ImportedNotice() {
     <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg px-3.5 py-2 text-[12px] text-ink-dim" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
       <span>Showing imported history — connect Plex to record new plays.</span>
       <Link to={LINKS.plexConnection} className="font-semibold" style={{ color: "var(--accent)" }}>Connect your Plex server →</Link>
-    </div>
-  );
-}
-
-const inp = "w-full rounded-lg px-3 py-2 text-[13px]";
-const inpStyle = { background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)" } as const;
-
-function PlexSettings({ cfg, onSaved, flash }: { cfg: PlexConfig | null; onSaved: (c: PlexConfig) => void; flash: (m: string) => void }) {
-  const [url, setUrl] = useState("");
-  const [token, setToken] = useState("");
-  const [poll, setPoll] = useState("5");
-  const [enabled, setEnabled] = useState(false);
-  const [busy, setBusy] = useState<"save" | "test" | null>(null);
-  const [test, setTest] = useState<PlexTestResult | null>(null);
-  const [signingIn, setSigningIn] = useState(false);
-
-  useEffect(() => {
-    if (!cfg) return;
-    setUrl(cfg.url);
-    setPoll(String(cfg.poll_seconds || 5));
-    setEnabled(cfg.enabled);
-  }, [cfg]);
-
-  // Sign in with Plex: open plex.tv's auth popup, then poll until the user approves,
-  // at which point the token (and server URL, if unset) are stored on the server.
-  const signIn = async () => {
-    setSigningIn(true);
-    setTest(null);
-    try {
-      const { id, auth_url } = await api.insightsPlexAuthStart();
-      const popup = window.open(auth_url, "plex-auth", "width=800,height=720");
-      const deadline = Date.now() + 3 * 60 * 1000;
-      while (true) {
-        await new Promise((r) => setTimeout(r, 2000));
-        if (Date.now() > deadline) { flash("Plex sign-in timed out — try again."); break; }
-        let authorized = false;
-        try { authorized = (await api.insightsPlexAuthPoll(id)).authorized; } catch { /* keep polling */ }
-        if (authorized) {
-          popup?.close();
-          const c = await api.insightsConfig();
-          onSaved(c);
-          setUrl(c.url);
-          flash("Signed in with Plex ✓");
-          break;
-        }
-        if (popup && popup.closed) { flash("Sign-in window closed before finishing."); break; }
-      }
-    } catch (e) {
-      flash((e as Error).message);
-    } finally {
-      setSigningIn(false);
-    }
-  };
-
-  const body = () => ({ url: url.trim(), token: token.trim() || undefined, enabled, poll_seconds: Number(poll) || 5 });
-
-  const save = async () => {
-    setBusy("save");
-    try { const c = await api.updateInsightsConfig(body()); onSaved(c); setToken(""); flash("Plex settings saved"); }
-    catch (e) { flash((e as Error).message); } finally { setBusy(null); }
-  };
-  const runTest = async () => {
-    setBusy("test"); setTest(null);
-    try { setTest(await api.testInsights({ url: url.trim() || undefined, token: token.trim() || undefined })); }
-    catch (e) { setTest({ ok: false, error: (e as Error).message }); } finally { setBusy(null); }
-  };
-
-  return (
-    <div className="grid gap-4" style={{ gridTemplateColumns: "minmax(0,1fr)" }}>
-      <div className="rounded-xl p-5" style={{ border: "1px solid var(--line)", background: "var(--panel)", maxWidth: 560 }}>
-        <div className="text-[13.5px] font-bold">Plex connection</div>
-        <div className="mb-4 mt-0.5 text-[11.5px] text-ink-faint">Point Arrmada at your Plex Media Server. Your token stays on this server and is never shown back in full.</div>
-
-        {/* One-click sign-in — no token hunting. */}
-        <button onClick={signIn} disabled={signingIn} className="mb-4 flex w-full items-center justify-center gap-2 rounded-lg py-2.5 text-[13px] font-semibold disabled:opacity-60" style={{ background: "#e5a00d", color: "#1f1200" }}>
-          {signingIn ? "Waiting for Plex…" : (cfg?.token_set ? "Re-sign in with Plex" : "Sign in with Plex")}
-        </button>
-        <div className="mb-4 flex items-center gap-2 text-[10.5px] text-ink-faint">
-          <span className="h-px flex-1" style={{ background: "var(--line)" }} /> or enter manually <span className="h-px flex-1" style={{ background: "var(--line)" }} />
-        </div>
-
-        <label className="mb-3 block">
-          <span className="mb-1 block text-[12px] font-semibold">Server URL</span>
-          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.168.1.10:32400" className={inp} style={inpStyle} />
-        </label>
-
-        <label className="mb-3 block">
-          <span className="mb-1 block text-[12px] font-semibold">X-Plex-Token</span>
-          <input value={token} onChange={(e) => setToken(e.target.value)} type="password" placeholder={cfg?.token_set ? "•••••••••• (saved — leave blank to keep)" : "paste your token"} className={inp} style={inpStyle} />
-          <span className="mt-1 block text-[10.5px] text-ink-faint">In Plex web: play an item → ⋯ → Get Info → View XML — the URL ends with <code>X-Plex-Token=…</code></span>
-        </label>
-
-        <div className="mb-4 flex items-center gap-4">
-          <label className="block">
-            <span className="mb-1 block text-[12px] font-semibold">Poll interval</span>
-            <span className="flex items-center gap-1.5"><input value={poll} onChange={(e) => setPoll(e.target.value)} type="number" min="2" max="60" className="w-[70px] rounded-lg px-2.5 py-1.5 text-[12px]" style={inpStyle} /><span className="text-[11px] text-ink-faint">seconds</span></span>
-          </label>
-          <label className="flex cursor-pointer items-center gap-2 pt-4 text-[12px]">
-            <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-            <span><b className="font-semibold">Enable monitoring</b><span className="block text-[10.5px] text-ink-faint">record activity in the background</span></span>
-          </label>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button onClick={runTest} disabled={busy !== null || !url.trim()} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ border: "1px solid var(--line)", background: "var(--panel-2)", color: "var(--ink)" }}>{busy === "test" ? "Testing…" : "Test connection"}</button>
-          <button onClick={save} disabled={busy !== null || !url.trim()} className="rounded-lg px-3.5 py-2 text-[12.5px] font-semibold disabled:opacity-50" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy === "save" ? "Saving…" : "Save"}</button>
-        </div>
-
-        {test && (
-          <div className="mt-4 rounded-lg p-3 text-[12px]" style={{ border: `1px solid ${test.ok ? "var(--good)" : "var(--reject)"}`, background: test.ok ? "var(--good-soft)" : "var(--reject-soft)", color: test.ok ? "var(--good)" : "var(--reject)" }}>
-            {test.ok ? (
-              <div>
-                <div className="font-semibold">✓ Connected{test.version ? ` · Plex ${test.version}` : ""}</div>
-                {test.libraries && test.libraries.length > 0 && (
-                  <div className="mt-1 text-ink-dim">Libraries: {test.libraries.map((l) => l.title).join(", ")}</div>
-                )}
-              </div>
-            ) : (
-              <div className="font-semibold">✕ {test.error || "Connection failed"}</div>
-            )}
-          </div>
-        )}
-      </div>
     </div>
   );
 }

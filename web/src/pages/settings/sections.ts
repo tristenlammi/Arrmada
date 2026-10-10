@@ -2,7 +2,7 @@
 // (for the search box) and where an old link should land. Kept free of components so it
 // can be tested on its own; pages/Settings.tsx pairs each id with the component it renders.
 
-export type SectionId = "library" | "media" | "downloads" | "alerts" | "users" | "import" | "system" | "status";
+export type SectionId = "library" | "media" | "downloads" | "alerts" | "plex" | "users" | "import" | "system" | "status";
 
 export interface SettingsSection {
   id: SectionId;
@@ -19,6 +19,9 @@ export const SECTIONS: readonly SettingsSection[] = [
   { id: "downloads", label: "Downloads", adminOnly: true },
   // Managers see the alert connections read-only; only admins change them.
   { id: "alerts", label: "Alerts", adminOnly: false },
+  // The Plex connection is a manager setting (Insights reads it); the sign-in cards on the
+  // same page are shown to admins only.
+  { id: "plex", label: "Plex", adminOnly: false },
   { id: "users", label: "Users", adminOnly: true },
   { id: "import", label: "Import", adminOnly: true },
   { id: "system", label: "System", adminOnly: true },
@@ -38,6 +41,8 @@ export interface SearchEntry {
   section: SectionId;
   /** The card's element id, so a result scrolls straight to it. */
   anchor: string;
+  /** An admin-only card in a section managers also see (Plex sign-in under Plex). */
+  adminOnly?: true;
 }
 
 // Every card in every section, with the words someone might type to find it.
@@ -55,7 +60,8 @@ export const SEARCH_INDEX: readonly SearchEntry[] = [
   { label: "Recycle bin", keywords: "trash deleted restore empty retention size cap purge undo", section: "downloads", anchor: "recycle-bin" },
   { label: "Alerts", keywords: "alert alerts notification notifications apprise discord telegram ntfy email slack pushover push phone message", section: "alerts", anchor: "alerts" },
   { label: "Users", keywords: "add user people accounts roles admin manager requester read-only password auto-approve block delete disable sign in", section: "users", anchor: "users" },
-  { label: "Plex sign-in", keywords: "plex login sign in with plex auto-approve home shared users", section: "users", anchor: "plex-sign-in" },
+  { label: "Plex connection", keywords: "plex server url token connect sign in monitoring insights poll interval", section: "plex", anchor: "plex-connection" },
+  { label: "Plex sign-in", keywords: "plex login sign in with plex auto-approve home shared users staff admin owner policy", section: "plex", anchor: "plex-sign-in", adminOnly: true },
   { label: "Request limits", keywords: "quota quotas request limits per week movies seasons books fair use household", section: "users", anchor: "request-limits" },
   { label: "Import from Overseerr / Jellyseerr", keywords: "overseerr jellyseerr requests migrate import", section: "import", anchor: "overseerr-import" },
   { label: "Import from Tautulli", keywords: "tautulli watch history plex insights migrate import", section: "import", anchor: "tautulli-import" },
@@ -68,13 +74,13 @@ export const SEARCH_INDEX: readonly SearchEntry[] = [
 ];
 
 // searchSettings finds the cards whose name or keywords contain every word typed, among
-// the sections this viewer can open.
-export function searchSettings(query: string, visible: readonly string[]): SearchEntry[] {
+// the sections this viewer can open (admin-only cards for admins only).
+export function searchSettings(query: string, visible: readonly string[], admin = true): SearchEntry[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length === 0) return [];
   const sectionLabel = new Map(SECTIONS.map((s) => [s.id, s.label]));
   return SEARCH_INDEX.filter((e) => {
-    if (!visible.includes(e.section)) return false;
+    if (!visible.includes(e.section) || (e.adminOnly && !admin)) return false;
     const hay = `${e.label} ${e.keywords} ${sectionLabel.get(e.section) ?? ""}`.toLowerCase();
     return words.every((w) => hay.includes(w));
   });

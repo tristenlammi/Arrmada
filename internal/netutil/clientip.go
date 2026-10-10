@@ -52,6 +52,13 @@ func ForwardedClientIP(r *http.Request) net.IP {
 	return pickHop(forwardedFor(r.Header.Values("Forwarded")))
 }
 
+// FromLocalProxy reports whether r reached us from a loopback or private address — the
+// only peers whose forwarding headers (X-Forwarded-Host and friends) are believed.
+func FromLocalProxy(r *http.Request) bool {
+	_, p := peer(r)
+	return p != nil && (p.IsLoopback() || p.IsPrivate())
+}
+
 // IsPublic reports whether ip is an internet address: not private, loopback or
 // link-local.
 func IsPublic(ip net.IP) bool {

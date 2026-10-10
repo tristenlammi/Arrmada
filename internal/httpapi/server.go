@@ -127,12 +127,13 @@ type api struct {
 	deps         Deps
 	start        time.Time
 	loginLimiter *loginLimiter // throttles auth attempts (login/setup/plex-pin)
+	plexPins     *plexPinGuard // which browser (and account) started each Plex PIN
 }
 
 // New builds the HTTP server: JSON API routes, the embedded UI (with SPA
 // fallback), and the middleware chain (recover → log → mux).
 func New(d Deps) *http.Server {
-	a := &api{deps: d, start: time.Now(), loginLimiter: newLoginLimiter(10, 15*time.Minute)}
+	a := &api{deps: d, start: time.Now(), loginLimiter: newLoginLimiter(10, 15*time.Minute), plexPins: newPlexPinGuard()}
 
 	rt := newRouter(a)
 	a.registerRoutes(rt)
@@ -235,6 +236,11 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("POST /api/v1/me/push/subscribe", a.signedIn(a.handlePushSubscribe).ext())
 	mux.HandleFunc("POST /api/v1/me/push/unsubscribe", a.signedIn(a.handlePushUnsubscribe).ext())
 	mux.HandleFunc("POST /api/v1/me/push/status", a.signedIn(a.handlePushStatus).ext())
+	// Your own Plex link (Discover's recommendations, and where Plex sign-in lands).
+	mux.HandleFunc("GET /api/v1/me/plex", a.signedIn(a.handleMyPlex).ext())
+	mux.HandleFunc("POST /api/v1/me/plex/link", a.signedIn(a.handlePlexLinkStart).ext())
+	mux.HandleFunc("GET /api/v1/me/plex/link/{id}", a.signedIn(a.handlePlexLinkPoll).ext())
+	mux.HandleFunc("DELETE /api/v1/me/plex/link", a.signedIn(a.handlePlexUnlink).ext())
 	mux.HandleFunc("GET /api/v1/me/apprise", a.signedIn(a.handleGetMyApprise).ext())
 	mux.HandleFunc("GET /api/v1/me/books", a.signedIn(a.handleMyBooks).ext())
 	mux.HandleFunc("GET /api/v1/me/quota", a.signedIn(a.handleMyQuota).ext())
@@ -247,6 +253,9 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/users/{id}/impact", a.requireRole(auth.RoleAdmin, a.handleUserImpact))
 	mux.HandleFunc("DELETE /api/v1/users/{id}", a.requireRole(auth.RoleAdmin, a.handleDeleteUser))
 	mux.HandleFunc("GET /api/v1/users/plex-blocks", a.requireRole(auth.RoleAdmin, a.handleListPlexBlocks))
+	// Merge a duplicate Plex requester into the account it belongs with (preview first).
+	mux.HandleFunc("GET /api/v1/users/{id}/plex/merge", a.requireRole(auth.RoleAdmin, a.handlePlexMergePreview))
+	mux.HandleFunc("POST /api/v1/users/{id}/plex/merge", a.requireRole(auth.RoleAdmin, a.handlePlexMerge))
 	mux.HandleFunc("POST /api/v1/users/{id}/block-plex", a.requireRole(auth.RoleAdmin, a.handleBlockUserPlex))
 	mux.HandleFunc("DELETE /api/v1/users/plex-blocks/{plexID}", a.requireRole(auth.RoleAdmin, a.handleUnblockPlex))
 

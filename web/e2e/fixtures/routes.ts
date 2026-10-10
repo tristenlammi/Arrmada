@@ -39,6 +39,8 @@ export function routes(p: PersonaInfo): MockRoute[] {
     // The Me page's notification settings: no push key (push stays hidden), no Apprise link.
     get("/api/v1/me/push/key", { key: "" }),
     get("/api/v1/me/apprise", { set: false, hint: "" }),
+    // Your own Plex link (sidebar footer, Me page): not linked.
+    get("/api/v1/me/plex", { linked: false, can_unlink: false }),
 
     // Discover (requester and staff)
     get("/api/v1/requests", discover.requests),

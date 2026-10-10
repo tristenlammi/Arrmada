@@ -122,6 +122,9 @@ func (a *api) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		Disabled *bool `json:"disabled"`
 		// Quota is their own request limits: -1 the global limit, 0 unlimited, n per window.
 		Quota *auth.UserQuota `json:"quota"`
+		// PlexUnlink removes their Plex link. Their next Plex sign-in then makes (or finds)
+		// another account, so the dialog says so when Plex is their only way in.
+		PlexUnlink bool `json:"plex_unlink"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
@@ -208,6 +211,13 @@ func (a *api) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			a.writeError(w, http.StatusInternalServerError, "could not update password")
 			return
 		}
+	}
+	if req.PlexUnlink {
+		if err := a.deps.Auth.UnlinkPlex(r.Context(), id, false); err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not unlink their Plex account")
+			return
+		}
+		a.deps.Log.Info("users: Plex account unlinked by an admin", "user_id", id)
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"id": id, "role": role, "disabled": disabled, "auto_approve": autoApprove.All(),

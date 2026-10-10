@@ -31,6 +31,15 @@ const (
 	// used; plays before it stored "hardware was requested" (see PLEX-09).
 	keyHWSince  = "insights_hw_actual_since"
 	plexProduct = "Arrmada"
+	// The connected server's machine identifier and name, from its own /identity and root
+	// endpoint: stored on sign-in, on a save that changes the URL or token, and on a Test of
+	// the saved connection. Plex sign-in gates on the machine id, and app.plex.tv deep
+	// links need it.
+	KeyMachineID  = "insights_plex_machine_id"
+	keyServerName = "insights_plex_server_name"
+	// probeTimeout bounds each connection tried while finding the server, so a dead
+	// address (a LAN IP from another network, a firewalled remote) costs seconds, not 15.
+	probeTimeout = 3 * time.Second
 )
 
 // Service owns the Plex connection config, the poller/recorder, and history queries.
@@ -78,10 +87,15 @@ func NewService(db *sql.DB, set *settings.Service, geo *geoip.Resolver, bus *eve
 // how monitoring is actually going, so the page can say "not recording" or "unreachable"
 // instead of a green badge that only means a URL and token are saved.
 type Config struct {
-	URL         string `json:"url"`
-	TokenSet    bool   `json:"token_set"`
-	Enabled     bool   `json:"enabled"`
+	URL      string `json:"url"`
+	TokenSet bool   `json:"token_set"`
+	Enabled  bool   `json:"enabled"`
+	// EnabledSet: someone has chosen monitoring on or off. Until then the form starts
+	// with it on, since connecting Plex without recording anything is never the point.
+	EnabledSet  bool   `json:"enabled_set"`
 	PollSeconds int    `json:"poll_seconds"`
+	ServerName  string `json:"server_name,omitempty"`
+	MachineID   string `json:"machine_id,omitempty"`
 	Status      Status `json:"status"`
 	LastPollAt  int64  `json:"last_poll_at,omitempty"` // unix seconds of the last answer from Plex
 	LastError   string `json:"last_error,omitempty"`   // why the last exchange failed, while it's failing
@@ -97,7 +111,10 @@ func (s *Service) Config(ctx context.Context) Config {
 		URL:         s.settings.Get(ctx, keyURL, ""),
 		TokenSet:    s.settings.Get(ctx, keyToken, "") != "",
 		Enabled:     s.settings.GetBool(ctx, keyEnabled, false),
+		EnabledSet:  s.settings.Get(ctx, keyEnabled, "") != "",
 		PollSeconds: s.pollSeconds(ctx),
+		ServerName:  s.settings.Get(ctx, keyServerName, ""),
+		MachineID:   s.settings.Get(ctx, KeyMachineID, ""),
 		Status:      h.Status,
 		LastError:   h.LastErr,
 	}
@@ -119,11 +136,6 @@ func (s *Service) markHWSince(ctx context.Context, now time.Time) {
 	}
 }
 
-// configured reports whether there is a server to talk to: both a URL and a token.
-func (s *Service) configured(ctx context.Context) bool {
-	return s.settings.Get(ctx, keyURL, "") != "" && s.settings.Get(ctx, keyToken, "") != ""
-}
-
 func (s *Service) pollSeconds(ctx context.Context) int {
 	n := 5
 	if v := s.settings.Get(ctx, keyPoll, ""); v != "" {
@@ -141,12 +153,16 @@ func (s *Service) pollSeconds(ctx context.Context) int {
 }
 
 // SetConfig persists connection settings. An empty token leaves the stored one untouched (so the
-// UI can save other fields without re-entering the secret).
+// UI can save other fields without re-entering the secret). A save that changes the URL or
+// token re-reads the server's identity, so the stored machine id and name never describe a
+// different server than the one saved.
 func (s *Service) SetConfig(ctx context.Context, url string, token *string, enabled *bool, poll *int) error {
+	changed := url != s.settings.Get(ctx, keyURL, "")
 	if err := s.settings.Set(ctx, keyURL, url); err != nil {
 		return err
 	}
 	if token != nil && *token != "" {
+		changed = changed || *token != s.settings.Get(ctx, keyToken, "")
 		if err := s.settings.Set(ctx, keyToken, *token); err != nil {
 			return err
 		}
@@ -160,6 +176,10 @@ func (s *Service) SetConfig(ctx context.Context, url string, token *string, enab
 		if err := s.settings.Set(ctx, keyPoll, strconv.Itoa(*poll)); err != nil {
 			return err
 		}
+	}
+	s.enableIfUnset(ctx)
+	if changed {
+		s.refreshIdentity(ctx)
 	}
 	return nil
 }
@@ -183,37 +203,23 @@ type PlexAuth struct {
 	AuthURL string `json:"auth_url"`
 }
 
-// StartPlexAuth begins a Plex sign-in and returns the PIN id + the URL to open.
-func (s *Service) StartPlexAuth(ctx context.Context) (PlexAuth, error) {
+// StartPlexAuth begins a Plex sign-in and returns the PIN id + the URL to open. forward,
+// when not nil, gives the address plex.tv should send the browser back to for that PIN
+// (the full-page redirect used when no popup can open).
+func (s *Service) StartPlexAuth(ctx context.Context, forward func(pinID int) string) (PlexAuth, error) {
 	cid := s.clientID(ctx)
 	pin, err := plex.RequestPIN(ctx, cid, plexProduct)
 	if err != nil {
 		return PlexAuth{}, err
 	}
-	return PlexAuth{ID: pin.ID, AuthURL: plex.AuthURL(cid, pin.Code, plexProduct)}, nil
+	back := ""
+	if forward != nil {
+		back = forward(pin.ID)
+	}
+	return PlexAuth{ID: pin.ID, AuthURL: plex.AuthURL(cid, pin.Code, plexProduct, back)}, nil
 }
 
-// PollPlexAuth checks whether the user has authorized the sign-in. On success it
-// stores the token and, if no URL is set yet, auto-discovers the server URL.
-func (s *Service) PollPlexAuth(ctx context.Context, pinID int) (bool, error) {
-	cid := s.clientID(ctx)
-	token, err := plex.CheckPIN(ctx, cid, pinID)
-	if err != nil {
-		return false, err
-	}
-	if token == "" {
-		return false, nil // still pending
-	}
-	if err := s.settings.Set(ctx, keyToken, token); err != nil {
-		return false, err
-	}
-	if s.settings.Get(ctx, keyURL, "") == "" {
-		if url, e := plex.DiscoverServer(ctx, cid, token); e == nil && url != "" {
-			_ = s.settings.Set(ctx, keyURL, url)
-		}
-	}
-	return true, nil
-}
+// PollPlexAuth (signing in finds and checks the server) is in connect.go.
 
 // SeedFromEnv stores a URL/token supplied via env on startup, but only for fields not already
 // set in the DB — so the UI stays the source of truth once the admin edits it there.
@@ -233,27 +239,34 @@ func (s *Service) client(ctx context.Context) *plex.Client {
 
 // TestResult reports whether a connection works, plus a quick server summary.
 type TestResult struct {
-	OK        bool           `json:"ok"`
-	Error     string         `json:"error,omitempty"`
-	MachineID string         `json:"machine_id,omitempty"`
-	Version   string         `json:"version,omitempty"`
-	Libraries []plex.Library `json:"libraries,omitempty"`
+	OK         bool           `json:"ok"`
+	Error      string         `json:"error,omitempty"`
+	MachineID  string         `json:"machine_id,omitempty"`
+	ServerName string         `json:"server_name,omitempty"`
+	Version    string         `json:"version,omitempty"`
+	Libraries  []plex.Library `json:"libraries,omitempty"`
 }
 
 // Test validates a connection. If url/token are provided they're tested directly (before saving);
-// otherwise the stored config is used.
+// otherwise the stored config is used. A passing test of the saved connection also refreshes
+// the stored machine id and server name.
 func (s *Service) Test(ctx context.Context, url, token string) TestResult {
+	savedURL, savedToken := s.settings.Get(ctx, keyURL, ""), s.settings.Get(ctx, keyToken, "")
 	if url == "" {
-		url = s.settings.Get(ctx, keyURL, "")
+		url = savedURL
 	}
 	if token == "" {
-		token = s.settings.Get(ctx, keyToken, "")
+		token = savedToken
 	}
 	c := plex.New(url, token)
 	id, err := c.Identity(ctx)
 	if err != nil {
 		return TestResult{OK: false, Error: err.Error()}
 	}
+	name, _ := c.ServerName(ctx)
+	if url == savedURL && token == savedToken {
+		s.saveIdentity(ctx, id.MachineIdentifier, name)
+	}
 	libs, _ := c.Libraries(ctx) // best-effort; connection already proven
-	return TestResult{OK: true, MachineID: id.MachineIdentifier, Version: id.Version, Libraries: libs}
+	return TestResult{OK: true, MachineID: id.MachineIdentifier, ServerName: name, Version: id.Version, Libraries: libs}
 }

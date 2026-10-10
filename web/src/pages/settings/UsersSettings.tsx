@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { PlexMergeDialog } from "../../components/PlexMergeDialog";
 import { Section, Toggle, inputStyle } from "../../components/settings/ui";
 import { api, type AuthUser, type PlexBlock, type UserImpact } from "../../lib/api";
 import { LINKS } from "../../lib/links";
@@ -8,26 +9,17 @@ import { useMe } from "../../lib/me";
 import { SaveBar, useLoadedSettings } from "../../lib/useSettings";
 import { managerExceptions, requesterPages } from "./roles";
 
-// Settings → Users (admin only): the accounts, and who may sign in with Plex.
+// Settings → Users (admin only): the accounts and their request limits. Who may sign in
+// with Plex lives in Settings → Plex.
 export function UsersSettings() {
   const { user, booksEnabled } = useMe();
   const { s, patch } = useLoadedSettings();
   return (
     <div className="flex flex-col gap-6">
       <UsersManager meId={user?.id} />
-      <Section id="plex-sign-in" title="Plex sign-in" subtitle={<>Let your Plex Home members and shared users sign in with Plex — no accounts to hand out. They get a Requester account ({requesterPages(booksEnabled)}), and only people with access to your Plex server get in. Needs your Plex server connected in <Link to={LINKS.plexConnection} style={{ color: "var(--accent)" }}>Insights → Settings</Link>.</>}>
-        <Toggle label="Allow Sign in with Plex" hint="Adds a 'Sign in with Plex' button to the login page." checked={s.plex_login_enabled} onChange={(v) => patch({ plex_login_enabled: v })} />
-        <div className="flex flex-col gap-1.5">
-          <div className="text-[12.5px] font-semibold">Auto-approve new Plex sign-ins' requests</div>
-          <AutoApproveChecks
-            value={typesFromCSV(s.plex_login_auto_approve_types ?? "movie")}
-            onChange={(v) => patch({ plex_login_auto_approve_types: typesToCSV(v) })}
-            books={booksEnabled}
-            label="New Plex sign-ins auto-approve"
-          />
-          <p className="m-0 text-[11px] text-ink-faint">Ticked types download straight away for someone who signs in with Plex for the first time; the rest wait for you. A series request can pull every season of a long show, so it starts with movies only. Existing accounts keep their own settings — change them under Users above.</p>
-        </div>
-      </Section>
+      <p className="m-0 text-[11.5px] text-ink-faint">
+        Who may sign in with Plex, and what new Plex sign-ins auto-approve, is in <Link to={LINKS.plexSignIn} style={{ color: "var(--accent)" }}>Settings → Plex</Link>.
+      </p>
       <Section id="request-limits" title="Request limits" subtitle="Optional: how much one person can ask for in a stretch of days. Following someone else's request is free, a withdrawn or declined request gives its share back, and admins and managers are never limited. 0 means no limit.">
         <div className="flex flex-wrap items-end gap-3">
           <QuotaField label="Movies" value={s.request_quota_movies ?? 0} onChange={(v) => patch({ request_quota_movies: v })} />
@@ -69,20 +61,20 @@ function QuotaField({ label, value, onChange, min = 0, max = 1000 }: { label: st
 }
 
 // Auto-approve is per media type: { movie, series, book }.
-type AutoTypes = { movie: boolean; series: boolean; book: boolean };
+export type AutoTypes = { movie: boolean; series: boolean; book: boolean };
 const NO_TYPES: AutoTypes = { movie: false, series: false, book: false };
 const TYPE_LABEL: [keyof AutoTypes, string][] = [["movie", "Movies"], ["series", "Series"], ["book", "Books"]];
-const typesFromCSV = (csv: string): AutoTypes => {
+export const typesFromCSV = (csv: string): AutoTypes => {
   const on = csv.split(",").map((t) => t.trim());
   return { movie: on.includes("movie"), series: on.includes("series"), book: on.includes("book") };
 };
-const typesToCSV = (t: AutoTypes) => TYPE_LABEL.filter(([k]) => t[k]).map(([k]) => k).join(",");
+export const typesToCSV = (t: AutoTypes) => TYPE_LABEL.filter(([k]) => t[k]).map(([k]) => k).join(",");
 const typesOf = (u: AuthUser): AutoTypes => ({ movie: !!u.auto_approve_movie, series: !!u.auto_approve_series, book: !!u.auto_approve_book });
 const typeFlags = (t: AutoTypes) => ({ auto_approve_movie: t.movie, auto_approve_series: t.series, auto_approve_book: t.book });
 
 // AutoApproveChecks is "Auto-approve: ☐ Movies ☐ Series ☐ Books" (Books only while the
 // module is on; a hidden type keeps its value).
-function AutoApproveChecks({ value, onChange, books, label }: { value: AutoTypes; onChange: (v: AutoTypes) => void; books: boolean; label: string }) {
+export function AutoApproveChecks({ value, onChange, books, label }: { value: AutoTypes; onChange: (v: AutoTypes) => void; books: boolean; label: string }) {
   return (
     <div role="group" aria-label={label} className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[12px] text-ink-dim">
       {TYPE_LABEL.filter(([k]) => k !== "book" || books).map(([k, name]) => (
@@ -166,6 +158,7 @@ function UsersManager({ meId }: { meId?: number }) {
               <span className="grid h-7 w-7 flex-none place-items-center rounded-full text-[11px] font-bold" style={{ background: "var(--accent-soft)", color: "var(--accent)" }}>{u.username[0]?.toUpperCase()}</span>
               <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium" style={u.disabled ? { color: "var(--ink-faint)" } : undefined}>{u.username}</span>
               {u.disabled && <span className="rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: "var(--reject-soft)", color: "var(--reject)" }} title="Can't sign in. Nothing of theirs was deleted.">Disabled</span>}
+              {u.plex_linked && <span className="hidden max-w-[140px] truncate rounded-full px-2 py-0.5 text-[10.5px] sm:inline" style={{ background: "var(--panel)", color: "var(--ink-dim)", border: "1px solid var(--line)" }} title="Linked Plex account">Plex{u.plex_username ? ` · ${u.plex_username}` : ""}</span>}
               {autoChip(typesOf(u)) && <span className="rounded-full px-2 py-0.5 font-mono text-[8.5px] font-bold uppercase" style={{ background: "var(--good-soft, rgba(90,140,90,.16))", color: "var(--good)" }}>{autoChip(typesOf(u))}</span>}
               {/* A Plex sign-in from before per-type auto-approve may still approve whole shows. */}
               {u.plex_linked && u.auto_approve_series && u.role === "requester" && (
@@ -221,7 +214,7 @@ function UsersManager({ meId }: { meId?: number }) {
         {err && <div className="text-[12px]" style={{ color: "var(--reject)" }}>{err}</div>}
       </form>
 
-      {editing && <EditUserModal user={editing} isMe={editing.id === meId} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
+      {editing && <EditUserModal user={editing} users={users ?? []} isMe={editing.id === meId} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); load(); }} />}
       {removing && <DeleteUserDialog user={removing} onClose={() => setRemoving(null)} onDeleted={() => { setRemoving(null); load(); }} />}
     </Section>
   );
@@ -302,7 +295,7 @@ function DeleteUserDialog({ user, onClose, onDeleted }: { user: AuthUser; onClos
   );
 }
 
-function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe: boolean; onClose: () => void; onSaved: () => void }) {
+function EditUserModal({ user, users, isMe, onClose, onSaved }: { user: AuthUser; users: AuthUser[]; isMe: boolean; onClose: () => void; onSaved: () => void }) {
   const [role, setRole] = useState(user.role);
   const [autoApprove, setAutoApprove] = useState<AutoTypes>(typesOf(user));
   const { booksEnabled } = useMe();
@@ -323,6 +316,16 @@ function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe:
       await api.updateUser(user.id, { role, ...typeFlags(autoApprove), quota: limits, ...signIn, ...(password ? { password } : {}) });
       onSaved();
     } catch (e) { setErr((e as Error).message); setBusy(false); }
+  };
+
+  const [confirmUnlink, setConfirmUnlink] = useState(false);
+  // Accounts this one could be merged into: any other account with no Plex link of its own.
+  const mergeTargets = users.filter((u) => u.id !== user.id && !u.plex_linked);
+  const [mergeInto, setMergeInto] = useState<number | null>(null);
+  const unlinkPlex = async () => {
+    setBusy(true); setErr(null);
+    try { await api.updateUser(user.id, { plex_unlink: true }); onSaved(); }
+    catch (e) { setErr((e as Error).message); setBusy(false); setConfirmUnlink(false); }
   };
 
   const blockPlex = async () => {
@@ -394,12 +397,30 @@ function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe:
             <span className="text-[11.5px] text-ink-dim">
               {user.plex_blocked
                 ? "Their Plex account is blocked from signing in here. Unblock it under Blocked Plex accounts."
-                : "Signs in with Plex. Blocking their Plex account stops them signing in with it (and stops a new account being made if you delete this one)."}
+                : `Linked to Plex${user.plex_username ? ` as ${user.plex_username}` : ""}. Blocking their Plex account stops them signing in with it (and stops a new account being made if you delete this one).`}
             </span>
-            {!user.plex_blocked && (
-              <button onClick={() => setConfirmBlock(true)} disabled={busy} className="flex-none rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Block their Plex account</button>
-            )}
+            <div className="flex flex-none flex-col gap-1.5">
+              {!user.plex_blocked && (
+                <button onClick={() => setConfirmBlock(true)} disabled={busy} className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--reject)", color: "var(--reject)" }}>Block their Plex account</button>
+              )}
+              <button onClick={() => setConfirmUnlink(true)} disabled={busy} className="rounded-lg px-2.5 py-1.5 text-[11.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Unlink Plex</button>
+            </div>
           </div>
+        )}
+
+        {/* A duplicate Plex requester (the owner or a family member signed in with Plex
+            before their own account was linked) can be folded into that account. */}
+        {user.plex_linked && !isMe && (user.role === "requester" || user.role === "readonly") && mergeTargets.length > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg p-3 text-[11.5px] text-ink-dim" style={{ background: "var(--panel-2)", border: "1px solid var(--line)" }}>
+            <span className="min-w-0 flex-1">Same person as another account? Merge this one into it: requests, inbox, phones, audiobook progress and the Plex link move there.</span>
+            <select aria-label="Merge into" value={mergeInto ?? ""} onChange={(e) => setMergeInto(e.target.value ? Number(e.target.value) : null)} className="rounded-lg px-2 py-1.5 text-[12px]" style={inputStyle}>
+              <option value="">Merge into…</option>
+              {mergeTargets.map((t) => <option key={t.id} value={t.id}>{t.username} ({t.role})</option>)}
+            </select>
+          </div>
+        )}
+        {mergeInto !== null && (
+          <PlexMergeDialog targetId={mergeInto} fromId={user.id} onClose={() => setMergeInto(null)} onMerged={() => { setMergeInto(null); onSaved(); }} />
         )}
 
         <label className="mb-4 flex flex-col gap-1.5">
@@ -412,6 +433,19 @@ function EditUserModal({ user, isMe, onClose, onSaved }: { user: AuthUser; isMe:
           <button onClick={onClose} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ border: "1px solid var(--line)", color: "var(--ink-dim)" }}>Cancel</button>
           <button onClick={save} disabled={busy} className="rounded-lg px-4 py-2 text-[12.5px] font-semibold" style={{ background: "linear-gradient(150deg, var(--accent), var(--accent-deep))", color: "var(--accent-ink)" }}>{busy ? "Saving…" : "Save changes"}</button>
         </div>
+        {confirmUnlink && (
+          <ConfirmDialog
+            title={<>Unlink {user.username}'s Plex account{user.plex_username ? ` (${user.plex_username})` : ""}?</>}
+            body={user.plex_only
+              ? <p className="m-0">Plex is their only way in: nobody knows a password for this account. After unlinking, their next Sign in with Plex makes a new, empty account. Set a new password here first if they should keep using this one.</p>
+              : <p className="m-0">Sign in with Plex won't open this account any more, and Discover stops using their Plex watch history. They can link it again from their account menu.</p>}
+            confirmLabel="Unlink"
+            busyLabel="Unlinking…"
+            busy={busy}
+            onConfirm={unlinkPlex}
+            onCancel={() => setConfirmUnlink(false)}
+          />
+        )}
         {confirmBlock && (
           <ConfirmDialog
             title={<>Block {user.username}'s Plex account?</>}

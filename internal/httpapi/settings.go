@@ -74,6 +74,7 @@ func (a *api) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		"books_enabled":           a.booksEnabled(ctx),
 		"music_enabled":           a.musicEnabled(ctx),
 		"plex_login_enabled":      a.deps.Settings.GetBool(ctx, "plex_login_enabled", false),
+		"plex_signin_staff":       a.deps.Settings.GetBool(ctx, keyPlexSignInStaff, false),
 		"tmdb_region":             a.deps.Settings.Get(ctx, "tmdb_region", ""),
 		"plex_login_auto_approve": a.plexAutoApproval(ctx).All(),
 		// Which media types a new Plex sign-in auto-approves ("movie,series,book").
@@ -119,6 +120,7 @@ type settingsUpdate struct {
 	BooksEnabled         *bool   `json:"books_enabled"`
 	MusicEnabled         *bool   `json:"music_enabled"`
 	PlexLoginEnabled     *bool   `json:"plex_login_enabled"`
+	PlexSignInStaff      *bool   `json:"plex_signin_staff"`
 	TMDBRegion           *string `json:"tmdb_region"`
 	PlexLoginAutoApprove *bool   `json:"plex_login_auto_approve"` // legacy: every type or none
 	// PlexLoginAutoApproveTypes wins over the legacy bool when both are sent.
@@ -157,6 +159,8 @@ func (a *api) adminSettingChange(ctx context.Context, req *settingsUpdate) strin
 		return "the Music module"
 	case boolChanged(req.PlexLoginEnabled, st.GetBool(ctx, "plex_login_enabled", false)):
 		return "Plex sign-in"
+	case boolChanged(req.PlexSignInStaff, st.GetBool(ctx, keyPlexSignInStaff, false)):
+		return "whether staff may sign in with Plex"
 	case req.PlexLoginAutoApproveTypes != nil && auth.ParseAutoApproval(*req.PlexLoginAutoApproveTypes) != a.plexAutoApproval(ctx),
 		req.PlexLoginAutoApproveTypes == nil && req.PlexLoginAutoApprove != nil && auth.AllTypes(*req.PlexLoginAutoApprove) != a.plexAutoApproval(ctx):
 		return "auto-approval of Plex sign-ins' requests"
@@ -286,6 +290,9 @@ func (a *api) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.PlexLoginEnabled != nil && !save(a.deps.Settings.SetBool(ctx, "plex_login_enabled", *req.PlexLoginEnabled)) {
+		return
+	}
+	if req.PlexSignInStaff != nil && !save(a.deps.Settings.SetBool(ctx, keyPlexSignInStaff, *req.PlexSignInStaff)) {
 		return
 	}
 	if req.TMDBRegion != nil && !save(a.deps.Settings.Set(ctx, "tmdb_region", region)) {

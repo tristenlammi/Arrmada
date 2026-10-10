@@ -75,3 +75,15 @@ export function nextAfterSignIn(): string {
   }
   return "/discover";
 }
+
+// keepNextAcrossRedirect is for a sign-in that leaves the page (Sign in with Plex by
+// redirect, on a phone): it stores where nextAfterSignIn would go now, so the page plex.tv
+// sends back to still lands there.
+export function keepNextAcrossRedirect(): void {
+  const next = nextAfterSignIn();
+  try {
+    sessionStorage.setItem(KEY, next);
+  } catch {
+    /* storage blocked: Discover it is */
+  }
+}

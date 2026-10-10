@@ -92,6 +92,7 @@ export const settings: AppSettings = {
   books_enabled: true,
   music_enabled: true,
   plex_login_enabled: false,
+  plex_signin_staff: false,
   plex_login_auto_approve: false,
   plex_login_auto_approve_types: "movie",
   request_quota_days: 7,

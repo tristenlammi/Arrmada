@@ -29,7 +29,7 @@ const overflow = (page: Page) => page.evaluate(() => {
 test.describe("admin on a phone", () => {
   test.use({ persona: "admin" });
 
-  for (const tab of ["activity", "history", "people", "graphs", "reliability", "settings"]) {
+  for (const tab of ["activity", "history", "people", "graphs", "reliability"]) {
     test(`${tab} fits 375 px`, async ({ page, api }) => {
       await serveInsights(page);
       await page.goto(`/insights?tab=${tab}`);
@@ -46,9 +46,11 @@ test.describe("admin on a phone", () => {
     const active = page.getByRole("tab", { name: "Reliability" });
     await expect(active).toHaveAttribute("aria-selected", "true");
     await api.quiet();
-    await expect(active).toBeInViewport({ ratio: 1 });
-    await page.getByRole("tab", { name: "Settings" }).click();
-    await expect(page).toHaveURL(/tab=settings/);
+    // Reliability is the last tab (Settings moved to Settings → Plex), so it sits at the bar's
+    // very end, where sub-pixel tab widths can leave a hair's width outside: 0.99, not 1.
+    await expect(active).toBeInViewport({ ratio: 0.99 });
+    await page.getByRole("tab", { name: "Graphs" }).click();
+    await expect(page).toHaveURL(/tab=graphs/);
     await page.goBack();
     await expect(page).toHaveURL(/tab=reliability/);
     await expect(page.getByRole("tab", { name: "Reliability" })).toHaveAttribute("aria-selected", "true");

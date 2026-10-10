@@ -835,6 +835,8 @@ export interface AppSettings {
   books_enabled: boolean;
   music_enabled: boolean;
   plex_login_enabled: boolean;
+  /** Sign in with Plex may open an admin or manager account linked to that Plex account. */
+  plex_signin_staff: boolean;
   /** Legacy: true when a new Plex sign-in auto-approves every type. */
   plex_login_auto_approve: boolean;
   /** The types a new Plex sign-in auto-approves, "movie,series,book" (any subset). */
@@ -870,7 +872,7 @@ export interface LogEntry {
   attrs?: string;
 }
 // Why a database backup was taken; part of its file name.
-export type BackupKind = "pre-migrate" | "nightly" | "manual" | "pre-restore" | "pre-delete-user" | "pre-delete-empty-user" | "uploaded" | "pre-insights-repair";
+export type BackupKind = "pre-migrate" | "nightly" | "manual" | "pre-restore" | "pre-delete-user" | "pre-delete-empty-user" | "pre-merge-user" | "uploaded" | "pre-insights-repair";
 
 // One database backup file. Nothing from inside it is ever sent, beyond its schema version.
 export interface BackupFile {
@@ -1338,6 +1340,10 @@ export interface AuthUser {
   // Signs in with Plex; plex_blocked means that Plex account is on the block list.
   plex_linked?: boolean;
   plex_blocked?: boolean;
+  /** The Plex name the link was made with. */
+  plex_username?: string;
+  /** Plex is their only way in (no password anyone knows): unlinking would strand them. */
+  plex_only?: boolean;
 }
 
 /** One kind of request limit: limit 0 is unlimited; resets_at is when the oldest use frees up. */
@@ -1919,6 +1925,10 @@ export interface PlexLibrary { key: string; title: string; type: string }
 export type PlexStatus = "unconfigured" | "off" | "recording" | "unreachable";
 export interface PlexConfig {
   url: string; token_set: boolean; enabled: boolean; poll_seconds: number;
+  /** Someone has switched monitoring on or off (until then the form starts with it on). */
+  enabled_set?: boolean;
+  /** The connected server, from its own identity: set on sign-in, save and Test. */
+  server_name?: string; machine_id?: string;
   status: PlexStatus;
   /** Unix seconds of Plex's last answer. */
   last_poll_at?: number;
@@ -1927,7 +1937,7 @@ export interface PlexConfig {
   /** Unix seconds: plays recorded before this stored "HW requested", not "HW used". */
   hw_since?: number;
 }
-export interface PlexTestResult { ok: boolean; error?: string; machine_id?: string; version?: string; libraries?: PlexLibrary[] }
+export interface PlexTestResult { ok: boolean; error?: string; machine_id?: string; server_name?: string; version?: string; libraries?: PlexLibrary[] }
 export interface GeoLocation { ip: string; local: boolean; city?: string; country?: string; country_code?: string; lat?: number; lon?: number }
 export interface StreamDetail { src: string; stream?: string }
 export interface InsightsStream {
@@ -2030,7 +2040,9 @@ export function releaseErrorMessage(e: unknown): string {
   return (e as Error).message;
 }
 
-async function req<T>(path: string, opts?: RequestInit): Promise<T> {
+// req is a JSON call. Exported for the few call groups that live in their own lazily
+// loaded module (lib/plexApi.ts), so they stay out of a requester's first download.
+export async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await send(path, {
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     ...opts,
@@ -2059,7 +2071,7 @@ export const api = {
   createUser: (body: { email: string; password: string; role: string } & AutoApproveFlags) =>
     req<AuthUser>("/api/v1/users", { method: "POST", body: JSON.stringify(body) }),
   // disabled: true turns off their sign-in and signs them out everywhere; nothing is deleted.
-  updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string; disabled?: boolean; quota?: UserQuota } & AutoApproveFlags) =>
+  updateUser: (id: number, body: { role?: string; auto_approve?: boolean; password?: string; disabled?: boolean; quota?: UserQuota; plex_unlink?: boolean } & AutoApproveFlags) =>
     req<{ id: number; role: string; auto_approve: boolean; disabled: boolean }>(`/api/v1/users/${id}`, { method: "PUT", body: JSON.stringify(body) }),
   userImpact: (id: number) => req<UserImpact>(`/api/v1/users/${id}/impact`),
   // confirm is the username, required by the server when the user has listening data.
@@ -2301,8 +2313,6 @@ export const api = {
   settings: () => req<AppSettings>("/api/v1/settings"),
   updateSettings: (body: Partial<AppSettings>) =>
     req<AppSettings>("/api/v1/settings", { method: "PUT", body: JSON.stringify(body) }),
-  plexLoginStart: () => req<{ id: number; auth_url: string }>("/api/v1/auth/plex/pin", { method: "POST" }),
-  plexLoginPoll: (id: number) => req<{ pending?: boolean; user?: AuthUser }>(`/api/v1/auth/plex/pin/${id}`),
   logs: (opts?: { limit?: number; level?: string; q?: string; hide?: string }) => {
     const p = new URLSearchParams();
     if (opts?.limit) p.set("limit", String(opts.limit));
@@ -2783,8 +2793,6 @@ export const api = {
 
   // Insights (Plex)
   insightsConfig: () => req<PlexConfig>("/api/v1/insights/plex"),
-  insightsPlexAuthStart: () => req<{ id: number; auth_url: string }>("/api/v1/insights/plex/auth", { method: "POST" }),
-  insightsPlexAuthPoll: (id: number) => req<{ authorized: boolean }>(`/api/v1/insights/plex/auth/${id}`),
   updateInsightsConfig: (body: { url: string; token?: string; enabled?: boolean; poll_seconds?: number }) =>
     req<PlexConfig>("/api/v1/insights/plex", { method: "PUT", body: JSON.stringify(body) }),
   testInsights: (body: { url?: string; token?: string }) =>

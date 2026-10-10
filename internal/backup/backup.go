@@ -44,6 +44,7 @@ var keep = map[store.BackupKind]int{
 	store.BackupPreRestore:         3,
 	store.BackupPreDeleteUser:      3,
 	store.BackupPreDeleteEmptyUser: 3,
+	store.BackupPreMergeUser:       3,
 	store.BackupUploaded:           3,
 	store.BackupPreUpdate:          3,
 	store.BackupPreInsightsRepair:  3,

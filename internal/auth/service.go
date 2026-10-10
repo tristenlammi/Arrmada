@@ -64,6 +64,11 @@ type User struct {
 	CreatedAt         string `json:"created_at,omitempty"`
 	// PlexLinked: signs in with Plex, so the admin can block that Plex account.
 	PlexLinked bool `json:"plex_linked"`
+	// PlexUsername is the Plex name the link was made with (users list; "" when unknown).
+	PlexUsername string `json:"plex_username,omitempty"`
+	// PlexOnly: Plex is their only way in (nobody knows a password for the account), so
+	// unlinking Plex would strand it.
+	PlexOnly bool `json:"plex_only,omitempty"`
 }
 
 // Service provides authentication operations backed by the database.
@@ -174,6 +179,12 @@ func (s *Service) FindOrCreatePlexUser(ctx context.Context, plexID, plexUsername
 	if err == nil {
 		u.Disabled = disabled == 1
 		u.setAutoApproval(am, as, ab)
+		u.PlexLinked = true
+		// Keep the shown Plex name current (it can change at plex.tv, and links made
+		// before it was stored have none). Cosmetic, so a failure doesn't stop the sign-in.
+		if name := strings.TrimSpace(plexUsername); name != "" {
+			_, _ = s.db.ExecContext(ctx, `UPDATE users SET plex_username = ? WHERE id = ? AND plex_username <> ?`, name, u.ID, name)
+		}
 		return &u, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -193,13 +204,13 @@ func (s *Service) FindOrCreatePlexUser(ctx context.Context, plexID, plexUsername
 	username := s.uniqueUsername(ctx, plexUsername)
 	am, as, ab = boolToInt(autoApprove.Movie), boolToInt(autoApprove.Series), boolToInt(autoApprove.Book)
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO users (username, password_hash, role, auto_approve, `+autoApproveCols+`, plex_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		username, string(hash), string(role), boolToInt(autoApprove.All()), am, as, ab, plexID)
+		`INSERT INTO users (username, password_hash, role, auto_approve, `+autoApproveCols+`, plex_id, plex_username, password_login) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+		username, string(hash), string(role), boolToInt(autoApprove.All()), am, as, ab, plexID, strings.TrimSpace(plexUsername))
 	if err != nil {
 		return nil, err
 	}
 	id, _ := res.LastInsertId()
-	nu := &User{ID: id, Username: username, Role: role}
+	nu := &User{ID: id, Username: username, Role: role, PlexLinked: true, PlexUsername: strings.TrimSpace(plexUsername)}
 	nu.setAutoApproval(am, as, ab)
 	return nu, nil
 }
@@ -259,7 +270,7 @@ func boolToInt(b bool) int {
 // ListUsers returns all accounts (no secrets), oldest first.
 func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, username, role, disabled, `+autoApproveCols+`, created_at, COALESCE(plex_id, '') != '' FROM users ORDER BY id`)
+		`SELECT id, username, role, disabled, `+autoApproveCols+`, created_at, COALESCE(plex_id, '') != '', plex_username, (COALESCE(plex_id, '') != '' AND password_login = 0) FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +279,7 @@ func (s *Service) ListUsers(ctx context.Context) ([]User, error) {
 	for rows.Next() {
 		var u User
 		var disabled, am, as, ab int
-		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &disabled, &am, &as, &ab, &u.CreatedAt, &u.PlexLinked); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &disabled, &am, &as, &ab, &u.CreatedAt, &u.PlexLinked, &u.PlexUsername, &u.PlexOnly); err != nil {
 			return nil, err
 		}
 		u.Disabled = disabled != 0
@@ -372,8 +383,8 @@ func (s *Service) userWhere(ctx context.Context, where string, arg any) (*User, 
 	var u User
 	var disabled, am, as, ab int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, username, role, disabled, `+autoApproveCols+`, created_at, COALESCE(plex_id, '') != '' FROM users WHERE `+where+` LIMIT 1`, arg).
-		Scan(&u.ID, &u.Username, &u.Role, &disabled, &am, &as, &ab, &u.CreatedAt, &u.PlexLinked)
+		`SELECT id, username, role, disabled, `+autoApproveCols+`, created_at, COALESCE(plex_id, '') != '', plex_username, (COALESCE(plex_id, '') != '' AND password_login = 0) FROM users WHERE `+where+` LIMIT 1`, arg).
+		Scan(&u.ID, &u.Username, &u.Role, &disabled, &am, &as, &ab, &u.CreatedAt, &u.PlexLinked, &u.PlexUsername, &u.PlexOnly)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrInvalidCredentials
 	}
@@ -413,7 +424,9 @@ func (s *Service) SetPassword(ctx context.Context, id int64, password string) er
 	if err != nil {
 		return err
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE id = ?`, string(hash), id)
+	// password_login: someone now knows a password for it, so Plex is no longer the only
+	// way in (unlinking Plex can't lock them out).
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET password_hash = ?, password_login = 1 WHERE id = ?`, string(hash), id)
 	if err != nil {
 		return err
 	}

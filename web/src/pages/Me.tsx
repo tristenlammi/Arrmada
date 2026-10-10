@@ -1,4 +1,4 @@
-import { Suspense, type ReactNode } from "react";
+import { lazy, Suspense, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { lazyPage } from "../lib/lazyPage";
@@ -8,6 +8,9 @@ import type { UserRole } from "../lib/api";
 
 // Push on this device and a personal Apprise link: the same panel as the bell's ⚙.
 const NotificationSettings = lazyPage(() => import("../components/NotificationSettings"), "NotificationSettings");
+// Linking your Plex account (Discover's "Recommended for you", Sign in with Plex). Its own
+// chunk, with the Plex sign-in code behind it.
+const PlexAccountLink = lazy(() => import("../components/PlexAccountLink"));
 
 const ROLE: Record<UserRole, string> = {
   admin: "Admin",
@@ -22,6 +25,7 @@ const ROLE: Record<UserRole, string> = {
 // without a second account page:
 //   Notifications — APP-13 turns it into the one 'Get notified' switch (Apprise under
 //                   Advanced), APP-15 adds per-event choices;
+//   Plex          — link your Plex account (PLEX-14); plex.tv's redirect comes back here;
 //   Account       — CFG-12 adds change password, SEC-15 the device list and 'sign out
 //                   other devices';
 //   More, Sign out.
@@ -45,6 +49,12 @@ export function Me({ chrome = false }: { chrome?: boolean }) {
         <MeSection id="notifications" title="Notifications">
           <Suspense fallback={<div className="px-3.5 py-3 text-[12px] text-ink-faint">Loading…</div>}>
             <NotificationSettings />
+          </Suspense>
+        </MeSection>
+
+        <MeSection id="plex" title="Plex">
+          <Suspense fallback={<div className="px-3.5 py-3 text-[12px] text-ink-faint">Loading…</div>}>
+            <PlexAccountLink variant="me" />
           </Suspense>
         </MeSection>
 

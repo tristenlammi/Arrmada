@@ -15,6 +15,7 @@ const KIND: Record<BackupKind, { label: string; tone: string }> = {
   "pre-restore": { label: "Before restore", tone: "var(--avoid)" },
   "pre-delete-user": { label: "Before user delete", tone: "var(--avoid)" },
   "pre-delete-empty-user": { label: "Before user delete", tone: "var(--avoid)" },
+  "pre-merge-user": { label: "Before account merge", tone: "var(--avoid)" },
   uploaded: { label: "Uploaded", tone: "var(--accent)" },
   "pre-insights-repair": { label: "Before Insights cleanup", tone: "var(--avoid)" },
 };
