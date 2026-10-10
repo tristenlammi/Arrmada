@@ -424,6 +424,16 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("DELETE /api/v1/requests/{id}", a.requireRole(auth.RoleRequester, a.handleDeleteRequest).ext())
 	mux.HandleFunc("POST /api/v1/requests/import/overseerr", a.requireRole(auth.RoleAdmin, a.handleImportOverseerr).ext())
 	mux.HandleFunc("POST /api/v1/insights/import/tautulli", a.requireRole(auth.RoleAdmin, a.handleImportTautulli))
+	// Tautulli imports as tracked runs: the saved connection (key masked), the latest runs
+	// with progress and counts, Retry, and undo of exactly one run's plays (backup first).
+	mux.HandleFunc("GET /api/v1/insights/import/tautulli", a.requireRole(auth.RoleAdmin, a.handleTautulliConfig))
+	mux.HandleFunc("GET /api/v1/insights/import/runs", a.requireRole(auth.RoleAdmin, a.handleImportRuns))
+	mux.HandleFunc("POST /api/v1/insights/import/runs/{id}/retry", a.requireRole(auth.RoleAdmin, a.handleRetryImportRun))
+	mux.HandleFunc("DELETE /api/v1/insights/import/runs/{id}/rows", a.requireRole(auth.RoleAdmin, a.handleRemoveImportRun))
+	// Imported plays that double up live-recorded ones: count them, and remove them (a job
+	// that backs the database up first).
+	mux.HandleFunc("GET /api/v1/insights/import/overlaps", a.requireRole(auth.RoleAdmin, a.handleImportOverlaps))
+	mux.HandleFunc("POST /api/v1/insights/import/overlaps/remove", a.requireRole(auth.RoleAdmin, a.handleRemoveImportOverlaps))
 
 	// Convert (Tdarr replacement — GPU transcoding/cleanup over the Movies/Series catalogs).
 	// The log carries whatever any module writes (paths, client names, sign-in lines), so

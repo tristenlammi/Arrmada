@@ -116,6 +116,12 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/subtitles/jobs", mod.subtitleJobs),
     get("/api/v1/insights/plex", mod.plexConfig),
     get("/api/v1/insights/stats", mod.insightsStats),
+    // Settings → Import (admin): no double-counted plays, live recording since NOW - 30d.
+    get("/api/v1/insights/import/overlaps", { count: 0, first_live_at: Math.floor(NOW / 1000) - 30 * 86400 }),
+    get("/api/v1/insights/import/tautulli", mod.tautulliConfig),
+    get("/api/v1/insights/import/runs", mod.importRuns),
+    { method: "DELETE", path: /^\/api\/v1\/insights\/import\/runs\/(\d+)\/rows$/, status: 202, body: { job_id: mod.removeImportJob.id, existing: false } },
+    get(`/api/v1/jobs/${mod.removeImportJob.id}`, mod.removeImportJob),
     get("/api/v1/settings", sys.settings),
     // Settings → Users: two accounts, one a Plex sign-in that still auto-approves shows.
     get("/api/v1/users/plex-blocks", { blocks: [] }),

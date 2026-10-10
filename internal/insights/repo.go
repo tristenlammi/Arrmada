@@ -42,20 +42,26 @@ type sessionRecord struct {
 	ContainerStream  string
 	HWTranscode      bool
 	BufferCount      int
+	ImportRunID      int64 // the Tautulli import run that brought this play in; 0 = live or older import
 }
 
 func (r *repo) insertSession(ctx context.Context, s sessionRecord) (int64, error) {
-	res, err := r.db.ExecContext(ctx, `
+	return r.insertSessionEx(ctx, r.db, s)
+}
+
+// insertSessionEx is insertSession on the database or inside a transaction.
+func (r *repo) insertSessionEx(ctx context.Context, ex execer, s sessionRecord) (int64, error) {
+	res, err := ex.ExecContext(ctx, `
 		INSERT INTO stream_sessions
 		 (session_key,user_id,user_name,rating_key,media_type,title,grandparent_title,parent_title,
 		  media_index,parent_index,year,thumb,player,platform,product,ip_address,location,decision,
 		  started_at,stopped_at,paused_ms,view_offset_ms,duration_ms,watched_ms,
-		  video_src,video_stream,audio_src,audio_stream,container_src,container_stream,hw_transcode,buffer_count)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		  video_src,video_stream,audio_src,audio_stream,container_src,container_stream,hw_transcode,buffer_count,import_run_id)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		s.SessionKey, s.UserID, s.UserName, s.RatingKey, s.MediaType, s.Title, s.GrandparentTitle, s.ParentTitle,
 		s.MediaIndex, s.ParentIndex, s.Year, s.Thumb, s.Player, s.Platform, s.Product, s.IPAddress, s.Location, s.Decision,
 		s.StartedAt, s.StoppedAt, s.PausedMS, s.ViewOffsetMS, s.DurationMS, s.WatchedMS,
-		s.VideoSrc, s.VideoStream, s.AudioSrc, s.AudioStream, s.ContainerSrc, s.ContainerStream, b2i(s.HWTranscode), s.BufferCount)
+		s.VideoSrc, s.VideoStream, s.AudioSrc, s.AudioStream, s.ContainerSrc, s.ContainerStream, b2i(s.HWTranscode), s.BufferCount, s.ImportRunID)
 	if err != nil {
 		return 0, err
 	}
@@ -64,16 +70,20 @@ func (r *repo) insertSession(ctx context.Context, s sessionRecord) (int64, error
 
 // sessionExists reports whether a session for this user + item + start time is already recorded
 // (used to keep history imports idempotent on re-run).
-func (r *repo) sessionExists(ctx context.Context, userID, ratingKey string, startedAt int64) bool {
+func (r *repo) sessionExists(ctx context.Context, userID, ratingKey string, startedAt int64) (bool, error) {
 	var n int
 	err := r.db.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM stream_sessions WHERE user_id = ? AND rating_key = ? AND started_at = ?`,
 		userID, ratingKey, startedAt).Scan(&n)
-	return err == nil && n > 0
+	return n > 0, err
 }
 
 func (r *repo) insertBufferEvent(ctx context.Context, sessionID, at, offsetMS, durationMS int64, cause, detail string) error {
-	_, err := r.db.ExecContext(ctx, `INSERT INTO buffer_events (session_id,at,view_offset_ms,duration_ms,cause,detail) VALUES (?,?,?,?,?,?)`, sessionID, at, offsetMS, durationMS, cause, detail)
+	return r.insertBufferEventEx(ctx, r.db, sessionID, at, offsetMS, durationMS, cause, detail)
+}
+
+func (r *repo) insertBufferEventEx(ctx context.Context, ex execer, sessionID, at, offsetMS, durationMS int64, cause, detail string) error {
+	_, err := ex.ExecContext(ctx, `INSERT INTO buffer_events (session_id,at,view_offset_ms,duration_ms,cause,detail) VALUES (?,?,?,?,?,?)`, sessionID, at, offsetMS, durationMS, cause, detail)
 	return err
 }
 

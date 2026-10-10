@@ -9,6 +9,7 @@ DELETE /api/v1/books/{id}/file staff -
 DELETE /api/v1/convert/requests staff -
 DELETE /api/v1/downloadclients/{id} staff -
 DELETE /api/v1/indexers/{id} staff -
+DELETE /api/v1/insights/import/runs/{id}/rows admin -
 DELETE /api/v1/me/audio/devices/{family} user ext
 DELETE /api/v1/me/audio/password user ext
 DELETE /api/v1/movies/{id} staff -
@@ -109,6 +110,9 @@ GET /api/v1/insights/activity staff -
 GET /api/v1/insights/graphs staff -
 GET /api/v1/insights/history staff -
 GET /api/v1/insights/image staff -
+GET /api/v1/insights/import/overlaps admin -
+GET /api/v1/insights/import/runs admin -
+GET /api/v1/insights/import/tautulli admin -
 GET /api/v1/insights/libraries staff -
 GET /api/v1/insights/plex staff -
 GET /api/v1/insights/plex/auth/{id} staff -
@@ -247,6 +251,8 @@ POST /api/v1/indexers staff -
 POST /api/v1/indexers/prowlarr/sync staff -
 POST /api/v1/indexers/test staff -
 POST /api/v1/indexers/{id}/test staff -
+POST /api/v1/insights/import/overlaps/remove admin -
+POST /api/v1/insights/import/runs/{id}/retry admin -
 POST /api/v1/insights/import/tautulli admin -
 POST /api/v1/insights/plex/auth staff -
 POST /api/v1/insights/plex/test staff -
