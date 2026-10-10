@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -109,6 +110,7 @@ func newHarness(t *testing.T) *harness {
 		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	h.s.now = func() time.Time { return h.clock }
+	h.s.exists = func(string) bool { return true } // the folders in these tests are made up
 	return h
 }
 
@@ -290,5 +292,30 @@ func TestScannerListenersAndSave(t *testing.T) {
 	rv, err := h.s.ScanNow(context.Background(), KindMovie, false)
 	if err != nil || rv.How != HowMapped || rv.PlexPath != "/srv/plex/films" {
 		t.Fatalf("ScanNow = %+v, %v", rv, err)
+	}
+}
+
+// A folder that's gone (a deleted movie, a renamed show's old folder) is scanned through
+// its nearest parent that still exists, never above the library folder: Plex skips a
+// folder that isn't there and would never notice what left it.
+func TestScannerGoneFolderScansNearestParent(t *testing.T) {
+	h := newHarness(t)
+	h.s.exists = func(dir string) bool {
+		d := filepath.ToSlash(dir)
+		return d == "/tv/Show" || d == "/tv" || d == "/movies"
+	}
+	h.s.Request(KindShow, "/tv/Show/Season 09")
+	h.s.Request(KindMovie, "/movies/Gone (1999)")
+	h.s.Request(KindMovie, "/elsewhere/x") // outside the library folder: left as it is
+	h.advance(16 * time.Second)
+	got := map[refresh]bool{}
+	for _, r := range h.plex.got() {
+		got[r] = true
+	}
+	// /elsewhere/x can't be matched to Plex at all, so it scans the whole Movies section.
+	for _, want := range []refresh{{"2", "/data/media/tv/Show"}, {"1", "/data/media/movies"}, {"1", ""}} {
+		if !got[want] {
+			t.Errorf("missing scan %v in %v", want, h.plex.got())
+		}
 	}
 }

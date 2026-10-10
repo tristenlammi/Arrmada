@@ -799,6 +799,11 @@ func main() {
 		Log: log,
 	})
 	grp.Loop("plex: library scans", plexScanner.Run)
+	// Imports, upgrades and movie renames/deletes reach it through the outbox (registered
+	// below); the changes that don't go through the outbox call it directly.
+	seriesSvc.SetLibraryChanged(plexScanner.Request)   // episode and show deletes
+	coordinator.SetLibraryChanged(plexScanner.Request) // series renames
+	convertSvc.SetLibraryChanged(plexScanner.Request)  // a converted file swapped in
 	// Prune raw bandwidth samples older than 90 days: the poller writes one row per
 	// cycle, so at the 5s default that's ~17k/day and every graph query scans them all.
 	// Watch history itself is kept — only the high-frequency bandwidth series is rolled off.
@@ -901,6 +906,7 @@ func main() {
 	// dispatcher starts.
 	importConsumers{
 		convert: convertSvc, subtitles: subtitlesSvc, requests: requestsSvc, audio: audioSrv, grp: grp,
+		plex: plexScanner, showFolder: seriesSvc.FolderPath,
 	}.register(box)
 	grp.Loop("outbox: dispatcher", box.Run)
 	// Alert deliveries are each connection's log on the Alerts page: a month of it.

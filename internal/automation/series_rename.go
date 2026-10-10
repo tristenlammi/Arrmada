@@ -347,7 +347,8 @@ func (c *Coordinator) SeriesRename(ctx context.Context, seriesID int64, only []S
 			order = append(order, i)
 		}
 	}
-	oldDirs := map[string]bool{} // season folders emptied by the moves, to prune after
+	oldDirs := map[string]bool{}  // season folders emptied by the moves, to prune after
+	showDirs := map[string]bool{} // show folders whose files moved, for Plex to rescan
 	for _, i := range order {
 		if failed[i] {
 			continue
@@ -378,6 +379,8 @@ func (c *Coordinator) SeriesRename(ctx context.Context, seriesID int64, only []S
 			continue
 		}
 		c.imp.MoveEpisodeSubs(src, st.To) // keep paired subtitles alongside
+		showDirs[series.ShowFolder(st.From)] = true
+		showDirs[series.ShowFolder(st.To)] = true
 		if od := filepath.Dir(st.From); od != filepath.Dir(st.To) {
 			oldDirs[od] = true // a season folder that changed name (e.g. "Season 04" → "Season 4")
 		}
@@ -388,6 +391,9 @@ func (c *Coordinator) SeriesRename(ctx context.Context, seriesID int64, only []S
 	}
 	for od := range oldDirs {
 		c.imp.RemoveDirIfEmpty(od) // drop the now-empty legacy season folder
+	}
+	for d := range showDirs {
+		c.libraryChanged("show", d)
 	}
 	if res.Moved > 0 {
 		c.series.AddEvent(ctx, seriesID, "renamed", fmt.Sprintf("Renamed %d episode file%s", res.Moved, plural(res.Moved)))

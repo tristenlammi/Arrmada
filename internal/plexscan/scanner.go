@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -98,6 +101,7 @@ type Scanner struct {
 	log        *slog.Logger
 
 	now        func() time.Time
+	exists     func(dir string) bool
 	debounce   time.Duration
 	maxWait    time.Duration
 	perTarget  time.Duration
@@ -129,6 +133,7 @@ func New(o Options) *Scanner {
 		roots:      o.Roots,
 		log:        log,
 		now:        time.Now,
+		exists:     dirExists,
 		debounce:   defaultDebounce,
 		maxWait:    defaultMaxWait,
 		perTarget:  defaultPerTarget,
@@ -380,7 +385,7 @@ func (s *Scanner) runDue(ctx context.Context) {
 	maps := s.PathMaps(ctx)
 	sent := map[target]bool{}
 	for _, p := range due {
-		res := Resolve(p.kind, p.dir, roots[p.kind], secs, maps)
+		res := Resolve(p.kind, s.existing(p.dir, roots[p.kind]), roots[p.kind], secs, maps)
 		if len(res.SectionKeys) == 0 {
 			s.logOnce("none:"+p.kind, "plex: no Plex library to scan for this change", "kind", p.kind, "note", res.Note)
 			continue
@@ -436,6 +441,31 @@ func (s *Scanner) runDue(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// dirExists reports whether dir is still there. Only a definite "doesn't exist" counts
+// as gone: an unreadable or sleeping disk is left to Plex to deal with.
+func dirExists(dir string) bool {
+	_, err := os.Stat(dir)
+	return !errors.Is(err, fs.ErrNotExist)
+}
+
+// existing is dir, or its nearest parent that still exists when dir itself is gone (a
+// deleted movie's folder, a renamed show's old one), but never above the library folder.
+// Plex skips a folder that isn't there, so the scan has to name one that is for Plex to
+// notice what went missing from it.
+func (s *Scanner) existing(dir, root string) string {
+	for !s.exists(dir) {
+		if _, ok := under(dir, root); !ok || canon(dir) == canon(root) {
+			return dir
+		}
+		up := filepath.Dir(dir)
+		if up == dir {
+			return dir
+		}
+		dir = up
+	}
+	return dir
 }
 
 var errNotFound = errors.New("plex returned HTTP 404")

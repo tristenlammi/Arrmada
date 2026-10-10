@@ -81,5 +81,6 @@ func (s *Service) recoverSwaps(ctx context.Context) {
 		}
 		s.log.Info("convert: reconciled an interrupted conversion", "final", w.final)
 		s.clearSwap(w.part)
+		s.swapped(job, w.final)
 	}
 }

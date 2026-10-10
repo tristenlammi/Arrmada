@@ -136,6 +136,8 @@ type Coordinator struct {
 	// Subtitles for the episodes that landed, the requester's "ready", the audiobook
 	// catalogue). nil means nothing is wired (tests).
 	outbox outbox.Enqueuer
+	// onLibraryChanged hears about folders a rename changed (Plex's scanner); nil = none.
+	onLibraryChanged func(kind, dir string)
 
 	// attentionKick asks the Needs-you feed to refresh (attentionkick.go); nil = nothing.
 	attentionKick atomic.Pointer[func()]
@@ -146,6 +148,17 @@ type Coordinator struct {
 
 // SetOutbox installs where series and book imports queue their side effects.
 func (c *Coordinator) SetOutbox(o outbox.Enqueuer) { c.outbox = o }
+
+// SetLibraryChanged installs who hears that a library folder's files changed outside an
+// import — a series rename moving episode files — so Plex can rescan it. kind is "movie"
+// or "show". Call it at startup, before anything runs.
+func (c *Coordinator) SetLibraryChanged(fn func(kind, dir string)) { c.onLibraryChanged = fn }
+
+func (c *Coordinator) libraryChanged(kind, dir string) {
+	if c.onLibraryChanged != nil && dir != "" && dir != "." {
+		c.onLibraryChanged(kind, dir)
+	}
+}
 
 // enqueue writes an outbox row on its own (series and book imports aren't one
 // transaction). A failure is logged, not fatal: the files are in place either way, and

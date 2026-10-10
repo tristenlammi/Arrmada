@@ -204,3 +204,31 @@ func TestBinWithRoomRetiresTheOriginal(t *testing.T) {
 		t.Fatal("the original should be in the recycle bin")
 	}
 }
+
+// A finished swap tells Plex's scanner about the file's folder, once; a swap that didn't
+// happen tells it nothing.
+func TestFinalizeOutputCallsLibraryChanged(t *testing.T) {
+	r, src, dst, mi, plan := finalizeRig(t)
+	var got []string
+	r.SetLibraryChanged(func(kind, dir string) { got = append(got, kind+"|"+dir) })
+	binWith(r.Service, 1000)
+	it, _ := parseKey(movieKey(1))
+	job := r.claim(it, "Remux", true)
+	r.finalizeOutput(context.Background(), job, src, dst, mi, plan)
+	if job.State != StateDone {
+		t.Fatalf("state %s (%s), want done", job.State, job.Note)
+	}
+	if want := "movie|" + filepath.Dir(src); len(got) != 1 || got[0] != want {
+		t.Fatalf("reported %v, want [%s]", got, want)
+	}
+
+	r2, src2, dst2, mi2, plan2 := finalizeRig(t)
+	got = nil
+	r2.SetLibraryChanged(func(kind, dir string) { got = append(got, kind+"|"+dir) })
+	binWith(r2.Service, 999) // the original no longer fits: nothing is swapped
+	job2 := r2.claim(it, "Remux", true)
+	r2.finalizeOutput(context.Background(), job2, src2, dst2, mi2, plan2)
+	if job2.State == StateDone || len(got) != 0 {
+		t.Fatalf("a skipped swap (%s) reported %v", job2.State, got)
+	}
+}
