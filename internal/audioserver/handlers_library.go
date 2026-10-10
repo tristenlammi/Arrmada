@@ -539,7 +539,7 @@ func (s *Server) handleBatchGet(w http.ResponseWriter, r *http.Request) {
 			if p, ok := prog[it.Key]; ok {
 				pp = &p
 			}
-			o, _ := s.itemExpanded(ctx, it, pp)
+			o, _ := s.itemFull(ctx, it, pp, false) // known files only: a batch mustn't wait on ffprobe
 			out = append(out, o)
 		}
 	}

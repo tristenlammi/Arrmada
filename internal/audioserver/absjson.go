@@ -86,7 +86,13 @@ func (s *Server) itemMinified(ctx context.Context, it Item, progress map[string]
 // itemExpanded is the full item: files, chapters and play tracks. It probes files that
 // aren't known yet.
 func (s *Server) itemExpanded(ctx context.Context, it Item, p *listening.Progress) (obj, []AudioFile) {
-	files, _ := s.probe.files(ctx, it.Path, true)
+	return s.itemFull(ctx, it, p, true)
+}
+
+// itemFull is itemExpanded; with probe false it describes only what's already been read
+// (for replies listing many items, which mustn't wait on ffprobe for each).
+func (s *Server) itemFull(ctx context.Context, it Item, p *listening.Progress, probe bool) (obj, []AudioFile) {
+	files, _ := s.probe.files(ctx, it.Path, probe)
 	audio := []obj{}
 	tracks := []obj{}
 	offset := 0.0
