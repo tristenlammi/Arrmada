@@ -156,6 +156,7 @@ GET /api/v1/notifications staff -
 GET /api/v1/notifications/catalog staff -
 GET /api/v1/notifications/{id}/deliveries staff -
 GET /api/v1/parse staff -
+GET /api/v1/plex/link user ext
 GET /api/v1/quality/preview staff -
 GET /api/v1/quality/profiles staff -
 GET /api/v1/quality/profiles/{ref} staff -

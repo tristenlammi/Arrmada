@@ -201,13 +201,15 @@ func (c *Client) SectionTotal(ctx context.Context, key string) (int64, error) {
 
 // RecentItem is a recently-added library item.
 type RecentItem struct {
-	RatingKey        string `json:"rating_key"`
-	Type             string `json:"type"`
-	Title            string `json:"title"`
-	GrandparentTitle string `json:"grandparent_title"`
-	Year             int    `json:"year"`
-	Thumb            string `json:"thumb"` // best poster (show poster for episodes)
-	AddedAt          int64  `json:"added_at"`
+	RatingKey string `json:"rating_key"`
+	// GrandparentRatingKey is the show's key for an episode ("" otherwise).
+	GrandparentRatingKey string `json:"grandparent_rating_key,omitempty"`
+	Type                 string `json:"type"`
+	Title                string `json:"title"`
+	GrandparentTitle     string `json:"grandparent_title"`
+	Year                 int    `json:"year"`
+	Thumb                string `json:"thumb"` // best poster (show poster for episodes)
+	AddedAt              int64  `json:"added_at"`
 }
 
 // RecentlyAdded returns the most recently added items across libraries.
@@ -218,14 +220,15 @@ func (c *Client) RecentlyAdded(ctx context.Context, limit int) ([]RecentItem, er
 	var r struct {
 		MediaContainer struct {
 			Metadata []struct {
-				RatingKey        string  `json:"ratingKey"`
-				Type             string  `json:"type"`
-				Title            string  `json:"title"`
-				GrandparentTitle string  `json:"grandparentTitle"`
-				Year             flexInt `json:"year"`
-				Thumb            string  `json:"thumb"`
-				GrandparentThumb string  `json:"grandparentThumb"`
-				AddedAt          flexInt `json:"addedAt"`
+				RatingKey            string  `json:"ratingKey"`
+				GrandparentRatingKey string  `json:"grandparentRatingKey"`
+				Type                 string  `json:"type"`
+				Title                string  `json:"title"`
+				GrandparentTitle     string  `json:"grandparentTitle"`
+				Year                 flexInt `json:"year"`
+				Thumb                string  `json:"thumb"`
+				GrandparentThumb     string  `json:"grandparentThumb"`
+				AddedAt              flexInt `json:"addedAt"`
 			} `json:"Metadata"`
 		} `json:"MediaContainer"`
 	}
@@ -239,11 +242,121 @@ func (c *Client) RecentlyAdded(ctx context.Context, limit int) ([]RecentItem, er
 			thumb = m.GrandparentThumb
 		}
 		out = append(out, RecentItem{
-			RatingKey: m.RatingKey, Type: m.Type, Title: m.Title, GrandparentTitle: m.GrandparentTitle,
-			Year: int(m.Year), Thumb: thumb, AddedAt: int64(m.AddedAt),
+			RatingKey: m.RatingKey, GrandparentRatingKey: m.GrandparentRatingKey, Type: m.Type, Title: m.Title,
+			GrandparentTitle: m.GrandparentTitle, Year: int(m.Year), Thumb: thumb, AddedAt: int64(m.AddedAt),
 		})
 	}
 	return out, nil
+}
+
+// Item is one movie or show in a library section, with the outside ids Plex matched it
+// to (0 / "" when Plex has none).
+type Item struct {
+	RatingKey  string `json:"rating_key"`
+	Type       string `json:"type"` // movie | show
+	Title      string `json:"title"`
+	Year       int    `json:"year"`
+	AddedAt    int64  `json:"added_at"`
+	SectionKey string `json:"section_key"`
+	TMDB       int    `json:"tmdb,omitempty"`
+	TVDB       int    `json:"tvdb,omitempty"`
+	IMDB       string `json:"imdb,omitempty"`
+}
+
+// Section item types, as /library/sections/{key}/all?type= takes them.
+const (
+	TypeMovie = 1
+	TypeShow  = 2
+)
+
+const sectionPageSize = 500
+
+// SectionItems lists every movie (typ TypeMovie) or show (TypeShow) in a section with its
+// guids, a page of 500 at a time, so a library of thousands is a handful of requests.
+func (c *Client) SectionItems(ctx context.Context, sectionKey string, typ int) ([]Item, error) {
+	var out []Item
+	// A runaway totalSize can't loop forever: 400 pages is 200,000 items.
+	for start, page := 0, 0; page < 400; page++ {
+		var r struct {
+			MediaContainer struct {
+				Size      flexInt `json:"size"`
+				TotalSize flexInt `json:"totalSize"`
+				Metadata  []struct {
+					RatingKey string  `json:"ratingKey"`
+					Type      string  `json:"type"`
+					Title     string  `json:"title"`
+					Year      flexInt `json:"year"`
+					AddedAt   flexInt `json:"addedAt"`
+					GUID      string  `json:"guid"` // the agent's primary match
+					// Guid (capital G, an array) is the new agents' list of outside ids.
+					// encoding/json prefers the exact-case key, so the two don't collide.
+					Guids []struct {
+						ID string `json:"id"`
+					} `json:"Guid"`
+				} `json:"Metadata"`
+			} `json:"MediaContainer"`
+		}
+		path := fmt.Sprintf("/library/sections/%s/all?type=%d&includeGuids=1&X-Plex-Container-Start=%d&X-Plex-Container-Size=%d",
+			url.PathEscape(sectionKey), typ, start, sectionPageSize)
+		if err := c.get(ctx, path, &r); err != nil {
+			return nil, err
+		}
+		for _, m := range r.MediaContainer.Metadata {
+			guids := make([]string, 0, len(m.Guids))
+			for _, g := range m.Guids {
+				guids = append(guids, g.ID)
+			}
+			it := Item{RatingKey: m.RatingKey, Type: m.Type, Title: m.Title, Year: int(m.Year), AddedAt: int64(m.AddedAt), SectionKey: sectionKey}
+			it.TMDB, it.TVDB, it.IMDB = parseGuids(m.GUID, guids)
+			out = append(out, it)
+		}
+		n := len(r.MediaContainer.Metadata)
+		start += n
+		if n == 0 || n < sectionPageSize || (r.MediaContainer.TotalSize > 0 && start >= int(r.MediaContainer.TotalSize)) {
+			break
+		}
+	}
+	return out, nil
+}
+
+// parseGuids reads the outside ids out of a Plex item's guids: the new agents' list
+// (tmdb://603, tvdb://81189, imdb://tt0133093) first, then the legacy agents' primary
+// guid (com.plexapp.agents.themoviedb://603?lang=en and the imdb and thetvdb
+// equivalents). A plex:// primary carries no outside id and is ignored.
+func parseGuids(primary string, guids []string) (tmdb, tvdb int, imdb string) {
+	take := func(scheme, val string) {
+		// Legacy guids carry ?lang=en, and episode guids /season/episode after the id.
+		if i := strings.IndexAny(val, "?/"); i >= 0 {
+			val = val[:i]
+		}
+		switch scheme {
+		case "tmdb", "themoviedb":
+			if n, err := strconv.Atoi(val); err == nil && n > 0 && tmdb == 0 {
+				tmdb = n
+			}
+		case "tvdb", "thetvdb":
+			if n, err := strconv.Atoi(val); err == nil && n > 0 && tvdb == 0 {
+				tvdb = n
+			}
+		case "imdb":
+			if strings.HasPrefix(val, "tt") && imdb == "" {
+				imdb = val
+			}
+		}
+	}
+	split := func(g string) (string, string, bool) {
+		scheme, val, ok := strings.Cut(strings.TrimSpace(g), "://")
+		return strings.ToLower(scheme), val, ok
+	}
+	for _, g := range guids {
+		if scheme, val, ok := split(g); ok {
+			take(scheme, val)
+		}
+	}
+	if scheme, val, ok := split(primary); ok && strings.HasPrefix(scheme, "com.plexapp.agents.") {
+		take(strings.TrimPrefix(scheme, "com.plexapp.agents."), val)
+	}
+	return tmdb, tvdb, imdb
 }
 
 // Image fetches a Plex image (poster/art) by its metadata path, authenticated with the token, so

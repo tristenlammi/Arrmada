@@ -31,6 +31,8 @@ type importConsumers struct {
 	plex interface{ Request(kind, dir string) }
 	// showFolder is a show's library folder ("" while it has no files).
 	showFolder func(ctx context.Context, seriesID int64) string
+	// plexIndexStale asks the Plex library index to look again soon (nil = nothing).
+	plexIndexStale func()
 }
 
 // register adds every consumer. It must run before anything can import — the scheduler's
@@ -99,6 +101,7 @@ func (c importConsumers) registerPlex(box *outbox.Outbox) {
 	// The movie's folder: the new file, or an upgrade's replacement.
 	box.Register(outbox.TopicMovieImported, "plex.scan", decode(func(_ context.Context, p outbox.MovieImported) error {
 		c.plexScan("movie", p.Path)
+		c.indexStale()
 		return nil
 	}))
 	// A rename scans the old folder and the new one; a delete, the folder it left.
@@ -114,8 +117,15 @@ func (c importConsumers) registerPlex(box *outbox.Outbox) {
 				c.plex.Request("show", dir)
 			}
 		}
+		c.indexStale()
 		return nil
 	}))
+}
+
+func (c importConsumers) indexStale() {
+	if c.plexIndexStale != nil {
+		c.plexIndexStale()
+	}
 }
 
 // plexScan queues a Plex scan of the folder file is in (nothing for an empty path).

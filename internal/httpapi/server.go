@@ -125,6 +125,8 @@ type Deps struct {
 	// PlexScan tells Plex which folder changed; the Plex settings card reads and edits
 	// its toggle and path mappings. nil = the card's routes answer 503.
 	PlexScan *plexscan.Scanner
+	// PlexLinks finds titles in Plex for Watch on Plex links. nil = no links anywhere.
+	PlexLinks PlexLinker
 }
 
 type api struct {
@@ -484,6 +486,9 @@ func (a *api) registerRoutes(mux *router) {
 	mux.HandleFunc("GET /api/v1/insights/plex/scan", a.requireRole(auth.RoleManager, a.handlePlexScanView))
 	mux.HandleFunc("PUT /api/v1/insights/plex/scan", a.requireRole(auth.RoleManager, a.handlePlexScanSave))
 	mux.HandleFunc("POST /api/v1/insights/plex/scan/test", a.requireRole(auth.RoleManager, a.handlePlexScanTest))
+	// Watch on Plex: anyone signed in may ask for a title's app.plex.tv link (no token,
+	// no server address in it); 204 when Plex doesn't have it.
+	mux.HandleFunc("GET /api/v1/plex/link", a.signedIn(a.handlePlexLink).ext())
 	mux.HandleFunc("GET /api/v1/insights/activity", a.requireRole(auth.RoleManager, a.handleInsightsActivity))
 	mux.HandleFunc("GET /api/v1/insights/history", a.requireRole(auth.RoleManager, a.handleInsightsHistory))
 	mux.HandleFunc("GET /api/v1/insights/stats", a.requireRole(auth.RoleManager, a.handleInsightsStats))

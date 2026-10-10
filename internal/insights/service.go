@@ -49,6 +49,9 @@ type Service struct {
 
 	// health is how polls (or identity probes) have been going, for the health panel.
 	health pollHealth
+
+	// links is the Plex library index behind Watch on Plex (plexlinks.go).
+	links plexLinks
 }
 
 // Watching reports whether anyone is playing something on Plex right now. A paused stream
