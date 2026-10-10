@@ -255,19 +255,24 @@ func (s *Service) History(ctx context.Context, f HistoryFilter) (HistoryResult, 
 	}
 	out := HistoryResult{Rows: make([]HistoryEntry, 0, len(rows)), Total: total}
 	for _, r := range rows {
-		e := HistoryEntry{HistoryRow: r, ThumbURL: proxyImage(r.Thumb), Geo: s.geo.Lookup(r.IPAddress)}
-		e.Subtitle = historySubtitle(r)
-		watched := (r.StoppedAt - r.StartedAt) - r.PausedMS/1000
-		if watched < 0 {
-			watched = 0
-		}
-		e.WatchedSecs = watched
-		if r.DurationMS > 0 {
-			e.ProgressPct = int(r.ViewOffsetMS * 100 / r.DurationMS)
-		}
-		out.Rows = append(out.Rows, e)
+		out.Rows = append(out.Rows, s.toHistoryEntry(r))
 	}
 	return out, nil
+}
+
+// toHistoryEntry enriches a recorded play for display. History and the Recently watched card
+// both go through it, so a play's watch time and progress can't differ between the two — or
+// from the Users and Graphs totals, which watchedSecs mirrors in SQL.
+func (s *Service) toHistoryEntry(r HistoryRow) HistoryEntry {
+	e := HistoryEntry{HistoryRow: r, ThumbURL: proxyImage(r.Thumb), Subtitle: historySubtitle(r), WatchedSecs: watchedSecs(r)}
+	if s.geo != nil {
+		e.Geo = s.geo.Lookup(r.IPAddress)
+	}
+	if r.DurationMS > 0 {
+		pct := r.ViewOffsetMS * 100 / r.DurationMS
+		e.ProgressPct = int(min(max(pct, 0), 100))
+	}
+	return e
 }
 
 func historySubtitle(r HistoryRow) string {

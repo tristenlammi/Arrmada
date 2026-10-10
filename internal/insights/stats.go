@@ -194,7 +194,7 @@ func (s *Service) Stats(ctx context.Context, windowDays int, byDuration bool) (S
 		Recent:    make([]HistoryEntry, 0, len(recent)),
 	}
 	for _, r := range recent {
-		out.Recent = append(out.Recent, HistoryEntry{HistoryRow: r, ThumbURL: proxyImage(r.Thumb), Subtitle: historySubtitle(r)})
+		out.Recent = append(out.Recent, s.toHistoryEntry(r))
 	}
 	return out, nil
 }
