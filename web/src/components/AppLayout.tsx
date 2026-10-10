@@ -7,6 +7,7 @@ import { PageSkeleton } from "./PageSkeleton";
 import { RestartBanner } from "./RestartBanner";
 import { NotificationBell } from "./NotificationBell";
 import { PushPromptHost } from "./PushPromptHost";
+import { PlayerHost } from "../lib/playerStub";
 import { useDocumentTitle } from "../lib/title";
 import { prefetchStaffPages } from "../lib/prefetch";
 import { useAttention, useAttentionPoll } from "../lib/useAttention";
@@ -82,7 +83,9 @@ export function AppLayout() {
         </div>
         <RestartBanner />
         <PushPromptHost />
-        <main className="min-w-0 flex-1 overflow-y-auto">
+        {/* pb-chrome: the last row scrolls clear of the audiobook mini-player and the
+            iPhone home indicator. */}
+        <main className="pb-chrome min-w-0 flex-1 overflow-y-auto">
           {/* Keyed by path: a broken page shows its error card inside the shell, and
               navigating elsewhere clears it. */}
           <ErrorBoundary resetKey={pathname}>
@@ -92,6 +95,7 @@ export function AppLayout() {
           </ErrorBoundary>
         </main>
       </div>
+      <PlayerHost sidebar />
     </div>
   );
 }

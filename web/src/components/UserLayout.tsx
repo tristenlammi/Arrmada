@@ -6,6 +6,7 @@ import { PageSkeleton } from "./PageSkeleton";
 import { NotificationBell } from "./NotificationBell";
 import { BottomTabs } from "./BottomTabs";
 import { PushPromptHost } from "./PushPromptHost";
+import { PlayerHost } from "../lib/playerStub";
 import { useMe } from "../lib/me";
 import { signOut } from "../lib/session";
 import { useDocumentTitle } from "../lib/title";
@@ -86,6 +87,8 @@ export function UserLayout() {
         </ErrorBoundary>
       </main>
       <BottomTabs items={nav.filter((n) => n.tab)} />
+      {/* The audiobook mini-player, above the tab bar; it outlives every page. */}
+      <PlayerHost />
       {/* "Get notified when it's ready?" once, right after a first request. */}
       <PushPromptHost />
     </div>

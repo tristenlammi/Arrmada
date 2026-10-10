@@ -4,6 +4,7 @@ import { useMe } from "../lib/me";
 import { posterThumb } from "../lib/img";
 import { lazyPage } from "../lib/lazyPage";
 import { useTabParam } from "../lib/useTabParam";
+import { playAudiobook } from "../lib/playerStub";
 import { TabPanel, Tabs, type TabItem } from "../ui/Tabs";
 import { PageHeader } from "../components/PageHeader";
 import { PlaceTimeline } from "../components/audiobooks/PlaceTimeline";
@@ -214,7 +215,10 @@ function PlaceRow({ p, onChange }: { p: AudioPlace; onChange: () => void }) {
             {p.finished ? "Finished" : `${fmtClock(p.position)}${p.duration > 0 ? ` of ${fmtClock(p.duration)} · ${Math.round(pct)}%` : ""}`} · {fmtAgo(p.updated_at)}{p.device ? ` on ${p.device}` : ""}
           </div>
         </div>
-        <button onClick={toggle} className="flex-none rounded-lg px-2.5 py-1 text-[11.5px] font-semibold" style={ghost}>{open ? "Hide" : "Earlier places"}</button>
+        <div className="flex flex-none flex-col gap-1.5 sm:flex-row">
+          <button onClick={() => playAudiobook(p.item_key, { meta: { title: p.title, author: p.author, cover: p.cover_url } })} className="rounded-lg px-2.5 py-1 text-[11.5px] font-semibold" style={primary}>{p.finished ? "Listen again" : "Play here"}</button>
+          <button onClick={toggle} className="rounded-lg px-2.5 py-1 text-[11.5px] font-semibold" style={ghost}>{open ? "Hide" : "Earlier places"}</button>
+        </div>
       </div>
       {p.offer && (
         <OfferBanner offer={p.offer} busy={busy}

@@ -87,10 +87,12 @@ export const books: { books: Book[]; metadata_available: boolean; upgradable?: n
 export const bookUpgrade: BookUpgradeStatus = { running: false, total: 0, done: 0, upgraded: 0, flagged: 0, unmatched: 0 };
 export const bookSweep: BookSweepStatus = { running: false, total: 0, done: 0, grabbed: 0, skipped: 0 };
 
-export const myBooks: { books: MyBook[]; requests: MyRequest[] } = {
+export const myBooks: { books: MyBook[]; requests: MyRequest[]; listen: boolean } = {
+  // The audiobook server is on and this person may use it: audiobooks offer Listen.
+  listen: true,
   books: [
     { book_id: 1, title: "A Field Guide to Tides", author: "Marina Coves", year: 2019, series: "Coastlines", ebook: { format: "epub", size_bytes: 2_400_000 }, audiobook: false, mine: true, added_at: "2026-09-12T10:00:00Z" },
-    { book_id: 2, title: "The Lighthouse Keeper's Very Long and Winding Account of Thirty Winters", author: "Elias Rook", audiobook: true, mine: false, audiobooks: [{ version_id: 7, format: "m4b", size_bytes: 310_000_000, files: 1 }] },
+    { book_id: 2, title: "The Lighthouse Keeper's Very Long and Winding Account of Thirty Winters", author: "Elias Rook", audiobook: true, mine: false, audiobooks: [{ version_id: 7, item_key: "b2v7", format: "m4b", size_bytes: 310_000_000, files: 1 }] },
   ],
   requests: [
     { title: "Knots and Splices", author: "Hal Yard", status: "pending", requested_at: "2026-10-02T10:00:00Z", stage: "pending" },

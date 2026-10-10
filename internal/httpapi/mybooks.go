@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/tristenlammi/arrmada/internal/audioserver"
 	"github.com/tristenlammi/arrmada/internal/auth"
 	"github.com/tristenlammi/arrmada/internal/books"
 	"github.com/tristenlammi/arrmada/internal/requests"
@@ -40,13 +41,32 @@ type MyBook struct {
 	Mine       bool          `json:"mine"` // the caller requested this one
 }
 
-// MyAudiobook is one downloadable audiobook of a book.
+// MyAudiobook is one downloadable audiobook of a book. ItemKey is the same audiobook in
+// the listening API (/api/v1/me/audio/items/{key}), so the shelf's Listen button plays it.
 type MyAudiobook struct {
 	VersionID int64  `json:"version_id"`
+	ItemKey   string `json:"item_key"`
 	Label     string `json:"label,omitempty"`
 	Format    string `json:"format"`
 	SizeBytes int64  `json:"size_bytes"`
 	Files     int    `json:"files"`
+}
+
+// myAudiobooks lists a book's audiobooks that have a file: the standard one first, then
+// each extra version.
+func myAudiobooks(b books.Book) []MyAudiobook {
+	var out []MyAudiobook
+	if b.Audiobook != nil && b.Audiobook.Path != "" {
+		out = append(out, MyAudiobook{ItemKey: audioserver.ItemKey(b.ID, 0), Format: b.Audiobook.Format,
+			SizeBytes: b.Audiobook.SizeBytes, Files: b.Audiobook.FileCount})
+	}
+	for _, v := range b.AudioVersions {
+		if v.File != nil && v.File.Path != "" {
+			out = append(out, MyAudiobook{VersionID: v.ID, ItemKey: audioserver.ItemKey(b.ID, v.ID), Label: v.Label,
+				Format: v.File.Format, SizeBytes: v.File.SizeBytes, Files: v.File.FileCount})
+		}
+	}
+	return out
 }
 
 // MyRequest is one of the caller's book requests that hasn't produced a file yet.
@@ -111,18 +131,8 @@ func (a *api) handleMyBooks(w http.ResponseWriter, r *http.Request) {
 	haveID := map[int64]bool{}
 	for _, b := range all {
 		ebook := b.Ebook != nil && b.Ebook.Path != ""
-		audio := b.Audiobook != nil && b.Audiobook.Path != ""
-		var audiobooks []MyAudiobook
-		if audio {
-			audiobooks = append(audiobooks, MyAudiobook{Format: b.Audiobook.Format, SizeBytes: b.Audiobook.SizeBytes, Files: b.Audiobook.FileCount})
-		}
-		for _, v := range b.AudioVersions {
-			if v.File != nil && v.File.Path != "" {
-				audiobooks = append(audiobooks, MyAudiobook{VersionID: v.ID, Label: v.Label, Format: v.File.Format,
-					SizeBytes: v.File.SizeBytes, Files: v.File.FileCount})
-			}
-		}
-		audio = len(audiobooks) > 0
+		audiobooks := myAudiobooks(b)
+		audio := len(audiobooks) > 0
 		if !ebook && !audio {
 			continue
 		}
@@ -187,7 +197,11 @@ func (a *api) handleMyBooks(w http.ResponseWriter, r *http.Request) {
 		}
 		pending = append(pending, mr)
 	}
-	a.writeJSON(w, http.StatusOK, map[string]any{"books": shelf, "requests": pending})
+	// listen: the caller may play audiobooks here (the audiobook server is on and their
+	// account is allowed), so the shelf offers Listen beside the downloads.
+	listen := a.deps.AudioServer != nil && a.deps.Settings.GetBool(r.Context(), audioserver.KeyEnabled, false) &&
+		a.deps.AudioServer.Allowed(r.Context(), u)
+	a.writeJSON(w, http.StatusOK, map[string]any{"books": shelf, "requests": pending, "listen": listen})
 }
 
 // handleBookEbook sends a book's ebook file as a download to any signed-in account

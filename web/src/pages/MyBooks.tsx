@@ -5,6 +5,7 @@ import { posterThumb } from "../lib/img";
 import { formatCheckDay, notFoundYet } from "../lib/format";
 import { stillComingLine } from "../lib/bookFormats";
 import { Link } from "react-router-dom";
+import { playAudiobook } from "../lib/playerStub";
 
 // MyBooks is the requester's view of the book library: every book that has a file,
 // a download for each ebook, and their own requests still on the way. Deliberately
@@ -27,13 +28,14 @@ export function MyBooks() {
   const [books, setBooks] = useState<MyBook[] | null>(null);
   const [requests, setRequests] = useState<MyRequest[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [listen, setListen] = useState(false);
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<Sort>("newest");
   const [onlyEbooks, setOnlyEbooks] = useState(false);
 
   // A book that arrives while the page is open shows up.
   usePoll(() => api.myBooks()
-    .then((r) => { setBooks(r.books); setRequests(r.requests); setError(null); })
+    .then((r) => { setBooks(r.books); setRequests(r.requests); setListen(!!r.listen); setError(null); })
     .catch((e) => { setError((e as Error).message); }), 15000);
 
   const shown = useMemo(() => {
@@ -114,7 +116,7 @@ export function MyBooks() {
 
       {shown.length > 0 && (
         <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))" }}>
-          {shown.map((b) => <BookCard key={b.book_id} b={b} />)}
+          {shown.map((b) => <BookCard key={b.book_id} b={b} listen={listen} />)}
         </div>
       )}
     </div>
@@ -140,7 +142,7 @@ function Badge({ label, tone }: { label: string; tone: string }) {
   return <span className="absolute right-1.5 top-1.5 rounded-full px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide" style={{ background: "rgba(20,12,7,.72)", color: tone, border: `1px solid ${tone}` }}>{label}</span>;
 }
 
-function BookCard({ b }: { b: MyBook }) {
+function BookCard({ b, listen }: { b: MyBook; listen: boolean }) {
   return (
     <div className="flex flex-col overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)", background: "var(--panel)" }}>
       <CoverBox url={b.cover_url} title={b.title}>
@@ -166,16 +168,30 @@ function BookCard({ b }: { b: MyBook }) {
             <div className="rounded-lg px-2 py-1 text-center text-[11px] text-ink-faint" style={{ border: "1px solid var(--line)" }}>No ebook yet</div>
           )}
           {(b.audiobooks ?? []).map((a) => (
-            <a
-              key={a.version_id}
-              href={api.audiobookDownloadURL(b.book_id, a.version_id)}
-              download
-              className="mt-1 block rounded-lg px-2 py-1 text-center text-[11px] font-semibold"
-              style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}
-              title={`Download the audiobook${a.label ? ` (${a.label})` : ""}${a.files > 1 ? ` — ${a.files} files as one zip` : ""}`}
-            >
-              Audiobook{a.label ? ` · ${a.label}` : ""}{a.size_bytes ? <span className="font-normal opacity-80"> · {fmtSize(a.size_bytes)}</span> : null}
-            </a>
+            <div key={a.version_id} className="mt-1 flex gap-1">
+              {/* Listen plays it right here, in the mini-player; the link downloads it. */}
+              {listen && a.item_key && (
+                <button
+                  onClick={() => playAudiobook(a.item_key!, { meta: { title: b.title, author: b.author, cover: b.cover_url } })}
+                  className="min-w-0 flex-1 truncate rounded-lg px-2 py-1 text-center text-[11px] font-semibold"
+                  style={{ background: "var(--accent-soft)", border: "1px solid var(--accent-line)", color: "var(--accent)" }}
+                  aria-label={`Listen to ${b.title}${a.label ? ` (${a.label})` : ""}`}
+                >
+                  ▶ Listen{a.label ? ` · ${a.label}` : ""}
+                </button>
+              )}
+              <a
+                href={api.audiobookDownloadURL(b.book_id, a.version_id)}
+                download
+                className={`${listen && a.item_key ? "flex-none" : "flex-1"} block truncate rounded-lg px-2 py-1 text-center text-[11px] font-semibold`}
+                style={{ border: "1px solid var(--accent-line)", color: "var(--accent)" }}
+                title={`Download the audiobook${a.label ? ` (${a.label})` : ""}${a.files > 1 ? ` — ${a.files} files as one zip` : ""}`}
+              >
+                {listen && a.item_key
+                  ? <span aria-label="Download">⬇{a.size_bytes ? <span className="font-normal opacity-80"> {fmtSize(a.size_bytes)}</span> : null}</span>
+                  : <>Audiobook{a.label ? ` · ${a.label}` : ""}{a.size_bytes ? <span className="font-normal opacity-80"> · {fmtSize(a.size_bytes)}</span> : null}</>}
+              </a>
+            </div>
           ))}
         </div>
       </div>
