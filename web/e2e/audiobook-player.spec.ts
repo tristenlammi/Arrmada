@@ -71,6 +71,53 @@ test.describe("audiobook player at 375px", () => {
     expect(api.callsTo("POST", "/api/v1/me/audio/sessions/s-b2v7/close")[0].body).toMatchObject({ current_time: expect.any(Number), time_listened: expect.any(Number) });
   });
 
+  test("Listen tab: shelves, the book sheet, play from a chapter (APP-10)", async ({ page, api }) => {
+    await mockAudio(page, api);
+    await page.clock.install({ time: NOW });
+    await page.goto("/audiobooks");
+    for (const shelf of ["Continue listening", "Continue series", "Recently added", "Finished"]) {
+      await expect(page.getByRole("region", { name: shelf })).toBeVisible();
+    }
+    await expect(page.getByRole("region", { name: "All audiobooks" }).getByRole("button", { name: /Carl's Doomsday Scenario/ })).toBeVisible();
+    const w = await page.evaluate(() => ({ doc: document.documentElement.scrollWidth, vp: document.documentElement.clientWidth }));
+    expect(w.doc).toBeLessThanOrEqual(w.vp);
+
+    await page.getByRole("region", { name: "Continue listening" }).getByRole("button", { name: /Dungeon Crawler Carl/ }).tap();
+    await expect(page).toHaveURL(/[?&]book=b12/);
+    const sheet = page.getByRole("dialog", { name: "Dungeon Crawler Carl" });
+    await expect(sheet.getByRole("button", { name: /Resume at 0:01/ })).toBeVisible();
+    await expect(sheet.getByRole("region", { name: "Your place" })).toBeVisible();
+    await expect(sheet.getByRole("button", { name: "Dungeon Crawler Carl (Full cast)" })).toBeVisible();
+
+    // A chapter plays from its start: the session opens at the saved place, and the jump
+    // is reported straight away so a hold would show at once.
+    await sheet.getByRole("button", { name: /Chapter 2: Mordecai/ }).tap();
+    await expect.poll(() => api.callsTo("POST", "/api/v1/me/audio/items/b12/play").length).toBe(1);
+    await expect.poll(() => api.callsTo("POST", "/api/v1/me/audio/sessions/s-b12/sync").length).toBeGreaterThanOrEqual(1);
+    expect((api.callsTo("POST", "/api/v1/me/audio/sessions/s-b12/sync")[0].body as { current_time: number }).current_time).toBeCloseTo(100, 0);
+    await expect(sheet.getByRole("button", { name: /Chapter 2: Mordecai/ })).toHaveAttribute("aria-current", "true");
+    await expect(sheet.getByRole("button", { name: /Pause/ })).toBeVisible();
+
+    // Back closes the sheet; the book plays on in the mini-player.
+    await page.goBack();
+    await expect(sheet).toHaveCount(0);
+    await expect(page.getByTestId("mini-player").getByRole("button", { name: "Pause", exact: true })).toBeVisible();
+  });
+
+  test("Listen tab: ?book= opens the sheet, ?tab=apps opens Apps & devices", async ({ page, api }) => {
+    await mockAudio(page, api);
+    await page.goto("/audiobooks?book=b13");
+    await expect(page.getByRole("dialog", { name: "Carl's Doomsday Scenario" }).getByRole("button", { name: "▶ Play" })).toBeVisible();
+    await page.goto("/audiobooks?tab=apps");
+    await expect(page.getByRole("tab", { name: "Apps & devices" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  test("Listen tab: switched off", async ({ page, api }) => {
+    await mockAudio(page, api, { status: 403 });
+    await page.goto("/audiobooks");
+    await expect(page.getByText("Audiobooks are switched off at the moment")).toBeVisible();
+  });
+
   test("a held jump back says so", async ({ page, api }) => {
     const m = await mockAudio(page, api, { startAt: 400 });
     const mini = await startFromShelf(page, api);
