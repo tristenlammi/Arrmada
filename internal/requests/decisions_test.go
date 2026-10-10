@@ -110,6 +110,30 @@ func TestReRequestNeedsNote(t *testing.T) {
 	}
 }
 
+// Two people asking again for the same declined title at once: the first re-opens it, the
+// second (working from the same stale declined row) follows instead of taking it over.
+func TestReRequestRaceFollows(t *testing.T) {
+	s, _, _ := quietFixture(t)
+	ctx := context.Background()
+	req, _, err := s.Create(ctx, Request{MediaType: "movie", TMDBID: 5, Title: "Tron", RequestedBy: 7}, CreateOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Decline(ctx, req.ID, DeclineOptions{DecidedBy: 1}); err != nil {
+		t.Fatal(err)
+	}
+	stale, _ := s.repo.Get(ctx, req.ID)
+	if _, sub, err := s.attachToExisting(ctx, stale, Request{RequestedBy: 8, Note: "a"}); err != nil || sub {
+		t.Fatalf("first: subscribed %v, %v", sub, err)
+	}
+	if _, sub, err := s.attachToExisting(ctx, stale, Request{RequestedBy: 9, Note: "b"}); err != nil || !sub {
+		t.Fatalf("second: subscribed %v, %v; want a follow", sub, err)
+	}
+	if got, _ := s.repo.Get(ctx, req.ID); got.RequestedBy != 8 || got.ReRequest != 1 {
+		t.Errorf("row = owner %d rerequest %d, want 8 and 1", got.RequestedBy, got.ReRequest)
+	}
+}
+
 // Asking for seasons a declined series request asked for is a re-request too, even when
 // it makes a new row: a note is needed, and the new row is flagged with the reason.
 func TestSeriesReRequestNeedsNote(t *testing.T) {

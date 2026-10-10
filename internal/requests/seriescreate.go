@@ -116,11 +116,8 @@ func (s *Service) createSeriesLocked(ctx context.Context, in Request, opts Creat
 	}
 	units := 0
 	if plan.insert {
-		asked := plan.seasons
-		if plan.reopen > 0 {
-			asked = byID[plan.reopen].Seasons
-		}
-		units = seasonUnits(asked, known)
+		// Only the seasons nobody covers yet count — what the season picker counts too.
+		units = plan.units
 		// Nothing is written — not even the follows — when the new seasons don't fit.
 		if err := s.checkQuota(ctx, q, QuotaSeason, units); err != nil {
 			return Request{}, false, false, err

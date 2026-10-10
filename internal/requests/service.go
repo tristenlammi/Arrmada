@@ -416,6 +416,9 @@ func (s *Service) attachCharged(ctx context.Context, existing, in Request, opts 
 		return Request{}, false, err
 	}
 	req, subscribed, err := s.attachAndPublish(ctx, existing, in, opts)
+	if existing.Status == StatusDeclined && subscribed {
+		units = 0 // lost a race to re-open it: they follow the other ask instead
+	}
 	if err == nil {
 		s.chargeQuota(ctx, q, req.ID, kind, units)
 	}
@@ -513,7 +516,15 @@ func (s *Service) lookupExistingBook(ctx context.Context, in Request) (Request, 
 func (s *Service) attachToExisting(ctx context.Context, existing, in Request) (Request, bool, error) {
 	if existing.Status == StatusDeclined {
 		if err := s.repo.Resurrect(ctx, existing.ID, in.RequestedBy, in.RequestedByName, in.QualityProfile, in.Note); err != nil {
-			return Request{}, false, err
+			if !errors.Is(err, errNotDeclined) {
+				return Request{}, false, err
+			}
+			// Someone else re-opened it a moment ago: follow theirs instead of taking it over.
+			fresh, gerr := s.repo.Get(ctx, existing.ID)
+			if gerr != nil || fresh.Status == StatusDeclined {
+				return Request{}, false, ErrNotFound
+			}
+			return s.attachToExisting(ctx, fresh, in)
 		}
 		// Keep the previous requester in the loop as a subscriber.
 		if existing.RequestedBy > 0 && existing.RequestedBy != in.RequestedBy {

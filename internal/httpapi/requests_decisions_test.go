@@ -48,6 +48,15 @@ func TestRequestDecisionsAPI(t *testing.T) {
 		t.Errorf("re-request with a note: HTTP %d %s", rec.Code, rec.Body)
 	}
 
+	// Someone else asking for it now follows Alice's request: their answer names neither
+	// her, her note, nor who decided it last time.
+	_, bobCookie := s.user(t, "bob@example.com", auth.RoleRequester)
+	rec = s.doJSON("POST", "/api/v1/requests", bobCookie, body)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "alice") || strings.Contains(rec.Body.String(), "Netflix any more") ||
+		strings.Contains(rec.Body.String(), "decided_by_name") || !strings.Contains(rec.Body.String(), `"relation":"subscriber"`) {
+		t.Errorf("a follower's create answer: HTTP %d %s", rec.Code, rec.Body)
+	}
+
 	// Bulk declines carry the reason too, bounded the same way.
 	if rec := s.doJSON("POST", "/api/v1/requests/bulk", admin, fmt.Sprintf(`{"action":"decline","ids":[%d],"reason":"%s"}`, id, strings.Repeat("y", 281))); rec.Code != http.StatusBadRequest {
 		t.Errorf("bulk with a long reason: HTTP %d", rec.Code)

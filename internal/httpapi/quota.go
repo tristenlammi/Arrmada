@@ -37,6 +37,10 @@ func quotaMessage(e *requests.ErrQuotaExceeded) string {
 	}
 	when := e.ResetsAt.Local().Format("Mon 2 Jan")
 	if left := e.Left(); left > 0 {
+		if e.Used == 0 {
+			// Nothing used yet, so nothing frees up: the ask is simply bigger than the limit.
+			return fmt.Sprintf("You can ask for at most %d %s %s — ask for fewer.", left, noun(left), quotaWindow(e.Days))
+		}
 		return fmt.Sprintf("You have %d %s left %s — ask for fewer, or more frees up %s.", left, noun(left), quotaWindow(e.Days), when)
 	}
 	return fmt.Sprintf("You've used your %d %s %s. The next one frees up %s.", e.Limit, noun(e.Limit), quotaWindow(e.Days), when)

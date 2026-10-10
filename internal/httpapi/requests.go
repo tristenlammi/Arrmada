@@ -341,8 +341,15 @@ func (a *api) handleCreateRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// subscribed=true means the caller was attached to an existing request rather
-	// than creating (or resurrecting) one.
-	a.writeJSON(w, http.StatusOK, map[string]any{"request": created, "subscribed": subscribed})
+	// than creating (or resurrecting) one. Shaped like any list row: a requester who only
+	// follows it never sees who asked, their note, or who decided.
+	created.Relation = requests.RelationOwner
+	if created.RequestedBy != u.ID {
+		created.Relation = requests.RelationSubscriber
+	}
+	list := []requests.Request{created}
+	shapeRequests(list, u.Role.AtLeast(auth.RoleManager))
+	a.writeJSON(w, http.StatusOK, map[string]any{"request": list[0], "subscribed": subscribed})
 }
 
 func (a *api) handleApproveRequest(w http.ResponseWriter, r *http.Request) {

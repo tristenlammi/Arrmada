@@ -29,11 +29,13 @@ export function SeasonPicker({ seasons, busy, onSubmit, onCancel }: {
   const someCovered = seasons.some((s) => s.state !== "requestable" && s.state !== "unaired");
   const follows = (pick ?? []).some((n) => seasons.some((s) => s.number === n && s.state === "requested"));
   const ticked = (n: number) => (pick === null ? selectable.includes(n) : pick.includes(n));
-  // A season limit, when there is one: following a season someone else asked for is free,
-  // so only the ticked seasons nobody has asked for count.
+  // A season limit, when there is one. It counts what the server counts: every season
+  // asked for that isn't already asked for by someone or complete on disk — so following a
+  // request is free, and All seasons counts the not-yet-aired and on-the-way ones too.
   const quota = useQuota();
   const left = quotaLeft(quota, "season");
-  const counted = (pick ?? selectable).filter((n) => seasons.some((s) => s.number === n && s.state === "requestable")).length;
+  const counts = (s: SeriesSeason) => s.state !== "requested" && s.state !== "in_library";
+  const counted = pick === null ? seasons.filter(counts).length : seasons.filter((s) => pick.includes(s.number) && counts(s)).length;
   const overQuota = left !== null && counted > left;
   const toggle = (n: number) => {
     const base = pick ?? selectable;

@@ -122,12 +122,11 @@ export function Requests({ chrome = true }: { chrome?: boolean }) {
       setParam("id", String(rq.id));
       return;
     }
-    setBusy(`${action}:${rq.id}`);
+    setBusy(`approve:${rq.id}`);
     setRowErrors((e) => { const n = { ...e }; delete n[rq.id]; return n; });
     try {
-      if (action === "approve") await api.approveRequest(rq.id);
-      else await api.declineRequest(rq.id);
-      flash(action === "approve" ? `Approved “${rq.title}” — searching now` : `Declined “${rq.title}”`);
+      await api.approveRequest(rq.id);
+      flash(`Approved “${rq.title}” — searching now`);
       refreshAttention(); // the sidebar's waiting count follows at once
       await load();
     } catch (e) {

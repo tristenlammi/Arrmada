@@ -80,6 +80,24 @@ func TestCreateSeriesSeasonsOverlap(t *testing.T) {
 			if err != nil {
 				return
 			}
+			// What a new row counts against a limit: the seasons in it, or for a whole-show
+			// row every season nobody covers (one with no season list).
+			wantUnits := len(tc.want.seasons)
+			if tc.want.insert && tc.want.seasons == nil {
+				wantUnits = max(len(got.seasons), 1)
+				if len(tc.known) > 0 {
+					wantUnits = 0
+					for _, n := range tc.known {
+						if n > 0 && !tc.onDisk[n] {
+							wantUnits++
+						}
+					}
+				}
+			}
+			if got.units != wantUnits {
+				t.Errorf("units = %d, want %d", got.units, wantUnits)
+			}
+			got.units = 0
 			if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("plan = %+v\n want %+v", got, tc.want)
 			}

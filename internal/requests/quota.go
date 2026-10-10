@@ -218,23 +218,6 @@ func quotaKind(mediaType string) string {
 	return QuotaSeason
 }
 
-// seasonUnits is how many seasons a series ask counts: the seasons listed, or for the
-// whole show every regular season known (one when there's no catalogue to count).
-func seasonUnits(seasons, known []int) int {
-	if len(seasons) > 0 {
-		return len(seasons)
-	}
-	n := 0
-	seen := map[int]bool{}
-	for _, s := range known {
-		if s > 0 && !seen[s] {
-			seen[s] = true
-			n++
-		}
-	}
-	return max(n, 1)
-}
-
 // Settings keys for the global limits: the window in days, and per window how many
 // movies, seasons and books ("0" or unset: unlimited).
 const (

@@ -352,16 +352,20 @@ func (r *Repo) Resurrect(ctx context.Context, id, userID int64, userName, profil
 		        note = ?,
 		        rerequest = rerequest + 1,
 		        updated_at = CURRENT_TIMESTAMP
-		  WHERE id = ?`,
-		StatusPending, userID, userName, profile, profile, note, id)
+		  WHERE id = ? AND status = ?`,
+		StatusPending, userID, userName, profile, profile, note, id, StatusDeclined)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
+		return errNotDeclined
 	}
 	return nil
 }
+
+// errNotDeclined: Resurrect found the request no longer declined (someone else asked for
+// it again a moment earlier) or gone.
+var errNotDeclined = errors.New("request is not declined")
 
 // Delete removes a request (and its subscriber rows).
 func (r *Repo) Delete(ctx context.Context, id int64) error {
