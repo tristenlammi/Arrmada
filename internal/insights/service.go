@@ -1,7 +1,8 @@
-// Package insights is Arrmada's Plex watch-monitoring module (the Tautulli replacement). This
-// first slice (I0) handles the Plex connection: storing the server URL + token and validating
-// them. The live-activity view, poller/recorder, stats, graphs, and buffering-history build on
-// top of this.
+// Package insights is Arrmada's Plex watch-monitoring module (the Tautulli replacement): the
+// Plex connection and its monitoring status, live activity, the poller that records every
+// play and buffer event, Tautulli import, and the history, people, graphs and reliability
+// reads over the recorded plays. Those reads use only the database, so they work before (or
+// without) a connected server.
 package insights
 
 import (

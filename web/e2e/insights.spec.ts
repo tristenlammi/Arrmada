@@ -11,7 +11,7 @@ import type { PlexConfig } from "../src/lib/api";
 // serveInsights answers the Insights endpoints for a saved server. It is registered after
 // the default table, so it wins for these paths. PUT /insights/plex records the body and
 // flips the served config to what was saved.
-async function serveInsights(page: Page, start: PlexConfig, opts: { plexDown?: boolean } = {}) {
+async function serveInsights(page: Page, start: PlexConfig, opts: { plexDown?: boolean; empty?: boolean } = {}) {
   let cfg = start;
   const puts: unknown[] = [];
   const table = ins.routes(() => cfg, opts);
@@ -86,6 +86,34 @@ test.describe("admin", () => {
     await page.goto("/insights?tab=history");
     await page.getByRole("cell", { name: /The Cartographer/ }).click();
     await expect(page.getByText("HW requested")).toHaveAttribute("title", /show HW as requested/);
+  });
+
+  test("without a server, imported plays still show on History, People and Graphs", async ({ page }) => {
+    await serveInsights(page, ins.config("unconfigured"));
+    await page.goto("/insights?tab=history");
+    await expect(page.getByRole("cell", { name: /The Cartographer/ })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Connect your Plex server →" })).toHaveAttribute("href", "/insights?tab=settings");
+    await page.getByRole("tab", { name: "People" }).click();
+    await expect(page.getByRole("cell", { name: "Jesse" })).toBeVisible();
+    await page.getByRole("tab", { name: "Graphs" }).click();
+    await expect(page.getByText("Daily plays by media type")).toBeVisible();
+    await expect(page.getByText(/coming soon/i)).toHaveCount(0);
+  });
+
+  test("with nothing recorded and no server, a tab says what it will show and links to setup", async ({ page }) => {
+    await serveInsights(page, ins.config("unconfigured"), { empty: true });
+    await page.goto("/insights?tab=reliability");
+    await expect(page.getByText("The buffering view", { exact: false })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Connect your Plex server →" })).toBeVisible();
+    await expect(page.getByText(/coming soon/i)).toHaveCount(0);
+  });
+
+  test("Plex down: Activity shows the error and keeps the watch statistics", async ({ page }) => {
+    await serveInsights(page, ins.config("unreachable", { last_error: "connection refused" }), { plexDown: true });
+    await page.goto("/insights");
+    await expect(page.getByText(/Couldn’t reach Plex/)).toBeVisible();
+    await expect(page.getByText("Most watched movies")).toBeVisible();
+    await expect(page.getByText(/Plex unreachable — library counts and recently added/)).toBeVisible();
   });
 
   test("Convert says pausing needs monitoring when it is off", async ({ page }) => {

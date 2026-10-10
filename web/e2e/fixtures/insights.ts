@@ -87,15 +87,21 @@ export const recent: { items: RecentItem[] } = { items: [{ title: "Sunshine", su
 
 // routes answers every Insights read for a saved server with recorded plays. The config
 // route is a function so a spec can flip the status (e.g. after Turn on).
-export function routes(cfg: () => PlexConfig, opts: { plexDown?: boolean } = {}): MockRoute[] {
+// Nothing recorded at all: the tabs fall back to their setup state when there's no server.
+const emptyReliability: Reliability = {
+  summary: { total_sessions: 0, buffered_sessions: 0, total_events: 0, total_stall_ms: 0, buffer_rate_pct: 0 },
+  causes: [], by_user: [], by_platform: [], by_title: [], events: [],
+};
+
+export function routes(cfg: () => PlexConfig, opts: { plexDown?: boolean; empty?: boolean } = {}): MockRoute[] {
   const plexDown = { status: 502, body: { message: "dial tcp 192.168.1.10:32400: connect: connection refused" } };
   return [
     { method: "GET", path: "/api/v1/insights/plex", respond: () => cfg() },
-    { method: "GET", path: "/api/v1/insights/history", body: history },
-    { method: "GET", path: "/api/v1/insights/users", body: users },
+    { method: "GET", path: "/api/v1/insights/history", body: opts.empty ? { rows: [], total: 0 } : history },
+    { method: "GET", path: "/api/v1/insights/users", body: opts.empty ? { users: [] } : users },
     { method: "GET", path: "/api/v1/insights/stats", body: stats },
     { method: "GET", path: "/api/v1/insights/graphs", body: graphs },
-    { method: "GET", path: "/api/v1/insights/reliability", body: reliability },
+    { method: "GET", path: "/api/v1/insights/reliability", body: opts.empty ? emptyReliability : reliability },
     opts.plexDown ? { method: "GET", path: "/api/v1/insights/activity", ...plexDown } : { method: "GET", path: "/api/v1/insights/activity", body: activity },
     opts.plexDown ? { method: "GET", path: "/api/v1/insights/libraries", ...plexDown } : { method: "GET", path: "/api/v1/insights/libraries", body: libraries },
     opts.plexDown ? { method: "GET", path: "/api/v1/insights/recently-added", ...plexDown } : { method: "GET", path: "/api/v1/insights/recently-added", body: recent },
