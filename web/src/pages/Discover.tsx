@@ -11,7 +11,7 @@ import { posterThumb } from "../lib/img";
 import { useCanHover } from "../lib/useCanHover";
 import { formatSeasons, MOVING_STAGES, requestStage, sortForRequester } from "../lib/requestStage";
 import { usePoll } from "../lib/usePoll";
-import { Button, IconButton, Modal, StatusChip, POSTER_CHIP_BG, TONE_HUE, useToast, type Tone, type ToastFn } from "../ui";
+import { Button, IconButton, Sheet, StatusChip, POSTER_CHIP_BG, TONE_HUE, useToast, type Tone, type ToastFn } from "../ui";
 
 // The Books tab is a separate Open Library experience; its code loads only when chosen.
 const BooksDiscover = lazyPage(() => import("./BooksDiscover"), "BooksDiscover");
@@ -1246,20 +1246,21 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
   const r = d?.ratings;
   const similar = (d?.similar ?? []).filter((s) => s.tmdb_id !== c.tmdb_id).slice(0, 12);
 
-  // The shared Modal owns the dialog plumbing (portal, focus trap and restore, Esc,
-  // scroll lock). The panel keeps its own layout: full screen on a phone, a centred
-  // card with an inner scroller above sm, and a slightly darker scrim than a plain
-  // dialog because it sits over artwork.
+  // The kit Sheet owns the dialog plumbing (portal, focus trap and restore, Esc, scroll
+  // lock, Back to close). The panel keeps its own layout: full screen on a phone, a
+  // centred card with an inner scroller above sm, and a slightly darker scrim than a
+  // plain dialog because it sits over artwork.
   return (
-    <Modal
+    <Sheet
       onClose={onClose}
       ariaLabel={c.title}
-      variant="sheet"
+      handle={false}
       scrim={0.68}
       panelClassName="flex h-full w-full flex-col overflow-hidden sm:h-auto sm:max-h-[92vh] sm:max-w-[820px] sm:rounded-2xl sm:shadow-panel"
     >
-      {/* Close sits on the dialog, not the backdrop, so it stays put while the body scrolls. */}
-      <IconButton label="Close" onClick={onClose} className="absolute right-3 top-3 z-20 h-8 w-8 rounded-full" style={{ background: "rgba(20,12,7,.7)", color: "#fff" }}>✕</IconButton>
+      {/* Close sits on the dialog, not the backdrop, so it stays put while the body scrolls.
+          Full screen in the installed iPhone app, it stays clear of the status bar. */}
+      <IconButton label="Close" onClick={onClose} className="absolute right-3 z-20 h-8 w-8 rounded-full" style={{ top: "max(0.75rem, env(safe-area-inset-top, 0px))", background: "rgba(20,12,7,.7)", color: "#fff" }}>✕</IconButton>
 
       {/* The backdrop lives INSIDE the scroller: the poster below insets over it with a
           negative margin, and an overflow container clips negative margins — with the
@@ -1461,7 +1462,7 @@ function RequestDetailModal({ card, ctx, pick, onClose }: { card: DiscoverCard; 
           )}
         </div>
       </div>
-    </Modal>
+    </Sheet>
   );
 }
 

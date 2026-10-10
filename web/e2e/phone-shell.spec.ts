@@ -134,3 +134,40 @@ for (const width of [375, 1280]) {
     });
   });
 }
+
+// APP-06: Back (Android's button, the iOS swipe) closes an open sheet instead of leaving
+// the page, and an open sheet covers the tab bar.
+test.describe("sheets on a phone", () => {
+  test.use({ persona: "requester" });
+
+  test("Back closes the request sheet and stays on Discover", async ({ page, api }) => {
+    await open(page, "/discover", api);
+    const poster = page.getByRole("button", { name: "Open the request for Saltwind" });
+    await poster.tap();
+    const sheet = page.getByRole("dialog", { name: "Saltwind" });
+    await expect(sheet).toBeVisible();
+
+    // The sheet covers the tab bar: a tap where the bar is lands on the sheet's overlay.
+    const onBar = await page.evaluate(() => {
+      const bar = document.querySelector('nav[aria-label="Primary"]')!.getBoundingClientRect();
+      const hit = document.elementFromPoint(bar.left + bar.width / 2, bar.top + bar.height / 2);
+      return !!hit?.closest('nav[aria-label="Primary"]');
+    });
+    expect(onBar).toBe(false);
+
+    await page.goBack();
+    await expect(sheet).toHaveCount(0);
+    await expect(page).toHaveURL(/\/discover$/);
+    await expect(tabBar(page)).toBeVisible();
+
+    // Closed by its own button it leaves no entry behind, so the next Back really
+    // leaves Discover.
+    await poster.tap();
+    await expect(sheet).toBeVisible();
+    await sheet.getByRole("button", { name: "Close", exact: true }).tap();
+    await expect(sheet).toHaveCount(0);
+    await expect(page).toHaveURL(/\/discover$/);
+    await page.goBack();
+    await expect(page).not.toHaveURL(/\/discover/);
+  });
+});

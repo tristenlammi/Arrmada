@@ -1,28 +1,6 @@
-import { useEffect, useId, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
+import { useId, useRef, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
-
-// Every open Modal, oldest first. Only the last one answers Escape and keeps Tab
-// inside itself, so a confirm opened over a sheet closes on Esc without taking the
-// sheet with it.
-const stack: symbol[] = [];
-const isTop = (id: symbol) => stack[stack.length - 1] === id;
-
-// Body scroll lock is a counter, not a saved value per modal: with two stacked
-// modals the second would otherwise "restore" the first one's hidden overflow and
-// leave the page frozen after both close.
-let locks = 0;
-let savedOverflow = "";
-function lockScroll() {
-  if (locks++ === 0) {
-    savedOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-  }
-}
-function unlockScroll() {
-  if (locks > 0 && --locks === 0) document.body.style.overflow = savedOverflow;
-}
-
-const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+import { openDialogCount, useDialogA11y } from "../lib/useDialogA11y";
 
 export type ModalSize = "sm" | "md" | "lg" | "xl";
 const WIDTH: Record<ModalSize, string> = {
@@ -69,59 +47,11 @@ export function Modal({
   dismissible = true, initialFocus, footer, panelClassName, panelStyle, panelRef, scrim = 0.6, children,
 }: ModalProps) {
   const titleId = useId();
-  // What had focus at first render, before any autoFocus child inside could take it.
-  const [firstFocus] = useState(() => (typeof document === "undefined" ? null : document.activeElement));
   const ownRef = useRef<HTMLDivElement>(null);
   const ref = panelRef ?? ownRef;
-  // Latest values without re-running the open/close effect on every parent render
-  // (onClose is usually a fresh arrow each time).
   const downOnBackdrop = useRef(true);
-  const closeRef = useRef(onClose);
-  const dismissRef = useRef(dismissible);
-  useEffect(() => { closeRef.current = onClose; dismissRef.current = dismissible; });
-
-  useEffect(() => {
-    if (!open) return;
-    const id = Symbol("modal");
-    stack.push(id);
-    lockScroll();
-    // A child with autoFocus has already taken focus by now: leave it there, and
-    // restore to whatever had focus when the modal first rendered instead.
-    const active = document.activeElement as HTMLElement | null;
-    const focusedInside = !!active && !!ref.current?.contains(active);
-    const opener = focusedInside ? (firstFocus as HTMLElement | null) : active;
-    if (!focusedInside) (initialFocus?.current ?? ref.current)?.focus();
-
-    const onKey = (e: KeyboardEvent) => {
-      if (!isTop(id)) return;
-      if (e.key === "Escape") {
-        // Captured and stopped here so the page under the modal (a search box, a
-        // menu) never sees the same Escape.
-        e.stopPropagation();
-        e.preventDefault();
-        if (dismissRef.current) closeRef.current();
-        return;
-      }
-      if (e.key !== "Tab" || !ref.current) return;
-      const nodes = ref.current.querySelectorAll<HTMLElement>(FOCUSABLE);
-      if (nodes.length === 0) { e.preventDefault(); return; }
-      const first = nodes[0], last = nodes[nodes.length - 1];
-      const at = document.activeElement;
-      const inside = !!at && ref.current.contains(at);
-      if (e.shiftKey && (at === first || at === ref.current || !inside)) { e.preventDefault(); last.focus(); }
-      else if (!e.shiftKey && (at === last || !inside)) { e.preventDefault(); first.focus(); }
-    };
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("keydown", onKey, true);
-      const i = stack.indexOf(id);
-      if (i >= 0) stack.splice(i, 1);
-      unlockScroll();
-      opener?.focus?.();
-    };
-    // initialFocus and ref are read once at open time on purpose.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
+  // Focus in and trapped, Escape, focus back to the opener, page scroll locked.
+  useDialogA11y(ref, { open, onClose, dismissible, initialFocus });
 
   if (!open) return null;
 
@@ -171,4 +101,4 @@ export function Modal({
 }
 
 // For tests: how many modals are open right now.
-export const openModalCount = () => stack.length;
+export const openModalCount = openDialogCount;
