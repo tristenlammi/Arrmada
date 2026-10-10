@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { FleetMark } from "../components/FleetMark";
 import { api, resetSignedOut } from "../lib/api";
 import { nextAfterSignIn } from "../lib/session";
+
+const PlexLoginButton = lazy(() => import("../components/PlexLoginButton"));
 
 // After any successful sign-in: back to the page they were on (or ?next=), else Discover.
 // A full load, so MeProvider and /status start fresh for the new session.
@@ -25,26 +27,6 @@ export function Login({ signedOut = false }: { signedOut?: boolean }) {
   useEffect(() => {
     api.status().then((s) => { setMode(s.needs_setup ? "setup" : "login"); setPlexEnabled(s.plex_login); }).catch(() => setMode("login"));
   }, []);
-
-  // Sign in with Plex: open the plex.tv authorize popup, then poll the PIN until Plex hands back a
-  // token — the server verifies server access and provisions a requester account.
-  const plexLogin = async () => {
-    setPlexBusy(true); setError(null);
-    try {
-      const { id, auth_url } = await api.plexLoginStart();
-      const popup = window.open(auth_url, "plex-auth", "width=620,height=720");
-      let tries = 0;
-      const poll = async () => {
-        if (++tries > 90) { setError("Plex sign-in timed out — try again."); setPlexBusy(false); return; } // ~3 min
-        try {
-          const r = await api.plexLoginPoll(id);
-          if (r.user) { popup?.close(); continueAfterSignIn(); return; }
-          setTimeout(poll, 2000);
-        } catch (e) { setError((e as Error).message); setPlexBusy(false); popup?.close(); }
-      };
-      setTimeout(poll, 2000);
-    } catch (e) { setError((e as Error).message); setPlexBusy(false); }
-  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -102,9 +84,11 @@ export function Login({ signedOut = false }: { signedOut?: boolean }) {
                 <div className="my-0.5 flex items-center gap-2 text-[10px] uppercase tracking-wide text-ink-faint">
                   <span className="h-px flex-1" style={{ background: "var(--line)" }} /> or <span className="h-px flex-1" style={{ background: "var(--line)" }} />
                 </div>
-                <button type="button" onClick={plexLogin} disabled={busy || plexBusy} className="rounded-lg px-4 py-2.5 text-[13px] font-semibold" style={{ background: "#e5a00d", color: "#1f1300" }}>
-                  {plexBusy ? "Waiting for Plex…" : "Sign in with Plex"}
-                </button>
+                {/* Sign in with Plex: the server checks the Plex account can reach this
+                    server and signs it into its requester account. */}
+                <Suspense fallback={<button type="button" disabled className="rounded-lg px-4 py-2.5 text-[13px] font-semibold" style={{ background: "#e5a00d", color: "#1f1300" }}>Sign in with Plex</button>}>
+                  <PlexLoginButton disabled={busy} onBusy={setPlexBusy} onError={setError} onSignedIn={continueAfterSignIn} />
+                </Suspense>
               </>
             )}
           </form>

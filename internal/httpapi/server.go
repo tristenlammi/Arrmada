@@ -127,12 +127,13 @@ type api struct {
 	deps         Deps
 	start        time.Time
 	loginLimiter *loginLimiter // throttles auth attempts (login/setup/plex-pin)
+	plexPins     *plexPinGuard // which browser (and account) started each Plex PIN
 }
 
 // New builds the HTTP server: JSON API routes, the embedded UI (with SPA
 // fallback), and the middleware chain (recover → log → mux).
 func New(d Deps) *http.Server {
-	a := &api{deps: d, start: time.Now(), loginLimiter: newLoginLimiter(10, 15*time.Minute)}
+	a := &api{deps: d, start: time.Now(), loginLimiter: newLoginLimiter(10, 15*time.Minute), plexPins: newPlexPinGuard()}
 
 	rt := newRouter(a)
 	a.registerRoutes(rt)

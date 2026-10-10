@@ -39,15 +39,30 @@ func (a *api) handlePlexLoginStart(w http.ResponseWriter, r *http.Request) {
 	if !a.loginAllowed(w, r, "plexpin:"+netutil.ClientIP(r)) {
 		return
 	}
+	// ?mode=redirect: no popup could be opened (iPhone, the installed app, a blocker), so
+	// plex.tv sends this browser back to the login page with the PIN once approved.
+	redirect := plexRedirectMode(r)
+	if _, ok := plexReturnBase(r); redirect && !ok {
+		a.writeError(w, http.StatusBadRequest, "Couldn't work out this site's address for Plex to send you back to.")
+		return
+	}
 	clientID := a.plexClientID(ctx)
 	pin, err := plex.RequestPIN(ctx, clientID, plexLoginProduct)
 	if err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	forward := ""
+	if redirect {
+		forward, _ = plexForwardURL(r, "/?plexpin="+strconv.Itoa(pin.ID))
+	}
+	if err := a.bindPlexPin(w, r, plexFlowLogin, 0, pin.ID); err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not start Plex sign-in")
+		return
+	}
 	a.writeJSON(w, http.StatusOK, map[string]any{
 		"id":       pin.ID,
-		"auth_url": plex.AuthURL(clientID, pin.Code, plexLoginProduct),
+		"auth_url": plex.AuthURL(clientID, pin.Code, plexLoginProduct, forward),
 	})
 }
 
@@ -65,6 +80,11 @@ func (a *api) handlePlexLoginPoll(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusBadRequest, "invalid pin")
 		return
 	}
+	// Only the browser that started this PIN may collect it (see plexpin.go).
+	if !a.plexPinOwned(r, plexFlowLogin, 0, pinID) {
+		a.writeError(w, http.StatusForbidden, errPlexPinElsewhere)
+		return
+	}
 	clientID := a.plexClientID(ctx)
 	token, err := plex.CheckPIN(ctx, clientID, pinID)
 	if err != nil {
@@ -75,6 +95,8 @@ func (a *api) handlePlexLoginPoll(w http.ResponseWriter, r *http.Request) {
 		a.writeJSON(w, http.StatusOK, map[string]any{"pending": true})
 		return
 	}
+	// Approved: whatever the outcome below, this PIN is spent.
+	defer a.plexPins.forget(pinID)
 
 	// Authorization gate: the signing-in user must have access to THIS Plex server.
 	adminToken := a.deps.Settings.Get(ctx, "insights_plex_token", "")

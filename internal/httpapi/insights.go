@@ -136,11 +136,32 @@ func (a *api) handleInsightsTest(w http.ResponseWriter, r *http.Request) {
 // handleInsightsPlexAuthStart begins a "Sign in with Plex" flow: returns the PIN id
 // and the plex.tv URL the UI opens for the user to authorize.
 func (a *api) handleInsightsPlexAuthStart(w http.ResponseWriter, r *http.Request) {
+	me, _ := userFrom(r)
+	if me == nil {
+		a.writeError(w, http.StatusUnauthorized, "sign in first")
+		return
+	}
+	// ?mode=redirect comes back to the Plex connection settings, which finish the connection.
+	var forward func(int) string
+	if plexRedirectMode(r) {
+		if _, ok := plexReturnBase(r); !ok {
+			a.writeError(w, http.StatusBadRequest, "Couldn't work out this site's address for Plex to send you back to.")
+			return
+		}
+		forward = func(pin int) string {
+			u, _ := plexForwardURL(r, "/insights?tab=settings&plexpin="+strconv.Itoa(pin))
+			return u
+		}
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
-	auth, err := a.deps.Insights.StartPlexAuth(ctx)
+	auth, err := a.deps.Insights.StartPlexAuth(ctx, forward)
 	if err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if err := a.bindPlexPin(w, r, plexFlowConnect, me.ID, auth.ID); err != nil {
+		a.writeError(w, http.StatusInternalServerError, "could not start Plex sign-in")
 		return
 	}
 	a.writeJSON(w, http.StatusOK, auth)
@@ -153,12 +174,20 @@ func (a *api) handleInsightsPlexAuthPoll(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
+	me, _ := userFrom(r)
+	if me == nil || !a.plexPinOwned(r, plexFlowConnect, me.ID, int(id)) {
+		a.writeError(w, http.StatusForbidden, errPlexPinElsewhere)
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 	authorized, err := a.deps.Insights.PollPlexAuth(ctx, int(id))
 	if err != nil {
 		a.writeError(w, http.StatusBadGateway, err.Error())
 		return
+	}
+	if authorized {
+		a.plexPins.forget(int(id))
 	}
 	a.writeJSON(w, http.StatusOK, map[string]any{"authorized": authorized})
 }

@@ -147,14 +147,20 @@ type PlexAuth struct {
 	AuthURL string `json:"auth_url"`
 }
 
-// StartPlexAuth begins a Plex sign-in and returns the PIN id + the URL to open.
-func (s *Service) StartPlexAuth(ctx context.Context) (PlexAuth, error) {
+// StartPlexAuth begins a Plex sign-in and returns the PIN id + the URL to open. forward,
+// when not nil, gives the address plex.tv should send the browser back to for that PIN
+// (the full-page redirect used when no popup can open).
+func (s *Service) StartPlexAuth(ctx context.Context, forward func(pinID int) string) (PlexAuth, error) {
 	cid := s.clientID(ctx)
 	pin, err := plex.RequestPIN(ctx, cid, plexProduct)
 	if err != nil {
 		return PlexAuth{}, err
 	}
-	return PlexAuth{ID: pin.ID, AuthURL: plex.AuthURL(cid, pin.Code, plexProduct)}, nil
+	back := ""
+	if forward != nil {
+		back = forward(pin.ID)
+	}
+	return PlexAuth{ID: pin.ID, AuthURL: plex.AuthURL(cid, pin.Code, plexProduct, back)}, nil
 }
 
 // PollPlexAuth checks whether the user has authorized the sign-in. On success it

@@ -20,7 +20,7 @@ type Account struct {
 // GetAccount returns the identity of the user who owns the token — used after a Plex sign-in to
 // know who's logging in.
 func GetAccount(ctx context.Context, clientID, token string) (Account, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, plexTVBase+"/api/v2/user", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, plexTV()+"/api/v2/user", nil)
 	if err != nil {
 		return Account{}, err
 	}
@@ -47,7 +47,7 @@ func GetAccount(ctx context.Context, clientID, token string) (Account, error) {
 // serverIDs returns the machine identifiers (clientIdentifier) of the Plex Media Server resources
 // a token can reach. ownedOnly restricts to servers the token OWNS (i.e. the account's own server).
 func serverIDs(ctx context.Context, clientID, token string, ownedOnly bool) ([]string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, plexTVBase+"/api/v2/resources", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, plexTV()+"/api/v2/resources", nil)
 	if err != nil {
 		return nil, err
 	}

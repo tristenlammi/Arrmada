@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
 import { LINKS } from "../lib/links";
 import { useTabParam } from "../lib/useTabParam";
 import { usePoll } from "../lib/usePoll";
+import { plexApi } from "../lib/plexApi";
+import { usePlexPinSignIn, type PlexFlow } from "../lib/plexSignIn";
 import { TabPanel, Tabs } from "../ui/Tabs";
 import { api, type PlexConfig, type PlexTestResult, type InsightsActivity, type InsightsStream, type HistoryEntry, type InsightsStats, type UserEntry, type LibraryStat, type RecentItem, type InsightsGraphs, type Reliability, type BufferGroup } from "../lib/api";
 
@@ -913,7 +915,7 @@ function PlexSettings({ cfg, onSaved, flash }: { cfg: PlexConfig | null; onSaved
   const [enabled, setEnabled] = useState(false);
   const [busy, setBusy] = useState<"save" | "test" | null>(null);
   const [test, setTest] = useState<PlexTestResult | null>(null);
-  const [signingIn, setSigningIn] = useState(false);
+  const [, setParams] = useSearchParams();
 
   useEffect(() => {
     if (!cfg) return;
@@ -922,36 +924,25 @@ function PlexSettings({ cfg, onSaved, flash }: { cfg: PlexConfig | null; onSaved
     setEnabled(cfg.enabled);
   }, [cfg]);
 
-  // Sign in with Plex: open plex.tv's auth popup, then poll until the user approves,
-  // at which point the token (and server URL, if unset) are stored on the server.
-  const signIn = async () => {
-    setSigningIn(true);
-    setTest(null);
-    try {
-      const { id, auth_url } = await api.insightsPlexAuthStart();
-      const popup = window.open(auth_url, "plex-auth", "width=800,height=720");
-      const deadline = Date.now() + 3 * 60 * 1000;
-      while (true) {
-        await new Promise((r) => setTimeout(r, 2000));
-        if (Date.now() > deadline) { flash("Plex sign-in timed out — try again."); break; }
-        let authorized = false;
-        try { authorized = (await api.insightsPlexAuthPoll(id)).authorized; } catch { /* keep polling */ }
-        if (authorized) {
-          popup?.close();
-          const c = await api.insightsConfig();
-          onSaved(c);
-          setUrl(c.url);
-          flash("Signed in with Plex ✓");
-          break;
-        }
-        if (popup && popup.closed) { flash("Sign-in window closed before finishing."); break; }
-      }
-    } catch (e) {
-      flash((e as Error).message);
-    } finally {
-      setSigningIn(false);
-    }
-  };
+  // Sign in with Plex: a popup on a computer, the whole page on a phone (plex.tv sends it
+  // back here with ?plexpin=). Once approved the server stores the token and finds the
+  // server URL if none is set.
+  const flow = useMemo<PlexFlow<true>>(() => ({
+    kind: "connect",
+    start: plexApi.connectStart,
+    poll: async (id) => ((await plexApi.connectPoll(id)).authorized ? true : null),
+  }), []);
+  const plex = usePlexPinSignIn({
+    flow,
+    onDone: () => {
+      setTest(null);
+      api.insightsConfig().then((c) => { onSaved(c); setUrl(c.url); flash("Signed in with Plex ✓"); }).catch(() => flash("Signed in with Plex ✓"));
+    },
+    onError: flash,
+    resumeParam: "plexpin",
+    strip: () => setParams((p) => { p.delete("plexpin"); return p; }, { replace: true }),
+  });
+  const signingIn = plex.phase !== "idle";
 
   const body = () => ({ url: url.trim(), token: token.trim() || undefined, enabled, poll_seconds: Number(poll) || 5 });
 
@@ -973,10 +964,16 @@ function PlexSettings({ cfg, onSaved, flash }: { cfg: PlexConfig | null; onSaved
         <div className="mb-4 mt-0.5 text-[11.5px] text-ink-faint">Point Arrmada at your Plex Media Server. Your token stays on this server and is never shown back in full.</div>
 
         {/* One-click sign-in — no token hunting. */}
-        <button onClick={signIn} disabled={signingIn} className="mb-4 flex w-full items-center justify-center gap-2 rounded-lg py-2.5 text-[13px] font-semibold disabled:opacity-60" style={{ background: "#e5a00d", color: "#1f1200" }}>
-          {signingIn ? "Waiting for Plex…" : (cfg?.token_set ? "Re-sign in with Plex" : "Sign in with Plex")}
+        <button onClick={() => { setTest(null); plex.begin(); }} disabled={signingIn} className="mb-2 flex w-full items-center justify-center gap-2 rounded-lg py-2.5 text-[13px] font-semibold disabled:opacity-60" style={{ background: "#e5a00d", color: "#1f1200" }}>
+          {plex.phase === "finishing" ? "Finishing Plex sign-in…" : signingIn ? "Waiting for Plex…" : (cfg?.token_set ? "Re-sign in with Plex" : "Sign in with Plex")}
         </button>
-        <div className="mb-4 flex items-center gap-2 text-[10.5px] text-ink-faint">
+        {(plex.phase === "waiting" || plex.phase === "slow") && (
+          <div className="mb-2 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[11.5px]">
+            {plex.phase === "slow" && <button onClick={plex.continueHere} className="font-semibold" style={{ color: "var(--accent)" }}>Plex window didn't open? Continue in this tab</button>}
+            <button onClick={plex.cancel} className="text-ink-faint underline">Cancel</button>
+          </div>
+        )}
+        <div className="mb-4 mt-4 flex items-center gap-2 text-[10.5px] text-ink-faint">
           <span className="h-px flex-1" style={{ background: "var(--line)" }} /> or enter manually <span className="h-px flex-1" style={{ background: "var(--line)" }} />
         </div>
 

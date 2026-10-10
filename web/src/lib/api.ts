@@ -1975,7 +1975,9 @@ export function releaseErrorMessage(e: unknown): string {
   return (e as Error).message;
 }
 
-async function req<T>(path: string, opts?: RequestInit): Promise<T> {
+// req is a JSON call. Exported for the few call groups that live in their own lazily
+// loaded module (lib/plexApi.ts), so they stay out of a requester's first download.
+export async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const res = await send(path, {
     headers: { "Content-Type": "application/json", Accept: "application/json" },
     ...opts,
@@ -2231,8 +2233,6 @@ export const api = {
   settings: () => req<AppSettings>("/api/v1/settings"),
   updateSettings: (body: Partial<AppSettings>) =>
     req<AppSettings>("/api/v1/settings", { method: "PUT", body: JSON.stringify(body) }),
-  plexLoginStart: () => req<{ id: number; auth_url: string }>("/api/v1/auth/plex/pin", { method: "POST" }),
-  plexLoginPoll: (id: number) => req<{ pending?: boolean; user?: AuthUser }>(`/api/v1/auth/plex/pin/${id}`),
   logs: (opts?: { limit?: number; level?: string; q?: string; hide?: string }) => {
     const p = new URLSearchParams();
     if (opts?.limit) p.set("limit", String(opts.limit));
@@ -2713,8 +2713,6 @@ export const api = {
 
   // Insights (Plex)
   insightsConfig: () => req<PlexConfig>("/api/v1/insights/plex"),
-  insightsPlexAuthStart: () => req<{ id: number; auth_url: string }>("/api/v1/insights/plex/auth", { method: "POST" }),
-  insightsPlexAuthPoll: (id: number) => req<{ authorized: boolean }>(`/api/v1/insights/plex/auth/${id}`),
   updateInsightsConfig: (body: { url: string; token?: string; enabled?: boolean; poll_seconds?: number }) =>
     req<PlexConfig>("/api/v1/insights/plex", { method: "PUT", body: JSON.stringify(body) }),
   testInsights: (body: { url?: string; token?: string }) =>
