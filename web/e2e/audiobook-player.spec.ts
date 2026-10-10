@@ -118,6 +118,70 @@ test.describe("audiobook player at 375px", () => {
     await expect(page.getByText("Audiobooks are switched off at the moment")).toBeVisible();
   });
 
+  test("full player: chapters, speed, sleep timer, bookmarks, Back closes (APP-11)", async ({ page, api }) => {
+    await mockAudio(page, api);
+    await page.clock.install({ time: NOW });
+    await page.goto("/shelf?sleepdebug=1");
+    await page.getByRole("button", { name: /^Listen to The Lighthouse Keeper/ }).tap();
+    const mini = page.getByTestId("mini-player");
+    await expect(mini.getByRole("button", { name: "Pause", exact: true })).toBeVisible();
+    await mini.getByRole("button", { name: /^Open the player/ }).tap();
+    const full = page.getByRole("dialog", { name: "Audiobook player" });
+    await expect(full).toBeVisible();
+
+    // Chapters: the playing one is marked; a tap goes there.
+    await expect(full.getByRole("button", { name: /Chapter 1: The Stairwell/ })).toHaveAttribute("aria-current", "true");
+    await full.getByRole("button", { name: /Chapter 3: The Safe Room/ }).tap();
+    await expect(full.getByRole("button", { name: /Chapter 3: The Safe Room/ })).toHaveAttribute("aria-current", "true");
+    await full.getByRole("button", { name: "Previous chapter" }).tap();
+    await expect(full.getByRole("button", { name: /Chapter 2: Mordecai/ })).toHaveAttribute("aria-current", "true");
+
+    // Speed: remembered on this device.
+    await full.getByRole("button", { name: "Faster" }).tap();
+    await full.getByRole("button", { name: "Faster" }).tap();
+    await expect(full.getByText("1.2×")).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem("arrmada.player.rate"))).toBe("1.2");
+
+    // Bookmarks: add with a note, delete after confirming.
+    await full.getByRole("button", { name: /^Add at / }).tap();
+    await full.getByRole("textbox", { name: "Bookmark note" }).fill("Mordecai shows up");
+    await full.getByRole("button", { name: "Save" }).tap();
+    await expect.poll(() => api.callsTo("POST", "/api/v1/me/audio/items/b2v7/bookmarks").length).toBe(1);
+    expect(api.callsTo("POST", "/api/v1/me/audio/items/b2v7/bookmarks")[0].body).toMatchObject({ title: "Mordecai shows up" });
+    await expect(full.getByText("Mordecai shows up")).toBeVisible();
+    await full.getByRole("button", { name: /^Delete the bookmark at 3:20/ }).tap();
+    await page.getByRole("button", { name: "Delete", exact: true }).tap();
+    await expect.poll(() => api.callsTo("DELETE", "/api/v1/me/audio/items/b2v7/bookmarks/200").length).toBe(1);
+
+    // Sleep: a minute (the debug option), then it pauses and saves the place.
+    await full.getByRole("combobox", { name: "Sleep timer" }).selectOption("1");
+    await expect(full.getByTestId("sleep-left")).toHaveText(/1 min left|60 s left/);
+    await expect(mini.getByTestId("mini-sleep")).toBeVisible();
+    await page.clock.runFor(61_000);
+    await expect(full.getByRole("button", { name: "Play", exact: true })).toBeVisible();
+    await expect.poll(() => api.callsTo("POST", "/api/v1/me/audio/sessions/s-b2v7/close").length).toBe(1);
+    await expect(full.getByTestId("sleep-left")).toHaveText("Off");
+
+    // Back closes it, leaving the bar.
+    await page.goBack();
+    await expect(full).toHaveCount(0);
+    await expect(mini).toBeVisible();
+  });
+
+  test("full player: a held jump back offers Keep it now", async ({ page, api }) => {
+    const m = await mockAudio(page, api, { startAt: 400, reply: { position: 400, held_position: 4 } });
+    const mini = await startFromShelf(page, api);
+    await page.clock.runFor(15_500);
+    await mini.getByRole("button", { name: /^Open the player/ }).tap();
+    const full = page.getByRole("dialog", { name: "Audiobook player" });
+    await expect(full.getByText(/Jumped back to/)).toBeVisible();
+    m.reply = {};
+    await full.getByRole("button", { name: "Keep it now" }).tap();
+    await expect.poll(() => api.callsTo("POST", "/api/v1/me/audio/accept").length).toBe(1);
+    expect(api.callsTo("POST", "/api/v1/me/audio/accept")[0].body).toEqual({ item: "b2v7" });
+    await expect(full.getByText(/Jumped back to/)).toHaveCount(0);
+  });
+
   test("a held jump back says so", async ({ page, api }) => {
     const m = await mockAudio(page, api, { startAt: 400 });
     const mini = await startFromShelf(page, api);

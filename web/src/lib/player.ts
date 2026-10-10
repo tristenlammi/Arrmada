@@ -716,8 +716,13 @@ window.addEventListener(SIGNED_OUT_EVENT, () => { if (state.key) stop("Signed ou
 export function playerKeys(e: KeyboardEvent): void {
   if (!state.key || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
   const t = e.target as HTMLElement | null;
-  if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON|A)$/.test(t.tagName) || t.closest("[role=slider]"))) return;
-  if (e.key === " ") { e.preventDefault(); toggle(); }
+  // Typing and sliders keep their keys; a focused button or link keeps Space.
+  if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+  if (e.key === " ") {
+    if (t && /^(BUTTON|A)$/.test(t.tagName)) return;
+    e.preventDefault();
+    toggle();
+  }
   else if (e.key === "ArrowLeft") { e.preventDefault(); if (e.shiftKey) prevChapter(); else skip(-30); }
   else if (e.key === "ArrowRight") { e.preventDefault(); if (e.shiftKey) nextChapter(); else skip(30); }
 }

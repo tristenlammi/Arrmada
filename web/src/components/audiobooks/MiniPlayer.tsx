@@ -1,7 +1,8 @@
-import { useEffect } from "react";
-import { chapterAt, close, resume, skip, toggle, usePlayer, type PlayerState } from "../../lib/player";
+import { useEffect, useState } from "react";
+import { chapterAt, close, resume, skip, sleepLeft, toggle, usePlayer, type PlayerState } from "../../lib/player";
 import { fmtTime } from "../../lib/playerMath";
 import { PlayerIcon } from "./PlayerIcons";
+import { FullPlayer } from "./FullPlayer";
 
 // MiniPlayer is the audiobook bar pinned above the phone tab bar (or the bottom of the
 // window) on every page while a book is loaded — or, after a reload, offering the one
@@ -9,6 +10,7 @@ import { PlayerIcon } from "./PlayerIcons";
 // bottom chrome (index.css): pages pad past it and toasts and sheets sit above it.
 export function MiniPlayer({ sidebar = false }: { sidebar?: boolean }) {
   const p = usePlayer();
+  const [full, setFull] = useState(false);
   const visible = !!(p.key || p.resume);
   useEffect(() => {
     if (!visible) return;
@@ -16,6 +18,8 @@ export function MiniPlayer({ sidebar = false }: { sidebar?: boolean }) {
     root.classList.add("has-player");
     return () => root.classList.remove("has-player");
   }, [visible]);
+  // Put away with ×: the next book opens in the bar, not straight into the full player.
+  useEffect(() => { if (!p.key) setFull(false); }, [p.key]);
   if (!visible) return null;
 
   const title = p.meta?.title ?? p.resume?.meta.title ?? "Audiobook";
@@ -34,13 +38,24 @@ export function MiniPlayer({ sidebar = false }: { sidebar?: boolean }) {
         <div className="h-full" style={{ width: `${pct}%`, background: "var(--accent)" }} />
       </div>
       <div className="px-safe flex h-full items-center gap-3">
-        <div className="h-11 w-11 flex-none overflow-hidden rounded-md" style={{ background: "var(--panel-2)" }}>
-          {cover && <img src={cover} alt="" className="h-full w-full object-cover" />}
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-[13px] font-semibold">{p.key ? title : <>Resume <span>{title}</span></>}</div>
-          <div className="truncate text-[11.5px]" style={{ color: subtitleTone(p) }}>{subtitle(p)}</div>
-        </div>
+        {/* Tapping the book opens the full player (once a book is loaded). */}
+        <button
+          onClick={() => p.key && setFull(true)}
+          disabled={!p.key}
+          aria-label={p.key ? `Open the player: ${title}` : undefined}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+        >
+          <span className="h-11 w-11 flex-none overflow-hidden rounded-md" style={{ background: "var(--panel-2)" }}>
+            {cover && <img src={cover} alt="" className="h-full w-full object-cover" />}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-[13px] font-semibold" style={{ color: "var(--ink)" }}>{p.key ? title : <>Resume {title}</>}</span>
+            <span className="block truncate text-[11.5px]" style={{ color: subtitleTone(p) }}>
+              {p.sleep && <span data-testid="mini-sleep" style={{ color: "var(--accent-text)" }}>☾ {fmtTime(sleepLeft(p) ?? 0)} · </span>}
+              {subtitle(p)}
+            </span>
+          </span>
+        </button>
         {p.key && (
           <button onClick={() => skip(-30)} aria-label="Back 30 seconds" className="hidden h-11 w-11 flex-none place-items-center rounded-full min-[360px]:grid" style={{ color: "var(--ink)" }}>
             <PlayerIcon name="back30" />
@@ -58,6 +73,7 @@ export function MiniPlayer({ sidebar = false }: { sidebar?: boolean }) {
           <PlayerIcon name="close" size={18} />
         </button>
       </div>
+      {full && p.key && <FullPlayer onClose={() => setFull(false)} />}
     </div>
   );
 }
