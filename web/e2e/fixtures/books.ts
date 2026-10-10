@@ -23,7 +23,7 @@ export const browse = { books: bookCards };
 export function detail(key: string): BookMeta {
   const c = bookCards.find((b) => b.key === key) ?? requestableBook;
   return {
-    key: c.key, title: c.title, author: c.author, year: c.year, cover_url: c.cover_url,
+    key: key || c.key, title: c.title, author: c.author, year: c.year, cover_url: c.cover_url,
     description: `${c.title} is a fixture used by the browser smoke tests.`, subjects: ["Sea stories"],
     default_book_formats: "ebook",
   };

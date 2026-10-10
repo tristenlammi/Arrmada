@@ -44,7 +44,15 @@ function BookCardSkeleton({ full }: { full?: boolean }) {
   );
 }
 
-export function BooksDiscover({ flash, canRequest, initialQuery }: { flash: (m: string) => void; canRequest: boolean; initialQuery?: string }) {
+// initialWork: a book's key from the address (?work=, a notification's link); its sheet
+// opens over the tab, and onWorkClosed takes the key back out of the address.
+export function BooksDiscover({ flash, canRequest, initialQuery, initialWork, onWorkClosed }: {
+  flash: (m: string) => void;
+  canRequest: boolean;
+  initialQuery?: string;
+  initialWork?: string;
+  onWorkClosed?: () => void;
+}) {
   const [input, setInput] = useState(initialQuery ?? "");
   const [query, setQuery] = useState("");
   const [author, setAuthor] = useState<BookAuthor | null>(null);
@@ -120,8 +128,14 @@ export function BooksDiscover({ flash, canRequest, initialQuery }: { flash: (m: 
       ) : (
         <BrowseView ctx={ctx} />
       )}
+      {initialWork && <BookRequestModal key={initialWork} b={stubBook(initialWork)} ctx={ctx} onClose={() => onWorkClosed?.()} />}
     </div>
   );
+}
+
+// stubBook is a book known only by its key; the sheet fetches the rest.
+function stubBook(key: string): BookDiscoverCard {
+  return { key, title: "", author: "", year: 0, in_library: false, has_file: false, requested: false };
 }
 
 interface BookCtx {
@@ -626,23 +640,26 @@ function BookRequestModal({ b, ctx, authorName, onClose }: { b: BookDiscoverCard
   const author = detail?.author || b.author || authorName || "Unknown author";
   const description = detail?.description || "";
   const subjects = detail?.subjects || [];
+  // A book opened from a link (a notification) starts from just its key; the detail
+  // fills in what to show.
+  const shown = { title: b.title || detail?.title || "", year: b.year || detail?.year || 0, cover_url: b.cover_url || detail?.cover_url };
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-start justify-center overflow-y-auto p-4 sm:p-6" style={{ background: "rgba(0,0,0,.65)" }} onClick={onClose}>
       <div className="mt-8 w-full max-w-[620px] overflow-hidden rounded-2xl" style={{ background: "var(--panel)", border: "1px solid var(--line)", boxShadow: "var(--shadow)" }} onClick={(e) => e.stopPropagation()}>
         <div className="relative">
-          {b.cover_url && <div className="pointer-events-none absolute inset-0 bg-cover bg-center opacity-[0.08] blur-2xl" style={{ backgroundImage: `url(${b.cover_url})` }} />}
+          {shown.cover_url && <div className="pointer-events-none absolute inset-0 bg-cover bg-center opacity-[0.08] blur-2xl" style={{ backgroundImage: `url(${shown.cover_url})` }} />}
           <div className="pointer-events-none absolute inset-0" style={{ background: "linear-gradient(180deg, transparent, var(--panel))" }} />
           <button onClick={onClose} className="absolute right-2.5 top-2.5 z-10 grid h-7 w-7 place-items-center rounded-full" style={{ background: "rgba(20,12,7,.7)", color: "#fff" }}>✕</button>
           <div className="relative flex gap-4 p-5">
             <div className="h-[168px] w-[112px] flex-none overflow-hidden rounded-xl" style={{ border: "1px solid var(--line)", background: "var(--panel-2)" }}>
-              {b.cover_url ? <img src={b.cover_url} alt={b.title} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center p-2 text-center text-[11px] font-bold text-white" style={{ background: "linear-gradient(150deg, hsl(28 30% 26%), hsl(24 28% 16%))" }}>{b.title}</div>}
+              {shown.cover_url ? <img src={shown.cover_url} alt={shown.title} className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center p-2 text-center text-[11px] font-bold text-white" style={{ background: "linear-gradient(150deg, hsl(28 30% 26%), hsl(24 28% 16%))" }}>{shown.title}</div>}
             </div>
             <div className="min-w-0 flex-1">
-              <h2 className="m-0 text-[17px] font-bold leading-tight">{b.title}</h2>
+              <h2 className="m-0 text-[17px] font-bold leading-tight">{shown.title}</h2>
               <div className="mt-1 text-[13px] font-semibold text-ink-dim">{author}</div>
               <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono text-[11px] text-ink-faint">
-                {b.year > 0 && <span>{b.year}</span>}
+                {shown.year > 0 && <span>{shown.year}</span>}
                 {(detail?.series_name || b.series_name) && <span>· {detail?.series_name || b.series_name}{(detail?.series_position || b.series_position) ? ` #${detail?.series_position || b.series_position}` : ""}</span>}
                 {!!detail?.pages && <span>· {detail.pages} pages</span>}
               </div>

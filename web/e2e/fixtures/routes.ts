@@ -34,6 +34,7 @@ export function routes(p: PersonaInfo): MockRoute[] {
     get("/api/v1/me/audio", sys.myAudio(p)),
     get("/api/v1/me/audio/listening", sys.myListening),
     get("/api/v1/me/notifications", discover.notifications),
+    { method: "POST", path: /^\/api\/v1\/me\/notifications\/\d+\/read$/, status: 204 },
     get("/api/v1/me/quota", sys.quota(p)),
     // The Me page's notification settings: no push key (push stays hidden), no Apprise link.
     get("/api/v1/me/push/key", { key: "" }),
@@ -69,6 +70,8 @@ export function routes(p: PersonaInfo): MockRoute[] {
     // Discover → Books
     get(/^\/api\/v1\/books\/discover\/browse\/[a-z_]+$/, books.browse),
     get("/api/v1/books/discover/recommended", { rows: [] }),
+    // Hardcover ("hc:") books also ask for "readers also liked".
+    get("/api/v1/books/discover/similar", { books: [] }),
     { method: "GET", path: "/api/v1/books/discover/detail", respond: ({ url }) => books.detail(url.searchParams.get("key") ?? "") },
 
     // Staff console

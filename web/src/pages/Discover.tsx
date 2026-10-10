@@ -48,6 +48,9 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
   // "See all" / Enter, not per keystroke); `searchInput` is what's typed in the omnibox.
   const search = tab === "books" ? "" : q;
   const bookSeed = tab === "books" ? q : "";
+  // ?work=<key>: one book's sheet on the Books tab (a notification's link); closing it drops the key.
+  const work = tab === "books" ? params.get("work") ?? "" : "";
+  const closeWork = () => setParams((p) => { const next = new URLSearchParams(p); next.delete("work"); return next; }, { replace: true });
   const [searchInput, setSearchInput] = useState(search);
   // Back, Forward or a notification link changed the committed search: show it in the box.
   useEffect(() => { setSearchInput(search); }, [search]);
@@ -59,7 +62,7 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
   const setTab = (t: Tab) => {
     if (t === tab && !q) return;
     setSearchInput("");
-    setParams((p) => { const next = withTab(p, "tab", t, "discover"); next.delete("q"); return next; });
+    setParams((p) => { const next = withTab(p, "tab", t, "discover"); next.delete("q"); next.delete("work"); return next; });
   };
   // Committing a search is a new history entry; emptying the box just drops it.
   const commitSearch = (query: string) => {
@@ -126,7 +129,7 @@ export function Discover({ chrome = true }: { chrome?: boolean }) {
         <TabPanel idPrefix="discover" value={tab}>
           {tab === "books" ? (
             <Suspense fallback={<div className="py-10 text-center text-[12.5px] text-ink-dim">Loading…</div>}>
-              <BooksDiscover flash={flash} canRequest={canRequest} initialQuery={bookSeed} />
+              <BooksDiscover flash={flash} canRequest={canRequest} initialQuery={bookSeed} initialWork={work || undefined} onWorkClosed={closeWork} />
             </Suspense>
           ) : !metadataReady ? (
             // No TMDB key: every movie/TV feed would fail on its own and repeat the same error

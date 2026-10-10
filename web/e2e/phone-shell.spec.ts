@@ -216,6 +216,37 @@ test.describe("title addresses on a phone", () => {
   });
 });
 
+// APP-08: a notification opens exactly what it's about, by its reference, from any page.
+test.describe("notifications on a phone", () => {
+  test.use({ persona: "requester" });
+
+  test("a 'ready' notice opens that exact title", async ({ page, api }) => {
+    await open(page, "/shelf", api);
+    await page.getByRole("button", { name: "Notifications" }).tap();
+    await page.getByRole("button", { name: /“The Cartographer” is ready to watch/ }).tap();
+    await expect(page).toHaveURL(/\/discover\/movie\/1007$/);
+    await expect(page.getByRole("dialog", { name: "The Cartographer" })).toBeVisible();
+    expect(api.callsTo("POST", "/api/v1/me/notifications/1/read")).toHaveLength(1);
+  });
+
+  test("a book notice opens the book on the Books tab, Hardcover key and all", async ({ page, api }) => {
+    await open(page, "/discover", api);
+    await page.getByRole("button", { name: "Notifications" }).tap();
+    await page.getByRole("button", { name: /“Moby-Dick” was approved/ }).tap();
+    await expect(page).toHaveURL(/\/discover\?tab=books&work=hc%3A4242$/);
+    await expect(page.getByRole("heading", { level: 2, name: "The Salt Road" })).toBeVisible();
+    await api.quiet();
+    expect(api.calls.some((c) => c.path === "/api/v1/books/discover/detail?key=hc%3A4242")).toBe(true);
+  });
+
+  test("an old notice without a reference still lands on a search", async ({ page, api }) => {
+    await open(page, "/me", api);
+    await page.getByRole("button", { name: "Notifications" }).tap();
+    await page.getByRole("button", { name: /“Saltwind” is ready to watch/ }).tap();
+    await expect(page).toHaveURL(/\/discover\?q=Saltwind$/);
+  });
+});
+
 test.describe("title addresses from outside", () => {
   test.use({ persona: "external" });
 

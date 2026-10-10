@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { api, type UserNotification } from "../lib/api";
 import { lazyPage } from "../lib/lazyPage";
+import { refToPath } from "../lib/refLink";
 import { usePoll } from "../lib/usePoll";
 
 // The settings panel (push on this device, a personal Apprise link) loads when ⚙ is
@@ -72,9 +73,10 @@ export function NotificationBell({ placement = "down" }: { placement?: "down" | 
       setError((e as Error).message);
     }
   };
-  // Mark read (badge only drops when the server call succeeds), then jump: a staff "New
-  // request" (ref request:<id>:…) opens that request; anything else goes to Discover with
-  // the title prefilled in search.
+  // Mark read (badge only drops when the server call succeeds), then jump to what it's
+  // about, by its reference: the exact title (Dune 2021, not 1984), the book on Discover's
+  // Books tab, or a staff "New request". Only an old notice whose reference says nothing
+  // falls back to searching Discover for the quoted title.
   const clickItem = async (n: UserNotification) => {
     if (!n.read) {
       try {
@@ -85,11 +87,16 @@ export function NotificationBell({ placement = "down" }: { placement?: "down" | 
         console.warn("mark notification read failed", e);
       }
     }
-    const req = /^request:(\d+)/.exec(n.ref)?.[1];
-    const title = searchTitleOf(n);
-    if (req || title) {
+    const path = refToPath(n.ref);
+    if (path) {
       setOpen(false);
-      navigate(req ? `/requests?id=${req}` : n.media_type === "book" ? `/discover?tab=books&q=${encodeURIComponent(title)}` : `/discover?q=${encodeURIComponent(title)}`);
+      navigate(path);
+      return;
+    }
+    const title = searchTitleOf(n);
+    if (title) {
+      setOpen(false);
+      navigate(n.media_type === "book" ? `/discover?tab=books&q=${encodeURIComponent(title)}` : `/discover?q=${encodeURIComponent(title)}`);
     }
   };
 

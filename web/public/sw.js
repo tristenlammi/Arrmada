@@ -86,16 +86,22 @@ self.addEventListener("push", (e) => {
   );
 });
 
-// Tapping the notification focuses an open Arrmada tab (navigating it), or opens one.
+// Tapping the notification opens what it's about (the server sends the exact title's
+// address): it focuses an open Arrmada tab and takes it there, or opens one. Only a page
+// this worker controls can be navigated; for any other (one opened before the worker
+// took over) navigate() rejects, and a fresh window opens instead. Only same-origin
+// paths are followed.
 self.addEventListener("notificationclick", (e) => {
   e.notification.close();
-  const url = (e.notification.data && e.notification.data.url) || "/discover";
+  let url = (e.notification.data && e.notification.data.url) || "/discover";
+  if (typeof url !== "string" || !url.startsWith("/") || url.startsWith("//")) url = "/discover";
   e.waitUntil(
     clients.matchAll({ type: "window", includeUncontrolled: true }).then((tabs) => {
-      for (const tab of tabs) {
-        if ("focus" in tab) { tab.navigate(url); return tab.focus(); }
-      }
-      return clients.openWindow(url);
+      const tab = tabs.find((t) => "focus" in t && "navigate" in t);
+      if (!tab) return clients.openWindow(url);
+      return tab.navigate(url)
+        .then((t) => (t || tab).focus())
+        .catch(() => clients.openWindow(url));
     })
   );
 });
