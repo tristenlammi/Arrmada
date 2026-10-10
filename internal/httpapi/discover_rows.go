@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sort"
 	"strconv"
@@ -9,13 +10,14 @@ import (
 	"time"
 
 	"github.com/tristenlammi/arrmada/internal/metadata"
+	"github.com/tristenlammi/arrmada/internal/movies"
 	"github.com/tristenlammi/arrmada/internal/requests"
 	"github.com/tristenlammi/arrmada/internal/series"
 )
 
 // The extra Discover rows: the TMDB-backed ones (in cinemas, top rated, anime, hidden
 // gems, your region, new on a streaming service), the per-seed "Because you watched
-// …" strips, and "Finish your collections" from the movie library.
+// …" strips, and the "Complete the X collection" rows from the movie library.
 
 func (a *api) discoverRows() (metadata.DiscoverRows, bool) {
 	if a.deps.Discovery == nil || !a.deps.Discovery.Available() {
@@ -196,98 +198,227 @@ func (a *api) handleDiscoverBecause(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"rows": out})
 }
 
-// --- "Finish your collections" ---
+// --- "Complete the X collection" ---
 
 const (
-	collectionsMax    = 8
-	collectionsCap    = 30
-	collectionsTTL    = 6 * time.Hour
-	collectionMinOwn  = 1
-	collectionFetcher = "collection"
+	collectionsRowsMax   = 4  // rows on Discover
+	collectionsFetchMax  = 12 // started collections looked at to find them (each cached 6 h)
+	collectionsTTL       = 6 * time.Hour
+	collectionMinMissing = 2 // a row needs at least two released films still to get
 )
 
-type collectionsCacheEntry struct {
-	at    time.Time
+// collectionRow is one "Complete the <name>" row.
+type collectionRow struct {
+	CollectionID int            `json:"collection_id"`
+	Title        string         `json:"title"`
+	Items        []discoverCard `json:"items"`
+}
+
+// collectionRowItems is a row before the viewer's badges are added (what's cached).
+type collectionRowItems struct {
+	id    int
+	title string
 	items []metadata.DiscoverItem
+}
+
+type collectionsCacheEntry struct {
+	at   time.Time
+	rows []collectionRowItems
 }
 
 var collectionsCache sync.Map // *api -> *collectionsCacheEntry
 
-// handleDiscoverCollections lists the members the library lacks from movie collections
-// it has started — the sequel you never got, the original behind the one you have.
+type collectionGetter interface {
+	GetCollection(ctx context.Context, id int) (*metadata.Collection, error)
+}
+
+// releasedBy reports whether a collection member is out on the given day (YYYY-MM-DD):
+// by its release date, or by its year when TMDB has no date. Unreleased members belong
+// on Upcoming, not in "still to get".
+func releasedBy(m metadata.MovieResult, today string) bool {
+	if m.ReleaseDate != "" {
+		return m.ReleaseDate <= today
+	}
+	return m.Year > 0 && strconv.Itoa(m.Year) < today[:4]
+}
+
+func memberItem(m metadata.MovieResult) metadata.DiscoverItem {
+	return metadata.DiscoverItem{
+		MediaType: "movie", TMDBID: m.TMDBID, Title: m.Title, Year: m.Year, Overview: m.Overview,
+		PosterURL: m.PosterURL, VoteAverage: m.VoteAverage, ReleaseDate: m.ReleaseDate,
+	}
+}
+
+// handleDiscoverCollections is one row per movie collection the library has started and
+// not finished: "Complete the Alien Collection", the released films it lacks. At most
+// four, each with at least two films to get, the most complete first.
+//
+//	GET /api/v1/discover/collections → {rows: [{collection_id, title, items}]}
 func (a *api) handleDiscoverCollections(w http.ResponseWriter, r *http.Request) {
-	if a.deps.Movies == nil || a.deps.Discovery == nil || !a.deps.Discovery.Available() {
-		a.enrichDiscover(w, r, nil)
+	getter, ok := a.deps.Discovery.(collectionGetter)
+	if a.deps.Movies == nil || !ok || !a.metadataReady() {
+		a.writeJSON(w, http.StatusOK, map[string]any{"rows": []collectionRow{}})
 		return
 	}
 	ctx := r.Context()
-	if v, ok := collectionsCache.Load(a); ok {
-		if e := v.(*collectionsCacheEntry); time.Since(e.at) < collectionsTTL {
-			a.enrichDiscover(w, r, e.items)
+	var rows []collectionRowItems
+	if v, hit := collectionsCache.Load(a); hit && time.Since(v.(*collectionsCacheEntry).at) < collectionsTTL {
+		rows = v.(*collectionsCacheEntry).rows
+	} else {
+		movies, err := a.deps.Movies.List(ctx)
+		if err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not list movies")
 			return
 		}
+		rows = buildCollectionRows(ctx, getter, movies)
+		collectionsCache.Store(a, &collectionsCacheEntry{at: time.Now(), rows: rows})
 	}
-	getter, ok := a.deps.Discovery.(interface {
-		GetCollection(ctx context.Context, id int) (*metadata.Collection, error)
-	})
-	if !ok {
-		a.enrichDiscover(w, r, nil)
-		return
+	out := make([]collectionRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, collectionRow{CollectionID: row.id, Title: row.title, Items: a.enrichCards(ctx, row.items)})
 	}
-	movies, err := a.deps.Movies.List(ctx)
-	if err != nil {
-		a.writeError(w, http.StatusInternalServerError, "could not list movies")
-		return
-	}
+	a.writeJSON(w, http.StatusOK, map[string]any{"rows": out})
+}
+
+// buildCollectionRows picks the rows: the started collections (most films owned first,
+// capped so this stays a few requests), each judged on its released members, ordered by
+// how complete it is.
+func buildCollectionRows(ctx context.Context, getter collectionGetter, library []movies.Movie) []collectionRowItems {
 	owned := map[int]bool{}
-	ownedPerColl := map[int]int{}
+	ownedPer := map[int]int{}
 	names := map[int]string{}
-	for _, m := range movies {
+	for _, m := range library {
 		owned[m.TMDBID] = true
 		if m.Extra != nil && m.Extra.CollectionID > 0 {
-			ownedPerColl[m.Extra.CollectionID]++
+			ownedPer[m.Extra.CollectionID]++
 			names[m.Extra.CollectionID] = m.Extra.CollectionName
 		}
 	}
-	// Collections the library has started, most-complete first (those are the ones
-	// worth finishing), capped so this stays a few requests.
-	var ids []int
-	for id, n := range ownedPerColl {
-		if n >= collectionMinOwn {
-			ids = append(ids, id)
-		}
+	ids := make([]int, 0, len(ownedPer))
+	for id := range ownedPer {
+		ids = append(ids, id)
 	}
 	sort.Slice(ids, func(i, j int) bool {
-		if ownedPerColl[ids[i]] != ownedPerColl[ids[j]] {
-			return ownedPerColl[ids[i]] > ownedPerColl[ids[j]]
+		if ownedPer[ids[i]] != ownedPer[ids[j]] {
+			return ownedPer[ids[i]] > ownedPer[ids[j]]
 		}
-		return names[ids[i]] < names[ids[j]]
+		if names[ids[i]] != names[ids[j]] {
+			return names[ids[i]] < names[ids[j]]
+		}
+		return ids[i] < ids[j]
 	})
-	if len(ids) > collectionsMax {
-		ids = ids[:collectionsMax]
+	if len(ids) > collectionsFetchMax {
+		ids = ids[:collectionsFetchMax]
 	}
-	var items []metadata.DiscoverItem
+	type candidate struct {
+		row      collectionRowItems
+		complete float64
+		have     int
+	}
+	today := time.Now().Format("2006-01-02")
+	var cands []candidate
 	for _, id := range ids {
 		c, err := getter.GetCollection(ctx, id)
-		if err != nil {
+		if err != nil || c == nil || c.Name == "" {
 			continue
 		}
+		released, have := 0, 0
+		var missing []metadata.DiscoverItem
 		for _, m := range c.Members {
-			if owned[m.TMDBID] || m.PosterURL == "" || m.Year == 0 || m.Year > time.Now().Year() {
-				continue // unreleased members belong on Upcoming, not here
+			if !releasedBy(m, today) {
+				continue
 			}
-			items = append(items, metadata.DiscoverItem{
-				MediaType: "movie", TMDBID: m.TMDBID, Title: m.Title, Year: m.Year,
-				Overview: m.Overview, PosterURL: m.PosterURL, VoteAverage: m.VoteAverage,
-			})
-			if len(items) >= collectionsCap {
-				break
+			released++
+			if owned[m.TMDBID] {
+				have++
+				continue
+			}
+			if m.PosterURL != "" {
+				missing = append(missing, memberItem(m))
 			}
 		}
-		if len(items) >= collectionsCap {
+		if len(missing) < collectionMinMissing || released == 0 {
+			continue
+		}
+		cands = append(cands, candidate{
+			row:      collectionRowItems{id: c.ID, title: "Complete the " + c.Name, items: missing},
+			complete: float64(have) / float64(released), have: have,
+		})
+	}
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].complete != cands[j].complete {
+			return cands[i].complete > cands[j].complete
+		}
+		if cands[i].have != cands[j].have {
+			return cands[i].have > cands[j].have
+		}
+		return cands[i].row.title < cands[j].row.title
+	})
+	rows := make([]collectionRowItems, 0, collectionsRowsMax)
+	for _, cd := range cands {
+		if len(rows) >= collectionsRowsMax {
 			break
 		}
+		rows = append(rows, cd.row)
 	}
-	collectionsCache.Store(a, &collectionsCacheEntry{at: time.Now(), items: items})
-	a.enrichDiscover(w, r, items)
+	return rows
+}
+
+// collectionResponse is a collection's page.
+type collectionResponse struct {
+	ID          int            `json:"id"`
+	Name        string         `json:"name"`
+	Overview    string         `json:"overview,omitempty"`
+	PosterURL   string         `json:"poster_url,omitempty"`
+	BackdropURL string         `json:"backdrop_url,omitempty"`
+	Items       []discoverCard `json:"items"`
+	Owned       int            `json:"owned"` // released members in the library
+	Total       int            `json:"total"` // released members
+}
+
+// handleDiscoverCollection is a collection's page: every member (adult ones never — the
+// provider leaves them out), with the viewer's badges, and how much of it is here.
+//
+//	GET /api/v1/discover/collection/{id}
+func (a *api) handleDiscoverCollection(w http.ResponseWriter, r *http.Request) {
+	if !a.discoveryReady(w, r) {
+		return
+	}
+	getter, ok := a.deps.Discovery.(collectionGetter)
+	if !ok {
+		a.writeError(w, http.StatusNotFound, "not available")
+		return
+	}
+	id, err := strconv.Atoi(r.PathValue("id"))
+	if err != nil || id <= 0 {
+		a.writeError(w, http.StatusBadRequest, "invalid collection id")
+		return
+	}
+	ctx := r.Context()
+	c, err := getter.GetCollection(ctx, id)
+	if errors.Is(err, metadata.ErrNotFound) || (err == nil && (c == nil || len(c.Members) == 0)) {
+		a.writeError(w, http.StatusNotFound, "That collection isn't available.")
+		return
+	}
+	if err != nil {
+		a.writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	snap := a.discoverSnapshot(ctx)
+	today := time.Now().Format("2006-01-02")
+	resp := collectionResponse{ID: c.ID, Name: c.Name, Overview: c.Overview, PosterURL: c.PosterURL, BackdropURL: c.BackdropURL}
+	var items []metadata.DiscoverItem
+	for _, m := range c.Members {
+		if releasedBy(m, today) {
+			resp.Total++
+			if snap.movIn[m.TMDBID] {
+				resp.Owned++
+			}
+		}
+		if m.PosterURL != "" {
+			items = append(items, memberItem(m))
+		}
+	}
+	resp.Items = a.enrichCards(ctx, items)
+	a.writeJSON(w, http.StatusOK, resp)
 }

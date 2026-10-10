@@ -107,6 +107,8 @@ type MovieResult struct {
 	Overview    string  `json:"overview"`
 	PosterURL   string  `json:"poster_url"`
 	VoteAverage float64 `json:"vote_average"`
+	// ReleaseDate is TMDB's release date (YYYY-MM-DD), when known.
+	ReleaseDate string `json:"release_date,omitempty"`
 }
 
 // MovieDetails is a full movie record.
@@ -126,18 +128,24 @@ type MovieDetails struct {
 	Cast             []CastMember `json:"cast,omitempty"`
 }
 
-// CastMember is one billed actor.
+// CastMember is one billed actor. ID is their TMDB person id (0 in records stored before
+// ids were kept), which opens their page on Discover.
 type CastMember struct {
+	ID         int    `json:"id,omitempty"`
 	Name       string `json:"name"`
 	Character  string `json:"character,omitempty"`
 	ProfileURL string `json:"profile_url,omitempty"`
 }
 
-// Collection is a movie franchise/collection and its member films.
+// Collection is a movie franchise/collection and its member films (adult members never
+// included).
 type Collection struct {
-	ID      int           `json:"id"`
-	Name    string        `json:"name"`
-	Members []MovieResult `json:"members"`
+	ID          int           `json:"id"`
+	Name        string        `json:"name"`
+	Overview    string        `json:"overview,omitempty"`
+	PosterURL   string        `json:"poster_url,omitempty"`
+	BackdropURL string        `json:"backdrop_url,omitempty"`
+	Members     []MovieResult `json:"members"`
 }
 
 // MovieProvider looks up movie metadata.

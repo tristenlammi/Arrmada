@@ -54,7 +54,16 @@ if (!entryKey) {
   process.exit(1);
 }
 const firstLoad = staticClosure(entryKey);
-staticClosure(REQUESTER_PAGE, firstLoad);
+// A page's chunk is keyed by its source path, unless other chunks import it statically
+// (Discover's lazy pages import its shared cards): Vite then keys it by chunk name.
+const requesterKey = manifest[REQUESTER_PAGE]
+  ? REQUESTER_PAGE
+  : Object.keys(manifest).find((k) => manifest[k].isDynamicEntry && manifest[k].name === "Discover" && k.startsWith("_"));
+if (!requesterKey) {
+  console.error(`check-size: ${REQUESTER_PAGE} is not in the manifest`);
+  process.exit(1);
+}
+staticClosure(requesterKey, firstLoad);
 
 function sizes(file) {
   const data = readFileSync(join(dist, file));

@@ -47,8 +47,10 @@ type DiscoveryProvider interface {
 	Recommendations(ctx context.Context, media string, tmdbID int) ([]DiscoverItem, error)
 }
 
-// CrewMember is a billed crew member (director/writer/producer/creator).
+// CrewMember is a billed crew member (director/writer/producer/creator). ID is their TMDB
+// person id.
 type CrewMember struct {
+	ID         int    `json:"id,omitempty"`
 	Name       string `json:"name"`
 	Job        string `json:"job"`
 	ProfileURL string `json:"profile_url,omitempty"`
@@ -92,10 +94,19 @@ type MediaDetail struct {
 	// payload as the rest: what the season picker and the per-season request states are
 	// built on. Empty for movies.
 	Seasons []SeasonSummary `json:"seasons,omitempty"`
+	// Collection is the franchise a movie belongs to (TMDB's belongs_to_collection), for
+	// the sheet's "Part of the … collection" link. Nil for series and standalone films.
+	Collection *CollectionRef `json:"collection,omitempty"`
 	// Adult is TMDB's own adult flag. The detail endpoint refuses such a title outright
 	// (the always-on adult filter), so it never reaches a browser as true; it is
 	// serialised only so the disk cache keeps it.
 	Adult bool `json:"adult,omitempty"`
+}
+
+// CollectionRef names a movie's collection.
+type CollectionRef struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
 }
 
 // SeasonSummary is one season as TMDB lists it on the show: no episodes, just enough to
@@ -131,7 +142,9 @@ func (t *TMDB) MediaDetails(ctx context.Context, media string, tmdbID int) (*Med
 		kind = "tv"
 	}
 	// v3: records carry Adult; a v2 copy would read as "not adult" until it expired.
-	key := "tmdb:detail:v3:" + kind + ":" + strconv.Itoa(tmdbID)
+	// v4: cast and crew carry their person ids (the links to their pages).
+	// v5: movies carry their collection.
+	key := "tmdb:detail:v5:" + kind + ":" + strconv.Itoa(tmdbID)
 	return swr(ctx, t.disk, key, mediaDetailTTL, func(ctx context.Context) (*MediaDetail, error) {
 		if kind == "tv" {
 			return t.seriesDetail(ctx, tmdbID)
@@ -174,6 +187,9 @@ func (t *TMDB) movieDetail(ctx context.Context, tmdbID int) (*MediaDetail, error
 	}
 	d.Cast = castOf(m.Credits.Cast)
 	d.Crew = movieCrew(m.Credits.Crew)
+	if c := m.BelongsToCollection; c != nil && c.ID > 0 && c.Name != "" {
+		d.Collection = &CollectionRef{ID: c.ID, Name: c.Name}
+	}
 	d.TrailerURL = bestTrailerURL(m.Videos.Results)
 	d.Similar = recommendedItems(m.Recommendations.Results, "movie")
 	return d, nil
@@ -209,7 +225,7 @@ func (t *TMDB) seriesDetail(ctx context.Context, tmdbID int) (*MediaDetail, erro
 	}
 	d.Cast = castOf(s.Credits.Cast)
 	for _, c := range s.CreatedBy {
-		cm := CrewMember{Name: c.Name, Job: "Creator"}
+		cm := CrewMember{ID: c.ID, Name: c.Name, Job: "Creator"}
 		if c.ProfilePath != "" {
 			cm.ProfileURL = tmdbProfileBase + c.ProfilePath
 		}
@@ -294,7 +310,7 @@ func castOf(cast []tmdbCast) []CastMember {
 		if len(out) >= maxCast {
 			break
 		}
-		cm := CastMember{Name: c.Name, Character: c.Character}
+		cm := CastMember{ID: c.ID, Name: c.Name, Character: c.Character}
 		if c.ProfilePath != "" {
 			cm.ProfileURL = tmdbProfileBase + c.ProfilePath
 		}
@@ -323,7 +339,7 @@ func movieCrew(crew []tmdbCrew) []CrewMember {
 			continue
 		}
 		seen[key] = true
-		cm := CrewMember{Name: c.Name, Job: role}
+		cm := CrewMember{ID: c.ID, Name: c.Name, Job: role}
 		if c.ProfilePath != "" {
 			cm.ProfileURL = tmdbProfileBase + c.ProfilePath
 		}
@@ -361,6 +377,7 @@ type tmdbDiscoverItem struct {
 	BackdropPath string  `json:"backdrop_path"`
 	VoteAverage  float64 `json:"vote_average"`
 	VoteCount    int     `json:"vote_count"`
+	Popularity   float64 `json:"popularity"`
 	Adult        bool    `json:"adult"`
 	GenreIDs     []int   `json:"genre_ids"`
 }
@@ -462,8 +479,35 @@ const (
 
 type discoverCacheEntry struct {
 	items []DiscoverItem
+	page  *SearchResults // a paged entry (cachedDiscoverPage); nil for a whole list
 	added time.Time
 	exp   time.Time
+}
+
+// storeDiscover puts an entry in the memory cache, dropping expired entries first and,
+// when it's still full, the oldest one, so it never holds more than discoverCacheCap.
+func (t *TMDB) storeDiscover(key string, e discoverCacheEntry) {
+	t.discMu.Lock()
+	defer t.discMu.Unlock()
+	if t.discCache == nil {
+		t.discCache = map[string]discoverCacheEntry{}
+	}
+	for k, old := range t.discCache {
+		if !e.added.Before(old.exp) {
+			delete(t.discCache, k)
+		}
+	}
+	if len(t.discCache) >= discoverCacheCap {
+		var oldestKey string
+		var oldestAt time.Time
+		for k, old := range t.discCache {
+			if oldestKey == "" || old.added.Before(oldestAt) {
+				oldestKey, oldestAt = k, old.added
+			}
+		}
+		delete(t.discCache, oldestKey)
+	}
+	t.discCache[key] = e
 }
 
 // cachedDiscoverList serves a discover list from the TTL cache, fetching (and caching)
@@ -500,28 +544,7 @@ func (t *TMDB) cachedDiscoverListN(ctx context.Context, path string, q url.Value
 	if err != nil {
 		return nil, err
 	}
-
-	t.discMu.Lock()
-	defer t.discMu.Unlock()
-	if t.discCache == nil {
-		t.discCache = map[string]discoverCacheEntry{}
-	}
-	for k, e := range t.discCache { // drop expired entries first
-		if !now.Before(e.exp) {
-			delete(t.discCache, k)
-		}
-	}
-	if len(t.discCache) >= discoverCacheCap { // still full: evict the oldest entry
-		var oldestKey string
-		var oldestAt time.Time
-		for k, e := range t.discCache {
-			if oldestKey == "" || e.added.Before(oldestAt) {
-				oldestKey, oldestAt = k, e.added
-			}
-		}
-		delete(t.discCache, oldestKey)
-	}
-	t.discCache[key] = discoverCacheEntry{items: items, added: now, exp: now.Add(ttl)}
+	t.storeDiscover(key, discoverCacheEntry{items: items, added: now, exp: now.Add(ttl)})
 	return items, nil
 }
 

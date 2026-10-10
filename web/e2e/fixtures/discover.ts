@@ -1,4 +1,4 @@
-import type { DiscoverCard, DiscoverRow, Genre, MediaDetail, MediaRequest, RequestList, SeriesSeason, UserNotification, WatchProvider } from "../../src/lib/api";
+import type { CollectionDetail, CollectionRow, DiscoverCard, DiscoverRow, Genre, MediaDetail, MediaRequest, PersonDetail, PersonResult, RequestList, SeriesSeason, UserNotification, WatchProvider } from "../../src/lib/api";
 import type { PersonaInfo } from "./users";
 
 // Discover's poster rows. The mix covers every badge a card can wear (none, Pending,
@@ -97,12 +97,15 @@ export function mediaDetail(media: string, tmdbID: number): MediaDetail {
     genres: c.genres,
     certification: "PG-13",
     studios: ["Fixture Pictures"],
-    cast: [{ name: "Ada Mariner", character: "Captain" }, { name: "Theo Keel", character: "First mate" }],
-    crew: [{ name: "Rowan Helm", job: "Director" }, { name: "Isla Bow", job: "Writer" }],
+    // Ada has a person page (REQ-20); Theo's record predates ids, so his tile stays a tile.
+    cast: [{ id: person.id, name: person.name, character: "Captain" }, { name: "Theo Keel", character: "First mate" }],
+    crew: [{ id: 5002, name: "Rowan Helm", job: "Director" }, { id: 5003, name: "Isla Bow", job: "Writer" }],
     ratings: { tmdb: c.vote_average, imdb: "7.4", rotten_tomatoes: "88%" },
     similar: cards.slice(2, 6),
     // The title's card with its badge state, which a title opened cold from its address uses.
     card: { ...c, media_type: media === "series" ? "series" : "movie" },
+    // The first card's film is part of a collection (REQ-21).
+    ...(c.tmdb_id === requestableCard.tmdb_id && media !== "series" ? { collection: { id: collection.id, name: collection.name } } : {}),
   };
 }
 
@@ -127,6 +130,68 @@ export const requests: RequestList = {
     { id: 4, media_type: "book", tmdb_id: 0, ol_key: "OL9003W", author: "Hal Yard", formats: "audiobook", title: "Knots and Splices", year: 2017, status: "approved", requested_by: 3, requested_by_name: "deckhand", relation: "owner", available: false, tracking: { stage: "searching" }, created_at: at, updated_at: at },
   ],
 };
+
+// GET /api/v1/requests?section=ready (REQ-18's "Ready for you"): one delivered movie the
+// owner's Plex has, so its poster carries Watch on Plex.
+export const readyRequests: RequestList = {
+  client_health: { ok: true },
+  auto_approve: false,
+  counts: { needs_approval: 0, in_progress: 0, ready: 1, declined: 0 },
+  total: 1,
+  requests: [
+    { id: 5, media_type: "movie", tmdb_id: 1007, title: "The Cartographer", year: 2021, poster_url: poster(7), status: "approved", requested_by: 3, requested_by_name: "deckhand", relation: "owner", available: true, ready_at: Date.parse(at) / 1000, tracking: { stage: "available" }, plex_url: "https://app.plex.tv/desktop/#!/server/fixture/details?key=%2Flibrary%2Fmetadata%2F1007", created_at: at, updated_at: at },
+  ],
+};
+
+// requestList answers GET /api/v1/requests: the ready section its own row, every other
+// section and the Discover strip the same rows.
+export function requestList(url: URL): RequestList {
+  return url.searchParams.get("section") === "ready" ? readyRequests : requests;
+}
+
+// person is GET /api/v1/discover/person/{id} (REQ-20): a cast member with a filmography.
+export const person: PersonDetail = {
+  id: 5001,
+  name: "Ada Mariner",
+  biography: "Ada Mariner is a fixture actor. ".repeat(20).trim(),
+  profile_url: "https://image.tmdb.org/t/p/w185/e2e-ada.jpg",
+  birthday: "1990-04-02",
+  place_of_birth: "Portsmouth",
+  known_for_department: "Acting",
+  credits: cards.slice(0, 7),
+};
+export const searchPerson: PersonResult = { id: person.id, name: person.name, profile_url: person.profile_url, known_for_department: "Acting", known_for: [cards[0].title] };
+
+// collection is GET /api/v1/discover/collection/{id} (REQ-21): one owned film, two to get.
+export const collection: CollectionDetail = {
+  id: 8091,
+  name: "Harbour Collection",
+  overview: "Three films about one harbour.",
+  backdrop_url: "https://image.tmdb.org/t/p/w1280/e2e-coll.jpg",
+  items: [cards[6], cards[0], cards[8]].map((c) => ({ ...c, media_type: "movie" as const })),
+  owned: 1,
+  total: 3,
+};
+
+// GET /api/v1/discover/collections: one "Complete the …" row.
+export const collectionRows: { rows: CollectionRow[] } = {
+  rows: [{ collection_id: collection.id, title: `Complete the ${collection.name}`, items: [cards[0], cards[8], cards[9], cards[1]] }],
+};
+
+// gridPage is one page of a paged grid (GET /api/v1/discover/browse and
+// /api/v1/discover/search): three pages of fresh titles (page 1 is the row cards, later
+// pages new ids), so a spec can watch the grid grow as it scrolls.
+export const gridPages = 3;
+// A search's first page also names a person.
+export function gridPage(url: URL): { items: DiscoverCard[]; people: PersonResult[]; page: number; total_pages: number } {
+  const page = Math.max(1, Number(url.searchParams.get("page") ?? 1));
+  const items = page === 1 ? cards : Array.from({ length: 20 }, (_, i) => card(100 * page + i, `Page ${page} title ${i + 1}`));
+  const people = page === 1 && url.pathname.endsWith("/search") ? [searchPerson] : [];
+  return { items, people, page, total_pages: gridPages };
+}
+
+// recentlyAdded is GET /api/v1/discover/recently-added: what's in the library.
+export const recentlyAdded = { items: [cards[6], { ...cards[5], has_file: true }] };
 
 // A pending request for three seasons of a show, opened by its id (?id=7) but kept off the
 // lists so the Requests page's counts and bulk selection stay as they are.

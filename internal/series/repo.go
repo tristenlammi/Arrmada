@@ -1389,6 +1389,46 @@ func (r *Repo) AddEvent(ctx context.Context, seriesID int64, event, detail strin
 		`INSERT INTO series_events (series_id, event, detail) VALUES (?, ?, ?)`, seriesID, event, detail)
 }
 
+// RecentImport is a show that had something arrive recently, as Discover's "Recently
+// added" row shows it. At is when its newest import landed (unix seconds).
+type RecentImport struct {
+	TMDBID    int
+	Title     string
+	Year      int
+	Overview  string
+	PosterURL string
+	At        int64
+}
+
+// RecentlyImported lists shows with an episode imported in the last `days` days, newest
+// import first, one row per show however many episodes landed. A show whose files have
+// all gone since is left out.
+func (r *Repo) RecentlyImported(ctx context.Context, days, limit int) ([]RecentImport, error) {
+	rows, err := r.db.QueryContext(ctx, `
+SELECT s.tmdb_id, s.title, s.year, s.overview, s.poster_url,
+       CAST(strftime('%s', MAX(e.created_at)) AS INTEGER) AS at
+  FROM series_events e JOIN series s ON s.id = e.series_id
+ WHERE e.event = 'imported' AND s.tmdb_id > 0
+   AND julianday(e.created_at) >= julianday('now', ?)
+   AND EXISTS (SELECT 1 FROM episodes ep WHERE ep.series_id = s.id AND ep.has_file = 1)
+ GROUP BY s.id
+ ORDER BY at DESC, s.id DESC
+ LIMIT ?`, "-"+strconv.Itoa(days)+" days", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RecentImport
+	for rows.Next() {
+		var ri RecentImport
+		if err := rows.Scan(&ri.TMDBID, &ri.Title, &ri.Year, &ri.Overview, &ri.PosterURL, &ri.At); err != nil {
+			return nil, err
+		}
+		out = append(out, ri)
+	}
+	return out, rows.Err()
+}
+
 // LastEventID is the id of the newest event in a series' timeline, 0 when it has none.
 func (r *Repo) LastEventID(ctx context.Context, seriesID int64) int64 {
 	var id int64

@@ -3,6 +3,7 @@ package insights
 import (
 	"context"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
 
@@ -381,6 +382,63 @@ func (s *Service) TMDBForRatingKey(key string) (media string, tmdb int, ok bool)
 		return "series", it.TMDB, true
 	}
 	return "movie", it.TMDB, true
+}
+
+// RecentTMDB is one title Plex added recently, by TMDB id: what Discover's "Recently
+// added" row can show without saying anything about Plex itself (no library names,
+// paths or users).
+type RecentTMDB struct {
+	Media   string // movie | series
+	TMDB    int
+	AddedAt int64 // unix seconds
+}
+
+// RecentlyAddedTMDB is Plex's recently added list mapped to TMDB ids through the library
+// index: an episode or season counts as its show, and anything the index can't name (not
+// indexed yet, no TMDB match, a library of home videos) is dropped. Newest first, one
+// entry per title. Nothing when the index isn't built.
+func (s *Service) RecentlyAddedTMDB(ctx context.Context, limit int) ([]RecentTMDB, error) {
+	if s.links.current() == nil {
+		return nil, nil
+	}
+	items, err := s.client(ctx).RecentlyAdded(ctx, limit)
+	if err != nil {
+		return nil, err
+	}
+	return mapRecentToTMDB(items, s.TMDBForRatingKey), nil
+}
+
+// mapRecentToTMDB maps Plex's recently added rows to TMDB titles: an episode through its
+// show (grandparent), a season through its show (parent), a movie or show directly.
+func mapRecentToTMDB(items []plex.RecentItem, lookup func(key string) (string, int, bool)) []RecentTMDB {
+	seen := map[string]bool{}
+	var out []RecentTMDB
+	for _, it := range items {
+		key := it.RatingKey
+		switch it.Type {
+		case "episode":
+			key = it.GrandparentRatingKey
+		case "season":
+			key = it.ParentRatingKey
+		case "movie", "show":
+		default:
+			continue // tracks, photos, clips: not Discover's
+		}
+		if key == "" {
+			continue
+		}
+		media, tmdb, ok := lookup(key)
+		if !ok {
+			continue
+		}
+		k := media + ":" + strconv.Itoa(tmdb)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, RecentTMDB{Media: media, TMDB: tmdb, AddedAt: it.AddedAt})
+	}
+	return out
 }
 
 // PlexItems lists the indexed movies ("movie") or shows ("series"/"show"), a copy.

@@ -88,11 +88,15 @@ GET /api/v1/convert/status staff -
 GET /api/v1/dashboard staff -
 GET /api/v1/discover user ext
 GET /api/v1/discover/because user ext
+GET /api/v1/discover/browse user ext
+GET /api/v1/discover/collection/{id} user ext
 GET /api/v1/discover/collections user ext
 GET /api/v1/discover/genres user ext
+GET /api/v1/discover/person/{id} user ext
 GET /api/v1/discover/popular user ext
 GET /api/v1/discover/provider user ext
 GET /api/v1/discover/providers user ext
+GET /api/v1/discover/recently-added user ext
 GET /api/v1/discover/recommended user ext
 GET /api/v1/discover/rows/{kind} user ext
 GET /api/v1/discover/search user ext

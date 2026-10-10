@@ -217,12 +217,15 @@ type RecentItem struct {
 	RatingKey string `json:"rating_key"`
 	// GrandparentRatingKey is the show's key for an episode ("" otherwise).
 	GrandparentRatingKey string `json:"grandparent_rating_key,omitempty"`
-	Type                 string `json:"type"`
-	Title                string `json:"title"`
-	GrandparentTitle     string `json:"grandparent_title"`
-	Year                 int    `json:"year"`
-	Thumb                string `json:"thumb"` // best poster (show poster for episodes)
-	AddedAt              int64  `json:"added_at"`
+	// ParentRatingKey is the show's key for a season (Plex lists a batch of new episodes
+	// as their season), the season's for an episode.
+	ParentRatingKey  string `json:"parent_rating_key,omitempty"`
+	Type             string `json:"type"`
+	Title            string `json:"title"`
+	GrandparentTitle string `json:"grandparent_title"`
+	Year             int    `json:"year"`
+	Thumb            string `json:"thumb"` // best poster (show poster for episodes)
+	AddedAt          int64  `json:"added_at"`
 }
 
 // RecentlyAdded returns the most recently added items across libraries.
@@ -235,6 +238,7 @@ func (c *Client) RecentlyAdded(ctx context.Context, limit int) ([]RecentItem, er
 			Metadata []struct {
 				RatingKey            string  `json:"ratingKey"`
 				GrandparentRatingKey string  `json:"grandparentRatingKey"`
+				ParentRatingKey      string  `json:"parentRatingKey"`
 				Type                 string  `json:"type"`
 				Title                string  `json:"title"`
 				GrandparentTitle     string  `json:"grandparentTitle"`
@@ -255,7 +259,7 @@ func (c *Client) RecentlyAdded(ctx context.Context, limit int) ([]RecentItem, er
 			thumb = m.GrandparentThumb
 		}
 		out = append(out, RecentItem{
-			RatingKey: m.RatingKey, GrandparentRatingKey: m.GrandparentRatingKey, Type: m.Type, Title: m.Title,
+			RatingKey: m.RatingKey, GrandparentRatingKey: m.GrandparentRatingKey, ParentRatingKey: m.ParentRatingKey, Type: m.Type, Title: m.Title,
 			GrandparentTitle: m.GrandparentTitle, Year: int(m.Year), Thumb: thumb, AddedAt: int64(m.AddedAt),
 		})
 	}

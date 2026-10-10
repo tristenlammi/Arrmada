@@ -69,20 +69,25 @@ function redirect(path: string, to: string): RouteObject {
   return { path, element: <Navigate to={to} replace />, errorElement: <RouteError /> };
 }
 
-// discover is Discover plus its titles' own addresses (/discover/movie/603,
-// /discover/series/1399), in every shell. A title is a child of /discover so the page
-// stays mounted under the title's sheet (Discover reads the match and opens it), keeping
-// its rows and scroll position. TMDB's own "tv" spelling redirects to "series".
+// discover is Discover plus the addresses of what opens over it, in every shell: a title
+// (/discover/movie/603, /discover/series/1399), a person (/discover/person/287), a movie
+// collection (/discover/collection/8091), and the browse grid behind a row's "See all"
+// (/discover/browse?list=popular&media=movie), which has the same overlays under it
+// (/discover/browse/movie/603). They are children of /discover so the page stays mounted
+// under the sheet (Discover reads the address and opens it), keeping its rows, its grid
+// and the scroll position. TMDB's own "tv" spelling redirects to "series".
 function discover(element: ReactNode): RouteObject {
   const title: RouteHandle = { title: "Discover" };
+  const child = (path: string, children?: RouteObject[]): RouteObject => ({ path, element: null, handle: title, errorElement: <RouteError />, children });
+  const overlays = () => ["movie/:tmdbId", "series/:tmdbId", "person/:personId", "collection/:collectionId"].map((p) => child(p));
   return {
     path: "/discover",
     element,
     handle: title,
     errorElement: <RouteError />,
     children: [
-      { path: "movie/:tmdbId", element: null, handle: title, errorElement: <RouteError /> },
-      { path: "series/:tmdbId", element: null, handle: title, errorElement: <RouteError /> },
+      ...overlays(),
+      child("browse", overlays()),
       { path: "tv/:tmdbId", element: <TvRedirect />, handle: title, errorElement: <RouteError /> },
     ],
   };
