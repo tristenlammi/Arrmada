@@ -17,6 +17,7 @@ import (
 // samples are a realistic payload for every built-in event, as its producer publishes it.
 var samples = map[string]map[string]any{
 	"request.auto_approved": {"id": int64(4), "title": "Dune", "year": 2021, "media_type": "movie", "requested_by": "Sam"},
+	"request.created":       {"id": int64(42), "media_type": "movie", "title": "Dune", "year": 2021, "requested_by_name": "Sam", "note": "for movie night"},
 	"release.grabbed":       {"title": "Dune.2021.2160p.WEB-DL", "indexer": "Tracker"},
 	"movie.imported":        {"id": int64(12), "version_id": int64(0), "path": "/m/Dune.mkv", "title": "Dune", "upgrade": true},
 	"episodes.imported":     {"title": "Severance", "id": int64(3), "count": 2},

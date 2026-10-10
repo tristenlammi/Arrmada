@@ -17,3 +17,13 @@ ALTER TABLE requests ADD COLUMN decided_by INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE requests ADD COLUMN decided_by_name TEXT NOT NULL DEFAULT '';
 ALTER TABLE requests ADD COLUMN decided_at INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE requests ADD COLUMN rerequest INTEGER NOT NULL DEFAULT 0;
+
+-- The "New request" alert (request.created) is on by default for new connections; existing
+-- admin channels get it too, chosen as 0173 chose them for the Needs-you alerts: any
+-- connection that already wants grabs, imports or auto-approved requests, and every "This
+-- device" push connection. A family channel that only follows Plex doesn't.
+INSERT OR IGNORE INTO notification_subscriptions (connection_id, event_key)
+    SELECT n.id, 'request.created' FROM notifications n
+    WHERE n.kind = 'webpush' OR EXISTS (
+        SELECT 1 FROM notification_subscriptions s WHERE s.connection_id = n.id AND s.event_key IN
+            ('release.grabbed', 'movie.imported', 'episodes.imported', 'book.imported', 'music.imported', 'request.auto_approved'));

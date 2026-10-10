@@ -6,13 +6,6 @@ import (
 	"testing"
 )
 
-func init() {
-	// TestCatalogFormat needs a realistic payload for every event.
-	samples["request.created"] = map[string]any{
-		"id": int64(42), "media_type": "movie", "title": "Dune", "year": 2021, "requested_by_name": "Sam", "note": "for movie night",
-	}
-}
-
 // The "New request" message names who asked for what, carries their note, says when it's
 // asked again after a decline, and opens the request on the Requests page.
 func TestRequestCreatedFormat(t *testing.T) {
