@@ -49,34 +49,42 @@ function useInfinite<P extends DiscoverPage>(key: string, fetchPage: (page: numb
   // Bumped on every new key, so an answer for the old one is dropped.
   const gen = useRef(0);
   const sentinel = useRef<HTMLDivElement>(null);
+  const shown = useRef<DiscoverCard[]>([]);
+  // Pages in a row that added nothing (everything on them filtered out or already shown).
+  // After a few the grid stops loading by itself and offers a button, so a filter that
+  // TMDB pads with unshowable rows can't walk all 500 pages unattended.
+  const [dry, setDry] = useState(0);
 
-  const load = useCallback((p: number) => {
+  const load = useCallback((p: number, manual = false) => {
     const my = gen.current;
     setLoading(true); setError(null);
     fetchRef.current(p).then((r) => {
       if (gen.current !== my) return;
       // TMDB's pages shift as popularity moves, so a title can turn up twice: keep the first.
-      setItems((cur) => {
-        const base = p === 1 ? [] : cur ?? [];
-        const seen = new Set(base.map(cardKey));
-        return [...base, ...r.items.filter((c) => !seen.has(cardKey(c)))];
-      });
+      const base = p === 1 ? [] : shown.current;
+      const seen = new Set(base.map(cardKey));
+      const fresh = r.items.filter((c) => !seen.has(cardKey(c)));
+      shown.current = [...base, ...fresh];
+      setItems(shown.current);
+      setDry((d) => (fresh.length > 0 || manual ? 0 : d + 1));
       setPage(p); setTotal(r.total_pages); setLoading(false);
       if (p === 1) firstRef.current?.(r);
     }).catch((e) => {
       if (gen.current !== my) return;
       setLoading(false); setError((e as Error).message);
-      if (p === 1) setItems([]);
+      if (p === 1) { shown.current = []; setItems([]); }
     });
   }, []);
 
   useEffect(() => {
     gen.current++;
-    setItems(null); setPage(0); setTotal(1);
+    shown.current = [];
+    setItems(null); setPage(0); setTotal(1); setDry(0);
     load(1);
   }, [key, load]);
 
-  const more = page > 0 && page < total && !loading && !error;
+  const stalled = dry >= 3;
+  const more = page > 0 && page < total && !loading && !error && !stalled;
   useEffect(() => {
     const el = sentinel.current;
     if (!el || !more || typeof IntersectionObserver === "undefined") return;
@@ -87,7 +95,7 @@ function useInfinite<P extends DiscoverPage>(key: string, fetchPage: (page: numb
     return () => io.disconnect();
   }, [more, page, load]);
 
-  return { items, loading, error, sentinel, retry: () => load(Math.max(1, page + 1)), hasMore: page < total };
+  return { items, loading, error, sentinel, retry: () => load(Math.max(1, page + 1), true), hasMore: page < total, stalled };
 }
 
 // scrollParent is the nearest ancestor that scrolls vertically, or null for the window.
@@ -102,7 +110,7 @@ function scrollParent(el: HTMLElement): HTMLElement | null {
 // Grid is the infinite poster grid: skeletons first, the error line on a failure (with a
 // retry for a later page), and the sentinel that loads the next page.
 function Grid({ state, ctx, empty }: { state: ReturnType<typeof useInfinite>; ctx: RowCtx; empty: string }) {
-  const { items, loading, error, sentinel, retry, hasMore } = state;
+  const { items, loading, error, sentinel, retry, hasMore, stalled } = state;
   if (items === null) {
     return <div className="grid gap-x-3 gap-y-5" style={GRID}>{Array.from({ length: 12 }).map((_, i) => <CardSkeleton key={i} full />)}</div>;
   }
@@ -120,6 +128,9 @@ function Grid({ state, ctx, empty }: { state: ReturnType<typeof useInfinite>; ct
           <LoadError message={error} />
           <button onClick={retry} className="min-h-[32px] text-[12px] font-semibold" style={{ color: "var(--accent)" }}>Try again</button>
         </div>
+      )}
+      {stalled && hasMore && !loading && !error && (
+        <div className="mt-4 text-center"><button onClick={retry} className="min-h-[32px] text-[12px] font-semibold" style={{ color: "var(--accent)" }}>Load more</button></div>
       )}
       {!hasMore && items.length > 20 && <div className="mt-6 text-center text-[11.5px] text-ink-faint">That’s everything.</div>}
       <div ref={sentinel} aria-hidden className="h-px" />
