@@ -192,10 +192,11 @@ func (s *Server) Detail(ctx context.Context, userID int64, key string) (ItemDeta
 	}
 	files, _ := s.probe.files(ctx, it.Path, true)
 	prog := map[string]listening.Progress{}
-	if p, ok, err := s.listen.Progress(ctx, userID, key); err != nil {
+	// Look the place up by the canonical key, so a key in either id shape finds it.
+	if p, ok, err := s.listen.Progress(ctx, userID, it.Key); err != nil {
 		return ItemDetail{}, err
 	} else if ok {
-		prog[key] = p
+		prog[it.Key] = p
 	}
 	d := ItemDetail{Card: s.card(ctx, it, prog), Description: it.Book.Description, Year: it.Book.Year,
 		Genres: nonNilStrings(it.Book.Subjects), Chapters: nonNilChapters(bookChapters(files)), Tracks: tracksFor(it, files),
@@ -208,7 +209,7 @@ func (s *Server) Detail(ctx context.Context, userID int64, key string) (ItemDeta
 			}
 		}
 	}
-	if d.Bookmarks, err = s.listen.Bookmarks(ctx, userID, key); err != nil {
+	if d.Bookmarks, err = s.listen.Bookmarks(ctx, userID, it.Key); err != nil {
 		return ItemDetail{}, err
 	}
 	return d, nil

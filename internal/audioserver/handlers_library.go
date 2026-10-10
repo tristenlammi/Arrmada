@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -36,7 +37,7 @@ func (s *Server) libraryTotals(ctx context.Context) obj {
 }
 
 func (s *Server) checkLibrary(w http.ResponseWriter, r *http.Request) bool {
-	if r.PathValue("lib") != libraryID {
+	if !isLibraryID(r.PathValue("lib")) {
 		writeError(w, http.StatusNotFound, "Library not found")
 		return false
 	}
@@ -133,18 +134,26 @@ func progressByKey(all []listening.Progress) map[string]listening.Progress {
 
 // applyFilter keeps items matching an Audiobookshelf filter ("authors.<base64 id>",
 // "series.…", "genres.…", "progress.finished|not-finished|in-progress|not-started").
+//
+// It always returns a new slice: items is the shared cached catalogue, and callers sort
+// the result in place — sorting the cache itself would race between requests and
+// reorder it for everyone.
 func applyFilter(items []Item, filter string, prog map[string]listening.Progress) []Item {
-	if filter == "" {
-		return items
-	}
 	key, enc, ok := strings.Cut(filter, ".")
-	if !ok {
-		return items
+	if filter == "" || !ok {
+		return append([]Item(nil), items...)
+	}
+	// Apps percent-encode the base64 value, and some (ShelfPlayer) encode a value that's
+	// already encoded ("…%3D" arrives as "…%253D"), so undo that as Audiobookshelf does; a
+	// "+" sent unencoded has become a space by now.
+	if u, err := url.PathUnescape(enc); err == nil {
+		enc = u
 	}
 	val := enc
-	if dec, err := base64.StdEncoding.DecodeString(enc); err == nil {
+	b64 := strings.ReplaceAll(enc, " ", "+")
+	if dec, err := base64.StdEncoding.DecodeString(b64); err == nil {
 		val = string(dec)
-	} else if dec, err := base64.RawStdEncoding.DecodeString(enc); err == nil {
+	} else if dec, err := base64.RawStdEncoding.DecodeString(b64); err == nil {
 		val = string(dec)
 	}
 	out := items[:0:0]
@@ -154,12 +163,14 @@ func applyFilter(items []Item, filter string, prog map[string]listening.Progress
 		case "authors":
 			keep = false
 			for _, a := range splitAuthors(it.Book.Author) {
-				if authorID(a) == val {
+				if isAuthorID(val, a) {
 					keep = true
 				}
 			}
 		case "series":
-			keep = it.Book.SeriesName != "" && seriesID(it.Book.SeriesName) == val
+			keep = it.Book.SeriesName != "" && isSeriesID(val, it.Book.SeriesName)
+		case "narrators":
+			keep = false // no narrators are recorded, so none match (rather than all)
 		case "genres":
 			keep = false
 			for _, g := range it.Book.Subjects {
@@ -374,8 +385,8 @@ func (s *Server) handleAuthors(w http.ResponseWriter, r *http.Request) {
 		if images[a.name] != "" {
 			img = "/api/authors/" + id + "/image"
 		}
-		list = append(list, obj{"id": id, "asin": nil, "name": a.name, "description": nil, "imagePath": img,
-			"libraryId": libraryID, "addedAt": a.added, "updatedAt": a.added, "numBooks": a.count})
+		list = append(list, obj{"id": id, "asin": nil, "name": a.name, "lastFirst": authorNameLF(a.name), "description": nil,
+			"imagePath": img, "libraryId": libraryID, "addedAt": a.added, "updatedAt": a.added, "numBooks": a.count})
 	}
 	q := r.URL.Query()
 	desc := q.Get("desc") == "1"
@@ -397,7 +408,8 @@ func (s *Server) handleAuthors(w http.ResponseWriter, r *http.Request) {
 		list = list[start:min(start+limit, total)]
 	}
 	// "results" is the paged shape newer clients (Lissen) read; "authors" the older one.
-	writeJSON(w, http.StatusOK, obj{"results": list, "authors": list, "total": total, "limit": limit, "page": page})
+	writeJSON(w, http.StatusOK, obj{"results": list, "authors": list, "total": total, "limit": limit, "page": page,
+		"sortDesc": desc, "minified": false})
 }
 
 func (s *Server) handleSeriesList(w http.ResponseWriter, r *http.Request) {
@@ -424,8 +436,8 @@ func (s *Server) handleSeriesList(w http.ResponseWriter, r *http.Request) {
 		for _, it := range g {
 			books = append(books, s.itemMinified(ctx, it, prog))
 		}
-		list = append(list, obj{"id": seriesID(name), "name": name, "nameIgnorePrefix": ignorePrefix(name),
-			"libraryId": libraryID, "books": books, "addedAt": g[0].AddedAt, "totalDuration": 0})
+		list = append(list, obj{"id": seriesID(name), "name": name, "nameIgnorePrefix": ignorePrefix(name), "description": nil,
+			"libraryId": libraryID, "books": books, "addedAt": g[0].AddedAt, "updatedAt": g[0].AddedAt, "totalDuration": 0})
 	}
 	sort.SliceStable(list, func(i, j int) bool { return sortTitle(list[i]["name"].(string)) < sortTitle(list[j]["name"].(string)) })
 	q := r.URL.Query()
@@ -436,7 +448,8 @@ func (s *Server) handleSeriesList(w http.ResponseWriter, r *http.Request) {
 		start := min(page*limit, total)
 		list = list[start:min(start+limit, total)]
 	}
-	writeJSON(w, http.StatusOK, obj{"results": list, "total": total, "limit": limit, "page": page})
+	writeJSON(w, http.StatusOK, obj{"results": list, "total": total, "limit": limit, "page": page,
+		"sortDesc": q.Get("desc") == "1", "minified": false, "include": ""})
 }
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -518,6 +531,9 @@ func (s *Server) handleItem(w http.ResponseWriter, r *http.Request) {
 		pp = &p
 	}
 	o, _ := s.itemExpanded(ctx, it, pp)
+	if pp == nil && strings.Contains(r.URL.Query().Get("include"), "progress") {
+		o["userMediaProgress"] = nil // asked for, and there isn't one yet
+	}
 	writeJSON(w, http.StatusOK, o)
 }
 
@@ -531,9 +547,19 @@ func (s *Server) handleBatchGet(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	prog := s.progressMap(ctx, userOf(r).ID)
 	out := []obj{}
-	for _, id := range body.LibraryItemIDs {
+	// Audiobookshelf answers with full items. At most 100 at a time: a full item reads
+	// its files' chapters, which costs more than a list entry.
+	for i, id := range body.LibraryItemIDs {
+		if i >= 100 {
+			break
+		}
 		if it, err := s.item(ctx, id); err == nil {
-			out = append(out, s.itemMinified(ctx, it, prog))
+			var pp *listening.Progress
+			if p, ok := prog[it.Key]; ok {
+				pp = &p
+			}
+			o, _ := s.itemFull(ctx, it, pp, false) // known files only: a batch mustn't wait on ffprobe
+			out = append(out, o)
 		}
 	}
 	writeJSON(w, http.StatusOK, obj{"libraryItems": out})
@@ -552,7 +578,7 @@ func (s *Server) handleAuthor(w http.ResponseWriter, r *http.Request) {
 	var mine []Item
 	for _, it := range items {
 		for _, a := range splitAuthors(it.Book.Author) {
-			if authorID(a) == id {
+			if isAuthorID(id, a) {
 				name = a
 				mine = append(mine, it)
 			}
@@ -562,6 +588,7 @@ func (s *Server) handleAuthor(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Author not found")
 		return
 	}
+	id = authorID(name) // replies use the classic id, whichever shape was asked for
 	var img any
 	if s.books.KnownAuthorImages(ctx)[name] != "" {
 		img = "/api/authors/" + id + "/image"
@@ -592,7 +619,7 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 	var mine []Item
 	name := ""
 	for _, it := range items {
-		if it.Book.SeriesName != "" && seriesID(it.Book.SeriesName) == id {
+		if it.Book.SeriesName != "" && isSeriesID(id, it.Book.SeriesName) {
 			name = it.Book.SeriesName
 			mine = append(mine, it)
 		}
@@ -601,6 +628,7 @@ func (s *Server) handleSeries(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "Series not found")
 		return
 	}
+	id = seriesID(name) // replies use the classic id, whichever shape was asked for
 	sortItems(mine, "sequence", false, nil)
 	list := make([]obj, 0, len(mine))
 	for _, it := range mine {

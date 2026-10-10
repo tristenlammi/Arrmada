@@ -152,7 +152,7 @@ func (s *Server) handleAuthorImage(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := r.PathValue("aid")
 	for name, u := range s.books.KnownAuthorImages(ctx) {
-		if authorID(name) == id && (strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")) {
+		if isAuthorID(id, name) && (strings.HasPrefix(u, "http://") || strings.HasPrefix(u, "https://")) {
 			s.images.serve(w, r, u, "")
 			return
 		}

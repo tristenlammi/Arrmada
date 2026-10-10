@@ -83,6 +83,7 @@ func TestRequestLogNeverNamesABook(t *testing.T) {
 		"query_keys=limit,q",
 		"GET /api/items/{id}/nope", // an unsupported call still shows up, redacted
 		"holding a jump back",
+		"token_kind=access", // which kind of token an app uses, never whose
 	} {
 		if !strings.Contains(logged, want) {
 			t.Errorf("the log is missing %q:\n%s", want, logged)

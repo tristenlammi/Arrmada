@@ -583,6 +583,8 @@ export interface AudioServerAdmin extends AudioConnection {
   devices: AudioDevice[];
   items: number;
   items_ready: number;
+  /** While an admin traces app requests: when it stops by itself (unix ms); 0 when off. */
+  trace_until: number;
 }
 export interface AudioPlace { item_key: string; book_id: number; title: string; author?: string; cover_url?: string; position: number; duration: number; finished: boolean; updated_at: number; device?: string;
   /** A big jump back that's being held until it proves itself (or the person confirms it). */
@@ -2426,7 +2428,7 @@ export const api = {
     req<{ status: string }>("/api/v1/movies/import", { method: "POST", body: JSON.stringify({ folder, tmdb_id }) }),
   libraryPaths: () => req<LibraryPaths>("/api/v1/system/library"),
   audioServer: () => req<AudioServerAdmin>("/api/v1/audioserver"),
-  setAudioServer: (body: { enabled?: boolean; public_url?: string }) => req<AudioServerAdmin>("/api/v1/audioserver", { method: "PUT", body: JSON.stringify(body) }),
+  setAudioServer: (body: { enabled?: boolean; public_url?: string; trace_hours?: number }) => req<AudioServerAdmin>("/api/v1/audioserver", { method: "PUT", body: JSON.stringify(body) }),
   setAudioUser: (id: number, allowed: boolean) => req<AudioServerAdmin>(`/api/v1/audioserver/users/${id}`, { method: "PUT", body: JSON.stringify({ allowed }) }),
   revokeAudioDevice: (id: string) => req<void>(`/api/v1/audioserver/devices/${encodeURIComponent(id)}`, { method: "DELETE" }),
   audioListening: (days = 30, userId?: number) => req<AudioListening>(`/api/v1/audioserver/listening?days=${days}${userId ? `&user_id=${userId}` : ""}`),

@@ -39,8 +39,17 @@ func itemKeyFor(bookID int64, versionID int64) string {
 	return fmt.Sprintf("b%d", bookID)
 }
 
-// parseItemKey splits "b12" / "b12v3" into ids.
-func parseItemKey(key string) (bookID, versionID int64, ok bool) {
+// parseItemKey splits an item id in either shape (ids.go) into book and version ids.
+func parseItemKey(id string) (bookID, versionID int64, ok bool) {
+	key, ok := itemKeyFromID(id)
+	if !ok {
+		return 0, 0, false
+	}
+	return parseLegacyItemKey(key)
+}
+
+// parseLegacyItemKey splits "b12" / "b12v3" into ids.
+func parseLegacyItemKey(key string) (bookID, versionID int64, ok bool) {
 	if !strings.HasPrefix(key, "b") {
 		return 0, 0, false
 	}
@@ -104,12 +113,14 @@ func (s *Server) loadItems(ctx context.Context) ([]Item, error) {
 	return out, nil
 }
 
-// item loads one audiobook by key.
-func (s *Server) item(ctx context.Context, key string) (Item, error) {
-	bookID, versionID, ok := parseItemKey(key)
+// item loads one audiobook by its id in either shape; the Item always carries the
+// internal key, so whatever shape an app sent, replies and places use the classic one.
+func (s *Server) item(ctx context.Context, id string) (Item, error) {
+	bookID, versionID, ok := parseItemKey(id)
 	if !ok {
 		return Item{}, errItemNotFound
 	}
+	key := itemKeyFor(bookID, versionID)
 	b, err := s.books.Get(ctx, bookID)
 	if err != nil {
 		return Item{}, errItemNotFound

@@ -50,6 +50,9 @@ type Server struct {
 	limiter  *loginLimiter
 	catalog  catalogCache
 	warming  atomic.Bool // stops overlapping Warm runs (the schedule, switching on, an import)
+
+	traceUntil atomic.Int64     // unix ms; see trace.go
+	now        func() time.Time // the clock (tests set it); nil means time.Now
 }
 
 // Options configure a Server.
@@ -74,6 +77,7 @@ func New(o Options) *Server {
 		limiter:  newLoginLimiter(),
 	}
 	s.Accounts = newAccounts(o.DB, o.Users, s.Allowed)
+	s.loadTrace(context.Background())
 	return s
 }
 
@@ -145,6 +149,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /login", s.handleLogin)
 	mux.HandleFunc("POST /auth/refresh", s.handleRefresh)
 	mux.HandleFunc("POST /logout", s.handleLogout)
+	// Streaming by session id, for apps that play without a token (handlers_public.go).
+	mux.HandleFunc("GET /public/session/{sid}/track/{index}", s.handleSessionTrack)
 
 	// Signed-in routes.
 	a := s.requireAuth
@@ -246,6 +252,7 @@ func (s *Server) requireAuth(h http.HandlerFunc) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "Unauthorized")
 			return
 		}
+		normalizePathIDs(r) // item and library ids in either shape (ids.go)
 		ctx := context.WithValue(r.Context(), userKey, u)
 		ctx = context.WithValue(ctx, familyKey, family)
 		ctx = context.WithValue(ctx, tokenKey, tok)
@@ -265,7 +272,8 @@ func bearer(r *http.Request) string {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, obj{
 		"app": "audiobookshelf", "serverVersion": ServerVersion, "isInit": true, "language": "en-us",
-		"authMethods": []string{"local"}, "authFormData": obj{"authOpenIDButtonText": nil, "authOpenIDAutoLaunch": false},
+		"authMethods":  []string{"local"},
+		"authFormData": obj{"authOpenIDButtonText": nil, "authOpenIDAutoLaunch": false, "authLoginCustomMessage": ""},
 	})
 }
 
@@ -348,15 +356,27 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAuthorize(w http.ResponseWriter, r *http.Request) {
-	u := userOf(r)
 	writeJSON(w, http.StatusOK, obj{
-		"user": s.userJSON(r.Context(), u, nil), "userDefaultLibraryId": libraryID,
+		"user": s.meJSON(r), "userDefaultLibraryId": libraryID,
 		"serverSettings": s.serverSettings(), "ereaderDevices": []obj{}, "Source": "docker",
 	})
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.userJSON(r.Context(), userOf(r), nil))
+	writeJSON(w, http.StatusOK, s.meJSON(r))
+}
+
+// meJSON is the signed-in user, for /api/me, /api/authorize and the replies that echo
+// the user. Audiobookshelf's user carries the long-lived "token"; this server keeps only
+// a hash of it, so it can only hand it back to a device that signed in with it (ShelfPlayer
+// does, and can't read the user without it). Anyone else gets no token key at all — the
+// official app signs itself out if "token" equals the access token it sent.
+func (s *Server) meJSON(r *http.Request) obj {
+	o := s.userJSON(r.Context(), userOf(r), nil)
+	if tok, _ := r.Context().Value(tokenKey).(string); tok != "" && s.Accounts.IsLegacy(r.Context(), tok) {
+		o["token"] = tok
+	}
+	return o
 }
 
 func (s *Server) handleNoPodcasts(w http.ResponseWriter, _ *http.Request) {
@@ -370,6 +390,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// writeOK is Audiobookshelf's bare success (res.sendStatus(200)): the text "OK".
+func writeOK(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("OK"))
 }
 
 // writeError answers the way Audiobookshelf does: a plain-text message.
@@ -559,22 +586,35 @@ var signInPaths = map[string]bool{"/status": true, "/ping": true, "/login": true
 // and the names of the query parameters, never a book, author, series, search term or
 // token — admins see how much and when people listen, never what. The steady traffic of
 // playing (audio, covers, place syncs) is only logged when it fails, and a book nobody has
-// started having no place yet isn't worth a line.
+// started having no place yet isn't worth a line — unless an admin has switched tracing on
+// (trace.go), when those are logged too, the same way, tagged trace=true.
 func (s *Server) logRequest(r *http.Request, status int, bytes int64) {
 	if status == 0 {
 		status = http.StatusOK
 	}
 	p := r.URL.Path
-	if status < 400 && !signInPaths[p] && (strings.Contains(p, "/file/") || strings.HasSuffix(p, "/cover") ||
+	quiet := status < 400 && !signInPaths[p] && (strings.Contains(p, "/file/") || strings.Contains(p, "/track/") || strings.HasSuffix(p, "/cover") ||
 		strings.HasSuffix(p, "/image") || strings.HasSuffix(p, "/sync") || strings.HasSuffix(p, "/download") ||
-		strings.HasPrefix(p, "/api/me/progress") || strings.HasPrefix(p, "/api/session/") && r.Method == http.MethodGet) {
-		return
-	}
+		strings.HasPrefix(p, "/api/me/progress") || strings.HasPrefix(p, "/api/session/") && r.Method == http.MethodGet)
 	if status == http.StatusNotFound && r.Method == http.MethodGet && strings.HasPrefix(p, "/api/me/progress/") {
-		return
+		quiet = true
 	}
-	s.log.Info("audiobook server: request", "route", applog.RouteLabel(r), "query_keys", applog.QueryKeys(r.URL.Query(), "token"),
-		"status", status, "bytes", bytes, "token", bearer(r) != "", "client", r.UserAgent())
+	attrs := []any{"route", applog.RouteLabel(r), "query_keys", applog.QueryKeys(r.URL.Query(), "token"),
+		"status", status, "bytes", bytes, "token", bearer(r) != "", "client", r.UserAgent()}
+	if quiet {
+		if !s.tracing() {
+			return
+		}
+		attrs = append(attrs, "trace", true)
+	}
+	if tok := bearer(r); tok != "" && s.Accounts != nil {
+		// Which kind of token an app signs its calls with (long-lived or 30-day) explains
+		// a lot about an app that won't load; it says nothing about whose it is.
+		if kind := s.Accounts.tokenKind(r.Context(), tok); kind != "" {
+			attrs = append(attrs, "token_kind", kind)
+		}
+	}
+	s.log.Info("audiobook server: request", attrs...)
 }
 
 // setRefreshCookie hands the refresh token over as Audiobookshelf's refresh_token cookie.

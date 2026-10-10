@@ -72,19 +72,32 @@ func (a *api) handleAudioServer(w http.ResponseWriter, r *http.Request) {
 	out["devices"] = devices
 	items, ready := a.deps.AudioServer.LibraryStats(ctx)
 	out["items"], out["items_ready"] = items, ready
+	out["trace_until"] = a.deps.AudioServer.TraceUntil() // unix ms, 0 = off (it ends by itself)
 	a.writeJSON(w, http.StatusOK, out)
 }
 
-// handleSetAudioServer — PUT /api/v1/audioserver (admin) {enabled?, public_url?}
+// handleSetAudioServer — PUT /api/v1/audioserver (admin) {enabled?, public_url?, trace_hours?}.
+// trace_hours (1–24) logs every request apps make, routes only, until it runs out; 0 stops.
 func (a *api) handleSetAudioServer(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Enabled   *bool   `json:"enabled"`
-		PublicURL *string `json:"public_url"`
+		Enabled    *bool   `json:"enabled"`
+		PublicURL  *string `json:"public_url"`
+		TraceHours *int    `json:"trace_hours"`
 	}
 	if !a.decodeJSON(w, r, &req) {
 		return
 	}
 	ctx := r.Context()
+	if req.TraceHours != nil {
+		if *req.TraceHours < 0 || time.Duration(*req.TraceHours)*time.Hour > audioserver.MaxTrace || a.deps.AudioServer == nil {
+			a.writeError(w, http.StatusBadRequest, "trace_hours must be between 0 and 24")
+			return
+		}
+		if _, err := a.deps.AudioServer.SetTrace(ctx, time.Duration(*req.TraceHours)*time.Hour); err != nil {
+			a.writeError(w, http.StatusInternalServerError, "could not save")
+			return
+		}
+	}
 	if req.PublicURL != nil {
 		_ = a.deps.Settings.Set(ctx, audioserver.KeyPublicURL, strings.TrimRight(strings.TrimSpace(*req.PublicURL), "/"))
 	}

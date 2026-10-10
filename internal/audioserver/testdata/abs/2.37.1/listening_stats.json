@@ -1,0 +1,114 @@
+{
+  "totalTime": 10,
+  "items": {
+    "55555555-5555-4555-8555-555555555555": {
+      "id": "55555555-5555-4555-8555-555555555555",
+      "timeListening": 10,
+      "mediaMetadata": {
+        "title": "The Time Machine",
+        "subtitle": null,
+        "authors": [
+          {
+            "id": "77777777-7777-4777-8777-777777777777",
+            "name": "H. G. Wells"
+          }
+        ],
+        "narrators": [
+          "Example Narrator"
+        ],
+        "series": [
+          {
+            "id": "88888888-8888-4888-8888-888888888888",
+            "name": "Example Series",
+            "sequence": "1"
+          }
+        ],
+        "genres": [
+          "Science Fiction"
+        ],
+        "publishedYear": "1895",
+        "publishedDate": null,
+        "publisher": null,
+        "description": "A Victorian scientist builds a machine that carries him into the far future.",
+        "isbn": null,
+        "asin": null,
+        "language": "en",
+        "explicit": false,
+        "abridged": false
+      }
+    }
+  },
+  "days": {
+    "2026-10-11": 10
+  },
+  "dayOfWeek": {
+    "Sunday": 10
+  },
+  "today": 10,
+  "recentSessions": [
+    {
+      "id": "99999999-9999-4999-8999-999999999999",
+      "userId": "22222222-2222-4222-8222-222222222222",
+      "libraryId": "33333333-3333-4333-8333-333333333333",
+      "libraryItemId": "55555555-5555-4555-8555-555555555555",
+      "bookId": "66666666-6666-4666-8666-666666666666",
+      "episodeId": null,
+      "mediaType": "book",
+      "mediaMetadata": {
+        "title": "The Time Machine",
+        "subtitle": null,
+        "authors": [
+          {
+            "id": "77777777-7777-4777-8777-777777777777",
+            "name": "H. G. Wells"
+          }
+        ],
+        "narrators": [
+          "Example Narrator"
+        ],
+        "series": [
+          {
+            "id": "88888888-8888-4888-8888-888888888888",
+            "name": "Example Series",
+            "sequence": "1"
+          }
+        ],
+        "genres": [
+          "Science Fiction"
+        ],
+        "publishedYear": "1895",
+        "publishedDate": null,
+        "publisher": null,
+        "description": "A Victorian scientist builds a machine that carries him into the far future.",
+        "isbn": null,
+        "asin": null,
+        "language": "en",
+        "explicit": false,
+        "abridged": false
+      },
+      "chapters": [],
+      "displayTitle": "The Time Machine",
+      "displayAuthor": "H. G. Wells",
+      "coverPath": "/audiobooks/H. G. Wells/The Time Machine/cover.jpg",
+      "duration": 3500.75,
+      "playMethod": 0,
+      "mediaPlayer": "AVPlayer",
+      "deviceInfo": {
+        "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        "userId": "22222222-2222-4222-8222-222222222222",
+        "deviceId": "device-1",
+        "ipAddress": "192.0.2.10",
+        "clientVersion": "2.37.1",
+        "clientName": "Example"
+      },
+      "serverVersion": "2.37.1",
+      "date": "2026-10-11",
+      "dayOfWeek": "Sunday",
+      "timeListening": 10,
+      "startTime": 0,
+      "currentTime": 120,
+      "startedAt": 1791720060000,
+      "updatedAt": 1791720075000
+    }
+  ]
+}

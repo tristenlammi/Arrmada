@@ -55,7 +55,7 @@ func (s *Server) handleNoSessions(w http.ResponseWriter, r *http.Request) {
 // user, as Audiobookshelf does. Series aren't hidden here — Continue Series just follows
 // what's being listened to.
 func (s *Server) handleSeriesContinue(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.userJSON(r.Context(), userOf(r), nil))
+	writeJSON(w, http.StatusOK, s.meJSON(r))
 }
 
 // handleEmptyPaged is a library list this server has nothing in (collections, playlists,

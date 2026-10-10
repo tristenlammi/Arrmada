@@ -1,0 +1,28 @@
+{
+  "id": "22222222-2222-4222-8222-222222222222",
+  "username": "listener",
+  "email": null,
+  "type": "user",
+  "token": "<redacted>",
+  "mediaProgress": [],
+  "seriesHideFromContinueListening": [],
+  "bookmarks": [],
+  "isActive": true,
+  "isLocked": false,
+  "lastSeen": null,
+  "createdAt": 1790849400000,
+  "permissions": {
+    "download": true,
+    "update": false,
+    "delete": false,
+    "upload": false,
+    "createEreader": false,
+    "accessAllLibraries": true,
+    "accessAllTags": true,
+    "accessExplicitContent": false,
+    "selectedTagsNotAccessible": false
+  },
+  "librariesAccessible": [],
+  "itemTagsSelected": [],
+  "hasOpenIDLink": false
+}

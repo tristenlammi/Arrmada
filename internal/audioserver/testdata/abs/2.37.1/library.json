@@ -1,0 +1,79 @@
+{
+  "filterdata": {
+    "authors": [
+      {
+        "id": "77777777-7777-4777-8777-777777777777",
+        "name": "H. G. Wells"
+      }
+    ],
+    "genres": [
+      "Science Fiction"
+    ],
+    "tags": [],
+    "series": [
+      {
+        "id": "88888888-8888-4888-8888-888888888888",
+        "name": "Example Series"
+      }
+    ],
+    "narrators": [
+      "Example Narrator"
+    ],
+    "languages": [
+      "en"
+    ],
+    "publishers": [],
+    "publishedDecades": [
+      "1890"
+    ],
+    "bookCount": 1,
+    "authorCount": 1,
+    "seriesCount": 1,
+    "podcastCount": 0,
+    "numIssues": 0,
+    "loadedAt": 1791720008000
+  },
+  "issues": 0,
+  "numUserPlaylists": 0,
+  "library": {
+    "id": "33333333-3333-4333-8333-333333333333",
+    "name": "Audiobooks",
+    "folders": [
+      {
+        "id": "44444444-4444-4444-8444-444444444444",
+        "fullPath": "/audiobooks",
+        "libraryId": "33333333-3333-4333-8333-333333333333",
+        "addedAt": 1790848800000
+      }
+    ],
+    "displayOrder": 1,
+    "icon": "database",
+    "mediaType": "book",
+    "provider": "google",
+    "settings": {
+      "coverAspectRatio": 1,
+      "disableWatcher": false,
+      "autoScanCronExpression": null,
+      "skipMatchingMediaWithAsin": false,
+      "skipMatchingMediaWithIsbn": false,
+      "audiobooksOnly": false,
+      "epubsAllowScriptedContent": false,
+      "hideSingleBookSeries": false,
+      "onlyShowLaterBooksInContinueSeries": false,
+      "metadataPrecedence": [
+        "folderStructure",
+        "audioMetatags",
+        "nfoFile",
+        "txtFiles",
+        "opfFile",
+        "absMetadata"
+      ],
+      "markAsFinishedPercentComplete": null,
+      "markAsFinishedTimeRemaining": 10
+    },
+    "lastScan": 1790849105000,
+    "lastScanVersion": "2.37.1",
+    "createdAt": 1790848800000,
+    "lastUpdate": 1790849106000
+  }
+}

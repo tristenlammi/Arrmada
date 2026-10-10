@@ -2,6 +2,7 @@ package audioserver
 
 import (
 	"context"
+	"os"
 	"strings"
 	"time"
 
@@ -85,7 +86,13 @@ func (s *Server) itemMinified(ctx context.Context, it Item, progress map[string]
 // itemExpanded is the full item: files, chapters and play tracks. It probes files that
 // aren't known yet.
 func (s *Server) itemExpanded(ctx context.Context, it Item, p *listening.Progress) (obj, []AudioFile) {
-	files, _ := s.probe.files(ctx, it.Path, true)
+	return s.itemFull(ctx, it, p, true)
+}
+
+// itemFull is itemExpanded; with probe false it describes only what's already been read
+// (for replies listing many items, which mustn't wait on ffprobe for each).
+func (s *Server) itemFull(ctx context.Context, it Item, p *listening.Progress, probe bool) (obj, []AudioFile) {
+	files, _ := s.probe.files(ctx, it.Path, probe)
 	audio := []obj{}
 	tracks := []obj{}
 	offset := 0.0
@@ -119,7 +126,7 @@ func (s *Server) itemExpanded(ctx context.Context, it Item, p *listening.Progres
 	o := obj{
 		"id": it.Key, "ino": inoFor(it.Key), "oldLibraryItemId": nil, "libraryId": libraryID, "folderId": libraryID,
 		"path": it.Path, "relPath": it.Title, "isFile": len(files) == 1, "mtimeMs": it.AddedAt, "ctimeMs": it.AddedAt,
-		"birthtimeMs": it.AddedAt, "addedAt": it.AddedAt, "updatedAt": it.AddedAt, "lastScan": nil, "scanVersion": nil,
+		"birthtimeMs": it.AddedAt, "addedAt": it.AddedAt, "updatedAt": it.AddedAt, "lastScan": it.AddedAt, "scanVersion": ServerVersion,
 		"isMissing": false, "isInvalid": false, "mediaType": "book",
 		"media": obj{
 			"id": "m" + it.Key, "libraryItemId": it.Key, "metadata": metadataExpanded(it), "coverPath": coverPath(it),
@@ -141,10 +148,12 @@ func mediaProgress(p listening.Progress) obj {
 	if p.FinishedAt > 0 {
 		finishedAt = p.FinishedAt
 	}
+	// userId: the official app's MediaProgress model requires it, and fails to read the
+	// whole reply without it. ebookProgress is 0, as Audiobookshelf stores it for audio.
 	return obj{
-		"id": p.ItemKey, "libraryItemId": p.ItemKey, "episodeId": nil, "mediaItemId": "m" + p.ItemKey,
+		"id": p.ItemKey, "userId": "u" + itoa(p.UserID), "libraryItemId": p.ItemKey, "episodeId": nil, "mediaItemId": "m" + p.ItemKey,
 		"mediaItemType": "book", "duration": p.Duration, "progress": p.Fraction(), "currentTime": p.Position,
-		"isFinished": p.Finished, "hideFromContinueListening": p.Hidden, "ebookLocation": nil, "ebookProgress": nil,
+		"isFinished": p.Finished, "hideFromContinueListening": p.Hidden, "ebookLocation": nil, "ebookProgress": 0,
 		"lastUpdate": p.UpdatedAt, "startedAt": p.UpdatedAt, "finishedAt": finishedAt,
 	}
 }
@@ -176,8 +185,8 @@ func (s *Server) userJSON(ctx context.Context, u *auth.User, t *Tokens) obj {
 		"id": "u" + itoa(u.ID), "username": u.Username, "email": nil, "type": typ, "isActive": !u.Disabled,
 		"isLocked": false, "lastSeen": time.Now().UnixMilli(), "createdAt": parseAdded(u.CreatedAt),
 		"mediaProgress": mp, "seriesHideFromContinueListening": []string{}, "bookmarks": bm,
-		"permissions": obj{"download": true, "update": false, "delete": false, "upload": false,
-			"accessAllLibraries": true, "accessAllTags": true, "accessExplicitContent": true},
+		"permissions": obj{"download": true, "update": false, "delete": false, "upload": false, "createEreader": false,
+			"accessAllLibraries": true, "accessAllTags": true, "accessExplicitContent": true, "selectedTagsNotAccessible": false},
 		"librariesAccessible": []string{}, "itemTagsSelected": []string{}, "hasOpenIDLink": false,
 	}
 	if t != nil {
@@ -195,13 +204,32 @@ func (s *Server) loginJSON(ctx context.Context, u *auth.User, t *Tokens) obj {
 	}
 }
 
+// serverSettings is Audiobookshelf's full settings object, as it hands it to a signed-in
+// app. The values that mean something to an app (version, sorting, formats, sign-in
+// methods) are this server's; the rest are Audiobookshelf's defaults, there so an app
+// reading the settings into a fixed model finds every key with the right type. Nothing
+// here can be changed through this server.
 func (s *Server) serverSettings() obj {
+	tz := strings.TrimSpace(os.Getenv("TZ"))
+	if tz == "" {
+		tz = "UTC"
+	}
 	return obj{
 		"id": "server-settings", "version": ServerVersion, "buildNumber": 1, "language": "en-us",
 		"authActiveAuthMethods": []string{"local"}, "authOpenIDAutoLaunch": false, "authOpenIDButtonText": "",
 		"sortingIgnorePrefix": true, "sortingPrefixes": []string{"the", "a", "an"}, "chromecastEnabled": false,
 		"dateFormat": "MM/dd/yyyy", "timeFormat": "HH:mm", "homeBookshelfView": 1, "bookshelfView": 1,
 		"podcastEpisodeSchedule": "0 * * * *", "logLevel": 2,
+		// Audiobookshelf's defaults for the rest.
+		"scannerFindCovers": false, "scannerCoverProvider": "google", "scannerParseSubtitle": false,
+		"scannerPreferMatchedMetadata": false, "scannerDisableWatcher": false, "storeCoverWithItem": false,
+		"storeMetadataWithItem": false, "metadataFileFormat": "json", "rateLimitLoginRequests": 10,
+		"rateLimitLoginWindow": 600000, "allowIframe": false, "backupPath": "/metadata/backups", "backupSchedule": false,
+		"backupsToKeep": 2, "maxBackupSize": 1, "loggerDailyLogsToKeep": 7, "loggerScannerLogsToKeep": 2,
+		"allowedOrigins": []string{}, "authLoginCustomMessage": nil, "authOpenIDIssuerURL": nil,
+		"authOpenIDAuthorizationURL": nil, "authOpenIDTokenURL": nil, "authOpenIDUserInfoURL": nil, "authOpenIDJwksURL": nil,
+		"authOpenIDLogoutURL": nil, "authOpenIDTokenSigningAlgorithm": "RS256", "authOpenIDAutoRegister": false,
+		"authOpenIDMatchExistingBy": nil, "timeZone": tz,
 	}
 }
 
@@ -216,7 +244,9 @@ func libraryJSON() obj {
 			"epubsAllowScriptedContent": false, "onlyShowLaterBooksInContinueSeries": false,
 			"markAsFinishedPercentComplete": nil, "markAsFinishedTimeRemaining": 10,
 			"metadataPrecedence": []string{"folderStructure", "audioMetatags", "nfoFile", "txtFiles", "opfFile", "absMetadata"}},
-		"lastScan": nil, "lastScanVersion": nil, "createdAt": 0, "lastUpdate": 0,
+		// The catalogue is always current (there's no scan to wait for), so "last scanned"
+		// is simply now.
+		"lastScan": time.Now().UnixMilli(), "lastScanVersion": ServerVersion, "createdAt": 0, "lastUpdate": 0,
 	}
 }
 

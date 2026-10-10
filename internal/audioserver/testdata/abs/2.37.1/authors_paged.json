@@ -1,0 +1,21 @@
+{
+  "results": [
+    {
+      "id": "77777777-7777-4777-8777-777777777777",
+      "asin": null,
+      "name": "H. G. Wells",
+      "description": null,
+      "imagePath": null,
+      "libraryId": "33333333-3333-4333-8333-333333333333",
+      "addedAt": 1790849101000,
+      "updatedAt": 1790849101000,
+      "numBooks": 1,
+      "lastFirst": "Wells, H. G."
+    }
+  ],
+  "total": 1,
+  "limit": 10,
+  "page": 0,
+  "sortDesc": false,
+  "minified": false
+}
