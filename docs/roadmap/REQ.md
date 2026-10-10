@@ -130,7 +130,7 @@ Everything keeps the current dark warm palette, terracotta accent, type scale, B
 _Staff hear about new requests (Apprise, push, inbox, sidebar badge) and handle them on a routed /requests page, with bulk actions and a tap-safe sheet where they can pick a profile. Requesters see the requests they joined and can stop following them. Auto-approvals and imports stop spamming. The Discover strip is capped, puts pending first for staff, and stops rebuilding every request ever made every 8 seconds. Request cards and 'ready' notifications agree on when a series is complete._
 
 <a id="req-01"></a>
-- [ ] **REQ-01 · Requests core: quiet auto-approvals, a bounded search queue, a silent Overseerr import, and a ready_at stamp** — `P1` · `M` · Phase 6
+- [x] **REQ-01 · Requests core: quiet auto-approvals, a bounded search queue, a silent Overseerr import, and a ready_at stamp** — `P1` · `M` · Phase 6
   - **Problem:** Auto-approved users are notified about their own click. Create calls Approve (service.go:109-111), which always calls notifyDecision(true) (service.go:235), sending an inbox entry, Web Push and Apprise.
 
 The Overseerr import calls Create(bg, in, status=='approved') for every item (import_overseerr.go:104). Imported users' inboxes fill with 'approved' rows, and the 10-minute sweep (main.go:439) then adds a 'ready' row for every title already available.
@@ -183,7 +183,7 @@ Service holds concrete *movies/*series/*books/*Coordinator pointers, so Approve 
   - **Risk:** The Create and Approve signature changes touch the handlers and the import together, so land them in one commit. The queue must never block an HTTP handler or shutdown. ready_at is per request row, which REQ-12's per-season rows rely on. The backfill ref must match requestRef exactly (movie:<tmdb>, series:<tmdb>, book:<ol_key>).
   - **Resolves:** discover-8
 <a id="req-02"></a>
-- [ ] **REQ-02 · One rule for 'is this series request complete', shared by tracking and the ready notification** — `P2` · `S` · Phase 6
+- [x] **REQ-02 · One rule for 'is this series request complete', shared by tracking and the ready notification** — `P2` · `S` · Phase 6
   - **Problem:** The card and the notification use different rules.
 - Track treats a series as complete when epHave >= epTotal (progress.go:76). epTotal comes from allStats, which counts every aired non-special episode whether or not it is monitored (series/repo.go:84-89), although the Stats comment says 'monitored seasons' (series.go:39).
 - The ready notifier and the sweep use HasWantedEpisodes, which counts monitored episodes only (series/repo.go:758-765; usernotify.go:138, 293).
@@ -206,7 +206,7 @@ So a show with unmonitored older seasons gets 'X is ready to watch' while its ca
   - **Risk:** Low. Make sure the series library grid isn't changed by accident. The notifier now needs Have > 0 explicitly, which the old sweep enforced through HaveFiles > 0.
   - **Resolves:** discover-12
 <a id="req-03"></a>
-- [ ] **REQ-03 · Requests API v2: sections, paging, counts, joined requests, stop following, and cheap tracking** — `P1` · `M` · Phase 6
+- [x] **REQ-03 · Requests API v2: sections, paging, counts, joined requests, stop following, and cheap tracking** — `P1` · `M` · Phase 6
   - **Problem:** Repo.List has no LIMIT or sections (repo.go:122-152), so handleListRequests returns every request ever made. Each call then:
 - lists all movies, all series (with a GROUP BY over every episode) and all books in enrichAvailability (service.go:260-305)
 - calls Downloads.Queue live (requests.go:34-37)
@@ -263,7 +263,7 @@ People who joined through request_subscribers never see the request: List filter
   - **Risk:** Every caller of the old List signature must change together. Requester scoping is enforced only server-side, so test it directly. Because and Recommended seeds now include followed titles, which is intended, but they must still drop items already in flight.
   - **Resolves:** product-2, discover-3, discover-9, discover-1
 <a id="req-04"></a>
-- [ ] **REQ-04 · RequestSheet: tap a request to see who asked, then approve with a profile, decline, withdraw or stop following** — `P1` · `S` · Phase 6
+- [x] **REQ-04 · RequestSheet: tap a request to see who asked, then approve with a profile, decline, withdraw or stop following** — `P1` · `S` · Phase 6
   - **Problem:** Approve, Decline and Withdraw live only in an opacity-0 group-hover overlay on 150px posters (Discover.tsx:637-653). On a phone they are tappable but invisible, and Decline has no confirmation. Nothing shows who asked, when, or with what note. Approve never sends a quality profile, although the API accepts one (Discover.tsx:641, requests.go:111-117).
   - **Approach:** 1. Move requestStage, etaText and STAGE_ORDER from Discover.tsx into a new web/src/lib/requestStage.ts, shared by the sheet, the strip and the page.
     2. New web/src/components/RequestSheet.tsx:
@@ -297,7 +297,7 @@ People who joined through request_subscribers never see the request: List filter
   - **Risk:** Low. Reuse the Discover chip, badge and gradient-button styles so the sheet reads as the same product.
   - **Resolves:** frontend-4, product-2
 <a id="req-05"></a>
-- [ ] **REQ-05 · A routed Requests page with sections, filters and bulk approve/decline** — `P1` · `M` · Phase 6
+- [x] **REQ-05 · A routed Requests page with sections, filters and bulk approve/decline** — `P1` · `M` · Phase 6
   - **Problem:** Requests.tsx (264 lines, Pending/Approved/Declined filters) isn't routed. App.tsx has no /requests route and nav.ts has no entry. Its in-page RequestModal calls the staff-only lookup endpoints (api.lookupMovies and api.lookupSeries). Settings.tsx:789 tells the admin that imported requests 'will appear on the Requests page', which doesn't exist. Staff have no list view, filter or bulk action.
   - **Approach:** Backend:
     1. POST /api/v1/requests/bulk (requireRole RoleManager):
@@ -336,7 +336,7 @@ People who joined through request_subscribers never see the request: List filter
   - **Risk:** Tracking depends on the download client. A Queue failure must still show file-based stages and never fail the page. Use the existing chip, badge and modal styles to avoid visual drift.
   - **Resolves:** discover-1, frontend-10, product-2
 <a id="req-06"></a>
-- [ ] **REQ-06 · Discover strip: tap-safe posters, pending first for staff, capped, 'See all', followed requests, and a note when requesting** — `P1` · `S` · Phase 6
+- [x] **REQ-06 · Discover strip: tap-safe posters, pending first for staff, capped, 'See all', followed requests, and a note when requesting** — `P1` · `S` · Phase 6
   - **Problem:** The strip has four problems:
 - Approve, Decline and Withdraw sit in an opacity-0 overlay (Discover.tsx:637-652), so a blind tap on a phone can approve or decline.
 - STAGE_ORDER puts pending (6) after downloading, importing, queued, paused, failed and searching (Discover.tsx:531-534), so staff scroll past in-flight items to find what needs them.
@@ -368,7 +368,7 @@ People who joined through request_subscribers never see the request: List filter
   - **Risk:** Low. Make sure the hero and the rest of Discover look the same. The MediaCard quick-request overlay is fixed by APP/FE's tap-safety task, not here (except the series path in REQ-13).
   - **Resolves:** product-2, product-7, frontend-4, discover-3, discover-9
 <a id="req-07"></a>
-- [ ] **REQ-07 · Tell staff a request is waiting: request.created, an Apprise 'New request' toggle, staff push and inbox, and a pending badge** — `P1` · `M` · Phase 6
+- [x] **REQ-07 · Tell staff a request is waiting: request.created, an Apprise 'New request' toggle, staff push and inbox, and a pending badge** — `P1` · `M` · Phase 6
   - **Problem:** Service.Create (service.go:95-113) only logs. The admin notifier subscribes only to release.grabbed, movie.downloaded, series.imported, plex.stream.started and plex.buffering (notify.go:148-152). Nothing alerts staff, puts a request in their inbox, or shows a badge, so family requests sit until the owner happens to open Discover. Separately, realtime.Hub.Run broadcasts every bus event to every websocket, requesters included (hub.go:63-84). A detailed request event would leak other people's titles and names.
   - **Approach:** 1. Events from requests.Service:
        - request.created {id, media_type, tmdb_id, title, year, requested_by_name, note, rerequest} when Create inserts a new pending row or re-opens a declined one. Never on subscribe, auto-approve or Silent.
@@ -406,7 +406,7 @@ People who joined through request_subscribers never see the request: List filter
 _Declines carry a reason that the requester sees. Notes reach staff. A re-request of a declined title must say why and is flagged. Auto-approve is set per media type, and new Plex sign-ins auto-approve movies only._
 
 <a id="req-08"></a>
-- [ ] **REQ-08 · Decisions with context: decline reasons, the decider, requester notes for staff, and a flagged re-request** — `P2` · `M` · Phase 6
+- [x] **REQ-08 · Decisions with context: decline reasons, the decider, requester notes for staff, and a flagged re-request** — `P2` · `M` · Phase 6
   - **Problem:** Decline(ctx, id) takes no reason, and the handler reads no body (service.go:241-252, requests.go:133-147), so the notification only says 'was declined' (usernotify.go:198). Approve records no decider. A declined card reads 'Declined / Declined' (Discover.tsx:694-695) and offers 'Request again' immediately (Discover.tsx:1321). The re-request silently resurrects the row. Decision refs are de-duplicated per (user, ref), so a second decline of the same title notifies nobody.
   - **Approach:** 1. Migration NNNN_request_decisions.sql:
        - requests ADD decline_reason TEXT NOT NULL DEFAULT ''
@@ -443,7 +443,7 @@ _Declines carry a reason that the requester sees. Notes reach staff. A re-reques
   - **Risk:** Old ':approved' and ':declined' inbox rows no longer block anything, which is intended. Keep reason and note lengths bounded. The 409 changes the re-request contract, so ship the server and the UI together.
   - **Resolves:** discover-10, product-2
 <a id="req-09"></a>
-- [ ] **REQ-09 · Auto-approve per media type, with new Plex sign-ins defaulting to movies only** — `P1` · `M` · Phase 6
+- [x] **REQ-09 · Auto-approve per media type, with new Plex sign-ins defaulting to movies only** — `P1` · `M` · Phase 6
   - **Problem:** Auto-approve is one per-user bool (users.auto_approve, migration 0029). Plex sign-ins get it from plex_login_auto_approve, which defaults to true (auth_plex.go:110, settings.go:73, import_overseerr.go:59). Any Plex user the owner shares with therefore has their series requests (every season, until M3) approved and searched immediately.
   - **Approach:** 1. Migration NNNN_auto_approve_types.sql:
        - users ADD auto_approve_movie, auto_approve_series, auto_approve_book INTEGER NOT NULL DEFAULT 0, then UPDATE users SET each = auto_approve. Every existing user keeps their behaviour. The old column stays for rollback but is no longer read.
@@ -479,7 +479,7 @@ _Declines carry a reason that the requester sees. Notes reach staff. A re-reques
 _Approving a title already in the library actually monitors and searches it. Requesters pick seasons, ask for 'more seasons' of shows the server partly has, and get per-season 'ready' notices. Staff can trim seasons when approving. Optional per-user quotas count movies, seasons and books, and refund on withdraw or decline._
 
 <a id="req-10"></a>
-- [ ] **REQ-10 · Approving a title already in the library monitors and searches it, and series adds become season-aware** — `P1` · `M` · Phase 6
+- [x] **REQ-10 · Approving a title already in the library monitors and searches it, and series adds become season-aware** — `P1` · `M` · Phase 6
   - **Problem:** Approve does nothing for media already in the library (series.ErrExists, movies.ErrExists, books.ErrExists; requests/service.go:183-218). A show added unmonitored by a library scan stays unmonitored and unsearched. Approval always calls series.Add(…, true), and seasonsFromDetails then monitors every non-special season (series/service.go:158-186), so there is no way to add only some seasons. On Discover, any in-library title without a file reads 'Wanted' and hides Request (Discover.tsx:1062, 1078, 1112), even when nobody monitors it, so requesters cannot ask for a show the scan picked up.
   - **Approach:** 1. series package:
        - AddOptions{Monitored bool; Seasons map[int]bool (nil = every non-special season); MonitorNewSeasons *bool}.
@@ -512,7 +512,7 @@ _Approving a title already in the library actually monitors and searches it. Req
   - **Risk:** Don't route this through Repo.SetMonitored, or seasons the owner deliberately skipped get re-monitored. Requester-facing labels must not reveal admin state beyond 'In library' and 'Wanted'.
   - **Resolves:** series-6, discover-2
 <a id="req-11"></a>
-- [ ] **REQ-11 · Season data: TMDB season summaries and a per-season state endpoint** — `P1` · `S` · Phase 6
+- [x] **REQ-11 · Season data: TMDB season summaries and a per-season state endpoint** — `P1` · `S` · Phase 6
   - **Problem:** Nothing tells the requester side which seasons exist, which are on disk, or which can be asked for. MediaDetail has no seasons, and tmdbSeries.Seasons doesn't parse episode_count (metadata/tmdb.go:281-287). The only signal is has_file, which is true once any episode exists (discover.go:99), so a partly owned show reads 'In library'.
   - **Approach:** 1. metadata/tmdb.go:
        - tmdbSeries.Seasons gains EpisodeCount (json episode_count).
@@ -541,7 +541,7 @@ _Approving a title already in the library actually monitors and searches it. Req
   - **Risk:** Anime shows numbered absolutely still list TMDB seasons, which matches how the library stores them. Without the detail cache, each sheet open costs one TMDB detail call.
   - **Resolves:** discover-2, product-3
 <a id="req-12"></a>
-- [ ] **REQ-12 · Season-scoped series requests: store seasons, monitor only those, allow 'more seasons', notify per season** — `P1` · `L` · Phase 6
+- [x] **REQ-12 · Season-scoped series requests: store seasons, monitor only those, allow 'more seasons', notify per season** — `P1` · `L` · Phase 6
   - **Problem:** A series request is the whole show. The create body has no seasons (requests.go:46-57), and Approve monitors every season (service.go:192). idx_requests_tmdb allows only one request per show (migration 0034), so nobody can ask for a missing or newly aired season of a show the server partly has. 'Ready' waits until no monitored aired episode is missing anywhere (usernotify.go:133-140, 289-294), so one unfindable old episode means the requester never hears.
   - **Approach:** Data model:
     1. Migration NNNN_request_seasons.sql:
@@ -595,7 +595,7 @@ _Approving a title already in the library actually monitors and searches it. Req
   - **Risk:** Dropping series uniqueness touches every per-show lookup (lookupExisting, notifyRequester, the snapshot's reqStatus, attachToExisting), so audit them all. The migration must leave legacy rows intact. Until SER's monitor-new-seasons exists, new seasons appearing on a refresh follow today's behaviour; document this. Overlap logic is the subtle part, so keep it in one pure function with a table test.
   - **Resolves:** discover-2, product-3
 <a id="req-13"></a>
-- [ ] **REQ-13 · Season picker in the title sheet, 'Request more seasons', series quick-request opens the sheet, and season trimming on approve** — `P1` · `M` · Phase 6
+- [x] **REQ-13 · Season picker in the title sheet, 'Request more seasons', series quick-request opens the sheet, and season trimming on approve** — `P1` · `M` · Phase 6
   - **Problem:** Every card has a hover '+ Request' that fires without opening the sheet (Discover.tsx:1082-1088, 1112-1122), and the Hero quick-request does the same, so a series is requested whole in one click. An owned series shows only '✓ In your library' (Discover.tsx:1311), a dead end even when seasons are missing. Staff have no way to approve only part of a series request.
   - **Approach:** 1. RequestDetailModal for series fetches api.seriesSeasons and renders a checklist.
        - Each row shows name, episode count, year and a state chip: 'In library ✓', '4 of 10', 'Requested', 'On the way', 'Not out yet'.
@@ -622,7 +622,7 @@ _Approving a title already in the library actually monitors and searches it. Req
   - **Risk:** Each sheet open costs one seasons call (one TMDB detail call unless it is cached). Keep the requester view free of other people's names.
   - **Resolves:** discover-2, product-3, series-6
 <a id="req-14"></a>
-- [ ] **REQ-14 · Per-user request quotas: movies, seasons and books per N days, refunded on withdraw or decline** — `P2` · `M` · Phase 6
+- [x] **REQ-14 · Per-user request quotas: movies, seasons and books per N days, refunded on withdraw or decline** — `P2` · `M` · Phase 6
   - **Problem:** There is no quota code anywhere in requests; the only quota grep hits are in subtitles. A trusted or auto-approved requester can queue unlimited titles and seasons. Overseerr users expect to see something like 'You have 3 requests left this week'.
   - **Approach:** 1. Migration NNNN_request_quotas.sql:
        - CREATE TABLE request_usage (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, request_id INTEGER NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('movie','season','book')), units INTEGER NOT NULL, created_at INTEGER NOT NULL);

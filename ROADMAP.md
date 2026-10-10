@@ -751,6 +751,8 @@ Most of this phase is S tasks with no prerequisites, so it moves fast.
 
 ### Phase 6 — Requests 2.0 and Needs you
 
+> **Status: shipped 2026-10-10** — all 28 tasks merged to main (full race suite, lint, frontend tests, typecheck, build within the size budget and Playwright e2e green; checked in a local instance with a real request → staff inbox → decline-with-reason → needs-a-note re-request round trip). Built as 5 lanes plus a second wave (decisions/quotas, season picker, needs-you alerts). Owner to check: admin Web Push on a phone (installed PWA); new-request alerts are backfilled onto existing admin alert connections.
+
 **Theme:** A real requests product for staff and requesters, the attention feed, and alerts that reach the owner  
 **Goal:** Staff hear about new requests and decide them on a routed /requests page with a shared sheet. Requesters ask for exactly the seasons and formats they want, within optional fair limits. The owner gets one 'Needs you' answer on every page, plus exactly-once alerts on their phone. OBS-10 builds the Alerts page, SEC-08 locks its URLs down, and request.created joins OBS-11's event catalog.  
 **Why now:** Requests are what the family touches most, and the owner currently misses them. Acquisition now records outcomes (Phase 5), so 'stuck search' and 'last checked' can be truthful. Season monitoring (Phase 4) and the TMDB detail cache (Phase 5) unblock season-scoped requests. The attention feed must exist before the sidebar badges and the Activity hub's Needs-you tab.  

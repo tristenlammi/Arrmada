@@ -390,7 +390,7 @@ Even manager-only, it ends up in devtools, HAR files and extensions. The grab an
   - **Risk:** Every grab entry point has to move in one change, or a modal breaks silently. Grep web/src for download_url after the change; it should be zero hits. A restart invalidates open modals, which the 410 copy covers. ACQ: coordinate ordering with ACQ's acquisition-core rework of the grab path. Tokens are a thin in-memory layer with no schema, so ACQ can later back them with candidate rows.
   - **Resolves:** integrations-7, movies-3
 <a id="sec-08"></a>
-- [ ] **SEC-08 · Admin Apprise connections: validate on save, never return the URL, admin-only writes** — `P1` · `S` · Phase 6
+- [x] **SEC-08 · Admin Apprise connections: validate on save, never return the URL, admin-only writes** — `P1` · `S` · Phase 6
   - **Problem:** handleCreateNotification and handleUpdateNotification (httpapi/notifications.go:23-58) never call notify.ValidateAppriseURL, which today guards only per-user URLs. GET /api/v1/notifications returns the full URL (discord webhook tokens, SMTP passwords, ntfy credentials) to every RoleManager user (server.go:205-209), and the Insights notifications card shows it in a plain text input. The Plex token, by contrast, is never sent back.
   - **Approach:** 1. Create and update call notify.ValidateAppriseURL(c.URL) when a URL is provided, and answer 400 with its message on failure.
     2. Add notify.URLHint(raw string) string:
@@ -529,7 +529,7 @@ None has a result cap.
   - **Risk:** Low. Callers of the old functions keep their behaviour. The 50 MB sample cutoff is unchanged.
   - **Resolves:** backend-1
 <a id="sec-13"></a>
-- [ ] **SEC-13 · Keep requester-owned Apprise URLs off internal hosts (save-time and send-time checks)** — `P2` · `S` · Phase 6
+- [x] **SEC-13 · Keep requester-owned Apprise URLs off internal hosts (save-time and send-time checks)** — `P2` · `S` · Phase 6
   - **Problem:** PUT /api/v1/me/apprise is open to any role, off-LAN too, because /api/v1/me/ is externally allowed. notify.ValidateAppriseURL (notify.go:296-316) allows the generic json/form/xml/webhook schemes, plus self-hosted ones (gotify, ntfy with a host, matrix, hassio, apprise) that take any host. The server then posts approve, decline and ready messages there (requests/usernotify.go notifyParties:205-240). That is a blind, fixed-content SSRF into the Docker network or the LAN (qBittorrent, Plex, routers).
   - **Approach:** 1. New internal/notify/ssrf.go:
        - type Resolver interface{ LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) }; net.DefaultResolver satisfies it.

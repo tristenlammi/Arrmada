@@ -381,7 +381,7 @@ A book that hasn't been found in a month looks identical to one that was just ad
 _Every key a book has ever had resolves to it, so old Discover cards and second requests attach to the right book. A manager reviews possible duplicates side by side and merges with one click. Editions, extra narrations, listening places, bookmarks, requests and history all move to the kept book, and no file is deleted._
 
 <a id="book-09"></a>
-- [ ] **BOOK-09 · book_keys alias table: every catalogue key a book has ever had** — `P1` · `M` · Phase 6
+- [x] **BOOK-09 · book_keys alias table: every catalogue key a book has ever had** — `P1` · `M` · Phase 6
   - **Problem:** Catalogue keys stand in for identity, and Re-match, the Hardcover upgrade, canonical-id swaps and Add-hits-duplicate each replace or ignore a key. As a result:
 - A Discover card still carrying an old key doesn't show In library.
 - A second request for the same book from a card with a different key creates a second request.
@@ -521,7 +521,7 @@ _Every key a book has ever had resolves to it, so old Discover cards and second 
 _Requesters choose Read, Listen or Both. A book that has only an ebook offers 'Request audiobook'. Existing books are widened rather than refused. 'Ready' messages say what actually arrived, once per requested format._
 
 <a id="book-13"></a>
-- [ ] **BOOK-13 · Read / Listen / Both on book requests: stored formats, widening existing books, per-format readiness and 'ready' wording** — `P1` · `M` · Phase 6
+- [x] **BOOK-13 · Read / Listen / Both on book requests: stored formats, widening existing books, per-format readiness and 'ready' wording** — `P1` · `M` · Phase 6
   - **Problem:** Book requests can't say which format the requester wants.
 - BooksDiscover.createRequest sends no format (BooksDiscover.tsx:63-70) and the admin approve buttons pass no profile (Requests.tsx:111, Discover.tsx:641), so every book request gets DefaultProfile('book').
 - If a requester asked for the other format of an existing book, Approve would hit books.ErrExists and never widen the book's profile.
@@ -558,7 +558,7 @@ _Requesters choose Read, Listen or Both. A book that has only an ebook offers 'R
   - **Risk:** If the owner's default is 'Ebook + Audiobook', requesters who pick one format get less than before, which is intended. The modal defaults to the owner's default editions. Widening a profile changes what the sweep searches, which is also intended.
   - **Resolves:** books-6, product-11
 <a id="book-14"></a>
-- [ ] **BOOK-14 · Discover and request UI for formats: Read / Listen / Both control, per-format badges, 'Request audiobook', format badges in request lists** — `P1` · `M` · Phase 6
+- [x] **BOOK-14 · Discover and request UI for formats: Read / Listen / Both control, per-format badges, 'Request audiobook', format badges in request lists** — `P1` · `M` · Phase 6
   - **Problem:** Once a book has either format, badgeFor returns 'In library' (BooksDiscover.tsx:438-446, 596-601) and hides Request, so a listener who finds only an ebook can't ask for the audiobook. The request modal offers no format choice. Admin request lists don't show what was asked for.
   - **Approach:** 1. httpapi/books.go enrichBookCards adds has_ebook, has_audiobook, want_ebook and want_audiobook from the library row, plus request_formats when the card is requested. The discover payload also exposes default_book_formats, the editions of the owner's default book profile.
     2. BooksDiscover.tsx:

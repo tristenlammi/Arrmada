@@ -774,7 +774,7 @@ SearchingItem (api.ts) and the feed entries (activity.go:62-112) omit all of it.
   - **Risk:** Low. The single-flight map must be released on panic (defer). Polling stops after 120s with 'still searching — check back'.
   - **Resolves:** backend-9, series-9, product-10
 <a id="acq-20"></a>
-- [ ] **ACQ-20 · Requesters see when their request was last checked** — `P2` · `S` · Phase 6
+- [x] **ACQ-20 · Requesters see when their request was last checked** — `P2` · `S` · Phase 6
   - **Problem:** A requester's approved request reads 'Looking for a release' with no time, whatever has happened (Discover.tsx:693; progress.go stage 'searching'). A book that stopped being searched automatically reads exactly like one searched an hour ago.
   - **Approach:** 1. requests.Tracking gains LastSearchAt and Misses (and SearchStopped for books). They are read from the linked library item through a small interface `SearchStates(ctx, kind string, ids []int64) map[int64]SearchState`, implemented over movies/series/books SearchState and wired in main.go.
     2. Discover requestStage 'searching' detail:

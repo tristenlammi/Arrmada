@@ -369,7 +369,7 @@ _Every background job records its last run, duration and error, survives a panic
 _One attention snapshot drives the Dashboard 'Needs you' card and the sidebar badges (Review, Downloads, Discover, Status, plus the mobile hamburger dot). Pending requests, held imports, errored/stalled downloads, failing imports, wrong-category downloads, stuck searches and health problems are visible on every page within 30s._
 
 <a id="obs-07"></a>
-- [ ] **OBS-07 · Attention feed: one pull-based 'needs you' snapshot and GET /api/v1/attention** — `P1` · `M` · Phase 6
+- [x] **OBS-07 · Attention feed: one pull-based 'needs you' snapshot and GET /api/v1/attention** — `P1` · `M` · Phase 6
   - **Problem:** Nothing aggregates what needs the owner. Pending requests appear only in a Discover strip. Held reviews wait until someone opens Review. Errored torrents are an amber tile without a count, and health is a separate list. Building badges or alerts on bus events alone would be unreliable, because the bus drops events when a subscriber's 64-slot buffer is full (eventbus.Publish).
   - **Approach:** 1. New package internal/attention:
        - `Item{Key, Kind (request|review|download|stalled|import|wrongcat|search|health|convert|issue), Level (warning|error), Title, Detail, Link string; Since int64; Count int}`.
@@ -409,7 +409,7 @@ _One attention snapshot drives the Dashboard 'Needs you' card and the sidebar ba
   - **Risk:** Query cost: every provider is a COUNT or LIMIT query on indexed columns, plus one queue read every 30s, regardless of how many tabs poll. The attention.changed payload must stay counts-only until SEC filters websocket topics.
   - **Resolves:** ops-4, product-4, frontend-10
 <a id="obs-08"></a>
-- [ ] **OBS-08 · "Needs you" card at the top of the Dashboard, sidebar count badges, and a mobile dot** — `P1` · `M` · Phase 6
+- [x] **OBS-08 · "Needs you" card at the top of the Dashboard, sidebar count badges, and a mobile dot** — `P1` · `M` · Phase 6
   - **Problem:** The sidebar fetches only the audiobook dot (Sidebar.tsx:20-25, 79-81). Review, Downloads and Discover show no counts. The Dashboard has no pending-request, held-review or failure counts, and its health warnings are a separate plain list. On phones the sidebar is a drawer, so even a badge would be hidden.
   - **Approach:** 1. web/src/lib/useAttention.ts: a module-level store shared by every component.
        - One poller hits /api/v1/attention every 30s, pauses while document.hidden, and refetches on visibilitychange and after a mutation via a `refreshAttention()` export.
@@ -441,7 +441,7 @@ _One attention snapshot drives the Dashboard 'Needs you' card and the sidebar ba
   - **Risk:** Sidebar polling must stay cheap: one poller per tab hitting a cached endpoint. Badge styling must use the existing tokens. Avoid duplicating health in two places on the Dashboard: the card replaces the warnings list.
   - **Resolves:** ops-4, product-4, frontend-10
 <a id="obs-09"></a>
-- [ ] **OBS-09 · Attention: imports stuck in retry and completed TV downloads in the wrong category** — `P2` · `S` · Phase 6
+- [x] **OBS-09 · Attention: imports stuck in retry and completed TV downloads in the wrong category** — `P2` · `S` · Phase 6
   - **Problem:** library.Manager keeps a per-hash failure map (attempts, next retry, last error; manager.go:54-118), but nothing outside it can read it, so an import that keeps failing is invisible until the movie path holds it for review after 5 tries. The series import path counts importFailed (series.go:1056-1064) and only logs. A completed TV pack in the wrong qBittorrent category is only a log warning (series.go:968-978) and silently never imports.
   - **Approach:** 1. library.Manager:
        - importFailure gains name, and noteFailure(hash, name, err).
@@ -471,7 +471,7 @@ _One attention snapshot drives the Dashboard 'Needs you' card and the sidebar ba
 _Alerts get their own page with a grouped event catalog, including book and music imports. New requests, held/stuck imports, failed downloads and health problems (with 'Resolved') alert exactly once, survive restarts and never flood. Deliveries are queued with retries and per-connection status. The owner can get them as Web Push on their phone._
 
 <a id="obs-10"></a>
-- [ ] **OBS-10 · Admin alerts get their own Alerts page, out of Insights, and admin URLs are validated on save** — `P1` · `S` · Phase 6
+- [x] **OBS-10 · Admin alerts get their own Alerts page, out of Insights, and admin URLs are validated on save** — `P1` · `S` · Phase 6
   - **Problem:** Admin notification connections are a tab inside the Plex monitoring page (Insights.tsx:822-899). /notifications redirects to /insights (App.tsx:106), which opens on Activity, not Notifications. The admin create and update handlers (notifications.go:23-58) never call notify.ValidateAppriseURL, which is only used for per-user URLs (usernotify.go:99), so a typo or an option-looking string is stored and fails at send time.
   - **Approach:** 1. Move EVENTS, BLANK_CONN, NotificationsView and ConnCard from Insights.tsx into web/src/pages/Alerts.tsx. Export an `AlertsSettings` component (the list plus editor) and a page wrapper with a PageHeader (title 'Alerts', crumb 'System / Alerts'), in the existing card style.
     2. Write the intro in plain words: 'Get a message when something needs you or when new things arrive.' Apprise is mentioned only in the Custom field hint.
@@ -490,7 +490,7 @@ _Alerts get their own page with a grouped event catalog, including book and musi
   - **Risk:** Low; this is mostly a move. Muscle memory is the only cost, which is why the link card stays for one release.
   - **Resolves:** insights-7, product-8
 <a id="obs-11"></a>
-- [ ] **OBS-11 · Alert event catalog with per-connection subscriptions; book, music and request alerts** — `P1` · `M` · Phase 6
+- [x] **OBS-11 · Alert event catalog with per-connection subscriptions; book, music and request alerts** — `P1` · `M` · Phase 6
   - **Problem:** Connections have four booleans (on_grab, on_import, on_stream, on_buffering; notify.go:30-33), and Run (notify.go:147-195) has a hand-written case per topic. book.imported (books.go:914, 1549, books_versions.go:202) and music.imported (music.go:375) have no admin subscriber. requests.Create (requests/service.go:76-113) publishes nothing, although the service already holds the bus. Adding any event means a migration and another bool.
   - **Approach:** 1. Migration NNNN_notification_subscriptions.sql (next free ≥0090):
        - `CREATE TABLE notification_subscriptions(connection_id INTEGER NOT NULL REFERENCES notifications(id) ON DELETE CASCADE, event_key TEXT NOT NULL, PRIMARY KEY(connection_id, event_key))`.
@@ -539,7 +539,7 @@ _Alerts get their own page with a grouped event catalog, including book and musi
   - **Risk:** The backfill must not lose subscriptions, which the migration test covers. Bus events here are still fire-and-forget. Needs-you alerts go through OBS-12's persisted path precisely so they don't depend on the bus.
   - **Resolves:** insights-6, product-4, product-8, ops-4
 <a id="obs-12"></a>
-- [ ] **OBS-12 · Needs-you and health alerts driven by the attention feed: exactly once, restart-safe, no floods** — `P1` · `M` · Phase 6
+- [x] **OBS-12 · Needs-you and health alerts driven by the attention feed: exactly once, restart-safe, no floods** — `P1` · `M` · Phase 6
   - **Problem:** Nothing alerts the owner when something needs them. That includes a request waiting, an import held in Review (import.held has no subscriber), a stuck import, an errored download, the disk guard pausing downloads, a dead client, or Plex becoming unreachable. Alerts built only on bus events would be unreliable, since the bus drops events under load, and naive health alerts would fire on every restart.
   - **Approach:** 1. Migration NNNN_attention_state.sql:
        - `attention_state(key TEXT PRIMARY KEY, kind TEXT NOT NULL, level TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, alerted_at INTEGER NOT NULL DEFAULT 0, resolved_at INTEGER NOT NULL DEFAULT 0, misses INTEGER NOT NULL DEFAULT 0)`.
@@ -580,7 +580,7 @@ _Alerts get their own page with a grouped event catalog, including book and musi
   - **Risk:** Alert noise. Seeding, boot grace, two-run confirmation, the flap guard and batching are all part of this task, not follow-ups. Quiet hours are out of scope. Back up the DB, or test on a scratch DB, before running the migration's subscription backfill on the real install.
   - **Resolves:** product-4, ops-4, system-8, insights-6
 <a id="obs-13"></a>
-- [ ] **OBS-13 · Notification delivery queue with retries, restart survival and a per-connection delivery log** — `P2` · `M` · Phase 6
+- [x] **OBS-13 · Notification delivery queue with retries, restart survival and a per-connection delivery log** — `P2` · `M` · Phase 6
   - **Problem:** fan() (notify.go:220-233) delivers serially inside the bus-subscriber loop, with a 20s apprise timeout per send. While a slow endpoint blocks the loop, the 64-slot bus buffer fills and later events are dropped ('event dropped: subscriber buffer full'). Failures go only to the log, so a broken endpoint fails silently with no status in the UI and no retry.
   - **Approach:** 1. Migration NNNN_notification_deliveries.sql:
        - `notification_deliveries(id INTEGER PK, connection_id INTEGER NOT NULL REFERENCES notifications(id) ON DELETE CASCADE, event_key TEXT, title TEXT, body TEXT, link TEXT NOT NULL DEFAULT '', attach TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'queued', attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', created_at INTEGER, next_attempt_at INTEGER, sent_at INTEGER)`.
@@ -610,7 +610,7 @@ _Alerts get their own page with a grouped event catalog, including book and musi
   - **Risk:** Worker concurrency needs the race run in Docker. The apprise CLI contract and the '--' separator are unchanged. Keep message bodies free of secrets, since they're now persisted.
   - **Resolves:** insights-7
 <a id="obs-14"></a>
-- [ ] **OBS-14 · Admin Web Push as an alert channel ('This device'), reusing the existing VAPID setup** — `P2` · `S` · Phase 6
+- [x] **OBS-14 · Admin Web Push as an alert channel ('This device'), reusing the existing VAPID setup** — `P2` · `S` · Phase 6
   - **Problem:** Admin alerts go out only through Apprise. The app already has Web Push (internal/push: VAPID keys, push_subscriptions, SendToUser and SendToUserAsync), but only requesters' 'ready' pings use it. An admin can't get pending-request or failure alerts on their phone without setting up an outside service.
   - **Approach:** 1. Migration NNNN_notifications_config.sql: `ALTER TABLE notifications ADD COLUMN config TEXT NOT NULL DEFAULT '{}'`. Connection gains `Config json.RawMessage`. [OBS-16](#obs-16) and [OBS-17](#obs-17) build on this column.
     2. Connection kind 'webpush' with config {user_id}. It needs no URL, and ValidateAppriseURL is skipped for this kind only. Create forces user_id to the current session's user, so an admin can't target someone else.
